@@ -15,8 +15,8 @@ Goal is the export of original MSS 3D player models and subsequent re-import of 
 - Python https://www.python.org/downloads/
 - Autism
 
-## workflow
-### export
+## Workflow  
+### Export  
 
 1) Set up Dolphin & Game iso
 2) Try running the game to make sure everything is prepped correctly
@@ -30,11 +30,11 @@ cd export_daes
 python export.py
 ```
 
-This will extract the entire content into a new folder \daes_model_only\...
+This will extract the entire content into a new folder \daes_model_only\\...
 It will contain more than just player models, but props and environment models as well.
 Everything is sorted into numbered folders, for example Tiny Kong + TK Bat + TK Glove is in 75
 
-### import
+### Import
 
 **not yet functional, this readme part is a stub**
 
@@ -43,8 +43,11 @@ Everything is sorted into numbered folders, for example Tiny Kong + TK Bat + TK 
 2) put the file in a new folder \import_model\somefoldername\
 3) update path at the beginning of import.py to your new folder
 4) sacrifice a goat to the machine god
-
+5) cmd
+``` 
+cd import_model
+python import_dae.py
+```
 5) ???
-
 6) receive "out" file
 7) integrate "out" contents into dt_na.dat
