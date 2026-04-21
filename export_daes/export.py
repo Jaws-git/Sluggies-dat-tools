@@ -102,7 +102,7 @@ for dir_ind, file_arr in dirs.items():
                     model_name = getattr(child.child, 'name', str(child.child.absolute))
                     txt_name = f"{model_name}.txt"
                     with open(os.path.join(lan_dir, txt_name), 'w') as info_f:
-                        info_f.write(f'<byte_len_hex: {hex(l)}>\n<byte_len_dec: {l}>')
+                        info_f.write(f'<byte_offset_hex: {hex(offset)}>\n<byte_offset_dec: {offset}>\n<byte_len_hex: {hex(l)}>\n<byte_len_dec: {l}>')
                 del child
         except Exception as e:
             print ("failed in export")
