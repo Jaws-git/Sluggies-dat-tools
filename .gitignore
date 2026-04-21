@@ -3,3 +3,5 @@ __pycache__
 *.dat
 /export_daes/output/
 /export_daes/tex/
+*.dae
+out
