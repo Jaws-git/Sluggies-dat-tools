@@ -3,10 +3,10 @@ from collada import *
 from helper import *
 import numpy as np
 from helper_classes import *
-from import_chr0 import *
-from mdl0 import *
+# from import_chr0 import *
+# from mdl0 import *
 
-DAE_FILENAME = 'import/lucas/lucas.dae'
+DAE_FILENAME = 'import/75/272731616/272731648_bat.gpl/model.dae'
 # DAE_FILENAME = 'import/lucas/FitLucas00.dae'
 DAE_FILEPATH = '/'.join(DAE_FILENAME.split('/')[:-1])
 
@@ -17,23 +17,21 @@ class DAEImport():
         self.textures = []
         self.parse_materials()
         self.parse_controllers()
-        defaults = MDL0BoneDefaults(open('import/lucas/FitLucas00.mdl0', 'rb'), 0, 0, '')
-        defaults.analyze()
-        for bone in self.bones.values():
-            if bone.name in defaults.defaults:
-                bone.s = defaults.defaults[bone.name]['s']
-                bone.r = euler_to_quaternion(*[x*math.pi/180 for x in defaults.defaults[bone.name]['r']])
-                bone.t = [x * MODEL_SCALE for x in defaults.defaults[bone.name]['t']]
-            # else:
-            #     bone.s = [1, 1, 1]
-            #     bone.r = [1, 0, 0, 0]
-            #     bone.t = [0, 0, 0]
+        
+        #the following pars are not used for MSS
+        # defaults = MDL0BoneDefaults(open('import/272147520_tiny_kong.gpl/model.mdl0', 'rb'), 0, 0, '')
+        # defaults.analyze()
+        # for bone in self.bones.values():
+        #     if bone.name in defaults.defaults:
+        #         bone.s = defaults.defaults[bone.name]['s']
+        #         bone.r = euler_to_quaternion(*[x*math.pi/180 for x in defaults.defaults[bone.name]['r']])
+        #         bone.t = [x * MODEL_SCALE for x in defaults.defaults[bone.name]['t']]
         # print(bone_track_map)
-        cnts = [0x2c, 0x1c, 0x11, 0xc, 0x4, 0x9, 0x18, 0x2, 0x5]
-        for i, cnt in enumerate(cnts):
-            chr0 = CHR0Import([CHR0_FILENAME] * cnt, self.bones)
-            chr0.toFile('anm_' + str(i + 5))
-        self.log_bone_srt()
+        # cnts = [0x2c, 0x1c, 0x11, 0xc, 0x4, 0x9, 0x18, 0x2, 0x5]
+        # for i, cnt in enumerate(cnts):
+        #     chr0 = CHR0Import([CHR0_FILENAME] * cnt, self.bones)
+        #     chr0.toFile('anm_' + str(i + 5))
+        # self.log_bone_srt()
         self.parse_geometries()
 
     def parse_geometries(self):
@@ -242,17 +240,5 @@ class DAEImport():
         #     new_bone.children = []
         #     self.bones[new_bone.id] = new_bone
 
-    def log_bone_srt(self):
-        for bone in self.bones.values():
-            # print(bone.name)
-            # print(bone.s)
-            f = open('import/bone_txt/' + bone.name, 'a')
-            f.write('\n')
-            f.write('s: ' + ','.join([str(round(x, 3)) for x in bone.s]) + '\n')
-            f.write('r: ' + ','.join([str(round(x, 3)) for x in bone.r]) + '\n')
-            f.write('t: ' + ','.join([str(round(x, 3)) for x in bone.t]) + '\n')
-            # f.write('\n')
-            # f.write('\n'.join([', '.join([str(round(y, 3)) for y in x]) for x in bone.orientation]))
-            f.close()
 
 my_import = DAEImport(DAE_FILENAME)
