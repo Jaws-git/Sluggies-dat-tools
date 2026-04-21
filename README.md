@@ -30,7 +30,7 @@ python export.py
 ```
 
 This will extract the entire content into a new folder \output\\...  
-It will contain all the player models, props and environment models. Everything is sorted into numbered folders, for example Tiny Kong + TK Bat + TK Glove is in 75 
+It will contain all the player models, props and environment models. Everything is sorted into numbered folders, for example Tiny Kong + TK Bat + TK Glove is in folderr "75" 
 
 ### Import
 
