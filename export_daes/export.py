@@ -8,7 +8,7 @@ def itb (val, n):
 def bti (b):
     return int.from_bytes(b, 'big')
 
-outdir = "daes_model_only/"
+outdir = "output/"
 if not os.path.exists(outdir):
     os.mkdir(outdir)
 

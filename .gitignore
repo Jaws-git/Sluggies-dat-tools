@@ -1,3 +1,5 @@
 __pycache__
 *.dol
 *.dat
+/export_daes/output/
+/export_daes/tex/
