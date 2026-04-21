@@ -19,7 +19,7 @@ DIRS_LEN = (DIRS_END - DIRS_START) // 0x4
 DIR_PTR_PTRS = range(DIRS_START, DIRS_END, 4)
 DAT_FNAME_PTR = 0x8067f658
 
-dol = open('bin/main.dol', 'rb')
+dol = open('input/main.dol', 'rb')
 DIR_PTRS = []
 for addr in DIR_PTR_PTRS:
     dol.seek(addr, 0)
@@ -74,7 +74,7 @@ class Dat(File):
     def __init__(self, f):
         super().__init__(f)
 
-dat = Dat(open('bin/dt_na.dat', 'rb'))
+dat = Dat(open('input/dt_na.dat', 'rb'))
 
 for dir_ind, file_arr in dirs.items():
     dir_dir = outdir + str(dir_ind) + '/'
@@ -99,6 +99,10 @@ for dir_ind, file_arr in dirs.items():
                 if child.child:
                     child.child.analyze()
                     child.child.toFile(lan_dir)
+                    model_name = getattr(child.child, 'name', str(child.child.absolute))
+                    txt_name = f"{model_name}.txt"
+                    with open(os.path.join(lan_dir, txt_name), 'w') as info_f:
+                        info_f.write(f'<byte_len_hex: {hex(l)}>\n<byte_len_dec: {l}>')
                 del child
         except Exception as e:
             print ("failed in export")
