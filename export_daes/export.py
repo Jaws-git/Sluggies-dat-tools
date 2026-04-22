@@ -2,6 +2,14 @@ from model0 import *
 import os
 import shutil
 import json
+import base64
+import re
+import struct
+
+EXPORT_DAE = False
+EXPORT_TEX = False
+EXPORT_JSON = True
+
 
 def itb (val, n):
     return val.to_bytes(n, 'big')
@@ -71,6 +79,50 @@ for dir_ind in range(DIRS_LEN):
 #     else:
 #         dirs[dir] = dirs[dir][3:5]
 
+def compact_faces_json(obj, indent=2):
+    """Serialize obj to indented JSON, then collapse face index triplets onto one line."""
+    raw = json.dumps(obj, indent=indent)
+    raw = re.sub(r'\[\s*(\d+),\s*(\d+),\s*(\d+)\s*\]', r'[\1, \2, \3]', raw, flags=re.DOTALL)
+    return raw
+
+def _vb_comp_size(quantize_info):
+    fmt = quantize_info >> 4
+    return 4 if fmt in [4, 7, 0xa] else 2
+
+def extract_submeshes(model):
+    """Return a list of submesh dicts with VertexBuffer info for a Model0 instance."""
+    if not hasattr(model, 'GPL') or not model.GPL:
+        return []
+    submeshes = []
+    for descriptor in model.GPL.geoDescriptors:
+        layout = descriptor.layout
+        pos = layout.DOPositionHeader
+        vb_offset = layout.absolute + pos.positionArrPtr
+        vb_length = pos.numPositions * pos.compCount * _vb_comp_size(pos.quantizeInfo)
+        model.f.seek(vb_offset)
+        vb_data = base64.b64encode(model.f.read(vb_length)).decode('ascii')
+        faces_raw = []
+        for draw_state in layout.getTriangles():
+            for triangle in draw_state['triangles']:
+                faces_raw.append([vertex['position'] for vertex in triangle])
+        face_count = len(faces_raw)
+        # Pack as big-endian uint16 triplets and base64-encode
+        flat = [idx for tri in faces_raw for idx in tri]
+        faces_data = base64.b64encode(struct.pack(f'>{len(flat)}H', *flat)).decode('ascii')
+        submeshes.append({
+            "SubmeshOffset": hex(layout.absolute),
+            "FacesCount": face_count,
+            "FacesData": faces_data,
+            "VertexBuffer": {
+                "VertexBufferOffset": hex(vb_offset),
+                "VertexBufferLength": vb_length,
+                "VertexBufferCompCount": pos.compCount,
+                "VertexBufferQuantizeInfo": pos.quantizeInfo,
+                "VertexBufferData": vb_data  #raw data in base 64
+            }
+        })
+    return submeshes
+
 class Dat(File):
     def __init__(self, f):
         super().__init__(f)
@@ -99,18 +151,21 @@ for dir_ind, file_arr in dirs.items():
                 child.analyze()
                 if child.child:
                     child.child.analyze()
-                    child.child.toFile(lan_dir)
-                    model_name = getattr(child.child, 'name', str(child.child.absolute))
-                    json_name = f"{model_name}.json"
-                    model_json = {
-                        "SluggiesModel": {
-                            "ChunkNumber": dir_ind,
-                            "ModelOffset": hex(offset),
-                            "ModelLength": l
+                    if EXPORT_DAE:
+                        child.child.toFile(lan_dir, export_tex=EXPORT_TEX)
+                    if EXPORT_JSON:
+                        model_name = getattr(child.child, 'name', str(child.child.absolute))
+                        json_name = f"{model_name}.json"
+                        model_json = {
+                            "SluggiesModel": {
+                                "ChunkNumber": dir_ind,
+                                "ModelOffset": hex(offset),
+                                "ModelLength": l,
+                                "Submeshes": extract_submeshes(child.child)
+                            }
                         }
-                    }
-                    with open(os.path.join(lan_dir, json_name), 'w') as info_f:
-                        json.dump(model_json, info_f, indent=2)
+                        with open(os.path.join(lan_dir, json_name), 'w') as info_f:
+                            info_f.write(compact_faces_json(model_json))
                 del child
         except Exception as e:
             print ("failed in export")

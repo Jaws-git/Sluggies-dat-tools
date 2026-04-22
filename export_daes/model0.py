@@ -132,26 +132,26 @@ class Model0(FileChunk):
             boneInfluences += [BoneInfluence(geoBone, 256, i, (100, 100, 100), 'Non-skinned assumption') for i in range(self.GPL.geoDescriptors[geoID].layout.DOPositionHeader.numPositions)]
         return boneInfluences
 
-    def toFile(self, outdir):
+    def toFile(self, outdir, export_tex=True):
         try:
             file_dir = outdir + self.name
             if os.path.exists(file_dir):
                 shutil.rmtree(file_dir)
             os.mkdir(file_dir)
             file_dir += '/'
-            data = self.model_data()
+            data = self.model_data(export_tex=export_tex)
             data.to_dae(file_dir)
         except Exception as e:
             print ("Failed in model0 tofile")
             print (e)
             pass
 
-    def model_data(self):
+    def model_data(self, export_tex=True):
         all_bones = []
         texture_paths = []
 
         # textures are simple enough
-        if self.TEXPalette:
+        if export_tex and self.TEXPalette:
             if os.path.exists('tex'):
                 shutil.rmtree('tex')
             os.mkdir('tex')
