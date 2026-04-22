@@ -59,7 +59,7 @@ def maxHalfShift (data):
     return shift
 
 def png_to_tpl(png_path, tpl_path):
-    os.system('wimgt encode --transform="TPL.CMPR" -d ' + tpl_path + ' "' + png_path + '"')
+    os.system('wimgt encode --overwrite --transform="TPL.CMPR" -d ' + tpl_path + ' "' + png_path + '"')
 
 def mtosrt(M):
     M = np.copy(M)
