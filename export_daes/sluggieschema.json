@@ -67,6 +67,16 @@
                 },
                 "required": ["VertexBufferOffset", "VertexBufferLength", "VertexBufferCompCount", "VertexBufferQuantizeInfo", "VertexBufferData"]
               },
+              "VertexBufferEdited": {
+                "type": "object",
+                "description": "XYZ position vertex buffer for this submesh after editing in blender",
+                "properties": {
+                  "VertexBufferDataEdited": {
+                    "type": "string",
+                    "description": "Base64-encoded raw vertex position buffer bytes"
+                  }
+                }
+              },
               "UVMap": {
                 "type": "object",
                 "description": "UV mapping data for this submesh",
