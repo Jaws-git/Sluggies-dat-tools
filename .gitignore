@@ -3,5 +3,10 @@ __pycache__
 *.dat
 /export_daes/output/
 /export_daes/tex/
+/import_model/import/
 *.dae
+*.png
+*.tpl
+*.txt
 out
+/_docs_modelformat/
