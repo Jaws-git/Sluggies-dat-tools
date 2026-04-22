@@ -32,6 +32,14 @@
                 "type": "number",
                 "description": "Length of this submesh data in bytes"
               },
+              "FacesCount": {
+                "type": "number",
+                "description": "Number of triangle faces"
+              },
+              "FacesData": {
+                "type": "string",
+                "description": "Base64-encoded face index buffer. Packed as big-endian uint16 triplets: [i0, i1, i2, i0, i1, i2, ...]"
+              },
               "VertexBuffer": {
                 "type": "object",
                 "description": "XYZ position vertex buffer for this submesh",
@@ -43,9 +51,21 @@
                   "VertexBufferLength": {
                     "type": "number",
                     "description": "Length of the vertex position buffer in bytes"
+                  },
+                  "VertexBufferCompCount": {
+                    "type": "number",
+                    "description": "Number of components per vertex entry. 3 = XYZ only, 6 = XYZ+NormalXYZ interleaved (skinned meshes)"
+                  },
+                  "VertexBufferQuantizeInfo": {
+                    "type": "number",
+                    "description": "Quantization byte. High nibble = data format (0/3=s16, 4=float), low nibble = right-shift divisor exponent"
+                  },
+                  "VertexBufferData": {
+                    "type": "string",
+                    "description": "Base64-encoded raw vertex position buffer bytes"
                   }
                 },
-                "required": ["VertexBufferOffset", "VertexBufferLength"]
+                "required": ["VertexBufferOffset", "VertexBufferLength", "VertexBufferCompCount", "VertexBufferQuantizeInfo", "VertexBufferData"]
               },
               "UVMap": {
                 "type": "object",
