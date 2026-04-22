@@ -1,6 +1,7 @@
 from model0 import *
 import os
 import shutil
+import json
 
 def itb (val, n):
     return val.to_bytes(n, 'big')
@@ -100,9 +101,16 @@ for dir_ind, file_arr in dirs.items():
                     child.child.analyze()
                     child.child.toFile(lan_dir)
                     model_name = getattr(child.child, 'name', str(child.child.absolute))
-                    txt_name = f"{model_name}.txt"
-                    with open(os.path.join(lan_dir, txt_name), 'w') as info_f:
-                        info_f.write(f'<byte_offset_hex: {hex(offset)}>\n<byte_offset_dec: {offset}>\n<byte_len_hex: {hex(l)}>\n<byte_len_dec: {l}>')
+                    json_name = f"{model_name}.json"
+                    model_json = {
+                        "SluggiesModel": {
+                            "ChunkNumber": dir_ind,
+                            "ModelOffset": hex(offset),
+                            "ModelLength": l
+                        }
+                    }
+                    with open(os.path.join(lan_dir, json_name), 'w') as info_f:
+                        json.dump(model_json, info_f, indent=2)
                 del child
         except Exception as e:
             print ("failed in export")

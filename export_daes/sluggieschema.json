@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema",
+  "type": "object",
+  "properties": {
+    "SluggiesModel": {
+      "type": "object",
+      "description": "MSS Model Folder",
+      "properties": {
+        "ChunkNumber": {
+          "type": "number",
+          "description": "Folder number the exported model is found in"
+        },
+        "ModelOffset": {
+          "type": "string",
+          "description": "Starting offset of model data in dt_na.dat (hex)"
+        },
+        "ModelLength": {
+          "type": "number",
+          "description": "Full length of model data (in bytes) from offset adress to end of model data"
+        },
+        "Submeshes": {
+          "type": "array",
+          "description": "There can be multiple separate submeshes in one model.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "SubmeshOffset": {
+                "type": "string",
+                "description": "Starting offset of this submesh in dt_na.dat (hex)"
+              },
+              "SubmeshLength": {
+                "type": "number",
+                "description": "Length of this submesh data in bytes"
+              },
+              "VertexBuffer": {
+                "type": "object",
+                "description": "XYZ position vertex buffer for this submesh",
+                "properties": {
+                  "VertexBufferOffset": {
+                    "type": "string",
+                    "description": "Starting offset of the vertex position buffer in dt_na.dat (hex)"
+                  },
+                  "VertexBufferLength": {
+                    "type": "number",
+                    "description": "Length of the vertex position buffer in bytes"
+                  }
+                },
+                "required": ["VertexBufferOffset", "VertexBufferLength"]
+              },
+              "UVMap": {
+                "type": "object",
+                "description": "UV mapping data for this submesh",
+                "properties": {
+                  "UVMapOffset": {
+                    "type": "string",
+                    "description": "Starting offset of the UV map buffer in dt_na.dat (hex)"
+                  },
+                  "UVMapLength": {
+                    "type": "number",
+                    "description": "Length of the UV map buffer in bytes"
+                  }
+                },
+                "required": ["UVMapOffset", "UVMapLength"]
+              }
+            },
+            "required": ["SubmeshOffset", "SubmeshLength", "VertexBuffer", "UVMap"]
+          }
+        }
+      },
+      "required": [
+        "ChunkNumber",
+        "ModelOffset",
+        "ModelLength"
+      ]
+    }
+  },
+  "required": [
+    "SluggiesModel"
+  ]
+}
