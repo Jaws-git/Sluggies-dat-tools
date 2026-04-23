@@ -13,14 +13,15 @@
 
 import bpy
 from . import ImportSluggies
+from . import ExportSluggies
 
 bl_info = {
     "name": "Sluggies IO",
     "author": "JawSFM",
     "description": "Import Sluggers intermediate JSON files",
     "blender": (4, 2, 0),
-    "version": (0, 0, 1),
-    "location": "File > Import > Sluggers intermediate (.json)",
+    "version": (0, 1, 0),
+    "location": "File > Import/Export > Sluggers intermediate (.json)",
     "warning": "",
     "category": "Import-Export",
 }
@@ -28,7 +29,9 @@ bl_info = {
 
 def register():
     ImportSluggies.register()
+    ExportSluggies.register()
 
 
 def unregister():
     ImportSluggies.unregister()
+    ExportSluggies.unregister()
