@@ -1,9 +1,9 @@
 __pycache__
 *.dol
 *.dat
-/export_daes/output/
-/export_daes/tex/
-/import_model/import/
+/1_Input/
+/2_Output_Models/
+/3_Output_Dat/
 *.dae
 *.png
 *.tpl

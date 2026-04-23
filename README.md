@@ -14,10 +14,10 @@ And the helpful Sluggers community for always having an open ear and pointing me
 
 - Dolphin Emulator https://dolphin-emu.org/
 - US(!) copy of Mario Super Sluggers
-- **wimgt** (part of [Wiimms SZS Tools](https://szs.wiimm.de/wimgt/) ) — must be on `PATH`; used to convert textures between TPL and PNG. No textures without this.
-- Blender 4.2 or newer https://www.blender.org/download/
 - Python https://www.python.org/downloads/
 - Collada ``pip install pycollada``
+- **wimgt** (part of [Wiimms SZS Tools](https://szs.wiimm.de/wimgt/) ) — must be on `PATH`; used to convert textures between TPL and PNG. No textures without this.
+- Blender 4.2 or newer https://www.blender.org/download/
 - Autism
 
 ## Workflow  
