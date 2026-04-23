@@ -17,6 +17,7 @@ And the helpful Sluggers community for always having an open ear and pointing me
 - **wimgt** (part of [Wiimms SZS Tools](https://szs.wiimm.de/wimgt/) ) — must be on `PATH`; used to convert textures between TPL and PNG. No textures without this.
 - Blender 4.2 or newer https://www.blender.org/download/
 - Python https://www.python.org/downloads/
+- Collada ``pip install pycollada``
 - Autism
 
 ## Workflow  
@@ -31,10 +32,10 @@ flowchart LR
 ```
 ## Export  
 
-1) Set up Dolphin & Game iso
-2) Try running the game to make sure everything is prepped correctly
-3) right click MSS -> properties -> Filesystem -> right click top node -> extract entire disc
-4) clone or download this repository
+1) clone or download this repository
+2) Set up Dolphin & Game iso
+3) Try running the game to make sure everything is prepped correctly
+4) right click the Game -> properties -> Filesystem -> right click top node -> extract entire disc
 5) from the extracted disc data, copy both "dt_na.dat" and "main.dol" to the folder \export_daes\input\
 6) you can save some waiting time by setting dae and texture extraction toggles at the top of export.py to "False"
 7) cmd 
