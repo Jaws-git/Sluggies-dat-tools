@@ -8,5 +8,4 @@ __pycache__
 *.png
 *.tpl
 *.txt
-out
 /_docs_modelformat/
