@@ -1,7 +1,9 @@
 import bpy
 import json
+import os
 import base64
 import struct
+import subprocess
 from bpy.props import StringProperty
 from bpy_extras.io_utils import ExportHelper
 
@@ -147,6 +149,9 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         with open(self.filepath, 'w') as f:
             json.dump(data, f, indent=2)
 
+        filename = os.path.basename(self.filepath)
+        context.window_manager.clipboard = filename
+        subprocess.run(['clip'], input=filename.encode('utf-16-le'), check=False)
         self.report({"INFO"},
             f"Wrote edited vertex data for {written} submesh(es) to {self.filepath}")
         return {"FINISHED"}
