@@ -24,11 +24,11 @@ And the helpful Sluggers community for always having an open ear and pointing me
 ## Overall Concept
 ```mermaid
 flowchart LR
-    A[Extract game files] --> B[Export model data as intermediate file]
-    B --> C[Import model to Blender]
+    A[Extract game files] --> B[Export model data as .sluggies file]
+    B --> C[Import to Blender]
     C --> D[Make changes]
-    D --> E[Export changed model back to intermediate file]
-    E --> F[Write changes back to game's .dat]
+    D --> E[Export model back to .sluggies file]
+    E --> F[Write changes to game's .dat]
 ```
 ## Export  
 
@@ -37,8 +37,7 @@ flowchart LR
 3) Try running the game to make sure everything is prepped correctly
 4) right click the Game -> properties -> Filesystem -> right click top node -> extract entire disc
 5) from the extracted disc data, copy both "dt_na.dat" and "main.dol" to the folder \export_daes\input\
-6) you can save some waiting time by setting dae and texture extraction toggle at the top of export.py to "False"
-7) cmd ``` python export.py ```
+6) cmd ``` python export.py ```
 
 This will extract the entire content into a new folder \output\\...  
 It will contain all the player models, props and environment models. Everything is sorted into numbered folders, for example Tiny Kong + her Bat + her Glove is in folder "75". 
