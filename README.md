@@ -4,9 +4,9 @@ This fork of the MSS-Dat-tools is laser focused on Mario Super Sluggers only and
 Goal is the export of original MSS 3D player models and subsequent re-import of edited models. For funny.
 
 None of this would have been possible without the folks who created the tools and documentation for these games.
-LlamaTrauma for the [MSS-Dat-Tools](https://github.com/LlamaTrauma/MSS-dat-tools) which this is forked off.
-roeming for the [MSSB-Export-Models](https://github.com/roeming/MSSB-Export-Models)
-The [Mario Sluggers Model format documentation](https://thatsrightigame.com/sluggers/format_docs/)
+- LlamaTrauma for the [MSS-Dat-Tools](https://github.com/LlamaTrauma/MSS-dat-tools) which this is forked off.
+- roeming for the [MSSB-Export-Models](https://github.com/roeming/MSSB-Export-Models)
+- The [Mario Sluggers Model format documentation](https://thatsrightigame.com/sluggers/format_docs/)
 
 And the helpful Sluggers community for always having an open ear and pointing me in the right directions.
 
@@ -20,8 +20,9 @@ And the helpful Sluggers community for always having an open ear and pointing me
 - Blender 4.2 or newer https://www.blender.org/download/
 - Autism
 
-## Workflow  
-## Overall Concept
+I want to keep making the whole process easier in the future, so look out for updates.
+
+## Workflow - Overall Concept
 ```mermaid
 flowchart LR
     A[Extract game files] --> B[Export model data as .sluggies file]
