@@ -317,7 +317,7 @@ class ModelData():
         tex_pngs = os.listdir('tex')
         tex_dir = dir + 'tex/'
         if os.path.exists(tex_dir):
-            os.rmdir(tex_dir)
+            shutil.rmtree(tex_dir)
         os.mkdir(tex_dir)
         for png in tex_pngs:
             shutil.copyfile('tex/'+png, tex_dir+png)

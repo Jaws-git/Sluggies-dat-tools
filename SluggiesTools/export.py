@@ -7,14 +7,12 @@ import re
 import struct
 import sys
 
-if len(sys.argv) >= 4:
-    EXPORT_DAE = bool(int(sys.argv[1]))
-    EXPORT_TEX = bool(int(sys.argv[2]))
-    EXPORT_JSON = bool(int(sys.argv[3]))
+if len(sys.argv) >= 3:
+    EXPORT_DAE_TEX = bool(int(sys.argv[1]))
+    EXPORT_SLUGGIES = bool(int(sys.argv[2]))
 else:
-    EXPORT_DAE = False
-    EXPORT_TEX = False
-    EXPORT_JSON = True
+    EXPORT_DAE_TEX = False
+    EXPORT_SLUGGIES = True
 
 
 def itb (val, n):
@@ -157,11 +155,11 @@ for dir_ind, file_arr in dirs.items():
                 child.analyze()
                 if child.child:
                     child.child.analyze()
-                    if EXPORT_DAE:
-                        child.child.toFile(lan_dir, export_tex=EXPORT_TEX)
-                    if EXPORT_JSON:
+                    if EXPORT_DAE_TEX:
+                        child.child.toFile(lan_dir)
+                    if EXPORT_SLUGGIES:
                         model_name = getattr(child.child, 'name', str(child.child.absolute))
-                        json_name = f"{model_name}.json"
+                        json_name = f"{model_name}.sluggie"
                         model_json = {
                             "SluggiesModel": {
                                 "ChunkNumber": dir_ind,

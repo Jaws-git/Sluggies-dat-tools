@@ -15,7 +15,7 @@ def abort(message):
 
 # --- require json path argument ---
 if len(sys.argv) < 2:
-    abort("No JSON file path provided.\nUsage: python patch_dat.py <path_to_model.json>")
+    abort("No .sluggies file path provided.\nUsage: python patch_dat.py <path_to_model.sluggies>")
 
 json_path = sys.argv[1]
 if not os.path.exists(json_path):
@@ -94,5 +94,4 @@ print(f"\n--- Summary ---")
 print(f"Submeshes patched : {written} / {len(patches)}")
 print(f"Output file       : {OUTPUT_DAT}")
 print(f"Done. You can now overwrite your original dt_na.dat with the patched version, but consider making a backup of the original file.")
-input("\nPress any key to exit...")
 
