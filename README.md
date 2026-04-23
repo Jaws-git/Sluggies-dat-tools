@@ -16,7 +16,7 @@ And the helpful Sluggers community for always having an open ear and pointing me
 - US(!) copy of Mario Super Sluggers
 - Python https://www.python.org/downloads/
 - Collada ``pip install pycollada``
-- **wimgt** (part of [Wiimms SZS Tools](https://szs.wiimm.de/wimgt/) ) — must be on `PATH`; used to convert textures between TPL and PNG. No textures without this.
+- **wimgt** (part of [Wiimms SZS Tools](https://szs.wiimm.de/download.html)) — must be on `PATH`; used to convert textures between TPL and PNG. No textures without this.
 - Blender 4.2 or newer https://www.blender.org/download/
 - Autism
 
@@ -57,11 +57,9 @@ Exporting to a .sluggies file will automatically put the file name on your clipb
 
 ## Import
 
-**not yet functional, this readme part is a stub**
-
 *The file name from the last step should still be in your clipboard unless you copied something else in the meantime.*
 1) cmd ``` python patch.py [yourfilename.sluggie]```
 2) a new folder 3_Output_Dat will appear, containing a patched dt_na.dat file
 3) keep applying as many patches as you like, you can also specify mutliple file names
-4) copy the finished dt_na.dat file back into the unpacked game folder
+4) copy the finished dt_na.dat file back into the unpacked game folder, overwrite
 5) start the unpacked game containing the patched dat file using Dolphin (we are not re-packaging it into an iso file for now, dolphin can run it just fine as is)
