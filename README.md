@@ -36,10 +36,10 @@ flowchart LR
 2) Set up Dolphin & Game iso
 3) Try running the game to make sure everything is prepped correctly
 4) right click the Game -> properties -> Filesystem -> right click top node -> extract entire disc
-5) from the extracted disc data, copy both "dt_na.dat" and "main.dol" to the folder \export_daes\input\
+5) from the extracted disc data, copy both "dt_na.dat" and "main.dol" to the folder \1_Input\
 6) cmd ``` python export.py ```
 
-This will extract the entire content into a new folder \output\\...  
+This will extract the entire content into a new folder \2_Output_Models\\...  
 It will contain all the player models, props and environment models. Everything is sorted into numbered folders, for example Tiny Kong + her Bat + her Glove is in folder "75". 
 
 If you get texture-related errors, make sure you've added the wimgt tools bin folder (usually .\szs_v2_42a\bin\\) to your [PATH](https://www.youtube.com/watch?v=rWVaxSWvxUQ)
