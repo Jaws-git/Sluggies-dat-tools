@@ -57,8 +57,8 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
     bl_description = "Write edited vertex data back into a Sluggers intermediate JSON file"
     bl_options = {"UNDO"}
 
-    filename_ext = ".json"
-    filter_glob: StringProperty(default="*.json", options={"HIDDEN"})
+    filename_ext = ".sluggie"
+    filter_glob: StringProperty(default="*.sluggie", options={"HIDDEN"})
 
     def execute(self, context):
         # --- load and sanity-check the target JSON ---
@@ -153,7 +153,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
 
 
 def menu_func_export(self, context):
-    self.layout.operator(SLUGGIES_OT_export.bl_idname, text="Sluggers intermediate (.json)")
+    self.layout.operator(SLUGGIES_OT_export.bl_idname, text="Sluggers intermediate (.sluggie)")
 
 
 def register():

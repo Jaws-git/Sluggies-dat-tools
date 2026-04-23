@@ -91,8 +91,8 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
     bl_description = "Import a Sluggers intermediate JSON file"
     bl_options = {"UNDO"}
 
-    filename_ext = ".json"
-    filter_glob: StringProperty(default="*.json", options={"HIDDEN"})
+    filename_ext = ".sluggie"
+    filter_glob: StringProperty(default="*.sluggie", options={"HIDDEN"})
 
     def execute(self, context):
         with open(self.filepath, 'r') as f:
@@ -121,7 +121,7 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
 
 
 def menu_func_import(self, context):
-    self.layout.operator(SLUGGIES_OT_import.bl_idname, text="Sluggers intermediate (.json)")
+    self.layout.operator(SLUGGIES_OT_import.bl_idname, text="Sluggers intermediate (.sluggie)")
 
 
 def register():
