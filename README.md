@@ -10,7 +10,7 @@ The [Mario Sluggers Model format documentation](https://thatsrightigame.com/slug
 
 And the helpful Sluggers community for always having an open ear and pointing me in the right directions.
 
-## requirements
+## Requirements
 
 - Dolphin Emulator https://dolphin-emu.org/
 - US(!) copy of Mario Super Sluggers
@@ -20,8 +20,7 @@ And the helpful Sluggers community for always having an open ear and pointing me
 - Autism
 
 ## Workflow  
-### Overall Concept
-
+## Overall Concept
 ```mermaid
 flowchart LR
     A[Extract game files] --> B[Export model data as intermediate file]
@@ -30,8 +29,7 @@ flowchart LR
     D --> E[Export changed model back to intermediate file]
     E --> F[Write changes back to game's .dat]
 ```
-
-### Export  
+## Export  
 
 1) Set up Dolphin & Game iso
 2) Try running the game to make sure everything is prepped correctly
@@ -50,36 +48,22 @@ It will contain all the player models, props and environment models. Everything 
 
 If you get texture-related errors, make sure you've added the wimgt tools bin folder (usually .\szs_v2_42a\bin\\) to your [PATH](https://www.youtube.com/watch?v=rWVaxSWvxUQ)
 
-### Blender editing
+## Blender editing
 
-1) install the addon .zip file from the BlenderAddon folder
+1) install the included SluggiesBlenderAddon .zip file
 2) File -> import -> Sluggers intermediate -> select one json file from the output folder
-3) in edit mode, change the positions of vertices and/or edit the face normal vectors as desired
+3) Edit mesh, according to the [Blender Guide](BlenderGuide.md)
 4) File -> export -> Sluggers intermediate -> select the **same** json file you imported earlier to export your changes to
 
 Nothing is lost, the updated file will hold both original and edited mesh data for you.
 
-- **This workflow currently does not support adding or removing vertices. It would lead to crashes later on when writing data back to the game.**
-- currently, only manipulation of vert positions and face normals is supported. More is in the works. Please wait warmly (or contribute!).
-- Materials, UVs and bone binding are also not getting touched at all.
-- Do not rename models, the names contain information about where the mesh belongs.
-- Do not remove the objects custom properties
-
-### Import
+## Import
 
 **not yet functional, this readme part is a stub**
 
-1) once you have edited your model in Blender, export it as . 
-   (Blender 5.x and higher no longer support thus format! Use third party plugins or install an older version of blender, 4.5 and lower)
-2) put the file in a new folder \import_model\somefoldername\
-3) update path at the beginning of import.py to your new folder
+1) run [insert file here].py
 4) sacrifice a goat to the machine god
-5) cmd
-``` 
-cd import_model
-python import_dae.py
-```
 5) ???
-6) receive "out" file
-7) ensure model does not overshoot original models length (how?)
-8) integrate "out" contents into dt_na.dat
+~~6) receive "out" file~~
+~~7) ensure model does not overshoot original models length (how?)~~
+~~8) integrate "out" contents into dt_na.dat~~
