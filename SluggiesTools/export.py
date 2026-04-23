@@ -5,10 +5,16 @@ import json
 import base64
 import re
 import struct
+import sys
 
-EXPORT_DAE = False
-EXPORT_TEX = False
-EXPORT_JSON = True
+if len(sys.argv) >= 4:
+    EXPORT_DAE = bool(int(sys.argv[1]))
+    EXPORT_TEX = bool(int(sys.argv[2]))
+    EXPORT_JSON = bool(int(sys.argv[3]))
+else:
+    EXPORT_DAE = False
+    EXPORT_TEX = False
+    EXPORT_JSON = True
 
 
 def itb (val, n):
