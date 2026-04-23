@@ -37,12 +37,8 @@ flowchart LR
 3) Try running the game to make sure everything is prepped correctly
 4) right click the Game -> properties -> Filesystem -> right click top node -> extract entire disc
 5) from the extracted disc data, copy both "dt_na.dat" and "main.dol" to the folder \export_daes\input\
-6) you can save some waiting time by setting dae and texture extraction toggles at the top of export.py to "False"
-7) cmd 
-```
-cd export_daes
-python export.py
-```
+6) you can save some waiting time by setting dae and texture extraction toggle at the top of export.py to "False"
+7) cmd ``` python export.py ```
 
 This will extract the entire content into a new folder \output\\...  
 It will contain all the player models, props and environment models. Everything is sorted into numbered folders, for example Tiny Kong + her Bat + her Glove is in folder "75". 
@@ -62,9 +58,9 @@ Nothing is lost, the updated file will hold both original and edited mesh data f
 
 **not yet functional, this readme part is a stub**
 
-1) run [insert file here].py
-4) sacrifice a goat to the machine god
-5) ???
-~~6) receive "out" file~~
-~~7) ensure model does not overshoot original models length (how?)~~
-~~8) integrate "out" contents into dt_na.dat~~
+1) cmd ``` python patch.py ```
+2) enter file name of the .sluggies file containing the edited model data
+3) a new folder 3_Output_Dat will appear, containing a patched dt_na.dat file
+4) keep applying as many patches as you like
+5) copy the finished dt_na.dat file back into the unpacked game folder
+6) start the unpacked game containing the patched dat file using Dolphin (we are not re-packaging it into an iso file for now, dolphin can run it just fine unpacked)
