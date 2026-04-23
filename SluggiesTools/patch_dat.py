@@ -4,8 +4,8 @@ import shutil
 import json
 import base64
 
-INPUT_DAT  = 'input/dt_na.dat'
-OUTPUT_DIR = 'output_dat'
+INPUT_DAT  = '../1_Input/dt_na.dat'
+OUTPUT_DIR = '../3_Output_Dat'
 OUTPUT_DAT = os.path.join(OUTPUT_DIR, 'dt_na.dat')
 
 def abort(message):

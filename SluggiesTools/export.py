@@ -17,7 +17,7 @@ def itb (val, n):
 def bti (b):
     return int.from_bytes(b, 'big')
 
-outdir = "output/"
+outdir = "../2_Output_Models/"
 if not os.path.exists(outdir):
     os.mkdir(outdir)
 
@@ -28,7 +28,7 @@ DIRS_LEN = (DIRS_END - DIRS_START) // 0x4
 DIR_PTR_PTRS = range(DIRS_START, DIRS_END, 4)
 DAT_FNAME_PTR = 0x8067f658
 
-dol = open('input/main.dol', 'rb')
+dol = open('../1_Input/main.dol', 'rb')
 DIR_PTRS = []
 for addr in DIR_PTR_PTRS:
     dol.seek(addr, 0)
@@ -127,7 +127,7 @@ class Dat(File):
     def __init__(self, f):
         super().__init__(f)
 
-dat = Dat(open('input/dt_na.dat', 'rb'))
+dat = Dat(open('../1_Input/dt_na.dat', 'rb'))
 
 for dir_ind, file_arr in dirs.items():
     dir_dir = outdir + str(dir_ind) + '/'
