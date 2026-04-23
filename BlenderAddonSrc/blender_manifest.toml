@@ -3,9 +3,9 @@ schema_version = "1.0.0"
 # Example of manifest file for a Blender extension
 # Change the values according to your extension
 id = "sluggiesio"
-version = "1.0.0"
-name = "Sluggiesio"
-tagline = "This is another extension"
+version = "0.1.0"
+name = "SluggiesIO"
+tagline = "Import and Export Sluggies intermediate model files"
 maintainer = "JawSFM"
 # Supported types: "add-on", "theme"
 type = "add-on"
