@@ -18,7 +18,7 @@ from . import ExportSluggies
 bl_info = {
     "name": "Sluggies IO",
     "author": "JawSFM",
-    "description": "Import Sluggers intermediate JSON files (Mario Super Sluggers - Wii)",
+    "description": "Import/Export Sluggers intermediate JSON files (Mario Super Sluggers - Wii)",
     "blender": (4, 2, 0),
     "version": (0, 1, 0),
     "location": "File > Import/Export > Sluggers intermediate (.sluggie)",
