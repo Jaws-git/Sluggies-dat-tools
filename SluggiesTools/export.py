@@ -11,7 +11,7 @@ if len(sys.argv) >= 3:
     EXPORT_DAE_TEX = bool(int(sys.argv[1]))
     EXPORT_SLUGGIES = bool(int(sys.argv[2]))
 else:
-    EXPORT_DAE_TEX = False
+    EXPORT_DAE_TEX = True
     EXPORT_SLUGGIES = True
 
 
@@ -155,21 +155,38 @@ for dir_ind, file_arr in dirs.items():
                 child.analyze()
                 if child.child:
                     child.child.analyze()
-                    if EXPORT_DAE_TEX:
-                        child.child.toFile(lan_dir)
+                    child.child.toFile(lan_dir, export_tex=EXPORT_DAE_TEX)
                     if EXPORT_SLUGGIES:
-                        model_name = getattr(child.child, 'name', str(child.child.absolute))
-                        json_name = f"{model_name}.sluggie"
-                        model_json = {
-                            "SluggiesModel": {
-                                "ChunkNumber": dir_ind,
-                                "ModelOffset": hex(offset),
-                                "ModelLength": l,
-                                "Submeshes": extract_submeshes(child.child)
+                        if isinstance(child.child, Archive):
+                            archive_dir = os.path.join(lan_dir, str(child.child.absolute))
+                            for i in child.child.success:
+                                sub_model = child.child.files[i]
+                                sub_dir = os.path.join(archive_dir, sub_model.name)
+                                json_name = f"{sub_model.name}.sluggie"
+                                model_json = {
+                                    "SluggiesModel": {
+                                        "ChunkNumber": dir_ind,
+                                        "ModelOffset": hex(sub_model.absolute),
+                                        "ModelLength": sub_model.length,
+                                        "Submeshes": extract_submeshes(sub_model)
+                                    }
+                                }
+                                with open(os.path.join(sub_dir, json_name), 'w') as info_f:
+                                    info_f.write(compact_faces_json(model_json))
+                        else:
+                            model_name = child.child.name
+                            model_dir = os.path.join(lan_dir, model_name)
+                            json_name = f"{model_name}.sluggie"
+                            model_json = {
+                                "SluggiesModel": {
+                                    "ChunkNumber": dir_ind,
+                                    "ModelOffset": hex(offset),
+                                    "ModelLength": l,
+                                    "Submeshes": extract_submeshes(child.child)
+                                }
                             }
-                        }
-                        with open(os.path.join(lan_dir, json_name), 'w') as info_f:
-                            info_f.write(compact_faces_json(model_json))
+                            with open(os.path.join(model_dir, json_name), 'w') as info_f:
+                                info_f.write(compact_faces_json(model_json))
                 del child
         except Exception as e:
             print ("failed in export")

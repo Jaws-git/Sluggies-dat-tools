@@ -40,7 +40,7 @@ class Archive(FileChunk):
                 print (e)
                 pass
 
-    def toFile(self, outdir):
+    def toFile(self, outdir, export_tex=True):
         if not len(self.success):
             return
         archivedir = outdir + str(self.absolute) + '/'
@@ -48,7 +48,7 @@ class Archive(FileChunk):
             os.mkdir(archivedir)
         for success in self.success:
             f = self.files[success]
-            f.toFile(archivedir)
+            f.toFile(archivedir, export_tex=export_tex)
 
 # This is not the mdl0 format, I think I just called the class that for some reason
 class Model0(FileChunk):
@@ -140,7 +140,7 @@ class Model0(FileChunk):
             os.mkdir(file_dir)
             file_dir += '/'
             data = self.model_data(export_tex=export_tex)
-            data.to_dae(file_dir)
+            data.to_dae(file_dir, name=self.name)
         except Exception as e:
             print ("Failed in model0 tofile")
             print (e)
@@ -338,7 +338,7 @@ class ModelData():
             out[ind] = (effect, mat)
         return out
 
-    def to_dae(self, dir):
+    def to_dae(self, dir, name='model'):
         # texture setup stuff
         self.create_tex_dir(dir)
         collada = Collada()
@@ -507,7 +507,7 @@ class ModelData():
         myscene = scene.Scene("myscene", [geom_node])
         collada.scenes.append(myscene)
         collada.scene = myscene
-        c_filepath = dir + 'model.dae'
+        c_filepath = dir + name + '.dae'
         collada.write(c_filepath)
         if len(controller_xmls):
             insert_controller_library(c_filepath, controller_library(controller_xmls))
@@ -516,7 +516,7 @@ class ModelData():
         anim_log_path = dir + '../anim_info'
         if not os.path.exists(anim_log_path):
             f = open(anim_log_path, 'w+')
-            f.write(dir + 'model.dae')
+            f.write(dir + name + '.dae')
             f.write('\n')
             for bone in self.bones:
                 f.write(str('bone_' + str(bone.id)) + ' ' + str(bone.track_id) + '\n')
