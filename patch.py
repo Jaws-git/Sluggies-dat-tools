@@ -5,7 +5,7 @@ import os
 search_dir = os.path.join(os.path.dirname(__file__), '2_Output_Models')
 script = os.path.join(os.path.dirname(__file__), 'SluggiesTools', 'patch_dat.py')
 
-filename = input("Enter .sluggies file name to use for patching: ").strip()
+filename = input("\nEnter .sluggies file name to use for patching: ").strip()
 
 matches = [
     os.path.join(root, f)
@@ -26,5 +26,3 @@ subprocess.run(
     cwd=os.path.join(os.path.dirname(__file__), 'SluggiesTools'),
     check=True
 )
-
-input("\nPress any key to exit...")

@@ -24,4 +24,3 @@ subprocess.run(
 )
 
 print('\nExport complete. Find your files in the folder "2_Output_Models"')
-input("\nPress any key to exit...")
