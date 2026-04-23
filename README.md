@@ -52,14 +52,15 @@ If you get texture-related errors, make sure you've added the wimgt tools bin fo
 4) File -> export -> Sluggers intermediate -> select the **same** json file you imported earlier to export your changes to
 
 Nothing is lost, the updated file will hold both original and edited mesh data for you.
+Exporting to a .sluggies file will automatically put the file name on your clipboard for the next step
 
 ## Import
 
 **not yet functional, this readme part is a stub**
 
-1) cmd ``` python patch.py ```
-2) enter file name of the .sluggies file containing the edited model data
-3) a new folder 3_Output_Dat will appear, containing a patched dt_na.dat file
-4) keep applying as many patches as you like
-5) copy the finished dt_na.dat file back into the unpacked game folder
-6) start the unpacked game containing the patched dat file using Dolphin (we are not re-packaging it into an iso file for now, dolphin can run it just fine unpacked)
+*The file name from the last step should still be in your clipboard unless you copied something else in the meantime.*
+1) cmd ``` python patch.py [yourfilename.sluggie]```
+2) a new folder 3_Output_Dat will appear, containing a patched dt_na.dat file
+3) keep applying as many patches as you like, you can also specify mutliple file names
+4) copy the finished dt_na.dat file back into the unpacked game folder
+5) start the unpacked game containing the patched dat file using Dolphin (we are not re-packaging it into an iso file for now, dolphin can run it just fine as is)
