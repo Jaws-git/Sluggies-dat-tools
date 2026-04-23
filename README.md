@@ -48,9 +48,9 @@ If you get texture-related errors, make sure you've added the wimgt tools bin fo
 ## Blender editing
 
 1) install the included SluggiesBlenderAddon .zip file
-2) File -> import -> Sluggers intermediate -> select one json file from the output folder
+2) File -> import -> Sluggers intermediate -> select one .sluggie file from the output folder
 3) Edit mesh, according to the [Blender Guide](BlenderGuide.md)
-4) File -> export -> Sluggers intermediate -> select the **same** json file you imported earlier to export your changes to
+4) File -> export -> Sluggers intermediate -> select the **same** file you imported earlier to export your changes to
 
 Nothing is lost, the updated file will hold both original and edited mesh data for you.
 Exporting to a .sluggies file will automatically put the file name on your clipboard for the next step
