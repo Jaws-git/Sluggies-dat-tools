@@ -6,7 +6,7 @@ from helper_classes import *
 # from import_chr0 import *
 # from mdl0 import *
 
-DAE_FILENAME = 'import/75/272731616/272731648_bat.gpl/model.dae'
+DAE_FILENAME = 'import/model.dae'
 # DAE_FILENAME = 'import/lucas/FitLucas00.dae'
 DAE_FILEPATH = '/'.join(DAE_FILENAME.split('/')[:-1])
 
@@ -36,60 +36,76 @@ class DAEImport():
 
     def parse_geometries(self):
         geometries = self.mesh.geometries
-        offsets = {
-            'position': 0,
-            'normal': 0,
-            'texture_coord': 0
-        }
         positions = []
         normals = []
         texture_coords = []
         texture_groups = []
         textures = []
         for geometry in geometries:
-            primitives = geometry.primitives
-            for primitive in primitives:
-                offsets['position'] = len(positions)
-                offsets['normal'] = len(normals)
-                offsets['texture_coord'] = len(texture_coords)
-                if isinstance(primitive, collada.triangleset.TriangleSet):
-                    triangles = []
-                    primitive_positions = [Position(a[0] * MODEL_SCALE, a[1] * MODEL_SCALE, a[2] * MODEL_SCALE) for a in primitive.vertex]
-                    # for position in primitive_positions:
-                    #     print(position.raw())
-                    primitive_normals = [Normal(a[0], a[1], a[2]) for a in primitive.normal]
-                    # I believe there's one texture coord per surface in the material?
-                    # Have only run into materials with one surface
-                    primitive_texture_coords = [TextureCoord(a[0], -a[1]) for a in primitive.texcoordset[0]]
-                    positions.extend(primitive_positions)
-                    normals.extend(primitive_normals)
-                    texture_coords.extend(primitive_texture_coords)
-                    for n in range(primitive.ntriangles):
-                        triangle = Triangle(
-                            [x + offsets['position'] for x in primitive.vertex_index[n]],
-                            [x + offsets['normal'] for x in primitive.normal_index[n]],
-                            [x + offsets['texture_coord'] for x in primitive.texcoord_indexset[0][n]]
-                        )
-                        triangles.append(triangle)
-                    texture_path = self.material_surface_map[primitive.material][0]
-                    if texture_path not in textures:
-                        textures.append(texture_path)
-                    texture_id = textures.index(texture_path)
-                    texture_groups.append(TextureGroup(triangles, texture_id))
-                    # Loop through bone influences to see if the original vertex position is defined here, store the default position value if it is
-                    # The controller only seems to store the geometry name and vertex index, so don't know how that'd work for geometries with multiple primitives
-                    # Don't have to worry about that now though, these geometries have one primitive each
-                    for bone in self.bones.values():
-                        for influence in bone.influences:
-                            if influence.geo_name == geometry.name:
-                                influence.default = [0, 0, 0, 1, 0, 0]
-                                influence.absolute_vertex_ind = influence.vertex_ind + offsets['position']
-                                for triangle in triangles:
-                                    for i, positionInd in enumerate(triangle.positionInds):
-                                        if positionInd == influence.absolute_vertex_ind:
-                                            influence.default = positions[positionInd].raw() + normals[triangle.normalInds[i]].raw()
-                else:
-                    print('not triangleset')
+            # The exporter creates one geometry per texture-coordinate layer
+            # (e.g. geom_0_layer_0, geom_0_layer_1).  Each layer has the same
+            # vertex positions; only the UV set differs.  Skip everything but
+            # layer_0 to avoid duplicating vertex and skin data.
+            if '_layer_' in geometry.name and not geometry.name.endswith('_layer_0'):
+                continue
+
+            triangle_primitives = [p for p in geometry.primitives
+                                   if isinstance(p, collada.triangleset.TriangleSet)]
+            if not triangle_primitives:
+                print('no triangle primitives in ' + geometry.name)
+                continue
+
+            # All primitives in a geometry share the same vertex/normal/UV
+            # source arrays.  Add them once per geometry, not once per primitive.
+            first_prim = triangle_primitives[0]
+            geom_pos_offset = len(positions)
+            geom_nor_offset = len(normals)
+            geom_tex_offset = len(texture_coords)
+
+            positions.extend([
+                Position(a[0] * MODEL_SCALE, a[1] * MODEL_SCALE, a[2] * MODEL_SCALE)
+                for a in first_prim.vertex
+            ])
+            normals.extend([Normal(a[0], a[1], a[2]) for a in first_prim.normal])
+            texture_coords.extend([
+                TextureCoord(a[0], -a[1]) for a in first_prim.texcoordset[0]
+            ])
+
+            # Collect ALL triangles for this geometry so bone default-position
+            # lookup can search across all primitives.
+            all_geo_triangles = []
+            for primitive in triangle_primitives:
+                triangles = []
+                # for position in primitive_positions:
+                #     print(position.raw())
+                for n in range(primitive.ntriangles):
+                    triangle = Triangle(
+                        [x + geom_pos_offset for x in primitive.vertex_index[n]],
+                        [x + geom_nor_offset for x in primitive.normal_index[n]],
+                        [x + geom_tex_offset for x in primitive.texcoord_indexset[0][n]]
+                    )
+                    triangles.append(triangle)
+                texture_path = self.material_surface_map[primitive.material][0]
+                if texture_path not in textures:
+                    textures.append(texture_path)
+                texture_id = textures.index(texture_path)
+                texture_groups.append(TextureGroup(triangles, texture_id))
+                # Loop through bone influences to see if the original vertex position is defined here, store the default position value if it is
+                # The controller only seems to store the geometry name and vertex index, so don't know how that'd work for geometries with multiple primitives
+                # Don't have to worry about that now though, these geometries have one primitive each
+                all_geo_triangles.extend(triangles)
+
+            # Set bone influence defaults and absolute indices once per geometry.
+            for bone in self.bones.values():
+                for influence in bone.influences:
+                    if influence.geo_name == geometry.name:
+                        influence.default = [0, 0, 0, 1, 0, 0]
+                        influence.absolute_vertex_ind = influence.vertex_ind + geom_pos_offset
+                        for triangle in all_geo_triangles:
+                            for i, positionInd in enumerate(triangle.positionInds):
+                                if positionInd == influence.absolute_vertex_ind:
+                                    influence.default = (positions[positionInd].raw()
+                                                         + normals[triangle.normalInds[i]].raw())
         model = ModelImport(positions, normals, texture_coords, texture_groups, textures, self.bones)
         with open(DAE_FILEPATH + '/out', 'wb') as f:
             f.write(model.binary())
@@ -120,6 +136,11 @@ class DAEImport():
             if not isinstance(controller, collada.controller.Skin):
                 print('Controller is not a skin')
             else:
+                # Skip duplicate-layer controllers (same geometry as layer_0 but
+                # with a different UV set).  Only layer_0 influences are needed.
+                geom_name = controller.geometry.name
+                if '_layer_' in geom_name and not geom_name.endswith('_layer_0'):
+                    continue
                 # sum(controller.vcounts) * len(controller.offsets) = len(controller.vertex_weight_index) = len(weight_source) * 2
                 # bind_shape_matrix is identity matrix from what I see
                 sources = controller.sourcebyid
@@ -154,19 +175,25 @@ class DAEImport():
         for node in scene_nodes:
             if node.id == 'Armature':
                 armature = node
-        if armature:
-            stack = []
-            for child in armature.children:
-                # For some reason I had pycollada 0.4.1 installed so this was throwing errors, fun
-                if isinstance(child, collada.scene.Node) and child.name in self.bones:
-                    stack.append(child)
-            while len(stack):
-                parent = stack.pop()
-                for child in parent.children:
-                    if isinstance(child, collada.scene.Node) and child.name in self.bones:
-                        self.bones[parent.name].children.append(child.name)
-                        self.bones[child.name].parent = parent.name
-                        stack.append(child)
+                break
+        # Walk the full scene graph tracking the nearest bone ancestor.
+        # This handles both a Blender-style Armature wrapper and the export_daes
+        # format where bones sit directly under a synthetic BaseJoint container.
+        root_nodes = armature.children if armature else scene_nodes
+        # Each stack item is (nearest_bone_ancestor_node, current_node)
+        stack = [(None, node) for node in root_nodes if isinstance(node, collada.scene.Node)]
+        while stack:
+            parent_bone_node, node = stack.pop()
+            if node.name in self.bones:
+                if parent_bone_node is not None:
+                    self.bones[parent_bone_node.name].children.append(node.name)
+                    self.bones[node.name].parent = parent_bone_node.name
+                new_parent_bone_node = node
+            else:
+                new_parent_bone_node = parent_bone_node
+            for child in node.children:
+                if isinstance(child, collada.scene.Node):
+                    stack.append((new_parent_bone_node, child))
         # Assign ids, switch from using names to ids as identifiers
         next_id = 0
         for i, bone in enumerate(self.bones.values()):
