@@ -47,7 +47,7 @@ If you get texture-related errors, make sure you've added the wimgt tools bin fo
 
 ## Blender editing
 
-1) install the included SluggiesBlenderAddon .zip file
+1) install the included SluggiesIO_BlenderAddon_Vxxx.zip file
 2) File -> import -> Sluggers intermediate -> select one .sluggie file from the output folder
 3) Edit mesh, according to the [Blender Guide](BlenderGuide.md)
 4) File -> export -> Sluggers intermediate -> select the **same** file you imported earlier to export your changes to
@@ -58,8 +58,11 @@ Exporting to a .sluggies file will automatically put the file name on your clipb
 ## Import
 
 *The file name from the last step should still be in your clipboard unless you copied something else in the meantime.*
-1) cmd ``` python patch.py [yourfilename.sluggie]```
+1) cmd ``` python patch.py myfilename```
 2) a new folder 3_Output_Dat will appear, containing a patched dt_na.dat file
 3) keep applying as many patches as you like, you can also specify mutliple file names
 4) copy the finished dt_na.dat file back into the unpacked game folder, overwrite
 5) start the unpacked game containing the patched dat file using Dolphin (we are not re-packaging it into an iso file for now, dolphin can run it just fine as is)
+
+You can call patch.py with the option --unpatch to write the original model back to the dat.
+Example: ``python patch.py --unpatch myfilename``

@@ -13,6 +13,7 @@ parser = argparse.ArgumentParser(
     formatter_class=argparse.RawDescriptionHelpFormatter
 )
 parser.add_argument('filenames', nargs='*', help='.sluggies file name(s) to patch')
+parser.add_argument('--unpatch', action='store_true', help='restore original vertex data instead of writing edited data')
 args = parser.parse_args()
 
 if not args.filenames:
@@ -37,8 +38,11 @@ for filename in args.filenames:
     found = matches[0]
     print(f"Found: {found}")
 
+    cmd = [sys.executable, script, found]
+    if args.unpatch:
+        cmd.append('--unpatch')
     subprocess.run(
-        [sys.executable, script, found],
+        cmd,
         cwd=os.path.join(os.path.dirname(__file__), 'SluggiesTools'),
         check=True
     )

@@ -13,11 +13,14 @@ def abort(message):
     input("\nPress any key to exit...")
     raise SystemExit(1)
 
-# --- require json path argument ---
-if len(sys.argv) < 2:
-    abort("No .sluggies file path provided.\nUsage: python patch_dat.py <path_to_model.sluggies>")
+# --- parse arguments ---
+unpatch = '--unpatch' in sys.argv
+argv_clean = [a for a in sys.argv[1:] if a != '--unpatch']
 
-json_path = sys.argv[1]
+if not argv_clean:
+    abort("No .sluggies file path provided.\nUsage: python patch_dat.py <path_to_model.sluggies> [--unpatch]")
+
+json_path = argv_clean[0]
 if not os.path.exists(json_path):
     abort(f"JSON file not found: {json_path}")
 
@@ -35,32 +38,41 @@ submeshes = data["SluggiesModel"].get("Submeshes", [])
 if not submeshes:
     abort("No submeshes found in JSON.")
 
-# --- decode base64 edited vertex buffers ---
+# --- decode base64 vertex buffers ---
+mode_label = "original" if unpatch else "edited"
+print(f"Mode: {'--unpatch (restoring original data)' if unpatch else 'patch (writing edited data)'}")
 patches = []
 for i, submesh in enumerate(submeshes):
-    vb_edited = submesh.get("VertexBufferEdited")
-    if not vb_edited or "VertexBufferDataEdited" not in vb_edited:
-        print(f"  Submesh {i}: no VertexBufferEdited data, skipping.")
-        continue
     vb_orig = submesh.get("VertexBuffer", {})
     offset_hex = vb_orig.get("VertexBufferOffset")
     expected_length = vb_orig.get("VertexBufferLength")
     if offset_hex is None or expected_length is None:
         print(f"  Submesh {i}: missing VertexBufferOffset or VertexBufferLength, skipping.")
         continue
+    if unpatch:
+        vb_data = vb_orig.get("VertexBufferData")
+        if not vb_data:
+            print(f"  Submesh {i}: no VertexBufferData in VertexBuffer, skipping.")
+            continue
+        raw = base64.b64decode(vb_data)
+    else:
+        vb_edited = submesh.get("VertexBufferEdited")
+        if not vb_edited or "VertexBufferDataEdited" not in vb_edited:
+            print(f"  Submesh {i}: no VertexBufferEdited data, skipping.")
+            continue
+        raw = base64.b64decode(vb_edited["VertexBufferDataEdited"])
     offset = int(offset_hex, 16)
-    raw = base64.b64decode(vb_edited["VertexBufferDataEdited"])
     if len(raw) != expected_length:
         abort(
-            f"Submesh {i}: decoded edited buffer length {len(raw)} bytes "
+            f"Submesh {i}: decoded {mode_label} buffer length {len(raw)} bytes "
             f"does not match original VertexBufferLength {expected_length} bytes.\n"
-            f"Vertex and face count must remain unchanged. Aborting to prevent corrupt output."
+            f"Aborting to prevent corrupt output."
         )
     patches.append((i, offset, raw))
     print(f"  Submesh {i}: decoded {len(raw)} bytes at offset {offset_hex}")
 
 if not patches:
-    abort("No valid edited submesh buffers found to apply.")
+    abort(f"No valid {mode_label} submesh buffers found to apply.")
 
 print(f"\nLoaded {len(patches)} patch(es) from {json_path}")
 
@@ -93,5 +105,8 @@ with open(OUTPUT_DAT, 'r+b') as f:
 print(f"\n--- Summary ---")
 print(f"Submeshes patched : {written} / {len(patches)}")
 print(f"Output file       : {OUTPUT_DAT}")
-print(f"Done. You can now overwrite your original dt_na.dat with the patched version, but consider making a backup of the original file.")
+if unpatch:
+    print(f"Done. The output file has been restored to the original vertex data.")
+else:
+    print(f"Done. You can now overwrite your original dt_na.dat with the patched version, but consider making a backup of the original file.")
 
