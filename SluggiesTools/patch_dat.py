@@ -71,10 +71,44 @@ for i, submesh in enumerate(submeshes):
     patches.append((i, offset, raw))
     print(f"  Submesh {i}: decoded {len(raw)} bytes at offset {offset_hex}")
 
-if not patches:
-    abort(f"No valid {mode_label} submesh buffers found to apply.")
+# --- decode base64 UV channel buffers ---
+uv_patches = []
+for i, submesh in enumerate(submeshes):
+    for ch in submesh.get("UVChannels", []):
+        ch_ind = ch.get("UVChannelIndex", "?")
+        offset_hex = ch.get("UVChannelOffset")
+        expected_length = ch.get("UVChannelLength")
+        if offset_hex is None or expected_length is None:
+            print(f"  Submesh {i} UV ch {ch_ind}: missing offset or length, skipping.")
+            continue
+        if unpatch:
+            raw_b64 = ch.get("UVChannelData")
+            if not raw_b64:
+                print(f"  Submesh {i} UV ch {ch_ind}: no UVChannelData, skipping.")
+                continue
+        else:
+            raw_b64 = ch.get("UVChannelDataEdited")
+            if not raw_b64:
+                print(f"  Submesh {i} UV ch {ch_ind}: no UVChannelDataEdited, skipping.")
+                continue
+        raw = base64.b64decode(raw_b64)
+        offset = int(offset_hex, 16)
+        if len(raw) != expected_length:
+            # Mismatched length means the deduplicated UV set changed size.
+            # Patching would corrupt adjacent data, so skip with a clear warning.
+            print(
+                f"  WARNING  Submesh {i} UV ch {ch_ind}: {mode_label} buffer is {len(raw)} bytes "
+                f"but the original slot is {expected_length} bytes — skipping. "
+                f"(Edit UVs without adding or removing unique coordinate entries to keep sizes equal.)"
+            )
+            continue
+        uv_patches.append((i, ch_ind, offset, raw))
+        print(f"  Submesh {i} UV ch {ch_ind}: decoded {len(raw)} bytes at offset {offset_hex}")
 
-print(f"\nLoaded {len(patches)} patch(es) from {json_path}")
+if not patches and not uv_patches:
+    abort(f"No valid {mode_label} buffers found to apply.")
+
+print(f"\nLoaded {len(patches)} vertex patch(es) and {len(uv_patches)} UV patch(es) from {json_path}")
 
 # --- ensure output_dat folder exists ---
 if not os.path.exists(OUTPUT_DIR):
@@ -93,20 +127,26 @@ else:
     print(f"Copied {INPUT_DAT} -> {OUTPUT_DAT}")
 
 # --- write patches to output dat ---
-print(f"\nWriting {len(patches)} patch(es) to {OUTPUT_DAT} ...")
-written = 0
+print(f"\nWriting {len(patches)} vertex patch(es) and {len(uv_patches)} UV patch(es) to {OUTPUT_DAT} ...")
+written_vb = 0
+written_uv = 0
 with open(OUTPUT_DAT, 'r+b') as f:
     for i, offset, raw in patches:
         f.seek(offset)
         f.write(raw)
-        print(f"  Submesh {i}: wrote {len(raw)} bytes at offset 0x{offset:X}")
-        written += 1
+        print(f"  Submesh {i} vertex: wrote {len(raw)} bytes at offset 0x{offset:X}")
+        written_vb += 1
+    for i, ch_ind, offset, raw in uv_patches:
+        f.seek(offset)
+        f.write(raw)
+        print(f"  Submesh {i} UV ch {ch_ind}: wrote {len(raw)} bytes at offset 0x{offset:X}")
+        written_uv += 1
 
 print(f"\n--- Summary ---")
-print(f"Submeshes patched : {written} / {len(patches)}")
-print(f"Output file       : {OUTPUT_DAT}")
+print(f"Vertex submeshes patched : {written_vb} / {len(patches)}")
+print(f"UV channels patched      : {written_uv} / {len(uv_patches)}")
+print(f"Output file              : {OUTPUT_DAT}")
 if unpatch:
-    print(f"Done. The output file has been restored to the original vertex data.")
+    print(f"Done. The output file has been restored to the original vertex and UV data.")
 else:
-    print(f"Done. You can now overwrite your original dt_na.dat with the patched version, but consider making a backup of the original file.")
-
+    print(f"Done. You can now overwrite your original dt_na.dat in the game folder.")
