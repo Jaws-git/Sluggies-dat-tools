@@ -21,6 +21,11 @@ outdir = "../2_Output_Models/"
 if not os.path.exists(outdir):
     os.mkdir(outdir)
 
+if os.path.exists('tex'):
+    for f in os.listdir('tex'):
+        if f.endswith('.png'):
+            os.remove(os.path.join('tex', f))
+
 # An array of FILE_POINTER[]'s in the US dol
 DIRS_START = 0x69C828
 DIRS_END = 0x69CAD8
