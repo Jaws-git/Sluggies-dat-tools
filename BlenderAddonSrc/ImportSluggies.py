@@ -53,7 +53,45 @@ def decode_vertex_buffer(vb):
     return positions, normals
 
 
-def build_mesh(name, positions, normals, faces, vb_meta, collection):
+def decode_uv_channel(uv_channel):
+    """Decode a UVChannel dict into:
+    - coords: list of (s, t) float tuples decoded from the raw ST buffer
+    - uv_faces: list of [i0, i1, i2] UV index triplets, aligned face-for-face with FacesData
+    """
+    raw = base64.b64decode(uv_channel["UVChannelData"])
+    quant = uv_channel["UVChannelQuantizeInfo"]
+    comp_count = uv_channel["UVChannelCompCount"]
+    fmt_nibble = quant >> 4
+    divisor = 1 << (quant & 0xF)
+
+    if fmt_nibble in [4, 7, 0xa]:
+        comp_fmt, comp_size = '>f', 4
+    else:  # 0, 3 -> signed int16
+        comp_fmt, comp_size = '>h', 2
+
+    stride = comp_count * comp_size
+    num_coords = len(raw) // stride
+
+    coords = []
+    for i in range(num_coords):
+        off = i * stride
+        s = struct.unpack_from(comp_fmt, raw, off)[0] / divisor
+        t = struct.unpack_from(comp_fmt, raw, off + comp_size)[0] / divisor
+        coords.append((s, t))
+
+    # Decode per-face UV indices (uint16 BE triplets, same encoding as FacesData)
+    uv_faces = []
+    uv_faces_data = uv_channel.get("UVFacesData")
+    if uv_faces_data:
+        uv_raw = base64.b64decode(uv_faces_data)
+        n = len(uv_raw) // 2
+        flat = list(struct.unpack(f'>{n}H', uv_raw))
+        uv_faces = [flat[i * 3 : i * 3 + 3] for i in range(n // 3)]
+
+    return coords, uv_faces
+
+
+def build_mesh(name, positions, normals, faces, vb_meta, collection, uv_channels=None):
     """Create a Blender mesh object from a vertex list and link it to *collection*."""
     mesh = bpy.data.meshes.new(name)
     mesh.from_pydata(positions, [], faces)
@@ -63,6 +101,26 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection):
         #mesh.use_auto_smooth = True 
         normals_per_loop = [normals[i] for face in faces for i in face]
         mesh.normals_split_custom_set(normals_per_loop)
+
+    if uv_channels:
+        for ch_ind, uv_channel in enumerate(uv_channels):
+            coords, uv_faces = decode_uv_channel(uv_channel)
+            if not coords or not uv_faces:
+                continue
+            # Use palette name as UV layer name; fall back to "uv<index>"
+            layer_name = uv_channel.get("PaletteName") or f"uv{ch_ind}"
+            uv_layer = mesh.uv_layers.new(name=layer_name)
+            for poly in mesh.polygons:
+                face_idx = poly.index
+                if face_idx >= len(uv_faces):
+                    continue
+                uv_tri = uv_faces[face_idx]
+                for loop_offset, loop_idx in enumerate(poly.loop_indices):
+                    uv_idx = uv_tri[loop_offset % 3]
+                    if uv_idx < len(coords):
+                        s, t = coords[uv_idx]
+                        # GX V increases downward; flip to match Blender convention
+                        uv_layer.data[loop_idx].uv = (s, 1.0 - t)
 
     obj = bpy.data.objects.new(name, mesh)
     collection.objects.link(obj)
@@ -111,8 +169,9 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
                 continue
             positions, normals = decode_vertex_buffer(vb)
             faces = decode_faces(submesh)
+            uv_channels = submesh.get("UVChannels", [])
             mesh_name = f"{model_number}_{model_offset_hex}_submesh{i}"
-            build_mesh(mesh_name, positions, normals, faces, vb, collection)
+            build_mesh(mesh_name, positions, normals, faces, vb, collection, uv_channels)
             imported += 1
 
         context.view_layer.update()

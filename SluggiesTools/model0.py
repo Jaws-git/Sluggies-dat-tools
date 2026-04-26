@@ -135,6 +135,9 @@ class Model0(FileChunk):
     def toFile(self, outdir, export_tex=True):
         try:
             file_dir = outdir + self.name
+            dae_exists = os.path.exists(os.path.join(file_dir, self.name + '.dae'))
+            if not export_tex and dae_exists:
+                return
             if os.path.exists(file_dir):
                 shutil.rmtree(file_dir)
             os.mkdir(file_dir)
@@ -304,14 +307,15 @@ class Model0(FileChunk):
             #     print('---------------')
 
         # return the tidy object
-        return ModelData(geometries, texture_paths, all_bones, self)
+        return ModelData(geometries, texture_paths, all_bones, self, export_tex)
 
 class ModelData():
-    def __init__(self, geometries, textures, bones, model):
+    def __init__(self, geometries, textures, bones, model, export_tex=True):
         self.geometries = geometries
         self.textures = textures
         self.bones = bones
         self.model = model
+        self.export_tex = export_tex
 
     def create_tex_dir(self, dir):
         tex_pngs = os.listdir('tex')
@@ -340,11 +344,12 @@ class ModelData():
 
     def to_dae(self, dir, name='model'):
         # texture setup stuff
-        self.create_tex_dir(dir)
+        if self.export_tex:
+            self.create_tex_dir(dir)
         collada = Collada()
         controller_xmls = []
         instancing_details = {}
-        effect_materials = self.create_materials(dir, collada)
+        effect_materials = self.create_materials(dir, collada) if self.export_tex else {}
         mat_nodes = {}
         for ind in effect_materials:
             effect, material = effect_materials[ind]
@@ -390,10 +395,13 @@ class ModelData():
                         continue
                     active_descriptors = mesh.active_descriptors
                     material_ind = mesh.texture_layers[tex_layer]
-                    effect, material = effect_materials[material_ind]
-                    material_symbol = 'material_'+str(material_ind)
-                    instancing_details[g_ind]['materials'][material_symbol] = 'material_'+str(material_ind)
-                    geom_mat_nodes.append(mat_nodes[material_ind])
+                    if self.export_tex:
+                        effect, material = effect_materials[material_ind]
+                        material_symbol = 'material_'+str(material_ind)
+                        instancing_details[g_ind]['materials'][material_symbol] = 'material_'+str(material_ind)
+                        geom_mat_nodes.append(mat_nodes[material_ind])
+                    else:
+                        material_symbol = ''
 
                     input_list = source.InputList()
                     input_list.addInput(0, 'VERTEX', '#'+vert_id)

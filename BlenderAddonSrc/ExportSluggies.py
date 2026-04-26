@@ -39,6 +39,92 @@ def encode_vertex_buffer_edited(obj, comp_count, quant_info):
     return base64.b64encode(bytes(raw_bytes)).decode('ascii')
 
 
+def encode_uv_channel_edited(obj, json_channel):
+    """Re-quantize Blender UV layer back into the game's ST coordinate format.
+
+    Writes each Blender UV value back into its ORIGINAL slot position, using
+    UVFacesData to look up which slot index the draw list expects for each face
+    loop. This preserves the original coord-array layout so the unmodified draw
+    list in the .dat file keeps working correctly.
+
+    Returns uv_channel_data_b64, or None if the matching UV layer is not found.
+    Warns (via returned string list) when a slot receives two conflicting values
+    (i.e. the user split a UV seam that was previously shared).
+    """
+    palette_name = json_channel.get("PaletteName", "")
+    ch_ind = json_channel.get("UVChannelIndex", 0)
+    layer_name = palette_name or f"uv{ch_ind}"
+
+    mesh_data = obj.data
+    uv_layer = mesh_data.uv_layers.get(layer_name)
+    if uv_layer is None:
+        return None
+
+    quant_info = json_channel["UVChannelQuantizeInfo"]
+    comp_count = json_channel["UVChannelCompCount"]
+    expected_length = json_channel["UVChannelLength"]
+    fmt_nibble = quant_info >> 4
+    shift = quant_info & 0xF
+    divisor = 1 << shift
+    is_float = fmt_nibble in [4, 7, 0xa]
+    comp_size = 4 if is_float else 2
+    num_slots = expected_length // (comp_count * comp_size)
+
+    # Decode original per-face UV slot indices from UVFacesData
+    uv_faces_raw = base64.b64decode(json_channel["UVFacesData"])
+    n = len(uv_faces_raw) // 2
+    flat = list(struct.unpack(f'>{n}H', uv_faces_raw))
+    original_uv_faces = [flat[i * 3 : i * 3 + 3] for i in range(n // 3)]
+
+    # Fill output slots using original slot assignments
+    # Each slot is (qs, qt); None means the slot was never referenced by a loop.
+    output_slots = [None] * num_slots
+    conflicts = []
+
+    for poly in mesh_data.polygons:
+        face_idx = poly.index
+        if face_idx >= len(original_uv_faces):
+            continue
+        uv_tri = original_uv_faces[face_idx]
+        for loop_offset, loop_idx in enumerate(poly.loop_indices):
+            uv_slot = uv_tri[loop_offset % 3]
+            uv = uv_layer.data[loop_idx].uv
+            s = uv.x
+            t = 1.0 - uv.y  # undo Blender V-flip applied on import
+            if is_float:
+                qs, qt = s, t
+            else:
+                qs = round(s * divisor)
+                qt = round(t * divisor)
+            if output_slots[uv_slot] is None:
+                output_slots[uv_slot] = (qs, qt)
+            elif output_slots[uv_slot] != (qs, qt):
+                conflicts.append(uv_slot)
+
+    # Fall back to original data for any slot not touched by a loop
+    if None in output_slots:
+        orig_raw = base64.b64decode(json_channel["UVChannelData"])
+        for slot_idx, val in enumerate(output_slots):
+            if val is None:
+                off = slot_idx * comp_count * comp_size
+                os_ = struct.unpack_from('>f' if is_float else '>h', orig_raw, off)[0]
+                ot_ = struct.unpack_from('>f' if is_float else '>h', orig_raw, off + comp_size)[0]
+                output_slots[slot_idx] = (os_ / (1 if is_float else divisor),
+                                          ot_ / (1 if is_float else divisor))
+
+    # Encode the coord array in original slot order
+    raw_bytes = bytearray()
+    for (qs, qt) in output_slots:
+        comps = [qs, qt] + [0.0] * (comp_count - 2)
+        for val in comps:
+            if is_float:
+                raw_bytes += struct.pack('>f', float(val))
+            else:
+                raw_bytes += struct.pack('>h', max(-32768, min(32767, int(val))))
+
+    return base64.b64encode(bytes(raw_bytes)).decode('ascii'), conflicts
+
+
 def validate_against_json(obj, json_submesh):
     """Return a list of mismatch descriptions, empty if everything matches."""
     vb = json_submesh.get("VertexBuffer", {})
@@ -137,6 +223,28 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             target_submesh["VertexBufferEdited"] = {
                 "VertexBufferDataEdited": edited_data
             }
+
+            # Re-encode UV channels from Blender UV layers
+            for json_channel in target_submesh.get("UVChannels", []):
+                result = encode_uv_channel_edited(obj, json_channel)
+                ch_ind = json_channel.get("UVChannelIndex", 0)
+                if result is None:
+                    palette_name = json_channel.get("PaletteName", "")
+                    layer_name = palette_name or f"uv{ch_ind}"
+                    warnings.append(
+                        f"{obj.name}: UV layer '{layer_name}' not found — UV channel {ch_ind} skipped."
+                    )
+                    continue
+                uv_data_b64, conflicts = result
+                for slot in set(conflicts):
+                    warnings.append(
+                        f"{obj.name}: UV ch {ch_ind} slot {slot} has conflicting values "
+                        f"(UV seam was split) — first value used."
+                    )
+                json_channel["UVChannelDataEdited"] = uv_data_b64
+                # UVFacesDataEdited is no longer written: the draw list indices
+                # are unchanged so UVFacesData still applies after patching.
+
             written += 1
 
         for w in warnings:

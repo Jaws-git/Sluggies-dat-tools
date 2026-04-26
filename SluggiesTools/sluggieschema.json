@@ -69,7 +69,7 @@
               },
               "VertexBufferEdited": {
                 "type": "object",
-                "description": "XYZ position vertex buffer for this submesh after editing in blender",
+                "description": "XYZ position vertex buffer for this submesh after editing in Blender",
                 "properties": {
                   "VertexBufferDataEdited": {
                     "type": "string",
@@ -77,23 +77,54 @@
                   }
                 }
               },
-              "UVMap": {
-                "type": "object",
-                "description": "UV mapping data for this submesh",
-                "properties": {
-                  "UVMapOffset": {
-                    "type": "string",
-                    "description": "Starting offset of the UV map buffer in dt_na.dat (hex)"
+              "UVChannels": {
+                "type": "array",
+                "description": "One entry per texture channel in the submesh (matches numTextureChannels from the mesh data header).",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "UVChannelIndex": {
+                      "type": "number",
+                      "description": "Zero-based texture channel index (0 = texture0, 1 = texture1, …)"
+                    },
+                    "PaletteName": {
+                      "type": "string",
+                      "description": "Palette/texture name string from the UV map data header"
+                    },
+                    "UVChannelOffset": {
+                      "type": "string",
+                      "description": "Starting offset of the ST coordinate array in dt_na.dat (hex)"
+                    },
+                    "UVChannelLength": {
+                      "type": "number",
+                      "description": "Byte length of the raw ST coordinate array"
+                    },
+                    "UVChannelCompCount": {
+                      "type": "number",
+                      "description": "Number of components per UV entry (typically 2 for ST)"
+                    },
+                    "UVChannelQuantizeInfo": {
+                      "type": "number",
+                      "description": "Quantization byte for UV coords. High nibble = data format (0/3=s16, 4=float), low nibble = right-shift divisor exponent"
+                    },
+                    "UVFacesData": {
+                      "type": "string",
+                      "description": "Base64-encoded UV index buffer, packed as big-endian uint16 triplets aligned face-for-face with FacesData. Index 0 = first ST coord entry."
+                    },
+                    "UVChannelData": {
+                      "type": "string",
+                      "description": "Base64-encoded raw ST coordinate buffer (original game data)"
+                    },
+                    "UVChannelDataEdited": {
+                      "type": "string",
+                      "description": "Base64-encoded raw ST coordinate buffer after editing in Blender, written into the same slot positions as UVChannelData so existing draw-list UV indices remain valid. Absent until first export from Blender."
+                    }
                   },
-                  "UVMapLength": {
-                    "type": "number",
-                    "description": "Length of the UV map buffer in bytes"
-                  }
-                },
-                "required": ["UVMapOffset", "UVMapLength"]
+                  "required": ["UVChannelIndex", "PaletteName", "UVChannelOffset", "UVChannelLength", "UVChannelCompCount", "UVChannelQuantizeInfo", "UVFacesData", "UVChannelData"]
+                }
               }
             },
-            "required": ["SubmeshOffset", "SubmeshLength", "VertexBuffer", "UVMap"]
+            "required": ["SubmeshOffset", "FacesCount", "FacesData", "VertexBuffer", "UVChannels"]
           }
         }
       },

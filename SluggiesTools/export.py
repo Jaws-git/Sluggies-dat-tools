@@ -7,12 +7,8 @@ import re
 import struct
 import sys
 
-if len(sys.argv) >= 3:
-    EXPORT_DAE_TEX = bool(int(sys.argv[1]))
-    EXPORT_SLUGGIES = bool(int(sys.argv[2]))
-else:
-    EXPORT_DAE_TEX = True
-    EXPORT_SLUGGIES = True
+EXPORT_TEX = '--notex' not in sys.argv
+
 
 
 def itb (val, n):
@@ -94,7 +90,7 @@ def _vb_comp_size(quantize_info):
     return 4 if fmt in [4, 7, 0xa] else 2
 
 def extract_submeshes(model):
-    """Return a list of submesh dicts with VertexBuffer info for a Model0 instance."""
+    """Return a list of submesh dicts with VertexBuffer and UV channel info for a Model0 instance."""
     if not hasattr(model, 'GPL') or not model.GPL:
         return []
     submeshes = []
@@ -105,14 +101,42 @@ def extract_submeshes(model):
         vb_length = pos.numPositions * pos.compCount * _vb_comp_size(pos.quantizeInfo)
         model.f.seek(vb_offset)
         vb_data = base64.b64encode(model.f.read(vb_length)).decode('ascii')
+        num_uv_channels = len(layout.DOTextureDataHeaders)
         faces_raw = []
+        uv_faces_raw = [[] for _ in range(num_uv_channels)]
         for draw_state in layout.getTriangles():
+            active_descriptors = [d['key'] for d in draw_state['state']['descriptors']]
             for triangle in draw_state['triangles']:
                 faces_raw.append([vertex['position'] for vertex in triangle])
+                for ch_ind in range(num_uv_channels):
+                    key = 'texture' + str(ch_ind)
+                    if key in active_descriptors:
+                        uv_faces_raw[ch_ind].append([vertex[key] for vertex in triangle])
+                    else:
+                        uv_faces_raw[ch_ind].append([0, 0, 0])
         face_count = len(faces_raw)
-        # Pack as big-endian uint16 triplets and base64-encode
+        # Pack position faces as big-endian uint16 triplets and base64-encode
         flat = [idx for tri in faces_raw for idx in tri]
         faces_data = base64.b64encode(struct.pack(f'>{len(flat)}H', *flat)).decode('ascii')
+        # Extract raw UV buffers and per-face UV indices for each texture channel
+        uv_channels = []
+        for ch_ind, tex_layer in enumerate(layout.DOTextureDataHeaders):
+            uv_offset = layout.absolute + tex_layer.textureCoordsArrPtr
+            uv_length = tex_layer.numTextureCoords * tex_layer.compCount * _vb_comp_size(tex_layer.quantizeInfo)
+            model.f.seek(uv_offset)
+            uv_raw = base64.b64encode(model.f.read(uv_length)).decode('ascii')
+            uv_flat = [idx for tri in uv_faces_raw[ch_ind] for idx in tri]
+            uv_faces_data = base64.b64encode(struct.pack(f'>{len(uv_flat)}H', *uv_flat)).decode('ascii')
+            uv_channels.append({
+                "UVChannelIndex": ch_ind,
+                "PaletteName": tex_layer.paletteName,
+                "UVChannelOffset": hex(uv_offset),
+                "UVChannelLength": uv_length,
+                "UVChannelCompCount": tex_layer.compCount,
+                "UVChannelQuantizeInfo": tex_layer.quantizeInfo,
+                "UVFacesData": uv_faces_data,  # base64 big-endian uint16 triplets, aligned with FacesData
+                "UVChannelData": uv_raw  # raw ST coord buffer in base64
+            })
         submeshes.append({
             "SubmeshOffset": hex(layout.absolute),
             "FacesCount": face_count,
@@ -122,8 +146,9 @@ def extract_submeshes(model):
                 "VertexBufferLength": vb_length,
                 "VertexBufferCompCount": pos.compCount,
                 "VertexBufferQuantizeInfo": pos.quantizeInfo,
-                "VertexBufferData": vb_data  #raw data in base 64
-            }
+                "VertexBufferData": vb_data  # raw data in base64
+            },
+            "UVChannels": uv_channels
         })
     return submeshes
 
@@ -155,38 +180,37 @@ for dir_ind, file_arr in dirs.items():
                 child.analyze()
                 if child.child:
                     child.child.analyze()
-                    child.child.toFile(lan_dir, export_tex=EXPORT_DAE_TEX)
-                    if EXPORT_SLUGGIES:
-                        if isinstance(child.child, Archive):
-                            archive_dir = os.path.join(lan_dir, str(child.child.absolute))
-                            for i in child.child.success:
-                                sub_model = child.child.files[i]
-                                sub_dir = os.path.join(archive_dir, sub_model.name)
-                                json_name = f"{sub_model.name}.sluggie"
-                                model_json = {
-                                    "SluggiesModel": {
-                                        "ChunkNumber": dir_ind,
-                                        "ModelOffset": hex(sub_model.absolute),
-                                        "ModelLength": sub_model.length,
-                                        "Submeshes": extract_submeshes(sub_model)
-                                    }
-                                }
-                                with open(os.path.join(sub_dir, json_name), 'w') as info_f:
-                                    info_f.write(compact_faces_json(model_json))
-                        else:
-                            model_name = child.child.name
-                            model_dir = os.path.join(lan_dir, model_name)
-                            json_name = f"{model_name}.sluggie"
+                    child.child.toFile(lan_dir, export_tex=EXPORT_TEX)
+                    if isinstance(child.child, Archive):
+                        archive_dir = os.path.join(lan_dir, str(child.child.absolute))
+                        for i in child.child.success:
+                            sub_model = child.child.files[i]
+                            sub_dir = os.path.join(archive_dir, sub_model.name)
+                            json_name = f"{sub_model.name}.sluggie"
                             model_json = {
                                 "SluggiesModel": {
                                     "ChunkNumber": dir_ind,
-                                    "ModelOffset": hex(offset),
-                                    "ModelLength": l,
-                                    "Submeshes": extract_submeshes(child.child)
+                                    "ModelOffset": hex(sub_model.absolute),
+                                    "ModelLength": sub_model.length,
+                                    "Submeshes": extract_submeshes(sub_model)
                                 }
                             }
-                            with open(os.path.join(model_dir, json_name), 'w') as info_f:
+                            with open(os.path.join(sub_dir, json_name), 'w') as info_f:
                                 info_f.write(compact_faces_json(model_json))
+                    else:
+                        model_name = child.child.name
+                        model_dir = os.path.join(lan_dir, model_name)
+                        json_name = f"{model_name}.sluggie"
+                        model_json = {
+                            "SluggiesModel": {
+                                "ChunkNumber": dir_ind,
+                                "ModelOffset": hex(offset),
+                                "ModelLength": l,
+                                "Submeshes": extract_submeshes(child.child)
+                            }
+                        }
+                        with open(os.path.join(model_dir, json_name), 'w') as info_f:
+                            info_f.write(compact_faces_json(model_json))
                 del child
         except Exception as e:
             print ("failed in export")

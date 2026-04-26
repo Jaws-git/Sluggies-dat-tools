@@ -1,24 +1,11 @@
-### Export settings ###
-
-# allowed values: True / False
-# extracts dae and texture files. dae supports skeletons, UVs and materials - but they can't be re-imported into the game
-EXPORT_DAE_TEX = True
-# export Sluggies intermediate files, only supports mesh data right now, but CAN be reimported into the game .dat
-EXPORT_SLUGGIES = True
-
-### Export settings end ###
-
-
-
 import subprocess
 import sys
 import os
 
 script = os.path.join(os.path.dirname(__file__), 'SluggiesTools', 'export.py')
+extra_args = [arg for arg in sys.argv[1:] if arg == '--notex']
 subprocess.run(
-    [sys.executable, script,
-     str(int(EXPORT_DAE_TEX)),
-     str(int(EXPORT_SLUGGIES))],
+    [sys.executable, script] + extra_args,
     cwd=os.path.join(os.path.dirname(__file__), 'SluggiesTools'),
     check=True
 )

@@ -41,7 +41,8 @@ flowchart LR
 6) cmd ``` python export.py ```
 
 This will extract the entire content into a new folder \2_Output_Models\\...  
-It will contain all the player models, props and environment models. Everything is sorted into numbered folders, for example Tiny Kong + her Bat + her Glove is in folder "75". 
+It will contain all the player models, props and environment models. Everything is sorted into numbered folders, for example Tiny Kong + her Bat + her Glove are in folder "75". 
+Use the option --notex to skip the rather slow png creation step. Removes the requirement for wimgt.
 
 If you get texture-related errors, make sure you've added the wimgt tools bin folder (usually .\szs_v2_42a\bin\\) to your [PATH](https://www.youtube.com/watch?v=rWVaxSWvxUQ)
 
