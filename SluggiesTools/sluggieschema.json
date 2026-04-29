@@ -40,6 +40,10 @@
                 "type": "string",
                 "description": "Base64-encoded face index buffer. Packed as big-endian uint16 triplets: [i0, i1, i2, i0, i1, i2, ...]"
               },
+              "FaceTextureIndices": {
+                "type": "string",
+                "description": "Base64-encoded per-face primary texture index buffer. Packed as big-endian uint16, one entry per face. Records which TPL texture (index into TextureDescriptors) was active on UV channel 0 when each face was drawn. Used to assign Blender material slots."
+              },
               "VertexBuffer": {
                 "type": "object",
                 "description": "XYZ position vertex buffer for this submesh",
@@ -91,6 +95,18 @@
                       "type": "string",
                       "description": "Palette/texture name string from the UV map data header"
                     },
+                    "TextureIndex": {
+                      "type": "number",
+                      "description": "Index into TextureDescriptors of the texture bound to this UV channel (from draw-list Type-1 state entry)"
+                    },
+                    "WrapS": {
+                      "type": "number",
+                      "description": "GX wrap mode for the S (U) axis (4-bit value from draw-list Type-1 state entry)"
+                    },
+                    "WrapT": {
+                      "type": "number",
+                      "description": "GX wrap mode for the T (V) axis (4-bit value from draw-list Type-1 state entry)"
+                    },
                     "UVChannelOffset": {
                       "type": "string",
                       "description": "Starting offset of the ST coordinate array in dt_na.dat (hex)"
@@ -124,18 +140,114 @@
                 }
               }
             },
+            "ColorChannels": {
+              "type": "array",
+              "description": "One entry per active vertex color channel (color0 and/or color1). Absent when no vertex colors are used.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "ColorChannelIndex": {
+                    "type": "number",
+                    "description": "0 = color0, 1 = color1"
+                  },
+                  "ColorChannelOffset": {
+                    "type": "string",
+                    "description": "Starting offset of the vertex color array in dt_na.dat (hex)"
+                  },
+                  "ColorChannelLength": {
+                    "type": "number",
+                    "description": "Byte length of the raw vertex color array"
+                  },
+                  "ColorChannelCompCount": {
+                    "type": "number",
+                    "description": "Component count from the DOColorHeader (informational; actual entry size is determined by the format nibble of ColorChannelQuantizeInfo)"
+                  },
+                  "ColorChannelQuantizeInfo": {
+                    "type": "number",
+                    "description": "Quantization byte for color data. High nibble = color format (0=RGB565, 1=RGB8, 2=RGBA8, 3=RGBA4444, 4=RGB8, 5=RGBA8)"
+                  },
+                  "ColorChannelData": {
+                    "type": "string",
+                    "description": "Base64-encoded raw vertex color buffer (original game data)"
+                  },
+                  "ColorFacesData": {
+                    "type": "string",
+                    "description": "Base64-encoded color index buffer, packed as big-endian uint16 triplets aligned face-for-face with FacesData."
+                  }
+                },
+                "required": ["ColorChannelIndex", "ColorChannelOffset", "ColorChannelLength", "ColorChannelCompCount", "ColorChannelQuantizeInfo", "ColorChannelData", "ColorFacesData"]
+              }
+            },
             "required": ["SubmeshOffset", "FacesCount", "FacesData", "VertexBuffer", "UVChannels"]
           }
         }
       },
-      "required": [
-        "ChunkNumber",
-        "ModelOffset",
-        "ModelLength"
-      ]
+      "TextureDescriptors": {
+        "type": "array",
+        "description": "One entry per texture in the model's TPL section. Provides dimensions, format, and file offsets needed to validate and write back image data.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "TextureIndex": {
+              "type": "number",
+              "description": "Zero-based index of this texture in the TPL section"
+            },
+            "TextureDescriptorOffset": {
+              "type": "string",
+              "description": "File offset of the 0x20-byte TEXDescriptor struct in dt_na.dat (hex)"
+            },
+            "Width": {
+              "type": "number",
+              "description": "Texture width in pixels"
+            },
+            "Height": {
+              "type": "number",
+              "description": "Texture height in pixels"
+            },
+            "Format": {
+              "type": "number",
+              "description": "GX image format code (0=I4, 1=I8, 2=IA4, 3=IA8, 4=RGB565, 5=RGB5A3, 6=RGBA8, 8=C4, 9=C8, 10=C14X2, 14=CMPR)"
+            },
+            "PaletteEntries": {
+              "type": "number",
+              "description": "Number of palette color entries (0 if no palette)"
+            },
+            "PaletteFormat": {
+              "type": "number",
+              "description": "GX palette format code"
+            },
+            "EdgeLODEnable": {
+              "type": "boolean",
+              "description": "Whether edge LOD bias is enabled"
+            },
+            "MinLOD": {
+              "type": "number",
+              "description": "Minimum mip level"
+            },
+            "MaxLOD": {
+              "type": "number",
+              "description": "Maximum mip level"
+            },
+            "ImageDataOffset": {
+              "type": "string",
+              "description": "File offset of the raw image pixel data in dt_na.dat (hex)"
+            },
+            "ImageDataLength": {
+              "type": "number",
+              "description": "Byte length of the raw image pixel data"
+            },
+            "PaletteDataOffset": {
+              "type": "string",
+              "description": "File offset of the palette data in dt_na.dat (hex). Present only when a palette exists."
+            },
+            "PaletteDataLength": {
+              "type": "number",
+              "description": "Byte length of the palette data. Present only when a palette exists."
+            }
+          },
+          "required": ["TextureIndex", "TextureDescriptorOffset", "Width", "Height", "Format", "ImageDataOffset", "ImageDataLength"]
+        }
+      }
     }
-  },
-  "required": [
-    "SluggiesModel"
-  ]
+  }
 }

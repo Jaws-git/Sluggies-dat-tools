@@ -21,11 +21,6 @@ outdir = "../2_Output_Models/"
 if not os.path.exists(outdir):
     os.mkdir(outdir)
 
-if os.path.exists('tex'):
-    for f in os.listdir('tex'):
-        if f.endswith('.png'):
-            os.remove(os.path.join('tex', f))
-
 # An array of FILE_POINTER[]'s in the US dol
 DIRS_START = 0x69C828
 DIRS_END = 0x69CAD8
@@ -94,8 +89,47 @@ def _vb_comp_size(quantize_info):
     fmt = quantize_info >> 4
     return 4 if fmt in [4, 7, 0xa] else 2
 
+def _color_entry_size(quantize_info):
+    """Return bytes per color entry based on the color quantize format nibble."""
+    fmt = quantize_info >> 4
+    return {0: 2, 1: 3, 2: 4, 3: 2, 4: 3, 5: 4}.get(fmt, 2)
+
+def extract_texture_descriptors(model):
+    """Return a list of TEX descriptor dicts for a Model0 instance.
+
+    Includes dimensions, format, palette info, and file offsets/lengths for
+    every texture so patch_dat.py can validate buffer sizes before writing.
+    """
+    if not hasattr(model, 'TEXPalette') or not model.TEXPalette:
+        return []
+    palette = model.TEXPalette
+    result = []
+    for tex_ind, desc in enumerate(palette.descriptors):
+        img_offset = palette.absolute + desc.dataPtr
+        img_length = palette.dataLens.get(desc.dataPtr, 0)
+        entry = {
+            "TextureIndex": tex_ind,
+            "TextureDescriptorOffset": hex(desc.absolute),
+            "Width": desc.width,
+            "Height": desc.height,
+            "Format": desc.format,
+            "PaletteEntries": desc.paletteEntries,
+            "PaletteFormat": desc.paletteFormat,
+            "EdgeLODEnable": bool(desc.edgeLODEnable),
+            "MinLOD": desc.minLOD,
+            "MaxLOD": desc.maxLOD,
+            "ImageDataOffset": hex(img_offset),
+            "ImageDataLength": img_length
+        }
+        if desc.paletteDataPtr:
+            pal_offset = palette.absolute + desc.paletteDataPtr
+            entry["PaletteDataOffset"] = hex(pal_offset)
+            entry["PaletteDataLength"] = palette.dataLens.get(desc.paletteDataPtr, 0)
+        result.append(entry)
+    return result
+
 def extract_submeshes(model):
-    """Return a list of submesh dicts with VertexBuffer and UV channel info for a Model0 instance."""
+    """Return a list of submesh dicts with VertexBuffer, UV channel, and color channel info for a Model0 instance."""
     if not hasattr(model, 'GPL') or not model.GPL:
         return []
     submeshes = []
@@ -108,22 +142,50 @@ def extract_submeshes(model):
         vb_data = base64.b64encode(model.f.read(vb_length)).decode('ascii')
         num_uv_channels = len(layout.DOTextureDataHeaders)
         faces_raw = []
+        face_tex_indices = []  # per-face TextureIndex active on UV channel 0 (primary)
         uv_faces_raw = [[] for _ in range(num_uv_channels)]
+        color_faces_raw = {0: [], 1: []}
+        color_active = {0: False, 1: False}
+        tex_assignments = {}  # ch_ind -> {'index', 'wraps', 'wrapt'} from last Type-1 draw state
         for draw_state in layout.getTriangles():
-            active_descriptors = [d['key'] for d in draw_state['state']['descriptors']]
+            state = draw_state['state']
+            active_descriptors = [d['key'] for d in state['descriptors']]
+            # Record the last-seen texture assignment for each UV channel (Type-1 draw state)
+            for ch_ind in range(num_uv_channels):
+                key = 'texture' + str(ch_ind)
+                if key in state and isinstance(state[key], dict) and 'index' in state[key]:
+                    tex_assignments[ch_ind] = state[key]
+            # Primary texture index for this draw batch (UV channel 0 / texture0)
+            primary_assign = tex_assignments.get(0)
+            current_primary_tex = primary_assign.get('index', 0) if primary_assign else 0
+            has_color0 = 'color0' in active_descriptors
+            has_color1 = 'color1' in active_descriptors
+            if has_color0:
+                color_active[0] = True
+            if has_color1:
+                color_active[1] = True
             for triangle in draw_state['triangles']:
                 faces_raw.append([vertex['position'] for vertex in triangle])
+                face_tex_indices.append(current_primary_tex)
                 for ch_ind in range(num_uv_channels):
                     key = 'texture' + str(ch_ind)
                     if key in active_descriptors:
                         uv_faces_raw[ch_ind].append([vertex[key] for vertex in triangle])
                     else:
                         uv_faces_raw[ch_ind].append([0, 0, 0])
+                color_faces_raw[0].append(
+                    [vertex['color0'] for vertex in triangle] if has_color0 else [0, 0, 0]
+                )
+                color_faces_raw[1].append(
+                    [vertex['color1'] for vertex in triangle] if has_color1 else [0, 0, 0]
+                )
         face_count = len(faces_raw)
         # Pack position faces as big-endian uint16 triplets and base64-encode
         flat = [idx for tri in faces_raw for idx in tri]
         faces_data = base64.b64encode(struct.pack(f'>{len(flat)}H', *flat)).decode('ascii')
-        # Extract raw UV buffers and per-face UV indices for each texture channel
+        # Per-face primary texture index (uint16, one per face)
+        face_tex_data = base64.b64encode(struct.pack(f'>{len(face_tex_indices)}H', *face_tex_indices)).decode('ascii')
+        # Extract raw UV buffers, per-face UV indices, and texture assignment per channel
         uv_channels = []
         for ch_ind, tex_layer in enumerate(layout.DOTextureDataHeaders):
             uv_offset = layout.absolute + tex_layer.textureCoordsArrPtr
@@ -132,28 +194,56 @@ def extract_submeshes(model):
             uv_raw = base64.b64encode(model.f.read(uv_length)).decode('ascii')
             uv_flat = [idx for tri in uv_faces_raw[ch_ind] for idx in tri]
             uv_faces_data = base64.b64encode(struct.pack(f'>{len(uv_flat)}H', *uv_flat)).decode('ascii')
+            assignment = tex_assignments.get(ch_ind, {})
             uv_channels.append({
                 "UVChannelIndex": ch_ind,
                 "PaletteName": tex_layer.paletteName,
+                "TextureIndex": assignment.get('index'),
+                "WrapS": assignment.get('wraps'),
+                "WrapT": assignment.get('wrapt'),
                 "UVChannelOffset": hex(uv_offset),
                 "UVChannelLength": uv_length,
                 "UVChannelCompCount": tex_layer.compCount,
                 "UVChannelQuantizeInfo": tex_layer.quantizeInfo,
-                "UVFacesData": uv_faces_data,  # base64 big-endian uint16 triplets, aligned with FacesData
-                "UVChannelData": uv_raw  # raw ST coord buffer in base64
+                "UVFacesData": uv_faces_data,
+                "UVChannelData": uv_raw
             })
+        # Extract color buffer and per-face color indices for each active channel
+        color_channels = []
+        color_hdr = layout.DOColorHeader
+        if color_hdr.colorArrPtr and (color_active[0] or color_active[1]):
+            color_offset = layout.absolute + color_hdr.colorArrPtr
+            color_length = color_hdr.numColors * _color_entry_size(color_hdr.quantizeInfo)
+            model.f.seek(color_offset)
+            color_raw = base64.b64encode(model.f.read(color_length)).decode('ascii')
+            for ch_idx in [0, 1]:
+                if not color_active[ch_idx]:
+                    continue
+                ch_flat = [idx for tri in color_faces_raw[ch_idx] for idx in tri]
+                ch_faces_data = base64.b64encode(struct.pack(f'>{len(ch_flat)}H', *ch_flat)).decode('ascii')
+                color_channels.append({
+                    "ColorChannelIndex": ch_idx,
+                    "ColorChannelOffset": hex(color_offset),
+                    "ColorChannelLength": color_length,
+                    "ColorChannelCompCount": color_hdr.compCount,
+                    "ColorChannelQuantizeInfo": color_hdr.quantizeInfo,
+                    "ColorChannelData": color_raw,
+                    "ColorFacesData": ch_faces_data
+                })
         submeshes.append({
             "SubmeshOffset": hex(layout.absolute),
             "FacesCount": face_count,
             "FacesData": faces_data,
+            "FaceTextureIndices": face_tex_data,
             "VertexBuffer": {
                 "VertexBufferOffset": hex(vb_offset),
                 "VertexBufferLength": vb_length,
                 "VertexBufferCompCount": pos.compCount,
                 "VertexBufferQuantizeInfo": pos.quantizeInfo,
-                "VertexBufferData": vb_data  # raw data in base64
+                "VertexBufferData": vb_data
             },
-            "UVChannels": uv_channels
+            "UVChannels": uv_channels,
+            "ColorChannels": color_channels
         })
     return submeshes
 
@@ -197,6 +287,7 @@ for dir_ind, file_arr in dirs.items():
                                     "ChunkNumber": dir_ind,
                                     "ModelOffset": hex(sub_model.absolute),
                                     "ModelLength": sub_model.length,
+                                    "TextureDescriptors": extract_texture_descriptors(sub_model),
                                     "Submeshes": extract_submeshes(sub_model)
                                 }
                             }
@@ -211,6 +302,7 @@ for dir_ind, file_arr in dirs.items():
                                 "ChunkNumber": dir_ind,
                                 "ModelOffset": hex(offset),
                                 "ModelLength": l,
+                                "TextureDescriptors": extract_texture_descriptors(child.child),
                                 "Submeshes": extract_submeshes(child.child)
                             }
                         }

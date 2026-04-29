@@ -38,42 +38,51 @@ submeshes = data["SluggiesModel"].get("Submeshes", [])
 if not submeshes:
     abort("No submeshes found in JSON.")
 
-# --- decode base64 vertex buffers ---
+# --- decode base64 vertex and UV channel buffers ---
 mode_label = "original" if unpatch else "edited"
 print(f"Mode: {'--unpatch (restoring original data)' if unpatch else 'patch (writing edited data)'}")
 patches = []
+uv_patches = []
 for i, submesh in enumerate(submeshes):
+    # --- vertex buffer ---
     vb_orig = submesh.get("VertexBuffer", {})
     offset_hex = vb_orig.get("VertexBufferOffset")
     expected_length = vb_orig.get("VertexBufferLength")
     if offset_hex is None or expected_length is None:
         print(f"  Submesh {i}: missing VertexBufferOffset or VertexBufferLength, skipping.")
-        continue
-    if unpatch:
-        vb_data = vb_orig.get("VertexBufferData")
-        if not vb_data:
-            print(f"  Submesh {i}: no VertexBufferData in VertexBuffer, skipping.")
-            continue
-        raw = base64.b64decode(vb_data)
     else:
-        vb_edited = submesh.get("VertexBufferEdited")
-        if not vb_edited or "VertexBufferDataEdited" not in vb_edited:
-            print(f"  Submesh {i}: no VertexBufferEdited data, skipping.")
-            continue
-        raw = base64.b64decode(vb_edited["VertexBufferDataEdited"])
-    offset = int(offset_hex, 16)
-    if len(raw) != expected_length:
-        abort(
-            f"Submesh {i}: decoded {mode_label} buffer length {len(raw)} bytes "
-            f"does not match original VertexBufferLength {expected_length} bytes.\n"
-            f"Aborting to prevent corrupt output."
-        )
-    patches.append((i, offset, raw))
-    print(f"  Submesh {i}: decoded {len(raw)} bytes at offset {offset_hex}")
+        if unpatch:
+            vb_data = vb_orig.get("VertexBufferData")
+            if not vb_data:
+                print(f"  Submesh {i}: no VertexBufferData in VertexBuffer, skipping.")
+            else:
+                raw = base64.b64decode(vb_data)
+                offset = int(offset_hex, 16)
+                if len(raw) != expected_length:
+                    abort(
+                        f"Submesh {i}: decoded {mode_label} buffer length {len(raw)} bytes "
+                        f"does not match original VertexBufferLength {expected_length} bytes.\n"
+                        f"Aborting to prevent corrupt output."
+                    )
+                patches.append((i, offset, raw))
+                print(f"  Submesh {i}: decoded {len(raw)} bytes at offset {offset_hex}")
+        else:
+            vb_edited = submesh.get("VertexBufferEdited")
+            if not vb_edited or "VertexBufferDataEdited" not in vb_edited:
+                print(f"  Submesh {i}: no VertexBufferEdited data, skipping.")
+            else:
+                raw = base64.b64decode(vb_edited["VertexBufferDataEdited"])
+                offset = int(offset_hex, 16)
+                if len(raw) != expected_length:
+                    abort(
+                        f"Submesh {i}: decoded {mode_label} buffer length {len(raw)} bytes "
+                        f"does not match original VertexBufferLength {expected_length} bytes.\n"
+                        f"Aborting to prevent corrupt output."
+                    )
+                patches.append((i, offset, raw))
+                print(f"  Submesh {i}: decoded {len(raw)} bytes at offset {offset_hex}")
 
-# --- decode base64 UV channel buffers ---
-uv_patches = []
-for i, submesh in enumerate(submeshes):
+    # --- UV channel buffers ---
     for ch in submesh.get("UVChannels", []):
         ch_ind = ch.get("UVChannelIndex", "?")
         offset_hex = ch.get("UVChannelOffset")
@@ -128,23 +137,19 @@ else:
 
 # --- write patches to output dat ---
 print(f"\nWriting {len(patches)} vertex patch(es) and {len(uv_patches)} UV patch(es) to {OUTPUT_DAT} ...")
-written_vb = 0
-written_uv = 0
 with open(OUTPUT_DAT, 'r+b') as f:
     for i, offset, raw in patches:
         f.seek(offset)
         f.write(raw)
         print(f"  Submesh {i} vertex: wrote {len(raw)} bytes at offset 0x{offset:X}")
-        written_vb += 1
     for i, ch_ind, offset, raw in uv_patches:
         f.seek(offset)
         f.write(raw)
         print(f"  Submesh {i} UV ch {ch_ind}: wrote {len(raw)} bytes at offset 0x{offset:X}")
-        written_uv += 1
 
 print(f"\n--- Summary ---")
-print(f"Vertex submeshes patched : {written_vb} / {len(patches)}")
-print(f"UV channels patched      : {written_uv} / {len(uv_patches)}")
+print(f"Vertex submeshes patched : {len(patches)}")
+print(f"UV channels patched      : {len(uv_patches)}")
 print(f"Output file              : {OUTPUT_DAT}")
 if unpatch:
     print(f"Done. The output file has been restored to the original vertex and UV data.")
