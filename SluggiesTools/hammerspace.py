@@ -1,12 +1,12 @@
 import os
 
-print("Hammerspace creation mode.\n")
-print("This creates some extra space to put additional model data that may not fit inside the base game memory.\n\n")
-print("Value range: 0-3600\n")
-print("  - 0: Restore original file size, no hammerspace (most compatible with original hardware)\n")
-print("  - 400: Add 400MB (1GB total) (enough for about 10-20 extra models, depending on complexity)\n")
-print("  - 1024: Add 1GB (1.6GB total) (plenty of space for nearly anything)\n")
-print("  - 3400: maximum, Add 3.4GB (4GB total, you can't get more than this)\n")
+print("\nHammerspace creation mode.")
+print("This creates some extra space to put additional model data that may not fit inside the base game memory.\n")
+print("Value range: 0-3580")
+print("  - 0: Restore original file size, no hammerspace (most compatible with original hardware)")
+print("  - 359: Add 359MB (1GB total) (can hold several extra models, depending on complexity)")
+print("  - 1024: Add 1GB (1.7GB total) (plenty of space for nearly anything)")
+print("  - 3580: maximum, creates 4GB total. You can't go higher than this")
 
 # user input checks
 raw = input("Enter value: ").strip()
@@ -20,18 +20,16 @@ if value < 0:
     print("ERROR: Value must be 0 or greater. Aborting.")
     raise SystemExit(1)
 
-if value > 3400:
-    print("Value exceeds maximum, clamping to 3400.")
-    value = 3400
-
-print(f"Using value: {value}")
+if value > 3580:
+    print("Value exceeds maximum, clamping to 3580.")
+    value = 3580
 
 # size change logic
 OUTPUT_DAT = os.path.join(os.path.dirname(__file__), '..', '3_Output_Dat', 'dt_na.dat')
 OUTPUT_DAT = os.path.normpath(OUTPUT_DAT)
 
-BASE_SIZE = 60_000_000  # 600 MB
-MB = 1_000_000
+BASE_SIZE = 715046144  # ~715 MB
+MB = 1000000
 
 target_size = BASE_SIZE + value * MB
 
