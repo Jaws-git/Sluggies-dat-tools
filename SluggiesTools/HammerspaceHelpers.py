@@ -66,13 +66,14 @@ def patchPointerField(file_offset: int, new_absolute_target: int, relative_base:
         f.write(struct.pack('>I', relative_value))
 
 
-def removeChunk(name: str, pointerFieldOffset: int, relativeBase: int) -> int:
-    """Overwrite a named chunk with zero bytes and restore the original pointer.
+def removeChunk(name: str, pointerFieldOffset: int = None, relativeBase: int = None) -> int:
+    """Overwrite a named chunk with zero bytes and optionally restore the original pointer.
 
     The original pointer value is recovered from the ``ooffset=<value>`` tag
-    stored inside the chunk immediately after the start marker.  After erasing
-    the chunk, ``patchPointerField`` is called to write the original absolute
-    offset back as a relative pointer at ``pointerFieldOffset``.
+    stored inside the chunk immediately after the start marker.  If both
+    ``pointerFieldOffset`` and ``relativeBase`` are provided, ``patchPointerField``
+    is called to write the original absolute offset back as a relative pointer.
+    Pass neither (or ``None``) to erase the chunk without touching any pointer.
 
     Returns 0 on success, -1 if the chunk was not found or could not be parsed."""
 
@@ -111,7 +112,8 @@ def removeChunk(name: str, pointerFieldOffset: int, relativeBase: int) -> int:
         f.seek(erase_start)
         f.write(b'\x00' * (erase_end - erase_start))
 
-    patchPointerField(pointerFieldOffset, original_offset, relativeBase)
+    if pointerFieldOffset is not None and relativeBase is not None:
+        patchPointerField(pointerFieldOffset, original_offset, relativeBase)
     return 0
 
 

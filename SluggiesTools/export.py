@@ -147,7 +147,8 @@ def extract_submeshes(model):
         color_faces_raw = {0: [], 1: []}
         color_active = {0: False, 1: False}
         tex_assignments = {}  # ch_ind -> {'index', 'wraps', 'wrapt'} from last Type-1 draw state
-        for draw_state in layout.getTriangles():
+        draw_states_gfx = layout.getTriangles()
+        for draw_state in draw_states_gfx:
             state = draw_state['state']
             active_descriptors = [d['key'] for d in state['descriptors']]
             # Record the last-seen texture assignment for each UV channel (Type-1 draw state)
@@ -201,6 +202,8 @@ def extract_submeshes(model):
                 "TextureIndex": assignment.get('index'),
                 "WrapS": assignment.get('wraps'),
                 "WrapT": assignment.get('wrapt'),
+                "UVDataPtrFieldOffset": hex(tex_layer.absolute),
+                "UVCountFieldOffset": hex(tex_layer.absolute + 4),
                 "UVChannelOffset": hex(uv_offset),
                 "UVChannelLength": uv_length,
                 "UVChannelCompCount": tex_layer.compCount,
@@ -230,11 +233,32 @@ def extract_submeshes(model):
                     "ColorChannelData": color_raw,
                     "ColorFacesData": ch_faces_data
                 })
+        # Build structural draw-state info for Phase 3b pointer patching.
+        # DODisplayState layout: [id:1][pad:3][setting:4][primitiveListPtr:4][primitiveListSize:4]
+        # primitiveListPtr is relative to DOLayout.absolute (= SubmeshOffset).
+        draw_states_export = []
+        for ds_obj, draw_state in zip(layout.DODisplayHeader.displayStates, draw_states_gfx):
+            raw_prim = bytes(ds_obj.primitiveList.data)
+            draw_states_export.append({
+                "DisplayStateId": ds_obj.id,
+                "PrimListPtrFieldOffset": hex(ds_obj.absolute + 8),
+                "PrimListSizeFieldOffset": hex(ds_obj.absolute + 12),
+                "PrimListAbsoluteOffset": hex(layout.absolute + ds_obj.primitiveListPtr),
+                "PrimListLength": ds_obj.primitiveListSize,
+                "PrimListData": base64.b64encode(raw_prim).decode('ascii'),
+                "ActiveDescriptors": [
+                    {"key": d['key'], "index_size": d['index_size']}
+                    for d in draw_state['state']['descriptors']
+                ]
+            })
         submeshes.append({
             "SubmeshOffset": hex(layout.absolute),
+            "PositionDataPtrFieldOffset": hex(pos.absolute),
+            "VertexCountFieldOffset": hex(pos.absolute + 4),
             "FacesCount": face_count,
             "FacesData": faces_data,
             "FaceTextureIndices": face_tex_data,
+            "DrawStates": draw_states_export,
             "VertexBuffer": {
                 "VertexBufferOffset": hex(vb_offset),
                 "VertexBufferLength": vb_length,
