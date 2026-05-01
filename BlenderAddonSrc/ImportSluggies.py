@@ -196,7 +196,8 @@ def _create_material(mat_name, uv_layer_name, image, wrap_s=1):
 
 def build_mesh(name, positions, normals, faces, vb_meta, collection,
                uv_channels=None, color_channels=None,
-               face_texture_indices=None, sluggie_dir=None):
+               face_texture_indices=None, sluggie_dir=None,
+               submesh_meta=None):
     """Create a Blender mesh object from a vertex list and link it to *collection*."""
     mesh = bpy.data.meshes.new(name)
     mesh.from_pydata(positions, [], faces)
@@ -252,6 +253,23 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
     obj["VertexBufferLength"]       = vb_meta["VertexBufferLength"]
     obj["VertexBufferCompCount"]    = vb_meta["VertexBufferCompCount"]
     obj["VertexBufferQuantizeInfo"] = vb_meta["VertexBufferQuantizeInfo"]
+
+    if submesh_meta is not None:
+        mesh_hdr_offset = submesh_meta.get("SubmeshOffset")
+        pos_ptr_offset  = submesh_meta.get("PositionDataPtrFieldOffset")
+        vcount_offset   = submesh_meta.get("VertexCountFieldOffset")
+        if mesh_hdr_offset is not None:
+            obj["MeshDataHeaderOffset"] = mesh_hdr_offset
+            obj.id_properties_ui("MeshDataHeaderOffset").update(
+                description="Absolute file offset of the mesh data header (SubmeshOffset); used as relative-base for pointer patching")
+        if pos_ptr_offset is not None:
+            obj["PositionDataPtrFieldOffset"] = pos_ptr_offset
+            obj.id_properties_ui("PositionDataPtrFieldOffset").update(
+                description="Absolute file offset of the 4-byte position-data pointer field in the mesh data header")
+        if vcount_offset is not None:
+            obj["VertexCountFieldOffset"] = vcount_offset
+            obj.id_properties_ui("VertexCountFieldOffset").update(
+                description="Absolute file offset of the 2-byte vertex-count field in the mesh data header")
 
     # Store UV channel material binding metadata as custom properties
     if uv_channels:
@@ -347,7 +365,8 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
             mesh_name = f"{model_number}_{model_offset_hex}_submesh{i}"
             build_mesh(mesh_name, positions, normals, faces, vb, collection,
                        uv_channels, color_channels,
-                       face_texture_indices=face_texture_indices, sluggie_dir=sluggie_dir)
+                       face_texture_indices=face_texture_indices, sluggie_dir=sluggie_dir,
+                       submesh_meta=submesh)
             imported += 1
 
         context.view_layer.update()

@@ -4,7 +4,7 @@ import os
 import base64
 import struct
 import subprocess
-from bpy.props import StringProperty
+from bpy.props import BoolProperty, StringProperty
 from bpy_extras.io_utils import ExportHelper
 
 REQUIRED_PROPS = (
@@ -125,6 +125,88 @@ def encode_uv_channel_edited(obj, json_channel):
     return base64.b64encode(bytes(raw_bytes)).decode('ascii'), conflicts
 
 
+def encode_mesh_hammerspace(obj, json_submesh):
+    """Encode all mesh data for hammerspace export (vertex count may differ from original).
+
+    Returns a dict with:
+      'VertexBufferDataEdited': base64 string  — full re-quantized vertex buffer
+      'FacesDataEdited':        base64 string  — uint16 BE triangulated face indices
+      'FacesCountEdited':       int            — triangle count
+      'UVEdits': {ch_ind: (uv_data_b64, uv_faces_b64), ...}
+    """
+    mesh = obj.data
+    mesh.calc_loop_triangles()
+    triangles = mesh.loop_triangles
+
+    vb_data = encode_vertex_buffer_edited(
+        obj,
+        obj["VertexBufferCompCount"],
+        obj["VertexBufferQuantizeInfo"],
+    )
+
+    face_flat = [vi for tri in triangles for vi in tri.vertices]
+    faces_data = base64.b64encode(struct.pack(f'>{len(face_flat)}H', *face_flat)).decode('ascii')
+
+    uv_edits = {}
+    for json_channel in json_submesh.get('UVChannels', []):
+        ch_ind = json_channel.get('UVChannelIndex', 0)
+        palette_name = json_channel.get('PaletteName', '')
+        layer_name = palette_name or f'uv{ch_ind}'
+        uv_layer = mesh.uv_layers.get(layer_name)
+        if uv_layer is None:
+            continue
+
+        quant_info_uv = json_channel['UVChannelQuantizeInfo']
+        comp_count_uv = json_channel['UVChannelCompCount']
+        fmt_nibble = quant_info_uv >> 4
+        shift = quant_info_uv & 0xF
+        divisor = 1 << shift
+        is_float = fmt_nibble in [4, 7, 0xa]
+
+        coords = []
+        coord_map = {}
+        uv_tri_indices = []
+        for tri in triangles:
+            tri_uvs = []
+            for loop_idx in tri.loops:
+                uv = uv_layer.data[loop_idx].uv
+                s = uv.x
+                t = 1.0 - uv.y  # undo Blender V-flip applied on import
+                if is_float:
+                    key = (float(s), float(t))
+                    qs, qt = float(s), float(t)
+                else:
+                    qs = round(s * divisor)
+                    qt = round(t * divisor)
+                    key = (int(qs), int(qt))
+                if key not in coord_map:
+                    coord_map[key] = len(coords)
+                    coords.append((qs, qt))
+                tri_uvs.append(coord_map[key])
+            uv_tri_indices.append(tri_uvs)
+
+        raw_bytes = bytearray()
+        for (qs, qt) in coords:
+            for val in [qs, qt] + [0.0] * (comp_count_uv - 2):
+                if is_float:
+                    raw_bytes += struct.pack('>f', float(val))
+                else:
+                    raw_bytes += struct.pack('>h', max(-32768, min(32767, int(val))))
+        uv_data_b64 = base64.b64encode(bytes(raw_bytes)).decode('ascii')
+
+        uv_flat = [idx for tri in uv_tri_indices for idx in tri]
+        uv_faces_b64 = base64.b64encode(struct.pack(f'>{len(uv_flat)}H', *uv_flat)).decode('ascii')
+
+        uv_edits[ch_ind] = (uv_data_b64, uv_faces_b64)
+
+    return {
+        'VertexBufferDataEdited': vb_data,
+        'FacesDataEdited': faces_data,
+        'FacesCountEdited': len(triangles),
+        'UVEdits': uv_edits,
+    }
+
+
 def validate_against_json(obj, json_submesh):
     """Return a list of mismatch descriptions, empty if everything matches."""
     vb = json_submesh.get("VertexBuffer", {})
@@ -147,6 +229,15 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
 
     filename_ext = ".sluggie"
     filter_glob: StringProperty(default="*.sluggie", options={"HIDDEN"})
+    use_hammerspace: BoolProperty(
+        name="Hammerspace Mode",
+        description=(
+            "Allow vertex count changes. Encodes new face indices and dense UV "
+            "coords for Phase 3 writeExpandedMesh() pointer patching. "
+            "Leave off for simple in-place edits that preserve vertex count."
+        ),
+        default=False,
+    )
 
     def execute(self, context):
         # --- load and sanity-check the target JSON ---
@@ -208,42 +299,62 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 )
                 continue
 
-            mismatches = validate_against_json(obj, target_submesh)
-            if mismatches:
-                warnings.append(
-                    f"{obj.name}: metadata mismatch ({'; '.join(mismatches)}) — skipped."
-                )
-                continue
-
-            edited_data = encode_vertex_buffer_edited(
-                obj,
-                obj["VertexBufferCompCount"],
-                obj["VertexBufferQuantizeInfo"],
-            )
-            target_submesh["VertexBufferEdited"] = {
-                "VertexBufferDataEdited": edited_data
-            }
-
-            # Re-encode UV channels from Blender UV layers
-            for json_channel in target_submesh.get("UVChannels", []):
-                result = encode_uv_channel_edited(obj, json_channel)
-                ch_ind = json_channel.get("UVChannelIndex", 0)
-                if result is None:
-                    palette_name = json_channel.get("PaletteName", "")
-                    layer_name = palette_name or f"uv{ch_ind}"
+            if self.use_hammerspace:
+                hs = encode_mesh_hammerspace(obj, target_submesh)
+                target_submesh["VertexBufferEdited"] = {
+                    "VertexBufferDataEdited": hs['VertexBufferDataEdited']
+                }
+                target_submesh["FacesDataEdited"] = hs['FacesDataEdited']
+                target_submesh["FacesCountEdited"] = hs['FacesCountEdited']
+                for json_channel in target_submesh.get("UVChannels", []):
+                    ch_ind = json_channel.get("UVChannelIndex", 0)
+                    if ch_ind in hs['UVEdits']:
+                        uv_data_b64, uv_faces_b64 = hs['UVEdits'][ch_ind]
+                        json_channel["UVChannelDataEdited"] = uv_data_b64
+                        json_channel["UVFacesDataEdited"] = uv_faces_b64
+                    else:
+                        palette_name = json_channel.get("PaletteName", "")
+                        layer_name = palette_name or f"uv{ch_ind}"
+                        warnings.append(
+                            f"{obj.name}: UV layer '{layer_name}' not found — UV channel {ch_ind} skipped."
+                        )
+            else:
+                mismatches = validate_against_json(obj, target_submesh)
+                if mismatches:
                     warnings.append(
-                        f"{obj.name}: UV layer '{layer_name}' not found — UV channel {ch_ind} skipped."
+                        f"{obj.name}: metadata mismatch ({'; '.join(mismatches)}) — skipped."
                     )
                     continue
-                uv_data_b64, conflicts = result
-                for slot in set(conflicts):
-                    warnings.append(
-                        f"{obj.name}: UV ch {ch_ind} slot {slot} has conflicting values "
-                        f"(UV seam was split) — first value used."
-                    )
-                json_channel["UVChannelDataEdited"] = uv_data_b64
-                # UVFacesDataEdited is no longer written: the draw list indices
-                # are unchanged so UVFacesData still applies after patching.
+
+                edited_data = encode_vertex_buffer_edited(
+                    obj,
+                    obj["VertexBufferCompCount"],
+                    obj["VertexBufferQuantizeInfo"],
+                )
+                target_submesh["VertexBufferEdited"] = {
+                    "VertexBufferDataEdited": edited_data
+                }
+
+                # Re-encode UV channels from Blender UV layers
+                for json_channel in target_submesh.get("UVChannels", []):
+                    result = encode_uv_channel_edited(obj, json_channel)
+                    ch_ind = json_channel.get("UVChannelIndex", 0)
+                    if result is None:
+                        palette_name = json_channel.get("PaletteName", "")
+                        layer_name = palette_name or f"uv{ch_ind}"
+                        warnings.append(
+                            f"{obj.name}: UV layer '{layer_name}' not found — UV channel {ch_ind} skipped."
+                        )
+                        continue
+                    uv_data_b64, conflicts = result
+                    for slot in set(conflicts):
+                        warnings.append(
+                            f"{obj.name}: UV ch {ch_ind} slot {slot} has conflicting values "
+                            f"(UV seam was split) — first value used."
+                        )
+                    json_channel["UVChannelDataEdited"] = uv_data_b64
+                    # UVFacesDataEdited is no longer written: the draw list indices
+                    # are unchanged so UVFacesData still applies after patching.
 
             written += 1
 

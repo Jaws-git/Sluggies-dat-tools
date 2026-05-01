@@ -271,6 +271,113 @@ def extract_submeshes(model):
         })
     return submeshes
 
+def extract_skin_data(model):
+    """Return a SkinData dict for a Model0 instance, or None if unskinned.
+
+    Exports all SKN/SK1/SK2/SKAcc structural fields needed by skn_patch.py:
+    - Absolute offsets of every pointer field (for patching)
+    - Current pointer target values (for restoring on --unpatch)
+    - Raw source data bytes (bind-pose positions/normals per bone entry)
+    - Raw weight and destination-index arrays
+
+    SK1 struct fields (at SK1.absolute):
+      +0x30 vertexArr   — source position+normal data, relative to SKN.absolute
+      +0x34 gplVertexArr — dest byte offset within the runtime memClr region
+    SK2 struct fields (at SK2.absolute):
+      +0x60 vertexArr, +0x64 weightArr, +0x68 gplVertexArr
+    SKAcc struct fields (at SKAcc.absolute):
+      +0x30 vertexArr, +0x34 destArr (index array), +0x38 gplDestArr, +0x3C weightArr
+    """
+    if not model.SKN:
+        return None
+    skn = model.SKN
+    skn_abs = skn.absolute
+    comp_size = _vb_comp_size(skn.quantizeInfo)
+
+    sk1s = []
+    for sk1 in skn.SK1s:
+        src_abs  = skn_abs + sk1.vertexArr
+        src_size = sk1.vertexOffset + sk1.vertexCnt * 2 * 3 * comp_size
+        model.f.seek(src_abs)
+        src_data = model.f.read(src_size)
+        sk1s.append({
+            "BoneIndex":           sk1.boneIndex,
+            "VertexCnt":           sk1.vertexCnt,
+            "VertexOffset":        sk1.vertexOffset,
+            "VertexArrFieldOffset":    hex(sk1.absolute + 0x30),
+            "GplVertexArrFieldOffset": hex(sk1.absolute + 0x34),
+            "VertexArrAbsolutePtr":    hex(src_abs),
+            "GplVertexArrValue":       sk1.gplVertexArr,
+            "SourceData":              base64.b64encode(src_data).decode('ascii')
+        })
+
+    sk2s = []
+    for sk2 in skn.SK2s:
+        src_abs  = skn_abs + sk2.vertexArr
+        src_size = sk2.vertexOffset + sk2.vertexCnt * 2 * 3 * comp_size
+        model.f.seek(src_abs)
+        src_data = model.f.read(src_size)
+        wt_abs   = skn_abs + sk2.weightArr
+        model.f.seek(wt_abs)
+        wt_data  = model.f.read(sk2.vertexCnt * 2)  # 2 weight bytes per vertex
+        sk2s.append({
+            "BoneIndex1":          sk2.boneIndex1,
+            "BoneIndex2":          sk2.boneIndex2,
+            "VertexCnt":           sk2.vertexCnt,
+            "VertexOffset":        sk2.vertexOffset,
+            "VertexArrFieldOffset":    hex(sk2.absolute + 0x60),
+            "WeightArrFieldOffset":    hex(sk2.absolute + 0x64),
+            "GplVertexArrFieldOffset": hex(sk2.absolute + 0x68),
+            "VertexArrAbsolutePtr":    hex(src_abs),
+            "WeightArrAbsolutePtr":    hex(wt_abs),
+            "GplVertexArrValue":       sk2.gplVertexArr,
+            "SourceData":              base64.b64encode(src_data).decode('ascii'),
+            "WeightData":              base64.b64encode(wt_data).decode('ascii')
+        })
+
+    skaccs = []
+    for skacc in skn.SKAccs:
+        src_abs      = skn_abs + skacc.vertexArr
+        src_size     = skacc.vertexCnt * 2 * 3 * comp_size  # no vertexOffset on SKAcc
+        model.f.seek(src_abs)
+        src_data     = model.f.read(src_size)
+        dest_idx_abs = skn_abs + skacc.destArr
+        model.f.seek(dest_idx_abs)
+        dest_idx_data = model.f.read(skacc.vertexCnt * 2)   # uint16 dest indices
+        wt_abs       = skn_abs + skacc.weightArr
+        model.f.seek(wt_abs)
+        wt_data      = model.f.read(skacc.vertexCnt)         # 1 weight byte per vertex
+        skaccs.append({
+            "BoneIndex":           skacc.boneIndex,
+            "VertexCnt":           skacc.vertexCnt,
+            "VertexArrFieldOffset":  hex(skacc.absolute + 0x30),
+            "DestArrFieldOffset":    hex(skacc.absolute + 0x34),
+            "GplDestArrFieldOffset": hex(skacc.absolute + 0x38),
+            "WeightArrFieldOffset":  hex(skacc.absolute + 0x3C),
+            "VertexArrAbsolutePtr":  hex(src_abs),
+            "DestArrAbsolutePtr":    hex(dest_idx_abs),
+            "GplDestArrValue":       skacc.gplDestArr,
+            "WeightArrAbsolutePtr":  hex(wt_abs),
+            "SourceData":            base64.b64encode(src_data).decode('ascii'),
+            "DestIndexData":         base64.b64encode(dest_idx_data).decode('ascii'),
+            "WeightData":            base64.b64encode(wt_data).decode('ascii')
+        })
+
+    return {
+        "SKNOffset":            hex(skn_abs),
+        "MemClrPtrFieldOffset": hex(skn_abs + 0x14),
+        "MemClrSzeFieldOffset": hex(skn_abs + 0x18),
+        "MemClrAbsolutePtr":    hex(skn_abs + skn.memClrPtr),
+        "MemClrSize":           skn.memClrSze,
+        "FlushIndArrFieldOffset": hex(skn_abs + 0x1C),
+        "FlushIndAbsolutePtr":  hex(skn_abs + skn.flushIndArr) if skn.flushIndArr else None,
+        "FlushIndSize":         skn.flushIndSze,
+        "QuantizeInfo":         skn.quantizeInfo,
+        "SK1s":  sk1s,
+        "SK2s":  sk2s,
+        "SKAccs": skaccs
+    }
+
 class Dat(File):
     def __init__(self, f):
         super().__init__(f)
@@ -312,7 +419,8 @@ for dir_ind, file_arr in dirs.items():
                                     "ModelOffset": hex(sub_model.absolute),
                                     "ModelLength": sub_model.length,
                                     "TextureDescriptors": extract_texture_descriptors(sub_model),
-                                    "Submeshes": extract_submeshes(sub_model)
+                                    "Submeshes": extract_submeshes(sub_model),
+                                    "SkinData": extract_skin_data(sub_model)
                                 }
                             }
                             with open(os.path.join(sub_dir, json_name), 'w') as info_f:
@@ -327,7 +435,8 @@ for dir_ind, file_arr in dirs.items():
                                 "ModelOffset": hex(offset),
                                 "ModelLength": l,
                                 "TextureDescriptors": extract_texture_descriptors(child.child),
-                                "Submeshes": extract_submeshes(child.child)
+                                "Submeshes": extract_submeshes(child.child),
+                                "SkinData": extract_skin_data(child.child)
                             }
                         }
                         with open(os.path.join(model_dir, json_name), 'w') as info_f:
