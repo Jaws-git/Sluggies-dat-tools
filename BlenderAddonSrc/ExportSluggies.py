@@ -207,6 +207,229 @@ def encode_mesh_hammerspace(obj, json_submesh):
     }
 
 
+def _comp_size_skin(quant_info):
+    fmt = quant_info >> 4
+    return 4 if fmt in [4, 7, 0xa] else 2
+
+
+def _get_vgroup_weight(obj, group_name, vertex_index):
+    """Return 0-1 weight for vertex_index in group_name, or 0.0 if absent."""
+    vg = obj.vertex_groups.get(group_name)
+    if vg is None:
+        return 0.0
+    try:
+        return vg.weight(vertex_index)
+    except RuntimeError:
+        return 0.0
+
+
+def encode_skin_weights_inplace(candidates, data, warnings):
+    """Re-pack SK2/SKAcc weight bytes from Blender vertex groups (in-place mode).
+
+    Vertex count and bone structure must be unchanged — only weight values are
+    updated.  Writes 'WeightDataEdited' into each SK2/SKAcc entry inside the
+    existing SkinData dict.  Returns True if any entries were written.
+    """
+    skin_data = data["SluggiesModel"].get("SkinData")
+    if not skin_data or not (skin_data.get("SK2s") or skin_data.get("SKAccs")):
+        return False
+    gpl_base_hex = skin_data.get("GplBaseOffset")
+    if not gpl_base_hex:
+        warnings.append("SkinData missing GplBaseOffset — skin weight re-encode skipped. Re-export the .sluggie from export.py.")
+        return False
+
+    quant_info  = skin_data["QuantizeInfo"]
+    vertex_size = 6 * _comp_size_skin(quant_info)
+    gpl_base    = int(gpl_base_hex, 16)
+    submeshes   = data["SluggiesModel"].get("Submeshes", [])
+
+    # Build per-submesh (vtx_start, vtx_count) in GPL-relative vertex units
+    sub_ranges = []
+    for sm in submeshes:
+        vb = sm["VertexBuffer"]
+        vb_abs   = int(vb["VertexBufferOffset"], 16)
+        vtx_start = (vb_abs - gpl_base) // vertex_size
+        vb_cs    = _comp_size_skin(vb["VertexBufferQuantizeInfo"])
+        vtx_count = vb["VertexBufferLength"] // (vb["VertexBufferCompCount"] * vb_cs)
+        sub_ranges.append((vtx_start, vtx_count, vb["VertexBufferOffset"]))
+
+    # Map VertexBufferOffset → object for quick lookup
+    obj_by_vb = {str(obj["VertexBufferOffset"]): obj for obj in candidates if "VertexBufferOffset" in obj}
+
+    def resolve(global_vtx):
+        for j, (start, count, vb_off) in enumerate(sub_ranges):
+            if start <= global_vtx < start + count:
+                return obj_by_vb.get(str(vb_off)), global_vtx - start
+        return None, global_vtx
+
+    wrote_any = False
+
+    for sk2 in skin_data.get("SK2s", []):
+        n            = sk2["VertexCnt"]
+        vtx_off      = sk2.get("VertexOffset", 0)
+        global_start = (sk2["GplVertexArrValue"] + vtx_off) // vertex_size
+        bone1        = sk2["BoneIndex1"]
+        bone2        = sk2["BoneIndex2"]
+        orig         = base64.b64decode(sk2["WeightData"])
+
+        wt = bytearray()
+        for i in range(n):
+            obj, local_v = resolve(global_start + i)
+            if obj is None:
+                wt.append(orig[i * 2])
+                wt.append(orig[i * 2 + 1])
+            else:
+                w1 = _get_vgroup_weight(obj, f"bone_{bone1}", local_v)
+                w2 = _get_vgroup_weight(obj, f"bone_{bone2}", local_v)
+                wt.append(max(0, min(255, round(w1 * 256))))
+                wt.append(max(0, min(255, round(w2 * 256))))
+        sk2["WeightDataEdited"] = base64.b64encode(bytes(wt)).decode('ascii')
+        wrote_any = True
+
+    for skacc in skin_data.get("SKAccs", []):
+        n         = skacc["VertexCnt"]
+        bone_id   = skacc["BoneIndex"]
+        dest_base = skacc["GplDestArrValue"] // vertex_size
+        orig      = base64.b64decode(skacc["WeightData"])
+        dest_idxs = list(struct.unpack(f'>{n}H', base64.b64decode(skacc["DestIndexData"])))
+
+        wt = bytearray()
+        for i in range(n):
+            obj, local_v = resolve(dest_base + dest_idxs[i])
+            if obj is None:
+                wt.append(orig[i])
+            else:
+                w = _get_vgroup_weight(obj, f"bone_{bone_id}", local_v)
+                wt.append(max(0, min(255, round(w * 256))))
+        skacc["WeightDataEdited"] = base64.b64encode(bytes(wt)).decode('ascii')
+        wrote_any = True
+
+    return wrote_any
+
+
+def encode_skin_hammerspace(candidates, data, warnings):
+    """Rebuild SK1/SK2/SKAcc from Blender vertex groups for hammerspace export.
+
+    Splitting rules:
+      1 influence  → SK1
+      2 influences → SK2
+      3+ influences → SK2 (top 2 by weight) + SKAcc (remainder)
+
+    Bone pairs in SK2 are stored with the lower BoneId first.
+    Source data (bind-pose XYZ + NxNyNz) is encoded with SkinData.QuantizeInfo.
+    Writes 'SkinDataEdited' at the model level.  Returns True if written.
+    """
+    skin_data = data["SluggiesModel"].get("SkinData")
+    if not skin_data:
+        return False
+
+    submeshes  = data["SluggiesModel"].get("Submeshes", [])
+    quant_info = skin_data["QuantizeInfo"]
+    cs         = _comp_size_skin(quant_info)
+    fmt_nibble = quant_info >> 4
+    is_float   = fmt_nibble in [4, 7, 0xa]
+    divisor    = 1 << (quant_info & 0xF)
+
+    def pack_val(v):
+        if is_float:
+            return struct.pack('>f', float(v))
+        return struct.pack('>h', max(-32768, min(32767, round(float(v) * divisor))))
+
+    # Map VertexBufferOffset → (submesh_idx, obj)
+    obj_to_sub = {}
+    for j, sm in enumerate(submeshes):
+        vb_off = str(sm["VertexBuffer"]["VertexBufferOffset"])
+        for obj in candidates:
+            if "VertexBufferOffset" in obj and str(obj["VertexBufferOffset"]) == vb_off:
+                obj_to_sub[id(obj)] = (j, obj)
+                break
+
+    sk1_groups  = {}   # bone_id → [(sub_idx, local_v, obj)]
+    sk2_groups  = {}   # (b_lo, b_hi) → [(sub_idx, local_v, w_lo, w_hi, obj)]
+    skacc_groups = {}  # bone_id → [(sub_idx, local_v, weight, dest_local_v, obj)]
+
+    for _, (sub_idx, obj) in obj_to_sub.items():
+        for v in obj.data.vertices:
+            parsed = []
+            for vge in v.groups:
+                vg = obj.vertex_groups[vge.group]
+                if not vg.name.startswith("bone_") or vge.weight <= 0.0:
+                    continue
+                try:
+                    parsed.append((int(vg.name[5:]), vge.weight))
+                except ValueError:
+                    continue
+            parsed.sort(key=lambda x: -x[1])
+            if not parsed:
+                continue
+
+            v_idx = v.index
+            if len(parsed) == 1:
+                b, _ = parsed[0]
+                sk1_groups.setdefault(b, []).append((sub_idx, v_idx, obj))
+            else:
+                # SK2 from top 2, canonically ordered by bone id
+                (b1, w1), (b2, w2) = parsed[0], parsed[1]
+                b_lo, b_hi = (b1, b2) if b1 <= b2 else (b2, b1)
+                w_lo = w1 if b1 <= b2 else w2
+                w_hi = w2 if b1 <= b2 else w1
+                sk2_groups.setdefault((b_lo, b_hi), []).append(
+                    (sub_idx, v_idx, w_lo, w_hi, obj))
+                # SKAcc for any remaining influences
+                for b, w in parsed[2:]:
+                    skacc_groups.setdefault(b, []).append(
+                        (sub_idx, v_idx, w, v_idx, obj))
+
+    def encode_src(entries):
+        raw = bytearray()
+        for entry in entries:
+            obj   = entry[-1]
+            v     = obj.data.vertices[entry[1]]
+            for val in [v.co.x, v.co.y, v.co.z, v.normal.x, v.normal.y, v.normal.z]:
+                raw += pack_val(val)
+        return base64.b64encode(bytes(raw)).decode('ascii')
+
+    new_sk1s = [
+        {"BoneIndex": b, "VertexCnt": len(e), "SourceData": encode_src(e)}
+        for b, e in sorted(sk1_groups.items())
+    ]
+
+    new_sk2s = []
+    for (b_lo, b_hi), entries in sorted(sk2_groups.items()):
+        wt = bytearray()
+        for e in entries:
+            wt.append(max(0, min(255, round(e[2] * 256))))
+            wt.append(max(0, min(255, round(e[3] * 256))))
+        new_sk2s.append({
+            "BoneIndex1": b_lo, "BoneIndex2": b_hi,
+            "VertexCnt": len(entries),
+            "SourceData": encode_src(entries),
+            "WeightData": base64.b64encode(bytes(wt)).decode('ascii'),
+        })
+
+    new_skaccs = []
+    for bone_id, entries in sorted(skacc_groups.items()):
+        wt   = bytearray()
+        dest = bytearray()
+        for e in entries:
+            wt   += bytes([max(0, min(255, round(e[2] * 256)))])
+            dest += struct.pack('>H', e[3])
+        new_skaccs.append({
+            "BoneIndex": bone_id, "VertexCnt": len(entries),
+            "SourceData":    encode_src(entries),
+            "WeightData":    base64.b64encode(bytes(wt)).decode('ascii'),
+            "DestIndexData": base64.b64encode(bytes(dest)).decode('ascii'),
+        })
+
+    data["SluggiesModel"]["SkinDataEdited"] = {
+        "QuantizeInfo": quant_info,
+        "SK1s":   new_sk1s,
+        "SK2s":   new_sk2s,
+        "SKAccs": new_skaccs,
+    }
+    return True
+
+
 def validate_against_json(obj, json_submesh):
     """Return a list of mismatch descriptions, empty if everything matches."""
     vb = json_submesh.get("VertexBuffer", {})
@@ -357,6 +580,12 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     # are unchanged so UVFacesData still applies after patching.
 
             written += 1
+
+        # Skin data is model-level — encode once after all submeshes are processed
+        if self.use_hammerspace:
+            encode_skin_hammerspace(candidates, data, warnings)
+        else:
+            encode_skin_weights_inplace(candidates, data, warnings)
 
         for w in warnings:
             self.report({"WARNING"}, w)

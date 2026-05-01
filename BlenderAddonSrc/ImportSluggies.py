@@ -332,6 +332,79 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
     return obj
 
 
+def build_armature(name, bone_list, collection):
+    """Create a Blender Armature from a BoneHierarchy list and link it to *collection*.
+
+    Bone names are ``bone_<id>``.  Tails are aimed at the first child's head
+    when available; otherwise offset slightly along global Z so bones are
+    visible in the viewport.  Returns the armature object.
+    """
+    arm_data = bpy.data.armatures.new(name + "_arm")
+    arm_obj  = bpy.data.objects.new(name + "_arm", arm_data)
+    collection.objects.link(arm_obj)
+
+    prev_active = bpy.context.view_layer.objects.active
+    bpy.context.view_layer.objects.active = arm_obj
+    bpy.ops.object.mode_set(mode='EDIT')
+    edit_bones = arm_data.edit_bones
+
+    bone_id_to_name = {}
+    for bd in bone_list:
+        eb = edit_bones.new(f"bone_{bd['BoneId']}")
+        h = bd['HeadPosition']
+        eb.head = (h[0], h[1], h[2])
+        # Placeholder tail — overridden below when a child is found
+        eb.tail = (h[0], h[1], h[2] + 0.05)
+        bone_id_to_name[bd['BoneId']] = eb.name
+
+    # Collect the first child head for each parent so we can aim tails
+    first_child_head = {}
+    for bd in bone_list:
+        pid = bd['ParentBoneId']
+        if pid is not None and pid not in first_child_head:
+            first_child_head[pid] = bd['HeadPosition']
+
+    for bd in bone_list:
+        eb = edit_bones.get(bone_id_to_name.get(bd['BoneId'], ''))
+        if eb is None:
+            continue
+        # Set parent relationship
+        pid = bd['ParentBoneId']
+        if pid is not None:
+            parent_eb = edit_bones.get(bone_id_to_name.get(pid, ''))
+            if parent_eb:
+                eb.parent = parent_eb
+        # Aim tail towards first child when available
+        if bd['BoneId'] in first_child_head:
+            ch = first_child_head[bd['BoneId']]
+            eb.tail = (ch[0], ch[1], ch[2])
+
+    bpy.ops.object.mode_set(mode='OBJECT')
+    bpy.context.view_layer.objects.active = prev_active
+    return arm_obj
+
+
+def add_vertex_groups(obj, submesh_index, bone_list, arm_obj):
+    """Add vertex groups from BoneHierarchy for *submesh_index* and attach an
+    Armature modifier pointing at *arm_obj*."""
+    for bd in bone_list:
+        for entry in bd.get('VertexInfluences', []):
+            if entry['SubmeshIndex'] != submesh_index:
+                continue
+            group_name = f"bone_{bd['BoneId']}"
+            vg = obj.vertex_groups.get(group_name)
+            if vg is None:
+                vg = obj.vertex_groups.new(name=group_name)
+            num_verts = len(obj.data.vertices)
+            for inf in entry['Influences']:
+                v_idx = inf['VertexIndex']
+                if v_idx < num_verts:
+                    vg.add([v_idx], inf['Weight'], 'REPLACE')
+
+    mod = obj.modifiers.new(name="Armature", type='ARMATURE')
+    mod.object = arm_obj
+
+
 class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
     bl_idname = "sluggies.import_json"
     bl_label = "Import Sluggers intermediate"
@@ -352,6 +425,14 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
         sluggie_dir = os.path.dirname(self.filepath)
 
         collection = context.collection
+
+        # Build armature first so mesh objects can reference it immediately
+        bone_list = model.get("BoneHierarchy")
+        arm_obj = None
+        if bone_list:
+            base_name = f"{model_number}_{model_offset_hex}"
+            arm_obj = build_armature(base_name, bone_list, collection)
+
         imported = 0
         for i, submesh in enumerate(submeshes):
             vb = submesh.get("VertexBuffer")
@@ -363,10 +444,12 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
             color_channels = submesh.get("ColorChannels", [])
             face_texture_indices = decode_face_texture_indices(submesh, len(faces))
             mesh_name = f"{model_number}_{model_offset_hex}_submesh{i}"
-            build_mesh(mesh_name, positions, normals, faces, vb, collection,
-                       uv_channels, color_channels,
-                       face_texture_indices=face_texture_indices, sluggie_dir=sluggie_dir,
-                       submesh_meta=submesh)
+            obj = build_mesh(mesh_name, positions, normals, faces, vb, collection,
+                             uv_channels, color_channels,
+                             face_texture_indices=face_texture_indices, sluggie_dir=sluggie_dir,
+                             submesh_meta=submesh)
+            if arm_obj is not None:
+                add_vertex_groups(obj, i, bone_list, arm_obj)
             imported += 1
 
         context.view_layer.update()

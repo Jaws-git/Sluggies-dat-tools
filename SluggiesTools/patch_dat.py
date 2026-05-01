@@ -12,6 +12,7 @@ OUTPUT_DAT = os.path.join(OUTPUT_DIR, 'dt_na.dat')
 # Allow importing sibling modules (HammerspaceHelpers, drawlist)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import HammerspaceHelpers as _hs
+import skn_patch as _skn
 
 
 def abort(message):
@@ -39,12 +40,19 @@ def _chunk_name(submesh_offset_hex: str, submesh_idx: int) -> str:
 
 
 def writeExpandedMesh(i: int, submesh: dict, new_verts_raw: bytes,
-                      new_uvs_per_ch: dict) -> bool:
+                      new_uvs_per_ch: dict,
+                      skin_data: dict = None) -> bool:
     """Write all buffers for one submesh to hammerspace and patch the pointers.
 
     ``new_uvs_per_ch`` is a dict ``{ch_ind: bytes}`` for channels that have
     changed.  Channels absent from the dict fall back to their original data
     recorded in the JSON so the chunk always contains complete UV data.
+
+    ``skin_data`` is the model-level ``SkinData`` dict from the .sluggie JSON.
+    When provided, SKN destination-buffer pointer fields are also patched.
+    NOTE (Phase 4): SKN patching only applies when submesh index i == 0, since
+    the memClr region starts at submesh 0's vertex buffer.  Phase 6 will
+    extend this to the full multi-submesh contiguous-buffer case.
 
     The draw list data is currently written verbatim from the JSON (original
     primitive lists).  Per-draw-state face index updates are reserved for a
@@ -117,14 +125,26 @@ def writeExpandedMesh(i: int, submesh: dict, new_verts_raw: bytes,
             f.seek(int(ds['PrimListSizeFieldOffset'], 16))
             f.write(struct.pack('>I', len(dl_raw)))
 
+    # Phase 4: patch SKN destination buffer pointer when this is the first
+    # submesh (submesh 0 is the start of the contiguous memClr region).
+    if skin_data is not None and i == 0:
+        new_vert_abs = data_abs + offsets['verts']
+        _skn.patchSKNForNewDestBuffer(skin_data, new_vert_abs)
+        print(f"  Submesh {i}: SKN memClrPtr patched to 0x{new_vert_abs:X}")
+
     print(f"  Submesh {i}: hammerspace '{chunk_name}' at 0x{data_abs:X} "
           f"({len(blob)} bytes payload, {new_vcount} vertices)")
     return True
 
 
-def restoreSubmeshFromHammerspace(i: int, submesh: dict) -> None:
+def restoreSubmeshFromHammerspace(i: int, submesh: dict,
+                                   skin_data: dict = None) -> None:
     """If this submesh has a hammerspace chunk, erase it and restore all
     pointer fields and count fields to their original values.
+
+    When ``skin_data`` is provided, SKN pointer fields are also restored.
+    This is safe to call for every submesh of a skinned model since
+    ``restoreSKNPointers`` is idempotent (always writes the same original values).
 
     The actual data bytes are written back by the standard --unpatch flow
     immediately after this call.
@@ -167,6 +187,10 @@ def restoreSubmeshFromHammerspace(i: int, submesh: dict) -> None:
                                   original_dl_offset, relative_base)
             f.seek(int(ds['PrimListSizeFieldOffset'], 16))
             f.write(struct.pack('>I', ds['PrimListLength']))
+
+    if skin_data is not None:
+        _skn.restoreSKNPointers(skin_data)
+        print(f"  Submesh {i}: SKN pointers restored.")
 
     print(f"  Submesh {i}: hammerspace chunk removed, pointers restored.")
 
@@ -230,12 +254,14 @@ patches    = []   # (submesh_idx, file_offset, raw_bytes)
 uv_patches = []   # (submesh_idx, ch_ind, file_offset, raw_bytes)
 hammerspace_count = 0
 
+skin_data = data["SluggiesModel"].get("SkinData")  # None for non-skinned models
+
 for i, submesh in enumerate(submeshes):
     vb = submesh.get("VertexBuffer", {})
 
     if unpatch:
         # -- restore hammerspace state first, then queue in-place data restore --
-        restoreSubmeshFromHammerspace(i, submesh)
+        restoreSubmeshFromHammerspace(i, submesh, skin_data)
 
         vb_data = vb.get("VertexBufferData")
         if vb_data:
@@ -275,9 +301,16 @@ for i, submesh in enumerate(submeshes):
 
         vb_size_changed = len(new_verts) != original_vb_length
 
+        # Guard: skinned mesh vertex count change requires Phase 6
+        if vb_size_changed and vb.get('VertexBufferCompCount', 3) == 6:
+            print(f"  Submesh {i}: WARNING — vertex count change on a skinned mesh "
+                  f"(compCount=6) is not yet supported (requires Phase 6 bone weight "
+                  f"rebuilding). Skipping this submesh.")
+            continue
+
         if vb_size_changed or uv_size_changed:
             # Sizes changed — write everything to hammerspace
-            ok = writeExpandedMesh(i, submesh, new_verts, new_uvs)
+            ok = writeExpandedMesh(i, submesh, new_verts, new_uvs, skin_data)
             if ok:
                 hammerspace_count += 1
         else:

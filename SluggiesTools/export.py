@@ -365,6 +365,7 @@ def extract_skin_data(model):
 
     return {
         "SKNOffset":            hex(skn_abs),
+        "GplBaseOffset":        hex(model.GPL.absolute) if model.GPL else None,
         "MemClrPtrFieldOffset": hex(skn_abs + 0x14),
         "MemClrSzeFieldOffset": hex(skn_abs + 0x18),
         "MemClrAbsolutePtr":    hex(skn_abs + skn.memClrPtr),
@@ -377,6 +378,89 @@ def extract_skin_data(model):
         "SK2s":  sk2s,
         "SKAccs": skaccs
     }
+
+def extract_bone_data(model):
+    """Return a BoneHierarchy list for the .sluggie JSON, or None if no ACT/bones present.
+
+    Each entry contains bone identity, local transform components, absolute
+    world-space head position, parent link, and per-vertex weight influences
+    grouped by submesh index.
+
+    Vertex index mapping:
+    - Non-skinned bones (Skinned=False): GEOID == submesh index; VertexIndex is
+      already local to that submesh (0..numPositions-1).
+    - Skinned bones (Skinned=True): the raw index from SK1/SK2/SKAcc entries is
+      a GPL-relative global index (gplVertexArr // skn_vs + i).  This function
+      converts it to a (submesh_index, local_vertex_index) pair using the
+      per-submesh vertex buffer byte offsets within the GPL section.
+    """
+    if not model.ACT or not model.bones:
+        return None
+
+    bones = model.bones  # dict: bone_id -> Bone
+
+    # Build per-submesh (global_vtx_start, vtx_count) for skinned index remapping.
+    submesh_vtx_starts = []
+    if model.GPL and model.SKN:
+        gpl_abs = model.GPL.absolute
+        skn_vs = 6 * _vb_comp_size(model.SKN.quantizeInfo)
+        for desc in model.GPL.geoDescriptors:
+            layout = desc.layout
+            pos = layout.DOPositionHeader
+            gpl_rel = (layout.absolute - gpl_abs) + pos.positionArrPtr
+            submesh_vtx_starts.append((gpl_rel // skn_vs, pos.numPositions))
+
+    bone_list = []
+    for bone_id in sorted(bones.keys()):
+        bone = bones[bone_id]
+        head  = [round(float(v), 6) for v in bone.head()]
+        trans = [round(float(v), 6) for v in bone.orientation.translation]
+        scale = [round(float(v), 6) for v in bone.orientation.scale]
+        quat  = [round(float(v), 6) for v in bone.orientation.quaternion]
+
+        # Group vertex influences by submesh index
+        by_submesh = {}
+        for v_idx, (raw_weight, _src_pos, _sources) in bone.vertexInfluences.items():
+            w = round(float(raw_weight) / 256.0, 6)
+            if bone.skinned and submesh_vtx_starts:
+                sub_idx = None
+                local_idx = v_idx
+                for j, (start, count) in enumerate(submesh_vtx_starts):
+                    if start <= v_idx < start + count:
+                        sub_idx = j
+                        local_idx = v_idx - start
+                        break
+                if sub_idx is None:
+                    continue  # vertex doesn't fall in any known submesh — skip
+            else:
+                # Non-skinned: GEOID is the submesh index; v_idx is already local
+                sub_idx = bone.GEOID
+                local_idx = v_idx
+
+            if sub_idx not in by_submesh:
+                by_submesh[sub_idx] = []
+            by_submesh[sub_idx].append({"VertexIndex": int(local_idx), "Weight": w})
+
+        influences_by_submesh = [
+            {"SubmeshIndex": sub_idx, "Influences": inf_list}
+            for sub_idx, inf_list in sorted(by_submesh.items())
+        ]
+
+        bone_list.append({
+            "BoneId":       int(bone.id),
+            "GeoId":        int(bone.GEOID),
+            "ParentBoneId": int(bone.parent.id) if bone.parent else None,
+            "Skinned":      bool(bone.skinned),
+            "TrackId":      int(bone.track_id),
+            "Translation":  trans,
+            "Scale":        scale,
+            "Quaternion":   quat,
+            "HeadPosition": head,
+            "VertexInfluences": influences_by_submesh,
+        })
+
+    return bone_list
+
 
 class Dat(File):
     def __init__(self, f):
@@ -420,7 +504,8 @@ for dir_ind, file_arr in dirs.items():
                                     "ModelLength": sub_model.length,
                                     "TextureDescriptors": extract_texture_descriptors(sub_model),
                                     "Submeshes": extract_submeshes(sub_model),
-                                    "SkinData": extract_skin_data(sub_model)
+                                    "SkinData": extract_skin_data(sub_model),
+                                    "BoneHierarchy": extract_bone_data(sub_model)
                                 }
                             }
                             with open(os.path.join(sub_dir, json_name), 'w') as info_f:
@@ -436,7 +521,8 @@ for dir_ind, file_arr in dirs.items():
                                 "ModelLength": l,
                                 "TextureDescriptors": extract_texture_descriptors(child.child),
                                 "Submeshes": extract_submeshes(child.child),
-                                "SkinData": extract_skin_data(child.child)
+                                "SkinData": extract_skin_data(child.child),
+                                "BoneHierarchy": extract_bone_data(child.child)
                             }
                         }
                         with open(os.path.join(model_dir, json_name), 'w') as info_f:
