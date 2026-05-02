@@ -279,12 +279,11 @@ for i, submesh in enumerate(submeshes):
 
     else:
         # -- patch mode --
-        vb_edited_block = submesh.get("VertexBufferEdited")
-        if not vb_edited_block or "VertexBufferDataEdited" not in vb_edited_block:
-            print(f"  Submesh {i}: no VertexBufferEdited data, skipping.")
+        if "VertexBufferDataEdited" not in vb:
+            print(f"  Submesh {i}: no VertexBufferDataEdited data, skipping.")
             continue
 
-        new_verts = base64.b64decode(vb_edited_block["VertexBufferDataEdited"])
+        new_verts = base64.b64decode(vb["VertexBufferDataEdited"])
         original_vb_length = vb.get("VertexBufferLength", 0)
 
         # Collect edited UV channels

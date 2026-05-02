@@ -380,6 +380,8 @@ def build_armature(name, bone_list, collection):
             eb.tail = (ch[0], ch[1], ch[2])
 
     bpy.ops.object.mode_set(mode='OBJECT')
+    arm_obj.show_in_front = True
+    arm_obj.display_type = 'WIRE'
     bpy.context.view_layer.objects.active = prev_active
     return arm_obj
 

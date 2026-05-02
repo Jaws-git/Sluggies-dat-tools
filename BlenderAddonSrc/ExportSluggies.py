@@ -430,6 +430,53 @@ def encode_skin_hammerspace(candidates, data, warnings):
     return True
 
 
+def detect_length_mismatches(obj, json_submesh):
+    """Return a list of human-readable strings describing any buffer-length
+    changes that would require Hammerspace Mode to export correctly.
+
+    Checks vertex buffer and all UV channels.  An empty list means all lengths
+    are compatible with in-place patching.
+    """
+    issues = []
+    vb = json_submesh.get("VertexBuffer", {})
+    comp_count = vb.get("VertexBufferCompCount", 3)
+    quant_info = vb.get("VertexBufferQuantizeInfo", 0)
+    fmt = quant_info >> 4
+    cs  = 4 if fmt in [4, 7, 0xa] else 2
+    expected_vb_len = vb.get("VertexBufferLength", 0)
+    actual_vb_len   = len(obj.data.vertices) * comp_count * cs
+    if actual_vb_len != expected_vb_len:
+        orig_vcount = expected_vb_len // (comp_count * cs) if comp_count * cs else 0
+        issues.append(
+            f"vertex count changed: {orig_vcount} → {len(obj.data.vertices)} "
+            f"(buffer {expected_vb_len} B → {actual_vb_len} B)"
+        )
+
+    for ch in json_submesh.get("UVChannels", []):
+        ch_ind       = ch.get("UVChannelIndex", 0)
+        uv_comp      = ch.get("UVChannelCompCount", 2)
+        uv_quant     = ch.get("UVChannelQuantizeInfo", 0)
+        uv_cs        = 4 if (uv_quant >> 4) in [4, 7, 0xa] else 2
+        orig_uv_len  = ch.get("UVChannelLength", 0)
+        orig_uv_cnt  = orig_uv_len // (uv_comp * uv_cs) if uv_comp * uv_cs else 0
+        # Count distinct UV coords in the Blender layer via UVFacesData slot range
+        uv_faces_raw = ch.get("UVFacesData")
+        if uv_faces_raw:
+            import base64 as _b64, struct as _st
+            raw   = _b64.b64decode(uv_faces_raw)
+            n     = len(raw) // 2
+            slots = list(_st.unpack(f'>{n}H', raw))
+            new_uv_cnt = max(slots) + 1 if slots else 0
+        else:
+            new_uv_cnt = orig_uv_cnt
+        if new_uv_cnt != orig_uv_cnt:
+            issues.append(
+                f"UV channel {ch_ind} slot count changed: {orig_uv_cnt} → {new_uv_cnt}"
+            )
+
+    return issues
+
+
 def validate_against_json(obj, json_submesh):
     """Return a list of mismatch descriptions, empty if everything matches."""
     vb = json_submesh.get("VertexBuffer", {})
@@ -524,9 +571,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
 
             if self.use_hammerspace:
                 hs = encode_mesh_hammerspace(obj, target_submesh)
-                target_submesh["VertexBufferEdited"] = {
-                    "VertexBufferDataEdited": hs['VertexBufferDataEdited']
-                }
+                target_submesh["VertexBuffer"]["VertexBufferDataEdited"] = hs['VertexBufferDataEdited']
                 target_submesh["FacesDataEdited"] = hs['FacesDataEdited']
                 target_submesh["FacesCountEdited"] = hs['FacesCountEdited']
                 for json_channel in target_submesh.get("UVChannels", []):
@@ -549,14 +594,20 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     )
                     continue
 
+                length_issues = detect_length_mismatches(obj, target_submesh)
+                if length_issues:
+                    self.report({"INFO"},
+                        f"{obj.name}: buffer length change(s) detected but Hammerspace Mode is "
+                        f"off — data written in-place (may corrupt game): "
+                        + "; ".join(length_issues)
+                    )
+
                 edited_data = encode_vertex_buffer_edited(
                     obj,
                     obj["VertexBufferCompCount"],
                     obj["VertexBufferQuantizeInfo"],
                 )
-                target_submesh["VertexBufferEdited"] = {
-                    "VertexBufferDataEdited": edited_data
-                }
+                target_submesh["VertexBuffer"]["VertexBufferDataEdited"] = edited_data
 
                 # Re-encode UV channels from Blender UV layers
                 for json_channel in target_submesh.get("UVChannels", []):

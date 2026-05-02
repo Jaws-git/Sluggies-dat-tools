@@ -20,7 +20,7 @@ bl_info = {
     "author": "JawSFM",
     "description": "Import/Export Sluggers intermediate JSON files (Mario Super Sluggers - Wii)",
     "blender": (4, 2, 0),
-    "version": (0, 1, 0),
+    "version": (0, 3, 0),
     "location": "File > Import/Export > Sluggers intermediate (.sluggie)",
     "warning": "",
     "category": "Import-Export",
