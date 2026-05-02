@@ -400,15 +400,17 @@ def extract_bone_data(model):
     bones = model.bones  # dict: bone_id -> Bone
 
     # Build per-submesh (global_vtx_start, vtx_count) for skinned index remapping.
+    # gplVertexArr in SK1/SK2/SKAcc is a byte offset from the start of the runtime
+    # dest buffer; divided by vertexSize it gives a global vertex index that runs
+    # sequentially across all submeshes (0, 1, 2, … total_verts-1).  Therefore
+    # the start index for submesh j is simply the sum of vertex counts of 0..j-1.
     submesh_vtx_starts = []
     if model.GPL and model.SKN:
-        gpl_abs = model.GPL.absolute
-        skn_vs = 6 * _vb_comp_size(model.SKN.quantizeInfo)
+        cumulative = 0
         for desc in model.GPL.geoDescriptors:
-            layout = desc.layout
-            pos = layout.DOPositionHeader
-            gpl_rel = (layout.absolute - gpl_abs) + pos.positionArrPtr
-            submesh_vtx_starts.append((gpl_rel // skn_vs, pos.numPositions))
+            count = desc.layout.DOPositionHeader.numPositions
+            submesh_vtx_starts.append((cumulative, count))
+            cumulative += count
 
     bone_list = []
     for bone_id in sorted(bones.keys()):
