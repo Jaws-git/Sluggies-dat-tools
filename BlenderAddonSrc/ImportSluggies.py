@@ -452,6 +452,7 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
                              submesh_meta=submesh)
             if arm_obj is not None:
                 add_vertex_groups(obj, i, bone_list, arm_obj)
+                obj.parent = arm_obj
             imported += 1
 
         context.view_layer.update()
