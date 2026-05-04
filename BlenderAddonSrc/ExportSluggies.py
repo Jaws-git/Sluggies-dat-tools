@@ -15,7 +15,30 @@ REQUIRED_PROPS = (
 )
 
 
-def encode_vertex_buffer_edited(obj, comp_count, quant_info):
+def _get_custom_split_normals(obj):
+    """Return per-vertex averaged custom split normals as a list of Vector, or None.
+
+    Returns None when the mesh has no custom normals data (``has_custom_normals``
+    is False).  When normals are present the loop normals are averaged per vertex
+    so they map 1-to-1 with vertex indices, matching the interleaved XYZ+NxNyNz
+    layout the game uses.
+    """
+    from mathutils import Vector
+    mesh = obj.data
+    if not mesh.has_custom_normals:
+        return None
+    vert_normals = [Vector((0.0, 0.0, 0.0)) for _ in mesh.vertices]
+    vert_counts  = [0] * len(mesh.vertices)
+    for loop in mesh.loops:
+        vert_normals[loop.vertex_index] += Vector(loop.normal)
+        vert_counts[loop.vertex_index]  += 1
+    return [
+        (vert_normals[i] / vert_counts[i]).normalized() if vert_counts[i] else Vector((0.0, 0.0, 1.0))
+        for i in range(len(mesh.vertices))
+    ]
+
+
+def encode_vertex_buffer_edited(obj, comp_count, quant_info, use_custom_normals=False):
     """Re-quantize edited vertex positions (and normals if comp_count==6)
     back into the original binary format and return a base64 string."""
     mesh = obj.data
@@ -24,11 +47,17 @@ def encode_vertex_buffer_edited(obj, comp_count, quant_info):
     divisor = 1 << shift
     is_float = fmt_nibble in [4, 7, 0xa]
 
+    custom_normals = _get_custom_split_normals(obj) if (use_custom_normals and comp_count >= 6) else None
+
     raw_bytes = bytearray()
     for v in mesh.vertices:
         comps = [v.co.x, v.co.y, v.co.z]
         if comp_count >= 6:
-            comps += [v.normal.x, v.normal.y, v.normal.z]
+            if custom_normals is not None:
+                n = custom_normals[v.index]
+                comps += [n.x, n.y, n.z]
+            else:
+                comps += [v.normal.x, v.normal.y, v.normal.z]
         for val in comps:
             if is_float:
                 raw_bytes += struct.pack('>f', val)
@@ -125,7 +154,7 @@ def encode_uv_channel_edited(obj, json_channel):
     return base64.b64encode(bytes(raw_bytes)).decode('ascii'), conflicts
 
 
-def encode_mesh_hammerspace(obj, json_submesh):
+def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False):
     """Encode all mesh data for hammerspace export (vertex count may differ from original).
 
     Returns a dict with:
@@ -145,6 +174,7 @@ def encode_mesh_hammerspace(obj, json_submesh):
         obj,
         obj["VertexBufferCompCount"],
         obj["VertexBufferQuantizeInfo"],
+        use_custom_normals=use_custom_normals,
     )
 
     face_flat = [vi for tri in triangles for vi in tri.vertices]
@@ -248,7 +278,7 @@ def _get_vgroup_weight(obj, group_name, vertex_index):
         return 0.0
 
 
-def encode_skin_weights_inplace(candidates, data, warnings):
+def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=False):
     """Re-pack SK1/SK2/SKAcc bind-pose source data and SK2/SKAcc weight bytes
     from Blender vertex positions/normals and vertex groups (in-place mode).
 
@@ -285,6 +315,15 @@ def encode_skin_weights_inplace(candidates, data, warnings):
     # Map VertexBufferOffset → object for quick lookup
     obj_by_vb = {str(obj["VertexBufferOffset"]): obj for obj in candidates if "VertexBufferOffset" in obj}
 
+    # Pre-compute custom split normals per object when requested
+    custom_normals_cache = {}
+    if use_custom_normals:
+        for _obj in candidates:
+            if "VertexBufferOffset" in _obj:
+                _cn = _get_custom_split_normals(_obj)
+                if _cn is not None:
+                    custom_normals_cache[str(_obj["VertexBufferOffset"])] = _cn
+
     def resolve(global_vtx):
         for j, (start, count, vb_off) in enumerate(sub_ranges):
             if start <= global_vtx < start + count:
@@ -311,7 +350,9 @@ def encode_skin_weights_inplace(candidates, data, warnings):
                 src.extend(orig_src[vtx_off + i * vertex_size : vtx_off + (i + 1) * vertex_size])
             else:
                 vd = obj.data.vertices[local_v]
-                for val in [vd.co.x, vd.co.y, vd.co.z, vd.normal.x, vd.normal.y, vd.normal.z]:
+                _cn = custom_normals_cache.get(str(obj["VertexBufferOffset"]))
+                nx, ny, nz = (_cn[local_v].x, _cn[local_v].y, _cn[local_v].z) if _cn is not None else (vd.normal.x, vd.normal.y, vd.normal.z)
+                for val in [vd.co.x, vd.co.y, vd.co.z, nx, ny, nz]:
                     src.extend(pack_val(val))
         sk1["BindPoseDataEdited"] = base64.b64encode(bytes(src)).decode('ascii')
         wrote_any = True
@@ -334,7 +375,9 @@ def encode_skin_weights_inplace(candidates, data, warnings):
                 wt.append(orig_wt[i * 2 + 1])
             else:
                 vd = obj.data.vertices[local_v]
-                for val in [vd.co.x, vd.co.y, vd.co.z, vd.normal.x, vd.normal.y, vd.normal.z]:
+                _cn = custom_normals_cache.get(str(obj["VertexBufferOffset"]))
+                nx, ny, nz = (_cn[local_v].x, _cn[local_v].y, _cn[local_v].z) if _cn is not None else (vd.normal.x, vd.normal.y, vd.normal.z)
+                for val in [vd.co.x, vd.co.y, vd.co.z, nx, ny, nz]:
                     src.extend(pack_val(val))
                 w1 = _get_vgroup_weight(obj, f"bone_{bone1}", local_v)
                 w2 = _get_vgroup_weight(obj, f"bone_{bone2}", local_v)
@@ -360,7 +403,9 @@ def encode_skin_weights_inplace(candidates, data, warnings):
                 wt.append(orig_wt[i])
             else:
                 vd = obj.data.vertices[local_v]
-                for val in [vd.co.x, vd.co.y, vd.co.z, vd.normal.x, vd.normal.y, vd.normal.z]:
+                _cn = custom_normals_cache.get(str(obj["VertexBufferOffset"]))
+                nx, ny, nz = (_cn[local_v].x, _cn[local_v].y, _cn[local_v].z) if _cn is not None else (vd.normal.x, vd.normal.y, vd.normal.z)
+                for val in [vd.co.x, vd.co.y, vd.co.z, nx, ny, nz]:
                     src.extend(pack_val(val))
                 w = _get_vgroup_weight(obj, f"bone_{bone_id}", local_v)
                 wt.append(max(0, min(255, round(w * 256))))
@@ -371,7 +416,7 @@ def encode_skin_weights_inplace(candidates, data, warnings):
     return wrote_any
 
 
-def encode_skin_hammerspace(candidates, data, warnings):
+def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False):
     """Rebuild SK1/SK2/SKAcc from Blender vertex groups for hammerspace export.
 
     Splitting rules:
@@ -407,6 +452,14 @@ def encode_skin_hammerspace(candidates, data, warnings):
             if "VertexBufferOffset" in obj and str(obj["VertexBufferOffset"]) == vb_off:
                 obj_to_sub[id(obj)] = (j, obj)
                 break
+
+    # Pre-compute custom split normals per object when requested
+    custom_normals_cache = {}
+    if use_custom_normals:
+        for _obj_id, (_, _obj) in obj_to_sub.items():
+            _cn = _get_custom_split_normals(_obj)
+            if _cn is not None:
+                custom_normals_cache[_obj_id] = _cn
 
     sk1_groups  = {}   # bone_id → [(sub_idx, local_v, obj)]
     sk2_groups  = {}   # (b_lo, b_hi) → [(sub_idx, local_v, w_lo, w_hi, obj)]
@@ -447,9 +500,11 @@ def encode_skin_hammerspace(candidates, data, warnings):
     def encode_src(entries):
         raw = bytearray()
         for entry in entries:
-            obj   = entry[-1]
-            v     = obj.data.vertices[entry[1]]
-            for val in [v.co.x, v.co.y, v.co.z, v.normal.x, v.normal.y, v.normal.z]:
+            obj_ref = entry[-1]
+            v       = obj_ref.data.vertices[entry[1]]
+            _cn     = custom_normals_cache.get(id(obj_ref))
+            nx, ny, nz = (_cn[v.index].x, _cn[v.index].y, _cn[v.index].z) if _cn is not None else (v.normal.x, v.normal.y, v.normal.z)
+            for val in [v.co.x, v.co.y, v.co.z, nx, ny, nz]:
                 raw += pack_val(val)
         return base64.b64encode(bytes(raw)).decode('ascii')
 
@@ -572,6 +627,15 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         ),
         default=False,
     )
+    use_custom_normals: BoolProperty(
+        name="Include Custom Split Normals",
+        description=(
+            "Write Blender custom split normals back into the export. "
+            "Only affects models that already store normals (CompCount=6). "
+            "Leave off to keep the original normal values unchanged."
+        ),
+        default=False,
+    )
 
     def execute(self, context):
         # --- load and sanity-check the target JSON ---
@@ -634,7 +698,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 continue
 
             if self.use_hammerspace:
-                hs = encode_mesh_hammerspace(obj, target_submesh)
+                hs = encode_mesh_hammerspace(obj, target_submesh, use_custom_normals=self.use_custom_normals)
                 target_submesh["VertexBuffer"]["VertexBufferDataEdited"] = hs['VertexBufferDataEdited']
                 target_submesh["FacesDataEdited"] = hs['FacesDataEdited']
                 target_submesh["FacesCountEdited"] = hs['FacesCountEdited']
@@ -671,6 +735,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     obj,
                     obj["VertexBufferCompCount"],
                     obj["VertexBufferQuantizeInfo"],
+                    use_custom_normals=self.use_custom_normals,
                 )
                 target_submesh["VertexBuffer"]["VertexBufferDataEdited"] = edited_data
 
@@ -699,9 +764,9 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
 
         # Skin data is model-level — encode once after all submeshes are processed
         if self.use_hammerspace:
-            encode_skin_hammerspace(candidates, data, warnings)
+            encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=self.use_custom_normals)
         else:
-            encode_skin_weights_inplace(candidates, data, warnings)
+            encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=self.use_custom_normals)
 
         for w in warnings:
             self.report({"WARNING"}, w)
