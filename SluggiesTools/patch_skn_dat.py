@@ -424,3 +424,51 @@ def patchSKNInPlace(skin_data: dict) -> bool:
 
     return wrote_any
 
+
+def restoreSKNInPlace(skin_data: dict) -> bool:
+    """Restore SK1/SK2/SKAcc bind-pose source and weight arrays to original values.
+
+    Mirror of ``patchSKNInPlace`` for the --unpatch path.  Reads the original
+    ``BindPoseData`` and ``WeightData`` fields (stored by the exporter) and
+    writes them back to the absolute file positions recorded in the JSON.
+
+    Safe to call unconditionally for any skinned model; entries that lack
+    the original data fields are silently skipped.
+
+    Returns True if any bytes were written.
+    """
+    wrote_any = False
+    with open(_hs.OUTPUT_DAT, 'r+b') as f:
+        for sk1 in skin_data.get('SK1s', []):
+            src = sk1.get('BindPoseData')
+            if src:
+                f.seek(int(sk1['VertexArrAbsolutePtr'], 16))
+                f.write(base64.b64decode(src))
+                wrote_any = True
+
+        for sk2 in skin_data.get('SK2s', []):
+            src = sk2.get('BindPoseData')
+            if src:
+                f.seek(int(sk2['VertexArrAbsolutePtr'], 16))
+                f.write(base64.b64decode(src))
+                wrote_any = True
+            wt = sk2.get('WeightData')
+            if wt:
+                f.seek(int(sk2['WeightArrAbsolutePtr'], 16))
+                f.write(base64.b64decode(wt))
+                wrote_any = True
+
+        for skacc in skin_data.get('SKAccs', []):
+            src = skacc.get('BindPoseData')
+            if src:
+                f.seek(int(skacc['VertexArrAbsolutePtr'], 16))
+                f.write(base64.b64decode(src))
+                wrote_any = True
+            wt = skacc.get('WeightData')
+            if wt:
+                f.seek(int(skacc['WeightArrAbsolutePtr'], 16))
+                f.write(base64.b64decode(wt))
+                wrote_any = True
+
+    return wrote_any
+

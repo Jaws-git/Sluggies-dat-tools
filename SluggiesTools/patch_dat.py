@@ -12,7 +12,7 @@ OUTPUT_DAT = os.path.join(OUTPUT_DIR, 'dt_na.dat')
 # Allow importing sibling modules (HammerspaceHelpers, drawlist)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import Hammerspace as _hs
-import skn_patch as _skn
+import patch_skn_dat as _skn
 import drawlist as _dl
 
 
@@ -532,6 +532,11 @@ if patches or uv_patches:
 if skin_data is not None and not use_hammerspace and not unpatch:
     if _skn.patchSKNInPlace(skin_data):
         print("  Skin bind-pose source and weight arrays patched in-place.")
+
+# In-place skin source and weight restoration (non-hammerspace --unpatch)
+if skin_data is not None and not use_hammerspace and unpatch:
+    if _skn.restoreSKNInPlace(skin_data):
+        print("  Skin bind-pose source and weight arrays restored in-place.")
 
 # ---------------------------------------------------------------------------
 # Summary
