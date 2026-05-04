@@ -129,9 +129,12 @@ def encode_mesh_hammerspace(obj, json_submesh):
     """Encode all mesh data for hammerspace export (vertex count may differ from original).
 
     Returns a dict with:
-      'VertexBufferDataEdited': base64 string  — full re-quantized vertex buffer
-      'FacesDataEdited':        base64 string  — uint16 BE triangulated face indices
-      'FacesCountEdited':       int            — triangle count
+      'VertexBufferDataEdited':    base64 string  — full re-quantized vertex buffer
+      'FacesDataEdited':           base64 string  — uint16 BE triangulated face indices
+      'FacesCountEdited':          int            — triangle count
+      'FaceTextureIndicesEdited':  base64 string  — uint16 BE texture index per face
+                                                    (derived from Blender material slots;
+                                                    used to route faces to draw states)
       'UVEdits': {ch_ind: (uv_data_b64, uv_faces_b64), ...}
     """
     mesh = obj.data
@@ -146,6 +149,27 @@ def encode_mesh_hammerspace(obj, json_submesh):
 
     face_flat = [vi for tri in triangles for vi in tri.vertices]
     faces_data = base64.b64encode(struct.pack(f'>{len(face_flat)}H', *face_flat)).decode('ascii')
+
+    # Per-face texture index derived from Blender material slots.
+    # Material names are "{obj_name}_mat{tex_idx}" (set during import).
+    # This is used by _rebuild_draw_states in patch_dat.py to route faces to
+    # the correct draw state when face count differs from the original.
+    mat_to_tex: dict[int, int] = {}
+    for slot_idx, slot in enumerate(obj.material_slots):
+        tex_idx = 0
+        if slot.material is not None:
+            try:
+                tex_idx = int(slot.material.name.rsplit('_mat', 1)[1])
+            except (IndexError, ValueError):
+                pass
+        mat_to_tex[slot_idx] = tex_idx
+    face_tex_flat = [
+        mat_to_tex.get(mesh.polygons[tri.polygon_index].material_index, 0)
+        for tri in triangles
+    ]
+    face_tex_data = base64.b64encode(
+        struct.pack(f'>{len(face_tex_flat)}H', *face_tex_flat)
+    ).decode('ascii')
 
     uv_edits = {}
     for json_channel in json_submesh.get('UVChannels', []):
@@ -200,10 +224,11 @@ def encode_mesh_hammerspace(obj, json_submesh):
         uv_edits[ch_ind] = (uv_data_b64, uv_faces_b64)
 
     return {
-        'VertexBufferDataEdited': vb_data,
-        'FacesDataEdited': faces_data,
-        'FacesCountEdited': len(triangles),
-        'UVEdits': uv_edits,
+        'VertexBufferDataEdited':   vb_data,
+        'FacesDataEdited':          faces_data,
+        'FacesCountEdited':         len(triangles),
+        'FaceTextureIndicesEdited': face_tex_data,
+        'UVEdits':                  uv_edits,
     }
 
 
@@ -224,34 +249,38 @@ def _get_vgroup_weight(obj, group_name, vertex_index):
 
 
 def encode_skin_weights_inplace(candidates, data, warnings):
-    """Re-pack SK2/SKAcc weight bytes from Blender vertex groups (in-place mode).
+    """Re-pack SK1/SK2/SKAcc bind-pose source data and SK2/SKAcc weight bytes
+    from Blender vertex positions/normals and vertex groups (in-place mode).
 
-    Vertex count and bone structure must be unchanged — only weight values are
-    updated.  Writes 'WeightDataEdited' into each SK2/SKAcc entry inside the
-    existing SkinData dict.  Returns True if any entries were written.
+    Vertex count and bone structure must be unchanged — only values are updated.
+    Writes 'BindPoseDataEdited' into each SK1/SK2/SKAcc entry and 'WeightDataEdited'
+    into each SK2/SKAcc entry inside the existing SkinData dict.
+    Returns True if any entries were written.
     """
     skin_data = data["SluggiesModel"].get("SkinData")
-    if not skin_data or not (skin_data.get("SK2s") or skin_data.get("SKAccs")):
+    if not skin_data or not (skin_data.get("SK1s") or skin_data.get("SK2s") or skin_data.get("SKAccs")):
         return False
-    gpl_base_hex = skin_data.get("GplBaseOffset")
-    if not gpl_base_hex:
-        warnings.append("SkinData missing GplBaseOffset — skin weight re-encode skipped. Re-export the .sluggie from export.py.")
-        return False
-
     quant_info  = skin_data["QuantizeInfo"]
     vertex_size = 6 * _comp_size_skin(quant_info)
-    gpl_base    = int(gpl_base_hex, 16)
+    fmt_nibble  = quant_info >> 4
+    is_float    = fmt_nibble in [4, 7, 0xa]
+    divisor     = 1 << (quant_info & 0xF)
     submeshes   = data["SluggiesModel"].get("Submeshes", [])
 
-    # Build per-submesh (vtx_start, vtx_count) in GPL-relative vertex units
+    # Build per-submesh (vtx_start, vtx_count) using cumulative vertex counts.
+    # gplVertexArr is a byte offset from the start of the runtime dest buffer;
+    # gplVertexArr // vertex_size gives a global vertex index that runs
+    # sequentially across all submeshes (0, 1, 2, … total_verts-1).
+    # This matches how extract_bone_data in export.py maps SK entries to Blender
+    # vertices — do NOT subtract (VertexBufferOffset - gpl_base) here.
     sub_ranges = []
+    cumulative = 0
     for sm in submeshes:
         vb = sm["VertexBuffer"]
-        vb_abs   = int(vb["VertexBufferOffset"], 16)
-        vtx_start = (vb_abs - gpl_base) // vertex_size
         vb_cs    = _comp_size_skin(vb["VertexBufferQuantizeInfo"])
         vtx_count = vb["VertexBufferLength"] // (vb["VertexBufferCompCount"] * vb_cs)
-        sub_ranges.append((vtx_start, vtx_count, vb["VertexBufferOffset"]))
+        sub_ranges.append((cumulative, vtx_count, vb["VertexBufferOffset"]))
+        cumulative += vtx_count
 
     # Map VertexBufferOffset → object for quick lookup
     obj_by_vb = {str(obj["VertexBufferOffset"]): obj for obj in candidates if "VertexBufferOffset" in obj}
@@ -262,7 +291,30 @@ def encode_skin_weights_inplace(candidates, data, warnings):
                 return obj_by_vb.get(str(vb_off)), global_vtx - start
         return None, global_vtx
 
+    def pack_val(v):
+        if is_float:
+            return struct.pack('>f', float(v))
+        return struct.pack('>h', max(-32768, min(32767, round(float(v) * divisor))))
+
     wrote_any = False
+
+    # SK1 entries — source data only (no weights)
+    for sk1 in skin_data.get("SK1s", []):
+        n            = sk1["VertexCnt"]
+        vtx_off      = sk1.get("VertexOffset", 0)
+        global_start = (sk1["GplVertexArrValue"] + vtx_off) // vertex_size
+        orig_src     = base64.b64decode(sk1["BindPoseData"])
+        src = bytearray(orig_src[:vtx_off])  # preserve any prefix bytes unchanged
+        for i in range(n):
+            obj, local_v = resolve(global_start + i)
+            if obj is None:
+                src.extend(orig_src[vtx_off + i * vertex_size : vtx_off + (i + 1) * vertex_size])
+            else:
+                vd = obj.data.vertices[local_v]
+                for val in [vd.co.x, vd.co.y, vd.co.z, vd.normal.x, vd.normal.y, vd.normal.z]:
+                    src.extend(pack_val(val))
+        sk1["BindPoseDataEdited"] = base64.b64encode(bytes(src)).decode('ascii')
+        wrote_any = True
 
     for sk2 in skin_data.get("SK2s", []):
         n            = sk2["VertexCnt"]
@@ -270,19 +322,25 @@ def encode_skin_weights_inplace(candidates, data, warnings):
         global_start = (sk2["GplVertexArrValue"] + vtx_off) // vertex_size
         bone1        = sk2["BoneIndex1"]
         bone2        = sk2["BoneIndex2"]
-        orig         = base64.b64decode(sk2["WeightData"])
-
-        wt = bytearray()
+        orig_wt      = base64.b64decode(sk2["WeightData"])
+        orig_src     = base64.b64decode(sk2["BindPoseData"])
+        src = bytearray(orig_src[:vtx_off])  # preserve any prefix bytes unchanged
+        wt  = bytearray()
         for i in range(n):
             obj, local_v = resolve(global_start + i)
             if obj is None:
-                wt.append(orig[i * 2])
-                wt.append(orig[i * 2 + 1])
+                src.extend(orig_src[vtx_off + i * vertex_size : vtx_off + (i + 1) * vertex_size])
+                wt.append(orig_wt[i * 2])
+                wt.append(orig_wt[i * 2 + 1])
             else:
+                vd = obj.data.vertices[local_v]
+                for val in [vd.co.x, vd.co.y, vd.co.z, vd.normal.x, vd.normal.y, vd.normal.z]:
+                    src.extend(pack_val(val))
                 w1 = _get_vgroup_weight(obj, f"bone_{bone1}", local_v)
                 w2 = _get_vgroup_weight(obj, f"bone_{bone2}", local_v)
                 wt.append(max(0, min(255, round(w1 * 256))))
                 wt.append(max(0, min(255, round(w2 * 256))))
+        sk2["BindPoseDataEdited"] = base64.b64encode(bytes(src)).decode('ascii')
         sk2["WeightDataEdited"] = base64.b64encode(bytes(wt)).decode('ascii')
         wrote_any = True
 
@@ -290,17 +348,23 @@ def encode_skin_weights_inplace(candidates, data, warnings):
         n         = skacc["VertexCnt"]
         bone_id   = skacc["BoneIndex"]
         dest_base = skacc["GplDestArrValue"] // vertex_size
-        orig      = base64.b64decode(skacc["WeightData"])
+        orig_wt   = base64.b64decode(skacc["WeightData"])
+        orig_src  = base64.b64decode(skacc["BindPoseData"])
         dest_idxs = list(struct.unpack(f'>{n}H', base64.b64decode(skacc["DestIndexData"])))
-
-        wt = bytearray()
+        src = bytearray()
+        wt  = bytearray()
         for i in range(n):
             obj, local_v = resolve(dest_base + dest_idxs[i])
             if obj is None:
-                wt.append(orig[i])
+                src.extend(orig_src[i * vertex_size : (i + 1) * vertex_size])
+                wt.append(orig_wt[i])
             else:
+                vd = obj.data.vertices[local_v]
+                for val in [vd.co.x, vd.co.y, vd.co.z, vd.normal.x, vd.normal.y, vd.normal.z]:
+                    src.extend(pack_val(val))
                 w = _get_vgroup_weight(obj, f"bone_{bone_id}", local_v)
                 wt.append(max(0, min(255, round(w * 256))))
+        skacc["BindPoseDataEdited"] = base64.b64encode(bytes(src)).decode('ascii')
         skacc["WeightDataEdited"] = base64.b64encode(bytes(wt)).decode('ascii')
         wrote_any = True
 
@@ -390,7 +454,7 @@ def encode_skin_hammerspace(candidates, data, warnings):
         return base64.b64encode(bytes(raw)).decode('ascii')
 
     new_sk1s = [
-        {"BoneIndex": b, "VertexCnt": len(e), "SourceData": encode_src(e)}
+        {"BoneIndex": b, "VertexCnt": len(e), "BindPoseData": encode_src(e)}
         for b, e in sorted(sk1_groups.items())
     ]
 
@@ -403,7 +467,7 @@ def encode_skin_hammerspace(candidates, data, warnings):
         new_sk2s.append({
             "BoneIndex1": b_lo, "BoneIndex2": b_hi,
             "VertexCnt": len(entries),
-            "SourceData": encode_src(entries),
+            "BindPoseData": encode_src(entries),
             "WeightData": base64.b64encode(bytes(wt)).decode('ascii'),
         })
 
@@ -416,7 +480,7 @@ def encode_skin_hammerspace(candidates, data, warnings):
             dest += struct.pack('>H', e[3])
         new_skaccs.append({
             "BoneIndex": bone_id, "VertexCnt": len(entries),
-            "SourceData":    encode_src(entries),
+            "BindPoseData":   encode_src(entries),
             "WeightData":    base64.b64encode(bytes(wt)).decode('ascii'),
             "DestIndexData": base64.b64encode(bytes(dest)).decode('ascii'),
         })
@@ -503,7 +567,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         name="Hammerspace Mode",
         description=(
             "Allow vertex count changes. Encodes new face indices and dense UV "
-            "coords for Phase 3 writeExpandedMesh() pointer patching. "
+            "coords for writeExpandedMesh() pointer patching. "
             "Leave off for simple in-place edits that preserve vertex count."
         ),
         default=False,
@@ -574,6 +638,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 target_submesh["VertexBuffer"]["VertexBufferDataEdited"] = hs['VertexBufferDataEdited']
                 target_submesh["FacesDataEdited"] = hs['FacesDataEdited']
                 target_submesh["FacesCountEdited"] = hs['FacesCountEdited']
+                target_submesh["FaceTextureIndicesEdited"] = hs['FaceTextureIndicesEdited']
                 for json_channel in target_submesh.get("UVChannels", []):
                     ch_ind = json_channel.get("UVChannelIndex", 0)
                     if ch_ind in hs['UVEdits']:
@@ -598,7 +663,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 if length_issues:
                     self.report({"INFO"},
                         f"{obj.name}: buffer length change(s) detected but Hammerspace Mode is "
-                        f"off — data written in-place (may corrupt game): "
+                        f"off — data written in-place (will be skipped when patching): "
                         + "; ".join(length_issues)
                     )
 
@@ -624,7 +689,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     for slot in set(conflicts):
                         warnings.append(
                             f"{obj.name}: UV ch {ch_ind} slot {slot} has conflicting values "
-                            f"(UV seam was split) — first value used."
+                            f"- Did you remember to activate hammerspace mode?"
                         )
                     json_channel["UVChannelDataEdited"] = uv_data_b64
                     # UVFacesDataEdited is no longer written: the draw list indices
@@ -644,6 +709,8 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         if written == 0:
             self.report({"ERROR"}, "No submeshes written. Check the warnings above.")
             return {"CANCELLED"}
+
+        data["SluggiesModel"]["UseHammerspace"] = self.use_hammerspace
 
         with open(self.filepath, 'w') as f:
             json.dump(data, f, indent=2)

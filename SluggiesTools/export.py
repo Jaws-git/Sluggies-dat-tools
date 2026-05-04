@@ -233,7 +233,7 @@ def extract_submeshes(model):
                     "ColorChannelData": color_raw,
                     "ColorFacesData": ch_faces_data
                 })
-        # Build structural draw-state info for Phase 3b pointer patching.
+        # Build structural draw-state info for pointer patching.
         # DODisplayState layout: [id:1][pad:3][setting:4][primitiveListPtr:4][primitiveListSize:4]
         # primitiveListPtr is relative to DOLayout.absolute (= SubmeshOffset).
         draw_states_export = []
@@ -308,7 +308,7 @@ def extract_skin_data(model):
             "GplVertexArrFieldOffset": hex(sk1.absolute + 0x34),
             "VertexArrAbsolutePtr":    hex(src_abs),
             "GplVertexArrValue":       sk1.gplVertexArr,
-            "SourceData":              base64.b64encode(src_data).decode('ascii')
+            "BindPoseData":             base64.b64encode(src_data).decode('ascii')
         })
 
     sk2s = []
@@ -331,7 +331,7 @@ def extract_skin_data(model):
             "VertexArrAbsolutePtr":    hex(src_abs),
             "WeightArrAbsolutePtr":    hex(wt_abs),
             "GplVertexArrValue":       sk2.gplVertexArr,
-            "SourceData":              base64.b64encode(src_data).decode('ascii'),
+            "BindPoseData":             base64.b64encode(src_data).decode('ascii'),
             "WeightData":              base64.b64encode(wt_data).decode('ascii')
         })
 
@@ -358,7 +358,7 @@ def extract_skin_data(model):
             "DestArrAbsolutePtr":    hex(dest_idx_abs),
             "GplDestArrValue":       skacc.gplDestArr,
             "WeightArrAbsolutePtr":  hex(wt_abs),
-            "SourceData":            base64.b64encode(src_data).decode('ascii'),
+            "BindPoseData":          base64.b64encode(src_data).decode('ascii'),
             "DestIndexData":         base64.b64encode(dest_idx_data).decode('ascii'),
             "WeightData":            base64.b64encode(wt_data).decode('ascii')
         })
