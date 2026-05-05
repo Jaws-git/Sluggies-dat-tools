@@ -398,10 +398,10 @@ def add_vertex_groups(obj, submesh_index, bone_list, arm_obj):
             if vg is None:
                 vg = obj.vertex_groups.new(name=group_name)
             num_verts = len(obj.data.vertices)
-            for inf in entry['Influences']:
-                v_idx = inf['VertexIndex']
+            raw = base64.b64decode(entry['Influences'])
+            for v_idx, weight in struct.iter_unpack('>Hf', raw):
                 if v_idx < num_verts:
-                    vg.add([v_idx], inf['Weight'], 'REPLACE')
+                    vg.add([v_idx], weight, 'REPLACE')
 
     mod = obj.modifiers.new(name="Armature", type='ARMATURE')
     mod.object = arm_obj

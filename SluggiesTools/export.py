@@ -80,9 +80,18 @@ for dir_ind in range(DIRS_LEN):
 #         dirs[dir] = dirs[dir][3:5]
 
 def compact_faces_json(obj, indent=2):
-    """Serialize obj to indented JSON, then collapse face index triplets onto one line."""
+    """Serialize obj to indented JSON, then collapse short numeric arrays and common repeating elements onto one line each."""
+    _n = r'-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?'
     raw = json.dumps(obj, indent=indent)
-    raw = re.sub(r'\[\s*(\d+),\s*(\d+),\s*(\d+)\s*\]', r'[\1, \2, \3]', raw, flags=re.DOTALL)
+    # Collapse 4-element numeric arrays (e.g. Quaternion) — must run before 3-element
+    raw = re.sub(rf'\[\s*({_n}),\s*({_n}),\s*({_n}),\s*({_n})\s*\]',
+                 r'[\1, \2, \3, \4]', raw, flags=re.DOTALL)
+    # Collapse 3-element numeric arrays (e.g. Translation, Scale, HeadPosition, face indices)
+    raw = re.sub(rf'\[\s*({_n}),\s*({_n}),\s*({_n})\s*\]',
+                 r'[\1, \2, \3]', raw, flags=re.DOTALL)
+    # Collapse ActiveDescriptor objects {"key": "...", "index_size": n} onto one line
+    raw = re.sub(r'\{\s*"key":\s*("[\w]+")\s*,\s*"index_size":\s*(\d+)\s*\}',
+                 r'{"key": \1, "index_size": \2}', raw, flags=re.DOTALL)
     return raw
 
 def _vb_comp_size(quantize_info):
@@ -441,10 +450,15 @@ def extract_bone_data(model):
 
             if sub_idx not in by_submesh:
                 by_submesh[sub_idx] = []
-            by_submesh[sub_idx].append({"VertexIndex": int(local_idx), "Weight": w})
+            by_submesh[sub_idx].append((int(local_idx), w))
 
         influences_by_submesh = [
-            {"SubmeshIndex": sub_idx, "Influences": inf_list}
+            {
+                "SubmeshIndex": sub_idx,
+                "Influences": base64.b64encode(
+                    b''.join(struct.pack('>Hf', vi, w) for vi, w in inf_list)
+                ).decode('ascii')
+            }
             for sub_idx, inf_list in sorted(by_submesh.items())
         ]
 
