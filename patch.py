@@ -17,8 +17,8 @@ parser = argparse.ArgumentParser(
     formatter_class=argparse.RawDescriptionHelpFormatter
 )
 parser.add_argument('filenames', nargs='*', help='.sluggies file name(s) to patch')
-parser.add_argument('--unpatch', '-u', action='store_true', help='restore original vertex data instead of writing edited data')
-parser.add_argument('--hammerspace', '-hs', action='store_true', help='change the available memory space in the outputdt_na.dat file')
+parser.add_argument('-u', '--unpatch', action='store_true', help='restore original vertex data instead of writing edited data')
+parser.add_argument('-hs','--hammerspace', action='store_true', help='change the available memory space in the outputdt_na.dat file')
 args = parser.parse_args()
 
 if args.hammerspace and (args.filenames or args.unpatch):
