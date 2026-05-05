@@ -69,3 +69,13 @@ Exporting to a .sluggies file will automatically put the file name on your clipb
 
 You can call patch.py with the option --unpatch to write the original model back to the dat.
 Example: ``python patch.py --unpatch myfilename``
+
+## Development progress:
+✅ .dae / texture export
+✅ .sluggies export
+✅ Blender Import/Export plugin
+✅ vertex position editing
+✅ UV position editing
+❌ Armature editing
+❌ Hammer space
+❌ Animations
