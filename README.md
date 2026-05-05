@@ -71,11 +71,11 @@ You can call patch.py with the option --unpatch to write the original model back
 Example: ``python patch.py --unpatch myfilename``
 
 ## Development progress:
-✅ .dae / texture export
-✅ .sluggies export
-✅ Blender Import/Export plugin
-✅ vertex position editing
-✅ UV position editing
-❌ Armature editing
-❌ Hammer space
-❌ Animations
+✅ .dae / texture export  
+✅ .sluggies export  
+✅ Blender Import/Export plugin  
+✅ vertex position editing  
+✅ UV position editing  
+❌ Armature editing  
+❌ Hammer space  
+❌ Animations  
