@@ -8,9 +8,8 @@ None of this would have been possible without the folks who created the tools an
 - roeming for the [MSSB-Export-Models](https://github.com/roeming/MSSB-Export-Models)
 - The [Mario Sluggers Model format documentation](https://thatsrightigame.com/sluggers/format_docs/)
 
-And the helpful Sluggers community for always having an open ear and pointing me in the right directions.
-
-The format is short for "SLUGGers IntermediatE format".
+And the helpful Sluggers community for always having an open ear and pointing me in the right directions.  
+"Sluggie" is short for "SLUGGers IntermediatE format".
 
 ## Requirements
 
