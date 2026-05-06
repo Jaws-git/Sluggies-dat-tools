@@ -10,6 +10,8 @@ None of this would have been possible without the folks who created the tools an
 
 And the helpful Sluggers community for always having an open ear and pointing me in the right directions.
 
+The format is short for "SLUGGers IntermediatE format".
+
 ## Requirements
 
 - Dolphin Emulator https://dolphin-emu.org/
@@ -71,10 +73,10 @@ You can call patch.py with the option --unpatch to write the original model back
 Example: ``python patch.py --unpatch myfilename``
 
 ## Development progress:
-✅ .dae / texture export  
-✅ .sluggies export  
+✅ .dae model & .png texture export  
+✅ SLUGGers IntermediatE (.sluggie) export  
 ✅ Blender Import/Export plugin  
-✅ vertex position editing  
+✅ Vertex position editing  
 ✅ UV position editing  
 ❌ Armature editing  
 ❌ Hammer space  
