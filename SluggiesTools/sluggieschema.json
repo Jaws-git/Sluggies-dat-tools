@@ -128,51 +128,135 @@
                     "UVChannelDataEdited": {
                       "type": "string",
                       "description": "Base64-encoded raw ST coordinate buffer after editing in Blender, written into the same slot positions as UVChannelData so existing draw-list UV indices remain valid. Absent until first export from Blender."
+                    },
+                    "UVDataPtrFieldOffset": {
+                      "type": "string",
+                      "description": "Absolute file offset of the ST coordinate data pointer field within the DOTextureDataHeader in dt_na.dat (hex). Patched by writeExpandedMesh to redirect this UV channel's ST array into hammerspace."
+                    },
+                    "UVCountFieldOffset": {
+                      "type": "string",
+                      "description": "Absolute file offset of the ST coordinate count field within the DOTextureDataHeader in dt_na.dat (hex). Updated to the new coord count after a hammerspace relocation."
+                    },
+                    "UVFacesDataEdited": {
+                      "type": "string",
+                      "description": "Base64-encoded UV index buffer for the edited face set, packed as big-endian uint16 triplets aligned face-for-face with FacesDataEdited. Written by the Blender exporter in Hammerspace Mode when UV seam layout or face count changes. Absent for in-place exports."
                     }
                   },
                   "required": ["UVChannelIndex", "PaletteName", "UVChannelOffset", "UVChannelLength", "UVChannelCompCount", "UVChannelQuantizeInfo", "UVFacesData", "UVChannelData"]
                 }
+              },
+              "ColorChannels": {
+                "type": "array",
+                "description": "One entry per active vertex color channel (color0 and/or color1). Absent when no vertex colors are used.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "ColorChannelIndex": {
+                      "type": "number",
+                      "description": "0 = color0, 1 = color1"
+                    },
+                    "ColorChannelOffset": {
+                      "type": "string",
+                      "description": "Starting offset of the vertex color array in dt_na.dat (hex)"
+                    },
+                    "ColorChannelLength": {
+                      "type": "number",
+                      "description": "Byte length of the raw vertex color array"
+                    },
+                    "ColorChannelCompCount": {
+                      "type": "number",
+                      "description": "Component count from the DOColorHeader (informational; actual entry size is determined by the format nibble of ColorChannelQuantizeInfo)"
+                    },
+                    "ColorChannelQuantizeInfo": {
+                      "type": "number",
+                      "description": "Quantization byte for color data. High nibble = color format (0=RGB565, 1=RGB8, 2=RGBA8, 3=RGBA4444, 4=RGB8, 5=RGBA8)"
+                    },
+                    "ColorChannelData": {
+                      "type": "string",
+                      "description": "Base64-encoded raw vertex color buffer (original game data)"
+                    },
+                    "ColorFacesData": {
+                      "type": "string",
+                      "description": "Base64-encoded color index buffer, packed as big-endian uint16 triplets aligned face-for-face with FacesData."
+                    }
+                  },
+                  "required": ["ColorChannelIndex", "ColorChannelOffset", "ColorChannelLength", "ColorChannelCompCount", "ColorChannelQuantizeInfo", "ColorChannelData", "ColorFacesData"]
+                }
+              },
+              "PositionDataPtrFieldOffset": {
+                "type": "string",
+                "description": "Absolute file offset of the vertex position data pointer field within the DOPositionHeader in dt_na.dat (hex). Patched by writeExpandedMesh to redirect the vertex position buffer into hammerspace."
+              },
+              "VertexCountFieldOffset": {
+                "type": "string",
+                "description": "Absolute file offset of the vertex count field within the DOPositionHeader in dt_na.dat (hex). Updated to the new vertex count after a hammerspace relocation."
+              },
+              "FacesDataEdited": {
+                "type": "string",
+                "description": "Base64-encoded face index buffer for the edited mesh, packed as big-endian uint16 triplets. Written by the Blender exporter in Hammerspace Mode. Absent for in-place exports."
+              },
+              "FacesCountEdited": {
+                "type": "number",
+                "description": "Number of triangle faces in the edited mesh. Written by the Blender exporter in Hammerspace Mode. Absent for in-place exports."
+              },
+              "FaceTextureIndicesEdited": {
+                "type": "string",
+                "description": "Base64-encoded per-face primary texture index buffer for the edited face set, packed as big-endian uint16 (one entry per face). Used by _rebuild_draw_states to route edited faces to the correct draw state by texture index. Absent for in-place exports."
+              },
+              "DrawStates": {
+                "type": "array",
+                "description": "One entry per display state (draw batch) in this submesh. Provides pointer-field offsets for writeExpandedMesh to relocate each primitive list into hammerspace, and the original data for --unpatch restoration.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "DisplayStateId": {
+                      "type": "number",
+                      "description": "ID byte of this display state from the DODisplayState header."
+                    },
+                    "PrimListPtrFieldOffset": {
+                      "type": "string",
+                      "description": "Absolute file offset of the primitiveListPtr field within the DODisplayState struct in dt_na.dat (hex). Located at DODisplayState.absolute + 8. Patched to redirect the primitive list into hammerspace."
+                    },
+                    "PrimListSizeFieldOffset": {
+                      "type": "string",
+                      "description": "Absolute file offset of the primitiveListSize field within the DODisplayState struct in dt_na.dat (hex). Located at DODisplayState.absolute + 12. Updated to the new byte length after hammerspace relocation."
+                    },
+                    "PrimListAbsoluteOffset": {
+                      "type": "string",
+                      "description": "Resolved absolute file offset of the original primitive list data in dt_na.dat (hex). Used by the --unpatch path to restore the primitiveListPtr field."
+                    },
+                    "PrimListLength": {
+                      "type": "number",
+                      "description": "Byte length of the original primitive list. Used by the --unpatch path to restore the primitiveListSize field."
+                    },
+                    "PrimListData": {
+                      "type": "string",
+                      "description": "Base64-encoded original primitive list bytes (raw GX display list draw commands for this draw batch)."
+                    },
+                    "ActiveDescriptors": {
+                      "type": "array",
+                      "description": "Vertex attribute descriptors active in this draw state. Each entry names one attribute stream and its per-index byte size. Used by decodeDrawList and rebuildDrawList.",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "key": {
+                            "type": "string",
+                            "description": "Attribute name: 'position', 'texture0', 'texture1', 'color0', 'color1', or 'lighting'."
+                          },
+                          "index_size": {
+                            "type": "number",
+                            "description": "Byte size of one index entry for this attribute in the display list (1 or 2)."
+                          }
+                        },
+                        "required": ["key", "index_size"]
+                      }
+                    }
+                  },
+                  "required": ["DisplayStateId", "PrimListPtrFieldOffset", "PrimListSizeFieldOffset", "PrimListAbsoluteOffset", "PrimListLength", "PrimListData", "ActiveDescriptors"]
+                }
               }
             },
-            "ColorChannels": {
-              "type": "array",
-              "description": "One entry per active vertex color channel (color0 and/or color1). Absent when no vertex colors are used.",
-              "items": {
-                "type": "object",
-                "properties": {
-                  "ColorChannelIndex": {
-                    "type": "number",
-                    "description": "0 = color0, 1 = color1"
-                  },
-                  "ColorChannelOffset": {
-                    "type": "string",
-                    "description": "Starting offset of the vertex color array in dt_na.dat (hex)"
-                  },
-                  "ColorChannelLength": {
-                    "type": "number",
-                    "description": "Byte length of the raw vertex color array"
-                  },
-                  "ColorChannelCompCount": {
-                    "type": "number",
-                    "description": "Component count from the DOColorHeader (informational; actual entry size is determined by the format nibble of ColorChannelQuantizeInfo)"
-                  },
-                  "ColorChannelQuantizeInfo": {
-                    "type": "number",
-                    "description": "Quantization byte for color data. High nibble = color format (0=RGB565, 1=RGB8, 2=RGBA8, 3=RGBA4444, 4=RGB8, 5=RGBA8)"
-                  },
-                  "ColorChannelData": {
-                    "type": "string",
-                    "description": "Base64-encoded raw vertex color buffer (original game data)"
-                  },
-                  "ColorFacesData": {
-                    "type": "string",
-                    "description": "Base64-encoded color index buffer, packed as big-endian uint16 triplets aligned face-for-face with FacesData."
-                  }
-                },
-                "required": ["ColorChannelIndex", "ColorChannelOffset", "ColorChannelLength", "ColorChannelCompCount", "ColorChannelQuantizeInfo", "ColorChannelData", "ColorFacesData"]
-              }
-            },
-            "required": ["SubmeshOffset", "FacesCount", "FacesData", "VertexBuffer", "UVChannels"]
+            "required": ["SubmeshOffset", "FacesCount", "FacesData", "VertexBuffer", "UVChannels", "DrawStates"]
           }
         }
       },
@@ -241,6 +325,438 @@
           },
           "required": ["TextureIndex", "TextureDescriptorOffset", "Width", "Height", "Format", "ImageDataOffset", "ImageDataLength"]
         }
+      },
+      "SkinData": {
+        "type": "object",
+        "description": "Skinning control block (SKN section) for this model. Present only for skinned models that use the SKN/SK1/SK2/SKAcc deformation pipeline. Absent (null) for static meshes.",
+        "properties": {
+          "SKNOffset": {
+            "type": "string",
+            "description": "Absolute file offset of the SKN header struct in dt_na.dat (hex). All pointer fields inside the SKN section are stored relative to this address."
+          },
+          "GplBaseOffset": {
+            "type": "string",
+            "description": "Absolute file offset of the GPL (geometry palette library) section (hex). Used to derive GPL-relative vertex indices from gplVertexArr values."
+          },
+          "MemClrPtrFieldOffset": {
+            "type": "string",
+            "description": "Absolute file offset of the SKN memClrPtr field (hex). This field holds the runtime destination buffer pointer (byte offset of the first vertex in the deformed output buffer)."
+          },
+          "MemClrSzeFieldOffset": {
+            "type": "string",
+            "description": "Absolute file offset of the SKN memClrSze field (hex). This field holds the total byte size of the runtime destination buffer."
+          },
+          "MemClrAbsolutePtr": {
+            "type": "string",
+            "description": "Resolved absolute address of the runtime destination (memClr) buffer (hex), computed as SKNOffset + memClrPtr."
+          },
+          "MemClrSize": {
+            "type": "number",
+            "description": "Total byte size of the runtime destination buffer (the contiguous region that receives all deformed vertex positions and normals)."
+          },
+          "FlushIndArrFieldOffset": {
+            "type": "string",
+            "description": "Absolute file offset of the SKN flushIndArr field (hex). Points to the flush index array used to invalidate cache lines after skinning."
+          },
+          "FlushIndAbsolutePtr": {
+            "type": ["string", "null"],
+            "description": "Resolved absolute address of the flush index array (hex), or null if the pointer is zero (no flush array present)."
+          },
+          "FlushIndSize": {
+            "type": "number",
+            "description": "Byte size of the flush index array."
+          },
+          "QuantizeInfo": {
+            "type": "number",
+            "description": "Quantization byte shared by all SK1/SK2/SKAcc bind-pose source arrays. High nibble = data format (0/3 = s16, 4/7/0xa = float). Low nibble = right-shift divisor exponent used when encoding s16 values."
+          },
+          "SK1s": {
+            "type": "array",
+            "description": "Single-bone influence entries. Each entry drives a set of vertices that are fully weighted to one bone.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "BoneIndex": {
+                  "type": "number",
+                  "description": "Index of the bone that influences all vertices in this entry."
+                },
+                "VertexCnt": {
+                  "type": "number",
+                  "description": "Number of vertices in this SK1 entry."
+                },
+                "VertexOffset": {
+                  "type": "number",
+                  "description": "Byte prefix to skip at the start of VertexArrAbsolutePtr before reading vertex data. Non-zero when vertex data is shared with an adjacent SK entry."
+                },
+                "VertexArrFieldOffset": {
+                  "type": "string",
+                  "description": "Absolute file offset of the vertexArr pointer field within the SK1 struct (hex). Located at SK1.absolute + 0x30."
+                },
+                "GplVertexArrFieldOffset": {
+                  "type": "string",
+                  "description": "Absolute file offset of the gplVertexArr field within the SK1 struct (hex). Located at SK1.absolute + 0x34."
+                },
+                "VertexArrAbsolutePtr": {
+                  "type": "string",
+                  "description": "Resolved absolute address of the bind-pose source data array (hex), computed as SKNOffset + vertexArr."
+                },
+                "GplVertexArrValue": {
+                  "type": "number",
+                  "description": "Byte offset of the first output vertex within the runtime destination buffer. Dividing by the per-vertex byte size gives the GPL-relative global vertex index."
+                },
+                "BindPoseData": {
+                  "type": "string",
+                  "description": "Base64-encoded bind-pose source array. Each vertex contributes 6 components (XYZ position + XYZ normal), packed according to QuantizeInfo. Includes the VertexOffset prefix bytes."
+                },
+                "BindPoseDataEdited": {
+                  "type": "string",
+                  "description": "Base64-encoded bind-pose source array after editing in Blender (in-place export). Written by the Blender exporter; absent until first export. Same layout as BindPoseData but without the VertexOffset prefix."
+                }
+              },
+              "required": ["BoneIndex", "VertexCnt", "VertexOffset", "VertexArrFieldOffset", "GplVertexArrFieldOffset", "VertexArrAbsolutePtr", "GplVertexArrValue", "BindPoseData"]
+            }
+          },
+          "SK2s": {
+            "type": "array",
+            "description": "Dual-bone influence entries. Each entry drives a set of vertices that are blended between exactly two bones using per-vertex weights.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "BoneIndex1": {
+                  "type": "number",
+                  "description": "Index of the first bone (lower bone id of the pair)."
+                },
+                "BoneIndex2": {
+                  "type": "number",
+                  "description": "Index of the second bone (higher bone id of the pair)."
+                },
+                "VertexCnt": {
+                  "type": "number",
+                  "description": "Number of vertices in this SK2 entry."
+                },
+                "VertexOffset": {
+                  "type": "number",
+                  "description": "Byte prefix to skip at the start of VertexArrAbsolutePtr before reading vertex data."
+                },
+                "VertexArrFieldOffset": {
+                  "type": "string",
+                  "description": "Absolute file offset of the vertexArr pointer field within the SK2 struct (hex). Located at SK2.absolute + 0x60."
+                },
+                "WeightArrFieldOffset": {
+                  "type": "string",
+                  "description": "Absolute file offset of the weightArr pointer field within the SK2 struct (hex). Located at SK2.absolute + 0x64."
+                },
+                "GplVertexArrFieldOffset": {
+                  "type": "string",
+                  "description": "Absolute file offset of the gplVertexArr field within the SK2 struct (hex). Located at SK2.absolute + 0x68."
+                },
+                "VertexArrAbsolutePtr": {
+                  "type": "string",
+                  "description": "Resolved absolute address of the bind-pose source data array (hex)."
+                },
+                "WeightArrAbsolutePtr": {
+                  "type": "string",
+                  "description": "Resolved absolute address of the weight array (hex)."
+                },
+                "GplVertexArrValue": {
+                  "type": "number",
+                  "description": "Byte offset of the first output vertex within the runtime destination buffer."
+                },
+                "BindPoseData": {
+                  "type": "string",
+                  "description": "Base64-encoded bind-pose source array (6 components per vertex, XYZ + normal, packed by QuantizeInfo). Includes the VertexOffset prefix bytes."
+                },
+                "WeightData": {
+                  "type": "string",
+                  "description": "Base64-encoded weight array. Two bytes per vertex (w1 for BoneIndex1, w2 for BoneIndex2), where 256 represents 100% weight."
+                },
+                "BindPoseDataEdited": {
+                  "type": "string",
+                  "description": "Base64-encoded bind-pose source array after editing in Blender (in-place export). Absent until first export."
+                },
+                "WeightDataEdited": {
+                  "type": "string",
+                  "description": "Base64-encoded weight array after editing in Blender (in-place export). Absent until first export."
+                }
+              },
+              "required": ["BoneIndex1", "BoneIndex2", "VertexCnt", "VertexOffset", "VertexArrFieldOffset", "WeightArrFieldOffset", "GplVertexArrFieldOffset", "VertexArrAbsolutePtr", "WeightArrAbsolutePtr", "GplVertexArrValue", "BindPoseData", "WeightData"]
+            }
+          },
+          "SKAccs": {
+            "type": "array",
+            "description": "Multi-bone accumulator entries. Each entry contributes a weighted influence from one bone to a set of vertices identified by explicit destination indices. Used for vertices with three or more bone influences.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "BoneIndex": {
+                  "type": "number",
+                  "description": "Index of the bone contributing to these vertices."
+                },
+                "VertexCnt": {
+                  "type": "number",
+                  "description": "Number of vertices in this SKAcc entry."
+                },
+                "VertexArrFieldOffset": {
+                  "type": "string",
+                  "description": "Absolute file offset of the vertexArr pointer field within the SKAcc struct (hex). Located at SKAcc.absolute + 0x30."
+                },
+                "DestArrFieldOffset": {
+                  "type": "string",
+                  "description": "Absolute file offset of the destArr pointer field within the SKAcc struct (hex). Located at SKAcc.absolute + 0x34. Points to the uint16 destination index array."
+                },
+                "GplDestArrFieldOffset": {
+                  "type": "string",
+                  "description": "Absolute file offset of the gplDestArr field within the SKAcc struct (hex). Located at SKAcc.absolute + 0x38."
+                },
+                "WeightArrFieldOffset": {
+                  "type": "string",
+                  "description": "Absolute file offset of the weightArr pointer field within the SKAcc struct (hex). Located at SKAcc.absolute + 0x3C."
+                },
+                "VertexArrAbsolutePtr": {
+                  "type": "string",
+                  "description": "Resolved absolute address of the bind-pose source data array (hex)."
+                },
+                "DestArrAbsolutePtr": {
+                  "type": "string",
+                  "description": "Resolved absolute address of the destination index array (hex)."
+                },
+                "GplDestArrValue": {
+                  "type": "number",
+                  "description": "Base byte offset within the runtime destination buffer. Each entry in DestIndexData is added to this to get the actual output vertex slot."
+                },
+                "WeightArrAbsolutePtr": {
+                  "type": "string",
+                  "description": "Resolved absolute address of the weight array (hex)."
+                },
+                "BindPoseData": {
+                  "type": "string",
+                  "description": "Base64-encoded bind-pose source array (6 components per vertex, XYZ + normal, packed by QuantizeInfo). No VertexOffset prefix for SKAcc entries."
+                },
+                "DestIndexData": {
+                  "type": "string",
+                  "description": "Base64-encoded destination index array. One big-endian uint16 per vertex identifying the output slot within the destination buffer."
+                },
+                "WeightData": {
+                  "type": "string",
+                  "description": "Base64-encoded weight array. One byte per vertex, where 255 represents approximately 100% weight contribution from this bone."
+                },
+                "BindPoseDataEdited": {
+                  "type": "string",
+                  "description": "Base64-encoded bind-pose source array after editing in Blender (in-place export). Absent until first export."
+                },
+                "WeightDataEdited": {
+                  "type": "string",
+                  "description": "Base64-encoded weight array after editing in Blender (in-place export). Absent until first export."
+                }
+              },
+              "required": ["BoneIndex", "VertexCnt", "VertexArrFieldOffset", "DestArrFieldOffset", "GplDestArrFieldOffset", "WeightArrFieldOffset", "VertexArrAbsolutePtr", "DestArrAbsolutePtr", "GplDestArrValue", "WeightArrAbsolutePtr", "BindPoseData", "DestIndexData", "WeightData"]
+            }
+          }
+        },
+        "required": ["SKNOffset", "GplBaseOffset", "MemClrPtrFieldOffset", "MemClrSzeFieldOffset", "MemClrAbsolutePtr", "MemClrSize", "FlushIndArrFieldOffset", "FlushIndSize", "QuantizeInfo", "SK1s", "SK2s", "SKAccs"]
+      },
+      "SkinDataEdited": {
+        "type": "object",
+        "description": "Rebuilt skinning data produced by the Blender exporter when Hammerspace Mode is used (vertex count may change). Written at the model level rather than inside SkinData so that the original pointer fields in SkinData remain available for --unpatch restoration. Absent until first hammerspace export.",
+        "properties": {
+          "QuantizeInfo": {
+            "type": "number",
+            "description": "Quantization byte inherited from SkinData.QuantizeInfo."
+          },
+          "SK1s": {
+            "type": "array",
+            "description": "Rebuilt SK1 entries (one per bone that has single-influence vertices).",
+            "items": {
+              "type": "object",
+              "properties": {
+                "BoneIndex":    { "type": "number" },
+                "VertexCnt":   { "type": "number" },
+                "BindPoseData": { "type": "string", "description": "Base64-encoded bind-pose source array (no VertexOffset prefix)." }
+              },
+              "required": ["BoneIndex", "VertexCnt", "BindPoseData"]
+            }
+          },
+          "SK2s": {
+            "type": "array",
+            "description": "Rebuilt SK2 entries (one per unique bone pair that has dual-influence vertices).",
+            "items": {
+              "type": "object",
+              "properties": {
+                "BoneIndex1":   { "type": "number" },
+                "BoneIndex2":   { "type": "number" },
+                "VertexCnt":   { "type": "number" },
+                "BindPoseData": { "type": "string" },
+                "WeightData":  { "type": "string" }
+              },
+              "required": ["BoneIndex1", "BoneIndex2", "VertexCnt", "BindPoseData", "WeightData"]
+            }
+          },
+          "SKAccs": {
+            "type": "array",
+            "description": "Rebuilt SKAcc entries (one per bone that contributes to vertices with three or more influences).",
+            "items": {
+              "type": "object",
+              "properties": {
+                "BoneIndex":    { "type": "number" },
+                "VertexCnt":   { "type": "number" },
+                "BindPoseData": { "type": "string" },
+                "WeightData":  { "type": "string" },
+                "DestIndexData": { "type": "string" }
+              },
+              "required": ["BoneIndex", "VertexCnt", "BindPoseData", "WeightData", "DestIndexData"]
+            }
+          }
+        },
+        "required": ["QuantizeInfo", "SK1s", "SK2s", "SKAccs"]
+      },
+      "BoneHierarchy": {
+        "type": "array",
+        "description": "One entry per bone in the model's ACT (actor) section. Present only for models that have an ACT section with a bone tree. Absent (null) for purely static meshes.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "BoneId": {
+              "type": "number",
+              "description": "Unique bone index within this model, matching the id field of the ACT bone layout."
+            },
+            "GeoId": {
+              "type": "number",
+              "description": "Index of the geometry submesh this bone is primarily associated with. For skinned bones (Skinned=true) this is always 0 because the geometry file ID in the ACT is 0xFFFF (skinned marker) and is normalised to 0."
+            },
+            "ParentBoneId": {
+              "type": ["number", "null"],
+              "description": "BoneId of this bone's parent, or null if this is a root bone."
+            },
+            "Skinned": {
+              "type": "boolean",
+              "description": "True when the ACT bone layout's geoFileId is 0xFFFF, meaning this bone drives skinned vertex deformation rather than a rigid sub-mesh."
+            },
+            "TrackId": {
+              "type": "number",
+              "description": "Animation track index that drives this bone, read from the ACT user-data section."
+            },
+            "Translation": {
+              "type": "array",
+              "description": "Local translation [X, Y, Z] of this bone relative to its parent, from the SRT block at +0x20 (3 big-endian floats).",
+              "items": { "type": "number" },
+              "minItems": 3,
+              "maxItems": 3
+            },
+            "Scale": {
+              "type": "array",
+              "description": "Local scale [X, Y, Z] from the SRT block at +0x04 (3 big-endian floats). Typically [1, 1, 1].",
+              "items": { "type": "number" },
+              "minItems": 3,
+              "maxItems": 3
+            },
+            "Quaternion": {
+              "type": "array",
+              "description": "Local rotation quaternion [W, X, Y, Z] from the SRT block at +0x10. The raw binary stores [X, Y, Z, -W]; this field holds the re-arranged and sign-corrected form used by the Python tools.",
+              "items": { "type": "number" },
+              "minItems": 4,
+              "maxItems": 4
+            },
+            "HeadPosition": {
+              "type": "array",
+              "description": "Absolute world-space position [X, Y, Z] of the bone origin (head), computed by accumulating all parent transforms. Used as the Blender edit-bone head position during import.",
+              "items": { "type": "number" },
+              "minItems": 3,
+              "maxItems": 3
+            },
+            "VertexInfluences": {
+              "type": "array",
+              "description": "Per-submesh vertex weight lists for this bone. Each entry groups the vertices of one submesh that this bone influences. Empty for bones that do not directly influence any vertices (e.g. root control bones).",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "SubmeshIndex": {
+                    "type": "number",
+                    "description": "Zero-based index into the Submeshes array identifying which submesh these vertex influences belong to."
+                  },
+                  "Influences": {
+                    "type": "string",
+                    "description": "Base64-encoded packed influence list. Each entry is a big-endian uint16 vertex index followed by a big-endian float weight (0.0–1.0), repeated for every influenced vertex: [uint16 vi, float w, uint16 vi, float w, ...]."
+                  }
+                },
+                "required": ["SubmeshIndex", "Influences"]
+              }
+            }
+          },
+          "required": ["BoneId", "GeoId", "ParentBoneId", "Skinned", "TrackId", "Translation", "Scale", "Quaternion", "HeadPosition", "VertexInfluences"]
+        }
+      },
+      "BoneHierarchyEdited": {
+        "type": "array",
+        "description": "Rebuilt bone hierarchy produced by the Blender exporter when editing the skeleton in Hammerspace Mode. Mirrors BoneHierarchy but represents the desired new state: bones may be added, removed, or reordered. The patcher uses this array to rebuild the entire ACT section in a new hammerspace chunk. Absent until a hammerspace skeleton export is performed.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "BoneId": {
+              "type": "number",
+              "description": "Bone index as it should appear in the rebuilt ACT. Must be unique within this array. When adding new bones, assign IDs that do not conflict with existing ones."
+            },
+            "GeoId": {
+              "type": "number",
+              "description": "Geometry submesh index to associate with this bone. Use 0 for skinned bones (the ACT will write 0xFFFF as the geoFileId marker when Skinned=true)."
+            },
+            "ParentBoneId": {
+              "type": ["number", "null"],
+              "description": "BoneId of this bone's parent in the rebuilt hierarchy, or null for root bones. Must refer to a BoneId present elsewhere in this array."
+            },
+            "Skinned": {
+              "type": "boolean",
+              "description": "True to mark this bone as a skinned deformation bone (geoFileId written as 0xFFFF in the ACT). False for rigid attachment bones."
+            },
+            "TrackId": {
+              "type": "number",
+              "description": "Animation track index to assign to this bone in the rebuilt ACT user-data section."
+            },
+            "Translation": {
+              "type": "array",
+              "description": "Local translation [X, Y, Z] of this bone relative to its parent, to be written into the rebuilt SRT block at +0x20.",
+              "items": { "type": "number" },
+              "minItems": 3,
+              "maxItems": 3
+            },
+            "Scale": {
+              "type": "array",
+              "description": "Local scale [X, Y, Z] to be written into the rebuilt SRT block at +0x04. Use [1, 1, 1] for no scaling.",
+              "items": { "type": "number" },
+              "minItems": 3,
+              "maxItems": 3
+            },
+            "Quaternion": {
+              "type": "array",
+              "description": "Local rotation quaternion [W, X, Y, Z] to be written into the rebuilt SRT block at +0x10. Stored in binary as [X, Y, Z, -W]; the patcher handles the rearrangement.",
+              "items": { "type": "number" },
+              "minItems": 4,
+              "maxItems": 4
+            },
+            "VertexInfluences": {
+              "type": "array",
+              "description": "Per-submesh vertex weight lists for this bone in the rebuilt mesh. Same encoding as BoneHierarchy.VertexInfluences. The patcher uses these to rebuild SK1/SK2/SKAcc entries alongside SkinDataEdited.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "SubmeshIndex": {
+                    "type": "number",
+                    "description": "Zero-based index into the Submeshes array."
+                  },
+                  "Influences": {
+                    "type": "string",
+                    "description": "Base64-encoded packed influence list: big-endian uint16 vertex index + big-endian float weight, repeated per influenced vertex."
+                  }
+                },
+                "required": ["SubmeshIndex", "Influences"]
+              }
+            }
+          },
+          "required": ["BoneId", "GeoId", "ParentBoneId", "Skinned", "TrackId", "Translation", "Scale", "Quaternion", "VertexInfluences"]
+        }
+      },
+      "UseHammerspace": {
+        "type": "boolean",
+        "description": "Written by the Blender exporter. When true, patch_dat.py uses writeExpandedMesh to relocate vertex, UV, draw-list, and skin source data into hammerspace chunks so that buffer sizes can change freely. When false or absent, all buffers are patched in-place at their original file offsets and sizes must not change."
       }
     }
   }
