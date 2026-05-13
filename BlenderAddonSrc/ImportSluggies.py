@@ -3,8 +3,67 @@ import json
 import os
 import base64
 import struct
+import mathutils
 from bpy.props import StringProperty
 from bpy_extras.io_utils import ImportHelper
+
+
+def _compute_bone_absolute_matrices(bone_list):
+    """Return a {BoneId: mathutils.Matrix} dict of absolute world-space transforms.
+
+    For non-skinned submeshes the game stores vertices in bone-local space and
+    applies bone.absolute_transform (= S@R@T accumulated up the parent chain in
+    row-vector convention) as a bind-shape matrix to map them to world space.
+    We replicate that here in Blender column-vector convention:
+      game row-vector:   local = S_row @ R_row @ T_row
+      Blender col-vector: local = T_col @ R_col @ S_col  (reversed order)
+      absolute_blender = parent_abs_blender @ child_local_blender
+    """
+    bone_map = {b['BoneId']: b for b in bone_list}
+    abs_mats = {}  # BoneId -> mathutils.Matrix
+
+    # Topological pass: resolve parents before children.  Guard against cycles.
+    remaining = list(bone_map.keys())
+    for _ in range(len(remaining) + 1):
+        still_remaining = []
+        for bone_id in remaining:
+            bone     = bone_map[bone_id]
+            parent_id = bone.get('ParentBoneId')
+            if parent_id is not None and parent_id not in abs_mats:
+                still_remaining.append(bone_id)
+                continue
+            trans = bone['Translation']
+            scale = bone['Scale']
+            quat  = bone['Quaternion']   # [w, x, y, z]
+            T = mathutils.Matrix.Translation(trans)
+            R = mathutils.Quaternion(quat).to_matrix().to_4x4()
+            S = mathutils.Matrix([
+                [scale[0], 0,       0,       0],
+                [0,        scale[1], 0,      0],
+                [0,        0,       scale[2], 0],
+                [0,        0,       0,        1],
+            ])
+            local_mat = T @ R @ S
+            if parent_id is not None:
+                abs_mats[bone_id] = abs_mats[parent_id] @ local_mat
+            else:
+                abs_mats[bone_id] = local_mat
+        remaining = still_remaining
+        if not remaining:
+            break
+
+    return abs_mats
+
+
+def _apply_nonskinned_transform(obj, submesh_index, bone_list, abs_bone_mats):
+    """Set *obj*.matrix_world to the absolute transform of the non-skinned bone
+    that owns *submesh_index*, if one exists.  No-op for skinned submeshes."""
+    for bd in bone_list:
+        if not bd.get('Skinned') and bd.get('GeoId') == submesh_index:
+            mat = abs_bone_mats.get(bd['BoneId'])
+            if mat is not None:
+                obj.matrix_world = mat
+            break
 
 
 def decode_faces(submesh):
@@ -482,9 +541,11 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
         # Build armature first so mesh objects can reference it immediately
         bone_list = model.get("BoneHierarchy")
         arm_obj = None
+        abs_bone_mats = {}
         if bone_list:
             base_name = f"{model_number}_{model_offset_hex}"
             arm_obj = build_armature(base_name, bone_list, collection)
+            abs_bone_mats = _compute_bone_absolute_matrices(bone_list)
 
         imported = 0
         for i, submesh in enumerate(submeshes):
@@ -504,6 +565,8 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
             if arm_obj is not None:
                 add_vertex_groups(obj, i, bone_list, arm_obj)
                 obj.parent = arm_obj
+            if bone_list:
+                _apply_nonskinned_transform(obj, i, bone_list, abs_bone_mats)
             imported += 1
 
             # Import the edited version of this submesh when one exists
@@ -541,6 +604,8 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
                     if arm_obj is not None:
                         add_vertex_groups(edit_obj, i, bone_list, arm_obj)
                         edit_obj.parent = arm_obj
+                    if bone_list:
+                        _apply_nonskinned_transform(edit_obj, i, bone_list, abs_bone_mats)
                     imported += 1
 
         context.view_layer.update()
