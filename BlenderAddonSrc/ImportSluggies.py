@@ -156,6 +156,43 @@ def decode_face_texture_indices(submesh, face_count):
     return [fallback] * face_count
 
 
+def _has_edited_data(submesh):
+    """Return True when *submesh* contains any edited mesh data."""
+    vb = submesh.get("VertexBuffer") or {}
+    return bool(vb.get("VertexBufferDataEdited") or submesh.get("FacesDataEdited"))
+
+
+def _edited_submesh_view(submesh):
+    """Return a shallow copy of *submesh* with all *Edited fields promoted to
+    their primary counterparts so existing decode_* helpers can be reused
+    without modification."""
+    view = dict(submesh)
+
+    vb = dict(view.get("VertexBuffer") or {})
+    if vb.get("VertexBufferDataEdited"):
+        vb["VertexBufferData"] = vb["VertexBufferDataEdited"]
+    view["VertexBuffer"] = vb
+
+    if view.get("FacesDataEdited"):
+        view["FacesData"] = view["FacesDataEdited"]
+    if view.get("FacesCountEdited") is not None:
+        view["FacesCount"] = view["FacesCountEdited"]
+    if view.get("FaceTextureIndicesEdited"):
+        view["FaceTextureIndices"] = view["FaceTextureIndicesEdited"]
+
+    edited_uvs = []
+    for ch in view.get("UVChannels") or []:
+        ch = dict(ch)
+        if ch.get("UVChannelDataEdited"):
+            ch["UVChannelData"] = ch["UVChannelDataEdited"]
+        if ch.get("UVFacesDataEdited"):
+            ch["UVFacesData"] = ch["UVFacesDataEdited"]
+        edited_uvs.append(ch)
+    view["UVChannels"] = edited_uvs
+
+    return view
+
+
 _GX_WRAP = {0: 'EXTEND', 1: 'REPEAT', 2: 'MIRROR'}
 
 
@@ -197,7 +234,7 @@ def _create_material(mat_name, uv_layer_name, image, wrap_s=1):
 def build_mesh(name, positions, normals, faces, vb_meta, collection,
                uv_channels=None, color_channels=None,
                face_texture_indices=None, sluggie_dir=None,
-               submesh_meta=None):
+               submesh_meta=None, prebuilt_materials=None):
     """Create a Blender mesh object from a vertex list and link it to *collection*."""
     mesh = bpy.data.meshes.new(name)
     mesh.from_pydata(positions, [], faces)
@@ -329,6 +366,20 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
             tex_idx = face_texture_indices[fi] if fi < len(face_texture_indices) else unique_tex[0]
             poly.material_index = mat_slot.get(tex_idx, 0)
 
+    elif prebuilt_materials is not None and face_texture_indices:
+        # Reuse material objects from the original mesh; do not create new ones.
+        available_tex = sorted(t for t in set(face_texture_indices) if t in prebuilt_materials)
+        mat_slot = {}
+        for slot_idx, tex_idx in enumerate(available_tex):
+            mat_slot[tex_idx] = slot_idx
+            obj.data.materials.append(prebuilt_materials[tex_idx])
+
+        fallback_slot = 0
+        for poly in mesh.polygons:
+            fi = poly.index
+            tex_idx = face_texture_indices[fi] if fi < len(face_texture_indices) else (available_tex[0] if available_tex else 0)
+            poly.material_index = mat_slot.get(tex_idx, fallback_slot)
+
     return obj
 
 
@@ -454,6 +505,43 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
                 add_vertex_groups(obj, i, bone_list, arm_obj)
                 obj.parent = arm_obj
             imported += 1
+
+            # Import the edited version of this submesh when one exists
+            if _has_edited_data(submesh):
+                ev = _edited_submesh_view(submesh)
+                ev_vb = ev.get("VertexBuffer")
+                if ev_vb:
+                    edit_positions, edit_normals = decode_vertex_buffer(ev_vb)
+                    edit_faces = decode_faces(ev)
+                    edit_uv_channels = ev.get("UVChannels", [])
+                    edit_color_channels = ev.get("ColorChannels", [])
+                    edit_fti = decode_face_texture_indices(ev, len(edit_faces))
+
+                    # Collect materials already created for the original mesh
+                    orig_materials = {}
+                    for slot in obj.material_slots:
+                        mat = slot.material
+                        if mat is not None:
+                            try:
+                                tex_idx = int(mat.name.rsplit('_mat', 1)[1])
+                                orig_materials[tex_idx] = mat
+                            except (IndexError, ValueError):
+                                pass
+
+                    edit_obj = build_mesh(
+                        f"{mesh_name}_edit",
+                        edit_positions, edit_normals, edit_faces,
+                        vb, collection,
+                        edit_uv_channels, edit_color_channels,
+                        face_texture_indices=edit_fti,
+                        sluggie_dir=None,
+                        submesh_meta=submesh,
+                        prebuilt_materials=orig_materials or None,
+                    )
+                    if arm_obj is not None:
+                        add_vertex_groups(edit_obj, i, bone_list, arm_obj)
+                        edit_obj.parent = arm_obj
+                    imported += 1
 
         context.view_layer.update()
         self.report({"INFO"}, f"Imported {imported} submesh(es) from {self.filepath}")
