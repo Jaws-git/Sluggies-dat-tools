@@ -40,7 +40,7 @@ def _chunk_name(submesh_offset_hex: str, submesh_idx: int) -> str:
     return f"slugmesh_{submesh_offset_hex.lstrip('0x')}_{submesh_idx}"
 
 
-def _rebuild_draw_states(submesh: dict) -> dict:
+def _rebuild_draw_states(submesh: dict) -> tuple[dict, set]:
     """Rebuild primitive list bytes for each draw state using new face indices.
 
     Two routing strategies are used depending on available data:
@@ -61,12 +61,19 @@ def _rebuild_draw_states(submesh: dict) -> dict:
     ``lighting``, ``color0``, and ``color1`` are co-indexed with ``position``
     for all known Sluggers models.
 
-    Returns a dict ``{ds_ind: bytes}`` of rebuilt primitive list data.
-    Draw states with no active descriptors are returned verbatim.
+    When any new index exceeds the original 1-byte field width the affected
+    attributes are automatically upgraded to 2-byte within the encoded bytes.
+    The caller receives the union of all widened attribute keys as the second
+    element of the return tuple so it can patch the Type-3 display-state
+    setting word(s) in the dat file accordingly.
+
+    Returns ``(rebuilt_bytes_by_ds_ind, all_upgraded_keys)``.
+    Draw states with no active descriptors or no assigned faces are returned
+    verbatim (original bytes); they do not contribute to *all_upgraded_keys*.
     """
     faces_edited_b64 = submesh.get('FacesDataEdited')
     if not faces_edited_b64:
-        return {}
+        return {}, set()
 
     # Decode flat position face indices → list of [i0, i1, i2] triplets
     raw_f = base64.b64decode(faces_edited_b64)
@@ -149,6 +156,7 @@ def _rebuild_draw_states(submesh: dict) -> dict:
 
     # --- Rebuild each draw list from assigned faces ---
     result = {}
+    all_upgraded_keys: set[str] = set()
     for ds_ind, ds in enumerate(draw_states):
         descriptors = ds.get('ActiveDescriptors', [])
         orig_raw = base64.b64decode(ds['PrimListData'])
@@ -179,9 +187,13 @@ def _rebuild_draw_states(submesh: dict) -> dict:
                 face.append(vertex)
             new_faces.append(face)
 
+        # Widen any 1-byte attribute whose new indices exceed 255
+        descriptors, upgraded = _dl.computeRequiredDescriptors(new_faces, descriptors)
+        all_upgraded_keys |= upgraded
+
         result[ds_ind] = _dl.rebuildDrawList(orig_raw, descriptors, new_faces)
 
-    return result
+    return result, all_upgraded_keys
 
 
 def writeExpandedMesh(i: int, submesh: dict, new_verts_raw: bytes,
@@ -212,7 +224,7 @@ def writeExpandedMesh(i: int, submesh: dict, new_verts_raw: bytes,
     chunk_name = _chunk_name(submesh['SubmeshOffset'], i)
 
     # Rebuild draw lists when new face/UV index data is available
-    rebuilt_dls = _rebuild_draw_states(submesh)
+    rebuilt_dls, upgraded_keys = _rebuild_draw_states(submesh)
 
     # Build ordered sections: vertex → each UV channel → each draw state
     sections = [('verts', new_verts_raw)]
@@ -275,6 +287,22 @@ def writeExpandedMesh(i: int, submesh: dict, new_verts_raw: bytes,
             _hs.patchPointerField(int(ds['PrimListPtrFieldOffset'], 16), dl_abs, relative_base)
             f.seek(int(ds['PrimListSizeFieldOffset'], 16))
             f.write(struct.pack('>I', len(dl_raw)))
+
+        # Patch Type-3 display-state setting words for attributes widened to 2-byte
+        if upgraded_keys:
+            for ds in submesh.get('DrawStates', []):
+                if ds.get('DisplayStateId') == 3:
+                    # setting field is 4 bytes before PrimListPtrFieldOffset
+                    setting_off = int(ds['PrimListPtrFieldOffset'], 16) - 4
+                    f.seek(setting_off)
+                    old_setting = struct.unpack('>I', f.read(4))[0]
+                    new_setting = _dl.patchType3Setting(old_setting, upgraded_keys)
+                    if new_setting != old_setting:
+                        f.seek(setting_off)
+                        f.write(struct.pack('>I', new_setting))
+                        print(f"  Submesh {i}: Type-3 setting at 0x{setting_off:X} "
+                              f"patched 0x{old_setting:08X}→0x{new_setting:08X} "
+                              f"(widened: {', '.join(sorted(upgraded_keys))})")
 
     # Patch SKN destination buffer pointer (and optionally source
     # arrays) when this is the first submesh (submesh 0 is the start of the

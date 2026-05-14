@@ -35,6 +35,52 @@ GX_QUADS          = 0x80
 # Maximum vertex count per GX primitive block (uint16 limit)
 _MAX_VERTS_PER_BLOCK = 0xFFFF
 
+# Bit-shift positions of each attribute within a Type-3 display-state setting word.
+# Two bits per attribute: 00=off, 01=direct, 10=1-byte indexed, 11=2-byte indexed.
+# Bits 0-1 are the position matrix (skipped in practice).
+_ATTR_BIT_SHIFT = {
+    'position': 2,  'lighting': 4,  'color0': 6,   'color1': 8,
+    'texture0': 10, 'texture1': 12, 'texture2': 14, 'texture3': 16,
+    'texture4': 18, 'texture5': 20, 'texture6': 22, 'texture7': 24,
+}
+
+
+def computeRequiredDescriptors(faces: list, descriptors: list):
+    """Scan *faces* and widen any 1-byte attribute that has indices > 255 to 2-byte.
+
+    Returns *(new_descriptors, upgraded_keys)* where *upgraded_keys* is the
+    set of attribute key names that were widened (empty when no upgrade needed).
+    """
+    if not faces:
+        return list(descriptors), set()
+    max_by_key: dict[str, int] = {}
+    for face in faces:
+        for vertex in face:
+            for key, idx in vertex.items():
+                if idx > max_by_key.get(key, 0):
+                    max_by_key[key] = idx
+    new_descs = []
+    upgraded: set[str] = set()
+    for d in descriptors:
+        new_d = dict(d)
+        if d['index_size'] == 1 and max_by_key.get(d['key'], 0) > 255:
+            new_d['index_size'] = 2
+            upgraded.add(d['key'])
+        new_descs.append(new_d)
+    return new_descs, upgraded
+
+
+def patchType3Setting(old_setting: int, upgraded_keys) -> int:
+    """Return an updated Type-3 display-state setting word with the index-size
+    bits for each key in *upgraded_keys* flipped from 1-byte (0b10) to
+    2-byte (0b11) by setting the LSB of the relevant 2-bit field."""
+    new_setting = old_setting
+    for key in upgraded_keys:
+        shift = _ATTR_BIT_SHIFT.get(key)
+        if shift is not None:
+            new_setting |= (1 << shift)  # 10 → 11
+    return new_setting
+
 
 def _vertex_size(descriptors: list) -> int:
     """Return the byte size of one vertex record given an active descriptor list."""
@@ -154,6 +200,14 @@ def encodeDrawList(faces: list, descriptors: list) -> bytes:
                 key      = entry['key']
                 idx_size = entry['index_size']
                 idx      = vertex.get(key, 0)
+                max_idx  = (1 << (idx_size * 8)) - 1
+                if idx > max_idx:
+                    raise ValueError(
+                        f"Index {idx} for attribute '{key}' overflows the "
+                        f"{idx_size}-byte field used by the original draw list "
+                        f"(max {max_idx}). The edited mesh has too many "
+                        f"vertices/UV coords for this submesh."
+                    )
                 out += idx.to_bytes(idx_size, 'big')
 
     return bytes(out)

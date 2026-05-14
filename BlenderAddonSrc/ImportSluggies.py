@@ -34,9 +34,11 @@ def _compute_bone_absolute_matrices(bone_list):
                 continue
             trans = bone['Translation']
             scale = bone['Scale']
-            quat  = bone['Quaternion']   # [w, x, y, z]
+            quat  = bone['Quaternion']   # stored as [-game_qw, game_qx, game_qy, game_qz]
             T = mathutils.Matrix.Translation(trans)
-            R = mathutils.Quaternion(quat).to_matrix().to_4x4()
+            # Negate w to recover game_qw; the stored negation was an artefact of the
+            # row-vector SRT convention.  With correct w, to_matrix() gives R_col.
+            R = mathutils.Quaternion((-quat[0], quat[1], quat[2], quat[3])).to_matrix().to_4x4()
             S = mathutils.Matrix([
                 [scale[0], 0,       0,       0],
                 [0,        scale[1], 0,      0],
@@ -299,10 +301,14 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
     mesh.from_pydata(positions, [], faces)
     mesh.update()
 
-    if normals and len(normals) == len(positions) and len(faces):
-        #mesh.use_auto_smooth = True 
-        normals_per_loop = [normals[i] for face in faces for i in face]
-        mesh.normals_split_custom_set(normals_per_loop)
+    n_normals = len(normals)
+    if normals and n_normals == len(positions) and len(faces):
+        max_face_idx = max(i for face in faces for i in face)
+        if max_face_idx < n_normals:
+            #mesh.use_auto_smooth = True
+            normals_per_loop = [normals[i] for face in faces for i in face]
+            mesh.normals_split_custom_set(normals_per_loop)
+        # else: face indices exceed vertex buffer — skip custom normals silently
 
     if uv_channels:
         for ch_ind, uv_channel in enumerate(uv_channels):

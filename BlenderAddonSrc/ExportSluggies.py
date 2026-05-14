@@ -738,8 +738,14 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     use_custom_normals=self.use_custom_normals,
                 )
                 target_submesh["VertexBuffer"]["VertexBufferDataEdited"] = edited_data
+                # Clear any stale hammerspace face data so it can't mismatch the
+                # in-place vertex buffer (which must stay at the original vertex count).
+                target_submesh.pop("FacesDataEdited", None)
+                target_submesh.pop("FacesCountEdited", None)
+                target_submesh.pop("FaceTextureIndicesEdited", None)
 
                 # Re-encode UV channels from Blender UV layers
+                hammerspace_hint_shown = False
                 for json_channel in target_submesh.get("UVChannels", []):
                     result = encode_uv_channel_edited(obj, json_channel)
                     ch_ind = json_channel.get("UVChannelIndex", 0)
@@ -751,11 +757,12 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                         )
                         continue
                     uv_data_b64, conflicts = result
-                    for slot in set(conflicts):
+                    if conflicts and not hammerspace_hint_shown:
                         warnings.append(
-                            f"{obj.name}: UV ch {ch_ind} slot {slot} has conflicting values "
+                            f"{obj.name}: UV seam conflict(s) detected "
                             f"- Did you remember to activate hammerspace mode?"
                         )
+                        hammerspace_hint_shown = True
                     json_channel["UVChannelDataEdited"] = uv_data_b64
                     # UVFacesDataEdited is no longer written: the draw list indices
                     # are unchanged so UVFacesData still applies after patching.
