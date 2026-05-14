@@ -35,5 +35,5 @@ The updated file will hold both original and edited model data.
 > [!WARNING]
 > Hammerspace model edits are currently bugged and WILL lead to problems in your game! Use In-place edits for now, as described above.  
 
-[] Use Hammerspace - instead of overwriting the original model data ("in-place" patching), write the edits to hammerspace. This is currently a manual setting and not determined automatically.
+[] Use Hammerspace - instead of overwriting the original model data ("in-place" patching), write the edits to hammerspace. This is currently a manual setting and not determined automatically.  
 [] Include Custom Split Normals - When off, writes averaged blender normals. When on, Writes custom split normals data. 
