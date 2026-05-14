@@ -7,18 +7,18 @@ To keep things simple, do not try to scale/align the various meshes to each othe
 
 # Meshes and UVs
 The current workflow supports editing mesh and UV shape in blender and writing this back into the game.
-However, there's restrictions imposed in order to not violate the game's file's memory. Change the length of the model data and you risk crashing the game.
+However, there's restrictions imposed in order to not violate the game's file's memory structure. Change the length of the model data and you risk crashing the game.
 
 ## You can:
 - change the position of existing verts in space
-- edit face normals (each model is imported with its original custom normals)
+- edit face normals (each model is imported with its original custom normals, were available)
 - change the position of existing UVs 
-- in case of multiple UVs concentrated in one single spot, you can move around the whole "unit" as one
+- in case of multiple UVs concentrated in one single spot, you can move the whole "unit" around as one
 
 ## You can't:
 - add or remove vertices
 - manipulate material slots (this feature is planned to be added in the future)
-- manipulate bones or skinning data (again, planning to add this in the futre)
+- manipulate bones or skinning data (again, planning to add this in the future)
 - reorder face indices
 - remove an object's custom properties
 - you should also refrain from renaming objects
@@ -33,4 +33,6 @@ The updated file will hold both original and edited model data.
 
 ### Options:
 [] Use Hammerspace - instead of overwriting the original model data ("in-place" patching), write the edits to hammerspace. This is currently a manual setting and not determined automatically.
+> [!WARNING]
+> Hammerspace models are currently bugged and WILL lead to problems in your game! Use In-place edits for now, as described above.
 [] Include Custom Split Normals - When off, writes averaged blender normals. When on, Writes custom split normals data. 
