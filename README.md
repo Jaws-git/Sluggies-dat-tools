@@ -1,6 +1,6 @@
 # Sluggies-dat-tools
 
-This fork of the MSS-Dat-tools is laser focused on Mario Super Sluggers only and will probably not work with much else.
+This fork of the MSS-Dat-tools is laser-focused on Mario Super Sluggers only and will probably not work with much else.
 Goal is the export of original MSS 3D player models and subsequent re-import of edited models. For funny.
 
 None of this would have been possible without the folks who created the tools and documentation for these games.
@@ -57,26 +57,26 @@ If you get texture-related errors, make sure you've added the wimgt tools bin fo
 4) File -> export -> Sluggers intermediate -> select the **same** file you imported earlier to export your changes to
 
 Nothing is lost, the updated file will hold both original and edited mesh data for you.
-Exporting to a .sluggies file will automatically put the file name on your clipboard for the next step
+Exporting to a .sluggies file will automatically put the file name on your clipboard for the next step.
 
 ## Import
 
 *The file name from the last step should still be in your clipboard unless you copied something else in the meantime.*
 1) cmd ``` python patch.py myfilename```
 2) a new folder 3_Output_Dat will appear, containing a patched dt_na.dat file
-3) keep applying as many patches as you like, you can also specify mutliple file names
-4) copy the finished dt_na.dat file back into the unpacked game folder, overwrite
-5) start the unpacked game containing the patched dat file using Dolphin (we are not re-packaging it into an iso file for now, dolphin can run it just fine as is)
+3) keep applying as many patches as you like, you can also specify multiple file names
+4) copy the finished dt_na.dat file back into the unpacked game folder, overwrite the old one
+5) start the unpacked game containing the patched dat file using Dolphin (we are not re-packaging it into an iso file for now, Dolphin can run it just fine as is)
 
 You can call patch.py with the option --unpatch to write the original model back to the dat.
 Example: ``python patch.py --unpatch myfilename``
 
 ## Development progress:
-✅ .dae model & .png texture export  
+✅ .dae model & .png texture export (one-way)  
 ✅ SLUGGers IntermediatE (.sluggie) export  
 ✅ Blender Import/Export plugin  
 ✅ Vertex position editing  
 ✅ UV position editing  
 ❌ Armature editing  
-❌ Hammer space  
+❌ Hammerspace  
 ❌ Animations  

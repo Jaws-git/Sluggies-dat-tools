@@ -1,17 +1,17 @@
 # Blender Editing Guide
 
-After the plugin is installed import one .sluggies file using File->Import
+After the plugin is installed, import one .sluggies file using File->Import
 
 One sluggies file can contain several meshes. These may not be aligned to each other, this is normal.
 To keep things simple, do not try to scale/align the various meshes to each other. But if you do, make sure to remove the rotation/transformation/scale from the objects before exporting. (Alt+G, Alt+R, Alt+S)
 
 # Meshes and UVs
 The current workflow supports editing mesh and UV shape in blender and writing this back into the game.
-However, there's restrictions imposed in order to not violate the game's file's memory structure. Change the length of the model data and you risk crashing the game.
+However, there are restrictions imposed in order to not violate the game's file's memory structure. Change the length of the model data and you risk crashing the game.
 
 ## You can:
 - change the position of existing verts in space
-- edit face normals (each model is imported with its original custom normals, were available)
+- edit face normals (each model is imported with its original custom normals, where available)
 - change the position of existing UVs 
 - in case of multiple UVs concentrated in one single spot, you can move the whole "unit" around as one
 
@@ -27,12 +27,12 @@ However, there's restrictions imposed in order to not violate the game's file's 
 - split up a connected UV edge
 
 # Exporting from Blender
-When everything is done, go abck to object mode and select the  objects you've modified.
+When everything is done, go back to object mode and select the objects you've modified.
 Export the file via File->Export, select **the same .sluggies file you imported earlier**!
 The updated file will hold both original and edited model data.
 
 ### Options:
-[] Use Hammerspace - instead of overwriting the original model data ("in-place" patching), write the edits to hammerspace. This is currently a manual setting and not determined automatically.
 > [!WARNING]
-> Hammerspace models are currently bugged and WILL lead to problems in your game! Use In-place edits for now, as described above.
+> Hammerspace model edits are currently bugged and WILL lead to problems in your game! Use In-place edits for now, as described above.  
+[] Use Hammerspace - instead of overwriting the original model data ("in-place" patching), write the edits to hammerspace. This is currently a manual setting and not determined automatically.
 [] Include Custom Split Normals - When off, writes averaged blender normals. When on, Writes custom split normals data. 
