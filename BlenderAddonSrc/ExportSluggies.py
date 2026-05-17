@@ -82,7 +82,27 @@ def encode_vertex_buffer_edited(obj, comp_count, quant_info, use_custom_normals=
     return _from_bytes(bytes(raw_bytes), use_base64)
 
 
-def encode_uv_channel_edited(obj, json_channel, use_base64=True):
+def _uv_layer_name(all_channels, target_ch_ind):
+    """Return the Blender UV layer name for *target_ch_ind*, using the same
+    deduplication logic that ImportSluggies applies when creating UV layers.
+
+    When two UV channels share the same PaletteName the importer falls back
+    to ``"uv<enumerate-index>"`` for the second one, so the export must
+    resolve names the same way to find the right layer.
+    """
+    used = set()
+    for enum_ind, ch in enumerate(all_channels):
+        idx = ch.get('UVChannelIndex', enum_ind)
+        palette = ch.get('PaletteName') or ''
+        raw = palette or f'uv{enum_ind}'
+        name = raw if raw not in used else f'uv{enum_ind}'
+        used.add(name)
+        if idx == target_ch_ind:
+            return name
+    return f'uv{target_ch_ind}'
+
+
+def encode_uv_channel_edited(obj, json_channel, use_base64=True, all_uv_channels=None):
     """Re-quantize Blender UV layer back into the game's ST coordinate format.
 
     Writes each Blender UV value back into its ORIGINAL slot position, using
@@ -94,9 +114,11 @@ def encode_uv_channel_edited(obj, json_channel, use_base64=True):
     Warns (via returned string list) when a slot receives two conflicting values
     (i.e. the user split a UV seam that was previously shared).
     """
-    palette_name = json_channel.get("PaletteName", "")
     ch_ind = json_channel.get("UVChannelIndex", 0)
-    layer_name = palette_name or f"uv{ch_ind}"
+    if all_uv_channels is not None:
+        layer_name = _uv_layer_name(all_uv_channels, ch_ind)
+    else:
+        layer_name = json_channel.get("PaletteName", "") or f"uv{ch_ind}"
 
     mesh_data = obj.data
     uv_layer = mesh_data.uv_layers.get(layer_name)
@@ -216,11 +238,11 @@ def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False, use_bas
         struct.pack(f'>{len(face_tex_flat)}H', *face_tex_flat), use_base64
     )
 
+    all_uv_channels = json_submesh.get('UVChannels', [])
     uv_edits = {}
-    for json_channel in json_submesh.get('UVChannels', []):
+    for json_channel in all_uv_channels:
         ch_ind = json_channel.get('UVChannelIndex', 0)
-        palette_name = json_channel.get('PaletteName', '')
-        layer_name = palette_name or f'uv{ch_ind}'
+        layer_name = _uv_layer_name(all_uv_channels, ch_ind)
         uv_layer = mesh.uv_layers.get(layer_name)
         if uv_layer is None:
             continue
@@ -741,8 +763,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                         json_channel["UVChannelDataEdited"] = uv_data_b64
                         json_channel["UVFacesDataEdited"] = uv_faces_b64
                     else:
-                        palette_name = json_channel.get("PaletteName", "")
-                        layer_name = palette_name or f"uv{ch_ind}"
+                        layer_name = _uv_layer_name(target_submesh.get("UVChannels", []), ch_ind)
                         warnings.append(
                             f"{obj.name}: UV layer '{layer_name}' not found — UV channel {ch_ind} skipped."
                         )
@@ -778,12 +799,12 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
 
                 # Re-encode UV channels from Blender UV layers
                 hammerspace_hint_shown = False
-                for json_channel in target_submesh.get("UVChannels", []):
-                    result = encode_uv_channel_edited(obj, json_channel, use_base64=use_base64)
+                _all_uv_ch = target_submesh.get("UVChannels", [])
+                for json_channel in _all_uv_ch:
+                    result = encode_uv_channel_edited(obj, json_channel, use_base64=use_base64, all_uv_channels=_all_uv_ch)
                     ch_ind = json_channel.get("UVChannelIndex", 0)
                     if result is None:
-                        palette_name = json_channel.get("PaletteName", "")
-                        layer_name = palette_name or f"uv{ch_ind}"
+                        layer_name = _uv_layer_name(_all_uv_ch, ch_ind)
                         warnings.append(
                             f"{obj.name}: UV layer '{layer_name}' not found — UV channel {ch_ind} skipped."
                         )

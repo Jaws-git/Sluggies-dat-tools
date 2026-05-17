@@ -317,13 +317,21 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
             mesh.normals_split_custom_set(normals_per_loop)
         # else: face indices exceed vertex buffer — skip custom normals silently
 
+    uv_layer_names = {}  # UVChannelIndex -> actual Blender layer name
     if uv_channels:
+        _used_uv_names = set()
         for ch_ind, uv_channel in enumerate(uv_channels):
             coords, uv_faces = decode_uv_channel(uv_channel)
             if not coords or not uv_faces:
                 continue
-            # Use palette name as UV layer name; fall back to "uv<index>"
-            layer_name = uv_channel.get("PaletteName") or f"uv{ch_ind}"
+            # Use palette name as UV layer name; fall back to "uv<index>".
+            # Deduplicate: when two channels share the same PaletteName the
+            # second one falls back to "uv<enumerate-index>" so both layers
+            # get unique names and can be looked up correctly on re-export.
+            raw_name = uv_channel.get("PaletteName") or f"uv{ch_ind}"
+            layer_name = raw_name if raw_name not in _used_uv_names else f"uv{ch_ind}"
+            _used_uv_names.add(layer_name)
+            uv_layer_names[uv_channel.get("UVChannelIndex", ch_ind)] = layer_name
             uv_layer = mesh.uv_layers.new(name=layer_name)
             for poly in mesh.polygons:
                 face_idx = poly.index
@@ -344,7 +352,7 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
             if not colors or not color_faces:
                 continue
             layer_name = f"color{ch_idx}"
-            vcol_layer = mesh.color_attributes.new(name=layer_name, type='FLOAT_COLOR', domain='CORNER')
+            vcol_layer = mesh.color_attributes.new(name=layer_name, type='BYTE_COLOR', domain='CORNER')
             for poly in mesh.polygons:
                 face_idx = poly.index
                 if face_idx >= len(color_faces):
@@ -426,7 +434,8 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
             mat_slot[tex_idx] = slot_idx
             uv_ch = tex_to_uv.get(tex_idx) or uv_channels[0]
             ch_ind = uv_ch.get('UVChannelIndex', 0)
-            layer_name = uv_ch.get('PaletteName') or f'uv{ch_ind}'
+            # Use the deduplicated name computed during UV layer creation
+            layer_name = uv_layer_names.get(ch_ind) or uv_ch.get('PaletteName') or f'uv{ch_ind}'
             wrap_s = uv_ch.get('WrapS', 1)
             img_path = os.path.join(sluggie_dir, 'tex', f'{tex_idx}.png')
             image = bpy.data.images.load(img_path, check_existing=True) if os.path.exists(img_path) else None
