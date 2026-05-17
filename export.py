@@ -10,7 +10,7 @@ if missing:
     sys.exit(1)
 
 script = os.path.join(os.path.dirname(__file__), 'SluggiesTools', 'export.py')
-extra_args = [arg for arg in sys.argv[1:] if arg == '--notex']
+extra_args = [arg for arg in sys.argv[1:] if arg in ('--notex', '--debug')]
 subprocess.run(
     [sys.executable, script] + extra_args,
     cwd=os.path.join(os.path.dirname(__file__), 'SluggiesTools'),

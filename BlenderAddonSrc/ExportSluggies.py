@@ -7,6 +7,20 @@ import subprocess
 from bpy.props import BoolProperty, StringProperty
 from bpy_extras.io_utils import ExportHelper
 
+
+def _to_bytes(data) -> bytes:
+    """Decode binary data that is either a base64 string or a list of byte values."""
+    if isinstance(data, list):
+        return bytes(data)
+    return base64.b64decode(data)
+
+
+def _from_bytes(raw: bytes, use_base64: bool = True):
+    """Encode binary data as a base64 string or a list of byte values."""
+    if use_base64:
+        return base64.b64encode(raw).decode('ascii')
+    return list(raw)
+
 REQUIRED_PROPS = (
     "VertexBufferOffset",
     "VertexBufferLength",
@@ -38,9 +52,9 @@ def _get_custom_split_normals(obj):
     ]
 
 
-def encode_vertex_buffer_edited(obj, comp_count, quant_info, use_custom_normals=False):
+def encode_vertex_buffer_edited(obj, comp_count, quant_info, use_custom_normals=False, use_base64=True):
     """Re-quantize edited vertex positions (and normals if comp_count==6)
-    back into the original binary format and return a base64 string."""
+    back into the original binary format and return a base64 string or byte list."""
     mesh = obj.data
     fmt_nibble = quant_info >> 4
     shift = quant_info & 0xF
@@ -65,10 +79,10 @@ def encode_vertex_buffer_edited(obj, comp_count, quant_info, use_custom_normals=
                 raw_val = max(-32768, min(32767, round(val * divisor)))
                 raw_bytes += struct.pack('>h', raw_val)
 
-    return base64.b64encode(bytes(raw_bytes)).decode('ascii')
+    return _from_bytes(bytes(raw_bytes), use_base64)
 
 
-def encode_uv_channel_edited(obj, json_channel):
+def encode_uv_channel_edited(obj, json_channel, use_base64=True):
     """Re-quantize Blender UV layer back into the game's ST coordinate format.
 
     Writes each Blender UV value back into its ORIGINAL slot position, using
@@ -100,7 +114,7 @@ def encode_uv_channel_edited(obj, json_channel):
     num_slots = expected_length // (comp_count * comp_size)
 
     # Decode original per-face UV slot indices from UVFacesData
-    uv_faces_raw = base64.b64decode(json_channel["UVFacesData"])
+    uv_faces_raw = _to_bytes(json_channel["UVFacesData"])
     n = len(uv_faces_raw) // 2
     flat = list(struct.unpack(f'>{n}H', uv_faces_raw))
     original_uv_faces = [flat[i * 3 : i * 3 + 3] for i in range(n // 3)]
@@ -132,7 +146,7 @@ def encode_uv_channel_edited(obj, json_channel):
 
     # Fall back to original data for any slot not touched by a loop
     if None in output_slots:
-        orig_raw = base64.b64decode(json_channel["UVChannelData"])
+        orig_raw = _to_bytes(json_channel["UVChannelData"])
         for slot_idx, val in enumerate(output_slots):
             if val is None:
                 off = slot_idx * comp_count * comp_size
@@ -151,10 +165,10 @@ def encode_uv_channel_edited(obj, json_channel):
             else:
                 raw_bytes += struct.pack('>h', max(-32768, min(32767, int(val))))
 
-    return base64.b64encode(bytes(raw_bytes)).decode('ascii'), conflicts
+    return _from_bytes(bytes(raw_bytes), use_base64), conflicts
 
 
-def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False):
+def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False, use_base64=True):
     """Encode all mesh data for hammerspace export (vertex count may differ from original).
 
     Returns a dict with:
@@ -175,10 +189,11 @@ def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False):
         obj["VertexBufferCompCount"],
         obj["VertexBufferQuantizeInfo"],
         use_custom_normals=use_custom_normals,
+        use_base64=use_base64,
     )
 
     face_flat = [vi for tri in triangles for vi in tri.vertices]
-    faces_data = base64.b64encode(struct.pack(f'>{len(face_flat)}H', *face_flat)).decode('ascii')
+    faces_data = _from_bytes(struct.pack(f'>{len(face_flat)}H', *face_flat), use_base64)
 
     # Per-face texture index derived from Blender material slots.
     # Material names are "{obj_name}_mat{tex_idx}" (set during import).
@@ -197,9 +212,9 @@ def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False):
         mat_to_tex.get(mesh.polygons[tri.polygon_index].material_index, 0)
         for tri in triangles
     ]
-    face_tex_data = base64.b64encode(
-        struct.pack(f'>{len(face_tex_flat)}H', *face_tex_flat)
-    ).decode('ascii')
+    face_tex_data = _from_bytes(
+        struct.pack(f'>{len(face_tex_flat)}H', *face_tex_flat), use_base64
+    )
 
     uv_edits = {}
     for json_channel in json_submesh.get('UVChannels', []):
@@ -246,10 +261,10 @@ def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False):
                     raw_bytes += struct.pack('>f', float(val))
                 else:
                     raw_bytes += struct.pack('>h', max(-32768, min(32767, int(val))))
-        uv_data_b64 = base64.b64encode(bytes(raw_bytes)).decode('ascii')
+        uv_data_b64 = _from_bytes(bytes(raw_bytes), use_base64)
 
         uv_flat = [idx for tri in uv_tri_indices for idx in tri]
-        uv_faces_b64 = base64.b64encode(struct.pack(f'>{len(uv_flat)}H', *uv_flat)).decode('ascii')
+        uv_faces_b64 = _from_bytes(struct.pack(f'>{len(uv_flat)}H', *uv_flat), use_base64)
 
         uv_edits[ch_ind] = (uv_data_b64, uv_faces_b64)
 
@@ -291,6 +306,7 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
     if not skin_data or not (skin_data.get("SK1s") or skin_data.get("SK2s") or skin_data.get("SKAccs")):
         return False
     quant_info  = skin_data["QuantizeInfo"]
+    use_base64  = data["SluggiesModel"].get("UseBase64", True)
     vertex_size = 6 * _comp_size_skin(quant_info)
     fmt_nibble  = quant_info >> 4
     is_float    = fmt_nibble in [4, 7, 0xa]
@@ -342,7 +358,7 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
         n            = sk1["VertexCnt"]
         vtx_off      = sk1.get("VertexOffset", 0)
         global_start = (sk1["GplVertexArrValue"] + vtx_off) // vertex_size
-        orig_src     = base64.b64decode(sk1["BindPoseData"])
+        orig_src     = _to_bytes(sk1["BindPoseData"])
         src = bytearray(orig_src[:vtx_off])  # preserve any prefix bytes unchanged
         for i in range(n):
             obj, local_v = resolve(global_start + i)
@@ -354,7 +370,7 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
                 nx, ny, nz = (_cn[local_v].x, _cn[local_v].y, _cn[local_v].z) if _cn is not None else (vd.normal.x, vd.normal.y, vd.normal.z)
                 for val in [vd.co.x, vd.co.y, vd.co.z, nx, ny, nz]:
                     src.extend(pack_val(val))
-        sk1["BindPoseDataEdited"] = base64.b64encode(bytes(src)).decode('ascii')
+        sk1["BindPoseDataEdited"] = _from_bytes(bytes(src), use_base64)
         wrote_any = True
 
     for sk2 in skin_data.get("SK2s", []):
@@ -363,8 +379,8 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
         global_start = (sk2["GplVertexArrValue"] + vtx_off) // vertex_size
         bone1        = sk2["BoneIndex1"]
         bone2        = sk2["BoneIndex2"]
-        orig_wt      = base64.b64decode(sk2["WeightData"])
-        orig_src     = base64.b64decode(sk2["BindPoseData"])
+        orig_wt      = _to_bytes(sk2["WeightData"])
+        orig_src     = _to_bytes(sk2["BindPoseData"])
         src = bytearray(orig_src[:vtx_off])  # preserve any prefix bytes unchanged
         wt  = bytearray()
         for i in range(n):
@@ -383,22 +399,35 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
                 w2 = _get_vgroup_weight(obj, f"bone_{bone2}", local_v)
                 wt.append(max(0, min(255, round(w1 * 256))))
                 wt.append(max(0, min(255, round(w2 * 256))))
-        sk2["BindPoseDataEdited"] = base64.b64encode(bytes(src)).decode('ascii')
-        sk2["WeightDataEdited"] = base64.b64encode(bytes(wt)).decode('ascii')
+        sk2["BindPoseDataEdited"] = _from_bytes(bytes(src), use_base64)
+        sk2["WeightDataEdited"] = _from_bytes(bytes(wt), use_base64)
         wrote_any = True
 
     for skacc in skin_data.get("SKAccs", []):
         n         = skacc["VertexCnt"]
         bone_id   = skacc["BoneIndex"]
         dest_base = skacc["GplDestArrValue"] // vertex_size
-        orig_wt   = base64.b64decode(skacc["WeightData"])
-        orig_src  = base64.b64decode(skacc["BindPoseData"])
-        dest_idxs = list(struct.unpack(f'>{n}H', base64.b64decode(skacc["DestIndexData"])))
+        orig_wt   = _to_bytes(skacc["WeightData"])
+        orig_src  = _to_bytes(skacc["BindPoseData"])
+        dest_idxs = list(struct.unpack(f'>{n}H', _to_bytes(skacc["DestIndexData"])))
         src = bytearray()
         wt  = bytearray()
+        # Pre-compute which dest indices appear more than once within this entry.
+        # These cannot be faithfully encoded from Blender vertex groups, which can
+        # only store one weight per (bone, vertex) pair: Blender's 'REPLACE' mode
+        # during import keeps only the last weight for a repeated (bone, vertex),
+        # so both the first and subsequent occurrences would be written with the
+        # wrong value.  Preserve the original bytes verbatim for ALL occurrences of
+        # any repeated dest index (non-duplicate indices are still re-encoded normally).
+        dest_count = {}
+        for di in dest_idxs:
+            dest_count[di] = dest_count.get(di, 0) + 1
+        dup_dests = {di for di, cnt in dest_count.items() if cnt > 1}
         for i in range(n):
-            obj, local_v = resolve(dest_base + dest_idxs[i])
-            if obj is None:
+            global_v = dest_base + dest_idxs[i]
+            obj, local_v = resolve(global_v)
+            if obj is None or dest_idxs[i] in dup_dests:
+                # Can't encode uniquely: preserve original bytes verbatim.
                 src.extend(orig_src[i * vertex_size : (i + 1) * vertex_size])
                 wt.append(orig_wt[i])
             else:
@@ -409,8 +438,8 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
                     src.extend(pack_val(val))
                 w = _get_vgroup_weight(obj, f"bone_{bone_id}", local_v)
                 wt.append(max(0, min(255, round(w * 256))))
-        skacc["BindPoseDataEdited"] = base64.b64encode(bytes(src)).decode('ascii')
-        skacc["WeightDataEdited"] = base64.b64encode(bytes(wt)).decode('ascii')
+        skacc["BindPoseDataEdited"] = _from_bytes(bytes(src), use_base64)
+        skacc["WeightDataEdited"] = _from_bytes(bytes(wt), use_base64)
         wrote_any = True
 
     return wrote_any
@@ -434,6 +463,7 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
 
     submeshes  = data["SluggiesModel"].get("Submeshes", [])
     quant_info = skin_data["QuantizeInfo"]
+    use_base64 = data["SluggiesModel"].get("UseBase64", True)
     cs         = _comp_size_skin(quant_info)
     fmt_nibble = quant_info >> 4
     is_float   = fmt_nibble in [4, 7, 0xa]
@@ -506,7 +536,7 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
             nx, ny, nz = (_cn[v.index].x, _cn[v.index].y, _cn[v.index].z) if _cn is not None else (v.normal.x, v.normal.y, v.normal.z)
             for val in [v.co.x, v.co.y, v.co.z, nx, ny, nz]:
                 raw += pack_val(val)
-        return base64.b64encode(bytes(raw)).decode('ascii')
+        return _from_bytes(bytes(raw), use_base64)
 
     new_sk1s = [
         {"BoneIndex": b, "VertexCnt": len(e), "BindPoseData": encode_src(e)}
@@ -523,7 +553,7 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
             "BoneIndex1": b_lo, "BoneIndex2": b_hi,
             "VertexCnt": len(entries),
             "BindPoseData": encode_src(entries),
-            "WeightData": base64.b64encode(bytes(wt)).decode('ascii'),
+            "WeightData": _from_bytes(bytes(wt), use_base64),
         })
 
     new_skaccs = []
@@ -536,8 +566,8 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
         new_skaccs.append({
             "BoneIndex": bone_id, "VertexCnt": len(entries),
             "BindPoseData":   encode_src(entries),
-            "WeightData":    base64.b64encode(bytes(wt)).decode('ascii'),
-            "DestIndexData": base64.b64encode(bytes(dest)).decode('ascii'),
+            "WeightData":    _from_bytes(bytes(wt), use_base64),
+            "DestIndexData": _from_bytes(bytes(dest), use_base64),
         })
 
     data["SluggiesModel"]["SkinDataEdited"] = {
@@ -581,8 +611,8 @@ def detect_length_mismatches(obj, json_submesh):
         # Count distinct UV coords in the Blender layer via UVFacesData slot range
         uv_faces_raw = ch.get("UVFacesData")
         if uv_faces_raw:
-            import base64 as _b64, struct as _st
-            raw   = _b64.b64decode(uv_faces_raw)
+            import struct as _st
+            raw   = _to_bytes(uv_faces_raw)
             n     = len(raw) // 2
             slots = list(_st.unpack(f'>{n}H', raw))
             new_uv_cnt = max(slots) + 1 if slots else 0
@@ -660,6 +690,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             self.report({"ERROR"}, "JSON does not contain a 'SluggiesModel' entry.")
             return {"CANCELLED"}
 
+        use_base64 = data["SluggiesModel"].get("UseBase64", True)
         submeshes = data["SluggiesModel"].get("Submeshes", [])
 
         # --- collect selected mesh objects that carry Sluggies custom properties ---
@@ -698,7 +729,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 continue
 
             if self.use_hammerspace:
-                hs = encode_mesh_hammerspace(obj, target_submesh, use_custom_normals=self.use_custom_normals)
+                hs = encode_mesh_hammerspace(obj, target_submesh, use_custom_normals=self.use_custom_normals, use_base64=use_base64)
                 target_submesh["VertexBuffer"]["VertexBufferDataEdited"] = hs['VertexBufferDataEdited']
                 target_submesh["FacesDataEdited"] = hs['FacesDataEdited']
                 target_submesh["FacesCountEdited"] = hs['FacesCountEdited']
@@ -736,6 +767,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     obj["VertexBufferCompCount"],
                     obj["VertexBufferQuantizeInfo"],
                     use_custom_normals=self.use_custom_normals,
+                    use_base64=use_base64,
                 )
                 target_submesh["VertexBuffer"]["VertexBufferDataEdited"] = edited_data
                 # Clear any stale hammerspace face data so it can't mismatch the
@@ -747,7 +779,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 # Re-encode UV channels from Blender UV layers
                 hammerspace_hint_shown = False
                 for json_channel in target_submesh.get("UVChannels", []):
-                    result = encode_uv_channel_edited(obj, json_channel)
+                    result = encode_uv_channel_edited(obj, json_channel, use_base64=use_base64)
                     ch_ind = json_channel.get("UVChannelIndex", 0)
                     if result is None:
                         palette_name = json_channel.get("PaletteName", "")

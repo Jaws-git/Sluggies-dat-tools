@@ -8,7 +8,14 @@ import struct
 import sys
 
 EXPORT_TEX = '--notex' not in sys.argv
+DEBUG_DONT_USE_BASE64 = '--debug' in sys.argv
 
+
+def _encode_bytes(data: bytes):
+    """Encode binary data as a base64 string, or a list of byte ints when DEBUG_DONT_USE_BASE64."""
+    if DEBUG_DONT_USE_BASE64:
+        return list(data)
+    return base64.b64encode(data).decode('ascii')
 
 
 def itb (val, n):
@@ -148,7 +155,7 @@ def extract_submeshes(model):
         vb_offset = layout.absolute + pos.positionArrPtr
         vb_length = pos.numPositions * pos.compCount * _vb_comp_size(pos.quantizeInfo)
         model.f.seek(vb_offset)
-        vb_data = base64.b64encode(model.f.read(vb_length)).decode('ascii')
+        vb_data = _encode_bytes(model.f.read(vb_length))
         num_uv_channels = len(layout.DOTextureDataHeaders)
         faces_raw = []
         face_tex_indices = []  # per-face TextureIndex active on UV channel 0 (primary)
@@ -192,18 +199,18 @@ def extract_submeshes(model):
         face_count = len(faces_raw)
         # Pack position faces as big-endian uint16 triplets and base64-encode
         flat = [idx for tri in faces_raw for idx in tri]
-        faces_data = base64.b64encode(struct.pack(f'>{len(flat)}H', *flat)).decode('ascii')
+        faces_data = _encode_bytes(struct.pack(f'>{len(flat)}H', *flat))
         # Per-face primary texture index (uint16, one per face)
-        face_tex_data = base64.b64encode(struct.pack(f'>{len(face_tex_indices)}H', *face_tex_indices)).decode('ascii')
+        face_tex_data = _encode_bytes(struct.pack(f'>{len(face_tex_indices)}H', *face_tex_indices))
         # Extract raw UV buffers, per-face UV indices, and texture assignment per channel
         uv_channels = []
         for ch_ind, tex_layer in enumerate(layout.DOTextureDataHeaders):
             uv_offset = layout.absolute + tex_layer.textureCoordsArrPtr
             uv_length = tex_layer.numTextureCoords * tex_layer.compCount * _vb_comp_size(tex_layer.quantizeInfo)
             model.f.seek(uv_offset)
-            uv_raw = base64.b64encode(model.f.read(uv_length)).decode('ascii')
+            uv_raw = _encode_bytes(model.f.read(uv_length))
             uv_flat = [idx for tri in uv_faces_raw[ch_ind] for idx in tri]
-            uv_faces_data = base64.b64encode(struct.pack(f'>{len(uv_flat)}H', *uv_flat)).decode('ascii')
+            uv_faces_data = _encode_bytes(struct.pack(f'>{len(uv_flat)}H', *uv_flat))
             assignment = tex_assignments.get(ch_ind, {})
             uv_channels.append({
                 "UVChannelIndex": ch_ind,
@@ -227,12 +234,12 @@ def extract_submeshes(model):
             color_offset = layout.absolute + color_hdr.colorArrPtr
             color_length = color_hdr.numColors * _color_entry_size(color_hdr.quantizeInfo)
             model.f.seek(color_offset)
-            color_raw = base64.b64encode(model.f.read(color_length)).decode('ascii')
+            color_raw = _encode_bytes(model.f.read(color_length))
             for ch_idx in [0, 1]:
                 if not color_active[ch_idx]:
                     continue
                 ch_flat = [idx for tri in color_faces_raw[ch_idx] for idx in tri]
-                ch_faces_data = base64.b64encode(struct.pack(f'>{len(ch_flat)}H', *ch_flat)).decode('ascii')
+                ch_faces_data = _encode_bytes(struct.pack(f'>{len(ch_flat)}H', *ch_flat))
                 color_channels.append({
                     "ColorChannelIndex": ch_idx,
                     "ColorChannelOffset": hex(color_offset),
@@ -254,7 +261,7 @@ def extract_submeshes(model):
                 "PrimListSizeFieldOffset": hex(ds_obj.absolute + 12),
                 "PrimListAbsoluteOffset": hex(layout.absolute + ds_obj.primitiveListPtr),
                 "PrimListLength": ds_obj.primitiveListSize,
-                "PrimListData": base64.b64encode(raw_prim).decode('ascii'),
+                "PrimListData": _encode_bytes(raw_prim),
                 "ActiveDescriptors": [
                     {"key": d['key'], "index_size": d['index_size']}
                     for d in draw_state['state']['descriptors']
@@ -317,7 +324,7 @@ def extract_skin_data(model):
             "GplVertexArrFieldOffset": hex(sk1.absolute + 0x34),
             "VertexArrAbsolutePtr":    hex(src_abs),
             "GplVertexArrValue":       sk1.gplVertexArr,
-            "BindPoseData":             base64.b64encode(src_data).decode('ascii')
+            "BindPoseData":             _encode_bytes(src_data)
         })
 
     sk2s = []
@@ -340,8 +347,8 @@ def extract_skin_data(model):
             "VertexArrAbsolutePtr":    hex(src_abs),
             "WeightArrAbsolutePtr":    hex(wt_abs),
             "GplVertexArrValue":       sk2.gplVertexArr,
-            "BindPoseData":             base64.b64encode(src_data).decode('ascii'),
-            "WeightData":              base64.b64encode(wt_data).decode('ascii')
+            "BindPoseData":             _encode_bytes(src_data),
+            "WeightData":              _encode_bytes(wt_data)
         })
 
     skaccs = []
@@ -367,9 +374,9 @@ def extract_skin_data(model):
             "DestArrAbsolutePtr":    hex(dest_idx_abs),
             "GplDestArrValue":       skacc.gplDestArr,
             "WeightArrAbsolutePtr":  hex(wt_abs),
-            "BindPoseData":          base64.b64encode(src_data).decode('ascii'),
-            "DestIndexData":         base64.b64encode(dest_idx_data).decode('ascii'),
-            "WeightData":            base64.b64encode(wt_data).decode('ascii')
+            "BindPoseData":          _encode_bytes(src_data),
+            "DestIndexData":         _encode_bytes(dest_idx_data),
+            "WeightData":            _encode_bytes(wt_data)
         })
 
     return {
@@ -455,9 +462,9 @@ def extract_bone_data(model):
         influences_by_submesh = [
             {
                 "SubmeshIndex": sub_idx,
-                "Influences": base64.b64encode(
+                "Influences": _encode_bytes(
                     b''.join(struct.pack('>Hf', vi, w) for vi, w in inf_list)
-                ).decode('ascii')
+                )
             }
             for sub_idx, inf_list in sorted(by_submesh.items())
         ]
@@ -518,6 +525,7 @@ for dir_ind, file_arr in dirs.items():
                                     "ChunkNumber": dir_ind,
                                     "ModelOffset": hex(sub_model.absolute),
                                     "ModelLength": sub_model.length,
+                                    "UseBase64": not DEBUG_DONT_USE_BASE64,
                                     "TextureDescriptors": extract_texture_descriptors(sub_model),
                                     "Submeshes": extract_submeshes(sub_model),
                                     "SkinData": extract_skin_data(sub_model),
@@ -535,6 +543,7 @@ for dir_ind, file_arr in dirs.items():
                                 "ChunkNumber": dir_ind,
                                 "ModelOffset": hex(offset),
                                 "ModelLength": l,
+                                "UseBase64": not DEBUG_DONT_USE_BASE64,
                                 "TextureDescriptors": extract_texture_descriptors(child.child),
                                 "Submeshes": extract_submeshes(child.child),
                                 "SkinData": extract_skin_data(child.child),

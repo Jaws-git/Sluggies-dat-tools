@@ -16,6 +16,13 @@ import patch_skn_dat as _skn
 import drawlist as _dl
 
 
+def _to_bytes(data) -> bytes:
+    """Decode binary data that is either a base64 string or a list of byte values."""
+    if isinstance(data, list):
+        return bytes(data)
+    return base64.b64decode(data)
+
+
 def abort(message):
     print(f"ERROR: {message}")
     input("\nPress any key to exit...")
@@ -76,7 +83,7 @@ def _rebuild_draw_states(submesh: dict) -> tuple[dict, set]:
         return {}, set()
 
     # Decode flat position face indices → list of [i0, i1, i2] triplets
-    raw_f = base64.b64decode(faces_edited_b64)
+    raw_f = _to_bytes(faces_edited_b64)
     n_f = len(raw_f) // 2
     flat_f = list(struct.unpack(f'>{n_f}H', raw_f))
     all_pos_faces = [flat_f[i * 3: i * 3 + 3] for i in range(n_f // 3)]
@@ -88,7 +95,7 @@ def _rebuild_draw_states(submesh: dict) -> tuple[dict, set]:
         ch_ind = ch['UVChannelIndex']
         uv_edited = ch.get('UVFacesDataEdited')
         if uv_edited:
-            raw_uv = base64.b64decode(uv_edited)
+            raw_uv = _to_bytes(uv_edited)
             n_uv = len(raw_uv) // 2
             flat_uv = list(struct.unpack(f'>{n_uv}H', raw_uv))
             uv_faces_by_ch[ch_ind] = [flat_uv[i * 3: i * 3 + 3] for i in range(n_uv // 3)]
@@ -99,14 +106,14 @@ def _rebuild_draw_states(submesh: dict) -> tuple[dict, set]:
     orig_decoded: list[list] = []
     for ds in draw_states:
         descriptors = ds.get('ActiveDescriptors', [])
-        orig_raw = base64.b64decode(ds['PrimListData'])
+        orig_raw = _to_bytes(ds['PrimListData'])
         orig_decoded.append(_dl.decodeDrawList(orig_raw, descriptors) if descriptors else [])
 
     # --- Build texture_index → draw_state_index from original FaceTextureIndices ---
     tex_to_ds: dict[int, int] = {}
     face_tex_b64 = submesh.get('FaceTextureIndices')
     if face_tex_b64:
-        raw_ti = base64.b64decode(face_tex_b64)
+        raw_ti = _to_bytes(face_tex_b64)
         n_ti = len(raw_ti) // 2
         orig_face_tex = list(struct.unpack(f'>{n_ti}H', raw_ti))
         face_off = 0
@@ -125,7 +132,7 @@ def _rebuild_draw_states(submesh: dict) -> tuple[dict, set]:
     face_tex_edited_b64 = submesh.get('FaceTextureIndicesEdited')
     if face_tex_edited_b64 and tex_to_ds:
         # Path 1: texture-based routing — handles face count changes
-        raw_fte = base64.b64decode(face_tex_edited_b64)
+        raw_fte = _to_bytes(face_tex_edited_b64)
         n_fte = len(raw_fte) // 2
         new_face_tex = list(struct.unpack(f'>{n_fte}H', raw_fte))
         skipped = 0
@@ -159,7 +166,7 @@ def _rebuild_draw_states(submesh: dict) -> tuple[dict, set]:
     all_upgraded_keys: set[str] = set()
     for ds_ind, ds in enumerate(draw_states):
         descriptors = ds.get('ActiveDescriptors', [])
-        orig_raw = base64.b64decode(ds['PrimListData'])
+        orig_raw = _to_bytes(ds['PrimListData'])
         assigned = ds_assignments.get(ds_ind, [])
 
         if not descriptors or not assigned:
@@ -233,11 +240,11 @@ def writeExpandedMesh(i: int, submesh: dict, new_verts_raw: bytes,
         ch_ind = ch['UVChannelIndex']
         raw = new_uvs_per_ch.get(ch_ind)
         if raw is None:
-            raw = base64.b64decode(ch['UVChannelData'])
+            raw = _to_bytes(ch['UVChannelData'])
         sections.append((f'uv{ch_ind}', raw))
 
     for ds_ind, ds in enumerate(submesh.get('DrawStates', [])):
-        dl_raw = rebuilt_dls.get(ds_ind, base64.b64decode(ds['PrimListData']))
+        dl_raw = rebuilt_dls.get(ds_ind, _to_bytes(ds['PrimListData']))
         sections.append((f'dl{ds_ind}', dl_raw))
 
     # Pack into a single 4-byte-aligned blob
@@ -273,7 +280,7 @@ def writeExpandedMesh(i: int, submesh: dict, new_verts_raw: bytes,
 
         for ch in submesh.get('UVChannels', []):
             ch_ind = ch['UVChannelIndex']
-            raw = new_uvs_per_ch.get(ch_ind, base64.b64decode(ch['UVChannelData']))
+            raw = new_uvs_per_ch.get(ch_ind, _to_bytes(ch['UVChannelData']))
             uv_abs = data_abs + offsets[f'uv{ch_ind}']
             _hs.patchPointerField(int(ch['UVDataPtrFieldOffset'], 16), uv_abs, relative_base)
             uv_cs = _comp_size(ch['UVChannelQuantizeInfo'])
@@ -282,7 +289,7 @@ def writeExpandedMesh(i: int, submesh: dict, new_verts_raw: bytes,
             f.write(struct.pack('>H', new_uv_count))
 
         for ds_ind, ds in enumerate(submesh.get('DrawStates', [])):
-            dl_raw = rebuilt_dls.get(ds_ind, base64.b64decode(ds['PrimListData']))
+            dl_raw = rebuilt_dls.get(ds_ind, _to_bytes(ds['PrimListData']))
             dl_abs = data_abs + offsets[f'dl{ds_ind}']
             _hs.patchPointerField(int(ds['PrimListPtrFieldOffset'], 16), dl_abs, relative_base)
             f.seek(int(ds['PrimListSizeFieldOffset'], 16))
@@ -455,7 +462,7 @@ if skin_data is not None:
         _vb = _sm.get("VertexBuffer", {})
         _edited = _vb.get("VertexBufferDataEdited")
         if _edited:
-            total_dest_bytes += len(base64.b64decode(_edited))
+            total_dest_bytes += len(_to_bytes(_edited))
         else:
             total_dest_bytes += _vb.get("VertexBufferLength", 0)
     new_skn_dest_size = total_dest_bytes
@@ -469,7 +476,7 @@ for i, submesh in enumerate(submeshes):
 
         vb_data = vb.get("VertexBufferData")
         if vb_data:
-            raw = base64.b64decode(vb_data)
+            raw = _to_bytes(vb_data)
             patches.append((i, int(vb["VertexBufferOffset"], 16), raw))
             print(f"  Submesh {i}: queued {len(raw)} vertex bytes at {vb['VertexBufferOffset']}")
 
@@ -477,7 +484,7 @@ for i, submesh in enumerate(submeshes):
             ch_ind   = ch.get("UVChannelIndex", "?")
             uv_data  = ch.get("UVChannelData")
             if uv_data:
-                raw = base64.b64decode(uv_data)
+                raw = _to_bytes(uv_data)
                 uv_patches.append((i, ch_ind, int(ch["UVChannelOffset"], 16), raw))
                 print(f"  Submesh {i} UV ch {ch_ind}: queued {len(raw)} bytes at {ch['UVChannelOffset']}")
 
@@ -487,7 +494,7 @@ for i, submesh in enumerate(submeshes):
             print(f"  Submesh {i}: no VertexBufferDataEdited data, skipping.")
             continue
 
-        new_verts = base64.b64decode(vb["VertexBufferDataEdited"])
+        new_verts = _to_bytes(vb["VertexBufferDataEdited"])
         original_vb_length = vb.get("VertexBufferLength", 0)
 
         # Collect edited UV channels
@@ -497,7 +504,7 @@ for i, submesh in enumerate(submeshes):
             ch_ind = ch["UVChannelIndex"]
             edited = ch.get("UVChannelDataEdited")
             if edited:
-                raw = base64.b64decode(edited)
+                raw = _to_bytes(edited)
                 new_uvs[ch_ind] = raw
                 if len(raw) != ch["UVChannelLength"]:
                     uv_size_changed = True

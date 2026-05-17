@@ -139,8 +139,17 @@ class Model0(FileChunk):
             if not export_tex and dae_exists:
                 return
             if os.path.exists(file_dir):
-                shutil.rmtree(file_dir)
-            os.mkdir(file_dir)
+                # Selectively remove only export-produced files so that unrelated
+                # files placed in the output folder are not destroyed.
+                _export_exts = {'.dae', '.png', '.sluggie'}
+                for _fname in os.listdir(file_dir):
+                    _fpath = os.path.join(file_dir, _fname)
+                    if os.path.isfile(_fpath) and os.path.splitext(_fname)[1].lower() in _export_exts:
+                        os.remove(_fpath)
+                    elif os.path.isdir(_fpath) and _fname == 'tex':
+                        shutil.rmtree(_fpath)
+            else:
+                os.mkdir(file_dir)
             file_dir += '/'
             data = self.model_data(export_tex=export_tex)
             data.to_dae(file_dir, name=self.name)
@@ -321,8 +330,12 @@ class ModelData():
         tex_pngs = os.listdir('tex')
         tex_dir = dir + 'tex/'
         if os.path.exists(tex_dir):
-            shutil.rmtree(tex_dir)
-        os.mkdir(tex_dir)
+            # Only remove .png files; leave any unrelated files intact.
+            for _fname in os.listdir(tex_dir):
+                if _fname.lower().endswith('.png'):
+                    os.remove(os.path.join(tex_dir, _fname))
+        else:
+            os.mkdir(tex_dir)
         for png in tex_pngs:
             shutil.copyfile('tex/'+png, tex_dir+png)
 

@@ -40,6 +40,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import Hammerspace as _hs
 
 
+def _to_bytes(data) -> bytes:
+    """Decode binary data that is either a base64 string or a list of byte values."""
+    if isinstance(data, list):
+        return bytes(data)
+    return base64.b64decode(data)
+
+
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
@@ -142,16 +149,16 @@ def patchSKNSourceArrays(skin_data: dict, skin_data_edited: dict,
     offsets = []     # blob byte offset for each section, in write order
 
     for e in new_sk1s:
-        offsets.append(len(blob)); blob.extend(_align4(base64.b64decode(e['BindPoseData'])))
+        offsets.append(len(blob)); blob.extend(_align4(_to_bytes(e['BindPoseData'])))
 
     for e in new_sk2s:
-        offsets.append(len(blob)); blob.extend(_align4(base64.b64decode(e['BindPoseData'])))
-        offsets.append(len(blob)); blob.extend(_align4(base64.b64decode(e['WeightData'])))
+        offsets.append(len(blob)); blob.extend(_align4(_to_bytes(e['BindPoseData'])))
+        offsets.append(len(blob)); blob.extend(_align4(_to_bytes(e['WeightData'])))
 
     for e in new_skaccs:
-        offsets.append(len(blob)); blob.extend(_align4(base64.b64decode(e['BindPoseData'])))
-        offsets.append(len(blob)); blob.extend(_align4(base64.b64decode(e['DestIndexData'])))
-        offsets.append(len(blob)); blob.extend(_align4(base64.b64decode(e['WeightData'])))
+        offsets.append(len(blob)); blob.extend(_align4(_to_bytes(e['BindPoseData'])))
+        offsets.append(len(blob)); blob.extend(_align4(_to_bytes(e['DestIndexData'])))
+        offsets.append(len(blob)); blob.extend(_align4(_to_bytes(e['WeightData'])))
 
     blob = bytes(blob)
 
@@ -395,31 +402,31 @@ def patchSKNInPlace(skin_data: dict) -> bool:
             src_edited = sk1.get('BindPoseDataEdited')
             if src_edited:
                 f.seek(int(sk1['VertexArrAbsolutePtr'], 16))
-                f.write(base64.b64decode(src_edited))
+                f.write(_to_bytes(src_edited))
                 wrote_any = True
 
         for sk2 in skin_data.get('SK2s', []):
             src_edited = sk2.get('BindPoseDataEdited')
             if src_edited:
                 f.seek(int(sk2['VertexArrAbsolutePtr'], 16))
-                f.write(base64.b64decode(src_edited))
+                f.write(_to_bytes(src_edited))
                 wrote_any = True
             wt_edited = sk2.get('WeightDataEdited')
             if wt_edited:
                 f.seek(int(sk2['WeightArrAbsolutePtr'], 16))
-                f.write(base64.b64decode(wt_edited))
+                f.write(_to_bytes(wt_edited))
                 wrote_any = True
 
         for skacc in skin_data.get('SKAccs', []):
             src_edited = skacc.get('BindPoseDataEdited')
             if src_edited:
                 f.seek(int(skacc['VertexArrAbsolutePtr'], 16))
-                f.write(base64.b64decode(src_edited))
+                f.write(_to_bytes(src_edited))
                 wrote_any = True
             wt_edited = skacc.get('WeightDataEdited')
             if wt_edited:
                 f.seek(int(skacc['WeightArrAbsolutePtr'], 16))
-                f.write(base64.b64decode(wt_edited))
+                f.write(_to_bytes(wt_edited))
                 wrote_any = True
 
     return wrote_any
@@ -443,31 +450,31 @@ def restoreSKNInPlace(skin_data: dict) -> bool:
             src = sk1.get('BindPoseData')
             if src:
                 f.seek(int(sk1['VertexArrAbsolutePtr'], 16))
-                f.write(base64.b64decode(src))
+                f.write(_to_bytes(src))
                 wrote_any = True
 
         for sk2 in skin_data.get('SK2s', []):
             src = sk2.get('BindPoseData')
             if src:
                 f.seek(int(sk2['VertexArrAbsolutePtr'], 16))
-                f.write(base64.b64decode(src))
+                f.write(_to_bytes(src))
                 wrote_any = True
             wt = sk2.get('WeightData')
             if wt:
                 f.seek(int(sk2['WeightArrAbsolutePtr'], 16))
-                f.write(base64.b64decode(wt))
+                f.write(_to_bytes(wt))
                 wrote_any = True
 
         for skacc in skin_data.get('SKAccs', []):
             src = skacc.get('BindPoseData')
             if src:
                 f.seek(int(skacc['VertexArrAbsolutePtr'], 16))
-                f.write(base64.b64decode(src))
+                f.write(_to_bytes(src))
                 wrote_any = True
             wt = skacc.get('WeightData')
             if wt:
                 f.seek(int(skacc['WeightArrAbsolutePtr'], 16))
-                f.write(base64.b64decode(wt))
+                f.write(_to_bytes(wt))
                 wrote_any = True
 
     return wrote_any

@@ -8,6 +8,13 @@ from bpy.props import StringProperty
 from bpy_extras.io_utils import ImportHelper
 
 
+def _to_bytes(data) -> bytes:
+    """Decode binary data that is either a base64 string or a list of byte values."""
+    if isinstance(data, list):
+        return bytes(data)
+    return base64.b64decode(data)
+
+
 def _compute_bone_absolute_matrices(bone_list):
     """Return a {BoneId: mathutils.Matrix} dict of absolute world-space transforms.
 
@@ -74,7 +81,7 @@ def decode_faces(submesh):
     face_count = submesh.get("FacesCount", 0)
     if not faces_data or not face_count:
         return []
-    raw = base64.b64decode(faces_data)
+    raw = _to_bytes(faces_data)
     flat = list(struct.unpack(f'>{face_count * 3}H', raw))
     return [flat[i*3:i*3+3] for i in range(face_count)]
 
@@ -86,7 +93,7 @@ def decode_vertex_buffer(vb):
     per vertex. For non-skinned meshes CompCount==3 only [X,Y,Z] is stored.
     Returns normals as an empty list when CompCount < 6.
     """
-    raw = base64.b64decode(vb["VertexBufferData"])
+    raw = _to_bytes(vb["VertexBufferData"])
     quant = vb["VertexBufferQuantizeInfo"]
     comp_count = vb["VertexBufferCompCount"]
     fmt_nibble = quant >> 4
@@ -120,7 +127,7 @@ def decode_uv_channel(uv_channel):
     - coords: list of (s, t) float tuples decoded from the raw ST buffer
     - uv_faces: list of [i0, i1, i2] UV index triplets, aligned face-for-face with FacesData
     """
-    raw = base64.b64decode(uv_channel["UVChannelData"])
+    raw = _to_bytes(uv_channel["UVChannelData"])
     quant = uv_channel["UVChannelQuantizeInfo"]
     comp_count = uv_channel["UVChannelCompCount"]
     fmt_nibble = quant >> 4
@@ -145,7 +152,7 @@ def decode_uv_channel(uv_channel):
     uv_faces = []
     uv_faces_data = uv_channel.get("UVFacesData")
     if uv_faces_data:
-        uv_raw = base64.b64decode(uv_faces_data)
+        uv_raw = _to_bytes(uv_faces_data)
         n = len(uv_raw) // 2
         flat = list(struct.unpack(f'>{n}H', uv_raw))
         uv_faces = [flat[i * 3 : i * 3 + 3] for i in range(n // 3)]
@@ -156,7 +163,7 @@ def decode_uv_channel(uv_channel):
 def decode_color_channel(color_channel):
     """Decode a ColorChannel dict into a list of (r, g, b[, a]) float tuples and
     a list of [i0, i1, i2] color index triplets aligned face-for-face with FacesData."""
-    raw = base64.b64decode(color_channel["ColorChannelData"])
+    raw = _to_bytes(color_channel["ColorChannelData"])
     quant = color_channel["ColorChannelQuantizeInfo"]
     fmt = quant >> 4
     entry_sizes = {0: 2, 1: 3, 2: 4, 3: 2, 4: 3, 5: 4}
@@ -194,7 +201,7 @@ def decode_color_channel(color_channel):
     color_faces = []
     faces_data = color_channel.get("ColorFacesData")
     if faces_data:
-        cf_raw = base64.b64decode(faces_data)
+        cf_raw = _to_bytes(faces_data)
         n = len(cf_raw) // 2
         flat = list(struct.unpack(f'>{n}H', cf_raw))
         color_faces = [flat[i * 3 : i * 3 + 3] for i in range(n // 3)]
@@ -210,7 +217,7 @@ def decode_face_texture_indices(submesh, face_count):
     """
     data = submesh.get("FaceTextureIndices")
     if data:
-        raw = base64.b64decode(data)
+        raw = _to_bytes(data)
         n = len(raw) // 2
         return list(struct.unpack(f'>{n}H', raw))
     fallback = (submesh.get("UVChannels") or [{}])[0].get("TextureIndex") or 0
@@ -514,7 +521,7 @@ def add_vertex_groups(obj, submesh_index, bone_list, arm_obj):
             if vg is None:
                 vg = obj.vertex_groups.new(name=group_name)
             num_verts = len(obj.data.vertices)
-            raw = base64.b64decode(entry['Influences'])
+            raw = _to_bytes(entry['Influences'])
             for v_idx, weight in struct.iter_unpack('>Hf', raw):
                 if v_idx < num_verts:
                     vg.add([v_idx], weight, 'REPLACE')

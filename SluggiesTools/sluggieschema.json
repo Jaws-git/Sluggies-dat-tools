@@ -18,6 +18,10 @@
           "type": "number",
           "description": "Full length of model data (in bytes) from offset adress to end of model data"
         },
+        "UseBase64": {
+          "type": "boolean",
+          "description": "Whether to use Base64 encoding for binary data buffers. If false, binary data will be represented as arrays of byte values. Base64 is more compact and human-readable for large buffers, but raw byte arrays may be more convenient for small buffers or when editing the JSON by hand."
+        },
         "Submeshes": {
           "type": "array",
           "description": "There can be multiple separate submeshes in one model.",
