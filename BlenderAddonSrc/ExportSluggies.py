@@ -166,7 +166,9 @@ def encode_uv_channel_edited(obj, json_channel, use_base64=True, all_uv_channels
             elif output_slots[uv_slot] != (qs, qt):
                 conflicts.append(uv_slot)
 
-    # Fall back to original data for any slot not touched by a loop
+    # Fall back to original data for any slot not touched by a loop.
+    # Store raw quantized values (int16 for integer format, float for float format)
+    # so they stay in the same units as active slots and re-encode correctly.
     if None in output_slots:
         orig_raw = _to_bytes(json_channel["UVChannelData"])
         for slot_idx, val in enumerate(output_slots):
@@ -174,8 +176,7 @@ def encode_uv_channel_edited(obj, json_channel, use_base64=True, all_uv_channels
                 off = slot_idx * comp_count * comp_size
                 os_ = struct.unpack_from('>f' if is_float else '>h', orig_raw, off)[0]
                 ot_ = struct.unpack_from('>f' if is_float else '>h', orig_raw, off + comp_size)[0]
-                output_slots[slot_idx] = (os_ / (1 if is_float else divisor),
-                                          ot_ / (1 if is_float else divisor))
+                output_slots[slot_idx] = (os_, ot_)
 
     # Encode the coord array in original slot order
     raw_bytes = bytearray()
