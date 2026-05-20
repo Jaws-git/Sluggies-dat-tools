@@ -224,6 +224,90 @@ def decode_face_texture_indices(submesh, face_count):
     return [fallback] * face_count
 
 
+def _primlist_position_indices(prim_raw: bytes, active_descriptors: list) -> set:
+    """Parse a raw GX primitive stream and return the set of position attribute
+    indices referenced by any vertex in any primitive block.
+
+    Implemented inline so the addon stays independent of SluggiesTools/drawlist.py.
+    Primitive types (TRIANGLES / TRIANGLE_STRIP / QUADS / etc.) are all handled
+    identically — only the vertex count and per-vertex byte stride matter.
+    """
+    if not prim_raw or not active_descriptors:
+        return set()
+
+    # Locate 'position' within the per-vertex attribute stream.
+    pos_byte_off = 0
+    pos_size     = 0
+    byte_off     = 0
+    for d in active_descriptors:
+        if d.get('key') == 'position':
+            pos_byte_off = byte_off
+            pos_size     = d.get('index_size', 2)
+            break
+        byte_off += d.get('index_size', 2)
+    if pos_size == 0:
+        return set()
+
+    vertex_stride = sum(d.get('index_size', 2) for d in active_descriptors)
+    indices = set()
+    pos = 0
+    while pos < len(prim_raw) and prim_raw[pos] != 0:
+        pos += 1  # skip primitive-type opcode
+        if pos + 2 > len(prim_raw):
+            break
+        vert_count = (prim_raw[pos] << 8) | prim_raw[pos + 1]
+        pos += 2
+        for _ in range(vert_count):
+            if pos + vertex_stride > len(prim_raw):
+                break
+            idx = int.from_bytes(
+                prim_raw[pos + pos_byte_off : pos + pos_byte_off + pos_size], 'big'
+            )
+            indices.add(idx)
+            pos += vertex_stride
+    return indices
+
+
+def _apply_drawlist_vcol(mesh, display_states):
+    """Create a 'drawlist_regions' vertex colour attribute on *mesh* that
+    visualises which GX draw-list block references each vertex.
+
+    Only Type-7 display states that carry both PrimListData and VertexStreamLayout
+    are considered.  Their grayscale brightness is spaced evenly across [step, 1]
+    where step = 1 / total_blocks, so the first block is the darkest non-black
+    shade and the last block is pure white.  Vertices not referenced by any
+    draw list remain black (0, 0, 0).
+    """
+    blocks = [
+        ds for ds in display_states
+        if ds.get('DisplayStateId') == 7
+        and ds.get('PrimListData') is not None
+        and ds.get('VertexStreamLayout')
+    ]
+    if not blocks:
+        return
+
+    total = len(blocks)
+    step  = 1.0 / total
+
+    n_verts = len(mesh.vertices)
+    vert_brightness = [0.0] * n_verts
+
+    for i, ds in enumerate(blocks):
+        brightness = (i + 1) * step
+        prim_raw   = _to_bytes(ds['PrimListData'])
+        for vi in _primlist_position_indices(prim_raw, ds['VertexStreamLayout']):
+            if vi < n_verts:
+                vert_brightness[vi] = brightness
+
+    layer = mesh.color_attributes.new(
+        name='drawlist_regions', type='FLOAT_COLOR', domain='POINT'
+    )
+    for vi in range(n_verts):
+        v = vert_brightness[vi]
+        layer.data[vi].color = (v, v, v, 1.0)
+
+
 def _has_edited_data(submesh):
     """Return True when *submesh* contains any edited mesh data."""
     vb = submesh.get("VertexBuffer") or {}
@@ -387,6 +471,31 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
             obj["VertexCountFieldOffset"] = vcount_offset
             obj.id_properties_ui("VertexCountFieldOffset").update(
                 description="Absolute file offset of the 2-byte vertex-count field in the mesh data header")
+
+        # Store Type-7 display-state shader modes as individual editable custom properties.
+        # DisplayStateShaderMode1, DisplayStateShaderMode2, ... = the 4-char FourCC to edit.
+        # DisplayStateShaderMode1_Offset, ...               = read-only file offset.
+        display_states = submesh_meta.get("DisplayStates", [])
+        mode_idx = 1
+        for ds in display_states:
+            if ds.get("DisplayStateId") != 7:
+                continue
+            prop_val = f"DisplayStateShaderMode{mode_idx}"
+            prop_off = f"DisplayStateShaderMode{mode_idx}_Offset"
+            obj[prop_val] = ds.get("ShaderMode", "")
+            obj.id_properties_ui(prop_val).update(
+                description=(
+                    f"Type-7 shader mode #{mode_idx}. "
+                    "Spec=specular  Shdw=no-specular  SpRf=specular-reflection  "
+                    "RhSp/LhSp=right/left-hand-specular  GhSp=ghost"
+                ))
+            obj[prop_off] = ds.get("ShaderModeFieldOffset", "")
+            obj.id_properties_ui(prop_off).update(
+                description=f"File offset of shader mode #{mode_idx} (read-only, do not edit)")
+            mode_idx += 1
+
+        if display_states:
+            _apply_drawlist_vcol(mesh, display_states)
 
     # Store UV channel material binding metadata as custom properties
     if uv_channels:

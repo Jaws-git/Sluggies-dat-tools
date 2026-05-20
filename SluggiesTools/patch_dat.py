@@ -15,6 +15,15 @@ import Hammerspace as _hs
 import patch_skn_dat as _skn
 import drawlist as _dl
 
+# ---------------------------------------------------------------------------
+# Shader-mode conversion constants and helpers
+# ---------------------------------------------------------------------------
+
+# FourCC modes whose vertex stream includes a per-vertex 'lighting' index.
+_LIGHTING_MODES    = frozenset({'Spec', 'RhSp', 'LhSp', 'SpRf', 'GhSp'})
+# FourCC modes whose vertex stream does NOT include a 'lighting' index.
+_NO_LIGHTING_MODES = frozenset({'Shdw', 'Audi', 'Oeka'})
+
 
 def _to_bytes(data) -> bytes:
     """Decode binary data that is either a base64 string or a list of byte values."""
@@ -47,20 +56,20 @@ def _chunk_name(submesh_offset_hex: str, submesh_idx: int) -> str:
     return f"slugmesh_{submesh_offset_hex.lstrip('0x')}_{submesh_idx}"
 
 
-def _rebuild_draw_states(submesh: dict) -> tuple[dict, set]:
-    """Rebuild primitive list bytes for each draw state using new face indices.
+def _rebuild_display_states(submesh: dict) -> tuple[dict, set]:
+    """Rebuild primitive list bytes for each display state using new face indices.
 
     Two routing strategies are used depending on available data:
 
     1. **Texture-based routing** (when ``FaceTextureIndicesEdited`` is present):
        Each new face carries a texture index derived from its Blender material
-       slot.  A ``texture_index → draw_state_index`` map is built from the
+       slot.  A ``texture_index → display_state_index`` map is built from the
        original ``FaceTextureIndices`` array.  New faces are then routed to
-       their draw state by texture index.  This correctly handles face count
+       their display state by texture index.  This correctly handles face count
        changes (additions and removals).
 
     2. **Count-based routing** (fallback, no ``FaceTextureIndicesEdited``):
-       The original per-draw-state face counts are used to split the flat new
+       The original per-display-state face counts are used to split the flat new
        face array in the same proportions.  Works only when total face count
        is unchanged.
 
@@ -75,7 +84,7 @@ def _rebuild_draw_states(submesh: dict) -> tuple[dict, set]:
     setting word(s) in the dat file accordingly.
 
     Returns ``(rebuilt_bytes_by_ds_ind, all_upgraded_keys)``.
-    Draw states with no active descriptors or no assigned faces are returned
+    Display states with no active descriptors or no assigned faces are returned
     verbatim (original bytes); they do not contribute to *all_upgraded_keys*.
     """
     faces_edited_b64 = submesh.get('FacesDataEdited')
@@ -100,16 +109,16 @@ def _rebuild_draw_states(submesh: dict) -> tuple[dict, set]:
             flat_uv = list(struct.unpack(f'>{n_uv}H', raw_uv))
             uv_faces_by_ch[ch_ind] = [flat_uv[i * 3: i * 3 + 3] for i in range(n_uv // 3)]
 
-    draw_states = submesh.get('DrawStates', [])
+    display_states = submesh.get('DisplayStates', [])
 
     # --- Decode original draw lists once (needed for face counts and fallback UV) ---
     orig_decoded: list[list] = []
-    for ds in draw_states:
-        descriptors = ds.get('ActiveDescriptors', [])
+    for ds in display_states:
+        descriptors = ds.get('VertexStreamLayout', [])
         orig_raw = _to_bytes(ds['PrimListData'])
         orig_decoded.append(_dl.decodeDrawList(orig_raw, descriptors) if descriptors else [])
 
-    # --- Build texture_index → draw_state_index from original FaceTextureIndices ---
+    # --- Build texture_index → display_state_index from original FaceTextureIndices ---
     tex_to_ds: dict[int, int] = {}
     face_tex_b64 = submesh.get('FaceTextureIndices')
     if face_tex_b64:
@@ -125,9 +134,9 @@ def _rebuild_draw_states(submesh: dict) -> tuple[dict, set]:
                     tex_to_ds[tex_idx] = ds_ind
             face_off += cnt
 
-    # --- Assign new faces to draw states ---
-    # ds_assignments[ds_ind] = ordered list of global face indices for that draw state
-    ds_assignments: dict[int, list[int]] = {i: [] for i in range(len(draw_states))}
+    # --- Assign new faces to display states ---
+    # ds_assignments[ds_ind] = ordered list of global face indices for that display state
+    ds_assignments: dict[int, list[int]] = {i: [] for i in range(len(display_states))}
 
     face_tex_edited_b64 = submesh.get('FaceTextureIndicesEdited')
     if face_tex_edited_b64 and tex_to_ds:
@@ -143,8 +152,8 @@ def _rebuild_draw_states(submesh: dict) -> tuple[dict, set]:
             else:
                 ds_assignments[ds_ind].append(fi)
         if skipped:
-            print(f"  WARNING _rebuild_draw_states: {skipped} face(s) had a texture "
-                  f"index not found in any original draw state and were dropped.")
+            print(f"  WARNING _rebuild_display_states: {skipped} face(s) had a texture "
+                  f"index not found in any original display state and were dropped.")
     else:
         # Path 2: count-based routing — face count must be unchanged
         face_offset = 0
@@ -153,19 +162,19 @@ def _rebuild_draw_states(submesh: dict) -> tuple[dict, set]:
             available = total_new - face_offset
             take = min(orig_count, available)
             if take < orig_count:
-                print(f"  WARNING draw state {ds_ind}: expected {orig_count} faces "
+                print(f"  WARNING display state {ds_ind}: expected {orig_count} faces "
                       f"but only {available} remain in FacesDataEdited — truncated.")
             ds_assignments[ds_ind] = list(range(face_offset, face_offset + take))
             face_offset += take
         if face_offset < total_new:
-            print(f"  WARNING _rebuild_draw_states: {total_new - face_offset} face(s) "
-                  f"in FacesDataEdited were not assigned to any draw state.")
+            print(f"  WARNING _rebuild_display_states: {total_new - face_offset} face(s) "
+                  f"in FacesDataEdited were not assigned to any display state.")
 
     # --- Rebuild each draw list from assigned faces ---
     result = {}
     all_upgraded_keys: set[str] = set()
-    for ds_ind, ds in enumerate(draw_states):
-        descriptors = ds.get('ActiveDescriptors', [])
+    for ds_ind, ds in enumerate(display_states):
+        descriptors = ds.get('VertexStreamLayout', [])
         orig_raw = _to_bytes(ds['PrimListData'])
         assigned = ds_assignments.get(ds_ind, [])
 
@@ -221,7 +230,7 @@ def writeExpandedMesh(i: int, submesh: dict, new_verts_raw: bytes,
 
     When ``submesh`` carries ``FacesDataEdited`` and/or ``UVFacesDataEdited``
     (written by ``encode_mesh_hammerspace``), each draw state's primitive list
-    is rebuilt via ``_rebuild_draw_states`` so UV seam splits and face count
+    is rebuilt via ``_rebuild_display_states`` so UV seam splits and face count
     changes are correctly reflected in the GX vertex index stream.
 
     Returns True on success, False on failure.
@@ -231,7 +240,7 @@ def writeExpandedMesh(i: int, submesh: dict, new_verts_raw: bytes,
     chunk_name = _chunk_name(submesh['SubmeshOffset'], i)
 
     # Rebuild draw lists when new face/UV index data is available
-    rebuilt_dls, upgraded_keys = _rebuild_draw_states(submesh)
+    rebuilt_dls, upgraded_keys = _rebuild_display_states(submesh)
 
     # Build ordered sections: vertex → each UV channel → each draw state
     sections = [('verts', new_verts_raw)]
@@ -243,7 +252,7 @@ def writeExpandedMesh(i: int, submesh: dict, new_verts_raw: bytes,
             raw = _to_bytes(ch['UVChannelData'])
         sections.append((f'uv{ch_ind}', raw))
 
-    for ds_ind, ds in enumerate(submesh.get('DrawStates', [])):
+    for ds_ind, ds in enumerate(submesh.get('DisplayStates', [])):
         dl_raw = rebuilt_dls.get(ds_ind, _to_bytes(ds['PrimListData']))
         sections.append((f'dl{ds_ind}', dl_raw))
 
@@ -288,7 +297,7 @@ def writeExpandedMesh(i: int, submesh: dict, new_verts_raw: bytes,
             f.seek(int(ch['UVCountFieldOffset'], 16))
             f.write(struct.pack('>H', new_uv_count))
 
-        for ds_ind, ds in enumerate(submesh.get('DrawStates', [])):
+        for ds_ind, ds in enumerate(submesh.get('DisplayStates', [])):
             dl_raw = rebuilt_dls.get(ds_ind, _to_bytes(ds['PrimListData']))
             dl_abs = data_abs + offsets[f'dl{ds_ind}']
             _hs.patchPointerField(int(ds['PrimListPtrFieldOffset'], 16), dl_abs, relative_base)
@@ -297,7 +306,7 @@ def writeExpandedMesh(i: int, submesh: dict, new_verts_raw: bytes,
 
         # Patch Type-3 display-state setting words for attributes widened to 2-byte
         if upgraded_keys:
-            for ds in submesh.get('DrawStates', []):
+            for ds in submesh.get('DisplayStates', []):
                 if ds.get('DisplayStateId') == 3:
                     # setting field is 4 bytes before PrimListPtrFieldOffset
                     setting_off = int(ds['PrimListPtrFieldOffset'], 16) - 4
@@ -376,7 +385,7 @@ def restoreSubmeshFromHammerspace(i: int, submesh: dict,
             f.seek(int(ch['UVCountFieldOffset'], 16))
             f.write(struct.pack('>H', orig_uv_count))
 
-        for ds in submesh.get('DrawStates', []):
+        for ds in submesh.get('DisplayStates', []):
             original_dl_offset = int(ds['PrimListAbsoluteOffset'], 16)
             _hs.patchPointerField(int(ds['PrimListPtrFieldOffset'], 16),
                                   original_dl_offset, relative_base)
@@ -447,6 +456,7 @@ else:
 
 patches    = []   # (submesh_idx, file_offset, raw_bytes)
 uv_patches = []   # (submesh_idx, ch_ind, file_offset, raw_bytes)
+setting_patches  = []   # (submesh_idx, ds_idx, file_offset, raw_bytes)
 hammerspace_count = 0
 
 skin_data        = data["SluggiesModel"].get("SkinData")        # None for non-skinned models
@@ -547,12 +557,64 @@ for i, submesh in enumerate(submeshes):
                 print(f"  Submesh {i} UV ch {ch_ind}: {len(raw)} bytes (in-place)")
 
 # ---------------------------------------------------------------------------
+# Collect shader-mode (Type-7 FourCC) patches.
+#
+# GUARDRAIL: changing between lighting modes (Spec / RhSp / LhSp / SpRf /
+# GhSp) and no-lighting modes (Shdw / Audi / Oeka) alters the per-vertex
+# stride of every primitive list in the affected Type-3 group and is
+# therefore not supported.  patch_dat.py aborts if any SettingEdited value
+# crosses that boundary or uses an unrecognised mode.
+#
+# Changes within the same class (e.g. Spec → RhSp, or Shdw → Audi) are
+# structurally safe and applied as a plain 4-byte FourCC overwrite.
+# ---------------------------------------------------------------------------
+
+_ALL_KNOWN_MODES = _LIGHTING_MODES | _NO_LIGHTING_MODES
+
+for i, submesh in enumerate(submeshes):
+    display_states = submesh.get("DisplayStates", [])
+
+    for ds_idx, ds in enumerate(display_states):
+        if ds.get("DisplayStateId") != 7:
+            continue
+        off_str = ds.get("ShaderModeFieldOffset")
+        if not off_str:
+            continue
+        off       = int(off_str, 16)
+        old_code  = ds.get("ShaderMode", "")
+        edit_code = ds.get("ShaderModeEdited")
+
+        if unpatch:
+            raw = old_code.encode('ascii', errors='replace').ljust(4, b' ')[:4]
+            setting_patches.append((i, ds_idx, off, raw))
+            print(f"  Submesh {i} DS[{ds_idx}] ShaderMode: restore \"{old_code}\" at {off_str}")
+        else:
+            if edit_code is None:
+                continue
+            if edit_code not in _ALL_KNOWN_MODES:
+                abort(
+                    f"Submesh {i} DS[{ds_idx}]: unrecognised shader mode \"{edit_code}\". "
+                    f"Known modes: {sorted(_ALL_KNOWN_MODES)}."
+                )
+            if (old_code in _LIGHTING_MODES) != (edit_code in _LIGHTING_MODES):
+                abort(
+                    f"Submesh {i} DS[{ds_idx}]: cannot change shader mode "
+                    f"from \"{old_code}\" to \"{edit_code}\" — crossing the "
+                    f"lighting / no-lighting boundary would require repacking "
+                    f"all primitive lists in the Type-3 group."
+                )
+            raw = edit_code.encode('ascii', errors='replace').ljust(4, b' ')[:4]
+            setting_patches.append((i, ds_idx, off, raw))
+            print(f"  Submesh {i} DS[{ds_idx}] ShaderMode: \"{old_code}\" -> \"{edit_code}\" at {off_str}")
+
+# ---------------------------------------------------------------------------
 # Write in-place patches
 # ---------------------------------------------------------------------------
 
-if patches or uv_patches:
-    print(f"\nWriting {len(patches)} in-place vertex patch(es) and "
-          f"{len(uv_patches)} UV patch(es) to {OUTPUT_DAT} ...")
+if patches or uv_patches or setting_patches:
+    print(f"\nWriting {len(patches)} vertex, {len(uv_patches)} UV, "
+          f"{len(setting_patches)} shader-mode "
+          f"patch(es) to {OUTPUT_DAT} ...")
     with open(OUTPUT_DAT, 'r+b') as f:
         for i, offset, raw in patches:
             f.seek(offset)
@@ -562,6 +624,10 @@ if patches or uv_patches:
             f.seek(offset)
             f.write(raw)
             print(f"  Submesh {i} UV ch {ch_ind}: wrote {len(raw)} bytes at 0x{offset:X}")
+        for i, ds_idx, offset, raw in setting_patches:
+            f.seek(offset)
+            f.write(raw)
+            print(f"  Submesh {i} DS[{ds_idx}] shader: wrote {raw!r} at 0x{offset:X}")
 
 # In-place skin source and weight patching (non-hammerspace skinned models)
 if skin_data is not None and not use_hammerspace and not unpatch:
@@ -580,6 +646,7 @@ if skin_data is not None and not use_hammerspace and unpatch:
 print(f"\n--- Summary ---")
 print(f"Vertex submeshes patched (in-place) : {len(patches)}")
 print(f"UV channels patched (in-place)      : {len(uv_patches)}")
+print(f"ShaderMode (Type-7 FourCC) patched  : {len(setting_patches)}")
 print(f"Submeshes written to hammerspace    : {hammerspace_count}")
 print(f"Output file                         : {OUTPUT_DAT}")
 if unpatch:

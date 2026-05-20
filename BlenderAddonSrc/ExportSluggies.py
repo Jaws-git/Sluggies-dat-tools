@@ -220,8 +220,8 @@ def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False, use_bas
 
     # Per-face texture index derived from Blender material slots.
     # Material names are "{obj_name}_mat{tex_idx}" (set during import).
-    # This is used by _rebuild_draw_states in patch_dat.py to route faces to
-    # the correct draw state when face count differs from the original.
+    # This is used by _rebuild_display_states in patch_dat.py to route faces to
+    # the correct display state when face count differs from the original.
     mat_to_tex: dict[int, int] = {}
     for slot_idx, slot in enumerate(obj.material_slots):
         tex_idx = 0
@@ -820,6 +820,30 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     json_channel["UVChannelDataEdited"] = uv_data_b64
                     # UVFacesDataEdited is no longer written: the draw list indices
                     # are unchanged so UVFacesData still applies after patching.
+
+            # Write back DisplayState shader modes (Type-7 FourCC codes) if edited.
+            # Collect from DisplayStateShaderMode1/DisplayStateShaderMode1_Offset, ...
+            edited_lookup = {}
+            n = 1
+            while f"DisplayStateShaderMode{n}" in obj:
+                setting = str(obj[f"DisplayStateShaderMode{n}"])
+                offset  = str(obj.get(f"DisplayStateShaderMode{n}_Offset") or "")
+                if offset:
+                    edited_lookup[offset] = setting
+                n += 1
+            for ds in target_submesh.get("DisplayStates", []):
+                if ds.get("DisplayStateId") != 7:
+                    continue
+                off = ds.get("ShaderModeFieldOffset")
+                original = ds.get("ShaderMode", "")
+                if off in edited_lookup:
+                    new_val = edited_lookup[off]
+                    if new_val != original:
+                        ds["ShaderModeEdited"] = new_val
+                    else:
+                        ds.pop("ShaderModeEdited", None)  # edited back to original — clear it
+                else:
+                    ds.pop("ShaderModeEdited", None)  # not in Blender props — clear any stale value
 
             written += 1
 

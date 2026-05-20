@@ -96,7 +96,7 @@ def compact_faces_json(obj, indent=2):
     # Collapse 3-element numeric arrays (e.g. Translation, Scale, HeadPosition, face indices)
     raw = re.sub(rf'\[\s*({_n}),\s*({_n}),\s*({_n})\s*\]',
                  r'[\1, \2, \3]', raw, flags=re.DOTALL)
-    # Collapse ActiveDescriptor objects {"key": "...", "index_size": n} onto one line
+    # Collapse VertexStreamLayout descriptor objects {"key": "...", "index_size": n} onto one line
     raw = re.sub(r'\{\s*"key":\s*("[\w]+")\s*,\s*"index_size":\s*(\d+)\s*\}',
                  r'{"key": \1, "index_size": \2}', raw, flags=re.DOTALL)
     return raw
@@ -163,9 +163,9 @@ def extract_submeshes(model):
         color_faces_raw = {0: [], 1: []}
         color_active = {0: False, 1: False}
         tex_assignments = {}  # ch_ind -> {'index', 'wraps', 'wrapt'} from last Type-1 draw state
-        draw_states_gfx = layout.getTriangles()
-        for draw_state in draw_states_gfx:
-            state = draw_state['state']
+        display_states_gfx = layout.getTriangles()
+        for display_state in display_states_gfx:
+            state = display_state['state']
             active_descriptors = [d['key'] for d in state['descriptors']]
             # Record the last-seen texture assignment for each UV channel (Type-1 draw state)
             for ch_ind in range(num_uv_channels):
@@ -181,7 +181,7 @@ def extract_submeshes(model):
                 color_active[0] = True
             if has_color1:
                 color_active[1] = True
-            for triangle in draw_state['triangles']:
+            for triangle in display_state['triangles']:
                 faces_raw.append([vertex['position'] for vertex in triangle])
                 face_tex_indices.append(current_primary_tex)
                 for ch_ind in range(num_uv_channels):
@@ -249,22 +249,31 @@ def extract_submeshes(model):
                     "ColorChannelData": color_raw,
                     "ColorFacesData": ch_faces_data
                 })
-        # Build structural draw-state info for pointer patching.
+        # Build structural display-state info for pointer patching.
         # DODisplayState layout: [id:1][pad:3][setting:4][primitiveListPtr:4][primitiveListSize:4]
         # primitiveListPtr is relative to DOLayout.absolute (= SubmeshOffset).
-        draw_states_export = []
-        for ds_obj, draw_state in zip(layout.DODisplayHeader.displayStates, draw_states_gfx):
+        display_states_export = []
+        for ds_obj, display_state in zip(layout.DODisplayHeader.displayStates, display_states_gfx):
             raw_prim = bytes(ds_obj.primitiveList.data)
-            draw_states_export.append({
+            # Decode the 4-byte FourCC shader mode for Type-7 display states.
+            # Setting field is at ds_obj.absolute + 4 (id=1B, pad=3B, then setting=4B).
+            setting_bytes = itb(ds_obj.setting, 4)
+            try:
+                setting_fourcc = setting_bytes.decode('ascii')
+            except Exception:
+                setting_fourcc = setting_bytes.hex()
+            display_states_export.append({
                 "DisplayStateId": ds_obj.id,
+                "ShaderModeFieldOffset": hex(ds_obj.absolute + 4),
+                "ShaderMode": setting_fourcc,
                 "PrimListPtrFieldOffset": hex(ds_obj.absolute + 8),
                 "PrimListSizeFieldOffset": hex(ds_obj.absolute + 12),
                 "PrimListAbsoluteOffset": hex(layout.absolute + ds_obj.primitiveListPtr),
                 "PrimListLength": ds_obj.primitiveListSize,
                 "PrimListData": _encode_bytes(raw_prim),
-                "ActiveDescriptors": [
+                "VertexStreamLayout": [
                     {"key": d['key'], "index_size": d['index_size']}
-                    for d in draw_state['state']['descriptors']
+                    for d in display_state['state']['descriptors']
                 ]
             })
         submeshes.append({
@@ -274,7 +283,7 @@ def extract_submeshes(model):
             "FacesCount": face_count,
             "FacesData": faces_data,
             "FaceTextureIndices": face_tex_data,
-            "DrawStates": draw_states_export,
+            "DisplayStates": display_states_export,
             "VertexBuffer": {
                 "VertexBufferOffset": hex(vb_offset),
                 "VertexBufferLength": vb_length,
