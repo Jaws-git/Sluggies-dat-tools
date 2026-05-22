@@ -561,51 +561,107 @@
       },
       "SkinDataEdited": {
         "type": "object",
-        "description": "Rebuilt skinning data produced by the Blender exporter when Hammerspace Mode is used (vertex count may change). Written at the model level rather than inside SkinData so that the original pointer fields in SkinData remain available for --unpatch restoration. Absent until first hammerspace export.",
+        "description": "Full SKN block representing the edited/rebuilt skinning state. Structurally identical to SkinData so the two blocks can be directly compared before patching. Written by the Blender exporter; absent until first export. Pointer and offset fields are optional (Blender cannot supply them); FlushIndSize should be carried over from SkinData when needed by skn_block_size.",
         "properties": {
+          "SKNOffset": {
+            "type": "string",
+            "description": "Absolute file offset of the SKN header struct in dt_na.dat (hex). Carried over from SkinData unchanged when written by the Blender exporter."
+          },
+          "GplBaseOffset": {
+            "type": "string",
+            "description": "Absolute file offset of the GPL section (hex). Carried over from SkinData."
+          },
+          "MemClrPtrFieldOffset": {
+            "type": "string",
+            "description": "Absolute file offset of the SKN memClrPtr field (hex). Carried over from SkinData."
+          },
+          "MemClrSzeFieldOffset": {
+            "type": "string",
+            "description": "Absolute file offset of the SKN memClrSze field (hex). Carried over from SkinData."
+          },
+          "MemClrAbsolutePtr": {
+            "type": "string",
+            "description": "Resolved absolute address of the runtime destination buffer (hex). Carried over from SkinData."
+          },
+          "MemClrSize": {
+            "type": "number",
+            "description": "Total byte size of the runtime destination buffer. May differ from SkinData.MemClrSize if vertex count changed."
+          },
+          "FlushIndArrFieldOffset": {
+            "type": "string",
+            "description": "Absolute file offset of the SKN flushIndArr field (hex). Carried over from SkinData."
+          },
+          "FlushIndAbsolutePtr": {
+            "type": ["string", "null"],
+            "description": "Resolved absolute address of the flush index array (hex), or null. Carried over from SkinData."
+          },
+          "FlushIndSize": {
+            "type": "number",
+            "description": "Number of flush indices. Should be carried over from SkinData.FlushIndSize when computing skn_block_size for the edited block."
+          },
           "QuantizeInfo": {
             "type": "number",
             "description": "Quantization byte inherited from SkinData.QuantizeInfo."
           },
           "SK1s": {
             "type": "array",
-            "description": "Rebuilt SK1 entries (one per bone that has single-influence vertices).",
+            "description": "SK1 entries for the edited skinning state. One per bone that has single-influence vertices.",
             "items": {
               "type": "object",
               "properties": {
-                "BoneIndex":    { "type": "number" },
-                "VertexCnt":   { "type": "number" },
-                "BindPoseData": { "type": "string", "description": "Base64-encoded bind-pose source array (no VertexOffset prefix)." }
+                "BoneIndex": { "type": "number", "description": "Index of the bone that influences all vertices in this entry." },
+                "VertexCnt": { "type": "number", "description": "Number of vertices in this SK1 entry." },
+                "VertexOffset": { "type": "number", "description": "Byte prefix to skip at the start of the source array. Always 0 for Blender-exported entries." },
+                "VertexArrFieldOffset": { "type": "string", "description": "Absolute file offset of the vertexArr pointer field (hex). Located at SK1.absolute + 0x30." },
+                "GplVertexArrFieldOffset": { "type": "string", "description": "Absolute file offset of the gplVertexArr field (hex). Located at SK1.absolute + 0x34." },
+                "VertexArrAbsolutePtr": { "type": "string", "description": "Resolved absolute address of the bind-pose source data array (hex)." },
+                "GplVertexArrValue": { "type": "number", "description": "Byte offset of the first output vertex within the runtime destination buffer." },
+                "BindPoseData": { "type": "string", "description": "Base64-encoded bind-pose source array (6 components per vertex, XYZ + normal). No VertexOffset prefix." }
               },
               "required": ["BoneIndex", "VertexCnt", "BindPoseData"]
             }
           },
           "SK2s": {
             "type": "array",
-            "description": "Rebuilt SK2 entries (one per unique bone pair that has dual-influence vertices).",
+            "description": "SK2 entries for the edited skinning state. One per unique bone pair that has dual-influence vertices.",
             "items": {
               "type": "object",
               "properties": {
-                "BoneIndex1":   { "type": "number" },
-                "BoneIndex2":   { "type": "number" },
-                "VertexCnt":   { "type": "number" },
-                "BindPoseData": { "type": "string" },
-                "WeightData":  { "type": "string" }
+                "BoneIndex1": { "type": "number", "description": "Index of the first bone (lower bone id of the pair)." },
+                "BoneIndex2": { "type": "number", "description": "Index of the second bone (higher bone id of the pair)." },
+                "VertexCnt": { "type": "number", "description": "Number of vertices in this SK2 entry." },
+                "VertexOffset": { "type": "number", "description": "Byte prefix to skip at the start of the source array. Always 0 for Blender-exported entries." },
+                "VertexArrFieldOffset": { "type": "string", "description": "Absolute file offset of the vertexArr pointer field (hex). Located at SK2.absolute + 0x60." },
+                "WeightArrFieldOffset": { "type": "string", "description": "Absolute file offset of the weightArr pointer field (hex). Located at SK2.absolute + 0x64." },
+                "GplVertexArrFieldOffset": { "type": "string", "description": "Absolute file offset of the gplVertexArr field (hex). Located at SK2.absolute + 0x68." },
+                "VertexArrAbsolutePtr": { "type": "string", "description": "Resolved absolute address of the bind-pose source data array (hex)." },
+                "WeightArrAbsolutePtr": { "type": "string", "description": "Resolved absolute address of the weight array (hex)." },
+                "GplVertexArrValue": { "type": "number", "description": "Byte offset of the first output vertex within the runtime destination buffer." },
+                "BindPoseData": { "type": "string", "description": "Base64-encoded bind-pose source array (6 components per vertex, XYZ + normal)." },
+                "WeightData": { "type": "string", "description": "Base64-encoded weight array. Two bytes per vertex (w1 for BoneIndex1, w2 for BoneIndex2)." }
               },
               "required": ["BoneIndex1", "BoneIndex2", "VertexCnt", "BindPoseData", "WeightData"]
             }
           },
           "SKAccs": {
             "type": "array",
-            "description": "Rebuilt SKAcc entries (one per bone that contributes to vertices with three or more influences).",
+            "description": "SKAcc entries for the edited skinning state. One per bone that contributes to vertices with three or more influences.",
             "items": {
               "type": "object",
               "properties": {
-                "BoneIndex":    { "type": "number" },
-                "VertexCnt":   { "type": "number" },
-                "BindPoseData": { "type": "string" },
-                "WeightData":  { "type": "string" },
-                "DestIndexData": { "type": "string" }
+                "BoneIndex": { "type": "number", "description": "Index of the bone contributing to these vertices." },
+                "VertexCnt": { "type": "number", "description": "Number of vertices in this SKAcc entry." },
+                "VertexArrFieldOffset": { "type": "string", "description": "Absolute file offset of the vertexArr pointer field (hex). Located at SKAcc.absolute + 0x30." },
+                "DestArrFieldOffset": { "type": "string", "description": "Absolute file offset of the destArr pointer field (hex). Located at SKAcc.absolute + 0x34." },
+                "GplDestArrFieldOffset": { "type": "string", "description": "Absolute file offset of the gplDestArr field (hex). Located at SKAcc.absolute + 0x38." },
+                "WeightArrFieldOffset": { "type": "string", "description": "Absolute file offset of the weightArr pointer field (hex). Located at SKAcc.absolute + 0x3C." },
+                "VertexArrAbsolutePtr": { "type": "string", "description": "Resolved absolute address of the bind-pose source data array (hex)." },
+                "DestArrAbsolutePtr": { "type": "string", "description": "Resolved absolute address of the destination index array (hex)." },
+                "GplDestArrValue": { "type": "number", "description": "Base byte offset within the runtime destination buffer." },
+                "WeightArrAbsolutePtr": { "type": "string", "description": "Resolved absolute address of the weight array (hex)." },
+                "BindPoseData": { "type": "string", "description": "Base64-encoded bind-pose source array (6 components per vertex, XYZ + normal). No VertexOffset prefix." },
+                "DestIndexData": { "type": "string", "description": "Base64-encoded destination index array. One big-endian uint16 per vertex." },
+                "WeightData": { "type": "string", "description": "Base64-encoded weight array. One byte per vertex." }
               },
               "required": ["BoneIndex", "VertexCnt", "BindPoseData", "WeightData", "DestIndexData"]
             }
