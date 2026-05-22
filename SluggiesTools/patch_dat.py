@@ -328,17 +328,12 @@ def writeExpandedMesh(i: int, submesh: dict, new_verts_raw: bytes,
         _skn.patchSKNForNewDestBuffer(skin_data, new_vert_abs, new_skn_dest_size)
         print(f"  Submesh {i}: SKN memClrPtr patched to 0x{new_vert_abs:X}")
         if skin_data_edited is not None:
-            total_sk = _skn.patchSKNSourceArrays(skin_data, skin_data_edited, new_vert_abs)
-            if total_sk != -1:
-                print(f"  Submesh {i}: SKN source arrays rebuilt "
-                      f"({total_sk} vertices in SK1+SK2).")
-            else:
-                print(f"  Submesh {i}: WARNING — SKN source array rebuild failed; "
-                      f"bind-pose data may be stale.")
-
-    print(f"  Submesh {i}: hammerspace '{chunk_name}' at 0x{data_abs:X} "
-          f"({len(blob)} bytes payload, {new_vcount} vertices)")
-    return True
+                total_sk = _skn.patchSKNBlockInPlace(skin_data, skin_data_edited, new_vert_abs)
+                if total_sk != -1:
+                    print(f"  Submesh {i}: SKN source arrays written in-place "
+                          f"({total_sk} vertices in SK1+SK2).")
+                else:
+                    print(f"  Submesh {i}: WARNING — SKN in-place block write failed.")
 
 
 def restoreSubmeshFromHammerspace(i: int, submesh: dict,
@@ -631,13 +626,40 @@ if patches or uv_patches or setting_patches:
 
 # In-place skin source and weight patching (non-hammerspace skinned models)
 if skin_data is not None and not use_hammerspace and not unpatch:
-    if _skn.patchSKNInPlace(skin_data):
-        print("  Skin bind-pose source and weight arrays patched in-place.")
+    needs_resize = any(
+        sk.get('VertexCntEdited') is not None
+        for lst in [skin_data.get('SK1s', []), skin_data.get('SK2s', []), skin_data.get('SKAccs', [])]
+        for sk in lst
+    )
+    if needs_resize:
+        total_sk = _skn.patchSKNInPlaceResized(skin_data)
+        if total_sk >= 0:
+            print(f"  Skin bind-pose source and weight arrays patched in-place (resized, {total_sk} SK1+SK2 verts).")
+    else:
+        if _skn.patchSKNInPlace(skin_data):
+            print("  Skin bind-pose source and weight arrays patched in-place.")
+
+# Restore SKN block after in-place block patching (hammerspace vertex data,
+# but SKN source arrays written within the original SKN block).
+# gplVertexArr / memClr fields are already restored by restoreSKNPointers
+# (called from restoreSubmeshFromHammerspace above).
+if skin_data is not None and use_hammerspace and unpatch and skin_data_edited is not None:
+    if _skn.restoreSKNBlockInPlace(skin_data):
+        print("  SKN source arrays restored in-place (block rewrite undone).")
 
 # In-place skin source and weight restoration (non-hammerspace --unpatch)
 if skin_data is not None and not use_hammerspace and unpatch:
-    if _skn.restoreSKNInPlace(skin_data):
-        print("  Skin bind-pose source and weight arrays restored in-place.")
+    needs_restore_block = any(
+        sk.get('VertexCntEdited') is not None
+        for lst in [skin_data.get('SK1s', []), skin_data.get('SK2s', []), skin_data.get('SKAccs', [])]
+        for sk in lst
+    )
+    if needs_restore_block:
+        if _skn.restoreSKNBlockInPlace(skin_data):
+            print("  Skin bind-pose source arrays restored in-place (resized block undone).")
+    else:
+        if _skn.restoreSKNInPlace(skin_data):
+            print("  Skin bind-pose source and weight arrays restored in-place.")
 
 # ---------------------------------------------------------------------------
 # Summary

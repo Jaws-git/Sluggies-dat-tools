@@ -305,6 +305,77 @@ def _comp_size_skin(quant_info):
     return 4 if fmt in [4, 7, 0xa] else 2
 
 
+def _skn_block_size(skin_data: dict, flush_ind_size: int = None) -> int:
+    """Calculate total byte size of an SKN block from a SkinData or SkinDataEdited dict.
+
+    Mirrors the logic of patch_skn_dat.skn_block_size so the Blender exporter
+    can compare original vs edited sizes without importing from SluggiesTools.
+    """
+    sk1s   = skin_data.get('SK1s',   [])
+    sk2s   = skin_data.get('SK2s',   [])
+    skaccs = skin_data.get('SKAccs', [])
+    if flush_ind_size is None:
+        flush_ind_size = skin_data.get('FlushIndSize', 0)
+
+    def _a4(n):
+        return (n + 3) & ~3
+
+    total  = 0x24                 # SKN header
+    total += len(sk1s)   * 0x40  # SK1 structs
+    total += len(sk2s)   * 0x74  # SK2 structs
+    total += len(skaccs) * 0x44  # SKAcc structs
+
+    for e in sk1s:
+        total += _a4(len(_to_bytes(e['BindPoseData'])))
+    for e in sk2s:
+        total += _a4(len(_to_bytes(e['BindPoseData'])))
+        total += _a4(len(_to_bytes(e['WeightData'])))
+    for e in skaccs:
+        total += _a4(len(_to_bytes(e['BindPoseData'])))
+        total += _a4(len(_to_bytes(e['DestIndexData'])))
+        total += _a4(len(_to_bytes(e['WeightData'])))
+
+    if flush_ind_size:
+        total += _a4(flush_ind_size * 2)
+
+    return total
+
+
+def _skn_block_size_inplace_edited(skin_data: dict) -> int:
+    """Like _skn_block_size but uses *Edited field lengths when present.
+
+    Used by encode_skin_weights_inplace to check whether the edited variable-count
+    layout still fits within the original SKN block.
+    """
+    sk1s   = skin_data.get('SK1s',   [])
+    sk2s   = skin_data.get('SK2s',   [])
+    skaccs = skin_data.get('SKAccs', [])
+    flush_ind_size = skin_data.get('FlushIndSize', 0)
+
+    def _a4(n):
+        return (n + 3) & ~3
+
+    total  = 0x24
+    total += len(sk1s)   * 0x40
+    total += len(sk2s)   * 0x74
+    total += len(skaccs) * 0x44
+
+    for e in sk1s:
+        total += _a4(len(_to_bytes(e.get('BindPoseDataEdited') or e['BindPoseData'])))
+    for e in sk2s:
+        total += _a4(len(_to_bytes(e.get('BindPoseDataEdited') or e['BindPoseData'])))
+        total += _a4(len(_to_bytes(e.get('WeightDataEdited')   or e['WeightData'])))
+    for e in skaccs:
+        total += _a4(len(_to_bytes(e.get('BindPoseDataEdited')  or e['BindPoseData'])))
+        total += _a4(len(_to_bytes(e.get('DestIndexDataEdited') or e['DestIndexData'])))
+        total += _a4(len(_to_bytes(e.get('WeightDataEdited')    or e['WeightData'])))
+
+    if flush_ind_size:
+        total += _a4(flush_ind_size * 2)
+
+    return total
+
+
 def _get_vgroup_weight(obj, group_name, vertex_index):
     """Return 0-1 weight for vertex_index in group_name, or 0.0 if absent."""
     vg = obj.vertex_groups.get(group_name)
@@ -320,10 +391,21 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
     """Re-pack SK1/SK2/SKAcc bind-pose source data and SK2/SKAcc weight bytes
     from Blender vertex positions/normals and vertex groups (in-place mode).
 
-    Vertex count and bone structure must be unchanged — only values are updated.
-    Writes 'BindPoseDataEdited' into each SK1/SK2/SKAcc entry and 'WeightDataEdited'
-    into each SK2/SKAcc entry inside the existing SkinData dict.
-    Returns True if any entries were written.
+    Supports variable vertex counts per entry: trailing vertices that have lost
+    all bone influence are trimmed from the source arrays, reducing entry size.
+    Middle-removed vertices (still needed to preserve dest-slot ordering for
+    subsequent kept vertices) retain their original source data.
+
+    For SKAcc entries, any vertex can be freely removed since dest indices are
+    explicit; duplicate-dest entries are always preserved verbatim.
+
+    Writes into each SK entry:
+    - 'BindPoseDataEdited'     (SK1 / SK2 / SKAcc)
+    - 'WeightDataEdited'       (SK2 / SKAcc)
+    - 'DestIndexDataEdited'    (SKAcc only, when count changes)
+    - 'VertexCntEdited'        (any type, when count changes)
+
+    Returns True if any entries were written, False on size overflow.
     """
     skin_data = data["SluggiesModel"].get("SkinData")
     if not skin_data or not (skin_data.get("SK1s") or skin_data.get("SK2s") or skin_data.get("SKAccs")):
@@ -346,7 +428,7 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
     cumulative = 0
     for sm in submeshes:
         vb = sm["VertexBuffer"]
-        vb_cs    = _comp_size_skin(vb["VertexBufferQuantizeInfo"])
+        vb_cs     = _comp_size_skin(vb["VertexBufferQuantizeInfo"])
         vtx_count = vb["VertexBufferLength"] // (vb["VertexBufferCompCount"] * vb_cs)
         sub_ranges.append((cumulative, vtx_count, vb["VertexBufferOffset"]))
         cumulative += vtx_count
@@ -374,96 +456,179 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
             return struct.pack('>f', float(v))
         return struct.pack('>h', max(-32768, min(32767, round(float(v) * divisor))))
 
+    def encode_vertex(obj, local_v):
+        vd  = obj.data.vertices[local_v]
+        _cn = custom_normals_cache.get(str(obj["VertexBufferOffset"]))
+        nx, ny, nz = (
+            (_cn[local_v].x, _cn[local_v].y, _cn[local_v].z)
+            if _cn is not None
+            else (vd.normal.x, vd.normal.y, vd.normal.z)
+        )
+        buf = bytearray()
+        for val in [vd.co.x, vd.co.y, vd.co.z, nx, ny, nz]:
+            buf.extend(pack_val(val))
+        return bytes(buf)
+
     wrote_any = False
 
-    # SK1 entries — source data only (no weights)
+    # --- SK1 entries (source data only, no weights) ---
+    # Re-encode in dest-slot order (position i → dest slot gplBase + vtx_off + i).
+    # Trailing vertices with weight=0 are trimmed; middle-removed ones keep
+    # their original source bytes so subsequent kept vertices stay at the
+    # correct dest slot.
     for sk1 in skin_data.get("SK1s", []):
+        bone_id      = sk1["BoneIndex"]
+        bone_name    = f"bone_{bone_id}"
         n            = sk1["VertexCnt"]
         vtx_off      = sk1.get("VertexOffset", 0)
         global_start = (sk1["GplVertexArrValue"] + vtx_off) // vertex_size
         orig_src     = _to_bytes(sk1["BindPoseData"])
-        src = bytearray(orig_src[:vtx_off])  # preserve any prefix bytes unchanged
+
+        last_kept  = -1
+        slot_bytes = []
         for i in range(n):
             obj, local_v = resolve(global_start + i)
             if obj is None:
-                src.extend(orig_src[vtx_off + i * vertex_size : vtx_off + (i + 1) * vertex_size])
+                # Vertex outside imported submeshes — treat as kept, preserve.
+                slot_bytes.append(orig_src[vtx_off + i * vertex_size : vtx_off + (i + 1) * vertex_size])
+                last_kept = i
             else:
-                vd = obj.data.vertices[local_v]
-                _cn = custom_normals_cache.get(str(obj["VertexBufferOffset"]))
-                nx, ny, nz = (_cn[local_v].x, _cn[local_v].y, _cn[local_v].z) if _cn is not None else (vd.normal.x, vd.normal.y, vd.normal.z)
-                for val in [vd.co.x, vd.co.y, vd.co.z, nx, ny, nz]:
-                    src.extend(pack_val(val))
-        sk1["BindPoseDataEdited"] = _from_bytes(bytes(src), use_base64)
+                if _get_vgroup_weight(obj, bone_name, local_v) > 0:
+                    slot_bytes.append(encode_vertex(obj, local_v))
+                    last_kept = i
+                else:
+                    # Vertex removed — keep original for middle-ordering.
+                    slot_bytes.append(orig_src[vtx_off + i * vertex_size : vtx_off + (i + 1) * vertex_size])
+
+        new_count = last_kept + 1 if last_kept >= 0 else 0
+        src = orig_src[:vtx_off] + b''.join(slot_bytes[:new_count])
+
+        sk1["BindPoseDataEdited"] = _from_bytes(src, use_base64)
+        if new_count != n:
+            sk1["VertexCntEdited"] = new_count
         wrote_any = True
 
+    # --- SK2 entries (source data + blend weights) ---
+    # A vertex is "kept" if it still has at least one non-zero weight for
+    # either bone in this pair.  Both weights zero → candidate for trailing trim.
     for sk2 in skin_data.get("SK2s", []):
+        bone1        = sk2["BoneIndex1"]
+        bone2        = sk2["BoneIndex2"]
+        bone1_name   = f"bone_{bone1}"
+        bone2_name   = f"bone_{bone2}"
         n            = sk2["VertexCnt"]
         vtx_off      = sk2.get("VertexOffset", 0)
         global_start = (sk2["GplVertexArrValue"] + vtx_off) // vertex_size
-        bone1        = sk2["BoneIndex1"]
-        bone2        = sk2["BoneIndex2"]
-        orig_wt      = _to_bytes(sk2["WeightData"])
         orig_src     = _to_bytes(sk2["BindPoseData"])
-        src = bytearray(orig_src[:vtx_off])  # preserve any prefix bytes unchanged
-        wt  = bytearray()
+        orig_wt      = _to_bytes(sk2["WeightData"])
+
+        last_kept  = -1
+        slot_src   = []
+        slot_wt    = []
         for i in range(n):
             obj, local_v = resolve(global_start + i)
             if obj is None:
-                src.extend(orig_src[vtx_off + i * vertex_size : vtx_off + (i + 1) * vertex_size])
-                wt.append(orig_wt[i * 2])
-                wt.append(orig_wt[i * 2 + 1])
+                slot_src.append(orig_src[vtx_off + i * vertex_size : vtx_off + (i + 1) * vertex_size])
+                slot_wt.append(bytes([orig_wt[i * 2], orig_wt[i * 2 + 1]]))
+                last_kept = i
             else:
-                vd = obj.data.vertices[local_v]
-                _cn = custom_normals_cache.get(str(obj["VertexBufferOffset"]))
-                nx, ny, nz = (_cn[local_v].x, _cn[local_v].y, _cn[local_v].z) if _cn is not None else (vd.normal.x, vd.normal.y, vd.normal.z)
-                for val in [vd.co.x, vd.co.y, vd.co.z, nx, ny, nz]:
-                    src.extend(pack_val(val))
-                w1 = _get_vgroup_weight(obj, f"bone_{bone1}", local_v)
-                w2 = _get_vgroup_weight(obj, f"bone_{bone2}", local_v)
-                wt.append(max(0, min(255, round(w1 * 256))))
-                wt.append(max(0, min(255, round(w2 * 256))))
-        sk2["BindPoseDataEdited"] = _from_bytes(bytes(src), use_base64)
-        sk2["WeightDataEdited"] = _from_bytes(bytes(wt), use_base64)
+                w1 = _get_vgroup_weight(obj, bone1_name, local_v)
+                w2 = _get_vgroup_weight(obj, bone2_name, local_v)
+                if w1 > 0 or w2 > 0:
+                    slot_src.append(encode_vertex(obj, local_v))
+                    slot_wt.append(bytes([
+                        max(0, min(255, round(w1 * 256))),
+                        max(0, min(255, round(w2 * 256))),
+                    ]))
+                    last_kept = i
+                else:
+                    # Both bones removed — keep original for middle-ordering.
+                    slot_src.append(orig_src[vtx_off + i * vertex_size : vtx_off + (i + 1) * vertex_size])
+                    slot_wt.append(bytes([orig_wt[i * 2], orig_wt[i * 2 + 1]]))
+
+        new_count = last_kept + 1 if last_kept >= 0 else 0
+        src = orig_src[:vtx_off] + b''.join(slot_src[:new_count])
+        wt  = b''.join(slot_wt[:new_count])
+
+        sk2["BindPoseDataEdited"] = _from_bytes(src, use_base64)
+        sk2["WeightDataEdited"]   = _from_bytes(wt, use_base64)
+        if new_count != n:
+            sk2["VertexCntEdited"] = new_count
         wrote_any = True
 
+    # --- SKAcc entries (source data + dest indices + weights) ---
+    # Since dest indices are explicit, any vertex can be freely removed without
+    # breaking the dest-slot ordering of other vertices.
+    # Duplicate-dest entries are always preserved verbatim (same reasoning as
+    # before: Blender stores only one weight per (bone, vertex) pair).
     for skacc in skin_data.get("SKAccs", []):
-        n         = skacc["VertexCnt"]
         bone_id   = skacc["BoneIndex"]
+        bone_name = f"bone_{bone_id}"
+        n         = skacc["VertexCnt"]
         dest_base = skacc["GplDestArrValue"] // vertex_size
-        orig_wt   = _to_bytes(skacc["WeightData"])
         orig_src  = _to_bytes(skacc["BindPoseData"])
+        orig_wt   = _to_bytes(skacc["WeightData"])
         dest_idxs = list(struct.unpack(f'>{n}H', _to_bytes(skacc["DestIndexData"])))
-        src = bytearray()
-        wt  = bytearray()
-        # Pre-compute which dest indices appear more than once within this entry.
-        # These cannot be faithfully encoded from Blender vertex groups, which can
-        # only store one weight per (bone, vertex) pair: Blender's 'REPLACE' mode
-        # during import keeps only the last weight for a repeated (bone, vertex),
-        # so both the first and subsequent occurrences would be written with the
-        # wrong value.  Preserve the original bytes verbatim for ALL occurrences of
-        # any repeated dest index (non-duplicate indices are still re-encoded normally).
+
         dest_count = {}
         for di in dest_idxs:
             dest_count[di] = dest_count.get(di, 0) + 1
         dup_dests = {di for di, cnt in dest_count.items() if cnt > 1}
+
+        new_src  = bytearray()
+        new_dest = bytearray()
+        new_wt   = bytearray()
+
         for i in range(n):
-            global_v = dest_base + dest_idxs[i]
+            di       = dest_idxs[i]
+            global_v = dest_base + di
             obj, local_v = resolve(global_v)
-            if obj is None or dest_idxs[i] in dup_dests:
-                # Can't encode uniquely: preserve original bytes verbatim.
-                src.extend(orig_src[i * vertex_size : (i + 1) * vertex_size])
-                wt.append(orig_wt[i])
+
+            if di in dup_dests or obj is None:
+                # Preserve verbatim — dup-dest or unknown vertex.
+                new_src  += orig_src[i * vertex_size : (i + 1) * vertex_size]
+                new_dest += struct.pack('>H', di)
+                new_wt   += bytes([orig_wt[i]])
             else:
-                vd = obj.data.vertices[local_v]
-                _cn = custom_normals_cache.get(str(obj["VertexBufferOffset"]))
-                nx, ny, nz = (_cn[local_v].x, _cn[local_v].y, _cn[local_v].z) if _cn is not None else (vd.normal.x, vd.normal.y, vd.normal.z)
-                for val in [vd.co.x, vd.co.y, vd.co.z, nx, ny, nz]:
-                    src.extend(pack_val(val))
-                w = _get_vgroup_weight(obj, f"bone_{bone_id}", local_v)
-                wt.append(max(0, min(255, round(w * 256))))
-        skacc["BindPoseDataEdited"] = _from_bytes(bytes(src), use_base64)
-        skacc["WeightDataEdited"] = _from_bytes(bytes(wt), use_base64)
+                w = _get_vgroup_weight(obj, bone_name, local_v)
+                if w > 0:
+                    new_src  += encode_vertex(obj, local_v)
+                    new_dest += struct.pack('>H', di)
+                    new_wt   += bytes([max(0, min(255, round(w * 256)))])
+                # else: vertex removed from this SKAcc entry — skip entirely.
+
+        new_count = len(new_dest) // 2
+        skacc["BindPoseDataEdited"]  = _from_bytes(bytes(new_src),  use_base64)
+        skacc["WeightDataEdited"]    = _from_bytes(bytes(new_wt),   use_base64)
+        if new_count != n:
+            skacc["DestIndexDataEdited"] = _from_bytes(bytes(new_dest), use_base64)
+            skacc["VertexCntEdited"]     = new_count
         wrote_any = True
+
+    # --- Size check ---
+    # Edited size can never exceed original because we only shrink or keep equal.
+    # This guard catches any unforeseen logic errors.
+    orig_size = _skn_block_size(skin_data)
+    edit_size = _skn_block_size_inplace_edited(skin_data)
+
+    if edit_size > orig_size:
+        overflow = edit_size - orig_size
+        # Strip all edited fields so the patcher ignores this model.
+        for sk1 in skin_data.get("SK1s", []):
+            for k in ('BindPoseDataEdited', 'VertexCntEdited'):
+                sk1.pop(k, None)
+        for sk2 in skin_data.get("SK2s", []):
+            for k in ('BindPoseDataEdited', 'WeightDataEdited', 'VertexCntEdited'):
+                sk2.pop(k, None)
+        for skacc in skin_data.get("SKAccs", []):
+            for k in ('BindPoseDataEdited', 'WeightDataEdited', 'DestIndexDataEdited', 'VertexCntEdited'):
+                skacc.pop(k, None)
+        warnings.append(
+            f"SKN block too large for in-place patch. "
+            f"Original: {orig_size} B, Edited: {edit_size} B, "
+            f"Overflow: +{overflow} B. Reduce vertex count or simplify bone influences."
+        )
+        return False
 
     return wrote_any
 
@@ -593,13 +758,43 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
             "DestIndexData": _from_bytes(bytes(dest), use_base64),
         })
 
-    data["SluggiesModel"]["SkinDataEdited"] = {
+    flush_ind_size = skin_data.get('FlushIndSize', 0)
+
+    candidate_edited = {
         "QuantizeInfo": quant_info,
-        "SK1s":   new_sk1s,
-        "SK2s":   new_sk2s,
-        "SKAccs": new_skaccs,
+        "SK1s":         new_sk1s,
+        "SK2s":         new_sk2s,
+        "SKAccs":       new_skaccs,
     }
-    return True
+
+    orig_size = _skn_block_size(skin_data)
+    edit_size = _skn_block_size(candidate_edited, flush_ind_size=flush_ind_size)
+
+    if edit_size > orig_size:
+        overflow = edit_size - orig_size
+        stats = (
+            f"SKN block too large to patch in-place. "
+            f"Original: {orig_size} B "
+            f"({len(skin_data.get('SK1s',[]))} SK1, "
+            f"{len(skin_data.get('SK2s',[]))} SK2, "
+            f"{len(skin_data.get('SKAccs',[]))} SKAcc). "
+            f"Edited: {edit_size} B "
+            f"({len(new_sk1s)} SK1, {len(new_sk2s)} SK2, {len(new_skaccs)} SKAcc). "
+            f"Overflow: +{overflow} B — reduce vertex count or simplify bone influences."
+        )
+        return False, stats
+
+    pad_bytes = orig_size - edit_size
+    candidate_edited["FlushIndSize"] = flush_ind_size
+    data["SluggiesModel"]["SkinDataEdited"] = candidate_edited
+
+    if pad_bytes > 0:
+        return True, (
+            f"SKN block shrunk by {pad_bytes} B "
+            f"(original {orig_size} B, edited {edit_size} B); "
+            f"patcher will zero-pad the remainder."
+        )
+    return True, None
 
 
 def detect_length_mismatches(obj, json_submesh):
@@ -849,7 +1044,13 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
 
         # Skin data is model-level — encode once after all submeshes are processed
         if self.use_hammerspace:
-            encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=self.use_custom_normals)
+            skn_ok, skn_msg = encode_skin_hammerspace(
+                candidates, data, warnings, use_custom_normals=self.use_custom_normals)
+            if not skn_ok:
+                self.report({"ERROR"}, skn_msg)
+                return {"CANCELLED"}
+            if skn_msg:
+                warnings.append(skn_msg)
         else:
             encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=self.use_custom_normals)
 
