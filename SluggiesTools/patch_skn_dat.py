@@ -17,6 +17,8 @@ import struct
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+OUTPUT_DAT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '3_Output_Dat', 'dt_na.dat')
+
 
 def _to_bytes(data) -> bytes:
     """Decode binary data that is either a base64 string or a list of byte values."""
@@ -167,7 +169,7 @@ def patchSKNInPlaceResized(skin_data: dict) -> int:
     flush_blob_rel = None
     if flush_ind_size and flush_abs_str and flush_abs_str not in (None, 'null'):
         flush_blob_rel = len(blob)
-        with open(_hs.OUTPUT_DAT, 'rb') as f_r:
+        with open(OUTPUT_DAT, 'rb') as f_r:
             f_r.seek(int(flush_abs_str, 16))
             flush_bytes = f_r.read(flush_ind_size * 2)
         blob.extend(_align4(flush_bytes))
@@ -183,7 +185,7 @@ def patchSKNInPlaceResized(skin_data: dict) -> int:
 
     total_verts = 0
 
-    with open(_hs.OUTPUT_DAT, 'r+b') as f:
+    with open(OUTPUT_DAT, 'r+b') as f:
         f.seek(data_start_abs)
         f.write(bytes(blob))
 
@@ -251,7 +253,7 @@ def patchSKNInPlace(skin_data: dict) -> bool:
     Returns True if any bytes were written.
     """
     wrote_any = False
-    with open(_hs.OUTPUT_DAT, 'r+b') as f:
+    with open(OUTPUT_DAT, 'r+b') as f:
         for sk1 in skin_data.get('SK1s', []):
             src_edited = sk1.get('BindPoseDataEdited')
             if src_edited:
@@ -299,7 +301,7 @@ def restoreSKNInPlace(skin_data: dict) -> bool:
     Returns True if any bytes were written.
     """
     wrote_any = False
-    with open(_hs.OUTPUT_DAT, 'r+b') as f:
+    with open(OUTPUT_DAT, 'r+b') as f:
         for sk1 in skin_data.get('SK1s', []):
             src = sk1.get('BindPoseData')
             if src:
@@ -357,7 +359,7 @@ def restoreSKNBlockInPlace(skin_data: dict) -> bool:
     skn_abs   = int(skin_data['SKNOffset'], 16)
     wrote_any = False
 
-    with open(_hs.OUTPUT_DAT, 'r+b') as f:
+    with open(OUTPUT_DAT, 'r+b') as f:
 
         # Restore flushIndArr header pointer.
         flush_abs_str = skin_data.get('FlushIndAbsolutePtr')

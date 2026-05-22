@@ -797,6 +797,28 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
     return True, None
 
 
+def _purge_skn_edited(data):
+    """Strip all *Edited keys from SkinData SK entries and remove SkinDataEdited.
+
+    Called at the start of every export so stale fields from a previous run
+    never bleed into the new output.
+    """
+    model = data.get("SluggiesModel", {})
+    model.pop("SkinDataEdited", None)
+    skin = model.get("SkinData")
+    if not skin:
+        return
+    sk1_keys   = ("BindPoseDataEdited", "VertexCntEdited")
+    sk2_keys   = ("BindPoseDataEdited", "WeightDataEdited", "VertexCntEdited")
+    skacc_keys = ("BindPoseDataEdited", "WeightDataEdited", "DestIndexDataEdited", "VertexCntEdited")
+    for e in skin.get("SK1s",   []):
+        for k in sk1_keys:   e.pop(k, None)
+    for e in skin.get("SK2s",   []):
+        for k in sk2_keys:   e.pop(k, None)
+    for e in skin.get("SKAccs", []):
+        for k in skacc_keys: e.pop(k, None)
+
+
 def detect_length_mismatches(obj, json_submesh):
     """Return a list of human-readable strings describing any buffer-length
     changes that would require Hammerspace Mode to export correctly.
@@ -1044,7 +1066,8 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
 
             written += 1
 
-        # Skin data is model-level — encode once after all submeshes are processed
+        # Skin data is model-level — purge stale edited fields, then re-encode.
+        _purge_skn_edited(data)
         if self.use_hammerspace:
             skn_ok, skn_msg = encode_skin_hammerspace(
                 candidates, data, warnings, use_custom_normals=self.use_custom_normals)
