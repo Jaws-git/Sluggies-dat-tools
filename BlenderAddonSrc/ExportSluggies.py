@@ -866,15 +866,17 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
 
     filename_ext = ".sluggie"
     filter_glob: StringProperty(default="*.sluggie", options={"HIDDEN"})
-    use_hammerspace: BoolProperty(
-        name="Hammerspace Mode",
-        description=(
-            "Allow vertex count changes. Encodes new face indices and dense UV "
-            "coords for writeExpandedMesh() pointer patching. "
-            "Leave off for simple in-place edits that preserve vertex count."
-        ),
-        default=False,
-    )
+    # Hammerspace Mode is disabled for now; set to False unconditionally.
+    # use_hammerspace: BoolProperty(
+    #     name="Hammerspace Mode",
+    #     description=(
+    #         "Allow vertex count changes. Encodes new face indices and dense UV "
+    #         "coords for writeExpandedMesh() pointer patching. "
+    #         "Leave off for simple in-place edits that preserve vertex count."
+    #     ),
+    #     default=False,
+    # )
+    use_hammerspace = False
     use_custom_normals: BoolProperty(
         name="Include Custom Split Normals",
         description=(

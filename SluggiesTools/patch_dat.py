@@ -9,11 +9,9 @@ INPUT_DAT  = '../1_Input/dt_na.dat'
 OUTPUT_DIR = '../3_Output_Dat'
 OUTPUT_DAT = os.path.join(OUTPUT_DIR, 'dt_na.dat')
 
-# Allow importing sibling modules (HammerspaceHelpers, drawlist)
+# Allow importing sibling modules
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import Hammerspace as _hs
 import patch_skn_dat as _skn
-import drawlist as _dl
 
 # ---------------------------------------------------------------------------
 # Shader-mode conversion constants and helpers
@@ -50,348 +48,6 @@ def _comp_size(quant_info: int) -> int:
 def _align4(data: bytes) -> bytes:
     r = len(data) % 4
     return data + b'\x00' * ((4 - r) % 4)
-
-
-def _chunk_name(submesh_offset_hex: str, submesh_idx: int) -> str:
-    return f"slugmesh_{submesh_offset_hex.lstrip('0x')}_{submesh_idx}"
-
-
-def _rebuild_display_states(submesh: dict) -> tuple[dict, set]:
-    """Rebuild primitive list bytes for each display state using new face indices.
-
-    Two routing strategies are used depending on available data:
-
-    1. **Texture-based routing** (when ``FaceTextureIndicesEdited`` is present):
-       Each new face carries a texture index derived from its Blender material
-       slot.  A ``texture_index → display_state_index`` map is built from the
-       original ``FaceTextureIndices`` array.  New faces are then routed to
-       their display state by texture index.  This correctly handles face count
-       changes (additions and removals).
-
-    2. **Count-based routing** (fallback, no ``FaceTextureIndicesEdited``):
-       The original per-display-state face counts are used to split the flat new
-       face array in the same proportions.  Works only when total face count
-       is unchanged.
-
-    UV indices come from ``UVFacesDataEdited`` per channel.
-    ``lighting``, ``color0``, and ``color1`` are co-indexed with ``position``
-    for all known Sluggers models.
-
-    When any new index exceeds the original 1-byte field width the affected
-    attributes are automatically upgraded to 2-byte within the encoded bytes.
-    The caller receives the union of all widened attribute keys as the second
-    element of the return tuple so it can patch the Type-3 display-state
-    setting word(s) in the dat file accordingly.
-
-    Returns ``(rebuilt_bytes_by_ds_ind, all_upgraded_keys)``.
-    Display states with no active descriptors or no assigned faces are returned
-    verbatim (original bytes); they do not contribute to *all_upgraded_keys*.
-    """
-    faces_edited_b64 = submesh.get('FacesDataEdited')
-    if not faces_edited_b64:
-        return {}, set()
-
-    # Decode flat position face indices → list of [i0, i1, i2] triplets
-    raw_f = _to_bytes(faces_edited_b64)
-    n_f = len(raw_f) // 2
-    flat_f = list(struct.unpack(f'>{n_f}H', raw_f))
-    all_pos_faces = [flat_f[i * 3: i * 3 + 3] for i in range(n_f // 3)]
-    total_new = len(all_pos_faces)
-
-    # Decode UV face indices per channel
-    uv_faces_by_ch: dict[int, list] = {}
-    for ch in submesh.get('UVChannels', []):
-        ch_ind = ch['UVChannelIndex']
-        uv_edited = ch.get('UVFacesDataEdited')
-        if uv_edited:
-            raw_uv = _to_bytes(uv_edited)
-            n_uv = len(raw_uv) // 2
-            flat_uv = list(struct.unpack(f'>{n_uv}H', raw_uv))
-            uv_faces_by_ch[ch_ind] = [flat_uv[i * 3: i * 3 + 3] for i in range(n_uv // 3)]
-
-    display_states = submesh.get('DisplayStates', [])
-
-    # --- Decode original draw lists once (needed for face counts and fallback UV) ---
-    orig_decoded: list[list] = []
-    for ds in display_states:
-        descriptors = ds.get('VertexStreamLayout', [])
-        orig_raw = _to_bytes(ds['PrimListData'])
-        orig_decoded.append(_dl.decodeDrawList(orig_raw, descriptors) if descriptors else [])
-
-    # --- Build texture_index → display_state_index from original FaceTextureIndices ---
-    tex_to_ds: dict[int, int] = {}
-    face_tex_b64 = submesh.get('FaceTextureIndices')
-    if face_tex_b64:
-        raw_ti = _to_bytes(face_tex_b64)
-        n_ti = len(raw_ti) // 2
-        orig_face_tex = list(struct.unpack(f'>{n_ti}H', raw_ti))
-        face_off = 0
-        for ds_ind, orig_faces in enumerate(orig_decoded):
-            cnt = len(orig_faces)
-            if cnt > 0 and face_off < len(orig_face_tex):
-                tex_idx = orig_face_tex[face_off]
-                if tex_idx not in tex_to_ds:
-                    tex_to_ds[tex_idx] = ds_ind
-            face_off += cnt
-
-    # --- Assign new faces to display states ---
-    # ds_assignments[ds_ind] = ordered list of global face indices for that display state
-    ds_assignments: dict[int, list[int]] = {i: [] for i in range(len(display_states))}
-
-    face_tex_edited_b64 = submesh.get('FaceTextureIndicesEdited')
-    if face_tex_edited_b64 and tex_to_ds:
-        # Path 1: texture-based routing — handles face count changes
-        raw_fte = _to_bytes(face_tex_edited_b64)
-        n_fte = len(raw_fte) // 2
-        new_face_tex = list(struct.unpack(f'>{n_fte}H', raw_fte))
-        skipped = 0
-        for fi, tex_idx in enumerate(new_face_tex):
-            ds_ind = tex_to_ds.get(tex_idx)
-            if ds_ind is None:
-                skipped += 1
-            else:
-                ds_assignments[ds_ind].append(fi)
-        if skipped:
-            print(f"  WARNING _rebuild_display_states: {skipped} face(s) had a texture "
-                  f"index not found in any original display state and were dropped.")
-    else:
-        # Path 2: count-based routing — face count must be unchanged
-        face_offset = 0
-        for ds_ind, orig_faces in enumerate(orig_decoded):
-            orig_count = len(orig_faces)
-            available = total_new - face_offset
-            take = min(orig_count, available)
-            if take < orig_count:
-                print(f"  WARNING display state {ds_ind}: expected {orig_count} faces "
-                      f"but only {available} remain in FacesDataEdited — truncated.")
-            ds_assignments[ds_ind] = list(range(face_offset, face_offset + take))
-            face_offset += take
-        if face_offset < total_new:
-            print(f"  WARNING _rebuild_display_states: {total_new - face_offset} face(s) "
-                  f"in FacesDataEdited were not assigned to any display state.")
-
-    # --- Rebuild each draw list from assigned faces ---
-    result = {}
-    all_upgraded_keys: set[str] = set()
-    for ds_ind, ds in enumerate(display_states):
-        descriptors = ds.get('VertexStreamLayout', [])
-        orig_raw = _to_bytes(ds['PrimListData'])
-        assigned = ds_assignments.get(ds_ind, [])
-
-        if not descriptors or not assigned:
-            result[ds_ind] = orig_raw
-            continue
-
-        new_faces = []
-        for global_fi in assigned:
-            pos_tri = all_pos_faces[global_fi]
-            face = []
-            for vi in range(3):
-                vertex = {}
-                for d in descriptors:
-                    key = d['key']
-                    if key in ('position', 'lighting', 'color0', 'color1'):
-                        vertex[key] = pos_tri[vi]
-                    elif key.startswith('texture'):
-                        ch_ind = int(key[7:])
-                        if ch_ind in uv_faces_by_ch and global_fi < len(uv_faces_by_ch[ch_ind]):
-                            vertex[key] = uv_faces_by_ch[ch_ind][global_fi][vi]
-                        else:
-                            vertex[key] = 0  # UV layer absent — warned by exporter
-                    else:
-                        vertex[key] = 0
-                face.append(vertex)
-            new_faces.append(face)
-
-        # Widen any 1-byte attribute whose new indices exceed 255
-        descriptors, upgraded = _dl.computeRequiredDescriptors(new_faces, descriptors)
-        all_upgraded_keys |= upgraded
-
-        result[ds_ind] = _dl.rebuildDrawList(orig_raw, descriptors, new_faces)
-
-    return result, all_upgraded_keys
-
-
-def writeExpandedMesh(i: int, submesh: dict, new_verts_raw: bytes,
-                      new_uvs_per_ch: dict,
-                      skin_data: dict = None,
-                      skin_data_edited: dict = None,
-                      new_skn_dest_size: int = None) -> bool:
-    """Write all buffers for one submesh to hammerspace and patch the pointers.
-
-    ``new_uvs_per_ch`` is a dict ``{ch_ind: bytes}`` for channels that have
-    changed.  Channels absent from the dict fall back to their original data
-    recorded in the JSON so the chunk always contains complete UV data.
-
-    ``skin_data`` is the model-level ``SkinData`` dict from the .sluggie JSON.
-    When provided, SKN destination-buffer pointer fields are also patched.
-    NOTE: SKN patching only applies when submesh index i == 0, since
-    the memClr region starts at submesh 0's vertex buffer.
-
-    When ``submesh`` carries ``FacesDataEdited`` and/or ``UVFacesDataEdited``
-    (written by ``encode_mesh_hammerspace``), each draw state's primitive list
-    is rebuilt via ``_rebuild_display_states`` so UV seam splits and face count
-    changes are correctly reflected in the GX vertex index stream.
-
-    Returns True on success, False on failure.
-    """
-    relative_base = int(submesh['SubmeshOffset'], 16)
-    vb = submesh['VertexBuffer']
-    chunk_name = _chunk_name(submesh['SubmeshOffset'], i)
-
-    # Rebuild draw lists when new face/UV index data is available
-    rebuilt_dls, upgraded_keys = _rebuild_display_states(submesh)
-
-    # Build ordered sections: vertex → each UV channel → each draw state
-    sections = [('verts', new_verts_raw)]
-
-    for ch in submesh.get('UVChannels', []):
-        ch_ind = ch['UVChannelIndex']
-        raw = new_uvs_per_ch.get(ch_ind)
-        if raw is None:
-            raw = _to_bytes(ch['UVChannelData'])
-        sections.append((f'uv{ch_ind}', raw))
-
-    for ds_ind, ds in enumerate(submesh.get('DisplayStates', [])):
-        dl_raw = rebuilt_dls.get(ds_ind, _to_bytes(ds['PrimListData']))
-        sections.append((f'dl{ds_ind}', dl_raw))
-
-    # Pack into a single 4-byte-aligned blob
-    blob = bytearray()
-    offsets: dict[str, int] = {}
-    for tag, raw in sections:
-        offsets[tag] = len(blob)
-        blob.extend(_align4(raw))
-    blob = bytes(blob)
-
-    # Write chunk — also patches the vertex data pointer field
-    original_vb_offset = int(vb['VertexBufferOffset'], 16)
-    pos_ptr_field      = int(submesh['PositionDataPtrFieldOffset'], 16)
-
-    chunk_start = _hs.writeNewMemoryChunk(
-        chunk_name, blob, original_vb_offset, pos_ptr_field, relative_base
-    )
-    if chunk_start == -1:
-        print(f"  Submesh {i}: ERROR — writeNewMemoryChunk failed.")
-        return False
-
-    data_abs, _ = _hs.findChunk(chunk_name)
-    if data_abs == -1:
-        print(f"  Submesh {i}: ERROR — could not locate chunk after writing.")
-        return False
-
-    with open(OUTPUT_DAT, 'r+b') as f:
-        # Vertex count (uint16 BE)
-        vb_cs = _comp_size(vb['VertexBufferQuantizeInfo'])
-        new_vcount = len(new_verts_raw) // (vb['VertexBufferCompCount'] * vb_cs)
-        f.seek(int(submesh['VertexCountFieldOffset'], 16))
-        f.write(struct.pack('>H', new_vcount))
-
-        for ch in submesh.get('UVChannels', []):
-            ch_ind = ch['UVChannelIndex']
-            raw = new_uvs_per_ch.get(ch_ind, _to_bytes(ch['UVChannelData']))
-            uv_abs = data_abs + offsets[f'uv{ch_ind}']
-            _hs.patchPointerField(int(ch['UVDataPtrFieldOffset'], 16), uv_abs, relative_base)
-            uv_cs = _comp_size(ch['UVChannelQuantizeInfo'])
-            new_uv_count = len(raw) // (ch['UVChannelCompCount'] * uv_cs)
-            f.seek(int(ch['UVCountFieldOffset'], 16))
-            f.write(struct.pack('>H', new_uv_count))
-
-        for ds_ind, ds in enumerate(submesh.get('DisplayStates', [])):
-            dl_raw = rebuilt_dls.get(ds_ind, _to_bytes(ds['PrimListData']))
-            dl_abs = data_abs + offsets[f'dl{ds_ind}']
-            _hs.patchPointerField(int(ds['PrimListPtrFieldOffset'], 16), dl_abs, relative_base)
-            f.seek(int(ds['PrimListSizeFieldOffset'], 16))
-            f.write(struct.pack('>I', len(dl_raw)))
-
-        # Patch Type-3 display-state setting words for attributes widened to 2-byte
-        if upgraded_keys:
-            for ds in submesh.get('DisplayStates', []):
-                if ds.get('DisplayStateId') == 3:
-                    # setting field is 4 bytes before PrimListPtrFieldOffset
-                    setting_off = int(ds['PrimListPtrFieldOffset'], 16) - 4
-                    f.seek(setting_off)
-                    old_setting = struct.unpack('>I', f.read(4))[0]
-                    new_setting = _dl.patchType3Setting(old_setting, upgraded_keys)
-                    if new_setting != old_setting:
-                        f.seek(setting_off)
-                        f.write(struct.pack('>I', new_setting))
-                        print(f"  Submesh {i}: Type-3 setting at 0x{setting_off:X} "
-                              f"patched 0x{old_setting:08X}→0x{new_setting:08X} "
-                              f"(widened: {', '.join(sorted(upgraded_keys))})")
-
-    # Patch SKN destination buffer pointer (and optionally source
-    # arrays) when this is the first submesh (submesh 0 is the start of the
-    # contiguous memClr region).
-    if skin_data is not None and i == 0:
-        new_vert_abs = data_abs + offsets['verts']
-        _skn.patchSKNForNewDestBuffer(skin_data, new_vert_abs, new_skn_dest_size)
-        print(f"  Submesh {i}: SKN memClrPtr patched to 0x{new_vert_abs:X}")
-        if skin_data_edited is not None:
-                total_sk = _skn.patchSKNBlockInPlace(skin_data, skin_data_edited, new_vert_abs)
-                if total_sk != -1:
-                    print(f"  Submesh {i}: SKN source arrays written in-place "
-                          f"({total_sk} vertices in SK1+SK2).")
-                else:
-                    print(f"  Submesh {i}: WARNING — SKN in-place block write failed.")
-
-
-def restoreSubmeshFromHammerspace(i: int, submesh: dict,
-                                   skin_data: dict = None) -> None:
-    """If this submesh has a hammerspace chunk, erase it and restore all
-    pointer fields and count fields to their original values.
-
-    When ``skin_data`` is provided, SKN pointer fields are also restored.
-    This is safe to call for every submesh of a skinned model since
-    ``restoreSKNPointers`` is idempotent (always writes the same original values).
-
-    The actual data bytes are written back by the standard --unpatch flow
-    immediately after this call.
-    """
-    chunk_name = _chunk_name(submesh['SubmeshOffset'], i)
-    _, existing_len = _hs.findChunk(chunk_name)
-    if existing_len == -1:
-        return  # Not in hammerspace
-
-    # Erase chunk without touching pointers (we restore them manually below)
-    _hs.removeChunk(chunk_name)
-
-    relative_base = int(submesh['SubmeshOffset'], 16)
-    vb = submesh['VertexBuffer']
-
-    # Restore vertex pointer
-    original_vb_offset = int(vb['VertexBufferOffset'], 16)
-    _hs.patchPointerField(int(submesh['PositionDataPtrFieldOffset'], 16),
-                          original_vb_offset, relative_base)
-
-    with open(OUTPUT_DAT, 'r+b') as f:
-        # Restore vertex count
-        vb_cs = _comp_size(vb['VertexBufferQuantizeInfo'])
-        orig_vcount = vb['VertexBufferLength'] // (vb['VertexBufferCompCount'] * vb_cs)
-        f.seek(int(submesh['VertexCountFieldOffset'], 16))
-        f.write(struct.pack('>H', orig_vcount))
-
-        for ch in submesh.get('UVChannels', []):
-            original_uv_offset = int(ch['UVChannelOffset'], 16)
-            _hs.patchPointerField(int(ch['UVDataPtrFieldOffset'], 16),
-                                  original_uv_offset, relative_base)
-            uv_cs = _comp_size(ch['UVChannelQuantizeInfo'])
-            orig_uv_count = ch['UVChannelLength'] // (ch['UVChannelCompCount'] * uv_cs)
-            f.seek(int(ch['UVCountFieldOffset'], 16))
-            f.write(struct.pack('>H', orig_uv_count))
-
-        for ds in submesh.get('DisplayStates', []):
-            original_dl_offset = int(ds['PrimListAbsoluteOffset'], 16)
-            _hs.patchPointerField(int(ds['PrimListPtrFieldOffset'], 16),
-                                  original_dl_offset, relative_base)
-            f.seek(int(ds['PrimListSizeFieldOffset'], 16))
-            f.write(struct.pack('>I', ds['PrimListLength']))
-
-    if skin_data is not None:
-        _skn.restoreSKNPointers(skin_data)
-        print(f"  Submesh {i}: SKN pointers restored.")
-
-    print(f"  Submesh {i}: hammerspace chunk removed, pointers restored.")
 
 
 # ---------------------------------------------------------------------------
@@ -452,33 +108,13 @@ else:
 patches    = []   # (submesh_idx, file_offset, raw_bytes)
 uv_patches = []   # (submesh_idx, ch_ind, file_offset, raw_bytes)
 setting_patches  = []   # (submesh_idx, ds_idx, file_offset, raw_bytes)
-hammerspace_count = 0
 
-skin_data        = data["SluggiesModel"].get("SkinData")        # None for non-skinned models
-skin_data_edited = data["SluggiesModel"].get("SkinDataEdited")  # present when Blender HS export used
-use_hammerspace  = data["SluggiesModel"].get("UseHammerspace", False)
-
-# Pre-compute new total dest buffer size for skinned models (sum of all
-# submesh vertex buffer byte lengths after editing).
-new_skn_dest_size = None
-if skin_data is not None:
-    total_dest_bytes = 0
-    for _sm in submeshes:
-        _vb = _sm.get("VertexBuffer", {})
-        _edited = _vb.get("VertexBufferDataEdited")
-        if _edited:
-            total_dest_bytes += len(_to_bytes(_edited))
-        else:
-            total_dest_bytes += _vb.get("VertexBufferLength", 0)
-    new_skn_dest_size = total_dest_bytes
+skin_data = data["SluggiesModel"].get("SkinData")  # None for non-skinned models
 
 for i, submesh in enumerate(submeshes):
     vb = submesh.get("VertexBuffer", {})
 
     if unpatch:
-        # -- restore hammerspace state first, then queue in-place data restore --
-        restoreSubmeshFromHammerspace(i, submesh, skin_data)
-
         vb_data = vb.get("VertexBufferData")
         if vb_data:
             raw = _to_bytes(vb_data)
@@ -516,10 +152,7 @@ for i, submesh in enumerate(submeshes):
 
         vb_size_changed = len(new_verts) != original_vb_length
 
-        # Guard: any buffer size change requires hammerspace mode.
-        # If the exporter did not enable UseHammerspace, refuse to silently
-        # relocate data; warn and skip so the user re-exports with the flag on.
-        if (vb_size_changed or uv_size_changed) and not use_hammerspace:
+        if vb_size_changed or uv_size_changed:
             reasons = []
             if vb_size_changed:
                 reasons.append(f"vertex buffer {original_vb_length} → {len(new_verts)} bytes")
@@ -527,29 +160,21 @@ for i, submesh in enumerate(submeshes):
                 ch_ind = ch["UVChannelIndex"]
                 if ch_ind in new_uvs and len(new_uvs[ch_ind]) != ch["UVChannelLength"]:
                     reasons.append(f"UV ch {ch_ind} {ch['UVChannelLength']} → {len(new_uvs[ch_ind])} bytes")
-            print(f"  Submesh {i}: WARNING — buffer size changed ({'; '.join(reasons)}) "
-                  f"but UseHammerspace=False in the .sluggie file. "
-                  f"Re-export from Blender with Hammerspace Mode enabled. Skipping.")
+            print(f"  Submesh {i}: WARNING — buffer size changed ({'; '.join(reasons)}). "
+                  f"Buffer size changes are not currently supported; skipping.")
             continue
 
-        if vb_size_changed or uv_size_changed:
-            # Sizes changed — write everything to hammerspace
-            ok = writeExpandedMesh(i, submesh, new_verts, new_uvs,
-                                   skin_data, skin_data_edited, new_skn_dest_size)
-            if ok:
-                hammerspace_count += 1
-        else:
-            # Sizes unchanged — in-place write
-            patches.append((i, int(vb["VertexBufferOffset"], 16), new_verts))
-            print(f"  Submesh {i}: {len(new_verts)} vertex bytes (in-place)")
+        # Sizes unchanged — in-place write
+        patches.append((i, int(vb["VertexBufferOffset"], 16), new_verts))
+        print(f"  Submesh {i}: {len(new_verts)} vertex bytes (in-place)")
 
-            for ch in submesh.get("UVChannels", []):
-                ch_ind = ch["UVChannelIndex"]
-                if ch_ind not in new_uvs:
-                    continue
-                raw = new_uvs[ch_ind]
-                uv_patches.append((i, ch_ind, int(ch["UVChannelOffset"], 16), raw))
-                print(f"  Submesh {i} UV ch {ch_ind}: {len(raw)} bytes (in-place)")
+        for ch in submesh.get("UVChannels", []):
+            ch_ind = ch["UVChannelIndex"]
+            if ch_ind not in new_uvs:
+                continue
+            raw = new_uvs[ch_ind]
+            uv_patches.append((i, ch_ind, int(ch["UVChannelOffset"], 16), raw))
+            print(f"  Submesh {i} UV ch {ch_ind}: {len(raw)} bytes (in-place)")
 
 # ---------------------------------------------------------------------------
 # Collect shader-mode (Type-7 FourCC) patches.
@@ -624,8 +249,8 @@ if patches or uv_patches or setting_patches:
             f.write(raw)
             print(f"  Submesh {i} DS[{ds_idx}] shader: wrote {raw!r} at 0x{offset:X}")
 
-# In-place skin source and weight patching (non-hammerspace skinned models)
-if skin_data is not None and not use_hammerspace and not unpatch:
+# In-place skin source and weight patching (skinned models)
+if skin_data is not None and not unpatch:
     needs_resize = any(
         sk.get('VertexCntEdited') is not None
         for lst in [skin_data.get('SK1s', []), skin_data.get('SK2s', []), skin_data.get('SKAccs', [])]
@@ -639,16 +264,8 @@ if skin_data is not None and not use_hammerspace and not unpatch:
         if _skn.patchSKNInPlace(skin_data):
             print("  Skin bind-pose source and weight arrays patched in-place.")
 
-# Restore SKN block after in-place block patching (hammerspace vertex data,
-# but SKN source arrays written within the original SKN block).
-# gplVertexArr / memClr fields are already restored by restoreSKNPointers
-# (called from restoreSubmeshFromHammerspace above).
-if skin_data is not None and use_hammerspace and unpatch and skin_data_edited is not None:
-    if _skn.restoreSKNBlockInPlace(skin_data):
-        print("  SKN source arrays restored in-place (block rewrite undone).")
-
-# In-place skin source and weight restoration (non-hammerspace --unpatch)
-if skin_data is not None and not use_hammerspace and unpatch:
+# In-place skin source and weight restoration (--unpatch)
+if skin_data is not None and unpatch:
     needs_restore_block = any(
         sk.get('VertexCntEdited') is not None
         for lst in [skin_data.get('SK1s', []), skin_data.get('SK2s', []), skin_data.get('SKAccs', [])]
@@ -669,7 +286,6 @@ print(f"\n--- Summary ---")
 print(f"Vertex submeshes patched (in-place) : {len(patches)}")
 print(f"UV channels patched (in-place)      : {len(uv_patches)}")
 print(f"ShaderMode (Type-7 FourCC) patched  : {len(setting_patches)}")
-print(f"Submeshes written to hammerspace    : {hammerspace_count}")
 print(f"Output file                         : {OUTPUT_DAT}")
 if unpatch:
     print("Done. The output file has been restored to the original data.")
