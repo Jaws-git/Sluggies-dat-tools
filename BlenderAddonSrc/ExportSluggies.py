@@ -220,7 +220,7 @@ def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False, use_bas
 
     # Per-face texture index derived from Blender material slots.
     # Material names are "{obj_name}_mat{tex_idx}" (set during import).
-    # This is used by _rebuild_display_states in patch_dat.py to route faces to
+    # This is used by _rebuild_display_states in patch_inplace.py to route faces to
     # the correct display state when face count differs from the original.
     mat_to_tex: dict[int, int] = {}
     for slot_idx, slot in enumerate(obj.material_slots):

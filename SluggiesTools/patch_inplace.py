@@ -58,7 +58,7 @@ unpatch    = '--unpatch' in sys.argv
 argv_clean = [a for a in sys.argv[1:] if a != '--unpatch']
 
 if not argv_clean:
-    abort("No .sluggies file path provided.\nUsage: python patch_dat.py <path_to_model.sluggies> [--unpatch]")
+    abort("No .sluggies file path provided.\nUsage: python patch_inplace.py <path_to_model.sluggies> [--unpatch]")
 
 json_path = argv_clean[0]
 if not os.path.exists(json_path):
@@ -182,7 +182,7 @@ for i, submesh in enumerate(submeshes):
 # GUARDRAIL: changing between lighting modes (Spec / RhSp / LhSp / SpRf /
 # GhSp) and no-lighting modes (Shdw / Audi / Oeka) alters the per-vertex
 # stride of every primitive list in the affected Type-3 group and is
-# therefore not supported.  patch_dat.py aborts if any SettingEdited value
+# therefore not supported.  patch_inplace.py aborts if any SettingEdited value
 # crosses that boundary or uses an unrecognised mode.
 #
 # Changes within the same class (e.g. Spec → RhSp, or Shdw → Audi) are

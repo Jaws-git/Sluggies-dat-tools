@@ -1,4 +1,4 @@
-"""patch_skn_dat.py — SKN/SK1/SK2/SKAcc in-place patching helpers.
+"""patch_skn_inplace.py — SKN/SK1/SK2/SKAcc in-place patching helpers.
 
 All pointer fields inside the SKN section are uint32 BE values relative to
 SKN.absolute (the ``SKNOffset`` stored in the JSON ``SkinData`` block).

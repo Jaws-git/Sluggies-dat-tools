@@ -114,7 +114,7 @@ def extract_texture_descriptors(model):
     """Return a list of TEX descriptor dicts for a Model0 instance.
 
     Includes dimensions, format, palette info, and file offsets/lengths for
-    every texture so patch_dat.py can validate buffer sizes before writing.
+    every texture so patch_inplace.py can validate buffer sizes before writing.
     """
     if not hasattr(model, 'TEXPalette') or not model.TEXPalette:
         return []

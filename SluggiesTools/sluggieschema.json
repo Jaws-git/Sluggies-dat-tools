@@ -820,7 +820,7 @@
       },
       "UseHammerspace": {
         "type": "boolean",
-        "description": "Written by the Blender exporter. When true, patch_dat.py uses writeExpandedMesh to relocate vertex, UV, draw-list, and skin source data into hammerspace chunks so that buffer sizes can change freely. When false or absent, all buffers are patched in-place at their original file offsets and sizes must not change."
+        "description": "Written by the Blender exporter. When true, patch_inplace.py uses writeExpandedMesh to relocate vertex, UV, draw-list, and skin source data into hammerspace chunks so that buffer sizes can change freely. When false or absent, all buffers are patched in-place at their original file offsets and sizes must not change."
       }
     }
   }
