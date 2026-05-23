@@ -504,7 +504,7 @@ for dir_ind, file_arr in dirs.items():
     dir_dir = outdir + str(dir_ind) + '/'
     if not os.path.exists(dir_dir):
         os.mkdir(dir_dir)
-    for file in file_arr:
+    for file_index, file in enumerate(file_arr):
         languages = ['en']
         # if file['en'][0] != file['sp'][0]:
         #     languages = ['en', 'sp', 'fr']
@@ -532,6 +532,7 @@ for dir_ind, file_arr in dirs.items():
                             model_json = {
                                 "SluggiesModel": {
                                     "ChunkNumber": dir_ind,
+                                    "FileIndex": file_index,
                                     "ModelOffset": hex(sub_model.absolute),
                                     "ModelLength": sub_model.length,
                                     "UseBase64": not DEBUG_DONT_USE_BASE64,
@@ -550,6 +551,7 @@ for dir_ind, file_arr in dirs.items():
                         model_json = {
                             "SluggiesModel": {
                                 "ChunkNumber": dir_ind,
+                                "FileIndex": file_index,
                                 "ModelOffset": hex(offset),
                                 "ModelLength": l,
                                 "UseBase64": not DEBUG_DONT_USE_BASE64,

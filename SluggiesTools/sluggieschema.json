@@ -10,6 +10,10 @@
           "type": "number",
           "description": "Folder number the exported model is found in"
         },
+        "FileIndex": {
+          "type": "number",
+          "description": "0-based index of this entry within the ChunkNumber's file list in the main.dol directory table. Combined with ChunkNumber, uniquely identifies the DOL entry to patch for Hammerspace."
+        },
         "ModelOffset": {
           "type": "string",
           "description": "Starting offset of model data in dt_na.dat (hex)"
