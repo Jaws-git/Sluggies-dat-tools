@@ -1,9 +1,22 @@
 import os
+import shutil
 import struct
 
 BASE_SIZE = 715046144  # ~715 MB
 CHUNK_SIZE = 1024 * 1024  # 1 MB read buffer
-OUTPUT_DAT = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '3_Output_Dat', 'dt_na.dat'))
+OUTPUT_DAT = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', '3_Output_Dat', 'dt_na.dat'))
+
+_ROOT         = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..'))
+INPUT_DOL     = os.path.join(_ROOT, '1_Input',     'main.dol')
+OUTPUT_DOL    = os.path.join(_ROOT, '3_Output_Dat', 'main.dol')
+
+# DOL directory table constants (US version)
+_DOL_BASE      = 0x80003f00
+_DIRS_START    = 0x69C828
+_DIRS_END      = 0x69CAD8
+_DIRS_COUNT    = (_DIRS_END - _DIRS_START) // 4
+_DAT_FNAME_PTR = 0x8067f658
+_ENTRY_SIZE    = 48   # 12 × uint32 BE
 
 
 if __name__ == '__main__':
@@ -107,155 +120,179 @@ def findFreeMemoryChunk(dataLength: int) -> int:
     return -1
 
 
-def patchPointerField(file_offset: int, new_absolute_target: int, relative_base: int) -> None:
-    """Write a relative uint32 BE pointer into the dat file.
+def writeModelBlock(data: bytes, offset: int) -> None:
+    """Write raw model data into the dat file at the given offset.
 
-    Computes ``new_absolute_target - relative_base`` and writes the result as a
-    big-endian uint32 at ``file_offset``."""
-
-    relative_value = new_absolute_target - relative_base
-    with open(OUTPUT_DAT, 'r+b') as f:
-        f.seek(file_offset)
-        f.write(struct.pack('>I', relative_value))
-
-
-def removeChunk(name: str, pointerFieldOffset: int = None, relativeBase: int = None) -> int:
-    """Overwrite a named chunk with zero bytes and optionally restore the original pointer.
-
-    The original pointer value is recovered from the ``ooffset=<value>`` tag
-    stored inside the chunk immediately after the start marker.  If both
-    ``pointerFieldOffset`` and ``relativeBase`` are provided, ``patchPointerField``
-    is called to write the original absolute offset back as a relative pointer.
-    Pass neither (or ``None``) to erase the chunk without touching any pointer.
-
-    Returns 0 on success, -1 if the chunk was not found or could not be parsed."""
-
-    if not os.path.exists(OUTPUT_DAT):
-        print(f"ERROR: File not found: {OUTPUT_DAT}")
-        return -1
-
-    start_marker = b'SLUGSTART' + name.encode('utf-8')
-    end_marker   = b'\x00' * 8 + b'SLUGEND'
-
-    with open(OUTPUT_DAT, 'r+b') as f:
-        data = f.read()
-
-    start_pos = data.find(start_marker)
-    if start_pos == -1:
-        return -1
-
-    # Parse the ooffset tag to recover the original absolute data offset.
-    tag_start = start_pos + len(start_marker)
-    sep_pos   = data.find(b'\x00\x00', tag_start)
-    if sep_pos == -1:
-        return -1
-    tag_str = data[tag_start:sep_pos].decode('utf-8')
-    if not tag_str.startswith('ooffset='):
-        return -1
-    original_offset = int(tag_str[len('ooffset='):])
-
-    end_pos = data.find(end_marker, sep_pos + 2)
-    if end_pos == -1:
-        return -1
-
-    erase_start = start_pos
-    erase_end   = end_pos + len(end_marker)
-
-    with open(OUTPUT_DAT, 'r+b') as f:
-        f.seek(erase_start)
-        f.write(b'\x00' * (erase_end - erase_start))
-
-    if pointerFieldOffset is not None and relativeBase is not None:
-        patchPointerField(pointerFieldOffset, original_offset, relativeBase)
-    return 0
-
-
-def findChunk(name: str) -> tuple[int, int]:
-    """Locate a named chunk and return ``(data_start_offset, total_length)``.
-
-    ``data_start_offset`` is the absolute file offset of the first payload byte
-    (past the ``SLUGSTART<name>`` marker, the ``ooffset=<value>`` tag, and the
-    two separator zero bytes).  ``total_length`` spans from the first byte of
-    the start marker through the last byte of the end marker.
-
-    Returns ``(-1, -1)`` if the chunk is not found."""
-
-    if not os.path.exists(OUTPUT_DAT):
-        print(f"ERROR: File not found: {OUTPUT_DAT}")
-        return -1, -1
-
-    start_marker = b'SLUGSTART' + name.encode('utf-8')
-    end_marker   = b'\x00' * 8 + b'SLUGEND'
-
-    with open(OUTPUT_DAT, 'rb') as f:
-        data = f.read()
-
-    start_pos = data.find(start_marker)
-    if start_pos == -1:
-        return -1, -1
-
-    # Skip past the ooffset=<value> tag by finding the \x00\x00 separator.
-    sep_pos = data.find(b'\x00\x00', start_pos + len(start_marker))
-    if sep_pos == -1:
-        return -1, -1
-    data_start = sep_pos + 2
-
-    end_pos = data.find(end_marker, data_start)
-    if end_pos == -1:
-        return -1, -1
-
-    return data_start, end_pos + len(end_marker) - start_pos
-
-
-def writeNewMemoryChunk(name: str, data: bytes, originalOffset: int,
-                        pointerFieldOffset: int, relativeBase: int) -> int:
-    """Write a named chunk into the hammerspace region of the dat file.
-
-    ``originalOffset`` is the original absolute file offset of the data being
-    replaced.  It is stored in the chunk as ``ooffset=<value>`` so that
-    ``removeChunk`` can later restore it.
-
-    After writing the chunk, ``patchPointerField`` is called to update the
-    pointer at ``pointerFieldOffset`` to point to the new data in hammerspace,
-    using ``relativeBase`` as the base for the relative offset calculation.
-
-    If a chunk with the same name already exists it is first erased via
-    ``removeChunk``.  The total space required is::
-
-        len("SLUGSTART<name>") + len("ooffset=<value>") + 2 + len(data) + len("\\x00"*8 + "SLUGEND")
-
-    Returns the file offset of the first byte of the new chunk on success,
-    or -1 on failure."""
-
-    if not os.path.exists(OUTPUT_DAT):
-        print(f"ERROR: File not found: {OUTPUT_DAT}")
-        return -1
-
-    start_marker   = b'SLUGSTART' + name.encode('utf-8')
-    offset_tag     = f'ooffset={originalOffset}'.encode('utf-8')
-    end_marker     = b'\x00' * 8 + b'SLUGEND'
-
-    total_length = len(start_marker) + len(offset_tag) + 2 + len(data) + len(end_marker)
-
-    # Remove pre-existing chunk with the same name, if any.
-    _, existing_len = findChunk(name)
-    if existing_len != -1:
-        if removeChunk(name, pointerFieldOffset, relativeBase) == -1:
-            print(f"ERROR: Failed to remove existing chunk '{name}'.")
-            return -1
-
-    # Find a free region large enough for the framed payload.
-    offset = findFreeMemoryChunk(total_length)
-    if offset == -1:
-        print(f"ERROR: Not enough free hammerspace to write chunk '{name}' ({total_length} bytes required).")
-        return -1
-
-    payload = start_marker + offset_tag + b'\x00\x00' + data + end_marker
+    ``offset`` should be a value returned by ``findFreeMemoryChunk``."""
 
     with open(OUTPUT_DAT, 'r+b') as f:
         f.seek(offset)
-        f.write(payload)
+        f.write(data)
 
-    chunk_data_abs = offset + len(start_marker) + len(offset_tag) + 2
-    patchPointerField(pointerFieldOffset, chunk_data_abs, relativeBase)
-    return offset
+
+def _readDirPtrs() -> list[int]:
+    """Read the directory pointer table from the INPUT main.dol.
+
+    Returns a list of DOL file offsets (virtual address minus DOL base),
+    one per directory entry."""
+
+    ptrs = []
+    with open(INPUT_DOL, 'rb') as dol:
+        for addr in range(_DIRS_START, _DIRS_END, 4):
+            dol.seek(addr)
+            raw = struct.unpack('>I', dol.read(4))[0]
+            ptrs.append(raw - _DOL_BASE)
+    return ptrs
+
+
+def readDolEntry(chunk_number: int, file_index: int) -> tuple[int, int]:
+    """Read the offset and length for a model entry from the INPUT main.dol.
+
+    Returns ``(offset_en, len_en)`` from the en language slot,
+    or ``(-1, -1)`` if ``chunk_number`` is out of range."""
+
+    dir_ptrs = _readDirPtrs()
+    if not (0 <= chunk_number < len(dir_ptrs)):
+        print(f"ERROR: chunk_number {chunk_number} out of range (0-{len(dir_ptrs) - 1})")
+        return -1, -1
+
+    entry_offset = dir_ptrs[chunk_number] + file_index * _ENTRY_SIZE
+    with open(INPUT_DOL, 'rb') as dol:
+        dol.seek(entry_offset + 4)
+        len_en    = struct.unpack('>I', dol.read(4))[0]  # word[1]
+        offset_en = struct.unpack('>I', dol.read(4))[0]  # word[2]
+    return offset_en, len_en
+
+
+def patchDolEntry(chunk_number: int, file_index: int, new_offset: int, new_length: int) -> None:
+    """Update the offset and length fields in the output main.dol for a model entry.
+
+    Reads the directory pointer table from the INPUT main.dol (never modified) to
+    locate the correct 48-byte entry, then writes ``new_offset`` and ``new_length``
+    into all three language slots (en, sp, fr) of the OUTPUT main.dol.
+
+    If the output main.dol does not yet exist, it is copied from the input first.
+
+    Layout of each 48-byte entry (big-endian uint32 words):
+      word[0]  = DAT_FNAME_PTR   (not modified)
+      word[1]  = len_en          <- new_length
+      word[2]  = offset_en       <- new_offset
+      word[3,4] = unknown
+      word[5]  = len_sp          <- new_length
+      word[6]  = offset_sp       <- new_offset
+      word[7,8] = unknown
+      word[9]  = len_fr          <- new_length
+      word[10] = offset_fr       <- new_offset
+      word[11] = unknown
+    """
+
+    # Ensure output DOL exists
+    if not os.path.exists(OUTPUT_DOL):
+        if not os.path.exists(INPUT_DOL):
+            print(f"ERROR: Input DOL not found: {INPUT_DOL}")
+            return
+        os.makedirs(os.path.dirname(OUTPUT_DOL), exist_ok=True)
+        shutil.copy2(INPUT_DOL, OUTPUT_DOL)
+        print(f"Copied main.dol to output folder.")
+
+    dir_ptrs = _readDirPtrs()
+
+    if not (0 <= chunk_number < len(dir_ptrs)):
+        print(f"ERROR: chunk_number {chunk_number} out of range (0-{len(dir_ptrs) - 1})")
+        return
+
+    entry_offset = dir_ptrs[chunk_number] + file_index * _ENTRY_SIZE
+
+    # (file_pos_in_dol, value) pairs for every field that must be updated
+    patches = [
+        (entry_offset +  4, new_length),  # len_en
+        (entry_offset +  8, new_offset),  # offset_en
+        (entry_offset + 20, new_length),  # len_sp
+        (entry_offset + 24, new_offset),  # offset_sp
+        (entry_offset + 36, new_length),  # len_fr
+        (entry_offset + 40, new_offset),  # offset_fr
+    ]
+
+    with open(OUTPUT_DOL, 'r+b') as dol:
+        for file_pos, value in patches:
+            dol.seek(file_pos)
+            dol.write(struct.pack('>I', value))
+
+    print(f"Patched DOL entry: chunk={chunk_number}, file_index={file_index}, "
+          f"offset=0x{new_offset:08X}, length=0x{new_length:X}")
+
+
+def removeModelFromHammerspace(chunk_number: int, file_index: int) -> bool:
+    """Remove a model block that was previously written to hammerspace.
+
+    Steps:
+      1. Read the current offset and length from the OUTPUT main.dol.
+      2. Verify the offset falls inside the hammerspace region (>= BASE_SIZE).
+      3. Overwrite that region in OUTPUT dt_na.dat with zero bytes.
+      4. Restore the original offset and length from INPUT main.dol back
+         into all language slots of the OUTPUT main.dol.
+
+    Returns True on success, False on any error.
+    """
+
+    if not os.path.exists(OUTPUT_DOL):
+        print(f"ERROR: Output DOL not found: {OUTPUT_DOL}")
+        return False
+    if not os.path.exists(OUTPUT_DAT):
+        print(f"ERROR: Output dat not found: {OUTPUT_DAT}")
+        return False
+
+    dir_ptrs = _readDirPtrs()
+    if not (0 <= chunk_number < len(dir_ptrs)):
+        print(f"ERROR: chunk_number {chunk_number} out of range (0-{len(dir_ptrs) - 1})")
+        return False
+
+    entry_offset = dir_ptrs[chunk_number] + file_index * _ENTRY_SIZE
+
+    # Step 1 — read current offset and length from OUTPUT main.dol
+    with open(OUTPUT_DOL, 'rb') as dol:
+        dol.seek(entry_offset + 4)
+        cur_length = struct.unpack('>I', dol.read(4))[0]  # word[1] len_en
+        cur_offset = struct.unpack('>I', dol.read(4))[0]  # word[2] offset_en
+
+    print(f"[1] Current DOL entry: chunk={chunk_number}, file_index={file_index}, "
+          f"offset=0x{cur_offset:08X} ({cur_offset:,}), "
+          f"length=0x{cur_length:08X} ({cur_length:,} bytes)")
+
+    # Step 2 — verify the offset is in the hammerspace region
+    if cur_offset < BASE_SIZE:
+        print(f"    ERROR: offset 0x{cur_offset:08X} is not in the hammerspace region "
+              f"(BASE_SIZE=0x{BASE_SIZE:08X}). Nothing to remove.")
+        return False
+
+    # Step 3 — zero out the block in OUTPUT dt_na.dat
+    dat_size = os.path.getsize(OUTPUT_DAT)
+    if cur_offset + cur_length > dat_size:
+        print(f"    ERROR: block at 0x{cur_offset:08X} + {cur_length:,} extends beyond "
+              f"dat file size {dat_size:,}. Aborting.")
+        return False
+
+    print(f"[2] Zeroing {cur_length:,} bytes at 0x{cur_offset:08X} in OUTPUT dt_na.dat ...")
+    zeroed = 0
+    with open(OUTPUT_DAT, 'r+b') as f:
+        f.seek(cur_offset)
+        while zeroed < cur_length:
+            write_size = min(CHUNK_SIZE, cur_length - zeroed)
+            f.write(b'\x00' * write_size)
+            zeroed += write_size
+    print(f"    Zeroed {cur_length:,} bytes.")
+
+    # Step 4 — read original offset and length from INPUT main.dol
+    orig_offset, orig_length = readDolEntry(chunk_number, file_index)
+    if orig_offset == -1:
+        print("    ERROR: Could not read original DOL entry from input.")
+        return False
+    print(f"[3] Original DOL entry: offset=0x{orig_offset:08X} ({orig_offset:,}), "
+          f"length=0x{orig_length:08X} ({orig_length:,} bytes)")
+
+    # Step 5 — restore original values into all language slots of OUTPUT main.dol
+    print(f"[4] Restoring original DOL entry ...")
+    patchDolEntry(chunk_number, file_index, orig_offset, orig_length)
+
+    print(f"\nDone. chunk={chunk_number}, file_index={file_index} removed from hammerspace.")
+    return True
