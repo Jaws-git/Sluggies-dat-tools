@@ -30,6 +30,18 @@ def _to_bytes(data) -> bytes:
     return base64.b64decode(data)
 
 
+def _shader_mode_to_bytes(s: str) -> bytes:
+    """Convert a ShaderMode value to its 4 raw bytes.
+
+    Accepts either the 4-char printable-ASCII form (e.g. 'Spec') that export.py
+    writes for modes whose bytes are all in range 32-126, or the 8-char lowercase
+    hex form (e.g. '11110000') that export.py writes for non-printable modes.
+    """
+    if len(s) == 8 and all(c in '0123456789abcdefABCDEF' for c in s):
+        return bytes.fromhex(s)
+    return s.encode('ascii', errors='replace').ljust(4, b'\x00')[:4]
+
+
 def abort(message):
     print(f"ERROR: {message}")
     input("\nPress any key to exit...")
@@ -205,7 +217,7 @@ for i, submesh in enumerate(submeshes):
         edit_code = ds.get("ShaderModeEdited")
 
         if unpatch:
-            raw = old_code.encode('ascii', errors='replace').ljust(4, b' ')[:4]
+            raw = _shader_mode_to_bytes(old_code)
             setting_patches.append((i, ds_idx, off, raw))
             print(f"  Submesh {i} DS[{ds_idx}] ShaderMode: restore \"{old_code}\" at {off_str}")
         else:

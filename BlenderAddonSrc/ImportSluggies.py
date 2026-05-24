@@ -473,7 +473,10 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
                 description="Absolute file offset of the 2-byte vertex-count field in the mesh data header")
 
         # Store Type-7 display-state shader modes as individual editable custom properties.
-        # DisplayStateShaderMode1, DisplayStateShaderMode2, ... = the 4-char FourCC to edit.
+        # DisplayStateShaderMode1, DisplayStateShaderMode2, ... = the shader mode to edit.
+        #   Value is a 4-char printable-ASCII FourCC (e.g. "Spec", "Shdw") when all bytes
+        #   are in range 32-126, or an 8-char lowercase hex string (e.g. "11110000") for
+        #   non-printable internal modes (read-only in practice — not in the known-modes set).
         # DisplayStateShaderMode1_Offset, ...               = read-only file offset.
         display_states = submesh_meta.get("DisplayStates", [])
         mode_idx = 1
@@ -485,9 +488,10 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
             obj[prop_val] = ds.get("ShaderMode", "")
             obj.id_properties_ui(prop_val).update(
                 description=(
-                    f"Type-7 shader mode #{mode_idx}. "
+                    f"Type-7 shader mode #{mode_idx}. Edit to one of the known 4-char names: "
                     "Spec=specular  Shdw=no-specular  SpRf=specular-reflection  "
-                    "RhSp/LhSp=right/left-hand-specular  GhSp=ghost"
+                    "RhSp/LhSp=right/left-hand-specular  GhSp=ghost. "
+                    "An 8-char hex value means the original bytes are non-printable (do not edit)."
                 ))
             obj[prop_off] = ds.get("ShaderModeFieldOffset", "")
             obj.id_properties_ui(prop_off).update(

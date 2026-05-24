@@ -26,12 +26,24 @@
           "type": "boolean",
           "description": "Whether to use Base64 encoding for binary data buffers. If false, binary data will be represented as arrays of byte values. Base64 is more compact and human-readable for large buffers, but raw byte arrays may be more convenient for small buffers or when editing the JSON by hand."
         },
+        "GPLUserDataLength": {
+          "type": "number",
+          "description": "Byte length of the GPL header user-data block (GPL header +0x04). Zero when no user data is present."
+        },
+        "GPLUserData": {
+          "type": ["string", "null"],
+          "description": "Base64-encoded raw bytes of the GPL header user-data block (GPL header +0x08). Null when GPLUserDataLength is zero."
+        },
         "Submeshes": {
           "type": "array",
           "description": "There can be multiple separate submeshes in one model.",
           "items": {
             "type": "object",
             "properties": {
+              "MeshName": {
+                "type": "string",
+                "description": "Mesh name string from the GEO descriptor (GEO descriptor +0x04 section-relative pointer to null-terminated string). Used when reassembling the mesh block in hammerspace."
+              },
               "SubmeshOffset": {
                 "type": "string",
                 "description": "Starting offset of this submesh in dt_na.dat (hex)"
@@ -153,6 +165,49 @@
                   "required": ["UVChannelIndex", "PaletteName", "UVChannelOffset", "UVChannelLength", "UVChannelCompCount", "UVChannelQuantizeInfo", "UVFacesData", "UVChannelData"]
                 }
               },
+              "NormalBuffer": {
+                "type": "object",
+                "description": "Separate normal/lighting data array for non-skinned meshes (DOLightingHeader at DOLayout +0x0c). Absent for skinned meshes (CompCount=6), which interleave normals in VertexBuffer.",
+                "properties": {
+                  "NormalDataPtrFieldOffset": {
+                    "type": "string",
+                    "description": "Absolute file offset of the normalsPtr field in the DOLightingHeader struct (hex). Located at DOLightingHeader.absolute + 0x0. Patched to redirect the normal array into hammerspace."
+                  },
+                  "NormalCountFieldOffset": {
+                    "type": "string",
+                    "description": "Absolute file offset of the numNormals field in the DOLightingHeader struct (hex). Located at DOLightingHeader.absolute + 0x4. Updated to the new normal count after hammerspace relocation."
+                  },
+                  "NormalBufferOffset": {
+                    "type": "string",
+                    "description": "Absolute file offset of the raw normal data array in dt_na.dat (hex)."
+                  },
+                  "NormalBufferLength": {
+                    "type": "number",
+                    "description": "Byte length of the raw normal data array."
+                  },
+                  "NormalBufferCompCount": {
+                    "type": "number",
+                    "description": "Number of components per normal entry (typically 3 for XYZ)."
+                  },
+                  "NormalBufferQuantizeInfo": {
+                    "type": "number",
+                    "description": "Quantization byte for normal data. High nibble = data format, low nibble = right-shift divisor exponent."
+                  },
+                  "NormalAmbientPct": {
+                    "type": "number",
+                    "description": "Ambient lighting percentage stored at DOLightingHeader +0x08 (big-endian float). Preserved verbatim during hammerspace assembly."
+                  },
+                  "NormalBufferData": {
+                    "type": "string",
+                    "description": "Base64-encoded raw normal data array bytes (original game data)."
+                  },
+                  "NormalBufferDataEdited": {
+                    "type": "string",
+                    "description": "Base64-encoded raw normal data array after editing in Blender. Absent until first export."
+                  }
+                },
+                "required": ["NormalDataPtrFieldOffset", "NormalCountFieldOffset", "NormalBufferOffset", "NormalBufferLength", "NormalBufferCompCount", "NormalBufferQuantizeInfo", "NormalAmbientPct", "NormalBufferData"]
+              },
               "ColorChannels": {
                 "type": "array",
                 "description": "One entry per active vertex color channel (color0 and/or color1). Absent when no vertex colors are used.",
@@ -221,6 +276,14 @@
                       "type": "number",
                       "description": "ID byte of this display state from the DODisplayState header."
                     },
+                    "ShaderModeFieldOffset": {
+                      "type": "string",
+                      "description": "Absolute file offset of the setting/shader-mode uint32 field in the DODisplayState struct (hex). Located at DODisplayState.absolute + 4."
+                    },
+                    "ShaderMode": {
+                      "type": "string",
+                      "description": "The 4-byte setting bitmap decoded as a FourCC ASCII string (e.g. 'TOON') or hex string when non-printable. Stored verbatim during hammerspace assembly."
+                    },
                     "PrimListPtrFieldOffset": {
                       "type": "string",
                       "description": "Absolute file offset of the primitiveListPtr field within the DODisplayState struct in dt_na.dat (hex). Located at DODisplayState.absolute + 8. Patched to redirect the primitive list into hammerspace."
@@ -241,7 +304,7 @@
                       "type": "string",
                       "description": "Base64-encoded original primitive list bytes (raw GX display list draw commands for this draw batch)."
                     },
-                    "ActiveDescriptors": {
+                    "VertexStreamLayout": {
                       "type": "array",
                       "description": "Vertex attribute descriptors active in this draw state. Each entry names one attribute stream and its per-index byte size. Used by decodeDrawList and rebuildDrawList.",
                       "items": {
@@ -260,7 +323,7 @@
                       }
                     }
                   },
-                  "required": ["DisplayStateId", "PrimListPtrFieldOffset", "PrimListSizeFieldOffset", "PrimListAbsoluteOffset", "PrimListLength", "PrimListData", "ActiveDescriptors"]
+                  "required": ["DisplayStateId", "ShaderModeFieldOffset", "ShaderMode", "PrimListPtrFieldOffset", "PrimListSizeFieldOffset", "PrimListAbsoluteOffset", "PrimListLength", "PrimListData", "VertexStreamLayout"]
                 }
               }
             },
@@ -268,9 +331,20 @@
           }
         }
       },
+      "TEXHeader": {
+        "type": ["object", "null"],
+        "description": "TEXPalette section header fields. Null for purely static meshes that have no TEX section.",
+        "properties": {
+          "CLUTCount": {
+            "type": "number",
+            "description": "Number of CLUT (palette) entries in the TEX section header (uint16 at TEXPalette +0x02, field numCLUTsMaybe). In practice equals the number of textures that have a palette (PaletteEntries > 0), but stored verbatim for exact reconstruction."
+          }
+        },
+        "required": ["CLUTCount"]
+      },
       "TextureDescriptors": {
         "type": "array",
-        "description": "One entry per texture in the model's TPL section. Provides dimensions, format, and file offsets needed to validate and write back image data.",
+        "description": "One entry per texture in the model's TPL section. Provides dimensions, format, and file offsets needed to validate and write back image data. Raw pixel and palette bytes are NOT stored here; at hammerspace assembly time they are copied directly from the input dt_na.dat using ImageDataOffset/ImageDataLength and PaletteDataOffset/PaletteDataLength.",
         "items": {
           "type": "object",
           "properties": {
@@ -314,6 +388,18 @@
               "type": "number",
               "description": "Maximum mip level"
             },
+            "Unpacked": {
+              "type": "number",
+              "description": "'unpacked' byte at TEXDescriptor +0x0f. Preserved verbatim in the reconstructed descriptor."
+            },
+            "DescUnknownAt10": {
+              "type": "string",
+              "description": "Base64-encoded 7 bytes at TEXDescriptor +0x10–+0x16 (a discarded word at +0x10 followed by three discarded bytes at +0x14). Likely sampler state (LOD bias, wrap mode, etc.). Preserved verbatim."
+            },
+            "DescUnknownAt1B": {
+              "type": "string",
+              "description": "Base64-encoded 5 bytes at TEXDescriptor +0x1b–+0x1f (one discarded byte at +0x1b followed by four discarded bytes at +0x1c). Preserved verbatim."
+            },
             "ImageDataOffset": {
               "type": "string",
               "description": "File offset of the raw image pixel data in dt_na.dat (hex)"
@@ -331,7 +417,7 @@
               "description": "Byte length of the palette data. Present only when a palette exists."
             }
           },
-          "required": ["TextureIndex", "TextureDescriptorOffset", "Width", "Height", "Format", "ImageDataOffset", "ImageDataLength"]
+          "required": ["TextureIndex", "TextureDescriptorOffset", "Width", "Height", "Format", "Unpacked", "DescUnknownAt10", "DescUnknownAt1B", "ImageDataOffset", "ImageDataLength"]
         }
       },
       "SkinData": {
@@ -673,6 +759,29 @@
         },
         "required": ["QuantizeInfo", "SK1s", "SK2s", "SKAccs"]
       },
+      "ACTHeader": {
+        "type": ["object", "null"],
+        "description": "ACT (actor) section header fields needed to reconstruct the binary ACT block during hammerspace assembly. Null for purely static meshes that have no ACT section.",
+        "properties": {
+          "ActorID": {
+            "type": "number",
+            "description": "Actor identifier (uint16 at ACT header +0x04). Written into the reconstructed ACT header."
+          },
+          "SkinFileID": {
+            "type": "number",
+            "description": "Skin file identifier (uint16 at ACT header +0x14). References the associated SKN/skin file in the game's file table."
+          },
+          "GeoName": {
+            "type": "string",
+            "description": "Null-terminated geometry name string pointed to by ACT header +0x10. Stored verbatim in the reconstructed ACT section's string region."
+          },
+          "ACTTreeUnknown": {
+            "type": "number",
+            "description": "Unknown uint32 at Tree struct +0x00 (ACT +0x08). Read and discarded by the parser; preserved here for verbatim reconstruction."
+          }
+        },
+        "required": ["ActorID", "SkinFileID", "GeoName", "ACTTreeUnknown"]
+      },
       "BoneHierarchy": {
         "type": "array",
         "description": "One entry per bone in the model's ACT (actor) section. Present only for models that have an ACT section with a bone tree. Absent (null) for purely static meshes.",
@@ -698,6 +807,18 @@
             "TrackId": {
               "type": "number",
               "description": "Animation track index that drives this bone, read from the ACT user-data section."
+            },
+            "SRTType": {
+              "type": "number",
+              "description": "Type byte at SRT block +0x00 (values: 0x4, 0x8, 0xc for a full scale/rotation/translation block; 0 when orientationPTR is null). Required to write the SRT block header during ACT reassembly."
+            },
+            "DrawPriority": {
+              "type": "number",
+              "description": "Render priority for this bone (uint8 at ACTBoneLayout +0x19). Controls draw order for rigid (non-skinned) sub-mesh bones."
+            },
+            "InheritTransform": {
+              "type": "boolean",
+              "description": "Whether this bone inherits its parent's transform (bool at ACTBoneLayout +0x18). Almost always true; exported to allow exact binary reconstruction."
             },
             "Translation": {
               "type": "array",
@@ -746,7 +867,7 @@
               }
             }
           },
-          "required": ["BoneId", "GeoId", "ParentBoneId", "Skinned", "TrackId", "Translation", "Scale", "Quaternion", "HeadPosition", "VertexInfluences"]
+          "required": ["BoneId", "GeoId", "ParentBoneId", "Skinned", "TrackId", "SRTType", "DrawPriority", "InheritTransform", "Translation", "Scale", "Quaternion", "HeadPosition", "VertexInfluences"]
         }
       },
       "BoneHierarchyEdited": {

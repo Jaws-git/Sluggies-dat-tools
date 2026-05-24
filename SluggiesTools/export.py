@@ -110,6 +110,13 @@ def _color_entry_size(quantize_info):
     fmt = quantize_info >> 4
     return {0: 2, 1: 3, 2: 4, 3: 2, 4: 3, 5: 4}.get(fmt, 2)
 
+def extract_tex_header(model):
+    """Return TEXPalette section header fields, or None if no TEX section."""
+    if not hasattr(model, 'TEXPalette') or not model.TEXPalette:
+        return None
+    return {"CLUTCount": model.TEXPalette.numCLUTsMaybe}
+
+
 def extract_texture_descriptors(model):
     """Return a list of TEX descriptor dicts for a Model0 instance.
 
@@ -123,6 +130,11 @@ def extract_texture_descriptors(model):
     for tex_ind, desc in enumerate(palette.descriptors):
         img_offset = palette.absolute + desc.dataPtr
         img_length = palette.dataLens.get(desc.dataPtr, 0)
+        # Preserve the two unknown byte regions that TEXDescriptor.analyze() discards.
+        model.f.seek(desc.absolute + 0x10)
+        unknown_10 = _encode_bytes(model.f.read(7))
+        model.f.seek(desc.absolute + 0x1b)
+        unknown_1b = _encode_bytes(model.f.read(5))
         entry = {
             "TextureIndex": tex_ind,
             "TextureDescriptorOffset": hex(desc.absolute),
@@ -134,6 +146,9 @@ def extract_texture_descriptors(model):
             "EdgeLODEnable": bool(desc.edgeLODEnable),
             "MinLOD": desc.minLOD,
             "MaxLOD": desc.maxLOD,
+            "Unpacked": desc.unpacked,
+            "DescUnknownAt10": unknown_10,
+            "DescUnknownAt1B": unknown_1b,
             "ImageDataOffset": hex(img_offset),
             "ImageDataLength": img_length
         }
@@ -143,6 +158,18 @@ def extract_texture_descriptors(model):
             entry["PaletteDataLength"] = palette.dataLens.get(desc.paletteDataPtr, 0)
         result.append(entry)
     return result
+
+def extract_gpl_userdata(model):
+    """Return (encoded_bytes_or_None, length) for the GPL user-data block."""
+    if not hasattr(model, 'GPL') or not model.GPL:
+        return None, 0
+    gpl = model.GPL
+    if not gpl.userDataPtr or not gpl.userDataSize:
+        return None, 0
+    model.f.seek(gpl.absolute + gpl.userDataPtr)
+    raw = model.f.read(gpl.userDataSize)
+    return _encode_bytes(raw), gpl.userDataSize
+
 
 def extract_submeshes(model):
     """Return a list of submesh dicts with VertexBuffer, UV channel, and color channel info for a Model0 instance."""
@@ -257,10 +284,13 @@ def extract_submeshes(model):
             raw_prim = bytes(ds_obj.primitiveList.data)
             # Decode the 4-byte FourCC shader mode for Type-7 display states.
             # Setting field is at ds_obj.absolute + 4 (id=1B, pad=3B, then setting=4B).
+            # Use ASCII only when all bytes are printable (32-126); otherwise hex.
+            # This prevents control characters (e.g. \x00, \x11) from appearing as
+            # raw unicode escapes in the JSON output.
             setting_bytes = itb(ds_obj.setting, 4)
-            try:
+            if all(32 <= b <= 126 for b in setting_bytes):
                 setting_fourcc = setting_bytes.decode('ascii')
-            except Exception:
+            else:
                 setting_fourcc = setting_bytes.hex()
             display_states_export.append({
                 "DisplayStateId": ds_obj.id,
@@ -276,7 +306,28 @@ def extract_submeshes(model):
                     for d in display_state['state']['descriptors']
                 ]
             })
-        submeshes.append({
+        # Extract normal buffer for non-skinned meshes (separate DOLightingHeader array)
+        lh = layout.DOLightingHeader
+        normal_buffer = None
+        if lh.normalsPtr != 0:
+            normal_abs_offset = layout.absolute + lh.normalsPtr
+            normal_length = lh.numNormals * lh.compCount * _vb_comp_size(lh.quantizeInfo)
+            model.f.seek(normal_abs_offset)
+            raw_normals = model.f.read(normal_length)
+            ambient_pct = struct.unpack('>f', lh.ambientPercentage)[0]
+            normal_buffer = {
+                "NormalDataPtrFieldOffset": hex(lh.absolute),
+                "NormalCountFieldOffset": hex(lh.absolute + 4),
+                "NormalBufferOffset": hex(normal_abs_offset),
+                "NormalBufferLength": normal_length,
+                "NormalBufferCompCount": lh.compCount,
+                "NormalBufferQuantizeInfo": lh.quantizeInfo,
+                "NormalAmbientPct": round(ambient_pct, 6),
+                "NormalBufferData": _encode_bytes(raw_normals)
+            }
+
+        submesh_entry = {
+            "MeshName": descriptor.n,
             "SubmeshOffset": hex(layout.absolute),
             "PositionDataPtrFieldOffset": hex(pos.absolute),
             "VertexCountFieldOffset": hex(pos.absolute + 4),
@@ -293,7 +344,10 @@ def extract_submeshes(model):
             },
             "UVChannels": uv_channels,
             "ColorChannels": color_channels
-        })
+        }
+        if normal_buffer is not None:
+            submesh_entry["NormalBuffer"] = normal_buffer
+        submeshes.append(submesh_entry)
     return submeshes
 
 def extract_skin_data(model):
@@ -404,6 +458,24 @@ def extract_skin_data(model):
         "SKAccs": skaccs
     }
 
+def extract_act_header(model):
+    """Return an ACTHeader dict with actor/skin IDs, geo name, and the
+    tree-unknown word at Tree+0x00, or None if the model has no ACT section."""
+    if not hasattr(model, 'ACT') or not model.ACT:
+        return None
+    act = model.ACT
+    # Tree struct is at act.absolute + 0x8.  Its first word is read-and-discarded
+    # by Tree.analyze(); re-read it here so we can preserve it on reassembly.
+    model.f.seek(act.absolute + 0x8)
+    tree_unknown = bti(model.f.read(4))
+    return {
+        "ActorID":        act.actorID,
+        "SkinFileID":     act.skinFileID,
+        "GeoName":        act.geoName,
+        "ACTTreeUnknown": tree_unknown,
+    }
+
+
 def extract_bone_data(model):
     """Return a BoneHierarchy list for the .sluggie JSON, or None if no ACT/bones present.
 
@@ -423,6 +495,9 @@ def extract_bone_data(model):
         return None
 
     bones = model.bones  # dict: bone_id -> Bone
+
+    # Build lookup by bone id to access ACTBoneLayout fields not on Bone.
+    layout_by_id = {bl.id: bl for bl in model.ACT.bone_layouts.values()}
 
     # Build per-submesh (global_vtx_start, vtx_count) for skinned index remapping.
     # gplVertexArr in SK1/SK2/SKAcc is a byte offset from the start of the runtime
@@ -478,16 +553,23 @@ def extract_bone_data(model):
             for sub_idx, inf_list in sorted(by_submesh.items())
         ]
 
+        bl = layout_by_id.get(bone_id)
+        srt_type     = bl.orientation_srt.type if bl and bl.orientation_srt else 0
+        draw_priority = int(bl.priority) if bl else 0
+
         bone_list.append({
-            "BoneId":       int(bone.id),
-            "GeoId":        int(bone.GEOID),
-            "ParentBoneId": int(bone.parent.id) if bone.parent else None,
-            "Skinned":      bool(bone.skinned),
-            "TrackId":      int(bone.track_id),
-            "Translation":  trans,
-            "Scale":        scale,
-            "Quaternion":   quat,
-            "HeadPosition": head,
+            "BoneId":          int(bone.id),
+            "GeoId":           int(bone.GEOID),
+            "ParentBoneId":    int(bone.parent.id) if bone.parent else None,
+            "Skinned":         bool(bone.skinned),
+            "TrackId":         int(bone.track_id),
+            "SRTType":         int(srt_type),
+            "DrawPriority":    draw_priority,
+            "InheritTransform": bool(bone.relative),
+            "Translation":     trans,
+            "Scale":           scale,
+            "Quaternion":      quat,
+            "HeadPosition":    head,
             "VertexInfluences": influences_by_submesh,
         })
 
@@ -529,6 +611,7 @@ for dir_ind, file_arr in dirs.items():
                             sub_model = child.child.files[i]
                             sub_dir = os.path.join(archive_dir, sub_model.name)
                             json_name = f"{sub_model.name}.sluggie"
+                            _gpl_ud, _gpl_ud_len = extract_gpl_userdata(sub_model)
                             model_json = {
                                 "SluggiesModel": {
                                     "ChunkNumber": dir_ind,
@@ -536,9 +619,13 @@ for dir_ind, file_arr in dirs.items():
                                     "ModelOffset": hex(sub_model.absolute),
                                     "ModelLength": sub_model.length,
                                     "UseBase64": not DEBUG_DONT_USE_BASE64,
+                                    "GPLUserDataLength": _gpl_ud_len,
+                                    "GPLUserData": _gpl_ud,
+                                    "TEXHeader": extract_tex_header(sub_model),
                                     "TextureDescriptors": extract_texture_descriptors(sub_model),
                                     "Submeshes": extract_submeshes(sub_model),
                                     "SkinData": extract_skin_data(sub_model),
+                                    "ACTHeader": extract_act_header(sub_model),
                                     "BoneHierarchy": extract_bone_data(sub_model)
                                 }
                             }
@@ -548,6 +635,7 @@ for dir_ind, file_arr in dirs.items():
                         model_name = child.child.name
                         model_dir = os.path.join(lan_dir, model_name)
                         json_name = f"{model_name}.sluggie"
+                        _gpl_ud, _gpl_ud_len = extract_gpl_userdata(child.child)
                         model_json = {
                             "SluggiesModel": {
                                 "ChunkNumber": dir_ind,
@@ -555,9 +643,13 @@ for dir_ind, file_arr in dirs.items():
                                 "ModelOffset": hex(offset),
                                 "ModelLength": l,
                                 "UseBase64": not DEBUG_DONT_USE_BASE64,
+                                "GPLUserDataLength": _gpl_ud_len,
+                                "GPLUserData": _gpl_ud,
+                                "TEXHeader": extract_tex_header(child.child),
                                 "TextureDescriptors": extract_texture_descriptors(child.child),
                                 "Submeshes": extract_submeshes(child.child),
                                 "SkinData": extract_skin_data(child.child),
+                                "ACTHeader": extract_act_header(child.child),
                                 "BoneHierarchy": extract_bone_data(child.child)
                             }
                         }
