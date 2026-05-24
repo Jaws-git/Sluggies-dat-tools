@@ -450,41 +450,18 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
     obj = bpy.data.objects.new(name, mesh)
     collection.objects.link(obj)
 
-    obj["VertexBufferOffset"]       = vb_meta["VertexBufferOffset"]
-    obj["VertexBufferLength"]       = vb_meta["VertexBufferLength"]
-    obj["VertexBufferCompCount"]    = vb_meta["VertexBufferCompCount"]
-    obj["VertexBufferQuantizeInfo"] = vb_meta["VertexBufferQuantizeInfo"]
-
     if submesh_meta is not None:
-        mesh_hdr_offset = submesh_meta.get("SubmeshOffset")
-        pos_ptr_offset  = submesh_meta.get("PositionDataPtrFieldOffset")
-        vcount_offset   = submesh_meta.get("VertexCountFieldOffset")
-        if mesh_hdr_offset is not None:
-            obj["MeshDataHeaderOffset"] = mesh_hdr_offset
-            obj.id_properties_ui("MeshDataHeaderOffset").update(
-                description="Absolute file offset of the mesh data header (SubmeshOffset); used as relative-base for pointer patching")
-        if pos_ptr_offset is not None:
-            obj["PositionDataPtrFieldOffset"] = pos_ptr_offset
-            obj.id_properties_ui("PositionDataPtrFieldOffset").update(
-                description="Absolute file offset of the 4-byte position-data pointer field in the mesh data header")
-        if vcount_offset is not None:
-            obj["VertexCountFieldOffset"] = vcount_offset
-            obj.id_properties_ui("VertexCountFieldOffset").update(
-                description="Absolute file offset of the 2-byte vertex-count field in the mesh data header")
-
         # Store Type-7 display-state shader modes as individual editable custom properties.
         # DisplayStateShaderMode1, DisplayStateShaderMode2, ... = the shader mode to edit.
         #   Value is a 4-char printable-ASCII FourCC (e.g. "Spec", "Shdw") when all bytes
         #   are in range 32-126, or an 8-char lowercase hex string (e.g. "11110000") for
         #   non-printable internal modes (read-only in practice — not in the known-modes set).
-        # DisplayStateShaderMode1_Offset, ...               = read-only file offset.
         display_states = submesh_meta.get("DisplayStates", [])
         mode_idx = 1
         for ds in display_states:
             if ds.get("DisplayStateId") != 7:
                 continue
             prop_val = f"DisplayStateShaderMode{mode_idx}"
-            prop_off = f"DisplayStateShaderMode{mode_idx}_Offset"
             obj[prop_val] = ds.get("ShaderMode", "")
             obj.id_properties_ui(prop_val).update(
                 description=(
@@ -493,9 +470,6 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
                     "RhSp/LhSp=right/left-hand-specular  GhSp=ghost. "
                     "An 8-char hex value means the original bytes are non-printable (do not edit)."
                 ))
-            obj[prop_off] = ds.get("ShaderModeFieldOffset", "")
-            obj.id_properties_ui(prop_off).update(
-                description=f"File offset of shader mode #{mode_idx} (read-only, do not edit)")
             mode_idx += 1
 
         if display_states:
@@ -521,16 +495,6 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
                 obj[prefix + "WrapT"] = wrap_t
                 obj.id_properties_ui(prefix + "WrapT").update(
                     description=f"GX T-axis wrap mode for UV channel {ch_ind}")
-
-    # Register UI metadata so properties appear in the Custom Properties panel
-    ui = obj.id_properties_ui("VertexBufferOffset")
-    ui.update(description="Starting offset of the vertex buffer in dt_na.dat (hex)")
-    ui = obj.id_properties_ui("VertexBufferLength")
-    ui.update(description="Length of the vertex buffer in bytes")
-    ui = obj.id_properties_ui("VertexBufferCompCount")
-    ui.update(description="Components per vertex: 3=XYZ, 6=XYZ+Normal interleaved")
-    ui = obj.id_properties_ui("VertexBufferQuantizeInfo")
-    ui.update(description="Quantization byte: high nibble=format, low nibble=divisor exponent")
 
     # Create Blender materials and assign per-face material indices
     if uv_channels and face_texture_indices and sluggie_dir is not None:
