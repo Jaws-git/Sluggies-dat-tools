@@ -7,6 +7,7 @@ CHUNK_SIZE = 1024 * 1024  # 1 MB read buffer
 OUTPUT_DAT = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', '3_Output_Dat', 'dt_na.dat'))
 
 _ROOT         = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..'))
+INPUT_DAT     = os.path.join(_ROOT, '1_Input',      'dt_na.dat')
 INPUT_DOL     = os.path.join(_ROOT, '1_Input',     'main.dol')
 OUTPUT_DOL    = os.path.join(_ROOT, '3_Output_Dat', 'main.dol')
 
@@ -49,8 +50,13 @@ if __name__ == '__main__':
     target_size = BASE_SIZE + value * MB
 
     if not os.path.exists(OUTPUT_DAT):
-        print(f"ERROR: File not found: {OUTPUT_DAT}")
-        raise SystemExit(1)
+        if not os.path.exists(INPUT_DAT):
+            print(f"ERROR: Output file not found and input file is also missing: {INPUT_DAT}")
+            raise SystemExit(1)
+        os.makedirs(os.path.dirname(OUTPUT_DAT), exist_ok=True)
+        print(f"Output file not found. Copying input file to output folder...")
+        shutil.copy2(INPUT_DAT, OUTPUT_DAT)
+        print(f"Copied {INPUT_DAT} -> {OUTPUT_DAT}")
 
     current_size = os.path.getsize(OUTPUT_DAT)
     print(f"Current file size : {current_size:,} bytes")
