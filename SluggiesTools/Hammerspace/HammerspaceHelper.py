@@ -136,6 +136,93 @@ def writeModelBlock(data: bytes, offset: int) -> None:
         f.write(data)
 
 
+def writeDebugDumps(
+    sluggie_name:  str,
+    model_offset:  int,
+    model_length:  int,
+    block:         bytes,
+) -> None:
+    """Write debug copies of the original and hammerspace model blocks.
+
+    Creates ``3_Output_Dat/SluggDebugg/`` if it does not already exist, then
+    writes two files named after ``sluggie_name``:
+
+      * ``<sluggie_name>_Original.SluggDebugg``   — the original model block
+        read verbatim from INPUT dt_na.dat at ``model_offset``.
+      * ``<sluggie_name>_Hammerspace.SluggDebugg`` — the assembled hammerspace
+        block passed as ``block``.
+
+    Existing files with the same names are overwritten.
+    """
+    debug_dir = os.path.join(os.path.dirname(OUTPUT_DAT), 'SluggDebugg')
+    os.makedirs(debug_dir, exist_ok=True)
+
+    orig_path = os.path.join(debug_dir, f"{sluggie_name}_Original.SluggDebugg")
+    with open(INPUT_DAT, 'rb') as f_in:
+        f_in.seek(model_offset)
+        orig_block = f_in.read(model_length)
+    with open(orig_path, 'wb') as f_out:
+        f_out.write(orig_block)
+    print(f"[Debug] Original block    → {orig_path}")
+
+    hs_path = os.path.join(debug_dir, f"{sluggie_name}_Hammerspace.SluggDebugg")
+    with open(hs_path, 'wb') as f_out:
+        f_out.write(block)
+    print(f"[Debug] Hammerspace block → {hs_path}")
+
+
+def appendHammerspaceLog(
+    action:       str,
+    model_name:   str,
+    chunk_number: int,
+    file_index:   int,
+    dat_offset:   int,
+    data_length:  int,
+) -> None:
+    """Append one entry to the persistent hammerspace activity log.
+
+    Creates ``3_Output_Dat/SluggDebugg/HammerspaceLog.txt`` (and the
+    ``SluggDebugg`` directory) if they do not yet exist, then appends the
+    entry.  Existing content is never overwritten.
+
+    Parameters
+    ----------
+    action :
+        ``'Written'`` or ``'Removed'``.
+    model_name :
+        The sluggie filename (e.g. ``337568064_L_mii_male.gpl.sluggie``).
+    chunk_number, file_index :
+        DOL directory table coordinates of the model entry.
+    dat_offset :
+        Byte offset of the start of the model data block in dt_na.dat.
+    data_length :
+        Byte length of the model data block.
+    """
+    import datetime
+
+    debug_dir = os.path.join(os.path.dirname(OUTPUT_DAT), 'SluggDebugg')
+    os.makedirs(debug_dir, exist_ok=True)
+    log_path  = os.path.join(debug_dir, 'HammerspaceLog.txt')
+
+    size_mb   = data_length / (1024 * 1024)
+    timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    entry = (
+        f"Action:   {action}\n"
+        f"Model:    {model_name}\n"
+        f"Chunk:    {chunk_number}  |  File: {file_index}\n"
+        f"Address:  0x{dat_offset:08X}\n"
+        f"Size:     {size_mb:.3f} MB\n"
+        f"Time:     {timestamp}\n"
+        f"-----\n"
+    )
+
+    with open(log_path, 'a', encoding='utf-8') as f:
+        f.write(entry)
+
+    print(f"[Log] Entry appended → {log_path}")
+
+
 def _readDirPtrs() -> list[int]:
     """Read the directory pointer table from the INPUT main.dol.
 
@@ -164,6 +251,30 @@ def readDolEntry(chunk_number: int, file_index: int) -> tuple[int, int]:
 
     entry_offset = dir_ptrs[chunk_number] + file_index * _ENTRY_SIZE
     with open(INPUT_DOL, 'rb') as dol:
+        dol.seek(entry_offset + 4)
+        len_en    = struct.unpack('>I', dol.read(4))[0]  # word[1]
+        offset_en = struct.unpack('>I', dol.read(4))[0]  # word[2]
+    return offset_en, len_en
+
+
+def readOutputDolEntry(chunk_number: int, file_index: int) -> tuple[int, int]:
+    """Read the offset and length for a model entry from the OUTPUT main.dol.
+
+    Unlike ``readDolEntry`` (which reads from the unmodified input), this
+    reflects the current patched state written by previous hammerspace runs.
+
+    Returns ``(offset_en, len_en)`` from the en language slot,
+    or ``(-1, -1)`` if the output DOL does not exist or the chunk is out of range."""
+
+    if not os.path.exists(OUTPUT_DOL):
+        return -1, -1
+
+    dir_ptrs = _readDirPtrs()
+    if not (0 <= chunk_number < len(dir_ptrs)):
+        return -1, -1
+
+    entry_offset = dir_ptrs[chunk_number] + file_index * _ENTRY_SIZE
+    with open(OUTPUT_DOL, 'rb') as dol:
         dol.seek(entry_offset + 4)
         len_en    = struct.unpack('>I', dol.read(4))[0]  # word[1]
         offset_en = struct.unpack('>I', dol.read(4))[0]  # word[2]
@@ -228,7 +339,7 @@ def patchDolEntry(chunk_number: int, file_index: int, new_offset: int, new_lengt
           f"offset=0x{new_offset:08X}, length=0x{new_length:X}")
 
 
-def removeModelFromHammerspace(chunk_number: int, file_index: int) -> bool:
+def removeModelFromHammerspace(chunk_number: int, file_index: int) -> tuple:
     """Remove a model block that was previously written to hammerspace.
 
     Steps:
@@ -238,20 +349,23 @@ def removeModelFromHammerspace(chunk_number: int, file_index: int) -> bool:
       4. Restore the original offset and length from INPUT main.dol back
          into all language slots of the OUTPUT main.dol.
 
-    Returns True on success, False on any error.
+    Returns ``(success, dat_offset, data_length)``:
+      - *success*     — True on success, False on any error.
+      - *dat_offset*  — byte offset of the removed block in dt_na.dat (0 on error).
+      - *data_length* — byte length of the removed block (0 on error).
     """
 
     if not os.path.exists(OUTPUT_DOL):
         print(f"ERROR: Output DOL not found: {OUTPUT_DOL}")
-        return False
+        return False, 0, 0
     if not os.path.exists(OUTPUT_DAT):
         print(f"ERROR: Output dat not found: {OUTPUT_DAT}")
-        return False
+        return False, 0, 0
 
     dir_ptrs = _readDirPtrs()
     if not (0 <= chunk_number < len(dir_ptrs)):
         print(f"ERROR: chunk_number {chunk_number} out of range (0-{len(dir_ptrs) - 1})")
-        return False
+        return False, 0, 0
 
     entry_offset = dir_ptrs[chunk_number] + file_index * _ENTRY_SIZE
 
@@ -269,14 +383,14 @@ def removeModelFromHammerspace(chunk_number: int, file_index: int) -> bool:
     if cur_offset < BASE_SIZE:
         print(f"    ERROR: offset 0x{cur_offset:08X} is not in the hammerspace region "
               f"(BASE_SIZE=0x{BASE_SIZE:08X}). Nothing to remove.")
-        return False
+        return False, 0, 0
 
     # Step 3 — zero out the block in OUTPUT dt_na.dat
     dat_size = os.path.getsize(OUTPUT_DAT)
     if cur_offset + cur_length > dat_size:
         print(f"    ERROR: block at 0x{cur_offset:08X} + {cur_length:,} extends beyond "
               f"dat file size {dat_size:,}. Aborting.")
-        return False
+        return False, 0, 0
 
     print(f"[2] Zeroing {cur_length:,} bytes at 0x{cur_offset:08X} in OUTPUT dt_na.dat ...")
     zeroed = 0
@@ -292,7 +406,7 @@ def removeModelFromHammerspace(chunk_number: int, file_index: int) -> bool:
     orig_offset, orig_length = readDolEntry(chunk_number, file_index)
     if orig_offset == -1:
         print("    ERROR: Could not read original DOL entry from input.")
-        return False
+        return False, 0, 0
     print(f"[3] Original DOL entry: offset=0x{orig_offset:08X} ({orig_offset:,}), "
           f"length=0x{orig_length:08X} ({orig_length:,} bytes)")
 
@@ -301,4 +415,4 @@ def removeModelFromHammerspace(chunk_number: int, file_index: int) -> bool:
     patchDolEntry(chunk_number, file_index, orig_offset, orig_length)
 
     print(f"\nDone. chunk={chunk_number}, file_index={file_index} removed from hammerspace.")
-    return True
+    return True, cur_offset, cur_length
