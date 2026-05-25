@@ -671,6 +671,38 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
                 obj_to_sub[id(obj)] = (j, obj)
                 break
 
+    # Only bones that already appear in the original SK data should feed the
+    # rebuild.  Non-skinned bones own static submesh geometry and have NO SK
+    # entries; their vertex groups must not be promoted to SK1/SK2/SKAcc entries
+    # or the new block will exceed the original's size even with no mesh changes.
+    skinned_bone_ids: set[int] = set()
+    for _e in skin_data.get('SK1s',   []):
+        skinned_bone_ids.add(_e['BoneIndex'])
+    for _e in skin_data.get('SK2s',   []):
+        skinned_bone_ids.add(_e['BoneIndex1'])
+        skinned_bone_ids.add(_e['BoneIndex2'])
+    for _e in skin_data.get('SKAccs', []):
+        skinned_bone_ids.add(_e['BoneIndex'])
+
+    # Validation sets used to prevent phantom entries caused by SKAcc dest-slot
+    # aliasing SK1/SK2 source slots.  In act.py, SKAcc vertex indices use the
+    # *dest* slot (gplDestArr + dests[i]), which can equal the *source* slot of
+    # an SK1/SK2 entry.  When they coincide the same Blender vertex carries
+    # weights from both bones → naive rebuild creates phantom SK2 pairs.
+    #
+    # Rule: only allow an SK2 pair that already existed in the original data.
+    # Any pair whose (b_lo, b_hi) is absent from the original SK2 list is
+    # treated as SK1 (dominant bone) + SKAcc (subordinate bone, if it was an
+    # original SKAcc bone).  This exactly reconstructs SK1+SKAcc collisions.
+    original_sk2_pairs: set[tuple[int, int]] = set()
+    for _e in skin_data.get('SK2s', []):
+        _b1, _b2 = _e['BoneIndex1'], _e['BoneIndex2']
+        original_sk2_pairs.add((min(_b1, _b2), max(_b1, _b2)))
+
+    original_skacc_bone_ids: set[int] = set(
+        _e['BoneIndex'] for _e in skin_data.get('SKAccs', [])
+    )
+
     # Pre-compute custom split normals per object when requested
     custom_normals_cache = {}
     if use_custom_normals:
@@ -691,29 +723,59 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
                 if not vg.name.startswith("bone_") or vge.weight <= 0.0:
                     continue
                 try:
-                    parsed.append((int(vg.name[5:]), vge.weight))
+                    bone_id = int(vg.name[5:])
                 except ValueError:
                     continue
+                if bone_id not in skinned_bone_ids:
+                    continue
+                parsed.append((bone_id, vge.weight))
             parsed.sort(key=lambda x: -x[1])
             if not parsed:
                 continue
 
             v_idx = v.index
             if len(parsed) == 1:
-                b, _ = parsed[0]
-                sk1_groups.setdefault(b, []).append((sub_idx, v_idx, obj))
+                b, w = parsed[0]
+                if b in original_skacc_bone_ids:
+                    # Single-influence vertex whose only bone is an SKAcc bone —
+                    # must go to SKAcc, not SK1.  The dest slot equals the source
+                    # slot for these vertices (no cross-submesh aliasing here).
+                    skacc_groups.setdefault(b, []).append((sub_idx, v_idx, w, v_idx, obj))
+                else:
+                    sk1_groups.setdefault(b, []).append((sub_idx, v_idx, obj))
             else:
-                # SK2 from top 2, canonically ordered by bone id
+                # SK2 from top 2, canonically ordered by bone id.
+                # IMPORTANT: only form an SK2 pair if that exact (b_lo, b_hi)
+                # pair already exists in the original SK2 data.  When an SKAcc
+                # entry accumulates on top of an SK1 entry at the same dest
+                # slot, the same Blender vertex carries weights for both bones,
+                # making len(parsed)==2 even though the original structure is
+                # SK1 + SKAcc (not SK2).  Blindly creating a new SK2 pair
+                # produces an entry absent from the original → phantom SK2 →
+                # block overflow.  If the pair is absent, fall back to:
+                #   top bone    → SK1
+                #   other bones → SKAcc  (only if bone is an original SKAcc bone)
                 (b1, w1), (b2, w2) = parsed[0], parsed[1]
                 b_lo, b_hi = (b1, b2) if b1 <= b2 else (b2, b1)
                 w_lo = w1 if b1 <= b2 else w2
                 w_hi = w2 if b1 <= b2 else w1
-                sk2_groups.setdefault((b_lo, b_hi), []).append(
-                    (sub_idx, v_idx, w_lo, w_hi, obj))
-                # SKAcc for any remaining influences
-                for b, w in parsed[2:]:
-                    skacc_groups.setdefault(b, []).append(
-                        (sub_idx, v_idx, w, v_idx, obj))
+
+                if (b_lo, b_hi) in original_sk2_pairs:
+                    sk2_groups.setdefault((b_lo, b_hi), []).append(
+                        (sub_idx, v_idx, w_lo, w_hi, obj))
+                    # SKAcc for any remaining influences (only original SKAcc bones)
+                    for b, w in parsed[2:]:
+                        if b in original_skacc_bone_ids:
+                            skacc_groups.setdefault(b, []).append(
+                                (sub_idx, v_idx, w, v_idx, obj))
+                else:
+                    # Phantom pair — reclassify as SK1 (dominant) + SKAcc (rest)
+                    b_top, _ = parsed[0]
+                    sk1_groups.setdefault(b_top, []).append((sub_idx, v_idx, obj))
+                    for b, w in parsed[1:]:
+                        if b in original_skacc_bone_ids:
+                            skacc_groups.setdefault(b, []).append(
+                                (sub_idx, v_idx, w, v_idx, obj))
 
     def encode_src(entries):
         raw = bytearray()
@@ -770,30 +832,66 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
     orig_size = _skn_block_size(skin_data)
     edit_size = _skn_block_size(candidate_edited, flush_ind_size=flush_ind_size)
 
+    # Per-category vertex totals — used in both feedback paths.
+    orig_sk1s   = skin_data.get('SK1s',   [])
+    orig_sk2s   = skin_data.get('SK2s',   [])
+    orig_skaccs = skin_data.get('SKAccs', [])
+    orig_v1 = sum(e['VertexCnt'] for e in orig_sk1s)
+    orig_v2 = sum(e['VertexCnt'] for e in orig_sk2s)
+    orig_v3 = sum(e['VertexCnt'] for e in orig_skaccs)
+    edit_v1 = sum(e['VertexCnt'] for e in new_sk1s)
+    edit_v2 = sum(e['VertexCnt'] for e in new_sk2s)
+    edit_v3 = sum(e['VertexCnt'] for e in new_skaccs)
+
+    # The hammerspace rebuild always uses vertex_offset=0, so BindPoseData blobs
+    # omit the VertexOffset prefix bytes present in original SK1/SK2 entries.
+    # Add those bytes back to edit_size so the comparison reflects actual payload
+    # content: when SK1/SK2/SKAcc entries and vertex counts are identical the sizes
+    # compare as equal and no spurious shrinkage message is shown.
+    def _a4_vo(n): return (n + 3) & ~3
+    vo_adjustment = (
+        sum(_a4_vo(e.get('VertexOffset', 0)) for e in orig_sk1s) +
+        sum(_a4_vo(e.get('VertexOffset', 0)) for e in orig_sk2s)
+    )
+    edit_size_adj = edit_size + vo_adjustment
+
+    def _sk_stats(n1, v1, n2, v2, n3, v3, total):
+        return (
+            f"{total} B  "
+            f"SK1: {n1} entries / {v1} verts  "
+            f"SK2: {n2} entries / {v2} verts  "
+            f"SKAcc: {n3} entries / {v3} verts"
+        )
+
     if edit_size > orig_size:
         overflow = edit_size - orig_size
         stats = (
-            f"SKN block too large to patch in-place. "
-            f"Original: {orig_size} B "
-            f"({len(skin_data.get('SK1s',[]))} SK1, "
-            f"{len(skin_data.get('SK2s',[]))} SK2, "
-            f"{len(skin_data.get('SKAccs',[]))} SKAcc). "
-            f"Edited: {edit_size} B "
-            f"({len(new_sk1s)} SK1, {len(new_sk2s)} SK2, {len(new_skaccs)} SKAcc). "
-            f"Overflow: +{overflow} B — reduce vertex count or simplify bone influences."
+            f"SKN block too large to patch in-place.\n"
+            f"  Original: {_sk_stats(len(orig_sk1s), orig_v1, len(orig_sk2s), orig_v2, len(orig_skaccs), orig_v3, orig_size)}\n"
+            f"  Edited:   {_sk_stats(len(new_sk1s), edit_v1, len(new_sk2s), edit_v2, len(new_skaccs), edit_v3, edit_size)}\n"
+            f"  Overflow: +{overflow} B — reduce vertex count or simplify bone influences."
         )
         return False, stats
 
-    pad_bytes = orig_size - edit_size
+    effective_shrinkage = orig_size - edit_size_adj
     candidate_edited["FlushIndSize"] = flush_ind_size
     data["SluggiesModel"]["SkinDataEdited"] = candidate_edited
 
-    if pad_bytes > 0:
-        return True, (
-            f"SKN block shrunk by {pad_bytes} B "
-            f"(original {orig_size} B, edited {edit_size} B); "
-            f"patcher will zero-pad the remainder."
+    if effective_shrinkage > 0:
+        verts_match = (edit_v1 == orig_v1 and edit_v2 == orig_v2 and edit_v3 == orig_v3)
+        msg = (
+            f"SKN block shrunk by {effective_shrinkage} B; patcher will zero-pad the remainder.\n"
+            f"  Original: {_sk_stats(len(orig_sk1s), orig_v1, len(orig_sk2s), orig_v2, len(orig_skaccs), orig_v3, orig_size)}\n"
+            f"  Edited:   {_sk_stats(len(new_sk1s), edit_v1, len(new_sk2s), edit_v2, len(new_skaccs), edit_v3, edit_size)}"
         )
+        if not verts_match:
+            msg += (
+                f"\n  Note: SKAcc vertex count differs from original — this is normal"
+                f" when some SKAcc dest slots fall outside submesh 0 (e.g. Head/Accessory"
+                f" submeshes). Those vertices are not part of the edited mesh and do not"
+                f" affect main-mesh skinning. Hammerspace write can proceed."
+            )
+        return True, msg
     return True, None
 
 
@@ -887,19 +985,17 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
     bl_options = {"UNDO"}
 
     filename_ext = ".sluggie"
-    filter_glob: StringProperty(default="*.sluggie", options={"HIDDEN"})
-    # Hammerspace Mode is disabled for now; set to False unconditionally.
-    # use_hammerspace: BoolProperty(
-    #     name="Hammerspace Mode",
-    #     description=(
-    #         "Allow vertex count changes. Encodes new face indices and dense UV "
-    #         "coords for writeExpandedMesh() pointer patching. "
-    #         "Leave off for simple in-place edits that preserve vertex count."
-    #     ),
-    #     default=False,
-    # )
-    use_hammerspace = False
-    use_custom_normals: BoolProperty(
+    filter_glob: StringProperty(default="*.sluggie", options={"HIDDEN"})  # type: ignore[valid-type]
+    use_hammerspace: BoolProperty(  # type: ignore[valid-type]
+        name="Hammerspace Mode",
+        description=(
+            "Allow vertex count changes. Encodes new face indices and dense UV "
+            "coords for writeExpandedMesh() pointer patching. "
+            "Leave off for simple in-place edits that preserve vertex count."
+        ),
+        default=False,
+    )
+    use_custom_normals: BoolProperty(  # type: ignore[valid-type]
         name="Include Custom Split Normals",
         description=(
             "Write Blender custom split normals back into the export. "
@@ -1075,7 +1171,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 self.report({"ERROR"}, skn_msg)
                 return {"CANCELLED"}
             if skn_msg:
-                warnings.append(skn_msg)
+                self.report({"INFO"}, skn_msg)
         else:
             encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=self.use_custom_normals)
 

@@ -450,6 +450,14 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
     obj = bpy.data.objects.new(name, mesh)
     collection.objects.link(obj)
 
+    # Store vertex buffer metadata as custom properties so the exporter can
+    # match this object back to the correct submesh and re-quantize correctly.
+    if vb_meta is not None:
+        for prop in ("VertexBufferOffset", "VertexBufferLength",
+                     "VertexBufferCompCount", "VertexBufferQuantizeInfo"):
+            if prop in vb_meta:
+                obj[prop] = vb_meta[prop]
+
     if submesh_meta is not None:
         # Store Type-7 display-state shader modes as individual editable custom properties.
         # DisplayStateShaderMode1, DisplayStateShaderMode2, ... = the shader mode to edit.
@@ -623,7 +631,7 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
     bl_options = {"UNDO"}
 
     filename_ext = ".sluggie"
-    filter_glob: StringProperty(default="*.sluggie", options={"HIDDEN"})
+    filter_glob: StringProperty(default="*.sluggie", options={"HIDDEN"}) # type: ignore[valid-type]
 
     def execute(self, context):
         with open(self.filepath, 'r') as f:
