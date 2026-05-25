@@ -447,7 +447,7 @@ def extract_skin_data(model):
         "GplBaseOffset":        hex(model.GPL.absolute) if model.GPL else None,
         "MemClrPtrFieldOffset": hex(skn_abs + 0x14),
         "MemClrSzeFieldOffset": hex(skn_abs + 0x18),
-        "MemClrAbsolutePtr":    hex(skn_abs + skn.memClrPtr),
+        "MemClrAbsolutePtr":    hex(model.GPL.absolute + skn.memClrPtr),
         "MemClrSize":           skn.memClrSze,
         "FlushIndArrFieldOffset": hex(skn_abs + 0x1C),
         "FlushIndAbsolutePtr":  hex(skn_abs + skn.flushIndArr) if skn.flushIndArr else None,
