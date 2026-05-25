@@ -5,8 +5,6 @@ from dataclasses import dataclass
 
 sys.path.insert(0, os.path.dirname(__file__))
 import HammerspaceHelper as hh
-from HammerspaceChunkBuilder import cloneModelToHammerspace
-
 
 # ---------------------------------------------------------------------------
 # Parsed data structures
@@ -217,6 +215,8 @@ class SluggieParsed:
     gpl_user_data_len:  int                 # 0 when no user data
     act_header:         ACTHeader | None    # ACT section header fields, or None
     tex_header:         TEXHeader | None    # TEX section header fields, or None
+    model_offset:       int                 # absolute byte offset of model block in INPUT dat
+    model_length:       int                 # byte length of model block in INPUT dat
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +238,31 @@ def _hex(val: str | int) -> int:
     if isinstance(val, str):
         return int(val, 16)
     return int(val)
+
+
+# ---------------------------------------------------------------------------
+# GPL build result
+# ---------------------------------------------------------------------------
+
+@dataclass
+class GPLBuildResult:
+    """Output of BuildGPLMeshData.
+
+    Carries the raw bytes of the GPL section plus the metadata that the SKN
+    builder needs to recalculate gplVertexArr / gplDestArr fields without
+    having to re-parse the byte string.
+
+    Attributes
+    ----------
+    gpl_bytes : bytes
+        The complete GPL section.
+    pos_gpl_offsets : list[int]
+        For each submesh i, the GPL-section-relative byte offset of that
+        submesh's raw position data array.  This is what the SKN builder uses
+        as ``new_pos_gpl_off[i]`` when recalculating gplVertexArr.
+    """
+    gpl_bytes: bytes
+    pos_gpl_offsets: list[int]
 
 
 # ---------------------------------------------------------------------------
@@ -506,14 +531,672 @@ def ParseSluggie(data: dict) -> SluggieParsed:
         gpl_user_data_len = gpl_user_data_len,
         act_header        = act_header,
         tex_header        = tex_header,
+        model_offset      = _hex(model.get('ModelOffset', '0x0')),
+        model_length      = model.get('ModelLength', 0),
     )
 
+
+
+# ---------------------------------------------------------------------------
+# Section builders
+# ---------------------------------------------------------------------------
+
+def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
+    """Build the GPL (Mesh Data) section from the parsed sluggies data.
+
+    Encodes vertex position/UV/color/normal arrays, assembles draw lists,
+    and lays out all GEO descriptors, DOLayout structs, and data headers
+    with correct relative pointers.
+
+    Returns a GPLBuildResult containing the complete GPL section bytes and
+    per-submesh GPL-relative position array offsets (needed by the SKN
+    builder to recalculate gplVertexArr / gplDestArr without re-parsing).
+
+    Pointer conventions
+    -------------------
+    - GEO Descriptor DOLayoutPtr and namePtr  →  GPL-section-relative
+    - All pointers inside DOLayout and its sub-structs →  DOLayout-start-relative
+    """
+    import struct as _s
+
+    GPL_MAGIC    = 0x00B749E0
+    GPL_HDR_SIZE = 0x14   # magic + userDataLen + userDataPtr + N + descriptorPtr
+
+    # -------------------------------------------------------------------------
+    # Local helpers
+    # -------------------------------------------------------------------------
+
+    def _align4(data: bytes) -> bytes:
+        r = len(data) % 4
+        return data + b'\x00' * ((4 - r) % 4)
+
+    def _vb_comp_size(quant_info: int) -> int:
+        """Bytes per vertex-buffer component: 4 for float32 formats, 2 for int16."""
+        return 4 if (quant_info >> 4) in (4, 7, 0xa) else 2
+
+    def _vertex_count(data: bytes, comp_count: int, quant_info: int) -> int:
+        stride = _vb_comp_size(quant_info) * comp_count
+        return len(data) // stride if stride else 0
+
+    def _color_count(data: bytes, quant_info: int) -> int:
+        fmt = quant_info >> 4
+        stride = {0: 2, 1: 3, 2: 4, 3: 2, 4: 3, 5: 4}.get(fmt, 2)
+        return len(data) // stride
+
+    def _setting_bytes(shader_mode: str) -> bytes:
+        """Decode a ShaderMode string back to 4 raw bytes (the setting field)."""
+        if len(shader_mode) == 8 and all(c in '0123456789abcdefABCDEF' for c in shader_mode):
+            return bytes.fromhex(shader_mode)
+        return shader_mode.encode('ascii', errors='replace').ljust(4, b'\x00')[:4]
+
+    # -------------------------------------------------------------------------
+    # Phase 1: per-submesh layout pass (all offsets DOLayout-relative)
+    # Phase 2: count derivation from raw buffer sizes
+    # -------------------------------------------------------------------------
+
+    N = len(parsed.mesh.submeshes)
+    sub_layouts = []
+
+    for sub in parsed.mesh.submeshes:
+        M_uv = len(sub.uv_channels)
+        n_ds = len(sub.draw_states)
+
+        # Fixed-size header region layout (sizes in bytes)
+        # 0x00  DOLayout          0x18
+        # 0x18  PositionHeader    0x08
+        # 0x20  ColorHeader       0x08
+        # 0x28  UV_Header × M_uv  M_uv × 0x10
+        # ...   NormalHeader      0x0c
+        # ...   DisplayHeader     0x0c
+        # ...   DisplayState × n_ds  n_ds × 0x10
+        POS_OFF = 0x18
+        COL_OFF = 0x20
+        UV_OFF  = 0x28
+        NOR_OFF = UV_OFF  + M_uv * 0x10
+        DSP_OFF = NOR_OFF + 0x0c
+        DS_OFF  = DSP_OFF + 0x0c
+        HDR_END = DS_OFF  + n_ds * 0x10
+
+        cursor = HDR_END
+
+        # --- mesh name string ---
+        name_bytes = _align4(sub.mesh_name.encode('ascii', errors='replace') + b'\x00')
+        name_off   = cursor
+        cursor    += len(name_bytes)
+
+        # --- per-UV palette name strings ---
+        pal_name_offs       = []
+        pal_name_bytes_list = []
+        for uv in sub.uv_channels:
+            pal_b = _align4((uv.palette_name or '').encode('ascii', errors='replace') + b'\x00')
+            pal_name_offs.append(cursor)
+            pal_name_bytes_list.append(pal_b)
+            cursor += len(pal_b)
+
+        # --- position raw data ---
+        pos_data     = _align4(sub.vertex_data)
+        pos_data_off = cursor
+        cursor      += len(pos_data)
+
+        # --- color raw data (all channels share one buffer; use channel-0) ---
+        col_data     = b''
+        col_data_off = 0
+        if sub.color_channels:
+            col_data     = _align4(sub.color_channels[0].color_data)
+            col_data_off = cursor
+            cursor      += len(col_data)
+
+        # --- UV raw data (one buffer per channel) ---
+        uv_data_offs  = []
+        uv_data_list  = []
+        for uv in sub.uv_channels:
+            uv_b = _align4(uv.uv_data)
+            uv_data_offs.append(cursor)
+            uv_data_list.append(uv_b)
+            cursor += len(uv_b)
+
+        # --- normal raw data (absent for skinned meshes) ---
+        nor_data     = b''
+        nor_data_off = 0
+        if sub.normal_buffer and sub.normal_buffer.normal_data:
+            nor_data     = _align4(sub.normal_buffer.normal_data)
+            nor_data_off = cursor
+            cursor      += len(nor_data)
+
+        # --- per-display-state primitive list data ---
+        pl_offs       = []
+        pl_bytes_list = []
+        for ds in sub.draw_states:
+            if ds.prim_list_data:
+                pl_b = _align4(ds.prim_list_data)
+                pl_offs.append(cursor)
+                pl_bytes_list.append(pl_b)
+                cursor += len(pl_b)
+            else:
+                pl_offs.append(0)
+                pl_bytes_list.append(b'')
+
+        blob_size = cursor
+
+        # Phase 2: derive counts from buffer sizes
+        pos_count = _vertex_count(sub.vertex_data, sub.vertex_comp_count, sub.vertex_quantize_info)
+
+        col_count = 0
+        if sub.color_channels:
+            cc0       = sub.color_channels[0]
+            col_count = _color_count(cc0.color_data, cc0.quantize_info)
+
+        uv_counts = [
+            _vertex_count(uv.uv_data, uv.comp_count, uv.quantize_info)
+            for uv in sub.uv_channels
+        ]
+
+        nor_count = 0
+        if sub.normal_buffer and sub.normal_buffer.normal_data:
+            nb        = sub.normal_buffer
+            nor_count = _vertex_count(nb.normal_data, nb.comp_count, nb.quantize_info)
+
+        sub_layouts.append({
+            'sub':                 sub,
+            'M_uv':                M_uv,
+            'n_ds':                n_ds,
+            'POS_OFF':             POS_OFF,
+            'COL_OFF':             COL_OFF,
+            'UV_OFF':              UV_OFF,
+            'NOR_OFF':             NOR_OFF,
+            'DSP_OFF':             DSP_OFF,
+            'DS_OFF':              DS_OFF,
+            'blob_size':           blob_size,
+            'name_off':            name_off,
+            'name_bytes':          name_bytes,
+            'pal_name_offs':       pal_name_offs,
+            'pal_name_bytes_list': pal_name_bytes_list,
+            'pos_data':            pos_data,
+            'pos_data_off':        pos_data_off,
+            'pos_count':           pos_count,
+            'col_data':            col_data,
+            'col_data_off':        col_data_off,
+            'col_count':           col_count,
+            'uv_data_offs':        uv_data_offs,
+            'uv_data_list':        uv_data_list,
+            'uv_counts':           uv_counts,
+            'nor_data':            nor_data,
+            'nor_data_off':        nor_data_off,
+            'nor_count':           nor_count,
+            'pl_offs':             pl_offs,
+            'pl_bytes_list':       pl_bytes_list,
+        })
+
+    # -------------------------------------------------------------------------
+    # GPL-level address layout
+    # -------------------------------------------------------------------------
+
+    GEO_DESC_OFF  = GPL_HDR_SIZE          # 0x14
+    GEO_DESC_SIZE = N * 8
+    BLOBS_START   = GEO_DESC_OFF + GEO_DESC_SIZE
+
+    blob_gpl_offs = []
+    cursor = BLOBS_START
+    for lay in sub_layouts:
+        blob_gpl_offs.append(cursor)
+        cursor += lay['blob_size']
+
+    # GPL-relative byte offset of each submesh's raw position data array.
+    # Computed here so the SKN builder can use them directly instead of
+    # re-parsing gpl_bytes (blob_gpl_offs[i] is the DOLayout base; pos_data_off
+    # is DOLayout-relative, so their sum is the GPL-relative pos array offset).
+    pos_gpl_offsets = [
+        blob_gpl_offs[i] + sub_layouts[i]['pos_data_off']
+        for i in range(N)
+    ]
+
+    user_data_gpl_off = cursor
+    user_data_bytes   = parsed.gpl_user_data if parsed.gpl_user_data else b''
+    total_size        = cursor + len(user_data_bytes)
+
+    # -------------------------------------------------------------------------
+    # Assembly
+    # -------------------------------------------------------------------------
+
+    gpl = bytearray(total_size)
+
+    # GPL Header (0x14 bytes)
+    _s.pack_into('>I', gpl, 0x00, GPL_MAGIC)
+    _s.pack_into('>I', gpl, 0x04, parsed.gpl_user_data_len)
+    _s.pack_into('>I', gpl, 0x08, user_data_gpl_off if user_data_bytes else 0)
+    _s.pack_into('>I', gpl, 0x0c, N)
+    _s.pack_into('>I', gpl, 0x10, GEO_DESC_OFF)
+
+    for i, (lay, gpl_b) in enumerate(zip(sub_layouts, blob_gpl_offs)):
+        sub     = lay['sub']
+        POS_OFF = lay['POS_OFF'];  COL_OFF = lay['COL_OFF']
+        UV_OFF  = lay['UV_OFF'];   NOR_OFF = lay['NOR_OFF']
+        DSP_OFF = lay['DSP_OFF'];  DS_OFF  = lay['DS_OFF']
+        M_uv    = lay['M_uv'];     n_ds    = lay['n_ds']
+
+        # GEO Descriptor (GPL-relative pointers)
+        desc = GEO_DESC_OFF + i * 8
+        _s.pack_into('>I', gpl, desc,     gpl_b)                       # DOLayoutPtr
+        _s.pack_into('>I', gpl, desc + 4, gpl_b + lay['name_off'])     # namePtr
+
+        # DOLayout (DOLayout-relative sub-struct pointers)
+        _s.pack_into('>I', gpl, gpl_b + 0x00, POS_OFF)
+        _s.pack_into('>I', gpl, gpl_b + 0x04, COL_OFF)
+        _s.pack_into('>I', gpl, gpl_b + 0x08, UV_OFF)
+        _s.pack_into('>I', gpl, gpl_b + 0x0c, NOR_OFF)
+        _s.pack_into('>I', gpl, gpl_b + 0x10, DSP_OFF)
+        _s.pack_into('B',  gpl, gpl_b + 0x14, M_uv)
+        # 0x15–0x17: padding (zero, already initialised)
+
+        # Position Header (DOLayout-relative rawPtr)
+        _s.pack_into('>I', gpl, gpl_b + POS_OFF + 0x00, lay['pos_data_off'])
+        _s.pack_into('>H', gpl, gpl_b + POS_OFF + 0x04, lay['pos_count'])
+        _s.pack_into('B',  gpl, gpl_b + POS_OFF + 0x06, sub.vertex_quantize_info)
+        _s.pack_into('B',  gpl, gpl_b + POS_OFF + 0x07, sub.vertex_comp_count)
+
+        # Color Header
+        if sub.color_channels:
+            cc0 = sub.color_channels[0]
+            _s.pack_into('>I', gpl, gpl_b + COL_OFF + 0x00, lay['col_data_off'])
+            _s.pack_into('>H', gpl, gpl_b + COL_OFF + 0x04, lay['col_count'])
+            _s.pack_into('B',  gpl, gpl_b + COL_OFF + 0x06, cc0.quantize_info)
+            _s.pack_into('B',  gpl, gpl_b + COL_OFF + 0x07, cc0.comp_count)
+        # else: all-zero (zero-initialised array)
+
+        # UV Headers (M_uv × 0x10)
+        for j, uv in enumerate(sub.uv_channels):
+            uv_off = gpl_b + UV_OFF + j * 0x10
+            _s.pack_into('>I', gpl, uv_off + 0x00, lay['uv_data_offs'][j])   # textureCoordsArrPtr
+            _s.pack_into('>H', gpl, uv_off + 0x04, lay['uv_counts'][j])
+            _s.pack_into('B',  gpl, uv_off + 0x06, uv.quantize_info)
+            _s.pack_into('B',  gpl, uv_off + 0x07, uv.comp_count)
+            _s.pack_into('>I', gpl, uv_off + 0x08, lay['pal_name_offs'][j])  # paletteNamePtr
+            _s.pack_into('>I', gpl, uv_off + 0x0c, 0)                        # palettePtr (runtime)
+
+        # Normal (Lighting) Header
+        if sub.normal_buffer and sub.normal_buffer.normal_data:
+            nb = sub.normal_buffer
+            _s.pack_into('>I', gpl, gpl_b + NOR_OFF + 0x00, lay['nor_data_off'])
+            _s.pack_into('>H', gpl, gpl_b + NOR_OFF + 0x04, lay['nor_count'])
+            _s.pack_into('B',  gpl, gpl_b + NOR_OFF + 0x06, nb.quantize_info)
+            _s.pack_into('B',  gpl, gpl_b + NOR_OFF + 0x07, nb.comp_count)
+            _s.pack_into('>f', gpl, gpl_b + NOR_OFF + 0x08, nb.ambient_pct)
+        # else: all-zero (skinned mesh: normalsPtr = 0)
+
+        # Display Header
+        first_pl = next(
+            (lay['pl_offs'][k] for k, ds in enumerate(sub.draw_states) if ds.prim_list_data),
+            0,
+        )
+        _s.pack_into('>I', gpl, gpl_b + DSP_OFF + 0x00, first_pl)   # primitivePtr (not used directly)
+        _s.pack_into('>I', gpl, gpl_b + DSP_OFF + 0x04, DS_OFF)     # displayStatePtr
+        _s.pack_into('>H', gpl, gpl_b + DSP_OFF + 0x08, n_ds)
+        # 0x0a–0x0b: padding
+
+        # Display States (n_ds × 0x10)
+        for k, ds in enumerate(sub.draw_states):
+            ds_off  = gpl_b + DS_OFF + k * 0x10
+            setting = _s.unpack('>I', _setting_bytes(ds.shader_mode))[0]
+            _s.pack_into('B',  gpl, ds_off + 0x00, ds.display_state_id)
+            # 0x01–0x03: padding
+            _s.pack_into('>I', gpl, ds_off + 0x04, setting)
+            _s.pack_into('>I', gpl, ds_off + 0x08, lay['pl_offs'][k])
+            _s.pack_into('>I', gpl, ds_off + 0x0c,
+                         len(ds.prim_list_data) if ds.prim_list_data else 0)
+
+        # Raw data payloads  (DOLayout-relative offsets, written into gpl at gpl_b + off)
+        def _put(rel_off: int, data: bytes) -> None:
+            gpl[gpl_b + rel_off : gpl_b + rel_off + len(data)] = data
+
+        _put(lay['name_off'], lay['name_bytes'])
+        for pal_off, pal_b in zip(lay['pal_name_offs'], lay['pal_name_bytes_list']):
+            _put(pal_off, pal_b)
+        _put(lay['pos_data_off'], lay['pos_data'])
+        if lay['col_data']:
+            _put(lay['col_data_off'], lay['col_data'])
+        for uv_off, uv_b in zip(lay['uv_data_offs'], lay['uv_data_list']):
+            _put(uv_off, uv_b)
+        if lay['nor_data']:
+            _put(lay['nor_data_off'], lay['nor_data'])
+        for pl_off, pl_b in zip(lay['pl_offs'], lay['pl_bytes_list']):
+            if pl_b:
+                _put(pl_off, pl_b)
+
+    # User data (appended after all submesh blobs)
+    if user_data_bytes:
+        gpl[user_data_gpl_off : user_data_gpl_off + len(user_data_bytes)] = user_data_bytes
+
+    return GPLBuildResult(gpl_bytes=bytes(gpl), pos_gpl_offsets=pos_gpl_offsets)
+
+
+def BuildACTBoneHierarchy(parsed: SluggieParsed) -> bytes:
+    """Return the ACT (Bone Hierarchy) section bytes.
+
+    Bone hierarchy and animation data are not modified by hammerspace, so
+    this reads the original ACT block verbatim from INPUT dt_na.dat using
+    the section offsets stored in the model-block file header.
+
+    Returns the raw ACT section bytes copied from the input file,
+    or b'' if the model has no ACT section.
+    """
+    import struct as _s
+
+    if not parsed.model_offset:
+        return b''
+
+    with open(hh.INPUT_DAT, 'rb') as f:
+        f.seek(parsed.model_offset)
+        hdr = f.read(0x20)
+        act_off = _s.unpack_from('>I', hdr, 0x08)[0]
+        tex_off = _s.unpack_from('>I', hdr, 0x0c)[0]
+        if not act_off or not tex_off:
+            return b''
+        act_len = tex_off - act_off
+        f.seek(parsed.model_offset + act_off)
+        return f.read(act_len)
+
+
+def BuildTEXTextureData(parsed: SluggieParsed) -> bytes:
+    """Return the TEX (Texture Data) section bytes.
+
+    Texture patching is not supported; this reads the original TEX block
+    verbatim from INPUT dt_na.dat using the section offsets stored in the
+    model-block file header.
+
+    Returns the raw TEX section bytes copied from the input file,
+    or b'' if the model has no TEX section.
+    """
+    import struct as _s
+
+    if not parsed.model_offset:
+        return b''
+
+    with open(hh.INPUT_DAT, 'rb') as f:
+        f.seek(parsed.model_offset)
+        hdr = f.read(0x20)
+        tex_off = _s.unpack_from('>I', hdr, 0x0c)[0]
+        skn_off = _s.unpack_from('>I', hdr, 0x10)[0]
+        if not tex_off:
+            return b''
+        tex_len = (skn_off if skn_off else parsed.model_length) - tex_off
+        f.seek(parsed.model_offset + tex_off)
+        return f.read(tex_len)
+
+
+def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> bytes:
+    """Build the SKN (Skinning Data) section.
+
+    Must be called after BuildGPLMeshData because memClrPtr in the SKN header
+    is GPL-section-relative and must point to wherever submesh 0's position
+    data lands in the new GPL layout.
+
+    gplVertexArr / gplDestArr values are pos-data-relative (byte offsets from
+    the start of submesh 0's position buffer) and are preserved verbatim from
+    parsed.skinning — they do not change when the model block is relocated or
+    the GPL section is rebuilt with the same vertex data.
+
+    The only field that requires recomputation is memClrPtr:
+        new_memClrPtr = gpl_result.pos_gpl_offsets[0] + min(all gplVertexArr)
+
+    Returns the complete SKN section as a byte string, or b'' for non-skinned
+    models.
+    """
+    import struct as _s
+
+    skn = parsed.skinning
+    if not skn:
+        return b''
+
+    # -------------------------------------------------------------------------
+    # Local helpers
+    # -------------------------------------------------------------------------
+
+    def _align4(data: bytes) -> bytes:
+        r = len(data) % 4
+        return data + b'\x00' * ((4 - r) % 4)
+
+    def _vb_comp_size(quant_info: int) -> int:
+        return 4 if (quant_info >> 4) in (4, 7, 0xa) else 2
+
+    vertex_stride = _vb_comp_size(skn.quantize_info) * 6  # pos + normal, interleaved
+
+    n_sk1 = len(skn.sk1s)
+    n_sk2 = len(skn.sk2s)
+    n_acc = len(skn.sk_accs)
+
+    SKN_HDR_SIZE  = 0x24
+    SK1_SIZE      = 0x40
+    SK2_SIZE      = 0x74
+    SKACC_SIZE    = 0x44
+
+    SK1_ARR_OFF   = SKN_HDR_SIZE
+    SK2_ARR_OFF   = SK1_ARR_OFF   + n_sk1 * SK1_SIZE
+    SKACC_ARR_OFF = SK2_ARR_OFF   + n_sk2 * SK2_SIZE
+    VAR_DATA_OFF  = SKACC_ARR_OFF + n_acc * SKACC_SIZE
+
+    # -------------------------------------------------------------------------
+    # Phase SKN-1: variable-data layout pass
+    # All offsets are SKN-section-relative (absolute within the final SKN bytes).
+    # Layout order: [SK1 srcs] [SK2 src+wt per pair] [SKAcc src+destIdx+wt per triple] [flush]
+    # -------------------------------------------------------------------------
+
+    var_data   = bytearray()
+    var_cursor = VAR_DATA_OFF
+
+    # Per SK1: one source (bind-pose pos+normal) array
+    sk1_src_off = []
+    for sk in skn.sk1s:
+        sk1_src_off.append(var_cursor)
+        chunk = _align4(sk.bind_pose_data)
+        var_data.extend(chunk)
+        var_cursor += len(chunk)
+
+    # Per SK2: source array then weight array
+    sk2_src_off = []
+    sk2_wt_off  = []
+    for sk in skn.sk2s:
+        sk2_src_off.append(var_cursor)
+        chunk = _align4(sk.bind_pose_data)
+        var_data.extend(chunk)
+        var_cursor += len(chunk)
+
+        sk2_wt_off.append(var_cursor)
+        chunk = _align4(sk.weight_data)
+        var_data.extend(chunk)
+        var_cursor += len(chunk)
+
+    # Per SKAcc: source, dest-index, weight arrays
+    acc_src_off  = []
+    acc_dest_off = []
+    acc_wt_off   = []
+    for sk in skn.sk_accs:
+        acc_src_off.append(var_cursor)
+        chunk = _align4(sk.bind_pose_data)
+        var_data.extend(chunk)
+        var_cursor += len(chunk)
+
+        acc_dest_off.append(var_cursor)
+        chunk = _align4(sk.dest_index_data)
+        var_data.extend(chunk)
+        var_cursor += len(chunk)
+
+        acc_wt_off.append(var_cursor)
+        chunk = _align4(sk.weight_data)
+        var_data.extend(chunk)
+        var_cursor += len(chunk)
+
+    # Flush index array — read verbatim from INPUT dat (content unchanged)
+    flush_off   = 0
+    flush_bytes = b''
+    if skn.flush_ind_size and skn.flush_ind_absolute_ptr:
+        with open(hh.INPUT_DAT, 'rb') as _f:
+            _f.seek(skn.flush_ind_absolute_ptr)
+            flush_bytes = _f.read(skn.flush_ind_size * 2)
+        flush_off = var_cursor
+        chunk = _align4(flush_bytes)
+        var_data.extend(chunk)
+        var_cursor += len(chunk)
+
+    # -------------------------------------------------------------------------
+    # Phase SKN-2: struct headers
+    # gplVertexArr / gplDestArr are preserved verbatim — they are pos-data-
+    # relative byte offsets and do not change when the block is relocated.
+    # -------------------------------------------------------------------------
+
+    # SK1 structs (0x40 bytes each)
+    sk1_bytes = bytearray(n_sk1 * SK1_SIZE)
+    for i, sk in enumerate(skn.sk1s):
+        b = i * SK1_SIZE
+        # +0x00..+0x2f: matrix placeholder — zeroed (runtime fills each frame)
+        _s.pack_into('>I', sk1_bytes, b + 0x30, sk1_src_off[i])         # srcArrPtr  (SKN-rel)
+        _s.pack_into('>I', sk1_bytes, b + 0x34, sk.gpl_vertex_arr_value) # gplVertexArr (verbatim)
+        _s.pack_into('>H', sk1_bytes, b + 0x38, sk.bone_index)
+        _s.pack_into('>H', sk1_bytes, b + 0x3a, sk.vertex_cnt)
+        _s.pack_into('B',  sk1_bytes, b + 0x3c, sk.vertex_offset)
+        # +0x3d..+0x3f: padding — already zero
+
+    # SK2 structs (0x74 bytes each)
+    sk2_bytes = bytearray(n_sk2 * SK2_SIZE)
+    for i, sk in enumerate(skn.sk2s):
+        b = i * SK2_SIZE
+        # +0x00..+0x5f: two matrix placeholders — zeroed
+        _s.pack_into('>I', sk2_bytes, b + 0x60, sk2_src_off[i])         # srcArrPtr
+        _s.pack_into('>I', sk2_bytes, b + 0x64, sk2_wt_off[i])          # weightArrPtr
+        _s.pack_into('>I', sk2_bytes, b + 0x68, sk.gpl_vertex_arr_value) # gplVertexArr (verbatim)
+        _s.pack_into('>H', sk2_bytes, b + 0x6c, sk.bone_index1)
+        _s.pack_into('>H', sk2_bytes, b + 0x6e, sk.bone_index2)
+        _s.pack_into('>H', sk2_bytes, b + 0x70, sk.vertex_cnt)
+        _s.pack_into('B',  sk2_bytes, b + 0x72, sk.vertex_offset)
+        # +0x73: padding — already zero
+
+    # SKAcc structs (0x44 bytes each)
+    acc_bytes = bytearray(n_acc * SKACC_SIZE)
+    for i, sk in enumerate(skn.sk_accs):
+        b = i * SKACC_SIZE
+        # +0x00..+0x2f: matrix placeholder — zeroed
+        _s.pack_into('>I', acc_bytes, b + 0x30, acc_src_off[i])       # srcArrPtr
+        _s.pack_into('>I', acc_bytes, b + 0x34, acc_dest_off[i])      # destIdxArrPtr
+        _s.pack_into('>I', acc_bytes, b + 0x38, sk.gpl_dest_arr_value) # gplDestArr (verbatim)
+        _s.pack_into('>I', acc_bytes, b + 0x3c, acc_wt_off[i])        # weightArrPtr
+        _s.pack_into('>H', acc_bytes, b + 0x40, sk.bone_index)
+        _s.pack_into('>H', acc_bytes, b + 0x42, sk.vertex_cnt)
+
+    # -------------------------------------------------------------------------
+    # Phase SKN-3: memClrPtr / memClrSize
+    #
+    # gplVertexArr values are pos-data-relative (byte offsets from the start
+    # of submesh 0's position buffer).  memClrPtr in the SKN header is GPL-
+    # section-relative, so it equals pos_data_gpl_start + min(gplVertexArr).
+    #
+    # memClrSize spans from min(gplVertexArr) to the end of the last SK write,
+    # computed from vertex counts and destination indices.
+    # -------------------------------------------------------------------------
+
+    all_gva = (
+        [sk.gpl_vertex_arr_value for sk in skn.sk1s] +
+        [sk.gpl_vertex_arr_value for sk in skn.sk2s] +
+        [sk.gpl_dest_arr_value   for sk in skn.sk_accs]
+    )
+    min_gva = min(all_gva) if all_gva else 0
+
+    # memClrPtr is GPL-section-relative: add the GPL-relative pos data start
+    new_memClrPtr = (gpl_result.pos_gpl_offsets[0] + min_gva) if gpl_result.pos_gpl_offsets else 0
+
+    # Compute write-end extents (pos-data-relative) across all SK types
+    ends = []
+    for sk in skn.sk1s:
+        ends.append(sk.gpl_vertex_arr_value + sk.vertex_offset + sk.vertex_cnt * vertex_stride)
+    for sk in skn.sk2s:
+        ends.append(sk.gpl_vertex_arr_value + sk.vertex_offset + sk.vertex_cnt * vertex_stride)
+    for sk in skn.sk_accs:
+        n_idx = len(sk.dest_index_data) // 2
+        if n_idx:
+            dest_indices = _s.unpack_from(f'>{n_idx}H', sk.dest_index_data)
+            max_idx = max(dest_indices)
+        else:
+            max_idx = 0
+        ends.append(sk.gpl_dest_arr_value + (max_idx + 1) * vertex_stride)
+    new_memClrSize = (max(ends) - min_gva) if ends else 0
+
+    # -------------------------------------------------------------------------
+    # Phase SKN-4: SKN header + full assembly
+    # -------------------------------------------------------------------------
+
+    skn_hdr = bytearray(SKN_HDR_SIZE)
+    _s.pack_into('>H', skn_hdr, 0x00, n_sk1)
+    _s.pack_into('>H', skn_hdr, 0x02, n_sk2)
+    _s.pack_into('>H', skn_hdr, 0x04, n_acc)
+    _s.pack_into('B',  skn_hdr, 0x06, skn.quantize_info)
+    # 0x07: padding
+    _s.pack_into('>I', skn_hdr, 0x08, SK1_ARR_OFF)    # sk1Ptr  (SKN-rel, points to array start)
+    _s.pack_into('>I', skn_hdr, 0x0c, SK2_ARR_OFF)    # sk2Ptr
+    _s.pack_into('>I', skn_hdr, 0x10, SKACC_ARR_OFF)  # skAccPtr
+    _s.pack_into('>I', skn_hdr, 0x14, new_memClrPtr)
+    _s.pack_into('>I', skn_hdr, 0x18, new_memClrSize)
+    _s.pack_into('>I', skn_hdr, 0x1c, flush_off if flush_bytes else 0)  # flushIndPtr
+    _s.pack_into('>I', skn_hdr, 0x20, skn.flush_ind_size)
+
+    return bytes(skn_hdr) + bytes(sk1_bytes) + bytes(sk2_bytes) + bytes(acc_bytes) + bytes(var_data)
+
+def BuildHEADERModelBlock(
+    gpl_bytes: bytes,
+    act_bytes: bytes,
+    tex_bytes: bytes,
+    skn_bytes: bytes,
+) -> bytes:
+    """Assemble the full model block from its four sections.
+
+    Writes the 0x20-byte file header with relative pointers to GPL, ACT,
+    TEX, and SKN, then concatenates all four sections into one contiguous
+    byte string ready to be written into hammerspace.
+
+    Header layout (matches Model0.analyze() in model0.py):
+        +0x00  uint32  firstWord  — always 0
+        +0x04  uint32  gplPtr     — GPL section offset relative to block start
+        +0x08  uint32  ptr3       — ACT section offset (0 if absent)
+        +0x0c  uint32  texPtr     — TEX section offset (0 if absent)
+        +0x10  uint32  ptr5       — SKN section offset (0 if absent)
+        +0x14..+0x1f   three reserved words, always 0
+
+    Section order:
+        0x00  File header (0x20 bytes)
+        0x20  GPL section          (always present)
+        0x20 + len(gpl)  ACT section (omitted when empty)
+        ...   TEX section          (omitted when empty)
+        ...   SKN section          (omitted when empty)
+
+    Returns the complete model block as a byte string.
+    """
+    import struct as _s
+
+    HDR_SIZE = 0x20
+
+    gpl_off = HDR_SIZE
+    act_off = gpl_off + len(gpl_bytes)
+    tex_off = act_off + len(act_bytes)
+    skn_off = tex_off + len(tex_bytes)
+
+    hdr = bytearray(HDR_SIZE)
+    _s.pack_into('>I', hdr, 0x00, 0)
+    _s.pack_into('>I', hdr, 0x04, gpl_off)
+    _s.pack_into('>I', hdr, 0x08, act_off if act_bytes else 0)
+    _s.pack_into('>I', hdr, 0x0c, tex_off if tex_bytes else 0)
+    _s.pack_into('>I', hdr, 0x10, skn_off if skn_bytes else 0)
+    # +0x14, +0x18, +0x1c: reserved ptr6/ptr7/ptr8 — remain zero
+
+    return bytes(hdr) + gpl_bytes + act_bytes + tex_bytes + skn_bytes
+
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 if __name__ == '__main__':
     import argparse as _ap
     import json as _json
 
-    _parser = _ap.ArgumentParser(description='Clone or remove a model block in hammerspace.')
+    _parser = _ap.ArgumentParser(description='Build a hammerspace model block from a .sluggies file.')
     _parser.add_argument('sluggies_path', help='Path to the .sluggies file')
     _parser.add_argument('--unpatch', action='store_true', help='Remove the model from hammerspace and restore the original DOL entry')
     _args = _parser.parse_args()
@@ -532,7 +1215,76 @@ if __name__ == '__main__':
     _index = _model['FileIndex']
 
     if _args.unpatch:
-        _success = hh.removeModelFromHammerspace(_chunk, _index)
-    else:
-        _success = cloneModelToHammerspace(_chunk, _index)
-    raise SystemExit(0 if _success else 1)
+        _success, _rem_offset, _rem_length = hh.removeModelFromHammerspace(_chunk, _index)
+        if _success:
+            hh.appendHammerspaceLog(
+                'Removed',
+                os.path.basename(_args.sluggies_path),
+                _chunk, _index,
+                _rem_offset, _rem_length,
+            )
+        raise SystemExit(0 if _success else 1)
+
+    # Check if this model is already in hammerspace and evict it first.
+    _cur_offset, _cur_length = hh.readOutputDolEntry(_chunk, _index)
+    if _cur_offset >= hh.BASE_SIZE:
+        print(f"\n[0] Model already in hammerspace at 0x{_cur_offset:08X} — removing old version ...")
+        _evict_ok, _evict_off, _evict_len = hh.removeModelFromHammerspace(_chunk, _index)
+        if not _evict_ok:
+            print("ERROR: Could not remove existing hammerspace entry. Aborting.")
+            raise SystemExit(1)
+        hh.appendHammerspaceLog(
+            'Removed',
+            os.path.basename(_args.sluggies_path),
+            _chunk, _index,
+            _evict_off, _evict_len,
+        )
+
+    # Build each section in dependency order, then assemble and write.
+    print("\n[1/5] Building GPL (Mesh Data) ...")
+    _gpl_result = BuildGPLMeshData(_parsed)
+
+    print("[2/5] Building SKN (Skinning Data) ...")
+    _skn = BuildSKNSkinningData(_parsed, _gpl_result)
+
+    print("[3/5] Copying ACT (Bone Hierarchy) from input ...")
+    _act = BuildACTBoneHierarchy(_parsed)
+
+    print("[4/5] Copying TEX (Texture Data) from input ...")
+    _tex = BuildTEXTextureData(_parsed)
+
+    print("[5/5] Assembling model block header ...")
+    _block = BuildHEADERModelBlock(_gpl_result.gpl_bytes, _act, _tex, _skn)
+
+    print(f"\nModel block size: {len(_block):,} bytes ({len(_block) / 1048576:.3f} MB)")
+
+    print("\n[6] Scanning hammerspace for free region ...")
+    _new_offset = hh.findFreeMemoryChunk(len(_block))
+    if _new_offset == -1:
+        print("ERROR: No contiguous free region found. Run HammerspaceHelper to extend OUTPUT dt_na.dat first.")
+        raise SystemExit(1)
+    print(f"    Free region at 0x{_new_offset:08X}")
+
+    print(f"\n[7] Writing model block to OUTPUT dt_na.dat ...")
+    hh.writeModelBlock(_block, _new_offset)
+
+    print(f"\n[8] Patching OUTPUT main.dol ...")
+    hh.patchDolEntry(_chunk, _index, _new_offset, len(_block))
+
+    print("\n[Debug] Writing debug dumps ...")
+    hh.writeDebugDumps(
+        os.path.basename(_args.sluggies_path),
+        _parsed.model_offset,
+        _parsed.model_length,
+        _block,
+    )
+
+    hh.appendHammerspaceLog(
+        'Written',
+        os.path.basename(_args.sluggies_path),
+        _chunk, _index,
+        _new_offset, len(_block),
+    )
+
+    print("\nDone.")
+    raise SystemExit(0)
