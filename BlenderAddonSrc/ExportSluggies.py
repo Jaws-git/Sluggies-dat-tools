@@ -788,8 +788,24 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
                 raw += pack_val(val)
         return _from_bytes(bytes(raw), use_base64)
 
+    # Build lookups so gplVertexArr / gplDestArr can be carried forward.
+    # The original values remain correct for the hammerspace GPL because Blender
+    # preserves vertex ordering (slot i in the Blender mesh == slot i in the GPL
+    # position buffer).  Without these values the runtime CPU skinning writes all
+    # SK1/SK2 output on top of each other at offset 0.
+    _orig_sk1_gva = {
+        e['BoneIndex']: e.get('GplVertexArrValue', 0)
+        for e in skin_data.get('SK1s', [])
+    }
+    _orig_sk2_gva = {
+        (min(e['BoneIndex1'], e['BoneIndex2']), max(e['BoneIndex1'], e['BoneIndex2'])):
+            e.get('GplVertexArrValue', 0)
+        for e in skin_data.get('SK2s', [])
+    }
+
     new_sk1s = [
-        {"BoneIndex": b, "VertexCnt": len(e), "BindPoseData": encode_src(e)}
+        {"BoneIndex": b, "VertexCnt": len(e), "BindPoseData": encode_src(e),
+         "GplVertexArrValue": _orig_sk1_gva.get(b, 0)}
         for b, e in sorted(sk1_groups.items())
     ]
 
@@ -804,6 +820,7 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
             "VertexCnt": len(entries),
             "BindPoseData": encode_src(entries),
             "WeightData": _from_bytes(bytes(wt), use_base64),
+            "GplVertexArrValue": _orig_sk2_gva.get((b_lo, b_hi), 0),
         })
 
     new_skaccs = []

@@ -330,7 +330,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
             ))
 
         draw_states = []
-        for ds in sub.get('DrawStates', []):
+        for ds in sub.get('DisplayStates', []):
             draw_states.append(DrawState(
                 display_state_id            = ds['DisplayStateId'],
                 prim_list_data              = _decode(ds['PrimListData'], use_b64),
@@ -620,7 +620,7 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
         cursor = HDR_END
 
         # --- mesh name string ---
-        name_bytes = _align4(sub.mesh_name.encode('ascii', errors='replace') + b'\x00')
+        name_bytes = sub.mesh_name.encode('ascii', errors='replace') + b'\x00'
         name_off   = cursor
         cursor    += len(name_bytes)
 
@@ -628,10 +628,13 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
         pal_name_offs       = []
         pal_name_bytes_list = []
         for uv in sub.uv_channels:
-            pal_b = _align4((uv.palette_name or '').encode('ascii', errors='replace') + b'\x00')
+            pal_b = (uv.palette_name or '').encode('ascii', errors='replace') + b'\x00'
             pal_name_offs.append(cursor)
             pal_name_bytes_list.append(pal_b)
             cursor += len(pal_b)
+
+        # Align to 4-byte boundary before vertex data buffers (strings are packed without padding)
+        cursor = (cursor + 3) & ~3
 
         # --- position raw data ---
         pos_data     = _align4(sub.vertex_data)
@@ -655,10 +658,17 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
             uv_data_list.append(uv_b)
             cursor += len(uv_b)
 
-        # --- normal raw data (absent for skinned meshes) ---
+        # --- normal raw data ---
+        # Skinned (interleaved) meshes use cc=6: pos+normal are packed together
+        # in the position buffer.  NorHdr.rawPtr points 6 bytes into that
+        # buffer; no separate normal data block is stored.
+        is_interleaved = (sub.vertex_comp_count == 6)
         nor_data     = b''
         nor_data_off = 0
-        if sub.normal_buffer and sub.normal_buffer.normal_data:
+        if is_interleaved and sub.normal_buffer:
+            comp_size    = _vb_comp_size(sub.vertex_quantize_info)
+            nor_data_off = pos_data_off + comp_size * 3
+        elif sub.normal_buffer and sub.normal_buffer.normal_data:
             nor_data     = _align4(sub.normal_buffer.normal_data)
             nor_data_off = cursor
             cursor      += len(nor_data)
@@ -692,11 +702,14 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
         ]
 
         nor_count = 0
-        if sub.normal_buffer and sub.normal_buffer.normal_data:
+        if is_interleaved and sub.normal_buffer:
+            nor_count = pos_count
+        elif sub.normal_buffer and sub.normal_buffer.normal_data:
             nb        = sub.normal_buffer
             nor_count = _vertex_count(nb.normal_data, nb.comp_count, nb.quantize_info)
 
         sub_layouts.append({
+            'is_interleaved':      is_interleaved,
             'sub':                 sub,
             'M_uv':                M_uv,
             'n_ds':                n_ds,
@@ -814,7 +827,9 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
             _s.pack_into('>I', gpl, uv_off + 0x0c, 0)                        # palettePtr (runtime)
 
         # Normal (Lighting) Header
-        if sub.normal_buffer and sub.normal_buffer.normal_data:
+        # Interleaved: rawPtr already set to pos_data_off+6 (no separate buffer).
+        # Non-interleaved: rawPtr points to the separate normal data block.
+        if sub.normal_buffer and (lay['is_interleaved'] or sub.normal_buffer.normal_data):
             nb = sub.normal_buffer
             _s.pack_into('>I', gpl, gpl_b + NOR_OFF + 0x00, lay['nor_data_off'])
             _s.pack_into('>H', gpl, gpl_b + NOR_OFF + 0x04, lay['nor_count'])
@@ -921,6 +936,66 @@ def BuildTEXTextureData(parsed: SluggieParsed) -> bytes:
         tex_len = (skn_off if skn_off else parsed.model_length) - tex_off
         f.seek(parsed.model_offset + tex_off)
         return f.read(tex_len)
+
+def BuildSKNSkinningDataCopyOnly(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> bytes:
+    """Return the SKN (Skinning Data) section bytes verbatim from INPUT dt_na.dat,
+    with memClrPtr patched to reflect the new GPL position-data offset.
+
+    Reads the original SKN block from the input file using the section offset
+    stored in the model-block file header.  After copying, memClrPtr at SKN
+    header offset 0x14 is recomputed as:
+        new_memClrPtr = gpl_result.pos_gpl_offsets[0] + min(all gplVertexArr)
+
+    Returns the raw SKN section bytes (patched), or b'' if the model has no
+    SKN section.
+    """
+    import struct as _s
+
+    if not parsed.model_offset:
+        return b''
+
+    with open(hh.INPUT_DAT, 'rb') as f:
+        f.seek(parsed.model_offset)
+        hdr = f.read(0x20)
+        skn_off = _s.unpack_from('>I', hdr, 0x10)[0]
+        if not skn_off:
+            return b''
+        skn_len = parsed.model_length - skn_off
+        f.seek(parsed.model_offset + skn_off)
+        skn = bytearray(f.read(skn_len))
+
+    # Patch memClrPtr (SKN header offset 0x14) to match the new GPL layout.
+    # Read SK counts from the copied header, then scan every gplVertexArr field
+    # to find the minimum pos-data-relative offset that memClrPtr must cover.
+    SKN_HDR_SIZE = 0x24
+    SK1_SIZE     = 0x40
+    SK2_SIZE     = 0x74
+    SKACC_SIZE   = 0x44
+
+    n_sk1 = _s.unpack_from('>H', skn, 0x00)[0]
+    n_sk2 = _s.unpack_from('>H', skn, 0x02)[0]
+    n_acc = _s.unpack_from('>H', skn, 0x04)[0]
+
+    SK1_ARR_OFF   = SKN_HDR_SIZE
+    SK2_ARR_OFF   = SK1_ARR_OFF   + n_sk1 * SK1_SIZE
+    SKACC_ARR_OFF = SK2_ARR_OFF   + n_sk2 * SK2_SIZE
+
+    all_gva = []
+    for i in range(n_sk1):
+        all_gva.append(_s.unpack_from('>I', skn, SK1_ARR_OFF   + i * SK1_SIZE   + 0x34)[0])
+    for i in range(n_sk2):
+        all_gva.append(_s.unpack_from('>I', skn, SK2_ARR_OFF   + i * SK2_SIZE   + 0x68)[0])
+    for i in range(n_acc):
+        all_gva.append(_s.unpack_from('>I', skn, SKACC_ARR_OFF + i * SKACC_SIZE + 0x38)[0])
+
+    if all_gva and gpl_result.pos_gpl_offsets:
+        min_gva = min(all_gva)
+        new_memClrPtr = gpl_result.pos_gpl_offsets[0] + min_gva
+        old_memClrPtr = _s.unpack_from('>I', skn, 0x14)[0]
+        _s.pack_into('>I', skn, 0x14, new_memClrPtr)
+        print(f'    [SKN] memClrPtr patched: 0x{old_memClrPtr:08X} → 0x{new_memClrPtr:08X}')
+
+    return bytes(skn)
 
 
 def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> bytes:
@@ -1244,8 +1319,8 @@ if __name__ == '__main__':
     print("\n[1/5] Building GPL (Mesh Data) ...")
     _gpl_result = BuildGPLMeshData(_parsed)
 
-    print("[2/5] Building SKN (Skinning Data) ...")
-    _skn = BuildSKNSkinningData(_parsed, _gpl_result)
+    print("[2/5] Copying SKN (Skinning Data) from input (patching memClrPtr) ...")
+    _skn = BuildSKNSkinningDataCopyOnly(_parsed, _gpl_result)
 
     print("[3/5] Copying ACT (Bone Hierarchy) from input ...")
     _act = BuildACTBoneHierarchy(_parsed)

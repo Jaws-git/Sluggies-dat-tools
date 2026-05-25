@@ -212,7 +212,7 @@ def appendHammerspaceLog(
         f"Model:    {model_name}\n"
         f"Chunk:    {chunk_number}  |  File: {file_index}\n"
         f"Address:  0x{dat_offset:08X}\n"
-        f"Size:     {size_mb:.3f} MB\n"
+        f"Size:     {size_mb:.2f} MB\n"
         f"Time:     {timestamp}\n"
         f"-----\n"
     )
