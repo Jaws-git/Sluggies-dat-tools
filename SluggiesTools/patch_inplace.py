@@ -11,7 +11,7 @@ OUTPUT_DAT = os.path.join(OUTPUT_DIR, 'dt_na.dat')
 
 # Allow importing sibling modules
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import patch_skn_dat as _skn
+import patch_skn_inplace as _skn
 
 # ---------------------------------------------------------------------------
 # Shader-mode conversion constants and helpers
