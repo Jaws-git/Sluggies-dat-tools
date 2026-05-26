@@ -702,6 +702,14 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
     original_skacc_bone_ids: set[int] = set(
         _e['BoneIndex'] for _e in skin_data.get('SKAccs', [])
     )
+    # Bones that appear in SK1 take priority: if a bone is in both SK1 and SKAcc
+    # (which happens when the same bone drives both a source-slot copy and an
+    # accumulation pass), a single-influence vertex must go to SK1, not SKAcc.
+    original_sk1_bone_ids: set[int] = set(
+        _e['BoneIndex'] for _e in skin_data.get('SK1s', [])
+    )
+    # SKAcc-only bones: exclusively in SKAcc, not in any SK1 entry.
+    skacc_only_bone_ids: set[int] = original_skacc_bone_ids - original_sk1_bone_ids
 
     # Pre-compute custom split normals per object when requested
     custom_normals_cache = {}
@@ -736,10 +744,11 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
             v_idx = v.index
             if len(parsed) == 1:
                 b, w = parsed[0]
-                if b in original_skacc_bone_ids:
-                    # Single-influence vertex whose only bone is an SKAcc bone —
-                    # must go to SKAcc, not SK1.  The dest slot equals the source
-                    # slot for these vertices (no cross-submesh aliasing here).
+                if b in skacc_only_bone_ids:
+                    # Single-influence vertex whose only bone is exclusively an
+                    # SKAcc bone (no SK1 entry for this bone) — must go to SKAcc.
+                    # Bones that appear in both SK1 and SKAcc stay in SK1 so we
+                    # don't lose their source-slot contributions.
                     skacc_groups.setdefault(b, []).append((sub_idx, v_idx, w, v_idx, obj))
                 else:
                     sk1_groups.setdefault(b, []).append((sub_idx, v_idx, obj))
@@ -802,6 +811,10 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
             e.get('GplVertexArrValue', 0)
         for e in skin_data.get('SK2s', [])
     }
+    _orig_skacc_gda = {
+        e['BoneIndex']: e.get('GplDestArrValue', 0)
+        for e in skin_data.get('SKAccs', [])
+    }
 
     new_sk1s = [
         {"BoneIndex": b, "VertexCnt": len(e), "BindPoseData": encode_src(e),
@@ -835,6 +848,7 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
             "BindPoseData":   encode_src(entries),
             "WeightData":    _from_bytes(bytes(wt), use_base64),
             "DestIndexData": _from_bytes(bytes(dest), use_base64),
+            "GplDestArrValue": _orig_skacc_gda.get(bone_id, 0),
         })
 
     flush_ind_size = skin_data.get('FlushIndSize', 0)

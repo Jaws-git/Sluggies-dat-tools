@@ -954,6 +954,7 @@ def BuildSKNSkinningDataCopyOnly(parsed: SluggieParsed, gpl_result: GPLBuildResu
     if not parsed.model_offset:
         return b''
 
+    original_pos_gpl_rel = 0
     with open(hh.INPUT_DAT, 'rb') as f:
         f.seek(parsed.model_offset)
         hdr = f.read(0x20)
@@ -964,36 +965,35 @@ def BuildSKNSkinningDataCopyOnly(parsed: SluggieParsed, gpl_result: GPLBuildResu
         f.seek(parsed.model_offset + skn_off)
         skn = bytearray(f.read(skn_len))
 
+        # Read the original GPL's sub0 pos_gpl_rel so we can compute the
+        # correct memClrPtr delta.  GPL section is always at model_offset+0x20.
+        # GPL header layout: +0x10 = descriptorPtr.
+        # Descriptor[0]: +0x00 = blob0_ptr (DOLayout-relative).
+        # DOLayout[0]: +0x00 = posHeaderPtr (blob-relative).
+        # DOPositionHeader: +0x00 = positionArrPtr (DOLayout-relative).
+        # original_pos_gpl_rel = blob0_ptr + positionArrPtr.
+        gpl_base = parsed.model_offset + 0x20
+        f.seek(gpl_base + 0x10)
+        desc_ptr  = _s.unpack_from('>I', f.read(4))[0]
+        f.seek(gpl_base + desc_ptr)
+        blob0_ptr = _s.unpack_from('>I', f.read(4))[0]
+        f.seek(gpl_base + blob0_ptr)
+        pos_hdr_ptr = _s.unpack_from('>I', f.read(4))[0]
+        f.seek(gpl_base + blob0_ptr + pos_hdr_ptr)
+        pos_arr_ptr = _s.unpack_from('>I', f.read(4))[0]
+        original_pos_gpl_rel = blob0_ptr + pos_arr_ptr
+
     # Patch memClrPtr (SKN header offset 0x14) to match the new GPL layout.
-    # Read SK counts from the copied header, then scan every gplVertexArr field
-    # to find the minimum pos-data-relative offset that memClrPtr must cover.
-    SKN_HDR_SIZE = 0x24
-    SK1_SIZE     = 0x40
-    SK2_SIZE     = 0x74
-    SKACC_SIZE   = 0x44
-
-    n_sk1 = _s.unpack_from('>H', skn, 0x00)[0]
-    n_sk2 = _s.unpack_from('>H', skn, 0x02)[0]
-    n_acc = _s.unpack_from('>H', skn, 0x04)[0]
-
-    SK1_ARR_OFF   = SKN_HDR_SIZE
-    SK2_ARR_OFF   = SK1_ARR_OFF   + n_sk1 * SK1_SIZE
-    SKACC_ARR_OFF = SK2_ARR_OFF   + n_sk2 * SK2_SIZE
-
-    all_gva = []
-    for i in range(n_sk1):
-        all_gva.append(_s.unpack_from('>I', skn, SK1_ARR_OFF   + i * SK1_SIZE   + 0x34)[0])
-    for i in range(n_sk2):
-        all_gva.append(_s.unpack_from('>I', skn, SK2_ARR_OFF   + i * SK2_SIZE   + 0x68)[0])
-    for i in range(n_acc):
-        all_gva.append(_s.unpack_from('>I', skn, SKACC_ARR_OFF + i * SKACC_SIZE + 0x38)[0])
-
-    if all_gva and gpl_result.pos_gpl_offsets:
-        min_gva = min(all_gva)
-        new_memClrPtr = gpl_result.pos_gpl_offsets[0] + min_gva
+    # The memClrPtr encodes a pos-data-relative delta that must be preserved
+    # when the GPL section is rebuilt at a different layout.
+    # Formula: new_memClrPtr = new_pos_gpl_rel + (old_memClrPtr - old_pos_gpl_rel)
+    if gpl_result.pos_gpl_offsets and original_pos_gpl_rel:
         old_memClrPtr = _s.unpack_from('>I', skn, 0x14)[0]
+        pos_relative_delta = old_memClrPtr - original_pos_gpl_rel
+        new_memClrPtr = gpl_result.pos_gpl_offsets[0] + pos_relative_delta
         _s.pack_into('>I', skn, 0x14, new_memClrPtr)
-        print(f'    [SKN] memClrPtr patched: 0x{old_memClrPtr:08X} → 0x{new_memClrPtr:08X}')
+        print(f'    [SKN] memClrPtr patched: 0x{old_memClrPtr:08X} → 0x{new_memClrPtr:08X}'
+              f'  (orig_pos_gpl_rel=0x{original_pos_gpl_rel:X} delta=0x{pos_relative_delta:X})')
 
     return bytes(skn)
 
