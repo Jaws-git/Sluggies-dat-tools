@@ -438,15 +438,37 @@ def ParseSluggie(data: dict) -> SluggieParsed:
     texture_data = TextureData(textures=textures)
 
     # ---- SkinningData ------------------------------------------------------
-    raw_skn = model.get('SkinDataEdited') or model.get('SkinData')
+    # Use the ORIGINAL SkinData for structural ordering (bone indices,
+    # gplVertexArr, vertex_offset) since the game engine depends on the
+    # original SK entry order.  Substitute edited payload (bind-pose data,
+    # weights, vertex counts) from SkinDataEdited when present, matching by
+    # bone key.
+    raw_skn_orig = model.get('SkinData')
+    raw_skn_edit = model.get('SkinDataEdited')
+    raw_skn = raw_skn_orig or raw_skn_edit
     if raw_skn:
+        # Build lookup dicts from edited data for payload substitution.
+        _edit_sk1_by_bone = {}
+        _edit_sk2_by_pair = {}
+        _edit_acc_by_bone = {}
+        if raw_skn_edit:
+            for s in raw_skn_edit.get('SK1s', []):
+                _edit_sk1_by_bone[s['BoneIndex']] = s
+            for s in raw_skn_edit.get('SK2s', []):
+                key = (s['BoneIndex1'], s['BoneIndex2'])
+                _edit_sk2_by_pair[key] = s
+            for s in raw_skn_edit.get('SKAccs', []):
+                _edit_acc_by_bone[s['BoneIndex']] = s
+
         sk1s = []
         for s in raw_skn.get('SK1s', []):
+            ed = _edit_sk1_by_bone.get(s['BoneIndex'])
+            bp_src = (ed or s).get('BindPoseDataEdited') or (ed or s).get('BindPoseData') or s['BindPoseData']
             sk1s.append(SK1(
                 bone_index                  = s['BoneIndex'],
-                vertex_cnt                  = s['VertexCnt'],
+                vertex_cnt                  = (ed or s)['VertexCnt'],
                 vertex_offset               = s.get('VertexOffset', 0),
-                bind_pose_data              = _decode(s.get('BindPoseDataEdited') or s['BindPoseData'], use_b64),
+                bind_pose_data              = _decode(bp_src, use_b64),
                 vertex_arr_field_offset     = _hex(s.get('VertexArrFieldOffset',     '0x0')),
                 gpl_vertex_arr_field_offset = _hex(s.get('GplVertexArrFieldOffset',  '0x0')),
                 vertex_arr_absolute_ptr     = _hex(s.get('VertexArrAbsolutePtr',     '0x0')),
@@ -455,13 +477,17 @@ def ParseSluggie(data: dict) -> SluggieParsed:
 
         sk2s = []
         for s in raw_skn.get('SK2s', []):
+            key = (s['BoneIndex1'], s['BoneIndex2'])
+            ed = _edit_sk2_by_pair.get(key)
+            bp_src = (ed or s).get('BindPoseDataEdited') or (ed or s).get('BindPoseData') or s['BindPoseData']
+            wt_src = (ed or s).get('WeightDataEdited') or (ed or s).get('WeightData') or s['WeightData']
             sk2s.append(SK2(
                 bone_index1                 = s['BoneIndex1'],
                 bone_index2                 = s['BoneIndex2'],
-                vertex_cnt                  = s['VertexCnt'],
+                vertex_cnt                  = (ed or s)['VertexCnt'],
                 vertex_offset               = s.get('VertexOffset', 0),
-                bind_pose_data              = _decode(s.get('BindPoseDataEdited') or s['BindPoseData'], use_b64),
-                weight_data                 = _decode(s.get('WeightDataEdited')   or s['WeightData'],   use_b64),
+                bind_pose_data              = _decode(bp_src, use_b64),
+                weight_data                 = _decode(wt_src, use_b64),
                 vertex_arr_field_offset     = _hex(s.get('VertexArrFieldOffset',     '0x0')),
                 weight_arr_field_offset     = _hex(s.get('WeightArrFieldOffset',     '0x0')),
                 gpl_vertex_arr_field_offset = _hex(s.get('GplVertexArrFieldOffset',  '0x0')),
@@ -472,12 +498,16 @@ def ParseSluggie(data: dict) -> SluggieParsed:
 
         sk_accs = []
         for s in raw_skn.get('SKAccs', []):
+            ed = _edit_acc_by_bone.get(s['BoneIndex'])
+            bp_src = (ed or s).get('BindPoseDataEdited') or (ed or s).get('BindPoseData') or s['BindPoseData']
+            wt_src = (ed or s).get('WeightDataEdited') or (ed or s).get('WeightData') or s['WeightData']
+            dest_src = (ed or s).get('DestIndexData') or s['DestIndexData']
             sk_accs.append(SKAcc(
                 bone_index                = s['BoneIndex'],
-                vertex_cnt                = s['VertexCnt'],
-                bind_pose_data            = _decode(s.get('BindPoseDataEdited') or s['BindPoseData'], use_b64),
-                dest_index_data           = _decode(s['DestIndexData'],                                use_b64),
-                weight_data               = _decode(s.get('WeightDataEdited')   or s['WeightData'],   use_b64),
+                vertex_cnt                = (ed or s)['VertexCnt'],
+                bind_pose_data            = _decode(bp_src, use_b64),
+                dest_index_data           = _decode(dest_src, use_b64),
+                weight_data               = _decode(wt_src, use_b64),
                 vertex_arr_field_offset   = _hex(s.get('VertexArrFieldOffset',   '0x0')),
                 dest_arr_field_offset     = _hex(s.get('DestArrFieldOffset',     '0x0')),
                 gpl_dest_arr_field_offset = _hex(s.get('GplDestArrFieldOffset',  '0x0')),
@@ -998,6 +1028,28 @@ def BuildSKNSkinningDataCopyOnly(parsed: SluggieParsed, gpl_result: GPLBuildResu
     return bytes(skn)
 
 
+def _compute_original_pos_gpl_rel(parsed: SluggieParsed) -> int:
+    """Read the original GPL's submesh 0 position-array GPL-relative offset.
+
+    Returns the GPL-section-relative offset of the position data array for
+    submesh 0, or 0 if it cannot be determined.
+    """
+    import struct as _s
+    if not parsed.model_offset:
+        return 0
+    with open(hh.INPUT_DAT, 'rb') as f:
+        gpl_base = parsed.model_offset + 0x20
+        f.seek(gpl_base + 0x10)
+        desc_ptr = _s.unpack_from('>I', f.read(4))[0]
+        f.seek(gpl_base + desc_ptr)
+        blob0_ptr = _s.unpack_from('>I', f.read(4))[0]
+        f.seek(gpl_base + blob0_ptr)
+        pos_hdr_ptr = _s.unpack_from('>I', f.read(4))[0]
+        f.seek(gpl_base + blob0_ptr + pos_hdr_ptr)
+        pos_arr_ptr = _s.unpack_from('>I', f.read(4))[0]
+        return blob0_ptr + pos_arr_ptr
+
+
 def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> bytes:
     """Build the SKN (Skinning Data) section.
 
@@ -1166,39 +1218,42 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
     # -------------------------------------------------------------------------
     # Phase SKN-3: memClrPtr / memClrSize
     #
-    # gplVertexArr values are pos-data-relative (byte offsets from the start
-    # of submesh 0's position buffer).  memClrPtr in the SKN header is GPL-
-    # section-relative, so it equals pos_data_gpl_start + min(gplVertexArr).
+    # memClrPtr is GPL-section-relative and points to the destination buffer
+    # where runtime CPU skinning writes transformed vertex data.  It is NOT
+    # simply pos_data_start + min(gplVertexArr) — those are source offsets.
     #
-    # memClrSize spans from min(gplVertexArr) to the end of the last SK write,
-    # computed from vertex counts and destination indices.
+    # For an unchanged-geometry rebuild (same vertex counts), we preserve the
+    # original memClrPtr and memClrSize from the sluggie metadata, relocated
+    # relative to the new GPL position data offset.  The formula matches
+    # BuildSKNSkinningDataCopyOnly:
+    #   delta = original_memClrPtr_gpl_rel - original_pos_data_gpl_rel
+    #   new_memClrPtr = new_pos_data_gpl_rel + delta
+    #
+    # Since gpl_result rebuilds the layout identically, pos_gpl_offsets[0]
+    # equals the original pos-data GPL-rel offset, so the delta is preserved.
     # -------------------------------------------------------------------------
 
-    all_gva = (
-        [sk.gpl_vertex_arr_value for sk in skn.sk1s] +
-        [sk.gpl_vertex_arr_value for sk in skn.sk2s] +
-        [sk.gpl_dest_arr_value   for sk in skn.sk_accs]
-    )
-    min_gva = min(all_gva) if all_gva else 0
+    # Original memClrPtr (GPL-relative)
+    orig_memClrPtr_gpl_rel = skn.mem_clr_absolute_ptr - skn.gpl_base_offset if skn.gpl_base_offset else 0
+    orig_memClrSize = skn.mem_clr_size
 
-    # memClrPtr is GPL-section-relative: add the GPL-relative pos data start
-    new_memClrPtr = (gpl_result.pos_gpl_offsets[0] + min_gva) if gpl_result.pos_gpl_offsets else 0
-
-    # Compute write-end extents (pos-data-relative) across all SK types
-    ends = []
-    for sk in skn.sk1s:
-        ends.append(sk.gpl_vertex_arr_value + sk.vertex_offset + sk.vertex_cnt * vertex_stride)
-    for sk in skn.sk2s:
-        ends.append(sk.gpl_vertex_arr_value + sk.vertex_offset + sk.vertex_cnt * vertex_stride)
-    for sk in skn.sk_accs:
-        n_idx = len(sk.dest_index_data) // 2
-        if n_idx:
-            dest_indices = _s.unpack_from(f'>{n_idx}H', sk.dest_index_data)
-            max_idx = max(dest_indices)
+    # Relocate: new_pos_gpl_offsets[0] + (orig_memClrPtr_gpl_rel - orig_pos_gpl_rel)
+    # Since the GPL rebuild reproduces the same layout, orig_pos_gpl_rel == pos_gpl_offsets[0],
+    # so new_memClrPtr == orig_memClrPtr_gpl_rel.  But we compute it properly for future
+    # extensibility when GPL layout might differ.
+    if gpl_result.pos_gpl_offsets and skn.gpl_base_offset:
+        # Compute original pos-data GPL-relative offset from the input file
+        # (same logic as CopyOnly)
+        _orig_pos_gpl_rel = _compute_original_pos_gpl_rel(parsed)
+        if _orig_pos_gpl_rel:
+            delta = orig_memClrPtr_gpl_rel - _orig_pos_gpl_rel
         else:
-            max_idx = 0
-        ends.append(sk.gpl_dest_arr_value + (max_idx + 1) * vertex_stride)
-    new_memClrSize = (max(ends) - min_gva) if ends else 0
+            delta = orig_memClrPtr_gpl_rel - gpl_result.pos_gpl_offsets[0]
+        new_memClrPtr = gpl_result.pos_gpl_offsets[0] + delta
+    else:
+        new_memClrPtr = orig_memClrPtr_gpl_rel
+
+    new_memClrSize = orig_memClrSize
 
     # -------------------------------------------------------------------------
     # Phase SKN-4: SKN header + full assembly
@@ -1218,7 +1273,45 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
     _s.pack_into('>I', skn_hdr, 0x1c, flush_off if flush_bytes else 0)  # flushIndPtr
     _s.pack_into('>I', skn_hdr, 0x20, skn.flush_ind_size)
 
-    return bytes(skn_hdr) + bytes(sk1_bytes) + bytes(sk2_bytes) + bytes(acc_bytes) + bytes(var_data)
+    skn_core = bytes(skn_hdr) + bytes(sk1_bytes) + bytes(sk2_bytes) + bytes(acc_bytes) + bytes(var_data)
+
+    # Append trailing sub-sections (ptr6/ptr7/ptr8 data) from INPUT dt_na.dat.
+    # These live between the end of the SKN section proper and the end of the
+    # model block.  BuildHEADERModelBlock recomputes the header pointers using
+    # (original_ptr - original_skn_off), so we must place the trailing data at
+    # the SAME relative offset from our new SKN start as in the original file.
+    trailing = b''
+    if parsed.model_offset:
+        import struct as _ts
+        with open(hh.INPUT_DAT, 'rb') as _f:
+            _f.seek(parsed.model_offset)
+            orig_hdr = _f.read(0x20)
+            orig_skn_off = _ts.unpack_from('>I', orig_hdr, 0x10)[0]
+            if orig_skn_off:
+                # Find the earliest ptr6/ptr7/ptr8 that falls after SKN start.
+                trailing_ptrs = []
+                for fo in (0x14, 0x18, 0x1c):
+                    p = _ts.unpack_from('>I', orig_hdr, fo)[0]
+                    if p and p >= orig_skn_off:
+                        trailing_ptrs.append(p)
+                if trailing_ptrs:
+                    trail_start = min(trailing_ptrs)
+                    trail_offset_in_skn = trail_start - orig_skn_off
+                    trail_len = parsed.model_length - trail_start
+                    _f.seek(parsed.model_offset + trail_start)
+                    trail_data = _f.read(trail_len)
+                    # Pad skn_core to reach the correct offset for trailing data.
+                    if len(skn_core) < trail_offset_in_skn:
+                        skn_core += b'\x00' * (trail_offset_in_skn - len(skn_core))
+                    elif len(skn_core) > trail_offset_in_skn:
+                        # SKN rebuilt larger than original — trailing data must
+                        # be relocated.  Append directly after skn_core.
+                        trail_offset_in_skn = len(skn_core)
+                    trailing = trail_data
+                    print(f'    [SKN] Trailing section appended at SKN+0x{trail_offset_in_skn:X} '
+                          f'({len(trail_data)} bytes)')
+
+    return skn_core + trailing
 
 def BuildHEADERModelBlock(
     gpl_bytes: bytes,
@@ -1353,8 +1446,8 @@ if __name__ == '__main__':
     print("\n[1/5] Building GPL (Mesh Data) ...")
     _gpl_result = BuildGPLMeshData(_parsed)
 
-    print("[2/5] Copying SKN (Skinning Data) from input (patching memClrPtr) ...")
-    _skn = BuildSKNSkinningDataCopyOnly(_parsed, _gpl_result)
+    print("[2/5] Building SKN (Skinning Data) from sluggie ...")
+    _skn = BuildSKNSkinningData(_parsed, _gpl_result)
 
     print("[3/5] Copying ACT (Bone Hierarchy) from input ...")
     _act = BuildACTBoneHierarchy(_parsed)
@@ -1399,8 +1492,23 @@ if __name__ == '__main__':
     print(f"\n[7] Writing model block to OUTPUT dt_na.dat ...")
     hh.writeModelBlock(_block, _new_offset)
 
-    print(f"\n[8] Patching OUTPUT main.dol ...")
+    print(f"\n[8] Patching OUTPUT main.dol and disc FST ...")
     hh.patchDolEntry(_chunk, _index, _new_offset, len(_block))
+
+    # Patch all other chunks that share the same original model data.
+    _shared = hh.findSharedEntries(_chunk, _index)
+    if _shared:
+        print(f"    Found {len(_shared)} shared chunk reference(s) — patching all:")
+        for _sc, _si in _shared:
+            hh.patchDolEntry(_sc, _si, _new_offset, len(_block))
+
+    # Update the disc FST so the game can read from the expanded region.
+    _dat_size = os.path.getsize(hh.OUTPUT_DAT)
+    hh.patchFstFileSize(_dat_size)
+
+    # Zero the original model location to verify hammerspace loading.
+    # Comment out the next line to disable this testing aid.
+    hh.zeroOriginalModel(_chunk, _index)
 
     print("\n[Debug] Writing debug dumps ...")
     hh.writeDebugDumps(
