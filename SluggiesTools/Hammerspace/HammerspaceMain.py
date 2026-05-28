@@ -1384,8 +1384,16 @@ if __name__ == '__main__':
     print("\n[6] Scanning hammerspace for free region ...")
     _new_offset = hh.findFreeMemoryChunk(len(_block))
     if _new_offset == -1:
-        print("ERROR: No contiguous free region found. Run HammerspaceHelper to extend OUTPUT dt_na.dat first.")
-        raise SystemExit(1)
+        # No free region yet — ensure the file exists and expand it, then retry.
+        _required = hh.BASE_SIZE + len(_block) + hh.HS_BUFFER_BYTES
+        print(f"No free hammerspace found. Ensuring OUTPUT dt_na.dat exists and has {_required:,} bytes ...")
+        if not hh.ensureOutputDat(_required):
+            print("ERROR: Unable to prepare OUTPUT dt_na.dat. Aborting.")
+            raise SystemExit(1)
+        _new_offset = hh.findFreeMemoryChunk(len(_block))
+        if _new_offset == -1:
+            print("ERROR: No contiguous free region found even after expansion. Aborting.")
+            raise SystemExit(1)
     print(f"    Free region at 0x{_new_offset:08X}")
 
     print(f"\n[7] Writing model block to OUTPUT dt_na.dat ...")
