@@ -1013,6 +1013,13 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
     The only field that requires recomputation is memClrPtr:
         new_memClrPtr = gpl_result.pos_gpl_offsets[0] + min(all gplVertexArr)
 
+    NOTE: This function builds the SKN section from scratch and does NOT
+    include any trailing sub-sections (ptr6/ptr7/ptr8 data that lives after
+    the SKN section in the original block).  If the original model has non-
+    zero ptr6/ptr7/ptr8 pointers, that data must be appended separately to
+    the returned bytes, or BuildSKNSkinningDataCopyOnly should be used
+    instead.
+
     Returns the complete SKN section as a byte string, or b'' for non-skinned
     models.
     """
@@ -1218,6 +1225,8 @@ def BuildHEADERModelBlock(
     act_bytes: bytes,
     tex_bytes: bytes,
     skn_bytes: bytes,
+    original_header: bytes = b'',
+    original_skn_off: int = 0,
 ) -> bytes:
     """Assemble the full model block from its four sections.
 
@@ -1231,14 +1240,27 @@ def BuildHEADERModelBlock(
         +0x08  uint32  ptr3       — ACT section offset (0 if absent)
         +0x0c  uint32  texPtr     — TEX section offset (0 if absent)
         +0x10  uint32  ptr5       — SKN section offset (0 if absent)
-        +0x14..+0x1f   three reserved words, always 0
+        +0x14  uint32  ptr6       — extra section pointer (recomputed if non-zero)
+        +0x18  uint32  ptr7       — extra section pointer (recomputed if non-zero)
+        +0x1c  uint32  ptr8       — extra section pointer (recomputed if non-zero)
 
     Section order:
         0x00  File header (0x20 bytes)
         0x20  GPL section          (always present)
         0x20 + len(gpl)  ACT section (omitted when empty)
         ...   TEX section          (omitted when empty)
-        ...   SKN section          (omitted when empty)
+        ...   SKN section          (omitted when empty; includes trailing
+              sub-sections pointed to by ptr6/ptr7/ptr8 when they fall
+              after the original SKN offset)
+
+    Parameters
+    ----------
+    original_header :
+        The 0x20-byte file header from the original model block in INPUT
+        dt_na.dat.  Used to read ptr6/ptr7/ptr8 for recomputation.
+    original_skn_off :
+        The SKN section offset as read from the original header (ptr5).
+        Needed to compute the delta for relocating ptr6/ptr7/ptr8.
 
     Returns the complete model block as a byte string.
     """
@@ -1257,7 +1279,19 @@ def BuildHEADERModelBlock(
     _s.pack_into('>I', hdr, 0x08, act_off if act_bytes else 0)
     _s.pack_into('>I', hdr, 0x0c, tex_off if tex_bytes else 0)
     _s.pack_into('>I', hdr, 0x10, skn_off if skn_bytes else 0)
-    # +0x14, +0x18, +0x1c: reserved ptr6/ptr7/ptr8 — remain zero
+
+    # Recompute ptr6/ptr7/ptr8 from the original header.
+    # These point to sub-sections that were copied as part of skn_bytes
+    # (BuildSKNSkinningDataCopyOnly reads from original SKN start to end-of-block).
+    # Their new offset = new_skn_off + (original_ptr - original_skn_off).
+    if len(original_header) >= HDR_SIZE and original_skn_off and skn_bytes:
+        for field_offset in (0x14, 0x18, 0x1c):
+            orig_ptr = _s.unpack_from('>I', original_header, field_offset)[0]
+            if orig_ptr and orig_ptr >= original_skn_off:
+                new_ptr = skn_off + (orig_ptr - original_skn_off)
+                _s.pack_into('>I', hdr, field_offset, new_ptr)
+                print(f'    [HDR] +0x{field_offset:02X} patched: '
+                      f'0x{orig_ptr:08X} → 0x{new_ptr:08X}')
 
     return bytes(hdr) + gpl_bytes + act_bytes + tex_bytes + skn_bytes
 
@@ -1328,8 +1362,22 @@ if __name__ == '__main__':
     print("[4/5] Copying TEX (Texture Data) from input ...")
     _tex = BuildTEXTextureData(_parsed)
 
+    # Read original model block header for ptr6/ptr7/ptr8 recomputation.
+    import struct as _struct
+    _orig_header = b''
+    _orig_skn_off = 0
+    if _parsed.model_offset:
+        with open(hh.INPUT_DAT, 'rb') as _fh:
+            _fh.seek(_parsed.model_offset)
+            _orig_header = _fh.read(0x20)
+        _orig_skn_off = _struct.unpack_from('>I', _orig_header, 0x10)[0]
+
     print("[5/5] Assembling model block header ...")
-    _block = BuildHEADERModelBlock(_gpl_result.gpl_bytes, _act, _tex, _skn)
+    _block = BuildHEADERModelBlock(
+        _gpl_result.gpl_bytes, _act, _tex, _skn,
+        original_header=_orig_header,
+        original_skn_off=_orig_skn_off,
+    )
 
     print(f"\nModel block size: {len(_block):,} bytes ({len(_block) / 1048576:.3f} MB)")
 
