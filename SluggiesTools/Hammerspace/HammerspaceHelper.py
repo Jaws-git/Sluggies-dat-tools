@@ -2,8 +2,9 @@ import os
 import shutil
 import struct
 
-BASE_SIZE = 715046144  # ~715 MB
-CHUNK_SIZE = 1024 * 1024  # 1 MB read buffer
+BASE_SIZE      = 715046144      # ~715 MB
+CHUNK_SIZE     = 1024 * 1024   # 1 MB read buffer
+HS_BUFFER_BYTES = 4 * 1024 * 1024  # 4 MiB safety buffer appended after every write
 OUTPUT_DAT = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', '3_Output_Dat', 'dt_na.dat'))
 
 _ROOT         = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -71,14 +72,71 @@ if __name__ == '__main__':
             f.write(b'\x00' * (target_size - current_size))
             print(f"Appended {target_size - current_size:,} zero bytes.")
         else:
+            # Check whether the region about to be removed contains non-zero data.
+            remove_start  = target_size
+            remove_length = current_size - target_size
+            non_zero_offset = -1
+            f.seek(remove_start)
+            scanned = 0
+            while scanned < remove_length:
+                chunk = f.read(min(CHUNK_SIZE, remove_length - scanned))
+                if not chunk:
+                    break
+                for i, byte in enumerate(chunk):
+                    if byte != 0:
+                        non_zero_offset = remove_start + scanned + i
+                        break
+                if non_zero_offset != -1:
+                    break
+                scanned += len(chunk)
+
+            if non_zero_offset != -1:
+                print(f"\nWARNING: Non-zero data found at offset 0x{non_zero_offset:08X} "
+                      f"within the {remove_length:,} bytes that would be removed.")
+                print("This may be hammerspace model data that has not been removed yet.")
+                answer = input("Continue and permanently discard this data? [y/N]: ").strip().lower()
+                if answer != 'y':
+                    print("Aborted. No changes were made.")
+                    raise SystemExit(0)
+
             f.truncate(target_size)
-            print(f"Trimmed {current_size - target_size:,} bytes from end of file.")
+            print(f"Trimmed {remove_length:,} bytes from end of file.")
 
     print("Done.")
 
 
 
 ### Hammerspace Helpers
+
+def ensureOutputDat(required_total_size: int = 0) -> bool:
+    """Ensure OUTPUT_DAT exists and is at least ``required_total_size`` bytes.
+
+    If the file is missing it is copied from INPUT_DAT first.  If it is
+    smaller than ``required_total_size`` it is extended with zero bytes.
+
+    Returns True on success, False if the input file is also missing."""
+
+    if not os.path.exists(OUTPUT_DAT):
+        if not os.path.exists(INPUT_DAT):
+            print(f"ERROR: OUTPUT dt_na.dat not found and INPUT dt_na.dat is also missing: {INPUT_DAT}")
+            return False
+        os.makedirs(os.path.dirname(OUTPUT_DAT), exist_ok=True)
+        print(f"OUTPUT dt_na.dat not found. Copying from input ...")
+        shutil.copy2(INPUT_DAT, OUTPUT_DAT)
+        print(f"Copied {INPUT_DAT} -> {OUTPUT_DAT}")
+
+    if required_total_size > 0:
+        current_size = os.path.getsize(OUTPUT_DAT)
+        if current_size < required_total_size:
+            expand_by = required_total_size - current_size
+            print(f"Expanding OUTPUT dt_na.dat by {expand_by:,} bytes "
+                  f"(current: {current_size:,} → target: {required_total_size:,}) ...")
+            with open(OUTPUT_DAT, 'ab') as f:
+                f.write(b'\x00' * expand_by)
+            print(f"Expansion complete. New size: {os.path.getsize(OUTPUT_DAT):,} bytes")
+
+    return True
+
 
 def findFreeMemoryChunk(dataLength: int) -> int:
     """Scan the hammerspace region of the dat file for a contiguous run of
@@ -129,7 +187,15 @@ def findFreeMemoryChunk(dataLength: int) -> int:
 def writeModelBlock(data: bytes, offset: int) -> None:
     """Write raw model data into the dat file at the given offset.
 
+    Ensures OUTPUT_DAT exists (copying from INPUT_DAT if necessary) and that
+    the file is large enough to hold ``offset + len(data) + HS_BUFFER_BYTES``,
+    expanding it with zero bytes when needed.
+
     ``offset`` should be a value returned by ``findFreeMemoryChunk``."""
+
+    required_size = offset + len(data) + HS_BUFFER_BYTES
+    if not ensureOutputDat(required_size):
+        raise FileNotFoundError(f"Cannot write model block: OUTPUT_DAT missing and INPUT_DAT not found ({INPUT_DAT})")
 
     with open(OUTPUT_DAT, 'r+b') as f:
         f.seek(offset)
