@@ -1394,6 +1394,34 @@ def BuildHEADERModelBlock(
     return bytes(hdr) + gpl_bytes + act_bytes + tex_bytes + skn_bytes
 
 
+# ---------------------------------------------------------------------------
+# BuildClone — verbatim copy of the original model block into hammerspace
+# ---------------------------------------------------------------------------
+
+def BuildClone(chunk_number: int, file_index: int) -> bytes:
+    """Read the entire original model block verbatim from INPUT dt_na.dat.
+
+    All internal pointers within a model block are section-relative or
+    block-relative, so relocating the block to a different file offset
+    requires NO pointer fixups inside the data itself.  Only the DOL
+    directory entry (handled by patchDolEntry) needs updating.
+
+    Returns the raw model block bytes ready for writeModelBlock().
+    """
+    offset, length = hh.readDolEntry(chunk_number, file_index)
+    if offset == -1 or length <= 0:
+        raise ValueError(f"Invalid DOL entry for chunk={chunk_number}, file_index={file_index}")
+
+    with open(hh.INPUT_DAT, 'rb') as f:
+        f.seek(offset)
+        block = f.read(length)
+
+    if len(block) != length:
+        raise IOError(f"Short read: expected {length} bytes at 0x{offset:08X}, got {len(block)}")
+
+    print(f"    Read {length:,} bytes from INPUT at 0x{offset:08X}")
+    return block
+
 
 # ---------------------------------------------------------------------------
 # Entry point
@@ -1406,20 +1434,96 @@ if __name__ == '__main__':
     _parser = _ap.ArgumentParser(description='Build a hammerspace model block from a .sluggies file.')
     _parser.add_argument('sluggies_path', help='Path to the .sluggies file')
     _parser.add_argument('--unpatch', action='store_true', help='Remove the model from hammerspace and restore the original DOL entry')
+    _parser.add_argument('--clone', action='store_true',
+                         help='Clone mode: copy the original model block verbatim into hammerspace '
+                              '(no rebuild, no edits — proof-of-concept for hammerspace loading)')
     _args = _parser.parse_args()
 
     with open(_args.sluggies_path, 'r') as _f:
         _data = _json.load(_f)
 
-    _parsed = ParseSluggie(_data)
-    print(f"Parsed: {len(_parsed.mesh.submeshes)} submesh(es), "
-          f"{len(_parsed.bones.bones) if _parsed.bones else 0} bone(s), "
-          f"{len(_parsed.textures.textures)} texture(s), "
-          f"skinning={'yes' if _parsed.skinning else 'no'}")
-
     _model = _data['SluggiesModel']
     _chunk = _model['ChunkNumber']
     _index = _model['FileIndex']
+
+    # ------------------------------------------------------------------
+    # --clone: verbatim copy of the original model block into hammerspace.
+    # No section rebuild, no pointer fixups inside the block (all pointers
+    # are block-relative or section-relative).  Only the DOL directory
+    # entry is updated to point at the new file offset.
+    # ------------------------------------------------------------------
+    if _args.clone:
+        print(f"=== CLONE MODE ===")
+        print(f"Chunk: {_chunk}, FileIndex: {_index}")
+
+        # Evict any previous hammerspace version.
+        _cur_offset, _cur_length = hh.readOutputDolEntry(_chunk, _index)
+        if _cur_offset >= hh.BASE_SIZE:
+            print(f"\n[0] Model already in hammerspace at 0x{_cur_offset:08X} — removing old version ...")
+            _evict_ok, _evict_off, _evict_len = hh.removeModelFromHammerspace(_chunk, _index)
+            if not _evict_ok:
+                print("ERROR: Could not remove existing hammerspace entry. Aborting.")
+                raise SystemExit(1)
+            hh.appendHammerspaceLog(
+                'Removed', os.path.basename(_args.sluggies_path),
+                _chunk, _index, _evict_off, _evict_len,
+            )
+
+        print(f"\n[1] Reading original model block from INPUT dt_na.dat ...")
+        _block = BuildClone(_chunk, _index)
+        print(f"    Block size: {len(_block):,} bytes ({len(_block) / 1048576:.3f} MB)")
+
+        print(f"\n[2] Scanning hammerspace for free region ...")
+        _new_offset = hh.findFreeMemoryChunk(len(_block))
+        if _new_offset == -1:
+            _required = hh.BASE_SIZE + len(_block) + hh.HS_BUFFER_BYTES
+            print(f"    No free hammerspace found. Expanding to {_required:,} bytes ...")
+            if not hh.ensureOutputDat(_required):
+                print("ERROR: Unable to prepare OUTPUT dt_na.dat. Aborting.")
+                raise SystemExit(1)
+            _new_offset = hh.findFreeMemoryChunk(len(_block))
+            if _new_offset == -1:
+                print("ERROR: No contiguous free region found even after expansion. Aborting.")
+                raise SystemExit(1)
+        print(f"    Free region at 0x{_new_offset:08X}")
+
+        print(f"\n[3] Writing cloned block to OUTPUT dt_na.dat ...")
+        hh.writeModelBlock(_block, _new_offset)
+
+        print(f"\n[4] Patching OUTPUT main.dol and disc FST ...")
+        hh.patchDolEntry(_chunk, _index, _new_offset, len(_block))
+
+        _shared = hh.findSharedEntries(_chunk, _index)
+        if _shared:
+            print(f"    Found {len(_shared)} shared chunk reference(s) — patching all:")
+            for _sc, _si in _shared:
+                hh.patchDolEntry(_sc, _si, _new_offset, len(_block))
+
+        _dat_size = os.path.getsize(hh.OUTPUT_DAT)
+        hh.patchFstFileSize(_dat_size)
+
+        print(f"\n[5] Zeroing original model address space ...")
+        hh.zeroOriginalModel(_chunk, _index)
+
+        print("\n[Debug] Writing debug dumps ...")
+        _orig_offset, _orig_length = hh.readDolEntry(_chunk, _index)
+        hh.writeDebugDumps(
+            os.path.basename(_args.sluggies_path),
+            _orig_offset, _orig_length, _block,
+        )
+
+        hh.appendHammerspaceLog(
+            'Written (Clone)', os.path.basename(_args.sluggies_path),
+            _chunk, _index, _new_offset, len(_block),
+        )
+
+        print("\nDone. (Clone mode — original data identical, original location zeroed)")
+        raise SystemExit(0)
+
+    # ------------------------------------------------------------------
+    # Normal path: currently using clone builder for testing.
+    # Old section-by-section rebuild is commented out below.
+    # ------------------------------------------------------------------
 
     if _args.unpatch:
         _success, _rem_offset, _rem_length = hh.removeModelFromHammerspace(_chunk, _index)
@@ -1431,6 +1535,10 @@ if __name__ == '__main__':
                 _rem_offset, _rem_length,
             )
         raise SystemExit(0 if _success else 1)
+
+    # --- Use clone builder (verbatim copy) instead of section rebuild ---
+    print("=== Using Clone builder (verbatim copy, no rebuild) ===")
+    print(f"Chunk: {_chunk}, FileIndex: {_index}")
 
     # Check if this model is already in hammerspace and evict it first.
     _cur_offset, _cur_length = hh.readOutputDolEntry(_chunk, _index)
@@ -1447,44 +1555,15 @@ if __name__ == '__main__':
             _evict_off, _evict_len,
         )
 
-    # Build each section in dependency order, then assemble and write.
-    print("\n[1/5] Building GPL (Mesh Data) ...")
-    _gpl_result = BuildGPLMeshData(_parsed)
+    print("\n[1] Reading original model block from INPUT dt_na.dat ...")
+    _block = BuildClone(_chunk, _index)
+    print(f"    Block size: {len(_block):,} bytes ({len(_block) / 1048576:.3f} MB)")
 
-    print("[2/5] Copying SKN (Skinning Data) from original ...")
-    _skn = BuildSKNSkinningDataCopyOnly(_parsed, _gpl_result)
-
-    print("[3/5] Copying ACT (Bone Hierarchy) from input ...")
-    _act = BuildACTBoneHierarchy(_parsed)
-
-    print("[4/5] Copying TEX (Texture Data) from input ...")
-    _tex = BuildTEXTextureData(_parsed)
-
-    # Read original model block header for ptr6/ptr7/ptr8 recomputation.
-    import struct as _struct
-    _orig_header = b''
-    _orig_skn_off = 0
-    if _parsed.model_offset:
-        with open(hh.INPUT_DAT, 'rb') as _fh:
-            _fh.seek(_parsed.model_offset)
-            _orig_header = _fh.read(0x20)
-        _orig_skn_off = _struct.unpack_from('>I', _orig_header, 0x10)[0]
-
-    print("[5/5] Assembling model block header ...")
-    _block = BuildHEADERModelBlock(
-        _gpl_result.gpl_bytes, _act, _tex, _skn,
-        original_header=_orig_header,
-        original_skn_off=_orig_skn_off,
-    )
-
-    print(f"\nModel block size: {len(_block):,} bytes ({len(_block) / 1048576:.3f} MB)")
-
-    print("\n[6] Scanning hammerspace for free region ...")
+    print("\n[2] Scanning hammerspace for free region ...")
     _new_offset = hh.findFreeMemoryChunk(len(_block))
     if _new_offset == -1:
-        # No free region yet — ensure the file exists and expand it, then retry.
         _required = hh.BASE_SIZE + len(_block) + hh.HS_BUFFER_BYTES
-        print(f"No free hammerspace found. Ensuring OUTPUT dt_na.dat exists and has {_required:,} bytes ...")
+        print(f"    No free hammerspace found. Expanding to {_required:,} bytes ...")
         if not hh.ensureOutputDat(_required):
             print("ERROR: Unable to prepare OUTPUT dt_na.dat. Aborting.")
             raise SystemExit(1)
@@ -1494,41 +1573,126 @@ if __name__ == '__main__':
             raise SystemExit(1)
     print(f"    Free region at 0x{_new_offset:08X}")
 
-    print(f"\n[7] Writing model block to OUTPUT dt_na.dat ...")
+    print("\n[3] Writing cloned block to OUTPUT dt_na.dat ...")
     hh.writeModelBlock(_block, _new_offset)
 
-    print(f"\n[8] Patching OUTPUT main.dol and disc FST ...")
+    print("\n[4] Patching OUTPUT main.dol and disc FST ...")
     hh.patchDolEntry(_chunk, _index, _new_offset, len(_block))
 
-    # Patch all other chunks that share the same original model data.
     _shared = hh.findSharedEntries(_chunk, _index)
     if _shared:
         print(f"    Found {len(_shared)} shared chunk reference(s) — patching all:")
         for _sc, _si in _shared:
             hh.patchDolEntry(_sc, _si, _new_offset, len(_block))
 
-    # Update the disc FST so the game can read from the expanded region.
     _dat_size = os.path.getsize(hh.OUTPUT_DAT)
     hh.patchFstFileSize(_dat_size)
 
-    # Zero the original model location to verify hammerspace loading.
-    # Comment out the next line to disable this testing aid.
+    print("\n[5] Zeroing original model address space ...")
     hh.zeroOriginalModel(_chunk, _index)
 
     print("\n[Debug] Writing debug dumps ...")
+    _orig_offset, _orig_length = hh.readDolEntry(_chunk, _index)
     hh.writeDebugDumps(
         os.path.basename(_args.sluggies_path),
-        _parsed.model_offset,
-        _parsed.model_length,
-        _block,
+        _orig_offset, _orig_length, _block,
     )
 
     hh.appendHammerspaceLog(
-        'Written',
+        'Written (Clone)',
         os.path.basename(_args.sluggies_path),
         _chunk, _index,
         _new_offset, len(_block),
     )
+
+    print("\nDone. (Clone mode — original data identical, original location zeroed)")
+
+    # ------------------------------------------------------------------
+    # OLD BUILDERS (commented out for now — restore when clone test passes)
+    # ------------------------------------------------------------------
+    # _parsed = ParseSluggie(_data)
+    # print(f"Parsed: {len(_parsed.mesh.submeshes)} submesh(es), "
+    #       f"{len(_parsed.bones.bones) if _parsed.bones else 0} bone(s), "
+    #       f"{len(_parsed.textures.textures)} texture(s), "
+    #       f"skinning={'yes' if _parsed.skinning else 'no'}")
+    #
+    # # Build each section in dependency order, then assemble and write.
+    # print("\n[1/5] Building GPL (Mesh Data) ...")
+    # _gpl_result = BuildGPLMeshData(_parsed)
+    #
+    # print("[2/5] Copying SKN (Skinning Data) from original ...")
+    # _skn = BuildSKNSkinningDataCopyOnly(_parsed, _gpl_result)
+    #
+    # print("[3/5] Copying ACT (Bone Hierarchy) from input ...")
+    # _act = BuildACTBoneHierarchy(_parsed)
+    #
+    # print("[4/5] Copying TEX (Texture Data) from input ...")
+    # _tex = BuildTEXTextureData(_parsed)
+    #
+    # # Read original model block header for ptr6/ptr7/ptr8 recomputation.
+    # import struct as _struct
+    # _orig_header = b''
+    # _orig_skn_off = 0
+    # if _parsed.model_offset:
+    #     with open(hh.INPUT_DAT, 'rb') as _fh:
+    #         _fh.seek(_parsed.model_offset)
+    #         _orig_header = _fh.read(0x20)
+    #     _orig_skn_off = _struct.unpack_from('>I', _orig_header, 0x10)[0]
+    #
+    # print("[5/5] Assembling model block header ...")
+    # _block = BuildHEADERModelBlock(
+    #     _gpl_result.gpl_bytes, _act, _tex, _skn,
+    #     original_header=_orig_header,
+    #     original_skn_off=_orig_skn_off,
+    # )
+    #
+    # print(f"\nModel block size: {len(_block):,} bytes ({len(_block) / 1048576:.3f} MB)")
+    #
+    # print("\n[6] Scanning hammerspace for free region ...")
+    # _new_offset = hh.findFreeMemoryChunk(len(_block))
+    # if _new_offset == -1:
+    #     _required = hh.BASE_SIZE + len(_block) + hh.HS_BUFFER_BYTES
+    #     print(f"No free hammerspace found. Ensuring OUTPUT dt_na.dat exists and has {_required:,} bytes ...")
+    #     if not hh.ensureOutputDat(_required):
+    #         print("ERROR: Unable to prepare OUTPUT dt_na.dat. Aborting.")
+    #         raise SystemExit(1)
+    #     _new_offset = hh.findFreeMemoryChunk(len(_block))
+    #     if _new_offset == -1:
+    #         print("ERROR: No contiguous free region found even after expansion. Aborting.")
+    #         raise SystemExit(1)
+    # print(f"    Free region at 0x{_new_offset:08X}")
+    #
+    # print(f"\n[7] Writing model block to OUTPUT dt_na.dat ...")
+    # hh.writeModelBlock(_block, _new_offset)
+    #
+    # print(f"\n[8] Patching OUTPUT main.dol and disc FST ...")
+    # hh.patchDolEntry(_chunk, _index, _new_offset, len(_block))
+    #
+    # _shared = hh.findSharedEntries(_chunk, _index)
+    # if _shared:
+    #     print(f"    Found {len(_shared)} shared chunk reference(s) — patching all:")
+    #     for _sc, _si in _shared:
+    #         hh.patchDolEntry(_sc, _si, _new_offset, len(_block))
+    #
+    # _dat_size = os.path.getsize(hh.OUTPUT_DAT)
+    # hh.patchFstFileSize(_dat_size)
+    #
+    # hh.zeroOriginalModel(_chunk, _index)
+    #
+    # print("\n[Debug] Writing debug dumps ...")
+    # hh.writeDebugDumps(
+    #     os.path.basename(_args.sluggies_path),
+    #     _parsed.model_offset,
+    #     _parsed.model_length,
+    #     _block,
+    # )
+    #
+    # hh.appendHammerspaceLog(
+    #     'Written',
+    #     os.path.basename(_args.sluggies_path),
+    #     _chunk, _index,
+    #     _new_offset, len(_block),
+    # )
 
     print("\nDone.")
     raise SystemExit(0)

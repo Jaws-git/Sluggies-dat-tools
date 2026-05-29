@@ -22,6 +22,12 @@ Some helper methods already exist in HammerspaceHelper.py but may need to be upd
 - texture patching will not be supported (alternative via dolphin custom texture loader exisits)
 - skeleton hierarchy and animation patching is out of scope for now
 
+## early testing with cloned data
+
+When copying the model data block into hammerspace, zeroing out the original data, and updating the .dol entries, the model loads normally and everything works as expected
+
+Ingame issues with recalculated data are thus problems with the payload itself and very likely not hammerspace read issues. All hammerspace edits stay in bounds of max addressable file size.
+
 
 ## vertex & face count changes
 
@@ -226,54 +232,3 @@ parsed.skinning (sluggies JSON)
        Write 0x24-byte SKN header with all counts and pointers.
        Concatenate: header + SK1 structs + SK2 structs + SKAcc structs + variable data.
 ```
-
-#### Additional notes
-
-- Skinned meshes always write into submesh 0's position array. Confirm: the first SK entry's `gplVertexArr_original` must fall within `[old_pos_gpl_off[0], old_pos_gpl_off[0] + pos_data_len)`.
-- The flush index array content is preserved verbatim (same as ACT/TEX copy approach); only its SKN-relative pointer in the header changes.
-- SKAcc duplicate-destination entries (twist/blend deformers) require no special handling — `dest_index_data` is preserved verbatim, and the recalculation only touches the `gplDestArr` base pointer.
-- Matrix placeholder bytes (0x30 or 0x60 per struct) are always zero in the file; the runtime transforms fill them each frame.
-- `vertexOffset` is preserved verbatim from `parsed.skinning.sk1s[i].vertex_offset` etc.
-
-
-
-## the problems with vertex count changes
-
-Here's the full chain of what breaks:
-
-Why topology changes are fundamentally incompatible with the current approach
-The game format imposes a hard constraint: SK1/SK2 entries use gplVertexArr as a contiguous-range start. For vertex slot s to be skinned by SK1 bone B, the face index must equal exactly gplVertexArr_B / stride + i for some i in [0, vertexCnt). The slot written and the slot referenced by the face must be the same number.
-
-What Blender does when you add vertices: New vertices are appended at the end of the mesh — indices 2415, 2416, 2417. FacesDataEdited emits those numbers as face indices. The exported VertexBufferDataEdited stores vertex 2415's data at byte position 2415 * stride in the buffer.
-
-What the SK1 entry would do: With GplVertexArrValue = 1200 (bone 5's original start, slot 100) and VertexCnt = 53, the game writes source verts 0..52 sequentially to dest slots 100..152 — not to slot 2415. The face referencing index 2415 reads whatever garbage is at that position.
-
-So the two things are disconnected: the face says "look at slot 2415", the SK entry writes to "slots 100..152". My fix of copying the original GplVertexArrValue is correct for deformation-only edits (which was its intent) but silently wrong for topology changes.
-
-Recomputing GplVertexArrValue from scratch doesn't save you either — even if you compute min(global_vertex_index) from the group, that gives you 100 again (the original vertices start there), and the new vertex at 2415 still won't be covered.
-
-What would actually be needed
-A vertex reordering pass at export time, coordinated across all four data types:
-
-Data	What changes
-VertexBufferDataEdited	Output vertices sorted by SK group membership, not Blender vertex index
-FacesDataEdited	Rewritten with the new reordered positions
-UV / color channel data	All slot arrays reordered to match
-GplVertexArrValue	Computed from scratch from the new contiguous ranges
-Concretely, for bone 5 with original verts 100..149 + new verts 2415..2417:
-
-Assign them new slots 100..152 in the output buffer (contiguous)
-Output vertex buffer with vertex 2415's data at byte position 150 * stride
-Rewrite any face index 2415 → 150
-Set GplVertexArrValue = 100 * stride, VertexCnt = 53
-This touches encode_vertex_buffer_edited, encode_uv_channel_edited, and the face encoding — all need to operate on the same vertex index remapping table.
-
-Current state / practical limit
-Edit type	Works?
-Vertex position/normal changes	✅ fully supported
-Weight changes between existing vertices	✅ supported
-Removing faces + trailing verts (per bone)	✅ handled by trailing trim in encode_skin_hammerspace
-Removing a vert from the middle of a bone's range	⚠️ only correct if the face is also removed and you don't care about stale data at that slot
-Adding new vertices/faces to a bone	❌ face indices reference positions outside any SK entry's contiguous range
-Adding a brand-new bone	❌ no space in the SK block, and no contiguous vertex range allocated
-The vertex reordering pass is theoretically buildable but touches essentially every encoder in the export pipeline. It's a non-trivial feature addition, not a small fix.
