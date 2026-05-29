@@ -919,6 +919,30 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
     return GPLBuildResult(gpl_bytes=bytes(gpl), pos_gpl_offsets=pos_gpl_offsets)
 
 
+def CloneGPL(model_offset: int, model_length: int) -> bytes:
+    """Clone the GPL section verbatim from INPUT dt_na.dat.
+
+    Reads the model block header to determine GPL boundaries, then returns
+    the raw GPL bytes unchanged.  No pointer fixups needed (all internal
+    GPL pointers are GPL-section-relative or DOLayout-relative).
+    """
+    import struct as _s
+    with open(hh.INPUT_DAT, 'rb') as f:
+        f.seek(model_offset)
+        hdr = f.read(0x20)
+        gpl_off = _s.unpack_from('>I', hdr, 0x04)[0]
+        act_off = _s.unpack_from('>I', hdr, 0x08)[0]
+        tex_off = _s.unpack_from('>I', hdr, 0x0c)[0]
+        skn_off = _s.unpack_from('>I', hdr, 0x10)[0]
+        # GPL ends where the next present section starts
+        next_off = act_off or tex_off or skn_off or model_length
+        gpl_len = next_off - gpl_off
+        f.seek(model_offset + gpl_off)
+        data = f.read(gpl_len)
+    print(f"    [CloneGPL] {gpl_len:,} bytes from block+0x{gpl_off:X}")
+    return data
+
+
 def BuildACTBoneHierarchy(parsed: SluggieParsed) -> bytes:
     """Return the ACT (Bone Hierarchy) section bytes.
 
@@ -946,6 +970,29 @@ def BuildACTBoneHierarchy(parsed: SluggieParsed) -> bytes:
         return f.read(act_len)
 
 
+def CloneACT(model_offset: int, model_length: int) -> bytes:
+    """Clone the ACT section verbatim from INPUT dt_na.dat.
+
+    Returns the raw ACT bytes unchanged, or b'' if the model has no ACT section.
+    """
+    import struct as _s
+    with open(hh.INPUT_DAT, 'rb') as f:
+        f.seek(model_offset)
+        hdr = f.read(0x20)
+        act_off = _s.unpack_from('>I', hdr, 0x08)[0]
+        if not act_off:
+            print("    [CloneACT] No ACT section")
+            return b''
+        tex_off = _s.unpack_from('>I', hdr, 0x0c)[0]
+        skn_off = _s.unpack_from('>I', hdr, 0x10)[0]
+        next_off = tex_off or skn_off or model_length
+        act_len = next_off - act_off
+        f.seek(model_offset + act_off)
+        data = f.read(act_len)
+    print(f"    [CloneACT] {act_len:,} bytes from block+0x{act_off:X}")
+    return data
+
+
 def BuildTEXTextureData(parsed: SluggieParsed) -> bytes:
     """Return the TEX (Texture Data) section bytes.
 
@@ -971,6 +1018,29 @@ def BuildTEXTextureData(parsed: SluggieParsed) -> bytes:
         tex_len = (skn_off if skn_off else parsed.model_length) - tex_off
         f.seek(parsed.model_offset + tex_off)
         return f.read(tex_len)
+
+
+def CloneTEX(model_offset: int, model_length: int) -> bytes:
+    """Clone the TEX section verbatim from INPUT dt_na.dat.
+
+    Returns the raw TEX bytes unchanged, or b'' if the model has no TEX section.
+    """
+    import struct as _s
+    with open(hh.INPUT_DAT, 'rb') as f:
+        f.seek(model_offset)
+        hdr = f.read(0x20)
+        tex_off = _s.unpack_from('>I', hdr, 0x0c)[0]
+        if not tex_off:
+            print("    [CloneTEX] No TEX section")
+            return b''
+        skn_off = _s.unpack_from('>I', hdr, 0x10)[0]
+        next_off = skn_off or model_length
+        tex_len = next_off - tex_off
+        f.seek(model_offset + tex_off)
+        data = f.read(tex_len)
+    print(f"    [CloneTEX] {tex_len:,} bytes from block+0x{tex_off:X}")
+    return data
+
 
 def BuildSKNSkinningDataCopyOnly(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> bytes:
     """Return the SKN (Skinning Data) section bytes verbatim from INPUT dt_na.dat,
@@ -1318,6 +1388,29 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
 
     return skn_core + trailing
 
+
+def CloneSKN(model_offset: int, model_length: int) -> bytes:
+    """Clone the SKN section verbatim from INPUT dt_na.dat.
+
+    Includes all trailing sub-sections (ptr6/ptr7/ptr8 data) that live
+    between the end of SKN proper and the end of the model block.
+    Returns b'' if the model has no SKN section.
+    """
+    import struct as _s
+    with open(hh.INPUT_DAT, 'rb') as f:
+        f.seek(model_offset)
+        hdr = f.read(0x20)
+        skn_off = _s.unpack_from('>I', hdr, 0x10)[0]
+        if not skn_off:
+            print("    [CloneSKN] No SKN section")
+            return b''
+        skn_len = model_length - skn_off
+        f.seek(model_offset + skn_off)
+        data = f.read(skn_len)
+    print(f"    [CloneSKN] {skn_len:,} bytes from block+0x{skn_off:X} (to end of block)")
+    return data
+
+
 def BuildHEADERModelBlock(
     gpl_bytes: bytes,
     act_bytes: bytes,
@@ -1394,33 +1487,48 @@ def BuildHEADERModelBlock(
     return bytes(hdr) + gpl_bytes + act_bytes + tex_bytes + skn_bytes
 
 
-# ---------------------------------------------------------------------------
-# BuildClone — verbatim copy of the original model block into hammerspace
-# ---------------------------------------------------------------------------
+def CloneHEADER(model_offset: int) -> bytes:
+    """Clone the 0x20-byte model block header verbatim from INPUT dt_na.dat.
 
-def BuildClone(chunk_number: int, file_index: int) -> bytes:
-    """Read the entire original model block verbatim from INPUT dt_na.dat.
-
-    All internal pointers within a model block are section-relative or
-    block-relative, so relocating the block to a different file offset
-    requires NO pointer fixups inside the data itself.  Only the DOL
-    directory entry (handled by patchDolEntry) needs updating.
-
-    Returns the raw model block bytes ready for writeModelBlock().
+    The header contains block-relative pointers to GPL, ACT, TEX, SKN, and
+    any ptr6/ptr7/ptr8 sub-sections.  When all sections are cloned at their
+    original sizes and reassembled in the same order, these pointers remain
+    valid without any fixups.
     """
-    offset, length = hh.readDolEntry(chunk_number, file_index)
-    if offset == -1 or length <= 0:
-        raise ValueError(f"Invalid DOL entry for chunk={chunk_number}, file_index={file_index}")
-
     with open(hh.INPUT_DAT, 'rb') as f:
-        f.seek(offset)
-        block = f.read(length)
+        f.seek(model_offset)
+        data = f.read(0x20)
+    print(f"    [CloneHEADER] 0x20 bytes from offset 0x{model_offset:08X}")
+    return data
 
-    if len(block) != length:
-        raise IOError(f"Short read: expected {length} bytes at 0x{offset:08X}, got {len(block)}")
 
-    print(f"    Read {length:,} bytes from INPUT at 0x{offset:08X}")
-    return block
+# ---------------------------------------------------------------------------
+# BuildClone — full-block verbatim copy (DEACTIVATED, kept for reference)
+# ---------------------------------------------------------------------------
+
+# def BuildClone(chunk_number: int, file_index: int) -> bytes:
+#     """Read the entire original model block verbatim from INPUT dt_na.dat.
+#
+#     All internal pointers within a model block are section-relative or
+#     block-relative, so relocating the block to a different file offset
+#     requires NO pointer fixups inside the data itself.  Only the DOL
+#     directory entry (handled by patchDolEntry) needs updating.
+#
+#     Returns the raw model block bytes ready for writeModelBlock().
+#     """
+#     offset, length = hh.readDolEntry(chunk_number, file_index)
+#     if offset == -1 or length <= 0:
+#         raise ValueError(f"Invalid DOL entry for chunk={chunk_number}, file_index={file_index}")
+#
+#     with open(hh.INPUT_DAT, 'rb') as f:
+#         f.seek(offset)
+#         block = f.read(length)
+#
+#     if len(block) != length:
+#         raise IOError(f"Short read: expected {length} bytes at 0x{offset:08X}, got {len(block)}")
+#
+#     print(f"    Read {length:,} bytes from INPUT at 0x{offset:08X}")
+#     return block
 
 
 # ---------------------------------------------------------------------------
@@ -1447,81 +1555,13 @@ if __name__ == '__main__':
     _index = _model['FileIndex']
 
     # ------------------------------------------------------------------
-    # --clone: verbatim copy of the original model block into hammerspace.
-    # No section rebuild, no pointer fixups inside the block (all pointers
-    # are block-relative or section-relative).  Only the DOL directory
-    # entry is updated to point at the new file offset.
+    # --clone: DEACTIVATED — superseded by per-section clone (default path).
+    # The full-block BuildClone is commented out above; --clone flag is now
+    # a no-op alias that falls through to the per-section clone below.
     # ------------------------------------------------------------------
-    if _args.clone:
-        print(f"=== CLONE MODE ===")
-        print(f"Chunk: {_chunk}, FileIndex: {_index}")
-
-        # Evict any previous hammerspace version.
-        _cur_offset, _cur_length = hh.readOutputDolEntry(_chunk, _index)
-        if _cur_offset >= hh.BASE_SIZE:
-            print(f"\n[0] Model already in hammerspace at 0x{_cur_offset:08X} — removing old version ...")
-            _evict_ok, _evict_off, _evict_len = hh.removeModelFromHammerspace(_chunk, _index)
-            if not _evict_ok:
-                print("ERROR: Could not remove existing hammerspace entry. Aborting.")
-                raise SystemExit(1)
-            hh.appendHammerspaceLog(
-                'Removed', os.path.basename(_args.sluggies_path),
-                _chunk, _index, _evict_off, _evict_len,
-            )
-
-        print(f"\n[1] Reading original model block from INPUT dt_na.dat ...")
-        _block = BuildClone(_chunk, _index)
-        print(f"    Block size: {len(_block):,} bytes ({len(_block) / 1048576:.3f} MB)")
-
-        print(f"\n[2] Scanning hammerspace for free region ...")
-        _new_offset = hh.findFreeMemoryChunk(len(_block))
-        if _new_offset == -1:
-            _required = hh.BASE_SIZE + len(_block) + hh.HS_BUFFER_BYTES
-            print(f"    No free hammerspace found. Expanding to {_required:,} bytes ...")
-            if not hh.ensureOutputDat(_required):
-                print("ERROR: Unable to prepare OUTPUT dt_na.dat. Aborting.")
-                raise SystemExit(1)
-            _new_offset = hh.findFreeMemoryChunk(len(_block))
-            if _new_offset == -1:
-                print("ERROR: No contiguous free region found even after expansion. Aborting.")
-                raise SystemExit(1)
-        print(f"    Free region at 0x{_new_offset:08X}")
-
-        print(f"\n[3] Writing cloned block to OUTPUT dt_na.dat ...")
-        hh.writeModelBlock(_block, _new_offset)
-
-        print(f"\n[4] Patching OUTPUT main.dol and disc FST ...")
-        hh.patchDolEntry(_chunk, _index, _new_offset, len(_block))
-
-        _shared = hh.findSharedEntries(_chunk, _index)
-        if _shared:
-            print(f"    Found {len(_shared)} shared chunk reference(s) — patching all:")
-            for _sc, _si in _shared:
-                hh.patchDolEntry(_sc, _si, _new_offset, len(_block))
-
-        _dat_size = os.path.getsize(hh.OUTPUT_DAT)
-        hh.patchFstFileSize(_dat_size)
-
-        print(f"\n[5] Zeroing original model address space ...")
-        hh.zeroOriginalModel(_chunk, _index)
-
-        print("\n[Debug] Writing debug dumps ...")
-        _orig_offset, _orig_length = hh.readDolEntry(_chunk, _index)
-        hh.writeDebugDumps(
-            os.path.basename(_args.sluggies_path),
-            _orig_offset, _orig_length, _block,
-        )
-
-        hh.appendHammerspaceLog(
-            'Written (Clone)', os.path.basename(_args.sluggies_path),
-            _chunk, _index, _new_offset, len(_block),
-        )
-
-        print("\nDone. (Clone mode — original data identical, original location zeroed)")
-        raise SystemExit(0)
 
     # ------------------------------------------------------------------
-    # Normal path: currently using clone builder for testing.
+    # Normal path: currently using per-section clone for testing.
     # Old section-by-section rebuild is commented out below.
     # ------------------------------------------------------------------
 
@@ -1536,8 +1576,8 @@ if __name__ == '__main__':
             )
         raise SystemExit(0 if _success else 1)
 
-    # --- Use clone builder (verbatim copy) instead of section rebuild ---
-    print("=== Using Clone builder (verbatim copy, no rebuild) ===")
+    # --- Per-section clone: each section cloned individually, then assembled ---
+    print("=== Per-section Clone (verbatim copy per section, no rebuild) ===")
     print(f"Chunk: {_chunk}, FileIndex: {_index}")
 
     # Check if this model is already in hammerspace and evict it first.
@@ -1555,11 +1595,33 @@ if __name__ == '__main__':
             _evict_off, _evict_len,
         )
 
-    print("\n[1] Reading original model block from INPUT dt_na.dat ...")
-    _block = BuildClone(_chunk, _index)
-    print(f"    Block size: {len(_block):,} bytes ({len(_block) / 1048576:.3f} MB)")
+    _orig_offset, _orig_length = hh.readDolEntry(_chunk, _index)
+    if _orig_offset == -1:
+        print("ERROR: Could not read DOL entry. Aborting.")
+        raise SystemExit(1)
+    print(f"\n    Original block: 0x{_orig_offset:08X}, {_orig_length:,} bytes")
 
-    print("\n[2] Scanning hammerspace for free region ...")
+    print("\n[1/5] Cloning HEADER ...")
+    _hdr = CloneHEADER(_orig_offset)
+
+    print("[2/5] Cloning GPL ...")
+    _gpl = CloneGPL(_orig_offset, _orig_length)
+
+    print("[3/5] Cloning ACT ...")
+    _act = CloneACT(_orig_offset, _orig_length)
+
+    print("[4/5] Cloning TEX ...")
+    _tex = CloneTEX(_orig_offset, _orig_length)
+
+    print("[5/5] Cloning SKN ...")
+    _skn = CloneSKN(_orig_offset, _orig_length)
+
+    _block = _hdr + _gpl + _act + _tex + _skn
+    print(f"\n    Assembled block: {len(_block):,} bytes ({len(_block) / 1048576:.3f} MB)")
+    if len(_block) != _orig_length:
+        print(f"    WARNING: assembled size ({len(_block):,}) differs from original ({_orig_length:,})!")
+
+    print("\n[6] Scanning hammerspace for free region ...")
     _new_offset = hh.findFreeMemoryChunk(len(_block))
     if _new_offset == -1:
         _required = hh.BASE_SIZE + len(_block) + hh.HS_BUFFER_BYTES
@@ -1573,10 +1635,10 @@ if __name__ == '__main__':
             raise SystemExit(1)
     print(f"    Free region at 0x{_new_offset:08X}")
 
-    print("\n[3] Writing cloned block to OUTPUT dt_na.dat ...")
+    print("\n[7] Writing assembled block to OUTPUT dt_na.dat ...")
     hh.writeModelBlock(_block, _new_offset)
 
-    print("\n[4] Patching OUTPUT main.dol and disc FST ...")
+    print("\n[8] Patching OUTPUT main.dol and disc FST ...")
     hh.patchDolEntry(_chunk, _index, _new_offset, len(_block))
 
     _shared = hh.findSharedEntries(_chunk, _index)
@@ -1588,24 +1650,23 @@ if __name__ == '__main__':
     _dat_size = os.path.getsize(hh.OUTPUT_DAT)
     hh.patchFstFileSize(_dat_size)
 
-    print("\n[5] Zeroing original model address space ...")
+    print("\n[9] Zeroing original model address space ...")
     hh.zeroOriginalModel(_chunk, _index)
 
     print("\n[Debug] Writing debug dumps ...")
-    _orig_offset, _orig_length = hh.readDolEntry(_chunk, _index)
     hh.writeDebugDumps(
         os.path.basename(_args.sluggies_path),
         _orig_offset, _orig_length, _block,
     )
 
     hh.appendHammerspaceLog(
-        'Written (Clone)',
+        'Written (SectionClone)',
         os.path.basename(_args.sluggies_path),
         _chunk, _index,
         _new_offset, len(_block),
     )
 
-    print("\nDone. (Clone mode — original data identical, original location zeroed)")
+    print("\nDone. (Per-section clone — original location zeroed)")
 
     # ------------------------------------------------------------------
     # OLD BUILDERS (commented out for now — restore when clone test passes)
