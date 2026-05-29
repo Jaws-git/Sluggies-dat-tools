@@ -294,6 +294,7 @@ def extract_submeshes(model):
                 setting_fourcc = setting_bytes.hex()
             display_states_export.append({
                 "DisplayStateId": ds_obj.id,
+                "DisplayStatePadBytes": ds_obj.pad_bytes.hex(),
                 "ShaderModeFieldOffset": hex(ds_obj.absolute + 4),
                 "ShaderMode": setting_fourcc,
                 "PrimListPtrFieldOffset": hex(ds_obj.absolute + 8),

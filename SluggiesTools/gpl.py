@@ -203,7 +203,7 @@ class DODisplayHeader(FileChunk):
 class DODisplayState(FileChunk):
     def analyze(self):
         self.id = intFromBytes(self.read(1))
-        pad = self.read(3)
+        self.pad_bytes = self.read(3)
         self.setting = self.word()
         self.primitiveListPtr = self.word()
         self.primitiveListSize = self.word()
