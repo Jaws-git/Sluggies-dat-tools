@@ -255,8 +255,12 @@ def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False, use_bas
         divisor = 1 << shift
         is_float = fmt_nibble in [4, 7, 0xa]
 
+        # Per-loop UV storage: each face-corner gets its own UV entry.
+        # This avoids value-based deduplication which can lose entries when
+        # the original game data contains duplicate quantized UV values at
+        # different array indices (the game's original tools kept them
+        # separate; merging them changes array length and breaks patching).
         coords = []
-        coord_map = {}
         uv_tri_indices = []
         for tri in triangles:
             tri_uvs = []
@@ -265,16 +269,12 @@ def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False, use_bas
                 s = uv.x
                 t = 1.0 - uv.y  # undo Blender V-flip applied on import
                 if is_float:
-                    key = (float(s), float(t))
                     qs, qt = float(s), float(t)
                 else:
-                    qs = round(s * divisor)
-                    qt = round(t * divisor)
-                    key = (int(qs), int(qt))
-                if key not in coord_map:
-                    coord_map[key] = len(coords)
-                    coords.append((qs, qt))
-                tri_uvs.append(coord_map[key])
+                    qs = int(round(s * divisor))
+                    qt = int(round(t * divisor))
+                tri_uvs.append(len(coords))
+                coords.append((qs, qt))
             uv_tri_indices.append(tri_uvs)
 
         raw_bytes = bytearray()
@@ -711,6 +711,38 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
     # SKAcc-only bones: exclusively in SKAcc, not in any SK1 entry.
     skacc_only_bone_ids: set[int] = original_skacc_bone_ids - original_sk1_bone_ids
 
+    # --- Per-vertex SK classification maps from original SkinData ---
+    # These allow definitive classification of each vertex without ambiguity.
+    # The actual vertex DATA (positions, normals, weights) is still computed
+    # from Blender; only the classification decision uses original metadata.
+    _vertex_stride = 6 * cs  # 6 components (xyz + nxnynz) * component size
+
+    # Compute cumulative vertex starts per submesh (for global ↔ local mapping)
+    _sub_vtx_starts = []
+    _cumulative = 0
+    for _sm in submeshes:
+        _vb = _sm["VertexBuffer"]
+        _vb_cs = _comp_size_skin(_vb["VertexBufferQuantizeInfo"])
+        _vtx_count = _vb["VertexBufferLength"] // (_vb["VertexBufferCompCount"] * _vb_cs)
+        _sub_vtx_starts.append(_cumulative)
+        _cumulative += _vtx_count
+
+    # SK1: global_vertex_idx → bone_id (contiguous ranges from GplVertexArrValue)
+    _sk1_vertex_map: dict[int, int] = {}
+    for _e in skin_data.get('SK1s', []):
+        _first = (_e['GplVertexArrValue'] + _e.get('VertexOffset', 0)) // _vertex_stride
+        for _i in range(_e['VertexCnt']):
+            _sk1_vertex_map[_first + _i] = _e['BoneIndex']
+
+    # SK2: global_vertex_idx → (b_lo, b_hi) (contiguous ranges)
+    _sk2_vertex_map: dict[int, tuple[int, int]] = {}
+    for _e in skin_data.get('SK2s', []):
+        _b1, _b2 = _e['BoneIndex1'], _e['BoneIndex2']
+        _pair = (min(_b1, _b2), max(_b1, _b2))
+        _first = (_e['GplVertexArrValue'] + _e.get('VertexOffset', 0)) // _vertex_stride
+        for _i in range(_e['VertexCnt']):
+            _sk2_vertex_map[_first + _i] = _pair
+
     # Pre-compute custom split normals per object when requested
     custom_normals_cache = {}
     if use_custom_normals:
@@ -742,49 +774,50 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
                 continue
 
             v_idx = v.index
-            if len(parsed) == 1:
-                b, w = parsed[0]
-                if b in skacc_only_bone_ids:
-                    # Single-influence vertex whose only bone is exclusively an
-                    # SKAcc bone (no SK1 entry for this bone) — must go to SKAcc.
-                    # Bones that appear in both SK1 and SKAcc stay in SK1 so we
-                    # don't lose their source-slot contributions.
-                    skacc_groups.setdefault(b, []).append((sub_idx, v_idx, w, v_idx, obj))
-                else:
-                    sk1_groups.setdefault(b, []).append((sub_idx, v_idx, obj))
-            else:
-                # SK2 from top 2, canonically ordered by bone id.
-                # IMPORTANT: only form an SK2 pair if that exact (b_lo, b_hi)
-                # pair already exists in the original SK2 data.  When an SKAcc
-                # entry accumulates on top of an SK1 entry at the same dest
-                # slot, the same Blender vertex carries weights for both bones,
-                # making len(parsed)==2 even though the original structure is
-                # SK1 + SKAcc (not SK2).  Blindly creating a new SK2 pair
-                # produces an entry absent from the original → phantom SK2 →
-                # block overflow.  If the pair is absent, fall back to:
-                #   top bone    → SK1
-                #   other bones → SKAcc  (only if bone is an original SKAcc bone)
-                (b1, w1), (b2, w2) = parsed[0], parsed[1]
-                b_lo, b_hi = (b1, b2) if b1 <= b2 else (b2, b1)
-                w_lo = w1 if b1 <= b2 else w2
-                w_hi = w2 if b1 <= b2 else w1
+            global_idx = _sub_vtx_starts[sub_idx] + v_idx
 
-                if (b_lo, b_hi) in original_sk2_pairs:
-                    sk2_groups.setdefault((b_lo, b_hi), []).append(
-                        (sub_idx, v_idx, w_lo, w_hi, obj))
-                    # SKAcc for any remaining influences (only original SKAcc bones)
-                    for b, w in parsed[2:]:
-                        if b in original_skacc_bone_ids:
-                            skacc_groups.setdefault(b, []).append(
-                                (sub_idx, v_idx, w, v_idx, obj))
-                else:
-                    # Phantom pair — reclassify as SK1 (dominant) + SKAcc (rest)
-                    b_top, _ = parsed[0]
-                    sk1_groups.setdefault(b_top, []).append((sub_idx, v_idx, obj))
-                    for b, w in parsed[1:]:
-                        if b in original_skacc_bone_ids:
-                            skacc_groups.setdefault(b, []).append(
-                                (sub_idx, v_idx, w, v_idx, obj))
+            # --- Definitive per-vertex classification using original maps ---
+            if global_idx in _sk2_vertex_map:
+                # Vertex was originally in an SK2 entry — classify as SK2.
+                pair = _sk2_vertex_map[global_idx]
+                b_lo, b_hi = pair
+                # Extract weights for the pair bones from Blender groups
+                w_lo = 0.0
+                w_hi = 0.0
+                for b, w in parsed:
+                    if b == b_lo:
+                        w_lo = w
+                    elif b == b_hi:
+                        w_hi = w
+                sk2_groups.setdefault(pair, []).append(
+                    (sub_idx, v_idx, w_lo, w_hi, obj))
+                # Any other bones with groups → SKAcc overlay
+                for b, w in parsed:
+                    if b != b_lo and b != b_hi and b in original_skacc_bone_ids:
+                        skacc_groups.setdefault(b, []).append(
+                            (sub_idx, v_idx, w, v_idx, obj))
+
+            elif global_idx in _sk1_vertex_map:
+                # Vertex was originally in an SK1 entry — classify as SK1.
+                sk1_bone = _sk1_vertex_map[global_idx]
+                sk1_groups.setdefault(sk1_bone, []).append((sub_idx, v_idx, obj))
+                # Any other bones with groups → SKAcc overlay
+                for b, w in parsed:
+                    if b != sk1_bone and b in original_skacc_bone_ids:
+                        skacc_groups.setdefault(b, []).append(
+                            (sub_idx, v_idx, w, v_idx, obj))
+
+            else:
+                # Vertex not in any SK1/SK2 source range — it's only an SKAcc
+                # destination, or a newly added vertex (future editing support).
+                # All influences go to SKAcc if the bone is a known SKAcc bone;
+                # otherwise fall back to SK1 for known SK1 bones.
+                for b, w in parsed:
+                    if b in original_skacc_bone_ids:
+                        skacc_groups.setdefault(b, []).append(
+                            (sub_idx, v_idx, w, v_idx, obj))
+                    elif b in original_sk1_bone_ids:
+                        sk1_groups.setdefault(b, []).append((sub_idx, v_idx, obj))
 
     def encode_src(entries):
         raw = bytearray()
