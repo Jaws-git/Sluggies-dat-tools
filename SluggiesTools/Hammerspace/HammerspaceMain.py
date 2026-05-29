@@ -13,6 +13,7 @@ import HammerspaceHelper as hh
 @dataclass
 class DrawState:
     display_state_id:            int
+    display_state_pad_bytes:     bytes
     prim_list_data:              bytes
     active_descriptors:          list   # [{'key': str, 'index_size': int}]
     prim_list_ptr_field_offset:  int    # absolute file offset
@@ -331,8 +332,10 @@ def ParseSluggie(data: dict) -> SluggieParsed:
 
         draw_states = []
         for ds in sub.get('DisplayStates', []):
+            pad_hex = ds.get('DisplayStatePadBytes', '000000')
             draw_states.append(DrawState(
                 display_state_id            = ds['DisplayStateId'],
+                display_state_pad_bytes     = bytes.fromhex(pad_hex),
                 prim_list_data              = _decode(ds['PrimListData'], use_b64),
                 active_descriptors          = ds.get('VertexStreamLayout') or ds.get('ActiveDescriptors', []),
                 prim_list_ptr_field_offset  = _hex(ds['PrimListPtrFieldOffset']),
@@ -883,7 +886,9 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
             ds_off  = gpl_b + DS_OFF + k * 0x10
             setting = _s.unpack('>I', _setting_bytes(ds.shader_mode))[0]
             _s.pack_into('B',  gpl, ds_off + 0x00, ds.display_state_id)
-            # 0x01–0x03: padding
+            # bytes 0x01–0x03: renderer parameters (NOT padding)
+            pad = ds.display_state_pad_bytes
+            gpl[ds_off + 0x01 : ds_off + 0x04] = pad[:3] if len(pad) >= 3 else pad.ljust(3, b'\x00')
             _s.pack_into('>I', gpl, ds_off + 0x04, setting)
             _s.pack_into('>I', gpl, ds_off + 0x08, lay['pl_offs'][k])
             _s.pack_into('>I', gpl, ds_off + 0x0c,
@@ -1446,8 +1451,8 @@ if __name__ == '__main__':
     print("\n[1/5] Building GPL (Mesh Data) ...")
     _gpl_result = BuildGPLMeshData(_parsed)
 
-    print("[2/5] Building SKN (Skinning Data) from sluggie ...")
-    _skn = BuildSKNSkinningData(_parsed, _gpl_result)
+    print("[2/5] Copying SKN (Skinning Data) from original ...")
+    _skn = BuildSKNSkinningDataCopyOnly(_parsed, _gpl_result)
 
     print("[3/5] Copying ACT (Bone Hierarchy) from input ...")
     _act = BuildACTBoneHierarchy(_parsed)
