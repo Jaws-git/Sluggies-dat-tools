@@ -943,6 +943,35 @@ def CloneGPL(model_offset: int, model_length: int) -> bytes:
     return data
 
 
+def _gpl_pos_offsets_from_bytes(gpl_bytes: bytes) -> list[int]:
+    """Extract per-submesh GPL-relative position-data offsets from raw GPL bytes.
+
+    Parses the GPL header and GEO descriptors to find each submesh's
+    DOLayout, then reads the PositionHeader rawPtr field.  Returns a list
+    of GPL-section-relative byte offsets (one per submesh).
+
+    This is used when the GPL section is cloned (not rebuilt) and we still
+    need the pos_gpl_offsets metadata for the SKN builder.
+    """
+    import struct as _s
+    # GPL header: +0x0c = N (submesh count), +0x10 = descriptorPtr
+    n_submeshes = _s.unpack_from('>I', gpl_bytes, 0x0c)[0]
+    desc_ptr    = _s.unpack_from('>I', gpl_bytes, 0x10)[0]
+
+    offsets = []
+    for i in range(n_submeshes):
+        # GEO descriptor: 8 bytes each → first uint32 = DOLayout GPL-rel ptr
+        blob_ptr = _s.unpack_from('>I', gpl_bytes, desc_ptr + i * 8)[0]
+        # DOLayout +0x00 = posHeaderPtr (DOLayout-relative)
+        pos_hdr_ptr = _s.unpack_from('>I', gpl_bytes, blob_ptr)[0]
+        # PositionHeader +0x00 = raw data array ptr (DOLayout-relative)
+        pos_arr_ptr = _s.unpack_from('>I', gpl_bytes, blob_ptr + pos_hdr_ptr)[0]
+        # GPL-relative offset = DOLayout base + pos_arr_ptr
+        offsets.append(blob_ptr + pos_arr_ptr)
+
+    return offsets
+
+
 def BuildACTBoneHierarchy(parsed: SluggieParsed) -> bytes:
     """Return the ACT (Bone Hierarchy) section bytes.
 
@@ -1160,9 +1189,11 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
     # Local helpers
     # -------------------------------------------------------------------------
 
-    def _align4(data: bytes) -> bytes:
-        r = len(data) % 4
-        return data + b'\x00' * ((4 - r) % 4)
+    _ALIGN = 32  # Wii CPU cache-line size; all source/weight/dest arrays must be 32-byte aligned
+
+    def _align(data: bytes) -> bytes:
+        r = len(data) % _ALIGN
+        return data + b'\x00' * ((_ALIGN - r) % _ALIGN)
 
     def _vb_comp_size(quant_info: int) -> int:
         return 4 if (quant_info >> 4) in (4, 7, 0xa) else 2
@@ -1181,7 +1212,8 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
     SK1_ARR_OFF   = SKN_HDR_SIZE
     SK2_ARR_OFF   = SK1_ARR_OFF   + n_sk1 * SK1_SIZE
     SKACC_ARR_OFF = SK2_ARR_OFF   + n_sk2 * SK2_SIZE
-    VAR_DATA_OFF  = SKACC_ARR_OFF + n_acc * SKACC_SIZE
+    # Round up to next 32-byte boundary so the first variable data array is aligned
+    VAR_DATA_OFF  = (SKACC_ARR_OFF + n_acc * SKACC_SIZE + _ALIGN - 1) & ~(_ALIGN - 1)
 
     # -------------------------------------------------------------------------
     # Phase SKN-1: variable-data layout pass
@@ -1196,7 +1228,16 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
     sk1_src_off = []
     for sk in skn.sk1s:
         sk1_src_off.append(var_cursor)
-        chunk = _align4(sk.bind_pose_data)
+        # Ensure the source array includes vertex_offset prefix bytes.
+        # The game reads from srcArrPtr + vertex_offset, so the first
+        # vertex_offset bytes are skipped padding.  SkinDataEdited from the
+        # Blender exporter stores only the actual vertex data (no prefix),
+        # so we must prepend zeros when the blob is too short.
+        bp = sk.bind_pose_data
+        expected_len = sk.vertex_offset + sk.vertex_cnt * vertex_stride
+        if len(bp) < expected_len:
+            bp = b'\x00' * (expected_len - len(bp)) + bp
+        chunk = _align(bp)
         var_data.extend(chunk)
         var_cursor += len(chunk)
 
@@ -1205,12 +1246,16 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
     sk2_wt_off  = []
     for sk in skn.sk2s:
         sk2_src_off.append(var_cursor)
-        chunk = _align4(sk.bind_pose_data)
+        bp = sk.bind_pose_data
+        expected_len = sk.vertex_offset + sk.vertex_cnt * vertex_stride
+        if len(bp) < expected_len:
+            bp = b'\x00' * (expected_len - len(bp)) + bp
+        chunk = _align(bp)
         var_data.extend(chunk)
         var_cursor += len(chunk)
 
         sk2_wt_off.append(var_cursor)
-        chunk = _align4(sk.weight_data)
+        chunk = _align(sk.weight_data)
         var_data.extend(chunk)
         var_cursor += len(chunk)
 
@@ -1220,17 +1265,17 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
     acc_wt_off   = []
     for sk in skn.sk_accs:
         acc_src_off.append(var_cursor)
-        chunk = _align4(sk.bind_pose_data)
+        chunk = _align(sk.bind_pose_data)
         var_data.extend(chunk)
         var_cursor += len(chunk)
 
         acc_dest_off.append(var_cursor)
-        chunk = _align4(sk.dest_index_data)
+        chunk = _align(sk.dest_index_data)
         var_data.extend(chunk)
         var_cursor += len(chunk)
 
         acc_wt_off.append(var_cursor)
-        chunk = _align4(sk.weight_data)
+        chunk = _align(sk.weight_data)
         var_data.extend(chunk)
         var_cursor += len(chunk)
 
@@ -1242,7 +1287,7 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
             _f.seek(skn.flush_ind_absolute_ptr)
             flush_bytes = _f.read(skn.flush_ind_size * 2)
         flush_off = var_cursor
-        chunk = _align4(flush_bytes)
+        chunk = _align(flush_bytes)
         var_data.extend(chunk)
         var_cursor += len(chunk)
 
@@ -1348,7 +1393,11 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
     _s.pack_into('>I', skn_hdr, 0x1c, flush_off if flush_bytes else 0)  # flushIndPtr
     _s.pack_into('>I', skn_hdr, 0x20, skn.flush_ind_size)
 
-    skn_core = bytes(skn_hdr) + bytes(sk1_bytes) + bytes(sk2_bytes) + bytes(acc_bytes) + bytes(var_data)
+    # Insert alignment padding between struct arrays and variable data so that
+    # var_data[0] lands at SKN offset VAR_DATA_OFF (where all pointers point).
+    struct_end = SKN_HDR_SIZE + n_sk1 * SK1_SIZE + n_sk2 * SK2_SIZE + n_acc * SKACC_SIZE
+    align_pad = VAR_DATA_OFF - struct_end
+    skn_core = bytes(skn_hdr) + bytes(sk1_bytes) + bytes(sk2_bytes) + bytes(acc_bytes) + b'\x00' * align_pad + bytes(var_data)
 
     # Append trailing sub-sections (ptr6/ptr7/ptr8 data) from INPUT dt_na.dat.
     # These live between the end of the SKN section proper and the end of the
@@ -1576,8 +1625,8 @@ if __name__ == '__main__':
             )
         raise SystemExit(0 if _success else 1)
 
-    # --- Per-section clone: each section cloned individually, then assembled ---
-    print("=== Per-section Clone (verbatim copy per section, no rebuild) ===")
+    # --- Hybrid build: clone GPL/ACT/TEX, build SKN, assemble header ---
+    print("=== Hybrid Build (Clone GPL/ACT/TEX + Build SKN) ===")
     print(f"Chunk: {_chunk}, FileIndex: {_index}")
 
     # Check if this model is already in hammerspace and evict it first.
@@ -1601,25 +1650,46 @@ if __name__ == '__main__':
         raise SystemExit(1)
     print(f"\n    Original block: 0x{_orig_offset:08X}, {_orig_length:,} bytes")
 
-    print("\n[1/5] Cloning HEADER ...")
-    _hdr = CloneHEADER(_orig_offset)
+    # Parse the sluggie for SKN builder metadata
+    _parsed = ParseSluggie(_data)
+    print(f"    Parsed: {len(_parsed.mesh.submeshes)} submesh(es), "
+          f"{len(_parsed.bones.bones) if _parsed.bones else 0} bone(s), "
+          f"skinning={'yes' if _parsed.skinning else 'no'}")
 
-    print("[2/5] Cloning GPL ...")
+    print("\n[1/5] Cloning GPL ...")
     _gpl = CloneGPL(_orig_offset, _orig_length)
 
-    print("[3/5] Cloning ACT ...")
+    print("[2/5] Cloning ACT ...")
     _act = CloneACT(_orig_offset, _orig_length)
 
-    print("[4/5] Cloning TEX ...")
+    print("[3/5] Cloning TEX ...")
     _tex = CloneTEX(_orig_offset, _orig_length)
 
-    print("[5/5] Cloning SKN ...")
-    _skn = CloneSKN(_orig_offset, _orig_length)
+    print("[4/5] Building SKN ...")
+    _gpl_result = GPLBuildResult(gpl_bytes=_gpl, pos_gpl_offsets=_gpl_pos_offsets_from_bytes(_gpl))
+    print(f"    pos_gpl_offsets = {['0x%X' % o for o in _gpl_result.pos_gpl_offsets]}")
+    _skn = BuildSKNSkinningData(_parsed, _gpl_result)
 
-    _block = _hdr + _gpl + _act + _tex + _skn
+    # Read original header for ptr6/ptr7/ptr8 recomputation
+    import struct as _struct
+    _orig_header = b''
+    _orig_skn_off = 0
+    if _parsed.model_offset:
+        with open(hh.INPUT_DAT, 'rb') as _fh:
+            _fh.seek(_parsed.model_offset)
+            _orig_header = _fh.read(0x20)
+        _orig_skn_off = _struct.unpack_from('>I', _orig_header, 0x10)[0]
+
+    print("[5/5] Assembling model block header ...")
+    _block = BuildHEADERModelBlock(
+        _gpl, _act, _tex, _skn,
+        original_header=_orig_header,
+        original_skn_off=_orig_skn_off,
+    )
     print(f"\n    Assembled block: {len(_block):,} bytes ({len(_block) / 1048576:.3f} MB)")
     if len(_block) != _orig_length:
-        print(f"    WARNING: assembled size ({len(_block):,}) differs from original ({_orig_length:,})!")
+        print(f"    WARNING: assembled size ({len(_block):,}) differs from original ({_orig_length:,})!"
+              f"  delta={len(_block) - _orig_length:+d}")
 
     print("\n[6] Scanning hammerspace for free region ...")
     _new_offset = hh.findFreeMemoryChunk(len(_block))
@@ -1660,100 +1730,13 @@ if __name__ == '__main__':
     )
 
     hh.appendHammerspaceLog(
-        'Written (SectionClone)',
+        'Written (CloneGPL+BuildSKN)',
         os.path.basename(_args.sluggies_path),
         _chunk, _index,
         _new_offset, len(_block),
     )
 
-    print("\nDone. (Per-section clone — original location zeroed)")
-
-    # ------------------------------------------------------------------
-    # OLD BUILDERS (commented out for now — restore when clone test passes)
-    # ------------------------------------------------------------------
-    # _parsed = ParseSluggie(_data)
-    # print(f"Parsed: {len(_parsed.mesh.submeshes)} submesh(es), "
-    #       f"{len(_parsed.bones.bones) if _parsed.bones else 0} bone(s), "
-    #       f"{len(_parsed.textures.textures)} texture(s), "
-    #       f"skinning={'yes' if _parsed.skinning else 'no'}")
-    #
-    # # Build each section in dependency order, then assemble and write.
-    # print("\n[1/5] Building GPL (Mesh Data) ...")
-    # _gpl_result = BuildGPLMeshData(_parsed)
-    #
-    # print("[2/5] Copying SKN (Skinning Data) from original ...")
-    # _skn = BuildSKNSkinningDataCopyOnly(_parsed, _gpl_result)
-    #
-    # print("[3/5] Copying ACT (Bone Hierarchy) from input ...")
-    # _act = BuildACTBoneHierarchy(_parsed)
-    #
-    # print("[4/5] Copying TEX (Texture Data) from input ...")
-    # _tex = BuildTEXTextureData(_parsed)
-    #
-    # # Read original model block header for ptr6/ptr7/ptr8 recomputation.
-    # import struct as _struct
-    # _orig_header = b''
-    # _orig_skn_off = 0
-    # if _parsed.model_offset:
-    #     with open(hh.INPUT_DAT, 'rb') as _fh:
-    #         _fh.seek(_parsed.model_offset)
-    #         _orig_header = _fh.read(0x20)
-    #     _orig_skn_off = _struct.unpack_from('>I', _orig_header, 0x10)[0]
-    #
-    # print("[5/5] Assembling model block header ...")
-    # _block = BuildHEADERModelBlock(
-    #     _gpl_result.gpl_bytes, _act, _tex, _skn,
-    #     original_header=_orig_header,
-    #     original_skn_off=_orig_skn_off,
-    # )
-    #
-    # print(f"\nModel block size: {len(_block):,} bytes ({len(_block) / 1048576:.3f} MB)")
-    #
-    # print("\n[6] Scanning hammerspace for free region ...")
-    # _new_offset = hh.findFreeMemoryChunk(len(_block))
-    # if _new_offset == -1:
-    #     _required = hh.BASE_SIZE + len(_block) + hh.HS_BUFFER_BYTES
-    #     print(f"No free hammerspace found. Ensuring OUTPUT dt_na.dat exists and has {_required:,} bytes ...")
-    #     if not hh.ensureOutputDat(_required):
-    #         print("ERROR: Unable to prepare OUTPUT dt_na.dat. Aborting.")
-    #         raise SystemExit(1)
-    #     _new_offset = hh.findFreeMemoryChunk(len(_block))
-    #     if _new_offset == -1:
-    #         print("ERROR: No contiguous free region found even after expansion. Aborting.")
-    #         raise SystemExit(1)
-    # print(f"    Free region at 0x{_new_offset:08X}")
-    #
-    # print(f"\n[7] Writing model block to OUTPUT dt_na.dat ...")
-    # hh.writeModelBlock(_block, _new_offset)
-    #
-    # print(f"\n[8] Patching OUTPUT main.dol and disc FST ...")
-    # hh.patchDolEntry(_chunk, _index, _new_offset, len(_block))
-    #
-    # _shared = hh.findSharedEntries(_chunk, _index)
-    # if _shared:
-    #     print(f"    Found {len(_shared)} shared chunk reference(s) — patching all:")
-    #     for _sc, _si in _shared:
-    #         hh.patchDolEntry(_sc, _si, _new_offset, len(_block))
-    #
-    # _dat_size = os.path.getsize(hh.OUTPUT_DAT)
-    # hh.patchFstFileSize(_dat_size)
-    #
-    # hh.zeroOriginalModel(_chunk, _index)
-    #
-    # print("\n[Debug] Writing debug dumps ...")
-    # hh.writeDebugDumps(
-    #     os.path.basename(_args.sluggies_path),
-    #     _parsed.model_offset,
-    #     _parsed.model_length,
-    #     _block,
-    # )
-    #
-    # hh.appendHammerspaceLog(
-    #     'Written',
-    #     os.path.basename(_args.sluggies_path),
-    #     _chunk, _index,
-    #     _new_offset, len(_block),
-    # )
+    print("\nDone. (Clone GPL/ACT/TEX + Build SKN — original location zeroed)")
 
     print("\nDone.")
     raise SystemExit(0)
