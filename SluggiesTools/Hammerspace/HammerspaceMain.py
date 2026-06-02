@@ -302,17 +302,32 @@ def ParseSluggie(data: dict) -> SluggieParsed:
         face_tex_indices = _decode(raw_fti, use_b64) if raw_fti else b''
 
         vb          = sub['VertexBuffer']
-        vertex_data = _decode(vb.get('VertexBufferDataEdited') or vb['VertexBufferData'], use_b64)
+
+        # Determine whether prim lists have been rebuilt.  If not, the GPU
+        # draw commands still reference the ORIGINAL compact UV/color arrays,
+        # so we must use the original data even if *Edited fields exist.
+        _prim_lists_edited = any(
+            'PrimListDataEdited' in ds for ds in sub.get('DisplayStates', [])
+        )
+
+        if _prim_lists_edited:
+            vertex_data = _decode(vb.get('VertexBufferDataEdited') or vb['VertexBufferData'], use_b64)
+        else:
+            vertex_data = _decode(vb['VertexBufferData'], use_b64)
 
         uv_channels = []
         for uv in sub.get('UVChannels', []):
+            if _prim_lists_edited:
+                _uv_src = uv.get('UVChannelDataEdited') or uv['UVChannelData']
+            else:
+                _uv_src = uv['UVChannelData']
             uv_channels.append(UVChannel(
                 channel_index            = uv['UVChannelIndex'],
                 palette_name             = uv['PaletteName'],
                 texture_index            = uv.get('TextureIndex', 0),
                 wrap_s                   = uv.get('WrapS', 0),
                 wrap_t                   = uv.get('WrapT', 0),
-                uv_data                  = _decode(uv.get('UVChannelDataEdited') or uv['UVChannelData'], use_b64),
+                uv_data                  = _decode(_uv_src, use_b64),
                 uv_faces_data            = _decode(uv.get('UVFacesDataEdited')   or uv['UVFacesData'],   use_b64),
                 comp_count               = uv['UVChannelCompCount'],
                 quantize_info            = uv['UVChannelQuantizeInfo'],
@@ -444,10 +459,18 @@ def ParseSluggie(data: dict) -> SluggieParsed:
     # Use the ORIGINAL SkinData for structural ordering (bone indices,
     # gplVertexArr, vertex_offset) since the game engine depends on the
     # original SK entry order.  Substitute edited payload (bind-pose data,
-    # weights, vertex counts) from SkinDataEdited when present, matching by
-    # bone key.
+    # weights, vertex counts) from SkinDataEdited when present AND the mesh
+    # geometry was actually modified (prim lists rebuilt).
     raw_skn_orig = model.get('SkinData')
     raw_skn_edit = model.get('SkinDataEdited')
+    # Determine if geometry was actually edited (any submesh has rebuilt prim
+    # lists).  If not, SkinDataEdited may still exist but contains Blender
+    # re-export precision drift — use original bind pose data instead.
+    _geometry_edited = any(
+        'PrimListDataEdited' in ds
+        for sub in model.get('Submeshes', [])
+        for ds in sub.get('DisplayStates', [])
+    )
     raw_skn = raw_skn_orig or raw_skn_edit
     if raw_skn:
         # Build lookup dicts from edited data for payload substitution.
@@ -465,8 +488,11 @@ def ParseSluggie(data: dict) -> SluggieParsed:
 
         sk1s = []
         for s in raw_skn.get('SK1s', []):
-            ed = _edit_sk1_by_bone.get(s['BoneIndex'])
-            bp_src = (ed or s).get('BindPoseDataEdited') or (ed or s).get('BindPoseData') or s['BindPoseData']
+            ed = _edit_sk1_by_bone.get(s['BoneIndex']) if _geometry_edited else None
+            if _geometry_edited and ed:
+                bp_src = ed.get('BindPoseDataEdited') or ed.get('BindPoseData') or s['BindPoseData']
+            else:
+                bp_src = s['BindPoseData']
             sk1s.append(SK1(
                 bone_index                  = s['BoneIndex'],
                 vertex_cnt                  = (ed or s)['VertexCnt'],
@@ -481,9 +507,13 @@ def ParseSluggie(data: dict) -> SluggieParsed:
         sk2s = []
         for s in raw_skn.get('SK2s', []):
             key = (s['BoneIndex1'], s['BoneIndex2'])
-            ed = _edit_sk2_by_pair.get(key)
-            bp_src = (ed or s).get('BindPoseDataEdited') or (ed or s).get('BindPoseData') or s['BindPoseData']
-            wt_src = (ed or s).get('WeightDataEdited') or (ed or s).get('WeightData') or s['WeightData']
+            ed = _edit_sk2_by_pair.get(key) if _geometry_edited else None
+            if _geometry_edited and ed:
+                bp_src = ed.get('BindPoseDataEdited') or ed.get('BindPoseData') or s['BindPoseData']
+                wt_src = ed.get('WeightDataEdited') or ed.get('WeightData') or s['WeightData']
+            else:
+                bp_src = s['BindPoseData']
+                wt_src = s['WeightData']
             sk2s.append(SK2(
                 bone_index1                 = s['BoneIndex1'],
                 bone_index2                 = s['BoneIndex2'],
@@ -501,9 +531,13 @@ def ParseSluggie(data: dict) -> SluggieParsed:
 
         sk_accs = []
         for s in raw_skn.get('SKAccs', []):
-            ed = _edit_acc_by_bone.get(s['BoneIndex'])
-            bp_src = (ed or s).get('BindPoseDataEdited') or (ed or s).get('BindPoseData') or s['BindPoseData']
-            wt_src = (ed or s).get('WeightDataEdited') or (ed or s).get('WeightData') or s['WeightData']
+            ed = _edit_acc_by_bone.get(s['BoneIndex']) if _geometry_edited else None
+            if _geometry_edited and ed:
+                bp_src = ed.get('BindPoseDataEdited') or ed.get('BindPoseData') or s['BindPoseData']
+                wt_src = ed.get('WeightDataEdited') or ed.get('WeightData') or s['WeightData']
+            else:
+                bp_src = s['BindPoseData']
+                wt_src = s['WeightData']
             dest_src = (ed or s).get('DestIndexData') or s['DestIndexData']
             sk_accs.append(SKAcc(
                 bone_index                = s['BoneIndex'],
@@ -603,6 +637,10 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
         r = len(data) % 4
         return data + b'\x00' * ((4 - r) % 4)
 
+    def _align32(offset: int) -> int:
+        """Round offset UP to next 32-byte boundary."""
+        return (offset + 31) & ~31
+
     def _vb_comp_size(quant_info: int) -> int:
         """Bytes per vertex-buffer component: 4 for float32 formats, 2 for int16."""
         return 4 if (quant_info >> 4) in (4, 7, 0xa) else 2
@@ -666,8 +704,12 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
             pal_name_bytes_list.append(pal_b)
             cursor += len(pal_b)
 
-        # Align to 4-byte boundary before vertex data buffers (strings are packed without padding)
-        cursor = (cursor + 3) & ~3
+        # Skinned meshes (cc=6): align position data to 32-byte boundary
+        # (Wii Broadway dcbz requirement — SKN deformer write target).
+        # Non-skinned meshes: no alignment required (original data is unaligned).
+        is_interleaved = (sub.vertex_comp_count == 6)
+        if is_interleaved:
+            cursor = _align32(cursor)
 
         # --- position raw data ---
         pos_data     = _align4(sub.vertex_data)
@@ -695,7 +737,6 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
         # Skinned (interleaved) meshes use cc=6: pos+normal are packed together
         # in the position buffer.  NorHdr.rawPtr points 6 bytes into that
         # buffer; no separate normal data block is stored.
-        is_interleaved = (sub.vertex_comp_count == 6)
         nor_data     = b''
         nor_data_off = 0
         if is_interleaved and sub.normal_buffer:
@@ -707,10 +748,13 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
             cursor      += len(nor_data)
 
         # --- per-display-state primitive list data ---
+        # Prim lists (GX display lists) MUST be 32-byte aligned — the GPU
+        # command processor reads them via DMA in 32-byte bursts.
         pl_offs       = []
         pl_bytes_list = []
         for ds in sub.draw_states:
             if ds.prim_list_data:
+                cursor = _align32(cursor)
                 pl_b = _align4(ds.prim_list_data)
                 pl_offs.append(cursor)
                 pl_bytes_list.append(pl_b)
@@ -779,13 +823,17 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
 
     GEO_DESC_OFF  = GPL_HDR_SIZE          # 0x14
     GEO_DESC_SIZE = N * 8
-    BLOBS_START   = GEO_DESC_OFF + GEO_DESC_SIZE
+    # Blob starts must be 32-byte aligned so that DOLayout-relative prim list
+    # offsets (which are 32-aligned within the blob) are also 32-aligned in
+    # GPL-absolute terms (GX DMA requirement for display lists).
+    BLOBS_START   = _align32(GEO_DESC_OFF + GEO_DESC_SIZE)
 
     blob_gpl_offs = []
     cursor = BLOBS_START
     for lay in sub_layouts:
         blob_gpl_offs.append(cursor)
         cursor += lay['blob_size']
+        cursor = _align32(cursor)  # next blob 32-aligned for prim list alignment
 
     # GPL-relative byte offset of each submesh's raw position data array.
     # Computed here so the SKN builder can use them directly instead of
@@ -1625,8 +1673,8 @@ if __name__ == '__main__':
             )
         raise SystemExit(0 if _success else 1)
 
-    # --- Hybrid build: clone GPL/ACT/TEX, build SKN, assemble header ---
-    print("=== Hybrid Build (Clone GPL/ACT/TEX + Build SKN) ===")
+    # --- Hybrid build: Build GPL + clone ACT/TEX + build SKN, assemble header ---
+    print("=== Hybrid Build (Build GPL + Clone ACT/TEX + Build SKN) ===")
     print(f"Chunk: {_chunk}, FileIndex: {_index}")
 
     # Check if this model is already in hammerspace and evict it first.
@@ -1656,8 +1704,11 @@ if __name__ == '__main__':
           f"{len(_parsed.bones.bones) if _parsed.bones else 0} bone(s), "
           f"skinning={'yes' if _parsed.skinning else 'no'}")
 
-    print("\n[1/5] Cloning GPL ...")
-    _gpl = CloneGPL(_orig_offset, _orig_length)
+    print("\n[1/5] Building GPL ...")
+    _gpl_result = BuildGPLMeshData(_parsed)
+    _gpl = _gpl_result.gpl_bytes
+    print(f"    GPL built: {len(_gpl):,} bytes, "
+          f"pos_gpl_offsets = {['0x%X' % o for o in _gpl_result.pos_gpl_offsets]}")
 
     print("[2/5] Cloning ACT ...")
     _act = CloneACT(_orig_offset, _orig_length)
@@ -1666,8 +1717,6 @@ if __name__ == '__main__':
     _tex = CloneTEX(_orig_offset, _orig_length)
 
     print("[4/5] Building SKN ...")
-    _gpl_result = GPLBuildResult(gpl_bytes=_gpl, pos_gpl_offsets=_gpl_pos_offsets_from_bytes(_gpl))
-    print(f"    pos_gpl_offsets = {['0x%X' % o for o in _gpl_result.pos_gpl_offsets]}")
     _skn = BuildSKNSkinningData(_parsed, _gpl_result)
 
     # Read original header for ptr6/ptr7/ptr8 recomputation
@@ -1730,13 +1779,13 @@ if __name__ == '__main__':
     )
 
     hh.appendHammerspaceLog(
-        'Written (CloneGPL+BuildSKN)',
+        'Written (BuildGPL+BuildSKN)',
         os.path.basename(_args.sluggies_path),
         _chunk, _index,
         _new_offset, len(_block),
     )
 
-    print("\nDone. (Clone GPL/ACT/TEX + Build SKN — original location zeroed)")
+    print("\nDone. (Build GPL + Clone ACT/TEX + Build SKN — original location zeroed)")
 
     print("\nDone.")
     raise SystemExit(0)
