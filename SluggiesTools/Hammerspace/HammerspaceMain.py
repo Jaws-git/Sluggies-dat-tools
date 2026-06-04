@@ -1704,9 +1704,12 @@ if __name__ == '__main__':
           f"{len(_parsed.bones.bones) if _parsed.bones else 0} bone(s), "
           f"skinning={'yes' if _parsed.skinning else 'no'}")
 
-    print("\n[1/5] Building GPL ...")
-    _gpl_result = BuildGPLMeshData(_parsed)
-    _gpl = _gpl_result.gpl_bytes
+    print("\n[1/5] Cloning GPL ...")
+    _gpl = CloneGPL(_orig_offset, _orig_length)
+    _gpl_result = GPLBuildResult(
+        gpl_bytes=_gpl,
+        pos_gpl_offsets=_gpl_pos_offsets_from_bytes(_gpl),
+    )
     print(f"    GPL built: {len(_gpl):,} bytes, "
           f"pos_gpl_offsets = {['0x%X' % o for o in _gpl_result.pos_gpl_offsets]}")
 
@@ -1716,8 +1719,8 @@ if __name__ == '__main__':
     print("[3/5] Cloning TEX ...")
     _tex = CloneTEX(_orig_offset, _orig_length)
 
-    print("[4/5] Building SKN ...")
-    _skn = BuildSKNSkinningData(_parsed, _gpl_result)
+    print("[4/5] Cloning SKN ...")
+    _skn = CloneSKN(_orig_offset, _orig_length)
 
     # Read original header for ptr6/ptr7/ptr8 recomputation
     import struct as _struct

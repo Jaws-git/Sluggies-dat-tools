@@ -5,6 +5,7 @@ import struct
 BASE_SIZE      = 715046144      # ~715 MB
 CHUNK_SIZE     = 1024 * 1024   # 1 MB read buffer
 HS_BUFFER_BYTES = 1024  # 1 KiB safety buffer appended after every write
+HS_ALIGN_BYTES  = 32    # Required model-block alignment for GPL/SKN hot-path data
 OUTPUT_DAT = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', '3_Output_Dat', 'dt_na.dat'))
 
 _ROOT         = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -182,8 +183,14 @@ def patchFstFileSize(new_size: int) -> bool:
 
 def findFreeMemoryChunk(dataLength: int) -> int:
     """Scan the hammerspace region of the dat file for a contiguous run of
-    ``dataLength`` zero bytes.  Returns the file offset of the first such run,
-    or -1 if no fitting space is found."""
+    ``dataLength`` zero bytes.
+
+    The returned offset is guaranteed to be aligned to ``HS_ALIGN_BYTES``
+    so the model block base preserves 32-byte absolute alignment for
+    cache-line-sensitive GPL/SKN data.
+
+    Returns the file offset of the first such run, or -1 if no fitting
+    aligned space is found."""
 
     if dataLength <= 0:
         return -1
@@ -215,8 +222,15 @@ def findFreeMemoryChunk(dataLength: int) -> int:
                     if run_length == 0:
                         run_start = read_offset + i
                     run_length += 1
-                    if run_length >= dataLength:
-                        return run_start
+
+                    # Candidate start must be aligned. If the zero-run starts
+                    # unaligned, move to the next aligned address within it.
+                    aligned_start = (run_start + (HS_ALIGN_BYTES - 1)) & ~(HS_ALIGN_BYTES - 1)
+                    run_end_exclusive = read_offset + i + 1
+                    if aligned_start < run_end_exclusive:
+                        aligned_run_len = run_end_exclusive - aligned_start
+                        if aligned_run_len >= dataLength:
+                            return aligned_start
                 else:
                     run_start = -1
                     run_length = 0
