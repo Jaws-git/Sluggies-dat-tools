@@ -1,0 +1,163 @@
+<head>
+    <link rel="stylesheet" type="text/css" href="style.css" />
+</head>
+
+<body>
+    <h1>Bone Data Section</h1>
+    <p>This section describes the actor's bones, including the hierarchy and pose position.</p>
+    <h2>Header</h2>
+    <table>
+        <tr>
+            <th>Offset</th>
+            <th>Type</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td>0x0</td>
+            <td></td>
+            <td>Magic (0x007B7960 for Sluggers)</td>
+        </tr>
+        <tr>
+            <td>0x4</td>
+            <td>uint16</td>
+            <td>Actor ID</td>
+        </tr>
+        <tr>
+            <td>0x6</td>
+            <td>uint16</td>
+            <td>Bone count</td>
+        </tr>
+        <tr>
+            <td>0x8</td>
+            <td>uint32</td>
+            <td>First word of an embedded tree structure (unknown purpose)</td>
+        </tr>
+        <tr>
+            <td>0xc</td>
+            <td>uint32</td>
+            <td>Root node pointer (relative to header). This is the second word of the tree structure and is used to traverse the bone hierarchy.</td>
+        </tr>
+        <tr>
+            <td>0x10</td>
+            <td>uint32</td>
+            <td>GEO name pointer (relative to header). This is the name of the geometry vertex file the bones are for.</td>
+        </tr>
+        <tr>
+            <td>0x14</td>
+            <td>uint16</td>
+            <td>Skin file id</td>
+        </tr>
+        <tr>
+            <td>0x16</td>
+            <td>byte[2]</td>
+            <td>Padding</td>
+        </tr>
+        <tr>
+            <td>0x18</td>
+            <td>uint32</td>
+            <td>User data size</td>
+        </tr>
+        <tr>
+            <td>0x1c</td>
+            <td>uint32</td>
+            <td>User data pointer (relative to header). In Sluggers, this holds linking information between bones and animations tracks.</td>
+        </tr>
+    </table>
+    <h2>Bone</h2>
+    <table>
+        <tr>
+            <th>Offset</th>
+            <th>Type</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td>0x0</td>
+            <td>uint32</td>
+            <td>Orientation control pointer (relative to header). This is an SRT that holds the bone's pose position, can be null.</td>
+        </tr>
+        <tr>
+            <td>0x4</td>
+            <td>uint32</td>
+            <td>Previous sibling bone pointer (relative to header)</td>
+        </tr>
+        <tr>
+            <td>0x8</td>
+            <td>uint32</td>
+            <td>Next sibling bone pointer (relative to header)</td>
+        </tr>
+        <tr>
+            <td>0xc</td>
+            <td>uint32</td>
+            <td>Parent bone pointer (relative to header)</td>
+        </tr>
+        <tr>
+            <td>0x10</td>
+            <td>uint32</td>
+            <td>First child bone pointer (relative to header)</td>
+        </tr>
+        <tr>
+            <td>0x14</td>
+            <td>uint16</td>
+            <td>GEO file ID, which mesh in the mesh data this bone controls. I think if this is FFFF, the first mesh must be skinned and this bone controls a portion of it.</td>
+        </tr>
+        <tr>
+            <td>0x16</td>
+            <td>uint16</td>
+            <td>Bone ID</td>
+        </tr>
+        <tr>
+            <td>0x18</td>
+            <td>bool</td>
+            <td>Is this bone positioned relative to its parent? (Usually true)</td>
+        </tr>
+        <tr>
+            <td>0x19</td>
+            <td>uint8</td>
+            <td>Something about draw priority, usually 0</td>
+        </tr>
+        <tr>
+            <td>0x1a</td>
+            <td>byte[2]</td>
+            <td>Padding</td>
+        </tr>
+    </table>
+    <h2>SRT</h2>
+    <p>SRT stands for scale, rotation, transform.</p>
+    <table>
+        <tr>
+            <th>Offset</th>
+            <th>Type</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td>0x0</td>
+            <td>uint8</td>
+            <td>Type (I've seen 0x4, 0x8, and 0xc, but they all seem to behave the same)</td>
+        </tr>
+        <tr>
+            <td>0x1</td>
+            <td>byte[3]</td>
+            <td>Padding</td>
+        </tr>
+        <tr>
+            <td>0x4</td>
+            <td>float[3]</td>
+            <td>Scale (x, y, z)</td>
+        </tr>
+        <tr>
+            <td>0x10</td>
+            <td>float[4]</td>
+            <td>Quaternion stored as (x, y, z, w). Note: when applying this quaternion, negate w and reorder to (-w, x, y, z) to match the game's convention.</td>
+        </tr>
+        <tr>
+            <td>0x20</td>
+            <td>float[3]</td>
+            <td>Translation (x, y, z)</td>
+        </tr>
+        <tr>
+            <td>0x2c</td>
+            <td>byte[8]</td>
+            <td>Padding? Don't know why it's here.</td>
+        </tr>
+    </table>
+</body>

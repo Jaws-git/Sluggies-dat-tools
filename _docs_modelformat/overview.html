@@ -1,0 +1,311 @@
+<head>
+    <link rel="stylesheet" type="text/css" href="style.css" />
+    <style>
+        .file-map {
+            display: inline-flex;
+            flex-direction: column;
+            border: 2px solid #444;
+            font-family: monospace;
+            min-width: 500px;
+        }
+
+        .blk {
+            border-bottom: 2px solid #444;
+        }
+        .blk:last-child {
+            border-bottom: none;
+        }
+
+        .blk-title {
+            font-weight: bold;
+            padding: 4px 10px;
+            border-bottom: 1px solid rgba(0,0,0,0.25);
+        }
+        .blk-title a {
+            color: inherit;
+        }
+
+        .fields {
+            padding: 4px 10px 6px 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .row {
+            display: grid;
+            grid-template-columns: 52px 1fr;
+            gap: 8px;
+        }
+
+        .off {
+            color: #555;
+            font-size: 0.85em;
+            padding-top: 2px;
+        }
+
+        /* nesting */
+        .nested {
+            margin: 6px 0 2px 18px;
+            border-left: 3px solid rgba(0,0,0,0.18);
+        }
+        .nested .blk-title {
+            font-style: italic;
+            font-weight: normal;
+        }
+        .nested .blk {
+            border-bottom: 1px solid rgba(0,0,0,0.2);
+        }
+        .nested .blk:last-child {
+            border-bottom: none;
+        }
+
+        /* section colors */
+        .c-hdr { background: #e6e6e6; }
+        .c-gpl { background: #d4edda; }
+        .c-act { background: #cce5ff; }
+        .c-tex { background: #fff3cd; }
+        .c-skn { background: #e8d9f5; }
+        .c-sub { background: rgba(255,255,255,0.55); }
+
+        .note {
+            font-size: 0.82em;
+            color: #666;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <h1>Mario Sluggers Model Format — Structure Overview</h1>
+    <p>Blocks appear in the order they are typically laid out in the file. Pointers in the header are relative to the start of the file; pointers within sections are generally relative to the start of that section.</p>
+
+    <div class="file-map">
+
+        <!-- FILE HEADER -->
+        <div class="blk c-hdr">
+            <div class="blk-title">File Header</div>
+            <div class="fields">
+                <div class="row"><span class="off">0x00</span><span>first word = 0</span></div>
+                <div class="row"><span class="off">0x04</span><span>→ <a href="vertex_section.html">GPL (Mesh Data)</a></span></div>
+                <div class="row"><span class="off">0x08</span><span>→ <a href="act_section.html">ACT (Bone Data)</a></span></div>
+                <div class="row"><span class="off">0x0c</span><span>→ <a href="texture_section.html">TEX (Texture Data)</a></span></div>
+                <div class="row"><span class="off">0x10</span><span>→ <a href="skn_section.html">SKN (Skinning Data)</a></span></div>
+                <div class="row"><span class="off">0x14</span><span>unknown pointer <span class="note">(usually null; block-relative when present)</span></span></div>
+                <div class="row"><span class="off">0x18</span><span>unknown pointer <span class="note">(NOT always null — observed non-zero for skinned models; block-relative, points to data stored after the SKN section; exact purpose unknown but critical for correct rendering of skinned meshes)</span></span></div>
+                <div class="row"><span class="off">0x1c</span><span>unknown pointer <span class="note">(usually null; block-relative when present)</span></span></div>
+            </div>
+        </div>
+
+        <!-- GPL -->
+        <div class="blk c-gpl">
+            <div class="blk-title"><a href="vertex_section.html">GPL — Mesh Data</a></div>
+            <div class="fields">
+                <div class="row"><span class="off">0x00</span><span>version magic (0x00B749E0)</span></div>
+                <div class="row"><span class="off">0x04</span><span>user data length</span></div>
+                <div class="row"><span class="off">0x08</span><span>user data pointer</span></div>
+                <div class="row"><span class="off">0x0c</span><span>number of GEO descriptors</span></div>
+                <div class="row"><span class="off">0x10</span><span>→ GEO descriptor array</span></div>
+
+                <div class="nested">
+                    <div class="blk c-sub">
+                        <div class="blk-title">GEO Descriptor ×N</div>
+                        <div class="fields">
+                            <div class="row"><span class="off">0x00</span><span>→ DOLayout</span></div>
+                            <div class="row"><span class="off">0x04</span><span>→ mesh name string</span></div>
+                        </div>
+                    </div>
+                    <div class="blk c-sub">
+                        <div class="blk-title">DOLayout</div>
+                        <div class="fields">
+                            <div class="row"><span class="off">0x00</span><span>→ Position Data</span></div>
+                            <div class="row"><span class="off">0x04</span><span>→ Color Data</span></div>
+                            <div class="row"><span class="off">0x08</span><span>→ UV Data <span class="note">(first of N channels)</span></span></div>
+                            <div class="row"><span class="off">0x0c</span><span>→ Normal/Lighting Data</span></div>
+                            <div class="row"><span class="off">0x10</span><span>→ Display Header</span></div>
+                            <div class="row"><span class="off">0x14</span><span>texture channel count (uint8)</span></div>
+                            <div class="row"><span class="off">0x15</span><span>padding (3 bytes)</span></div>
+                        </div>
+                        <div class="nested">
+                            <div class="blk c-sub">
+                                <div class="blk-title">Position / Color / UV / Normal Data</div>
+                                <div class="fields">
+                                    <div class="row"><span class="off">0x00</span><span>→ raw quantized data array</span></div>
+                                    <div class="row"><span class="off">0x04</span><span>count (uint16)</span></div>
+                                    <div class="row"><span class="off">0x06</span><span><a href="quantization.html">quantization</a> byte</span></div>
+                                    <div class="row"><span class="off">0x07</span><span>component count <span class="note">(3 usual; 6 if skinned pos+normal)</span></span></div>
+                                    <div class="note" style="padding-left:4px">UV headers also carry palette name ptr (0x08) and palette ptr (0x0c).<br>Normal header also carries ambient percentage float (0x08).</div>
+                                </div>
+                            </div>
+                            <div class="blk c-sub">
+                                <div class="blk-title">Display Header</div>
+                                <div class="fields">
+                                    <div class="row"><span class="off">0x00</span><span>primitive data pointer <span class="note">(not used directly)</span></span></div>
+                                    <div class="row"><span class="off">0x04</span><span>→ display state array</span></div>
+                                    <div class="row"><span class="off">0x08</span><span>number of display states (uint16)</span></div>
+                                </div>
+                            </div>
+                            <div class="blk c-sub">
+                                <div class="blk-title">Display State ×N  <span class="note">(16 bytes each)</span></div>
+                                <div class="fields">
+                                    <div class="row"><span class="off">0x00</span><span>type (uint8): 1 = texture bind, 3 = vertex format, 7 = unknown</span></div>
+                                    <div class="row"><span class="off">0x04</span><span>setting (bitmap32)</span></div>
+                                    <div class="row"><span class="off">0x08</span><span>→ primitive list <span class="note">(may be null)</span></span></div>
+                                    <div class="row"><span class="off">0x0c</span><span>primitive list size</span></div>
+                                </div>
+                            </div>
+                            <div class="blk c-sub">
+                                <div class="blk-title">Primitive List  <span class="note">(GX draw calls)</span></div>
+                                <div class="fields">
+                                    <div class="note" style="padding-left:4px">Repeating blocks until null terminator byte:</div>
+                                    <div class="row"><span class="off">+0x00</span><span>primitive type: 0x90 triangles, 0x98 tri-strip, 0x80 quads</span></div>
+                                    <div class="row"><span class="off">+0x01</span><span>vertex count (uint16 BE)</span></div>
+                                    <div class="row"><span class="off">+0x03</span><span>vertex data — per-attribute indices, widths set by type-3 state</span></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ACT -->
+        <div class="blk c-act">
+            <div class="blk-title"><a href="act_section.html">ACT — Bone Data</a></div>
+            <div class="fields">
+                <div class="row"><span class="off">0x00</span><span>version magic (0x007B7960)</span></div>
+                <div class="row"><span class="off">0x04</span><span>actor ID (uint16)</span></div>
+                <div class="row"><span class="off">0x06</span><span>bone count (uint16)</span></div>
+                <div class="row"><span class="off">0x08</span><span>bone tree — unknown word</span></div>
+                <div class="row"><span class="off">0x0c</span><span>bone tree — root node pointer</span></div>
+                <div class="row"><span class="off">0x10</span><span>→ geo name string</span></div>
+                <div class="row"><span class="off">0x14</span><span>skin file ID (uint16)</span></div>
+                <div class="row"><span class="off">0x18</span><span>user data size</span></div>
+                <div class="row"><span class="off">0x1c</span><span>→ user data <span class="note">(bone → animation track ID map)</span></span></div>
+
+                <div class="nested">
+                    <div class="blk c-sub">
+                        <div class="blk-title">Bone ×N  <span class="note">(0x1c bytes each, traversed via tree)</span></div>
+                        <div class="fields">
+                            <div class="row"><span class="off">0x00</span><span>→ SRT <span class="note">(null if no transform)</span></span></div>
+                            <div class="row"><span class="off">0x04–0x13</span><span>tree navigation: prev / next / parent / first child pointers</span></div>
+                            <div class="row"><span class="off">0x14</span><span>GEO file ID (uint16) — 0xFFFF means skinned bone</span></div>
+                            <div class="row"><span class="off">0x16</span><span>bone ID (uint16)</span></div>
+                            <div class="row"><span class="off">0x18</span><span>inheritance flag (bool) — usually true</span></div>
+                            <div class="row"><span class="off">0x19</span><span>draw priority (uint8)</span></div>
+                        </div>
+                    </div>
+                    <div class="blk c-sub">
+                        <div class="blk-title">SRT  <span class="note">(0x34 bytes)</span></div>
+                        <div class="fields">
+                            <div class="row"><span class="off">0x00</span><span>type byte (0x4, 0x8, or 0xc)</span></div>
+                            <div class="row"><span class="off">0x04</span><span>scale (float[3]: x y z)</span></div>
+                            <div class="row"><span class="off">0x10</span><span>quaternion (float[4]: x y z w) <span class="note">— apply as (-w, x, y, z)</span></span></div>
+                            <div class="row"><span class="off">0x20</span><span>translation (float[3]: x y z)</span></div>
+                            <div class="row"><span class="off">0x2c</span><span>padding (8 bytes)</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TEX -->
+        <div class="blk c-tex">
+            <div class="blk-title"><a href="texture_section.html">TEX — Texture Data</a></div>
+            <div class="fields">
+                <div class="row"><span class="off">0x00</span><span>number of textures (uint16)</span></div>
+                <div class="row"><span class="off">0x02</span><span>number of CLUTs (uint16)</span></div>
+
+                <div class="nested">
+                    <div class="blk c-sub">
+                        <div class="blk-title">Texture Descriptor ×N  <span class="note">(0x20 bytes each, starts at 0x04)</span></div>
+                        <div class="fields">
+                            <div class="row"><span class="off">0x00</span><span>→ image data</span></div>
+                            <div class="row"><span class="off">0x04</span><span>→ palette data <span class="note">(null if none)</span></span></div>
+                            <div class="row"><span class="off">0x08</span><span>image height (uint16)</span></div>
+                            <div class="row"><span class="off">0x0a</span><span>image width (uint16)</span></div>
+                            <div class="row"><span class="off">0x0c–0x0f</span><span>edge LOD enable · min LOD · max LOD · unpacked</span></div>
+                            <div class="row"><span class="off">0x10–0x16</span><span>unknown / padding <span class="note">(may contain wrap/filter settings)</span></span></div>
+                            <div class="row"><span class="off">0x17</span><span>image format (uint8)</span></div>
+                            <div class="row"><span class="off">0x18</span><span>palette entry count (uint16)</span></div>
+                            <div class="row"><span class="off">0x1a</span><span>palette format (uint8)</span></div>
+                            <div class="row"><span class="off">0x1b–0x1f</span><span>unknown / padding</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- SKN -->
+        <div class="blk c-skn">
+            <div class="blk-title"><a href="skn_section.html">SKN — Skinning Data</a></div>
+            <div class="fields">
+                <div class="row"><span class="off">0x00</span><span>SK1 count (uint16)</span></div>
+                <div class="row"><span class="off">0x02</span><span>SK2 count (uint16)</span></div>
+                <div class="row"><span class="off">0x04</span><span>SKAcc count (uint16)</span></div>
+                <div class="row"><span class="off">0x06</span><span>quantize info <span class="note">(high nibble must be 0)</span></span></div>
+                <div class="row"><span class="off">0x08</span><span>→ SK1 array</span></div>
+                <div class="row"><span class="off">0x0c</span><span>→ SK2 array</span></div>
+                <div class="row"><span class="off">0x10</span><span>→ SKAcc array</span></div>
+                <div class="row"><span class="off">0x14</span><span>→ dest buffer top <span class="note">(cleared each frame)</span></span></div>
+                <div class="row"><span class="off">0x18</span><span>dest buffer clear size</span></div>
+                <div class="row"><span class="off">0x1c</span><span>→ flush index array</span></div>
+                <div class="row"><span class="off">0x20</span><span>flush index count</span></div>
+
+                <div class="nested">
+                    <div class="blk c-sub">
+                        <div class="blk-title">SK1 ×N  <span class="note">(0x40 bytes each — 1 bone, sequential vertices)</span></div>
+                        <div class="fields">
+                            <div class="row"><span class="off">0x00</span><span>runtime matrix placeholder (0x30 bytes)</span></div>
+                            <div class="row"><span class="off">0x30</span><span>→ source position/normal array</span></div>
+                            <div class="row"><span class="off">0x34</span><span>→ destination in GPL position data</span></div>
+                            <div class="row"><span class="off">0x38</span><span>bone index (uint16)</span></div>
+                            <div class="row"><span class="off">0x3a</span><span>vertex count (uint16)</span></div>
+                            <div class="row"><span class="off">0x3c</span><span>position/normal offset (uint8)</span></div>
+                        </div>
+                    </div>
+                    <div class="blk c-sub">
+                        <div class="blk-title">SK2 ×N  <span class="note">(0x74 bytes each — 2 bones, weight array)</span></div>
+                        <div class="fields">
+                            <div class="row"><span class="off">0x00</span><span>runtime matrix placeholders (2 × 0x30 bytes)</span></div>
+                            <div class="row"><span class="off">0x60</span><span>→ source position/normal array</span></div>
+                            <div class="row"><span class="off">0x64</span><span>→ weight array <span class="note">(uint8 pairs per vertex, sum to 255)</span></span></div>
+                            <div class="row"><span class="off">0x68</span><span>→ destination in GPL position data</span></div>
+                            <div class="row"><span class="off">0x6c</span><span>bone index 1 (uint16)</span></div>
+                            <div class="row"><span class="off">0x6e</span><span>bone index 2 (uint16)</span></div>
+                            <div class="row"><span class="off">0x70</span><span>vertex count (uint16)</span></div>
+                            <div class="row"><span class="off">0x72</span><span>position/normal offset (uint8)</span></div>
+                        </div>
+                    </div>
+                    <div class="blk c-sub">
+                        <div class="blk-title">SKAcc ×N  <span class="note">(0x44 bytes each — 1 bone, indexed dest, accumulates)</span></div>
+                        <div class="fields">
+                            <div class="row"><span class="off">0x00</span><span>runtime matrix placeholder (0x30 bytes)</span></div>
+                            <div class="row"><span class="off">0x30</span><span>→ source position/normal array</span></div>
+                            <div class="row"><span class="off">0x34</span><span>→ destination index array (uint16 per vertex)</span></div>
+                            <div class="row"><span class="off">0x38</span><span>→ destination base in GPL position data</span></div>
+                            <div class="row"><span class="off">0x3c</span><span>→ weight array (uint8 per vertex)</span></div>
+                            <div class="row"><span class="off">0x40</span><span>bone index (uint16)</span></div>
+                            <div class="row"><span class="off">0x42</span><span>vertex count (uint16)</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <h2>32-Byte Alignment Requirement</h2>
+    <p>The Wii Broadway CPU has 32-byte cache lines and uses aligned memory operations (dcbz, paired-single loads) throughout its graphics pipeline. <strong>All raw data arrays</strong> — vertex buffers, skinning source arrays, weight arrays, index arrays, primitive lists — must begin at an address that is a multiple of 32 bytes relative to the section or region they belong to.</p>
+    <p>In observed game data, 100% of data array pointers satisfy this alignment. Violating the requirement causes the game to <strong>hang</strong> (infinite stall or bus error) rather than crash with an informative error.</p>
+    <p>When rebuilding any section, insert zero-filled padding bytes as needed between the end of fixed-size struct arrays and the start of variable-length data blobs to ensure the first data array lands on a 32-byte boundary. Each subsequent array must also be individually padded to 32 bytes before the next one begins.</p>
+    <pre>data_region_start = (end_of_structs + 31) &amp; ~31
+padding_needed    = data_region_start - end_of_structs</pre>
+    <p>This applies to at minimum:</p>
+    <ul>
+        <li><strong>SKN section</strong> — srcArrPtr, weightArrPtr, destIdxArrPtr, flushIndPtr</li>
+        <li><strong>GPL section</strong> — position, UV, color, and normal raw data arrays; primitive list data</li>
+        <li><strong>TEX section</strong> — image data and palette data buffers</li>
+    </ul>
+
+    <p>See <a href="index.html">index</a> for links to detailed per-section documentation.</p>
+</body>

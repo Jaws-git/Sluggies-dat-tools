@@ -1,0 +1,162 @@
+<head>
+    <link rel="stylesheet" type="text/css" href="style.css" />
+</head>
+
+<body>
+    <h1>Texture Data Section</h1>
+    <p>This section has a bunch of textures</p>
+    <h2>Header</h2>
+    <table>
+        <tr>
+            <th>Offset</th>
+            <th>Type</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td>0x0</td>
+            <td>uint16</td>
+            <td>Number of textures</td>
+        </tr>
+        <tr>
+            <td>0x2</td>
+            <td>uint16</td>
+            <td>Number of CLUTs (color lookup tables)</td>
+        </tr>
+    </table>
+    <h2>Texture Descriptor</h2>
+    <p>Immediately following the header (at offset 0x4 from the start of the file) is an array of texture descriptors.</p>
+    <table>
+        <tr>
+            <th>Offset</th>
+            <th>Type</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td>0x0</td>
+            <td>uint32</td>
+            <td>Image Data Pointer (relative to header)</td>
+        </tr>
+        <tr>
+            <td>0x4</td>
+            <td>uint32</td>
+            <td>Palette Data Pointer (relative to header) (might be null)</td>
+        </tr>
+        <tr>
+            <td>0x8</td>
+            <td>uint16</td>
+            <td>Image height</td>
+        </tr>
+        <tr>
+            <td>0xa</td>
+            <td>uint16</td>
+            <td>Image width</td>
+        </tr>
+        <tr>
+            <td>0xc</td>
+            <td>bool</td>
+            <td>Edge LOD enable (?)</td>
+        </tr>
+        <tr>
+            <td>0xd</td>
+            <td>uint8</td>
+            <td>Min LOD (?)</td>
+        </tr>
+        <tr>
+            <td>0xe</td>
+            <td>uint8</td>
+            <td>Max LOD (?)</td>
+        </tr>
+        <tr>
+            <td>0xf</td>
+            <td>bool</td>
+            <td>Unpacked?</td>
+        </tr>
+        <tr>
+            <td>0x10</td>
+            <td>byte[7]</td>
+            <td>Unknown/padding</td>
+        </tr>
+        <tr>
+            <td>0x17</td>
+            <td>uint8</td>
+            <td>Image format</td>
+        </tr>
+        <tr>
+            <td>0x18</td>
+            <td>uint16</td>
+            <td>Palette entry count</td>
+        </tr>
+        <tr>
+            <td>0x1a</td>
+            <td>uint8</td>
+            <td>Palette format</td>
+        </tr>
+        <tr>
+            <td>0x1b</td>
+            <td>byte[5]</td>
+            <td>Unknown/padding</td>
+        </tr>
+    </table>
+    <p>This is probably a version of the TEX0 format. I extract the textures by shuffling around the data to create a valid TPL file and then converting it to a png with wimgt. I don't know where the LODBias, wrapS, wrapT, minFilter, and magFilter are in the header, so I assume they're 0.</p>
+    <pre><code>def toFile(self, path):
+    dataLength = self.height * self.width * {0:4,1:8,2:8,3:16,4:16,5:16,6:32,8:4,9:8,10:16,14:4}[self.format] >> 3
+    hasPalette = self.paletteDataPtr > 0
+    fname = path + '.tpl'
+    pngname = path + '.png'
+
+    out = open(fname, 'wb')
+    # TEXPalette
+    out.write(itb(0x0020AF30, 4))
+    out.write(itb(1, 4))
+    out.write(itb(0xC, 4))
+
+    # TEXDescriptor
+    out.write(itb(0x14, 4))
+    if hasPalette:
+        out.write(itb(0x38, 4))
+    else:
+        out.write(itb(0, 4))
+
+    # TEXHeader
+    out.write(itb(self.height, 2))
+    out.write(itb(self.width, 2))
+    out.write(itb(self.format, 4))
+    out.write(itb(0x40 + hasPalette * 0x20, 4))
+    out.write(itb(self.wrapS, 4))
+    out.write(itb(self.wrapT, 4))
+    out.write(itb(self.minFilter, 4))
+    out.write(itb(self.magFilter, 4))
+    out.write(itb(self.LODBias, 4))
+    out.write(itb(self.edgeLODEnable, 1))
+    out.write(itb(self.minLOD, 1))
+    out.write(itb(self.maxLOD, 1))
+    out.write(itb(self.unpacked, 1))
+
+    paletteDataLen = self.paletteEntries * 2
+    paletteDataOffset = 0
+    paletteDataPad = 0
+    if hasPalette:
+        paletteDataOffset = 0x60 + dataLength
+        mod = paletteDataOffset % 0x20
+        if mod != 0:
+            paletteDataPad = 0x20 - mod
+            paletteDataOffset += paletteDataPad
+        # Palette header
+        out.write(itb(self.paletteEntries, 2))
+        out.write(itb(1, 1))
+        out.write(itb(0, 1))
+        out.write(itb(self.paletteFormat, 4))
+        out.write(itb(paletteDataOffset, 4))
+
+    # Pad to multiple of 0x20 (0x40 or 0x60 here)
+    out.write(itb(0, 0x8 + hasPalette * 0x14))
+    self.parent.seek(self.dataPtr)
+    out.write(self.parent.read(dataLength))
+    if hasPalette:
+        out.write(itb(0, paletteDataPad))
+        self.parent.seek(self.paletteDataPtr)
+        out.write(self.parent.read(paletteDataLen))
+    out.close()
+    os.system('wimgt decode -q -d ' + pngname + ' ' + fname)
+    os.remove(fname)</code></pre>
+</body>

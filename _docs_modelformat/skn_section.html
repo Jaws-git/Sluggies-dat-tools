@@ -1,0 +1,310 @@
+<head>
+    <link rel="stylesheet" type="text/css" href="style.css" />
+</head>
+
+<body>
+    <h1>Skinning Data Section</h1>
+    <p>This section describes how bones influence the data of skinned meshes. Skinned position/normal data in the mesh section gets updated at runtime based on this section.</p>
+    <h2>Header</h2>
+    <table>
+        <tr>
+            <th>Offset</th>
+            <th>Type</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td>0x0</td>
+            <td>uint16</td>
+            <td>Number of SK1 headers</td>
+        </tr>
+        <tr>
+            <td>0x2</td>
+            <td>uint16</td>
+            <td>Number of SK2 headers</td>
+        </tr>
+        <tr>
+            <td>0x4</td>
+            <td>uint16</td>
+            <td>Number of SKAcc headers</td>
+        </tr>
+        <tr>
+            <td>0x6</td>
+            <td>uint8</td>
+            <td>Quantize info (This seems to only work correctly when the high nibble is 0)</td>
+        </tr>
+        <tr>
+            <td>0x7</td>
+            <td>byte</td>
+            <td>Padding</td>
+        </tr>
+        <tr>
+            <td>0x8</td>
+            <td>uint32</td>
+            <td>Pointer to SK1 structures (relative to header)</td>
+        </tr>
+        <tr>
+            <td>0xc</td>
+            <td>uint32</td>
+            <td>Pointer to SK2 structures (relative to header)</td>
+        </tr>
+        <tr>
+            <td>0x10</td>
+            <td>uint32</td>
+            <td>Pointer to SKAcc structures (relative to header)</td>
+        </tr>
+        <tr>
+            <td>0x14</td>
+            <td>uint32</td>
+            <td>Start of the memory region to clear before processing SK entries, as a byte offset from the start of the <a href="vertex_section.html">GPL section</a>. Equal to <code>(GPL-relative offset of submesh 0's raw position data) + min(all gplVertexArr / gplDestArr values)</code>. In practice the minimum gplVertexArr is always zero, so this simply points to the start of submesh 0's position array. Note: this is GPL-section-relative, <em>not</em> SKN-section-relative.</td>
+        </tr>
+        <tr>
+            <td>0x18</td>
+            <td>uint32</td>
+            <td>Size of memory to clear in the mesh data</td>
+        </tr>
+        <tr>
+            <td>0x1c</td>
+            <td>uint32</td>
+            <td>Pointer to array of vertex position indices (?) to 'flush' (I don't know what this does)</td>
+        </tr>
+        <tr>
+            <td>0x20</td>
+            <td>uint32</td>
+            <td>Number of indices to flush</td>
+        </tr>
+    </table>
+    <p>The memory clearing part is weird. The SKAcc headers work by adding (accumulating) the influences from multiple bones in-place in the position data, so without clearing the memory the correct value for a skinned position will be added to whatever position was used last frame.</p>
+    <p>The vertex stride — bytes per vertex in the skinned position buffer — is <code>component_size(quantize_info) * 6</code>, where <code>component_size</code> returns 4 for float formats (high nibble 4, 7, or 0xa) and 2 otherwise. The memClrSize value equals <code>max(write_end) &minus; min(all gplVertexArr / gplDestArr)</code>; <em>write_end</em> for SK1 and SK2 entries is <code>gplVertexArr + vertex_offset + vertex_count &times; vertex_stride</code>, and for SKAcc entries is <code>gplDestArr + (max(dest_indices) + 1) &times; vertex_stride</code>.</p>
+    <h2>SK1</h2>
+    <p>The simplest case. This signifies a group of vertex positions that are only influenced by a single bone.</p>
+    <table>
+        <tr>
+            <th>Offset</th>
+            <th>Type</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td>0x0</td>
+            <td>Matrix</td>
+            <td>An 0x30 byte placeholder for a matrix that gets populated at runtime based on the SK1's bone's animation. I believe this is a 4x3 matrix, with the last column assumed to be (0, 0, 0, 1).</td>
+        </tr>
+        <tr>
+            <td>0x30</td>
+            <td>uint32</td>
+            <td>Source position/normal array pointer (relative to header)</td>
+        </tr>
+        <tr>
+            <td>0x34</td>
+            <td>uint32</td>
+            <td>Destination position/normal pointer (byte offset from the start of submesh 0's raw position data array; not relative to this section)</td>
+        </tr>
+        <tr>
+            <td>0x38</td>
+            <td>uint16</td>
+            <td>Bone index (which bone influences these vertices)</td>
+        </tr>
+        <tr>
+            <td>0x3a</td>
+            <td>uint16</td>
+            <td>Vertex count</td>
+        </tr>
+        <tr>
+            <td>0x3c</td>
+            <td>uint8</td>
+            <td>Position/normal offset (I don't know why this exists instead of already being added to both pointers, probably some performance reason)</td>
+        </tr>
+        <tr>
+            <td>0x3d</td>
+            <td>byte[3]</td>
+            <td>Padding</td>
+        </tr>
+    </table>
+    <p>The way this works is pretty weird.</p>
+    <hr>
+    <p>First, read the quantized data from <code>(source_position_normal_array_pointer + position_normal_offset)</code>. This holds a series of alternating positions and normals, one of each per vertex, so will be <code>(3 + 3) * vertex_count</code> items long. Skinned meshes store six values per position, an x, y, z for the position followed by an x, y, z for the normal. This might mean that the normal section in a skinned mesh's data is completely ignored?</p>
+    <hr>
+    <p>After being transformed, the position/normal data from the source is inserted into the position data of the first mesh at <code>(destination_position_normal_pointer + position_normal_offset)</code> relative to the start of the raw quantized position data. Effectively, there are vertex_cnt sequential vertex positions influenced by this SK1's bone with an assumed weight of 255, starting at index <code>(destination_position_normal_array_pointer + position_normal_offset) / (quantized_data_size(mesh_data.meshes[0].positions.quantization) * 6)</code></p>
+    <h2>SK2</h2>
+    <p>Very similar to SK1, but there are two bones influencing each vertex with different weights.</p>
+    <table>
+        <tr>
+            <th>Offset</th>
+            <th>Type</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td>0x0</td>
+            <td>Matrix</td>
+            <td>Two 0x30-byte matrix placeholders (one per bone), totalling 0x60 bytes</td>
+        </tr>
+        <tr>
+            <td>0x60</td>
+            <td>uint32</td>
+            <td>Source position/normal array pointer (relative to header)</td>
+        </tr>
+        <tr>
+            <td>0x64</td>
+            <td>uint32</td>
+            <td>Weight array pointer (relative to header)</td>
+        </tr>
+        <tr>
+            <td>0x68</td>
+            <td>uint32</td>
+            <td>Destination position/normal pointer (byte offset from the start of submesh 0's raw position data array; not relative to this section)</td>
+        </tr>
+        <tr>
+            <td>0x6c</td>
+            <td>uint16</td>
+            <td>Bone index 1</td>
+        </tr>
+        <tr>
+            <td>0x6e</td>
+            <td>uint16</td>
+            <td>Bone index 2</td>
+        </tr>
+        <tr>
+            <td>0x70</td>
+            <td>uint16</td>
+            <td>Vertex count</td>
+        </tr>
+        <tr>
+            <td>0x72</td>
+            <td>uint8</td>
+            <td>Position/normal offset</td>
+        </tr>
+        <tr>
+            <td>0x73</td>
+            <td>byte</td>
+            <td>Padding</td>
+        </tr>
+    </table>
+    <p>Process this similar to SK1 entries. The only difference is that there's now a weight array (don't add the position/normal offset to the weight array pointer) that has vertex_count * 2 entries, each a uint8 between 1 and 255. Bone 1 influences vertex n with a weight of weights[n * 2], and bone 2 influences vertex n with a weight of weights[n * 2 + 1]. The weights on each vertex should sum to 255 once all the SK entries have been processed.</p>
+    <h2>SKAcc</h2>
+    <p>These entries are used to supplement SK2s for vertices that have more than two bone influences.</p>
+    <table>
+        <tr>
+            <th>Offset</th>
+            <th>Type</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td>0x0</td>
+            <td>Matrix</td>
+            <td>An 0x30 byte placeholder for a matrix</td>
+        </tr>
+        <tr>
+            <td>0x30</td>
+            <td>uint32</td>
+            <td>Source position/normal array pointer (relative to header)</td>
+        </tr>
+        <tr>
+            <td>0x34</td>
+            <td>uint32</td>
+            <td>Destination position/normal index array pointer (relative to header)</td>
+        </tr>
+        <tr>
+            <td>0x38</td>
+            <td>uint32</td>
+            <td>Destination position/normal pointer (byte offset from the start of submesh 0's raw position data array; not relative to this section)</td>
+        </tr>
+        <tr>
+            <td>0x3c</td>
+            <td>uint32</td>
+            <td>Weight array pointer (relative to header)</td>
+        </tr>
+        <tr>
+            <td>0x40</td>
+            <td>uint16</td>
+            <td>Bone index (which bone influences these vertices)</td>
+        </tr>
+        <tr>
+            <td>0x42</td>
+            <td>uint16</td>
+            <td>Vertex count</td>
+        </tr>
+    </table>
+    <p>This entry type has one bone index and one weight per vertex. Its gimmick is that it has an array of destination indexes stored as uint16s, rather than a single pointer in the position data to place the entries into sequentially. Unlike SK1 and SK2, SKAcc has no position/normal offset field; the offset is effectively zero. Each vertex position's index is <code>destination_position_normal_array_pointer / (quantized_data_size(mesh_data.meshes[0].positions.quantization) * 6) + destination_position_normal_index_array[n]</code></p>
+
+    <h3>Footnote: Duplicate destination indices (twist/blend deformer pattern)</h3>
+    <p>Some SKAcc entries intentionally list the <strong>same destination vertex index more than once</strong> within a single entry's index array, each occurrence carrying a different weight. This has been observed in the low-poly version of a character model for the finger-joint vertices, where a single bone accumulates into the same destination vertex twice per entry.</p>
+    <p>In all observed cases the duplicate pairs have:</p>
+    <ul>
+        <li><strong>Identical bind-pose source positions</strong> — at rest the two source slots hold the same XYZ/normal values.</li>
+        <li><strong>Different weights</strong> — always <code>255</code> for the first occurrence and <code>1</code> for the second (i.e. ~100 % and ~0.4 %).</li>
+    </ul>
+    <p>The purpose appears to be a lightweight twist/multi-stage deformer: the game engine accumulates the same bone's contribution twice into the destination vertex with two distinct weight scalings, allowing the runtime to blend between two intermediate transform stages for complex joints. Because the memory-clear step zeros the destination before each frame, both accumulations are added to zero, giving a combined result of <code>(weight_0 + weight_1) / 255</code> of the bone's full transform — approximately 1.0 in these cases.</p>
+    <p><strong>Implication for tools:</strong> The weight array is indexed by <em>source-array position</em>, not by destination vertex. Two source entries that share a destination index are independent records with independent weights. Any tool that maps weights by <code>(bone, destination_vertex)</code> key — such as a vertex-group system that stores a single weight per bone per vertex — will silently discard the first weight when it encounters the second, corrupting the skinning on round-trip. The original per-source-entry weight data must be preserved verbatim for all source slots whose destination index appears more than once in the same entry.</p>
+
+    <h2>Section Memory Layout</h2>
+    <p>The SKN section is laid out as a contiguous block with the following regions in order:</p>
+    <ol>
+        <li><strong>SKN Header</strong> — 0x24 bytes (described above)</li>
+        <li><strong>SK1 struct array</strong> — <code>numSK1 &times; 0x40</code> bytes, immediately after header at offset 0x24</li>
+        <li><strong>SK2 struct array</strong> — <code>numSK2 &times; 0x74</code> bytes, immediately after SK1 array</li>
+        <li><strong>SKAcc struct array</strong> — <code>numSKAcc &times; 0x44</code> bytes, immediately after SK2 array</li>
+        <li><strong>Alignment padding</strong> — zero-filled bytes to reach the next 32-byte boundary</li>
+        <li><strong>Variable data arrays</strong> — source/weight/dest-index arrays for all entries, each individually 32-byte aligned</li>
+        <li><strong>Flush index array</strong> — if present, also 32-byte aligned</li>
+    </ol>
+    <p>The struct arrays are packed contiguously with no gaps between them. Between the end of the SKAcc struct array and the start of the variable data, zero-filled padding is inserted so that the first variable data array begins on a 32-byte boundary.</p>
+
+    <h3>Variable data ordering</h3>
+    <p>Within the variable data region, arrays are laid out in this order:</p>
+    <ol>
+        <li>All SK1 source arrays (one per SK1 entry, in entry order)</li>
+        <li>All SK2 source + weight arrays (per entry: source array then weight array)</li>
+        <li>All SKAcc source + dest-index + weight arrays (per entry: source, dest-index, weight)</li>
+        <li>Flush index array (if present)</li>
+    </ol>
+    <p>Each individual array is padded to a 32-byte boundary before the next array begins.</p>
+
+    <h3>32-byte alignment (critical)</h3>
+    <p>All variable data pointers in this section must be 32-byte aligned. See the <a href="overview.html">overview</a> for the general alignment requirement that applies across all sections. For the SKN section specifically, compute the variable data start as:</p>
+    <pre>VAR_DATA_OFF = (end_of_SKAcc_array + 31) &amp; ~31</pre>
+    <p>Then insert <code>VAR_DATA_OFF - end_of_SKAcc_array</code> zero bytes between the struct arrays and the variable data blob.</p>
+
+    <h3>Source array prefix bytes (position/normal offset)</h3>
+    <p>SK1 and SK2 entries have a <code>position_normal_offset</code> field (1 byte). The source array pointer points to the <em>start</em> of the allocated buffer, but actual vertex data begins at <code>srcArrPtr + position_normal_offset</code>. The prefix bytes (between srcArrPtr and the first vertex) must exist and should be zero-filled.</p>
+    <p>When a tool exports edited bind-pose data without the prefix (starting directly at the first vertex), the builder must prepend <code>position_normal_offset</code> zero bytes to the data before writing it into the source array slot. The total source array length for SK1/SK2 is:</p>
+    <pre>source_array_length = position_normal_offset + vertex_count &times; vertex_stride</pre>
+    <p>where <code>vertex_stride = component_size(quantize_info) &times; 6</code>.</p>
+    <p>SKAcc entries have no position_normal_offset field; their source arrays start directly at the first vertex.</p>
+
+    <h3>Pointer reference types</h3>
+    <p>Two different pointer conventions are used within the SKN section:</p>
+    <table>
+        <tr>
+            <th>Field</th>
+            <th>Reference base</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td>srcArrPtr, weightArrPtr, destIdxArrPtr, flushIndPtr</td>
+            <td>SKN section start</td>
+            <td>Byte offset from the beginning of the SKN header (offset 0x0 of this section)</td>
+        </tr>
+        <tr>
+            <td>gplVertexArr (SK1, SK2)</td>
+            <td>Submesh 0 position data</td>
+            <td>Byte offset from the start of submesh 0's raw position data array in the GPL section. Used as the destination write address.</td>
+        </tr>
+        <tr>
+            <td>gplDestArr (SKAcc)</td>
+            <td>Submesh 0 position data</td>
+            <td>Same as gplVertexArr — byte offset from submesh 0's position array start. Combined with the dest-index array to compute per-vertex write positions.</td>
+        </tr>
+        <tr>
+            <td>memClrPtr (header +0x14)</td>
+            <td>GPL section start</td>
+            <td>GPL-section-relative. Points to the start of the memory region to zero each frame. Equal to <code>submesh_0_pos_data_gpl_offset + min(all gplVertexArr/gplDestArr)</code>.</td>
+        </tr>
+    </table>
+
+    <h3>Rebuilding considerations</h3>
+    <ul>
+        <li><strong>Entry order matters:</strong> The game processes SK entries in array order. SK1, SK2, and SKAcc entries must preserve their original ordering (by bone index / bone pair) so that accumulation into the destination buffer produces correct results.</li>
+        <li><strong>gplVertexArr / gplDestArr are position-data-relative:</strong> These values do not change when the model block is relocated to a different file offset or when sections are rearranged, because they are relative to the position data within the GPL section, not to any absolute address.</li>
+        <li><strong>memClrPtr must be recomputed</strong> when the GPL section layout changes (e.g. different submesh blob ordering or position data offset), since it is GPL-section-relative.</li>
+        <li><strong>Vertex data quantization round-trip:</strong> When bind-pose data passes through a floating-point pipeline (e.g. Blender export → re-quantize to int16), component values may differ by ±1–3 from the original due to rounding. This is visually imperceptible and does not cause rendering errors.</li>
+    </ul>
+</body>
