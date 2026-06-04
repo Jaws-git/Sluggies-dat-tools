@@ -1,0 +1,46 @@
+<head>
+    <link rel="stylesheet" type="text/css" href="style.css" />
+</head>
+<body>
+    <h1>Mario Sluggers Model format documentation</h1>
+    <h2>Header</h2>
+    <p>The header has pointers toward sections in the file</p>
+    <table>
+        <tr>
+            <th>Typical Offset</th>
+            <th>Section</th>
+        </tr>
+        <tr>
+            <td>0x4</td>
+            <td><a href="vertex_section.html">Mesh Data</a></td>
+        </tr>
+        <tr>
+            <td>0x8</td>
+            <td><a href="act_section.html">Bone Data</a></td>
+        </tr>
+        <tr>
+            <td>0xc</td>
+            <td><a href="texture_section.html">Texture Data</a></td>
+        </tr>
+        <tr>
+            <td>0x10</td>
+            <td><a href="skn_section.html">Skinning Data</a></td>
+        </tr>
+        <tr>
+            <td>0x14</td>
+            <td>Unknown pointer (usually null)</td>
+        </tr>
+        <tr>
+            <td>0x18</td>
+            <td>Unknown pointer (usually null)</td>
+        </tr>
+        <tr>
+            <td>0x1c</td>
+            <td>Unknown pointer (usually null)</td>
+        </tr>
+    </table>
+    <p>Quantization is brought up often in this documentation, <a href="quantization.html">here's how it works</a></p>
+    <p>For a visual overview of the full structure, see the <a href="overview.html">structure overview diagram</a>.</p>
+    <p>For questions or suggestions, message llamatrauma_ on Discord</p>
+    <a href='docs.zip'>Download the whole thing here</a>
+</body>

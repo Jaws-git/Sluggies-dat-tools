@@ -1,0 +1,565 @@
+<head>
+    <link rel="stylesheet" type="text/css" href="style.css" />
+</head>
+
+<body>
+    <h1>Mesh Data Section</h1>
+    <p>This section holds position, normal, color, and uv mapping information for the vertices, as well as draw lists
+        describing the triangles created with the vertices.</p>
+    <h2>Header</h2>
+    <table>
+        <tr>
+            <th>Offset</th>
+            <th>Type</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td>
+                0x0
+            </td>
+            <td></td>
+            <td>
+                Magic (0x00B749E0 for Sluggers)
+            </td>
+        </tr>
+        <tr>
+            <td>
+                0x4
+            </td>
+            <td>uint32</td>
+            <td>
+                User data length
+            </td>
+        </tr>
+        <tr>
+            <td>
+                0x8
+            </td>
+            <td>uint32</td>
+            <td>
+                User data pointer (relative to header)
+            </td>
+        </tr>
+        <tr>
+            <td>
+                0xc
+            </td>
+            <td>uint32</td>
+            <td>
+                Number of meshes
+            </td>
+        </tr>
+        <tr>
+            <td>
+                0x10
+            </td>
+            <td>uint32</td>
+            <td>
+                Pointer to mesh header array (relative to header)
+            </td>
+        </tr>
+    </table>
+    <h2 id="mesh_header">Mesh Header</h2>
+    <table>
+        <tr>
+            <th>Offset</th>
+            <th>Type</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td>0x0</td>
+            <td>uint32</td>
+            <td>Mesh data header pointer (relative to header)</td>
+        </tr>
+        <tr>
+            <td>0x4</td>
+            <td>char*</td>
+            <td>Mesh name pointer (relative to header)</td>
+        </tr>
+    </table>
+    <h2 id="#mesh_data_header">Mesh Data Header</h2>
+    <table>
+        <tr>
+            <th>Offset</th>
+            <th>Type</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td>
+                0x0
+            </td>
+            <td>
+                uint32
+            </td>
+            <td>
+                Position data pointer (relative to mesh data header)
+            </td>
+        </tr>
+        <tr>
+            <td>
+                0x4
+            </td>
+            <td>
+                uint32
+            </td>
+            <td>
+                Color data pointer (relative to mesh data header)
+            </td>
+        </tr>
+        <tr>
+            <td>
+                0x8
+            </td>
+            <td>
+                uint32
+            </td>
+            <td>
+                UV mapping data pointer (relative to mesh data header)
+            </td>
+        </tr>
+        <tr>
+            <td>
+                0xc
+            </td>
+            <td>
+                uint32
+            </td>
+            <td>
+                Normal data pointer (relative to mesh data header)
+            </td>
+        </tr>
+        <tr>
+            <td>
+                0x10
+            </td>
+            <td>
+                uint32
+            </td>
+            <td>
+                Draw list pointer (relative to mesh data header)
+            </td>
+        </tr>
+        <tr>
+            <td>
+                0x14
+            </td>
+            <td>
+                uint8
+            </td>
+            <td>
+                Number of texture channels
+            </td>
+        <tr>
+            <td>
+                0x15
+            </td>
+            <td>
+                byte[3]
+            </td>
+            <td>
+                Padding
+            </td>
+        </tr>
+    </table>
+    <p>Once you analyze the position, color, uv mapping, and normal data referenced by this header, you'll have an array for each of the four data types that the draw list will read from.</p>
+    <h2>Position Data</h2>
+    <table>
+        <tr>
+            <th>Offset</th>
+            <th>Type</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td>
+                0x0
+            </td>
+            <td>
+                uint32
+            </td>
+            <td>
+                Quantized raw position data ptr (relative to mesh data header)
+            </td>
+        </tr>
+        <tr>
+            <td>
+                0x4
+            </td>
+            <td>
+                uint16
+            </td>
+            <td>
+                Number of positions
+            </td>
+        </tr>
+        <tr>
+            <td>
+                0x6
+            </td>
+            <td>
+                uint8
+            </td>
+            <td>
+                Quantization
+            </td>
+        </tr>
+        <tr>
+            <td>
+                0x7
+            </td>
+            <td>
+                uint8
+            </td>
+            <td>
+                Component count (usually 3, 6 if the mesh is skinned and includes alternating position and normal data)
+            </td>
+        </tr>
+    </table>
+    <h2>Color Data</h2>
+    <table>
+        <tr>
+            <th>Offset</th>
+            <th>Type</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td>
+                0x0
+            </td>
+            <td>
+                uint32
+            </td>
+            <td>
+                Quantized raw color data ptr (relative to mesh data header)
+            </td>
+        </tr>
+        <tr>
+            <td>
+                0x4
+            </td>
+            <td>
+                uint16
+            </td>
+            <td>
+                Number of colors
+            </td>
+        </tr>
+        <tr>
+            <td>
+                0x6
+            </td>
+            <td>
+                uint8
+            </td>
+            <td>
+                Quantization
+            </td>
+        </tr>
+        <tr>
+            <td>
+                0x7
+            </td>
+            <td>
+                uint8
+            </td>
+            <td>
+                Component count
+            </td>
+        </tr>
+    </table>
+    <h2>UV Map Data</h2>
+    <table>
+        <tr>
+            <th>Offset</th>
+            <th>Type</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td>
+                0x0
+            </td>
+            <td>
+                uint32
+            </td>
+            <td>
+                Quantized raw uv (technically st) coord data ptr (relative to mesh data header)
+            </td>
+        </tr>
+        <tr>
+            <td>
+                0x4
+            </td>
+            <td>
+                uint16
+            </td>
+            <td>
+                Number of coords
+            </td>
+        </tr>
+        <tr>
+            <td>
+                0x6
+            </td>
+            <td>
+                uint8
+            </td>
+            <td>
+                Quantization
+            </td>
+        </tr>
+        <tr>
+            <td>
+                0x7
+            </td>
+            <td>
+                uint8
+            </td>
+            <td>
+                Component count
+            </td>
+        </tr>
+        <tr>
+            <td>
+                0x8
+            </td>
+            <td>
+                char*
+            </td>
+            <td>
+                Palette name pointer (relative to mesh data header)
+            </td>
+        </tr>
+        <tr>
+            <td>
+                0xc
+            </td>
+            <td>
+                uint32
+            </td>
+            <td>
+                Palette pointer (relative to mesh data header)
+            </td>
+        </tr>
+    </table>
+    <h2>Normal Data</h2>
+    <table>
+        <tr>
+            <th>Offset</th>
+            <th>Type</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td>
+                0x0
+            </td>
+            <td>
+                uint32
+            </td>
+            <td>
+                Quantized raw normal data ptr (relative to mesh data header)
+            </td>
+        </tr>
+        <tr>
+            <td>
+                0x4
+            </td>
+            <td>
+                uint16
+            </td>
+            <td>
+                Number of normals
+            </td>
+        </tr>
+        <tr>
+            <td>
+                0x6
+            </td>
+            <td>
+                uint8
+            </td>
+            <td>
+                Quantization
+            </td>
+        </tr>
+        <tr>
+            <td>
+                0x7
+            </td>
+            <td>
+                uint8
+            </td>
+            <td>
+                Component count
+            </td>
+        </tr>
+        <tr>
+            <td>
+                0x8
+            </td>
+            <td>
+                float
+            </td>
+            <td>
+                Ambient percentage (?)
+            </td>
+        </tr>
+    </table>
+    <h2>Draw List</h2>
+    <table>
+        <tr>
+            <th>Offset</th>
+            <th>Type</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td>0x0</td>
+            <td>uint32</td>
+            <td>Primitive data pointer (not used directly)</td>
+        </tr>
+        <tr>
+            <td>0x4</td>
+            <td>uint32</td>
+            <td>Entry array pointer (relative to mesh data header)</td>
+        </tr>
+        <tr>
+            <td>0x8</td>
+            <td>uint16</td>
+            <td>Number of entries in draw list</td>
+        </tr>
+        <tr>
+            <td>0xa</td>
+            <td>byte[2]</td>
+            <td>Padding</td>
+        </tr>
+    </table>
+    <p>Once you've analyzed the other data sections, analyze the draw list entry by entry.</p>
+    <h2>Draw List Entry</h2>
+    <table>
+        <tr>
+            <th>Offset</th>
+            <th>Type</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td>0x0</td>
+            <td>uint8</td>
+            <td>Entry type</td>
+        </tr>
+        <tr>
+            <td>0x1</td>
+            <td>byte[3]</td>
+            <td>Padding</td>
+        </tr>
+        <tr>
+            <td>0x4</td>
+            <td>bitmap32</td>
+            <td>Setting</td>
+        </tr>
+        <tr>
+            <td>0x8</td>
+            <td>uint32</td>
+            <td>Primitive list pointer (relative to the mesh data header) (might be null)</td>
+        </tr>
+        <tr>
+            <td>0xc</td>
+            <td>uint32</td>
+            <td>Primitive list size</td>
+        </tr>
+    </table>
+    <p>Each time you analyze a draw list entry, do two things: update the draw state, and draw the triangles specified by the entry's primitive list if one exists.</p>
+    <h3>Update the draw state</h3>
+    <p>Each triangle drawn by the primitive list has three vertices, each with a combination of a position, a normal, up to two colors, and up to eight texture coordinates. The draw state specifies which of those components are in use and how data will be selected for each component.</p>
+    <p>How the draw state is changed depends on the entry type. The important entries I've run into are</p>
+    <h4>Type 3</h4>
+    <p>This type specifies which components are provided to the primitive list for each vertex and how the data is chosen for each. The psuedocode is</p>
+    <pre><code>state.expected_components = []
+components = ['position', 'normal', 'color0', 'color1', 'texture0', 'texture1', 'texture2', 'texture3', 'texture4', 'texture5', 'texture6', 'texture7']
+// the first couple bytes have to do with something called the 'position matrix index', I just ignore them
+setting = setting >> 2
+for component in components:
+    // the two bits in the setting describing this component
+    this_setting = setting & 0b11
+    enabled = this_setting != 0
+    // if this is set, the value is provided in the primitive list instead of an index into one of the data arrays in the mesh data
+    // I haven't seen this used
+    immediate = this_setting == 0b01
+    indexed = !immediate
+    index_size = 1 + (this_setting & 0b01)
+    if enabled:
+        expected_components.append({'name': component, 'immediate': immediate, 'index_size': index_size})
+    setting = setting >> 2</code></pre>
+    <p>You may end up with a list like<br>
+        <code>[{'name': 'position', 'immediate': 0, 'index_size': 2},<br>
+              {'name': 'normal', 'immediate': 0, 'index_size': 2},<br>
+              {'name': 'color0', 'immediate': 0, 'index_size': 1},<br>
+              {'name': 'texture0', 'immediate': 0, 'index_size': 2}<br>
+              {'name': 'texture1', 'immediate': 0, 'index_size': 2}]</code><br>
+    meaning that a primitive list at this point would expect 9 bytes per vertex: a two-byte index into the position list, a two-byte index into the normal list, a one-byte index into the vertex colors list, a two-byte index into the texture coordinates list to get a coordinate for texture layer 0, and another two-byte index to get a coordinate for texture layer 1, in that order.</p>
+    <h4>Type 1</h4>
+    <p>This type of entry is simpler, it just describes which texture entry from the texture section of the file is used by a layer. Pseudocode:</p>
+<pre><code>texture_index = setting & 0b0001111111111111
+setting = setting >> 13
+layer = setting & 0b111
+setting = setting >> 3
+wraps = setting & 0b1111
+setting = setting >> 4
+wrapt = setting & 0b1111
+state.texture_layers[layer] = {'index': texture_index, 'wraps': wraps, 'wrapt': wrapt}</code></pre>
+<p>so a setting of 0b00000000 00000000 001 0000000000101 would set texture layer 1 to whatever the 6th texture in the texture section is. wraps and wrapt specify what happens when the s and t (x and y) coordinates extend past the edge of an image, but I just assume the default behavior of whatever modeling software I'm using which is usually fine.</p>
+    <h4>Type 7</h4>
+    <p>Stores a single setting word whose meaning isn't fully understood. The code records it as <code>state.settings[7] = setting</code> and otherwise ignores it.</p>
+<h3>Draw the primitives</h3>
+A draw list entry won't always have a primitive list - if the primitive list pointer is 0 you skip this step. If there is a primitive list, then the structure is as follows:
+<table>
+    <tr>
+        <th>Offset</th>
+        <th>Type</th>
+        <th>Description</th>
+    </tr>
+    <tr>
+        <td>0x0</td>
+        <td>uint8</td>
+        <td>Primitive Type (I believe 0x90 is triangles, 0x98 is triangle strips, 0x80 is quads)</td>
+    </tr>
+    <tr>
+        <td>0x1</td>
+        <td>uint16</td>
+        <td>Vertex count</td>
+    </tr>
+    <tr>
+        <td>0x3</td>
+        <td>binary</td>
+        <td>Vertex data (follows the format set by entry type 3)</td>
+    </tr>
+</table>
+<p>Once you've parsed that, you'll have a bunch of vertices, each looking something like (assuming immediate positioning isn't used)<br><code>{'position': positions[378],<br>
+'normal': normals[350],<br>
+'color0': colors[5],<br>
+'texture0': texture_coords[254],<br>
+'texture1': texture_coords[875]}</code><br>
+Now you draw triangular faces from those vertices. The code from my awful python parser looks like:
+<pre><code>match primitive:
+    case 0x90:
+        # TRIANGLES — winding is reversed on import
+        for i in range(0, len(vertexes), 3):
+            faces.append([vertexes[i + 2], vertexes[i + 1], vertexes[i]])
+    case 0x98:
+        # TRIANGLESTRIP
+        order = False
+        for i in range(len(vertexes) - 2):
+            if order:
+                faces.append([vertexes[i], vertexes[i + 1], vertexes[i + 2]])
+            else:
+                faces.append([vertexes[i + 2], vertexes[i + 1], vertexes[i]])
+            order = not order
+    case 0x80:
+        # QUADS
+        for i in range(0, len(vertexes), 4):
+            if i + 3 < len(vertexes):
+                faces.append([vertexes[i + 2], vertexes[i + 1], vertexes[i]])
+                faces.append([vertexes[i], vertexes[i + 3], vertexes[i + 2]])
+    case _:
+        print ("primitive type " + hex(primitive) + " not supported")</code></pre>
+
+    If you haven't parsed the entire primitive list by now, repeat the entire process. The list may draw a different type of primitive as well.
+    </p>
+</body>

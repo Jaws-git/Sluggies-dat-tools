@@ -4,7 +4,8 @@ import struct
 
 BASE_SIZE      = 715046144      # ~715 MB
 CHUNK_SIZE     = 1024 * 1024   # 1 MB read buffer
-HS_BUFFER_BYTES = 4 * 1024 * 1024  # 4 MiB safety buffer appended after every write
+HS_BUFFER_BYTES = 1024  # 1 KiB safety buffer appended after every write
+HS_ALIGN_BYTES  = 32    # Required model-block alignment for GPL/SKN hot-path data
 OUTPUT_DAT = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', '3_Output_Dat', 'dt_na.dat'))
 
 _ROOT         = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -19,6 +20,13 @@ _DIRS_END      = 0x69CAD8
 _DIRS_COUNT    = (_DIRS_END - _DIRS_START) // 4
 _DAT_FNAME_PTR = 0x8067f658
 _ENTRY_SIZE    = 48   # 12 × uint32 BE
+
+# FST (File System Table) constants — Mario Super Sluggers (US) disc layout.
+# dt_na.dat is FST entry index 1; its size field is at byte offset 0x14.
+_FST_INPUT          = os.path.join(_ROOT, '1_Input', 'fst.bin')
+_FST_OUTPUT         = os.path.join(_ROOT, '3_Output_Dat', 'fst.bin')
+_FST_DAT_ENTRY_IDX  = 1
+_FST_DAT_SIZE_OFF   = _FST_DAT_ENTRY_IDX * 12 + 8  # type/name(4) + offset(4) + size(4)
 
 
 if __name__ == '__main__':
@@ -102,6 +110,9 @@ if __name__ == '__main__':
             f.truncate(target_size)
             print(f"Trimmed {remove_length:,} bytes from end of file.")
 
+    # Update the disc FST to reflect the new file size.
+    patchFstFileSize(target_size)
+
     print("Done.")
 
 
@@ -138,10 +149,48 @@ def ensureOutputDat(required_total_size: int = 0) -> bool:
     return True
 
 
+def patchFstFileSize(new_size: int) -> bool:
+    """Update the dt_na.dat file size in the disc's FST so the game can read beyond the original bounds.
+
+    Writes ``new_size`` (big-endian uint32) into the FST entry for dt_na.dat.
+    The output FST is written to ``3_Output_Dat/fst.bin``, copied from the
+    reference copy in ``Sluggers/DATA/sys/fst.bin`` on first use.
+
+    Returns True on success, False if no source FST can be found."""
+
+    if not os.path.exists(_FST_OUTPUT):
+        if not os.path.exists(_FST_INPUT):
+            print(f"WARNING: FST source not found: {_FST_INPUT}")
+            print("         Disc filesystem size will NOT be updated.")
+            print("         The game may not be able to read hammerspace data.")
+            return False
+        os.makedirs(os.path.dirname(_FST_OUTPUT), exist_ok=True)
+        shutil.copy2(_FST_INPUT, _FST_OUTPUT)
+        print(f"Copied fst.bin to output folder.")
+
+    with open(_FST_OUTPUT, 'r+b') as f:
+        f.seek(_FST_DAT_SIZE_OFF)
+        old_size = struct.unpack('>I', f.read(4))[0]
+        if old_size == new_size:
+            return True
+        f.seek(_FST_DAT_SIZE_OFF)
+        f.write(struct.pack('>I', new_size))
+
+    print(f"Patched FST: dt_na.dat size 0x{old_size:08X} -> 0x{new_size:08X} "
+          f"({new_size:,} bytes)")
+    return True
+
+
 def findFreeMemoryChunk(dataLength: int) -> int:
     """Scan the hammerspace region of the dat file for a contiguous run of
-    ``dataLength`` zero bytes.  Returns the file offset of the first such run,
-    or -1 if no fitting space is found."""
+    ``dataLength`` zero bytes.
+
+    The returned offset is guaranteed to be aligned to ``HS_ALIGN_BYTES``
+    so the model block base preserves 32-byte absolute alignment for
+    cache-line-sensitive GPL/SKN data.
+
+    Returns the file offset of the first such run, or -1 if no fitting
+    aligned space is found."""
 
     if dataLength <= 0:
         return -1
@@ -173,8 +222,15 @@ def findFreeMemoryChunk(dataLength: int) -> int:
                     if run_length == 0:
                         run_start = read_offset + i
                     run_length += 1
-                    if run_length >= dataLength:
-                        return run_start
+
+                    # Candidate start must be aligned. If the zero-run starts
+                    # unaligned, move to the next aligned address within it.
+                    aligned_start = (run_start + (HS_ALIGN_BYTES - 1)) & ~(HS_ALIGN_BYTES - 1)
+                    run_end_exclusive = read_offset + i + 1
+                    if aligned_start < run_end_exclusive:
+                        aligned_run_len = run_end_exclusive - aligned_start
+                        if aligned_run_len >= dataLength:
+                            return aligned_start
                 else:
                     run_start = -1
                     run_length = 0
@@ -304,6 +360,40 @@ def _readDirPtrs() -> list[int]:
     return ptrs
 
 
+def findSharedEntries(chunk_number: int, file_index: int) -> list[tuple[int, int]]:
+    """Find all chunk entries that share the same dat offset as the given entry.
+
+    Scans the INPUT main.dol directory table for entries with the same
+    ``offset_en`` value.  Returns a list of ``(chunk_number, file_index)``
+    tuples, *excluding* the entry specified by the arguments.
+    """
+
+    # Read the target entry's original offset from the INPUT DOL.
+    target_offset, _ = readDolEntry(chunk_number, file_index)
+    if target_offset == -1:
+        return []
+
+    dir_ptrs = _readDirPtrs()
+    shared: list[tuple[int, int]] = []
+
+    with open(INPUT_DOL, 'rb') as dol:
+        for cidx, dir_ptr in enumerate(dir_ptrs):
+            fidx = 0
+            while True:
+                entry_off = dir_ptr + fidx * _ENTRY_SIZE
+                dol.seek(entry_off)
+                words = struct.unpack('>12I', dol.read(48))
+                if words[0] != _DAT_FNAME_PTR:
+                    break
+                if words[2] == target_offset and not (cidx == chunk_number and fidx == file_index):
+                    shared.append((cidx, fidx))
+                fidx += 1
+                if fidx > 200:
+                    break
+
+    return shared
+
+
 def readDolEntry(chunk_number: int, file_index: int) -> tuple[int, int]:
     """Read the offset and length for a model entry from the INPUT main.dol.
 
@@ -360,13 +450,15 @@ def patchDolEntry(chunk_number: int, file_index: int, new_offset: int, new_lengt
       word[0]  = DAT_FNAME_PTR   (not modified)
       word[1]  = len_en          <- new_length
       word[2]  = offset_en       <- new_offset
-      word[3,4] = unknown
+      word[3]  = alloc_size_en   <- new_length
+      word[4]  = DAT_FNAME_PTR   (not modified)
       word[5]  = len_sp          <- new_length
       word[6]  = offset_sp       <- new_offset
-      word[7,8] = unknown
+      word[7]  = alloc_size_sp   <- new_length
+      word[8]  = DAT_FNAME_PTR   (not modified)
       word[9]  = len_fr          <- new_length
       word[10] = offset_fr       <- new_offset
-      word[11] = unknown
+      word[11] = alloc_size_fr   <- new_length
     """
 
     # Ensure output DOL exists
@@ -390,10 +482,13 @@ def patchDolEntry(chunk_number: int, file_index: int, new_offset: int, new_lengt
     patches = [
         (entry_offset +  4, new_length),  # len_en
         (entry_offset +  8, new_offset),  # offset_en
+        (entry_offset + 12, new_length),  # alloc_size_en (word[3])
         (entry_offset + 20, new_length),  # len_sp
         (entry_offset + 24, new_offset),  # offset_sp
+        (entry_offset + 28, new_length),  # alloc_size_sp (word[7])
         (entry_offset + 36, new_length),  # len_fr
         (entry_offset + 40, new_offset),  # offset_fr
+        (entry_offset + 44, new_length),  # alloc_size_fr (word[11])
     ]
 
     with open(OUTPUT_DOL, 'r+b') as dol:
@@ -480,5 +575,44 @@ def removeModelFromHammerspace(chunk_number: int, file_index: int) -> tuple:
     print(f"[4] Restoring original DOL entry ...")
     patchDolEntry(chunk_number, file_index, orig_offset, orig_length)
 
+    # Also restore all shared entries that reference the same original data.
+    shared = findSharedEntries(chunk_number, file_index)
+    if shared:
+        print(f"    Restoring {len(shared)} shared chunk reference(s):")
+        for sc, si in shared:
+            patchDolEntry(sc, si, orig_offset, orig_length)
+
     print(f"\nDone. chunk={chunk_number}, file_index={file_index} removed from hammerspace.")
     return True, cur_offset, cur_length
+
+
+def zeroOriginalModel(chunk_number: int, file_index: int) -> None:
+    """Zero out the original model data in OUTPUT dt_na.dat.
+
+    Reads the original offset and length from the INPUT main.dol and
+    overwrites that region with zeros in the OUTPUT dat.  This is useful
+    for testing that the game truly loads from hammerspace rather than
+    falling back to stale original data.
+
+    Call this AFTER patchDolEntry (and shared entry patching) has redirected
+    all DOL references away from the original location.
+    """
+
+    orig_offset, orig_length = readDolEntry(chunk_number, file_index)
+    if orig_offset == -1:
+        print("ERROR: Could not read original DOL entry for zeroing.")
+        return
+
+    if not os.path.exists(OUTPUT_DAT):
+        print("ERROR: Output dat not found for zeroing.")
+        return
+
+    print(f"Zeroing original model data: 0x{orig_offset:08X}, {orig_length:,} bytes ...")
+    zeroed = 0
+    with open(OUTPUT_DAT, 'r+b') as f:
+        f.seek(orig_offset)
+        while zeroed < orig_length:
+            write_size = min(CHUNK_SIZE, orig_length - zeroed)
+            f.write(b'\x00' * write_size)
+            zeroed += write_size
+    print(f"    Zeroed {orig_length:,} bytes at original location.")

@@ -13,6 +13,7 @@ import HammerspaceHelper as hh
 @dataclass
 class DrawState:
     display_state_id:            int
+    display_state_pad_bytes:     bytes
     prim_list_data:              bytes
     active_descriptors:          list   # [{'key': str, 'index_size': int}]
     prim_list_ptr_field_offset:  int    # absolute file offset
@@ -301,17 +302,32 @@ def ParseSluggie(data: dict) -> SluggieParsed:
         face_tex_indices = _decode(raw_fti, use_b64) if raw_fti else b''
 
         vb          = sub['VertexBuffer']
-        vertex_data = _decode(vb.get('VertexBufferDataEdited') or vb['VertexBufferData'], use_b64)
+
+        # Determine whether prim lists have been rebuilt.  If not, the GPU
+        # draw commands still reference the ORIGINAL compact UV/color arrays,
+        # so we must use the original data even if *Edited fields exist.
+        _prim_lists_edited = any(
+            'PrimListDataEdited' in ds for ds in sub.get('DisplayStates', [])
+        )
+
+        if _prim_lists_edited:
+            vertex_data = _decode(vb.get('VertexBufferDataEdited') or vb['VertexBufferData'], use_b64)
+        else:
+            vertex_data = _decode(vb['VertexBufferData'], use_b64)
 
         uv_channels = []
         for uv in sub.get('UVChannels', []):
+            if _prim_lists_edited:
+                _uv_src = uv.get('UVChannelDataEdited') or uv['UVChannelData']
+            else:
+                _uv_src = uv['UVChannelData']
             uv_channels.append(UVChannel(
                 channel_index            = uv['UVChannelIndex'],
                 palette_name             = uv['PaletteName'],
                 texture_index            = uv.get('TextureIndex', 0),
                 wrap_s                   = uv.get('WrapS', 0),
                 wrap_t                   = uv.get('WrapT', 0),
-                uv_data                  = _decode(uv.get('UVChannelDataEdited') or uv['UVChannelData'], use_b64),
+                uv_data                  = _decode(_uv_src, use_b64),
                 uv_faces_data            = _decode(uv.get('UVFacesDataEdited')   or uv['UVFacesData'],   use_b64),
                 comp_count               = uv['UVChannelCompCount'],
                 quantize_info            = uv['UVChannelQuantizeInfo'],
@@ -331,8 +347,10 @@ def ParseSluggie(data: dict) -> SluggieParsed:
 
         draw_states = []
         for ds in sub.get('DisplayStates', []):
+            pad_hex = ds.get('DisplayStatePadBytes', '000000')
             draw_states.append(DrawState(
                 display_state_id            = ds['DisplayStateId'],
+                display_state_pad_bytes     = bytes.fromhex(pad_hex),
                 prim_list_data              = _decode(ds['PrimListData'], use_b64),
                 active_descriptors          = ds.get('VertexStreamLayout') or ds.get('ActiveDescriptors', []),
                 prim_list_ptr_field_offset  = _hex(ds['PrimListPtrFieldOffset']),
@@ -438,15 +456,48 @@ def ParseSluggie(data: dict) -> SluggieParsed:
     texture_data = TextureData(textures=textures)
 
     # ---- SkinningData ------------------------------------------------------
-    raw_skn = model.get('SkinDataEdited') or model.get('SkinData')
+    # Use the ORIGINAL SkinData for structural ordering (bone indices,
+    # gplVertexArr, vertex_offset) since the game engine depends on the
+    # original SK entry order.  Substitute edited payload (bind-pose data,
+    # weights, vertex counts) from SkinDataEdited when present AND the mesh
+    # geometry was actually modified (prim lists rebuilt).
+    raw_skn_orig = model.get('SkinData')
+    raw_skn_edit = model.get('SkinDataEdited')
+    # Determine if geometry was actually edited (any submesh has rebuilt prim
+    # lists).  If not, SkinDataEdited may still exist but contains Blender
+    # re-export precision drift — use original bind pose data instead.
+    _geometry_edited = any(
+        'PrimListDataEdited' in ds
+        for sub in model.get('Submeshes', [])
+        for ds in sub.get('DisplayStates', [])
+    )
+    raw_skn = raw_skn_orig or raw_skn_edit
     if raw_skn:
+        # Build lookup dicts from edited data for payload substitution.
+        _edit_sk1_by_bone = {}
+        _edit_sk2_by_pair = {}
+        _edit_acc_by_bone = {}
+        if raw_skn_edit:
+            for s in raw_skn_edit.get('SK1s', []):
+                _edit_sk1_by_bone[s['BoneIndex']] = s
+            for s in raw_skn_edit.get('SK2s', []):
+                key = (s['BoneIndex1'], s['BoneIndex2'])
+                _edit_sk2_by_pair[key] = s
+            for s in raw_skn_edit.get('SKAccs', []):
+                _edit_acc_by_bone[s['BoneIndex']] = s
+
         sk1s = []
         for s in raw_skn.get('SK1s', []):
+            ed = _edit_sk1_by_bone.get(s['BoneIndex']) if _geometry_edited else None
+            if _geometry_edited and ed:
+                bp_src = ed.get('BindPoseDataEdited') or ed.get('BindPoseData') or s['BindPoseData']
+            else:
+                bp_src = s['BindPoseData']
             sk1s.append(SK1(
                 bone_index                  = s['BoneIndex'],
-                vertex_cnt                  = s['VertexCnt'],
+                vertex_cnt                  = (ed or s)['VertexCnt'],
                 vertex_offset               = s.get('VertexOffset', 0),
-                bind_pose_data              = _decode(s.get('BindPoseDataEdited') or s['BindPoseData'], use_b64),
+                bind_pose_data              = _decode(bp_src, use_b64),
                 vertex_arr_field_offset     = _hex(s.get('VertexArrFieldOffset',     '0x0')),
                 gpl_vertex_arr_field_offset = _hex(s.get('GplVertexArrFieldOffset',  '0x0')),
                 vertex_arr_absolute_ptr     = _hex(s.get('VertexArrAbsolutePtr',     '0x0')),
@@ -455,13 +506,21 @@ def ParseSluggie(data: dict) -> SluggieParsed:
 
         sk2s = []
         for s in raw_skn.get('SK2s', []):
+            key = (s['BoneIndex1'], s['BoneIndex2'])
+            ed = _edit_sk2_by_pair.get(key) if _geometry_edited else None
+            if _geometry_edited and ed:
+                bp_src = ed.get('BindPoseDataEdited') or ed.get('BindPoseData') or s['BindPoseData']
+                wt_src = ed.get('WeightDataEdited') or ed.get('WeightData') or s['WeightData']
+            else:
+                bp_src = s['BindPoseData']
+                wt_src = s['WeightData']
             sk2s.append(SK2(
                 bone_index1                 = s['BoneIndex1'],
                 bone_index2                 = s['BoneIndex2'],
-                vertex_cnt                  = s['VertexCnt'],
+                vertex_cnt                  = (ed or s)['VertexCnt'],
                 vertex_offset               = s.get('VertexOffset', 0),
-                bind_pose_data              = _decode(s.get('BindPoseDataEdited') or s['BindPoseData'], use_b64),
-                weight_data                 = _decode(s.get('WeightDataEdited')   or s['WeightData'],   use_b64),
+                bind_pose_data              = _decode(bp_src, use_b64),
+                weight_data                 = _decode(wt_src, use_b64),
                 vertex_arr_field_offset     = _hex(s.get('VertexArrFieldOffset',     '0x0')),
                 weight_arr_field_offset     = _hex(s.get('WeightArrFieldOffset',     '0x0')),
                 gpl_vertex_arr_field_offset = _hex(s.get('GplVertexArrFieldOffset',  '0x0')),
@@ -472,12 +531,20 @@ def ParseSluggie(data: dict) -> SluggieParsed:
 
         sk_accs = []
         for s in raw_skn.get('SKAccs', []):
+            ed = _edit_acc_by_bone.get(s['BoneIndex']) if _geometry_edited else None
+            if _geometry_edited and ed:
+                bp_src = ed.get('BindPoseDataEdited') or ed.get('BindPoseData') or s['BindPoseData']
+                wt_src = ed.get('WeightDataEdited') or ed.get('WeightData') or s['WeightData']
+            else:
+                bp_src = s['BindPoseData']
+                wt_src = s['WeightData']
+            dest_src = (ed or s).get('DestIndexData') or s['DestIndexData']
             sk_accs.append(SKAcc(
                 bone_index                = s['BoneIndex'],
-                vertex_cnt                = s['VertexCnt'],
-                bind_pose_data            = _decode(s.get('BindPoseDataEdited') or s['BindPoseData'], use_b64),
-                dest_index_data           = _decode(s['DestIndexData'],                                use_b64),
-                weight_data               = _decode(s.get('WeightDataEdited')   or s['WeightData'],   use_b64),
+                vertex_cnt                = (ed or s)['VertexCnt'],
+                bind_pose_data            = _decode(bp_src, use_b64),
+                dest_index_data           = _decode(dest_src, use_b64),
+                weight_data               = _decode(wt_src, use_b64),
                 vertex_arr_field_offset   = _hex(s.get('VertexArrFieldOffset',   '0x0')),
                 dest_arr_field_offset     = _hex(s.get('DestArrFieldOffset',     '0x0')),
                 gpl_dest_arr_field_offset = _hex(s.get('GplDestArrFieldOffset',  '0x0')),
@@ -570,6 +637,10 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
         r = len(data) % 4
         return data + b'\x00' * ((4 - r) % 4)
 
+    def _align32(offset: int) -> int:
+        """Round offset UP to next 32-byte boundary."""
+        return (offset + 31) & ~31
+
     def _vb_comp_size(quant_info: int) -> int:
         """Bytes per vertex-buffer component: 4 for float32 formats, 2 for int16."""
         return 4 if (quant_info >> 4) in (4, 7, 0xa) else 2
@@ -633,8 +704,12 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
             pal_name_bytes_list.append(pal_b)
             cursor += len(pal_b)
 
-        # Align to 4-byte boundary before vertex data buffers (strings are packed without padding)
-        cursor = (cursor + 3) & ~3
+        # Skinned meshes (cc=6): align position data to 32-byte boundary
+        # (Wii Broadway dcbz requirement — SKN deformer write target).
+        # Non-skinned meshes: no alignment required (original data is unaligned).
+        is_interleaved = (sub.vertex_comp_count == 6)
+        if is_interleaved:
+            cursor = _align32(cursor)
 
         # --- position raw data ---
         pos_data     = _align4(sub.vertex_data)
@@ -662,7 +737,6 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
         # Skinned (interleaved) meshes use cc=6: pos+normal are packed together
         # in the position buffer.  NorHdr.rawPtr points 6 bytes into that
         # buffer; no separate normal data block is stored.
-        is_interleaved = (sub.vertex_comp_count == 6)
         nor_data     = b''
         nor_data_off = 0
         if is_interleaved and sub.normal_buffer:
@@ -674,10 +748,13 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
             cursor      += len(nor_data)
 
         # --- per-display-state primitive list data ---
+        # Prim lists (GX display lists) MUST be 32-byte aligned — the GPU
+        # command processor reads them via DMA in 32-byte bursts.
         pl_offs       = []
         pl_bytes_list = []
         for ds in sub.draw_states:
             if ds.prim_list_data:
+                cursor = _align32(cursor)
                 pl_b = _align4(ds.prim_list_data)
                 pl_offs.append(cursor)
                 pl_bytes_list.append(pl_b)
@@ -746,13 +823,17 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
 
     GEO_DESC_OFF  = GPL_HDR_SIZE          # 0x14
     GEO_DESC_SIZE = N * 8
-    BLOBS_START   = GEO_DESC_OFF + GEO_DESC_SIZE
+    # Blob starts must be 32-byte aligned so that DOLayout-relative prim list
+    # offsets (which are 32-aligned within the blob) are also 32-aligned in
+    # GPL-absolute terms (GX DMA requirement for display lists).
+    BLOBS_START   = _align32(GEO_DESC_OFF + GEO_DESC_SIZE)
 
     blob_gpl_offs = []
     cursor = BLOBS_START
     for lay in sub_layouts:
         blob_gpl_offs.append(cursor)
         cursor += lay['blob_size']
+        cursor = _align32(cursor)  # next blob 32-aligned for prim list alignment
 
     # GPL-relative byte offset of each submesh's raw position data array.
     # Computed here so the SKN builder can use them directly instead of
@@ -853,7 +934,9 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
             ds_off  = gpl_b + DS_OFF + k * 0x10
             setting = _s.unpack('>I', _setting_bytes(ds.shader_mode))[0]
             _s.pack_into('B',  gpl, ds_off + 0x00, ds.display_state_id)
-            # 0x01–0x03: padding
+            # bytes 0x01–0x03: renderer parameters (NOT padding)
+            pad = ds.display_state_pad_bytes
+            gpl[ds_off + 0x01 : ds_off + 0x04] = pad[:3] if len(pad) >= 3 else pad.ljust(3, b'\x00')
             _s.pack_into('>I', gpl, ds_off + 0x04, setting)
             _s.pack_into('>I', gpl, ds_off + 0x08, lay['pl_offs'][k])
             _s.pack_into('>I', gpl, ds_off + 0x0c,
@@ -884,6 +967,59 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
     return GPLBuildResult(gpl_bytes=bytes(gpl), pos_gpl_offsets=pos_gpl_offsets)
 
 
+def CloneGPL(model_offset: int, model_length: int) -> bytes:
+    """Clone the GPL section verbatim from INPUT dt_na.dat.
+
+    Reads the model block header to determine GPL boundaries, then returns
+    the raw GPL bytes unchanged.  No pointer fixups needed (all internal
+    GPL pointers are GPL-section-relative or DOLayout-relative).
+    """
+    import struct as _s
+    with open(hh.INPUT_DAT, 'rb') as f:
+        f.seek(model_offset)
+        hdr = f.read(0x20)
+        gpl_off = _s.unpack_from('>I', hdr, 0x04)[0]
+        act_off = _s.unpack_from('>I', hdr, 0x08)[0]
+        tex_off = _s.unpack_from('>I', hdr, 0x0c)[0]
+        skn_off = _s.unpack_from('>I', hdr, 0x10)[0]
+        # GPL ends where the next present section starts
+        next_off = act_off or tex_off or skn_off or model_length
+        gpl_len = next_off - gpl_off
+        f.seek(model_offset + gpl_off)
+        data = f.read(gpl_len)
+    print(f"    [CloneGPL] {gpl_len:,} bytes from block+0x{gpl_off:X}")
+    return data
+
+
+def _gpl_pos_offsets_from_bytes(gpl_bytes: bytes) -> list[int]:
+    """Extract per-submesh GPL-relative position-data offsets from raw GPL bytes.
+
+    Parses the GPL header and GEO descriptors to find each submesh's
+    DOLayout, then reads the PositionHeader rawPtr field.  Returns a list
+    of GPL-section-relative byte offsets (one per submesh).
+
+    This is used when the GPL section is cloned (not rebuilt) and we still
+    need the pos_gpl_offsets metadata for the SKN builder.
+    """
+    import struct as _s
+    # GPL header: +0x0c = N (submesh count), +0x10 = descriptorPtr
+    n_submeshes = _s.unpack_from('>I', gpl_bytes, 0x0c)[0]
+    desc_ptr    = _s.unpack_from('>I', gpl_bytes, 0x10)[0]
+
+    offsets = []
+    for i in range(n_submeshes):
+        # GEO descriptor: 8 bytes each → first uint32 = DOLayout GPL-rel ptr
+        blob_ptr = _s.unpack_from('>I', gpl_bytes, desc_ptr + i * 8)[0]
+        # DOLayout +0x00 = posHeaderPtr (DOLayout-relative)
+        pos_hdr_ptr = _s.unpack_from('>I', gpl_bytes, blob_ptr)[0]
+        # PositionHeader +0x00 = raw data array ptr (DOLayout-relative)
+        pos_arr_ptr = _s.unpack_from('>I', gpl_bytes, blob_ptr + pos_hdr_ptr)[0]
+        # GPL-relative offset = DOLayout base + pos_arr_ptr
+        offsets.append(blob_ptr + pos_arr_ptr)
+
+    return offsets
+
+
 def BuildACTBoneHierarchy(parsed: SluggieParsed) -> bytes:
     """Return the ACT (Bone Hierarchy) section bytes.
 
@@ -911,6 +1047,29 @@ def BuildACTBoneHierarchy(parsed: SluggieParsed) -> bytes:
         return f.read(act_len)
 
 
+def CloneACT(model_offset: int, model_length: int) -> bytes:
+    """Clone the ACT section verbatim from INPUT dt_na.dat.
+
+    Returns the raw ACT bytes unchanged, or b'' if the model has no ACT section.
+    """
+    import struct as _s
+    with open(hh.INPUT_DAT, 'rb') as f:
+        f.seek(model_offset)
+        hdr = f.read(0x20)
+        act_off = _s.unpack_from('>I', hdr, 0x08)[0]
+        if not act_off:
+            print("    [CloneACT] No ACT section")
+            return b''
+        tex_off = _s.unpack_from('>I', hdr, 0x0c)[0]
+        skn_off = _s.unpack_from('>I', hdr, 0x10)[0]
+        next_off = tex_off or skn_off or model_length
+        act_len = next_off - act_off
+        f.seek(model_offset + act_off)
+        data = f.read(act_len)
+    print(f"    [CloneACT] {act_len:,} bytes from block+0x{act_off:X}")
+    return data
+
+
 def BuildTEXTextureData(parsed: SluggieParsed) -> bytes:
     """Return the TEX (Texture Data) section bytes.
 
@@ -936,6 +1095,29 @@ def BuildTEXTextureData(parsed: SluggieParsed) -> bytes:
         tex_len = (skn_off if skn_off else parsed.model_length) - tex_off
         f.seek(parsed.model_offset + tex_off)
         return f.read(tex_len)
+
+
+def CloneTEX(model_offset: int, model_length: int) -> bytes:
+    """Clone the TEX section verbatim from INPUT dt_na.dat.
+
+    Returns the raw TEX bytes unchanged, or b'' if the model has no TEX section.
+    """
+    import struct as _s
+    with open(hh.INPUT_DAT, 'rb') as f:
+        f.seek(model_offset)
+        hdr = f.read(0x20)
+        tex_off = _s.unpack_from('>I', hdr, 0x0c)[0]
+        if not tex_off:
+            print("    [CloneTEX] No TEX section")
+            return b''
+        skn_off = _s.unpack_from('>I', hdr, 0x10)[0]
+        next_off = skn_off or model_length
+        tex_len = next_off - tex_off
+        f.seek(model_offset + tex_off)
+        data = f.read(tex_len)
+    print(f"    [CloneTEX] {tex_len:,} bytes from block+0x{tex_off:X}")
+    return data
+
 
 def BuildSKNSkinningDataCopyOnly(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> bytes:
     """Return the SKN (Skinning Data) section bytes verbatim from INPUT dt_na.dat,
@@ -998,6 +1180,28 @@ def BuildSKNSkinningDataCopyOnly(parsed: SluggieParsed, gpl_result: GPLBuildResu
     return bytes(skn)
 
 
+def _compute_original_pos_gpl_rel(parsed: SluggieParsed) -> int:
+    """Read the original GPL's submesh 0 position-array GPL-relative offset.
+
+    Returns the GPL-section-relative offset of the position data array for
+    submesh 0, or 0 if it cannot be determined.
+    """
+    import struct as _s
+    if not parsed.model_offset:
+        return 0
+    with open(hh.INPUT_DAT, 'rb') as f:
+        gpl_base = parsed.model_offset + 0x20
+        f.seek(gpl_base + 0x10)
+        desc_ptr = _s.unpack_from('>I', f.read(4))[0]
+        f.seek(gpl_base + desc_ptr)
+        blob0_ptr = _s.unpack_from('>I', f.read(4))[0]
+        f.seek(gpl_base + blob0_ptr)
+        pos_hdr_ptr = _s.unpack_from('>I', f.read(4))[0]
+        f.seek(gpl_base + blob0_ptr + pos_hdr_ptr)
+        pos_arr_ptr = _s.unpack_from('>I', f.read(4))[0]
+        return blob0_ptr + pos_arr_ptr
+
+
 def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> bytes:
     """Build the SKN (Skinning Data) section.
 
@@ -1033,9 +1237,11 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
     # Local helpers
     # -------------------------------------------------------------------------
 
-    def _align4(data: bytes) -> bytes:
-        r = len(data) % 4
-        return data + b'\x00' * ((4 - r) % 4)
+    _ALIGN = 32  # Wii CPU cache-line size; all source/weight/dest arrays must be 32-byte aligned
+
+    def _align(data: bytes) -> bytes:
+        r = len(data) % _ALIGN
+        return data + b'\x00' * ((_ALIGN - r) % _ALIGN)
 
     def _vb_comp_size(quant_info: int) -> int:
         return 4 if (quant_info >> 4) in (4, 7, 0xa) else 2
@@ -1054,7 +1260,8 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
     SK1_ARR_OFF   = SKN_HDR_SIZE
     SK2_ARR_OFF   = SK1_ARR_OFF   + n_sk1 * SK1_SIZE
     SKACC_ARR_OFF = SK2_ARR_OFF   + n_sk2 * SK2_SIZE
-    VAR_DATA_OFF  = SKACC_ARR_OFF + n_acc * SKACC_SIZE
+    # Round up to next 32-byte boundary so the first variable data array is aligned
+    VAR_DATA_OFF  = (SKACC_ARR_OFF + n_acc * SKACC_SIZE + _ALIGN - 1) & ~(_ALIGN - 1)
 
     # -------------------------------------------------------------------------
     # Phase SKN-1: variable-data layout pass
@@ -1069,7 +1276,16 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
     sk1_src_off = []
     for sk in skn.sk1s:
         sk1_src_off.append(var_cursor)
-        chunk = _align4(sk.bind_pose_data)
+        # Ensure the source array includes vertex_offset prefix bytes.
+        # The game reads from srcArrPtr + vertex_offset, so the first
+        # vertex_offset bytes are skipped padding.  SkinDataEdited from the
+        # Blender exporter stores only the actual vertex data (no prefix),
+        # so we must prepend zeros when the blob is too short.
+        bp = sk.bind_pose_data
+        expected_len = sk.vertex_offset + sk.vertex_cnt * vertex_stride
+        if len(bp) < expected_len:
+            bp = b'\x00' * (expected_len - len(bp)) + bp
+        chunk = _align(bp)
         var_data.extend(chunk)
         var_cursor += len(chunk)
 
@@ -1078,12 +1294,16 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
     sk2_wt_off  = []
     for sk in skn.sk2s:
         sk2_src_off.append(var_cursor)
-        chunk = _align4(sk.bind_pose_data)
+        bp = sk.bind_pose_data
+        expected_len = sk.vertex_offset + sk.vertex_cnt * vertex_stride
+        if len(bp) < expected_len:
+            bp = b'\x00' * (expected_len - len(bp)) + bp
+        chunk = _align(bp)
         var_data.extend(chunk)
         var_cursor += len(chunk)
 
         sk2_wt_off.append(var_cursor)
-        chunk = _align4(sk.weight_data)
+        chunk = _align(sk.weight_data)
         var_data.extend(chunk)
         var_cursor += len(chunk)
 
@@ -1093,17 +1313,17 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
     acc_wt_off   = []
     for sk in skn.sk_accs:
         acc_src_off.append(var_cursor)
-        chunk = _align4(sk.bind_pose_data)
+        chunk = _align(sk.bind_pose_data)
         var_data.extend(chunk)
         var_cursor += len(chunk)
 
         acc_dest_off.append(var_cursor)
-        chunk = _align4(sk.dest_index_data)
+        chunk = _align(sk.dest_index_data)
         var_data.extend(chunk)
         var_cursor += len(chunk)
 
         acc_wt_off.append(var_cursor)
-        chunk = _align4(sk.weight_data)
+        chunk = _align(sk.weight_data)
         var_data.extend(chunk)
         var_cursor += len(chunk)
 
@@ -1115,7 +1335,7 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
             _f.seek(skn.flush_ind_absolute_ptr)
             flush_bytes = _f.read(skn.flush_ind_size * 2)
         flush_off = var_cursor
-        chunk = _align4(flush_bytes)
+        chunk = _align(flush_bytes)
         var_data.extend(chunk)
         var_cursor += len(chunk)
 
@@ -1166,39 +1386,42 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
     # -------------------------------------------------------------------------
     # Phase SKN-3: memClrPtr / memClrSize
     #
-    # gplVertexArr values are pos-data-relative (byte offsets from the start
-    # of submesh 0's position buffer).  memClrPtr in the SKN header is GPL-
-    # section-relative, so it equals pos_data_gpl_start + min(gplVertexArr).
+    # memClrPtr is GPL-section-relative and points to the destination buffer
+    # where runtime CPU skinning writes transformed vertex data.  It is NOT
+    # simply pos_data_start + min(gplVertexArr) — those are source offsets.
     #
-    # memClrSize spans from min(gplVertexArr) to the end of the last SK write,
-    # computed from vertex counts and destination indices.
+    # For an unchanged-geometry rebuild (same vertex counts), we preserve the
+    # original memClrPtr and memClrSize from the sluggie metadata, relocated
+    # relative to the new GPL position data offset.  The formula matches
+    # BuildSKNSkinningDataCopyOnly:
+    #   delta = original_memClrPtr_gpl_rel - original_pos_data_gpl_rel
+    #   new_memClrPtr = new_pos_data_gpl_rel + delta
+    #
+    # Since gpl_result rebuilds the layout identically, pos_gpl_offsets[0]
+    # equals the original pos-data GPL-rel offset, so the delta is preserved.
     # -------------------------------------------------------------------------
 
-    all_gva = (
-        [sk.gpl_vertex_arr_value for sk in skn.sk1s] +
-        [sk.gpl_vertex_arr_value for sk in skn.sk2s] +
-        [sk.gpl_dest_arr_value   for sk in skn.sk_accs]
-    )
-    min_gva = min(all_gva) if all_gva else 0
+    # Original memClrPtr (GPL-relative)
+    orig_memClrPtr_gpl_rel = skn.mem_clr_absolute_ptr - skn.gpl_base_offset if skn.gpl_base_offset else 0
+    orig_memClrSize = skn.mem_clr_size
 
-    # memClrPtr is GPL-section-relative: add the GPL-relative pos data start
-    new_memClrPtr = (gpl_result.pos_gpl_offsets[0] + min_gva) if gpl_result.pos_gpl_offsets else 0
-
-    # Compute write-end extents (pos-data-relative) across all SK types
-    ends = []
-    for sk in skn.sk1s:
-        ends.append(sk.gpl_vertex_arr_value + sk.vertex_offset + sk.vertex_cnt * vertex_stride)
-    for sk in skn.sk2s:
-        ends.append(sk.gpl_vertex_arr_value + sk.vertex_offset + sk.vertex_cnt * vertex_stride)
-    for sk in skn.sk_accs:
-        n_idx = len(sk.dest_index_data) // 2
-        if n_idx:
-            dest_indices = _s.unpack_from(f'>{n_idx}H', sk.dest_index_data)
-            max_idx = max(dest_indices)
+    # Relocate: new_pos_gpl_offsets[0] + (orig_memClrPtr_gpl_rel - orig_pos_gpl_rel)
+    # Since the GPL rebuild reproduces the same layout, orig_pos_gpl_rel == pos_gpl_offsets[0],
+    # so new_memClrPtr == orig_memClrPtr_gpl_rel.  But we compute it properly for future
+    # extensibility when GPL layout might differ.
+    if gpl_result.pos_gpl_offsets and skn.gpl_base_offset:
+        # Compute original pos-data GPL-relative offset from the input file
+        # (same logic as CopyOnly)
+        _orig_pos_gpl_rel = _compute_original_pos_gpl_rel(parsed)
+        if _orig_pos_gpl_rel:
+            delta = orig_memClrPtr_gpl_rel - _orig_pos_gpl_rel
         else:
-            max_idx = 0
-        ends.append(sk.gpl_dest_arr_value + (max_idx + 1) * vertex_stride)
-    new_memClrSize = (max(ends) - min_gva) if ends else 0
+            delta = orig_memClrPtr_gpl_rel - gpl_result.pos_gpl_offsets[0]
+        new_memClrPtr = gpl_result.pos_gpl_offsets[0] + delta
+    else:
+        new_memClrPtr = orig_memClrPtr_gpl_rel
+
+    new_memClrSize = orig_memClrSize
 
     # -------------------------------------------------------------------------
     # Phase SKN-4: SKN header + full assembly
@@ -1218,7 +1441,72 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
     _s.pack_into('>I', skn_hdr, 0x1c, flush_off if flush_bytes else 0)  # flushIndPtr
     _s.pack_into('>I', skn_hdr, 0x20, skn.flush_ind_size)
 
-    return bytes(skn_hdr) + bytes(sk1_bytes) + bytes(sk2_bytes) + bytes(acc_bytes) + bytes(var_data)
+    # Insert alignment padding between struct arrays and variable data so that
+    # var_data[0] lands at SKN offset VAR_DATA_OFF (where all pointers point).
+    struct_end = SKN_HDR_SIZE + n_sk1 * SK1_SIZE + n_sk2 * SK2_SIZE + n_acc * SKACC_SIZE
+    align_pad = VAR_DATA_OFF - struct_end
+    skn_core = bytes(skn_hdr) + bytes(sk1_bytes) + bytes(sk2_bytes) + bytes(acc_bytes) + b'\x00' * align_pad + bytes(var_data)
+
+    # Append trailing sub-sections (ptr6/ptr7/ptr8 data) from INPUT dt_na.dat.
+    # These live between the end of the SKN section proper and the end of the
+    # model block.  BuildHEADERModelBlock recomputes the header pointers using
+    # (original_ptr - original_skn_off), so we must place the trailing data at
+    # the SAME relative offset from our new SKN start as in the original file.
+    trailing = b''
+    if parsed.model_offset:
+        import struct as _ts
+        with open(hh.INPUT_DAT, 'rb') as _f:
+            _f.seek(parsed.model_offset)
+            orig_hdr = _f.read(0x20)
+            orig_skn_off = _ts.unpack_from('>I', orig_hdr, 0x10)[0]
+            if orig_skn_off:
+                # Find the earliest ptr6/ptr7/ptr8 that falls after SKN start.
+                trailing_ptrs = []
+                for fo in (0x14, 0x18, 0x1c):
+                    p = _ts.unpack_from('>I', orig_hdr, fo)[0]
+                    if p and p >= orig_skn_off:
+                        trailing_ptrs.append(p)
+                if trailing_ptrs:
+                    trail_start = min(trailing_ptrs)
+                    trail_offset_in_skn = trail_start - orig_skn_off
+                    trail_len = parsed.model_length - trail_start
+                    _f.seek(parsed.model_offset + trail_start)
+                    trail_data = _f.read(trail_len)
+                    # Pad skn_core to reach the correct offset for trailing data.
+                    if len(skn_core) < trail_offset_in_skn:
+                        skn_core += b'\x00' * (trail_offset_in_skn - len(skn_core))
+                    elif len(skn_core) > trail_offset_in_skn:
+                        # SKN rebuilt larger than original — trailing data must
+                        # be relocated.  Append directly after skn_core.
+                        trail_offset_in_skn = len(skn_core)
+                    trailing = trail_data
+                    print(f'    [SKN] Trailing section appended at SKN+0x{trail_offset_in_skn:X} '
+                          f'({len(trail_data)} bytes)')
+
+    return skn_core + trailing
+
+
+def CloneSKN(model_offset: int, model_length: int) -> bytes:
+    """Clone the SKN section verbatim from INPUT dt_na.dat.
+
+    Includes all trailing sub-sections (ptr6/ptr7/ptr8 data) that live
+    between the end of SKN proper and the end of the model block.
+    Returns b'' if the model has no SKN section.
+    """
+    import struct as _s
+    with open(hh.INPUT_DAT, 'rb') as f:
+        f.seek(model_offset)
+        hdr = f.read(0x20)
+        skn_off = _s.unpack_from('>I', hdr, 0x10)[0]
+        if not skn_off:
+            print("    [CloneSKN] No SKN section")
+            return b''
+        skn_len = model_length - skn_off
+        f.seek(model_offset + skn_off)
+        data = f.read(skn_len)
+    print(f"    [CloneSKN] {skn_len:,} bytes from block+0x{skn_off:X} (to end of block)")
+    return data
+
 
 def BuildHEADERModelBlock(
     gpl_bytes: bytes,
@@ -1296,6 +1584,49 @@ def BuildHEADERModelBlock(
     return bytes(hdr) + gpl_bytes + act_bytes + tex_bytes + skn_bytes
 
 
+def CloneHEADER(model_offset: int) -> bytes:
+    """Clone the 0x20-byte model block header verbatim from INPUT dt_na.dat.
+
+    The header contains block-relative pointers to GPL, ACT, TEX, SKN, and
+    any ptr6/ptr7/ptr8 sub-sections.  When all sections are cloned at their
+    original sizes and reassembled in the same order, these pointers remain
+    valid without any fixups.
+    """
+    with open(hh.INPUT_DAT, 'rb') as f:
+        f.seek(model_offset)
+        data = f.read(0x20)
+    print(f"    [CloneHEADER] 0x20 bytes from offset 0x{model_offset:08X}")
+    return data
+
+
+# ---------------------------------------------------------------------------
+# BuildClone — full-block verbatim copy (DEACTIVATED, kept for reference)
+# ---------------------------------------------------------------------------
+
+# def BuildClone(chunk_number: int, file_index: int) -> bytes:
+#     """Read the entire original model block verbatim from INPUT dt_na.dat.
+#
+#     All internal pointers within a model block are section-relative or
+#     block-relative, so relocating the block to a different file offset
+#     requires NO pointer fixups inside the data itself.  Only the DOL
+#     directory entry (handled by patchDolEntry) needs updating.
+#
+#     Returns the raw model block bytes ready for writeModelBlock().
+#     """
+#     offset, length = hh.readDolEntry(chunk_number, file_index)
+#     if offset == -1 or length <= 0:
+#         raise ValueError(f"Invalid DOL entry for chunk={chunk_number}, file_index={file_index}")
+#
+#     with open(hh.INPUT_DAT, 'rb') as f:
+#         f.seek(offset)
+#         block = f.read(length)
+#
+#     if len(block) != length:
+#         raise IOError(f"Short read: expected {length} bytes at 0x{offset:08X}, got {len(block)}")
+#
+#     print(f"    Read {length:,} bytes from INPUT at 0x{offset:08X}")
+#     return block
+
 
 # ---------------------------------------------------------------------------
 # Entry point
@@ -1308,20 +1639,28 @@ if __name__ == '__main__':
     _parser = _ap.ArgumentParser(description='Build a hammerspace model block from a .sluggies file.')
     _parser.add_argument('sluggies_path', help='Path to the .sluggies file')
     _parser.add_argument('--unpatch', action='store_true', help='Remove the model from hammerspace and restore the original DOL entry')
+    _parser.add_argument('--clone', action='store_true',
+                         help='Clone mode: copy the original model block verbatim into hammerspace '
+                              '(no rebuild, no edits — proof-of-concept for hammerspace loading)')
     _args = _parser.parse_args()
 
     with open(_args.sluggies_path, 'r') as _f:
         _data = _json.load(_f)
 
-    _parsed = ParseSluggie(_data)
-    print(f"Parsed: {len(_parsed.mesh.submeshes)} submesh(es), "
-          f"{len(_parsed.bones.bones) if _parsed.bones else 0} bone(s), "
-          f"{len(_parsed.textures.textures)} texture(s), "
-          f"skinning={'yes' if _parsed.skinning else 'no'}")
-
     _model = _data['SluggiesModel']
     _chunk = _model['ChunkNumber']
     _index = _model['FileIndex']
+
+    # ------------------------------------------------------------------
+    # --clone: DEACTIVATED — superseded by per-section clone (default path).
+    # The full-block BuildClone is commented out above; --clone flag is now
+    # a no-op alias that falls through to the per-section clone below.
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Normal path: currently using per-section clone for testing.
+    # Old section-by-section rebuild is commented out below.
+    # ------------------------------------------------------------------
 
     if _args.unpatch:
         _success, _rem_offset, _rem_length = hh.removeModelFromHammerspace(_chunk, _index)
@@ -1333,6 +1672,10 @@ if __name__ == '__main__':
                 _rem_offset, _rem_length,
             )
         raise SystemExit(0 if _success else 1)
+
+    # --- Hybrid build: Build GPL + clone ACT/TEX + build SKN, assemble header ---
+    print("=== Hybrid Build (Build GPL + Clone ACT/TEX + Build SKN) ===")
+    print(f"Chunk: {_chunk}, FileIndex: {_index}")
 
     # Check if this model is already in hammerspace and evict it first.
     _cur_offset, _cur_length = hh.readOutputDolEntry(_chunk, _index)
@@ -1349,20 +1692,37 @@ if __name__ == '__main__':
             _evict_off, _evict_len,
         )
 
-    # Build each section in dependency order, then assemble and write.
-    print("\n[1/5] Building GPL (Mesh Data) ...")
-    _gpl_result = BuildGPLMeshData(_parsed)
+    _orig_offset, _orig_length = hh.readDolEntry(_chunk, _index)
+    if _orig_offset == -1:
+        print("ERROR: Could not read DOL entry. Aborting.")
+        raise SystemExit(1)
+    print(f"\n    Original block: 0x{_orig_offset:08X}, {_orig_length:,} bytes")
 
-    print("[2/5] Copying SKN (Skinning Data) from input (patching memClrPtr) ...")
-    _skn = BuildSKNSkinningDataCopyOnly(_parsed, _gpl_result)
+    # Parse the sluggie for SKN builder metadata
+    _parsed = ParseSluggie(_data)
+    print(f"    Parsed: {len(_parsed.mesh.submeshes)} submesh(es), "
+          f"{len(_parsed.bones.bones) if _parsed.bones else 0} bone(s), "
+          f"skinning={'yes' if _parsed.skinning else 'no'}")
 
-    print("[3/5] Copying ACT (Bone Hierarchy) from input ...")
-    _act = BuildACTBoneHierarchy(_parsed)
+    print("\n[1/5] Cloning GPL ...")
+    _gpl = CloneGPL(_orig_offset, _orig_length)
+    _gpl_result = GPLBuildResult(
+        gpl_bytes=_gpl,
+        pos_gpl_offsets=_gpl_pos_offsets_from_bytes(_gpl),
+    )
+    print(f"    GPL built: {len(_gpl):,} bytes, "
+          f"pos_gpl_offsets = {['0x%X' % o for o in _gpl_result.pos_gpl_offsets]}")
 
-    print("[4/5] Copying TEX (Texture Data) from input ...")
-    _tex = BuildTEXTextureData(_parsed)
+    print("[2/5] Cloning ACT ...")
+    _act = CloneACT(_orig_offset, _orig_length)
 
-    # Read original model block header for ptr6/ptr7/ptr8 recomputation.
+    print("[3/5] Cloning TEX ...")
+    _tex = CloneTEX(_orig_offset, _orig_length)
+
+    print("[4/5] Cloning SKN ...")
+    _skn = CloneSKN(_orig_offset, _orig_length)
+
+    # Read original header for ptr6/ptr7/ptr8 recomputation
     import struct as _struct
     _orig_header = b''
     _orig_skn_off = 0
@@ -1374,19 +1734,20 @@ if __name__ == '__main__':
 
     print("[5/5] Assembling model block header ...")
     _block = BuildHEADERModelBlock(
-        _gpl_result.gpl_bytes, _act, _tex, _skn,
+        _gpl, _act, _tex, _skn,
         original_header=_orig_header,
         original_skn_off=_orig_skn_off,
     )
-
-    print(f"\nModel block size: {len(_block):,} bytes ({len(_block) / 1048576:.3f} MB)")
+    print(f"\n    Assembled block: {len(_block):,} bytes ({len(_block) / 1048576:.3f} MB)")
+    if len(_block) != _orig_length:
+        print(f"    WARNING: assembled size ({len(_block):,}) differs from original ({_orig_length:,})!"
+              f"  delta={len(_block) - _orig_length:+d}")
 
     print("\n[6] Scanning hammerspace for free region ...")
     _new_offset = hh.findFreeMemoryChunk(len(_block))
     if _new_offset == -1:
-        # No free region yet — ensure the file exists and expand it, then retry.
         _required = hh.BASE_SIZE + len(_block) + hh.HS_BUFFER_BYTES
-        print(f"No free hammerspace found. Ensuring OUTPUT dt_na.dat exists and has {_required:,} bytes ...")
+        print(f"    No free hammerspace found. Expanding to {_required:,} bytes ...")
         if not hh.ensureOutputDat(_required):
             print("ERROR: Unable to prepare OUTPUT dt_na.dat. Aborting.")
             raise SystemExit(1)
@@ -1396,26 +1757,38 @@ if __name__ == '__main__':
             raise SystemExit(1)
     print(f"    Free region at 0x{_new_offset:08X}")
 
-    print(f"\n[7] Writing model block to OUTPUT dt_na.dat ...")
+    print("\n[7] Writing assembled block to OUTPUT dt_na.dat ...")
     hh.writeModelBlock(_block, _new_offset)
 
-    print(f"\n[8] Patching OUTPUT main.dol ...")
+    print("\n[8] Patching OUTPUT main.dol and disc FST ...")
     hh.patchDolEntry(_chunk, _index, _new_offset, len(_block))
+
+    _shared = hh.findSharedEntries(_chunk, _index)
+    if _shared:
+        print(f"    Found {len(_shared)} shared chunk reference(s) — patching all:")
+        for _sc, _si in _shared:
+            hh.patchDolEntry(_sc, _si, _new_offset, len(_block))
+
+    _dat_size = os.path.getsize(hh.OUTPUT_DAT)
+    hh.patchFstFileSize(_dat_size)
+
+    print("\n[9] Zeroing original model address space ...")
+    hh.zeroOriginalModel(_chunk, _index)
 
     print("\n[Debug] Writing debug dumps ...")
     hh.writeDebugDumps(
         os.path.basename(_args.sluggies_path),
-        _parsed.model_offset,
-        _parsed.model_length,
-        _block,
+        _orig_offset, _orig_length, _block,
     )
 
     hh.appendHammerspaceLog(
-        'Written',
+        'Written (BuildGPL+BuildSKN)',
         os.path.basename(_args.sluggies_path),
         _chunk, _index,
         _new_offset, len(_block),
     )
+
+    print("\nDone. (Build GPL + Clone ACT/TEX + Build SKN — original location zeroed)")
 
     print("\nDone.")
     raise SystemExit(0)

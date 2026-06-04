@@ -1,0 +1,33 @@
+body * {
+    font-size: 18px;
+}
+
+h1 {
+    font-size: 30px;
+}
+
+h2 {
+    font-size: 24px;
+}
+
+h3 {
+    font-size: 22px;
+}
+
+h4 {
+    font-size: 18px;
+}
+
+pre, code {
+    overflow-x:scroll;
+}
+
+table {
+    border: 1px solid;
+    border-collapse: collapse;
+}
+
+th, td {
+    border: 1px solid;
+    padding: 2px 5px;
+}

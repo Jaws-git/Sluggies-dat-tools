@@ -1,0 +1,43 @@
+<head>
+    <link rel="stylesheet" type="text/css" href="style.css" />
+</head>
+<body>
+    <h1>Quantization</h1>
+    <p>Quantization is used to store floats using less space. An array of quantized data will be accompanied by a byte describing the quantization. The high nibble of the quantization byte tells you the data type, and the low nibble gives you a value to divide each value by.</p>
+    <pre><code>format = quantization >> 4
+divisor = 1 << (quantization & 0b1111)</code></pre>
+<p>The observed formats in Sluggers data are:</p>
+<table>
+    <tr>
+        <th>Format</th>
+        <th>Data type</th>
+        <th>Byte size</th>
+    </tr>
+    <tr>
+        <td>0</td>
+        <td>s16</td>
+        <td>2</td>
+    </tr>
+    <tr>
+        <td>3</td>
+        <td>s16</td>
+        <td>2</td>
+    </tr>
+    <tr>
+        <td>4</td>
+        <td>float</td>
+        <td>4</td>
+    </tr>
+    <tr>
+        <td>7</td>
+        <td>float</td>
+        <td>4</td>
+    </tr>
+    <tr>
+        <td>0xa</td>
+        <td>float</td>
+        <td>4</td>
+    </tr>
+</table>
+<p>The theoretical GX table (1=float, 2=u16, 3=s16, 4=u8, 5=s8) does not match what's observed. In practice, format 4 is float (not u8), and formats 7 and 0xa also appear as floats. Any unrecognised format should be treated as float.</p>
+</body>
