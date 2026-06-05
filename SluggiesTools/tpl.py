@@ -1,8 +1,91 @@
 from base import *
 from helper import *
 import os
+import shutil
 
 globalcounter = 0
+
+_U64_MASK = (1 << 64) - 1
+_XXH64_PRIME1 = 11400714785074694791
+_XXH64_PRIME2 = 14029467366897019727
+_XXH64_PRIME3 = 1609587929392839161
+_XXH64_PRIME4 = 9650029242287828579
+_XXH64_PRIME5 = 2870177450012600261
+
+
+def _rotl64(value, bits):
+    return ((value << bits) & _U64_MASK) | (value >> (64 - bits))
+
+
+def _xxh64_round(acc, input64):
+    acc = (acc + (input64 * _XXH64_PRIME2)) & _U64_MASK
+    acc = _rotl64(acc, 31)
+    acc = (acc * _XXH64_PRIME1) & _U64_MASK
+    return acc
+
+
+def _xxh64_merge_round(acc, val):
+    acc ^= _xxh64_round(0, val)
+    acc = (acc * _XXH64_PRIME1 + _XXH64_PRIME4) & _U64_MASK
+    return acc
+
+
+def xxh64(data, seed=0):
+    """Return xxHash64(data, seed) compatible with Dolphin's XXH64(..., 0)."""
+    if not isinstance(data, (bytes, bytearray)):
+        data = bytes(data)
+    length = len(data)
+    i = 0
+
+    if length >= 32:
+        v1 = (seed + _XXH64_PRIME1 + _XXH64_PRIME2) & _U64_MASK
+        v2 = (seed + _XXH64_PRIME2) & _U64_MASK
+        v3 = seed & _U64_MASK
+        v4 = (seed - _XXH64_PRIME1) & _U64_MASK
+
+        limit = length - 32
+        while i <= limit:
+            v1 = _xxh64_round(v1, int.from_bytes(data[i:i + 8], 'little'))
+            i += 8
+            v2 = _xxh64_round(v2, int.from_bytes(data[i:i + 8], 'little'))
+            i += 8
+            v3 = _xxh64_round(v3, int.from_bytes(data[i:i + 8], 'little'))
+            i += 8
+            v4 = _xxh64_round(v4, int.from_bytes(data[i:i + 8], 'little'))
+            i += 8
+
+        h64 = (_rotl64(v1, 1) + _rotl64(v2, 7) + _rotl64(v3, 12) + _rotl64(v4, 18)) & _U64_MASK
+        h64 = _xxh64_merge_round(h64, v1)
+        h64 = _xxh64_merge_round(h64, v2)
+        h64 = _xxh64_merge_round(h64, v3)
+        h64 = _xxh64_merge_round(h64, v4)
+    else:
+        h64 = (seed + _XXH64_PRIME5) & _U64_MASK
+
+    h64 = (h64 + length) & _U64_MASK
+
+    while i + 8 <= length:
+        k1 = _xxh64_round(0, int.from_bytes(data[i:i + 8], 'little'))
+        h64 ^= k1
+        h64 = (_rotl64(h64, 27) * _XXH64_PRIME1 + _XXH64_PRIME4) & _U64_MASK
+        i += 8
+
+    if i + 4 <= length:
+        h64 ^= (int.from_bytes(data[i:i + 4], 'little') * _XXH64_PRIME1) & _U64_MASK
+        h64 = (_rotl64(h64, 23) * _XXH64_PRIME2 + _XXH64_PRIME3) & _U64_MASK
+        i += 4
+
+    while i < length:
+        h64 ^= (data[i] * _XXH64_PRIME5) & _U64_MASK
+        h64 = (_rotl64(h64, 11) * _XXH64_PRIME1) & _U64_MASK
+        i += 1
+
+    h64 ^= h64 >> 33
+    h64 = (h64 * _XXH64_PRIME2) & _U64_MASK
+    h64 ^= h64 >> 29
+    h64 = (h64 * _XXH64_PRIME3) & _U64_MASK
+    h64 ^= h64 >> 32
+    return h64 & _U64_MASK
 
 class TEXPalette(FileChunk):
     def analyze(self):
@@ -127,3 +210,71 @@ class TEXDescriptor(FileChunk):
         out.close()
         os.system('wimgt decode -q -d ' + pngname + ' ' + fname)
         os.remove(fname)
+
+    def dolphinTextureBasename(self):
+        """Return Dolphin-compatible base texture name (without .png)."""
+        bits_per_pixel = {0:4,1:8,2:8,3:16,4:16,5:16,6:32,8:4,9:8,10:16,14:4}[self.format]
+        data_length = self.height * self.width * bits_per_pixel >> 3
+
+        self.parent.seek(self.dataPtr)
+        image_data = self.parent.read(data_length)
+
+        tlut_data = b''
+        tlut_size = 0
+        if self.paletteDataPtr > 0 and self.paletteEntries > 0:
+            tlut_size = self.paletteEntries * 2
+            self.parent.seek(self.paletteDataPtr)
+            tlut_data = self.parent.read(tlut_size)
+
+        # Match Dolphin's palette hashing behavior by trimming TLUT to the
+        # actually referenced range for indexed textures.
+        if tlut_size == 16 * 2:
+            min_idx = 0xffff
+            max_idx = 0
+            for b in image_data:
+                low_nibble = b & 0x0F
+                high_nibble = b >> 4
+                min_idx = min(min_idx, low_nibble, high_nibble)
+                max_idx = max(max_idx, low_nibble, high_nibble)
+            tlut_size = 2 * (max_idx + 1 - min_idx)
+            tlut_data = tlut_data[2 * min_idx:2 * min_idx + tlut_size]
+        elif tlut_size == 256 * 2:
+            min_idx = 0xffff
+            max_idx = 0
+            for b in image_data:
+                min_idx = min(min_idx, b)
+                max_idx = max(max_idx, b)
+            tlut_size = 2 * (max_idx + 1 - min_idx)
+            tlut_data = tlut_data[2 * min_idx:2 * min_idx + tlut_size]
+        elif tlut_size == 16384 * 2:
+            min_idx = 0xffff
+            max_idx = 0
+            for i in range(0, len(image_data) - 1, 2):
+                texture_halfword = int.from_bytes(image_data[i:i + 2], 'big') & 0x3FFF
+                min_idx = min(min_idx, texture_halfword)
+                max_idx = max(max_idx, texture_halfword)
+            tlut_size = 2 * (max_idx + 1 - min_idx)
+            tlut_data = tlut_data[2 * min_idx:2 * min_idx + tlut_size]
+
+        tex_hash = xxh64(image_data, 0)
+        tlut_hash = xxh64(tlut_data, 0) if tlut_size > 0 else 0
+
+        has_mipmaps = self.maxLOD > 0
+        base_name = 'tex1_' + str(self.width) + 'x' + str(self.height)
+        if has_mipmaps:
+            base_name += '_m'
+
+        texture_name = format(tex_hash, '016x')
+        tlut_name = '_' + format(tlut_hash, '016x') if tlut_size > 0 else ''
+        format_name = str(self.format)
+        return base_name + '_' + texture_name + tlut_name + '_' + format_name
+
+    def toFileWithDolphinName(self, path, dolphin_path):
+        """Export indexed name plus Dolphin-compatible hash name."""
+        self.toFile(path)
+        legacy_png = path + '.png'
+        dolphin_png = dolphin_path + '.png'
+        if legacy_png == dolphin_png:
+            return
+        if not os.path.exists(dolphin_png):
+            shutil.copyfile(legacy_png, dolphin_png)
