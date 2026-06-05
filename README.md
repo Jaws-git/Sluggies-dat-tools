@@ -41,9 +41,10 @@ flowchart LR
 3) Try running the game to make sure everything is prepped correctly
 4) right click the Game -> properties -> Filesystem -> right click top node -> extract entire disc
 5) from the extracted disc data, copy both "dt_na.dat" and "main.dol" to the folder \1_Input\
-6) cmd ``` python export.py ```
+6) cmd ``` python start.py --export --untangle ```
 
 This will extract the entire content into a new folder \2_Output_Models\\...  
+Identical textures will be made "unique".
 It will contain all the player models, props and environment models. Everything is sorted into numbered folders, for example Tiny Kong + her Bat + her Glove are in folder "75". 
 Use the option --notex to skip the rather slow png creation step. Removes the requirement for wimgt.
 
@@ -62,7 +63,7 @@ Exporting to a .sluggies file will automatically put the file name on your clipb
 ## Import
 
 *The file name from the last step should still be in your clipboard unless you copied something else in the meantime.*
-1) cmd ``` python patch.py myfilename```
+1) cmd ``` python patch.py --patch myfilename```
 2) a new folder 3_Output_Dat will appear, containing a patched dt_na.dat file
 3) keep applying as many patches as you like, you can also specify multiple file names
 4) copy the finished dt_na.dat file back into the unpacked game folder, overwrite the old one

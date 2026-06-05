@@ -149,8 +149,132 @@ class TEXDescriptor(FileChunk):
         desc += "\nFormat: " + hex(self.format)
         return desc
 
-    def toFile(self, path):
-        dataLength = self.height * self.width * {0:4,1:8,2:8,3:16,4:16,5:16,6:32,8:4,9:8,10:16,14:4}[self.format] >> 3
+    def _data_length(self):
+        bits_per_pixel = {0:4,1:8,2:8,3:16,4:16,5:16,6:32,8:4,9:8,10:16,14:4}[self.format]
+        return self.height * self.width * bits_per_pixel >> 3
+
+    def _read_payload(self):
+        data_length = self._data_length()
+        self.parent.seek(self.dataPtr)
+        image_data = self.parent.read(data_length)
+
+        tlut_data = b''
+        if self.paletteDataPtr > 0 and self.paletteEntries > 0:
+            self.parent.seek(self.paletteDataPtr)
+            tlut_data = self.parent.read(self.paletteEntries * 2)
+        return image_data, tlut_data
+
+    def _trim_tlut_to_used_range(self, image_data, tlut_data):
+        tlut_size = len(tlut_data)
+        if tlut_size == 16 * 2:
+            min_idx = 0xffff
+            max_idx = 0
+            for b in image_data:
+                low_nibble = b & 0x0F
+                high_nibble = b >> 4
+                min_idx = min(min_idx, low_nibble, high_nibble)
+                max_idx = max(max_idx, low_nibble, high_nibble)
+            tlut_size = 2 * (max_idx + 1 - min_idx)
+            return tlut_data[2 * min_idx:2 * min_idx + tlut_size]
+        if tlut_size == 256 * 2:
+            min_idx = 0xffff
+            max_idx = 0
+            for b in image_data:
+                min_idx = min(min_idx, b)
+                max_idx = max(max_idx, b)
+            tlut_size = 2 * (max_idx + 1 - min_idx)
+            return tlut_data[2 * min_idx:2 * min_idx + tlut_size]
+        if tlut_size == 16384 * 2:
+            min_idx = 0xffff
+            max_idx = 0
+            for i in range(0, len(image_data) - 1, 2):
+                texture_halfword = int.from_bytes(image_data[i:i + 2], 'big') & 0x3FFF
+                min_idx = min(min_idx, texture_halfword)
+                max_idx = max(max_idx, texture_halfword)
+            tlut_size = 2 * (max_idx + 1 - min_idx)
+            return tlut_data[2 * min_idx:2 * min_idx + tlut_size]
+        return tlut_data
+
+    def dolphinTextureBasenameForPayload(self, image_data, tlut_data=b''):
+        """Return Dolphin-compatible base texture name for explicit payload bytes."""
+        trimmed_tlut = self._trim_tlut_to_used_range(image_data, tlut_data) if tlut_data else b''
+
+        tex_hash = xxh64(image_data, 0)
+        tlut_hash = xxh64(trimmed_tlut, 0) if len(trimmed_tlut) > 0 else 0
+
+        has_mipmaps = self.maxLOD > 0
+        base_name = 'tex1_' + str(self.width) + 'x' + str(self.height)
+        if has_mipmaps:
+            base_name += '_m'
+
+        texture_name = format(tex_hash, '016x')
+        tlut_name = '_' + format(tlut_hash, '016x') if len(trimmed_tlut) > 0 else ''
+        format_name = str(self.format)
+        return base_name + '_' + texture_name + tlut_name + '_' + format_name
+
+    def ensureUniqueDolphinBasename(self, seen_names, max_attempts=8192):
+        """Return basename and payload bytes, mutating image bytes only when needed."""
+        image_data, tlut_data = self._read_payload()
+        original_name = self.dolphinTextureBasenameForPayload(image_data, tlut_data)
+
+        if original_name not in seen_names:
+            seen_names.add(original_name)
+            return {
+                'basename': original_name,
+                'image_data': image_data,
+                'tlut_data': tlut_data,
+                'changed': False,
+                'attempts': 0,
+                'warning': None,
+                'original_basename': original_name,
+            }
+
+        if len(image_data) == 0:
+            return {
+                'basename': original_name,
+                'image_data': image_data,
+                'tlut_data': tlut_data,
+                'changed': False,
+                'attempts': 0,
+                'warning': 'duplicate hash could not be untangled because image data is empty',
+                'original_basename': original_name,
+            }
+
+        mutated = bytearray(image_data)
+        img_len = len(mutated)
+        for attempt in range(1, max_attempts + 1):
+            pos = img_len - 1 - ((attempt - 1) % img_len)
+            rounds = (attempt - 1) // img_len
+            xor_mask = ((rounds * 37) + (attempt * 17) + 1) & 0xFF
+            if xor_mask == 0:
+                xor_mask = 1
+            mutated[pos] ^= xor_mask
+
+            candidate_name = self.dolphinTextureBasenameForPayload(mutated, tlut_data)
+            if candidate_name not in seen_names:
+                seen_names.add(candidate_name)
+                return {
+                    'basename': candidate_name,
+                    'image_data': bytes(mutated),
+                    'tlut_data': tlut_data,
+                    'changed': True,
+                    'attempts': attempt,
+                    'warning': None,
+                    'original_basename': original_name,
+                }
+
+        return {
+            'basename': original_name,
+            'image_data': image_data,
+            'tlut_data': tlut_data,
+            'changed': False,
+            'attempts': max_attempts,
+            'warning': f'duplicate hash untangle gave up after {max_attempts} attempts',
+            'original_basename': original_name,
+        }
+
+    def toFile(self, path, image_data_override=None, tlut_data_override=None):
+        dataLength = self._data_length()
         hasPalette = self.paletteDataPtr > 0
         fname = path + '.tpl'
         pngname = path + '.png'
@@ -201,73 +325,30 @@ class TEXDescriptor(FileChunk):
 
         # Pad to multiple of 0x20 (0x40 or 0x60 here)
         out.write(itb(0, 0x8 + hasPalette * 0x14))
-        self.parent.seek(self.dataPtr)
-        out.write(self.parent.read(dataLength))
+        if image_data_override is None:
+            self.parent.seek(self.dataPtr)
+            out.write(self.parent.read(dataLength))
+        else:
+            if len(image_data_override) != dataLength:
+                raise Exception('image_data_override length mismatch in TEX export')
+            out.write(image_data_override)
         if hasPalette:
             out.write(itb(0, paletteDataPad))
-            self.parent.seek(self.paletteDataPtr)
-            out.write(self.parent.read(paletteDataLen))
+            if tlut_data_override is None:
+                self.parent.seek(self.paletteDataPtr)
+                out.write(self.parent.read(paletteDataLen))
+            else:
+                if len(tlut_data_override) != paletteDataLen:
+                    raise Exception('tlut_data_override length mismatch in TEX export')
+                out.write(tlut_data_override)
         out.close()
         os.system('wimgt decode -q -d ' + pngname + ' ' + fname)
         os.remove(fname)
 
     def dolphinTextureBasename(self):
         """Return Dolphin-compatible base texture name (without .png)."""
-        bits_per_pixel = {0:4,1:8,2:8,3:16,4:16,5:16,6:32,8:4,9:8,10:16,14:4}[self.format]
-        data_length = self.height * self.width * bits_per_pixel >> 3
-
-        self.parent.seek(self.dataPtr)
-        image_data = self.parent.read(data_length)
-
-        tlut_data = b''
-        tlut_size = 0
-        if self.paletteDataPtr > 0 and self.paletteEntries > 0:
-            tlut_size = self.paletteEntries * 2
-            self.parent.seek(self.paletteDataPtr)
-            tlut_data = self.parent.read(tlut_size)
-
-        # Match Dolphin's palette hashing behavior by trimming TLUT to the
-        # actually referenced range for indexed textures.
-        if tlut_size == 16 * 2:
-            min_idx = 0xffff
-            max_idx = 0
-            for b in image_data:
-                low_nibble = b & 0x0F
-                high_nibble = b >> 4
-                min_idx = min(min_idx, low_nibble, high_nibble)
-                max_idx = max(max_idx, low_nibble, high_nibble)
-            tlut_size = 2 * (max_idx + 1 - min_idx)
-            tlut_data = tlut_data[2 * min_idx:2 * min_idx + tlut_size]
-        elif tlut_size == 256 * 2:
-            min_idx = 0xffff
-            max_idx = 0
-            for b in image_data:
-                min_idx = min(min_idx, b)
-                max_idx = max(max_idx, b)
-            tlut_size = 2 * (max_idx + 1 - min_idx)
-            tlut_data = tlut_data[2 * min_idx:2 * min_idx + tlut_size]
-        elif tlut_size == 16384 * 2:
-            min_idx = 0xffff
-            max_idx = 0
-            for i in range(0, len(image_data) - 1, 2):
-                texture_halfword = int.from_bytes(image_data[i:i + 2], 'big') & 0x3FFF
-                min_idx = min(min_idx, texture_halfword)
-                max_idx = max(max_idx, texture_halfword)
-            tlut_size = 2 * (max_idx + 1 - min_idx)
-            tlut_data = tlut_data[2 * min_idx:2 * min_idx + tlut_size]
-
-        tex_hash = xxh64(image_data, 0)
-        tlut_hash = xxh64(tlut_data, 0) if tlut_size > 0 else 0
-
-        has_mipmaps = self.maxLOD > 0
-        base_name = 'tex1_' + str(self.width) + 'x' + str(self.height)
-        if has_mipmaps:
-            base_name += '_m'
-
-        texture_name = format(tex_hash, '016x')
-        tlut_name = '_' + format(tlut_hash, '016x') if tlut_size > 0 else ''
-        format_name = str(self.format)
-        return base_name + '_' + texture_name + tlut_name + '_' + format_name
+        image_data, tlut_data = self._read_payload()
+        return self.dolphinTextureBasenameForPayload(image_data, tlut_data)
 
     def toFileWithDolphinName(self, path, dolphin_path):
         """Export indexed name plus Dolphin-compatible hash name."""

@@ -9,6 +9,7 @@ import sys
 
 EXPORT_TEX = '--notex' not in sys.argv
 DEBUG_DONT_USE_BASE64 = '--debug' in sys.argv
+UNTANGLE_TEX = '--untangle' in sys.argv
 
 
 def _encode_bytes(data: bytes):
@@ -111,7 +112,7 @@ def _color_entry_size(quantize_info):
     return {0: 2, 1: 3, 2: 4, 3: 2, 4: 3, 5: 4}.get(fmt, 2)
 
 
-def write_texture_hash_overlaps_report(output_dir):
+def write_texture_hash_overlaps_report(output_dir, untangle_report_lines=None, untangle_warnings=None):
     """Write repeated PNG filename counts under the export root.
 
     Any PNG basename encountered more than once anywhere below output_dir is
@@ -133,6 +134,16 @@ def write_texture_hash_overlaps_report(output_dir):
     with open(report_path, 'w', encoding='utf-8') as report_f:
         for name, count in duplicate_names:
             report_f.write(f'{name} (x{count} identical duplicates)\n')
+        if untangle_report_lines:
+            report_f.write('\n')
+            report_f.write('Untangle updates:\n')
+            for line in untangle_report_lines:
+                report_f.write(line + '\n')
+        if untangle_warnings:
+            report_f.write('\n')
+            report_f.write('Untangle warnings:\n')
+            for line in untangle_warnings:
+                report_f.write(line + '\n')
 
 def extract_tex_header(model):
     """Return TEXPalette section header fields, or None if no TEX section."""
@@ -141,7 +152,7 @@ def extract_tex_header(model):
     return {"CLUTCount": model.TEXPalette.numCLUTsMaybe}
 
 
-def extract_texture_descriptors(model):
+def extract_texture_descriptors(model, untangle_context=None):
     """Return a list of TEX descriptor dicts for a Model0 instance.
 
     Includes dimensions, format, palette info, and file offsets/lengths for
@@ -151,6 +162,9 @@ def extract_texture_descriptors(model):
         return []
     palette = model.TEXPalette
     result = []
+    model_name_overrides = {}
+    if untangle_context and untangle_context.get('enabled'):
+        model_name_overrides = untangle_context.get('name_overrides', {}).get(model.absolute, {})
     for tex_ind, desc in enumerate(palette.descriptors):
         img_offset = palette.absolute + desc.dataPtr
         img_length = palette.dataLens.get(desc.dataPtr, 0)
@@ -161,7 +175,7 @@ def extract_texture_descriptors(model):
         unknown_1b = _encode_bytes(model.f.read(5))
         entry = {
             "TextureIndex": tex_ind,
-            "TextureFileName": desc.dolphinTextureBasename() + '.png',
+            "TextureFileName": model_name_overrides.get(tex_ind, desc.dolphinTextureBasename()) + '.png',
             "TextureDescriptorOffset": hex(desc.absolute),
             "Width": desc.width,
             "Height": desc.height,
@@ -606,9 +620,46 @@ class Dat(File):
     def __init__(self, f):
         super().__init__(f)
 
+
+def prepare_untangle_output_dat():
+    output_dat_dir = '../3_Output_Dat'
+    output_dat_path = os.path.join(output_dat_dir, 'dt_na.dat')
+    input_dat_path = '../1_Input/dt_na.dat'
+
+    if not os.path.exists(output_dat_dir):
+        os.mkdir(output_dat_dir)
+
+    if os.path.exists(output_dat_path):
+        answer = input('Untangle mode will overwrite 3_Output_Dat/dt_na.dat. Continue? (y/n): ').strip().lower()
+        if answer != 'y':
+            print('Untangle export canceled by user.')
+            return None
+
+    shutil.copyfile(input_dat_path, output_dat_path)
+    return output_dat_path
+
 dat = Dat(open('../1_Input/dt_na.dat', 'rb'))
+untangle_context = None
+
+if UNTANGLE_TEX:
+    if not EXPORT_TEX:
+        print('Warning: --untangle has no effect with --notex; untangle mode disabled.')
+    else:
+        untangle_output_path = prepare_untangle_output_dat()
+        if untangle_output_path is None:
+            sys.exit(0)
+        untangle_context = {
+            'enabled': True,
+            'seen_names': set(),
+            'report_lines': [],
+            'warnings': [],
+            'name_overrides': {},
+            'max_attempts': 8192,
+            'dat_output_handle': open(untangle_output_path, 'r+b')
+        }
 
 for dir_ind, file_arr in dirs.items():
+    set_log_dir_index(dir_ind)
     dir_dir = outdir + str(dir_ind) + '/'
     if not os.path.exists(dir_dir):
         os.mkdir(dir_dir)
@@ -630,7 +681,7 @@ for dir_ind, file_arr in dirs.items():
                 child.analyze()
                 if child.child:
                     child.child.analyze()
-                    child.child.toFile(lan_dir, export_tex=EXPORT_TEX)
+                    child.child.toFile(lan_dir, export_tex=EXPORT_TEX, untangle_context=untangle_context)
                     if isinstance(child.child, Archive):
                         archive_dir = os.path.join(lan_dir, str(child.child.absolute))
                         for i in child.child.success:
@@ -648,7 +699,7 @@ for dir_ind, file_arr in dirs.items():
                                     "GPLUserDataLength": _gpl_ud_len,
                                     "GPLUserData": _gpl_ud,
                                     "TEXHeader": extract_tex_header(sub_model),
-                                    "TextureDescriptors": extract_texture_descriptors(sub_model),
+                                    "TextureDescriptors": extract_texture_descriptors(sub_model, untangle_context=untangle_context),
                                     "Submeshes": extract_submeshes(sub_model),
                                     "SkinData": extract_skin_data(sub_model),
                                     "ACTHeader": extract_act_header(sub_model),
@@ -672,7 +723,7 @@ for dir_ind, file_arr in dirs.items():
                                 "GPLUserDataLength": _gpl_ud_len,
                                 "GPLUserData": _gpl_ud,
                                 "TEXHeader": extract_tex_header(child.child),
-                                "TextureDescriptors": extract_texture_descriptors(child.child),
+                                "TextureDescriptors": extract_texture_descriptors(child.child, untangle_context=untangle_context),
                                 "Submeshes": extract_submeshes(child.child),
                                 "SkinData": extract_skin_data(child.child),
                                 "ACTHeader": extract_act_header(child.child),
@@ -683,11 +734,18 @@ for dir_ind, file_arr in dirs.items():
                             info_f.write(compact_faces_json(model_json))
                 del child
         except Exception as e:
-            print ("failed in export")
-            print (e)
+            print(f'[dir {dir_ind}] failed in export: {type(e).__name__}: {e} (Moving on)')
             pass
     if len(os.listdir(dir_dir)) == 0:
         os.rmdir(dir_dir)
-    print ("Analyzed dir " + str(dir_ind))
+    print (f'[dir {dir_ind}] Analyzed dir {dir_ind}')
 
-write_texture_hash_overlaps_report(outdir)
+if untangle_context and untangle_context.get('dat_output_handle'):
+    untangle_context['dat_output_handle'].flush()
+    untangle_context['dat_output_handle'].close()
+
+write_texture_hash_overlaps_report(
+    outdir,
+    untangle_report_lines=(untangle_context or {}).get('report_lines'),
+    untangle_warnings=(untangle_context or {}).get('warnings')
+)

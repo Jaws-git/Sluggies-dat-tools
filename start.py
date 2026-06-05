@@ -1,0 +1,142 @@
+import subprocess
+import sys
+import os
+import argparse
+import json
+import importlib.util
+
+# this file is for dispatching only; patching and export logic live in SluggiesTools
+
+ROOT_DIR = os.path.dirname(__file__)
+SEARCH_DIR = os.path.join(ROOT_DIR, '2_Output_Models')
+PATCH_SCRIPT = os.path.join(ROOT_DIR, 'SluggiesTools', 'patch_inplace.py')
+EXPORT_SCRIPT = os.path.join(ROOT_DIR, 'SluggiesTools', 'export.py')
+TOOLS_DIR = os.path.join(ROOT_DIR, 'SluggiesTools')
+HS_DIR = os.path.join(TOOLS_DIR, 'Hammerspace')
+HS_HELPER_SCRIPT = os.path.join(HS_DIR, 'HammerspaceHelper.py')
+HS_MAIN_SCRIPT = os.path.join(HS_DIR, 'HammerspaceMain.py')
+
+
+def run_hammerspace_helper():
+    subprocess.run([sys.executable, HS_HELPER_SCRIPT], cwd=HS_DIR, check=True)
+
+
+def run_export(debug=False, notex=False, untangle=False):
+    missing = [pkg for pkg in ['numpy', 'collada'] if importlib.util.find_spec(pkg) is None]
+    if missing:
+        print(f"Missing required packages: {', '.join(missing)}")
+        print('Run: pip install numpy pycollada')
+        sys.exit(1)
+
+    extra_args = []
+    if notex:
+        extra_args.append('--notex')
+    if debug:
+        extra_args.append('--debug')
+    if untangle:
+        extra_args.append('--untangle')
+
+    subprocess.run(
+        [sys.executable, EXPORT_SCRIPT] + extra_args,
+        cwd=TOOLS_DIR,
+        check=True
+    )
+    print('\nExport complete. Find your files in the folder "2_Output_Models"')
+
+
+def run_patching(filenames, unpatch=False):
+    for filename in filenames:
+        matches = [
+            os.path.join(root, f)
+            for root, _, files in os.walk(SEARCH_DIR)
+            for f in files
+            if f == filename
+        ]
+
+        if not matches:
+            print(f"No file named '{filename}' found in {SEARCH_DIR}")
+            continue
+
+        found = matches[0]
+        print(f"Found: {found}")
+
+        # Read UseHammerspace flag from the .sluggies JSON
+        try:
+            with open(found, 'r') as f:
+                sluggies_data = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"ERROR: Could not read '{found}': {e}")
+            continue
+
+        model = sluggies_data.get('SluggiesModel', {})
+        use_hammerspace = model.get('UseHammerspace', False)
+
+        if use_hammerspace:
+            cmd = [sys.executable, HS_MAIN_SCRIPT, found]
+            if unpatch:
+                cmd.append('--unpatch')
+            subprocess.run(cmd, cwd=HS_DIR, check=True)
+        else:
+            cmd = [sys.executable, PATCH_SCRIPT, found]
+            if unpatch:
+                cmd.append('--unpatch')
+            subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description='Central dispatcher for Sluggies patching and export tasks.',
+        epilog=(
+            'Examples:\n'
+            '  python patch.py --export\n'
+            '  python patch.py --export --debug --notex --untangle\n'
+            '  python patch.py --export --untangle\n'
+            '  python patch.py --patch model.sluggies\n'
+            '  python patch.py --patch model1.sluggies model2.sluggies\n'
+            '  python patch.py --unpatch model.sluggies\n'
+            '  python patch.py --hammerspace\n'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--patch', nargs='+', metavar='FILENAME', help='patch one or more .sluggies files')
+    mode.add_argument('--unpatch', nargs='+', metavar='FILENAME', help='restore original data for one or more .sluggies files')
+    mode.add_argument('-hs', '--hammerspace', action='store_true', help='change available memory space in outputdt_na.dat')
+    mode.add_argument('--export', action='store_true', help='export all models from 1_Input to 2_Output_Models')
+
+    parser.add_argument('--debug', action='store_true', help='export only: write binary blobs as raw byte arrays instead of base64')
+    parser.add_argument('--notex', action='store_true', help='export only: skip texture extraction')
+    parser.add_argument('--untangle', action='store_true', help='export only: pass untangling flag through to export process')
+
+    args = parser.parse_args()
+
+    if args.debug and not args.export:
+        parser.error('--debug can only be used with --export.')
+    if args.notex and not args.export:
+        parser.error('--notex can only be used with --export.')
+    if args.untangle and not args.export:
+        parser.error('--untangle can only be used with --export.')
+    if not any([args.patch, args.unpatch, args.hammerspace, args.export]):
+        parser.print_help()
+        sys.exit(0)
+
+    return args
+
+
+def main():
+    args = parse_args()
+    if args.hammerspace:
+        run_hammerspace_helper()
+        return
+    if args.export:
+        run_export(debug=args.debug, notex=args.notex, untangle=args.untangle)
+        return
+    if args.patch:
+        run_patching(args.patch, unpatch=False)
+        return
+    if args.unpatch:
+        run_patching(args.unpatch, unpatch=True)
+
+
+if __name__ == '__main__':
+    main()
