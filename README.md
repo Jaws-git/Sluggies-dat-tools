@@ -41,12 +41,12 @@ flowchart LR
 3) Try running the game to make sure everything is prepped correctly
 4) right click the Game -> properties -> Filesystem -> right click top node -> extract entire disc
 5) from the extracted disc data, copy both "dt_na.dat" and "main.dol" to the folder \1_Input\
-6) cmd ``` python start.py --export --untangle ```
+6) cmd ``` python start.py --export --untangle```
 
 This will extract the entire content into a new folder \2_Output_Models\\...  
-Identical textures will be made "unique".
 It will contain all the player models, props and environment models. Everything is sorted into numbered folders, for example Tiny Kong + her Bat + her Glove are in folder "75". 
-Use the option --notex to skip the rather slow png creation step. Removes the requirement for wimgt.
+With the "untangle" parameter, duplicate textures will be made "unique". Their file names will change compared to "vanilla" Sluggers.
+You can also use the option --notex to skip the rather slow png creation step. Removes the requirement for wimgt.
 
 If you get texture-related errors, make sure you've added the wimgt tools bin folder (usually .\szs_v2_42a\bin\\) to your [PATH](https://www.youtube.com/watch?v=rWVaxSWvxUQ)
 
