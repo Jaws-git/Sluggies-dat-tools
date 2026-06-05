@@ -738,7 +738,7 @@ for dir_ind, file_arr in dirs.items():
             pass
     if len(os.listdir(dir_dir)) == 0:
         os.rmdir(dir_dir)
-    print (f'[dir {dir_ind}] Analyzed dir {dir_ind}')
+    print (f'[dir {dir_ind}] Finished analyzing')
 
 if untangle_context and untangle_context.get('dat_output_handle'):
     untangle_context['dat_output_handle'].flush()

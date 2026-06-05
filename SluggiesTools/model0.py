@@ -9,6 +9,7 @@ from collada import source, common
 from xml_helper import *
 
 _LOG_DIR_INDEX = None
+UNTANGLE_IGNORE_BASENAME = 'tex1_64x64_f848cd3d240b0bd0_14'
 
 
 def set_log_dir_index(dir_index):
@@ -190,29 +191,33 @@ class Model0(FileChunk):
                 dolphin_name = tex.dolphinTextureBasename()
 
                 if untangle_context and untangle_context.get('enabled'):
-                    seen_names = untangle_context.setdefault('seen_names', set())
-                    max_attempts = untangle_context.get('max_attempts', 8192)
-                    untangled = tex.ensureUniqueDolphinBasename(seen_names, max_attempts=max_attempts)
-                    dolphin_name = untangled['basename']
-                    if untangled['changed']:
-                        image_override = untangled['image_data']
-                        tlut_override = untangled['tlut_data']
-                        dat_out = untangle_context.get('dat_output_handle')
-                        if dat_out:
-                            image_abs = tex.parent.absolute + tex.dataPtr
-                            dat_out.seek(image_abs)
-                            dat_out.write(image_override)
-                        report = untangle_context.setdefault('report_lines', [])
-                        report.append(
-                            f'Texture file untangled: {untangled["original_basename"]}.png -> {dolphin_name}.png '
-                            f'(model 0x{self.absolute:x}, tex {tex_ind}, attempts {untangled["attempts"]})'
-                        )
-                    elif untangled['warning']:
-                        warnings = untangle_context.setdefault('warnings', [])
-                        warnings.append(
-                            f'Warning: {untangled["warning"]} (model 0x{self.absolute:x}, tex {tex_ind}, '
-                            f'basename {untangled["original_basename"]}.png)'
-                        )
+                    # //quick hack to prevent destruction of this file that would get "untangled" 395 times in total, destroying much of the picture
+                    if dolphin_name == UNTANGLE_IGNORE_BASENAME:
+                        pass
+                    else:
+                        seen_names = untangle_context.setdefault('seen_names', set())
+                        max_attempts = untangle_context.get('max_attempts', 8192)
+                        untangled = tex.ensureUniqueDolphinBasename(seen_names, max_attempts=max_attempts)
+                        dolphin_name = untangled['basename']
+                        if untangled['changed']:
+                            image_override = untangled['image_data']
+                            tlut_override = untangled['tlut_data']
+                            dat_out = untangle_context.get('dat_output_handle')
+                            if dat_out:
+                                image_abs = tex.parent.absolute + tex.dataPtr
+                                dat_out.seek(image_abs)
+                                dat_out.write(image_override)
+                            report = untangle_context.setdefault('report_lines', [])
+                            report.append(
+                                f'Texture file untangled: {untangled["original_basename"]}.png -> {dolphin_name}.png '
+                                f'(model 0x{self.absolute:x}, tex {tex_ind}, attempts {untangled["attempts"]})'
+                            )
+                        elif untangled['warning']:
+                            warnings = untangle_context.setdefault('warnings', [])
+                            warnings.append(
+                                f'Warning: {untangled["warning"]} (model 0x{self.absolute:x}, tex {tex_ind}, '
+                                f'basename {untangled["original_basename"]}.png)'
+                            )
 
                 if untangle_context and untangle_context.get('enabled'):
                     name_overrides = untangle_context.setdefault('name_overrides', {})
