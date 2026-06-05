@@ -202,10 +202,7 @@ class TEXDescriptor(FileChunk):
         tex_hash = xxh64(image_data, 0)
         tlut_hash = xxh64(trimmed_tlut, 0) if len(trimmed_tlut) > 0 else 0
 
-        has_mipmaps = self.maxLOD > 0
         base_name = 'tex1_' + str(self.width) + 'x' + str(self.height)
-        if has_mipmaps:
-            base_name += '_m'
 
         texture_name = format(tex_hash, '016x')
         tlut_name = '_' + format(tlut_hash, '016x') if len(trimmed_tlut) > 0 else ''
