@@ -8,6 +8,26 @@ import shutil
 from collada import source, common
 from xml_helper import *
 
+_LOG_DIR_INDEX = None
+
+
+def set_log_dir_index(dir_index):
+    global _LOG_DIR_INDEX
+    _LOG_DIR_INDEX = dir_index
+
+
+def _log_prefix():
+    if _LOG_DIR_INDEX is None:
+        return '[dir ?]'
+    return f'[dir {_LOG_DIR_INDEX}]'
+
+
+def _log_noncritical(message, exc=None, postfix='(Moving on)'):
+    if exc is None:
+        print(f'{_log_prefix()} {message} {postfix}')
+        return
+    print(f'{_log_prefix()} {message}: {type(exc).__name__}: {exc} {postfix}')
+
 class MaybeArchive(FileChunk):
     def analyze(self):
         word1 = self.word()
@@ -36,11 +56,10 @@ class Archive(FileChunk):
                 file.analyze()
                 self.success.append(i)
             except Exception as e:
-                print ("failed analyzing in archive")
-                print (e)
+                _log_noncritical('failed analyzing in archive', e)
                 pass
 
-    def toFile(self, outdir, export_tex=True):
+    def toFile(self, outdir, export_tex=True, untangle_context=None):
         if not len(self.success):
             return
         archivedir = outdir + str(self.absolute) + '/'
@@ -48,7 +67,7 @@ class Archive(FileChunk):
             os.mkdir(archivedir)
         for success in self.success:
             f = self.files[success]
-            f.toFile(archivedir, export_tex=export_tex)
+            f.toFile(archivedir, export_tex=export_tex, untangle_context=untangle_context)
 
 # This is not the mdl0 format, I think I just called the class that for some reason
 class Model0(FileChunk):
@@ -132,7 +151,7 @@ class Model0(FileChunk):
             boneInfluences += [BoneInfluence(geoBone, 256, i, (100, 100, 100), 'Non-skinned assumption') for i in range(self.GPL.geoDescriptors[geoID].layout.DOPositionHeader.numPositions)]
         return boneInfluences
 
-    def toFile(self, outdir, export_tex=True):
+    def toFile(self, outdir, export_tex=True, untangle_context=None):
         try:
             file_dir = outdir + self.name
             dae_exists = os.path.exists(os.path.join(file_dir, self.name + '.dae'))
@@ -151,14 +170,12 @@ class Model0(FileChunk):
             else:
                 os.mkdir(file_dir)
             file_dir += '/'
-            data = self.model_data(export_tex=export_tex)
+            data = self.model_data(export_tex=export_tex, untangle_context=untangle_context)
             data.to_dae(file_dir, name=self.name)
         except Exception as e:
-            print ("Failed in model0 tofile")
-            print (e)
             pass
 
-    def model_data(self, export_tex=True):
+    def model_data(self, export_tex=True, untangle_context=None):
         all_bones = []
         texture_paths = {}
 
@@ -168,10 +185,43 @@ class Model0(FileChunk):
                 shutil.rmtree('tex')
             os.mkdir('tex')
             for tex_ind, tex in enumerate(self.TEXPalette.descriptors):
+                image_override = None
+                tlut_override = None
                 dolphin_name = tex.dolphinTextureBasename()
+
+                if untangle_context and untangle_context.get('enabled'):
+                    seen_names = untangle_context.setdefault('seen_names', set())
+                    max_attempts = untangle_context.get('max_attempts', 8192)
+                    untangled = tex.ensureUniqueDolphinBasename(seen_names, max_attempts=max_attempts)
+                    dolphin_name = untangled['basename']
+                    if untangled['changed']:
+                        image_override = untangled['image_data']
+                        tlut_override = untangled['tlut_data']
+                        dat_out = untangle_context.get('dat_output_handle')
+                        if dat_out:
+                            image_abs = tex.parent.absolute + tex.dataPtr
+                            dat_out.seek(image_abs)
+                            dat_out.write(image_override)
+                        report = untangle_context.setdefault('report_lines', [])
+                        report.append(
+                            f'Texture file untangled: {untangled["original_basename"]}.png -> {dolphin_name}.png '
+                            f'(model 0x{self.absolute:x}, tex {tex_ind}, attempts {untangled["attempts"]})'
+                        )
+                    elif untangled['warning']:
+                        warnings = untangle_context.setdefault('warnings', [])
+                        warnings.append(
+                            f'Warning: {untangled["warning"]} (model 0x{self.absolute:x}, tex {tex_ind}, '
+                            f'basename {untangled["original_basename"]}.png)'
+                        )
+
+                if untangle_context and untangle_context.get('enabled'):
+                    name_overrides = untangle_context.setdefault('name_overrides', {})
+                    model_overrides = name_overrides.setdefault(self.absolute, {})
+                    model_overrides[tex_ind] = dolphin_name
+
                 dolphin_path = 'tex/' + dolphin_name
                 if not os.path.exists(dolphin_path + '.png'):
-                    tex.toFile(dolphin_path)
+                    tex.toFile(dolphin_path, image_data_override=image_override, tlut_data_override=tlut_override)
                 texture_paths[tex_ind] = dolphin_name + '.png'
 
         geometries = []
@@ -318,15 +368,16 @@ class Model0(FileChunk):
             #     print('---------------')
 
         # return the tidy object
-        return ModelData(geometries, texture_paths, all_bones, self, export_tex)
+        return ModelData(geometries, texture_paths, all_bones, self, export_tex, untangle_context)
 
 class ModelData():
-    def __init__(self, geometries, textures, bones, model, export_tex=True):
+    def __init__(self, geometries, textures, bones, model, export_tex=True, untangle_context=None):
         self.geometries = geometries
         self.textures = textures
         self.bones = bones
         self.model = model
         self.export_tex = export_tex
+        self.untangle_context = untangle_context
 
     def create_tex_dir(self, dir):
         tex_pngs = os.listdir('tex')
