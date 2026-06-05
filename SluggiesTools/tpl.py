@@ -243,7 +243,7 @@ class TEXDescriptor(FileChunk):
         mutated = bytearray(image_data)
         img_len = len(mutated)
         for attempt in range(1, max_attempts + 1):
-            pos = img_len - 1 - ((attempt - 1) % img_len)
+            pos = (attempt - 1) % img_len
             rounds = (attempt - 1) // img_len
             xor_mask = ((rounds * 37) + (attempt * 17) + 1) & 0xFF
             if xor_mask == 0:
