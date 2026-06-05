@@ -110,6 +110,30 @@ def _color_entry_size(quantize_info):
     fmt = quantize_info >> 4
     return {0: 2, 1: 3, 2: 4, 3: 2, 4: 3, 5: 4}.get(fmt, 2)
 
+
+def write_texture_hash_overlaps_report(output_dir):
+    """Write repeated PNG filename counts under the export root.
+
+    Any PNG basename encountered more than once anywhere below output_dir is
+    reported once in texture_hash_overlaps.txt.
+    """
+    report_path = os.path.join(output_dir, 'texture_hash_overlaps.txt')
+    png_counts = {}
+
+    for root, _dirs, files in os.walk(output_dir):
+        for fname in files:
+            if not fname.lower().endswith('.png'):
+                continue
+            png_counts[fname] = png_counts.get(fname, 0) + 1
+
+    duplicate_names = sorted(
+        (name, count) for name, count in png_counts.items() if count > 1
+    )
+
+    with open(report_path, 'w', encoding='utf-8') as report_f:
+        for name, count in duplicate_names:
+            report_f.write(f'{name} (x{count} identical duplicates)\n')
+
 def extract_tex_header(model):
     """Return TEXPalette section header fields, or None if no TEX section."""
     if not hasattr(model, 'TEXPalette') or not model.TEXPalette:
@@ -137,6 +161,7 @@ def extract_texture_descriptors(model):
         unknown_1b = _encode_bytes(model.f.read(5))
         entry = {
             "TextureIndex": tex_ind,
+            "TextureFileName": desc.dolphinTextureBasename() + '.png',
             "TextureDescriptorOffset": hex(desc.absolute),
             "Width": desc.width,
             "Height": desc.height,
@@ -664,3 +689,5 @@ for dir_ind, file_arr in dirs.items():
     if len(os.listdir(dir_dir)) == 0:
         os.rmdir(dir_dir)
     print ("Analyzed dir " + str(dir_ind))
+
+write_texture_hash_overlaps_report(outdir)

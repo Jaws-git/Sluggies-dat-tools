@@ -15,6 +15,20 @@ def _to_bytes(data) -> bytes:
     return base64.b64decode(data)
 
 
+def _texture_file_map(texture_descriptors):
+    """Return {TextureIndex: filename} from sluggie metadata.
+
+    Falls back to the legacy numeric file name when TextureFileName is absent.
+    """
+    mapping = {}
+    for tex in texture_descriptors or []:
+        tex_idx = tex.get("TextureIndex")
+        if tex_idx is None:
+            continue
+        mapping[tex_idx] = tex.get("TextureFileName") or f"{tex_idx}.png"
+    return mapping
+
+
 def _compute_bone_absolute_matrices(bone_list):
     """Return a {BoneId: mathutils.Matrix} dict of absolute world-space transforms.
 
@@ -386,7 +400,8 @@ def _create_material(mat_name, uv_layer_name, image, wrap_s=1):
 def build_mesh(name, positions, normals, faces, vb_meta, collection,
                uv_channels=None, color_channels=None,
                face_texture_indices=None, sluggie_dir=None,
-               submesh_meta=None, prebuilt_materials=None):
+               submesh_meta=None, prebuilt_materials=None,
+               texture_file_map=None):
     """Create a Blender mesh object from a vertex list and link it to *collection*."""
     mesh = bpy.data.meshes.new(name)
     mesh.from_pydata(positions, [], faces)
@@ -522,7 +537,8 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
             # Use the deduplicated name computed during UV layer creation
             layer_name = uv_layer_names.get(ch_ind) or uv_ch.get('PaletteName') or f'uv{ch_ind}'
             wrap_s = uv_ch.get('WrapS', 1)
-            img_path = os.path.join(sluggie_dir, 'tex', f'{tex_idx}.png')
+            tex_file = (texture_file_map or {}).get(tex_idx, f'{tex_idx}.png')
+            img_path = os.path.join(sluggie_dir, 'tex', tex_file)
             image = bpy.data.images.load(img_path, check_existing=True) if os.path.exists(img_path) else None
             mat = _create_material(f'{name}_mat{tex_idx}', layer_name, image, wrap_s)
             obj.data.materials.append(mat)
@@ -641,6 +657,7 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
         model_number = model["ChunkNumber"]
         model_offset_hex = model["ModelOffset"]
         submeshes = model.get("Submeshes", [])
+        texture_file_map = _texture_file_map(model.get("TextureDescriptors", []))
         sluggie_dir = os.path.dirname(self.filepath)
 
         collection = context.collection
@@ -668,7 +685,7 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
             obj = build_mesh(mesh_name, positions, normals, faces, vb, collection,
                              uv_channels, color_channels,
                              face_texture_indices=face_texture_indices, sluggie_dir=sluggie_dir,
-                             submesh_meta=submesh)
+                             submesh_meta=submesh, texture_file_map=texture_file_map)
             if arm_obj is not None:
                 add_vertex_groups(obj, i, bone_list, arm_obj)
                 obj.parent = arm_obj
@@ -707,6 +724,7 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
                         sluggie_dir=None,
                         submesh_meta=submesh,
                         prebuilt_materials=orig_materials or None,
+                        texture_file_map=texture_file_map,
                     )
                     if arm_obj is not None:
                         add_vertex_groups(edit_obj, i, bone_list, arm_obj)

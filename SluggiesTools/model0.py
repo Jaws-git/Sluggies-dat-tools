@@ -160,7 +160,7 @@ class Model0(FileChunk):
 
     def model_data(self, export_tex=True):
         all_bones = []
-        texture_paths = []
+        texture_paths = {}
 
         # textures are simple enough
         if export_tex and self.TEXPalette:
@@ -168,9 +168,11 @@ class Model0(FileChunk):
                 shutil.rmtree('tex')
             os.mkdir('tex')
             for tex_ind, tex in enumerate(self.TEXPalette.descriptors):
-                tex_path = 'tex/'+str(tex_ind)
-                tex.toFile(tex_path)
-                texture_paths.append(tex_path + '.png')
+                dolphin_name = tex.dolphinTextureBasename()
+                dolphin_path = 'tex/' + dolphin_name
+                if not os.path.exists(dolphin_path + '.png'):
+                    tex.toFile(dolphin_path)
+                texture_paths[tex_ind] = dolphin_name + '.png'
 
         geometries = []
         vertex_deletions = {}
@@ -340,10 +342,10 @@ class ModelData():
             shutil.copyfile('tex/'+png, tex_dir+png)
 
     def create_materials(self, dir, collada):
-        pngs = os.listdir(dir + 'tex/')
         out = {}
-        for png in pngs:
-            ind = int(png.split('.')[0])
+        for ind, png in self.textures.items():
+            if not png:
+                continue
             ind_str = str(ind)
             image = material.CImage('image_'+ind_str, './tex/'+png)
             collada.images.append(image)
