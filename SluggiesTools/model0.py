@@ -9,7 +9,7 @@ from collada import source, common
 from xml_helper import *
 
 _LOG_DIR_INDEX = None
-UNTANGLE_IGNORE_BASENAME = 'tex1_64x64_d6da4880cee95b7b_14'
+UNTANGLE_IGNORE_BASENAME = { 'tex1_64x64_d6da4880cee95b7b_14' , "tex1_64x64_a09662ae19841ea4_14" , "tex1_64x64_8a05f75d65053b44_14", "tex1_64x64_cc3d32b121549b17_14" }
 
 
 def set_log_dir_index(dir_index):
@@ -192,7 +192,7 @@ class Model0(FileChunk):
 
                 if untangle_context and untangle_context.get('enabled'):
                     # //quick hack to prevent destruction of this file that would get "untangled" 395 times in total, destroying much of the picture
-                    if dolphin_name == UNTANGLE_IGNORE_BASENAME:
+                    if dolphin_name in UNTANGLE_IGNORE_BASENAME:
                         pass
                     else:
                         seen_names = untangle_context.setdefault('seen_names', set())
