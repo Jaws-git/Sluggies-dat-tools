@@ -9,7 +9,7 @@ from collada import source, common
 from xml_helper import *
 
 _LOG_DIR_INDEX = None
-UNTANGLE_IGNORE_BASENAME = 'tex1_64x64_f848cd3d240b0bd0_14'
+UNTANGLE_IGNORE_BASENAME = 'tex1_64x64_d6da4880cee95b7b_14'
 
 
 def set_log_dir_index(dir_index):
