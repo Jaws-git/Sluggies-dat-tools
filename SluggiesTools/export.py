@@ -789,6 +789,7 @@ if UNTANGLE_TEX:
         untangle_context = {
             'enabled': True,
             'seen_names': set(),
+            'seen_image_starts': {},
             'report_lines': [],
             'warnings': [],
             'name_overrides': {},

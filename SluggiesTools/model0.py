@@ -189,6 +189,7 @@ class Model0(FileChunk):
                 image_override = None
                 tlut_override = None
                 dolphin_name = tex.dolphinTextureBasename()
+                image_abs = tex.parent.absolute + tex.dataPtr
 
                 if untangle_context and untangle_context.get('enabled'):
                     # //quick hack to prevent destruction of this file that would get "untangled" 395 times in total, destroying much of the picture
@@ -196,28 +197,39 @@ class Model0(FileChunk):
                         pass
                     else:
                         seen_names = untangle_context.setdefault('seen_names', set())
+                        seen_image_starts = untangle_context.setdefault('seen_image_starts', {})
+                        known_starts = seen_image_starts.setdefault(dolphin_name, set())
                         max_attempts = untangle_context.get('max_attempts', 8192)
-                        untangled = tex.ensureUniqueDolphinBasename(seen_names, max_attempts=max_attempts)
-                        dolphin_name = untangled['basename']
-                        if untangled['changed']:
-                            image_override = untangled['image_data']
-                            tlut_override = untangled['tlut_data']
-                            dat_out = untangle_context.get('dat_output_handle')
-                            if dat_out:
-                                image_abs = tex.parent.absolute + tex.dataPtr
-                                dat_out.seek(image_abs)
-                                dat_out.write(image_override)
+                        if image_abs in known_starts:
+                            # Same hash/name and same source image start: do not untangle again.
+                            seen_names.add(dolphin_name)
                             report = untangle_context.setdefault('report_lines', [])
                             report.append(
-                                f'Texture file untangled: {untangled["original_basename"]}.png -> {dolphin_name}.png '
-                                f'(model 0x{self.absolute:x}, tex {tex_ind}, attempts {untangled["attempts"]})'
+                                f'Texture file untangle skipped (known address): {dolphin_name}.png '
+                                f'(model 0x{self.absolute:x}, tex {tex_ind}, image_start 0x{image_abs:x})'
                             )
-                        elif untangled['warning']:
-                            warnings = untangle_context.setdefault('warnings', [])
-                            warnings.append(
-                                f'Warning: {untangled["warning"]} (model 0x{self.absolute:x}, tex {tex_ind}, '
-                                f'basename {untangled["original_basename"]}.png)'
-                            )
+                        else:
+                            untangled = tex.ensureUniqueDolphinBasename(seen_names, max_attempts=max_attempts)
+                            dolphin_name = untangled['basename']
+                            known_starts.add(image_abs)
+                            if untangled['changed']:
+                                image_override = untangled['image_data']
+                                tlut_override = untangled['tlut_data']
+                                dat_out = untangle_context.get('dat_output_handle')
+                                if dat_out:
+                                    dat_out.seek(image_abs)
+                                    dat_out.write(image_override)
+                                report = untangle_context.setdefault('report_lines', [])
+                                report.append(
+                                    f'Texture file untangled: {untangled["original_basename"]}.png -> {dolphin_name}.png '
+                                    f'(model 0x{self.absolute:x}, tex {tex_ind}, image_start 0x{image_abs:x}, attempts {untangled["attempts"]})'
+                                )
+                            elif untangled['warning']:
+                                warnings = untangle_context.setdefault('warnings', [])
+                                warnings.append(
+                                    f'Warning: {untangled["warning"]} (model 0x{self.absolute:x}, tex {tex_ind}, '
+                                    f'image_start 0x{image_abs:x}, basename {untangled["original_basename"]}.png)'
+                                )
 
                 if untangle_context and untangle_context.get('enabled'):
                     name_overrides = untangle_context.setdefault('name_overrides', {})
