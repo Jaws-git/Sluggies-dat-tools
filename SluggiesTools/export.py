@@ -7,6 +7,14 @@ import re
 import struct
 import sys
 
+_HS_DIR = os.path.join(os.path.dirname(__file__), 'Hammerspace')
+if _HS_DIR not in sys.path:
+    sys.path.insert(0, _HS_DIR)
+try:
+    import HammerspaceHelper as hh
+except Exception:
+    hh = None
+
 EXPORT_TEX = '--notex' not in sys.argv
 DEBUG_DONT_USE_BASE64 = '--debug' in sys.argv
 UNTANGLE_TEX = '--untangle' in sys.argv
@@ -173,35 +181,105 @@ DIRS_END = 0x69CAD8
 DIRS_LEN = (DIRS_END - DIRS_START) // 0x4
 DIR_PTR_PTRS = range(DIRS_START, DIRS_END, 4)
 DAT_FNAME_PTR = 0x8067f658
+UNUSED_DIRS_TO_UNTANGLE_CLONE = [89, 90, 91, 92, 93, 94]
 
-dol = open('../1_Input/main.dol', 'rb')
-DIR_PTRS = []
-for addr in DIR_PTR_PTRS:
-    dol.seek(addr, 0)
-    DIR_PTRS.append(bti(dol.read(4)) - 0x80003f00)
 
-dirs = {}
+def load_dol_dirs(dol_path):
+    """Parse model directory entries from a main.dol file."""
+    with open(dol_path, 'rb') as dol:
+        dir_ptrs = []
+        for addr in DIR_PTR_PTRS:
+            dol.seek(addr, 0)
+            dir_ptrs.append(bti(dol.read(4)) - 0x80003f00)
 
-# for x in DIR_PTRS:
-#     print(hex(x))
+        dirs = {}
+        for dir_ind in range(DIRS_LEN):
+            dirs[dir_ind] = []
+            file_ptr = dir_ptrs[dir_ind]
+            while file_ptr not in dir_ptrs[:dir_ind] + dir_ptrs[dir_ind + 1:]:
+                dol.seek(file_ptr, 0)
+                file_data = [bti(dol.read(4)) for _ in range(12)]
+                if file_data[0] != DAT_FNAME_PTR:
+                    break
+                offset_en = file_data[2]
+                len_en = file_data[1]
+                offset_sp = file_data[6]
+                len_sp = file_data[5]
+                offset_fr = file_data[10]
+                len_fr = file_data[9]
+                dirs[dir_ind].append({'en': [offset_en, len_en], 'sp': [offset_sp, len_sp], 'fr': [offset_fr, len_fr]})
+                file_ptr += 12 * 4
 
-for dir_ind in range(DIRS_LEN):
-    dirs[dir_ind] = []
-    file_ptr = DIR_PTRS[dir_ind]
-    while file_ptr not in DIR_PTRS[:dir_ind] + DIR_PTRS[dir_ind + 1:]:
-        # print(hex(file_ptr))
-        dol.seek(file_ptr, 0)
-        file_data = [bti(dol.read(4)) for _ in range(12)]
-        if file_data[0] != DAT_FNAME_PTR:
-            break
-        offset_en = file_data[2]
-        len_en = file_data[1]
-        offset_sp = file_data[6]
-        len_sp = file_data[5]
-        offset_fr = file_data[10]
-        len_fr = file_data[9]
-        dirs[dir_ind].append({'en':[offset_en, len_en], 'sp':[offset_sp, len_sp], 'fr':[offset_fr, len_fr]})
-        file_ptr += 12 * 4
+    return dirs
+
+
+def clone_unused_dirs_to_hammerspace_for_untangle(input_dol_path, input_dat_path, report_lines=None):
+    """Clone all model entries in dirs 89-94 into hammerspace and repoint output main.dol.
+
+    This decouples unused character directories from shared offsets before
+    texture untangling so each referenced model block can be modified independently.
+    """
+    if hh is None:
+        raise RuntimeError('HammerspaceHelper import failed; cannot perform untangle pre-clone step.')
+
+    source_dirs = load_dol_dirs(input_dol_path)
+
+    required_growth = 0
+    for dir_ind in UNUSED_DIRS_TO_UNTANGLE_CLONE:
+        for file in source_dirs.get(dir_ind, []):
+            length = file['en'][1]
+            if length > 0:
+                required_growth += length + hh.HS_BUFFER_BYTES
+
+    base_size = os.path.getsize(hh.OUTPUT_DAT) if os.path.exists(hh.OUTPUT_DAT) else hh.BASE_SIZE
+    reserve = 1024 * 1024
+    required_total_size = max(base_size, hh.BASE_SIZE) + required_growth + reserve
+    if not hh.ensureOutputDat(required_total_size):
+        raise RuntimeError('Unable to prepare output dt_na.dat for untangle clone step.')
+    hh.patchFstFileSize(os.path.getsize(hh.OUTPUT_DAT))
+
+    clone_count = 0
+    with open(input_dat_path, 'rb') as input_dat:
+        for dir_ind in UNUSED_DIRS_TO_UNTANGLE_CLONE:
+            for file_index, file in enumerate(source_dirs.get(dir_ind, [])):
+                src_offset = file['en'][0]
+                src_length = file['en'][1]
+                if src_length <= 0:
+                    continue
+
+                input_dat.seek(src_offset, 0)
+                block = input_dat.read(src_length)
+                if len(block) != src_length:
+                    raise RuntimeError(
+                        f'Failed reading source model block for dir {dir_ind} file {file_index}: '
+                        f'expected {src_length} bytes, got {len(block)}'
+                    )
+
+                new_offset = hh.findFreeMemoryChunk(src_length)
+                if new_offset == -1:
+                    grow_by = max(src_length + hh.HS_BUFFER_BYTES, 64 * 1024 * 1024)
+                    next_size = os.path.getsize(hh.OUTPUT_DAT) + grow_by
+                    if not hh.ensureOutputDat(next_size):
+                        raise RuntimeError('Unable to expand output dt_na.dat for untangle clone step.')
+                    hh.patchFstFileSize(os.path.getsize(hh.OUTPUT_DAT))
+                    new_offset = hh.findFreeMemoryChunk(src_length)
+                    if new_offset == -1:
+                        raise RuntimeError(
+                            f'Unable to find free hammerspace chunk for dir {dir_ind} file {file_index} '
+                            f'({src_length} bytes).'
+                        )
+
+                hh.writeModelBlock(block, new_offset)
+                hh.patchDolEntry(dir_ind, file_index, new_offset, src_length)
+                clone_count += 1
+
+                if report_lines is not None:
+                    report_lines.append(
+                        f'Hammerspace clone: dir {dir_ind} file {file_index} '
+                        f'0x{src_offset:x} -> 0x{new_offset:x} ({src_length} bytes)'
+                    )
+
+    return clone_count
 
 # dirs = {2:dirs[2]}
 # mario
@@ -759,43 +837,63 @@ class Dat(File):
         super().__init__(f)
 
 
-def prepare_untangle_output_dat():
+def prepare_untangle_output_files():
     output_dat_dir = '../3_Output_Dat'
     output_dat_path = os.path.join(output_dat_dir, 'dt_na.dat')
+    output_dol_path = os.path.join(output_dat_dir, 'main.dol')
     input_dat_path = '../1_Input/dt_na.dat'
+    input_dol_path = '../1_Input/main.dol'
 
     if not os.path.exists(output_dat_dir):
         os.mkdir(output_dat_dir)
 
-    if os.path.exists(output_dat_path):
-        answer = input('Untangle mode will overwrite 3_Output_Dat/dt_na.dat. Continue? (y/n): ').strip().lower()
+    if os.path.exists(output_dat_path) or os.path.exists(output_dol_path):
+        answer = input('Untangle mode will overwrite 3_Output_Dat/dt_na.dat and main.dol. Continue? (y/n): ').strip().lower()
         if answer != 'y':
             print('Untangle export canceled by user.')
-            return None
+            return None, None
 
     shutil.copyfile(input_dat_path, output_dat_path)
-    return output_dat_path
+    shutil.copyfile(input_dol_path, output_dol_path)
+    return output_dat_path, output_dol_path
 
-dat = Dat(open('../1_Input/dt_na.dat', 'rb'))
 untangle_context = None
+active_dol_path = '../1_Input/main.dol'
+active_dat_path = '../1_Input/dt_na.dat'
 
 if UNTANGLE_TEX:
     if not EXPORT_TEX:
         print('Warning: --untangle has no effect with --notex; untangle mode disabled.')
     else:
-        untangle_output_path = prepare_untangle_output_dat()
+        untangle_output_path, untangle_output_dol_path = prepare_untangle_output_files()
         if untangle_output_path is None:
             sys.exit(0)
+
+        untangle_bootstrap_report = []
+        clone_count = clone_unused_dirs_to_hammerspace_for_untangle(
+            input_dol_path='../1_Input/main.dol',
+            input_dat_path='../1_Input/dt_na.dat',
+            report_lines=untangle_bootstrap_report,
+        )
+
+        active_dol_path = untangle_output_dol_path
+        active_dat_path = untangle_output_path
+
         untangle_context = {
             'enabled': True,
             'seen_names': set(),
             'seen_image_starts': {},
-            'report_lines': [],
+            'report_lines': [
+                f'Hammerspace clone pre-pass complete: cloned {clone_count} entries from dirs 89-94.'
+            ] + untangle_bootstrap_report,
             'warnings': [],
             'name_overrides': {},
             'max_attempts': 8192,
             'dat_output_handle': open(untangle_output_path, 'r+b')
         }
+
+dirs = load_dol_dirs(active_dol_path)
+dat = Dat(open(active_dat_path, 'rb'))
 
 for dir_ind, file_arr in dirs.items():
     set_log_dir_index(dir_ind)
