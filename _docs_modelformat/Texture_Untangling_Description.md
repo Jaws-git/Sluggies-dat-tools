@@ -4,7 +4,10 @@ Dolphin emulator provides a very useful custom texture loading system that lets 
 Unfortunately the system works by hashing textures and generating a filename out of this. Placing a .png texture with this filename in Dolphins LOAD folder will override *every* texture with this hash in the game, which can lead to multiple models unintentionally appearing with the same texture mod.
 
 "Untangling" refers to making the hash code of every identical texture unique instead.
-This process will run each time before texture files are written by the export, so the exported file names will already be unique.
+This process will run before texture files are written by the export, so the exported file names will already be unique.
+You can choose to skip the untangling step in order to retain the old texture behavior (e.g. for old texture mod compatibility)
+
+Untangling is deterministic and the new filenames (hashes) are shared between all untangled games.
 
 # approach
 
