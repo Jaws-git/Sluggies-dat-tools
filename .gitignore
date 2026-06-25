@@ -1,8 +1,6 @@
 __pycache__
 *.dol
 *.dat
-/1_Input/
-
 /3_Output_Dat/
 *.dae
 *.png

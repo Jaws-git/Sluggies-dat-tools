@@ -40,11 +40,11 @@ flowchart LR
 2) Set up Dolphin & Game iso
 3) Try running the game to make sure everything is prepped correctly
 4) right click the Game -> properties -> Filesystem -> right click top node -> extract entire disc
-5) from the extracted disc data, copy both "dt_na.dat" and "main.dol" to the folder \1_Input\
-6) cmd ``` python start.py --export --untangle```
+5) from the extracted disc data, copy both "dt_na.dat" and "main.dol" (and optionally fst.bin) to the folder \1_Input\
+6) cmd ``` python start.py --export --untangle``` (or alternatively, start the batch file)
 
 This will extract the entire content into a new folder \2_Output_Models\\...  
-It will contain all the player models, props and environment models. Everything is sorted into numbered folders, for example Tiny Kong + her Bat + her Glove are in folder "75". 
+It will contain all the player models, props and environment models. Everything is sorted into numbered and approximately named folders.
 With the "untangle" parameter, duplicate textures will be made "unique". Their file names will change compared to "vanilla" Sluggers.
 You can also use the option --notex to skip the rather slow png creation step. Removes the requirement for wimgt.
 
@@ -64,9 +64,9 @@ Exporting to a .sluggies file will automatically put the file name on your clipb
 
 *The file name from the last step should still be in your clipboard unless you copied something else in the meantime.*
 1) cmd ``` python patch.py --patch myfilename```
-2) a new folder 3_Output_Dat will appear, containing a patched dt_na.dat file
+2) a new folder 3_Output_Dat will appear, containing a patched dt_na.dat and main.dol file
 3) keep applying as many patches as you like, you can also specify multiple file names
-4) copy the finished dt_na.dat file back into the unpacked game folder, overwrite the old one
+4) copy the finished dt_na.dat and main.dol files back into the unpacked game folder, overwriting the old ones
 5) start the unpacked game containing the patched dat file using Dolphin (we are not re-packaging it into an iso file for now, Dolphin can run it just fine as is)
 
 You can call patch.py with the option --unpatch to write the original model back to the dat.
