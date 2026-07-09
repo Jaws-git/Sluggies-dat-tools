@@ -643,11 +643,11 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
 
     Bone pairs in SK2 are stored with the lower BoneId first.
     Source data (bind-pose XYZ + NxNyNz) is encoded with SkinData.QuantizeInfo.
-    Writes 'SkinDataEdited' at the model level.  Returns True if written.
+    Writes 'SkinDataEdited' at the model level.  Returns (ok, message).
     """
     skin_data = data["SluggiesModel"].get("SkinData")
     if not skin_data:
-        return False
+        return True, None   # unskinned model — nothing to encode, not an error
 
     submeshes  = data["SluggiesModel"].get("Submeshes", [])
     quant_info = skin_data["QuantizeInfo"]
@@ -928,14 +928,19 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
         )
 
     if edit_size > orig_size:
+        # Size growth is fine in hammerspace mode — the block is written to the
+        # extended region of the dat file with no in-place size constraint.
+        # (The hard overflow guard only applies to in-place mode, which uses
+        # encode_skin_weights_inplace instead of this function.)
         overflow = edit_size - orig_size
-        stats = (
-            f"SKN block too large to patch in-place.\n"
+        candidate_edited["FlushIndSize"] = flush_ind_size
+        data["SluggiesModel"]["SkinDataEdited"] = candidate_edited
+        msg = (
+            f"SKN block grew by {overflow} B (hammerspace accommodates this).\n"
             f"  Original: {_sk_stats(len(orig_sk1s), orig_v1, len(orig_sk2s), orig_v2, len(orig_skaccs), orig_v3, orig_size)}\n"
-            f"  Edited:   {_sk_stats(len(new_sk1s), edit_v1, len(new_sk2s), edit_v2, len(new_skaccs), edit_v3, edit_size)}\n"
-            f"  Overflow: +{overflow} B — reduce vertex count or simplify bone influences."
+            f"  Edited:   {_sk_stats(len(new_sk1s), edit_v1, len(new_sk2s), edit_v2, len(new_skaccs), edit_v3, edit_size)}"
         )
-        return False, stats
+        return True, msg
 
     effective_shrinkage = orig_size - edit_size_adj
     candidate_edited["FlushIndSize"] = flush_ind_size
