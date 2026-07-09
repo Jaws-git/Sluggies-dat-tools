@@ -32,11 +32,11 @@ _FST_DAT_SIZE_OFF   = _FST_DAT_ENTRY_IDX * 12 + 8  # type/name(4) + offset(4) + 
 if __name__ == '__main__':
     print("\nHammerspace creation mode.")
     print("This creates some extra space to put additional model data that may not fit inside the base game memory.\n")
-    print("Value range: 0-3580")
+    print("Value range: 0-3579")
     print("  - 0: Restore original file size, no hammerspace (most compatible with original hardware)")
     print("  - 359: Add 359MB (1GB total) (can hold several extra models, depending on complexity)")
     print("  - 1024: Add 1GB (1.7GB total) (plenty of space for nearly anything)")
-    print("  - 3580: maximum, creates 4GB total. You can't go higher than this")
+    print("  - 3579: maximum, ~4GB total. You can't go higher than this (uint32 offset/size limit)")
 
     # user input checks
     raw = input("Enter value: ").strip()
@@ -50,9 +50,11 @@ if __name__ == '__main__':
         print("ERROR: Value must be 0 or greater. Aborting.")
         raise SystemExit(1)
 
-    if value > 3580:
-        print("Value exceeds maximum, clamping to 3580.")
-        value = 3580
+    if value > 3579:
+        # 3579 keeps BASE_SIZE + value MB below the uint32 max (4,294,967,295)
+        # that the DOL offset/length and FST size fields can represent.
+        print("Value exceeds maximum, clamping to 3579.")
+        value = 3579
 
     # size change logic
     MB = 1000000
@@ -102,7 +104,7 @@ if __name__ == '__main__':
                 print(f"\nWARNING: Non-zero data found at offset 0x{non_zero_offset:08X} "
                       f"within the {remove_length:,} bytes that would be removed.")
                 print("This may be hammerspace model data that has not been removed yet.")
-                answer = input("Continue and permanently discard this data? [y/N]: ").strip().lower()
+                answer = input("Continue and permanently discard this data? [y/n]: ").strip().lower()
                 if answer != 'y':
                     print("Aborted. No changes were made.")
                     raise SystemExit(0)
