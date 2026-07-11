@@ -55,7 +55,7 @@
         <tr>
             <td>0x14</td>
             <td>uint32</td>
-            <td>Start of the memory region to clear before processing SK entries, as a byte offset from the start of the <a href="vertex_section.html">GPL section</a>. Equal to <code>(GPL-relative offset of submesh 0's raw position data) + min(all gplVertexArr / gplDestArr values)</code>. In practice the minimum gplVertexArr is always zero, so this simply points to the start of submesh 0's position array. Note: this is GPL-section-relative, <em>not</em> SKN-section-relative.</td>
+            <td>Start of the memory region to clear before processing SK entries, as a byte offset from the start of <strong>submesh 0's raw position data array</strong> (same convention as gplVertexArr / gplDestArr — position-data-relative, <em>not</em> GPL-section-relative and not SKN-section-relative). Empirically verified against all 325 skinned models (324 exact, see <code>SluggiesTools/Debug/memclr_probe3.py</code>): the cleared region covers exactly the vertex slots written by SKAcc (accumulation) entries that are <em>not</em> written by any SK1/SK2 (direct-write) entry. <code>memClrPtr = min(accumulation-only slot offsets)</code>, or 0 when no such slots exist. Slot offsets: SK1/SK2 write to <code>gplVertexArr + vertexOffset + k × stride</code>; SKAcc writes to <code>gplDestArr + destIndex[k] × stride</code>.</td>
         </tr>
         <tr>
             <td>0x18</td>
@@ -73,8 +73,8 @@
             <td>Number of indices to flush</td>
         </tr>
     </table>
-    <p>The memory clearing part is weird. The SKAcc headers work by adding (accumulating) the influences from multiple bones in-place in the position data, so without clearing the memory the correct value for a skinned position will be added to whatever position was used last frame.</p>
-    <p>The vertex stride — bytes per vertex in the skinned position buffer — is <code>component_size(quantize_info) * 6</code>, where <code>component_size</code> returns 4 for float formats (high nibble 4, 7, or 0xa) and 2 otherwise. The memClrSize value equals <code>max(write_end) &minus; min(all gplVertexArr / gplDestArr)</code>; <em>write_end</em> for SK1 and SK2 entries is <code>gplVertexArr + vertex_offset + vertex_count &times; vertex_stride</code>, and for SKAcc entries is <code>gplDestArr + (max(dest_indices) + 1) &times; vertex_stride</code>.</p>
+    <p>The memory clearing part is weird. The SKAcc headers work by adding (accumulating) the influences from multiple bones in-place in the position data, so without clearing the memory the correct value for a skinned position will be added to whatever position was used last frame. Slots written by SK1/SK2 are plain overwrites and need no clearing — the cleared region covers only the accumulation-only slots.</p>
+    <p>The vertex stride — bytes per vertex in the skinned position buffer — is <code>component_size(quantize_info) * 6</code>, where <code>component_size</code> returns 4 for float formats (high nibble 4, 7, or 0xa) and 2 otherwise. <code>memClrSize = align32_up(max(accumulation-only slot) + stride − memClrPtr)</code> — the slot span rounded up to a 32-byte multiple (0 when there are no accumulation-only slots). Verified on 324 of 325 skinned models; the single outlier (model at 0x8808B60) clears one extra cache line.</p>
     <h2>SK1</h2>
     <p>The simplest case. This signifies a group of vertex positions that are only influenced by a single bone.</p>
     <table>
@@ -295,8 +295,8 @@
         </tr>
         <tr>
             <td>memClrPtr (header +0x14)</td>
-            <td>GPL section start</td>
-            <td>GPL-section-relative. Points to the start of the memory region to zero each frame. Equal to <code>submesh_0_pos_data_gpl_offset + min(all gplVertexArr/gplDestArr)</code>.</td>
+            <td>Submesh 0 position data</td>
+            <td>Position-data-relative (empirically verified — same base as gplVertexArr / gplDestArr). Points to the first accumulation-only vertex slot to zero each frame. Equal to <code>min(SKAcc slots not covered by SK1/SK2 writes)</code>, 0 when none exist.</td>
         </tr>
     </table>
 
@@ -304,7 +304,8 @@
     <ul>
         <li><strong>Entry order matters:</strong> The game processes SK entries in array order. SK1, SK2, and SKAcc entries must preserve their original ordering (by bone index / bone pair) so that accumulation into the destination buffer produces correct results.</li>
         <li><strong>gplVertexArr / gplDestArr are position-data-relative:</strong> These values do not change when the model block is relocated to a different file offset or when sections are rearranged, because they are relative to the position data within the GPL section, not to any absolute address.</li>
-        <li><strong>memClrPtr must be recomputed</strong> when the GPL section layout changes (e.g. different submesh blob ordering or position data offset), since it is GPL-section-relative.</li>
+        <li><strong>memClrPtr / memClrSize are position-data-relative and layout-independent:</strong> they only change when the SK entry coverage changes (vertex counts, dest indices, or gplVertexArr values), NOT when the block is relocated or the GPL section layout shifts. Recompute them from the accumulation-only slot set whenever skinning data changes.</li>
+        <li><strong>SK runtime scratch space:</strong> the SK write targets (gplVertexArr / gplDestArr slots) can extend BEYOND the last stored vertex of submesh 0's position array — 163 of 325 skinned models use scratch slots after the array (up to ~6.5 KB past the end). Original files leave a gap after the position data for this. When rebuilding the GPL section, the position buffer region must reserve <code>max(stored_array_length, max_write_end)</code> bytes; packing the next data array (e.g. vertex colors) directly after the position data gets it overwritten by the per-frame memClr/SKAcc writes, which manifests as corrupted colors/partial transparency in-game.</li>
         <li><strong>Vertex data quantization round-trip:</strong> When bind-pose data passes through a floating-point pipeline (e.g. Blender export → re-quantize to int16), component values may differ by ±1–3 from the original due to rounding. This is visually imperceptible and does not cause rendering errors.</li>
     </ul>
 </body>
