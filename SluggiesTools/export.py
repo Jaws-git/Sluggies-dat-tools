@@ -729,12 +729,17 @@ def extract_trailing_sections(model):
     block-relative pointer, and the raw section bytes so the hammerspace
     importer can rebuild the block from the .sluggies file alone."""
     sections = []
-    all_ptrs = sorted(p for p in [model.gplPtr, model.ptr3, model.texPtr,
-                                  model.ptr5, model.ptr6, model.ptr7, model.ptr8] if p)
+    all_ptrs = sorted(
+        p for p in [model.gplPtr, model.ptr3, model.texPtr,
+                    model.ptr5, model.ptr6, model.ptr7, model.ptr8]
+        if 0 < p < model.length
+    )
     for field_off, ptr in ((0x14, model.ptr6), (0x18, model.ptr7), (0x1c, model.ptr8)):
-        if not ptr:
+        if not ptr or ptr >= model.length:
             continue
         nxt = min([x for x in all_ptrs if x > ptr] + [model.length])
+        if nxt <= ptr:
+            continue
         model.f.seek(model.absolute + ptr)
         data = model.f.read(nxt - ptr)
         sections.append({
