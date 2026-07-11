@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <link rel="stylesheet" type="text/css" href="../_docs_modelformat/style.css" />
+    <style>
+        body { font-family: monospace; padding: 16px; }
+        h1, h2, p { font-family: sans-serif; }
+
+        .file-map {
+            display: inline-flex;
+            flex-direction: column;
+            border: 2px solid #444;
+            font-family: monospace;
+            min-width: 520px;
+        }
+        .blk { border-bottom: 2px solid #444; }
+        .blk:last-child { border-bottom: none; }
+        .blk-title {
+            font-weight: bold;
+            padding: 4px 10px;
+            border-bottom: 1px solid rgba(0,0,0,0.25);
+        }
+        .fields {
+            padding: 4px 10px 6px 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .row {
+            display: grid;
+            grid-template-columns: 80px 1fr;
+            gap: 8px;
+        }
+        .off { color: #555; font-size: 0.85em; padding-top: 2px; }
+        .note { font-size: 0.82em; color: #666; font-style: italic; }
+
+        /* nesting */
+        .nested {
+            margin: 6px 0 2px 18px;
+            border-left: 3px solid rgba(0,0,0,0.18);
+        }
+        .nested .blk-title { font-style: italic; font-weight: normal; }
+        .nested .blk { border-bottom: 1px solid rgba(0,0,0,0.2); }
+        .nested .blk:last-child { border-bottom: none; }
+
+        /* section colours */
+        .c-flag { background: #e0e0e0; }
+        .c-cw   { background: #cce5ff; }
+        .c-cap  { background: #d4edda; }
+        .c-sub  { background: rgba(255,255,255,0.55); }
+        .c-key  { background: #fff3cd; }        /* highlight for important fields */
+
+        .addr { color: #888; font-size: 0.8em; font-style: normal; margin-left: 6px; }
+    </style>
+</head>
+<body>
+    <h1>Mario Super Sluggers — Player Data Structures in <code>main.dol</code></h1>
+    <p>
+        Three contiguous tables in <strong>sec11</strong> (<code>0x806233C0</code>–<code>0x80639D00</code>) hold all static per-character metadata.
+        The most important for icon routing is the <strong>color-wheel attribute table</strong>.
+        Virtual addresses shown; all values are big-endian.
+        File-absolute offsets from the start of <code>main.dol</code> are noted in brackets: <code>[0x...]</code>.
+    </p>
+
+    <!-- ================================================================
+         SEC11 MEMORY MAP
+         ================================================================ -->
+    <h2>sec11 — Known Contiguous Block</h2>
+
+    <div class="file-map">
+
+        <!-- FLAG ARRAY -->
+        <div class="blk c-flag">
+            <div class="blk-title">
+                Flag Array
+                <span class="addr">0x80631510 &nbsp;[0x0062D610] · 64 bytes</span>
+            </div>
+            <div class="fields">
+                <div class="row">
+                    <span class="off">char 0x00</span>
+                    <span>u8 flag, one entry per character ID (first 64 chars only)</span>
+                </div>
+                <div class="row">
+                    <span class="off">…</span>
+                    <span class="note">Mostly <code>0x01</code>; a few entries are <code>0x00</code>. Exact meaning not yet decoded.</span>
+                </div>
+                <div class="row">
+                    <span class="off">char 0x3F</span>
+                    <span>last entry (array ends at <code>0x80631550</code>)</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- COLOR-WHEEL TABLE -->
+        <div class="blk c-cw">
+            <div class="blk-title">
+                Color-Wheel Attribute Table
+                <span class="addr">0x80631550 &nbsp;[0x0062D650] · 101 × 8 = 808 bytes</span>
+            </div>
+            <div class="fields">
+                <div class="row">
+                    <span class="off">entry formula</span>
+                    <span><code>0x80631550 + char_id × 8</code> &nbsp;/&nbsp; file: <code>[0x0062D650 + char_id × 8]</code></span>
+                </div>
+                <div class="row">
+                    <span class="off">count</span>
+                    <span>101 entries — char IDs <code>0x00</code>–<code>0x64</code></span>
+                </div>
+
+                <div class="nested">
+                    <!-- RECORD LAYOUT -->
+                    <div class="blk c-sub">
+                        <div class="blk-title">Color-Wheel Record &nbsp;×101&nbsp; <span class="note">(8 bytes each)</span></div>
+                        <div class="fields">
+                            <div class="row">
+                                <span class="off">+0x00</span>
+                                <span><code>species_id</code> &nbsp;u8 — species / physical-type enum
+                                    <span class="note">(0x00 solo, 0x0B Yoshi, 0x0C team-NPC-C, 0x0D team-NPC-D, …)</span>
+                                </span>
+                            </div>
+                            <div class="row">
+                                <span class="off">+0x01</span>
+                                <span><code>captain_id</code> &nbsp;u8 — char ID of the species captain;
+                                    equals <code>char_id</code> for captains and solo chars
+                                </span>
+                            </div>
+                            <div class="row">
+                                <span class="off">+0x02</span>
+                                <span><code>model_id</code> &nbsp;u8 — shared model/sprite index for this appearance;
+                                    same value across all chars that share a model
+                                </span>
+                            </div>
+                            <div class="row">
+                                <span class="off">+0x03</span>
+                                <span><code>is_captain</code> &nbsp;u8 — <code>0x01</code> = captain or solo char; <code>0x00</code> = variant</span>
+                            </div>
+                            <div class="row">
+                                <span class="off">+0x04</span>
+                                <span><code>flag_b4</code> &nbsp;u8 — unknown flag; <code>0x01</code> for some variants, otherwise <code>0x00</code></span>
+                            </div>
+                            <div class="row">
+                                <span class="off">+0x05</span>
+                                <span><code>variant_index</code> &nbsp;u8 — zero-based position within species group
+                                    <span class="note">(0 = captain, 1 = first variant, …)</span>
+                                </span>
+                            </div>
+                        </div>
+
+                        <div class="nested">
+                            <!-- KEY FIELDS -->
+                            <div class="blk c-key">
+                                <div class="blk-title">Icon routing fields <span class="note">(patching targets for phase 5)</span></div>
+                                <div class="fields">
+                                    <div class="row">
+                                        <span class="off">+0x06</span>
+                                        <span><code>icon_valid</code> &nbsp;u8 —
+                                            <code>0x01</code> = character has a valid icon entry;
+                                            <code>0x00</code> = no valid icon, draws Pink Yoshi fallback (page <code>0x8B</code> cell <code>0x49</code>).
+                                            <br><strong>All unused chars 0x59–0x5E are <code>0x00</code> here.</strong>
+                                        </span>
+                                    </div>
+                                    <div class="row">
+                                        <span class="off">+0x07</span>
+                                        <span><code>icon_slot</code> &nbsp;u8 —
+                                            per-species icon slot index, active when <code>icon_valid == 1</code>.
+                                            Used to look up <code>(front_page, front_cell, side_page, side_cell)</code>
+                                            in the per-species icon table <span class="note">(location not yet confirmed)</span>.
+                                            <br><strong>All unused chars 0x59–0x5E are <code>0x00</code> here.</strong>
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- species examples inline -->
+                <div class="row" style="margin-top:4px">
+                    <span class="off">examples</span>
+                    <span class="note">
+                        Green Yoshi <code>0x06</code>: <code>0B 06 06 01 01 00 01 03</code> — icon_valid=1 slot=3<br>
+                        Pink Yoshi &nbsp;<code>0x46</code>: <code>0B 06 06 00 00 05 01 08</code> — icon_valid=1 slot=8<br>
+                        Unused Yoshi <code>0x47</code>: <code>0B 06 06 00 00 06 <strong>00</strong> 05</code> — icon_valid=<strong>0</strong> ← fallback<br>
+                        Unused char &nbsp;<code>0x59</code>: <code>0D 59 2A 01 00 00 <strong>00</strong> 00</code> — icon_valid=<strong>0</strong> ← fallback
+                    </span>
+                </div>
+            </div>
+        </div>
+
+        <!-- CAPTAIN LIST -->
+        <div class="blk c-cap">
+            <div class="blk-title">
+                Captain ID List
+                <span class="addr">0x80631878 &nbsp;[0x0062D978] · 43 bytes + padding</span>
+            </div>
+            <div class="fields">
+                <div class="row">
+                    <span class="off">+0x00</span>
+                    <span>linear array of u8 captain char IDs — one entry per species / unique solo</span>
+                </div>
+                <div class="row">
+                    <span class="off">entries</span>
+                    <span><code>00 01 02 … 14 15 18 1B 1C 21 25–29 30 36–3A 3E–41 4D 59</code>
+                        <span class="note">(43 entries, null-terminated)</span>
+                    </span>
+                </div>
+                <div class="row">
+                    <span class="off">note</span>
+                    <span class="note">
+                        <code>0x4D</code> = captain of species <code>0x0C</code> (team-NPC-C).
+                        <code>0x59</code> = captain of species <code>0x0D</code> (team-NPC-D, the unused chars).
+                        These are the last two real entries before the null padding.
+                    </span>
+                </div>
+            </div>
+        </div>
+
+    </div><!-- /file-map -->
+
+
+    <!-- ================================================================
+         ICON DRAW MECHANISM
+         ================================================================ -->
+    <h2>Icon Draw Path (front view) — partial</h2>
+    <p>
+        The front icon draw dispatch at <code>0x80070DC4</code> calls <code>0x8007A654</code>
+        to determine the draw path. When that function returns <code>1</code> the fallback fires:
+    </p>
+
+    <div class="file-map">
+
+        <div class="blk c-flag">
+            <div class="blk-title">Fallback path <span class="addr">fires when icon_valid == 0</span></div>
+            <div class="fields">
+                <div class="row"><span class="off">page</span><span><code>0x8B</code> — hardcoded; Pink Yoshi's atlas page</span></div>
+                <div class="row"><span class="off">cell</span><span><code>char_obj[r30+0x228][0x0C]</code> — runtime byte; <code>0x49</code> for all unused chars</span></div>
+                <div class="row"><span class="off">result</span><span>always draws Pink Yoshi placeholder regardless of <code>icon_slot</code></span></div>
+            </div>
+        </div>
+
+        <div class="blk c-cw">
+            <div class="blk-title">Normal path <span class="addr">fires when icon_valid == 1</span></div>
+            <div class="fields">
+                <div class="row"><span class="off">page</span><span><code>0x8C</code> — hardcoded; exact meaning under investigation</span></div>
+                <div class="row"><span class="off">cell</span><span><code>char_obj[r30+0x228][0x0C]</code> — set during character init from the per-species icon table</span></div>
+                <div class="row"><span class="off">result</span><span>draws the character's own icon from <code>icon_slot</code> lookup</span></div>
+            </div>
+        </div>
+
+        <div class="blk c-cap">
+            <div class="blk-title">Per-species icon table <span class="addr">location not yet confirmed</span></div>
+            <div class="fields">
+                <div class="row"><span class="off">key</span><span><code>(species_id, icon_slot)</code> → <code>(front_page, front_cell, side_page, side_cell)</code></span></div>
+                <div class="row"><span class="off">known</span><span>Yoshi (<code>species 0x0B</code>) has at least 10 slots (slot indices 0–9 observed)</span></div>
+                <div class="row"><span class="off">gap</span><span class="note">Species <code>0x0D</code> has no allocated slots — all entries are <code>icon_slot=0</code></span></div>
+            </div>
+        </div>
+
+    </div><!-- /file-map -->
+
+</body>
+</html>
