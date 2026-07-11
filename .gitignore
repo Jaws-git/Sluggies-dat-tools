@@ -12,3 +12,5 @@ anim_info
 *.wad
 *.thp
 *.sluggie
+*.act
+*.bin
