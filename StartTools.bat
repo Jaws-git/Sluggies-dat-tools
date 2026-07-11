@@ -1,9 +1,11 @@
 @echo off
+setlocal EnableDelayedExpansion
 echo Sluggers Dat Tools
 echo ==================
 echo [1] Extract all models, icons ^& 'untangle' textures (for Dolphin texture loader)
 echo [2] Extract all models - no texture untangling
 echo [3] Extract player icons only
+echo ---
 echo [4] Patch model into game files
 echo [5] UnPatch model in game files
 echo [6] Create or resize hammerspace (extra model data storage)
@@ -27,13 +29,13 @@ if "%choice%"=="3" (
     goto end
 )
 if "%choice%"=="4" (
-    set /p "files=Enter file name^(s^): "
-    python start.py --patch %files%
+    set /p "files=Enter file name(s): "
+    python start.py --patch !files!
     goto end
 )
 if "%choice%"=="5" (
-    set /p "files=Enter file name^(s^): "
-    python start.py --unpatch %files%
+    set /p "files=Enter file name(s): "
+    python start.py --unpatch !files!
     goto end
 )
 if "%choice%"=="6" (
