@@ -18,6 +18,7 @@ And the helpful Sluggers community for always having an open ear and pointing me
 - Python https://www.python.org/downloads/
 - Numpy ``pip install numpy``
 - Collada ``pip install pycollada``
+- Pillow ``pip install Pillow``
 - **wimgt** (part of [Wiimms SZS Tools](https://szs.wiimm.de/download.html)) — must be on `PATH`; used to convert textures between TPL and PNG. No textures without this.
 - Blender 4.2 or newer https://www.blender.org/download/
 - Autism
@@ -71,6 +72,19 @@ Exporting to a .sluggies file will automatically put the file name on your clipb
 
 You can call patch.py with the option --unpatch to write the original model back to the dat.
 Example: ``python patch.py --unpatch myfilename``
+
+## Icon Reimport
+
+After editing sheets in ``2_Output_Models/_ICONS/sheets (EDIT THESE)``, reimport with:
+
+1) ``python start.py --patch-icons``
+2) Patched output is written to ``3_Output_Dat/dt_na.dat``
+3) A report is generated at ``2_Output_Models/_ICONS/metadata [META]/reimport_report.json``
+
+Useful options:
+
+- ``python start.py --patch-icons --dry-run`` validates and reports without writing bytes.
+- ``python start.py --patch-icons --palette-only`` writes only page palettes.
 
 ## Development progress:
 ✅ .dae model & .png texture export (one-way)  
