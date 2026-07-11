@@ -708,11 +708,42 @@ def extract_skin_data(model):
         "FlushIndArrFieldOffset": hex(skn_abs + 0x1C),
         "FlushIndAbsolutePtr":  hex(skn_abs + skn.flushIndArr) if skn.flushIndArr else None,
         "FlushIndSize":         skn.flushIndSze,
+        "FlushIndData":         _extract_flush_data(model, skn, skn_abs),
         "QuantizeInfo":         skn.quantizeInfo,
         "SK1s":  sk1s,
         "SK2s":  sk2s,
         "SKAccs": skaccs
     }
+
+def _extract_flush_data(model, skn, skn_abs):
+    """Read the raw flush index array bytes (uint16 × flushIndSze), or None."""
+    if not skn.flushIndArr or not skn.flushIndSze:
+        return None
+    model.f.seek(skn_abs + skn.flushIndArr)
+    return _encode_bytes(model.f.read(skn.flushIndSze * 2))
+
+def extract_trailing_sections(model):
+    """Return a list of trailing sub-sections referenced by header ptr6/ptr7/ptr8.
+
+    Each entry carries the header field offset (0x14/0x18/0x1c), the original
+    block-relative pointer, and the raw section bytes so the hammerspace
+    importer can rebuild the block from the .sluggies file alone."""
+    sections = []
+    all_ptrs = sorted(p for p in [model.gplPtr, model.ptr3, model.texPtr,
+                                  model.ptr5, model.ptr6, model.ptr7, model.ptr8] if p)
+    for field_off, ptr in ((0x14, model.ptr6), (0x18, model.ptr7), (0x1c, model.ptr8)):
+        if not ptr:
+            continue
+        nxt = min([x for x in all_ptrs if x > ptr] + [model.length])
+        model.f.seek(model.absolute + ptr)
+        data = model.f.read(nxt - ptr)
+        sections.append({
+            "HeaderFieldOffset": hex(field_off),
+            "OriginalPtr":       hex(ptr),
+            "Length":            nxt - ptr,
+            "Data":              _encode_bytes(data),
+        })
+    return sections
 
 def extract_act_header(model):
     """Return an ACTHeader dict with actor/skin IDs, geo name, and the
@@ -939,6 +970,7 @@ for dir_ind, file_arr in dirs.items():
                                     "TextureDescriptors": extract_texture_descriptors(sub_model, untangle_context=untangle_context),
                                     "Submeshes": extract_submeshes(sub_model),
                                     "SkinData": extract_skin_data(sub_model),
+                                    "TrailingSections": extract_trailing_sections(sub_model),
                                     "ACTHeader": extract_act_header(sub_model),
                                     "BoneHierarchy": extract_bone_data(sub_model)
                                 }
@@ -963,6 +995,7 @@ for dir_ind, file_arr in dirs.items():
                                 "TextureDescriptors": extract_texture_descriptors(child.child, untangle_context=untangle_context),
                                 "Submeshes": extract_submeshes(child.child),
                                 "SkinData": extract_skin_data(child.child),
+                                "TrailingSections": extract_trailing_sections(child.child),
                                 "ACTHeader": extract_act_header(child.child),
                                 "BoneHierarchy": extract_bone_data(child.child)
                             }
