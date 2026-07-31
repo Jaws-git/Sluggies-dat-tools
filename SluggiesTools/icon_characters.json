@@ -1,0 +1,102 @@
+{
+    "_comment": [
+        "Custom character icon description file for Mario Super Sluggers.",
+        "Each entry defines one unused character to receive a custom icon.",
+        "The donor character's icon resolution path is borrowed at runtime;",
+        "the hooks then redirect to the custom resource row at the last step.",
+        "",
+        "donor_side_resource / donor_front_resource are the donor's resource",
+        "IDs used as match keys by the final row hook. These come from the",
+        "donor's existing source table records (guide section 8).",
+        "",
+        "color_wheel values are written to the DOL color-wheel table at",
+        "0x0062D650 + char_id * 8.  icon_valid is always set to 1.",
+        "",
+        "Artwork PNGs must be 48x51 RGBA, placed in the artwork_dir folder."
+    ],
+
+    "artwork_dir": "icon_artwork",
+
+    "characters": [
+        {
+            "name": "Rosalina",
+            "char_id": "0x48",
+            "donor_id": "0x05",
+            "donor_name": "Daisy",
+            "donor_side_resource": "0x06",
+            "donor_front_resource": "0x54",
+            "color_wheel": {
+                "species": "0x0B",
+                "captain": "0x06",
+                "model": "0x06",
+                "is_captain": 0,
+                "flags": "0x00",
+                "variant": "0x07",
+                "icon_valid": 1,
+                "icon_slot": "0x09"
+            },
+            "side_png": "rosalina_side.png",
+            "front_png": "rosalina_front.png"
+        },
+        {
+            "name": "Orange Toad",
+            "char_id": "0x49",
+            "donor_id": "0x0D",
+            "donor_name": "Toad (Red)",
+            "donor_side_resource": "0x10",
+            "donor_front_resource": "0x5C",
+            "color_wheel": {
+                "species": "0x02",
+                "captain": "0x0D",
+                "model": "0x0D",
+                "is_captain": 0,
+                "flags": "0x00",
+                "variant": "0x05",
+                "icon_valid": 1,
+                "icon_slot": "0x05"
+            },
+            "side_png": "orange_toad_side.png",
+            "front_png": "orange_toad_front.png"
+        },
+        {
+            "name": "Larry",
+            "char_id": "0x4A",
+            "donor_id": "0x13",
+            "donor_name": "Bowser Jr.",
+            "donor_side_resource": "0x16",
+            "donor_front_resource": "0x62",
+            "color_wheel": {
+                "species": "0x05",
+                "captain": "0x15",
+                "model": "0x15",
+                "is_captain": 0,
+                "flags": "0x00",
+                "variant": "0x03",
+                "icon_valid": 1,
+                "icon_slot": "0x05"
+            },
+            "side_png": "larry_side.png",
+            "front_png": "larry_front.png"
+        },
+        {
+            "name": "Luma",
+            "char_id": "0x4B",
+            "donor_id": "0x0E",
+            "donor_name": "Boo",
+            "donor_side_resource": "0x11",
+            "donor_front_resource": "0x5D",
+            "color_wheel": {
+                "species": "0x0A",
+                "captain": "0x3A",
+                "model": "0x24",
+                "is_captain": 0,
+                "flags": "0x00",
+                "variant": "0x04",
+                "icon_valid": 1,
+                "icon_slot": "0x05"
+            },
+            "side_png": "luma_side.png",
+            "front_png": "luma_front.png"
+        }
+    ]
+}
