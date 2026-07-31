@@ -1,11 +1,11 @@
 __pycache__
 *.dol
 *.dat
-/3_Output_Dat/
 *.dae
 *.png
 *.tpl
 *.txt
+*.csv
 anim_info
 
 *.brstm
@@ -14,3 +14,8 @@ anim_info
 *.sluggie
 *.act
 *.bin
+*.7z
+
+SluggiesTools/Debug/
+2_Output_Models/_ICONS/
+3_Output_Dat/

@@ -1,4 +1,5 @@
 import csv
+import argparse
 import hashlib
 import json
 import math
@@ -730,10 +731,20 @@ def _check_existing_edits(root):
 
 
 def main():
-    if not os.path.exists(INPUT_DOL):
-        raise ExportIconsError(f'missing input DOL: {INPUT_DOL}')
-    if not os.path.exists(INPUT_DAT):
-        raise ExportIconsError(f'missing input DAT: {INPUT_DAT}')
+    parser = argparse.ArgumentParser(
+        description='Export character-select icon atlases and metadata from DOL/DAT.'
+    )
+    parser.add_argument('--dol-path', default=INPUT_DOL, help='path to main.dol source')
+    parser.add_argument('--dat-path', default=INPUT_DAT, help='path to dt_na.dat source')
+    args = parser.parse_args()
+
+    input_dol = os.path.normpath(args.dol_path)
+    input_dat = os.path.normpath(args.dat_path)
+
+    if not os.path.exists(input_dol):
+        raise ExportIconsError(f'missing input DOL: {input_dol}')
+    if not os.path.exists(input_dat):
+        raise ExportIconsError(f'missing input DAT: {input_dat}')
 
     if _check_existing_edits(OUTPUT_ROOT):
         print('WARNING: A previous export already exists in:')
@@ -749,9 +760,9 @@ def main():
 
     _prepare_output_tree(OUTPUT_ROOT)
 
-    entry_offset, entry_length = _extract_icon_entry(INPUT_DOL)
+    entry_offset, entry_length = _extract_icon_entry(input_dol)
 
-    dat_file, tex_palette = _load_texpalette(INPUT_DAT, entry_offset, entry_length)
+    dat_file, tex_palette = _load_texpalette(input_dat, entry_offset, entry_length)
     try:
         side_texture_indices, front_texture_indices = _discover_page_indices(tex_palette)
 
@@ -811,10 +822,10 @@ def main():
     manifest = {
         'generated_utc': datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z'),
         'source': {
-            'dol_path': os.path.relpath(INPUT_DOL, ROOT_DIR).replace('\\', '/'),
-            'dat_path': os.path.relpath(INPUT_DAT, ROOT_DIR).replace('\\', '/'),
-            'dol_sha256': sha256_file(INPUT_DOL),
-            'dat_sha256': sha256_file(INPUT_DAT),
+            'dol_path': os.path.relpath(input_dol, ROOT_DIR).replace('\\', '/'),
+            'dat_path': os.path.relpath(input_dat, ROOT_DIR).replace('\\', '/'),
+            'dol_sha256': sha256_file(input_dol),
+            'dat_sha256': sha256_file(input_dat),
             'group_index': ICON_DIR_INDEX,
             'file_index': ICON_FILE_INDEX,
             'entry_offset': f'0x{entry_offset:X}',
@@ -859,6 +870,8 @@ def main():
 
     print('Character-select icon export assets generated successfully:')
     print(f'  {os.path.relpath(OUTPUT_ROOT, ROOT_DIR)}')
+    print(f'  Source DOL: {os.path.relpath(input_dol, ROOT_DIR)}')
+    print(f'  Source DAT: {os.path.relpath(input_dat, ROOT_DIR)}')
     print(f'  Pages exported: {len(pages_rows)}')
     print(f'  Non-empty cells exported: {len(cells_rows)}')
 

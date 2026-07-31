@@ -13,6 +13,7 @@ PATCH_SCRIPT = os.path.join(ROOT_DIR, 'SluggiesTools', 'patch_inplace.py')
 EXPORT_SCRIPT = os.path.join(ROOT_DIR, 'SluggiesTools', 'export.py')
 ICON_EXPORT_SCRIPT = os.path.join(ROOT_DIR, 'SluggiesTools', 'export_icons.py')
 ICON_PATCH_SCRIPT = os.path.join(ROOT_DIR, 'SluggiesTools', 'patch_icons_inplace.py')
+ICON_ROUTE_PREP_SCRIPT = os.path.join(ROOT_DIR, 'SluggiesTools', 'prepare_icon_routes.py')
 TOOLS_DIR = os.path.join(ROOT_DIR, 'SluggiesTools')
 HS_DIR = os.path.join(TOOLS_DIR, 'Hammerspace')
 HS_HELPER_SCRIPT = os.path.join(HS_DIR, 'HammerspaceHelper.py')
@@ -46,7 +47,7 @@ def run_export(debug=False, notex=False, untangle=False):
     print('\nExport complete. Find your files in the folder "2_Output_Models"')
 
 
-def run_export_icons():
+def run_export_icons(use_output=False):
     required = [
         ('Pillow', 'PIL'),
         ('numpy', 'numpy'),
@@ -57,12 +58,35 @@ def run_export_icons():
         print('Run: pip install Pillow numpy')
         sys.exit(1)
 
+    cmd = [sys.executable, ICON_EXPORT_SCRIPT]
+    if use_output:
+        dol_path = os.path.join(ROOT_DIR, '3_Output_Dat', 'main.dol')
+        dat_path = os.path.join(ROOT_DIR, '3_Output_Dat', 'dt_na.dat')
+        if not os.path.exists(dol_path) or not os.path.exists(dat_path):
+            print('Missing 3_Output_Dat/main.dol or 3_Output_Dat/dt_na.dat')
+            print('Run: python start.py --prepare-icon-routes')
+            sys.exit(1)
+        cmd += ['--dol-path', dol_path, '--dat-path', dat_path]
+
     subprocess.run(
-        [sys.executable, ICON_EXPORT_SCRIPT],
+        cmd,
         cwd=TOOLS_DIR,
         check=True
     )
     print('\nIcon export complete. Find your files in the folder "2_Output_Models/_ICONS"')
+
+
+def run_prepare_icon_routes(no_overwrite_copy=False):
+    cmd = [sys.executable, ICON_ROUTE_PREP_SCRIPT]
+    if no_overwrite_copy:
+        cmd.append('--no-overwrite-copy')
+
+    subprocess.run(
+        cmd,
+        cwd=TOOLS_DIR,
+        check=True
+    )
+    print('\nIcon route prepatch complete. Patched files are in "3_Output_Dat"')
 
 
 def run_patch_icons(source=None, dry_run=False):
@@ -127,7 +151,9 @@ def parse_args():
             '  python patch.py --export\n'
             '  python patch.py --export --debug --notex --untangle\n'
             '  python patch.py --export --untangle\n'
+            '  python patch.py --prepare-icon-routes\n'
             '  python patch.py --export-icons\n'
+            '  python patch.py --export-icons --use-output\n'
             '  python patch.py --patch-icons\n'
             '  python patch.py --patch-icons --palette-only\n'
             '  python patch.py --patch-icons --shared-mode first-page\n'
@@ -144,6 +170,7 @@ def parse_args():
     mode.add_argument('--unpatch', nargs='+', metavar='FILENAME', help='restore original data for one or more .sluggies files')
     mode.add_argument('-hs', '--hammerspace', action='store_true', help='change available memory space in outputdt_na.dat')
     mode.add_argument('--export', action='store_true', help='export all models from 1_Input to 2_Output_Models')
+    mode.add_argument('--prepare-icon-routes', action='store_true', help='prepare output DOL/DAT copies and apply icon routing prepatch rules')
     mode.add_argument('--export-icons', action='store_true', help='export character-select icon atlases and metadata to 2_Output_Models/_ICONS')
     mode.add_argument(
         '--patch-icons',
@@ -156,6 +183,8 @@ def parse_args():
     parser.add_argument('--debug', action='store_true', help='export only: write binary blobs as raw byte arrays instead of base64')
     parser.add_argument('--notex', action='store_true', help='export only: skip texture extraction')
     parser.add_argument('--untangle', action='store_true', help='export only: pass untangling flag through to export process')
+    parser.add_argument('--use-output', action='store_true', help='export-icons only: read DOL/DAT from 3_Output_Dat instead of 1_Input')
+    parser.add_argument('--no-overwrite-copy', action='store_true', help='prepare-icon-routes only: patch existing 3_Output_Dat files without recopying from 1_Input')
     parser.add_argument('--dry-run', action='store_true', help='patch-icons only: validate and report without writing bytes')
 
     args = parser.parse_args()
@@ -166,9 +195,13 @@ def parse_args():
         parser.error('--notex can only be used with --export.')
     if args.untangle and not args.export:
         parser.error('--untangle can only be used with --export.')
+    if args.use_output and not args.export_icons:
+        parser.error('--use-output can only be used with --export-icons.')
+    if args.no_overwrite_copy and not args.prepare_icon_routes:
+        parser.error('--no-overwrite-copy can only be used with --prepare-icon-routes.')
     if args.dry_run and not (args.patch_icons is not None):
         parser.error('--dry-run can only be used with --patch-icons.')
-    if not any([args.patch, args.unpatch, args.hammerspace, args.export, args.export_icons, args.patch_icons is not None]):
+    if not any([args.patch, args.unpatch, args.hammerspace, args.export, args.prepare_icon_routes, args.export_icons, args.patch_icons is not None]):
         parser.print_help()
         sys.exit(0)
 
@@ -183,8 +216,11 @@ def main():
     if args.export:
         run_export(debug=args.debug, notex=args.notex, untangle=args.untangle)
         return
+    if args.prepare_icon_routes:
+        run_prepare_icon_routes(no_overwrite_copy=args.no_overwrite_copy)
+        return
     if args.export_icons:
-        run_export_icons()
+        run_export_icons(use_output=args.use_output)
         return
     if args.patch_icons is not None:
         source = args.patch_icons if args.patch_icons != '' else None

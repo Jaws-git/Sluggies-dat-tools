@@ -15,9 +15,11 @@ set /p "choice=Enter option: "
 echo.
 
 if "%choice%"=="1" (
-    python start.py --export-icons
-    if errorlevel 1 goto end
     python start.py --export --untangle
+    if errorlevel 1 goto end
+    python start.py --prepare-icon-routes --no-overwrite-copy
+    if errorlevel 1 goto end
+    python start.py --export-icons --use-output
     goto end
 )
 if "%choice%"=="2" (
