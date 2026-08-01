@@ -2,6 +2,20 @@
 
 This document summarizes how textures are stored and referenced in Sluggers model blocks, how they map to materials/meshes, and what a future hammerspace texture patch path would need.
 
+## Scope clarification (2026-07 player icon findings)
+
+This file documents MODEL TEX behavior (the TEX section inside a model block).
+
+Player icons are a separate system and do not use per-model TEX descriptors. New reverse engineering confirms the icon render path is driven by character-id routing tables and icon resource rows in the icon bank (`dt_na.dat` group 119, entry 2), not by a model's TEX section.
+
+Implication:
+
+- "hammerspace-first" in this document applies to model TEX growth/repacking.
+- It does NOT mean player icon edits always require hammerspace.
+- Current project policy for icons remains in-place spritesheet replacement unless explicitly opting into icon-bank expansion.
+
+See: `_docs/_docs_model_format/Player_Icon_System_Ground_Truth.md` for the icon-specific ground truth offsets, resolver flow, and tested hook points.
+
 ## Current status in this repository
 
 - Export extracts TEX metadata into each .sluggie under `TextureDescriptors` and `TEXHeader`.
@@ -106,6 +120,8 @@ If TEX length changes, all later block offsets shift. A complete hammerspace tex
 ### Why this must be hammerspace-first
 
 In-place patching assumes fixed buffer lengths at fixed offsets. TEX growth changes section boundaries and therefore cannot be safely applied with current in-place logic.
+
+Note: this statement is about model TEX sections only. Player icon data follows a different path (see the player icon ground-truth doc linked above).
 
 ## 4) Shared textures: how the game handles them
 
