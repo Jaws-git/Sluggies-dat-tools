@@ -1,3 +1,5 @@
+Credit for coming up with the icon replacement concept and reverse engineering the critical DOL hooks: JBiscuit!
+
 # Unused Character Icon Replacement
 
 Reference: `custom_character_icons_discord_guide_20260725.txt`
