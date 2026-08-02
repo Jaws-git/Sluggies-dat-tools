@@ -14,14 +14,26 @@ from base import File
 from helper import bti, itb
 from tpl import TEXPalette
 
-# An array of FILE_POINTER[]'s in the US DOL.
-DIRS_START = 0x69C828
-DIRS_END = 0x69CAD8
-DIR_PTR_PTRS = range(DIRS_START, DIRS_END, 4)
-DAT_FNAME_PTR = 0x8067F658
+# --- Guide-proven DOL directory table address (direct group-entry record) ---
+# The group-entry record for group 119, entry 2 sits at this DOL file offset.
+# This is the address used by the discord icon-modding guide and is confirmed
+# working for both reads and writes on a live game.
+# The record is 48 bytes (12 x u32): for each of EN/SP/FR it stores
+# [dat_fname_ptr, length, offset, alloc].
+# See DOL_Directory_Table_Investigation.md for background.
+ICON_ENTRY_DOL_OFFSET = 0x68DE88
 
-ICON_DIR_INDEX = 119
-ICON_FILE_INDEX = 2
+# --- Old pointer-chain approach (commented out, may need to be restored) ---
+# The old code walked a pointer array at 0x69C828..0x69CAD8 to locate
+# directory entries indirectly.  This produced correct reads but is ~58 KB
+# away from the guide's proven address.  If the new direct-read approach
+# causes any regression, restore the old constants and _load_dol_dirs() below.
+# DIRS_START = 0x69C828
+# DIRS_END = 0x69CAD8
+# DIR_PTR_PTRS = range(DIRS_START, DIRS_END, 4)
+# DAT_FNAME_PTR = 0x8067F658
+# ICON_DIR_INDEX = 119
+# ICON_FILE_INDEX = 2
 ICON_TEX_LOCAL_OFFSET = 0x20
 
 SIDE_START = 0x49
@@ -139,33 +151,38 @@ def sha256_file(path):
     return h.hexdigest()
 
 
-def _load_dol_dirs(dol_path):
-    with open(dol_path, 'rb') as dol:
-        dir_ptrs = []
-        for addr in DIR_PTR_PTRS:
-            dol.seek(addr, 0)
-            dir_ptrs.append(bti(dol.read(4)) - 0x80003F00)
-
-        dirs = {}
-        dir_count = (DIRS_END - DIRS_START) // 4
-        for dir_ind in range(dir_count):
-            dirs[dir_ind] = []
-            file_ptr = dir_ptrs[dir_ind]
-            while file_ptr not in dir_ptrs[:dir_ind] + dir_ptrs[dir_ind + 1:]:
-                dol.seek(file_ptr, 0)
-                file_data = [bti(dol.read(4)) for _ in range(12)]
-                if file_data[0] != DAT_FNAME_PTR:
-                    break
-                offset_en = file_data[2]
-                len_en = file_data[1]
-                offset_sp = file_data[6]
-                len_sp = file_data[5]
-                offset_fr = file_data[10]
-                len_fr = file_data[9]
-                dirs[dir_ind].append({'en': [offset_en, len_en], 'sp': [offset_sp, len_sp], 'fr': [offset_fr, len_fr]})
-                file_ptr += 12 * 4
-
-    return dirs
+# --- Old _load_dol_dirs (commented out, may need to be restored) ---
+# If the direct-read approach via ICON_ENTRY_DOL_OFFSET causes problems,
+# uncomment this function and the constants above, then revert
+# _extract_icon_entry() to call _load_dol_dirs() as before.
+#
+# def _load_dol_dirs(dol_path):
+#     with open(dol_path, 'rb') as dol:
+#         dir_ptrs = []
+#         for addr in DIR_PTR_PTRS:
+#             dol.seek(addr, 0)
+#             dir_ptrs.append(bti(dol.read(4)) - 0x80003F00)
+#
+#         dirs = {}
+#         dir_count = (DIRS_END - DIRS_START) // 4
+#         for dir_ind in range(dir_count):
+#             dirs[dir_ind] = []
+#             file_ptr = dir_ptrs[dir_ind]
+#             while file_ptr not in dir_ptrs[:dir_ind] + dir_ptrs[dir_ind + 1:]:
+#                 dol.seek(file_ptr, 0)
+#                 file_data = [bti(dol.read(4)) for _ in range(12)]
+#                 if file_data[0] != DAT_FNAME_PTR:
+#                     break
+#                 offset_en = file_data[2]
+#                 len_en = file_data[1]
+#                 offset_sp = file_data[6]
+#                 len_sp = file_data[5]
+#                 offset_fr = file_data[10]
+#                 len_fr = file_data[9]
+#                 dirs[dir_ind].append({'en': [offset_en, len_en], 'sp': [offset_sp, len_sp], 'fr': [offset_fr, len_fr]})
+#                 file_ptr += 12 * 4
+#
+#     return dirs
 
 
 def _write_single_tpl(tpl_path, desc, image_data, tlut_data):
@@ -435,19 +452,28 @@ def _prepare_output_tree(root):
 
 
 def _extract_icon_entry(dol_path):
-    dirs = _load_dol_dirs(dol_path)
-    if ICON_DIR_INDEX not in dirs:
-        raise ExportIconsError(f'directory {ICON_DIR_INDEX} not found in DOL directory table')
+    """Read the icon bank entry (group 119, entry 2) directly from the DOL.
 
-    files = dirs[ICON_DIR_INDEX]
-    if len(files) <= ICON_FILE_INDEX:
-        raise ExportIconsError(
-            f'directory {ICON_DIR_INDEX} does not contain file index {ICON_FILE_INDEX} (found {len(files)})'
-        )
+    Uses the guide-proven DOL file offset 0x68DE88 which points straight at
+    the 48-byte group-entry record.  The record layout (12 x u32) is:
+        [dat_fname_ptr, len_en, offset_en, alloc_en,
+         dat_fname_ptr, len_sp, offset_sp, alloc_sp,
+         dat_fname_ptr, len_fr, offset_fr, alloc_fr]
+    We return the English (offset, length) pair.
+    """
+    with open(dol_path, 'rb') as dol:
+        dol.seek(ICON_ENTRY_DOL_OFFSET, 0)
+        words = [bti(dol.read(4)) for _ in range(12)]
 
-    en_offset, en_length = files[ICON_FILE_INDEX]['en']
+    # English entry: words[2] = offset, words[1] = length
+    en_offset = words[2]
+    en_length = words[1]
+
     if en_offset <= 0 or en_length <= 0:
-        raise ExportIconsError('invalid icon entry offset/length in DOL table')
+        raise ExportIconsError(
+            f'invalid icon entry at DOL offset 0x{ICON_ENTRY_DOL_OFFSET:X}: '
+            f'offset=0x{en_offset:X}, length=0x{en_length:X}'
+        )
 
     return en_offset, en_length
 
@@ -826,8 +852,8 @@ def main():
             'dat_path': os.path.relpath(input_dat, ROOT_DIR).replace('\\', '/'),
             'dol_sha256': sha256_file(input_dol),
             'dat_sha256': sha256_file(input_dat),
-            'group_index': ICON_DIR_INDEX,
-            'file_index': ICON_FILE_INDEX,
+            'group_index': 119,   # icon bank group
+            'file_index': 2,     # icon bank entry within group
             'entry_offset': f'0x{entry_offset:X}',
             'entry_length': f'0x{entry_length:X}',
             'direct_texture_section_offset': f'0x{ICON_TEX_LOCAL_OFFSET:X}',
