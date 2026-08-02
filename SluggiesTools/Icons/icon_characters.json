@@ -12,19 +12,20 @@
         "color_wheel values are written to the DOL color-wheel table at",
         "0x0062D650 + char_id * 8.  icon_valid is always set to 1.",
         "",
-        "Artwork PNGs must be 48x51 RGBA, placed in the artwork_dir folder."
+        "Artwork PNGs may be RGB or RGBA and are fitted into 48x51 slots.",
+        "Provide release artwork for every configured filename in artwork_dir."
     ],
 
-    "artwork_dir": "icon_artwork",
+    "artwork_dir": "../../1_Input/_Icons",
 
     "characters": [
         {
-            "name": "Rosalina",
+            "name": "White Yoshi",
             "char_id": "0x48",
-            "donor_id": "0x05",
-            "donor_name": "Daisy",
-            "donor_side_resource": "0x06",
-            "donor_front_resource": "0x54",
+            "donor_id": "0x00",
+            "donor_name": "Mario",
+            "donor_side_resource": "0x00",
+            "donor_front_resource": "0x4F",
             "color_wheel": {
                 "species": "0x0B",
                 "captain": "0x06",
@@ -35,16 +36,16 @@
                 "icon_valid": 1,
                 "icon_slot": "0x09"
             },
-            "side_png": "rosalina_side.png",
-            "front_png": "rosalina_front.png"
+            "side_png": "white_yoshi_side.png",
+            "front_png": "white_yoshi_front.png"
         },
         {
-            "name": "Orange Toad",
+            "name": "Black Toad",
             "char_id": "0x49",
-            "donor_id": "0x0D",
-            "donor_name": "Toad (Red)",
-            "donor_side_resource": "0x10",
-            "donor_front_resource": "0x5C",
+            "donor_id": "0x01",
+            "donor_name": "Luigi",
+            "donor_side_resource": "0x02",
+            "donor_front_resource": "0x50",
             "color_wheel": {
                 "species": "0x02",
                 "captain": "0x0D",
@@ -55,16 +56,16 @@
                 "icon_valid": 1,
                 "icon_slot": "0x05"
             },
-            "side_png": "orange_toad_side.png",
-            "front_png": "orange_toad_front.png"
+            "side_png": "black_toad_side.png",
+            "front_png": "black_toad_front.png"
         },
         {
-            "name": "Larry",
+            "name": "Black Pianta",
             "char_id": "0x4A",
-            "donor_id": "0x13",
-            "donor_name": "Bowser Jr.",
-            "donor_side_resource": "0x16",
-            "donor_front_resource": "0x62",
+            "donor_id": "0x02",
+            "donor_name": "Donkey Kong",
+            "donor_side_resource": "0x03",
+            "donor_front_resource": "0x51",
             "color_wheel": {
                 "species": "0x05",
                 "captain": "0x15",
@@ -75,16 +76,16 @@
                 "icon_valid": 1,
                 "icon_slot": "0x05"
             },
-            "side_png": "larry_side.png",
-            "front_png": "larry_front.png"
+            "side_png": "black_pianta_side.png",
+            "front_png": "black_pianta_front.png"
         },
         {
-            "name": "Luma",
+            "name": "Black Kritter",
             "char_id": "0x4B",
-            "donor_id": "0x0E",
-            "donor_name": "Boo",
-            "donor_side_resource": "0x11",
-            "donor_front_resource": "0x5D",
+            "donor_id": "0x03",
+            "donor_name": "Diddy Kong",
+            "donor_side_resource": "0x04",
+            "donor_front_resource": "0x52",
             "color_wheel": {
                 "species": "0x0A",
                 "captain": "0x3A",
@@ -95,8 +96,48 @@
                 "icon_valid": 1,
                 "icon_slot": "0x05"
             },
-            "side_png": "luma_side.png",
-            "front_png": "luma_front.png"
+            "side_png": "black_kritter_side.png",
+            "front_png": "black_kritter_front.png"
+        },
+        {
+            "name": "Black Yoshi",
+            "char_id": "0x47",
+            "donor_id": "0x04",
+            "donor_name": "Peach",
+            "donor_side_resource": "0x05",
+            "donor_front_resource": "0x53",
+            "color_wheel": {
+                "species": "0x0B",
+                "captain": "0x06",
+                "model": "0x06",
+                "is_captain": 0,
+                "flags": "0x00",
+                "variant": "0x06",
+                "icon_valid": 1,
+                "icon_slot": "0x05"
+            },
+            "side_png": "black_yoshi_side.png",
+            "front_png": "black_yoshi_front.png"
+        },
+        {
+            "name": "Black Koopa",
+            "char_id": "0x4C",
+            "donor_id": "0x05",
+            "donor_name": "Daisy",
+            "donor_side_resource": "0x06",
+            "donor_front_resource": "0x54",
+            "color_wheel": {
+                "species": "0x01",
+                "captain": "0x0C",
+                "model": "0x0C",
+                "is_captain": 0,
+                "flags": "0x00",
+                "variant": "0x02",
+                "icon_valid": 1,
+                "icon_slot": "0x05"
+            },
+            "side_png": "black_koopa_side.png",
+            "front_png": "black_koopa_front.png"
         }
     ]
 }

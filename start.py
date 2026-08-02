@@ -16,6 +16,7 @@ ICONS_DIR = os.path.join(TOOLS_DIR, 'Icons')
 ICON_EXPORT_SCRIPT = os.path.join(ICONS_DIR, 'export_icons.py')
 ICON_PATCH_SCRIPT = os.path.join(ICONS_DIR, 'patch_icons_inplace.py')
 ICON_ROUTE_PREP_SCRIPT = os.path.join(ICONS_DIR, 'prepare_icon_routes.py')
+CUSTOM_ICON_SCRIPT = os.path.join(ICONS_DIR, 'add_custom_icons.py')
 HS_DIR = os.path.join(TOOLS_DIR, 'Hammerspace')
 HS_HELPER_SCRIPT = os.path.join(HS_DIR, 'HammerspaceHelper.py')
 HS_MAIN_SCRIPT = os.path.join(HS_DIR, 'HammerspaceMain.py')
@@ -105,6 +106,31 @@ def run_patch_icons(source=None, dry_run=False):
         print('\nIcon reimport complete. Patched DAT is in the folder "3_Output_Dat"')
 
 
+def run_add_custom_icons(dry_run=False, diagnostic_stage=None, icon_fit='contain'):
+    if importlib.util.find_spec('PIL') is None:
+        print('Missing required package: Pillow')
+        print('Run: pip install Pillow')
+        sys.exit(1)
+
+    cmd = [sys.executable, CUSTOM_ICON_SCRIPT]
+    if dry_run:
+        cmd.append('--dry-run')
+    if diagnostic_stage:
+        cmd.extend(('--diagnostic-stage', diagnostic_stage))
+    cmd.extend(('--icon-fit', icon_fit))
+    subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
+    if dry_run:
+        print('\nCustom icon dry run complete. No output files were changed.')
+    else:
+        if diagnostic_stage:
+            print(
+                f'\nCustom icon diagnostic stage {diagnostic_stage} complete. '
+                'Patched files are in "3_Output_Dat".'
+            )
+        else:
+            print('\nCustom icon installation complete. Patched files are in "3_Output_Dat".')
+
+
 def run_patching(filenames, unpatch=False):
     for filename in filenames:
         matches = [
@@ -152,7 +178,10 @@ def parse_args():
             '  python patch.py --export\n'
             '  python patch.py --export --debug --notex --untangle\n'
             '  python patch.py --export --untangle\n'
-            '  python patch.py --prepare-icon-routes\n'
+            '  python start.py --prepare-icon-routes\n'
+            '  python start.py --add-custom-icons --dry-run\n'
+            '  python start.py --add-custom-icons --custom-icon-stage a\n'
+            '  python start.py --add-custom-icons\n'
             '  python patch.py --export-icons\n'
             '  python patch.py --export-icons --use-output\n'
             '  python patch.py --patch-icons\n'
@@ -172,6 +201,7 @@ def parse_args():
     mode.add_argument('-hs', '--hammerspace', action='store_true', help='change available memory space in outputdt_na.dat')
     mode.add_argument('--export', action='store_true', help='export all models from 1_Input to 2_Output_Models')
     mode.add_argument('--prepare-icon-routes', action='store_true', help='prepare output DOL/DAT copies and apply icon routing prepatch rules')
+    mode.add_argument('--add-custom-icons', action='store_true', help='install the complete six-character custom icon pipeline')
     mode.add_argument('--export-icons', action='store_true', help='export character-select icon atlases and metadata to 2_Output_Models/_ICONS')
     mode.add_argument(
         '--patch-icons',
@@ -186,7 +216,17 @@ def parse_args():
     parser.add_argument('--untangle', action='store_true', help='export only: pass untangling flag through to export process')
     parser.add_argument('--use-output', action='store_true', help='export-icons only: read DOL/DAT from 3_Output_Dat instead of 1_Input')
     parser.add_argument('--no-overwrite-copy', action='store_true', help='prepare-icon-routes only: patch existing 3_Output_Dat files without recopying from 1_Input')
-    parser.add_argument('--dry-run', action='store_true', help='patch-icons only: validate and report without writing bytes')
+    parser.add_argument('--dry-run', action='store_true', help='patch-icons/add-custom-icons: validate without writing bytes')
+    parser.add_argument(
+        '--custom-icon-stage',
+        choices=tuple('abcdefghijk'),
+        help='add-custom-icons only: cumulative diagnostic stage to build from pristine inputs',
+    )
+    parser.add_argument(
+        '--icon-fit',
+        choices=('contain', 'cover', 'strict'),
+        help='add-custom-icons only: fit source artwork into 48x51 slots (default: contain)',
+    )
 
     args = parser.parse_args()
 
@@ -200,9 +240,13 @@ def parse_args():
         parser.error('--use-output can only be used with --export-icons.')
     if args.no_overwrite_copy and not args.prepare_icon_routes:
         parser.error('--no-overwrite-copy can only be used with --prepare-icon-routes.')
-    if args.dry_run and not (args.patch_icons is not None):
-        parser.error('--dry-run can only be used with --patch-icons.')
-    if not any([args.patch, args.unpatch, args.hammerspace, args.export, args.prepare_icon_routes, args.export_icons, args.patch_icons is not None]):
+    if args.dry_run and not (args.patch_icons is not None or args.add_custom_icons):
+        parser.error('--dry-run can only be used with --patch-icons or --add-custom-icons.')
+    if args.custom_icon_stage and not args.add_custom_icons:
+        parser.error('--custom-icon-stage can only be used with --add-custom-icons.')
+    if args.icon_fit and not args.add_custom_icons:
+        parser.error('--icon-fit can only be used with --add-custom-icons.')
+    if not any([args.patch, args.unpatch, args.hammerspace, args.export, args.prepare_icon_routes, args.add_custom_icons, args.export_icons, args.patch_icons is not None]):
         parser.print_help()
         sys.exit(0)
 
@@ -219,6 +263,13 @@ def main():
         return
     if args.prepare_icon_routes:
         run_prepare_icon_routes(no_overwrite_copy=args.no_overwrite_copy)
+        return
+    if args.add_custom_icons:
+        run_add_custom_icons(
+            dry_run=args.dry_run,
+            diagnostic_stage=args.custom_icon_stage,
+            icon_fit=args.icon_fit or 'contain',
+        )
         return
     if args.export_icons:
         run_export_icons(use_output=args.use_output)

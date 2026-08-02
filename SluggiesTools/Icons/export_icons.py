@@ -51,7 +51,9 @@ FRONT_END = 0x8B
 EXPECTED_WIDTH = 1024
 EXPECTED_HEIGHT = 256
 EXPECTED_FORMAT = 0x09
-EXPECTED_PALETTE_FORMAT = 0x02
+PALETTE_FORMAT_IA8 = 0x00
+PALETTE_FORMAT_RGB5A3 = 0x02
+EXPECTED_PALETTE_FORMATS = frozenset((PALETTE_FORMAT_IA8, PALETTE_FORMAT_RGB5A3))
 EXPECTED_PALETTE_ENTRIES = 256
 EXPECTED_IMAGE_LEN = 0x40000
 EXPECTED_PALETTE_LEN = 0x200
@@ -136,6 +138,37 @@ DIR_NAMES = {
     "88": "BabyPeach",
     "89": "BabyDaisy", 
     }
+
+SIDE_CHARACTER_NAMES = (
+    'Mario', 'Luigi', 'DonkeyKong', 'DiddyKong', 'Peach', 'Daisy', 'Yoshi',
+    'BabyMario', 'BabyLuigi', 'Bowser', 'Wario', 'Waluigi', 'Koopa', 'Toad',
+    'Boo', 'Toadette', 'ShyGuy', 'Birdo', 'MontyMole', 'BowserJr', 'Paratroopa',
+    'Pianta', 'RedPianta', 'YellowPianta', 'Noki', 'RedNoki', 'GreenNoki',
+    'HammerBro', 'Toadsworth', 'BlueToad', 'YellowToad', 'GreenToad',
+    'PurpleToad', 'Magikoopa', 'RedMagikoopa', 'GreenMagikoopa',
+    'YellowMagikoopa', 'KingBoo', 'PeteyPiranha', 'DixieKong', 'Goomba',
+    'Paragoomba', 'RedKoopa', 'GreenParatroopa', 'BlueShyGuy', 'YellowShyGuy',
+    'GreenShyGuy', 'GrayShyGuy', 'DryBones', 'GreenDryBones', 'DarkBones',
+    'BlueDryBones', 'FireBro', 'BoomerangBro', 'Wiggler', 'Blooper', 'FunkyKong',
+    'TinyKong', 'Kritter', 'BlueKritter', 'RedKritter', 'BrownKritter',
+    'KingKRool', 'BabyPeach', 'BabyDaisy', 'BabyDK', 'RedYoshi', 'BlueYoshi',
+    'YellowYoshi', 'LightBlueYoshi', 'PinkYoshi',
+)
+
+SIDE_PAGE_CHARACTER_IDS = (
+    0x00, 0x01, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x08, 0x09,
+    0x0A, 0x0B, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14,
+    0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20,
+    0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x27, 0x28, 0x29, 0x2A, 0x2B,
+    0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
+    0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3E, 0x3F, 0x3F, 0x40, 0x40,
+    0x41, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46,
+)
+
+SIDE_DIR_NAMES = {
+    f'{page_index:02X}': SIDE_CHARACTER_NAMES[character_id]
+    for page_index, character_id in enumerate(SIDE_PAGE_CHARACTER_IDS)
+}
 
 class ExportIconsError(Exception):
     pass
@@ -303,7 +336,19 @@ def _rgb5a3_to_rgb8(palette_bytes):
     return bytes(rgb8_data)
 
 
-def _write_act_file(act_path, palette_bytes):
+def _ia8_to_rgb8(palette_bytes):
+    if len(palette_bytes) != EXPECTED_PALETTE_LEN:
+        raise ExportIconsError(
+            f'palette data length mismatch: expected {EXPECTED_PALETTE_LEN}, got {len(palette_bytes)}'
+        )
+
+    rgb8_data = bytearray()
+    for intensity, _alpha in zip(palette_bytes[0::2], palette_bytes[1::2]):
+        rgb8_data.extend((intensity, intensity, intensity))
+    return bytes(rgb8_data)
+
+
+def _write_act_file(act_path, palette_bytes, palette_format):
     """
     Write an Adobe Color Table (ACT) file for use in Photoshop.
     
@@ -312,7 +357,12 @@ def _write_act_file(act_path, palette_bytes):
     - Optional 2 bytes: number of colors (or 0x0100 for 256)
     - Optional 2 bytes: transparent index (or 0xFFFF for none)
     """
-    rgb8_data = _rgb5a3_to_rgb8(palette_bytes)
+    if palette_format == PALETTE_FORMAT_IA8:
+        rgb8_data = _ia8_to_rgb8(palette_bytes)
+    elif palette_format == PALETTE_FORMAT_RGB5A3:
+        rgb8_data = _rgb5a3_to_rgb8(palette_bytes)
+    else:
+        raise ExportIconsError(f'unsupported palette format: 0x{palette_format:02X}')
     
     with open(act_path, 'wb') as f:
         # Write 256 RGB entries
@@ -346,7 +396,7 @@ def _is_expected_icon_descriptor(desc):
         desc.width == EXPECTED_WIDTH
         and desc.height == EXPECTED_HEIGHT
         and desc.format == EXPECTED_FORMAT
-        and desc.paletteFormat == EXPECTED_PALETTE_FORMAT
+        and desc.paletteFormat in EXPECTED_PALETTE_FORMATS
         and desc.paletteEntries == EXPECTED_PALETTE_ENTRIES
         and desc.paletteDataPtr > 0
     )
@@ -390,8 +440,9 @@ def _discover_page_indices(tex_palette):
 def _page_base_name(view, texture_index):
     key = f'{texture_index:02X}'
     name_suffix = ''
-    if key in DIR_NAMES:
-        name_suffix = '_' + str(DIR_NAMES[key])
+    names = SIDE_DIR_NAMES if view == 'side' else DIR_NAMES
+    if key in names:
+        name_suffix = '_' + str(names[key])
     return f'{view}_page_{texture_index:02X}_t{texture_index:03d}{name_suffix}'
 
 
@@ -506,10 +557,10 @@ def _validate_descriptor(desc, image_len, palette_len, texture_index):
         raise ExportIconsError(
             f'texture {texture_index:02X} format mismatch: 0x{desc.format:02X} expected 0x{EXPECTED_FORMAT:02X}'
         )
-    if desc.paletteFormat != EXPECTED_PALETTE_FORMAT:
+    if desc.paletteFormat not in EXPECTED_PALETTE_FORMATS:
         raise ExportIconsError(
-            f'texture {texture_index:02X} palette format mismatch: 0x{desc.paletteFormat:02X} expected '
-            f'0x{EXPECTED_PALETTE_FORMAT:02X}'
+            f'texture {texture_index:02X} palette format mismatch: 0x{desc.paletteFormat:02X} expected one of '
+            f'{", ".join(f"0x{value:02X}" for value in sorted(EXPECTED_PALETTE_FORMATS))}'
         )
     if desc.paletteEntries != EXPECTED_PALETTE_ENTRIES:
         raise ExportIconsError(
@@ -557,7 +608,7 @@ def _export_one_page(root, entry_offset, tex_palette, desc, texture_index, view,
         f.write(tlut_data)
 
     # Export ACT file for Photoshop palette import
-    _write_act_file(act_abs, tlut_data)
+    _write_act_file(act_abs, tlut_data, desc.paletteFormat)
 
     _write_single_tpl(tpl_abs, desc, image_data, tlut_data)
     _decode_tpl_to_png(tpl_abs, sheet_abs)
@@ -876,7 +927,9 @@ def main():
             'width': EXPECTED_WIDTH,
             'height': EXPECTED_HEIGHT,
             'image_format': f'0x{EXPECTED_FORMAT:02X}',
-            'palette_format': f'0x{EXPECTED_PALETTE_FORMAT:02X}',
+            'palette_formats': [
+                f'0x{value:02X}' for value in sorted(EXPECTED_PALETTE_FORMATS)
+            ],
             'palette_entries': EXPECTED_PALETTE_ENTRIES,
             'image_len': EXPECTED_IMAGE_LEN,
             'palette_len': EXPECTED_PALETTE_LEN,

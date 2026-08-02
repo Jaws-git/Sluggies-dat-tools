@@ -4,12 +4,20 @@ from act import *
 from anm import *
 import numpy as np
 from collada import *
+import os
 import shutil
 from collada import source, common
 from xml_helper import *
 
 _LOG_DIR_INDEX = None
+TEX_TEMP_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), '..', '2_Output_Models', 'tex_temp')
+)
 UNTANGLE_IGNORE_BASENAME = { 'tex1_64x64_d6da4880cee95b7b_14' , "tex1_64x64_a09662ae19841ea4_14" , "tex1_64x64_8a05f75d65053b44_14", "tex1_64x64_cc3d32b121549b17_14" }
+
+
+class ExpectedFormatSkip(Exception):
+    pass
 
 
 def set_log_dir_index(dir_index):
@@ -50,12 +58,14 @@ class Archive(FileChunk):
         self.files = [self.add_child(self.word(), 0, Model0) for x in range(self.fileCount)]
         for x in range(1, self.fileCount):
             if self.files[x].absolute < self.files[x - 1].absolute:
-                raise Exception('Archive files not ascending')
+                raise ExpectedFormatSkip('Skipping entry: unsupported archive layout')
         self.success = []
         for i, file in enumerate(self.files):
             try:
                 file.analyze()
                 self.success.append(i)
+            except ExpectedFormatSkip as exc:
+                print(f'{_log_prefix()} {exc}')
             except Exception as e:
                 _log_noncritical('failed analyzing in archive', e)
                 pass
@@ -76,7 +86,7 @@ class Model0(FileChunk):
         # Initial testing if this is a valid file
         firstWord = self.word()
         if firstWord != 0:
-            raise Exception("gpl doesn't start with 0")
+            raise ExpectedFormatSkip('Skipping archive member: not a model entry')
         self.gplPtr = self.word()
         if self.gplPtr > 0x40 or self.gplPtr < 0x20:
             raise Exception("gpl pointer is " + hex(self.gplPtr))
@@ -182,9 +192,9 @@ class Model0(FileChunk):
 
         # textures are simple enough
         if export_tex and self.TEXPalette:
-            if os.path.exists('tex'):
-                shutil.rmtree('tex')
-            os.mkdir('tex')
+            if os.path.exists(TEX_TEMP_DIR):
+                shutil.rmtree(TEX_TEMP_DIR)
+            os.makedirs(TEX_TEMP_DIR)
             for tex_ind, tex in enumerate(self.TEXPalette.descriptors):
                 image_override = None
                 tlut_override = None
@@ -236,7 +246,7 @@ class Model0(FileChunk):
                     model_overrides = name_overrides.setdefault(self.absolute, {})
                     model_overrides[tex_ind] = dolphin_name
 
-                dolphin_path = 'tex/' + dolphin_name
+                dolphin_path = os.path.join(TEX_TEMP_DIR, dolphin_name)
                 if not os.path.exists(dolphin_path + '.png'):
                     tex.toFile(dolphin_path, image_data_override=image_override, tlut_data_override=tlut_override)
                 texture_paths[tex_ind] = dolphin_name + '.png'
@@ -397,7 +407,7 @@ class ModelData():
         self.untangle_context = untangle_context
 
     def create_tex_dir(self, dir):
-        tex_pngs = os.listdir('tex')
+        tex_pngs = os.listdir(TEX_TEMP_DIR)
         tex_dir = dir + 'tex/'
         if os.path.exists(tex_dir):
             # Only remove .png files; leave any unrelated files intact.
@@ -407,7 +417,7 @@ class ModelData():
         else:
             os.mkdir(tex_dir)
         for png in tex_pngs:
-            shutil.copyfile('tex/'+png, tex_dir+png)
+            shutil.copyfile(os.path.join(TEX_TEMP_DIR, png), tex_dir+png)
 
     def create_materials(self, dir, collada):
         out = {}

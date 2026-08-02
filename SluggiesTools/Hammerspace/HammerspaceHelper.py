@@ -4,7 +4,7 @@ import struct
 
 BASE_SIZE      = 715046144      # ~715 MB
 CHUNK_SIZE     = 1024 * 1024   # 1 MB read buffer
-HS_BUFFER_BYTES = 1024  # 1 KiB safety buffer appended after every write
+HS_BUFFER_BYTES = 128  # 128B safety buffer appended after every write
 HS_ALIGN_BYTES  = 32    # Required model-block alignment for GPL/SKN hot-path data
 OUTPUT_DAT = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', '3_Output_Dat', 'dt_na.dat'))
 

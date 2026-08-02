@@ -1008,6 +1008,8 @@ for dir_ind, file_arr in dirs.items():
                         with open(os.path.join(model_dir, json_name), 'w') as info_f:
                             info_f.write(compact_faces_json(model_json))
                 del child
+        except ExpectedFormatSkip as exc:
+            print(f'[dir {dir_ind}] {exc}')
         except Exception as e:
             print(f'[dir {dir_ind}] failed in export: {type(e).__name__}: {e} (Moving on)')
             pass

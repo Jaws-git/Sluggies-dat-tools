@@ -1,262 +1,348 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <link rel="stylesheet" type="text/css" href="../_docs_modelformat/style.css" />
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mario Super Sluggers Player Icon Data Structures</title>
+    <link rel="stylesheet" type="text/css" href="../_docs_model_format/style.css" />
     <style>
-        body { font-family: monospace; padding: 16px; }
-        h1, h2, p { font-family: sans-serif; }
+        :root {
+            --ink: #20252b;
+            --muted: #5d6873;
+            --line: #3d4650;
+            --page: #f4f6f7;
+            --panel: #ffffff;
+            --dol: #dcecff;
+            --dat: #dff1e5;
+            --table: #fff0c9;
+            --hook: #f4dddf;
+            --key: #fff8df;
+            --stock: #e7eaed;
+        }
 
-        .file-map {
-            display: inline-flex;
-            flex-direction: column;
-            border: 2px solid #444;
-            font-family: monospace;
-            min-width: 520px;
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            padding: 24px;
+            color: var(--ink);
+            background: var(--page);
+            font-family: "Cascadia Mono", Consolas, monospace;
+            line-height: 1.45;
         }
-        .blk { border-bottom: 2px solid #444; }
-        .blk:last-child { border-bottom: none; }
-        .blk-title {
-            font-weight: bold;
-            padding: 4px 10px;
-            border-bottom: 1px solid rgba(0,0,0,0.25);
+        main { max-width: 1220px; margin: 0 auto; }
+        h1, h2, h3, p { font-family: Aptos, "Segoe UI", sans-serif; }
+        h1 { margin: 0 0 8px; font-size: 2rem; letter-spacing: 0; }
+        h2 { margin: 34px 0 12px; font-size: 1.35rem; letter-spacing: 0; }
+        h3 { margin: 0; font-size: 1rem; letter-spacing: 0; }
+        p { max-width: 920px; }
+        code { font-family: "Cascadia Mono", Consolas, monospace; }
+        a { color: #005ea8; }
+
+        .lede {
+            margin: 0 0 20px;
+            color: var(--muted);
+            font-size: 1rem;
         }
-        .fields {
-            padding: 4px 10px 6px 10px;
+        .notice {
+            padding: 12px 14px;
+            border-left: 4px solid #2374a8;
+            background: #eaf5fb;
+            font-family: Aptos, "Segoe UI", sans-serif;
+        }
+        .legend, .flow, .grid {
+            display: grid;
+            gap: 12px;
+        }
+        .legend { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+        .flow { grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); }
+        .grid { grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); }
+
+        .chip, .flow-step {
+            border: 1px solid var(--line);
+            padding: 9px 11px;
+            background: var(--panel);
+        }
+        .flow-step { min-height: 92px; }
+        .flow-step strong { display: block; margin-bottom: 5px; }
+        .flow-step span { color: var(--muted); font-size: 0.86rem; }
+
+        .map {
+            min-width: 0;
+            overflow: hidden;
+            border: 2px solid var(--line);
+            background: var(--panel);
+        }
+        .map-title {
+            padding: 9px 12px;
+            border-bottom: 2px solid var(--line);
+            font-family: Aptos, "Segoe UI", sans-serif;
+            font-weight: 700;
+        }
+        .block { border-bottom: 1px solid #8a949d; }
+        .block:last-child { border-bottom: 0; }
+        .block-title {
             display: flex;
-            flex-direction: column;
-            gap: 2px;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            gap: 6px 12px;
+            padding: 6px 10px;
+            border-bottom: 1px solid rgba(0, 0, 0, 0.18);
+            font-weight: 700;
         }
+        .fields { padding: 6px 10px 9px; }
         .row {
             display: grid;
-            grid-template-columns: 80px 1fr;
-            gap: 8px;
+            grid-template-columns: 92px minmax(0, 1fr);
+            gap: 10px;
+            padding: 3px 0;
         }
-        .off { color: #555; font-size: 0.85em; padding-top: 2px; }
-        .note { font-size: 0.82em; color: #666; font-style: italic; }
-
-        /* nesting */
-        .nested {
-            margin: 6px 0 2px 18px;
-            border-left: 3px solid rgba(0,0,0,0.18);
+        .off { color: var(--muted); font-size: 0.84rem; }
+        .note { color: var(--muted); font-size: 0.82rem; }
+        .formula {
+            margin: 7px 10px 10px;
+            padding: 7px 9px;
+            overflow-wrap: anywhere;
+            background: rgba(255,255,255,0.62);
+            border: 1px dashed #76808a;
         }
-        .nested .blk-title { font-style: italic; font-weight: normal; }
-        .nested .blk { border-bottom: 1px solid rgba(0,0,0,0.2); }
-        .nested .blk:last-child { border-bottom: none; }
+        .dol { background: var(--dol); }
+        .dat { background: var(--dat); }
+        .table { background: var(--table); }
+        .hook { background: var(--hook); }
+        .key { background: var(--key); }
+        .stock { background: var(--stock); }
 
-        /* section colours */
-        .c-flag { background: #e0e0e0; }
-        .c-cw   { background: #cce5ff; }
-        .c-cap  { background: #d4edda; }
-        .c-sub  { background: rgba(255,255,255,0.55); }
-        .c-key  { background: #fff3cd; }        /* highlight for important fields */
+        .addr {
+            color: var(--muted);
+            font-size: 0.8rem;
+            font-weight: 400;
+        }
+        .checks {
+            columns: 2 320px;
+            padding-left: 22px;
+            font-family: Aptos, "Segoe UI", sans-serif;
+        }
+        .checks li { margin-bottom: 7px; break-inside: avoid; }
 
-        .addr { color: #888; font-size: 0.8em; font-style: normal; margin-left: 6px; }
+        @media (max-width: 620px) {
+            body { padding: 14px; }
+            .grid { grid-template-columns: 1fr; }
+            .row { grid-template-columns: 76px minmax(0, 1fr); }
+        }
     </style>
 </head>
 <body>
-    <h1>Mario Super Sluggers — Player Data Structures in <code>main.dol</code></h1>
-    <p>
-        Three contiguous tables in <strong>sec11</strong> (<code>0x806233C0</code>–<code>0x80639D00</code>) hold all static per-character metadata.
-        The most important for icon routing is the <strong>color-wheel attribute table</strong>.
-        Virtual addresses shown; all values are big-endian.
-        File-absolute offsets from the start of <code>main.dol</code> are noted in brackets: <code>[0x...]</code>.
+<main>
+    <h1>Mario Super Sluggers Player Icon Data Structures</h1>
+    <p class="lede">
+        Current six-character implementation reference. All binary values are big-endian.
+        Address labels distinguish DOL runtime addresses, DOL file offsets, and icon-bank-local offsets.
     </p>
 
-    <!-- ================================================================
-         SEC11 MEMORY MAP
-         ================================================================ -->
-    <h2>sec11 — Known Contiguous Block</h2>
+    <div class="notice">
+        This page documents the implemented data path. See
+        <a href="Unused%20Character%20Icon%20Modding.md">Unused Character Icon Modding.md</a>
+        for workflow and design rationale. Historical logger and candidate-table probes are not part of the production route.
+    </div>
 
-    <div class="file-map">
+    <h2>Address Spaces</h2>
+    <div class="legend">
+        <div class="chip dol"><strong>DOL runtime</strong><br><code>0x80......</code> PowerPC virtual address</div>
+        <div class="chip dol"><strong>DOL file</strong><br><code>[0x........]</code> offset in <code>main.dol</code></div>
+        <div class="chip dat"><strong>DAT absolute</strong><br>offset in <code>dt_na.dat</code></div>
+        <div class="chip dat"><strong>Bank local</strong><br>offset from group 119, entry 2</div>
+    </div>
 
-        <!-- FLAG ARRAY -->
-        <div class="blk c-flag">
-            <div class="blk-title">
-                Flag Array
-                <span class="addr">0x80631510 &nbsp;[0x0062D610] · 64 bytes</span>
-            </div>
-            <div class="fields">
-                <div class="row">
-                    <span class="off">char 0x00</span>
-                    <span>u8 flag, one entry per character ID (first 64 chars only)</span>
-                </div>
-                <div class="row">
-                    <span class="off">…</span>
-                    <span class="note">Mostly <code>0x01</code>; a few entries are <code>0x00</code>. Exact meaning not yet decoded.</span>
-                </div>
-                <div class="row">
-                    <span class="off">char 0x3F</span>
-                    <span>last entry (array ends at <code>0x80631550</code>)</span>
-                </div>
-            </div>
-        </div>
+    <h2>Resolved Icon Data Flow</h2>
+    <div class="flow">
+        <div class="flow-step dol"><strong>1. Character ID</strong><span>Unused IDs <code>0x47</code>-<code>0x4C</code>.</span></div>
+        <div class="flow-step dol"><strong>2. Color-wheel row</strong><span>Enables the character with <code>icon_valid=1</code>.</span></div>
+        <div class="flow-step hook"><strong>3. Donor hook</strong><span>Saves the custom ID and sends donor <code>0x00</code>-<code>0x05</code> through stock resolution.</span></div>
+        <div class="flow-step table"><strong>4. Source record</strong><span>Maps character ID to a side/front resource ID.</span></div>
+        <div class="flow-step hook"><strong>5. Final-row hook</strong><span>Replaces the donor resource row with the custom row.</span></div>
+        <div class="flow-step dat"><strong>6. Texture page</strong><span>Resource UVs sample private CMPR page <code>0x92</code> or <code>0x93</code>.</span></div>
+    </div>
 
-        <!-- COLOR-WHEEL TABLE -->
-        <div class="blk c-cw">
-            <div class="blk-title">
-                Color-Wheel Attribute Table
-                <span class="addr">0x80631550 &nbsp;[0x0062D650] · 101 × 8 = 808 bytes</span>
-            </div>
-            <div class="fields">
-                <div class="row">
-                    <span class="off">entry formula</span>
-                    <span><code>0x80631550 + char_id × 8</code> &nbsp;/&nbsp; file: <code>[0x0062D650 + char_id × 8]</code></span>
-                </div>
-                <div class="row">
-                    <span class="off">count</span>
-                    <span>101 entries — char IDs <code>0x00</code>–<code>0x64</code></span>
-                </div>
-
-                <div class="nested">
-                    <!-- RECORD LAYOUT -->
-                    <div class="blk c-sub">
-                        <div class="blk-title">Color-Wheel Record &nbsp;×101&nbsp; <span class="note">(8 bytes each)</span></div>
-                        <div class="fields">
-                            <div class="row">
-                                <span class="off">+0x00</span>
-                                <span><code>species_id</code> &nbsp;u8 — species / physical-type enum
-                                    <span class="note">(0x00 solo, 0x0B Yoshi, 0x0C team-NPC-C, 0x0D team-NPC-D, …)</span>
-                                </span>
-                            </div>
-                            <div class="row">
-                                <span class="off">+0x01</span>
-                                <span><code>captain_id</code> &nbsp;u8 — char ID of the species captain;
-                                    equals <code>char_id</code> for captains and solo chars
-                                </span>
-                            </div>
-                            <div class="row">
-                                <span class="off">+0x02</span>
-                                <span><code>model_id</code> &nbsp;u8 — shared model/sprite index for this appearance;
-                                    same value across all chars that share a model
-                                </span>
-                            </div>
-                            <div class="row">
-                                <span class="off">+0x03</span>
-                                <span><code>is_captain</code> &nbsp;u8 — <code>0x01</code> = captain or solo char; <code>0x00</code> = variant</span>
-                            </div>
-                            <div class="row">
-                                <span class="off">+0x04</span>
-                                <span><code>flag_b4</code> &nbsp;u8 — unknown flag; <code>0x01</code> for some variants, otherwise <code>0x00</code></span>
-                            </div>
-                            <div class="row">
-                                <span class="off">+0x05</span>
-                                <span><code>variant_index</code> &nbsp;u8 — zero-based position within species group
-                                    <span class="note">(0 = captain, 1 = first variant, …)</span>
-                                </span>
-                            </div>
-                        </div>
-
-                        <div class="nested">
-                            <!-- KEY FIELDS -->
-                            <div class="blk c-key">
-                                <div class="blk-title">Icon routing fields <span class="note">(patching targets for phase 5)</span></div>
-                                <div class="fields">
-                                    <div class="row">
-                                        <span class="off">+0x06</span>
-                                        <span><code>icon_valid</code> &nbsp;u8 —
-                                            <code>0x01</code> = character has a valid icon entry;
-                                            <code>0x00</code> = no valid icon, draws Pink Yoshi fallback (page <code>0x8B</code> cell <code>0x49</code>).
-                                            <br><strong>All unused chars 0x59–0x5E are <code>0x00</code> here.</strong>
-                                        </span>
-                                    </div>
-                                    <div class="row">
-                                        <span class="off">+0x07</span>
-                                        <span><code>icon_slot</code> &nbsp;u8 —
-                                            per-species icon slot index, active when <code>icon_valid == 1</code>.
-                                            Used to look up <code>(front_page, front_cell, side_page, side_cell)</code>
-                                            in the per-species icon table <span class="note">(location not yet confirmed)</span>.
-                                            <br><strong>All unused chars 0x59–0x5E are <code>0x00</code> here.</strong>
-                                        </span>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- species examples inline -->
-                <div class="row" style="margin-top:4px">
-                    <span class="off">examples</span>
-                    <span class="note">
-                        Green Yoshi <code>0x06</code>: <code>0B 06 06 01 01 00 01 03</code> — icon_valid=1 slot=3<br>
-                        Pink Yoshi &nbsp;<code>0x46</code>: <code>0B 06 06 00 00 05 01 08</code> — icon_valid=1 slot=8<br>
-                        Unused Yoshi <code>0x47</code>: <code>0B 06 06 00 00 06 <strong>00</strong> 05</code> — icon_valid=<strong>0</strong> ← fallback<br>
-                        Unused char &nbsp;<code>0x59</code>: <code>0D 59 2A 01 00 00 <strong>00</strong> 00</code> — icon_valid=<strong>0</strong> ← fallback
-                    </span>
+    <h2>DOL Structures</h2>
+    <div class="grid">
+        <section class="map">
+            <div class="map-title dol">Icon Directory Entry <span class="addr">DOL file [0x0068DE88] · 0x30 bytes</span></div>
+            <div class="block dol">
+                <div class="block-title"><span>EN slot</span><span class="addr">+0x00 · 4 × u32</span></div>
+                <div class="fields">
+                    <div class="row"><span class="off">+0x00</span><span>DAT filename pointer</span></div>
+                    <div class="row"><span class="off">+0x04</span><span>entry length</span></div>
+                    <div class="row"><span class="off">+0x08</span><span>absolute DAT offset</span></div>
+                    <div class="row"><span class="off">+0x0C</span><span>allocation length</span></div>
                 </div>
             </div>
-        </div>
-
-        <!-- CAPTAIN LIST -->
-        <div class="blk c-cap">
-            <div class="blk-title">
-                Captain ID List
-                <span class="addr">0x80631878 &nbsp;[0x0062D978] · 43 bytes + padding</span>
+            <div class="block dol">
+                <div class="block-title"><span>SP slot</span><span class="addr">+0x10 · same layout</span></div>
+                <div class="fields"><div class="row"><span class="off">+0x10</span><span>filename, length, offset, allocation</span></div></div>
             </div>
-            <div class="fields">
-                <div class="row">
-                    <span class="off">+0x00</span>
-                    <span>linear array of u8 captain char IDs — one entry per species / unique solo</span>
-                </div>
-                <div class="row">
-                    <span class="off">entries</span>
-                    <span><code>00 01 02 … 14 15 18 1B 1C 21 25–29 30 36–3A 3E–41 4D 59</code>
-                        <span class="note">(43 entries, null-terminated)</span>
-                    </span>
-                </div>
-                <div class="row">
-                    <span class="off">note</span>
-                    <span class="note">
-                        <code>0x4D</code> = captain of species <code>0x0C</code> (team-NPC-C).
-                        <code>0x59</code> = captain of species <code>0x0D</code> (team-NPC-D, the unused chars).
-                        These are the last two real entries before the null padding.
-                    </span>
+            <div class="block dol">
+                <div class="block-title"><span>FR slot</span><span class="addr">+0x20 · same layout</span></div>
+                <div class="fields"><div class="row"><span class="off">+0x20</span><span>filename, length, offset, allocation</span></div></div>
+            </div>
+            <div class="formula">All three slots must point to the same dynamically aligned bank. Stock: DAT <code>0x167E7420</code>, length <code>0x985F0</code>. Expanded length: <code>0x118CE0</code>.</div>
+        </section>
+
+        <section class="map">
+            <div class="map-title dol">Color-Wheel Table <span class="addr">runtime 0x80631550 · file [0x0062D650]</span></div>
+            <div class="block table">
+                <div class="block-title"><span>Headerless record array</span><span class="addr">101 × 8 bytes</span></div>
+                <div class="fields">
+                    <div class="row"><span class="off">+0x00</span><span><code>species_id</code> · u8</span></div>
+                    <div class="row"><span class="off">+0x01</span><span><code>captain_id</code> · u8</span></div>
+                    <div class="row"><span class="off">+0x02</span><span><code>model_id</code> · u8</span></div>
+                    <div class="row"><span class="off">+0x03</span><span><code>is_captain</code> · u8</span></div>
+                    <div class="row"><span class="off">+0x04</span><span>flags · u8</span></div>
+                    <div class="row"><span class="off">+0x05</span><span><code>variant_index</code> · u8</span></div>
+                    <div class="row key"><span class="off">+0x06</span><span><code>icon_valid</code> · u8; changed from 0 to 1 for IDs <code>0x47</code>-<code>0x4C</code></span></div>
+                    <div class="row key"><span class="off">+0x07</span><span><code>icon_slot</code> · u8; validated but not sufficient by itself for unused IDs</span></div>
                 </div>
             </div>
-        </div>
+            <div class="formula">row = <code>0x0062D650 + character_id × 8</code> in the DOL file</div>
+        </section>
+    </div>
 
-    </div><!-- /file-map -->
+    <h2>Expanded Icon Bank</h2>
+    <section class="map">
+        <div class="map-title dat">Group 119, Entry 2 <span class="addr">bank-local map · total 0x118CE0 bytes</span></div>
+        <div class="block stock"><div class="block-title"><span>Texture section and stock content</span><span class="addr">0x000020 onward</span></div><div class="fields"><div class="row"><span class="off">0x000020</span><span>texture count u16; stock <code>0x92</code>, expanded <code>0x94</code></span></div><div class="row"><span class="off">0x000024</span><span>texture descriptor array, stride <code>0x20</code></span></div></div></div>
+        <div class="block table"><div class="block-title"><span>normal_a source table</span><span class="addr">0x087520</span></div><div class="fields"><div class="row"><span class="off">count</span><span>71 stock records; unchanged</span></div></div></div>
+        <div class="block table"><div class="block-title"><span>Side source table</span><span class="addr">0x088B78</span></div><div class="fields"><div class="row"><span class="off">count</span><span>71 stock + 6 custom = 77 records</span></div></div></div>
+        <div class="block table"><div class="block-title"><span>Front source table</span><span class="addr">0x08A3B0</span></div><div class="fields"><div class="row"><span class="off">count</span><span>72 stock + 6 custom = 78 records</span></div></div></div>
+        <div class="block dat"><div class="block-title"><span>Private side CMPR image</span><span class="addr">0x093880-0x0B387F</span></div><div class="fields"><div class="row"><span class="off">page 0x92</span><span><code>1024 × 256</code>, GX CMPR, <code>0x20000</code> bytes</span></div></div></div>
+        <div class="block dat"><div class="block-title"><span>Private front CMPR image</span><span class="addr">0x0D3A80-0x0F3A7F</span></div><div class="fields"><div class="row"><span class="off">page 0x93</span><span><code>1024 × 256</code>, GX CMPR, <code>0x20000</code> bytes</span></div></div></div>
+        <div class="block dat"><div class="block-title"><span>Relocated icon-table container</span><span class="addr">0x113C80</span></div><div class="fields"><div class="row"><span class="off">descriptor</span><span>container + <code>0x14</code> = <code>0x113C94</code></span></div><div class="row"><span class="off">endpoint</span><span>container <code>+0x10 = 0x5058</code></span></div></div></div>
+        <div class="block table"><div class="block-title"><span>Expanded resource table</span><span class="addr">0x118000-0x118CD7</span></div><div class="fields"><div class="row"><span class="off">count</span><span><code>0xA4</code> rows</span></div><div class="row"><span class="off">length</span><span><code>0xCD8</code> bytes, followed by 8 preserved tail bytes</span></div></div></div>
+    </section>
 
+    <h2>Texture and Icon-Table Descriptors</h2>
+    <div class="grid">
+        <section class="map">
+            <div class="map-title dat">Private Texture Descriptor <span class="addr">stride 0x20</span></div>
+            <div class="block dat"><div class="fields">
+                <div class="row"><span class="off">+0x00</span><span>bank-local image offset · u32</span></div>
+                <div class="row"><span class="off">+0x04</span><span>palette pointer · u32 = 0</span></div>
+                <div class="row"><span class="off">+0x08</span><span>height · u16 = 256</span></div>
+                <div class="row"><span class="off">+0x0A</span><span>width · u16 = 1024</span></div>
+                <div class="row"><span class="off">+0x17</span><span>GX format · u8 = <code>0x0E</code> CMPR</span></div>
+                <div class="row"><span class="off">+0x18</span><span>palette entries · u16 = 0</span></div>
+                <div class="row"><span class="off">+0x1A</span><span>palette format · u8 = 0</span></div>
+            </div></div>
+            <div class="formula">descriptor = <code>0x24 + page_id × 0x20</code></div>
+        </section>
 
-    <!-- ================================================================
-         ICON DRAW MECHANISM
-         ================================================================ -->
-    <h2>Icon Draw Path (front view) — partial</h2>
-    <p>
-        The front icon draw dispatch at <code>0x80070DC4</code> calls <code>0x8007A654</code>
-        to determine the draw path. When that function returns <code>1</code> the fallback fires:
-    </p>
+        <section class="map">
+            <div class="map-title dat">Icon Descriptor <span class="addr">bank local 0x113C94</span></div>
+            <div class="block table"><div class="fields">
+                <div class="row"><span class="off">+0x04</span><span>signed relative pointer to resource table</span></div>
+                <div class="row"><span class="off">+0x08</span><span>signed relative pointer to normal_a table</span></div>
+                <div class="row"><span class="off">+0x0C</span><span>signed relative pointer to side table</span></div>
+                <div class="row"><span class="off">+0x10</span><span>signed relative pointer to front table</span></div>
+            </div></div>
+            <div class="formula">target = <code>descriptor_address + signed_field_value</code></div>
+        </section>
+    </div>
 
-    <div class="file-map">
-
-        <div class="blk c-flag">
-            <div class="blk-title">Fallback path <span class="addr">fires when icon_valid == 0</span></div>
-            <div class="fields">
-                <div class="row"><span class="off">page</span><span><code>0x8B</code> — hardcoded; Pink Yoshi's atlas page</span></div>
-                <div class="row"><span class="off">cell</span><span><code>char_obj[r30+0x228][0x0C]</code> — runtime byte; <code>0x49</code> for all unused chars</span></div>
-                <div class="row"><span class="off">result</span><span>always draws Pink Yoshi placeholder regardless of <code>icon_slot</code></span></div>
+    <h2>Source and Resource Tables</h2>
+    <div class="grid">
+        <section class="map">
+            <div class="map-title table">Source Table</div>
+            <div class="block table">
+                <div class="block-title"><span>Header</span><span class="addr">0x28 bytes</span></div>
+                <div class="fields">
+                    <div class="row"><span class="off">+0x08</span><span>total table length · u32</span></div>
+                    <div class="row"><span class="off">+0x24</span><span>record count · u16</span></div>
+                    <div class="row"><span class="off">+0x26</span><span>record stride · u16 = <code>0x50</code></span></div>
+                </div>
             </div>
-        </div>
-
-        <div class="blk c-cw">
-            <div class="blk-title">Normal path <span class="addr">fires when icon_valid == 1</span></div>
-            <div class="fields">
-                <div class="row"><span class="off">page</span><span><code>0x8C</code> — hardcoded; exact meaning under investigation</span></div>
-                <div class="row"><span class="off">cell</span><span><code>char_obj[r30+0x228][0x0C]</code> — set during character init from the per-species icon table</span></div>
-                <div class="row"><span class="off">result</span><span>draws the character's own icon from <code>icon_slot</code> lookup</span></div>
+            <div class="block key">
+                <div class="block-title"><span>Source record</span><span class="addr">0x50 bytes each</span></div>
+                <div class="fields">
+                    <div class="row"><span class="off">+0x00</span><span>flags · first record <code>0x0014</code>, continuations <code>0x0114</code></span></div>
+                    <div class="row"><span class="off">+0x02</span><span>character ID · u16</span></div>
+                    <div class="row"><span class="off">+0x04</span><span>constant · u16 = <code>0x0400</code></span></div>
+                    <div class="row"><span class="off">+0x06</span><span>resource ID · u16</span></div>
+                    <div class="row"><span class="off">+0x08</span><span>remaining donor record payload, preserved verbatim</span></div>
+                </div>
             </div>
-        </div>
+            <div class="formula">Records are sorted by character ID in descending order. Breaking order or the first-record marker makes resolved icons disappear.</div>
+        </section>
 
-        <div class="blk c-cap">
-            <div class="blk-title">Per-species icon table <span class="addr">location not yet confirmed</span></div>
-            <div class="fields">
-                <div class="row"><span class="off">key</span><span><code>(species_id, icon_slot)</code> → <code>(front_page, front_cell, side_page, side_cell)</code></span></div>
-                <div class="row"><span class="off">known</span><span>Yoshi (<code>species 0x0B</code>) has at least 10 slots (slot indices 0–9 observed)</span></div>
-                <div class="row"><span class="off">gap</span><span class="note">Species <code>0x0D</code> has no allocated slots — all entries are <code>icon_slot=0</code></span></div>
+        <section class="map">
+            <div class="map-title table">Resource Table <span class="addr">bank local 0x118000</span></div>
+            <div class="block table">
+                <div class="block-title"><span>Header</span><span class="addr">8 bytes</span></div>
+                <div class="fields">
+                    <div class="row"><span class="off">+0x00</span><span>row count · u32 = <code>0xA4</code></span></div>
+                    <div class="row"><span class="off">+0x04</span><span>total length · u32 = <code>0xCD8</code></span></div>
+                </div>
             </div>
-        </div>
+            <div class="block key">
+                <div class="block-title"><span>Resource row</span><span class="addr">0x14 bytes each</span></div>
+                <div class="fields">
+                    <div class="row"><span class="off">+0x00</span><span>texture page · u16</span></div>
+                    <div class="row"><span class="off">+0x02</span><span>reserved · u16 = 0</span></div>
+                    <div class="row"><span class="off">+0x04</span><span>V1 · f32</span></div>
+                    <div class="row"><span class="off">+0x08</span><span>U1 · f32</span></div>
+                    <div class="row"><span class="off">+0x0C</span><span>V2 · f32</span></div>
+                    <div class="row"><span class="off">+0x10</span><span>U2 · f32</span></div>
+                </div>
+            </div>
+            <div class="formula">row = <code>table + 0x08 + resource_id × 0x14</code><br />Custom side IDs: <code>0x98</code>-<code>0x9D</code>; front IDs: <code>0x9E</code>-<code>0xA3</code>.</div>
+        </section>
+    </div>
 
-    </div><!-- /file-map -->
+    <h2>Runtime Hooks and Shared State</h2>
+    <div class="grid">
+        <section class="map">
+            <div class="map-title hook">Production Hook Sites</div>
+            <div class="block hook"><div class="block-title"><span>Lower lookup hook</span><span class="addr">0x8050A5AC → 0x80004C6C</span></div><div class="fields"><div class="row"><span class="off">action</span><span>Save custom ID; substitute configured donor ID.</span></div><div class="row"><span class="off">stock word</span><span><code>0x9421FFA0</code></span></div></div></div>
+            <div class="block hook"><div class="block-title"><span>Key hook</span><span class="addr">0x80519478 → 0x8000576C</span></div><div class="fields"><div class="row"><span class="off">action</span><span>Confirm the donor side/front resource key.</span></div><div class="row"><span class="off">stock word</span><span><code>0x4BFF5099</code></span></div></div></div>
+            <div class="block hook"><div class="block-title"><span>Final-row hook</span><span class="addr">0x8051952C → 0x80005DB0</span></div><div class="fields"><div class="row"><span class="off">action</span><span>Redirect <code>r31</code> to the custom resource row.</span></div><div class="row"><span class="off">stock word</span><span><code>0xA0BF0000</code></span></div></div></div>
+        </section>
 
+        <section class="map">
+            <div class="map-title hook">Shared Hook State <span class="addr">runtime 0x80004E00-0x80004EF7</span></div>
+            <div class="block hook"><div class="fields">
+                <div class="row"><span class="off">+0x00</span><span><code>pending_id</code> · u32</span></div>
+                <div class="row"><span class="off">+0x04</span><span><code>resolved_row_id</code> · u32</span></div>
+                <div class="row"><span class="off">+0x08</span><span>custom rows for route 0</span></div>
+                <div class="row"><span class="off">+0x30</span><span>custom rows for route 1</span></div>
+                <div class="row"><span class="off">stride</span><span><code>0x28</code> per route: side row <code>0x14</code> + front row <code>0x14</code></span></div>
+                <div class="row"><span class="off">routes</span><span>6 routes, ending at <code>0x80004EF7</code></span></div>
+            </div></div>
+            <div class="formula">row address = <code>0x80004E08 + route_index × 0x28 + (front ? 0x14 : 0)</code></div>
+        </section>
+    </div>
+
+    <h2>Current Six Routes</h2>
+    <section class="map">
+        <div class="map-title key">Configured donor and resource mapping</div>
+        <div class="block key"><div class="fields">
+            <div class="row"><span class="off">White Yoshi</span><span>custom <code>0x48</code> → donor Mario <code>0x00</code>; donor keys <code>0x00 / 0x4F</code>; custom rows <code>0x98 / 0x9E</code></span></div>
+            <div class="row"><span class="off">Black Toad</span><span>custom <code>0x49</code> → donor Luigi <code>0x01</code>; donor keys <code>0x02 / 0x50</code>; custom rows <code>0x99 / 0x9F</code></span></div>
+            <div class="row"><span class="off">Black Pianta</span><span>custom <code>0x4A</code> → donor Donkey Kong <code>0x02</code>; donor keys <code>0x03 / 0x51</code>; custom rows <code>0x9A / 0xA0</code></span></div>
+            <div class="row"><span class="off">Black Kritter</span><span>custom <code>0x4B</code> → donor Diddy Kong <code>0x03</code>; donor keys <code>0x04 / 0x52</code>; custom rows <code>0x9B / 0xA1</code></span></div>
+            <div class="row"><span class="off">Black Yoshi</span><span>custom <code>0x47</code> → donor Peach <code>0x04</code>; donor keys <code>0x05 / 0x53</code>; custom rows <code>0x9C / 0xA2</code></span></div>
+            <div class="row"><span class="off">Black Koopa</span><span>custom <code>0x4C</code> → donor Daisy <code>0x05</code>; donor keys <code>0x06 / 0x54</code>; custom rows <code>0x9D / 0xA3</code></span></div>
+        </div></div>
+    </section>
+
+    <h2>Critical Invariants</h2>
+    <ul class="checks">
+        <li>Directory EN/SP/FR offsets, lengths, and allocations must agree.</li>
+        <li>The expanded bank and destination are <code>0x20</code>-byte aligned.</li>
+        <li>Private image payloads must not overlap each other or the relocated icon table.</li>
+        <li>Source records remain descending and retain the first/continuation marker convention.</li>
+        <li>Resource count, table length, and container endpoint <code>0x5058</code> grow together.</li>
+        <li>The resource table retains its final eight-byte tail.</li>
+        <li>Custom source resource IDs, resource rows, and DOL hook rows must agree.</li>
+        <li>Hook sites must contain exact stock words or the exact generated patch.</li>
+    </ul>
+</main>
 </body>
 </html>

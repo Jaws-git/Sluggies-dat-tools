@@ -20,7 +20,9 @@ OUTPUT_DAT = os.path.join(OUTPUT_DIR, 'dt_na.dat')
 EXPECTED_WIDTH = 1024
 EXPECTED_HEIGHT = 256
 EXPECTED_FORMAT = 0x09
-EXPECTED_PALETTE_FORMAT = 0x02
+PALETTE_FORMAT_IA8 = 0x00
+PALETTE_FORMAT_RGB5A3 = 0x02
+EXPECTED_PALETTE_FORMATS = frozenset((PALETTE_FORMAT_IA8, PALETTE_FORMAT_RGB5A3))
 EXPECTED_PALETTE_ENTRIES = 256
 EXPECTED_IMAGE_LEN = 0x40000
 EXPECTED_PALETTE_LEN = 0x200
@@ -105,6 +107,7 @@ def _load_pages(pages_csv):
     required = [
         'view',
         'texture_index_dec',
+        'palette_format',
         'sheet_png',
         'dt_na_image_offset',
         'dt_na_palette_offset',
@@ -120,6 +123,7 @@ def _load_pages(pages_csv):
                 'view': row['view'],
                 'texture_index_dec': int(row['texture_index_dec']),
                 'texture_index_hex': row.get('texture_index_hex', ''),
+                'palette_format': _parse_hex_int(row['palette_format'], 'palette_format'),
                 'sheet_png': row['sheet_png'],
                 'dt_na_image_offset': _parse_hex_int(row['dt_na_image_offset'], 'dt_na_image_offset'),
                 'dt_na_palette_offset': _parse_hex_int(row['dt_na_palette_offset'], 'dt_na_palette_offset'),
@@ -235,6 +239,36 @@ def _act_to_rgb5a3_using_raw_modes(icons_root, raw_palette_rel, act_rgb8):
     return bytes(result)
 
 
+def _act_to_ia8_preserving_alpha(icons_root, raw_palette_rel, act_rgb8):
+    raw_path = ''
+    if raw_palette_rel:
+        raw_path = os.path.join(icons_root, _normalize_rel(raw_palette_rel))
+
+    if not raw_path or not os.path.exists(raw_path):
+        raise IconPatchError(
+            f'raw palette binary not found for ACT conversion: "{raw_path}". '
+            'Re-run --export-icons to regenerate the raw files.'
+        )
+
+    with open(raw_path, 'rb') as f:
+        raw_bytes = f.read()
+
+    if len(raw_bytes) != EXPECTED_PALETTE_LEN:
+        raise IconPatchError(
+            f'raw palette binary has unexpected size {len(raw_bytes)} '
+            f'(expected {EXPECTED_PALETTE_LEN}): {raw_path}'
+        )
+
+    result = bytearray()
+    for index in range(EXPECTED_PALETTE_ENTRIES):
+        red = act_rgb8[index * 3]
+        green = act_rgb8[index * 3 + 1]
+        blue = act_rgb8[index * 3 + 2]
+        intensity = (77 * red + 150 * green + 29 * blue + 128) >> 8
+        result.extend((intensity, raw_bytes[index * 2 + 1]))
+    return bytes(result)
+
+
 def _read_act_file(act_path):
     """
     Read an Adobe Color Table (ACT) file.
@@ -260,11 +294,17 @@ def _read_act_file(act_path):
     return rgb8_data
 
 
-def _find_act_file(sheets_dir, view, texture_index_dec):
+def _find_act_file(sheets_dir, view, texture_index_dec, sheet_png=''):
     """
     Find an ACT file for a given page by matching the index prefix.
     Matches any file named {view}_page_{HEX}_t{DEC}[_anything].act.
     """
+    if sheet_png:
+        exact_name = os.path.splitext(os.path.basename(_normalize_rel(sheet_png)))[0] + '.act'
+        exact_path = os.path.join(sheets_dir, exact_name)
+        if os.path.exists(exact_path):
+            return exact_path
+
     prefix = f'{view}_page_{texture_index_dec:02X}_t{texture_index_dec:03d}'
     for filename in os.listdir(sheets_dir):
         if filename.startswith(prefix) and filename.endswith('.act'):
@@ -297,7 +337,12 @@ def _collect_payloads(icons_root, pages):
         base_image_data = _read_grayscale_png_indexed_bytes(base_png_path)
 
         for page in view_pages:
-            act_path = _find_act_file(sheets_dir, view, page['texture_index_dec'])
+            act_path = _find_act_file(
+                sheets_dir,
+                view,
+                page['texture_index_dec'],
+                page.get('sheet_png', ''),
+            )
 
             if not act_path:
                 raise IconPatchError(
@@ -306,18 +351,29 @@ def _collect_payloads(icons_root, pages):
                 )
 
             rgb8_palette = _read_act_file(act_path)
-            rgb5a3_palette = _act_to_rgb5a3_using_raw_modes(
-                icons_root, page.get('raw_palette_file', ''), rgb8_palette
-            )
+            palette_format = page['palette_format']
+            if palette_format == PALETTE_FORMAT_IA8:
+                palette_data = _act_to_ia8_preserving_alpha(
+                    icons_root, page.get('raw_palette_file', ''), rgb8_palette
+                )
+            elif palette_format == PALETTE_FORMAT_RGB5A3:
+                palette_data = _act_to_rgb5a3_using_raw_modes(
+                    icons_root, page.get('raw_palette_file', ''), rgb8_palette
+                )
+            else:
+                raise IconPatchError(
+                    f'unsupported palette format 0x{palette_format:02X} for page '
+                    f'{page["texture_index_dec"]}'
+                )
 
             records.append({
                 **page,
                 'base_png': base_png_path,
                 'act_path': act_path,
                 'image_data': base_image_data,
-                'palette_data': rgb5a3_palette,
+                'palette_data': palette_data,
                 'image_sha256': _sha256_bytes(base_image_data),
-                'palette_sha256': _sha256_bytes(rgb5a3_palette),
+                'palette_sha256': _sha256_bytes(palette_data),
             })
 
     return records
@@ -406,6 +462,7 @@ def _build_report(source_info, records, image_writes, dry_run):
                 'texture_index_dec': r['texture_index_dec'],
                 'texture_index_hex': r['texture_index_hex'],
                 'view': r['view'],
+                'palette_format': f"0x{r['palette_format']:02X}",
                 'dt_na_palette_offset': f"0x{r['dt_na_palette_offset']:X}",
                 'palette_sha256': r['palette_sha256'],
                 'act_path': r.get('act_path', ''),

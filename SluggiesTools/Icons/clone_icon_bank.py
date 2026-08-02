@@ -18,7 +18,7 @@ ICON_ENTRY_DOL_OFFSET = 0x68DE88
 ICON_ENTRY_SIZE = 0x30
 STOCK_BANK_OFFSET = 0x167E7420
 STOCK_BANK_LENGTH = 0x985F0
-EXPANDED_BANK_LENGTH = 0x118BF0
+EXPANDED_BANK_LENGTH = 0x118CE0
 STOCK_TEXTURE_SECTION = 0x20
 STOCK_ICON_TABLE = 0x93680
 STOCK_TEXTURE_COUNT = 0x92
@@ -255,7 +255,7 @@ def _print_result(result: CloneResult) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description='Clone and reserve the four-character expanded icon bank in hammerspace.'
+        description='Clone and reserve the six-character expanded icon bank in hammerspace.'
     )
     parser.add_argument('--dry-run', action='store_true', help='validate and report without writing files')
     args = parser.parse_args()

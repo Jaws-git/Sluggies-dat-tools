@@ -2,7 +2,6 @@ __pycache__
 *.dol
 *.dat
 *.dae
-*.png
 *.tpl
 *.txt
 *.csv
@@ -17,5 +16,5 @@ anim_info
 *.7z
 
 SluggiesTools/Debug/
-2_Output_Models/_ICONS/
+2_Output_Models/
 3_Output_Dat/
