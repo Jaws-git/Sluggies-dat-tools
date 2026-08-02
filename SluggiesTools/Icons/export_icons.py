@@ -6,9 +6,16 @@ import math
 import os
 import shutil
 import subprocess
+import sys
 from datetime import datetime, timezone
 
 from PIL import Image
+
+ICONS_DIR = os.path.dirname(__file__)
+TOOLS_DIR = os.path.normpath(os.path.join(ICONS_DIR, '..'))
+ROOT_DIR = os.path.normpath(os.path.join(TOOLS_DIR, '..'))
+if TOOLS_DIR not in sys.path:
+    sys.path.insert(0, TOOLS_DIR)
 
 from base import File
 from helper import bti, itb
@@ -57,8 +64,6 @@ GRID_Y_PAD = 1
 GRID_CELL_WIDTH = 48
 GRID_CELL_HEIGHT = 51
 
-TOOLS_DIR = os.path.dirname(__file__)
-ROOT_DIR = os.path.normpath(os.path.join(TOOLS_DIR, '..'))
 INPUT_DOL = os.path.join(ROOT_DIR, '1_Input', 'main.dol')
 INPUT_DAT = os.path.join(ROOT_DIR, '1_Input', 'dt_na.dat')
 OUTPUT_ROOT = os.path.join(ROOT_DIR, '2_Output_Models', '_ICONS')
@@ -860,7 +865,7 @@ def main():
             'direct_texture_section_length': f'0x{entry_length - ICON_TEX_LOCAL_OFFSET:X}',
         },
         'tooling': {
-            'exporter': 'SluggiesTools/export_icons.py',
+            'exporter': 'SluggiesTools/Icons/export_icons.py',
             'wimgt_version': _try_get_wimgt_version(),
         },
         'ranges': {

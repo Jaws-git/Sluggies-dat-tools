@@ -8,7 +8,8 @@ import sys
 
 from PIL import Image
 
-TOOLS_DIR = os.path.dirname(__file__)
+ICONS_DIR = os.path.dirname(__file__)
+TOOLS_DIR = os.path.normpath(os.path.join(ICONS_DIR, '..'))
 ROOT_DIR = os.path.normpath(os.path.join(TOOLS_DIR, '..'))
 
 DEFAULT_ICONS_ROOT = os.path.join(ROOT_DIR, '2_Output_Models', '_ICONS')

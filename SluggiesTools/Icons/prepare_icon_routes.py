@@ -6,7 +6,8 @@ import struct
 from datetime import datetime, timezone
 
 
-TOOLS_DIR = os.path.dirname(__file__)
+ICONS_DIR = os.path.dirname(__file__)
+TOOLS_DIR = os.path.normpath(os.path.join(ICONS_DIR, '..'))
 ROOT_DIR = os.path.normpath(os.path.join(TOOLS_DIR, '..'))
 
 INPUT_DOL = os.path.join(ROOT_DIR, '1_Input', 'main.dol')
