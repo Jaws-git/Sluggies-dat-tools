@@ -26,7 +26,7 @@ def run_hammerspace_helper():
     subprocess.run([sys.executable, HS_HELPER_SCRIPT], cwd=HS_DIR, check=True)
 
 
-def run_export(debug=False, notex=False, untangle=False):
+def run_export(debug=False, notex=False, untangle=False, dae=False):
     missing = [pkg for pkg in ['numpy', 'collada'] if importlib.util.find_spec(pkg) is None]
     if missing:
         print(f"Missing required packages: {', '.join(missing)}")
@@ -40,6 +40,8 @@ def run_export(debug=False, notex=False, untangle=False):
         extra_args.append('--debug')
     if untangle:
         extra_args.append('--untangle')
+    if dae:
+        extra_args.append('--dae')
 
     subprocess.run(
         [sys.executable, EXPORT_SCRIPT] + extra_args,
@@ -178,6 +180,7 @@ def parse_args():
             '  python patch.py --export\n'
             '  python patch.py --export --debug --notex --untangle\n'
             '  python patch.py --export --untangle\n'
+            '  python patch.py --export --dae\n'
             '  python start.py --prepare-icon-routes\n'
             '  python start.py --add-custom-icons --dry-run\n'
             '  python start.py --add-custom-icons --custom-icon-stage a\n'
@@ -214,6 +217,7 @@ def parse_args():
     parser.add_argument('--debug', action='store_true', help='export only: write binary blobs as raw byte arrays instead of base64')
     parser.add_argument('--notex', action='store_true', help='export only: skip texture extraction')
     parser.add_argument('--untangle', action='store_true', help='export only: pass untangling flag through to export process')
+    parser.add_argument('--dae', action='store_true', help='export only: also write .dae model files to disk (always writes .sluggie files)')
     parser.add_argument('--use-output', action='store_true', help='export-icons only: read DOL/DAT from 3_Output_Dat instead of 1_Input')
     parser.add_argument('--no-overwrite-copy', action='store_true', help='prepare-icon-routes only: patch existing 3_Output_Dat files without recopying from 1_Input')
     parser.add_argument('--dry-run', action='store_true', help='patch-icons/add-custom-icons: validate without writing bytes')
@@ -236,6 +240,8 @@ def parse_args():
         parser.error('--notex can only be used with --export.')
     if args.untangle and not args.export:
         parser.error('--untangle can only be used with --export.')
+    if args.dae and not args.export:
+        parser.error('--dae can only be used with --export.')
     if args.use_output and not args.export_icons:
         parser.error('--use-output can only be used with --export-icons.')
     if args.no_overwrite_copy and not args.prepare_icon_routes:
@@ -259,7 +265,7 @@ def main():
         run_hammerspace_helper()
         return
     if args.export:
-        run_export(debug=args.debug, notex=args.notex, untangle=args.untangle)
+        run_export(debug=args.debug, notex=args.notex, untangle=args.untangle, dae=args.dae)
         return
     if args.prepare_icon_routes:
         run_prepare_icon_routes(no_overwrite_copy=args.no_overwrite_copy)

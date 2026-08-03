@@ -70,7 +70,7 @@ class Archive(FileChunk):
                 _log_noncritical('failed analyzing in archive', e)
                 pass
 
-    def toFile(self, outdir, export_tex=True, untangle_context=None):
+    def toFile(self, outdir, export_tex=True, export_dae=False, untangle_context=None):
         if not len(self.success):
             return
         archivedir = outdir + str(self.absolute) + '/'
@@ -78,7 +78,7 @@ class Archive(FileChunk):
             os.mkdir(archivedir)
         for success in self.success:
             f = self.files[success]
-            f.toFile(archivedir, export_tex=export_tex, untangle_context=untangle_context)
+            f.toFile(archivedir, export_tex=export_tex, export_dae=export_dae, untangle_context=untangle_context)
 
 # This is not the mdl0 format, I think I just called the class that for some reason
 class Model0(FileChunk):
@@ -162,7 +162,7 @@ class Model0(FileChunk):
             boneInfluences += [BoneInfluence(geoBone, 256, i, (100, 100, 100), 'Non-skinned assumption') for i in range(self.GPL.geoDescriptors[geoID].layout.DOPositionHeader.numPositions)]
         return boneInfluences
 
-    def toFile(self, outdir, export_tex=True, untangle_context=None):
+    def toFile(self, outdir, export_tex=True, export_dae=False, untangle_context=None):
         try:
             file_dir = outdir + self.name
             dae_exists = os.path.exists(os.path.join(file_dir, self.name + '.dae'))
@@ -171,18 +171,23 @@ class Model0(FileChunk):
             if os.path.exists(file_dir):
                 # Selectively remove only export-produced files so that unrelated
                 # files placed in the output folder are not destroyed.
-                _export_exts = {'.dae', '.png', '.sluggie'}
+                _export_exts = {'.sluggie'}
+                if export_dae:
+                    _export_exts |= {'.dae', '.png'}
                 for _fname in os.listdir(file_dir):
                     _fpath = os.path.join(file_dir, _fname)
                     if os.path.isfile(_fpath) and os.path.splitext(_fname)[1].lower() in _export_exts:
                         os.remove(_fpath)
-                    elif os.path.isdir(_fpath) and _fname == 'tex':
+                    elif export_dae and os.path.isdir(_fpath) and _fname == 'tex':
                         shutil.rmtree(_fpath)
             else:
                 os.mkdir(file_dir)
             file_dir += '/'
+            # model_data() still runs when dae export is off: untangling side effects
+            # (rewriting texture bytes into the dat and recording name overrides) happen here.
             data = self.model_data(export_tex=export_tex, untangle_context=untangle_context)
-            data.to_dae(file_dir, name=self.name)
+            if export_dae:
+                data.to_dae(file_dir, name=self.name)
         except Exception as e:
             pass
 

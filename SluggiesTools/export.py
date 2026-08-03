@@ -18,6 +18,7 @@ except Exception:
 EXPORT_TEX = '--notex' not in sys.argv
 DEBUG_DONT_USE_BASE64 = '--debug' in sys.argv
 UNTANGLE_TEX = '--untangle' in sys.argv
+EXPORT_DAE = '--dae' in sys.argv
 
 
 def _encode_bytes(data: bytes):
@@ -954,7 +955,7 @@ for dir_ind, file_arr in dirs.items():
                 child.analyze()
                 if child.child:
                     child.child.analyze()
-                    child.child.toFile(lan_dir, export_tex=EXPORT_TEX, untangle_context=untangle_context)
+                    child.child.toFile(lan_dir, export_tex=EXPORT_TEX, export_dae=EXPORT_DAE, untangle_context=untangle_context)
                     if isinstance(child.child, Archive):
                         archive_dir = os.path.join(lan_dir, str(child.child.absolute))
                         for i in child.child.success:
