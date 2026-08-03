@@ -15,11 +15,12 @@ All pointers below are relative to the start of this section.
 
 | Offset | Type | Meaning |
 |---|---:|---|
+| `+0x00` | `uint16` | Pose count per position/normal attribute |
 | `+0x04` | `uint16` | Facial object count |
 | `+0x08` | `uint32` | Facial object table pointer |
 
 Each object-table entry is 12 bytes. Its word at `+0x08` points to a pair of
-32-byte attribute records:
+variable-size attribute records. Each record is `0x0C + pose_count * 4` bytes:
 
 1. Position record, identified by format bytes `03 01 03 02`.
 2. Normal record, identified by format bytes `03 02 03 02`.
@@ -31,7 +32,7 @@ Each object-table entry is 12 bytes. Its word at `+0x08` points to a pair of
 | `+0x00` | `uint32` | Number of mapped entries per pose |
 | `+0x04` | 4 bytes | Attribute/format bytes |
 | `+0x08` | `uint32` | Run-list pointer |
-| `+0x0c` | `uint32[5]` | Five pose-array pointers |
+| `+0x0c` | `uint32[pose_count]` | Pose-array pointers |
 
 The position run list ends at the normal record's run-list pointer. The normal
 run list ends at the first pose array. Each run is two big-endian `uint16`
@@ -49,6 +50,12 @@ The section contains two facial objects. Their position records map 199 and 451
 head vertices respectively, with five poses per object. The corresponding
 normal records map 247 and 520 normal entries. The low-detail model contains no
 section, which explains why ordinary GPL editing worked there.
+
+`pose_count` is a stored format field rather than an implicit constant. A scan
+of 69 original, in-range models with non-null `ptr7` found only the value 5, so
+five is the only currently observed count. Exporters and importers must still
+derive record sizes and pointer-array lengths from `pose_count` so other counts
+remain representable.
 
 ## In-place patch rule
 

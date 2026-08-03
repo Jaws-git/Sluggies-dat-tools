@@ -34,6 +34,9 @@
           "type": ["string", "null"],
           "description": "Base64-encoded raw bytes of the GPL header user-data block (GPL header +0x08). Null when GPLUserDataLength is zero."
         },
+        "FacialPoseData": {
+          "$ref": "#/properties/SluggiesModel/FacialPoseData"
+        },
         "Submeshes": {
           "type": "array",
           "description": "There can be multiple separate submeshes in one model.",
@@ -419,6 +422,77 @@
           },
           "required": ["TextureIndex", "TextureDescriptorOffset", "Width", "Height", "Format", "Unpacked", "DescUnknownAt10", "DescUnknownAt1B", "ImageDataOffset", "ImageDataLength"]
         }
+      },
+      "FacialPoseData": {
+        "type": ["object", "null"],
+        "description": "Optional facial vertex-animation section referenced by model header +0x18 (ptr7). Contains indexed position and normal pose arrays that overwrite mapped GPL vertices at runtime. The pose count is stored in the section and is not assumed to be fixed. Null when ptr7 is absent or does not use the recognized facial layout.",
+        "properties": {
+          "SectionOffset": {
+            "type": "string",
+            "description": "Absolute file offset of the facial pose section in dt_na.dat (hex)."
+          },
+          "HeaderFieldOffset": {
+            "type": "string",
+            "description": "Absolute file offset of model header +0x18, the block-relative facial section pointer field (hex)."
+          },
+          "SectionLength": {
+            "type": "number",
+            "description": "Complete facial section length in bytes."
+          },
+          "SectionData": {
+            "type": ["string", "array"],
+            "description": "Complete original facial section bytes for lossless preservation, encoded as base64 or a debug byte array.",
+            "items": { "type": "number", "minimum": 0, "maximum": 255 }
+          },
+          "HeaderData": {
+            "type": ["string", "array"],
+            "description": "Original bytes from the facial section start through the object table pointer, encoded as base64 or a debug byte array.",
+            "items": { "type": "number", "minimum": 0, "maximum": 255 }
+          },
+          "PoseCount": {
+            "type": "number",
+            "minimum": 1,
+            "description": "Number of position poses and normal poses per facial object (uint16 at section +0x00). All currently surveyed original models use 5, but readers must honor this field dynamically."
+          },
+          "AttributeRecordSize": {
+            "type": "number",
+            "minimum": 16,
+            "description": "Byte size of each position or normal attribute record, computed as 0x0C + PoseCount * 4."
+          },
+          "ObjectCount": {
+            "type": "number",
+            "description": "Number of facial objects (uint16 at section +0x04)."
+          },
+          "ObjectTableOffset": {
+            "type": "string",
+            "description": "Section-relative offset of the 12-byte facial object table entries (hex)."
+          },
+          "Objects": {
+            "type": "array",
+            "description": "Decoded facial objects. Each object contains one position and one normal attribute with PoseCount poses.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "ObjectIndex": { "type": "number", "description": "Zero-based facial object index." },
+                "TableEntryOffset": { "type": "string", "description": "Section-relative offset of this object's 12-byte table entry (hex)." },
+                "TableEntryAbsoluteOffset": { "type": "string", "description": "Absolute file offset of this object's table entry (hex)." },
+                "TableEntryData": {
+                  "type": ["string", "array"],
+                  "description": "Original 12-byte object table entry, encoded as base64 or a debug byte array.",
+                  "items": { "type": "number", "minimum": 0, "maximum": 255 }
+                },
+                "ObjectDataOffset": { "type": "string", "description": "Section-relative offset of the paired position/normal attribute records (hex)." },
+                "ObjectDataAbsoluteOffset": { "type": "string", "description": "Absolute file offset of the paired position/normal attribute records (hex)." },
+                "SubmeshIndex": { "type": ["number", "null"], "description": "Index into SluggiesModel.Submeshes matched using pose-zero positions and normals, or null when no exact match is found." },
+                "MeshName": { "type": ["string", "null"], "description": "Matched GPL mesh name, or null when SubmeshIndex is null." },
+                "Position": { "$ref": "#/definitions/facialAttribute" },
+                "Normal": { "$ref": "#/definitions/facialAttribute" }
+              },
+              "required": ["ObjectIndex", "TableEntryOffset", "TableEntryAbsoluteOffset", "TableEntryData", "ObjectDataOffset", "ObjectDataAbsoluteOffset", "SubmeshIndex", "MeshName", "Position", "Normal"]
+            }
+          }
+        },
+        "required": ["SectionOffset", "HeaderFieldOffset", "SectionLength", "SectionData", "HeaderData", "PoseCount", "AttributeRecordSize", "ObjectCount", "ObjectTableOffset", "Objects"]
       },
       "SkinData": {
         "type": "object",
@@ -943,6 +1017,63 @@
         "type": "boolean",
         "description": "Written by the Blender exporter. When true, patch_inplace.py uses writeExpandedMesh to relocate vertex, UV, draw-list, and skin source data into hammerspace chunks so that buffer sizes can change freely. When false or absent, all buffers are patched in-place at their original file offsets and sizes must not change."
       }
+    }
+  },
+  "definitions": {
+    "facialAttribute": {
+      "type": "object",
+      "description": "One facial position or normal attribute record with an indexed GPL mapping and a section-defined number of quantized XYZ pose arrays.",
+      "properties": {
+        "RecordOffset": { "type": "string", "description": "Section-relative attribute record offset (hex)." },
+        "RecordAbsoluteOffset": { "type": "string", "description": "Absolute file offset of the attribute record (hex)." },
+        "EntryCount": { "type": "number", "description": "Number of mapped entries in each pose array." },
+        "FormatData": {
+          "type": ["string", "array"],
+          "description": "Four format bytes: 03 01 03 02 for positions or 03 02 03 02 for normals.",
+          "items": { "type": "number", "minimum": 0, "maximum": 255 }
+        },
+        "RunListOffset": { "type": "string", "description": "Section-relative run-list offset (hex)." },
+        "RunListAbsoluteOffset": { "type": "string", "description": "Absolute file offset of the run list (hex)." },
+        "RunListData": {
+          "type": ["string", "array"],
+          "description": "Original packed run-list bytes, encoded as base64 or a debug byte array.",
+          "items": { "type": "number", "minimum": 0, "maximum": 255 }
+        },
+        "Runs": {
+          "type": "array",
+          "description": "Decoded GPL index runs. Expanding all runs yields exactly EntryCount indices.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "FirstVertex": { "type": "number", "description": "First GPL vertex or normal index in this run (uint16)." },
+              "VertexCount": { "type": "number", "description": "Number of consecutive indices in this run (uint16)." }
+            },
+            "required": ["FirstVertex", "VertexCount"]
+          }
+        },
+        "PoseOffsets": {
+          "type": "array",
+          "description": "Section-relative pose-array offsets (hex). Array length equals FacialPoseData.PoseCount.",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "PoseAbsoluteOffsets": {
+          "type": "array",
+          "description": "Absolute pose-array file offsets (hex). Array length equals FacialPoseData.PoseCount.",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "PoseData": {
+          "type": "array",
+          "description": "Original pose buffers. Array length equals FacialPoseData.PoseCount; each buffer contains EntryCount quantized XYZ triplets (three big-endian int16 values per entry).",
+          "items": {
+            "type": ["string", "array"],
+            "items": { "type": "number", "minimum": 0, "maximum": 255 }
+          },
+          "minItems": 1
+        }
+      },
+      "required": ["RecordOffset", "RecordAbsoluteOffset", "EntryCount", "FormatData", "RunListOffset", "RunListAbsoluteOffset", "RunListData", "Runs", "PoseOffsets", "PoseAbsoluteOffsets", "PoseData"]
     }
   }
 }

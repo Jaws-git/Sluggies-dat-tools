@@ -751,6 +751,222 @@ def extract_trailing_sections(model):
         })
     return sections
 
+
+def extract_facial_pose_data(model):
+    """Decode the optional ptr7 facial position/normal pose section.
+
+    Unrecognized ptr7 payloads return None and remain preserved through
+    TrailingSections. All offsets stored by this function are either explicitly
+    section-relative or absolute dt_na.dat file offsets.
+    """
+    if not getattr(model, 'ptr7', 0):
+        return None
+
+    section_relative = model.ptr7
+    section_absolute = model.absolute + section_relative
+    following_ptrs = [
+        ptr for ptr in (
+            model.gplPtr, model.ptr3, model.texPtr, model.ptr5,
+            model.ptr6, model.ptr7, model.ptr8,
+        )
+        if section_relative < ptr < model.length
+    ]
+    section_end_relative = min(following_ptrs, default=model.length)
+    section_length = section_end_relative - section_relative
+    if section_length < 0x14:
+        return None
+
+    model.f.seek(section_absolute)
+    section = model.f.read(section_length)
+
+    def u16(offset):
+        if offset < 0 or offset + 2 > len(section):
+            raise ValueError('facial uint16 outside section')
+        return struct.unpack_from('>H', section, offset)[0]
+
+    def u32(offset):
+        if offset < 0 or offset + 4 > len(section):
+            raise ValueError('facial uint32 outside section')
+        return struct.unpack_from('>I', section, offset)[0]
+
+    def parse_attribute(record_offset, record_size, pose_count, run_end, expected_format):
+        if record_offset < 0 or record_offset + record_size > len(section):
+            raise ValueError('facial attribute record outside section')
+        entry_count = u32(record_offset)
+        format_data = section[record_offset + 4:record_offset + 8]
+        if format_data != expected_format:
+            raise ValueError('unrecognized facial attribute format')
+        run_list_offset = u32(record_offset + 8)
+        pose_offsets = [
+            u32(record_offset + 0x0C + index * 4)
+            for index in range(pose_count)
+        ]
+        pose_size = entry_count * 6
+        if not (run_list_offset <= run_end <= len(section)):
+            raise ValueError('invalid facial run-list bounds')
+        if any(offset + pose_size > len(section) for offset in pose_offsets):
+            raise ValueError('facial pose array outside section')
+
+        runs = []
+        expanded_indices = []
+        for offset in range(run_list_offset, run_end, 4):
+            first_vertex = u16(offset)
+            vertex_count = u16(offset + 2)
+            runs.append({
+                'FirstVertex': first_vertex,
+                'VertexCount': vertex_count,
+            })
+            expanded_indices.extend(range(first_vertex, first_vertex + vertex_count))
+        if len(expanded_indices) != entry_count:
+            raise ValueError('facial run-list count does not match attribute count')
+
+        return {
+            'RecordOffset': hex(record_offset),
+            'RecordAbsoluteOffset': hex(section_absolute + record_offset),
+            'EntryCount': entry_count,
+            'FormatData': _encode_bytes(format_data),
+            'RunListOffset': hex(run_list_offset),
+            'RunListAbsoluteOffset': hex(section_absolute + run_list_offset),
+            'RunListData': _encode_bytes(section[run_list_offset:run_end]),
+            'Runs': runs,
+            'PoseOffsets': [hex(offset) for offset in pose_offsets],
+            'PoseAbsoluteOffsets': [hex(section_absolute + offset) for offset in pose_offsets],
+            'PoseData': [
+                _encode_bytes(section[offset:offset + pose_size])
+                for offset in pose_offsets
+            ],
+        }, expanded_indices
+
+    try:
+        pose_count = u16(0x00)
+        object_count = u16(0x04)
+        object_table_offset = u32(0x08)
+        attribute_record_size = 0x0C + pose_count * 4
+        if (
+            not pose_count
+            or not object_count
+            or object_table_offset + object_count * 12 > len(section)
+        ):
+            return None
+
+        submesh_arrays = []
+        if getattr(model, 'GPL', None):
+            for submesh_index, descriptor in enumerate(model.GPL.geoDescriptors):
+                layout = descriptor.layout
+                position_header = layout.DOPositionHeader
+                position_size = (
+                    position_header.numPositions * position_header.compCount
+                    * _vb_comp_size(position_header.quantizeInfo)
+                )
+                position_offset = layout.absolute + position_header.positionArrPtr
+                model.f.seek(position_offset)
+                position_data = model.f.read(position_size)
+
+                normal_header = layout.DOLightingHeader
+                normal_data = None
+                if normal_header.normalsPtr:
+                    normal_size = (
+                        normal_header.numNormals * normal_header.compCount
+                        * _vb_comp_size(normal_header.quantizeInfo)
+                    )
+                    model.f.seek(layout.absolute + normal_header.normalsPtr)
+                    normal_data = model.f.read(normal_size)
+                submesh_arrays.append((submesh_index, descriptor.n, position_data, normal_data))
+
+        objects = []
+        recognized_objects = 0
+        for object_index in range(object_count):
+            table_entry_offset = object_table_offset + object_index * 12
+            object_data_offset = u32(table_entry_offset + 8)
+            if object_data_offset + attribute_record_size * 2 > len(section):
+                raise ValueError('facial object data outside section')
+
+            position_record = object_data_offset
+            normal_record = object_data_offset + attribute_record_size
+            normal_run_list_offset = u32(normal_record + 8)
+            position_pose_offsets = [
+                u32(position_record + 0x0C + index * 4)
+                for index in range(pose_count)
+            ]
+            normal_pose_offsets = [
+                u32(normal_record + 0x0C + index * 4)
+                for index in range(pose_count)
+            ]
+            first_pose_offset = min(position_pose_offsets + normal_pose_offsets)
+
+            position, position_indices = parse_attribute(
+                position_record, attribute_record_size, pose_count,
+                normal_run_list_offset, b'\x03\x01\x03\x02'
+            )
+            normal, normal_indices = parse_attribute(
+                normal_record, attribute_record_size, pose_count,
+                first_pose_offset, b'\x03\x02\x03\x02'
+            )
+
+            submesh_index = None
+            mesh_name = None
+            position_pose_zero = section[
+                position_pose_offsets[0]:
+                position_pose_offsets[0] + position['EntryCount'] * 6
+            ]
+            normal_pose_zero = section[
+                normal_pose_offsets[0]:
+                normal_pose_offsets[0] + normal['EntryCount'] * 6
+            ]
+            for candidate_index, candidate_name, positions, normals in submesh_arrays:
+                position_matches = (
+                    max(position_indices, default=-1) * 6 + 6 <= len(positions)
+                    and all(
+                        position_pose_zero[index * 6:(index + 1) * 6]
+                        == positions[vertex_index * 6:(vertex_index + 1) * 6]
+                        for index, vertex_index in enumerate(position_indices)
+                    )
+                )
+                normal_matches = (
+                    normals is not None
+                    and max(normal_indices, default=-1) * 6 + 6 <= len(normals)
+                    and all(
+                        normal_pose_zero[index * 6:(index + 1) * 6]
+                        == normals[vertex_index * 6:(vertex_index + 1) * 6]
+                        for index, vertex_index in enumerate(normal_indices)
+                    )
+                )
+                if position_matches and normal_matches:
+                    submesh_index = candidate_index
+                    mesh_name = candidate_name
+                    break
+
+            objects.append({
+                'ObjectIndex': object_index,
+                'TableEntryOffset': hex(table_entry_offset),
+                'TableEntryAbsoluteOffset': hex(section_absolute + table_entry_offset),
+                'TableEntryData': _encode_bytes(section[table_entry_offset:table_entry_offset + 12]),
+                'ObjectDataOffset': hex(object_data_offset),
+                'ObjectDataAbsoluteOffset': hex(section_absolute + object_data_offset),
+                'SubmeshIndex': submesh_index,
+                'MeshName': mesh_name,
+                'Position': position,
+                'Normal': normal,
+            })
+            recognized_objects += 1
+
+        if recognized_objects != object_count:
+            return None
+        return {
+            'SectionOffset': hex(section_absolute),
+            'HeaderFieldOffset': hex(model.absolute + 0x18),
+            'SectionLength': section_length,
+            'SectionData': _encode_bytes(section),
+            'HeaderData': _encode_bytes(section[:object_table_offset]),
+            'PoseCount': pose_count,
+            'AttributeRecordSize': attribute_record_size,
+            'ObjectCount': object_count,
+            'ObjectTableOffset': hex(object_table_offset),
+            'Objects': objects,
+        }
+    except (ValueError, struct.error):
+        return None
+
 def extract_act_header(model):
     """Return an ACTHeader dict with actor/skin IDs, geo name, and the
     tree-unknown word at Tree+0x00, or None if the model has no ACT section."""
@@ -976,6 +1192,7 @@ for dir_ind, file_arr in dirs.items():
                                     "TextureDescriptors": extract_texture_descriptors(sub_model, untangle_context=untangle_context),
                                     "Submeshes": extract_submeshes(sub_model),
                                     "SkinData": extract_skin_data(sub_model),
+                                    "FacialPoseData": extract_facial_pose_data(sub_model),
                                     "TrailingSections": extract_trailing_sections(sub_model),
                                     "ACTHeader": extract_act_header(sub_model),
                                     "BoneHierarchy": extract_bone_data(sub_model)
@@ -1001,6 +1218,7 @@ for dir_ind, file_arr in dirs.items():
                                 "TextureDescriptors": extract_texture_descriptors(child.child, untangle_context=untangle_context),
                                 "Submeshes": extract_submeshes(child.child),
                                 "SkinData": extract_skin_data(child.child),
+                                "FacialPoseData": extract_facial_pose_data(child.child),
                                 "TrailingSections": extract_trailing_sections(child.child),
                                 "ACTHeader": extract_act_header(child.child),
                                 "BoneHierarchy": extract_bone_data(child.child)
