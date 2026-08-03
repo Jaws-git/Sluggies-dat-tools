@@ -89,7 +89,7 @@ class Model0(FileChunk):
             raise ExpectedFormatSkip('Skipping archive member: not a model entry')
         self.gplPtr = self.word()
         if self.gplPtr > 0x40 or self.gplPtr < 0x20:
-            raise Exception("gpl pointer is " + hex(self.gplPtr))
+            raise Exception("no mesh data (gpl pointer is " + hex(self.gplPtr) + ")")
         self.ptr3 = self.word()
         self.texPtr = self.word()
         self.ptr5 = self.word()

@@ -1012,7 +1012,7 @@ for dir_ind, file_arr in dirs.items():
         except ExpectedFormatSkip as exc:
             print(f'[dir {dir_ind}] {exc}')
         except Exception as e:
-            print(f'[dir {dir_ind}] failed in export: {type(e).__name__}: {e} (Moving on)')
+            print(f'[dir {dir_ind}] skipping entry: {type(e).__name__}: {e}')
             pass
     if len(os.listdir(dir_dir)) == 0:
         os.rmdir(dir_dir)
