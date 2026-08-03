@@ -1111,7 +1111,11 @@ def CloneTEX(model_offset: int, model_length: int) -> bytes:
             print("    [CloneTEX] No TEX section")
             return b''
         skn_off = _s.unpack_from('>I', hdr, 0x10)[0]
-        next_off = skn_off or model_length
+        trailing_offsets = [_s.unpack_from('>I', hdr, offset)[0] for offset in (0x14, 0x18, 0x1c)]
+        next_off = min(
+            [offset for offset in [skn_off, *trailing_offsets] if offset > tex_off]
+            + [model_length]
+        )
         tex_len = next_off - tex_off
         f.seek(model_offset + tex_off)
         data = f.read(tex_len)
@@ -1487,12 +1491,7 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
 
 
 def CloneSKN(model_offset: int, model_length: int) -> bytes:
-    """Clone the SKN section verbatim from INPUT dt_na.dat.
-
-    Includes all trailing sub-sections (ptr6/ptr7/ptr8 data) that live
-    between the end of SKN proper and the end of the model block.
-    Returns b'' if the model has no SKN section.
-    """
+    """Clone the SKN section verbatim, excluding ptr6/ptr7/ptr8 sections."""
     import struct as _s
     with open(hh.INPUT_DAT, 'rb') as f:
         f.seek(model_offset)
@@ -1501,11 +1500,37 @@ def CloneSKN(model_offset: int, model_length: int) -> bytes:
         if not skn_off:
             print("    [CloneSKN] No SKN section")
             return b''
-        skn_len = model_length - skn_off
+        trailing_offsets = [_s.unpack_from('>I', hdr, offset)[0] for offset in (0x14, 0x18, 0x1c)]
+        skn_end = min(
+            [offset for offset in trailing_offsets if offset > skn_off]
+            + [model_length]
+        )
+        skn_len = skn_end - skn_off
         f.seek(model_offset + skn_off)
         data = f.read(skn_len)
-    print(f"    [CloneSKN] {skn_len:,} bytes from block+0x{skn_off:X} (to end of block)")
+    print(f"    [CloneSKN] {skn_len:,} bytes from block+0x{skn_off:X}")
     return data
+
+
+def CloneTrailingSections(model_offset: int, model_length: int) -> tuple[bytes, int]:
+    """Clone the contiguous ptr6/ptr7/ptr8 tail and return its original offset."""
+    import struct as _s
+    with open(hh.INPUT_DAT, 'rb') as f:
+        f.seek(model_offset)
+        hdr = f.read(0x20)
+        offsets = [
+            _s.unpack_from('>I', hdr, field_offset)[0]
+            for field_offset in (0x14, 0x18, 0x1c)
+        ]
+        offsets = [offset for offset in offsets if 0 < offset < model_length]
+        if not offsets:
+            print("    [CloneTrailing] No ptr6/ptr7/ptr8 sections")
+            return b'', 0
+        start = min(offsets)
+        f.seek(model_offset + start)
+        data = f.read(model_length - start)
+    print(f"    [CloneTrailing] {len(data):,} bytes from block+0x{start:X}")
+    return data, start
 
 
 def BuildHEADERModelBlock(
@@ -1513,8 +1538,9 @@ def BuildHEADERModelBlock(
     act_bytes: bytes,
     tex_bytes: bytes,
     skn_bytes: bytes,
+    trailing_bytes: bytes = b'',
     original_header: bytes = b'',
-    original_skn_off: int = 0,
+    original_trailing_off: int = 0,
 ) -> bytes:
     """Assemble the full model block from its four sections.
 
@@ -1546,9 +1572,9 @@ def BuildHEADERModelBlock(
     original_header :
         The 0x20-byte file header from the original model block in INPUT
         dt_na.dat.  Used to read ptr6/ptr7/ptr8 for recomputation.
-    original_skn_off :
-        The SKN section offset as read from the original header (ptr5).
-        Needed to compute the delta for relocating ptr6/ptr7/ptr8.
+    original_trailing_off :
+        The earliest original ptr6/ptr7/ptr8 section offset. Needed to preserve
+        relative spacing between separately cloned trailing sections.
 
     Returns the complete model block as a byte string.
     """
@@ -1560,6 +1586,7 @@ def BuildHEADERModelBlock(
     act_off = gpl_off + len(gpl_bytes)
     tex_off = act_off + len(act_bytes)
     skn_off = tex_off + len(tex_bytes)
+    trailing_off = skn_off + len(skn_bytes)
 
     hdr = bytearray(HDR_SIZE)
     _s.pack_into('>I', hdr, 0x00, 0)
@@ -1568,20 +1595,17 @@ def BuildHEADERModelBlock(
     _s.pack_into('>I', hdr, 0x0c, tex_off if tex_bytes else 0)
     _s.pack_into('>I', hdr, 0x10, skn_off if skn_bytes else 0)
 
-    # Recompute ptr6/ptr7/ptr8 from the original header.
-    # These point to sub-sections that were copied as part of skn_bytes
-    # (BuildSKNSkinningDataCopyOnly reads from original SKN start to end-of-block).
-    # Their new offset = new_skn_off + (original_ptr - original_skn_off).
-    if len(original_header) >= HDR_SIZE and original_skn_off and skn_bytes:
+    # Recompute ptr6/ptr7/ptr8 relative to the separately cloned tail.
+    if len(original_header) >= HDR_SIZE and original_trailing_off and trailing_bytes:
         for field_offset in (0x14, 0x18, 0x1c):
             orig_ptr = _s.unpack_from('>I', original_header, field_offset)[0]
-            if orig_ptr and orig_ptr >= original_skn_off:
-                new_ptr = skn_off + (orig_ptr - original_skn_off)
+            if orig_ptr and orig_ptr >= original_trailing_off:
+                new_ptr = trailing_off + (orig_ptr - original_trailing_off)
                 _s.pack_into('>I', hdr, field_offset, new_ptr)
                 print(f'    [HDR] +0x{field_offset:02X} patched: '
                       f'0x{orig_ptr:08X} → 0x{new_ptr:08X}')
 
-    return bytes(hdr) + gpl_bytes + act_bytes + tex_bytes + skn_bytes
+    return bytes(hdr) + gpl_bytes + act_bytes + tex_bytes + skn_bytes + trailing_bytes
 
 
 def CloneHEADER(model_offset: int) -> bytes:
@@ -1673,8 +1697,8 @@ if __name__ == '__main__':
             )
         raise SystemExit(0 if _success else 1)
 
-    # --- Hybrid build: Build GPL + clone ACT/TEX + build SKN, assemble header ---
-    print("=== Hybrid Build (Build GPL + Clone ACT/TEX + Build SKN) ===")
+    # --- Per-section clone, including a separately addressable trailing tail ---
+    print("=== Per-Section Clone (GPL/ACT/TEX/SKN + ptr6/ptr7/ptr8) ===")
     print(f"Chunk: {_chunk}, FileIndex: {_index}")
 
     # Check if this model is already in hammerspace and evict it first.
@@ -1704,7 +1728,7 @@ if __name__ == '__main__':
           f"{len(_parsed.bones.bones) if _parsed.bones else 0} bone(s), "
           f"skinning={'yes' if _parsed.skinning else 'no'}")
 
-    print("\n[1/5] Cloning GPL ...")
+    print("\n[1/6] Cloning GPL ...")
     _gpl = CloneGPL(_orig_offset, _orig_length)
     _gpl_result = GPLBuildResult(
         gpl_bytes=_gpl,
@@ -1713,30 +1737,32 @@ if __name__ == '__main__':
     print(f"    GPL built: {len(_gpl):,} bytes, "
           f"pos_gpl_offsets = {['0x%X' % o for o in _gpl_result.pos_gpl_offsets]}")
 
-    print("[2/5] Cloning ACT ...")
+    print("[2/6] Cloning ACT ...")
     _act = CloneACT(_orig_offset, _orig_length)
 
-    print("[3/5] Cloning TEX ...")
+    print("[3/6] Cloning TEX ...")
     _tex = CloneTEX(_orig_offset, _orig_length)
 
-    print("[4/5] Cloning SKN ...")
+    print("[4/6] Cloning SKN ...")
     _skn = CloneSKN(_orig_offset, _orig_length)
+
+    print("[5/6] Cloning ptr6/ptr7/ptr8 sections ...")
+    _trailing, _orig_trailing_off = CloneTrailingSections(_orig_offset, _orig_length)
 
     # Read original header for ptr6/ptr7/ptr8 recomputation
     import struct as _struct
     _orig_header = b''
-    _orig_skn_off = 0
     if _parsed.model_offset:
         with open(hh.INPUT_DAT, 'rb') as _fh:
             _fh.seek(_parsed.model_offset)
             _orig_header = _fh.read(0x20)
-        _orig_skn_off = _struct.unpack_from('>I', _orig_header, 0x10)[0]
 
-    print("[5/5] Assembling model block header ...")
+    print("[6/6] Assembling model block header ...")
     _block = BuildHEADERModelBlock(
         _gpl, _act, _tex, _skn,
+        trailing_bytes=_trailing,
         original_header=_orig_header,
-        original_skn_off=_orig_skn_off,
+        original_trailing_off=_orig_trailing_off,
     )
     print(f"\n    Assembled block: {len(_block):,} bytes ({len(_block) / 1048576:.3f} MB)")
     if len(_block) != _orig_length:
@@ -1782,13 +1808,13 @@ if __name__ == '__main__':
     )
 
     hh.appendHammerspaceLog(
-        'Written (BuildGPL+BuildSKN)',
+        'Written (per-section clone)',
         os.path.basename(_args.sluggies_path),
         _chunk, _index,
         _new_offset, len(_block),
     )
 
-    print("\nDone. (Build GPL + Clone ACT/TEX + Build SKN — original location zeroed)")
+    print("\nDone. (Per-section clone — original location zeroed)")
 
     print("\nDone.")
     raise SystemExit(0)
