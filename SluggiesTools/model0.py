@@ -48,17 +48,22 @@ class MaybeArchive(FileChunk):
         elif word1 > 1000:
             return
         elif word1 > 0:
-            self.child = self.add_child(0, 0, Archive)
+            self.child = self.add_child(0, self.length, Archive)
         else:
-            self.child = self.add_child(0, 0, Model0)
+            self.child = self.add_child(0, self.length, Model0)
 
 class Archive(FileChunk):
     def analyze(self):
         self.fileCount = self.word()
-        self.files = [self.add_child(self.word(), 0, Model0) for x in range(self.fileCount)]
-        for x in range(1, self.fileCount):
-            if self.files[x].absolute < self.files[x - 1].absolute:
+        offsets = [self.word() for _ in range(self.fileCount)]
+        for index in range(1, self.fileCount):
+            if offsets[index] < offsets[index - 1]:
                 raise ExpectedFormatSkip('Skipping entry: unsupported archive layout')
+        ends = offsets[1:] + [self.length]
+        self.files = [
+            self.add_child(offset, end - offset, Model0)
+            for offset, end in zip(offsets, ends)
+        ]
         self.success = []
         for i, file in enumerate(self.files):
             try:

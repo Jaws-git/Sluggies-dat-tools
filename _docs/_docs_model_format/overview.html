@@ -296,31 +296,34 @@
         <div class="blk c-sub">
             <div class="blk-title"><a href="facial_pose_section.md">Facial Pose Data</a> <span class="note">(optional, model header +0x18)</span></div>
             <div class="fields">
-                <div class="row"><span class="off">0x00</span><span>pose count per attribute (uint16) <span class="note">(5 in all currently observed models)</span></span></div>
-                <div class="row"><span class="off">0x04</span><span>facial object count (uint16)</span></div>
+                <div class="row"><span class="off">0x00</span><span>maximum pose count (uint16)</span></div>
+                <div class="row"><span class="off">0x02</span><span>facial object count (uint16)</span></div>
+                <div class="row"><span class="off">0x04</span><span>attribute type count (uint16)</span></div>
                 <div class="row"><span class="off">0x08</span><span>→ facial object table</span></div>
 
                 <div class="nested">
                     <div class="blk c-sub">
                         <div class="blk-title">Facial Object Table Entry ×N <span class="note">(12 bytes each)</span></div>
                         <div class="fields">
+                            <div class="row"><span class="off">0x00</span><span>object pose count (uint16)</span></div>
+                            <div class="row"><span class="off">0x02</span><span>object attribute count (uint16)</span></div>
+                            <div class="row"><span class="off">0x04</span><span>attribute record size <span class="note">(0x0C + object pose count × 4)</span></span></div>
                             <div class="row"><span class="off">0x08</span><span>→ facial object data</span></div>
                         </div>
                     </div>
                     <div class="blk c-sub">
                         <div class="blk-title">Facial Object Data</div>
                         <div class="fields">
-                            <div class="row"><span class="off">0x00</span><span>position attribute record <span class="note">(size = 0x0C + pose count × 4; format 03 01 03 02)</span></span></div>
-                            <div class="row"><span class="off">+record size</span><span>normal attribute record <span class="note">(same dynamic size; format 03 02 03 02)</span></span></div>
+                            <div class="row"><span class="off">0x00</span><span>attribute records × object attribute count</span></div>
 
                             <div class="nested">
                                 <div class="blk c-sub">
                                     <div class="blk-title">Attribute Record</div>
                                     <div class="fields">
                                         <div class="row"><span class="off">0x00</span><span>mapped entry count (uint32)</span></div>
-                                        <div class="row"><span class="off">0x04</span><span>attribute / format bytes</span></div>
+                                        <div class="row"><span class="off">0x04</span><span>submesh / kind / component count / component size</span></div>
                                         <div class="row"><span class="off">0x08</span><span>→ vertex run list</span></div>
-                                        <div class="row"><span class="off">0x0c</span><span>→ pose pointer array <span class="note">(uint32 × section pose count)</span></span></div>
+                                        <div class="row"><span class="off">0x0c</span><span>→ pose pointer array <span class="note">(uint32 × object pose count)</span></span></div>
                                     </div>
                                 </div>
                                 <div class="blk c-sub">
@@ -334,8 +337,8 @@
                                 <div class="blk c-sub">
                                     <div class="blk-title">Pose Array × Pose Count</div>
                                     <div class="fields">
-                                        <div class="row"><span class="off">+0x00</span><span>quantized XYZ (3 × int16 BE, 6 bytes per mapped entry)</span></div>
-                                        <div class="note" style="padding-left:4px">Position poses overwrite mapped GPL positions at runtime; normal poses overwrite mapped GPL normals.</div>
+                                        <div class="row"><span class="off">+0x00</span><span>quantized components <span class="note">(XYZ or interleaved XYZ+normal XYZ)</span></span></div>
+                                        <div class="note" style="padding-left:4px">Pose zero is absolute; later position poses are displacement vectors.</div>
                                     </div>
                                 </div>
                             </div>

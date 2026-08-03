@@ -62,10 +62,14 @@ def encode_vertex_buffer_edited(obj, comp_count, quant_info, use_custom_normals=
     is_float = fmt_nibble in [4, 7, 0xa]
 
     custom_normals = _get_custom_split_normals(obj) if (use_custom_normals and comp_count >= 6) else None
+    basis_key = None
+    if mesh.shape_keys:
+        basis_key = mesh.shape_keys.key_blocks.get("Basis")
 
     raw_bytes = bytearray()
     for v in mesh.vertices:
-        comps = [v.co.x, v.co.y, v.co.z]
+        position = basis_key.data[v.index].co if basis_key is not None else v.co
+        comps = [position.x, position.y, position.z]
         if comp_count >= 6:
             if custom_normals is not None:
                 n = custom_normals[v.index]
@@ -80,6 +84,159 @@ def encode_vertex_buffer_edited(obj, comp_count, quant_info, use_custom_normals=
                 raw_bytes += struct.pack('>h', raw_val)
 
     return _from_bytes(bytes(raw_bytes), use_base64)
+
+
+def _facial_vertex_indices(attribute):
+    indices = []
+    for run in attribute.get("Runs", []):
+        first = run.get("FirstVertex", 0)
+        count = run.get("VertexCount", 0)
+        indices.extend(range(first, first + count))
+    return indices
+
+
+def _encode_facial_key(
+    key, pose_zero_data, source_pose_data, indices, pose_index, quant_info,
+    component_count, component_size,
+):
+    if component_size != 2 or component_count < 3:
+        return None
+    divisor = 1 << (quant_info & 0xF)
+    stride = component_count * component_size
+    pose_zero_raw = _to_bytes(pose_zero_data)
+    raw = bytearray(_to_bytes(source_pose_data))
+    if len(raw) != len(indices) * stride or len(pose_zero_raw) != len(indices) * stride:
+        return None
+    for mapped_index, vertex_index in enumerate(indices):
+        coordinate = key.data[vertex_index].co
+        if pose_index == 0:
+            values = coordinate
+        else:
+            imported_pose_zero = struct.unpack_from(
+                '>3h', pose_zero_raw, mapped_index * stride
+            )
+            values = tuple(
+                coordinate[axis] - imported_pose_zero[axis] / divisor
+                for axis in range(3)
+            )
+        for component, value in enumerate(values):
+            quantized = max(-32768, min(32767, round(value * divisor)))
+            struct.pack_into(
+                '>h', raw, mapped_index * stride + component * component_size,
+                quantized,
+            )
+    return bytes(raw)
+
+
+def encode_facial_pose_edits(
+    obj, facial_data, submesh_index, use_base64=True, facial_edited=None
+):
+    """Return sparse position-pose edits for one submesh's Blender shape keys."""
+    if not facial_data or not obj.data.shape_keys:
+        return []
+    key_blocks = obj.data.shape_keys.key_blocks
+    basis_key = key_blocks.get("Basis")
+    if basis_key is None:
+        return []
+    quant_info = obj.get("VertexBufferQuantizeInfo", 0)
+    edited_lookup = {
+        (facial_object.get("ObjectIndex"), pose.get("PoseIndex")): pose.get("PoseData")
+        for facial_object in (facial_edited or {}).get("Objects", [])
+        for pose in facial_object.get("PositionPoseEdits", [])
+    }
+    object_edits = []
+
+    for facial_object in facial_data.get("Objects", []):
+        if facial_object.get("SubmeshIndex") != submesh_index:
+            continue
+        position = facial_object.get("Position", {})
+        indices = _facial_vertex_indices(position)
+        if not indices or max(indices) >= len(obj.data.vertices):
+            continue
+        original_poses = position.get("PoseData", [])
+        object_index = facial_object.get("ObjectIndex")
+        pose_count = facial_object.get("PoseCount", facial_data.get("PoseCount", 0))
+        pose_zero_data = edited_lookup.get(
+            (object_index, 0), original_poses[0] if original_poses else None
+        )
+        if pose_zero_data is None:
+            continue
+        pose_edits = []
+        for pose_index in range(pose_count):
+            key = basis_key if pose_index == 0 else key_blocks.get(
+                f"facial_object_{facial_object.get('ObjectIndex')}_pose_{pose_index}"
+            )
+            if key is None or pose_index >= len(original_poses):
+                continue
+            source_pose_data = edited_lookup.get(
+                (object_index, pose_index), original_poses[pose_index]
+            )
+            edited_raw = _encode_facial_key(
+                key, pose_zero_data, source_pose_data, indices, pose_index,
+                quant_info, position.get("ComponentCount", 3),
+                position.get("ComponentSize", 2),
+            )
+            if edited_raw is None:
+                continue
+            if edited_raw != _to_bytes(original_poses[pose_index]):
+                pose_edits.append({
+                    "PoseIndex": pose_index,
+                    "PoseData": _from_bytes(edited_raw, use_base64),
+                })
+        if pose_edits:
+            object_edits.append({
+                "ObjectIndex": facial_object.get("ObjectIndex"),
+                "PositionPoseEdits": pose_edits,
+            })
+    return object_edits
+
+
+def update_facial_pose_edits(candidates, data, warnings):
+    """Replace edits for selected facial submeshes and preserve unselected edits."""
+    model = data.get("SluggiesModel", {})
+    facial_data = model.get("FacialPoseData")
+    if not facial_data:
+        model.pop("FacialPoseDataEdited", None)
+        return
+
+    submeshes = model.get("Submeshes", [])
+    use_base64 = model.get("UseBase64", True)
+    selected = {}
+    for obj in candidates:
+        submesh_index = next((
+            index for index, submesh in enumerate(submeshes)
+            if str(obj.get("VertexBufferOffset"))
+            == str(submesh.get("VertexBuffer", {}).get("VertexBufferOffset"))
+        ), None)
+        if submesh_index is not None:
+            selected[submesh_index] = obj
+
+    selected_object_indices = {
+        entry.get("ObjectIndex") for entry in facial_data.get("Objects", [])
+        if entry.get("SubmeshIndex") in selected
+    }
+    retained = [
+        entry for entry in model.get("FacialPoseDataEdited", {}).get("Objects", [])
+        if entry.get("ObjectIndex") not in selected_object_indices
+    ]
+    generated = []
+    for submesh_index, obj in selected.items():
+        if any(entry.get("SubmeshIndex") == submesh_index
+               for entry in facial_data.get("Objects", [])):
+            if not obj.data.shape_keys:
+                warnings.append(
+                    f"{obj.name}: facial shape keys are missing; existing facial edits cleared."
+                )
+            generated.extend(encode_facial_pose_edits(
+                obj, facial_data, submesh_index, use_base64,
+                model.get("FacialPoseDataEdited"),
+            ))
+
+    edits = retained + generated
+    if edits:
+        model["FacialPoseDataEdited"] = {"Objects": edits}
+    else:
+        model.pop("FacialPoseDataEdited", None)
 
 
 def _uv_layer_name(all_channels, target_ch_ind):
@@ -1243,6 +1400,8 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 self.report({"INFO"}, skn_msg)
         else:
             encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=self.use_custom_normals)
+
+        update_facial_pose_edits(candidates, data, warnings)
 
         for w in warnings:
             self.report({"WARNING"}, w)

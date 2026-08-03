@@ -136,6 +136,115 @@ def decode_vertex_buffer(vb):
     return positions, normals
 
 
+def _facial_vertex_indices(attribute):
+    indices = []
+    for run in attribute.get("Runs", []):
+        first = run.get("FirstVertex", 0)
+        count = run.get("VertexCount", 0)
+        indices.extend(range(first, first + count))
+    return indices
+
+
+def _decode_facial_pose(data, quant_info, component_count=3, component_size=2):
+    """Decode one facial XYZ array using its matched GPL position quantization."""
+    raw = _to_bytes(data)
+    if component_size != 2 or component_count < 3:
+        return []
+    divisor = 1 << (quant_info & 0xF)
+    stride = component_count * component_size
+    return [
+        tuple(struct.unpack_from('>3h', raw, offset)[axis] / divisor for axis in range(3))
+        for offset in range(0, len(raw), stride)
+    ]
+
+
+def _facial_edit_lookup(facial_edited):
+    lookup = {}
+    for facial_object in (facial_edited or {}).get("Objects", []):
+        object_index = facial_object.get("ObjectIndex")
+        for pose_edit in facial_object.get("PositionPoseEdits", []):
+            lookup[(object_index, pose_edit.get("PoseIndex"))] = pose_edit.get("PoseData")
+    return lookup
+
+
+def add_facial_shape_keys(obj, submesh_index, facial_data, facial_edited=None):
+    """Add facial expression keys; Blender Basis represents pose zero."""
+    if not facial_data:
+        return 0
+    facial_objects = [
+        entry for entry in facial_data.get("Objects", [])
+        if entry.get("SubmeshIndex") == submesh_index
+    ]
+    if not facial_objects:
+        return 0
+
+    expression_objects = [
+        facial_object for facial_object in facial_objects
+        if facial_object.get("PoseCount", facial_data.get("PoseCount", 0)) > 1
+    ]
+    if not expression_objects:
+        return 0
+    quant_info = obj.get("VertexBufferQuantizeInfo", 0)
+    edited_lookup = _facial_edit_lookup(facial_edited)
+    basis_key = obj.shape_key_add(name="Basis", from_mix=False)
+
+    for facial_object in facial_objects:
+        object_index = facial_object.get("ObjectIndex")
+        position = facial_object.get("Position", {})
+        pose_zero_edit = edited_lookup.get((object_index, 0))
+        if pose_zero_edit is None:
+            continue
+        indices = _facial_vertex_indices(position)
+        coordinates = _decode_facial_pose(
+            pose_zero_edit, quant_info,
+            position.get("ComponentCount", 3),
+            position.get("ComponentSize", 2),
+        )
+        if len(indices) != len(coordinates):
+            continue
+        for vertex_index, coordinate in zip(indices, coordinates):
+            if vertex_index < len(basis_key.data):
+                basis_key.data[vertex_index].co = coordinate
+
+    shape_key_count = 0
+    for facial_object in expression_objects:
+        object_index = facial_object.get("ObjectIndex")
+        position = facial_object.get("Position", {})
+        indices = _facial_vertex_indices(position)
+        original_poses = position.get("PoseData", [])
+        pose_count = facial_object.get("PoseCount", facial_data.get("PoseCount", 0))
+        for pose_index in range(1, pose_count):
+            key = obj.shape_key_add(
+                name=f"facial_object_{object_index}_pose_{pose_index}",
+                from_mix=False,
+            )
+            key.value = 0.0
+            position = facial_object.get("Position", {})
+            pose_data = edited_lookup.get(
+                (object_index, pose_index),
+                original_poses[pose_index] if pose_index < len(original_poses) else None,
+            )
+            if pose_data is None:
+                continue
+            coordinates = _decode_facial_pose(
+                pose_data, quant_info,
+                position.get("ComponentCount", 3),
+                position.get("ComponentSize", 2),
+            )
+            if len(indices) != len(coordinates):
+                continue
+            for vertex_index, coordinate in zip(indices, coordinates):
+                if vertex_index < len(key.data):
+                    basis = basis_key.data[vertex_index].co
+                    key.data[vertex_index].co = tuple(
+                        basis[axis] + coordinate[axis] for axis in range(3)
+                    )
+            shape_key_count += 1
+
+    obj["FacialShapeKeyCount"] = shape_key_count
+    return shape_key_count
+
+
 def decode_uv_channel(uv_channel):
     """Decode a UVChannel dict into:
     - coords: list of (s, t) float tuples decoded from the raw ST buffer
@@ -691,6 +800,9 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
                 obj.parent = arm_obj
             if bone_list:
                 _apply_nonskinned_transform(obj, i, bone_list, abs_bone_mats)
+            add_facial_shape_keys(
+                obj, i, model.get("FacialPoseData"), model.get("FacialPoseDataEdited")
+            )
             imported += 1
 
             # Import the edited version of this submesh when one exists
@@ -731,6 +843,10 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
                         edit_obj.parent = arm_obj
                     if bone_list:
                         _apply_nonskinned_transform(edit_obj, i, bone_list, abs_bone_mats)
+                    add_facial_shape_keys(
+                        edit_obj, i, model.get("FacialPoseData"),
+                        model.get("FacialPoseDataEdited")
+                    )
                     imported += 1
 
         context.view_layer.update()

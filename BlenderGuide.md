@@ -12,6 +12,7 @@ However, there are restrictions imposed in order to not violate the game's file'
 ## You can:
 - change the position of existing verts in space
 - edit face normals (each model is imported with its original custom normals, where available)
+- edit facial expressions (shapekeys)
 - change the position of existing UVs 
 - in case of multiple UVs concentrated in one single spot, you can move the whole "unit" around as one
 

@@ -71,30 +71,16 @@ def _u32(data: bytes, offset: int) -> int:
 
 
 def _facial_position_patches(model: dict, restore: bool) -> list[tuple[int, bytes]]:
-    """Build patches for the undocumented ptr7 facial pose position arrays."""
-    model_offset = int(model.get('ModelOffset', '0'), 16)
-    if not model_offset:
+    """Build position-pose patches from exported facial metadata and Blender edits."""
+    facial = model.get('FacialPoseData')
+    if not facial:
         return []
 
-    with open(INPUT_DAT, 'rb') as source_file:
-        source_file.seek(model_offset)
-        model_header = source_file.read(0x20)
-        if len(model_header) != 0x20:
-            return []
-        section_relative = _u32(model_header, 0x18)
-        if not section_relative:
-            return []
-
-        section_offset = model_offset + section_relative
-        source_file.seek(section_offset)
-        section = source_file.read(model.get('ModelLength', 0) - section_relative)
-
-    if len(section) < 0x14:
-        return []
-    object_count = _u16(section, 0x04)
-    object_table = _u32(section, 0x08)
-    if not object_count or object_table + object_count * 12 > len(section):
-        return []
+    edited_lookup = {
+        (facial_object.get('ObjectIndex'), pose.get('PoseIndex')): _to_bytes(pose['PoseData'])
+        for facial_object in model.get('FacialPoseDataEdited', {}).get('Objects', [])
+        for pose in facial_object.get('PositionPoseEdits', [])
+    }
 
     submesh_buffers = []
     for submesh_index, submesh in enumerate(model.get('Submeshes', [])):
@@ -105,78 +91,90 @@ def _facial_position_patches(model: dict, restore: bool) -> list[tuple[int, byte
             continue
         original = _to_bytes(original_data)
         edited = original if edited_data is None else _to_bytes(edited_data)
-        if len(original) == len(edited) and len(original) % 6 == 0:
-            submesh_buffers.append((submesh_index, original, edited))
+        vertex_stride = (
+            vb.get('VertexBufferCompCount', 3)
+            * _comp_size(vb.get('VertexBufferQuantizeInfo', 0))
+        )
+        if len(original) == len(edited) and vertex_stride > 0 and len(original) % vertex_stride == 0:
+            submesh_buffers.append((submesh_index, original, edited, vertex_stride))
 
     facial_patches = []
-    for object_index in range(object_count):
-        object_record = object_table + object_index * 12
-        object_relative = _u32(section, object_record + 8)
-        if object_relative + 0x40 > len(section):
+    for facial_object in facial.get('Objects', []):
+        object_index = facial_object.get('ObjectIndex')
+        submesh_index = facial_object.get('SubmeshIndex')
+        position = facial_object.get('Position', {})
+        original_poses = [_to_bytes(data) for data in position.get('PoseData', [])]
+        pose_offsets = [int(offset, 16) for offset in position.get('PoseAbsoluteOffsets', [])]
+        vertex_count = position.get('EntryCount', 0)
+        component_count = position.get('ComponentCount', 3)
+        component_size = position.get('ComponentSize', 2)
+        pose_stride = component_count * component_size
+        vertex_indices = [
+            vertex_index
+            for run in position.get('Runs', [])
+            for vertex_index in range(
+                run.get('FirstVertex', 0),
+                run.get('FirstVertex', 0) + run.get('VertexCount', 0),
+            )
+        ]
+        if (
+            submesh_index is None
+            or len(vertex_indices) != vertex_count
+            or len(original_poses) != len(pose_offsets)
+            or component_size != 2
+            or component_count < 3
+            or any(len(pose) != vertex_count * pose_stride for pose in original_poses)
+        ):
             continue
 
-        position_record = object_relative
-        normal_record = object_relative + 0x20
-        if section[position_record + 4:position_record + 8] != b'\x03\x01\x03\x02':
-            continue
-        if section[normal_record + 4:normal_record + 8] != b'\x03\x02\x03\x02':
-            continue
-
-        vertex_count = _u32(section, position_record)
-        position_index_ptr = _u32(section, position_record + 8)
-        normal_index_ptr = _u32(section, normal_record + 8)
-        pose_ptrs = [_u32(section, position_record + 12 + i * 4) for i in range(5)]
-        if not (position_index_ptr <= normal_index_ptr <= len(section)):
-            continue
-        if any(ptr + vertex_count * 6 > len(section) for ptr in pose_ptrs):
-            continue
-
-        vertex_indices = []
-        cursor = position_index_ptr
-        while cursor + 4 <= normal_index_ptr:
-            first_vertex = _u16(section, cursor)
-            run_length = _u16(section, cursor + 2)
-            cursor += 4
-            vertex_indices.extend(range(first_vertex, first_vertex + run_length))
-        if len(vertex_indices) != vertex_count:
-            continue
-
-        pose_zero = section[pose_ptrs[0]:pose_ptrs[0] + vertex_count * 6]
-        matched = None
-        for submesh_index, original, edited in submesh_buffers:
-            if max(vertex_indices, default=-1) * 6 + 6 > len(original):
-                continue
-            if all(
-                pose_zero[i * 6:(i + 1) * 6] == original[vertex_index * 6:(vertex_index + 1) * 6]
-                for i, vertex_index in enumerate(vertex_indices)
-            ):
-                matched = (submesh_index, original, edited)
-                break
-        if matched is None:
-            continue
-
-        submesh_index, original, edited = matched
-        for pose_index, pose_ptr in enumerate(pose_ptrs):
-            original_pose = section[pose_ptr:pose_ptr + vertex_count * 6]
+        matched = next(
+            (entry for entry in submesh_buffers if entry[0] == submesh_index),
+            None,
+        )
+        for pose_index, (pose_offset, original_pose) in enumerate(
+            zip(pose_offsets, original_poses)
+        ):
+            sparse_edit = edited_lookup.get((object_index, pose_index))
             if restore:
                 patched_pose = original_pose
-            else:
-                values = list(struct.unpack(f'>{vertex_count * 3}h', original_pose))
+            elif sparse_edit is not None:
+                if len(sparse_edit) != len(original_pose):
+                    abort(
+                        f"Facial object {object_index}, pose {pose_index}: edited length "
+                        f"{len(sparse_edit)} does not match original {len(original_pose)}."
+                    )
+                patched_pose = sparse_edit
+            elif pose_index == 0 and matched is not None:
+                _, original, edited, vertex_stride = matched
+                patched_pose = bytearray(original_pose)
                 for mapped_index, vertex_index in enumerate(vertex_indices):
-                    original_vertex = struct.unpack_from('>3h', original, vertex_index * 6)
-                    edited_vertex = struct.unpack_from('>3h', edited, vertex_index * 6)
+                    if vertex_index * vertex_stride + 6 > len(original) or len(original) != len(edited):
+                        abort(
+                            f"Submesh {submesh_index}: facial vertex {vertex_index} "
+                            "is outside the editable vertex buffer."
+                        )
+                    original_vertex = struct.unpack_from(
+                        '>3h', original, vertex_index * vertex_stride
+                    )
+                    edited_vertex = struct.unpack_from(
+                        '>3h', edited, vertex_index * vertex_stride
+                    )
                     for component in range(3):
-                        value_index = mapped_index * 3 + component
-                        values[value_index] += edited_vertex[component] - original_vertex[component]
-                        if not -32768 <= values[value_index] <= 32767:
+                        value_offset = mapped_index * pose_stride + component * component_size
+                        value = struct.unpack_from('>h', patched_pose, value_offset)[0]
+                        value += edited_vertex[component] - original_vertex[component]
+                        if not -32768 <= value <= 32767:
                             abort(
                                 f"Submesh {submesh_index}: facial pose coordinate overflow "
                                 f"in object {object_index}, pose {pose_index}."
                             )
-                patched_pose = struct.pack(f'>{len(values)}h', *values)
-            facial_patches.append((section_offset + pose_ptr, patched_pose))
+                        struct.pack_into('>h', patched_pose, value_offset, value)
+                patched_pose = bytes(patched_pose)
+            else:
+                patched_pose = original_pose
+            facial_patches.append((pose_offset, patched_pose))
         print(
-            f"  Submesh {submesh_index}: queued {len(pose_ptrs)} facial position poses "
+            f"  Submesh {submesh_index}: queued {len(original_poses)} facial position poses "
             f"({vertex_count} mapped vertices each)."
         )
 

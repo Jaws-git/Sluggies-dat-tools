@@ -37,6 +37,9 @@
         "FacialPoseData": {
           "$ref": "#/properties/SluggiesModel/FacialPoseData"
         },
+        "FacialPoseDataEdited": {
+          "$ref": "#/properties/SluggiesModel/FacialPoseDataEdited"
+        },
         "Submeshes": {
           "type": "array",
           "description": "There can be multiple separate submeshes in one model.",
@@ -452,16 +455,16 @@
           "PoseCount": {
             "type": "number",
             "minimum": 1,
-            "description": "Number of position poses and normal poses per facial object (uint16 at section +0x00). All currently surveyed original models use 5, but readers must honor this field dynamically."
+            "description": "Maximum pose count advertised by the section (uint16 at section +0x00). Each object stores its actual PoseCount independently."
           },
-          "AttributeRecordSize": {
+          "AttributeTypeCount": {
             "type": "number",
-            "minimum": 16,
-            "description": "Byte size of each position or normal attribute record, computed as 0x0C + PoseCount * 4."
+            "minimum": 1,
+            "description": "Section-level attribute type/descriptor count (uint16 at section +0x04)."
           },
           "ObjectCount": {
             "type": "number",
-            "description": "Number of facial objects (uint16 at section +0x04)."
+            "description": "Number of facial objects (uint16 at section +0x02)."
           },
           "ObjectTableOffset": {
             "type": "string",
@@ -469,7 +472,7 @@
           },
           "Objects": {
             "type": "array",
-            "description": "Decoded facial objects. Each object contains one position and one normal attribute with PoseCount poses.",
+            "description": "Decoded facial objects. Pose count, attribute count, and record size are stored independently per object.",
             "items": {
               "type": "object",
               "properties": {
@@ -483,16 +486,72 @@
                 },
                 "ObjectDataOffset": { "type": "string", "description": "Section-relative offset of the paired position/normal attribute records (hex)." },
                 "ObjectDataAbsoluteOffset": { "type": "string", "description": "Absolute file offset of the paired position/normal attribute records (hex)." },
+                "PoseCount": { "type": "number", "minimum": 1, "description": "Number of poses in every attribute of this object (uint16 at table entry +0x00)." },
+                "AttributeCount": { "type": "number", "minimum": 1, "description": "Number of attribute records for this object (uint16 at table entry +0x02)." },
+                "AttributeRecordSize": { "type": "number", "minimum": 16, "description": "Per-attribute record size from table entry +0x04; equals 0x0C + PoseCount * 4." },
                 "SubmeshIndex": { "type": ["number", "null"], "description": "Index into SluggiesModel.Submeshes matched using pose-zero positions and normals, or null when no exact match is found." },
                 "MeshName": { "type": ["string", "null"], "description": "Matched GPL mesh name, or null when SubmeshIndex is null." },
                 "Position": { "$ref": "#/definitions/facialAttribute" },
-                "Normal": { "$ref": "#/definitions/facialAttribute" }
+                "Normal": {
+                  "anyOf": [
+                    { "$ref": "#/definitions/facialAttribute" },
+                    { "type": "null" }
+                  ],
+                  "description": "Separate normal attribute, or null when normals are interleaved in the six-component Position attribute."
+                },
+                "AuxiliaryAttributes": {
+                  "type": "array",
+                  "description": "Preserved non-position/non-normal attributes (AttributeKind 0).",
+                  "items": { "$ref": "#/definitions/facialAttribute" }
+                }
               },
-              "required": ["ObjectIndex", "TableEntryOffset", "TableEntryAbsoluteOffset", "TableEntryData", "ObjectDataOffset", "ObjectDataAbsoluteOffset", "SubmeshIndex", "MeshName", "Position", "Normal"]
+              "required": ["ObjectIndex", "TableEntryOffset", "TableEntryAbsoluteOffset", "TableEntryData", "ObjectDataOffset", "ObjectDataAbsoluteOffset", "PoseCount", "AttributeCount", "AttributeRecordSize", "SubmeshIndex", "MeshName", "Position", "Normal", "AuxiliaryAttributes"]
             }
           }
         },
-        "required": ["SectionOffset", "HeaderFieldOffset", "SectionLength", "SectionData", "HeaderData", "PoseCount", "AttributeRecordSize", "ObjectCount", "ObjectTableOffset", "Objects"]
+        "required": ["SectionOffset", "HeaderFieldOffset", "SectionLength", "SectionData", "HeaderData", "PoseCount", "AttributeTypeCount", "ObjectCount", "ObjectTableOffset", "Objects"]
+      },
+      "FacialPoseDataEdited": {
+        "type": "object",
+        "description": "Sparse facial position-pose edits written by the Blender exporter. Absent when every facial shape key quantizes to its original PoseData. Normal poses remain preserved by FacialPoseData because Blender shape keys do not store per-pose normals.",
+        "properties": {
+          "Objects": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "properties": {
+                "ObjectIndex": {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "ObjectIndex of the corresponding FacialPoseData object."
+                },
+                "PositionPoseEdits": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "PoseIndex": {
+                        "type": "number",
+                        "minimum": 0,
+                        "description": "Zero-based pose index, less than the corresponding facial object's PoseCount."
+                      },
+                      "PoseData": {
+                        "type": ["string", "array"],
+                        "description": "Edited position-attribute pose bytes. Length equals EntryCount * ComponentCount * ComponentSize. Pose 0 contains absolute values; later poses contain displacement vectors relative to Basis. Components after XYZ are preserved unchanged.",
+                        "items": { "type": "number", "minimum": 0, "maximum": 255 }
+                      }
+                    },
+                    "required": ["PoseIndex", "PoseData"]
+                  }
+                }
+              },
+              "required": ["ObjectIndex", "PositionPoseEdits"]
+            }
+          }
+        },
+        "required": ["Objects"]
       },
       "SkinData": {
         "type": "object",
@@ -1022,16 +1081,20 @@
   "definitions": {
     "facialAttribute": {
       "type": "object",
-      "description": "One facial position or normal attribute record with an indexed GPL mapping and a section-defined number of quantized XYZ pose arrays.",
+      "description": "One facial attribute record with an indexed GPL mapping and an object-defined number of pose arrays.",
       "properties": {
         "RecordOffset": { "type": "string", "description": "Section-relative attribute record offset (hex)." },
         "RecordAbsoluteOffset": { "type": "string", "description": "Absolute file offset of the attribute record (hex)." },
         "EntryCount": { "type": "number", "description": "Number of mapped entries in each pose array." },
         "FormatData": {
           "type": ["string", "array"],
-          "description": "Four format bytes: 03 01 03 02 for positions or 03 02 03 02 for normals.",
+          "description": "Four format bytes: target submesh index, attribute kind (0 auxiliary, 1 position, 2 normal), component count, and component byte width.",
           "items": { "type": "number", "minimum": 0, "maximum": 255 }
         },
+        "SubmeshIndex": { "type": "number", "minimum": 0, "description": "Target GPL submesh index from format byte 0." },
+        "AttributeKind": { "type": "number", "minimum": 0, "description": "Attribute semantic from format byte 1: 0 auxiliary, 1 position, 2 normal." },
+        "ComponentCount": { "type": "number", "minimum": 1, "description": "Components per mapped entry from format byte 2. Six-component position records interleave XYZ and normal XYZ." },
+        "ComponentSize": { "type": "number", "minimum": 1, "description": "Bytes per component from format byte 3." },
         "RunListOffset": { "type": "string", "description": "Section-relative run-list offset (hex)." },
         "RunListAbsoluteOffset": { "type": "string", "description": "Absolute file offset of the run list (hex)." },
         "RunListData": {
@@ -1053,19 +1116,19 @@
         },
         "PoseOffsets": {
           "type": "array",
-          "description": "Section-relative pose-array offsets (hex). Array length equals FacialPoseData.PoseCount.",
+          "description": "Section-relative pose-array offsets (hex). Array length equals the containing object's PoseCount.",
           "items": { "type": "string" },
           "minItems": 1
         },
         "PoseAbsoluteOffsets": {
           "type": "array",
-          "description": "Absolute pose-array file offsets (hex). Array length equals FacialPoseData.PoseCount.",
+          "description": "Absolute pose-array file offsets (hex). Array length equals the containing object's PoseCount.",
           "items": { "type": "string" },
           "minItems": 1
         },
         "PoseData": {
           "type": "array",
-          "description": "Original pose buffers. Array length equals FacialPoseData.PoseCount; each buffer contains EntryCount quantized XYZ triplets (three big-endian int16 values per entry).",
+          "description": "Original pose buffers. Array length equals the containing object's PoseCount; each buffer length is EntryCount * ComponentCount * ComponentSize. Pose 0 stores absolute rest values; poses 1 and later store displacement vectors relative to pose 0.",
           "items": {
             "type": ["string", "array"],
             "items": { "type": "number", "minimum": 0, "maximum": 255 }
@@ -1073,7 +1136,7 @@
           "minItems": 1
         }
       },
-      "required": ["RecordOffset", "RecordAbsoluteOffset", "EntryCount", "FormatData", "RunListOffset", "RunListAbsoluteOffset", "RunListData", "Runs", "PoseOffsets", "PoseAbsoluteOffsets", "PoseData"]
+      "required": ["RecordOffset", "RecordAbsoluteOffset", "EntryCount", "FormatData", "SubmeshIndex", "AttributeKind", "ComponentCount", "ComponentSize", "RunListOffset", "RunListAbsoluteOffset", "RunListData", "Runs", "PoseOffsets", "PoseAbsoluteOffsets", "PoseData"]
     }
   }
 }

@@ -789,19 +789,20 @@ def extract_facial_pose_data(model):
             raise ValueError('facial uint32 outside section')
         return struct.unpack_from('>I', section, offset)[0]
 
-    def parse_attribute(record_offset, record_size, pose_count, run_end, expected_format):
+    def parse_attribute(record_offset, record_size, pose_count, run_end):
         if record_offset < 0 or record_offset + record_size > len(section):
             raise ValueError('facial attribute record outside section')
         entry_count = u32(record_offset)
         format_data = section[record_offset + 4:record_offset + 8]
-        if format_data != expected_format:
+        submesh_index, attribute_kind, component_count, component_size = format_data
+        if component_count not in (3, 6) or component_size not in (1, 2, 4):
             raise ValueError('unrecognized facial attribute format')
         run_list_offset = u32(record_offset + 8)
         pose_offsets = [
             u32(record_offset + 0x0C + index * 4)
             for index in range(pose_count)
         ]
-        pose_size = entry_count * 6
+        pose_size = entry_count * component_count * component_size
         if not (run_list_offset <= run_end <= len(section)):
             raise ValueError('invalid facial run-list bounds')
         if any(offset + pose_size > len(section) for offset in pose_offsets):
@@ -825,6 +826,10 @@ def extract_facial_pose_data(model):
             'RecordAbsoluteOffset': hex(section_absolute + record_offset),
             'EntryCount': entry_count,
             'FormatData': _encode_bytes(format_data),
+            'SubmeshIndex': submesh_index,
+            'AttributeKind': attribute_kind,
+            'ComponentCount': component_count,
+            'ComponentSize': component_size,
             'RunListOffset': hex(run_list_offset),
             'RunListAbsoluteOffset': hex(section_absolute + run_list_offset),
             'RunListData': _encode_bytes(section[run_list_offset:run_end]),
@@ -838,12 +843,12 @@ def extract_facial_pose_data(model):
         }, expanded_indices
 
     try:
-        pose_count = u16(0x00)
-        object_count = u16(0x04)
+        maximum_pose_count = u16(0x00)
+        object_count = u16(0x02)
+        attribute_type_count = u16(0x04)
         object_table_offset = u32(0x08)
-        attribute_record_size = 0x0C + pose_count * 4
         if (
-            not pose_count
+            not maximum_pose_count
             or not object_count
             or object_table_offset + object_count * 12 > len(section)
         ):
@@ -871,70 +876,125 @@ def extract_facial_pose_data(model):
                     )
                     model.f.seek(layout.absolute + normal_header.normalsPtr)
                     normal_data = model.f.read(normal_size)
-                submesh_arrays.append((submesh_index, descriptor.n, position_data, normal_data))
+                submesh_arrays.append((
+                    submesh_index,
+                    descriptor.n,
+                    position_data,
+                    position_header.compCount * _vb_comp_size(position_header.quantizeInfo),
+                    normal_data,
+                ))
 
         objects = []
         recognized_objects = 0
         for object_index in range(object_count):
             table_entry_offset = object_table_offset + object_index * 12
+            pose_count = u16(table_entry_offset)
+            attribute_count = u16(table_entry_offset + 2)
+            attribute_record_size = u32(table_entry_offset + 4)
             object_data_offset = u32(table_entry_offset + 8)
-            if object_data_offset + attribute_record_size * 2 > len(section):
+            if (
+                not pose_count
+                or not attribute_count
+                or attribute_record_size != 0x0C + pose_count * 4
+                or object_data_offset + attribute_record_size * attribute_count > len(section)
+            ):
                 raise ValueError('facial object data outside section')
 
-            position_record = object_data_offset
-            normal_record = object_data_offset + attribute_record_size
-            normal_run_list_offset = u32(normal_record + 8)
-            position_pose_offsets = [
-                u32(position_record + 0x0C + index * 4)
-                for index in range(pose_count)
+            record_offsets = [
+                object_data_offset + index * attribute_record_size
+                for index in range(attribute_count)
             ]
-            normal_pose_offsets = [
-                u32(normal_record + 0x0C + index * 4)
-                for index in range(pose_count)
+            run_offsets = [u32(offset + 8) for offset in record_offsets]
+            all_pose_offsets = [
+                u32(offset + 0x0C + pose_index * 4)
+                for offset in record_offsets
+                for pose_index in range(pose_count)
             ]
-            first_pose_offset = min(position_pose_offsets + normal_pose_offsets)
+            attributes = []
+            attribute_indices = []
+            for attribute_index, record_offset in enumerate(record_offsets):
+                run_end = (
+                    run_offsets[attribute_index + 1]
+                    if attribute_index + 1 < attribute_count
+                    else min(all_pose_offsets)
+                )
+                attribute, indices = parse_attribute(
+                    record_offset, attribute_record_size, pose_count, run_end
+                )
+                attributes.append(attribute)
+                attribute_indices.append(indices)
 
-            position, position_indices = parse_attribute(
-                position_record, attribute_record_size, pose_count,
-                normal_run_list_offset, b'\x03\x01\x03\x02'
+            position_attribute_index = next(
+                (index for index, attribute in enumerate(attributes)
+                 if attribute['AttributeKind'] == 1),
+                None,
             )
-            normal, normal_indices = parse_attribute(
-                normal_record, attribute_record_size, pose_count,
-                first_pose_offset, b'\x03\x02\x03\x02'
+            if position_attribute_index is None:
+                raise ValueError('facial object has no position attribute')
+            position = attributes[position_attribute_index]
+            position_indices = attribute_indices[position_attribute_index]
+            normal_attribute_index = next(
+                (index for index, attribute in enumerate(attributes)
+                 if attribute['AttributeKind'] == 2),
+                None,
+            )
+            normal = (
+                attributes[normal_attribute_index]
+                if normal_attribute_index is not None else None
+            )
+            normal_indices = (
+                attribute_indices[normal_attribute_index]
+                if normal_attribute_index is not None else []
             )
 
-            submesh_index = None
+            submesh_index = position['SubmeshIndex']
             mesh_name = None
-            position_pose_zero = section[
-                position_pose_offsets[0]:
-                position_pose_offsets[0] + position['EntryCount'] * 6
-            ]
-            normal_pose_zero = section[
-                normal_pose_offsets[0]:
-                normal_pose_offsets[0] + normal['EntryCount'] * 6
-            ]
-            for candidate_index, candidate_name, positions, normals in submesh_arrays:
+            for candidate_index, candidate_name, positions, position_buffer_stride, normals in submesh_arrays:
+                if candidate_index != submesh_index:
+                    continue
+                position_stride = position['ComponentCount'] * position['ComponentSize']
+                position_pose_zero_offset = int(position['PoseOffsets'][0], 16)
+                position_pose_zero = section[
+                    position_pose_zero_offset:
+                    position_pose_zero_offset + position['EntryCount'] * position_stride
+                ]
                 position_matches = (
-                    max(position_indices, default=-1) * 6 + 6 <= len(positions)
+                    max(position_indices, default=-1) * position_buffer_stride
+                    + position_stride <= len(positions)
                     and all(
-                        position_pose_zero[index * 6:(index + 1) * 6]
-                        == positions[vertex_index * 6:(vertex_index + 1) * 6]
+                        position_pose_zero[index * position_stride:(index + 1) * position_stride]
+                        == positions[
+                            vertex_index * position_buffer_stride:
+                            vertex_index * position_buffer_stride + position_stride
+                        ]
                         for index, vertex_index in enumerate(position_indices)
                     )
                 )
-                normal_matches = (
-                    normals is not None
-                    and max(normal_indices, default=-1) * 6 + 6 <= len(normals)
-                    and all(
-                        normal_pose_zero[index * 6:(index + 1) * 6]
-                        == normals[vertex_index * 6:(vertex_index + 1) * 6]
-                        for index, vertex_index in enumerate(normal_indices)
+                if normal is not None:
+                    normal_stride = normal['ComponentCount'] * normal['ComponentSize']
+                    normal_pose_zero_offset = int(normal['PoseOffsets'][0], 16)
+                    normal_pose_zero = section[
+                        normal_pose_zero_offset:
+                        normal_pose_zero_offset + normal['EntryCount'] * normal_stride
+                    ]
+                    normal_matches = (
+                        normals is not None
+                        and max(normal_indices, default=-1) * 6 + 6 <= len(normals)
+                        and all(
+                            normal_pose_zero[index * normal_stride:index * normal_stride + 6]
+                            == normals[vertex_index * 6:(vertex_index + 1) * 6]
+                            for index, vertex_index in enumerate(normal_indices)
+                        )
                     )
-                )
+                elif position['ComponentCount'] >= 6:
+                    normal_matches = position_matches
+                else:
+                    normal_matches = True
                 if position_matches and normal_matches:
-                    submesh_index = candidate_index
                     mesh_name = candidate_name
                     break
+            if mesh_name is None:
+                submesh_index = None
 
             objects.append({
                 'ObjectIndex': object_index,
@@ -943,10 +1003,17 @@ def extract_facial_pose_data(model):
                 'TableEntryData': _encode_bytes(section[table_entry_offset:table_entry_offset + 12]),
                 'ObjectDataOffset': hex(object_data_offset),
                 'ObjectDataAbsoluteOffset': hex(section_absolute + object_data_offset),
+                'PoseCount': pose_count,
+                'AttributeCount': attribute_count,
+                'AttributeRecordSize': attribute_record_size,
                 'SubmeshIndex': submesh_index,
                 'MeshName': mesh_name,
                 'Position': position,
                 'Normal': normal,
+                'AuxiliaryAttributes': [
+                    attribute for attribute in attributes
+                    if attribute['AttributeKind'] not in (1, 2)
+                ],
             })
             recognized_objects += 1
 
@@ -958,8 +1025,8 @@ def extract_facial_pose_data(model):
             'SectionLength': section_length,
             'SectionData': _encode_bytes(section),
             'HeaderData': _encode_bytes(section[:object_table_offset]),
-            'PoseCount': pose_count,
-            'AttributeRecordSize': attribute_record_size,
+            'PoseCount': maximum_pose_count,
+            'AttributeTypeCount': attribute_type_count,
             'ObjectCount': object_count,
             'ObjectTableOffset': hex(object_table_offset),
             'Objects': objects,
