@@ -1,6 +1,15 @@
 import os
 import shutil
 import struct
+import sys
+
+# Step 2.2 – Initialize universal logger in child process.
+_HS_TOOLS_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
+if _HS_TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _HS_TOOLS_DIR)
+
+import slogger as _slogger
+_slogger.configure()
 
 BASE_SIZE      = 715046144      # ~715 MB
 CHUNK_SIZE     = 1024 * 1024   # 1 MB read buffer
@@ -30,30 +39,37 @@ _FST_DAT_SIZE_OFF   = _FST_DAT_ENTRY_IDX * 12 + 8  # type/name(4) + offset(4) + 
 
 
 if __name__ == '__main__':
-    print("\nHammerspace creation mode.")
-    print("This creates some extra space to put additional model data that may not fit inside the base game memory.\n")
-    print("Value range: 0-3579")
-    print("  - 0: Restore original file size, no hammerspace (most compatible with original hardware)")
-    print("  - 359: Add 359MB (1GB total) (can hold several extra models, depending on complexity)")
-    print("  - 1024: Add 1GB (1.7GB total) (plenty of space for nearly anything)")
-    print("  - 3579: maximum, ~4GB total. You can't go higher than this (uint32 offset/size limit)")
+    _slogger.info(
+        "Hammerspace creation mode.\n"
+        "This creates some extra space to put additional model data that may not fit inside the base game memory.",
+        source="hammerspace.helper"
+    )
+    _slogger.info(
+        "Value range: 0-3579\n"
+        "  - 0: Restore original file size, no hammerspace (most compatible with original hardware)\n"
+        "  - 359: Add 359MB (1GB total) (can hold several extra models, depending on complexity)\n"
+        "  - 1024: Add 1GB (1.7GB total) (plenty of space for nearly anything)\n"
+        "  - 3579: maximum, ~4GB total. You can't go higher than this (uint32 offset/size limit)",
+        source="hammerspace.helper"
+    )
 
     # user input checks
     raw = input("Enter value: ").strip()
+    _slogger.log_user_input("Enter value", raw, source="hammerspace.helper")
     try:
         value = int(raw)
     except ValueError:
-        print("ERROR: Input is not an integer. Aborting.")
+        _slogger.error("Input is not an integer. Aborting.", source="hammerspace.helper")
         raise SystemExit(1)
 
     if value < 0:
-        print("ERROR: Value must be 0 or greater. Aborting.")
+        _slogger.error("Value must be 0 or greater. Aborting.", source="hammerspace.helper")
         raise SystemExit(1)
 
     if value > 3579:
         # 3579 keeps BASE_SIZE + value MB below the uint32 max (4,294,967,295)
         # that the DOL offset/length and FST size fields can represent.
-        print("Value exceeds maximum, clamping to 3579.")
+        _slogger.warning("Value exceeds maximum, clamping to 3579.", source="hammerspace.helper")
         value = 3579
 
     # size change logic
@@ -62,25 +78,25 @@ if __name__ == '__main__':
 
     if not os.path.exists(OUTPUT_DAT):
         if not os.path.exists(INPUT_DAT):
-            print(f"ERROR: Output file not found and input file is also missing: {INPUT_DAT}")
+            _slogger.error(f"Output file not found and input file is also missing: {INPUT_DAT}", source="hammerspace.helper")
             raise SystemExit(1)
         os.makedirs(os.path.dirname(OUTPUT_DAT), exist_ok=True)
-        print(f"Output file not found. Copying input file to output folder...")
+        _slogger.info("Output file not found. Copying input file to output folder...", source="hammerspace.helper")
         shutil.copy2(INPUT_DAT, OUTPUT_DAT)
-        print(f"Copied {INPUT_DAT} -> {OUTPUT_DAT}")
+        _slogger.info(f"Copied {INPUT_DAT} -> {OUTPUT_DAT}", source="hammerspace.helper")
 
     current_size = os.path.getsize(OUTPUT_DAT)
-    print(f"Current file size : {current_size:,} bytes")
-    print(f"Target file size  : {target_size:,} bytes")
+    _slogger.info(f"Current file size : {current_size:,} bytes", source="hammerspace.helper")
+    _slogger.info(f"Target file size  : {target_size:,} bytes", source="hammerspace.helper")
 
     if current_size == target_size:
-        print("File is already the correct size. Nothing to do.")
+        _slogger.info("File is already the correct size. Nothing to do.", source="hammerspace.helper")
         raise SystemExit(0)
 
     with open(OUTPUT_DAT, 'ab' if target_size > current_size else 'r+b') as f:
         if target_size > current_size:
             f.write(b'\x00' * (target_size - current_size))
-            print(f"Appended {target_size - current_size:,} zero bytes.")
+            _slogger.info(f"Appended {target_size - current_size:,} zero bytes.", source="hammerspace.helper")
         else:
             # Check whether the region about to be removed contains non-zero data.
             remove_start  = target_size
@@ -101,21 +117,25 @@ if __name__ == '__main__':
                 scanned += len(chunk)
 
             if non_zero_offset != -1:
-                print(f"\nWARNING: Non-zero data found at offset 0x{non_zero_offset:08X} "
-                      f"within the {remove_length:,} bytes that would be removed.")
-                print("This may be hammerspace model data that has not been removed yet.")
+                _slogger.warning(
+                    f"Non-zero data found at offset 0x{non_zero_offset:08X} "
+                    f"within the {remove_length:,} bytes that would be removed.\n"
+                    "This may be hammerspace model data that has not been removed yet.",
+                    source="hammerspace.helper"
+                )
                 answer = input("Continue and permanently discard this data? [y/n]: ").strip().lower()
+                _slogger.log_user_input("Continue and permanently discard this data? [y/n]", answer, source="hammerspace.helper")
                 if answer != 'y':
-                    print("Aborted. No changes were made.")
+                    _slogger.info("Aborted. No changes were made.", source="hammerspace.helper")
                     raise SystemExit(0)
 
             f.truncate(target_size)
-            print(f"Trimmed {remove_length:,} bytes from end of file.")
+            _slogger.info(f"Trimmed {remove_length:,} bytes from end of file.", source="hammerspace.helper")
 
     # Update the disc FST to reflect the new file size.
     patchFstFileSize(target_size)
 
-    print("Done.")
+    _slogger.info("Done.", source="hammerspace.helper")
 
 
 
@@ -131,22 +151,22 @@ def ensureOutputDat(required_total_size: int = 0) -> bool:
 
     if not os.path.exists(OUTPUT_DAT):
         if not os.path.exists(INPUT_DAT):
-            print(f"ERROR: OUTPUT dt_na.dat not found and INPUT dt_na.dat is also missing: {INPUT_DAT}")
+            _slogger.error(f"OUTPUT dt_na.dat not found and INPUT dt_na.dat is also missing: {INPUT_DAT}", source="hammerspace.helper")
             return False
         os.makedirs(os.path.dirname(OUTPUT_DAT), exist_ok=True)
-        print(f"OUTPUT dt_na.dat not found. Copying from input ...")
+        _slogger.info("OUTPUT dt_na.dat not found. Copying from input ...", source="hammerspace.helper")
         shutil.copy2(INPUT_DAT, OUTPUT_DAT)
-        print(f"Copied {INPUT_DAT} -> {OUTPUT_DAT}")
+        _slogger.info(f"Copied {INPUT_DAT} -> {OUTPUT_DAT}", source="hammerspace.helper")
 
     if required_total_size > 0:
         current_size = os.path.getsize(OUTPUT_DAT)
         if current_size < required_total_size:
             expand_by = required_total_size - current_size
-            print(f"Expanding OUTPUT dt_na.dat by {expand_by:,} bytes "
-                  f"(current: {current_size:,} → target: {required_total_size:,}) ...")
+            _slogger.info(f"Expanding OUTPUT dt_na.dat by {expand_by:,} bytes "
+                  f"(current: {current_size:,} → target: {required_total_size:,}) ...", source="hammerspace.helper")
             with open(OUTPUT_DAT, 'ab') as f:
                 f.write(b'\x00' * expand_by)
-            print(f"Expansion complete. New size: {os.path.getsize(OUTPUT_DAT):,} bytes")
+            _slogger.info(f"Expansion complete. New size: {os.path.getsize(OUTPUT_DAT):,} bytes", source="hammerspace.helper")
 
     return True
 
@@ -162,13 +182,13 @@ def patchFstFileSize(new_size: int) -> bool:
 
     if not os.path.exists(_FST_OUTPUT):
         if not os.path.exists(_FST_INPUT):
-            print(f"WARNING: FST source not found: {_FST_INPUT}")
-            print("         Disc filesystem size will NOT be updated.")
-            print("         The game may not be able to read hammerspace data.")
+            _slogger.warning(f"FST source not found: {_FST_INPUT}\n"
+                            "Disc filesystem size will NOT be updated.\n"
+                            "The game may not be able to read hammerspace data.", source="hammerspace.helper")
             return False
         os.makedirs(os.path.dirname(_FST_OUTPUT), exist_ok=True)
         shutil.copy2(_FST_INPUT, _FST_OUTPUT)
-        print(f"Copied fst.bin to output folder.")
+        _slogger.info("Copied fst.bin to output folder.", source="hammerspace.helper")
 
     with open(_FST_OUTPUT, 'r+b') as f:
         f.seek(_FST_DAT_SIZE_OFF)
@@ -178,8 +198,8 @@ def patchFstFileSize(new_size: int) -> bool:
         f.seek(_FST_DAT_SIZE_OFF)
         f.write(struct.pack('>I', new_size))
 
-    print(f"Patched FST: dt_na.dat size 0x{old_size:08X} -> 0x{new_size:08X} "
-          f"({new_size:,} bytes)")
+    _slogger.info(f"Patched FST: dt_na.dat size 0x{old_size:08X} -> 0x{new_size:08X} "
+          f"({new_size:,} bytes)", source="hammerspace.helper")
     return True
 
 
@@ -198,13 +218,13 @@ def findFreeMemoryChunk(dataLength: int) -> int:
         return -1
 
     if not os.path.exists(OUTPUT_DAT):
-        print(f"ERROR: File not found: {OUTPUT_DAT}")
+        _slogger.error(f"File not found: {OUTPUT_DAT}", source="hammerspace.helper")
         return -1
 
     file_size = os.path.getsize(OUTPUT_DAT)
 
     if file_size <= BASE_SIZE:
-        print("No hammerspace region present (file is not larger than BASE_SIZE).")
+        _slogger.info("No hammerspace region present (file is not larger than BASE_SIZE).", source="hammerspace.helper")
         return -1
 
     with open(OUTPUT_DAT, 'rb') as f:
@@ -287,64 +307,12 @@ def writeDebugDumps(
         orig_block = f_in.read(model_length)
     with open(orig_path, 'wb') as f_out:
         f_out.write(orig_block)
-    print(f"[Debug] Original block    → {orig_path}")
+    _slogger.info(f"[Debug] Original block    → {orig_path}", source="hammerspace.helper")
 
     hs_path = os.path.join(debug_dir, f"{sluggie_name}_Hammerspace.SluggDebugg")
     with open(hs_path, 'wb') as f_out:
         f_out.write(block)
-    print(f"[Debug] Hammerspace block → {hs_path}")
-
-
-def appendHammerspaceLog(
-    action:       str,
-    model_name:   str,
-    chunk_number: int,
-    file_index:   int,
-    dat_offset:   int,
-    data_length:  int,
-) -> None:
-    """Append one entry to the persistent hammerspace activity log.
-
-    Creates ``3_Output_Dat/SluggDebugg/HammerspaceLog.txt`` (and the
-    ``SluggDebugg`` directory) if they do not yet exist, then appends the
-    entry.  Existing content is never overwritten.
-
-    Parameters
-    ----------
-    action :
-        ``'Written'`` or ``'Removed'``.
-    model_name :
-        The sluggie filename (e.g. ``337568064_L_mii_male.gpl.sluggie``).
-    chunk_number, file_index :
-        DOL directory table coordinates of the model entry.
-    dat_offset :
-        Byte offset of the start of the model data block in dt_na.dat.
-    data_length :
-        Byte length of the model data block.
-    """
-    import datetime
-
-    debug_dir = os.path.join(os.path.dirname(OUTPUT_DAT), 'SluggDebugg')
-    os.makedirs(debug_dir, exist_ok=True)
-    log_path  = os.path.join(debug_dir, 'HammerspaceLog.txt')
-
-    size_mb   = data_length / (1024 * 1024)
-    timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
-    entry = (
-        f"Action:   {action}\n"
-        f"Model:    {model_name}\n"
-        f"Chunk:    {chunk_number}  |  File: {file_index}\n"
-        f"Address:  0x{dat_offset:08X}\n"
-        f"Size:     {size_mb:.2f} MB\n"
-        f"Time:     {timestamp}\n"
-        f"-----\n"
-    )
-
-    with open(log_path, 'a', encoding='utf-8') as f:
-        f.write(entry)
-
-    print(f"[Log] Entry appended → {log_path}")
+    _slogger.info(f"[Debug] Hammerspace block → {hs_path}", source="hammerspace.helper")
 
 
 def _readDirPtrs() -> list[int]:
@@ -404,7 +372,7 @@ def readDolEntry(chunk_number: int, file_index: int) -> tuple[int, int]:
 
     dir_ptrs = _readDirPtrs()
     if not (0 <= chunk_number < len(dir_ptrs)):
-        print(f"ERROR: chunk_number {chunk_number} out of range (0-{len(dir_ptrs) - 1})")
+        _slogger.error(f"chunk_number {chunk_number} out of range (0-{len(dir_ptrs) - 1})", source="hammerspace.helper")
         return -1, -1
 
     entry_offset = dir_ptrs[chunk_number] + file_index * _ENTRY_SIZE
@@ -466,16 +434,16 @@ def patchDolEntry(chunk_number: int, file_index: int, new_offset: int, new_lengt
     # Ensure output DOL exists
     if not os.path.exists(OUTPUT_DOL):
         if not os.path.exists(INPUT_DOL):
-            print(f"ERROR: Input DOL not found: {INPUT_DOL}")
+            _slogger.error(f"Input DOL not found: {INPUT_DOL}", source="hammerspace.helper")
             return
         os.makedirs(os.path.dirname(OUTPUT_DOL), exist_ok=True)
         shutil.copy2(INPUT_DOL, OUTPUT_DOL)
-        print(f"Copied main.dol to output folder.")
+        _slogger.info("Copied main.dol to output folder.", source="hammerspace.helper")
 
     dir_ptrs = _readDirPtrs()
 
     if not (0 <= chunk_number < len(dir_ptrs)):
-        print(f"ERROR: chunk_number {chunk_number} out of range (0-{len(dir_ptrs) - 1})")
+        _slogger.error(f"chunk_number {chunk_number} out of range (0-{len(dir_ptrs) - 1})", source="hammerspace.helper")
         return
 
     entry_offset = dir_ptrs[chunk_number] + file_index * _ENTRY_SIZE
@@ -498,8 +466,8 @@ def patchDolEntry(chunk_number: int, file_index: int, new_offset: int, new_lengt
             dol.seek(file_pos)
             dol.write(struct.pack('>I', value))
 
-    print(f"Patched DOL entry: chunk={chunk_number}, file_index={file_index}, "
-          f"offset=0x{new_offset:08X}, length=0x{new_length:X}")
+    _slogger.info(f"Patched DOL entry: chunk={chunk_number}, file_index={file_index}, "
+          f"offset=0x{new_offset:08X}, length=0x{new_length:X}", source="hammerspace.helper")
 
 
 def removeModelFromHammerspace(chunk_number: int, file_index: int) -> tuple:
@@ -519,15 +487,15 @@ def removeModelFromHammerspace(chunk_number: int, file_index: int) -> tuple:
     """
 
     if not os.path.exists(OUTPUT_DOL):
-        print(f"ERROR: Output DOL not found: {OUTPUT_DOL}")
+        _slogger.error(f"Output DOL not found: {OUTPUT_DOL}", source="hammerspace.helper")
         return False, 0, 0
     if not os.path.exists(OUTPUT_DAT):
-        print(f"ERROR: Output dat not found: {OUTPUT_DAT}")
+        _slogger.error(f"Output dat not found: {OUTPUT_DAT}", source="hammerspace.helper")
         return False, 0, 0
 
     dir_ptrs = _readDirPtrs()
     if not (0 <= chunk_number < len(dir_ptrs)):
-        print(f"ERROR: chunk_number {chunk_number} out of range (0-{len(dir_ptrs) - 1})")
+        _slogger.error(f"chunk_number {chunk_number} out of range (0-{len(dir_ptrs) - 1})", source="hammerspace.helper")
         return False, 0, 0
 
     entry_offset = dir_ptrs[chunk_number] + file_index * _ENTRY_SIZE
@@ -538,24 +506,24 @@ def removeModelFromHammerspace(chunk_number: int, file_index: int) -> tuple:
         cur_length = struct.unpack('>I', dol.read(4))[0]  # word[1] len_en
         cur_offset = struct.unpack('>I', dol.read(4))[0]  # word[2] offset_en
 
-    print(f"[1] Current DOL entry: chunk={chunk_number}, file_index={file_index}, "
+    _slogger.info(f"[1] Current DOL entry: chunk={chunk_number}, file_index={file_index}, "
           f"offset=0x{cur_offset:08X} ({cur_offset:,}), "
-          f"length=0x{cur_length:08X} ({cur_length:,} bytes)")
+          f"length=0x{cur_length:08X} ({cur_length:,} bytes)", source="hammerspace.helper")
 
     # Step 2 — verify the offset is in the hammerspace region
     if cur_offset < BASE_SIZE:
-        print(f"    ERROR: offset 0x{cur_offset:08X} is not in the hammerspace region "
-              f"(BASE_SIZE=0x{BASE_SIZE:08X}). Nothing to remove.")
+        _slogger.error(f"offset 0x{cur_offset:08X} is not in the hammerspace region "
+              f"(BASE_SIZE=0x{BASE_SIZE:08X}). Nothing to remove.", source="hammerspace.helper")
         return False, 0, 0
 
     # Step 3 — zero out the block in OUTPUT dt_na.dat
     dat_size = os.path.getsize(OUTPUT_DAT)
     if cur_offset + cur_length > dat_size:
-        print(f"    ERROR: block at 0x{cur_offset:08X} + {cur_length:,} extends beyond "
-              f"dat file size {dat_size:,}. Aborting.")
+        _slogger.error(f"block at 0x{cur_offset:08X} + {cur_length:,} extends beyond "
+              f"dat file size {dat_size:,}. Aborting.", source="hammerspace.helper")
         return False, 0, 0
 
-    print(f"[2] Zeroing {cur_length:,} bytes at 0x{cur_offset:08X} in OUTPUT dt_na.dat ...")
+    _slogger.info(f"[2] Zeroing {cur_length:,} bytes at 0x{cur_offset:08X} in OUTPUT dt_na.dat ...", source="hammerspace.helper")
     zeroed = 0
     with open(OUTPUT_DAT, 'r+b') as f:
         f.seek(cur_offset)
@@ -563,28 +531,28 @@ def removeModelFromHammerspace(chunk_number: int, file_index: int) -> tuple:
             write_size = min(CHUNK_SIZE, cur_length - zeroed)
             f.write(b'\x00' * write_size)
             zeroed += write_size
-    print(f"    Zeroed {cur_length:,} bytes.")
+    _slogger.info(f"    Zeroed {cur_length:,} bytes.", source="hammerspace.helper")
 
     # Step 4 — read original offset and length from INPUT main.dol
     orig_offset, orig_length = readDolEntry(chunk_number, file_index)
     if orig_offset == -1:
-        print("    ERROR: Could not read original DOL entry from input.")
+        _slogger.error("Could not read original DOL entry from input.", source="hammerspace.helper")
         return False, 0, 0
-    print(f"[3] Original DOL entry: offset=0x{orig_offset:08X} ({orig_offset:,}), "
-          f"length=0x{orig_length:08X} ({orig_length:,} bytes)")
+    _slogger.info(f"[3] Original DOL entry: offset=0x{orig_offset:08X} ({orig_offset:,}), "
+          f"length=0x{orig_length:08X} ({orig_length:,} bytes)", source="hammerspace.helper")
 
     # Step 5 — restore original values into all language slots of OUTPUT main.dol
-    print(f"[4] Restoring original DOL entry ...")
+    _slogger.info("[4] Restoring original DOL entry ...", source="hammerspace.helper")
     patchDolEntry(chunk_number, file_index, orig_offset, orig_length)
 
     # Also restore all shared entries that reference the same original data.
     shared = findSharedEntries(chunk_number, file_index)
     if shared:
-        print(f"    Restoring {len(shared)} shared chunk reference(s):")
+        _slogger.info(f"    Restoring {len(shared)} shared chunk reference(s):", source="hammerspace.helper")
         for sc, si in shared:
             patchDolEntry(sc, si, orig_offset, orig_length)
 
-    print(f"\nDone. chunk={chunk_number}, file_index={file_index} removed from hammerspace.")
+    _slogger.info(f"Done. chunk={chunk_number}, file_index={file_index} removed from hammerspace.", source="hammerspace.helper")
     return True, cur_offset, cur_length
 
 
@@ -602,14 +570,14 @@ def zeroOriginalModel(chunk_number: int, file_index: int) -> None:
 
     orig_offset, orig_length = readDolEntry(chunk_number, file_index)
     if orig_offset == -1:
-        print("ERROR: Could not read original DOL entry for zeroing.")
+        _slogger.error("Could not read original DOL entry for zeroing.", source="hammerspace.helper")
         return
 
     if not os.path.exists(OUTPUT_DAT):
-        print("ERROR: Output dat not found for zeroing.")
+        _slogger.error("Output dat not found for zeroing.", source="hammerspace.helper")
         return
 
-    print(f"Zeroing original model data: 0x{orig_offset:08X}, {orig_length:,} bytes ...")
+    _slogger.info(f"Zeroing original model data: 0x{orig_offset:08X}, {orig_length:,} bytes ...", source="hammerspace.helper")
     zeroed = 0
     with open(OUTPUT_DAT, 'r+b') as f:
         f.seek(orig_offset)
@@ -617,4 +585,4 @@ def zeroOriginalModel(chunk_number: int, file_index: int) -> None:
             write_size = min(CHUNK_SIZE, orig_length - zeroed)
             f.write(b'\x00' * write_size)
             zeroed += write_size
-    print(f"    Zeroed {orig_length:,} bytes at original location.")
+    _slogger.info(f"    Zeroed {orig_length:,} bytes at original location.", source="hammerspace.helper")

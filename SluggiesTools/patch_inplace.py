@@ -5,6 +5,10 @@ import json
 import base64
 import struct
 
+# Step 2.2 – Initialize universal logger in child process.
+import slogger as _slogger
+_slogger.configure()
+
 INPUT_DAT  = '../1_Input/dt_na.dat'
 OUTPUT_DIR = '../3_Output_Dat'
 OUTPUT_DAT = os.path.join(OUTPUT_DIR, 'dt_na.dat')
@@ -43,8 +47,9 @@ def _shader_mode_to_bytes(s: str) -> bytes:
 
 
 def abort(message):
-    print(f"ERROR: {message}")
-    input("\nPress any key to exit...")
+    _slogger.error(message, source="patch_inplace")
+    answer = input("\nPress any key to exit...")
+    _slogger.log_user_input("Press any key to exit", answer, source="patch_inplace")
     raise SystemExit(1)
 
 
@@ -173,9 +178,10 @@ def _facial_position_patches(model: dict, restore: bool) -> list[tuple[int, byte
             else:
                 patched_pose = original_pose
             facial_patches.append((pose_offset, patched_pose))
-        print(
-            f"  Submesh {submesh_index}: queued {len(original_poses)} facial position poses "
-            f"({vertex_count} mapped vertices each)."
+        _slogger.info(
+            f"Submesh {submesh_index}: queued {len(original_poses)} facial position poses "
+            f"({vertex_count} mapped vertices each).",
+            source="patch_inplace",
         )
 
     return facial_patches
@@ -217,20 +223,23 @@ if not submeshes:
 # ---------------------------------------------------------------------------
 
 mode_label = "original" if unpatch else "edited"
-print(f"Mode: {'--unpatch (restoring original data)' if unpatch else 'patch (writing edited data)'}")
+_slogger.info(
+    f"Mode: {'--unpatch (restoring original data)' if unpatch else 'patch (writing edited data)'}",
+    source="patch_inplace",
+)
 
 if not os.path.exists(OUTPUT_DIR):
     os.mkdir(OUTPUT_DIR)
-    print(f"Created folder: {OUTPUT_DIR}/")
+    _slogger.info(f"Created folder: {OUTPUT_DIR}/", source="patch_inplace")
 
 if not os.path.exists(INPUT_DAT):
     abort(f"Input file not found: {INPUT_DAT}\nCannot continue without a source dt_na.dat.")
 
 if os.path.exists(OUTPUT_DAT):
-    print(f"Output file already exists, skipping copy: {OUTPUT_DAT}")
+    _slogger.warning(f"Output file already exists, skipping copy: {OUTPUT_DAT}", source="patch_inplace")
 else:
     shutil.copy2(INPUT_DAT, OUTPUT_DAT)
-    print(f"Copied {INPUT_DAT} -> {OUTPUT_DAT}")
+    _slogger.info(f"Copied {INPUT_DAT} -> {OUTPUT_DAT}", source="patch_inplace")
 
 # ---------------------------------------------------------------------------
 # Build patch list
@@ -251,7 +260,7 @@ for i, submesh in enumerate(submeshes):
         if vb_data:
             raw = _to_bytes(vb_data)
             patches.append((i, int(vb["VertexBufferOffset"], 16), raw))
-            print(f"  Submesh {i}: queued {len(raw)} vertex bytes at {vb['VertexBufferOffset']}")
+            _slogger.info(f"Submesh {i}: queued {len(raw)} vertex bytes at {vb['VertexBufferOffset']}", source="patch_inplace")
 
         for ch in submesh.get("UVChannels", []):
             ch_ind   = ch.get("UVChannelIndex", "?")
@@ -259,12 +268,12 @@ for i, submesh in enumerate(submeshes):
             if uv_data:
                 raw = _to_bytes(uv_data)
                 uv_patches.append((i, ch_ind, int(ch["UVChannelOffset"], 16), raw))
-                print(f"  Submesh {i} UV ch {ch_ind}: queued {len(raw)} bytes at {ch['UVChannelOffset']}")
+                _slogger.info(f"Submesh {i} UV ch {ch_ind}: queued {len(raw)} bytes at {ch['UVChannelOffset']}", source="patch_inplace")
 
     else:
         # -- patch mode --
         if "VertexBufferDataEdited" not in vb:
-            print(f"  Submesh {i}: no VertexBufferDataEdited data, skipping.")
+            _slogger.info(f"Submesh {i}: no VertexBufferDataEdited data, skipping.", source="patch_inplace")
             continue
 
         new_verts = _to_bytes(vb["VertexBufferDataEdited"])
@@ -292,13 +301,16 @@ for i, submesh in enumerate(submeshes):
                 ch_ind = ch["UVChannelIndex"]
                 if ch_ind in new_uvs and len(new_uvs[ch_ind]) != ch["UVChannelLength"]:
                     reasons.append(f"UV ch {ch_ind} {ch['UVChannelLength']} → {len(new_uvs[ch_ind])} bytes")
-            print(f"  Submesh {i}: WARNING — buffer size changed ({'; '.join(reasons)}). "
-                  f"Buffer size changes are not currently supported; skipping.")
+            _slogger.warning(
+                f"Submesh {i}: buffer size changed ({'; '.join(reasons)}). "
+                f"Buffer size changes are not currently supported; skipping.",
+                source="patch_inplace",
+            )
             continue
 
         # Sizes unchanged — in-place write
         patches.append((i, int(vb["VertexBufferOffset"], 16), new_verts))
-        print(f"  Submesh {i}: {len(new_verts)} vertex bytes (in-place)")
+        _slogger.info(f"Submesh {i}: {len(new_verts)} vertex bytes (in-place)", source="patch_inplace")
 
         for ch in submesh.get("UVChannels", []):
             ch_ind = ch["UVChannelIndex"]
@@ -306,7 +318,7 @@ for i, submesh in enumerate(submeshes):
                 continue
             raw = new_uvs[ch_ind]
             uv_patches.append((i, ch_ind, int(ch["UVChannelOffset"], 16), raw))
-            print(f"  Submesh {i} UV ch {ch_ind}: {len(raw)} bytes (in-place)")
+            _slogger.info(f"Submesh {i} UV ch {ch_ind}: {len(raw)} bytes (in-place)", source="patch_inplace")
 
 # ---------------------------------------------------------------------------
 # Collect shader-mode (Type-7 FourCC) patches.
@@ -339,7 +351,7 @@ for i, submesh in enumerate(submeshes):
         if unpatch:
             raw = _shader_mode_to_bytes(old_code)
             setting_patches.append((i, ds_idx, off, raw))
-            print(f"  Submesh {i} DS[{ds_idx}] ShaderMode: restore \"{old_code}\" at {off_str}")
+            _slogger.info(f"Submesh {i} DS[{ds_idx}] ShaderMode: restore \"{old_code}\" at {off_str}", source="patch_inplace")
         else:
             if edit_code is None:
                 continue
@@ -357,33 +369,36 @@ for i, submesh in enumerate(submeshes):
                 )
             raw = edit_code.encode('ascii', errors='replace').ljust(4, b' ')[:4]
             setting_patches.append((i, ds_idx, off, raw))
-            print(f"  Submesh {i} DS[{ds_idx}] ShaderMode: \"{old_code}\" -> \"{edit_code}\" at {off_str}")
+            _slogger.info(f"Submesh {i} DS[{ds_idx}] ShaderMode: \"{old_code}\" -> \"{edit_code}\" at {off_str}", source="patch_inplace")
 
 # ---------------------------------------------------------------------------
 # Write in-place patches
 # ---------------------------------------------------------------------------
 
 if patches or uv_patches or setting_patches or facial_patches:
-    print(f"\nWriting {len(patches)} vertex, {len(uv_patches)} UV, "
-          f"{len(setting_patches)} shader-mode, {len(facial_patches)} facial-pose "
-          f"patch(es) to {OUTPUT_DAT} ...")
+    _slogger.info(
+        f"Writing {len(patches)} vertex, {len(uv_patches)} UV, "
+        f"{len(setting_patches)} shader-mode, {len(facial_patches)} facial-pose "
+        f"patch(es) to {OUTPUT_DAT} ...",
+        source="patch_inplace",
+    )
     with open(OUTPUT_DAT, 'r+b') as f:
         for i, offset, raw in patches:
             f.seek(offset)
             f.write(raw)
-            print(f"  Submesh {i} vertex: wrote {len(raw)} bytes at 0x{offset:X}")
+            _slogger.info(f"Submesh {i} vertex: wrote {len(raw)} bytes at 0x{offset:X}", source="patch_inplace")
         for i, ch_ind, offset, raw in uv_patches:
             f.seek(offset)
             f.write(raw)
-            print(f"  Submesh {i} UV ch {ch_ind}: wrote {len(raw)} bytes at 0x{offset:X}")
+            _slogger.info(f"Submesh {i} UV ch {ch_ind}: wrote {len(raw)} bytes at 0x{offset:X}", source="patch_inplace")
         for i, ds_idx, offset, raw in setting_patches:
             f.seek(offset)
             f.write(raw)
-            print(f"  Submesh {i} DS[{ds_idx}] shader: wrote {raw!r} at 0x{offset:X}")
+            _slogger.info(f"Submesh {i} DS[{ds_idx}] shader: wrote {raw!r} at 0x{offset:X}", source="patch_inplace")
         for offset, raw in facial_patches:
             f.seek(offset)
             f.write(raw)
-            print(f"  Facial pose: wrote {len(raw)} bytes at 0x{offset:X}")
+            _slogger.info(f"Facial pose: wrote {len(raw)} bytes at 0x{offset:X}", source="patch_inplace")
 
 # In-place skin source and weight patching (skinned models)
 if skin_data is not None and not unpatch:
@@ -395,10 +410,10 @@ if skin_data is not None and not unpatch:
     if needs_resize:
         total_sk = _skn.patchSKNInPlaceResized(skin_data)
         if total_sk >= 0:
-            print(f"  Skin bind-pose source and weight arrays patched in-place (resized, {total_sk} SK1+SK2 verts).")
+            _slogger.info(f"Skin bind-pose source and weight arrays patched in-place (resized, {total_sk} SK1+SK2 verts).", source="patch_inplace")
     else:
         if _skn.patchSKNInPlace(skin_data):
-            print("  Skin bind-pose source and weight arrays patched in-place.")
+            _slogger.info("Skin bind-pose source and weight arrays patched in-place.", source="patch_inplace")
 
 # In-place skin source and weight restoration (--unpatch)
 if skin_data is not None and unpatch:
@@ -409,23 +424,26 @@ if skin_data is not None and unpatch:
     )
     if needs_restore_block:
         if _skn.restoreSKNBlockInPlace(skin_data):
-            print("  Skin bind-pose source arrays restored in-place (resized block undone).")
+            _slogger.info("Skin bind-pose source arrays restored in-place (resized block undone).", source="patch_inplace")
     else:
         if _skn.restoreSKNInPlace(skin_data):
-            print("  Skin bind-pose source and weight arrays restored in-place.")
+            _slogger.info("Skin bind-pose source and weight arrays restored in-place.", source="patch_inplace")
 
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 
-print(f"\n--- Summary ---")
-print(f"Vertex submeshes patched (in-place) : {len(patches)}")
-print(f"UV channels patched (in-place)      : {len(uv_patches)}")
-print(f"ShaderMode (Type-7 FourCC) patched  : {len(setting_patches)}")
-print(f"Facial position poses patched       : {len(facial_patches)}")
-print(f"Output file                         : {OUTPUT_DAT}")
+summary = (
+    f"--- Summary ---\n"
+    f"Vertex submeshes patched (in-place) : {len(patches)}\n"
+    f"UV channels patched (in-place)      : {len(uv_patches)}\n"
+    f"ShaderMode (Type-7 FourCC) patched  : {len(setting_patches)}\n"
+    f"Facial position poses patched       : {len(facial_patches)}\n"
+    f"Output file                         : {OUTPUT_DAT}"
+)
+_slogger.info(summary, source="patch_inplace")
 if unpatch:
-    print("Done. The output file has been restored to the original data.")
+    _slogger.info("Done. The output file has been restored to the original data.", source="patch_inplace")
 else:
-    print("Done. You can now overwrite your original dt_na.dat in the game folder.")
+    _slogger.info("Done. You can now overwrite your original dt_na.dat in the game folder.", source="patch_inplace")
 

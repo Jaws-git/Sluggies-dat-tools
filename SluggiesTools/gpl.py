@@ -3,6 +3,7 @@ from act import *
 import numpy as np
 from helper import *
 from model0 import *
+import slogger
 
 # np.set_printoptions(precision=3, suppress=True, threshold=np.inf)
 
@@ -288,9 +289,6 @@ class PrimitiveList(FileChunk):
         return data_str
     
     def draw(self, state):
-        debug = 0
-        if debug:
-            print ("\n\nDRAWING\n\n")
         data_index = 0
         faces = []
         while data_index < len(self.data) and self.data[data_index] != 0:
@@ -304,20 +302,16 @@ class PrimitiveList(FileChunk):
             for entry in descriptors:
                 attribute = entry['key']
                 if attribute not in state['attributes']:
-                    print ("did not find attribute " + str(attribute))
-                    exit(0)
+                    slogger.error(
+                        f"did not find attribute {attribute}", source='gpl'
+                    )
+                    exit(1)
                 if entry['direct']:
-                    print ("attribute " + str(attribute) + " uses direct mode")
-                    exit(0)
+                    slogger.error(
+                        f"attribute {attribute} uses direct mode", source='gpl'
+                    )
+                    exit(1)
                 vertexSize += entry['index_size']
-            if debug:
-                print ("\nprimitive is " + hex(primitive) + ", count is " + hex(vertexCount) + ", vertex size is " + str(vertexSize))
-                print ('data is ')
-                print (
-                    '\n'.join([
-                        ','.join(['{:02x}'.format(d) for d in self.data[data_index + x : data_index + x + vertexSize]])
-                        for x in range(0, vertexSize*vertexCount, vertexSize)])
-                )
             vertexes = []
             while vertexCount > 0:
                 vertex = {}
@@ -339,7 +333,10 @@ class PrimitiveList(FileChunk):
                 case 0x90:
                     # GX_TRIANGLES
                     if len(vertexes) % 3 != 0:
-                        print("drawing triangles with " + str(len(vertexes)) + " vertexes")
+                        slogger.warning(
+                            f"drawing triangles with {len(vertexes)} vertexes",
+                            source='gpl'
+                        )
                     faces += [[vertexes[x+2], vertexes[x+1], vertexes[x]] for x in range(0, len(vertexes), 3)]
                 case 0x98:
                     # GX_TRIANGLESTRIP
@@ -353,15 +350,20 @@ class PrimitiveList(FileChunk):
                 case 0x80:
                     # GX_QUADS
                     if len(vertexes) % 4 != 0:
-                        print("drawing quads with " + str(len(vertexes)) + " vertexes")
+                        slogger.warning(
+                            f"drawing quads with {len(vertexes)} vertexes",
+                            source='gpl'
+                        )
                     for x in range(0, len(vertexes), 4):
                         faces.append([vertexes[x+2], vertexes[x+1], vertexes[x]])
                         faces.append([vertexes[x], vertexes[x+3], vertexes[x+2]])
                         # faces.append([vertexes[x], vertexes[x+1], vertexes[x]])
                         # faces.append([vertexes[x+2], vertexes[x+3], vertexes[x+2]])
                 case _:
-                    print ("primitive type " + hex(primitive) + " not supported")
-                    exit(0)
+                    slogger.error(
+                        f"primitive type {hex(primitive)} not supported", source='gpl'
+                    )
+                    exit(1)
         return faces
 
     def description(self, empty = True):

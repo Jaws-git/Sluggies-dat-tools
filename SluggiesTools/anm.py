@@ -4,6 +4,7 @@ import numpy as np
 from helper import *
 from xml_helper import *
 from model0 import *
+import slogger
 
 class ANMVector(FileChunk):
     def analyze(self, quantization):
@@ -292,4 +293,5 @@ if __name__ == '__main__':
     anm.analyze()
     data = ANMData(anm)
     # print(len(data.sequences))
-    print([hex(x.id) for x in data.sequences[0].tracks])
+    track_ids = [hex(x.id) for x in data.sequences[0].tracks]
+    slogger.info(f"ANM track IDs: {track_ids}", source='anm')

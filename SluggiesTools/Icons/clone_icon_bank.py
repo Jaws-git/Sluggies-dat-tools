@@ -13,6 +13,9 @@ if TOOLS_DIR not in sys.path:
 
 from Hammerspace import HammerspaceHelper as hh
 
+import slogger as _slogger
+_slogger.configure()
+
 
 ICON_ENTRY_DOL_OFFSET = 0x68DE88
 ICON_ENTRY_SIZE = 0x30
@@ -245,12 +248,15 @@ def clone_icon_bank(dry_run: bool = False) -> CloneResult:
 
 def _print_result(result: CloneResult) -> None:
     action = 'Already expanded' if result.already_expanded else ('Dry run' if result.dry_run else 'Expanded')
-    print(f'{action}: icon bank group 119 entry 2')
-    print(f'  source:      0x{result.source_offset:08X} (0x{result.source_length:X} bytes)')
-    print(f'  destination: 0x{result.destination_offset:08X} (0x{result.destination_length:X} bytes)')
-    print(f'  output DAT:  0x{result.output_dat_size:X} bytes')
+    summary = (
+        f'{action}: icon bank group 119 entry 2\n'
+        f'  source:      0x{result.source_offset:08X} (0x{result.source_length:X} bytes)\n'
+        f'  destination: 0x{result.destination_offset:08X} (0x{result.destination_length:X} bytes)\n'
+        f'  output DAT:  0x{result.output_dat_size:X} bytes'
+    )
+    _slogger.info(summary, source='icons.clone_icon_bank')
     if not result.dry_run and not result.already_expanded and not result.fst_updated:
-        print('  FST:         not updated (1_Input/fst.bin is unavailable)')
+        _slogger.warning('FST: not updated (1_Input/fst.bin is unavailable)', source='icons.clone_icon_bank')
 
 
 def main() -> int:

@@ -4,6 +4,13 @@ import os
 import struct
 from dataclasses import dataclass
 
+_TOOLS_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
+import sys as _sys
+if _TOOLS_DIR not in _sys.path:
+    _sys.path.insert(0, _TOOLS_DIR)
+import slogger as _slogger
+_slogger.configure()
+
 try:
     from . import prepare_icon_artwork as artwork
     from . import update_icon_source_tables as sources
@@ -307,13 +314,16 @@ def install_icon_resource_rows(dry_run: bool = False) -> ResourceRowResult:
 
 def _print_result(result: ResourceRowResult) -> None:
     action = 'Already configured' if result.already_configured else ('Dry run' if result.dry_run else 'Written')
-    print(f'{action}: resource rows for {result.character_count} custom characters')
-    print(f'  bank:           0x{result.destination_offset:08X}')
-    print(f'  resource table: 0x{result.resource_table_offset:X} ({result.resource_count} rows)')
-    print('  side rows:      0x98-0x9B on page 0x92')
-    print('  front rows:     0x9C-0x9F on page 0x93')
+    summary = (
+        f'{action}: resource rows for {result.character_count} custom characters\n'
+        f'  bank:           0x{result.destination_offset:08X}\n'
+        f'  resource table: 0x{result.resource_table_offset:X} ({result.resource_count} rows)\n'
+        '  side rows:      0x98-0x9B on page 0x92\n'
+        '  front rows:     0x9C-0x9F on page 0x93'
+    )
     if result.report_written:
-        print(f'  report:         {os.path.relpath(REPORT_PATH, sources.pages.cib.ROOT)}')
+        summary += f'\n  report:         {os.path.relpath(REPORT_PATH, sources.pages.cib.ROOT)}'
+    _slogger.info(summary, source='icons.add_icon_resource_rows')
 
 
 def main() -> int:

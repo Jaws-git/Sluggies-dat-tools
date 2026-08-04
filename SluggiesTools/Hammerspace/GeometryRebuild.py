@@ -40,6 +40,8 @@ sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(__file__), '..'
 from drawlist import (computeRequiredDescriptors, decodeDrawList,
                       encodeDrawList, patchType3Setting)
 
+import slogger as _slogger
+
 _u16 = struct.Struct('>H')
 
 
@@ -256,9 +258,9 @@ def _rebuild_skinning(model: dict, sub: dict, use_b64) -> dict | None:
     ske['FlushIndSize'] = len(flush_sorted)
     ske['RebuiltByImporter'] = True
 
-    print(f'    [M2] skinned submesh: {n_verts} verts permuted, '
+    _slogger.info(f'[M2] skinned submesh: {n_verts} verts permuted, '
           f'{len(only_acc)} acc-only slots, memClr 0x{mcp:X}/0x{mcs:X}, '
-          f'flush {len(flush_sorted)} entries')
+          f'flush {len(flush_sorted)} entries', source="geometry.rebuild")
     return {'perm': perm, 'n_verts': n_verts}
 
 
@@ -358,7 +360,7 @@ def _rebuild_submesh(model: dict, sub: dict, sub_idx: int, use_b64,
         uv['UVChannelDataEdited'] = _enc(b''.join(order), use_b64)
         uv['UVFacesDataEdited'] = _enc(b''.join(_u16.pack(i) for i in loop_idx), use_b64)
         uv_loop_indices[ch] = loop_idx
-        print(f'    [M2] sub{sub_idx} uv{ch}: {len(uvf)} loops → {len(order)} compact coords')
+        _slogger.info(f'[M2] sub{sub_idx} uv{ch}: {len(uvf)} loops → {len(order)} compact coords', source="geometry.rebuild")
 
     # ---- per-position color fallback map from original decode ----
     color_by_pos: dict[int, int] = {}
@@ -420,8 +422,8 @@ def _rebuild_submesh(model: dict, sub: dict, sub_idx: int, use_b64,
             face_verts.append(v)
         new_state_faces[state_idx].append(face_verts)
 
-    print(f'    [M2] sub{sub_idx}: {n_faces} faces routed '
-          f'({n_faces - unmatched} matched to original states, {unmatched} new/changed)')
+    _slogger.info(f'[M2] sub{sub_idx}: {n_faces} faces routed '
+          f'({n_faces - unmatched} matched to original states, {unmatched} new/changed)', source="geometry.rebuild")
 
     # ---- encode prim lists, upgrading index widths as needed ----
     all_faces = [f for fl in new_state_faces.values() for f in fl]
@@ -447,9 +449,9 @@ def _rebuild_submesh(model: dict, sub: dict, sub_idx: int, use_b64,
         new = patchType3Setting(old, upgraded_total)
         if new != old:
             t3['ShaderModeEdited'] = f'{new:08x}'
-            print(f'    [M2] sub{sub_idx}: index width upgraded for '
+            _slogger.info(f'[M2] sub{sub_idx}: index width upgraded for '
                   f'{sorted(upgraded_total)} — Type-3 setting '
-                  f'0x{old:08X} → 0x{new:08X}')
+                  f'0x{old:08X} → 0x{new:08X}', source="geometry.rebuild")
 
 
 # ---------------------------------------------------------------------------
@@ -469,7 +471,7 @@ def rebuild_edited_geometry(data: dict) -> bool:
     if not changed:
         return False
 
-    print(f'    [M2] topology edits detected in submesh(es): {changed}')
+    _slogger.info(f'[M2] topology edits detected in submesh(es): {changed}', source="geometry.rebuild")
 
     perm_info = None
     for i in changed:

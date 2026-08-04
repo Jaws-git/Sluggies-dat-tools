@@ -8,12 +8,26 @@ import os
 import shutil
 from collada import source, common
 from xml_helper import *
+import slogger
 
 _LOG_DIR_INDEX = None
 TEX_TEMP_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), '..', '2_Output_Models', 'tex_temp')
 )
 UNTANGLE_IGNORE_BASENAME = { 'tex1_64x64_d6da4880cee95b7b_14' , "tex1_64x64_a09662ae19841ea4_14" , "tex1_64x64_8a05f75d65053b44_14", "tex1_64x64_cc3d32b121549b17_14" }
+
+
+def _copy_texture_pngs(output_dir):
+    tex_dir = os.path.join(output_dir, 'tex')
+    os.makedirs(tex_dir, exist_ok=True)
+    for filename in os.listdir(tex_dir):
+        if filename.lower().endswith('.png'):
+            os.remove(os.path.join(tex_dir, filename))
+    for filename in os.listdir(TEX_TEMP_DIR):
+        shutil.copyfile(
+            os.path.join(TEX_TEMP_DIR, filename),
+            os.path.join(tex_dir, filename),
+        )
 
 
 class ExpectedFormatSkip(Exception):
@@ -31,11 +45,12 @@ def _log_prefix():
     return f'[dir {_LOG_DIR_INDEX}]'
 
 
-def _log_noncritical(message, exc=None, postfix='(Moving on)'):
+def _log_noncritical(message, exc=None):
+    prefix = _log_prefix()
     if exc is None:
-        print(f'{_log_prefix()} {message} {postfix}')
+        slogger.warning(f'{prefix} {message}', source='model')
         return
-    print(f'{_log_prefix()} {message}: {type(exc).__name__}: {exc} {postfix}')
+    slogger.warning(f'{prefix} {message}: {type(exc).__name__}: {exc}', source='model')
 
 class MaybeArchive(FileChunk):
     def analyze(self):
@@ -70,7 +85,7 @@ class Archive(FileChunk):
                 file.analyze()
                 self.success.append(i)
             except ExpectedFormatSkip as exc:
-                print(f'{_log_prefix()} {exc}')
+                slogger.warning(f'{_log_prefix()} {exc}', source='model')
             except Exception as e:
                 _log_noncritical('failed analyzing in archive', e)
                 pass
@@ -190,13 +205,17 @@ class Model0(FileChunk):
             file_dir += '/'
             # model_data() still runs when dae export is off: untangling side effects
             # (rewriting texture bytes into the dat and recording name overrides) happen here.
-            data = self.model_data(export_tex=export_tex, untangle_context=untangle_context)
+            data = self.model_data(
+                export_tex=export_tex,
+                untangle_context=untangle_context,
+                texture_output_dir=file_dir if export_tex else None,
+            )
             if export_dae:
                 data.to_dae(file_dir, name=self.name)
         except Exception as e:
-            pass
+            _log_noncritical(f'failed exporting model {self.name}', e)
 
-    def model_data(self, export_tex=True, untangle_context=None):
+    def model_data(self, export_tex=True, untangle_context=None, texture_output_dir=None):
         all_bones = []
         texture_paths = {}
 
@@ -261,6 +280,9 @@ class Model0(FileChunk):
                     tex.toFile(dolphin_path, image_data_override=image_override, tlut_data_override=tlut_override)
                 texture_paths[tex_ind] = dolphin_name + '.png'
 
+            if texture_output_dir:
+                _copy_texture_pngs(texture_output_dir)
+
         geometries = []
         vertex_deletions = {}
         # vertex data/triangles are a little more complicated because of the multiple geodescriptors
@@ -312,7 +334,7 @@ class Model0(FileChunk):
                     continue
                 active_descriptors = [descriptor['key'] for descriptor in state['descriptors']]
                 if 'color1' in active_descriptors:
-                    print('model uses color1')
+                    slogger.info('model uses color1', source='model')
                 # first, get a list of the textures used by this mesh
                 # a hash that maps a texture layer (0-7) to its texture id (index in the texture_paths arr)
                 active_textures = {}
@@ -417,17 +439,7 @@ class ModelData():
         self.untangle_context = untangle_context
 
     def create_tex_dir(self, dir):
-        tex_pngs = os.listdir(TEX_TEMP_DIR)
-        tex_dir = dir + 'tex/'
-        if os.path.exists(tex_dir):
-            # Only remove .png files; leave any unrelated files intact.
-            for _fname in os.listdir(tex_dir):
-                if _fname.lower().endswith('.png'):
-                    os.remove(os.path.join(tex_dir, _fname))
-        else:
-            os.mkdir(tex_dir)
-        for png in tex_pngs:
-            shutil.copyfile(os.path.join(TEX_TEMP_DIR, png), tex_dir+png)
+        _copy_texture_pngs(dir)
 
     def create_materials(self, dir, collada):
         out = {}

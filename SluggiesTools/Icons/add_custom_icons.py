@@ -4,8 +4,18 @@ import json
 import os
 import shutil
 import struct
+import sys
 import tempfile
 from dataclasses import dataclass
+
+# Step 2.2 – Initialize universal logger in child process.
+_ICONS_DIR = os.path.dirname(__file__)
+_TOOLS_DIR = os.path.normpath(os.path.join(_ICONS_DIR, '..'))
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+
+import slogger as _slogger
+_slogger.configure()
 
 try:
     from . import install_runtime_hooks as hooks
@@ -712,6 +722,7 @@ def add_custom_icons(
     diagnostic_stage: str | None = None,
     fit_mode: str = artwork.DEFAULT_FIT_MODE,
 ) -> CustomIconResult:
+    _slogger.info('Starting unused character icon replacement...', source='icons.add_custom_icons')
     plan = plan_custom_icons(
         diagnostic_stage=diagnostic_stage,
         fit_mode=fit_mode,
@@ -749,18 +760,21 @@ def add_custom_icons(
 
 def _print_result(result: CustomIconResult) -> None:
     action = 'Already configured' if result.already_configured else ('Dry run' if result.dry_run else 'Installed')
-    print(f'{action}: custom icons for {result.character_count} characters')
-    print(f'  bank:       0x{result.destination_offset:08X} + 0x{result.bank_length:X}')
-    print(f'  output DAT: 0x{result.output_dat_size:X} bytes')
-    print(f'  side CMPR:  {result.side_sha256}')
-    print(f'  front CMPR: {result.front_sha256}')
-    print(f'  DOL regions requiring changes: {result.changed_dol_regions}')
+    summary = (
+        f'{action}: custom icons for {result.character_count} characters\n'
+        f'  bank:       0x{result.destination_offset:08X} + 0x{result.bank_length:X}\n'
+        f'  output DAT: 0x{result.output_dat_size:X} bytes\n'
+        f'  side CMPR:  {result.side_sha256}\n'
+        f'  front CMPR: {result.front_sha256}\n'
+        f'  DOL regions requiring changes: {result.changed_dol_regions}'
+    )
     if result.report_written:
-        print(f'  report:     {os.path.relpath(REPORT_PATH, cib.ROOT)}')
+        summary += f'\n  report:     {os.path.relpath(REPORT_PATH, cib.ROOT)}'
+    _slogger.info(summary, source='icons.add_custom_icons')
     if result.dry_run and not result.fst_available:
-        print('WARNING: fst.bin was not found; write mode cannot update the disc filesystem size.')
+        _slogger.warning('fst.bin was not found; write mode cannot update the disc filesystem size.', source='icons.add_custom_icons')
     elif not result.dry_run and not result.already_configured and not result.fst_updated:
-        print('WARNING: the disc filesystem size was not updated in fst.bin.')
+        _slogger.warning('the disc filesystem size was not updated in fst.bin.', source='icons.add_custom_icons')
 
 
 def main() -> int:
@@ -800,9 +814,10 @@ def main() -> int:
         parser.exit(1, f'ERROR: {exc}\n')
     _print_result(result)
     if args.diagnostic_stage:
-        print(
-            f'  diagnostic: stage {args.diagnostic_stage} - '
-            f'{DIAGNOSTIC_STAGES[args.diagnostic_stage]}'
+        _slogger.info(
+            f'diagnostic: stage {args.diagnostic_stage} - '
+            f'{DIAGNOSTIC_STAGES[args.diagnostic_stage]}',
+            source='icons.add_custom_icons',
         )
     return 0
 

@@ -17,6 +17,9 @@ import struct
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import slogger as _slogger
+_slogger.configure()
+
 OUTPUT_DAT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '3_Output_Dat', 'dt_na.dat')
 
 
@@ -178,8 +181,11 @@ def patchSKNInPlaceResized(skin_data: dict) -> int:
     orig_var_size = skn_block_size(skin_data) - data_start_rel
     pad = orig_var_size - len(blob)
     if pad < 0:
-        print(f"  SKN in-place resize: edited data ({len(blob)} B) exceeds "
-              f"original variable region ({orig_var_size} B). Aborting.")
+        _slogger.error(
+            f"SKN in-place resize: edited data ({len(blob)} B) exceeds "
+            f"original variable region ({orig_var_size} B). Aborting.",
+            source="patch_skn_inplace",
+        )
         return -1
     blob.extend(b'\x00' * pad)
 

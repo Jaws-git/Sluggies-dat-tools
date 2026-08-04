@@ -4,6 +4,15 @@ import base64
 from dataclasses import dataclass
 
 sys.path.insert(0, os.path.dirname(__file__))
+
+# Step 2.2 – Initialize universal logger in child process.
+_HS_TOOLS_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
+if _HS_TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _HS_TOOLS_DIR)
+
+import slogger as _slogger
+_slogger.configure()
+
 import HammerspaceHelper as hh
 
 # ---------------------------------------------------------------------------
@@ -987,7 +996,7 @@ def CloneGPL(model_offset: int, model_length: int) -> bytes:
         gpl_len = next_off - gpl_off
         f.seek(model_offset + gpl_off)
         data = f.read(gpl_len)
-    print(f"    [CloneGPL] {gpl_len:,} bytes from block+0x{gpl_off:X}")
+    _slogger.info(f"[CloneGPL] {gpl_len:,} bytes from block+0x{gpl_off:X}", source="hammerspace.main")
     return data
 
 
@@ -1058,7 +1067,7 @@ def CloneACT(model_offset: int, model_length: int) -> bytes:
         hdr = f.read(0x20)
         act_off = _s.unpack_from('>I', hdr, 0x08)[0]
         if not act_off:
-            print("    [CloneACT] No ACT section")
+            _slogger.info("[CloneACT] No ACT section", source="hammerspace.main")
             return b''
         tex_off = _s.unpack_from('>I', hdr, 0x0c)[0]
         skn_off = _s.unpack_from('>I', hdr, 0x10)[0]
@@ -1066,7 +1075,7 @@ def CloneACT(model_offset: int, model_length: int) -> bytes:
         act_len = next_off - act_off
         f.seek(model_offset + act_off)
         data = f.read(act_len)
-    print(f"    [CloneACT] {act_len:,} bytes from block+0x{act_off:X}")
+    _slogger.info(f"[CloneACT] {act_len:,} bytes from block+0x{act_off:X}", source="hammerspace.main")
     return data
 
 
@@ -1108,7 +1117,7 @@ def CloneTEX(model_offset: int, model_length: int) -> bytes:
         hdr = f.read(0x20)
         tex_off = _s.unpack_from('>I', hdr, 0x0c)[0]
         if not tex_off:
-            print("    [CloneTEX] No TEX section")
+            _slogger.info("[CloneTEX] No TEX section", source="hammerspace.main")
             return b''
         skn_off = _s.unpack_from('>I', hdr, 0x10)[0]
         trailing_offsets = [_s.unpack_from('>I', hdr, offset)[0] for offset in (0x14, 0x18, 0x1c)]
@@ -1119,7 +1128,7 @@ def CloneTEX(model_offset: int, model_length: int) -> bytes:
         tex_len = next_off - tex_off
         f.seek(model_offset + tex_off)
         data = f.read(tex_len)
-    print(f"    [CloneTEX] {tex_len:,} bytes from block+0x{tex_off:X}")
+    _slogger.info(f"[CloneTEX] {tex_len:,} bytes from block+0x{tex_off:X}", source="hammerspace.main")
     return data
 
 
@@ -1178,8 +1187,8 @@ def BuildSKNSkinningDataCopyOnly(parsed: SluggieParsed, gpl_result: GPLBuildResu
         pos_relative_delta = old_memClrPtr - original_pos_gpl_rel
         new_memClrPtr = gpl_result.pos_gpl_offsets[0] + pos_relative_delta
         _s.pack_into('>I', skn, 0x14, new_memClrPtr)
-        print(f'    [SKN] memClrPtr patched: 0x{old_memClrPtr:08X} → 0x{new_memClrPtr:08X}'
-              f'  (orig_pos_gpl_rel=0x{original_pos_gpl_rel:X} delta=0x{pos_relative_delta:X})')
+        _slogger.info(f'[SKN] memClrPtr patched: 0x{old_memClrPtr:08X} → 0x{new_memClrPtr:08X}'
+                       f'  (orig_pos_gpl_rel=0x{original_pos_gpl_rel:X} delta=0x{pos_relative_delta:X})', source="hammerspace.main")
 
     return bytes(skn)
 
@@ -1484,8 +1493,8 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
                         # be relocated.  Append directly after skn_core.
                         trail_offset_in_skn = len(skn_core)
                     trailing = trail_data
-                    print(f'    [SKN] Trailing section appended at SKN+0x{trail_offset_in_skn:X} '
-                          f'({len(trail_data)} bytes)')
+                    _slogger.info(f'[SKN] Trailing section appended at SKN+0x{trail_offset_in_skn:X} '
+                           f'({len(trail_data)} bytes)', source="hammerspace.main")
 
     return skn_core + trailing
 
@@ -1498,7 +1507,7 @@ def CloneSKN(model_offset: int, model_length: int) -> bytes:
         hdr = f.read(0x20)
         skn_off = _s.unpack_from('>I', hdr, 0x10)[0]
         if not skn_off:
-            print("    [CloneSKN] No SKN section")
+            _slogger.info("[CloneSKN] No SKN section", source="hammerspace.main")
             return b''
         trailing_offsets = [_s.unpack_from('>I', hdr, offset)[0] for offset in (0x14, 0x18, 0x1c)]
         skn_end = min(
@@ -1508,7 +1517,7 @@ def CloneSKN(model_offset: int, model_length: int) -> bytes:
         skn_len = skn_end - skn_off
         f.seek(model_offset + skn_off)
         data = f.read(skn_len)
-    print(f"    [CloneSKN] {skn_len:,} bytes from block+0x{skn_off:X}")
+    _slogger.info(f"[CloneSKN] {skn_len:,} bytes from block+0x{skn_off:X}", source="hammerspace.main")
     return data
 
 
@@ -1524,12 +1533,12 @@ def CloneTrailingSections(model_offset: int, model_length: int) -> tuple[bytes, 
         ]
         offsets = [offset for offset in offsets if 0 < offset < model_length]
         if not offsets:
-            print("    [CloneTrailing] No ptr6/ptr7/ptr8 sections")
+            _slogger.info("[CloneTrailing] No ptr6/ptr7/ptr8 sections", source="hammerspace.main")
             return b'', 0
         start = min(offsets)
         f.seek(model_offset + start)
         data = f.read(model_length - start)
-    print(f"    [CloneTrailing] {len(data):,} bytes from block+0x{start:X}")
+    _slogger.info(f"[CloneTrailing] {len(data):,} bytes from block+0x{start:X}", source="hammerspace.main")
     return data, start
 
 
@@ -1602,8 +1611,8 @@ def BuildHEADERModelBlock(
             if orig_ptr and orig_ptr >= original_trailing_off:
                 new_ptr = trailing_off + (orig_ptr - original_trailing_off)
                 _s.pack_into('>I', hdr, field_offset, new_ptr)
-                print(f'    [HDR] +0x{field_offset:02X} patched: '
-                      f'0x{orig_ptr:08X} → 0x{new_ptr:08X}')
+                _slogger.info(f'[HDR] +0x{field_offset:02X} patched: '
+                       f'0x{orig_ptr:08X} → 0x{new_ptr:08X}', source="hammerspace.main")
 
     return bytes(hdr) + gpl_bytes + act_bytes + tex_bytes + skn_bytes + trailing_bytes
 
@@ -1619,7 +1628,7 @@ def CloneHEADER(model_offset: int) -> bytes:
     with open(hh.INPUT_DAT, 'rb') as f:
         f.seek(model_offset)
         data = f.read(0x20)
-    print(f"    [CloneHEADER] 0x20 bytes from offset 0x{model_offset:08X}")
+    _slogger.info(f"[CloneHEADER] 0x20 bytes from offset 0x{model_offset:08X}", source="hammerspace.main")
     return data
 
 
@@ -1689,64 +1698,64 @@ if __name__ == '__main__':
     if _args.unpatch:
         _success, _rem_offset, _rem_length = hh.removeModelFromHammerspace(_chunk, _index)
         if _success:
-            hh.appendHammerspaceLog(
-                'Removed',
-                os.path.basename(_args.sluggies_path),
-                _chunk, _index,
-                _rem_offset, _rem_length,
+            _slogger.info(
+                f"Hammerspace Log: Removed | Model: {os.path.basename(_args.sluggies_path)} | "
+                f"Chunk: {_chunk} | File: {_index} | Address: 0x{_rem_offset:08X} | "
+                f"Size: {_rem_length / (1024*1024):.2f} MB",
+                source="hammerspace.main"
             )
         raise SystemExit(0 if _success else 1)
 
     # --- Per-section clone, including a separately addressable trailing tail ---
-    print("=== Per-Section Clone (GPL/ACT/TEX/SKN + ptr6/ptr7/ptr8) ===")
-    print(f"Chunk: {_chunk}, FileIndex: {_index}")
+    _slogger.info("=== Per-Section Clone (GPL/ACT/TEX/SKN + ptr6/ptr7/ptr8) ===", source="hammerspace.main")
+    _slogger.info(f"Chunk: {_chunk}, FileIndex: {_index}", source="hammerspace.main")
 
     # Check if this model is already in hammerspace and evict it first.
     _cur_offset, _cur_length = hh.readOutputDolEntry(_chunk, _index)
     if _cur_offset >= hh.BASE_SIZE:
-        print(f"\n[0] Model already in hammerspace at 0x{_cur_offset:08X} — removing old version ...")
+        _slogger.info(f"[0] Model already in hammerspace at 0x{_cur_offset:08X} — removing old version ...", source="hammerspace.main")
         _evict_ok, _evict_off, _evict_len = hh.removeModelFromHammerspace(_chunk, _index)
         if not _evict_ok:
-            print("ERROR: Could not remove existing hammerspace entry. Aborting.")
+            _slogger.error("Could not remove existing hammerspace entry. Aborting.", source="hammerspace.main")
             raise SystemExit(1)
-        hh.appendHammerspaceLog(
-            'Removed',
-            os.path.basename(_args.sluggies_path),
-            _chunk, _index,
-            _evict_off, _evict_len,
+        _slogger.info(
+            f"Hammerspace Log: Removed | Model: {os.path.basename(_args.sluggies_path)} | "
+            f"Chunk: {_chunk} | File: {_index} | Address: 0x{_evict_off:08X} | "
+            f"Size: {_evict_len / (1024*1024):.2f} MB",
+            source="hammerspace.main"
         )
 
     _orig_offset, _orig_length = hh.readDolEntry(_chunk, _index)
     if _orig_offset == -1:
-        print("ERROR: Could not read DOL entry. Aborting.")
+        _slogger.error("Could not read DOL entry. Aborting.", source="hammerspace.main")
         raise SystemExit(1)
-    print(f"\n    Original block: 0x{_orig_offset:08X}, {_orig_length:,} bytes")
+    _slogger.info(f"Original block: 0x{_orig_offset:08X}, {_orig_length:,} bytes", source="hammerspace.main")
 
     # Parse the sluggie for SKN builder metadata
     _parsed = ParseSluggie(_data)
-    print(f"    Parsed: {len(_parsed.mesh.submeshes)} submesh(es), "
+    _slogger.info(f"Parsed: {len(_parsed.mesh.submeshes)} submesh(es), "
           f"{len(_parsed.bones.bones) if _parsed.bones else 0} bone(s), "
-          f"skinning={'yes' if _parsed.skinning else 'no'}")
+          f"skinning={'yes' if _parsed.skinning else 'no'}", source="hammerspace.main")
 
-    print("\n[1/6] Cloning GPL ...")
+    _slogger.info("[1/6] Cloning GPL ...", source="hammerspace.main")
     _gpl = CloneGPL(_orig_offset, _orig_length)
     _gpl_result = GPLBuildResult(
         gpl_bytes=_gpl,
         pos_gpl_offsets=_gpl_pos_offsets_from_bytes(_gpl),
     )
-    print(f"    GPL built: {len(_gpl):,} bytes, "
-          f"pos_gpl_offsets = {['0x%X' % o for o in _gpl_result.pos_gpl_offsets]}")
+    _slogger.info(f"GPL built: {len(_gpl):,} bytes, "
+          f"pos_gpl_offsets = {['0x%X' % o for o in _gpl_result.pos_gpl_offsets]}", source="hammerspace.main")
 
-    print("[2/6] Cloning ACT ...")
+    _slogger.info("[2/6] Cloning ACT ...", source="hammerspace.main")
     _act = CloneACT(_orig_offset, _orig_length)
 
-    print("[3/6] Cloning TEX ...")
+    _slogger.info("[3/6] Cloning TEX ...", source="hammerspace.main")
     _tex = CloneTEX(_orig_offset, _orig_length)
 
-    print("[4/6] Cloning SKN ...")
+    _slogger.info("[4/6] Cloning SKN ...", source="hammerspace.main")
     _skn = CloneSKN(_orig_offset, _orig_length)
 
-    print("[5/6] Cloning ptr6/ptr7/ptr8 sections ...")
+    _slogger.info("[5/6] Cloning ptr6/ptr7/ptr8 sections ...", source="hammerspace.main")
     _trailing, _orig_trailing_off = CloneTrailingSections(_orig_offset, _orig_length)
 
     # Read original header for ptr6/ptr7/ptr8 recomputation
@@ -1757,64 +1766,62 @@ if __name__ == '__main__':
             _fh.seek(_parsed.model_offset)
             _orig_header = _fh.read(0x20)
 
-    print("[6/6] Assembling model block header ...")
+    _slogger.info("[6/6] Assembling model block header ...", source="hammerspace.main")
     _block = BuildHEADERModelBlock(
         _gpl, _act, _tex, _skn,
         trailing_bytes=_trailing,
         original_header=_orig_header,
         original_trailing_off=_orig_trailing_off,
     )
-    print(f"\n    Assembled block: {len(_block):,} bytes ({len(_block) / 1048576:.3f} MB)")
+    _slogger.info(f"Assembled block: {len(_block):,} bytes ({len(_block) / 1048576:.3f} MB)", source="hammerspace.main")
     if len(_block) != _orig_length:
-        print(f"    WARNING: assembled size ({len(_block):,}) differs from original ({_orig_length:,})!"
-              f"  delta={len(_block) - _orig_length:+d}")
+        _slogger.warning(f"Assembled size ({len(_block):,}) differs from original ({_orig_length:,})!"
+              f"  delta={len(_block) - _orig_length:+d}", source="hammerspace.main")
 
-    print("\n[6] Scanning hammerspace for free region ...")
+    _slogger.info("[6] Scanning hammerspace for free region ...", source="hammerspace.main")
     _new_offset = hh.findFreeMemoryChunk(len(_block))
     if _new_offset == -1:
         _required = hh.BASE_SIZE + len(_block) + hh.HS_BUFFER_BYTES
-        print(f"    No free hammerspace found. Expanding to {_required:,} bytes ...")
+        _slogger.info(f"No free hammerspace found. Expanding to {_required:,} bytes ...", source="hammerspace.main")
         if not hh.ensureOutputDat(_required):
-            print("ERROR: Unable to prepare OUTPUT dt_na.dat. Aborting.")
+            _slogger.error("Unable to prepare OUTPUT dt_na.dat. Aborting.", source="hammerspace.main")
             raise SystemExit(1)
         _new_offset = hh.findFreeMemoryChunk(len(_block))
         if _new_offset == -1:
-            print("ERROR: No contiguous free region found even after expansion. Aborting.")
+            _slogger.error("No contiguous free region found even after expansion. Aborting.", source="hammerspace.main")
             raise SystemExit(1)
-    print(f"    Free region at 0x{_new_offset:08X}")
+    _slogger.info(f"Free region at 0x{_new_offset:08X}", source="hammerspace.main")
 
-    print("\n[7] Writing assembled block to OUTPUT dt_na.dat ...")
+    _slogger.info("[7] Writing assembled block to OUTPUT dt_na.dat ...", source="hammerspace.main")
     hh.writeModelBlock(_block, _new_offset)
 
-    print("\n[8] Patching OUTPUT main.dol and disc FST ...")
+    _slogger.info("[8] Patching OUTPUT main.dol and disc FST ...", source="hammerspace.main")
     hh.patchDolEntry(_chunk, _index, _new_offset, len(_block))
 
     _shared = hh.findSharedEntries(_chunk, _index)
     if _shared:
-        print(f"    Found {len(_shared)} shared chunk reference(s) — patching all:")
+        _slogger.info(f"Found {len(_shared)} shared chunk reference(s) — patching all:", source="hammerspace.main")
         for _sc, _si in _shared:
             hh.patchDolEntry(_sc, _si, _new_offset, len(_block))
 
     _dat_size = os.path.getsize(hh.OUTPUT_DAT)
     hh.patchFstFileSize(_dat_size)
 
-    print("\n[9] Zeroing original model address space ...")
+    _slogger.info("[9] Zeroing original model address space ...", source="hammerspace.main")
     hh.zeroOriginalModel(_chunk, _index)
 
-    print("\n[Debug] Writing debug dumps ...")
+    _slogger.info("[Debug] Writing debug dumps ...", source="hammerspace.main")
     hh.writeDebugDumps(
         os.path.basename(_args.sluggies_path),
         _orig_offset, _orig_length, _block,
     )
 
-    hh.appendHammerspaceLog(
-        'Written (per-section clone)',
-        os.path.basename(_args.sluggies_path),
-        _chunk, _index,
-        _new_offset, len(_block),
+    _slogger.info(
+        f"Hammerspace Log: Written (per-section clone) | Model: {os.path.basename(_args.sluggies_path)} | "
+        f"Chunk: {_chunk} | File: {_index} | Address: 0x{_new_offset:08X} | "
+        f"Size: {len(_block) / (1024*1024):.2f} MB",
+        source="hammerspace.main"
     )
 
-    print("\nDone. (Per-section clone — original location zeroed)")
-
-    print("\nDone.")
+    _slogger.info("Done. (Per-section clone — original location zeroed)", source="hammerspace.main")
     raise SystemExit(0)

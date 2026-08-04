@@ -26,6 +26,7 @@ rebuildDrawList(original_raw_bytes, descriptors, new_faces)
 """
 
 import struct
+import slogger
 
 # GX primitive type identifiers
 GX_TRIANGLES      = 0x90
@@ -150,7 +151,10 @@ def decodeDrawList(raw_bytes: bytes, descriptors: list) -> list:
                         faces.append([vertices[i + 2], vertices[i + 1], vertices[i]])
                         faces.append([vertices[i], vertices[i + 3], vertices[i + 2]])
             case _:
-                print(f"WARNING drawlist: unsupported primitive type 0x{primitive:02X}, skipping {vertex_count} vertices")
+                slogger.warning(
+                    f"unsupported primitive type 0x{primitive:02X}, skipping {vertex_count} vertices",
+                    source='drawlist'
+                )
 
     return faces
 

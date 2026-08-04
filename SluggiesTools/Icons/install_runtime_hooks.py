@@ -6,6 +6,13 @@ import shutil
 import struct
 from dataclasses import dataclass
 
+_TOOLS_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
+import sys as _sys
+if _TOOLS_DIR not in _sys.path:
+    _sys.path.insert(0, _TOOLS_DIR)
+import slogger as _slogger
+_slogger.configure()
+
 try:
     from . import add_icon_resource_rows as resources
 except ImportError:
@@ -454,14 +461,17 @@ def install_runtime_hooks(dry_run: bool = False) -> RuntimeHookResult:
 
 def _print_result(result: RuntimeHookResult) -> None:
     action = 'Already configured' if result.already_configured else ('Dry run' if result.dry_run else 'Written')
-    print(f'{action}: donor-safe runtime hooks for {result.character_count} characters')
-    print(f'  changed regions: {result.changed_region_count}')
-    print(f'  lower stub:      0x{LOWER_STUB:08X} ({result.lower_stub_size} bytes)')
-    print(f'  key stub:        0x{KEY_STUB:08X} ({result.key_stub_size} bytes)')
-    print(f'  row stub:        0x{ROW_STUB:08X} ({result.row_stub_size} bytes)')
-    print(f'  custom rows:     0x{CUSTOM_ROWS_ADDRESS:08X}-0x{CUSTOM_ROWS_ADDRESS + result.character_count * CUSTOM_ROW_STRIDE - 1:08X}')
+    summary = (
+        f'{action}: donor-safe runtime hooks for {result.character_count} characters\n'
+        f'  changed regions: {result.changed_region_count}\n'
+        f'  lower stub:      0x{LOWER_STUB:08X} ({result.lower_stub_size} bytes)\n'
+        f'  key stub:        0x{KEY_STUB:08X} ({result.key_stub_size} bytes)\n'
+        f'  row stub:        0x{ROW_STUB:08X} ({result.row_stub_size} bytes)\n'
+        f'  custom rows:     0x{CUSTOM_ROWS_ADDRESS:08X}-0x{CUSTOM_ROWS_ADDRESS + result.character_count * CUSTOM_ROW_STRIDE - 1:08X}'
+    )
     if result.report_written:
-        print(f'  report:          {os.path.relpath(REPORT_PATH, resources.sources.pages.cib.ROOT)}')
+        summary += f'\n  report:          {os.path.relpath(REPORT_PATH, resources.sources.pages.cib.ROOT)}'
+    _slogger.info(summary, source='icons.install_runtime_hooks')
 
 
 def main() -> int:

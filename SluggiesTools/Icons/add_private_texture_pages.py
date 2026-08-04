@@ -4,6 +4,13 @@ import shutil
 import struct
 from dataclasses import dataclass
 
+_TOOLS_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
+import sys as _sys
+if _TOOLS_DIR not in _sys.path:
+    _sys.path.insert(0, _TOOLS_DIR)
+import slogger as _slogger
+_slogger.configure()
+
 try:
     from . import clone_icon_bank as cib
 except ImportError:
@@ -259,14 +266,17 @@ def _print_result(result: PrivatePageResult) -> None:
         action = 'Dry run (in-place upgrade)' if result.upgraded_in_place else 'Dry run (new clone)'
     else:
         action = 'Upgraded in place' if result.upgraded_in_place else 'Created configured clone'
-    print(f'{action}: private CMPR icon pages')
-    print(f'  bank:       0x{result.destination_offset:08X} (0x{result.destination_length:X} bytes)')
-    print(f'  side page:  0x{SIDE_PAGE:02X}, image 0x{SIDE_IMAGE_OFFSET:X}')
-    print(f'  front page: 0x{FRONT_PAGE:02X}, image 0x{FRONT_IMAGE_OFFSET:X}')
-    print(f'  icon table: 0x{RELOCATED_ICON_TABLE:X}')
-    print(f'  output DAT: 0x{result.output_dat_size:X} bytes')
+    summary = (
+        f'{action}: private CMPR icon pages\n'
+        f'  bank:       0x{result.destination_offset:08X} (0x{result.destination_length:X} bytes)\n'
+        f'  side page:  0x{SIDE_PAGE:02X}, image 0x{SIDE_IMAGE_OFFSET:X}\n'
+        f'  front page: 0x{FRONT_PAGE:02X}, image 0x{FRONT_IMAGE_OFFSET:X}\n'
+        f'  icon table: 0x{RELOCATED_ICON_TABLE:X}\n'
+        f'  output DAT: 0x{result.output_dat_size:X} bytes'
+    )
+    _slogger.info(summary, source='icons.add_private_texture_pages')
     if not result.dry_run and not result.already_configured and not result.fst_updated:
-        print('  FST:        not updated (1_Input/fst.bin is unavailable)')
+        _slogger.warning('FST: not updated (1_Input/fst.bin is unavailable)', source='icons.add_private_texture_pages')
 
 
 def main() -> int:

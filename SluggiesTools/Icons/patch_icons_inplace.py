@@ -11,6 +11,12 @@ from PIL import Image
 ICONS_DIR = os.path.dirname(__file__)
 TOOLS_DIR = os.path.normpath(os.path.join(ICONS_DIR, '..'))
 ROOT_DIR = os.path.normpath(os.path.join(TOOLS_DIR, '..'))
+if TOOLS_DIR not in sys.path:
+    sys.path.insert(0, TOOLS_DIR)
+
+# Step 2.2 – Initialize universal logger in child process.
+import slogger as _slogger
+_slogger.configure()
 
 DEFAULT_ICONS_ROOT = os.path.join(ROOT_DIR, '2_Output_Models', '_ICONS')
 INPUT_DAT = os.path.join(ROOT_DIR, '1_Input', 'dt_na.dat')
@@ -518,20 +524,23 @@ def main(argv=None):
     report_path = _write_report(source_info['metadata_dir'], report)
 
     label = 'Dry run complete.' if args.dry_run else 'Reimport complete.'
-    print(f'Icon {label}')
-    print(f"  Pages processed: {report['counts']['pages_processed']}")
-    print(f"  Palette writes: {report['counts']['palette_writes']}")
-    print(f"  Image writes: {report['counts']['image_writes']}")
-    print(f"  Report: {report_path}")
+    summary = (
+        f'Icon {label}\n'
+        f"  Pages processed: {report['counts']['pages_processed']}\n"
+        f"  Palette writes: {report['counts']['palette_writes']}\n"
+        f"  Image writes: {report['counts']['image_writes']}\n"
+        f"  Report: {report_path}"
+    )
     if args.dry_run:
-        print('  No bytes were written.')
+        summary += '\n  No bytes were written.'
     else:
-        print(f'  Output DAT: {OUTPUT_DAT}')
+        summary += f'\n  Output DAT: {OUTPUT_DAT}'
+    _slogger.info(summary, source='icons.patch_icons_inplace')
 
 
 if __name__ == '__main__':
     try:
         main()
     except IconPatchError as exc:
-        print(f'ERROR: {exc}')
+        _slogger.error(str(exc), source='icons.patch_icons_inplace')
         raise SystemExit(1)

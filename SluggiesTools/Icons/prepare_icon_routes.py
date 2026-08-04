@@ -3,12 +3,19 @@ import json
 import os
 import shutil
 import struct
+import sys
 from datetime import datetime, timezone
 
 
 ICONS_DIR = os.path.dirname(__file__)
 TOOLS_DIR = os.path.normpath(os.path.join(ICONS_DIR, '..'))
 ROOT_DIR = os.path.normpath(os.path.join(TOOLS_DIR, '..'))
+if TOOLS_DIR not in sys.path:
+    sys.path.insert(0, TOOLS_DIR)
+
+# Step 2.2 – Initialize universal logger in child process.
+import slogger as _slogger
+_slogger.configure()
 
 INPUT_DOL = os.path.join(ROOT_DIR, '1_Input', 'main.dol')
 INPUT_DAT = os.path.join(ROOT_DIR, '1_Input', 'dt_na.dat')
@@ -431,22 +438,25 @@ def main():
     applied_rows, code_patches, warnings = _apply_rules_to_dol(OUT_DOL, payload, rules)
     _write_report(report_path, rules_path, applied_rows, code_patches, warnings)
 
-    print('Icon route prepatch complete:')
-    print(f'  Patched DOL: {os.path.relpath(OUT_DOL, ROOT_DIR)}')
-    print(f'  DAT copy:    {os.path.relpath(OUT_DAT, ROOT_DIR)}')
-    print(f'  Rules:       {os.path.relpath(rules_path, ROOT_DIR)}')
-    print(f'  Report:      {os.path.relpath(report_path, ROOT_DIR)}')
-    print(f'  Rows patched: {len(applied_rows)}')
-    print(f'  Code patches: {len(code_patches)}')
+    summary = (
+        'Icon route prepatch complete:\n'
+        f'  Patched DOL: {os.path.relpath(OUT_DOL, ROOT_DIR)}\n'
+        f'  DAT copy:    {os.path.relpath(OUT_DAT, ROOT_DIR)}\n'
+        f'  Rules:       {os.path.relpath(rules_path, ROOT_DIR)}\n'
+        f'  Report:      {os.path.relpath(report_path, ROOT_DIR)}\n'
+        f'  Rows patched: {len(applied_rows)}\n'
+        f'  Code patches: {len(code_patches)}'
+    )
+    _slogger.info(summary, source='icons.prepare_icon_routes')
     for cp in code_patches:
-        print(f'    [{cp["status"]}] {cp["desc"]} @ {cp["vaddr_hex"]}')
+        _slogger.info(f'[{cp["status"]}] {cp["desc"]} @ {cp["vaddr_hex"]}', source='icons.prepare_icon_routes')
     for w in warnings:
-        print(f'  WARNING: {w}')
+        _slogger.warning(w, source='icons.prepare_icon_routes')
 
 
 if __name__ == '__main__':
     try:
         main()
     except IconRoutePrepError as exc:
-        print(f'ERROR: {exc}')
+        _slogger.error(str(exc), source='icons.prepare_icon_routes')
         raise SystemExit(1)

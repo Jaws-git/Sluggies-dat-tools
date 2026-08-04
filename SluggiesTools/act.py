@@ -3,6 +3,7 @@ from ds import *
 import numpy as np
 from helper import *
 from model0 import *
+import slogger
 
 # The general output of all of this
 # Each bone has a child, a parent, a base transform, and a list of affected vertexes and weights
@@ -22,7 +23,7 @@ class Bone():
         self.parent = parent
         self.relative = relative
         if not relative:
-            print('bone ' + str(self.id) + ' is not relative')
+            slogger.warning(f'bone {self.id} is not relative', source='act')
         self.track_id = track_id
         self.vertexInfluences = {}
 

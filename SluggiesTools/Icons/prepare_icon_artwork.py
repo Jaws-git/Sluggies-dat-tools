@@ -10,6 +10,13 @@ from pathlib import Path
 
 from PIL import Image, ImageOps
 
+_TOOLS_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
+import sys as _sys
+if _TOOLS_DIR not in _sys.path:
+    _sys.path.insert(0, _TOOLS_DIR)
+import slogger as _slogger
+_slogger.configure()
+
 try:
     from . import add_private_texture_pages as pages
 except ImportError:
@@ -235,6 +242,7 @@ def encode_atlas_cmpr(atlas: Image.Image, work_dir: str, name: str) -> bytes:
             text=True,
         )
     except FileNotFoundError as exc:
+        _slogger.error('wimgt installation not found or not available on PATH', source='icons.prepare_icon_artwork')
         raise IconArtworkError('wimgt was not found on PATH') from exc
     except subprocess.CalledProcessError as exc:
         detail = exc.stderr.strip() or exc.stdout.strip() or f'exit code {exc.returncode}'
@@ -365,14 +373,17 @@ def prepare_icon_artwork(
 
 def _print_result(result: ArtworkResult) -> None:
     action = 'Dry run' if result.dry_run else 'Written'
-    print(f'{action}: {result.character_count} custom character icon pairs')
-    print(f'  bank:         0x{result.destination_offset:08X}')
-    print(f'  side CMPR:    {result.side_sha256}')
-    print(f'  front CMPR:   {result.front_sha256}')
+    summary = (
+        f'{action}: {result.character_count} custom character icon pairs\n'
+        f'  bank:         0x{result.destination_offset:08X}\n'
+        f'  side CMPR:    {result.side_sha256}\n'
+        f'  front CMPR:   {result.front_sha256}'
+    )
     slot_positions = ','.join(str(index * SLOT_X_STRIDE) for index in range(result.character_count))
-    print(f'  slot layout:  x={slot_positions}; artwork x=slot+{ARTWORK_X_OFFSET}')
+    summary += f'\n  slot layout:  x={slot_positions}; artwork x=slot+{ARTWORK_X_OFFSET}'
     if result.report_written:
-        print(f'  layout report: {os.path.relpath(LAYOUT_REPORT_PATH, pages.cib.ROOT)}')
+        summary += f'\n  layout report: {os.path.relpath(LAYOUT_REPORT_PATH, pages.cib.ROOT)}'
+    _slogger.info(summary, source='icons.prepare_icon_artwork')
 
 
 def main() -> int:

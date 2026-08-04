@@ -7,6 +7,10 @@ import re
 import struct
 import sys
 
+# Step 2.2 – Initialize universal logger in child process.
+import slogger as _slogger
+_slogger.configure()
+
 _HS_DIR = os.path.join(os.path.dirname(__file__), 'Hammerspace')
 if _HS_DIR not in sys.path:
     sys.path.insert(0, _HS_DIR)
@@ -35,8 +39,22 @@ def bti (b):
     return int.from_bytes(b, 'big')
 
 outdir = "../2_Output_Models/"
-if not os.path.exists(outdir):
-    os.mkdir(outdir)
+_export_placeholder = 'exports will be created here'
+_existing_exports = [
+    f for f in os.listdir(outdir) if os.path.exists(outdir)
+    if f != _export_placeholder
+]
+if _existing_exports:
+    answer = input(
+        'Previous export files already exist in 2_Output_Models. '
+        'Continue and overwrite? (y/n): '
+    ).strip().lower()
+    _slogger.log_user_input('Model export overwrite confirm', answer, source='export')
+    if answer != 'y':
+        _slogger.info('Model export canceled by user.', source='export')
+        sys.exit(0)
+else:
+    os.makedirs(outdir, exist_ok=True)
 
 folderNameMap = {
     "1": "test_actor",
@@ -1169,8 +1187,11 @@ def prepare_untangle_output_files():
 
     if os.path.exists(output_dat_path) or os.path.exists(output_dol_path):
         answer = input('Untangle mode will overwrite 3_Output_Dat/dt_na.dat and main.dol. Continue? (y/n): ').strip().lower()
+        _slogger.log_user_input(
+            'Untangle overwrite confirm', answer, source='export'
+        )
         if answer != 'y':
-            print('Untangle export canceled by user.')
+            _slogger.info('Untangle export canceled by user.', source='export')
             return None, None
 
     shutil.copyfile(input_dat_path, output_dat_path)
@@ -1183,8 +1204,9 @@ active_dat_path = '../1_Input/dt_na.dat'
 
 if UNTANGLE_TEX:
     if not EXPORT_TEX:
-        print('Warning: --untangle has no effect with --notex; untangle mode disabled.')
+        _slogger.warning('--untangle has no effect with --notex; untangle mode disabled.', source='export')
     else:
+        _slogger.info('Starting texture untangling process...', source='export')
         untangle_output_path, untangle_output_dol_path = prepare_untangle_output_files()
         if untangle_output_path is None:
             sys.exit(0)
@@ -1211,7 +1233,12 @@ if UNTANGLE_TEX:
             'max_attempts': 8192,
             'dat_output_handle': open(untangle_output_path, 'r+b')
         }
+        _slogger.info(
+            'Hammerspace duplication complete. Unused character textures are now independent.',
+            source='export'
+        )
 
+_slogger.info('Starting model export...', source='export')
 dirs = load_dol_dirs(active_dol_path)
 dat = Dat(open(active_dat_path, 'rb'))
 
@@ -1295,13 +1322,13 @@ for dir_ind, file_arr in dirs.items():
                             info_f.write(compact_faces_json(model_json))
                 del child
         except ExpectedFormatSkip as exc:
-            print(f'[dir {dir_ind}] {exc}')
+            _slogger.warning(f'{exc}', source=f'export.dir{dir_ind}')
         except Exception as e:
-            print(f'[dir {dir_ind}] skipping entry: {type(e).__name__}: {e}')
+            _slogger.warning(f'skipping entry: {type(e).__name__}: {e}', source=f'export.dir{dir_ind}')
             pass
     if len(os.listdir(dir_dir)) == 0:
         os.rmdir(dir_dir)
-    print (f'[dir {dir_ind}] Finished analyzing')
+    _slogger.info(f'Finished analyzing', source=f'export.dir{dir_ind}')
 
 if untangle_context and untangle_context.get('dat_output_handle'):
     untangle_context['dat_output_handle'].flush()

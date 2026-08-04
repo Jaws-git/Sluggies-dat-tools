@@ -5,6 +5,13 @@ import shutil
 import struct
 from dataclasses import dataclass
 
+_TOOLS_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
+import sys as _sys
+if _TOOLS_DIR not in _sys.path:
+    _sys.path.insert(0, _TOOLS_DIR)
+import slogger as _slogger
+_slogger.configure()
+
 try:
     from . import add_private_texture_pages as pages
 except ImportError:
@@ -553,15 +560,20 @@ def install_icon_source_tables(dry_run: bool = False) -> SourceTableResult:
 
 def _print_result(result: SourceTableResult) -> None:
     action = 'Already configured' if result.already_configured else ('Dry run' if result.dry_run else 'Written')
-    print(f'{action}: icon source tables for {result.character_count} characters')
-    print(f'  bank:     0x{result.destination_offset:08X}')
-    print(f'  normal_a: 0x{NORMAL_A_OFFSET:X} ({STOCK_NORMAL_A_COUNT} records)')
-    print(f'  side:     0x{SIDE_TABLE_OFFSET:X} ({result.side_count} records)')
-    print(f'  front:    0x{FRONT_TABLE_OFFSET:X} ({result.front_count} records)')
-    print(f'  resources: side 0x{SIDE_RESOURCE_BASE:02X}-0x{SIDE_RESOURCE_BASE + result.character_count - 1:02X}, '
-          f'front 0x{FRONT_RESOURCE_BASE:02X}-0x{FRONT_RESOURCE_BASE + result.character_count - 1:02X}')
+    summary = (
+        f'{action}: icon source tables for {result.character_count} characters\n'
+        f'  bank:     0x{result.destination_offset:08X}\n'
+        f'  normal_a: 0x{NORMAL_A_OFFSET:X} ({STOCK_NORMAL_A_COUNT} records)\n'
+        f'  side:     0x{SIDE_TABLE_OFFSET:X} ({result.side_count} records)\n'
+        f'  front:    0x{FRONT_TABLE_OFFSET:X} ({result.front_count} records)'
+    )
+    summary += (
+        f'\n  resources: side 0x{SIDE_RESOURCE_BASE:02X}-0x{SIDE_RESOURCE_BASE + result.character_count - 1:02X}, '
+        f'front 0x{FRONT_RESOURCE_BASE:02X}-0x{FRONT_RESOURCE_BASE + result.character_count - 1:02X}'
+    )
     if result.report_written:
-        print(f'  report:   {os.path.relpath(REPORT_PATH, pages.cib.ROOT)}')
+        summary += f'\n  report:   {os.path.relpath(REPORT_PATH, pages.cib.ROOT)}'
+    _slogger.info(summary, source='icons.update_icon_source_tables')
 
 
 def main() -> int:

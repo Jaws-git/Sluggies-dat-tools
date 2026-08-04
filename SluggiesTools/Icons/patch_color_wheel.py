@@ -4,6 +4,13 @@ import os
 import shutil
 from dataclasses import dataclass
 
+_TOOLS_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
+import sys as _sys
+if _TOOLS_DIR not in _sys.path:
+    _sys.path.insert(0, _TOOLS_DIR)
+import slogger as _slogger
+_slogger.configure()
+
 try:
     from . import clone_icon_bank as cib
 except ImportError:
@@ -216,11 +223,14 @@ def install_color_wheel(dry_run: bool = False) -> ColorWheelResult:
 
 def _print_result(result: ColorWheelResult) -> None:
     action = 'Already configured' if result.already_configured else ('Dry run' if result.dry_run else 'Written')
-    print(f'{action}: color-wheel rows for {result.character_count} custom characters')
-    print(f'  table:   0x{COLOR_WHEEL_OFFSET:X}')
-    print(f'  changed: {result.changed_count}')
+    summary = (
+        f'{action}: color-wheel rows for {result.character_count} custom characters\n'
+        f'  table:   0x{COLOR_WHEEL_OFFSET:X}\n'
+        f'  changed: {result.changed_count}'
+    )
     if result.report_written:
-        print(f'  report:  {os.path.relpath(REPORT_PATH, cib.ROOT)}')
+        summary += f'\n  report:  {os.path.relpath(REPORT_PATH, cib.ROOT)}'
+    _slogger.info(summary, source='icons.patch_color_wheel')
 
 
 def main() -> int:

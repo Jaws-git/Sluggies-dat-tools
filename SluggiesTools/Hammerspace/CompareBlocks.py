@@ -24,8 +24,17 @@ Usage:
   (files as written by writeDebugDumps: *_Original.SluggDebugg / *_Hammerspace.SluggDebugg)
 """
 
+import os
 import struct
 import sys
+
+# Initialize universal logger for standalone use.
+_CBS_TOOLS_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
+if _CBS_TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _CBS_TOOLS_DIR)
+
+import slogger as _slogger
+_slogger.configure()
 
 u32 = lambda b, o: struct.unpack_from('>I', b, o)[0]
 u16 = lambda b, o: struct.unpack_from('>H', b, o)[0]
@@ -44,7 +53,7 @@ def check(label: str, ok: bool, detail: str = '') -> None:
         _pass += 1
     else:
         _fail += 1
-        print(f'  FAIL  {label}' + (f'  ({detail})' if detail else ''))
+        _slogger.error(f'FAIL  {label}' + (f'  ({detail})' if detail else ''), source="compare.blocks")
 
 
 def note(msg: str) -> None:
@@ -219,12 +228,12 @@ def parse_block(blk: bytes) -> dict:
 # ---------------------------------------------------------------------------
 
 def compare(o: dict, r: dict) -> None:
-    print('--- Header ---')
+    _slogger.info('--- Header ---', source="compare.blocks")
     for k in ('gpl', 'act', 'tex', 'skn', 'p6', 'p7', 'p8'):
         check(f'header {k} presence', bool(o['hdr'][k]) == bool(r['hdr'][k]),
               f"orig=0x{o['hdr'][k]:X} new=0x{r['hdr'][k]:X}")
 
-    print('--- GPL ---')
+    _slogger.info('--- GPL ---', source="compare.blocks")
     og, rg = o['gpl'], r['gpl']
     check('submesh count', og['n'] == rg['n'], f"{og['n']} vs {rg['n']}")
     check('GPL user data length', og['ud_len'] == rg['ud_len'])
@@ -259,15 +268,15 @@ def compare(o: dict, r: dict) -> None:
             check(f'{pre} ds{k} prim list bytes', da['pl'] == db['pl'],
                   f"len {len(da['pl'])} vs {len(db['pl'])}")
 
-    print('--- ACT ---')
+    _slogger.info('--- ACT ---', source="compare.blocks")
     check('ACT bytes identical', o['act'] == r['act'],
           f"len {len(o['act'])} vs {len(r['act'])}")
 
-    print('--- TEX ---')
+    _slogger.info('--- TEX ---', source="compare.blocks")
     check('TEX bytes identical', o['tex'] == r['tex'],
           f"len {len(o['tex'])} vs {len(r['tex'])}")
 
-    print('--- SKN ---')
+    _slogger.info('--- SKN ---', source="compare.blocks")
     os_, rs = o['skn'], r['skn']
     check('SKN presence', (os_ is None) == (rs is None))
     if os_ and rs:
@@ -295,12 +304,12 @@ def compare(o: dict, r: dict) -> None:
                               f"len {len(a[fld])} vs {len(b[fld])}")
                 check(f'skn {lst}[{i}] matrix zeroed', b['mtx_zero'])
 
-    print('--- Trailing sections ---')
+    _slogger.info('--- Trailing sections ---', source="compare.blocks")
     for key in ('p6', 'p7', 'p8'):
         check(f'trailing {key} bytes', o['trail'][key] == r['trail'][key],
               f"len {len(o['trail'][key])} vs {len(r['trail'][key])}")
 
-    print('--- Alignment invariants (rebuilt block, block-relative) ---')
+    _slogger.info('--- Alignment invariants (rebuilt block, block-relative) ---', source="compare.blocks")
     for i, sub in enumerate(r['gpl']['subs']):
         if sub['pos']['cc'] == 6 and sub['pos']['block_off']:
             check(f'sub{i} skinned pos 32-aligned', sub['pos']['block_off'] % 32 == 0,
@@ -319,7 +328,7 @@ def compare(o: dict, r: dict) -> None:
         if rs['flush_block_off']:
             check('skn flush 32-aligned', rs['flush_block_off'] % 32 == 0)
 
-    print('--- SK runtime scratch space (rebuilt block) ---')
+    _slogger.info('--- SK runtime scratch space (rebuilt block) ---', source="compare.blocks")
     # Runtime skinning writes vertex slots that can extend beyond the stored
     # position array of submesh 0 (scratch space).  Verify no other data
     # array lies inside the write window [pos_start, pos_start + write_end).
@@ -360,23 +369,23 @@ def compare(o: dict, r: dict) -> None:
 
 def main() -> None:
     if len(sys.argv) != 3:
-        print(__doc__)
+        _slogger.info(__doc__, source="compare.blocks")
         sys.exit(1)
     with open(sys.argv[1], 'rb') as f:
         orig = f.read()
     with open(sys.argv[2], 'rb') as f:
         rebuilt = f.read()
 
-    print(f'original: {len(orig):,} bytes   rebuilt: {len(rebuilt):,} bytes '
-          f'(delta {len(rebuilt) - len(orig):+,})\n')
+    _slogger.info(f'original: {len(orig):,} bytes   rebuilt: {len(rebuilt):,} bytes '
+          f'(delta {len(rebuilt) - len(orig):+,})', source="compare.blocks")
 
     o = parse_block(orig)
     r = parse_block(rebuilt)
     compare(o, r)
 
-    print(f'\n===== {_pass} checks passed, {_fail} failed =====')
+    _slogger.info(f'===== {_pass} checks passed, {_fail} failed =====', source="compare.blocks")
     for n in _notes:
-        print(f'NOTE: {n}')
+        _slogger.info(f'NOTE: {n}', source="compare.blocks")
     sys.exit(1 if _fail else 0)
 
 

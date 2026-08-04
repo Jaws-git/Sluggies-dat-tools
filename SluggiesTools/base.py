@@ -5,6 +5,9 @@ import shutil
 import pprint
 pp = pprint.PrettyPrinter(indent=0)
 
+# Lazy import to avoid circular dependencies.
+# slogger is imported inside methods that need it.
+
 def tabs(n):
     return '    ' * n
 
@@ -136,12 +139,29 @@ class SequentialData:
         return hex(self.absolute) + ' - ' + self.name
 
     def print(self, level=0):
+        """Print the object tree to stdout.
+
+        Public API method for debugging/inspection.  Also emits each record
+        through the universal logger so tree dumps appear in the log file.
+        Falls back to plain stdout when the logger has not been configured yet.
+        """
+        _slogger = None
+        try:
+            from . import slogger as _slogger  # noqa: MCC001
+        except ImportError:
+            pass
+
         desc = self.description()
         if len(desc):
+            indented = '\n'.join(
+                [tabs(level + (c > 0)) + l for c, l in enumerate(desc.split('\n'))]
+            )
             try:
-                print ('\n'.join([tabs(level + (c > 0)) + l for c, l in enumerate(desc.split('\n'))]))
+                print(indented)
             except UnicodeEncodeError as e:
                 print(e)
+            if _slogger:
+                _slogger.info(indented, source='base.tree')
         for child in self.children:
             child.print(level+1)
     

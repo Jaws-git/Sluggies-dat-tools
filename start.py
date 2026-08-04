@@ -7,7 +7,25 @@ import importlib.util
 
 # this file is for dispatching only; patching and export logic live in SluggiesTools
 
-ROOT_DIR = os.path.dirname(__file__)
+# ---------------------------------------------------------------------------
+# Initialize universal logging BEFORE anything else so every command,
+# including invalid invocations, is captured.
+# ---------------------------------------------------------------------------
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Ensure SluggiesTools package is importable when start.py is run directly.
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+import SluggiesTools.slogger as slogger  # noqa: E402 – must come after sys.path fix
+
+slogger.configure()
+
+# Read batch metadata if StartTools.bat set environment variables.
+_BATCH_SOURCE = os.environ.get("SLUGGIES_SOURCE", "")
+_BATCH_MENU_SELECTION = os.environ.get("SLUGGIES_MENU_SELECTION", "")
+_BATCH_MODEL_FILES = os.environ.get("SLUGGIES_MODEL_FILES", "")
+_BATCH_ICON_SHARED_MODE = os.environ.get("SLUGGIES_ICON_SHARED_MODE", "")
 SEARCH_DIR = os.path.join(ROOT_DIR, '2_Output_Models')
 PATCH_SCRIPT = os.path.join(ROOT_DIR, 'SluggiesTools', 'patch_inplace.py')
 EXPORT_SCRIPT = os.path.join(ROOT_DIR, 'SluggiesTools', 'export.py')
@@ -27,10 +45,13 @@ def run_hammerspace_helper():
 
 
 def run_export(debug=False, notex=False, untangle=False, dae=False):
-    missing = [pkg for pkg in ['numpy', 'collada'] if importlib.util.find_spec(pkg) is None]
-    if missing:
-        print(f"Missing required packages: {', '.join(missing)}")
-        print('Run: pip install numpy pycollada')
+    if importlib.util.find_spec('numpy') is None:
+        slogger.error("Missing required package: numpy", source="dispatcher")
+        slogger.error("Run: pip install numpy", source="dispatcher")
+        sys.exit(1)
+    if dae and importlib.util.find_spec('collada') is None:
+        slogger.error("Missing required package for --dae export: pycollada", source="dispatcher")
+        slogger.error("Run: pip install pycollada", source="dispatcher")
         sys.exit(1)
 
     extra_args = []
@@ -48,18 +69,17 @@ def run_export(debug=False, notex=False, untangle=False, dae=False):
         cwd=TOOLS_DIR,
         check=True
     )
-    print('\nExport complete. Find your files in the folder "2_Output_Models"')
+    slogger.info('Export complete. Find your files in the folder "2_Output_Models"', source="dispatcher")
 
 
 def run_export_icons(use_output=False):
-    required = [
-        ('Pillow', 'PIL'),
-        ('numpy', 'numpy'),
-    ]
-    missing = [display for display, module in required if importlib.util.find_spec(module) is None]
-    if missing:
-        print(f"Missing required packages: {', '.join(missing)}")
-        print('Run: pip install Pillow numpy')
+    if importlib.util.find_spec('PIL') is None:
+        slogger.error("Missing required package: Pillow", source="dispatcher")
+        slogger.error("Run: pip install Pillow", source="dispatcher")
+        sys.exit(1)
+    if importlib.util.find_spec('numpy') is None:
+        slogger.error("Missing required package: numpy", source="dispatcher")
+        slogger.error("Run: pip install numpy", source="dispatcher")
         sys.exit(1)
 
     cmd = [sys.executable, ICON_EXPORT_SCRIPT]
@@ -67,8 +87,8 @@ def run_export_icons(use_output=False):
         dol_path = os.path.join(ROOT_DIR, '3_Output_Dat', 'main.dol')
         dat_path = os.path.join(ROOT_DIR, '3_Output_Dat', 'dt_na.dat')
         if not os.path.exists(dol_path) or not os.path.exists(dat_path):
-            print('Missing 3_Output_Dat/main.dol or 3_Output_Dat/dt_na.dat')
-            print('Run: python start.py --prepare-icon-routes')
+            slogger.error('Missing 3_Output_Dat/main.dol or 3_Output_Dat/dt_na.dat', source="dispatcher")
+            slogger.error('Run: python start.py --prepare-icon-routes', source="dispatcher")
             sys.exit(1)
         cmd += ['--dol-path', dol_path, '--dat-path', dat_path]
 
@@ -77,7 +97,7 @@ def run_export_icons(use_output=False):
         cwd=TOOLS_DIR,
         check=True
     )
-    print('\nIcon export complete. Find your files in the folder "2_Output_Models/_ICONS"')
+    slogger.info('Icon export complete. Find your files in the folder "2_Output_Models/_ICONS"', source="dispatcher")
 
 
 def run_prepare_icon_routes(no_overwrite_copy=False):
@@ -90,7 +110,7 @@ def run_prepare_icon_routes(no_overwrite_copy=False):
         cwd=TOOLS_DIR,
         check=True
     )
-    print('\nIcon route prepatch complete. Patched files are in "3_Output_Dat"')
+    slogger.info('Icon route prepatch complete. Patched files are in "3_Output_Dat"', source="dispatcher")
 
 
 def run_patch_icons(source=None, dry_run=False):
@@ -103,15 +123,15 @@ def run_patch_icons(source=None, dry_run=False):
     subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
 
     if dry_run:
-        print('\nIcon reimport dry-run complete. Check metadata [META]/reimport_report.json for details.')
+        slogger.info('Icon reimport dry-run complete. Check metadata [META]/reimport_report.json for details.', source="dispatcher")
     else:
-        print('\nIcon reimport complete. Patched DAT is in the folder "3_Output_Dat"')
+        slogger.info('Icon reimport complete. Patched DAT is in the folder "3_Output_Dat"', source="dispatcher")
 
 
 def run_add_custom_icons(dry_run=False, diagnostic_stage=None, icon_fit='contain'):
     if importlib.util.find_spec('PIL') is None:
-        print('Missing required package: Pillow')
-        print('Run: pip install Pillow')
+        slogger.error('Missing required package: Pillow', source="dispatcher")
+        slogger.error('Run: pip install Pillow', source="dispatcher")
         sys.exit(1)
 
     cmd = [sys.executable, CUSTOM_ICON_SCRIPT]
@@ -122,15 +142,16 @@ def run_add_custom_icons(dry_run=False, diagnostic_stage=None, icon_fit='contain
     cmd.extend(('--icon-fit', icon_fit))
     subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
     if dry_run:
-        print('\nCustom icon dry run complete. No output files were changed.')
+        slogger.info('Custom icon dry run complete. No output files were changed.', source="dispatcher")
     else:
         if diagnostic_stage:
-            print(
-                f'\nCustom icon diagnostic stage {diagnostic_stage} complete. '
-                'Patched files are in "3_Output_Dat".'
+            slogger.info(
+                f'Custom icon diagnostic stage {diagnostic_stage} complete. '
+                'Patched files are in "3_Output_Dat".',
+                source="dispatcher",
             )
         else:
-            print('\nCustom icon installation complete. Patched files are in "3_Output_Dat".')
+            slogger.info('Custom icon installation complete. Patched files are in "3_Output_Dat".', source="dispatcher")
 
 
 def run_patching(filenames, unpatch=False):
@@ -143,18 +164,18 @@ def run_patching(filenames, unpatch=False):
         ]
 
         if not matches:
-            print(f"No file named '{filename}' found in {SEARCH_DIR}")
+            slogger.info(f"No file named '{filename}' found in {SEARCH_DIR}", source="dispatcher")
             continue
 
         found = matches[0]
-        print(f"Found: {found}")
+        slogger.info(f"Found: {found}", source="dispatcher")
 
         # Read UseHammerspace flag from the .sluggies JSON
         try:
             with open(found, 'r') as f:
                 sluggies_data = json.load(f)
         except (OSError, json.JSONDecodeError) as e:
-            print(f"ERROR: Could not read '{found}': {e}")
+            slogger.error(f"Could not read '{found}': {e}", source="dispatcher")
             continue
 
         model = sluggies_data.get('SluggiesModel', {})
@@ -259,40 +280,95 @@ def parse_args():
     return args
 
 
-def main():
-    args = parse_args()
-    if args.hammerspace:
-        run_hammerspace_helper()
+def _get_invocation_source() -> str:
+    """Return 'StartTools.bat' when batch metadata is present, else 'CLI'."""
+    if _BATCH_SOURCE:
+        return _BATCH_SOURCE
+    return "CLI"
+
+
+def _log_batch_metadata() -> None:
+    """Log batch menu selection and interactive inputs if coming from StartTools.bat."""
+    if not _BATCH_SOURCE:
         return
-    if args.export:
-        run_export(debug=args.debug, notex=args.notex, untangle=args.untangle, dae=args.dae)
-        return
-    if args.prepare_icon_routes:
-        run_prepare_icon_routes(no_overwrite_copy=args.no_overwrite_copy)
-        return
-    if args.add_custom_icons:
-        run_add_custom_icons(
-            dry_run=args.dry_run,
-            diagnostic_stage=args.custom_icon_stage,
-            icon_fit=args.icon_fit or 'contain',
+    if _BATCH_MENU_SELECTION:
+        slogger.info(
+            f"Batch menu selection: {_BATCH_MENU_SELECTION}",
+            source="dispatcher",
         )
-        return
-    if args.export_icons:
-        run_export_icons(use_output=args.use_output)
-        return
-    if args.patch_icons is not None:
-        source = args.patch_icons if args.patch_icons != '' else None
-        run_patch_icons(
-            source=source,
-            dry_run=args.dry_run,
+    if _BATCH_MODEL_FILES:
+        slogger.info(
+            f"Batch model file input: {_BATCH_MODEL_FILES!r}",
+            source="dispatcher",
         )
-        return
-    if args.patch:
-        run_patching(args.patch, unpatch=False)
-        return
-    if args.unpatch:
-        run_patching(args.unpatch, unpatch=True)
+    if _BATCH_ICON_SHARED_MODE:
+        slogger.info(
+            f"Batch icon shared-mode input: {_BATCH_ICON_SHARED_MODE!r}",
+            source="dispatcher",
+        )
+
+
+def main() -> int:
+    """Dispatch user command. Returns 0 on success, 1 on failure."""
+    source = _get_invocation_source()
+
+    # 2.1 – Log normalized command before parsing so even invalid invocations
+    # are captured.
+    slogger.log_command(sys.argv, source=source)
+
+    # 2.3 – Log batch metadata (menu choice, interactive inputs).
+    _log_batch_metadata()
+
+    try:
+        args = parse_args()
+    except SystemExit as exc:
+        # argparse calls sys.exit on --help (code 0) or on parser.error (code 2).
+        code = exc.code if isinstance(exc.code, int) else 1
+        if code != 0:
+            slogger.info(f"Command exited with code {code}", source="dispatcher")
+        return code
+
+    try:
+        if args.hammerspace:
+            run_hammerspace_helper()
+        elif args.export:
+            run_export(debug=args.debug, notex=args.notex, untangle=args.untangle, dae=args.dae)
+        elif args.prepare_icon_routes:
+            run_prepare_icon_routes(no_overwrite_copy=args.no_overwrite_copy)
+        elif args.add_custom_icons:
+            run_add_custom_icons(
+                dry_run=args.dry_run,
+                diagnostic_stage=args.custom_icon_stage,
+                icon_fit=args.icon_fit or 'contain',
+            )
+        elif args.export_icons:
+            run_export_icons(use_output=args.use_output)
+        elif args.patch_icons is not None:
+            source_path = args.patch_icons if args.patch_icons != '' else None
+            run_patch_icons(
+                source=source_path,
+                dry_run=args.dry_run,
+            )
+        elif args.patch:
+            run_patching(args.patch, unpatch=False)
+        elif args.unpatch:
+            run_patching(args.unpatch, unpatch=True)
+
+        slogger.info("Command completed successfully", source="dispatcher")
+        return 0
+    except KeyboardInterrupt:
+        slogger.info("Command interrupted by user", source="dispatcher")
+        return 130
+    except Exception as exc:
+        slogger.exception(
+            "Unexpected failure during command execution",
+            source="dispatcher",
+            exc=exc,
+        )
+        return 1
 
 
 if __name__ == '__main__':
-    main()
+    rc = main()
+    if rc != 0:
+        sys.exit(rc)

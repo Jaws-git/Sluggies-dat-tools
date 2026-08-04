@@ -17,6 +17,10 @@ ROOT_DIR = os.path.normpath(os.path.join(TOOLS_DIR, '..'))
 if TOOLS_DIR not in sys.path:
     sys.path.insert(0, TOOLS_DIR)
 
+# Step 2.2 – Initialize universal logger in child process.
+import slogger as _slogger
+_slogger.configure()
+
 from base import File
 from helper import bti, itb
 from tpl import TEXPalette
@@ -828,16 +832,21 @@ def main():
     if not os.path.exists(input_dat):
         raise ExportIconsError(f'missing input DAT: {input_dat}')
 
+    _slogger.info('Starting player icon export...', source='icons.export_icons')
+
     if _check_existing_edits(OUTPUT_ROOT):
-        print('WARNING: A previous export already exists in:')
-        print(f'  {os.path.relpath(OUTPUT_ROOT, ROOT_DIR)}')
-        print('Running a new export will overwrite BASE.png and all per-page sheet PNGs,')
-        print('losing any edits you have made to those files.')
-        print('Your ACT palette files will be preserved.')
-        print()
+        prompt_msg = (
+            'WARNING: A previous export already exists in:\n'
+            f'  {os.path.relpath(OUTPUT_ROOT, ROOT_DIR)}\n'
+            'Running a new export will overwrite BASE.png and all per-page sheet PNGs,\n'
+            'losing any edits you have made to those files.\n'
+            'Your ACT palette files will be preserved.'
+        )
+        _slogger.warning(prompt_msg, source='icons.export_icons')
         answer = input('Continue anyway? [y/n] ').strip().lower()
+        _slogger.log_user_input('Overwrite confirm', answer, source='icons.export_icons')
         if answer != 'y':
-            print('Export cancelled.')
+            _slogger.info('Export cancelled.', source='icons.export_icons')
             raise SystemExit(0)
 
     _prepare_output_tree(OUTPUT_ROOT)
@@ -952,24 +961,27 @@ def main():
     with open(manifest_json, 'w', encoding='utf-8') as f:
         json.dump(manifest, f, indent=2)
 
-    print('Character-select icon export assets generated successfully:')
-    print(f'  {os.path.relpath(OUTPUT_ROOT, ROOT_DIR)}')
-    print(f'  Source DOL: {os.path.relpath(input_dol, ROOT_DIR)}')
-    print(f'  Source DAT: {os.path.relpath(input_dat, ROOT_DIR)}')
-    print(f'  Pages exported: {len(pages_rows)}')
-    print(f'  Non-empty cells exported: {len(cells_rows)}')
+    summary = (
+        'Character-select icon export assets generated successfully:\n'
+        f'  {os.path.relpath(OUTPUT_ROOT, ROOT_DIR)}\n'
+        f'  Source DOL: {os.path.relpath(input_dol, ROOT_DIR)}\n'
+        f'  Source DAT: {os.path.relpath(input_dat, ROOT_DIR)}\n'
+        f'  Pages exported: {len(pages_rows)}\n'
+        f'  Non-empty cells exported: {len(cells_rows)}'
+    )
+    _slogger.info(summary, source='icons.export_icons')
 
 
 if __name__ == '__main__':
     try:
         main()
     except ExportIconsError as exc:
-        print(f'ERROR: {exc}')
+        _slogger.error(str(exc), source='icons.export_icons')
         raise SystemExit(1)
     except FileNotFoundError as exc:
-        print(f'ERROR: required external tool not found: {exc}')
-        print('Make sure Wiimm tools (wimgt) are installed and available on PATH.')
+        _slogger.error(f'required external tool not found: {exc}', source='icons.export_icons')
+        _slogger.error('Make sure Wiimm tools (wimgt) are installed and available on PATH.', source='icons.export_icons')
         raise SystemExit(1)
     except subprocess.CalledProcessError as exc:
-        print(f'ERROR: external tool failed: {exc}')
+        _slogger.error(f'external tool failed: {exc}', source='icons.export_icons')
         raise SystemExit(1)
