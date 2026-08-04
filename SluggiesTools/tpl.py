@@ -2,6 +2,8 @@ from base import *
 from helper import *
 import os
 import shutil
+import subprocess
+import slogger
 
 globalcounter = 0
 
@@ -339,8 +341,32 @@ class TEXDescriptor(FileChunk):
                     raise Exception('tlut_data_override length mismatch in TEX export')
                 out.write(tlut_data_override)
         out.close()
-        os.system('wimgt decode -q -d ' + pngname + ' ' + fname)
-        os.remove(fname)
+        try:
+            result = subprocess.run(
+                ['wimgt', 'decode', '-q', '-d', pngname, fname],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            if not os.path.exists(pngname):
+                detail = result.stderr.strip() or result.stdout.strip() or 'no diagnostic output'
+                raise RuntimeError(f'wimgt completed without creating {pngname}: {detail}')
+        except FileNotFoundError as exc:
+            slogger.error(
+                f'wimgt was not found on PATH while exporting texture {pngname}',
+                source='texture.export',
+            )
+            raise RuntimeError('wimgt was not found on PATH') from exc
+        except subprocess.CalledProcessError as exc:
+            detail = exc.stderr.strip() or exc.stdout.strip() or f'exit code {exc.returncode}'
+            slogger.error(
+                f'wimgt failed to export texture {pngname}: {detail}',
+                source='texture.export',
+            )
+            raise RuntimeError(f'wimgt failed to export texture {pngname}: {detail}') from exc
+        finally:
+            if os.path.exists(fname):
+                os.remove(fname)
 
     def dolphinTextureBasename(self):
         """Return Dolphin-compatible base texture name (without .png)."""

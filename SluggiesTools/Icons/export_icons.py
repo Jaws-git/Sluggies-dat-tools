@@ -472,8 +472,12 @@ def _clean_old_sheets(sheets_dir):
         if filename.endswith('.png'):
             try:
                 os.remove(filepath)
-            except PermissionError:
-                pass
+            except PermissionError as exc:
+                _slogger.warning(
+                    f'Could not remove stale icon sheet {filepath}: {exc}; '
+                    'the existing file may remain in this export.',
+                    source='icons.export.cleanup',
+                )
 
 
 def _prepare_output_tree(root):
@@ -494,9 +498,13 @@ def _prepare_output_tree(root):
         if os.path.exists(path):
             try:
                 shutil.rmtree(path)
-            except PermissionError:
+            except PermissionError as exc:
                 # If directory is locked, skip it; we'll just overwrite files inside
-                pass
+                _slogger.warning(
+                    f'Could not remove old icon output directory {path}: {exc}; '
+                    'stale files may remain in this export.',
+                    source='icons.export.cleanup',
+                )
 
     # Clean old per-page sheets but preserve BASE.png, BASE.act, and ACT files
     _clean_old_sheets(os.path.join(root, DIR_SHEETS, 'side'))

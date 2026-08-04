@@ -1049,7 +1049,13 @@ def extract_facial_pose_data(model):
             'ObjectTableOffset': hex(object_table_offset),
             'Objects': objects,
         }
-    except (ValueError, struct.error):
+    except (ValueError, struct.error) as exc:
+        _slogger.warning(
+            f'Could not decode facial pose data for model at '
+            f'0x{model.absolute:08X}: {type(exc).__name__}: {exc}; '
+            'raw ptr7 data remains preserved in TrailingSections.',
+            source='export.facial_pose',
+        )
         return None
 
 def extract_act_header(model):
