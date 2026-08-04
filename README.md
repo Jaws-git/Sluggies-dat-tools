@@ -42,7 +42,7 @@ flowchart LR
 3) Try running the game to make sure everything is prepped correctly
 4) right click the Game -> properties -> Filesystem -> right click top node -> extract entire disc
 5) from the extracted disc data, copy both "dt_na.dat" and "main.dol" (and optionally fst.bin) to the folder \1_Input\
-6) cmd ``` python start.py --export --untangle``` (or alternatively, start the batch file)
+6) cmd ``` python start.py --export --untangle``` (or, alternatively, just start the included batch file)
 
 This will extract the entire content into a new folder \2_Output_Models\\...  
 It will contain all the player models, props and environment models. Everything is sorted into numbered and approximately named folders.
@@ -86,12 +86,23 @@ Useful options:
 - ``python start.py --patch-icons --dry-run`` validates and reports without writing bytes.
 - ``python start.py --patch-icons --palette-only`` writes only page palettes.
 
+## Icons for unused characters
+
+1) insert your own front and side icon images into the templates in folder /1_Input/_Icons/
+2) run python start.py --add-custom-icons
+3) make sure the old gecko code to make unuseds selectable is active in dolphin
+4) the 6 unused characters will now show the 12 injected images as front and side icons
+
 ## Development progress:
 ✅ .dae model & .png texture export (one-way)  
 ✅ SLUGGers IntermediatE (.sluggie) export  
 ✅ Blender Import/Export plugin  
 ✅ Vertex position editing  
+✅ Vertex animation editing (shapekeys)
 ✅ UV position editing  
+✅ Icon Modding  
+✅ Mod the unused character icons
+✅ Make unused character textures independent
 ❌ Armature editing  
 ❌ Hammerspace  
 ❌ Animations  
