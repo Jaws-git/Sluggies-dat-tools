@@ -98,11 +98,11 @@ Useful options:
 ✅ SLUGGers IntermediatE (.sluggie) export  
 ✅ Blender Import/Export plugin  
 ✅ Vertex position editing  
-✅ Vertex animation editing (shapekeys)
+✅ Vertex animation editing (shapekeys)  
 ✅ UV position editing  
 ✅ Icon Modding  
-✅ Mod the unused character icons
-✅ Make unused character textures independent
+✅ Mod the unused character icons  
+✅ Make unused character textures independent  
 ❌ Armature editing  
-❌ Hammerspace  
+❌ Hammerspace full-Model replacement  
 ❌ Animations  
