@@ -3,10 +3,8 @@ from gpl import *
 from act import *
 from anm import *
 import numpy as np
-from collada import *
 import os
 import shutil
-from collada import source, common
 from xml_helper import *
 import slogger
 
@@ -441,36 +439,45 @@ class ModelData():
     def create_tex_dir(self, dir):
         _copy_texture_pngs(dir)
 
-    def create_materials(self, dir, collada):
+    def create_materials(self, collada_doc, collada_material):
         out = {}
         for ind, png in self.textures.items():
             if not png:
                 continue
             ind_str = str(ind)
-            image = material.CImage('image_'+ind_str, './tex/'+png)
-            collada.images.append(image)
-            surface = material.Surface('surface_'+ind_str, image)
-            sampler2d = material.Sampler2D('sampler_'+ind_str, surface)
-            map = material.Map(sampler2d, 'TEX')
-            effect = material.Effect("effect_"+ind_str, [surface, sampler2d], "lambert",  diffuse=map, transparent=map, double_sided=True)
-            mat = material.Material("material_"+ind_str, "material_"+ind_str, effect)
+            image = collada_material.CImage('image_'+ind_str, './tex/'+png)
+            collada_doc.images.append(image)
+            surface = collada_material.Surface('surface_'+ind_str, image)
+            sampler2d = collada_material.Sampler2D('sampler_'+ind_str, surface)
+            tex_map = collada_material.Map(sampler2d, 'TEX')
+            effect = collada_material.Effect("effect_"+ind_str, [surface, sampler2d], "lambert",  diffuse=tex_map, transparent=tex_map, double_sided=True)
+            mat = collada_material.Material("material_"+ind_str, "material_"+ind_str, effect)
             out[ind] = (effect, mat)
         return out
 
     def to_dae(self, dir, name='model'):
+        try:
+            import collada as collada_module
+            from collada import geometry as collada_geometry
+            from collada import material as collada_material
+            from collada import scene as collada_scene
+            from collada import source as collada_source
+        except ImportError as exc:
+            raise RuntimeError('DAE export requires pycollada. Install with: pip install pycollada') from exc
+
         # texture setup stuff
         if self.export_tex:
             self.create_tex_dir(dir)
-        collada = Collada()
+        collada = collada_module.Collada()
         controller_xmls = []
         instancing_details = {}
-        effect_materials = self.create_materials(dir, collada) if self.export_tex else {}
+        effect_materials = self.create_materials(collada, collada_material) if self.export_tex else {}
         mat_nodes = {}
         for ind in effect_materials:
             effect, material = effect_materials[ind]
             collada.effects.append(effect)
             collada.materials.append(material)
-            mat_node = scene.MaterialNode('material_'+str(ind), material, inputs=[('TEX', 'TEXCOORD', '0')])
+            mat_node = collada_scene.MaterialNode('material_'+str(ind), material, inputs=[('TEX', 'TEXCOORD', '0')])
             mat_nodes[ind] = mat_node
 
         # create geometries
@@ -481,25 +488,25 @@ class ModelData():
             for tex_layer in range(len(g.tex_coords)):
                 g_positions = np.array(g.positions).flatten()
                 vert_id = 'verts_arr_'+str(g_ind)
-                vert_src = source.FloatSource(vert_id, g_positions, ('X', 'Y', 'Z'))
+                vert_src = collada_source.FloatSource(vert_id, g_positions, ('X', 'Y', 'Z'))
                 g_normals = np.array(g.normals + [[1, 0, 0]]).flatten()
                 normal_id = 'normals_arr_'+str(g_ind)
-                normal_src = source.FloatSource(normal_id, g_normals, ('X', 'Y', 'Z'))
+                normal_src = collada_source.FloatSource(normal_id, g_normals, ('X', 'Y', 'Z'))
                 g_colors = np.array(g.colors).flatten()
                 color_id = 'colors_arr_'+str(g_ind)
                 color_components = ('R', 'G', 'B')
                 if len(g.colors) and len(g.colors[0]) == 4:
                     color_components = ('R', 'G', 'B', 'A')
-                color_src = source.FloatSource(color_id, g_colors, color_components)
+                color_src = collada_source.FloatSource(color_id, g_colors, color_components)
                 texcoord_id = 'texcoords_arr_'+str(g_ind)
                 data = np.array(g.tex_coords[tex_layer]).flatten()
                 for i in range(1, len(data), 2):
                     data[i] = -data[i]
-                texcoord_src = source.FloatSource(texcoord_id, data, ('S', 'T'))
+                texcoord_src = collada_source.FloatSource(texcoord_id, data, ('S', 'T'))
                 instancing_details[g_ind] = {}
                 instancing_details[g_ind]['materials'] = {}
                 geometry_id = 'geom_'+str(geom_ind)+'_layer_'+str(tex_layer)
-                geom = geometry.Geometry(collada, geometry_id, geometry_id, [vert_src, normal_src, color_src, texcoord_src])
+                geom = collada_geometry.Geometry(collada, geometry_id, geometry_id, [vert_src, normal_src, color_src, texcoord_src])
                 instancing_details[g_ind]['geometry'] = geometry_id
                 geom_mat_nodes = []
                 for m_ind, mesh in enumerate(g.meshes):
@@ -518,7 +525,7 @@ class ModelData():
                     else:
                         material_symbol = ''
 
-                    input_list = source.InputList()
+                    input_list = collada_source.InputList()
                     input_list.addInput(0, 'VERTEX', '#'+vert_id)
                     offset = 1
                     if 'lighting' in active_descriptors:
@@ -542,7 +549,7 @@ class ModelData():
                     triset = geom.createTriangleSet(np.array(indices), input_list, material_symbol)
                     geom.primitives.append(triset)
                 collada.geometries.append(geom)
-                geom_nodes.append(scene.GeometryNode(geom, geom_mat_nodes))
+                geom_nodes.append(collada_scene.GeometryNode(geom, geom_mat_nodes))
             
                 # Create the controller for this geometry
                 controller_id = 'controller_'+str(geom_ind)+'_layer_'+str(tex_layer)
@@ -625,9 +632,9 @@ class ModelData():
                     instancing_details[g_ind]['controller'] = controller_id
                 g_ind += 1
 
-        geom_node = scene.Node("geom_node", children=geom_nodes)
+        geom_node = collada_scene.Node("geom_node", children=geom_nodes)
         # controller_node = scene.Node("geom_node", children=controller_nodes)
-        myscene = scene.Scene("myscene", [geom_node])
+        myscene = collada_scene.Scene("myscene", [geom_node])
         collada.scenes.append(myscene)
         collada.scene = myscene
         c_filepath = dir + name + '.dae'

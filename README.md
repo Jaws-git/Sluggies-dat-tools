@@ -17,8 +17,8 @@ And the helpful Sluggers community for always having an open ear and pointing me
 - US(!) copy of Mario Super Sluggers
 - Python https://www.python.org/downloads/
 - Numpy ``pip install numpy``
-- Collada ``pip install pycollada``
 - Pillow ``pip install Pillow``
+- Collada ``pip install pycollada``  (optional, for .dae export)
 - **wimgt** (part of [Wiimms SZS Tools](https://szs.wiimm.de/download.html)) — must be on `PATH`; used to convert textures between TPL and PNG. No textures without this.
 - Blender 4.2 or newer https://www.blender.org/download/
 - Autism
