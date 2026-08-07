@@ -101,7 +101,7 @@ Useful options:
 ✅ Vertex animation editing (shapekeys)  
 ✅ UV position editing  
 ✅ Icon Modding  
-✅ Mod the unused character icons  
+✅ Assign new Icons to unused characters  
 ✅ Make unused character textures independent  
 ❌ Armature editing  
 ❌ Hammerspace full-Model replacement  
