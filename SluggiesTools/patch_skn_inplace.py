@@ -213,6 +213,7 @@ def patchSKNInPlaceResized(skin_data: dict) -> int:
             f.seek(int(orig['VertexArrFieldOffset'], 16))
             f.write(struct.pack('>I', src_abs - skn_abs))
             va = int(orig['VertexArrFieldOffset'], 16)
+            f.seek(va + 0x08); f.write(struct.pack('>H', orig.get('BoneIndexEdited', orig['BoneIndex'])))
             f.seek(va + 0x0A); f.write(struct.pack('>H', new_cnt))
             f.seek(va + 0x0C); f.write(bytes([orig.get('VertexOffset', 0)]))
 
@@ -261,6 +262,14 @@ def patchSKNInPlace(skin_data: dict) -> bool:
     wrote_any = False
     with open(OUTPUT_DAT, 'r+b') as f:
         for sk1 in skin_data.get('SK1s', []):
+            bone_idx_edited = sk1.get('BoneIndexEdited')
+            if bone_idx_edited is not None:
+                # SK1 layout: vertexArr at +0x30, gplVertexArr +0x34, boneIndex +0x38.
+                va = int(sk1['VertexArrFieldOffset'], 16)
+                f.seek(va + 0x08)
+                f.write(struct.pack('>H', bone_idx_edited))
+                wrote_any = True
+
             src_edited = sk1.get('BindPoseDataEdited')
             if src_edited:
                 f.seek(int(sk1['VertexArrAbsolutePtr'], 16))
@@ -309,6 +318,13 @@ def restoreSKNInPlace(skin_data: dict) -> bool:
     wrote_any = False
     with open(OUTPUT_DAT, 'r+b') as f:
         for sk1 in skin_data.get('SK1s', []):
+            # Always restore original SK1 bone index when present.
+            if sk1.get('BoneIndex') is not None:
+                va = int(sk1['VertexArrFieldOffset'], 16)
+                f.seek(va + 0x08)
+                f.write(struct.pack('>H', sk1['BoneIndex']))
+                wrote_any = True
+
             src = sk1.get('BindPoseData')
             if src:
                 f.seek(int(sk1['VertexArrAbsolutePtr'], 16))
@@ -380,6 +396,7 @@ def restoreSKNBlockInPlace(skin_data: dict) -> bool:
             va       = int(orig['VertexArrFieldOffset'], 16)
 
             f.seek(va);        f.write(struct.pack('>I', orig_src - skn_abs))
+            f.seek(va + 0x08); f.write(struct.pack('>H', orig['BoneIndex']))
             f.seek(va + 0x0A); f.write(struct.pack('>H', orig['VertexCnt']))
             f.seek(va + 0x0C); f.write(bytes([orig['VertexOffset']]))
 

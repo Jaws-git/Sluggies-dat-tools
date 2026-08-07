@@ -544,6 +544,131 @@ def _get_vgroup_weight(obj, group_name, vertex_index):
         return 0.0
 
 
+def _parse_bone_group_name(name):
+    """Return bone id from Blender vertex-group name bone_<id>, else None."""
+    if not isinstance(name, str) or not name.startswith("bone_"):
+        return None
+    try:
+        return int(name[5:])
+    except ValueError:
+        return None
+
+
+def _detect_uniform_vertex_bone_id(obj):
+    """Return a single bone id when all vertices map to exactly one bone_<id>."""
+    uniform_id = None
+    for vd in obj.data.vertices:
+        ids_here = set()
+        for g in vd.groups:
+            if g.weight <= 0:
+                continue
+            vg_name = obj.vertex_groups[g.group].name
+            parsed = _parse_bone_group_name(vg_name)
+            if parsed is not None:
+                ids_here.add(parsed)
+        if len(ids_here) != 1:
+            return None
+        v_id = next(iter(ids_here))
+        if uniform_id is None:
+            uniform_id = v_id
+        elif uniform_id != v_id:
+            return None
+    return uniform_id
+
+
+def encode_unskinned_bone_reassignments(candidates, data, warnings):
+    """Write BoneHierarchy.GeoIdEdited when a non-skinned submesh is retargeted.
+
+    Detection rule: for a non-skinned submesh object, every vertex must belong
+    to exactly one positive-weight bone_<id> group, and that id differs from
+    the current owning bone id.
+    """
+    model = data.get("SluggiesModel", {})
+    bone_list = model.get("BoneHierarchy")
+    submeshes = model.get("Submeshes", [])
+    if not bone_list or not submeshes:
+        return False
+
+    for bd in bone_list:
+        bd.pop("GeoIdEdited", None)
+
+    submesh_by_vb = {}
+    for i, sm in enumerate(submeshes):
+        vb = sm.get("VertexBuffer")
+        if vb and "VertexBufferOffset" in vb:
+            submesh_by_vb[str(vb["VertexBufferOffset"])] = i
+
+    obj_by_submesh = {}
+    for obj in candidates:
+        if "VertexBufferOffset" not in obj:
+            continue
+        sub_idx = submesh_by_vb.get(str(obj["VertexBufferOffset"]))
+        if sub_idx is not None:
+            obj_by_submesh[sub_idx] = obj
+
+    bone_by_id = {int(bd["BoneId"]): bd for bd in bone_list if "BoneId" in bd}
+    owner_by_submesh = {
+        int(bd["GeoId"]): bd
+        for bd in bone_list
+        if (not bd.get("Skinned")) and bd.get("GeoId") is not None and int(bd.get("GeoId", -1)) >= 0
+    }
+
+    def _geo_raw(bd):
+        if bd.get("GeoIdEdited") is not None:
+            return int(bd["GeoIdEdited"])
+        if bd.get("GeoIdRaw") is not None:
+            return int(bd["GeoIdRaw"])
+        if bd.get("Skinned"):
+            return 0xFFFF
+        return int(bd.get("GeoId", 0xFFFF))
+
+    wrote_any = False
+    target_claims = {}
+
+    for sub_idx, obj in obj_by_submesh.items():
+        owner = owner_by_submesh.get(sub_idx)
+        if owner is None:
+            continue
+
+        target_bone_id = _detect_uniform_vertex_bone_id(obj)
+        if target_bone_id is None:
+            continue
+
+        from_bone_id = int(owner["BoneId"])
+        if target_bone_id == from_bone_id:
+            continue
+
+        target = bone_by_id.get(target_bone_id)
+        if target is None:
+            warnings.append(
+                f"{obj.name}: target group bone_{target_bone_id} is not present in BoneHierarchy; "
+                f"non-skinned reassignment skipped."
+            )
+            continue
+
+        if target_bone_id in target_claims and target_claims[target_bone_id] != sub_idx:
+            warnings.append(
+                f"{obj.name}: bone_{target_bone_id} is already requested by submesh "
+                f"{target_claims[target_bone_id]}; one non-skinned bone can own only one GeoId."
+            )
+            continue
+
+        target_geo_raw = _geo_raw(target)
+        if target_geo_raw not in (0xFFFF, sub_idx):
+            warnings.append(
+                f"{obj.name}: bone_{target_bone_id} currently owns submesh {target_geo_raw}; "
+                f"reassignment skipped to avoid GeoId collision."
+            )
+            continue
+
+        owner["GeoIdEdited"] = 0xFFFF
+        target["GeoIdEdited"] = sub_idx
+        target_claims[target_bone_id] = sub_idx
+        wrote_any = True
+
+    return wrote_any
+
+
 def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=False):
     """Re-pack SK1/SK2/SKAcc bind-pose source data and SK2/SKAcc weight bytes
     from Blender vertex positions/normals and vertex groups (in-place mode).
@@ -574,6 +699,15 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
     is_float    = fmt_nibble in [4, 7, 0xa]
     divisor     = 1 << (quant_info & 0xF)
     submeshes   = data["SluggiesModel"].get("Submeshes", [])
+
+    skinned_bone_ids = set()
+    for _e in skin_data.get("SK1s", []):
+        skinned_bone_ids.add(_e["BoneIndex"])
+    for _e in skin_data.get("SK2s", []):
+        skinned_bone_ids.add(_e["BoneIndex1"])
+        skinned_bone_ids.add(_e["BoneIndex2"])
+    for _e in skin_data.get("SKAccs", []):
+        skinned_bone_ids.add(_e["BoneIndex"])
 
     # Build per-submesh (vtx_start, vtx_count) using cumulative vertex counts.
     # gplVertexArr is a byte offset from the start of the runtime dest buffer;
@@ -635,11 +769,51 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
     # correct dest slot.
     for sk1 in skin_data.get("SK1s", []):
         bone_id      = sk1["BoneIndex"]
-        bone_name    = f"bone_{bone_id}"
         n            = sk1["VertexCnt"]
         vtx_off      = sk1.get("VertexOffset", 0)
         global_start = (sk1["GplVertexArrValue"] + vtx_off) // vertex_size
         orig_src     = _to_bytes(sk1["BindPoseData"])
+
+        # Detect full SK1 reassignment (all vertices moved from bone_A to one
+        # other skinned bone via vertex-group rename/transfer).
+        reassigned_bone = None
+        seen_any = False
+        unresolved = False
+        candidate_ids = set()
+        any_orig_weight = False
+        for i in range(n):
+            obj, local_v = resolve(global_start + i)
+            if obj is None:
+                unresolved = True
+                continue
+            seen_any = True
+            if _get_vgroup_weight(obj, f"bone_{bone_id}", local_v) > 0:
+                any_orig_weight = True
+
+            ids_here = set()
+            for g in obj.data.vertices[local_v].groups:
+                if g.weight <= 0:
+                    continue
+                vg_name = obj.vertex_groups[g.group].name
+                parsed = _parse_bone_group_name(vg_name)
+                if parsed is not None and parsed in skinned_bone_ids:
+                    ids_here.add(parsed)
+            if len(ids_here) != 1:
+                candidate_ids = set()
+                break
+            candidate_ids |= ids_here
+
+        if seen_any and (not unresolved) and (not any_orig_weight) and len(candidate_ids) == 1:
+            only_id = next(iter(candidate_ids))
+            if only_id != bone_id:
+                reassigned_bone = only_id
+
+        target_bone_id = reassigned_bone if reassigned_bone is not None else bone_id
+        target_bone_name = f"bone_{target_bone_id}"
+        if reassigned_bone is not None:
+            sk1["BoneIndexEdited"] = target_bone_id
+        else:
+            sk1.pop("BoneIndexEdited", None)
 
         last_kept  = -1
         slot_bytes = []
@@ -650,7 +824,7 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
                 slot_bytes.append(orig_src[vtx_off + i * vertex_size : vtx_off + (i + 1) * vertex_size])
                 last_kept = i
             else:
-                if _get_vgroup_weight(obj, bone_name, local_v) > 0:
+                if _get_vgroup_weight(obj, target_bone_name, local_v) > 0:
                     slot_bytes.append(encode_vertex(obj, local_v))
                     last_kept = i
                 else:
@@ -772,7 +946,7 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
         overflow = edit_size - orig_size
         # Strip all edited fields so the patcher ignores this model.
         for sk1 in skin_data.get("SK1s", []):
-            for k in ('BindPoseDataEdited', 'VertexCntEdited'):
+            for k in ('BindPoseDataEdited', 'VertexCntEdited', 'BoneIndexEdited'):
                 sk1.pop(k, None)
         for sk2 in skin_data.get("SK2s", []):
             for k in ('BindPoseDataEdited', 'WeightDataEdited', 'VertexCntEdited'):
@@ -1132,7 +1306,7 @@ def _purge_skn_edited(data):
     skin = model.get("SkinData")
     if not skin:
         return
-    sk1_keys   = ("BindPoseDataEdited", "VertexCntEdited")
+    sk1_keys   = ("BindPoseDataEdited", "VertexCntEdited", "BoneIndexEdited")
     sk2_keys   = ("BindPoseDataEdited", "WeightDataEdited", "VertexCntEdited")
     skacc_keys = ("BindPoseDataEdited", "WeightDataEdited", "DestIndexDataEdited", "VertexCntEdited")
     for e in skin.get("SK1s",   []):
@@ -1389,6 +1563,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             written += 1
 
         # Skin data is model-level — purge stale edited fields, then re-encode.
+        encode_unskinned_bone_reassignments(candidates, data, warnings)
         _purge_skn_edited(data)
         if self.use_hammerspace:
             skn_ok, skn_msg = encode_skin_hammerspace(

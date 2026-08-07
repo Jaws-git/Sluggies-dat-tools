@@ -248,9 +248,58 @@ else:
 patches    = []   # (submesh_idx, file_offset, raw_bytes)
 uv_patches = []   # (submesh_idx, ch_ind, file_offset, raw_bytes)
 setting_patches  = []   # (submesh_idx, ds_idx, file_offset, raw_bytes)
+bone_geo_patches = []   # (bone_id, file_offset, raw_bytes)
 
 skin_data = data["SluggiesModel"].get("SkinData")  # None for non-skinned models
 facial_patches = _facial_position_patches(data["SluggiesModel"], unpatch)
+bone_hierarchy = data["SluggiesModel"].get("BoneHierarchy") or []
+
+
+def _bone_geo_raw_original(bd: dict) -> int:
+    if bd.get('GeoIdRaw') is not None:
+        return int(bd['GeoIdRaw'])
+    if bd.get('Skinned'):
+        return 0xFFFF
+    return int(bd.get('GeoId', 0xFFFF))
+
+
+if bone_hierarchy:
+    missing_offsets = []
+    for bd in bone_hierarchy:
+        if unpatch:
+            target_geo_raw = _bone_geo_raw_original(bd)
+        else:
+            if bd.get('GeoIdEdited') is None:
+                continue
+            target_geo_raw = int(bd['GeoIdEdited'])
+
+        if target_geo_raw < 0 or target_geo_raw > 0xFFFF:
+            abort(
+                f"Bone {bd.get('BoneId', '?')}: GeoId value {target_geo_raw} is out of range (0..65535)."
+            )
+
+        field_off = bd.get('GeoIdFieldOffset')
+        if not field_off:
+            missing_offsets.append(int(bd.get('BoneId', -1)))
+            continue
+
+        original_geo_raw = _bone_geo_raw_original(bd)
+        if target_geo_raw == original_geo_raw:
+            continue
+
+        bone_geo_patches.append((
+            int(bd.get('BoneId', -1)),
+            int(field_off, 16),
+            struct.pack('>H', target_geo_raw),
+        ))
+
+    if missing_offsets and not unpatch:
+        abort(
+            "This .sluggie contains non-skinned bone reassignment edits but is missing "
+            "BoneHierarchy.GeoIdFieldOffset metadata required for ACT in-place patching. "
+            "Re-export the model with the latest SluggiesTools export.py, then export from Blender again. "
+            f"Affected bones: {', '.join(str(x) for x in sorted(x for x in missing_offsets if x >= 0))}"
+        )
 
 for i, submesh in enumerate(submeshes):
     vb = submesh.get("VertexBuffer", {})
@@ -375,10 +424,11 @@ for i, submesh in enumerate(submeshes):
 # Write in-place patches
 # ---------------------------------------------------------------------------
 
-if patches or uv_patches or setting_patches or facial_patches:
+if patches or uv_patches or setting_patches or facial_patches or bone_geo_patches:
     _slogger.info(
         f"Writing {len(patches)} vertex, {len(uv_patches)} UV, "
-        f"{len(setting_patches)} shader-mode, {len(facial_patches)} facial-pose "
+        f"{len(setting_patches)} shader-mode, {len(facial_patches)} facial-pose, "
+        f"{len(bone_geo_patches)} bone-geo "
         f"patch(es) to {OUTPUT_DAT} ...",
         source="patch_inplace",
     )
@@ -399,6 +449,13 @@ if patches or uv_patches or setting_patches or facial_patches:
             f.seek(offset)
             f.write(raw)
             _slogger.info(f"Facial pose: wrote {len(raw)} bytes at 0x{offset:X}", source="patch_inplace")
+        for bone_id, offset, raw in bone_geo_patches:
+            f.seek(offset)
+            f.write(raw)
+            _slogger.info(
+                f"Bone {bone_id} GeoId: wrote {raw.hex()} at 0x{offset:X}",
+                source="patch_inplace",
+            )
 
 # In-place skin source and weight patching (skinned models)
 if skin_data is not None and not unpatch:
@@ -439,6 +496,7 @@ summary = (
     f"UV channels patched (in-place)      : {len(uv_patches)}\n"
     f"ShaderMode (Type-7 FourCC) patched  : {len(setting_patches)}\n"
     f"Facial position poses patched       : {len(facial_patches)}\n"
+    f"Bone GeoId fields patched           : {len(bone_geo_patches)}\n"
     f"Output file                         : {OUTPUT_DAT}"
 )
 _slogger.info(summary, source="patch_inplace")
