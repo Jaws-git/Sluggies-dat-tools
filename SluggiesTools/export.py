@@ -1156,10 +1156,14 @@ def extract_bone_data(model):
         bl = layout_by_id.get(bone_id)
         srt_type     = bl.orientation_srt.type if bl and bl.orientation_srt else 0
         draw_priority = int(bl.priority) if bl else 0
+        geo_raw = int(bl.geoFileIdRaw) if bl and hasattr(bl, 'geoFileIdRaw') else (0xFFFF if bone.skinned else int(bone.GEOID))
+        geo_field_off = hex(bl.absolute + 0x0C) if bl else None
 
         bone_list.append({
             "BoneId":          int(bone.id),
             "GeoId":           int(bone.GEOID),
+            "GeoIdRaw":        geo_raw,
+            "GeoIdFieldOffset": geo_field_off,
             "ParentBoneId":    int(bone.parent.id) if bone.parent else None,
             "Skinned":         bool(bone.skinned),
             "TrackId":         int(bone.track_id),

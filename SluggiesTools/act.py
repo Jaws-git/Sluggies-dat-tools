@@ -151,8 +151,9 @@ class ACTBoneLayout(FileChunk):
     def analyze(self):
         self.orientationPTR = self.word()
         self.branch = ['{:04x}'.format(self.word()) for i in range(4)]
-        self.geoFileId = self.half()
-        self.skinned = self.geoFileId == 65535
+        self.geoFileIdRaw = self.half()
+        self.geoFileId = self.geoFileIdRaw
+        self.skinned = self.geoFileIdRaw == 65535
         if self.geoFileId == 65535:
             self.geoFileId = 0
         self.id = self.half()
