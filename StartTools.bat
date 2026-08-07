@@ -1,12 +1,10 @@
 @echo off
 setlocal EnableDelayedExpansion
 
-:: ------------------------------------------------------------------
-:: Step 2.3 – Export batch metadata so the Python dispatcher can log
-:: menu selection and interactive inputs to the universal log file.
-:: ------------------------------------------------------------------
 set "SLUGGIES_SOURCE=StartTools.bat"
 
+:menu
+echo ==================
 echo Sluggers Dat Tools
 echo ==================
 echo [1] Extract all models, icons ^& 'untangle' textures (for Dolphin texture loader)
@@ -21,33 +19,35 @@ echo [7] Manually resize available hammerspace (extra model data storage) - usua
 echo [8] Reimport patched standard icon sheets into dt_na.dat
 echo.
 set "tools_choice="
-set /p "tools_choice=Enter option: "
+set /p "tools_choice=Enter option (or type exit to quit): "
 echo.
+
+if /i "!tools_choice!"=="exit" goto :eof
 
 if "!tools_choice!"=="1" (
     set "SLUGGIES_MENU_SELECTION=1 - Full export with untangling + icon routes + icon export"
     set "SLUGGIES_MODEL_FILES="
     set "SLUGGIES_ICON_SHARED_MODE="
     python start.py --export --untangle
-    if errorlevel 1 goto end
+    if errorlevel 1 goto :after_command
     python start.py --prepare-icon-routes --no-overwrite-copy
-    if errorlevel 1 goto end
+    if errorlevel 1 goto :after_command
     python start.py --export-icons --use-output
-    goto end
+    goto :after_command
 )
 if "!tools_choice!"=="2" (
     set "SLUGGIES_MENU_SELECTION=2 - Export all models"
     set "SLUGGIES_MODEL_FILES="
     set "SLUGGIES_ICON_SHARED_MODE="
     python start.py --export
-    goto end
+    goto :after_command
 )
 if "!tools_choice!"=="3" (
     set "SLUGGIES_MENU_SELECTION=3 - Export player icons only"
     set "SLUGGIES_MODEL_FILES="
     set "SLUGGIES_ICON_SHARED_MODE="
     python start.py --export-icons
-    goto end
+    goto :after_command
 )
 if "!tools_choice!"=="4" (
     set "SLUGGIES_MENU_SELECTION=4 - Patch custom icons"
@@ -62,7 +62,7 @@ if "!tools_choice!"=="4" (
         echo.
         echo Custom icon patching completed successfully.
     )
-    goto end
+    goto :after_command
 )
 if "!tools_choice!"=="5" (
     set "SLUGGIES_MENU_SELECTION=5 - Patch model(s)"
@@ -71,7 +71,7 @@ if "!tools_choice!"=="5" (
     set /p "model_files=Enter file name(s): "
     set "SLUGGIES_MODEL_FILES=!model_files!"
     python start.py --patch !model_files!
-    goto end
+    goto :after_command
 )
 if "!tools_choice!"=="6" (
     set "SLUGGIES_MENU_SELECTION=6 - Unpatch model(s)"
@@ -80,14 +80,14 @@ if "!tools_choice!"=="6" (
     set /p "model_files=Enter file name(s): "
     set "SLUGGIES_MODEL_FILES=!model_files!"
     python start.py --unpatch !model_files!
-    goto end
+    goto :after_command
 )
 if "!tools_choice!"=="7" (
     set "SLUGGIES_MENU_SELECTION=7 - Resize hammerspace"
     set "SLUGGIES_MODEL_FILES="
     set "SLUGGIES_ICON_SHARED_MODE="
     python start.py -hs
-    goto end
+    goto :after_command
 )
 if "!tools_choice!"=="8" (
     set "SLUGGIES_MENU_SELECTION=8 - Reimport icon sheets"
@@ -103,16 +103,16 @@ if "!tools_choice!"=="8" (
     ) else (
         python start.py --patch-icons
     )
-    goto end
+    goto :after_command
 )
 
 set "SLUGGIES_MENU_SELECTION=Invalid option: !tools_choice!"
 set "SLUGGIES_MODEL_FILES="
 set "SLUGGIES_ICON_SHARED_MODE="
-echo Invalid option. Exiting.
+echo Invalid option. Returning to the menu.
 
-:end
+:after_command
 echo.
 pause
-goto :eof
+goto :menu
 
