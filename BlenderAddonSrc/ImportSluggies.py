@@ -2,8 +2,10 @@ import bpy
 import json
 import os
 import base64
+import math
 import struct
 import mathutils
+from functools import lru_cache
 from bpy.props import StringProperty
 from bpy_extras.io_utils import ImportHelper
 
@@ -27,6 +29,63 @@ def _texture_file_map(texture_descriptors):
             continue
         mapping[tex_idx] = tex.get("TextureFileName") or f"{tex_idx}.png"
     return mapping
+
+
+def _texture_file_map_from_sibling_sluggie(current_sluggie_path, model):
+    """Return a fallback texture file map from a sibling .sluggie when needed.
+
+    Some lowpoly (_L) exports have no local TextureDescriptors, but their sibling
+    export folder still has the canonical hashed TextureFileName mapping.
+    """
+    current_dir = os.path.dirname(current_sluggie_path)
+    parent_dir = os.path.dirname(current_dir)
+    if not parent_dir or not os.path.isdir(parent_dir):
+        return {}
+
+    target_chunk = model.get("ChunkNumber")
+    target_submesh_count = len(model.get("Submeshes", []))
+
+    candidates = []
+    for sibling_name in sorted(os.listdir(parent_dir)):
+        sibling_dir = os.path.join(parent_dir, sibling_name)
+        if not os.path.isdir(sibling_dir) or sibling_dir == current_dir:
+            continue
+        try:
+            sluggies = [
+                name for name in os.listdir(sibling_dir)
+                if name.lower().endswith('.sluggie')
+            ]
+        except OSError:
+            continue
+        for slug_name in sluggies:
+            candidates.append(os.path.join(sibling_dir, slug_name))
+
+    best_map = {}
+    best_score = -1
+    for candidate_path in candidates:
+        try:
+            with open(candidate_path, 'r') as handle:
+                candidate_root = json.load(handle)
+        except (OSError, ValueError):
+            continue
+        candidate_model = candidate_root.get("SluggiesModel", {})
+        candidate_desc = candidate_model.get("TextureDescriptors", [])
+        candidate_map = _texture_file_map(candidate_desc)
+        if not candidate_map:
+            continue
+
+        score = 0
+        if candidate_model.get("ChunkNumber") == target_chunk:
+            score += 4
+        if len(candidate_model.get("Submeshes", [])) >= target_submesh_count:
+            score += 2
+        if candidate_model.get("TEXHeader"):
+            score += 1
+        if score > best_score:
+            best_score = score
+            best_map = candidate_map
+
+    return best_map
 
 
 def _compute_bone_absolute_matrices(bone_list):
@@ -506,6 +565,34 @@ def _create_material(mat_name, uv_layer_name, image, wrap_s=1):
     return mat
 
 
+@lru_cache(maxsize=None)
+def _resolve_texture_image_path(sluggie_dir, tex_file):
+    """Find a texture PNG for this import, falling back to sibling export folders.
+
+    Lowpoly exports in this workspace often live in a sibling folder without a
+    local tex/ directory, while the paired highpoly export keeps the PNG cache.
+    """
+    candidate_dirs = [os.path.join(sluggie_dir, 'tex')]
+
+    parent_dir = os.path.dirname(sluggie_dir)
+    if parent_dir and os.path.isdir(parent_dir):
+        sibling_tex_dir = os.path.join(parent_dir, 'tex')
+        candidate_dirs.append(sibling_tex_dir)
+        try:
+            for sibling_name in sorted(os.listdir(parent_dir)):
+                sibling_dir = os.path.join(parent_dir, sibling_name)
+                if os.path.isdir(sibling_dir):
+                    candidate_dirs.append(os.path.join(sibling_dir, 'tex'))
+        except OSError:
+            pass
+
+    for tex_dir in candidate_dirs:
+        img_path = os.path.join(tex_dir, tex_file)
+        if os.path.exists(img_path):
+            return img_path
+    return None
+
+
 def build_mesh(name, positions, normals, faces, vb_meta, collection,
                uv_channels=None, color_channels=None,
                face_texture_indices=None, sluggie_dir=None,
@@ -647,8 +734,8 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
             layer_name = uv_layer_names.get(ch_ind) or uv_ch.get('PaletteName') or f'uv{ch_ind}'
             wrap_s = uv_ch.get('WrapS', 1)
             tex_file = (texture_file_map or {}).get(tex_idx, f'{tex_idx}.png')
-            img_path = os.path.join(sluggie_dir, 'tex', tex_file)
-            image = bpy.data.images.load(img_path, check_existing=True) if os.path.exists(img_path) else None
+            img_path = _resolve_texture_image_path(sluggie_dir, tex_file)
+            image = bpy.data.images.load(img_path, check_existing=True) if img_path else None
             mat = _create_material(f'{name}_mat{tex_idx}', layer_name, image, wrap_s)
             obj.data.materials.append(mat)
 
@@ -724,8 +811,13 @@ def build_armature(name, bone_list, collection):
     bpy.ops.object.mode_set(mode='OBJECT')
     arm_obj.show_in_front = True
     arm_obj.display_type = 'WIRE'
+    arm_obj.rotation_euler[0] = math.pi / 2
     bpy.context.view_layer.objects.active = prev_active
     return arm_obj
+
+
+def _apply_import_rotation(obj):
+    obj.matrix_world = obj.matrix_world @ mathutils.Matrix.Rotation(math.pi / 2, 4, 'X')
 
 
 def add_vertex_groups(obj, submesh_index, bone_list, arm_obj):
@@ -768,6 +860,8 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
         submeshes = model.get("Submeshes", [])
         texture_file_map = _texture_file_map(model.get("TextureDescriptors", []))
         sluggie_dir = os.path.dirname(self.filepath)
+        if not texture_file_map:
+            texture_file_map = _texture_file_map_from_sibling_sluggie(self.filepath, model)
 
         collection = context.collection
 
@@ -798,6 +892,8 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
             if arm_obj is not None:
                 add_vertex_groups(obj, i, bone_list, arm_obj)
                 obj.parent = arm_obj
+            else:
+                _apply_import_rotation(obj)
             if bone_list:
                 _apply_nonskinned_transform(obj, i, bone_list, abs_bone_mats)
             add_facial_shape_keys(
@@ -841,6 +937,8 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
                     if arm_obj is not None:
                         add_vertex_groups(edit_obj, i, bone_list, arm_obj)
                         edit_obj.parent = arm_obj
+                    else:
+                        _apply_import_rotation(edit_obj)
                     if bone_list:
                         _apply_nonskinned_transform(edit_obj, i, bone_list, abs_bone_mats)
                     add_facial_shape_keys(
