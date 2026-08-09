@@ -227,35 +227,45 @@ def findFreeMemoryChunk(dataLength: int) -> int:
         _slogger.info("No hammerspace region present (file is not larger than BASE_SIZE).", source="hammerspace.helper")
         return -1
 
-    with open(OUTPUT_DAT, 'rb') as f:
-        f.seek(BASE_SIZE)
+    zero_block = b'\x00' * HS_ALIGN_BYTES
+    full_blocks, tail_bytes = divmod(dataLength, HS_ALIGN_BYTES)
+    scan_start = (BASE_SIZE + HS_ALIGN_BYTES - 1) & ~(HS_ALIGN_BYTES - 1)
+    run_start = -1
+    run_blocks = 0
 
-        run_start = -1   # file offset where the current zero-run started
-        run_length = 0   # length of the current zero-run
-        read_offset = BASE_SIZE
+    with open(OUTPUT_DAT, 'rb') as f:
+        f.seek(scan_start)
+        read_offset = scan_start
 
         while read_offset < file_size:
-            chunk = f.read(CHUNK_SIZE)
+            chunk = f.read(min(CHUNK_SIZE, file_size - read_offset))
             if not chunk:
                 break
 
-            for i, byte in enumerate(chunk):
-                if byte == 0:
-                    if run_length == 0:
-                        run_start = read_offset + i
-                    run_length += 1
+            for chunk_offset in range(0, len(chunk), HS_ALIGN_BYTES):
+                block = chunk[chunk_offset:chunk_offset + HS_ALIGN_BYTES]
+                block_offset = read_offset + chunk_offset
 
-                    # Candidate start must be aligned. If the zero-run starts
-                    # unaligned, move to the next aligned address within it.
-                    aligned_start = (run_start + (HS_ALIGN_BYTES - 1)) & ~(HS_ALIGN_BYTES - 1)
-                    run_end_exclusive = read_offset + i + 1
-                    if aligned_start < run_end_exclusive:
-                        aligned_run_len = run_end_exclusive - aligned_start
-                        if aligned_run_len >= dataLength:
-                            return aligned_start
+                if full_blocks == 0:
+                    if len(block) >= tail_bytes and block[:tail_bytes] == zero_block[:tail_bytes]:
+                        return block_offset
+                    continue
+
+                if tail_bytes and run_blocks >= full_blocks:
+                    if len(block) >= tail_bytes and block[:tail_bytes] == zero_block[:tail_bytes]:
+                        return run_start
+                    run_start = -1
+                    run_blocks = 0
+
+                if len(block) == HS_ALIGN_BYTES and block == zero_block:
+                    if run_blocks == 0:
+                        run_start = block_offset
+                    run_blocks += 1
+                    if not tail_bytes and run_blocks >= full_blocks:
+                        return run_start
                 else:
                     run_start = -1
-                    run_length = 0
+                    run_blocks = 0
 
             read_offset += len(chunk)
 
