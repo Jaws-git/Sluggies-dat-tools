@@ -69,19 +69,24 @@ class Archive(FileChunk):
     def analyze(self):
         self.fileCount = self.word()
         offsets = [self.word() for _ in range(self.fileCount)]
-        for index in range(1, self.fileCount):
-            if offsets[index] < offsets[index - 1]:
-                raise ExpectedFormatSkip('Skipping entry: unsupported archive layout')
-        ends = offsets[1:] + [self.length]
-        self.files = [
-            self.add_child(offset, end - offset, Model0)
-            for offset, end in zip(offsets, ends)
+        populated = [
+            (slot_index, offset)
+            for slot_index, offset in enumerate(offsets)
+            if offset != 0
         ]
+        for index in range(1, len(populated)):
+            if populated[index][1] < populated[index - 1][1]:
+                raise ExpectedFormatSkip('Skipping entry: unsupported archive layout')
+        ends = [entry[1] for entry in populated[1:]] + [self.length]
+        self.files = [None] * self.fileCount
+        for (slot_index, offset), end in zip(populated, ends):
+            self.files[slot_index] = self.add_child(offset, end - offset, Model0)
         self.success = []
-        for i, file in enumerate(self.files):
+        for slot_index, _ in populated:
+            file = self.files[slot_index]
             try:
                 file.analyze()
-                self.success.append(i)
+                self.success.append(slot_index)
             except ExpectedFormatSkip as exc:
                 slogger.warning(f'{_log_prefix()} {exc}', source='model')
             except Exception as e:
