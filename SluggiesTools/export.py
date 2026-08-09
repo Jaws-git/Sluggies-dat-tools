@@ -243,12 +243,19 @@ def clone_unused_dirs_to_hammerspace_for_untangle(input_dol_path, input_dat_path
 
     source_dirs = load_dol_dirs(input_dol_path)
 
-    required_growth = 0
+    clone_entries = []
     for dir_ind in UNUSED_DIRS_TO_UNTANGLE_CLONE:
-        for file in source_dirs.get(dir_ind, []):
+        for file_index, file in enumerate(source_dirs.get(dir_ind, [])):
             length = file['en'][1]
             if length > 0:
-                required_growth += length + hh.HS_BUFFER_BYTES
+                clone_entries.append((dir_ind, file_index, file))
+
+    # Reserve one run up front. Re-running first-fit search after every write
+    # rescans all preceding clone data and makes this pre-pass quadratic.
+    required_growth = sum(
+        file['en'][1] + hh.HS_BUFFER_BYTES + hh.HS_ALIGN_BYTES - 1
+        for _, _, file in clone_entries
+    )
 
     base_size = os.path.getsize(hh.OUTPUT_DAT) if os.path.exists(hh.OUTPUT_DAT) else hh.BASE_SIZE
     reserve = 1024 * 1024
@@ -257,46 +264,47 @@ def clone_unused_dirs_to_hammerspace_for_untangle(input_dol_path, input_dat_path
         raise RuntimeError('Unable to prepare output dt_na.dat for untangle clone step.')
     hh.patchFstFileSize(os.path.getsize(hh.OUTPUT_DAT))
 
+    allocation_start = hh.findFreeMemoryChunk(required_growth)
+    if allocation_start == -1:
+        grow_by = max(required_growth + reserve, 64 * 1024 * 1024)
+        next_size = os.path.getsize(hh.OUTPUT_DAT) + grow_by
+        if not hh.ensureOutputDat(next_size):
+            raise RuntimeError('Unable to expand output dt_na.dat for untangle clone step.')
+        hh.patchFstFileSize(os.path.getsize(hh.OUTPUT_DAT))
+        allocation_start = hh.findFreeMemoryChunk(required_growth)
+        if allocation_start == -1:
+            raise RuntimeError(
+                f'Unable to reserve a contiguous hammerspace region ({required_growth} bytes).'
+            )
+
     clone_count = 0
+    next_offset = allocation_start
     with open(input_dat_path, 'rb') as input_dat:
-        for dir_ind in UNUSED_DIRS_TO_UNTANGLE_CLONE:
-            for file_index, file in enumerate(source_dirs.get(dir_ind, [])):
-                src_offset = file['en'][0]
-                src_length = file['en'][1]
-                if src_length <= 0:
-                    continue
+        for dir_ind, file_index, file in clone_entries:
+            src_offset = file['en'][0]
+            src_length = file['en'][1]
+            new_offset = (
+                next_offset + hh.HS_ALIGN_BYTES - 1
+            ) & ~(hh.HS_ALIGN_BYTES - 1)
 
-                input_dat.seek(src_offset, 0)
-                block = input_dat.read(src_length)
-                if len(block) != src_length:
-                    raise RuntimeError(
-                        f'Failed reading source model block for dir {dir_ind} file {file_index}: '
-                        f'expected {src_length} bytes, got {len(block)}'
-                    )
+            input_dat.seek(src_offset, 0)
+            block = input_dat.read(src_length)
+            if len(block) != src_length:
+                raise RuntimeError(
+                    f'Failed reading source model block for dir {dir_ind} file {file_index}: '
+                    f'expected {src_length} bytes, got {len(block)}'
+                )
 
-                new_offset = hh.findFreeMemoryChunk(src_length)
-                if new_offset == -1:
-                    grow_by = max(src_length + hh.HS_BUFFER_BYTES, 64 * 1024 * 1024)
-                    next_size = os.path.getsize(hh.OUTPUT_DAT) + grow_by
-                    if not hh.ensureOutputDat(next_size):
-                        raise RuntimeError('Unable to expand output dt_na.dat for untangle clone step.')
-                    hh.patchFstFileSize(os.path.getsize(hh.OUTPUT_DAT))
-                    new_offset = hh.findFreeMemoryChunk(src_length)
-                    if new_offset == -1:
-                        raise RuntimeError(
-                            f'Unable to find free hammerspace chunk for dir {dir_ind} file {file_index} '
-                            f'({src_length} bytes).'
-                        )
+            hh.writeModelBlock(block, new_offset)
+            hh.patchDolEntry(dir_ind, file_index, new_offset, src_length)
+            next_offset = new_offset + src_length + hh.HS_BUFFER_BYTES
+            clone_count += 1
 
-                hh.writeModelBlock(block, new_offset)
-                hh.patchDolEntry(dir_ind, file_index, new_offset, src_length)
-                clone_count += 1
-
-                if report_lines is not None:
-                    report_lines.append(
-                        f'Hammerspace clone: dir {dir_ind} file {file_index} '
-                        f'0x{src_offset:x} -> 0x{new_offset:x} ({src_length} bytes)'
-                    )
+            if report_lines is not None:
+                report_lines.append(
+                    f'Hammerspace clone: dir {dir_ind} file {file_index} '
+                    f'0x{src_offset:x} -> 0x{new_offset:x} ({src_length} bytes)'
+                )
 
     return clone_count
 
