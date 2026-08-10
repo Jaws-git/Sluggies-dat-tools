@@ -1,9 +1,9 @@
 # Alignment Investigation
 
-Empirical analysis of byte-alignment requirements for all data arrays in the
-Mario Super Sluggers model format.  Based on scanning **721 models** (3,244
-submeshes) from the original `dt_na.dat` game data, plus **192 models** with
-SKN (skinning) sections.
+Empirical analysis of byte-alignment requirements for model arrays in the
+Mario Super Sluggers format. Re-run on 2026-08-10 with
+`SluggiesTools/Debug/alignment_verify.py`: **1,422 model blocks**, including
+**337 skinned blocks**.
 
 ---
 
@@ -22,7 +22,7 @@ SKN (skinning) sections.
 | Normal data (standalone) | GPL section | 3,055 | None (byte) | All mod32 values 0–31 present |
 | UV data | GPL section | 4,562 | None (byte) | All mod32 values 0–31 present |
 | DOLayout blob start | GPL section | 3,244 | None (byte) | mod32 spans 0–28; mod4 spans 0–3 |
-| SKN memClrPtr | GPL-relative | 161 | None* | mod32 = {0, 4, 8} |
+| SKN memClrPtr | Position-data-relative | 165 non-zero | None* | mod32 = {0, 4, 8, 12, 20} |
 
 \* memClrSize is always a multiple of 32 (consistent with 32-byte chunk clearing),
 but memClrPtr itself is not always 32-aligned.  See discussion below.
@@ -94,7 +94,7 @@ All three array types in the SKN section are **always 32-byte aligned**:
 
 #### memClrPtr
 
-- 161 models analyzed.
+- 165 non-zero ranges analyzed.
 - mod32 values observed: {0, 4, 8}
 - memClrSize is **always** a multiple of 32.
 - **memClrPtr does NOT require 32-byte alignment.**
@@ -126,6 +126,21 @@ All other GPL data:       No alignment     (matches original)
 SKN source/weight/dest:   32-byte aligned  (CRITICAL — CPU deformer)
 SKN flush index:          32-byte aligned  (matches original)
 ```
+
+### Alignment is not sufficient for unchanged SKN layout
+
+The Peach in-game isolation test on 2026-08-10 showed that valid 32-byte
+alignment, bounds, counts, and byte-identical decoded arrays were not enough.
+Interleaving each SK2 source with its weights caused broad vertex explosions.
+Using the donor-observed order (all SK2 sources, flush list, then all SK2
+weights) reduced the explosions, and restoring one additional 0x20-byte donor
+gap after SK1[22] eliminated them. The resulting rebuilt model block was
+byte-identical to the donor.
+
+For unchanged topology, preserve `array_absolute_ptr - SKNOffset` for every
+SKN source, weight, destination-index, and flush array rather than recomputing a
+minimal aligned layout. Canonical packing remains necessary for edited topology
+but requires separate in-game validation.
 
 Size overhead vs. original: **+80 bytes** for the tiny_kong test model
 (4 submeshes).  The overhead comes from blob boundary padding and the skinned

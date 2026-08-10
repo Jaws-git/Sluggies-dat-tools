@@ -268,7 +268,7 @@
                         <div class="fields">
                             <div class="row"><span class="off">0x00</span><span>runtime matrix placeholders (2 × 0x30 bytes)</span></div>
                             <div class="row"><span class="off">0x60</span><span>→ source position/normal array</span></div>
-                            <div class="row"><span class="off">0x64</span><span>→ weight array <span class="note">(uint8 pairs per vertex, sum to 255)</span></span></div>
+                            <div class="row"><span class="off">0x64</span><span>→ weight array <span class="note">(uint8 pairs; logical records use a 256-unit divisor)</span></span></div>
                             <div class="row"><span class="off">0x68</span><span>→ destination in GPL position data</span></div>
                             <div class="row"><span class="off">0x6c</span><span>bone index 1 (uint16)</span></div>
                             <div class="row"><span class="off">0x6e</span><span>bone index 2 (uint16)</span></div>
@@ -351,7 +351,7 @@
     </div>
 
     <h2>32-Byte Alignment Requirement</h2>
-    <p>The Wii Broadway CPU has 32-byte cache lines and uses aligned memory operations (dcbz, paired-single loads) throughout its graphics pipeline. <strong>All raw data arrays</strong> — vertex buffers, skinning source arrays, weight arrays, index arrays, primitive lists — must begin at an address that is a multiple of 32 bytes relative to the section or region they belong to.</p>
+    <p>The Wii Broadway CPU has 32-byte cache lines. Empirical scanning shows that <strong>only hot-path arrays</strong> require 32-byte alignment: skinned position buffers, GX primitive lists, and SKN source, weight, destination-index, and flush-index arrays. Static position, standalone normal, color, UV, and DOLayout data are commonly unaligned.</p>
     <p>In observed game data, 100% of data array pointers satisfy this alignment. Violating the requirement causes the game to <strong>hang</strong> (infinite stall or bus error) rather than crash with an informative error.</p>
     <p>When rebuilding any section, insert zero-filled padding bytes as needed between the end of fixed-size struct arrays and the start of variable-length data blobs to ensure the first data array lands on a 32-byte boundary. Each subsequent array must also be individually padded to 32 bytes before the next one begins.</p>
     <pre>data_region_start = (end_of_structs + 31) &amp; ~31

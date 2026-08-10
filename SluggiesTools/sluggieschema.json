@@ -567,15 +567,19 @@
           },
           "MemClrPtrFieldOffset": {
             "type": "string",
-            "description": "Absolute file offset of the SKN memClrPtr field (hex). This field holds the runtime destination buffer pointer (byte offset of the first vertex in the deformed output buffer)."
+            "description": "Absolute file offset of the SKN memClrPtr field (hex). The field value is position-data-relative."
           },
           "MemClrSzeFieldOffset": {
             "type": "string",
             "description": "Absolute file offset of the SKN memClrSze field (hex). This field holds the total byte size of the runtime destination buffer."
           },
+          "MemClrPtrValue": {
+            "type": "number",
+            "description": "Raw position-data-relative memClrPtr value. It is independent of GPL section layout and model relocation."
+          },
           "MemClrAbsolutePtr": {
             "type": "string",
-            "description": "Resolved absolute address of the runtime destination (memClr) buffer (hex), computed as SKNOffset + memClrPtr."
+            "description": "Resolved absolute address of the runtime destination (memClr) buffer (hex), computed as submesh 0 position-data address + MemClrPtrValue."
           },
           "MemClrSize": {
             "type": "number",
@@ -695,7 +699,7 @@
                 },
                 "WeightData": {
                   "type": "string",
-                  "description": "Base64-encoded weight array. Two bytes per vertex (w1 for BoneIndex1, w2 for BoneIndex2), where 256 represents 100% weight."
+                  "description": "Base64-encoded weight array. Two uint8 values per vertex; logical contributions use a 256-unit divisor and commonly sum to 256 across all physical records for the vertex."
                 },
                 "BindPoseDataEdited": {
                   "type": "string",
@@ -765,7 +769,7 @@
                 },
                 "WeightData": {
                   "type": "string",
-                  "description": "Base64-encoded weight array. One byte per vertex, where 255 represents approximately 100% weight contribution from this bone."
+                  "description": "Base64-encoded uint8 contribution array using a 256-unit divisor. A full accumulated contribution may require duplicate physical records encoded as 255 + 1."
                 },
                 "BindPoseDataEdited": {
                   "type": "string",

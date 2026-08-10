@@ -725,12 +725,17 @@ def extract_skin_data(model):
             "WeightData":            _encode_bytes(wt_data)
         })
 
+    position_data_absolute = (
+        model.GPL.geoDescriptors[0].layout.absolute
+        + model.GPL.geoDescriptors[0].layout.DOPositionHeader.positionArrPtr
+    )
     return {
         "SKNOffset":            hex(skn_abs),
         "GplBaseOffset":        hex(model.GPL.absolute) if model.GPL else None,
         "MemClrPtrFieldOffset": hex(skn_abs + 0x14),
         "MemClrSzeFieldOffset": hex(skn_abs + 0x18),
-        "MemClrAbsolutePtr":    hex(model.GPL.absolute + skn.memClrPtr),
+        "MemClrPtrValue":       skn.memClrPtr,
+        "MemClrAbsolutePtr":    hex(position_data_absolute + skn.memClrPtr),
         "MemClrSize":           skn.memClrSze,
         "FlushIndArrFieldOffset": hex(skn_abs + 0x1C),
         "FlushIndAbsolutePtr":  hex(skn_abs + skn.flushIndArr) if skn.flushIndArr else None,

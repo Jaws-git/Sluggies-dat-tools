@@ -113,7 +113,7 @@ SKN Header (0x24 bytes)
   +0x08  sk1Ptr       uint32  SKN-relative → SK1 struct array
   +0x0c  sk2Ptr       uint32  SKN-relative → SK2 struct array
   +0x10  skAccPtr     uint32  SKN-relative → SKAcc struct array
-  +0x14  memClrPtr    uint32  GPL-relative → start of runtime dest vertex buffer to zero
+  +0x14  memClrPtr    uint32  position-data-relative → start of runtime dest region to zero
   +0x18  memClrSize   uint32  byte length of region to zero each frame
   +0x1c  flushIndPtr  uint32  SKN-relative → flush index array
   +0x20  flushIndSize uint32  number of flush indices
@@ -147,12 +147,23 @@ SKAcc struct (0x44 bytes each)
   +0x40  boneIndex      uint16
   +0x42  vertexCnt      uint16
 
-Variable data region (immediately after all structs, in this order):
-  SK1[0] source data (4-aligned) … SK1[n] source data
-  SK2[0] source data (4-aligned), SK2[0] weight data (4-aligned) … per SK2
-  SKAcc[0] source (4-aligned), SKAcc[0] destIdx (4-aligned), SKAcc[0] weights (4-aligned) … per SKAcc
-  flush index array (uint16 × flushIndSize, 4-aligned)
+Variable data region (all pointers 32-aligned):
+  Unchanged topology: preserve every exported SKN-relative array slot and gap.
+  Peach donor / canonical edited-layout order:
+    all SK1 source arrays
+    all SK2 source arrays
+    flush index array (uint16 × flushIndSize)
+    all SK2 weight arrays
+    SKAcc source, destIdx, weight arrays per entry
 ```
+
+Alignment does not imply that arrays may be compacted to the minimum aligned
+layout. Peach contains a 0x20-byte non-minimal hole after SK1[22]. A rebuild
+that retained equivalent payloads and valid 32-byte pointers but removed this
+hole still produced some in-game vertex explosions. Unchanged builds therefore
+derive each slot as `AbsolutePtr - SKNOffset` from the `.sluggie` schema and
+zero-fill the recorded gaps. If any slot is absent, misaligned, overlapping, or
+too small for edited data, the builder falls back to canonical repacking.
 
 #### gplVertexArr / gplDestArr semantics (corrected)
 
@@ -187,8 +198,12 @@ parsed.skinning (sluggies JSON)
   │    flush index array data.
   │    Milestone 2: rebuild the flush index array and dest_index_data when
   │    vertex counts / dest slots change.
-  │    Lay out in fixed order: SK1 srcs → SK2 src+wt → SKAcc src+destIdx+wt → flush.
-  │    Record SKN-relative offset for every sub-array.
+  │    Unchanged topology: restore each exported SKN-relative slot exactly,
+  │    including non-minimal zero-filled gaps. This produced a byte-identical
+  │    Peach SKN and eliminated the vertex explosions seen with repacking.
+  │    Edited topology canonical order: SK1 srcs → SK2 srcs → flush →
+  │    SK2 weights → SKAcc src+destIdx+weight per entry.
+  │    Record the SKN-relative offset for every sub-array.
   │
   ├─[SKN-2] SK1 / SK2 / SKAcc struct headers  (depends on SKN-1)
   │    Pack all fields except gplVertexArr / gplDestArr (leave those as 0).
