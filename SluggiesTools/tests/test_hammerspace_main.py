@@ -155,6 +155,24 @@ class BuildModelBlockTests(unittest.TestCase):
         patch_dol.assert_not_called()
 
     def test_gpl_and_skn_build_modes_use_builders(self):
+        self.data['SluggiesModel'].update({
+            'UseHammerspace': True,
+            'ModelOffset': 0x1000,
+            'ModelLength': 0x2000,
+            'Submeshes': [{
+                'FacesData': b'\x00',
+                'VertexBuffer': {
+                    'VertexBufferData': b'\x00',
+                    'VertexBufferCompCount': 3,
+                    'VertexBufferQuantizeInfo': 0,
+                },
+                'DisplayStates': [{
+                    'DisplayStateId': 0,
+                    'PrimListData': b'\x00',
+                    'ShaderMode': 'Spec',
+                }],
+            }],
+        })
         patches = self._patch_common()
         built_gpl = main.GPLBuildResult(b'BUILT_GPL', [9])
         with patches[0], patches[1], patches[4], patches[5], patches[7], patches[8]:
@@ -171,6 +189,36 @@ class BuildModelBlockTests(unittest.TestCase):
         build_skn.assert_called_once_with(self.parsed, built_gpl)
         self.assertEqual(result.section_modes.gpl, 'build')
         self.assertEqual(result.section_modes.skn, 'build')
+
+    def test_gpl_build_tolerates_missing_primlistdata(self):
+        parsed = main.ParseSluggie({'SluggiesModel': {
+            'UseBase64': False,
+            'Submeshes': [{
+                'FacesCount': 0,
+                'FacesData': [0],
+                'FaceTextureIndices': [],
+                'VertexBuffer': {
+                    'VertexBufferData': [0, 0, 0, 0, 0, 0],
+                    'VertexBufferCompCount': 3,
+                    'VertexBufferQuantizeInfo': 0,
+                },
+                'UVChannels': [],
+                'ColorChannels': [],
+                'DisplayStates': [{
+                    'DisplayStateId': 0,
+                    'PrimListData': None,
+                    'ShaderMode': 'Spec',
+                    'PrimListPtrFieldOffset': '0x0',
+                    'PrimListSizeFieldOffset': '0x0',
+                    'PrimListAbsoluteOffset': '0x0',
+                    'PrimListLength': 0,
+                    'DisplayStatePadBytes': '000000',
+                }],
+            }],
+        }})
+        result = main.BuildGPLMeshData(parsed)
+        self.assertEqual(struct.unpack_from('>I', result.gpl_bytes, 0x00)[0], 0x00B749E0)
+        self.assertEqual(len(result.pos_gpl_offsets), 1)
 
     def test_header_builder_aligns_skn_section_to_32_bytes(self):
         block = main.BuildHEADERModelBlock(
@@ -205,11 +253,141 @@ class BuildModelBlockTests(unittest.TestCase):
         self.assertEqual(block[ptr7_offset:ptr7_offset + 4], b'TAIL')
         self.assertEqual(block.count(b'TAIL'), 1)
 
+    def test_header_builder_relocates_trailing_pointers_relative_to_tail(self):
+        original_header = bytearray(0x20)
+        struct.pack_into('>I', original_header, 0x14, 0x100)
+        struct.pack_into('>I', original_header, 0x18, 0x140)
+        struct.pack_into('>I', original_header, 0x1C, 0x180)
+
+        block = main.BuildHEADERModelBlock(
+            b'GPL',
+            b'ACT',
+            b'TEX',
+            b'SKN',
+            trailing_bytes=b'TAIL',
+            original_header=bytes(original_header),
+            original_trailing_off=0x100,
+        )
+
+        skn_offset = struct.unpack_from('>I', block, 0x10)[0]
+        tail_offset = skn_offset + len(b'SKN')
+        self.assertEqual(struct.unpack_from('>I', block, 0x14)[0], tail_offset)
+        self.assertEqual(struct.unpack_from('>I', block, 0x18)[0], tail_offset + 0x40)
+        self.assertEqual(struct.unpack_from('>I', block, 0x1C)[0], tail_offset + 0x80)
+
+    def test_header_builder_zeroes_trailing_pointers_when_tail_is_absent(self):
+        original_header = bytearray(0x20)
+        struct.pack_into('>I', original_header, 0x14, 0x100)
+        struct.pack_into('>I', original_header, 0x18, 0x140)
+        struct.pack_into('>I', original_header, 0x1C, 0x180)
+
+        block = main.BuildHEADERModelBlock(
+            b'GPL',
+            b'ACT',
+            b'TEX',
+            b'SKN',
+            trailing_bytes=b'',
+            original_header=bytes(original_header),
+            original_trailing_off=0x100,
+        )
+
+        self.assertEqual(struct.unpack_from('>I', block, 0x14)[0], 0)
+        self.assertEqual(struct.unpack_from('>I', block, 0x18)[0], 0)
+        self.assertEqual(struct.unpack_from('>I', block, 0x1C)[0], 0)
+
     def test_unimplemented_section_build_is_rejected_before_parsing(self):
         with mock.patch.object(main, 'ParseSluggie') as parse:
             with self.assertRaisesRegex(ValueError, 'ACT=build is not implemented'):
                 main.BuildModelBlock(self.data, main.SectionModes(act='build'))
         parse.assert_not_called()
+
+    def test_hammerspace_rebuild_rejects_missing_required_properties(self):
+        data = {'SluggiesModel': {
+            'ChunkNumber': 18,
+            'FileIndex': 0,
+            'UseHammerspace': True,
+            'ModelOffset': 0x1000,
+            'ModelLength': 0x2000,
+        }}
+        with mock.patch.object(main.hh, 'readDolEntry', return_value=(0x1000, 0x2000)):
+            with self.assertRaisesRegex(ValueError, 'missing required rebuild properties'):
+                main.BuildModelBlock(data, main.SectionModes(gpl='build'))
+
+    def test_skn_only_rebuilds_tolerate_missing_primlistdata(self):
+        data = {'SluggiesModel': {
+            'ChunkNumber': 18,
+            'FileIndex': 0,
+            'UseHammerspace': True,
+            'ModelOffset': 0x1000,
+            'ModelLength': 0x2000,
+            'Submeshes': [{
+                'VertexBuffer': {
+                    'VertexBufferData': b'\x00',
+                    'VertexBufferCompCount': 3,
+                    'VertexBufferQuantizeInfo': 0,
+                },
+                'FacesData': b'\x00',
+                'DisplayStates': [{
+                    'DisplayStateId': 0,
+                    'ShaderMode': 'Spec',
+                }],
+            }],
+        }}
+        patches = self._patch_common()
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
+            with (
+                mock.patch.object(main, 'validate_model_block', return_value={
+                    'valid': True,
+                    'errors': [],
+                    'warnings': [],
+                    'facts': {'section_pointers': {'GPL': 32, 'ACT': 35, 'TEX': 38, 'SKN': 41}},
+                }),
+                mock.patch.object(main, 'BuildSKNSkinningData', return_value=b'SKN'),
+            ):
+                result = main.BuildModelBlock(data, main.SectionModes(skn='build'))
+
+        self.assertTrue(result.validation_report['valid'])
+
+    def test_legacy_non_hammerspace_files_skip_contract_validation(self):
+        data = {'SluggiesModel': {
+            'ChunkNumber': 18,
+            'FileIndex': 0,
+            'ModelOffset': 0x1000,
+            'ModelLength': 0x2000,
+        }}
+        patches = self._patch_common()
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
+            with (
+                mock.patch.object(main, 'validate_model_block', return_value={
+                    'valid': True,
+                    'errors': [],
+                    'warnings': [],
+                    'facts': {'section_pointers': {'GPL': 32, 'ACT': 35, 'TEX': 38, 'SKN': 41}},
+                }),
+            ):
+                result = main.BuildModelBlock(data)
+
+        self.assertTrue(result.validation_report['valid'])
+
+    def test_hammerspace_clone_only_runs_without_required_rebuild_properties(self):
+        data = {'SluggiesModel': {
+            'ChunkNumber': 18,
+            'FileIndex': 0,
+            'UseHammerspace': True,
+        }}
+        patches = self._patch_common()
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
+            with (
+                mock.patch.object(main, 'validate_model_block', return_value={
+                    'valid': True,
+                    'errors': [],
+                    'warnings': [],
+                    'facts': {'section_pointers': {'GPL': 32, 'ACT': 35, 'TEX': 38, 'SKN': 41}},
+                }),
+            ):
+                result = main.BuildModelBlock(data)
+
+        self.assertTrue(result.validation_report['valid'])
 
     def test_write_operation_owns_output_mutations(self):
         build = main.ModelBlockBuild(

@@ -691,9 +691,9 @@ def _validate_ptr7_facial(state: _ValidationState, gpl_submeshes: list[dict]) ->
             state.fail(f'ptr7 facial object[{object_index}] has zero pose count')
             continue
         if pose_count > max_pose_count:
-            state.fail(
+            state.warn(
                 f'ptr7 facial object[{object_index}] pose count {pose_count} '
-                f'exceeds section maximum {max_pose_count}'
+                f'exceeds section maximum {max_pose_count}; accepting per-object layout'
             )
         if attribute_count == 0:
             state.fail(f'ptr7 facial object[{object_index}] has zero attributes')
