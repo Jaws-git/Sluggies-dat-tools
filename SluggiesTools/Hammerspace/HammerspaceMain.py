@@ -33,6 +33,7 @@ class DrawState:
     prim_list_length:            int
     shader_mode_field_offset:    int
     shader_mode:                 str
+    source_state_offset:         int
 
 
 @dataclass
@@ -45,6 +46,7 @@ class NormalBuffer:
     quantize_info:                int
     ambient_pct:                  float
     normal_data:                  bytes
+    source_header_offset:         int
 
 
 @dataclass
@@ -60,6 +62,7 @@ class UVChannel:
     quantize_info:            int
     uv_data_ptr_field_offset: int
     uv_count_field_offset:    int
+    source_data_offset:       int
 
 
 @dataclass
@@ -69,6 +72,7 @@ class ColorChannel:
     color_faces_data: bytes
     comp_count:       int
     quantize_info:    int
+    source_data_offset: int
 
 
 @dataclass
@@ -87,11 +91,14 @@ class Submesh:
     position_data_ptr_field_offset: int
     vertex_count_field_offset:      int
     normal_buffer:                  NormalBuffer | None   # None for skinned meshes
+    source_layout_offset:           int
+    source_position_data_offset:    int
 
 
 @dataclass
 class MeshData:
     submeshes: list   # [Submesh]
+    source_gpl_base_offset: int
 
 
 @dataclass
@@ -221,6 +228,13 @@ class ACTHeader:
 
 
 @dataclass
+class TrailingSection:
+    header_field_offset: int
+    original_ptr:        int
+    data:                bytes
+
+
+@dataclass
 class SluggieParsed:
     mesh:               MeshData
     bones:              BoneData | None     # None for static meshes
@@ -230,6 +244,7 @@ class SluggieParsed:
     gpl_user_data_len:  int                 # 0 when no user data
     act_header:         ACTHeader | None    # ACT section header fields, or None
     tex_header:         TEXHeader | None    # TEX section header fields, or None
+    trailing_sections:  list[TrailingSection]  # schema-backed ptr6/ptr7/ptr8 payloads
     model_offset:       int                 # absolute byte offset of model block in INPUT dat
     model_length:       int                 # byte length of model block in INPUT dat
 
@@ -337,6 +352,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
 
     model   = data['SluggiesModel']
     use_b64 = model.get('UseBase64', True)
+    source_gpl_base_offset = _hex((model.get('SkinData') or {}).get('GplBaseOffset', '0x0'))
 
     # ---- MeshData ----------------------------------------------------------
     submeshes = []
@@ -378,6 +394,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
                 quantize_info            = uv['UVChannelQuantizeInfo'],
                 uv_data_ptr_field_offset = _hex(uv.get('UVDataPtrFieldOffset', '0x0')),
                 uv_count_field_offset    = _hex(uv.get('UVCountFieldOffset',    '0x0')),
+                source_data_offset       = _hex(uv.get('UVChannelOffset', '0x0')),
             ))
 
         color_channels = []
@@ -388,6 +405,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
                 color_faces_data = _decode(cc['ColorFacesData'],   use_b64),
                 comp_count       = cc['ColorChannelCompCount'],
                 quantize_info    = cc['ColorChannelQuantizeInfo'],
+                source_data_offset = _hex(cc.get('ColorChannelOffset', '0x0')),
             ))
 
         draw_states = []
@@ -409,6 +427,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
                 prim_list_length            = ds['PrimListLength'],
                 shader_mode_field_offset    = _hex(ds['ShaderModeFieldOffset']) if ds.get('ShaderModeFieldOffset') else 0,
                 shader_mode                 = ds.get('ShaderMode', ''),
+                source_state_offset         = _hex(ds['ShaderModeFieldOffset']) - 4 if ds.get('ShaderModeFieldOffset') else 0,
             ))
 
         raw_nb = sub.get('NormalBuffer')
@@ -425,6 +444,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
                 normal_data                  = _decode(
                     raw_nb.get('NormalBufferDataEdited') or raw_nb['NormalBufferData'], use_b64
                 ),
+                source_header_offset         = _hex(raw_nb.get('NormalDataPtrFieldOffset', '0x0')),
             )
 
         submeshes.append(Submesh(
@@ -442,9 +462,14 @@ def ParseSluggie(data: dict) -> SluggieParsed:
             position_data_ptr_field_offset = _hex(sub.get('PositionDataPtrFieldOffset', '0x0')),
             vertex_count_field_offset      = _hex(sub.get('VertexCountFieldOffset',      '0x0')),
             normal_buffer                  = normal_buffer,
+            source_layout_offset           = _hex(sub.get('SubmeshOffset', '0x0')),
+            source_position_data_offset    = _hex(vb.get('VertexBufferOffset', '0x0')),
         ))
 
-    mesh_data = MeshData(submeshes=submeshes)
+    mesh_data = MeshData(
+        submeshes=submeshes,
+        source_gpl_base_offset=source_gpl_base_offset,
+    )
 
     # ---- GPL user data ----------------------------------------------------
     gpl_user_data_len = model.get('GPLUserDataLength', 0)
@@ -630,6 +655,17 @@ def ParseSluggie(data: dict) -> SluggieParsed:
     else:
         skinning_data = None
 
+    # ---- Trailing sections ------------------------------------------------
+    trailing_sections = []
+    for entry in model.get('TrailingSections', []) or []:
+        if not isinstance(entry, dict):
+            continue
+        trailing_sections.append(TrailingSection(
+            header_field_offset = _hex(entry.get('HeaderFieldOffset', '0x0')),
+            original_ptr        = _hex(entry.get('OriginalPtr', '0x0')),
+            data                = _decode(entry.get('Data'), use_b64) if entry.get('Data') else b'',
+        ))
+
     # ---- TEXHeader ---------------------------------------------------------
     raw_tex_hdr = model.get('TEXHeader')
     tex_header = TEXHeader(clut_count=raw_tex_hdr['CLUTCount']) if raw_tex_hdr else None
@@ -655,6 +691,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
         gpl_user_data_len = gpl_user_data_len,
         act_header        = act_header,
         tex_header        = tex_header,
+        trailing_sections = trailing_sections,
         model_offset      = _hex(model.get('ModelOffset', '0x0')),
         model_length      = model.get('ModelLength', 0),
     )
@@ -724,6 +761,14 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
 
     N = len(parsed.mesh.submeshes)
     sub_layouts = []
+    preserve_source_layout = bool(parsed.mesh.source_gpl_base_offset) and all(
+        sub.source_layout_offset
+        and sub.position_data_ptr_field_offset
+        and sub.source_position_data_offset
+        and sub.draw_states
+        and sub.draw_states[0].source_state_offset
+        for sub in parsed.mesh.submeshes
+    )
 
     sk_write_end = 0
     if parsed.skinning:
@@ -766,8 +811,7 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
         UV_OFF  = 0x28
         NOR_OFF = UV_OFF  + M_uv * 0x10
         DSP_OFF = NOR_OFF + 0x0c
-        DS_OFF  = DSP_OFF + 0x0c
-        HDR_END = DS_OFF  + n_ds * 0x10
+        HDR_END = DSP_OFF + 0x0c
 
         cursor = HDR_END
 
@@ -830,6 +874,11 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
             nor_data_off = cursor
             cursor      += len(nor_data)
 
+        # Donor GPL layouts place display-state records after all attribute
+        # arrays. Some runtime state handling depends on that ordering.
+        DS_OFF = cursor
+        cursor += n_ds * 0x10
+
         # --- per-display-state primitive list data ---
         # Prim lists (GX display lists) MUST be 32-byte aligned — the GPU
         # command processor reads them via DMA in 32-byte bursts.
@@ -845,6 +894,72 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
             else:
                 pl_offs.append(0)
                 pl_bytes_list.append(b'')
+
+        if preserve_source_layout:
+            source_base = parsed.mesh.source_gpl_base_offset
+            source_layout = sub.source_layout_offset - source_base
+            source_pos_header = sub.position_data_ptr_field_offset - sub.source_layout_offset
+            source_pos_data = sub.source_position_data_offset - sub.source_layout_offset
+            source_uv_headers = [
+                uv.uv_data_ptr_field_offset - sub.source_layout_offset
+                for uv in sub.uv_channels
+            ]
+            source_uv_data = [
+                uv.source_data_offset - sub.source_layout_offset
+                for uv in sub.uv_channels
+            ]
+            source_state = sub.draw_states[0].source_state_offset - sub.source_layout_offset
+            source_display = source_state - 0x0C
+            source_normal = (
+                sub.normal_buffer.source_header_offset - sub.source_layout_offset
+                if sub.normal_buffer else 0
+            )
+            source_normal_data = (
+                sub.normal_buffer.normal_buffer_offset - sub.source_layout_offset
+                if sub.normal_buffer else 0
+            )
+            source_color = (
+                sub.color_channels[0].source_data_offset - sub.source_layout_offset
+                if sub.color_channels else 0
+            )
+            source_color_header = (
+                source_color - 8 if source_color else source_normal - 8
+            )
+            source_prim = [
+                ds.prim_list_absolute_offset - sub.source_layout_offset
+                if ds.prim_list_data else 0
+                for ds in sub.draw_states
+            ]
+
+            POS_OFF = source_pos_header
+            COL_OFF = source_color_header
+            UV_OFF = source_uv_headers[0] if source_uv_headers else source_normal
+            NOR_OFF = source_normal
+            DSP_OFF = source_display
+            DS_OFF = source_state
+            pos_data_off = source_pos_data
+            col_data_off = source_color
+            uv_data_offs = source_uv_data
+            nor_data_off = (
+                source_pos_data + _vb_comp_size(sub.vertex_quantize_info) * 3
+                if is_interleaved else source_normal_data
+            )
+            pl_offs = source_prim
+
+            source_ends = [
+                POS_OFF + 8,
+                COL_OFF + 8,
+                UV_OFF + M_uv * 0x10,
+                NOR_OFF + 0x0C if NOR_OFF else 0,
+                DSP_OFF + 0x0C,
+                DS_OFF + n_ds * 0x10,
+                pos_data_off + len(pos_data),
+                col_data_off + len(col_data) if col_data_off else 0,
+                *(offset + len(data) for offset, data in zip(uv_data_offs, uv_data_list)),
+                nor_data_off + len(nor_data) if nor_data else 0,
+                *(offset + len(data) for offset, data in zip(pl_offs, pl_bytes_list) if offset),
+            ]
+            cursor = max(source_ends)
 
         blob_size = cursor
 
@@ -906,17 +1021,45 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
 
     GEO_DESC_OFF  = GPL_HDR_SIZE          # 0x14
     GEO_DESC_SIZE = N * 8
-    # Blob starts must be 32-byte aligned so that DOLayout-relative prim list
-    # offsets (which are 32-aligned within the blob) are also 32-aligned in
-    # GPL-absolute terms (GX DMA requirement for display lists).
-    BLOBS_START   = _align32(GEO_DESC_OFF + GEO_DESC_SIZE)
-
-    blob_gpl_offs = []
-    cursor = BLOBS_START
-    for lay in sub_layouts:
-        blob_gpl_offs.append(cursor)
-        cursor += lay['blob_size']
-        cursor = _align32(cursor)  # next blob 32-aligned for prim list alignment
+    # Blob starts must be 32-byte aligned in flexible layouts. Unchanged
+    # source-layout rebuilds retain the donor coordinates exactly.
+    BLOBS_START = _align32(GEO_DESC_OFF + GEO_DESC_SIZE)
+    if preserve_source_layout:
+        blob_gpl_offs = [
+            lay['sub'].source_layout_offset - parsed.mesh.source_gpl_base_offset
+            for lay in sub_layouts
+        ]
+        cursor = max(gpl_off + lay['blob_size'] for gpl_off, lay in zip(blob_gpl_offs, sub_layouts))
+        for index, (gpl_off, lay) in enumerate(zip(blob_gpl_offs, sub_layouts)):
+            palette_offsets: dict[bytes, int] = {}
+            unique_palette_bytes = []
+            for pal_b in lay['pal_name_bytes_list']:
+                if pal_b not in palette_offsets:
+                    palette_offsets[pal_b] = 0
+                    unique_palette_bytes.append(pal_b)
+            palette_size = sum((len(pal_b) + 3) & ~3 for pal_b in unique_palette_bytes)
+            next_layout = blob_gpl_offs[index + 1] if index + 1 < len(blob_gpl_offs) else cursor
+            palette_cursor = next_layout - palette_size if index + 1 < len(blob_gpl_offs) else cursor
+            pal_name_offs = []
+            for pal_b in lay['pal_name_bytes_list']:
+                if not palette_offsets[pal_b]:
+                    palette_offsets[pal_b] = palette_cursor
+                    palette_cursor += len(pal_b)
+                    palette_cursor = (palette_cursor + 3) & ~3
+                pal_name_offs.append(palette_offsets[pal_b] - gpl_off)
+            lay['pal_name_offs'] = pal_name_offs
+            cursor = max(cursor, palette_cursor)
+        for gpl_off, lay in zip(blob_gpl_offs, sub_layouts):
+            lay['name_off'] = cursor - gpl_off
+            cursor += len(lay['name_bytes'])
+        cursor = _align32(cursor)
+    else:
+        blob_gpl_offs = []
+        cursor = BLOBS_START
+        for lay in sub_layouts:
+            blob_gpl_offs.append(cursor)
+            cursor += lay['blob_size']
+            cursor = _align32(cursor)  # next blob 32-aligned for prim list alignment
 
     # GPL-relative byte offset of each submesh's raw position data array.
     # Computed here so the SKN builder can use them directly instead of
@@ -1581,6 +1724,7 @@ def BuildHEADERModelBlock(
     trailing_bytes: bytes = b'',
     original_header: bytes = b'',
     original_trailing_off: int = 0,
+    trailing_sections: list[TrailingSection] | None = None,
 ) -> bytes:
     """Assemble the full model block from its four sections.
 
@@ -1623,7 +1767,23 @@ def BuildHEADERModelBlock(
     HDR_SIZE = 0x20
 
     gpl_off = HDR_SIZE
-    act_off = gpl_off + len(gpl_bytes)
+    gpl_section_padding = b''
+    if len(original_header) >= HDR_SIZE:
+        original_gpl_off = _s.unpack_from('>I', original_header, 0x04)[0]
+        original_next_sections = [
+            _s.unpack_from('>I', original_header, offset)[0]
+            for offset in (0x08, 0x0C, 0x10, 0x14, 0x18, 0x1C)
+        ]
+        original_next = min(
+            (offset for offset in original_next_sections if offset > original_gpl_off),
+            default=0,
+        )
+        if original_gpl_off == gpl_off and original_next:
+            original_gpl_span = original_next - original_gpl_off
+            if len(gpl_bytes) <= original_gpl_span:
+                gpl_section_padding = b'\x00' * (original_gpl_span - len(gpl_bytes))
+
+    act_off = gpl_off + len(gpl_bytes) + len(gpl_section_padding)
     tex_off = act_off + len(act_bytes)
     skn_unaligned_off = tex_off + len(tex_bytes)
     skn_off = align_array_offset(skn_unaligned_off, 'skn_source') if skn_bytes else skn_unaligned_off
@@ -1646,16 +1806,21 @@ def BuildHEADERModelBlock(
     _s.pack_into('>I', hdr, 0x10, skn_off if skn_bytes else 0)
 
     # Recompute ptr6/ptr7/ptr8 relative to the separately cloned tail.
-    if len(original_header) >= HDR_SIZE and original_trailing_off and trailing_bytes:
-        for field_offset in (0x14, 0x18, 0x1c):
-            orig_ptr = _s.unpack_from('>I', original_header, field_offset)[0]
-            if orig_ptr and orig_ptr >= original_trailing_off:
-                new_ptr = tail_start + (orig_ptr - original_trailing_off)
-                _s.pack_into('>I', hdr, field_offset, new_ptr)
-                _slogger.info(f'[HDR] +0x{field_offset:02X} patched: '
-                       f'0x{orig_ptr:08X} → 0x{new_ptr:08X}', source="hammerspace.main")
+    if trailing_bytes:
+        if trailing_sections:
+            section_ptrs = [sec.original_ptr for sec in trailing_sections if sec.original_ptr]
+            if section_ptrs:
+                original_trailing_off = min(section_ptrs)
+        if len(original_header) >= HDR_SIZE and original_trailing_off:
+            for field_offset in (0x14, 0x18, 0x1c):
+                orig_ptr = _s.unpack_from('>I', original_header, field_offset)[0]
+                if orig_ptr and orig_ptr >= original_trailing_off:
+                    new_ptr = tail_start + (orig_ptr - original_trailing_off)
+                    _s.pack_into('>I', hdr, field_offset, new_ptr)
+                    _slogger.info(f'[HDR] +0x{field_offset:02X} patched: '
+                           f'0x{orig_ptr:08X} → 0x{new_ptr:08X}', source="hammerspace.main")
 
-    return (bytes(hdr) + gpl_bytes + act_bytes + tex_bytes + skn_padding
+    return (bytes(hdr) + gpl_bytes + gpl_section_padding + act_bytes + tex_bytes + skn_padding
             + skn_bytes + skn_trailing_padding + trailing_bytes)
 
 
@@ -1726,9 +1891,12 @@ def _collect_missing_hammerspace_properties(model: dict) -> list[str]:
             if not isinstance(display_state, dict):
                 missing.append(f'Submeshes[{sub_idx}].DisplayStates[{ds_idx}]')
                 continue
-            for key in ('DisplayStateId', 'PrimListData', 'ShaderMode'):
+            for key in ('DisplayStateId', 'PrimListLength', 'ShaderMode'):
                 if key not in display_state or display_state.get(key) in (None, ''):
                     missing.append(f'Submeshes[{sub_idx}].DisplayStates[{ds_idx}].{key}')
+            if (display_state.get('PrimListLength', 0) > 0
+                    and display_state.get('PrimListData') in (None, '')):
+                missing.append(f'Submeshes[{sub_idx}].DisplayStates[{ds_idx}].PrimListData')
 
     return missing
 
@@ -1833,10 +2001,18 @@ def BuildModelBlock(data: dict, section_modes: SectionModes | None = None) -> Mo
         skn_bytes = BuildSKNSkinningData(parsed, gpl_result)
     else:
         skn_bytes = CloneSKN(original_offset, original_length)
-    trailing_bytes, original_trailing_offset = CloneTrailingSections(
-        original_offset,
-        original_length,
-    )
+    parsed_trailing_sections = getattr(parsed, 'trailing_sections', None) or []
+    if parsed_trailing_sections:
+        trailing_bytes = b''.join(section.data for section in parsed_trailing_sections)
+        original_trailing_offset = min(
+            (section.original_ptr for section in parsed_trailing_sections if section.original_ptr),
+            default=0,
+        )
+    else:
+        trailing_bytes, original_trailing_offset = CloneTrailingSections(
+            original_offset,
+            original_length,
+        )
     original_header = CloneHEADER(original_offset)
     block = BuildHEADERModelBlock(
         gpl_result.gpl_bytes,
@@ -1846,6 +2022,7 @@ def BuildModelBlock(data: dict, section_modes: SectionModes | None = None) -> Mo
         trailing_bytes=trailing_bytes,
         original_header=original_header,
         original_trailing_off=original_trailing_offset,
+        trailing_sections=getattr(parsed, 'trailing_sections', None),
     )
     section_sizes = {
         'GPL': len(gpl_result.gpl_bytes),
@@ -1897,7 +2074,11 @@ def WriteModelBlock(build: ModelBlockBuild, model_name: str) -> int:
 
     new_offset = hh.findFreeMemoryChunk(len(build.block))
     if new_offset == -1:
-        required_size = hh.BASE_SIZE + len(build.block) + hh.HS_BUFFER_BYTES
+        if not hh.ensureOutputDat():
+            raise RuntimeError('Unable to prepare output dt_na.dat')
+        current_size = os.path.getsize(hh.OUTPUT_DAT)
+        next_region_start = (current_size + hh.HS_ALIGN_BYTES - 1) & ~(hh.HS_ALIGN_BYTES - 1)
+        required_size = next_region_start + len(build.block) + hh.HS_BUFFER_BYTES
         if not hh.ensureOutputDat(required_size):
             raise RuntimeError('Unable to prepare output dt_na.dat')
         new_offset = hh.findFreeMemoryChunk(len(build.block))

@@ -121,9 +121,11 @@ def parse_block(blk: bytes) -> dict:
         for j in range(m_uv):
             o = uv_h + j * 0x10
             raw, cnt, q, cc = hdr8(o)
-            pal = cstr(blk, base + u32(blk, base + o + 8)) if u32(blk, base + o + 8) else ''
+            palette_ptr = u32(blk, base + o + 8)
+            pal = cstr(blk, base + palette_ptr) if palette_ptr else ''
             data = blk[base + raw: base + raw + cnt * comp_size(q) * cc] if raw else b''
             uvs.append({'cnt': cnt, 'q': q, 'cc': cc, 'pal': pal, 'data': data,
+                        'raw_rel': raw, 'palette_ptr': palette_ptr,
                         'block_off': (base + raw) if raw else 0})
 
         n_raw, n_cnt, n_q, n_cc = hdr8(nor_h)
@@ -142,17 +144,23 @@ def parse_block(blk: bytes) -> dict:
             dss.append({
                 'id': u8(blk, o), 'params': bytes(blk[o + 1:o + 4]),
                 'setting': u32(blk, o + 4),
+                'record_rel': ds_ptr + k * 0x10, 'prim_rel': pl_ptr,
                 'pl': blk[base + pl_ptr: base + pl_ptr + pl_len] if pl_ptr else b'',
                 'pl_block_off': (base + pl_ptr) if pl_ptr else 0,
             })
         subs.append({
             'name': name,
+                'layout_rel': blob,
+                'name_ptr': u32(blk, g + desc + i * 8 + 4),
+                'headers': {'pos': pos_h, 'col': col_h, 'uv': uv_h, 'nor': nor_h, 'display': dsp_h},
+                'display': {'primitive_ptr': u32(blk, base + dsp_h), 'state_ptr': ds_ptr},
             'pos': {'cnt': p_cnt, 'q': p_q, 'cc': p_cc, 'data': pos_bytes,
-                    'block_off': base + p_raw if p_raw else 0},
+                    'raw_rel': p_raw, 'block_off': base + p_raw if p_raw else 0},
             'col': {'cnt': c_cnt, 'q': c_q, 'cc': c_cc, 'data': col_bytes,
-                    'block_off': col_block_off},
+                    'raw_rel': c_raw, 'block_off': col_block_off},
             'uvs': uvs,
             'nor': {'cnt': n_cnt, 'q': n_q, 'cc': n_cc, 'amb': amb, 'data': nor_bytes,
+                    'raw_rel': n_raw,
                     'raw_rel_pos': (n_raw - p_raw) if (n_raw and p_cc == 6) else None},
             'dss': dss,
         })
@@ -240,23 +248,34 @@ def compare(o: dict, r: dict) -> None:
     check('GPL user data bytes', og['ud'] == rg['ud'])
     for i, (a, b) in enumerate(zip(og['subs'], rg['subs'])):
         pre = f'sub{i}'
+        check(f'{pre} layout pointer', a['layout_rel'] == b['layout_rel'])
+        check(f'{pre} name pointer', a['name_ptr'] == b['name_ptr'])
+        for key in ('pos', 'col', 'uv', 'nor', 'display'):
+            check(f'{pre} {key} header pointer', a['headers'][key] == b['headers'][key])
+        for key in ('primitive_ptr', 'state_ptr'):
+            check(f'{pre} display {key}', a['display'][key] == b['display'][key])
         check(f'{pre} name', a['name'] == b['name'], f"{a['name']!r} vs {b['name']!r}")
         for fld in ('cnt', 'q', 'cc'):
             check(f'{pre} pos.{fld}', a['pos'][fld] == b['pos'][fld],
                   f"{a['pos'][fld]} vs {b['pos'][fld]}")
+        check(f'{pre} pos raw pointer', a['pos']['raw_rel'] == b['pos']['raw_rel'])
         check(f'{pre} pos bytes', a['pos']['data'] == b['pos']['data'],
               f"len {len(a['pos']['data'])} vs {len(b['pos']['data'])}")
         for fld in ('cnt', 'q', 'cc'):
             check(f'{pre} col.{fld}', a['col'][fld] == b['col'][fld])
+        check(f'{pre} col raw pointer', a['col']['raw_rel'] == b['col']['raw_rel'])
         check(f'{pre} col bytes', a['col']['data'] == b['col']['data'])
         check(f'{pre} uv channel count', len(a['uvs']) == len(b['uvs']))
         for j, (ua, ub) in enumerate(zip(a['uvs'], b['uvs'])):
             for fld in ('cnt', 'q', 'cc', 'pal'):
                 check(f'{pre} uv{j}.{fld}', ua[fld] == ub[fld], f"{ua[fld]} vs {ub[fld]}")
+            for fld in ('raw_rel', 'palette_ptr'):
+                check(f'{pre} uv{j} {fld}', ua[fld] == ub[fld])
             check(f'{pre} uv{j} bytes', ua['data'] == ub['data'])
         for fld in ('cnt', 'q', 'cc', 'amb', 'raw_rel_pos'):
             check(f'{pre} nor.{fld}', a['nor'][fld] == b['nor'][fld],
                   f"{a['nor'][fld]} vs {b['nor'][fld]}")
+        check(f'{pre} nor raw pointer', a['nor']['raw_rel'] == b['nor']['raw_rel'])
         check(f'{pre} nor bytes', a['nor']['data'] == b['nor']['data'])
         check(f'{pre} display state count', len(a['dss']) == len(b['dss']))
         for k, (da, db) in enumerate(zip(a['dss'], b['dss'])):
@@ -265,6 +284,8 @@ def compare(o: dict, r: dict) -> None:
                   f"{da['params'].hex()} vs {db['params'].hex()}")
             check(f'{pre} ds{k} setting', da['setting'] == db['setting'],
                   f"0x{da['setting']:08X} vs 0x{db['setting']:08X}")
+            check(f'{pre} ds{k} record pointer', da['record_rel'] == db['record_rel'])
+            check(f'{pre} ds{k} primitive pointer', da['prim_rel'] == db['prim_rel'])
             check(f'{pre} ds{k} prim list bytes', da['pl'] == db['pl'],
                   f"len {len(da['pl'])} vs {len(db['pl'])}")
 

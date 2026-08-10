@@ -168,6 +168,7 @@ class BuildModelBlockTests(unittest.TestCase):
                 },
                 'DisplayStates': [{
                     'DisplayStateId': 0,
+                    'PrimListLength': 1,
                     'PrimListData': b'\x00',
                     'ShaderMode': 'Spec',
                 }],
@@ -219,6 +220,28 @@ class BuildModelBlockTests(unittest.TestCase):
         result = main.BuildGPLMeshData(parsed)
         self.assertEqual(struct.unpack_from('>I', result.gpl_bytes, 0x00)[0], 0x00B749E0)
         self.assertEqual(len(result.pos_gpl_offsets), 1)
+        descriptor_offset = struct.unpack_from('>I', result.gpl_bytes, 0x10)[0]
+        layout_offset = struct.unpack_from('>I', result.gpl_bytes, descriptor_offset)[0]
+        position_header_offset = struct.unpack_from('>I', result.gpl_bytes, layout_offset)[0]
+        display_header_offset = struct.unpack_from('>I', result.gpl_bytes, layout_offset + 0x10)[0]
+        position_data_offset = struct.unpack_from('>I', result.gpl_bytes, layout_offset + position_header_offset)[0]
+        display_state_offset = struct.unpack_from('>I', result.gpl_bytes, layout_offset + display_header_offset + 4)[0]
+        self.assertGreater(display_state_offset, position_data_offset + 6)
+
+    def test_model_block_uses_schema_trailing_sections_when_available(self):
+        fake_parsed = SimpleNamespace(trailing_sections=[
+            main.TrailingSection(header_field_offset=0x14, original_ptr=0x100, data=b'TAIL'),
+        ])
+        patches = self._patch_common()
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
+            with (
+                mock.patch.object(main, 'ParseSluggie', return_value=fake_parsed),
+                mock.patch.object(main, 'CloneTrailingSections', side_effect=AssertionError('should not read donor trailing data')),
+            ):
+                result = main.BuildModelBlock(self.data)
+
+        self.assertEqual(result.section_sizes['trailing'], 4)
+        self.assertIn(b'TAIL', result.block[-4:])
 
     def test_header_builder_aligns_skn_section_to_32_bytes(self):
         block = main.BuildHEADERModelBlock(
@@ -231,6 +254,23 @@ class BuildModelBlockTests(unittest.TestCase):
         skn_offset = struct.unpack_from('>I', block, 0x10)[0]
         self.assertEqual(skn_offset % 32, 0)
         self.assertEqual(block[skn_offset:skn_offset + 3], b'SKN')
+
+    def test_header_builder_preserves_donor_gap_after_gpl(self):
+        original_header = bytearray(0x20)
+        struct.pack_into('>I', original_header, 0x04, 0x20)
+        struct.pack_into('>I', original_header, 0x08, 0x30)
+
+        block = main.BuildHEADERModelBlock(
+            b'GPL',
+            b'ACT',
+            b'',
+            b'',
+            original_header=bytes(original_header),
+        )
+
+        self.assertEqual(struct.unpack_from('>I', block, 0x08)[0], 0x30)
+        self.assertEqual(block[0x23:0x30], b'\x00' * 13)
+        self.assertEqual(block[0x30:0x33], b'ACT')
 
     def test_header_builder_preserves_skn_relative_trailing_offset_once(self):
         original_header = bytearray(0x20)
@@ -329,6 +369,7 @@ class BuildModelBlockTests(unittest.TestCase):
                 'FacesData': b'\x00',
                 'DisplayStates': [{
                     'DisplayStateId': 0,
+                    'PrimListLength': 0,
                     'ShaderMode': 'Spec',
                 }],
             }],
@@ -423,6 +464,38 @@ class BuildModelBlockTests(unittest.TestCase):
         patch_fst.assert_called_once_with(123456)
         zero_original.assert_called_once_with(18, 0)
         write_dumps.assert_called_once_with('fixture.sluggie', 0x1000, 42, b'model-block')
+
+    def test_write_expands_after_existing_hammerspace_when_no_free_run_exists(self):
+        build = main.ModelBlockBuild(
+            block=b'model-block',
+            parsed=self.parsed,
+            chunk_number=18,
+            file_index=0,
+            original_offset=0x1000,
+            original_length=42,
+            section_modes=main.SectionModes(),
+            section_sizes={},
+            validation_report={'valid': True},
+        )
+        current_size = 0x1003
+        expected_start = 0x1020
+        expected_size = expected_start + len(build.block) + main.hh.HS_BUFFER_BYTES
+        with (
+            mock.patch.object(main.hh, 'readOutputDolEntry', return_value=(0, 42)),
+            mock.patch.object(main.hh, 'findFreeMemoryChunk', side_effect=(-1, expected_start)),
+            mock.patch.object(main.hh, 'ensureOutputDat', return_value=True) as ensure_dat,
+            mock.patch.object(main.hh, 'writeModelBlock'),
+            mock.patch.object(main.hh, 'patchDolEntry'),
+            mock.patch.object(main.hh, 'findSharedEntries', return_value=[]),
+            mock.patch.object(main.hh, 'patchFstFileSize'),
+            mock.patch.object(main.hh, 'zeroOriginalModel'),
+            mock.patch.object(main.hh, 'writeDebugDumps'),
+            mock.patch.object(main.os.path, 'getsize', side_effect=(current_size, expected_size)),
+        ):
+            new_offset = main.WriteModelBlock(build, 'fixture.sluggie')
+
+        self.assertEqual(new_offset, expected_start)
+        self.assertEqual(ensure_dat.call_args_list, [mock.call(), mock.call(expected_size)])
 
     def test_write_rejects_failed_validation(self):
         build = mock.Mock(validation_report={'valid': False})
