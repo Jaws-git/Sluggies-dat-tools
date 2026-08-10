@@ -24,19 +24,21 @@ def _write_ptr7_facial(
     submesh_index: int = 0,
     first_vertex: int = 0,
     vertex_count: int = 1,
+    maximum_pose_count: int = 1,
+    object_pose_count: int = 1,
 ) -> None:
     struct.pack_into('>I', block, 0x18, ptr7_offset)
 
     section = bytearray(0x40)
-    struct.pack_into('>H', section, 0x00, 1)      # max pose count
+    struct.pack_into('>H', section, 0x00, maximum_pose_count)
     struct.pack_into('>H', section, 0x02, 1)      # object count
     struct.pack_into('>H', section, 0x04, 2)      # attribute type count
     struct.pack_into('>I', section, 0x08, 0x0C)   # object table offset
 
     # Single object table entry.
-    struct.pack_into('>H', section, 0x0C, 1)      # pose count
+    struct.pack_into('>H', section, 0x0C, object_pose_count)
     struct.pack_into('>H', section, 0x0E, 1)      # attribute count
-    struct.pack_into('>I', section, 0x10, 0x10)   # attribute record size
+    struct.pack_into('>I', section, 0x10, 0x0C + object_pose_count * 4)  # attribute record size
     struct.pack_into('>I', section, 0x14, 0x18)   # object data offset
 
     # Single attribute record (position kind).
@@ -45,13 +47,17 @@ def _write_ptr7_facial(
     section[0x1D] = 1                              # position attribute kind
     section[0x1E] = 3                              # component count
     section[0x1F] = 2                              # component size
-    struct.pack_into('>I', section, 0x20, 0x28)   # run list offset
-    struct.pack_into('>I', section, 0x24, 0x2C)   # pose offset[0]
+    run_list_offset = 0x2C
+    struct.pack_into('>I', section, 0x20, run_list_offset)   # run list offset
+
+    pose_base = 0x30
+    for pose_index in range(object_pose_count):
+        struct.pack_into('>I', section, 0x24 + pose_index * 4, pose_base)
 
     # One run and one 3xint16 pose sample.
-    struct.pack_into('>H', section, 0x28, first_vertex)
-    struct.pack_into('>H', section, 0x2A, vertex_count)
-    section[0x2C:0x32] = b'\x00\x00\x00\x00\x00\x00'
+    struct.pack_into('>H', section, run_list_offset, first_vertex)
+    struct.pack_into('>H', section, run_list_offset + 2, vertex_count)
+    section[pose_base:pose_base + 6] = b'\x00\x00\x00\x00\x00\x00'
 
     block[ptr7_offset:ptr7_offset + len(section)] = section
 
@@ -279,6 +285,14 @@ class BlockValidatorTests(unittest.TestCase):
         report = validate_model_block(bytes(block))
         self.assertFalse(report['valid'])
         self.assertTrue(any('references submesh 9' in error for error in report['errors']))
+
+    def test_ptr7_facial_object_pose_count_can_exceed_section_max(self):
+        block = bytearray(make_valid_block())
+        _write_ptr7_facial(block, maximum_pose_count=1, object_pose_count=2, submesh_index=1)
+
+        report = validate_model_block(bytes(block))
+        self.assertTrue(report['valid'])
+        self.assertEqual(report['errors'], [])
 
 
 if __name__ == '__main__':

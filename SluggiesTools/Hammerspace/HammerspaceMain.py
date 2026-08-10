@@ -393,10 +393,15 @@ def ParseSluggie(data: dict) -> SluggieParsed:
         draw_states = []
         for ds in sub.get('DisplayStates', []):
             pad_hex = ds.get('DisplayStatePadBytes', '000000')
+            prim_list_data = ds.get('PrimListData')
+            if prim_list_data in (None, ''):
+                prim_list_bytes = b''
+            else:
+                prim_list_bytes = _decode(prim_list_data, use_b64)
             draw_states.append(DrawState(
                 display_state_id            = ds['DisplayStateId'],
                 display_state_pad_bytes     = bytes.fromhex(pad_hex),
-                prim_list_data              = _decode(ds['PrimListData'], use_b64),
+                prim_list_data              = prim_list_bytes,
                 active_descriptors          = ds.get('VertexStreamLayout') or ds.get('ActiveDescriptors', []),
                 prim_list_ptr_field_offset  = _hex(ds['PrimListPtrFieldOffset']),
                 prim_list_size_field_offset = _hex(ds['PrimListSizeFieldOffset']),
@@ -1249,6 +1254,202 @@ def _compute_original_pos_gpl_rel(parsed: SluggieParsed) -> int:
         return blob0_ptr + pos_arr_ptr
 
 
+def _vb_comp_size(quant_info: int) -> int:
+    return 4 if (quant_info >> 4) in (4, 7, 0xa) else 2
+
+
+def _source_blob_for_skn(entry: object, vertex_stride: int) -> bytes:
+    blob = entry.bind_pose_data
+    expected_len = getattr(entry, 'vertex_offset', 0) + entry.vertex_cnt * vertex_stride
+    if len(blob) < expected_len:
+        blob = b'\x00' * (expected_len - len(blob)) + blob
+    return blob
+
+
+def _layout_skn_variable_data(skn: SkinningData, vertex_stride: int, var_data_offset: int) -> tuple[bytearray, list[int], list[int], list[int], list[int], list[int], list[int], bytes, int]:
+    var_data = bytearray()
+    var_cursor = var_data_offset
+
+    def _source_relative(absolute_ptr: int) -> int:
+        return absolute_ptr - skn.skn_offset if absolute_ptr else 0
+
+    source_layout = []
+    if skn.preserve_source_layout and skn.skn_offset:
+        source_layout.extend(
+            (_source_relative(entry.vertex_arr_absolute_ptr), _source_blob_for_skn(entry, vertex_stride))
+            for entry in skn.sk1s
+        )
+        source_layout.extend(
+            (_source_relative(entry.vertex_arr_absolute_ptr), _source_blob_for_skn(entry, vertex_stride))
+            for entry in skn.sk2s
+        )
+        if skn.flush_ind_size and skn.flush_ind_data:
+            source_layout.append(
+                (_source_relative(skn.flush_ind_absolute_ptr or 0), skn.flush_ind_data)
+            )
+        source_layout.extend(
+            (_source_relative(entry.weight_arr_absolute_ptr), entry.weight_data)
+            for entry in skn.sk2s
+        )
+        for entry in skn.sk_accs:
+            source_layout.extend((
+                (_source_relative(entry.vertex_arr_absolute_ptr), entry.bind_pose_data),
+                (_source_relative(entry.dest_arr_absolute_ptr), entry.dest_index_data),
+                (_source_relative(entry.weight_arr_absolute_ptr), entry.weight_data),
+            ))
+
+    source_layout_valid = bool(source_layout) and all(
+        offset >= var_data_offset and offset % 32 == 0
+        for offset, _ in source_layout
+    )
+    if source_layout_valid:
+        ordered = sorted(source_layout)
+        source_layout_valid = all(
+            offset + len(blob) <= next_offset
+            for (offset, blob), (next_offset, _) in zip(ordered, ordered[1:])
+        )
+
+    if source_layout_valid:
+        layout_end = align_array_offset(
+            max(offset + len(blob) for offset, blob in source_layout), 'skn_source')
+        var_data = bytearray(layout_end - var_data_offset)
+        for offset, blob in source_layout:
+            start = offset - var_data_offset
+            var_data[start:start + len(blob)] = blob
+
+        sk1_src_off = [_source_relative(entry.vertex_arr_absolute_ptr) for entry in skn.sk1s]
+        sk2_src_off = [_source_relative(entry.vertex_arr_absolute_ptr) for entry in skn.sk2s]
+        sk2_wt_off = [_source_relative(entry.weight_arr_absolute_ptr) for entry in skn.sk2s]
+        acc_src_off = [_source_relative(entry.vertex_arr_absolute_ptr) for entry in skn.sk_accs]
+        acc_dest_off = [_source_relative(entry.dest_arr_absolute_ptr) for entry in skn.sk_accs]
+        acc_wt_off = [_source_relative(entry.weight_arr_absolute_ptr) for entry in skn.sk_accs]
+        flush_bytes = skn.flush_ind_data
+        flush_off = _source_relative(skn.flush_ind_absolute_ptr or 0) if flush_bytes else 0
+        var_cursor = layout_end
+    else:
+        sk1_src_off = []
+        for sk in skn.sk1s:
+            sk1_src_off.append(var_cursor)
+            chunk = pad_array(_source_blob_for_skn(sk, vertex_stride), 'skn_source')
+            var_data.extend(chunk)
+            var_cursor += len(chunk)
+
+        sk2_src_off = []
+        for sk in skn.sk2s:
+            sk2_src_off.append(var_cursor)
+            chunk = pad_array(_source_blob_for_skn(sk, vertex_stride), 'skn_source')
+            var_data.extend(chunk)
+            var_cursor += len(chunk)
+
+        flush_off = 0
+        flush_bytes = skn.flush_ind_data
+        if skn.flush_ind_size and flush_bytes:
+            flush_off = var_cursor
+            chunk = pad_array(flush_bytes, 'skn_flush_index')
+            var_data.extend(chunk)
+            var_cursor += len(chunk)
+
+        sk2_wt_off = []
+        for sk in skn.sk2s:
+            sk2_wt_off.append(var_cursor)
+            chunk = pad_array(sk.weight_data, 'skn_weight')
+            var_data.extend(chunk)
+            var_cursor += len(chunk)
+
+        acc_src_off = []
+        acc_dest_off = []
+        acc_wt_off = []
+        for sk in skn.sk_accs:
+            acc_src_off.append(var_cursor)
+            chunk = pad_array(sk.bind_pose_data, 'skn_source')
+            var_data.extend(chunk)
+            var_cursor += len(chunk)
+
+            acc_dest_off.append(var_cursor)
+            chunk = pad_array(sk.dest_index_data, 'skn_destination_index')
+            var_data.extend(chunk)
+            var_cursor += len(chunk)
+
+            acc_wt_off.append(var_cursor)
+            chunk = pad_array(sk.weight_data, 'skn_weight')
+            var_data.extend(chunk)
+            var_cursor += len(chunk)
+
+    return (
+        var_data,
+        sk1_src_off,
+        sk2_src_off,
+        sk2_wt_off,
+        acc_src_off,
+        acc_dest_off,
+        acc_wt_off,
+        flush_bytes,
+        flush_off,
+    )
+
+
+def _build_skn_struct_bytes(skn: SkinningData, sk1_src_off: list[int], sk2_src_off: list[int], sk2_wt_off: list[int], acc_src_off: list[int], acc_dest_off: list[int], acc_wt_off: list[int]) -> tuple[bytes, bytes, bytes]:
+    import struct as _s
+
+    SK1_SIZE = 0x40
+    SK2_SIZE = 0x74
+    SKACC_SIZE = 0x44
+    n_sk1 = len(skn.sk1s)
+    n_sk2 = len(skn.sk2s)
+    n_acc = len(skn.sk_accs)
+
+    sk1_bytes = bytearray(n_sk1 * SK1_SIZE)
+    for i, sk in enumerate(skn.sk1s):
+        b = i * SK1_SIZE
+        _s.pack_into('>I', sk1_bytes, b + 0x30, sk1_src_off[i])
+        _s.pack_into('>I', sk1_bytes, b + 0x34, sk.gpl_vertex_arr_value)
+        _s.pack_into('>H', sk1_bytes, b + 0x38, sk.bone_index)
+        _s.pack_into('>H', sk1_bytes, b + 0x3a, sk.vertex_cnt)
+        _s.pack_into('B', sk1_bytes, b + 0x3c, sk.vertex_offset)
+
+    sk2_bytes = bytearray(n_sk2 * SK2_SIZE)
+    for i, sk in enumerate(skn.sk2s):
+        b = i * SK2_SIZE
+        _s.pack_into('>I', sk2_bytes, b + 0x60, sk2_src_off[i])
+        _s.pack_into('>I', sk2_bytes, b + 0x64, sk2_wt_off[i])
+        _s.pack_into('>I', sk2_bytes, b + 0x68, sk.gpl_vertex_arr_value)
+        _s.pack_into('>H', sk2_bytes, b + 0x6c, sk.bone_index1)
+        _s.pack_into('>H', sk2_bytes, b + 0x6e, sk.bone_index2)
+        _s.pack_into('>H', sk2_bytes, b + 0x70, sk.vertex_cnt)
+        _s.pack_into('B', sk2_bytes, b + 0x72, sk.vertex_offset)
+
+    acc_bytes = bytearray(n_acc * SKACC_SIZE)
+    for i, sk in enumerate(skn.sk_accs):
+        b = i * SKACC_SIZE
+        _s.pack_into('>I', acc_bytes, b + 0x30, acc_src_off[i])
+        _s.pack_into('>I', acc_bytes, b + 0x34, acc_dest_off[i])
+        _s.pack_into('>I', acc_bytes, b + 0x38, sk.gpl_dest_arr_value)
+        _s.pack_into('>I', acc_bytes, b + 0x3c, acc_wt_off[i])
+        _s.pack_into('>H', acc_bytes, b + 0x40, sk.bone_index)
+        _s.pack_into('>H', acc_bytes, b + 0x42, sk.vertex_cnt)
+
+    return bytes(sk1_bytes), bytes(sk2_bytes), bytes(acc_bytes)
+
+
+def _compute_skn_mem_clear_range(skn: SkinningData, vertex_stride: int) -> tuple[int, int]:
+    import struct as _s
+
+    direct_writes = set()
+    for entry in (*skn.sk1s, *skn.sk2s):
+        direct_writes.update(
+            entry.gpl_vertex_arr_value + entry.vertex_offset + index * vertex_stride
+            for index in range(entry.vertex_cnt)
+        )
+    accumulation_writes = set()
+    for entry in skn.sk_accs:
+        destinations = _s.unpack(f'>{entry.vertex_cnt}H', entry.dest_index_data)
+        accumulation_writes.update(
+            entry.gpl_dest_arr_value + destination * vertex_stride
+            for destination in destinations
+        )
+    return compute_mem_clear_range(direct_writes, accumulation_writes, vertex_stride)
+
+
 def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> bytes:
     """Build the SKN (Skinning Data) section.
 
@@ -1273,13 +1474,6 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
     if not skn:
         return b''
 
-    # -------------------------------------------------------------------------
-    # Local helpers
-    # -------------------------------------------------------------------------
-
-    def _vb_comp_size(quant_info: int) -> int:
-        return 4 if (quant_info >> 4) in (4, 7, 0xa) else 2
-
     vertex_stride = _vb_comp_size(skn.quantize_info) * 6  # pos + normal, interleaved
 
     n_sk1 = len(skn.sk1s)
@@ -1294,197 +1488,23 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
     SK1_ARR_OFF   = SKN_HDR_SIZE
     SK2_ARR_OFF   = SK1_ARR_OFF   + n_sk1 * SK1_SIZE
     SKACC_ARR_OFF = SK2_ARR_OFF   + n_sk2 * SK2_SIZE
-    # Round up to next 32-byte boundary so the first variable data array is aligned
     VAR_DATA_OFF  = align_array_offset(SKACC_ARR_OFF + n_acc * SKACC_SIZE, 'skn_source')
 
-    # -------------------------------------------------------------------------
-    # Phase SKN-1: variable-data layout pass
-    # All offsets are SKN-section-relative (absolute within the final SKN bytes).
-    # Layout order: [SK1 srcs] [SK2 srcs] [flush] [SK2 weights]
-    # [SKAcc src+destIdx+wt per triple].
-    # -------------------------------------------------------------------------
-
-    var_data = bytearray()
-    var_cursor = VAR_DATA_OFF
-
-    def _source_blob(entry) -> bytes:
-        blob = entry.bind_pose_data
-        expected_len = getattr(entry, 'vertex_offset', 0) + entry.vertex_cnt * vertex_stride
-        if len(blob) < expected_len:
-            blob = b'\x00' * (expected_len - len(blob)) + blob
-        return blob
-
-    def _source_relative(absolute_ptr: int) -> int:
-        return absolute_ptr - skn.skn_offset if absolute_ptr else 0
-
-    source_layout = []
-    if skn.preserve_source_layout and skn.skn_offset:
-        source_layout.extend(
-            (_source_relative(entry.vertex_arr_absolute_ptr), _source_blob(entry))
-            for entry in skn.sk1s
-        )
-        source_layout.extend(
-            (_source_relative(entry.vertex_arr_absolute_ptr), _source_blob(entry))
-            for entry in skn.sk2s
-        )
-        if skn.flush_ind_size and skn.flush_ind_data:
-            source_layout.append(
-                (_source_relative(skn.flush_ind_absolute_ptr or 0), skn.flush_ind_data)
-            )
-        source_layout.extend(
-            (_source_relative(entry.weight_arr_absolute_ptr), entry.weight_data)
-            for entry in skn.sk2s
-        )
-        for entry in skn.sk_accs:
-            source_layout.extend((
-                (_source_relative(entry.vertex_arr_absolute_ptr), entry.bind_pose_data),
-                (_source_relative(entry.dest_arr_absolute_ptr), entry.dest_index_data),
-                (_source_relative(entry.weight_arr_absolute_ptr), entry.weight_data),
-            ))
-
-    source_layout_valid = bool(source_layout) and all(
-        offset >= VAR_DATA_OFF and offset % 32 == 0
-        for offset, _ in source_layout
+    var_data, sk1_src_off, sk2_src_off, sk2_wt_off, acc_src_off, acc_dest_off, acc_wt_off, flush_bytes, flush_off = _layout_skn_variable_data(
+        skn,
+        vertex_stride,
+        VAR_DATA_OFF,
     )
-    if source_layout_valid:
-        ordered = sorted(source_layout)
-        source_layout_valid = all(
-            offset + len(blob) <= next_offset
-            for (offset, blob), (next_offset, _) in zip(ordered, ordered[1:])
-        )
-
-    if source_layout_valid:
-        layout_end = align_array_offset(
-            max(offset + len(blob) for offset, blob in source_layout), 'skn_source')
-        var_data = bytearray(layout_end - VAR_DATA_OFF)
-        for offset, blob in source_layout:
-            start = offset - VAR_DATA_OFF
-            var_data[start:start + len(blob)] = blob
-
-        sk1_src_off = [_source_relative(entry.vertex_arr_absolute_ptr) for entry in skn.sk1s]
-        sk2_src_off = [_source_relative(entry.vertex_arr_absolute_ptr) for entry in skn.sk2s]
-        sk2_wt_off = [_source_relative(entry.weight_arr_absolute_ptr) for entry in skn.sk2s]
-        acc_src_off = [_source_relative(entry.vertex_arr_absolute_ptr) for entry in skn.sk_accs]
-        acc_dest_off = [_source_relative(entry.dest_arr_absolute_ptr) for entry in skn.sk_accs]
-        acc_wt_off = [_source_relative(entry.weight_arr_absolute_ptr) for entry in skn.sk_accs]
-        flush_bytes = skn.flush_ind_data
-        flush_off = _source_relative(skn.flush_ind_absolute_ptr or 0) if flush_bytes else 0
-        var_cursor = layout_end
-    else:
-        # Per SK1: one source (bind-pose pos+normal) array.
-        sk1_src_off = []
-        for sk in skn.sk1s:
-            sk1_src_off.append(var_cursor)
-            chunk = pad_array(_source_blob(sk), 'skn_source')
-            var_data.extend(chunk)
-            var_cursor += len(chunk)
-
-        # SK2 source arrays are contiguous in donor blocks.
-        sk2_src_off = []
-        for sk in skn.sk2s:
-            sk2_src_off.append(var_cursor)
-            chunk = pad_array(_source_blob(sk), 'skn_source')
-            var_data.extend(chunk)
-            var_cursor += len(chunk)
-
-        # Donor blocks place the flush list between SK2 sources and weights.
-        flush_off = 0
-        flush_bytes = skn.flush_ind_data
-        if skn.flush_ind_size and flush_bytes:
-            flush_off = var_cursor
-            chunk = pad_array(flush_bytes, 'skn_flush_index')
-            var_data.extend(chunk)
-            var_cursor += len(chunk)
-
-        sk2_wt_off = []
-        for sk in skn.sk2s:
-            sk2_wt_off.append(var_cursor)
-            chunk = pad_array(sk.weight_data, 'skn_weight')
-            var_data.extend(chunk)
-            var_cursor += len(chunk)
-
-        # Per SKAcc: source, dest-index, weight arrays.
-        acc_src_off = []
-        acc_dest_off = []
-        acc_wt_off = []
-        for sk in skn.sk_accs:
-            acc_src_off.append(var_cursor)
-            chunk = pad_array(sk.bind_pose_data, 'skn_source')
-            var_data.extend(chunk)
-            var_cursor += len(chunk)
-
-            acc_dest_off.append(var_cursor)
-            chunk = pad_array(sk.dest_index_data, 'skn_destination_index')
-            var_data.extend(chunk)
-            var_cursor += len(chunk)
-
-            acc_wt_off.append(var_cursor)
-            chunk = pad_array(sk.weight_data, 'skn_weight')
-            var_data.extend(chunk)
-            var_cursor += len(chunk)
-
-    # -------------------------------------------------------------------------
-    # Phase SKN-2: struct headers
-    # gplVertexArr / gplDestArr are preserved verbatim — they are pos-data-
-    # relative byte offsets and do not change when the block is relocated.
-    # -------------------------------------------------------------------------
-
-    # SK1 structs (0x40 bytes each)
-    sk1_bytes = bytearray(n_sk1 * SK1_SIZE)
-    for i, sk in enumerate(skn.sk1s):
-        b = i * SK1_SIZE
-        # +0x00..+0x2f: matrix placeholder — zeroed (runtime fills each frame)
-        _s.pack_into('>I', sk1_bytes, b + 0x30, sk1_src_off[i])         # srcArrPtr  (SKN-rel)
-        _s.pack_into('>I', sk1_bytes, b + 0x34, sk.gpl_vertex_arr_value) # gplVertexArr (verbatim)
-        _s.pack_into('>H', sk1_bytes, b + 0x38, sk.bone_index)
-        _s.pack_into('>H', sk1_bytes, b + 0x3a, sk.vertex_cnt)
-        _s.pack_into('B',  sk1_bytes, b + 0x3c, sk.vertex_offset)
-        # +0x3d..+0x3f: padding — already zero
-
-    # SK2 structs (0x74 bytes each)
-    sk2_bytes = bytearray(n_sk2 * SK2_SIZE)
-    for i, sk in enumerate(skn.sk2s):
-        b = i * SK2_SIZE
-        # +0x00..+0x5f: two matrix placeholders — zeroed
-        _s.pack_into('>I', sk2_bytes, b + 0x60, sk2_src_off[i])         # srcArrPtr
-        _s.pack_into('>I', sk2_bytes, b + 0x64, sk2_wt_off[i])          # weightArrPtr
-        _s.pack_into('>I', sk2_bytes, b + 0x68, sk.gpl_vertex_arr_value) # gplVertexArr (verbatim)
-        _s.pack_into('>H', sk2_bytes, b + 0x6c, sk.bone_index1)
-        _s.pack_into('>H', sk2_bytes, b + 0x6e, sk.bone_index2)
-        _s.pack_into('>H', sk2_bytes, b + 0x70, sk.vertex_cnt)
-        _s.pack_into('B',  sk2_bytes, b + 0x72, sk.vertex_offset)
-        # +0x73: padding — already zero
-
-    # SKAcc structs (0x44 bytes each)
-    acc_bytes = bytearray(n_acc * SKACC_SIZE)
-    for i, sk in enumerate(skn.sk_accs):
-        b = i * SKACC_SIZE
-        # +0x00..+0x2f: matrix placeholder — zeroed
-        _s.pack_into('>I', acc_bytes, b + 0x30, acc_src_off[i])       # srcArrPtr
-        _s.pack_into('>I', acc_bytes, b + 0x34, acc_dest_off[i])      # destIdxArrPtr
-        _s.pack_into('>I', acc_bytes, b + 0x38, sk.gpl_dest_arr_value) # gplDestArr (verbatim)
-        _s.pack_into('>I', acc_bytes, b + 0x3c, acc_wt_off[i])        # weightArrPtr
-        _s.pack_into('>H', acc_bytes, b + 0x40, sk.bone_index)
-        _s.pack_into('>H', acc_bytes, b + 0x42, sk.vertex_cnt)
-
-    # -------------------------------------------------------------------------
-    # Phase SKN-3: position-data-relative memClrPtr / memClrSize.
-    # -------------------------------------------------------------------------
-    direct_writes = set()
-    for entry in (*skn.sk1s, *skn.sk2s):
-        direct_writes.update(
-            entry.gpl_vertex_arr_value + entry.vertex_offset + index * vertex_stride
-            for index in range(entry.vertex_cnt)
-        )
-    accumulation_writes = set()
-    for entry in skn.sk_accs:
-        destinations = _s.unpack(f'>{entry.vertex_cnt}H', entry.dest_index_data)
-        accumulation_writes.update(
-            entry.gpl_dest_arr_value + destination * vertex_stride
-            for destination in destinations
-        )
-    new_memClrPtr, new_memClrSize = compute_mem_clear_range(
-        direct_writes, accumulation_writes, vertex_stride)
+    sk1_bytes, sk2_bytes, acc_bytes = _build_skn_struct_bytes(
+        skn,
+        sk1_src_off,
+        sk2_src_off,
+        sk2_wt_off,
+        acc_src_off,
+        acc_dest_off,
+        acc_wt_off,
+    )
+    new_memClrPtr, new_memClrSize = _compute_skn_mem_clear_range(skn, vertex_stride)
     if (new_memClrPtr, new_memClrSize) != (skn.mem_clr_ptr_value, skn.mem_clr_size):
         _slogger.info(
             f'[SKN] memClr recalculated: 0x{skn.mem_clr_ptr_value:X}/0x{skn.mem_clr_size:X}'
@@ -1492,31 +1512,22 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
             source='hammerspace.main',
         )
 
-    # -------------------------------------------------------------------------
-    # Phase SKN-4: SKN header + full assembly
-    # -------------------------------------------------------------------------
-
     skn_hdr = bytearray(SKN_HDR_SIZE)
     _s.pack_into('>H', skn_hdr, 0x00, n_sk1)
     _s.pack_into('>H', skn_hdr, 0x02, n_sk2)
     _s.pack_into('>H', skn_hdr, 0x04, n_acc)
     _s.pack_into('B',  skn_hdr, 0x06, skn.quantize_info)
-    # 0x07: padding
-    _s.pack_into('>I', skn_hdr, 0x08, SK1_ARR_OFF)    # sk1Ptr  (SKN-rel, points to array start)
-    _s.pack_into('>I', skn_hdr, 0x0c, SK2_ARR_OFF)    # sk2Ptr
-    _s.pack_into('>I', skn_hdr, 0x10, SKACC_ARR_OFF)  # skAccPtr
+    _s.pack_into('>I', skn_hdr, 0x08, SK1_ARR_OFF)
+    _s.pack_into('>I', skn_hdr, 0x0c, SK2_ARR_OFF)
+    _s.pack_into('>I', skn_hdr, 0x10, SKACC_ARR_OFF)
     _s.pack_into('>I', skn_hdr, 0x14, new_memClrPtr)
     _s.pack_into('>I', skn_hdr, 0x18, new_memClrSize)
-    _s.pack_into('>I', skn_hdr, 0x1c, flush_off if flush_bytes else 0)  # flushIndPtr
+    _s.pack_into('>I', skn_hdr, 0x1c, flush_off if flush_bytes else 0)
     _s.pack_into('>I', skn_hdr, 0x20, skn.flush_ind_size)
 
-    # Insert alignment padding between struct arrays and variable data so that
-    # var_data[0] lands at SKN offset VAR_DATA_OFF (where all pointers point).
     struct_end = SKN_HDR_SIZE + n_sk1 * SK1_SIZE + n_sk2 * SK2_SIZE + n_acc * SKACC_SIZE
     align_pad = VAR_DATA_OFF - struct_end
-    skn_core = bytes(skn_hdr) + bytes(sk1_bytes) + bytes(sk2_bytes) + bytes(acc_bytes) + b'\x00' * align_pad + bytes(var_data)
-
-    return skn_core
+    return bytes(skn_hdr) + sk1_bytes + sk2_bytes + acc_bytes + b'\x00' * align_pad + bytes(var_data)
 
 
 def CloneSKN(model_offset: int, model_length: int) -> bytes:
@@ -1625,7 +1636,7 @@ def BuildHEADERModelBlock(
             original_relative_offset = original_trailing_off - original_skn_off
             if len(skn_bytes) < original_relative_offset:
                 skn_trailing_padding = b'\x00' * (original_relative_offset - len(skn_bytes))
-    trailing_off = skn_off + len(skn_bytes) + len(skn_trailing_padding)
+    tail_start = skn_off + len(skn_bytes) + len(skn_trailing_padding)
 
     hdr = bytearray(HDR_SIZE)
     _s.pack_into('>I', hdr, 0x00, 0)
@@ -1639,7 +1650,7 @@ def BuildHEADERModelBlock(
         for field_offset in (0x14, 0x18, 0x1c):
             orig_ptr = _s.unpack_from('>I', original_header, field_offset)[0]
             if orig_ptr and orig_ptr >= original_trailing_off:
-                new_ptr = trailing_off + (orig_ptr - original_trailing_off)
+                new_ptr = tail_start + (orig_ptr - original_trailing_off)
                 _s.pack_into('>I', hdr, field_offset, new_ptr)
                 _slogger.info(f'[HDR] +0x{field_offset:02X} patched: '
                        f'0x{orig_ptr:08X} → 0x{new_ptr:08X}', source="hammerspace.main")
@@ -1678,6 +1689,89 @@ def _validate_section_modes(modes: SectionModes) -> None:
             raise ValueError(f"{section}=build is not implemented; supported mode: clone")
 
 
+def _collect_missing_hammerspace_properties(model: dict) -> list[str]:
+    """Return the subset of hammerspace rebuild properties that are missing."""
+    missing: list[str] = []
+
+    for key in ('ChunkNumber', 'FileIndex', 'ModelOffset', 'ModelLength'):
+        if key not in model or model.get(key) in (None, ''):
+            missing.append(key)
+
+    if 'Submeshes' not in model or not isinstance(model.get('Submeshes'), list) or not model['Submeshes']:
+        missing.append('Submeshes')
+        return missing
+
+    for sub_idx, sub in enumerate(model['Submeshes']):
+        if not isinstance(sub, dict):
+            missing.append(f'Submeshes[{sub_idx}]')
+            continue
+
+        vb = sub.get('VertexBuffer')
+        if not isinstance(vb, dict):
+            missing.append(f'Submeshes[{sub_idx}].VertexBuffer')
+        else:
+            for key in ('VertexBufferData', 'VertexBufferCompCount', 'VertexBufferQuantizeInfo'):
+                if key not in vb or vb.get(key) in (None, ''):
+                    missing.append(f'Submeshes[{sub_idx}].VertexBuffer.{key}')
+
+        if 'FacesData' not in sub or sub.get('FacesData') in (None, ''):
+            missing.append(f'Submeshes[{sub_idx}].FacesData')
+
+        ds = sub.get('DisplayStates')
+        if not isinstance(ds, list) or not ds:
+            missing.append(f'Submeshes[{sub_idx}].DisplayStates')
+            continue
+
+        for ds_idx, display_state in enumerate(ds):
+            if not isinstance(display_state, dict):
+                missing.append(f'Submeshes[{sub_idx}].DisplayStates[{ds_idx}]')
+                continue
+            for key in ('DisplayStateId', 'PrimListData', 'ShaderMode'):
+                if key not in display_state or display_state.get(key) in (None, ''):
+                    missing.append(f'Submeshes[{sub_idx}].DisplayStates[{ds_idx}].{key}')
+
+    return missing
+
+
+def _validate_hammerspace_contract(model: dict, modes: SectionModes) -> None:
+    """Require a real hammerspace `.sluggies` contract for rebuild operations.
+
+    Temporary compatibility shim for milestone testing: SKN-only rebuilds are
+    allowed to proceed even when the exporter has not yet filled in display-state
+    `PrimListData`, because the current in-game test matrix needs a runnable path.
+    Once the exporter provides the missing data, this should be tightened back up
+    so the contract gate rejects incomplete rebuild payloads again.
+    """
+    if all(
+        (
+            modes.gpl == 'clone',
+            modes.act == 'clone',
+            modes.tex == 'clone',
+            modes.skn == 'clone',
+            modes.trailing == 'clone',
+        )
+    ):
+        return
+
+    if modes.skn == 'build' and modes.gpl == 'clone' and modes.act == 'clone' and modes.tex == 'clone' and modes.trailing == 'clone':
+        missing = _collect_missing_hammerspace_properties(model)
+        if missing and 'PrimListData' in '\n'.join(missing):
+            _slogger.warning(
+                'Temporary hammerspace contract relaxation: allowing SKN-only rebuild with '
+                'missing PrimListData until exporter data is available',
+                source='hammerspace.main',
+            )
+            return
+
+    missing = _collect_missing_hammerspace_properties(model)
+    if missing:
+        missing_list = ', '.join(missing)
+        raise ValueError(
+            'hammerspace rebuild is missing required rebuild properties: '
+            f'{missing_list}; re-export the model from Blender/SluggiesTools before patching'
+        )
+
+
 def _build_validation_report(
     block: bytes,
     original_length: int,
@@ -1713,6 +1807,7 @@ def BuildModelBlock(data: dict, section_modes: SectionModes | None = None) -> Mo
     _validate_section_modes(modes)
 
     model = data['SluggiesModel']
+    _validate_hammerspace_contract(model, modes)
     chunk_number = model['ChunkNumber']
     file_index = model['FileIndex']
     original_offset, original_length = hh.readDolEntry(chunk_number, file_index)
