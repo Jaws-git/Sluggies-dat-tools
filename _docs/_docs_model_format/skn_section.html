@@ -178,7 +178,7 @@
             <td>Padding</td>
         </tr>
     </table>
-    <p>Process this similar to SK1 entries. The only difference is that there's now a weight array (don't add the position/normal offset to the weight array pointer) that has vertex_count * 2 entries, each a uint8 between 1 and 255. Bone 1 influences vertex n with a weight of weights[n * 2], and bone 2 influences vertex n with a weight of weights[n * 2 + 1]. The weights on each vertex should sum to 255 once all the SK entries have been processed.</p>
+    <p>Process this similar to SK1 entries. The weight array (without the position/normal offset) has vertex_count * 2 uint8 entries. Bone 1 influences vertex n with weights[n * 2], and bone 2 with weights[n * 2 + 1]. Vanilla data establishes a 256-unit logical divisor: 89,381 observed SK2 pairs sum to 256, while lower SK2 sums may receive additional SKAcc contributions.</p>
     <h2>SKAcc</h2>
     <p>These entries are used to supplement SK2s for vertices that have more than two bone influences.</p>
     <table>
@@ -232,7 +232,7 @@
         <li><strong>Identical bind-pose source positions</strong> — at rest the two source slots hold the same XYZ/normal values.</li>
         <li><strong>Different weights</strong> — always <code>255</code> for the first occurrence and <code>1</code> for the second (i.e. ~100 % and ~0.4 %).</li>
     </ul>
-    <p>The purpose appears to be a lightweight twist/multi-stage deformer: the game engine accumulates the same bone's contribution twice into the destination vertex with two distinct weight scalings, allowing the runtime to blend between two intermediate transform stages for complex joints. Because the memory-clear step zeros the destination before each frame, both accumulations are added to zero, giving a combined result of <code>(weight_0 + weight_1) / 255</code> of the bone's full transform — approximately 1.0 in these cases.</p>
+    <p>The purpose appears to be a lightweight twist/multi-stage deformer: the game engine accumulates the same bone's contribution twice into the destination vertex with two distinct weight scalings. All 936 duplicate groups measured by <code>weight_divisor_probe.py</code> are exactly <code>255 + 1</code>, giving <code>(weight_0 + weight_1) / 256 = 1.0</code>.</p>
     <p><strong>Implication for tools:</strong> The weight array is indexed by <em>source-array position</em>, not by destination vertex. Two source entries that share a destination index are independent records with independent weights. Any tool that maps weights by <code>(bone, destination_vertex)</code> key — such as a vertex-group system that stores a single weight per bone per vertex — will silently discard the first weight when it encounters the second, corrupting the skinning on round-trip. The original per-source-entry weight data must be preserved verbatim for all source slots whose destination index appears more than once in the same entry.</p>
 
     <h2>Section Memory Layout</h2>
@@ -243,20 +243,21 @@
         <li><strong>SK2 struct array</strong> — <code>numSK2 &times; 0x74</code> bytes, immediately after SK1 array</li>
         <li><strong>SKAcc struct array</strong> — <code>numSKAcc &times; 0x44</code> bytes, immediately after SK2 array</li>
         <li><strong>Alignment padding</strong> — zero-filled bytes to reach the next 32-byte boundary</li>
-        <li><strong>Variable data arrays</strong> — source/weight/dest-index arrays for all entries, each individually 32-byte aligned</li>
-        <li><strong>Flush index array</strong> — if present, also 32-byte aligned</li>
+        <li><strong>Variable data arrays</strong> — source/weight/dest-index and flush arrays, each individually 32-byte aligned and potentially separated by non-minimal donor padding</li>
     </ol>
     <p>The struct arrays are packed contiguously with no gaps between them. Between the end of the SKAcc struct array and the start of the variable data, zero-filled padding is inserted so that the first variable data array begins on a 32-byte boundary.</p>
 
     <h3>Variable data ordering</h3>
-    <p>Within the variable data region, arrays are laid out in this order:</p>
+    <p>For unchanged topology, preserve every exported SKN-relative array pointer and zero-filled gap. Do not compact arrays merely because the resulting pointers remain 32-byte aligned. Peach contains a non-minimal 0x20-byte hole after SK1[22]; removing it contributed to visible in-game vertex explosions.</p>
+    <p>The donor-observed Peach order, also used as the canonical fallback for edited topology, is:</p>
     <ol>
         <li>All SK1 source arrays (one per SK1 entry, in entry order)</li>
-        <li>All SK2 source + weight arrays (per entry: source array then weight array)</li>
-        <li>All SKAcc source + dest-index + weight arrays (per entry: source, dest-index, weight)</li>
+        <li>All SK2 source arrays</li>
         <li>Flush index array (if present)</li>
+        <li>All SK2 weight arrays</li>
+        <li>All SKAcc source + dest-index + weight arrays (per entry: source, dest-index, weight)</li>
     </ol>
-    <p>Each individual array is padded to a 32-byte boundary before the next array begins.</p>
+    <p>Each individual array starts on a 32-byte boundary. Donor allocations can contain more padding than the minimum required to reach that boundary. Unchanged rebuilds derive each relative slot as <code>array_absolute_ptr - SKNOffset</code>; canonical repacking is reserved for edited layouts that no longer fit those slots.</p>
 
     <h3>32-byte alignment (critical)</h3>
     <p>All variable data pointers in this section must be 32-byte aligned. See the <a href="overview.html">overview</a> for the general alignment requirement that applies across all sections. For the SKN section specifically, compute the variable data start as:</p>

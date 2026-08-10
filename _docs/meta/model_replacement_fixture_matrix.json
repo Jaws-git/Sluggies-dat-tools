@@ -1,0 +1,137 @@
+{
+  "milestone": "0.1",
+  "donor_dat": "1_Input/dt_na.dat",
+  "fixtures": [
+    {
+      "name": "140106432_heyho.gpl",
+      "source": "2_Output_Models/34 Shy Guy/140106432_heyho.gpl/140106432_heyho.gpl.sluggie",
+      "chunk_number": 34,
+      "file_index": 0,
+      "model_offset": "0x859DAC0",
+      "model_length": 254304,
+      "section_sizes": {
+        "GPL": 104256,
+        "ACT": 7456,
+        "TEX": 100480,
+        "SKN": 42080,
+        "ptr6": 0,
+        "ptr7": 0,
+        "ptr8": 0
+      },
+      "submesh_count": 2,
+      "vertex_count": 2639,
+      "face_count": 4556,
+      "display_state_count": 20,
+      "sk_entry_counts": {
+        "SK1": 10,
+        "SK2": 47,
+        "SKAcc": 19
+      },
+      "texture_count": 3,
+      "nonzero_trailing_pointers": {},
+      "coverage": [
+        "skinned",
+        "skacc",
+        "multiple_display_states"
+      ],
+      "manual_control_test": {
+        "character_select": "pending",
+        "static_scene": "pending",
+        "animated_gameplay": "pending"
+      }
+    },
+    {
+      "name": "78277664_mario.gpl",
+      "source": "2_Output_Models/18 Mario/78277664_mario.gpl/78277664_mario.gpl.sluggie",
+      "chunk_number": 18,
+      "file_index": 0,
+      "model_offset": "0x4AA6C20",
+      "model_length": 433760,
+      "section_sizes": {
+        "GPL": 129568,
+        "ACT": 7392,
+        "TEX": 248000,
+        "SKN": 38208,
+        "ptr6": 0,
+        "ptr7": 10560,
+        "ptr8": 0
+      },
+      "submesh_count": 3,
+      "vertex_count": 2849,
+      "face_count": 5252,
+      "display_state_count": 33,
+      "sk_entry_counts": {
+        "SK1": 37,
+        "SK2": 30,
+        "SKAcc": 36
+      },
+      "texture_count": 5,
+      "nonzero_trailing_pointers": {
+        "ptr7": "0x67520"
+      },
+      "coverage": [
+        "skinned",
+        "skacc",
+        "multiple_display_states",
+        "recognized_ptr7_facial_pose"
+      ],
+      "manual_control_test": {
+        "character_select": "pending",
+        "static_scene": "pending",
+        "animated_gameplay": "pending"
+      }
+    }
+  ],
+  "edited_blender_fixtures": {
+    "position_only": {
+      "source": "_docs/meta/78277664_mario.gpl.sluggie",
+      "status": "ready",
+      "donor_fixture": "78277664_mario.gpl",
+      "verification": {
+        "edit_kind": "position_only",
+        "changed_submeshes": [0, 1, 2],
+        "vertex_buffer_lengths_unchanged": true,
+        "topology_or_skin_edit_markers": false
+      }
+    },
+    "same_count_reskin": {
+      "source": null,
+      "status": "not_created"
+    },
+    "vertex_count_increase": {
+      "source": null,
+      "status": "not_created"
+    },
+    "new_face": {
+      "source": null,
+      "status": "not_created"
+    },
+    "material_reassignment": {
+      "source": null,
+      "status": "not_created"
+    },
+    "new_png_texture": {
+      "source": null,
+      "status": "not_created"
+    }
+  },
+  "manual_clone_controls": [
+    {
+      "name": "93430528_peach.gpl",
+      "source": "2_Output_Models/22 Peach/93430528_peach.gpl/93430528_peach.gpl.sluggie",
+      "section_modes": {
+        "GPL": "clone",
+        "ACT": "clone",
+        "TEX": "clone",
+        "SKN": "clone",
+        "trailing": "clone"
+      },
+      "manual_control_test": {
+        "character_select": "pass",
+        "static_scene": "pass",
+        "animated_gameplay": "pass",
+        "notes": "All-clone hammerspace test completed successfully."
+      }
+    }
+  ]
+}

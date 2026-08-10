@@ -39,6 +39,7 @@ import sys
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(__file__), '..')))
 from drawlist import (computeRequiredDescriptors, decodeDrawList,
                       encodeDrawList, patchType3Setting)
+from ModelFormat import compute_mem_clear_range, conservative_flush_indices
 
 import slogger as _slogger
 
@@ -232,28 +233,8 @@ def _rebuild_skinning(model: dict, sub: dict, use_b64) -> dict | None:
         for k in range(len(members)):
             direct.add((start + k) * stride)
     only_acc = written - direct
-    if only_acc:
-        mcp = min(only_acc)
-        mcs = ((max(only_acc) + stride - mcp) + 31) & ~31
-    else:
-        mcp = mcs = 0
-
-    flush = set()
-    lines = set()
-    for s in written:
-        for ln in range(s // 32, (s + stride - 1) // 32 + 1):
-            lines.add(ln)
-    for ln in sorted(lines):
-        lo, hi = ln * 32, ln * 32 + 32
-        if mcs and lo >= mcp and hi <= mcp + mcs:
-            continue                                    # cleared each frame anyway
-        starts_in_line = [s for s in written if lo <= s < hi]
-        if starts_in_line:
-            for s in starts_in_line:
-                flush.add(s // stride)
-        else:
-            flush.add((lo + stride - 1) // stride)      # straddled line
-    flush_sorted = sorted(x for x in flush if x < n_verts)
+    mcp, mcs = compute_mem_clear_range(direct, written, stride)
+    flush_sorted = conservative_flush_indices(written, stride, mcp, mcs, n_verts)
     ske['FlushIndData'] = _enc(b''.join(_u16.pack(x) for x in flush_sorted), use_b64)
     ske['FlushIndSize'] = len(flush_sorted)
     ske['RebuiltByImporter'] = True
