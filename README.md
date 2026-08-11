@@ -84,7 +84,7 @@ Exporting to a .sluggies file will automatically put the file name on your clipb
 ## Import
 
 *The file name from the last step should still be in your clipboard unless you copied something else in the meantime.*
-1) cmd ``` python patch.py --patch myfilename```
+1) cmd ``` python start.py --patch myfilename```
 2) a new folder 3_Output_Dat will appear, containing a patched dt_na.dat and main.dol file
 3) keep applying as many patches as you like, you can also specify multiple file names
 4) copy the finished dt_na.dat and main.dol files back into the unpacked game folder, overwriting the old ones
