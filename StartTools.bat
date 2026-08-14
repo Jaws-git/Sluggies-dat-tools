@@ -2,6 +2,8 @@
 setlocal EnableDelayedExpansion
 
 set "SLUGGIES_SOURCE=StartTools.bat"
+set SLUGGIES_LAUNCHER=python start.py
+if exist "%~dp0sluggies-dat-tools.exe" set SLUGGIES_LAUNCHER="%~dp0sluggies-dat-tools.exe"
 
 :menu
 echo ==================
@@ -28,32 +30,32 @@ if "!tools_choice!"=="1" (
     set "SLUGGIES_MENU_SELECTION=1 - Full export with untangling + icon routes + icon export"
     set "SLUGGIES_MODEL_FILES="
     set "SLUGGIES_ICON_SHARED_MODE="
-    python start.py --export --untangle
+    call !SLUGGIES_LAUNCHER! --export --untangle
     if errorlevel 1 goto :after_command
-    python start.py --prepare-icon-routes --no-overwrite-copy
+    call !SLUGGIES_LAUNCHER! --prepare-icon-routes --no-overwrite-copy
     if errorlevel 1 goto :after_command
-    python start.py --export-icons --use-output
+    call !SLUGGIES_LAUNCHER! --export-icons --use-output
     goto :after_command
 )
 if "!tools_choice!"=="2" (
     set "SLUGGIES_MENU_SELECTION=2 - Export all models"
     set "SLUGGIES_MODEL_FILES="
     set "SLUGGIES_ICON_SHARED_MODE="
-    python start.py --export
+    call !SLUGGIES_LAUNCHER! --export
     goto :after_command
 )
 if "!tools_choice!"=="3" (
     set "SLUGGIES_MENU_SELECTION=3 - Export player icons only"
     set "SLUGGIES_MODEL_FILES="
     set "SLUGGIES_ICON_SHARED_MODE="
-    python start.py --export-icons
+    call !SLUGGIES_LAUNCHER! --export-icons
     goto :after_command
 )
 if "!tools_choice!"=="4" (
     set "SLUGGIES_MENU_SELECTION=4 - Patch custom icons"
     set "SLUGGIES_MODEL_FILES="
     set "SLUGGIES_ICON_SHARED_MODE="
-    call python start.py --add-custom-icons
+    call !SLUGGIES_LAUNCHER! --add-custom-icons
     set "tools_result=!errorlevel!"
     if not "!tools_result!"=="0" (
         echo.
@@ -70,7 +72,7 @@ if "!tools_choice!"=="5" (
     set "model_files="
     set /p "model_files=Enter file name(s): "
     set "SLUGGIES_MODEL_FILES=!model_files!"
-    python start.py --patch !model_files!
+    call !SLUGGIES_LAUNCHER! --patch !model_files!
     goto :after_command
 )
 if "!tools_choice!"=="6" (
@@ -79,14 +81,14 @@ if "!tools_choice!"=="6" (
     set "model_files="
     set /p "model_files=Enter file name(s): "
     set "SLUGGIES_MODEL_FILES=!model_files!"
-    python start.py --unpatch !model_files!
+    call !SLUGGIES_LAUNCHER! --unpatch !model_files!
     goto :after_command
 )
 if "!tools_choice!"=="7" (
     set "SLUGGIES_MENU_SELECTION=7 - Resize hammerspace"
     set "SLUGGIES_MODEL_FILES="
     set "SLUGGIES_ICON_SHARED_MODE="
-    python start.py -hs
+    call !SLUGGIES_LAUNCHER! -hs
     goto :after_command
 )
 if "!tools_choice!"=="8" (
@@ -99,9 +101,9 @@ if "!tools_choice!"=="8" (
     set /p "icon_shared_mode=Choose mode [1/2]: "
     set "SLUGGIES_ICON_SHARED_MODE=!icon_shared_mode!"
     if "!icon_shared_mode!"=="2" (
-        python start.py --patch-icons --shared-mode first-page
+        call !SLUGGIES_LAUNCHER! --patch-icons --shared-mode first-page
     ) else (
-        python start.py --patch-icons
+        call !SLUGGIES_LAUNCHER! --patch-icons
     )
     goto :after_command
 )
@@ -115,4 +117,3 @@ echo Invalid option. Returning to the menu.
 echo.
 pause
 goto :menu
-

@@ -1,0 +1,156 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+      - pyinstaller
+      - "codex/**"
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Create a test GitHub release and deploy GitHub Pages
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON_PREFERENCE: only-system
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with:
+          version: "latest"
+
+      - name: Install locked dependencies
+        run: uv sync --locked
+
+      - name: Run core tests
+        run: uv run python -m unittest discover -s SluggiesTools/tests -v
+
+      - name: Run icon tests
+        run: uv run python -m unittest discover -s SluggiesTools/Icons/tests -v
+
+  build:
+    needs: test
+    runs-on: windows-latest
+    env:
+      UV_PYTHON_PREFERENCE: only-system
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with:
+          version: "latest"
+
+      - name: Build portable application
+        run: python build.py
+
+      - name: Smoke test executable
+        run: .\dist\sluggies-dat-tools\sluggies-dat-tools.exe --help
+
+      - name: Create release archive
+        shell: pwsh
+        run: Compress-Archive -Path dist\sluggies-dat-tools -DestinationPath sluggies-dat-tools-windows.zip
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sluggies-dat-tools-windows
+          path: sluggies-dat-tools-windows.zip
+
+  release:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish == true
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download build artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: artifacts
+
+      - name: Generate release information
+        id: release_info
+        shell: bash
+        run: |
+          release_name="test-$(date +'%Y-%m-%d')-$(git rev-parse --short HEAD)"
+          echo "release_name=$release_name" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub prerelease
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          tag_name: ${{ steps.release_info.outputs.release_name }}
+          name: ${{ steps.release_info.outputs.release_name }}
+          body: |
+            Portable test build of Sluggies-dat-tools.
+
+            Download the Windows tools and the Blender add-on below. `wimgt` remains an external requirement.
+          files: |
+            artifacts/sluggies-dat-tools-windows/sluggies-dat-tools-windows.zip
+            SluggiesIO_BlenderAddon_v0.7.4.zip
+          draft: false
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate GitHub Pages site
+        shell: bash
+        env:
+          RELEASE_NAME: ${{ steps.release_info.outputs.release_name }}
+        run: |
+          repository_url="${{ github.server_url }}/${{ github.repository }}"
+          release_url="$repository_url/releases/download/$RELEASE_NAME"
+          mkdir -p _pages/docs
+          cp -R _docs/. _pages/docs/
+          sed \
+            -e "s|{{RELEASE_NAME}}|$RELEASE_NAME|g" \
+            -e "s|{{WINDOWS_DOWNLOAD_URL}}|$release_url/sluggies-dat-tools-windows.zip|g" \
+            -e "s|{{BLENDER_ADDON_URL}}|$release_url/SluggiesIO_BlenderAddon_v0.7.4.zip|g" \
+            -e "s|{{RELEASES_URL}}|$repository_url/releases|g" \
+            -e "s|{{SOURCE_URL}}|$repository_url|g" \
+            -e "s|{{SOURCE_REF}}|${{ github.ref_name }}|g" \
+            index.html > _pages/index.html
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _pages
+
+      - name: Publish GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

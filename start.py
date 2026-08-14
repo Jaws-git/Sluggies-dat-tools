@@ -4,6 +4,7 @@ import os
 import argparse
 import json
 import importlib.util
+import runpy
 
 # this file is for dispatching only; patching and export logic live in SluggiesTools
 
@@ -11,7 +12,10 @@ import importlib.util
 # Initialize universal logging BEFORE anything else so every command,
 # including invalid invocations, is captured.
 # ---------------------------------------------------------------------------
-ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, 'frozen', False):
+    ROOT_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Ensure SluggiesTools package is importable when start.py is run directly.
 if ROOT_DIR not in sys.path:
@@ -40,8 +44,39 @@ HS_HELPER_SCRIPT = os.path.join(HS_DIR, 'HammerspaceHelper.py')
 HS_MAIN_SCRIPT = os.path.join(HS_DIR, 'HammerspaceMain.py')
 
 
+def python_script_command(script, *args):
+    """Return a child-script command that works in source and frozen builds."""
+    if getattr(sys, 'frozen', False):
+        return [sys.executable, '--_run-script', script, *args]
+    return [sys.executable, script, *args]
+
+
+def run_bundled_script_mode():
+    """Run an external project script through the frozen Python runtime."""
+    if len(sys.argv) < 2 or sys.argv[1] != '--_run-script':
+        return False
+    if len(sys.argv) < 3:
+        raise SystemExit('--_run-script requires a script path')
+
+    script = os.path.abspath(sys.argv[2])
+    if not os.path.isfile(script):
+        raise SystemExit(f'Bundled script not found: {script}')
+    if os.path.commonpath((ROOT_DIR, script)) != ROOT_DIR:
+        raise SystemExit(f'Refusing to run a script outside the application folder: {script}')
+
+    script_dir = os.path.dirname(script)
+    tools_dir = os.path.join(ROOT_DIR, 'SluggiesTools')
+    for path in (ROOT_DIR, tools_dir, script_dir):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+    sys.argv = [script, *sys.argv[3:]]
+    runpy.run_path(script, run_name='__main__')
+    return True
+
+
 def run_hammerspace_helper():
-    subprocess.run([sys.executable, HS_HELPER_SCRIPT], cwd=HS_DIR, check=True)
+    subprocess.run(python_script_command(HS_HELPER_SCRIPT), cwd=HS_DIR, check=True)
 
 
 def run_export(debug=False, notex=False, untangle=False, dae=False):
@@ -65,7 +100,7 @@ def run_export(debug=False, notex=False, untangle=False, dae=False):
         extra_args.append('--dae')
 
     subprocess.run(
-        [sys.executable, EXPORT_SCRIPT] + extra_args,
+        python_script_command(EXPORT_SCRIPT, *extra_args),
         cwd=TOOLS_DIR,
         check=True
     )
@@ -82,7 +117,7 @@ def run_export_icons(use_output=False):
         slogger.error("Run: pip install numpy", source="dispatcher")
         sys.exit(1)
 
-    cmd = [sys.executable, ICON_EXPORT_SCRIPT]
+    cmd = python_script_command(ICON_EXPORT_SCRIPT)
     if use_output:
         dol_path = os.path.join(ROOT_DIR, '3_Output_Dat', 'main.dol')
         dat_path = os.path.join(ROOT_DIR, '3_Output_Dat', 'dt_na.dat')
@@ -101,7 +136,7 @@ def run_export_icons(use_output=False):
 
 
 def run_prepare_icon_routes(no_overwrite_copy=False):
-    cmd = [sys.executable, ICON_ROUTE_PREP_SCRIPT]
+    cmd = python_script_command(ICON_ROUTE_PREP_SCRIPT)
     if no_overwrite_copy:
         cmd.append('--no-overwrite-copy')
 
@@ -114,7 +149,7 @@ def run_prepare_icon_routes(no_overwrite_copy=False):
 
 
 def run_patch_icons(source=None, dry_run=False):
-    cmd = [sys.executable, ICON_PATCH_SCRIPT]
+    cmd = python_script_command(ICON_PATCH_SCRIPT)
     if source:
         cmd.append(source)
     if dry_run:
@@ -134,7 +169,7 @@ def run_add_custom_icons(dry_run=False, diagnostic_stage=None, icon_fit='contain
         slogger.error('Run: pip install Pillow', source="dispatcher")
         sys.exit(1)
 
-    cmd = [sys.executable, CUSTOM_ICON_SCRIPT]
+    cmd = python_script_command(CUSTOM_ICON_SCRIPT)
     if dry_run:
         cmd.append('--dry-run')
     if diagnostic_stage:
@@ -182,12 +217,12 @@ def run_patching(filenames, unpatch=False):
         use_hammerspace = model.get('UseHammerspace', False)
 
         if use_hammerspace:
-            cmd = [sys.executable, HS_MAIN_SCRIPT, found]
+            cmd = python_script_command(HS_MAIN_SCRIPT, found)
             if unpatch:
                 cmd.append('--unpatch')
             subprocess.run(cmd, cwd=HS_DIR, check=True)
         else:
-            cmd = [sys.executable, PATCH_SCRIPT, found]
+            cmd = python_script_command(PATCH_SCRIPT, found)
             if unpatch:
                 cmd.append('--unpatch')
             subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
@@ -369,6 +404,7 @@ def main() -> int:
 
 
 if __name__ == '__main__':
-    rc = main()
-    if rc != 0:
-        sys.exit(rc)
+    if not run_bundled_script_mode():
+        rc = main()
+        if rc != 0:
+            sys.exit(rc)

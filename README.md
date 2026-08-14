@@ -1,5 +1,13 @@
 # Sluggies-dat-tools
 
+## Portable Windows release
+
+Download the latest packaged tools and Blender add-on from the
+[Sluggies-dat-tools release site](https://jackharrhy.github.io/Sluggies-dat-tools/).
+The portable release includes Python and the required Python packages. Texture
+conversion still requires **wimgt** from Wiimms SZS Tools to be installed on
+`PATH`.
+
 This fork of the MSS-Dat-tools is laser-focused on Mario Super Sluggers only and will probably not work with much else.
 Goal is the export of original MSS 3D player models and subsequent re-import of edited models. For funny.
 
@@ -15,10 +23,10 @@ And the helpful Sluggers community for always having an open ear and pointing me
 
 - Dolphin Emulator https://dolphin-emu.org/
 - US(!) copy of Mario Super Sluggers
-- Python https://www.python.org/downloads/
-- Numpy ``pip install numpy``
-- Collada ``pip install pycollada``
-- Pillow ``pip install Pillow``
+- Python 3.12 or newer https://www.python.org/downloads/ (source checkout only)
+- Numpy ``pip install numpy`` (source checkout only)
+- Collada ``pip install pycollada`` (source checkout only)
+- Pillow ``pip install Pillow`` (source checkout only)
 - **wimgt** (part of [Wiimms SZS Tools](https://szs.wiimm.de/download.html)) — must be on `PATH`; used to convert textures between TPL and PNG. No textures without this.
 - Blender 4.2 or newer https://www.blender.org/download/
 - Autism
@@ -105,4 +113,4 @@ Useful options:
 ✅ Make unused character textures independent  
 ❌ Armature editing  
 ❌ Hammerspace full-Model replacement  
-❌ Animations  
+❌ Animations

@@ -18,3 +18,6 @@ anim_info
 SluggiesTools/Debug/
 2_Output_Models/
 3_Output_Dat/
+.venv/
+build/
+dist/
