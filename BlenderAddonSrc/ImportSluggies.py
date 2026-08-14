@@ -530,6 +530,30 @@ def _edited_submesh_view(submesh):
 _GX_WRAP = {0: 'EXTEND', 1: 'REPEAT', 2: 'MIRROR'}
 
 
+def _surface_face_ranges(display_states):
+    """Return list of (surface_id, start_face_idx, face_count) for draw states with faces.
+
+    Includes ALL display-state types — not just Type-7 — because Type-1 (texture-bind)
+    states can also carry primitive lists.  States that contribute zero faces are skipped
+    (no material slot needed).  Returns None when any Type-7 state lacks FaceCount,
+    signalling an old export that needs the legacy per-texture material path.
+    """
+    result = []
+    cumulative = 0
+    for ds_idx, ds in enumerate(display_states):
+        fc = ds.get("FaceCount")
+        if fc is None:
+            if ds.get("DisplayStateId") == 7:
+                return None  # Old Type-7 without FaceCount: fall back to legacy path
+            continue         # Old non-Type-7 without FaceCount: assumed zero faces, skip
+        if fc == 0:
+            continue         # This state draws nothing; no material slot needed
+        surface_id = ds.get("SurfaceId") or f"ds{ds_idx}"
+        result.append((surface_id, cumulative, fc))
+        cumulative += fc
+    return result
+
+
 def _create_material(mat_name, uv_layer_name, image, wrap_s=1):
     """Build a UV Map -> Mapping -> Image Texture -> Diffuse BSDF -> Material Output node tree."""
     mat = bpy.data.materials.new(name=mat_name)
@@ -670,29 +694,32 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
                 obj[prop] = vb_meta[prop]
 
     if submesh_meta is not None:
-        # Store Type-7 display-state shader modes as individual editable custom properties.
-        # DisplayStateShaderMode1, DisplayStateShaderMode2, ... = the shader mode to edit.
-        #   Value is a 4-char printable-ASCII FourCC (e.g. "Spec", "Shdw") when all bytes
-        #   are in range 32-126, or an 8-char lowercase hex string (e.g. "11110000") for
-        #   non-printable internal modes (read-only in practice — not in the known-modes set).
+        # Compute once — needed for both shader-mode properties and material creation.
         display_states = submesh_meta.get("DisplayStates", [])
-        mode_idx = 1
-        for ds in display_states:
-            if ds.get("DisplayStateId") != 7:
-                continue
-            prop_val = f"DisplayStateShaderMode{mode_idx}"
-            obj[prop_val] = ds.get("ShaderMode", "")
-            obj.id_properties_ui(prop_val).update(
-                description=(
-                    f"Type-7 shader mode #{mode_idx}. Edit to one of the known 4-char names: "
-                    "Spec=specular  Shdw=no-specular  SpRf=specular-reflection  "
-                    "RhSp/LhSp=right/left-hand-specular  GhSp=ghost. "
-                    "An 8-char hex value means the original bytes are non-printable (do not edit)."
-                ))
-            mode_idx += 1
+        surface_ranges = _surface_face_ranges(display_states)
+
+        # Object-level shader mode properties are only written for the legacy path
+        # (old exports without FaceCount).  When per-surface materials exist the
+        # shader mode lives on mat["ShaderMode"] instead.
+        if surface_ranges is None:
+            for ds_idx, ds in enumerate(display_states):
+                if ds.get("DisplayStateId") != 7:
+                    continue
+                surface_id = ds.get("SurfaceId") or f"ds{ds_idx}"
+                prop_val = f"DS_{surface_id}_ShaderMode"
+                obj[prop_val] = ds.get("ShaderMode", "")
+                obj.id_properties_ui(prop_val).update(
+                    description=(
+                        f"Surface {surface_id} shader mode (legacy — re-export to get per-surface materials). "
+                        "Known 4-char names: Spec=specular  Shdw=no-specular  SpRf=specular-reflection  "
+                        "RhSp/LhSp=right/left-hand-specular  GhSp=ghost."
+                    ))
 
         if display_states:
             _apply_drawlist_vcol(mesh, display_states)
+    else:
+        display_states = []
+        surface_ranges = None
 
     # Store UV channel material binding metadata as custom properties
     if uv_channels:
@@ -715,9 +742,65 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
                 obj.id_properties_ui(prefix + "WrapT").update(
                     description=f"GX T-axis wrap mode for UV channel {ch_ind}")
 
-    # Create Blender materials and assign per-face material indices
-    if uv_channels and face_texture_indices and sluggie_dir is not None:
-        # Map TextureIndex -> the UV channel that references it (first match wins)
+    # Create Blender materials and assign per-face material indices.
+    # New path: one material per Type-7 draw state (SurfaceId-keyed).
+    # Legacy fallback: one material per unique texture index for old exports.
+    if surface_ranges is not None and uv_channels and face_texture_indices:
+        # Build texture-index → UV channel map for node tree setup
+        tex_to_uv = {}
+        for uv_ch in uv_channels:
+            idx = uv_ch.get('TextureIndex')
+            if idx is not None and idx not in tex_to_uv:
+                tex_to_uv[idx] = uv_ch
+
+        mat_slot = {}  # surface_id -> material slot index
+        for slot_idx, (surface_id, start_fi, fc) in enumerate(surface_ranges):
+            fi_tex = face_texture_indices[start_fi] if start_fi < len(face_texture_indices) else 0
+            uv_ch = tex_to_uv.get(fi_tex) or (uv_channels[0] if uv_channels else None)
+            ch_ind = uv_ch.get('UVChannelIndex', 0) if uv_ch else 0
+            layer_name = uv_layer_names.get(ch_ind) or (uv_ch.get('PaletteName') if uv_ch else None) or f'uv{ch_ind}'
+            wrap_s = uv_ch.get('WrapS', 1) if uv_ch else 1
+            wrap_t = uv_ch.get('WrapT', 1) if uv_ch else 1
+
+            if prebuilt_materials is not None and surface_id in prebuilt_materials:
+                mat = prebuilt_materials[surface_id]
+            elif sluggie_dir is not None:
+                tex_file = (texture_file_map or {}).get(fi_tex, f'{fi_tex}.png')
+                img_path = _resolve_texture_image_path(sluggie_dir, tex_file)
+                image = bpy.data.images.load(img_path, check_existing=True) if img_path else None
+                mat = _create_material(f'{name}_{surface_id}', layer_name, image, wrap_s)
+                # Store surface identity and editable properties on the material
+                ds_entry = next((ds for ds in display_states if ds.get("SurfaceId") == surface_id), {})
+                mat["SurfaceId"] = surface_id
+                mat["TextureIndex"] = fi_tex
+                mat["WrapS"] = wrap_s
+                mat["WrapT"] = wrap_t
+                mat.id_properties_ui("SurfaceId").update(
+                    description="Stable draw-state identity (sm{n}_ds{n}). Do not delete — export resolves this material by SurfaceId.")
+                mat.id_properties_ui("TextureIndex").update(
+                    description="TPL texture slot index active for this draw state.")
+                mat.id_properties_ui("WrapS").update(
+                    description="GX S-axis wrap mode for this draw state (0=extend, 1=repeat, 2=mirror).")
+                mat.id_properties_ui("WrapT").update(
+                    description="GX T-axis wrap mode for this draw state (0=extend, 1=repeat, 2=mirror).")
+                if ds_entry.get("DisplayStateId") == 7:
+                    mat["ShaderMode"] = ds_entry.get("ShaderMode", "")
+                    mat.id_properties_ui("ShaderMode").update(
+                        description="Type-7 shader mode. Known names: Spec=specular  Shdw=no-specular  SpRf=specular-reflection  RhSp/LhSp=right/left-hand-specular  GhSp=ghost.")
+            else:
+                continue
+
+            mat_slot[surface_id] = slot_idx
+            obj.data.materials.append(mat)
+
+        # Assign faces to their draw-state material by cumulative face range
+        for surface_id, start_fi, fc in surface_ranges:
+            slot = mat_slot.get(surface_id, 0)
+            for fi in range(start_fi, min(start_fi + fc, len(mesh.polygons))):
+                mesh.polygons[fi].material_index = slot
+
+    elif uv_channels and face_texture_indices and sluggie_dir is not None:
+        # Legacy: per-texture materials (old exports without FaceCount)
         tex_to_uv = {}
         for uv_ch in uv_channels:
             idx = uv_ch.get('TextureIndex')
@@ -730,7 +813,6 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
             mat_slot[tex_idx] = slot_idx
             uv_ch = tex_to_uv.get(tex_idx) or uv_channels[0]
             ch_ind = uv_ch.get('UVChannelIndex', 0)
-            # Use the deduplicated name computed during UV layer creation
             layer_name = uv_layer_names.get(ch_ind) or uv_ch.get('PaletteName') or f'uv{ch_ind}'
             wrap_s = uv_ch.get('WrapS', 1)
             tex_file = (texture_file_map or {}).get(tex_idx, f'{tex_idx}.png')
@@ -745,7 +827,7 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
             poly.material_index = mat_slot.get(tex_idx, 0)
 
     elif prebuilt_materials is not None and face_texture_indices:
-        # Reuse material objects from the original mesh; do not create new ones.
+        # Legacy prebuilt: reuse by tex_idx (old format, int keys)
         available_tex = sorted(t for t in set(face_texture_indices) if t in prebuilt_materials)
         mat_slot = {}
         for slot_idx, tex_idx in enumerate(available_tex):
@@ -912,14 +994,19 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
                     edit_color_channels = ev.get("ColorChannels", [])
                     edit_fti = decode_face_texture_indices(ev, len(edit_faces))
 
-                    # Collect materials already created for the original mesh
+                    # Collect materials from the original mesh for reuse.
+                    # New format: keyed by SurfaceId. Legacy format: keyed by tex_idx (int).
                     orig_materials = {}
                     for slot in obj.material_slots:
                         mat = slot.material
-                        if mat is not None:
+                        if mat is None:
+                            continue
+                        sid = mat.get("SurfaceId")
+                        if sid:
+                            orig_materials[sid] = mat
+                        else:
                             try:
-                                tex_idx = int(mat.name.rsplit('_mat', 1)[1])
-                                orig_materials[tex_idx] = mat
+                                orig_materials[int(mat.name.rsplit('_mat', 1)[1])] = mat
                             except (IndexError, ValueError):
                                 pass
 
