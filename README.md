@@ -3,7 +3,7 @@
 ## Portable Windows release
 
 Download the latest packaged tools and Blender add-on from the
-[Sluggies-dat-tools release site](https://jackharrhy.github.io/Sluggies-dat-tools/).
+[Sluggies-dat-tools release site](https://jaws-git.github.io/Sluggies-dat-tools/).
 The portable release includes Python, the required Python packages, and
 **wimgt** from Wiimms SZS Tools. Texture conversion works without a separate
 install or changes to `PATH`.
