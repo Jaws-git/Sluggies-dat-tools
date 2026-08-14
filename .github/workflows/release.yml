@@ -121,8 +121,9 @@ jobs:
 
             Download the Windows tools and the Blender add-on below. `wimgt` remains an external requirement.
           files: |
-            artifacts/sluggies-dat-tools-windows/sluggies-dat-tools-windows.zip
+            artifacts/sluggies-dat-tools-windows.zip
             SluggiesIO_BlenderAddon_v0.7.4.zip
+          fail_on_unmatched_files: true
           draft: false
           prerelease: true
         env:
