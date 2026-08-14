@@ -1,7 +1,11 @@
+import hashlib
 import platform
 import shutil
 import subprocess
 import sys
+import tempfile
+import urllib.request
+import zipfile
 from pathlib import Path
 
 
@@ -22,7 +26,13 @@ RELEASE_FILES = (
     "README.md",
     "BlenderGuide.md",
     "SluggiesIO_BlenderAddon_v0.7.4.zip",
+    "THIRD_PARTY_NOTICES.md",
 )
+
+WIIMMS_VERSION = "v2.42a-r8989"
+WIIMMS_ARCHIVE = f"szs-{WIIMMS_VERSION}-cygwin64.zip"
+WIIMMS_URL = f"https://szs.wiimm.de/download/{WIIMMS_ARCHIVE}"
+WIIMMS_SHA256 = "ac54b82806d5867d2d9f003df972164138ae4f7a7ab8f29d8397664f31c9e892"
 
 
 def clean() -> None:
@@ -66,6 +76,47 @@ def copy_release_files() -> None:
     (PACKAGE / "3_Output_Dat").mkdir(exist_ok=True)
 
 
+def bundle_wiimms_tools() -> None:
+    """Bundle the official, checksum-pinned Windows distribution unchanged."""
+    if platform.system() != "Windows":
+        print("Skipping Wiimms SZS Tools bundle on non-Windows platform")
+        return
+
+    destination = PACKAGE / "tools" / "wiimms-szs-tools"
+    with tempfile.TemporaryDirectory(prefix="sluggies-wiimms-") as temporary:
+        archive = Path(temporary) / WIIMMS_ARCHIVE
+        print(f"Downloading Wiimms SZS Tools {WIIMMS_VERSION}")
+        urllib.request.urlretrieve(WIIMMS_URL, archive)
+
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+        if digest != WIIMMS_SHA256:
+            raise RuntimeError(
+                f"Wiimms SZS Tools checksum mismatch: expected {WIIMMS_SHA256}, got {digest}"
+            )
+
+        with zipfile.ZipFile(archive) as package:
+            members = package.infolist()
+            top_level = Path(members[0].filename).parts[0]
+            for member in members:
+                parts = Path(member.filename).parts
+                if not parts or parts[0] != top_level or ".." in parts:
+                    raise RuntimeError(f"Unsafe path in Wiimms SZS Tools archive: {member.filename}")
+                relative = Path(*parts[1:])
+                if not relative.parts:
+                    continue
+                target = destination / relative
+                if member.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with package.open(member) as source, target.open("wb") as output:
+                        shutil.copyfileobj(source, output)
+
+    wimgt = destination / "bin" / "wimgt.exe"
+    if not wimgt.exists():
+        raise FileNotFoundError(f"Bundled wimgt executable not found: {wimgt}")
+
+
 def verify() -> Path:
     executable = PACKAGE / ("sluggies-dat-tools.exe" if platform.system() == "Windows" else "sluggies-dat-tools")
     required = (
@@ -77,6 +128,13 @@ def verify() -> Path:
         PACKAGE / "docs" / "_docs_model_format" / "index.html",
     )
     missing = [path for path in required if not path.exists()]
+    if platform.system() == "Windows":
+        windows_required = (
+            PACKAGE / "tools" / "wiimms-szs-tools" / "bin" / "wimgt.exe",
+            PACKAGE / "tools" / "wiimms-szs-tools" / "bin" / "cygwin1.dll",
+            PACKAGE / "tools" / "wiimms-szs-tools" / "gpl-2.0.txt",
+        )
+        missing.extend(path for path in windows_required if not path.exists())
     if missing:
         raise FileNotFoundError(f"Release verification failed; missing: {missing}")
     return executable
@@ -89,6 +147,7 @@ def main() -> None:
     sync_dependencies()
     build_executable()
     copy_release_files()
+    bundle_wiimms_tools()
     executable = verify()
     size_mb = executable.stat().st_size / (1024 * 1024)
     print(f"Build complete: {executable} ({size_mb:.1f} MB)")

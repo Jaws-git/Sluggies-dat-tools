@@ -17,6 +17,12 @@ if getattr(sys, 'frozen', False):
 else:
     ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# Portable Windows builds carry Wiimm's tools beside the application. Put that
+# directory first so existing subprocess calls find wimgt without user setup.
+_BUNDLED_WIIMMS_BIN = os.path.join(ROOT_DIR, 'tools', 'wiimms-szs-tools', 'bin')
+if os.path.isdir(_BUNDLED_WIIMMS_BIN):
+    os.environ['PATH'] = _BUNDLED_WIIMMS_BIN + os.pathsep + os.environ.get('PATH', '')
+
 # Ensure SluggiesTools package is importable when start.py is run directly.
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)

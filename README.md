@@ -4,9 +4,9 @@
 
 Download the latest packaged tools and Blender add-on from the
 [Sluggies-dat-tools release site](https://jackharrhy.github.io/Sluggies-dat-tools/).
-The portable release includes Python and the required Python packages. Texture
-conversion still requires **wimgt** from Wiimms SZS Tools to be installed on
-`PATH`.
+The portable release includes Python, the required Python packages, and
+**wimgt** from Wiimms SZS Tools. Texture conversion works without a separate
+install or changes to `PATH`.
 
 This fork of the MSS-Dat-tools is laser-focused on Mario Super Sluggers only and will probably not work with much else.
 Goal is the export of original MSS 3D player models and subsequent re-import of edited models. For funny.
@@ -27,7 +27,7 @@ And the helpful Sluggers community for always having an open ear and pointing me
 - Numpy ``pip install numpy`` (source checkout only)
 - Collada ``pip install pycollada`` (source checkout only)
 - Pillow ``pip install Pillow`` (source checkout only)
-- **wimgt** (part of [Wiimms SZS Tools](https://szs.wiimm.de/download.html)) — must be on `PATH`; used to convert textures between TPL and PNG. No textures without this.
+- **wimgt** (source checkout only) — part of [Wiimms SZS Tools](https://szs.wiimm.de/download.html); used to convert textures between TPL and PNG. It is already bundled in the portable Windows release.
 - Blender 4.2 or newer https://www.blender.org/download/
 - Autism
 
@@ -57,7 +57,19 @@ It will contain all the player models, props and environment models. Everything 
 With the "untangle" parameter, duplicate textures will be made "unique". Their file names will change compared to "vanilla" Sluggers.
 You can also use the option --notex to skip the rather slow png creation step. Removes the requirement for wimgt.
 
-If you get texture-related errors, make sure you've added the wimgt tools bin folder (usually .\szs_v2_42a\bin\\) to your [PATH](https://www.youtube.com/watch?v=rWVaxSWvxUQ)
+### Source checkout: setting up wimgt on Windows
+
+The portable release does this for you. If you are running the Python source
+instead:
+
+1. Download the **Cygwin64** ZIP from [Wiimms SZS Tools](https://szs.wiimm.de/download.html) and extract it somewhere permanent.
+2. Open Windows Search, type **environment variables**, and select **Edit the environment variables for your account**.
+3. Under **User variables**, select **Path**, choose **Edit**, then **New**.
+4. Add the extracted tools' `bin` folder (for example, `C:\Tools\szs-v2.42a-r8989-cygwin64\bin`) and confirm each dialog.
+5. Open a new Command Prompt and run `wimgt --version`. If it prints version information, setup is complete.
+
+If you do not need textures, `--notex` skips PNG conversion and does not require
+`wimgt`.
 
 ## Blender editing
 
