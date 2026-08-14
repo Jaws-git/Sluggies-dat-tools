@@ -111,7 +111,7 @@ jobs:
         id: release_info
         shell: bash
         run: |
-          release_name="Sluggies Dat Tools $(date +'%Y-%m-%d')-$(git rev-parse --short HEAD)"
+          release_name="Sluggies-Dat-Tools-$(date +'%Y-%m-%d')-$(git rev-parse --short HEAD)"
           echo "release_name=$release_name" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub prerelease
