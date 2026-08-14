@@ -458,7 +458,7 @@ def extract_submeshes(model):
     if not hasattr(model, 'GPL') or not model.GPL:
         return []
     submeshes = []
-    for descriptor in model.GPL.geoDescriptors:
+    for sm_idx, descriptor in enumerate(model.GPL.geoDescriptors):
         layout = descriptor.layout
         pos = layout.DOPositionHeader
         vb_offset = layout.absolute + pos.positionArrPtr
@@ -562,7 +562,7 @@ def extract_submeshes(model):
         # DODisplayState layout: [id:1][pad:3][setting:4][primitiveListPtr:4][primitiveListSize:4]
         # primitiveListPtr is relative to DOLayout.absolute (= SubmeshOffset).
         display_states_export = []
-        for ds_obj, display_state in zip(layout.DODisplayHeader.displayStates, display_states_gfx):
+        for ds_idx, (ds_obj, display_state) in enumerate(zip(layout.DODisplayHeader.displayStates, display_states_gfx)):
             raw_prim = bytes(ds_obj.primitiveList.data)
             # Decode the 4-byte FourCC shader mode for Type-7 display states.
             # Setting field is at ds_obj.absolute + 4 (id=1B, pad=3B, then setting=4B).
@@ -575,6 +575,8 @@ def extract_submeshes(model):
             else:
                 setting_fourcc = setting_bytes.hex()
             display_states_export.append({
+                "SurfaceId": f"sm{sm_idx}_ds{ds_idx}",
+                "FaceCount": len(display_state.get('triangles', [])),
                 "DisplayStateId": ds_obj.id,
                 "DisplayStatePadBytes": ds_obj.pad_bytes.hex(),
                 "ShaderModeFieldOffset": hex(ds_obj.absolute + 4),

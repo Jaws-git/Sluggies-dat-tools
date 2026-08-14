@@ -272,6 +272,10 @@
                 "type": "string",
                 "description": "Base64-encoded per-face primary texture index buffer for the edited face set, packed as big-endian uint16 (one entry per face). Used by _rebuild_draw_states to route edited faces to the correct draw state by texture index. Absent for in-place exports."
               },
+              "FaceSurfaceIdsEdited": {
+                "type": "string",
+                "description": "Base64-encoded per-face draw-state index, packed as big-endian uint16 (one entry per face). Each value is the index into the DisplayStates array of the draw state that owns this face. Written by the Blender exporter when any face has been reassigned to a different surface material. Absent when face-to-surface assignment is unchanged. Used by the hammerspace GPL rebuild to route faces to the correct primitive list."
+              },
               "DrawStates": {
                 "type": "array",
                 "description": "One entry per display state (draw batch) in this submesh. Provides pointer-field offsets for writeExpandedMesh to relocate each primitive list into hammerspace, and the original data for --unpatch restoration.",
@@ -281,6 +285,14 @@
                     "DisplayStateId": {
                       "type": "number",
                       "description": "ID byte of this display state from the DODisplayState header."
+                    },
+                    "SurfaceId": {
+                      "type": "string",
+                      "description": "Stable surface identity in the form 'sm{submesh_idx}_ds{ds_idx}'. Keyed by position in the Submeshes and DisplayStates arrays; independent of Blender material slot order or name. Used by the Blender add-on to key per-draw-state editable properties."
+                    },
+                    "FaceCount": {
+                      "type": "number",
+                      "description": "Number of triangulated faces contributed by this draw state. Zero for non-Type-7 states. Used by the Blender importer to assign one material per draw state (faces are ordered to match draw-state sequence)."
                     },
                     "ShaderModeFieldOffset": {
                       "type": "string",
