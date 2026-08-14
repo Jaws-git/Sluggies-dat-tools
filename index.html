@@ -13,7 +13,7 @@
 
         html {
             min-height: 100%;
-            background: linear-gradient(115deg, #7a5600 0%, #ffd84d 48%, #9a7000 100%);
+            background: linear-gradient(115deg, #031d16 0%, #0b4b38 48%, #06281f 100%);
         }
 
         body {
@@ -22,7 +22,7 @@
             display: grid;
             place-items: center;
             padding: 0.65rem 1rem;
-            color: #2d2300;
+            color: #eef7f0;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
             font-size: 1.08rem;
             line-height: 1.42;
@@ -31,10 +31,10 @@
         main {
             width: min(100%, 68rem);
             padding: clamp(1rem, 2.5vw, 1.65rem);
-            border: 2px solid #6b4d00;
+            border: 2px solid #79ad8c;
             border-radius: 1.1rem;
-            background: #fffdf2;
-            box-shadow: 0 1.2rem 3rem rgb(59 40 0 / 32%);
+            background: #0c2c22;
+            box-shadow: 0 1.2rem 3rem rgb(0 12 8 / 52%);
         }
 
         header {
@@ -55,9 +55,9 @@
         .release {
             margin: 1.15rem 0;
             padding: 1rem;
-            border: 1px solid #c69500;
+            border: 1px solid #4f8a69;
             border-radius: 0.8rem;
-            background: #fff7cc;
+            background: #143d30;
             text-align: center;
         }
 
@@ -76,10 +76,10 @@
         .button {
             display: inline-block;
             padding: 0.55rem 1rem;
-            border: 2px solid #6b4d00;
+            border: 2px solid #b6dbbf;
             border-radius: 0.45rem;
-            background: #ffe58a;
-            color: #2d2300;
+            background: #286044;
+            color: #f4fbf6;
             font-weight: 700;
             text-decoration: none;
             transition: transform 0.15s ease, background-color 0.15s ease;
@@ -87,12 +87,12 @@
 
         .button:hover {
             transform: translateY(-2px) rotate(-1deg);
-            background: #ffd34d;
+            background: #347c57;
         }
 
         .button:focus-visible,
         a:focus-visible {
-            outline: 3px solid #2d2300;
+            outline: 3px solid #d1f0d7;
             outline-offset: 3px;
         }
 
@@ -108,9 +108,9 @@
 
         .steps li {
             padding: 0.8rem 0.9rem;
-            border-left: 5px solid #d39a00;
+            border-left: 5px solid #56a172;
             border-radius: 0.55rem;
-            background: #fff9dc;
+            background: #12382c;
             counter-increment: steps;
         }
 
@@ -118,16 +118,9 @@
             content: counter(steps);
             display: block;
             margin-bottom: 0.35rem;
-            color: #765300;
+            color: #a9dfb8;
             font-size: 1.5rem;
             font-weight: 800;
-        }
-
-        .notice {
-            margin: 0;
-            padding: 0.75rem 1rem;
-            border-radius: 0.6rem;
-            background: #f5e7a4;
         }
 
         .links {
@@ -139,7 +132,7 @@
         }
 
         a {
-            color: #684900;
+            color: #b7e4c2;
         }
 
         @media (max-width: 46rem) {
@@ -171,14 +164,15 @@
             <li><strong>Patch and play</strong><br />Patch your edits into <code>3_Output_Dat</code>, then run the unpacked game in Dolphin.</li>
         </ol>
 
-        <p class="notice"><strong>Textures work out of the box:</strong> the Windows download includes <a href="https://szs.wiimm.de/">Wiimms SZS Tools</a> and configures <code>wimgt</code> automatically. Game files are not included.</p>
-
-        <nav class="links" aria-label="Project links">
-            <a href="{{RELEASES_URL}}">All releases</a>
-            <a href="docs/_docs_model_format/">Model format docs</a>
-            <a href="{{SOURCE_URL}}">Source code</a>
-            <a href="{{SOURCE_URL}}/blob/{{SOURCE_REF}}/BlenderGuide.md">Blender guide</a>
-        </nav>
+        <footer>
+            <nav class="links" aria-label="Project links">
+                <a href="{{RELEASES_URL}}">All releases</a>
+                <a href="docs/_docs_model_format/">Model format docs</a>
+                <a href="{{SOURCE_URL}}">Source code</a>
+                <a href="{{SOURCE_URL}}/blob/{{SOURCE_REF}}/BlenderGuide.md">Blender guide</a>
+                <a href="{{SOURCE_URL}}/blob/{{SOURCE_REF}}/THIRD_PARTY_NOTICES.md">Third-party notices</a>
+            </nav>
+        </footer>
     </main>
 </body>
 
