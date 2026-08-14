@@ -15,11 +15,16 @@ None of this would have been possible without the folks who created the tools an
 - LlamaTrauma for the [MSS-Dat-Tools](https://github.com/LlamaTrauma/MSS-dat-tools) which this is forked off.
 - roeming for the [MSSB-Export-Models](https://github.com/roeming/MSSB-Export-Models)
 - The [Mario Sluggers Model format documentation](https://thatsrightigame.com/sluggers/format_docs/)
+- pyinstaller portable windows setup by [jackharrhy](https://github.com/jackharrhy) 
 
 And the helpful Sluggers community for always having an open ear and pointing me in the right directions.  
 "Sluggie" is short for "SLUGGers IntermediatE format".
 
-## Requirements
+
+## Requirements (not needed when using portable release)
+
+<details>
+<summary><strong> Requirements & Setup </strong></summary>
 
 - Dolphin Emulator https://dolphin-emu.org/
 - US(!) copy of Mario Super Sluggers
@@ -30,32 +35,6 @@ And the helpful Sluggers community for always having an open ear and pointing me
 - **wimgt** (source checkout only) — part of [Wiimms SZS Tools](https://szs.wiimm.de/download.html); used to convert textures between TPL and PNG. It is already bundled in the portable Windows release. No textures without this.
 - Blender 4.2 or newer https://www.blender.org/download/
 - Autism
-
-I want to keep making the whole process easier in the future, so look out for updates.
-All commands are to be used on the command line - enter "cmd" in file explorer's address bar to open a new terminal in the current folder.
-
-## Workflow - Overall Concept
-```mermaid
-flowchart LR
-    A[Extract game files] --> B[Export model data as .sluggies file]
-    B --> C[Import to Blender]
-    C --> D[Make changes]
-    D --> E[Export model back to .sluggies file]
-    E --> F[Write changes to game's .dat]
-```
-## Export  
-
-1) clone or download this repository
-2) Set up Dolphin & Game iso
-3) Try running the game to make sure everything is prepped correctly
-4) right click the Game -> properties -> Filesystem -> right click top node -> extract entire disc
-5) from the extracted disc data, copy both "dt_na.dat" and "main.dol" (and optionally fst.bin) to the folder \1_Input\
-6) cmd ``` python start.py --export --untangle``` (or, alternatively, just start the included batch file)
-
-This will extract the entire content into a new folder \2_Output_Models\\...  
-It will contain all the player models, props and environment models. Everything is sorted into numbered and approximately named folders.
-With the "untangle" parameter, duplicate textures will be made "unique". Their file names will change compared to "vanilla" Sluggers.
-You can also use the option --notex to skip the rather slow png creation step. Removes the requirement for wimgt.
 
 ### Source checkout: setting up wimgt on Windows
 
@@ -70,6 +49,34 @@ instead:
 
 If you do not need textures, `--notex` skips PNG conversion and does not require
 `wimgt`.
+
+</details>
+
+## Workflow - Overall Concept
+```mermaid
+flowchart LR
+    A[Extract game files] --> B[Export model data as .sluggies file]
+    B --> C[Import to Blender]
+    C --> D[Make changes]
+    D --> E[Export model back to .sluggies file]
+    E --> F[Write changes to game's .dat]
+```
+
+All commands are to be used on the command line - enter "cmd" in file explorer's address bar to open a new terminal in the current folder.  
+
+## Export  
+
+1) Set up Dolphin & Game iso
+2) Try running the game to make sure everything is prepped correctly
+3) right click the Game -> properties -> Filesystem -> right click top node -> extract entire disc
+5) from the extracted disc data, copy both "dt_na.dat" and "main.dol" (and optionally fst.bin) to the folder \1_Input\
+6) cmd ```sluggies-dat-tools.exe --export --untangle``` (or, alternatively, just start the included batch file)
+
+This will extract the entire content into a new folder \2_Output_Models\\...  
+It will contain all the player models, props and environment models. Everything is sorted into numbered and approximately named folders.
+With the "untangle" parameter, duplicate textures will be made unique. Their file names will change compared to "vanilla" Sluggers.
+You can also use the option --notex to skip the rather slow png creation step. Removes the requirement for wimgt.
+
 
 ## Blender editing
 
