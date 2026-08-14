@@ -4,13 +4,25 @@ import unittest
 from SluggiesTools.Icons import add_custom_icons as custom
 from SluggiesTools.Icons import add_private_texture_pages as pages
 from SluggiesTools.Icons import prepare_icon_artwork as artwork
-from SluggiesTools.Icons.tests.test_add_icon_resource_rows import ENTRIES
 from SluggiesTools.Icons.tests.test_update_icon_source_tables import (
     ROUTES,
     make_configured_bank,
     make_plain_source_bank,
 )
 from SluggiesTools.Icons.tests.test_install_runtime_hooks import CUSTOM_ROWS, make_dol
+
+
+ENTRIES = [
+    artwork.ArtworkEntry(
+        f'Character {index}',
+        char_id,
+        '',
+        '',
+        index * artwork.SLOT_X_STRIDE,
+        0,
+    )
+    for index, char_id in enumerate((0x48, 0x49, 0x4A, 0x4B, 0x47, 0x4C))
+]
 
 
 def make_stage_dol():

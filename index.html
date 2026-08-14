@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Portable Mario Super Sluggers model and icon modding tools." />
+    <title>Sluggies-dat-tools</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        html {
+            min-height: 100%;
+            background: linear-gradient(115deg, #031d16 0%, #0b4b38 48%, #06281f 100%);
+        }
+
+        body {
+            min-height: 100vh;
+            margin: 0;
+            display: grid;
+            place-items: center;
+            padding: 0.65rem 1rem;
+            color: #eef7f0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            font-size: 1.08rem;
+            line-height: 1.42;
+        }
+
+        main {
+            width: min(100%, 68rem);
+            padding: clamp(1rem, 2.5vw, 1.65rem);
+            border: 2px solid #79ad8c;
+            border-radius: 1.1rem;
+            background: #0c2c22;
+            box-shadow: 0 1.2rem 3rem rgb(0 12 8 / 52%);
+        }
+
+        header {
+            text-align: center;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: clamp(2rem, 7vw, 3rem);
+            line-height: 1;
+        }
+
+        header p {
+            max-width: 48rem;
+            margin: 0.45rem auto 0;
+        }
+
+        .release {
+            margin: 1.15rem 0;
+            padding: 1rem;
+            border: 1px solid #4f8a69;
+            border-radius: 0.8rem;
+            background: #143d30;
+            text-align: center;
+        }
+
+        .release strong {
+            display: block;
+            margin-bottom: 0.65rem;
+        }
+
+        .buttons {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 0.8rem;
+        }
+
+        .button {
+            display: inline-block;
+            padding: 0.55rem 1rem;
+            border: 2px solid #b6dbbf;
+            border-radius: 0.45rem;
+            background: #286044;
+            color: #f4fbf6;
+            font-weight: 700;
+            text-decoration: none;
+            transition: transform 0.15s ease, background-color 0.15s ease;
+        }
+
+        .button:hover {
+            transform: translateY(-2px) rotate(-1deg);
+            background: #347c57;
+        }
+
+        .button:focus-visible,
+        a:focus-visible {
+            outline: 3px solid #d1f0d7;
+            outline-offset: 3px;
+        }
+
+        .steps {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1rem;
+            margin: 1.15rem 0;
+            padding: 0;
+            list-style: none;
+            counter-reset: steps;
+        }
+
+        .steps li {
+            padding: 0.8rem 0.9rem;
+            border-left: 5px solid #56a172;
+            border-radius: 0.55rem;
+            background: #12382c;
+            counter-increment: steps;
+        }
+
+        .steps li::before {
+            content: counter(steps);
+            display: block;
+            margin-bottom: 0.35rem;
+            color: #a9dfb8;
+            font-size: 1.5rem;
+            font-weight: 800;
+        }
+
+        .links {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 0.6rem 1.2rem;
+            margin-top: 1rem;
+        }
+
+        a {
+            color: #b7e4c2;
+        }
+
+        @media (max-width: 46rem) {
+            .steps {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <main>
+        <header>
+            <h1>Sluggies-dat-tools</h1>
+            <p>Export Mario Super Sluggers models and icons, edit them in Blender, and patch your changes back into the game files.</p>
+        </header>
+
+        <section class="release" aria-labelledby="download-heading">
+            <strong id="download-heading">Test release {{RELEASE_NAME}}</strong>
+            <div class="buttons">
+                <a class="button" href="{{WINDOWS_DOWNLOAD_URL}}" download>Windows tools</a>
+                <a class="button" href="{{BLENDER_ADDON_URL}}" download>Blender add-on</a>
+            </div>
+        </section>
+
+        <ol class="steps">
+            <li><strong>Bring your files</strong><br />Extract your own US-region <code>dt_na.dat</code> and <code>main.dol</code> into <code>1_Input</code>.</li>
+            <li><strong>Export and edit</strong><br />Run <code>StartTools.bat</code>, export the models, and edit <code>.sluggies</code> files with the Blender add-on.</li>
+            <li><strong>Patch and play</strong><br />Patch your edits into <code>3_Output_Dat</code>, then run the unpacked game in Dolphin.</li>
+        </ol>
+
+        <footer>
+            <nav class="links" aria-label="Project links">
+                <a href="{{RELEASES_URL}}">All releases</a>
+                <a href="docs/_docs_model_format/">Model format docs</a>
+                <a href="{{SOURCE_URL}}">Source code</a>
+                <a href="{{SOURCE_URL}}/blob/{{SOURCE_REF}}/BlenderGuide.md">Blender guide</a>
+                <a href="{{SOURCE_URL}}/blob/{{SOURCE_REF}}/THIRD_PARTY_NOTICES.md">Third-party notices</a>
+            </nav>
+        </footer>
+    </main>
+</body>
+
+</html>

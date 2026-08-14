@@ -1,0 +1,16 @@
+[project]
+name = "sluggies-dat-tools"
+version = "0.1.0"
+description = "Mario Super Sluggers model and icon export, editing, and patching tools"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.2,<3",
+    "pillow>=11,<13",
+    "pycollada>=0.9,<1",
+]
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.18,<7",
+]
