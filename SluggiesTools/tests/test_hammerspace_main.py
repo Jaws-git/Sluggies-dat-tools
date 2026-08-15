@@ -123,6 +123,25 @@ class BuildModelBlockTests(unittest.TestCase):
             mock.patch.object(main, 'CloneHEADER', return_value=b'\x00' * 0x20),
         )
 
+    def test_gpl_source_layout_requires_unchanged_primitive_list_lengths(self):
+        draw_state = SimpleNamespace(
+            prim_list_data=b'original',
+            prim_list_length=len(b'original'),
+            source_state_offset=0x120,
+        )
+        submesh = SimpleNamespace(
+            source_layout_offset=0x100,
+            position_data_ptr_field_offset=0x118,
+            source_position_data_offset=0x180,
+            draw_states=[draw_state],
+        )
+        mesh = SimpleNamespace(source_gpl_base_offset=0x20, submeshes=[submesh])
+
+        self.assertTrue(main._can_preserve_gpl_source_layout(mesh))
+        draw_state.prim_list_data = b'reassigned surface payload'
+        self.assertTrue(main._can_preserve_gpl_internal_layout(mesh))
+        self.assertFalse(main._can_preserve_gpl_source_layout(mesh))
+
     def test_all_clone_build_only_assembles_without_output_mutation(self):
         patches = self._patch_common()
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
@@ -191,6 +210,27 @@ class BuildModelBlockTests(unittest.TestCase):
         self.assertEqual(result.section_modes.gpl, 'build')
         self.assertEqual(result.section_modes.skn, 'build')
 
+    def test_shader_mode_edit_patches_cloned_gpl(self):
+        self.data['SluggiesModel']['Submeshes'] = [{
+            'DisplayStates': [{'ShaderModeEdited': 'Shdw'}],
+        }]
+        patches = self._patch_common()
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
+            with (
+                mock.patch.object(main, '_validate_hammerspace_contract'),
+                mock.patch.object(main, 'rebuild_surface_assignments', return_value=False),
+                mock.patch.object(main, 'PatchGPLMaterialStates', return_value=b'PATCHED') as patch_states,
+                mock.patch.object(main, 'BuildGPLMeshData') as build_gpl,
+            ):
+                result = main.BuildModelBlock(
+                    self.data,
+                    main.SectionModes(gpl='build'),
+                )
+
+        patch_states.assert_called_once()
+        build_gpl.assert_not_called()
+        self.assertEqual(result.section_sizes['GPL'], len(b'PATCHED'))
+
     def test_gpl_build_tolerates_missing_primlistdata(self):
         parsed = main.ParseSluggie({'SluggiesModel': {
             'UseBase64': False,
@@ -227,6 +267,124 @@ class BuildModelBlockTests(unittest.TestCase):
         position_data_offset = struct.unpack_from('>I', result.gpl_bytes, layout_offset + position_header_offset)[0]
         display_state_offset = struct.unpack_from('>I', result.gpl_bytes, layout_offset + display_header_offset + 4)[0]
         self.assertGreater(display_state_offset, position_data_offset + 6)
+
+    def test_gpl_builder_pads_primitive_payload_and_size_to_32_bytes(self):
+        parsed = main.ParseSluggie({'SluggiesModel': {
+            'UseBase64': False,
+            'Submeshes': [{
+                'FacesCount': 0,
+                'FacesData': [],
+                'FaceTextureIndices': [],
+                'VertexBuffer': {
+                    'VertexBufferData': [0, 0, 0, 0, 0, 0],
+                    'VertexBufferCompCount': 3,
+                    'VertexBufferQuantizeInfo': 0,
+                },
+                'UVChannels': [],
+                'ColorChannels': [],
+                'DisplayStates': [{
+                    'DisplayStateId': 7,
+                    'PrimListData': [0x90, 0, 0, 0],
+                    'ShaderMode': '00000000',
+                    'PrimListPtrFieldOffset': '0x0',
+                    'PrimListSizeFieldOffset': '0x0',
+                    'PrimListAbsoluteOffset': '0x0',
+                    'PrimListLength': 4,
+                    'DisplayStatePadBytes': '000000',
+                }],
+            }],
+        }})
+
+        result = main.BuildGPLMeshData(parsed)
+        descriptor_offset = struct.unpack_from('>I', result.gpl_bytes, 0x10)[0]
+        layout_offset = struct.unpack_from('>I', result.gpl_bytes, descriptor_offset)[0]
+        display_header_offset = struct.unpack_from('>I', result.gpl_bytes, layout_offset + 0x10)[0]
+        display_state_offset = struct.unpack_from(
+            '>I', result.gpl_bytes, layout_offset + display_header_offset + 4
+        )[0]
+        primitive_offset, primitive_size = struct.unpack_from(
+            '>II', result.gpl_bytes, layout_offset + display_state_offset + 8
+        )
+
+        self.assertEqual(primitive_size, 32)
+        self.assertEqual((layout_offset + primitive_offset) % 32, 0)
+        self.assertEqual(
+            result.gpl_bytes[layout_offset + primitive_offset:layout_offset + primitive_offset + 32],
+            b'\x90\x00\x00\x00' + b'\x00' * 28,
+        )
+
+    def test_parser_consumes_rebuilt_surface_primitive_list(self):
+        parsed = main.ParseSluggie({'SluggiesModel': {
+            'UseBase64': False,
+            'Submeshes': [{
+                'FacesCount': 0,
+                'FacesData': [],
+                'FaceTextureIndices': [],
+                'VertexBuffer': {
+                    'VertexBufferData': [],
+                    'VertexBufferCompCount': 3,
+                    'VertexBufferQuantizeInfo': 0,
+                },
+                'UVChannels': [],
+                'ColorChannels': [],
+                'DisplayStates': [{
+                    'DisplayStateId': 7,
+                    'PrimListData': [0xAA],
+                    'PrimListDataEdited': [0xBB],
+                    'ShaderMode': '00000000',
+                    'PrimListPtrFieldOffset': '0x0',
+                    'PrimListSizeFieldOffset': '0x0',
+                    'PrimListAbsoluteOffset': '0x0',
+                    'PrimListLength': 1,
+                    'DisplayStatePadBytes': '000000',
+                }],
+            }],
+        }})
+
+        self.assertEqual(parsed.mesh.submeshes[0].draw_states[0].prim_list_data, b'\xBB')
+
+    def test_surface_only_rebuild_preserves_donor_geometry_arrays(self):
+        parsed = main.ParseSluggie({'SluggiesModel': {
+            'UseBase64': False,
+            'Submeshes': [{
+                'FacesCount': 0,
+                'FacesData': [],
+                'FaceTextureIndices': [],
+                'SurfaceAssignmentsRebuiltByImporter': True,
+                'VertexBuffer': {
+                    'VertexBufferData': [1, 2],
+                    'VertexBufferDataEdited': [3, 4],
+                    'VertexBufferCompCount': 3,
+                    'VertexBufferQuantizeInfo': 0,
+                },
+                'UVChannels': [{
+                    'UVChannelIndex': 0,
+                    'PaletteName': '',
+                    'UVChannelData': [5, 6],
+                    'UVChannelDataEdited': [7, 8, 9, 10],
+                    'UVFacesData': [],
+                    'UVChannelCompCount': 2,
+                    'UVChannelQuantizeInfo': 0,
+                }],
+                'ColorChannels': [],
+                'DisplayStates': [{
+                    'DisplayStateId': 7,
+                    'PrimListData': [0xAA],
+                    'PrimListDataEdited': [0xBB],
+                    'ShaderMode': '00000000',
+                    'PrimListPtrFieldOffset': '0x0',
+                    'PrimListSizeFieldOffset': '0x0',
+                    'PrimListAbsoluteOffset': '0x0',
+                    'PrimListLength': 1,
+                    'DisplayStatePadBytes': '000000',
+                }],
+            }],
+        }})
+
+        submesh = parsed.mesh.submeshes[0]
+        self.assertEqual(submesh.vertex_data, b'\x01\x02')
+        self.assertEqual(submesh.uv_channels[0].uv_data, b'\x05\x06')
+        self.assertEqual(submesh.draw_states[0].prim_list_data, b'\xBB')
 
     def test_model_block_uses_schema_trailing_sections_when_available(self):
         fake_parsed = SimpleNamespace(trailing_sections=[

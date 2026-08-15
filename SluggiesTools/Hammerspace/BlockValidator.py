@@ -530,6 +530,11 @@ def _validate_gpl(state: _ValidationState, skn_positions: list[int], prim_offset
 
             if prim_rel and prim_len:
                 prim_abs = layout_off + prim_rel
+                if prim_len % 32:
+                    state.fail(
+                        f'GPL submesh[{submesh_index}] ds[{ds_index}] primitive '
+                        f'list size {prim_len} is not a multiple of 32 bytes'
+                    )
                 if state.in_bounds(prim_abs, prim_len, f'GPL submesh[{submesh_index}] ds[{ds_index}] primitive list'):
                     state.check_array_alignment(prim_abs, 'primitive_list', f'GPL submesh[{submesh_index}] ds[{ds_index}] primitive list')
                     prim_offsets.append(prim_abs)

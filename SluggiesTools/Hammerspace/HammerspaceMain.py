@@ -15,6 +15,7 @@ _slogger.configure()
 
 import HammerspaceHelper as hh
 from BlockValidator import validate_model_block
+from GeometryRebuild import rebuild_surface_assignments
 from ModelFormat import align_array_offset, compute_mem_clear_range, pad_array
 
 # ---------------------------------------------------------------------------
@@ -93,6 +94,7 @@ class Submesh:
     normal_buffer:                  NormalBuffer | None   # None for skinned meshes
     source_layout_offset:           int
     source_position_data_offset:    int
+    preserve_source_layout:         bool
 
 
 @dataclass
@@ -370,15 +372,17 @@ def ParseSluggie(data: dict) -> SluggieParsed:
         _prim_lists_edited = any(
             'PrimListDataEdited' in ds for ds in sub.get('DisplayStates', [])
         )
+        _surface_only_rebuild = sub.get('SurfaceAssignmentsRebuiltByImporter', False)
+        _geometry_arrays_edited = _prim_lists_edited and not _surface_only_rebuild
 
-        if _prim_lists_edited:
+        if _geometry_arrays_edited:
             vertex_data = _decode(vb.get('VertexBufferDataEdited') or vb['VertexBufferData'], use_b64)
         else:
             vertex_data = _decode(vb['VertexBufferData'], use_b64)
 
         uv_channels = []
         for uv in sub.get('UVChannels', []):
-            if _prim_lists_edited:
+            if _geometry_arrays_edited:
                 _uv_src = uv.get('UVChannelDataEdited') or uv['UVChannelData']
             else:
                 _uv_src = uv['UVChannelData']
@@ -411,7 +415,11 @@ def ParseSluggie(data: dict) -> SluggieParsed:
         draw_states = []
         for ds in sub.get('DisplayStates', []):
             pad_hex = ds.get('DisplayStatePadBytes', '000000')
-            prim_list_data = ds.get('PrimListData')
+            prim_list_data = (
+                ds.get('PrimListDataEdited')
+                if 'PrimListDataEdited' in ds
+                else ds.get('PrimListData')
+            )
             if prim_list_data in (None, ''):
                 prim_list_bytes = b''
             else:
@@ -464,6 +472,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
             normal_buffer                  = normal_buffer,
             source_layout_offset           = _hex(sub.get('SubmeshOffset', '0x0')),
             source_position_data_offset    = _hex(vb.get('VertexBufferOffset', '0x0')),
+            preserve_source_layout         = not _geometry_arrays_edited,
         ))
 
     mesh_data = MeshData(
@@ -702,6 +711,33 @@ def ParseSluggie(data: dict) -> SluggieParsed:
 # Section builders
 # ---------------------------------------------------------------------------
 
+def _can_preserve_gpl_internal_layout(mesh: MeshData) -> bool:
+    return bool(mesh.source_gpl_base_offset) and all(
+        getattr(sub, 'preserve_source_layout', True)
+        and sub.source_layout_offset
+        and sub.position_data_ptr_field_offset
+        and sub.source_position_data_offset
+        and sub.draw_states
+        and sub.draw_states[0].source_state_offset
+        for sub in mesh.submeshes
+    )
+
+
+def _can_preserve_gpl_source_layout(mesh: MeshData) -> bool:
+    return _can_preserve_gpl_internal_layout(mesh) and all(
+        sub.source_layout_offset
+        and sub.position_data_ptr_field_offset
+        and sub.source_position_data_offset
+        and sub.draw_states
+        and sub.draw_states[0].source_state_offset
+        and all(
+            len(draw_state.prim_list_data) == draw_state.prim_list_length
+            for draw_state in sub.draw_states
+        )
+        for sub in mesh.submeshes
+    )
+
+
 def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
     """Build the GPL (Mesh Data) section from the parsed sluggies data.
 
@@ -735,6 +771,10 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
         """Round offset UP to next 32-byte boundary."""
         return (offset + 31) & ~31
 
+    def _align32_residue(offset: int, residue: int) -> int:
+        """Round offset up to the next value with the requested mod-32 residue."""
+        return offset + ((residue - offset) & 31)
+
     def _vb_comp_size(quant_info: int) -> int:
         """Bytes per vertex-buffer component: 4 for float32 formats, 2 for int16."""
         return 4 if (quant_info >> 4) in (4, 7, 0xa) else 2
@@ -761,14 +801,8 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
 
     N = len(parsed.mesh.submeshes)
     sub_layouts = []
-    preserve_source_layout = bool(parsed.mesh.source_gpl_base_offset) and all(
-        sub.source_layout_offset
-        and sub.position_data_ptr_field_offset
-        and sub.source_position_data_offset
-        and sub.draw_states
-        and sub.draw_states[0].source_state_offset
-        for sub in parsed.mesh.submeshes
-    )
+    preserve_internal_layout = _can_preserve_gpl_internal_layout(parsed.mesh)
+    preserve_source_layout = _can_preserve_gpl_source_layout(parsed.mesh)
 
     sk_write_end = 0
     if parsed.skinning:
@@ -887,7 +921,9 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
         for ds in sub.draw_states:
             if ds.prim_list_data:
                 cursor = _align32(cursor)
-                pl_b = _align4(ds.prim_list_data)
+                pl_b = ds.prim_list_data + b'\x00' * (
+                    (-len(ds.prim_list_data)) % 32
+                )
                 pl_offs.append(cursor)
                 pl_bytes_list.append(pl_b)
                 cursor += len(pl_b)
@@ -895,7 +931,7 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
                 pl_offs.append(0)
                 pl_bytes_list.append(b'')
 
-        if preserve_source_layout:
+        if preserve_internal_layout:
             source_base = parsed.mesh.source_gpl_base_offset
             source_layout = sub.source_layout_offset - source_base
             source_pos_header = sub.position_data_ptr_field_offset - sub.source_layout_offset
@@ -944,8 +980,6 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
                 source_pos_data + _vb_comp_size(sub.vertex_quantize_info) * 3
                 if is_interleaved else source_normal_data
             )
-            pl_offs = source_prim
-
             source_ends = [
                 POS_OFF + 8,
                 COL_OFF + 8,
@@ -957,9 +991,38 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
                 col_data_off + len(col_data) if col_data_off else 0,
                 *(offset + len(data) for offset, data in zip(uv_data_offs, uv_data_list)),
                 nor_data_off + len(nor_data) if nor_data else 0,
-                *(offset + len(data) for offset, data in zip(pl_offs, pl_bytes_list) if offset),
+                *(
+                    offset + draw_state.prim_list_length
+                    for offset, draw_state in zip(source_prim, sub.draw_states)
+                    if offset
+                ),
             ]
             cursor = max(source_ends)
+            pl_offs = []
+            for source_off, draw_state, data in zip(
+                source_prim, sub.draw_states, pl_bytes_list
+            ):
+                if not data:
+                    pl_offs.append(0)
+                elif source_off and len(draw_state.prim_list_data) <= draw_state.prim_list_length:
+                    pl_offs.append(source_off)
+                else:
+                    source_layout = sub.source_layout_offset - parsed.mesh.source_gpl_base_offset
+                    cursor = _align32_residue(cursor, (-source_layout) & 31)
+                    pl_offs.append(cursor)
+                    cursor += len(data)
+
+            if not preserve_source_layout:
+                palette_offsets = {}
+                pal_name_offs = []
+                for pal_b in pal_name_bytes_list:
+                    if pal_b not in palette_offsets:
+                        palette_offsets[pal_b] = cursor
+                        cursor += len(pal_b)
+                        cursor = (cursor + 3) & ~3
+                    pal_name_offs.append(palette_offsets[pal_b])
+                name_off = cursor
+                cursor += len(name_bytes)
 
         blob_size = cursor
 
@@ -1057,9 +1120,15 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
         blob_gpl_offs = []
         cursor = BLOBS_START
         for lay in sub_layouts:
+            if preserve_internal_layout:
+                source_layout = (
+                    lay['sub'].source_layout_offset - parsed.mesh.source_gpl_base_offset
+                )
+                cursor = _align32_residue(cursor, source_layout & 31)
             blob_gpl_offs.append(cursor)
             cursor += lay['blob_size']
-            cursor = _align32(cursor)  # next blob 32-aligned for prim list alignment
+            if not preserve_internal_layout:
+                cursor = _align32(cursor)
 
     # GPL-relative byte offset of each submesh's raw position data array.
     # Computed here so the SKN builder can use them directly instead of
@@ -1166,7 +1235,7 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
             _s.pack_into('>I', gpl, ds_off + 0x04, setting)
             _s.pack_into('>I', gpl, ds_off + 0x08, lay['pl_offs'][k])
             _s.pack_into('>I', gpl, ds_off + 0x0c,
-                         len(ds.prim_list_data) if ds.prim_list_data else 0)
+                         len(lay['pl_bytes_list'][k]) if ds.prim_list_data else 0)
 
         # Raw data payloads  (DOLayout-relative offsets, written into gpl at gpl_b + off)
         def _put(rel_off: int, data: bytes) -> None:
@@ -1215,6 +1284,50 @@ def CloneGPL(model_offset: int, model_length: int) -> bytes:
         data = f.read(gpl_len)
     _slogger.info(f"[CloneGPL] {gpl_len:,} bytes from block+0x{gpl_off:X}", source="hammerspace.main")
     return data
+
+
+def PatchGPLMaterialStates(gpl_bytes: bytes, data: dict, model_offset: int) -> bytes:
+    """Patch aliased Type-7 material bytes over an otherwise verbatim donor GPL."""
+    import struct as _s
+
+    with open(hh.INPUT_DAT, 'rb') as source:
+        source.seek(model_offset + 0x04)
+        raw = source.read(4)
+    if len(raw) != 4:
+        raise IOError(f'Could not read donor GPL offset at 0x{model_offset + 4:08X}')
+    gpl_offset = _s.unpack('>I', raw)[0]
+    gpl_absolute = model_offset + gpl_offset
+    patched = bytearray(gpl_bytes)
+
+    for submesh_index, submesh in enumerate(data['SluggiesModel'].get('Submeshes', [])):
+        for state_index, state in enumerate(submesh.get('DisplayStates', [])):
+            if not (
+                state.get('MaterialStateAliasedByImporter')
+                or state.get('ShaderModeEdited') is not None
+            ):
+                continue
+            setting_field = _hex(state['ShaderModeFieldOffset'])
+            state_relative = setting_field - 4 - gpl_absolute
+            if state_relative < 0 or state_relative + 8 > len(patched):
+                raise ValueError(
+                    f'sub{submesh_index} ds{state_index}: material-state record '
+                    f'offset 0x{state_relative:X} is outside cloned GPL size '
+                    f'0x{len(patched):X}')
+            pad = bytes.fromhex(state.get('DisplayStatePadBytes', '000000'))
+            setting = state.get('ShaderModeEdited') or state.get('ShaderMode', '')
+            if len(setting) == 8 and all(c in '0123456789abcdefABCDEF' for c in setting):
+                setting_bytes = bytes.fromhex(setting)
+            else:
+                setting_bytes = setting.encode('ascii', errors='replace').ljust(4, b'\x00')[:4]
+            patched[state_relative + 1:state_relative + 4] = pad[:3].ljust(3, b'\x00')
+            patched[state_relative + 4:state_relative + 8] = setting_bytes
+            _slogger.info(
+                f'[GPL] patched material state sub{submesh_index} ds{state_index} '
+                f'at GPL+0x{state_relative:X}',
+                source='hammerspace.main',
+            )
+
+    return bytes(patched)
 
 
 def _gpl_pos_offsets_from_bytes(gpl_bytes: bytes) -> list[int]:
@@ -1985,9 +2098,26 @@ def BuildModelBlock(data: dict, section_modes: SectionModes | None = None) -> Mo
             f'offset={original_offset}, length={original_length}'
         )
 
+    if modes.gpl == 'build':
+        rebuild_surface_assignments(data)
     parsed = ParseSluggie(data)
     if modes.gpl == 'build':
-        gpl_result = BuildGPLMeshData(parsed)
+        has_material_state_edits = any(
+            state.get('MaterialStateAliasedByImporter')
+            or state.get('ShaderModeEdited') is not None
+            for submesh in model.get('Submeshes', [])
+            for state in submesh.get('DisplayStates', [])
+        )
+        if has_material_state_edits:
+            gpl_bytes = PatchGPLMaterialStates(
+                CloneGPL(original_offset, original_length), data, original_offset
+            )
+            gpl_result = GPLBuildResult(
+                gpl_bytes=gpl_bytes,
+                pos_gpl_offsets=_gpl_pos_offsets_from_bytes(gpl_bytes),
+            )
+        else:
+            gpl_result = BuildGPLMeshData(parsed)
     else:
         gpl_bytes = CloneGPL(original_offset, original_length)
         gpl_result = GPLBuildResult(

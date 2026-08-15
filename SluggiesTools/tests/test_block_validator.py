@@ -128,8 +128,8 @@ def make_valid_block() -> bytes:
     block[ds0 + 0x00] = 3
     struct.pack_into('>I', block, ds0 + 0x04, 0x00000008)  # Type-3: position indexed u8
     struct.pack_into('>I', block, ds0 + 0x08, 0x7C)  # prim rel => abs 0xC0 (aligned)
-    struct.pack_into('>I', block, ds0 + 0x0C, 4)
-    block[l0 + 0x7C:l0 + 0x80] = b'\x90\x00\x01\x00'
+    struct.pack_into('>I', block, ds0 + 0x0C, 32)
+    block[l0 + 0x7C:l0 + 0x9C] = b'\x90\x00\x01\x00' + b'\x00' * 28
 
     # Skinned position payload.
     block[l0 + 0x5C:l0 + 0x74] = b'\x00' * 0x18
@@ -220,6 +220,23 @@ class BlockValidatorTests(unittest.TestCase):
         report = validate_model_block(bytes(block))
         self.assertFalse(report['valid'])
         self.assertTrue(any('SKAcc[0] source array not 32-byte aligned' in error for error in report['errors']))
+
+    def test_unpadded_primitive_list_size_fails(self):
+        block = bytearray(make_valid_block())
+        ds0 = 0x20 + 0x24 + 0x60
+        block[ds0 + 0x00] = 3
+        struct.pack_into('>I', block, ds0 + 0x04, 0x00000008)
+        struct.pack_into('>I', block, ds0 + 0x08, 0x7C)
+        struct.pack_into('>I', block, ds0 + 0x0C, 4)
+        block[0xC0:0xC4] = b'\x90\x00\x01\x00'
+
+        report = validate_model_block(bytes(block))
+
+        self.assertFalse(report['valid'])
+        self.assertTrue(any(
+            'primitive list size 4 is not a multiple of 32 bytes' in error
+            for error in report['errors']
+        ))
 
     def test_incorrect_position_relative_memclr_range_fails(self):
         block = bytearray(make_valid_block())

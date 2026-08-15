@@ -1380,6 +1380,62 @@ def validate_against_json(obj, json_submesh):
     return mismatches
 
 
+def _find_new_materials(obj, json_submesh):
+    """Return a list of (material_name, reason) for materials that are NOT donor surfaces.
+
+    A material is a valid donor surface when:
+      - new path (2.2+): it carries a SurfaceId that exists in the donor's display states, or
+      - legacy path: its name ends with ``_mat{tex_idx}`` where tex_idx is a texture index
+        present in the donor's FaceTextureIndices.
+
+    Any other material (no SurfaceId, unknown SurfaceId, or unparseable legacy name)
+    is a newly created surface and must be rejected for the MVP (plan step 2.4).
+    """
+    display_states = json_submesh.get("DisplayStates", [])
+    donor_sids = {
+        ds.get("SurfaceId") for ds in display_states if ds.get("SurfaceId")
+    }
+
+    # Legacy donor texture indices (old exports without SurfaceId/FaceCount).
+    # FaceTextureIndices is a base64 uint16 BE array, one texture index per face.
+    donor_tex_idxs = set()
+    fti_raw = json_submesh.get("FaceTextureIndicesEdited") or json_submesh.get("FaceTextureIndices")
+    if fti_raw:
+        try:
+            raw = _to_bytes(fti_raw)
+            n = len(raw) // 2
+            donor_tex_idxs = set(struct.unpack(f'>{n}H', raw))
+        except Exception:
+            donor_tex_idxs = set()
+
+    new_materials = []
+    for slot in obj.material_slots:
+        mat = slot.material
+        if mat is None:
+            continue
+        sid = mat.get("SurfaceId")
+        if sid:
+            if sid not in donor_sids:
+                new_materials.append((mat.name, f"SurfaceId '{sid}' is not a donor surface"))
+            continue
+        # No SurfaceId: legacy material — must be named '{...}_mat{tex_idx}' with a
+        # donor texture index.
+        try:
+            tex_idx = int(mat.name.rsplit('_mat', 1)[1])
+        except (IndexError, ValueError):
+            new_materials.append((mat.name, "no SurfaceId and not a donor material name"))
+            continue
+        if donor_tex_idxs and tex_idx not in donor_tex_idxs:
+            new_materials.append((mat.name, f"texture index {tex_idx} is not a donor texture"))
+    return new_materials
+
+
+# Runtime testing found that even byte-minimal donor-surface reassignment can
+# corrupt rendering. Keep the schema encoder available for future format probes,
+# but do not allow Blender exports to activate the patcher path by default.
+ENABLE_MATERIAL_REASSIGNMENT_EXPORT = False
+
+
 def _encode_face_surface_assignment(obj, display_states, surf_mat, use_base64, warnings):
     """Return (data, changed) encoding which display state owns each face.
 
@@ -1558,6 +1614,19 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 )
                 continue
 
+            # --- Step 2.4 (MVP): reject newly created surfaces/materials ---
+            # Only reassignment among imported donor surfaces is permitted.
+            # Any material that is not a donor surface must abort the export.
+            new_materials = _find_new_materials(obj, target_submesh)
+            if new_materials:
+                names = ", ".join(f"'{n}' ({r})" for n, r in new_materials)
+                self.report({"ERROR"},
+                    f"Error: creating new materials is currently not supported "
+                    f"({obj.name}: {names}). "
+                    f"Remove the new material(s) or reassign those faces to an existing donor surface."
+                )
+                return {"CANCELLED"}
+
             if self.use_hammerspace:
                 hs = encode_mesh_hammerspace(obj, target_submesh, use_custom_normals=self.use_custom_normals, use_base64=use_base64)
                 target_submesh["VertexBuffer"]["VertexBufferDataEdited"] = hs['VertexBufferDataEdited']
@@ -1658,6 +1727,15 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 surf_mat, use_base64, warnings,
             )
             if face_sid_changed:
+                if not ENABLE_MATERIAL_REASSIGNMENT_EXPORT:
+                    self.report({"ERROR"},
+                        f"{obj.name}: material reassignment is currently disabled. "
+                        "Dolphin testing found unresolved runtime corruption even "
+                        "for complete moves between compatible donor surfaces. "
+                        "Restore every face to its originally imported material "
+                        "before exporting."
+                    )
+                    return {"CANCELLED"}
                 target_submesh["FaceSurfaceIdsEdited"] = face_sid_data
             else:
                 target_submesh.pop("FaceSurfaceIdsEdited", None)

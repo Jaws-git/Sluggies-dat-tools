@@ -286,6 +286,232 @@ def _decode_original_states(sub: dict, use_b64):
     return state_faces, face_lookup, first_state_by_tex, type3_index
 
 
+def _primitive_blocks(raw: bytes, descriptors: list, what: str) -> list[tuple[bytes, list]]:
+    """Return each raw GX block and its decoded faces, excluding zero padding."""
+    stride = sum(descriptor['index_size'] for descriptor in descriptors)
+    if not stride:
+        return []
+    blocks = []
+    offset = 0
+    while offset < len(raw) and raw[offset] != 0:
+        if offset + 3 > len(raw):
+            raise ValueError(f'{what}: truncated primitive header at byte {offset}')
+        vertex_count = int.from_bytes(raw[offset + 1:offset + 3], 'big')
+        block_end = offset + 3 + vertex_count * stride
+        if block_end > len(raw):
+            raise ValueError(
+                f'{what}: primitive at byte {offset} needs {block_end - offset} '
+                f'bytes but only {len(raw) - offset} remain')
+        block = raw[offset:block_end]
+        blocks.append((block, decodeDrawList(block, descriptors)))
+        offset = block_end
+    return blocks
+
+
+def rebuild_surface_assignments(data: dict) -> bool:
+    """Rebuild primitive lists for unchanged faces reassigned to donor surfaces."""
+    model = data['SluggiesModel']
+    use_b64 = model.get('UseBase64', True)
+    rebuilt = False
+
+    for sub_idx, sub in enumerate(model.get('Submeshes', [])):
+        encoded_assignments = sub.get('FaceSurfaceIdsEdited')
+        if encoded_assignments is None:
+            continue
+
+        raw_assignments = _dec(encoded_assignments, use_b64)
+        if len(raw_assignments) % 2:
+            raise ValueError(
+                f'sub{sub_idx}: FaceSurfaceIdsEdited has odd byte length '
+                f'{len(raw_assignments)}; expected big-endian uint16 values')
+        target_states = _u16s(raw_assignments)
+        state_faces, _, _, _ = _decode_original_states(sub, use_b64)
+        original_faces = [
+            (state_idx, face)
+            for state_idx, faces in state_faces.items()
+            for face in faces
+        ]
+        if len(target_states) != len(original_faces):
+            raise ValueError(
+                f'sub{sub_idx}: FaceSurfaceIdsEdited has {len(target_states)} '
+                f'entries but donor primitive lists contain {len(original_faces)} faces')
+
+        original_states = [state_idx for state_idx, _ in original_faces]
+        if target_states == original_states:
+            _slogger.info(
+                f'[M2.4] sub{sub_idx}: surface assignments unchanged; '
+                'preserving donor primitive lists',
+                source='geometry.rebuild',
+            )
+            continue
+
+        display_states = sub['DisplayStates']
+        state_snapshots = [
+            {
+                'DisplayStateId': state['DisplayStateId'],
+                'DisplayStatePadBytes': state.get('DisplayStatePadBytes', '000000'),
+                'ShaderMode': state.get('ShaderModeEdited') or state.get('ShaderMode', ''),
+                'VertexStreamLayout': state.get('VertexStreamLayout', []),
+            }
+            for state in display_states
+        ]
+        texture_layers = {}
+        texture_contracts = []
+        for state in display_states:
+            if state['DisplayStateId'] == 1:
+                setting = _setting_int(state.get('ShaderModeEdited') or state['ShaderMode'])
+                layer = (setting >> 13) & 7
+                texture_layers[layer] = (
+                    setting & 0x1FFF,
+                    (setting >> 20) & 0xF,
+                    (setting >> 16) & 0xF,
+                )
+            texture_contracts.append(tuple(sorted(texture_layers.items())))
+
+        assignment_ranges = {}
+        cursor = 0
+        for state_idx, faces in state_faces.items():
+            assignment_ranges[state_idx] = (cursor, cursor + len(faces))
+            cursor += len(faces)
+
+        aliased_faces = 0
+        for source_state, (start, end) in assignment_ranges.items():
+            assigned = target_states[start:end]
+            if not assigned or all(target == source_state for target in assigned):
+                continue
+            target_set = set(assigned)
+            if len(target_set) != 1:
+                raise ValueError(
+                    f'sub{sub_idx} ds{source_state}: partial surface reassignment '
+                    'splits a donor GX batch; only complete donor-surface moves '
+                    'are supported by the current MVP')
+            target_state = next(iter(target_set))
+            if target_state not in state_faces:
+                raise ValueError(
+                    f'sub{sub_idx} ds{source_state}: target display state '
+                    f'{target_state} is not an existing drawable donor surface')
+            source_contract = state_snapshots[source_state]
+            target_contract = state_snapshots[target_state]
+            if source_contract['DisplayStateId'] != 7 or target_contract['DisplayStateId'] != 7:
+                raise ValueError(
+                    f'sub{sub_idx}: complete reassignment requires Type-7 donor '
+                    f'surfaces, got ds{source_state} type '
+                    f'{source_contract["DisplayStateId"]} and ds{target_state} '
+                    f'type {target_contract["DisplayStateId"]}')
+            if source_contract['VertexStreamLayout'] != target_contract['VertexStreamLayout']:
+                raise ValueError(
+                    f'sub{sub_idx}: donor surfaces {source_state} and '
+                    f'{target_state} use incompatible vertex stream layouts')
+            if texture_contracts[source_state] != texture_contracts[target_state]:
+                raise ValueError(
+                    f'sub{sub_idx}: donor surfaces {source_state} and '
+                    f'{target_state} use incompatible inherited texture bindings')
+
+            source = display_states[source_state]
+            source['DisplayStatePadBytes'] = target_contract['DisplayStatePadBytes']
+            source['ShaderMode'] = target_contract['ShaderMode']
+            source['MaterialStateAliasedByImporter'] = True
+            aliased_faces += len(assigned)
+            target_states[start:end] = [source_state] * len(assigned)
+            _slogger.info(
+                f'[M2.4] sub{sub_idx}: ds{source_state} adopts ds{target_state} '
+                f'material state; preserved {len(assigned)} faces in their donor GX batch',
+                source='geometry.rebuild',
+            )
+
+        if target_states == original_states:
+            sub['SurfaceAssignmentsRebuiltByImporter'] = True
+            _slogger.info(
+                f'[M2.4] sub{sub_idx}: applied complete-surface reassignment '
+                f'to {aliased_faces} faces without rebuilding primitive lists',
+                source='geometry.rebuild',
+            )
+            rebuilt = True
+            continue
+
+        for face_idx, ((source_state, _), target_state) in enumerate(zip(original_faces, target_states)):
+            if target_state not in state_faces:
+                raise ValueError(
+                    f'sub{sub_idx} face {face_idx}: target display state '
+                    f'{target_state} is not an existing drawable donor surface')
+            source_layout = sub['DisplayStates'][source_state].get('VertexStreamLayout', [])
+            target_layout = sub['DisplayStates'][target_state].get('VertexStreamLayout', [])
+            if source_layout != target_layout:
+                raise ValueError(
+                    f'sub{sub_idx} face {face_idx}: donor surfaces {source_state} '
+                    f'and {target_state} use incompatible vertex stream layouts')
+
+        chunks_by_target = {state_idx: [] for state_idx in state_faces}
+        changed_states = set()
+        assignment_offset = 0
+        preserved_blocks = 0
+        rebuilt_blocks = 0
+        for source_state in state_faces:
+            display_state = sub['DisplayStates'][source_state]
+            descriptors = [
+                {'key': descriptor['key'], 'direct': False,
+                 'index_size': descriptor['index_size']}
+                for descriptor in display_state['VertexStreamLayout']
+            ]
+            original = _dec(display_state['PrimListData'], use_b64)
+            for block, block_faces in _primitive_blocks(
+                original, descriptors, f'sub{sub_idx} ds{source_state}'
+            ):
+                block_targets = target_states[
+                    assignment_offset:assignment_offset + len(block_faces)
+                ]
+                if len(block_targets) != len(block_faces):
+                    raise ValueError(
+                        f'sub{sub_idx} ds{source_state}: assignment data ended '
+                        'inside a primitive block')
+                assignment_offset += len(block_faces)
+                unique_targets = list(dict.fromkeys(block_targets))
+                if len(unique_targets) == 1:
+                    target_state = unique_targets[0]
+                    chunks_by_target[target_state].append(block)
+                    preserved_blocks += 1
+                else:
+                    for target_state in unique_targets:
+                        selected_faces = [
+                            face for face, target in zip(block_faces, block_targets)
+                            if target == target_state
+                        ]
+                        chunks_by_target[target_state].append(
+                            encodeDrawList(selected_faces, descriptors)
+                        )
+                    rebuilt_blocks += 1
+
+                for target_state in unique_targets:
+                    if target_state != source_state:
+                        changed_states.update((source_state, target_state))
+
+        if assignment_offset != len(target_states):
+            raise ValueError(
+                f'sub{sub_idx}: consumed {assignment_offset} face assignments but '
+                f'{len(target_states)} were supplied')
+
+        for state_idx in changed_states:
+            raw = b''.join(chunks_by_target[state_idx])
+            if raw:
+                raw += b'\x00'
+            sub['DisplayStates'][state_idx]['PrimListDataEdited'] = _enc(raw, use_b64)
+
+        moved_count = sum(
+            source_state != target_state
+            for (source_state, _), target_state in zip(original_faces, target_states)
+        )
+        _slogger.info(
+            f'[M2.4] sub{sub_idx}: changed {len(changed_states)} donor surfaces; '
+            f'reassigned {moved_count}/{len(original_faces)} faces; preserved '
+            f'{preserved_blocks} GX blocks, rebuilt {rebuilt_blocks} split blocks',
+            source='geometry.rebuild',
+        )
+        sub['SurfaceAssignmentsRebuiltByImporter'] = True
+        rebuilt = True
+
+    return rebuilt
+
+
 def _rebuild_submesh(model: dict, sub: dict, sub_idx: int, use_b64,
                      perm_info: dict | None) -> None:
     """Rebuild prim lists, compact UVs, and descriptors for one changed submesh."""

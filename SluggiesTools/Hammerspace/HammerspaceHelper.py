@@ -480,15 +480,58 @@ def patchDolEntry(chunk_number: int, file_index: int, new_offset: int, new_lengt
           f"offset=0x{new_offset:08X}, length=0x{new_length:X}", source="hammerspace.helper")
 
 
+def _restore_original_model_bytes(orig_offset: int, orig_length: int) -> None:
+    """Copy one original model range from INPUT DAT back into OUTPUT DAT."""
+    if not os.path.exists(INPUT_DAT):
+        raise FileNotFoundError(f"Input dat not found: {INPUT_DAT}")
+    input_size = os.path.getsize(INPUT_DAT)
+    output_size = os.path.getsize(OUTPUT_DAT)
+    range_end = orig_offset + orig_length
+    if range_end > input_size:
+        raise ValueError(
+            f"original model range 0x{orig_offset:08X}+{orig_length:,} exceeds "
+            f"input dat size {input_size:,}")
+    if range_end > output_size:
+        raise ValueError(
+            f"original model range 0x{orig_offset:08X}+{orig_length:,} exceeds "
+            f"output dat size {output_size:,}")
+
+    restored = 0
+    with open(INPUT_DAT, 'rb') as source, open(OUTPUT_DAT, 'r+b') as target:
+        source.seek(orig_offset)
+        target.seek(orig_offset)
+        while restored < orig_length:
+            read_size = min(CHUNK_SIZE, orig_length - restored)
+            data = source.read(read_size)
+            if len(data) != read_size:
+                raise IOError(
+                    f"short read restoring original model: expected {read_size:,}, "
+                    f"got {len(data):,}")
+            target.write(data)
+            restored += len(data)
+
+    with open(INPUT_DAT, 'rb') as source, open(OUTPUT_DAT, 'rb') as target:
+        source.seek(orig_offset)
+        target.seek(orig_offset)
+        remaining = orig_length
+        while remaining:
+            read_size = min(CHUNK_SIZE, remaining)
+            if source.read(read_size) != target.read(read_size):
+                raise IOError(
+                    f"restored output bytes do not match input at model offset "
+                    f"0x{orig_offset:08X}")
+            remaining -= read_size
+
+
 def removeModelFromHammerspace(chunk_number: int, file_index: int) -> tuple:
     """Remove a model block that was previously written to hammerspace.
 
     Steps:
       1. Read the current offset and length from the OUTPUT main.dol.
-      2. Verify the offset falls inside the hammerspace region (>= BASE_SIZE).
-      3. Overwrite that region in OUTPUT dt_na.dat with zero bytes.
-      4. Restore the original offset and length from INPUT main.dol back
-         into all language slots of the OUTPUT main.dol.
+        2. Restore the original model bytes from INPUT dt_na.dat.
+        3. Restore the original offset and length from INPUT main.dol back
+            into all language slots of the OUTPUT main.dol.
+        4. Overwrite the obsolete hammerspace region with zero bytes.
 
     Returns ``(success, dat_offset, data_length)``:
       - *success*     — True on success, False on any error.
@@ -520,38 +563,48 @@ def removeModelFromHammerspace(chunk_number: int, file_index: int) -> tuple:
           f"offset=0x{cur_offset:08X} ({cur_offset:,}), "
           f"length=0x{cur_length:08X} ({cur_length:,} bytes)", source="hammerspace.helper")
 
-    # Step 2 — verify the offset is in the hammerspace region
+    orig_offset, orig_length = readDolEntry(chunk_number, file_index)
+    if orig_offset == -1:
+        _slogger.error("Could not read original DOL entry from input.", source="hammerspace.helper")
+        return False, 0, 0
+    _slogger.info(f"[2] Original DOL entry: offset=0x{orig_offset:08X} ({orig_offset:,}), "
+          f"length=0x{orig_length:08X} ({orig_length:,} bytes)", source="hammerspace.helper")
+
+    # A prior broken unpatch may already have restored the DOL route while
+    # leaving the original DAT range zeroed. Re-running unpatch repairs it.
     if cur_offset < BASE_SIZE:
+        if (cur_offset, cur_length) == (orig_offset, orig_length):
+            try:
+                _restore_original_model_bytes(orig_offset, orig_length)
+            except (OSError, ValueError) as exc:
+                _slogger.error(f"Could not restore original model bytes: {exc}", source="hammerspace.helper")
+                return False, 0, 0
+            _slogger.info(
+                "DOL entry was already restored; original model bytes were repaired and verified.",
+                source="hammerspace.helper",
+            )
+            return True, 0, 0
         _slogger.error(f"offset 0x{cur_offset:08X} is not in the hammerspace region "
               f"(BASE_SIZE=0x{BASE_SIZE:08X}). Nothing to remove.", source="hammerspace.helper")
         return False, 0, 0
 
-    # Step 3 — zero out the block in OUTPUT dt_na.dat
     dat_size = os.path.getsize(OUTPUT_DAT)
     if cur_offset + cur_length > dat_size:
         _slogger.error(f"block at 0x{cur_offset:08X} + {cur_length:,} extends beyond "
               f"dat file size {dat_size:,}. Aborting.", source="hammerspace.helper")
         return False, 0, 0
 
-    _slogger.info(f"[2] Zeroing {cur_length:,} bytes at 0x{cur_offset:08X} in OUTPUT dt_na.dat ...", source="hammerspace.helper")
-    zeroed = 0
-    with open(OUTPUT_DAT, 'r+b') as f:
-        f.seek(cur_offset)
-        while zeroed < cur_length:
-            write_size = min(CHUNK_SIZE, cur_length - zeroed)
-            f.write(b'\x00' * write_size)
-            zeroed += write_size
-    _slogger.info(f"    Zeroed {cur_length:,} bytes.", source="hammerspace.helper")
-
-    # Step 4 — read original offset and length from INPUT main.dol
-    orig_offset, orig_length = readDolEntry(chunk_number, file_index)
-    if orig_offset == -1:
-        _slogger.error("Could not read original DOL entry from input.", source="hammerspace.helper")
+    try:
+        _restore_original_model_bytes(orig_offset, orig_length)
+    except (OSError, ValueError) as exc:
+        _slogger.error(f"Could not restore original model bytes: {exc}", source="hammerspace.helper")
         return False, 0, 0
-    _slogger.info(f"[3] Original DOL entry: offset=0x{orig_offset:08X} ({orig_offset:,}), "
-          f"length=0x{orig_length:08X} ({orig_length:,} bytes)", source="hammerspace.helper")
+    _slogger.info(
+        f"[3] Restored and verified {orig_length:,} original model bytes at "
+        f"0x{orig_offset:08X}.",
+        source="hammerspace.helper",
+    )
 
-    # Step 5 — restore original values into all language slots of OUTPUT main.dol
     _slogger.info("[4] Restoring original DOL entry ...", source="hammerspace.helper")
     patchDolEntry(chunk_number, file_index, orig_offset, orig_length)
 
@@ -561,6 +614,16 @@ def removeModelFromHammerspace(chunk_number: int, file_index: int) -> tuple:
         _slogger.info(f"    Restoring {len(shared)} shared chunk reference(s):", source="hammerspace.helper")
         for sc, si in shared:
             patchDolEntry(sc, si, orig_offset, orig_length)
+
+    _slogger.info(f"[5] Zeroing {cur_length:,} bytes at 0x{cur_offset:08X} in OUTPUT dt_na.dat ...", source="hammerspace.helper")
+    zeroed = 0
+    with open(OUTPUT_DAT, 'r+b') as f:
+        f.seek(cur_offset)
+        while zeroed < cur_length:
+            write_size = min(CHUNK_SIZE, cur_length - zeroed)
+            f.write(b'\x00' * write_size)
+            zeroed += write_size
+    _slogger.info(f"    Zeroed {cur_length:,} bytes.", source="hammerspace.helper")
 
     _slogger.info(f"Done. chunk={chunk_number}, file_index={file_index} removed from hammerspace.", source="hammerspace.helper")
     return True, cur_offset, cur_length

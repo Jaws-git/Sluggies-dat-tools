@@ -42,18 +42,16 @@ markers are present.
 
 ### What To Supply
 
-Only the position-only fixture is currently producible through the documented
-Blender workflow. Make a copy of either selected donor `.sluggie`, import that
-copy, move one or a few existing vertices without changing topology, and export
-back onto the same copied file. Record its relative path and set
-`edited_blender_fixtures.position_only` to `ready` in the matrix.
+Only the position-only fixture is currently producible through the supported
+Blender workflow. Material reassignment was implemented experimentally but
+failed Dolphin runtime tests; Blender export now rejects any changed face-to-
+material assignment. Keep the material-reassignment fixture planned until the
+dormant encoder/patcher path is explicitly reactivated after further research.
 
-The other five slots must remain planned fixtures for now. The current Blender
-guide explicitly prohibits skinning changes, adding vertices/faces, and material
-slot changes; the current hammerspace builder also rejects ACT/TEX/trailing
-build modes. Do not hand-edit binary data to fill those slots. Supply them only
-when their editing/import paths have been implemented, or when you have a
-known-good `.sluggie` produced by a supported tool.
+The same-count reskin, vertex-count increase, new-face, and new-PNG-texture
+slots must remain planned for now. Do not hand-edit binary data to fill those
+slots. Supply them only when their editing/import paths have been implemented,
+or when you have a known-good `.sluggie` produced by a supported tool.
 
 The two unchanged-donor control tests do require manual game evidence now. For
 both Shy Guy and Mario, perform a normal all-clone write to a disposable output

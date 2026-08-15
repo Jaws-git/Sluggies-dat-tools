@@ -195,6 +195,16 @@ def run_add_custom_icons(dry_run=False, diagnostic_stage=None, icon_fit='contain
             slogger.info('Custom icon installation complete. Patched files are in "3_Output_Dat".', source="dispatcher")
 
 
+def hammerspace_section_args(model):
+    """Select rebuild modes required by exported hammerspace edit markers."""
+    if any(
+        submesh.get('FaceSurfaceIdsEdited') is not None
+        for submesh in model.get('Submeshes', [])
+    ):
+        return ['--gpl', 'build']
+    return []
+
+
 def run_patching(filenames, unpatch=False):
     for filename in filenames:
         matches = [
@@ -223,7 +233,7 @@ def run_patching(filenames, unpatch=False):
         use_hammerspace = model.get('UseHammerspace', False)
 
         if use_hammerspace:
-            cmd = python_script_command(HS_MAIN_SCRIPT, found)
+            cmd = python_script_command(HS_MAIN_SCRIPT, found, *hammerspace_section_args(model))
             if unpatch:
                 cmd.append('--unpatch')
             subprocess.run(cmd, cwd=HS_DIR, check=True)
