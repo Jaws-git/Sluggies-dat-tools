@@ -55,10 +55,10 @@ If you do not need textures, `--notex` skips PNG conversion and does not require
 ## Workflow - Overall Concept
 ```mermaid
 flowchart LR
-    A[Extract game files] --> B[Export model data as .sluggies file]
+    A[Extract game files] --> B[Export model data as .sluggie file]
     B --> C[Import to Blender]
     C --> D[Make changes]
-    D --> E[Export model back to .sluggies file]
+    D --> E[Export model back to .sluggie file]
     E --> F[Write changes to game's .dat]
 ```
 
@@ -86,7 +86,7 @@ You can also use the option --notex to skip the rather slow png creation step. R
 4) File -> export -> Sluggers intermediate -> select the **same** file you imported earlier to export your changes to
 
 Nothing is lost, the updated file will hold both original and edited mesh data for you.
-Exporting to a .sluggies file will automatically put the file name on your clipboard for the next step.
+Exporting to a .sluggie file will automatically put the file name on your clipboard for the next step.
 
 ## Import
 
@@ -97,8 +97,8 @@ Exporting to a .sluggies file will automatically put the file name on your clipb
 4) copy the finished dt_na.dat and main.dol files back into the unpacked game folder, overwriting the old ones
 5) start the unpacked game containing the patched dat file using Dolphin (we are not re-packaging it into an iso file for now, Dolphin can run it just fine as is)
 
-You can call patch.py with the option --unpatch to write the original model back to the dat.
-Example: ``python patch.py --unpatch myfilename``
+You can call start.py with the option --unpatch to write the original model back to the dat.
+Example: ``python start.py --unpatch myfilename``
 
 ## Icon Reimport
 
@@ -106,12 +106,9 @@ After editing sheets in ``2_Output_Models/_ICONS/sheets (EDIT THESE)``, reimport
 
 1) ``python start.py --patch-icons``
 2) Patched output is written to ``3_Output_Dat/dt_na.dat``
-3) A report is generated at ``2_Output_Models/_ICONS/metadata [META]/reimport_report.json``
+3) A report is generated at ``2_Output_Models/_ICONS/metadata/reimport_report.json``
 
-Useful options:
-
-- ``python start.py --patch-icons --dry-run`` validates and reports without writing bytes.
-- ``python start.py --patch-icons --palette-only`` writes only page palettes.
+- ``python start.py --patch-icons --dry-run`` validates and reports without writing to output.
 
 ## Icons for unused characters
 
