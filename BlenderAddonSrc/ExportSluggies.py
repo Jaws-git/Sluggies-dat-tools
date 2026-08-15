@@ -1,5 +1,6 @@
 import bpy
 import json
+import math
 import os
 import base64
 import struct
@@ -20,6 +21,21 @@ def _from_bytes(raw: bytes, use_base64: bool = True):
     if use_base64:
         return base64.b64encode(raw).decode('ascii')
     return list(raw)
+
+
+def _pack_quantized_component(value, divisor, context):
+    value = float(value)
+    if not math.isfinite(value):
+        raise ValueError(f"{context}: coordinate/component is not finite ({value})")
+    quantized = round(value * divisor)
+    if not -32768 <= quantized <= 32767:
+        minimum = -32768 / divisor
+        maximum = 32767 / divisor
+        raise ValueError(
+            f"{context}: value {value} quantizes to {quantized}, outside int16 "
+            f"range [-32768, 32767] (representable coordinates {minimum}..{maximum})"
+        )
+    return struct.pack('>h', quantized)
 
 REQUIRED_PROPS = (
     "VertexBufferOffset",
@@ -76,12 +92,21 @@ def encode_vertex_buffer_edited(obj, comp_count, quant_info, use_custom_normals=
                 comps += [n.x, n.y, n.z]
             else:
                 comps += [v.normal.x, v.normal.y, v.normal.z]
-        for val in comps:
+        component_names = ('x', 'y', 'z', 'nx', 'ny', 'nz')
+        for component_index, val in enumerate(comps):
             if is_float:
+                if not math.isfinite(float(val)):
+                    raise ValueError(
+                        f"{obj.name} vertex {v.index} {component_names[component_index]}: "
+                        f"coordinate/component is not finite ({val})"
+                    )
                 raw_bytes += struct.pack('>f', val)
             else:
-                raw_val = max(-32768, min(32767, round(val * divisor)))
-                raw_bytes += struct.pack('>h', raw_val)
+                raw_bytes += _pack_quantized_component(
+                    val,
+                    divisor,
+                    f"{obj.name} vertex {v.index} {component_names[component_index]}",
+                )
 
     return _from_bytes(bytes(raw_bytes), use_base64)
 
@@ -744,10 +769,12 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
                 return obj_by_vb.get(str(vb_off)), global_vtx - start
         return None, global_vtx
 
-    def pack_val(v):
+    def pack_val(v, context):
         if is_float:
+            if not math.isfinite(float(v)):
+                raise ValueError(f"{context}: coordinate/component is not finite ({v})")
             return struct.pack('>f', float(v))
-        return struct.pack('>h', max(-32768, min(32767, round(float(v) * divisor))))
+        return _pack_quantized_component(v, divisor, context)
 
     def encode_vertex(obj, local_v):
         vd  = obj.data.vertices[local_v]
@@ -758,8 +785,11 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
             else (vd.normal.x, vd.normal.y, vd.normal.z)
         )
         buf = bytearray()
-        for val in [vd.co.x, vd.co.y, vd.co.z, nx, ny, nz]:
-            buf.extend(pack_val(val))
+        for component, val in zip(
+            ('x', 'y', 'z', 'nx', 'ny', 'nz'),
+            (vd.co.x, vd.co.y, vd.co.z, nx, ny, nz),
+        ):
+            buf.extend(pack_val(val, f"{obj.name} vertex {local_v} {component}"))
         return bytes(buf)
 
     wrote_any = False
@@ -990,10 +1020,12 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
     is_float   = fmt_nibble in [4, 7, 0xa]
     divisor    = 1 << (quant_info & 0xF)
 
-    def pack_val(v):
+    def pack_val(v, context):
         if is_float:
+            if not math.isfinite(float(v)):
+                raise ValueError(f"{context}: coordinate/component is not finite ({v})")
             return struct.pack('>f', float(v))
-        return struct.pack('>h', max(-32768, min(32767, round(float(v) * divisor))))
+        return _pack_quantized_component(v, divisor, context)
 
     # Map VertexBufferOffset → (submesh_idx, obj)
     obj_to_sub = {}
@@ -1159,8 +1191,14 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
             v       = obj_ref.data.vertices[entry[1]]
             _cn     = custom_normals_cache.get(id(obj_ref))
             nx, ny, nz = (_cn[v.index].x, _cn[v.index].y, _cn[v.index].z) if _cn is not None else (v.normal.x, v.normal.y, v.normal.z)
-            for val in [v.co.x, v.co.y, v.co.z, nx, ny, nz]:
-                raw += pack_val(val)
+            for component, val in zip(
+                ('x', 'y', 'z', 'nx', 'ny', 'nz'),
+                (v.co.x, v.co.y, v.co.z, nx, ny, nz),
+            ):
+                raw += pack_val(
+                    val,
+                    f"{obj_ref.name} vertex {v.index} SKN {component}",
+                )
         return _from_bytes(bytes(raw), use_base64)
 
     # Build lookups so gplVertexArr / gplDestArr can be carried forward.
@@ -1628,7 +1666,16 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 return {"CANCELLED"}
 
             if self.use_hammerspace:
-                hs = encode_mesh_hammerspace(obj, target_submesh, use_custom_normals=self.use_custom_normals, use_base64=use_base64)
+                try:
+                    hs = encode_mesh_hammerspace(
+                        obj,
+                        target_submesh,
+                        use_custom_normals=self.use_custom_normals,
+                        use_base64=use_base64,
+                    )
+                except ValueError as exc:
+                    self.report({"ERROR"}, f"{obj.name}: {exc}")
+                    return {"CANCELLED"}
                 target_submesh["VertexBuffer"]["VertexBufferDataEdited"] = hs['VertexBufferDataEdited']
                 target_submesh["FacesDataEdited"] = hs['FacesDataEdited']
                 target_submesh["FacesCountEdited"] = hs['FacesCountEdited']
@@ -1660,13 +1707,17 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                         + "; ".join(length_issues)
                     )
 
-                edited_data = encode_vertex_buffer_edited(
-                    obj,
-                    obj["VertexBufferCompCount"],
-                    obj["VertexBufferQuantizeInfo"],
-                    use_custom_normals=self.use_custom_normals,
-                    use_base64=use_base64,
-                )
+                try:
+                    edited_data = encode_vertex_buffer_edited(
+                        obj,
+                        obj["VertexBufferCompCount"],
+                        obj["VertexBufferQuantizeInfo"],
+                        use_custom_normals=self.use_custom_normals,
+                        use_base64=use_base64,
+                    )
+                except ValueError as exc:
+                    self.report({"ERROR"}, f"{obj.name}: {exc}")
+                    return {"CANCELLED"}
                 target_submesh["VertexBuffer"]["VertexBufferDataEdited"] = edited_data
                 # Clear any stale hammerspace face data so it can't mismatch the
                 # in-place vertex buffer (which must stay at the original vertex count).
@@ -1746,8 +1797,16 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         encode_unskinned_bone_reassignments(candidates, data, warnings)
         _purge_skn_edited(data)
         if self.use_hammerspace:
-            skn_ok, skn_msg = encode_skin_hammerspace(
-                candidates, data, warnings, use_custom_normals=self.use_custom_normals)
+            try:
+                skn_ok, skn_msg = encode_skin_hammerspace(
+                    candidates,
+                    data,
+                    warnings,
+                    use_custom_normals=self.use_custom_normals,
+                )
+            except ValueError as exc:
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
             if not skn_ok:
                 self.report({"ERROR"}, skn_msg)
                 return {"CANCELLED"}

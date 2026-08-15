@@ -19,6 +19,55 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
     def test_unchanged_model_keeps_clone_defaults(self):
         self.assertEqual(start.hammerspace_section_args({'Submeshes': [{}]}), [])
 
+    def test_static_position_edit_requests_only_gpl_build(self):
+        model = {
+            'UseBase64': False,
+            'Submeshes': [{
+                'VertexBuffer': {
+                    'VertexBufferData': [0, 1],
+                    'VertexBufferDataEdited': [0, 2],
+                    'VertexBufferCompCount': 3,
+                },
+            }],
+        }
+
+        self.assertEqual(
+            start.hammerspace_section_args(model),
+            ['--gpl', 'build'],
+        )
+
+    def test_skinned_position_edit_requests_gpl_and_skn_build(self):
+        model = {
+            'UseBase64': False,
+            'SkinDataEdited': {'SK1s': []},
+            'Submeshes': [{
+                'VertexBuffer': {
+                    'VertexBufferData': [0, 1],
+                    'VertexBufferDataEdited': [0, 2],
+                    'VertexBufferCompCount': 6,
+                },
+            }],
+        }
+
+        self.assertEqual(
+            start.hammerspace_section_args(model),
+            ['--gpl', 'build', '--skn', 'build'],
+        )
+
+    def test_identical_reexported_position_buffer_keeps_clone_defaults(self):
+        model = {
+            'UseBase64': False,
+            'Submeshes': [{
+                'VertexBuffer': {
+                    'VertexBufferData': [0, 1],
+                    'VertexBufferDataEdited': [0, 1],
+                    'VertexBufferCompCount': 3,
+                },
+            }],
+        }
+
+        self.assertEqual(start.hammerspace_section_args(model), [])
+
     def test_other_edit_markers_do_not_activate_unfinished_rebuilders(self):
         model = {'Submeshes': [{'FacesDataEdited': 'AAAA'}]}
 

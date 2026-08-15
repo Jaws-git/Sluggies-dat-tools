@@ -272,6 +272,66 @@ def _hex(val: str | int) -> int:
     return int(val)
 
 
+def _position_edits(model: dict) -> list[tuple[int, dict, bytes]]:
+    """Return validated unchanged-count position edits as (index, submesh, bytes)."""
+    use_b64 = model.get('UseBase64', True)
+    edits = []
+    for submesh_index, submesh in enumerate(model.get('Submeshes', [])):
+        vertex_buffer = submesh.get('VertexBuffer', {})
+        encoded_edit = vertex_buffer.get('VertexBufferDataEdited')
+        if encoded_edit is None:
+            continue
+        original = _decode(vertex_buffer['VertexBufferData'], use_b64)
+        edited = _decode(encoded_edit, use_b64)
+        if edited == original:
+            continue
+
+        comp_count = vertex_buffer.get('VertexBufferCompCount')
+        quantize_info = vertex_buffer.get('VertexBufferQuantizeInfo')
+        if comp_count not in (3, 6):
+            raise ValueError(
+                f'sub{submesh_index}: position-only edit has unsupported component '
+                f'count {comp_count}; expected 3 or 6')
+        if not isinstance(quantize_info, int) or (quantize_info >> 4) not in (0, 1, 2, 3, 4, 7, 0xA):
+            raise ValueError(
+                f'sub{submesh_index}: position-only edit has unsupported quantization '
+                f'{quantize_info!r}')
+        stride = comp_count * _vb_comp_size(quantize_info)
+        if len(original) % stride:
+            raise ValueError(
+                f'sub{submesh_index}: donor position length {len(original)} is not '
+                f'divisible by stride {stride}')
+        if len(edited) != len(original):
+            raise ValueError(
+                f'sub{submesh_index}: position-only edit changed byte length from '
+                f'{len(original)} to {len(edited)} (stride {stride}); topology/count '
+                'changes require a later milestone')
+        recorded_length = vertex_buffer.get('VertexBufferLength')
+        if recorded_length is not None and recorded_length != len(original):
+            raise ValueError(
+                f'sub{submesh_index}: recorded VertexBufferLength {recorded_length} '
+                f'does not match donor payload length {len(original)}')
+
+        original_face_count = submesh.get('FacesCount')
+        edited_face_count = submesh.get('FacesCountEdited', original_face_count)
+        if edited_face_count != original_face_count:
+            raise ValueError(
+                f'sub{submesh_index}: position-only edit changed face count from '
+                f'{original_face_count} to {edited_face_count}')
+        encoded_faces = submesh.get('FacesDataEdited')
+        if encoded_faces is not None and _decode(encoded_faces, use_b64) != _decode(
+            submesh['FacesData'], use_b64
+        ):
+            raise ValueError(
+                f'sub{submesh_index}: position-only edit changed face indices/order')
+        if comp_count == 6 and not model.get('SkinDataEdited'):
+            raise ValueError(
+                f'sub{submesh_index}: skinned position edit is missing SkinDataEdited; '
+                're-export with the current Blender addon')
+        edits.append((submesh_index, submesh, edited))
+    return edits
+
+
 # ---------------------------------------------------------------------------
 # GPL build result
 # ---------------------------------------------------------------------------
@@ -355,6 +415,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
     model   = data['SluggiesModel']
     use_b64 = model.get('UseBase64', True)
     source_gpl_base_offset = _hex((model.get('SkinData') or {}).get('GplBaseOffset', '0x0'))
+    position_edit_submeshes = set(model.get('_PositionEditSubmeshes', []))
 
     # ---- MeshData ----------------------------------------------------------
     submeshes = []
@@ -373,7 +434,10 @@ def ParseSluggie(data: dict) -> SluggieParsed:
             'PrimListDataEdited' in ds for ds in sub.get('DisplayStates', [])
         )
         _surface_only_rebuild = sub.get('SurfaceAssignmentsRebuiltByImporter', False)
-        _geometry_arrays_edited = _prim_lists_edited and not _surface_only_rebuild
+        _position_only_edited = i in position_edit_submeshes
+        _geometry_arrays_edited = (
+            _prim_lists_edited and not _surface_only_rebuild
+        ) or _position_only_edited
 
         if _geometry_arrays_edited:
             vertex_data = _decode(vb.get('VertexBufferDataEdited') or vb['VertexBufferData'], use_b64)
@@ -550,11 +614,13 @@ def ParseSluggie(data: dict) -> SluggieParsed:
     # Determine if geometry was actually edited (any submesh has rebuilt prim
     # lists).  If not, SkinDataEdited may still exist but contains Blender
     # re-export precision drift — use original bind pose data instead.
-    _geometry_edited = any(
+    _topology_geometry_edited = any(
         'PrimListDataEdited' in ds
         for sub in model.get('Submeshes', [])
         for ds in sub.get('DisplayStates', [])
     )
+    _position_geometry_edited = bool(position_edit_submeshes)
+    _geometry_edited = _topology_geometry_edited or _position_geometry_edited
     raw_skn = raw_skn_orig or raw_skn_edit
     if raw_skn:
         # Build lookup dicts from edited data for payload substitution.
@@ -570,9 +636,52 @@ def ParseSluggie(data: dict) -> SluggieParsed:
             for s in raw_skn_edit.get('SKAccs', []):
                 _edit_acc_by_bone[s['BoneIndex']] = s
 
+        position_edit_lists = None
+        if _position_geometry_edited and raw_skn_orig:
+            if not raw_skn_edit:
+                raise ValueError('skinned position edit is missing SkinDataEdited')
+            position_edit_lists = {}
+            identity_fields = {
+                'SK1s': ('BoneIndex', 'VertexCnt', 'GplVertexArrValue'),
+                'SK2s': (
+                    'BoneIndex1', 'BoneIndex2', 'VertexCnt', 'GplVertexArrValue'
+                ),
+                'SKAccs': ('BoneIndex', 'VertexCnt', 'GplDestArrValue'),
+            }
+            for list_name, fields in identity_fields.items():
+                originals = raw_skn_orig.get(list_name, [])
+                edits = raw_skn_edit.get(list_name, [])
+                if len(edits) != len(originals):
+                    raise ValueError(
+                        f'position-only SKN edit changed {list_name} count from '
+                        f'{len(originals)} to {len(edits)}')
+                edits_by_identity = {}
+                for edit in edits:
+                    identity = tuple(edit.get(field) for field in fields)
+                    edits_by_identity.setdefault(identity, []).append(edit)
+                ordered_edits = []
+                for entry_index, original in enumerate(originals):
+                    identity = tuple(original.get(field) for field in fields)
+                    candidates = edits_by_identity.get(identity)
+                    if not candidates:
+                        raise ValueError(
+                            f'position-only SKN edit has no match for donor '
+                            f'{list_name}[{entry_index}] identity {identity}')
+                    ordered_edits.append(candidates.pop(0))
+                extras = sum(len(candidates) for candidates in edits_by_identity.values())
+                if extras:
+                    raise ValueError(
+                        f'position-only SKN edit contains {extras} unmatched '
+                        f'{list_name} entries')
+                position_edit_lists[list_name] = ordered_edits
+
         sk1s = []
-        for s in raw_skn.get('SK1s', []):
-            ed = _edit_sk1_by_bone.get(s['BoneIndex']) if _geometry_edited else None
+        for entry_index, s in enumerate(raw_skn.get('SK1s', [])):
+            ed = (
+                position_edit_lists['SK1s'][entry_index]
+                if position_edit_lists is not None
+                else _edit_sk1_by_bone.get(s['BoneIndex']) if _geometry_edited else None
+            )
             if _geometry_edited and ed:
                 bp_src = ed.get('BindPoseDataEdited') or ed.get('BindPoseData') or s['BindPoseData']
             else:
@@ -589,12 +698,20 @@ def ParseSluggie(data: dict) -> SluggieParsed:
             ))
 
         sk2s = []
-        for s in raw_skn.get('SK2s', []):
+        for entry_index, s in enumerate(raw_skn.get('SK2s', [])):
             key = (s['BoneIndex1'], s['BoneIndex2'])
-            ed = _edit_sk2_by_pair.get(key) if _geometry_edited else None
+            ed = (
+                position_edit_lists['SK2s'][entry_index]
+                if position_edit_lists is not None
+                else _edit_sk2_by_pair.get(key) if _geometry_edited else None
+            )
             if _geometry_edited and ed:
                 bp_src = ed.get('BindPoseDataEdited') or ed.get('BindPoseData') or s['BindPoseData']
-                wt_src = ed.get('WeightDataEdited') or ed.get('WeightData') or s['WeightData']
+                wt_src = (
+                    s['WeightData']
+                    if position_edit_lists is not None
+                    else ed.get('WeightDataEdited') or ed.get('WeightData') or s['WeightData']
+                )
             else:
                 bp_src = s['BindPoseData']
                 wt_src = s['WeightData']
@@ -614,15 +731,27 @@ def ParseSluggie(data: dict) -> SluggieParsed:
             ))
 
         sk_accs = []
-        for s in raw_skn.get('SKAccs', []):
-            ed = _edit_acc_by_bone.get(s['BoneIndex']) if _geometry_edited else None
+        for entry_index, s in enumerate(raw_skn.get('SKAccs', [])):
+            ed = (
+                position_edit_lists['SKAccs'][entry_index]
+                if position_edit_lists is not None
+                else _edit_acc_by_bone.get(s['BoneIndex']) if _geometry_edited else None
+            )
             if _geometry_edited and ed:
                 bp_src = ed.get('BindPoseDataEdited') or ed.get('BindPoseData') or s['BindPoseData']
-                wt_src = ed.get('WeightDataEdited') or ed.get('WeightData') or s['WeightData']
+                wt_src = (
+                    s['WeightData']
+                    if position_edit_lists is not None
+                    else ed.get('WeightDataEdited') or ed.get('WeightData') or s['WeightData']
+                )
             else:
                 bp_src = s['BindPoseData']
                 wt_src = s['WeightData']
-            dest_src = (ed or s).get('DestIndexData') or s['DestIndexData']
+            dest_src = (
+                s['DestIndexData']
+                if position_edit_lists is not None
+                else (ed or s).get('DestIndexData') or s['DestIndexData']
+            )
             sk_accs.append(SKAcc(
                 bone_index                = s['BoneIndex'],
                 vertex_cnt                = (ed or s)['VertexCnt'],
@@ -659,7 +788,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
             sk1s                      = sk1s,
             sk2s                      = sk2s,
             sk_accs                   = sk_accs,
-            preserve_source_layout    = not _geometry_edited,
+            preserve_source_layout    = not _topology_geometry_edited,
         )
     else:
         skinning_data = None
@@ -1327,6 +1456,34 @@ def PatchGPLMaterialStates(gpl_bytes: bytes, data: dict, model_offset: int) -> b
                 source='hammerspace.main',
             )
 
+    return bytes(patched)
+
+
+def PatchGPLPositionArrays(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes:
+    """Patch validated same-size position arrays over an otherwise cloned GPL."""
+    import struct as _s
+
+    with open(hh.INPUT_DAT, 'rb') as source:
+        source.seek(model_offset + 0x04)
+        raw = source.read(4)
+    if len(raw) != 4:
+        raise IOError(f'Could not read donor GPL offset at 0x{model_offset + 4:08X}')
+    gpl_absolute = model_offset + _s.unpack('>I', raw)[0]
+    patched = bytearray(gpl_bytes)
+    for submesh_index, submesh, edited in _position_edits(model):
+        position_absolute = _hex(submesh['VertexBuffer']['VertexBufferOffset'])
+        position_relative = position_absolute - gpl_absolute
+        if position_relative < 0 or position_relative + len(edited) > len(patched):
+            raise ValueError(
+                f'sub{submesh_index}: position array range GPL+0x{position_relative:X} '
+                f'..0x{position_relative + len(edited):X} exceeds cloned GPL size '
+                f'0x{len(patched):X}')
+        patched[position_relative:position_relative + len(edited)] = edited
+        _slogger.info(
+            f'[GPL] patched position array sub{submesh_index} at '
+            f'GPL+0x{position_relative:X} ({len(edited):,} bytes)',
+            source='hammerspace.main',
+        )
     return bytes(patched)
 
 
@@ -2098,6 +2255,11 @@ def BuildModelBlock(data: dict, section_modes: SectionModes | None = None) -> Mo
             f'offset={original_offset}, length={original_length}'
         )
 
+    position_edits = _position_edits(model) if modes.gpl == 'build' else []
+    if position_edits:
+        model['_PositionEditSubmeshes'] = [index for index, _, _ in position_edits]
+    else:
+        model.pop('_PositionEditSubmeshes', None)
     if modes.gpl == 'build':
         rebuild_surface_assignments(data)
     parsed = ParseSluggie(data)
@@ -2108,10 +2270,16 @@ def BuildModelBlock(data: dict, section_modes: SectionModes | None = None) -> Mo
             for submesh in model.get('Submeshes', [])
             for state in submesh.get('DisplayStates', [])
         )
-        if has_material_state_edits:
-            gpl_bytes = PatchGPLMaterialStates(
-                CloneGPL(original_offset, original_length), data, original_offset
-            )
+        if has_material_state_edits or position_edits:
+            gpl_bytes = CloneGPL(original_offset, original_length)
+            if has_material_state_edits:
+                gpl_bytes = PatchGPLMaterialStates(
+                    gpl_bytes, data, original_offset
+                )
+            if position_edits:
+                gpl_bytes = PatchGPLPositionArrays(
+                    gpl_bytes, model, original_offset
+                )
             gpl_result = GPLBuildResult(
                 gpl_bytes=gpl_bytes,
                 pos_gpl_offsets=_gpl_pos_offsets_from_bytes(gpl_bytes),

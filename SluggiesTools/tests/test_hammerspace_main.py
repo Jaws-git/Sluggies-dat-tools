@@ -1,6 +1,7 @@
 import pathlib
 import struct
 import sys
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -141,6 +142,53 @@ class BuildModelBlockTests(unittest.TestCase):
         draw_state.prim_list_data = b'reassigned surface payload'
         self.assertTrue(main._can_preserve_gpl_internal_layout(mesh))
         self.assertFalse(main._can_preserve_gpl_source_layout(mesh))
+
+    def _position_model(self, edited):
+        return {
+            'UseBase64': False,
+            'Submeshes': [{
+                'FacesCount': 1,
+                'FacesCountEdited': 1,
+                'FacesData': [0, 0, 0, 0, 0, 0],
+                'FacesDataEdited': [0, 0, 0, 0, 0, 0],
+                'VertexBuffer': {
+                    'VertexBufferOffset': '0x30',
+                    'VertexBufferLength': 6,
+                    'VertexBufferData': [0, 0, 0, 1, 0, 2],
+                    'VertexBufferDataEdited': edited,
+                    'VertexBufferCompCount': 3,
+                    'VertexBufferQuantizeInfo': 0x30,
+                },
+            }],
+        }
+
+    def test_position_edit_requires_unchanged_length_and_topology(self):
+        valid = self._position_model([0, 3, 0, 1, 0, 2])
+        self.assertEqual(len(main._position_edits(valid)), 1)
+
+        changed_length = self._position_model([0, 3])
+        with self.assertRaisesRegex(ValueError, 'changed byte length'):
+            main._position_edits(changed_length)
+
+        changed_faces = self._position_model([0, 3, 0, 1, 0, 2])
+        changed_faces['Submeshes'][0]['FacesDataEdited'][-1] = 1
+        with self.assertRaisesRegex(ValueError, 'changed face indices/order'):
+            main._position_edits(changed_faces)
+
+    def test_position_edit_patches_only_recorded_gpl_array_range(self):
+        model = self._position_model([0, 3, 0, 1, 0, 2])
+        original_gpl = bytes(range(32))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = pathlib.Path(temp_dir) / 'dt_na.dat'
+            block_header = bytearray(0x20)
+            struct.pack_into('>I', block_header, 0x04, 0x20)
+            input_dat.write_bytes(block_header)
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                patched = main.PatchGPLPositionArrays(original_gpl, model, 0)
+
+        self.assertEqual(patched[:0x10], original_gpl[:0x10])
+        self.assertEqual(patched[0x10:0x16], bytes([0, 3, 0, 1, 0, 2]))
+        self.assertEqual(patched[0x16:], original_gpl[0x16:])
 
     def test_all_clone_build_only_assembles_without_output_mutation(self):
         patches = self._patch_common()

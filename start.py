@@ -2,6 +2,7 @@ import subprocess
 import sys
 import os
 import argparse
+import base64
 import json
 import importlib.util
 import runpy
@@ -197,11 +198,32 @@ def run_add_custom_icons(dry_run=False, diagnostic_stage=None, icon_fit='contain
 
 def hammerspace_section_args(model):
     """Select rebuild modes required by exported hammerspace edit markers."""
+    use_base64 = model.get('UseBase64', True)
+
+    def decode_binary(value):
+        if value is None:
+            return None
+        return base64.b64decode(value) if use_base64 else bytes(value)
+
+    changed_positions = []
+    for submesh in model.get('Submeshes', []):
+        vertex_buffer = submesh.get('VertexBuffer', {})
+        edited = decode_binary(vertex_buffer.get('VertexBufferDataEdited'))
+        original = decode_binary(vertex_buffer.get('VertexBufferData'))
+        if edited is not None and original is not None and edited != original:
+            changed_positions.append(submesh)
+
     if any(
         submesh.get('FaceSurfaceIdsEdited') is not None
         for submesh in model.get('Submeshes', [])
-    ):
-        return ['--gpl', 'build']
+    ) or changed_positions:
+        args = ['--gpl', 'build']
+        if any(
+            submesh.get('VertexBuffer', {}).get('VertexBufferCompCount') == 6
+            for submesh in changed_positions
+        ) and model.get('SkinDataEdited'):
+            args.extend(('--skn', 'build'))
+        return args
     return []
 
 
