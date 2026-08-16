@@ -1610,8 +1610,28 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         ),
         default=False,
     )
+    reimport_textures: BoolProperty(  # type: ignore[valid-type]
+        name="Reimport textures from tex folder",
+        description=(
+            "When patching, replace the model's existing texture payloads in "
+            "dt_na.dat with the edited PNGs from the model's tex/ folder. "
+            "Strictly in-place: no buffers are moved, resized, or added. "
+            "Cannot be combined with Hammerspace Mode."
+        ),
+        default=False,
+    )
 
     def execute(self, context):
+        # --- reject mutually exclusive export modes before any work ---
+        if self.reimport_textures and self.use_hammerspace:
+            self.report({"ERROR"},
+                "Error: 'Reimport textures from tex folder' cannot be combined with "
+                "Hammerspace Mode. Texture re-import is a strict in-place operation and "
+                "is not supported while hammerspace rebuilds the model. Disable one of "
+                "the two options and export again."
+            )
+            return {"CANCELLED"}
+
         # --- load and sanity-check the target JSON ---
         try:
             with open(self.filepath, 'r') as f:
@@ -1845,6 +1865,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             return {"CANCELLED"}
 
         data["SluggiesModel"]["UseHammerspace"] = self.use_hammerspace
+        data["SluggiesModel"]["ReimportTextures"] = self.reimport_textures
 
         with open(self.filepath, 'w') as f:
             json.dump(data, f, indent=2)
