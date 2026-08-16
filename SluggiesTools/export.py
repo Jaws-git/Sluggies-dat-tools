@@ -355,6 +355,49 @@ def _color_entry_size(quantize_info):
     return {0: 2, 1: 3, 2: 4, 3: 2, 4: 3, 5: 4}.get(fmt, 2)
 
 
+def _mip_level_dimensions(width, height, level):
+    """Return (w, h) for mip level `level` using the proven donor contract.
+
+    Level zero is the base image. Each subsequent level halves both dimensions,
+    clamped to a minimum of 1 pixel (milestone 0.1).
+    """
+    w = max(1, width // (1 << level))
+    h = max(1, height // (1 << level))
+    return w, h
+
+
+def _mip_level_byte_length(fmt, width, height):
+    """Return the encoded byte length of one mip level for a GX image format.
+
+    Uses the per-format storage-unit table proven in milestone 0.1.
+    """
+    if fmt in (0, 8):  # I4, C4: 8x8 blocks / 32 bytes
+        return ((width + 7) // 8) * ((height + 7) // 8) * 32
+    if fmt in (1, 2, 9):  # I8, IA4, C8: 8x4 blocks / 32 bytes
+        return ((width + 7) // 8) * ((height + 3) // 4) * 32
+    if fmt in (3, 4, 5, 10):  # IA8, RGB565, RGB5A3, C14X2: 4x4 blocks / 32 bytes
+        return ((width + 3) // 4) * ((height + 3) // 4) * 32
+    if fmt == 6:  # RGBA8: 4x4 blocks / 64 bytes
+        return ((width + 3) // 4) * ((height + 3) // 4) * 64
+    if fmt == 14:  # CMPR: 4x4 blocks / 8 bytes
+        return ((width + 3) // 4) * ((height + 3) // 4) * 8
+    raise ValueError(f'unsupported GX image format code: {fmt}')
+
+
+def _image_payload_length(fmt, width, height, additional_mip_count):
+    """Return the exact stored image payload length (sum of all mip levels).
+
+    Sums the encoded byte length of each level from zero through
+    `additional_mip_count`, using the per-level dimensions from the donor
+    contract. This is the authoritative length for in-place texture patching.
+    """
+    total = 0
+    for level in range(additional_mip_count + 1):
+        w, h = _mip_level_dimensions(width, height, level)
+        total += _mip_level_byte_length(fmt, w, h)
+    return total
+
+
 def write_texture_hash_overlaps_report(output_dir, untangle_report_lines=None, untangle_warnings=None):
     """Write repeated PNG filename counts under the export root.
 
@@ -416,6 +459,10 @@ def extract_texture_descriptors(model, untangle_context=None):
         unknown_10 = _encode_bytes(model.f.read(7))
         model.f.seek(desc.absolute + 0x1b)
         unknown_1b = _encode_bytes(model.f.read(5))
+        # AdditionalMipCount is the byte at TEXDescriptor +0x16 (last byte of the
+        # DescUnknownAt10 region). MipLevelCount = AdditionalMipCount + 1.
+        model.f.seek(desc.absolute + 0x16)
+        additional_mip_count = model.f.read(1)[0]
         entry = {
             "TextureIndex": tex_ind,
             "TextureFileName": model_name_overrides.get(tex_ind, desc.dolphinTextureBasename()) + '.png',
@@ -431,8 +478,13 @@ def extract_texture_descriptors(model, untangle_context=None):
             "Unpacked": desc.unpacked,
             "DescUnknownAt10": unknown_10,
             "DescUnknownAt1B": unknown_1b,
+            "AdditionalMipCount": additional_mip_count,
             "ImageDataOffset": hex(img_offset),
-            "ImageDataLength": img_length
+            "ImageDataLength": img_length,
+            "ImagePayloadLength": _image_payload_length(
+                desc.format, desc.width, desc.height, additional_mip_count
+            ),
+            "ImageDataCapacity": img_length
         }
         if desc.paletteDataPtr:
             pal_offset = palette.absolute + desc.paletteDataPtr

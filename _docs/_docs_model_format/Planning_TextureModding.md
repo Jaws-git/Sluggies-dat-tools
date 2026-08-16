@@ -19,11 +19,11 @@ See: `_docs/_docs_model_format/Player_Icon_System_Ground_Truth.md` for the icon-
 ## Current status in this repository
 
 - Export extracts TEX metadata into each .sluggie under `TextureDescriptors` and `TEXHeader`.
-- In-place patching does not patch TEX at all (only vertex/UV/shader mode and skin data).
+- In-place patching can now patch TEX image and palette payloads in place when `ReimportTextures` is true, replacing bytes within existing buffers without moving them or resizing the TEX section. It still does not rebuild or grow TEX (only vertex/UV/shader mode and skin data are rebuilt).
 - Hammerspace currently clones TEX verbatim from the input model block.
 - Blender import uses png files only for viewport material preview (from `tex/<TextureIndex>.png`).
 
-So, texture replacement/addition is not implemented yet in either patch path.
+So, in-place texture payload replacement is now supported via `ReimportTextures` (see `PLAN_InPlace_TexturePatching.md`). Texture addition (TEX growth/rebuild) is still not implemented and remains hammerspace-first.
 
 ## 1) How the game stores and references textures in general
 
@@ -117,9 +117,11 @@ If TEX length changes, all later block offsets shift. A complete hammerspace tex
 6. Preserve unpatch behavior
 - `--unpatch` should restore original DOL entry + original model block location/content as today.
 
-### Why this must be hammerspace-first
+### Why TEX growth must be hammerspace-first
 
 In-place patching assumes fixed buffer lengths at fixed offsets. TEX growth changes section boundaries and therefore cannot be safely applied with current in-place logic.
+
+Note: this applies to TEX growth/rebuild only. Replacing the payload of an existing texture (same dimensions, format, and palette layout) is now supported in place via `ReimportTextures` — it rewrites bytes within the existing image and palette buffers without moving them or resizing the section. See `PLAN_InPlace_TexturePatching.md`.
 
 Note: this statement is about model TEX sections only. Player icon data follows a different path (see the player icon ground-truth doc linked above).
 
@@ -156,14 +158,14 @@ Dolphin identifies a texture by hashing the raw pixel data at the point the game
 - **Specularity / universal maps.** Texture 4 (64×64) being identical across all Monte variants suggests there is a class of "universal" textures (specularity, environment, etc.) that the game ships as verbatim copies in every model that uses them. Replacing one in Dolphin replaces all, but patching one in the file only affects that one model block.
 - **Identifying shared textures.** The reliable way to detect sharing is to MD5 the `ImageDataLength` bytes at `ImageDataOffset` across all model blocks for a character group and look for collisions.
 
-## 5) Restriction: external conversion only
+## 5) Conversion
 
-Texture conversion from png to game-ready encoded texture bytes is out of scope for Sluggies tools.
+Texture conversion from png to game-ready encoded texture bytes is now handled by the bundled WIMGT tool for the in-place re-import path: `ReimportTextures` encodes each `tex/<TextureFileName>` PNG with an explicit WIMGT format target and validates the result against the donor descriptor before writing. See `PLAN_InPlace_TexturePatching.md` for the conversion contract and validation rules.
 
-Required user workflow for texture modding should be:
+TEX growth/rebuild (adding textures or changing dimensions/format) still requires pre-converted payload files consumed by the hammerspace path:
 
 1. Prepare already-converted texture data with external tools.
 2. Place converted files in the model output folder (alongside that model's .sluggie workflow files).
 3. Let hammerspace patching consume those pre-converted payload files and rebuild TEX/model block offsets.
 
-This keeps Sluggies focused on model-block assembly and pointer correctness, while format conversion remains delegated to dedicated image/texture tools.
+This keeps Sluggies focused on model-block assembly and pointer correctness for the rebuild path, while the in-place path delegates per-format encoding to WIMGT.

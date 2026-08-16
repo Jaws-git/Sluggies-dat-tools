@@ -370,6 +370,10 @@
               "type": "number",
               "description": "Zero-based index of this texture in the TPL section"
             },
+            "TextureFileName": {
+              "type": "string",
+              "description": "File name of this texture's PNG in the model's tex/ folder (e.g. '0.png'). Emitted by export.py; used as the file contract for in-place texture re-import. Optional so legacy .sluggie files without it remain valid; required at patch time only when ReimportTextures is true."
+            },
             "TextureDescriptorOffset": {
               "type": "string",
               "description": "File offset of the 0x20-byte TEXDescriptor struct in dt_na.dat (hex)"
@@ -418,13 +422,25 @@
               "type": "string",
               "description": "Base64-encoded 5 bytes at TEXDescriptor +0x1b–+0x1f (one discarded byte at +0x1b followed by four discarded bytes at +0x1c). Preserved verbatim."
             },
+            "AdditionalMipCount": {
+              "type": "number",
+              "description": "Number of additional mip levels stored beyond the base image (byte at TEXDescriptor +0x16, the last byte of DescUnknownAt10). MipLevelCount = AdditionalMipCount + 1; level zero is the base image. MinLOD/MaxLOD are sampler metadata and do not determine this count. Zero for base-only textures."
+            },
             "ImageDataOffset": {
               "type": "string",
               "description": "File offset of the raw image pixel data in dt_na.dat (hex)"
             },
             "ImageDataLength": {
               "type": "number",
-              "description": "Byte length of the raw image pixel data"
+              "description": "LEGACY: byte capacity from this image pointer to the next greater image or palette pointer (next-pointer delta). This is a capacity, not a reliable payload length: it can exceed the actual image payload when the pointer aliases a larger, differently shaped texture. Kept for backward compatibility; use ImagePayloadLength for the exact stored payload length and ImageDataCapacity for the capacity."
+            },
+            "ImagePayloadLength": {
+              "type": "number",
+              "description": "Exact byte length of the stored image payload: the sum of the encoded byte lengths of mip levels zero through AdditionalMipCount, using the per-format storage-unit table (I4/C4: 8x8/32B, I8/IA4/C8: 8x4/32B, IA8/RGB565/RGB5A3/C14X2: 4x4/32B, RGBA8: 4x4/64B, CMPR: 4x4/8B) and level dimensions max(1, floor(Width/2^i)) x max(1, floor(Height/2^i)). This is the authoritative length for in-place texture patching; it is always <= ImageDataCapacity."
+            },
+            "ImageDataCapacity": {
+              "type": "number",
+              "description": "Byte capacity of the image buffer region: the legacy next-pointer delta (identical to ImageDataLength). Bytes between ImagePayloadLength and ImageDataCapacity belong to the buffer but not to this descriptor's image payload and must be preserved when patching."
             },
             "PaletteDataOffset": {
               "type": "string",
@@ -1091,6 +1107,10 @@
       "UseHammerspace": {
         "type": "boolean",
         "description": "Written by the Blender exporter. When true, patch_inplace.py uses writeExpandedMesh to relocate vertex, UV, draw-list, and skin source data into hammerspace chunks so that buffer sizes can change freely. When false or absent, all buffers are patched in-place at their original file offsets and sizes must not change."
+      },
+      "ReimportTextures": {
+        "type": "boolean",
+        "description": "Written by the Blender exporter. Optional; defaults to false when absent. When true, patch_inplace.py re-imports the edited PNGs from the model's tex/ folder and patches the existing image and palette payloads in place at their original offsets, without moving buffers, resizing the TEX section, adding texture slots, or changing texture descriptors. When false or absent, texture behavior is unchanged. Must not be combined with UseHammerspace; a file that enables both is rejected until hammerspace supports rebuilt TEX sections."
       }
     }
   },
