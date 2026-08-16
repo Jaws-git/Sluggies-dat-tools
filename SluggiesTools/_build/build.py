@@ -10,11 +10,12 @@ import zipfile
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parent
+TOOLING_ROOT = Path(__file__).resolve().parent
+ROOT = TOOLING_ROOT.parents[1]
 BUILD = ROOT / "build"
 DIST = ROOT / "dist"
 PACKAGE = DIST / "sluggies-dat-tools"
-SPEC = ROOT / "sluggies-dat-tools.spec"
+SPEC = TOOLING_ROOT / "sluggies-dat-tools.spec"
 
 RELEASE_DIRECTORIES = {
     ROOT / "SluggiesTools": PACKAGE / "SluggiesTools",
@@ -23,10 +24,10 @@ RELEASE_DIRECTORIES = {
     ROOT / "_docs": PACKAGE / "docs",
 }
 RELEASE_FILES = (
-    "StartTools.bat",
-    "README.md",
-    "BlenderGuide.md",
-    "THIRD_PARTY_NOTICES.md",
+    ("StartTools.bat", "StartTools.bat"),
+    ("README.md", "README.md"),
+    ("_docs/BlenderGuide.md", "BlenderGuide.md"),
+    ("THIRD_PARTY_NOTICES.md", "THIRD_PARTY_NOTICES.md"),
 )
 
 BLENDER_ADDON_PATTERN = re.compile(r"SluggiesIO_BlenderAddon_v(\d+)\.(\d+)\.(\d+)\.zip")
@@ -58,12 +59,29 @@ def clean() -> None:
 
 
 def sync_dependencies() -> None:
-    subprocess.run(["uv", "sync", "--locked"], cwd=ROOT, check=True)
+    subprocess.run(
+        ["uv", "sync", "--locked", "--project", str(TOOLING_ROOT)],
+        cwd=ROOT,
+        check=True,
+    )
 
 
 def build_executable() -> None:
     subprocess.run(
-        ["uv", "run", "pyinstaller", "--clean", "--noconfirm", str(SPEC)],
+        [
+            "uv",
+            "run",
+            "--project",
+            str(TOOLING_ROOT),
+            "pyinstaller",
+            "--clean",
+            "--noconfirm",
+            "--workpath",
+            str(BUILD),
+            "--distpath",
+            str(DIST),
+            str(SPEC),
+        ],
         cwd=ROOT,
         check=True,
     )
@@ -82,11 +100,11 @@ def copy_release_files() -> None:
             raise FileNotFoundError(f"Required release directory not found: {source}")
         shutil.copytree(source, destination, dirs_exist_ok=True, ignore=ignored_release_path)
 
-    for name in RELEASE_FILES:
-        source = ROOT / name
+    for source_name, destination_name in RELEASE_FILES:
+        source = ROOT / source_name
         if not source.exists():
             raise FileNotFoundError(f"Required release file not found: {source}")
-        shutil.copy2(source, PACKAGE / name)
+        shutil.copy2(source, PACKAGE / destination_name)
 
     addon_zip = find_blender_addon_zip()
     shutil.copy2(addon_zip, PACKAGE / addon_zip.name)

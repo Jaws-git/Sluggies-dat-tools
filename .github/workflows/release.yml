@@ -39,13 +39,13 @@ jobs:
           version: "latest"
 
       - name: Install locked dependencies
-        run: uv sync --locked
+        run: uv sync --locked --project SluggiesTools/_build
 
       - name: Run core tests
-        run: uv run python -m unittest discover -s SluggiesTools/tests -v
+        run: uv run --project SluggiesTools/_build python -m unittest discover -s SluggiesTools/tests -v
 
       - name: Run icon tests
-        run: uv run python -m unittest discover -s SluggiesTools/Icons/tests -v
+        run: uv run --project SluggiesTools/_build python -m unittest discover -s SluggiesTools/Icons/tests -v
 
   build:
     needs: test
@@ -68,7 +68,7 @@ jobs:
           version: "latest"
 
       - name: Build portable application
-        run: python build.py
+        run: python SluggiesTools/_build/build.py
 
       - name: Smoke test executable
         run: .\dist\sluggies-dat-tools\sluggies-dat-tools.exe --help

@@ -82,7 +82,7 @@ You can also use the option --notex to skip the rather slow png creation step. R
 
 1) install the included SluggiesIO_BlenderAddon_Vxxx.zip file
 2) File -> import -> Sluggers intermediate -> select one .sluggie file from the output folder
-3) Edit mesh, according to the [Blender Guide](BlenderGuide.md)
+3) Edit mesh, according to the [Blender Guide](_docs/BlenderGuide.md)
 4) File -> export -> Sluggers intermediate -> select the **same** file you imported earlier to export your changes to
 
 Nothing is lost, the updated file will hold both original and edited mesh data for you.

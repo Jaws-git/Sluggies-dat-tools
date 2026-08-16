@@ -1,7 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from pathlib import Path
+
 from PyInstaller.utils.hooks import collect_submodules
 
+
+ROOT = Path(SPECPATH).resolve().parents[1]
 
 hiddenimports = (
     collect_submodules("collada")
@@ -10,8 +14,13 @@ hiddenimports = (
 )
 
 a = Analysis(
-    ["start.py"],
-    pathex=[".", "SluggiesTools", "SluggiesTools/Icons", "SluggiesTools/Hammerspace"],
+    [str(ROOT / "start.py")],
+    pathex=[
+        str(ROOT),
+        str(ROOT / "SluggiesTools"),
+        str(ROOT / "SluggiesTools" / "Icons"),
+        str(ROOT / "SluggiesTools" / "Hammerspace"),
+    ],
     binaries=[],
     datas=[],
     hiddenimports=hiddenimports,
