@@ -1,5 +1,6 @@
 import hashlib
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -25,9 +26,23 @@ RELEASE_FILES = (
     "StartTools.bat",
     "README.md",
     "BlenderGuide.md",
-    "SluggiesIO_BlenderAddon_v0.7.4.zip",
     "THIRD_PARTY_NOTICES.md",
 )
+
+BLENDER_ADDON_PATTERN = re.compile(r"SluggiesIO_BlenderAddon_v(\d+)\.(\d+)\.(\d+)\.zip")
+
+
+def find_blender_addon_zip() -> Path:
+    """Pick the highest-versioned addon zip in ROOT, since the version changes per release."""
+    candidates = []
+    for path in ROOT.glob("SluggiesIO_BlenderAddon_v*.zip"):
+        match = BLENDER_ADDON_PATTERN.fullmatch(path.name)
+        if match:
+            candidates.append((tuple(int(part) for part in match.groups()), path))
+    if not candidates:
+        raise FileNotFoundError(f"No SluggiesIO_BlenderAddon_v*.zip found in {ROOT}")
+    candidates.sort(key=lambda item: item[0])
+    return candidates[-1][1]
 
 WIIMMS_VERSION = "v2.42a-r8989"
 WIIMMS_ARCHIVE = f"szs-{WIIMMS_VERSION}-cygwin64.zip"
@@ -72,6 +87,9 @@ def copy_release_files() -> None:
         if not source.exists():
             raise FileNotFoundError(f"Required release file not found: {source}")
         shutil.copy2(source, PACKAGE / name)
+
+    addon_zip = find_blender_addon_zip()
+    shutil.copy2(addon_zip, PACKAGE / addon_zip.name)
 
     (PACKAGE / "3_Output_Dat").mkdir(exist_ok=True)
 
@@ -119,12 +137,13 @@ def bundle_wiimms_tools() -> None:
 
 def verify() -> Path:
     executable = PACKAGE / ("sluggies-dat-tools.exe" if platform.system() == "Windows" else "sluggies-dat-tools")
+    addon_zip = find_blender_addon_zip()
     required = (
         executable,
         PACKAGE / "StartTools.bat",
         PACKAGE / "SluggiesTools" / "export.py",
         PACKAGE / "1_Input" / "_Icons",
-        PACKAGE / "SluggiesIO_BlenderAddon_v0.7.4.zip",
+        PACKAGE / addon_zip.name,
         PACKAGE / "docs" / "_docs_model_format" / "index.html",
     )
     missing = [path for path in required if not path.exists()]
