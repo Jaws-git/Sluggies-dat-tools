@@ -68,6 +68,38 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
 
         self.assertEqual(start.hammerspace_section_args(model), [])
 
+    def test_uv_edit_payload_requests_gpl_build(self):
+        model = {
+            'UseBase64': False,
+            'Submeshes': [{
+                'VertexBuffer': {},
+                'UVChannels': [{
+                    'UVChannelDataEdited': [0, 1],
+                    'UVFacesDataEdited': [0, 0],
+                }],
+            }],
+        }
+
+        self.assertEqual(
+            start.hammerspace_section_args(model),
+            ['--gpl', 'build'],
+        )
+
+    def test_identical_stale_uv_payload_keeps_clone_defaults(self):
+        model = {
+            'UseBase64': False,
+            'Submeshes': [{
+                'VertexBuffer': {},
+                'UVChannels': [{
+                    'UVChannelData': [0, 1],
+                    'UVChannelDataEdited': [0, 1],
+                    'UVFacesDataEdited': [0, 0],
+                }],
+            }],
+        }
+
+        self.assertEqual(start.hammerspace_section_args(model), [])
+
     def test_other_edit_markers_do_not_activate_unfinished_rebuilders(self):
         model = {'Submeshes': [{'FacesDataEdited': 'AAAA'}]}
 

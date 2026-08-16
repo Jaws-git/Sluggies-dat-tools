@@ -3,7 +3,7 @@ schema_version = "1.0.0"
 # Example of manifest file for a Blender extension
 # Change the values according to your extension
 id = "sluggiesio"
-version = "0.7.4"
+version = "0.7.5"
 name = "SluggiesIO"
 tagline = "Import and Export Sluggies intermediate model files - Mario Super Sluggers (Wii)"
 maintainer = "JawSFM"

@@ -15,7 +15,7 @@ _slogger.configure()
 
 import HammerspaceHelper as hh
 from BlockValidator import validate_model_block
-from GeometryRebuild import rebuild_surface_assignments
+from GeometryRebuild import rebuild_edited_uvs, rebuild_surface_assignments
 from ModelFormat import align_array_offset, compute_mem_clear_range, pad_array
 
 # ---------------------------------------------------------------------------
@@ -324,10 +324,6 @@ def _position_edits(model: dict) -> list[tuple[int, dict, bytes]]:
         ):
             raise ValueError(
                 f'sub{submesh_index}: position-only edit changed face indices/order')
-        if comp_count == 6 and not model.get('SkinDataEdited'):
-            raise ValueError(
-                f'sub{submesh_index}: skinned position edit is missing SkinDataEdited; '
-                're-export with the current Blender addon')
         edits.append((submesh_index, submesh, edited))
     return edits
 
@@ -435,9 +431,14 @@ def ParseSluggie(data: dict) -> SluggieParsed:
         )
         _surface_only_rebuild = sub.get('SurfaceAssignmentsRebuiltByImporter', False)
         _position_only_edited = i in position_edit_submeshes
-        _geometry_arrays_edited = (
-            _prim_lists_edited and not _surface_only_rebuild
-        ) or _position_only_edited
+        _uv_arrays_edited = sub.get('UVArraysEditedByImporter', False)
+        _uv_primitive_lists_rebuilt = sub.get('UVPrimitiveListsRebuiltByImporter', False)
+        _topology_arrays_edited = (
+            _prim_lists_edited
+            and not _surface_only_rebuild
+            and not _uv_primitive_lists_rebuilt
+        )
+        _geometry_arrays_edited = _topology_arrays_edited or _position_only_edited
 
         if _geometry_arrays_edited:
             vertex_data = _decode(vb.get('VertexBufferDataEdited') or vb['VertexBufferData'], use_b64)
@@ -446,7 +447,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
 
         uv_channels = []
         for uv in sub.get('UVChannels', []):
-            if _geometry_arrays_edited:
+            if _uv_arrays_edited or _topology_arrays_edited:
                 _uv_src = uv.get('UVChannelDataEdited') or uv['UVChannelData']
             else:
                 _uv_src = uv['UVChannelData']
@@ -498,7 +499,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
                 prim_list_absolute_offset   = _hex(ds['PrimListAbsoluteOffset']),
                 prim_list_length            = ds['PrimListLength'],
                 shader_mode_field_offset    = _hex(ds['ShaderModeFieldOffset']) if ds.get('ShaderModeFieldOffset') else 0,
-                shader_mode                 = ds.get('ShaderMode', ''),
+                shader_mode                 = ds.get('ShaderModeEdited') or ds.get('ShaderMode', ''),
                 source_state_offset         = _hex(ds['ShaderModeFieldOffset']) - 4 if ds.get('ShaderModeFieldOffset') else 0,
             ))
 
@@ -514,7 +515,12 @@ def ParseSluggie(data: dict) -> SluggieParsed:
                 quantize_info                = raw_nb['NormalBufferQuantizeInfo'],
                 ambient_pct                  = raw_nb.get('NormalAmbientPct', 0.0),
                 normal_data                  = _decode(
-                    raw_nb.get('NormalBufferDataEdited') or raw_nb['NormalBufferData'], use_b64
+                    (
+                        raw_nb.get('NormalBufferDataEdited') or raw_nb['NormalBufferData']
+                        if _topology_arrays_edited
+                        else raw_nb['NormalBufferData']
+                    ),
+                    use_b64,
                 ),
                 source_header_offset         = _hex(raw_nb.get('NormalDataPtrFieldOffset', '0x0')),
             )
@@ -536,7 +542,9 @@ def ParseSluggie(data: dict) -> SluggieParsed:
             normal_buffer                  = normal_buffer,
             source_layout_offset           = _hex(sub.get('SubmeshOffset', '0x0')),
             source_position_data_offset    = _hex(vb.get('VertexBufferOffset', '0x0')),
-            preserve_source_layout         = not _geometry_arrays_edited,
+            preserve_source_layout         = not (
+                _geometry_arrays_edited or _uv_primitive_lists_rebuilt
+            ),
         ))
 
     mesh_data = MeshData(
@@ -637,9 +645,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
                 _edit_acc_by_bone[s['BoneIndex']] = s
 
         position_edit_lists = None
-        if _position_geometry_edited and raw_skn_orig:
-            if not raw_skn_edit:
-                raise ValueError('skinned position edit is missing SkinDataEdited')
+        if _position_geometry_edited and raw_skn_orig and raw_skn_edit:
             position_edit_lists = {}
             identity_fields = {
                 'SK1s': ('BoneIndex', 'VertexCnt', 'GplVertexArrValue'),
@@ -1487,6 +1493,152 @@ def PatchGPLPositionArrays(gpl_bytes: bytes, model: dict, model_offset: int) -> 
     return bytes(patched)
 
 
+def PatchGPLUVArrays(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes:
+    """Patch same-size edited UV arrays over an otherwise cloned donor GPL."""
+    import struct as _s
+
+    with open(hh.INPUT_DAT, 'rb') as source:
+        source.seek(model_offset + 0x04)
+        raw = source.read(4)
+    if len(raw) != 4:
+        raise IOError(f'Could not read donor GPL offset at 0x{model_offset + 4:08X}')
+    gpl_absolute = model_offset + _s.unpack('>I', raw)[0]
+    use_b64 = model.get('UseBase64', True)
+    patched = bytearray(gpl_bytes)
+    for submesh_index, submesh in enumerate(model.get('Submeshes', [])):
+        if not submesh.get('UVArraysEditedByImporter'):
+            continue
+        for uv in submesh.get('UVChannels', []):
+            encoded = uv.get('UVChannelDataEdited')
+            if encoded is None:
+                continue
+            original = _decode(uv['UVChannelData'], use_b64)
+            edited = _decode(encoded, use_b64)
+            if edited == original:
+                continue
+            if len(edited) != len(original):
+                raise ValueError(
+                    f'sub{submesh_index} uv{uv["UVChannelIndex"]}: compact UV '
+                    f'length changed from {len(original)} to {len(edited)}; '
+                    'requires GPL serialization')
+            uv_absolute = _hex(uv['UVChannelOffset'])
+            uv_relative = uv_absolute - gpl_absolute
+            if uv_relative < 0 or uv_relative + len(edited) > len(patched):
+                raise ValueError(
+                    f'sub{submesh_index} uv{uv["UVChannelIndex"]}: array range '
+                    f'GPL+0x{uv_relative:X}..0x{uv_relative + len(edited):X} '
+                    f'exceeds cloned GPL size 0x{len(patched):X}')
+            patched[uv_relative:uv_relative + len(edited)] = edited
+            _slogger.info(
+                f'[GPL] patched UV array sub{submesh_index} '
+                f'uv{uv["UVChannelIndex"]} at GPL+0x{uv_relative:X} '
+                f'({len(edited):,} bytes)',
+                source='hammerspace.main',
+            )
+    return bytes(patched)
+
+
+def PatchGPLUVRebuild(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes:
+    """Append resized UV/list payloads and redirect pointers over cloned GPL."""
+    import struct as _s
+
+    with open(hh.INPUT_DAT, 'rb') as source:
+        source.seek(model_offset + 0x04)
+        raw = source.read(4)
+    if len(raw) != 4:
+        raise IOError(f'Could not read donor GPL offset at 0x{model_offset + 4:08X}')
+    gpl_absolute = model_offset + _s.unpack('>I', raw)[0]
+    use_b64 = model.get('UseBase64', True)
+    patched = bytearray(gpl_bytes)
+
+    def append_payload(payload: bytes, alignment: int) -> int:
+        padding = (-len(patched)) % alignment
+        if padding:
+            patched.extend(b'\x00' * padding)
+        offset = len(patched)
+        patched.extend(payload)
+        return offset
+
+    for submesh_index, submesh in enumerate(model.get('Submeshes', [])):
+        if not submesh.get('UVArraysEditedByImporter'):
+            continue
+        submesh_relative = _hex(submesh['SubmeshOffset']) - gpl_absolute
+        if not 0 <= submesh_relative < len(gpl_bytes):
+            raise ValueError(
+                f'sub{submesh_index}: donor layout offset GPL+0x{submesh_relative:X} '
+                f'is outside cloned GPL size 0x{len(gpl_bytes):X}')
+
+        for uv in submesh.get('UVChannels', []):
+            encoded = uv.get('UVChannelDataEdited')
+            if encoded is None:
+                continue
+            original = _decode(uv['UVChannelData'], use_b64)
+            edited = _decode(encoded, use_b64)
+            if edited == original:
+                continue
+            stride = uv['UVChannelCompCount'] * _vb_comp_size(uv['UVChannelQuantizeInfo'])
+            if len(edited) % stride:
+                raise ValueError(
+                    f'sub{submesh_index} uv{uv["UVChannelIndex"]}: edited length '
+                    f'{len(edited)} is not divisible by stride {stride}')
+            if len(edited) // stride > 0xFFFF:
+                raise ValueError(
+                    f'sub{submesh_index} uv{uv["UVChannelIndex"]}: coordinate '
+                    f'count {len(edited) // stride} exceeds uint16')
+            data_offset = append_payload(edited, 4)
+            pointer_field = _hex(uv['UVDataPtrFieldOffset']) - gpl_absolute
+            count_field = _hex(uv['UVCountFieldOffset']) - gpl_absolute
+            if pointer_field < 0 or count_field < 0 or count_field + 2 > len(gpl_bytes):
+                raise ValueError(
+                    f'sub{submesh_index} uv{uv["UVChannelIndex"]}: header fields '
+                    'are outside cloned GPL')
+            _s.pack_into('>I', patched, pointer_field, data_offset - submesh_relative)
+            _s.pack_into('>H', patched, count_field, len(edited) // stride)
+            _slogger.info(
+                f'[GPL] appended UV array sub{submesh_index} '
+                f'uv{uv["UVChannelIndex"]} at GPL+0x{data_offset:X} '
+                f'({len(edited):,} bytes)',
+                source='hammerspace.main',
+            )
+
+        for state_index, state in enumerate(submesh.get('DisplayStates', [])):
+            edited_primitive = state.get('PrimListDataEdited')
+            if edited_primitive is not None:
+                raw_primitive = _decode(edited_primitive, use_b64)
+                if raw_primitive:
+                    padded = raw_primitive + b'\x00' * ((-len(raw_primitive)) % 32)
+                    primitive_offset = append_payload(padded, 32)
+                    primitive_relative = primitive_offset - submesh_relative
+                    primitive_size = len(padded)
+                else:
+                    primitive_relative = 0
+                    primitive_size = 0
+                pointer_field = _hex(state['PrimListPtrFieldOffset']) - gpl_absolute
+                size_field = _hex(state['PrimListSizeFieldOffset']) - gpl_absolute
+                if pointer_field < 0 or size_field < 0 or size_field + 4 > len(gpl_bytes):
+                    raise ValueError(
+                        f'sub{submesh_index} ds{state_index}: primitive header '
+                        'fields are outside cloned GPL')
+                _s.pack_into('>I', patched, pointer_field, primitive_relative)
+                _s.pack_into('>I', patched, size_field, primitive_size)
+                _slogger.info(
+                    f'[GPL] appended primitive list sub{submesh_index} ds{state_index} '
+                    f'({primitive_size:,} bytes)',
+                    source='hammerspace.main',
+                )
+            if state.get('ShaderModeEdited') is not None:
+                setting_field = _hex(state['ShaderModeFieldOffset']) - gpl_absolute
+                setting = state['ShaderModeEdited']
+                setting_bytes = (
+                    bytes.fromhex(setting)
+                    if len(setting) == 8 and all(c in '0123456789abcdefABCDEF' for c in setting)
+                    else setting.encode('ascii', errors='replace').ljust(4, b'\x00')[:4]
+                )
+                patched[setting_field:setting_field + 4] = setting_bytes
+
+    return bytes(patched)
+
+
 def _gpl_pos_offsets_from_bytes(gpl_bytes: bytes) -> list[int]:
     """Extract per-submesh GPL-relative position-data offsets from raw GPL bytes.
 
@@ -2254,6 +2406,27 @@ def BuildModelBlock(data: dict, section_modes: SectionModes | None = None) -> Mo
             f'Invalid donor DOL entry for chunk={chunk_number}, file_index={file_index}: '
             f'offset={original_offset}, length={original_length}'
         )
+    source_model_offset = _hex(model.get('ModelOffset', original_offset))
+    source_model_length = model.get('ModelLength', original_length)
+    route_prefix_size = source_model_offset - original_offset
+    if route_prefix_size < 0 or route_prefix_size + source_model_length > original_length:
+        raise ValueError(
+            f'schema model range 0x{source_model_offset:08X}+{source_model_length:,} '
+            f'is outside donor DOL entry 0x{original_offset:08X}+{original_length:,}')
+    route_prefix = b''
+    if route_prefix_size:
+        with open(hh.INPUT_DAT, 'rb') as source:
+            source.seek(original_offset)
+            route_prefix = source.read(route_prefix_size)
+        if len(route_prefix) != route_prefix_size:
+            raise IOError(
+                f'could not read {route_prefix_size} byte model container prefix '
+                f'at 0x{original_offset:08X}')
+        _slogger.info(
+            f'[Container] preserving {route_prefix_size}-byte DOL entry prefix; '
+            f'inner model starts at +0x{route_prefix_size:X}',
+            source='hammerspace.main',
+        )
 
     position_edits = _position_edits(model) if modes.gpl == 'build' else []
     if position_edits:
@@ -2262,6 +2435,7 @@ def BuildModelBlock(data: dict, section_modes: SectionModes | None = None) -> Mo
         model.pop('_PositionEditSubmeshes', None)
     if modes.gpl == 'build':
         rebuild_surface_assignments(data)
+        rebuild_edited_uvs(data)
     parsed = ParseSluggie(data)
     if modes.gpl == 'build':
         has_material_state_edits = any(
@@ -2270,15 +2444,29 @@ def BuildModelBlock(data: dict, section_modes: SectionModes | None = None) -> Mo
             for submesh in model.get('Submeshes', [])
             for state in submesh.get('DisplayStates', [])
         )
-        if has_material_state_edits or position_edits:
-            gpl_bytes = CloneGPL(original_offset, original_length)
+        uv_lists_rebuilt = any(
+            submesh.get('UVPrimitiveListsRebuiltByImporter')
+            for submesh in model.get('Submeshes', [])
+        )
+        uv_array_edits = any(
+            submesh.get('UVArraysEditedByImporter')
+            for submesh in model.get('Submeshes', [])
+        )
+        if has_material_state_edits or position_edits or uv_array_edits:
+            gpl_bytes = CloneGPL(source_model_offset, source_model_length)
             if has_material_state_edits:
                 gpl_bytes = PatchGPLMaterialStates(
-                    gpl_bytes, data, original_offset
+                    gpl_bytes, data, source_model_offset
                 )
             if position_edits:
                 gpl_bytes = PatchGPLPositionArrays(
-                    gpl_bytes, model, original_offset
+                    gpl_bytes, model, source_model_offset
+                )
+            if uv_array_edits:
+                gpl_bytes = (
+                    PatchGPLUVRebuild(gpl_bytes, model, source_model_offset)
+                    if uv_lists_rebuilt
+                    else PatchGPLUVArrays(gpl_bytes, model, source_model_offset)
                 )
             gpl_result = GPLBuildResult(
                 gpl_bytes=gpl_bytes,
@@ -2287,18 +2475,18 @@ def BuildModelBlock(data: dict, section_modes: SectionModes | None = None) -> Mo
         else:
             gpl_result = BuildGPLMeshData(parsed)
     else:
-        gpl_bytes = CloneGPL(original_offset, original_length)
+        gpl_bytes = CloneGPL(source_model_offset, source_model_length)
         gpl_result = GPLBuildResult(
             gpl_bytes=gpl_bytes,
             pos_gpl_offsets=_gpl_pos_offsets_from_bytes(gpl_bytes),
         )
 
-    act_bytes = CloneACT(original_offset, original_length)
-    tex_bytes = CloneTEX(original_offset, original_length)
+    act_bytes = CloneACT(source_model_offset, source_model_length)
+    tex_bytes = CloneTEX(source_model_offset, source_model_length)
     if modes.skn == 'build':
         skn_bytes = BuildSKNSkinningData(parsed, gpl_result)
     else:
-        skn_bytes = CloneSKN(original_offset, original_length)
+        skn_bytes = CloneSKN(source_model_offset, source_model_length)
     parsed_trailing_sections = getattr(parsed, 'trailing_sections', None) or []
     if parsed_trailing_sections:
         trailing_bytes = b''.join(section.data for section in parsed_trailing_sections)
@@ -2308,11 +2496,11 @@ def BuildModelBlock(data: dict, section_modes: SectionModes | None = None) -> Mo
         )
     else:
         trailing_bytes, original_trailing_offset = CloneTrailingSections(
-            original_offset,
-            original_length,
+            source_model_offset,
+            source_model_length,
         )
-    original_header = CloneHEADER(original_offset)
-    block = BuildHEADERModelBlock(
+    original_header = CloneHEADER(source_model_offset)
+    inner_block = BuildHEADERModelBlock(
         gpl_result.gpl_bytes,
         act_bytes,
         tex_bytes,
@@ -2329,7 +2517,17 @@ def BuildModelBlock(data: dict, section_modes: SectionModes | None = None) -> Mo
         'SKN': len(skn_bytes),
         'trailing': len(trailing_bytes),
     }
-    report = _build_validation_report(block, original_length, modes, section_sizes)
+    report = _build_validation_report(
+        inner_block, source_model_length, modes, section_sizes
+    )
+    block = route_prefix + inner_block
+    if route_prefix:
+        report['container_prefix_size'] = route_prefix_size
+        report['inner_assembled_size'] = len(inner_block)
+        report['inner_original_size'] = source_model_length
+        report['assembled_size'] = len(block)
+        report['original_size'] = original_length
+        report['size_delta'] = len(block) - original_length
     return ModelBlockBuild(
         block=block,
         parsed=parsed,

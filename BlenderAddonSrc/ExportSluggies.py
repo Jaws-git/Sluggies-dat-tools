@@ -362,13 +362,22 @@ def encode_uv_channel_edited(obj, json_channel, use_base64=True, all_uv_channels
 
     # Encode the coord array in original slot order
     raw_bytes = bytearray()
-    for (qs, qt) in output_slots:
+    for slot_index, (qs, qt) in enumerate(output_slots):
         comps = [qs, qt] + [0.0] * (comp_count - 2)
-        for val in comps:
+        for component_index, val in enumerate(comps):
             if is_float:
+                if not math.isfinite(float(val)):
+                    raise ValueError(
+                        f"{obj.name} UV{ch_ind} slot {slot_index} component "
+                        f"{component_index}: value is not finite ({val})"
+                    )
                 raw_bytes += struct.pack('>f', float(val))
             else:
-                raw_bytes += struct.pack('>h', max(-32768, min(32767, int(val))))
+                raw_bytes += _pack_quantized_component(
+                    int(val) / divisor,
+                    divisor,
+                    f"{obj.name} UV{ch_ind} slot {slot_index} component {component_index}",
+                )
 
     return _from_bytes(bytes(raw_bytes), use_base64), conflicts
 
@@ -462,12 +471,23 @@ def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False, use_bas
             uv_tri_indices.append(tri_uvs)
 
         raw_bytes = bytearray()
-        for (qs, qt) in coords:
-            for val in [qs, qt] + [0.0] * (comp_count_uv - 2):
+        for coord_index, (qs, qt) in enumerate(coords):
+            for component_index, val in enumerate(
+                [qs, qt] + [0.0] * (comp_count_uv - 2)
+            ):
                 if is_float:
+                    if not math.isfinite(float(val)):
+                        raise ValueError(
+                            f"{obj.name} UV{ch_ind} loop {coord_index} component "
+                            f"{component_index}: value is not finite ({val})"
+                        )
                     raw_bytes += struct.pack('>f', float(val))
                 else:
-                    raw_bytes += struct.pack('>h', max(-32768, min(32767, int(val))))
+                    raw_bytes += _pack_quantized_component(
+                        int(val) / divisor,
+                        divisor,
+                        f"{obj.name} UV{ch_ind} loop {coord_index} component {component_index}",
+                    )
         uv_data_b64 = _from_bytes(bytes(raw_bytes), use_base64)
 
         uv_flat = [idx for tri in uv_tri_indices for idx in tri]

@@ -29,21 +29,24 @@ The matrix reserves named slots for these small edits. They remain
 stable local fixture location:
 
 - position-only edit
+- UV-only edit
 - same-count reskin
 - vertex-count increase
 - new face
 - material reassignment
 - new PNG texture
 
-**Recorded position-only fixture:** `_docs/meta/78277664_mario.gpl.sluggie`.
-All three Mario vertex buffers have obvious edits with their original byte
-lengths retained; no topology, skinning, material, texture, or facial edit
-markers are present.
+**Recorded position-only fixture:**
+`2_Output_Models/18 Mario/78277664_mario.gpl/78277664_mario.gpl.sluggie`.
+Mario submeshes 0 and 1 have visible edits with original byte lengths retained;
+the unchanged hammerspace control and both edits pass in Dolphin.
 
 ### What To Supply
 
-Only the position-only fixture is currently producible through the supported
-Blender workflow. Material reassignment was implemented experimentally but
+Position-only and UV-only fixtures are currently producible through the
+supported Blender workflow. For UV coverage, provide one donor-slot value edit
+and one split-seam edit if practical; use a checker texture for the Dolphin
+test. Material reassignment was implemented experimentally but
 failed Dolphin runtime tests; Blender export now rejects any changed face-to-
 material assignment. Keep the material-reassignment fixture planned until the
 dormant encoder/patcher path is explicitly reactivated after further research.

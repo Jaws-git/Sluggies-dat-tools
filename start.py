@@ -206,17 +206,26 @@ def hammerspace_section_args(model):
         return base64.b64decode(value) if use_base64 else bytes(value)
 
     changed_positions = []
+    has_uv_edits = False
     for submesh in model.get('Submeshes', []):
         vertex_buffer = submesh.get('VertexBuffer', {})
         edited = decode_binary(vertex_buffer.get('VertexBufferDataEdited'))
         original = decode_binary(vertex_buffer.get('VertexBufferData'))
         if edited is not None and original is not None and edited != original:
             changed_positions.append(submesh)
+        if any(
+            channel.get('UVChannelDataEdited') is not None
+            and channel.get('UVFacesDataEdited') is not None
+            and decode_binary(channel.get('UVChannelDataEdited'))
+                != decode_binary(channel.get('UVChannelData'))
+            for channel in submesh.get('UVChannels', [])
+        ):
+            has_uv_edits = True
 
     if any(
         submesh.get('FaceSurfaceIdsEdited') is not None
         for submesh in model.get('Submeshes', [])
-    ) or changed_positions:
+    ) or changed_positions or has_uv_edits:
         args = ['--gpl', 'build']
         if any(
             submesh.get('VertexBuffer', {}).get('VertexBufferCompCount') == 6

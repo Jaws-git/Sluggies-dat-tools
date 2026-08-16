@@ -22,6 +22,7 @@ DEFAULT_OUTPUT_PATH = PROJECT_DIR / "_docs" / "meta" / "model_replacement_fixtur
 SECTION_NAMES = ("GPL", "ACT", "TEX", "SKN", "ptr6", "ptr7", "ptr8")
 EDITED_FIXTURE_KINDS = (
     "position_only",
+    "uv_only",
     "same_count_reskin",
     "vertex_count_increase",
     "new_face",

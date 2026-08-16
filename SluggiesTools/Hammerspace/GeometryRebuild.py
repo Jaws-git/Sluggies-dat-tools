@@ -308,6 +308,167 @@ def _primitive_blocks(raw: bytes, descriptors: list, what: str) -> list[tuple[by
     return blocks
 
 
+def _primitive_block_face_vertices(opcode: int, vertex_count: int) -> list[tuple[int, int, int]]:
+    if opcode == 0x90:
+        return [
+            (index + 2, index + 1, index)
+            for index in range(0, vertex_count - 2, 3)
+        ]
+    if opcode == 0x98:
+        return [
+            (index, index + 1, index + 2) if index % 2 else (index + 2, index + 1, index)
+            for index in range(vertex_count - 2)
+        ]
+    if opcode == 0x80:
+        result = []
+        for index in range(0, vertex_count - 3, 4):
+            result.extend(((index + 2, index + 1, index), (index, index + 3, index + 2)))
+        return result
+    raise ValueError(f'unsupported GX primitive opcode 0x{opcode:02X}')
+
+
+def _rewrite_uv_primitive_blocks(
+    raw: bytes,
+    descriptors: list,
+    face_start: int,
+    channel_edits: dict,
+    what: str,
+) -> tuple[bytes, int, int]:
+    """Patch UV indices in raw GX blocks; triangulate only irreducible blocks."""
+    stride = sum(descriptor['index_size'] for descriptor in descriptors)
+    descriptor_offsets = {}
+    offset = 0
+    for descriptor in descriptors:
+        descriptor_offsets[descriptor['key']] = (offset, descriptor['index_size'])
+        offset += descriptor['index_size']
+
+    output = bytearray()
+    data_offset = 0
+    face_cursor = face_start
+    rebuilt_blocks = 0
+    while data_offset < len(raw) and raw[data_offset] != 0:
+        if data_offset + 3 > len(raw):
+            raise ValueError(f'{what}: truncated primitive header at byte {data_offset}')
+        opcode = raw[data_offset]
+        vertex_count = int.from_bytes(raw[data_offset + 1:data_offset + 3], 'big')
+        block_end = data_offset + 3 + vertex_count * stride
+        if block_end > len(raw):
+            raise ValueError(f'{what}: primitive block exceeds payload bounds')
+        block = bytearray(raw[data_offset:block_end])
+        face_vertices = _primitive_block_face_vertices(opcode, vertex_count)
+        assignments = {}
+        conflict = False
+        for local_face, vertex_indices in enumerate(face_vertices):
+            global_face = face_cursor + local_face
+            for corner, raw_vertex_index in enumerate(vertex_indices):
+                for channel, edit in channel_edits.items():
+                    key = f'texture{channel}'
+                    if key not in descriptor_offsets:
+                        continue
+                    desired = edit['indices'][global_face * 3 + corner]
+                    assignment_key = (raw_vertex_index, key)
+                    previous = assignments.get(assignment_key)
+                    if previous is not None and previous != desired:
+                        conflict = True
+                    assignments[assignment_key] = desired
+
+        if not conflict:
+            for (raw_vertex_index, key), desired in assignments.items():
+                attribute_offset, width = descriptor_offsets[key]
+                maximum = (1 << (width * 8)) - 1
+                if desired > maximum:
+                    raise ValueError(
+                        f'{what}: UV index {desired} exceeds {width}-byte '
+                        f'{key} field (max {maximum})')
+                field_offset = 3 + raw_vertex_index * stride + attribute_offset
+                block[field_offset:field_offset + width] = desired.to_bytes(width, 'big')
+            output.extend(block)
+        elif opcode == 0x80:
+            pending_quads = bytearray()
+
+            def flush_quads():
+                if not pending_quads:
+                    return
+                count = len(pending_quads) // stride
+                output.append(0x80)
+                output.extend(struct.pack('>H', count))
+                output.extend(pending_quads)
+                pending_quads.clear()
+
+            vertex_payload = block[3:]
+            for quad_index in range(vertex_count // 4):
+                quad_data = bytearray(
+                    vertex_payload[
+                        quad_index * 4 * stride:(quad_index + 1) * 4 * stride
+                    ]
+                )
+                quad_mappings = ((2, 1, 0), (0, 3, 2))
+                quad_assignments = {}
+                quad_conflict = False
+                for local_face, vertex_indices in enumerate(quad_mappings):
+                    global_face = face_cursor + quad_index * 2 + local_face
+                    for corner, raw_vertex_index in enumerate(vertex_indices):
+                        for channel, edit in channel_edits.items():
+                            key = f'texture{channel}'
+                            if key not in descriptor_offsets:
+                                continue
+                            desired = edit['indices'][global_face * 3 + corner]
+                            assignment_key = (raw_vertex_index, key)
+                            previous = quad_assignments.get(assignment_key)
+                            if previous is not None and previous != desired:
+                                quad_conflict = True
+                            quad_assignments[assignment_key] = desired
+                if not quad_conflict:
+                    for (raw_vertex_index, key), desired in quad_assignments.items():
+                        attribute_offset, width = descriptor_offsets[key]
+                        maximum = (1 << (width * 8)) - 1
+                        if desired > maximum:
+                            raise ValueError(
+                                f'{what}: UV index {desired} exceeds {width}-byte '
+                                f'{key} field (max {maximum})')
+                        field_offset = raw_vertex_index * stride + attribute_offset
+                        quad_data[field_offset:field_offset + width] = desired.to_bytes(width, 'big')
+                    pending_quads.extend(quad_data)
+                    continue
+
+                flush_quads()
+                quad_block = b'\x80\x00\x04' + bytes(quad_data)
+                faces = [
+                    [dict(vertex) for vertex in face]
+                    for face in decodeDrawList(quad_block, descriptors)
+                ]
+                for local_face, face in enumerate(faces):
+                    global_face = face_cursor + quad_index * 2 + local_face
+                    for corner, vertex in enumerate(face):
+                        for channel, edit in channel_edits.items():
+                            key = f'texture{channel}'
+                            if key in vertex:
+                                vertex[key] = edit['indices'][global_face * 3 + corner]
+                output.extend(encodeDrawList(faces, descriptors))
+                rebuilt_blocks += 1
+            flush_quads()
+        else:
+            faces = [
+                [dict(vertex) for vertex in face]
+                for face in decodeDrawList(bytes(block), descriptors)
+            ]
+            for local_face, face in enumerate(faces):
+                global_face = face_cursor + local_face
+                for corner, vertex in enumerate(face):
+                    for channel, edit in channel_edits.items():
+                        key = f'texture{channel}'
+                        if key in vertex:
+                            vertex[key] = edit['indices'][global_face * 3 + corner]
+            output.extend(encodeDrawList(faces, descriptors))
+            rebuilt_blocks += 1
+        face_cursor += len(face_vertices)
+        data_offset = block_end
+
+    if output:
+        output.append(0)
+    return bytes(output), face_cursor, rebuilt_blocks
+
+
 def rebuild_surface_assignments(data: dict) -> bool:
     """Rebuild primitive lists for unchanged faces reassigned to donor surfaces."""
     model = data['SluggiesModel']
@@ -508,6 +669,258 @@ def rebuild_surface_assignments(data: dict) -> bool:
         )
         sub['SurfaceAssignmentsRebuiltByImporter'] = True
         rebuilt = True
+
+    return rebuilt
+
+
+def rebuild_edited_uvs(data: dict) -> bool:
+    """Prepare unchanged-topology UV edits and rebuild only required draw lists."""
+    model = data['SluggiesModel']
+    use_b64 = model.get('UseBase64', True)
+    rebuilt = False
+
+    for sub_idx, sub in enumerate(model.get('Submeshes', [])):
+        face_count = sub.get('FacesCountEdited', sub.get('FacesCount', 0))
+        if face_count != sub.get('FacesCount'):
+            continue
+        loop_count = face_count * 3
+        channel_edits = {}
+
+        for uv in sub.get('UVChannels', []):
+            encoded_data = uv.get('UVChannelDataEdited')
+            encoded_faces = uv.get('UVFacesDataEdited')
+            if encoded_data is None or encoded_faces is None:
+                continue
+            channel = uv['UVChannelIndex']
+            stride = uv['UVChannelCompCount'] * _comp_size(uv['UVChannelQuantizeInfo'])
+            original = _dec(uv['UVChannelData'], use_b64)
+            expanded = _dec(encoded_data, use_b64)
+            if expanded == original:
+                uv.pop('UVChannelDataEdited', None)
+                uv.pop('UVFacesDataEdited', None)
+                continue
+            original_indices = _u16s(_dec(uv['UVFacesData'], use_b64))
+            expanded_indices = _u16s(_dec(encoded_faces, use_b64))
+            if len(original) % stride or len(expanded) % stride:
+                raise ValueError(
+                    f'sub{sub_idx} uv{channel}: payload length is not divisible '
+                    f'by stride {stride}')
+            if len(original_indices) != loop_count or len(expanded_indices) != loop_count:
+                raise ValueError(
+                    f'sub{sub_idx} uv{channel}: expected {loop_count} loop indices, '
+                    f'got donor={len(original_indices)}, edited={len(expanded_indices)}')
+            expanded_count = len(expanded) // stride
+            donor_count = len(original) // stride
+            if any(index >= expanded_count for index in expanded_indices):
+                raise ValueError(
+                    f'sub{sub_idx} uv{channel}: edited loop index exceeds '
+                    f'coordinate count {expanded_count}')
+
+            edited_records = [
+                expanded[index * stride:(index + 1) * stride]
+                for index in expanded_indices
+            ]
+            donor_slots = [None] * donor_count
+            conflict = False
+            for donor_index, record in zip(original_indices, edited_records):
+                if donor_index >= donor_count:
+                    raise ValueError(
+                        f'sub{sub_idx} uv{channel}: donor loop index {donor_index} '
+                        f'exceeds coordinate count {donor_count}')
+                if donor_slots[donor_index] is None:
+                    donor_slots[donor_index] = record
+                elif donor_slots[donor_index] != record:
+                    conflict = True
+                    break
+
+            if not conflict:
+                for index, record in enumerate(donor_slots):
+                    if record is None:
+                        donor_slots[index] = original[index * stride:(index + 1) * stride]
+                compact = b''.join(donor_slots)
+                if compact == original:
+                    uv.pop('UVChannelDataEdited', None)
+                    uv.pop('UVFacesDataEdited', None)
+                    continue
+                new_indices = original_indices
+                preserve_indices = True
+            else:
+                compact_records = [
+                    original[index * stride:(index + 1) * stride]
+                    for index in range(donor_count)
+                ]
+                split_indices = {}
+                new_indices = []
+                for donor_index, record in zip(original_indices, edited_records):
+                    donor_record = compact_records[donor_index]
+                    if record == donor_record:
+                        new_indices.append(donor_index)
+                        continue
+                    split_key = (donor_index, record)
+                    if split_key not in split_indices:
+                        # Reuse the donor slot for the first edited value only when
+                        # no loop still needs its original value.
+                        slot_records = {
+                            candidate
+                            for index, candidate in zip(original_indices, edited_records)
+                            if index == donor_index
+                        }
+                        if donor_record not in slot_records and not any(
+                            key[0] == donor_index for key in split_indices
+                        ):
+                            compact_records[donor_index] = record
+                            split_indices[split_key] = donor_index
+                        else:
+                            split_indices[split_key] = len(compact_records)
+                            compact_records.append(record)
+                    new_indices.append(split_indices[split_key])
+                if len(compact_records) > 0xFFFF:
+                    raise ValueError(
+                        f'sub{sub_idx} uv{channel}: compact coordinate count '
+                        f'{len(compact_records)} exceeds uint16')
+                compact = b''.join(compact_records)
+                preserve_indices = new_indices == original_indices
+
+            uv['UVChannelDataEdited'] = _enc(compact, use_b64)
+            uv['UVFacesDataEdited'] = _enc(
+                b''.join(_u16.pack(index) for index in new_indices), use_b64
+            )
+            channel_edits[channel] = {
+                'indices': new_indices,
+                'preserve_indices': preserve_indices,
+            }
+            rebuilt = True
+            _slogger.info(
+                f'[M3.2] sub{sub_idx} uv{channel}: {expanded_count} expanded '
+                f'coords -> {len(compact) // stride} compact; '
+                f'indices {"preserved" if preserve_indices else "rebuilt"}',
+                source='geometry.rebuild',
+            )
+
+        # Donor-identical channels are commonly diffuse/specular coordinate
+        # aliases. If Blender changes only one, preserve that donor relationship
+        # unless the sibling carries its own meaningful edit.
+        uv_by_channel = {
+            uv['UVChannelIndex']: uv for uv in sub.get('UVChannels', [])
+        }
+        for source_channel, source_edit in list(channel_edits.items()):
+            source_uv = uv_by_channel[source_channel]
+            for target_channel, target_uv in uv_by_channel.items():
+                if target_channel == source_channel or target_channel in channel_edits:
+                    continue
+                if (
+                    _dec(target_uv['UVChannelData'], use_b64)
+                    != _dec(source_uv['UVChannelData'], use_b64)
+                    or _dec(target_uv['UVFacesData'], use_b64)
+                    != _dec(source_uv['UVFacesData'], use_b64)
+                ):
+                    continue
+                target_uv['UVChannelDataEdited'] = source_uv['UVChannelDataEdited']
+                target_uv['UVFacesDataEdited'] = source_uv['UVFacesDataEdited']
+                channel_edits[target_channel] = {
+                    'indices': list(source_edit['indices']),
+                    'preserve_indices': source_edit['preserve_indices'],
+                }
+                rebuilt = True
+                _slogger.info(
+                    f'[M3.2] sub{sub_idx} uv{target_channel}: mirrored uv'
+                    f'{source_channel} edit because donor channels are identical',
+                    source='geometry.rebuild',
+                )
+
+        changed_indices = {
+            channel: edit for channel, edit in channel_edits.items()
+            if not edit['preserve_indices']
+        }
+        if not changed_indices:
+            if channel_edits:
+                sub['UVArraysEditedByImporter'] = True
+            continue
+
+        state_faces, _, _, type3_index = _decode_original_states(sub, use_b64)
+        edited_state_faces = {}
+        face_cursor = 0
+        for state_index, faces in state_faces.items():
+            edited_faces = []
+            for local_face_index, face in enumerate(faces):
+                global_face = face_cursor + local_face_index
+                copied_face = [dict(vertex) for vertex in face]
+                for corner, vertex in enumerate(copied_face):
+                    for channel, edit in changed_indices.items():
+                        key = f'texture{channel}'
+                        if key in vertex:
+                            vertex[key] = edit['indices'][global_face * 3 + corner]
+                edited_faces.append(copied_face)
+            edited_state_faces[state_index] = edited_faces
+            face_cursor += len(faces)
+        if face_cursor != face_count:
+            raise ValueError(
+                f'sub{sub_idx}: decoded draw lists contain {face_cursor} faces, '
+                f'expected {face_count}')
+        all_faces = [face for faces in edited_state_faces.values() for face in faces]
+        descriptor_state = sub['DisplayStates'][type3_index] if type3_index is not None else None
+        base_descriptors = None
+        for state_index in state_faces:
+            layout = sub['DisplayStates'][state_index].get('VertexStreamLayout')
+            if layout:
+                base_descriptors = [
+                    {'key': item['key'], 'direct': False, 'index_size': item['index_size']}
+                    for item in layout
+                ]
+                break
+        if base_descriptors is None:
+            raise ValueError(f'sub{sub_idx}: UV edit has no active vertex descriptors')
+        new_descriptors, upgraded = computeRequiredDescriptors(all_faces, base_descriptors)
+        states_to_rebuild = set(state_faces) if upgraded else set()
+        face_cursor = 0
+        total_rebuilt_blocks = 0
+        for state_index, faces in state_faces.items():
+            state = sub['DisplayStates'][state_index]
+            original_raw = _dec(state['PrimListData'], use_b64)
+            if upgraded:
+                raw = encodeDrawList(edited_state_faces[state_index], new_descriptors)
+                if raw:
+                    raw += b'\x00'
+                next_face = face_cursor + len(faces)
+                rebuilt_blocks = 0
+            else:
+                raw, next_face, rebuilt_blocks = _rewrite_uv_primitive_blocks(
+                    original_raw,
+                    base_descriptors,
+                    face_cursor,
+                    changed_indices,
+                    f'sub{sub_idx} ds{state_index}',
+                )
+            if raw != original_raw:
+                states_to_rebuild.add(state_index)
+                state['PrimListDataEdited'] = _enc(raw, use_b64)
+            total_rebuilt_blocks += rebuilt_blocks
+            face_cursor = next_face
+        if face_cursor != face_count:
+            raise ValueError(
+                f'sub{sub_idx}: decoded draw lists contain {face_cursor} faces, '
+                f'expected {face_count}')
+        for state_index in states_to_rebuild:
+            state = sub['DisplayStates'][state_index]
+            state['VertexStreamLayout'] = [
+                {'key': item['key'], 'index_size': item['index_size']}
+                for item in new_descriptors
+            ]
+        if upgraded:
+            if descriptor_state is None:
+                raise ValueError(
+                    f'sub{sub_idx}: UV indices require descriptor widening but '
+                    'no Type-3 state exists')
+            old_setting = _setting_int(descriptor_state['ShaderMode'])
+            descriptor_state['ShaderModeEdited'] = f'{patchType3Setting(old_setting, upgraded):08x}'
+        sub['UVArraysEditedByImporter'] = True
+        sub['UVPrimitiveListsRebuiltByImporter'] = True
+        _slogger.info(
+            f'[M3.2] sub{sub_idx}: rebuilt draw states {sorted(states_to_rebuild)}; '
+            f'descriptor upgrades {sorted(upgraded)}; triangulated '
+            f'{total_rebuilt_blocks} irreducible GX blocks',
+            source='geometry.rebuild',
+        )
 
     return rebuilt
 

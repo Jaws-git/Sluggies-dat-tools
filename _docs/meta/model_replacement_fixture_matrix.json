@@ -84,15 +84,24 @@
   ],
   "edited_blender_fixtures": {
     "position_only": {
-      "source": "_docs/meta/78277664_mario.gpl.sluggie",
+      "source": "2_Output_Models/18 Mario/78277664_mario.gpl/78277664_mario.gpl.sluggie",
       "status": "ready",
       "donor_fixture": "78277664_mario.gpl",
       "verification": {
         "edit_kind": "position_only",
-        "changed_submeshes": [0, 1, 2],
+        "changed_submeshes": [0, 1],
         "vertex_buffer_lengths_unchanged": true,
-        "topology_or_skin_edit_markers": false
+        "topology_changed": false,
+        "same_structure_skin_payload_present": false,
+        "skn_mode": "clone",
+        "manual_dolphin_result": "pass",
+        "dry_run_valid": true,
+        "size_delta": 0
       }
+    },
+    "uv_only": {
+      "source": null,
+      "status": "not_created"
     },
     "same_count_reskin": {
       "source": null,

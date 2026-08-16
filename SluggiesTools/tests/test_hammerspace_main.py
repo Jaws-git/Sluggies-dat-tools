@@ -113,7 +113,7 @@ class BuildModelBlockTests(unittest.TestCase):
 
     def _patch_common(self):
         return (
-            mock.patch.object(main.hh, 'readDolEntry', return_value=(0x1000, 42)),
+            mock.patch.object(main.hh, 'readDolEntry', return_value=(0x1000, 0x2000)),
             mock.patch.object(main, 'ParseSluggie', return_value=self.parsed),
             mock.patch.object(main, 'CloneGPL', return_value=b'GPL'),
             mock.patch.object(main, '_gpl_pos_offsets_from_bytes', return_value=[3]),
@@ -190,6 +190,77 @@ class BuildModelBlockTests(unittest.TestCase):
         self.assertEqual(patched[0x10:0x16], bytes([0, 3, 0, 1, 0, 2]))
         self.assertEqual(patched[0x16:], original_gpl[0x16:])
 
+    def test_uv_edit_patches_only_recorded_gpl_array_range(self):
+        model = {
+            'UseBase64': False,
+            'Submeshes': [{
+                'UVArraysEditedByImporter': True,
+                'UVChannels': [{
+                    'UVChannelIndex': 0,
+                    'UVChannelOffset': '0x34',
+                    'UVChannelData': [0, 0, 0, 1],
+                    'UVChannelDataEdited': [0, 2, 0, 1],
+                }],
+            }],
+        }
+        original_gpl = bytes(range(32))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = pathlib.Path(temp_dir) / 'dt_na.dat'
+            block_header = bytearray(0x20)
+            struct.pack_into('>I', block_header, 0x04, 0x20)
+            input_dat.write_bytes(block_header)
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                patched = main.PatchGPLUVArrays(original_gpl, model, 0)
+
+        self.assertEqual(patched[:0x14], original_gpl[:0x14])
+        self.assertEqual(patched[0x14:0x18], bytes([0, 2, 0, 1]))
+        self.assertEqual(patched[0x18:], original_gpl[0x18:])
+
+    def test_resized_uv_edit_appends_payloads_and_preserves_donor_bytes(self):
+        original_gpl = bytes(range(128))
+        model = {
+            'UseBase64': False,
+            'Submeshes': [{
+                'SubmeshOffset': '0x30',
+                'UVArraysEditedByImporter': True,
+                'UVChannels': [{
+                    'UVChannelIndex': 0,
+                    'UVDataPtrFieldOffset': '0x50',
+                    'UVCountFieldOffset': '0x54',
+                    'UVChannelData': [1, 2, 3, 4],
+                    'UVChannelDataEdited': [5, 6, 7, 8, 9, 10, 11, 12],
+                    'UVChannelCompCount': 2,
+                    'UVChannelQuantizeInfo': 0x30,
+                }],
+                'DisplayStates': [{
+                    'PrimListPtrFieldOffset': '0x60',
+                    'PrimListSizeFieldOffset': '0x64',
+                    'PrimListDataEdited': [0x90, 0, 0, 0],
+                }],
+            }],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = pathlib.Path(temp_dir) / 'dt_na.dat'
+            block_header = bytearray(0x20)
+            struct.pack_into('>I', block_header, 0x04, 0x20)
+            input_dat.write_bytes(block_header)
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                patched = main.PatchGPLUVRebuild(original_gpl, model, 0)
+
+        changed_header_ranges = set(range(0x30, 0x36)) | set(range(0x40, 0x48))
+        self.assertTrue(all(
+            patched[index] == original_gpl[index]
+            for index in range(len(original_gpl))
+            if index not in changed_header_ranges
+        ))
+        uv_pointer = struct.unpack_from('>I', patched, 0x30)[0]
+        uv_count = struct.unpack_from('>H', patched, 0x34)[0]
+        primitive_pointer, primitive_size = struct.unpack_from('>II', patched, 0x40)
+        self.assertEqual(uv_count, 2)
+        self.assertEqual(patched[0x10 + uv_pointer:0x10 + uv_pointer + 8], bytes(range(5, 13)))
+        self.assertEqual(primitive_size, 32)
+        self.assertEqual((0x10 + primitive_pointer) % 32, 0)
+
     def test_all_clone_build_only_assembles_without_output_mutation(self):
         patches = self._patch_common()
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
@@ -220,6 +291,36 @@ class BuildModelBlockTests(unittest.TestCase):
         self.assertIn('validator_facts', result.validation_report)
         write_model.assert_not_called()
         patch_dol.assert_not_called()
+
+    def test_build_preserves_dol_entry_prefix_before_inner_model(self):
+        self.data['SluggiesModel'].update({
+            'ModelOffset': 0x1020,
+            'ModelLength': 0x40,
+        })
+        prefix = bytes(range(32))
+        patches = self._patch_common()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = pathlib.Path(temp_dir) / 'dt_na.dat'
+            input_bytes = bytearray(0x1060)
+            input_bytes[0x1000:0x1020] = prefix
+            input_dat.write_bytes(input_bytes)
+            with (
+                mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)),
+                mock.patch.object(main.hh, 'readDolEntry', return_value=(0x1000, 0x60)),
+                patches[1], patches[2], patches[3], patches[4], patches[5],
+                patches[6], patches[7], patches[8],
+                mock.patch.object(main, 'validate_model_block', return_value={
+                    'valid': True,
+                    'errors': [],
+                    'warnings': [],
+                    'facts': {'section_pointers': {}},
+                }),
+            ):
+                result = main.BuildModelBlock(self.data)
+
+        self.assertEqual(result.block[:0x20], prefix)
+        self.assertEqual(result.validation_report['container_prefix_size'], 0x20)
+        self.assertEqual(result.validation_report['assembled_size'], len(result.block))
 
     def test_gpl_and_skn_build_modes_use_builders(self):
         self.data['SluggiesModel'].update({
