@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import struct
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from typing import Any
 
@@ -20,6 +22,34 @@ _GX_FORMATS = {
     0xA: "C14X2",
     0xE: "CMPR",
 }
+
+# Explicit WIMGT target for each supported GX image format. Indexed formats
+# (C4/C8/C14X2) require a donor palette token, which wimgt_target_for() appends
+# based on the descriptor's palette format. Direct-color formats never use a
+# palette token. WIMGT must never be allowed to choose a format automatically.
+WIMGT_IMAGE_TARGETS = {
+    0x0: "TPL.I4",
+    0x1: "TPL.I8",
+    0x2: "TPL.IA4",
+    0x3: "TPL.IA8",
+    0x4: "TPL.RGB565",
+    0x5: "TPL.RGB5A3",
+    0x6: "TPL.RGBA8",
+    0x8: "TPL.C4",
+    0x9: "TPL.C8",
+    0xA: "TPL.C14X2",
+    0xE: "TPL.CMPR",
+}
+
+# WIMGT palette token for each supported donor palette format.
+WIMGT_PALETTE_TOKENS = {
+    0x0: "P-IA8",
+    0x1: "P-RGB565",
+    0x2: "P-RGB5A3",
+}
+
+# GX image formats that require a palette.
+_INDEXED_FORMATS = frozenset((0x8, 0x9, 0xA))
 
 
 def _ceil_div(value: int, divisor: int) -> int:
@@ -176,10 +206,134 @@ def parse_tpl(tpl_bytes: bytes | bytearray | memoryview) -> ParsedSingleImageTpl
     return parse_single_image_tpl(tpl_bytes)
 
 
+class TextureEncodingError(RuntimeError):
+    """Raised when WIMGT encoding or TPL parsing fails.
+
+    Carries the WIMGT target, captured stdout/stderr, and exit code so callers
+    can surface actionable diagnostics.
+    """
+
+    def __init__(self, message, target=None, stdout=None, stderr=None, exit_code=None):
+        super().__init__(message)
+        self.target = target
+        self.stdout = stdout or ""
+        self.stderr = stderr or ""
+        self.exit_code = exit_code
+
+
+def wimgt_target_for(gx_format: int, palette_format: int | None = None) -> str:
+    """Return the explicit WIMGT target for a GX image format.
+
+    Indexed formats (C4/C8/C14X2) require a donor palette format, which is
+    appended as a palette token. Direct-color formats never use a palette token.
+    Unsupported formats, or an indexed format without a supported palette, raise
+    ValueError so WIMGT is never allowed to choose a format automatically.
+    """
+    base = WIMGT_IMAGE_TARGETS.get(gx_format)
+    if base is None:
+        raise ValueError(
+            f"unsupported GX image format 0x{gx_format:02X}: no explicit WIMGT target"
+        )
+
+    if gx_format in _INDEXED_FORMATS:
+        token = WIMGT_PALETTE_TOKENS.get(palette_format)
+        if token is None:
+            raise ValueError(
+                f"indexed GX format 0x{gx_format:02X} requires a supported donor "
+                f"palette format, got {palette_format!r}"
+            )
+        return f"{base}.{token}"
+
+    return base
+
+
+def encode_png_to_tpl(
+    png_path: str | os.PathLike[str],
+    gx_format: int,
+    palette_format: int | None = None,
+    wimgt_executable: str = "wimgt",
+) -> ParsedSingleImageTpl:
+    """Encode a PNG into a single-image TPL using WIMGT with an explicit target.
+
+    The PNG is copied into a temporary directory, WIMGT is invoked with an
+    explicit format target, and the resulting single-image TPL is parsed and
+    validated. The temporary directory is removed on both success and failure.
+
+    This is the base-image (single-level) encoding path. Mipmapped textures
+    produce a multi-image TPL and require a dedicated multi-image parser, which
+    is a separate work item.
+
+    Raises TextureEncodingError if WIMGT is unavailable, fails, or produces no
+    TPL, and ValueError for unsupported format/palette combinations.
+    """
+    target = wimgt_target_for(gx_format, palette_format)
+
+    from PIL import Image
+
+    with Image.open(png_path) as img:
+        base_image = img.copy()
+
+    with tempfile.TemporaryDirectory(prefix="wimgt_encode_") as temp_dir:
+        base_name = "tex"
+        base_png = os.path.join(temp_dir, f"{base_name}.png")
+        base_image.save(base_png, "PNG")
+
+        tpl_path = os.path.join(temp_dir, f"{base_name}.tpl")
+        cmd = [
+            wimgt_executable, "encode", "-q", "-o",
+            "-x", target,
+            "-d", tpl_path,
+            base_png,
+        ]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        except FileNotFoundError as exc:
+            raise TextureEncodingError(
+                f"wimgt executable not found: {wimgt_executable!r}",
+                target=target, stdout="", stderr=str(exc), exit_code=None,
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise TextureEncodingError(
+                f"wimgt timed out encoding {png_path}",
+                target=target,
+                stdout=exc.stdout or "",
+                stderr=exc.stderr or "",
+                exit_code=None,
+            ) from exc
+
+        if result.returncode != 0:
+            raise TextureEncodingError(
+                f"wimgt failed to encode {png_path} (exit {result.returncode})",
+                target=target,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                exit_code=result.returncode,
+            )
+
+        if not os.path.exists(tpl_path):
+            raise TextureEncodingError(
+                f"wimgt completed without creating {tpl_path}",
+                target=target,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                exit_code=result.returncode,
+            )
+
+        with open(tpl_path, "rb") as tpl_file:
+            tpl_bytes = tpl_file.read()
+
+    return parse_single_image_tpl(tpl_bytes)
+
+
 __all__ = [
     "ParsedSingleImageTpl",
     "TPL_MAGIC",
+    "WIMGT_IMAGE_TARGETS",
+    "WIMGT_PALETTE_TOKENS",
+    "TextureEncodingError",
+    "encode_png_to_tpl",
     "parse_single_image_tpl",
     "parse_single_image_tpl_file",
     "parse_tpl",
+    "wimgt_target_for",
 ]
