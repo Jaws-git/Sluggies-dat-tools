@@ -2556,8 +2556,21 @@ def _build_validation_report(
     }
 
 
-def BuildModelBlock(data: dict, section_modes: SectionModes | None = None) -> ModelBlockBuild:
-    """Assemble a model block without modifying output DAT, DOL, or FST files."""
+def BuildModelBlock(
+    data: dict,
+    section_modes: SectionModes | None = None,
+    sluggie_path: str | os.PathLike[str] | None = None,
+) -> ModelBlockBuild:
+    """Assemble a model block without modifying output DAT, DOL, or FST files.
+
+    When ``section_modes.tex == 'build'`` and the sluggie has
+    ``ReimportTextures`` set, the TEX section is rebuilt from the edited PNGs
+    in the sluggie's ``tex/`` folder via :func:`BuildTEX`. ``sluggie_path``
+    must then point at the ``.sluggies`` file so the texture plan builder can
+    resolve the PNGs. Without ``ReimportTextures`` (or when ``sluggie_path``
+    is absent), the rebuilt TEX section clones every texture payload from
+    INPUT dt_na.dat, which is byte-equivalent to the clone path.
+    """
     modes = section_modes or SectionModes()
     _validate_section_modes(modes)
 
@@ -2647,7 +2660,32 @@ def BuildModelBlock(data: dict, section_modes: SectionModes | None = None) -> Mo
         )
 
     act_bytes = CloneACT(source_model_offset, source_model_length)
-    tex_bytes = CloneTEX(source_model_offset, source_model_length)
+    if modes.tex == 'build':
+        texture_plan = None
+        if model.get('ReimportTextures'):
+            if sluggie_path is None:
+                raise ValueError(
+                    "tex='build' with ReimportTextures requires the sluggie path "
+                    "to resolve the tex/ folder; pass sluggie_path to BuildModelBlock"
+                )
+            import texture_helper as _tex
+            texture_plan = _tex.build_hammerspace_texture_plan(
+                sluggie_path,
+                model.get('TextureDescriptors') or [],
+                allow_dimension_change=True,
+            )
+            for _sk in texture_plan.skipped:
+                _sk_fields = [f"expected {_sk.expected_payload_length} bytes"]
+                if _sk.generated_payload_length is not None:
+                    _sk_fields.append(f"generated {_sk.generated_payload_length} bytes")
+                _slogger.warning(
+                    f"texture {_sk.texture_index} ({_sk.texture_file_name}): "
+                    f"{', '.join(_sk_fields)}; left unchanged ({_sk.reason})",
+                    source='hammerspace.main',
+                )
+        tex_bytes = BuildTEX(parsed, texture_plan)
+    else:
+        tex_bytes = CloneTEX(source_model_offset, source_model_length)
     if modes.skn == 'build':
         skn_bytes = BuildSKNSkinningData(parsed, gpl_result)
     else:
@@ -2847,7 +2885,7 @@ if __name__ == '__main__':
         _parser.error('--clone cannot be combined with build section modes')
 
     try:
-        _build = BuildModelBlock(_data, _modes)
+        _build = BuildModelBlock(_data, _modes, sluggie_path=_args.sluggies_path)
         _slogger.info(
             'Build validation report:\n' + _json.dumps(_build.validation_report, indent=2),
             source='hammerspace.main',

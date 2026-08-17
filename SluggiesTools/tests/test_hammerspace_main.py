@@ -996,5 +996,128 @@ class BuildTEXTests(unittest.TestCase):
         self.assertEqual(main.BuildTEX(parsed, None), b'')
 
 
+class BuildModelBlockTEXBuildTests(unittest.TestCase):
+    """Gate test for milestone 3: BuildModelBlock() wires BuildTEX into the
+    assembly path when tex='build'."""
+
+    def setUp(self):
+        self.data = {'SluggiesModel': {'ChunkNumber': 18, 'FileIndex': 0}}
+        self.parsed = mock.sentinel.parsed
+
+    def _patch_common(self):
+        return (
+            mock.patch.object(main.hh, 'readDolEntry', return_value=(0x1000, 0x2000)),
+            mock.patch.object(main, 'ParseSluggie', return_value=self.parsed),
+            mock.patch.object(main, 'CloneGPL', return_value=b'GPL'),
+            mock.patch.object(main, '_gpl_pos_offsets_from_bytes', return_value=[3]),
+            mock.patch.object(main, 'CloneACT', return_value=b'ACT'),
+            mock.patch.object(main, 'CloneTEX', return_value=b'TEX'),
+            mock.patch.object(main, 'CloneSKN', return_value=b'SKN'),
+            mock.patch.object(main, 'CloneTrailingSections', return_value=(b'TAIL', 0x80)),
+            mock.patch.object(main, 'CloneHEADER', return_value=b'\x00' * 0x20),
+        )
+
+    def _run(self, modes, **kwargs):
+        patches = self._patch_common()
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
+            with (
+                mock.patch.object(main, '_validate_hammerspace_contract'),
+                mock.patch.object(main, 'validate_model_block', return_value={
+                    'valid': True,
+                    'errors': [],
+                    'warnings': [],
+                    'facts': {'section_pointers': {'GPL': 32, 'ACT': 35, 'TEX': 38, 'SKN': 41}},
+                }),
+            ):
+                return main.BuildModelBlock(self.data, modes, **kwargs)
+
+    def test_tex_build_with_reimport_uses_plan_and_buildtex(self):
+        self.data['SluggiesModel'].update({
+            'UseHammerspace': True,
+            'ReimportTextures': True,
+            'TextureDescriptors': [
+                {'TextureIndex': 0, 'TextureFileName': '0.png'},
+            ],
+        })
+        plan = mock.Mock(skipped=())
+        with (
+            mock.patch.object(
+                texture_helper, 'build_hammerspace_texture_plan',
+                return_value=plan,
+            ) as build_plan,
+            mock.patch.object(main, 'BuildTEX', return_value=b'BUILT_TEX') as build_tex,
+            mock.patch.object(main, 'CloneTEX') as clone_tex,
+        ):
+            result = self._run(main.SectionModes(tex='build'), sluggie_path='model.sluggies')
+
+        build_plan.assert_called_once_with(
+            'model.sluggies',
+            self.data['SluggiesModel']['TextureDescriptors'],
+            allow_dimension_change=True,
+        )
+        build_tex.assert_called_once_with(self.parsed, plan)
+        clone_tex.assert_not_called()
+        self.assertEqual(result.section_sizes['TEX'], len(b'BUILT_TEX'))
+        self.assertEqual(result.section_modes.tex, 'build')
+
+    def test_tex_build_with_reimport_requires_sluggie_path(self):
+        self.data['SluggiesModel'].update({
+            'UseHammerspace': True,
+            'ReimportTextures': True,
+            'TextureDescriptors': [
+                {'TextureIndex': 0, 'TextureFileName': '0.png'},
+            ],
+        })
+        with (
+            mock.patch.object(texture_helper, 'build_hammerspace_texture_plan') as build_plan,
+            mock.patch.object(main, 'BuildTEX') as build_tex,
+        ):
+            with self.assertRaisesRegex(ValueError, 'sluggie path'):
+                self._run(main.SectionModes(tex='build'))
+        build_plan.assert_not_called()
+        build_tex.assert_not_called()
+
+    def test_tex_build_without_reimport_clones_payloads(self):
+        self.data['SluggiesModel'].update({
+            'UseHammerspace': True,
+            'TextureDescriptors': [
+                {'TextureIndex': 0, 'TextureFileName': '0.png'},
+            ],
+        })
+        with (
+            mock.patch.object(texture_helper, 'build_hammerspace_texture_plan') as build_plan,
+            mock.patch.object(main, 'BuildTEX', return_value=b'BUILT_TEX') as build_tex,
+        ):
+            result = self._run(main.SectionModes(tex='build'), sluggie_path='model.sluggies')
+
+        build_plan.assert_not_called()
+        build_tex.assert_called_once_with(self.parsed, None)
+        self.assertEqual(result.section_sizes['TEX'], len(b'BUILT_TEX'))
+
+    def test_tex_clone_mode_still_clones(self):
+        patches = self._patch_common()
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[6], patches[7], patches[8]:
+            with (
+                mock.patch.object(main, '_validate_hammerspace_contract'),
+                mock.patch.object(main, 'CloneTEX', return_value=b'TEX') as clone_tex,
+                mock.patch.object(main, 'BuildTEX') as build_tex,
+                mock.patch.object(texture_helper, 'build_hammerspace_texture_plan') as build_plan,
+                mock.patch.object(main, 'validate_model_block', return_value={
+                    'valid': True,
+                    'errors': [],
+                    'warnings': [],
+                    'facts': {'section_pointers': {'GPL': 32, 'ACT': 35, 'TEX': 38, 'SKN': 41}},
+                }),
+            ):
+                result = main.BuildModelBlock(
+                    self.data, main.SectionModes(tex='clone'), sluggie_path='model.sluggies'
+                )
+
+        build_plan.assert_not_called()
+        build_tex.assert_not_called()
+        clone_tex.assert_called_once()
+        self.assertEqual(result.section_sizes['TEX'], len(b'TEX'))
+
+
 if __name__ == '__main__':
     unittest.main()
