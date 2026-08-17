@@ -2265,7 +2265,7 @@ def _validate_section_modes(modes: SectionModes) -> None:
     supported = {
         'GPL': {'clone', 'build'},
         'ACT': {'clone'},
-        'TEX': {'clone'},
+        'TEX': {'clone', 'build'},
         'SKN': {'clone', 'build'},
         'trailing': {'clone'},
     }
