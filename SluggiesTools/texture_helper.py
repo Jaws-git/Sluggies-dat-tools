@@ -170,7 +170,7 @@ def parse_single_image_tpl(tpl_bytes: bytes | bytearray | memoryview) -> ParsedS
     if width == 0 or height == 0:
         raise ValueError(f"invalid image dimensions {width}x{height}")
     if gx_format not in _GX_FORMATS:
-        raise ValueError(f"unsupported GX format code 0x{gx_format:08X}")
+        raise ValueError(f"unsupported GX format code 0x{gx_format:02X}")
 
     expected_image_length = _image_payload_size(width, height, gx_format)
     image_end = image_payload_offset + expected_image_length
@@ -496,6 +496,7 @@ class SkippedTexture:
     texture_file_name: str
     expected_payload_length: int
     reason: str
+    generated_payload_length: int | None = None
 
 
 @dataclass(frozen=True)
@@ -703,23 +704,118 @@ def _hex_offset(value: Any, field: str, index: Any) -> int:
     return offset
 
 
-def _proven_length(value: Any, fallback: int, kind: str, index: Any) -> int:
-    """Return the descriptor's proven payload length, or ``fallback`` if absent.
+_PROVEN_LENGTH_FIELDS = {
+    "image": "ImagePayloadLength",
+    "palette": "PaletteDataLength",
+}
 
-    The proven length (``ImagePayloadLength`` / ``PaletteDataLength``) is the
-    authoritative byte length for the write (PLAN 3.2, second bullet). When the
-    descriptor does not carry it, the actual encoded length is used so the
-    representation stays self-consistent.
+
+def _proven_length(value: Any, kind: str, index: Any) -> int:
+    """Return the descriptor's proven payload length, requiring it to be present.
+
+    The proven length (``ImagePayloadLength`` for images, ``PaletteDataLength``
+    for palettes) is the authoritative byte length for the write (PLAN 3.2,
+    second bullet). It is *required*: a descriptor that does not carry it cannot
+    be validated against the donor, so a missing value raises ValueError naming
+    the texture and the offending field. The write then covers exactly this many
+    bytes, preserving any remaining bytes between the proven length and the
+    buffer capacity (``ImageDataCapacity``).
     """
+    field = _PROVEN_LENGTH_FIELDS.get(kind, f"{kind.capitalize()}PayloadLength")
     if value is None:
-        return fallback
+        raise ValueError(
+            f"texture {index} is missing the proven {kind} payload length ({field}); "
+            "create a new export to enable texture re-import"
+        )
     try:
         length = int(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"texture {index} has an invalid {kind} payload length: {value!r}") from exc
+        raise ValueError(f"texture {index} has an invalid {field}: {value!r}") from exc
     if length < 0:
-        raise ValueError(f"texture {index} has a negative {kind} payload length: {length}")
+        raise ValueError(f"texture {index} has a negative {field}: {length}")
     return length
+
+
+def _check_within_capacity(capacity: Any, payload_length: int, kind: str, index: Any) -> None:
+    """Ensure a proven payload length does not exceed the buffer capacity.
+
+    The write covers exactly the proven payload length, preserving any remaining
+    bytes between the proven length and the buffer capacity (``ImageDataCapacity``
+    for images; PLAN 3.2, second bullet). A proven length that exceeds the
+    capacity would write beyond the buffer, so it is rejected.
+    """
+    if capacity is None:
+        return
+    try:
+        cap = int(capacity)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"texture {index} has an invalid buffer capacity: {capacity!r}") from exc
+    if payload_length > cap:
+        raise ValueError(
+            f"texture {index} {kind} payload length {payload_length} exceeds "
+            f"the buffer capacity {cap}"
+        )
+
+
+def _dat_size(value: Any, label: str) -> int:
+    """Validate a DAT file size, requiring it to be a non-negative int.
+
+    The bounds check (PLAN 3.2, third bullet) needs the exact byte size of the
+    input and output ``dt_na.dat`` files. A missing or invalid size cannot be
+    used to validate write ranges, so it raises ValueError naming the offending
+    value.
+    """
+    if value is None:
+        raise ValueError(
+            f"missing {label} DAT size; cannot bounds-check texture writes"
+        )
+    try:
+        size = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid {label} DAT size: {value!r}") from exc
+    if size < 0:
+        raise ValueError(f"negative {label} DAT size: {size}")
+    return size
+
+
+def _check_range_within_dat(
+    offset: int,
+    length: int,
+    texture_index: Any,
+    kind: str,
+    size: int,
+    label: str,
+) -> None:
+    """Raise ValueError if ``offset + length`` exceeds ``size``.
+
+    Used in :func:`build_unpatch_texture_writes` to bounds-check the read range
+    against the input DAT *before* slicing, so the error message names the DAT
+    size rather than reporting a malformed write.
+    """
+    end = offset + length
+    if end > size:
+        raise ValueError(
+            f"texture {texture_index} {kind} read at offset "
+            f"0x{offset:X} with length {length} extends to "
+            f"0x{end:X}, past the {label} DAT size 0x{size:X}"
+        )
+
+
+def _check_write_within_dat(write: TextureWrite, size: int, label: str) -> None:
+    """Ensure a planned write fits entirely within a DAT of the given size.
+
+    Offsets are absolute file offsets into ``dt_na.dat`` (``export.py`` emits
+    ``ImageDataOffset``/``PaletteDataOffset`` as ``palette.absolute + ptr``), so
+    a write is in-bounds when ``offset + payload_length <= size``. A write that
+    would extend past the end of the DAT is rejected (PLAN 3.2, third bullet).
+    """
+    end = write.offset + write.payload_length
+    if end > size:
+        raise ValueError(
+            f"texture {write.texture_index} {write.kind} write at offset "
+            f"0x{write.offset:X} with length {write.payload_length} extends to "
+            f"0x{end:X}, past the {label} DAT size 0x{size:X}"
+        )
 
 
 def texture_writes_for(descriptor: Mapping[str, Any], entry: TexturePlanEntry) -> tuple[TextureWrite, ...]:
@@ -732,32 +828,41 @@ def texture_writes_for(descriptor: Mapping[str, Any], entry: TexturePlanEntry) -
 
     An image write is always produced. A palette write is produced only when the
     entry carries palette bytes. Each write's ``payload_length`` is the
-    descriptor's proven length; the :class:`TextureWrite` invariant then requires
-    the encoded bytes to be exactly that long.
+    descriptor's *proven* length, which is required (PLAN 3.2, second bullet);
+    the :class:`TextureWrite` invariant then requires the encoded bytes to be
+    exactly that long. The write covers only the proven length, so any remaining
+    bytes between ``ImagePayloadLength`` and ``ImageDataCapacity`` are preserved
+    (left untouched in the DAT).
     """
     index = descriptor.get("TextureIndex", entry.texture_index)
+
+    image_payload_length = _proven_length(
+        descriptor.get("ImagePayloadLength"), "image", index
+    )
+    _check_within_capacity(
+        descriptor.get("ImageDataCapacity"), image_payload_length, "image", index
+    )
 
     writes = [
         TextureWrite(
             kind="image",
             texture_index=index,
             offset=_hex_offset(descriptor.get("ImageDataOffset"), "ImageDataOffset", index),
-            payload_length=_proven_length(
-                descriptor.get("ImagePayloadLength"), len(entry.image_data), "image", index
-            ),
+            payload_length=image_payload_length,
             bytes=entry.image_data,
         )
     ]
 
     if entry.palette_data:
+        palette_payload_length = _proven_length(
+            descriptor.get("PaletteDataLength"), "palette", index
+        )
         writes.append(
             TextureWrite(
                 kind="palette",
                 texture_index=index,
                 offset=_hex_offset(descriptor.get("PaletteDataOffset"), "PaletteDataOffset", index),
-                payload_length=_proven_length(
-                    descriptor.get("PaletteDataLength"), len(entry.palette_data), "palette", index
-                ),
+                payload_length=palette_payload_length,
                 bytes=entry.palette_data,
             )
         )
@@ -765,31 +870,180 @@ def texture_writes_for(descriptor: Mapping[str, Any], entry: TexturePlanEntry) -
     return tuple(writes)
 
 
+def _detect_overlaps(writes: Sequence[TextureWrite]) -> list[TextureWrite]:
+    """Group writes by offset, coalesce identical aliases, and reject conflicts.
+
+    PLAN 3.2, fourth bullet: multiple descriptors may share the same image (or
+    palette) pointer. When two writes target the same ``(offset,
+    payload_length)`` range and carry identical bytes, they are *identical-layout
+    aliases* and are coalesced into one write. Different-layout aliases (same
+    offset but different length) and any other overlapping writes are rejected.
+
+    Returns a deduplicated write list sorted by offset.
+    """
+    by_offset: dict[int, list[TextureWrite]] = {}
+    for write in writes:
+        by_offset.setdefault(write.offset, []).append(write)
+
+    coalesced: list[TextureWrite] = []
+    for offset in sorted(by_offset):
+        group = by_offset[offset]
+        if len(group) == 1:
+            coalesced.append(group[0])
+            continue
+
+        # Multiple writes at the same offset — check for identical-layout alias.
+        first = group[0]
+        for other in group[1:]:
+            if other.payload_length != first.payload_length:
+                raise ValueError(
+                    f"texture {other.texture_index} {other.kind} write at offset "
+                    f"0x{offset:X} has length {other.payload_length}, but texture "
+                    f"{first.texture_index} {first.kind} write at the same offset "
+                    f"has length {first.payload_length} — different-layout alias"
+                )
+            if other.bytes != first.bytes:
+                raise ValueError(
+                    f"texture {other.texture_index} {other.kind} write at offset "
+                    f"0x{offset:X} has different bytes than texture "
+                    f"{first.texture_index} {first.kind} write at the same offset "
+                    f"— conflicting overlap"
+                )
+        # All writes in this group are identical; keep one.
+        coalesced.append(first)
+
+    # Check for partially overlapping ranges between distinct offsets.
+    for i, a in enumerate(coalesced):
+        a_end = a.offset + a.payload_length
+        for b in coalesced[i + 1:]:
+            if b.offset < a_end:
+                raise ValueError(
+                    f"texture {a.texture_index} {a.kind} write at offset "
+                    f"0x{a.offset:X} (length {a.payload_length}) overlaps with "
+                    f"texture {b.texture_index} {b.kind} write at offset "
+                    f"0x{b.offset:X} (length {b.payload_length})"
+                )
+            break  # sorted by offset — no further overlap possible once gap found
+
+    return coalesced
+
+
 def build_texture_writes(
     descriptors: Sequence[Mapping[str, Any]],
     plan: TexturePlan,
+    input_dat_size: int,
+    output_dat_size: int,
 ) -> tuple[TextureWrite, ...]:
     """Build the complete texture write list for a plan.
 
     Each plan entry is matched to its descriptor by ``TextureIndex`` and turned
-    into an image write plus (when present) a palette write. Writes are returned
-    in plan order. This produces the full write list *without* opening the
+    into an image write plus (when present) a palette write. Writes are
+    bounds-checked, grouped by offset, and deduplicated before being returned
+    sorted by offset. This produces the full write list *without* opening the
     output DAT for writing (PLAN 3.2, last bullet); the patcher applies them in
     its existing write phase.
+
+    Every write is bounds-checked against both the input and output
+    ``dt_na.dat`` sizes (PLAN 3.2, third bullet): a write whose
+    ``offset + payload_length`` exceeds either size is rejected, so no planned
+    write can extend past the end of either file.
+
+    Identical-layout aliases (same offset, same length, same bytes) are
+    coalesced into one write. Different-layout aliases (same offset, different
+    length) and any other overlapping writes are rejected (PLAN 3.2, fourth
+    bullet).
     """
+    input_size = _dat_size(input_dat_size, "input")
+    output_size = _dat_size(output_dat_size, "output")
+
     by_index: dict[Any, Mapping[str, Any]] = {}
     for descriptor in descriptors:
         index = descriptor.get("TextureIndex")
         if index is not None:
             by_index[index] = descriptor
 
-    writes: list[TextureWrite] = []
+    raw_writes: list[TextureWrite] = []
     for entry in plan:
         descriptor = by_index.get(entry.texture_index)
         if descriptor is None:
             raise ValueError(f"texture {entry.texture_index} has no matching descriptor")
-        writes.extend(texture_writes_for(descriptor, entry))
-    return tuple(writes)
+        for write in texture_writes_for(descriptor, entry):
+            _check_write_within_dat(write, input_size, "input")
+            _check_write_within_dat(write, output_size, "output")
+            raw_writes.append(write)
+
+    return tuple(_detect_overlaps(raw_writes))
+
+
+def build_unpatch_texture_writes(
+    descriptors: Sequence[Mapping[str, Any]],
+    input_dat_path: str | os.PathLike[str],
+    input_dat_size: int,
+    output_dat_size: int,
+) -> tuple[TextureWrite, ...]:
+    """Build restoration writes for every descriptor from the input DAT.
+
+    Used in unpatch mode (PLAN "Required behavior", ``--unpatch``). No PNG
+    files are read and WIMGT is not invoked. Each descriptor's image and
+    optional palette bytes are read from ``input_dat_path`` at the exact proven
+    offsets and lengths from the descriptor, then bounds-checked and
+    alias-coalesced the same way as :func:`build_texture_writes`.
+
+    All descriptors are restored, including mipmapped ones — reading from the
+    original DAT is unconditional on mip layout.
+    """
+    input_size = _dat_size(input_dat_size, "input")
+    output_size = _dat_size(output_dat_size, "output")
+
+    with open(input_dat_path, "rb") as _f:
+        input_dat = _f.read()
+
+    if len(input_dat) != input_size:
+        raise ValueError(
+            f"input DAT read {len(input_dat)} bytes but expected {input_size}"
+        )
+
+    raw_writes: list[TextureWrite] = []
+    for descriptor in descriptors:
+        index = descriptor.get("TextureIndex", "?")
+
+        image_offset = _hex_offset(descriptor.get("ImageDataOffset"), "ImageDataOffset", index)
+        image_payload_length = _proven_length(
+            descriptor.get("ImagePayloadLength"), "image", index
+        )
+        _check_within_capacity(
+            descriptor.get("ImageDataCapacity"), image_payload_length, "image", index
+        )
+
+        _check_range_within_dat(image_offset, image_payload_length, index, "image", input_size, "input")
+        image_write = TextureWrite(
+            kind="image",
+            texture_index=index,
+            offset=image_offset,
+            payload_length=image_payload_length,
+            bytes=input_dat[image_offset : image_offset + image_payload_length],
+        )
+        _check_write_within_dat(image_write, output_size, "output")
+        raw_writes.append(image_write)
+
+        palette_length_val = descriptor.get("PaletteDataLength")
+        if palette_length_val:
+            palette_offset = _hex_offset(
+                descriptor.get("PaletteDataOffset"), "PaletteDataOffset", index
+            )
+            palette_payload_length = _proven_length(palette_length_val, "palette", index)
+            _check_range_within_dat(palette_offset, palette_payload_length, index, "palette", input_size, "input")
+            palette_write = TextureWrite(
+                kind="palette",
+                texture_index=index,
+                offset=palette_offset,
+                payload_length=palette_payload_length,
+                bytes=input_dat[palette_offset : palette_offset + palette_payload_length],
+            )
+            _check_write_within_dat(palette_write, output_size, "output")
+            raw_writes.append(palette_write)
+
+    return tuple(_detect_overlaps(raw_writes))
 
 
 def encode_png_to_tpl(
@@ -893,6 +1147,7 @@ __all__ = [
     "TextureWrite",
     "build_texture_plan",
     "build_texture_writes",
+    "build_unpatch_texture_writes",
     "texture_writes_for",
     "check_png_dimensions",
     "encode_png_to_tpl",

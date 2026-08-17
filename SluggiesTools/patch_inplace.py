@@ -16,6 +16,7 @@ OUTPUT_DAT = os.path.join(OUTPUT_DIR, 'dt_na.dat')
 # Allow importing sibling modules
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import patch_skn_inplace as _skn
+import texture_helper as _tex
 
 # ---------------------------------------------------------------------------
 # Shader-mode conversion constants and helpers
@@ -421,14 +422,58 @@ for i, submesh in enumerate(submeshes):
             _slogger.info(f"Submesh {i} DS[{ds_idx}] ShaderMode: \"{old_code}\" -> \"{edit_code}\" at {off_str}", source="patch_inplace")
 
 # ---------------------------------------------------------------------------
+# Build texture writes (patch: encode and validate; unpatch: restore from input)
+# ---------------------------------------------------------------------------
+
+texture_writes: tuple[_tex.TextureWrite, ...] = ()
+texture_skipped_count = 0
+
+_model = data["SluggiesModel"]
+if _model.get("ReimportTextures"):
+    if _model.get("UseHammerspace"):
+        abort(
+            "UseHammerspace and ReimportTextures are both true. "
+            "Texture re-import is not supported with Hammerspace mode; "
+            "disable ReimportTextures in Blender before re-exporting."
+        )
+    _descriptors = _model.get("TextureDescriptors") or []
+    if _descriptors:
+        _input_dat_size = os.path.getsize(INPUT_DAT)
+        _output_dat_size = os.path.getsize(OUTPUT_DAT)
+        try:
+            if unpatch:
+                texture_writes = _tex.build_unpatch_texture_writes(
+                    _descriptors, INPUT_DAT, _input_dat_size, _output_dat_size,
+                )
+            else:
+                _plan = _tex.build_texture_plan(json_path, _descriptors)
+                texture_skipped_count = len(_plan.skipped)
+                for _sk in _plan.skipped:
+                    _sk_fields = [f"expected {_sk.expected_payload_length} bytes"]
+                    if _sk.generated_payload_length is not None:
+                        _sk_fields.append(f"generated {_sk.generated_payload_length} bytes")
+                    _slogger.warning(
+                        f"texture {_sk.texture_index} ({_sk.texture_file_name}): "
+                        f"{', '.join(_sk_fields)}; left unchanged ({_sk.reason})",
+                        source="patch_inplace",
+                    )
+                texture_writes = _tex.build_texture_writes(
+                    _descriptors, _plan, _input_dat_size, _output_dat_size,
+                )
+        except (_tex.TextureEncodingError, ValueError) as exc:
+            abort(str(exc))
+
+# ---------------------------------------------------------------------------
 # Write in-place patches
 # ---------------------------------------------------------------------------
 
-if patches or uv_patches or setting_patches or facial_patches or bone_geo_patches:
+_textures_patched = len({w.texture_index for w in texture_writes})
+
+if patches or uv_patches or setting_patches or facial_patches or bone_geo_patches or texture_writes:
     _slogger.info(
         f"Writing {len(patches)} vertex, {len(uv_patches)} UV, "
         f"{len(setting_patches)} shader-mode, {len(facial_patches)} facial-pose, "
-        f"{len(bone_geo_patches)} bone-geo "
+        f"{len(bone_geo_patches)} bone-geo, {_textures_patched} texture "
         f"patch(es) to {OUTPUT_DAT} ...",
         source="patch_inplace",
     )
@@ -454,6 +499,37 @@ if patches or uv_patches or setting_patches or facial_patches or bone_geo_patche
             f.write(raw)
             _slogger.info(
                 f"Bone {bone_id} GeoId: wrote {raw.hex()} at 0x{offset:X}",
+                source="patch_inplace",
+            )
+        # Apply texture writes grouped by texture_index; verify each write
+        # byte-for-byte before logging the per-texture success line (PLAN 4.2).
+        _writes_by_tex: dict = {}
+        for _tw in texture_writes:
+            _writes_by_tex.setdefault(_tw.texture_index, []).append(_tw)
+        for _tex_idx, _tex_group in _writes_by_tex.items():
+            _img_bytes = 0
+            _pal_bytes = 0
+            for _tw in _tex_group:
+                f.seek(_tw.offset)
+                f.write(_tw.bytes)
+                f.seek(_tw.offset)
+                _readback = f.read(_tw.payload_length)
+                if _readback != _tw.bytes:
+                    _differ = sum(a != b for a, b in zip(_readback, _tw.bytes))
+                    abort(
+                        f"texture {_tw.texture_index} {_tw.kind}: "
+                        f"write verification failed at 0x{_tw.offset:X}: "
+                        f"{_differ} byte(s) differ in {_tw.payload_length} written"
+                    )
+                if _tw.kind == "image":
+                    _img_bytes = _tw.payload_length
+                else:
+                    _pal_bytes = _tw.payload_length
+            _log_parts = [f"{_img_bytes} image bytes"]
+            if _pal_bytes:
+                _log_parts.append(f"{_pal_bytes} palette bytes")
+            _slogger.info(
+                f"texture {_tex_idx}: wrote {', '.join(_log_parts)}",
                 source="patch_inplace",
             )
 
@@ -497,6 +573,8 @@ summary = (
     f"ShaderMode (Type-7 FourCC) patched  : {len(setting_patches)}\n"
     f"Facial position poses patched       : {len(facial_patches)}\n"
     f"Bone GeoId fields patched           : {len(bone_geo_patches)}\n"
+    f"Textures patched (in-place)         : {_textures_patched}\n"
+    f"Textures skipped (mip layout)       : {texture_skipped_count}\n"
     f"Output file                         : {OUTPUT_DAT}"
 )
 _slogger.info(summary, source="patch_inplace")

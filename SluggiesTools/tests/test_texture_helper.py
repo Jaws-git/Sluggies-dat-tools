@@ -19,6 +19,7 @@ from texture_helper import (
     TextureWrite,
     build_texture_plan,
     build_texture_writes,
+    build_unpatch_texture_writes,
     texture_writes_for,
     check_png_dimensions,
     encode_png_to_tpl,
@@ -885,6 +886,897 @@ class EncodePngToTplErrorTests(unittest.TestCase):
             Image.new("RGBA", (8, 8), (200, 100, 50, 255)).save(png, "PNG")
             with self.assertRaises(ValueError):
                 encode_png_to_tpl(png, gx_format=0x7)
+
+
+class TextureWriteRepresentationTests(unittest.TestCase):
+    """PLAN 3.2, first bullet: writes are represented as
+    ``(kind, texture_index, offset, payload_length, bytes)``."""
+
+    def test_write_unpacks_as_the_five_field_tuple(self):
+        write = TextureWrite(
+            kind="image",
+            texture_index=7,
+            offset=0x1000,
+            payload_length=4,
+            bytes=b"\x01\x02\x03\x04",
+        )
+
+        self.assertEqual(
+            tuple(write),
+            ("image", 7, 0x1000, 4, b"\x01\x02\x03\x04"),
+        )
+        # Field access matches the tuple positions.
+        self.assertEqual(write.kind, "image")
+        self.assertEqual(write.texture_index, 7)
+        self.assertEqual(write.offset, 0x1000)
+        self.assertEqual(write.payload_length, 4)
+        self.assertEqual(write.bytes, b"\x01\x02\x03\x04")
+
+    def test_write_is_frozen(self):
+        write = TextureWrite("image", 0, 0, 1, b"\x00")
+        with self.assertRaises(AttributeError):
+            write.offset = 1  # type: ignore[misc]
+
+    def test_write_rejects_bytes_length_mismatch(self):
+        with self.assertRaisesRegex(ValueError, "malformed"):
+            TextureWrite("image", 0, 0, 4, b"\x00\x00")
+        with self.assertRaisesRegex(ValueError, "malformed"):
+            TextureWrite("palette", 3, 0x10, 2, b"\x00\x00\x00")
+
+    def test_write_rejects_negative_offset_and_length(self):
+        with self.assertRaisesRegex(ValueError, "negative offset"):
+            TextureWrite("image", 0, -1, 1, b"\x00")
+        with self.assertRaisesRegex(ValueError, "negative payload_length"):
+            TextureWrite("image", 0, 0, -1, b"")
+
+
+def _entry(image: bytes, palette: bytes = b"") -> TexturePlanEntry:
+    return TexturePlanEntry(
+        texture_index=0,
+        texture_file_name="0.png",
+        width=4,
+        height=4,
+        format=0x6,
+        format_name="RGBA8",
+        image_data=image,
+        palette_data=palette,
+        palette_entries=len(palette) // 2 if palette else 0,
+        palette_format=0x2 if palette else None,
+    )
+
+
+class TextureWritesForTests(unittest.TestCase):
+    """PLAN 3.2: one descriptor/entry pair yields an image write plus an
+    optional palette write, each carrying the proven payload length."""
+
+    def test_image_only_descriptor_yields_one_image_write(self):
+        descriptor = {
+            "TextureIndex": 0,
+            "ImageDataOffset": "0x1000",
+            "ImagePayloadLength": 64,
+        }
+        entry = _entry(b"\x11" * 64)
+
+        writes = texture_writes_for(descriptor, entry)
+
+        self.assertEqual(len(writes), 1)
+        write = writes[0]
+        self.assertEqual(write.kind, "image")
+        self.assertEqual(write.texture_index, 0)
+        self.assertEqual(write.offset, 0x1000)
+        self.assertEqual(write.payload_length, 64)
+        self.assertEqual(write.bytes, b"\x11" * 64)
+
+    def test_indexed_descriptor_yields_image_and_palette_writes(self):
+        descriptor = {
+            "TextureIndex": 2,
+            "ImageDataOffset": "0x2000",
+            "ImagePayloadLength": 32,
+            "PaletteDataOffset": "0x3000",
+            "PaletteDataLength": 8,
+        }
+        entry = _entry(b"\x22" * 32, palette=b"\xAA\xBB\xCC\xDD\xEE\xFF\x00\x11")
+
+        writes = texture_writes_for(descriptor, entry)
+
+        self.assertEqual(len(writes), 2)
+        image, palette = writes
+        self.assertEqual(image.kind, "image")
+        self.assertEqual(image.offset, 0x2000)
+        self.assertEqual(image.payload_length, 32)
+        self.assertEqual(palette.kind, "palette")
+        self.assertEqual(palette.texture_index, 2)
+        self.assertEqual(palette.offset, 0x3000)
+        self.assertEqual(palette.payload_length, 8)
+        self.assertEqual(palette.bytes, b"\xAA\xBB\xCC\xDD\xEE\xFF\x00\x11")
+
+    def test_payload_length_comes_from_the_descriptor(self):
+        # The proven length is the descriptor's, not the encoded length.
+        descriptor = {
+            "TextureIndex": 0,
+            "ImageDataOffset": "0x1000",
+            "ImagePayloadLength": 64,
+        }
+        entry = _entry(b"\x11" * 64)
+
+        write = texture_writes_for(descriptor, entry)[0]
+        self.assertEqual(write.payload_length, 64)
+
+    def test_missing_image_offset_is_rejected(self):
+        descriptor = {"TextureIndex": 0, "ImagePayloadLength": 64}
+        with self.assertRaisesRegex(ValueError, "missing ImageDataOffset"):
+            texture_writes_for(descriptor, _entry(b"\x11" * 64))
+
+    def test_invalid_image_offset_is_rejected(self):
+        descriptor = {"TextureIndex": 0, "ImageDataOffset": "not-a-hex", "ImagePayloadLength": 64}
+        with self.assertRaisesRegex(ValueError, "invalid ImageDataOffset"):
+            texture_writes_for(descriptor, _entry(b"\x11" * 64))
+
+    def test_missing_palette_offset_is_rejected_when_palette_present(self):
+        descriptor = {
+            "TextureIndex": 0,
+            "ImageDataOffset": "0x1000",
+            "ImagePayloadLength": 32,
+            # PaletteDataOffset intentionally absent.
+            "PaletteDataLength": 8,
+        }
+        entry = _entry(b"\x22" * 32, palette=b"\xAA\xBB\xCC\xDD\xEE\xFF\x00\x11")
+        with self.assertRaisesRegex(ValueError, "missing PaletteDataOffset"):
+            texture_writes_for(descriptor, entry)
+
+    def test_palette_length_mismatch_is_rejected(self):
+        # The proven palette length (8) does not match the encoded bytes (4),
+        # so the write invariant must reject it.
+        descriptor = {
+            "TextureIndex": 0,
+            "ImageDataOffset": "0x1000",
+            "ImagePayloadLength": 32,
+            "PaletteDataOffset": "0x3000",
+            "PaletteDataLength": 8,
+        }
+        entry = _entry(b"\x22" * 32, palette=b"\xAA\xBB\xCC\xDD")
+        with self.assertRaisesRegex(ValueError, "malformed"):
+            texture_writes_for(descriptor, entry)
+
+    def test_missing_image_payload_length_is_rejected(self):
+        # PLAN 3.2, second bullet: the proven image payload length is required.
+        # A descriptor without ImagePayloadLength cannot be validated against
+        # the donor, so the write must be rejected (no fallback to the encoded
+        # length).
+        descriptor = {
+            "TextureIndex": 0,
+            "ImageDataOffset": "0x1000",
+            # ImagePayloadLength intentionally absent.
+        }
+        with self.assertRaisesRegex(ValueError, "missing the proven image payload length"):
+            texture_writes_for(descriptor, _entry(b"\x11" * 64))
+
+    def test_missing_palette_payload_length_is_rejected(self):
+        # The proven palette length is required when a palette is present.
+        descriptor = {
+            "TextureIndex": 0,
+            "ImageDataOffset": "0x1000",
+            "ImagePayloadLength": 32,
+            "PaletteDataOffset": "0x3000",
+            # PaletteDataLength intentionally absent.
+        }
+        entry = _entry(b"\x22" * 32, palette=b"\xAA\xBB\xCC\xDD\xEE\xFF\x00\x11")
+        with self.assertRaisesRegex(ValueError, "missing the proven palette payload length"):
+            texture_writes_for(descriptor, entry)
+
+    def test_invalid_image_payload_length_is_rejected(self):
+        descriptor = {
+            "TextureIndex": 0,
+            "ImageDataOffset": "0x1000",
+            "ImagePayloadLength": "not-a-number",
+        }
+        with self.assertRaisesRegex(ValueError, "invalid ImagePayloadLength"):
+            texture_writes_for(descriptor, _entry(b"\x11" * 64))
+
+    def test_negative_image_payload_length_is_rejected(self):
+        descriptor = {
+            "TextureIndex": 0,
+            "ImageDataOffset": "0x1000",
+            "ImagePayloadLength": -1,
+        }
+        with self.assertRaisesRegex(ValueError, "negative ImagePayloadLength"):
+            texture_writes_for(descriptor, _entry(b"\x11" * 64))
+
+    def test_payload_length_exceeding_capacity_is_rejected(self):
+        # A proven payload length that exceeds the buffer capacity would write
+        # beyond the buffer, so it must be rejected.
+        descriptor = {
+            "TextureIndex": 0,
+            "ImageDataOffset": "0x1000",
+            "ImagePayloadLength": 128,
+            "ImageDataCapacity": 64,
+        }
+        with self.assertRaisesRegex(ValueError, "exceeds the buffer capacity"):
+            texture_writes_for(descriptor, _entry(b"\x11" * 128))
+
+    def test_write_covers_only_proven_length_preserving_capacity_tail(self):
+        # PLAN 3.2, second bullet: the write covers exactly the proven payload
+        # length, preserving any remaining bytes between ImagePayloadLength and
+        # ImageDataCapacity. The encoded bytes must be exactly the proven
+        # length; the capacity tail is left untouched in the DAT.
+        descriptor = {
+            "TextureIndex": 0,
+            "ImageDataOffset": "0x1000",
+            "ImagePayloadLength": 64,
+            "ImageDataCapacity": 128,  # 64 bytes of capacity tail to preserve.
+        }
+        entry = _entry(b"\x11" * 64)
+
+        write = texture_writes_for(descriptor, entry)[0]
+
+        self.assertEqual(write.payload_length, 64)
+        self.assertEqual(len(write.bytes), 64)
+        # The write ends at 0x1000 + 64, leaving the 64-byte capacity tail
+        # (0x1040..0x1080) untouched.
+        self.assertEqual(write.offset + write.payload_length, 0x1000 + 64)
+
+
+class BuildTextureWritesTests(unittest.TestCase):
+    """PLAN 3.2: the complete write list is built from a plan without opening
+    the output DAT for writing, and every write is bounds-checked against both
+    the input and output DAT sizes (third bullet)."""
+
+    def test_writes_are_built_in_plan_order(self):
+        descriptors = [
+            {"TextureIndex": 0, "ImageDataOffset": "0x1000", "ImagePayloadLength": 64},
+            {"TextureIndex": 1, "ImageDataOffset": "0x2000", "ImagePayloadLength": 32},
+        ]
+        plan = TexturePlan(
+            entries=(
+                _entry(b"\x11" * 64),
+                TexturePlanEntry(
+                    texture_index=1,
+                    texture_file_name="1.png",
+                    width=4,
+                    height=4,
+                    format=0x6,
+                    format_name="RGBA8",
+                    image_data=b"\x22" * 32,
+                    palette_data=b"",
+                    palette_entries=0,
+                    palette_format=None,
+                ),
+            ),
+        )
+
+        writes = build_texture_writes(descriptors, plan, 0x10000, 0x10000)
+
+        self.assertEqual(len(writes), 2)
+        self.assertEqual([w.texture_index for w in writes], [0, 1])
+        self.assertEqual([w.offset for w in writes], [0x1000, 0x2000])
+        self.assertEqual([w.payload_length for w in writes], [64, 32])
+
+    def test_indexed_plan_yields_image_and_palette_writes(self):
+        descriptors = [
+            {
+                "TextureIndex": 0,
+                "ImageDataOffset": "0x1000",
+                "ImagePayloadLength": 32,
+                "PaletteDataOffset": "0x3000",
+                "PaletteDataLength": 8,
+            },
+        ]
+        plan = TexturePlan(entries=(_entry(b"\x22" * 32, palette=b"\xAA" * 8),))
+
+        writes = build_texture_writes(descriptors, plan, 0x10000, 0x10000)
+
+        self.assertEqual(len(writes), 2)
+        self.assertEqual([w.kind for w in writes], ["image", "palette"])
+
+    def test_entry_without_matching_descriptor_is_rejected(self):
+        descriptors = [
+            {"TextureIndex": 0, "ImageDataOffset": "0x1000", "ImagePayloadLength": 64},
+        ]
+        plan = TexturePlan(
+            entries=(
+                TexturePlanEntry(
+                    texture_index=99,
+                    texture_file_name="99.png",
+                    width=4,
+                    height=4,
+                    format=0x6,
+                    format_name="RGBA8",
+                    image_data=b"\x11" * 64,
+                    palette_data=b"",
+                    palette_entries=0,
+                    palette_format=None,
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "no matching descriptor"):
+            build_texture_writes(descriptors, plan, 0x10000, 0x10000)
+
+    def test_empty_plan_yields_no_writes(self):
+        self.assertEqual(build_texture_writes([], TexturePlan(entries=()), 0x10000, 0x10000), ())
+
+    # --- PLAN 3.2, third bullet: bounds-check against both DAT sizes ---
+
+    def test_write_exceeding_input_dat_size_is_rejected(self):
+        # The write ends at 0x1000 + 64 = 0x1040, which is past the input DAT
+        # size of 0x1000, so it must be rejected.
+        descriptors = [
+            {"TextureIndex": 0, "ImageDataOffset": "0x1000", "ImagePayloadLength": 64},
+        ]
+        plan = TexturePlan(entries=(_entry(b"\x11" * 64),))
+        with self.assertRaisesRegex(ValueError, "past the input DAT size"):
+            build_texture_writes(descriptors, plan, 0x1000, 0x10000)
+
+    def test_write_exceeding_output_dat_size_is_rejected(self):
+        # The write ends at 0x1000 + 64 = 0x1040, which is past the output DAT
+        # size of 0x1000, so it must be rejected even though the input is large.
+        descriptors = [
+            {"TextureIndex": 0, "ImageDataOffset": "0x1000", "ImagePayloadLength": 64},
+        ]
+        plan = TexturePlan(entries=(_entry(b"\x11" * 64),))
+        with self.assertRaisesRegex(ValueError, "past the output DAT size"):
+            build_texture_writes(descriptors, plan, 0x10000, 0x1000)
+
+    def test_write_exactly_at_dat_boundary_is_allowed(self):
+        # The write ends at 0x1000 + 64 = 0x1040, exactly the DAT size, so it
+        # is in-bounds (end == size is allowed; only end > size is rejected).
+        descriptors = [
+            {"TextureIndex": 0, "ImageDataOffset": "0x1000", "ImagePayloadLength": 64},
+        ]
+        plan = TexturePlan(entries=(_entry(b"\x11" * 64),))
+        writes = build_texture_writes(descriptors, plan, 0x1040, 0x1040)
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(writes[0].offset + writes[0].payload_length, 0x1040)
+
+    def test_palette_write_exceeding_dat_size_is_rejected(self):
+        # The palette write ends at 0x3000 + 8 = 0x3008, past the DAT size of
+        # 0x3000, so it must be rejected.
+        descriptors = [
+            {
+                "TextureIndex": 0,
+                "ImageDataOffset": "0x1000",
+                "ImagePayloadLength": 32,
+                "PaletteDataOffset": "0x3000",
+                "PaletteDataLength": 8,
+            },
+        ]
+        plan = TexturePlan(entries=(_entry(b"\x22" * 32, palette=b"\xAA" * 8),))
+        with self.assertRaisesRegex(ValueError, "past the input DAT size"):
+            build_texture_writes(descriptors, plan, 0x3000, 0x10000)
+
+    def test_missing_input_dat_size_is_rejected(self):
+        descriptors = [
+            {"TextureIndex": 0, "ImageDataOffset": "0x1000", "ImagePayloadLength": 64},
+        ]
+        plan = TexturePlan(entries=(_entry(b"\x11" * 64),))
+        with self.assertRaisesRegex(ValueError, "missing input DAT size"):
+            build_texture_writes(descriptors, plan, None, 0x10000)
+
+    def test_missing_output_dat_size_is_rejected(self):
+        descriptors = [
+            {"TextureIndex": 0, "ImageDataOffset": "0x1000", "ImagePayloadLength": 64},
+        ]
+        plan = TexturePlan(entries=(_entry(b"\x11" * 64),))
+        with self.assertRaisesRegex(ValueError, "missing output DAT size"):
+            build_texture_writes(descriptors, plan, 0x10000, None)
+
+    def test_negative_dat_size_is_rejected(self):
+        descriptors = [
+            {"TextureIndex": 0, "ImageDataOffset": "0x1000", "ImagePayloadLength": 64},
+        ]
+        plan = TexturePlan(entries=(_entry(b"\x11" * 64),))
+        with self.assertRaisesRegex(ValueError, "negative input DAT size"):
+            build_texture_writes(descriptors, plan, -1, 0x10000)
+
+    # --- PLAN 3.2, fourth bullet: overlap detection and alias coalescing ---
+
+    def test_identical_alias_writes_are_coalesced(self):
+        # Two descriptors sharing the same image offset with identical layout
+        # and bytes should be coalesced into one write.
+        image_bytes = b"\x11" * 64
+        descriptors = [
+            {"TextureIndex": 0, "ImageDataOffset": "0x1000", "ImagePayloadLength": 64},
+            {"TextureIndex": 1, "ImageDataOffset": "0x1000", "ImagePayloadLength": 64},
+        ]
+        plan = TexturePlan(
+            entries=(
+                _entry(image_bytes),
+                TexturePlanEntry(
+                    texture_index=1,
+                    texture_file_name="1.png",
+                    width=4,
+                    height=4,
+                    format=0x6,
+                    format_name="RGBA8",
+                    image_data=image_bytes,
+                    palette_data=b"",
+                    palette_entries=0,
+                    palette_format=None,
+                ),
+            ),
+        )
+        writes = build_texture_writes(descriptors, plan, 0x10000, 0x10000)
+        # Only one write should remain after coalescing.
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(writes[0].offset, 0x1000)
+        self.assertEqual(writes[0].bytes, image_bytes)
+
+    def test_different_layout_alias_is_rejected(self):
+        # Two descriptors at the same offset but different payload lengths
+        # are a different-layout alias and must be rejected.
+        descriptors = [
+            {"TextureIndex": 0, "ImageDataOffset": "0x1000", "ImagePayloadLength": 64},
+            {"TextureIndex": 1, "ImageDataOffset": "0x1000", "ImagePayloadLength": 32},
+        ]
+        plan = TexturePlan(
+            entries=(
+                _entry(b"\x11" * 64),
+                TexturePlanEntry(
+                    texture_index=1,
+                    texture_file_name="1.png",
+                    width=4,
+                    height=4,
+                    format=0x6,
+                    format_name="RGBA8",
+                    image_data=b"\x22" * 32,
+                    palette_data=b"",
+                    palette_entries=0,
+                    palette_format=None,
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "different-layout alias"):
+            build_texture_writes(descriptors, plan, 0x10000, 0x10000)
+
+    def test_conflicting_same_offset_same_length_different_bytes_is_rejected(self):
+        # Two descriptors at the same offset with the same payload length
+        # but different bytes are a conflicting overlap.
+        descriptors = [
+            {"TextureIndex": 0, "ImageDataOffset": "0x1000", "ImagePayloadLength": 64},
+            {"TextureIndex": 1, "ImageDataOffset": "0x1000", "ImagePayloadLength": 64},
+        ]
+        plan = TexturePlan(
+            entries=(
+                _entry(b"\x11" * 64),
+                TexturePlanEntry(
+                    texture_index=1,
+                    texture_file_name="1.png",
+                    width=4,
+                    height=4,
+                    format=0x6,
+                    format_name="RGBA8",
+                    image_data=b"\x22" * 64,
+                    palette_data=b"",
+                    palette_entries=0,
+                    palette_format=None,
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "conflicting overlap"):
+            build_texture_writes(descriptors, plan, 0x10000, 0x10000)
+
+    def test_partially_overlapping_writes_are_rejected(self):
+        # Two writes at different offsets whose ranges overlap must be rejected.
+        descriptors = [
+            {"TextureIndex": 0, "ImageDataOffset": "0x1000", "ImagePayloadLength": 64},
+            {"TextureIndex": 1, "ImageDataOffset": "0x1020", "ImagePayloadLength": 64},
+        ]
+        plan = TexturePlan(
+            entries=(
+                _entry(b"\x11" * 64),
+                TexturePlanEntry(
+                    texture_index=1,
+                    texture_file_name="1.png",
+                    width=4,
+                    height=4,
+                    format=0x6,
+                    format_name="RGBA8",
+                    image_data=b"\x22" * 64,
+                    palette_data=b"",
+                    palette_entries=0,
+                    palette_format=None,
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "overlaps with"):
+            build_texture_writes(descriptors, plan, 0x10000, 0x10000)
+
+    def test_non_overlapping_writes_are_preserved(self):
+        # Two writes at different offsets that don't overlap should both pass.
+        descriptors = [
+            {"TextureIndex": 0, "ImageDataOffset": "0x1000", "ImagePayloadLength": 64},
+            {"TextureIndex": 1, "ImageDataOffset": "0x2000", "ImagePayloadLength": 64},
+        ]
+        plan = TexturePlan(
+            entries=(
+                _entry(b"\x11" * 64),
+                TexturePlanEntry(
+                    texture_index=1,
+                    texture_file_name="1.png",
+                    width=4,
+                    height=4,
+                    format=0x6,
+                    format_name="RGBA8",
+                    image_data=b"\x22" * 64,
+                    palette_data=b"",
+                    palette_entries=0,
+                    palette_format=None,
+                ),
+            ),
+        )
+        writes = build_texture_writes(descriptors, plan, 0x10000, 0x10000)
+        self.assertEqual(len(writes), 2)
+        # Writes are sorted by offset.
+        self.assertEqual(writes[0].offset, 0x1000)
+        self.assertEqual(writes[1].offset, 0x2000)
+
+    def test_writes_are_sorted_by_offset(self):
+        # Plan entries in reverse offset order should produce writes sorted by offset.
+        descriptors = [
+            {"TextureIndex": 0, "ImageDataOffset": "0x2000", "ImagePayloadLength": 64},
+            {"TextureIndex": 1, "ImageDataOffset": "0x1000", "ImagePayloadLength": 64},
+        ]
+        plan = TexturePlan(
+            entries=(
+                _entry(b"\x11" * 64),
+                TexturePlanEntry(
+                    texture_index=1,
+                    texture_file_name="1.png",
+                    width=4,
+                    height=4,
+                    format=0x6,
+                    format_name="RGBA8",
+                    image_data=b"\x22" * 64,
+                    palette_data=b"",
+                    palette_entries=0,
+                    palette_format=None,
+                ),
+            ),
+        )
+        writes = build_texture_writes(descriptors, plan, 0x10000, 0x10000)
+        self.assertEqual(len(writes), 2)
+        self.assertEqual(writes[0].offset, 0x1000)
+        self.assertEqual(writes[1].offset, 0x2000)
+
+
+class BuildUnpatchTextureWritesTests(unittest.TestCase):
+    """PLAN 4.1: unpatch mode reads original image and palette bytes from the
+    input DAT at the descriptor's proven offsets and lengths, without touching
+    PNG files or invoking WIMGT."""
+
+    def _make_dat(self, size: int, fill: bytes = b"\xAB") -> bytes:
+        return (fill * size)[:size]
+
+    def _write_dat(self, path: str, data: bytes) -> None:
+        with open(path, "wb") as f:
+            f.write(data)
+
+    def test_image_only_descriptor_restores_image_bytes(self):
+        image_bytes = b"\xDE\xAD\xBE\xEF" * 16  # 64 bytes
+        dat = b"\x00" * 0x1000 + image_bytes + b"\x00" * 0x1000
+        descriptors = [
+            {
+                "TextureIndex": 0,
+                "ImageDataOffset": "0x1000",
+                "ImagePayloadLength": 64,
+            }
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            dat_path = os.path.join(tmp, "dt_na.dat")
+            self._write_dat(dat_path, dat)
+            writes = build_unpatch_texture_writes(
+                descriptors, dat_path, len(dat), len(dat)
+            )
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(writes[0].kind, "image")
+        self.assertEqual(writes[0].texture_index, 0)
+        self.assertEqual(writes[0].offset, 0x1000)
+        self.assertEqual(writes[0].payload_length, 64)
+        self.assertEqual(writes[0].bytes, image_bytes)
+
+    def test_paletted_descriptor_restores_image_and_palette(self):
+        image_bytes = b"\x11" * 32
+        palette_bytes = b"\x22" * 16
+        dat = b"\x00" * 0x1000 + image_bytes + b"\x00" * 0x100 + palette_bytes + b"\x00" * 0x100
+        descriptors = [
+            {
+                "TextureIndex": 2,
+                "ImageDataOffset": "0x1000",
+                "ImagePayloadLength": 32,
+                "PaletteDataOffset": hex(0x1000 + 32 + 0x100),
+                "PaletteDataLength": 16,
+            }
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            dat_path = os.path.join(tmp, "dt_na.dat")
+            self._write_dat(dat_path, dat)
+            writes = build_unpatch_texture_writes(
+                descriptors, dat_path, len(dat), len(dat)
+            )
+        self.assertEqual(len(writes), 2)
+        kinds = [w.kind for w in writes]
+        self.assertIn("image", kinds)
+        self.assertIn("palette", kinds)
+        by_kind = {w.kind: w for w in writes}
+        self.assertEqual(by_kind["image"].bytes, image_bytes)
+        self.assertEqual(by_kind["palette"].bytes, palette_bytes)
+
+    def test_missing_image_payload_length_is_rejected(self):
+        dat = b"\x00" * 0x100
+        descriptors = [
+            {"TextureIndex": 0, "ImageDataOffset": "0x10"},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            dat_path = os.path.join(tmp, "dt_na.dat")
+            self._write_dat(dat_path, dat)
+            with self.assertRaisesRegex(ValueError, "missing the proven image payload length"):
+                build_unpatch_texture_writes(
+                    descriptors, dat_path, len(dat), len(dat)
+                )
+
+    def test_write_out_of_bounds_is_rejected(self):
+        dat = b"\x00" * 0x100
+        descriptors = [
+            {"TextureIndex": 0, "ImageDataOffset": "0xF0", "ImagePayloadLength": 64},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            dat_path = os.path.join(tmp, "dt_na.dat")
+            self._write_dat(dat_path, dat)
+            with self.assertRaisesRegex(ValueError, "past the input DAT size"):
+                build_unpatch_texture_writes(
+                    descriptors, dat_path, len(dat), len(dat)
+                )
+
+    def test_empty_descriptor_list_yields_no_writes(self):
+        dat = b"\x00" * 0x100
+        with tempfile.TemporaryDirectory() as tmp:
+            dat_path = os.path.join(tmp, "dt_na.dat")
+            self._write_dat(dat_path, dat)
+            writes = build_unpatch_texture_writes([], dat_path, len(dat), len(dat))
+        self.assertEqual(writes, ())
+
+    def test_identical_alias_is_coalesced(self):
+        image_bytes = b"\xCC" * 32
+        dat = b"\x00" * 0x100 + image_bytes + b"\x00" * 0x100
+        descriptors = [
+            {"TextureIndex": 0, "ImageDataOffset": "0x100", "ImagePayloadLength": 32},
+            {"TextureIndex": 1, "ImageDataOffset": "0x100", "ImagePayloadLength": 32},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            dat_path = os.path.join(tmp, "dt_na.dat")
+            self._write_dat(dat_path, dat)
+            writes = build_unpatch_texture_writes(
+                descriptors, dat_path, len(dat), len(dat)
+            )
+        # Two descriptors sharing the same pointer produce one write.
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(writes[0].bytes, image_bytes)
+
+
+class PatchAllOrNothingGateTests(unittest.TestCase):
+    """PLAN 4.1 gate: when any texture fails to encode, build_texture_plan()
+    raises before returning a plan. patch_inplace.py catches this exception and
+    calls abort() before the write phase, so no geometry or texture bytes are
+    committed to the output DAT."""
+
+    def test_second_encoder_failure_raises_and_discards_first_result(self):
+        """build_texture_plan raises when the second encoder call fails.
+
+        Both encoders are attempted (all-or-nothing after validation), the
+        second raises, and no plan is returned. In patch_inplace.py this causes
+        abort() to run before any DAT writes, so the queued geometry patches
+        are also left unwritten.
+        """
+        calls = []
+
+        def mock_encoder(path, gx_format, palette_format=None, **kwargs):
+            calls.append(path)
+            if len(calls) == 1:
+                return _fake_parsed()
+            raise TextureEncodingError("second texture encoding failed deliberately")
+
+        descriptors = [
+            {"TextureIndex": 0, "TextureFileName": "0.png"},
+            {"TextureIndex": 1, "TextureFileName": "1.png"},
+        ]
+
+        with self.assertRaises(TextureEncodingError) as ctx:
+            build_texture_plan("/fake/model/model.sluggie", descriptors, encoder=mock_encoder)
+
+        self.assertIn("second texture encoding failed", str(ctx.exception))
+        # Both descriptors were attempted; the second caused the failure.
+        self.assertEqual(len(calls), 2)
+
+    def test_first_encoder_failure_also_prevents_plan(self):
+        """build_texture_plan raises even when only the first encoder fails."""
+        def failing_encoder(path, gx_format, palette_format=None, **kwargs):
+            raise TextureEncodingError("first texture failed")
+
+        descriptors = [
+            {"TextureIndex": 0, "TextureFileName": "0.png"},
+        ]
+
+        with self.assertRaises(TextureEncodingError):
+            build_texture_plan("/fake/model/model.sluggie", descriptors, encoder=failing_encoder)
+
+    def test_value_error_from_encoder_also_prevents_plan(self):
+        """ValueError from the encoder (e.g. dimension mismatch) is also fatal."""
+        def bad_encoder(path, gx_format, palette_format=None, **kwargs):
+            raise ValueError("encoded dimensions do not match descriptor")
+
+        descriptors = [
+            {"TextureIndex": 0, "TextureFileName": "0.png"},
+        ]
+
+        with self.assertRaises(ValueError):
+            build_texture_plan("/fake/model/model.sluggie", descriptors, encoder=bad_encoder)
+
+
+class VerifyWriteRoundTripTests(unittest.TestCase):
+    """PLAN 4.2 gate: apply texture writes to a temp DAT, verify byte-for-byte,
+    then unpatch and confirm that the restored ranges match the input DAT exactly."""
+
+    def _write_file(self, path: str, data: bytes) -> None:
+        with open(path, "wb") as f:
+            f.write(data)
+
+    def _read_file(self, path: str) -> bytes:
+        with open(path, "rb") as f:
+            return f.read()
+
+    def test_unpatch_round_trip_restores_input_ranges(self):
+        """Unpatch writes applied to a modified output DAT restore the input ranges.
+
+        This is the primary 4.2 gate: start with a known input DAT, produce an
+        output DAT with different bytes at the image and palette ranges, use
+        build_unpatch_texture_writes to build restoration writes, apply them with
+        byte-for-byte verification, then confirm the ranges match the input DAT.
+        """
+        image_bytes = b"\xAA" * 64
+        palette_bytes = b"\xBB" * 32
+        img_off = 0x100
+        pal_off = 0x180
+        dat_size = 0x200
+
+        # Input DAT with original image and palette bytes.
+        input_dat = bytearray(dat_size)
+        input_dat[img_off : img_off + len(image_bytes)] = image_bytes
+        input_dat[pal_off : pal_off + len(palette_bytes)] = palette_bytes
+        input_dat = bytes(input_dat)
+
+        # Output DAT with different bytes at those ranges (simulating a prior patch).
+        output_dat = bytearray(dat_size)
+        output_dat[img_off : img_off + len(image_bytes)] = b"\xFF" * len(image_bytes)
+        output_dat[pal_off : pal_off + len(palette_bytes)] = b"\xEE" * len(palette_bytes)
+
+        descriptors = [{
+            "TextureIndex": 0,
+            "ImageDataOffset": f"0x{img_off:X}",
+            "ImagePayloadLength": len(image_bytes),
+            "ImageDataCapacity": len(image_bytes),
+            "PaletteDataOffset": f"0x{pal_off:X}",
+            "PaletteDataLength": len(palette_bytes),
+        }]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = os.path.join(tmp, "input.dat")
+            output_path = os.path.join(tmp, "output.dat")
+            self._write_file(input_path, input_dat)
+            self._write_file(output_path, bytes(output_dat))
+
+            writes = build_unpatch_texture_writes(
+                descriptors, input_path, dat_size, dat_size,
+            )
+
+            # Apply and verify each write (mirrors the patch_inplace.py 4.2 loop).
+            with open(output_path, "r+b") as f:
+                for write in writes:
+                    f.seek(write.offset)
+                    f.write(write.bytes)
+                    f.seek(write.offset)
+                    readback = f.read(write.payload_length)
+                    self.assertEqual(
+                        readback, write.bytes,
+                        msg=f"write verification failed for texture {write.texture_index} {write.kind}",
+                    )
+
+            result = self._read_file(output_path)
+
+        # The image and palette ranges in the output now match the input exactly.
+        self.assertEqual(result[img_off : img_off + len(image_bytes)], image_bytes)
+        self.assertEqual(result[pal_off : pal_off + len(palette_bytes)], palette_bytes)
+
+    def test_patch_writes_known_bytes_and_are_verified(self):
+        """build_texture_writes with a fake encoder produces writes that apply and
+        verify correctly (patch side of the round-trip gate)."""
+        known_image = b"\x11" * 64
+        img_off = 0x100
+        dat_size = 0x200
+
+        def fake_encoder(path, gx_format, palette_format=None, **kwargs):
+            return _fake_parsed(width=64, height=64, gx_format=0x6)
+
+        # Width/Height omitted intentionally: build_texture_plan skips the PIL
+        # dimension check when they are absent, letting the test run without PIL.
+        descriptors = [{
+            "TextureIndex": 7,
+            "TextureFileName": "tex7.png",
+            "Format": 0x6,
+            "ImageDataOffset": f"0x{img_off:X}",
+            "ImagePayloadLength": 64,
+            "ImageDataCapacity": 64,
+        }]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # Create a tex/ folder with a dummy PNG so resolve_texture_path finds it.
+            model_dir = os.path.join(tmp, "model")
+            tex_dir = os.path.join(model_dir, "tex")
+            os.makedirs(tex_dir)
+            sluggie = os.path.join(model_dir, "model.sluggie")
+            open(sluggie, "w").close()
+            open(os.path.join(tex_dir, "tex7.png"), "wb").close()
+
+            plan = build_texture_plan(sluggie, descriptors, encoder=fake_encoder)
+
+            dat = bytearray(dat_size)
+            dat_path = os.path.join(tmp, "output.dat")
+            self._write_file(dat_path, bytes(dat))
+
+            writes = build_texture_writes(descriptors, plan, dat_size, dat_size)
+
+            with open(dat_path, "r+b") as f:
+                for write in writes:
+                    f.seek(write.offset)
+                    f.write(write.bytes)
+                    f.seek(write.offset)
+                    readback = f.read(write.payload_length)
+                    self.assertEqual(readback, write.bytes)
+
+            result = self._read_file(dat_path)
+
+        self.assertEqual(result[img_off : img_off + 64], known_image)
+
+    def test_unpatch_image_only_descriptor(self):
+        """Unpatch a descriptor with no palette; only image range is restored."""
+        image_bytes = b"\xCC" * 128
+        img_off = 0x80
+        dat_size = 0x200
+
+        input_dat = bytearray(dat_size)
+        input_dat[img_off : img_off + len(image_bytes)] = image_bytes
+        input_dat = bytes(input_dat)
+
+        output_dat = bytearray(dat_size)
+        output_dat[img_off : img_off + len(image_bytes)] = b"\x00" * len(image_bytes)
+
+        descriptors = [{
+            "TextureIndex": 2,
+            "ImageDataOffset": f"0x{img_off:X}",
+            "ImagePayloadLength": len(image_bytes),
+        }]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            input_path = os.path.join(tmp, "input.dat")
+            output_path = os.path.join(tmp, "output.dat")
+            self._write_file(input_path, input_dat)
+            self._write_file(output_path, bytes(output_dat))
+
+            writes = build_unpatch_texture_writes(
+                descriptors, input_path, dat_size, dat_size,
+            )
+            self.assertEqual(len(writes), 1)
+            self.assertEqual(writes[0].kind, "image")
+
+            with open(output_path, "r+b") as f:
+                for write in writes:
+                    f.seek(write.offset)
+                    f.write(write.bytes)
+                    f.seek(write.offset)
+                    readback = f.read(write.payload_length)
+                    self.assertEqual(readback, write.bytes)
+
+            result = self._read_file(output_path)
+
+        self.assertEqual(result[img_off : img_off + len(image_bytes)], image_bytes)
 
 
 if __name__ == "__main__":
