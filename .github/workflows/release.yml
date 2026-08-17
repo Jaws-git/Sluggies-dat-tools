@@ -107,6 +107,17 @@ jobs:
         with:
           path: artifacts
 
+      - name: Find latest Blender add-on
+        id: addon
+        shell: bash
+        run: |
+          addon=$(printf '%s\n' SluggiesIO_BlenderAddon_v*.zip | sort -V | tail -n 1)
+          if [ ! -f "$addon" ]; then
+            echo "::error::No SluggiesIO_BlenderAddon zip found in repository root"
+            exit 1
+          fi
+          echo "name=$addon" >> "$GITHUB_OUTPUT"
+
       - name: Generate release information
         id: release_info
         shell: bash
@@ -127,7 +138,7 @@ jobs:
             Wiimms SZS Tools is redistributed under GPL-2.0-or-later; its license, documentation, and source link are included in the package.
           files: |
             artifacts/sluggies-dat-tools-windows.zip
-            SluggiesIO_BlenderAddon_v0.7.4.zip
+            ${{ steps.addon.outputs.name }}
           fail_on_unmatched_files: true
           draft: false
           prerelease: true
@@ -146,7 +157,7 @@ jobs:
           sed \
             -e "s|{{RELEASE_NAME}}|$RELEASE_NAME|g" \
             -e "s|{{WINDOWS_DOWNLOAD_URL}}|$release_url/sluggies-dat-tools-windows.zip|g" \
-            -e "s|{{BLENDER_ADDON_URL}}|$release_url/SluggiesIO_BlenderAddon_v0.7.4.zip|g" \
+            -e "s|{{BLENDER_ADDON_URL}}|$release_url/${{ steps.addon.outputs.name }}|g" \
             -e "s|{{RELEASES_URL}}|$repository_url/releases|g" \
             -e "s|{{SOURCE_URL}}|$repository_url|g" \
             -e "s|{{SOURCE_REF}}|${{ github.ref_name }}|g" \
