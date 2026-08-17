@@ -686,6 +686,130 @@ def build_texture_plan(
     return TexturePlan(entries=tuple(entries), skipped=tuple(skipped))
 
 
+def build_hammerspace_texture_plan(
+    sluggie_path: str | os.PathLike[str],
+    descriptors: Sequence[Mapping[str, Any]],
+    wimgt_executable: str = "wimgt",
+    encoder: Callable[..., ParsedSingleImageTpl] | None = None,
+    warn: Callable[[str], None] | None = None,
+    allow_dimension_change: bool = False,
+) -> TexturePlan:
+    """Encode and validate every descriptor for a hammerspace TEX rebuild.
+
+    This wraps :func:`build_texture_plan` but relaxes the dimension constraint
+    when ``allow_dimension_change`` is true. Instead of enforcing that the PNG
+    dimensions match the descriptor, it reads the actual PNG dimensions and uses
+    them for encoding. The encoded dimensions (which may differ from the
+    descriptor) are stored on each :class:`TexturePlanEntry` so the TEX section
+    builder can use them.
+
+    When ``allow_dimension_change`` is false (the default), this function
+    delegates to :func:`build_texture_plan` and enforces the strict dimension
+    match.
+
+    The same all-or-nothing validation applies: if any non-skipped descriptor
+    fails, the function raises and returns no plan. The same mip skip rule
+    applies: a descriptor with ``AdditionalMipCount > 0`` is recorded in
+    ``plan.skipped`` and its donor bytes are left unchanged.
+    """
+    if not allow_dimension_change:
+        return build_texture_plan(
+            sluggie_path,
+            descriptors,
+            wimgt_executable=wimgt_executable,
+            encoder=encoder,
+            warn=warn,
+        )
+
+    if encoder is None:
+        encoder = encode_png_to_tpl
+    if warn is None:
+        warn = lambda message: slogger.warning(message, source="texture_helper")
+
+    names = validate_texture_descriptors(descriptors)
+
+    entries: list[TexturePlanEntry] = []
+    skipped: list[SkippedTexture] = []
+    for descriptor, name in zip(descriptors, names):
+        index = descriptor.get("TextureIndex", "?")
+        png_path = resolve_texture_path(sluggie_path, name)
+
+        expected_width = descriptor.get("Width")
+        expected_height = descriptor.get("Height")
+
+        # Read the actual PNG dimensions (relaxed check).
+        actual_width, actual_height = read_png_dimensions(png_path)
+
+        # Log an info when the actual dimensions differ from the descriptor.
+        if expected_width is not None and expected_height is not None:
+            if actual_width != expected_width or actual_height != expected_height:
+                slogger.info(
+                    f"texture {index} ({name}): PNG dimensions "
+                    f"{actual_width}x{actual_height} differ from descriptor "
+                    f"{expected_width}x{expected_height}; using actual PNG "
+                    "dimensions for encoding",
+                    source="texture_helper",
+                )
+
+        additional_mip_count = descriptor.get("AdditionalMipCount") or 0
+        if additional_mip_count > 0:
+            expected_length = descriptor.get("ImagePayloadLength")
+            if expected_length is None:
+                expected_length = _mip_chain_payload_length(
+                    descriptor.get("Format", 0),
+                    actual_width,
+                    actual_height,
+                    additional_mip_count,
+                )
+            reason = (
+                f"unsupported mip layout: {additional_mip_count} additional "
+                "mip level(s) cannot be validated in the single-image "
+                "encoding path"
+            )
+            skipped.append(
+                SkippedTexture(
+                    texture_index=descriptor.get("TextureIndex", 0),
+                    texture_file_name=name,
+                    expected_payload_length=expected_length,
+                    reason=reason,
+                )
+            )
+            warn(
+                f"texture {index} ({name}): {reason}; expected "
+                f"{expected_length} bytes; donor image and palette left unchanged"
+            )
+            continue
+
+        # Pass the actual PNG dimensions to the encoder.
+        parsed = encoder(
+            png_path,
+            descriptor.get("Format", 0),
+            descriptor.get("PaletteFormat"),
+            wimgt_executable=wimgt_executable,
+            expected_width=actual_width,
+            expected_height=actual_height,
+        )
+
+        _validate_parsed_tpl_against_descriptor(descriptor, parsed)
+
+        entries.append(
+            TexturePlanEntry(
+                texture_index=descriptor.get("TextureIndex", 0),
+                texture_file_name=name,
+                width=parsed.width,
+                height=parsed.height,
+                format=parsed.format,
+                format_name=parsed.format_name,
+                image_data=parsed.image_data,
+                palette_data=parsed.palette_data,
+                palette_entries=parsed.palette_entries,
+                palette_format=parsed.palette_format,
+            )
+        )
+
+    return TexturePlan(entries=tuple(entries), skipped=tuple(skipped))
+
+
 def _hex_offset(value: Any, field: str, index: Any) -> int:
     """Parse a descriptor's hex offset field into a non-negative int.
 
@@ -1146,6 +1270,7 @@ __all__ = [
     "SkippedTexture",
     "TextureWrite",
     "build_texture_plan",
+    "build_hammerspace_texture_plan",
     "build_texture_writes",
     "build_unpatch_texture_writes",
     "texture_writes_for",

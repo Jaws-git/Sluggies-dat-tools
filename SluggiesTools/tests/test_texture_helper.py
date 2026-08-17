@@ -5,6 +5,7 @@ import struct
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 TOOLS_DIR = pathlib.Path(__file__).resolve().parents[1]
 if str(TOOLS_DIR) not in sys.path:
@@ -18,6 +19,7 @@ from texture_helper import (
     TexturePlanEntry,
     TextureWrite,
     build_texture_plan,
+    build_hammerspace_texture_plan,
     build_texture_writes,
     build_unpatch_texture_writes,
     texture_writes_for,
@@ -816,6 +818,174 @@ class MipSkipTests(unittest.TestCase):
 
             self.assertEqual(len(plan), 1)
             self.assertEqual(plan.skipped, ())
+
+
+class BuildHammerspaceTexturePlanTests(unittest.TestCase):
+    """PLAN Hammerspace 1: build_hammerspace_texture_plan() relaxes the
+    dimension constraint when allow_dimension_change=True, and otherwise
+    delegates to the strict build_texture_plan()."""
+
+    def _make_model(self, temp_dir: str, names_and_sizes):
+        model_dir = os.path.join(temp_dir, "model")
+        tex_dir = os.path.join(model_dir, "tex")
+        os.makedirs(tex_dir)
+        sluggie = os.path.join(model_dir, "model.sluggie")
+        with open(sluggie, "w") as f:
+            f.write("{}")
+        from PIL import Image
+
+        for name, (w, h) in names_and_sizes.items():
+            Image.new("RGBA", (w, h), (0, 255, 0, 255)).save(os.path.join(tex_dir, name), "PNG")
+        return sluggie
+
+    def test_dimension_change_allowed_succeeds_with_actual_dimensions(self):
+        # The PNG is 64x64 but the descriptor says 128x128. With
+        # allow_dimension_change=True the plan must succeed and the entry must
+        # carry the actual encoded dimensions (64x64), not the descriptor's.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sluggie = self._make_model(temp_dir, {"0.png": (64, 64)})
+            descriptors = [
+                {"TextureIndex": 0, "TextureFileName": "0.png", "Width": 128, "Height": 128, "Format": 0x6},
+            ]
+
+            def fake_encoder(png_path, gx_format, palette_format=None, **kwargs):
+                return _fake_parsed(width=kwargs["expected_width"], height=kwargs["expected_height"], gx_format=gx_format)
+
+            info_messages = []
+            with mock.patch(
+                "texture_helper.slogger.info",
+                side_effect=lambda message, source=None: info_messages.append(message),
+            ):
+                plan = build_hammerspace_texture_plan(
+                    sluggie, descriptors, encoder=fake_encoder,
+                    allow_dimension_change=True,
+                )
+
+            self.assertIsInstance(plan, TexturePlan)
+            self.assertEqual(len(plan), 1)
+            self.assertEqual(plan[0].width, 64)
+            self.assertEqual(plan[0].height, 64)
+            # An [Info] log was emitted naming both the actual and descriptor sizes.
+            self.assertEqual(len(info_messages), 1)
+            self.assertIn("64x64", info_messages[0])
+            self.assertIn("128x128", info_messages[0])
+
+    def test_dimension_change_disallowed_fails(self):
+        # With allow_dimension_change=False (the default) a dimension mismatch
+        # must fail before the encoder is ever called.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sluggie = self._make_model(temp_dir, {"0.png": (64, 64)})
+            descriptors = [
+                {"TextureIndex": 0, "TextureFileName": "0.png", "Width": 128, "Height": 128, "Format": 0x6},
+            ]
+
+            def exploding_encoder(*a, **k):
+                raise AssertionError("encoder must not be called for bad dimensions")
+
+            with self.assertRaises(ValueError):
+                build_hammerspace_texture_plan(
+                    sluggie, descriptors, encoder=exploding_encoder,
+                    allow_dimension_change=False,
+                )
+
+    def test_default_flag_is_strict(self):
+        # Omitting the flag entirely must behave exactly like
+        # build_texture_plan(): a dimension mismatch is fatal.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sluggie = self._make_model(temp_dir, {"0.png": (64, 64)})
+            descriptors = [
+                {"TextureIndex": 0, "TextureFileName": "0.png", "Width": 128, "Height": 128, "Format": 0x6},
+            ]
+            with self.assertRaises(ValueError):
+                build_hammerspace_texture_plan(
+                    sluggie, descriptors, encoder=lambda *a, **k: _fake_parsed()
+                )
+
+    def test_matching_dimensions_succeeds_without_warning(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sluggie = self._make_model(temp_dir, {"0.png": (64, 64)})
+            descriptors = [
+                {"TextureIndex": 0, "TextureFileName": "0.png", "Width": 64, "Height": 64, "Format": 0x6},
+            ]
+
+            def fake_encoder(png_path, gx_format, palette_format=None, **kwargs):
+                return _fake_parsed(width=kwargs["expected_width"], height=kwargs["expected_height"], gx_format=gx_format)
+
+            warnings = []
+            plan = build_hammerspace_texture_plan(
+                sluggie, descriptors, encoder=fake_encoder,
+                warn=warnings.append, allow_dimension_change=True,
+            )
+
+            self.assertEqual(len(plan), 1)
+            self.assertEqual(plan[0].width, 64)
+            self.assertEqual(plan[0].height, 64)
+            self.assertEqual(warnings, [])
+
+    def test_mip_skip_still_applies_with_allow_dimension_change(self):
+        # The mip skip rule is preserved: a descriptor with
+        # AdditionalMipCount > 0 is skipped (not encoded) even when
+        # allow_dimension_change=True.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sluggie = self._make_model(temp_dir, {"0.png": (256, 32)})
+            descriptors = [
+                {
+                    "TextureIndex": 0,
+                    "TextureFileName": "0.png",
+                    "Width": 256,
+                    "Height": 32,
+                    "Format": 0xE,
+                    "AdditionalMipCount": 3,
+                    "ImagePayloadLength": 5440,
+                },
+            ]
+
+            def exploding_encoder(*a, **k):
+                raise AssertionError("encoder must not be called for a skipped mip texture")
+
+            warnings = []
+            plan = build_hammerspace_texture_plan(
+                sluggie, descriptors, encoder=exploding_encoder,
+                warn=warnings.append, allow_dimension_change=True,
+            )
+
+            self.assertEqual(len(plan), 0)
+            self.assertEqual(len(plan.skipped), 1)
+            self.assertIn("unsupported mip layout", plan.skipped[0].reason)
+
+    def test_missing_file_still_fatal_with_allow_dimension_change(self):
+        # A missing PNG is fatal even with allow_dimension_change=True.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sluggie = self._make_model(temp_dir, {})
+            descriptors = [
+                {"TextureIndex": 0, "TextureFileName": "0.png", "Width": 64, "Height": 64, "Format": 0x6},
+            ]
+            with self.assertRaises(TextureEncodingError):
+                build_hammerspace_texture_plan(
+                    sluggie, descriptors, encoder=lambda *a, **k: _fake_parsed(),
+                    allow_dimension_change=True,
+                )
+
+    def test_all_or_nothing_still_holds_with_allow_dimension_change(self):
+        # If any non-skipped texture fails, no plan is returned, even when
+        # dimension changes are allowed.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sluggie = self._make_model(temp_dir, {"0.png": (64, 64), "1.png": (32, 32)})
+            descriptors = [
+                {"TextureIndex": 0, "TextureFileName": "0.png", "Width": 128, "Height": 128, "Format": 0x6},
+                {"TextureIndex": 1, "TextureFileName": "1.png", "Width": 64, "Height": 64, "Format": 0x6},
+            ]
+
+            def selective_encoder(png_path, gx_format, palette_format=None, **kwargs):
+                if "1.png" in png_path:
+                    raise TextureEncodingError("second texture failed")
+                return _fake_parsed(width=kwargs["expected_width"], height=kwargs["expected_height"], gx_format=gx_format)
+
+            with self.assertRaises(TextureEncodingError):
+                build_hammerspace_texture_plan(
+                    sluggie, descriptors, encoder=selective_encoder,
+                    allow_dimension_change=True,
+                )
 
 
 def _wimgt_available() -> bool:
