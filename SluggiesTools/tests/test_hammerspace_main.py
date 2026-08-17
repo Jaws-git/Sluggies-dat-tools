@@ -14,6 +14,7 @@ for import_path in (TOOLS_DIR, HAMMERSPACE_DIR):
         sys.path.insert(0, str(import_path))
 
 import HammerspaceMain as main
+import texture_helper
 
 
 class BuildSKNSkinningDataTests(unittest.TestCase):
@@ -810,6 +811,189 @@ class BuildModelBlockTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'failed validation report'):
                 main.WriteModelBlock(build, 'fixture.sluggie')
         read_output.assert_not_called()
+
+
+class BuildTEXTests(unittest.TestCase):
+    """Gate test for milestone 2: BuildTEX() TEX section binary layout."""
+
+    def _make_texture(self, index, width, height, fmt, palette_entries=0,
+                      palette_format=0, image_offset=0, image_length=0,
+                      palette_offset=None, palette_length=None):
+        return main.Texture(
+            texture_index=index,
+            width=width,
+            height=height,
+            format=fmt,
+            palette_entries=palette_entries,
+            palette_format=palette_format,
+            edge_lod_enable=False,
+            min_lod=0.0,
+            max_lod=0.0,
+            unpacked=0,
+            desc_unknown_at_10=bytes(7),
+            desc_unknown_at_1b=bytes(5),
+            image_data_offset=image_offset,
+            image_data_length=image_length,
+            palette_data_offset=palette_offset,
+            palette_data_length=palette_length,
+            texture_descriptor_offset=0,
+        )
+
+    def _make_parsed(self, textures, clut_count=0):
+        return main.SluggieParsed(
+            mesh=main.MeshData(submeshes=[], source_gpl_base_offset=0),
+            bones=None,
+            textures=main.TextureData(textures=textures),
+            skinning=None,
+            gpl_user_data=None,
+            gpl_user_data_len=0,
+            act_header=None,
+            tex_header=main.TEXHeader(clut_count=clut_count) if clut_count else None,
+            trailing_sections=[],
+            model_offset=0,
+            model_length=0,
+        )
+
+    def test_build_tex_reencodes_one_and_clones_one(self):
+        # Texture 0: re-encoded via plan entry (new dimensions 4x4, RGBA8).
+        # Texture 1: not in plan -> cloned from INPUT dt_na.dat.
+        reencoded_image = b'\xAA' * 64          # 4x4 RGBA8 = 64 bytes
+        reencoded_palette = b'\x11\x22\x33\x44'  # 2 palette entries
+        cloned_image = b'\xBB' * 32             # 8x8 RGBA8 = 32 bytes
+        cloned_palette = b'\x55\x66'            # 1 palette entry
+
+        tex0 = self._make_texture(
+            0, width=64, height=64, fmt=0x6,
+            palette_entries=2, palette_format=0x1,
+        )
+        tex1 = self._make_texture(
+            1, width=8, height=8, fmt=0x6,
+            palette_entries=1, palette_format=0x1,
+            image_offset=0x1000, image_length=32,
+            palette_offset=0x2000, palette_length=2,
+        )
+        parsed = self._make_parsed([tex0, tex1], clut_count=2)
+
+        entry = texture_helper.TexturePlanEntry(
+            texture_index=0,
+            texture_file_name='tex0.png',
+            width=4,
+            height=4,
+            format=0x6,
+            format_name='RGBA8',
+            image_data=reencoded_image,
+            palette_data=reencoded_palette,
+            palette_entries=2,
+            palette_format=0x1,
+        )
+        plan = texture_helper.TexturePlan(entries=(entry,))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = pathlib.Path(temp_dir) / 'dt_na.dat'
+            buf = bytearray(0x3000)
+            buf[0x1000:0x1000 + 32] = cloned_image
+            buf[0x2000:0x2000 + 2] = cloned_palette
+            input_dat.write_bytes(bytes(buf))
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                section = main.BuildTEX(parsed, plan)
+
+        # --- Header ---
+        texture_count = struct.unpack_from('>H', section, 0x00)[0]
+        clut_count = struct.unpack_from('>H', section, 0x02)[0]
+        self.assertEqual(texture_count, 2)
+        self.assertEqual(clut_count, 2)
+
+        # --- Descriptor table ---
+        desc0 = 4
+        desc1 = 4 + 0x20
+        img0_off = struct.unpack_from('>I', section, desc0 + 0x00)[0]
+        pal0_off = struct.unpack_from('>I', section, desc0 + 0x04)[0]
+        h0 = struct.unpack_from('>H', section, desc0 + 0x08)[0]
+        w0 = struct.unpack_from('>H', section, desc0 + 0x0A)[0]
+        fmt0 = section[desc0 + 0x17]
+        pal_entries0 = struct.unpack_from('>H', section, desc0 + 0x18)[0]
+        pal_fmt0 = section[desc0 + 0x1A]
+
+        img1_off = struct.unpack_from('>I', section, desc1 + 0x00)[0]
+        pal1_off = struct.unpack_from('>I', section, desc1 + 0x04)[0]
+        h1 = struct.unpack_from('>H', section, desc1 + 0x08)[0]
+        w1 = struct.unpack_from('>H', section, desc1 + 0x0A)[0]
+        fmt1 = section[desc1 + 0x17]
+        pal_entries1 = struct.unpack_from('>H', section, desc1 + 0x18)[0]
+
+        # Re-encoded texture has the NEW dimensions in its descriptor.
+        self.assertEqual((w0, h0), (4, 4))
+        self.assertEqual(fmt0, 0x6)
+        self.assertEqual(pal_entries0, 2)
+        self.assertEqual(pal_fmt0, 0x1)
+        # Cloned texture keeps its original dimensions.
+        self.assertEqual((w1, h1), (8, 8))
+        self.assertEqual(fmt1, 0x6)
+        self.assertEqual(pal_entries1, 1)
+
+        # --- Data region layout: images first, then palettes ---
+        data_start = 4 + 2 * 0x20
+        self.assertEqual(img0_off, data_start)
+        self.assertEqual(img1_off, data_start + 64)
+        self.assertEqual(pal0_off, data_start + 64 + 32)
+        self.assertEqual(pal1_off, data_start + 64 + 32 + 4)
+
+        # All offsets point to valid regions within the section.
+        self.assertEqual(len(section), data_start + 64 + 32 + 4 + 2)
+        for off, length in (
+            (img0_off, 64), (img1_off, 32), (pal0_off, 4), (pal1_off, 2),
+        ):
+            self.assertGreaterEqual(off, data_start)
+            self.assertLessEqual(off + length, len(section))
+
+        # Re-encoded texture carries the new payload bytes.
+        self.assertEqual(section[img0_off:img0_off + 64], reencoded_image)
+        self.assertEqual(section[pal0_off:pal0_off + 4], reencoded_palette)
+        # Cloned texture has its original data intact.
+        self.assertEqual(section[img1_off:img1_off + 32], cloned_image)
+        self.assertEqual(section[pal1_off:pal1_off + 2], cloned_palette)
+
+    def test_build_tex_without_plan_clones_all(self):
+        tex0 = self._make_texture(
+            0, width=8, height=8, fmt=0x6,
+            image_offset=0x100, image_length=8,
+        )
+        parsed = self._make_parsed([tex0])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = pathlib.Path(temp_dir) / 'dt_na.dat'
+            buf = bytearray(0x200)
+            buf[0x100:0x108] = b'\xCD\xCD\xCD\xCD\xCD\xCD\xCD\xCD'
+            input_dat.write_bytes(bytes(buf))
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                section = main.BuildTEX(parsed, None)
+
+        texture_count = struct.unpack_from('>H', section, 0x00)[0]
+        self.assertEqual(texture_count, 1)
+        img_off = struct.unpack_from('>I', section, 4 + 0x00)[0]
+        self.assertEqual(section[img_off:img_off + 8], b'\xCD' * 8)
+
+    def test_build_tex_rejects_malformed_encoded_payload(self):
+        tex0 = self._make_texture(0, width=64, height=64, fmt=0x6)
+        parsed = self._make_parsed([tex0])
+        entry = texture_helper.TexturePlanEntry(
+            texture_index=0,
+            texture_file_name='tex0.png',
+            width=32,
+            height=32,
+            format=0x6,
+            format_name='RGBA8',
+            image_data=b'\xAA' * 10,  # wrong size for 32x32 RGBA8
+            palette_data=b'',
+            palette_entries=0,
+            palette_format=None,
+        )
+        plan = texture_helper.TexturePlan(entries=(entry,))
+        with self.assertRaisesRegex(ValueError, 'encoded image payload'):
+            main.BuildTEX(parsed, plan)
+
+    def test_build_tex_empty_returns_empty(self):
+        parsed = self._make_parsed([])
+        self.assertEqual(main.BuildTEX(parsed, None), b'')
 
 
 if __name__ == '__main__':

@@ -1771,6 +1771,171 @@ def CloneTEX(model_offset: int, model_length: int) -> bytes:
     return data
 
 
+def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
+    """Build a complete TEX section from parsed descriptors and an optional texture plan.
+
+    Textures present in ``texture_plan.entries`` are re-encoded: their image and
+    palette payloads come from the plan entry, and their width/height come from
+    the entry's actual encoded dimensions. Textures not in the plan (skipped or
+    absent) are cloned verbatim from INPUT dt_na.dat using the descriptor's
+    original absolute offsets.
+
+    Binary layout (all big-endian):
+
+      TEX Header (4 bytes):
+        +0x00  uint16  texture_count
+        +0x02  uint16  clut_count
+
+      Descriptor table (texture_count * 0x20 bytes):
+        +0x00  uint32  image_data_offset   (relative to TEX section start)
+        +0x04  uint32  palette_data_offset (relative to TEX section start, 0 if none)
+        +0x08  uint16  height
+        +0x0A  uint16  width
+        +0x0C  uint8   edge_lod_enable
+        +0x0D  uint8   min_lod
+        +0x0E  uint8   max_lod
+        +0x0F  uint8   unpacked
+        +0x10  byte[7] unknown (additional mip count at +0x16)
+        +0x17  uint8   image_format
+        +0x18  uint16  palette_entries
+        +0x1A  uint8   palette_format
+        +0x1B  byte[5] unknown
+
+      Data region:
+        Image payloads packed sequentially, then palette payloads.
+    """
+    import struct as _s
+    from texture_helper import _image_payload_size
+
+    textures = parsed.textures.textures if parsed.textures else []
+    if not textures:
+        _slogger.info("[BuildTEX] No textures; returning empty TEX section", source="hammerspace.main")
+        return b''
+
+    entries_by_index = {}
+    if texture_plan is not None:
+        for entry in texture_plan.entries:
+            entries_by_index[entry.texture_index] = entry
+
+    clut_count = parsed.tex_header.clut_count if parsed.tex_header else 0
+
+    # --- Pass 1: determine payload bytes and dimensions for each texture ---
+    image_payloads = []   # list of (texture_index, bytes) in descriptor order
+    palette_payloads = [] # list of (texture_index, bytes) in descriptor order
+    dims = {}             # texture_index -> (width, height)
+    mip_counts = {}       # texture_index -> int
+
+    for tex in textures:
+        idx = tex.texture_index
+        entry = entries_by_index.get(idx)
+        if entry is not None:
+            # Re-encoded: validate payload size against the encoded dimensions.
+            expected = _image_payload_size(entry.width, entry.height, entry.format)
+            if len(entry.image_data) != expected:
+                raise ValueError(
+                    f"[BuildTEX] texture {idx}: encoded image payload is "
+                    f"{len(entry.image_data)} bytes but {expected} bytes are "
+                    f"expected for {entry.width}x{entry.height} format 0x{entry.format:02X}"
+                )
+            image_payloads.append((idx, entry.image_data))
+            if entry.palette_data:
+                palette_payloads.append((idx, entry.palette_data))
+            dims[idx] = (entry.width, entry.height)
+            # Single-image encoding path is base-only; reset mip count.
+            mip_counts[idx] = 0
+        else:
+            # Cloned: read original payload from INPUT dt_na.dat.
+            if not tex.image_data_offset or not tex.image_data_length:
+                raise ValueError(
+                    f"[BuildTEX] texture {idx}: cannot clone payload because "
+                    f"image_data_offset={tex.image_data_offset} or "
+                    f"image_data_length={tex.image_data_length} is zero"
+                )
+            with open(hh.INPUT_DAT, 'rb') as f:
+                f.seek(tex.image_data_offset)
+                image_bytes = f.read(tex.image_data_length)
+            if len(image_bytes) != tex.image_data_length:
+                raise IOError(
+                    f"[BuildTEX] texture {idx}: expected to read "
+                    f"{tex.image_data_length} bytes at offset 0x{tex.image_data_offset:X} "
+                    f"but only got {len(image_bytes)}"
+                )
+            image_payloads.append((idx, image_bytes))
+            if tex.palette_data_offset and tex.palette_data_length:
+                with open(hh.INPUT_DAT, 'rb') as f:
+                    f.seek(tex.palette_data_offset)
+                    palette_bytes = f.read(tex.palette_data_length)
+                if len(palette_bytes) != tex.palette_data_length:
+                    raise IOError(
+                        f"[BuildTEX] texture {idx}: expected to read "
+                        f"{tex.palette_data_length} bytes at offset 0x{tex.palette_data_offset:X} "
+                        f"but only got {len(palette_bytes)}"
+                    )
+                palette_payloads.append((idx, palette_bytes))
+            dims[idx] = (tex.width, tex.height)
+            mip_counts[idx] = tex.desc_unknown_at_10[6] if len(tex.desc_unknown_at_10) > 6 else 0
+
+    # --- Pass 2: lay out the section ---
+    header_size = 4
+    desc_size = 0x20
+    desc_table_size = len(textures) * desc_size
+    data_start = header_size + desc_table_size
+
+    # Image payloads first, then palette payloads.
+    cursor = data_start
+    image_offsets = {}
+    for idx, payload in image_payloads:
+        image_offsets[idx] = cursor
+        cursor += len(payload)
+    palette_offsets = {}
+    for idx, payload in palette_payloads:
+        palette_offsets[idx] = cursor
+        cursor += len(payload)
+
+    out = bytearray()
+    # Header
+    out += _s.pack('>HH', len(textures), clut_count)
+    # Descriptors
+    for tex in textures:
+        idx = tex.texture_index
+        width, height = dims[idx]
+        mip_count = mip_counts[idx]
+        unknown_10 = bytearray(tex.desc_unknown_at_10)
+        if len(unknown_10) < 7:
+            unknown_10 = unknown_10 + bytes(7 - len(unknown_10))
+        unknown_10[6] = mip_count & 0xFF
+        unknown_1b = tex.desc_unknown_at_1b
+        if len(unknown_1b) < 5:
+            unknown_1b = unknown_1b + bytes(5 - len(unknown_1b))
+        palette_offset = palette_offsets.get(idx, 0)
+        out += _s.pack('>II', image_offsets[idx], palette_offset)
+        out += _s.pack('>HH', height, width)
+        out += _s.pack('>BBBB',
+                       1 if tex.edge_lod_enable else 0,
+                       int(tex.min_lod) & 0xFF,
+                       int(tex.max_lod) & 0xFF,
+                       tex.unpacked & 0xFF)
+        out += bytes(unknown_10)
+        out += _s.pack('>B', tex.format & 0xFF)
+        out += _s.pack('>H', tex.palette_entries & 0xFFFF)
+        out += _s.pack('>B', tex.palette_format & 0xFF)
+        out += bytes(unknown_1b[:5])
+    # Data region
+    for idx, payload in image_payloads:
+        out += payload
+    for idx, payload in palette_payloads:
+        out += payload
+
+    _slogger.info(
+        f"[BuildTEX] built {len(textures)} texture(s), "
+        f"{len(image_payloads)} image payload(s), "
+        f"{len(palette_payloads)} palette payload(s); "
+        f"section size {len(out):,} bytes",
+        source="hammerspace.main",
+    )
+    return bytes(out)
+
+
 def BuildSKNSkinningDataCopyOnly(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> bytes:
     """Return the SKN (Skinning Data) section bytes verbatim from INPUT dt_na.dat.
 
