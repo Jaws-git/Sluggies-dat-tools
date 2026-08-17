@@ -684,6 +684,12 @@ def _export_one_page(root, entry_offset, tex_palette, desc, texture_index, view,
         'nonempty_cells_exported': nonempty_count,
     })
 
+    _slogger.info(
+        f'Exported {view} page 0x{texture_index:02X} ({base_name}): '
+        f'{nonempty_count} non-empty cells',
+        source='icons.export_icons',
+    )
+
 
 def _export_base_indexed_image(root, image_data, view):
     """
