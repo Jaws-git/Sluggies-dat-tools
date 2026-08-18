@@ -105,6 +105,32 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
 
         self.assertEqual(start.hammerspace_section_args(model), [])
 
+    def test_reimport_textures_requests_tex_build(self):
+        model = {'Submeshes': [{}], 'ReimportTextures': True}
+
+        self.assertEqual(start.hammerspace_section_args(model), ['--tex', 'build'])
+
+    def test_reimport_textures_with_geometry_edits_requests_gpl_and_tex_build(self):
+        model = {
+            'Submeshes': [{'FaceSurfaceIdsEdited': 'AAE='}],
+            'ReimportTextures': True,
+        }
+
+        self.assertEqual(
+            start.hammerspace_section_args(model),
+            ['--gpl', 'build', '--tex', 'build'],
+        )
+
+    def test_reimport_textures_false_keeps_tex_clone(self):
+        model = {'Submeshes': [{}], 'ReimportTextures': False}
+
+        self.assertEqual(start.hammerspace_section_args(model), [])
+
+    def test_absent_reimport_textures_keeps_tex_clone(self):
+        model = {'Submeshes': [{}]}
+
+        self.assertEqual(start.hammerspace_section_args(model), [])
+
 
 if __name__ == '__main__':
     unittest.main()

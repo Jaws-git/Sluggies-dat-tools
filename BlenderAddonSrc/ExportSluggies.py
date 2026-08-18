@@ -1615,22 +1615,19 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         description=(
             "When patching, replace the model's existing texture payloads in "
             "dt_na.dat with the edited PNGs from the model's tex/ folder. "
-            "Strictly in-place: no buffers are moved, resized, or added. "
-            "Cannot be combined with Hammerspace Mode."
+            "Without Hammerspace Mode this is a strict in-place operation: "
+            "no buffers are moved, resized, or added. With Hammerspace Mode "
+            "the TEX section is rebuilt, so texture dimensions may change."
         ),
         default=False,
     )
 
     def execute(self, context):
-        # --- reject mutually exclusive export modes before any work ---
-        if self.reimport_textures and self.use_hammerspace:
-            self.report({"ERROR"},
-                "Error: 'Reimport textures from tex folder' cannot be combined with "
-                "Hammerspace Mode. Texture re-import is a strict in-place operation and "
-                "is not supported while hammerspace rebuilds the model. Disable one of "
-                "the two options and export again."
-            )
-            return {"CANCELLED"}
+        # NOTE: The former gate that rejected the combination of
+        # reimport_textures + use_hammerspace has been removed. Hammerspace
+        # now rebuilds the TEX section (BuildTEX), so texture re-import is
+        # supported alongside hammerspace. The in-place patcher gate in
+        # SluggiesTools/patch_inplace.py remains active.
 
         # --- load and sanity-check the target JSON ---
         try:

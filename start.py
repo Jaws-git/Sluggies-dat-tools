@@ -222,18 +222,22 @@ def hammerspace_section_args(model):
         ):
             has_uv_edits = True
 
+    args = []
     if any(
         submesh.get('FaceSurfaceIdsEdited') is not None
         for submesh in model.get('Submeshes', [])
     ) or changed_positions or has_uv_edits:
-        args = ['--gpl', 'build']
+        args.extend(['--gpl', 'build'])
         if any(
             submesh.get('VertexBuffer', {}).get('VertexBufferCompCount') == 6
             for submesh in changed_positions
         ) and model.get('SkinDataEdited'):
             args.extend(('--skn', 'build'))
-        return args
-    return []
+
+    if model.get('ReimportTextures'):
+        args.extend(['--tex', 'build'])
+
+    return args
 
 
 def run_patching(filenames, unpatch=False):
