@@ -207,9 +207,17 @@
                     "type": "string",
                     "description": "Base64-encoded raw normal data array bytes (original game data)."
                   },
+                  "NormalFacesData": {
+                    "type": "string",
+                    "description": "Base64-encoded per-loop normal (lighting) index buffer from the draw list, packed as big-endian uint16 values aligned loop-for-loop with FacesData. Written when the active Type-3 descriptor carries a lighting index; absent for meshes without one."
+                  },
                   "NormalBufferDataEdited": {
                     "type": "string",
-                    "description": "Base64-encoded raw normal data array after editing in Blender. Absent until first export."
+                    "description": "Base64-encoded normal data array after editing in Blender. In Hammerspace Mode the Blender exporter writes one expanded entry per loop of FacesDataEdited (no deduplication); the patcher compacts/deduplicates it exactly as for UVChannelDataEdited. Absent for in-place exports."
+                  },
+                  "NormalFacesDataEdited": {
+                    "type": "string",
+                    "description": "Base64-encoded per-loop normal index buffer for the edited face set, packed as big-endian uint16 values aligned loop-for-loop with FacesDataEdited. The Blender exporter writes an identity mapping (one normal per loop); the patcher rewrites compact indices after deduplication. Absent for in-place exports."
                   }
                 },
                 "required": ["NormalDataPtrFieldOffset", "NormalCountFieldOffset", "NormalBufferOffset", "NormalBufferLength", "NormalBufferCompCount", "NormalBufferQuantizeInfo", "NormalAmbientPct", "NormalBufferData"]
@@ -247,6 +255,14 @@
                     "ColorFacesData": {
                       "type": "string",
                       "description": "Base64-encoded color index buffer, packed as big-endian uint16 triplets aligned face-for-face with FacesData."
+                    },
+                    "ColorChannelDataEdited": {
+                      "type": "string",
+                      "description": "Base64-encoded vertex color buffer after editing in Blender. In Hammerspace Mode the Blender exporter writes one expanded entry per loop of FacesDataEdited (no deduplication); the patcher compacts/deduplicates it exactly as for UVChannelDataEdited. Absent for in-place exports."
+                    },
+                    "ColorFacesDataEdited": {
+                      "type": "string",
+                      "description": "Base64-encoded per-loop color index buffer for the edited face set, packed as big-endian uint16 values aligned loop-for-loop with FacesDataEdited. The Blender exporter writes an identity mapping (one color per loop); the patcher rewrites compact indices after deduplication. Absent for in-place exports."
                     }
                   },
                   "required": ["ColorChannelIndex", "ColorChannelOffset", "ColorChannelLength", "ColorChannelCompCount", "ColorChannelQuantizeInfo", "ColorChannelData", "ColorFacesData"]

@@ -195,6 +195,39 @@ def decode_vertex_buffer(vb):
     return positions, normals
 
 
+def decode_normal_buffer(normal_buffer):
+    """Decode a NormalBuffer dict (non-skinned standalone normal array) into a
+    list of (nx, ny, nz) float tuples.
+
+    Same quantization rules as the interleaved CompCount==6 vertex normals:
+    high nibble picks float vs signed int16, low nibble is the right-shift
+    exponent of the divisor.
+    """
+    raw = _to_bytes(normal_buffer["NormalBufferData"])
+    quant = normal_buffer.get("NormalBufferQuantizeInfo", 0)
+    comp_count = normal_buffer.get("NormalBufferCompCount", 3)
+    fmt_nibble = quant >> 4
+    divisor = 1 << (quant & 0xF)
+
+    if fmt_nibble in [4, 7, 0xa]:
+        comp_fmt, comp_size = '>f', 4
+    else:  # 0, 3 -> signed int16
+        comp_fmt, comp_size = '>h', 2
+
+    stride = comp_count * comp_size
+    num_normals = len(raw) // stride
+
+    normals = []
+    for i in range(num_normals):
+        off = i * stride
+        comps = [
+            struct.unpack_from(comp_fmt, raw, off + j * comp_size)[0] / divisor
+            for j in range(comp_count)
+        ]
+        normals.append((comps[0], comps[1], comps[2]))
+    return normals
+
+
 def _facial_vertex_indices(attribute):
     indices = []
     for run in attribute.get("Runs", []):
@@ -635,6 +668,31 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
             normals_per_loop = [normals[i] for face in faces for i in face]
             mesh.normals_split_custom_set(normals_per_loop)
         # else: face indices exceed vertex buffer — skip custom normals silently
+
+    # Per-loop normals from the standalone NormalBuffer (non-skinned meshes):
+    # the donor values become custom split normals so unedited loops round-trip
+    # unchanged through the Blender export (plan 3.3, item 1) — mirrors the
+    # interleaved CompCount==6 path above, using NormalFacesData per-loop
+    # indices instead of position indices.
+    if not mesh.has_custom_normals and faces:
+        normal_buffer = submesh_meta.get("NormalBuffer") if submesh_meta else None
+        if (
+            normal_buffer
+            and normal_buffer.get("NormalBufferData")
+            and normal_buffer.get("NormalFacesData")
+        ):
+            buffer_normals = decode_normal_buffer(normal_buffer)
+            nf_raw = _to_bytes(normal_buffer["NormalFacesData"])
+            nf_count = len(nf_raw) // 2
+            nf_flat = list(struct.unpack(f'>{nf_count}H', nf_raw)) if nf_count else []
+            loop_count = sum(len(f) for f in faces)
+            if nf_count == loop_count and max(nf_flat) < len(buffer_normals):
+                mesh.normals_split_custom_set([buffer_normals[i] for i in nf_flat])
+            else:
+                _report(
+                    f"WARNING: {name}: NormalFacesData has {nf_count} loop indices "
+                    f"but the mesh has {loop_count} loops; per-loop normals skipped"
+                )
 
     uv_layer_names = {}  # UVChannelIndex -> actual Blender layer name
     if uv_channels:

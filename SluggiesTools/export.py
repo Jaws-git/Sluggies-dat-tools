@@ -523,6 +523,8 @@ def extract_submeshes(model):
         uv_faces_raw = [[] for _ in range(num_uv_channels)]
         color_faces_raw = {0: [], 1: []}
         color_active = {0: False, 1: False}
+        normal_faces_raw = []
+        any_lighting = False
         tex_assignments = {}  # ch_ind -> {'index', 'wraps', 'wrapt'} from last Type-1 draw state
         display_states_gfx = layout.getTriangles()
         for display_state in display_states_gfx:
@@ -538,6 +540,9 @@ def extract_submeshes(model):
             current_primary_tex = primary_assign.get('index', 0) if primary_assign else 0
             has_color0 = 'color0' in active_descriptors
             has_color1 = 'color1' in active_descriptors
+            has_lighting = 'lighting' in active_descriptors
+            if has_lighting:
+                any_lighting = True
             if has_color0:
                 color_active[0] = True
             if has_color1:
@@ -556,6 +561,9 @@ def extract_submeshes(model):
                 )
                 color_faces_raw[1].append(
                     [vertex['color1'] for vertex in triangle] if has_color1 else [0, 0, 0]
+                )
+                normal_faces_raw.append(
+                    [vertex['lighting'] for vertex in triangle] if has_lighting else [0, 0, 0]
                 )
         face_count = len(faces_raw)
         # Pack position faces as big-endian uint16 triplets and base64-encode
@@ -662,6 +670,13 @@ def extract_submeshes(model):
                 "NormalAmbientPct": round(ambient_pct, 6),
                 "NormalBufferData": _encode_bytes(raw_normals)
             }
+            if any_lighting:
+                # Per-loop normal indices (the 'lighting' draw-list index), aligned
+                # face-for-face with FacesData — same pattern as ColorFacesData.
+                normal_flat = [idx for tri in normal_faces_raw for idx in tri]
+                normal_buffer["NormalFacesData"] = _encode_bytes(
+                    struct.pack(f'>{len(normal_flat)}H', *normal_flat)
+                )
 
         submesh_entry = {
             "MeshName": descriptor.n,

@@ -382,6 +382,101 @@ def encode_uv_channel_edited(obj, json_channel, use_base64=True, all_uv_channels
     return _from_bytes(bytes(raw_bytes), use_base64), conflicts
 
 
+def _per_loop_normals(mesh, loop_indices):
+    """Per-loop normals for *loop_indices*.
+
+    Uses Blender loop normals (custom split normals when the mesh has them,
+    geometric face normals otherwise). Loops with a degenerate (zero-length)
+    custom normal — e.g. new loops created by mesh edits before the user
+    re-applies smooth shading — fall back to the face normal so something
+    usable is always exported.
+    """
+    result = []
+    for loop_idx in loop_indices:
+        n = mesh.loops[loop_idx].normal
+        if n.length_squared < 1e-8:
+            n = mesh.polygons[mesh.loops[loop_idx].polygon_index].normal
+        result.append((n[0], n[1], n[2]))
+    return result
+
+
+def encode_normal_edits(obj, json_normal_buffer, loop_indices, use_base64=True):
+    """Export per-loop edited normals aligned with FacesDataEdited (plan 3.3, item 1).
+
+    Mirrors the per-loop UV contract of item 3.2: one quantized normal per loop
+    in FacesDataEdited loop order (no deduplication) plus an identity per-loop
+    index buffer. The patcher compacts the buffer like UVChannelDataEdited.
+    """
+    normal_data = bytearray()
+    comp = json_normal_buffer.get("NormalBufferCompCount", 3)
+    quant = json_normal_buffer.get("NormalBufferQuantizeInfo", 0)
+    is_float = (quant >> 4) in [4, 7, 0xa]
+    divisor = 1 << (quant & 0xF)
+    for n in _per_loop_normals(obj.data, loop_indices):
+        for val in n[:comp]:
+            if is_float:
+                if not math.isfinite(float(val)):
+                    raise ValueError(
+                        f"{obj.name}: per-loop normal component is not finite ({val})"
+                    )
+                normal_data += struct.pack('>f', val)
+            else:
+                normal_data += _pack_quantized_component(
+                    val, divisor, f"{obj.name} per-loop normal component"
+                )
+    normal_faces = _from_bytes(
+        struct.pack(f'>{len(loop_indices)}H', *range(len(loop_indices))), use_base64
+    )
+    return _from_bytes(bytes(normal_data), use_base64), normal_faces
+
+
+def _encode_color_entry(quant_info, rgba):
+    """Encode one 0..1 (r, g, b, a) color into the big-endian entry layout that
+    decode_color_channel (ImportSluggies) decodes for the channel's format."""
+    fmt = quant_info >> 4
+    r, g, b, a = (max(0.0, min(1.0, c)) for c in rgba)
+    if fmt == 0:  # RGB565
+        value = ((int(round(r * 31)) & 0x1F) << 11) \
+              | ((int(round(g * 63)) & 0x3F) << 5) \
+              | (int(round(b * 31)) & 0x1F)
+        return value.to_bytes(2, 'big')
+    if fmt == 3:  # RGBA4444
+        value = ((int(round(r * 15)) & 0xF) << 12) \
+              | ((int(round(g * 15)) & 0xF) << 8) \
+              | ((int(round(b * 15)) & 0xF) << 4) \
+              | (int(round(a * 15)) & 0xF)
+        return value.to_bytes(2, 'big')
+    if fmt in (1, 4):  # RGB8
+        return bytes((int(round(r * 255)), int(round(g * 255)), int(round(b * 255))))
+    if fmt in (2, 5):  # RGBA8
+        return bytes((int(round(r * 255)), int(round(g * 255)),
+                      int(round(b * 255)), int(round(a * 255))))
+    raise ValueError(f"unsupported color channel format {fmt} (quantizeInfo=0x{quant_info:X})")
+
+
+def encode_color_edits(obj, json_channel, loop_indices, use_base64=True):
+    """Export per-loop edited colors for one ColorChannels entry (plan 3.3, item 1).
+
+    Reads the CORNER-domain color attribute the importer created ('color0' /
+    'color1'), one entry per loop in FacesDataEdited loop order, plus an
+    identity per-loop index buffer — the same per-loop contract as
+    UVFacesDataEdited. Returns None when the attribute does not exist.
+    """
+    mesh = obj.data
+    ch_idx = json_channel.get("ColorChannelIndex", 0)
+    attr = next((a for a in mesh.color_attributes if a.name == f"color{ch_idx}"), None)
+    if attr is None:
+        return None
+    quant = json_channel.get("ColorChannelQuantizeInfo", 0)
+    color_data = bytearray()
+    for loop_idx in loop_indices:
+        color_data += _encode_color_entry(quant, attr.data[loop_idx].color)
+    color_faces = _from_bytes(
+        struct.pack(f'>{len(loop_indices)}H', *range(len(loop_indices))), use_base64
+    )
+    return _from_bytes(bytes(color_data), use_base64), color_faces
+
+
 def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False, use_base64=True):
     """Encode all mesh data for hammerspace export (vertex count may differ from original).
 
@@ -393,6 +488,10 @@ def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False, use_bas
                                                     (derived from Blender material slots;
                                                     used to route faces to draw states)
       'UVEdits': {ch_ind: (uv_data_b64, uv_faces_b64), ...}
+      'NormalEdits': (normal_data_b64, normal_faces_b64) or None — per-loop normals
+                      when the submesh has a standalone NormalBuffer (plan 3.3)
+      'ColorEdits': {ch_ind: (color_data_b64, color_faces_b64), ...} — per-loop
+                     colors for channels whose color attribute exists (plan 3.3)
     """
     mesh = obj.data
     mesh.calc_loop_triangles()
@@ -495,12 +594,30 @@ def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False, use_bas
 
         uv_edits[ch_ind] = (uv_data_b64, uv_faces_b64)
 
+    # Per-loop normals (standalone NormalBuffer, non-skinned meshes) and per-loop
+    # colors — same expanded per-loop contract as the UV edits above (plan 3.3).
+    loop_indices = [loop_idx for tri in triangles for loop_idx in tri.loops]
+
+    normal_edits = None
+    normal_buffer = json_submesh.get("NormalBuffer")
+    if isinstance(normal_buffer, dict) and "NormalBufferData" in normal_buffer:
+        normal_edits = encode_normal_edits(obj, normal_buffer, loop_indices, use_base64)
+
+    color_edits = {}
+    for json_channel in json_submesh.get("ColorChannels", []):
+        ch_ind = json_channel.get("ColorChannelIndex", 0)
+        encoded = encode_color_edits(obj, json_channel, loop_indices, use_base64)
+        if encoded is not None:
+            color_edits[ch_ind] = encoded
+
     return {
         'VertexBufferDataEdited':   vb_data,
         'FacesDataEdited':          faces_data,
         'FacesCountEdited':         len(triangles),
         'FaceTextureIndicesEdited': face_tex_data,
         'UVEdits':                  uv_edits,
+        'NormalEdits':              normal_edits,
+        'ColorEdits':               color_edits,
     }
 
 
@@ -1728,6 +1845,32 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                         warnings.append(
                             f"{obj.name}: UV layer '{layer_name}' not found — UV channel {ch_ind} skipped."
                         )
+
+                # Per-loop normals (standalone NormalBuffer) and per-loop colors
+                # (plan 3.3) — written only when the submesh actually has them.
+                normal_buffer = target_submesh.get("NormalBuffer")
+                if hs.get("NormalEdits") is not None and isinstance(normal_buffer, dict):
+                    normal_data_b64, normal_faces_b64 = hs["NormalEdits"]
+                    normal_buffer["NormalBufferDataEdited"] = normal_data_b64
+                    normal_buffer["NormalFacesDataEdited"] = normal_faces_b64
+                elif isinstance(normal_buffer, dict):
+                    # Submesh has a NormalBuffer the exporter refused to encode —
+                    # drop stale per-loop edits so the original NormalBuffer stays authoritative.
+                    normal_buffer.pop("NormalBufferDataEdited", None)
+                    normal_buffer.pop("NormalFacesDataEdited", None)
+                for json_channel in target_submesh.get("ColorChannels", []):
+                    ch_ind = json_channel.get("ColorChannelIndex", 0)
+                    if ch_ind in hs["ColorEdits"]:
+                        color_data_b64, color_faces_b64 = hs["ColorEdits"][ch_ind]
+                        json_channel["ColorChannelDataEdited"] = color_data_b64
+                        json_channel["ColorFacesDataEdited"] = color_faces_b64
+                    else:
+                        json_channel.pop("ColorChannelDataEdited", None)
+                        json_channel.pop("ColorFacesDataEdited", None)
+                        warnings.append(
+                            f"{obj.name}: color attribute 'color{ch_ind}' not found — "
+                            f"color channel {ch_ind} skipped."
+                        )
             else:
                 mismatches = validate_against_json(obj, target_submesh)
                 if mismatches:
@@ -1761,6 +1904,16 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 target_submesh.pop("FacesDataEdited", None)
                 target_submesh.pop("FacesCountEdited", None)
                 target_submesh.pop("FaceTextureIndicesEdited", None)
+                # Per-loop normal/color edits are hammerspace-only (plan 3.3):
+                # in-place mode reuses the original draw-list loops, so the original
+                # per-loop NormalBuffer / ColorChannel buffers stay authoritative.
+                inplace_normal_buffer = target_submesh.get("NormalBuffer")
+                if isinstance(inplace_normal_buffer, dict):
+                    inplace_normal_buffer.pop("NormalBufferDataEdited", None)
+                    inplace_normal_buffer.pop("NormalFacesDataEdited", None)
+                for json_channel in target_submesh.get("ColorChannels", []):
+                    json_channel.pop("ColorChannelDataEdited", None)
+                    json_channel.pop("ColorFacesDataEdited", None)
 
                 # Re-encode UV channels from Blender UV layers
                 hammerspace_hint_shown = False

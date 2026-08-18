@@ -14,7 +14,7 @@ Hammerspace opens up additional memory at the end of the data file to store more
 ## Import
 1. Make sure the plugin is installed by going to Edit->Preference->Add-ons->Install from Disk (upper right corner drop down menu)  
 2. Select the addon zip file as is, do not unpack it.  
-3. After the plugin is installed, import one .sluggies file using File->Import->Sluggers intermediate (.sluggie)  
+3. After the plugin is installed, import one .sluggie file using File->Import->Sluggers intermediate (.sluggie)  
 
 ## Export
 
@@ -22,8 +22,8 @@ Hammerspace opens up additional memory at the end of the data file to store more
 2. File->Export->Sluggers intermediate (.sluggie)  
 3. select **the same .sluggies file for the character you imported earlier**. The updated file will contain both original and edited model data now.
 
-*SAVE YOUR EDITS AS .BLEND PROJECTS!*
-*Pro Tip: you can add the import/export menus to your quick favorites by right clicking them. Then press "q" default to see all quick favorites.*
+*SAVE YOUR EDITS AS .BLEND PROJECTS FOR SAFEKEEPING!*  
+*Pro Tip: you can add the import/export menus to your quick favorites by right clicking them. Then press "q" (default) to see all your quick favorites.*
 
 #### Exporter Options:
 > [!WARNING]
