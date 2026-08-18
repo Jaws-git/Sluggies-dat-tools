@@ -1803,6 +1803,9 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
 
       Data region:
         Image payloads packed sequentially, then palette payloads.
+        The data region starts at the first 32-byte-aligned offset after the
+        descriptor table (zero padding closes the gap); every payload is
+        therefore 32-byte aligned, as the Wii Broadway GPU requires.
     """
     import struct as _s
     from texture_helper import _image_payload_size
@@ -1879,7 +1882,13 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
     header_size = 4
     desc_size = 0x20
     desc_table_size = len(textures) * desc_size
-    data_start = header_size + desc_table_size
+    # The Wii Broadway GPU requires texture (image/palette) payloads to sit on a
+    # 32-byte boundary so the DMA/decompressor can fetch them. The original TEX
+    # sections pack the data region at the first 32-byte-aligned offset after the
+    # descriptor table, inserting zero padding to close the gap. Repack must do
+    # the same or every payload lands misaligned and renders as blocky/transparent
+    # garbage in-game (see PLAN_Hammerspace_TexturePatching.md).
+    data_start = (header_size + desc_table_size + 31) & ~31
 
     # Image payloads first, then palette payloads.
     cursor = data_start
@@ -1920,6 +1929,12 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
         out += _s.pack('>H', tex.palette_entries & 0xFFFF)
         out += _s.pack('>B', tex.palette_format & 0xFF)
         out += bytes(unknown_1b[:5])
+    # Zero padding to reach the 32-byte-aligned data region (see data_start above).
+    # This mirrors the original TEX sections, which pad the gap after the
+    # descriptor table with zeros so every texture payload lands on a 32-byte
+    # boundary the Wii Broadway GPU can DMA.
+    if len(out) < data_start:
+        out += b'\x00' * (data_start - len(out))
     # Data region
     for idx, payload in image_payloads:
         out += payload

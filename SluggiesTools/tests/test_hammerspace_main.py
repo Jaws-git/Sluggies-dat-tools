@@ -932,7 +932,10 @@ class BuildTEXTests(unittest.TestCase):
         self.assertEqual(pal_entries1, 1)
 
         # --- Data region layout: images first, then palettes ---
-        data_start = 4 + 2 * 0x20
+        # Data region starts at the first 32-byte-aligned offset after the
+        # descriptor table (Wii Broadway GPU DMA alignment requirement).
+        data_start = (4 + 2 * 0x20 + 31) & ~31  # 0x60
+        self.assertEqual(data_start % 32, 0)
         self.assertEqual(img0_off, data_start)
         self.assertEqual(img1_off, data_start + 64)
         self.assertEqual(pal0_off, data_start + 64 + 32)
@@ -994,6 +997,48 @@ class BuildTEXTests(unittest.TestCase):
     def test_build_tex_empty_returns_empty(self):
         parsed = self._make_parsed([])
         self.assertEqual(main.BuildTEX(parsed, None), b'')
+
+    def test_build_tex_all_data_ptrs_are_32_byte_aligned(self):
+        """Regression: 5 textures (Mario model scenario) — all image/palette
+        data pointers MUST be 32-byte aligned for the Wii Broadway GPU."""
+        # 5 textures, each with a 128-byte image payload and no palette.
+        textures = [
+            self._make_texture(i, width=8, height=8, fmt=0xE,
+                               image_offset=0x100 + i * 0x100, image_length=128)
+            for i in range(5)
+        ]
+        parsed = self._make_parsed(textures)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = pathlib.Path(temp_dir) / 'dt_na.dat'
+            buf = bytearray(0x1000)
+            for i in range(5):
+                buf[0x100 + i * 0x100 : 0x100 + i * 0x100 + 128] = bytes([i]) * 128
+            input_dat.write_bytes(bytes(buf))
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                section = main.BuildTEX(parsed, None)
+
+        # All image data pointers must be 32-byte aligned.
+        for i in range(5):
+            desc_off = 4 + i * 0x20
+            img_off = struct.unpack_from('>I', section, desc_off)[0]
+            self.assertEqual(
+                img_off % 32, 0,
+                f'texture {i}: image_data_offset 0x{img_off:X} is not 32-byte aligned',
+            )
+            # Payload must be intact.
+            self.assertEqual(section[img_off:img_off + 128], bytes([i]) * 128)
+
+        # The descriptor table ends at 4 + 5*0x20 = 0xA4; data must start at 0xC0.
+        expected_data_start = (4 + 5 * 0x20 + 31) & ~31
+        self.assertEqual(expected_data_start, 0xC0)
+        self.assertEqual(
+            struct.unpack_from('>I', section, 4)[0],  # first image ptr
+            expected_data_start,
+        )
+        # Padding between descriptor table and data region must be zero.
+        desc_end = 4 + 5 * 0x20
+        self.assertEqual(section[desc_end:expected_data_start], b'\x00' * (expected_data_start - desc_end))
 
 
 class BuildModelBlockTEXBuildTests(unittest.TestCase):
