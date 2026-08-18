@@ -611,6 +611,8 @@ def extract_submeshes(model):
                 ch_faces_data = _encode_bytes(struct.pack(f'>{len(ch_flat)}H', *ch_flat))
                 color_channels.append({
                     "ColorChannelIndex": ch_idx,
+                    "ColorDataPtrFieldOffset": hex(color_hdr.absolute),
+                    "ColorCountFieldOffset": hex(color_hdr.absolute + 4),
                     "ColorChannelOffset": hex(color_offset),
                     "ColorChannelLength": color_length,
                     "ColorChannelCompCount": color_hdr.compCount,

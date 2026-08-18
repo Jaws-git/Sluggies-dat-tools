@@ -103,7 +103,7 @@ class UVRebuildTests(unittest.TestCase):
             raw,
             descriptors,
             0,
-            {0: {'indices': desired}},
+            {'texture0': {'indices': desired}},
             'fixture',
         )
 

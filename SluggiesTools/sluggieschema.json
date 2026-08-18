@@ -232,6 +232,14 @@
                       "type": "number",
                       "description": "0 = color0, 1 = color1"
                     },
+                    "ColorDataPtrFieldOffset": {
+                      "type": "string",
+                      "description": "Absolute file offset of the color array pointer field within the DOColorHeader in dt_na.dat (hex). Shared by all color channels pointing to the same header. Used by PatchGPLUVRebuild to redirect the color buffer into appended space."
+                    },
+                    "ColorCountFieldOffset": {
+                      "type": "string",
+                      "description": "Absolute file offset of the color count field (uint16) within the DOColorHeader in dt_na.dat (hex). Shared by all color channels. Updated when the compact color array has a different entry count."
+                    },
                     "ColorChannelOffset": {
                       "type": "string",
                       "description": "Starting offset of the vertex color array in dt_na.dat (hex)"

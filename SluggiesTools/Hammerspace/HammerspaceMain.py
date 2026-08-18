@@ -15,7 +15,7 @@ _slogger.configure()
 
 import HammerspaceHelper as hh
 from BlockValidator import validate_model_block
-from GeometryRebuild import rebuild_edited_uvs, rebuild_surface_assignments
+from GeometryRebuild import rebuild_edited_uvs, rebuild_surface_assignments, _color_entry_size
 from ModelFormat import align_array_offset, compute_mem_clear_range, pad_array
 
 # ---------------------------------------------------------------------------
@@ -467,11 +467,21 @@ def ParseSluggie(data: dict) -> SluggieParsed:
             ))
 
         color_channels = []
+        _color_arrays_edited = (
+            sub.get('ColorArraysEditedByImporter', False)
+            or _topology_arrays_edited
+        )
         for cc in sub.get('ColorChannels', []):
+            if _color_arrays_edited:
+                _color_src = cc.get('ColorChannelDataEdited') or cc['ColorChannelData']
+                _color_faces_src = cc.get('ColorFacesDataEdited') or cc['ColorFacesData']
+            else:
+                _color_src = cc['ColorChannelData']
+                _color_faces_src = cc['ColorFacesData']
             color_channels.append(ColorChannel(
                 channel_index    = cc['ColorChannelIndex'],
-                color_data       = _decode(cc['ColorChannelData'], use_b64),
-                color_faces_data = _decode(cc['ColorFacesData'],   use_b64),
+                color_data       = _decode(_color_src, use_b64),
+                color_faces_data = _decode(_color_faces_src, use_b64),
                 comp_count       = cc['ColorChannelCompCount'],
                 quantize_info    = cc['ColorChannelQuantizeInfo'],
                 source_data_offset = _hex(cc.get('ColorChannelOffset', '0x0')),
@@ -518,6 +528,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
                     (
                         raw_nb.get('NormalBufferDataEdited') or raw_nb['NormalBufferData']
                         if _topology_arrays_edited
+                        or sub.get('NormalArraysEditedByImporter', False)
                         else raw_nb['NormalBufferData']
                     ),
                     use_b64,
@@ -1494,7 +1505,7 @@ def PatchGPLPositionArrays(gpl_bytes: bytes, model: dict, model_offset: int) -> 
 
 
 def PatchGPLUVArrays(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes:
-    """Patch same-size edited UV arrays over an otherwise cloned donor GPL."""
+    """Patch same-size edited UV/normal arrays over an otherwise cloned donor GPL."""
     import struct as _s
 
     with open(hh.INPUT_DAT, 'rb') as source:
@@ -1506,7 +1517,9 @@ def PatchGPLUVArrays(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes:
     use_b64 = model.get('UseBase64', True)
     patched = bytearray(gpl_bytes)
     for submesh_index, submesh in enumerate(model.get('Submeshes', [])):
-        if not submesh.get('UVArraysEditedByImporter'):
+        if not submesh.get('UVArraysEditedByImporter') \
+                and not submesh.get('NormalArraysEditedByImporter') \
+                and not submesh.get('ColorArraysEditedByImporter'):
             continue
         for uv in submesh.get('UVChannels', []):
             encoded = uv.get('UVChannelDataEdited')
@@ -1535,6 +1548,74 @@ def PatchGPLUVArrays(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes:
                 f'({len(edited):,} bytes)',
                 source='hammerspace.main',
             )
+        nb = submesh.get('NormalBuffer')
+        encoded = nb.get('NormalBufferDataEdited') if nb else None
+        if encoded is not None:
+            original = _decode(nb['NormalBufferData'], use_b64)
+            edited = _decode(encoded, use_b64)
+            if edited != original:
+                stride = (
+                    nb['NormalBufferCompCount']
+                    * _vb_comp_size(nb['NormalBufferQuantizeInfo'])
+                )
+                if len(edited) % stride or len(edited) // stride > 0xFFFF:
+                    raise ValueError(
+                        f'sub{submesh_index}: compact normal count '
+                        f'{len(edited) // stride} is invalid for record size {stride}')
+                if len(edited) != len(original):
+                    raise ValueError(
+                        f'sub{submesh_index}: compact normal length changed from '
+                        f'{len(original)} to {len(edited)}; requires GPL serialization')
+                normal_absolute = _hex(nb['NormalBufferOffset'])
+                normal_relative = normal_absolute - gpl_absolute
+                if normal_relative < 0 or normal_relative + len(edited) > len(patched):
+                    raise ValueError(
+                        f'sub{submesh_index}: normal array range '
+                        f'GPL+0x{normal_relative:X}..0x{normal_relative + len(edited):X} '
+                        f'exceeds cloned GPL size 0x{len(patched):X}')
+                patched[normal_relative:normal_relative + len(edited)] = edited
+                _slogger.info(
+                    f'[GPL] patched normal array sub{submesh_index} at '
+                    f'GPL+0x{normal_relative:X} ({len(edited):,} bytes)',
+                    source='hammerspace.main',
+                )
+
+        if submesh.get('ColorArraysEditedByImporter'):
+            color_channels = submesh.get('ColorChannels', [])
+            original = _decode(color_channels[0]['ColorChannelData'], use_b64)
+            for cc in color_channels[1:]:
+                other = _decode(cc['ColorChannelData'], use_b64)
+                if len(other) != len(original):
+                    raise ValueError(
+                        f'sub{submesh_index}: color channels report different '
+                        f'donor array sizes ({len(original)} vs {len(other)})')
+            for cc in color_channels:
+                encoded = cc.get('ColorChannelDataEdited')
+                if encoded is None:
+                    continue
+                edited = _decode(encoded, use_b64)
+                if edited == original:
+                    continue
+                if len(edited) != len(original):
+                    raise ValueError(
+                        f'sub{submesh_index} color{cc["ColorChannelIndex"]}: '
+                        'compact color length changed from '
+                        f'{len(original)} to {len(edited)}; requires GPL serialization')
+                color_absolute = _hex(cc['ColorChannelOffset'])
+                color_relative = color_absolute - gpl_absolute
+                if color_relative < 0 or color_relative + len(edited) > len(patched):
+                    raise ValueError(
+                        f'sub{submesh_index} color{cc["ColorChannelIndex"]}: '
+                        f'array range GPL+0x{color_relative:X}..0x{color_relative + len(edited):X} '
+                        f'exceeds cloned GPL size 0x{len(patched):X}')
+                patched[color_relative:color_relative + len(edited)] = edited
+                _slogger.info(
+                    f'[GPL] patched color array sub{submesh_index} '
+                    f'color{cc["ColorChannelIndex"]} at GPL+0x{color_relative:X} '
+                    f'({len(edited):,} bytes)',
+                    source='hammerspace.main',
+                )
+                break
     return bytes(patched)
 
 
@@ -1560,7 +1641,9 @@ def PatchGPLUVRebuild(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes
         return offset
 
     for submesh_index, submesh in enumerate(model.get('Submeshes', [])):
-        if not submesh.get('UVArraysEditedByImporter'):
+        if not submesh.get('UVArraysEditedByImporter') \
+                and not submesh.get('NormalArraysEditedByImporter') \
+                and not submesh.get('ColorArraysEditedByImporter'):
             continue
         submesh_relative = _hex(submesh['SubmeshOffset']) - gpl_absolute
         if not 0 <= submesh_relative < len(gpl_bytes):
@@ -1600,6 +1683,82 @@ def PatchGPLUVRebuild(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes
                 f'({len(edited):,} bytes)',
                 source='hammerspace.main',
             )
+
+        nb = submesh.get('NormalBuffer')
+        encoded = nb.get('NormalBufferDataEdited') if nb else None
+        if encoded is not None:
+            original = _decode(nb['NormalBufferData'], use_b64)
+            edited = _decode(encoded, use_b64)
+            if edited != original:
+                stride = (
+                    nb['NormalBufferCompCount']
+                    * _vb_comp_size(nb['NormalBufferQuantizeInfo'])
+                )
+                if len(edited) % stride:
+                    raise ValueError(
+                        f'sub{submesh_index}: compact normal length '
+                        f'{len(edited)} is not divisible by stride {stride}')
+                if len(edited) // stride > 0xFFFF:
+                    raise ValueError(
+                        f'sub{submesh_index}: normal count '
+                        f'{len(edited) // stride} exceeds uint16')
+                data_offset = append_payload(edited, 4)
+                pointer_field = _hex(nb['NormalDataPtrFieldOffset']) - gpl_absolute
+                count_field = _hex(nb['NormalCountFieldOffset']) - gpl_absolute
+                if pointer_field < 0 or count_field < 0 \
+                        or count_field + 2 > len(gpl_bytes):
+                    raise ValueError(
+                        f'sub{submesh_index}: normal header fields are outside '
+                        'cloned GPL')
+                _s.pack_into('>I', patched, pointer_field, data_offset - submesh_relative)
+                _s.pack_into('>H', patched, count_field, len(edited) // stride)
+                _slogger.info(
+                    f'[GPL] appended normal array sub{submesh_index} at '
+                    f'GPL+0x{data_offset:X} ({len(edited):,} bytes)',
+                    source='hammerspace.main',
+                )
+
+        if submesh.get('ColorArraysEditedByImporter'):
+            color_channels = submesh.get('ColorChannels', [])
+            color_appended = False
+            for cc in color_channels:
+                encoded = cc.get('ColorChannelDataEdited')
+                if encoded is None:
+                    continue
+                original = _decode(cc['ColorChannelData'], use_b64)
+                edited = _decode(encoded, use_b64)
+                if edited == original:
+                    continue
+                entry_size = _color_entry_size(cc['ColorChannelQuantizeInfo'])
+                if len(edited) % entry_size:
+                    raise ValueError(
+                        f'sub{submesh_index} color{cc["ColorChannelIndex"]}: '
+                        f'edited length {len(edited)} is not divisible by '
+                        f'entry size {entry_size}')
+                if len(edited) // entry_size > 0xFFFF:
+                    raise ValueError(
+                        f'sub{submesh_index} color{cc["ColorChannelIndex"]}: '
+                        f'color count {len(edited) // entry_size} exceeds uint16')
+                if not color_appended:
+                    data_offset = append_payload(edited, 4)
+                    pointer_field = _hex(cc['ColorDataPtrFieldOffset']) - gpl_absolute
+                    count_field = _hex(cc['ColorCountFieldOffset']) - gpl_absolute
+                    if pointer_field < 0 or count_field < 0 \
+                            or count_field + 2 > len(gpl_bytes):
+                        raise ValueError(
+                            f'sub{submesh_index}: color header fields are outside '
+                            'cloned GPL')
+                    _s.pack_into('>I', patched, pointer_field,
+                                 data_offset - submesh_relative)
+                    _s.pack_into('>H', patched, count_field,
+                                 len(edited) // entry_size)
+                    color_appended = True
+                    _slogger.info(
+                        f'[GPL] appended color array sub{submesh_index} at '
+                        f'GPL+0x{data_offset:X} ({len(edited):,} bytes)',
+                        source='hammerspace.main',
+                    )
+                break
 
         for state_index, state in enumerate(submesh.get('DisplayStates', [])):
             edited_primitive = state.get('PrimListDataEdited')
@@ -2639,13 +2798,29 @@ def BuildModelBlock(
         )
         uv_lists_rebuilt = any(
             submesh.get('UVPrimitiveListsRebuiltByImporter')
+            or submesh.get('NormalPrimitiveListsRebuiltByImporter')
+            or submesh.get('ColorPrimitiveListsRebuiltByImporter')
             for submesh in model.get('Submeshes', [])
         )
         uv_array_edits = any(
             submesh.get('UVArraysEditedByImporter')
             for submesh in model.get('Submeshes', [])
         )
-        if has_material_state_edits or position_edits or uv_array_edits:
+        normal_array_edits = any(
+            submesh.get('NormalArraysEditedByImporter')
+            for submesh in model.get('Submeshes', [])
+        )
+        color_array_edits = any(
+            submesh.get('ColorArraysEditedByImporter')
+            for submesh in model.get('Submeshes', [])
+        )
+        if (
+            has_material_state_edits
+            or position_edits
+            or uv_array_edits
+            or normal_array_edits
+            or color_array_edits
+        ):
             gpl_bytes = CloneGPL(source_model_offset, source_model_length)
             if has_material_state_edits:
                 gpl_bytes = PatchGPLMaterialStates(
@@ -2655,7 +2830,7 @@ def BuildModelBlock(
                 gpl_bytes = PatchGPLPositionArrays(
                     gpl_bytes, model, source_model_offset
                 )
-            if uv_array_edits:
+            if uv_array_edits or normal_array_edits or color_array_edits:
                 gpl_bytes = (
                     PatchGPLUVRebuild(gpl_bytes, model, source_model_offset)
                     if uv_lists_rebuilt

@@ -70,6 +70,13 @@ def _comp_size(q: int) -> int:
     return 4 if (q >> 4) in (4, 7, 0xa) else 2
 
 
+def _color_entry_size(quant_info: int) -> int:
+    """Bytes per vertex-color entry from the format nibble (0=RGB565,
+    1=RGB8, 2=RGBA8, 3=RGBA4444, 4=RGB8, 5=RGBA8)."""
+    fmt = quant_info >> 4
+    return {0: 2, 1: 3, 2: 4, 3: 2, 4: 3, 5: 4}.get(fmt, 2)
+
+
 def _u16s(data: bytes) -> list[int]:
     return list(struct.unpack(f'>{len(data)//2}H', data))
 
@@ -361,8 +368,7 @@ def _rewrite_uv_primitive_blocks(
         for local_face, vertex_indices in enumerate(face_vertices):
             global_face = face_cursor + local_face
             for corner, raw_vertex_index in enumerate(vertex_indices):
-                for channel, edit in channel_edits.items():
-                    key = f'texture{channel}'
+                for key, edit in channel_edits.items():
                     if key not in descriptor_offsets:
                         continue
                     desired = edit['indices'][global_face * 3 + corner]
@@ -408,8 +414,7 @@ def _rewrite_uv_primitive_blocks(
                 for local_face, vertex_indices in enumerate(quad_mappings):
                     global_face = face_cursor + quad_index * 2 + local_face
                     for corner, raw_vertex_index in enumerate(vertex_indices):
-                        for channel, edit in channel_edits.items():
-                            key = f'texture{channel}'
+                        for key, edit in channel_edits.items():
                             if key not in descriptor_offsets:
                                 continue
                             desired = edit['indices'][global_face * 3 + corner]
@@ -440,8 +445,7 @@ def _rewrite_uv_primitive_blocks(
                 for local_face, face in enumerate(faces):
                     global_face = face_cursor + quad_index * 2 + local_face
                     for corner, vertex in enumerate(face):
-                        for channel, edit in channel_edits.items():
-                            key = f'texture{channel}'
+                        for key, edit in channel_edits.items():
                             if key in vertex:
                                 vertex[key] = edit['indices'][global_face * 3 + corner]
                 output.extend(encodeDrawList(faces, descriptors))
@@ -455,8 +459,7 @@ def _rewrite_uv_primitive_blocks(
             for local_face, face in enumerate(faces):
                 global_face = face_cursor + local_face
                 for corner, vertex in enumerate(face):
-                    for channel, edit in channel_edits.items():
-                        key = f'texture{channel}'
+                    for key, edit in channel_edits.items():
                         if key in vertex:
                             vertex[key] = edit['indices'][global_face * 3 + corner]
             output.extend(encodeDrawList(faces, descriptors))
@@ -673,6 +676,176 @@ def rebuild_surface_assignments(data: dict) -> bool:
     return rebuilt
 
 
+def _compact_channel(what: str, stride: int, original: bytes,
+                     original_indices: list[int], expanded: bytes,
+                     expanded_indices: list[int], loop_count: int):
+    """Deduplicate a per-loop-expanded coordinate array against the donor layout.
+
+    ``expanded`` holds one record per loop of the edited topology and
+    ``expanded_indices`` maps each loop to that record.  ``original`` is the
+    donor's compact array and ``original_indices`` maps each loop to its slot.
+
+    Returns ``(compact, new_indices, preserve_indices)``.  Donor slot order
+    is preserved: a loop whose edited record matches its donor slot's record
+    keeps that slot, and a donor slot shared by loops with different edited
+    values is reassigned to the first such value when no loop still needs
+    the original record while further values are appended after the donor
+    slots.
+    """
+    if len(original) % stride or len(expanded) % stride:
+        raise ValueError(
+            f'{what}: payload length is not divisible by stride {stride}')
+    if len(original_indices) != loop_count or len(expanded_indices) != loop_count:
+        raise ValueError(
+            f'{what}: expected {loop_count} loop indices, '
+            f'got donor={len(original_indices)}, edited={len(expanded_indices)}')
+    expanded_count = len(expanded) // stride
+    donor_count = len(original) // stride
+    if any(index >= expanded_count for index in expanded_indices):
+        raise ValueError(
+            f'{what}: edited loop index exceeds coordinate count {expanded_count}')
+    if any(index >= donor_count for index in original_indices):
+        raise ValueError(
+            f'{what}: donor loop index {max(original_indices)} '
+            f'exceeds coordinate count {donor_count}')
+    if not donor_count:
+        return b'', list(expanded_indices), False
+
+    edited_records = [
+        expanded[index * stride:(index + 1) * stride]
+        for index in expanded_indices
+    ]
+
+    donor_slots = [None] * donor_count
+    conflict = False
+    for donor_index, record in zip(original_indices, edited_records):
+        if donor_slots[donor_index] is None:
+            donor_slots[donor_index] = record
+        elif donor_slots[donor_index] != record:
+            conflict = True
+            break
+
+    if not conflict:
+        for index, record in enumerate(donor_slots):
+            if record is None:
+                donor_slots[index] = original[index * stride:(index + 1) * stride]
+        compact = b''.join(donor_slots)
+        return compact, list(original_indices), True
+
+    compact_records = [
+        original[index * stride:(index + 1) * stride]
+        for index in range(donor_count)
+    ]
+    split_indices = {}
+    new_indices = []
+    for donor_index, record in zip(original_indices, edited_records):
+        donor_record = compact_records[donor_index]
+        if record == donor_record:
+            new_indices.append(donor_index)
+            continue
+        split_key = (donor_index, record)
+        if split_key not in split_indices:
+            # Reuse the donor slot for the first edited value only when no
+            # loop still needs its original value.
+            slot_records = {
+                candidate
+                for index, candidate in zip(original_indices, edited_records)
+                if index == donor_index
+            }
+            if donor_record not in slot_records and not any(
+                key[0] == donor_index for key in split_indices
+            ):
+                compact_records[donor_index] = record
+                split_indices[split_key] = donor_index
+            else:
+                split_indices[split_key] = len(compact_records)
+                compact_records.append(record)
+        new_indices.append(split_indices[split_key])
+    if len(compact_records) > 0xFFFF:
+        raise ValueError(
+            f'{what}: compact coordinate count {len(compact_records)} exceeds uint16')
+    return (
+        b''.join(compact_records),
+        new_indices,
+        new_indices == list(original_indices),
+    )
+
+
+def _compact_shared_color_array(
+    what: str,
+    donor_entries: list[bytes],
+    donor_indices_by_channel: dict[str, list[int]],
+    edited_by_channel: dict[str, list[bytes]],
+    loop_count: int,
+):
+    """Compact the single vertex-color array shared by color0/color1.
+
+    Unlike UV channels (one array each), both color index fields reference
+    the same entry array, so compaction dedupes entries while producing an
+    independent per-loop index list for every active channel.  Donor entry
+    order is preserved; a donor slot whose original entry is no longer
+    referenced by any loop may be repurposed for a new value (UV-style),
+    and remaining new values are appended after the donor entries.
+
+    Returns (compact_bytes, indices_by_channel, preserve_indices).
+    """
+    if not donor_entries:
+        raise ValueError(f'{what}: donor color array is empty')
+    entry_size = len(donor_entries[0])
+    for channel, indices in donor_indices_by_channel.items():
+        if len(indices) != loop_count:
+            raise ValueError(
+                f'{what}: {channel} donor index list has {len(indices)} '
+                f'entries, expected {loop_count}')
+        if any(index >= len(donor_entries) for index in indices):
+            raise ValueError(
+                f'{what}: {channel} donor index '
+                f'{max(indices)} exceeds entry count {len(donor_entries)}')
+
+    slots = list(donor_entries)
+    slot_for = {}
+    for index, entry in enumerate(slots):
+        slot_for.setdefault(entry, index)
+    required = {entry for entries in edited_by_channel.values() for entry in entries}
+    reused = set()
+
+    def assign(entry: bytes) -> int:
+        index = slot_for.get(entry)
+        if index is not None:
+            return index
+        for candidate in range(len(slots)):
+            if candidate in reused:
+                continue
+            if donor_entries[candidate] in required:
+                continue
+            slots[candidate] = entry
+            slot_for[entry] = candidate
+            reused.add(candidate)
+            return candidate
+        slots.append(entry)
+        slot_for[entry] = len(slots) - 1
+        return len(slots) - 1
+
+    indices_by_channel = {}
+    preserve = True
+    for channel, edited in edited_by_channel.items():
+        donor_indices = donor_indices_by_channel[channel]
+        new_indices = []
+        for loop in range(loop_count):
+            index = assign(edited[donor_indices[loop]])
+            new_indices.append(index)
+        if new_indices != list(donor_indices):
+            preserve = False
+        indices_by_channel[channel] = new_indices
+    for channel in donor_indices_by_channel:
+        if channel not in indices_by_channel:
+            indices_by_channel[channel] = list(donor_indices_by_channel[channel])
+    if len(slots) > 0xFFFF:
+        raise ValueError(
+            f'{what}: compact entry count {len(slots)} exceeds uint16')
+    return b''.join(slots), indices_by_channel, preserve
+
+
 def rebuild_edited_uvs(data: dict) -> bool:
     """Prepare unchanged-topology UV edits and rebuild only required draw lists."""
     model = data['SluggiesModel']
@@ -701,97 +874,31 @@ def rebuild_edited_uvs(data: dict) -> bool:
                 continue
             original_indices = _u16s(_dec(uv['UVFacesData'], use_b64))
             expanded_indices = _u16s(_dec(encoded_faces, use_b64))
-            if len(original) % stride or len(expanded) % stride:
-                raise ValueError(
-                    f'sub{sub_idx} uv{channel}: payload length is not divisible '
-                    f'by stride {stride}')
-            if len(original_indices) != loop_count or len(expanded_indices) != loop_count:
-                raise ValueError(
-                    f'sub{sub_idx} uv{channel}: expected {loop_count} loop indices, '
-                    f'got donor={len(original_indices)}, edited={len(expanded_indices)}')
-            expanded_count = len(expanded) // stride
-            donor_count = len(original) // stride
-            if any(index >= expanded_count for index in expanded_indices):
-                raise ValueError(
-                    f'sub{sub_idx} uv{channel}: edited loop index exceeds '
-                    f'coordinate count {expanded_count}')
-
-            edited_records = [
-                expanded[index * stride:(index + 1) * stride]
-                for index in expanded_indices
-            ]
-            donor_slots = [None] * donor_count
-            conflict = False
-            for donor_index, record in zip(original_indices, edited_records):
-                if donor_index >= donor_count:
-                    raise ValueError(
-                        f'sub{sub_idx} uv{channel}: donor loop index {donor_index} '
-                        f'exceeds coordinate count {donor_count}')
-                if donor_slots[donor_index] is None:
-                    donor_slots[donor_index] = record
-                elif donor_slots[donor_index] != record:
-                    conflict = True
-                    break
-
-            if not conflict:
-                for index, record in enumerate(donor_slots):
-                    if record is None:
-                        donor_slots[index] = original[index * stride:(index + 1) * stride]
-                compact = b''.join(donor_slots)
-                if compact == original:
-                    uv.pop('UVChannelDataEdited', None)
-                    uv.pop('UVFacesDataEdited', None)
-                    continue
-                new_indices = original_indices
-                preserve_indices = True
-            else:
-                compact_records = [
-                    original[index * stride:(index + 1) * stride]
-                    for index in range(donor_count)
-                ]
-                split_indices = {}
-                new_indices = []
-                for donor_index, record in zip(original_indices, edited_records):
-                    donor_record = compact_records[donor_index]
-                    if record == donor_record:
-                        new_indices.append(donor_index)
-                        continue
-                    split_key = (donor_index, record)
-                    if split_key not in split_indices:
-                        # Reuse the donor slot for the first edited value only when
-                        # no loop still needs its original value.
-                        slot_records = {
-                            candidate
-                            for index, candidate in zip(original_indices, edited_records)
-                            if index == donor_index
-                        }
-                        if donor_record not in slot_records and not any(
-                            key[0] == donor_index for key in split_indices
-                        ):
-                            compact_records[donor_index] = record
-                            split_indices[split_key] = donor_index
-                        else:
-                            split_indices[split_key] = len(compact_records)
-                            compact_records.append(record)
-                    new_indices.append(split_indices[split_key])
-                if len(compact_records) > 0xFFFF:
-                    raise ValueError(
-                        f'sub{sub_idx} uv{channel}: compact coordinate count '
-                        f'{len(compact_records)} exceeds uint16')
-                compact = b''.join(compact_records)
-                preserve_indices = new_indices == original_indices
+            compact, new_indices, preserve_indices = _compact_channel(
+                f'sub{sub_idx} uv{channel}',
+                stride,
+                original,
+                original_indices,
+                expanded,
+                expanded_indices,
+                loop_count,
+            )
+            if compact == original:
+                uv.pop('UVChannelDataEdited', None)
+                uv.pop('UVFacesDataEdited', None)
+                continue
 
             uv['UVChannelDataEdited'] = _enc(compact, use_b64)
             uv['UVFacesDataEdited'] = _enc(
                 b''.join(_u16.pack(index) for index in new_indices), use_b64
             )
-            channel_edits[channel] = {
+            channel_edits[f'texture{channel}'] = {
                 'indices': new_indices,
                 'preserve_indices': preserve_indices,
             }
             rebuilt = True
             _slogger.info(
-                f'[M3.2] sub{sub_idx} uv{channel}: {expanded_count} expanded '
+                f'[M3.2] sub{sub_idx} uv{channel}: {len(expanded) // stride} expanded '
                 f'coords -> {len(compact) // stride} compact; '
                 f'indices {"preserved" if preserve_indices else "rebuilt"}',
                 source='geometry.rebuild',
@@ -803,10 +910,11 @@ def rebuild_edited_uvs(data: dict) -> bool:
         uv_by_channel = {
             uv['UVChannelIndex']: uv for uv in sub.get('UVChannels', [])
         }
-        for source_channel, source_edit in list(channel_edits.items()):
+        for source_key, source_edit in list(channel_edits.items()):
+            source_channel = int(source_key.split('texture', 1)[1])
             source_uv = uv_by_channel[source_channel]
             for target_channel, target_uv in uv_by_channel.items():
-                if target_channel == source_channel or target_channel in channel_edits:
+                if target_channel == source_channel or f'texture{target_channel}' in channel_edits:
                     continue
                 if (
                     _dec(target_uv['UVChannelData'], use_b64)
@@ -817,7 +925,7 @@ def rebuild_edited_uvs(data: dict) -> bool:
                     continue
                 target_uv['UVChannelDataEdited'] = source_uv['UVChannelDataEdited']
                 target_uv['UVFacesDataEdited'] = source_uv['UVFacesDataEdited']
-                channel_edits[target_channel] = {
+                channel_edits[f'texture{target_channel}'] = {
                     'indices': list(source_edit['indices']),
                     'preserve_indices': source_edit['preserve_indices'],
                 }
@@ -828,13 +936,158 @@ def rebuild_edited_uvs(data: dict) -> bool:
                     source='geometry.rebuild',
                 )
 
-        changed_indices = {
-            channel: edit for channel, edit in channel_edits.items()
-            if not edit['preserve_indices']
-        }
+        # M3.4: normal-buffer compaction — same helper, same donor-order
+        # preservation as UVs.  The Blender per-loop normal array is deduped
+        # against the donor normal layout; changed slots flow into the
+        # primitive-list rewrite as the 'lighting' index.
+        normal_buffer = sub.get('NormalBuffer')
+        edited_normal = (
+            normal_buffer.get('NormalBufferDataEdited') if normal_buffer else None
+        )
+        if edited_normal is not None:
+            donor_norm = _dec(normal_buffer['NormalBufferData'], use_b64)
+            expanded_norm = _dec(edited_normal, use_b64)
+            if expanded_norm == donor_norm:
+                normal_buffer.pop('NormalBufferDataEdited', None)
+            else:
+                normal_stride = (
+                    normal_buffer['NormalBufferCompCount']
+                    * _comp_size(normal_buffer['NormalBufferQuantizeInfo'])
+                )
+                if not donor_norm or len(donor_norm) % normal_stride:
+                    raise ValueError(
+                        f'sub{sub_idx}: donor normal array size '
+                        f'{len(donor_norm)} is not divisible by record '
+                        f'size {normal_stride}')
+                donor_normal_indices = _u16s(
+                    _dec(normal_buffer['NormalFacesData'], use_b64))
+                if len(donor_normal_indices) != loop_count:
+                    raise ValueError(
+                        f'sub{sub_idx}: donor normal index list has '
+                        f'{len(donor_normal_indices)} entries, expected '
+                        f'{loop_count}')
+                compact_norm, normal_indices, normal_preserve = _compact_channel(
+                    f'sub{sub_idx} normal',
+                    normal_stride,
+                    donor_norm,
+                    donor_normal_indices,
+                    expanded_norm,
+                    list(range(loop_count)),
+                    loop_count,
+                )
+                if compact_norm == donor_norm:
+                    normal_buffer.pop('NormalBufferDataEdited', None)
+                else:
+                    normal_buffer['NormalBufferDataEdited'] = _enc(compact_norm, use_b64)
+                    channel_edits['lighting'] = {
+                        'indices': normal_indices,
+                        'preserve_indices': normal_preserve,
+                    }
+                    _slogger.info(
+                        f'[M3.3] sub{sub_idx}: normal buffer compacted to '
+                        f'{len(compact_norm) // normal_stride} unique normals',
+                        source='geometry.rebuild',
+                    )
+                rebuilt = True
+
+        # M3.3: vertex-color compaction.  Unlike UV channels, color0/color1
+        # both index ONE shared DOColorHeader entry array, so compaction is
+        # per-entry with independent index lists per channel.  Donor entry
+        # order is preserved exactly as for UVs; a donor slot whose original
+        # entry is no longer referenced by any loop may be repurposed for a
+        # new value, and remaining new values are appended after the donor
+        # entries.
+        color_channels = sub.get('ColorChannels') or []
+        edited_color_channels = [
+            cc for cc in color_channels
+            if cc.get('ColorChannelDataEdited') is not None
+            and cc.get('ColorFacesDataEdited') is not None
+        ]
+        if edited_color_channels:
+            entry_size = _color_entry_size(
+                color_channels[0]['ColorChannelQuantizeInfo'])
+            donor_color = _dec(color_channels[0]['ColorChannelData'], use_b64)
+            for cc in color_channels[1:]:
+                other = _dec(cc['ColorChannelData'], use_b64)
+                if len(other) != len(donor_color):
+                    raise ValueError(
+                        f'sub{sub_idx}: color channels report different '
+                        f'donor array sizes ({len(donor_color)} vs {len(other)})')
+            donor_entries = [
+                donor_color[i * entry_size:(i + 1) * entry_size]
+                for i in range(len(donor_color) // entry_size)
+            ]
+            edited_by_channel = {}
+            donor_indices_by_channel = {}
+            for cc in color_channels:
+                key = f"color{cc['ColorChannelIndex']}"
+                donor_indices_by_channel[key] = _u16s(
+                    _dec(cc['ColorFacesData'], use_b64))
+                if cc in edited_color_channels:
+                    expanded = _dec(cc['ColorChannelDataEdited'], use_b64)
+                    expanded_indices = _u16s(
+                        _dec(cc['ColorFacesDataEdited'], use_b64))
+                    if len(expanded) % entry_size:
+                        raise ValueError(
+                            f'sub{sub_idx} {key}: edited length '
+                            f'{len(expanded)} is not divisible by entry '
+                            f'size {entry_size}')
+                    edited_by_channel[key] = [
+                        expanded[i * entry_size:(i + 1) * entry_size]
+                        for i in range(len(expanded) // entry_size)
+                    ]
+                    if len(expanded_indices) != loop_count:
+                        raise ValueError(
+                            f'sub{sub_idx} {key}: edited index list has '
+                            f'{len(expanded_indices)} entries, expected '
+                            f'{loop_count}')
+            compact_color, indices_by_key, color_preserve = _compact_shared_color_array(
+                f'sub{sub_idx} color',
+                donor_entries,
+                donor_indices_by_channel,
+                edited_by_channel,
+                loop_count,
+            )
+            if compact_color == donor_color:
+                for cc in edited_color_channels:
+                    cc.pop('ColorChannelDataEdited', None)
+                    cc.pop('ColorFacesDataEdited', None)
+            else:
+                compact_encoded = _enc(compact_color, use_b64)
+                for cc in color_channels:
+                    key = f"color{cc['ColorChannelIndex']}"
+                    if key not in indices_by_key:
+                        continue
+                    cc['ColorChannelDataEdited'] = compact_encoded
+                    cc['ColorFacesDataEdited'] = _enc(
+                        b''.join(
+                            _u16.pack(index) for index in indices_by_key[key]
+                        ),
+                        use_b64,
+                    )
+                    channel_edits[key] = {
+                        'indices': indices_by_key[key],
+                        'preserve_indices': color_preserve,
+                    }
+                _slogger.info(
+                    f"[M3.3] sub{sub_idx} color: {len(donor_entries)} donor "
+                    f'entries -> {len(compact_color) // entry_size} compact; '
+                    f'indices {"preserved" if color_preserve else "rebuilt"}',
+                    source='geometry.rebuild',
+                )
+            rebuilt = True
+
+        if any(key.startswith('texture') for key in channel_edits):
+            sub['UVArraysEditedByImporter'] = True
+        if 'lighting' in channel_edits:
+            sub['NormalArraysEditedByImporter'] = True
+        if any(key.startswith('color') for key in channel_edits):
+            sub['ColorArraysEditedByImporter'] = True
+        changed_indices = {}
+        for key, edit in channel_edits.items():
+            if not edit['preserve_indices']:
+                changed_indices[key] = edit
         if not changed_indices:
-            if channel_edits:
-                sub['UVArraysEditedByImporter'] = True
             continue
 
         state_faces, _, _, type3_index = _decode_original_states(sub, use_b64)
@@ -846,8 +1099,7 @@ def rebuild_edited_uvs(data: dict) -> bool:
                 global_face = face_cursor + local_face_index
                 copied_face = [dict(vertex) for vertex in face]
                 for corner, vertex in enumerate(copied_face):
-                    for channel, edit in changed_indices.items():
-                        key = f'texture{channel}'
+                    for key, edit in changed_indices.items():
                         if key in vertex:
                             vertex[key] = edit['indices'][global_face * 3 + corner]
                 edited_faces.append(copied_face)
@@ -913,8 +1165,12 @@ def rebuild_edited_uvs(data: dict) -> bool:
                     'no Type-3 state exists')
             old_setting = _setting_int(descriptor_state['ShaderMode'])
             descriptor_state['ShaderModeEdited'] = f'{patchType3Setting(old_setting, upgraded):08x}'
-        sub['UVArraysEditedByImporter'] = True
-        sub['UVPrimitiveListsRebuiltByImporter'] = True
+        if any(key.startswith('texture') for key in changed_indices):
+            sub['UVPrimitiveListsRebuiltByImporter'] = True
+        if 'lighting' in changed_indices:
+            sub['NormalPrimitiveListsRebuiltByImporter'] = True
+        if any(key.startswith('color') for key in changed_indices):
+            sub['ColorPrimitiveListsRebuiltByImporter'] = True
         _slogger.info(
             f'[M3.2] sub{sub_idx}: rebuilt draw states {sorted(states_to_rebuild)}; '
             f'descriptor upgrades {sorted(upgraded)}; triangulated '
