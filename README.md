@@ -55,13 +55,12 @@ If you do not need textures, `--notex` skips PNG conversion and does not require
 ## Workflow - Overall Concept
 ```mermaid
 flowchart LR
-    A[Extract game files] --> B[Export model data as .sluggie file]
+    A[Extract game files] --> B[Export model data as .sluggie files]
     B --> C[Import to Blender]
     C --> D[Make changes]
     D --> E[Export model back to .sluggie file]
     E --> F[Write changes to game's .dat]
 ```
-
 All commands are to be used on the command line - enter "cmd" in file explorer's address bar to open a new terminal in the current folder.  
 
 ## Export  
@@ -69,20 +68,19 @@ All commands are to be used on the command line - enter "cmd" in file explorer's
 1) Set up Dolphin & Game iso
 2) Try running the game to make sure everything is prepped correctly
 3) right click the Game -> properties -> Filesystem -> right click top node -> extract entire disc
-5) from the extracted disc data, copy both "dt_na.dat" and "main.dol" (and optionally fst.bin) to the folder \1_Input\
-6) cmd ```sluggies-dat-tools.exe --export --untangle``` (or, alternatively, just start the included batch file)
+4) from the extracted disc data, copy both "dt_na.dat" and "main.dol" (and optionally fst.bin) to the folder \1_Input\
+5) cmd ```sluggies-dat-tools.exe --export --untangle``` (or, alternatively, just start the included batch file)
 
 This will extract the entire content into a new folder \2_Output_Models\\...  
 It will contain all the player models, props and environment models. Everything is sorted into numbered and approximately named folders.
 With the "untangle" parameter, duplicate textures will be made unique. Their file names will change compared to "vanilla" Sluggers.
 You can also use the option --notex to skip the rather slow png creation step. Removes the requirement for wimgt.
 
-
 ## Blender editing
 
 1) install the included SluggiesIO_BlenderAddon_Vxxx.zip file
 2) File -> import -> Sluggers intermediate -> select one .sluggie file from the output folder
-3) Edit mesh, according to the [Blender Guide](_docs/BlenderGuide.md)
+3) Edit model, according to the [Blender Guide](_docs/BlenderGuide.md)
 4) File -> export -> Sluggers intermediate -> select the **same** file you imported earlier to export your changes to
 
 Nothing is lost, the updated file will hold both original and edited mesh data for you.
@@ -118,15 +116,15 @@ After editing sheets in ``2_Output_Models/_ICONS/sheets (EDIT THESE)``, reimport
 4) the 6 unused characters will now show the 12 injected images as front and side icons
 
 ## Development progress:
-✅ .dae model & .png texture export (one-way)  
 ✅ SLUGGers IntermediatE (.sluggie) export  
+✅ .png texture & .dae model (optional) export  
 ✅ Blender Import/Export plugin  
 ✅ Vertex position editing  
 ✅ Vertex animation editing (shapekeys)  
-✅ UV position editing  
-✅ Icon Modding  
-✅ Assign new Icons to unused characters  
-✅ Make unused character textures independent  
-❌ Armature editing  
+✅ Full UV editing  
+✅ Icon Modding & Assign new Icons to the unused characters  
+✅ "Untangle" all textures so they can be replaced for one character only  
+✅ Replace player textures  
 ❌ Hammerspace full-Model replacement  
+❌ Armature editing  
 ❌ Animations
