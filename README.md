@@ -86,10 +86,10 @@ You can also use the option --notex to skip the rather slow png creation step. R
 Nothing is lost, the updated file will hold both original and edited mesh data for you.
 Exporting to a .sluggie file will automatically put the file name on your clipboard for the next step.
 
-## Import
+## Patching the game
 
 *The file name from the last step should still be in your clipboard unless you copied something else in the meantime.*
-1) cmd ``` python start.py --patch myfilename```
+1) cmd ``` python start.py --patch myfilename``` (or pick option 5 in starttools.bat)
 2) a new folder 3_Output_Dat will appear, containing a patched dt_na.dat and main.dol file
 3) keep applying as many patches as you like, you can also specify multiple file names
 4) copy the finished dt_na.dat and main.dol files back into the unpacked game folder, overwriting the old ones
@@ -98,22 +98,9 @@ Exporting to a .sluggie file will automatically put the file name on your clipbo
 You can call start.py with the option --unpatch to write the original model back to the dat.
 Example: ``python start.py --unpatch myfilename``
 
-## Icon Reimport
+## Icon Editing
+See [Icon Guide](_docs/IconGuide.md)
 
-After editing sheets in ``2_Output_Models/_ICONS/sheets (EDIT THESE)``, reimport with:
-
-1) ``python start.py --patch-icons``
-2) Patched output is written to ``3_Output_Dat/dt_na.dat``
-3) A report is generated at ``2_Output_Models/_ICONS/metadata/reimport_report.json``
-
-- ``python start.py --patch-icons --dry-run`` validates and reports without writing to output.
-
-## Icons for unused characters
-
-1) insert your own front and side icon images into the templates in folder /1_Input/_Icons/
-2) run python start.py --add-custom-icons
-3) make sure the old gecko code to make unuseds selectable is active in dolphin
-4) the 6 unused characters will now show the 12 injected images as front and side icons
 
 ## Development progress:
 ✅ SLUGGers IntermediatE (.sluggie) export  
