@@ -1422,7 +1422,7 @@ for dir_ind, file_arr in dirs.items():
             pass
     if len(os.listdir(dir_dir)) == 0:
         os.rmdir(dir_dir)
-    _slogger.info(f'Finished analyzing', source=f'export.dir{dir_ind}')
+    _slogger.info(f'Finished exporting', source=f'export.dir{dir_ind}')
 
 if untangle_context and untangle_context.get('dat_output_handle'):
     untangle_context['dat_output_handle'].flush()

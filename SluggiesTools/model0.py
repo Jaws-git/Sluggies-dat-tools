@@ -32,6 +32,10 @@ class ExpectedFormatSkip(Exception):
     pass
 
 
+class UnexportableEntrySkip(ExpectedFormatSkip):
+    pass
+
+
 def set_log_dir_index(dir_index):
     global _LOG_DIR_INDEX
     _LOG_DIR_INDEX = dir_index
@@ -87,6 +91,8 @@ class Archive(FileChunk):
             try:
                 file.analyze()
                 self.success.append(slot_index)
+            except UnexportableEntrySkip as exc:
+                slogger.info(f'{_log_prefix()} {exc}', source='model')
             except ExpectedFormatSkip as exc:
                 slogger.warning(f'{_log_prefix()} {exc}', source='model')
             except Exception as e:
@@ -111,6 +117,8 @@ class Model0(FileChunk):
         if firstWord != 0:
             raise ExpectedFormatSkip('Skipping archive member: not a model entry')
         self.gplPtr = self.word()
+        if self.gplPtr == 0:
+            raise UnexportableEntrySkip('Skipping one sub-entry: no GPL data')
         if self.gplPtr > 0x40 or self.gplPtr < 0x20:
             raise Exception("no mesh data (gpl pointer is " + hex(self.gplPtr) + ")")
         self.ptr3 = self.word()
