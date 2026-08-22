@@ -5,16 +5,26 @@ import json
 import base64
 import struct
 
+# Resolve project directories relative to this file so the script works
+# regardless of the current working directory.
+_THIS_DIR  = os.path.dirname(os.path.abspath(__file__))   # .../SluggiesTools/InplacePatcher
+_TOOLS_DIR = os.path.dirname(_THIS_DIR)                    # .../SluggiesTools
+_ROOT_DIR  = os.path.dirname(_TOOLS_DIR)                   # project root
+
+# Ensure SluggiesTools/ (slogger, texture_helper, …) and this directory
+# (patch_skn_inplace) are importable.
+for _p in (_TOOLS_DIR, _THIS_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 # Step 2.2 – Initialize universal logger in child process.
 import slogger as _slogger
 _slogger.configure()
 
-INPUT_DAT  = '../1_Input/dt_na.dat'
-OUTPUT_DIR = '../3_Output_Dat'
+INPUT_DAT  = os.path.join(_ROOT_DIR, '1_Input', 'dt_na.dat')
+OUTPUT_DIR = os.path.join(_ROOT_DIR, '3_Output_Dat')
 OUTPUT_DAT = os.path.join(OUTPUT_DIR, 'dt_na.dat')
 
-# Allow importing sibling modules
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import patch_skn_inplace as _skn
 import texture_helper as _tex
 

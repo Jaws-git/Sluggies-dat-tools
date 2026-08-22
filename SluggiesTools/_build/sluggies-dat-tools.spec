@@ -20,6 +20,7 @@ a = Analysis(
         str(ROOT / "SluggiesTools"),
         str(ROOT / "SluggiesTools" / "Icons"),
         str(ROOT / "SluggiesTools" / "Hammerspace"),
+        str(ROOT / "SluggiesTools" / "InplacePatcher"),
     ],
     binaries=[],
     datas=[],

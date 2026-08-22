@@ -15,12 +15,21 @@ import os
 import sys
 import struct
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Resolve project directories relative to this file so the module works
+# regardless of the current working directory.
+_THIS_DIR  = os.path.dirname(os.path.abspath(__file__))   # .../SluggiesTools/InplacePatcher
+_TOOLS_DIR = os.path.dirname(_THIS_DIR)                    # .../SluggiesTools
+_ROOT_DIR  = os.path.dirname(_TOOLS_DIR)                   # project root
+
+# Ensure SluggiesTools/ (slogger, …) and this directory are importable.
+for _p in (_TOOLS_DIR, _THIS_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 import slogger as _slogger
 _slogger.configure()
 
-OUTPUT_DAT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '3_Output_Dat', 'dt_na.dat')
+OUTPUT_DAT = os.path.join(_ROOT_DIR, '3_Output_Dat', 'dt_na.dat')
 
 
 def _to_bytes(data) -> bytes:
