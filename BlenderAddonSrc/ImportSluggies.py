@@ -904,12 +904,13 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
 def build_armature(name, bone_list, collection):
     """Create a Blender Armature from a BoneHierarchy list and link it to *collection*.
 
-    Bone names are ``bone_<id>``.  Tails are aimed at the first child's head
-    when available; otherwise offset slightly along global Z so bones are
-    visible in the viewport.  Returns the armature object.
+    The armature object is named *name* (the imported .sluggie file name without
+    its extension). Bone names are ``bone_<id>``. Tails are aimed at the first
+    child's head when available; otherwise offset slightly along global Z so
+    bones are visible in the viewport. Returns the armature object.
     """
-    arm_data = bpy.data.armatures.new(name + "_arm")
-    arm_obj  = bpy.data.objects.new(name + "_arm", arm_data)
+    arm_data = bpy.data.armatures.new(name)
+    arm_obj  = bpy.data.objects.new(name, arm_data)
     collection.objects.link(arm_obj)
 
     prev_active = bpy.context.view_layer.objects.active
@@ -1010,7 +1011,12 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
         arm_obj = None
         abs_bone_mats = {}
         if bone_list:
-            base_name = f"{model_number}_{model_offset_hex}"
+            # Name the armature after the imported .sluggie file (without its
+            # extension) so it is easy to identify in the outliner. The export
+            # workflow does not rely on the armature name — meshes are matched
+            # by their VertexBufferOffset custom property and skin weights are
+            # read from bone_<id> vertex groups — so this is cosmetic.
+            base_name = os.path.splitext(os.path.basename(self.filepath))[0]
             arm_obj = build_armature(base_name, bone_list, collection)
             abs_bone_mats = _compute_bone_absolute_matrices(bone_list)
 

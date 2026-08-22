@@ -406,13 +406,41 @@ def encode_normal_edits(obj, json_normal_buffer, loop_indices, use_base64=True):
     Mirrors the per-loop UV contract of item 3.2: one quantized normal per loop
     in FacesDataEdited loop order (no deduplication) plus an identity per-loop
     index buffer. The patcher compacts the buffer like UVChannelDataEdited.
+
+    Records may declare more components than the three normal axes (CompCount 6
+    interleaves [NX, NY, NZ, X, Y, Z]). Blender only carries the normal, so the
+    trailing components are copied verbatim from the donor record each loop
+    referenced. Returns None when that donor mapping is unavailable.
     """
     normal_data = bytearray()
     comp = json_normal_buffer.get("NormalBufferCompCount", 3)
     quant = json_normal_buffer.get("NormalBufferQuantizeInfo", 0)
     is_float = (quant >> 4) in [4, 7, 0xa]
     divisor = 1 << (quant & 0xF)
-    for n in _per_loop_normals(obj.data, loop_indices):
+    comp_size = 4 if is_float else 2
+    stride = comp * comp_size
+
+    donor_tails = None
+    if comp > 3:
+        donor_raw = _to_bytes(json_normal_buffer.get("NormalBufferData"))
+        donor_faces = json_normal_buffer.get("NormalFacesData")
+        if not donor_raw or donor_faces is None or len(donor_raw) % stride:
+            return None
+        donor_indices = list(struct.unpack(
+            f'>{len(_to_bytes(donor_faces)) // 2}H', _to_bytes(donor_faces)))
+        # Trailing components can only be preserved with an unchanged loop layout.
+        if len(donor_indices) != len(loop_indices):
+            return None
+        donor_count = len(donor_raw) // stride
+        if any(index >= donor_count for index in donor_indices):
+            return None
+        tail_offset = 3 * comp_size
+        donor_tails = [
+            donor_raw[index * stride + tail_offset:(index + 1) * stride]
+            for index in donor_indices
+        ]
+
+    for loop_position, n in enumerate(_per_loop_normals(obj.data, loop_indices)):
         for val in n[:comp]:
             if is_float:
                 if not math.isfinite(float(val)):
@@ -424,6 +452,11 @@ def encode_normal_edits(obj, json_normal_buffer, loop_indices, use_base64=True):
                 normal_data += _pack_quantized_component(
                     val, divisor, f"{obj.name} per-loop normal component"
                 )
+        if donor_tails is not None:
+            normal_data += donor_tails[loop_position]
+
+    if len(normal_data) != len(loop_indices) * stride:
+        return None
     normal_faces = _from_bytes(
         struct.pack(f'>{len(loop_indices)}H', *range(len(loop_indices))), use_base64
     )
@@ -600,7 +633,8 @@ def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False, use_bas
 
     normal_edits = None
     normal_buffer = json_submesh.get("NormalBuffer")
-    if isinstance(normal_buffer, dict) and "NormalBufferData" in normal_buffer:
+    # Normals are only rewritten when the user opted in, matching in-place mode.
+    if use_custom_normals and isinstance(normal_buffer, dict) and "NormalBufferData" in normal_buffer:
         normal_edits = encode_normal_edits(obj, normal_buffer, loop_indices, use_base64)
 
     color_edits = {}
