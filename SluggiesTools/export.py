@@ -24,6 +24,12 @@ DEBUG_DONT_USE_BASE64 = '--debug' in sys.argv
 UNTANGLE_TEX = '--untangle' in sys.argv
 EXPORT_DAE = '--dae' in sys.argv
 
+# Model directory indices that hold stadiums (see folderNameMap):
+# 7 Mario Stadium ... 16 Toy Field. When UNTANGLE_SKIP_STADIUMS is enabled,
+# texture untangling is bypassed for these directories so their texture
+# names/bytes in the dat are left untouched.
+STADIUM_DIR_INDICES = range(7, 17)
+
 
 def _encode_bytes(data: bytes):
     """Encode binary data as a base64 string, or a list of byte ints when DEBUG_DONT_USE_BASE64."""
@@ -1341,6 +1347,15 @@ for dir_ind, file_arr in dirs.items():
     dir_dir = outdir + top_level_folder_name(dir_ind) + '/'
     if not os.path.exists(dir_dir):
         os.mkdir(dir_dir)
+    # Stadiums (dirs 7-16) keep their original texture names and bytes:
+    # pass a None untangle context so no renaming or dat rewriting happens.
+    dir_untangle_context = untangle_context
+    if UNTANGLE_SKIP_STADIUMS and dir_ind in STADIUM_DIR_INDICES:
+        dir_untangle_context = None
+        _slogger.info(
+            'Skipping texture untangling for stadium directory.',
+            source=f'export.dir{dir_ind}'
+        )
     for file_index, file in enumerate(file_arr):
         languages = ['en']
         # if file['en'][0] != file['sp'][0]:
@@ -1359,7 +1374,7 @@ for dir_ind, file_arr in dirs.items():
                 child.analyze()
                 if child.child:
                     child.child.analyze()
-                    child.child.toFile(lan_dir, export_tex=EXPORT_TEX, export_dae=EXPORT_DAE, untangle_context=untangle_context)
+                    child.child.toFile(lan_dir, export_tex=EXPORT_TEX, export_dae=EXPORT_DAE, untangle_context=dir_untangle_context)
                     if isinstance(child.child, Archive):
                         archive_dir = os.path.join(lan_dir, str(child.child.absolute))
                         for i in child.child.success:
@@ -1377,7 +1392,7 @@ for dir_ind, file_arr in dirs.items():
                                     "GPLUserDataLength": _gpl_ud_len,
                                     "GPLUserData": _gpl_ud,
                                     "TEXHeader": extract_tex_header(sub_model),
-                                    "TextureDescriptors": extract_texture_descriptors(sub_model, untangle_context=untangle_context),
+                                    "TextureDescriptors": extract_texture_descriptors(sub_model, untangle_context=dir_untangle_context),
                                     "Submeshes": extract_submeshes(sub_model),
                                     "SkinData": extract_skin_data(sub_model),
                                     "FacialPoseData": extract_facial_pose_data(sub_model),
@@ -1403,7 +1418,7 @@ for dir_ind, file_arr in dirs.items():
                                 "GPLUserDataLength": _gpl_ud_len,
                                 "GPLUserData": _gpl_ud,
                                 "TEXHeader": extract_tex_header(child.child),
-                                "TextureDescriptors": extract_texture_descriptors(child.child, untangle_context=untangle_context),
+                                "TextureDescriptors": extract_texture_descriptors(child.child, untangle_context=dir_untangle_context),
                                 "Submeshes": extract_submeshes(child.child),
                                 "SkinData": extract_skin_data(child.child),
                                 "FacialPoseData": extract_facial_pose_data(child.child),

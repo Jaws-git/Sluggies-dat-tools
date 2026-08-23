@@ -12,7 +12,16 @@ _LOG_DIR_INDEX = None
 TEX_TEMP_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), '..', '2_Output_Models', 'tex_temp')
 )
-UNTANGLE_IGNORE_BASENAME = { 'tex1_64x64_d6da4880cee95b7b_14' , "tex1_64x64_a09662ae19841ea4_14" , "tex1_64x64_8a05f75d65053b44_14", "tex1_64x64_cc3d32b121549b17_14" }
+
+UNTANGLE_SKIP_STADIUMS = True
+UNTANGLE_IGNORE_RAW = { 'tex1_64x64_d6da4880cee95b7b_14' , "tex1_64x64_a09662ae19841ea4_14" , "tex1_64x64_8a05f75d65053b44_14", "tex1_64x64_cc3d32b121549b17_14", "tex1_256x1024_bbd4db6290a9ce03_14", "tex1_256x512_0cd3d3567193d20d_14", "tex1_512x512_82ae50a699739e73_14" }
+
+# Entries may be written with or without the .png extension; compare on basenames only.
+UNTANGLE_IGNORE_BASENAME = {
+    name[:-4] if name.lower().endswith('.png') else name
+    for name in UNTANGLE_IGNORE_RAW
+}
+
 
 
 def _copy_texture_pngs(output_dir):
@@ -118,7 +127,7 @@ class Model0(FileChunk):
             raise ExpectedFormatSkip('Skipping archive member: not a model entry')
         self.gplPtr = self.word()
         if self.gplPtr == 0:
-            raise UnexportableEntrySkip('Skipping one sub-entry: no GPL data')
+            raise UnexportableEntrySkip('Skipping sub-entry: empty reserved equipment slot')
         if self.gplPtr > 0x40 or self.gplPtr < 0x20:
             raise Exception("no mesh data (gpl pointer is " + hex(self.gplPtr) + ")")
         self.ptr3 = self.word()

@@ -1255,29 +1255,37 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
 
     # Compute cumulative vertex starts per submesh (for global ↔ local mapping)
     _sub_vtx_starts = []
+    _sub_vtx_counts = []
     _cumulative = 0
     for _sm in submeshes:
         _vb = _sm["VertexBuffer"]
         _vb_cs = _comp_size_skin(_vb["VertexBufferQuantizeInfo"])
         _vtx_count = _vb["VertexBufferLength"] // (_vb["VertexBufferCompCount"] * _vb_cs)
         _sub_vtx_starts.append(_cumulative)
+        _sub_vtx_counts.append(_vtx_count)
         _cumulative += _vtx_count
 
-    # SK1: global_vertex_idx → bone_id (contiguous ranges from GplVertexArrValue)
+    # Maps target the original ENTRY INDEX, not the bone id: a bone may own
+    # several SK entries (different gplVertexArr destinations) and merging them
+    # would drop entries and corrupt the destination offsets.
+    # SK1: global_vertex_idx → entry index (contiguous ranges from GplVertexArrValue)
     _sk1_vertex_map: dict[int, int] = {}
-    for _e in skin_data.get('SK1s', []):
+    for _idx, _e in enumerate(skin_data.get('SK1s', [])):
         _first = (_e['GplVertexArrValue'] + _e.get('VertexOffset', 0)) // _vertex_stride
         for _i in range(_e['VertexCnt']):
-            _sk1_vertex_map[_first + _i] = _e['BoneIndex']
+            _sk1_vertex_map[_first + _i] = _idx
 
-    # SK2: global_vertex_idx → (b_lo, b_hi) (contiguous ranges)
-    _sk2_vertex_map: dict[int, tuple[int, int]] = {}
-    for _e in skin_data.get('SK2s', []):
-        _b1, _b2 = _e['BoneIndex1'], _e['BoneIndex2']
-        _pair = (min(_b1, _b2), max(_b1, _b2))
+    # SK2: global_vertex_idx → entry index (contiguous ranges)
+    _sk2_vertex_map: dict[int, int] = {}
+    for _idx, _e in enumerate(skin_data.get('SK2s', [])):
         _first = (_e['GplVertexArrValue'] + _e.get('VertexOffset', 0)) // _vertex_stride
         for _i in range(_e['VertexCnt']):
-            _sk2_vertex_map[_first + _i] = _pair
+            _sk2_vertex_map[_first + _i] = _idx
+
+    # Fallback targets for vertices outside every SK1/SK2 source range.
+    _first_sk1_entry_by_bone: dict[int, int] = {}
+    for _idx, _e in enumerate(skin_data.get('SK1s', [])):
+        _first_sk1_entry_by_bone.setdefault(_e['BoneIndex'], _idx)
 
     # Pre-compute custom split normals per object when requested
     custom_normals_cache = {}
@@ -1287,8 +1295,8 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
             if _cn is not None:
                 custom_normals_cache[_obj_id] = _cn
 
-    sk1_groups  = {}   # bone_id → [(sub_idx, local_v, obj)]
-    sk2_groups  = {}   # (b_lo, b_hi) → [(sub_idx, local_v, w_lo, w_hi, obj)]
+    sk1_groups  = {}   # SK1 entry index → [(sub_idx, local_v, obj)]
+    sk2_groups  = {}   # SK2 entry index → [(sub_idx, local_v, w_lo, w_hi, obj)]
     skacc_groups = {}  # bone_id → [(sub_idx, local_v, weight, dest_local_v, obj)]
 
     for _, (sub_idx, obj) in obj_to_sub.items():
@@ -1315,8 +1323,10 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
             # --- Definitive per-vertex classification using original maps ---
             if global_idx in _sk2_vertex_map:
                 # Vertex was originally in an SK2 entry — classify as SK2.
-                pair = _sk2_vertex_map[global_idx]
-                b_lo, b_hi = pair
+                sk2_entry_index = _sk2_vertex_map[global_idx]
+                _sk2_entry = skin_data['SK2s'][sk2_entry_index]
+                b_lo = min(_sk2_entry['BoneIndex1'], _sk2_entry['BoneIndex2'])
+                b_hi = max(_sk2_entry['BoneIndex1'], _sk2_entry['BoneIndex2'])
                 # Extract weights for the pair bones from Blender groups
                 w_lo = 0.0
                 w_hi = 0.0
@@ -1325,7 +1335,7 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
                         w_lo = w
                     elif b == b_hi:
                         w_hi = w
-                sk2_groups.setdefault(pair, []).append(
+                sk2_groups.setdefault(sk2_entry_index, []).append(
                     (sub_idx, v_idx, w_lo, w_hi, obj))
                 # Any other bones with groups → SKAcc overlay
                 for b, w in parsed:
@@ -1335,8 +1345,9 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
 
             elif global_idx in _sk1_vertex_map:
                 # Vertex was originally in an SK1 entry — classify as SK1.
-                sk1_bone = _sk1_vertex_map[global_idx]
-                sk1_groups.setdefault(sk1_bone, []).append((sub_idx, v_idx, obj))
+                sk1_entry_index = _sk1_vertex_map[global_idx]
+                sk1_bone = skin_data['SK1s'][sk1_entry_index]['BoneIndex']
+                sk1_groups.setdefault(sk1_entry_index, []).append((sub_idx, v_idx, obj))
                 # Any other bones with groups → SKAcc overlay
                 for b, w in parsed:
                     if b != sk1_bone and b in original_skacc_bone_ids:
@@ -1353,7 +1364,51 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
                         skacc_groups.setdefault(b, []).append(
                             (sub_idx, v_idx, w, v_idx, obj))
                     elif b in original_sk1_bone_ids:
-                        sk1_groups.setdefault(b, []).append((sub_idx, v_idx, obj))
+                        sk1_groups.setdefault(
+                            _first_sk1_entry_by_bone[b], []).append(
+                                (sub_idx, v_idx, obj))
+
+    # A Blender vertex group holds only one weight per (vertex, bone), so donor
+    # SKAcc entries that accumulate twice onto the same dest slot cannot survive
+    # the round trip.  Rebuild those entries from the donor dest/weight arrays,
+    # taking only the bind-pose source from Blender.
+    _obj_by_sub = {sub_idx: obj for _, (sub_idx, obj) in obj_to_sub.items()}
+
+    def _resolve_global_vertex(global_idx):
+        for _sub_idx, _start in enumerate(_sub_vtx_starts):
+            if _start <= global_idx < _start + _sub_vtx_counts[_sub_idx]:
+                _obj = _obj_by_sub.get(_sub_idx)
+                if _obj is None:
+                    return None
+                _local = global_idx - _start
+                if _local >= len(_obj.data.vertices):
+                    return None
+                return _sub_idx, _local, _obj
+        return None
+
+    for _e in skin_data.get('SKAccs', []):
+        _n = _e['VertexCnt']
+        if _n == 0:
+            continue
+        _dests = list(struct.unpack(f'>{_n}H', _to_bytes(_e['DestIndexData'])))
+        if len(set(_dests)) == _n:
+            continue
+        _weights = _to_bytes(_e['WeightData'])
+        _dest_base = _e.get('GplDestArrValue', 0) // _vertex_stride
+        _rebuilt = []
+        for _di, _w in zip(_dests, _weights):
+            _loc = _resolve_global_vertex(_dest_base + _di)
+            if _loc is None:
+                _rebuilt = None
+                break
+            _sub_idx, _local_v, _obj = _loc
+            _rebuilt.append((_sub_idx, _local_v, _w / 256.0, _di, _obj))
+        if _rebuilt is None:
+            warnings.append(
+                f"SKAcc bone {_e['BoneIndex']}: duplicate dest slots could not be "
+                f"resolved to mesh vertices; entry left as rebuilt from Blender")
+            continue
+        skacc_groups[_e['BoneIndex']] = _rebuilt
 
     def encode_src(entries):
         raw = bytearray()
@@ -1377,28 +1432,28 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
     # preserves vertex ordering (slot i in the Blender mesh == slot i in the GPL
     # position buffer).  Without these values the runtime CPU skinning writes all
     # SK1/SK2 output on top of each other at offset 0.
-    _orig_sk1_gva = {
-        e['BoneIndex']: e.get('GplVertexArrValue', 0)
-        for e in skin_data.get('SK1s', [])
-    }
-    _orig_sk2_gva = {
-        (min(e['BoneIndex1'], e['BoneIndex2']), max(e['BoneIndex1'], e['BoneIndex2'])):
-            e.get('GplVertexArrValue', 0)
-        for e in skin_data.get('SK2s', [])
-    }
+    _orig_sk1s_list = skin_data.get('SK1s', [])
+    _orig_sk2s_list = skin_data.get('SK2s', [])
     _orig_skacc_gda = {
         e['BoneIndex']: e.get('GplDestArrValue', 0)
         for e in skin_data.get('SKAccs', [])
     }
 
-    new_sk1s = [
-        {"BoneIndex": b, "VertexCnt": len(e), "BindPoseData": encode_src(e),
-         "GplVertexArrValue": _orig_sk1_gva.get(b, 0)}
-        for b, e in sorted(sk1_groups.items())
-    ]
+    new_sk1s = []
+    for entry_index, entries in sorted(sk1_groups.items()):
+        orig = _orig_sk1s_list[entry_index]
+        new_sk1s.append({
+            "BoneIndex": orig['BoneIndex'],
+            "VertexCnt": len(entries),
+            "BindPoseData": encode_src(entries),
+            "GplVertexArrValue": orig.get('GplVertexArrValue', 0),
+        })
 
     new_sk2s = []
-    for (b_lo, b_hi), entries in sorted(sk2_groups.items()):
+    for entry_index, entries in sorted(sk2_groups.items()):
+        orig = _orig_sk2s_list[entry_index]
+        b_lo = min(orig['BoneIndex1'], orig['BoneIndex2'])
+        b_hi = max(orig['BoneIndex1'], orig['BoneIndex2'])
         wt = bytearray()
         for e in entries:
             wt.append(max(0, min(255, round(e[2] * 256))))
@@ -1408,7 +1463,7 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
             "VertexCnt": len(entries),
             "BindPoseData": encode_src(entries),
             "WeightData": _from_bytes(bytes(wt), use_base64),
-            "GplVertexArrValue": _orig_sk2_gva.get((b_lo, b_hi), 0),
+            "GplVertexArrValue": orig.get('GplVertexArrValue', 0),
         })
 
     new_skaccs = []

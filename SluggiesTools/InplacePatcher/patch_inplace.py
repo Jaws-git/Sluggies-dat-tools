@@ -247,7 +247,7 @@ if not os.path.exists(INPUT_DAT):
     abort(f"Input file not found: {INPUT_DAT}\nCannot continue without a source dt_na.dat.")
 
 if os.path.exists(OUTPUT_DAT):
-    _slogger.warning(f"Output file already exists, skipping copy: {OUTPUT_DAT}", source="patch_inplace")
+    _slogger.info(f"Output file already exists, skipping copy: {OUTPUT_DAT}", source="patch_inplace")
 else:
     shutil.copy2(INPUT_DAT, OUTPUT_DAT)
     _slogger.info(f"Copied {INPUT_DAT} -> {OUTPUT_DAT}", source="patch_inplace")
