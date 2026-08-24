@@ -27,6 +27,7 @@ OUTPUT_DAT = os.path.join(OUTPUT_DIR, 'dt_na.dat')
 
 import patch_skn_inplace as _skn
 import texture_helper as _tex
+import root_scale as _root_scale
 
 # ---------------------------------------------------------------------------
 # Shader-mode conversion constants and helpers
@@ -264,6 +265,7 @@ bone_geo_patches = []   # (bone_id, file_offset, raw_bytes)
 skin_data = data["SluggiesModel"].get("SkinData")  # None for non-skinned models
 facial_patches = _facial_position_patches(data["SluggiesModel"], unpatch)
 bone_hierarchy = data["SluggiesModel"].get("BoneHierarchy") or []
+root_scale_patch = _root_scale.root_scale_patch(data["SluggiesModel"], bone_hierarchy, unpatch, abort)
 
 
 def _bone_geo_raw_original(bd: dict) -> int:
@@ -479,11 +481,12 @@ if _model.get("ReimportTextures"):
 
 _textures_patched = len({w.texture_index for w in texture_writes})
 
-if patches or uv_patches or setting_patches or facial_patches or bone_geo_patches or texture_writes:
+if patches or uv_patches or setting_patches or facial_patches or bone_geo_patches or root_scale_patch or texture_writes:
     _slogger.info(
         f"Writing {len(patches)} vertex, {len(uv_patches)} UV, "
         f"{len(setting_patches)} shader-mode, {len(facial_patches)} facial-pose, "
-        f"{len(bone_geo_patches)} bone-geo, {_textures_patched} texture "
+        f"{len(bone_geo_patches)} bone-geo, {1 if root_scale_patch else 0} root-scale, "
+        f"{_textures_patched} texture "
         f"patch(es) to {OUTPUT_DAT} ...",
         source="patch_inplace",
     )
@@ -509,6 +512,14 @@ if patches or uv_patches or setting_patches or facial_patches or bone_geo_patche
             f.write(raw)
             _slogger.info(
                 f"Bone {bone_id} GeoId: wrote {raw.hex()} at 0x{offset:X}",
+                source="patch_inplace",
+            )
+        if root_scale_patch:
+            bone_id, offset, raw = root_scale_patch
+            f.seek(offset)
+            f.write(raw)
+            _slogger.info(
+                f"Bone {bone_id} root SRT scale: wrote {raw.hex()} at 0x{offset:X}",
                 source="patch_inplace",
             )
         # Apply texture writes grouped by texture_index; verify each write
@@ -583,6 +594,7 @@ summary = (
     f"ShaderMode (Type-7 FourCC) patched  : {len(setting_patches)}\n"
     f"Facial position poses patched       : {len(facial_patches)}\n"
     f"Bone GeoId fields patched           : {len(bone_geo_patches)}\n"
+    f"Root-bone SRT scale patched         : {1 if root_scale_patch else 0}\n"
     f"Textures patched (in-place)         : {_textures_patched}\n"
     f"Textures skipped (mip layout)       : {texture_skipped_count}\n"
     f"Output file                         : {OUTPUT_DAT}"

@@ -264,6 +264,59 @@ def update_facial_pose_edits(candidates, data, warnings):
         model.pop("FacialPoseDataEdited", None)
 
 
+def _find_root_scale_armature(candidates, context):
+    """Return the imported armature object that carries the ``RootBoneScale``
+    custom property, or None.
+
+    The importer parents every skinned mesh to the armature, so the primary
+    lookup walks up each candidate's parent chain. A scene-wide fallback covers
+    the edge case where the mesh was reparented or the armature is simply
+    selected without its meshes.
+    """
+    for obj in candidates:
+        node = obj
+        while node is not None:
+            if node.type == 'ARMATURE' and "RootBoneScale" in node:
+                return node
+            node = node.parent
+    for obj in context.scene.objects:
+        if obj.type == 'ARMATURE' and "RootBoneScale" in obj:
+            return obj
+    return None
+
+
+def encode_root_bone_scale_edited(candidates, data, warnings, context):
+    """Read the armature's ``RootBoneScale`` and, when it differs from the
+    unit scale [1, 1, 1], write it to ``SluggiesModel.RootBoneScaleEdited``.
+
+    The field is popped when the scale is unchanged so an untouched import
+    never writes it back. Returns the written 3-element scale list, or None
+    when nothing was written (no armature found, or scale already unit).
+    """
+    model = data.get("SluggiesModel", {})
+    arm_obj = _find_root_scale_armature(candidates, context)
+    if arm_obj is None:
+        model.pop("RootBoneScaleEdited", None)
+        return None
+
+    scale = arm_obj["RootBoneScale"]
+    if scale is None or len(scale) != 3:
+        warnings.append(
+            f"{arm_obj.name}: RootBoneScale must be a 3-element vector; "
+            "root-bone scale export skipped."
+        )
+        model.pop("RootBoneScaleEdited", None)
+        return None
+
+    value = [float(scale[0]), float(scale[1]), float(scale[2])]
+    if value == [1.0, 1.0, 1.0]:
+        model.pop("RootBoneScaleEdited", None)
+        return None
+
+    model["RootBoneScaleEdited"] = value
+    return value
+
+
 def _uv_layer_name(all_channels, target_ch_ind):
     """Return the Blender UV layer name for *target_ch_ind*, using the same
     deduplication logic that ImportSluggies applies when creating UV layers.
@@ -2096,6 +2149,9 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
 
         update_facial_pose_edits(candidates, data, warnings)
 
+        # Whole-model root-bone scale — model-level, written only when edited.
+        root_scale = encode_root_bone_scale_edited(candidates, data, warnings, context)
+
         for w in warnings:
             self.report({"WARNING"}, w)
 
@@ -2112,8 +2168,12 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         filename = os.path.basename(self.filepath)
         context.window_manager.clipboard = filename
         subprocess.run(['clip'], input=filename.encode('utf-16-le'), check=False)
+        scale_note = (
+            f" (root bone scale {root_scale[0]:.4f}, {root_scale[1]:.4f}, {root_scale[2]:.4f})"
+            if root_scale else ""
+        )
         self.report({"INFO"},
-            f"Wrote edited vertex data for {written} submesh(es) to {self.filepath}")
+            f"Wrote edited vertex data for {written} submesh(es){scale_note} to {self.filepath}")
         return {"FINISHED"}
 
 

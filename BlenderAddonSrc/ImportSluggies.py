@@ -913,6 +913,18 @@ def build_armature(name, bone_list, collection):
     arm_obj  = bpy.data.objects.new(name, arm_data)
     collection.objects.link(arm_obj)
 
+    # Whole-model (root-bone) scale, editable by the user in the outliner.
+    # Defaults to unit scale so an untouched import writes nothing back. The
+    # exporter reads this and emits RootBoneScaleEdited when it differs from
+    # [1,1,1]; the patcher then scales the model's main root bone SRT.
+    arm_obj["RootBoneScale"] = (1.0, 1.0, 1.0)
+    arm_obj.id_properties_ui("RootBoneScale").update(
+        description=(
+            "Whole-model scale applied to the main root bone. "
+            "Leave at [1,1,1] for no change; any other value is written back "
+            "to dt_na.dat on export."
+        ))
+
     prev_active = bpy.context.view_layer.objects.active
     bpy.context.view_layer.objects.active = arm_obj
     bpy.ops.object.mode_set(mode='EDIT')
