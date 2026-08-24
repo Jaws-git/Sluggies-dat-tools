@@ -1248,6 +1248,14 @@ def extract_bone_data(model):
         draw_priority = int(bl.priority) if bl else 0
         geo_raw = int(bl.geoFileIdRaw) if bl and hasattr(bl, 'geoFileIdRaw') else (0xFFFF if bone.skinned else int(bone.GEOID))
         geo_field_off = hex(bl.absolute + 0x0C) if bl else None
+        # Absolute offset of the SRT block (ACT abs + orientationPTR). The
+        # bind-pose scale floats live at SRTOffset + 0x04; the patcher uses
+        # this to write an edited scale back in place. None when the bone has
+        # no SRT block (orientationPTR == 0).
+        srt_field_off = (
+            hex(model.ACT.absolute + bl.orientationPTR)
+            if bl and bl.orientationPTR else None
+        )
 
         bone_list.append({
             "BoneId":          int(bone.id),
@@ -1258,6 +1266,7 @@ def extract_bone_data(model):
             "Skinned":         bool(bone.skinned),
             "TrackId":         int(bone.track_id),
             "SRTType":         int(srt_type),
+            "SRTOffset":       srt_field_off,
             "DrawPriority":    draw_priority,
             "InheritTransform": bool(bone.relative),
             "Translation":     trans,

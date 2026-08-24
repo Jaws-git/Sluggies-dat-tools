@@ -1001,6 +1001,10 @@
               "type": "number",
               "description": "Type byte at SRT block +0x00 (values: 0x4, 0x8, 0xc for a full scale/rotation/translation block; 0 when orientationPTR is null). Required to write the SRT block header during ACT reassembly."
             },
+            "SRTOffset": {
+              "type": ["string", "null"],
+              "description": "Absolute file offset (hex) of this bone's SRT block, computed as the ACT section's absolute offset + orientationPTR. The SRT block stores the bind-pose scale at +0x04 (3 big-endian floats), the rotation quaternion at +0x10, and the translation at +0x20. Null when orientationPTR is 0 (the bone has no SRT block). Used by the in-place patcher to locate where an edited bind-pose scale should be written back."
+            },
             "DrawPriority": {
               "type": "number",
               "description": "Render priority for this bone (uint8 at ACTBoneLayout +0x19). Controls draw order for rigid (non-skinned) sub-mesh bones."
@@ -1127,6 +1131,13 @@
           },
           "required": ["BoneId", "GeoId", "ParentBoneId", "Skinned", "TrackId", "Translation", "Scale", "Quaternion", "VertexInfluences"]
         }
+      },
+      "RootBoneScaleEdited": {
+        "type": "array",
+        "description": "Optional whole-model scale [X, Y, Z] written by the Blender exporter when the user edits the armature's RootBoneScale property and it differs from [1, 1, 1]. The patcher writes these 3 big-endian floats into the SRT block (+0x04) of the main root bone (the top-level bone with no parent, typically BoneId 0), scaling the entire model. Absent when no root scale was applied. The main root bone is never scale-animated by ANM tracks, so this bind-pose scale is the authoritative runtime scale for all animations.",
+        "items": { "type": "number" },
+        "minItems": 3,
+        "maxItems": 3
       },
       "UseHammerspace": {
         "type": "boolean",
