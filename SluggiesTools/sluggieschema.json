@@ -1141,7 +1141,7 @@
       },
       "UseHammerspace": {
         "type": "boolean",
-        "description": "Written by the Blender exporter. When true, patch_inplace.py uses writeExpandedMesh to relocate vertex, UV, draw-list, and skin source data into hammerspace chunks so that buffer sizes can change freely. When false or absent, all buffers are patched in-place at their original file offsets and sizes must not change."
+        "description": "Written by the Blender exporter. When true, start.py routes the file to HammerspaceMain.py, which rebuilds the model and relocates vertex, UV, draw-list, and skin source data into hammerspace chunks so that buffer sizes can change freely. When false or absent, the file is patched in-place at its original file offsets by patch_inplace.py and buffer sizes must not change. Note: this flag only describes how THIS file should be written; start.py also inspects the current 3_Output_Dat/main.dol entry and, if the model is already living in hammerspace, removes it first before an in-place operation so the original bytes and DOL route are restored."
       },
       "ReimportTextures": {
         "type": "boolean",

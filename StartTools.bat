@@ -6,19 +6,22 @@ set SLUGGIES_LAUNCHER=python start.py
 if exist "%~dp0sluggies-dat-tools.exe" set SLUGGIES_LAUNCHER="%~dp0sluggies-dat-tools.exe"
 
 :menu
+echo.
 echo ==================
 echo Sluggers Dat Tools
 echo ==================
+echo.
+echo --- Extract & Prepare ---
 echo [1] Extract all models, icons ^& 'untangle' textures (for Dolphin texture loader)
 echo [2] Extract all models - no texture untangling
 echo [3] Extract player icons only
-echo ---
 echo [4] Patch all 6 unused-character icons into game files
-echo ---
+echo --- Patch ---
 echo [5] Patch .sluggies model into game files
 echo [6] UnPatch .sluggies model in game files
+echo --- Other ---
 echo [7] Manually resize available hammerspace (extra model data storage) - usually not necessary
-echo [8] Reimport patched standard icon sheets into dt_na.dat
+echo [8] Reimport edited standard icon sheets into dt_na.dat
 echo.
 set "tools_choice="
 set /p "tools_choice=Enter option (or type exit to quit): "
@@ -35,6 +38,8 @@ if "!tools_choice!"=="1" (
     call !SLUGGIES_LAUNCHER! --prepare-icon-routes --no-overwrite-copy
     if errorlevel 1 goto :after_command
     call !SLUGGIES_LAUNCHER! --export-icons --use-output
+    if errorlevel 1 goto :after_command
+    call !SLUGGIES_LAUNCHER! --add-custom-icons
     goto :after_command
 )
 if "!tools_choice!"=="2" (

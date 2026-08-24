@@ -240,6 +240,53 @@ def hammerspace_section_args(model):
     return args
 
 
+def _current_model_in_hammerspace(chunk_number, file_index):
+    """Return True when the model's DOL entry currently points into the
+    hammerspace region of ``3_Output_Dat/main.dol``.
+
+    This detects a stale-state gap: a model that was previously patched via
+    Hammerspace (``UseHammerspace=true``) but is now being re-patched with an
+    in-place file (``UseHammerspace=false``). After a Hammerspace patch the
+    original DAT region has been zeroed and the DOL points at the hammerspace
+    block, so a plain in-place patch would write into a zeroed region while
+    the game keeps loading from hammerspace -- silently losing the edit.
+
+    The check reads the *current* (output) DOL entry, not the file's flag, so
+    it reflects what is actually on disk. Any read failure fails safe to
+    ``False`` (the existing, unguarded behavior).
+    """
+    if chunk_number is None or file_index is None:
+        return False
+
+    # Lazy import so start.py stays a pure dispatcher at import time and the
+    # Hammerspace module (and its slogger / sys.path setup) is only loaded when
+    # a patch is actually being dispatched.
+    try:
+        from SluggiesTools.Hammerspace import HammerspaceHelper
+    except Exception as exc:  # pragma: no cover - import side effects
+        slogger.warning(
+            f"Could not import HammerspaceHelper to check DOL state ({exc}); "
+            "assuming the model is not in hammerspace.",
+            source="dispatcher",
+        )
+        return False
+
+    try:
+        offset, _length = HammerspaceHelper.readOutputDolEntry(chunk_number, file_index)
+    except Exception as exc:
+        slogger.warning(
+            f"Could not read the current DOL entry (chunk={chunk_number}, "
+            f"file_index={file_index}): {exc}; assuming the model is not in hammerspace.",
+            source="dispatcher",
+        )
+        return False
+
+    if offset == -1:
+        # No output DOL yet, or chunk out of range -> nothing in hammerspace.
+        return False
+    return offset >= HammerspaceHelper.BASE_SIZE
+
+
 def run_patching(filenames, unpatch=False):
     for filename in filenames:
         matches = [
@@ -273,6 +320,28 @@ def run_patching(filenames, unpatch=False):
                 cmd.append('--unpatch')
             subprocess.run(cmd, cwd=HS_DIR, check=True)
         else:
+            # Stale-state guard: if the model is currently living in
+            # hammerspace (DOL offset >= BASE_SIZE) but this file requests an
+            # in-place operation, the original DAT region was zeroed by the
+            # hammerspace write and the DOL still points at the hammerspace
+            # block. Writing in-place here would land in a zeroed region while
+            # the game keeps loading hammerspace, silently losing the edit.
+            # Restore the original model (bytes + DOL route) first, then apply
+            # the requested in-place operation on a clean original.
+            if _current_model_in_hammerspace(model.get('ChunkNumber'), model.get('FileIndex')):
+                slogger.info(
+                    f"Model is currently in hammerspace but this file requests an "
+                    f"{'in-place unpatch' if unpatch else 'in-place patch'}; removing the "
+                    "hammerspace block first to restore the original model bytes "
+                    "and DOL route.",
+                    source="dispatcher",
+                )
+                subprocess.run(
+                    python_script_command(HS_MAIN_SCRIPT, found, '--unpatch'),
+                    cwd=HS_DIR,
+                    check=True,
+                )
+
             cmd = python_script_command(PATCH_SCRIPT, found)
             if unpatch:
                 cmd.append('--unpatch')
