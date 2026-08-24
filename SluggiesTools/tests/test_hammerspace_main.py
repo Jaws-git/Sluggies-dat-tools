@@ -1164,5 +1164,95 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
         self.assertEqual(result.section_sizes['TEX'], len(b'TEX'))
 
 
+class BuildModelBlockRootScaleTests(unittest.TestCase):
+    """Integration test: ``_apply_root_scale_patch`` writes the edited root-bone
+    SRT scale into the cloned ACT section at the ACT-section-relative offset.
+
+    Only the ACT section payload is mocked. The real ``_act_section_absolute``
+    reads the model-block header from a temp INPUT_DAT, and the real
+    ``hammerspace_root_scale_patch`` resolves the main root bone and computes the
+    offset, so this exercises the full write path end-to-end.
+    """
+
+    SOURCE_MODEL_OFFSET = 0x1000
+    ACT_OFF = 0x40          # model header +0x08 -> ACT section rel. to model start
+    ORIENTATION_PTR = 0x50  # SRT offset rel. to ACT section start
+
+    def _write_input_dat(self, temp_dir, act_off):
+        input_dat = pathlib.Path(temp_dir) / 'dt_na.dat'
+        buf = bytearray(0x2000)
+        # Model block header at SOURCE_MODEL_OFFSET; +0x08 holds act_off.
+        struct.pack_into('>I', buf, self.SOURCE_MODEL_OFFSET + 0x08, act_off)
+        input_dat.write_bytes(bytes(buf))
+        return input_dat
+
+    def _bones(self):
+        # Bone 0 is a parentless leaf; Bone 1 is the parentless root of the
+        # visible subtree; Bone 2 hangs off Bone 1. Main root must be Bone 1.
+        srt_absolute = self.SOURCE_MODEL_OFFSET + self.ACT_OFF + self.ORIENTATION_PTR
+        return [
+            {'BoneId': 0, 'ParentBoneId': None, 'SRTOffset': None, 'Scale': [1.0, 1.0, 1.0]},
+            {'BoneId': 1, 'ParentBoneId': None, 'SRTOffset': f'0x{srt_absolute:X}', 'Scale': [1.0, 1.0, 1.0]},
+            {'BoneId': 2, 'ParentBoneId': 1, 'SRTOffset': None, 'Scale': [1.0, 1.0, 1.0]},
+        ]
+
+    def test_writes_edited_scale_at_act_relative_offset(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = self._write_input_dat(temp_dir, self.ACT_OFF)
+            act_bytes = b'\x00' * 0x80
+            data = {'SluggiesModel': {
+                'RootBoneScaleEdited': [2.0, 1.5, 1.0],
+                'BoneHierarchy': self._bones(),
+            }}
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                patched = main._apply_root_scale_patch(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+
+        # Scale lands at orientationPTR + 0x04 within the ACT section.
+        scale_offset = self.ORIENTATION_PTR + 0x04
+        self.assertEqual(
+            patched[scale_offset:scale_offset + 12],
+            struct.pack('>3f', 2.0, 1.5, 1.0),
+        )
+        # Everything else in the cloned ACT section is untouched.
+        self.assertEqual(patched[:scale_offset], act_bytes[:scale_offset])
+        self.assertEqual(patched[scale_offset + 12:], act_bytes[scale_offset + 12:])
+
+    def test_no_edit_returns_unchanged(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = self._write_input_dat(temp_dir, self.ACT_OFF)
+            act_bytes = b'\x11' * 0x80
+            data = {'SluggiesModel': {'BoneHierarchy': self._bones()}}
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                result = main._apply_root_scale_patch(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+        self.assertEqual(result, act_bytes)
+
+    def test_no_act_section_returns_unchanged(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = self._write_input_dat(temp_dir, 0)  # act_off == 0 -> no ACT
+            act_bytes = b'\x00' * 0x80
+            data = {'SluggiesModel': {
+                'RootBoneScaleEdited': [2.0, 1.5, 1.0],
+                'BoneHierarchy': self._bones(),
+            }}
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                result = main._apply_root_scale_patch(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+        self.assertEqual(result, act_bytes)
+
+    def test_mismatched_srt_offset_raises(self):
+        # SRTOffset before the ACT section start -> .sluggie metadata mismatch.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = self._write_input_dat(temp_dir, self.ACT_OFF)
+            bones = self._bones()
+            bones[1]['SRTOffset'] = f'0x{self.SOURCE_MODEL_OFFSET + self.ACT_OFF - 1:X}'
+            act_bytes = b'\x00' * 0x80
+            data = {'SluggiesModel': {
+                'RootBoneScaleEdited': [2.0, 1.5, 1.0],
+                'BoneHierarchy': bones,
+            }}
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                with self.assertRaises(ValueError):
+                    main._apply_root_scale_patch(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+
+
 if __name__ == '__main__':
     unittest.main()

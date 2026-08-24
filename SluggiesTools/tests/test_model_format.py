@@ -154,5 +154,77 @@ class RootBoneScaleTests(unittest.TestCase):
         raise SystemExit(1)
 
 
+class HammerspaceRootBoneScaleTests(unittest.TestCase):
+    def _abort(self, message):
+        raise SystemExit(1)
+
+    def test_hammerspace_patch_offset_is_act_section_relative(self):
+        # SRTOffset is an absolute INPUT-file offset (ACT.absolute +
+        # orientationPTR). The hammerspace patcher must convert it to an
+        # ACT-section-relative offset (orientationPTR + 0x04) so the write
+        # stays correct after the block is relocated.
+        bones = [
+            _hierarchy(0, None),
+            _hierarchy(1, None, srt_offset='0x4050'),
+            _hierarchy(2, 1),
+        ]
+        model = {'RootBoneScaleEdited': [2.0, 1.5, 1.0]}
+        patch = _root_scale.hammerspace_root_scale_patch(
+            model, bones, act_section_absolute=0x4000, abort=self._abort,
+        )
+        self.assertIsNotNone(patch)
+        bone_id, offset, raw = patch
+        self.assertEqual(bone_id, 1)
+        # 0x4050 - 0x4000 + 0x04 = 0x54 (orientationPTR + 0x04)
+        self.assertEqual(offset, 0x54)
+        self.assertEqual(struct.unpack('>3f', raw), (2.0, 1.5, 1.0))
+
+    def test_hammerspace_patch_no_edit_returns_none(self):
+        bones = [_hierarchy(1, None, srt_offset='0x4050')]
+        self.assertIsNone(
+            _root_scale.hammerspace_root_scale_patch(
+                {}, bones, act_section_absolute=0x4000, abort=self._abort,
+            )
+        )
+
+    def test_hammerspace_patch_missing_srt_offset_aborts(self):
+        bones = [
+            _hierarchy(0, None),
+            _hierarchy(1, None),  # no SRTOffset (pre-Step-1 export)
+            _hierarchy(2, 1),
+        ]
+        model = {'RootBoneScaleEdited': [2.0, 2.0, 2.0]}
+        with self.assertRaises(SystemExit):
+            _root_scale.hammerspace_root_scale_patch(
+                model, bones, act_section_absolute=0x4000, abort=self._abort,
+            )
+
+    def test_hammerspace_patch_non_finite_scale_aborts(self):
+        bones = [_hierarchy(1, None, srt_offset='0x4050')]
+        with self.assertRaises(SystemExit):
+            _root_scale.hammerspace_root_scale_patch(
+                {'RootBoneScaleEdited': [float('inf'), 1.0, 1.0]},
+                bones, act_section_absolute=0x4000, abort=self._abort,
+            )
+
+    def test_hammerspace_patch_out_of_range_scale_aborts(self):
+        bones = [_hierarchy(1, None, srt_offset='0x4050')]
+        with self.assertRaises(SystemExit):
+            _root_scale.hammerspace_root_scale_patch(
+                {'RootBoneScaleEdited': [1e9, 1.0, 1.0]},
+                bones, act_section_absolute=0x4000, abort=self._abort,
+            )
+
+    def test_hammerspace_patch_srt_before_act_start_aborts(self):
+        # A SRTOffset that lands before the ACT section start means the
+        # .sluggie metadata does not match this model's ACT layout.
+        bones = [_hierarchy(1, None, srt_offset='0x3FFF')]
+        model = {'RootBoneScaleEdited': [2.0, 2.0, 2.0]}
+        with self.assertRaises(SystemExit):
+            _root_scale.hammerspace_root_scale_patch(
+                model, bones, act_section_absolute=0x4000, abort=self._abort,
+            )
+
+
 if __name__ == '__main__':
     unittest.main()

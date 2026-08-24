@@ -17,6 +17,7 @@ import HammerspaceHelper as hh
 from BlockValidator import validate_model_block
 from GeometryRebuild import rebuild_edited_uvs, rebuild_surface_assignments, _color_entry_size
 from ModelFormat import align_array_offset, compute_mem_clear_range, pad_array
+from InplacePatcher import root_scale as _root_scale
 
 # ---------------------------------------------------------------------------
 # Parsed data structures
@@ -1877,6 +1878,87 @@ def CloneACT(model_offset: int, model_length: int) -> bytes:
     return data
 
 
+def _act_section_absolute(source_model_offset: int) -> int:
+    """Return the absolute INPUT-file offset of a model's ACT section.
+
+    Reads the model block header at ``source_model_offset`` in INPUT dt_na.dat
+    and returns ``source_model_offset + act_off`` (``act_off`` is the big-endian
+    uint32 at header +0x08). Returns 0 when the model has no ACT section
+    (``act_off`` is 0).
+
+    This is the reference point used to convert the ``.sluggie``'s absolute
+    ``SRTOffset`` (``ACT.absolute + orientationPTR``) into an ACT-section-relative
+    offset, which stays valid after the hammerspace block is relocated.
+    """
+    import struct as _s
+    with open(hh.INPUT_DAT, 'rb') as f:
+        f.seek(source_model_offset)
+        hdr = f.read(0x20)
+    if len(hdr) < 0x20:
+        return 0
+    act_off = _s.unpack_from('>I', hdr, 0x08)[0]
+    if not act_off:
+        return 0
+    return source_model_offset + act_off
+
+
+def _apply_root_scale_patch(act_bytes: bytes, data: dict, source_model_offset: int) -> bytes:
+    """Apply the root-bone SRT scale patch to a cloned ACT section.
+
+    Reads the model's ``BoneHierarchy`` and ``RootBoneScaleEdited`` from the
+    ``.sluggies`` data, computes the root-bone SRT scale patch (3 big-endian
+    floats) via ``root_scale.hammerspace_root_scale_patch``, and writes it into
+    the in-memory ACT section bytes at the ACT-section-relative offset
+    (``orientationPTR + 0x04``).
+
+    Because the hammerspace block is written to a new absolute offset, the
+    absolute ``SRTOffset`` recorded in the ``.sluggie`` is not valid for the
+    output. The ACT section, however, is cloned verbatim, so the SRT offset
+    relative to the ACT section start is stable. Writing the scale at that
+    relative offset keeps it correct regardless of hammerspace block size
+    changes or relocation.
+
+    Returns the (possibly modified) ACT section bytes. When there is no
+    ``RootBoneScaleEdited`` (or no bone hierarchy / no ACT section), the original
+    ``act_bytes`` are returned unchanged.
+    """
+    model = data['SluggiesModel']
+    bone_hierarchy = model.get('BoneHierarchyEdited') or model.get('BoneHierarchy')
+    if not bone_hierarchy or not act_bytes:
+        return act_bytes
+    act_section_absolute = _act_section_absolute(source_model_offset)
+    if not act_section_absolute:
+        return act_bytes
+    patch = _root_scale.hammerspace_root_scale_patch(
+        model, bone_hierarchy, act_section_absolute, _hs_abort
+    )
+    if patch is None:
+        return act_bytes
+    bone_id, scale_relative, raw = patch
+    if scale_relative < 0 or scale_relative + len(raw) > len(act_bytes):
+        raise ValueError(
+            f'root-bone SRT scale for bone {bone_id} at ACT+0x{scale_relative:X} '
+            f'({len(raw)} bytes) exceeds the cloned ACT section size '
+            f'0x{len(act_bytes):X}; the .sluggie SRTOffset metadata does not match '
+            f'this model ACT layout'
+        )
+    patched = bytearray(act_bytes)
+    patched[scale_relative:scale_relative + len(raw)] = raw
+    _slogger.info(
+        f'[ACT] root-bone SRT scale: bone {bone_id} wrote {raw.hex()} at '
+        f'ACT+0x{scale_relative:X} (section-relative; stable across hammerspace '
+        f'relocation)',
+        source='hammerspace.main',
+    )
+    return bytes(patched)
+
+
+def _hs_abort(message: str) -> None:
+    """Log and raise for a root-scale patch error in the hammerspace pipeline."""
+    _slogger.error(message, source='hammerspace.main')
+    raise ValueError(message)
+
+
 def BuildTEXTextureData(parsed: SluggieParsed) -> bytes:
     """Return the TEX (Texture Data) section bytes.
 
@@ -2850,6 +2932,14 @@ def BuildModelBlock(
         )
 
     act_bytes = CloneACT(source_model_offset, source_model_length)
+    # Apply the root-bone SRT scale patch (RootBoneScaleEdited) to the cloned ACT
+    # section. The patch is ACT-section-relative, so it stays correct even though
+    # the hammerspace block is written to a new absolute offset and the section
+    # boundaries may shift.
+    _act_before = act_bytes
+    if act_bytes:
+        act_bytes = _apply_root_scale_patch(act_bytes, data, source_model_offset)
+    root_scale_applied = act_bytes != _act_before
     if modes.tex == 'build':
         texture_plan = None
         if model.get('ReimportTextures'):
@@ -2913,6 +3003,7 @@ def BuildModelBlock(
     report = _build_validation_report(
         inner_block, source_model_length, modes, section_sizes
     )
+    report['root_scale_applied'] = root_scale_applied
     block = route_prefix + inner_block
     if route_prefix:
         report['container_prefix_size'] = route_prefix_size

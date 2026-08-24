@@ -97,14 +97,13 @@ def main_root_bone(bone_hierarchy: list[dict]) -> dict | None:
     return best
 
 
-def root_scale_patch(model: dict, bone_hierarchy: list[dict], restore: bool, abort) -> tuple | None:
-    """Build the (bone_id, file_offset, raw_bytes) patch for the root-bone SRT scale.
+def _resolve_root_scale(model: dict, bone_hierarchy: list[dict], restore: bool, abort):
+    """Resolve the main root bone and its target scale for a root-scale write.
 
-    Patch mode (``restore`` False): writes ``SluggiesModel.RootBoneScaleEdited``
-    (3 big-endian floats) into the SRT block of the main root bone. Unpatch mode
-    (``restore`` True): writes the main root bone's original ``Scale`` back so a
-    previously-applied scale edit is undone. Returns None when there is nothing
-    to write (no edit and nothing to restore, or no bone hierarchy).
+    Shared by the in-place patcher (``root_scale_patch``) and the hammerspace
+    patcher (``hammerspace_root_scale_patch``). Returns
+    ``(bone_id, srt_offset_hex, target_scale, label)`` or None when there is
+    nothing to write (no edit and nothing to restore, or no bone hierarchy).
 
     *abort* is injected for error reporting (missing ``SRTOffset`` metadata,
     malformed scale) so this module stays import-safe.
@@ -138,5 +137,69 @@ def root_scale_patch(model: dict, bone_hierarchy: list[dict], restore: bool, abo
             f"with the latest SluggiesTools export.py, then export from Blender again."
         )
         return None
+    return (bone_id, srt_off, target, label)
+
+
+def root_scale_patch(model: dict, bone_hierarchy: list[dict], restore: bool, abort) -> tuple | None:
+    """Build the (bone_id, file_offset, raw_bytes) patch for the root-bone SRT scale.
+
+    Patch mode (``restore`` False): writes ``SluggiesModel.RootBoneScaleEdited``
+    (3 big-endian floats) into the SRT block of the main root bone. Unpatch mode
+    (``restore`` True): writes the main root bone's original ``Scale`` back so a
+    previously-applied scale edit is undone. Returns None when there is nothing
+    to write (no edit and nothing to restore, or no bone hierarchy).
+
+    The returned ``file_offset`` is an ABSOLUTE input-file offset
+    (``SRTOffset + 0x04``), valid for the in-place patcher which writes back into
+    the original ``dt_na.dat`` at the model's original location.
+
+    *abort* is injected for error reporting (missing ``SRTOffset`` metadata,
+    malformed scale) so this module stays import-safe.
+    """
+    resolved = _resolve_root_scale(model, bone_hierarchy, restore, abort)
+    if resolved is None:
+        return None
+    bone_id, srt_off, target, _label = resolved
     scale_offset = int(srt_off, 16) + 0x04
     return (bone_id, scale_offset, pack_srt_scale(target))
+
+
+def hammerspace_root_scale_patch(
+    model: dict,
+    bone_hierarchy: list[dict],
+    act_section_absolute: int,
+    abort,
+) -> tuple | None:
+    """Build a root-bone SRT scale patch for the hammerspace (relocated) patcher.
+
+    Returns ``(bone_id, act_relative_scale_offset, raw_bytes)`` where the offset
+    is RELATIVE to the start of the ACT section (``orientationPTR + 0x04``), or
+    None when there is nothing to write (no ``RootBoneScaleEdited`` or no bone
+    hierarchy).
+
+    The hammerspace block is written to a new absolute offset, so the absolute
+    ``SRTOffset`` recorded in the ``.sluggie`` is not valid for the output. The
+    ACT section, however, is cloned verbatim, so the SRT offset relative to the
+    ACT section start is stable. The caller applies ``raw_bytes`` at
+    ``act_relative_scale_offset`` within the in-memory ACT section bytes.
+
+    *act_section_absolute* is the absolute input-file offset of the ACT section
+    (``model_offset + act_off`` from the model block header). *abort* is injected
+    for error reporting (missing ``SRTOffset`` metadata, malformed scale, or an
+    SRT offset that falls before the ACT section start).
+    """
+    resolved = _resolve_root_scale(model, bone_hierarchy, restore=False, abort=abort)
+    if resolved is None:
+        return None
+    bone_id, srt_off, target, _label = resolved
+    srt_relative = int(srt_off, 16) - act_section_absolute
+    if srt_relative < 0:
+        abort(
+            f"Bone {bone_id}: SRTOffset 0x{int(srt_off, 16):X} is before the ACT section "
+            f"start (0x{act_section_absolute:X}); the .sluggie's SRTOffset metadata does "
+            f"not match this model's ACT section layout. Re-export the model with the "
+            f"latest SluggiesTools export.py, then export from Blender again."
+        )
+        return None
+    scale_relative = srt_relative + 0x04
+    return (bone_id, scale_relative, pack_srt_scale(target))
