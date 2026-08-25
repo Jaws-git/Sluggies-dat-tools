@@ -203,3 +203,119 @@ def hammerspace_root_scale_patch(
         return None
     scale_relative = srt_relative + 0x04
     return (bone_id, scale_relative, pack_srt_scale(target))
+
+
+# ---------------------------------------------------------------------------
+# Bind-pose vertex scaling
+#
+# Scaling the root SRT matrix alone does not change the rendered model size:
+# the game skins vertices with *local* ANM bone transforms, which cancel the
+# root scale. The reliable mechanism is to scale the SKN ``BindPoseData``
+# vertex positions directly (the same data the Blender add-on's
+# "Apply Root Bone Scale" button edits). Both the inplace patcher and the
+# hammerspace patcher use the functions below.
+# ---------------------------------------------------------------------------
+
+_INT16_MIN = -32768
+_INT16_MAX = 32767
+
+
+def _quantized_component_layout(quantize_info: int) -> tuple[str, float]:
+    """Return ``(struct_format, divisor)`` for one SKN quantized component.
+
+    Mirrors ``SluggiesTools.helper.getQuantizedData``: the high nibble picks
+    the raw format (``0x3``/``0x0`` → 16-bit int, ``0x4``/``0x7``/``0xa`` →
+    32-bit float, anything else → 32-bit float) and the low nibble is the
+    power-of-two divisor. ``helper`` applies the divisor to *every* format
+    (including float) when decoding, so the divisor is meaningful for floats
+    too -- even though it cancels out in the scale-and-requantize round trip
+    (see ``_rescale_bind_pose_component``).
+    """
+    high = quantize_info >> 4
+    low = quantize_info & 0xF
+    divisor = float(2 ** low)
+    if high in (0x3, 0x0):
+        return ">h", divisor
+    return ">f", divisor
+
+
+def _rescale_bind_pose_component(raw: int, factor: float) -> int:
+    """Re-quantize one 16-bit bind-pose component by *factor*.
+
+    The divisor cancels out of the round trip: the engine decodes a component
+    as ``decoded = raw / divisor`` and re-encodes with the *same* divisor, so
+    ``new_raw = round(decoded * factor * divisor) = round(raw * factor)``. The
+    result is clamped to the 16-bit signed range so the output stays valid for
+    the original quantization format.
+    """
+    quantized = int(round(raw * factor))
+    if quantized > _INT16_MAX:
+        quantized = _INT16_MAX
+    elif quantized < _INT16_MIN:
+        quantized = _INT16_MIN
+    return quantized
+
+
+def scale_bind_pose_data(
+    data: bytes,
+    quantize_info: int,
+    vertex_cnt: int,
+    vertex_offset: int,
+    factors: tuple[float, float, float],
+) -> bytes:
+    """Return *data* with the bind-pose vertex positions scaled by *factors*.
+
+    *data* is the raw SKN ``BindPoseData`` blob: ``vertex_offset`` prefix bytes
+    (unknown/unused) followed by ``vertex_cnt`` vertices of 6 components each
+    (position x/y/z, then normal x/y/z). Only the three position components of
+    each vertex are scaled; normals and the prefix are copied through
+    unchanged. The quantization format (component size and divisor) is taken
+    from *quantize_info* and preserved, so the output blob is the same length
+    as the input.
+
+    Returns *data* unchanged when the scale is a no-op (all factors 1.0) or
+    when there is nothing to scale.
+    """
+    if vertex_cnt <= 0 or vertex_offset < 0:
+        return data
+    if factors == (1.0, 1.0, 1.0):
+        return data
+
+    comp_fmt, _divisor = _quantized_component_layout(quantize_info)
+    comp_size = struct.calcsize(comp_fmt)
+    stride = 6 * comp_size
+    expected = vertex_offset + vertex_cnt * stride
+    if len(data) < expected:
+        # Truncated blob: scale only the vertices that are actually present.
+        vertex_cnt = (len(data) - vertex_offset) // stride
+
+    out = bytearray(data)
+    for vi in range(vertex_cnt):
+        base = vertex_offset + vi * stride
+        for ci in range(3):  # position components only
+            off = base + ci * comp_size
+            (raw,) = struct.unpack_from(comp_fmt, data, off)
+            if comp_fmt == ">f":
+                (out[off : off + comp_size]) = struct.pack(">f", raw * factors[ci])
+            else:
+                (out[off : off + comp_size]) = struct.pack(
+                    ">h", _rescale_bind_pose_component(raw, factors[ci])
+                )
+    return bytes(out)
+
+
+def resolve_bind_pose_scale(model: dict) -> tuple[float, float, float] | None:
+    """Return the model's ``RootBoneScaleEdited`` factors or None.
+
+    This is the same scale applied to the root SRT matrix; it is reused here
+    to scale the SKN bind-pose vertices. Returns None when the model has no
+    ``RootBoneScaleEdited`` (or it is malformed).
+    """
+    raw = model.get("RootBoneScaleEdited")
+    if raw is None:
+        return None
+    try:
+        factors = (float(raw[0]), float(raw[1]), float(raw[2]))
+    except (TypeError, ValueError, IndexError):
+        return None
+    return factors

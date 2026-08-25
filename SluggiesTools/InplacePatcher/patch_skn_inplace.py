@@ -29,6 +29,8 @@ for _p in (_TOOLS_DIR, _THIS_DIR):
 import slogger as _slogger
 _slogger.configure()
 
+import root_scale as _root_scale
+
 OUTPUT_DAT = os.path.join(_ROOT_DIR, '3_Output_Dat', 'dt_na.dat')
 
 
@@ -51,6 +53,35 @@ def _comp_size(quant_info: int) -> int:
 def _align4(data: bytes) -> bytes:
     r = len(data) % 4
     return data + b'\x00' * ((4 - r) % 4)
+
+
+def _scaled_bind_pose(entry: dict, skin_data: dict, factors) -> bytes | None:
+    """Return the effective bind-pose bytes for *entry*, scaled by *factors*.
+
+    The effective payload is ``BindPoseDataEdited`` when present, else the
+    original ``BindPoseData``. When *factors* is None or a no-op unit scale the
+    payload is returned unchanged. The vertex count used for scaling matches the
+    payload (``VertexCntEdited`` for edited data, else ``VertexCnt``); any
+    truncation is handled inside ``root_scale.scale_bind_pose_data``. Returns
+    None when the entry carries no bind-pose data at all.
+    """
+    edited = entry.get('BindPoseDataEdited')
+    if edited is not None:
+        payload = edited
+        vertex_cnt = int(entry.get('VertexCntEdited', entry.get('VertexCnt', 0)))
+    else:
+        payload = entry.get('BindPoseData')
+        if payload is None:
+            return None
+        vertex_cnt = int(entry.get('VertexCnt', 0))
+    data = _to_bytes(payload)
+    if factors is None or factors == (1.0, 1.0, 1.0):
+        return data
+    quant_info = int(skin_data.get('QuantizeInfo', 0))
+    vertex_offset = int(entry.get('VertexOffset', 0))
+    return _root_scale.scale_bind_pose_data(
+        data, quant_info, vertex_cnt, vertex_offset, factors
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +150,7 @@ def skn_block_size(skin_data: dict, flush_ind_size: int = None) -> int:
     return total
 
 
-def patchSKNInPlaceResized(skin_data: dict) -> int:
+def patchSKNInPlaceResized(skin_data: dict, factors=None) -> int:
     """Repack SKN source arrays in-place supporting variable vertex counts.
 
     Like ``patchSKNBlockInPlace`` but reads edited data from inline
@@ -159,17 +190,17 @@ def patchSKNInPlaceResized(skin_data: dict) -> int:
 
     for e in orig_sk1s:
         offsets.append(len(blob))
-        blob.extend(_align4(_to_bytes(_eff(e, 'BindPoseDataEdited', 'BindPoseData'))))
+        blob.extend(_align4(_scaled_bind_pose(e, skin_data, factors)))
 
     for e in orig_sk2s:
         offsets.append(len(blob))
-        blob.extend(_align4(_to_bytes(_eff(e, 'BindPoseDataEdited', 'BindPoseData'))))
+        blob.extend(_align4(_scaled_bind_pose(e, skin_data, factors)))
         offsets.append(len(blob))
         blob.extend(_align4(_to_bytes(_eff(e, 'WeightDataEdited', 'WeightData'))))
 
     for e in orig_skaccs:
         offsets.append(len(blob))
-        blob.extend(_align4(_to_bytes(_eff(e, 'BindPoseDataEdited', 'BindPoseData'))))
+        blob.extend(_align4(_scaled_bind_pose(e, skin_data, factors)))
         offsets.append(len(blob))
         blob.extend(_align4(_to_bytes(_eff(e, 'DestIndexDataEdited', 'DestIndexData'))))
         offsets.append(len(blob))
@@ -256,7 +287,7 @@ def patchSKNInPlaceResized(skin_data: dict) -> int:
     return total_verts
 
 
-def patchSKNInPlace(skin_data: dict) -> bool:
+def patchSKNInPlace(skin_data: dict, factors=None) -> bool:
     """Overwrite SK1/SK2/SKAcc bind-pose source and weight arrays in-place.
 
     Called when UseHammerspace=False and the model has skin data.  Vertex
@@ -280,17 +311,21 @@ def patchSKNInPlace(skin_data: dict) -> bool:
                 wrote_any = True
 
             src_edited = sk1.get('BindPoseDataEdited')
-            if src_edited:
-                f.seek(int(sk1['VertexArrAbsolutePtr'], 16))
-                f.write(_to_bytes(src_edited))
-                wrote_any = True
+            if src_edited is not None or factors is not None:
+                scaled = _scaled_bind_pose(sk1, skin_data, factors)
+                if scaled is not None:
+                    f.seek(int(sk1['VertexArrAbsolutePtr'], 16))
+                    f.write(scaled)
+                    wrote_any = True
 
         for sk2 in skin_data.get('SK2s', []):
             src_edited = sk2.get('BindPoseDataEdited')
-            if src_edited:
-                f.seek(int(sk2['VertexArrAbsolutePtr'], 16))
-                f.write(_to_bytes(src_edited))
-                wrote_any = True
+            if src_edited is not None or factors is not None:
+                scaled = _scaled_bind_pose(sk2, skin_data, factors)
+                if scaled is not None:
+                    f.seek(int(sk2['VertexArrAbsolutePtr'], 16))
+                    f.write(scaled)
+                    wrote_any = True
             wt_edited = sk2.get('WeightDataEdited')
             if wt_edited:
                 f.seek(int(sk2['WeightArrAbsolutePtr'], 16))
@@ -299,10 +334,12 @@ def patchSKNInPlace(skin_data: dict) -> bool:
 
         for skacc in skin_data.get('SKAccs', []):
             src_edited = skacc.get('BindPoseDataEdited')
-            if src_edited:
-                f.seek(int(skacc['VertexArrAbsolutePtr'], 16))
-                f.write(_to_bytes(src_edited))
-                wrote_any = True
+            if src_edited is not None or factors is not None:
+                scaled = _scaled_bind_pose(skacc, skin_data, factors)
+                if scaled is not None:
+                    f.seek(int(skacc['VertexArrAbsolutePtr'], 16))
+                    f.write(scaled)
+                    wrote_any = True
             wt_edited = skacc.get('WeightDataEdited')
             if wt_edited:
                 f.seek(int(skacc['WeightArrAbsolutePtr'], 16))

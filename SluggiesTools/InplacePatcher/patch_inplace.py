@@ -266,6 +266,11 @@ skin_data = data["SluggiesModel"].get("SkinData")  # None for non-skinned models
 facial_patches = _facial_position_patches(data["SluggiesModel"], unpatch)
 bone_hierarchy = data["SluggiesModel"].get("BoneHierarchy") or []
 root_scale_patch = _root_scale.root_scale_patch(data["SluggiesModel"], bone_hierarchy, unpatch, abort)
+# Same factors, reused to scale the SKN bind-pose vertices. None when the
+# model has no RootBoneScaleEdited (or it is a no-op unit scale).
+bind_pose_scale = _root_scale.resolve_bind_pose_scale(data["SluggiesModel"])
+if bind_pose_scale == (1.0, 1.0, 1.0):
+    bind_pose_scale = None
 
 
 def _bone_geo_raw_original(bd: dict) -> int:
@@ -561,12 +566,17 @@ if skin_data is not None and not unpatch:
         for lst in [skin_data.get('SK1s', []), skin_data.get('SK2s', []), skin_data.get('SKAccs', [])]
         for sk in lst
     )
+    if bind_pose_scale is not None:
+        _slogger.info(
+            f"Applying root-bone scale to SKN bind-pose vertices: {bind_pose_scale}",
+            source="patch_inplace",
+        )
     if needs_resize:
-        total_sk = _skn.patchSKNInPlaceResized(skin_data)
+        total_sk = _skn.patchSKNInPlaceResized(skin_data, bind_pose_scale)
         if total_sk >= 0:
             _slogger.info(f"Skin bind-pose source and weight arrays patched in-place (resized, {total_sk} SK1+SK2 verts).", source="patch_inplace")
     else:
-        if _skn.patchSKNInPlace(skin_data):
+        if _skn.patchSKNInPlace(skin_data, bind_pose_scale):
             _slogger.info("Skin bind-pose source and weight arrays patched in-place.", source="patch_inplace")
 
 # In-place skin source and weight restoration (--unpatch)
@@ -595,6 +605,7 @@ summary = (
     f"Facial position poses patched       : {len(facial_patches)}\n"
     f"Bone GeoId fields patched           : {len(bone_geo_patches)}\n"
     f"Root-bone SRT scale patched         : {1 if root_scale_patch else 0}\n"
+    f"Bind-pose vertices scaled           : {1 if bind_pose_scale else 0}\n"
     f"Textures patched (in-place)         : {_textures_patched}\n"
     f"Textures skipped (mip layout)       : {texture_skipped_count}\n"
     f"Output file                         : {OUTPUT_DAT}"

@@ -2252,6 +2252,78 @@ def _source_blob_for_skn(entry: object, vertex_stride: int) -> bytes:
     return blob
 
 
+def _scale_skn_bind_pose(skn_bytes: bytes, factors: tuple[float, float, float] | None) -> bytes:
+    """Scale the bind-pose vertex positions in a SKN section by *factors*.
+
+    Parses the SKN header and each SK1/SK2/SKAcc struct to locate the bind-pose
+    source arrays, then rescales their position components via
+    ``root_scale.scale_bind_pose_data`` (normals and the per-array prefix are
+    copied through unchanged). Works on both freshly-built and verbatim-cloned
+    SKN sections because both share the same header/struct layout:
+
+        header (0x24): SK1Cnt, SK2Cnt, SKAccCnt, quantizeInfo, SK1Ptr, SK2Ptr,
+                       SKAccPtr, memClrPtr, memClrSze, flushIndArr, flushIndSze
+        SK1  (0x40):   vertexArr @ +0x30, vertexCnt @ +0x3a, vertexOffset @ +0x3c
+        SK2  (0x74):   vertexArr @ +0x60, vertexCnt @ +0x70, vertexOffset @ +0x72
+        SKAcc(0x44):   vertexArr @ +0x30, vertexCnt @ +0x42 (no vertex offset)
+
+    All pointer fields are relative to the SKN section start (byte 0 of
+    *skn_bytes*). Returns *skn_bytes* unchanged when *factors* is None or a
+    no-op scale, or when the section is too short to hold a header.
+    """
+    if not skn_bytes or len(skn_bytes) < 0x24:
+        return skn_bytes
+    if factors is None or factors == (1.0, 1.0, 1.0):
+        return skn_bytes
+    import struct as _s
+    n_sk1 = _s.unpack_from('>H', skn_bytes, 0x00)[0]
+    n_sk2 = _s.unpack_from('>H', skn_bytes, 0x02)[0]
+    n_acc = _s.unpack_from('>H', skn_bytes, 0x04)[0]
+    quantize_info = _s.unpack_from('B', skn_bytes, 0x06)[0]
+    sk1_ptr = _s.unpack_from('>I', skn_bytes, 0x08)[0]
+    sk2_ptr = _s.unpack_from('>I', skn_bytes, 0x0c)[0]
+    skacc_ptr = _s.unpack_from('>I', skn_bytes, 0x10)[0]
+    stride = 6 * _vb_comp_size(quantize_info)
+    out = bytearray(skn_bytes)
+
+    def _scale_at(arr_rel: int, vertex_cnt: int, vertex_offset: int) -> None:
+        if vertex_cnt <= 0 or vertex_offset < 0:
+            return
+        start = arr_rel + vertex_offset
+        end = min(start + vertex_cnt * stride, len(out))
+        if end <= start:
+            return
+        blob = bytes(out[start:end])
+        out[start:end] = _root_scale.scale_bind_pose_data(
+            blob, quantize_info, vertex_cnt, 0, factors
+        )
+
+    for i in range(n_sk1):
+        b = sk1_ptr + i * 0x40
+        if b + 0x40 > len(skn_bytes):
+            break
+        arr = _s.unpack_from('>I', skn_bytes, b + 0x30)[0]
+        cnt = _s.unpack_from('>H', skn_bytes, b + 0x3a)[0]
+        off = _s.unpack_from('B', skn_bytes, b + 0x3c)[0]
+        _scale_at(arr, cnt, off)
+    for i in range(n_sk2):
+        b = sk2_ptr + i * 0x74
+        if b + 0x74 > len(skn_bytes):
+            break
+        arr = _s.unpack_from('>I', skn_bytes, b + 0x60)[0]
+        cnt = _s.unpack_from('>H', skn_bytes, b + 0x70)[0]
+        off = _s.unpack_from('B', skn_bytes, b + 0x72)[0]
+        _scale_at(arr, cnt, off)
+    for i in range(n_acc):
+        b = skacc_ptr + i * 0x44
+        if b + 0x44 > len(skn_bytes):
+            break
+        arr = _s.unpack_from('>I', skn_bytes, b + 0x30)[0]
+        cnt = _s.unpack_from('>H', skn_bytes, b + 0x42)[0]
+        _scale_at(arr, cnt, 0)
+    return bytes(out)
+
+
 def _layout_skn_variable_data(skn: SkinningData, vertex_stride: int, var_data_offset: int) -> tuple[bytearray, list[int], list[int], list[int], list[int], list[int], list[int], bytes, int]:
     var_data = bytearray()
     var_cursor = var_data_offset
@@ -2970,6 +3042,19 @@ def BuildModelBlock(
         skn_bytes = BuildSKNSkinningData(parsed, gpl_result)
     else:
         skn_bytes = CloneSKN(source_model_offset, source_model_length)
+    # Bind-pose vertex scaling (PLAN_BoneScaling): apply the model's
+    # RootBoneScaleEdited factors to the SKN bind-pose data. Covers both build
+    # mode (freshly built SKN) and clone mode (verbatim SKN clone) since both
+    # produce the same SKN section layout. No-op when the model has no
+    # non-uniform scale.
+    bind_pose_factors = _root_scale.resolve_bind_pose_scale(model)
+    if bind_pose_factors is not None and skn_bytes:
+        skn_bytes = _scale_skn_bind_pose(skn_bytes, bind_pose_factors)
+        _slogger.info(
+            f'[SKN] bind-pose scaled by {bind_pose_factors} '
+            f'(RootBoneScaleEdited)',
+            source='hammerspace.main',
+        )
     parsed_trailing_sections = getattr(parsed, 'trailing_sections', None) or []
     if parsed_trailing_sections:
         trailing_bytes = b''.join(section.data for section in parsed_trailing_sections)

@@ -1,6 +1,8 @@
+import os
 import pathlib
 import struct
 import sys
+import tempfile
 import unittest
 
 
@@ -15,6 +17,7 @@ for import_path in (HAMMERSPACE_DIR, BLENDER_ADDON_DIR, INPLACE_PATCHER_DIR):
 from ModelFormat import compute_mem_clear_range, conservative_flush_indices
 from SkinWeights import quantize_skin_weights
 import root_scale as _root_scale
+import patch_skn_inplace as _skn
 
 
 class ModelFormatTests(unittest.TestCase):
@@ -225,6 +228,177 @@ class HammerspaceRootBoneScaleTests(unittest.TestCase):
                 model, bones, act_section_absolute=0x4000, abort=self._abort,
             )
 
+
+class BindPoseScaleTests(unittest.TestCase):
+    def test_resolve_returns_factors(self):
+        self.assertEqual(
+            _root_scale.resolve_bind_pose_scale({'RootBoneScaleEdited': [1.0, 2.0, 0.5]}),
+            (1.0, 2.0, 0.5),
+        )
+
+    def test_resolve_none_when_absent(self):
+        self.assertIsNone(_root_scale.resolve_bind_pose_scale({}))
+
+    def test_resolve_none_when_malformed(self):
+        self.assertIsNone(
+            _root_scale.resolve_bind_pose_scale({'RootBoneScaleEdited': [1.0, 2.0]})
+        )
+
+    def test_scale_float_format_scales_positions_only(self):
+        # quantize_info 0x40 -> 32-bit float, divisor 1.0
+        data = struct.pack('>6f', 1.0, 2.0, 3.0, 0.1, 0.2, 0.3)
+        out = _root_scale.scale_bind_pose_data(
+            data, 0x40, vertex_cnt=1, vertex_offset=0, factors=(2.0, 3.0, 4.0)
+        )
+        x, y, z, nx, ny, nz = struct.unpack('>6f', out)
+        self.assertEqual((x, y, z), (2.0, 6.0, 12.0))
+        # normals are copied through unchanged (byte-for-byte)
+        self.assertEqual(out[12:], data[12:])
+
+    def test_scale_int16_format(self):
+        # quantize_info 0x30 -> 16-bit int, divisor 1.0
+        data = struct.pack('>6h', 100, 200, 300, 10, 20, 30)
+        out = _root_scale.scale_bind_pose_data(
+            data, 0x30, vertex_cnt=1, vertex_offset=0, factors=(2.0, 1.0, 0.5)
+        )
+        x, y, z, nx, ny, nz = struct.unpack('>6h', out)
+        self.assertEqual((x, y, z), (200, 200, 150))
+        self.assertEqual((nx, ny, nz), (10, 20, 30))
+
+    def test_scale_noop_returns_same(self):
+        data = struct.pack('>6f', 1.0, 2.0, 3.0, 0.1, 0.2, 0.3)
+        out = _root_scale.scale_bind_pose_data(data, 0x40, 1, 0, (1.0, 1.0, 1.0))
+        self.assertEqual(out, data)
+
+    def test_scale_preserves_prefix(self):
+        prefix = b'\x01\x02\x03\x04'
+        data = prefix + struct.pack('>6f', 1.0, 2.0, 3.0, 0.1, 0.2, 0.3)
+        out = _root_scale.scale_bind_pose_data(data, 0x40, 1, 4, (2.0, 2.0, 2.0))
+        self.assertEqual(out[:4], prefix)
+        x, y, z, *_ = struct.unpack('>6f', out[4:])
+        self.assertEqual((x, y, z), (2.0, 4.0, 6.0))
+
+    def test_scale_multiple_vertices(self):
+        data = struct.pack('>12f', 1, 2, 3, 0, 0, 0, 10, 20, 30, 0, 0, 0)
+        out = _root_scale.scale_bind_pose_data(data, 0x40, 2, 0, (2.0, 2.0, 2.0))
+        vals = struct.unpack('>12f', out)
+        self.assertEqual(vals[0:3], (2.0, 4.0, 6.0))
+        self.assertEqual(vals[6:9], (20.0, 40.0, 60.0))
+
+
+class SknScaledBindPoseTests(unittest.TestCase):
+    """Cover the per-entry helper in patch_skn_inplace and the write path."""
+
+    def _skin(self, quant=0x40):
+        return {'QuantizeInfo': quant, 'SK1s': [], 'SK2s': [], 'SKAccs': []}
+
+    def test_returns_original_when_no_factors(self):
+        entry = {'BindPoseData': [1, 2, 3, 4], 'VertexCnt': 1, 'VertexOffset': 0}
+        self.assertEqual(
+            _skn._scaled_bind_pose(entry, self._skin(), None), bytes([1, 2, 3, 4])
+        )
+
+    def test_returns_original_when_unit_factors(self):
+        entry = {'BindPoseData': [1, 2, 3, 4], 'VertexCnt': 1, 'VertexOffset': 0}
+        self.assertEqual(
+            _skn._scaled_bind_pose(entry, self._skin(), (1.0, 1.0, 1.0)),
+            bytes([1, 2, 3, 4]),
+        )
+
+    def test_scales_original_payload(self):
+        data = struct.pack('>6f', 1.0, 2.0, 3.0, 0.1, 0.2, 0.3)
+        entry = {'BindPoseData': list(data), 'VertexCnt': 1, 'VertexOffset': 0}
+        out = _skn._scaled_bind_pose(entry, self._skin(0x40), (2.0, 1.0, 1.0))
+        x, y, z, *_ = struct.unpack('>6f', out)
+        self.assertEqual((x, y, z), (2.0, 2.0, 3.0))
+
+    def test_prefers_edited_payload_with_edited_count(self):
+        edited = struct.pack('>6f', 1.0, 2.0, 3.0, 0.1, 0.2, 0.3)
+        entry = {
+            'BindPoseData': list(struct.pack('>6f', 9, 9, 9, 0, 0, 0)),
+            'BindPoseDataEdited': list(edited),
+            'VertexCnt': 1,
+            'VertexCntEdited': 1,
+            'VertexOffset': 0,
+        }
+        out = _skn._scaled_bind_pose(entry, self._skin(0x40), (2.0, 1.0, 1.0))
+        x, y, z, *_ = struct.unpack('>6f', out)
+        self.assertEqual((x, y, z), (2.0, 2.0, 3.0))
+
+
+    def _run_patch(self, skin_data, factors):
+        with tempfile.NamedTemporaryFile(delete=False) as tf:
+            tf.write(b'\x00' * 0x100)
+            path = tf.name
+        orig_output = _skn.OUTPUT_DAT
+        _skn.OUTPUT_DAT = path
+        try:
+            wrote = _skn.patchSKNInPlace(skin_data, factors)
+        finally:
+            _skn.OUTPUT_DAT = orig_output
+        with open(path, 'rb') as f:
+            f.seek(0x40)
+            written = f.read(24)
+        os.unlink(path)
+        return wrote, written
+
+    def test_patch_writes_scaled_original_when_root_scale_only(self):
+        # A root-scale-only edit (no BindPoseDataEdited) must still land the
+        # scaled original bind-pose in the file.
+        data = struct.pack('>6f', 1.0, 2.0, 3.0, 0.1, 0.2, 0.3)
+        skin_data = {
+            'SK1s': [{
+                'BindPoseData': list(data),
+                'VertexCnt': 1,
+                'VertexOffset': 0,
+                'VertexArrAbsolutePtr': '0x40',
+            }],
+            'SK2s': [],
+            'SKAccs': [],
+            'QuantizeInfo': 0x40,
+        }
+        wrote, written = self._run_patch(skin_data, (2.0, 1.0, 1.0))
+        self.assertTrue(wrote)
+        x, y, z, *_ = struct.unpack('>6f', written)
+        self.assertEqual((x, y, z), (2.0, 2.0, 3.0))
+
+    def test_patch_writes_scaled_edited_payload(self):
+        edited = struct.pack('>6f', 1.0, 2.0, 3.0, 0.1, 0.2, 0.3)
+        skin_data = {
+            'SK1s': [{
+                'BindPoseData': list(struct.pack('>6f', 9, 9, 9, 0, 0, 0)),
+                'BindPoseDataEdited': list(edited),
+                'VertexCnt': 1,
+                'VertexCntEdited': 1,
+                'VertexOffset': 0,
+                'VertexArrAbsolutePtr': '0x40',
+            }],
+            'SK2s': [],
+            'SKAccs': [],
+            'QuantizeInfo': 0x40,
+        }
+        wrote, written = self._run_patch(skin_data, (2.0, 1.0, 1.0))
+        self.assertTrue(wrote)
+        x, y, z, *_ = struct.unpack('>6f', written)
+        self.assertEqual((x, y, z), (2.0, 2.0, 3.0))
+
+    def test_patch_no_factors_no_write(self):
+        # Without factors and without edited data, nothing is written.
+        data = struct.pack('>6f', 1.0, 2.0, 3.0, 0.1, 0.2, 0.3)
+        skin_data = {
+            'SK1s': [{
+                'BindPoseData': list(data),
+                'VertexCnt': 1,
+                'VertexOffset': 0,
+                'VertexArrAbsolutePtr': '0x40',
+            }],
+            'SK2s': [],
+            'SKAccs': [],
+            'QuantizeInfo': 0x40,
+        }
+        wrote, written = self._run_patch(skin_data, None)
+        self.assertFalse(wrote)
+        self.assertEqual(written, b'\x00' * 24)
 
 if __name__ == '__main__':
     unittest.main()
