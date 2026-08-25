@@ -233,6 +233,16 @@ class ANM(FileChunk):
                 out_name = '/'.join(model_dae.split('/')[:-1]) + '/anm_'+str(self.absolute)+'_'+str(i)+'.dae'
                 animate_dae(model_dae, out_name, sequence_dict, track_dict)
 
+    def dumpRaw(self, output_dir, file_index):
+        anm_dir = os.path.join(output_dir, 'anm')
+        os.makedirs(anm_dir, exist_ok=True)
+        self.f.seek(self.absolute)
+        raw = self.f.read(self.length)
+        out_path = os.path.join(anm_dir, f'{file_index}.anm')
+        with open(out_path, 'wb') as out:
+            out.write(raw)
+        slogger.info(f'Exported ANM slot {file_index} ({self.length} bytes)', source='anm')
+
 # Wanted to do the same thing I did with the model data seperating it from the file reading classes completely
 # Turned out to be mainly just copying over attributes that I wanted
 class ANMData():

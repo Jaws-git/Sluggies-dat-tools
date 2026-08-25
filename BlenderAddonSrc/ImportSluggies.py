@@ -6,8 +6,88 @@ import math
 import struct
 import mathutils
 from functools import lru_cache
-from bpy.props import StringProperty
+from bpy.props import StringProperty, CollectionProperty
 from bpy_extras.io_utils import ImportHelper
+
+
+ANM_MAGICS = (0x01321AFD, 0x013240DB, 0x01324210)
+
+
+def _read_quantized(data, offset, count, dimensions, quantize_info):
+    fmt_nibble = quantize_info >> 4
+    shift = quantize_info & 0x0F
+    if fmt_nibble in (0, 3):
+        fmt_char, fmt_size = '>h', 2
+    else:
+        fmt_char, fmt_size = '>f', 4
+    divisor = 1 << shift
+    result = []
+    pos = offset
+    for _ in range(count):
+        components = []
+        for _ in range(dimensions):
+            val = struct.unpack_from(fmt_char, data, pos)[0]
+            components.append(val / divisor)
+            pos += fmt_size
+        result.append(components)
+    return result, pos
+
+
+def _parse_anm(data):
+    magic = struct.unpack_from('>I', data, 0)[0]
+    if magic not in ANM_MAGICS:
+        raise ValueError(f"Not an ANM file: magic {magic:#010x}")
+
+    seq_arr_ptr = struct.unpack_from('>I', data, 4)[0]
+    _bank_id, seq_cnt, _track_cnt, _kf_cnt = struct.unpack_from('>HHHH', data, 8)
+
+    sequences = []
+    for si in range(seq_cnt):
+        seq_off = seq_arr_ptr + si * 12
+        _name_ptr, track_arr_ptr, track_cnt, _pad = struct.unpack_from('>IIHH', data, seq_off)
+
+        tracks = []
+        for ti in range(track_cnt):
+            t_off = track_arr_ptr + ti * 16
+            anm_time_raw, kf_arr_ptr, kf_cnt, track_id = struct.unpack_from('>fIHH', data, t_off)
+            quantize_info, anm_type_raw, interp_type, _replace = struct.unpack_from('>BBBB', data, t_off + 12)
+            anm_type = anm_type_raw & 0x1F
+
+            active_channels = []
+            for bit in [3, 1, 0]:
+                if anm_type & (1 << bit):
+                    active_channels.append(bit)
+
+            keyframes = []
+            for ki in range(kf_cnt):
+                kf_off = kf_arr_ptr + ki * 12
+                time_val = struct.unpack_from('>f', data, kf_off)[0]
+                setting_bank_ptr = struct.unpack_from('>I', data, kf_off + 4)[0]
+
+                settings = {}
+                bank_pos = setting_bank_ptr
+                for ch in active_channels:
+                    if ch == 3:
+                        qi = 0x3E
+                        vals, bank_pos = _read_quantized(data, bank_pos, 1, 4, qi)
+                        xyzw = vals[0]
+                        settings[ch] = [-xyzw[3], xyzw[0], xyzw[1], xyzw[2]]
+                    else:
+                        vals, bank_pos = _read_quantized(data, bank_pos, 1, 3, quantize_info)
+                        settings[ch] = vals[0]
+
+                keyframes.append({'time': time_val, 'settings': settings})
+
+            tracks.append({
+                'track_id': track_id,
+                'anm_time': anm_time_raw,
+                'active_channels': active_channels,
+                'keyframes': keyframes,
+            })
+
+        sequences.append({'tracks': tracks})
+
+    return sequences
 
 
 def _to_bytes(data) -> bytes:
@@ -962,6 +1042,16 @@ def build_armature(name, bone_list, collection):
             eb.tail = (ch[0], ch[1], ch[2])
 
     bpy.ops.object.mode_set(mode='OBJECT')
+
+    for bd in bone_list:
+        bone_name = bone_id_to_name.get(bd['BoneId'])
+        if bone_name and bone_name in arm_data.bones:
+            b = arm_data.bones[bone_name]
+            b['track_id'] = bd.get('TrackId', 0xFFFF)
+            b['game_translation'] = list(bd['Translation'])
+            b['game_quaternion'] = list(bd['Quaternion'])
+            b['game_scale'] = list(bd['Scale'])
+
     arm_obj.show_in_front = True
     arm_obj.display_type = 'WIRE'
     arm_obj.rotation_euler[0] = math.pi / 2
@@ -1119,11 +1209,139 @@ def menu_func_import(self, context):
     self.layout.operator(SLUGGIES_OT_import.bl_idname, text="Sluggers intermediate (.sluggie)")
 
 
+class SLUGGIES_OT_import_anm(bpy.types.Operator, ImportHelper):
+    bl_idname = "sluggies.import_anm"
+    bl_label = "Import Sluggers animation"
+    bl_description = "Import ANM animation files onto the selected armature"
+    bl_options = {"UNDO"}
+
+    filename_ext = ".anm"
+    filter_glob: StringProperty(default="*.anm", options={"HIDDEN"})  # type: ignore[valid-type]
+    files: CollectionProperty(type=bpy.types.OperatorFileListElement)  # type: ignore[valid-type]
+    directory: StringProperty(subtype='DIR_PATH')  # type: ignore[valid-type]
+
+    def execute(self, context):
+        arm_obj = context.active_object
+        if arm_obj is None or arm_obj.type != 'ARMATURE':
+            self.report({"ERROR"}, "Select an armature first")
+            return {"CANCELLED"}
+
+        arm_data = arm_obj.data
+        if not any('track_id' in arm_data.bones[b.name] for b in arm_data.bones if b.name in arm_data.bones):
+            self.report({"ERROR"}, "Armature has no track_id data — import a .sluggie first")
+            return {"CANCELLED"}
+
+        track_to_bone = {}
+        for bone in arm_data.bones:
+            tid = bone.get('track_id', 0xFFFF)
+            if tid != 0xFFFF:
+                track_to_bone[tid] = bone.name
+
+        if not self.files:
+            file_list = [os.path.basename(self.filepath)]
+        else:
+            file_list = [f.name for f in self.files]
+
+        if not arm_obj.animation_data:
+            arm_obj.animation_data_create()
+
+        total_actions = 0
+        for file_entry in file_list:
+            filepath = os.path.join(self.directory, file_entry)
+            anm_name = os.path.splitext(file_entry)[0]
+
+            with open(filepath, 'rb') as f:
+                raw = f.read()
+
+            try:
+                sequences = _parse_anm(raw)
+            except ValueError as e:
+                self.report({"WARNING"}, f"{file_entry}: {e}")
+                continue
+
+            for seq_i, sequence in enumerate(sequences):
+                action_name = f"{anm_name}_seq{seq_i}"
+                action = bpy.data.actions.new(name=action_name)
+                action.use_fake_user = True
+                arm_obj.animation_data.action = action
+
+                for track in sequence['tracks']:
+                    tid = track['track_id']
+                    bone_name = track_to_bone.get(tid)
+                    if bone_name is None:
+                        continue
+
+                    pose_bone = arm_obj.pose.bones.get(bone_name)
+                    if pose_bone is None:
+                        continue
+
+                    bone_mat = pose_bone.bone.matrix_local
+                    if pose_bone.parent:
+                        parent_mat = pose_bone.parent.bone.matrix_local
+                        E_local = parent_mat.inverted() @ bone_mat
+                    else:
+                        E_local = bone_mat
+                    inv_E_local = E_local.inverted()
+
+                    b = arm_data.bones[bone_name]
+                    rest_trans = list(b.get('game_translation', [0, 0, 0]))
+                    rest_quat = list(b.get('game_quaternion', [-1, 0, 0, 0]))
+                    rest_scale = list(b.get('game_scale', [1, 1, 1]))
+
+                    pose_bone.rotation_mode = 'QUATERNION'
+                    data_path_loc = f'pose.bones["{bone_name}"].location'
+                    data_path_rot = f'pose.bones["{bone_name}"].rotation_quaternion'
+                    data_path_scl = f'pose.bones["{bone_name}"].scale'
+
+                    fc_loc = [action.fcurve_ensure_for_datablock(arm_obj, data_path_loc, index=i) for i in range(3)]
+                    fc_rot = [action.fcurve_ensure_for_datablock(arm_obj, data_path_rot, index=i) for i in range(4)]
+                    fc_scl = [action.fcurve_ensure_for_datablock(arm_obj, data_path_scl, index=i) for i in range(3)]
+
+                    for kf in track['keyframes']:
+                        frame = kf['time']
+                        settings = kf['settings']
+
+                        trans = settings.get(0, rest_trans)
+                        scale = settings.get(1, rest_scale)
+                        quat = settings.get(3, rest_quat)
+
+                        T = mathutils.Matrix.Translation(trans)
+                        R = mathutils.Quaternion((-quat[0], quat[1], quat[2], quat[3])).to_matrix().to_4x4()
+                        S = mathutils.Matrix.Diagonal((*scale, 1)).to_4x4()
+                        L_anm = T @ R @ S
+
+                        matrix_basis = inv_E_local @ L_anm
+                        loc, rot_q, scl = matrix_basis.decompose()
+
+                        for i in range(3):
+                            fc_loc[i].keyframe_points.insert(frame, loc[i], options={'FAST'})
+                        for i in range(4):
+                            fc_rot[i].keyframe_points.insert(frame, rot_q[i], options={'FAST'})
+                        for i in range(3):
+                            fc_scl[i].keyframe_points.insert(frame, scl[i], options={'FAST'})
+
+                    for fc in fc_loc + fc_rot + fc_scl:
+                        fc.update()
+
+                total_actions += 1
+
+        self.report({"INFO"}, f"Imported {total_actions} animation action(s)")
+        return {"FINISHED"}
+
+
+def menu_func_import_anm(self, context):
+    self.layout.operator(SLUGGIES_OT_import_anm.bl_idname, text="Sluggers animation (.anm)")
+
+
 def register():
     bpy.utils.register_class(SLUGGIES_OT_import)
+    bpy.utils.register_class(SLUGGIES_OT_import_anm)
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
+    bpy.types.TOPBAR_MT_file_import.append(menu_func_import_anm)
 
 
 def unregister():
+    bpy.types.TOPBAR_MT_file_import.remove(menu_func_import_anm)
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
+    bpy.utils.unregister_class(SLUGGIES_OT_import_anm)
     bpy.utils.unregister_class(SLUGGIES_OT_import)

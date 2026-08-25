@@ -11,17 +11,16 @@ echo ==================
 echo Sluggers Dat Tools
 echo ==================
 echo.
-echo --- Extract & Prepare ---
 echo [1] Extract all models, icons ^& 'untangle' textures (for Dolphin texture loader)
-echo [2] Extract all models - no texture untangling
-echo [3] Extract player icons only
+echo [2] Extract all models
+echo [3] Extract player icons
 echo [4] Patch all 6 unused-character icons into game files
-echo --- Patch ---
+echo.
 echo [5] Patch .sluggies model into game files
 echo [6] UnPatch .sluggies model in game files
-echo --- Other ---
+echo. 
 echo [7] Manually resize available hammerspace (extra model data storage) - usually not necessary
-echo [8] Reimport edited standard icon sheets into dt_na.dat
+echo [8] Import edited icon sheets (.\2_Output_Models\_ICONS\sheets\)
 echo.
 set "tools_choice="
 set /p "tools_choice=Enter option (or type exit to quit): "

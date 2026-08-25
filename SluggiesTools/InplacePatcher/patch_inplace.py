@@ -28,6 +28,7 @@ OUTPUT_DAT = os.path.join(OUTPUT_DIR, 'dt_na.dat')
 import patch_skn_inplace as _skn
 import texture_helper as _tex
 import root_scale as _root_scale
+from compact_channel import comp_size as _comp_size, compact_channel
 
 # ---------------------------------------------------------------------------
 # Shader-mode conversion constants and helpers
@@ -259,6 +260,7 @@ else:
 
 patches    = []   # (submesh_idx, file_offset, raw_bytes)
 uv_patches = []   # (submesh_idx, ch_ind, file_offset, raw_bytes)
+normal_patches = []   # (submesh_idx, file_offset, raw_bytes)
 setting_patches  = []   # (submesh_idx, ds_idx, file_offset, raw_bytes)
 bone_geo_patches = []   # (bone_id, file_offset, raw_bytes)
 
@@ -337,6 +339,13 @@ for i, submesh in enumerate(submeshes):
                 uv_patches.append((i, ch_ind, int(ch["UVChannelOffset"], 16), raw))
                 _slogger.info(f"Submesh {i} UV ch {ch_ind}: queued {len(raw)} bytes at {ch['UVChannelOffset']}", source="patch_inplace")
 
+        nb = submesh.get("NormalBuffer", {})
+        nb_data = nb.get("NormalBufferData")
+        if nb_data and nb.get("NormalBufferOffset"):
+            raw = _to_bytes(nb_data)
+            normal_patches.append((i, int(nb["NormalBufferOffset"], 16), raw))
+            _slogger.info(f"Submesh {i} normal: queued {len(raw)} bytes at {nb['NormalBufferOffset']}", source="patch_inplace")
+
     else:
         # -- patch mode --
         if "VertexBufferDataEdited" not in vb:
@@ -386,6 +395,43 @@ for i, submesh in enumerate(submeshes):
             raw = new_uvs[ch_ind]
             uv_patches.append((i, ch_ind, int(ch["UVChannelOffset"], 16), raw))
             _slogger.info(f"Submesh {i} UV ch {ch_ind}: {len(raw)} bytes (in-place)", source="patch_inplace")
+
+        # Standalone NormalBuffer patching
+        nb = submesh.get("NormalBuffer", {})
+        nb_edited = nb.get("NormalBufferDataEdited")
+        if nb_edited and nb.get("NormalBufferOffset"):
+            donor_norm = _to_bytes(nb["NormalBufferData"])
+            donor_faces_raw = _to_bytes(nb["NormalFacesData"])
+            expanded_norm = _to_bytes(nb_edited)
+            expanded_faces_raw = _to_bytes(nb["NormalFacesDataEdited"])
+            norm_comp = nb.get("NormalBufferCompCount", 3)
+            norm_quant = nb.get("NormalBufferQuantizeInfo", 0)
+            norm_stride = norm_comp * _comp_size(norm_quant)
+            loop_count = len(donor_faces_raw) // 2
+            donor_indices = [
+                int.from_bytes(donor_faces_raw[k*2:k*2+2], 'big')
+                for k in range(loop_count)
+            ]
+            expanded_indices = [
+                int.from_bytes(expanded_faces_raw[k*2:k*2+2], 'big')
+                for k in range(len(expanded_faces_raw) // 2)
+            ]
+            compact_norm, _, _ = compact_channel(
+                f'sub{i} normal', norm_stride,
+                donor_norm, donor_indices,
+                expanded_norm, expanded_indices,
+                loop_count,
+            )
+            if len(compact_norm) != nb["NormalBufferLength"]:
+                _slogger.warning(
+                    f"Submesh {i}: normal buffer size changed "
+                    f"({nb['NormalBufferLength']} → {len(compact_norm)} bytes). "
+                    f"Skipping normal patch.",
+                    source="patch_inplace",
+                )
+            else:
+                normal_patches.append((i, int(nb["NormalBufferOffset"], 16), compact_norm))
+                _slogger.info(f"Submesh {i} normal: {len(compact_norm)} bytes (in-place)", source="patch_inplace")
 
 # ---------------------------------------------------------------------------
 # Collect shader-mode (Type-7 FourCC) patches.
@@ -486,11 +532,12 @@ if _model.get("ReimportTextures"):
 
 _textures_patched = len({w.texture_index for w in texture_writes})
 
-if patches or uv_patches or setting_patches or facial_patches or bone_geo_patches or root_scale_patch or texture_writes:
+if patches or uv_patches or normal_patches or setting_patches or facial_patches or bone_geo_patches or root_scale_patch or texture_writes:
     _slogger.info(
         f"Writing {len(patches)} vertex, {len(uv_patches)} UV, "
-        f"{len(setting_patches)} shader-mode, {len(facial_patches)} facial-pose, "
-        f"{len(bone_geo_patches)} bone-geo, {1 if root_scale_patch else 0} root-scale, "
+    f"{len(normal_patches)} normal, {len(setting_patches)} shader-mode, "
+    f"{len(facial_patches)} facial-pose, {len(bone_geo_patches)} bone-geo, "
+    f"{1 if root_scale_patch else 0} root-scale, "
         f"{_textures_patched} texture "
         f"patch(es) to {OUTPUT_DAT} ...",
         source="patch_inplace",
@@ -504,6 +551,10 @@ if patches or uv_patches or setting_patches or facial_patches or bone_geo_patche
             f.seek(offset)
             f.write(raw)
             _slogger.info(f"Submesh {i} UV ch {ch_ind}: wrote {len(raw)} bytes at 0x{offset:X}", source="patch_inplace")
+        for i, offset, raw in normal_patches:
+            f.seek(offset)
+            f.write(raw)
+            _slogger.info(f"Submesh {i} normal: wrote {len(raw)} bytes at 0x{offset:X}", source="patch_inplace")
         for i, ds_idx, offset, raw in setting_patches:
             f.seek(offset)
             f.write(raw)
@@ -601,6 +652,7 @@ summary = (
     f"--- Summary ---\n"
     f"Vertex submeshes patched (in-place) : {len(patches)}\n"
     f"UV channels patched (in-place)      : {len(uv_patches)}\n"
+    f"Normal buffers patched (in-place)   : {len(normal_patches)}\n"
     f"ShaderMode (Type-7 FourCC) patched  : {len(setting_patches)}\n"
     f"Facial position poses patched       : {len(facial_patches)}\n"
     f"Bone GeoId fields patched           : {len(bone_geo_patches)}\n"

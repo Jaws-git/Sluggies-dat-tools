@@ -6,6 +6,7 @@ import base64
 import re
 import struct
 import sys
+from anm_to_gltf import convert_anm_directory
 
 # Step 2.2 – Initialize universal logger in child process.
 import slogger as _slogger
@@ -23,6 +24,7 @@ EXPORT_TEX = '--notex' not in sys.argv
 DEBUG_DONT_USE_BASE64 = '--debug' in sys.argv
 UNTANGLE_TEX = '--untangle' in sys.argv
 EXPORT_DAE = '--dae' in sys.argv
+EXPORT_GLTF = '--gltf' in sys.argv
 
 # Model directory indices that hold stadiums (see folderNameMap):
 # 7 Mario Stadium ... 16 Toy Field. When UNTANGLE_SKIP_STADIUMS is enabled,
@@ -1382,68 +1384,73 @@ for dir_ind, file_arr in dirs.items():
                 child = dat.add_child(offset, l, MaybeArchive)
                 child.analyze()
                 if child.child:
-                    child.child.analyze()
-                    child.child.toFile(lan_dir, export_tex=EXPORT_TEX, export_dae=EXPORT_DAE, untangle_context=dir_untangle_context)
-                    if isinstance(child.child, Archive):
-                        archive_dir = os.path.join(lan_dir, str(child.child.absolute))
-                        for i in child.child.success:
-                            sub_model = child.child.files[i]
-                            sub_dir = os.path.join(archive_dir, sub_model.name)
-                            json_name = f"{sub_model.name}.sluggie"
-                            _gpl_ud, _gpl_ud_len = extract_gpl_userdata(sub_model)
+                    if isinstance(child.child, ANM):
+                        child.child.dumpRaw(dir_dir, file_index)
+                    else:
+                        child.child.analyze()
+                        child.child.toFile(lan_dir, export_tex=EXPORT_TEX, export_dae=EXPORT_DAE, untangle_context=dir_untangle_context)
+                        if isinstance(child.child, Archive):
+                            archive_dir = os.path.join(lan_dir, str(child.child.absolute))
+                            for i in child.child.success:
+                                sub_model = child.child.files[i]
+                                sub_dir = os.path.join(archive_dir, sub_model.name)
+                                json_name = f"{sub_model.name}.sluggie"
+                                _gpl_ud, _gpl_ud_len = extract_gpl_userdata(sub_model)
+                                model_json = {
+                                    "SluggiesModel": {
+                                        "ChunkNumber": dir_ind,
+                                        "FileIndex": file_index,
+                                        "ModelOffset": hex(sub_model.absolute),
+                                        "ModelLength": sub_model.length,
+                                        "UseBase64": not DEBUG_DONT_USE_BASE64,
+                                        "GPLUserDataLength": _gpl_ud_len,
+                                        "GPLUserData": _gpl_ud,
+                                        "TEXHeader": extract_tex_header(sub_model),
+                                        "TextureDescriptors": extract_texture_descriptors(sub_model, untangle_context=dir_untangle_context),
+                                        "Submeshes": extract_submeshes(sub_model),
+                                        "SkinData": extract_skin_data(sub_model),
+                                        "FacialPoseData": extract_facial_pose_data(sub_model),
+                                        "TrailingSections": extract_trailing_sections(sub_model),
+                                        "ACTHeader": extract_act_header(sub_model),
+                                        "BoneHierarchy": extract_bone_data(sub_model)
+                                    }
+                                }
+                                with open(os.path.join(sub_dir, json_name), 'w') as info_f:
+                                    info_f.write(compact_faces_json(model_json))
+                        else:
+                            model_name = child.child.name
+                            model_dir = os.path.join(lan_dir, model_name)
+                            json_name = f"{model_name}.sluggie"
+                            _gpl_ud, _gpl_ud_len = extract_gpl_userdata(child.child)
                             model_json = {
                                 "SluggiesModel": {
                                     "ChunkNumber": dir_ind,
                                     "FileIndex": file_index,
-                                    "ModelOffset": hex(sub_model.absolute),
-                                    "ModelLength": sub_model.length,
+                                    "ModelOffset": hex(offset),
+                                    "ModelLength": l,
                                     "UseBase64": not DEBUG_DONT_USE_BASE64,
                                     "GPLUserDataLength": _gpl_ud_len,
                                     "GPLUserData": _gpl_ud,
-                                    "TEXHeader": extract_tex_header(sub_model),
-                                    "TextureDescriptors": extract_texture_descriptors(sub_model, untangle_context=dir_untangle_context),
-                                    "Submeshes": extract_submeshes(sub_model),
-                                    "SkinData": extract_skin_data(sub_model),
-                                    "FacialPoseData": extract_facial_pose_data(sub_model),
-                                    "TrailingSections": extract_trailing_sections(sub_model),
-                                    "ACTHeader": extract_act_header(sub_model),
-                                    "BoneHierarchy": extract_bone_data(sub_model)
+                                    "TEXHeader": extract_tex_header(child.child),
+                                    "TextureDescriptors": extract_texture_descriptors(child.child, untangle_context=dir_untangle_context),
+                                    "Submeshes": extract_submeshes(child.child),
+                                    "SkinData": extract_skin_data(child.child),
+                                    "FacialPoseData": extract_facial_pose_data(child.child),
+                                    "TrailingSections": extract_trailing_sections(child.child),
+                                    "ACTHeader": extract_act_header(child.child),
+                                    "BoneHierarchy": extract_bone_data(child.child)
                                 }
                             }
-                            with open(os.path.join(sub_dir, json_name), 'w') as info_f:
+                            with open(os.path.join(model_dir, json_name), 'w') as info_f:
                                 info_f.write(compact_faces_json(model_json))
-                    else:
-                        model_name = child.child.name
-                        model_dir = os.path.join(lan_dir, model_name)
-                        json_name = f"{model_name}.sluggie"
-                        _gpl_ud, _gpl_ud_len = extract_gpl_userdata(child.child)
-                        model_json = {
-                            "SluggiesModel": {
-                                "ChunkNumber": dir_ind,
-                                "FileIndex": file_index,
-                                "ModelOffset": hex(offset),
-                                "ModelLength": l,
-                                "UseBase64": not DEBUG_DONT_USE_BASE64,
-                                "GPLUserDataLength": _gpl_ud_len,
-                                "GPLUserData": _gpl_ud,
-                                "TEXHeader": extract_tex_header(child.child),
-                                "TextureDescriptors": extract_texture_descriptors(child.child, untangle_context=dir_untangle_context),
-                                "Submeshes": extract_submeshes(child.child),
-                                "SkinData": extract_skin_data(child.child),
-                                "FacialPoseData": extract_facial_pose_data(child.child),
-                                "TrailingSections": extract_trailing_sections(child.child),
-                                "ACTHeader": extract_act_header(child.child),
-                                "BoneHierarchy": extract_bone_data(child.child)
-                            }
-                        }
-                        with open(os.path.join(model_dir, json_name), 'w') as info_f:
-                            info_f.write(compact_faces_json(model_json))
                 del child
         except ExpectedFormatSkip as exc:
             _slogger.warning(f'{exc}', source=f'export.dir{dir_ind}')
         except Exception as e:
             _slogger.warning(f'skipping entry: {type(e).__name__}: {e}', source=f'export.dir{dir_ind}')
             pass
+    if EXPORT_GLTF and os.path.isdir(os.path.join(dir_dir, 'anm')):
+        convert_anm_directory(dir_dir)
     if len(os.listdir(dir_dir)) == 0:
         os.rmdir(dir_dir)
     _slogger.info(f'Finished exporting', source=f'export.dir{dir_ind}')

@@ -1861,10 +1861,10 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         default=False,
     )
     use_custom_normals: BoolProperty(  # type: ignore[valid-type]
-        name="Include Custom Split Normals",
+        name="Overwrite Normals",
         description=(
-            "Write Blender custom split normals back into the export. "
-            "Only affects models that already store normals (CompCount=6). "
+            "Overwrite both interleaved vertex-buffer normals (CompCount>=6) "
+            "and standalone NormalBuffer arrays with Blender's current normals. "
             "Leave off to keep the original normal values unchanged."
         ),
         default=False,
@@ -2046,11 +2046,51 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 target_submesh.pop("FacesDataEdited", None)
                 target_submesh.pop("FacesCountEdited", None)
                 target_submesh.pop("FaceTextureIndicesEdited", None)
-                # Per-loop normal/color edits are hammerspace-only (plan 3.3):
-                # in-place mode reuses the original draw-list loops, so the original
-                # per-loop NormalBuffer / ColorChannel buffers stay authoritative.
                 inplace_normal_buffer = target_submesh.get("NormalBuffer")
-                if isinstance(inplace_normal_buffer, dict):
+                if (self.use_custom_normals
+                        and isinstance(inplace_normal_buffer, dict)
+                        and "NormalBufferData" in inplace_normal_buffer):
+                    loop_indices = [
+                        li for poly in obj.data.polygons for li in poly.loop_indices
+                    ]
+                    norm_data, norm_faces = encode_normal_edits(
+                        obj, inplace_normal_buffer, loop_indices, use_base64
+                    )
+                    norm_data_raw = _to_bytes(norm_data)
+                    donor_faces_raw = _to_bytes(inplace_normal_buffer["NormalFacesData"])
+                    norm_comp = inplace_normal_buffer.get("NormalBufferCompCount", 3)
+                    norm_quant = inplace_normal_buffer.get("NormalBufferQuantizeInfo", 0)
+                    norm_stride = norm_comp * _comp_size_skin(norm_quant)
+                    donor_count = len(donor_faces_raw) // 2
+                    donor_indices = [
+                        int.from_bytes(donor_faces_raw[k*2:k*2+2], 'big')
+                        for k in range(donor_count)
+                    ]
+                    # Conflict check: if loops sharing a donor slot have different
+                    # edited normals, compaction would grow the buffer.
+                    slot_values = {}
+                    normal_conflict = False
+                    for slot_idx, loop_pos in zip(donor_indices, range(len(loop_indices))):
+                        record = norm_data_raw[loop_pos * norm_stride:(loop_pos + 1) * norm_stride]
+                        if slot_idx in slot_values:
+                            if slot_values[slot_idx] != record:
+                                normal_conflict = True
+                                break
+                        else:
+                            slot_values[slot_idx] = record
+                    if normal_conflict:
+                        warnings.append(
+                            f"{obj.name}: standalone normal buffer conflict — loops sharing "
+                            f"a donor slot have different edited normals. Normal overwrite "
+                            f"skipped (would exceed original buffer size). Use Hammerspace "
+                            f"Mode for full normal editing support."
+                        )
+                        inplace_normal_buffer.pop("NormalBufferDataEdited", None)
+                        inplace_normal_buffer.pop("NormalFacesDataEdited", None)
+                    else:
+                        inplace_normal_buffer["NormalBufferDataEdited"] = norm_data
+                        inplace_normal_buffer["NormalFacesDataEdited"] = norm_faces
+                elif isinstance(inplace_normal_buffer, dict):
                     inplace_normal_buffer.pop("NormalBufferDataEdited", None)
                     inplace_normal_buffer.pop("NormalFacesDataEdited", None)
                 for json_channel in target_submesh.get("ColorChannels", []):

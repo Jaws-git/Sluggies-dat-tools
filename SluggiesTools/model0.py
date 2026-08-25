@@ -68,8 +68,8 @@ class MaybeArchive(FileChunk):
         word1 = self.word()
         self.child = None
         # print(hex(word1))
-        if word1 in (0x01321AFD, 0x013240DB):
-            # self.child = self.add_child(0, 0, ANM)
+        if word1 in (0x01321AFD, 0x013240DB, 0x01324210):
+            self.child = self.add_child(0, self.length, ANM)
             return
         elif word1 > 1000:
             return
