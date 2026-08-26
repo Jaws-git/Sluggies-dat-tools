@@ -241,7 +241,7 @@ class ANM(FileChunk):
         out_path = os.path.join(anm_dir, f'{file_index}.anm')
         with open(out_path, 'wb') as out:
             out.write(raw)
-        slogger.info(f'Exported ANM slot {file_index} ({self.length} bytes)', source='anm')
+        #slogger.info(f'Exported ANM slot {file_index} ({self.length} bytes)', source='anm')
 
 # Wanted to do the same thing I did with the model data seperating it from the file reading classes completely
 # Turned out to be mainly just copying over attributes that I wanted

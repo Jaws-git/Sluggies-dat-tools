@@ -103,7 +103,7 @@ class Archive(FileChunk):
             except UnexportableEntrySkip as exc:
                 slogger.info(f'{_log_prefix()} {exc}', source='model')
             except ExpectedFormatSkip as exc:
-                slogger.warning(f'{_log_prefix()} {exc}', source='model')
+                slogger.info(f'{_log_prefix()} {exc}', source='model')
             except Exception as e:
                 _log_noncritical('failed analyzing in archive', e)
                 pass
