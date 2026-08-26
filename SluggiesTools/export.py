@@ -1347,6 +1347,10 @@ if UNTANGLE_TEX:
             source='export'
         )
 
+# The export is now fully confirmed (any "overwrite 3_Output_Dat?" prompt has
+# been answered). Clear the running log so the new log starts where this
+# export begins.
+_slogger.clear_log_file()
 _slogger.info('Starting model export...', source='export')
 dirs = load_dol_dirs(active_dol_path)
 dat = Dat(open(active_dat_path, 'rb'))

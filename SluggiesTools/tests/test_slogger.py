@@ -436,6 +436,44 @@ class TestParentChildAppend(unittest.TestCase):
         self.assertIn("child record", lines[1])
 
 
+class TestClearLogFile(unittest.TestCase):
+    """clear_log_file() truncates the log so the next record starts fresh."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        self.slog = _fresh_slogger(self._tmpdir)
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _read_log_lines(self):
+        log_path = os.path.join(self._tmpdir, "SluggiesTools.log")
+        with open(log_path, encoding="utf-8") as f:
+            return f.readlines()
+
+    def test_clear_removes_prior_records(self):
+        # Write records that represent a previous run.
+        self.slog.info("old run record", source="export")
+        # Start a new export: clear the log.
+        self.slog.clear_log_file()
+        self.slog.info("new run record", source="export")
+        lines = self._read_log_lines()
+        # Only the record written after the clear remains, at the top.
+        self.assertEqual(len(lines), 1)
+        self.assertIn("new run record", lines[0])
+        self.assertNotIn("old run record", "".join(lines))
+
+    def test_clear_is_noop_without_file_handler(self):
+        # Remove the file handler to simulate the console-only fallback.
+        cached = logging.getLogger("sluggies")
+        for handler in list(cached.handlers):
+            if isinstance(handler, logging.FileHandler):
+                handler.close()
+                cached.removeHandler(handler)
+        # Must not raise even with no file handler present.
+        self.slog.clear_log_file()
+
+
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     unittest.main()

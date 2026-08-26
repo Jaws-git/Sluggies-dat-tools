@@ -224,6 +224,32 @@ def configure(
     _initialized = True
 
 
+def clear_log_file() -> None:
+    """Truncate the running log file in place.
+
+    Clears all existing content so the next record starts at the top of the
+    file.  Used at the start of an export so the log begins where the current
+    export begins.  This is a no-op when no file handler is active (for
+    example the console-only fallback) or when the underlying stream is not
+    seekable/truncatable.
+    """
+    if _root_logger is None:
+        return
+    for handler in _root_logger.handlers:
+        if not isinstance(handler, logging.FileHandler):
+            continue
+        stream = handler.stream
+        if stream is None:
+            continue
+        try:
+            stream.seek(0)
+            stream.truncate()
+            handler.flush()
+        except (OSError, ValueError):
+            # Non-seekable stream (e.g. a pipe); leave it untouched.
+            pass
+
+
 def _get_logger() -> logging.Logger:
     """Return the root sluggies logger, configuring if needed."""
     if not _initialized or _root_logger is None:
