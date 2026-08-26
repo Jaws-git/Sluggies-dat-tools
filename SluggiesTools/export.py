@@ -6,7 +6,6 @@ import base64
 import re
 import struct
 import sys
-from anm_to_gltf import convert_anm_directory
 
 # Step 2.2 – Initialize universal logger in child process.
 import slogger as _slogger
@@ -24,7 +23,6 @@ EXPORT_TEX = '--notex' not in sys.argv
 DEBUG_DONT_USE_BASE64 = '--debug' in sys.argv
 UNTANGLE_TEX = '--untangle' in sys.argv
 EXPORT_DAE = '--dae' in sys.argv
-EXPORT_GLTF = '--gltf' in sys.argv
 
 # Model directory indices that hold stadiums (see folderNameMap):
 # 7 Mario Stadium ... 16 Toy Field. When UNTANGLE_SKIP_STADIUMS is enabled,
@@ -1449,8 +1447,6 @@ for dir_ind, file_arr in dirs.items():
         except Exception as e:
             _slogger.warning(f'skipping entry: {type(e).__name__}: {e}', source=f'export.dir{dir_ind}')
             pass
-    if EXPORT_GLTF and os.path.isdir(os.path.join(dir_dir, 'anm')):
-        convert_anm_directory(dir_dir)
     if len(os.listdir(dir_dir)) == 0:
         os.rmdir(dir_dir)
     _slogger.info(f'Finished exporting', source=f'export.dir{dir_ind}')

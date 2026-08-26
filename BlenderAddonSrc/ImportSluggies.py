@@ -1329,19 +1329,22 @@ class SLUGGIES_OT_import_anm(bpy.types.Operator, ImportHelper):
         return {"FINISHED"}
 
 
-def menu_func_import_anm(self, context):
-    self.layout.operator(SLUGGIES_OT_import_anm.bl_idname, text="Sluggers animation (.anm)")
+# ANM import is hidden from the File > Import menu for now.
+# To reactivate: uncomment this function plus the append/remove lines
+# in register()/unregister() below.
+# def menu_func_import_anm(self, context):
+#     self.layout.operator(SLUGGIES_OT_import_anm.bl_idname, text="Sluggers animation (.anm)")
 
 
 def register():
     bpy.utils.register_class(SLUGGIES_OT_import)
     bpy.utils.register_class(SLUGGIES_OT_import_anm)
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
-    bpy.types.TOPBAR_MT_file_import.append(menu_func_import_anm)
+    # bpy.types.TOPBAR_MT_file_import.append(menu_func_import_anm)  # hidden: ANM import
 
 
 def unregister():
-    bpy.types.TOPBAR_MT_file_import.remove(menu_func_import_anm)
+    # bpy.types.TOPBAR_MT_file_import.remove(menu_func_import_anm)  # hidden: ANM import
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
     bpy.utils.unregister_class(SLUGGIES_OT_import_anm)
     bpy.utils.unregister_class(SLUGGIES_OT_import)
