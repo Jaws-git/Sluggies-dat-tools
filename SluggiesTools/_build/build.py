@@ -20,7 +20,6 @@ SPEC = TOOLING_ROOT / "sluggies-dat-tools.spec"
 RELEASE_DIRECTORIES = {
     ROOT / "SluggiesTools": PACKAGE / "SluggiesTools",
     ROOT / "1_Input": PACKAGE / "1_Input",
-    ROOT / "2_Output_Models": PACKAGE / "2_Output_Models",
     ROOT / "_docs": PACKAGE / "docs",
 }
 RELEASE_FILES = (
