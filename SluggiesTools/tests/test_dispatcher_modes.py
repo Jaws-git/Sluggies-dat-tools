@@ -100,6 +100,93 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
 
         self.assertEqual(start.hammerspace_section_args(model), [])
 
+    def test_normal_edit_payload_requests_gpl_build(self):
+        model = {
+            'UseBase64': False,
+            'Submeshes': [{
+                'VertexBuffer': {},
+                'NormalBuffer': {
+                    'NormalBufferData': [0, 1],
+                    'NormalBufferDataEdited': [0, 2],
+                    'NormalFacesDataEdited': [0, 0],
+                },
+            }],
+        }
+
+        self.assertEqual(
+            start.hammerspace_section_args(model),
+            ['--gpl', 'build'],
+        )
+
+    def test_identical_stale_normal_payload_keeps_clone_defaults(self):
+        model = {
+            'UseBase64': False,
+            'Submeshes': [{
+                'VertexBuffer': {},
+                'NormalBuffer': {
+                    'NormalBufferData': [0, 1],
+                    'NormalBufferDataEdited': [0, 1],
+                    'NormalFacesDataEdited': [0, 0],
+                },
+            }],
+        }
+
+        self.assertEqual(start.hammerspace_section_args(model), [])
+
+    def test_color_edit_payload_requests_gpl_build(self):
+        model = {
+            'UseBase64': False,
+            'Submeshes': [{
+                'VertexBuffer': {},
+                'ColorChannels': [{
+                    'ColorChannelData': [0, 1],
+                    'ColorChannelDataEdited': [0, 2],
+                    'ColorFacesDataEdited': [0, 0],
+                }],
+            }],
+        }
+
+        self.assertEqual(
+            start.hammerspace_section_args(model),
+            ['--gpl', 'build'],
+        )
+
+    def test_identical_stale_color_payload_keeps_clone_defaults(self):
+        model = {
+            'UseBase64': False,
+            'Submeshes': [{
+                'VertexBuffer': {},
+                'ColorChannels': [{
+                    'ColorChannelData': [0, 1],
+                    'ColorChannelDataEdited': [0, 1],
+                    'ColorFacesDataEdited': [0, 0],
+                }],
+            }],
+        }
+
+        self.assertEqual(start.hammerspace_section_args(model), [])
+
+    def test_normal_and_color_edits_request_gpl_build(self):
+        model = {
+            'UseBase64': False,
+            'Submeshes': [{
+                'VertexBuffer': {},
+                'NormalBuffer': {
+                    'NormalBufferData': [0, 1],
+                    'NormalBufferDataEdited': [0, 2],
+                },
+                'ColorChannels': [{
+                    'ColorChannelData': [0, 1],
+                    'ColorChannelDataEdited': [0, 2],
+                }],
+            }],
+        }
+
+        self.assertEqual(
+            start.hammerspace_section_args(model),
+            ['--gpl', 'build'],
+        )
+
     def test_other_edit_markers_do_not_activate_unfinished_rebuilders(self):
         model = {'Submeshes': [{'FacesDataEdited': 'AAAA'}]}
 

@@ -1310,6 +1310,18 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
         DSP_OFF = lay['DSP_OFF'];  DS_OFF  = lay['DS_OFF']
         M_uv    = lay['M_uv'];     n_ds    = lay['n_ds']
 
+        # A DOLightingHeader exists only when the submesh carries normal data:
+        # skinned (interleaved cc=6) meshes always do, non-skinned meshes only
+        # when a separate NormalBuffer was exported.  When absent, the pointer
+        # must stay 0 — a non-zero pointer to a zeroed header makes the game's
+        # model loader allocate a normal vertex attribute, shifting the UV
+        # attribute slots the (copied) display-state shader expects and
+        # producing blocky color/UV distortion in-game.
+        has_lighting = bool(
+            sub.normal_buffer
+            and (lay['is_interleaved'] or sub.normal_buffer.normal_data)
+        )
+
         # GEO Descriptor (GPL-relative pointers)
         desc = GEO_DESC_OFF + i * 8
         _s.pack_into('>I', gpl, desc,     gpl_b)                       # DOLayoutPtr
@@ -1319,7 +1331,7 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
         _s.pack_into('>I', gpl, gpl_b + 0x00, POS_OFF)
         _s.pack_into('>I', gpl, gpl_b + 0x04, COL_OFF)
         _s.pack_into('>I', gpl, gpl_b + 0x08, UV_OFF)
-        _s.pack_into('>I', gpl, gpl_b + 0x0c, NOR_OFF)
+        _s.pack_into('>I', gpl, gpl_b + 0x0c, NOR_OFF if has_lighting else 0)
         _s.pack_into('>I', gpl, gpl_b + 0x10, DSP_OFF)
         _s.pack_into('B',  gpl, gpl_b + 0x14, M_uv)
         # 0x15–0x17: padding (zero, already initialised)
@@ -1352,14 +1364,16 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
         # Normal (Lighting) Header
         # Interleaved: rawPtr already set to pos_data_off+6 (no separate buffer).
         # Non-interleaved: rawPtr points to the separate normal data block.
-        if sub.normal_buffer and (lay['is_interleaved'] or sub.normal_buffer.normal_data):
+        # Guarded by has_lighting (see DOLayout pointer write above) so the
+        # pointer and the header body are emitted together, or not at all.
+        if has_lighting:
             nb = sub.normal_buffer
             _s.pack_into('>I', gpl, gpl_b + NOR_OFF + 0x00, lay['nor_data_off'])
             _s.pack_into('>H', gpl, gpl_b + NOR_OFF + 0x04, lay['nor_count'])
             _s.pack_into('B',  gpl, gpl_b + NOR_OFF + 0x06, nb.quantize_info)
             _s.pack_into('B',  gpl, gpl_b + NOR_OFF + 0x07, nb.comp_count)
             _s.pack_into('>f', gpl, gpl_b + NOR_OFF + 0x08, nb.ambient_pct)
-        # else: all-zero (skinned mesh: normalsPtr = 0)
+        # else: all-zero (no lighting header: pointer left 0)
 
         # Display Header
         first_pl = next(

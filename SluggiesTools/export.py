@@ -662,7 +662,14 @@ def extract_submeshes(model):
         # Extract normal buffer for non-skinned meshes (separate DOLightingHeader array)
         lh = layout.DOLightingHeader
         normal_buffer = None
-        if lh.normalsPtr != 0:
+        # A submesh has a standalone normal buffer ONLY when its DOLightingHeader
+        # pointer is non-zero. When it is zero (e.g. stadium models, dirs 7-16),
+        # DOLayout.analyze() still creates a DOLightingHeader at the DOLayout base,
+        # so lh.normalsPtr misreads the DOPositionHeaderPtr (non-zero) and the
+        # remaining fields decode as garbage (compCount/quantizeInfo from the
+        # DOColorHeaderPtr bytes). Guarding on the layout pointer prevents
+        # exporting a bogus NormalBuffer that later fails block validation.
+        if layout.DOLightingHeaderPtr != 0 and lh.normalsPtr != 0:
             normal_abs_offset = layout.absolute + lh.normalsPtr
             normal_length = lh.numNormals * lh.compCount * _vb_comp_size(lh.quantizeInfo)
             model.f.seek(normal_abs_offset)

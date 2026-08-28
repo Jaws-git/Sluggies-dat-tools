@@ -207,6 +207,8 @@ def hammerspace_section_args(model):
 
     changed_positions = []
     has_uv_edits = False
+    has_normal_edits = False
+    has_color_edits = False
     for submesh in model.get('Submeshes', []):
         vertex_buffer = submesh.get('VertexBuffer', {})
         edited = decode_binary(vertex_buffer.get('VertexBufferDataEdited'))
@@ -221,12 +223,26 @@ def hammerspace_section_args(model):
             for channel in submesh.get('UVChannels', [])
         ):
             has_uv_edits = True
+        normal_buffer = submesh.get('NormalBuffer', {})
+        if (
+            normal_buffer.get('NormalBufferDataEdited') is not None
+            and decode_binary(normal_buffer.get('NormalBufferDataEdited'))
+                != decode_binary(normal_buffer.get('NormalBufferData'))
+        ):
+            has_normal_edits = True
+        if any(
+            channel.get('ColorChannelDataEdited') is not None
+            and decode_binary(channel.get('ColorChannelDataEdited'))
+                != decode_binary(channel.get('ColorChannelData'))
+            for channel in submesh.get('ColorChannels', [])
+        ):
+            has_color_edits = True
 
     args = []
     if any(
         submesh.get('FaceSurfaceIdsEdited') is not None
         for submesh in model.get('Submeshes', [])
-    ) or changed_positions or has_uv_edits:
+    ) or changed_positions or has_uv_edits or has_normal_edits or has_color_edits:
         args.extend(['--gpl', 'build'])
         if any(
             submesh.get('VertexBuffer', {}).get('VertexBufferCompCount') == 6

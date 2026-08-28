@@ -386,7 +386,10 @@ def _validate_gpl(state: _ValidationState, skn_positions: list[int], prim_offset
 
         pos = hdr8(pos_h, f'GPL submesh[{submesh_index}] position header')
         col = hdr8(col_h, f'GPL submesh[{submesh_index}] color header')
-        nor = hdr8(nor_h, f'GPL submesh[{submesh_index}] normal header')
+        # A zero DOLightingHeaderPtr means the submesh has no normal data at
+        # all (common for stadium/background models).  Reading the header at
+        # offset 0 would misparse the DOLayout's own pointer words, so skip it.
+        nor = hdr8(nor_h, f'GPL submesh[{submesh_index}] normal header') if nor_h else None
         pos_count = 0
         pos_cc = 0
         pos_q = 0
