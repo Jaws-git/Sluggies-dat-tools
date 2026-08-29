@@ -450,6 +450,39 @@ def _page_base_name(view, texture_index):
     return f'{view}_page_{texture_index:02X}_t{texture_index:03d}{name_suffix}'
 
 
+def _page_character_name(view, texture_index):
+    names = SIDE_DIR_NAMES if view == 'side' else DIR_NAMES
+    return names.get(f'{texture_index:02X}', '')
+
+
+def _dolphin_texture_name(desc, image_data, tlut_data):
+    """Return the Dolphin emulator dump filename for the page texture payload.
+
+    Reuses tpl.TEXDescriptor hashing (XXH64 of the encoded image plus the
+    trimmed TLUT) so the name matches what Dolphin names its texture dump.
+    """
+    return desc.dolphinTextureBasenameForPayload(image_data, tlut_data) + '.png'
+
+
+def _write_dolphin_names_txt(path, dolphin_names):
+    """Write the expected Dolphin dump filenames, one per exported page.
+
+    Lines are sorted by character name (pages without a known character sort
+    by their base name), then by view and page index.
+    """
+    ordered = sorted(
+        dolphin_names,
+        key=lambda entry: (
+            entry['character_name'].lower() or entry['base_name'],
+            entry['view'],
+            entry['texture_index_dec'],
+        ),
+    )
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        for entry in ordered:
+            f.write(f"{entry['base_name']} -> {entry['dolphin_name']}\n")
+
+
 def _clean_old_sheets(sheets_dir):
     """
     Clean old per-page sheet PNG files while preserving:
@@ -589,7 +622,7 @@ def _validate_descriptor(desc, image_len, palette_len, texture_index):
         )
 
 
-def _export_one_page(root, entry_offset, tex_palette, desc, texture_index, view, pages_rows, cells_rows):
+def _export_one_page(root, entry_offset, tex_palette, desc, texture_index, view, pages_rows, cells_rows, dolphin_names):
 
     # dataLens uses next-pointer deltas and is unreliable when many descriptors
     # intentionally share the same image payload pointer. Derive sizes from the
@@ -601,6 +634,14 @@ def _export_one_page(root, entry_offset, tex_palette, desc, texture_index, view,
     image_data, tlut_data = desc._read_payload()
 
     base_name = _page_base_name(view, texture_index)
+
+    dolphin_names.append({
+        'view': view,
+        'texture_index_dec': texture_index,
+        'base_name': base_name,
+        'character_name': _page_character_name(view, texture_index),
+        'dolphin_name': _dolphin_texture_name(desc, image_data, tlut_data),
+    })
 
     tpl_rel = os.path.join(DIR_RAW, view, f'{base_name}.tpl').replace('\\', '/')
     sheet_rel = os.path.join(DIR_SHEETS, view, f'{base_name}.png').replace('\\', '/')
@@ -873,6 +914,7 @@ def main():
 
         pages_rows = []
         cells_rows = []
+        dolphin_names = []
 
         # Export base indexed images (shared across all pages of each view)
         side_seed_desc = tex_palette.descriptors[side_texture_indices[0]]
@@ -894,6 +936,7 @@ def main():
                 'side',
                 pages_rows,
                 cells_rows,
+                dolphin_names,
             )
 
         for texture_index in front_texture_indices:
@@ -907,6 +950,7 @@ def main():
                 'front',
                 pages_rows,
                 cells_rows,
+                dolphin_names,
             )
 
     finally:
@@ -923,6 +967,9 @@ def main():
 
     _write_pages_csv(pages_csv, pages_rows)
     _write_cells_csv(cells_csv, cells_rows)
+
+    dolphin_names_txt = os.path.join(OUTPUT_ROOT, 'dolphin_icon_names.txt')
+    _write_dolphin_names_txt(dolphin_names_txt, dolphin_names)
 
     manifest = {
         'generated_utc': datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z'),
@@ -981,7 +1028,8 @@ def main():
         f'  Source DOL: {os.path.relpath(input_dol, ROOT_DIR)}\n'
         f'  Source DAT: {os.path.relpath(input_dat, ROOT_DIR)}\n'
         f'  Pages exported: {len(pages_rows)}\n'
-        f'  Non-empty cells exported: {len(cells_rows)}'
+        f'  Non-empty cells exported: {len(cells_rows)}\n'
+        f'  Dolphin dump names: {os.path.relpath(dolphin_names_txt, ROOT_DIR)}'
     )
     _slogger.info(summary, source='icons.export_icons')
 
