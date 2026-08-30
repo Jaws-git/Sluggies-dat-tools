@@ -570,6 +570,13 @@ def rebuild_surface_assignments(data: dict) -> bool:
                 raise ValueError(
                     f'sub{sub_idx}: donor surfaces {source_state} and '
                     f'{target_state} use incompatible inherited texture bindings')
+            if source_contract['ShaderMode'] != target_contract['ShaderMode']:
+                raise ValueError(
+                    f'sub{sub_idx}: donor surfaces {source_state} and '
+                    f'{target_state} use different shader modes '
+                    f'({source_contract["ShaderMode"]} and '
+                    f'{target_contract["ShaderMode"]}); only identical-type '
+                    f'(same FourCC) reassignment is supported')
 
             source = display_states[source_state]
             source['DisplayStatePadBytes'] = target_contract['DisplayStatePadBytes']

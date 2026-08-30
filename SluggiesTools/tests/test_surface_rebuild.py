@@ -104,6 +104,52 @@ class SurfaceAssignmentRebuildTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'not an existing drawable donor surface'):
             rebuild_surface_assignments(data)
 
+    def test_same_type_move_accepted(self):
+        """A complete move between two donor surfaces that share the same
+        FourCC (shader mode) is allowed and the source adopts the target's
+        material state."""
+        data = _model([1, 1])
+        states = data['SluggiesModel']['Submeshes'][0]['DisplayStates']
+        states[0]['ShaderMode'] = '47535043'
+        states[1]['ShaderMode'] = '47535043'
+
+        self.assertTrue(rebuild_surface_assignments(data))
+
+        states = data['SluggiesModel']['Submeshes'][0]['DisplayStates']
+        # Source adopts the target's shader mode and is flagged as aliased.
+        self.assertEqual(states[0]['ShaderMode'], '47535043')
+        self.assertTrue(states[0]['MaterialStateAliasedByImporter'])
+
+    def test_different_type_move_rejected(self):
+        """A complete move between donor surfaces with different FourCC
+        (shader modes) is rejected — this is the cross-type corruption guard
+        (e.g. Spec -> Shdw) that previously broke the vertex-stream/DMA
+        contract."""
+        data = _model([1, 1])
+        states = data['SluggiesModel']['Submeshes'][0]['DisplayStates']
+        states[0]['ShaderMode'] = '47535043'
+        states[1]['ShaderMode'] = '47534844'
+
+        with self.assertRaisesRegex(ValueError, 'different shader modes'):
+            rebuild_surface_assignments(data)
+
+    def test_different_type_guard_fires_before_adopt(self):
+        """The same-type guard must reject the move before any material state
+        is adopted, so a rejected cross-type move leaves the source untouched."""
+        data = _model([1, 1])
+        states = data['SluggiesModel']['Submeshes'][0]['DisplayStates']
+        states[0]['ShaderMode'] = '47535043'
+        states[1]['ShaderMode'] = '47534844'
+
+        with self.assertRaisesRegex(ValueError, 'different shader modes'):
+            rebuild_surface_assignments(data)
+
+        # No adoption happened: source keeps its own shader mode and is not
+        # flagged as aliased.
+        states = data['SluggiesModel']['Submeshes'][0]['DisplayStates']
+        self.assertEqual(states[0]['ShaderMode'], '47535043')
+        self.assertNotIn('MaterialStateAliasedByImporter', states[0])
+
 
 if __name__ == '__main__':
     unittest.main()

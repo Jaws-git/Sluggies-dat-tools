@@ -1747,10 +1747,14 @@ def _find_new_materials(obj, json_submesh):
     return new_materials
 
 
-# Runtime testing found that even byte-minimal donor-surface reassignment can
-# corrupt rendering. Keep the schema encoder available for future format probes,
-# but do not allow Blender exports to activate the patcher path by default.
-ENABLE_MATERIAL_REASSIGNMENT_EXPORT = False
+# Runtime testing found that CROSS-TYPE donor-surface reassignment (e.g. a
+# Spec surface aliased onto a Shdw surface) corrupts rendering at runtime by
+# breaking the vertex-stream/DMA contract. Same-type moves (identical FourCC /
+# shader mode) are safe, so the export path is enabled, but the encoder below
+# rejects any face move whose source and target display states differ in
+# shader mode. Flip this flag back to False to disable reassignment exports
+# entirely (kill switch).
+ENABLE_MATERIAL_REASSIGNMENT_EXPORT = True
 
 
 def _encode_face_surface_assignment(obj, display_states, surf_mat, use_base64, warnings):
@@ -1838,6 +1842,28 @@ def _encode_face_surface_assignment(obj, display_states, surf_mat, use_base64, w
 
     if current_ds_idx == original_ds_idx:
         return None, False
+
+    # Same-type guard: a face may only be moved to a display state whose
+    # shader mode (FourCC) matches the face's original display state. Cross-type
+    # moves (e.g. Spec -> Shdw) break the vertex-stream/DMA contract and corrupt
+    # rendering at runtime.
+    effective_mode = [
+        ds.get("ShaderModeEdited") or ds.get("ShaderMode", "")
+        for ds in display_states
+    ]
+    for poly_index, (src_ds, dst_ds) in enumerate(zip(original_ds_idx, current_ds_idx)):
+        if src_ds == dst_ds:
+            continue
+        if effective_mode[src_ds] != effective_mode[dst_ds]:
+            src_name = display_states[src_ds].get("SurfaceId") or f"ds{src_ds}"
+            dst_name = display_states[dst_ds].get("SurfaceId") or f"ds{dst_ds}"
+            raise ValueError(
+                f"{obj.name}: face {poly_index} cannot move from surface "
+                f"'{src_name}' (shader mode {effective_mode[src_ds]}) to "
+                f"surface '{dst_name}' (shader mode {effective_mode[dst_ds]}); "
+                "only identical-type (same FourCC) surface reassignment is "
+                "supported"
+            )
 
     raw = struct.pack(f'>{n_faces}H', *current_ds_idx)
     return _from_bytes(raw, use_base64), True
@@ -2145,10 +2171,14 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     ds.pop("ShaderModeEdited", None)
 
             # Export per-face draw-state assignment when faces have been moved.
-            face_sid_data, face_sid_changed = _encode_face_surface_assignment(
-                obj, target_submesh.get("DisplayStates", []),
-                surf_mat, use_base64, warnings,
-            )
+            try:
+                face_sid_data, face_sid_changed = _encode_face_surface_assignment(
+                    obj, target_submesh.get("DisplayStates", []),
+                    surf_mat, use_base64, warnings,
+                )
+            except ValueError as exc:
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
             if face_sid_changed:
                 if not ENABLE_MATERIAL_REASSIGNMENT_EXPORT:
                     self.report({"ERROR"},
