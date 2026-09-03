@@ -1,4 +1,5 @@
 import contextlib
+import json
 import os
 import pathlib
 import struct
@@ -18,6 +19,8 @@ from texture_helper import (
     TexturePlan,
     TexturePlanEntry,
     TextureWrite,
+    PngTextureTarget,
+    resolve_png_to_texture,
     build_texture_plan,
     build_hammerspace_texture_plan,
     build_texture_writes,
@@ -1947,6 +1950,279 @@ class VerifyWriteRoundTripTests(unittest.TestCase):
             result = self._read_file(output_path)
 
         self.assertEqual(result[img_off : img_off + len(image_bytes)], image_bytes)
+
+
+class ResolvePngToTextureTests(unittest.TestCase):
+    """PLAN_PngPatching Phase 0: resolve_png_to_texture() locates the parent
+    .sluggie and matched descriptor for a PNG inside an exported model tree."""
+
+    def _make_tree(
+        self,
+        temp_dir,
+        descriptors=None,
+        png_names=("0.png",),
+        png_size=(64, 64),
+        sluggie_names=("model.sluggie",),
+        model_name="model",
+    ):
+        from PIL import Image
+
+        model_dir = os.path.join(temp_dir, model_name)
+        tex_dir = os.path.join(model_dir, "tex")
+        os.makedirs(tex_dir)
+        for name in png_names:
+            Image.new("RGBA", png_size, (0, 255, 0, 255)).save(
+                os.path.join(tex_dir, name), "PNG"
+            )
+        for name in sluggie_names:
+            with open(os.path.join(model_dir, name), "w") as f:
+                json.dump(
+                    {"SluggiesModel": {"TextureDescriptors": descriptors or []}}, f
+                )
+        return model_dir, tex_dir
+
+    def test_found_in_tex_folder(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_dir, tex_dir = self._make_tree(
+                temp_dir,
+                descriptors=[
+                    {"TextureIndex": 0, "TextureFileName": "0.png", "Width": 64, "Height": 64, "Format": 0x6},
+                    {"TextureIndex": 1, "TextureFileName": "1.png", "Width": 64, "Height": 64, "Format": 0x6},
+                ],
+                png_names=("0.png", "1.png"),
+            )
+            png = os.path.join(tex_dir, "1.png")
+
+            target = resolve_png_to_texture(png)
+
+            self.assertIsInstance(target, PngTextureTarget)
+            self.assertEqual(os.path.basename(target.png_path), "1.png")
+            self.assertEqual(os.path.basename(target.sluggie_path), "model.sluggie")
+            self.assertEqual(target.texture_index, 1)
+            self.assertEqual(target.descriptor["TextureFileName"], "1.png")
+
+    def test_bare_name_search_hit(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self._make_tree(
+                temp_dir,
+                descriptors=[
+                    {"TextureIndex": 0, "TextureFileName": "0.png", "Width": 64, "Height": 64, "Format": 0x6},
+                ],
+            )
+
+            target = resolve_png_to_texture("0.png", search_dir=temp_dir)
+
+            self.assertEqual(os.path.basename(target.png_path), "0.png")
+            self.assertEqual(os.path.basename(target.sluggie_path), "model.sluggie")
+            self.assertEqual(target.texture_index, 0)
+
+    def test_not_in_tex_folder(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            from PIL import Image
+
+            stray = os.path.join(temp_dir, "stray.png")
+            Image.new("RGBA", (4, 4), (0, 255, 0, 255)).save(stray, "PNG")
+
+            with self.assertRaisesRegex(ValueError, "not inside a 'tex/' folder"):
+                resolve_png_to_texture(stray)
+
+    def test_zero_sluggie(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_dir, tex_dir = self._make_tree(
+                temp_dir,
+                descriptors=[{"TextureIndex": 0, "TextureFileName": "0.png"}],
+                sluggie_names=(),
+            )
+            png = os.path.join(tex_dir, "0.png")
+
+            with self.assertRaisesRegex(ValueError, "expected exactly one .sluggie"):
+                resolve_png_to_texture(png)
+
+    def test_ambiguous_sluggie(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_dir, tex_dir = self._make_tree(
+                temp_dir,
+                descriptors=[{"TextureIndex": 0, "TextureFileName": "0.png"}],
+                sluggie_names=("a.sluggie", "b.sluggie"),
+            )
+            png = os.path.join(tex_dir, "0.png")
+
+            with self.assertRaisesRegex(ValueError, "expected exactly one .sluggie"):
+                resolve_png_to_texture(png)
+
+    def test_no_matching_descriptor(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_dir, tex_dir = self._make_tree(
+                temp_dir,
+                descriptors=[
+                    {"TextureIndex": 0, "TextureFileName": "0.png", "Width": 64, "Height": 64, "Format": 0x6},
+                ],
+            )
+            from PIL import Image
+
+            png = os.path.join(tex_dir, "9.png")
+            Image.new("RGBA", (64, 64), (0, 255, 0, 255)).save(png, "PNG")
+
+            with self.assertRaisesRegex(ValueError, "does not match any TextureFileName"):
+                resolve_png_to_texture(png)
+
+    def test_no_texture_descriptors(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_dir, tex_dir = self._make_tree(temp_dir, descriptors=[])
+
+            with self.assertRaisesRegex(ValueError, "has no TextureDescriptors"):
+                resolve_png_to_texture(os.path.join(tex_dir, "0.png"))
+
+    def test_not_found(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self._make_tree(
+                temp_dir,
+                descriptors=[{"TextureIndex": 0, "TextureFileName": "0.png"}],
+            )
+
+            with self.assertRaisesRegex(ValueError, "PNG not found"):
+                resolve_png_to_texture("missing.png", search_dir=temp_dir)
+
+    def test_not_found_without_search_dir(self):
+        with self.assertRaisesRegex(ValueError, "PNG not found"):
+            resolve_png_to_texture("/nonexistent/nowhere/missing.png")
+
+
+class PngOverrideTests(unittest.TestCase):
+    """PLAN_PngPatching Phase 1: png_overrides redirects the encode source and
+    the strict path enforces an identical footprint."""
+
+    def _make_model(self, temp_dir, names_and_sizes):
+        from PIL import Image
+
+        model_dir = os.path.join(temp_dir, "model")
+        tex_dir = os.path.join(model_dir, "tex")
+        os.makedirs(tex_dir)
+        sluggie = os.path.join(model_dir, "model.sluggie")
+        with open(sluggie, "w") as f:
+            f.write("{}")
+        for name, (w, h) in names_and_sizes.items():
+            Image.new("RGBA", (w, h), (0, 255, 0, 255)).save(os.path.join(tex_dir, name), "PNG")
+        return sluggie
+
+    def test_override_redirects_encoding(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            from PIL import Image
+
+            sluggie = self._make_model(temp_dir, {"0.png": (64, 64), "1.png": (64, 64)})
+            descriptors = [
+                {"TextureIndex": 0, "TextureFileName": "0.png", "Width": 64, "Height": 64, "Format": 0x6, "ImagePayloadLength": 64},
+                {"TextureIndex": 1, "TextureFileName": "1.png", "Width": 64, "Height": 64, "Format": 0x6, "ImagePayloadLength": 64},
+            ]
+            override = os.path.join(temp_dir, "edited_1.png")
+            Image.new("RGBA", (64, 64), (255, 0, 0, 255)).save(override, "PNG")
+            calls = []
+
+            def fake_encoder(png_path, gx_format, palette_format=None, **kwargs):
+                calls.append(png_path)
+                return _fake_parsed(width=kwargs["expected_width"], height=kwargs["expected_height"], gx_format=gx_format)
+
+            build_texture_plan(
+                sluggie,
+                descriptors,
+                encoder=fake_encoder,
+                png_overrides={1: override},
+            )
+
+            # Texture 0 resolves from tex/, texture 1 uses the override.
+            self.assertEqual(len(calls), 2)
+            self.assertTrue(calls[0].endswith(os.path.join("tex", "0.png")))
+            self.assertEqual(calls[1], os.path.abspath(override))
+
+    def test_none_override_unchanged(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sluggie = self._make_model(temp_dir, {"0.png": (64, 64)})
+            descriptors = [
+                {"TextureIndex": 0, "TextureFileName": "0.png", "Width": 64, "Height": 64, "Format": 0x6, "ImagePayloadLength": 64},
+            ]
+            calls = []
+
+            def fake_encoder(png_path, gx_format, palette_format=None, **kwargs):
+                calls.append(png_path)
+                return _fake_parsed(width=kwargs["expected_width"], height=kwargs["expected_height"], gx_format=gx_format)
+
+            build_texture_plan(sluggie, descriptors, encoder=fake_encoder)
+
+            self.assertEqual(len(calls), 1)
+            self.assertTrue(calls[0].endswith(os.path.join("tex", "0.png")))
+
+    def test_footprint_mismatch_raises(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sluggie = self._make_model(temp_dir, {"0.png": (64, 64)})
+            descriptors = [
+                {"TextureIndex": 0, "TextureFileName": "0.png", "Width": 64, "Height": 64, "Format": 0x6, "ImagePayloadLength": 2048},
+            ]
+
+            with self.assertRaisesRegex(ValueError, "identical footprint"):
+                build_texture_plan(
+                    sluggie, descriptors, encoder=lambda *a, **k: _fake_parsed()
+                )
+
+    def test_matching_footprint_succeeds(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sluggie = self._make_model(temp_dir, {"0.png": (64, 64)})
+            descriptors = [
+                {"TextureIndex": 0, "TextureFileName": "0.png", "Width": 64, "Height": 64, "Format": 0x6, "ImagePayloadLength": 64},
+            ]
+
+            def fake_encoder(png_path, gx_format, palette_format=None, **kwargs):
+                return _fake_parsed(width=kwargs["expected_width"], height=kwargs["expected_height"], gx_format=gx_format)
+
+            plan = build_texture_plan(sluggie, descriptors, encoder=fake_encoder)
+
+            self.assertEqual(len(plan), 1)
+
+    def test_hammerspace_override_redirects(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            from PIL import Image
+
+            sluggie = self._make_model(temp_dir, {"0.png": (64, 64)})
+            descriptors = [
+                {"TextureIndex": 0, "TextureFileName": "0.png", "Width": 64, "Height": 64, "Format": 0x6},
+            ]
+            override = os.path.join(temp_dir, "edited_0.png")
+            Image.new("RGBA", (64, 64), (255, 0, 0, 255)).save(override, "PNG")
+            calls = []
+
+            def fake_encoder(png_path, gx_format, palette_format=None, **kwargs):
+                calls.append(png_path)
+                return _fake_parsed(width=kwargs["expected_width"], height=kwargs["expected_height"], gx_format=gx_format)
+
+            build_hammerspace_texture_plan(
+                sluggie,
+                descriptors,
+                encoder=fake_encoder,
+                allow_dimension_change=True,
+                png_overrides={0: override},
+            )
+
+            self.assertEqual(calls, [os.path.abspath(override)])
+
+    def test_hammerspace_relaxed_path_skips_footprint_check(self):
+        # On the relaxed (allow_dimension_change) path the footprint check is
+        # not applied: the Hammerspace TEX section is rebuilt to fit the payload.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sluggie = self._make_model(temp_dir, {"0.png": (64, 64)})
+            descriptors = [
+                {"TextureIndex": 0, "TextureFileName": "0.png", "Width": 64, "Height": 64, "Format": 0x6, "ImagePayloadLength": 2048},
+            ]
+
+            def fake_encoder(png_path, gx_format, palette_format=None, **kwargs):
+                return _fake_parsed(width=kwargs["expected_width"], height=kwargs["expected_height"], gx_format=gx_format)
+
+            plan = build_hammerspace_texture_plan(
+                sluggie,
+                descriptors,
+                encoder=fake_encoder,
+                allow_dimension_change=True,
+            )
+
+            self.assertEqual(len(plan), 1)
 
 
 if __name__ == "__main__":

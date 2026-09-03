@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import ntpath
 import os
 import struct
@@ -373,6 +374,121 @@ def validate_texture_descriptors(descriptors: Sequence[Mapping[str, Any]]) -> li
     return names
 
 
+@dataclass(frozen=True)
+class PngTextureTarget:
+    """The result of resolving a ``.png`` to its owning model texture.
+
+    Carries the absolute path of the PNG to encode, the absolute path of the
+    parent ``.sluggie`` that owns the texture, the matched
+    ``TextureDescriptors`` entry, and that entry's ``TextureIndex``. This is the
+    single value the dispatcher and the child patchers need to replace one
+    texture in place (PLAN_PngPatching Phase 0 / D1-D2).
+    """
+
+    png_path: str
+    sluggie_path: str
+    descriptor: Mapping[str, Any]
+    texture_index: int
+
+
+def resolve_png_to_texture(
+    png_path: str | os.PathLike[str],
+    search_dir: str | os.PathLike[str] | None = None,
+) -> PngTextureTarget:
+    """Resolve a ``.png`` to its parent ``.sluggie`` and matched descriptor.
+
+    This is the single place that knows the exported-model-tree contract
+    (PLAN_PngPatching Phase 0 / D1-D2):
+
+    1. If ``png_path`` is not an existing file and ``search_dir`` is given,
+       ``os.walk(search_dir)`` for an exact basename match (mirrors
+       ``start.py``'s ``run_patching`` search).
+    2. Require ``basename(dirname(png)) == 'tex'``; ``model_dir = dirname(tex_dir)``.
+    3. Find exactly one ``*.sluggie`` in ``model_dir`` (error if 0 or >1).
+    4. Load the ``.sluggie`` and read ``SluggiesModel['TextureDescriptors']``.
+    5. Match the descriptor whose ``TextureFileName`` equals the PNG's basename
+       (the name is validated with :func:`validate_texture_file_name`).
+    6. Return a :class:`PngTextureTarget`.
+
+    Raises :class:`ValueError` with a specific message for each failure
+    (PLAN_PngPatching, section 5).
+    """
+    name = os.path.basename(os.fspath(png_path))
+
+    # 1. Locate the PNG on disk: an existing path (absolute or relative) is
+    #    used as-is; otherwise the basename is searched under search_dir
+    #    (mirrors run_patching, which matches a bare filename by walking).
+    if os.path.isfile(png_path):
+        located = os.path.abspath(os.fspath(png_path))
+    elif search_dir is not None:
+        matches = [
+            os.path.join(root, f)
+            for root, _, files in os.walk(search_dir)
+            for f in files
+            if f == name
+        ]
+        if not matches:
+            raise ValueError(
+                f"PNG not found: '{name}' "
+                f"(searched {os.path.basename(os.path.abspath(os.fspath(search_dir)))})"
+            )
+        located = os.path.abspath(matches[0])
+    else:
+        raise ValueError(f"PNG not found: '{name}'")
+
+    # 2. The PNG must live in a tex/ folder that is a sibling of the .sluggie.
+    tex_dir = os.path.dirname(located)
+    if os.path.basename(tex_dir) != "tex":
+        raise ValueError(
+            f"'{located}' is not inside a 'tex/' folder; "
+            "place the edited PNG in the model's tex/ folder"
+        )
+    model_dir = os.path.dirname(tex_dir)
+
+    # 3. Exactly one .sluggie must own the model directory.
+    sluggies = [f for f in os.listdir(model_dir) if f.lower().endswith(".sluggie")]
+    if len(sluggies) != 1:
+        raise ValueError(
+            f"expected exactly one .sluggie in '{model_dir}', found {len(sluggies)}"
+        )
+    sluggie_path = os.path.abspath(os.path.join(model_dir, sluggies[0]))
+
+    # 4. Load the .sluggie and read its texture descriptors.
+    try:
+        with open(sluggie_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"'{sluggie_path}' could not be read: {exc}") from exc
+    model = data.get("SluggiesModel", {})
+    descriptors = model.get("TextureDescriptors")
+    if not descriptors:
+        raise ValueError(f"'{sluggie_path}' has no TextureDescriptors; re-export the model")
+
+    # 5. Match the descriptor whose TextureFileName equals the PNG's basename.
+    #    The basename is validated as a bare, safe file name (PLAN_PngPatching D2).
+    validate_texture_file_name(name)
+    matched = [d for d in descriptors if d.get("TextureFileName") == name]
+    if len(matched) == 0:
+        known = ", ".join(str(d.get("TextureFileName")) for d in descriptors)
+        raise ValueError(
+            f"'{name}' does not match any TextureFileName in '{sluggie_path}' (known: {known})"
+        )
+    if len(matched) > 1:
+        raise ValueError(
+            f"'{name}' matches {len(matched)} TextureFileName entries in '{sluggie_path}'; "
+            "expected exactly one"
+        )
+    descriptor = matched[0]
+
+    # 6. Return the resolved target.
+    return PngTextureTarget(
+        png_path=located,
+        sluggie_path=sluggie_path,
+        descriptor=descriptor,
+        texture_index=descriptor.get("TextureIndex"),
+    )
+
+
 def read_png_dimensions(png_path: str | os.PathLike[str]) -> tuple[int, int]:
     """Return the ``(width, height)`` of a PNG file using Pillow.
 
@@ -580,6 +696,7 @@ def build_texture_plan(
     wimgt_executable: str = "wimgt",
     encoder: Callable[..., ParsedSingleImageTpl] | None = None,
     warn: Callable[[str], None] | None = None,
+    png_overrides: Mapping[int, str] | None = None,
 ) -> TexturePlan:
     """Encode and validate every descriptor, returning a plan only if all succeed.
 
@@ -606,6 +723,14 @@ def build_texture_plan(
     :func:`encode_png_to_tpl` and must accept the same keyword arguments.
     ``warn`` is injectable for testing; it defaults to
     :func:`slogger.warning` and receives a single formatted message.
+
+    ``png_overrides`` (PLAN_PngPatching Phase 1 / D3) is an optional
+    ``TextureIndex`` -> absolute-PNG-path mapping. When a descriptor's
+    ``TextureIndex`` is present, that file is the encode source instead of the
+    ``tex/`` copy; otherwise the ``tex/`` copy is used and behavior is
+    unchanged. The encoded payload is also footprint-checked against the
+    descriptor's ``ImagePayloadLength`` (in-place replacement is strictly
+    same-size), raising a descriptive ValueError on mismatch.
     """
     if encoder is None:
         encoder = encode_png_to_tpl
@@ -618,7 +743,10 @@ def build_texture_plan(
     skipped: list[SkippedTexture] = []
     for descriptor, name in zip(descriptors, names):
         index = descriptor.get("TextureIndex", "?")
-        png_path = resolve_texture_path(sluggie_path, name)
+        if png_overrides and index in png_overrides:
+            png_path = os.path.abspath(png_overrides[index])
+        else:
+            png_path = resolve_texture_path(sluggie_path, name)
 
         expected_width = descriptor.get("Width")
         expected_height = descriptor.get("Height")
@@ -668,6 +796,19 @@ def build_texture_plan(
 
         _validate_parsed_tpl_against_descriptor(descriptor, parsed)
 
+        # In-place replacement is strictly same-footprint (PLAN_PngPatching
+        # Phase 1): the encoded payload must equal the descriptor's proven
+        # ImagePayloadLength. This is a friendlier pre-check than the
+        # TextureWrite invariant that would otherwise fire downstream.
+        expected_len = descriptor.get("ImagePayloadLength")
+        if expected_len is not None and len(parsed.image_data) != expected_len:
+            raise ValueError(
+                f"texture {index} ({name}): encoded payload is {len(parsed.image_data)} "
+                f"bytes but the existing slot is {expected_len} bytes "
+                f"(mip chain: {_mip_chain_payload_length(descriptor.get('Format', 0), descriptor.get('Width', 0), descriptor.get('Height', 0), descriptor.get('AdditionalMipCount') or 0)}). "
+                "In-place replacement requires an identical footprint."
+            )
+
         entries.append(
             TexturePlanEntry(
                 texture_index=descriptor.get("TextureIndex", 0),
@@ -693,6 +834,7 @@ def build_hammerspace_texture_plan(
     encoder: Callable[..., ParsedSingleImageTpl] | None = None,
     warn: Callable[[str], None] | None = None,
     allow_dimension_change: bool = False,
+    png_overrides: Mapping[int, str] | None = None,
 ) -> TexturePlan:
     """Encode and validate every descriptor for a hammerspace TEX rebuild.
 
@@ -711,6 +853,13 @@ def build_hammerspace_texture_plan(
     fails, the function raises and returns no plan. The same mip skip rule
     applies: a descriptor with ``AdditionalMipCount > 0`` is recorded in
     ``plan.skipped`` and its donor bytes are left unchanged.
+
+    ``png_overrides`` (PLAN_PngPatching Phase 1 / D3) is an optional
+    ``TextureIndex`` -> absolute-PNG-path mapping that redirects the encode
+    source per texture. It is forwarded to :func:`build_texture_plan` on the
+    strict path and applied on the relaxed path. On the relaxed
+    (``allow_dimension_change``) path the footprint pre-check is *not* applied
+    because the Hammerspace TEX section is rebuilt to fit the new payload.
     """
     if not allow_dimension_change:
         return build_texture_plan(
@@ -719,6 +868,7 @@ def build_hammerspace_texture_plan(
             wimgt_executable=wimgt_executable,
             encoder=encoder,
             warn=warn,
+            png_overrides=png_overrides,
         )
 
     if encoder is None:
@@ -732,7 +882,10 @@ def build_hammerspace_texture_plan(
     skipped: list[SkippedTexture] = []
     for descriptor, name in zip(descriptors, names):
         index = descriptor.get("TextureIndex", "?")
-        png_path = resolve_texture_path(sluggie_path, name)
+        if png_overrides and index in png_overrides:
+            png_path = os.path.abspath(png_overrides[index])
+        else:
+            png_path = resolve_texture_path(sluggie_path, name)
 
         expected_width = descriptor.get("Width")
         expected_height = descriptor.get("Height")
@@ -1269,6 +1422,8 @@ __all__ = [
     "TexturePlanEntry",
     "SkippedTexture",
     "TextureWrite",
+    "PngTextureTarget",
+    "resolve_png_to_texture",
     "build_texture_plan",
     "build_hammerspace_texture_plan",
     "build_texture_writes",
