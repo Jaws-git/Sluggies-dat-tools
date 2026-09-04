@@ -1747,14 +1747,22 @@ def _find_new_materials(obj, json_submesh):
     return new_materials
 
 
-# Runtime testing found that CROSS-TYPE donor-surface reassignment (e.g. a
-# Spec surface aliased onto a Shdw surface) corrupts rendering at runtime by
-# breaking the vertex-stream/DMA contract. Same-type moves (identical FourCC /
-# shader mode) are safe, so the export path is enabled, but the encoder below
-# rejects any face move whose source and target display states differ in
-# shader mode. Flip this flag back to False to disable reassignment exports
-# entirely (kill switch).
+# Runtime testing found that cross-mode reassignment is unsafe. In particular,
+# changing a hand-role batch from RhSp/LhSp to Spec leaves its primitive list in
+# the hand display-state slot, where game-state visibility still suppresses it.
+# Only identical effective Type-7 modes are accepted. Flip this flag back to
+# False to disable reassignment exports entirely.
 ENABLE_MATERIAL_REASSIGNMENT_EXPORT = True
+
+
+def _effective_type7_modes(display_states):
+    active_mode = None
+    effective_modes = []
+    for state in display_states:
+        if state.get("DisplayStateId") == 7:
+            active_mode = state.get("ShaderModeEdited") or state.get("ShaderMode", "")
+        effective_modes.append(active_mode)
+    return effective_modes
 
 
 def _encode_face_surface_assignment(obj, display_states, surf_mat, use_base64, warnings):
@@ -1843,14 +1851,10 @@ def _encode_face_surface_assignment(obj, display_states, surf_mat, use_base64, w
     if current_ds_idx == original_ds_idx:
         return None, False
 
-    # Same-type guard: a face may only be moved to a display state whose
-    # shader mode (FourCC) matches the face's original display state. Cross-type
-    # moves (e.g. Spec -> Shdw) break the vertex-stream/DMA contract and corrupt
-    # rendering at runtime.
-    effective_mode = [
-        ds.get("ShaderModeEdited") or ds.get("ShaderMode", "")
-        for ds in display_states
-    ]
+    # A primitive-bearing non-Type-7 state inherits the most recent Type-7
+    # shader mode. Compare that effective mode rather than the current command's
+    # raw setting (for example, Type-1 11110001 is a texture binding, not a shader).
+    effective_mode = _effective_type7_modes(display_states)
     for poly_index, (src_ds, dst_ds) in enumerate(zip(original_ds_idx, current_ds_idx)):
         if src_ds == dst_ds:
             continue
@@ -1861,8 +1865,7 @@ def _encode_face_surface_assignment(obj, display_states, surf_mat, use_base64, w
                 f"{obj.name}: face {poly_index} cannot move from surface "
                 f"'{src_name}' (shader mode {effective_mode[src_ds]}) to "
                 f"surface '{dst_name}' (shader mode {effective_mode[dst_ds]}); "
-                "only identical-type (same FourCC) surface reassignment is "
-                "supported"
+                "only identical effective Type-7 shader reassignment is supported"
             )
 
     raw = struct.pack(f'>{n_faces}H', *current_ds_idx)

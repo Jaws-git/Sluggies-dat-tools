@@ -19,6 +19,12 @@ from GeometryRebuild import rebuild_edited_uvs, rebuild_surface_assignments, _co
 from ModelFormat import align_array_offset, compute_mem_clear_range, pad_array
 from InplacePatcher import root_scale as _root_scale
 
+
+def _source_dat_path(absolute_offset: int) -> str:
+    """Return the DAT containing data at an exported absolute offset."""
+    return hh.OUTPUT_DAT if absolute_offset >= hh.BASE_SIZE else hh.INPUT_DAT
+
+
 # ---------------------------------------------------------------------------
 # Parsed data structures
 # ---------------------------------------------------------------------------
@@ -1424,14 +1430,14 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
 
 
 def CloneGPL(model_offset: int, model_length: int) -> bytes:
-    """Clone the GPL section verbatim from INPUT dt_na.dat.
+    """Clone the GPL section verbatim from the model's source DAT.
 
     Reads the model block header to determine GPL boundaries, then returns
     the raw GPL bytes unchanged.  No pointer fixups needed (all internal
     GPL pointers are GPL-section-relative or DOLayout-relative).
     """
     import struct as _s
-    with open(hh.INPUT_DAT, 'rb') as f:
+    with open(_source_dat_path(model_offset), 'rb') as f:
         f.seek(model_offset)
         hdr = f.read(0x20)
         gpl_off = _s.unpack_from('>I', hdr, 0x04)[0]
@@ -1451,7 +1457,7 @@ def PatchGPLMaterialStates(gpl_bytes: bytes, data: dict, model_offset: int) -> b
     """Patch aliased Type-7 material bytes over an otherwise verbatim donor GPL."""
     import struct as _s
 
-    with open(hh.INPUT_DAT, 'rb') as source:
+    with open(_source_dat_path(model_offset), 'rb') as source:
         source.seek(model_offset + 0x04)
         raw = source.read(4)
     if len(raw) != 4:
@@ -1495,7 +1501,7 @@ def PatchGPLPositionArrays(gpl_bytes: bytes, model: dict, model_offset: int) -> 
     """Patch validated same-size position arrays over an otherwise cloned GPL."""
     import struct as _s
 
-    with open(hh.INPUT_DAT, 'rb') as source:
+    with open(_source_dat_path(model_offset), 'rb') as source:
         source.seek(model_offset + 0x04)
         raw = source.read(4)
     if len(raw) != 4:
@@ -1523,7 +1529,7 @@ def PatchGPLUVArrays(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes:
     """Patch same-size edited UV/normal arrays over an otherwise cloned donor GPL."""
     import struct as _s
 
-    with open(hh.INPUT_DAT, 'rb') as source:
+    with open(_source_dat_path(model_offset), 'rb') as source:
         source.seek(model_offset + 0x04)
         raw = source.read(4)
     if len(raw) != 4:
@@ -1638,7 +1644,7 @@ def PatchGPLUVRebuild(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes
     """Append resized UV/list payloads and redirect pointers over cloned GPL."""
     import struct as _s
 
-    with open(hh.INPUT_DAT, 'rb') as source:
+    with open(_source_dat_path(model_offset), 'rb') as source:
         source.seek(model_offset + 0x04)
         raw = source.read(4)
     if len(raw) != 4:
@@ -1857,7 +1863,7 @@ def BuildACTBoneHierarchy(parsed: SluggieParsed) -> bytes:
     if not parsed.model_offset:
         return b''
 
-    with open(hh.INPUT_DAT, 'rb') as f:
+    with open(_source_dat_path(parsed.model_offset), 'rb') as f:
         f.seek(parsed.model_offset)
         hdr = f.read(0x20)
         act_off = _s.unpack_from('>I', hdr, 0x08)[0]
@@ -1870,12 +1876,12 @@ def BuildACTBoneHierarchy(parsed: SluggieParsed) -> bytes:
 
 
 def CloneACT(model_offset: int, model_length: int) -> bytes:
-    """Clone the ACT section verbatim from INPUT dt_na.dat.
+    """Clone the ACT section verbatim from the model's source DAT.
 
     Returns the raw ACT bytes unchanged, or b'' if the model has no ACT section.
     """
     import struct as _s
-    with open(hh.INPUT_DAT, 'rb') as f:
+    with open(_source_dat_path(model_offset), 'rb') as f:
         f.seek(model_offset)
         hdr = f.read(0x20)
         act_off = _s.unpack_from('>I', hdr, 0x08)[0]
@@ -1905,7 +1911,7 @@ def _act_section_absolute(source_model_offset: int) -> int:
     offset, which stays valid after the hammerspace block is relocated.
     """
     import struct as _s
-    with open(hh.INPUT_DAT, 'rb') as f:
+    with open(_source_dat_path(source_model_offset), 'rb') as f:
         f.seek(source_model_offset)
         hdr = f.read(0x20)
     if len(hdr) < 0x20:
@@ -1988,7 +1994,7 @@ def BuildTEXTextureData(parsed: SluggieParsed) -> bytes:
     if not parsed.model_offset:
         return b''
 
-    with open(hh.INPUT_DAT, 'rb') as f:
+    with open(_source_dat_path(parsed.model_offset), 'rb') as f:
         f.seek(parsed.model_offset)
         hdr = f.read(0x20)
         tex_off = _s.unpack_from('>I', hdr, 0x0c)[0]
@@ -2001,12 +2007,12 @@ def BuildTEXTextureData(parsed: SluggieParsed) -> bytes:
 
 
 def CloneTEX(model_offset: int, model_length: int) -> bytes:
-    """Clone the TEX section verbatim from INPUT dt_na.dat.
+    """Clone the TEX section verbatim from the model's source DAT.
 
     Returns the raw TEX bytes unchanged, or b'' if the model has no TEX section.
     """
     import struct as _s
-    with open(hh.INPUT_DAT, 'rb') as f:
+    with open(_source_dat_path(model_offset), 'rb') as f:
         f.seek(model_offset)
         hdr = f.read(0x20)
         tex_off = _s.unpack_from('>I', hdr, 0x0c)[0]
@@ -2102,14 +2108,14 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
             # Single-image encoding path is base-only; reset mip count.
             mip_counts[idx] = 0
         else:
-            # Cloned: read original payload from INPUT dt_na.dat.
+            # Cloned: read the payload from the DAT used during export.
             if not tex.image_data_offset or not tex.image_data_length:
                 raise ValueError(
                     f"[BuildTEX] texture {idx}: cannot clone payload because "
                     f"image_data_offset={tex.image_data_offset} or "
                     f"image_data_length={tex.image_data_length} is zero"
                 )
-            with open(hh.INPUT_DAT, 'rb') as f:
+            with open(_source_dat_path(tex.image_data_offset), 'rb') as f:
                 f.seek(tex.image_data_offset)
                 image_bytes = f.read(tex.image_data_length)
             if len(image_bytes) != tex.image_data_length:
@@ -2120,7 +2126,7 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
                 )
             image_payloads.append((idx, image_bytes))
             if tex.palette_data_offset and tex.palette_data_length:
-                with open(hh.INPUT_DAT, 'rb') as f:
+                with open(_source_dat_path(tex.palette_data_offset), 'rb') as f:
                     f.seek(tex.palette_data_offset)
                     palette_bytes = f.read(tex.palette_data_length)
                 if len(palette_bytes) != tex.palette_data_length:
@@ -2221,7 +2227,7 @@ def BuildSKNSkinningDataCopyOnly(parsed: SluggieParsed, gpl_result: GPLBuildResu
     if not parsed.model_offset:
         return b''
 
-    with open(hh.INPUT_DAT, 'rb') as f:
+    with open(_source_dat_path(parsed.model_offset), 'rb') as f:
         f.seek(parsed.model_offset)
         hdr = f.read(0x20)
         skn_off = _s.unpack_from('>I', hdr, 0x10)[0]
@@ -2241,7 +2247,7 @@ def _compute_original_pos_gpl_rel(parsed: SluggieParsed) -> int:
     import struct as _s
     if not parsed.model_offset:
         return 0
-    with open(hh.INPUT_DAT, 'rb') as f:
+    with open(_source_dat_path(parsed.model_offset), 'rb') as f:
         gpl_base = parsed.model_offset + 0x20
         f.seek(gpl_base + 0x10)
         desc_ptr = _s.unpack_from('>I', f.read(4))[0]
@@ -2605,7 +2611,7 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
 def CloneSKN(model_offset: int, model_length: int) -> bytes:
     """Clone the SKN section verbatim, excluding ptr6/ptr7/ptr8 sections."""
     import struct as _s
-    with open(hh.INPUT_DAT, 'rb') as f:
+    with open(_source_dat_path(model_offset), 'rb') as f:
         f.seek(model_offset)
         hdr = f.read(0x20)
         skn_off = _s.unpack_from('>I', hdr, 0x10)[0]
@@ -2627,7 +2633,7 @@ def CloneSKN(model_offset: int, model_length: int) -> bytes:
 def CloneTrailingSections(model_offset: int, model_length: int) -> tuple[bytes, int]:
     """Clone the contiguous ptr6/ptr7/ptr8 tail and return its original offset."""
     import struct as _s
-    with open(hh.INPUT_DAT, 'rb') as f:
+    with open(_source_dat_path(model_offset), 'rb') as f:
         f.seek(model_offset)
         hdr = f.read(0x20)
         offsets = [
@@ -2754,14 +2760,14 @@ def BuildHEADERModelBlock(
 
 
 def CloneHEADER(model_offset: int) -> bytes:
-    """Clone the 0x20-byte model block header verbatim from INPUT dt_na.dat.
+    """Clone the 0x20-byte model block header verbatim from the source DAT.
 
     The header contains block-relative pointers to GPL, ACT, TEX, SKN, and
     any ptr6/ptr7/ptr8 sub-sections.  When all sections are cloned at their
     original sizes and reassembled in the same order, these pointers remain
     valid without any fixups.
     """
-    with open(hh.INPUT_DAT, 'rb') as f:
+    with open(_source_dat_path(model_offset), 'rb') as f:
         f.seek(model_offset)
         data = f.read(0x20)
     _slogger.info(f"[CloneHEADER] 0x20 bytes from offset 0x{model_offset:08X}", source="hammerspace.main")
@@ -2902,6 +2908,7 @@ def BuildModelBlock(
     data: dict,
     section_modes: SectionModes | None = None,
     sluggie_path: str | os.PathLike[str] | None = None,
+    tex_png_overrides: dict[int, str] | None = None,
 ) -> ModelBlockBuild:
     """Assemble a model block without modifying output DAT, DOL, or FST files.
 
@@ -2928,25 +2935,38 @@ def BuildModelBlock(
         )
     source_model_offset = _hex(model.get('ModelOffset', original_offset))
     source_model_length = model.get('ModelLength', original_length)
-    route_prefix_size = source_model_offset - original_offset
-    if route_prefix_size < 0 or route_prefix_size + source_model_length > original_length:
-        raise ValueError(
-            f'schema model range 0x{source_model_offset:08X}+{source_model_length:,} '
-            f'is outside donor DOL entry 0x{original_offset:08X}+{original_length:,}')
     route_prefix = b''
-    if route_prefix_size:
-        with open(hh.INPUT_DAT, 'rb') as source:
-            source.seek(original_offset)
-            route_prefix = source.read(route_prefix_size)
-        if len(route_prefix) != route_prefix_size:
-            raise IOError(
-                f'could not read {route_prefix_size} byte model container prefix '
-                f'at 0x{original_offset:08X}')
+    route_prefix_size = 0
+    if source_model_offset >= hh.BASE_SIZE:
+        # Hammerspace-resident source: the model block already lives in the
+        # hammerspace region of OUTPUT_DAT (e.g. a previously patched clone or
+        # unused character).  There is no DOL-entry container prefix to
+        # preserve — the clone functions read the model block directly from
+        # source_model_offset.
         _slogger.info(
-            f'[Container] preserving {route_prefix_size}-byte DOL entry prefix; '
-            f'inner model starts at +0x{route_prefix_size:X}',
+            f'[Container] source model is hammerspace-resident at '
+            f'0x{source_model_offset:08X}; no DOL-entry prefix to preserve',
             source='hammerspace.main',
         )
+    else:
+        route_prefix_size = source_model_offset - original_offset
+        if route_prefix_size < 0 or route_prefix_size + source_model_length > original_length:
+            raise ValueError(
+                f'schema model range 0x{source_model_offset:08X}+{source_model_length:,} '
+                f'is outside donor DOL entry 0x{original_offset:08X}+{original_length:,}')
+        if route_prefix_size:
+            with open(_source_dat_path(original_offset), 'rb') as source:
+                source.seek(original_offset)
+                route_prefix = source.read(route_prefix_size)
+            if len(route_prefix) != route_prefix_size:
+                raise IOError(
+                    f'could not read {route_prefix_size} byte model container prefix '
+                    f'at 0x{original_offset:08X}')
+            _slogger.info(
+                f'[Container] preserving {route_prefix_size}-byte DOL entry prefix; '
+                f'inner model starts at +0x{route_prefix_size:X}',
+                source='hammerspace.main',
+            )
 
     position_edits = _position_edits(model) if modes.gpl == 'build' else []
     if position_edits:
@@ -3028,17 +3048,19 @@ def BuildModelBlock(
     root_scale_applied = act_bytes != _act_before
     if modes.tex == 'build':
         texture_plan = None
-        if model.get('ReimportTextures'):
+        if model.get('ReimportTextures') or tex_png_overrides:
             if sluggie_path is None:
                 raise ValueError(
-                    "tex='build' with ReimportTextures requires the sluggie path "
-                    "to resolve the tex/ folder; pass sluggie_path to BuildModelBlock"
+                    "tex='build' with ReimportTextures or png overrides requires "
+                    "the sluggie path to resolve the tex/ folder; pass "
+                    "sluggie_path to BuildModelBlock"
                 )
             import texture_helper as _tex
             texture_plan = _tex.build_hammerspace_texture_plan(
                 sluggie_path,
                 model.get('TextureDescriptors') or [],
                 allow_dimension_change=True,
+                png_overrides=tex_png_overrides,
             )
             for _sk in texture_plan.skipped:
                 _sk_fields = [f"expected {_sk.expected_payload_length} bytes"]
@@ -3164,9 +3186,10 @@ def WriteModelBlock(build: ModelBlockBuild, model_name: str) -> int:
         if new_offset == -1:
             raise RuntimeError('No contiguous hammerspace region found after expansion')
 
+    shared_entries = hh.findSharedEntries(chunk_number, file_index)
     hh.writeModelBlock(build.block, new_offset)
     hh.patchDolEntry(chunk_number, file_index, new_offset, len(build.block))
-    for shared_chunk, shared_index in hh.findSharedEntries(chunk_number, file_index):
+    for shared_chunk, shared_index in shared_entries:
         hh.patchDolEntry(shared_chunk, shared_index, new_offset, len(build.block))
 
     hh.patchFstFileSize(os.path.getsize(hh.OUTPUT_DAT))
@@ -3234,7 +3257,14 @@ if __name__ == '__main__':
     _parser.add_argument('--tex', choices=('clone', 'build'), default='clone')
     _parser.add_argument('--skn', choices=('clone', 'build'), default='clone')
     _parser.add_argument('--trailing', choices=('clone', 'build'), default='clone')
+    _parser.add_argument('--texture-file', default=None,
+                         help='Absolute path to a .png file for single-texture replacement')
+    _parser.add_argument('--texture-index', type=int, default=None,
+                         help='TextureDescriptor index targeted by --texture-file')
     _args = _parser.parse_args()
+
+    if (_args.texture_file is None) != (_args.texture_index is None):
+        _parser.error('--texture-file and --texture-index must be used together')
 
     with open(_args.sluggies_path, 'r') as _file:
         _data = _json.load(_file)
@@ -3254,6 +3284,12 @@ if __name__ == '__main__':
             )
         raise SystemExit(0 if _success else 1)
 
+    _tex_png_overrides = None
+    if _args.texture_file is not None:
+        _tex_png_overrides = {_args.texture_index: _args.texture_file}
+        if _args.tex != 'build':
+            _args.tex = 'build'
+
     _modes = SectionModes(
         gpl=_args.gpl,
         act=_args.act,
@@ -3265,7 +3301,8 @@ if __name__ == '__main__':
         _parser.error('--clone cannot be combined with build section modes')
 
     try:
-        _build = BuildModelBlock(_data, _modes, sluggie_path=_args.sluggies_path)
+        _build = BuildModelBlock(_data, _modes, sluggie_path=_args.sluggies_path,
+                                 tex_png_overrides=_tex_png_overrides)
         _slogger.info(
             'Build validation report:\n' + _json.dumps(_build.validation_report, indent=2),
             source='hammerspace.main',

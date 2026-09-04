@@ -207,6 +207,34 @@ def _facial_position_patches(model: dict, restore: bool) -> list[tuple[int, byte
 unpatch    = '--unpatch' in sys.argv
 argv_clean = [a for a in sys.argv[1:] if a != '--unpatch']
 
+# Parse --texture-file <png> and --texture-index <N> for single-texture mode.
+_texture_file: str | None = None
+_texture_index_arg: int | None = None
+_argv_rest: list[str] = []
+_it = iter(argv_clean)
+for _tok in _it:
+    if _tok == '--texture-file':
+        _texture_file = next(_it, None)
+        if _texture_file is None:
+            abort("--texture-file requires a PNG path argument.")
+    elif _tok == '--texture-index':
+        _idx_str = next(_it, None)
+        if _idx_str is None:
+            abort("--texture-index requires an integer argument.")
+        try:
+            _texture_index_arg = int(_idx_str)
+        except ValueError:
+            abort(f"--texture-index must be an integer, got: {_idx_str}")
+    else:
+        _argv_rest.append(_tok)
+argv_clean = _argv_rest
+
+if unpatch and _texture_file:
+    abort(
+        "'--unpatch' does not accept .png files: pass the model's .sluggie "
+        "(e.g. <model>.gpl.sluggie) to restore the original texture bytes."
+    )
+
 if not argv_clean:
     abort("No .sluggies file path provided.\nUsage: python patch_inplace.py <path_to_model.sluggies> [--unpatch]")
 
@@ -492,7 +520,61 @@ texture_writes: tuple[_tex.TextureWrite, ...] = ()
 texture_skipped_count = 0
 
 _model = data["SluggiesModel"]
-if _model.get("ReimportTextures"):
+
+if _texture_file and not unpatch:
+    # Single-texture mode: patch exactly one texture from a given PNG,
+    # independent of the ReimportTextures flag.
+    if _model.get("UseHammerspace"):
+        abort(
+            "UseHammerspace is true — single-texture in-place patching is not "
+            "supported for Hammerspace models. Use start.py --patch to route "
+            "through the Hammerspace builder."
+        )
+    _descriptors = _model.get("TextureDescriptors") or []
+    if not _descriptors:
+        abort(f"No TextureDescriptors in {json_path}; cannot patch a texture.")
+    if _texture_index_arg is not None:
+        _matched = [d for d in _descriptors if d.get("TextureIndex") == _texture_index_arg]
+        if not _matched:
+            abort(
+                f"No descriptor with TextureIndex={_texture_index_arg} in {json_path}."
+            )
+        _target_descs = _matched[:1]
+        _target_index = _texture_index_arg
+    else:
+        _png_basename = os.path.basename(_texture_file)
+        _matched = [d for d in _descriptors if d.get("TextureFileName") == _png_basename]
+        if not _matched:
+            _known = [d.get("TextureFileName", "?") for d in _descriptors]
+            abort(
+                f"'{_png_basename}' does not match any TextureFileName in "
+                f"'{json_path}' (known: {', '.join(_known)})"
+            )
+        _target_descs = _matched[:1]
+        _target_index = _target_descs[0].get("TextureIndex", 0)
+    _input_dat_size = os.path.getsize(INPUT_DAT)
+    _output_dat_size = os.path.getsize(OUTPUT_DAT)
+    try:
+        _plan = _tex.build_texture_plan(
+            json_path, _target_descs,
+            png_overrides={_target_index: os.path.abspath(_texture_file)},
+        )
+        texture_skipped_count = len(_plan.skipped)
+        for _sk in _plan.skipped:
+            _sk_fields = [f"expected {_sk.expected_payload_length} bytes"]
+            if _sk.generated_payload_length is not None:
+                _sk_fields.append(f"generated {_sk.generated_payload_length} bytes")
+            _slogger.warning(
+                f"texture {_sk.texture_index} ({_sk.texture_file_name}): "
+                f"{', '.join(_sk_fields)}; left unchanged ({_sk.reason})",
+                source="patch_inplace",
+            )
+        texture_writes = _tex.build_texture_writes(
+            _target_descs, _plan, _input_dat_size, _output_dat_size,
+        )
+    except (_tex.TextureEncodingError, ValueError) as exc:
+        abort(str(exc))
+elif _model.get("ReimportTextures"):
     if _model.get("UseHammerspace"):
         abort(
             "UseHammerspace and ReimportTextures are both true. "

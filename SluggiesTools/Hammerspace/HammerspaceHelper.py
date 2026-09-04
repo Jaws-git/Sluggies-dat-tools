@@ -341,22 +341,25 @@ def _readDirPtrs() -> list[int]:
 
 
 def findSharedEntries(chunk_number: int, file_index: int) -> list[tuple[int, int]]:
-    """Find all chunk entries that share the same dat offset as the given entry.
+    """Find output-DOL entries that currently share the given entry's dat offset.
 
-    Scans the INPUT main.dol directory table for entries with the same
-    ``offset_en`` value.  Returns a list of ``(chunk_number, file_index)``
-    tuples, *excluding* the entry specified by the arguments.
+    The output state is authoritative here: untangle mode intentionally splits
+    entries that shared offsets in the stock DOL. Returns ``(chunk_number,
+    file_index)`` tuples, excluding the specified entry.
     """
 
-    # Read the target entry's original offset from the INPUT DOL.
-    target_offset, _ = readDolEntry(chunk_number, file_index)
+    dol_path = OUTPUT_DOL if os.path.exists(OUTPUT_DOL) else INPUT_DOL
+    if dol_path == OUTPUT_DOL:
+        target_offset, _ = readOutputDolEntry(chunk_number, file_index)
+    else:
+        target_offset, _ = readDolEntry(chunk_number, file_index)
     if target_offset == -1:
         return []
 
     dir_ptrs = _readDirPtrs()
     shared: list[tuple[int, int]] = []
 
-    with open(INPUT_DOL, 'rb') as dol:
+    with open(dol_path, 'rb') as dol:
         for cidx, dir_ptr in enumerate(dir_ptrs):
             fidx = 0
             while True:
@@ -559,6 +562,8 @@ def removeModelFromHammerspace(chunk_number: int, file_index: int) -> tuple:
         cur_length = struct.unpack('>I', dol.read(4))[0]  # word[1] len_en
         cur_offset = struct.unpack('>I', dol.read(4))[0]  # word[2] offset_en
 
+    shared = findSharedEntries(chunk_number, file_index)
+
     _slogger.info(f"[1] Current DOL entry: chunk={chunk_number}, file_index={file_index}, "
           f"offset=0x{cur_offset:08X} ({cur_offset:,}), "
           f"length=0x{cur_length:08X} ({cur_length:,} bytes)", source="hammerspace.helper")
@@ -608,8 +613,8 @@ def removeModelFromHammerspace(chunk_number: int, file_index: int) -> tuple:
     _slogger.info("[4] Restoring original DOL entry ...", source="hammerspace.helper")
     patchDolEntry(chunk_number, file_index, orig_offset, orig_length)
 
-    # Also restore all shared entries that reference the same original data.
-    shared = findSharedEntries(chunk_number, file_index)
+    # Also restore entries that referenced the same hammerspace block before
+    # the primary route was restored above.
     if shared:
         _slogger.info(f"    Restoring {len(shared)} shared chunk reference(s):", source="hammerspace.helper")
         for sc, si in shared:

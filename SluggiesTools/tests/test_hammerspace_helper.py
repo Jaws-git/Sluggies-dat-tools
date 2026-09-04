@@ -50,6 +50,45 @@ class FindFreeMemoryChunkTests(unittest.TestCase):
         )
 
 
+class FindSharedEntriesTests(unittest.TestCase):
+    def _write_dol(self, path, offsets):
+        data = bytearray(192)
+        for entry_offset, dat_offset in zip((0, 96), offsets):
+            words = [helper._DAT_FNAME_PTR, 8, dat_offset, 8] * 3
+            struct.pack_into('>12I', data, entry_offset, *words)
+        path.write_bytes(data)
+
+    def test_untangled_output_entries_are_not_treated_as_shared(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            input_dol = root / 'input.dol'
+            output_dol = root / 'output.dol'
+            self._write_dol(input_dol, (8, 8))
+            self._write_dol(output_dol, (64, 96))
+
+            with (
+                mock.patch.object(helper, 'INPUT_DOL', str(input_dol)),
+                mock.patch.object(helper, 'OUTPUT_DOL', str(output_dol)),
+                mock.patch.object(helper, '_readDirPtrs', return_value=[0, 96]),
+            ):
+                self.assertEqual(helper.findSharedEntries(0, 0), [])
+
+    def test_currently_shared_output_entries_are_returned(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            input_dol = root / 'input.dol'
+            output_dol = root / 'output.dol'
+            self._write_dol(input_dol, (8, 8))
+            self._write_dol(output_dol, (64, 64))
+
+            with (
+                mock.patch.object(helper, 'INPUT_DOL', str(input_dol)),
+                mock.patch.object(helper, 'OUTPUT_DOL', str(output_dol)),
+                mock.patch.object(helper, '_readDirPtrs', return_value=[0, 96]),
+            ):
+                self.assertEqual(helper.findSharedEntries(0, 0), [(1, 0)])
+
+
 class RemoveModelFromHammerspaceTests(unittest.TestCase):
     def _files(self, temp_dir, *, current_offset):
         root = pathlib.Path(temp_dir)

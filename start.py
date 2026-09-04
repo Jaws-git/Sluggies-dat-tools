@@ -28,7 +28,14 @@ if os.path.isdir(_BUNDLED_WIIMMS_BIN):
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
+# Many modules inside SluggiesTools use bare ``import slogger`` (and similar
+# sibling imports).  Add the package directory so those resolve correctly.
+_SLUGGIES_PKG_DIR = os.path.join(ROOT_DIR, 'SluggiesTools')
+if _SLUGGIES_PKG_DIR not in sys.path:
+    sys.path.insert(1, _SLUGGIES_PKG_DIR)
+
 import SluggiesTools.slogger as slogger  # noqa: E402 – must come after sys.path fix
+import SluggiesTools.texture_helper as _tex  # noqa: E402
 
 slogger.configure()
 
@@ -49,6 +56,14 @@ CUSTOM_ICON_SCRIPT = os.path.join(ICONS_DIR, 'add_custom_icons.py')
 HS_DIR = os.path.join(TOOLS_DIR, 'Hammerspace')
 HS_HELPER_SCRIPT = os.path.join(HS_DIR, 'HammerspaceHelper.py')
 HS_MAIN_SCRIPT = os.path.join(HS_DIR, 'HammerspaceMain.py')
+
+# Model directory indices that hold unused characters (see folderNameMap in
+# export.py). These characters share a playable character's model block and
+# have no data block of their own, so they can only be written back through
+# hammerspace. Kept here (mirroring export.UNUSED_DIRS_TO_UNTANGLE_CLONE) so
+# the dispatcher can reject in-place patches without importing export.py, which
+# has interactive side effects at import time.
+UNUSED_CHARACTER_DIR_INDICES = frozenset({89, 90, 91, 92, 93, 94})
 
 
 def python_script_command(script, *args):
@@ -303,65 +318,190 @@ def _current_model_in_hammerspace(chunk_number, file_index):
     return offset >= HammerspaceHelper.BASE_SIZE
 
 
+def _unused_character_dir_index(found):
+    """Return the model directory index encoded in a .sluggie's top-level
+    export folder name, or None when it cannot be determined.
+
+    Export folders are named ``<dir_index> <character name>`` (see
+    ``export.top_level_folder_name``), e.g. ``89 Unused Yoshi A``. The index is
+    the leading integer of the first path component under ``2_Output_Models``.
+    """
+    if not found:
+        return None
+    try:
+        rel = os.path.relpath(found, SEARCH_DIR)
+    except ValueError:
+        # found and SEARCH_DIR are on different drives (Windows) — cannot
+        # resolve a relative path, so the index is unknown.
+        return None
+    parts = rel.split(os.sep)
+    # The first component is the top-level export folder (e.g. "89 Unused Yoshi A").
+    if not parts or parts[0] in (os.curdir, os.pardir):
+        return None
+    prefix = parts[0].split(' ', 1)[0]
+    if prefix.isdigit():
+        return int(prefix)
+    return None
+
+
+def _patch_sluggie(found, model, unpatch):
+    """Dispatch a .sluggie patch/unpatch through Hammerspace or in-place."""
+    use_hammerspace = model.get('UseHammerspace', False)
+
+    if use_hammerspace:
+        cmd = python_script_command(HS_MAIN_SCRIPT, found, *hammerspace_section_args(model))
+        if unpatch:
+            cmd.append('--unpatch')
+        subprocess.run(cmd, cwd=HS_DIR, check=True)
+    else:
+        if _unused_character_dir_index(found) in UNUSED_CHARACTER_DIR_INDICES:
+            slogger.error(
+                "Unused characters cannot be in-place patched. Please activate "
+                "hammerspace mode during Blender export.",
+                source="dispatcher",
+            )
+            return
+
+        if _current_model_in_hammerspace(model.get('ChunkNumber'), model.get('FileIndex')):
+            slogger.info(
+                f"Model is currently in hammerspace but this file requests an "
+                f"{'in-place unpatch' if unpatch else 'in-place patch'}; removing the "
+                "hammerspace block first to restore the original model bytes "
+                "and DOL route.",
+                source="dispatcher",
+            )
+            subprocess.run(
+                python_script_command(HS_MAIN_SCRIPT, found, '--unpatch'),
+                cwd=HS_DIR,
+                check=True,
+            )
+
+        cmd = python_script_command(PATCH_SCRIPT, found)
+        if unpatch:
+            cmd.append('--unpatch')
+        subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
+
+
+def _patch_png(target, model):
+    """Dispatch a single-texture PNG patch through the appropriate path."""
+    sluggie_path = target.sluggie_path
+    png_path = target.png_path
+    texture_index = target.texture_index
+    use_hammerspace = model.get('UseHammerspace', False)
+
+    if use_hammerspace:
+        cmd = python_script_command(
+            HS_MAIN_SCRIPT, sluggie_path,
+            *hammerspace_section_args(model),
+            '--tex', 'build',
+            '--texture-file', png_path,
+            '--texture-index', str(texture_index),
+        )
+        subprocess.run(cmd, cwd=HS_DIR, check=True)
+        return
+
+    if _unused_character_dir_index(sluggie_path) in UNUSED_CHARACTER_DIR_INDICES:
+        slogger.error(
+            "Unused characters cannot be in-place patched. Please activate "
+            "hammerspace mode during Blender export.",
+            source="dispatcher",
+        )
+        return
+
+    if _current_model_in_hammerspace(model.get('ChunkNumber'), model.get('FileIndex')):
+        slogger.info(
+            "Model is currently in hammerspace but this PNG targets an "
+            "in-place model; removing the hammerspace block first to "
+            "restore the original model bytes and DOL route.",
+            source="dispatcher",
+        )
+        subprocess.run(
+            python_script_command(HS_MAIN_SCRIPT, sluggie_path, '--unpatch'),
+            cwd=HS_DIR,
+            check=True,
+        )
+
+    cmd = python_script_command(
+        PATCH_SCRIPT, sluggie_path,
+        '--texture-file', png_path,
+        '--texture-index', str(texture_index),
+    )
+    subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
+
+
 def run_patching(filenames, unpatch=False):
     for filename in filenames:
-        matches = [
-            os.path.join(root, f)
-            for root, _, files in os.walk(SEARCH_DIR)
-            for f in files
-            if f == filename
-        ]
+        is_png = filename.lower().endswith('.png')
 
-        if not matches:
-            slogger.info(f"No file named '{filename}' found in {SEARCH_DIR}", source="dispatcher")
+        if is_png and unpatch:
+            slogger.error(
+                f"'{filename}': --unpatch does not accept .png files: pass "
+                "the model's .sluggie (e.g. <model>.gpl.sluggie) to restore "
+                "the original texture bytes.",
+                source="dispatcher",
+            )
             continue
 
-        found = matches[0]
-        slogger.info(f"Found: {found}", source="dispatcher")
+        if is_png:
+            try:
+                target = _tex.resolve_png_to_texture(filename, SEARCH_DIR)
+            except ValueError as exc:
+                slogger.error(str(exc), source="dispatcher")
+                continue
 
-        # Read UseHammerspace flag from the .sluggies JSON
-        try:
-            with open(found, 'r') as f:
-                sluggies_data = json.load(f)
-        except (OSError, json.JSONDecodeError) as e:
-            slogger.error(f"Could not read '{found}': {e}", source="dispatcher")
-            continue
+            slogger.info(
+                f"Resolved PNG '{filename}' → "
+                f"{os.path.basename(target.sluggie_path)} texture {target.texture_index}",
+                source="dispatcher",
+            )
 
-        model = sluggies_data.get('SluggiesModel', {})
-        use_hammerspace = model.get('UseHammerspace', False)
+            try:
+                with open(target.sluggie_path, 'r') as f:
+                    sluggies_data = json.load(f)
+            except (OSError, json.JSONDecodeError) as e:
+                slogger.error(f"Could not read '{target.sluggie_path}': {e}", source="dispatcher")
+                continue
 
-        if use_hammerspace:
-            cmd = python_script_command(HS_MAIN_SCRIPT, found, *hammerspace_section_args(model))
-            if unpatch:
-                cmd.append('--unpatch')
-            subprocess.run(cmd, cwd=HS_DIR, check=True)
-        else:
-            # Stale-state guard: if the model is currently living in
-            # hammerspace (DOL offset >= BASE_SIZE) but this file requests an
-            # in-place operation, the original DAT region was zeroed by the
-            # hammerspace write and the DOL still points at the hammerspace
-            # block. Writing in-place here would land in a zeroed region while
-            # the game keeps loading hammerspace, silently losing the edit.
-            # Restore the original model (bytes + DOL route) first, then apply
-            # the requested in-place operation on a clean original.
-            if _current_model_in_hammerspace(model.get('ChunkNumber'), model.get('FileIndex')):
-                slogger.info(
-                    f"Model is currently in hammerspace but this file requests an "
-                    f"{'in-place unpatch' if unpatch else 'in-place patch'}; removing the "
-                    "hammerspace block first to restore the original model bytes "
-                    "and DOL route.",
+            model = sluggies_data.get('SluggiesModel', {})
+            try:
+                _patch_png(target, model)
+            except subprocess.CalledProcessError as e:
+                slogger.error(
+                    f"PNG patch failed for '{filename}' (exit code {e.returncode})",
                     source="dispatcher",
                 )
-                subprocess.run(
-                    python_script_command(HS_MAIN_SCRIPT, found, '--unpatch'),
-                    cwd=HS_DIR,
-                    check=True,
-                )
+                continue
+        else:
+            matches = [
+                os.path.join(root, f)
+                for root, _, files in os.walk(SEARCH_DIR)
+                for f in files
+                if f == filename
+            ]
 
-            cmd = python_script_command(PATCH_SCRIPT, found)
-            if unpatch:
-                cmd.append('--unpatch')
-            subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
+            if not matches:
+                slogger.info(f"No file named '{filename}' found in {SEARCH_DIR}", source="dispatcher")
+                continue
+
+            found = matches[0]
+            slogger.info(f"Found: {found}", source="dispatcher")
+
+            try:
+                with open(found, 'r') as f:
+                    sluggies_data = json.load(f)
+            except (OSError, json.JSONDecodeError) as e:
+                slogger.error(f"Could not read '{found}': {e}", source="dispatcher")
+                continue
+
+            model = sluggies_data.get('SluggiesModel', {})
+            try:
+                _patch_sluggie(found, model, unpatch)
+            except subprocess.CalledProcessError as e:
+                slogger.error(
+                    f"Patch failed for '{filename}' (exit code {e.returncode})",
+                    source="dispatcher",
+                )
+                continue
 
 
 def parse_args():
@@ -383,13 +523,15 @@ def parse_args():
             '  python start.py --patch-icons --dry-run\n'
             '  python start.py --patch model.sluggie\n'
             '  python start.py --patch model1.sluggie model2.sluggie\n'
+            '  python start.py --patch texture.png\n'
+            '  python start.py --patch model.sluggie texture.png\n'
             '  python start.py --unpatch model.sluggie\n'
             '  python start.py --hammerspace\n'
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument('--patch', nargs='+', metavar='FILENAME', help='patch one or more .sluggies files')
+    mode.add_argument('--patch', nargs='+', metavar='FILENAME', help='patch one or more .sluggie and/or .png files')
     mode.add_argument('--unpatch', nargs='+', metavar='FILENAME', help='restore original data for one or more .sluggies files')
     mode.add_argument('-hs', '--hammerspace', action='store_true', help='change available memory space in outputdt_na.dat')
     mode.add_argument('--export', action='store_true', help='export all models from 1_Input to 2_Output_Models')
@@ -523,7 +665,7 @@ def main() -> int:
         elif args.unpatch:
             run_patching(args.unpatch, unpatch=True)
 
-        slogger.info("Command completed successfully", source="dispatcher")
+        slogger.info("Command completed", source="dispatcher")
         return 0
     except KeyboardInterrupt:
         slogger.info("Command interrupted by user", source="dispatcher")

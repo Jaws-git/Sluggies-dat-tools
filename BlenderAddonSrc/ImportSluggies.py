@@ -702,6 +702,23 @@ def _create_material(mat_name, uv_layer_name, image, wrap_s=1):
     return mat
 
 
+def _set_surface_material_metadata(mat, ds_entry):
+    display_state_id = ds_entry.get("DisplayStateId")
+    mat["DisplayStateId"] = display_state_id
+    mat["ShaderMode"] = ds_entry.get("ShaderMode", "")
+    mat.id_properties_ui("DisplayStateId").update(
+        description="GX display-state command type for this donor surface.")
+    shader_description = (
+        "Editable Type-7 shader mode. Known names: Spec=specular  "
+        "Shdw=no-specular  SpRf=specular-reflection  "
+        "RhSp/LhSp=right/left-hand-specular  GhSp=ghost."
+        if display_state_id == 7 else
+        f"Raw Type-{display_state_id} GX state setting. Exposed for "
+        "surface comparison; only Type-7 shader-mode edits are exported."
+    )
+    mat.id_properties_ui("ShaderMode").update(description=shader_description)
+
+
 @lru_cache(maxsize=None)
 def _resolve_texture_image_path(sluggie_dir, tex_file):
     """Find a texture PNG for this import, falling back to sibling export folders.
@@ -881,7 +898,7 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
                     description=f"GX T-axis wrap mode for UV channel {ch_ind}")
 
     # Create Blender materials and assign per-face material indices.
-    # New path: one material per Type-7 draw state (SurfaceId-keyed).
+    # New path: one material per face-owning draw state (SurfaceId-keyed).
     # Legacy fallback: one material per unique texture index for old exports.
     if surface_ranges is not None and uv_channels and face_texture_indices:
         # Build texture-index → UV channel map for node tree setup
@@ -913,6 +930,7 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
                 mat["TextureIndex"] = fi_tex
                 mat["WrapS"] = wrap_s
                 mat["WrapT"] = wrap_t
+                _set_surface_material_metadata(mat, ds_entry)
                 mat.id_properties_ui("SurfaceId").update(
                     description="Stable draw-state identity (sm{n}_ds{n}). Do not delete — export resolves this material by SurfaceId.")
                 mat.id_properties_ui("TextureIndex").update(
@@ -921,10 +939,6 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
                     description="GX S-axis wrap mode for this draw state (0=extend, 1=repeat, 2=mirror).")
                 mat.id_properties_ui("WrapT").update(
                     description="GX T-axis wrap mode for this draw state (0=extend, 1=repeat, 2=mirror).")
-                if ds_entry.get("DisplayStateId") == 7:
-                    mat["ShaderMode"] = ds_entry.get("ShaderMode", "")
-                    mat.id_properties_ui("ShaderMode").update(
-                        description="Type-7 shader mode. Known names: Spec=specular  Shdw=no-specular  SpRf=specular-reflection  RhSp/LhSp=right/left-hand-specular  GhSp=ghost.")
             else:
                 continue
 

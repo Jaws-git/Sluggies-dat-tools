@@ -26,7 +26,7 @@ RELEASE_FILES = (
     ("StartTools.bat", "StartTools.bat"),
     ("README.md", "README.md"),
     ("_docs/BlenderGuide.md", "BlenderGuide.md"),
-    ("THIRD_PARTY_NOTICES.md", "THIRD_PARTY_NOTICES.md"),
+    ("SluggiesTools/_build/THIRD_PARTY_NOTICES.md", "THIRD_PARTY_NOTICES.md"),
 )
 
 BLENDER_ADDON_PATTERN = re.compile(r"SluggiesIO_BlenderAddon_v(\d+)\.(\d+)\.(\d+)\.zip")

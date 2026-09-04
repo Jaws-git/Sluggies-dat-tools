@@ -172,7 +172,7 @@ def load_and_harden_image(
         raise IconArtworkError(f'could not read artwork {path}: {exc}') from exc
 
     pixels = []
-    for red, green, blue, alpha in image.getdata():
+    for red, green, blue, alpha in image.get_flattened_data():
         if alpha >= 128:
             pixels.append((red, green, blue, 255))
         else:

@@ -35,6 +35,14 @@ def _display_state(face, pad='000000'):
     }
 
 
+def _texture_state(texture_index, pad='000000'):
+    return {
+        'DisplayStateId': 1,
+        'DisplayStatePadBytes': pad,
+        'ShaderMode': f'{0x11110000 | texture_index:08x}',
+    }
+
+
 def _model(assignments=None):
     submesh = {
         'DisplayStates': [
@@ -120,6 +128,84 @@ class SurfaceAssignmentRebuildTests(unittest.TestCase):
         self.assertEqual(states[0]['ShaderMode'], '47535043')
         self.assertTrue(states[0]['MaterialStateAliasedByImporter'])
 
+    def test_same_type_move_aliases_source_local_texture_binding(self):
+        data = {'SluggiesModel': {'UseBase64': False, 'Submeshes': [{
+            'DisplayStates': [
+                _texture_state(0, '000100'),
+                _display_state(_face(0), '010203'),
+                _texture_state(1, '000200'),
+                _display_state(_face(3), '040506'),
+            ],
+            'FaceSurfaceIdsEdited': [0, 1, 0, 1],
+        }]}}
+
+        self.assertTrue(rebuild_surface_assignments(data))
+
+        states = data['SluggiesModel']['Submeshes'][0]['DisplayStates']
+        self.assertEqual(states[2]['ShaderMode'], states[0]['ShaderMode'])
+        self.assertEqual(states[2]['DisplayStatePadBytes'], '000200')
+        self.assertTrue(states[2]['MaterialStateAliasedByImporter'])
+
+    def test_type1_draw_batch_can_move_to_its_inherited_type7_surface(self):
+        data = {'SluggiesModel': {'UseBase64': False, 'Submeshes': [{
+            'DisplayStates': [
+                _texture_state(0, '000008'),
+                _display_state(_face(0), '460064'),
+                {
+                    **_texture_state(1, '000108'),
+                    'VertexStreamLayout': DESCRIPTORS,
+                    'PrimListData': _display_state(_face(3))['PrimListData'],
+                },
+            ],
+            'FaceSurfaceIdsEdited': [0, 1, 0, 1],
+        }]}}
+
+        self.assertTrue(rebuild_surface_assignments(data))
+
+        states = data['SluggiesModel']['Submeshes'][0]['DisplayStates']
+        self.assertEqual(states[2]['DisplayStateId'], 1)
+        self.assertEqual(states[2]['ShaderMode'], states[0]['ShaderMode'])
+        self.assertEqual(states[1]['ShaderMode'], '00000000')
+
+    def test_type7_batch_can_adopt_later_type1_texture_without_losing_shader(self):
+        data = {'SluggiesModel': {'UseBase64': False, 'Submeshes': [{
+            'DisplayStates': [
+                _texture_state(0, '000008'),
+                _display_state(_face(0), '460064'),
+                {
+                    **_texture_state(1, '000108'),
+                    'VertexStreamLayout': DESCRIPTORS,
+                    'PrimListData': _display_state(_face(3))['PrimListData'],
+                },
+            ],
+            'FaceSurfaceIdsEdited': [0, 2, 0, 2],
+        }]}}
+
+        self.assertTrue(rebuild_surface_assignments(data))
+
+        states = data['SluggiesModel']['Submeshes'][0]['DisplayStates']
+        self.assertEqual(states[0]['DisplayStateId'], 1)
+        self.assertEqual(states[0]['ShaderMode'], states[2]['ShaderMode'])
+        self.assertTrue(states[0]['MaterialStateAliasedByImporter'])
+        self.assertEqual(states[1]['DisplayStateId'], 7)
+        self.assertEqual(states[1]['ShaderMode'], '00000000')
+        self.assertNotIn('MaterialStateAliasedByImporter', states[1])
+
+    def test_different_texture_move_rejects_shared_source_binding(self):
+        data = {'SluggiesModel': {'UseBase64': False, 'Submeshes': [{
+            'DisplayStates': [
+                _texture_state(0),
+                _display_state(_face(0)),
+                _texture_state(1),
+                _display_state(_face(3)),
+                _display_state(_face(6)),
+            ],
+            'FaceSurfaceIdsEdited': [0, 1, 0, 3, 0, 1],
+        }]}}
+
+        with self.assertRaisesRegex(ValueError, 'inherits texture layer 0 from shared ds2'):
+            rebuild_surface_assignments(data)
+
     def test_different_type_move_rejected(self):
         """A complete move between donor surfaces with different FourCC
         (shader modes) is rejected — this is the cross-type corruption guard
@@ -149,6 +235,15 @@ class SurfaceAssignmentRebuildTests(unittest.TestCase):
         states = data['SluggiesModel']['Submeshes'][0]['DisplayStates']
         self.assertEqual(states[0]['ShaderMode'], '47535043')
         self.assertNotIn('MaterialStateAliasedByImporter', states[0])
+
+    def test_visibility_role_change_is_rejected(self):
+        data = _model([1, 1])
+        states = data['SluggiesModel']['Submeshes'][0]['DisplayStates']
+        states[0]['ShaderMode'] = 'RhSp'
+        states[1]['ShaderMode'] = 'Spec'
+
+        with self.assertRaisesRegex(ValueError, 'different shader modes'):
+            rebuild_surface_assignments(data)
 
 
 if __name__ == '__main__':

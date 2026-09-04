@@ -46,10 +46,10 @@ def bti (b):
 
 outdir = "../2_Output_Models/"
 _export_placeholder = 'exports will be created here'
-_existing_exports = [
-    f for f in os.listdir(outdir) if os.path.exists(outdir)
-    if f != _export_placeholder
-]
+_existing_exports = (
+    [f for f in os.listdir(outdir) if f != _export_placeholder]
+    if os.path.exists(outdir) else []
+)
 if _existing_exports:
     answer = input(
         'Previous export files already exist in 2_Output_Models. '
@@ -1364,6 +1364,12 @@ dat = Dat(open(active_dat_path, 'rb'))
 
 for dir_ind, file_arr in dirs.items():
     set_log_dir_index(dir_ind)
+    if not UNTANGLE_TEX and dir_ind in UNUSED_DIRS_TO_UNTANGLE_CLONE:
+        _slogger.info(
+            'Skipping unused character (no untangle).',
+            source=f'export.dir{dir_ind}'
+        )
+        continue
     dir_dir = outdir + top_level_folder_name(dir_ind) + '/'
     if not os.path.exists(dir_dir):
         os.mkdir(dir_dir)

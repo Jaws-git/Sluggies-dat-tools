@@ -6749,16 +6749,6 @@ EXPECTED_MODEL_TEXTURES = [
     "88 Pink Yoshi/318644512/318644544_glove_L.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
     "88 Pink Yoshi/318678720/318678752_glove_R.gpl/tex/tex1_256x128_72af6be7cd3674f2_14.png",
     "88 Pink Yoshi/318678720/318678752_glove_R.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
-    "89 Unused Yoshi A/103619744_yoshi.gpl/tex/tex1_128x128_56d3eb9e878f7fd1_14.png",
-    "89 Unused Yoshi A/103619744_yoshi.gpl/tex/tex1_256x128_68f56a7f63ea8a49_14.png",
-    "89 Unused Yoshi A/103619744_yoshi.gpl/tex/tex1_512x512_25e3a5962fcdf1b3_14.png",
-    "89 Unused Yoshi A/103619744_yoshi.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
-    "89 Unused Yoshi A/104057792/104057824_bat.gpl/tex/tex1_128x128_f0ecb84a55a2150b_14.png",
-    "89 Unused Yoshi A/104057792/104057824_bat.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
-    "89 Unused Yoshi A/104071424/104071456_glove_L.gpl/tex/tex1_256x128_900284000bad44d8_14.png",
-    "89 Unused Yoshi A/104071424/104071456_glove_L.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
-    "89 Unused Yoshi A/104105632/104105664_glove_R.gpl/tex/tex1_256x128_900284000bad44d8_14.png",
-    "89 Unused Yoshi A/104105632/104105664_glove_R.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
     "89 Unused Yoshi A/715046144_yoshi.gpl/tex/tex1_128x128_81a32780c4b7a73f_14.png",
     "89 Unused Yoshi A/715046144_yoshi.gpl/tex/tex1_256x128_7a6e7ab99e3b93cb_14.png",
     "89 Unused Yoshi A/715046144_yoshi.gpl/tex/tex1_512x512_323be62cd6f15a7d_14.png",
@@ -7011,16 +7001,6 @@ EXPECTED_MODEL_TEXTURES = [
     "9 Wario City/23761536_sta06b.gpl/tex/tex1_64x64_d41d82761bbf1685_14.png",
     "9 Wario City/23761536_sta06b.gpl/tex/tex1_64x64_d9f5b4b13b873517_14.png",
     "9 Wario City/23761536_sta06b.gpl/tex/tex1_64x64_ea5ebe9157ee4576_14.png",
-    "90 Unused Yoshi B/103619744_yoshi.gpl/tex/tex1_128x128_56d3eb9e878f7fd1_14.png",
-    "90 Unused Yoshi B/103619744_yoshi.gpl/tex/tex1_256x128_68f56a7f63ea8a49_14.png",
-    "90 Unused Yoshi B/103619744_yoshi.gpl/tex/tex1_512x512_25e3a5962fcdf1b3_14.png",
-    "90 Unused Yoshi B/103619744_yoshi.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
-    "90 Unused Yoshi B/104057792/104057824_bat.gpl/tex/tex1_128x128_f0ecb84a55a2150b_14.png",
-    "90 Unused Yoshi B/104057792/104057824_bat.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
-    "90 Unused Yoshi B/104071424/104071456_glove_L.gpl/tex/tex1_256x128_900284000bad44d8_14.png",
-    "90 Unused Yoshi B/104071424/104071456_glove_L.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
-    "90 Unused Yoshi B/104105632/104105664_glove_R.gpl/tex/tex1_256x128_900284000bad44d8_14.png",
-    "90 Unused Yoshi B/104105632/104105664_glove_R.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
     "90 Unused Yoshi B/718820416_yoshi.gpl/tex/tex1_128x128_3519e5bac7fe3a0f_14.png",
     "90 Unused Yoshi B/718820416_yoshi.gpl/tex/tex1_256x128_3c12cd80f8b0be73_14.png",
     "90 Unused Yoshi B/718820416_yoshi.gpl/tex/tex1_512x512_d9b37c1c4de3525c_14.png",
@@ -7031,17 +7011,6 @@ EXPECTED_MODEL_TEXTURES = [
     "90 Unused Yoshi B/719272480/719272512_glove_L.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
     "90 Unused Yoshi B/719306816/719306848_glove_R.gpl/tex/tex1_256x128_39fcd71d3410831d_14.png",
     "90 Unused Yoshi B/719306816/719306848_glove_R.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
-    "91 Unused Toad/197251424_kinopio.gpl/tex/tex1_1024x128_93891c6f91437058_14.png",
-    "91 Unused Toad/197251424_kinopio.gpl/tex/tex1_256x128_e117e625aeeaa06f_14.png",
-    "91 Unused Toad/197251424_kinopio.gpl/tex/tex1_512x512_34f4c212778be016_14.png",
-    "91 Unused Toad/197251424_kinopio.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
-    "91 Unused Toad/197736736/197736768_bat.gpl/tex/tex1_64x64_986669f9cae16625_14.png",
-    "91 Unused Toad/197736736/197736768_bat.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
-    "91 Unused Toad/197736736/197736768_bat.gpl/tex/tex1_8x8_e390f82e7c6efe58_14.png",
-    "91 Unused Toad/197744544/197744576_glove_L.gpl/tex/tex1_256x128_291d5fdd2c1d9811_14.png",
-    "91 Unused Toad/197744544/197744576_glove_L.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
-    "91 Unused Toad/197778496/197778528_glove_R.gpl/tex/tex1_256x128_291d5fdd2c1d9811_14.png",
-    "91 Unused Toad/197778496/197778528_glove_R.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
     "91 Unused Toad/722594688_kinopio.gpl/tex/tex1_1024x128_d276336fb4aa61f3_14.png",
     "91 Unused Toad/722594688_kinopio.gpl/tex/tex1_256x128_e870ece60fbbff93_14.png",
     "91 Unused Toad/722594688_kinopio.gpl/tex/tex1_512x512_98b7076431712e0c_14.png",
@@ -7053,17 +7022,6 @@ EXPECTED_MODEL_TEXTURES = [
     "91 Unused Toad/723088192/723088224_glove_L.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
     "91 Unused Toad/723122272/723122304_glove_R.gpl/tex/tex1_256x128_6f8f6e8407990c4a_14.png",
     "91 Unused Toad/723122272/723122304_glove_R.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
-    "92 Unused Pianta/156474816_monte.gpl/tex/tex1_1024x128_d4ee9c23653a5194_14.png",
-    "92 Unused Pianta/156474816_monte.gpl/tex/tex1_256x128_8de4e107045bd5b5_14.png",
-    "92 Unused Pianta/156474816_monte.gpl/tex/tex1_256x256_58a177a8bef25079_14.png",
-    "92 Unused Pianta/156474816_monte.gpl/tex/tex1_256x256_94f3a21e95a9d7d1_14.png",
-    "92 Unused Pianta/156474816_monte.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
-    "92 Unused Pianta/156804896/156804928_bat.gpl/tex/tex1_128x128_8690ebcb8a242240_14.png",
-    "92 Unused Pianta/156804896/156804928_bat.gpl/tex/tex1_64x64_5f51e327c244f28a_14.png",
-    "92 Unused Pianta/156818592/156818624_glove_L.gpl/tex/tex1_256x128_6b7f8330c78ce39a_14.png",
-    "92 Unused Pianta/156818592/156818624_glove_L.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
-    "92 Unused Pianta/156851936/156851968_glove_R.gpl/tex/tex1_256x128_6b7f8330c78ce39a_14.png",
-    "92 Unused Pianta/156851936/156851968_glove_R.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
     "92 Unused Pianta/725465440_monte.gpl/tex/tex1_1024x128_09bba488422653ca_14.png",
     "92 Unused Pianta/725465440_monte.gpl/tex/tex1_256x128_5b19f1eecaa0a96f_14.png",
     "92 Unused Pianta/725465440_monte.gpl/tex/tex1_256x256_66b77650c56e115b_14.png",
@@ -7075,18 +7033,6 @@ EXPECTED_MODEL_TEXTURES = [
     "92 Unused Pianta/725809600/725809632_glove_L.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
     "92 Unused Pianta/725843072/725843104_glove_R.gpl/tex/tex1_256x128_4f10a13f91817c85_14.png",
     "92 Unused Pianta/725843072/725843104_glove_R.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
-    "93 Unused Kritter/276252288_kritter.gpl/tex/tex1_1024x64_d68331d0ad103a05_14.png",
-    "93 Unused Kritter/276252288_kritter.gpl/tex/tex1_256x128_78186d5c9bd3232b_14.png",
-    "93 Unused Kritter/276252288_kritter.gpl/tex/tex1_256x256_a4494d8caa1bdfb6_14.png",
-    "93 Unused Kritter/276252288_kritter.gpl/tex/tex1_512x512_bd0f99d42de9c49d_14.png",
-    "93 Unused Kritter/276252288_kritter.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
-    "93 Unused Kritter/276757120/276757152_bat.gpl/tex/tex1_128x128_c36d11e75ebb7cdf_14.png",
-    "93 Unused Kritter/276757120/276757152_bat.gpl/tex/tex1_32x32_681013dd345ab795_14.png",
-    "93 Unused Kritter/276757120/276757152_bat.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
-    "93 Unused Kritter/276775104/276775136_glove_L.gpl/tex/tex1_256x128_530c6354c18beb36_14.png",
-    "93 Unused Kritter/276775104/276775136_glove_L.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
-    "93 Unused Kritter/276809088/276809120_glove_R.gpl/tex/tex1_256x128_530c6354c18beb36_14.png",
-    "93 Unused Kritter/276809088/276809120_glove_R.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
     "93 Unused Kritter/729609152_kritter.gpl/tex/tex1_1024x64_f2a8ff3a85a8e857_14.png",
     "93 Unused Kritter/729609152_kritter.gpl/tex/tex1_256x128_4050bdbbf53e69c3_14.png",
     "93 Unused Kritter/729609152_kritter.gpl/tex/tex1_256x256_23f9ec65e735164f_14.png",
@@ -7099,16 +7045,6 @@ EXPECTED_MODEL_TEXTURES = [
     "93 Unused Kritter/730132352/730132384_glove_L.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
     "93 Unused Kritter/730166464/730166496_glove_R.gpl/tex/tex1_256x128_c5b6d5f76ca0272a_14.png",
     "93 Unused Kritter/730166464/730166496_glove_R.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
-    "94 Unused Koopa/127244288_nokonoko.gpl°/tex/tex1_256x128_3b02e02001e7647c_14.png",
-    "94 Unused Koopa/127244288_nokonoko.gpl°/tex/tex1_512x128_5096cadb13914e20_14.png",
-    "94 Unused Koopa/127244288_nokonoko.gpl°/tex/tex1_512x512_8abb6ae61237f3b2_14.png",
-    "94 Unused Koopa/127244288_nokonoko.gpl°/tex/tex1_64x64_d6da4880cee95b7b_14.png",
-    "94 Unused Koopa/127671520/127671552_bat.gpl/tex/tex1_64x64_23de2038b4435105_14.png",
-    "94 Unused Koopa/127671520/127671552_bat.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
-    "94 Unused Koopa/127678272/127678304_glove_L.gpl/tex/tex1_256x128_68ad71599dbaeef6_14.png",
-    "94 Unused Koopa/127678272/127678304_glove_L.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
-    "94 Unused Koopa/127711776/127711808_glove_R.gpl/tex/tex1_256x128_68ad71599dbaeef6_14.png",
-    "94 Unused Koopa/127711776/127711808_glove_R.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
     "94 Unused Koopa/732652928_nokonoko.gpl°/tex/tex1_256x128_1486461c0da4fecd_14.png",
     "94 Unused Koopa/732652928_nokonoko.gpl°/tex/tex1_512x128_0c238893ca59da5f_14.png",
     "94 Unused Koopa/732652928_nokonoko.gpl°/tex/tex1_512x512_12e64ac19e7c25f8_14.png",
@@ -7211,6 +7147,12 @@ def _build_list_literal(paths: list[str]) -> str:
 # ---------------------------------------------------------------------------
 
 class ModelTextureFilenameTests(unittest.TestCase):
+    _UNUSED_PREFIXES = tuple(f"{i} Unused " for i in range(89, 95))
+
+    @staticmethod
+    def _is_unused_char(path: str) -> bool:
+        return path.startswith(ModelTextureFilenameTests._UNUSED_PREFIXES)
+
     def test_model_texture_filenames_unchanged(self):
         if not OUTPUT_DIR.is_dir():
             self.skipTest(f"{OUTPUT_DIR} does not exist (run an export first)")
@@ -7218,8 +7160,14 @@ class ModelTextureFilenameTests(unittest.TestCase):
         expected = set(EXPECTED_MODEL_TEXTURES)
         actual = collect_model_texture_paths()
 
-        missing = sorted(expected - actual)  # baseline names no longer exported
-        extra = sorted(actual - expected)    # newly exported names not in baseline
+        missing = sorted(expected - actual)
+        extra = sorted(actual - expected)
+
+        # Unused characters (89-94) are optional: their absence is fine,
+        # but if present they must match the baseline exactly.
+        has_any_unused = any(self._is_unused_char(p) for p in actual)
+        if not has_any_unused:
+            missing = [m for m in missing if not self._is_unused_char(m)]
 
         if not missing and not extra:
             return

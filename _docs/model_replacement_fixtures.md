@@ -46,10 +46,40 @@ the unchanged hammerspace control and both edits pass in Dolphin.
 Position-only and UV-only fixtures are currently producible through the
 supported Blender workflow. For UV coverage, provide one donor-slot value edit
 and one split-seam edit if practical; use a checker texture for the Dolphin
-test. Material reassignment was implemented experimentally but
-failed Dolphin runtime tests; Blender export now rejects any changed face-to-
-material assignment. Keep the material-reassignment fixture planned until the
-dormant encoder/patcher path is explicitly reactivated after further research.
+test. Complete same-FourCC material reassignment is active for donor surfaces.
+Mario submesh0 `sm0_ds16` -> `sm0_ds14` is the selected different-texture probe:
+move all 20 ds16 faces, preserving its primitive list while changing its local
+texture binding from slot 1 to slot 0. Build-only validation passes; keep the
+fixture status planned until this exact edit passes in Dolphin. Partial-surface,
+shared-binding, and cross-FourCC moves remain unsupported.
+
+Mario submesh0 ds6 -> ds5 is the primitive-bearing Type-1 probe. Despite the
+raw ds6 setting `11110001`, both batches use the effective `Spec` shader mode:
+ds6 inherits it from ds5. Move all 594 ds6 faces to ds5. The rebuild keeps ds6's
+primitive payload and Type-1 command ID, changing its local texture binding to
+`11110000`. Build-only validation passes with zero size delta; Dolphin validation
+is pending.
+
+The reverse ds5 -> ds6 assignment does not remove or move ds5's Type-7 command:
+the alias-in-place rebuild leaves `Spec` at ds5 and copies ds6's texture-1
+binding backward into ds0, the source-local setter for ds5. Both batches then
+execute as `Spec` with texture 1. Structural validation passes with zero size
+delta, so this direction is not guarded; manual Dolphin validation remains the
+runtime gate.
+
+**Failed visibility-role probe:** the current saved assignment moves all 562
+Mario submesh0 ds9 (`RhSp`) faces to ds5 (`Spec`), not ds14. The generated GPL
+kept the ds9 primitive pointer and payload unchanged, changed ds9's setting to
+`Spec`, and changed its local texture setter. It validated structurally with zero
+size delta, but the right hand remained invisible in game even where ordinary
+`Spec` geometry and an unedited `RhSp` hand were visible. This proves the hand
+role is not disabled by replacing the FourCC in its existing display-state slot.
+All `RhSp`/`LhSp`/`Spec` cross-mode face reassignments are guarded again pending
+a verified primitive/state relocation mechanism.
+
+The failed build also copied target Type-1 pad bytes (`000408` -> `000008`).
+Those bytes are opaque and not part of the documented texture binding setting;
+texture aliases now preserve source pad bytes and copy only the setting word.
 
 The same-count reskin, vertex-count increase, new-face, and new-PNG-texture
 slots must remain planned for now. Do not hand-edit binary data to fill those

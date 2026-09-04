@@ -510,17 +510,28 @@ def rebuild_surface_assignments(data: dict) -> bool:
             continue
 
         display_states = sub['DisplayStates']
-        state_snapshots = [
-            {
+        state_snapshots = []
+        active_type7_state = None
+        for state_index, state in enumerate(display_states):
+            if state['DisplayStateId'] == 7:
+                active_type7_state = state_index
+            effective_type7_mode = (
+                display_states[active_type7_state].get('ShaderModeEdited')
+                or display_states[active_type7_state].get('ShaderMode', '')
+                if active_type7_state is not None else None
+            )
+            state_snapshots.append({
                 'DisplayStateId': state['DisplayStateId'],
                 'DisplayStatePadBytes': state.get('DisplayStatePadBytes', '000000'),
                 'ShaderMode': state.get('ShaderModeEdited') or state.get('ShaderMode', ''),
+                'EffectiveType7State': active_type7_state,
+                'EffectiveType7Mode': effective_type7_mode,
                 'VertexStreamLayout': state.get('VertexStreamLayout', []),
-            }
-            for state in display_states
-        ]
+            })
         texture_layers = {}
+        texture_layer_states = {}
         texture_contracts = []
+        texture_state_contracts = []
         for state in display_states:
             if state['DisplayStateId'] == 1:
                 setting = _setting_int(state.get('ShaderModeEdited') or state['ShaderMode'])
@@ -530,7 +541,9 @@ def rebuild_surface_assignments(data: dict) -> bool:
                     (setting >> 20) & 0xF,
                     (setting >> 16) & 0xF,
                 )
+                texture_layer_states[layer] = len(texture_contracts)
             texture_contracts.append(tuple(sorted(texture_layers.items())))
+            texture_state_contracts.append(dict(texture_layer_states))
 
         assignment_ranges = {}
         cursor = 0
@@ -556,37 +569,81 @@ def rebuild_surface_assignments(data: dict) -> bool:
                     f'{target_state} is not an existing drawable donor surface')
             source_contract = state_snapshots[source_state]
             target_contract = state_snapshots[target_state]
-            if source_contract['DisplayStateId'] != 7 or target_contract['DisplayStateId'] != 7:
+            if (source_contract['EffectiveType7State'] is None
+                    or target_contract['EffectiveType7State'] is None):
                 raise ValueError(
-                    f'sub{sub_idx}: complete reassignment requires Type-7 donor '
-                    f'surfaces, got ds{source_state} type '
-                    f'{source_contract["DisplayStateId"]} and ds{target_state} '
-                    f'type {target_contract["DisplayStateId"]}')
+                    f'sub{sub_idx}: donor surfaces {source_state} and {target_state} '
+                    'must both inherit a Type-7 shader state')
             if source_contract['VertexStreamLayout'] != target_contract['VertexStreamLayout']:
                 raise ValueError(
                     f'sub{sub_idx}: donor surfaces {source_state} and '
                     f'{target_state} use incompatible vertex stream layouts')
-            if texture_contracts[source_state] != texture_contracts[target_state]:
+            if source_contract['EffectiveType7Mode'] != target_contract['EffectiveType7Mode']:
                 raise ValueError(
                     f'sub{sub_idx}: donor surfaces {source_state} and '
-                    f'{target_state} use incompatible inherited texture bindings')
-            if source_contract['ShaderMode'] != target_contract['ShaderMode']:
-                raise ValueError(
-                    f'sub{sub_idx}: donor surfaces {source_state} and '
-                    f'{target_state} use different shader modes '
-                    f'({source_contract["ShaderMode"]} and '
-                    f'{target_contract["ShaderMode"]}); only identical-type '
-                    f'(same FourCC) reassignment is supported')
+                    f'{target_state} use different shader modes (effective Type-7: '
+                    f'({source_contract["EffectiveType7Mode"]} and '
+                    f'{target_contract["EffectiveType7Mode"]})); only identical '
+                    'effective shader reassignment is supported')
 
-            source = display_states[source_state]
-            source['DisplayStatePadBytes'] = target_contract['DisplayStatePadBytes']
-            source['ShaderMode'] = target_contract['ShaderMode']
-            source['MaterialStateAliasedByImporter'] = True
+            source_texture_contract = dict(texture_contracts[source_state])
+            target_texture_contract = dict(texture_contracts[target_state])
+            differing_layers = {
+                layer for layer in source_texture_contract.keys() | target_texture_contract.keys()
+                if source_texture_contract.get(layer) != target_texture_contract.get(layer)
+            }
+            previous_drawable = max(
+                (state_idx for state_idx in state_faces if state_idx < source_state),
+                default=-1,
+            )
+            binding_aliases = []
+            for layer in sorted(differing_layers):
+                source_binding_state = texture_state_contracts[source_state].get(layer)
+                target_binding_state = texture_state_contracts[target_state].get(layer)
+                if source_binding_state is None or target_binding_state is None:
+                    raise ValueError(
+                        f'sub{sub_idx}: donor surfaces {source_state} and '
+                        f'{target_state} have incompatible texture layer {layer}; '
+                        'the target contract cannot be represented by the source states')
+                if source_binding_state <= previous_drawable:
+                    raise ValueError(
+                        f'sub{sub_idx}: ds{source_state} inherits texture layer {layer} '
+                        f'from shared ds{source_binding_state}; changing it would also '
+                        'affect an earlier donor surface')
+                binding_aliases.append((source_binding_state, target_binding_state, layer))
+
+            source_type7_state = source_contract['EffectiveType7State']
+            target_type7_state = target_contract['EffectiveType7State']
+            if source_type7_state != target_type7_state:
+                if source_type7_state != source_state:
+                    raise ValueError(
+                        f'sub{sub_idx}: ds{source_state} inherits its Type-7 state '
+                        f'from shared ds{source_type7_state}; changing it would also '
+                        'affect an earlier donor surface')
+                source_type7 = display_states[source_type7_state]
+                target_type7 = state_snapshots[target_type7_state]
+                source_type7['DisplayStatePadBytes'] = target_type7['DisplayStatePadBytes']
+                source_type7['ShaderMode'] = target_type7['ShaderMode']
+                source_type7['MaterialStateAliasedByImporter'] = True
+            for source_binding_state, target_binding_state, layer in binding_aliases:
+                source_binding = display_states[source_binding_state]
+                target_binding = display_states[target_binding_state]
+                source_binding['ShaderMode'] = (
+                    target_binding.get('ShaderModeEdited')
+                    or target_binding.get('ShaderMode', '')
+                )
+                source_binding['MaterialStateAliasedByImporter'] = True
+                _slogger.info(
+                    f'[M2.4] sub{sub_idx}: ds{source_binding_state} adopts '
+                    f'ds{target_binding_state} texture-layer {layer} binding',
+                    source='geometry.rebuild',
+                )
             aliased_faces += len(assigned)
             target_states[start:end] = [source_state] * len(assigned)
             _slogger.info(
                 f'[M2.4] sub{sub_idx}: ds{source_state} adopts ds{target_state} '
-                f'material state; preserved {len(assigned)} faces in their donor GX batch',
+                f'effective material state; preserved {len(assigned)} faces in '
+                'their donor GX batch',
                 source='geometry.rebuild',
             )
 

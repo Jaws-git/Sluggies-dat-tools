@@ -125,6 +125,26 @@ class BuildModelBlockTests(unittest.TestCase):
             mock.patch.object(main, 'CloneHEADER', return_value=b'\x00' * 0x20),
         )
 
+    def test_clone_gpl_reads_hammerspace_source_from_output_dat(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = pathlib.Path(temp_dir) / 'input.dat'
+            output_dat = pathlib.Path(temp_dir) / 'output.dat'
+            model_offset = 0x40
+            input_dat.write_bytes(b'\x00' * 0x80)
+            output = bytearray(0x80)
+            struct.pack_into('>5I', output, model_offset, 0, 0x20, 0x24, 0, 0)
+            output[model_offset + 0x20:model_offset + 0x24] = b'GPL!'
+            output_dat.write_bytes(output)
+
+            with (
+                mock.patch.object(main.hh, 'BASE_SIZE', model_offset),
+                mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)),
+                mock.patch.object(main.hh, 'OUTPUT_DAT', str(output_dat)),
+            ):
+                cloned = main.CloneGPL(model_offset, 0x40)
+
+        self.assertEqual(cloned, b'GPL!')
+
     def test_gpl_source_layout_requires_unchanged_primitive_list_lengths(self):
         draw_state = SimpleNamespace(
             prim_list_data=b'original',
@@ -380,6 +400,37 @@ class BuildModelBlockTests(unittest.TestCase):
         patch_states.assert_called_once()
         build_gpl.assert_not_called()
         self.assertEqual(result.section_sizes['GPL'], len(b'PATCHED'))
+
+    def test_material_alias_patches_texture_and_drawable_states(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = pathlib.Path(temp_dir) / 'dt_na.dat'
+            donor = bytearray(0x100)
+            struct.pack_into('>I', donor, 0x04, 0x20)
+            input_dat.write_bytes(donor)
+            data = {'SluggiesModel': {'Submeshes': [{
+                'DisplayStates': [
+                    {
+                        'DisplayStateId': 1,
+                        'ShaderModeFieldOffset': '0x34',
+                        'ShaderMode': '11110000',
+                        'DisplayStatePadBytes': '010203',
+                        'MaterialStateAliasedByImporter': True,
+                    },
+                    {
+                        'DisplayStateId': 7,
+                        'ShaderModeFieldOffset': '0x44',
+                        'ShaderMode': 'Spec',
+                        'DisplayStatePadBytes': '040506',
+                        'MaterialStateAliasedByImporter': True,
+                    },
+                ],
+            }]}}
+
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                patched = main.PatchGPLMaterialStates(b'\x00' * 0x40, data, 0)
+
+        self.assertEqual(patched[0x11:0x18], bytes.fromhex('01020311110000'))
+        self.assertEqual(patched[0x21:0x28], b'\x04\x05\x06Spec')
 
     def test_gpl_build_tolerates_missing_primlistdata(self):
         parsed = main.ParseSluggie({'SluggiesModel': {
@@ -750,12 +801,19 @@ class BuildModelBlockTests(unittest.TestCase):
             section_sizes={},
             validation_report={'valid': True},
         )
+        route_events = []
         with (
             mock.patch.object(main.hh, 'readOutputDolEntry', return_value=(0, 42)),
             mock.patch.object(main.hh, 'findFreeMemoryChunk', return_value=0x2000),
             mock.patch.object(main.hh, 'writeModelBlock') as write_model,
-            mock.patch.object(main.hh, 'patchDolEntry') as patch_dol,
-            mock.patch.object(main.hh, 'findSharedEntries', return_value=[(19, 1)]),
+            mock.patch.object(
+                main.hh, 'patchDolEntry',
+                side_effect=lambda *_args: route_events.append('patch'),
+            ) as patch_dol,
+            mock.patch.object(
+                main.hh, 'findSharedEntries',
+                side_effect=lambda *_args: route_events.append('find') or [(19, 1)],
+            ),
             mock.patch.object(main.hh, 'patchFstFileSize') as patch_fst,
             mock.patch.object(main.hh, 'zeroOriginalModel') as zero_original,
             mock.patch.object(main.hh, 'writeDebugDumps') as write_dumps,
@@ -769,6 +827,7 @@ class BuildModelBlockTests(unittest.TestCase):
             mock.call(18, 0, 0x2000, 11),
             mock.call(19, 1, 0x2000, 11),
         ])
+        self.assertEqual(route_events, ['find', 'patch', 'patch'])
         patch_fst.assert_called_once_with(123456)
         zero_original.assert_called_once_with(18, 0)
         write_dumps.assert_called_once_with('fixture.sluggie', 0x1000, 42, b'model-block')
@@ -1099,6 +1158,7 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
             'model.sluggies',
             self.data['SluggiesModel']['TextureDescriptors'],
             allow_dimension_change=True,
+            png_overrides=None,
         )
         build_tex.assert_called_once_with(self.parsed, plan)
         clone_tex.assert_not_called()
@@ -1121,6 +1181,39 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
                 self._run(main.SectionModes(tex='build'))
         build_plan.assert_not_called()
         build_tex.assert_not_called()
+
+    def test_tex_build_with_png_override_passes_overrides(self):
+        self.data['SluggiesModel'].update({
+            'UseHammerspace': True,
+            'TextureDescriptors': [
+                {'TextureIndex': 0, 'TextureFileName': '0.png'},
+            ],
+        })
+        overrides = {0: '/tmp/edited.png'}
+        plan = mock.Mock(skipped=())
+        with (
+            mock.patch.object(
+                texture_helper, 'build_hammerspace_texture_plan',
+                return_value=plan,
+            ) as build_plan,
+            mock.patch.object(main, 'BuildTEX', return_value=b'BUILT_TEX') as build_tex,
+            mock.patch.object(main, 'CloneTEX') as clone_tex,
+        ):
+            result = self._run(
+                main.SectionModes(tex='build'),
+                sluggie_path='model.sluggies',
+                tex_png_overrides=overrides,
+            )
+
+        build_plan.assert_called_once_with(
+            'model.sluggies',
+            self.data['SluggiesModel']['TextureDescriptors'],
+            allow_dimension_change=True,
+            png_overrides=overrides,
+        )
+        build_tex.assert_called_once_with(self.parsed, plan)
+        clone_tex.assert_not_called()
+        self.assertEqual(result.section_sizes['TEX'], len(b'BUILT_TEX'))
 
     def test_tex_build_without_reimport_clones_payloads(self):
         self.data['SluggiesModel'].update({
