@@ -1359,6 +1359,7 @@ def encode_png_to_tpl(
 
     with Image.open(png_path) as img:
         base_image = img.copy()
+    base_image.info.pop("icc_profile", None)
 
     with tempfile.TemporaryDirectory(prefix="wimgt_encode_") as temp_dir:
         base_name = "tex"

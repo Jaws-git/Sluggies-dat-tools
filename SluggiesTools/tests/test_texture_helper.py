@@ -1028,6 +1028,19 @@ class EncodePngToTplTests(unittest.TestCase):
             self.assertEqual(len(parsed["image_data"]), 32)
             self.assertEqual(parsed["palette_data"], b"")
 
+    def test_encode_strips_invalid_icc_profile(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            from PIL import Image
+            png = os.path.join(temp_dir, "invalid-profile.png")
+            Image.new("RGBA", (8, 8), (200, 100, 50, 255)).save(
+                png, "PNG", icc_profile=b"invalid ICC profile"
+            )
+
+            parsed = encode_png_to_tpl(png, gx_format=0xE)
+
+            self.assertEqual(parsed["format"], 0xE)
+            self.assertEqual(len(parsed["image_data"]), 32)
+
     def test_encode_indexed_c8_with_rgb5a3_palette(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             png = self._make_fixture_png(temp_dir)
