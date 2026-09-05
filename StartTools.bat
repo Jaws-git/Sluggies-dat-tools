@@ -16,8 +16,8 @@ echo [2] Extract all models
 echo [3] Extract player icons
 echo [4] Patch all 6 unused-character icons into game files
 echo.
-echo [5] Patch .sluggies model or .png texture into game files
-echo [6] UnPatch .sluggies model in game files
+echo [5] Patch .sluggie models or .png textures into game files
+echo [6] UnPatch .sluggie model from game files
 echo. 
 echo [7] Manually resize available hammerspace (extra model data storage) - usually not necessary
 echo [8] Import edited icon sheets (.\2_Output_Models\_ICONS\sheets\)
