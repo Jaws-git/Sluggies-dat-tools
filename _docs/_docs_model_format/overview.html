@@ -352,16 +352,16 @@
 
     <h2>32-Byte Alignment Requirement</h2>
     <p>The Wii Broadway CPU has 32-byte cache lines. Empirical scanning shows that <strong>only hot-path arrays</strong> require 32-byte alignment: skinned position buffers, GX primitive lists, and SKN source, weight, destination-index, and flush-index arrays. Static position, standalone normal, color, UV, and DOLayout data are commonly unaligned.</p>
-    <p>In observed game data, 100% of data array pointers satisfy this alignment. Violating the requirement causes the game to <strong>hang</strong> (infinite stall or bus error) rather than crash with an informative error.</p>
-    <p>When rebuilding any section, insert zero-filled padding bytes as needed between the end of fixed-size struct arrays and the start of variable-length data blobs to ensure the first data array lands on a 32-byte boundary. Each subsequent array must also be individually padded to 32 bytes before the next one begins.</p>
+    <p>In observed game data, 100% of pointers in those hot-path categories satisfy this alignment. Violating their requirement causes the game to <strong>hang</strong> (infinite stall or bus error) rather than crash with an informative error.</p>
+    <p>When rebuilding a section, insert zero-filled padding where required so each hot-path array lands on a 32-byte boundary. Do not apply this rule indiscriminately to every variable-length payload.</p>
     <pre>data_region_start = (end_of_structs + 31) &amp; ~31
 padding_needed    = data_region_start - end_of_structs</pre>
     <p>This applies to at minimum:</p>
     <ul>
         <li><strong>SKN section</strong> — srcArrPtr, weightArrPtr, destIdxArrPtr, flushIndPtr</li>
-        <li><strong>GPL section</strong> — position, UV, color, and normal raw data arrays; primitive list data</li>
-        <li><strong>TEX section</strong> — image data and palette data buffers</li>
+        <li><strong>GPL section</strong> — skinned position buffers and primitive list data</li>
     </ul>
+    <p><strong>TEX exception:</strong> align the TEX data-region start to 32 bytes, but image payloads may be packed consecutively without aligning each image pointer. A Dolphin-tested model rendered a visible CMPR image correctly from a TEX-relative pointer that was 8 modulo 32. Palette payload alignment has not been runtime-tested.</p>
 
     <p>See <a href="index.html">index</a> for links to detailed per-section documentation.</p>
 </body>

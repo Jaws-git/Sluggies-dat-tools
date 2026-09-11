@@ -1057,9 +1057,8 @@ class BuildTEXTests(unittest.TestCase):
         parsed = self._make_parsed([])
         self.assertEqual(main.BuildTEX(parsed, None), b'')
 
-    def test_build_tex_all_data_ptrs_are_32_byte_aligned(self):
-        """Regression: 5 textures (Mario model scenario) — all image/palette
-        data pointers MUST be 32-byte aligned for the Wii Broadway GPU."""
+    def test_build_tex_aligns_data_region_with_naturally_aligned_payloads(self):
+        """The TEX data region starts aligned; these payload sizes preserve it."""
         # 5 textures, each with a 128-byte image payload and no palette.
         textures = [
             self._make_texture(i, width=8, height=8, fmt=0xE,
@@ -1077,7 +1076,7 @@ class BuildTEXTests(unittest.TestCase):
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
                 section = main.BuildTEX(parsed, None)
 
-        # All image data pointers must be 32-byte aligned.
+        # These naturally aligned image payloads keep every pointer aligned.
         for i in range(5):
             desc_off = 4 + i * 0x20
             img_off = struct.unpack_from('>I', section, desc_off)[0]
@@ -1098,6 +1097,39 @@ class BuildTEXTests(unittest.TestCase):
         # Padding between descriptor table and data region must be zero.
         desc_end = 4 + 5 * 0x20
         self.assertEqual(section[desc_end:expected_data_start], b'\x00' * (expected_data_start - desc_end))
+
+    def test_build_tex_packs_valid_unaligned_image_payloads_consecutively(self):
+        textures = [
+            self._make_texture(index, width=1, height=1, fmt=0xE)
+            for index in range(2)
+        ]
+        parsed = self._make_parsed(textures)
+        entries = tuple(
+            texture_helper.TexturePlanEntry(
+                texture_index=index,
+                texture_file_name=f'{index}.png',
+                width=1,
+                height=1,
+                format=0xE,
+                format_name='CMPR',
+                image_data=bytes([index + 1]) * 8,
+                palette_data=b'',
+                palette_entries=0,
+                palette_format=None,
+            )
+            for index in range(2)
+        )
+
+        section = main.BuildTEX(parsed, texture_helper.TexturePlan(entries=entries))
+
+        data_start = (4 + 2 * 0x20 + 31) & ~31
+        first_ptr = struct.unpack_from('>I', section, 4)[0]
+        second_ptr = struct.unpack_from('>I', section, 4 + 0x20)[0]
+        self.assertEqual(first_ptr, data_start)
+        self.assertEqual(second_ptr, data_start + 8)
+        self.assertEqual(second_ptr % 32, 8)
+        self.assertEqual(section[first_ptr:first_ptr + 8], b'\x01' * 8)
+        self.assertEqual(section[second_ptr:second_ptr + 8], b'\x02' * 8)
 
 
 class BuildModelBlockTEXBuildTests(unittest.TestCase):
@@ -1231,6 +1263,43 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
         build_plan.assert_not_called()
         build_tex.assert_called_once_with(self.parsed, None)
         self.assertEqual(result.section_sizes['TEX'], len(b'BUILT_TEX'))
+
+    def test_tex_build_accepts_caller_supplied_plan(self):
+        self.data['SluggiesModel'].update({
+            'UseHammerspace': True,
+            'TextureDescriptors': [
+                {'TextureIndex': 0, 'TextureFileName': '0.png'},
+            ],
+        })
+        plan = mock.Mock(skipped=())
+        with (
+            mock.patch.object(texture_helper, 'build_hammerspace_texture_plan') as build_plan,
+            mock.patch.object(main, 'BuildTEX', return_value=b'BUILT_TEX') as build_tex,
+        ):
+            result = self._run(
+                main.SectionModes(tex='build'),
+                sluggie_path='model.sluggies',
+                texture_plan=plan,
+            )
+
+        build_plan.assert_not_called()
+        build_tex.assert_called_once_with(self.parsed, plan)
+        self.assertEqual(result.section_sizes['TEX'], len(b'BUILT_TEX'))
+
+    def test_tex_build_rejects_supplied_plan_with_automatic_reimport(self):
+        self.data['SluggiesModel'].update({
+            'UseHammerspace': True,
+            'ReimportTextures': True,
+            'TextureDescriptors': [
+                {'TextureIndex': 0, 'TextureFileName': '0.png'},
+            ],
+        })
+        with self.assertRaisesRegex(ValueError, 'caller-supplied texture_plan'):
+            self._run(
+                main.SectionModes(tex='build'),
+                sluggie_path='model.sluggies',
+                texture_plan=mock.Mock(skipped=()),
+            )
 
     def test_tex_clone_mode_still_clones(self):
         patches = self._patch_common()

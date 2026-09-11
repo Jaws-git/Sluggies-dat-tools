@@ -97,6 +97,8 @@
             <td>Unknown/padding</td>
         </tr>
     </table>
+    <h2>Payload Alignment</h2>
+    <p>The packed image-data region starts at the first 32-byte boundary after the descriptor table. Individual image payloads do not need separate 32-byte padding: payloads may be stored consecutively, and a Dolphin-tested CMPR image rendered correctly from a TEX-relative pointer that was 8 modulo 32. Palette payload alignment has not been runtime-tested.</p>
     <p>This is probably a version of the TEX0 format. I extract the textures by shuffling around the data to create a valid TPL file and then converting it to a png with wimgt. I don't know where the LODBias, wrapS, wrapT, minFilter, and magFilter are in the header, so I assume they're 0.</p>
     <pre><code>def toFile(self, path):
     dataLength = self.height * self.width * {0:4,1:8,2:8,3:16,4:16,5:16,6:32,8:4,9:8,10:16,14:4}[self.format] >> 3

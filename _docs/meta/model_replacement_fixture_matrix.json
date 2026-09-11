@@ -120,8 +120,127 @@
       "status": "not_created"
     },
     "new_png_texture": {
-      "source": null,
-      "status": "not_created"
+      "source": "Debug/fixtures/78277664_mario.gpl.additional_texture_ds5.sluggie",
+      "status": "runtime_passed",
+      "donor_fixture": "78277664_mario.gpl",
+      "texture_source": "2_Output_Models/18 Mario/78277664_mario.gpl/tex/newmariotexture.png",
+      "verification": {
+        "edit_kind": "additional_texture_ds5",
+        "submesh_index": 0,
+        "display_state_index": 5,
+        "texture_setter_display_state_index": 0,
+        "template_texture_index": 0,
+        "new_texture_index": 5,
+        "format": "CMPR",
+        "dimensions": [512, 512],
+        "texture_count_before": 5,
+        "texture_count_after": 6,
+        "block_size": 564864,
+        "size_delta": 131104,
+        "output_offset": "0x2BE6E620",
+        "output_sha256": "62c4e8c741b15792ec0ee0c3c436d01d25c04573924a360dec27376ee35ff06e",
+        "structural_validation": "pass",
+        "donor_texture_payloads_unchanged": true,
+        "manual_dolphin_result": "pass",
+        "manual_dolphin_scenes": {
+          "character_select": "pass",
+          "static_scene": "pass",
+          "animated_gameplay": "pass"
+        },
+        "notes": "Mario displayed the appended texture on DS5 exactly as expected; unaffected surfaces remained correct."
+      }
+    },
+    "shared_new_texture": {
+      "source": "Debug/fixtures/78277664_mario.gpl.additional_texture_sm0_ds5_sm0_ds9.sluggie",
+      "status": "runtime_passed",
+      "donor_fixture": "78277664_mario.gpl",
+      "texture_source": "2_Output_Models/18 Mario/78277664_mario.gpl/tex/newmariotexture.png",
+      "verification": {
+        "edit_kind": "shared_additional_texture_ds5_ds9",
+        "new_texture_index": 5,
+        "template_texture_index": 0,
+        "format": "CMPR",
+        "targets": [
+          {
+            "submesh_index": 0,
+            "display_state_index": 5,
+            "texture_setter_display_state_index": 0,
+            "original_texture_index": 0,
+            "original_dimensions": [512, 512],
+            "effective_shader_mode": "Spec"
+          },
+          {
+            "submesh_index": 0,
+            "display_state_index": 9,
+            "texture_setter_display_state_index": 7,
+            "original_texture_index": 3,
+            "original_dimensions": [256, 128],
+            "effective_shader_mode": "RhSp"
+          }
+        ],
+        "texture_count_before": 5,
+        "texture_count_after": 6,
+        "block_size": 564864,
+        "size_delta": 131104,
+        "output_offset": "0x2BE6E620",
+        "output_sha256": "bcd046ad467784730609de9f8c46a2468adbe3dbb5f52a1a533f9d47b0e34762",
+        "structural_validation": "pass",
+        "non_target_gpl_bytes_unchanged": true,
+        "manual_dolphin_result": "pass",
+        "manual_dolphin_scenes": {
+          "character_select": "pass",
+          "static_scene": "pass",
+          "animated_gameplay": "pass"
+        },
+        "notes": "DS5 and DS9 both displayed the shared appended texture correctly; unaffected surfaces remained correct."
+      }
+    },
+    "unaligned_texture_payload": {
+      "source": "Debug/fixtures/78277664_mario.gpl.additional_texture_sm0_ds5_sm0_ds9_alignment.sluggie",
+      "status": "runtime_passed",
+      "donor_fixture": "78277664_mario.gpl",
+      "verification": {
+        "edit_kind": "two_additional_textures_unaligned_second_payload",
+        "textures": [
+          {
+            "texture_index": 5,
+            "source": "2_Output_Models/18 Mario/78277664_mario.gpl/tex/customdimensionedtexture.png",
+            "format": "CMPR",
+            "dimensions": [505, 505],
+            "payload_length": 129032,
+            "payload_pointer": "0x3C900",
+            "payload_pointer_mod_32": 0,
+            "target_submesh_index": 0,
+            "target_display_state_index": 5
+          },
+          {
+            "texture_index": 6,
+            "source": "2_Output_Models/18 Mario/78277664_mario.gpl/tex/newmariotexture.png",
+            "format": "CMPR",
+            "dimensions": [512, 512],
+            "payload_length": 131072,
+            "payload_pointer": "0x5C108",
+            "payload_pointer_mod_32": 8,
+            "target_submesh_index": 0,
+            "target_display_state_index": 9
+          }
+        ],
+        "texture_count_before": 5,
+        "texture_count_after": 7,
+        "block_size": 693952,
+        "size_delta": 260192,
+        "output_offset": "0x2BE6E620",
+        "output_sha256": "e317c4a678473a2fed633db690bb8699b1b8eaae752bd61dc220970ead01a6b8",
+        "structural_validation": "pass",
+        "non_target_gpl_bytes_unchanged": true,
+        "manual_dolphin_result": "pass",
+        "manual_dolphin_scenes": {
+          "character_select": "pass",
+          "static_scene": "pass",
+          "animated_gameplay": "pass"
+        },
+        "notes": "DS5 rendered the NPOT image and DS9 rendered slot 6 correctly from a payload pointer that was 8 modulo 32; unaffected surfaces remained correct."
+      }
     }
   },
   "manual_clone_controls": [

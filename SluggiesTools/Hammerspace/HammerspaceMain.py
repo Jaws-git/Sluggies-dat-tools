@@ -2065,8 +2065,9 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
       Data region:
         Image payloads packed sequentially, then palette payloads.
         The data region starts at the first 32-byte-aligned offset after the
-        descriptor table (zero padding closes the gap); every payload is
-        therefore 32-byte aligned, as the Wii Broadway GPU requires.
+                descriptor table (zero padding closes the gap). Individual image
+                payload starts are not padded: a Dolphin-tested CMPR image rendered
+                correctly from a TEX-relative pointer that was 8 modulo 32.
     """
     import struct as _s
     from texture_helper import _image_payload_size
@@ -2143,12 +2144,10 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
     header_size = 4
     desc_size = 0x20
     desc_table_size = len(textures) * desc_size
-    # The Wii Broadway GPU requires texture (image/palette) payloads to sit on a
-    # 32-byte boundary so the DMA/decompressor can fetch them. The original TEX
-    # sections pack the data region at the first 32-byte-aligned offset after the
-    # descriptor table, inserting zero padding to close the gap. Repack must do
-    # the same or every payload lands misaligned and renders as blocky/transparent
-    # garbage in-game (see PLAN_Hammerspace_TexturePatching.md).
+    # Match the original TEX layout by starting the packed data region at the
+    # first 32-byte boundary after the descriptor table. Image payloads are then
+    # packed consecutively; runtime testing confirms that an individual image
+    # pointer may be unaligned (8 modulo 32) without rendering errors.
     data_start = (header_size + desc_table_size + 31) & ~31
 
     # Image payloads first, then palette payloads.
@@ -2191,9 +2190,8 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
         out += _s.pack('>B', tex.palette_format & 0xFF)
         out += bytes(unknown_1b[:5])
     # Zero padding to reach the 32-byte-aligned data region (see data_start above).
-    # This mirrors the original TEX sections, which pad the gap after the
-    # descriptor table with zeros so every texture payload lands on a 32-byte
-    # boundary the Wii Broadway GPU can DMA.
+    # This mirrors the original TEX sections' initial gap. It does not align
+    # each payload independently.
     if len(out) < data_start:
         out += b'\x00' * (data_start - len(out))
     # Data region
@@ -2909,6 +2907,7 @@ def BuildModelBlock(
     section_modes: SectionModes | None = None,
     sluggie_path: str | os.PathLike[str] | None = None,
     tex_png_overrides: dict[int, str] | None = None,
+    texture_plan=None,
 ) -> ModelBlockBuild:
     """Assemble a model block without modifying output DAT, DOL, or FST files.
 
@@ -3047,8 +3046,12 @@ def BuildModelBlock(
         act_bytes = _apply_root_scale_patch(act_bytes, data, source_model_offset)
     root_scale_applied = act_bytes != _act_before
     if modes.tex == 'build':
-        texture_plan = None
-        if model.get('ReimportTextures') or tex_png_overrides:
+        if texture_plan is not None and (model.get('ReimportTextures') or tex_png_overrides):
+            raise ValueError(
+                'a caller-supplied texture_plan cannot be combined with '
+                'ReimportTextures or png overrides'
+            )
+        if texture_plan is None and (model.get('ReimportTextures') or tex_png_overrides):
             if sluggie_path is None:
                 raise ValueError(
                     "tex='build' with ReimportTextures or png overrides requires "
