@@ -1131,6 +1131,77 @@ class BuildTEXTests(unittest.TestCase):
         self.assertEqual(section[first_ptr:first_ptr + 8], b'\x01' * 8)
         self.assertEqual(section[second_ptr:second_ptr + 8], b'\x02' * 8)
 
+    def test_build_tex_appends_plan_entry_from_donor_template(self):
+        donor = self._make_texture(
+            0, width=1, height=1, fmt=0xE,
+            image_offset=0x100, image_length=8,
+        )
+        donor.desc_unknown_at_10 = b'ABCDEF\x00'
+        donor.desc_unknown_at_1b = b'12345'
+        parsed = self._make_parsed([donor])
+        addition = texture_helper.TexturePlanEntry(
+            texture_index=1,
+            texture_file_name='new.png',
+            width=5,
+            height=5,
+            format=0xE,
+            format_name='CMPR',
+            image_data=b'\xAA' * 32,
+            palette_data=b'',
+            palette_entries=0,
+            palette_format=None,
+            template_texture_index=0,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = pathlib.Path(temp_dir) / 'dt_na.dat'
+            buf = bytearray(0x200)
+            buf[0x100:0x108] = b'\xCD' * 8
+            input_dat.write_bytes(bytes(buf))
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                section = main.BuildTEX(
+                    parsed, texture_helper.TexturePlan(entries=(addition,))
+                )
+
+        self.assertEqual(struct.unpack_from('>H', section, 0)[0], 2)
+        appended_desc = 4 + 0x20
+        self.assertEqual(struct.unpack_from('>HH', section, appended_desc + 8), (5, 5))
+        self.assertEqual(section[appended_desc + 0x10:appended_desc + 0x17], b'ABCDEF\x00')
+        self.assertEqual(section[appended_desc + 0x1B:appended_desc + 0x20], b'12345')
+        appended_ptr = struct.unpack_from('>I', section, appended_desc)[0]
+        self.assertEqual(section[appended_ptr:appended_ptr + 32], b'\xAA' * 32)
+
+    def test_build_tex_rejects_malformed_addition_plan(self):
+        parsed = self._make_parsed([
+            self._make_texture(0, width=1, height=1, fmt=0xE),
+        ])
+
+        def addition(index, template=0, fmt=0xE):
+            return texture_helper.TexturePlanEntry(
+                texture_index=index,
+                texture_file_name='new.png',
+                width=1,
+                height=1,
+                format=fmt,
+                format_name='CMPR',
+                image_data=b'\xAA' * 8,
+                palette_data=b'',
+                palette_entries=0,
+                palette_format=None,
+                template_texture_index=template,
+            )
+
+        with self.assertRaisesRegex(ValueError, 'must be contiguous'):
+            main.BuildTEX(parsed, texture_helper.TexturePlan(entries=(addition(2),)))
+        with self.assertRaisesRegex(ValueError, 'invalid template texture'):
+            main.BuildTEX(parsed, texture_helper.TexturePlan(entries=(addition(1, 4),)))
+        with self.assertRaisesRegex(ValueError, 'does not match template format'):
+            main.BuildTEX(parsed, texture_helper.TexturePlan(entries=(addition(1, fmt=0x6),)))
+        with self.assertRaisesRegex(ValueError, 'duplicate texture plan index'):
+            main.BuildTEX(
+                parsed,
+                texture_helper.TexturePlan(entries=(addition(1), addition(1))),
+            )
+
 
 class BuildModelBlockTEXBuildTests(unittest.TestCase):
     """Gate test for milestone 3: BuildModelBlock() wires BuildTEX into the
@@ -1263,6 +1334,53 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
         build_plan.assert_not_called()
         build_tex.assert_called_once_with(self.parsed, None)
         self.assertEqual(result.section_sizes['TEX'], len(b'BUILT_TEX'))
+
+    def test_tex_build_plans_additional_texture_descriptors(self):
+        additional = [{
+            'TextureFileName': 'new.png',
+            'TemplateTextureIndex': 0,
+        }]
+        self.data['SluggiesModel'].update({
+            'UseHammerspace': True,
+            'ReimportTextures': True,
+            'TextureDescriptors': [
+                {'TextureIndex': 0, 'TextureFileName': '0.png'},
+            ],
+            'AdditionalTextureDescriptors': additional,
+        })
+        plan = mock.Mock(skipped=())
+        with (
+            mock.patch.object(
+                texture_helper, 'build_hammerspace_texture_plan', return_value=plan,
+            ) as build_plan,
+            mock.patch.object(main, 'BuildTEX', return_value=b'BUILT_TEX') as build_tex,
+        ):
+            self._run(main.SectionModes(tex='build'), sluggie_path='model.sluggies')
+
+        build_plan.assert_called_once_with(
+            'model.sluggies',
+            self.data['SluggiesModel']['TextureDescriptors'],
+            allow_dimension_change=True,
+            png_overrides=None,
+            additional_descriptors=(
+                texture_helper.AdditionalTextureDescriptor('new.png', 0),
+            ),
+        )
+        build_tex.assert_called_once_with(self.parsed, plan)
+
+    def test_additional_texture_descriptors_require_reimport_enabled(self):
+        self.data['SluggiesModel'].update({
+            'UseHammerspace': True,
+            'TextureDescriptors': [
+                {'TextureIndex': 0, 'TextureFileName': '0.png'},
+            ],
+            'AdditionalTextureDescriptors': [{
+                'TextureFileName': 'new.png',
+                'TemplateTextureIndex': 0,
+            }],
+        })
+        with self.assertRaisesRegex(ValueError, "require 'ReimportTextures'"):
+            self._run(main.SectionModes(tex='build'), sluggie_path='model.sluggies')
 
     def test_tex_build_accepts_caller_supplied_plan(self):
         self.data['SluggiesModel'].update({

@@ -14,7 +14,9 @@
 import bpy
 from . import ImportSluggies
 from . import ExportSluggies
-from . import SluggiesToolsPanel
+
+# SluggiesToolsPanel.py is retained for future implementation, but its
+# unfinished N-panel is intentionally not loaded or registered yet.
 
 bl_info = {
     "name": "Sluggies IO",
@@ -31,10 +33,8 @@ bl_info = {
 def register():
     ImportSluggies.register()
     ExportSluggies.register()
-    SluggiesToolsPanel.register()
 
 
 def unregister():
-    SluggiesToolsPanel.unregister()
     ImportSluggies.unregister()
     ExportSluggies.unregister()

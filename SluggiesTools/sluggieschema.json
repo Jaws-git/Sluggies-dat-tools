@@ -478,6 +478,35 @@
           "required": ["TextureIndex", "TextureDescriptorOffset", "Width", "Height", "Format", "Unpacked", "DescUnknownAt10", "DescUnknownAt1B", "ImageDataOffset", "ImageDataLength"]
         }
       },
+      "AdditionalTextureDescriptors": {
+        "type": "array",
+        "description": "Append-only textures to encode into a rebuilt hammerspace TEX section. Entries are assigned indices deterministically after TextureDescriptors in array order.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "TextureFileName": {
+              "type": "string",
+              "description": "Safe PNG filename located in this model's tex/ directory."
+            },
+            "TemplateTextureIndex": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Donor TextureDescriptors index whose format, sampler fields, and unknown descriptor bytes are cloned."
+            }
+          },
+          "required": ["TextureFileName", "TemplateTextureIndex"],
+          "additionalProperties": false
+        }
+      },
+      "DesiredTextureAssignments": {
+        "type": "object",
+        "description": "Phase 2 export intent keyed by donor SurfaceId. Each value is the existing or deterministically appended TEX index that Phase 3 must bind before that surface's primitive list executes.",
+        "additionalProperties": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 8191
+        }
+      },
       "FacialPoseData": {
         "type": ["object", "null"],
         "description": "Optional facial vertex-animation section referenced by model header +0x18 (ptr7). Contains indexed position and normal pose arrays that overwrite mapped GPL vertices at runtime. The pose count is stored in the section and is not assumed to be fixed. Null when ptr7 is absent or does not use the recognized facial layout.",

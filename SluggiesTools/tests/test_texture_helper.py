@@ -13,6 +13,7 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 from texture_helper import (
+    AdditionalTextureDescriptor,
     TPL_MAGIC,
     SkippedTexture,
     TextureEncodingError,
@@ -989,6 +990,113 @@ class BuildHammerspaceTexturePlanTests(unittest.TestCase):
                     sluggie, descriptors, encoder=selective_encoder,
                     allow_dimension_change=True,
                 )
+
+    def test_mixed_replacement_and_addition_assigns_deterministic_index(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sluggie = self._make_model(
+                temp_dir, {"0.png": (8, 8), "new.png": (12, 4)}
+            )
+            descriptors = [{
+                "TextureIndex": 0,
+                "TextureFileName": "0.png",
+                "Width": 8,
+                "Height": 8,
+                "Format": 0xE,
+                "ImagePayloadLength": 64,
+            }]
+
+            def fake_encoder(png_path, gx_format, palette_format=None, **kwargs):
+                return _fake_parsed(
+                    width=kwargs["expected_width"],
+                    height=kwargs["expected_height"],
+                    gx_format=gx_format,
+                )
+
+            plan = build_hammerspace_texture_plan(
+                sluggie,
+                descriptors,
+                encoder=fake_encoder,
+                additional_descriptors=(AdditionalTextureDescriptor("new.png", 0),),
+            )
+
+            self.assertEqual([entry.texture_index for entry in plan], [0, 1])
+            self.assertIsNone(plan[0].template_texture_index)
+            self.assertEqual(plan[1].template_texture_index, 0)
+            self.assertEqual((plan[1].width, plan[1].height), (12, 4))
+
+    def test_multiple_additions_preserve_append_order_without_deduplication(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sluggie = self._make_model(
+                temp_dir, {"0.png": (8, 8), "new.png": (8, 8)}
+            )
+            descriptors = [{
+                "TextureIndex": 0, "TextureFileName": "0.png",
+                "Width": 8, "Height": 8, "Format": 0xE,
+            }]
+            plan = build_hammerspace_texture_plan(
+                sluggie,
+                descriptors,
+                encoder=lambda _path, gx_format, _palette_format=None, **_kwargs: _fake_parsed(gx_format=gx_format),
+                allow_dimension_change=True,
+                additional_descriptors=(
+                    AdditionalTextureDescriptor("new.png", 0),
+                    AdditionalTextureDescriptor("new.png", 0),
+                ),
+            )
+
+            self.assertEqual([entry.texture_index for entry in plan], [0, 1, 2])
+            self.assertEqual([entry.template_texture_index for entry in plan], [None, 0, 0])
+
+    def test_addition_rejects_indexed_or_mipmapped_template(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sluggie = self._make_model(temp_dir, {"0.png": (8, 8), "new.png": (8, 8)})
+            base = {
+                "TextureIndex": 0, "TextureFileName": "0.png",
+                "Width": 8, "Height": 8,
+            }
+            with self.assertRaisesRegex(ValueError, "indexed GX format"):
+                build_hammerspace_texture_plan(
+                    sluggie, [{**base, "Format": 0x9}],
+                    additional_descriptors=(AdditionalTextureDescriptor("new.png", 0),),
+                )
+            with self.assertRaisesRegex(ValueError, "mipmapped descriptor templates"):
+                build_hammerspace_texture_plan(
+                    sluggie, [{**base, "Format": 0xE, "AdditionalMipCount": 1}],
+                    additional_descriptors=(AdditionalTextureDescriptor("new.png", 0),),
+                )
+
+    def test_addition_rejects_missing_template_and_unsafe_filename(self):
+        descriptors = [{
+            "TextureIndex": 0, "TextureFileName": "0.png",
+            "Width": 8, "Height": 8, "Format": 0xE,
+        }]
+        with self.assertRaisesRegex(ValueError, "template texture 1 does not exist"):
+            build_hammerspace_texture_plan(
+                "model.sluggie", descriptors,
+                additional_descriptors=(AdditionalTextureDescriptor("new.png", 1),),
+            )
+        with self.assertRaises(ValueError):
+            build_hammerspace_texture_plan(
+                "model.sluggie", descriptors,
+                additional_descriptors=(AdditionalTextureDescriptor("../new.png", 0),),
+            )
+
+    def test_addition_rejects_index_above_type1_limit(self):
+        descriptors = [
+            {
+                "TextureIndex": index,
+                "TextureFileName": f"{index}.png",
+                "Width": 1,
+                "Height": 1,
+                "Format": 0xE,
+            }
+            for index in range(0x2000)
+        ]
+        with self.assertRaisesRegex(ValueError, "exceeds the Type-1 13-bit field"):
+            build_hammerspace_texture_plan(
+                "model.sluggie", descriptors,
+                additional_descriptors=(AdditionalTextureDescriptor("new.png", 0),),
+            )
 
 
 def _wimgt_available() -> bool:

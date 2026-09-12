@@ -2037,9 +2037,10 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
 
     Textures present in ``texture_plan.entries`` are re-encoded: their image and
     palette payloads come from the plan entry, and their width/height come from
-    the entry's actual encoded dimensions. Textures not in the plan (skipped or
-    absent) are cloned verbatim from INPUT dt_na.dat using the descriptor's
-    original absolute offsets.
+    the entry's actual encoded dimensions. Contiguous entries after the donor
+    count are appended by cloning the selected donor descriptor template.
+    Donor textures not in the plan (skipped or absent) are cloned verbatim from
+    INPUT dt_na.dat using the descriptor's original absolute offsets.
 
     Binary layout (all big-endian):
 
@@ -2065,14 +2066,14 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
       Data region:
         Image payloads packed sequentially, then palette payloads.
         The data region starts at the first 32-byte-aligned offset after the
-                descriptor table (zero padding closes the gap). Individual image
-                payload starts are not padded: a Dolphin-tested CMPR image rendered
-                correctly from a TEX-relative pointer that was 8 modulo 32.
+        descriptor table (zero padding closes the gap). Individual image
+        payload starts are not padded: a Dolphin-tested CMPR image rendered
+        correctly from a TEX-relative pointer that was 8 modulo 32.
     """
     import struct as _s
     from texture_helper import _image_payload_size
 
-    textures = parsed.textures.textures if parsed.textures else []
+    textures = list(parsed.textures.textures) if parsed.textures else []
     if not textures:
         _slogger.info("[BuildTEX] No textures; returning empty TEX section", source="hammerspace.main")
         return b''
@@ -2080,9 +2081,61 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
     entries_by_index = {}
     if texture_plan is not None:
         for entry in texture_plan.entries:
+            if not isinstance(entry.texture_index, int) or entry.texture_index < 0:
+                raise ValueError(
+                    f"[BuildTEX] invalid texture plan index {entry.texture_index!r}"
+                )
+            if entry.texture_index in entries_by_index:
+                raise ValueError(f"[BuildTEX] duplicate texture plan index {entry.texture_index}")
             entries_by_index[entry.texture_index] = entry
-
-    clut_count = parsed.tex_header.clut_count if parsed.tex_header else 0
+        donor_count = len(textures)
+        addition_indices = sorted(
+            index for index in entries_by_index if index >= donor_count
+        )
+        expected_addition_indices = list(range(donor_count, donor_count + len(addition_indices)))
+        if addition_indices != expected_addition_indices:
+            raise ValueError(
+                f"[BuildTEX] appended texture indices must be contiguous "
+                f"{expected_addition_indices}, found {addition_indices}"
+            )
+        for index in addition_indices:
+            entry = entries_by_index[index]
+            template_index = entry.template_texture_index
+            if template_index is None or template_index < 0 or template_index >= donor_count:
+                raise ValueError(
+                    f"[BuildTEX] appended texture {index} has invalid template texture "
+                    f"{template_index}"
+                )
+            template = textures[template_index]
+            if template.format in (0x8, 0x9, 0xA):
+                raise ValueError(
+                    f"[BuildTEX] appended texture {index} uses unsupported indexed "
+                    f"template format 0x{template.format:02X}"
+                )
+            if entry.format != template.format:
+                raise ValueError(
+                    f"[BuildTEX] appended texture {index} format 0x{entry.format:02X} "
+                    f"does not match template format 0x{template.format:02X}"
+                )
+            textures.append(Texture(
+                texture_index=index,
+                width=entry.width,
+                height=entry.height,
+                format=template.format,
+                palette_entries=entry.palette_entries,
+                palette_format=entry.palette_format or 0,
+                edge_lod_enable=template.edge_lod_enable,
+                min_lod=template.min_lod,
+                max_lod=template.max_lod,
+                unpacked=template.unpacked,
+                desc_unknown_at_10=template.desc_unknown_at_10,
+                desc_unknown_at_1b=template.desc_unknown_at_1b,
+                image_data_offset=0,
+                image_data_length=0,
+                palette_data_offset=None,
+                palette_data_length=None,
+                texture_descriptor_offset=0,
+            ))
 
     # --- Pass 1: determine payload bytes and dimensions for each texture ---
     image_payloads = []   # list of (texture_index, bytes) in descriptor order
@@ -2094,6 +2147,11 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
         idx = tex.texture_index
         entry = entries_by_index.get(idx)
         if entry is not None:
+            if entry.format != tex.format:
+                raise ValueError(
+                    f"[BuildTEX] texture {idx}: plan format 0x{entry.format:02X} "
+                    f"does not match descriptor format 0x{tex.format:02X}"
+                )
             # Re-encoded: validate payload size against the encoded dimensions.
             expected = _image_payload_size(entry.width, entry.height, entry.format)
             if len(entry.image_data) != expected:
@@ -2139,6 +2197,16 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
                 palette_payloads.append((idx, palette_bytes))
             dims[idx] = (tex.width, tex.height)
             mip_counts[idx] = tex.desc_unknown_at_10[6] if len(tex.desc_unknown_at_10) > 6 else 0
+
+    clut_count = sum(
+        1
+        for tex in textures
+        if (
+            entries_by_index[tex.texture_index].palette_entries
+            if tex.texture_index in entries_by_index
+            else tex.palette_entries
+        )
+    )
 
     # --- Pass 2: lay out the section ---
     header_size = 4
@@ -3046,24 +3114,45 @@ def BuildModelBlock(
         act_bytes = _apply_root_scale_patch(act_bytes, data, source_model_offset)
     root_scale_applied = act_bytes != _act_before
     if modes.tex == 'build':
-        if texture_plan is not None and (model.get('ReimportTextures') or tex_png_overrides):
+        additional_texture_descriptors = model.get('AdditionalTextureDescriptors') or []
+        if texture_plan is not None and (
+            model.get('ReimportTextures') or tex_png_overrides or additional_texture_descriptors
+        ):
             raise ValueError(
                 'a caller-supplied texture_plan cannot be combined with '
-                'ReimportTextures or png overrides'
+                'ReimportTextures, png overrides, or AdditionalTextureDescriptors'
             )
-        if texture_plan is None and (model.get('ReimportTextures') or tex_png_overrides):
+        if additional_texture_descriptors and not model.get('ReimportTextures'):
+            raise ValueError(
+                "AdditionalTextureDescriptors require 'ReimportTextures' to be enabled"
+            )
+        if texture_plan is None and (
+            model.get('ReimportTextures') or tex_png_overrides or additional_texture_descriptors
+        ):
             if sluggie_path is None:
                 raise ValueError(
-                    "tex='build' with ReimportTextures or png overrides requires "
+                    "tex='build' with texture reimport inputs requires "
                     "the sluggie path to resolve the tex/ folder; pass "
                     "sluggie_path to BuildModelBlock"
                 )
             import texture_helper as _tex
+            additions = tuple(
+                _tex.AdditionalTextureDescriptor(
+                    texture_file_name=entry['TextureFileName'],
+                    template_texture_index=int(entry['TemplateTextureIndex']),
+                )
+                for entry in additional_texture_descriptors
+            )
+            plan_kwargs = {
+                'allow_dimension_change': True,
+                'png_overrides': tex_png_overrides,
+            }
+            if additions:
+                plan_kwargs['additional_descriptors'] = additions
             texture_plan = _tex.build_hammerspace_texture_plan(
                 sluggie_path,
                 model.get('TextureDescriptors') or [],
-                allow_dimension_change=True,
-                png_overrides=tex_png_overrides,
+                **plan_kwargs,
             )
             for _sk in texture_plan.skipped:
                 _sk_fields = [f"expected {_sk.expected_payload_length} bytes"]

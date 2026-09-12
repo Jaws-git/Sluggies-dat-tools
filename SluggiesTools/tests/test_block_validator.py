@@ -190,6 +190,26 @@ def make_valid_block() -> bytes:
     return bytes(block)
 
 
+def make_valid_textured_block(texture_count: int = 1) -> bytearray:
+    original = bytearray(make_valid_block())
+    block = bytearray(0x500)
+    block[:0x2B0] = original[:0x2B0]
+    skn = 0x340
+    struct.pack_into('>I', block, 0x10, skn)
+    block[skn:skn + 0x140] = original[0x2C0:0x400]
+
+    tex = 0x2B0
+    struct.pack_into('>HH', block, tex, texture_count, 0)
+    data_ptr = 0x60
+    for index in range(texture_count):
+        desc = tex + 4 + index * 0x20
+        struct.pack_into('>I', block, desc, data_ptr + index * 8)
+        struct.pack_into('>HH', block, desc + 8, 4, 4)
+        block[desc + 0x17] = 0xE
+        block[tex + data_ptr + index * 8:tex + data_ptr + index * 8 + 8] = b'\xAA' * 8
+    return block
+
+
 class BlockValidatorTests(unittest.TestCase):
     def test_valid_block_passes(self):
         report = validate_model_block(make_valid_block())
@@ -310,6 +330,46 @@ class BlockValidatorTests(unittest.TestCase):
         report = validate_model_block(bytes(block))
         self.assertTrue(report['valid'])
         self.assertEqual(report['errors'], [])
+
+    def test_valid_unaligned_tex_image_payload_passes(self):
+        block = make_valid_textured_block(texture_count=2)
+        report = validate_model_block(bytes(block))
+        self.assertTrue(report['valid'], report['errors'])
+
+    def test_tex_zero_image_pointer_fails(self):
+        block = make_valid_textured_block()
+        struct.pack_into('>I', block, 0x2B0 + 4, 0)
+        report = validate_model_block(bytes(block))
+        self.assertTrue(any('zero image pointer' in error for error in report['errors']))
+
+    def test_tex_overlapping_payloads_fail(self):
+        block = make_valid_textured_block(texture_count=2)
+        first_ptr = struct.unpack_from('>I', block, 0x2B0 + 4)[0]
+        struct.pack_into('>I', block, 0x2B0 + 4 + 0x20, first_ptr + 4)
+        report = validate_model_block(bytes(block))
+        self.assertTrue(any('TEX payload overlap' in error for error in report['errors']))
+
+    def test_tex_same_start_image_alias_passes(self):
+        block = make_valid_textured_block(texture_count=2)
+        first_ptr = struct.unpack_from('>I', block, 0x2B0 + 4)[0]
+        struct.pack_into('>I', block, 0x2B0 + 4 + 0x20, first_ptr)
+        report = validate_model_block(bytes(block))
+        self.assertTrue(report['valid'], report['errors'])
+
+    def test_tex_payload_crossing_section_boundary_fails(self):
+        block = make_valid_textured_block()
+        struct.pack_into('>I', block, 0x2B0 + 4, 0x89)
+        report = validate_model_block(bytes(block))
+        self.assertTrue(any('image payload exceeds TEX section' in error for error in report['errors']))
+
+    def test_tex_palette_consistency_and_clut_count_fail(self):
+        block = make_valid_textured_block()
+        desc = 0x2B0 + 4
+        struct.pack_into('>I', block, desc + 4, 0x70)
+        struct.pack_into('>H', block, desc + 0x18, 1)
+        report = validate_model_block(bytes(block))
+        self.assertTrue(any('direct format must not have a palette' in error for error in report['errors']))
+        self.assertTrue(any('CLUT count 0 does not match 1' in error for error in report['errors']))
 
 
 if __name__ == '__main__':

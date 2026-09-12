@@ -586,6 +586,10 @@ def _validate_tex(state: _ValidationState) -> None:
     if not state.in_bounds(descriptor_table, texture_count * 0x20, 'TEX descriptor table'):
         return
 
+    data_start = descriptor_table + texture_count * 0x20
+    payload_ranges = []
+    actual_clut_count = 0
+
     for index in range(texture_count):
         desc_abs = descriptor_table + index * 0x20
         if not state.in_bounds(desc_abs, 0x20, f'TEX descriptor[{index}]'):
@@ -606,32 +610,73 @@ def _validate_tex(state: _ValidationState) -> None:
             state.fail(f'TEX descriptor[{index}] uses unsupported format {fmt}')
             continue
 
+        if not image_ptr:
+            state.fail(f'TEX descriptor[{index}] has a zero image pointer')
+            continue
         image_abs = tex_start + image_ptr
-        if image_ptr and not state.in_bounds(
+        if image_abs < data_start:
+            state.fail(f'TEX descriptor[{index}] image payload overlaps descriptor table')
+        if image_abs + image_len > tex_end:
+            state.fail(
+                f'TEX descriptor[{index}] image payload exceeds TEX section: '
+                f'0x{image_abs + image_len:X} > 0x{tex_end:X}'
+            )
+            continue
+        if not state.in_bounds(
             image_abs,
             image_len,
             f'TEX descriptor[{index}] image payload',
         ):
             continue
+        payload_ranges.append((image_abs, image_abs + image_len, 'image', index))
+
+        is_indexed = fmt in (0x8, 0x9, 0xA)
+        if is_indexed and (not palette_ptr or not palette_entries):
+            state.fail(f'TEX descriptor[{index}] indexed format requires a palette')
+        if not is_indexed and (palette_ptr or palette_entries):
+            state.fail(f'TEX descriptor[{index}] direct format must not have a palette')
 
         if palette_ptr and palette_entries:
+            actual_clut_count += 1
             palette_abs = tex_start + palette_ptr
             palette_len = palette_entries * 2
-            state.in_bounds(
+            if palette_abs < data_start:
+                state.fail(f'TEX descriptor[{index}] palette payload overlaps descriptor table')
+            if palette_abs + palette_len > tex_end:
+                state.fail(
+                    f'TEX descriptor[{index}] palette payload exceeds TEX section: '
+                    f'0x{palette_abs + palette_len:X} > 0x{tex_end:X}'
+                )
+                continue
+            if state.in_bounds(
                 palette_abs,
                 palette_len,
                 f'TEX descriptor[{index}] palette payload',
-            )
-            if palette_abs < tex_start or palette_abs >= tex_end:
-                state.fail(
-                    f'TEX descriptor[{index}] palette pointer outside TEX section: '
-                    f'0x{palette_abs:X}'
+            ):
+                payload_ranges.append(
+                    (palette_abs, palette_abs + palette_len, 'palette', index)
                 )
 
         if image_abs < tex_start or image_abs >= tex_end:
             state.fail(
                 f'TEX descriptor[{index}] image pointer outside TEX section: '
                 f'0x{image_abs:X}'
+            )
+
+    if clut_count != actual_clut_count:
+        state.fail(
+            f'TEX CLUT count {clut_count} does not match {actual_clut_count} palette payload(s)'
+        )
+
+    payload_ranges.sort()
+    for previous, current in zip(payload_ranges, payload_ranges[1:]):
+        if current[0] < previous[1]:
+            if previous[0] == current[0] and previous[2] == current[2] == 'image':
+                continue
+            state.fail(
+                f'TEX payload overlap: {previous[2]}[{previous[3]}] '
+                f'0x{previous[0]:X}-0x{previous[1]:X} overlaps '
+                f'{current[2]}[{current[3]}] 0x{current[0]:X}-0x{current[1]:X}'
             )
 
 

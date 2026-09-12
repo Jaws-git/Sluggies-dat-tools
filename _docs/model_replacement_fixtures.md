@@ -81,10 +81,59 @@ The failed build also copied target Type-1 pad bytes (`000408` -> `000008`).
 Those bytes are opaque and not part of the documented texture binding setting;
 texture aliases now preserve source pad bytes and copy only the setting word.
 
-The same-count reskin, vertex-count increase, new-face, and new-PNG-texture
-slots must remain planned for now. Do not hand-edit binary data to fill those
-slots. Supply them only when their editing/import paths have been implemented,
-or when you have a known-good `.sluggie` produced by a supported tool.
+The same-count reskin, vertex-count increase, and new-face slots must remain
+planned for now. Do not hand-edit binary data to fill those slots. Supply them
+only when their editing/import paths have been implemented, or when you have a
+known-good `.sluggie` produced by a supported tool.
+
+**Additional-texture Phase 0 fixture (runtime passed):**
+`Debug/fixtures/78277664_mario.gpl.additional_texture_ds5.sluggie` appends
+`newmariotexture.png` as Mario TEX index 5. It clones texture 0's CMPR
+descriptor fields, encodes a 512x512 base image, and changes submesh 0 DS0's
+Type-1 setting from `0x11110000` to `0x11110005`. DS5 inherits that layer-0
+binding and retains its `Spec` mode and 1,438-face primitive data. DS6 installs
+texture 1 afterward, limiting the intended change to the DS5 batch.
+
+The installed output entry is `0x2BE6E620`, length `564864`, SHA-256
+`62c4e8c741b15792ec0ee0c3c436d01d25c04573924a360dec27376ee35ff06e`.
+Structural validation passes, all five donor image payloads are byte-identical,
+TEX count is 6, ptr7 relocated to `0x87540`, and all shared Mario DOL entries
+route to the new block. Dolphin character select, static scene, and animated
+gameplay all pass; Mario displays the new DS5 texture exactly as expected.
+
+**Shared additional-texture Phase 0 fixture (runtime passed):**
+`Debug/fixtures/78277664_mario.gpl.additional_texture_sm0_ds5_sm0_ds9.sluggie`
+routes both submesh 0 DS5 and DS9 to the same appended TEX index 5. DS5 starts
+from texture 0 (512x512 CMPR), effective shader `Spec`, inherited setter DS0;
+DS9 starts from texture 3 (256x128 CMPR), effective shader `RhSp`, local setter
+DS7. The appended descriptor still clones texture 0.
+
+The installed output entry is `0x2BE6E620`, length `564864`, SHA-256
+`bcd046ad467784730609de9f8c46a2468adbe3dbb5f52a1a533f9d47b0e34762`.
+Structural validation passes with TEX count 6; DS0 and DS7 are both
+`0x11110005`; all other GPL bytes remain donor-identical; ptr7 remains correctly
+relocated; and all shared Mario DOL entries route to this block. Dolphin
+character select, static scene, and animated gameplay all pass. Both DS5 and
+DS9 display the shared new texture correctly and unaffected surfaces remain
+correct.
+
+**Unaligned additional-texture payload fixture (runtime passed):**
+`Debug/fixtures/78277664_mario.gpl.additional_texture_sm0_ds5_sm0_ds9_alignment.sluggie`
+appends two distinct CMPR textures. Slot 5 is the 505x505
+`customdimensionedtexture.png` payload (129,032 bytes, 8 modulo 32) assigned to
+DS5. Slot 6 is the 512x512 `newmariotexture.png` assigned to DS9. Consecutive
+packing places slot 5 at aligned TEX-relative pointer `0x3C900` and slot 6 at
+deliberately unaligned pointer `0x5C108` (8 modulo 32).
+
+The installed output entry is `0x2BE6E620`, length `693952`, SHA-256
+`e317c4a678473a2fed633db690bb8699b1b8eaae752bd61dc220970ead01a6b8`.
+Structural validation passes with TEX count 7; DS0 is `0x11110005`; DS7 is
+`0x11110006`; all unrelated GPL bytes remain donor-identical; and all shared
+Mario DOL entries route to this block. Dolphin character select, static scene,
+and animated gameplay all pass. DS5 displays the NPOT image, DS9 displays the
+second image from the deliberately unaligned pointer, and unaffected surfaces
+remain correct. Individual TEX image payload starts therefore do not require
+32-byte alignment in this tested path.
 
 The two unchanged-donor control tests do require manual game evidence now. For
 both Shy Guy and Mario, perform a normal all-clone write to a disposable output

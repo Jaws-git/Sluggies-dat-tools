@@ -1747,6 +1747,145 @@ def _find_new_materials(obj, json_submesh):
     return new_materials
 
 
+def _connected_image_texture_nodes(material):
+    """Return image nodes reachable from the active Material Output surface."""
+    node_tree = getattr(material, "node_tree", None)
+    if not getattr(material, "use_nodes", False) or node_tree is None:
+        return []
+
+    output_nodes = [
+        node for node in node_tree.nodes
+        if getattr(node, "type", None) == 'OUTPUT_MATERIAL'
+    ]
+    active_outputs = [
+        node for node in output_nodes if getattr(node, "is_active_output", False)
+    ]
+    if active_outputs:
+        output = active_outputs[0]
+    elif len(output_nodes) == 1:
+        output = output_nodes[0]
+    else:
+        return []
+
+    try:
+        surface = output.inputs['Surface']
+    except (KeyError, TypeError):
+        return []
+
+    found = []
+    visited = set()
+
+    def visit_node(node):
+        identity = id(node)
+        if identity in visited:
+            return
+        visited.add(identity)
+        if getattr(node, "type", None) == 'TEX_IMAGE':
+            found.append(node)
+        for input_socket in getattr(node, "inputs", ()):
+            for link in getattr(input_socket, "links", ()):
+                source = getattr(link, "from_node", None)
+                if source is not None:
+                    visit_node(source)
+
+    for link in getattr(surface, "links", ()):
+        source = getattr(link, "from_node", None)
+        if source is not None:
+            visit_node(source)
+    return found
+
+
+def _resolve_material_texture_changes(
+    object_submeshes,
+    descriptors,
+    tex_dir,
+    path_resolver=os.path.abspath,
+):
+    """Classify connected material images without mutating Blender or JSON data."""
+    descriptor_by_name = {
+        descriptor.get("TextureFileName"): int(descriptor["TextureIndex"])
+        for descriptor in descriptors
+        if descriptor.get("TextureFileName")
+    }
+    donor_count = len(descriptors)
+    additions = []
+    assignments = {}
+    changed_materials = []
+
+    for obj, _json_submesh in object_submeshes:
+        for slot in obj.material_slots:
+            material = slot.material
+            if material is None:
+                continue
+            surface_id = material.get("SurfaceId")
+            if not surface_id:
+                continue
+
+            image_nodes = _connected_image_texture_nodes(material)
+            if len(image_nodes) > 1:
+                raise ValueError(
+                    f"Multiple textures in one material are not supported: {material.name}"
+                )
+            if not image_nodes:
+                continue
+            image = getattr(image_nodes[0], "image", None)
+            image_path = (
+                getattr(image, "filepath_raw", "") or getattr(image, "filepath", "")
+                if image is not None else ""
+            )
+            if not image_path:
+                raise ValueError(f"Material image has no file path: {material.name}")
+
+            resolved_path = path_resolver(image_path)
+            file_name = os.path.basename(os.path.normpath(resolved_path))
+            if not file_name.lower().endswith('.png'):
+                raise ValueError(
+                    f"Material '{material.name}' image must be a PNG: {file_name}"
+                )
+            local_path = os.path.join(tex_dir, file_name)
+            if not file_name or not os.path.isfile(local_path):
+                raise ValueError(
+                    f"Texture PNG for material '{material.name}' must exist in "
+                    f"this model's tex folder: {local_path}"
+                )
+
+            original_index = int(material.get("TextureIndex", -1))
+            if original_index < 0 or original_index >= donor_count:
+                raise ValueError(
+                    f"Material '{material.name}' has invalid donor TextureIndex "
+                    f"{original_index}"
+                )
+            desired_index = descriptor_by_name.get(file_name)
+            if desired_index is None:
+                desired_index = donor_count + len(additions)
+                if desired_index > 0x1FFF:
+                    raise ValueError(
+                        "the appended texture index exceeds the Type-1 13-bit field"
+                    )
+                additions.append({
+                    "TextureFileName": file_name,
+                    "TemplateTextureIndex": original_index,
+                })
+
+            if desired_index != original_index:
+                if surface_id in assignments:
+                    raise ValueError(
+                        f"SurfaceId '{surface_id}' is assigned by multiple materials"
+                    )
+                assignments[surface_id] = desired_index
+                changed_materials.append(material.name)
+
+    return additions, assignments, changed_materials
+
+
+def _texture_export_toggles_required_message(material_names):
+    return (
+        "Texture change detected but 'Hammerspace Mode' and 'Reimport textures' "
+        "are not both enabled. Enable both options before exporting. "
+        f"Materials: [{', '.join(material_names)}]"
+    )
+
+
 # Runtime testing found that cross-mode reassignment is unsafe. In particular,
 # changing a hand-role batch from RhSp/LhSp to Spec leaves its primitive list in
 # the hand display-state slot, where game-state visibility still suppresses it.
@@ -1918,6 +2057,14 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         # SluggiesTools/patch_inplace.py remains active.
 
         # --- load and sanity-check the target JSON ---
+        if not getattr(self, "filepath", "").strip():
+            self.report(
+                {"ERROR"},
+                "No target .sluggie file was selected. Select the original "
+                ".sluggie file to update and export again.",
+            )
+            return {"CANCELLED"}
+
         try:
             with open(self.filepath, 'r') as f:
                 content = f.read().strip()
@@ -1962,7 +2109,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
 
         written = 0
         warnings = []
-
+        object_submeshes = []
         for obj in candidates:
             # match by VertexBufferOffset (unique per submesh)
             target_submesh = next(
@@ -1976,6 +2123,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     f"{obj['VertexBufferOffset']} found in JSON — skipped."
                 )
                 continue
+            object_submeshes.append((obj, target_submesh))
 
             # --- Step 2.4 (MVP): reject newly created surfaces/materials ---
             # Only reassignment among imported donor surfaces is permitted.
@@ -1990,6 +2138,29 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 )
                 return {"CANCELLED"}
 
+        try:
+            additions, desired_assignments, changed_materials = (
+                _resolve_material_texture_changes(
+                    object_submeshes,
+                    data["SluggiesModel"].get("TextureDescriptors") or [],
+                    os.path.join(os.path.dirname(os.path.abspath(self.filepath)), 'tex'),
+                    path_resolver=bpy.path.abspath,
+                )
+            )
+        except ValueError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+
+        if changed_materials and not (
+            self.use_hammerspace and self.reimport_textures
+        ):
+            self.report(
+                {"ERROR"},
+                _texture_export_toggles_required_message(changed_materials),
+            )
+            return {"CANCELLED"}
+
+        for obj, target_submesh in object_submeshes:
             if self.use_hammerspace:
                 try:
                     hs = encode_mesh_hammerspace(
@@ -2234,6 +2405,14 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
 
         data["SluggiesModel"]["UseHammerspace"] = self.use_hammerspace
         data["SluggiesModel"]["ReimportTextures"] = self.reimport_textures
+        if additions:
+            data["SluggiesModel"]["AdditionalTextureDescriptors"] = additions
+        else:
+            data["SluggiesModel"].pop("AdditionalTextureDescriptors", None)
+        if desired_assignments:
+            data["SluggiesModel"]["DesiredTextureAssignments"] = desired_assignments
+        else:
+            data["SluggiesModel"].pop("DesiredTextureAssignments", None)
 
         with open(self.filepath, 'w') as f:
             json.dump(data, f, indent=2)

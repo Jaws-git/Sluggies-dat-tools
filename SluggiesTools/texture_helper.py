@@ -578,12 +578,14 @@ def _validate_parsed_tpl_against_descriptor(
 
 @dataclass(frozen=True)
 class TexturePlanEntry:
-    """One validated, encoded texture ready for in-place patching.
+    """One validated, encoded texture ready for patching or TEX rebuilding.
 
     Carries the descriptor's identity plus the exact image and optional
     palette payload bytes produced by WIMGT and validated against the
     descriptor. The patcher writes ``image_data`` (and ``palette_data`` when
-    present) into the donor's proven payload ranges.
+    present) into the donor's proven payload ranges. For an appended texture,
+    ``template_texture_index`` identifies the donor descriptor whose preserved
+    fields the TEX builder clones.
     """
 
     texture_index: int
@@ -596,6 +598,15 @@ class TexturePlanEntry:
     palette_data: bytes
     palette_entries: int
     palette_format: int | None
+    template_texture_index: int | None = None
+
+
+@dataclass(frozen=True)
+class AdditionalTextureDescriptor:
+    """One append-only texture request using an existing descriptor as a template."""
+
+    texture_file_name: str
+    template_texture_index: int
 
 
 @dataclass(frozen=True)
@@ -835,6 +846,7 @@ def build_hammerspace_texture_plan(
     warn: Callable[[str], None] | None = None,
     allow_dimension_change: bool = False,
     png_overrides: Mapping[int, str] | None = None,
+    additional_descriptors: Sequence[AdditionalTextureDescriptor] = (),
 ) -> TexturePlan:
     """Encode and validate every descriptor for a hammerspace TEX rebuild.
 
@@ -860,8 +872,13 @@ def build_hammerspace_texture_plan(
     strict path and applied on the relaxed path. On the relaxed
     (``allow_dimension_change``) path the footprint pre-check is *not* applied
     because the Hammerspace TEX section is rebuilt to fit the new payload.
+
+    ``additional_descriptors`` is append-only. Each request is assigned index
+    ``len(descriptors) + append_order`` and encoded from a PNG in the same
+    model-local ``tex/`` folder using the selected donor descriptor's direct GX
+    format. Indexed and mipmapped templates are rejected.
     """
-    if not allow_dimension_change:
+    if not additional_descriptors and not allow_dimension_change:
         return build_texture_plan(
             sluggie_path,
             descriptors,
@@ -877,10 +894,51 @@ def build_hammerspace_texture_plan(
         warn = lambda message: slogger.warning(message, source="texture_helper")
 
     names = validate_texture_descriptors(descriptors)
+    donor_indices = [int(descriptor.get("TextureIndex", -1)) for descriptor in descriptors]
+    if donor_indices != list(range(len(descriptors))):
+        raise ValueError(
+            "donor texture indices must be contiguous from zero before textures can be appended"
+        )
+
+    descriptors_to_encode = list(descriptors)
+    names_to_encode = list(names)
+    template_indices: dict[int, int] = {}
+    for append_order, addition in enumerate(additional_descriptors):
+        new_index = len(descriptors) + append_order
+        if new_index > 0x1FFF:
+            raise ValueError("the appended texture index exceeds the Type-1 13-bit field")
+        template_index = int(addition.template_texture_index)
+        if template_index not in donor_indices:
+            raise ValueError(f"template texture {template_index} does not exist")
+        template = descriptors[template_index]
+        if int(template.get("AdditionalMipCount") or 0):
+            raise ValueError("mipmapped descriptor templates are not supported")
+        gx_format = int(template.get("Format", -1))
+        if gx_format in _INDEXED_FORMATS:
+            raise ValueError(
+                f"additional texture {new_index}: indexed GX format "
+                f"{_GX_FORMATS[gx_format]} is not supported"
+            )
+        if gx_format not in WIMGT_IMAGE_TARGETS:
+            raise ValueError(
+                f"additional texture {new_index}: unsupported GX image format 0x{gx_format:02X}"
+            )
+        name = validate_texture_file_name(addition.texture_file_name)
+        appended_descriptor = dict(template)
+        appended_descriptor.update({
+            "TextureIndex": new_index,
+            "TextureFileName": name,
+            "AdditionalMipCount": 0,
+            "PaletteEntries": 0,
+            "PaletteFormat": 0,
+        })
+        descriptors_to_encode.append(appended_descriptor)
+        names_to_encode.append(name)
+        template_indices[new_index] = template_index
 
     entries: list[TexturePlanEntry] = []
     skipped: list[SkippedTexture] = []
-    for descriptor, name in zip(descriptors, names):
+    for descriptor, name in zip(descriptors_to_encode, names_to_encode):
         index = descriptor.get("TextureIndex", "?")
         if png_overrides and index in png_overrides:
             png_path = os.path.abspath(png_overrides[index])
@@ -889,9 +947,13 @@ def build_hammerspace_texture_plan(
 
         expected_width = descriptor.get("Width")
         expected_height = descriptor.get("Height")
+        is_addition = int(index) in template_indices
 
-        # Read the actual PNG dimensions (relaxed check).
-        actual_width, actual_height = read_png_dimensions(png_path)
+        if allow_dimension_change or is_addition:
+            actual_width, actual_height = read_png_dimensions(png_path)
+        else:
+            check_png_dimensions(png_path, expected_width, expected_height)
+            actual_width, actual_height = expected_width, expected_height
 
         # Log an info when the actual dimensions differ from the descriptor.
         if expected_width is not None and expected_height is not None:
@@ -945,6 +1007,15 @@ def build_hammerspace_texture_plan(
 
         _validate_parsed_tpl_against_descriptor(descriptor, parsed)
 
+        expected_len = descriptor.get("ImagePayloadLength")
+        if not allow_dimension_change and not is_addition and expected_len is not None:
+            if len(parsed.image_data) != expected_len:
+                raise ValueError(
+                    f"texture {index} ({name}): encoded payload is {len(parsed.image_data)} "
+                    f"bytes but the existing slot is {expected_len} bytes "
+                    "(in-place replacement requires an identical footprint)"
+                )
+
         entries.append(
             TexturePlanEntry(
                 texture_index=descriptor.get("TextureIndex", 0),
@@ -957,6 +1028,7 @@ def build_hammerspace_texture_plan(
                 palette_data=parsed.palette_data,
                 palette_entries=parsed.palette_entries,
                 palette_format=parsed.palette_format,
+                template_texture_index=template_indices.get(int(index)),
             )
         )
 
