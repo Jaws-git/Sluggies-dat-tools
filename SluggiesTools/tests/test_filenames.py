@@ -16,10 +16,11 @@ of Dolphin's naming convention plus the texture/TLUT hashing performed by
   * ``{format}``    the GX image format code (e.g. 4=RGB565, 9=C8, 14=CMPR)
 
 Because the hashes are computed from the *encoded* bytes, any change in the
-workflow (re-encoding, untangling, a new/removed texture, a dimension or
-format change, a changed TLUT) changes the resulting filename. This test pins
-the full set of exported model texture filenames so a regression that renames
-any exported PNG is caught immediately, with the exact affected names reported.
+workflow (re-encoding, untangling, a removed texture, a dimension or format
+change, a changed TLUT) changes the resulting filename. This test pins the
+required exporter-generated baseline filenames so a regression that removes or
+renames one is caught immediately. Additional user PNGs are allowed in model
+``tex/`` folders and need not use Dolphin's generated naming scheme.
 
 Scope
 -----
@@ -47,6 +48,7 @@ import pathlib
 import re
 import sys
 import unittest
+from unittest import mock
 
 # ---------------------------------------------------------------------------
 # Paths & scope
@@ -7161,7 +7163,6 @@ class ModelTextureFilenameTests(unittest.TestCase):
         actual = collect_model_texture_paths()
 
         missing = sorted(expected - actual)
-        extra = sorted(actual - expected)
 
         # Unused characters (89-94) are optional: their absence is fine,
         # but if present they must match the baseline exactly.
@@ -7169,27 +7170,25 @@ class ModelTextureFilenameTests(unittest.TestCase):
         if not has_any_unused:
             missing = [m for m in missing if not self._is_unused_char(m)]
 
-        if not missing and not extra:
+        if not missing:
             return
 
         lines = [
-            f"Model texture filename set changed: "
-            f"{len(missing)} missing, {len(extra)} unexpected "
+            f"Required model texture filename set changed: "
+            f"{len(missing)} missing "
             f"(baseline={len(expected)}, current={len(actual)})."
         ]
-        if missing:
-            lines.append("MISSING (in baseline, no longer exported):")
-            lines.extend(f"  - {name}" for name in missing)
-        if extra:
-            lines.append("UNEXPECTED (exported, not in baseline):")
-            lines.extend(f"  + {name}" for name in extra)
+        lines.append("MISSING (in baseline, no longer exported):")
+        lines.extend(f"  - {name}" for name in missing)
         self.fail("\n".join(lines))
 
     def test_all_model_textures_follow_dolphin_naming(self):
         if not OUTPUT_DIR.is_dir():
             self.skipTest(f"{OUTPUT_DIR} does not exist (run an export first)")
 
-        offenders = non_dolphin_named(collect_model_texture_paths())
+        actual = collect_model_texture_paths()
+        baseline_files = set(EXPECTED_MODEL_TEXTURES) & actual
+        offenders = non_dolphin_named(baseline_files)
         self.assertEqual(
             offenders,
             [],
@@ -7197,6 +7196,25 @@ class ModelTextureFilenameTests(unittest.TestCase):
             "convention (tex{N}_{W}x{H}_{texhash}[_{tluthash}]_{format}.png):\n"
             + "\n".join(f"  - {name}" for name in offenders),
         )
+
+    def test_additional_png_is_allowed(self):
+        expected = set(EXPECTED_MODEL_TEXTURES)
+        with mock.patch(
+            f'{__name__}.collect_model_texture_paths',
+            return_value=expected | {'18 Mario/model/tex/custom.png'},
+        ):
+            self.test_model_texture_filenames_unchanged()
+            self.test_all_model_textures_follow_dolphin_naming()
+
+    def test_missing_required_baseline_png_still_fails(self):
+        expected = set(EXPECTED_MODEL_TEXTURES)
+        required = next(path for path in expected if not self._is_unused_char(path))
+        with mock.patch(
+            f'{__name__}.collect_model_texture_paths',
+            return_value=expected - {required},
+        ):
+            with self.assertRaisesRegex(AssertionError, 'MISSING'):
+                self.test_model_texture_filenames_unchanged()
 
 
 # ---------------------------------------------------------------------------
