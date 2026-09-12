@@ -20,7 +20,7 @@ Hammerspace opens up additional memory at the end of the data file to store more
 
 1. Select all submeshes you want to write back to the sluggie file in the viewport
 2. File->Export->Sluggers intermediate (.sluggie)  
-3. select **the same .sluggies file for the character you imported earlier**. The updated file will contain both original and edited model data now.
+3. select **the same .sluggie file for the character you imported earlier**. The updated file will contain both original and edited model data now.
 
 *SAVE YOUR EDITS AS .BLEND PROJECTS FOR SAFEKEEPING!*  
 *Pro Tip: you can add the import/export menus to your quick favorites by right clicking them. Then press "q" (default) to see all your quick favorites.*
@@ -60,6 +60,17 @@ Hammerspace opens up additional memory at the end of the data file to store more
 - edit facial expressions (shapekeys)  
 >- change UVs in any way you want. split edges, unwrap, make new seams!
 >- reimport edited PNG textures at any size!  
+>- append a new model texture by changing the connected Image Texture node on an imported donor material
+
+#### Adding a new model texture how-to
+
+1. Put the new PNG in the model's own `tex/` folder.
+2. Keep the imported material and its `SurfaceId`; do not create a new material.
+3. Replace the image in the Image Texture node or create a new one.
+	Leave at most one Image Texture node connected to the active Material Output!
+4. Export with **Use Hammerspace** and **Reimport textures from tex folder** enabled.
+5. Patch the exported `.sluggie` normally.
+
 #### You can't (yet):
 - add or remove vertices
 - manipulate material slots
@@ -67,3 +78,4 @@ Hammerspace opens up additional memory at the end of the data file to store more
 - reorder face indices
 - remove an object's custom properties
 - you should also always refrain from renaming objects
+

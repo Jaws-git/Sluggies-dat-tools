@@ -516,6 +516,61 @@ def encode_normal_edits(obj, json_normal_buffer, loop_indices, use_base64=True):
     return _from_bytes(bytes(normal_data), use_base64), normal_faces
 
 
+def _apply_inplace_normal_edits(obj, normal_buffer, loop_indices, warnings, use_base64=True):
+    normal_edits = encode_normal_edits(
+        obj, normal_buffer, loop_indices, use_base64
+    )
+    if normal_edits is None:
+        donor_loop_count = len(_to_bytes(
+            normal_buffer.get("NormalFacesData")
+        )) // 2
+        warnings.append(
+            f"{obj.name}: standalone normal overwrite skipped — extended "
+            f"normal records could not preserve their donor mapping "
+            f"({donor_loop_count} donor loops, {len(loop_indices)} mesh loops). "
+            f"Keep the original topology or leave Overwrite Normals off."
+        )
+        normal_buffer.pop("NormalBufferDataEdited", None)
+        normal_buffer.pop("NormalFacesDataEdited", None)
+        return
+
+    norm_data, norm_faces = normal_edits
+    norm_data_raw = _to_bytes(norm_data)
+    donor_faces_raw = _to_bytes(normal_buffer["NormalFacesData"])
+    norm_comp = normal_buffer.get("NormalBufferCompCount", 3)
+    norm_quant = normal_buffer.get("NormalBufferQuantizeInfo", 0)
+    norm_stride = norm_comp * _comp_size_skin(norm_quant)
+    donor_count = len(donor_faces_raw) // 2
+    donor_indices = [
+        int.from_bytes(donor_faces_raw[k*2:k*2+2], 'big')
+        for k in range(donor_count)
+    ]
+    # Conflict check: if loops sharing a donor slot have different edited
+    # normals, compaction would grow the buffer.
+    slot_values = {}
+    normal_conflict = False
+    for slot_idx, loop_pos in zip(donor_indices, range(len(loop_indices))):
+        record = norm_data_raw[loop_pos * norm_stride:(loop_pos + 1) * norm_stride]
+        if slot_idx in slot_values:
+            if slot_values[slot_idx] != record:
+                normal_conflict = True
+                break
+        else:
+            slot_values[slot_idx] = record
+    if normal_conflict:
+        warnings.append(
+            f"{obj.name}: standalone normal buffer conflict — loops sharing "
+            f"a donor slot have different edited normals. Normal overwrite "
+            f"skipped (would exceed original buffer size). Use Hammerspace "
+            f"Mode for full normal editing support."
+        )
+        normal_buffer.pop("NormalBufferDataEdited", None)
+        normal_buffer.pop("NormalFacesDataEdited", None)
+    else:
+        normal_buffer["NormalBufferDataEdited"] = norm_data
+        normal_buffer["NormalFacesDataEdited"] = norm_faces
+
+
 def _encode_color_entry(quant_info, rgba):
     """Encode one 0..1 (r, g, b, a) color into the big-endian entry layout that
     decode_color_channel (ImportSluggies) decodes for the channel's format."""
@@ -2333,43 +2388,13 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     loop_indices = [
                         li for poly in obj.data.polygons for li in poly.loop_indices
                     ]
-                    norm_data, norm_faces = encode_normal_edits(
-                        obj, inplace_normal_buffer, loop_indices, use_base64
+                    _apply_inplace_normal_edits(
+                        obj,
+                        inplace_normal_buffer,
+                        loop_indices,
+                        warnings,
+                        use_base64,
                     )
-                    norm_data_raw = _to_bytes(norm_data)
-                    donor_faces_raw = _to_bytes(inplace_normal_buffer["NormalFacesData"])
-                    norm_comp = inplace_normal_buffer.get("NormalBufferCompCount", 3)
-                    norm_quant = inplace_normal_buffer.get("NormalBufferQuantizeInfo", 0)
-                    norm_stride = norm_comp * _comp_size_skin(norm_quant)
-                    donor_count = len(donor_faces_raw) // 2
-                    donor_indices = [
-                        int.from_bytes(donor_faces_raw[k*2:k*2+2], 'big')
-                        for k in range(donor_count)
-                    ]
-                    # Conflict check: if loops sharing a donor slot have different
-                    # edited normals, compaction would grow the buffer.
-                    slot_values = {}
-                    normal_conflict = False
-                    for slot_idx, loop_pos in zip(donor_indices, range(len(loop_indices))):
-                        record = norm_data_raw[loop_pos * norm_stride:(loop_pos + 1) * norm_stride]
-                        if slot_idx in slot_values:
-                            if slot_values[slot_idx] != record:
-                                normal_conflict = True
-                                break
-                        else:
-                            slot_values[slot_idx] = record
-                    if normal_conflict:
-                        warnings.append(
-                            f"{obj.name}: standalone normal buffer conflict — loops sharing "
-                            f"a donor slot have different edited normals. Normal overwrite "
-                            f"skipped (would exceed original buffer size). Use Hammerspace "
-                            f"Mode for full normal editing support."
-                        )
-                        inplace_normal_buffer.pop("NormalBufferDataEdited", None)
-                        inplace_normal_buffer.pop("NormalFacesDataEdited", None)
-                    else:
-                        inplace_normal_buffer["NormalBufferDataEdited"] = norm_data
-                        inplace_normal_buffer["NormalFacesDataEdited"] = norm_faces
                 elif isinstance(inplace_normal_buffer, dict):
                     inplace_normal_buffer.pop("NormalBufferDataEdited", None)
                     inplace_normal_buffer.pop("NormalFacesDataEdited", None)

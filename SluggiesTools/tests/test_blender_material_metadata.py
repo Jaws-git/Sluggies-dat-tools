@@ -67,6 +67,15 @@ def _load_texture_helpers():
     return namespace
 
 
+def _load_inplace_normal_helper():
+    helper = _load_helper(EXPORTER_PATH, '_apply_inplace_normal_edits')
+    helper.__globals__.update({
+        'encode_normal_edits': lambda *_args, **_kwargs: None,
+        '_to_bytes': lambda value: bytes(value),
+    })
+    return helper
+
+
 class _FakeUi:
     def __init__(self):
         self.values = {}
@@ -130,6 +139,26 @@ def _material_graph(name, surface_id, texture_index, images, disconnected=()):
 
 
 class BlenderMaterialMetadataTests(unittest.TestCase):
+    def test_inplace_extended_normals_skip_incompatible_loop_mapping(self):
+        normal_buffer = {
+            'NormalFacesData': bytes(6),
+            'NormalBufferDataEdited': 'stale-data',
+            'NormalFacesDataEdited': 'stale-faces',
+        }
+        warnings = []
+
+        _load_inplace_normal_helper()(
+            SimpleNamespace(name='body'),
+            normal_buffer,
+            list(range(6)),
+            warnings,
+        )
+
+        self.assertNotIn('NormalBufferDataEdited', normal_buffer)
+        self.assertNotIn('NormalFacesDataEdited', normal_buffer)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('3 donor loops, 6 mesh loops', warnings[0])
+
     def test_type1_surface_exposes_raw_shader_mode(self):
         material = _FakeMaterial()
 
