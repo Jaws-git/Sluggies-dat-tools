@@ -1800,6 +1800,7 @@ def _resolve_material_texture_changes(
     descriptors,
     tex_dir,
     path_resolver=os.path.abspath,
+    validate_texture_files=True,
 ):
     """Classify connected material images without mutating Blender or JSON data."""
     descriptor_by_name = {
@@ -1843,10 +1844,12 @@ def _resolve_material_texture_changes(
                     f"Material '{material.name}' image must be a PNG: {file_name}"
                 )
             local_path = os.path.join(tex_dir, file_name)
-            if not file_name or not os.path.isfile(local_path):
+            if validate_texture_files and (
+                not file_name or not os.path.isfile(local_path)
+            ):
                 raise ValueError(
                     f"Texture PNG for material '{material.name}' must exist in "
-                    f"this model's tex folder: {local_path}"
+                    f"the resolved tex folder: {local_path}"
                 )
 
             original_index = int(material.get("TextureIndex", -1))
@@ -1876,6 +1879,65 @@ def _resolve_material_texture_changes(
                 changed_materials.append(material.name)
 
     return additions, assignments, changed_materials
+
+
+def _resolve_export_texture_context(sluggie_path, model):
+    """Return descriptor/path context, borrowing it for a paired `_L_` model."""
+    model_dir = os.path.dirname(os.path.abspath(sluggie_path))
+    local_descriptors = model.get("TextureDescriptors") or []
+    if local_descriptors:
+        return local_descriptors, os.path.join(model_dir, 'tex'), True
+
+    folder_name = os.path.basename(model_dir)
+    marker_index = folder_name.lower().find('_l_')
+    if marker_index < 0:
+        return [], os.path.join(model_dir, 'tex'), False
+
+    paired_suffix = folder_name[marker_index + 3:].lower()
+    parent_dir = os.path.dirname(model_dir)
+    candidates = []
+    try:
+        sibling_names = sorted(os.listdir(parent_dir))
+    except OSError:
+        sibling_names = []
+    for sibling_name in sibling_names:
+        sibling_dir = os.path.join(parent_dir, sibling_name)
+        sibling_lower = sibling_name.lower()
+        if (
+            not os.path.isdir(sibling_dir)
+            or '_l_' in sibling_lower
+            or not sibling_lower.endswith('_' + paired_suffix)
+        ):
+            continue
+        tex_dir = os.path.join(sibling_dir, 'tex')
+        if not os.path.isdir(tex_dir):
+            continue
+        try:
+            sluggie_names = sorted(
+                name for name in os.listdir(sibling_dir)
+                if name.lower().endswith('.sluggie')
+            )
+        except OSError:
+            continue
+        for sluggie_name in sluggie_names:
+            candidate_path = os.path.join(sibling_dir, sluggie_name)
+            try:
+                with open(candidate_path, 'r') as candidate_file:
+                    candidate_model = json.load(candidate_file).get('SluggiesModel', {})
+            except (OSError, ValueError):
+                continue
+            descriptors = candidate_model.get('TextureDescriptors') or []
+            if descriptors:
+                candidates.append((descriptors, tex_dir))
+
+    if len(candidates) > 1:
+        raise ValueError(
+            f"Low-poly model '{folder_name}' matches multiple sibling texture owners"
+        )
+    if candidates:
+        descriptors, tex_dir = candidates[0]
+        return descriptors, tex_dir, False
+    return [], os.path.join(model_dir, 'tex'), False
 
 
 def _texture_export_toggles_required_message(material_names):
@@ -2138,17 +2200,35 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 )
                 return {"CANCELLED"}
 
-        try:
-            additions, desired_assignments, changed_materials = (
-                _resolve_material_texture_changes(
-                    object_submeshes,
-                    data["SluggiesModel"].get("TextureDescriptors") or [],
-                    os.path.join(os.path.dirname(os.path.abspath(self.filepath)), 'tex'),
-                    path_resolver=bpy.path.abspath,
+        local_texture_descriptors = (
+            data["SluggiesModel"].get("TextureDescriptors") or []
+        )
+        owns_texture_section = bool(local_texture_descriptors)
+        additions, desired_assignments, changed_materials = [], {}, []
+        if self.reimport_textures:
+            try:
+                texture_descriptors, texture_dir, owns_texture_section = (
+                    _resolve_export_texture_context(self.filepath, data["SluggiesModel"])
                 )
+                additions, desired_assignments, changed_materials = (
+                    _resolve_material_texture_changes(
+                        object_submeshes,
+                        texture_descriptors,
+                        texture_dir,
+                        path_resolver=bpy.path.abspath,
+                    )
+                )
+            except ValueError as exc:
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
+
+        if changed_materials and not owns_texture_section:
+            self.report(
+                {"ERROR"},
+                "Low-poly model textures are owned by the paired main model. "
+                "Apply and export this texture change from the sibling main model: "
+                f"{', '.join(changed_materials)}",
             )
-        except ValueError as exc:
-            self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
 
         if changed_materials and not (
@@ -2404,7 +2484,9 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             return {"CANCELLED"}
 
         data["SluggiesModel"]["UseHammerspace"] = self.use_hammerspace
-        data["SluggiesModel"]["ReimportTextures"] = self.reimport_textures
+        data["SluggiesModel"]["ReimportTextures"] = (
+            self.reimport_textures and bool(local_texture_descriptors)
+        )
         if additions:
             data["SluggiesModel"]["AdditionalTextureDescriptors"] = additions
         else:

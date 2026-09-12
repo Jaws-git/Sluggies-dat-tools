@@ -87,6 +87,142 @@ def _setting_int(shader_mode: str) -> int:
     return int.from_bytes(shader_mode.encode('ascii')[:4].ljust(4, b'\x00'), 'big')
 
 
+def apply_desired_texture_assignments(data: dict) -> bool:
+    """Patch primary Type-1 bindings requested by SurfaceId."""
+    model = data['SluggiesModel']
+    assignments = model.get('DesiredTextureAssignments') or {}
+    if not assignments:
+        return False
+
+    texture_count = len(model.get('TextureDescriptors') or []) + len(
+        model.get('AdditionalTextureDescriptors') or []
+    )
+    surface_lookup = {}
+    submesh_info = []
+
+    for submesh_index, submesh in enumerate(model.get('Submeshes', [])):
+        display_states = submesh.get('DisplayStates', [])
+        active_primary_setter = None
+        setter_consumers = {}
+        state_setters = {}
+        for state_index, display_state in enumerate(display_states):
+            surface_id = display_state.get('SurfaceId') or f'sm{submesh_index}_ds{state_index}'
+            if surface_id in surface_lookup:
+                raise ValueError(f"duplicate SurfaceId '{surface_id}'")
+            surface_lookup[surface_id] = (submesh_index, state_index)
+
+            if display_state.get('DisplayStateId') == 1:
+                setting = _setting_int(
+                    display_state.get('ShaderModeEdited') or display_state['ShaderMode']
+                )
+                if ((setting >> 13) & 7) == 0:
+                    active_primary_setter = state_index
+
+            if int(display_state.get('FaceCount') or 0) > 0 \
+                    or int(display_state.get('PrimListLength') or 0) > 0:
+                if active_primary_setter is not None:
+                    state_setters[state_index] = active_primary_setter
+                    setter_consumers.setdefault(active_primary_setter, []).append(surface_id)
+
+        submesh_info.append((state_setters, setter_consumers))
+
+    requested = {}
+    for surface_id, raw_texture_index in assignments.items():
+        if surface_id not in surface_lookup:
+            raise ValueError(f"DesiredTextureAssignments references unknown SurfaceId '{surface_id}'")
+        if isinstance(raw_texture_index, bool) or not isinstance(raw_texture_index, int):
+            raise ValueError(f"DesiredTextureAssignments['{surface_id}'] must be an integer")
+        if raw_texture_index < 0 or raw_texture_index >= texture_count:
+            raise ValueError(
+                f"DesiredTextureAssignments['{surface_id}'] texture index "
+                f'{raw_texture_index} is outside rebuilt TEX count {texture_count}'
+            )
+        submesh_index, state_index = surface_lookup[surface_id]
+        state_setters, _ = submesh_info[submesh_index]
+        if state_index not in state_setters:
+            raise ValueError(f"DesiredTextureAssignments SurfaceId '{surface_id}' is not drawable")
+        requested[surface_id] = raw_texture_index
+
+    setter_requests = {}
+    for surface_id, texture_index in requested.items():
+        submesh_index, state_index = surface_lookup[surface_id]
+        setter_index = submesh_info[submesh_index][0][state_index]
+        setter_requests.setdefault((submesh_index, setter_index), {})[surface_id] = texture_index
+
+    for (submesh_index, setter_index), requests in setter_requests.items():
+        consumers = submesh_info[submesh_index][1][setter_index]
+        requested_indices = set(requests.values())
+        if len(requested_indices) != 1 or set(requests) != set(consumers):
+            requested_text = ', '.join(
+                f'{surface_id}={texture_index}'
+                for surface_id, texture_index in sorted(requests.items())
+            )
+            raise ValueError(
+                f'sub{submesh_index} ds{setter_index}: shared primary texture setter '
+                f'is consumed by {consumers}; all consumers must request the same '
+                f'texture (requested: {requested_text})'
+            )
+
+    use_b64 = model.get('UseBase64', True)
+    pending_face_textures = []
+    for submesh_index, submesh in enumerate(model.get('Submeshes', [])):
+        display_states = submesh.get('DisplayStates', [])
+        surface_indices = []
+        decoded_state_faces = None
+        for state_index, display_state in enumerate(display_states):
+            face_count = display_state.get('FaceCount')
+            if face_count is None and display_state.get('PrimListData'):
+                if decoded_state_faces is None:
+                    decoded_state_faces = _decode_original_states(submesh, use_b64)[0]
+                face_count = len(decoded_state_faces.get(state_index, []))
+            surface_indices.extend([state_index] * int(face_count or 0))
+        encoded_surface_indices = submesh.get('FaceSurfaceIdsEdited')
+        if encoded_surface_indices is not None:
+            surface_indices = _u16s(_dec(encoded_surface_indices, use_b64))
+
+        raw_face_textures = submesh.get('FaceTextureIndicesEdited')
+        if raw_face_textures is None:
+            raw_face_textures = submesh.get('FaceTextureIndices')
+        if raw_face_textures is None:
+            continue
+        face_textures = _u16s(_dec(raw_face_textures, use_b64))
+        if len(face_textures) != len(surface_indices):
+            raise ValueError(
+                f'sub{submesh_index}: face texture count {len(face_textures)} does not '
+                f'match surface assignment count {len(surface_indices)}'
+            )
+        changed = False
+        for face_index, state_index in enumerate(surface_indices):
+            if state_index < 0 or state_index >= len(display_states):
+                raise ValueError(
+                    f'sub{submesh_index} face {face_index}: surface index {state_index} '
+                    'is outside the display-state table'
+                )
+            surface_id = display_states[state_index].get('SurfaceId') \
+                or f'sm{submesh_index}_ds{state_index}'
+            if surface_id in requested and face_textures[face_index] != requested[surface_id]:
+                face_textures[face_index] = requested[surface_id]
+                changed = True
+        if changed:
+            pending_face_textures.append((submesh, face_textures))
+
+    for (submesh_index, setter_index), requests in setter_requests.items():
+        display_state = model['Submeshes'][submesh_index]['DisplayStates'][setter_index]
+        old_setting = _setting_int(
+            display_state.get('ShaderModeEdited') or display_state['ShaderMode']
+        )
+        texture_index = next(iter(requests.values()))
+        display_state['ShaderModeEdited'] = f'{(old_setting & ~0x1FFF) | texture_index:08x}'
+
+    for submesh, face_textures in pending_face_textures:
+        submesh['FaceTextureIndicesEdited'] = _enc(
+            b''.join(_u16.pack(index) for index in face_textures),
+            use_b64,
+        )
+
+    return True
+
+
 def _submesh_changed(sub: dict, use_b64) -> bool:
     fe = sub.get('FacesDataEdited')
     if fe is None:

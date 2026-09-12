@@ -313,6 +313,15 @@ class BuildModelBlockTests(unittest.TestCase):
         write_model.assert_not_called()
         patch_dol.assert_not_called()
 
+    def test_desired_texture_assignments_require_gpl_tex_build_and_reimport(self):
+        self.data['SluggiesModel']['DesiredTextureAssignments'] = {'sm0_ds1': 1}
+
+        with self.assertRaisesRegex(
+            ValueError,
+            'require GPL and TEX build modes with ReimportTextures enabled',
+        ):
+            main.BuildModelBlock(self.data)
+
     def test_build_preserves_dol_entry_prefix_before_inner_model(self):
         self.data['SluggiesModel'].update({
             'ModelOffset': 0x1020,
@@ -863,6 +872,81 @@ class BuildModelBlockTests(unittest.TestCase):
 
         self.assertEqual(new_offset, expected_start)
         self.assertEqual(ensure_dat.call_args_list, [mock.call(), mock.call(expected_size)])
+
+    def test_replacement_keeps_old_block_until_new_route_commits(self):
+        build = main.ModelBlockBuild(
+            block=b'new-model-block',
+            parsed=self.parsed,
+            chunk_number=18,
+            file_index=0,
+            original_offset=0x1000,
+            original_length=42,
+            section_modes=main.SectionModes(),
+            section_sizes={},
+            validation_report={'valid': True},
+        )
+        events = []
+        with (
+            mock.patch.object(main.hh, 'BASE_SIZE', 0x2000),
+            mock.patch.object(main.hh, 'OUTPUT_DAT', 'output.dat'),
+            mock.patch.object(main.hh, 'readOutputDolEntry', return_value=(0x3000, 100)),
+            mock.patch.object(main.hh, 'findFreeMemoryChunk', return_value=0x4000),
+            mock.patch.object(main.hh, 'findSharedEntries', return_value=[(19, 1)]),
+            mock.patch.object(
+                main.hh, 'writeModelBlock',
+                side_effect=lambda *_args: events.append('write'),
+            ),
+            mock.patch.object(
+                main.hh, 'patchDolEntry',
+                side_effect=lambda *_args: events.append('route'),
+            ),
+            mock.patch.object(main.hh, 'patchFstFileSize'),
+            mock.patch.object(
+                main.hh, 'zeroOriginalModel',
+                side_effect=lambda *_args: events.append('zero-original'),
+            ),
+            mock.patch.object(
+                main.hh, 'zeroRange',
+                side_effect=lambda *_args: events.append('zero-old'),
+            ) as zero_range,
+            mock.patch.object(main.hh, 'writeDebugDumps'),
+            mock.patch.object(main.os.path, 'getsize', return_value=123456),
+        ):
+            new_offset = main.WriteModelBlock(build, 'fixture.sluggie')
+
+        self.assertEqual(new_offset, 0x4000)
+        self.assertEqual(
+            events,
+            ['write', 'route', 'route', 'zero-original', 'zero-old'],
+        )
+        zero_range.assert_called_once_with(0x3000, 100)
+
+    def test_replacement_write_failure_preserves_existing_route(self):
+        build = main.ModelBlockBuild(
+            block=b'new-model-block',
+            parsed=self.parsed,
+            chunk_number=18,
+            file_index=0,
+            original_offset=0x1000,
+            original_length=42,
+            section_modes=main.SectionModes(),
+            section_sizes={},
+            validation_report={'valid': True},
+        )
+        with (
+            mock.patch.object(main.hh, 'BASE_SIZE', 0x2000),
+            mock.patch.object(main.hh, 'readOutputDolEntry', return_value=(0x3000, 100)),
+            mock.patch.object(main.hh, 'findFreeMemoryChunk', return_value=0x4000),
+            mock.patch.object(main.hh, 'findSharedEntries', return_value=[]),
+            mock.patch.object(main.hh, 'writeModelBlock', side_effect=IOError('verify failed')),
+            mock.patch.object(main.hh, 'patchDolEntry') as patch_dol,
+            mock.patch.object(main.hh, 'zeroRange') as zero_range,
+        ):
+            with self.assertRaisesRegex(IOError, 'verify failed'):
+                main.WriteModelBlock(build, 'fixture.sluggie')
+
+        patch_dol.assert_not_called()
+        zero_range.assert_not_called()
 
     def test_write_rejects_failed_validation(self):
         build = mock.Mock(validation_report={'valid': False})

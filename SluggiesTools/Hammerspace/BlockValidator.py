@@ -530,6 +530,12 @@ def _validate_gpl(state: _ValidationState, skn_positions: list[int], prim_offset
                     f'GPL submesh[{submesh_index}] ds[{ds_index}]',
                     state,
                 )
+            elif ds_id == 1:
+                state.facts.setdefault('gpl_texture_references', []).append({
+                    'submesh': submesh_index,
+                    'display_state': ds_index,
+                    'texture_index': setting & 0x1FFF,
+                })
 
             if prim_rel and prim_len:
                 prim_abs = layout_off + prim_rel
@@ -581,6 +587,14 @@ def _validate_tex(state: _ValidationState) -> None:
 
     state.facts['tex_texture_count'] = texture_count
     state.facts['tex_clut_count'] = clut_count
+    for reference in state.facts.get('gpl_texture_references', []):
+        texture_index = reference['texture_index']
+        if texture_index >= texture_count:
+            state.fail(
+                f"GPL submesh[{reference['submesh']}] "
+                f"ds[{reference['display_state']}] Type-1 texture index "
+                f'{texture_index} is outside TEX count {texture_count}'
+            )
 
     descriptor_table = tex_start + 4
     if not state.in_bounds(descriptor_table, texture_count * 0x20, 'TEX descriptor table'):

@@ -371,6 +371,21 @@ class BlockValidatorTests(unittest.TestCase):
         self.assertTrue(any('direct format must not have a palette' in error for error in report['errors']))
         self.assertTrue(any('CLUT count 0 does not match 1' in error for error in report['errors']))
 
+    def test_type1_texture_index_outside_tex_count_fails(self):
+        block = make_valid_textured_block(texture_count=1)
+        ds0 = 0x20 + 0x24 + 0x60
+        block[ds0 + 0x00] = 1
+        struct.pack_into('>I', block, ds0 + 0x04, 0x11110001)
+        struct.pack_into('>II', block, ds0 + 0x08, 0, 0)
+
+        report = validate_model_block(bytes(block))
+
+        self.assertFalse(report['valid'])
+        self.assertTrue(any(
+            'Type-1 texture index 1 is outside TEX count 1' in error
+            for error in report['errors']
+        ))
+
 
 if __name__ == '__main__':
     unittest.main()

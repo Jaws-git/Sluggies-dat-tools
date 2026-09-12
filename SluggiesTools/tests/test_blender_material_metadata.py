@@ -54,6 +54,7 @@ def _load_texture_helpers():
     names = {
         '_connected_image_texture_nodes',
         '_resolve_material_texture_changes',
+        '_resolve_export_texture_context',
         '_texture_export_toggles_required_message',
     }
     helpers = [
@@ -61,7 +62,7 @@ def _load_texture_helpers():
         if isinstance(node, ast.FunctionDef) and node.name in names
     ]
     module = ast.Module(body=helpers, type_ignores=[])
-    namespace = {'os': os}
+    namespace = {'json': __import__('json'), 'os': os}
     exec(compile(module, str(EXPORTER_PATH), 'exec'), namespace)
     return namespace
 
@@ -236,6 +237,7 @@ class BlenderMaterialTextureTests(unittest.TestCase):
         helpers = _load_texture_helpers()
         self.connected_nodes = helpers['_connected_image_texture_nodes']
         self.resolve_changes = helpers['_resolve_material_texture_changes']
+        self.resolve_context = helpers['_resolve_export_texture_context']
         self.toggle_message = helpers['_texture_export_toggles_required_message']
 
     @staticmethod
@@ -316,12 +318,59 @@ class BlenderMaterialTextureTests(unittest.TestCase):
     def test_missing_model_local_png_is_rejected(self):
         material = _material_graph('body', 'sm0_ds1', 0, ['elsewhere/new.png'])
         with tempfile.TemporaryDirectory() as temp_dir:
-            with self.assertRaisesRegex(ValueError, "must exist in this model's tex folder"):
+            with self.assertRaisesRegex(ValueError, 'must exist in the resolved tex folder'):
                 self.resolve_changes(
                     [(self._object(material), {})],
                     [{'TextureIndex': 0, 'TextureFileName': '0.png'}],
                     temp_dir,
                 )
+
+    def test_missing_png_is_not_checked_when_reimport_is_disabled(self):
+        material = _material_graph('body', 'sm0_ds1', 0, ['missing/0.png'])
+
+        result = self.resolve_changes(
+            [(self._object(material), {})],
+            [{'TextureIndex': 0, 'TextureFileName': '0.png'}],
+            'missing/tex',
+            validate_texture_files=False,
+        )
+
+        self.assertEqual(result, ([], {}, []))
+
+    def test_lowpoly_context_uses_paired_main_model_tex_folder(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            parent = pathlib.Path(temp_dir)
+            lowpoly_dir = parent / '78711424_L_mario.gpl'
+            main_dir = parent / '78277664_mario.gpl'
+            lowpoly_dir.mkdir()
+            (main_dir / 'tex').mkdir(parents=True)
+            lowpoly_path = lowpoly_dir / '78711424_L_mario.gpl.sluggie'
+            lowpoly_path.write_text('{}', encoding='utf-8')
+            descriptors = [{'TextureIndex': 0, 'TextureFileName': 'body.png'}]
+            image_path = main_dir / 'tex' / 'body.png'
+            image_path.write_bytes(b'png')
+            (main_dir / '78277664_mario.gpl.sluggie').write_text(
+                __import__('json').dumps({
+                    'SluggiesModel': {'TextureDescriptors': descriptors},
+                }),
+                encoding='utf-8',
+            )
+
+            resolved_descriptors, tex_dir, owns_textures = self.resolve_context(
+                str(lowpoly_path),
+                {'TextureDescriptors': []},
+            )
+            material = _material_graph('body', 'sm0_ds1', 0, [image_path])
+            changes = self.resolve_changes(
+                [(self._object(material), {})],
+                resolved_descriptors,
+                tex_dir,
+            )
+
+        self.assertEqual(resolved_descriptors, descriptors)
+        self.assertEqual(tex_dir, str(main_dir / 'tex'))
+        self.assertFalse(owns_textures)
+        self.assertEqual(changes, ([], {}, []))
 
     def test_non_png_image_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp_dir:

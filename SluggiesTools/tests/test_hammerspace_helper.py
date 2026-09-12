@@ -50,6 +50,56 @@ class FindFreeMemoryChunkTests(unittest.TestCase):
         )
 
 
+class WriteModelBlockTests(unittest.TestCase):
+    def test_writes_and_verifies_model_bytes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dat_path = pathlib.Path(temp_dir) / 'dt_na.dat'
+            dat_path.write_bytes(b'\x00' * 256)
+            with (
+                mock.patch.object(helper, 'OUTPUT_DAT', str(dat_path)),
+                mock.patch.object(helper, 'HS_BUFFER_BYTES', 0),
+            ):
+                helper.writeModelBlock(b'model-block', 64)
+
+            self.assertEqual(dat_path.read_bytes()[64:75], b'model-block')
+
+    def test_detects_failed_write_verification(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dat_path = pathlib.Path(temp_dir) / 'dt_na.dat'
+            dat_path.write_bytes(b'\x00' * 256)
+            real_open = open
+
+            class CorruptingReader:
+                def __init__(self, wrapped):
+                    self.wrapped = wrapped
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    self.wrapped.close()
+
+                def seek(self, *args):
+                    return self.wrapped.seek(*args)
+
+                def read(self, size):
+                    return b'X' * size
+
+            def open_with_corrupt_read(path, mode='r', *args, **kwargs):
+                wrapped = real_open(path, mode, *args, **kwargs)
+                if mode == 'rb':
+                    return CorruptingReader(wrapped)
+                return wrapped
+
+            with (
+                mock.patch.object(helper, 'OUTPUT_DAT', str(dat_path)),
+                mock.patch.object(helper, 'HS_BUFFER_BYTES', 0),
+                mock.patch('builtins.open', side_effect=open_with_corrupt_read),
+            ):
+                with self.assertRaisesRegex(IOError, 'verification failed'):
+                    helper.writeModelBlock(b'model-block', 64)
+
+
 class FindSharedEntriesTests(unittest.TestCase):
     def _write_dol(self, path, offsets):
         data = bytearray(192)

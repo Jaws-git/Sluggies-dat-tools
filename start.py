@@ -254,7 +254,7 @@ def hammerspace_section_args(model):
             has_color_edits = True
 
     args = []
-    if any(
+    if model.get('DesiredTextureAssignments') or any(
         submesh.get('FaceSurfaceIdsEdited') is not None
         for submesh in model.get('Submeshes', [])
     ) or changed_positions or has_uv_edits or has_normal_edits or has_color_edits:

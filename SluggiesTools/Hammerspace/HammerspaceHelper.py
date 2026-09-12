@@ -289,6 +289,34 @@ def writeModelBlock(data: bytes, offset: int) -> None:
         f.seek(offset)
         f.write(data)
 
+    with open(OUTPUT_DAT, 'rb') as f:
+        f.seek(offset)
+        written = f.read(len(data))
+    if written != data:
+        raise IOError(
+            f'model block verification failed at 0x{offset:08X}: '
+            f'expected {len(data):,} bytes, read {len(written):,}'
+        )
+
+
+def zeroRange(offset: int, length: int) -> None:
+    """Overwrite one validated OUTPUT_DAT range with zero bytes."""
+    if offset < 0 or length < 0:
+        raise ValueError(f'invalid zero range: offset={offset}, length={length}')
+    output_size = os.path.getsize(OUTPUT_DAT)
+    if offset + length > output_size:
+        raise ValueError(
+            f'zero range 0x{offset:08X}+{length:,} exceeds output dat size '
+            f'{output_size:,}'
+        )
+    zeroed = 0
+    with open(OUTPUT_DAT, 'r+b') as output:
+        output.seek(offset)
+        while zeroed < length:
+            write_size = min(CHUNK_SIZE, length - zeroed)
+            output.write(b'\x00' * write_size)
+            zeroed += write_size
+
 
 def writeDebugDumps(
     sluggie_name:  str,
@@ -621,13 +649,7 @@ def removeModelFromHammerspace(chunk_number: int, file_index: int) -> tuple:
             patchDolEntry(sc, si, orig_offset, orig_length)
 
     _slogger.info(f"[5] Zeroing {cur_length:,} bytes at 0x{cur_offset:08X} in OUTPUT dt_na.dat ...", source="hammerspace.helper")
-    zeroed = 0
-    with open(OUTPUT_DAT, 'r+b') as f:
-        f.seek(cur_offset)
-        while zeroed < cur_length:
-            write_size = min(CHUNK_SIZE, cur_length - zeroed)
-            f.write(b'\x00' * write_size)
-            zeroed += write_size
+    zeroRange(cur_offset, cur_length)
     _slogger.info(f"    Zeroed {cur_length:,} bytes.", source="hammerspace.helper")
 
     _slogger.info(f"Done. chunk={chunk_number}, file_index={file_index} removed from hammerspace.", source="hammerspace.helper")
@@ -656,11 +678,5 @@ def zeroOriginalModel(chunk_number: int, file_index: int) -> None:
         return
 
     _slogger.info(f"Zeroing original model data: 0x{orig_offset:08X}, {orig_length:,} bytes ...", source="hammerspace.helper")
-    zeroed = 0
-    with open(OUTPUT_DAT, 'r+b') as f:
-        f.seek(orig_offset)
-        while zeroed < orig_length:
-            write_size = min(CHUNK_SIZE, orig_length - zeroed)
-            f.write(b'\x00' * write_size)
-            zeroed += write_size
+    zeroRange(orig_offset, orig_length)
     _slogger.info(f"    Zeroed {orig_length:,} bytes at original location.", source="hammerspace.helper")

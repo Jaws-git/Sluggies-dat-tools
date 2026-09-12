@@ -10,7 +10,7 @@ for import_path in (TOOLS_DIR, HAMMERSPACE_DIR):
         sys.path.insert(0, str(import_path))
 
 from drawlist import decodeDrawList, encodeDrawList
-from GeometryRebuild import rebuild_surface_assignments
+from GeometryRebuild import apply_desired_texture_assignments, rebuild_surface_assignments
 
 
 DESCRIPTORS = [{'key': 'position', 'index_size': 1}]
@@ -244,6 +244,81 @@ class SurfaceAssignmentRebuildTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, 'different shader modes'):
             rebuild_surface_assignments(data)
+
+
+class DesiredTextureAssignmentTests(unittest.TestCase):
+    def _data(self, states, assignments, face_textures):
+        return {'SluggiesModel': {
+            'UseBase64': False,
+            'TextureDescriptors': [
+                {'TextureIndex': 0},
+                {'TextureIndex': 1},
+            ],
+            'AdditionalTextureDescriptors': [
+                {'TextureFileName': 'new.png', 'TemplateTextureIndex': 0},
+                {'TextureFileName': 'other.png', 'TemplateTextureIndex': 1},
+            ],
+            'DesiredTextureAssignments': assignments,
+            'Submeshes': [{
+                'DisplayStates': states,
+                'FaceTextureIndices': [
+                    byte
+                    for texture_index in face_textures
+                    for byte in texture_index.to_bytes(2, 'big')
+                ],
+            }],
+        }}
+
+    def test_patches_local_setters_and_face_texture_indices(self):
+        states = [
+            {**_texture_state(0), 'SurfaceId': 'sm0_ds0'},
+            {**_display_state(_face(0)), 'SurfaceId': 'sm0_ds1', 'FaceCount': 1},
+            {**_texture_state(1), 'SurfaceId': 'sm0_ds2'},
+            {**_display_state(_face(3)), 'SurfaceId': 'sm0_ds3', 'FaceCount': 1},
+        ]
+        data = self._data(states, {'sm0_ds1': 2, 'sm0_ds3': 3}, [0, 1])
+
+        self.assertTrue(apply_desired_texture_assignments(data))
+
+        self.assertEqual(states[0]['ShaderModeEdited'], '11110002')
+        self.assertEqual(states[2]['ShaderModeEdited'], '11110003')
+        self.assertEqual(data['SluggiesModel']['Submeshes'][0]['FaceTextureIndicesEdited'], [0, 2, 0, 3])
+
+    def test_allows_shared_setter_when_all_consumers_request_same_texture(self):
+        states = [
+            {**_texture_state(0), 'SurfaceId': 'sm0_ds0'},
+            {**_display_state(_face(0)), 'SurfaceId': 'sm0_ds1', 'FaceCount': 1},
+            {**_display_state(_face(3)), 'SurfaceId': 'sm0_ds2', 'FaceCount': 1},
+        ]
+        data = self._data(states, {'sm0_ds1': 2, 'sm0_ds2': 2}, [0, 0])
+
+        self.assertTrue(apply_desired_texture_assignments(data))
+
+        self.assertEqual(states[0]['ShaderModeEdited'], '11110002')
+
+    def test_rejects_shared_setter_with_unselected_consumer(self):
+        states = [
+            {**_texture_state(0), 'SurfaceId': 'sm0_ds0'},
+            {**_display_state(_face(0)), 'SurfaceId': 'sm0_ds1', 'FaceCount': 1},
+            {**_display_state(_face(3)), 'SurfaceId': 'sm0_ds2', 'FaceCount': 1},
+        ]
+        data = self._data(states, {'sm0_ds2': 2}, [0, 0])
+
+        with self.assertRaisesRegex(ValueError, 'all consumers must request the same texture'):
+            apply_desired_texture_assignments(data)
+
+        self.assertNotIn('ShaderModeEdited', states[0])
+
+    def test_rebinds_to_existing_texture(self):
+        states = [
+            {**_texture_state(0), 'SurfaceId': 'sm0_ds0'},
+            {**_display_state(_face(0)), 'SurfaceId': 'sm0_ds1', 'FaceCount': 1},
+        ]
+        data = self._data(states, {'sm0_ds1': 1}, [0])
+
+        apply_desired_texture_assignments(data)
+
+        self.assertEqual(states[0]['ShaderModeEdited'], '11110001')
 
 
 if __name__ == '__main__':

@@ -15,7 +15,12 @@ _slogger.configure()
 
 import HammerspaceHelper as hh
 from BlockValidator import validate_model_block
-from GeometryRebuild import rebuild_edited_uvs, rebuild_surface_assignments, _color_entry_size
+from GeometryRebuild import (
+    _color_entry_size,
+    apply_desired_texture_assignments,
+    rebuild_edited_uvs,
+    rebuild_surface_assignments,
+)
 from ModelFormat import align_array_offset, compute_mem_clear_range, pad_array
 from InplacePatcher import root_scale as _root_scale
 
@@ -2992,6 +2997,15 @@ def BuildModelBlock(
 
     model = data['SluggiesModel']
     _validate_hammerspace_contract(model, modes)
+    if model.get('DesiredTextureAssignments') and (
+        modes.gpl != 'build'
+        or modes.tex != 'build'
+        or not model.get('ReimportTextures')
+    ):
+        raise ValueError(
+            'DesiredTextureAssignments require GPL and TEX build modes with '
+            'ReimportTextures enabled'
+        )
     chunk_number = model['ChunkNumber']
     file_index = model['FileIndex']
     original_offset, original_length = hh.readDolEntry(chunk_number, file_index)
@@ -3043,6 +3057,7 @@ def BuildModelBlock(
     if modes.gpl == 'build':
         rebuild_surface_assignments(data)
         rebuild_edited_uvs(data)
+        apply_desired_texture_assignments(data)
     parsed = ParseSluggie(data)
     if modes.gpl == 'build':
         has_material_state_edits = any(
@@ -3246,22 +3261,12 @@ def WriteModelBlock(build: ModelBlockBuild, model_name: str) -> int:
     chunk_number = build.chunk_number
     file_index = build.file_index
 
-    current_offset, _ = hh.readOutputDolEntry(chunk_number, file_index)
-    if current_offset >= hh.BASE_SIZE:
+    current_offset, current_length = hh.readOutputDolEntry(chunk_number, file_index)
+    replacing_hammerspace_block = current_offset >= hh.BASE_SIZE
+    if replacing_hammerspace_block:
         _slogger.info(
-            f'Model already in hammerspace at 0x{current_offset:08X}; removing old version',
-            source='hammerspace.main',
-        )
-        evicted, evicted_offset, evicted_length = hh.removeModelFromHammerspace(
-            chunk_number,
-            file_index,
-        )
-        if not evicted:
-            raise RuntimeError('Could not remove existing hammerspace entry')
-        _slogger.info(
-            f'Hammerspace Log: Removed | Model: {model_name} | Chunk: {chunk_number} | '
-            f'File: {file_index} | Address: 0x{evicted_offset:08X} | '
-            f'Size: {evicted_length / (1024 * 1024):.2f} MB',
+            f'Model already in hammerspace at 0x{current_offset:08X}; '
+            'keeping the old route live until replacement commits',
             source='hammerspace.main',
         )
 
@@ -3286,6 +3291,14 @@ def WriteModelBlock(build: ModelBlockBuild, model_name: str) -> int:
 
     hh.patchFstFileSize(os.path.getsize(hh.OUTPUT_DAT))
     hh.zeroOriginalModel(chunk_number, file_index)
+    if replacing_hammerspace_block and current_offset != new_offset:
+        hh.zeroRange(current_offset, current_length)
+        _slogger.info(
+            f'Hammerspace Log: Replaced | Model: {model_name} | '
+            f'Old address: 0x{current_offset:08X} | '
+            f'Old size: {current_length / (1024 * 1024):.2f} MB',
+            source='hammerspace.main',
+        )
     hh.writeDebugDumps(
         model_name,
         build.original_offset,
