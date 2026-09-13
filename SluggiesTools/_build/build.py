@@ -27,6 +27,7 @@ RELEASE_FILES = (
     ("README.md", "README.md"),
     ("_docs/BlenderGuide.md", "BlenderGuide.md"),
     ("SluggiesTools/_build/THIRD_PARTY_NOTICES.md", "THIRD_PARTY_NOTICES.md"),
+    ("3_Output_Dat/CopyFilesToGameDir.bat", "3_Output_Dat/CopyFilesToGameDir.bat"),
 )
 
 BLENDER_ADDON_PATTERN = re.compile(r"SluggiesIO_BlenderAddon_v(\d+)\.(\d+)\.(\d+)\.zip")
@@ -99,17 +100,18 @@ def copy_release_files() -> None:
             raise FileNotFoundError(f"Required release directory not found: {source}")
         shutil.copytree(source, destination, dirs_exist_ok=True, ignore=ignored_release_path)
 
+    (PACKAGE / "3_Output_Dat").mkdir(exist_ok=True)
+
     for source_name, destination_name in RELEASE_FILES:
         source = ROOT / source_name
         if not source.exists():
             raise FileNotFoundError(f"Required release file not found: {source}")
-        shutil.copy2(source, PACKAGE / destination_name)
+        destination = PACKAGE / destination_name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
 
     addon_zip = find_blender_addon_zip()
     shutil.copy2(addon_zip, PACKAGE / addon_zip.name)
-
-    (PACKAGE / "3_Output_Dat").mkdir(exist_ok=True)
-
 
 def bundle_wiimms_tools() -> None:
     """Bundle the official, checksum-pinned Windows distribution unchanged."""
@@ -158,6 +160,7 @@ def verify() -> Path:
     required = (
         executable,
         PACKAGE / "StartTools.bat",
+        PACKAGE / "3_Output_Dat" / "CopyFilesToGameDir.bat",
         PACKAGE / "SluggiesTools" / "export.py",
         PACKAGE / "1_Input" / "_Icons",
         PACKAGE / addon_zip.name,
