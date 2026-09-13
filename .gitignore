@@ -17,7 +17,14 @@ anim_info
 
 SluggiesTools/Debug/
 2_Output_Models/
-3_Output_Dat/
+3_Output_Dat/dt_na.dat
+3_Output_Dat/main.dol
+3_Output_Dat/fst.bin
+3_Output_Dat/SluggiesTools.log
+3_Output_Dat/sluggiespath
+3_Output_Dat/_backup
+3_Output_Dat/SluggDebugg
+
 .venv/
 build/
 dist/
