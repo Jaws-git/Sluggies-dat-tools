@@ -13,6 +13,7 @@ if _HS_TOOLS_DIR not in sys.path:
 import slogger as _slogger
 _slogger.configure()
 
+import drawlist
 import HammerspaceHelper as hh
 from BlockValidator import validate_model_block
 from GeometryRebuild import (
@@ -497,6 +498,23 @@ def _validate_custom_submesh_indexed_array(
             return
 
 
+def _custom_submesh_rigid_surfaces(model: dict) -> dict:
+    """Map every rigid (CompCount 3) donor submesh's SurfaceId to
+    ``(that submesh's DisplayStates list, the surface's index within it)``,
+    first-seen-wins. Shared by ``_validate_custom_submeshes`` (Phase 1 step 3)
+    and ``PatchGPLAppendSubmesh`` (Phase 2)."""
+    rigid_surfaces: dict[str, tuple[list, int]] = {}
+    for sub in model.get('Submeshes') or []:
+        if int((sub.get('VertexBuffer') or {}).get('VertexBufferCompCount', 0)) != 3:
+            continue
+        states = sub.get('DisplayStates') or []
+        for index, state in enumerate(states):
+            surface_id = state.get('SurfaceId')
+            if surface_id and surface_id not in rigid_surfaces:
+                rigid_surfaces[surface_id] = (states, index)
+    return rigid_surfaces
+
+
 def _validate_custom_submeshes(model: dict) -> None:
     """PLAN_AddSubmesh.md Phase 1 step 3: reject an invalid CustomSubmeshes
     entry before any DAT/DOL write. Runs ahead of ParseSluggie so a bad
@@ -517,15 +535,7 @@ def _validate_custom_submeshes(model: dict) -> None:
     donor_submeshes = model.get('Submeshes') or []
     submesh0 = donor_submeshes[0] if donor_submeshes else None
 
-    rigid_surfaces: dict[str, tuple[list, int]] = {}
-    for sub in donor_submeshes:
-        if int((sub.get('VertexBuffer') or {}).get('VertexBufferCompCount', 0)) != 3:
-            continue
-        states = sub.get('DisplayStates') or []
-        for index, state in enumerate(states):
-            surface_id = state.get('SurfaceId')
-            if surface_id and surface_id not in rigid_surfaces:
-                rigid_surfaces[surface_id] = (states, index)
+    rigid_surfaces = _custom_submesh_rigid_surfaces(model)
 
     claimed_bones: dict[int, str] = {}
     for cs in custom_submeshes:
@@ -680,6 +690,715 @@ def _validate_custom_submeshes(model: dict) -> None:
 
     if errors:
         raise ValueError('; '.join(errors))
+
+
+# ---------------------------------------------------------------------------
+# CustomSubmeshes GPL append (PLAN_AddSubmesh.md Phase 2)
+# ---------------------------------------------------------------------------
+# Builds the display-state list and raw GPL blob for each parsed
+# CustomSubmesh and appends them to an already-cloned/patched GPL section,
+# following the same clone + append + repoint approach as PatchGPLUVRebuild.
+# _validate_custom_submeshes has already rejected anything malformed before
+# this runs, so the helpers below assume a valid, already-checked entry.
+
+_CUSTOM_SUBMESH_TEXTURE_LAYER_SHIFT = 13
+_CUSTOM_SUBMESH_TEXTURE_INDEX_MASK  = 0x1FFF
+_CUSTOM_SUBMESH_TYPE4_BY_UV_COUNT   = {1: 'fffffff0', 2: 'ffffff10'}  # F9
+
+_CUSTOM_SUBMESH_POSITION_FORMAT = (3, 59)  # CompCount, QuantizeInfo (F6/F9)
+_CUSTOM_SUBMESH_NORMAL_FORMAT   = (3, 62)
+_CUSTOM_SUBMESH_UV_FORMAT       = (2, 62)
+_CUSTOM_SUBMESH_COLOR_FORMAT    = (4, 48)
+
+
+def _custom_submesh_texture_layer(mode: str) -> tuple[int, int]:
+    """Decode a Type-1 ShaderMode hex string into (layer, texture_index)."""
+    setting = int(mode, 16)
+    return (
+        (setting >> _CUSTOM_SUBMESH_TEXTURE_LAYER_SHIFT) & 7,
+        setting & _CUSTOM_SUBMESH_TEXTURE_INDEX_MASK,
+    )
+
+
+def _custom_submesh_with_texture_index(mode: str, texture_index: int) -> str:
+    """Return *mode* (a Type-1 ShaderMode hex string) with its texture index
+    field replaced, keeping the layer and every other bit unchanged."""
+    setting = int(mode, 16)
+    rebound = (setting & ~_CUSTOM_SUBMESH_TEXTURE_INDEX_MASK) | (texture_index & _CUSTOM_SUBMESH_TEXTURE_INDEX_MASK)
+    return f'{rebound:08x}'
+
+
+def _custom_submesh_type3_descriptors(setting: int) -> list[dict]:
+    """Decode a Type-3 setting word into the ordered attribute index layout
+    (mirrors build_add_submesh_fixture._type3_descriptors)."""
+    descriptors = []
+    for key, shift in drawlist._ATTR_BIT_SHIFT.items():
+        mode = (setting >> shift) & 0b11
+        if mode == 0b00:
+            continue
+        if mode == 0b01:
+            raise ValueError(
+                f'Type-3 setting 0x{setting:08X} uses a direct {key} attribute, '
+                'which CustomSubmeshes do not support'
+            )
+        descriptors.append({'key': key, 'index_size': 1 if mode == 0b10 else 2})
+    return descriptors
+
+
+def _custom_submesh_type3_setting(layout: list[dict]) -> int:
+    """Encode an attribute index layout as a Type-3 setting (inverse of
+    _custom_submesh_type3_descriptors)."""
+    setting = 0
+    for descriptor in layout:
+        shift = drawlist._ATTR_BIT_SHIFT[descriptor['key']]
+        setting |= (0b10 if descriptor['index_size'] == 1 else 0b11) << shift
+    return setting
+
+
+def _custom_submesh_index_size_for(count: int) -> int:
+    return 1 if count <= 0x100 else 2
+
+
+def _custom_submesh_canonical_layout(cs: 'CustomSubmesh') -> list[dict]:
+    """The attribute index layout for a `derived:`/`builtin:` custom submesh:
+    position, then lighting/color0 if present, then one texture{i} per UV
+    channel -- index sizes sized to the submesh's own entry counts (F9)."""
+    layout = [{
+        'key': 'position',
+        'index_size': _custom_submesh_index_size_for(
+            len(cs.vertex_data) // _CUSTOM_SUBMESH_POSITION_STRIDE
+        ),
+    }]
+    if cs.normal_data:
+        layout.append({
+            'key': 'lighting',
+            'index_size': _custom_submesh_index_size_for(
+                len(cs.normal_data) // _CUSTOM_SUBMESH_NORMAL_STRIDE
+            ),
+        })
+    if cs.color_data:
+        layout.append({
+            'key': 'color0',
+            'index_size': _custom_submesh_index_size_for(
+                len(cs.color_data) // _CUSTOM_SUBMESH_COLOR_STRIDE
+            ),
+        })
+    for uv in sorted(cs.uv_channels, key=lambda channel: channel.channel_index):
+        layout.append({
+            'key': f'texture{uv.channel_index}',
+            'index_size': _custom_submesh_index_size_for(
+                len(uv.uv_data) // _CUSTOM_SUBMESH_UV_STRIDE
+            ),
+        })
+    return layout
+
+
+def _custom_submesh_rigid_records(states: list, surface_index: int) -> list[list]:
+    """`rigid:` template source: clone every DisplayStates record of the
+    template submesh verbatim (state_id, pad, mode). Whichever record ends
+    up drawing is decided by the caller; every other record's primitive list
+    is dropped regardless of what it originally drew (F4/Phase 2 step 3)."""
+    return [
+        [
+            int(state['DisplayStateId']),
+            bytes.fromhex(state.get('DisplayStatePadBytes', '000000')),
+            state.get('ShaderMode', ''),
+        ]
+        for state in states
+    ]
+
+
+def _custom_submesh_derived_records(submesh0_states: list, surface_id: str) -> list[list]:
+    """`derived:` template source: build the canonical rigid record order
+    from the effective states of a submesh-0 surface (ported from
+    build_template_source_fixture.derive_rigid_state_records; validity is
+    already enforced by _validate_custom_submeshes)."""
+    surface_index = next(
+        index for index, state in enumerate(submesh0_states)
+        if state.get('SurfaceId') == surface_id
+    )
+    layers: dict[int, dict] = {}
+    type6 = type7 = None
+    for state in submesh0_states[:surface_index + 1]:
+        state_id = int(state['DisplayStateId'])
+        if state_id == 1:
+            layers[_custom_submesh_texture_layer(state['ShaderMode'])[0]] = state
+        elif state_id == 6:
+            type6 = state
+        elif state_id == 7:
+            type7 = state
+
+    def _rec(state: dict) -> list:
+        return [
+            int(state['DisplayStateId']),
+            bytes.fromhex(state.get('DisplayStatePadBytes', '000000')),
+            state['ShaderMode'],
+        ]
+
+    uv_count = 2 if 1 in layers else 1
+    records = [_rec(layers[0])]
+    if uv_count == 2:
+        records.append(_rec(layers[1]))
+    records += [
+        [4, b'\x00\x00\x00', _CUSTOM_SUBMESH_TYPE4_BY_UV_COUNT[uv_count]],
+        [3, b'\x00\x00\x00', '00000000'],  # placeholder; regenerated below
+        _rec(type6),
+        _rec(type7),
+    ]
+    return records
+
+
+def _custom_submesh_builtin_records(model: dict, name: str) -> list[list]:
+    """`builtin:` template source: bind the stored canonical rigid list to
+    the host model's own submesh-0 textures (ported from
+    build_template_source_fixture.builtin_rigid_state_records)."""
+    template = _CUSTOM_SUBMESH_BUILTIN_TEMPLATES[name]
+    submesh0 = (model.get('Submeshes') or [None])[0] or {}
+    bindings: dict[int, int] = {}
+    for state in submesh0.get('DisplayStates') or []:
+        if int(state.get('DisplayStateId', -1)) == 1:
+            layer, texture_index = _custom_submesh_texture_layer(state['ShaderMode'])
+            bindings.setdefault(layer, texture_index)
+
+    records = []
+    for state_id, pad_hex, mode in template['States']:
+        if state_id == 1:
+            layer, _texture_index = _custom_submesh_texture_layer(mode)
+            if layer not in bindings:
+                continue
+            mode = _custom_submesh_with_texture_index(mode, bindings[layer])
+        records.append([state_id, bytes.fromhex(pad_hex), mode])
+
+    uv_count = 2 if 1 in bindings else 1
+    for record in records:
+        if record[0] == 4:
+            record[2] = _CUSTOM_SUBMESH_TYPE4_BY_UV_COUNT[uv_count]  # placeholder; regenerated below
+    return records
+
+
+def _resolve_custom_submesh_records(
+    model: dict, cs: 'CustomSubmesh', rigid_surfaces: dict,
+) -> tuple[list[list], int, str]:
+    """Return (records, drawing_index, kind) for one CustomSubmesh, per its
+    TemplateSource kind (PLAN_AddSubmesh.md "Template sources"). ``records``
+    entries are mutable ``[state_id, pad_bytes, shader_mode]`` lists; the
+    caller still needs to resolve the active Type-3 layout and patch the
+    layer-0 texture before turning them into DrawStates."""
+    kind, _sep, argument = cs.template_source.partition(':')
+    if kind == 'rigid':
+        states, surface_index = rigid_surfaces[argument]
+        return _custom_submesh_rigid_records(states, surface_index), surface_index, kind
+    if kind == 'derived':
+        submesh0 = (model.get('Submeshes') or [None])[0]
+        records = _custom_submesh_derived_records(submesh0.get('DisplayStates') or [], argument)
+        return records, len(records) - 1, kind
+    if kind == 'builtin':
+        records = _custom_submesh_builtin_records(model, argument)
+        return records, len(records) - 1, kind
+    raise ValueError(
+        f"custom submesh '{cs.custom_submesh_id}': malformed TemplateSource "
+        f'{cs.template_source!r}'
+    )
+
+
+def _custom_submesh_active_type3(records: list[list], upto_index: int) -> int | None:
+    """Latest Type-3 setting at or before *upto_index* (cumulative-state walk,
+    as in _custom_submesh_effective_state)."""
+    for state_id, _pad, mode in reversed(records[:upto_index + 1]):
+        if state_id == 3:
+            return int(mode, 16)
+    return None
+
+
+def _custom_submesh_descriptors(
+    cs: 'CustomSubmesh', records: list[list], drawing_index: int, kind: str,
+) -> list[dict]:
+    """Resolve the active Type-3 attribute layout for the drawing record.
+
+    `rigid:` reuses the template's own Type-3 setting verbatim (F4 -- clone
+    template bytes, change only what's understood); `derived:`/`builtin:`
+    regenerate Type-3 for the custom submesh's own attribute set and index
+    sizes (F9), overwriting the canonical placeholder record in place.
+    """
+    if kind == 'rigid':
+        setting = _custom_submesh_active_type3(records, drawing_index)
+        if setting is None:
+            raise ValueError(
+                f"custom submesh '{cs.custom_submesh_id}': rigid template has no "
+                'active Type-3 attribute layout'
+            )
+        return _custom_submesh_type3_descriptors(setting)
+    layout = _custom_submesh_canonical_layout(cs)
+    setting = _custom_submesh_type3_setting(layout)
+    for record in records:
+        if record[0] == 3:
+            record[2] = f'{setting:08x}'
+            break
+    return layout
+
+
+def _custom_submesh_patch_layer0_texture(
+    records: list[list], upto_index: int, texture_index: int,
+) -> None:
+    """Patch the effective layer-0 Type-1 texture index to *texture_index*
+    (Phase 2 step 3: "Patch the effective Type-1 texture index for the new
+    submesh only"). Layer 1 (specular, F9) is left as the template/host's own
+    binding."""
+    for record in reversed(records[:upto_index + 1]):
+        state_id, _pad, mode = record
+        if state_id == 1 and _custom_submesh_texture_layer(mode)[0] == 0:
+            record[2] = _custom_submesh_with_texture_index(mode, texture_index)
+            return
+    raise ValueError('template has no layer-0 Type-1 texture binding to patch')
+
+
+def _custom_submesh_faces(cs: 'CustomSubmesh', descriptors: list[dict]) -> list[list[dict]]:
+    """Zip a CustomSubmesh's per-attribute face-index buffers into the
+    [v0, v1, v2]-per-triangle structure drawlist.encodeDrawList expects,
+    keyed by the active Type-3 descriptor layout."""
+    import struct as _s
+
+    uv_by_channel = {uv.channel_index: uv for uv in cs.uv_channels}
+
+    def _indices(key: str) -> tuple[int, ...]:
+        if key == 'position':
+            raw = cs.faces_data
+        elif key == 'lighting':
+            raw = cs.normal_faces_data or b''
+        elif key in ('color0', 'color1'):
+            raw = cs.color_faces_data or b''
+        elif key.startswith('texture'):
+            channel = uv_by_channel.get(int(key[len('texture'):]))
+            raw = channel.uv_faces_data if channel else b''
+        else:
+            raw = b''
+        return _s.unpack(f'>{len(raw) // 2}H', raw) if raw else ()
+
+    per_key_indices = {descriptor['key']: _indices(descriptor['key']) for descriptor in descriptors}
+
+    faces = []
+    for face_index in range(cs.faces_count):
+        triangle = []
+        for vertex_slot in range(3):
+            flat_index = face_index * 3 + vertex_slot
+            vertex = {
+                key: (indices[flat_index] if flat_index < len(indices) else 0)
+                for key, indices in per_key_indices.items()
+            }
+            triangle.append(vertex)
+        faces.append(triangle)
+    return faces
+
+
+def _custom_submesh_to_submesh(
+    cs: 'CustomSubmesh', submesh_index: int, records: list[list],
+    drawing_index: int, primitive_bytes: bytes,
+) -> 'Submesh':
+    """Assemble a CustomSubmesh's already-resolved geometry and display
+    states into a Submesh dataclass, ready for _build_rigid_submesh_blob.
+    Fields the blob writer never reads (file-offset metadata that only
+    matters for donor submeshes) are left at 0/empty."""
+    uv_channels = [
+        UVChannel(
+            channel_index=uv.channel_index,
+            palette_name='',
+            texture_index=0,
+            wrap_s=0,
+            wrap_t=0,
+            uv_data=uv.uv_data,
+            uv_faces_data=uv.uv_faces_data,
+            comp_count=_CUSTOM_SUBMESH_UV_FORMAT[0],
+            quantize_info=_CUSTOM_SUBMESH_UV_FORMAT[1],
+            uv_data_ptr_field_offset=0,
+            uv_count_field_offset=0,
+            source_data_offset=0,
+        )
+        for uv in sorted(cs.uv_channels, key=lambda channel: channel.channel_index)
+    ]
+    color_channels = []
+    if cs.color_data:
+        color_channels.append(ColorChannel(
+            channel_index=0,
+            color_data=cs.color_data,
+            color_faces_data=cs.color_faces_data or b'',
+            comp_count=_CUSTOM_SUBMESH_COLOR_FORMAT[0],
+            quantize_info=_CUSTOM_SUBMESH_COLOR_FORMAT[1],
+            source_data_offset=0,
+        ))
+    normal_buffer = None
+    if cs.normal_data:
+        normal_buffer = NormalBuffer(
+            normal_data_ptr_field_offset=0,
+            normal_count_field_offset=0,
+            normal_buffer_offset=0,
+            normal_buffer_length=len(cs.normal_data),
+            comp_count=_CUSTOM_SUBMESH_NORMAL_FORMAT[0],
+            quantize_info=_CUSTOM_SUBMESH_NORMAL_FORMAT[1],
+            ambient_pct=0.0,
+            normal_data=cs.normal_data,
+            source_header_offset=0,
+        )
+    draw_states = [
+        DrawState(
+            display_state_id=state_id,
+            display_state_pad_bytes=pad,
+            prim_list_data=primitive_bytes if index == drawing_index else b'',
+            active_descriptors=[],
+            prim_list_ptr_field_offset=0,
+            prim_list_size_field_offset=0,
+            prim_list_absolute_offset=0,
+            prim_list_length=len(primitive_bytes) if index == drawing_index else 0,
+            shader_mode_field_offset=0,
+            shader_mode=mode,
+            source_state_offset=0,
+        )
+        for index, (state_id, pad, mode) in enumerate(records)
+    ]
+    return Submesh(
+        submesh_index=submesh_index,
+        mesh_name=cs.mesh_name,
+        faces_count=cs.faces_count,
+        faces_data=cs.faces_data,
+        face_texture_indices=b'',
+        vertex_data=cs.vertex_data,
+        vertex_comp_count=_CUSTOM_SUBMESH_POSITION_FORMAT[0],
+        vertex_quantize_info=_CUSTOM_SUBMESH_POSITION_FORMAT[1],
+        uv_channels=uv_channels,
+        color_channels=color_channels,
+        draw_states=draw_states,
+        position_data_ptr_field_offset=0,
+        vertex_count_field_offset=0,
+        normal_buffer=normal_buffer,
+        source_layout_offset=0,
+        source_position_data_offset=0,
+        preserve_source_layout=False,
+    )
+
+
+def _build_custom_submesh(model: dict, cs: 'CustomSubmesh', rigid_surfaces: dict, submesh_index: int) -> 'Submesh':
+    """Resolve one CustomSubmesh's template, geometry and texture binding
+    into a Submesh dataclass ready for _build_rigid_submesh_blob."""
+    records, drawing_index, kind = _resolve_custom_submesh_records(model, cs, rigid_surfaces)
+    descriptors = _custom_submesh_descriptors(cs, records, drawing_index, kind)
+    texture_index = cs.texture_assignment.donor_texture_index
+    if texture_index is None:
+        # AdditionalTextureFileName: Phase 4 resolves the real TEX index once
+        # its plan is built and re-patches this Type-1 record then
+        # (PLAN_AddSubmesh.md Phase 4 step 2, "build order"); 0 is a
+        # build-time placeholder until that phase lands.
+        texture_index = 0
+    _custom_submesh_patch_layer0_texture(records, drawing_index, texture_index)
+    faces = _custom_submesh_faces(cs, descriptors)
+    raw = drawlist.encodeDrawList(faces, descriptors) + b'\x00'
+    primitive_bytes = raw + b'\x00' * ((-len(raw)) % 32)
+    return _custom_submesh_to_submesh(cs, submesh_index, records, drawing_index, primitive_bytes)
+
+
+def _build_rigid_submesh_blob(sub: 'Submesh') -> tuple[bytes, int]:
+    """Serialize one brand-new rigid (CompCount 3) submesh as a self-contained
+    GPL blob (DOLayout + headers + raw arrays + display states + primitive
+    lists), ready to be appended to an existing GPL section.
+
+    A restricted, single-submesh subset of BuildGPLMeshData's general
+    (non-preserving) layout path: no skinning (custom submeshes never carry
+    SK1/SK2/SKAcc, F1) and no donor-layout preservation (a new submesh has no
+    donor bytes to preserve). Returns (blob_bytes, name_off), where name_off
+    is relative to the start of blob_bytes -- which is also the DOLayout's
+    own start, matching the GEO descriptor's DOLayoutPtr convention.
+    """
+    import struct as _s
+
+    def _align4(data: bytes) -> bytes:
+        r = len(data) % 4
+        return data + b'\x00' * ((4 - r) % 4)
+
+    def _align32(offset: int) -> int:
+        return (offset + 31) & ~31
+
+    def _vb_comp_size(quant_info: int) -> int:
+        return 4 if (quant_info >> 4) in (4, 7, 0xa) else 2
+
+    def _vertex_count(data: bytes, comp_count: int, quant_info: int) -> int:
+        stride = _vb_comp_size(quant_info) * comp_count
+        return len(data) // stride if stride else 0
+
+    def _color_count(data: bytes, quant_info: int) -> int:
+        fmt = quant_info >> 4
+        stride = {0: 2, 1: 3, 2: 4, 3: 2, 4: 3, 5: 4}.get(fmt, 2)
+        return len(data) // stride
+
+    M_uv = len(sub.uv_channels)
+    n_ds = len(sub.draw_states)
+
+    POS_OFF = 0x18
+    COL_OFF = 0x20
+    UV_OFF  = 0x28
+    NOR_OFF = UV_OFF  + M_uv * 0x10
+    DSP_OFF = NOR_OFF + 0x0c
+    HDR_END = DSP_OFF + 0x0c
+
+    cursor = HDR_END
+
+    name_bytes = sub.mesh_name.encode('ascii', errors='replace') + b'\x00'
+    name_off   = cursor
+    cursor    += len(name_bytes)
+
+    pal_name_offs       = []
+    pal_name_bytes_list = []
+    for uv in sub.uv_channels:
+        pal_b = (uv.palette_name or '').encode('ascii', errors='replace') + b'\x00'
+        pal_name_offs.append(cursor)
+        pal_name_bytes_list.append(pal_b)
+        cursor += len(pal_b)
+
+    pos_data     = _align4(sub.vertex_data)
+    pos_data_off = cursor
+    cursor      += len(pos_data)
+
+    col_data     = b''
+    col_data_off = 0
+    if sub.color_channels:
+        col_data     = _align4(sub.color_channels[0].color_data)
+        col_data_off = cursor
+        cursor      += len(col_data)
+
+    uv_data_offs = []
+    uv_data_list = []
+    for uv in sub.uv_channels:
+        uv_b = _align4(uv.uv_data)
+        uv_data_offs.append(cursor)
+        uv_data_list.append(uv_b)
+        cursor += len(uv_b)
+
+    nor_data     = b''
+    nor_data_off = 0
+    if sub.normal_buffer and sub.normal_buffer.normal_data:
+        nor_data     = _align4(sub.normal_buffer.normal_data)
+        nor_data_off = cursor
+        cursor      += len(nor_data)
+
+    DS_OFF = cursor
+    cursor += n_ds * 0x10
+
+    pl_offs       = []
+    pl_bytes_list = []
+    for ds in sub.draw_states:
+        if ds.prim_list_data:
+            cursor = _align32(cursor)
+            pl_b = ds.prim_list_data + b'\x00' * ((-len(ds.prim_list_data)) % 32)
+            pl_offs.append(cursor)
+            pl_bytes_list.append(pl_b)
+            cursor += len(pl_b)
+        else:
+            pl_offs.append(0)
+            pl_bytes_list.append(b'')
+
+    blob_size = cursor
+
+    pos_count = _vertex_count(sub.vertex_data, sub.vertex_comp_count, sub.vertex_quantize_info)
+    col_count = 0
+    if sub.color_channels:
+        cc0 = sub.color_channels[0]
+        col_count = _color_count(cc0.color_data, cc0.quantize_info)
+    uv_counts = [
+        _vertex_count(uv.uv_data, uv.comp_count, uv.quantize_info)
+        for uv in sub.uv_channels
+    ]
+    nor_count = 0
+    if sub.normal_buffer and sub.normal_buffer.normal_data:
+        nb = sub.normal_buffer
+        nor_count = _vertex_count(nb.normal_data, nb.comp_count, nb.quantize_info)
+
+    has_lighting = bool(sub.normal_buffer and sub.normal_buffer.normal_data)
+
+    blob = bytearray(blob_size)
+
+    _s.pack_into('>I', blob, 0x00, POS_OFF)
+    _s.pack_into('>I', blob, 0x04, COL_OFF)
+    _s.pack_into('>I', blob, 0x08, UV_OFF)
+    _s.pack_into('>I', blob, 0x0c, NOR_OFF if has_lighting else 0)
+    _s.pack_into('>I', blob, 0x10, DSP_OFF)
+    _s.pack_into('B',  blob, 0x14, M_uv)
+
+    _s.pack_into('>I', blob, POS_OFF + 0x00, pos_data_off)
+    _s.pack_into('>H', blob, POS_OFF + 0x04, pos_count)
+    _s.pack_into('B',  blob, POS_OFF + 0x06, sub.vertex_quantize_info)
+    _s.pack_into('B',  blob, POS_OFF + 0x07, sub.vertex_comp_count)
+
+    if sub.color_channels:
+        cc0 = sub.color_channels[0]
+        _s.pack_into('>I', blob, COL_OFF + 0x00, col_data_off)
+        _s.pack_into('>H', blob, COL_OFF + 0x04, col_count)
+        _s.pack_into('B',  blob, COL_OFF + 0x06, cc0.quantize_info)
+        _s.pack_into('B',  blob, COL_OFF + 0x07, cc0.comp_count)
+
+    for j, uv in enumerate(sub.uv_channels):
+        uv_off = UV_OFF + j * 0x10
+        _s.pack_into('>I', blob, uv_off + 0x00, uv_data_offs[j])
+        _s.pack_into('>H', blob, uv_off + 0x04, uv_counts[j])
+        _s.pack_into('B',  blob, uv_off + 0x06, uv.quantize_info)
+        _s.pack_into('B',  blob, uv_off + 0x07, uv.comp_count)
+        _s.pack_into('>I', blob, uv_off + 0x08, pal_name_offs[j])
+        _s.pack_into('>I', blob, uv_off + 0x0c, 0)
+
+    if has_lighting:
+        nb = sub.normal_buffer
+        _s.pack_into('>I', blob, NOR_OFF + 0x00, nor_data_off)
+        _s.pack_into('>H', blob, NOR_OFF + 0x04, nor_count)
+        _s.pack_into('B',  blob, NOR_OFF + 0x06, nb.quantize_info)
+        _s.pack_into('B',  blob, NOR_OFF + 0x07, nb.comp_count)
+        _s.pack_into('>f', blob, NOR_OFF + 0x08, nb.ambient_pct)
+
+    first_pl = next(
+        (pl_offs[k] for k, ds in enumerate(sub.draw_states) if ds.prim_list_data),
+        0,
+    )
+    _s.pack_into('>I', blob, DSP_OFF + 0x00, first_pl)
+    _s.pack_into('>I', blob, DSP_OFF + 0x04, DS_OFF)
+    _s.pack_into('>H', blob, DSP_OFF + 0x08, n_ds)
+
+    for k, ds in enumerate(sub.draw_states):
+        ds_off  = DS_OFF + k * 0x10
+        setting = _s.unpack('>I', _custom_submesh_setting_bytes(ds.shader_mode))[0]
+        _s.pack_into('B', blob, ds_off + 0x00, ds.display_state_id)
+        pad = ds.display_state_pad_bytes
+        blob[ds_off + 0x01 : ds_off + 0x04] = pad[:3] if len(pad) >= 3 else pad.ljust(3, b'\x00')
+        _s.pack_into('>I', blob, ds_off + 0x04, setting)
+        _s.pack_into('>I', blob, ds_off + 0x08, pl_offs[k])
+        _s.pack_into('>I', blob, ds_off + 0x0c, len(pl_bytes_list[k]) if ds.prim_list_data else 0)
+
+    def _put(rel_off: int, data: bytes) -> None:
+        blob[rel_off : rel_off + len(data)] = data
+
+    _put(name_off, name_bytes)
+    for pal_off, pal_b in zip(pal_name_offs, pal_name_bytes_list):
+        _put(pal_off, pal_b)
+    _put(pos_data_off, pos_data)
+    if col_data:
+        _put(col_data_off, col_data)
+    for uv_off, uv_b in zip(uv_data_offs, uv_data_list):
+        _put(uv_off, uv_b)
+    if nor_data:
+        _put(nor_data_off, nor_data)
+    for pl_off, pl_b in zip(pl_offs, pl_bytes_list):
+        if pl_b:
+            _put(pl_off, pl_b)
+
+    return bytes(blob), name_off
+
+
+def PatchGPLAppendSubmesh(gpl_bytes: bytes, model: dict, parsed: 'SluggieParsed') -> bytes:
+    """Append every parsed.custom_submeshes entry to a cloned/patched GPL
+    section (PLAN_AddSubmesh.md Phase 2).
+
+    Unlike PatchGPLUVRebuild's pure tail-append, the GEO descriptor table
+    must grow in place (Phase 0 only proved that shape -- the table
+    immediately following the header -- works at runtime), so every existing
+    blob is relocated as a single unit and each existing descriptor's
+    DOLayoutPtr/namePtr (the only GPL-section-absolute pointers referencing
+    it) is adjusted by the resulting shift. Nothing *inside* any existing
+    blob changes: every pointer there is DOLayout-relative (self-relative to
+    the blob), and SKN's cache-line write targets are offsets into submesh
+    0's own position array (F1), not absolute GPL addresses, so relocating
+    blobs as a unit doesn't affect SKN either (confirmed by Phase 0 probe 3's
+    animated-skinning test). New blobs are inserted right after the existing
+    ones and before GPLUserData, matching BuildGPLMeshData's own blob order.
+    """
+    import struct as _s
+
+    if not parsed.custom_submeshes:
+        return gpl_bytes
+
+    def _align32(offset: int) -> int:
+        return (offset + 31) & ~31
+
+    def _align32_residue(offset: int, residue: int) -> int:
+        """Round *offset* up to the next value congruent to *residue* mod 32."""
+        return offset + ((residue - offset) & 31)
+
+    rigid_surfaces = _custom_submesh_rigid_surfaces(model)
+    donor_count = len(model.get('Submeshes') or [])
+    new_submeshes = [
+        _build_custom_submesh(model, cs, rigid_surfaces, donor_count + index)
+        for index, cs in enumerate(parsed.custom_submeshes)
+    ]
+
+    patched = bytearray(gpl_bytes)
+    magic, user_data_len, user_data_ptr, old_count, desc_ptr = _s.unpack_from('>5I', patched, 0x00)
+    old_descriptors = [
+        _s.unpack_from('>II', patched, desc_ptr + i * 8)
+        for i in range(old_count)
+    ]
+    old_blob_region_start = (
+        min(pointer for entry in old_descriptors for pointer in entry)
+        if old_descriptors else _align32(desc_ptr + old_count * 8)
+    )
+    insertion_point = user_data_ptr if user_data_ptr else len(patched)
+    if not (desc_ptr <= old_blob_region_start <= insertion_point <= len(patched)):
+        raise ValueError('GPL section layout is not in the shape PatchGPLAppendSubmesh expects')
+
+    pre_table            = bytes(patched[:desc_ptr])
+    blobs_before_userdata = bytes(patched[old_blob_region_start:insertion_point])
+    from_userdata_onward  = bytes(patched[insertion_point:])
+
+    new_count = old_count + len(new_submeshes)
+
+    out = bytearray()
+    out += pre_table
+    for dolayout_ptr, name_ptr in old_descriptors:
+        # Relocated below once new_blob_region_start is known (out is still
+        # the old table's length here); placeholder-free since old entries'
+        # final shift only depends on where the (already-sized) table ends.
+        out += _s.pack('>II', dolayout_ptr, name_ptr)
+    out += b'\x00' * (len(new_submeshes) * 8)  # reserved for new descriptors
+    # The blob region doesn't generally start on a 32-byte boundary itself
+    # (vanilla data packs it directly after the descriptor table); what does
+    # need to hold is that a skinned submesh 0's own *absolute* position-array
+    # alignment survives the relocation. BuildGPLMeshData achieves that today
+    # by choosing a blob-relative pos_data_off with a residue calibrated to
+    # the blob's fixed GPL-relative base (_align32_residue). Shifting every
+    # existing blob's base by a multiple of 32 preserves that residue
+    # relationship untouched; any other shift would silently misalign it.
+    padded_len = _align32_residue(len(out), old_blob_region_start % 32)
+    out += b'\x00' * (padded_len - len(out))
+
+    new_blob_region_start = len(out)
+    blob_shift = new_blob_region_start - old_blob_region_start
+    assert blob_shift % 32 == 0, 'blob relocation must preserve mod-32 residue'
+    for i, (dolayout_ptr, name_ptr) in enumerate(old_descriptors):
+        _s.pack_into('>II', out, desc_ptr + i * 8, dolayout_ptr + blob_shift, name_ptr + blob_shift)
+
+    out += blobs_before_userdata
+
+    new_descriptor_entries = []
+    for sub in new_submeshes:
+        out += b'\x00' * ((-len(out)) % 32)
+        blob_gpl_off = len(out)
+        blob_bytes, name_off = _build_rigid_submesh_blob(sub)
+        out += blob_bytes
+        new_descriptor_entries.append((blob_gpl_off, blob_gpl_off + name_off))
+
+    out += b'\x00' * ((-len(out)) % 32)
+    new_user_data_off = len(out) if user_data_ptr else 0
+    out += from_userdata_onward
+
+    new_table_slot_start = desc_ptr + old_count * 8
+    for i, (dolayout_ptr, name_ptr) in enumerate(new_descriptor_entries):
+        _s.pack_into('>II', out, new_table_slot_start + i * 8, dolayout_ptr, name_ptr)
+
+    _s.pack_into('>I', out, 0x0c, new_count)
+    if user_data_ptr:
+        _s.pack_into('>I', out, 0x08, new_user_data_off)
+
+    for cs, sub in zip(parsed.custom_submeshes, new_submeshes):
+        _slogger.info(
+            f"[GPL] appended custom submesh '{cs.custom_submesh_id}' as submesh "
+            f'{sub.submesh_index} (host bone {cs.host_bone_id}, template '
+            f'{cs.template_source})',
+            source='hammerspace.main',
+        )
+
+    return bytes(out)
 
 
 # ---------------------------------------------------------------------------
@@ -3259,6 +3978,15 @@ def BuildHEADERModelBlock(
 
     HDR_SIZE = 0x20
 
+    def _section_align_padding(length: int) -> bytes:
+        # F10: every section start must sit at 0 mod 32 relative to the
+        # block. HDR_SIZE (0x20) is itself 32-aligned, so rounding each
+        # section's own length up to a multiple of 32 keeps every following
+        # section start aligned too. This is a no-op whenever the section is
+        # already a multiple of 32 long, which vanilla sections always are
+        # (F10), so unchanged/byte-identical builds are unaffected.
+        return b'\x00' * ((-length) % 32)
+
     gpl_off = HDR_SIZE
     gpl_section_padding = b''
     if len(original_header) >= HDR_SIZE:
@@ -3275,10 +4003,18 @@ def BuildHEADERModelBlock(
             original_gpl_span = original_next - original_gpl_off
             if len(gpl_bytes) <= original_gpl_span:
                 gpl_section_padding = b'\x00' * (original_gpl_span - len(gpl_bytes))
+    if not gpl_section_padding:
+        # GPL grew past what donor-span preservation can cover (or there is
+        # no donor header to preserve against, e.g. a synthetic block): fall
+        # back to a plain 32-byte-boundary pad so ACT/TEX/SKN still start
+        # aligned (F10).
+        gpl_section_padding = _section_align_padding(len(gpl_bytes))
 
     act_off = gpl_off + len(gpl_bytes) + len(gpl_section_padding)
-    tex_off = act_off + len(act_bytes)
-    skn_unaligned_off = tex_off + len(tex_bytes)
+    act_padding = _section_align_padding(len(act_bytes)) if act_bytes else b''
+    tex_off = act_off + len(act_bytes) + len(act_padding)
+    tex_padding = _section_align_padding(len(tex_bytes)) if tex_bytes else b''
+    skn_unaligned_off = tex_off + len(tex_bytes) + len(tex_padding)
     skn_off = align_array_offset(skn_unaligned_off, 'skn_source') if skn_bytes else skn_unaligned_off
     skn_padding = b'\x00' * (skn_off - skn_unaligned_off)
     skn_trailing_padding = b''
@@ -3289,7 +4025,9 @@ def BuildHEADERModelBlock(
             original_relative_offset = original_trailing_off - original_skn_off
             if len(skn_bytes) < original_relative_offset:
                 skn_trailing_padding = b'\x00' * (original_relative_offset - len(skn_bytes))
-    tail_start = skn_off + len(skn_bytes) + len(skn_trailing_padding)
+    tail_start_unaligned = skn_off + len(skn_bytes) + len(skn_trailing_padding)
+    tail_padding = _section_align_padding(tail_start_unaligned) if trailing_bytes else b''
+    tail_start = tail_start_unaligned + len(tail_padding)
 
     hdr = bytearray(HDR_SIZE)
     _s.pack_into('>I', hdr, 0x00, 0)
@@ -3313,8 +4051,9 @@ def BuildHEADERModelBlock(
                     _slogger.info(f'[HDR] +0x{field_offset:02X} patched: '
                            f'0x{orig_ptr:08X} → 0x{new_ptr:08X}', source="hammerspace.main")
 
-    return (bytes(hdr) + gpl_bytes + gpl_section_padding + act_bytes + tex_bytes + skn_padding
-            + skn_bytes + skn_trailing_padding + trailing_bytes)
+    return (bytes(hdr) + gpl_bytes + gpl_section_padding + act_bytes + act_padding
+            + tex_bytes + tex_padding + skn_padding
+            + skn_bytes + skn_trailing_padding + tail_padding + trailing_bytes)
 
 
 def CloneHEADER(model_offset: int) -> bytes:
@@ -3549,6 +4288,8 @@ def BuildModelBlock(
     if modes.skn == 'build':
         layout_skin_membership_edit(data)
     parsed = ParseSluggie(data)
+    if getattr(parsed, 'custom_submeshes', None) and modes.gpl != 'build':
+        raise ValueError("CustomSubmeshes require SectionModes.gpl='build'")
     if modes.gpl == 'build':
         has_material_state_edits = any(
             state.get('MaterialStateAliasedByImporter')
@@ -3580,6 +4321,7 @@ def BuildModelBlock(
             or uv_array_edits
             or normal_array_edits
             or color_array_edits
+            or getattr(parsed, 'custom_submeshes', None)
         ):
             gpl_bytes = CloneGPL(source_model_offset, source_model_length)
             if has_material_state_edits:
@@ -3596,6 +4338,13 @@ def BuildModelBlock(
                     if uv_lists_rebuilt
                     else PatchGPLUVArrays(gpl_bytes, model, source_model_offset)
                 )
+            if getattr(parsed, 'custom_submeshes', None):
+                # Always clone + append (never the full BuildGPLMeshData
+                # rebuild): a same-count rebuild's preserve-layout fast path
+                # is known to corrupt unmodified donor data (Phase 0 finding,
+                # PLAN_AddSubmesh.md Phase 2), and a new submesh has no donor
+                # layout to preserve regardless.
+                gpl_bytes = PatchGPLAppendSubmesh(gpl_bytes, model, parsed)
             gpl_result = GPLBuildResult(
                 gpl_bytes=gpl_bytes,
                 pos_gpl_offsets=_gpl_pos_offsets_from_bytes(gpl_bytes),

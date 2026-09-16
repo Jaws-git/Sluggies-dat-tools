@@ -1,4 +1,5 @@
 import base64
+import json
 import pathlib
 import struct
 import sys
@@ -16,6 +17,10 @@ for import_path in (TOOLS_DIR, HAMMERSPACE_DIR):
 
 import HammerspaceMain as main
 import texture_helper
+
+REAL_MARIO_SLUGGIE = (
+    TOOLS_DIR.parent / '2_Output_Models' / '18 Mario' / '78277664_mario.gpl' / '78277664_mario.gpl.sluggie'
+)
 
 
 class BuildSKNSkinningDataTests(unittest.TestCase):
@@ -360,10 +365,17 @@ class BuildModelBlockTests(unittest.TestCase):
             ):
                 result = main.BuildModelBlock(self.data)
 
-        self.assertEqual(struct.unpack_from('>5I', result.block), (0, 32, 35, 38, 64))
-        self.assertEqual(result.block[0x20:41], b'GPLACTTEX')
-        self.assertEqual(result.block[41:64], b'\x00' * 23)
-        self.assertEqual(result.block[64:], b'SKNTAIL')
+        # F10: every section start is padded up to the next 32-byte boundary.
+        self.assertEqual(struct.unpack_from('>5I', result.block), (0, 32, 64, 96, 128))
+        self.assertEqual(result.block[0x20:0x23], b'GPL')
+        self.assertEqual(result.block[0x23:64], b'\x00' * (64 - 0x23))
+        self.assertEqual(result.block[64:67], b'ACT')
+        self.assertEqual(result.block[67:96], b'\x00' * (96 - 67))
+        self.assertEqual(result.block[96:99], b'TEX')
+        self.assertEqual(result.block[99:128], b'\x00' * (128 - 99))
+        self.assertEqual(result.block[128:131], b'SKN')
+        self.assertEqual(result.block[131:160], b'\x00' * (160 - 131))
+        self.assertEqual(result.block[160:], b'TAIL')
         self.assertEqual(result.section_sizes, {
             'GPL': 3,
             'ACT': 3,
@@ -828,7 +840,8 @@ class BuildModelBlockTests(unittest.TestCase):
         )
 
         skn_offset = struct.unpack_from('>I', block, 0x10)[0]
-        tail_offset = skn_offset + len(b'SKN')
+        unaligned_tail_offset = skn_offset + len(b'SKN')
+        tail_offset = -(-unaligned_tail_offset // 32) * 32  # F10: tail starts 32-aligned
         self.assertEqual(struct.unpack_from('>I', block, 0x14)[0], tail_offset)
         self.assertEqual(struct.unpack_from('>I', block, 0x18)[0], tail_offset + 0x40)
         self.assertEqual(struct.unpack_from('>I', block, 0x1C)[0], tail_offset + 0x80)
@@ -2190,6 +2203,409 @@ class ValidateCustomSubmeshesTests(unittest.TestCase):
         theirs = tsf.BUILTIN_RIGID_SPEC_V1
         self.assertEqual(ours['States'], theirs['States'])
         self.assertEqual(ours['Sha256'], theirs['Sha256'])
+
+
+class CustomSubmeshType3AndTextureHelperTests(unittest.TestCase):
+    """PLAN_AddSubmesh.md Phase 2 step 3: the small bit-level helpers that
+    encode/decode Type-1 texture bindings and Type-3 attribute layouts."""
+
+    def test_texture_layer_round_trip(self):
+        mode = '11110000'
+        layer, texture_index = main._custom_submesh_texture_layer(mode)
+        rebound = main._custom_submesh_with_texture_index(mode, 7)
+        self.assertEqual(main._custom_submesh_texture_layer(rebound), (layer, 7))
+
+    def test_type3_setting_round_trip(self):
+        layout = [
+            {'key': 'position', 'index_size': 1},
+            {'key': 'lighting', 'index_size': 2},
+            {'key': 'color0', 'index_size': 1},
+            {'key': 'texture0', 'index_size': 1},
+            {'key': 'texture1', 'index_size': 2},
+        ]
+        setting = main._custom_submesh_type3_setting(layout)
+        self.assertEqual(main._custom_submesh_type3_descriptors(setting), layout)
+
+    def test_type3_descriptors_reproduces_vanilla_values(self):
+        # F9 survey values, decoded then re-encoded, must round-trip exactly.
+        for hex_value in ('000028a8', '000028bc', '00003cbc', '00003ca8'):
+            setting = int(hex_value, 16)
+            layout = main._custom_submesh_type3_descriptors(setting)
+            self.assertEqual(main._custom_submesh_type3_setting(layout), setting)
+
+    def test_type3_descriptors_rejects_direct_attribute(self):
+        with self.assertRaisesRegex(ValueError, 'direct'):
+            main._custom_submesh_type3_descriptors(0b01 << main.drawlist._ATTR_BIT_SHIFT['position'])
+
+
+class CustomSubmeshTemplateRecordsTests(unittest.TestCase):
+    """PLAN_AddSubmesh.md Phase 2 step 3: resolving a CustomSubmesh's
+    display-state records per TemplateSource kind."""
+
+    def test_rigid_records_clone_the_whole_template_list_verbatim(self):
+        model = _validation_base_model()
+        rigid_surfaces = main._custom_submesh_rigid_surfaces(model)
+        cs = SimpleNamespace(
+            template_source='rigid:sm1_ds4', custom_submesh_id='custom0',
+        )
+        records, drawing_index, kind = main._resolve_custom_submesh_records(model, cs, rigid_surfaces)
+        head_states = model['Submeshes'][1]['DisplayStates']
+        self.assertEqual(kind, 'rigid')
+        self.assertEqual(drawing_index, 4)
+        self.assertEqual([r[0] for r in records], [int(s['DisplayStateId']) for s in head_states])
+        self.assertEqual(records[4][2], 'Spec')
+
+    def test_derived_records_use_canonical_order_and_placeholders(self):
+        model = _validation_base_model()
+        records, drawing_index, kind = main._resolve_custom_submesh_records(
+            model, SimpleNamespace(template_source='derived:sm0_ds4', custom_submesh_id='custom0'), {},
+        )
+        self.assertEqual(kind, 'derived')
+        self.assertEqual(drawing_index, len(records) - 1)
+        self.assertEqual([r[0] for r in records], [1, 4, 3, 6, 7])
+        self.assertEqual(records[1][2], 'fffffff0')  # T4: 1 UV channel (only layer 0 bound)
+        self.assertEqual(records[2][2], '00000000')  # T3 placeholder, regenerated later
+        self.assertEqual(records[3][2], '00000374')
+        self.assertEqual(records[4][2], 'Spec')
+
+    def test_builtin_records_rebind_to_host_submesh0_textures(self):
+        model = _validation_base_model()
+        records, drawing_index, kind = main._resolve_custom_submesh_records(
+            model, SimpleNamespace(template_source='builtin:rigid_spec_v1', custom_submesh_id='custom0'), {},
+        )
+        self.assertEqual(kind, 'builtin')
+        layer0 = next(r for r in records if r[0] == 1 and main._custom_submesh_texture_layer(r[2])[0] == 0)
+        # sm0_ds0's ShaderMode is '11110000' -> texture index 0.
+        self.assertEqual(main._custom_submesh_texture_layer(layer0[2]), (0, 0))
+        type4 = next(r for r in records if r[0] == 4)
+        self.assertEqual(type4[2], 'fffffff0')  # only layer 0 is bound on submesh 0 here
+
+    def test_patch_layer0_texture_only_changes_layer0(self):
+        records = [[1, b'\x00\x00\x00', '11110000'], [1, b'\x00\x00\x00', '11002003'], [7, b'\x00\x00\x00', 'Spec']]
+        main._custom_submesh_patch_layer0_texture(records, 2, 9)
+        self.assertEqual(main._custom_submesh_texture_layer(records[0][2]), (0, 9))
+        self.assertEqual(records[1][2], '11002003')  # layer 1 (specular) untouched
+
+
+class BuildRigidSubmeshBlobTests(unittest.TestCase):
+    """PLAN_AddSubmesh.md Phase 2 step 1: the self-contained single-submesh
+    GPL blob writer a new custom submesh is serialized with."""
+
+    def _submesh(self, **overrides):
+        base = dict(
+            submesh_index=3,
+            mesh_name='CustomSubmesh_0',
+            faces_count=1,
+            faces_data=struct.pack('>3H', 0, 1, 2),
+            face_texture_indices=b'',
+            vertex_data=struct.pack('>9h', 0, 0, 0, 1, 0, 0, 0, 1, 0),
+            vertex_comp_count=3,
+            vertex_quantize_info=59,
+            uv_channels=[],
+            color_channels=[],
+            draw_states=[main.DrawState(
+                display_state_id=7, display_state_pad_bytes=b'\x64\x00\x64',
+                prim_list_data=b'\x90\x00\x03' + b'\x00' * 29, active_descriptors=[],
+                prim_list_ptr_field_offset=0, prim_list_size_field_offset=0,
+                prim_list_absolute_offset=0, prim_list_length=32,
+                shader_mode_field_offset=0, shader_mode='Spec', source_state_offset=0,
+            )],
+            position_data_ptr_field_offset=0,
+            vertex_count_field_offset=0,
+            normal_buffer=None,
+            source_layout_offset=0,
+            source_position_data_offset=0,
+            preserve_source_layout=False,
+        )
+        base.update(overrides)
+        return main.Submesh(**base)
+
+    def test_blob_layout_matches_dolayout_conventions(self):
+        sub = self._submesh()
+        blob, name_off = main._build_rigid_submesh_blob(sub)
+
+        pos_off, col_off, uv_off, nor_off, dsp_off = struct.unpack_from('>5I', blob, 0x00)
+        m_uv = blob[0x14]
+        self.assertEqual((pos_off, col_off, uv_off, nor_off), (0x18, 0x20, 0x28, 0))
+        self.assertEqual(m_uv, 0)
+
+        pos_ptr, pos_count, pos_quant, pos_cc = struct.unpack_from('>IHBB', blob, pos_off)
+        self.assertEqual(pos_count, 3)
+        self.assertEqual((pos_quant, pos_cc), (59, 3))
+        self.assertEqual(
+            struct.unpack_from('>9h', blob, pos_ptr), (0, 0, 0, 1, 0, 0, 0, 1, 0),
+        )
+
+        n_ds = struct.unpack_from('>H', blob, dsp_off + 0x08)[0]
+        self.assertEqual(n_ds, 1)
+        ds_off = struct.unpack_from('>I', blob, dsp_off + 0x04)[0]
+        state_id = blob[ds_off]
+        pl_ptr, pl_len = struct.unpack_from('>II', blob, ds_off + 0x08)
+        self.assertEqual(state_id, 7)
+        self.assertEqual(pl_len, 32)
+        self.assertEqual(pl_ptr % 32, 0)  # primitive lists are always 32-byte aligned
+        self.assertEqual(blob[pl_ptr:pl_ptr + 3], b'\x90\x00\x03')
+
+        self.assertEqual(blob[name_off:name_off + len('CustomSubmesh_0')], b'CustomSubmesh_0')
+        self.assertEqual(blob[name_off + len('CustomSubmesh_0')], 0)  # NUL terminator
+
+    def test_normal_buffer_absent_leaves_dolayout_pointer_zero(self):
+        sub = self._submesh()
+        blob, _ = main._build_rigid_submesh_blob(sub)
+        nor_off = struct.unpack_from('>I', blob, 0x0c)[0]
+        self.assertEqual(nor_off, 0)
+
+    def test_normal_buffer_present_is_wired_into_dolayout(self):
+        sub = self._submesh(normal_buffer=main.NormalBuffer(
+            normal_data_ptr_field_offset=0, normal_count_field_offset=0,
+            normal_buffer_offset=0, normal_buffer_length=6, comp_count=3,
+            quantize_info=62, ambient_pct=0.0,
+            normal_data=struct.pack('>3h', 0, 16384, 0), source_header_offset=0,
+        ))
+        blob, _ = main._build_rigid_submesh_blob(sub)
+        nor_off = struct.unpack_from('>I', blob, 0x0c)[0]
+        self.assertNotEqual(nor_off, 0)
+        nor_ptr, nor_count, nor_quant, nor_cc = struct.unpack_from('>IHBB', blob, nor_off)
+        self.assertEqual((nor_count, nor_quant, nor_cc), (1, 62, 3))
+        self.assertEqual(struct.unpack_from('>3h', blob, nor_ptr), (0, 16384, 0))
+
+
+class PatchGPLAppendSubmeshTests(unittest.TestCase):
+    """PLAN_AddSubmesh.md Phase 2: appends a new GEO descriptor + blob to a
+    cloned GPL section, relocating existing blobs as a single unit."""
+
+    def _build_donor_gpl(self, blob_start: int, blob_bytes: bytes, name_off: int, user_data: bytes):
+        """A minimal one-submesh GPL whose blob starts immediately after the
+        descriptor table -- deliberately NOT 32-aligned, matching real donor
+        data (e.g. real Mario's blob 0 starts at GPL+0x2C)."""
+        desc_ptr = 0x14
+        user_data_off = blob_start + len(blob_bytes)
+        gpl = bytearray(user_data_off + len(user_data))
+        struct.pack_into('>5I', gpl, 0x00, main.GPL_MAGIC if hasattr(main, 'GPL_MAGIC') else 0x00B749E0,
+                          len(user_data), user_data_off, 1, desc_ptr)
+        struct.pack_into('>II', gpl, desc_ptr, blob_start, blob_start + name_off)
+        gpl[blob_start:blob_start + len(blob_bytes)] = blob_bytes
+        gpl[user_data_off:] = user_data
+        return bytes(gpl), desc_ptr, blob_start, user_data_off
+
+    def test_append_relocates_existing_blob_preserving_mod32_residue(self):
+        blob_start = 0x1C  # 28, not a multiple of 32 -- the real-world shape
+        blob_bytes = bytes(range(40))
+        name_off = 10
+        user_data = b'USERDATA' * 5
+        gpl_bytes, desc_ptr, old_blob_start, old_user_data_off = self._build_donor_gpl(
+            blob_start, blob_bytes, name_off, user_data,
+        )
+
+        new_sub = main.Submesh(
+            submesh_index=1, mesh_name='CustomSubmesh_0', faces_count=1,
+            faces_data=struct.pack('>3H', 0, 1, 2), face_texture_indices=b'',
+            vertex_data=struct.pack('>9h', 0, 0, 0, 1, 0, 0, 0, 1, 0),
+            vertex_comp_count=3, vertex_quantize_info=59,
+            uv_channels=[], color_channels=[], draw_states=[], position_data_ptr_field_offset=0,
+            vertex_count_field_offset=0, normal_buffer=None, source_layout_offset=0,
+            source_position_data_offset=0, preserve_source_layout=False,
+        )
+        parsed = SimpleNamespace(custom_submeshes=[SimpleNamespace(
+            custom_submesh_id='custom0', host_bone_id=5, template_source='builtin:rigid_spec_v1',
+        )])
+        with mock.patch.object(main, '_build_custom_submesh', return_value=new_sub):
+            patched = main.PatchGPLAppendSubmesh(gpl_bytes, {'Submeshes': []}, parsed)
+
+        magic, ud_len, ud_ptr, count, out_desc_ptr = struct.unpack_from('>5I', patched, 0x00)
+        self.assertEqual(count, 2)
+        self.assertEqual(out_desc_ptr, desc_ptr)
+
+        old_dolayout_ptr, old_name_ptr = struct.unpack_from('>II', patched, desc_ptr)
+        shift = old_dolayout_ptr - old_blob_start
+        self.assertEqual(shift % 32, 0, 'relocation must preserve the mod-32 residue')
+        self.assertEqual(old_name_ptr - old_dolayout_ptr, name_off)
+        self.assertEqual(
+            patched[old_dolayout_ptr:old_dolayout_ptr + len(blob_bytes)], blob_bytes,
+            'the donor blob must be relocated byte-for-byte unchanged',
+        )
+
+        self.assertEqual(ud_len, len(user_data))
+        self.assertEqual(patched[ud_ptr:ud_ptr + len(user_data)], user_data)
+
+        new_dolayout_ptr, new_name_ptr = struct.unpack_from('>II', patched, desc_ptr + 8)
+        self.assertEqual(new_dolayout_ptr % 32, 0, 'a freshly appended blob is always 32-aligned')
+        rebuilt_blob, rebuilt_name_off = main._build_rigid_submesh_blob(new_sub)
+        self.assertEqual(
+            patched[new_dolayout_ptr:new_dolayout_ptr + len(rebuilt_blob)], rebuilt_blob,
+        )
+        self.assertEqual(new_name_ptr - new_dolayout_ptr, rebuilt_name_off)
+
+    def test_no_custom_submeshes_returns_input_unchanged(self):
+        gpl_bytes, *_ = self._build_donor_gpl(0x1C, bytes(range(40)), 10, b'UD')
+        result = main.PatchGPLAppendSubmesh(gpl_bytes, {'Submeshes': []}, SimpleNamespace(custom_submeshes=[]))
+        self.assertEqual(result, gpl_bytes)
+
+
+def _cube_custom_submesh(cs_id: str, host_bone_id: int, template_source: str, use_b64: bool) -> dict:
+    """A structurally valid 12-triangle cube CustomSubmeshes entry with a
+    normal, one color entry and two UV channels, so it fits any of the three
+    template sources' attribute requirements."""
+    def s16(values):
+        return struct.pack(f'>{len(values)}h', *values)
+
+    def encode(data: bytes):
+        return base64.b64encode(data).decode('ascii') if use_b64 else list(data)
+
+    extent = 200
+    corners = []
+    for i in range(8):
+        corners += [extent if i & 4 else -extent, extent if i & 2 else -extent, extent if i & 1 else -extent]
+    cube_faces = [(0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3)]
+    face_indices = []
+    for a, b, c, d in cube_faces:
+        face_indices += [a, b, c, a, c, d]
+    faces_count = len(face_indices) // 3
+    faces_data = struct.pack(f'>{len(face_indices)}H', *face_indices)
+
+    normal_dirs = [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)]
+    normal_data = s16([int(c * 16000) for n in normal_dirs for c in n])
+    normal_faces = struct.pack(f'>{faces_count * 3}H', *(face_i for face_i in range(6) for _ in range(6)))
+
+    uv_pairs = []
+    for i in range(8):
+        uv_pairs += [100 if i & 4 else 0, 100 if i & 2 else 0]
+    uv_bytes = s16(uv_pairs)
+
+    return {
+        'CustomSubmeshId': cs_id,
+        'MeshName': cs_id,
+        'HostBoneId': host_bone_id,
+        'TemplateSource': template_source,
+        'VertexBufferData': encode(s16(corners)),
+        'NormalBufferData': encode(normal_data),
+        'NormalFacesData': encode(normal_faces),
+        'ColorChannelData': encode(bytes([255, 255, 255, 255])),
+        'ColorFacesData': encode(struct.pack(f'>{faces_count * 3}H', *([0] * (faces_count * 3)))),
+        'FacesCount': faces_count,
+        'FacesData': encode(faces_data),
+        'UVChannels': [
+            {
+                'UVChannelIndex': i,
+                'UVChannelData': encode(uv_bytes),
+                'UVFacesData': encode(faces_data),
+            }
+            for i in range(2)
+        ],
+        'TextureAssignment': {'DonorTextureIndex': 0},
+    }
+
+
+def _free_host_bones(model: dict, count: int) -> list:
+    skn_used = set()
+    skin_data = model.get('SkinData') or {}
+    for entry in skin_data.get('SK1s', []) + skin_data.get('SK2s', []):
+        skn_used.add(int(entry.get('BoneId', -1)))
+    candidates = [
+        int(bone['BoneId']) for bone in model['BoneHierarchy']
+        if main._bone_geo_id_raw(bone) == 0xFFFF
+        and int(bone['BoneId']) not in skn_used
+        and bone.get('ParentBoneId') is not None
+    ]
+    return candidates[:count]
+
+
+@unittest.skipUnless(REAL_MARIO_SLUGGIE.is_file(), 'real Mario export not present in this checkout')
+class PatchGPLAppendSubmeshRealDonorTests(unittest.TestCase):
+    """End-to-end smoke test against the real Mario entry00 export: appends
+    a cube CustomSubmesh through the full BuildModelBlock pipeline and
+    validates the assembled block, for each PLAN_AddSubmesh.md template
+    source. GeoId patching is Phase 3's job, so the new submesh is valid but
+    unowned here -- BlockValidator does not require an owner."""
+
+    def _load(self):
+        with REAL_MARIO_SLUGGIE.open('r', encoding='utf-8') as source_file:
+            data = json.load(source_file)
+        model = data['SluggiesModel']
+        model['UseHammerspace'] = True
+        return data, model
+
+    def _build(self, template_source: str, host_index: int = 0):
+        data, model = self._load()
+        use_b64 = model.get('UseBase64', True)
+        host_bone_id = _free_host_bones(model, host_index + 1)[host_index]
+        model['CustomSubmeshes'] = [
+            _cube_custom_submesh('custom0', host_bone_id, template_source, use_b64)
+        ]
+        modes = main.SectionModes(gpl='build', act='clone', tex='clone', skn='clone', trailing='clone')
+        return main.BuildModelBlock(data, modes, sluggie_path=REAL_MARIO_SLUGGIE), model
+
+    def _rigid_surface_id(self, model: dict) -> str:
+        for submesh in model['Submeshes']:
+            if int(submesh['VertexBuffer']['VertexBufferCompCount']) != 3:
+                continue
+            for state in submesh.get('DisplayStates', []):
+                if state.get('SurfaceId') and int(state.get('PrimListLength') or 0) > 0:
+                    return state['SurfaceId']
+        raise AssertionError('no rigid drawing surface found in the real Mario export')
+
+    def _derived_surface_id(self, model: dict) -> str:
+        submesh0 = model['Submeshes'][0]
+        for state in submesh0.get('DisplayStates', []):
+            if state.get('SurfaceId') and int(state.get('PrimListLength') or 0) > 0:
+                return state['SurfaceId']
+        raise AssertionError('no derived-eligible surface found in the real Mario export')
+
+    def test_builtin_template_produces_a_valid_block_with_one_more_submesh(self):
+        data, model = self._load()
+        donor_count = len(model['Submeshes'])
+        build, _ = self._build('builtin:rigid_spec_v1', host_index=0)
+        self.assertTrue(build.validation_report['valid'], build.validation_report.get('errors'))
+        self.assertEqual(
+            len(build.validation_report['validator_facts']['gpl_submesh_layout']), donor_count + 1,
+        )
+
+    def test_rigid_template_produces_a_valid_block(self):
+        _, model = self._load()
+        surface_id = self._rigid_surface_id(model)
+        build, _ = self._build(f'rigid:{surface_id}', host_index=1)
+        self.assertTrue(build.validation_report['valid'], build.validation_report.get('errors'))
+
+    def test_derived_template_produces_a_valid_block(self):
+        _, model = self._load()
+        surface_id = self._derived_surface_id(model)
+        build, _ = self._build(f'derived:{surface_id}', host_index=2)
+        self.assertTrue(build.validation_report['valid'], build.validation_report.get('errors'))
+
+    def test_donor_submesh_blobs_are_byte_for_byte_unchanged(self):
+        data, model = self._load()
+        offset = model['ModelOffset']
+        offset = int(offset, 16) if isinstance(offset, str) else int(offset)
+        length = int(model.get('ModelLength', 0))
+        donor_gpl = main.CloneGPL(offset, length)
+        donor_count, donor_desc_ptr = struct.unpack_from('>I', donor_gpl, 0x0c)[0], struct.unpack_from('>I', donor_gpl, 0x10)[0]
+        donor_pointers = sorted(
+            struct.unpack_from('>II', donor_gpl, donor_desc_ptr + i * 8)[0] for i in range(donor_count)
+        )
+        donor_user_data_ptr = struct.unpack_from('>I', donor_gpl, 0x08)[0]
+        donor_bounds = donor_pointers + [donor_user_data_ptr or len(donor_gpl)]
+        donor_blobs = [
+            donor_gpl[start:donor_bounds[index + 1]] for index, start in enumerate(donor_pointers)
+        ]
+
+        build, _ = self._build('builtin:rigid_spec_v1', host_index=0)
+        prefix = int(build.validation_report.get('container_prefix_size', 0))
+        block = build.block[prefix:]
+        gpl_off = struct.unpack_from('>I', block, 0x04)[0]
+        new_gpl = block[gpl_off:]
+        new_pointers = sorted(
+            struct.unpack_from('>II', new_gpl, donor_desc_ptr + i * 8)[0] for i in range(donor_count)
+        )
+        new_user_data_ptr = struct.unpack_from('>I', new_gpl, 0x08)[0]
+        new_bounds = new_pointers + [new_user_data_ptr or len(new_gpl)]
+        for index, start in enumerate(new_pointers):
+            content = new_gpl[start:new_bounds[index + 1]]
+            donor_content = donor_blobs[index]
+            compare_len = min(len(content), len(donor_content))
+            self.assertEqual(
+                content[:compare_len], donor_content[:compare_len],
+                f'donor submesh {index} content changed',
+            )
 
 
 if __name__ == '__main__':

@@ -488,41 +488,6 @@ class SectionAlignmentFactsTests(unittest.TestCase):
             fixture_mod.section_alignment_facts(b"\x00" * 8)
 
 
-class PadGplSectionTests(unittest.TestCase):
-    def test_pads_gpl_argument_and_restores_the_assembler(self):
-        hammerspace = fixture_mod.hammerspace
-        real = hammerspace.BuildHEADERModelBlock
-        calls = []
-
-        def recorder(gpl_bytes, *args, **kwargs):
-            calls.append((gpl_bytes, args, kwargs))
-            return b"assembled"
-
-        hammerspace.BuildHEADERModelBlock = recorder
-        try:
-            with fixture_mod._pad_gpl_section_to_32():
-                self.assertIsNot(hammerspace.BuildHEADERModelBlock, recorder)
-                result = hammerspace.BuildHEADERModelBlock(b"\x01" * 41, b"act", trailing_bytes=b"t")
-                hammerspace.BuildHEADERModelBlock(b"\x02" * 64, b"act")
-            self.assertIs(hammerspace.BuildHEADERModelBlock, recorder)
-        finally:
-            hammerspace.BuildHEADERModelBlock = real
-
-        self.assertEqual(result, b"assembled")
-        self.assertEqual(calls[0][0], b"\x01" * 41 + b"\x00" * 23)
-        self.assertEqual(calls[0][1], (b"act",))
-        self.assertEqual(calls[0][2], {"trailing_bytes": b"t"})
-        self.assertEqual(calls[1][0], b"\x02" * 64)
-
-    def test_assembler_is_restored_when_the_build_raises(self):
-        hammerspace = fixture_mod.hammerspace
-        real = hammerspace.BuildHEADERModelBlock
-        with self.assertRaises(RuntimeError):
-            with fixture_mod._pad_gpl_section_to_32():
-                raise RuntimeError("build failed")
-        self.assertIs(hammerspace.BuildHEADERModelBlock, real)
-
-
 @unittest.skipUnless(REAL_MARIO_SLUGGIE.is_file(), "real Mario export not present in this checkout")
 class BuildFixtureRealDonorTests(unittest.TestCase):
     """End-to-end smoke test against the real Mario entry00 export."""
@@ -567,16 +532,11 @@ class BuildFixtureRealDonorTests(unittest.TestCase):
                 fixture_path.unlink()
         return build
 
-    def test_default_build_leaves_textures_off_a_32_byte_boundary(self):
-        # Documents the Phase 0 finding: without padding, the grown GPL pushes
-        # TEX and all texture payloads to 8 mod 32.
-        build = self._build_real('_test_add_submesh_unaligned.sluggie')
-        misaligned = build.validation_report["section_alignment"]["misaligned"]
-        self.assertTrue(any(entry.startswith("TEX section") for entry in misaligned), misaligned)
-        self.assertTrue(any(entry.startswith("texture 0 image") for entry in misaligned), misaligned)
-
-    def test_align_sections_puts_every_section_and_texture_on_32_bytes(self):
-        build = self._build_real('_test_add_submesh_aligned.sluggie', align_sections=True)
+    def test_default_build_puts_every_section_and_texture_on_32_bytes(self):
+        # Phase 2 step 4: HammerspaceMain.BuildHEADERModelBlock now pads every
+        # section start to a 32-byte boundary itself (F10), so a plain build
+        # (no fixture-local workaround) already comes out aligned.
+        build = self._build_real('_test_add_submesh_aligned.sluggie')
         report = build.validation_report
         self.assertTrue(report["valid"], report.get("errors"))
         alignment = report["section_alignment"]
@@ -596,7 +556,7 @@ class BuildFixtureRealDonorTests(unittest.TestCase):
 
         build = self._build_real(
             '_test_add_submesh_order_probe.sluggie',
-            align_sections=True, position_scale=0.5,
+            position_scale=0.5,
         )
         report = build.validation_report
         self.assertTrue(report["valid"], report.get("errors"))
@@ -612,7 +572,7 @@ class BuildFixtureRealDonorTests(unittest.TestCase):
     def test_cube_probe_build_validates_with_eight_cube_corners(self):
         build = self._build_real(
             '_test_add_submesh_cube_probe.sluggie',
-            align_sections=True, cube_half_extent=0.1,
+            cube_half_extent=0.1,
         )
         report = build.validation_report
         self.assertTrue(report["valid"], report.get("errors"))

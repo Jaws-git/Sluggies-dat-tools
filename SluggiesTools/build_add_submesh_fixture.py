@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import contextlib
 import copy
 import json
 import struct
@@ -53,9 +52,11 @@ import drawlist
 # section grows by one submesh, even with a hypothetical per-submesh preserve
 # path), never "content-mutated". The array CONTENT was not the cause of the
 # observed Dolphin texture noise. The rebuilt GPL section LENGTH was, confirmed
-# in Dolphin on 2026-09-16: it ends 8 bytes past a 32-byte boundary, which
-# shifts every texture payload off alignment (see `_pad_gpl_section_to_32` and
-# PLAN_AddSubmesh.md finding F10).
+# in Dolphin on 2026-09-16: it ended 8 bytes past a 32-byte boundary, which
+# shifted every texture payload off alignment (PLAN_AddSubmesh.md finding
+# F10). `HammerspaceMain.BuildHEADERModelBlock` now pads every section start
+# to a 32-byte boundary itself (Phase 2 step 4), so this no longer needs a
+# fixture-local workaround.
 def _clear_source_layout_fields(clone: dict) -> None:
     clone["SubmeshOffset"] = "0x0"
     clone["PositionDataPtrFieldOffset"] = "0x0"
@@ -694,38 +695,6 @@ _HEADER_SECTION_FIELDS = (
 )
 
 
-@contextlib.contextmanager
-def _pad_gpl_section_to_32():
-    """Pad the GPL section to a 32-byte boundary while a block is assembled.
-
-    Fix for the body-texture noise, confirmed in Dolphin on 2026-09-16
-    (PLAN_AddSubmesh.md finding F10). The full GPL serializer ends the section at a
-    32-byte blob boundary plus the 40-byte GPLUserData, so it is 8 mod 32.
-    ``BuildHEADERModelBlock`` only pads GPL when it still fits the donor span,
-    so a grown GPL pushes ACT, TEX and every texture payload to 8 mod 32. The
-    GX texture image-base register holds ``address >> 5``, so such a texture
-    is sampled 8 bytes early. Every vanilla model block starts all sections
-    and texture/palette payloads at 0 mod 32.
-
-    The padding goes after GPLUserData, which is the vanilla shape. This is a
-    Phase 0 stopgap scoped to this script: the wrapper is installed only for
-    the duration of the ``with`` block and always restored. The real fix
-    belongs in ``HammerspaceMain.BuildHEADERModelBlock`` (PLAN_AddSubmesh.md
-    Phase 2 step 4); remove this wrapper once that lands.
-    """
-    original = hammerspace.BuildHEADERModelBlock
-
-    def padded(gpl_bytes, *args, **kwargs):
-        padding = (-len(gpl_bytes)) % SECTION_ALIGNMENT
-        return original(gpl_bytes + b"\x00" * padding, *args, **kwargs)
-
-    hammerspace.BuildHEADERModelBlock = padded
-    try:
-        yield
-    finally:
-        hammerspace.BuildHEADERModelBlock = original
-
-
 def section_alignment_facts(inner_block: bytes) -> dict:
     """Report section starts and texture/palette payload starts modulo 32.
 
@@ -801,7 +770,6 @@ def build_fixture(
     skip_geo_id_patch: bool = False,
     no_draw: bool = False,
     exclude_display_state_types: tuple[int, ...] = (),
-    align_sections: bool = False,
     position_scale: float | None = None,
     cube_half_extent: float | None = None,
     cube_display_state: int | None = None,
@@ -828,8 +796,6 @@ def build_fixture(
             "re-export the model with the latest SluggiesTools export.py"
         )
 
-    fixture_meta["AlignSections"] = align_sections
-
     fixture_path.parent.mkdir(parents=True, exist_ok=True)
     with fixture_path.open("w", encoding="utf-8", newline="\n") as fixture_file:
         json.dump(data, fixture_file, indent=2)
@@ -842,9 +808,7 @@ def build_fixture(
         skn="clone",
         trailing="clone",
     )
-    padding_context = _pad_gpl_section_to_32() if align_sections else contextlib.nullcontext()
-    with padding_context:
-        build = hammerspace.BuildModelBlock(data, modes, sluggie_path=fixture_path)
+    build = hammerspace.BuildModelBlock(data, modes, sluggie_path=fixture_path)
     if not build.validation_report["valid"]:
         raise ValueError(
             "fixture model block failed validation before the GeoId patch: "
@@ -881,9 +845,9 @@ def build_fixture(
     prefix_size = int(build.validation_report.get("container_prefix_size", 0))
     alignment = section_alignment_facts(build.block[prefix_size:])
     build.validation_report["section_alignment"] = alignment
-    if align_sections and alignment["misaligned"]:
+    if alignment["misaligned"]:
         raise ValueError(
-            "--align-sections build still has entries off a 32-byte boundary: "
+            "build has entries off a 32-byte boundary (F10): "
             + "; ".join(alignment["misaligned"])
         )
 
@@ -903,7 +867,6 @@ def build_fixture(
         f"ascending owner order broken: {fixture_meta['OrderBroken']}\n"
         f"Clone position scale: {position_scale if position_scale is not None else 'none'}\n"
         f"Cube: {_format_cube_summary(fixture_meta['Cube'])}\n"
-        f"Align sections: {align_sections}\n"
         f"{_format_alignment_summary(alignment)}\n"
         f"Block: {len(build.block)} bytes, delta {build.validation_report['size_delta']:+d}, "
         f"valid={build.validation_report['valid']}"
@@ -961,14 +924,6 @@ def main() -> int:
             "narrow down which state type causes the render-state-carryover artifact "
             "confirmed by --no-draw. Combine with --no-draw to keep isolating from "
             "the triangle draw."
-        ),
-    )
-    parser.add_argument(
-        "--align-sections", action="store_true",
-        help=(
-            "Fix for the body-texture noise (required for every probe): pad the rebuilt GPL section to a "
-            "32-byte boundary so ACT, TEX and every texture payload start 0 mod 32, as "
-            "in every vanilla model block. The build fails if anything is still off."
         ),
     )
     parser.add_argument(
@@ -1046,8 +1001,6 @@ def main() -> int:
         control_suffix += f"_cube{args.cube:g}"
         if args.cube_display_state is not None:
             control_suffix += f"_ds{args.cube_display_state}"
-    if args.align_sections:
-        control_suffix += "_aligned32"
     output = (
         args.output.resolve()
         if args.output
@@ -1072,7 +1025,6 @@ def main() -> int:
             args.skip_geo_id_patch,
             args.no_draw,
             exclude_display_state_types,
-            args.align_sections,
             args.position_scale,
             args.cube,
             args.cube_display_state,

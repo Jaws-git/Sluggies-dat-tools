@@ -397,8 +397,7 @@ def build_template_source_fixture(
         fixture_file.write("\n")
 
     modes = hammerspace.SectionModes(gpl="build", act="clone", tex="clone", skn="clone", trailing="clone")
-    with probe._pad_gpl_section_to_32():
-        build = hammerspace.BuildModelBlock(data, modes, sluggie_path=fixture_path)
+    build = hammerspace.BuildModelBlock(data, modes, sluggie_path=fixture_path)
     if not build.validation_report["valid"]:
         raise ValueError("fixture block failed validation: " + "; ".join(build.validation_report["errors"]))
 
