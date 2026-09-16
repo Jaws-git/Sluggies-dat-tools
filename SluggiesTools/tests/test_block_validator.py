@@ -10,6 +10,7 @@ for import_path in (TOOLS_DIR, HAMMERSPACE_DIR):
     if str(import_path) not in sys.path:
         sys.path.insert(0, str(import_path))
 
+import BlockValidator
 from BlockValidator import GPL_MAGIC, validate_model_block
 
 
@@ -385,6 +386,159 @@ class BlockValidatorTests(unittest.TestCase):
             'Type-1 texture index 1 is outside TEX count 1' in error
             for error in report['errors']
         ))
+
+
+def _make_skn_two_vertex_block(
+    *,
+    sk2_weights=(128, 128),
+    sk2_gpl_vertex_arr_value=None,
+    sk2_vertex_offset=None,
+    n_verts=4,
+    mem_clr=(0, 0),
+):
+    """A minimal, self-contained SKN section with 2 skinned entries: SK1 bone
+    10 owns slot 0, SK2 pair (20, 21) owns slot 3 (gplVertexArr 0x20 +
+    vertexOffset 4, donor-style: each entry on its own cache line, slots 1-2
+    unused). quantize_info 0x30 (nibble 3) => comp_size 2 => stride 12."""
+    stride = 12
+    block = bytearray(0x140)
+
+    struct.pack_into('>H', block, 0x00, 1)     # SK1 count
+    struct.pack_into('>H', block, 0x02, 1)     # SK2 count
+    struct.pack_into('>H', block, 0x04, 0)     # SKAcc count
+    block[0x06] = 0x30                          # quantize info
+    struct.pack_into('>I', block, 0x08, 0x24)  # SK1 struct array offset
+    struct.pack_into('>I', block, 0x0C, 0x64)  # SK2 struct array offset
+    struct.pack_into('>I', block, 0x10, 0)     # SKAcc struct array offset (unused)
+    struct.pack_into('>I', block, 0x14, mem_clr[0])  # memClrPtr
+    struct.pack_into('>I', block, 0x18, mem_clr[1])  # memClrSize
+    struct.pack_into('>I', block, 0x1C, 0)     # flush ptr
+    struct.pack_into('>I', block, 0x20, 0)     # flush size
+
+    sk1 = 0x24
+    struct.pack_into('>I', block, sk1 + 0x30, 0xE0)   # source ptr
+    struct.pack_into('>I', block, sk1 + 0x34, 0)      # GplVertexArrValue (slot 0)
+    struct.pack_into('>H', block, sk1 + 0x38, 10)     # BoneIndex
+    struct.pack_into('>H', block, sk1 + 0x3A, 1)      # VertexCnt
+    block[sk1 + 0x3C] = 0                              # VertexOffset
+
+    sk2 = 0x64
+    struct.pack_into('>I', block, sk2 + 0x60, 0x100)  # source ptr
+    struct.pack_into('>I', block, sk2 + 0x64, 0x120)  # weight ptr
+    gva2 = 0x20 if sk2_gpl_vertex_arr_value is None else sk2_gpl_vertex_arr_value
+    vo2 = (4 if sk2_gpl_vertex_arr_value is None else 0) if sk2_vertex_offset is None         else sk2_vertex_offset
+    struct.pack_into('>I', block, sk2 + 0x68, gva2)   # GplVertexArrValue
+    struct.pack_into('>H', block, sk2 + 0x6C, 20)     # BoneIndex1
+    struct.pack_into('>H', block, sk2 + 0x6E, 21)     # BoneIndex2
+    struct.pack_into('>H', block, sk2 + 0x70, 1)      # VertexCnt
+    block[sk2 + 0x72] = vo2                            # VertexOffset
+
+    block[0xE0:0xE0 + stride] = b'\x01' * stride       # SK1 bind-pose source
+    block[0x100:0x100 + stride] = b'\x02' * stride     # SK2 bind-pose source
+    block[0x120] = sk2_weights[0]
+    block[0x121] = sk2_weights[1]
+
+    facts_layout = [{'position_comp_count': 6, 'position_count': n_verts}]
+    return bytes(block), facts_layout
+
+
+class SKNMembershipCoverageTests(unittest.TestCase):
+    """PLAN_ModelReplacements.md 3.4: BlockValidator must independently catch
+    a same-count reskin that left the built SKN section with a bad weight
+    encoding, a duplicated destination slot, or a vertex with no direct
+    (SK1/SK2) bone influence."""
+
+    def _validate(self, block, facts_layout):
+        state = BlockValidator._ValidationState(block)
+        state.facts['section_ranges']['SKN'] = {'start': 0, 'end': len(block)}
+        state.facts['gpl_submesh_layout'] = facts_layout
+        BlockValidator._validate_skn(state, [], [])
+        return state.errors
+
+    def test_valid_two_vertex_fixture_passes(self):
+        block, layout = _make_skn_two_vertex_block()
+        self.assertEqual(self._validate(block, layout), [])
+
+    def test_sk2_weight_pair_not_summing_to_256_is_not_an_error(self):
+        # A vertex with an SKAcc supplement splits its 256-unit budget across
+        # the SK2 pair AND the SKAcc weight(s) together — verified against
+        # production data (Luigi), where donor SK2 pairs legitimately sum to
+        # well under 256. No sum check is enforced.
+        block, layout = _make_skn_two_vertex_block(sk2_weights=(100, 100))
+        self.assertEqual(self._validate(block, layout), [])
+
+    def test_duplicate_direct_write_slot_fails(self):
+        block, layout = _make_skn_two_vertex_block(sk2_gpl_vertex_arr_value=0)
+        errors = self._validate(block, layout)
+        self.assertTrue(any(
+            'claim 1 position slot(s) more than once' in error for error in errors
+        ))
+
+    def test_uncovered_vertex_slot_is_not_an_error(self):
+        # Real donor models legitimately leave some submesh-0 vertices with
+        # no SK1/SK2/SKAcc coverage at all (verified against production data:
+        # Luigi has 130 of 2808 submesh-0 vertices with zero coverage) — a
+        # vertex slot beyond every SK1/SK2 entry's range must not fail.
+        block, layout = _make_skn_two_vertex_block(n_verts=5)
+        self.assertEqual(self._validate(block, layout), [])
+
+
+class SKNDestinationLayoutTests(unittest.TestCase):
+    """Donor destination layout rules, verified with zero exceptions across
+    361 skinned exports (12,364 SK1/SK2 entries): gplVertexArr on a cache-line
+    boundary, first write on a vertex boundary, no cache line shared by two
+    SK1/SK2 entries, and memClr never touching a direct entry's lines."""
+
+    def _validate(self, block, facts_layout):
+        state = BlockValidator._ValidationState(block)
+        state.facts['section_ranges']['SKN'] = {'start': 0, 'end': len(block)}
+        state.facts['gpl_submesh_layout'] = facts_layout
+        BlockValidator._validate_skn(state, [], [])
+        return state
+
+    def test_gpl_vertex_arr_off_cache_line_fails(self):
+        # slot 3 addressed as 0x24 + 0 instead of 0x20 + 4
+        block, layout = _make_skn_two_vertex_block(sk2_gpl_vertex_arr_value=0x24)
+        errors = self._validate(block, layout).errors
+        self.assertTrue(any('not on a cache-line boundary' in error for error in errors))
+
+    def test_first_write_off_vertex_boundary_fails(self):
+        block, layout = _make_skn_two_vertex_block(sk2_vertex_offset=0)
+        errors = self._validate(block, layout).errors
+        self.assertTrue(any('not on a 12-byte vertex boundary' in error for error in errors))
+
+    def test_entries_sharing_a_cache_line_fail(self):
+        # slot 1 (0x0C) shares cache line 0x0 with SK1's slot 0
+        block, layout = _make_skn_two_vertex_block(
+            sk2_gpl_vertex_arr_value=0, sk2_vertex_offset=12)
+        errors = self._validate(block, layout).errors
+        self.assertTrue(any('share 1 cache line(s): 0x0 (SK1[0]/SK2[0])' in error
+                            for error in errors))
+
+    def test_vertex_offset_skipping_a_whole_vertex_warns(self):
+        state = self._validate(*_make_skn_two_vertex_block(
+            sk2_gpl_vertex_arr_value=0x20, sk2_vertex_offset=16))
+        self.assertTrue(any('skips a whole vertex' in warning for warning in state.warnings))
+
+    def test_source_array_off_mirror_fails(self):
+        # SK2 source moved 0x20 past base + gplVertexArr (sequential packing
+        # dropping a donor gap line) — the Luigi facial-pose neck stretch.
+        block, layout = _make_skn_two_vertex_block()
+        block = bytearray(block)
+        struct.pack_into('>I', block, 0x64 + 0x60, 0x120)
+        block[0x120:0x120 + 12] = b'' * 12
+        errors = self._validate(bytes(block), layout).errors
+        self.assertTrue(any(
+            'do not mirror the position buffer for 1 SK1/SK2' in error
+            and 'SK2[0] (source 0x120, expected 0x100)' in error
+            for error in errors
+        ))
+
+    def test_mem_clear_touching_direct_entry_line_fails(self):
+        block, layout = _make_skn_two_vertex_block(mem_clr=(0x30, 0x20))
+        errors = self._validate(block, layout).errors
+        self.assertTrue(any('touches cache lines of direct writes: SK2[0]' in error
+                            for error in errors))
 
 
 if __name__ == '__main__':

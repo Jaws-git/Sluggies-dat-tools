@@ -12,6 +12,10 @@ from bpy_extras.io_utils import ImportHelper
 
 ANM_MAGICS = (0x01321AFD, 0x013240DB, 0x01324210)
 
+# Fallback tail length for a bone that gets no direction from the hierarchy,
+# and the reference scale for clamping leaf-bone tails in build_armature.
+LEAF_TAIL_FALLBACK = 0.05
+
 
 def _read_quantized(data, offset, count, dimensions, quantize_info):
     fmt_nibble = quantize_info >> 4
@@ -455,6 +459,22 @@ def decode_uv_channel(uv_channel):
     return coords, uv_faces
 
 
+def _set_loop_color(entry, rgba):
+    """Write one donor color into a BYTE_COLOR attribute without a curve change.
+
+    The donor entries are raw normalized channel values, not scene-linear ones.
+    ``entry.color`` applies an sRGB<->linear conversion on top of the 8-bit
+    storage, which is not reversible: 73 of the 256 byte values come back from
+    the export accessor shifted by one. ``color_srgb`` maps straight onto the
+    stored bytes, so an untouched color attribute re-exports byte-for-byte.
+    Mirrors ``_get_loop_color`` in ExportSluggies.
+    """
+    try:
+        entry.color_srgb = rgba
+    except AttributeError:
+        entry.color = rgba
+
+
 def decode_color_channel(color_channel):
     """Decode a ColorChannel dict into a list of (r, g, b[, a]) float tuples and
     a list of [i0, i1, i2] color index triplets aligned face-for-face with FacesData."""
@@ -835,7 +855,7 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
                 for loop_offset, loop_idx in enumerate(poly.loop_indices):
                     col_idx = col_tri[loop_offset % 3]
                     if col_idx < len(colors):
-                        vcol_layer.data[loop_idx].color = colors[col_idx]
+                        _set_loop_color(vcol_layer.data[loop_idx], colors[col_idx])
 
     obj = bpy.data.objects.new(name, mesh)
     collection.objects.link(obj)
@@ -1000,8 +1020,10 @@ def build_armature(name, bone_list, collection):
 
     The armature object is named *name* (the imported .sluggie file name without
     its extension). Bone names are ``bone_<id>``. Tails are aimed at the first
-    child's head when available; otherwise offset slightly along global Z so
-    bones are visible in the viewport. Returns the armature object.
+    child's head when available; leaf bones continue their parent's direction
+    instead, falling back to a small global-Z offset when there is no usable
+    parent so the bone stays visible in the viewport. Returns the armature
+    object.
     """
     arm_data = bpy.data.armatures.new(name)
     arm_obj  = bpy.data.objects.new(name, arm_data)
@@ -1030,7 +1052,7 @@ def build_armature(name, bone_list, collection):
         h = bd['HeadPosition']
         eb.head = (h[0], h[1], h[2])
         # Placeholder tail — overridden below when a child is found
-        eb.tail = (h[0], h[1], h[2] + 0.05)
+        eb.tail = (h[0], h[1], h[2] + LEAF_TAIL_FALLBACK)
         bone_id_to_name[bd['BoneId']] = eb.name
 
     # Collect the first child head for each parent so we can aim tails
@@ -1054,6 +1076,41 @@ def build_armature(name, bone_list, collection):
         if bd['BoneId'] in first_child_head:
             ch = first_child_head[bd['BoneId']]
             eb.tail = (ch[0], ch[1], ch[2])
+
+    # Leaf bones have no child to aim at. Continuing the parent's direction
+    # keeps chain terminators — fingertips and the like — in line with the
+    # chain instead of forking off along +Z, where the stub reads as a real
+    # finger segment and is easy to click by mistake.
+    #
+    # The parent's length is only a starting point: some leaves hang off long
+    # structural bones (Luigi's bone_4 off a 0.85-unit spine bone) and would
+    # shoot a spike across the model, while others hang off near-degenerate
+    # bones (mini_luigi's bones sit 2e-06 apart) and would come out an
+    # invisible sliver. Clamp into a band scaled to the model's own bone
+    # spread, falling back to the fixed stub length for models too small or
+    # too degenerate to derive a scale from.
+    heads = [bd['HeadPosition'] for bd in bone_list]
+    extent = max(
+        max(h[axis] for h in heads) - min(h[axis] for h in heads)
+        for axis in range(3)
+    ) if heads else 0.0
+    leaf_max = max(extent * 0.05, LEAF_TAIL_FALLBACK)
+    leaf_min = LEAF_TAIL_FALLBACK * 0.5
+
+    # Runs after the loop above so every parent already has its final tail.
+    for bd in bone_list:
+        if bd['BoneId'] in first_child_head:
+            continue
+        eb = edit_bones.get(bone_id_to_name.get(bd['BoneId'], ''))
+        if eb is None or eb.parent is None:
+            continue
+        direction = eb.parent.tail - eb.parent.head
+        # A parent with no direction at all gives nothing to continue, so the
+        # +Z placeholder stands; normalizing here would collapse the bone and
+        # Blender drops zero-length bones on leaving edit mode.
+        if direction.length > 1e-9:
+            length = min(max(direction.length, leaf_min), leaf_max)
+            eb.tail = eb.head + direction.normalized() * length
 
     bpy.ops.object.mode_set(mode='OBJECT')
 

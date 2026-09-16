@@ -76,6 +76,126 @@ def _load_inplace_normal_helper():
     return helper
 
 
+def _load_color_roundtrip_helpers():
+    """Load the import/export color accessors plus the exporter's quantizer."""
+    import_helper = _load_helper(IMPORTER_PATH, '_set_loop_color')
+    tree = ast.parse(EXPORTER_PATH.read_text(encoding='utf-8'))
+    names = {'_get_loop_color', '_encode_color_entry', 'encode_color_edits'}
+    helpers = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name in names
+    ]
+    namespace = {
+        'struct': struct,
+        '_from_bytes': lambda value, _use_base64=True: list(value),
+    }
+    exec(compile(ast.Module(body=helpers, type_ignores=[]), str(EXPORTER_PATH), 'exec'),
+         namespace)
+    namespace['_set_loop_color'] = import_helper
+    return namespace
+
+
+def _srgb_encode(c):
+    return 12.92 * c if c <= 0.0031308 else 1.055 * (c ** (1 / 2.4)) - 0.055
+
+
+def _srgb_decode(c):
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+
+class _FakeByteColorEntry:
+    """Models a Blender BYTE_COLOR attribute entry.
+
+    Storage is 8-bit. ``color_srgb`` maps straight onto the stored bytes;
+    ``color`` applies the sRGB<->scene-linear conversion on top of that same
+    8-bit storage, which is where the round-trip precision is lost.
+    """
+
+    def __init__(self):
+        self.stored = [0, 0, 0, 255]
+
+    @property
+    def color_srgb(self):
+        return tuple(v / 255.0 for v in self.stored)
+
+    @color_srgb.setter
+    def color_srgb(self, rgba):
+        self.stored = [round(max(0.0, min(1.0, c)) * 255) for c in rgba]
+
+    @property
+    def color(self):
+        return tuple(_srgb_decode(v / 255.0) for v in self.stored)
+
+    @color.setter
+    def color(self, rgba):
+        self.stored = [
+            round(max(0.0, min(1.0, _srgb_encode(max(0.0, min(1.0, c))))) * 255)
+            for c in rgba
+        ]
+
+
+class _FakeColorAttribute:
+    def __init__(self, name, count):
+        self.name = name
+        self.data = [_FakeByteColorEntry() for _ in range(count)]
+
+
+class ColorRoundTripTests(unittest.TestCase):
+    """Plan 3.3: an untouched color attribute must re-export byte-for-byte.
+
+    Going through ``.color`` re-quantizes in a different transfer curve, so 73
+    of the 256 byte values come back shifted by one and every export of an
+    unedited model reports a spurious color edit.
+    """
+
+    QUANT_RGBA8 = 0x50
+
+    def _roundtrip_bytes(self, helpers, accessor):
+        donor = list(range(256))
+        entry = _FakeByteColorEntry()
+        out = []
+        for value in donor:
+            level = value / 255.0
+            setattr(entry, accessor, (level, level, level, 1.0))
+            recovered = getattr(entry, accessor)
+            out.append(helpers['_encode_color_entry'](self.QUANT_RGBA8, recovered)[0])
+        return donor, out
+
+    def test_linear_color_accessor_would_lose_byte_values(self):
+        helpers = _load_color_roundtrip_helpers()
+        donor, out = self._roundtrip_bytes(helpers, 'color')
+        self.assertNotEqual(donor, out, 'fixture no longer models the lossy path')
+
+    def test_srgb_accessor_round_trips_every_byte_value(self):
+        helpers = _load_color_roundtrip_helpers()
+        donor, out = self._roundtrip_bytes(helpers, 'color_srgb')
+        self.assertEqual(donor, out)
+
+    def test_untouched_channel_round_trips_through_import_and_export(self):
+        helpers = _load_color_roundtrip_helpers()
+        donor_entries = [
+            (0, 0, 0, 255), (75, 83, 200, 255), (128, 129, 130, 64), (255, 255, 255, 255),
+        ]
+        loop_count = len(donor_entries)
+        attribute = _FakeColorAttribute('color0', loop_count)
+        for loop, rgba in enumerate(donor_entries):
+            helpers['_set_loop_color'](
+                attribute.data[loop], tuple(c / 255.0 for c in rgba)
+            )
+
+        mesh = SimpleNamespace(color_attributes=[attribute])
+        obj = SimpleNamespace(name='body', data=mesh)
+        encoded, _faces = helpers['encode_color_edits'](
+            obj,
+            {'ColorChannelIndex': 0, 'ColorChannelQuantizeInfo': self.QUANT_RGBA8},
+            list(range(loop_count)),
+            use_base64=False,
+        )
+
+        expected = [c for rgba in donor_entries for c in rgba]
+        self.assertEqual(list(encoded), expected)
+
+
 class _FakeUi:
     def __init__(self):
         self.values = {}
@@ -145,19 +265,22 @@ class BlenderMaterialMetadataTests(unittest.TestCase):
             'NormalBufferDataEdited': 'stale-data',
             'NormalFacesDataEdited': 'stale-faces',
         }
-        warnings = []
+        errors = []
 
         _load_inplace_normal_helper()(
             SimpleNamespace(name='body'),
             normal_buffer,
             list(range(6)),
-            warnings,
+            errors,
         )
 
         self.assertNotIn('NormalBufferDataEdited', normal_buffer)
         self.assertNotIn('NormalFacesDataEdited', normal_buffer)
-        self.assertEqual(len(warnings), 1)
-        self.assertIn('3 donor loops, 6 mesh loops', warnings[0])
+        # Reported at ERROR level: the export completes but the user's normal
+        # edits are silently absent from it unless this is made loud.
+        self.assertEqual(len(errors), 1)
+        self.assertIn('3 donor loops, 6 mesh loops', errors[0])
+        self.assertIn('DROPPED', errors[0])
 
     def test_type1_surface_exposes_raw_shader_mode(self):
         material = _FakeMaterial()

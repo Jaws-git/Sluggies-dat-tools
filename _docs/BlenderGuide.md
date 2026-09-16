@@ -71,10 +71,18 @@ Hammerspace opens up additional memory at the end of the data file to store more
 4. Export with **Use Hammerspace** and **Reimport textures from tex folder** enabled.
 5. Patch the exported `.sluggie` normally.
 
+#### Moving vertices to a different bone (vertex groups)
+
+In hammerspace mode you can move vertices between the model's existing `bone_<id>` vertex groups, e.g. assign all of `bone_28` to `bone_63` and remove them from `bone_28`.
+- Keep the number of bones per vertex the same. A two-bone vertex should stay two-bone and a one-bone vertex one-bone. Reassigning a whole group is the safest edit.
+- Merge weights instead of assigning at weight 1.0 if you want to keep the original blend between bones (e.g. with a Vertex Weight Mix modifier set to *Add*). Assigning at 1.0 overwrites it.
+- If an edit would need the game's vertex order changed, the patcher stops with a message naming the affected bone entries. For example, giving part of a two-bone area a single bone does this. Undo that part, or reassign the whole area.
+- Moving vertices in space is fine in the same export, but don't add, remove or reorder vertices or faces in it.
+
 #### You can't (yet):
 - add or remove vertices
 - manipulate material slots
-- manipulate bones or skinning data
+- manipulate bones, or skinning edits beyond moving vertices between existing bone vertex groups (see above)
 - reorder face indices
 - remove an object's custom properties
 - you should also always refrain from renaming objects

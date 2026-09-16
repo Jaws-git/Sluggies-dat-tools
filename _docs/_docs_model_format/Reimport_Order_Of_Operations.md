@@ -81,7 +81,7 @@ sluggies JSON
 
 Notes:
 - [2] means importing the draw lists provided by the Blender exporter (PrimListDataEdited) — the importer does not build draw lists itself, it only lays them out. Contract (refined 2026-07-09): edited arrays are used whenever they are IN-PLACE COMPATIBLE with the original (same byte length for GPL arrays / same vertex count for SK payloads — covers position-only edits without a prim-list rebuild). Edited arrays in EXPANDED per-loop form (UVChannelDataEdited) are only consumable together with PrimListDataEdited; without it the importer uses the original compact array and prints a notice. Topology changes (different counts) REQUIRE PrimListDataEdited.
-- Structural reskin (weights moved between vertex groups, SK entries added/removed/resized, total vertex count unchanged): supported WITHOUT PrimListDataEdited. When SkinDataEdited's entry sets or per-entry vertex counts differ from SkinData, the SK entry lists are built wholly from SkinDataEdited (it carries recomputed GplVertexArrValue/GplDestArrValue, counts, payloads, dest indices); memClr and the GPL scratch reservation are recalculated from the new coverage. The flush index array is still copied from the original (rebuild = Milestone 2).
+- Structural reskin (vertices moved between bone vertex groups, SK entries added/removed/resized, total vertex count unchanged): supported WITHOUT PrimListDataEdited, and WITHOUT reordering vertices (so cloned prim lists and facial pose run lists stay valid). The exporter sets `SkinDataEdited.MembershipEdited` and writes one SK1/SK2 entry per bone/pair with `VertexIndices`; its `GplVertexArrValue` values are placeholders. Before ParseSluggie, `GeometryRebuild.layout_skin_membership_edit` splits entries into runs of consecutive vertices and places each run the vanilla way (`gplVertexArr = byte & ~31`, `vertexOffset = byte & 31`). It rejects edits that would share a cache line between SK1/SK2 entries or touch one with accumulation-only slots, and it rejects a combined topology edit. It keeps vanilla flush bytes when the SKAcc write set and memClr range are unchanged, otherwise it emits the conservative flush superset. memClr is recalculated by the SKN builder. The exporter keeps every edited vertex in its vanilla entry type (accumulation-only stays SKAcc-only, and SK2 keeps the surviving vanilla pair bone plus its replacement), because a type change mid-entry breaks cache-line exclusivity. See skn_section.html "Destination layout rules".
 - [7] The model block header also contains ptr6/ptr7/ptr8, pointing to trailing sub-sections that live after the SKN section. Their data must come from the .sluggies file, be laid out after SKN, and the three header pointers must be recomputed for the new layout.
 
 
@@ -201,8 +201,11 @@ parsed.skinning (sluggies JSON)
   │    Unchanged topology: restore each exported SKN-relative slot exactly,
   │    including non-minimal zero-filled gaps. This produced a byte-identical
   │    Peach SKN and eliminated the vertex explosions seen with repacking.
-  │    Edited topology canonical order: SK1 srcs → SK2 srcs → flush →
-  │    SK2 weights → SKAcc src+destIdx+weight per entry.
+  │    Rebuilt layout: SK1/SK2 srcs MIRRORED at VAR_DATA_OFF + gplVertexArr
+  │    (vanilla rule 361/361; the runtime writes facial poses there — Peach
+  │    and Luigi in-game failures when broken) → flush → SK2 weights →
+  │    SKAcc src+destIdx+weight per entry. The mirror needs final
+  │    gplVertexArr values, so destinations must be settled first.
   │    Record the SKN-relative offset for every sub-array.
   │
   ├─[SKN-2] SK1 / SK2 / SKAcc struct headers  (depends on SKN-1)
@@ -211,7 +214,9 @@ parsed.skinning (sluggies JSON)
   │    boneIndex, vertexCnt, vertexOffset      ← verbatim from parsed.
   │    Matrix placeholder bytes                ← zero (runtime fills).
   │
-  ├─[SKN-3] gplVertexArr / gplDestArr  (depends on SKN-2)
+  ├─[SKN-3] gplVertexArr / gplDestArr  (depends on SKN-2; the VALUES must
+  │    already be final before SKN-1 because of the source mirror — for
+  │    membership edits layout_skin_membership_edit settles them up front)
   │    Position-data-relative — take verbatim from the .sluggies file for
   │    unchanged geometry (Milestone 1). No relocation math is needed and
   │    no INPUT dat reads are allowed. When vertex data changes

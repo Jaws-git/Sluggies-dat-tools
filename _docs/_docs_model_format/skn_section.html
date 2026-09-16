@@ -65,7 +65,7 @@
         <tr>
             <td>0x1c</td>
             <td>uint32</td>
-            <td>Pointer to array of vertex position indices (?) to 'flush' (I don't know what this does)</td>
+            <td>Pointer to array of uint16 vertex indices to 'flush' (exact runtime purpose unknown). Observed: roughly one index per 32-byte cache line of the position buffer that SKAcc entries accumulate into, grouped by destination region, excluding lines fully inside the memClr range. Vanilla arrays follow no single reproducible formula (26/178 exact with the best candidate). Dolphin ignores CPU cache effects, so a wrong flush array may be invisible there.</td>
         </tr>
         <tr>
             <td>0x20</td>
@@ -111,7 +111,7 @@
         <tr>
             <td>0x3c</td>
             <td>uint8</td>
-            <td>Position/normal offset (I don't know why this exists instead of already being added to both pointers, probably some performance reason)</td>
+            <td>Position/normal offset: byte offset of the first vertex inside the destination's first 32-byte cache line. The destination pointer (0x34) is always on a cache-line boundary, and <code>destination + offset</code> is always on a vertex boundary. Observed values for stride 12 are 0, 4 and 8 only (361 skinned models, 12,364 SK1/SK2 entries). See <a href="#destination-layout">Destination layout rules</a>.</td>
         </tr>
         <tr>
             <td>0x3d</td>
@@ -179,6 +179,7 @@
         </tr>
     </table>
     <p>Process this similar to SK1 entries. The weight array (without the position/normal offset) has vertex_count * 2 uint8 entries. Bone 1 influences vertex n with weights[n * 2], and bone 2 with weights[n * 2 + 1]. Vanilla data establishes a 256-unit logical divisor: 89,381 observed SK2 pairs sum to 256, while lower SK2 sums may receive additional SKAcc contributions.</p>
+    <p><strong>An SK2 weight pair does not have to sum to 256.</strong> When a vertex also receives SKAcc contributions, its 256-unit budget is split across the SK2 pair <em>and</em> the SKAcc weights (Luigi: pairs summing to 77, 115 or 205 with the rest supplied by SKAcc). Validators must not enforce a per-pair sum.</p>
     <h2>SKAcc</h2>
     <p>These entries are used to supplement SK2s for vertices that have more than two bone influences.</p>
     <table>
@@ -223,6 +224,7 @@
             <td>Vertex count</td>
         </tr>
     </table>
+    <p>Some vertices are written only by SKAcc entries, with no SK1/SK2 entry at all. These accumulation-only vertices are the ones the memClr range zeroes each frame. Luigi's fingertip vertices, for example, get 192/64 splits from two different SKAcc bones. Such a vertex must stay accumulation-only when its bones are reassigned (see <a href="#destination-layout">Destination layout rules</a>).</p>
     <p>This entry type has one bone index and one weight per vertex. Its gimmick is that it has an array of destination indexes stored as uint16s, rather than a single pointer in the position data to place the entries into sequentially. Unlike SK1 and SK2, SKAcc has no position/normal offset field; the offset is effectively zero. Each vertex position's index is <code>destination_position_normal_array_pointer / (quantized_data_size(mesh_data.meshes[0].positions.quantization) * 6) + destination_position_normal_index_array[n]</code></p>
 
     <h3>Footnote: Duplicate destination indices (twist/blend deformer pattern)</h3>
@@ -235,6 +237,17 @@
     <p>The purpose appears to be a lightweight twist/multi-stage deformer: the game engine accumulates the same bone's contribution twice into the destination vertex with two distinct weight scalings. All 936 duplicate groups measured by <code>weight_divisor_probe.py</code> are exactly <code>255 + 1</code>, giving <code>(weight_0 + weight_1) / 256 = 1.0</code>.</p>
     <p><strong>Implication for tools:</strong> The weight array is indexed by <em>source-array position</em>, not by destination vertex. Two source entries that share a destination index are independent records with independent weights. Any tool that maps weights by <code>(bone, destination_vertex)</code> key — such as a vertex-group system that stores a single weight per bone per vertex — will silently discard the first weight when it encounters the second, corrupting the skinning on round-trip. The original per-source-entry weight data must be preserved verbatim for all source slots whose destination index appears more than once in the same entry.</p>
 
+    <h2 id="destination-layout">Destination layout rules</h2>
+    <p>These rules describe where entries write inside submesh 0's position buffer. Each held with <strong>zero exceptions</strong> across all 361 skinned models exported from the game (12,364 SK1/SK2 entries). A 2026-09-16 scan checked them against the exported <code>.sluggie</code> files.</p>
+    <ul>
+        <li><strong>Destinations start on cache lines:</strong> every SK1/SK2 <code>gplVertexArr</code> is a multiple of 32, and the first vertex is at <code>gplVertexArr + vertexOffset</code> with <code>vertexOffset &lt; stride</code>.</li>
+        <li><strong>SK1/SK2 entries are cache-line exclusive:</strong> no 32-byte line of the position buffer is touched by two SK1/SK2 entries. Where one entry ends partway through a line, the vertices up to the next boundary are left unused. That is why vanilla data has unused "gap" vertices between entries (Luigi: 130 of 2808 submesh-0 vertices are written by no SK entry at all, and another 40 only by SKAcc).</li>
+        <li><strong>A single SK1/SK2 entry can have multiple runs:</strong> one bone or bone pair may own several entries (Luigi bone 51 has two SK1 entries). Consecutive vertices only share an entry when they form one run.</li>
+        <li><strong>Accumulation-only slots are separate:</strong> SKAcc destinations that no SK1/SK2 entry writes, and therefore the memClr range, never touch an SK1/SK2 entry's cache lines. SK1 vertices never receive SKAcc supplements; SK2 vertices often do (17,683 slots).</li>
+        <li><strong>SKAcc base:</strong> every observed SKAcc <code>gplDestArr</code> is 0.</li>
+    </ul>
+    <p><strong>Consequence for editing:</strong> moving vertices between bones without reordering them only works while every vertex keeps its entry type. Examples: SK1 stays SK1, a two-bone SK2 vertex stays SK2, and an accumulation-only vertex stays accumulation-only. Otherwise part of an entry changes type in the middle of a cache line and would share that line with its neighbour. Luigi examples: reassigning bone 28 to bone 63 lays out in place, but reassigning bone 5 to bone 17 turns part of <code>SK2(5,17)</code> into <code>SK1(17)</code> mid-line and needs vertex reordering.</p>
+
     <h2>Section Memory Layout</h2>
     <p>The SKN section is laid out as a contiguous block with the following regions in order:</p>
     <ol>
@@ -243,21 +256,32 @@
         <li><strong>SK2 struct array</strong> — <code>numSK2 &times; 0x74</code> bytes, immediately after SK1 array</li>
         <li><strong>SKAcc struct array</strong> — <code>numSKAcc &times; 0x44</code> bytes, immediately after SK2 array</li>
         <li><strong>Alignment padding</strong> — zero-filled bytes to reach the next 32-byte boundary</li>
-        <li><strong>Variable data arrays</strong> — source/weight/dest-index and flush arrays, each individually 32-byte aligned and potentially separated by non-minimal donor padding</li>
+        <li><strong>Variable data arrays</strong> — SK1/SK2 source arrays mirrored at <code>VAR_DATA_OFF + gplVertexArr</code> (gaps included), followed by flush, weight, and SKAcc arrays, each individually 32-byte aligned</li>
     </ol>
     <p>The struct arrays are packed contiguously with no gaps between them. Between the end of the SKAcc struct array and the start of the variable data, zero-filled padding is inserted so that the first variable data array begins on a 32-byte boundary.</p>
 
+    <h3>Source mirror rule (critical)</h3>
+    <p>SK1/SK2 source arrays are not packed back to back. They <strong>mirror the skinned position buffer</strong>:</p>
+    <pre>srcArrPtr = VAR_DATA_OFF + gplVertexArr        (VAR_DATA_OFF = align32(end of SKAcc struct array))</pre>
+    <p>This held for every SK1/SK2 entry in all 361 skinned models, with zero exceptions. The vertex-offset prefix bytes and the unused gap lines between entries are therefore mirrored as well. The source data is effectively a copy of the position buffer laid out with the same offsets.</p>
+    <p><strong>The runtime depends on this beyond the per-entry pointers.</strong> Facial poses on skinned vertices are written to the mirrored address (<code>VAR_DATA_OFF + vertex_index &times; stride</code>), not through the entry's own source pointer (see <a href="facial_pose_section.md">facial poses</a>). Two in-game failures traced back to this:</p>
+    <ul>
+        <li><strong>Peach (2026-08-10):</strong> a repacked SKN with correct pointers caused vertex explosions. The "non-minimal 0x20-byte hole after SK1[22]" that fixed it was a mirrored gap line.</li>
+        <li><strong>Luigi (2026-09-16):</strong> a bone-reassignment build packed sources back to back and dropped two gap lines, so 11 SK2 entries sat 0x20&ndash;0x60 bytes early. <code>SK2(50,51)</code>, the neck strip, holds 12 facial-pose target vertices. Facial poses were written 8 bytes out of step into neighbouring records, and the back of the head and neck stretched down to the floor. Mirroring the sources fixed it in-game.</li>
+    </ul>
+    <p>No other section (GPL, ACT, facial) stores pointers into SKN, so the runtime appears to derive the mirror base from the struct-array sizes. Keep <code>VAR_DATA_OFF</code> consistent with the counts in the header.</p>
+
     <h3>Variable data ordering</h3>
-    <p>For unchanged topology, preserve every exported SKN-relative array pointer and zero-filled gap. Do not compact arrays merely because the resulting pointers remain 32-byte aligned. Peach contains a non-minimal 0x20-byte hole after SK1[22]; removing it contributed to visible in-game vertex explosions.</p>
-    <p>The donor-observed Peach order, also used as the canonical fallback for edited topology, is:</p>
+    <p>For unchanged skinning, preserve every exported SKN-relative array pointer and zero-filled gap (<code>array_absolute_ptr - SKNOffset</code>). This reproduces the donor SKN byte for byte.</p>
+    <p>For rebuilt skinning, the vanilla order is:</p>
     <ol>
-        <li>All SK1 source arrays (one per SK1 entry, in entry order)</li>
-        <li>All SK2 source arrays</li>
+        <li>All SK1 and SK2 source arrays, each at its mirrored address (see above), which also covers the gap lines between them</li>
         <li>Flush index array (if present)</li>
         <li>All SK2 weight arrays</li>
         <li>All SKAcc source + dest-index + weight arrays (per entry: source, dest-index, weight)</li>
     </ol>
-    <p>Each individual array starts on a 32-byte boundary. Donor allocations can contain more padding than the minimum required to reach that boundary. Unchanged rebuilds derive each relative slot as <code>array_absolute_ptr - SKNOffset</code>; canonical repacking is reserved for edited layouts that no longer fit those slots.</p>
+    <p>The first array after the mirrored region starts on the next 32-byte boundary after the last SK1/SK2 source (305/361 models). The other 56 models leave one extra 32-byte line, and all of them have accumulation-only slots, but no rule was identified. The builder uses no extra line; these arrays are reached only through their own pointers. Every array starts on a 32-byte boundary. Signatures seen: flush, SK2 weights, SKAcc (190 models); SK2 weights only (154); SK2 weights, SKAcc (17).</p>
+    <p><strong>Entry order:</strong> vanilla SK1 and SK2 entries are in ascending destination order. The order of SKAcc entries is not sorted by bone (Luigi starts 62, 27, 18, 20, &hellip;). A Luigi build that re-sorted SKAcc entries by bone, with unchanged flush bytes, rendered correctly in-game, so SKAcc order does not appear to matter.</p>
 
     <h3>32-byte alignment (critical)</h3>
     <p>All variable data pointers in this section must be 32-byte aligned. See the <a href="overview.html">overview</a> for the general alignment requirement that applies across all sections. For the SKN section specifically, compute the variable data start as:</p>
@@ -303,7 +327,8 @@
 
     <h3>Rebuilding considerations</h3>
     <ul>
-        <li><strong>Entry order matters:</strong> The game processes SK entries in array order. SK1, SK2, and SKAcc entries must preserve their original ordering (by bone index / bone pair) so that accumulation into the destination buffer produces correct results.</li>
+        <li><strong>Layout matters, not just pointers:</strong> keep SK1/SK2 sources on the mirror (see <em>Source mirror rule</em>) and destinations cache-line exclusive (see <a href="#destination-layout">Destination layout rules</a>). <code>BlockValidator</code> rejects violations of either. SK1/SK2 entries are ordered by destination. SKAcc entry order was re-sorted by bone without visible effect (Luigi).</li>
+        <li><strong>Moving vertices between bones (same vertex count):</strong> the exporter writes <code>VertexIndices</code> per SK1/SK2 entry. <code>GeometryRebuild.layout_skin_membership_edit</code> splits entries into runs of consecutive vertices without reordering them and places each run with vanilla <code>gplVertexArr</code>/<code>vertexOffset</code>. It keeps vanilla flush bytes while the SKAcc write set is unchanged. Edits that would share a cache line are rejected with a message naming the entries.</li>
         <li><strong>gplVertexArr / gplDestArr are position-data-relative:</strong> These values do not change when the model block is relocated to a different file offset or when sections are rearranged, because they are relative to the position data within the GPL section, not to any absolute address.</li>
         <li><strong>memClrPtr / memClrSize are position-data-relative and layout-independent:</strong> they only change when the SK entry coverage changes (vertex counts, dest indices, or gplVertexArr values), NOT when the block is relocated or the GPL section layout shifts. Recompute them from the accumulation-only slot set whenever skinning data changes.</li>
         <li><strong>SK runtime scratch space:</strong> the SK write targets (gplVertexArr / gplDestArr slots) can extend BEYOND the last stored vertex of submesh 0's position array — 163 of 325 skinned models use scratch slots after the array (up to ~6.5 KB past the end). Original files leave a gap after the position data for this. When rebuilding the GPL section, the position buffer region must reserve <code>max(stored_array_length, max_write_end)</code> bytes; packing the next data array (e.g. vertex colors) directly after the position data gets it overwritten by the per-frame memClr/SKAcc writes, which manifests as corrupted colors/partial transparency in-game.</li>

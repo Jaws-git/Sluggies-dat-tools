@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import math
 import struct
+from collections import Counter
 
-from ModelFormat import compute_mem_clear_range, is_array_aligned
+from ModelFormat import CACHE_LINE_SIZE, align_up, compute_mem_clear_range, is_array_aligned
 
 GPL_MAGIC = 0x00B749E0
 _VECTOR_QUANTIZE_FORMATS = {0, 3, 4, 7, 0xA}
@@ -1005,6 +1006,8 @@ def _validate_skn(state: _ValidationState, skn_write_ends: list[int], skn_stride
     stride = _comp_size(quantize_info) * 6
     skn_stride_out.append(stride)
     direct_writes: set[int] = set()
+    direct_write_counts: Counter[int] = Counter()
+    direct_entries: list[tuple[str, int, int, int, int]] = []
     accumulation_writes: set[int] = set()
 
     if sk1_ptr:
@@ -1038,7 +1041,10 @@ def _validate_skn(state: _ValidationState, skn_write_ends: list[int], skn_stride
         src_abs = skn_start + src_ptr
         if state.in_bounds(src_abs, src_size, f'SK1[{index}] source array'):
             state.check_array_alignment(src_abs, 'skn_source', f'SK1[{index}] source array')
-        direct_writes.update(gva + vertex_offset + i * stride for i in range(vertex_count))
+        sk1_slots = [gva + vertex_offset + i * stride for i in range(vertex_count)]
+        direct_entries.append((f'SK1[{index}]', src_ptr, gva, vertex_offset, vertex_count))
+        direct_writes.update(sk1_slots)
+        direct_write_counts.update(sk1_slots)
         skn_write_ends.append(gva + vertex_offset + vertex_count * stride)
 
     for index in range(n2):
@@ -1061,7 +1067,16 @@ def _validate_skn(state: _ValidationState, skn_write_ends: list[int], skn_stride
             state.check_array_alignment(src_abs, 'skn_source', f'SK2[{index}] source array')
         if state.in_bounds(wt_abs, vertex_count * 2, f'SK2[{index}] weight array'):
             state.check_array_alignment(wt_abs, 'skn_weight', f'SK2[{index}] weight array')
-        direct_writes.update(gva + vertex_offset + i * stride for i in range(vertex_count))
+        # NOTE: an SK2 weight pair does NOT always sum to 256 — a vertex with
+        # an SKAcc supplement splits its 256-unit budget across the SK2 pair
+        # AND the SKAcc weight(s) together. Verified against production data
+        # (Luigi SK2[4]/[11]): many donor pairs legitimately sum to well
+        # under 256 (e.g. 77, 115, 205) wherever an SKAcc entry supplies the
+        # rest for that same vertex. No sum check is enforced here.
+        sk2_slots = [gva + vertex_offset + i * stride for i in range(vertex_count)]
+        direct_entries.append((f'SK2[{index}]', src_ptr, gva, vertex_offset, vertex_count))
+        direct_writes.update(sk2_slots)
+        direct_write_counts.update(sk2_slots)
         skn_write_ends.append(gva + vertex_offset + vertex_count * stride)
 
     for index in range(na):
@@ -1096,6 +1111,92 @@ def _validate_skn(state: _ValidationState, skn_write_ends: list[int], skn_stride
             skn_write_ends.append(gda + (max_dest + 1) * stride)
         if state.in_bounds(wt_abs, vertex_count, f'SKAcc[{index}] weight array'):
             state.check_array_alignment(wt_abs, 'skn_weight', f'SKAcc[{index}] weight array')
+
+    duplicate_slots = sorted(slot for slot, count in direct_write_counts.items() if count > 1)
+    if duplicate_slots:
+        state.fail(
+            f'SKN direct writes (SK1/SK2) claim {len(duplicate_slots)} position '
+            f'slot(s) more than once: '
+            + ', '.join(f'0x{slot:X}' for slot in duplicate_slots[:10])
+            + (f' (+{len(duplicate_slots) - 10} more)' if len(duplicate_slots) > 10 else '')
+        )
+
+    # Destination layout rules, each verified with zero exceptions across all
+    # 361 skinned exports (12,364 SK1/SK2 entries): gplVertexArr sits on a
+    # cache-line boundary, gplVertexArr + vertexOffset lands on a vertex
+    # boundary, and no cache line is touched by two SK1/SK2 entries. The
+    # deformer zeroes whole cache lines per entry, so a shared line lets one
+    # entry wipe another's output.
+    line_owner: dict[int, str] = {}
+    shared_lines: list[str] = []
+    for label, _src_ptr, gva, vertex_offset, vertex_count in direct_entries:
+        if gva % CACHE_LINE_SIZE:
+            state.fail(f'{label} gplVertexArr 0x{gva:X} is not on a cache-line boundary')
+        if (gva + vertex_offset) % stride:
+            state.fail(
+                f'{label} first write 0x{gva:X}+0x{vertex_offset:X} is not on a '
+                f'{stride}-byte vertex boundary'
+            )
+        if vertex_offset >= stride:
+            state.warn(
+                f'{label} vertexOffset 0x{vertex_offset:X} skips a whole vertex; '
+                'donor data never does this'
+            )
+        if not vertex_count:
+            continue
+        end = gva + vertex_offset + vertex_count * stride
+        for line in range(gva // CACHE_LINE_SIZE, align_up(end) // CACHE_LINE_SIZE):
+            if line in line_owner:
+                shared_lines.append(f'0x{line * CACHE_LINE_SIZE:X} ({line_owner[line]}/{label})')
+            line_owner[line] = label
+    if shared_lines:
+        state.fail(
+            f'SKN direct writes (SK1/SK2) share {len(shared_lines)} cache line(s): '
+            + ', '.join(shared_lines[:10])
+            + (f' (+{len(shared_lines) - 10} more)' if len(shared_lines) > 10 else '')
+        )
+    # Source mirror rule (361/361 donors): SK1/SK2 source arrays mirror the
+    # skinned position buffer at align32(end of struct arrays) + gplVertexArr.
+    # In-game evidence that the runtime depends on it beyond the per-entry
+    # pointers: Luigi facial-posed neck vertices stretched when it broke.
+    struct_end = max(
+        0x24,
+        sk1_ptr + n1 * 0x40 if sk1_ptr else 0,
+        sk2_ptr + n2 * 0x74 if sk2_ptr else 0,
+        acc_ptr + na * 0x44 if acc_ptr else 0,
+    )
+    mirror_base = align_up(struct_end)
+    off_mirror = [
+        f'{label} (source 0x{src_ptr:X}, expected 0x{mirror_base + gva:X})'
+        for label, src_ptr, gva, _vertex_offset, _vertex_count in direct_entries
+        if src_ptr - gva != mirror_base
+    ]
+    if off_mirror:
+        state.fail(
+            f'SKN source arrays do not mirror the position buffer for {len(off_mirror)} '
+            f'SK1/SK2 entr(y/ies): ' + ', '.join(off_mirror[:5])
+            + (f' (+{len(off_mirror) - 5} more)' if len(off_mirror) > 5 else '')
+        )
+
+    if memclr_size:
+        cleared_direct = sorted({
+            line_owner[line]
+            for line in range(memclr_ptr // CACHE_LINE_SIZE,
+                              align_up(memclr_ptr + memclr_size) // CACHE_LINE_SIZE)
+            if line in line_owner
+        })
+        if cleared_direct:
+            state.fail(
+                f'SKN memClr range 0x{memclr_ptr:X}/0x{memclr_size:X} touches cache lines '
+                f"of direct writes: {', '.join(cleared_direct[:10])}"
+            )
+
+    # NOTE: a real donor model can legitimately leave some submesh-0 vertices
+    # with NO direct (or even accumulation) write at all — verified against
+    # production data (Luigi: 130 of 2808 submesh-0 vertices have zero
+    # SK1/SK2/SKAcc coverage, another 40 are SKAcc-only). "Every vertex has a
+    # direct write" is not a real invariant of this format, so no full-
+    # coverage check is enforced here.
 
     expected_memclr = compute_mem_clear_range(direct_writes, accumulation_writes, stride)
     if (memclr_ptr, memclr_size) != expected_memclr:

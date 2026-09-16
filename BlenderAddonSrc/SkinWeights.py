@@ -8,6 +8,12 @@ import math
 DEFAULT_WEIGHT_TARGET_SUM = 256
 SUPPORTED_WEIGHT_TARGET_SUMS = (255, 256)
 
+# Highest distinct-bone-per-vertex count observed across every player model in
+# dt_na.dat (SK2's 2-bone pair plus up to 3 SKAcc supplements). The format has
+# no hard structural limit, but nothing the game ships exceeds this, so it is
+# treated as the practical cap for authored/replacement content.
+MAX_BONE_INFLUENCES_PER_VERTEX = 5
+
 
 def quantize_skin_weights(
     influences: list[tuple[int, float]],

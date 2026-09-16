@@ -18,6 +18,7 @@ from BlockValidator import validate_model_block
 from GeometryRebuild import (
     _color_entry_size,
     apply_desired_texture_assignments,
+    layout_skin_membership_edit,
     rebuild_edited_uvs,
     rebuild_surface_assignments,
 )
@@ -653,7 +654,77 @@ def ParseSluggie(data: dict) -> SluggieParsed:
     _position_geometry_edited = bool(position_edit_submeshes)
     _geometry_edited = _topology_geometry_edited or _position_geometry_edited
     raw_skn = raw_skn_orig or raw_skn_edit
-    if raw_skn:
+    # Same-count reskin (PLAN_ModelReplacements.md 3.4): entry membership
+    # itself changed (vertices reassigned between donor bones), so a donor
+    # bone/pair may have gained or lost its SK1/SK2/SKAcc entry entirely.
+    # The identity-substitution loops below assume the donor's entry COUNT
+    # and per-entry identity are unchanged and only splice in payload — that
+    # would silently drop new entries and keep stale entries for bones that
+    # lost every vertex. Build straight from SkinDataEdited instead.
+    # GeometryRebuild.layout_skin_membership_edit must have run first: the
+    # exporter only writes placeholder GplVertexArrValue / VertexOffset.
+    _membership_edited = bool(raw_skn_edit and raw_skn_edit.get('MembershipEdited'))
+    # Flush-index data is rewritten onto SkinDataEdited by the topology-edit
+    # skinning rebuild (GeometryRebuild._rebuild_skinning) and by the
+    # membership layout pass, since it depends on the SKAcc write set. raw_skn
+    # always prefers raw_skn_orig when the donor has skin data, so pull flush
+    # data from raw_skn_edit specifically whenever either pass produced it.
+    _flush_source = (
+        raw_skn_edit
+        if ((_topology_geometry_edited or _membership_edited) and raw_skn_edit
+            and raw_skn_edit.get('FlushIndData') is not None)
+        else raw_skn
+    )
+    if _membership_edited:
+        sk1s = [
+            SK1(
+                bone_index                  = s['BoneIndex'],
+                vertex_cnt                  = s['VertexCnt'],
+                vertex_offset               = s.get('VertexOffset', 0),
+                bind_pose_data              = _decode(s.get('BindPoseDataEdited') or s['BindPoseData'], use_b64),
+                vertex_arr_field_offset     = _hex(s.get('VertexArrFieldOffset',    '0x0')),
+                gpl_vertex_arr_field_offset = _hex(s.get('GplVertexArrFieldOffset', '0x0')),
+                vertex_arr_absolute_ptr     = _hex(s.get('VertexArrAbsolutePtr',    '0x0')),
+                gpl_vertex_arr_value        = s.get('GplVertexArrValue', 0),
+            )
+            for s in raw_skn_edit.get('SK1s', [])
+        ]
+        sk2s = [
+            SK2(
+                bone_index1                 = s['BoneIndex1'],
+                bone_index2                 = s['BoneIndex2'],
+                vertex_cnt                  = s['VertexCnt'],
+                vertex_offset               = s.get('VertexOffset', 0),
+                bind_pose_data              = _decode(s.get('BindPoseDataEdited') or s['BindPoseData'], use_b64),
+                weight_data                 = _decode(s.get('WeightDataEdited') or s['WeightData'], use_b64),
+                vertex_arr_field_offset     = _hex(s.get('VertexArrFieldOffset',    '0x0')),
+                weight_arr_field_offset     = _hex(s.get('WeightArrFieldOffset',    '0x0')),
+                gpl_vertex_arr_field_offset = _hex(s.get('GplVertexArrFieldOffset', '0x0')),
+                vertex_arr_absolute_ptr     = _hex(s.get('VertexArrAbsolutePtr',    '0x0')),
+                weight_arr_absolute_ptr     = _hex(s.get('WeightArrAbsolutePtr',    '0x0')),
+                gpl_vertex_arr_value        = s.get('GplVertexArrValue', 0),
+            )
+            for s in raw_skn_edit.get('SK2s', [])
+        ]
+        sk_accs = [
+            SKAcc(
+                bone_index                = s['BoneIndex'],
+                vertex_cnt                = s['VertexCnt'],
+                bind_pose_data            = _decode(s.get('BindPoseDataEdited') or s['BindPoseData'], use_b64),
+                dest_index_data           = _decode(s.get('DestIndexDataEdited') or s['DestIndexData'], use_b64),
+                weight_data               = _decode(s.get('WeightDataEdited') or s['WeightData'], use_b64),
+                vertex_arr_field_offset   = _hex(s.get('VertexArrFieldOffset',   '0x0')),
+                dest_arr_field_offset     = _hex(s.get('DestArrFieldOffset',     '0x0')),
+                gpl_dest_arr_field_offset = _hex(s.get('GplDestArrFieldOffset',  '0x0')),
+                weight_arr_field_offset   = _hex(s.get('WeightArrFieldOffset',   '0x0')),
+                vertex_arr_absolute_ptr   = _hex(s.get('VertexArrAbsolutePtr',   '0x0')),
+                dest_arr_absolute_ptr     = _hex(s.get('DestArrAbsolutePtr',     '0x0')),
+                gpl_dest_arr_value        = s.get('GplDestArrValue', 0),
+                weight_arr_absolute_ptr   = _hex(s.get('WeightArrAbsolutePtr',   '0x0')),
+            )
+            for s in raw_skn_edit.get('SKAccs', [])
+        ]
+    elif raw_skn:
         # Build lookup dicts from edited data for payload substitution.
         _edit_sk1_by_bone = {}
         _edit_sk2_by_pair = {}
@@ -797,6 +868,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
                 weight_arr_absolute_ptr   = _hex(s.get('WeightArrAbsolutePtr',   '0x0')),
             ))
 
+    if _membership_edited or raw_skn:
         skinning_data = SkinningData(
             skn_offset                = _hex(raw_skn.get('SKNOffset',                '0x0')),
             gpl_base_offset           = _hex(raw_skn.get('GplBaseOffset',            '0x0')),
@@ -811,8 +883,8 @@ def ParseSluggie(data: dict) -> SluggieParsed:
             mem_clr_size              = raw_skn.get('MemClrSize', 0),
             flush_ind_arr_field_offset= _hex(raw_skn.get('FlushIndArrFieldOffset',   '0x0')),
             flush_ind_absolute_ptr    = _hex(raw_skn['FlushIndAbsolutePtr']) if raw_skn.get('FlushIndAbsolutePtr') else None,
-            flush_ind_size            = raw_skn.get('FlushIndSize', 0),
-            flush_ind_data            = _decode(raw_skn['FlushIndData'], use_b64) if raw_skn.get('FlushIndData') else b'',
+            flush_ind_size            = _flush_source.get('FlushIndSize', 0),
+            flush_ind_data            = _decode(_flush_source['FlushIndData'], use_b64) if _flush_source.get('FlushIndData') else b'',
             quantize_info             = raw_skn['QuantizeInfo'],
             sk1s                      = sk1s,
             sk2s                      = sk2s,
@@ -2415,6 +2487,23 @@ def _scale_skn_bind_pose(skn_bytes: bytes, factors: tuple[float, float, float] |
     return bytes(out)
 
 
+def _mirrored_skn_source_layout(skn: SkinningData, vertex_stride: int) -> list[tuple[int, bytes]] | None:
+    """Return [(gplVertexArr, source blob)] when SK1/SK2 sources can mirror the
+    position buffer: every destination on a cache-line boundary and no two
+    source blobs overlapping. Otherwise None."""
+    layout = sorted(
+        ((sk.gpl_vertex_arr_value, _source_blob_for_skn(sk, vertex_stride))
+         for sk in (*skn.sk1s, *skn.sk2s)),
+        key=lambda item: item[0],
+    )
+    if not layout or any(gva % 32 for gva, _ in layout):
+        return None
+    for (gva, blob), (next_gva, _) in zip(layout, layout[1:]):
+        if gva + len(blob) > next_gva:
+            return None
+    return layout
+
+
 def _layout_skn_variable_data(skn: SkinningData, vertex_stride: int, var_data_offset: int) -> tuple[bytearray, list[int], list[int], list[int], list[int], list[int], list[int], bytes, int]:
     var_data = bytearray()
     var_cursor = var_data_offset
@@ -2476,19 +2565,40 @@ def _layout_skn_variable_data(skn: SkinningData, vertex_stride: int, var_data_of
         flush_off = _source_relative(skn.flush_ind_absolute_ptr or 0) if flush_bytes else 0
         var_cursor = layout_end
     else:
-        sk1_src_off = []
-        for sk in skn.sk1s:
-            sk1_src_off.append(var_cursor)
-            chunk = pad_array(_source_blob_for_skn(sk, vertex_stride), 'skn_source')
-            var_data.extend(chunk)
-            var_cursor += len(chunk)
+        mirror_layout = _mirrored_skn_source_layout(skn, vertex_stride)
+        if mirror_layout is not None:
+            # Donor rule (361/361 skinned models): SK1/SK2 source arrays mirror
+            # the skinned position buffer, src = var_data_offset + gplVertexArr.
+            # The runtime relies on it beyond the per-entry pointers: facial
+            # poses on skinned vertices were written 0x20 bytes off (Luigi
+            # neck stretched to the floor) once packing dropped donor gap lines.
+            mirror_end = max(gva + len(blob) for gva, blob in mirror_layout)
+            var_data = bytearray(align_array_offset(mirror_end, 'skn_source'))
+            for gva, blob in mirror_layout:
+                var_data[gva:gva + len(blob)] = blob
+            sk1_src_off = [var_data_offset + sk.gpl_vertex_arr_value for sk in skn.sk1s]
+            sk2_src_off = [var_data_offset + sk.gpl_vertex_arr_value for sk in skn.sk2s]
+            var_cursor += len(var_data)
+        else:
+            _slogger.warning(
+                '[SKN] SK1/SK2 destinations are not cache-line exclusive; source arrays '
+                'packed sequentially instead of mirroring the position buffer (donor '
+                'layout rule) — facial poses on skinned vertices may break in-game',
+                source='hammerspace.main',
+            )
+            sk1_src_off = []
+            for sk in skn.sk1s:
+                sk1_src_off.append(var_cursor)
+                chunk = pad_array(_source_blob_for_skn(sk, vertex_stride), 'skn_source')
+                var_data.extend(chunk)
+                var_cursor += len(chunk)
 
-        sk2_src_off = []
-        for sk in skn.sk2s:
-            sk2_src_off.append(var_cursor)
-            chunk = pad_array(_source_blob_for_skn(sk, vertex_stride), 'skn_source')
-            var_data.extend(chunk)
-            var_cursor += len(chunk)
+            sk2_src_off = []
+            for sk in skn.sk2s:
+                sk2_src_off.append(var_cursor)
+                chunk = pad_array(_source_blob_for_skn(sk, vertex_stride), 'skn_source')
+                var_data.extend(chunk)
+                var_cursor += len(chunk)
 
         flush_off = 0
         flush_bytes = skn.flush_ind_data
@@ -3058,6 +3168,8 @@ def BuildModelBlock(
         rebuild_surface_assignments(data)
         rebuild_edited_uvs(data)
         apply_desired_texture_assignments(data)
+    if modes.skn == 'build':
+        layout_skin_membership_edit(data)
     parsed = ParseSluggie(data)
     if modes.gpl == 'build':
         has_material_state_edits = any(

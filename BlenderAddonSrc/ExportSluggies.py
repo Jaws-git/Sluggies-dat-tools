@@ -8,6 +8,8 @@ import subprocess
 from bpy.props import BoolProperty, StringProperty
 from bpy_extras.io_utils import ExportHelper
 
+from .SkinWeights import quantize_skin_weights, MAX_BONE_INFLUENCES_PER_VERTEX
+
 
 def _to_bytes(data) -> bytes:
     """Decode binary data that is either a base64 string or a list of byte values."""
@@ -516,7 +518,7 @@ def encode_normal_edits(obj, json_normal_buffer, loop_indices, use_base64=True):
     return _from_bytes(bytes(normal_data), use_base64), normal_faces
 
 
-def _apply_inplace_normal_edits(obj, normal_buffer, loop_indices, warnings, use_base64=True):
+def _apply_inplace_normal_edits(obj, normal_buffer, loop_indices, errors, use_base64=True):
     normal_edits = encode_normal_edits(
         obj, normal_buffer, loop_indices, use_base64
     )
@@ -524,11 +526,12 @@ def _apply_inplace_normal_edits(obj, normal_buffer, loop_indices, warnings, use_
         donor_loop_count = len(_to_bytes(
             normal_buffer.get("NormalFacesData")
         )) // 2
-        warnings.append(
-            f"{obj.name}: standalone normal overwrite skipped — extended "
+        errors.append(
+            f"{obj.name}: standalone normal overwrite DROPPED — extended "
             f"normal records could not preserve their donor mapping "
             f"({donor_loop_count} donor loops, {len(loop_indices)} mesh loops). "
-            f"Keep the original topology or leave Overwrite Normals off."
+            f"The donor normals were kept; your normal edits are NOT in this "
+            f"export. Keep the original topology or leave Overwrite Normals off."
         )
         normal_buffer.pop("NormalBufferDataEdited", None)
         normal_buffer.pop("NormalFacesDataEdited", None)
@@ -558,17 +561,33 @@ def _apply_inplace_normal_edits(obj, normal_buffer, loop_indices, warnings, use_
         else:
             slot_values[slot_idx] = record
     if normal_conflict:
-        warnings.append(
+        errors.append(
             f"{obj.name}: standalone normal buffer conflict — loops sharing "
             f"a donor slot have different edited normals. Normal overwrite "
-            f"skipped (would exceed original buffer size). Use Hammerspace "
-            f"Mode for full normal editing support."
+            f"DROPPED (would exceed original buffer size); your normal edits "
+            f"are NOT in this export. Use Hammerspace Mode for full normal "
+            f"editing support."
         )
         normal_buffer.pop("NormalBufferDataEdited", None)
         normal_buffer.pop("NormalFacesDataEdited", None)
     else:
         normal_buffer["NormalBufferDataEdited"] = norm_data
         normal_buffer["NormalFacesDataEdited"] = norm_faces
+
+
+def _get_loop_color(entry):
+    """Read one color attribute entry back in the donor's own value space.
+
+    ``entry.color`` converts between sRGB and scene-linear on top of the 8-bit
+    BYTE_COLOR storage, which does not round-trip: 73 of the 256 donor byte
+    values come back shifted by one, so every export of an untouched model
+    would report a spurious color edit. ``color_srgb`` maps straight onto the
+    stored bytes. Mirrors ``_set_loop_color`` in ImportSluggies.
+    """
+    try:
+        return entry.color_srgb
+    except AttributeError:
+        return entry.color
 
 
 def _encode_color_entry(quant_info, rgba):
@@ -611,7 +630,7 @@ def encode_color_edits(obj, json_channel, loop_indices, use_base64=True):
     quant = json_channel.get("ColorChannelQuantizeInfo", 0)
     color_data = bytearray()
     for loop_idx in loop_indices:
-        color_data += _encode_color_entry(quant, attr.data[loop_idx].color)
+        color_data += _encode_color_entry(quant, _get_loop_color(attr.data[loop_idx]))
     color_faces = _from_bytes(
         struct.pack(f'>{len(loop_indices)}H', *range(len(loop_indices))), use_base64
     )
@@ -1278,10 +1297,38 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
 def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False):
     """Rebuild SK1/SK2/SKAcc from Blender vertex groups for hammerspace export.
 
-    Splitting rules:
+    Membership (which bone(s) influence a vertex) is read directly from
+    Blender's current bone_<id> vertex groups — NOT from donor SK1/SK2/SKAcc
+    structure — so real bone reassignment (moving a vertex group between
+    donor bones) round-trips correctly. See PLAN_ModelReplacements.md 3.4.
+
+    Splitting rules (vertices whose bone set is unchanged replicate the donor
+    role assignment exactly; for edited vertices):
+      donor accumulation-only → SKAcc for every influence
       1 influence  → SK1
-      2 influences → SK2
-      3+ influences → SK2 (top 2 by weight) + SKAcc (remainder)
+      2+ influences → SK2 (donor's surviving pair bones, then replacement
+                      bones, then by weight) + SKAcc (remainder)
+    Each SK1/SK2 entry carries VertexIndices; the build tool splits entries
+    into contiguous runs without reordering vertices.
+
+    Weights are normalized and quantized together with the deterministic
+    largest-remainder rule (SkinWeights.quantize_skin_weights) so output does
+    not depend on Blender vertex-group iteration order.
+
+    A vertex that had a donor bone influence but now resolves to zero is a
+    hard export error (raises ValueError naming every offending object+
+    vertex) — real donor models legitimately leave some vertices with no
+    SK1/SK2/SKAcc coverage at all (static/unused position slots), so a
+    vertex with no influence in BOTH the donor and the current Blender
+    groups is not an error. Vertex groups that don't resolve to a donor-
+    skinned bone are ignored with a warning (deduped by group name), unless
+    doing so leaves a previously-weighted vertex unweighted, in which case
+    the unweighted error wins and includes the ignored names too.
+
+    When membership differs from the donor anywhere in the model, sets
+    SkinDataEdited['MembershipEdited'] = True and every vertex's weights are
+    freshly requantized (not just the edited ones) — accepted as an MVP
+    tradeoff rather than preserving donor weight bytes for untouched vertices.
 
     Bone pairs in SK2 are stored with the lower BoneId first.
     Source data (bind-pose XYZ + NxNyNz) is encoded with SkinData.QuantizeInfo.
@@ -1306,9 +1353,17 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
             return struct.pack('>f', float(v))
         return _pack_quantized_component(v, divisor, context)
 
-    # Map VertexBufferOffset → (submesh_idx, obj)
+    # Map VertexBufferOffset → (submesh_idx, obj), skinned (cc=6) submeshes only.
+    # A model can include rigid/static submeshes (cc=3) whose vertices are
+    # attached to a single non-skinned bone (see encode_unskinned_bone_
+    # reassignments) but that still carry a bone_<id> vertex group from
+    # import for positioning — those bones are correctly absent from
+    # skinned_bone_ids and must never enter SK1/SK2/SKAcc classification or
+    # the unweighted-vertex check below.
     obj_to_sub = {}
     for j, sm in enumerate(submeshes):
+        if sm["VertexBuffer"].get("VertexBufferCompCount") != 6:
+            continue
         vb_off = str(sm["VertexBuffer"]["VertexBufferOffset"])
         for obj in candidates:
             if "VertexBufferOffset" in obj and str(obj["VertexBufferOffset"]) == vb_off:
@@ -1328,37 +1383,13 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
     for _e in skin_data.get('SKAccs', []):
         skinned_bone_ids.add(_e['BoneIndex'])
 
-    # Validation sets used to prevent phantom entries caused by SKAcc dest-slot
-    # aliasing SK1/SK2 source slots.  In act.py, SKAcc vertex indices use the
-    # *dest* slot (gplDestArr + dests[i]), which can equal the *source* slot of
-    # an SK1/SK2 entry.  When they coincide the same Blender vertex carries
-    # weights from both bones → naive rebuild creates phantom SK2 pairs.
-    #
-    # Rule: only allow an SK2 pair that already existed in the original data.
-    # Any pair whose (b_lo, b_hi) is absent from the original SK2 list is
-    # treated as SK1 (dominant bone) + SKAcc (subordinate bone, if it was an
-    # original SKAcc bone).  This exactly reconstructs SK1+SKAcc collisions.
-    original_sk2_pairs: set[tuple[int, int]] = set()
-    for _e in skin_data.get('SK2s', []):
-        _b1, _b2 = _e['BoneIndex1'], _e['BoneIndex2']
-        original_sk2_pairs.add((min(_b1, _b2), max(_b1, _b2)))
-
-    original_skacc_bone_ids: set[int] = set(
-        _e['BoneIndex'] for _e in skin_data.get('SKAccs', [])
-    )
-    # Bones that appear in SK1 take priority: if a bone is in both SK1 and SKAcc
-    # (which happens when the same bone drives both a source-slot copy and an
-    # accumulation pass), a single-influence vertex must go to SK1, not SKAcc.
-    original_sk1_bone_ids: set[int] = set(
-        _e['BoneIndex'] for _e in skin_data.get('SK1s', [])
-    )
-    # SKAcc-only bones: exclusively in SKAcc, not in any SK1 entry.
-    skacc_only_bone_ids: set[int] = original_skacc_bone_ids - original_sk1_bone_ids
-
-    # --- Per-vertex SK classification maps from original SkinData ---
-    # These allow definitive classification of each vertex without ambiguity.
-    # The actual vertex DATA (positions, normals, weights) is still computed
-    # from Blender; only the classification decision uses original metadata.
+    # --- Original per-vertex bone membership (donor SkinData) ---
+    # Used ONLY to detect whether the user's Blender vertex-group edits
+    # actually changed skin membership anywhere in the model — NOT for
+    # classification. Per PLAN_ModelReplacements.md 3.4, SkinDataEdited is
+    # treated as the complete source of truth for entry membership once an
+    # edit is detected; membership must not be re-derived from stale donor
+    # per-entry structure.
     _vertex_stride = 6 * cs  # 6 components (xyz + nxnynz) * component size
 
     # Compute cumulative vertex starts per submesh (for global ↔ local mapping)
@@ -1373,27 +1404,57 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
         _sub_vtx_counts.append(_vtx_count)
         _cumulative += _vtx_count
 
-    # Maps target the original ENTRY INDEX, not the bone id: a bone may own
-    # several SK entries (different gplVertexArr destinations) and merging them
-    # would drop entries and corrupt the destination offsets.
-    # SK1: global_vertex_idx → entry index (contiguous ranges from GplVertexArrValue)
-    _sk1_vertex_map: dict[int, int] = {}
+    # entry-index maps (NOT bone-id maps): a bone can legitimately own more
+    # than one SK1/SK2 entry (different gplVertexArr destinations) — grouping
+    # by bone id alone would silently merge them and change the entry count
+    # even with no membership edit at all. Verified against production data:
+    # Luigi's bone 51 owns two separate SK1 entries.
+    _sk1_entry_of: dict[int, int] = {}
     for _idx, _e in enumerate(skin_data.get('SK1s', [])):
         _first = (_e['GplVertexArrValue'] + _e.get('VertexOffset', 0)) // _vertex_stride
         for _i in range(_e['VertexCnt']):
-            _sk1_vertex_map[_first + _i] = _idx
-
-    # SK2: global_vertex_idx → entry index (contiguous ranges)
-    _sk2_vertex_map: dict[int, int] = {}
+            _sk1_entry_of[_first + _i] = _idx
+    _sk2_entry_of: dict[int, int] = {}
     for _idx, _e in enumerate(skin_data.get('SK2s', [])):
         _first = (_e['GplVertexArrValue'] + _e.get('VertexOffset', 0)) // _vertex_stride
         for _i in range(_e['VertexCnt']):
-            _sk2_vertex_map[_first + _i] = _idx
-
-    # Fallback targets for vertices outside every SK1/SK2 source range.
+            _sk2_entry_of[_first + _i] = _idx
+    # Fallback target for a vertex reassigned TO a bone from elsewhere: reuse
+    # that bone's first existing entry rather than always minting a new one.
     _first_sk1_entry_by_bone: dict[int, int] = {}
     for _idx, _e in enumerate(skin_data.get('SK1s', [])):
         _first_sk1_entry_by_bone.setdefault(_e['BoneIndex'], _idx)
+    _first_sk2_entry_by_pair: dict[tuple[int, int], int] = {}
+    for _idx, _e in enumerate(skin_data.get('SK2s', [])):
+        _pair = (min(_e['BoneIndex1'], _e['BoneIndex2']), max(_e['BoneIndex1'], _e['BoneIndex2']))
+        _first_sk2_entry_by_pair.setdefault(_pair, _idx)
+
+    _orig_membership: dict[int, set[int]] = {}
+    for _e in skin_data.get('SK1s', []):
+        _first = (_e['GplVertexArrValue'] + _e.get('VertexOffset', 0)) // _vertex_stride
+        for _i in range(_e['VertexCnt']):
+            _orig_membership.setdefault(_first + _i, set()).add(_e['BoneIndex'])
+    for _e in skin_data.get('SK2s', []):
+        _first = (_e['GplVertexArrValue'] + _e.get('VertexOffset', 0)) // _vertex_stride
+        for _i in range(_e['VertexCnt']):
+            _orig_membership.setdefault(_first + _i, set()).update(
+                (_e['BoneIndex1'], _e['BoneIndex2']))
+    # (bone_id, global_idx) -> literal donor weight byte, for replaying an
+    # unchanged vertex's SKAcc contribution exactly rather than re-deriving
+    # it. Donor duplicate-dest (twist/blend) entries are handled separately
+    # below by the existing round-trip special case, so keeping only the
+    # first match here is fine.
+    _donor_skacc_weight: dict[tuple[int, int], int] = {}
+    for _e in skin_data.get('SKAccs', []):
+        _n = _e['VertexCnt']
+        if _n == 0:
+            continue
+        _dests = struct.unpack(f'>{_n}H', _to_bytes(_e['DestIndexData']))
+        _weights = _to_bytes(_e['WeightData'])
+        _dest_base = _e.get('GplDestArrValue', 0) // _vertex_stride
+        for _pos, _di in enumerate(_dests):
+            _orig_membership.setdefault(_dest_base + _di, set()).add(_e['BoneIndex'])
+            _donor_skacc_weight.setdefault((_e['BoneIndex'], _dest_base + _di), _weights[_pos])
 
     # Pre-compute custom split normals per object when requested
     custom_normals_cache = {}
@@ -1403,9 +1464,21 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
             if _cn is not None:
                 custom_normals_cache[_obj_id] = _cn
 
-    sk1_groups  = {}   # SK1 entry index → [(sub_idx, local_v, obj)]
-    sk2_groups  = {}   # SK2 entry index → [(sub_idx, local_v, w_lo, w_hi, obj)]
-    skacc_groups = {}  # bone_id → [(sub_idx, local_v, weight, dest_local_v, obj)]
+    # SK1/SK2 group keys are donor ENTRY INDEXES when a vertex keeps its
+    # original entry's bone(s), falling back to the bone's/pair's first
+    # existing entry, or a synthetic ('new_sk1', bone_id) / ('new_sk2', lo, hi)
+    # key when reassigned to a bone/pair with no existing entry at all. This
+    # preserves entry count for the (overwhelmingly common) no-membership-
+    # change case, since a bone owning multiple separate SK1/SK2 entries must
+    # not be silently merged into one.
+    sk1_groups   = {}  # entry key → [(sub_idx, local_v, obj)]
+    sk2_groups   = {}  # entry key → [(sub_idx, local_v, w_lo, w_hi, obj)]
+    skacc_groups = {}  # bone_id → [(sub_idx, local_v, weight_unit, dest_local_v, obj)]
+
+    ignored_group_names: set[str] = set()
+    unweighted: list[tuple[str, int]] = []
+    overweighted: list[tuple[str, int, int]] = []
+    membership_edited = False
 
     for _, (sub_idx, obj) in obj_to_sub.items():
         for v in obj.data.vertices:
@@ -1419,62 +1492,180 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
                 except ValueError:
                     continue
                 if bone_id not in skinned_bone_ids:
+                    ignored_group_names.add(vg.name)
                     continue
                 parsed.append((bone_id, vge.weight))
             parsed.sort(key=lambda x: -x[1])
-            if not parsed:
+
+            if len(parsed) > MAX_BONE_INFLUENCES_PER_VERTEX:
+                overweighted.append((obj.name, v.index, len(parsed)))
                 continue
 
             v_idx = v.index
             global_idx = _sub_vtx_starts[sub_idx] + v_idx
+            orig_bones = _orig_membership.get(global_idx, set())
 
-            # --- Definitive per-vertex classification using original maps ---
-            if global_idx in _sk2_vertex_map:
-                # Vertex was originally in an SK2 entry — classify as SK2.
-                sk2_entry_index = _sk2_vertex_map[global_idx]
-                _sk2_entry = skin_data['SK2s'][sk2_entry_index]
-                b_lo = min(_sk2_entry['BoneIndex1'], _sk2_entry['BoneIndex2'])
-                b_hi = max(_sk2_entry['BoneIndex1'], _sk2_entry['BoneIndex2'])
-                # Extract weights for the pair bones from Blender groups
-                w_lo = 0.0
-                w_hi = 0.0
-                for b, w in parsed:
-                    if b == b_lo:
-                        w_lo = w
-                    elif b == b_hi:
-                        w_hi = w
-                sk2_groups.setdefault(sk2_entry_index, []).append(
-                    (sub_idx, v_idx, w_lo, w_hi, obj))
-                # Any other bones with groups → SKAcc overlay
-                for b, w in parsed:
-                    if b != b_lo and b != b_hi and b in original_skacc_bone_ids:
-                        skacc_groups.setdefault(b, []).append(
-                            (sub_idx, v_idx, w, v_idx, obj))
+            if not parsed:
+                # Real donor models legitimately leave some submesh-0
+                # vertices with no SK1/SK2/SKAcc coverage at all (static/
+                # unused position slots) — that is not an error. Only a
+                # vertex that DID have a donor bone influence and lost it
+                # is a genuine regression worth rejecting.
+                if orig_bones:
+                    unweighted.append((obj.name, v_idx))
+                    membership_edited = True
+                continue
 
-            elif global_idx in _sk1_vertex_map:
-                # Vertex was originally in an SK1 entry — classify as SK1.
-                sk1_entry_index = _sk1_vertex_map[global_idx]
-                sk1_bone = skin_data['SK1s'][sk1_entry_index]['BoneIndex']
-                sk1_groups.setdefault(sk1_entry_index, []).append((sub_idx, v_idx, obj))
-                # Any other bones with groups → SKAcc overlay
-                for b, w in parsed:
-                    if b != sk1_bone and b in original_skacc_bone_ids:
-                        skacc_groups.setdefault(b, []).append(
-                            (sub_idx, v_idx, w, v_idx, obj))
+            new_bones = {bone_id for bone_id, _ in parsed}
+            membership_unchanged = (new_bones == orig_bones)
+            if not membership_unchanged:
+                membership_edited = True
 
+            # --- Classification. Membership (WHICH bones influence a
+            # vertex) always comes from Blender's current vertex groups, per
+            # PLAN_ModelReplacements.md 3.4. But the donor's choice of WHICH
+            # ROLE each bone plays — SK2 pair partner vs. SKAcc supplement —
+            # is an authored structural fact, not simply "the two heaviest
+            # weights": verified against production data (Luigi), 103
+            # vertices have a real 3rd (SKAcc) influence, and picking the
+            # top-2-by-weight bones as the SK2 pair does NOT reliably
+            # reproduce the donor's actual pair (Blender's re-imported
+            # weight order need not match the donor's role assignment). So
+            # whenever this vertex's bone SET is unchanged from the donor,
+            # replicate the donor's own role assignment exactly, refreshing
+            # only the weight VALUES from Blender; only a vertex whose bone
+            # set actually changed falls back to the general influence-count
+            # heuristic, since there is no donor role assignment left to
+            # replicate for its new bone set.
+            if membership_unchanged and global_idx in _sk2_entry_of:
+                entry_idx = _sk2_entry_of[global_idx]
+                e = skin_data['SK2s'][entry_idx]
+                b_lo = min(e['BoneIndex1'], e['BoneIndex2'])
+                b_hi = max(e['BoneIndex1'], e['BoneIndex2'])
+                first = (e['GplVertexArrValue'] + e.get('VertexOffset', 0)) // _vertex_stride
+                k = global_idx - first
+                wt_bytes = _to_bytes(e['WeightData'])
+                w1_byte, w2_byte = wt_bytes[2 * k], wt_bytes[2 * k + 1]
+                w_lo, w_hi = (w1_byte, w2_byte) if e['BoneIndex1'] <= e['BoneIndex2'] else (w2_byte, w1_byte)
+                sk2_groups.setdefault(entry_idx, []).append((sub_idx, v_idx, w_lo, w_hi, obj))
+                for bone_id in (b for b, _ in parsed if b not in (b_lo, b_hi)):
+                    byte = _donor_skacc_weight.get((bone_id, global_idx))
+                    if byte is not None:
+                        skacc_groups.setdefault(bone_id, []).append((sub_idx, v_idx, byte, v_idx, obj))
+                continue
+
+            if membership_unchanged and global_idx in _sk1_entry_of:
+                entry_idx = _sk1_entry_of[global_idx]
+                sk1_bone = skin_data['SK1s'][entry_idx]['BoneIndex']
+                sk1_groups.setdefault(entry_idx, []).append((sub_idx, v_idx, obj))
+                for bone_id in (b for b, _ in parsed if b != sk1_bone):
+                    byte = _donor_skacc_weight.get((bone_id, global_idx))
+                    if byte is not None:
+                        skacc_groups.setdefault(bone_id, []).append((sub_idx, v_idx, byte, v_idx, obj))
+                continue
+
+            if membership_unchanged:
+                # SKAcc-only vertex: no SK1/SK2 primary in the donor at all.
+                for bone_id, _ in parsed:
+                    byte = _donor_skacc_weight.get((bone_id, global_idx))
+                    if byte is not None:
+                        skacc_groups.setdefault(bone_id, []).append((sub_idx, v_idx, byte, v_idx, obj))
+                continue
+
+            # --- Genuinely edited membership: no donor role assignment to
+            # replicate, so quantize fresh — but keep the vertex in its donor
+            # skinning CATEGORY (SK1 / SK2 / accumulation-only) whenever the
+            # new bone set allows it. The build tool lays entries out without
+            # reordering vertices, and donor data never lets an SK1/SK2 entry
+            # share a 32-byte cache line with another entry or with an
+            # accumulation-only slot (verified across all 361 skinned models),
+            # so a category change mid-entry cannot be laid out. ---
+            quantized = quantize_skin_weights(parsed, target_sum=256)
+            merged: dict[int, int] = {}
+            for bone_id, unit in quantized:
+                merged[bone_id] = merged.get(bone_id, 0) + unit
+
+            donor_sk1 = _sk1_entry_of.get(global_idx)
+            donor_sk2 = _sk2_entry_of.get(global_idx)
+            if donor_sk1 is None and donor_sk2 is None and orig_bones:
+                # Donor accumulation-only vertex: its slot lives in the memClr
+                # tail, so every influence stays an SKAcc contribution. A lone
+                # full-weight bone clamps 256 -> 255 (same MVP loss as SK2).
+                for bone_id, unit in sorted(merged.items()):
+                    skacc_groups.setdefault(bone_id, []).append(
+                        (sub_idx, v_idx, min(255, unit), v_idx, obj))
+                continue
+
+            if len(parsed) == 1:
+                bone_id = parsed[0][0]
+                sk1_key = donor_sk1
+                if sk1_key is None or skin_data['SK1s'][sk1_key]['BoneIndex'] != bone_id:
+                    sk1_key = _first_sk1_entry_by_bone.get(bone_id, ('new_sk1', bone_id))
+                sk1_groups.setdefault(sk1_key, []).append((sub_idx, v_idx, obj))
+                continue
+
+            # SK2 pair: the donor's surviving direct bone(s) first, then the
+            # bones that replaced lost ones, then the rest by weight — so a
+            # remapped SKAcc supplement bone stays a supplement.
+            ranked = [bone_id for bone_id, _ in parsed]
+            if donor_sk2 is not None:
+                _donor_pair = skin_data['SK2s'][donor_sk2]
+                survivors = [b for b in (_donor_pair['BoneIndex1'], _donor_pair['BoneIndex2'])
+                             if b in new_bones]
+            elif donor_sk1 is not None:
+                _donor_bone = skin_data['SK1s'][donor_sk1]['BoneIndex']
+                survivors = [_donor_bone] if _donor_bone in new_bones else []
             else:
-                # Vertex not in any SK1/SK2 source range — it's only an SKAcc
-                # destination, or a newly added vertex (future editing support).
-                # All influences go to SKAcc if the bone is a known SKAcc bone;
-                # otherwise fall back to SK1 for known SK1 bones.
-                for b, w in parsed:
-                    if b in original_skacc_bone_ids:
-                        skacc_groups.setdefault(b, []).append(
-                            (sub_idx, v_idx, w, v_idx, obj))
-                    elif b in original_sk1_bone_ids:
-                        sk1_groups.setdefault(
-                            _first_sk1_entry_by_bone[b], []).append(
-                                (sub_idx, v_idx, obj))
+                survivors = []
+            replacements = [b for b in ranked if b not in orig_bones]
+            top_bones = []
+            for bone_id in survivors + replacements + ranked:
+                if bone_id not in top_bones:
+                    top_bones.append(bone_id)
+            top_bones = top_bones[:2]
+            b_lo, b_hi = min(top_bones), max(top_bones)
+            # A single dominant bone can legitimately claim the full 256-unit
+            # budget (e.g. the second influence quantizes to zero); clamping
+            # to 255 here loses at most 1/256 of a unit — accepted for MVP
+            # rather than reclassifying the vertex as SK1 after the fact.
+            w_lo = min(255, merged.get(b_lo, 0))
+            w_hi = min(255, merged.get(b_hi, 0))
+            sk2_key = _first_sk2_entry_by_pair.get((b_lo, b_hi), ('new_sk2', b_lo, b_hi))
+            sk2_groups.setdefault(sk2_key, []).append(
+                (sub_idx, v_idx, w_lo, w_hi, obj))
+
+            if len(parsed) > 2:
+                for bone_id, unit in quantized:
+                    if bone_id in (b_lo, b_hi):
+                        continue
+                    skacc_groups.setdefault(bone_id, []).append(
+                        (sub_idx, v_idx, unit, v_idx, obj))
+
+    if overweighted:
+        detail = "; ".join(
+            f"{name} vertex {idx} ({count} bones)" for name, idx, count in overweighted
+        )
+        raise ValueError(
+            f"{len(overweighted)} vertex(es) exceed the {MAX_BONE_INFLUENCES_PER_VERTEX}-bone "
+            f"influence limit observed across every player model in the game: {detail}. "
+            f"Remove some nonzero-weight bone_<id> vertex groups from these vertices."
+        )
+
+    if unweighted:
+        detail = "; ".join(f"{name} vertex {idx}" for name, idx in unweighted)
+        ignored_detail = (
+            f" Ignored vertex groups (not donor-skinned bones): "
+            f"{', '.join(sorted(ignored_group_names))}."
+            if ignored_group_names else ""
+        )
+        raise ValueError(
+            f"{len(unweighted)} vertex(es) have no valid donor bone influence: "
+            f"{detail}.{ignored_detail}"
+        )
+
+    for _name in sorted(ignored_group_names):
+        warnings.append(
+            f"Vertex group '{_name}' does not resolve to a donor-skinned bone; ignored.")
 
     # A Blender vertex group holds only one weight per (vertex, bone), so donor
     # SKAcc entries that accumulate twice onto the same dest slot cannot survive
@@ -1503,6 +1694,16 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
             continue
         _weights = _to_bytes(_e['WeightData'])
         _dest_base = _e.get('GplDestArrValue', 0) // _vertex_stride
+        _current = {_sub_vtx_starts[entry[0]] + entry[1]
+                    for entry in skacc_groups.get(_e['BoneIndex'], [])}
+        if _current != {_dest_base + _di for _di in _dests}:
+            # This bone's accumulation membership was edited: restoring the
+            # donor entry would silently undo the edit (or resurrect a bone
+            # that lost every vertex), so keep the Blender-built entry.
+            warnings.append(
+                f"SKAcc bone {_e['BoneIndex']}: membership edited, duplicate dest "
+                f"slots (donor 255+1 weights) rebuilt from Blender weights")
+            continue
         _rebuilt = []
         for _di, _w in zip(_dests, _weights):
             _loc = _resolve_global_vertex(_dest_base + _di)
@@ -1510,7 +1711,7 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
                 _rebuilt = None
                 break
             _sub_idx, _local_v, _obj = _loc
-            _rebuilt.append((_sub_idx, _local_v, _w / 256.0, _di, _obj))
+            _rebuilt.append((_sub_idx, _local_v, _w, _di, _obj))
         if _rebuilt is None:
             warnings.append(
                 f"SKAcc bone {_e['BoneIndex']}: duplicate dest slots could not be "
@@ -1535,43 +1736,70 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
                 )
         return _from_bytes(bytes(raw), use_base64)
 
-    # Build lookups so gplVertexArr / gplDestArr can be carried forward.
-    # The original values remain correct for the hammerspace GPL because Blender
-    # preserves vertex ordering (slot i in the Blender mesh == slot i in the GPL
-    # position buffer).  Without these values the runtime CPU skinning writes all
-    # SK1/SK2 output on top of each other at offset 0.
-    _orig_sk1s_list = skin_data.get('SK1s', [])
-    _orig_sk2s_list = skin_data.get('SK2s', [])
+    # sk1_groups/sk2_groups keys are either a donor SK1s/SK2s entry INDEX
+    # (int) or a ('new_sk1', bone_id) / ('new_sk2', lo, hi) sentinel for a
+    # bone/pair with no existing donor entry. Resolve each key back to its
+    # BoneIndex(es)/GplVertexArrValue: an existing entry's GPL value is a
+    # harmless best-effort hint for the no-membership-change case (Geometry
+    # Rebuild recomputes it unconditionally whenever MembershipEdited is
+    # set), and a synthetic entry gets a 0 placeholder — never read as final
+    # data either.
+    orig_sk1s_list = skin_data.get('SK1s', [])
+    orig_sk2s_list = skin_data.get('SK2s', [])
+
+    def _sk1_identity(key):
+        if isinstance(key, int):
+            e = orig_sk1s_list[key]
+            return e['BoneIndex'], e.get('GplVertexArrValue', 0)
+        return key[1], 0  # ('new_sk1', bone_id)
+
+    def _sk2_identity(key):
+        if isinstance(key, int):
+            e = orig_sk2s_list[key]
+            b_lo = min(e['BoneIndex1'], e['BoneIndex2'])
+            b_hi = max(e['BoneIndex1'], e['BoneIndex2'])
+            return b_lo, b_hi, e.get('GplVertexArrValue', 0)
+        return key[1], key[2], 0  # ('new_sk2', lo, hi)
+
     _orig_skacc_gda = {
         e['BoneIndex']: e.get('GplDestArrValue', 0)
         for e in skin_data.get('SKAccs', [])
     }
 
+    # VertexIndices: skinned position-slot index of each member, in payload
+    # order. The build tool splits an entry into contiguous runs from these
+    # instead of value-matching bind-pose records (ambiguous for duplicates).
+    def encode_vertex_indices(entries):
+        return _from_bytes(
+            struct.pack(f'>{len(entries)}H', *(entry[1] for entry in entries)), use_base64)
+
     new_sk1s = []
-    for entry_index, entries in sorted(sk1_groups.items()):
-        orig = _orig_sk1s_list[entry_index]
+    for key in sorted(sk1_groups, key=lambda k: _sk1_identity(k)[0]):
+        entries = sk1_groups[key]
+        bone_id, gpl_value = _sk1_identity(key)
         new_sk1s.append({
-            "BoneIndex": orig['BoneIndex'],
+            "BoneIndex": bone_id,
             "VertexCnt": len(entries),
             "BindPoseData": encode_src(entries),
-            "GplVertexArrValue": orig.get('GplVertexArrValue', 0),
+            "VertexIndices": encode_vertex_indices(entries),
+            "GplVertexArrValue": gpl_value,
         })
 
     new_sk2s = []
-    for entry_index, entries in sorted(sk2_groups.items()):
-        orig = _orig_sk2s_list[entry_index]
-        b_lo = min(orig['BoneIndex1'], orig['BoneIndex2'])
-        b_hi = max(orig['BoneIndex1'], orig['BoneIndex2'])
+    for key in sorted(sk2_groups, key=lambda k: _sk2_identity(k)[:2]):
+        entries = sk2_groups[key]
+        b_lo, b_hi, gpl_value = _sk2_identity(key)
         wt = bytearray()
         for e in entries:
-            wt.append(max(0, min(255, round(e[2] * 256))))
-            wt.append(max(0, min(255, round(e[3] * 256))))
+            wt.append(max(0, min(255, e[2])))
+            wt.append(max(0, min(255, e[3])))
         new_sk2s.append({
             "BoneIndex1": b_lo, "BoneIndex2": b_hi,
             "VertexCnt": len(entries),
             "BindPoseData": encode_src(entries),
             "WeightData": _from_bytes(bytes(wt), use_base64),
-            "GplVertexArrValue": orig.get('GplVertexArrValue', 0),
+            "VertexIndices": encode_vertex_indices(entries),
+            "GplVertexArrValue": gpl_value,
         })
 
     new_skaccs = []
@@ -1579,7 +1807,7 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
         wt   = bytearray()
         dest = bytearray()
         for e in entries:
-            wt   += bytes([max(0, min(255, round(e[2] * 256)))])
+            wt   += bytes([max(0, min(255, e[2]))])
             dest += struct.pack('>H', e[3])
         new_skaccs.append({
             "BoneIndex": bone_id, "VertexCnt": len(entries),
@@ -1597,6 +1825,12 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
         "SK2s":         new_sk2s,
         "SKAccs":       new_skaccs,
     }
+    if membership_edited:
+        # Tells the Python build tool (HammerspaceMain/GeometryRebuild) that
+        # entry membership itself changed, not just payload — SkinDataEdited
+        # must be rebuilt structurally rather than substituted by bone key
+        # into stale donor structure. See PLAN_ModelReplacements.md 3.4.
+        candidate_edited["MembershipEdited"] = True
 
     orig_size = _skn_block_size(skin_data)
     edit_size = _skn_block_size(candidate_edited, flush_ind_size=flush_ind_size)
@@ -2226,6 +2460,10 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
 
         written = 0
         warnings = []
+        # Non-fatal but severe conditions: the export still completes, yet part
+        # of the user's edit was discarded. Reported at ERROR level so it is not
+        # lost among ordinary warnings.
+        errors = []
         object_submeshes = []
         for obj in candidates:
             # match by VertexBufferOffset (unique per submesh)
@@ -2333,6 +2571,25 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 elif isinstance(normal_buffer, dict):
                     # Submesh has a NormalBuffer the exporter refused to encode —
                     # drop stale per-loop edits so the original NormalBuffer stays authoritative.
+                    if (self.use_custom_normals
+                            and normal_buffer.get("NormalBufferData")):
+                        # The user asked for normals to be overwritten and the
+                        # submesh has a standalone buffer, so encode_normal_edits
+                        # bailed out: extended records (CompCount > 3) could not
+                        # keep their donor tail mapping. Silently dropping this
+                        # ships a model whose lighting is not what was edited.
+                        donor_loops = len(_to_bytes(
+                            normal_buffer.get("NormalFacesData") or b""
+                        )) // 2
+                        errors.append(
+                            f"{obj.name}: standalone normal overwrite DROPPED — "
+                            f"extended normal records (CompCount "
+                            f"{normal_buffer.get('NormalBufferCompCount')}) could not "
+                            f"preserve their donor mapping ({donor_loops} donor loops). "
+                            f"The donor normals were kept; your normal edits are NOT "
+                            f"in this export. Keep the original topology or turn "
+                            f"Overwrite Normals off."
+                        )
                     normal_buffer.pop("NormalBufferDataEdited", None)
                     normal_buffer.pop("NormalFacesDataEdited", None)
                 for json_channel in target_submesh.get("ColorChannels", []):
@@ -2392,7 +2649,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                         obj,
                         inplace_normal_buffer,
                         loop_indices,
-                        warnings,
+                        errors,
                         use_base64,
                     )
                 elif isinstance(inplace_normal_buffer, dict):
@@ -2503,6 +2760,8 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
 
         for w in warnings:
             self.report({"WARNING"}, w)
+        for e in errors:
+            self.report({"ERROR"}, e)
 
         if written == 0:
             self.report({"ERROR"}, "No submeshes written. Check the warnings above.")

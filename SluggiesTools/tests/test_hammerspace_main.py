@@ -106,6 +106,68 @@ class BuildSKNSkinningDataTests(unittest.TestCase):
             [0x120, 0x140, 0x160, 0x180, 0x1A0],
         )
 
+    @staticmethod
+    def _rebuilt_skinning(sk1s, sk2s):
+        return main.SkinningData(
+            skn_offset=0, gpl_base_offset=0, mem_clr_ptr_field_offset=0,
+            mem_clr_sze_field_offset=0, mem_clr_ptr_value=0, mem_clr_absolute_ptr=0,
+            mem_clr_size=0, flush_ind_arr_field_offset=0, flush_ind_absolute_ptr=0,
+            flush_ind_size=1, flush_ind_data=b'\x00\x00', quantize_info=9,
+            sk1s=sk1s, sk2s=sk2s, sk_accs=[],
+        )
+
+    @staticmethod
+    def _sk1(gva, vertex_offset, count, fill):
+        return main.SK1(
+            bone_index=0, vertex_cnt=count, vertex_offset=vertex_offset,
+            bind_pose_data=bytes([fill]) * (count * 12), vertex_arr_field_offset=0,
+            gpl_vertex_arr_field_offset=0, vertex_arr_absolute_ptr=0,
+            gpl_vertex_arr_value=gva,
+        )
+
+    def test_rebuilt_source_arrays_mirror_position_buffer_including_gap_lines(self):
+        # Donor rule (361/361 models): src = align32(struct end) + gplVertexArr.
+        # SK1[1] sits two cache lines after SK1[0]'s last line (an unused
+        # position-buffer line at 0x20..0x40); SK2 lands at 0x60 + 8.
+        sk2 = main.SK2(
+            bone_index1=0, bone_index2=1, vertex_cnt=1, vertex_offset=8,
+            bind_pose_data=b'\x03' * 12, weight_data=b'\x80\x80',
+            vertex_arr_field_offset=0, weight_arr_field_offset=0,
+            gpl_vertex_arr_field_offset=0, vertex_arr_absolute_ptr=0,
+            weight_arr_absolute_ptr=0, gpl_vertex_arr_value=0x60,
+        )
+        skinning = self._rebuilt_skinning(
+            [self._sk1(0x00, 0, 2, 0x01), self._sk1(0x40, 4, 1, 0x02)], [sk2])
+
+        block = main.BuildSKNSkinningData(SimpleNamespace(skinning=skinning), None)
+
+        base = 0x24 + 2 * 0x40 + 0x74       # struct end 0x118
+        base = (base + 31) & ~31             # 0x120
+        sk1_offset = struct.unpack_from('>I', block, 0x08)[0]
+        sk2_offset = struct.unpack_from('>I', block, 0x0C)[0]
+        sources = [
+            struct.unpack_from('>I', block, sk1_offset + 0x30)[0],
+            struct.unpack_from('>I', block, sk1_offset + 0x40 + 0x30)[0],
+            struct.unpack_from('>I', block, sk2_offset + 0x60)[0],
+        ]
+        self.assertEqual(sources, [base + 0x00, base + 0x40, base + 0x60])
+        self.assertEqual(block[base + 0x40 + 4:base + 0x40 + 16], b'\x02' * 12)
+        self.assertEqual(block[base + 0x60 + 8:base + 0x60 + 20], b'\x03' * 12)
+        # tail arrays start right after the mirrored region (0x60 + 20 -> 0x80)
+        self.assertEqual(struct.unpack_from('>I', block, 0x1C)[0], base + 0x80)
+
+    def test_non_exclusive_destinations_fall_back_to_sequential_sources_with_warning(self):
+        skinning = self._rebuilt_skinning(
+            [self._sk1(0x00, 0, 1, 0x01), self._sk1(0x0C, 0, 1, 0x02)], [])
+
+        with mock.patch.object(main._slogger, 'warning') as warning:
+            block = main.BuildSKNSkinningData(SimpleNamespace(skinning=skinning), None)
+
+        sk1_offset = struct.unpack_from('>I', block, 0x08)[0]
+        second_source = struct.unpack_from('>I', block, sk1_offset + 0x40 + 0x30)[0]
+        self.assertEqual(second_source, 0xC0 + 0x20)
+        self.assertIn('not cache-line exclusive', warning.call_args[0][0])
+
 
 class BuildModelBlockTests(unittest.TestCase):
     def setUp(self):
@@ -595,6 +657,93 @@ class BuildModelBlockTests(unittest.TestCase):
         self.assertEqual(submesh.vertex_data, b'\x01\x02')
         self.assertEqual(submesh.uv_channels[0].uv_data, b'\x05\x06')
         self.assertEqual(submesh.draw_states[0].prim_list_data, b'\xBB')
+
+    def test_topology_rebuild_uses_rebuilt_flush_index_data(self):
+        parsed = main.ParseSluggie({'SluggiesModel': {
+            'UseBase64': False,
+            'SkinData': {
+                'QuantizeInfo': 0,
+                'SK1s': [],
+                'SK2s': [],
+                'SKAccs': [],
+                'FlushIndSize': 1,
+                'FlushIndData': [0xAA, 0xAA],
+            },
+            'SkinDataEdited': {
+                'SK1s': [],
+                'SK2s': [],
+                'SKAccs': [],
+                'FlushIndSize': 2,
+                'FlushIndData': [0xBB, 0xBB, 0xCC, 0xCC],
+            },
+            'Submeshes': [{
+                'FacesCount': 0,
+                'FacesData': [],
+                'FaceTextureIndices': [],
+                'VertexBuffer': {
+                    'VertexBufferData': [0, 0, 0, 0, 0, 0],
+                    'VertexBufferCompCount': 6,
+                    'VertexBufferQuantizeInfo': 0,
+                },
+                'UVChannels': [],
+                'ColorChannels': [],
+                'DisplayStates': [{
+                    'DisplayStateId': 7,
+                    'PrimListData': [0xAA],
+                    'PrimListDataEdited': [0xBB],
+                    'ShaderMode': '00000000',
+                    'PrimListPtrFieldOffset': '0x0',
+                    'PrimListSizeFieldOffset': '0x0',
+                    'PrimListAbsoluteOffset': '0x0',
+                    'PrimListLength': 1,
+                    'DisplayStatePadBytes': '000000',
+                }],
+            }],
+        }})
+
+        # A topology edit (PrimListDataEdited present) must pull flush-index
+        # data from SkinDataEdited (produced by GeometryRebuild._rebuild_skinning),
+        # not silently fall back to the untouched donor SkinData.
+        self.assertEqual(parsed.skinning.flush_ind_size, 2)
+        self.assertEqual(parsed.skinning.flush_ind_data, b'\xBB\xBB\xCC\xCC')
+
+    def test_unedited_skinning_still_uses_donor_flush_index_data(self):
+        parsed = main.ParseSluggie({'SluggiesModel': {
+            'UseBase64': False,
+            'SkinData': {
+                'QuantizeInfo': 0,
+                'SK1s': [],
+                'SK2s': [],
+                'SKAccs': [],
+                'FlushIndSize': 1,
+                'FlushIndData': [0xAA, 0xAA],
+            },
+            'Submeshes': [{
+                'FacesCount': 0,
+                'FacesData': [],
+                'FaceTextureIndices': [],
+                'VertexBuffer': {
+                    'VertexBufferData': [0, 0, 0, 0, 0, 0],
+                    'VertexBufferCompCount': 6,
+                    'VertexBufferQuantizeInfo': 0,
+                },
+                'UVChannels': [],
+                'ColorChannels': [],
+                'DisplayStates': [{
+                    'DisplayStateId': 7,
+                    'PrimListData': [0xAA],
+                    'ShaderMode': '00000000',
+                    'PrimListPtrFieldOffset': '0x0',
+                    'PrimListSizeFieldOffset': '0x0',
+                    'PrimListAbsoluteOffset': '0x0',
+                    'PrimListLength': 1,
+                    'DisplayStatePadBytes': '000000',
+                }],
+            }],
+        }})
+
+        self.assertEqual(parsed.skinning.flush_ind_size, 1)
+        self.assertEqual(parsed.skinning.flush_ind_data, b'\xAA\xAA')
 
     def test_model_block_uses_schema_trailing_sections_when_available(self):
         fake_parsed = SimpleNamespace(trailing_sections=[

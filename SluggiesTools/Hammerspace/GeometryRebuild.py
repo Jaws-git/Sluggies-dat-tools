@@ -39,7 +39,8 @@ import sys
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(__file__), '..')))
 from drawlist import (computeRequiredDescriptors, decodeDrawList,
                       encodeDrawList, patchType3Setting)
-from ModelFormat import compute_mem_clear_range, conservative_flush_indices
+from ModelFormat import (CACHE_LINE_SIZE, align_up, compute_mem_clear_range,
+                         conservative_flush_indices)
 
 import slogger as _slogger
 
@@ -386,6 +387,232 @@ def _rebuild_skinning(model: dict, sub: dict, use_b64) -> dict | None:
           f'{len(only_acc)} acc-only slots, memClr 0x{mcp:X}/0x{mcs:X}, '
           f'flush {len(flush_sorted)} entries', source="geometry.rebuild")
     return {'perm': perm, 'n_verts': n_verts}
+
+
+# ---------------------------------------------------------------------------
+# Same-count skin membership edit (PLAN_ModelReplacements.md 3.4)
+# ---------------------------------------------------------------------------
+
+def _direct_entry_label(kind: str, entry: dict, members: list[int]) -> str:
+    bones = (f"bone {entry['BoneIndex']}" if kind == 'SK1'
+             else f"pair ({entry['BoneIndex1']},{entry['BoneIndex2']})")
+    return f'{kind} {bones} vertices {members[0]}-{members[-1]}'
+
+
+def layout_skin_membership_edit(data: dict) -> bool:
+    """Lay out a membership-edited SkinDataEdited without reordering vertices.
+
+    The exporter emits one SK1/SK2 entry per bone/pair whose members need not
+    be contiguous, with placeholder GplVertexArrValue and no VertexOffset.
+    Each entry is split into runs of consecutive vertex slots, and every run
+    gets the donor-style destination: GplVertexArrValue on a cache-line
+    boundary, VertexOffset = first slot's byte offset within that line.
+
+    Verified against all 361 skinned exports (12,364 SK1/SK2 entries, zero
+    exceptions): no two SK1/SK2 entries touch the same 32-byte cache line, and
+    SKAcc-only slots / the memClr range never touch an SK1/SK2 entry's lines.
+    A layout breaking either rule needs vertex reordering, which is rejected
+    here rather than emitted.
+
+    Rewrites SkinDataEdited in place (entries, VertexIndices, flush indices).
+    Returns True when a membership edit was laid out."""
+    model = data['SluggiesModel']
+    ske = model.get('SkinDataEdited')
+    sk = model.get('SkinData')
+    if not ske or not ske.get('MembershipEdited') or not sk:
+        return False
+    use_b64 = model.get('UseBase64', True)
+    stride = 6 * _comp_size(sk['QuantizeInfo'])
+
+    sub = next((s for s in model.get('Submeshes', [])
+                if s['VertexBuffer'].get('VertexBufferCompCount') == 6), None)
+    if sub is None:
+        raise ValueError('skin membership edit: model has no skinned (cc=6) submesh')
+    vb = sub['VertexBuffer']
+    donor_vb = _dec(vb['VertexBufferData'], use_b64)
+    edited_vb = _dec(vb.get('VertexBufferDataEdited') or vb['VertexBufferData'], use_b64)
+    faces_edited = sub.get('FacesDataEdited')
+    if (len(edited_vb) != len(donor_vb)
+            or (faces_edited is not None
+                and _dec(faces_edited, use_b64) != _dec(sub['FacesData'], use_b64))):
+        raise ValueError(
+            'skin membership edit combined with a vertex/face topology edit is not '
+            'supported yet; edit bone weights and geometry in separate exports')
+    n_verts = len(edited_vb) // stride
+
+    # Fallback for exports without VertexIndices: value-match bind-pose records
+    # against the edited vertex buffer (the exporter appends members in
+    # ascending vertex order, so prefer the next candidate after the last one).
+    value_map: dict[bytes, list[int]] = {}
+    for i in range(n_verts):
+        value_map.setdefault(edited_vb[i * stride:(i + 1) * stride], []).append(i)
+    claimed: set[int] = set()
+
+    def _members(entry: dict, bind_pose: bytes, what: str) -> list[int]:
+        count = entry['VertexCnt']
+        if entry.get('VertexIndices') is not None:
+            members = _u16s(_dec(entry['VertexIndices'], use_b64))
+            if len(members) != count:
+                raise ValueError(f'{what}: VertexIndices has {len(members)} entries, '
+                                 f'VertexCnt is {count}')
+        else:
+            members = []
+            previous = -1
+            for k in range(count):
+                candidates = value_map.get(bind_pose[k * stride:(k + 1) * stride])
+                if not candidates:
+                    raise ValueError(
+                        f'{what}: bind-pose record {k} matches no unclaimed vertex in '
+                        'the edited vertex buffer; re-export with the current Blender '
+                        'add-on (writes VertexIndices)')
+                pick = next((c for c in candidates if c > previous), candidates[0])
+                candidates.remove(pick)
+                members.append(pick)
+                previous = pick
+        for vertex in members:
+            if vertex >= n_verts:
+                raise ValueError(f'{what}: vertex {vertex} is outside the {n_verts}-vertex '
+                                 'skinned position buffer')
+            if vertex in claimed:
+                raise ValueError(f'{what}: vertex {vertex} is claimed by more than one '
+                                 'SK1/SK2 entry')
+            claimed.add(vertex)
+        return members
+
+    def _split(kind: str, entry: dict) -> list[tuple[dict, list[int]]]:
+        count = entry['VertexCnt']
+        what = (f"SK1 bone {entry['BoneIndex']}" if kind == 'SK1'
+                else f"SK2 pair ({entry['BoneIndex1']},{entry['BoneIndex2']})")
+        bind_pose = _dec(entry.get('BindPoseDataEdited') or entry['BindPoseData'], use_b64)
+        if len(bind_pose) != count * stride:
+            raise ValueError(f'{what}: BindPoseData is {len(bind_pose)} bytes, expected '
+                             f'{count} x {stride}')
+        weights = None
+        if kind == 'SK2':
+            weights = _dec(entry.get('WeightDataEdited') or entry['WeightData'], use_b64)
+            if len(weights) != count * 2:
+                raise ValueError(f'{what}: WeightData is {len(weights)} bytes, expected '
+                                 f'{count} x 2')
+        members = _members(entry, bind_pose, what)
+
+        runs: list[list[tuple[int, int]]] = []
+        for k in sorted(range(count), key=members.__getitem__):
+            if runs and members[k] == runs[-1][-1][0] + 1:
+                runs[-1].append((members[k], k))
+            else:
+                runs.append([(members[k], k)])
+
+        bone_keys = ('BoneIndex',) if kind == 'SK1' else ('BoneIndex1', 'BoneIndex2')
+        out = []
+        for run in runs:
+            first_byte = run[0][0] * stride
+            gpl_value = first_byte & ~(CACHE_LINE_SIZE - 1)
+            run_entry = {key: entry[key] for key in bone_keys}
+            run_entry['VertexCnt'] = len(run)
+            run_entry['GplVertexArrValue'] = gpl_value
+            run_entry['VertexOffset'] = first_byte - gpl_value
+            run_entry['BindPoseData'] = _enc(
+                b''.join(bind_pose[k * stride:(k + 1) * stride] for _, k in run), use_b64)
+            if weights is not None:
+                run_entry['WeightData'] = _enc(
+                    b''.join(weights[2 * k:2 * k + 2] for _, k in run), use_b64)
+            run_vertices = [vertex for vertex, _ in run]
+            run_entry['VertexIndices'] = _enc(
+                b''.join(_u16.pack(vertex) for vertex in run_vertices), use_b64)
+            out.append((run_entry, run_vertices))
+        return out
+
+    sk1_runs = [run for e in ske.get('SK1s', []) for run in _split('SK1', e)]
+    sk2_runs = [run for e in ske.get('SK2s', []) for run in _split('SK2', e)]
+    sk1_runs.sort(key=lambda run: run[1][0])
+    sk2_runs.sort(key=lambda run: run[1][0])
+
+    # ---- cache-line exclusivity between SK1/SK2 entries ----
+    line_owner: dict[int, str] = {}
+    conflicts = []
+    direct: set[int] = set()
+    for kind, runs in (('SK1', sk1_runs), ('SK2', sk2_runs)):
+        for entry, members in runs:
+            label = _direct_entry_label(kind, entry, members)
+            direct.update(vertex * stride for vertex in members)
+            end = (members[-1] + 1) * stride
+            for line in range(entry['GplVertexArrValue'] // CACHE_LINE_SIZE,
+                              align_up(end) // CACHE_LINE_SIZE):
+                if line in line_owner:
+                    conflicts.append((line * CACHE_LINE_SIZE, line_owner[line], label))
+                line_owner[line] = label
+    if conflicts:
+        detail = '; '.join(f'0x{offset:X}: {a} / {b}' for offset, a, b in conflicts[:5])
+        more = f' (+{len(conflicts) - 5} more)' if len(conflicts) > 5 else ''
+        raise ValueError(
+            f'skin membership edit needs vertex reordering (not supported yet): '
+            f'{len(conflicts)} cache line(s) shared by two SK1/SK2 entries — {detail}{more}. '
+            'The edit changes part of a donor SK1/SK2 entry into a different entry '
+            'type or bone pair (e.g. a two-bone vertex left with one bone, or a '
+            'three-bone vertex left with two); reassign the affected vertices as a '
+            'whole or keep their bone count unchanged')
+
+    # ---- SKAcc destinations and memClr range ----
+    written: set[int] = set()
+    for entry in ske.get('SKAccs', []):
+        destinations = _u16s(_dec(entry.get('DestIndexDataEdited') or entry['DestIndexData'],
+                                  use_b64))
+        base = entry.get('GplDestArrValue', 0)
+        for destination in destinations:
+            if base // stride + destination >= n_verts:
+                raise ValueError(f"SKAcc bone {entry['BoneIndex']}: destination "
+                                 f'{destination} is outside the {n_verts}-vertex buffer')
+            written.add(base + destination * stride)
+    mem_clr_ptr, mem_clr_size = compute_mem_clear_range(direct, written, stride)
+    if mem_clr_size:
+        hit = sorted({line_owner[line] for line in range(
+            mem_clr_ptr // CACHE_LINE_SIZE,
+            align_up(mem_clr_ptr + mem_clr_size) // CACHE_LINE_SIZE) if line in line_owner})
+        if hit:
+            raise ValueError(
+                f'skin membership edit needs vertex reordering (not supported yet): '
+                f'the SKAcc-only clear range 0x{mem_clr_ptr:X}/0x{mem_clr_size:X} overlaps '
+                f"{', '.join(hit[:5])}. A vertex moved between accumulation-only and "
+                'SK1/SK2 skinning')
+
+    # ---- flush indices: keep donor bytes when the SKAcc write set is unchanged ----
+    donor_direct: set[int] = set()
+    for entry in (*sk.get('SK1s', []), *sk.get('SK2s', [])):
+        start = entry['GplVertexArrValue'] + entry.get('VertexOffset', 0)
+        donor_direct.update(start + i * stride for i in range(entry['VertexCnt']))
+    donor_written: set[int] = set()
+    for entry in sk.get('SKAccs', []):
+        base = entry.get('GplDestArrValue', 0)
+        donor_written.update(base + d * stride
+                             for d in _u16s(_dec(entry['DestIndexData'], use_b64)))
+    donor_mem_clr = compute_mem_clear_range(donor_direct, donor_written, stride)
+    if written == donor_written and (mem_clr_ptr, mem_clr_size) == donor_mem_clr \
+            and sk.get('FlushIndData') is not None:
+        ske['FlushIndData'] = sk['FlushIndData']
+        ske['FlushIndSize'] = sk.get('FlushIndSize', 0)
+        flush_note = 'donor flush indices kept'
+    else:
+        flush = conservative_flush_indices(written, stride, mem_clr_ptr, mem_clr_size, n_verts)
+        ske['FlushIndData'] = _enc(b''.join(_u16.pack(x) for x in flush), use_b64)
+        ske['FlushIndSize'] = len(flush)
+        flush_note = f'SKAcc writes changed, conservative flush indices ({len(flush)})'
+
+    for kind, runs in (('SK1', sk1_runs), ('SK2', sk2_runs)):
+        for entry, members in runs:
+            if entry['VertexOffset'] >= stride:
+                _slogger.warning(
+                    f'[SKN] {_direct_entry_label(kind, entry, members)} starts '
+                    f"{entry['VertexOffset']} bytes into its cache line; donor data "
+                    'never does this (untested in-game)', source='geometry.rebuild')
+
+    ske['SK1s'] = [entry for entry, _ in sk1_runs]
+    ske['SK2s'] = [entry for entry, _ in sk2_runs]
+    ske['LayoutRebuiltByImporter'] = True
+    _slogger.info(
+        f"[SKN] membership edit laid out in place: {len(ske['SK1s'])} SK1 / "
+        f"{len(ske['SK2s'])} SK2 entries, memClr 0x{mem_clr_ptr:X}/0x{mem_clr_size:X}, "
+        f'{flush_note}', source='geometry.rebuild')
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1447,8 +1674,12 @@ def rebuild_edited_geometry(data: dict) -> bool:
     model = data['SluggiesModel']
     use_b64 = model.get('UseBase64', True)
 
+    # A same-count reskin (membership-only edit) is deliberately NOT routed
+    # through here: layout_skin_membership_edit() lays it out in place without
+    # permuting vertices, which keeps prim lists and facial pose data valid.
     changed = [i for i, sub in enumerate(model.get('Submeshes', []))
                if _submesh_changed(sub, use_b64)]
+
     if not changed:
         return False
 

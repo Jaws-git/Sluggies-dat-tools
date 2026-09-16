@@ -83,3 +83,35 @@ Explicit Blender shape-key edits replace their corresponding delta buffers.
 This is separate from SK1/SK2/SKAcc skinning. Birdo's facial head remains a
 rigid GEO attachment on bone 56; bone 55 has no SK entry or vertex influence in
 either LOD and is not responsible for the per-vertex overwrite.
+
+## Facial poses on skinned vertices (Luigi)
+
+Facial objects can also target the **skinned** submesh. Luigi's two objects
+(`SubmeshIndex 0`, interleaved 6-component records) map 64 and 356 vertices:
+341 in `SK1(51)` (head), 12 in `SK2(50,51)` (neck) and 3 in `SK1(18)` (the
+first object's 64 are all `SK1(51)`). Every one is written by an SK1/SK2
+entry, so the skinning deformer overwrites the position buffer each frame.
+Copying the pose into the GPL position array alone would therefore have no
+visible effect.
+
+In-game evidence shows the pose data lands in the **SKN source data** at the
+mirrored address `VAR_DATA_OFF + vertex_index * stride` (see the source mirror
+rule in [skn_section.html](skn_section.html)), not through the entry's own
+source pointer. A rebuilt Luigi SKN with correct per-entry pointers but source
+arrays 0x20 bytes off the mirror stretched exactly the facial-mapped neck
+vertices at the back of the head down to the floor. The pose records were
+written 8 bytes out of step into neighbouring source records. Mirroring the
+sources fixed it.
+
+No pointers into SKN exist in the facial section (checked for both
+SKN-relative and block-relative values), so the runtime derives the mapping
+itself.
+
+Implications:
+
+- Any SKN rebuild for a model with facial poses on skinned vertices must keep
+	SK1/SK2 sources on the mirror. `BlockValidator` enforces this for every
+	skinned model.
+- A topology rebuild that renumbers skinned vertices must remap facial run
+	lists as well (Milestone 4.6), and the mirrored layout then follows from the
+	new destinations.
