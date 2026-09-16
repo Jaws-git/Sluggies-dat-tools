@@ -203,13 +203,35 @@ def patchFstFileSize(new_size: int) -> bool:
     return True
 
 
-def findFreeMemoryChunk(dataLength: int) -> int:
+def _normalize_reserved_ranges(reserved_ranges) -> list[tuple[int, int]]:
+    """Return sorted, merged ``(start, end)`` pairs for non-empty ranges."""
+    spans = sorted(
+        (int(offset), int(offset) + int(length))
+        for offset, length in (reserved_ranges or ())
+        if int(length) > 0
+    )
+    merged: list[tuple[int, int]] = []
+    for start, end in spans:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def findFreeMemoryChunk(dataLength: int, reserved_ranges=()) -> int:
     """Scan the hammerspace region of the dat file for a contiguous run of
     ``dataLength`` zero bytes.
 
     The returned offset is guaranteed to be aligned to ``HS_ALIGN_BYTES``
     so the model block base preserves 32-byte absolute alignment for
     cache-line-sensitive GPL/SKN data.
+
+    ``reserved_ranges`` is an iterable of ``(offset, length)`` pairs that are
+    in use even when their bytes are zero, for example live model blocks that
+    end in zero padding. No byte of the returned run overlaps a reserved
+    range. Without it, a zero tail of a live block counts as free space, and a
+    new block can be placed over it.
 
     Returns the file offset of the first such run, or -1 if no fitting
     aligned space is found."""
@@ -226,6 +248,16 @@ def findFreeMemoryChunk(dataLength: int) -> int:
     if file_size <= BASE_SIZE:
         _slogger.info("No hammerspace region present (file is not larger than BASE_SIZE).", source="hammerspace.helper")
         return -1
+
+    reserved = _normalize_reserved_ranges(reserved_ranges)
+    reserved_index = 0
+
+    def overlaps_reserved(start: int, length: int) -> bool:
+        # Offsets are checked in ascending order, so the index only moves forward.
+        nonlocal reserved_index
+        while reserved_index < len(reserved) and reserved[reserved_index][1] <= start:
+            reserved_index += 1
+        return reserved_index < len(reserved) and reserved[reserved_index][0] < start + length
 
     zero_block = b'\x00' * HS_ALIGN_BYTES
     full_blocks, tail_bytes = divmod(dataLength, HS_ALIGN_BYTES)
@@ -247,17 +279,29 @@ def findFreeMemoryChunk(dataLength: int) -> int:
                 block_offset = read_offset + chunk_offset
 
                 if full_blocks == 0:
-                    if len(block) >= tail_bytes and block[:tail_bytes] == zero_block[:tail_bytes]:
+                    if (
+                        len(block) >= tail_bytes
+                        and block[:tail_bytes] == zero_block[:tail_bytes]
+                        and not overlaps_reserved(block_offset, tail_bytes)
+                    ):
                         return block_offset
                     continue
 
                 if tail_bytes and run_blocks >= full_blocks:
-                    if len(block) >= tail_bytes and block[:tail_bytes] == zero_block[:tail_bytes]:
+                    if (
+                        len(block) >= tail_bytes
+                        and block[:tail_bytes] == zero_block[:tail_bytes]
+                        and not overlaps_reserved(block_offset, tail_bytes)
+                    ):
                         return run_start
                     run_start = -1
                     run_blocks = 0
 
-                if len(block) == HS_ALIGN_BYTES and block == zero_block:
+                if (
+                    len(block) == HS_ALIGN_BYTES
+                    and block == zero_block
+                    and not overlaps_reserved(block_offset, HS_ALIGN_BYTES)
+                ):
                     if run_blocks == 0:
                         run_start = block_offset
                     run_blocks += 1
@@ -403,6 +447,42 @@ def findSharedEntries(chunk_number: int, file_index: int) -> list[tuple[int, int
                     break
 
     return shared
+
+
+def routedHammerspaceRanges() -> list[tuple[int, int]]:
+    """Return every ``(offset, length)`` the OUTPUT main.dol routes into hammerspace.
+
+    Scans all model entries and all three language slots (en, sp, fr). Only
+    ranges starting at or after ``BASE_SIZE`` are returned, deduplicated and
+    sorted. These blocks are live even where their bytes are zero, so callers
+    pass them to ``findFreeMemoryChunk`` as reserved ranges. Returns an empty
+    list when the output DOL does not exist yet.
+    """
+
+    if not os.path.exists(OUTPUT_DOL):
+        return []
+
+    ranges: set[tuple[int, int]] = set()
+    with open(OUTPUT_DOL, 'rb') as dol:
+        for dir_ptr in _readDirPtrs():
+            fidx = 0
+            while True:
+                dol.seek(dir_ptr + fidx * _ENTRY_SIZE)
+                raw = dol.read(_ENTRY_SIZE)
+                if len(raw) < _ENTRY_SIZE:
+                    break
+                words = struct.unpack('>12I', raw)
+                if words[0] != _DAT_FNAME_PTR:
+                    break
+                for length_word, offset_word in ((1, 2), (5, 6), (9, 10)):
+                    offset, length = words[offset_word], words[length_word]
+                    if offset >= BASE_SIZE and length > 0:
+                        ranges.add((offset, length))
+                fidx += 1
+                if fidx > 200:
+                    break
+
+    return sorted(ranges)
 
 
 def readDolEntry(chunk_number: int, file_index: int) -> tuple[int, int]:

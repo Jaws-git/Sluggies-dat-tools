@@ -498,6 +498,106 @@
           "additionalProperties": false
         }
       },
+      "CustomSubmeshes": {
+        "type": "array",
+        "description": "Hammerspace-only, user-created rigid submeshes appended to the donor model (PLAN_AddSubmesh.md). Kept separate from donor Submeshes, as with AdditionalTextureDescriptors. Each entry is a single-bone rigid mesh attached via ACT bone GeoId; no skinning is possible for these submeshes.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "CustomSubmeshId": {
+              "type": "string",
+              "description": "Stable identifier for this custom submesh (e.g. 'custom0'), assigned by the Blender add-on at creation time. Used to key export-time errors and, in the Blender scene, to detect a bone claimed twice."
+            },
+            "MeshName": {
+              "type": "string",
+              "description": "ASCII, length-limited mesh name string to embed in the new GEO descriptor, following the same convention as donor Submeshes[].MeshName."
+            },
+            "HostBoneId": {
+              "type": "number",
+              "minimum": 0,
+              "description": "BoneId (index into BoneHierarchy) that owns this submesh. Must be mesh-free (GeoIdRaw == 0xFFFF) and not claimed by another CustomSubmeshes entry; bones that also drive SKN skinning are allowed (Phase 0 probe 3, U2 passed)."
+            },
+            "TemplateSource": {
+              "type": "string",
+              "pattern": "^(rigid|derived|builtin):.+$",
+              "description": "Selects the cloned display-state list, attribute formats/quantization and UV channel count. One of 'rigid:<SurfaceId>' (a same-model rigid submesh surface), 'derived:<SurfaceId>' (built from a same-model submesh-0 Spec surface) or 'builtin:<name>' (a stored generic template, e.g. 'builtin:rigid_spec_v1'). See PLAN_AddSubmesh.md 'Template sources'."
+            },
+            "VertexBufferData": {
+              "type": "string",
+              "description": "Base64-encoded position buffer in host-bone bind-local space, quantized using the template source's position format (canonical rigid contract: CompCount 3, QuantizeInfo 59 unless the template dictates otherwise)."
+            },
+            "NormalBufferData": {
+              "type": "string",
+              "description": "Base64-encoded separate normal array (rigid submeshes never interleave normals), quantized using the template source's normal format."
+            },
+            "NormalFacesData": {
+              "type": "string",
+              "description": "Base64-encoded per-loop normal index buffer, packed as big-endian uint16 values aligned loop-for-loop with FacesData, following the convention of Submeshes[].NormalBuffer.NormalFacesData."
+            },
+            "ColorChannelData": {
+              "type": "string",
+              "description": "Base64-encoded vertex color buffer for this submesh's single color entry, quantized using the template source's color format. Absent when the template has no color channel."
+            },
+            "ColorFacesData": {
+              "type": "string",
+              "description": "Base64-encoded color index buffer, packed as big-endian uint16 triplets aligned face-for-face with FacesData. Absent when ColorChannelData is absent."
+            },
+            "UVChannels": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 2,
+              "description": "One or two UV channels, matching the template source's UV channel count (F9; the MVP allows only 1 or 2). Channel 1, when present, mirrors channel 0 (specular), as with donor rigid submeshes.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "UVChannelIndex": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "description": "Zero-based UV channel index (0 = texture0, 1 = texture1 / specular mirror)."
+                  },
+                  "UVChannelData": {
+                    "type": "string",
+                    "description": "Base64-encoded raw ST coordinate buffer, quantized using the template source's UV format."
+                  },
+                  "UVFacesData": {
+                    "type": "string",
+                    "description": "Base64-encoded UV index buffer, packed as big-endian uint16 triplets aligned face-for-face with FacesData."
+                  }
+                },
+                "required": ["UVChannelIndex", "UVChannelData", "UVFacesData"]
+              }
+            },
+            "FacesCount": {
+              "type": "number",
+              "minimum": 1,
+              "description": "Number of triangle faces in this custom submesh."
+            },
+            "FacesData": {
+              "type": "string",
+              "description": "Base64-encoded face index buffer, packed as big-endian uint16 triplets, in the same layout as Submeshes[].FacesData."
+            },
+            "TextureAssignment": {
+              "type": "object",
+              "description": "Resolves this submesh's layer-0 texture. Exactly one of the two properties is present; validated in Python (Phase 1 step 3), not by this schema.",
+              "properties": {
+                "DonorTextureIndex": {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "Existing TextureDescriptors index to bind directly, reusing a donor texture."
+                },
+                "AdditionalTextureFileName": {
+                  "type": "string",
+                  "description": "TextureFileName of an AdditionalTextureDescriptors entry to bind once it is appended to TEX."
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "required": ["CustomSubmeshId", "MeshName", "HostBoneId", "TemplateSource", "VertexBufferData", "FacesCount", "FacesData", "UVChannels", "TextureAssignment"],
+          "additionalProperties": false
+        }
+      },
       "DesiredTextureAssignments": {
         "type": "object",
         "description": "Phase 2 export intent keyed by donor SurfaceId. Each value is the existing or deterministically appended TEX index that Phase 3 must bind before that surface's primitive list executes.",

@@ -117,6 +117,41 @@ class MeshData:
 
 
 @dataclass
+class CustomSubmeshUVChannel:
+    channel_index:  int
+    uv_data:        bytes
+    uv_faces_data:  bytes
+
+
+@dataclass
+class CustomSubmeshTextureAssignment:
+    donor_texture_index:          int | None
+    additional_texture_file_name: str | None
+
+
+@dataclass
+class CustomSubmesh:
+    """PLAN_AddSubmesh.md Phase 1: a hammerspace-only, user-created rigid
+    submesh appended to a donor model. Kept fully separate from donor
+    Submeshes/MeshData; nothing here is written into or derived from donor
+    structures. Bone-ownership, template-source and other cross-checks are
+    Phase 1 step 3's job, not this parse step."""
+    custom_submesh_id:  str
+    mesh_name:          str
+    host_bone_id:       int
+    template_source:    str
+    vertex_data:        bytes
+    normal_data:        bytes | None
+    normal_faces_data:  bytes | None
+    color_data:         bytes | None
+    color_faces_data:   bytes | None
+    uv_channels:        list   # [CustomSubmeshUVChannel]
+    faces_count:        int
+    faces_data:         bytes
+    texture_assignment: CustomSubmeshTextureAssignment
+
+
+@dataclass
 class Bone:
     bone_id:            int
     geo_id:             int
@@ -262,6 +297,7 @@ class SluggieParsed:
     trailing_sections:  list[TrailingSection]  # schema-backed ptr6/ptr7/ptr8 payloads
     model_offset:       int                 # absolute byte offset of model block in INPUT dat
     model_length:       int                 # byte length of model block in INPUT dat
+    custom_submeshes:   list                # [CustomSubmesh], empty when none requested
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +375,311 @@ def _position_edits(model: dict) -> list[tuple[int, dict, bytes]]:
                 f'sub{submesh_index}: position-only edit changed face indices/order')
         edits.append((submesh_index, submesh, edited))
     return edits
+
+
+# ---------------------------------------------------------------------------
+# CustomSubmeshes validation (PLAN_AddSubmesh.md Phase 1 step 3)
+# ---------------------------------------------------------------------------
+# Cross-checks a CustomSubmeshes entry against the rest of the .sluggie
+# contract before any DAT/DOL write. This runs ahead of ParseSluggie/
+# BuildGPLMeshData, which don't otherwise touch CustomSubmeshes at all
+# (Phase 1 step 2 is a pure parse); GPL/ACT/TEX assembly is Phase 2-4.
+
+_CUSTOM_SUBMESH_HAND_VISIBILITY_ROLES = frozenset({'RhSp', 'LhSp', 'SpRf', 'GhSp'})
+_CUSTOM_SUBMESH_REJECTED_DERIVED_TYPE6 = '00000375'  # F9: never occurs on a rigid submesh
+
+# Canonical rigid attribute formats (F6/F9), used for entries that don't come
+# from a same-model `rigid:` template. Byte strides of the int16/uint8
+# formats below; a `rigid:` source may in principle carry the donor
+# template's own (near-universally identical) format, but the MVP encodes
+# every CustomSubmeshes buffer in these canonical formats regardless of
+# source kind, so structural validation can check them uniformly here.
+_CUSTOM_SUBMESH_POSITION_STRIDE = 6   # CompCount 3, QuantizeInfo 59 (3 x int16)
+_CUSTOM_SUBMESH_NORMAL_STRIDE   = 6   # CompCount 3, QuantizeInfo 62 (3 x int16)
+_CUSTOM_SUBMESH_UV_STRIDE       = 4   # CompCount 2, QuantizeInfo 62 (2 x int16)
+_CUSTOM_SUBMESH_COLOR_STRIDE    = 4   # CompCount 4, QuantizeInfo 48 (RGBA8)
+
+# Phase 0 U4 (2026-09-16): byte-exact capture from Toadette kinopico.gpl
+# pony_l3 sm1_ds5, identical across 17 vanilla rigid submeshes. Duplicated
+# from build_template_source_fixture.BUILTIN_RIGID_SPEC_V1 (that module
+# imports HammerspaceMain, so this module can't import it back without a
+# cycle); test_hammerspace_main.py cross-checks the two copies so they can't
+# drift silently. Phase 2 step 3 consolidates them into one copy when the
+# GPL state-list builder moves into this module.
+_CUSTOM_SUBMESH_BUILTIN_TEMPLATES = {
+    'rigid_spec_v1': {
+        'States': (
+            (1, '000008', '11110000'),
+            (1, '000000', '11002003'),
+            (4, '000000', 'ffffff10'),
+            (3, '000000', '000028a8'),
+            (6, '010000', '00000374'),
+            (7, '640064', 'Spec'),
+        ),
+        'Sha256': 'ee88bc44a3fb2a5864203b941519199ec61f1097eafef479eccf87de666dd862',
+    },
+}
+
+
+def _custom_submesh_setting_bytes(shader_mode: str) -> bytes:
+    if len(shader_mode) == 8 and all(c in '0123456789abcdefABCDEF' for c in shader_mode):
+        return bytes.fromhex(shader_mode)
+    return shader_mode.encode('ascii', errors='replace').ljust(4, b'\x00')[:4]
+
+
+def _custom_submesh_state_records_sha256(records) -> str:
+    """Hash display-state records as their 16-byte headers without pointers.
+
+    Mirrors build_template_source_fixture.state_records_sha256 exactly (same
+    algorithm and byte layout)."""
+    import hashlib
+    payload = b''.join(
+        bytes([state_id]) + bytes.fromhex(pad) + _custom_submesh_setting_bytes(mode)
+        for state_id, pad, mode in records
+    )
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _bone_geo_id_raw(bone: dict) -> int:
+    """Literal ACT GeoId sentinel (0xFFFF = mesh-free), independent of the
+    BoneHierarchy[].GeoId field, which normalises skinned bones to 0 (F7)."""
+    if bone.get('GeoIdRaw') is not None:
+        return int(bone['GeoIdRaw'])
+    if bone.get('Skinned'):
+        return 0xFFFF
+    return int(bone.get('GeoId', 0xFFFF))
+
+
+def _custom_submesh_effective_state(states: list, upto_index: int, display_state_id: int):
+    """Last state of *display_state_id* at or before *upto_index* in *states*
+    (the cumulative-state walk used throughout PLAN_AddSubmesh.md/
+    PLAN_ModelReplacements.md to resolve GX state carried into a draw)."""
+    effective = None
+    for state in states[:upto_index + 1]:
+        if int(state.get('DisplayStateId', -1)) == display_state_id:
+            effective = state
+    return effective
+
+
+def _validate_custom_submesh_indexed_array(
+    fail, label: str, use_b64: bool, data_field, faces_field, stride: int,
+) -> None:
+    """Structurally validate one (data, face-index) buffer pair.
+
+    Confirms the data buffer decodes to a whole number of *stride*-byte
+    entries within the uint16 index range, and that every face-index value
+    addresses an existing entry -- the "index/count limits are within
+    uint16" and "quantized coordinates are within the representable range"
+    checks from PLAN_AddSubmesh.md Phase 1 step 3. Values already decoded
+    from a properly strided buffer are always in-range for their own field
+    width; a misaligned/truncated buffer is the actual failure mode this
+    guards against.
+    """
+    if data_field is None:
+        return
+    data_bytes = _decode(data_field, use_b64)
+    if not data_bytes or len(data_bytes) % stride:
+        fail(f'{label} length {len(data_bytes)} is not a whole number of {stride}-byte entries')
+        return
+    entry_count = len(data_bytes) // stride
+    if entry_count > 0xFFFF:
+        fail(f'{label} entry count {entry_count} exceeds the uint16 index range')
+    if faces_field is None:
+        return
+    faces_bytes = _decode(faces_field, use_b64)
+    if not faces_bytes or len(faces_bytes) % 6:
+        fail(f'{label} face-index buffer length {len(faces_bytes)} is not a whole number of uint16 triplets')
+        return
+    import struct as _struct
+    for index in _struct.unpack(f'>{len(faces_bytes) // 2}H', faces_bytes):
+        if index >= entry_count:
+            fail(f'{label} face index {index} is out of range for {entry_count} entries')
+            return
+
+
+def _validate_custom_submeshes(model: dict) -> None:
+    """PLAN_AddSubmesh.md Phase 1 step 3: reject an invalid CustomSubmeshes
+    entry before any DAT/DOL write. Runs ahead of ParseSluggie so a bad
+    entry never reaches GPL/ACT/TEX assembly. Each error names the
+    offending CustomSubmeshId so a failed patch is actionable."""
+    custom_submeshes = model.get('CustomSubmeshes') or []
+    if not custom_submeshes:
+        return
+
+    errors: list[str] = []
+    if not model.get('UseHammerspace'):
+        raise ValueError(
+            'CustomSubmeshes require Hammerspace Mode (UseHammerspace) to be enabled'
+        )
+
+    use_b64 = model.get('UseBase64', True)
+    bones_by_id = {int(b['BoneId']): b for b in model.get('BoneHierarchy') or []}
+    donor_submeshes = model.get('Submeshes') or []
+    submesh0 = donor_submeshes[0] if donor_submeshes else None
+
+    rigid_surfaces: dict[str, tuple[list, int]] = {}
+    for sub in donor_submeshes:
+        if int((sub.get('VertexBuffer') or {}).get('VertexBufferCompCount', 0)) != 3:
+            continue
+        states = sub.get('DisplayStates') or []
+        for index, state in enumerate(states):
+            surface_id = state.get('SurfaceId')
+            if surface_id and surface_id not in rigid_surfaces:
+                rigid_surfaces[surface_id] = (states, index)
+
+    claimed_bones: dict[int, str] = {}
+    for cs in custom_submeshes:
+        cs_id = cs.get('CustomSubmeshId', '<missing CustomSubmeshId>')
+
+        def fail(message: str, _cs_id=cs_id) -> None:
+            errors.append(f"custom submesh '{_cs_id}': {message}")
+
+        host_bone_id = cs.get('HostBoneId')
+        if not isinstance(host_bone_id, int) or isinstance(host_bone_id, bool) or not (0 <= host_bone_id <= 0xFFFF):
+            fail(f'HostBoneId {host_bone_id!r} must be a uint16 bone index')
+        else:
+            bone = bones_by_id.get(host_bone_id)
+            if bone is None:
+                fail(f'host bone {host_bone_id} does not exist in BoneHierarchy')
+            else:
+                raw = _bone_geo_id_raw(bone)
+                if raw != 0xFFFF:
+                    fail(
+                        f'host bone {host_bone_id} already owns submesh {raw}; '
+                        'GeoId is a single uint16 per bone'
+                    )
+                elif host_bone_id in claimed_bones:
+                    fail(
+                        f'host bone {host_bone_id} is also claimed by custom submesh '
+                        f"'{claimed_bones[host_bone_id]}'"
+                    )
+                else:
+                    claimed_bones[host_bone_id] = cs_id
+
+        template_source = cs.get('TemplateSource', '')
+        kind, sep, argument = str(template_source).partition(':')
+        if not sep or kind not in ('rigid', 'derived', 'builtin') or not argument:
+            fail(
+                f'TemplateSource {template_source!r} must be rigid:<SurfaceId>, '
+                'derived:<SurfaceId> or builtin:<name>'
+            )
+            kind = None
+
+        if kind == 'rigid':
+            found = rigid_surfaces.get(argument)
+            if found is None:
+                fail(f"rigid: surface {argument!r} does not exist on a rigid submesh")
+            else:
+                states, index = found
+                lighting = _custom_submesh_effective_state(states, index, 7)
+                mode = lighting.get('ShaderMode') if lighting else None
+                if mode in _CUSTOM_SUBMESH_HAND_VISIBILITY_ROLES:
+                    fail(
+                        f"rigid: surface {argument!r} has hand/visibility-role "
+                        f'Type-7 {mode!r}; only plain lit surfaces are allowed'
+                    )
+        elif kind == 'derived':
+            if submesh0 is None or int((submesh0.get('VertexBuffer') or {}).get('VertexBufferCompCount', 0)) != 6:
+                fail('derived: sources require a donor skinned submesh 0')
+            else:
+                states = submesh0.get('DisplayStates') or []
+                matches = [i for i, s in enumerate(states) if s.get('SurfaceId') == argument]
+                if not matches:
+                    fail(f"derived: surface {argument!r} does not exist on submesh 0")
+                elif int(states[matches[0]].get('PrimListLength') or 0) <= 0:
+                    fail(f"derived: surface {argument!r} draws no primitives")
+                else:
+                    index = matches[0]
+                    type7 = _custom_submesh_effective_state(states, index, 7)
+                    type7_mode = type7.get('ShaderMode') if type7 else None
+                    if type7_mode != 'Spec':
+                        fail(
+                            f"derived: surface {argument!r} has effective Type-7 "
+                            f'{type7_mode!r}; only plain Spec surfaces are allowed'
+                        )
+                    type6 = _custom_submesh_effective_state(states, index, 6)
+                    type6_mode = type6.get('ShaderMode') if type6 else None
+                    if type6_mode == _CUSTOM_SUBMESH_REJECTED_DERIVED_TYPE6:
+                        fail(
+                            f"derived: surface {argument!r} uses Type-6 "
+                            f'{_CUSTOM_SUBMESH_REJECTED_DERIVED_TYPE6}, which never '
+                            'occurs on rigid submeshes'
+                        )
+        elif kind == 'builtin':
+            template = _CUSTOM_SUBMESH_BUILTIN_TEMPLATES.get(argument)
+            if template is None:
+                fail(
+                    f'builtin: unknown template {argument!r}; known: '
+                    f'{sorted(_CUSTOM_SUBMESH_BUILTIN_TEMPLATES)}'
+                )
+            elif _custom_submesh_state_records_sha256(template['States']) != template['Sha256']:
+                fail(f"builtin: stored bytes of {argument!r} do not match their recorded hash")
+
+        if kind in ('derived', 'builtin'):
+            uv_channel_count = len(cs.get('UVChannels') or [])
+            if uv_channel_count not in (1, 2):
+                fail(f'{kind}: UV channel count must be 1 or 2, got {uv_channel_count}')
+
+        faces_count = cs.get('FacesCount')
+        if not isinstance(faces_count, int) or isinstance(faces_count, bool) or not (0 <= faces_count <= 0xFFFF):
+            fail(f'FacesCount {faces_count!r} must be a uint16 value')
+            faces_count = None
+
+        vertex_bytes = _decode(cs['VertexBufferData'], use_b64) if cs.get('VertexBufferData') else b''
+        vertex_count = None
+        if not vertex_bytes or len(vertex_bytes) % _CUSTOM_SUBMESH_POSITION_STRIDE:
+            fail(f'VertexBufferData length {len(vertex_bytes)} is not a whole number of rigid position entries')
+        else:
+            vertex_count = len(vertex_bytes) // _CUSTOM_SUBMESH_POSITION_STRIDE
+            if vertex_count > 0xFFFF:
+                fail(f'vertex count {vertex_count} exceeds the uint16 index range')
+
+        if faces_count is not None:
+            faces_bytes = _decode(cs['FacesData'], use_b64) if cs.get('FacesData') is not None else b''
+            if len(faces_bytes) != faces_count * 6:
+                fail(
+                    f'FacesData length {len(faces_bytes)} does not match FacesCount '
+                    f'{faces_count} (expected {faces_count * 6} bytes)'
+                )
+            elif vertex_count is not None and faces_bytes:
+                import struct as _struct
+                for vertex_index in _struct.unpack(f'>{len(faces_bytes) // 2}H', faces_bytes):
+                    if vertex_index >= vertex_count:
+                        fail(f'face index {vertex_index} is out of range for {vertex_count} vertices')
+                        break
+
+        if cs.get('NormalBufferData') is not None:
+            _validate_custom_submesh_indexed_array(
+                fail, 'NormalBufferData', use_b64,
+                cs.get('NormalBufferData'), cs.get('NormalFacesData'),
+                _CUSTOM_SUBMESH_NORMAL_STRIDE,
+            )
+        if cs.get('ColorChannelData') is not None:
+            _validate_custom_submesh_indexed_array(
+                fail, 'ColorChannelData', use_b64,
+                cs.get('ColorChannelData'), cs.get('ColorFacesData'),
+                _CUSTOM_SUBMESH_COLOR_STRIDE,
+            )
+        for uv in cs.get('UVChannels') or []:
+            _validate_custom_submesh_indexed_array(
+                fail, f"UVChannels[{uv.get('UVChannelIndex')}]", use_b64,
+                uv.get('UVChannelData'), uv.get('UVFacesData'),
+                _CUSTOM_SUBMESH_UV_STRIDE,
+            )
+
+        texture_assignment = cs.get('TextureAssignment') or {}
+        donor_index = texture_assignment.get('DonorTextureIndex')
+        additional_name = texture_assignment.get('AdditionalTextureFileName')
+        if (donor_index is None) == (additional_name is None):
+            fail(
+                'TextureAssignment must set exactly one of DonorTextureIndex or '
+                'AdditionalTextureFileName'
+            )
+        elif donor_index is not None and not (isinstance(donor_index, int) and 0 <= donor_index <= 0xFFFF):
+            fail(f'TextureAssignment.DonorTextureIndex {donor_index!r} must be a uint16 texture index')
+
+    if errors:
+        raise ValueError('; '.join(errors))
 
 
 # ---------------------------------------------------------------------------
@@ -921,6 +1262,41 @@ def ParseSluggie(data: dict) -> SluggieParsed:
     else:
         act_header = None
 
+    # ---- CustomSubmeshes ----------------------------------------------------
+    # PLAN_AddSubmesh.md Phase 1 step 2: parse only, never touching donor
+    # Submeshes/MeshData. Cross-checks (host bone freedom, template validity,
+    # texture-assignment resolution, ...) are Phase 1 step 3's job.
+    custom_submeshes = []
+    for cs in model.get('CustomSubmeshes', []) or []:
+        cs_uv_channels = [
+            CustomSubmeshUVChannel(
+                channel_index = uv['UVChannelIndex'],
+                uv_data       = _decode(uv['UVChannelData'], use_b64),
+                uv_faces_data = _decode(uv['UVFacesData'], use_b64),
+            )
+            for uv in cs.get('UVChannels', [])
+        ]
+        raw_texture_assignment = cs.get('TextureAssignment', {}) or {}
+        texture_assignment = CustomSubmeshTextureAssignment(
+            donor_texture_index          = raw_texture_assignment.get('DonorTextureIndex'),
+            additional_texture_file_name = raw_texture_assignment.get('AdditionalTextureFileName'),
+        )
+        custom_submeshes.append(CustomSubmesh(
+            custom_submesh_id  = cs['CustomSubmeshId'],
+            mesh_name          = cs['MeshName'],
+            host_bone_id       = cs['HostBoneId'],
+            template_source    = cs['TemplateSource'],
+            vertex_data        = _decode(cs['VertexBufferData'], use_b64),
+            normal_data        = _decode(cs['NormalBufferData'], use_b64) if cs.get('NormalBufferData') else None,
+            normal_faces_data  = _decode(cs['NormalFacesData'], use_b64) if cs.get('NormalFacesData') else None,
+            color_data         = _decode(cs['ColorChannelData'], use_b64) if cs.get('ColorChannelData') else None,
+            color_faces_data   = _decode(cs['ColorFacesData'], use_b64) if cs.get('ColorFacesData') else None,
+            uv_channels        = cs_uv_channels,
+            faces_count        = cs['FacesCount'],
+            faces_data         = _decode(cs['FacesData'], use_b64),
+            texture_assignment = texture_assignment,
+        ))
+
     return SluggieParsed(
         mesh              = mesh_data,
         bones             = bone_data,
@@ -933,6 +1309,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
         trailing_sections = trailing_sections,
         model_offset      = _hex(model.get('ModelOffset', '0x0')),
         model_length      = model.get('ModelLength', 0),
+        custom_submeshes  = custom_submeshes,
     )
 
 
@@ -3107,6 +3484,7 @@ def BuildModelBlock(
 
     model = data['SluggiesModel']
     _validate_hammerspace_contract(model, modes)
+    _validate_custom_submeshes(model)
     if model.get('DesiredTextureAssignments') and (
         modes.gpl != 'build'
         or modes.tex != 'build'
@@ -3382,7 +3760,13 @@ def WriteModelBlock(build: ModelBlockBuild, model_name: str) -> int:
             source='hammerspace.main',
         )
 
-    new_offset = hh.findFreeMemoryChunk(len(build.block))
+    # Live hammerspace blocks can end in zero padding, which the zero-byte scan
+    # would otherwise treat as free. Placing the new block over the old block's
+    # zero tail let the zeroRange below wipe the new block's header.
+    reserved_ranges = list(hh.routedHammerspaceRanges())
+    if replacing_hammerspace_block:
+        reserved_ranges.append((current_offset, current_length))
+    new_offset = hh.findFreeMemoryChunk(len(build.block), reserved_ranges=reserved_ranges)
     if new_offset == -1:
         if not hh.ensureOutputDat():
             raise RuntimeError('Unable to prepare output dt_na.dat')
@@ -3391,9 +3775,19 @@ def WriteModelBlock(build: ModelBlockBuild, model_name: str) -> int:
         required_size = next_region_start + len(build.block) + hh.HS_BUFFER_BYTES
         if not hh.ensureOutputDat(required_size):
             raise RuntimeError('Unable to prepare output dt_na.dat')
-        new_offset = hh.findFreeMemoryChunk(len(build.block))
+        new_offset = hh.findFreeMemoryChunk(len(build.block), reserved_ranges=reserved_ranges)
         if new_offset == -1:
             raise RuntimeError('No contiguous hammerspace region found after expansion')
+
+    if replacing_hammerspace_block and (
+        new_offset < current_offset + current_length
+        and current_offset < new_offset + len(build.block)
+    ):
+        raise RuntimeError(
+            f'new hammerspace block 0x{new_offset:08X}+{len(build.block):,} overlaps the '
+            f'live block 0x{current_offset:08X}+{current_length:,} it replaces; refusing to '
+            'write, because zeroing the old block would corrupt the new one'
+        )
 
     shared_entries = hh.findSharedEntries(chunk_number, file_index)
     hh.writeModelBlock(build.block, new_offset)

@@ -14,7 +14,7 @@ import HammerspaceHelper as helper
 
 
 class FindFreeMemoryChunkTests(unittest.TestCase):
-    def _find(self, region, length, *, base_size=64, chunk_size=64, alignment=32):
+    def _find(self, region, length, *, base_size=64, chunk_size=64, alignment=32, reserved=()):
         with tempfile.TemporaryDirectory() as temp_dir:
             dat_path = pathlib.Path(temp_dir) / 'dt_na.dat'
             dat_path.write_bytes(b'X' * base_size + region)
@@ -24,7 +24,7 @@ class FindFreeMemoryChunkTests(unittest.TestCase):
                 mock.patch.object(helper, 'CHUNK_SIZE', chunk_size),
                 mock.patch.object(helper, 'HS_ALIGN_BYTES', alignment),
             ):
-                return helper.findFreeMemoryChunk(length)
+                return helper.findFreeMemoryChunk(length, reserved_ranges=reserved)
 
     def test_checks_every_byte_inside_aligned_block(self):
         region = bytearray(96)
@@ -48,6 +48,54 @@ class FindFreeMemoryChunkTests(unittest.TestCase):
             self._find(b'\x00' * 29, 8, base_size=3, chunk_size=16, alignment=8),
             8,
         )
+
+
+    def test_zero_tail_of_a_reserved_live_block_is_not_free(self):
+        # A live 64-byte block whose last 32 bytes are zero padding, then free space.
+        region = b'D' * 32 + b'\x00' * 32 + b'\x00' * 64
+
+        self.assertEqual(self._find(region, 64), 96)
+        self.assertEqual(self._find(region, 64, reserved=[(64, 64)]), 128)
+
+    def test_partial_tail_respects_reserved_ranges(self):
+        region = b'\x00' * 128
+
+        self.assertEqual(self._find(region, 35, reserved=[(100, 4)]), 64)
+        self.assertEqual(self._find(region, 35, reserved=[(98, 4)]), 128)
+
+    def test_overlapping_reserved_ranges_are_merged(self):
+        self.assertEqual(
+            helper._normalize_reserved_ranges([(10, 5), (0, 0), (12, 10), (40, 2)]),
+            [(10, 22), (40, 42)],
+        )
+
+
+class RoutedHammerspaceRangesTests(unittest.TestCase):
+    def test_collects_hammerspace_ranges_from_every_language_slot(self):
+        def entry(slots):
+            words = []
+            for length, offset in slots:
+                words += [helper._DAT_FNAME_PTR, length, offset, length]
+            return struct.pack('>12I', *words)
+
+        dol = (
+            entry([(0x40, 0x2000), (0x40, 0x2000), (0x80, 0x3000)])
+            + entry([(0x10, 0x0500), (0x10, 0x0500), (0x10, 0x0500)])
+            + b'\x00' * 48
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dol_path = pathlib.Path(temp_dir) / 'main.dol'
+            dol_path.write_bytes(dol)
+            with (
+                mock.patch.object(helper, 'OUTPUT_DOL', str(dol_path)),
+                mock.patch.object(helper, 'BASE_SIZE', 0x1000),
+                mock.patch.object(helper, '_readDirPtrs', return_value=[0]),
+            ):
+                self.assertEqual(helper.routedHammerspaceRanges(), [(0x2000, 0x40), (0x3000, 0x80)])
+
+    def test_missing_output_dol_returns_no_ranges(self):
+        with mock.patch.object(helper, 'OUTPUT_DOL', '/nonexistent/main.dol'):
+            self.assertEqual(helper.routedHammerspaceRanges(), [])
 
 
 class WriteModelBlockTests(unittest.TestCase):

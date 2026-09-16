@@ -1254,7 +1254,12 @@ def extract_bone_data(model):
         srt_type     = bl.orientation_srt.type if bl and bl.orientation_srt else 0
         draw_priority = int(bl.priority) if bl else 0
         geo_raw = int(bl.geoFileIdRaw) if bl and hasattr(bl, 'geoFileIdRaw') else (0xFFFF if bone.skinned else int(bone.GEOID))
-        geo_field_off = hex(bl.absolute + 0x0C) if bl else None
+        # ACTBoneLayout.analyze() (act.py): orientationPTR(word,+0x00) +
+        # branch(4 words,+0x04..+0x13) + geoFileIdRaw(half,+0x14). The GeoId
+        # field is therefore at bl.absolute + 0x14, not + 0x0C (verified
+        # against real donor bytes: bl.absolute+0x0C falls inside the
+        # branch table, +0x14 reads the actual 0xFFFF/owner sentinel).
+        geo_field_off = hex(bl.absolute + 0x14) if bl else None
         # Absolute offset of the SRT block (ACT abs + orientationPTR). The
         # bind-pose scale floats live at SRTOffset + 0x04; the patcher uses
         # this to write an edited scale back in place. None when the bone has

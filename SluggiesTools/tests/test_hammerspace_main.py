@@ -1,3 +1,4 @@
+import base64
 import pathlib
 import struct
 import sys
@@ -962,6 +963,7 @@ class BuildModelBlockTests(unittest.TestCase):
         route_events = []
         with (
             mock.patch.object(main.hh, 'readOutputDolEntry', return_value=(0, 42)),
+            mock.patch.object(main.hh, 'routedHammerspaceRanges', return_value=[]),
             mock.patch.object(main.hh, 'findFreeMemoryChunk', return_value=0x2000),
             mock.patch.object(main.hh, 'writeModelBlock') as write_model,
             mock.patch.object(
@@ -1007,6 +1009,7 @@ class BuildModelBlockTests(unittest.TestCase):
         expected_size = expected_start + len(build.block) + main.hh.HS_BUFFER_BYTES
         with (
             mock.patch.object(main.hh, 'readOutputDolEntry', return_value=(0, 42)),
+            mock.patch.object(main.hh, 'routedHammerspaceRanges', return_value=[]),
             mock.patch.object(main.hh, 'findFreeMemoryChunk', side_effect=(-1, expected_start)),
             mock.patch.object(main.hh, 'ensureOutputDat', return_value=True) as ensure_dat,
             mock.patch.object(main.hh, 'writeModelBlock'),
@@ -1039,6 +1042,7 @@ class BuildModelBlockTests(unittest.TestCase):
             mock.patch.object(main.hh, 'BASE_SIZE', 0x2000),
             mock.patch.object(main.hh, 'OUTPUT_DAT', 'output.dat'),
             mock.patch.object(main.hh, 'readOutputDolEntry', return_value=(0x3000, 100)),
+            mock.patch.object(main.hh, 'routedHammerspaceRanges', return_value=[]),
             mock.patch.object(main.hh, 'findFreeMemoryChunk', return_value=0x4000),
             mock.patch.object(main.hh, 'findSharedEntries', return_value=[(19, 1)]),
             mock.patch.object(
@@ -1085,6 +1089,7 @@ class BuildModelBlockTests(unittest.TestCase):
         with (
             mock.patch.object(main.hh, 'BASE_SIZE', 0x2000),
             mock.patch.object(main.hh, 'readOutputDolEntry', return_value=(0x3000, 100)),
+            mock.patch.object(main.hh, 'routedHammerspaceRanges', return_value=[]),
             mock.patch.object(main.hh, 'findFreeMemoryChunk', return_value=0x4000),
             mock.patch.object(main.hh, 'findSharedEntries', return_value=[]),
             mock.patch.object(main.hh, 'writeModelBlock', side_effect=IOError('verify failed')),
@@ -1094,6 +1099,69 @@ class BuildModelBlockTests(unittest.TestCase):
             with self.assertRaisesRegex(IOError, 'verify failed'):
                 main.WriteModelBlock(build, 'fixture.sluggie')
 
+        patch_dol.assert_not_called()
+        zero_range.assert_not_called()
+
+    def test_replacement_reserves_routed_and_live_ranges_during_free_search(self):
+        build = main.ModelBlockBuild(
+            block=b'new-model-block',
+            parsed=self.parsed,
+            chunk_number=18,
+            file_index=0,
+            original_offset=0x1000,
+            original_length=42,
+            section_modes=main.SectionModes(),
+            section_sizes={},
+            validation_report={'valid': True},
+        )
+        with (
+            mock.patch.object(main.hh, 'BASE_SIZE', 0x2000),
+            mock.patch.object(main.hh, 'readOutputDolEntry', return_value=(0x3000, 100)),
+            mock.patch.object(main.hh, 'routedHammerspaceRanges', return_value=[(0x5000, 16)]),
+            mock.patch.object(main.hh, 'findFreeMemoryChunk', return_value=0x4000) as find_free,
+            mock.patch.object(main.hh, 'findSharedEntries', return_value=[]),
+            mock.patch.object(main.hh, 'writeModelBlock'),
+            mock.patch.object(main.hh, 'patchDolEntry'),
+            mock.patch.object(main.hh, 'patchFstFileSize'),
+            mock.patch.object(main.hh, 'zeroOriginalModel'),
+            mock.patch.object(main.hh, 'zeroRange'),
+            mock.patch.object(main.hh, 'writeDebugDumps'),
+            mock.patch.object(main.os.path, 'getsize', return_value=123456),
+        ):
+            main.WriteModelBlock(build, 'fixture.sluggie')
+
+        find_free.assert_called_once_with(
+            len(build.block), reserved_ranges=[(0x5000, 16), (0x3000, 100)],
+        )
+
+    def test_replacement_refuses_new_block_overlapping_the_live_block(self):
+        # Regression: the free search once placed a new block over the zero
+        # tail of the block it replaced, and zeroing the old range then wiped
+        # the new block's header.
+        build = main.ModelBlockBuild(
+            block=b'n' * 64,
+            parsed=self.parsed,
+            chunk_number=18,
+            file_index=0,
+            original_offset=0x1000,
+            original_length=42,
+            section_modes=main.SectionModes(),
+            section_sizes={},
+            validation_report={'valid': True},
+        )
+        with (
+            mock.patch.object(main.hh, 'BASE_SIZE', 0x2000),
+            mock.patch.object(main.hh, 'readOutputDolEntry', return_value=(0x3000, 100)),
+            mock.patch.object(main.hh, 'routedHammerspaceRanges', return_value=[]),
+            mock.patch.object(main.hh, 'findFreeMemoryChunk', return_value=0x3000 + 100 - 32),
+            mock.patch.object(main.hh, 'writeModelBlock') as write_model,
+            mock.patch.object(main.hh, 'patchDolEntry') as patch_dol,
+            mock.patch.object(main.hh, 'zeroRange') as zero_range,
+        ):
+            with self.assertRaisesRegex(RuntimeError, 'overlaps the live block'):
+                main.WriteModelBlock(build, 'fixture.sluggie')
+
+        write_model.assert_not_called()
         patch_dol.assert_not_called()
         zero_range.assert_not_called()
 
@@ -1144,6 +1212,7 @@ class BuildTEXTests(unittest.TestCase):
             trailing_sections=[],
             model_offset=0,
             model_length=0,
+            custom_submeshes=[],
         )
 
     def test_build_tex_reencodes_one_and_clones_one(self):
@@ -1765,6 +1834,362 @@ class BuildModelBlockRootScaleTests(unittest.TestCase):
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
                 with self.assertRaises(ValueError):
                     main._apply_root_scale_patch(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+
+
+class ParseSluggieCustomSubmeshesTests(unittest.TestCase):
+    """PLAN_AddSubmesh.md Phase 1 step 2: ParseSluggie produces a parsed
+    custom-submesh object without touching donor structures."""
+
+    def test_no_custom_submeshes_yields_empty_list(self):
+        parsed = main.ParseSluggie({'SluggiesModel': {'UseBase64': False}})
+        self.assertEqual(parsed.custom_submeshes, [])
+
+    def test_full_entry_parses_without_touching_donor_structures(self):
+        data = {'SluggiesModel': {
+            'UseBase64': False,
+            'Submeshes': [{
+                'FacesCount': 0,
+                'FacesData': [],
+                'FaceTextureIndices': [],
+                'VertexBuffer': {
+                    'VertexBufferData': [0, 0, 0, 0, 0, 0],
+                    'VertexBufferCompCount': 3,
+                    'VertexBufferQuantizeInfo': 0,
+                },
+                'UVChannels': [],
+                'ColorChannels': [],
+                'DisplayStates': [],
+            }],
+            'CustomSubmeshes': [{
+                'CustomSubmeshId': 'custom0',
+                'MeshName': 'CustomSubmesh_0',
+                'HostBoneId': 49,
+                'TemplateSource': 'rigid:sm1_ds5',
+                'VertexBufferData': [1, 2, 3, 4, 5, 6],
+                'NormalBufferData': [7, 8, 9, 10, 11, 12],
+                'NormalFacesData': [0, 0, 0],
+                'ColorChannelData': [255, 255, 255, 255],
+                'ColorFacesData': [0, 0, 0],
+                'UVChannels': [{
+                    'UVChannelIndex': 0,
+                    'UVChannelData': [0, 0, 1, 1],
+                    'UVFacesData': [0, 0, 0],
+                }],
+                'FacesCount': 1,
+                'FacesData': [0, 1, 2],
+                'TextureAssignment': {'DonorTextureIndex': 0},
+            }],
+        }}
+        parsed = main.ParseSluggie(data)
+
+        self.assertEqual(len(parsed.custom_submeshes), 1)
+        cs = parsed.custom_submeshes[0]
+        self.assertEqual(cs.custom_submesh_id, 'custom0')
+        self.assertEqual(cs.mesh_name, 'CustomSubmesh_0')
+        self.assertEqual(cs.host_bone_id, 49)
+        self.assertEqual(cs.template_source, 'rigid:sm1_ds5')
+        self.assertEqual(cs.vertex_data, bytes([1, 2, 3, 4, 5, 6]))
+        self.assertEqual(cs.normal_data, bytes([7, 8, 9, 10, 11, 12]))
+        self.assertEqual(cs.normal_faces_data, bytes([0, 0, 0]))
+        self.assertEqual(cs.color_data, bytes([255, 255, 255, 255]))
+        self.assertEqual(cs.color_faces_data, bytes([0, 0, 0]))
+        self.assertEqual(len(cs.uv_channels), 1)
+        self.assertEqual(cs.uv_channels[0].channel_index, 0)
+        self.assertEqual(cs.uv_channels[0].uv_data, bytes([0, 0, 1, 1]))
+        self.assertEqual(cs.uv_channels[0].uv_faces_data, bytes([0, 0, 0]))
+        self.assertEqual(cs.faces_count, 1)
+        self.assertEqual(cs.faces_data, bytes([0, 1, 2]))
+        self.assertEqual(cs.texture_assignment.donor_texture_index, 0)
+        self.assertIsNone(cs.texture_assignment.additional_texture_file_name)
+
+        # Donor mesh data must be untouched by the presence of CustomSubmeshes.
+        self.assertEqual(len(parsed.mesh.submeshes), 1)
+        self.assertEqual(parsed.mesh.submeshes[0].faces_count, 0)
+
+    def test_texture_assignment_by_additional_texture_file_name(self):
+        data = {'SluggiesModel': {
+            'UseBase64': False,
+            'CustomSubmeshes': [{
+                'CustomSubmeshId': 'custom0',
+                'MeshName': 'CustomSubmesh_0',
+                'HostBoneId': 49,
+                'TemplateSource': 'builtin:rigid_spec_v1',
+                'VertexBufferData': [0, 0, 0, 0, 0, 0],
+                'UVChannels': [],
+                'FacesCount': 0,
+                'FacesData': [],
+                'TextureAssignment': {'AdditionalTextureFileName': 'custom_custom0.png'},
+            }],
+        }}
+        parsed = main.ParseSluggie(data)
+        cs = parsed.custom_submeshes[0]
+        self.assertIsNone(cs.texture_assignment.donor_texture_index)
+        self.assertEqual(cs.texture_assignment.additional_texture_file_name, 'custom_custom0.png')
+        self.assertIsNone(cs.normal_data)
+        self.assertIsNone(cs.color_data)
+
+
+def _ds(surface_id, state_id, mode, pad='000000', prim=0):
+    return {
+        'SurfaceId': surface_id,
+        'DisplayStateId': state_id,
+        'DisplayStatePadBytes': pad,
+        'ShaderMode': mode,
+        'PrimListLength': prim,
+        'PrimListData': 'AAA=' if prim else '',
+        'FaceCount': 1 if prim else 0,
+    }
+
+
+def _validation_bone(bone_id, geo_raw=0xFFFF, parent=0):
+    return {'BoneId': bone_id, 'GeoIdRaw': geo_raw, 'ParentBoneId': parent, 'GeoIdFieldOffset': '0x1000'}
+
+
+def _validation_base_model():
+    """A minimal donor with one skinned submesh 0 and one rigid submesh 1.
+
+    submesh0 carries a plain Spec surface (sm0_ds4), a hand-role RhSp surface
+    (sm0_ds5) and a rejected Type-6 00000375 surface (sm0_ds7) so `derived:`
+    checks have something to reject. submesh1 mirrors the same shape for
+    `rigid:` checks (sm1_ds4 = Spec, sm1_ds5 = RhSp). Bones 1 and 3 are free
+    host candidates; bone 2 already owns submesh 1.
+    """
+    return {
+        'UseBase64': True,
+        'UseHammerspace': True,
+        'BoneHierarchy': [
+            _validation_bone(0, parent=None),
+            _validation_bone(1),
+            _validation_bone(2, geo_raw=1),
+            _validation_bone(3),
+        ],
+        'Submeshes': [
+            {
+                'MeshName': 'body',
+                'VertexBuffer': {'VertexBufferCompCount': 6, 'VertexBufferQuantizeInfo': 59, 'VertexBufferData': 'AAA='},
+                'DisplayStates': [
+                    _ds('sm0_ds0', 1, '11110000', '000008'),
+                    _ds('sm0_ds1', 4, 'fffffff0'),
+                    _ds('sm0_ds2', 3, '00003cbc'),
+                    _ds('sm0_ds3', 6, '00000374', '010000'),
+                    _ds('sm0_ds4', 7, 'Spec', '320064', prim=32),
+                    _ds('sm0_ds5', 7, 'RhSp', '460064', prim=32),
+                    _ds('sm0_ds6', 6, '00000375', '010000'),
+                    _ds('sm0_ds7', 7, 'Spec', '320064', prim=32),
+                ],
+            },
+            {
+                'MeshName': 'head',
+                'VertexBuffer': {'VertexBufferCompCount': 3, 'VertexBufferQuantizeInfo': 59, 'VertexBufferData': 'AAA='},
+                'DisplayStates': [
+                    _ds('sm1_ds0', 1, '11110000', '000008'),
+                    _ds('sm1_ds1', 4, 'ffffff10'),
+                    _ds('sm1_ds2', 3, '000028a8'),
+                    _ds('sm1_ds3', 6, '00000374', '010000'),
+                    _ds('sm1_ds4', 7, 'Spec', '640064', prim=32),
+                    _ds('sm1_ds5', 7, 'RhSp', '640064', prim=32),
+                ],
+            },
+        ],
+    }
+
+
+def _validation_entry(**overrides):
+    entry = {
+        'CustomSubmeshId': 'custom0',
+        'MeshName': 'CustomSubmesh_0',
+        'HostBoneId': 1,
+        'TemplateSource': 'rigid:sm1_ds4',
+        'VertexBufferData': base64.b64encode(bytes(6)).decode('ascii'),
+        'UVChannels': [{
+            'UVChannelIndex': 0,
+            'UVChannelData': base64.b64encode(bytes(4)).decode('ascii'),
+            'UVFacesData': base64.b64encode(struct.pack('>3H', 0, 0, 0)).decode('ascii'),
+        }],
+        'FacesCount': 1,
+        'FacesData': base64.b64encode(struct.pack('>3H', 0, 0, 0)).decode('ascii'),
+        'TextureAssignment': {'DonorTextureIndex': 0},
+    }
+    entry.update(overrides)
+    return entry
+
+
+class ValidateCustomSubmeshesTests(unittest.TestCase):
+    """PLAN_AddSubmesh.md Phase 1 step 3: reject an invalid CustomSubmeshes
+    entry before any DAT/DOL write, with each error naming the entry."""
+
+    def test_no_entries_is_a_noop(self):
+        model = _validation_base_model()
+        main._validate_custom_submeshes(model)  # must not raise
+
+    def test_missing_hammerspace_flag_is_rejected(self):
+        model = _validation_base_model()
+        model['UseHammerspace'] = False
+        model['CustomSubmeshes'] = [_validation_entry()]
+        with self.assertRaisesRegex(ValueError, 'Hammerspace Mode'):
+            main._validate_custom_submeshes(model)
+
+    def test_valid_rigid_entry_passes(self):
+        model = _validation_base_model()
+        model['CustomSubmeshes'] = [_validation_entry()]
+        main._validate_custom_submeshes(model)
+
+    def test_valid_derived_entry_passes(self):
+        model = _validation_base_model()
+        model['CustomSubmeshes'] = [_validation_entry(TemplateSource='derived:sm0_ds4')]
+        main._validate_custom_submeshes(model)
+
+    def test_valid_builtin_entry_passes(self):
+        model = _validation_base_model()
+        model['CustomSubmeshes'] = [_validation_entry(TemplateSource='builtin:rigid_spec_v1')]
+        main._validate_custom_submeshes(model)
+
+    def test_unknown_host_bone_is_rejected(self):
+        model = _validation_base_model()
+        model['CustomSubmeshes'] = [_validation_entry(HostBoneId=999)]
+        with self.assertRaisesRegex(ValueError, "custom0.*does not exist in BoneHierarchy"):
+            main._validate_custom_submeshes(model)
+
+    def test_host_bone_already_owning_a_mesh_is_rejected(self):
+        model = _validation_base_model()
+        model['CustomSubmeshes'] = [_validation_entry(HostBoneId=2)]
+        with self.assertRaisesRegex(ValueError, 'already owns submesh 1'):
+            main._validate_custom_submeshes(model)
+
+    def test_host_bone_claimed_twice_is_rejected(self):
+        model = _validation_base_model()
+        model['CustomSubmeshes'] = [
+            _validation_entry(CustomSubmeshId='custom0', HostBoneId=1),
+            _validation_entry(CustomSubmeshId='custom1', HostBoneId=1),
+        ]
+        with self.assertRaisesRegex(ValueError, "also claimed by custom submesh 'custom0'"):
+            main._validate_custom_submeshes(model)
+
+    def test_malformed_template_source_is_rejected(self):
+        model = _validation_base_model()
+        model['CustomSubmeshes'] = [_validation_entry(TemplateSource='nonsense')]
+        with self.assertRaisesRegex(ValueError, 'rigid:<SurfaceId>'):
+            main._validate_custom_submeshes(model)
+
+    def test_missing_rigid_surface_is_rejected(self):
+        model = _validation_base_model()
+        model['CustomSubmeshes'] = [_validation_entry(TemplateSource='rigid:sm1_ds99')]
+        with self.assertRaisesRegex(ValueError, 'does not exist on a rigid submesh'):
+            main._validate_custom_submeshes(model)
+
+    def test_rigid_hand_role_surface_is_rejected(self):
+        model = _validation_base_model()
+        model['CustomSubmeshes'] = [_validation_entry(TemplateSource='rigid:sm1_ds5')]
+        with self.assertRaisesRegex(ValueError, 'hand/visibility-role'):
+            main._validate_custom_submeshes(model)
+
+    def test_derived_missing_surface_is_rejected(self):
+        model = _validation_base_model()
+        model['CustomSubmeshes'] = [_validation_entry(TemplateSource='derived:sm0_ds99')]
+        with self.assertRaisesRegex(ValueError, 'does not exist on submesh 0'):
+            main._validate_custom_submeshes(model)
+
+    def test_derived_non_drawing_surface_is_rejected(self):
+        model = _validation_base_model()
+        model['CustomSubmeshes'] = [_validation_entry(TemplateSource='derived:sm0_ds3')]
+        with self.assertRaisesRegex(ValueError, 'draws no primitives'):
+            main._validate_custom_submeshes(model)
+
+    def test_derived_hand_role_surface_is_rejected(self):
+        model = _validation_base_model()
+        model['CustomSubmeshes'] = [_validation_entry(TemplateSource='derived:sm0_ds5')]
+        with self.assertRaisesRegex(ValueError, 'RhSp'):
+            main._validate_custom_submeshes(model)
+
+    def test_derived_rejected_type6_is_rejected(self):
+        model = _validation_base_model()
+        model['CustomSubmeshes'] = [_validation_entry(TemplateSource='derived:sm0_ds7')]
+        with self.assertRaisesRegex(ValueError, '00000375'):
+            main._validate_custom_submeshes(model)
+
+    def test_derived_requires_skinned_submesh0(self):
+        model = _validation_base_model()
+        model['Submeshes'][0]['VertexBuffer']['VertexBufferCompCount'] = 3
+        model['CustomSubmeshes'] = [_validation_entry(TemplateSource='derived:sm0_ds4')]
+        with self.assertRaisesRegex(ValueError, 'skinned submesh 0'):
+            main._validate_custom_submeshes(model)
+
+    def test_unknown_builtin_name_is_rejected(self):
+        model = _validation_base_model()
+        model['CustomSubmeshes'] = [_validation_entry(TemplateSource='builtin:nope')]
+        with self.assertRaisesRegex(ValueError, 'unknown template'):
+            main._validate_custom_submeshes(model)
+
+    def test_tampered_builtin_hash_is_rejected(self):
+        original = main._CUSTOM_SUBMESH_BUILTIN_TEMPLATES['rigid_spec_v1']
+        tampered = dict(original, States=original['States'][:-1] + ((7, '640064', 'RhSp'),))
+        main._CUSTOM_SUBMESH_BUILTIN_TEMPLATES['rigid_spec_v1'] = tampered
+        try:
+            model = _validation_base_model()
+            model['CustomSubmeshes'] = [_validation_entry(TemplateSource='builtin:rigid_spec_v1')]
+            with self.assertRaisesRegex(ValueError, 'recorded hash'):
+                main._validate_custom_submeshes(model)
+        finally:
+            main._CUSTOM_SUBMESH_BUILTIN_TEMPLATES['rigid_spec_v1'] = original
+
+    def test_uv_channel_count_enforced_for_derived_and_builtin(self):
+        model = _validation_base_model()
+        model['CustomSubmeshes'] = [_validation_entry(TemplateSource='derived:sm0_ds4', UVChannels=[])]
+        with self.assertRaisesRegex(ValueError, 'UV channel count must be 1 or 2'):
+            main._validate_custom_submeshes(model)
+
+    def test_faces_count_mismatch_is_rejected(self):
+        model = _validation_base_model()
+        model['CustomSubmeshes'] = [_validation_entry(FacesCount=2)]
+        with self.assertRaisesRegex(ValueError, 'does not match FacesCount'):
+            main._validate_custom_submeshes(model)
+
+    def test_face_index_out_of_range_is_rejected(self):
+        model = _validation_base_model()
+        model['CustomSubmeshes'] = [_validation_entry(
+            FacesData=base64.b64encode(struct.pack('>3H', 0, 0, 5)).decode('ascii'),
+        )]
+        with self.assertRaisesRegex(ValueError, 'face index 5 is out of range'):
+            main._validate_custom_submeshes(model)
+
+    def test_malformed_vertex_buffer_length_is_rejected(self):
+        model = _validation_base_model()
+        model['CustomSubmeshes'] = [_validation_entry(
+            VertexBufferData=base64.b64encode(bytes(5)).decode('ascii'),
+        )]
+        with self.assertRaisesRegex(ValueError, 'not a whole number of rigid position entries'):
+            main._validate_custom_submeshes(model)
+
+    def test_uv_face_index_out_of_range_is_rejected(self):
+        model = _validation_base_model()
+        entry = _validation_entry()
+        entry['UVChannels'][0]['UVFacesData'] = base64.b64encode(struct.pack('>3H', 0, 0, 9)).decode('ascii')
+        model['CustomSubmeshes'] = [entry]
+        with self.assertRaisesRegex(ValueError, 'UVChannels\\[0\\] face index 9 is out of range'):
+            main._validate_custom_submeshes(model)
+
+    def test_texture_assignment_requires_exactly_one_field(self):
+        model = _validation_base_model()
+        model['CustomSubmeshes'] = [_validation_entry(TextureAssignment={})]
+        with self.assertRaisesRegex(ValueError, 'exactly one of'):
+            main._validate_custom_submeshes(model)
+
+        model = _validation_base_model()
+        model['CustomSubmeshes'] = [_validation_entry(TextureAssignment={
+            'DonorTextureIndex': 0, 'AdditionalTextureFileName': 'x.png',
+        })]
+        with self.assertRaisesRegex(ValueError, 'exactly one of'):
+            main._validate_custom_submeshes(model)
+
+    def test_builtin_template_registry_matches_fixture_script_copy(self):
+        # Guards against silent drift between this module's validation-only
+        # copy and build_template_source_fixture.py's builder copy (see the
+        # comment on _CUSTOM_SUBMESH_BUILTIN_TEMPLATES).
+        import build_template_source_fixture as tsf
+        ours = main._CUSTOM_SUBMESH_BUILTIN_TEMPLATES['rigid_spec_v1']
+        theirs = tsf.BUILTIN_RIGID_SPEC_V1
+        self.assertEqual(ours['States'], theirs['States'])
+        self.assertEqual(ours['Sha256'], theirs['Sha256'])
 
 
 if __name__ == '__main__':
