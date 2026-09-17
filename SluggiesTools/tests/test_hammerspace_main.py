@@ -2512,9 +2512,8 @@ class ValidateCustomSubmeshesTests(unittest.TestCase):
             main._validate_custom_submeshes(model)
 
     def test_builtin_template_registry_matches_fixture_script_copy(self):
-        # Guards against silent drift between this module's validation-only
-        # copy and build_template_source_fixture.py's builder copy (see the
-        # comment on _CUSTOM_SUBMESH_BUILTIN_TEMPLATES).
+        # The fixture script reads the states and hash from this module; this
+        # guards against it growing its own copy again.
         import build_template_source_fixture as tsf
         ours = main._CUSTOM_SUBMESH_BUILTIN_TEMPLATES['rigid_spec_v1']
         theirs = tsf.BUILTIN_RIGID_SPEC_V1
@@ -2874,6 +2873,18 @@ def _free_host_bones(model: dict, count: int) -> list:
 
 
 @unittest.skipUnless(REAL_MARIO_SLUGGIE.is_file(), 'real Mario export not present in this checkout')
+def _strip_edited_fields(node) -> None:
+    """Remove every ``*Edited`` key from a parsed .sluggie tree, in place."""
+    if isinstance(node, dict):
+        for key in [k for k in node if k.endswith('Edited')]:
+            del node[key]
+        for value in node.values():
+            _strip_edited_fields(value)
+    elif isinstance(node, list):
+        for value in node:
+            _strip_edited_fields(value)
+
+
 class PatchGPLAppendSubmeshRealDonorTests(unittest.TestCase):
     """End-to-end smoke test against the real Mario entry00 export: appends
     a cube CustomSubmesh through the full BuildModelBlock pipeline and
@@ -2885,6 +2896,10 @@ class PatchGPLAppendSubmeshRealDonorTests(unittest.TestCase):
         with REAL_MARIO_SLUGGIE.open('r', encoding='utf-8') as source_file:
             data = json.load(source_file)
         model = data['SluggiesModel']
+        # The working export may carry Blender edits (for example
+        # round-trip drift in VertexBufferDataEdited) that the builder
+        # rightly applies; these tests only cover the append itself.
+        _strip_edited_fields(model)
         model['UseHammerspace'] = True
         return data, model
 

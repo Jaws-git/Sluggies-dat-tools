@@ -191,7 +191,12 @@ def _existing_expansion(output_dol: str, output_dat: str) -> CloneResult | None:
 
 def _choose_destination(output_dat: str) -> int:
     if os.path.exists(output_dat) and os.path.getsize(output_dat) > hh.BASE_SIZE:
-        destination = hh.findFreeMemoryChunk(EXPANDED_BANK_LENGTH + hh.HS_BUFFER_BYTES)
+        # Routed model blocks can end in zero padding that would otherwise
+        # look free.
+        destination = hh.findFreeMemoryChunk(
+            EXPANDED_BANK_LENGTH + hh.HS_BUFFER_BYTES,
+            reserved_ranges=hh.routedHammerspaceRanges(),
+        )
         if destination >= 0:
             return destination
 

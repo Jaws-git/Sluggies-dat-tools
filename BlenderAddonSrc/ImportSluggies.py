@@ -9,6 +9,8 @@ from functools import lru_cache
 from bpy.props import StringProperty, CollectionProperty
 from bpy_extras.io_utils import ImportHelper
 
+from . import HostBones
+
 
 ANM_MAGICS = (0x01321AFD, 0x013240DB, 0x01324210)
 
@@ -1015,7 +1017,7 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
     return obj
 
 
-def build_armature(name, bone_list, collection):
+def build_armature(name, bone_list, collection, skin_data=None):
     """Create a Blender Armature from a BoneHierarchy list and link it to *collection*.
 
     The armature object is named *name* (the imported .sluggie file name without
@@ -1114,6 +1116,7 @@ def build_armature(name, bone_list, collection):
 
     bpy.ops.object.mode_set(mode='OBJECT')
 
+    skn_bone_ids = HostBones.skn_bone_ids(skin_data)
     for bd in bone_list:
         bone_name = bone_id_to_name.get(bd['BoneId'])
         if bone_name and bone_name in arm_data.bones:
@@ -1126,10 +1129,12 @@ def build_armature(name, bone_list, collection):
             # proposal (PLAN_AddSubmesh.md Phase 5 step 2, HostBones.py). Fixed
             # facts of the exported model, read-only, stored on Bone (not
             # EditBone) so they survive into saved .blend files.
+            # SluggiesSkinned must come from SkinData: BoneHierarchy's own
+            # "Skinned" flag only means GeoIdRaw == 0xFFFF.
             b['SluggiesGeoIdRaw'] = int(bd.get('GeoIdRaw', 0xFFFF))
-            b['SluggiesSkinned'] = bool(bd.get('Skinned', False))
+            b['SluggiesSkinned'] = bd['BoneId'] in skn_bone_ids
 
-    arm_obj['SluggiesBoneMetadataVersion'] = 1
+    arm_obj['SluggiesBoneMetadataVersion'] = HostBones.BONE_METADATA_VERSION
     arm_obj.show_in_front = True
     arm_obj.display_type = 'WIRE'
     arm_obj.rotation_euler[0] = math.pi / 2
@@ -1197,7 +1202,7 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
             # by their VertexBufferOffset custom property and skin weights are
             # read from bone_<id> vertex groups — so this is cosmetic.
             base_name = os.path.splitext(os.path.basename(self.filepath))[0]
-            arm_obj = build_armature(base_name, bone_list, collection)
+            arm_obj = build_armature(base_name, bone_list, collection, model.get("SkinData"))
             abs_bone_mats = _compute_bone_absolute_matrices(bone_list)
             # So Add submesh (PLAN_AddSubmesh.md Phase 5 step 3) can find this
             # model's tex/ directory without asking the user or reading the

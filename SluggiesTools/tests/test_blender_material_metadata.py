@@ -58,6 +58,7 @@ def _load_texture_helpers():
         '_texture_export_toggles_required_message',
         '_custom_submesh_texture_layer',
         '_custom_submesh_template_texture_index',
+        '_plan_external_texture_copy',
         '_resolve_custom_submesh_texture_changes',
     }
     helpers = [
@@ -642,7 +643,7 @@ class CustomSubmeshTextureTests(unittest.TestCase):
             image_path = pathlib.Path(temp_dir, 'custom0.png')
             image_path.write_bytes(b'png')
             material = _material_graph('custom0_mat', 'custom0_ds0', 0, [image_path])
-            additions, assignments = self.resolve_custom_changes(
+            additions, assignments, copies = self.resolve_custom_changes(
                 [(material, 2)],
                 [
                     {'TextureIndex': 0, 'TextureFileName': '0.png'},
@@ -657,6 +658,7 @@ class CustomSubmeshTextureTests(unittest.TestCase):
         self.assertEqual(
             assignments, {'custom0_mat': {'AdditionalTextureFileName': 'custom0.png'}}
         )
+        self.assertEqual(copies, [])
 
     def test_existing_donor_png_rebinds_instead_of_appending(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -664,7 +666,7 @@ class CustomSubmeshTextureTests(unittest.TestCase):
             material = _material_graph(
                 'custom0_mat', 'custom0_ds0', 0, [pathlib.Path(temp_dir, '1.png')]
             )
-            additions, assignments = self.resolve_custom_changes(
+            additions, assignments, copies = self.resolve_custom_changes(
                 [(material, 0)],
                 [
                     {'TextureIndex': 0, 'TextureFileName': '0.png'},
@@ -676,6 +678,127 @@ class CustomSubmeshTextureTests(unittest.TestCase):
         self.assertEqual(
             assignments, {'custom0_mat': {'DonorTextureIndex': 1}}
         )
+        self.assertEqual(copies, [])
+
+    def _external_setup(self, temp_dir):
+        tex_dir = pathlib.Path(temp_dir, 'model', 'tex')
+        tex_dir.mkdir(parents=True)
+        external_dir = pathlib.Path(temp_dir, 'elsewhere')
+        external_dir.mkdir()
+        return tex_dir, external_dir
+
+    def test_external_png_is_planned_as_copy_into_tex(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tex_dir, external_dir = self._external_setup(temp_dir)
+            image_path = external_dir / 'hat.png'
+            image_path.write_bytes(b'hat')
+            additions, assignments, copies = self.resolve_custom_changes(
+                [(_material_graph('hat_mat', 'custom0_ds0', 0, [image_path]), 0)],
+                [{'TextureIndex': 0, 'TextureFileName': '0.png'}],
+                str(tex_dir),
+            )
+            self.assertEqual(additions, [
+                {'TextureFileName': 'hat.png', 'TemplateTextureIndex': 0},
+            ])
+            self.assertEqual(
+                assignments, {'hat_mat': {'AdditionalTextureFileName': 'hat.png'}}
+            )
+            self.assertEqual(copies, [(str(image_path), str(tex_dir / 'hat.png'))])
+            # Planning does not touch the filesystem.
+            self.assertFalse((tex_dir / 'hat.png').exists())
+
+    def test_external_png_identical_to_tex_file_reuses_it(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tex_dir, external_dir = self._external_setup(temp_dir)
+            (tex_dir / '0.png').write_bytes(b'donor')
+            image_path = external_dir / '0.png'
+            image_path.write_bytes(b'donor')
+            additions, assignments, copies = self.resolve_custom_changes(
+                [(_material_graph('hat_mat', 'custom0_ds0', 0, [image_path]), 0)],
+                [{'TextureIndex': 0, 'TextureFileName': '0.png'}],
+                str(tex_dir),
+            )
+        self.assertEqual(additions, [])
+        self.assertEqual(assignments, {'hat_mat': {'DonorTextureIndex': 0}})
+        self.assertEqual(copies, [])
+
+    def test_external_png_name_clash_gets_suffixed_name(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tex_dir, external_dir = self._external_setup(temp_dir)
+            (tex_dir / '0.png').write_bytes(b'donor')
+            image_path = external_dir / '0.png'
+            image_path.write_bytes(b'different')
+            additions, assignments, copies = self.resolve_custom_changes(
+                [(_material_graph('hat_mat', 'custom0_ds0', 0, [image_path]), 0)],
+                [{'TextureIndex': 0, 'TextureFileName': '0.png'}],
+                str(tex_dir),
+            )
+            self.assertEqual(additions, [
+                {'TextureFileName': '0_1.png', 'TemplateTextureIndex': 0},
+            ])
+            self.assertEqual(copies, [(str(image_path), str(tex_dir / '0_1.png'))])
+
+            # After the copy, a re-export reuses 0_1.png instead of adding 0_2.png.
+            (tex_dir / '0_1.png').write_bytes(b'different')
+            _additions, assignments, copies = self.resolve_custom_changes(
+                [(_material_graph('hat_mat', 'custom0_ds0', 0, [image_path]), 0)],
+                [{'TextureIndex': 0, 'TextureFileName': '0.png'}],
+                str(tex_dir),
+            )
+        self.assertEqual(assignments, {'hat_mat': {'AdditionalTextureFileName': '0_1.png'}})
+        self.assertEqual(copies, [])
+
+    def test_external_png_never_claims_missing_donor_name(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tex_dir, external_dir = self._external_setup(temp_dir)
+            image_path = external_dir / '0.png'
+            image_path.write_bytes(b'new')
+            additions, _assignments, copies = self.resolve_custom_changes(
+                [(_material_graph('hat_mat', 'custom0_ds0', 0, [image_path]), 0)],
+                [{'TextureIndex': 0, 'TextureFileName': '0.png'}],
+                str(tex_dir),
+            )
+        self.assertEqual([a['TextureFileName'] for a in additions], ['0_1.png'])
+        self.assertEqual([pathlib.Path(t).name for _s, t in copies], ['0_1.png'])
+
+    def test_same_named_external_pngs_from_different_folders_both_copy(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tex_dir, external_dir = self._external_setup(temp_dir)
+            first = external_dir / 'hat.png'
+            first.write_bytes(b'first')
+            (external_dir / 'b').mkdir()
+            second = external_dir / 'b' / 'hat.png'
+            second.write_bytes(b'second')
+            additions, assignments, copies = self.resolve_custom_changes(
+                [
+                    (_material_graph('a_mat', 'custom0_ds0', 0, [first]), 0),
+                    (_material_graph('b_mat', 'custom1_ds0', 0, [second]), 0),
+                    (_material_graph('c_mat', 'custom2_ds0', 0, [first]), 0),
+                ],
+                [{'TextureIndex': 0, 'TextureFileName': '0.png'}],
+                str(tex_dir),
+            )
+        # Repeats are collapsed later by _merge_texture_additions.
+        self.assertEqual(
+            list(dict.fromkeys(a['TextureFileName'] for a in additions)),
+            ['hat.png', 'hat_1.png'],
+        )
+        self.assertEqual(assignments['c_mat'], {'AdditionalTextureFileName': 'hat.png'})
+        self.assertEqual(
+            copies,
+            [(str(first), str(tex_dir / 'hat.png')), (str(second), str(tex_dir / 'hat_1.png'))],
+        )
+
+    def test_missing_external_png_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tex_dir, external_dir = self._external_setup(temp_dir)
+            with self.assertRaisesRegex(ValueError, 'does not exist'):
+                self.resolve_custom_changes(
+                    [(_material_graph('hat_mat', 'custom0_ds0', 0,
+                                      [external_dir / 'gone.png']), 0)],
+                    [{'TextureIndex': 0, 'TextureFileName': '0.png'}],
+                    str(tex_dir),
+                )
 
     def test_out_of_range_template_texture_index_is_rejected(self):
         material = _material_graph('custom0_mat', 'custom0_ds0', 0, [])

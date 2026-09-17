@@ -98,7 +98,8 @@
         </tr>
     </table>
     <h2>Payload Alignment</h2>
-    <p>The packed image-data region starts at the first 32-byte boundary after the descriptor table. Individual image payloads do not need separate 32-byte padding: payloads may be stored consecutively, and a Dolphin-tested CMPR image rendered correctly from a TEX-relative pointer that was 8 modulo 32. Palette payload alignment has not been runtime-tested.</p>
+    <p>The packed image-data region starts at the first 32-byte boundary after the descriptor table, and <strong>every image and palette payload must also start on a 32-byte boundary</strong> relative to the model block. Pad between payloads with zeros.</p>
+    <p>The GX texture image-base register stores the physical address shifted right by 5 bits, so the GPU (and Dolphin) can only address a texture on a 32-byte boundary. A payload at 8 mod 32 is sampled 8 bytes early. For CMPR that is one 4x4 sub-block, which shows up as fine pixel noise over a texture that is still recognisable. That makes the error easy to miss: an earlier test judged such an image correct. Across 1,422 unique vanilla model blocks, all 7,011 image payloads and all 654 palette payloads are at 0 mod 32. The TEX section start itself must be aligned too (see <a href="overview.html">overview</a>).</p>
     <p>This is probably a version of the TEX0 format. I extract the textures by shuffling around the data to create a valid TPL file and then converting it to a png with wimgt. I don't know where the LODBias, wrapS, wrapT, minFilter, and magFilter are in the header, so I assume they're 0.</p>
     <pre><code>def toFile(self, path):
     dataLength = self.height * self.width * {0:4,1:8,2:8,3:16,4:16,5:16,6:32,8:4,9:8,10:16,14:4}[self.format] >> 3

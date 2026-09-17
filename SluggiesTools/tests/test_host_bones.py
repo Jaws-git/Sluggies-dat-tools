@@ -1,4 +1,5 @@
 import ast
+import json
 import pathlib
 import sys
 import unittest
@@ -10,6 +11,7 @@ if str(BLENDER_ADDON_DIR) not in sys.path:
     sys.path.insert(0, str(BLENDER_ADDON_DIR))
 
 from HostBones import (  # noqa: E402
+    BONE_METADATA_VERSION,
     GEO_ID_FREE,
     BoneRecord,
     HostBoneChoice,
@@ -19,11 +21,18 @@ from HostBones import (  # noqa: E402
     STATUS_DRIVES_SKINNING,
     STATUS_EXCLUDED,
     STATUS_RECOMMENDED,
+    bone_metadata_is_current,
     bone_records_from_hierarchy,
     classify_host_bones,
     compute_rigid_retargets,
     order_host_bone_choices,
+    skn_bone_ids,
 )
+
+MODELS_DIR = ROOT / '2_Output_Models'
+REAL_MARIO = MODELS_DIR / '18 Mario' / '78277664_mario.gpl' / '78277664_mario.gpl.sluggie'
+REAL_LUIGI = MODELS_DIR / '19 Luigi' / '82188352_luigi.gpl' / '82188352_luigi.gpl.sluggie'
+REAL_MARE = MODELS_DIR / '42 Noki' / '168900000_mare.gpl' / '168900000_mare.gpl.sluggie'
 
 
 def _rec(bone_id, parent_id, geo_id_raw=GEO_ID_FREE, skinned=False):
@@ -148,14 +157,86 @@ class ComputeRigidRetargetsTests(unittest.TestCase):
 
 
 class BoneRecordsFromHierarchyTests(unittest.TestCase):
-    def test_reads_geoidraw_and_skinned_fields(self):
+    def test_reads_geoidraw_and_skinning_from_skin_data(self):
         hierarchy = [
-            {"BoneId": 0, "ParentBoneId": None, "GeoIdRaw": GEO_ID_FREE, "Skinned": False},
-            {"BoneId": 1, "ParentBoneId": 0, "GeoIdRaw": 2, "Skinned": True},
+            {"BoneId": 0, "ParentBoneId": None, "GeoIdRaw": GEO_ID_FREE, "Skinned": True},
+            {"BoneId": 1, "ParentBoneId": 0, "GeoIdRaw": 2, "Skinned": False},
+            {"BoneId": 2, "ParentBoneId": 0, "GeoIdRaw": GEO_ID_FREE, "Skinned": True},
         ]
-        records = bone_records_from_hierarchy(hierarchy)
+        skin_data = {"SK1s": [{"BoneIndex": 2}], "SK2s": [], "SKAccs": []}
+        records = bone_records_from_hierarchy(hierarchy, skin_data)
+        # export.py's "Skinned" only means GeoIdRaw == 0xFFFF; it is ignored.
         self.assertEqual(records[0], BoneRecord(0, None, GEO_ID_FREE, False))
-        self.assertEqual(records[1], BoneRecord(1, 0, 2, True))
+        self.assertEqual(records[1], BoneRecord(1, 0, 2, False))
+        self.assertEqual(records[2], BoneRecord(2, 0, GEO_ID_FREE, True))
+
+    def test_no_skin_data_means_no_skinning_bones(self):
+        hierarchy = [{"BoneId": 0, "ParentBoneId": None, "GeoIdRaw": GEO_ID_FREE, "Skinned": True}]
+        self.assertFalse(bone_records_from_hierarchy(hierarchy)[0].skinned)
+
+
+class SknBoneIdsTests(unittest.TestCase):
+    def test_collects_sk1_sk2_and_skacc_bones(self):
+        skin_data = {
+            "SK1s": [{"BoneIndex": 3}],
+            "SK2s": [{"BoneIndex1": 4, "BoneIndex2": 5}],
+            "SKAccs": [{"BoneIndex": 6}, {"BoneIndex": 3}],
+        }
+        self.assertEqual(skn_bone_ids(skin_data), {3, 4, 5, 6})
+
+    def test_empty_or_missing_skin_data(self):
+        self.assertEqual(skn_bone_ids(None), set())
+        self.assertEqual(skn_bone_ids({"SK1s": None}), set())
+
+
+class BoneMetadataVersionTests(unittest.TestCase):
+    def test_missing_or_version_1_metadata_needs_reimport(self):
+        self.assertFalse(bone_metadata_is_current(None))
+        self.assertFalse(bone_metadata_is_current(1))
+        self.assertFalse(bone_metadata_is_current('garbage'))
+
+    def test_current_version_is_accepted(self):
+        self.assertTrue(bone_metadata_is_current(BONE_METADATA_VERSION))
+
+
+def _real_choices(path):
+    with path.open('r', encoding='utf-8') as handle:
+        model = json.load(handle)['SluggiesModel']
+    records = bone_records_from_hierarchy(model['BoneHierarchy'], model.get('SkinData'))
+    ordered = order_host_bone_choices(classify_host_bones(records), records)
+    return {c.bone_id: c.status for c in ordered}, len(records)
+
+
+class RealModelHostBoneTests(unittest.TestCase):
+    """F7 survey numbers on real exports (skipped when not exported)."""
+
+    @unittest.skipUnless(REAL_MARIO.is_file(), "real Mario export not present")
+    def test_mario(self):
+        statuses, bone_count = _real_choices(REAL_MARIO)
+        self.assertEqual(bone_count, 91)
+        # Rigid owners: bone 54 (cap) and 55 (head).
+        self.assertNotIn(54, statuses)
+        self.assertNotIn(55, statuses)
+        # Hand bone 28 drives skinning (probe 3); bone 49 is SKN-unused (probe 4).
+        self.assertEqual(statuses[28], STATUS_DRIVES_SKINNING)
+        self.assertEqual(statuses[49], STATUS_RECOMMENDED)
+        safe = [b for b, s in statuses.items() if s in (STATUS_RECOMMENDED, STATUS_ALLOWED)]
+        self.assertEqual(len(safe), 33)
+
+    @unittest.skipUnless(REAL_LUIGI.is_file(), "real Luigi export not present")
+    def test_luigi(self):
+        statuses, bone_count = _real_choices(REAL_LUIGI)
+        self.assertEqual(bone_count, 90)
+        self.assertIn(STATUS_DRIVES_SKINNING, statuses.values())
+        safe = [b for b, s in statuses.items() if s in (STATUS_RECOMMENDED, STATUS_ALLOWED)]
+        self.assertEqual(len(safe), 34)
+
+    @unittest.skipUnless(REAL_MARE.is_file(), "real Noki (mare) export not present")
+    def test_mare_minimum_still_has_26_safe_bones(self):
+        statuses, bone_count = _real_choices(REAL_MARE)
+        self.assertEqual(bone_count, 65)
+        safe = [b for b, s in statuses.items() if s in (STATUS_RECOMMENDED, STATUS_ALLOWED)]
+        self.assertEqual(len(safe), 26)
 
 
 class ImportSluggiesBoneMetadataAstTests(unittest.TestCase):
@@ -186,6 +267,15 @@ class ImportSluggiesBoneMetadataAstTests(unittest.TestCase):
         targets = self._assigned_targets()
         self.assertIn(('b', 'SluggiesGeoIdRaw'), targets)
         self.assertIn(('b', 'SluggiesSkinned'), targets)
+
+    def test_skinned_flag_comes_from_skin_data_not_bone_hierarchy(self):
+        body = ast.get_source_segment(self.source, self.build_armature)
+        self.assertIn('HostBones.skn_bone_ids(skin_data)', body)
+        self.assertNotIn("bd.get('Skinned'", body)
+        self.assertIn('HostBones.BONE_METADATA_VERSION', body)
+
+    def test_importer_passes_skin_data_to_build_armature(self):
+        self.assertIn('build_armature(base_name, bone_list, collection, model.get("SkinData"))', self.source)
 
     def test_writes_metadata_version_on_armature_object(self):
         targets = self._assigned_targets()

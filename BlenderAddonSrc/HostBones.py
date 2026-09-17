@@ -15,7 +15,11 @@ from dataclasses import dataclass
 from typing import Dict, FrozenSet, Iterable, List, Optional, Sequence, Set, Tuple
 
 GEO_ID_FREE = 0xFFFF
-BONE_METADATA_VERSION = 1
+# 2: SluggiesSkinned comes from SkinData bone references. Version 1 copied
+# BoneHierarchy's "Skinned" flag, which export.py sets for every mesh-free bone
+# (GeoIdRaw == 0xFFFF), so every free bone looked like it drove skinning.
+BONE_METADATA_VERSION = 2
+RE_IMPORT_MESSAGE = "Re-import this model to enable Add submesh"
 
 STATUS_EXCLUDED = "excluded"
 STATUS_RECOMMENDED = "recommended"
@@ -209,15 +213,49 @@ def order_host_bone_choices(
     return ordered
 
 
-def bone_records_from_hierarchy(bone_hierarchy: Sequence[dict]) -> List[BoneRecord]:
+def skn_bone_ids(skin_data: Optional[dict]) -> Set[int]:
+    """Bone ids referenced by any SK1, SK2 or SKAcc entry in a ``.sluggie``
+    ``SkinData`` dict.
+
+    This is the "drives skinning" fact (F7). ``BoneHierarchy``'s ``Skinned``
+    flag is not: ``export.py`` sets it for every bone whose ``GeoIdRaw`` is
+    ``0xFFFF``.
+    """
+    used: Set[int] = set()
+    if not skin_data:
+        return used
+    for entry in skin_data.get("SK1s") or []:
+        used.add(int(entry["BoneIndex"]))
+    for entry in skin_data.get("SK2s") or []:
+        used.add(int(entry["BoneIndex1"]))
+        used.add(int(entry["BoneIndex2"]))
+    for entry in skin_data.get("SKAccs") or []:
+        used.add(int(entry["BoneIndex"]))
+    return used
+
+
+def bone_metadata_is_current(version: object) -> bool:
+    """Whether an armature's ``SluggiesBoneMetadataVersion`` can be trusted."""
+    try:
+        return int(version) >= BONE_METADATA_VERSION
+    except (TypeError, ValueError):
+        return False
+
+
+def bone_records_from_hierarchy(
+    bone_hierarchy: Sequence[dict],
+    skin_data: Optional[dict] = None,
+) -> List[BoneRecord]:
     """Build :class:`BoneRecord` entries from a parsed ``.sluggie``
-    ``BoneHierarchy`` list (``export.py``'s ``bone_list`` shape)."""
+    ``BoneHierarchy`` list (``export.py``'s ``bone_list`` shape) and its
+    ``SkinData``."""
+    skinned_ids = skn_bone_ids(skin_data)
     return [
         BoneRecord(
             bone_id=int(bd["BoneId"]),
             parent_id=(int(bd["ParentBoneId"]) if bd.get("ParentBoneId") is not None else None),
             geo_id_raw=int(bd.get("GeoIdRaw", GEO_ID_FREE)),
-            skinned=bool(bd.get("Skinned", False)),
+            skinned=int(bd["BoneId"]) in skinned_ids,
         )
         for bd in bone_hierarchy
     ]

@@ -190,6 +190,15 @@ class ExportExecuteWiringTests(unittest.TestCase):
         self.assertLess(source.index('_merge_texture_additions(additions, custom_additions)'),
                         source.index("data['SluggiesModel']['AdditionalTextureDescriptors'] = additions"))
 
+    def test_execute_copies_external_textures_only_after_validation(self):
+        source = _execute_source()
+        copy_index = source.index('shutil.copyfile(source_path, target_path)')
+        # Every cancel path that can still fire comes before the copy ...
+        self.assertLess(source.index('if written == 0'), copy_index)
+        self.assertLess(source.index('encode_skin_hammerspace('), copy_index)
+        # ... and the .sluggie that names the copied files is written after it.
+        self.assertLess(copy_index, source.index('json.dump(data, f, indent=2)'))
+
 
 def _translation(x, y, z):
     return [[1.0, 0.0, 0.0, x], [0.0, 1.0, 0.0, y], [0.0, 0.0, 1.0, z], [0.0, 0.0, 0.0, 1.0]]

@@ -98,7 +98,7 @@
         <tr>
             <td>0x14</td>
             <td>uint16</td>
-            <td>GEO file ID, which mesh in the mesh data this bone controls. I think if this is FFFF, the first mesh must be skinned and this bone controls a portion of it.</td>
+            <td>GEO file ID: the index of the GPL submesh this bone draws rigidly. FFFF means the bone owns no mesh (it may still drive skinning of submesh 0 through SKN). See <a href="#geo-id-ownership">GEO ID ownership rules</a>.</td>
         </tr>
         <tr>
             <td>0x16</td>
@@ -121,6 +121,17 @@
             <td>Padding</td>
         </tr>
     </table>
+    <h2 id="geo-id-ownership">GEO ID ownership rules</h2>
+    <p>Surveyed across 721 exported models and confirmed in Dolphin (PLAN_AddSubmesh.md Phase 0, 2026-09-16):</p>
+    <ul>
+        <li><strong>Rigid submeshes are placed by their owner bone.</strong> Every rigid (<code>CompCount 3</code>) submesh is named by at least one bone's GEO ID, and its vertices are stored in that bone's local space. Skinned (<code>CompCount 6</code>) submeshes are never named by a GEO ID.</li>
+        <li><strong>An unowned submesh crashes the game.</strong> A GPL submesh appended without a bone that names it crashes on load (<code>Invalid read from 0x00000008</code>, <code>PC = 0x804FF694</code>). A new submesh and its owner's GEO ID must always be written together.</li>
+        <li><strong>A GEO ID never exceeds the GPL submesh count.</strong></li>
+        <li><strong>One bone owns at most one mesh</strong>, because the field is a single uint16. In player models no two bones share a GEO ID. Seven effect and map-object models do give several bones the same GEO ID, so sharing is legal.</li>
+        <li><strong>A bone that drives skinning may also own a rigid mesh.</strong> None does in vanilla data, but giving Mario's hand bone 28 a mesh worked: the mesh follows the hand and skinning is unaffected (probe 3).</li>
+        <li><strong>Submesh order doesn't have to follow bone order.</strong> Vanilla rigid submeshes are in ascending owner-bone order, but a submesh appended at the end on a lower-numbered bone draws correctly (probe 2). Appending keeps every existing submesh index, and so every existing GEO ID and ptr7 facial <code>SubmeshIndex</code>, unchanged.</li>
+    </ul>
+    <p>The bone table is reached through the tree: the tree header sits at header+0x08 and its root pointer at header+0x0C. Each node address is the bone's start, relative to the ACT header. <code>BlockValidator</code> walks it to check the rules above.</p>
     <h2>SRT</h2>
     <p>SRT stands for scale, rotation, transform.</p>
     <table>

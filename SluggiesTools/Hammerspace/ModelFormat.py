@@ -12,6 +12,11 @@ ARRAY_ALIGNMENT = {
     'skn_weight': CACHE_LINE_SIZE,
     'skn_destination_index': CACHE_LINE_SIZE,
     'skn_flush_index': CACHE_LINE_SIZE,
+    # F10 (PLAN_AddSubmesh.md): the GX texture image-base register drops the
+    # low 5 address bits, and every vanilla section start and TEX payload is
+    # at 0 mod 32 relative to the model block.
+    'section_start': CACHE_LINE_SIZE,
+    'texture_payload': CACHE_LINE_SIZE,
 }
 
 

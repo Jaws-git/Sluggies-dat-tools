@@ -6,6 +6,7 @@ import unittest
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parents[2]
 PANEL_PATH = ROOT_DIR / 'BlenderAddonSrc' / 'SluggiesToolsPanel.py'
+EXPORT_PATH = ROOT_DIR / 'BlenderAddonSrc' / 'ExportSluggies.py'
 
 
 def _binds_name(node, names):
@@ -18,11 +19,11 @@ def _binds_name(node, names):
     return False
 
 
-def _extract(names):
+def _extract(names, path=PANEL_PATH):
     """Load the given top-level names (imports/assignments/functions) from
-    SluggiesToolsPanel.py into an executable module, in source order, without
-    importing bpy/bmesh."""
-    tree = ast.parse(PANEL_PATH.read_text(encoding='utf-8'))
+    SluggiesToolsPanel.py (or *path*) into an executable module, in source
+    order, without importing bpy/bmesh."""
+    tree = ast.parse(path.read_text(encoding='utf-8'))
     nodes = [node for node in tree.body if _binds_name(node, names)]
     module = ast.Module(body=nodes, type_ignores=[])
     namespace = {}
@@ -87,8 +88,12 @@ class NextCustomSubmeshIdTests(unittest.TestCase):
 
 class WriteCustomSubmeshTextureTests(unittest.TestCase):
     def setUp(self):
-        ns = _extract({'os', '_write_custom_submesh_texture', '_CUSTOM_SUBMESH_TEXTURE_SIZE'})
+        ns = _extract({'os', 'json', '_write_custom_submesh_texture', '_CUSTOM_SUBMESH_TEXTURE_SIZE'})
         self.fn = ns['_write_custom_submesh_texture']
+        # The panel imports this from ExportSluggies; load the real one the
+        # same bpy-free way.
+        export_ns = _extract({'os', '_resolve_export_texture_context'}, EXPORT_PATH)
+        self.fn.__globals__['_resolve_export_texture_context'] =             export_ns['_resolve_export_texture_context']
 
     def test_refuses_to_overwrite_existing_file(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -306,6 +311,16 @@ class AddSubmeshOperatorStructureTests(unittest.TestCase):
         self.assertIn('_find_target_armature', invoke_src)
         self.assertIn('"ERROR"', invoke_src)
         self.assertIn('CANCELLED', invoke_src)
+
+    def test_outdated_bone_metadata_asks_for_reimport(self):
+        cls = self._class('SLUGGIES_OT_add_submesh')
+        invoke_fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == 'invoke')
+        invoke_src = ast.get_source_segment(self.source, invoke_fn)
+        self.assertIn('_bone_metadata_is_current(arm_obj)', invoke_src)
+        self.assertIn('HostBones.RE_IMPORT_MESSAGE', invoke_src)
+        for name in ('_host_bone_enum_items', '_draw_free_host_bones'):
+            fn_src = ast.get_source_segment(self.source, self._function(name))
+            self.assertIn('_bone_metadata_is_current(arm_obj)', fn_src, name)
 
     def test_find_target_armature_never_scans_the_whole_scene(self):
         fn = self._function('_find_target_armature')

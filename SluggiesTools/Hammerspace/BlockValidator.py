@@ -315,6 +315,10 @@ def _validate_header(state: _ValidationState) -> dict[str, int]:
     if populated != sorted(populated):
         state.fail(f'section pointers out of order: {pointers}')
 
+    for section, pointer in pointers.items():
+        if pointer in valid_populated:
+            state.check_array_alignment(pointer, 'section_start', f'{section} section start')
+
     starts = sorted(set(valid_populated + [len(block)]))
     section_ranges: dict[str, tuple[int, int]] = {}
     for section, pointer in pointers.items():
@@ -644,6 +648,7 @@ def _validate_tex(state: _ValidationState) -> None:
         ):
             continue
         payload_ranges.append((image_abs, image_abs + image_len, 'image', index))
+        state.check_array_alignment(image_abs, 'texture_payload', f'TEX descriptor[{index}] image payload')
 
         is_indexed = fmt in (0x8, 0x9, 0xA)
         if is_indexed and (not palette_ptr or not palette_entries):
@@ -671,6 +676,8 @@ def _validate_tex(state: _ValidationState) -> None:
                 payload_ranges.append(
                     (palette_abs, palette_abs + palette_len, 'palette', index)
                 )
+                state.check_array_alignment(
+                    palette_abs, 'texture_payload', f'TEX descriptor[{index}] palette payload')
 
         if image_abs < tex_start or image_abs >= tex_end:
             state.fail(
@@ -693,6 +700,110 @@ def _validate_tex(state: _ValidationState) -> None:
                 f'0x{previous[0]:X}-0x{previous[1]:X} overlaps '
                 f'{current[2]}[{current[3]}] 0x{current[0]:X}-0x{current[1]:X}'
             )
+
+
+_ACT_BONE_GEO_ID_OFFSET = 0x14
+_ACT_BONE_ID_OFFSET = 0x16
+_GEO_ID_FREE = 0xFFFF
+
+
+def _validate_act_geo_ids(state: _ValidationState, gpl_submeshes: list[dict]) -> None:
+    """Check bone-to-submesh ownership (ACT bone ``GeoId``).
+
+    Walks the ACT bone tree the same way ``act.ACTLayout`` does: the tree
+    header sits at ACT+0x08, its root pointer at ACT+0x0C, and each node
+    address ``addr`` is both the bone layout start (ACT+addr) and, 4 bytes
+    later, the node's ``prev/next/parent/firstChild`` words.
+
+    Rules, all verified across 721 exported models (PLAN_AddSubmesh.md):
+    - a ``GeoId`` other than 0xFFFF indexes an existing GPL submesh;
+    - every rigid (``CompCount 3``) submesh has at least one owner bone. An
+      unowned appended submesh crashes the game (Phase 0 probe 1).
+    Several bones sharing one ``GeoId`` occurs in vanilla effect and map
+    models, so duplicates are only reported as facts.
+    """
+    act_range = state.facts['section_ranges'].get('ACT')
+    if not act_range or not gpl_submeshes:
+        return
+    act_start, act_end = act_range['start'], act_range['end']
+    block = state.block
+    label = 'ACT bone tree'
+    if act_end - act_start < 0x10:
+        state.fail(f'{label}: ACT section too short (0x{act_end - act_start:X} bytes)')
+        return
+
+    bone_count = _u16(block, act_start + 0x06)
+    root = _u32(block, act_start + 0x0C)
+
+    def node_words(addr: int) -> tuple[int, int, int, int] | None:
+        layout = act_start + addr
+        if addr <= 0 or layout + _ACT_BONE_ID_OFFSET + 2 > act_end:
+            state.fail(f'{label}: bone node 0x{addr:X} outside ACT section')
+            return None
+        return struct.unpack_from('>4I', block, layout + 4)
+
+    owners: dict[int, list[int]] = {}
+    visited: set[int] = set()
+    stack = []
+    sibling = root
+    while sibling:
+        if sibling in visited:
+            state.fail(f'{label}: root chain loops at node 0x{sibling:X}')
+            return
+        words = node_words(sibling)
+        if words is None:
+            return
+        visited.add(sibling)
+        stack.append(sibling)
+        sibling = words[1]
+    visited.clear()
+
+    while stack:
+        addr = stack.pop()
+        if addr in visited:
+            state.fail(f'{label}: node 0x{addr:X} is reachable twice')
+            return
+        visited.add(addr)
+        if len(visited) > bone_count:
+            state.fail(f'{label}: tree holds more nodes than the bone count {bone_count}')
+            return
+        words = node_words(addr)
+        if words is None:
+            return
+        layout = act_start + addr
+        geo_id = _u16(block, layout + _ACT_BONE_GEO_ID_OFFSET)
+        bone_id = _u16(block, layout + _ACT_BONE_ID_OFFSET)
+        if geo_id != _GEO_ID_FREE:
+            if geo_id >= len(gpl_submeshes):
+                state.fail(
+                    f'ACT bone {bone_id} GeoId {geo_id} is outside GPL submesh count '
+                    f'{len(gpl_submeshes)}'
+                )
+            owners.setdefault(geo_id, []).append(bone_id)
+        child = words[3]
+        while child:
+            if child in stack or child in visited:
+                state.fail(f'{label}: child chain loops at node 0x{child:X}')
+                return
+            stack.append(child)
+            child_words = node_words(child)
+            if child_words is None:
+                return
+            child = child_words[1]
+
+    if len(visited) != bone_count:
+        state.fail(f'{label}: walked {len(visited)} bones, header says {bone_count}')
+
+    for submesh_index, submesh in enumerate(gpl_submeshes):
+        if submesh['position_comp_count'] == 3 and submesh_index not in owners:
+            state.fail(
+                f'GPL submesh[{submesh_index}] is rigid but no ACT bone owns it (GeoId); '
+                'the game crashes on an unowned submesh'
+            )
+
+    state.facts['act_bone_count'] = len(visited)
+    state.facts['act_geo_id_owners'] = {index: sorted(bones) for index, bones in sorted(owners.items())}
+    state.facts['act_shared_geo_ids'] = sorted(index for index, bones in owners.items() if len(bones) > 1)
 
 
 def _validate_ptr7_facial(state: _ValidationState, gpl_submeshes: list[dict]) -> None:
@@ -1249,6 +1360,7 @@ def validate_model_block(block: bytes) -> dict:
     try:
         _validate_gpl(state, skinned_positions, primitive_offsets, non_position_ranges)
         _validate_tex(state)
+        _validate_act_geo_ids(state, state.facts.get('gpl_submesh_layout', []))
         _validate_skn(state, skn_write_ends, skn_stride)
         _validate_trailing_sections(state, state.facts.get('gpl_submesh_layout', []))
         _validate_scratch_window(state, skinned_positions, skn_write_ends, non_position_ranges)

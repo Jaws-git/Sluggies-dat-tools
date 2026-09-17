@@ -514,6 +514,7 @@ def prepare_fixture_data(
     """
     data = copy.deepcopy(source_data)
     model = data["SluggiesModel"]
+    strip_donor_edits(model)
     submeshes = model.get("Submeshes")
     if not submeshes:
         raise ValueError("source model has no Submeshes")
@@ -585,6 +586,34 @@ def prepare_fixture_data(
     return data
 
 
+def strip_donor_edits(node) -> None:
+    """Remove every ``*Edited`` key from a .sluggie tree, in place.
+
+    Probes must stay donor-identical apart from the appended submesh. Blender
+    re-exports usually carry edits (even pure round-trip drift), and any GPL
+    edit makes ``BuildModelBlock`` take its clone + patch path, which ignores
+    submeshes appended to ``Submeshes``.
+    """
+    if isinstance(node, dict):
+        for key in [k for k in node if k.endswith("Edited")]:
+            del node[key]
+        for value in node.values():
+            strip_donor_edits(value)
+    elif isinstance(node, list):
+        for value in node:
+            strip_donor_edits(value)
+
+
+def require_built_submesh_count(build: "hammerspace.ModelBlockBuild", expected: int) -> None:
+    """Fail if the assembled GPL doesn't hold *expected* submeshes."""
+    layout = build.validation_report.get("validator_facts", {}).get("gpl_submesh_layout", [])
+    if len(layout) != expected:
+        raise ValueError(
+            f"assembled GPL has {len(layout)} submeshes, expected {expected}; "
+            "the appended probe submesh was not built"
+        )
+
+
 def _apply_add_submesh_geo_id_patch(
     build: "hammerspace.ModelBlockBuild",
     source_model_offset: int,
@@ -635,6 +664,16 @@ def _apply_add_submesh_geo_id_patch(
         )
 
     current = struct.unpack_from(">H", block, patch_off)[0]
+    if current == new_submesh_index:
+        # BuildModelBlock consumes GeoIdEdited since PLAN_AddSubmesh.md Phase 3
+        # step 2, so the host bone set up by prepare_fixture_data is
+        # normally patched already. Nothing left to do.
+        hammerspace._slogger.info(
+            f"[ACT] bone {host_bone_id} GeoId already reads submesh {new_submesh_index} "
+            f"at ACT+0x{act_relative:X} (applied by BuildModelBlock via GeoIdEdited)",
+            source="build_add_submesh_fixture",
+        )
+        return build
     if current != 0xFFFF:
         # Exports written before the export.py GeoIdFieldOffset fix (see that
         # file's extract_bone_hierarchy comment) recorded bl.absolute + 0x0C
@@ -795,6 +834,14 @@ def build_fixture(
             f"bone {host_bone_id} is missing GeoIdFieldOffset metadata; "
             "re-export the model with the latest SluggiesTools export.py"
         )
+    if skip_geo_id_patch:
+        # Phase 0 showed an unowned appended submesh crashes the game, and
+        # BlockValidator now rejects one (PLAN_AddSubmesh.md Phase 2 step 5),
+        # so this control can no longer produce a block.
+        raise ValueError(
+            "--skip-geo-id-patch is retired: an unowned rigid submesh crashes the "
+            "game (Phase 0) and BlockValidator now rejects it"
+        )
 
     fixture_path.parent.mkdir(parents=True, exist_ok=True)
     with fixture_path.open("w", encoding="utf-8", newline="\n") as fixture_file:
@@ -814,6 +861,7 @@ def build_fixture(
             "fixture model block failed validation before the GeoId patch: "
             + "; ".join(build.validation_report["errors"])
         )
+    require_built_submesh_count(build, new_submesh_index + 1)
 
     if skip_geo_id_patch:
         # Control probe for the GX/TEV render-state-carryover theory (see
@@ -903,7 +951,7 @@ def main() -> int:
             "Control probe: append the submesh but don't patch any bone's GeoId, "
             "so it's never referenced/drawn. WARNING: the 2026-09-16 in-game test "
             "found this crashes the game (an appended-but-unowned submesh is fatal, "
-            "not merely invisible) -- kept for the record, not recommended to rerun."
+            "not merely invisible). Retired: BlockValidator now rejects the block."
         ),
     )
     parser.add_argument(

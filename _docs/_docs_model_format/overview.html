@@ -188,7 +188,7 @@
                         <div class="fields">
                             <div class="row"><span class="off">0x00</span><span>→ SRT <span class="note">(null if no transform)</span></span></div>
                             <div class="row"><span class="off">0x04–0x13</span><span>tree navigation: prev / next / parent / first child pointers</span></div>
-                            <div class="row"><span class="off">0x14</span><span>GEO file ID (uint16) — 0xFFFF means skinned bone</span></div>
+                            <div class="row"><span class="off">0x14</span><span>GEO file ID (uint16) — submesh drawn rigidly by this bone; 0xFFFF means no mesh</span></div>
                             <div class="row"><span class="off">0x16</span><span>bone ID (uint16)</span></div>
                             <div class="row"><span class="off">0x18</span><span>inheritance flag (bool) — usually true</span></div>
                             <div class="row"><span class="off">0x19</span><span>draw priority (uint8)</span></div>
@@ -361,7 +361,9 @@ padding_needed    = data_region_start - end_of_structs</pre>
         <li><strong>SKN section</strong> — srcArrPtr, weightArrPtr, destIdxArrPtr, flushIndPtr</li>
         <li><strong>GPL section</strong> — skinned position buffers and primitive list data</li>
     </ul>
-    <p><strong>TEX exception:</strong> align the TEX data-region start to 32 bytes, but image payloads may be packed consecutively without aligning each image pointer. A Dolphin-tested model rendered a visible CMPR image correctly from a TEX-relative pointer that was 8 modulo 32. Palette payload alignment has not been runtime-tested.</p>
+    <h3>Section starts and texture payloads</h3>
+    <p>Relative to the model block, <strong>every section start</strong> (GPL, ACT, TEX, SKN, ptr6-ptr8) and <strong>every TEX image and palette payload</strong> must be at 0 mod 32. All 1,422 unique vanilla model blocks comply. The GX texture image-base register drops the low 5 address bits, so a misaligned payload is sampled up to 31 bytes early. Moving a section moves every texture after it, so a GPL section that grows to a length that isn't a multiple of 32 misaligns every texture in the model. The symptom is fine pixel noise over textures that still look right, not a hang (confirmed in Dolphin, 2026-09-16).</p>
+    <p>When rebuilding a block, pad each section to the next 32-byte boundary and pad between texture payloads. <code>BuildHEADERModelBlock</code> and <code>BuildTEX</code> do this, and <code>BlockValidator</code> rejects a misaligned section start or payload.</p>
 
     <p>See <a href="index.html">index</a> for links to detailed per-section documentation.</p>
 </body>

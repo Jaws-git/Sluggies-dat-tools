@@ -261,8 +261,34 @@ class OrderProbeTests(unittest.TestCase):
             (50, -100, 3, 15000, -15000, 0),
         )
         self.assertNotIn("VertexBufferDataEdited", clone_vb)
-        self.assertEqual(template_vb, head["VertexBuffer"])
+        # Donor edits are stripped, so the template keeps only its donor data.
+        self.assertNotIn("VertexBufferDataEdited", template_vb)
+        self.assertEqual(template_vb["VertexBufferData"], head["VertexBuffer"]["VertexBufferData"])
         self.assertEqual(model["AddSubmeshFixture"]["PositionScale"], 0.5)
+
+    def test_prepare_strips_donor_edits_before_appending(self):
+        data = _minimal_model()
+        body_vb = data["SluggiesModel"]["Submeshes"][0]["VertexBuffer"]
+        body_vb["VertexBufferDataEdited"] = body_vb["VertexBufferData"]
+        data["SluggiesModel"]["RootBoneScaleEdited"] = [1.0, 1.0, 1.0]
+
+        model = fixture_mod.prepare_fixture_data(data)["SluggiesModel"]
+
+        self.assertNotIn("VertexBufferDataEdited", model["Submeshes"][0]["VertexBuffer"])
+        self.assertNotIn("RootBoneScaleEdited", model)
+        # The host-bone ownership edit is added after stripping.
+        host = model["AddSubmeshFixture"]["HostBoneId"]
+        bone = next(b for b in model["BoneHierarchy"] if int(b["BoneId"]) == host)
+        self.assertEqual(bone["GeoIdEdited"], model["AddSubmeshFixture"]["NewSubmeshIndex"])
+
+    def test_require_built_submesh_count_rejects_missing_append(self):
+        class _Build:
+            validation_report = {"validator_facts": {"gpl_submesh_layout": [{}, {}, {}]}}
+
+        fixture_mod.require_built_submesh_count(_Build(), 3)
+        with self.assertRaises(ValueError) as ctx:
+            fixture_mod.require_built_submesh_count(_Build(), 4)
+        self.assertIn("was not built", str(ctx.exception))
 
     def test_position_scale_rejects_int16_overflow(self):
         data = _minimal_model()
@@ -498,7 +524,9 @@ class BuildFixtureRealDonorTests(unittest.TestCase):
 
         prepared = fixture_mod.prepare_fixture_data(source_data)
         prepared_submeshes = prepared["SluggiesModel"]["Submeshes"]
-        donor_submeshes = source_data["SluggiesModel"]["Submeshes"]
+        stripped_source = copy.deepcopy(source_data)
+        fixture_mod.strip_donor_edits(stripped_source)
+        donor_submeshes = stripped_source["SluggiesModel"]["Submeshes"]
         self.assertEqual(len(prepared_submeshes), len(donor_submeshes) + 1)
         for i in range(len(donor_submeshes)):
             self.assertEqual(prepared_submeshes[i], donor_submeshes[i])

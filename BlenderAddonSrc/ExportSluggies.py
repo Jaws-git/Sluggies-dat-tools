@@ -4,6 +4,7 @@ import json
 import math
 import os
 import base64
+import shutil
 import struct
 import subprocess
 from bpy.props import BoolProperty, StringProperty
@@ -2267,6 +2268,54 @@ def _custom_submesh_template_texture_index(model, template_source):
     raise ValueError(f"Unrecognized TemplateSource: {template_source!r}")
 
 
+def _plan_external_texture_copy(source_path, tex_dir, planned_copies, reserved_names=()):
+    """Pick the tex/ file name an image outside tex/ is copied to on export.
+
+    The patcher only reads bare file names from the model's tex/ folder, so an
+    external PNG is copied in. The first free name among ``<stem>.png``,
+    ``<stem>_1.png``, ... wins, where a name is usable when tex/ has no such
+    file (and no other source is already planned for it), or when the file
+    there is byte-identical to the source. That reuse keeps repeated exports
+    from piling up copies, and an identical copy of a donor PNG still rebinds
+    to that donor texture. A `reserved_names` entry (a donor descriptor's
+    TextureFileName) is never claimed as a fresh copy target, even when its
+    file is missing from tex/.
+
+    `planned_copies` maps tex/ file name -> source path and is updated in
+    place. Returns the chosen file name.
+    """
+    file_name = os.path.basename(source_path)
+    stem, ext = os.path.splitext(file_name)
+    try:
+        with open(source_path, 'rb') as source_file:
+            source_bytes = source_file.read()
+    except OSError:
+        source_bytes = None
+
+    suffix = 0
+    while True:
+        candidate = file_name if suffix == 0 else f"{stem}_{suffix}{ext}"
+        suffix += 1
+        planned_source = planned_copies.get(candidate)
+        if planned_source is not None:
+            if os.path.normcase(planned_source) == os.path.normcase(source_path):
+                return candidate
+            continue
+        target_path = os.path.join(tex_dir, candidate)
+        if not os.path.exists(target_path):
+            if candidate in reserved_names:
+                continue
+            planned_copies[candidate] = source_path
+            return candidate
+        if source_bytes is not None and os.path.isfile(target_path):
+            try:
+                with open(target_path, 'rb') as target_file:
+                    if target_file.read() == source_bytes:
+                        return candidate
+            except OSError:
+                pass
+
+
 def _resolve_custom_submesh_texture_changes(
     custom_submesh_entries,
     descriptors,
@@ -2281,8 +2330,12 @@ def _resolve_custom_submesh_texture_changes(
     from: each entry instead supplies the donor texture index its template
     clones its GX format from (`_custom_submesh_template_texture_index`).
 
+    Unlike donor materials, a custom submesh image may live outside tex/:
+    it is planned as a copy into tex/ (`_plan_external_texture_copy`) that
+    the caller performs once the export is otherwise validated.
+
     `custom_submesh_entries` is a list of (material, template_texture_index)
-    pairs. Returns (additions, assignment_by_material_name):
+    pairs. Returns (additions, assignment_by_material_name, texture_copies):
     - `additions` is in the same shape as _resolve_material_texture_changes
       produces, appendable to AdditionalTextureDescriptors.
     - `assignment_by_material_name` maps each material's name to a dict
@@ -2290,6 +2343,7 @@ def _resolve_custom_submesh_texture_changes(
       {"DonorTextureIndex": n} when the image already matches an existing
       descriptor (a rebind, "as before"), or
       {"AdditionalTextureFileName": name} for a newly appended one.
+    - `texture_copies` is a list of (source_path, tex_dir_path) pairs.
     """
     descriptor_by_name = {
         descriptor.get("TextureFileName"): int(descriptor["TextureIndex"])
@@ -2299,6 +2353,7 @@ def _resolve_custom_submesh_texture_changes(
     donor_count = len(descriptors)
     additions = []
     assignments = {}
+    planned_copies = {}
 
     for material, template_texture_index in custom_submesh_entries:
         if template_texture_index < 0 or template_texture_index >= donor_count:
@@ -2324,19 +2379,24 @@ def _resolve_custom_submesh_texture_changes(
         if not image_path:
             raise ValueError(f"Material image has no file path: {material.name}")
 
-        resolved_path = path_resolver(image_path)
-        file_name = os.path.basename(os.path.normpath(resolved_path))
+        resolved_path = os.path.abspath(os.path.normpath(path_resolver(image_path)))
+        file_name = os.path.basename(resolved_path)
         if not file_name.lower().endswith('.png'):
             raise ValueError(
                 f"Material '{material.name}' image must be a PNG: {file_name}"
             )
-        local_path = os.path.join(tex_dir, file_name)
-        if validate_texture_files and (
-            not file_name or not os.path.isfile(local_path)
-        ):
+        if validate_texture_files and not os.path.isfile(resolved_path):
             raise ValueError(
-                f"Texture PNG for material '{material.name}' must exist in "
-                f"the resolved tex folder: {local_path}"
+                f"Texture PNG for material '{material.name}' does not exist: "
+                f"{resolved_path}"
+            )
+        in_tex_dir = (
+            os.path.normcase(os.path.dirname(resolved_path))
+            == os.path.normcase(os.path.abspath(tex_dir))
+        )
+        if not in_tex_dir:
+            file_name = _plan_external_texture_copy(
+                resolved_path, tex_dir, planned_copies, descriptor_by_name
             )
 
         desired_index = descriptor_by_name.get(file_name)
@@ -2354,7 +2414,11 @@ def _resolve_custom_submesh_texture_changes(
         else:
             assignments[material.name] = {"DonorTextureIndex": desired_index}
 
-    return additions, assignments
+    texture_copies = [
+        (source_path, os.path.join(tex_dir, name))
+        for name, source_path in planned_copies.items()
+    ]
+    return additions, assignments, texture_copies
 
 
 def _custom_submesh_triangles(obj):
@@ -2943,6 +3007,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         # always mirrors the current selection, like AdditionalTextureDescriptors.
         custom_submesh_entries = []
         custom_additions = []
+        custom_texture_copies = []
         if custom_submesh_candidates:
             model = data["SluggiesModel"]
             try:
@@ -2965,7 +3030,9 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                         model, str(obj.get("TemplateSource") or "")
                     )
                     custom_texture_entries.append((material, template_texture_index))
-                custom_additions, custom_assignments = _resolve_custom_submesh_texture_changes(
+                (
+                    custom_additions, custom_assignments, custom_texture_copies,
+                ) = _resolve_custom_submesh_texture_changes(
                     custom_texture_entries,
                     texture_descriptors,
                     texture_dir,
@@ -3240,6 +3307,18 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             data["SluggiesModel"]["CustomSubmeshes"] = custom_submesh_entries
         else:
             data["SluggiesModel"].pop("CustomSubmeshes", None)
+
+        # Custom submesh PNGs linked from outside tex/ are copied in now, once
+        # nothing can cancel the export, so the patcher finds them by name.
+        try:
+            for source_path, target_path in custom_texture_copies:
+                os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                shutil.copyfile(source_path, target_path)
+        except OSError as exc:
+            self.report({"ERROR"}, f"Could not copy custom submesh texture into tex/: {exc}")
+            return {"CANCELLED"}
+        for source_path, target_path in custom_texture_copies:
+            self.report({"INFO"}, f"Copied {source_path} to {target_path}")
 
         with open(self.filepath, 'w') as f:
             json.dump(data, f, indent=2)

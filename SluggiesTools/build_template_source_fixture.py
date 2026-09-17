@@ -47,7 +47,8 @@ COLOR_FORMAT = (4, 48)
 COLOR_WHITE = bytes.fromhex("ffffffff")
 
 # Canonical rigid list captured byte-exact from vanilla data. The same six
-# records occur in 17 rigid submeshes of the player-folder exports.
+# records occur in 17 rigid submeshes of the player-folder exports. The states
+# and their hash live once, in HammerspaceMain (the patch-time builder).
 BUILTIN_RIGID_SPEC_V1 = {
     "Name": "rigid_spec_v1",
     "Provenance": {
@@ -56,15 +57,8 @@ BUILTIN_RIGID_SPEC_V1 = {
         "SurfaceId": "sm1_ds5",
         "IdenticalRigidLists": 17,
     },
-    "States": (
-        (TYPE1, "000008", "11110000"),
-        (TYPE1, "000000", "11002003"),
-        (TYPE4, "000000", "ffffff10"),
-        (TYPE3, "000000", "000028a8"),
-        (TYPE6, "010000", "00000374"),
-        (TYPE7, "640064", "Spec"),
-    ),
-    "Sha256": "ee88bc44a3fb2a5864203b941519199ec61f1097eafef479eccf87de666dd862",
+    "States": hammerspace._CUSTOM_SUBMESH_BUILTIN_TEMPLATES["rigid_spec_v1"]["States"],
+    "Sha256": hammerspace._CUSTOM_SUBMESH_BUILTIN_TEMPLATES["rigid_spec_v1"]["Sha256"],
 }
 BUILTIN_TEMPLATES = {BUILTIN_RIGID_SPEC_V1["Name"]: BUILTIN_RIGID_SPEC_V1}
 
@@ -355,6 +349,7 @@ def prepare_template_source_fixture(
         raise ValueError("at least one cube is required")
     data = copy.deepcopy(source_data)
     model = data["SluggiesModel"]
+    probe.strip_donor_edits(model)
     bones = {int(bone["BoneId"]): bone for bone in model.get("BoneHierarchy") or []}
     skn_used = probe._skn_used_bone_ids(model.get("SkinData"))
     seen: set[int] = set()
@@ -400,6 +395,7 @@ def build_template_source_fixture(
     build = hammerspace.BuildModelBlock(data, modes, sluggie_path=fixture_path)
     if not build.validation_report["valid"]:
         raise ValueError("fixture block failed validation: " + "; ".join(build.validation_report["errors"]))
+    probe.require_built_submesh_count(build, len(model["Submeshes"]))
 
     offset = model.get("ModelOffset", 0)
     source_model_offset = int(offset, 16) if isinstance(offset, str) else int(offset)

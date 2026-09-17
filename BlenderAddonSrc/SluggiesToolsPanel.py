@@ -20,8 +20,8 @@ _CUSTOM_SUBMESH_ID_RE = re.compile(r'^custom(\d+)$')
 _SUBMESH_NAME_RE = re.compile(r'^CustomSubmesh_(\d+)$')
 _INVALID_SUBMESH_NAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
-_CUSTOM_SUBMESH_CUBE_HALF_EXTENT = 0.1
-_CUSTOM_SUBMESH_TEXTURE_SIZE = 64
+_CUSTOM_SUBMESH_CUBE_HALF_EXTENT = 0.2
+_CUSTOM_SUBMESH_TEXTURE_SIZE = 256
 
 _HOST_BONE_STATUS_TAGS = {
     HostBones.STATUS_RECOMMENDED: "free",
@@ -149,6 +149,12 @@ def _gather_scene_claims(context, arm_obj, bone_records):
     )
 
 
+def _bone_metadata_is_current(arm_obj):
+    """False for armatures imported before the current bone metadata format
+    (version 1 stored a wrong SluggiesSkinned flag), which must be re-imported."""
+    return HostBones.bone_metadata_is_current(arm_obj.get('SluggiesBoneMetadataVersion'))
+
+
 def _ordered_host_bone_choices(context, arm_obj):
     records = _bone_records(arm_obj)
     claims = _gather_scene_claims(context, arm_obj, records)
@@ -197,6 +203,8 @@ def _host_bone_enum_items(self, context):
     arm_obj = _find_target_armature(context)
     if arm_obj is None:
         return [('NONE', "No armature", _no_target_armature_message(context), 0)]
+    if not _bone_metadata_is_current(arm_obj):
+        return [('NONE', "Re-import needed", HostBones.RE_IMPORT_MESSAGE, 0)]
     ordered = _ordered_host_bone_choices(context, arm_obj)
     if not ordered:
         return [('NONE', "No free bones", "Every bone already owns a mesh or is claimed", 0)]
@@ -441,7 +449,7 @@ class SLUGGIES_OT_add_submesh(bpy.types.Operator):
         update=_update_host_bone_preview,
     )  # type: ignore[valid-type]
     template_source: EnumProperty(
-        name="Template source",
+        name="Material template source",
         description="Donor display-state list and attribute formats the new submesh borrows",
         items=_template_source_enum_items,
     )  # type: ignore[valid-type]
@@ -463,8 +471,8 @@ class SLUGGIES_OT_add_submesh(bpy.types.Operator):
         if arm_obj is None:
             self.report({"ERROR"}, _no_target_armature_message(context))
             return {"CANCELLED"}
-        if 'SluggieFilePath' not in arm_obj.keys():
-            self.report({"ERROR"}, "Re-import this model to enable Add submesh")
+        if 'SluggieFilePath' not in arm_obj.keys() or not _bone_metadata_is_current(arm_obj):
+            self.report({"ERROR"}, HostBones.RE_IMPORT_MESSAGE)
             return {"CANCELLED"}
 
         ordered = _ordered_host_bone_choices(context, arm_obj)
@@ -552,6 +560,9 @@ def _draw_free_host_bones(layout, context):
     arm_obj = _find_target_armature(context)
     if arm_obj is None:
         box.label(text=_no_target_armature_message(context), icon='INFO')
+        return
+    if not _bone_metadata_is_current(arm_obj):
+        box.label(text=HostBones.RE_IMPORT_MESSAGE, icon='INFO')
         return
 
     ordered = _ordered_host_bone_choices(context, arm_obj)

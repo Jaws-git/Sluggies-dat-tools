@@ -270,14 +270,17 @@ def clone_unused_dirs_to_hammerspace_for_untangle(input_dol_path, input_dat_path
         raise RuntimeError('Unable to prepare output dt_na.dat for untangle clone step.')
     hh.patchFstFileSize(os.path.getsize(hh.OUTPUT_DAT))
 
-    allocation_start = hh.findFreeMemoryChunk(required_growth)
+    # Live hammerspace blocks can end in zero padding that the zero-byte scan
+    # would otherwise treat as free (see WriteModelBlock).
+    reserved_ranges = hh.routedHammerspaceRanges()
+    allocation_start = hh.findFreeMemoryChunk(required_growth, reserved_ranges=reserved_ranges)
     if allocation_start == -1:
         grow_by = max(required_growth + reserve, 64 * 1024 * 1024)
         next_size = os.path.getsize(hh.OUTPUT_DAT) + grow_by
         if not hh.ensureOutputDat(next_size):
             raise RuntimeError('Unable to expand output dt_na.dat for untangle clone step.')
         hh.patchFstFileSize(os.path.getsize(hh.OUTPUT_DAT))
-        allocation_start = hh.findFreeMemoryChunk(required_growth)
+        allocation_start = hh.findFreeMemoryChunk(required_growth, reserved_ranges=reserved_ranges)
         if allocation_start == -1:
             raise RuntimeError(
                 f'Unable to reserve a contiguous hammerspace region ({required_growth} bytes).'

@@ -401,12 +401,9 @@ _CUSTOM_SUBMESH_UV_STRIDE       = 4   # CompCount 2, QuantizeInfo 62 (2 x int16)
 _CUSTOM_SUBMESH_COLOR_STRIDE    = 4   # CompCount 4, QuantizeInfo 48 (RGBA8)
 
 # Phase 0 U4 (2026-09-16): byte-exact capture from Toadette kinopico.gpl
-# pony_l3 sm1_ds5, identical across 17 vanilla rigid submeshes. Duplicated
-# from build_template_source_fixture.BUILTIN_RIGID_SPEC_V1 (that module
-# imports HammerspaceMain, so this module can't import it back without a
-# cycle); test_hammerspace_main.py cross-checks the two copies so they can't
-# drift silently. Phase 2 step 3 consolidates them into one copy when the
-# GPL state-list builder moves into this module.
+# pony_l3 sm1_ds5, identical across 17 vanilla rigid submeshes. The only copy:
+# build_template_source_fixture.BUILTIN_RIGID_SPEC_V1 reads its states and
+# hash from here and adds the provenance record.
 _CUSTOM_SUBMESH_BUILTIN_TEMPLATES = {
     'rigid_spec_v1': {
         'States': (

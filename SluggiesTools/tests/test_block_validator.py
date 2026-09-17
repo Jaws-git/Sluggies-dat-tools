@@ -63,16 +63,20 @@ def _write_ptr7_facial(
     block[ptr7_offset:ptr7_offset + len(section)] = section
 
 
+ACT_OFF = 0x220
+TEX_OFF = 0x2A0
+
+
 def make_valid_block() -> bytes:
     block = bytearray(0x400)
 
-    # Model header pointers.
+    # Model header pointers. Every section starts at 0 mod 32 (F10).
     struct.pack_into('>8I', block, 0x00,
         0,
-        0x20,   # GPL
-        0x2A0,  # ACT
-        0x2B0,  # TEX
-        0x2C0,  # SKN
+        0x20,     # GPL
+        ACT_OFF,  # ACT
+        TEX_OFF,  # TEX
+        0x2C0,    # SKN
         0, 0, 0,
     )
 
@@ -157,10 +161,20 @@ def make_valid_block() -> bytes:
     struct.pack_into('>I', block, l1 + 0x54, 0x60)
     struct.pack_into('>H', block, l1 + 0x58, 0)
 
-    # ACT/TEX placeholders.
-    block[0x2A0:0x2B0] = b'A' * 0x10
-    struct.pack_into('>H', block, 0x2B0, 0)  # num TPL
-    struct.pack_into('>H', block, 0x2B2, 0)  # num CLUT
+    # ACT: root bone 0 (no mesh) with child bone 1 owning rigid submesh 1.
+    # Tree node addresses are ACT-relative bone layout starts; the node's
+    # prev/next/parent/firstChild words follow 4 bytes in.
+    struct.pack_into('>H', block, ACT_OFF + 0x06, 2)     # bone count
+    struct.pack_into('>I', block, ACT_OFF + 0x0C, 0x10)  # root node
+    bone0 = ACT_OFF + 0x10
+    struct.pack_into('>4I', block, bone0 + 0x04, 0, 0, 0, 0x30)
+    struct.pack_into('>HH', block, bone0 + 0x14, 0xFFFF, 0)
+    bone1 = ACT_OFF + 0x30
+    struct.pack_into('>4I', block, bone1 + 0x04, 0, 0, 0x10, 0)
+    struct.pack_into('>HH', block, bone1 + 0x14, 1, 1)
+
+    struct.pack_into('>H', block, TEX_OFF, 0)      # num TPL
+    struct.pack_into('>H', block, TEX_OFF + 2, 0)  # num CLUT
 
     # SKN section.
     skn = 0x2C0
@@ -194,20 +208,22 @@ def make_valid_block() -> bytes:
 def make_valid_textured_block(texture_count: int = 1) -> bytearray:
     original = bytearray(make_valid_block())
     block = bytearray(0x500)
-    block[:0x2B0] = original[:0x2B0]
+    block[:TEX_OFF] = original[:TEX_OFF]
     skn = 0x340
     struct.pack_into('>I', block, 0x10, skn)
     block[skn:skn + 0x140] = original[0x2C0:0x400]
 
-    tex = 0x2B0
+    tex = TEX_OFF
     struct.pack_into('>HH', block, tex, texture_count, 0)
     data_ptr = 0x60
     for index in range(texture_count):
+        # 8-byte 4x4 CMPR payloads, each padded to a 32-byte boundary (F10).
+        image_ptr = data_ptr + index * 0x20
         desc = tex + 4 + index * 0x20
-        struct.pack_into('>I', block, desc, data_ptr + index * 8)
+        struct.pack_into('>I', block, desc, image_ptr)
         struct.pack_into('>HH', block, desc + 8, 4, 4)
         block[desc + 0x17] = 0xE
-        block[tex + data_ptr + index * 8:tex + data_ptr + index * 8 + 8] = b'\xAA' * 8
+        block[tex + image_ptr:tex + image_ptr + 8] = b'\xAA' * 8
     return block
 
 
@@ -332,40 +348,107 @@ class BlockValidatorTests(unittest.TestCase):
         self.assertTrue(report['valid'])
         self.assertEqual(report['errors'], [])
 
-    def test_valid_unaligned_tex_image_payload_passes(self):
+    def test_valid_aligned_tex_image_payloads_pass(self):
         block = make_valid_textured_block(texture_count=2)
         report = validate_model_block(bytes(block))
         self.assertTrue(report['valid'], report['errors'])
 
+    def test_tex_image_payload_off_32_byte_boundary_fails(self):
+        # F10: the GX image-base register drops the low 5 address bits, so a
+        # payload at 8 mod 32 is sampled 8 bytes early.
+        block = make_valid_textured_block(texture_count=2)
+        struct.pack_into('>I', block, TEX_OFF + 4 + 0x20, 0x68)
+        report = validate_model_block(bytes(block))
+        self.assertFalse(report['valid'])
+        self.assertTrue(any(
+            'TEX descriptor[1] image payload not 32-byte aligned' in error
+            for error in report['errors']
+        ), report['errors'])
+
+    def test_tex_palette_payload_off_32_byte_boundary_fails(self):
+        block = make_valid_textured_block()
+        desc = TEX_OFF + 4
+        block[desc + 0x17] = 0x9  # C8
+        struct.pack_into('>I', block, desc + 4, 0x88)
+        struct.pack_into('>H', block, desc + 0x18, 1)
+        struct.pack_into('>H', block, TEX_OFF + 2, 1)
+        report = validate_model_block(bytes(block))
+        self.assertTrue(any(
+            'TEX descriptor[0] palette payload not 32-byte aligned' in error
+            for error in report['errors']
+        ), report['errors'])
+
+    def test_section_start_off_32_byte_boundary_fails(self):
+        block = bytearray(make_valid_block())
+        struct.pack_into('>I', block, 0x0C, TEX_OFF + 8)
+        report = validate_model_block(bytes(block))
+        self.assertFalse(report['valid'])
+        self.assertTrue(any('TEX section start not 32-byte aligned' in error for error in report['errors']))
+
+    def test_act_owner_map_is_reported(self):
+        report = validate_model_block(make_valid_block())
+        self.assertEqual(report['facts']['act_bone_count'], 2)
+        self.assertEqual(report['facts']['act_geo_id_owners'], {1: [1]})
+        self.assertEqual(report['facts']['act_shared_geo_ids'], [])
+
+    def test_unowned_rigid_submesh_fails(self):
+        block = bytearray(make_valid_block())
+        struct.pack_into('>H', block, ACT_OFF + 0x30 + 0x14, 0xFFFF)
+        report = validate_model_block(bytes(block))
+        self.assertFalse(report['valid'])
+        self.assertTrue(any('submesh[1] is rigid but no ACT bone owns it' in error for error in report['errors']))
+
+    def test_geo_id_outside_submesh_count_fails(self):
+        block = bytearray(make_valid_block())
+        struct.pack_into('>H', block, ACT_OFF + 0x10 + 0x14, 2)
+        report = validate_model_block(bytes(block))
+        self.assertFalse(report['valid'])
+        self.assertTrue(any('GeoId 2 is outside GPL submesh count 2' in error for error in report['errors']))
+
+    def test_shared_geo_id_is_allowed(self):
+        # Vanilla effect/map models draw one mesh from several bones.
+        block = bytearray(make_valid_block())
+        struct.pack_into('>H', block, ACT_OFF + 0x10 + 0x14, 1)
+        report = validate_model_block(bytes(block))
+        self.assertTrue(report['valid'], report['errors'])
+        self.assertEqual(report['facts']['act_shared_geo_ids'], [1])
+
+    def test_act_bone_tree_loop_fails(self):
+        block = bytearray(make_valid_block())
+        struct.pack_into('>I', block, ACT_OFF + 0x30 + 0x10, 0x10)  # bone 1 child -> bone 0
+        report = validate_model_block(bytes(block))
+        self.assertFalse(report['valid'])
+        self.assertTrue(any('ACT bone tree' in error for error in report['errors']), report['errors'])
+
     def test_tex_zero_image_pointer_fails(self):
         block = make_valid_textured_block()
-        struct.pack_into('>I', block, 0x2B0 + 4, 0)
+        struct.pack_into('>I', block, TEX_OFF + 4, 0)
         report = validate_model_block(bytes(block))
         self.assertTrue(any('zero image pointer' in error for error in report['errors']))
 
     def test_tex_overlapping_payloads_fail(self):
         block = make_valid_textured_block(texture_count=2)
-        first_ptr = struct.unpack_from('>I', block, 0x2B0 + 4)[0]
-        struct.pack_into('>I', block, 0x2B0 + 4 + 0x20, first_ptr + 4)
+        first_ptr = struct.unpack_from('>I', block, TEX_OFF + 4)[0]
+        struct.pack_into('>I', block, TEX_OFF + 4 + 0x20, first_ptr + 4)
         report = validate_model_block(bytes(block))
         self.assertTrue(any('TEX payload overlap' in error for error in report['errors']))
 
     def test_tex_same_start_image_alias_passes(self):
         block = make_valid_textured_block(texture_count=2)
-        first_ptr = struct.unpack_from('>I', block, 0x2B0 + 4)[0]
-        struct.pack_into('>I', block, 0x2B0 + 4 + 0x20, first_ptr)
+        first_ptr = struct.unpack_from('>I', block, TEX_OFF + 4)[0]
+        struct.pack_into('>I', block, TEX_OFF + 4 + 0x20, first_ptr)
         report = validate_model_block(bytes(block))
         self.assertTrue(report['valid'], report['errors'])
 
     def test_tex_payload_crossing_section_boundary_fails(self):
         block = make_valid_textured_block()
-        struct.pack_into('>I', block, 0x2B0 + 4, 0x89)
+        struct.pack_into('>I', block, TEX_OFF + 4, 0x99)
         report = validate_model_block(bytes(block))
         self.assertTrue(any('image payload exceeds TEX section' in error for error in report['errors']))
 
     def test_tex_palette_consistency_and_clut_count_fail(self):
         block = make_valid_textured_block()
-        desc = 0x2B0 + 4
+        desc = TEX_OFF + 4
         struct.pack_into('>I', block, desc + 4, 0x70)
         struct.pack_into('>H', block, desc + 0x18, 1)
         report = validate_model_block(bytes(block))
