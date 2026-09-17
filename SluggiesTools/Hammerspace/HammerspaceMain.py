@@ -1075,18 +1075,30 @@ def _custom_submesh_to_submesh(
     )
 
 
-def _build_custom_submesh(model: dict, cs: 'CustomSubmesh', rigid_surfaces: dict, submesh_index: int) -> 'Submesh':
+def _build_custom_submesh(
+    model: dict, cs: 'CustomSubmesh', rigid_surfaces: dict, submesh_index: int,
+    texture_index_by_file_name: dict[str, int] | None = None,
+) -> 'Submesh':
     """Resolve one CustomSubmesh's template, geometry and texture binding
-    into a Submesh dataclass ready for _build_rigid_submesh_blob."""
+    into a Submesh dataclass ready for _build_rigid_submesh_blob.
+
+    ``texture_index_by_file_name`` maps an ``AdditionalTextureFileName`` to
+    its final TEX index (PLAN_AddSubmesh.md Phase 4 step 2: the caller builds
+    the TEX plan first, then this patches the cloned Type-1 state with that
+    final index -- there is no placeholder to re-patch later)."""
     records, drawing_index, kind = _resolve_custom_submesh_records(model, cs, rigid_surfaces)
     descriptors = _custom_submesh_descriptors(cs, records, drawing_index, kind)
     texture_index = cs.texture_assignment.donor_texture_index
     if texture_index is None:
-        # AdditionalTextureFileName: Phase 4 resolves the real TEX index once
-        # its plan is built and re-patches this Type-1 record then
-        # (PLAN_AddSubmesh.md Phase 4 step 2, "build order"); 0 is a
-        # build-time placeholder until that phase lands.
-        texture_index = 0
+        file_name = cs.texture_assignment.additional_texture_file_name
+        mapping = texture_index_by_file_name or {}
+        if file_name not in mapping:
+            raise ValueError(
+                f"custom submesh '{cs.custom_submesh_id}': no resolved TEX index "
+                f"for AdditionalTextureFileName {file_name!r}; the TEX plan must "
+                'be built before the GPL append (PLAN_AddSubmesh.md Phase 4 step 2)'
+            )
+        texture_index = mapping[file_name]
     _custom_submesh_patch_layer0_texture(records, drawing_index, texture_index)
     faces = _custom_submesh_faces(cs, descriptors)
     raw = drawlist.encodeDrawList(faces, descriptors) + b'\x00'
@@ -1287,9 +1299,16 @@ def _build_rigid_submesh_blob(sub: 'Submesh') -> tuple[bytes, int]:
     return bytes(blob), name_off
 
 
-def PatchGPLAppendSubmesh(gpl_bytes: bytes, model: dict, parsed: 'SluggieParsed') -> bytes:
+def PatchGPLAppendSubmesh(
+    gpl_bytes: bytes, model: dict, parsed: 'SluggieParsed',
+    texture_index_by_file_name: dict[str, int] | None = None,
+) -> bytes:
     """Append every parsed.custom_submeshes entry to a cloned/patched GPL
     section (PLAN_AddSubmesh.md Phase 2).
+
+    ``texture_index_by_file_name`` resolves each custom submesh's
+    ``AdditionalTextureFileName`` to its final TEX index; the caller builds
+    the TEX plan before calling this (PLAN_AddSubmesh.md Phase 4 step 2).
 
     Unlike PatchGPLUVRebuild's pure tail-append, the GEO descriptor table
     must grow in place (Phase 0 only proved that shape -- the table
@@ -1319,7 +1338,9 @@ def PatchGPLAppendSubmesh(gpl_bytes: bytes, model: dict, parsed: 'SluggieParsed'
     rigid_surfaces = _custom_submesh_rigid_surfaces(model)
     donor_count = len(model.get('Submeshes') or [])
     new_submeshes = [
-        _build_custom_submesh(model, cs, rigid_surfaces, donor_count + index)
+        _build_custom_submesh(
+            model, cs, rigid_surfaces, donor_count + index, texture_index_by_file_name,
+        )
         for index, cs in enumerate(parsed.custom_submeshes)
     ]
 
@@ -3152,6 +3173,160 @@ def _hs_abort(message: str) -> None:
     raise ValueError(message)
 
 
+def _apply_geo_id_patches(act_bytes: bytes, data: dict, source_model_offset: int) -> bytes:
+    """Patch bone ``GeoId`` fields in a cloned ACT section
+    (PLAN_AddSubmesh.md Phase 3 steps 1-2): each custom submesh's host bone
+    gets ``GeoId = <new submesh index>``, and every ``GeoIdEdited`` bone (the
+    donor rigid-submesh retargeting the in-place patcher already supports,
+    via ``BoneHierarchy[].GeoIdEdited``) gets its edited value written too.
+    Hammerspace silently ignored ``GeoIdEdited`` before this.
+
+    Follows the same pattern as ``_apply_root_scale_patch``: hammerspace's ACT
+    section is always cloned verbatim, so a donor bone's absolute
+    ``GeoIdFieldOffset`` converted to an ACT-section-relative offset (via
+    ``_act_section_absolute``) stays valid regardless of where the
+    hammerspace block is relocated. New submesh indices are assigned in
+    ``model['CustomSubmeshes']`` order starting at ``len(model['Submeshes'])``,
+    matching ``PatchGPLAppendSubmesh``'s own ``donor_count + index`` rule, so
+    the GPL append and the ACT ownership patch always agree.
+
+    ``GeoIdEdited`` retargets are written first, using the same skip-if-no-op
+    rule as ``InplacePatcher/patch_inplace.py`` (compare against
+    ``_bone_geo_id_raw``, the literal un-edited ACT sentinel). Custom submesh
+    claims are written second and read the already-patched bytes, so a
+    retarget that frees a bone in the same build (``GeoIdEdited = 0xFFFF``)
+    makes that bone claimable by a custom submesh in the same call, and a
+    retarget that assigns a bone away from ``0xFFFF`` makes it correctly
+    unclaimable.
+
+    Returns the (possibly modified) ACT section bytes. When there is neither
+    a ``CustomSubmeshes`` entry nor a ``GeoIdEdited`` bone (or no ACT
+    section), the original ``act_bytes`` are returned unchanged.
+    ``_validate_custom_submeshes`` has already checked that every host bone
+    exists, is unclaimed (``GeoIdRaw == 0xFFFF``) and is claimed by exactly
+    one custom submesh, so the only new failure mode for custom submeshes
+    here is missing/stale ``GeoIdFieldOffset`` metadata. A stale field is
+    tolerated only for the known pre-fix off-by-8 export.py bug (see the
+    fallback below); anything else is rejected rather than guessed.
+    """
+    import struct as _s
+
+    model = data['SluggiesModel']
+    bone_hierarchy = model.get('BoneHierarchy') or []
+    custom_submeshes = model.get('CustomSubmeshes') or []
+    geo_id_edited_bones = [b for b in bone_hierarchy if b.get('GeoIdEdited') is not None]
+    if not custom_submeshes and not geo_id_edited_bones:
+        return act_bytes
+    if not act_bytes:
+        return act_bytes
+    act_section_absolute = _act_section_absolute(source_model_offset)
+    if not act_section_absolute:
+        return act_bytes
+
+    bones_by_id = {int(b['BoneId']): b for b in bone_hierarchy}
+    donor_count = len(model.get('Submeshes') or [])
+    patched = bytearray(act_bytes)
+
+    for bone in geo_id_edited_bones:
+        bone_id = int(bone['BoneId'])
+        target_geo_raw = int(bone['GeoIdEdited'])
+        if target_geo_raw < 0 or target_geo_raw > 0xFFFF:
+            raise ValueError(
+                f'bone {bone_id}: GeoIdEdited value {target_geo_raw} is out of '
+                'range (0..65535)'
+            )
+        if target_geo_raw == _bone_geo_id_raw(bone):
+            continue  # no-op retarget, nothing to write
+
+        field_off_hex = bone.get('GeoIdFieldOffset')
+        if not field_off_hex:
+            raise ValueError(
+                f'bone {bone_id}: GeoIdEdited is set but GeoIdFieldOffset metadata '
+                'is missing; re-export the model with the latest SluggiesTools '
+                'export.py'
+            )
+        act_relative = int(field_off_hex, 16) - act_section_absolute
+        if act_relative < 0 or act_relative + 2 > len(patched):
+            raise ValueError(
+                f'bone {bone_id}: GeoIdFieldOffset 0x{int(field_off_hex, 16):X} '
+                f'(ACT+0x{act_relative:X}) falls outside the cloned ACT section '
+                f'(0x{len(patched):X} bytes); the .sluggie\'s GeoIdFieldOffset '
+                'metadata does not match this model\'s ACT layout'
+            )
+
+        _s.pack_into('>H', patched, act_relative, target_geo_raw)
+        _slogger.info(
+            f'[ACT] bone {bone_id} GeoId -> {target_geo_raw} at ACT+0x{act_relative:X} '
+            '(GeoIdEdited retarget; section-relative, stable across hammerspace '
+            'relocation)',
+            source='hammerspace.main',
+        )
+
+    for index, cs in enumerate(custom_submeshes):
+        cs_id = cs.get('CustomSubmeshId', '<missing CustomSubmeshId>')
+        host_bone_id = int(cs['HostBoneId'])
+        new_submesh_index = donor_count + index
+        bone = bones_by_id[host_bone_id]
+
+        field_off_hex = bone.get('GeoIdFieldOffset')
+        if not field_off_hex:
+            raise ValueError(
+                f"custom submesh '{cs_id}': host bone {host_bone_id} is missing "
+                "GeoIdFieldOffset metadata; re-export the model with the latest "
+                "SluggiesTools export.py"
+            )
+        act_relative = int(field_off_hex, 16) - act_section_absolute
+        if act_relative < 0 or act_relative + 2 > len(patched):
+            raise ValueError(
+                f"custom submesh '{cs_id}': host bone {host_bone_id} GeoIdFieldOffset "
+                f"0x{int(field_off_hex, 16):X} (ACT+0x{act_relative:X}) falls outside "
+                f"the cloned ACT section (0x{len(patched):X} bytes); the .sluggie's "
+                "GeoIdFieldOffset metadata does not match this model's ACT layout"
+            )
+
+        current = _s.unpack_from('>H', patched, act_relative)[0]
+        if current != 0xFFFF:
+            # Exports written before the export.py GeoIdFieldOffset fix (see
+            # that file's extract_bone_hierarchy comment, and
+            # build_add_submesh_fixture.py's identical fallback) recorded
+            # bl.absolute + 0x0C instead of the real geoFileIdRaw field at
+            # bl.absolute + 0x14, an 8-byte offset bug. Older .sluggie files
+            # on disk still carry the stale offset. Try the corrected
+            # location, but only accept it if it actually reads the unowned
+            # sentinel; otherwise fail rather than guess.
+            fallback_relative = act_relative + 8
+            if (
+                fallback_relative + 2 <= len(patched)
+                and _s.unpack_from('>H', patched, fallback_relative)[0] == 0xFFFF
+            ):
+                _slogger.warning(
+                    f"custom submesh '{cs_id}': host bone {host_bone_id} GeoIdFieldOffset "
+                    f"at ACT+0x{act_relative:X} reads 0x{current:04X}, not 0xFFFF; using "
+                    f"ACT+0x{fallback_relative:X} instead (compensating for the pre-fix "
+                    "export.py off-by-8 GeoIdFieldOffset bug)",
+                    source='hammerspace.main',
+                )
+                act_relative = fallback_relative
+                current = 0xFFFF
+            else:
+                raise ValueError(
+                    f"custom submesh '{cs_id}': host bone {host_bone_id} GeoId field at "
+                    f"ACT+0x{act_relative:X} reads 0x{current:04X}, not 0xFFFF; it may "
+                    "already have been claimed by another patch, or GeoIdFieldOffset "
+                    "metadata is stale"
+                )
+
+        _s.pack_into('>H', patched, act_relative, new_submesh_index)
+        _slogger.info(
+            f"[ACT] custom submesh '{cs_id}': bone {host_bone_id} GeoId -> "
+            f'{new_submesh_index} at ACT+0x{act_relative:X} (section-relative; '
+            'stable across hammerspace relocation)',
+            source='hammerspace.main',
+        )
+
+    return bytes(patched)
+
+
 def BuildTEXTextureData(parsed: SluggieParsed) -> bytes:
     """Return the TEX (Texture Data) section bytes.
 
@@ -3237,11 +3412,12 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
         +0x1B  byte[5] unknown
 
       Data region:
-        Image payloads packed sequentially, then palette payloads.
-        The data region starts at the first 32-byte-aligned offset after the
-        descriptor table (zero padding closes the gap). Individual image
-        payload starts are not padded: a Dolphin-tested CMPR image rendered
-        correctly from a TEX-relative pointer that was 8 modulo 32.
+        Image payloads packed sequentially, then palette payloads. The data
+        region starts at the first 32-byte-aligned offset after the
+        descriptor table (zero padding closes the gap), and every individual
+        image and palette payload is likewise zero-padded up to the next
+        32-byte boundary before the next payload starts, matching vanilla
+        TEX sections (F10).
     """
     import struct as _s
     from texture_helper import _image_payload_size
@@ -3386,21 +3562,21 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
     desc_size = 0x20
     desc_table_size = len(textures) * desc_size
     # Match the original TEX layout by starting the packed data region at the
-    # first 32-byte boundary after the descriptor table. Image payloads are then
-    # packed consecutively; runtime testing confirms that an individual image
-    # pointer may be unaligned (8 modulo 32) without rendering errors.
+    # first 32-byte boundary after the descriptor table (F10). Every
+    # individual image/palette payload start is also 32-byte aligned.
     data_start = (header_size + desc_table_size + 31) & ~31
 
-    # Image payloads first, then palette payloads.
+    # Image payloads first, then palette payloads. Each payload start is
+    # 32-byte aligned (F10), matching vanilla TEX sections.
     cursor = data_start
     image_offsets = {}
     for idx, payload in image_payloads:
         image_offsets[idx] = cursor
-        cursor += len(payload)
+        cursor = (cursor + len(payload) + 31) & ~31
     palette_offsets = {}
     for idx, payload in palette_payloads:
         palette_offsets[idx] = cursor
-        cursor += len(payload)
+        cursor = (cursor + len(payload) + 31) & ~31
 
     out = bytearray()
     # Header
@@ -3435,11 +3611,16 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
     # each payload independently.
     if len(out) < data_start:
         out += b'\x00' * (data_start - len(out))
-    # Data region
+    # Data region: each payload is followed by zero padding out to the next
+    # 32-byte boundary (F10), matching the offsets computed above.
     for idx, payload in image_payloads:
         out += payload
+        padded_len = (len(payload) + 31) & ~31
+        out += b'\x00' * (padded_len - len(payload))
     for idx, payload in palette_payloads:
         out += payload
+        padded_len = (len(payload) + 31) & ~31
+        out += b'\x00' * (padded_len - len(payload))
 
     _slogger.info(
         f"[BuildTEX] built {len(textures)} texture(s), "
@@ -4233,6 +4414,17 @@ def BuildModelBlock(
             'DesiredTextureAssignments require GPL and TEX build modes with '
             'ReimportTextures enabled'
         )
+    custom_submesh_additional_texture_names = {
+        (cs.get('TextureAssignment') or {}).get('AdditionalTextureFileName')
+        for cs in model.get('CustomSubmeshes') or []
+    } - {None}
+    if custom_submesh_additional_texture_names and (
+        modes.tex != 'build' or not model.get('ReimportTextures')
+    ):
+        raise ValueError(
+            "CustomSubmeshes with TextureAssignment.AdditionalTextureFileName require "
+            "SectionModes.tex='build' with ReimportTextures enabled"
+        )
     chunk_number = model['ChunkNumber']
     file_index = model['FileIndex']
     original_offset, original_length = hh.readDolEntry(chunk_number, file_index)
@@ -4290,6 +4482,60 @@ def BuildModelBlock(
     parsed = ParseSluggie(data)
     if getattr(parsed, 'custom_submeshes', None) and modes.gpl != 'build':
         raise ValueError("CustomSubmeshes require SectionModes.gpl='build'")
+    if modes.tex == 'build':
+        # Resolved before the GPL append below so a custom submesh's
+        # AdditionalTextureFileName can be patched with its final TEX index
+        # immediately, instead of a placeholder re-patched later
+        # (PLAN_AddSubmesh.md Phase 4 step 2, "build order").
+        additional_texture_descriptors = model.get('AdditionalTextureDescriptors') or []
+        if texture_plan is not None and (
+            model.get('ReimportTextures') or tex_png_overrides or additional_texture_descriptors
+        ):
+            raise ValueError(
+                'a caller-supplied texture_plan cannot be combined with '
+                'ReimportTextures, png overrides, or AdditionalTextureDescriptors'
+            )
+        if additional_texture_descriptors and not model.get('ReimportTextures'):
+            raise ValueError(
+                "AdditionalTextureDescriptors require 'ReimportTextures' to be enabled"
+            )
+        if texture_plan is None and (
+            model.get('ReimportTextures') or tex_png_overrides or additional_texture_descriptors
+        ):
+            if sluggie_path is None:
+                raise ValueError(
+                    "tex='build' with texture reimport inputs requires "
+                    "the sluggie path to resolve the tex/ folder; pass "
+                    "sluggie_path to BuildModelBlock"
+                )
+            import texture_helper as _tex
+            additions = tuple(
+                _tex.AdditionalTextureDescriptor(
+                    texture_file_name=entry['TextureFileName'],
+                    template_texture_index=int(entry['TemplateTextureIndex']),
+                )
+                for entry in additional_texture_descriptors
+            )
+            plan_kwargs = {
+                'allow_dimension_change': True,
+                'png_overrides': tex_png_overrides,
+            }
+            if additions:
+                plan_kwargs['additional_descriptors'] = additions
+            texture_plan = _tex.build_hammerspace_texture_plan(
+                sluggie_path,
+                model.get('TextureDescriptors') or [],
+                **plan_kwargs,
+            )
+            for _sk in texture_plan.skipped:
+                _sk_fields = [f"expected {_sk.expected_payload_length} bytes"]
+                if _sk.generated_payload_length is not None:
+                    _sk_fields.append(f"generated {_sk.generated_payload_length} bytes")
+                _slogger.warning(
+                    f"texture {_sk.texture_index} ({_sk.texture_file_name}): "
+                    f"{', '.join(_sk_fields)}; left unchanged ({_sk.reason})",
+                    source='hammerspace.main',
+                )
     if modes.gpl == 'build':
         has_material_state_edits = any(
             state.get('MaterialStateAliasedByImporter')
@@ -4344,7 +4590,13 @@ def BuildModelBlock(
                 # is known to corrupt unmodified donor data (Phase 0 finding,
                 # PLAN_AddSubmesh.md Phase 2), and a new submesh has no donor
                 # layout to preserve regardless.
-                gpl_bytes = PatchGPLAppendSubmesh(gpl_bytes, model, parsed)
+                texture_index_by_file_name = {
+                    entry.texture_file_name: entry.texture_index
+                    for entry in (texture_plan.entries if texture_plan is not None else ())
+                }
+                gpl_bytes = PatchGPLAppendSubmesh(
+                    gpl_bytes, model, parsed, texture_index_by_file_name,
+                )
             gpl_result = GPLBuildResult(
                 gpl_bytes=gpl_bytes,
                 pos_gpl_offsets=_gpl_pos_offsets_from_bytes(gpl_bytes),
@@ -4367,56 +4619,9 @@ def BuildModelBlock(
     if act_bytes:
         act_bytes = _apply_root_scale_patch(act_bytes, data, source_model_offset)
     root_scale_applied = act_bytes != _act_before
+    if act_bytes:
+        act_bytes = _apply_geo_id_patches(act_bytes, data, source_model_offset)
     if modes.tex == 'build':
-        additional_texture_descriptors = model.get('AdditionalTextureDescriptors') or []
-        if texture_plan is not None and (
-            model.get('ReimportTextures') or tex_png_overrides or additional_texture_descriptors
-        ):
-            raise ValueError(
-                'a caller-supplied texture_plan cannot be combined with '
-                'ReimportTextures, png overrides, or AdditionalTextureDescriptors'
-            )
-        if additional_texture_descriptors and not model.get('ReimportTextures'):
-            raise ValueError(
-                "AdditionalTextureDescriptors require 'ReimportTextures' to be enabled"
-            )
-        if texture_plan is None and (
-            model.get('ReimportTextures') or tex_png_overrides or additional_texture_descriptors
-        ):
-            if sluggie_path is None:
-                raise ValueError(
-                    "tex='build' with texture reimport inputs requires "
-                    "the sluggie path to resolve the tex/ folder; pass "
-                    "sluggie_path to BuildModelBlock"
-                )
-            import texture_helper as _tex
-            additions = tuple(
-                _tex.AdditionalTextureDescriptor(
-                    texture_file_name=entry['TextureFileName'],
-                    template_texture_index=int(entry['TemplateTextureIndex']),
-                )
-                for entry in additional_texture_descriptors
-            )
-            plan_kwargs = {
-                'allow_dimension_change': True,
-                'png_overrides': tex_png_overrides,
-            }
-            if additions:
-                plan_kwargs['additional_descriptors'] = additions
-            texture_plan = _tex.build_hammerspace_texture_plan(
-                sluggie_path,
-                model.get('TextureDescriptors') or [],
-                **plan_kwargs,
-            )
-            for _sk in texture_plan.skipped:
-                _sk_fields = [f"expected {_sk.expected_payload_length} bytes"]
-                if _sk.generated_payload_length is not None:
-                    _sk_fields.append(f"generated {_sk.generated_payload_length} bytes")
-                _slogger.warning(
-                    f"texture {_sk.texture_index} ({_sk.texture_file_name}): "
-                    f"{', '.join(_sk_fields)}; left unchanged ({_sk.reason})",
-                    source='hammerspace.main',
-                )
         tex_bytes = BuildTEX(parsed, texture_plan)
     else:
         tex_bytes = CloneTEX(source_model_offset, source_model_length)

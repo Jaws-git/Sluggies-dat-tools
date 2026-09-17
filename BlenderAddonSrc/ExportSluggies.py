@@ -1,4 +1,5 @@
 import bpy
+import contextlib
 import json
 import math
 import os
@@ -9,6 +10,8 @@ from bpy.props import BoolProperty, StringProperty
 from bpy_extras.io_utils import ExportHelper
 
 from .SkinWeights import quantize_skin_weights, MAX_BONE_INFLUENCES_PER_VERTEX
+from .HostBones import compute_rigid_retargets, GEO_ID_FREE
+from . import CustomSubmeshExport
 
 
 def _to_bytes(data) -> bytes:
@@ -906,7 +909,10 @@ def encode_unskinned_bone_reassignments(candidates, data, warnings):
 
     Detection rule: for a non-skinned submesh object, every vertex must belong
     to exactly one positive-weight bone_<id> group, and that id differs from
-    the current owning bone id.
+    the current owning bone id. The rule itself lives in
+    HostBones.compute_rigid_retargets, shared with the free-bone proposal
+    (PLAN_AddSubmesh.md Phase 5 step 2) so both call sites agree on what a
+    valid retarget is.
     """
     model = data.get("SluggiesModel", {})
     bone_list = model.get("BoneHierarchy")
@@ -932,8 +938,8 @@ def encode_unskinned_bone_reassignments(candidates, data, warnings):
             obj_by_submesh[sub_idx] = obj
 
     bone_by_id = {int(bd["BoneId"]): bd for bd in bone_list if "BoneId" in bd}
-    owner_by_submesh = {
-        int(bd["GeoId"]): bd
+    owner_bone_by_submesh = {
+        int(bd["GeoId"]): int(bd["BoneId"])
         for bd in bone_list
         if (not bd.get("Skinned")) and bd.get("GeoId") is not None and int(bd.get("GeoId", -1)) >= 0
     }
@@ -944,51 +950,44 @@ def encode_unskinned_bone_reassignments(candidates, data, warnings):
         if bd.get("GeoIdRaw") is not None:
             return int(bd["GeoIdRaw"])
         if bd.get("Skinned"):
-            return 0xFFFF
-        return int(bd.get("GeoId", 0xFFFF))
+            return GEO_ID_FREE
+        return int(bd.get("GeoId", GEO_ID_FREE))
 
-    wrote_any = False
-    target_claims = {}
+    bone_geo_raw = {bone_id: _geo_raw(bd) for bone_id, bd in bone_by_id.items()}
 
-    for sub_idx, obj in obj_by_submesh.items():
-        owner = owner_by_submesh.get(sub_idx)
-        if owner is None:
-            continue
+    target_bone_by_submesh = {}
+    for sub_idx, from_bone_id in owner_bone_by_submesh.items():
+        obj = obj_by_submesh.get(sub_idx)
+        if obj is not None:
+            target_bone_by_submesh[sub_idx] = _detect_uniform_vertex_bone_id(obj)
 
-        target_bone_id = _detect_uniform_vertex_bone_id(obj)
-        if target_bone_id is None:
-            continue
+    retargets, issues = compute_rigid_retargets(
+        owner_bone_by_submesh, bone_geo_raw, target_bone_by_submesh, set(bone_by_id.keys())
+    )
 
-        from_bone_id = int(owner["BoneId"])
-        if target_bone_id == from_bone_id:
-            continue
-
-        target = bone_by_id.get(target_bone_id)
-        if target is None:
+    for issue in issues:
+        obj = obj_by_submesh.get(issue.submesh_index)
+        obj_name = obj.name if obj is not None else f"submesh {issue.submesh_index}"
+        if issue.reason == "unknown_bone":
             warnings.append(
-                f"{obj.name}: target group bone_{target_bone_id} is not present in BoneHierarchy; "
+                f"{obj_name}: target group bone_{issue.target_bone_id} is not present in BoneHierarchy; "
                 f"non-skinned reassignment skipped."
             )
-            continue
-
-        if target_bone_id in target_claims and target_claims[target_bone_id] != sub_idx:
+        elif issue.reason == "target_claimed_by_other_submesh":
             warnings.append(
-                f"{obj.name}: bone_{target_bone_id} is already requested by submesh "
-                f"{target_claims[target_bone_id]}; one non-skinned bone can own only one GeoId."
+                f"{obj_name}: bone_{issue.target_bone_id} is already requested by submesh "
+                f"{issue.detail}; one non-skinned bone can own only one GeoId."
             )
-            continue
-
-        target_geo_raw = _geo_raw(target)
-        if target_geo_raw not in (0xFFFF, sub_idx):
+        elif issue.reason == "target_occupied":
             warnings.append(
-                f"{obj.name}: bone_{target_bone_id} currently owns submesh {target_geo_raw}; "
+                f"{obj_name}: bone_{issue.target_bone_id} currently owns submesh {issue.detail}; "
                 f"reassignment skipped to avoid GeoId collision."
             )
-            continue
 
-        owner["GeoIdEdited"] = 0xFFFF
-        target["GeoIdEdited"] = sub_idx
-        target_claims[target_bone_id] = sub_idx
+    wrote_any = False
+    for r in retargets:
+        bone_by_id[r.from_bone_id]["GeoIdEdited"] = GEO_ID_FREE
+        bone_by_id[r.to_bone_id]["GeoIdEdited"] = r.submesh_index
         wrote_any = True
 
     return wrote_any
@@ -1996,7 +1995,25 @@ def _find_new_materials(obj, json_submesh):
 
     Any other material (no SurfaceId, unknown SurfaceId, or unparseable legacy name)
     is a newly created surface and must be rejected for the MVP (plan step 2.4).
+
+    A custom submesh (``SluggiesCustomSubmesh``) has no donor submesh to compare
+    against — it accepts exactly its own ``<CustomSubmeshId>_ds*`` SurfaceIds
+    (Phase 6 step 1 of PLAN_AddSubmesh.md) and rejects everything else.
     """
+    if obj.get("SluggiesCustomSubmesh"):
+        own_prefix = f'{obj.get("CustomSubmeshId")}_ds'
+        new_materials = []
+        for slot in obj.material_slots:
+            mat = slot.material
+            if mat is None:
+                continue
+            sid = mat.get("SurfaceId")
+            if not sid or not sid.startswith(own_prefix):
+                reason = (f"SurfaceId '{sid}' is not this custom submesh's own surface"
+                          if sid else "no SurfaceId")
+                new_materials.append((mat.name, reason))
+        return new_materials
+
     display_states = json_submesh.get("DisplayStates", [])
     donor_sids = {
         ds.get("SurfaceId") for ds in display_states if ds.get("SurfaceId")
@@ -2170,6 +2187,337 @@ def _resolve_material_texture_changes(
     return additions, assignments, changed_materials
 
 
+def _custom_submesh_texture_layer(mode):
+    """Decode a Type-1 ShaderMode hex string into (layer, texture_index).
+    Bits 13-15 are the texture layer, bits 0-12 are the texture index
+    (PLAN_AddSubmesh.md F9/Phase 4). Duplicated from
+    HammerspaceMain._custom_submesh_texture_layer because the add-on stays
+    standalone (no SluggiesTools imports, PLAN_AddSubmesh.md Phase 5 step 5)."""
+    setting = int(mode, 16)
+    return ((setting >> 13) & 7, setting & 0x1FFF)
+
+
+def _custom_submesh_template_texture_index(model, template_source):
+    """Resolve a CustomSubmesh's TemplateSource to the donor texture index
+    its new descriptor should clone the GX format from (PLAN_AddSubmesh.md
+    Phase 4 step 1). A custom submesh has no donor material of its own, so
+    this walks the same donor DisplayStates a `rigid:`/`derived:`/`builtin:`
+    template resolves against at build time (mirroring
+    HammerspaceMain._custom_submesh_rigid_records/_derived_records/
+    _builtin_records) to find the effective layer-0 Type-1 texture index:
+
+    - `rigid:<SurfaceId>`: the template submesh's own effective layer-0
+      texture at that surface.
+    - `derived:<SurfaceId>`: submesh 0's effective layer-0 texture at that
+      surface.
+    - `builtin:<name>`: the host model's own submesh 0, first layer-0
+      texture encountered (builtin templates are model-independent and
+      always rebind to the host's own submesh-0 texture, F9).
+    """
+    submeshes = model.get('Submeshes') or []
+    submesh0_states = (submeshes[0].get('DisplayStates') if submeshes else None) or []
+
+    def _effective_layer0(states, up_to_index):
+        layer0 = None
+        for state in states[:up_to_index + 1]:
+            if int(state.get('DisplayStateId', -1)) != 1:
+                continue
+            layer, texture_index = _custom_submesh_texture_layer(state['ShaderMode'])
+            if layer == 0:
+                layer0 = texture_index
+        return layer0
+
+    if template_source.startswith('rigid:'):
+        surface_id = template_source[len('rigid:'):]
+        for submesh in submeshes:
+            states = submesh.get('DisplayStates') or []
+            for index, state in enumerate(states):
+                if state.get('SurfaceId') != surface_id:
+                    continue
+                layer0 = _effective_layer0(states, index)
+                if layer0 is None:
+                    raise ValueError(
+                        f"Template surface '{surface_id}' has no layer-0 texture"
+                    )
+                return layer0
+        raise ValueError(f"Template surface '{surface_id}' not found in donor submeshes")
+
+    if template_source.startswith('derived:'):
+        surface_id = template_source[len('derived:'):]
+        for index, state in enumerate(submesh0_states):
+            if state.get('SurfaceId') != surface_id:
+                continue
+            layer0 = _effective_layer0(submesh0_states, index)
+            if layer0 is None:
+                raise ValueError(
+                    f"Derived surface '{surface_id}' has no layer-0 texture"
+                )
+            return layer0
+        raise ValueError(f"Derived surface '{surface_id}' not found in submesh 0")
+
+    if template_source.startswith('builtin:'):
+        for state in submesh0_states:
+            if int(state.get('DisplayStateId', -1)) != 1:
+                continue
+            layer, texture_index = _custom_submesh_texture_layer(state['ShaderMode'])
+            if layer == 0:
+                return texture_index
+        raise ValueError("Host model's submesh 0 has no layer-0 texture")
+
+    raise ValueError(f"Unrecognized TemplateSource: {template_source!r}")
+
+
+def _resolve_custom_submesh_texture_changes(
+    custom_submesh_entries,
+    descriptors,
+    tex_dir,
+    path_resolver=os.path.abspath,
+    validate_texture_files=True,
+):
+    """Resolve each custom submesh material's connected image into a
+    TextureAssignment (PLAN_AddSubmesh.md Phase 4 step 1). Applies the same
+    per-material image-inspection rules as _resolve_material_texture_changes,
+    but a custom submesh has no donor material to read a `TextureIndex`
+    from: each entry instead supplies the donor texture index its template
+    clones its GX format from (`_custom_submesh_template_texture_index`).
+
+    `custom_submesh_entries` is a list of (material, template_texture_index)
+    pairs. Returns (additions, assignment_by_material_name):
+    - `additions` is in the same shape as _resolve_material_texture_changes
+      produces, appendable to AdditionalTextureDescriptors.
+    - `assignment_by_material_name` maps each material's name to a dict
+      usable directly as a CustomSubmesh TextureAssignment: either
+      {"DonorTextureIndex": n} when the image already matches an existing
+      descriptor (a rebind, "as before"), or
+      {"AdditionalTextureFileName": name} for a newly appended one.
+    """
+    descriptor_by_name = {
+        descriptor.get("TextureFileName"): int(descriptor["TextureIndex"])
+        for descriptor in descriptors
+        if descriptor.get("TextureFileName")
+    }
+    donor_count = len(descriptors)
+    additions = []
+    assignments = {}
+
+    for material, template_texture_index in custom_submesh_entries:
+        if template_texture_index < 0 or template_texture_index >= donor_count:
+            raise ValueError(
+                f"Material '{material.name}' has invalid template texture index "
+                f"{template_texture_index}"
+            )
+
+        image_nodes = _connected_image_texture_nodes(material)
+        if len(image_nodes) > 1:
+            raise ValueError(
+                f"Multiple textures in one material are not supported: {material.name}"
+            )
+        if not image_nodes:
+            raise ValueError(
+                f"Custom submesh material has no connected texture: {material.name}"
+            )
+        image = getattr(image_nodes[0], "image", None)
+        image_path = (
+            getattr(image, "filepath_raw", "") or getattr(image, "filepath", "")
+            if image is not None else ""
+        )
+        if not image_path:
+            raise ValueError(f"Material image has no file path: {material.name}")
+
+        resolved_path = path_resolver(image_path)
+        file_name = os.path.basename(os.path.normpath(resolved_path))
+        if not file_name.lower().endswith('.png'):
+            raise ValueError(
+                f"Material '{material.name}' image must be a PNG: {file_name}"
+            )
+        local_path = os.path.join(tex_dir, file_name)
+        if validate_texture_files and (
+            not file_name or not os.path.isfile(local_path)
+        ):
+            raise ValueError(
+                f"Texture PNG for material '{material.name}' must exist in "
+                f"the resolved tex folder: {local_path}"
+            )
+
+        desired_index = descriptor_by_name.get(file_name)
+        if desired_index is None:
+            desired_index = donor_count + len(additions)
+            if desired_index > 0x1FFF:
+                raise ValueError(
+                    "the appended texture index exceeds the Type-1 13-bit field"
+                )
+            additions.append({
+                "TextureFileName": file_name,
+                "TemplateTextureIndex": template_texture_index,
+            })
+            assignments[material.name] = {"AdditionalTextureFileName": file_name}
+        else:
+            assignments[material.name] = {"DonorTextureIndex": desired_index}
+
+    return additions, assignments
+
+
+def _custom_submesh_triangles(obj):
+    """Triangulate a custom submesh for export (PLAN_AddSubmesh.md Phase 6
+    step 2.1) without changing the user's mesh: reads Blender's own loop
+    triangles instead of running a Triangulate operator or modifier."""
+    mesh = obj.data
+    mesh.calc_loop_triangles()
+    return CustomSubmeshExport.triangles_from_loop_triangles(mesh.loop_triangles)
+
+
+def _custom_submesh_armature(obj):
+    """The armature a custom submesh follows: its Armature modifier's object,
+    else the nearest armature parent."""
+    for modifier in obj.modifiers:
+        if modifier.type == 'ARMATURE' and modifier.object is not None:
+            return modifier.object
+    node = obj.parent
+    while node is not None:
+        if node.type == 'ARMATURE':
+            return node
+        node = node.parent
+    return None
+
+
+@contextlib.contextmanager
+def _armature_rest_pose(context, arm_obj):
+    """Evaluate the scene with *arm_obj* in its rest pose, then restore the
+    user's pose setting. An object parented to a bone (or constrained to one)
+    gets a pose-dependent ``matrix_world``; the rest pose makes it match the
+    bind pose the game positions are relative to."""
+    arm_data = arm_obj.data
+    previous = arm_data.pose_position
+    arm_data.pose_position = 'REST'
+    context.view_layer.update()
+    try:
+        yield
+    finally:
+        arm_data.pose_position = previous
+        context.view_layer.update()
+
+
+def _matrix_rows(matrix):
+    return [list(row) for row in matrix]
+
+
+def _custom_submesh_bone_local_geometry(context, obj, bone_hierarchy, host_bone_id, warnings):
+    """World position is authoritative (PLAN_AddSubmesh.md Phase 6 step 2.2).
+
+    Transforms are applied mathematically, never with ``transform_apply``, so
+    the export leaves the user's scene as it was:
+    1. flush Edit Mode into the mesh data,
+    2. read the undeformed ``mesh.vertices`` (never the evaluated mesh, so the
+       Armature modifier and the current pose can't leak into bind positions),
+    3-4. map object-local coordinates through the rest-pose world matrices into
+       the host bone's bind-local space, using the target .sluggie's own
+       BoneHierarchy bind matrices (the importer's placement matrices),
+    6. reverse winding when that transform mirrors,
+    7. warn about modifiers that export doesn't evaluate.
+    Item 5 (normals) uses the returned ``to_bone`` matrix.
+    """
+    arm_obj = _custom_submesh_armature(obj)
+    if arm_obj is None:
+        raise ValueError(
+            f"{obj.name}: custom submesh has no Armature modifier or armature parent; "
+            "it can't be placed relative to its host bone"
+        )
+    host_bind = CustomSubmeshExport.bone_absolute_matrices(bone_hierarchy).get(host_bone_id)
+    if host_bind is None:
+        raise ValueError(
+            f"{obj.name}: host bone {host_bone_id} does not exist in the target "
+            ".sluggie BoneHierarchy"
+        )
+
+    if obj.mode == 'EDIT':
+        obj.update_from_editmode()
+
+    skipped = CustomSubmeshExport.unsupported_modifier_names(
+        (modifier.name, modifier.type) for modifier in obj.modifiers
+    )
+    if skipped:
+        warnings.append(
+            f"{obj.name}: modifier(s) {', '.join(skipped)} are not evaluated on export; "
+            "apply them first or their geometry is missing in game."
+        )
+
+    with _armature_rest_pose(context, arm_obj):
+        obj_world = _matrix_rows(obj.matrix_world)
+        arm_world = _matrix_rows(arm_obj.matrix_world)
+
+    vertex_cos = [tuple(v.co) for v in obj.data.vertices]
+    try:
+        return CustomSubmeshExport.bone_local_geometry(
+            vertex_cos, _custom_submesh_triangles(obj), obj_world, arm_world, host_bind,
+        )
+    except ValueError as exc:
+        raise ValueError(f"{obj.name}: {exc}") from exc
+
+
+def _custom_submesh_loop_attributes(obj, warnings):
+    """Per-loop normals, UVs and colors of a custom submesh, indexed by Blender
+    loop index (PLAN_AddSubmesh.md Phase 6 step 2.5). Call after the geometry,
+    which flushes Edit Mode first.
+
+    - Normals are Blender's loop normals (custom split normals when present).
+    - UVs come from the render-active UV map. Only one map is exported; the
+      game's second channel mirrors it.
+    - Colors come from ``color0`` (the importer's name) or else the active
+      color attribute, on corner or point domain. No color attribute means
+      white.
+    """
+    mesh = obj.data
+    loop_normals = _per_loop_normals(mesh, range(len(mesh.loops)))
+
+    uv_layer = mesh.uv_layers.active_render or mesh.uv_layers.active
+    if uv_layer is None:
+        raise ValueError(f"{obj.name}: custom submesh has no UV map; add one and unwrap it")
+    if len(mesh.uv_layers) > 1:
+        warnings.append(
+            f"{obj.name}: only UV map '{uv_layer.name}' (render-active) is exported; "
+            "other UV maps are ignored."
+        )
+    loop_uvs = [tuple(uv_layer.data[i].uv) for i in range(len(mesh.loops))]
+
+    color_attribute = mesh.color_attributes.get("color0") or mesh.color_attributes.active_color
+    loop_colors = None
+    if color_attribute is not None:
+        if color_attribute.domain == 'CORNER':
+            loop_colors = [tuple(_get_loop_color(color_attribute.data[i])) for i in range(len(mesh.loops))]
+        elif color_attribute.domain == 'POINT':
+            loop_colors = [
+                tuple(_get_loop_color(color_attribute.data[loop.vertex_index])) for loop in mesh.loops
+            ]
+    return loop_normals, loop_uvs, loop_colors
+
+
+def encode_custom_submesh(context, obj, model, texture_assignment, warnings, use_base64=True):
+    """Encode one ``SluggiesCustomSubmesh`` object as a ``CustomSubmeshes``
+    entry (PLAN_AddSubmesh.md Phase 6 step 2): triangulate, map world
+    positions into host-bone space, range-check and quantize, and encode
+    per-loop normals, colors and UVs for the template's attribute set.
+    Raises ValueError with the object named."""
+    host_bone_id = _detect_uniform_vertex_bone_id(obj)
+    if host_bone_id is None:
+        raise ValueError(
+            f"{obj.name}: every vertex must belong to exactly one bone_<id> vertex group "
+            "(the host bone), all the same bone"
+        )
+    template_source = str(obj.get("TemplateSource") or "")
+    try:
+        plan = CustomSubmeshExport.attribute_plan(model, template_source)
+    except ValueError as exc:
+        raise ValueError(f"{obj.name}: {exc}") from exc
+    geometry = _custom_submesh_bone_local_geometry(
+        context, obj, model.get("BoneHierarchy") or [], host_bone_id, warnings,
+    )
+    loop_normals, loop_uvs, loop_colors = _custom_submesh_loop_attributes(obj, warnings)
+    return CustomSubmeshExport.build_custom_submesh_entry(
+        obj.name, str(obj.get("CustomSubmeshId")), host_bone_id, template_source, plan,
+        geometry, loop_normals, loop_uvs, loop_colors, texture_assignment, use_base64,
+    )
+
+
 def _resolve_export_texture_context(sluggie_path, model):
     """Return descriptor/path context, borrowing it for a paired `_L_` model."""
     model_dir = os.path.dirname(os.path.abspath(sluggie_path))
@@ -2234,6 +2582,14 @@ def _texture_export_toggles_required_message(material_names):
         "Texture change detected but 'Hammerspace Mode' and 'Reimport textures' "
         "are not both enabled. Enable both options before exporting. "
         f"Materials: [{', '.join(material_names)}]"
+    )
+
+
+def _custom_submesh_export_toggles_required_message(object_names):
+    return (
+        "Custom submeshes require both 'Hammerspace Mode' and 'Reimport textures' "
+        "to be enabled. Enable both options before exporting. "
+        f"Objects: [{', '.join(object_names)}]"
     )
 
 
@@ -2441,12 +2797,32 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         submeshes = data["SluggiesModel"].get("Submeshes", [])
 
         # --- collect selected mesh objects that carry Sluggies custom properties ---
+        # Custom submeshes (PLAN_AddSubmesh.md Phase 6 step 1) have no
+        # VertexBufferOffset of their own yet — they are new submeshes, not
+        # edits to an existing one — so they are collected separately and
+        # excluded from the VertexBufferOffset-matching candidates below.
+        custom_submesh_candidates = [
+            obj for obj in context.selected_objects
+            if obj.type == 'MESH' and obj.get('SluggiesCustomSubmesh')
+        ]
         candidates = [
             obj for obj in context.selected_objects
-            if obj.type == 'MESH' and all(prop in obj for prop in REQUIRED_PROPS)
+            if obj.type == 'MESH' and not obj.get('SluggiesCustomSubmesh')
+            and all(prop in obj for prop in REQUIRED_PROPS)
         ]
 
-        if not candidates:
+        if custom_submesh_candidates and not (
+            self.use_hammerspace and self.reimport_textures
+        ):
+            self.report(
+                {"ERROR"},
+                _custom_submesh_export_toggles_required_message(
+                    [obj.name for obj in custom_submesh_candidates]
+                ),
+            )
+            return {"CANCELLED"}
+
+        if not candidates and not custom_submesh_candidates:
             self.report({"ERROR"},
                 "No selected mesh objects with Sluggies custom properties found. "
                 "Import the JSON first, then select the meshes you want to export.")

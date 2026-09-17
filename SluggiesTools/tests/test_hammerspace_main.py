@@ -1307,19 +1307,22 @@ class BuildTEXTests(unittest.TestCase):
 
         # --- Data region layout: images first, then palettes ---
         # Data region starts at the first 32-byte-aligned offset after the
-        # descriptor table (Wii Broadway GPU DMA alignment requirement).
+        # descriptor table, and every individual payload start is likewise
+        # 32-byte aligned (F10), matching vanilla TEX sections.
         data_start = (4 + 2 * 0x20 + 31) & ~31  # 0x60
         self.assertEqual(data_start % 32, 0)
         self.assertEqual(img0_off, data_start)
-        self.assertEqual(img1_off, data_start + 64)
-        self.assertEqual(pal0_off, data_start + 64 + 32)
-        self.assertEqual(pal1_off, data_start + 64 + 32 + 4)
+        self.assertEqual(img1_off, data_start + 64)  # 64 already 32-aligned
+        self.assertEqual(pal0_off, data_start + 64 + 32)  # 32 already 32-aligned
+        self.assertEqual(pal1_off, data_start + 64 + 32 + 32)  # 4 padded up to 32
+        expected_len = data_start + 64 + 32 + 32 + 32  # 2 padded up to 32
+        self.assertEqual(len(section), expected_len)
 
-        # All offsets point to valid regions within the section.
-        self.assertEqual(len(section), data_start + 64 + 32 + 4 + 2)
+        # All offsets are themselves 32-byte aligned and within the section.
         for off, length in (
             (img0_off, 64), (img1_off, 32), (pal0_off, 4), (pal1_off, 2),
         ):
+            self.assertEqual(off % 32, 0)
             self.assertGreaterEqual(off, data_start)
             self.assertLessEqual(off + length, len(section))
 
@@ -1413,7 +1416,10 @@ class BuildTEXTests(unittest.TestCase):
         desc_end = 4 + 5 * 0x20
         self.assertEqual(section[desc_end:expected_data_start], b'\x00' * (expected_data_start - desc_end))
 
-    def test_build_tex_packs_valid_unaligned_image_payloads_consecutively(self):
+    def test_build_tex_pads_each_payload_to_32_byte_boundary(self):
+        # F10: every image/palette payload start is 32-byte aligned, even
+        # though an 8-byte payload leaves the next one at 8 mod 32 if packed
+        # back-to-back with no padding.
         textures = [
             self._make_texture(index, width=1, height=1, fmt=0xE)
             for index in range(2)
@@ -1441,9 +1447,12 @@ class BuildTEXTests(unittest.TestCase):
         first_ptr = struct.unpack_from('>I', section, 4)[0]
         second_ptr = struct.unpack_from('>I', section, 4 + 0x20)[0]
         self.assertEqual(first_ptr, data_start)
-        self.assertEqual(second_ptr, data_start + 8)
-        self.assertEqual(second_ptr % 32, 8)
+        self.assertEqual(second_ptr, data_start + 32)
+        self.assertEqual(second_ptr % 32, 0)
         self.assertEqual(section[first_ptr:first_ptr + 8], b'\x01' * 8)
+        # The gap between the first payload and the next aligned boundary is
+        # zero padding.
+        self.assertEqual(section[first_ptr + 8:second_ptr], b'\x00' * 24)
         self.assertEqual(section[second_ptr:second_ptr + 8], b'\x02' * 8)
 
     def test_build_tex_appends_plan_entry_from_donor_template(self):
@@ -1683,6 +1692,72 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
         )
         build_tex.assert_called_once_with(self.parsed, plan)
 
+    def test_tex_plan_built_before_gpl_append_resolves_additional_texture_index(self):
+        """PLAN_AddSubmesh.md Phase 4 step 2: the TEX plan is resolved before
+        the GPL append, so PatchGPLAppendSubmesh receives the custom
+        submesh's real, final TEX index instead of a placeholder."""
+        self.data['SluggiesModel'].update({
+            'UseHammerspace': True,
+            'ReimportTextures': True,
+            'TextureDescriptors': [{'TextureIndex': 0, 'TextureFileName': '0.png'}],
+            'AdditionalTextureDescriptors': [{'TextureFileName': 'new.png', 'TemplateTextureIndex': 0}],
+            'CustomSubmeshes': [{
+                'CustomSubmeshId': 'custom0',
+                'HostBoneId': 1,
+                'TextureAssignment': {'AdditionalTextureFileName': 'new.png'},
+            }],
+        })
+        cs = SimpleNamespace(
+            custom_submesh_id='custom0',
+            texture_assignment=SimpleNamespace(
+                donor_texture_index=None, additional_texture_file_name='new.png',
+            ),
+        )
+        self.parsed = SimpleNamespace(custom_submeshes=[cs])
+        plan_entry = mock.Mock(texture_file_name='new.png', texture_index=5)
+        plan = mock.Mock(skipped=(), entries=(plan_entry,))
+        patches = self._patch_common()
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
+            with (
+                mock.patch.object(main, '_validate_hammerspace_contract'),
+                mock.patch.object(main, '_validate_custom_submeshes'),
+                mock.patch.object(
+                    texture_helper, 'build_hammerspace_texture_plan', return_value=plan,
+                ),
+                mock.patch.object(main, 'BuildTEX', return_value=b'BUILT_TEX'),
+                mock.patch.object(main, 'PatchGPLAppendSubmesh', return_value=b'GPL2') as patch_append,
+                mock.patch.object(main, '_apply_geo_id_patches', side_effect=lambda act, *a, **k: act),
+                mock.patch.object(main, 'validate_model_block', return_value={
+                    'valid': True,
+                    'errors': [],
+                    'warnings': [],
+                    'facts': {'section_pointers': {'GPL': 32, 'ACT': 35, 'TEX': 38, 'SKN': 41}},
+                }),
+            ):
+                main.BuildModelBlock(
+                    self.data, main.SectionModes(gpl='build', tex='build'),
+                    sluggie_path='model.sluggies',
+                )
+
+        patch_append.assert_called_once_with(
+            b'GPL', self.data['SluggiesModel'], self.parsed, {'new.png': 5},
+        )
+
+    def test_custom_submesh_additional_texture_file_name_requires_tex_build_and_reimport(self):
+        self.data['SluggiesModel'].update({
+            'UseHammerspace': True,
+            'CustomSubmeshes': [{'TextureAssignment': {'AdditionalTextureFileName': 'new.png'}}],
+        })
+        with (
+            mock.patch.object(main, '_validate_hammerspace_contract'),
+            mock.patch.object(main, '_validate_custom_submeshes'),
+        ):
+            with self.assertRaisesRegex(ValueError, 'AdditionalTextureFileName'):
+                main.BuildModelBlock(
+                    self.data, main.SectionModes(gpl='build', tex='clone'),
+                    sluggie_path='model.sluggies',
+                )
+
     def test_additional_texture_descriptors_require_reimport_enabled(self):
         self.data['SluggiesModel'].update({
             'UseHammerspace': True,
@@ -1847,6 +1922,248 @@ class BuildModelBlockRootScaleTests(unittest.TestCase):
             with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
                 with self.assertRaises(ValueError):
                     main._apply_root_scale_patch(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+
+
+class ApplyGeoIdPatchesTests(unittest.TestCase):
+    """PLAN_AddSubmesh.md Phase 3 step 1: ``_apply_geo_id_patches`` writes
+    ``GeoId = <new submesh index>`` onto each custom submesh's host bone at
+    its ACT-section-relative ``GeoIdFieldOffset``.
+
+    Follows the same shape as ``BuildModelBlockRootScaleTests``: only the ACT
+    section payload is mocked, and the real ``_act_section_absolute`` reads
+    the model-block header from a temp INPUT_DAT.
+    """
+
+    SOURCE_MODEL_OFFSET = 0x1000
+    ACT_OFF = 0x40  # model header +0x08 -> ACT section rel. to model start
+
+    def _write_input_dat(self, temp_dir, act_off):
+        input_dat = pathlib.Path(temp_dir) / 'dt_na.dat'
+        buf = bytearray(0x2000)
+        struct.pack_into('>I', buf, self.SOURCE_MODEL_OFFSET + 0x08, act_off)
+        input_dat.write_bytes(bytes(buf))
+        return input_dat
+
+    def _bone(self, bone_id, field_off_relative, geo_raw=0xFFFF):
+        field_off_absolute = self.SOURCE_MODEL_OFFSET + self.ACT_OFF + field_off_relative
+        return {
+            'BoneId': bone_id,
+            'GeoIdRaw': geo_raw,
+            'GeoIdFieldOffset': f'0x{field_off_absolute:X}',
+        }
+
+    def _custom_submesh(self, cs_id, host_bone_id):
+        return {'CustomSubmeshId': cs_id, 'HostBoneId': host_bone_id}
+
+    def test_writes_new_submesh_index_at_act_relative_offset(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = self._write_input_dat(temp_dir, self.ACT_OFF)
+            act_bytes = b'\xff' * 0x80
+            data = {'SluggiesModel': {
+                'Submeshes': [{}, {}],
+                'BoneHierarchy': [self._bone(5, 0x20)],
+                'CustomSubmeshes': [self._custom_submesh('custom0', 5)],
+            }}
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                patched = main._apply_geo_id_patches(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+
+        self.assertEqual(patched[0x20:0x22], struct.pack('>H', 2))
+        self.assertEqual(patched[:0x20], act_bytes[:0x20])
+        self.assertEqual(patched[0x22:], act_bytes[0x22:])
+
+    def test_multiple_custom_submeshes_index_in_order(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = self._write_input_dat(temp_dir, self.ACT_OFF)
+            act_bytes = b'\xff' * 0x80
+            data = {'SluggiesModel': {
+                'Submeshes': [{}],
+                'BoneHierarchy': [self._bone(5, 0x20), self._bone(6, 0x28)],
+                'CustomSubmeshes': [
+                    self._custom_submesh('custom0', 5),
+                    self._custom_submesh('custom1', 6),
+                ],
+            }}
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                patched = main._apply_geo_id_patches(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+
+        self.assertEqual(patched[0x20:0x22], struct.pack('>H', 1))
+        self.assertEqual(patched[0x28:0x2A], struct.pack('>H', 2))
+
+    def test_no_custom_submeshes_returns_unchanged(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = self._write_input_dat(temp_dir, self.ACT_OFF)
+            act_bytes = b'\xff' * 0x80
+            data = {'SluggiesModel': {'Submeshes': [], 'BoneHierarchy': []}}
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                result = main._apply_geo_id_patches(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+        self.assertEqual(result, act_bytes)
+
+    def test_no_act_section_returns_unchanged(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = self._write_input_dat(temp_dir, 0)  # act_off == 0 -> no ACT
+            act_bytes = b'\xff' * 0x80
+            data = {'SluggiesModel': {
+                'Submeshes': [{}],
+                'BoneHierarchy': [self._bone(5, 0x20)],
+                'CustomSubmeshes': [self._custom_submesh('custom0', 5)],
+            }}
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                result = main._apply_geo_id_patches(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+        self.assertEqual(result, act_bytes)
+
+    def test_missing_geo_id_field_offset_raises(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = self._write_input_dat(temp_dir, self.ACT_OFF)
+            act_bytes = b'\xff' * 0x80
+            bone = self._bone(5, 0x20)
+            del bone['GeoIdFieldOffset']
+            data = {'SluggiesModel': {
+                'Submeshes': [{}],
+                'BoneHierarchy': [bone],
+                'CustomSubmeshes': [self._custom_submesh('custom0', 5)],
+            }}
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                with self.assertRaises(ValueError):
+                    main._apply_geo_id_patches(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+
+    def test_stale_geo_id_field_raises(self):
+        # The field doesn't read 0xFFFF (e.g. already claimed) -> reject
+        # rather than silently overwrite.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = self._write_input_dat(temp_dir, self.ACT_OFF)
+            act_bytes = bytearray(b'\xff' * 0x80)
+            struct.pack_into('>H', act_bytes, 0x20, 0x0003)
+            # Also poison the off-by-8 fallback location so it can't mask
+            # this as the pre-fix export.py bug.
+            struct.pack_into('>H', act_bytes, 0x28, 0x0000)
+            data = {'SluggiesModel': {
+                'Submeshes': [{}],
+                'BoneHierarchy': [self._bone(5, 0x20)],
+                'CustomSubmeshes': [self._custom_submesh('custom0', 5)],
+            }}
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                with self.assertRaises(ValueError):
+                    main._apply_geo_id_patches(bytes(act_bytes), data, self.SOURCE_MODEL_OFFSET)
+
+    def test_field_offset_before_act_section_raises(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = self._write_input_dat(temp_dir, self.ACT_OFF)
+            act_bytes = b'\xff' * 0x80
+            bone = self._bone(5, 0x20)
+            bone['GeoIdFieldOffset'] = f'0x{self.SOURCE_MODEL_OFFSET + self.ACT_OFF - 1:X}'
+            data = {'SluggiesModel': {
+                'Submeshes': [{}],
+                'BoneHierarchy': [bone],
+                'CustomSubmeshes': [self._custom_submesh('custom0', 5)],
+            }}
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                with self.assertRaises(ValueError):
+                    main._apply_geo_id_patches(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+
+    # -- PLAN_AddSubmesh.md Phase 3 step 2: GeoIdEdited retargets --------
+
+    def test_geo_id_edited_writes_target_value(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = self._write_input_dat(temp_dir, self.ACT_OFF)
+            act_bytes = bytearray(b'\xff' * 0x80)
+            struct.pack_into('>H', act_bytes, 0x20, 0x0001)  # bone 5 currently owns submesh 1
+            bone = self._bone(5, 0x20, geo_raw=0x0001)
+            bone['GeoIdEdited'] = 0xFFFF  # freed by a retarget
+            data = {'SluggiesModel': {
+                'Submeshes': [{}, {}],
+                'BoneHierarchy': [bone],
+            }}
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                patched = main._apply_geo_id_patches(bytes(act_bytes), data, self.SOURCE_MODEL_OFFSET)
+        self.assertEqual(patched[0x20:0x22], struct.pack('>H', 0xFFFF))
+
+    def test_geo_id_edited_no_op_when_equal_to_original_leaves_bytes_untouched(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = self._write_input_dat(temp_dir, self.ACT_OFF)
+            act_bytes = bytearray(b'\xff' * 0x80)
+            struct.pack_into('>H', act_bytes, 0x20, 0x0001)
+            bone = self._bone(5, 0x20, geo_raw=0x0001)
+            bone['GeoIdEdited'] = 0x0001  # same as original -> no-op
+            data = {'SluggiesModel': {
+                'Submeshes': [{}, {}],
+                'BoneHierarchy': [bone],
+            }}
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                patched = main._apply_geo_id_patches(bytes(act_bytes), data, self.SOURCE_MODEL_OFFSET)
+        self.assertEqual(patched, bytes(act_bytes))
+
+    def test_geo_id_edited_missing_field_offset_raises(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = self._write_input_dat(temp_dir, self.ACT_OFF)
+            act_bytes = b'\xff' * 0x80
+            bone = {'BoneId': 5, 'GeoIdRaw': 0xFFFF, 'GeoIdEdited': 3}
+            data = {'SluggiesModel': {'Submeshes': [{}], 'BoneHierarchy': [bone]}}
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                with self.assertRaises(ValueError):
+                    main._apply_geo_id_patches(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+
+    def test_geo_id_edited_out_of_range_raises(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = self._write_input_dat(temp_dir, self.ACT_OFF)
+            act_bytes = b'\xff' * 0x80
+            bone = self._bone(5, 0x20)
+            bone['GeoIdEdited'] = 0x10000
+            data = {'SluggiesModel': {'Submeshes': [{}], 'BoneHierarchy': [bone]}}
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                with self.assertRaises(ValueError):
+                    main._apply_geo_id_patches(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+
+    def test_geo_id_edited_frees_bone_that_custom_submesh_then_claims(self):
+        # A retarget frees bone 5 (GeoIdEdited 0xFFFF) in the same build that
+        # a custom submesh claims it. Retargets are written first, so the
+        # custom-submesh claim's "must currently read 0xFFFF" check sees the
+        # freshly-freed field and succeeds.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = self._write_input_dat(temp_dir, self.ACT_OFF)
+            act_bytes = bytearray(b'\xff' * 0x80)
+            struct.pack_into('>H', act_bytes, 0x20, 0x0001)
+            bone = self._bone(5, 0x20, geo_raw=0x0001)
+            bone['GeoIdEdited'] = 0xFFFF
+            data = {'SluggiesModel': {
+                'Submeshes': [{}, {}],
+                'BoneHierarchy': [bone],
+                'CustomSubmeshes': [self._custom_submesh('custom0', 5)],
+            }}
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                patched = main._apply_geo_id_patches(bytes(act_bytes), data, self.SOURCE_MODEL_OFFSET)
+        # donor_count (2) + index 0 -> new submesh index 2
+        self.assertEqual(patched[0x20:0x22], struct.pack('>H', 2))
+
+    def test_geo_id_edited_retarget_onto_a_bone_blocks_it_from_custom_claim(self):
+        # A retarget assigns bone 6 away from 0xFFFF (it now owns submesh 1)
+        # in the same build that a custom submesh tries to claim it -- the
+        # claim must fail rather than silently overwrite the retarget.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = self._write_input_dat(temp_dir, self.ACT_OFF)
+            act_bytes = bytearray(b'\xff' * 0x80)
+            # Poison the off-by-8 fallback location too, so it can't mask
+            # this as the pre-fix export.py bug.
+            struct.pack_into('>H', act_bytes, 0x28 + 8, 0x0000)
+            bone = self._bone(6, 0x28, geo_raw=0xFFFF)
+            bone['GeoIdEdited'] = 1
+            data = {'SluggiesModel': {
+                'Submeshes': [{}, {}],
+                'BoneHierarchy': [bone],
+                'CustomSubmeshes': [self._custom_submesh('custom0', 6)],
+            }}
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                with self.assertRaises(ValueError):
+                    main._apply_geo_id_patches(bytes(act_bytes), data, self.SOURCE_MODEL_OFFSET)
+
+    def test_no_geo_id_edits_or_custom_submeshes_returns_unchanged(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = self._write_input_dat(temp_dir, self.ACT_OFF)
+            act_bytes = b'\xff' * 0x80
+            bone = self._bone(5, 0x20)  # GeoIdEdited not set
+            data = {'SluggiesModel': {'Submeshes': [{}], 'BoneHierarchy': [bone]}}
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                result = main._apply_geo_id_patches(act_bytes, data, self.SOURCE_MODEL_OFFSET)
+        self.assertEqual(result, act_bytes)
 
 
 class ParseSluggieCustomSubmeshesTests(unittest.TestCase):
@@ -2236,6 +2553,52 @@ class CustomSubmeshType3AndTextureHelperTests(unittest.TestCase):
     def test_type3_descriptors_rejects_direct_attribute(self):
         with self.assertRaisesRegex(ValueError, 'direct'):
             main._custom_submesh_type3_descriptors(0b01 << main.drawlist._ATTR_BIT_SHIFT['position'])
+
+
+class BuildCustomSubmeshAdditionalTextureIndexTests(unittest.TestCase):
+    """PLAN_AddSubmesh.md Phase 4 step 2: _build_custom_submesh patches the
+    new submesh's Type-1 texture binding with the final TEX index resolved
+    from the caller's texture_index_by_file_name mapping -- there is no
+    build-time placeholder to re-patch later."""
+
+    def test_missing_mapping_entry_raises(self):
+        model = _validation_base_model()
+        cs = SimpleNamespace(
+            template_source='builtin:rigid_spec_v1', custom_submesh_id='custom0',
+            vertex_data=b'\x00' * 6, normal_data=None, color_data=None, uv_channels=[],
+            texture_assignment=SimpleNamespace(
+                donor_texture_index=None, additional_texture_file_name='new.png',
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, 'no resolved TEX index'):
+            main._build_custom_submesh(
+                model, cs, main._custom_submesh_rigid_surfaces(model), 1,
+                texture_index_by_file_name={},
+            )
+
+    @unittest.skipUnless(REAL_MARIO_SLUGGIE.is_file(), 'real Mario export not present in this checkout')
+    def test_resolved_mapping_patches_the_final_index(self):
+        with REAL_MARIO_SLUGGIE.open('r', encoding='utf-8') as source_file:
+            data = json.load(source_file)
+        model = data['SluggiesModel']
+        model['UseHammerspace'] = True
+        use_b64 = model.get('UseBase64', True)
+        host_bone_id = _free_host_bones(model, 1)[0]
+        cs_dict = _cube_custom_submesh('custom0', host_bone_id, 'builtin:rigid_spec_v1', use_b64)
+        cs_dict['TextureAssignment'] = {'AdditionalTextureFileName': 'new.png'}
+        model['CustomSubmeshes'] = [cs_dict]
+        parsed = main.ParseSluggie(data)
+        cs = parsed.custom_submeshes[0]
+        sub = main._build_custom_submesh(
+            model, cs, main._custom_submesh_rigid_surfaces(model), len(model['Submeshes']),
+            texture_index_by_file_name={'new.png': 42},
+        )
+        layer0 = next(
+            state.shader_mode for state in sub.draw_states
+            if state.display_state_id == 1
+            and main._custom_submesh_texture_layer(state.shader_mode)[0] == 0
+        )
+        self.assertEqual(main._custom_submesh_texture_layer(layer0), (0, 42))
 
 
 class CustomSubmeshTemplateRecordsTests(unittest.TestCase):

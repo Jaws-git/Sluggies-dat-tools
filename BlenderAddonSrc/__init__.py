@@ -14,16 +14,14 @@
 import bpy
 from . import ImportSluggies
 from . import ExportSluggies
-
-# SluggiesToolsPanel.py is retained for future implementation, but its
-# unfinished N-panel is intentionally not loaded or registered yet.
+from . import SluggiesToolsPanel
 
 bl_info = {
     "name": "Sluggies IO",
     "author": "JawSFM",
     "description": "Import/Export Sluggers intermediate JSON files (Mario Super Sluggers - Wii)",
     "blender": (4, 2, 0),
-    "version": (0, 7, 7),
+    "version": (0, 7, 8),
     "location": "File > Import/Export > Sluggers intermediate (.sluggie)",
     "warning": "",
     "category": "Import-Export",
@@ -33,8 +31,10 @@ bl_info = {
 def register():
     ImportSluggies.register()
     ExportSluggies.register()
+    SluggiesToolsPanel.register()
 
 
 def unregister():
+    SluggiesToolsPanel.unregister()
     ImportSluggies.unregister()
     ExportSluggies.unregister()

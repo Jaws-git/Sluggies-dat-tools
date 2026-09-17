@@ -56,6 +56,9 @@ def _load_texture_helpers():
         '_resolve_material_texture_changes',
         '_resolve_export_texture_context',
         '_texture_export_toggles_required_message',
+        '_custom_submesh_texture_layer',
+        '_custom_submesh_template_texture_index',
+        '_resolve_custom_submesh_texture_changes',
     }
     helpers = [
         node for node in tree.body
@@ -559,6 +562,154 @@ class BlenderMaterialTextureTests(unittest.TestCase):
         )
 
 
+class CustomSubmeshTextureTests(unittest.TestCase):
+    def setUp(self):
+        helpers = _load_texture_helpers()
+        self.texture_layer = helpers['_custom_submesh_texture_layer']
+        self.template_texture_index = helpers['_custom_submesh_template_texture_index']
+        self.resolve_custom_changes = helpers['_resolve_custom_submesh_texture_changes']
+
+    @staticmethod
+    def _mode(layer, texture_index):
+        return f'{(layer << 13) | texture_index:08x}'
+
+    def test_texture_layer_decodes_layer_and_index(self):
+        self.assertEqual(self.texture_layer(CustomSubmeshTextureTests._mode(0, 4)), (0, 4))
+        self.assertEqual(self.texture_layer(CustomSubmeshTextureTests._mode(1, 7)), (1, 7))
+
+    def test_rigid_template_uses_last_effective_layer0_before_surface(self):
+        model = {'Submeshes': [
+            {'DisplayStates': []},
+            {'DisplayStates': [
+                {'DisplayStateId': 1, 'ShaderMode': self._mode(0, 2)},
+                {'SurfaceId': 'sm1_ds1', 'DisplayStateId': 1, 'ShaderMode': self._mode(0, 5)},
+                {'SurfaceId': 'sm1_ds2', 'DisplayStateId': 7, 'ShaderMode': 'Spec'},
+            ]},
+        ]}
+        self.assertEqual(
+            self.template_texture_index(model, 'rigid:sm1_ds1'), 5
+        )
+        # A surface after the last layer-0 setter still resolves to it.
+        self.assertEqual(
+            self.template_texture_index(model, 'rigid:sm1_ds2'), 5
+        )
+
+    def test_derived_template_reads_submesh0_up_to_surface(self):
+        model = {'Submeshes': [{'DisplayStates': [
+            {'DisplayStateId': 1, 'ShaderMode': self._mode(0, 3)},
+            {'SurfaceId': 'sm0_ds1', 'DisplayStateId': 7, 'ShaderMode': 'Spec'},
+            {'DisplayStateId': 1, 'ShaderMode': self._mode(0, 9)},
+            {'SurfaceId': 'sm0_ds2', 'DisplayStateId': 7, 'ShaderMode': 'Spec'},
+        ]}]}
+        self.assertEqual(self.template_texture_index(model, 'derived:sm0_ds1'), 3)
+        self.assertEqual(self.template_texture_index(model, 'derived:sm0_ds2'), 9)
+
+    def test_builtin_template_uses_first_submesh0_layer0(self):
+        model = {'Submeshes': [{'DisplayStates': [
+            {'DisplayStateId': 1, 'ShaderMode': self._mode(1, 6)},
+            {'DisplayStateId': 1, 'ShaderMode': self._mode(0, 4)},
+            {'DisplayStateId': 1, 'ShaderMode': self._mode(0, 8)},
+        ]}]}
+        self.assertEqual(self.template_texture_index(model, 'builtin:rigid_spec_v1'), 4)
+
+    def test_missing_surface_is_rejected(self):
+        model = {'Submeshes': [{'DisplayStates': []}]}
+        with self.assertRaisesRegex(ValueError, "not found in donor submeshes"):
+            self.template_texture_index(model, 'rigid:missing')
+        with self.assertRaisesRegex(ValueError, "not found in submesh 0"):
+            self.template_texture_index(model, 'derived:missing')
+
+    def test_surface_with_no_layer0_texture_is_rejected(self):
+        model = {'Submeshes': [{'DisplayStates': [
+            {'SurfaceId': 'sm0_ds1', 'DisplayStateId': 1, 'ShaderMode': self._mode(1, 2)},
+        ]}]}
+        with self.assertRaisesRegex(ValueError, 'no layer-0 texture'):
+            self.template_texture_index(model, 'derived:sm0_ds1')
+
+    def test_builtin_with_no_submesh0_layer0_texture_is_rejected(self):
+        model = {'Submeshes': [{'DisplayStates': [
+            {'DisplayStateId': 1, 'ShaderMode': self._mode(1, 2)},
+        ]}]}
+        with self.assertRaisesRegex(ValueError, "submesh 0 has no layer-0 texture"):
+            self.template_texture_index(model, 'builtin:rigid_spec_v1')
+
+    def test_unrecognized_template_source_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'Unrecognized TemplateSource'):
+            self.template_texture_index({'Submeshes': []}, 'sculpted:foo')
+
+    def test_new_png_appends_descriptor_cloning_template_texture(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = pathlib.Path(temp_dir, 'custom0.png')
+            image_path.write_bytes(b'png')
+            material = _material_graph('custom0_mat', 'custom0_ds0', 0, [image_path])
+            additions, assignments = self.resolve_custom_changes(
+                [(material, 2)],
+                [
+                    {'TextureIndex': 0, 'TextureFileName': '0.png'},
+                    {'TextureIndex': 1, 'TextureFileName': '1.png'},
+                    {'TextureIndex': 2, 'TextureFileName': '2.png'},
+                ],
+                temp_dir,
+            )
+        self.assertEqual(additions, [
+            {'TextureFileName': 'custom0.png', 'TemplateTextureIndex': 2},
+        ])
+        self.assertEqual(
+            assignments, {'custom0_mat': {'AdditionalTextureFileName': 'custom0.png'}}
+        )
+
+    def test_existing_donor_png_rebinds_instead_of_appending(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pathlib.Path(temp_dir, '1.png').write_bytes(b'png')
+            material = _material_graph(
+                'custom0_mat', 'custom0_ds0', 0, [pathlib.Path(temp_dir, '1.png')]
+            )
+            additions, assignments = self.resolve_custom_changes(
+                [(material, 0)],
+                [
+                    {'TextureIndex': 0, 'TextureFileName': '0.png'},
+                    {'TextureIndex': 1, 'TextureFileName': '1.png'},
+                ],
+                temp_dir,
+            )
+        self.assertEqual(additions, [])
+        self.assertEqual(
+            assignments, {'custom0_mat': {'DonorTextureIndex': 1}}
+        )
+
+    def test_out_of_range_template_texture_index_is_rejected(self):
+        material = _material_graph('custom0_mat', 'custom0_ds0', 0, [])
+        with self.assertRaisesRegex(ValueError, 'invalid template texture index'):
+            self.resolve_custom_changes(
+                [(material, 5)],
+                [{'TextureIndex': 0, 'TextureFileName': '0.png'}],
+                'unused',
+            )
+
+    def test_no_connected_texture_is_rejected(self):
+        material = _material_graph('custom0_mat', 'custom0_ds0', 0, [])
+        with self.assertRaisesRegex(ValueError, 'no connected texture'):
+            self.resolve_custom_changes(
+                [(material, 0)],
+                [{'TextureIndex': 0, 'TextureFileName': '0.png'}],
+                'unused',
+            )
+
+    def test_multiple_connected_images_is_rejected(self):
+        material = _material_graph(
+            'custom0_mat', 'custom0_ds0', 0, ['first.png', 'second.png']
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            '^Multiple textures in one material are not supported: custom0_mat$',
+        ):
+            self.resolve_custom_changes(
+                [(material, 0)],
+                [{'TextureIndex': 0, 'TextureFileName': '0.png'}],
+                'unused',
+            )
+
+
 class BlenderExportUiTests(unittest.TestCase):
     def test_export_execute_rejects_empty_target_before_file_io(self):
         tree = ast.parse(EXPORTER_PATH.read_text(encoding='utf-8'))
@@ -576,7 +727,7 @@ class BlenderExportUiTests(unittest.TestCase):
         self.assertIn('No target .sluggie file was selected', source)
         self.assertIn("return {'CANCELLED'}", source)
 
-    def test_sidebar_module_is_retained_but_not_registered(self):
+    def test_sidebar_module_is_registered(self):
         self.assertTrue((ROOT_DIR / 'BlenderAddonSrc' / 'SluggiesToolsPanel.py').is_file())
         tree = ast.parse(ADDON_INIT_PATH.read_text(encoding='utf-8'))
         imported_modules = {
@@ -585,11 +736,16 @@ class BlenderExportUiTests(unittest.TestCase):
             if isinstance(node, ast.ImportFrom)
             for alias in node.names
         }
-        self.assertNotIn('SluggiesToolsPanel', imported_modules)
-        self.assertNotIn(
-            'SluggiesToolsPanel.register',
-            ADDON_INIT_PATH.read_text(encoding='utf-8'),
-        )
+        self.assertIn('SluggiesToolsPanel', imported_modules)
+        init_source = ADDON_INIT_PATH.read_text(encoding='utf-8')
+        self.assertIn('SluggiesToolsPanel.register()', init_source)
+        self.assertIn('SluggiesToolsPanel.unregister()', init_source)
+
+    def test_transfer_pose_and_animation_placeholders_are_removed(self):
+        panel_path = ROOT_DIR / 'BlenderAddonSrc' / 'SluggiesToolsPanel.py'
+        source = panel_path.read_text(encoding='utf-8')
+        self.assertNotIn('SLUGGIES_OT_transfer_pose', source)
+        self.assertNotIn('SLUGGIES_OT_transfer_animation', source)
 
 
 if __name__ == '__main__':

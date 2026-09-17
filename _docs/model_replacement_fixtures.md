@@ -135,6 +135,16 @@ second image from the deliberately unaligned pointer, and unaffected surfaces
 remain correct. Individual TEX image payload starts therefore do not require
 32-byte alignment in this tested path.
 
+**Superseded (2026-09-16)** by `PLAN_AddSubmesh.md` Phase 4 step 3 (F10):
+`BuildTEX` now pads every image/palette payload start to a 32-byte boundary,
+so this "do not require alignment" finding no longer describes current
+`BuildTEX` output. The same fixture was rebuilt against the padded `BuildTEX`
+(new PNGs, same dimensions/format) and reinstalled at output offset
+`0x2C0AD880`; slot 6's pointer moved from `0x5C108` (8 mod 32) to `0x5C120`
+(0 mod 32), and every payload in the rebuilt block is now 32-byte aligned.
+Dolphin character select, static scene, and animated gameplay all pass again
+with no glitching, confirming the aligned layout is also runtime-correct.
+
 The two unchanged-donor control tests do require manual game evidence now. For
 both Shy Guy and Mario, perform a normal all-clone write to a disposable output
 DAT, then record `pass` or `fail` for all three matrix fields:

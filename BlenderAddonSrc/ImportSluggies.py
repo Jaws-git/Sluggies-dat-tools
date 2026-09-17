@@ -1122,7 +1122,14 @@ def build_armature(name, bone_list, collection):
             b['game_translation'] = list(bd['Translation'])
             b['game_quaternion'] = list(bd['Quaternion'])
             b['game_scale'] = list(bd['Scale'])
+            # Donor ownership/skinning snapshot for the Add submesh free-bone
+            # proposal (PLAN_AddSubmesh.md Phase 5 step 2, HostBones.py). Fixed
+            # facts of the exported model, read-only, stored on Bone (not
+            # EditBone) so they survive into saved .blend files.
+            b['SluggiesGeoIdRaw'] = int(bd.get('GeoIdRaw', 0xFFFF))
+            b['SluggiesSkinned'] = bool(bd.get('Skinned', False))
 
+    arm_obj['SluggiesBoneMetadataVersion'] = 1
     arm_obj.show_in_front = True
     arm_obj.display_type = 'WIRE'
     arm_obj.rotation_euler[0] = math.pi / 2
@@ -1192,6 +1199,10 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
             base_name = os.path.splitext(os.path.basename(self.filepath))[0]
             arm_obj = build_armature(base_name, bone_list, collection)
             abs_bone_mats = _compute_bone_absolute_matrices(bone_list)
+            # So Add submesh (PLAN_AddSubmesh.md Phase 5 step 3) can find this
+            # model's tex/ directory without asking the user or reading the
+            # .sluggie file again.
+            arm_obj['SluggieFilePath'] = self.filepath
 
         imported = 0
         for i, submesh in enumerate(submeshes):
