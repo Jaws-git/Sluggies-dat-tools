@@ -23,6 +23,21 @@ REAL_BOO = MODELS_DIR / '32 Boo' / '134010752_teresa.gpl' / '134010752_teresa.gp
 REAL_MARIO = MODELS_DIR / '18 Mario' / '78277664_mario.gpl' / '78277664_mario.gpl.sluggie'
 TOADETTE_SLUGGIES = sorted((MODELS_DIR / '33 Toadette').glob('135708512_kinopico.gpl*/*.sluggie'))
 
+BLENDER_ADDON_DIR = TOOLS_DIR.parent / 'BlenderAddonSrc'
+if str(BLENDER_ADDON_DIR) not in sys.path:
+    sys.path.insert(0, str(BLENDER_ADDON_DIR))
+import TemplateSources  # noqa: E402
+
+
+def _capture_exports(provenance):
+    """Locate a built-in's capture export from its provenance.
+
+    Matched by prefix because some exported folder names carry the game's own
+    mojibake (Toadette's `kinopico.gplp`).
+    """
+    folder, _sep, model = provenance['Model'].partition('/')
+    return sorted((MODELS_DIR / folder).glob(f'{model}*/*.sluggie'))
+
 
 def _state(surface_id, state_id, mode, pad='000000', prim=0):
     return {
@@ -134,8 +149,11 @@ class DerivedTemplateTests(unittest.TestCase):
 
 class BuiltinTemplateTests(unittest.TestCase):
     def test_stored_bytes_match_recorded_hash(self):
-        template = tsf.BUILTIN_RIGID_SPEC_V1
-        self.assertEqual(tsf.state_records_sha256(template['States']), template['Sha256'])
+        for name, template in tsf.BUILTIN_TEMPLATES.items():
+            with self.subTest(name):
+                self.assertEqual(
+                    tsf.state_records_sha256(template['States']), template['Sha256'],
+                )
 
     def test_binds_host_submesh0_textures(self):
         records = tsf.builtin_rigid_state_records(_skinned_submesh0(), 'rigid_spec_v1')
@@ -162,15 +180,83 @@ class BuiltinTemplateTests(unittest.TestCase):
         finally:
             tsf.BUILTIN_TEMPLATES['rigid_spec_v1'] = original
 
-    @unittest.skipUnless(TOADETTE_SLUGGIES, 'Toadette export not present in this checkout')
-    def test_capture_still_matches_vanilla_source(self):
-        model = json.loads(TOADETTE_SLUGGIES[0].read_text(encoding='utf-8'))['SluggiesModel']
-        provenance = tsf.BUILTIN_RIGID_SPEC_V1['Provenance']
-        source = next(sub for sub in model['Submeshes'] if sub['MeshName'] == provenance['MeshName'])
-        self.assertEqual(source['DisplayStates'][-1]['SurfaceId'], provenance['SurfaceId'])
+    def test_one_layer_builtin_stays_one_layer_on_a_two_layer_host(self):
+        """The probe builder agrees with the patch-time builder: Type 4 follows
+        the template's emitted T1 records, not the host's bindings."""
+        records = tsf.builtin_rigid_state_records(_skinned_submesh0(), 'rigid_shdw_v1')
+        self.assertEqual([r[0] for r in records], [1, 4, 3, 6, 7])
+        self.assertEqual(records[1], (4, '000000', 'fffffff0'))
+        self.assertEqual(records[-1][2], 'Shdw')
+        # The same host gives the 2-layer built-in both channels.
+        spec = tsf.builtin_rigid_state_records(_skinned_submesh0(), 'rigid_spec_v1')
+        self.assertEqual([r[0] for r in spec], [1, 1, 4, 3, 6, 7])
+        self.assertEqual(spec[2], (4, '000000', 'ffffff10'))
+
+    def test_unverified_builtins_still_build_for_probe_7(self):
+        """The probe fixture must be able to build an unverified template --
+        that is how PLAN_EditRigidMeshes.md Phase 0 probe 7 verifies it. Only
+        the patch-time validator and the dialogs refuse them."""
+        unverified = [
+            name for name, template in tsf.BUILTIN_TEMPLATES.items()
+            if not template['VerifiedInGame']
+        ]
+        self.assertTrue(unverified, 'expected at least one unverified built-in')
+        for name in unverified:
+            with self.subTest(name):
+                records = tsf.builtin_rigid_state_records(_skinned_submesh0(), name)
+                self.assertEqual(records[-1][2], tsf.BUILTIN_TEMPLATES[name]['ShaderMode'])
+
+    def test_every_capture_still_matches_its_vanilla_source(self):
+        """Decision 9: each entry is a byte-exact capture of one whole vanilla
+        rigid draw list, re-checked against the export it came from."""
+        checked = []
+        for name, template in tsf.BUILTIN_TEMPLATES.items():
+            provenance = template['Provenance']
+            exports = _capture_exports(provenance)
+            if not exports:
+                continue
+            with self.subTest(name):
+                model = json.loads(exports[0].read_text(encoding='utf-8'))['SluggiesModel']
+                source = next(
+                    sub for sub in model['Submeshes']
+                    if sub['MeshName'] == provenance['MeshName']
+                )
+                self.assertEqual(int(source['VertexBuffer']['VertexBufferCompCount']), 3)
+                self.assertEqual(
+                    source['DisplayStates'][-1]['SurfaceId'], provenance['SurfaceId'],
+                )
+                self.assertEqual(
+                    tuple(tsf._record(state) for state in source['DisplayStates']),
+                    template['States'],
+                )
+            checked.append(name)
+        if not checked:
+            self.skipTest('no built-in capture exports present in this checkout')
+
+
+class BuiltinRegistryMirrorTests(unittest.TestCase):
+    """G24/decision 9: the Blender addon cannot import HammerspaceMain, so
+    TemplateSources mirrors the registry by hand. These catch drift."""
+
+    def test_addon_mirror_matches_the_registry(self):
+        registry = tsf.hammerspace._CUSTOM_SUBMESH_BUILTIN_TEMPLATES
+        self.assertEqual(sorted(TemplateSources.BUILTIN_TEMPLATES), sorted(registry))
+        for name, template in registry.items():
+            with self.subTest(name):
+                mirror = TemplateSources.BUILTIN_TEMPLATES[name]
+                self.assertEqual(mirror.layers, template['Layers'])
+                self.assertEqual(mirror.shader_mode, template['ShaderMode'])
+                self.assertEqual(mirror.verified_in_game, template['VerifiedInGame'])
+                self.assertTrue(mirror.description)
         self.assertEqual(
-            tuple(tsf._record(state) for state in source['DisplayStates']),
-            tsf.BUILTIN_RIGID_SPEC_V1['States'],
+            TemplateSources.BUILTIN_TEMPLATE_NAMES,
+            tsf.hammerspace.builtin_template_names(verified_only=True),
+        )
+
+    def test_hand_visibility_role_mirror_matches_the_tools(self):
+        self.assertEqual(
+            TemplateSources.HAND_VISIBILITY_ROLES,
+            tsf.hammerspace._CUSTOM_SUBMESH_HAND_VISIBILITY_ROLES,
         )
 
 

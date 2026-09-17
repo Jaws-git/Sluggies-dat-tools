@@ -46,21 +46,17 @@ UV_FORMAT = (2, 62)
 COLOR_FORMAT = (4, 48)
 COLOR_WHITE = bytes.fromhex("ffffffff")
 
-# Canonical rigid list captured byte-exact from vanilla data. The same six
-# records occur in 17 rigid submeshes of the player-folder exports. The states
-# and their hash live once, in HammerspaceMain (the patch-time builder).
-BUILTIN_RIGID_SPEC_V1 = {
-    "Name": "rigid_spec_v1",
-    "Provenance": {
-        "Model": "33 Toadette/135708512_kinopico.gpl",
-        "MeshName": "pony_l3",
-        "SurfaceId": "sm1_ds5",
-        "IdenticalRigidLists": 17,
-    },
-    "States": hammerspace._CUSTOM_SUBMESH_BUILTIN_TEMPLATES["rigid_spec_v1"]["States"],
-    "Sha256": hammerspace._CUSTOM_SUBMESH_BUILTIN_TEMPLATES["rigid_spec_v1"]["Sha256"],
+# Canonical rigid lists captured byte-exact from vanilla data, one per shader
+# mode. States, hash, layer count, provenance and the in-game verification flag
+# all live once, in HammerspaceMain (the patch-time builder); this module only
+# adds the registry key as a "Name" field. Unlike the patch-time validator,
+# this probe builder accepts unverified templates on purpose -- building them is
+# how PLAN_EditRigidMeshes.md Phase 0 probe 7 verifies them.
+BUILTIN_TEMPLATES = {
+    name: {"Name": name, **template}
+    for name, template in hammerspace._CUSTOM_SUBMESH_BUILTIN_TEMPLATES.items()
 }
-BUILTIN_TEMPLATES = {BUILTIN_RIGID_SPEC_V1["Name"]: BUILTIN_RIGID_SPEC_V1}
+BUILTIN_RIGID_SPEC_V1 = BUILTIN_TEMPLATES["rigid_spec_v1"]
 
 
 def _setting_bytes(mode: str) -> bytes:
@@ -182,7 +178,11 @@ def builtin_rigid_state_records(submesh0: dict, name: str) -> list[tuple[int, st
                 continue
             mode = _with_texture_index(mode, bindings[layer])
         records.append((state_id, pad, mode))
-    uv_count = 2 if 1 in bindings else 1
+    # Type 4 follows the T1 records actually emitted -- the template's own layer
+    # count, capped by the host's bindings -- so a 1-layer built-in keeps
+    # fffffff0 on a 2-layer host. Mirrors
+    # HammerspaceMain._custom_submesh_builtin_records.
+    uv_count = sum(1 for state_id, _, _ in records if state_id == TYPE1)
     return [
         (TYPE4, pad, TYPE4_BY_UV_COUNT[uv_count]) if state_id == TYPE4 else (state_id, pad, mode)
         for state_id, pad, mode in records

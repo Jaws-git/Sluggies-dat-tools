@@ -10,6 +10,11 @@ import math
 import struct
 from dataclasses import dataclass
 
+try:  # inside Blender this module is part of the addon package
+    from . import TemplateSources
+except ImportError:  # imported flat by the unit tests
+    import TemplateSources
+
 
 @dataclass(frozen=True)
 class Triangle:
@@ -465,7 +470,9 @@ def attribute_plan(model, template_source):
     - `derived:` uses two UV channels when a layer-1 (specular) texture is
       bound at or before the submesh-0 surface, else one.
     - `builtin:` uses two UV channels when submesh 0 binds a layer-1 texture
-      anywhere.
+      anywhere, capped by the template's own layer count -- the 1-layer
+      `Shdw` built-in exports one channel whatever the host binds, matching
+      HammerspaceMain._custom_submesh_builtin_records.
 
     `derived:`/`builtin:` always get normals and one color channel, the
     canonical rigid attribute set (F9).
@@ -486,7 +493,10 @@ def attribute_plan(model, template_source):
         int(s.get('DisplayStateId', -1)) == 1 and _type1_layer(s['ShaderMode']) == 1
         for s in states
     )
-    return AttributePlan(True, True, 2 if has_layer1 else 1, {})
+    uv_count = 2 if has_layer1 else 1
+    if kind == 'builtin':
+        uv_count = min(uv_count, TemplateSources.builtin_template_layers(argument))
+    return AttributePlan(True, True, uv_count, {})
 
 
 def dedupe_records(records):

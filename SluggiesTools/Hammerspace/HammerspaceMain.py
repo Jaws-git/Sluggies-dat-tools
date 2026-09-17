@@ -400,10 +400,27 @@ _CUSTOM_SUBMESH_NORMAL_STRIDE   = 6   # CompCount 3, QuantizeInfo 62 (3 x int16)
 _CUSTOM_SUBMESH_UV_STRIDE       = 4   # CompCount 2, QuantizeInfo 62 (2 x int16)
 _CUSTOM_SUBMESH_COLOR_STRIDE    = 4   # CompCount 4, QuantizeInfo 48 (RGBA8)
 
-# Phase 0 U4 (2026-09-16): byte-exact capture from Toadette kinopico.gpl
-# pony_l3 sm1_ds5, identical across 17 vanilla rigid submeshes. The only copy:
-# build_template_source_fixture.BUILTIN_RIGID_SPEC_V1 reads its states and
-# hash from here and adds the provenance record.
+# Byte-exact captures of complete vanilla rigid draw lists, one per shader
+# mode (PLAN_EditRigidMeshes.md decision 9). Every capture source below holds
+# exactly these records and nothing else, in canonical order
+# (T1 L0, [T1 L1], T4, T3, T6, T7), so `States` is the source submesh's whole
+# DisplayStates list and `IdenticalRigidLists` counts the vanilla rigid
+# submeshes whose whole list is byte-identical to it (surveyed over all 1,472
+# player-folder exports).
+#
+# Only `States`, `Layers` and `Sha256` drive the build. The T1 texture indices
+# and the T3 setting are provenance only: _custom_submesh_builtin_records
+# rebinds every layer to the host model's own textures and the caller
+# regenerates Type 3 from the host submesh's attribute set. `Layers` is the
+# number of T1 records, which is what Type 4 follows -- so the 1-layer `Shdw`
+# form keeps `T4 fffffff0` even on a 2-UV-channel host.
+#
+# `VerifiedInGame` gates a template: _validate_template_source refuses an
+# unverified one and the Add submesh / Add material dialogs hide it
+# (TemplateSources.BUILTIN_TEMPLATE_NAMES), until PLAN_EditRigidMeshes.md
+# Phase 0 probe 7 confirms it in Dolphin. The only copy:
+# build_template_source_fixture.BUILTIN_TEMPLATES reads this whole registry,
+# including provenance.
 _CUSTOM_SUBMESH_BUILTIN_TEMPLATES = {
     'rigid_spec_v1': {
         'States': (
@@ -415,8 +432,123 @@ _CUSTOM_SUBMESH_BUILTIN_TEMPLATES = {
             (7, '640064', 'Spec'),
         ),
         'Sha256': 'ee88bc44a3fb2a5864203b941519199ec61f1097eafef479eccf87de666dd862',
+        'Layers': 2,
+        'ShaderMode': 'Spec',
+        'VerifiedInGame': True,  # PLAN_AddSubmesh.md Phase 0 probe 5 (U4)
+        'Provenance': {
+            'Model': '33 Toadette/135708512_kinopico.gpl',
+            'MeshName': 'pony_l3',
+            'SurfaceId': 'sm1_ds5',
+            'IdenticalRigidLists': 17,
+        },
+    },
+    # `Shdw` never occurs on a vanilla character, so this capture comes from a
+    # map object. Of the 672 rigid surfaces drawn with an effective Type-7
+    # `Shdw`, 516 bind one texture layer; `T4 fffffff0` (1 layer),
+    # `T6 00000374` and T7 pad `000000` are each the most common value, and
+    # this list's Type-1 word matches rigid_spec_v1's in every documented
+    # field (layer 0, wraps 1, wrapt 1) and in its undocumented top byte, so
+    # the capture differs from the verified `Spec` built-in only in the three
+    # fields the shader mode is meant to change.
+    'rigid_shdw_v1': {
+        'States': (
+            (1, '000008', '11110002'),
+            (4, '000000', 'fffffff0'),
+            (3, '000000', '00000828'),
+            (6, '010000', '00000374'),
+            (7, '000000', 'Shdw'),
+        ),
+        'Sha256': '324907992ca4c44273724ddc0b2bc9983c9972cc69bcc5a57fdbb876b452df2b',
+        'Layers': 1,
+        'ShaderMode': 'Shdw',
+        'VerifiedInGame': False,  # awaits PLAN_EditRigidMeshes.md Phase 0 probe 7
+        'Provenance': {
+            'Model': '137 Various A/653486528_manhole01.gpl',
+            'MeshName': 'manhole',
+            'SurfaceId': 'sm0_ds4',
+            'IdenticalRigidLists': 9,
+        },
+    },
+    # `GhSp` occurs on exactly four vanilla rigid surfaces: Birdo's ring and
+    # diamond in the high- and low-poly models, all four byte-identical.
+    'rigid_ghsp_v1': {
+        'States': (
+            (1, '000708', '11110003'),
+            (1, '000000', '11002004'),
+            (4, '000000', 'ffffff10'),
+            (3, '000000', '000028a8'),
+            (6, '010000', '00000174'),
+            (7, '640064', 'GhSp'),
+        ),
+        'Sha256': '6a5e44b42125c7033de42f0a5b8a2ad9a744d52fb4a496dce4793640f57a1560',
+        'Layers': 2,
+        'ShaderMode': 'GhSp',
+        'VerifiedInGame': False,  # awaits PLAN_EditRigidMeshes.md Phase 0 probe 7
+        'Provenance': {
+            'Model': '35 Birdo/142642016_catherine.gpl',
+            'MeshName': 'gold_ring',
+            'SurfaceId': 'sm1_ds5',
+            'IdenticalRigidLists': 4,
+        },
+    },
+    # The hand visibility roles occur only on Mii hands (48 rigid surfaces
+    # each). The male and female Mii lists differ solely in the T1 L0 pad
+    # byte, which is why only 24 of the 48 are byte-identical to this capture.
+    'rigid_rhsp_v1': {
+        'States': (
+            (1, '000308', '11110000'),
+            (1, '000000', '11002003'),
+            (4, '000000', 'ffffff10'),
+            (3, '000000', '000028a8'),
+            (6, '010000', '00000174'),
+            (7, '96003c', 'RhSp'),
+        ),
+        'Sha256': 'e1ac62994ad67caefdad4b9ba68099da4b17aee417142df59cc5c27e063fbcd7',
+        'Layers': 2,
+        'ShaderMode': 'RhSp',
+        'VerifiedInGame': False,  # awaits PLAN_EditRigidMeshes.md Phase 0 probe 7
+        'Provenance': {
+            'Model': '100 Blue Male Mii/333008640_mii_male.gplp',
+            'MeshName': 'r_hand',
+            'SurfaceId': 'sm7_ds5',
+            'IdenticalRigidLists': 24,
+        },
+    },
+    'rigid_lhsp_v1': {
+        'States': (
+            (1, '000408', '11110000'),
+            (1, '000000', '11002003'),
+            (4, '000000', 'ffffff10'),
+            (3, '000000', '000028a8'),
+            (6, '010000', '00000174'),
+            (7, '96003c', 'LhSp'),
+        ),
+        'Sha256': 'c246a603b25923b7978231f0d5d63dfa5eb399d239527a3798ee968e61221ade',
+        'Layers': 2,
+        'ShaderMode': 'LhSp',
+        'VerifiedInGame': False,  # awaits PLAN_EditRigidMeshes.md Phase 0 probe 7
+        'Provenance': {
+            'Model': '100 Blue Male Mii/333008640_mii_male.gplp',
+            'MeshName': 'l_hand',
+            'SurfaceId': 'sm4_ds5',
+            'IdenticalRigidLists': 24,
+        },
     },
 }
+
+
+def builtin_template_names(verified_only: bool = True) -> tuple[str, ...]:
+    """Registry template names in registration order.
+
+    ``verified_only`` keeps the ones PLAN_EditRigidMeshes.md Phase 0 probe 7
+    has confirmed in game, which is what the dialogs offer and what
+    ``_validate_template_source`` accepts. ``TemplateSources`` mirrors the
+    result for the Blender side, which cannot import this module.
+    """
+    return tuple(
+        name for name, template in _CUSTOM_SUBMESH_BUILTIN_TEMPLATES.items()
+        if template.get('VerifiedInGame') or not verified_only
+    )
 
 
 def _custom_submesh_setting_bytes(shader_mode: str) -> bytes:
@@ -621,6 +753,27 @@ def _validate_custom_submeshes(model: dict) -> None:
                 )
             elif _custom_submesh_state_records_sha256(template['States']) != template['Sha256']:
                 fail(f"builtin: stored bytes of {argument!r} do not match their recorded hash")
+            elif not template.get('VerifiedInGame'):
+                fail(
+                    f'builtin: template {argument!r} is not verified in game yet '
+                    '(PLAN_EditRigidMeshes.md Phase 0 probe 7); verified: '
+                    f'{sorted(builtin_template_names(verified_only=True))}'
+                )
+            else:
+                # Type 3 comes from the channels this submesh exported while
+                # Type 4 follows the T1 records the template emits, so the two
+                # have to agree. The emitted count is the template's own layer
+                # count capped by what host submesh 0 binds -- a 2-layer
+                # built-in legitimately degrades to the 1-layer form on a host
+                # with no specular binding.
+                bound_layers = _custom_submesh_builtin_layer_count(model, argument)
+                uv_channel_count = len(cs.get('UVChannels') or [])
+                if bound_layers != uv_channel_count:
+                    fail(
+                        f'builtin: template {argument!r} binds {bound_layers} texture '
+                        f'layer(s) on this model but the custom submesh has '
+                        f'{uv_channel_count} UV channel(s)'
+                    )
 
         if kind in ('derived', 'builtin'):
             uv_channel_count = len(cs.get('UVChannels') or [])
@@ -866,11 +1019,35 @@ def _custom_submesh_builtin_records(model: dict, name: str) -> list[list]:
             mode = _custom_submesh_with_texture_index(mode, bindings[layer])
         records.append([state_id, bytes.fromhex(pad_hex), mode])
 
-    uv_count = 2 if 1 in bindings else 1
+    # Type 4 follows the T1 records this template actually emits -- the
+    # template's own layer count, capped by what the host binds. A 1-layer
+    # built-in (`rigid_shdw_v1`) therefore keeps `T4 fffffff0` even when the
+    # host submesh binds a layer-1 specular texture (decision 9).
+    uv_count = sum(1 for record in records if record[0] == 1)
     for record in records:
         if record[0] == 4:
             record[2] = _CUSTOM_SUBMESH_TYPE4_BY_UV_COUNT[uv_count]  # placeholder; regenerated below
     return records
+
+
+def _custom_submesh_builtin_layer_count(model: dict, name: str) -> int:
+    """Texture layers built-in *name* actually binds on *model*.
+
+    That is its captured layer count capped by host submesh 0's own bindings,
+    which is exactly the number of T1 records _custom_submesh_builtin_records
+    emits -- and therefore what Type 4 declares and what the custom submesh's
+    UV channel count has to match.
+    """
+    submesh0 = (model.get('Submeshes') or [None])[0] or {}
+    bindings = {
+        _custom_submesh_texture_layer(state['ShaderMode'])[0]
+        for state in submesh0.get('DisplayStates') or []
+        if int(state.get('DisplayStateId', -1)) == 1
+    }
+    return sum(
+        1 for state_id, _pad, mode in _CUSTOM_SUBMESH_BUILTIN_TEMPLATES[name]['States']
+        if state_id == 1 and _custom_submesh_texture_layer(mode)[0] in bindings
+    )
 
 
 def _resolve_custom_submesh_records(

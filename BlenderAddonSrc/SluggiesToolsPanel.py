@@ -223,6 +223,16 @@ def _host_bone_enum_items(self, context):
     return items
 
 
+def _template_source_description(choice):
+    """Dialog tooltip. Built-ins carry their own description (decision 9:
+    what the shader mode does); donor sources just name their kind."""
+    if choice.kind == 'builtin':
+        template = TemplateSources.BUILTIN_TEMPLATES.get(choice.argument)
+        if template is not None:
+            return template.description
+    return f"{choice.kind} template source"
+
+
 def _template_source_enum_items(self, context):
     arm_obj = _find_target_armature(context)
     if arm_obj is None:
@@ -232,7 +242,7 @@ def _template_source_enum_items(self, context):
     if not choices:
         return [('NONE', "None", "No usable surface template found", 0)]
     return [
-        (c.template_source, c.template_source, f"{c.kind} template source", idx)
+        (c.template_source, c.template_source, _template_source_description(c), idx)
         for idx, c in enumerate(choices)
     ]
 

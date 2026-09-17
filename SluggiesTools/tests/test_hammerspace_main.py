@@ -2462,6 +2462,54 @@ class ValidateCustomSubmeshesTests(unittest.TestCase):
         finally:
             main._CUSTOM_SUBMESH_BUILTIN_TEMPLATES['rigid_spec_v1'] = original
 
+    def test_unverified_builtins_are_rejected(self):
+        """Decision 9: a built-in stays refused until Phase 0 probe 7 confirms
+        it in game, so an unverified capture cannot reach a DAT write."""
+        unverified = [
+            name for name, template in main._CUSTOM_SUBMESH_BUILTIN_TEMPLATES.items()
+            if not template['VerifiedInGame']
+        ]
+        self.assertTrue(unverified, 'expected at least one unverified built-in')
+        for name in unverified:
+            with self.subTest(name):
+                model = _validation_base_model()
+                model['CustomSubmeshes'] = [
+                    _validation_entry(TemplateSource=f'builtin:{name}')
+                ]
+                with self.assertRaisesRegex(ValueError, 'not verified in game yet'):
+                    main._validate_custom_submeshes(model)
+
+    def test_builtin_layer_count_must_match_uv_channel_count(self):
+        model = _validation_base_model()
+        # Bind a layer-1 specular texture on submesh 0, so rigid_spec_v1 emits
+        # two T1 records and Type 4 declares two channels -- which the
+        # single-UV-channel entry would contradict.
+        model['Submeshes'][0]['DisplayStates'].insert(1, _ds('sm0_ds0b', 1, '11002003'))
+        model['CustomSubmeshes'] = [_validation_entry(TemplateSource='builtin:rigid_spec_v1')]
+        with self.assertRaisesRegex(
+            ValueError, r'binds 2 texture layer\(s\).*has 1 UV channel'
+        ):
+            main._validate_custom_submeshes(model)
+
+    def test_one_layer_builtin_is_rejected_on_a_two_channel_submesh(self):
+        model = _validation_base_model()
+        original = main._CUSTOM_SUBMESH_BUILTIN_TEMPLATES['rigid_shdw_v1']
+        main._CUSTOM_SUBMESH_BUILTIN_TEMPLATES['rigid_shdw_v1'] = dict(
+            original, VerifiedInGame=True,
+        )
+        try:
+            entry = _validation_entry(TemplateSource='builtin:rigid_shdw_v1')
+            entry['UVChannels'] = entry['UVChannels'] + [
+                dict(entry['UVChannels'][0], UVChannelIndex=1),
+            ]
+            model['CustomSubmeshes'] = [entry]
+            with self.assertRaisesRegex(
+                ValueError, r'binds 1 texture layer\(s\).*has 2 UV channel'
+            ):
+                main._validate_custom_submeshes(model)
+        finally:
+            main._CUSTOM_SUBMESH_BUILTIN_TEMPLATES['rigid_shdw_v1'] = original
+
     def test_uv_channel_count_enforced_for_derived_and_builtin(self):
         model = _validation_base_model()
         model['CustomSubmeshes'] = [_validation_entry(TemplateSource='derived:sm0_ds4', UVChannels=[])]
@@ -2641,6 +2689,97 @@ class CustomSubmeshTemplateRecordsTests(unittest.TestCase):
         self.assertEqual(main._custom_submesh_texture_layer(layer0[2]), (0, 0))
         type4 = next(r for r in records if r[0] == 4)
         self.assertEqual(type4[2], 'fffffff0')  # only layer 0 is bound on submesh 0 here
+
+    def test_one_layer_builtin_keeps_type4_fffffff0_on_a_two_layer_host(self):
+        """Decision 9: Type 4 follows the template's own layer count, so the
+        1-layer `Shdw` form stays 1-layer even where `Spec` binds two."""
+        model = _validation_base_model()
+        model['Submeshes'][0]['DisplayStates'].insert(1, _ds('sm0_ds0b', 1, '11002003'))
+        shdw, drawing_index, kind = main._resolve_custom_submesh_records(
+            model,
+            SimpleNamespace(template_source='builtin:rigid_shdw_v1', custom_submesh_id='custom0'),
+            {},
+        )
+        self.assertEqual(kind, 'builtin')
+        self.assertEqual(drawing_index, len(shdw) - 1)
+        self.assertEqual([r[0] for r in shdw], [1, 4, 3, 6, 7])
+        self.assertEqual(next(r for r in shdw if r[0] == 4)[2], 'fffffff0')
+        self.assertEqual(shdw[-1][2], 'Shdw')
+        # The same host binds both layers for the 2-layer built-in.
+        spec, _index, _kind = main._resolve_custom_submesh_records(
+            model,
+            SimpleNamespace(template_source='builtin:rigid_spec_v1', custom_submesh_id='custom0'),
+            {},
+        )
+        self.assertEqual([r[0] for r in spec], [1, 1, 4, 3, 6, 7])
+        self.assertEqual(next(r for r in spec if r[0] == 4)[2], 'ffffff10')
+
+    def test_builtin_layer_count_is_capped_by_host_bindings(self):
+        model = _validation_base_model()
+        # Only layer 0 is bound here, so even the 2-layer built-in emits one.
+        self.assertEqual(main._custom_submesh_builtin_layer_count(model, 'rigid_spec_v1'), 1)
+        self.assertEqual(main._custom_submesh_builtin_layer_count(model, 'rigid_shdw_v1'), 1)
+        model['Submeshes'][0]['DisplayStates'].insert(1, _ds('sm0_ds0b', 1, '11002003'))
+        self.assertEqual(main._custom_submesh_builtin_layer_count(model, 'rigid_spec_v1'), 2)
+        self.assertEqual(main._custom_submesh_builtin_layer_count(model, 'rigid_shdw_v1'), 1)
+
+    def test_every_builtin_rebinds_layer0_to_the_host_texture(self):
+        model = _validation_base_model()
+        model['Submeshes'][0]['DisplayStates'][0] = _ds('sm0_ds0', 1, '11110007', '000008')
+        model['Submeshes'][0]['DisplayStates'].insert(1, _ds('sm0_ds0b', 1, '11002009'))
+        for name, template in main._CUSTOM_SUBMESH_BUILTIN_TEMPLATES.items():
+            with self.subTest(name):
+                records = main._custom_submesh_builtin_records(model, name)
+                layer0 = next(
+                    r for r in records
+                    if r[0] == 1 and main._custom_submesh_texture_layer(r[2])[0] == 0
+                )
+                self.assertEqual(main._custom_submesh_texture_layer(layer0[2]), (0, 7))
+                self.assertEqual(records[-1][2], template['ShaderMode'])
+                self.assertEqual(
+                    sum(1 for r in records if r[0] == 1), template['Layers'],
+                )
+                layer1 = [
+                    r for r in records
+                    if r[0] == 1 and main._custom_submesh_texture_layer(r[2])[0] == 1
+                ]
+                if template['Layers'] == 2:
+                    self.assertEqual(main._custom_submesh_texture_layer(layer1[0][2]), (1, 9))
+                else:
+                    self.assertEqual(layer1, [])
+
+    def test_builtin_template_names_offers_only_verified_templates(self):
+        self.assertEqual(main.builtin_template_names(), ('rigid_spec_v1',))
+        self.assertEqual(
+            sorted(main.builtin_template_names(verified_only=False)),
+            sorted(main._CUSTOM_SUBMESH_BUILTIN_TEMPLATES),
+        )
+
+    def test_registry_entries_are_self_consistent(self):
+        """Every entry's stored hash, layer count and mode agree with its
+        records, so a hand-edited capture cannot pass unnoticed."""
+        self.assertEqual(
+            sorted(main._CUSTOM_SUBMESH_BUILTIN_TEMPLATES),
+            ['rigid_ghsp_v1', 'rigid_lhsp_v1', 'rigid_rhsp_v1', 'rigid_shdw_v1',
+             'rigid_spec_v1'],
+        )
+        for name, template in main._CUSTOM_SUBMESH_BUILTIN_TEMPLATES.items():
+            with self.subTest(name):
+                self.assertEqual(
+                    main._custom_submesh_state_records_sha256(template['States']),
+                    template['Sha256'],
+                )
+                states = template['States']
+                self.assertEqual(
+                    template['Layers'], sum(1 for s, _p, _m in states if s == 1),
+                )
+                self.assertEqual([s for s, _p, _m in states][-4:], [4, 3, 6, 7])
+                self.assertEqual(states[-1][0], 7)
+                self.assertEqual(states[-1][2], template['ShaderMode'])
+                self.assertEqual(
+                    next(m for s, _p, m in states if s == 4),
+                    main._CUSTOM_SUBMESH_TYPE4_BY_UV_COUNT[template['Layers']],
+                )
 
     def test_patch_layer0_texture_only_changes_layer0(self):
         records = [[1, b'\x00\x00\x00', '11110000'], [1, b'\x00\x00\x00', '11002003'], [7, b'\x00\x00\x00', 'Spec']]
