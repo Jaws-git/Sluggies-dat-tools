@@ -299,6 +299,49 @@ class MatrixHelperTests(unittest.TestCase):
         )
 
 
+class KeepOffsetWorldMatrixTests(unittest.TestCase):
+    """PLAN_EditRigidMeshes.md Phase 6 step 2: Reassign to new bone's
+    'Keep offset to bone' placement math."""
+
+    def _bind(self, tx, ty, tz, angle=0.0):
+        return _mul(_translation(tx, ty, tz), _rot_z(angle))
+
+    def test_moves_object_by_the_difference_between_bind_matrices(self):
+        b_old = self._bind(0.2, 1.3, -0.1, 0.4)
+        b_new = self._bind(-0.5, 0.6, 0.9, -0.2)
+        obj_world = _mul(ARMATURE_WORLD, b_old, _translation(0.03, -0.01, 0.02))
+
+        new_world = cse.keep_offset_world_matrix(obj_world, ARMATURE_WORLD, b_old, b_new)
+
+        # The mesh keeps the same local offset to its host bone: re-deriving
+        # that offset from the new bind matrix must reproduce it exactly.
+        offset = _mul(cse.mat4_inverse(b_old), cse.mat4_inverse(ARMATURE_WORLD), obj_world)
+        expected = _mul(ARMATURE_WORLD, b_new, offset)
+        for r in range(4):
+            for c in range(4):
+                self.assertAlmostEqual(new_world[r][c], expected[r][c], places=9)
+
+    def test_same_bone_is_a_no_op(self):
+        b = self._bind(0.2, 1.3, -0.1, 0.4)
+        obj_world = _mul(ARMATURE_WORLD, b, _translation(0.03, -0.01, 0.02))
+        new_world = cse.keep_offset_world_matrix(obj_world, ARMATURE_WORLD, b, b)
+        for r in range(4):
+            for c in range(4):
+                self.assertAlmostEqual(new_world[r][c], obj_world[r][c], places=9)
+
+    def test_round_trip_back_to_the_original_bone_is_the_identity_move(self):
+        b_old = self._bind(0.2, 1.3, -0.1, 0.4)
+        b_new = self._bind(-0.5, 0.6, 0.9, -0.2)
+        obj_world = _mul(ARMATURE_WORLD, b_old, _translation(0.03, -0.01, 0.02))
+
+        moved = cse.keep_offset_world_matrix(obj_world, ARMATURE_WORLD, b_old, b_new)
+        back = cse.keep_offset_world_matrix(moved, ARMATURE_WORLD, b_new, b_old)
+
+        for r in range(4):
+            for c in range(4):
+                self.assertAlmostEqual(back[r][c], obj_world[r][c], places=9)
+
+
 class WorldPositionTests(unittest.TestCase):
     """PLAN_AddSubmesh.md Phase 6 step 2 "Pure-math transform tests"."""
 

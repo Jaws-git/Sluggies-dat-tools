@@ -184,6 +184,23 @@ def object_to_bone_matrix(obj_world, arm_world, host_bind):
     return mat4_mul(mat4_mul(mat4_inverse(host_bind), mat4_inverse(arm_world)), obj_world)
 
 
+def keep_offset_world_matrix(obj_world, arm_world, b_old, b_new):
+    """New object world matrix for Reassign to new bone's 'Keep offset to
+    bone' placement (PLAN_EditRigidMeshes.md Phase 6 step 2): the mesh keeps
+    the same offset from its host bone, moving from bind matrix ``b_old`` to
+    ``b_new`` (both in armature space, rest pose):
+    ``M_obj' = A @ B_new @ B_old^-1 @ A^-1 @ M_obj``.
+
+    Bytes are unchanged by this placement (only ``GeoIdEdited`` moves), so
+    this is viewport-only: it keeps Blender's rest-pose preview matching what
+    the importer would show after a re-import onto the new bone.
+    """
+    m = mat4_mul(arm_world, b_new)
+    m = mat4_mul(m, mat4_inverse(b_old))
+    m = mat4_mul(m, mat4_inverse(arm_world))
+    return mat4_mul(m, obj_world)
+
+
 def transform_normals(normals, m):
     """Transform normals by *m*'s inverse-transpose and renormalize. A normal
     that collapses to zero length (a degenerate input) comes back as +Z."""

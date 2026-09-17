@@ -808,7 +808,7 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
             if nf_count == loop_count and max(nf_flat) < len(buffer_normals):
                 mesh.normals_split_custom_set([buffer_normals[i] for i in nf_flat])
             else:
-                _report(
+                print(
                     f"WARNING: {name}: NormalFacesData has {nf_count} loop indices "
                     f"but the mesh has {loop_count} loops; per-loop normals skipped"
                 )

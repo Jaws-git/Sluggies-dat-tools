@@ -7,7 +7,9 @@ import re
 import bmesh
 import bpy
 from bpy.props import BoolProperty, EnumProperty, StringProperty
+from mathutils import Matrix, Vector
 
+from . import CustomSubmeshExport
 from . import HostBones
 from . import TemplateSources
 from .ExportSluggies import _detect_uniform_vertex_bone_id, _resolve_export_texture_context
@@ -430,6 +432,292 @@ def _write_custom_submesh_texture(sluggie_path, submesh_name):
     return image, None
 
 
+def _rigid_mesh_kind(obj):
+    """('donor', submesh_index) for a rigid (CompCount 3) donor submesh,
+    ('custom', None) for a custom submesh, or (None, None) for anything else
+    (PLAN_EditRigidMeshes.md Phase 6)."""
+    if obj is None or obj.type != 'MESH':
+        return None, None
+    if obj.get('SluggiesCustomSubmesh'):
+        return 'custom', None
+    if obj.get('VertexBufferCompCount') == 3:
+        return 'donor', _submesh_index_of(obj)
+    return None, None
+
+
+def _read_bone_hierarchy(sluggie_path):
+    """The parsed .sluggie's BoneHierarchy list, or None if unreadable."""
+    try:
+        with open(sluggie_path, 'r') as handle:
+            model = json.load(handle).get('SluggiesModel', {})
+    except (OSError, ValueError):
+        return None
+    return model.get('BoneHierarchy')
+
+
+def _object_world_bbox_center(obj):
+    corners = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
+    return sum(corners, Vector((0.0, 0.0, 0.0))) / 8
+
+
+def _default_reassign_target(arm_obj, obj, ordered_choices):
+    """The recommended bone nearest the object's own world bounding-box
+    centre (plan: 'the object is what's being moved', not the 3D cursor)."""
+    recommended = [c for c in ordered_choices if c.status == HostBones.STATUS_RECOMMENDED]
+    pool = recommended or ordered_choices
+    if not pool:
+        return None
+    center = _object_world_bbox_center(obj)
+
+    def _distance(choice):
+        bone = arm_obj.data.bones.get(f'bone_{choice.bone_id}')
+        if bone is None:
+            return float('inf')
+        head_world = arm_obj.matrix_world @ bone.head_local
+        return (head_world - center).length
+
+    return min(pool, key=_distance)
+
+
+def _reassign_choices(context, arm_obj, obj):
+    kind, submesh_index = _rigid_mesh_kind(obj)
+    records = _bone_records(arm_obj)
+    claims = _gather_scene_claims(context, arm_obj, records)
+    moving_bone_id = _detect_uniform_vertex_bone_id(obj)
+    return HostBones.reassignment_choices(
+        records, claims,
+        moving_submesh_index=submesh_index if kind == 'donor' else None,
+        moving_custom_bone_id=moving_bone_id if kind == 'custom' else None,
+    )
+
+
+def _rigid_mesh_attachment_label(context, arm_obj, obj):
+    """'Attached to bone_<id>', with '(moved from bone_<id>)' when a donor
+    rigid submesh's current bone differs from its donor owner, or a reason
+    nothing can be shown."""
+    kind, submesh_index = _rigid_mesh_kind(obj)
+    if kind is None:
+        return "Not a rigid or custom submesh"
+    bone_id = _detect_uniform_vertex_bone_id(obj)
+    if bone_id is None:
+        return "No single bone_<id> vertex group with weight; assign one to reassign"
+    if kind == 'donor':
+        donor_bone_id = next(
+            (r.bone_id for r in _bone_records(arm_obj) if r.geo_id_raw == submesh_index), None)
+        if donor_bone_id is not None and donor_bone_id != bone_id:
+            return f"Attached to bone_{bone_id} (moved from bone_{donor_bone_id})"
+    return f"Attached to bone_{bone_id}"
+
+
+def _reassign_target_bone_enum_items(self, context):
+    arm_obj = _find_target_armature(context)
+    obj = context.active_object
+    if arm_obj is None or obj is None:
+        return [('NONE', "No armature", _no_target_armature_message(context), 0)]
+    ordered = _reassign_choices(context, arm_obj, obj)
+    if not ordered:
+        return [('NONE', "No other free bones", "No other bone is free to move to", 0)]
+    items = []
+    for idx, choice in enumerate(ordered):
+        parent_label = f'bone_{choice.parent_id}' if choice.parent_id is not None else "none"
+        tag = _HOST_BONE_STATUS_TAGS.get(choice.status, choice.status)
+        items.append((
+            f'bone_{choice.bone_id}',
+            f'bone_{choice.bone_id} ({tag})',
+            f"{choice.reason}; parent {parent_label}",
+            idx,
+        ))
+    return items
+
+
+_PLACEMENT_KEEP_WORLD = (
+    'KEEP_WORLD', "Keep world position",
+    "The mesh stays exactly where it is and follows the new bone from now on. "
+    "Requires Hammerspace Mode on export.",
+)
+_PLACEMENT_KEEP_OFFSET = (
+    'KEEP_OFFSET', "Keep offset to bone",
+    "The mesh jumps to the same offset from the new bone as it had from the old one. "
+    "Its bytes don't change, so this also works with the in-place patcher.",
+)
+
+
+def _placement_enum_items(self, context):
+    obj = context.active_object
+    if obj is not None and int(obj.get('FacialShapeKeyCount', 0) or 0) > 0:
+        return [_PLACEMENT_KEEP_OFFSET]
+    return [_PLACEMENT_KEEP_WORLD, _PLACEMENT_KEEP_OFFSET]
+
+
+def _update_reassign_target_preview(self, context):
+    """Best-effort active-bone preview, matching _update_host_bone_preview."""
+    arm_obj = _find_target_armature(context)
+    bone_id = _bone_id_from_name(self.target_bone)
+    if arm_obj is None or bone_id is None:
+        return
+    bone = arm_obj.data.bones.get(f'bone_{bone_id}')
+    if bone is not None:
+        arm_obj.data.bones.active = bone
+
+
+class SLUGGIES_OT_reassign_bone(bpy.types.Operator):
+    """Move a rigid or custom submesh to another bone (Hammerspace only for
+    Keep world position)"""
+    bl_idname = "sluggies.reassign_bone"
+    bl_label = "Reassign to New Bone"
+    bl_description = "Move the active rigid or custom submesh to another free bone"
+    bl_options = {"UNDO"}
+
+    target_bone: EnumProperty(
+        name="Target bone",
+        description="Bone the mesh will follow after reassignment",
+        items=_reassign_target_bone_enum_items,
+        update=_update_reassign_target_preview,
+    )  # type: ignore[valid-type]
+    placement: EnumProperty(
+        name="Placement",
+        description="How the mesh moves relative to its new bone",
+        items=_placement_enum_items,
+    )  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context):
+        if context.mode != 'OBJECT':
+            if hasattr(cls, 'poll_message_set'):
+                cls.poll_message_set("Switch to Object Mode")
+            return False
+        obj = context.active_object
+        arm_obj = _find_target_armature(context)
+        if arm_obj is None:
+            if hasattr(cls, 'poll_message_set'):
+                cls.poll_message_set(_no_target_armature_message(context))
+            return False
+        if not _bone_metadata_is_current(arm_obj):
+            if hasattr(cls, 'poll_message_set'):
+                cls.poll_message_set(HostBones.RE_IMPORT_MESSAGE)
+            return False
+        kind, _submesh_index = _rigid_mesh_kind(obj)
+        if kind is None:
+            if hasattr(cls, 'poll_message_set'):
+                if obj is not None and obj.get('VertexBufferCompCount') == 6:
+                    cls.poll_message_set(
+                        "Skinned submeshes follow bone weights; edit vertex groups instead")
+                else:
+                    cls.poll_message_set("Select a rigid or custom submesh")
+            return False
+        return True
+
+    def invoke(self, context, event):
+        arm_obj = _find_target_armature(context)
+        obj = context.active_object
+        if arm_obj is None or obj is None:
+            self.report({"ERROR"}, _no_target_armature_message(context))
+            return {"CANCELLED"}
+
+        ordered = _reassign_choices(context, arm_obj, obj)
+        if not ordered:
+            self.report({"ERROR"}, "No other bone is free to move to")
+            return {"CANCELLED"}
+
+        default_choice = _default_reassign_target(arm_obj, obj, ordered)
+        if default_choice is not None:
+            self.target_bone = f'bone_{default_choice.bone_id}'
+        self.placement = (
+            'KEEP_OFFSET' if int(obj.get('FacialShapeKeyCount', 0) or 0) > 0 else 'KEEP_WORLD')
+        return context.window_manager.invoke_props_dialog(self)
+
+    def execute(self, context):
+        arm_obj = _find_target_armature(context)
+        obj = context.active_object
+        if arm_obj is None or obj is None:
+            self.report({"ERROR"}, _no_target_armature_message(context))
+            return {"CANCELLED"}
+
+        kind, submesh_index = _rigid_mesh_kind(obj)
+        if kind is None:
+            self.report({"ERROR"}, "Select a rigid or custom submesh")
+            return {"CANCELLED"}
+
+        if self.target_bone == 'NONE':
+            self.report({"ERROR"}, "No other bone is free to move to")
+            return {"CANCELLED"}
+        target_bone_id = _bone_id_from_name(self.target_bone)
+        if target_bone_id is None or f'bone_{target_bone_id}' not in arm_obj.data.bones:
+            self.report({"ERROR"}, f"Target bone {self.target_bone!r} no longer exists")
+            return {"CANCELLED"}
+
+        # The props dialog may have stayed open while the scene changed underneath it.
+        ordered = _reassign_choices(context, arm_obj, obj)
+        if not any(c.bone_id == target_bone_id for c in ordered):
+            self.report({"ERROR"}, f"bone_{target_bone_id} is no longer free; pick another target bone")
+            return {"CANCELLED"}
+
+        current_bone_id = _detect_uniform_vertex_bone_id(obj)
+
+        if self.placement == 'KEEP_OFFSET':
+            if current_bone_id is None:
+                self.report(
+                    {"ERROR"}, f"{obj.name} has no single bone_<id> vertex group to move from")
+                return {"CANCELLED"}
+            sluggie_path = arm_obj.get('SluggieFilePath')
+            bone_hierarchy = _read_bone_hierarchy(sluggie_path) if sluggie_path else None
+            if not bone_hierarchy:
+                self.report({"ERROR"}, HostBones.RE_IMPORT_MESSAGE)
+                return {"CANCELLED"}
+            bind_matrices = CustomSubmeshExport.bone_absolute_matrices(bone_hierarchy)
+            b_old = bind_matrices.get(current_bone_id)
+            b_new = bind_matrices.get(target_bone_id)
+            if b_old is None or b_new is None:
+                self.report(
+                    {"ERROR"}, "Bone bind matrix missing from BoneHierarchy; re-import this model")
+                return {"CANCELLED"}
+            arm_world = [list(row) for row in arm_obj.matrix_world]
+            obj_world = [list(row) for row in obj.matrix_world]
+            new_world = CustomSubmeshExport.keep_offset_world_matrix(
+                obj_world, arm_world, b_old, b_new)
+            obj.matrix_world = Matrix(new_world)
+
+        for vg in list(obj.vertex_groups):
+            if _bone_id_from_name(vg.name) is not None:
+                obj.vertex_groups.remove(vg)
+        new_vg = obj.vertex_groups.new(name=f'bone_{target_bone_id}')
+        new_vg.add(list(range(len(obj.data.vertices))), 1.0, 'REPLACE')
+
+        mod = next((m for m in obj.modifiers if m.type == 'ARMATURE'), None)
+        if mod is None:
+            mod = obj.modifiers.new(name="Armature", type='ARMATURE')
+        mod.object = arm_obj
+
+        obj['SluggiesRigidPlacement'] = self.placement
+
+        if current_bone_id is not None:
+            self.report(
+                {"INFO"},
+                f"Moved {obj.name} from bone_{current_bone_id} to bone_{target_bone_id} "
+                f"({self.placement})")
+        else:
+            self.report({"INFO"}, f"Moved {obj.name} to bone_{target_bone_id} ({self.placement})")
+        return {"FINISHED"}
+
+
+def _draw_rigid_mesh_box(layout, context):
+    """The 'Rigid mesh' box (plan: renamed 'Mesh' for a custom submesh),
+    showing the active object's current attachment and the Reassign to new
+    bone button."""
+    arm_obj = _find_target_armature(context)
+    obj = context.active_object
+    kind, _submesh_index = _rigid_mesh_kind(obj) if obj is not None else (None, None)
+
+    box = layout.box()
+    box.label(text="Mesh" if kind == 'custom' else "Rigid mesh")
+    if arm_obj is None:
+        box.label(text=_no_target_armature_message(context), icon='INFO')
+        return
+    if kind is not None:
+        box.label(text=_rigid_mesh_attachment_label(context, arm_obj, obj))
+    box.operator(SLUGGIES_OT_reassign_bone.bl_idname)
+
+
 class SLUGGIES_OT_add_submesh(bpy.types.Operator):
     """Add a custom rigid submesh, attached to a free bone (Hammerspace only)"""
     bl_idname = "sluggies.add_submesh"
@@ -589,11 +877,15 @@ class SLUGGIES_PT_tools(bpy.types.Panel):
         layout.operator(SLUGGIES_OT_add_submesh.bl_idname)
 
         layout.separator()
+        _draw_rigid_mesh_box(layout, context)
+
+        layout.separator()
         _draw_free_host_bones(layout, context)
 
 
 def register():
     bpy.utils.register_class(SLUGGIES_OT_add_submesh)
+    bpy.utils.register_class(SLUGGIES_OT_reassign_bone)
     bpy.utils.register_class(SLUGGIES_PT_tools)
     bpy.types.Scene.sluggies_show_free_host_bones = BoolProperty(
         name="Free host bones",
@@ -605,4 +897,5 @@ def register():
 def unregister():
     del bpy.types.Scene.sluggies_show_free_host_bones
     bpy.utils.unregister_class(SLUGGIES_PT_tools)
+    bpy.utils.unregister_class(SLUGGIES_OT_reassign_bone)
     bpy.utils.unregister_class(SLUGGIES_OT_add_submesh)

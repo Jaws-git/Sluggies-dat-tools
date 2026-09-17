@@ -26,6 +26,7 @@ from HostBones import (  # noqa: E402
     classify_host_bones,
     compute_rigid_retargets,
     order_host_bone_choices,
+    reassignment_choices,
     skn_bone_ids,
 )
 
@@ -154,6 +155,50 @@ class ComputeRigidRetargetsTests(unittest.TestCase):
         self.assertEqual(retargets, [])
         self.assertEqual(issues[0].reason, "target_occupied")
         self.assertEqual(issues[0].detail, 7)
+
+
+class ReassignmentChoicesTests(unittest.TestCase):
+    """PLAN_EditRigidMeshes.md Phase 6: host-bone choices for the Reassign to
+    new bone dialog."""
+
+    def test_single_bone_prop_yields_an_empty_list(self):
+        # The only bone in the model is the donor owner of the submesh being
+        # reassigned; moving it "to itself" is not offered.
+        records = [_rec(1, None, geo_id_raw=0)]
+        ordered = reassignment_choices(records, moving_submesh_index=0)
+        self.assertEqual(ordered, [])
+
+    def test_original_owner_reappears_after_a_move(self):
+        # bone 1 (root) originally owned submesh 0; the object was already
+        # moved onto bone 2 (a retarget records this). Reopening the dialog
+        # must offer bone 1 again, but not bone 2 (the object's current bone).
+        records = [_rec(1, None, geo_id_raw=0), _rec(2, 1)]
+        claims = SceneClaims(retargets=(RigidRetarget(submesh_index=0, from_bone_id=1, to_bone_id=2),))
+        ordered = reassignment_choices(records, claims, moving_submesh_index=0)
+        self.assertEqual([c.bone_id for c in ordered], [1])
+
+    def test_bone_claimed_by_another_custom_submesh_is_absent(self):
+        records = [_rec(1, None, geo_id_raw=0), _rec(2, 1), _rec(3, 1)]
+        claims = SceneClaims(custom_submesh_bone_ids=frozenset({2}))
+        ordered = reassignment_choices(records, claims, moving_submesh_index=0)
+        self.assertEqual([c.bone_id for c in ordered], [3])
+
+    def test_moving_a_custom_submesh_excludes_its_own_current_bone(self):
+        records = [_rec(1, None), _rec(2, 1)]
+        claims = SceneClaims(custom_submesh_bone_ids=frozenset({2}))
+        ordered = reassignment_choices(records, claims, moving_custom_bone_id=2)
+        self.assertEqual([c.bone_id for c in ordered], [1])
+
+    def test_moving_a_custom_submesh_does_not_free_another_ones_bone(self):
+        records = [_rec(1, None), _rec(2, 1), _rec(3, 1)]
+        claims = SceneClaims(custom_submesh_bone_ids=frozenset({2, 3}))
+        ordered = reassignment_choices(records, claims, moving_custom_bone_id=2)
+        self.assertEqual([c.bone_id for c in ordered], [1])
+
+    def test_no_scene_claims_defaults_to_empty(self):
+        records = [_rec(1, None, geo_id_raw=0), _rec(2, 1)]
+        ordered = reassignment_choices(records, moving_submesh_index=0)
+        self.assertEqual([c.bone_id for c in ordered], [2])
 
 
 class BoneRecordsFromHierarchyTests(unittest.TestCase):

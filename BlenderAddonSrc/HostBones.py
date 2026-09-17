@@ -213,6 +213,65 @@ def order_host_bone_choices(
     return ordered
 
 
+def reassignment_choices(
+    bone_records: Iterable[BoneRecord],
+    scene_claims: Optional[SceneClaims] = None,
+    moving_submesh_index: Optional[int] = None,
+    moving_custom_bone_id: Optional[int] = None,
+) -> List[HostBoneChoice]:
+    """Host-bone choices for the Reassign to new bone dialog (PLAN_EditRigidMeshes.md
+    Phase 6): the same classification :func:`classify_host_bones` /
+    :func:`order_host_bone_choices` give Add submesh, with the object being
+    moved dropped from the claims first, then its own *current* bone
+    excluded again as a separate, final step.
+
+    The two-step shape matters: freeing the object's claim first is what
+    makes its original donor bone reappear once it has been moved away
+    (a claim on that bone would otherwise never lift, since bone_records
+    only records donor/original ownership, never a pending retarget) --
+    but the bone the object is *currently* on is never a useful
+    reassignment target (moving an object to the bone it is already on is a
+    no-op), so it is excluded again at the end regardless of how it became
+    free. For a single-bone prop, the one bone in the model is both the
+    object's original owner and its current bone, so it is freed and then
+    immediately excluded again, leaving an empty list.
+
+    Exactly one of *moving_submesh_index* (a donor rigid submesh, identified
+    by its donor ``GeoIdRaw``) or *moving_custom_bone_id* (a custom
+    submesh's current bone) should be given, matching which kind of object
+    is being reassigned.
+    """
+    scene_claims = scene_claims or SceneClaims()
+    bone_records = list(bone_records)
+    retargets = scene_claims.retargets
+    custom_submesh_bone_ids = scene_claims.custom_submesh_bone_ids
+    current_bone_id = None
+
+    if moving_submesh_index is not None:
+        donor_bone_id = next(
+            (r.bone_id for r in bone_records if r.geo_id_raw == moving_submesh_index), None)
+        own_retarget = next(
+            (r for r in retargets if r.submesh_index == moving_submesh_index), None)
+        current_bone_id = own_retarget.to_bone_id if own_retarget is not None else donor_bone_id
+        bone_records = [
+            BoneRecord(r.bone_id, r.parent_id, GEO_ID_FREE, r.skinned)
+            if r.geo_id_raw == moving_submesh_index else r
+            for r in bone_records
+        ]
+        retargets = tuple(r for r in retargets if r.submesh_index != moving_submesh_index)
+    elif moving_custom_bone_id is not None:
+        current_bone_id = moving_custom_bone_id
+        custom_submesh_bone_ids = frozenset(
+            b for b in custom_submesh_bone_ids if b != moving_custom_bone_id)
+
+    claims = SceneClaims(retargets=retargets, custom_submesh_bone_ids=custom_submesh_bone_ids)
+    choices = classify_host_bones(bone_records, claims)
+    ordered = order_host_bone_choices(choices, bone_records)
+    if current_bone_id is not None:
+        ordered = [c for c in ordered if c.bone_id != current_bone_id]
+    return ordered
+
+
 def skn_bone_ids(skin_data: Optional[dict]) -> Set[int]:
     """Bone ids referenced by any SK1, SK2 or SKAcc entry in a ``.sluggie``
     ``SkinData`` dict.
