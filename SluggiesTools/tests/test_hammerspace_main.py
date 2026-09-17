@@ -2872,7 +2872,6 @@ def _free_host_bones(model: dict, count: int) -> list:
     return candidates[:count]
 
 
-@unittest.skipUnless(REAL_MARIO_SLUGGIE.is_file(), 'real Mario export not present in this checkout')
 def _strip_edited_fields(node) -> None:
     """Remove every ``*Edited`` key from a parsed .sluggie tree, in place."""
     if isinstance(node, dict):
@@ -2885,6 +2884,7 @@ def _strip_edited_fields(node) -> None:
             _strip_edited_fields(value)
 
 
+@unittest.skipUnless(REAL_MARIO_SLUGGIE.is_file(), 'real Mario export not present in this checkout')
 class PatchGPLAppendSubmeshRealDonorTests(unittest.TestCase):
     """End-to-end smoke test against the real Mario entry00 export: appends
     a cube CustomSubmesh through the full BuildModelBlock pipeline and
