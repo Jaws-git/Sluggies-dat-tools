@@ -58,18 +58,28 @@ Hammerspace opens up additional memory at the end of the data file to store more
 - change the position of existing verts in space
 - edit face normals (each model is imported with its original custom normals, where available)
 - edit facial expressions (shapekeys)  
->- change UVs in any way you want. split edges, unwrap, make new seams!
->- reimport edited PNG textures at any size!  
->- append a new model texture by changing the connected Image Texture node on an imported donor material
+- change UVs in any way you want. split edges, unwrap, make new seams!
+- reimport edited PNG textures at any size!  
+- append a new model texture by changing the connected Image Texture node on an imported donor material
+>- create a new static submesh that has it's own texture and follows a bone of your choice
 
 #### Adding a new model texture how-to
 
 1. Put the new PNG in the model's own `tex/` folder.
 2. Keep the imported material and its `SurfaceId`; do not create a new material.
 3. Replace the image in the Image Texture node or create a new one.
-	Leave at most one Image Texture node connected to the active Material Output!
+   Leave at most one Image Texture node connected to the active Material Output!
 4. Export with **Use Hammerspace** and **Reimport textures from tex folder** enabled.
 5. Patch the exported `.sluggie` normally.
+
+#### Adding a new submesh how-to
+1. Import any sluggie file
+2. select the armature or any of the child meshes, then open the sluggies tab in the side panel
+3. pick a bone to use and a material to copy
+4. click the "Add submesh" button, set name, bone and template material for your new object
+5. A simple cube mesh will appear at the guiding bone. Yo ucan edit it freely in edit mode.
+6. when done, select all meshes you'd like to include, then export back to the original sluggie
+   file with "hammerspace" and "reimport textures" activated
 
 #### Moving vertices to a different bone (vertex groups)
 
@@ -80,10 +90,10 @@ In hammerspace mode you can move vertices between the model's existing `bone_<id
 - Moving vertices in space is fine in the same export, but don't add, remove or reorder vertices or faces in it.
 
 #### You can't (yet):
-- add or remove vertices
+- add or remove vertices on the main mesh (always the first) 
 - manipulate material slots
 - manipulate bones, or skinning edits beyond moving vertices between existing bone vertex groups (see above)
-- reorder face indices
+- reorder main mesh face indices
 - remove an object's custom properties
 - you should also always refrain from renaming objects
 
