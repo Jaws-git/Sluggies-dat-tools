@@ -2518,6 +2518,33 @@ def encode_custom_submesh(context, obj, model, texture_assignment, warnings, use
     )
 
 
+def _custom_submesh_material(obj):
+    """The material carrying this custom submesh's own ``<CustomSubmeshId>_ds*``
+    SurfaceId (the one the Add submesh operator created), first slot wins."""
+    prefix = f'{obj.get("CustomSubmeshId")}_ds'
+    for slot in obj.material_slots:
+        material = slot.material
+        if material is not None and str(material.get("SurfaceId") or "").startswith(prefix):
+            return material
+    return None
+
+
+def _merge_texture_additions(donor_additions, custom_additions):
+    """Append custom submesh texture additions after the donor-material ones.
+
+    Donor additions keep their positions, so the appended indices already
+    written into DesiredTextureAssignments stay valid. A PNG that is already
+    being appended (by a donor material or another custom submesh) is not
+    appended twice: custom submeshes bind by file name, so they share it."""
+    merged = list(donor_additions)
+    names = {addition["TextureFileName"] for addition in merged}
+    for addition in custom_additions:
+        if addition["TextureFileName"] not in names:
+            merged.append(addition)
+            names.add(addition["TextureFileName"])
+    return merged
+
+
 def _resolve_export_texture_context(sluggie_path, model):
     """Return descriptor/path context, borrowing it for a paired `_L_` model."""
     model_dir = os.path.dirname(os.path.abspath(sluggie_path))
@@ -2874,6 +2901,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         )
         owns_texture_section = bool(local_texture_descriptors)
         additions, desired_assignments, changed_materials = [], {}, []
+        texture_descriptors, texture_dir = local_texture_descriptors, None
         if self.reimport_textures:
             try:
                 texture_descriptors, texture_dir, owns_texture_section = (
@@ -2908,6 +2936,57 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 _texture_export_toggles_required_message(changed_materials),
             )
             return {"CANCELLED"}
+
+        # --- Custom submeshes (PLAN_AddSubmesh.md Phase 6 step 2) ---
+        # The toggle guard above guarantees Hammerspace Mode and Reimport
+        # textures, so the texture context was resolved. CustomSubmeshes
+        # always mirrors the current selection, like AdditionalTextureDescriptors.
+        custom_submesh_entries = []
+        custom_additions = []
+        if custom_submesh_candidates:
+            model = data["SluggiesModel"]
+            try:
+                custom_texture_entries = []
+                for obj in custom_submesh_candidates:
+                    new_materials = _find_new_materials(obj, None)
+                    if new_materials:
+                        names = ", ".join(f"'{n}' ({r})" for n, r in new_materials)
+                        raise ValueError(
+                            f"{obj.name}: custom submeshes support only their own surface "
+                            f"material ({names})"
+                        )
+                    material = _custom_submesh_material(obj)
+                    if material is None:
+                        raise ValueError(
+                            f"{obj.name}: custom submesh has no material with its own "
+                            f"SurfaceId '{obj.get('CustomSubmeshId')}_ds0'"
+                        )
+                    template_texture_index = _custom_submesh_template_texture_index(
+                        model, str(obj.get("TemplateSource") or "")
+                    )
+                    custom_texture_entries.append((material, template_texture_index))
+                custom_additions, custom_assignments = _resolve_custom_submesh_texture_changes(
+                    custom_texture_entries,
+                    texture_descriptors,
+                    texture_dir,
+                    path_resolver=bpy.path.abspath,
+                )
+                if custom_additions and not owns_texture_section:
+                    raise ValueError(
+                        "Low-poly model textures are owned by the paired main model; "
+                        "a custom submesh on it can only use an existing texture: "
+                        + ", ".join(obj.name for obj in custom_submesh_candidates)
+                    )
+                for obj, (material, _template_index) in zip(
+                    custom_submesh_candidates, custom_texture_entries
+                ):
+                    custom_submesh_entries.append(encode_custom_submesh(
+                        context, obj, model, custom_assignments[material.name],
+                        warnings, use_base64,
+                    ))
+            except ValueError as exc:
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
 
         for obj, target_submesh in object_submeshes:
             if self.use_hammerspace:
@@ -3139,6 +3218,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         for e in errors:
             self.report({"ERROR"}, e)
 
+        written += len(custom_submesh_entries)
         if written == 0:
             self.report({"ERROR"}, "No submeshes written. Check the warnings above.")
             return {"CANCELLED"}
@@ -3147,6 +3227,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         data["SluggiesModel"]["ReimportTextures"] = (
             self.reimport_textures and bool(local_texture_descriptors)
         )
+        additions = _merge_texture_additions(additions, custom_additions)
         if additions:
             data["SluggiesModel"]["AdditionalTextureDescriptors"] = additions
         else:
@@ -3155,6 +3236,10 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             data["SluggiesModel"]["DesiredTextureAssignments"] = desired_assignments
         else:
             data["SluggiesModel"].pop("DesiredTextureAssignments", None)
+        if custom_submesh_entries:
+            data["SluggiesModel"]["CustomSubmeshes"] = custom_submesh_entries
+        else:
+            data["SluggiesModel"].pop("CustomSubmeshes", None)
 
         with open(self.filepath, 'w') as f:
             json.dump(data, f, indent=2)

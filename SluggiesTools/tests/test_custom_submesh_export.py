@@ -115,6 +115,82 @@ class CustomSubmeshExportGuardTests(unittest.TestCase):
         self.assertIn("return {'CANCELLED'}", guard_body)
 
 
+def _execute_source():
+    tree = ast.parse(EXPORTER_PATH.read_text(encoding='utf-8'))
+    export_class = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == 'SLUGGIES_OT_export'
+    )
+    return ast.unparse(next(
+        node for node in export_class.body
+        if isinstance(node, ast.FunctionDef) and node.name == 'execute'
+    ))
+
+
+class _FakeMaterial:
+    def __init__(self, name, surface_id):
+        self.name = name
+        self._props = {'SurfaceId': surface_id}
+
+    def get(self, key, default=None):
+        return self._props.get(key, default)
+
+
+class _FakeCustomObject:
+    def __init__(self, custom_submesh_id, materials):
+        self._props = {'CustomSubmeshId': custom_submesh_id}
+        self.material_slots = [SimpleNamespace(material=m) for m in materials]
+
+    def get(self, key, default=None):
+        return self._props.get(key, default)
+
+
+class ExportExecuteWiringTests(unittest.TestCase):
+    """Phase 6 step 2: SLUGGIES_OT_export.execute writes CustomSubmeshes."""
+
+    def test_custom_submesh_material_picks_its_own_surface(self):
+        fn = _load_exporter_function('_custom_submesh_material')
+        own = _FakeMaterial('Hat_mat', 'custom1_ds0')
+        obj = _FakeCustomObject('custom1', [None, _FakeMaterial('donor', 'sm0_ds5'), own])
+        self.assertIs(fn(obj), own)
+        self.assertIsNone(fn(_FakeCustomObject('custom1', [_FakeMaterial('other', 'custom10_ds0x')])))
+
+    def test_merge_keeps_donor_order_and_appends_each_png_once(self):
+        fn = _load_exporter_function('_merge_texture_additions')
+        donor = [{'TextureFileName': 'body_new.png', 'TemplateTextureIndex': 0}]
+        custom = [
+            {'TextureFileName': 'Hat.png', 'TemplateTextureIndex': 0},
+            {'TextureFileName': 'body_new.png', 'TemplateTextureIndex': 2},
+            {'TextureFileName': 'Hat.png', 'TemplateTextureIndex': 0},
+        ]
+        merged = fn(donor, custom)
+        self.assertEqual([a['TextureFileName'] for a in merged], ['body_new.png', 'Hat.png'])
+        self.assertIs(merged[0], donor[0])
+        self.assertEqual(len(donor), 1)  # input not mutated
+
+    def test_execute_encodes_each_selected_custom_submesh(self):
+        source = _execute_source()
+        for call in ('_custom_submesh_material(obj)', '_custom_submesh_template_texture_index(',
+                     '_resolve_custom_submesh_texture_changes(', 'encode_custom_submesh('):
+            self.assertIn(call, source)
+        # Texture assignments are resolved before any entry is encoded.
+        self.assertLess(source.index('_resolve_custom_submesh_texture_changes('),
+                        source.index('encode_custom_submesh('))
+        # ... and only after the Hammerspace/Reimport toggle guard.
+        self.assertLess(source.index('_custom_submesh_export_toggles_required_message'),
+                        source.index('encode_custom_submesh('))
+
+    def test_execute_writes_merges_and_counts_custom_submeshes(self):
+        source = _execute_source()
+        self.assertIn("data['SluggiesModel']['CustomSubmeshes'] = custom_submesh_entries", source)
+        self.assertIn("data['SluggiesModel'].pop('CustomSubmeshes', None)", source)
+        self.assertIn('written += len(custom_submesh_entries)', source)
+        self.assertLess(source.index('written += len(custom_submesh_entries)'),
+                        source.index('if written == 0'))
+        self.assertLess(source.index('_merge_texture_additions(additions, custom_additions)'),
+                        source.index("data['SluggiesModel']['AdditionalTextureDescriptors'] = additions"))
+
+
 def _translation(x, y, z):
     return [[1.0, 0.0, 0.0, x], [0.0, 1.0, 0.0, y], [0.0, 0.0, 1.0, z], [0.0, 0.0, 0.0, 1.0]]
 
