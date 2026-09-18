@@ -288,6 +288,22 @@ NORMAL_FORMAT = (3, 62)
 UV_FORMAT = (2, 62)
 COLOR_FORMAT = (4, 48)
 
+# Adaptive position quantization. Every candidate is an s16 format (high nibble
+# 3), so the stride stays 6 bytes per vertex whichever one is picked; only the
+# low nibble -- the fixed-point shift -- moves. They run from the canonical 59
+# (shift 11, +/-16, the finest) down to 48 (shift 0, +/-32767, the coarsest).
+#
+# `select_position_format` always takes the first that fits, so a mesh inside
+# +/-16 still encodes byte-identically to the canonical contract; only a mesh
+# that the canonical format would have rejected outright trades precision for
+# range. Stadium props (the Gesso boss and friends) are the reason this exists:
+# they sit whole multiples of a player character away from their host bone.
+#
+# Nothing coarser than 59 is ever picked for a mesh that fits, and nothing
+# finer than 59 is offered at all -- the donor round-trip anchor depends on
+# 59 staying the default, and rigid donor buffers use it too.
+POSITION_QUANTIZE_CANDIDATES = tuple(range(0x3B, 0x2F, -1))  # 59, 58, ... 48
+
 
 def int16_divisor(quantize_info):
     """Fixed-point divisor for an int16 QuantizeInfo. Float formats never
@@ -308,12 +324,16 @@ def _fits_int16(value, divisor):
 
 
 def check_position_range(object_name, host_bone_id, geometry, quantize_info=POSITION_FORMAT[1]):
-    """Step 2.3: reject a mesh whose bone-local positions don't fit the
+    """Step 2.3: reject a mesh whose bone-local positions don't fit *one*
     position format, before quantizing anything.
 
     A mesh moved far from its host bone overflows int16 (about +/-16 units for
     QuantizeInfo 59). The error names the vertex that overshoots most (by its
     Blender index), how far it is from the host bone, and what to do about it.
+
+    Export goes through ``select_position_format`` instead, which walks the
+    candidate formats and only lands here -- on the coarsest one -- when the
+    mesh fits none of them.
     """
     divisor = int16_divisor(quantize_info)
     low, high = int16_range(quantize_info)
@@ -337,6 +357,48 @@ def check_position_range(object_name, host_bone_id, geometry, quantize_info=POSI
         f'host bone {host_bone_id}; positions must stay within {low:g}..{high:g} on every axis. '
         'Move the mesh closer to its host bone or choose a host bone nearer to the mesh.'
     )
+
+
+def position_format_fits(geometry, quantize_info):
+    """True when every bone-local coordinate is representable in
+    *quantize_info*, using the same rounding as the quantizer."""
+    divisor = int16_divisor(quantize_info)
+    return all(
+        _fits_int16(value, divisor)
+        for position in geometry.positions
+        for value in position
+    )
+
+
+def select_position_format(
+    object_name, host_bone_id, geometry, candidates=POSITION_QUANTIZE_CANDIDATES,
+):
+    """Step 2.3 (adaptive): the most precise s16 position format that holds
+    every bone-local coordinate, as ``(CompCount, QuantizeInfo)``.
+
+    A mesh that fits the canonical +/-16 gets the canonical 59 and encodes
+    exactly as it always has. A mesh further from its host bone -- a stadium
+    prop the size of several player characters -- steps down one shift at a
+    time, buying 2x the range for half the precision, instead of being
+    rejected. The chosen QuantizeInfo travels with the submesh in its
+    ``VertexBufferQuantizeInfo`` field, so the builder writes the matching
+    header and the game decodes it with the right divisor.
+
+    Raises ValueError naming the worst vertex when not even the coarsest
+    candidate fits.
+    """
+    for quantize_info in candidates:
+        if position_format_fits(geometry, quantize_info):
+            return (POSITION_FORMAT[0], quantize_info)
+    coarsest = candidates[-1]
+    try:
+        check_position_range(object_name, host_bone_id, geometry, coarsest)
+    except ValueError as error:
+        raise ValueError(
+            f'{error} QuantizeInfo {coarsest} is already the widest position '
+            'format available, so no loss of precision can bring this mesh in range.'
+        ) from None
+    raise AssertionError('coarsest candidate reported a fit it does not have')
 
 
 def quantize_int16(value, divisor, context):
@@ -600,17 +662,27 @@ def sanitize_mesh_name(name):
 def build_custom_submesh_entry(
     object_name, custom_submesh_id, host_bone_id, template_source, plan,
     geometry, loop_normals, loop_uvs, loop_colors, texture_assignment,
-    use_base64=True,
+    use_base64=True, warnings=None,
 ):
     """Assemble one ``CustomSubmeshes`` entry (sluggieschema.json) from
-    bone-local geometry and per-loop attributes, running the 2.3 range check
-    and 2.4 quantization on the way.
+    bone-local geometry and per-loop attributes, picking the position format
+    (2.3) and quantizing (2.4) on the way.
 
     When the template draws two UV channels, channel 1 mirrors channel 0
     exactly: it is the specular channel, as in donor rigid submeshes (F6).
     """
-    check_position_range(object_name, host_bone_id, geometry)
-    positions = encode_positions(object_name, geometry)
+    position_format = select_position_format(object_name, host_bone_id, geometry)
+    quantize_info = position_format[1]
+    if warnings is not None and quantize_info != POSITION_FORMAT[1]:
+        low, high = int16_range(quantize_info)
+        steps_coarser = POSITION_FORMAT[1] - quantize_info
+        warnings.append(
+            f'{object_name}: sits too far from host bone {host_bone_id} for the usual '
+            f'position precision, so it was quantized at QuantizeInfo {quantize_info} '
+            f'({low:g}..{high:g} per axis, {1 / int16_divisor(quantize_info):g} units per step, '
+            f'{2 ** steps_coarser}x coarser than normal). Host it on a nearer bone to keep full precision.'
+        )
+    positions = encode_positions(object_name, geometry, position_format)
     faces_data, faces_count = encode_faces(object_name, geometry.faces)
     _check_entry_limit(object_name, template_source, 'position', 'vertices',
                        len(geometry.positions), plan)
@@ -621,6 +693,7 @@ def build_custom_submesh_entry(
         'HostBoneId': int(host_bone_id),
         'TemplateSource': template_source,
         'VertexBufferData': encode_field(positions, use_base64),
+        'VertexBufferQuantizeInfo': quantize_info,
     }
 
     if plan.normals:

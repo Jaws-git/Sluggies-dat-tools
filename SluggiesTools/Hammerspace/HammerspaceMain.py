@@ -23,6 +23,7 @@ from GeometryRebuild import (
     rebuild_edited_uvs,
     rebuild_surface_assignments,
 )
+from ArchiveContainer import parse_archive_container, rebuild_archive_container
 from ModelFormat import align_array_offset, compute_mem_clear_range, pad_array
 from InplacePatcher import root_scale as _root_scale
 import act_rebuild
@@ -143,6 +144,7 @@ class CustomSubmesh:
     host_bone_id:       int
     template_source:    str
     vertex_data:        bytes
+    vertex_quantize_info: int   # s16 position format; 59 unless the exporter had to widen it
     normal_data:        bytes | None
     normal_faces_data:  bytes | None
     color_data:         bytes | None
@@ -396,7 +398,10 @@ _CUSTOM_SUBMESH_REJECTED_DERIVED_TYPE6 = '00000375'  # F9: never occurs on a rig
 # template's own (near-universally identical) format, but the MVP encodes
 # every CustomSubmeshes buffer in these canonical formats regardless of
 # source kind, so structural validation can check them uniformly here.
-_CUSTOM_SUBMESH_POSITION_STRIDE = 6   # CompCount 3, QuantizeInfo 59 (3 x int16)
+# CompCount 3 x int16. Every accepted VertexBufferQuantizeInfo is an s16
+# format (see _CUSTOM_SUBMESH_POSITION_QUANTIZE_RANGE), so only the fixed-point
+# shift varies between custom submeshes -- the stride never does.
+_CUSTOM_SUBMESH_POSITION_STRIDE = 6
 _CUSTOM_SUBMESH_NORMAL_STRIDE   = 6   # CompCount 3, QuantizeInfo 62 (3 x int16)
 _CUSTOM_SUBMESH_UV_STRIDE       = 4   # CompCount 2, QuantizeInfo 62 (2 x int16)
 _CUSTOM_SUBMESH_COLOR_STRIDE    = 4   # CompCount 4, QuantizeInfo 48 (RGBA8)
@@ -794,6 +799,20 @@ def _validate_custom_submeshes(model: dict) -> None:
             fail(f'FacesCount {faces_count!r} must be a uint16 value')
             faces_count = None
 
+        position_quantize = cs.get(
+            'VertexBufferQuantizeInfo', _CUSTOM_SUBMESH_POSITION_FORMAT[1]
+        )
+        if (
+            not isinstance(position_quantize, int) or isinstance(position_quantize, bool)
+            or position_quantize not in _CUSTOM_SUBMESH_POSITION_QUANTIZE_RANGE
+        ):
+            fail(
+                f'VertexBufferQuantizeInfo {position_quantize!r} must be an s16 position '
+                f'format between {_CUSTOM_SUBMESH_POSITION_QUANTIZE_RANGE[0]} and '
+                f'{_CUSTOM_SUBMESH_POSITION_QUANTIZE_RANGE[-1]} (high nibble 3); custom '
+                'submeshes never use float positions'
+            )
+
         vertex_bytes = _decode(cs['VertexBufferData'], use_b64) if cs.get('VertexBufferData') else b''
         vertex_count = None
         if not vertex_bytes or len(vertex_bytes) % _CUSTOM_SUBMESH_POSITION_STRIDE:
@@ -1062,7 +1081,13 @@ _CUSTOM_SUBMESH_TEXTURE_LAYER_SHIFT = 13
 _CUSTOM_SUBMESH_TEXTURE_INDEX_MASK  = 0x1FFF
 _CUSTOM_SUBMESH_TYPE4_BY_UV_COUNT   = {1: 'fffffff0', 2: 'ffffff10'}  # F9
 
-_CUSTOM_SUBMESH_POSITION_FORMAT = (3, 59)  # CompCount, QuantizeInfo (F6/F9)
+_CUSTOM_SUBMESH_POSITION_FORMAT = (3, 59)  # CompCount, default QuantizeInfo (F6/F9)
+# Accepted VertexBufferQuantizeInfo values, coarsest first: the s16 formats from
+# 48 (0x30, shift 0, +/-32767) up to the default 59 (0x3B, shift 11, +/-16).
+# The exporter's CustomSubmeshExport.POSITION_QUANTIZE_CANDIDATES is the same
+# set, ordered finest first -- it picks the most precise one the mesh fits in,
+# so a prop far from its host bone widens the range instead of being rejected.
+_CUSTOM_SUBMESH_POSITION_QUANTIZE_RANGE = tuple(range(0x30, 0x3C))
 _CUSTOM_SUBMESH_NORMAL_FORMAT   = (3, 62)
 _CUSTOM_SUBMESH_UV_FORMAT       = (2, 62)
 _CUSTOM_SUBMESH_COLOR_FORMAT    = (4, 48)
@@ -1443,7 +1468,7 @@ def _custom_submesh_to_submesh(
         face_texture_indices=b'',
         vertex_data=cs.vertex_data,
         vertex_comp_count=_CUSTOM_SUBMESH_POSITION_FORMAT[0],
-        vertex_quantize_info=_CUSTOM_SUBMESH_POSITION_FORMAT[1],
+        vertex_quantize_info=cs.vertex_quantize_info,
         uv_channels=uv_channels,
         color_channels=color_channels,
         draw_states=draw_states,
@@ -2214,9 +2239,19 @@ def ParseSluggie(data: dict) -> SluggieParsed:
                 originals = raw_skn_orig.get(list_name, [])
                 edits = raw_skn_edit.get(list_name, [])
                 if len(edits) != len(originals):
+                    hint = ''
+                    if not edits:
+                        # An export that included no skinned mesh used to write
+                        # an empty SkinDataEdited over the donor's structure.
+                        hint = (
+                            '. SkinDataEdited is empty, which means the export that '
+                            'wrote this file did not include the skinned mesh. Select '
+                            'the skinned mesh along with whatever else you are '
+                            'exporting and export again'
+                        )
                     raise ValueError(
                         f'position-only SKN edit changed {list_name} count from '
-                        f'{len(originals)} to {len(edits)}')
+                        f'{len(originals)} to {len(edits)}{hint}')
                 edits_by_identity = {}
                 for edit in edits:
                     identity = tuple(edit.get(field) for field in fields)
@@ -2408,6 +2443,9 @@ def ParseSluggie(data: dict) -> SluggieParsed:
             host_bone_id       = cs['HostBoneId'],
             template_source    = cs['TemplateSource'],
             vertex_data        = _decode(cs['VertexBufferData'], use_b64),
+            vertex_quantize_info = cs.get(
+                'VertexBufferQuantizeInfo', _CUSTOM_SUBMESH_POSITION_FORMAT[1]
+            ),
             normal_data        = _decode(cs['NormalBufferData'], use_b64) if cs.get('NormalBufferData') else None,
             normal_faces_data  = _decode(cs['NormalFacesData'], use_b64) if cs.get('NormalFacesData') else None,
             color_data         = _decode(cs['ColorChannelData'], use_b64) if cs.get('ColorChannelData') else None,
@@ -4934,6 +4972,8 @@ def BuildModelBlock(
     source_model_length = model.get('ModelLength', original_length)
     route_prefix = b''
     route_prefix_size = 0
+    route_container = b''
+    archive_layout = None
     if source_model_offset >= hh.BASE_SIZE:
         # Hammerspace-resident source: the model block already lives in the
         # hammerspace region of OUTPUT_DAT (e.g. a previously patched clone or
@@ -4951,19 +4991,58 @@ def BuildModelBlock(
             raise ValueError(
                 f'schema model range 0x{source_model_offset:08X}+{source_model_length:,} '
                 f'is outside donor DOL entry 0x{original_offset:08X}+{original_length:,}')
-        if route_prefix_size:
+        route_suffix_size = original_length - route_prefix_size - source_model_length
+        if route_prefix_size or route_suffix_size:
+            # The DOL entry holds more than this model, so read all of it: the
+            # bytes around the model have to be carried into the new block.
             with open(_source_dat_path(original_offset), 'rb') as source:
                 source.seek(original_offset)
-                route_prefix = source.read(route_prefix_size)
-            if len(route_prefix) != route_prefix_size:
+                route_container = source.read(original_length)
+            if len(route_container) != original_length:
                 raise IOError(
-                    f'could not read {route_prefix_size} byte model container prefix '
+                    f'could not read the {original_length} byte DOL entry '
                     f'at 0x{original_offset:08X}')
-            _slogger.info(
-                f'[Container] preserving {route_prefix_size}-byte DOL entry prefix; '
-                f'inner model starts at +0x{route_prefix_size:X}',
-                source='hammerspace.main',
-            )
+            route_prefix = route_container[:route_prefix_size]
+            archive_layout = parse_archive_container(route_container)
+            if archive_layout is not None and archive_layout.member_at(route_prefix_size) is None:
+                # An archive whose table does not list this model: rebuilding it
+                # would shift members the schema knows nothing about.
+                raise ValueError(
+                    f'model at 0x{source_model_offset:08X} is not a populated slot of '
+                    f'the archive at 0x{original_offset:08X}')
+            if archive_layout is not None:
+                member = archive_layout.member_at(route_prefix_size)
+                if member.length != source_model_length:
+                    raise ValueError(
+                        f'archive slot {member.slot} spans {member.length:,} bytes but the '
+                        f'schema reports ModelLength={source_model_length:,}')
+                if member.offset % hh.HS_ALIGN_BYTES:
+                    # The block lands on a 32-byte boundary, so a member off the
+                    # boundary would drag the model's hot data off it too.
+                    raise ValueError(
+                        f'archive slot {member.slot} starts at +0x{member.offset:X}, which is '
+                        f'not a multiple of {hh.HS_ALIGN_BYTES}')
+                _slogger.info(
+                    f'[Container] DOL entry is an archive: {archive_layout.file_count} slots, '
+                    f'{len(archive_layout.members)} populated; rebuilding slot {member.slot} '
+                    f'at +0x{member.offset:X} and carrying the other '
+                    f'{len(archive_layout.members) - 1} member(s) along',
+                    source='hammerspace.main',
+                )
+            else:
+                if route_suffix_size:
+                    _slogger.warning(
+                        f'[Container] DOL entry 0x{original_offset:08X}+{original_length:,} has '
+                        f'{route_suffix_size:,} bytes after the model but is not a readable '
+                        f'archive; those bytes are dropped from the rebuilt block',
+                        source='hammerspace.main',
+                    )
+                if route_prefix_size:
+                    _slogger.info(
+                        f'[Container] preserving {route_prefix_size}-byte DOL entry prefix; '
+                        f'inner model starts at +0x{route_prefix_size:X}',
+                        source='hammerspace.main',
+                    )
 
     position_edits = _position_edits(model) if modes.gpl == 'build' else []
     if position_edits:
@@ -5173,8 +5252,27 @@ def BuildModelBlock(
         inner_block, source_model_length, modes, section_sizes
     )
     report['root_scale_applied'] = root_scale_applied
-    block = route_prefix + inner_block
-    if route_prefix:
+    if archive_layout is not None:
+        block, archive_report = rebuild_archive_container(
+            route_container,
+            route_prefix_size,
+            inner_block,
+            layout=archive_layout,
+        )
+        report.update(archive_report)
+        _slogger.info(
+            f'[Container] archive slot {archive_report["archive_member_slot"]} '
+            f'{archive_report["archive_member_original_size"]:,} -> '
+            f'{archive_report["archive_member_new_size"]:,} bytes; '
+            f'{archive_report["archive_slots_shifted"]} later slot(s) shifted by '
+            f'{archive_report["archive_size_delta"]:+,}; archive '
+            f'{archive_report["archive_original_size"]:,} -> '
+            f'{archive_report["archive_new_size"]:,} bytes',
+            source='hammerspace.main',
+        )
+    else:
+        block = route_prefix + inner_block
+    if route_prefix or archive_layout is not None:
         report['container_prefix_size'] = route_prefix_size
         report['inner_assembled_size'] = len(inner_block)
         report['inner_original_size'] = source_model_length

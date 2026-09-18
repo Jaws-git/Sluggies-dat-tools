@@ -56,6 +56,35 @@ WIMGT_PALETTE_TOKENS = {
 _INDEXED_FORMATS = frozenset((0x8, 0x9, 0xA))
 
 
+# GX hardware limit: the TX_SETIMAGE0 width/height fields are 10 bits wide and
+# store (size - 1), so no texture axis can exceed 1024 texels. Anything larger
+# cannot be expressed in a texture object and must be downscaled before it is
+# encoded into a TPL.
+GX_MAX_TEXTURE_DIMENSION = 1024
+
+
+def clamp_texture_dimensions(
+    width: int,
+    height: int,
+    max_dimension: int = GX_MAX_TEXTURE_DIMENSION,
+) -> tuple[int, int]:
+    """Return ``(width, height)`` scaled down to fit the GX texture limit.
+
+    Both axes are divided by the same factor - the smallest one that brings the
+    longer axis down to ``max_dimension`` - so the aspect ratio is preserved and
+    a power-of-two image stays a power of two (2048x512 -> 1024x256).
+    Dimensions already within the limit are returned unchanged.
+    """
+    longest = max(width, height)
+    if longest <= max_dimension:
+        return width, height
+    factor = longest / max_dimension
+    return (
+        min(max_dimension, max(1, round(width / factor))),
+        min(max_dimension, max(1, round(height / factor))),
+    )
+
+
 def _ceil_div(value: int, divisor: int) -> int:
     return (value + divisor - 1) // divisor if value > 0 else 0
 
@@ -955,14 +984,18 @@ def build_hammerspace_texture_plan(
             check_png_dimensions(png_path, expected_width, expected_height)
             actual_width, actual_height = expected_width, expected_height
 
+        # The encoder downscales anything past the GX limit; report the
+        # dimensions the TEX section will actually carry, not the PNG's.
+        encode_width, encode_height = clamp_texture_dimensions(actual_width, actual_height)
+
         # Log an info when the actual dimensions differ from the descriptor.
         if expected_width is not None and expected_height is not None:
-            if actual_width != expected_width or actual_height != expected_height:
+            if encode_width != expected_width or encode_height != expected_height:
                 slogger.info(
                     f"texture {index} ({name}): PNG dimensions "
                     f"{actual_width}x{actual_height} differ from descriptor "
-                    f"{expected_width}x{expected_height}; using actual PNG "
-                    "dimensions for encoding",
+                    f"{expected_width}x{expected_height}; using "
+                    f"{encode_width}x{encode_height} for encoding",
                     source="texture_helper",
                 )
 
@@ -972,8 +1005,8 @@ def build_hammerspace_texture_plan(
             if expected_length is None:
                 expected_length = _mip_chain_payload_length(
                     descriptor.get("Format", 0),
-                    actual_width,
-                    actual_height,
+                    encode_width,
+                    encode_height,
                     additional_mip_count,
                 )
             reason = (
@@ -995,14 +1028,15 @@ def build_hammerspace_texture_plan(
             )
             continue
 
-        # Pass the actual PNG dimensions to the encoder.
+        # Pass the dimensions the encoder must produce: the PNG's own, or the
+        # downscaled ones when it is larger than the GX texture limit.
         parsed = encoder(
             png_path,
             descriptor.get("Format", 0),
             descriptor.get("PaletteFormat"),
             wimgt_executable=wimgt_executable,
-            expected_width=actual_width,
-            expected_height=actual_height,
+            expected_width=encode_width,
+            expected_height=encode_height,
         )
 
         _validate_parsed_tpl_against_descriptor(descriptor, parsed)
@@ -1412,7 +1446,10 @@ def encode_png_to_tpl(
     When ``expected_width`` and ``expected_height`` are both provided, the PNG's
     dimensions are checked against them with Pillow *before* WIMGT is invoked
     (PLAN 3.1, fourth bullet); a mismatch raises ValueError without running
-    WIMGT.
+    WIMGT. The comparison is made against
+    :func:`clamp_texture_dimensions` of the PNG's size, because a PNG larger
+    than ``GX_MAX_TEXTURE_DIMENSION`` on either axis is downscaled to fit the
+    GX texture limit (with a warning) before WIMGT sees it.
 
     This is the base-image (single-level) encoding path. Mipmapped textures
     produce a multi-image TPL and require a dedicated multi-image parser, which
@@ -1425,13 +1462,29 @@ def encode_png_to_tpl(
     target = wimgt_target_for(gx_format, palette_format)
 
     if expected_width is not None and expected_height is not None:
-        check_png_dimensions(png_path, expected_width, expected_height)
+        file_width, file_height = read_png_dimensions(png_path)
+        if clamp_texture_dimensions(file_width, file_height) != (expected_width, expected_height):
+            raise ValueError(
+                f"PNG dimensions {file_width}x{file_height} do not match descriptor "
+                f"{expected_width}x{expected_height} for {png_path}"
+            )
 
     from PIL import Image
 
     with Image.open(png_path) as img:
         base_image = img.copy()
     base_image.info.pop("icc_profile", None)
+
+    clamped_size = clamp_texture_dimensions(*base_image.size)
+    if clamped_size != base_image.size:
+        slogger.warning(
+            f"{os.path.basename(os.fspath(png_path))}: "
+            f"{base_image.width}x{base_image.height} exceeds the GX maximum "
+            f"texture size of {GX_MAX_TEXTURE_DIMENSION}x{GX_MAX_TEXTURE_DIMENSION}; "
+            f"downscaled to {clamped_size[0]}x{clamped_size[1]} for encoding",
+            source="texture_helper",
+        )
+        base_image = base_image.resize(clamped_size, Image.LANCZOS)
 
     with tempfile.TemporaryDirectory(prefix="wimgt_encode_") as temp_dir:
         base_name = "tex"
@@ -1488,6 +1541,7 @@ def encode_png_to_tpl(
 __all__ = [
     "ParsedSingleImageTpl",
     "TPL_MAGIC",
+    "GX_MAX_TEXTURE_DIMENSION",
     "WIMGT_IMAGE_TARGETS",
     "WIMGT_PALETTE_TOKENS",
     "TextureEncodingError",
@@ -1503,6 +1557,7 @@ __all__ = [
     "build_unpatch_texture_writes",
     "texture_writes_for",
     "check_png_dimensions",
+    "clamp_texture_dimensions",
     "encode_png_to_tpl",
     "parse_single_image_tpl",
     "parse_single_image_tpl_file",

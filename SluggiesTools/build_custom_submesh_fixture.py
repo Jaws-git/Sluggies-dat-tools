@@ -141,7 +141,8 @@ def build(source_path: Path, fixture_path: Path, cubes, write: bool):
 
     facts = report["validator_facts"]
     prefix = int(report.get("container_prefix_size", 0))
-    alignment = probe.section_alignment_facts(result.block[prefix:])
+    inner = int(report.get("inner_assembled_size", len(result.block) - prefix))
+    alignment = probe.section_alignment_facts(result.block[prefix:prefix + inner])
     if alignment["misaligned"]:
         raise ValueError("block is off a 32-byte boundary: " + "; ".join(alignment["misaligned"]))
 

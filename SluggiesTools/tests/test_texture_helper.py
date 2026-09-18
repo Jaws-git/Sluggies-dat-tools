@@ -14,6 +14,7 @@ if str(TOOLS_DIR) not in sys.path:
 
 from texture_helper import (
     AdditionalTextureDescriptor,
+    GX_MAX_TEXTURE_DIMENSION,
     TPL_MAGIC,
     SkippedTexture,
     TextureEncodingError,
@@ -28,6 +29,7 @@ from texture_helper import (
     build_unpatch_texture_writes,
     texture_writes_for,
     check_png_dimensions,
+    clamp_texture_dimensions,
     encode_png_to_tpl,
     parse_single_image_tpl,
     parse_single_image_tpl_file,
@@ -2344,6 +2346,160 @@ class PngOverrideTests(unittest.TestCase):
             )
 
             self.assertEqual(len(plan), 1)
+
+
+class HammerspaceOversizedTextureTests(unittest.TestCase):
+    """A hammerspace TEX rebuild encodes an oversized PNG at the clamped size,
+    so the rebuilt descriptor never claims a dimension GX cannot express."""
+
+    def _make_model(self, temp_dir: str, names_and_sizes):
+        model_dir = os.path.join(temp_dir, "model")
+        tex_dir = os.path.join(model_dir, "tex")
+        os.makedirs(tex_dir)
+        sluggie = os.path.join(model_dir, "model.sluggie")
+        with open(sluggie, "w") as f:
+            f.write("{}")
+        from PIL import Image
+
+        for name, (w, h) in names_and_sizes.items():
+            Image.new("RGBA", (w, h), (0, 255, 0, 255)).save(os.path.join(tex_dir, name), "PNG")
+        return sluggie
+
+    def test_oversized_png_encodes_at_the_clamped_size(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sluggie = self._make_model(temp_dir, {"0.png": (2048, 2048)})
+            descriptors = [
+                {"TextureIndex": 0, "TextureFileName": "0.png", "Width": 256, "Height": 256, "Format": 0x6},
+            ]
+
+            def fake_encoder(png_path, gx_format, palette_format=None, **kwargs):
+                return _fake_parsed(
+                    width=kwargs["expected_width"],
+                    height=kwargs["expected_height"],
+                    gx_format=gx_format,
+                )
+
+            info_messages = []
+            with mock.patch(
+                "texture_helper.slogger.info",
+                side_effect=lambda message, source=None: info_messages.append(message),
+            ):
+                plan = build_hammerspace_texture_plan(
+                    sluggie, descriptors, encoder=fake_encoder,
+                    allow_dimension_change=True,
+                )
+
+            self.assertEqual((plan[0].width, plan[0].height), (1024, 1024))
+            self.assertTrue(any("using 1024x1024 for encoding" in m for m in info_messages))
+
+
+class ClampTextureDimensionsTests(unittest.TestCase):
+    """The GX texture object cannot express an axis larger than 1024 texels,
+    so anything bigger is downscaled before it reaches WIMGT."""
+
+    def test_limit_is_the_gx_maximum(self):
+        self.assertEqual(GX_MAX_TEXTURE_DIMENSION, 1024)
+
+    def test_dimensions_within_the_limit_are_unchanged(self):
+        for size in ((1, 1), (64, 32), (1024, 1024), (1024, 16)):
+            with self.subTest(size=size):
+                self.assertEqual(clamp_texture_dimensions(*size), size)
+
+    def test_square_oversized_scales_to_the_limit(self):
+        self.assertEqual(clamp_texture_dimensions(2048, 2048), (1024, 1024))
+        self.assertEqual(clamp_texture_dimensions(4096, 4096), (1024, 1024))
+
+    def test_aspect_ratio_is_preserved(self):
+        self.assertEqual(clamp_texture_dimensions(2048, 512), (1024, 256))
+        self.assertEqual(clamp_texture_dimensions(512, 2048), (256, 1024))
+        self.assertEqual(clamp_texture_dimensions(3000, 1000), (1024, 341))
+
+    def test_neither_axis_exceeds_the_limit(self):
+        for width, height in ((2049, 2048), (5000, 4999), (1025, 1)):
+            with self.subTest(size=(width, height)):
+                clamped_width, clamped_height = clamp_texture_dimensions(width, height)
+                self.assertLessEqual(clamped_width, GX_MAX_TEXTURE_DIMENSION)
+                self.assertLessEqual(clamped_height, GX_MAX_TEXTURE_DIMENSION)
+                self.assertGreaterEqual(min(clamped_width, clamped_height), 1)
+
+    def test_extreme_aspect_ratio_never_collapses_to_zero(self):
+        self.assertEqual(clamp_texture_dimensions(8192, 1), (1024, 1))
+
+
+class OversizedPngDownscaleTests(unittest.TestCase):
+    """encode_png_to_tpl() downscales an oversized PNG and warns about it."""
+
+    def _write_png(self, temp_dir: str, size) -> str:
+        from PIL import Image
+
+        path = os.path.join(temp_dir, "big.png")
+        Image.new("RGBA", size, (0, 255, 0, 255)).save(path, "PNG")
+        return path
+
+    def _run_encode(self, png_path, **kwargs):
+        """Run encode_png_to_tpl with WIMGT stubbed out, returning the PNG it saw."""
+        seen = {}
+
+        def fake_run(cmd, **_):
+            base_png = cmd[-1]
+            tpl_path = cmd[cmd.index("-d") + 1]
+            from PIL import Image
+
+            with Image.open(base_png) as img:
+                seen["size"] = img.size
+            with open(tpl_path, "wb") as tpl_file:
+                tpl_file.write(_make_direct_color_tpl())
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        warnings = []
+        with mock.patch("texture_helper.subprocess.run", side_effect=fake_run),              mock.patch(
+                 "texture_helper.slogger.warning",
+                 side_effect=lambda message, source=None: warnings.append(message),
+             ):
+            encode_png_to_tpl(png_path, 0x6, **kwargs)
+        return seen["size"], warnings
+
+    def test_oversized_png_is_downscaled_before_wimgt(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            png_path = self._write_png(temp_dir, (2048, 2048))
+            size, warnings = self._run_encode(png_path)
+
+            self.assertEqual(size, (1024, 1024))
+            self.assertEqual(len(warnings), 1)
+            self.assertIn("2048x2048", warnings[0])
+            self.assertIn("1024x1024", warnings[0])
+            self.assertIn("big.png", warnings[0])
+
+    def test_oversized_png_accepts_the_clamped_expected_dimensions(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            png_path = self._write_png(temp_dir, (2048, 512))
+            size, warnings = self._run_encode(
+                png_path, expected_width=1024, expected_height=256,
+            )
+
+            self.assertEqual(size, (1024, 256))
+            self.assertEqual(len(warnings), 1)
+
+    def test_oversized_png_rejects_an_unclamped_expectation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            png_path = self._write_png(temp_dir, (2048, 2048))
+
+            def exploding_run(*a, **k):
+                raise AssertionError("wimgt must not run on a dimension mismatch")
+
+            with mock.patch("texture_helper.subprocess.run", side_effect=exploding_run):
+                with self.assertRaises(ValueError):
+                    encode_png_to_tpl(
+                        png_path, 0x6, expected_width=2048, expected_height=2048,
+                    )
+
+    def test_png_within_the_limit_is_not_resized_and_does_not_warn(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            png_path = self._write_png(temp_dir, (64, 32))
+            size, warnings = self._run_encode(png_path)
+
+            self.assertEqual(size, (64, 32))
+            self.assertEqual(warnings, [])
 
 
 if __name__ == "__main__":

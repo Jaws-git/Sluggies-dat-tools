@@ -1456,6 +1456,28 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
     return wrote_any
 
 
+def skinned_donor_objects(candidates, data):
+    """``{id(obj): (submesh_index, obj)}`` for the exported objects that are a
+    donor *skinned* submesh (``VertexBufferCompCount == 6``), matched by
+    ``VertexBufferOffset``.
+
+    A model can include rigid/static submeshes (cc=3) whose vertices attach to
+    a single non-skinned bone but still carry a ``bone_<id>`` vertex group from
+    import; those never take part in SK1/SK2/SKAcc classification. Custom
+    submeshes have no ``VertexBufferOffset`` at all and never match.
+    """
+    mapping = {}
+    for submesh_index, submesh in enumerate(data["SluggiesModel"].get("Submeshes", [])):
+        if submesh["VertexBuffer"].get("VertexBufferCompCount") != 6:
+            continue
+        vb_off = str(submesh["VertexBuffer"]["VertexBufferOffset"])
+        for obj in candidates:
+            if "VertexBufferOffset" in obj and str(obj["VertexBufferOffset"]) == vb_off:
+                mapping[id(obj)] = (submesh_index, obj)
+                break
+    return mapping
+
+
 def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False):
     """Rebuild SK1/SK2/SKAcc from Blender vertex groups for hammerspace export.
 
@@ -1515,22 +1537,14 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
             return struct.pack('>f', float(v))
         return _pack_quantized_component(v, divisor, context)
 
-    # Map VertexBufferOffset → (submesh_idx, obj), skinned (cc=6) submeshes only.
-    # A model can include rigid/static submeshes (cc=3) whose vertices are
-    # attached to a single non-skinned bone (see encode_unskinned_bone_
-    # reassignments) but that still carry a bone_<id> vertex group from
-    # import for positioning — those bones are correctly absent from
-    # skinned_bone_ids and must never enter SK1/SK2/SKAcc classification or
-    # the unweighted-vertex check below.
-    obj_to_sub = {}
-    for j, sm in enumerate(submeshes):
-        if sm["VertexBuffer"].get("VertexBufferCompCount") != 6:
-            continue
-        vb_off = str(sm["VertexBuffer"]["VertexBufferOffset"])
-        for obj in candidates:
-            if "VertexBufferOffset" in obj and str(obj["VertexBufferOffset"]) == vb_off:
-                obj_to_sub[id(obj)] = (j, obj)
-                break
+    obj_to_sub = skinned_donor_objects(candidates, data)
+    if not obj_to_sub:
+        # No skinned donor mesh took part in this export -- e.g. only a custom
+        # submesh was selected. There is nothing to classify, and writing the
+        # empty result would replace the donor's whole SK1/SK2/SKAcc structure
+        # with nothing. The caller leaves SkinData (and any SkinDataEdited from
+        # an earlier run) alone instead.
+        return True, None
 
     # Only bones that already appear in the original SK data should feed the
     # rebuild.  Non-skinned bones own static submesh geometry and have NO SK
@@ -2063,6 +2077,27 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
             )
         return True, msg
     return True, None
+
+
+def _skin_data_edited_is_empty(data):
+    """True when SkinDataEdited exists but carries no SK entry at all while the
+    donor SkinData does.
+
+    That combination is not something a real edit can produce -- it is the
+    signature of an export that ran without the skinned mesh selected, before
+    `skinned_donor_objects` gated the encode. Applying it would strip the
+    model's skinning, and the patcher rejects it outright.
+    """
+    model = data.get("SluggiesModel", {})
+    edited = model.get("SkinDataEdited")
+    donor = model.get("SkinData")
+    if not edited or not donor:
+        return False
+    lists = ("SK1s", "SK2s", "SKAccs")
+    return (
+        not any(edited.get(name) for name in lists)
+        and any(donor.get(name) for name in lists)
+    )
 
 
 def _purge_skn_edited(data):
@@ -2742,6 +2777,7 @@ def encode_custom_submesh(context, obj, model, texture_assignment, warnings, use
     return CustomSubmeshExport.build_custom_submesh_entry(
         obj.name, str(obj.get("CustomSubmeshId")), host_bone_id, template_source, plan,
         geometry, loop_normals, loop_uvs, loop_colors, texture_assignment, use_base64,
+        warnings,
     )
 
 
@@ -3439,26 +3475,47 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             written += 1
 
         # Skin data is model-level — purge stale edited fields, then re-encode.
+        # Both only make sense when a skinned donor mesh is actually part of
+        # this export: purging and re-encoding without one would drop the
+        # model's whole SK1/SK2/SKAcc structure (and any skin edit from an
+        # earlier run) on, say, a custom-submesh-only export.
         encode_unskinned_bone_reassignments(candidates, data, warnings)
-        _purge_skn_edited(data)
-        if self.use_hammerspace:
-            try:
-                skn_ok, skn_msg = encode_skin_hammerspace(
-                    candidates,
-                    data,
-                    warnings,
-                    use_custom_normals=self.use_custom_normals,
+        if skinned_donor_objects(candidates, data):
+            _purge_skn_edited(data)
+            if self.use_hammerspace:
+                try:
+                    skn_ok, skn_msg = encode_skin_hammerspace(
+                        candidates,
+                        data,
+                        warnings,
+                        use_custom_normals=self.use_custom_normals,
+                    )
+                except ValueError as exc:
+                    self.report({"ERROR"}, str(exc))
+                    return {"CANCELLED"}
+                if not skn_ok:
+                    self.report({"ERROR"}, skn_msg)
+                    return {"CANCELLED"}
+                if skn_msg:
+                    self.report({"INFO"}, skn_msg)
+            else:
+                encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=self.use_custom_normals)
+        elif data["SluggiesModel"].get("SkinData"):
+            if _skin_data_edited_is_empty(data):
+                # Only an export from before this guard existed can have left
+                # an empty SkinDataEdited on a skinned model; it would unskin
+                # the model. Drop it so the donor structure is used again.
+                _purge_skn_edited(data)
+                warnings.append(
+                    "Removed an empty SkinDataEdited left by an earlier export that "
+                    "included no skinned mesh; the model's donor skinning is used again."
                 )
-            except ValueError as exc:
-                self.report({"ERROR"}, str(exc))
-                return {"CANCELLED"}
-            if not skn_ok:
-                self.report({"ERROR"}, skn_msg)
-                return {"CANCELLED"}
-            if skn_msg:
-                self.report({"INFO"}, skn_msg)
-        else:
-            encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=self.use_custom_normals)
+            else:
+                warnings.append(
+                    "No skinned mesh was part of this export, so the model's skinning "
+                    "(SKN) was left exactly as it was. Select the skinned mesh too if "
+                    "you meant to re-export its weights."
+                )
 
         update_facial_pose_edits(candidates, data, warnings)
 

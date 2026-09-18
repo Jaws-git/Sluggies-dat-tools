@@ -427,6 +427,84 @@ class BuildModelBlockTests(unittest.TestCase):
         self.assertEqual(result.validation_report['container_prefix_size'], 0x20)
         self.assertEqual(result.validation_report['assembled_size'], len(result.block))
 
+    def _build_archive_entry(self, temp_dir, entry_offset=0x1000, entry_length=0x100):
+        """Write a 3-slot archive DOL entry and return its path.
+
+        Slot 0 at +0x20 and slot 2 at +0xA0 carry recognisable filler; slot 1 at
+        +0x60 is the model the builder replaces.
+        """
+        input_dat = pathlib.Path(temp_dir) / 'dt_na.dat'
+        entry = bytearray(entry_length)
+        struct.pack_into('>4I', entry, 0, 3, 0x20, 0x60, 0xA0)
+        entry[0x20:0x60] = b'A' * 0x40
+        entry[0x60:0xA0] = b'B' * 0x40
+        entry[0xA0:0x100] = b'C' * 0x60
+        input_bytes = bytearray(entry_offset + entry_length)
+        input_bytes[entry_offset:entry_offset + entry_length] = entry
+        input_dat.write_bytes(input_bytes)
+        return input_dat
+
+    def _build_archive_block(self, model_offset=0x1060, model_length=0x40):
+        self.data['SluggiesModel'].update({
+            'ModelOffset': model_offset,
+            'ModelLength': model_length,
+        })
+        patches = self._patch_common()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = self._build_archive_entry(temp_dir)
+            with (
+                mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)),
+                mock.patch.object(main.hh, 'readDolEntry', return_value=(0x1000, 0x100)),
+                patches[1], patches[2], patches[3], patches[4], patches[5],
+                patches[6], patches[7], patches[8],
+                mock.patch.object(main, 'validate_model_block', return_value={
+                    'valid': True,
+                    'errors': [],
+                    'warnings': [],
+                    'facts': {'section_pointers': {}},
+                }),
+            ):
+                return main.BuildModelBlock(self.data)
+
+    def test_build_rebuilds_an_archive_entry_around_the_replaced_member(self):
+        result = self._build_archive_block()
+        report = result.validation_report
+
+        self.assertEqual(report['container_prefix_size'], 0x60)
+        self.assertEqual(report['archive_file_count'], 3)
+        self.assertEqual(report['archive_member_slot'], 1)
+        self.assertEqual(report['archive_member_original_size'], 0x40)
+        self.assertEqual(report['archive_slots_shifted'], 1)
+        self.assertEqual(report['archive_new_size'], len(result.block))
+        self.assertEqual(report['assembled_size'], len(result.block))
+        self.assertEqual(report['original_size'], 0x100)
+
+    def test_build_carries_the_other_archive_members_along_unchanged(self):
+        result = self._build_archive_block()
+        delta = result.validation_report['archive_size_delta']
+
+        self.assertGreater(delta, 0)
+        # Slot 0 sits before the edit, slot 2 after it.
+        self.assertEqual(result.block[0x20:0x60], b'A' * 0x40)
+        self.assertEqual(result.block[0xA0 + delta:0x100 + delta], b'C' * 0x60)
+
+    def test_build_rewrites_the_archive_offset_table(self):
+        result = self._build_archive_block()
+        delta = result.validation_report['archive_size_delta']
+
+        count, first, second, third = struct.unpack_from('>4I', result.block, 0)
+        self.assertEqual(count, 3)
+        self.assertEqual((first, second), (0x20, 0x60))
+        self.assertEqual(third, 0xA0 + delta)
+
+    def test_build_rejects_a_model_that_is_not_an_archive_slot(self):
+        with self.assertRaisesRegex(ValueError, 'not a populated slot of the archive'):
+            self._build_archive_block(model_offset=0x1080, model_length=0x20)
+
+    def test_build_rejects_an_archive_slot_whose_length_disagrees_with_the_schema(self):
+        with self.assertRaisesRegex(ValueError, 'ModelLength'):
+            self._build_archive_block(model_offset=0x1060, model_length=0x20)
+
     def test_gpl_and_skn_build_modes_use_builders(self):
         self.data['SluggiesModel'].update({
             'UseHammerspace': True,
@@ -2231,10 +2309,34 @@ class ParseSluggieCustomSubmeshesTests(unittest.TestCase):
         self.assertEqual(cs.faces_data, bytes([0, 1, 2]))
         self.assertEqual(cs.texture_assignment.donor_texture_index, 0)
         self.assertIsNone(cs.texture_assignment.additional_texture_file_name)
+        # No VertexBufferQuantizeInfo in the entry: the historical fixed value.
+        self.assertEqual(cs.vertex_quantize_info, 59)
 
         # Donor mesh data must be untouched by the presence of CustomSubmeshes.
         self.assertEqual(len(parsed.mesh.submeshes), 1)
         self.assertEqual(parsed.mesh.submeshes[0].faces_count, 0)
+
+    def test_position_quantize_info_is_carried_through_to_the_blob_header(self):
+        data = {'SluggiesModel': {
+            'UseBase64': False,
+            'CustomSubmeshes': [{
+                'CustomSubmeshId': 'custom0',
+                'MeshName': 'CustomSubmesh_0',
+                'HostBoneId': 49,
+                'TemplateSource': 'builtin:rigid_spec_v1',
+                'VertexBufferData': [0, 0, 0, 0, 0, 0],
+                'VertexBufferQuantizeInfo': 54,
+                'UVChannels': [],
+                'FacesCount': 0,
+                'FacesData': [],
+                'TextureAssignment': {'DonorTextureIndex': 0},
+            }],
+        }}
+        cs = main.ParseSluggie(data).custom_submeshes[0]
+        self.assertEqual(cs.vertex_quantize_info, 54)
+        submesh = main._custom_submesh_to_submesh(cs, 3, [], 0, b'')
+        self.assertEqual(submesh.vertex_comp_count, 3)
+        self.assertEqual(submesh.vertex_quantize_info, 54)
 
     def test_texture_assignment_by_additional_texture_file_name(self):
         data = {'SluggiesModel': {
@@ -2537,6 +2639,26 @@ class ValidateCustomSubmeshesTests(unittest.TestCase):
         )]
         with self.assertRaisesRegex(ValueError, 'not a whole number of rigid position entries'):
             main._validate_custom_submeshes(model)
+
+    def test_position_quantize_info_defaults_and_accepts_the_s16_range(self):
+        for quantize_info in (None, 48, 55, 59):
+            with self.subTest(quantize_info=quantize_info):
+                model = _validation_base_model()
+                entry = _validation_entry()
+                if quantize_info is not None:
+                    entry['VertexBufferQuantizeInfo'] = quantize_info
+                model['CustomSubmeshes'] = [entry]
+                main._validate_custom_submeshes(model)  # no raise
+
+    def test_position_quantize_info_outside_the_s16_range_is_rejected(self):
+        for quantize_info in (64, 60, 47, 0x40, 'x', True):
+            with self.subTest(quantize_info=quantize_info):
+                model = _validation_base_model()
+                model['CustomSubmeshes'] = [_validation_entry(
+                    VertexBufferQuantizeInfo=quantize_info,
+                )]
+                with self.assertRaisesRegex(ValueError, 'must be an s16 position format'):
+                    main._validate_custom_submeshes(model)
 
     def test_uv_face_index_out_of_range_is_rejected(self):
         model = _validation_base_model()
@@ -3107,7 +3229,8 @@ class PatchGPLAppendSubmeshRealDonorTests(unittest.TestCase):
 
         build, _ = self._build('builtin:rigid_spec_v1', host_index=0)
         prefix = int(build.validation_report.get('container_prefix_size', 0))
-        block = build.block[prefix:]
+        inner = int(build.validation_report.get('inner_assembled_size', len(build.block) - prefix))
+        block = build.block[prefix:prefix + inner]
         gpl_off = struct.unpack_from('>I', block, 0x04)[0]
         new_gpl = block[gpl_off:]
         new_pointers = sorted(

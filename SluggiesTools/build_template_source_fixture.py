@@ -411,7 +411,8 @@ def build_template_source_fixture(
             raise ValueError("fixture block failed validation after GeoId patches: " + "; ".join(build.validation_report["errors"]))
 
     prefix = int(build.validation_report.get("container_prefix_size", 0))
-    alignment = probe.section_alignment_facts(build.block[prefix:])
+    inner = int(build.validation_report.get("inner_assembled_size", len(build.block) - prefix))
+    alignment = probe.section_alignment_facts(build.block[prefix:prefix + inner])
     build.validation_report["section_alignment"] = alignment
     if alignment["misaligned"]:
         raise ValueError("fixture block is off a 32-byte boundary: " + "; ".join(alignment["misaligned"]))

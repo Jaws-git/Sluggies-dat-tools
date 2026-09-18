@@ -524,7 +524,13 @@
             },
             "VertexBufferData": {
               "type": "string",
-              "description": "Base64-encoded position buffer in host-bone bind-local space, quantized using the template source's position format (canonical rigid contract: CompCount 3, QuantizeInfo 59 unless the template dictates otherwise)."
+              "description": "Base64-encoded position buffer in host-bone bind-local space, quantized with VertexBufferQuantizeInfo (CompCount is always 3 for a rigid custom submesh)."
+            },
+            "VertexBufferQuantizeInfo": {
+              "type": "number",
+              "minimum": 48,
+              "maximum": 59,
+              "description": "Position quantization byte for VertexBufferData: always an s16 format (high nibble 3, so 2 bytes per component), with the low nibble giving the fixed-point shift. The exporter picks the most precise value whose range holds the mesh -- 59 (shift 11, +/-16 units) for anything near its host bone, stepping down to 48 (shift 0, +/-32767) for far-flung stage props. Absent means 59, the historical fixed value."
             },
             "NormalBufferData": {
               "type": "string",

@@ -705,7 +705,8 @@ def _apply_add_submesh_geo_id_patch(
     struct.pack_into(">H", patched, patch_off, new_submesh_index)
     patched_bytes = bytes(patched)
 
-    inner_block = patched_bytes[prefix_size:]
+    inner_size = int(build.validation_report.get("inner_assembled_size", len(patched_bytes) - prefix_size))
+    inner_block = patched_bytes[prefix_size:prefix_size + inner_size]
     original_length = build.validation_report.get("inner_original_size", build.original_length)
     report = hammerspace._build_validation_report(
         inner_block, original_length, build.section_modes, build.section_sizes,
@@ -891,7 +892,8 @@ def build_fixture(
             )
 
     prefix_size = int(build.validation_report.get("container_prefix_size", 0))
-    alignment = section_alignment_facts(build.block[prefix_size:])
+    inner_size = int(build.validation_report.get("inner_assembled_size", len(build.block) - prefix_size))
+    alignment = section_alignment_facts(build.block[prefix_size:prefix_size + inner_size])
     build.validation_report["section_alignment"] = alignment
     if alignment["misaligned"]:
         raise ValueError(

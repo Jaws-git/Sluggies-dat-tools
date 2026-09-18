@@ -590,7 +590,8 @@ class BuildFixtureRealDonorTests(unittest.TestCase):
         self.assertTrue(report["valid"], report.get("errors"))
         self.assertEqual(report["section_alignment"]["misaligned"], [])
         prefix = int(report.get("container_prefix_size", 0))
-        block = build.block[prefix:]
+        inner = int(report.get("inner_assembled_size", len(build.block) - prefix))
+        block = build.block[prefix:prefix + inner]
         head = _gpl_positions(block, 2)
         clone = _gpl_positions(block, 3)
         self.assertEqual(len(clone), len(head))
@@ -606,7 +607,8 @@ class BuildFixtureRealDonorTests(unittest.TestCase):
         self.assertTrue(report["valid"], report.get("errors"))
         self.assertEqual(report["section_alignment"]["misaligned"], [])
         prefix = int(report.get("container_prefix_size", 0))
-        cube = _gpl_positions(build.block[prefix:], 3)
+        inner = int(report.get("inner_assembled_size", len(build.block) - prefix))
+        cube = _gpl_positions(build.block[prefix:prefix + inner], 3)
         self.assertEqual(len(cube), 24)
         self.assertEqual({abs(value) for value in cube}, {205})
 

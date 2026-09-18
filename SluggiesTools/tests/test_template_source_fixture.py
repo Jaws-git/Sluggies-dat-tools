@@ -332,7 +332,9 @@ class RealDonorTests(unittest.TestCase):
             [3, '000000', '000028a8'], [6, '010000', '00000374'], [7, '320064', 'Spec'],
         ])
         self.assertEqual(cubes[1]['States'][5], [7, '640064', 'Spec'])
-        block = build.block[int(build.validation_report.get('container_prefix_size', 0)):]
+        _prefix = int(build.validation_report.get('container_prefix_size', 0))
+        _inner = int(build.validation_report.get('inner_assembled_size', len(build.block) - _prefix))
+        block = build.block[_prefix:_prefix + _inner]
         for index in (1, 2):
             self.assertEqual({abs(v) for v in _gpl_positions(block, index)}, {205})
 

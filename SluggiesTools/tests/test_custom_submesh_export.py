@@ -145,6 +145,81 @@ class _FakeCustomObject:
         return self._props.get(key, default)
 
 
+class SkinnedDonorObjectsTests(unittest.TestCase):
+    """A custom-submesh-only export must not touch the model's skinning.
+
+    Regression: exporting with no skinned mesh selected purged SkinDataEdited
+    and rewrote it with empty SK1/SK2/SKAcc lists, which the patcher then
+    rejected with "position-only SKN edit changed SK1s count from 3 to 0"
+    (Gesso, 2026-09-18).
+    """
+
+    DATA = {'SluggiesModel': {'Submeshes': [
+        {'VertexBuffer': {'VertexBufferCompCount': 6, 'VertexBufferOffset': '0x26be3460'}},
+        {'VertexBuffer': {'VertexBufferCompCount': 3, 'VertexBufferOffset': '0x26be4000'}},
+    ]}}
+
+    def setUp(self):
+        self.fn = _load_exporter_function('skinned_donor_objects')
+
+    def test_skinned_donor_object_is_matched_by_vertex_buffer_offset(self):
+        obj = {'VertexBufferOffset': '0x26be3460'}
+        self.assertEqual(self.fn([obj], self.DATA), {id(obj): (0, obj)})
+
+    def test_rigid_donor_object_is_not_a_skinned_one(self):
+        self.assertEqual(self.fn([{'VertexBufferOffset': '0x26be4000'}], self.DATA), {})
+
+    def test_custom_submesh_objects_never_match(self):
+        # Custom submeshes carry no VertexBufferOffset -- they are new
+        # submeshes, not edits to a donor one.
+        self.assertEqual(self.fn([{'SluggiesCustomSubmesh': True}], self.DATA), {})
+
+    def test_no_candidates_at_all(self):
+        self.assertEqual(self.fn([], self.DATA), {})
+
+    def test_empty_skin_data_edited_is_recognised_only_against_a_skinned_donor(self):
+        fn = _load_exporter_function('_skin_data_edited_is_empty')
+        donor = {'SK1s': [{'BoneIndex': 0}], 'SK2s': [], 'SKAccs': []}
+        empty = {'QuantizeInfo': 8, 'SK1s': [], 'SK2s': [], 'SKAccs': []}
+        self.assertTrue(fn({'SluggiesModel': {'SkinData': donor, 'SkinDataEdited': empty}}))
+        # A real edit always keeps at least one entry.
+        self.assertFalse(fn({'SluggiesModel': {'SkinData': donor, 'SkinDataEdited': donor}}))
+        # Nothing to heal without both halves, or on an unskinned model.
+        self.assertFalse(fn({'SluggiesModel': {'SkinData': donor}}))
+        self.assertFalse(fn({'SluggiesModel': {'SkinDataEdited': empty}}))
+        self.assertFalse(fn({'SluggiesModel': {
+            'SkinData': {'SK1s': [], 'SK2s': [], 'SKAccs': []}, 'SkinDataEdited': empty,
+        }}))
+
+    def test_an_empty_skin_data_edited_is_dropped_on_a_custom_submesh_only_export(self):
+        source = _execute_source()
+        self.assertIn('if _skin_data_edited_is_empty(data):', source)
+        self.assertLess(
+            source.index('if _skin_data_edited_is_empty(data):'),
+            source.rindex('_purge_skn_edited(data)'),
+        )
+
+    def test_skin_encode_and_purge_only_run_when_a_skinned_mesh_is_present(self):
+        source = _execute_source()
+        guard = 'if skinned_donor_objects(candidates, data):'
+        self.assertIn(guard, source)
+        for call in ('_purge_skn_edited(data)', 'encode_skin_hammerspace(',
+                     'encode_skin_weights_inplace('):
+            self.assertLess(source.index(guard), source.index(call), call)
+
+    def test_hammerspace_encoder_returns_early_without_a_skinned_object(self):
+        tree = ast.parse(EXPORTER_PATH.read_text(encoding='utf-8'))
+        encoder = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == 'encode_skin_hammerspace'
+        )
+        # The early return must come before anything writes SkinDataEdited.
+        source = ast.unparse(encoder)
+        write = "data['SluggiesModel']['SkinDataEdited'] ="
+        self.assertIn(write, source)
+        self.assertLess(source.index('if not obj_to_sub'), source.index(write))
+
+
 class ExportExecuteWiringTests(unittest.TestCase):
     """Phase 6 step 2: SLUGGIES_OT_export.execute writes CustomSubmeshes."""
 
@@ -483,6 +558,69 @@ class PositionRangeTests(unittest.TestCase):
             cse.int16_divisor(0x40)
 
 
+class AdaptivePositionFormatTests(unittest.TestCase):
+    """Step 2.3 (adaptive): a mesh too far from its host bone for the canonical
+    +/-16 steps down to a coarser s16 shift instead of being rejected."""
+
+    def test_candidates_are_s16_from_finest_to_coarsest(self):
+        candidates = cse.POSITION_QUANTIZE_CANDIDATES
+        self.assertEqual(candidates[0], cse.POSITION_FORMAT[1])
+        self.assertEqual(candidates[0], 59)
+        self.assertEqual(candidates[-1], 48)
+        self.assertEqual(list(candidates), sorted(candidates, reverse=True))
+        for quantize_info in candidates:
+            self.assertEqual(quantize_info >> 4, 3, f'{quantize_info} is not an s16 format')
+
+    def test_mesh_inside_the_canonical_range_keeps_59(self):
+        geometry = _positions_geometry([(0.0, 1.0, -2.0), (15.9, -16.0, 0.0)])
+        self.assertEqual(cse.select_position_format('Cube', 7, geometry), (3, 59))
+
+    def test_a_far_mesh_steps_down_only_as_far_as_it_must(self):
+        for half_extent, expected in ((17.0, 58), (40.0, 57), (100.0, 56), (5000.0, 50)):
+            with self.subTest(half_extent=half_extent):
+                geometry = _positions_geometry([(0.0, 0.0, 0.0), (half_extent, 0.0, 0.0)])
+                comp_count, quantize_info = cse.select_position_format('Gesso', 3, geometry)
+                self.assertEqual(comp_count, 3)
+                self.assertEqual(quantize_info, expected)
+                low, high = cse.int16_range(quantize_info)
+                self.assertLessEqual(half_extent, high)
+                # One step finer would not have held it.
+                finer_low, finer_high = cse.int16_range(quantize_info + 1)
+                self.assertGreater(half_extent, finer_high)
+
+    def test_coarsest_candidate_reaches_32767(self):
+        geometry = _positions_geometry([(0.0, 0.0, 0.0), (-32768.0, 32767.0, 0.0)])
+        self.assertEqual(cse.select_position_format('Gesso', 3, geometry), (3, 48))
+
+    def test_beyond_every_candidate_names_the_worst_vertex_and_says_it_is_the_widest(self):
+        geometry = _positions_geometry(
+            [(0.0, 0.0, 0.0), (40000.0, 0.0, 0.0)], source_vertices=[4, 5],
+        )
+        with self.assertRaises(ValueError) as caught:
+            cse.select_position_format('Gesso', 3, geometry)
+        message = str(caught.exception)
+        self.assertIn('Gesso', message)
+        self.assertIn('vertex 5', message)
+        self.assertIn('host bone 3', message)
+        self.assertIn('QuantizeInfo 48', message)
+        self.assertIn('widest position format', message)
+
+    def test_non_finite_position_is_rejected_by_every_candidate(self):
+        geometry = _positions_geometry([(math.nan, 0.0, 0.0)])
+        with self.assertRaises(ValueError):
+            cse.select_position_format('Cube', 1, geometry)
+
+    def test_chosen_format_actually_encodes(self):
+        geometry = _positions_geometry([(0.0, 0.0, 0.0), (100.0, -50.0, 0.25)])
+        position_format = cse.select_position_format('Gesso', 3, geometry)
+        raw = cse.encode_positions('Gesso', geometry, position_format)
+        divisor = cse.int16_divisor(position_format[1])
+        self.assertEqual(
+            struct.unpack('>6h', raw),
+            (0, 0, 0, 100 * divisor, -50 * divisor, int(0.25 * divisor)),
+        )
+
+
 class PositionQuantizationTests(unittest.TestCase):
     """Step 2.4: quantize with the template position format."""
 
@@ -764,18 +902,22 @@ class ExportedEntryBuildsTests(unittest.TestCase):
                     if self.main._bone_geo_id_raw(b) == 0xFFFF and int(b['BoneId']) not in skn_used
                     and b.get('ParentBoneId') is not None)
 
-    def _build(self, template_source):
+    def _build(self, template_source, away=None, warnings=None):
         data = _mario_model()
         model = data['SluggiesModel']
         model['UseHammerspace'] = True
         host_bone_id = self._free_host_bone(model)
         host_bind = cse.bone_absolute_matrices(model['BoneHierarchy'])[host_bone_id]
-        geometry = _cube_geometry(obj_world=_mul(ARMATURE_WORLD, host_bind), host_bind=host_bind)
+        placement = _mul(ARMATURE_WORLD, host_bind)
+        if away is not None:
+            placement = _mul(placement, _translation(away, 0.0, 0.0))
+        geometry = _cube_geometry(obj_world=placement, host_bind=host_bind)
         normals, uvs, colors = _cube_loop_attributes()
         plan = cse.attribute_plan(model, template_source)
         entry = cse.build_custom_submesh_entry(
             'CustomSubmesh_1', 'custom0', host_bone_id, template_source, plan, geometry,
             normals, uvs, colors, {'DonorTextureIndex': 0}, model.get('UseBase64', True),
+            warnings,
         )
         model['CustomSubmeshes'] = [entry]
         modes = self.main.SectionModes(gpl='build', act='clone', tex='clone', skn='clone', trailing='clone')
@@ -787,8 +929,32 @@ class ExportedEntryBuildsTests(unittest.TestCase):
                 build, entry, plan = self._build(source)
                 self.assertTrue(build.validation_report['valid'], build.validation_report.get('errors'))
                 self.assertEqual(len(entry['UVChannels']), plan.uv_channels)
+                self.assertEqual(entry['VertexBufferQuantizeInfo'], 59)
                 corners = _unpack(entry['VertexBufferData'], 'h')
                 self.assertEqual(sorted(set(abs(v) for v in corners)), [205])
+
+    def test_a_far_submesh_widens_its_format_warns_and_still_builds(self):
+        warnings = []
+        build, entry, _ = self._build('builtin:rigid_spec_v1', away=200.0, warnings=warnings)
+        self.assertTrue(build.validation_report['valid'], build.validation_report.get('errors'))
+        # The cube spans 200 +/- 0.1 on x, so it needs +/-256: shift 7, QuantizeInfo 55.
+        self.assertEqual(entry['VertexBufferQuantizeInfo'], 55)
+        divisor = cse.int16_divisor(55)
+        corners = _unpack(entry['VertexBufferData'], 'h')
+        decoded = sorted({v / divisor for v in corners})
+        # Four distinct coordinates, each within half a quantization step of
+        # the true cube -- the precision the wider range costs.
+        self.assertEqual(len(decoded), 4)
+        for got, want in zip(decoded, (-0.1, 0.1, 199.9, 200.1)):
+            self.assertLessEqual(abs(got - want), 0.5 / divisor)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('QuantizeInfo 55', warnings[0])
+        self.assertIn('CustomSubmesh_1', warnings[0])
+
+    def test_a_near_submesh_warns_about_nothing(self):
+        warnings = []
+        self._build('builtin:rigid_spec_v1', warnings=warnings)
+        self.assertEqual(warnings, [])
 
 
 @unittest.skipUnless(REAL_MARIO_SLUGGIE.exists(), 'real Mario export not present')
