@@ -28,7 +28,8 @@ OUTPUT_DAT = os.path.join(OUTPUT_DIR, 'dt_na.dat')
 import patch_skn_inplace as _skn
 import texture_helper as _tex
 import root_scale as _root_scale
-from compact_channel import comp_size as _comp_size, compact_channel
+from binfmt import comp_size as _comp_size
+from compact_channel import compact_channel
 
 # ---------------------------------------------------------------------------
 # Shader-mode conversion constants and helpers
@@ -69,24 +70,6 @@ def abort(message):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _comp_size(quant_info: int) -> int:
-    fmt = quant_info >> 4
-    return 4 if fmt in [4, 7, 0xa] else 2
-
-
-def _align4(data: bytes) -> bytes:
-    r = len(data) % 4
-    return data + b'\x00' * ((4 - r) % 4)
-
-
-def _u16(data: bytes, offset: int) -> int:
-    return struct.unpack_from('>H', data, offset)[0]
-
-
-def _u32(data: bytes, offset: int) -> int:
-    return struct.unpack_from('>I', data, offset)[0]
-
 
 def _facial_position_patches(model: dict, restore: bool) -> list[tuple[int, bytes]]:
     """Build position-pose patches from exported facial metadata and Blender edits."""

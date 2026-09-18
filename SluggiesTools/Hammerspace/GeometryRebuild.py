@@ -37,6 +37,13 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(__file__), '..')))
+from binfmt import (
+    color_entry_size as _color_entry_size,
+    comp_size as _comp_size,
+    decode_field as _dec,
+    encode_field as _enc,
+)
+from compact_channel import compact_channel as _compact_channel
 from drawlist import (computeRequiredDescriptors, decodeDrawList,
                       encodeDrawList, patchType3Setting)
 from ModelFormat import (CACHE_LINE_SIZE, align_up, compute_mem_clear_range,
@@ -50,33 +57,6 @@ _u16 = struct.Struct('>H')
 # ---------------------------------------------------------------------------
 # Small helpers
 # ---------------------------------------------------------------------------
-
-def _dec(val, use_b64):
-    if val is None:
-        return None
-    if use_b64:
-        import base64
-        return base64.b64decode(val)
-    return bytes(val)
-
-
-def _enc(data: bytes, use_b64):
-    if use_b64:
-        import base64
-        return base64.b64encode(data).decode('ascii')
-    return list(data)
-
-
-from compact_channel import comp_size as _comp_size
-from compact_channel import compact_channel as _compact_channel
-
-
-def _color_entry_size(quant_info: int) -> int:
-    """Bytes per vertex-color entry from the format nibble (0=RGB565,
-    1=RGB8, 2=RGBA8, 3=RGBA4444, 4=RGB8, 5=RGBA8)."""
-    fmt = quant_info >> 4
-    return {0: 2, 1: 3, 2: 4, 3: 2, 4: 3, 5: 4}.get(fmt, 2)
-
 
 def _u16s(data: bytes) -> list[int]:
     return list(struct.unpack(f'>{len(data)//2}H', data))

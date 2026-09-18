@@ -11,31 +11,18 @@ import math
 import struct
 from collections import Counter
 
+from binfmt import (
+    color_entry_size as _color_stride,
+    comp_size as _comp_size,
+    u8 as _u8,
+    u16 as _u16,
+    u32 as _u32,
+)
 from ModelFormat import CACHE_LINE_SIZE, align_up, compute_mem_clear_range, is_array_aligned
 
 GPL_MAGIC = 0x00B749E0
 _VECTOR_QUANTIZE_FORMATS = {0, 3, 4, 7, 0xA}
 _COLOR_QUANTIZE_FORMATS = {0, 1, 2, 3, 4, 5}
-
-
-def _u32(data: bytes, offset: int) -> int:
-    return struct.unpack_from('>I', data, offset)[0]
-
-
-def _u16(data: bytes, offset: int) -> int:
-    return struct.unpack_from('>H', data, offset)[0]
-
-
-def _u8(data: bytes, offset: int) -> int:
-    return data[offset]
-
-
-def _comp_size(quantize_info: int) -> int:
-    return 4 if (quantize_info >> 4) in (4, 7, 0xA) else 2
-
-
-def _color_stride(quantize_info: int) -> int:
-    return {0: 2, 1: 3, 2: 4, 3: 2, 4: 3, 5: 4}.get(quantize_info >> 4, 2)
 
 
 def _vector_quantize_range(quantize_info: int) -> tuple[float, float] | None:

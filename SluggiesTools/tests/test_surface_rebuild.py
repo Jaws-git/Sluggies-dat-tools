@@ -9,7 +9,7 @@ for import_path in (TOOLS_DIR, HAMMERSPACE_DIR):
     if str(import_path) not in sys.path:
         sys.path.insert(0, str(import_path))
 
-from drawlist import decodeDrawList, encodeDrawList
+from drawlist import encodeDrawList
 from GeometryRebuild import apply_desired_texture_assignments, rebuild_surface_assignments
 
 

@@ -30,6 +30,7 @@ import slogger as _slogger
 _slogger.configure()
 
 import root_scale as _root_scale
+from binfmt import align4 as _align4
 
 OUTPUT_DAT = os.path.join(_ROOT_DIR, '3_Output_Dat', 'dt_na.dat')
 
@@ -44,16 +45,6 @@ def _to_bytes(data) -> bytes:
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
-
-def _comp_size(quant_info: int) -> int:
-    fmt = quant_info >> 4
-    return 4 if fmt in [4, 7, 0xa] else 2
-
-
-def _align4(data: bytes) -> bytes:
-    r = len(data) % 4
-    return data + b'\x00' * ((4 - r) % 4)
-
 
 def _scaled_bind_pose(entry: dict, skin_data: dict, factors) -> bytes | None:
     """Return the effective bind-pose bytes for *entry*, scaled by *factors*.

@@ -6,10 +6,6 @@ donor layout.
 """
 
 
-def comp_size(q: int) -> int:
-    return 4 if (q >> 4) in (4, 7, 0xa) else 2
-
-
 def compact_channel(what: str, stride: int, original: bytes,
                     original_indices: list[int], expanded: bytes,
                     expanded_indices: list[int], loop_count: int):

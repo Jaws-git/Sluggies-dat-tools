@@ -83,11 +83,6 @@ def patchType3Setting(old_setting: int, upgraded_keys) -> int:
     return new_setting
 
 
-def _vertex_size(descriptors: list) -> int:
-    """Return the byte size of one vertex record given an active descriptor list."""
-    return sum(d['index_size'] for d in descriptors)
-
-
 def decodeDrawList(raw_bytes: bytes, descriptors: list) -> list:
     """Parse raw GX primitive list bytes into a list of triangular faces.
 

@@ -2,7 +2,6 @@ from model0 import *
 import os
 import shutil
 import json
-import base64
 import re
 import struct
 import sys
@@ -10,6 +9,12 @@ import sys
 # Step 2.2 – Initialize universal logger in child process.
 import slogger as _slogger
 _slogger.configure()
+
+from binfmt import (
+    color_entry_size as _color_entry_size,
+    comp_size as _vb_comp_size,
+    encode_field as _encode_field,
+)
 
 _HS_DIR = os.path.join(os.path.dirname(__file__), 'Hammerspace')
 if _HS_DIR not in sys.path:
@@ -33,16 +38,8 @@ STADIUM_DIR_INDICES = range(7, 17)
 
 def _encode_bytes(data: bytes):
     """Encode binary data as a base64 string, or a list of byte ints when DEBUG_DONT_USE_BASE64."""
-    if DEBUG_DONT_USE_BASE64:
-        return list(data)
-    return base64.b64encode(data).decode('ascii')
+    return _encode_field(data, not DEBUG_DONT_USE_BASE64)
 
-
-def itb (val, n):
-    return val.to_bytes(n, 'big')
-
-def bti (b):
-    return int.from_bytes(b, 'big')
 
 outdir = "../2_Output_Models/"
 _export_placeholder = 'exports will be created here'
@@ -165,18 +162,18 @@ folderNameMap = {
     "104": "Brown Male Mii",
     "105": "White Male Mii",
     "106": "Black Male Mii",
-    "107": "Red Male Mii",
-    "108": "Orange Male Mii",
-    "109": "Yellow Male Mii",
-    "110": "Light-Green Male Mii",
-    "111": "Green Male Mii",
-    "112": "Blue Male Mii",
-    "113": "Light-Blue Male Mii",
-    "114": "Pink Male Mii",
-    "115": "Purple Male Mii",
-    "116": "Brown Male Mii",
-    "117": "White Male Mii",
-    "118": "Black Male Mii",
+    "107": "Red Female Mii",
+    "108": "Orange Female Mii",
+    "109": "Yellow Female Mii",
+    "110": "Light-Green Female Mii",
+    "111": "Green Female Mii",
+    "112": "Blue Female Mii",
+    "113": "Light-Blue Female Mii",
+    "114": "Pink Female Mii",
+    "115": "Purple Female Mii",
+    "116": "Brown Female Mii",
+    "117": "White Female Mii",
+    "118": "Black Female Mii",
     "122": "Stadium Select",
     "125": "Water Waves",
     "126": "Map Objects A",
@@ -353,16 +350,6 @@ def compact_faces_json(obj, indent=2):
     raw = re.sub(r'\{\s*"key":\s*("[\w]+")\s*,\s*"index_size":\s*(\d+)\s*\}',
                  r'{"key": \1, "index_size": \2}', raw, flags=re.DOTALL)
     return raw
-
-def _vb_comp_size(quantize_info):
-    fmt = quantize_info >> 4
-    return 4 if fmt in [4, 7, 0xa] else 2
-
-def _color_entry_size(quantize_info):
-    """Return bytes per color entry based on the color quantize format nibble."""
-    fmt = quantize_info >> 4
-    return {0: 2, 1: 3, 2: 4, 3: 2, 4: 3, 5: 4}.get(fmt, 2)
-
 
 def _mip_level_dimensions(width, height, level):
     """Return (w, h) for mip level `level` using the proven donor contract.

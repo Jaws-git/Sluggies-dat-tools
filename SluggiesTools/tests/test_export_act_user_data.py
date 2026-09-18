@@ -34,6 +34,7 @@ if TOOLS_DIR not in sys.path:
 
 import act_rebuild  # noqa: E402
 from act import ACTLayout  # noqa: E402
+from binfmt import encode_field as _encode_field  # noqa: E402
 
 
 def _load_export_functions(*names):
@@ -48,7 +49,8 @@ def _load_export_functions(*names):
         node for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name in wanted
     ], type_ignores=[])
-    ns = {'struct': struct, 'base64': base64, 'DEBUG_DONT_USE_BASE64': False}
+    ns = {'struct': struct, 'base64': base64, 'DEBUG_DONT_USE_BASE64': False,
+          '_encode_field': _encode_field}
 
     class _StubLogger:
         def warning(self, *args, **kwargs):

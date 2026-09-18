@@ -1,18 +1,10 @@
 import numpy as np
 import math
 from base import *
+# Re-exported so the legacy `from helper import *` chain (act/anm/ds/gpl/tpl ->
+# model0 -> export) keeps seeing itb/bti; binfmt.py is their real home.
+from binfmt import itb, bti  # noqa: F401
 import struct
-
-def itb (val, n):
-    return val.to_bytes(n, 'big')
-
-def bti (b):
-    return int.from_bytes(b, 'big')
-
-def nullCoalesce(v, a):
-    if v == None:
-        return a
-    return v
 
 # https://automaticaddison.com/how-to-convert-a-quaternion-to-a-rotation-matrix/
 def quaternion_rotation_matrix(Q):
@@ -93,141 +85,7 @@ def translation_matrix(arr):
     #             [0, 0, 0, 1]
     #         ])
 
-def translation_diff(a, b):
-    return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-
-def scaling_diff(a, b):
-    return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-
-def quaternion_inverse(q):
-    inv = [q[0], -q[1], -q[2], -q[3]]
-    length = (q[0] ** 2 + q[1] ** 2 + q[2] ** 2 + q[3] ** 2) ** 0.5
-    return [inv[0]/length, inv[1]/length, inv[2]/length, inv[3]/length]
-
-def quaternion_multiply(Q0,Q1):
-    # Stolen from https://automaticaddison.com/how-to-multiply-two-quaternions-together-using-python/
-    """
-    Multiplies two quaternions.
- 
-    Input
-    :param Q0: A 4 element array containing the first quaternion (q01,q11,q21,q31) 
-    :param Q1: A 4 element array containing the second quaternion (q02,q12,q22,q32) 
- 
-    Output
-    :return: A 4 element array containing the final quaternion (q03,q13,q23,q33) 
- 
-    """
-    # Extract the values from Q0
-    w0 = Q0[0]
-    x0 = Q0[1]
-    y0 = Q0[2]
-    z0 = Q0[3]
-     
-    # Extract the values from Q1
-    w1 = Q1[0]
-    x1 = Q1[1]
-    y1 = Q1[2]
-    z1 = Q1[3]
-     
-    # Computer the product of the two quaternions, term by term
-    Q0Q1_w = w0 * w1 - x0 * x1 - y0 * y1 - z0 * z1
-    Q0Q1_x = w0 * x1 + x0 * w1 + y0 * z1 - z0 * y1
-    Q0Q1_y = w0 * y1 - x0 * z1 + y0 * w1 + z0 * x1
-    Q0Q1_z = w0 * z1 + x0 * y1 - y0 * x1 + z0 * w1
-     
-    # Create a 4 element array containing the final quaternion
-    final_quaternion = np.array([Q0Q1_w, Q0Q1_x, Q0Q1_y, Q0Q1_z])
-     
-    # Return a 4 element array containing the final quaternion (q02,q12,q22,q32) 
-    return final_quaternion
-
-def quaternion_diff(a, b):
-    return quaternion_multiply(a, quaternion_inverse(b))
-
-def mtosrt(M):
-    # print(M)
-    M = np.copy(M)
-    translate = [M[0][3], M[1][3], M[2][3]]
-
-    M[0][3] = 0
-    M[1][3] = 0
-    M[2][3] = 0
-
-    scale = [1, 1, 1]
-    # scale = [(M[0][0] ** 2 + M[1][0] ** 2 + M[2][0] ** 2) ** 0.5,
-    #          (M[0][1] ** 2 + M[1][1] ** 2 + M[2][1] ** 2) ** 0.5,
-    #          (M[0][2] ** 2 + M[1][2] ** 2 + M[2][2] ** 2) ** 0.5]
-
-    # M[0][0] /= scale[0]
-    # M[1][0] /= scale[0]
-    # M[2][0] /= scale[0]
-
-    # M[0][1] /= scale[1]
-    # M[1][1] /= scale[1]
-    # M[2][1] /= scale[1]
-
-    # M[0][2] /= scale[2]
-    # M[1][2] /= scale[2]
-    # M[2][2] /= scale[2]
-
-    rotation = rotationMatrixToQuaternion3(M[:3][:3])
-
-    return [scale, rotation, translate]
-
 # fully stolen from the quaternion module source
-def rotationMatrixToQuaternion3(m):
-    rot = np.array(m, copy=False)
-    shape = rot.shape[:-2]
-    diagonals = np.empty(shape+(4,))
-    diagonals[..., 0] = rot[..., 0, 0]
-    diagonals[..., 1] = rot[..., 1, 1]
-    diagonals[..., 2] = rot[..., 2, 2]
-    diagonals[..., 3] = rot[..., 0, 0] + rot[..., 1, 1] + rot[..., 2, 2]
-
-    indices = np.argmax(diagonals, axis=-1)
-
-    q = diagonals  # reuse storage space
-    indices_i = (indices == 0)
-    if np.any(indices_i):
-        if indices_i.shape == ():
-            indices_i = Ellipsis
-        rot_i = rot[indices_i, :, :]
-        q[indices_i, 0] = rot_i[..., 2, 1] - rot_i[..., 1, 2]
-        q[indices_i, 1] = 1 + rot_i[..., 0, 0] - rot_i[..., 1, 1] - rot_i[..., 2, 2]
-        q[indices_i, 2] = rot_i[..., 0, 1] + rot_i[..., 1, 0]
-        q[indices_i, 3] = rot_i[..., 0, 2] + rot_i[..., 2, 0]
-    indices_i = (indices == 1)
-    if np.any(indices_i):
-        if indices_i.shape == ():
-            indices_i = Ellipsis
-        rot_i = rot[indices_i, :, :]
-        q[indices_i, 0] = rot_i[..., 0, 2] - rot_i[..., 2, 0]
-        q[indices_i, 1] = rot_i[..., 1, 0] + rot_i[..., 0, 1]
-        q[indices_i, 2] = 1 - rot_i[..., 0, 0] + rot_i[..., 1, 1] - rot_i[..., 2, 2]
-        q[indices_i, 3] = rot_i[..., 1, 2] + rot_i[..., 2, 1]
-    indices_i = (indices == 2)
-    if np.any(indices_i):
-        if indices_i.shape == ():
-            indices_i = Ellipsis
-        rot_i = rot[indices_i, :, :]
-        q[indices_i, 0] = rot_i[..., 1, 0] - rot_i[..., 0, 1]
-        q[indices_i, 1] = rot_i[..., 2, 0] + rot_i[..., 0, 2]
-        q[indices_i, 2] = rot_i[..., 2, 1] + rot_i[..., 1, 2]
-        q[indices_i, 3] = 1 - rot_i[..., 0, 0] - rot_i[..., 1, 1] + rot_i[..., 2, 2]
-    indices_i = (indices == 3)
-    if np.any(indices_i):
-        if indices_i.shape == ():
-            indices_i = Ellipsis
-        rot_i = rot[indices_i, :, :]
-        q[indices_i, 0] = 1 + rot_i[..., 0, 0] + rot_i[..., 1, 1] + rot_i[..., 2, 2]
-        q[indices_i, 1] = rot_i[..., 2, 1] - rot_i[..., 1, 2]
-        q[indices_i, 2] = rot_i[..., 0, 2] - rot_i[..., 2, 0]
-        q[indices_i, 3] = rot_i[..., 1, 0] - rot_i[..., 0, 1]
-
-    q /= np.linalg.norm(q, axis=-1)[..., np.newaxis]
-
-    return q
-
 def getQuantizedData(f, offset, count, dimensions, quantizeInfo):
     dataArr = []
     positionStore = f.tell()
@@ -290,22 +148,6 @@ def quantizedDataSize (quantizeInfo):
 class Object(object):
     def __init__(self) -> None:
         pass
-
-def quaternion_to_euler(w, x, y, z):
-    t0 = +2.0 * (w * x + y * z)
-    t1 = +1.0 - 2.0 * (x * x + y * y)
-    roll_x = math.atan2(t0, t1)
-    
-    t2 = +2.0 * (w * y - z * x)
-    t2 = +1.0 if t2 > +1.0 else t2
-    t2 = -1.0 if t2 < -1.0 else t2
-    pitch_y = math.asin(t2)
-    
-    t3 = +2.0 * (w * z + x * y)
-    t4 = +1.0 - 2.0 * (y * y + z * z)
-    yaw_z = math.atan2(t3, t4)
-    
-    return roll_x, pitch_y, yaw_z # in radians
 
 # collada uses this
 # https://www.euclideanspace.com/maths/geometry/rotations/conversions/quaternionToAngle/index.htm

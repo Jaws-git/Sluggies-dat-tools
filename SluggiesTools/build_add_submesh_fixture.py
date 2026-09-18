@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import copy
 import json
 import struct
@@ -18,6 +17,7 @@ for import_path in (TOOLS_DIR, HAMMERSPACE_DIR):
 
 import HammerspaceMain as hammerspace
 import drawlist
+from binfmt import decode_field as _decode_field, encode_field as _encode_field
 
 
 # Fields that record where a submesh's arrays physically live in the DONOR
@@ -157,7 +157,7 @@ def _scale_clone_positions(clone: dict, factor: float, use_base64: bool) -> None
             f"(for example {out_of_range[0]})"
         )
     packed = struct.pack(f">{len(scaled)}h", *scaled)
-    vb["VertexBufferData"] = base64.b64encode(packed).decode("ascii") if use_base64 else list(packed)
+    vb["VertexBufferData"] = _encode_field(packed, use_base64)
     # The clone must stay on the full-serializer path with its own data; a
     # stale edited payload would take precedence or trigger the position-edit
     # patch path instead.
@@ -176,14 +176,6 @@ _CUBE_FACES = (
     ((0, 0, -1), (0, 1, 0), (1, 0, 0)),
 )
 _CUBE_UVS = ((0, 0), (1, 0), (1, 1), (0, 1))
-
-
-def _decode_field(value, use_base64: bool) -> bytes:
-    return hammerspace._decode(value, use_base64)
-
-
-def _encode_field(data: bytes, use_base64: bool):
-    return base64.b64encode(data).decode("ascii") if use_base64 else list(data)
 
 
 def _type3_descriptors(setting: int) -> list[dict]:

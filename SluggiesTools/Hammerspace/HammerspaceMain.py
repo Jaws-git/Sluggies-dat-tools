@@ -1,6 +1,6 @@
 import os
 import sys
-import base64
+import struct
 from dataclasses import dataclass
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -15,9 +15,14 @@ _slogger.configure()
 
 import drawlist
 import HammerspaceHelper as hh
+from binfmt import (
+    align4 as _align4,
+    color_entry_size as _color_entry_size,
+    comp_size as _vb_comp_size,
+    decode_field as _decode,
+)
 from BlockValidator import validate_model_block
 from GeometryRebuild import (
-    _color_entry_size,
     apply_desired_texture_assignments,
     layout_skin_membership_edit,
     rebuild_edited_uvs,
@@ -307,16 +312,6 @@ class SluggieParsed:
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
-
-def _decode(val: str | list, use_base64: bool) -> bytes:
-    """Decode a binary field from a sluggies JSON value.
-
-    When use_base64 is True the value is a base64 string; otherwise it is a
-    list of integer byte values (UseBase64=false export mode)."""
-    if use_base64:
-        return base64.b64decode(val)
-    return bytes(val)
-
 
 def _hex(val: str | int) -> int:
     """Accept either a hex string ('0x…') or a plain integer."""
@@ -626,8 +621,7 @@ def _validate_custom_submesh_indexed_array(
     if not faces_bytes or len(faces_bytes) % 6:
         fail(f'{label} face-index buffer length {len(faces_bytes)} is not a whole number of uint16 triplets')
         return
-    import struct as _struct
-    for index in _struct.unpack(f'>{len(faces_bytes) // 2}H', faces_bytes):
+    for index in struct.unpack(f'>{len(faces_bytes) // 2}H', faces_bytes):
         if index >= entry_count:
             fail(f'{label} face index {index} is out of range for {entry_count} entries')
             return
@@ -830,8 +824,7 @@ def _validate_custom_submeshes(model: dict) -> None:
                     f'{faces_count} (expected {faces_count * 6} bytes)'
                 )
             elif vertex_count is not None and faces_bytes:
-                import struct as _struct
-                for vertex_index in _struct.unpack(f'>{len(faces_bytes) // 2}H', faces_bytes):
+                for vertex_index in struct.unpack(f'>{len(faces_bytes) // 2}H', faces_bytes):
                     if vertex_index >= vertex_count:
                         fail(f'face index {vertex_index} is out of range for {vertex_count} vertices')
                         break
@@ -1362,7 +1355,6 @@ def _custom_submesh_faces(cs: 'CustomSubmesh', descriptors: list[dict]) -> list[
     """Zip a CustomSubmesh's per-attribute face-index buffers into the
     [v0, v1, v2]-per-triangle structure drawlist.encodeDrawList expects,
     keyed by the active Type-3 descriptor layout."""
-    import struct as _s
 
     uv_by_channel = {uv.channel_index: uv for uv in cs.uv_channels}
 
@@ -1378,7 +1370,7 @@ def _custom_submesh_faces(cs: 'CustomSubmesh', descriptors: list[dict]) -> list[
             raw = channel.uv_faces_data if channel else b''
         else:
             raw = b''
-        return _s.unpack(f'>{len(raw) // 2}H', raw) if raw else ()
+        return struct.unpack(f'>{len(raw) // 2}H', raw) if raw else ()
 
     per_key_indices = {descriptor['key']: _indices(descriptor['key']) for descriptor in descriptors}
 
@@ -1524,17 +1516,9 @@ def _build_rigid_submesh_blob(sub: 'Submesh') -> tuple[bytes, int]:
     is relative to the start of blob_bytes -- which is also the DOLayout's
     own start, matching the GEO descriptor's DOLayoutPtr convention.
     """
-    import struct as _s
-
-    def _align4(data: bytes) -> bytes:
-        r = len(data) % 4
-        return data + b'\x00' * ((4 - r) % 4)
 
     def _align32(offset: int) -> int:
         return (offset + 31) & ~31
-
-    def _vb_comp_size(quant_info: int) -> int:
-        return 4 if (quant_info >> 4) in (4, 7, 0xa) else 2
 
     def _vertex_count(data: bytes, comp_count: int, quant_info: int) -> int:
         stride = _vb_comp_size(quant_info) * comp_count
@@ -1631,59 +1615,59 @@ def _build_rigid_submesh_blob(sub: 'Submesh') -> tuple[bytes, int]:
 
     blob = bytearray(blob_size)
 
-    _s.pack_into('>I', blob, 0x00, POS_OFF)
-    _s.pack_into('>I', blob, 0x04, COL_OFF)
-    _s.pack_into('>I', blob, 0x08, UV_OFF)
-    _s.pack_into('>I', blob, 0x0c, NOR_OFF if has_lighting else 0)
-    _s.pack_into('>I', blob, 0x10, DSP_OFF)
-    _s.pack_into('B',  blob, 0x14, M_uv)
+    struct.pack_into('>I', blob, 0x00, POS_OFF)
+    struct.pack_into('>I', blob, 0x04, COL_OFF)
+    struct.pack_into('>I', blob, 0x08, UV_OFF)
+    struct.pack_into('>I', blob, 0x0c, NOR_OFF if has_lighting else 0)
+    struct.pack_into('>I', blob, 0x10, DSP_OFF)
+    struct.pack_into('B',  blob, 0x14, M_uv)
 
-    _s.pack_into('>I', blob, POS_OFF + 0x00, pos_data_off)
-    _s.pack_into('>H', blob, POS_OFF + 0x04, pos_count)
-    _s.pack_into('B',  blob, POS_OFF + 0x06, sub.vertex_quantize_info)
-    _s.pack_into('B',  blob, POS_OFF + 0x07, sub.vertex_comp_count)
+    struct.pack_into('>I', blob, POS_OFF + 0x00, pos_data_off)
+    struct.pack_into('>H', blob, POS_OFF + 0x04, pos_count)
+    struct.pack_into('B',  blob, POS_OFF + 0x06, sub.vertex_quantize_info)
+    struct.pack_into('B',  blob, POS_OFF + 0x07, sub.vertex_comp_count)
 
     if sub.color_channels:
         cc0 = sub.color_channels[0]
-        _s.pack_into('>I', blob, COL_OFF + 0x00, col_data_off)
-        _s.pack_into('>H', blob, COL_OFF + 0x04, col_count)
-        _s.pack_into('B',  blob, COL_OFF + 0x06, cc0.quantize_info)
-        _s.pack_into('B',  blob, COL_OFF + 0x07, cc0.comp_count)
+        struct.pack_into('>I', blob, COL_OFF + 0x00, col_data_off)
+        struct.pack_into('>H', blob, COL_OFF + 0x04, col_count)
+        struct.pack_into('B',  blob, COL_OFF + 0x06, cc0.quantize_info)
+        struct.pack_into('B',  blob, COL_OFF + 0x07, cc0.comp_count)
 
     for j, uv in enumerate(sub.uv_channels):
         uv_off = UV_OFF + j * 0x10
-        _s.pack_into('>I', blob, uv_off + 0x00, uv_data_offs[j])
-        _s.pack_into('>H', blob, uv_off + 0x04, uv_counts[j])
-        _s.pack_into('B',  blob, uv_off + 0x06, uv.quantize_info)
-        _s.pack_into('B',  blob, uv_off + 0x07, uv.comp_count)
-        _s.pack_into('>I', blob, uv_off + 0x08, pal_name_offs[j])
-        _s.pack_into('>I', blob, uv_off + 0x0c, 0)
+        struct.pack_into('>I', blob, uv_off + 0x00, uv_data_offs[j])
+        struct.pack_into('>H', blob, uv_off + 0x04, uv_counts[j])
+        struct.pack_into('B',  blob, uv_off + 0x06, uv.quantize_info)
+        struct.pack_into('B',  blob, uv_off + 0x07, uv.comp_count)
+        struct.pack_into('>I', blob, uv_off + 0x08, pal_name_offs[j])
+        struct.pack_into('>I', blob, uv_off + 0x0c, 0)
 
     if has_lighting:
         nb = sub.normal_buffer
-        _s.pack_into('>I', blob, NOR_OFF + 0x00, nor_data_off)
-        _s.pack_into('>H', blob, NOR_OFF + 0x04, nor_count)
-        _s.pack_into('B',  blob, NOR_OFF + 0x06, nb.quantize_info)
-        _s.pack_into('B',  blob, NOR_OFF + 0x07, nb.comp_count)
-        _s.pack_into('>f', blob, NOR_OFF + 0x08, nb.ambient_pct)
+        struct.pack_into('>I', blob, NOR_OFF + 0x00, nor_data_off)
+        struct.pack_into('>H', blob, NOR_OFF + 0x04, nor_count)
+        struct.pack_into('B',  blob, NOR_OFF + 0x06, nb.quantize_info)
+        struct.pack_into('B',  blob, NOR_OFF + 0x07, nb.comp_count)
+        struct.pack_into('>f', blob, NOR_OFF + 0x08, nb.ambient_pct)
 
     first_pl = next(
         (pl_offs[k] for k, ds in enumerate(sub.draw_states) if ds.prim_list_data),
         0,
     )
-    _s.pack_into('>I', blob, DSP_OFF + 0x00, first_pl)
-    _s.pack_into('>I', blob, DSP_OFF + 0x04, DS_OFF)
-    _s.pack_into('>H', blob, DSP_OFF + 0x08, n_ds)
+    struct.pack_into('>I', blob, DSP_OFF + 0x00, first_pl)
+    struct.pack_into('>I', blob, DSP_OFF + 0x04, DS_OFF)
+    struct.pack_into('>H', blob, DSP_OFF + 0x08, n_ds)
 
     for k, ds in enumerate(sub.draw_states):
         ds_off  = DS_OFF + k * 0x10
-        setting = _s.unpack('>I', _custom_submesh_setting_bytes(ds.shader_mode))[0]
-        _s.pack_into('B', blob, ds_off + 0x00, ds.display_state_id)
+        setting = struct.unpack('>I', _custom_submesh_setting_bytes(ds.shader_mode))[0]
+        struct.pack_into('B', blob, ds_off + 0x00, ds.display_state_id)
         pad = ds.display_state_pad_bytes
         blob[ds_off + 0x01 : ds_off + 0x04] = pad[:3] if len(pad) >= 3 else pad.ljust(3, b'\x00')
-        _s.pack_into('>I', blob, ds_off + 0x04, setting)
-        _s.pack_into('>I', blob, ds_off + 0x08, pl_offs[k])
-        _s.pack_into('>I', blob, ds_off + 0x0c, len(pl_bytes_list[k]) if ds.prim_list_data else 0)
+        struct.pack_into('>I', blob, ds_off + 0x04, setting)
+        struct.pack_into('>I', blob, ds_off + 0x08, pl_offs[k])
+        struct.pack_into('>I', blob, ds_off + 0x0c, len(pl_bytes_list[k]) if ds.prim_list_data else 0)
 
     def _put(rel_off: int, data: bytes) -> None:
         blob[rel_off : rel_off + len(data)] = data
@@ -1729,7 +1713,6 @@ def PatchGPLAppendSubmesh(
     animated-skinning test). New blobs are inserted right after the existing
     ones and before GPLUserData, matching BuildGPLMeshData's own blob order.
     """
-    import struct as _s
 
     if not parsed.custom_submeshes:
         return gpl_bytes
@@ -1751,9 +1734,9 @@ def PatchGPLAppendSubmesh(
     ]
 
     patched = bytearray(gpl_bytes)
-    magic, user_data_len, user_data_ptr, old_count, desc_ptr = _s.unpack_from('>5I', patched, 0x00)
+    magic, user_data_len, user_data_ptr, old_count, desc_ptr = struct.unpack_from('>5I', patched, 0x00)
     old_descriptors = [
-        _s.unpack_from('>II', patched, desc_ptr + i * 8)
+        struct.unpack_from('>II', patched, desc_ptr + i * 8)
         for i in range(old_count)
     ]
     old_blob_region_start = (
@@ -1776,7 +1759,7 @@ def PatchGPLAppendSubmesh(
         # Relocated below once new_blob_region_start is known (out is still
         # the old table's length here); placeholder-free since old entries'
         # final shift only depends on where the (already-sized) table ends.
-        out += _s.pack('>II', dolayout_ptr, name_ptr)
+        out += struct.pack('>II', dolayout_ptr, name_ptr)
     out += b'\x00' * (len(new_submeshes) * 8)  # reserved for new descriptors
     # The blob region doesn't generally start on a 32-byte boundary itself
     # (vanilla data packs it directly after the descriptor table); what does
@@ -1793,7 +1776,7 @@ def PatchGPLAppendSubmesh(
     blob_shift = new_blob_region_start - old_blob_region_start
     assert blob_shift % 32 == 0, 'blob relocation must preserve mod-32 residue'
     for i, (dolayout_ptr, name_ptr) in enumerate(old_descriptors):
-        _s.pack_into('>II', out, desc_ptr + i * 8, dolayout_ptr + blob_shift, name_ptr + blob_shift)
+        struct.pack_into('>II', out, desc_ptr + i * 8, dolayout_ptr + blob_shift, name_ptr + blob_shift)
 
     out += blobs_before_userdata
 
@@ -1811,11 +1794,11 @@ def PatchGPLAppendSubmesh(
 
     new_table_slot_start = desc_ptr + old_count * 8
     for i, (dolayout_ptr, name_ptr) in enumerate(new_descriptor_entries):
-        _s.pack_into('>II', out, new_table_slot_start + i * 8, dolayout_ptr, name_ptr)
+        struct.pack_into('>II', out, new_table_slot_start + i * 8, dolayout_ptr, name_ptr)
 
-    _s.pack_into('>I', out, 0x0c, new_count)
+    struct.pack_into('>I', out, 0x0c, new_count)
     if user_data_ptr:
-        _s.pack_into('>I', out, 0x08, new_user_data_off)
+        struct.pack_into('>I', out, 0x08, new_user_data_off)
 
     for cs, sub in zip(parsed.custom_submeshes, new_submeshes):
         _slogger.info(
@@ -2520,7 +2503,6 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
     - GEO Descriptor DOLayoutPtr and namePtr  →  GPL-section-relative
     - All pointers inside DOLayout and its sub-structs →  DOLayout-start-relative
     """
-    import struct as _s
 
     GPL_MAGIC    = 0x00B749E0
     GPL_HDR_SIZE = 0x14   # magic + userDataLen + userDataPtr + N + descriptorPtr
@@ -2529,10 +2511,6 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
     # Local helpers
     # -------------------------------------------------------------------------
 
-    def _align4(data: bytes) -> bytes:
-        r = len(data) % 4
-        return data + b'\x00' * ((4 - r) % 4)
-
     def _align32(offset: int) -> int:
         """Round offset UP to next 32-byte boundary."""
         return (offset + 31) & ~31
@@ -2540,10 +2518,6 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
     def _align32_residue(offset: int, residue: int) -> int:
         """Round offset up to the next value with the requested mod-32 residue."""
         return offset + ((residue - offset) & 31)
-
-    def _vb_comp_size(quant_info: int) -> int:
-        """Bytes per vertex-buffer component: 4 for float32 formats, 2 for int16."""
-        return 4 if (quant_info >> 4) in (4, 7, 0xa) else 2
 
     def _vertex_count(data: bytes, comp_count: int, quant_info: int) -> int:
         stride = _vb_comp_size(quant_info) * comp_count
@@ -2582,7 +2556,7 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
             )
         accumulation_writes = set()
         for entry in skinning.sk_accs:
-            destinations = _s.unpack(f'>{entry.vertex_cnt}H', entry.dest_index_data)
+            destinations = struct.unpack(f'>{entry.vertex_cnt}H', entry.dest_index_data)
             accumulation_writes.update(
                 entry.gpl_dest_arr_value + destination * skin_stride
                 for destination in destinations
@@ -2916,11 +2890,11 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
     gpl = bytearray(total_size)
 
     # GPL Header (0x14 bytes)
-    _s.pack_into('>I', gpl, 0x00, GPL_MAGIC)
-    _s.pack_into('>I', gpl, 0x04, parsed.gpl_user_data_len)
-    _s.pack_into('>I', gpl, 0x08, user_data_gpl_off if user_data_bytes else 0)
-    _s.pack_into('>I', gpl, 0x0c, N)
-    _s.pack_into('>I', gpl, 0x10, GEO_DESC_OFF)
+    struct.pack_into('>I', gpl, 0x00, GPL_MAGIC)
+    struct.pack_into('>I', gpl, 0x04, parsed.gpl_user_data_len)
+    struct.pack_into('>I', gpl, 0x08, user_data_gpl_off if user_data_bytes else 0)
+    struct.pack_into('>I', gpl, 0x0c, N)
+    struct.pack_into('>I', gpl, 0x10, GEO_DESC_OFF)
 
     for i, (lay, gpl_b) in enumerate(zip(sub_layouts, blob_gpl_offs)):
         sub     = lay['sub']
@@ -2943,42 +2917,42 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
 
         # GEO Descriptor (GPL-relative pointers)
         desc = GEO_DESC_OFF + i * 8
-        _s.pack_into('>I', gpl, desc,     gpl_b)                       # DOLayoutPtr
-        _s.pack_into('>I', gpl, desc + 4, gpl_b + lay['name_off'])     # namePtr
+        struct.pack_into('>I', gpl, desc,     gpl_b)                       # DOLayoutPtr
+        struct.pack_into('>I', gpl, desc + 4, gpl_b + lay['name_off'])     # namePtr
 
         # DOLayout (DOLayout-relative sub-struct pointers)
-        _s.pack_into('>I', gpl, gpl_b + 0x00, POS_OFF)
-        _s.pack_into('>I', gpl, gpl_b + 0x04, COL_OFF)
-        _s.pack_into('>I', gpl, gpl_b + 0x08, UV_OFF)
-        _s.pack_into('>I', gpl, gpl_b + 0x0c, NOR_OFF if has_lighting else 0)
-        _s.pack_into('>I', gpl, gpl_b + 0x10, DSP_OFF)
-        _s.pack_into('B',  gpl, gpl_b + 0x14, M_uv)
+        struct.pack_into('>I', gpl, gpl_b + 0x00, POS_OFF)
+        struct.pack_into('>I', gpl, gpl_b + 0x04, COL_OFF)
+        struct.pack_into('>I', gpl, gpl_b + 0x08, UV_OFF)
+        struct.pack_into('>I', gpl, gpl_b + 0x0c, NOR_OFF if has_lighting else 0)
+        struct.pack_into('>I', gpl, gpl_b + 0x10, DSP_OFF)
+        struct.pack_into('B',  gpl, gpl_b + 0x14, M_uv)
         # 0x15–0x17: padding (zero, already initialised)
 
         # Position Header (DOLayout-relative rawPtr)
-        _s.pack_into('>I', gpl, gpl_b + POS_OFF + 0x00, lay['pos_data_off'])
-        _s.pack_into('>H', gpl, gpl_b + POS_OFF + 0x04, lay['pos_count'])
-        _s.pack_into('B',  gpl, gpl_b + POS_OFF + 0x06, sub.vertex_quantize_info)
-        _s.pack_into('B',  gpl, gpl_b + POS_OFF + 0x07, sub.vertex_comp_count)
+        struct.pack_into('>I', gpl, gpl_b + POS_OFF + 0x00, lay['pos_data_off'])
+        struct.pack_into('>H', gpl, gpl_b + POS_OFF + 0x04, lay['pos_count'])
+        struct.pack_into('B',  gpl, gpl_b + POS_OFF + 0x06, sub.vertex_quantize_info)
+        struct.pack_into('B',  gpl, gpl_b + POS_OFF + 0x07, sub.vertex_comp_count)
 
         # Color Header
         if sub.color_channels:
             cc0 = sub.color_channels[0]
-            _s.pack_into('>I', gpl, gpl_b + COL_OFF + 0x00, lay['col_data_off'])
-            _s.pack_into('>H', gpl, gpl_b + COL_OFF + 0x04, lay['col_count'])
-            _s.pack_into('B',  gpl, gpl_b + COL_OFF + 0x06, cc0.quantize_info)
-            _s.pack_into('B',  gpl, gpl_b + COL_OFF + 0x07, cc0.comp_count)
+            struct.pack_into('>I', gpl, gpl_b + COL_OFF + 0x00, lay['col_data_off'])
+            struct.pack_into('>H', gpl, gpl_b + COL_OFF + 0x04, lay['col_count'])
+            struct.pack_into('B',  gpl, gpl_b + COL_OFF + 0x06, cc0.quantize_info)
+            struct.pack_into('B',  gpl, gpl_b + COL_OFF + 0x07, cc0.comp_count)
         # else: all-zero (zero-initialised array)
 
         # UV Headers (M_uv × 0x10)
         for j, uv in enumerate(sub.uv_channels):
             uv_off = gpl_b + UV_OFF + j * 0x10
-            _s.pack_into('>I', gpl, uv_off + 0x00, lay['uv_data_offs'][j])   # textureCoordsArrPtr
-            _s.pack_into('>H', gpl, uv_off + 0x04, lay['uv_counts'][j])
-            _s.pack_into('B',  gpl, uv_off + 0x06, uv.quantize_info)
-            _s.pack_into('B',  gpl, uv_off + 0x07, uv.comp_count)
-            _s.pack_into('>I', gpl, uv_off + 0x08, lay['pal_name_offs'][j])  # paletteNamePtr
-            _s.pack_into('>I', gpl, uv_off + 0x0c, 0)                        # palettePtr (runtime)
+            struct.pack_into('>I', gpl, uv_off + 0x00, lay['uv_data_offs'][j])   # textureCoordsArrPtr
+            struct.pack_into('>H', gpl, uv_off + 0x04, lay['uv_counts'][j])
+            struct.pack_into('B',  gpl, uv_off + 0x06, uv.quantize_info)
+            struct.pack_into('B',  gpl, uv_off + 0x07, uv.comp_count)
+            struct.pack_into('>I', gpl, uv_off + 0x08, lay['pal_name_offs'][j])  # paletteNamePtr
+            struct.pack_into('>I', gpl, uv_off + 0x0c, 0)                        # palettePtr (runtime)
 
         # Normal (Lighting) Header
         # Interleaved: rawPtr already set to pos_data_off+6 (no separate buffer).
@@ -2987,11 +2961,11 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
         # pointer and the header body are emitted together, or not at all.
         if has_lighting:
             nb = sub.normal_buffer
-            _s.pack_into('>I', gpl, gpl_b + NOR_OFF + 0x00, lay['nor_data_off'])
-            _s.pack_into('>H', gpl, gpl_b + NOR_OFF + 0x04, lay['nor_count'])
-            _s.pack_into('B',  gpl, gpl_b + NOR_OFF + 0x06, nb.quantize_info)
-            _s.pack_into('B',  gpl, gpl_b + NOR_OFF + 0x07, nb.comp_count)
-            _s.pack_into('>f', gpl, gpl_b + NOR_OFF + 0x08, nb.ambient_pct)
+            struct.pack_into('>I', gpl, gpl_b + NOR_OFF + 0x00, lay['nor_data_off'])
+            struct.pack_into('>H', gpl, gpl_b + NOR_OFF + 0x04, lay['nor_count'])
+            struct.pack_into('B',  gpl, gpl_b + NOR_OFF + 0x06, nb.quantize_info)
+            struct.pack_into('B',  gpl, gpl_b + NOR_OFF + 0x07, nb.comp_count)
+            struct.pack_into('>f', gpl, gpl_b + NOR_OFF + 0x08, nb.ambient_pct)
         # else: all-zero (no lighting header: pointer left 0)
 
         # Display Header
@@ -2999,22 +2973,22 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
             (lay['pl_offs'][k] for k, ds in enumerate(sub.draw_states) if ds.prim_list_data),
             0,
         )
-        _s.pack_into('>I', gpl, gpl_b + DSP_OFF + 0x00, first_pl)   # primitivePtr (not used directly)
-        _s.pack_into('>I', gpl, gpl_b + DSP_OFF + 0x04, DS_OFF)     # displayStatePtr
-        _s.pack_into('>H', gpl, gpl_b + DSP_OFF + 0x08, n_ds)
+        struct.pack_into('>I', gpl, gpl_b + DSP_OFF + 0x00, first_pl)   # primitivePtr (not used directly)
+        struct.pack_into('>I', gpl, gpl_b + DSP_OFF + 0x04, DS_OFF)     # displayStatePtr
+        struct.pack_into('>H', gpl, gpl_b + DSP_OFF + 0x08, n_ds)
         # 0x0a–0x0b: padding
 
         # Display States (n_ds × 0x10)
         for k, ds in enumerate(sub.draw_states):
             ds_off  = gpl_b + DS_OFF + k * 0x10
-            setting = _s.unpack('>I', _setting_bytes(ds.shader_mode))[0]
-            _s.pack_into('B',  gpl, ds_off + 0x00, ds.display_state_id)
+            setting = struct.unpack('>I', _setting_bytes(ds.shader_mode))[0]
+            struct.pack_into('B',  gpl, ds_off + 0x00, ds.display_state_id)
             # bytes 0x01–0x03: renderer parameters (NOT padding)
             pad = ds.display_state_pad_bytes
             gpl[ds_off + 0x01 : ds_off + 0x04] = pad[:3] if len(pad) >= 3 else pad.ljust(3, b'\x00')
-            _s.pack_into('>I', gpl, ds_off + 0x04, setting)
-            _s.pack_into('>I', gpl, ds_off + 0x08, lay['pl_offs'][k])
-            _s.pack_into('>I', gpl, ds_off + 0x0c,
+            struct.pack_into('>I', gpl, ds_off + 0x04, setting)
+            struct.pack_into('>I', gpl, ds_off + 0x08, lay['pl_offs'][k])
+            struct.pack_into('>I', gpl, ds_off + 0x0c,
                          len(lay['pl_bytes_list'][k]) if ds.prim_list_data else 0)
 
         # Raw data payloads  (DOLayout-relative offsets, written into gpl at gpl_b + off)
@@ -3049,14 +3023,13 @@ def CloneGPL(model_offset: int, model_length: int) -> bytes:
     the raw GPL bytes unchanged.  No pointer fixups needed (all internal
     GPL pointers are GPL-section-relative or DOLayout-relative).
     """
-    import struct as _s
     with open(_source_dat_path(model_offset), 'rb') as f:
         f.seek(model_offset)
         hdr = f.read(0x20)
-        gpl_off = _s.unpack_from('>I', hdr, 0x04)[0]
-        act_off = _s.unpack_from('>I', hdr, 0x08)[0]
-        tex_off = _s.unpack_from('>I', hdr, 0x0c)[0]
-        skn_off = _s.unpack_from('>I', hdr, 0x10)[0]
+        gpl_off = struct.unpack_from('>I', hdr, 0x04)[0]
+        act_off = struct.unpack_from('>I', hdr, 0x08)[0]
+        tex_off = struct.unpack_from('>I', hdr, 0x0c)[0]
+        skn_off = struct.unpack_from('>I', hdr, 0x10)[0]
         # GPL ends where the next present section starts
         next_off = act_off or tex_off or skn_off or model_length
         gpl_len = next_off - gpl_off
@@ -3068,14 +3041,13 @@ def CloneGPL(model_offset: int, model_length: int) -> bytes:
 
 def PatchGPLMaterialStates(gpl_bytes: bytes, data: dict, model_offset: int) -> bytes:
     """Patch aliased Type-7 material bytes over an otherwise verbatim donor GPL."""
-    import struct as _s
 
     with open(_source_dat_path(model_offset), 'rb') as source:
         source.seek(model_offset + 0x04)
         raw = source.read(4)
     if len(raw) != 4:
         raise IOError(f'Could not read donor GPL offset at 0x{model_offset + 4:08X}')
-    gpl_offset = _s.unpack('>I', raw)[0]
+    gpl_offset = struct.unpack('>I', raw)[0]
     gpl_absolute = model_offset + gpl_offset
     patched = bytearray(gpl_bytes)
 
@@ -3112,14 +3084,13 @@ def PatchGPLMaterialStates(gpl_bytes: bytes, data: dict, model_offset: int) -> b
 
 def PatchGPLPositionArrays(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes:
     """Patch validated same-size position arrays over an otherwise cloned GPL."""
-    import struct as _s
 
     with open(_source_dat_path(model_offset), 'rb') as source:
         source.seek(model_offset + 0x04)
         raw = source.read(4)
     if len(raw) != 4:
         raise IOError(f'Could not read donor GPL offset at 0x{model_offset + 4:08X}')
-    gpl_absolute = model_offset + _s.unpack('>I', raw)[0]
+    gpl_absolute = model_offset + struct.unpack('>I', raw)[0]
     patched = bytearray(gpl_bytes)
     for submesh_index, submesh, edited in _position_edits(model):
         position_absolute = _hex(submesh['VertexBuffer']['VertexBufferOffset'])
@@ -3140,14 +3111,13 @@ def PatchGPLPositionArrays(gpl_bytes: bytes, model: dict, model_offset: int) -> 
 
 def PatchGPLUVArrays(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes:
     """Patch same-size edited UV/normal arrays over an otherwise cloned donor GPL."""
-    import struct as _s
 
     with open(_source_dat_path(model_offset), 'rb') as source:
         source.seek(model_offset + 0x04)
         raw = source.read(4)
     if len(raw) != 4:
         raise IOError(f'Could not read donor GPL offset at 0x{model_offset + 4:08X}')
-    gpl_absolute = model_offset + _s.unpack('>I', raw)[0]
+    gpl_absolute = model_offset + struct.unpack('>I', raw)[0]
     use_b64 = model.get('UseBase64', True)
     patched = bytearray(gpl_bytes)
     for submesh_index, submesh in enumerate(model.get('Submeshes', [])):
@@ -3255,14 +3225,13 @@ def PatchGPLUVArrays(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes:
 
 def PatchGPLUVRebuild(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes:
     """Append resized UV/list payloads and redirect pointers over cloned GPL."""
-    import struct as _s
 
     with open(_source_dat_path(model_offset), 'rb') as source:
         source.seek(model_offset + 0x04)
         raw = source.read(4)
     if len(raw) != 4:
         raise IOError(f'Could not read donor GPL offset at 0x{model_offset + 4:08X}')
-    gpl_absolute = model_offset + _s.unpack('>I', raw)[0]
+    gpl_absolute = model_offset + struct.unpack('>I', raw)[0]
     use_b64 = model.get('UseBase64', True)
     patched = bytearray(gpl_bytes)
 
@@ -3309,8 +3278,8 @@ def PatchGPLUVRebuild(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes
                 raise ValueError(
                     f'sub{submesh_index} uv{uv["UVChannelIndex"]}: header fields '
                     'are outside cloned GPL')
-            _s.pack_into('>I', patched, pointer_field, data_offset - submesh_relative)
-            _s.pack_into('>H', patched, count_field, len(edited) // stride)
+            struct.pack_into('>I', patched, pointer_field, data_offset - submesh_relative)
+            struct.pack_into('>H', patched, count_field, len(edited) // stride)
             _slogger.info(
                 f'[GPL] appended UV array sub{submesh_index} '
                 f'uv{uv["UVChannelIndex"]} at GPL+0x{data_offset:X} '
@@ -3344,8 +3313,8 @@ def PatchGPLUVRebuild(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes
                     raise ValueError(
                         f'sub{submesh_index}: normal header fields are outside '
                         'cloned GPL')
-                _s.pack_into('>I', patched, pointer_field, data_offset - submesh_relative)
-                _s.pack_into('>H', patched, count_field, len(edited) // stride)
+                struct.pack_into('>I', patched, pointer_field, data_offset - submesh_relative)
+                struct.pack_into('>H', patched, count_field, len(edited) // stride)
                 _slogger.info(
                     f'[GPL] appended normal array sub{submesh_index} at '
                     f'GPL+0x{data_offset:X} ({len(edited):,} bytes)',
@@ -3382,9 +3351,9 @@ def PatchGPLUVRebuild(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes
                         raise ValueError(
                             f'sub{submesh_index}: color header fields are outside '
                             'cloned GPL')
-                    _s.pack_into('>I', patched, pointer_field,
+                    struct.pack_into('>I', patched, pointer_field,
                                  data_offset - submesh_relative)
-                    _s.pack_into('>H', patched, count_field,
+                    struct.pack_into('>H', patched, count_field,
                                  len(edited) // entry_size)
                     color_appended = True
                     _slogger.info(
@@ -3412,8 +3381,8 @@ def PatchGPLUVRebuild(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes
                     raise ValueError(
                         f'sub{submesh_index} ds{state_index}: primitive header '
                         'fields are outside cloned GPL')
-                _s.pack_into('>I', patched, pointer_field, primitive_relative)
-                _s.pack_into('>I', patched, size_field, primitive_size)
+                struct.pack_into('>I', patched, pointer_field, primitive_relative)
+                struct.pack_into('>I', patched, size_field, primitive_size)
                 _slogger.info(
                     f'[GPL] appended primitive list sub{submesh_index} ds{state_index} '
                     f'({primitive_size:,} bytes)',
@@ -3442,19 +3411,18 @@ def _gpl_pos_offsets_from_bytes(gpl_bytes: bytes) -> list[int]:
     This is used when the GPL section is cloned (not rebuilt) and we still
     need the pos_gpl_offsets metadata for the SKN builder.
     """
-    import struct as _s
     # GPL header: +0x0c = N (submesh count), +0x10 = descriptorPtr
-    n_submeshes = _s.unpack_from('>I', gpl_bytes, 0x0c)[0]
-    desc_ptr    = _s.unpack_from('>I', gpl_bytes, 0x10)[0]
+    n_submeshes = struct.unpack_from('>I', gpl_bytes, 0x0c)[0]
+    desc_ptr    = struct.unpack_from('>I', gpl_bytes, 0x10)[0]
 
     offsets = []
     for i in range(n_submeshes):
         # GEO descriptor: 8 bytes each → first uint32 = DOLayout GPL-rel ptr
-        blob_ptr = _s.unpack_from('>I', gpl_bytes, desc_ptr + i * 8)[0]
+        blob_ptr = struct.unpack_from('>I', gpl_bytes, desc_ptr + i * 8)[0]
         # DOLayout +0x00 = posHeaderPtr (DOLayout-relative)
-        pos_hdr_ptr = _s.unpack_from('>I', gpl_bytes, blob_ptr)[0]
+        pos_hdr_ptr = struct.unpack_from('>I', gpl_bytes, blob_ptr)[0]
         # PositionHeader +0x00 = raw data array ptr (DOLayout-relative)
-        pos_arr_ptr = _s.unpack_from('>I', gpl_bytes, blob_ptr + pos_hdr_ptr)[0]
+        pos_arr_ptr = struct.unpack_from('>I', gpl_bytes, blob_ptr + pos_hdr_ptr)[0]
         # GPL-relative offset = DOLayout base + pos_arr_ptr
         offsets.append(blob_ptr + pos_arr_ptr)
 
@@ -3602,16 +3570,15 @@ def CloneACT(model_offset: int, model_length: int) -> bytes:
 
     Returns the raw ACT bytes unchanged, or b'' if the model has no ACT section.
     """
-    import struct as _s
     with open(_source_dat_path(model_offset), 'rb') as f:
         f.seek(model_offset)
         hdr = f.read(0x20)
-        act_off = _s.unpack_from('>I', hdr, 0x08)[0]
+        act_off = struct.unpack_from('>I', hdr, 0x08)[0]
         if not act_off:
             _slogger.info("[CloneACT] No ACT section", source="hammerspace.main")
             return b''
-        tex_off = _s.unpack_from('>I', hdr, 0x0c)[0]
-        skn_off = _s.unpack_from('>I', hdr, 0x10)[0]
+        tex_off = struct.unpack_from('>I', hdr, 0x0c)[0]
+        skn_off = struct.unpack_from('>I', hdr, 0x10)[0]
         next_off = tex_off or skn_off or model_length
         act_len = next_off - act_off
         f.seek(model_offset + act_off)
@@ -3632,13 +3599,12 @@ def _act_section_absolute(source_model_offset: int) -> int:
     ``SRTOffset`` (``ACT.absolute + orientationPTR``) into an ACT-section-relative
     offset, which stays valid after the hammerspace block is relocated.
     """
-    import struct as _s
     with open(_source_dat_path(source_model_offset), 'rb') as f:
         f.seek(source_model_offset)
         hdr = f.read(0x20)
     if len(hdr) < 0x20:
         return 0
-    act_off = _s.unpack_from('>I', hdr, 0x08)[0]
+    act_off = struct.unpack_from('>I', hdr, 0x08)[0]
     if not act_off:
         return 0
     return source_model_offset + act_off
@@ -3737,7 +3703,6 @@ def _apply_geo_id_patches(act_bytes: bytes, data: dict, source_model_offset: int
     tolerated only for the known pre-fix off-by-8 export.py bug (see the
     fallback below); anything else is rejected rather than guessed.
     """
-    import struct as _s
 
     model = data['SluggiesModel']
     bone_hierarchy = model.get('BoneHierarchy') or []
@@ -3782,7 +3747,7 @@ def _apply_geo_id_patches(act_bytes: bytes, data: dict, source_model_offset: int
                 'metadata does not match this model\'s ACT layout'
             )
 
-        _s.pack_into('>H', patched, act_relative, target_geo_raw)
+        struct.pack_into('>H', patched, act_relative, target_geo_raw)
         _slogger.info(
             f'[ACT] bone {bone_id} GeoId -> {target_geo_raw} at ACT+0x{act_relative:X} '
             '(GeoIdEdited retarget; section-relative, stable across hammerspace '
@@ -3818,7 +3783,7 @@ def _apply_geo_id_patches(act_bytes: bytes, data: dict, source_model_offset: int
                 "GeoIdFieldOffset metadata does not match this model's ACT layout"
             )
 
-        current = _s.unpack_from('>H', patched, act_relative)[0]
+        current = struct.unpack_from('>H', patched, act_relative)[0]
         if current != 0xFFFF:
             # Exports written before the export.py GeoIdFieldOffset fix (see
             # that file's extract_bone_hierarchy comment, and
@@ -3831,7 +3796,7 @@ def _apply_geo_id_patches(act_bytes: bytes, data: dict, source_model_offset: int
             fallback_relative = act_relative + 8
             if (
                 fallback_relative + 2 <= len(patched)
-                and _s.unpack_from('>H', patched, fallback_relative)[0] == 0xFFFF
+                and struct.unpack_from('>H', patched, fallback_relative)[0] == 0xFFFF
             ):
                 _slogger.warning(
                     f"custom submesh '{cs_id}': host bone {host_bone_id} GeoIdFieldOffset "
@@ -3850,7 +3815,7 @@ def _apply_geo_id_patches(act_bytes: bytes, data: dict, source_model_offset: int
                     "metadata is stale"
                 )
 
-        _s.pack_into('>H', patched, act_relative, new_submesh_index)
+        struct.pack_into('>H', patched, act_relative, new_submesh_index)
         _slogger.info(
             f"[ACT] custom submesh '{cs_id}': bone {host_bone_id} GeoId -> "
             f'{new_submesh_index} at ACT+0x{act_relative:X} (section-relative; '
@@ -3861,48 +3826,20 @@ def _apply_geo_id_patches(act_bytes: bytes, data: dict, source_model_offset: int
     return bytes(patched)
 
 
-def BuildTEXTextureData(parsed: SluggieParsed) -> bytes:
-    """Return the TEX (Texture Data) section bytes.
-
-    Texture patching is not supported; this reads the original TEX block
-    verbatim from INPUT dt_na.dat using the section offsets stored in the
-    model-block file header.
-
-    Returns the raw TEX section bytes copied from the input file,
-    or b'' if the model has no TEX section.
-    """
-    import struct as _s
-
-    if not parsed.model_offset:
-        return b''
-
-    with open(_source_dat_path(parsed.model_offset), 'rb') as f:
-        f.seek(parsed.model_offset)
-        hdr = f.read(0x20)
-        tex_off = _s.unpack_from('>I', hdr, 0x0c)[0]
-        skn_off = _s.unpack_from('>I', hdr, 0x10)[0]
-        if not tex_off:
-            return b''
-        tex_len = (skn_off if skn_off else parsed.model_length) - tex_off
-        f.seek(parsed.model_offset + tex_off)
-        return f.read(tex_len)
-
-
 def CloneTEX(model_offset: int, model_length: int) -> bytes:
     """Clone the TEX section verbatim from the model's source DAT.
 
     Returns the raw TEX bytes unchanged, or b'' if the model has no TEX section.
     """
-    import struct as _s
     with open(_source_dat_path(model_offset), 'rb') as f:
         f.seek(model_offset)
         hdr = f.read(0x20)
-        tex_off = _s.unpack_from('>I', hdr, 0x0c)[0]
+        tex_off = struct.unpack_from('>I', hdr, 0x0c)[0]
         if not tex_off:
             _slogger.info("[CloneTEX] No TEX section", source="hammerspace.main")
             return b''
-        skn_off = _s.unpack_from('>I', hdr, 0x10)[0]
-        trailing_offsets = [_s.unpack_from('>I', hdr, offset)[0] for offset in (0x14, 0x18, 0x1c)]
+        skn_off = struct.unpack_from('>I', hdr, 0x10)[0]
+        trailing_offsets = [struct.unpack_from('>I', hdr, offset)[0] for offset in (0x14, 0x18, 0x1c)]
         next_off = min(
             [offset for offset in [skn_off, *trailing_offsets] if offset > tex_off]
             + [model_length]
@@ -3953,7 +3890,6 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
         32-byte boundary before the next payload starts, matching vanilla
         TEX sections (F10).
     """
-    import struct as _s
     from texture_helper import _image_payload_size
 
     textures = list(parsed.textures.textures) if parsed.textures else []
@@ -4114,7 +4050,7 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
 
     out = bytearray()
     # Header
-    out += _s.pack('>HH', len(textures), clut_count)
+    out += struct.pack('>HH', len(textures), clut_count)
     # Descriptors
     for tex in textures:
         idx = tex.texture_index
@@ -4128,17 +4064,17 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
         if len(unknown_1b) < 5:
             unknown_1b = unknown_1b + bytes(5 - len(unknown_1b))
         palette_offset = palette_offsets.get(idx, 0)
-        out += _s.pack('>II', image_offsets[idx], palette_offset)
-        out += _s.pack('>HH', height, width)
-        out += _s.pack('>BBBB',
+        out += struct.pack('>II', image_offsets[idx], palette_offset)
+        out += struct.pack('>HH', height, width)
+        out += struct.pack('>BBBB',
                        1 if tex.edge_lod_enable else 0,
                        int(tex.min_lod) & 0xFF,
                        int(tex.max_lod) & 0xFF,
                        tex.unpacked & 0xFF)
         out += bytes(unknown_10)
-        out += _s.pack('>B', tex.format & 0xFF)
-        out += _s.pack('>H', tex.palette_entries & 0xFFFF)
-        out += _s.pack('>B', tex.palette_format & 0xFF)
+        out += struct.pack('>B', tex.format & 0xFF)
+        out += struct.pack('>H', tex.palette_entries & 0xFFFF)
+        out += struct.pack('>B', tex.palette_format & 0xFF)
         out += bytes(unknown_1b[:5])
     # Zero padding to reach the 32-byte-aligned data region (see data_start above).
     # This mirrors the original TEX sections' initial gap. It does not align
@@ -4176,7 +4112,6 @@ def BuildSKNSkinningDataCopyOnly(parsed: SluggieParsed, gpl_result: GPLBuildResu
     Returns the raw SKN section bytes (patched), or b'' if the model has no
     SKN section.
     """
-    import struct as _s
 
     if not parsed.model_offset:
         return b''
@@ -4184,38 +4119,12 @@ def BuildSKNSkinningDataCopyOnly(parsed: SluggieParsed, gpl_result: GPLBuildResu
     with open(_source_dat_path(parsed.model_offset), 'rb') as f:
         f.seek(parsed.model_offset)
         hdr = f.read(0x20)
-        skn_off = _s.unpack_from('>I', hdr, 0x10)[0]
+        skn_off = struct.unpack_from('>I', hdr, 0x10)[0]
         if not skn_off:
             return b''
         skn_len = parsed.model_length - skn_off
         f.seek(parsed.model_offset + skn_off)
         return f.read(skn_len)
-
-
-def _compute_original_pos_gpl_rel(parsed: SluggieParsed) -> int:
-    """Read the original GPL's submesh 0 position-array GPL-relative offset.
-
-    Returns the GPL-section-relative offset of the position data array for
-    submesh 0, or 0 if it cannot be determined.
-    """
-    import struct as _s
-    if not parsed.model_offset:
-        return 0
-    with open(_source_dat_path(parsed.model_offset), 'rb') as f:
-        gpl_base = parsed.model_offset + 0x20
-        f.seek(gpl_base + 0x10)
-        desc_ptr = _s.unpack_from('>I', f.read(4))[0]
-        f.seek(gpl_base + desc_ptr)
-        blob0_ptr = _s.unpack_from('>I', f.read(4))[0]
-        f.seek(gpl_base + blob0_ptr)
-        pos_hdr_ptr = _s.unpack_from('>I', f.read(4))[0]
-        f.seek(gpl_base + blob0_ptr + pos_hdr_ptr)
-        pos_arr_ptr = _s.unpack_from('>I', f.read(4))[0]
-        return blob0_ptr + pos_arr_ptr
-
-
-def _vb_comp_size(quant_info: int) -> int:
-    return 4 if (quant_info >> 4) in (4, 7, 0xa) else 2
 
 
 def _source_blob_for_skn(entry: object, vertex_stride: int) -> bytes:
@@ -4249,14 +4158,13 @@ def _scale_skn_bind_pose(skn_bytes: bytes, factors: tuple[float, float, float] |
         return skn_bytes
     if factors is None or factors == (1.0, 1.0, 1.0):
         return skn_bytes
-    import struct as _s
-    n_sk1 = _s.unpack_from('>H', skn_bytes, 0x00)[0]
-    n_sk2 = _s.unpack_from('>H', skn_bytes, 0x02)[0]
-    n_acc = _s.unpack_from('>H', skn_bytes, 0x04)[0]
-    quantize_info = _s.unpack_from('B', skn_bytes, 0x06)[0]
-    sk1_ptr = _s.unpack_from('>I', skn_bytes, 0x08)[0]
-    sk2_ptr = _s.unpack_from('>I', skn_bytes, 0x0c)[0]
-    skacc_ptr = _s.unpack_from('>I', skn_bytes, 0x10)[0]
+    n_sk1 = struct.unpack_from('>H', skn_bytes, 0x00)[0]
+    n_sk2 = struct.unpack_from('>H', skn_bytes, 0x02)[0]
+    n_acc = struct.unpack_from('>H', skn_bytes, 0x04)[0]
+    quantize_info = struct.unpack_from('B', skn_bytes, 0x06)[0]
+    sk1_ptr = struct.unpack_from('>I', skn_bytes, 0x08)[0]
+    sk2_ptr = struct.unpack_from('>I', skn_bytes, 0x0c)[0]
+    skacc_ptr = struct.unpack_from('>I', skn_bytes, 0x10)[0]
     stride = 6 * _vb_comp_size(quantize_info)
     out = bytearray(skn_bytes)
 
@@ -4276,24 +4184,24 @@ def _scale_skn_bind_pose(skn_bytes: bytes, factors: tuple[float, float, float] |
         b = sk1_ptr + i * 0x40
         if b + 0x40 > len(skn_bytes):
             break
-        arr = _s.unpack_from('>I', skn_bytes, b + 0x30)[0]
-        cnt = _s.unpack_from('>H', skn_bytes, b + 0x3a)[0]
-        off = _s.unpack_from('B', skn_bytes, b + 0x3c)[0]
+        arr = struct.unpack_from('>I', skn_bytes, b + 0x30)[0]
+        cnt = struct.unpack_from('>H', skn_bytes, b + 0x3a)[0]
+        off = struct.unpack_from('B', skn_bytes, b + 0x3c)[0]
         _scale_at(arr, cnt, off)
     for i in range(n_sk2):
         b = sk2_ptr + i * 0x74
         if b + 0x74 > len(skn_bytes):
             break
-        arr = _s.unpack_from('>I', skn_bytes, b + 0x60)[0]
-        cnt = _s.unpack_from('>H', skn_bytes, b + 0x70)[0]
-        off = _s.unpack_from('B', skn_bytes, b + 0x72)[0]
+        arr = struct.unpack_from('>I', skn_bytes, b + 0x60)[0]
+        cnt = struct.unpack_from('>H', skn_bytes, b + 0x70)[0]
+        off = struct.unpack_from('B', skn_bytes, b + 0x72)[0]
         _scale_at(arr, cnt, off)
     for i in range(n_acc):
         b = skacc_ptr + i * 0x44
         if b + 0x44 > len(skn_bytes):
             break
-        arr = _s.unpack_from('>I', skn_bytes, b + 0x30)[0]
-        cnt = _s.unpack_from('>H', skn_bytes, b + 0x42)[0]
+        arr = struct.unpack_from('>I', skn_bytes, b + 0x30)[0]
+        cnt = struct.unpack_from('>H', skn_bytes, b + 0x42)[0]
         _scale_at(arr, cnt, 0)
     return bytes(out)
 
@@ -4459,7 +4367,6 @@ def _layout_skn_variable_data(skn: SkinningData, vertex_stride: int, var_data_of
 
 
 def _build_skn_struct_bytes(skn: SkinningData, sk1_src_off: list[int], sk2_src_off: list[int], sk2_wt_off: list[int], acc_src_off: list[int], acc_dest_off: list[int], acc_wt_off: list[int]) -> tuple[bytes, bytes, bytes]:
-    import struct as _s
 
     SK1_SIZE = 0x40
     SK2_SIZE = 0x74
@@ -4471,38 +4378,37 @@ def _build_skn_struct_bytes(skn: SkinningData, sk1_src_off: list[int], sk2_src_o
     sk1_bytes = bytearray(n_sk1 * SK1_SIZE)
     for i, sk in enumerate(skn.sk1s):
         b = i * SK1_SIZE
-        _s.pack_into('>I', sk1_bytes, b + 0x30, sk1_src_off[i])
-        _s.pack_into('>I', sk1_bytes, b + 0x34, sk.gpl_vertex_arr_value)
-        _s.pack_into('>H', sk1_bytes, b + 0x38, sk.bone_index)
-        _s.pack_into('>H', sk1_bytes, b + 0x3a, sk.vertex_cnt)
-        _s.pack_into('B', sk1_bytes, b + 0x3c, sk.vertex_offset)
+        struct.pack_into('>I', sk1_bytes, b + 0x30, sk1_src_off[i])
+        struct.pack_into('>I', sk1_bytes, b + 0x34, sk.gpl_vertex_arr_value)
+        struct.pack_into('>H', sk1_bytes, b + 0x38, sk.bone_index)
+        struct.pack_into('>H', sk1_bytes, b + 0x3a, sk.vertex_cnt)
+        struct.pack_into('B', sk1_bytes, b + 0x3c, sk.vertex_offset)
 
     sk2_bytes = bytearray(n_sk2 * SK2_SIZE)
     for i, sk in enumerate(skn.sk2s):
         b = i * SK2_SIZE
-        _s.pack_into('>I', sk2_bytes, b + 0x60, sk2_src_off[i])
-        _s.pack_into('>I', sk2_bytes, b + 0x64, sk2_wt_off[i])
-        _s.pack_into('>I', sk2_bytes, b + 0x68, sk.gpl_vertex_arr_value)
-        _s.pack_into('>H', sk2_bytes, b + 0x6c, sk.bone_index1)
-        _s.pack_into('>H', sk2_bytes, b + 0x6e, sk.bone_index2)
-        _s.pack_into('>H', sk2_bytes, b + 0x70, sk.vertex_cnt)
-        _s.pack_into('B', sk2_bytes, b + 0x72, sk.vertex_offset)
+        struct.pack_into('>I', sk2_bytes, b + 0x60, sk2_src_off[i])
+        struct.pack_into('>I', sk2_bytes, b + 0x64, sk2_wt_off[i])
+        struct.pack_into('>I', sk2_bytes, b + 0x68, sk.gpl_vertex_arr_value)
+        struct.pack_into('>H', sk2_bytes, b + 0x6c, sk.bone_index1)
+        struct.pack_into('>H', sk2_bytes, b + 0x6e, sk.bone_index2)
+        struct.pack_into('>H', sk2_bytes, b + 0x70, sk.vertex_cnt)
+        struct.pack_into('B', sk2_bytes, b + 0x72, sk.vertex_offset)
 
     acc_bytes = bytearray(n_acc * SKACC_SIZE)
     for i, sk in enumerate(skn.sk_accs):
         b = i * SKACC_SIZE
-        _s.pack_into('>I', acc_bytes, b + 0x30, acc_src_off[i])
-        _s.pack_into('>I', acc_bytes, b + 0x34, acc_dest_off[i])
-        _s.pack_into('>I', acc_bytes, b + 0x38, sk.gpl_dest_arr_value)
-        _s.pack_into('>I', acc_bytes, b + 0x3c, acc_wt_off[i])
-        _s.pack_into('>H', acc_bytes, b + 0x40, sk.bone_index)
-        _s.pack_into('>H', acc_bytes, b + 0x42, sk.vertex_cnt)
+        struct.pack_into('>I', acc_bytes, b + 0x30, acc_src_off[i])
+        struct.pack_into('>I', acc_bytes, b + 0x34, acc_dest_off[i])
+        struct.pack_into('>I', acc_bytes, b + 0x38, sk.gpl_dest_arr_value)
+        struct.pack_into('>I', acc_bytes, b + 0x3c, acc_wt_off[i])
+        struct.pack_into('>H', acc_bytes, b + 0x40, sk.bone_index)
+        struct.pack_into('>H', acc_bytes, b + 0x42, sk.vertex_cnt)
 
     return bytes(sk1_bytes), bytes(sk2_bytes), bytes(acc_bytes)
 
 
 def _compute_skn_mem_clear_range(skn: SkinningData, vertex_stride: int) -> tuple[int, int]:
-    import struct as _s
 
     direct_writes = set()
     for entry in (*skn.sk1s, *skn.sk2s):
@@ -4512,7 +4418,7 @@ def _compute_skn_mem_clear_range(skn: SkinningData, vertex_stride: int) -> tuple
         )
     accumulation_writes = set()
     for entry in skn.sk_accs:
-        destinations = _s.unpack(f'>{entry.vertex_cnt}H', entry.dest_index_data)
+        destinations = struct.unpack(f'>{entry.vertex_cnt}H', entry.dest_index_data)
         accumulation_writes.update(
             entry.gpl_dest_arr_value + destination * vertex_stride
             for destination in destinations
@@ -4538,7 +4444,6 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
     Returns the complete SKN section as a byte string, or b'' for non-skinned
     models.
     """
-    import struct as _s
 
     skn = parsed.skinning
     if not skn:
@@ -4583,17 +4488,17 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
         )
 
     skn_hdr = bytearray(SKN_HDR_SIZE)
-    _s.pack_into('>H', skn_hdr, 0x00, n_sk1)
-    _s.pack_into('>H', skn_hdr, 0x02, n_sk2)
-    _s.pack_into('>H', skn_hdr, 0x04, n_acc)
-    _s.pack_into('B',  skn_hdr, 0x06, skn.quantize_info)
-    _s.pack_into('>I', skn_hdr, 0x08, SK1_ARR_OFF)
-    _s.pack_into('>I', skn_hdr, 0x0c, SK2_ARR_OFF)
-    _s.pack_into('>I', skn_hdr, 0x10, SKACC_ARR_OFF)
-    _s.pack_into('>I', skn_hdr, 0x14, new_memClrPtr)
-    _s.pack_into('>I', skn_hdr, 0x18, new_memClrSize)
-    _s.pack_into('>I', skn_hdr, 0x1c, flush_off if flush_bytes else 0)
-    _s.pack_into('>I', skn_hdr, 0x20, skn.flush_ind_size)
+    struct.pack_into('>H', skn_hdr, 0x00, n_sk1)
+    struct.pack_into('>H', skn_hdr, 0x02, n_sk2)
+    struct.pack_into('>H', skn_hdr, 0x04, n_acc)
+    struct.pack_into('B',  skn_hdr, 0x06, skn.quantize_info)
+    struct.pack_into('>I', skn_hdr, 0x08, SK1_ARR_OFF)
+    struct.pack_into('>I', skn_hdr, 0x0c, SK2_ARR_OFF)
+    struct.pack_into('>I', skn_hdr, 0x10, SKACC_ARR_OFF)
+    struct.pack_into('>I', skn_hdr, 0x14, new_memClrPtr)
+    struct.pack_into('>I', skn_hdr, 0x18, new_memClrSize)
+    struct.pack_into('>I', skn_hdr, 0x1c, flush_off if flush_bytes else 0)
+    struct.pack_into('>I', skn_hdr, 0x20, skn.flush_ind_size)
 
     struct_end = SKN_HDR_SIZE + n_sk1 * SK1_SIZE + n_sk2 * SK2_SIZE + n_acc * SKACC_SIZE
     align_pad = VAR_DATA_OFF - struct_end
@@ -4602,15 +4507,14 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
 
 def CloneSKN(model_offset: int, model_length: int) -> bytes:
     """Clone the SKN section verbatim, excluding ptr6/ptr7/ptr8 sections."""
-    import struct as _s
     with open(_source_dat_path(model_offset), 'rb') as f:
         f.seek(model_offset)
         hdr = f.read(0x20)
-        skn_off = _s.unpack_from('>I', hdr, 0x10)[0]
+        skn_off = struct.unpack_from('>I', hdr, 0x10)[0]
         if not skn_off:
             _slogger.info("[CloneSKN] No SKN section", source="hammerspace.main")
             return b''
-        trailing_offsets = [_s.unpack_from('>I', hdr, offset)[0] for offset in (0x14, 0x18, 0x1c)]
+        trailing_offsets = [struct.unpack_from('>I', hdr, offset)[0] for offset in (0x14, 0x18, 0x1c)]
         skn_end = min(
             [offset for offset in trailing_offsets if offset > skn_off]
             + [model_length]
@@ -4624,12 +4528,11 @@ def CloneSKN(model_offset: int, model_length: int) -> bytes:
 
 def CloneTrailingSections(model_offset: int, model_length: int) -> tuple[bytes, int]:
     """Clone the contiguous ptr6/ptr7/ptr8 tail and return its original offset."""
-    import struct as _s
     with open(_source_dat_path(model_offset), 'rb') as f:
         f.seek(model_offset)
         hdr = f.read(0x20)
         offsets = [
-            _s.unpack_from('>I', hdr, field_offset)[0]
+            struct.unpack_from('>I', hdr, field_offset)[0]
             for field_offset in (0x14, 0x18, 0x1c)
         ]
         offsets = [offset for offset in offsets if 0 < offset < model_length]
@@ -4689,7 +4592,6 @@ def BuildHEADERModelBlock(
 
     Returns the complete model block as a byte string.
     """
-    import struct as _s
 
     HDR_SIZE = 0x20
 
@@ -4705,9 +4607,9 @@ def BuildHEADERModelBlock(
     gpl_off = HDR_SIZE
     gpl_section_padding = b''
     if len(original_header) >= HDR_SIZE:
-        original_gpl_off = _s.unpack_from('>I', original_header, 0x04)[0]
+        original_gpl_off = struct.unpack_from('>I', original_header, 0x04)[0]
         original_next_sections = [
-            _s.unpack_from('>I', original_header, offset)[0]
+            struct.unpack_from('>I', original_header, offset)[0]
             for offset in (0x08, 0x0C, 0x10, 0x14, 0x18, 0x1C)
         ]
         original_next = min(
@@ -4735,7 +4637,7 @@ def BuildHEADERModelBlock(
     skn_trailing_padding = b''
     if (skn_bytes and trailing_bytes and len(original_header) >= HDR_SIZE
             and original_trailing_off):
-        original_skn_off = _s.unpack_from('>I', original_header, 0x10)[0]
+        original_skn_off = struct.unpack_from('>I', original_header, 0x10)[0]
         if original_skn_off and original_trailing_off > original_skn_off:
             original_relative_offset = original_trailing_off - original_skn_off
             if len(skn_bytes) < original_relative_offset:
@@ -4745,11 +4647,11 @@ def BuildHEADERModelBlock(
     tail_start = tail_start_unaligned + len(tail_padding)
 
     hdr = bytearray(HDR_SIZE)
-    _s.pack_into('>I', hdr, 0x00, 0)
-    _s.pack_into('>I', hdr, 0x04, gpl_off)
-    _s.pack_into('>I', hdr, 0x08, act_off if act_bytes else 0)
-    _s.pack_into('>I', hdr, 0x0c, tex_off if tex_bytes else 0)
-    _s.pack_into('>I', hdr, 0x10, skn_off if skn_bytes else 0)
+    struct.pack_into('>I', hdr, 0x00, 0)
+    struct.pack_into('>I', hdr, 0x04, gpl_off)
+    struct.pack_into('>I', hdr, 0x08, act_off if act_bytes else 0)
+    struct.pack_into('>I', hdr, 0x0c, tex_off if tex_bytes else 0)
+    struct.pack_into('>I', hdr, 0x10, skn_off if skn_bytes else 0)
 
     # Recompute ptr6/ptr7/ptr8 relative to the separately cloned tail.
     if trailing_bytes:
@@ -4759,10 +4661,10 @@ def BuildHEADERModelBlock(
                 original_trailing_off = min(section_ptrs)
         if len(original_header) >= HDR_SIZE and original_trailing_off:
             for field_offset in (0x14, 0x18, 0x1c):
-                orig_ptr = _s.unpack_from('>I', original_header, field_offset)[0]
+                orig_ptr = struct.unpack_from('>I', original_header, field_offset)[0]
                 if orig_ptr and orig_ptr >= original_trailing_off:
                     new_ptr = tail_start + (orig_ptr - original_trailing_off)
-                    _s.pack_into('>I', hdr, field_offset, new_ptr)
+                    struct.pack_into('>I', hdr, field_offset, new_ptr)
                     _slogger.info(f'[HDR] +0x{field_offset:02X} patched: '
                            f'0x{orig_ptr:08X} → 0x{new_ptr:08X}', source="hammerspace.main")
 

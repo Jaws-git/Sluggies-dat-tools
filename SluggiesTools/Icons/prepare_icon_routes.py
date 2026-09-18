@@ -203,22 +203,6 @@ def _build_dol_mapper(dol_bytes):
     return vaddr_to_file
 
 
-def _patch_u8_at_vaddr(dol_bytes, vaddr_to_file, vaddr, value):
-    value = _u8(value, 'u8 patch value')
-    foff = vaddr_to_file(vaddr)
-    old = dol_bytes[foff]
-    dol_bytes[foff] = value
-    return foff, old, value
-
-
-def _patch_u16_at_vaddr(dol_bytes, vaddr_to_file, vaddr, value):
-    value = _u16(value, 'u16 patch value')
-    foff = vaddr_to_file(vaddr)
-    old = struct.unpack('>H', dol_bytes[foff:foff + 2])[0]
-    dol_bytes[foff:foff + 2] = struct.pack('>H', value)
-    return foff, old, value
-
-
 def _patch_verified_block(dol_bytes, vaddr_to_file, vaddr, old_words, new_words, desc):
     """Write a sequence of 32-bit words only if the region matches the stock
     words (or is already fully patched)."""
