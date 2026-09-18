@@ -351,7 +351,7 @@ def pack_srt_blob(
     ``[X, Y, Z, -W]`` (``helper.SRT.analyze``), so this re-packs the same
     rearrangement ``SRT.analyze`` undoes on read. Layout: type byte + 3 pad,
     scale (3f), quaternion (4f raw), translation (3f), 8 reserved zero bytes
-    (PLAN_AddBones.md module docstring / ``build_add_bone_fixture.py``).
+    (PLAN_AddBones.md module docstring).
     """
     sx, sy, sz = scale
     w, x, y, z = quaternion

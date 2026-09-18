@@ -3516,8 +3516,8 @@ def _rebuild_act_bone_hierarchy(act_bytes: bytes, data: dict, source_model_offse
     ``GeoIdFieldOffset`` to patch through, so its ``GeoId`` is instead owned
     directly here: a custom submesh naming a new bone as ``HostBoneId`` sets
     that bone's ``geo_file_id_raw`` on the in-memory ``BoneRecord`` before
-    the final byte serialization, mirroring what
-    ``build_add_bone_fixture.py``'s P3 probe already did by hand.
+    the final byte serialization, mirroring what PLAN_AddBones.md's Phase 0
+    P3 probe fixture already did by hand.
     """
     model = data['SluggiesModel']
     bone_hierarchy_edited = model['BoneHierarchyEdited']
