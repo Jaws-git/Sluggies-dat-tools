@@ -1,4 +1,5 @@
 import pathlib
+import re
 import sys
 import unittest
 
@@ -15,6 +16,7 @@ from TemplateSources import (  # noqa: E402
     TemplateSourceMaterial,
     build_template_source_choices,
     builtin_template_layers,
+    next_new_surface_key,
 )
 
 
@@ -126,3 +128,34 @@ class BuiltinTemplateMetadataTests(unittest.TestCase):
     def test_unknown_builtin_layer_lookup_raises(self):
         with self.assertRaisesRegex(ValueError, 'unknown template'):
             builtin_template_layers('rigid_nope_v1')
+
+
+class NextNewSurfaceKeyTests(unittest.TestCase):
+    """PLAN_EditRigidMeshes.md decision 8: Add material's SurfaceId
+    allocator, `<owner>_new<K>`."""
+
+    def test_first_key_for_donor_owner(self):
+        self.assertEqual(next_new_surface_key('sm1', []), 'sm1_new0')
+
+    def test_first_key_for_custom_owner(self):
+        self.assertEqual(next_new_surface_key('custom0', []), 'custom0_new0')
+
+    def test_skips_used_indices(self):
+        self.assertEqual(
+            next_new_surface_key('sm1', ['sm1_new0', 'sm1_new1']), 'sm1_new2')
+
+    def test_gap_left_by_a_deleted_surface_is_reused(self):
+        self.assertEqual(
+            next_new_surface_key('sm1', ['sm1_new0', 'sm1_new2']), 'sm1_new1')
+
+    def test_donor_and_custom_owners_stay_separate(self):
+        self.assertEqual(
+            next_new_surface_key('custom0', ['sm1_new0']), 'custom0_new0')
+
+    def test_unrelated_surface_ids_are_ignored(self):
+        self.assertEqual(
+            next_new_surface_key('sm1', ['sm1_ds5', 'sm10_new0']), 'sm1_new0')
+
+    def test_result_never_matches_a_donor_surface_id_pattern(self):
+        key = next_new_surface_key('sm1', [])
+        self.assertIsNone(re.match(r'^sm\d+_ds\d+$', key))

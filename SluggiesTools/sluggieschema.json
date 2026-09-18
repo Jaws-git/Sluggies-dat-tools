@@ -1126,6 +1126,14 @@
               "type": "number",
               "description": "Animation track index that drives this bone, read from the ACT user-data section."
             },
+            "MirrorBoneId": {
+              "type": ["number", "null"],
+              "description": "BoneId this bone mirrors, decoded from the kind-2 ACT user-data entry (u8 mirror_bone_id, PLAN_AddBones.md F3). A bone's mirror table is a perfect involution on every well-formed donor: MirrorBoneId[MirrorBoneId[i]] == i. Self-mapped for centreline bones. Null when the donor has no kind-2 entry (F4) or its table doesn't fit the expected boneCount-long shape (F6)."
+            },
+            "MirrorRole": {
+              "type": ["number", "null"],
+              "description": "Role byte paired with MirrorBoneId in the kind-2 entry (F3): 1 = main root, 2 = extra root, 3 = ordinary bone, 0/4 = rare one-offs. Null under the same conditions as MirrorBoneId."
+            },
             "SRTType": {
               "type": "number",
               "description": "Type byte at SRT block +0x00 (values: 0x4, 0x8, 0xc for a full scale/rotation/translation block; 0 when orientationPTR is null). Required to write the SRT block header during ACT reassembly."
@@ -1189,8 +1197,42 @@
               }
             }
           },
-          "required": ["BoneId", "GeoId", "ParentBoneId", "Skinned", "TrackId", "SRTType", "DrawPriority", "InheritTransform", "Translation", "Scale", "Quaternion", "HeadPosition", "VertexInfluences"]
+          "required": ["BoneId", "GeoId", "ParentBoneId", "Skinned", "TrackId", "MirrorBoneId", "MirrorRole", "SRTType", "DrawPriority", "InheritTransform", "Translation", "Scale", "Quaternion", "HeadPosition", "VertexInfluences"]
         }
+      },
+      "ACTUserData": {
+        "type": ["object", "null"],
+        "description": "Describes the ACT section's user-data descriptor chain (PLAN_AddBones.md F3, F5), or null when the model has no ACT user data at all (F4 -- a legal, shipped state). Kind 2 (mirror table) and kind 3 (track table) are fully decoded elsewhere (BoneHierarchy's MirrorBoneId/MirrorRole and TrackId); this only preserves which kinds are present, in order, plus every kind-4 entry verbatim so a rebuild can reproduce the chain without needing to understand kind-4's contents.",
+        "properties": {
+          "PresentKinds": {
+            "type": "array",
+            "description": "The kind value (u16) of each user-data descriptor, in on-disk order. Typically [3, 2] (track table then mirror table) or [3, 2, 4] when a kind-4 entry follows.",
+            "items": { "type": "number" }
+          },
+          "Kind4Entries": {
+            "type": "array",
+            "description": "Every kind-4 descriptor's payload, verbatim and undecoded (F5: '(u16 track_id, u16 = 2)[count]', references tracks not bones). Empty when the donor has no kind-4 entry.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "Count": {
+                  "type": "number",
+                  "description": "The descriptor's own count field (+0x06). Observed to equal (size - 0x0C) / 4 on every corpus example."
+                },
+                "DataPtr": {
+                  "type": "number",
+                  "description": "The descriptor's dataPtr field (+0x08). Always observed as 0x0C (payload immediately follows the descriptor header)."
+                },
+                "Payload": {
+                  "type": "string",
+                  "description": "Base64-encoded raw payload bytes, excluding the 0x0C-byte descriptor header. Copied through verbatim on rebuild."
+                }
+              },
+              "required": ["Count", "DataPtr", "Payload"]
+            }
+          }
+        },
+        "required": ["PresentKinds", "Kind4Entries"]
       },
       "BoneHierarchyEdited": {
         "type": "array",
@@ -1216,7 +1258,31 @@
             },
             "TrackId": {
               "type": "number",
-              "description": "Animation track index to assign to this bone in the rebuilt ACT user-data section."
+              "description": "Animation track index to assign to this bone in the rebuilt ACT user-data section. New (Phase 4 'Add bone') bones always use 0xFFFF (no track, PLAN_AddBones.md user contract)."
+            },
+            "MirrorBoneId": {
+              "type": "number",
+              "description": "BoneId this bone mirrors, to be written into the rebuilt kind-2 user-data entry (F3). New bones must self-mirror (equal to this entry's own BoneId) per the user contract and Phase 3 rule 8; the patcher rejects anything else."
+            },
+            "MirrorRole": {
+              "type": "number",
+              "description": "Role byte paired with MirrorBoneId (F3): 1 = main root, 2 = extra root, 3 = ordinary bone. New bones must use 3 per the user contract and Phase 3 rule 8."
+            },
+            "SRTType": {
+              "type": "number",
+              "description": "Type byte to write at this bone's SRT block +0x00 (0x4/0x8/0xC for a full scale/rotation/translation block). New bones copy this from their parent per the user contract."
+            },
+            "DrawPriority": {
+              "type": "number",
+              "description": "Render priority (uint8 at ACTBoneLayout +0x19) to write for this bone. New bones default to 0 per the user contract."
+            },
+            "InheritTransform": {
+              "type": "boolean",
+              "description": "Whether this bone inherits its parent's transform (bool at ACTBoneLayout +0x18). New bones default to true per the user contract."
+            },
+            "UserAdded": {
+              "type": "boolean",
+              "description": "True when this entry is a new leaf bone added in Blender (SluggiesUserAdded marker property) rather than a donor bone carried through from BoneHierarchy. Drives Phase 3 validation: user-added bones may only append to the end of their parent's child chain (F10) and must be leaves (no bone may name a user-added bone as its parent)."
             },
             "Translation": {
               "type": "array",
@@ -1258,7 +1324,7 @@
               }
             }
           },
-          "required": ["BoneId", "GeoId", "ParentBoneId", "Skinned", "TrackId", "Translation", "Scale", "Quaternion", "VertexInfluences"]
+          "required": ["BoneId", "GeoId", "ParentBoneId", "Skinned", "TrackId", "MirrorBoneId", "MirrorRole", "SRTType", "DrawPriority", "InheritTransform", "UserAdded", "Translation", "Scale", "Quaternion", "VertexInfluences"]
         }
       },
       "RootBoneScaleEdited": {

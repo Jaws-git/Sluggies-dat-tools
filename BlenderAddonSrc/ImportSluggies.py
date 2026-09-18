@@ -1133,6 +1133,18 @@ def build_armature(name, bone_list, collection, skin_data=None):
             # "Skinned" flag only means GeoIdRaw == 0xFFFF.
             b['SluggiesGeoIdRaw'] = int(bd.get('GeoIdRaw', 0xFFFF))
             b['SluggiesSkinned'] = bd['BoneId'] in skn_bone_ids
+            # Round-tripped for Add bone (PLAN_AddBones.md Phase 4 step 1): a new
+            # leaf bone copies SRTType from its parent, and every bone (donor or
+            # new) needs these written into BoneHierarchyEdited on export.
+            if bd.get('MirrorBoneId') is not None:
+                b['SluggiesMirrorBoneId'] = int(bd['MirrorBoneId'])
+            if bd.get('MirrorRole') is not None:
+                b['SluggiesMirrorRole'] = int(bd['MirrorRole'])
+            b['SluggiesSRTType'] = int(bd.get('SRTType', 0))
+            b['SluggiesDrawPriority'] = int(bd.get('DrawPriority', 0))
+            b['SluggiesInheritTransform'] = bool(bd.get('InheritTransform', True))
+            # False for every imported (donor) bone; Add bone sets this True.
+            b['SluggiesUserAdded'] = False
 
     arm_obj['SluggiesBoneMetadataVersion'] = HostBones.BONE_METADATA_VERSION
     arm_obj.show_in_front = True

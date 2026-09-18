@@ -18,7 +18,11 @@ GEO_ID_FREE = 0xFFFF
 # 2: SluggiesSkinned comes from SkinData bone references. Version 1 copied
 # BoneHierarchy's "Skinned" flag, which export.py sets for every mesh-free bone
 # (GeoIdRaw == 0xFFFF), so every free bone looked like it drove skinning.
-BONE_METADATA_VERSION = 2
+# 3: Add bone (PLAN_AddBones.md Phase 4) needs SluggiesMirrorBoneId/
+# SluggiesMirrorRole/SluggiesSRTType/SluggiesDrawPriority/
+# SluggiesInheritTransform/SluggiesUserAdded on every bone to export
+# BoneHierarchyEdited; armatures imported before these were written lack them.
+BONE_METADATA_VERSION = 3
 RE_IMPORT_MESSAGE = "Re-import this model to enable Add submesh"
 
 STATUS_EXCLUDED = "excluded"

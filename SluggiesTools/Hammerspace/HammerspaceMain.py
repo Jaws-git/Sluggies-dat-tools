@@ -25,6 +25,7 @@ from GeometryRebuild import (
 )
 from ModelFormat import align_array_offset, compute_mem_clear_range, pad_array
 from InplacePatcher import root_scale as _root_scale
+import act_rebuild
 
 
 def _source_dat_path(absolute_offset: int) -> str:
@@ -660,7 +661,15 @@ def _validate_custom_submeshes(model: dict) -> None:
         )
 
     use_b64 = model.get('UseBase64', True)
-    bones_by_id = {int(b['BoneId']): b for b in model.get('BoneHierarchy') or []}
+    # PLAN_AddBones.md's user contract: a custom submesh may host on a
+    # user-added bone, which has no BoneHierarchy entry at all (it doesn't
+    # exist in the donor ACT) -- BoneHierarchyEdited, when present, already
+    # carries every donor bone forward plus any new ones, so it is the
+    # complete bone set to validate a HostBoneId against.
+    bones_by_id = {
+        int(b['BoneId']): b
+        for b in model.get('BoneHierarchyEdited') or model.get('BoneHierarchy') or []
+    }
     donor_submeshes = model.get('Submeshes') or []
     submesh0 = donor_submeshes[0] if donor_submeshes else None
 
@@ -837,6 +846,204 @@ def _validate_custom_submeshes(model: dict) -> None:
             )
         elif donor_index is not None and not (isinstance(donor_index, int) and 0 <= donor_index <= 0xFFFF):
             fail(f'TextureAssignment.DonorTextureIndex {donor_index!r} must be a uint16 texture index')
+
+    if errors:
+        raise ValueError('; '.join(errors))
+
+
+def _validate_bone_hierarchy_edited(model: dict) -> None:
+    """PLAN_AddBones.md Phase 3: reject an invalid ``BoneHierarchyEdited``
+    before any DAT/DOL write, alongside ``_validate_custom_submeshes``. Each
+    error names the offending bone(s) so a failed patch is actionable.
+
+    Operates purely on the ``.sluggie`` JSON (``BoneHierarchy``/
+    ``BoneHierarchyEdited``/``CustomSubmeshes``/``SkinData``/
+    ``SkinDataEdited``), not the parsed ACT bytes -- this is the data-level
+    gate the plan wants ahead of ``_rebuild_act_bone_hierarchy``, which is
+    itself only reachable once this passes. Sibling-chain order (the last
+    F10 topology case, "sibling chain reordered") has no representation in
+    the ``.sluggie`` schema at all (only ``ParentBoneId`` per bone), so it
+    cannot be checked at this layer; it is enforced by construction instead
+    -- the rebuilder only ever appends a donor bone's own ``prev``/``next``
+    unchanged and links a new leaf onto the tail of its parent's chain.
+    """
+    bone_hierarchy_edited = model.get('BoneHierarchyEdited')
+    if not bone_hierarchy_edited:
+        return
+
+    errors: list[str] = []
+
+    def fail(message: str) -> None:
+        errors.append(message)
+
+    # Rule 1: Hammerspace flag set.
+    if not model.get('UseHammerspace'):
+        raise ValueError(
+            'BoneHierarchyEdited requires Hammerspace Mode (UseHammerspace) to be enabled'
+        )
+
+    donor_bones = model.get('BoneHierarchy') or []
+    donor_by_id = {int(b['BoneId']): b for b in donor_bones}
+    donor_count = len(donor_bones)
+
+    edited_ids = [int(b['BoneId']) for b in bone_hierarchy_edited]
+    if len(set(edited_ids)) != len(edited_ids):
+        fail('BoneHierarchyEdited has duplicate BoneId values')
+    edited_by_id = {int(b['BoneId']): b for b in bone_hierarchy_edited}
+
+    new_entries = [b for b in bone_hierarchy_edited if b.get('UserAdded')]
+    new_ids = sorted(int(b['BoneId']) for b in new_entries)
+
+    # Rule 5: new bone ids are exactly N, N+1, ... contiguous from the donor count.
+    expected_new_ids = list(range(donor_count, donor_count + len(new_ids)))
+    if new_ids != expected_new_ids:
+        fail(
+            f'new bone ids must be contiguous starting at the donor bone count '
+            f'{donor_count} (got {new_ids}, expected {expected_new_ids})'
+        )
+
+    # Rule 6: total bone count <= 255 (F3: mirror ids are u8).
+    total_bone_count = donor_count + len(new_ids)
+    if total_bone_count > 255:
+        fail(f'total bone count {total_bone_count} exceeds the 255-bone cap (PLAN_AddBones.md F3, Phase 3 rule 6)')
+
+    # CustomSubmeshes may legitimately move a donor bone's GeoId away from
+    # 0xFFFF (PLAN_AddSubmesh.md); that is not a Rule 2 violation.
+    claimed_donor_bones = {
+        int(cs['HostBoneId'])
+        for cs in model.get('CustomSubmeshes') or []
+        if isinstance(cs.get('HostBoneId'), int) and int(cs['HostBoneId']) < donor_count
+    }
+
+    # Rule 2: BoneHierarchyEdited is append-only against BoneHierarchy.
+    for bone_id, donor_bone in donor_by_id.items():
+        edited_bone = edited_by_id.get(bone_id)
+        if edited_bone is None:
+            fail(f'donor bone {bone_id} is missing from BoneHierarchyEdited (donor bones cannot be deleted)')
+            continue
+        if edited_bone.get('UserAdded'):
+            fail(f'donor bone {bone_id} is marked UserAdded in BoneHierarchyEdited')
+            continue
+
+        donor_geo_raw = _bone_geo_id_raw(donor_bone)
+        edited_geo_raw = _bone_geo_id_raw(edited_bone)
+        if donor_geo_raw != edited_geo_raw:
+            retargeted = donor_bone.get('GeoIdEdited') is not None and int(donor_bone['GeoIdEdited']) == edited_geo_raw
+            if not retargeted and bone_id not in claimed_donor_bones:
+                fail(
+                    f'donor bone {bone_id} GeoId changed from {donor_geo_raw} to {edited_geo_raw} '
+                    'without a CustomSubmeshes claim or GeoIdEdited retarget'
+                )
+
+        donor_mirror_id = donor_bone.get('MirrorBoneId')
+        edited_mirror_id = edited_bone.get('MirrorBoneId')
+        if donor_mirror_id is not None and donor_mirror_id != edited_mirror_id:
+            fail(
+                f'donor bone {bone_id} mirror pair changed from {donor_mirror_id} to {edited_mirror_id}'
+            )
+        donor_mirror_role = donor_bone.get('MirrorRole')
+        edited_mirror_role = edited_bone.get('MirrorRole')
+        if donor_mirror_role is not None and donor_mirror_role != edited_mirror_role:
+            fail(
+                f'donor bone {bone_id} mirror role changed from {donor_mirror_role} to {edited_mirror_role}'
+            )
+
+        # Rule 3: donor topology is byte-identical except for new leaves.
+        donor_parent = donor_bone.get('ParentBoneId')
+        edited_parent = edited_bone.get('ParentBoneId')
+        donor_parent_id = None if donor_parent is None else int(donor_parent)
+        edited_parent_id = None if edited_parent is None else int(edited_parent)
+        if donor_parent_id != edited_parent_id:
+            if edited_parent_id is not None and edited_parent_id in {int(b['BoneId']) for b in new_entries}:
+                fail(
+                    f'new bone {edited_parent_id} was inserted between donor bones '
+                    f'{donor_parent_id} and {bone_id}; new bones can only hang off the '
+                    'tree as leaves (PLAN_AddBones.md F10)'
+                )
+            elif (
+                edited_parent_id is not None
+                and edited_parent_id in donor_by_id
+                and donor_by_id[edited_parent_id].get('ParentBoneId') is not None
+                and int(donor_by_id[edited_parent_id]['ParentBoneId']) == bone_id
+            ):
+                fail(f'donor bones {bone_id} and {edited_parent_id} swapped their parent/child relation')
+            else:
+                fail(f'donor bone {bone_id} was reparented from {donor_parent_id} to {edited_parent_id}')
+
+    # Rule 4: every new bone is a leaf of the donor tree -- no donor bone may
+    # name a new bone as its parent (independent of how rule 3's diff reads
+    # the exporter's ParentBoneId, so a donor-onto-new parenting is caught
+    # even if the rule-3 diff above is somehow bypassed).
+    new_id_set = {int(b['BoneId']) for b in new_entries}
+    for bone in bone_hierarchy_edited:
+        if bone.get('UserAdded'):
+            continue
+        parent_id = bone.get('ParentBoneId')
+        if parent_id is not None and int(parent_id) in new_id_set:
+            fail(
+                f"donor bone {bone['BoneId']} names new bone {int(parent_id)} as its parent; "
+                'new bones must be leaves (PLAN_AddBones.md F10/Phase 3 rule 4)'
+            )
+
+    # Rules 7-8: every new bone has an existing, non-root parent and the
+    # user-contract defaults (no track, self-mirrored, role 3).
+    for entry in new_entries:
+        bone_id = int(entry['BoneId'])
+        parent_id = entry.get('ParentBoneId')
+        if parent_id is None:
+            fail(f'new bone {bone_id} has no ParentBoneId; new bones may not be roots')
+        elif int(parent_id) not in edited_by_id:
+            fail(f"new bone {bone_id}'s parent {int(parent_id)} does not exist")
+
+        track_id = entry.get('TrackId')
+        if track_id is None or int(track_id) != 0xFFFF:
+            fail(f'new bone {bone_id} has TrackId {track_id!r}, expected 0xFFFF (no track)')
+        mirror_id = entry.get('MirrorBoneId')
+        if mirror_id is None or int(mirror_id) != bone_id:
+            fail(f'new bone {bone_id} has MirrorBoneId {mirror_id!r}, expected its own id {bone_id}')
+        mirror_role = entry.get('MirrorRole')
+        if mirror_role is None or int(mirror_role) != 3:
+            fail(f'new bone {bone_id} has MirrorRole {mirror_role!r}, expected 3')
+
+    # Rule 9: donor mirror table is a clean boneCount-long involution, or absent.
+    mirror_entries = {
+        bone_id: (donor_bone.get('MirrorBoneId'), donor_bone.get('MirrorRole'))
+        for bone_id, donor_bone in donor_by_id.items()
+    }
+    present = {bid: pair for bid, pair in mirror_entries.items() if pair[0] is not None}
+    if present and len(present) != donor_count:
+        fail(
+            f'donor mirror table is present on {len(present)} of {donor_count} bones; '
+            'it must cover every bone or none (PLAN_AddBones.md F4/F6)'
+        )
+    else:
+        for bone_id, (mirror_id, _role) in present.items():
+            mirror_id = int(mirror_id)
+            if mirror_id not in donor_by_id:
+                fail(f'donor bone {bone_id} mirror id {mirror_id} does not exist')
+                continue
+            target = donor_by_id[mirror_id].get('MirrorBoneId')
+            if target is None or int(target) != bone_id:
+                fail(
+                    f'donor mirror table is not an involution: bone {bone_id} -> {mirror_id} -> {target} '
+                    '(PLAN_AddBones.md F6 -- refuse rather than guess)'
+                )
+
+    # Rule 10: no new bone drives skinning.
+    for skin_key in ('SkinData', 'SkinDataEdited'):
+        skin_data = model.get(skin_key)
+        if not skin_data:
+            continue
+        for sk1 in skin_data.get('SK1s') or []:
+            if int(sk1['BoneIndex']) >= donor_count:
+                fail(f"{skin_key}: SK1 entry names bone {sk1['BoneIndex']}, which is not a donor bone")
+        for sk2 in skin_data.get('SK2s') or []:
+            for field in ('BoneIndex1', 'BoneIndex2'):
+                if int(sk2[field]) >= donor_count:
+                    fail(f"{skin_key}: SK2 entry names bone {sk2[field]}, which is not a donor bone")
+        for skacc in skin_data.get('SKAccs') or []:
+            if int(skacc['BoneIndex']) >= donor_count:
+                fail(f"{skin_key}: SKAcc entry names bone {skacc['BoneIndex']}, which is not a donor bone")
 
     if errors:
         raise ValueError('; '.join(errors))
@@ -3216,31 +3423,140 @@ def _gpl_pos_offsets_from_bytes(gpl_bytes: bytes) -> list[int]:
     return offsets
 
 
-def BuildACTBoneHierarchy(parsed: SluggieParsed) -> bytes:
-    """Return the ACT (Bone Hierarchy) section bytes.
+def BuildACTBoneHierarchy(data: dict, source_model_offset: int, source_model_length: int) -> bytes:
+    """Return the ACT (Bone Hierarchy) section bytes for a hammerspace build.
 
-    Bone hierarchy and animation data are not modified by hammerspace, so
-    this reads the original ACT block verbatim from INPUT dt_na.dat using
-    the section offsets stored in the model-block file header.
+    Two routes (PLAN_AddBones.md Phase 2 step 4):
 
-    Returns the raw ACT section bytes copied from the input file,
-    or b'' if the model has no ACT section.
+    - **Clone route** (no ``BoneHierarchyEdited``): identical to the
+      pre-Phase-2 behaviour -- ``CloneACT`` verbatim, then
+      ``_apply_root_scale_patch`` and ``_apply_geo_id_patches``. Every
+      existing hammerspace build stays byte-identical.
+    - **Rebuild route** (``BoneHierarchyEdited`` present): appends every
+      user-added bone to the donor's own parsed bone table
+      (``_rebuild_act_bone_hierarchy``) instead of leaving the ACT section a
+      fixed-size verbatim clone, so bone count can change.
+
+    Returns ``b''`` when the model has no ACT section.
     """
-    import struct as _s
-
-    if not parsed.model_offset:
+    act_bytes = CloneACT(source_model_offset, source_model_length)
+    if not act_bytes:
         return b''
 
-    with open(_source_dat_path(parsed.model_offset), 'rb') as f:
-        f.seek(parsed.model_offset)
-        hdr = f.read(0x20)
-        act_off = _s.unpack_from('>I', hdr, 0x08)[0]
-        tex_off = _s.unpack_from('>I', hdr, 0x0c)[0]
-        if not act_off or not tex_off:
-            return b''
-        act_len = tex_off - act_off
-        f.seek(parsed.model_offset + act_off)
-        return f.read(act_len)
+    model = data['SluggiesModel']
+    if not model.get('BoneHierarchyEdited'):
+        act_bytes = _apply_root_scale_patch(act_bytes, data, source_model_offset)
+        act_bytes = _apply_geo_id_patches(act_bytes, data, source_model_offset)
+        return act_bytes
+
+    return _rebuild_act_bone_hierarchy(act_bytes, data, source_model_offset)
+
+
+def _rebuild_act_bone_hierarchy(act_bytes: bytes, data: dict, source_model_offset: int) -> bytes:
+    """PLAN_AddBones.md Phase 2: rebuild the ACT bone hierarchy instead of
+    cloning it verbatim, so new leaf bones from ``BoneHierarchyEdited`` can be
+    appended.
+
+    Parses the donor ACT bytes with ``act_rebuild`` -- the same machinery
+    Phase 0's P1 probe validated as byte-identical across the full player
+    corpus -- which preserves every donor bone's own tree links, SRT block
+    and header/name/tail bytes exactly. Every ``BoneHierarchyEdited`` entry
+    with ``UserAdded`` set is then appended in ``BoneId`` order via
+    ``act_rebuild.append_leaf_bone`` (F10: always a new leaf at the end of
+    its parent's child chain), fed back in so each append sees the previous
+    one's result -- the same incremental pattern Phase 0 P4's ``--bulk``
+    probe already validated in Dolphin for repeated appends.
+
+    GeoId ownership: a **donor** bone's ``GeoIdEdited``/custom-submesh claim
+    still goes through ``_apply_root_scale_patch``/``_apply_geo_id_patches``
+    on the *rebuilt* bytes below -- their ACT-relative offset math
+    (``orientationPTR``, and the bone-table ``geo_file_id_raw`` field
+    addressed purely by bone id) is unaffected by appending trailing bones,
+    since append-only growth never moves an existing bone's table slot or
+    SRT position (verified: every donor bone's ``orientationPTR`` sits before
+    any new bone's SRT in bone-table order). A **new** bone has no donor
+    ``GeoIdFieldOffset`` to patch through, so its ``GeoId`` is instead owned
+    directly here: a custom submesh naming a new bone as ``HostBoneId`` sets
+    that bone's ``geo_file_id_raw`` on the in-memory ``BoneRecord`` before
+    the final byte serialization, mirroring what
+    ``build_add_bone_fixture.py``'s P3 probe already did by hand.
+    """
+    model = data['SluggiesModel']
+    bone_hierarchy_edited = model['BoneHierarchyEdited']
+
+    parsed = act_rebuild.parse_act(act_bytes)
+    act_rebuild.validate_mirror_table(parsed)
+
+    new_entries = sorted(
+        (b for b in bone_hierarchy_edited if b.get('UserAdded')),
+        key=lambda b: int(b['BoneId']),
+    )
+
+    expected_id = parsed.bone_count
+    for entry in new_entries:
+        bone_id = int(entry['BoneId'])
+        if bone_id != expected_id:
+            raise ValueError(
+                f"BoneHierarchyEdited: new bone id {bone_id} is not contiguous with the "
+                f"existing bone count ({expected_id} expected); new bone ids must be "
+                "N, N+1, ... starting at the donor bone count (PLAN_AddBones.md Phase 3 rule 5)"
+            )
+        parent_id = entry.get('ParentBoneId')
+        if parent_id is None:
+            raise ValueError(f"new bone {bone_id} has no ParentBoneId; new bones may not be roots")
+        parent_id = int(parent_id)
+        if parent_id >= expected_id:
+            raise ValueError(
+                f"new bone {bone_id}'s parent {parent_id} does not exist yet; a new bone's "
+                "parent must already be present (a donor bone, or an earlier new bone in "
+                "BoneHierarchyEdited order)"
+            )
+
+        srt_type = int(entry.get('SRTType', 0))
+        srt_blob = (
+            act_rebuild.pack_srt_blob(
+                srt_type, entry['Scale'], entry['Quaternion'], entry['Translation'],
+            )
+            if srt_type else None
+        )
+
+        parsed = act_rebuild.append_leaf_bone(
+            parsed, parent_id, srt_blob,
+            geo_file_id_raw=0xFFFF if entry.get('Skinned') else int(entry.get('GeoId', 0xFFFF)),
+            inheritance=1 if entry.get('InheritTransform', True) else 0,
+            priority=int(entry.get('DrawPriority', 0)),
+            track_id=int(entry.get('TrackId', 0xFFFF)),
+            mirror_bone_id=int(entry.get('MirrorBoneId', bone_id)),
+            mirror_role=int(entry.get('MirrorRole', 3)),
+        )
+        expected_id += 1
+
+    custom_submeshes = model.get('CustomSubmeshes') or []
+    if custom_submeshes:
+        donor_submesh_count = len(model.get('Submeshes') or [])
+        donor_bone_count = parsed.bone_count - len(new_entries)
+        bones_by_id = {b.id: b for b in parsed.bones}
+        for index, cs in enumerate(custom_submeshes):
+            host_bone_id = int(cs['HostBoneId'])
+            if host_bone_id < donor_bone_count:
+                continue  # donor host bone: handled by _apply_geo_id_patches below
+            bone = bones_by_id.get(host_bone_id)
+            if bone is None:
+                raise ValueError(
+                    f"custom submesh '{cs.get('CustomSubmeshId', '?')}': host bone "
+                    f"{host_bone_id} does not exist in the rebuilt ACT bone hierarchy"
+                )
+            if bone.geo_file_id_raw != 0xFFFF:
+                raise ValueError(
+                    f"custom submesh '{cs.get('CustomSubmeshId', '?')}': host bone "
+                    f"{host_bone_id} already owns GeoId {bone.geo_file_id_raw}, expected 0xFFFF"
+                )
+            bone.geo_file_id_raw = donor_submesh_count + index
+
+    act_bytes = act_rebuild.rebuild_act_bytes(parsed)
+    act_bytes = _apply_root_scale_patch(act_bytes, data, source_model_offset)
+    act_bytes = _apply_geo_id_patches(act_bytes, data, source_model_offset)
+    return act_bytes
 
 
 def CloneACT(model_offset: int, model_length: int) -> bytes:
@@ -3439,6 +3755,12 @@ def _apply_geo_id_patches(act_bytes: bytes, data: dict, source_model_offset: int
     for index, cs in enumerate(custom_submeshes):
         cs_id = cs.get('CustomSubmeshId', '<missing CustomSubmeshId>')
         host_bone_id = int(cs['HostBoneId'])
+        if host_bone_id not in bones_by_id:
+            # PLAN_AddBones.md Phase 2: a host bone with no BoneHierarchy entry
+            # is a user-added bone -- _rebuild_act_bone_hierarchy already owns
+            # its GeoId directly (it has no donor GeoIdFieldOffset to patch
+            # through), so there is nothing for this loop to do here.
+            continue
         new_submesh_index = donor_count + index
         bone = bones_by_id[host_bone_id]
 
@@ -4578,6 +4900,7 @@ def BuildModelBlock(
 
     model = data['SluggiesModel']
     _validate_hammerspace_contract(model, modes)
+    _validate_bone_hierarchy_edited(model)
     _validate_custom_submeshes(model)
     if model.get('DesiredTextureAssignments') and (
         modes.gpl != 'build'
@@ -4784,17 +5107,17 @@ def BuildModelBlock(
             pos_gpl_offsets=_gpl_pos_offsets_from_bytes(gpl_bytes),
         )
 
-    act_bytes = CloneACT(source_model_offset, source_model_length)
-    # Apply the root-bone SRT scale patch (RootBoneScaleEdited) to the cloned ACT
-    # section. The patch is ACT-section-relative, so it stays correct even though
-    # the hammerspace block is written to a new absolute offset and the section
-    # boundaries may shift.
-    _act_before = act_bytes
-    if act_bytes:
-        act_bytes = _apply_root_scale_patch(act_bytes, data, source_model_offset)
-    root_scale_applied = act_bytes != _act_before
-    if act_bytes:
-        act_bytes = _apply_geo_id_patches(act_bytes, data, source_model_offset)
+    # BuildACTBoneHierarchy (PLAN_AddBones.md Phase 2) picks the clone route
+    # (CloneACT + _apply_root_scale_patch + _apply_geo_id_patches, both
+    # ACT-section-relative so they stay correct across hammerspace
+    # relocation) or the rebuild route (BoneHierarchyEdited present -- new
+    # leaf bones change the section's length, so it can no longer be a fixed
+    # verbatim clone) on its own.
+    act_bytes = BuildACTBoneHierarchy(data, source_model_offset, source_model_length)
+    _act_before = CloneACT(source_model_offset, source_model_length)
+    root_scale_applied = bool(_act_before) and (
+        _apply_root_scale_patch(_act_before, data, source_model_offset) != _act_before
+    )
     if modes.tex == 'build':
         tex_bytes = BuildTEX(parsed, texture_plan)
     else:

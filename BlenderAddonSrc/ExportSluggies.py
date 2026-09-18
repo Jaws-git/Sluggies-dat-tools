@@ -4,6 +4,7 @@ import json
 import math
 import os
 import base64
+import re
 import shutil
 import struct
 import subprocess
@@ -321,6 +322,167 @@ def encode_root_bone_scale_edited(candidates, data, warnings, context):
 
     model["RootBoneScaleEdited"] = value
     return value
+
+
+_BONE_NAME_RE = re.compile(r'^bone_(\d+)$')
+
+
+def _bone_id_from_bone_name(name):
+    """bone_<id> -> id, else None. Mirrors SluggiesToolsPanel._bone_id_from_name;
+    duplicated here rather than imported to avoid a circular import (that
+    module imports from this one)."""
+    m = _BONE_NAME_RE.match(name or '')
+    return int(m.group(1)) if m else None
+
+
+def armature_has_new_bones(candidates, context):
+    """Whether the .sluggie's armature carries any Add-bone (PLAN_AddBones.md
+    Phase 4) bone, used to gate the Hammerspace/UseHammerspace requirement
+    before any other export work happens."""
+    arm_obj = _find_root_scale_armature(candidates, context)
+    if arm_obj is None:
+        return False
+    return any(b.get('SluggiesUserAdded') for b in arm_obj.data.bones)
+
+
+def encode_bone_hierarchy_edited(candidates, data, warnings, context):
+    """Write ``SluggiesModel.BoneHierarchyEdited`` when the target armature has
+    any Add-bone leaf (PLAN_AddBones.md Phase 4 step 3).
+
+    Every donor bone is carried through unchanged (Phase 3 rule 2 is an
+    append-only check), and every ``SluggiesUserAdded`` bone is assigned ids
+    ``N, N+1, ...`` in ``SluggiesCreationOrder`` (the Blender bone *name* has
+    no binary meaning -- PLAN_AddBones.md's user contract). Each new bone's
+    Blender rest matrix is converted to a local T/R/S against its parent,
+    reusing the same bind-matrix convention
+    ``CustomSubmeshExport.bone_local_matrix`` decodes back (T @ R @ S,
+    quaternion stored as ``[-qw, qx, qy, qz]``).
+    """
+    model = data.get("SluggiesModel", {})
+    arm_obj = _find_root_scale_armature(candidates, context)
+    if arm_obj is None:
+        model.pop("BoneHierarchyEdited", None)
+        return
+
+    new_bones = [b for b in arm_obj.data.bones if b.get('SluggiesUserAdded')]
+    if not new_bones:
+        model.pop("BoneHierarchyEdited", None)
+        return
+
+    donor_bones = model.get("BoneHierarchy") or []
+    if not donor_bones:
+        warnings.append(
+            f"{arm_obj.name}: model has no BoneHierarchy; added bone(s) not exported."
+        )
+        model.pop("BoneHierarchyEdited", None)
+        return
+
+    donor_count = len(donor_bones)
+    new_bones.sort(key=lambda b: (int(b.get('SluggiesCreationOrder', 0)), b.name))
+
+    id_by_bone_name = {
+        b.name: _bone_id_from_bone_name(b.name)
+        for b in arm_obj.data.bones if not b.get('SluggiesUserAdded')
+    }
+    id_by_bone_name = {name: bid for name, bid in id_by_bone_name.items() if bid is not None}
+    next_id = donor_count
+    for b in new_bones:
+        id_by_bone_name[b.name] = next_id
+        next_id += 1
+
+    edited = []
+    for donor_bone in donor_bones:
+        entry = dict(donor_bone)
+        entry["UserAdded"] = False
+        edited.append(entry)
+
+    for b in new_bones:
+        own_id = id_by_bone_name[b.name]
+        parent = b.parent
+        if parent is None or parent.name not in id_by_bone_name:
+            warnings.append(f"{b.name}: has no valid parent bone; not exported.")
+            continue
+        parent_id = id_by_bone_name[parent.name]
+
+        local = parent.matrix_local.inverted() @ b.matrix_local
+        translation, rotation, scale = local.decompose()
+        geo_id_raw = int(b.get('SluggiesGeoIdRaw', GEO_ID_FREE))
+
+        edited.append({
+            "BoneId": own_id,
+            "GeoId": geo_id_raw,
+            "GeoIdRaw": geo_id_raw,
+            "ParentBoneId": parent_id,
+            "Skinned": bool(b.get('SluggiesSkinned', False)),
+            "TrackId": int(b.get('track_id', 0xFFFF)),
+            "MirrorBoneId": own_id,
+            "MirrorRole": 3,
+            "SRTType": int(b.get('SluggiesSRTType', 0xC)),
+            "DrawPriority": int(b.get('SluggiesDrawPriority', 0)),
+            "InheritTransform": bool(b.get('SluggiesInheritTransform', True)),
+            "UserAdded": True,
+            "Translation": [round(translation.x, 6), round(translation.y, 6), round(translation.z, 6)],
+            "Scale": [round(scale.x, 6), round(scale.y, 6), round(scale.z, 6)],
+            "Quaternion": [
+                round(-rotation.w, 6), round(rotation.x, 6),
+                round(rotation.y, 6), round(rotation.z, 6),
+            ],
+            "VertexInfluences": [],
+        })
+
+    model["BoneHierarchyEdited"] = edited
+
+
+# --- Phase 4 step 4: Blender-side pre-check for the donor-topology rules
+# HammerspaceMain._validate_bone_hierarchy_edited enforces authoritatively.
+# This is a courtesy check so a mistake is visible while the user can still
+# see and undo it in Blender; it is not a substitute for the patcher's own
+# gate (F10, PLAN_AddBones.md Phase 4 step 4), which also catches sibling-
+# chain reordering that this check cannot see from ParentBoneId alone.
+def validate_bone_hierarchy_edited_export(model, warnings):
+    """Return a list of blocking error strings for ``BoneHierarchyEdited``, or
+    an empty list when nothing is wrong."""
+    bone_hierarchy_edited = model.get("BoneHierarchyEdited")
+    if not bone_hierarchy_edited:
+        return []
+
+    errors = []
+    donor_bones = model.get("BoneHierarchy") or []
+    donor_by_id = {int(b["BoneId"]): b for b in donor_bones}
+    edited_by_id = {int(b["BoneId"]): b for b in bone_hierarchy_edited}
+    new_ids = {int(b["BoneId"]) for b in bone_hierarchy_edited if b.get("UserAdded")}
+
+    for bone_id, donor_bone in donor_by_id.items():
+        edited_bone = edited_by_id.get(bone_id)
+        if edited_bone is None:
+            errors.append(f"donor bone {bone_id} is missing (donor bones cannot be deleted)")
+            continue
+        if edited_bone.get("UserAdded"):
+            errors.append(f"donor bone {bone_id} is marked as a new bone")
+            continue
+        donor_parent = donor_bone.get("ParentBoneId")
+        edited_parent = edited_bone.get("ParentBoneId")
+        donor_parent_id = None if donor_parent is None else int(donor_parent)
+        edited_parent_id = None if edited_parent is None else int(edited_parent)
+        if donor_parent_id != edited_parent_id:
+            if edited_parent_id in new_ids:
+                errors.append(
+                    f"new bone {edited_parent_id} was inserted between donor bones "
+                    f"{donor_parent_id} and {bone_id}; new bones can only hang off "
+                    "the tree as leaves"
+                )
+            else:
+                errors.append(
+                    f"donor bone {bone_id} was reparented from {donor_parent_id} "
+                    f"to {edited_parent_id}"
+                )
+
+    for bone_id in new_ids:
+        parent_id = edited_by_id[bone_id].get("ParentBoneId")
+        if parent_id is None:
+            errors.append(f"new bone {bone_id} has no parent; new bones may not be roots")
+
+    return errors
 
 
 def _uv_layer_name(all_channels, target_ch_ind):
@@ -2572,8 +2734,9 @@ def encode_custom_submesh(context, obj, model, texture_assignment, warnings, use
         plan = CustomSubmeshExport.attribute_plan(model, template_source)
     except ValueError as exc:
         raise ValueError(f"{obj.name}: {exc}") from exc
+    bone_hierarchy = model.get("BoneHierarchyEdited") or model.get("BoneHierarchy") or []
     geometry = _custom_submesh_bone_local_geometry(
-        context, obj, model.get("BoneHierarchy") or [], host_bone_id, warnings,
+        context, obj, bone_hierarchy, host_bone_id, warnings,
     )
     loop_normals, loop_uvs, loop_colors = _custom_submesh_loop_attributes(obj, warnings)
     return CustomSubmeshExport.build_custom_submesh_entry(
@@ -2913,6 +3076,14 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             )
             return {"CANCELLED"}
 
+        if armature_has_new_bones(context.selected_objects, context) and not self.use_hammerspace:
+            self.report(
+                {"ERROR"},
+                "This armature has bone(s) added with Add Bone, which requires "
+                "Hammerspace Mode. Enable Hammerspace Mode and export again."
+            )
+            return {"CANCELLED"}
+
         if not candidates and not custom_submesh_candidates:
             self.report({"ERROR"},
                 "No selected mesh objects with Sluggies custom properties found. "
@@ -2999,6 +3170,20 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 {"ERROR"},
                 _texture_export_toggles_required_message(changed_materials),
             )
+            return {"CANCELLED"}
+
+        # Added bones (PLAN_AddBones.md Phase 4) — model-level, written only
+        # when the armature has any SluggiesUserAdded bone. Runs before custom
+        # submesh encoding below, which resolves host bones against it: a
+        # custom submesh may be hosted on a user-added bone that has no
+        # BoneHierarchy entry yet.
+        encode_bone_hierarchy_edited(context.selected_objects, data, warnings, context)
+        bone_hierarchy_errors = validate_bone_hierarchy_edited_export(
+            data["SluggiesModel"], warnings
+        )
+        if bone_hierarchy_errors:
+            for err in bone_hierarchy_errors:
+                self.report({"ERROR"}, err)
             return {"CANCELLED"}
 
         # --- Custom submeshes (PLAN_AddSubmesh.md Phase 6 step 2) ---

@@ -1176,6 +1176,79 @@ def extract_act_header(model):
     }
 
 
+def _read_act_user_data_descriptors(model):
+    """Return the ACT user-data descriptor chain as a list of
+    (kind, count, data_ptr, payload) tuples, or [] if the model has no ACT
+    section or no user data at all (PLAN_AddBones.md F3-F5; a model with no
+    user data is a legal, shipped state per F4)."""
+    if not model.ACT or not model.ACT.userDataSize:
+        return []
+    act = model.ACT
+    model.f.seek(act.absolute + act.userDataPtr)
+    blob = model.f.read(act.userDataSize)
+    descriptors = []
+    pos = 0
+    while pos < len(blob):
+        size, kind, count, data_ptr = struct.unpack_from('>IHHI', blob, pos)
+        descriptors.append((kind, count, data_ptr, blob[pos + 0xC:pos + size]))
+        pos += size
+    return descriptors
+
+
+def _extract_mirror_table(model):
+    """Return {bone_id: (mirror_bone_id, role)} decoded from the kind-2 ACT
+    user-data entry, or {} if the model has no kind-2 entry or its table
+    doesn't fit the expected boneCount-long shape (PLAN_AddBones.md F3, F6 --
+    two known donors have oversized, non-involution mirror tables that this
+    exports as null rather than guessing at)."""
+    if not model.ACT:
+        return {}
+    mirror_descriptors = [d for d in _read_act_user_data_descriptors(model) if d[0] == 2]
+    if not mirror_descriptors:
+        return {}
+    _, _, _, payload = mirror_descriptors[0]
+    bone_count = model.ACT.boneCount
+    if len(payload) < bone_count * 2:
+        _slogger.warning(
+            f'model at 0x{model.ACT.absolute:08X}: kind-2 mirror table payload '
+            f'({len(payload)} bytes) is shorter than boneCount*2 ({bone_count * 2}); '
+            'MirrorBoneId/MirrorRole will be exported as null for all bones (F6).',
+            source='export.act_user_data',
+        )
+        return {}
+    return {
+        bone_id: (payload[2 * bone_id], payload[2 * bone_id + 1])
+        for bone_id in range(bone_count)
+    }
+
+
+def extract_act_user_data(model):
+    """Return an ACTUserData dict describing the ACT user-data descriptor
+    chain, or None if the model has no ACT section or no user data at all
+    (PLAN_AddBones.md F4 -- a legal, shipped state).
+
+    Kind 2 (mirror table) and kind 3 (track table) are fully decoded
+    elsewhere (BoneHierarchy's MirrorBoneId/MirrorRole and TrackId); this
+    only needs to preserve which kinds are present, in order, plus every
+    kind-4 entry verbatim as an opaque blob (F5) so a rebuild can reproduce
+    it without understanding it.
+    """
+    descriptors = _read_act_user_data_descriptors(model)
+    if not descriptors:
+        return None
+    return {
+        "PresentKinds": [kind for kind, _count, _data_ptr, _payload in descriptors],
+        "Kind4Entries": [
+            {
+                "Count": count,
+                "DataPtr": data_ptr,
+                "Payload": _encode_bytes(payload),
+            }
+            for kind, count, data_ptr, payload in descriptors if kind == 4
+        ],
+    }
+
+
 def extract_bone_data(model):
     """Return a BoneHierarchy list for the .sluggie JSON, or None if no ACT/bones present.
 
@@ -1198,6 +1271,9 @@ def extract_bone_data(model):
 
     # Build lookup by bone id to access ACTBoneLayout fields not on Bone.
     layout_by_id = {bl.id: bl for bl in model.ACT.bone_layouts.values()}
+
+    # bone_id -> (mirror_bone_id, role) from the kind-2 user-data entry (F3).
+    mirror_table = _extract_mirror_table(model)
 
     # Build per-submesh (global_vtx_start, vtx_count) for skinned index remapping.
     # gplVertexArr in SK1/SK2/SKAcc is a byte offset from the start of the runtime
@@ -1272,6 +1348,8 @@ def extract_bone_data(model):
             if bl and bl.orientationPTR else None
         )
 
+        mirror_bone_id, mirror_role = mirror_table.get(bone_id, (None, None))
+
         bone_list.append({
             "BoneId":          int(bone.id),
             "GeoId":           int(bone.GEOID),
@@ -1280,6 +1358,8 @@ def extract_bone_data(model):
             "ParentBoneId":    int(bone.parent.id) if bone.parent else None,
             "Skinned":         bool(bone.skinned),
             "TrackId":         int(bone.track_id),
+            "MirrorBoneId":    int(mirror_bone_id) if mirror_bone_id is not None else None,
+            "MirrorRole":      int(mirror_role) if mirror_role is not None else None,
             "SRTType":         int(srt_type),
             "SRTOffset":       srt_field_off,
             "DrawPriority":    draw_priority,
@@ -1435,6 +1515,7 @@ for dir_ind, file_arr in dirs.items():
                                         "FacialPoseData": extract_facial_pose_data(sub_model),
                                         "TrailingSections": extract_trailing_sections(sub_model),
                                         "ACTHeader": extract_act_header(sub_model),
+                                        "ACTUserData": extract_act_user_data(sub_model),
                                         "BoneHierarchy": extract_bone_data(sub_model)
                                     }
                                 }
@@ -1461,6 +1542,7 @@ for dir_ind, file_arr in dirs.items():
                                     "FacialPoseData": extract_facial_pose_data(child.child),
                                     "TrailingSections": extract_trailing_sections(child.child),
                                     "ACTHeader": extract_act_header(child.child),
+                                    "ACTUserData": extract_act_user_data(child.child),
                                     "BoneHierarchy": extract_bone_data(child.child)
                                 }
                             }

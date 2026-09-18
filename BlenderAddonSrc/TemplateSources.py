@@ -120,6 +120,25 @@ class TemplateSourceChoice:
         return f"{self.kind}:{self.argument}"
 
 
+def next_new_surface_key(owner: str, existing_surface_ids: Iterable[str]) -> str:
+    """The lowest unused ``<owner>_new<K>`` SurfaceId for a new Add-material
+    surface (PLAN_EditRigidMeshes.md decision 8), where *owner* is
+    ``sm<N>`` for a donor submesh or a ``CustomSubmeshId`` for a custom one.
+    Gaps left by deleted surfaces are reused.
+    """
+    prefix = f"{owner}_new"
+    used = set()
+    for surface_id in existing_surface_ids:
+        if surface_id.startswith(prefix):
+            suffix = surface_id[len(prefix):]
+            if suffix.isdigit():
+                used.add(int(suffix))
+    n = 0
+    while n in used:
+        n += 1
+    return f"{prefix}{n}"
+
+
 def build_template_source_choices(
     materials: Iterable[TemplateSourceMaterial],
 ) -> List[TemplateSourceChoice]:

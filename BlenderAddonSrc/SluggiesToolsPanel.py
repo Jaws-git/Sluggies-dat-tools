@@ -12,8 +12,12 @@ from mathutils import Matrix, Vector
 from . import CustomSubmeshExport
 from . import HostBones
 from . import TemplateSources
-from .ExportSluggies import _detect_uniform_vertex_bone_id, _resolve_export_texture_context
-from .ImportSluggies import _create_material, _set_surface_material_metadata
+from .ExportSluggies import (
+    _custom_submesh_template_texture_index,
+    _detect_uniform_vertex_bone_id,
+    _resolve_export_texture_context,
+)
+from .ImportSluggies import _create_material, _set_surface_material_metadata, LEAF_TAIL_FALLBACK
 
 
 _BONE_NAME_RE = re.compile(r'^bone_(\d+)$')
@@ -172,7 +176,7 @@ def _template_source_materials(context, arm_obj):
             continue
         for slot in obj.material_slots:
             mat = slot.material
-            if mat is None or not mat.get('SurfaceId'):
+            if mat is None or not mat.get('SurfaceId') or mat.get('SluggiesNewSurface'):
                 continue
             materials.append(TemplateSources.TemplateSourceMaterial(
                 surface_id=mat['SurfaceId'],
@@ -180,6 +184,94 @@ def _template_source_materials(context, arm_obj):
                 shader_mode=mat.get('ShaderMode', ''),
             ))
     return materials
+
+
+def _material_by_surface_id(context, arm_obj, surface_id):
+    """The scene material carrying *surface_id*, donor or custom, or None."""
+    for obj in context.view_layer.objects:
+        if obj.type != 'MESH' or obj.parent is not arm_obj:
+            continue
+        for slot in obj.material_slots:
+            mat = slot.material
+            if mat is not None and mat.get('SurfaceId') == surface_id:
+                return mat
+    return None
+
+
+def _submesh0_material(context, arm_obj):
+    """Any submesh 0 donor material, used as the wrap-mode fallback for
+    `builtin:` templates (PLAN_EditRigidMeshes.md Phase 8 step 3)."""
+    for obj in _donor_mesh_objects(context, arm_obj):
+        if _submesh_index_of(obj) != 0:
+            continue
+        for slot in obj.material_slots:
+            mat = slot.material
+            if mat is not None and _SURFACE_ID_RE.match(mat.get('SurfaceId', '') or ''):
+                return mat
+    return None
+
+
+def _template_shader_mode(context, arm_obj, template_source):
+    if template_source.startswith('builtin:'):
+        template = TemplateSources.BUILTIN_TEMPLATES.get(template_source[len('builtin:'):])
+        return template.shader_mode if template is not None else ''
+    surface_id = template_source.split(':', 1)[1] if ':' in template_source else ''
+    mat = _material_by_surface_id(context, arm_obj, surface_id)
+    return mat.get('ShaderMode', '') if mat is not None else ''
+
+
+def _template_wrap_modes(context, arm_obj, template_source):
+    """(WrapS, WrapT) copied from the template's own imported material
+    (PLAN_EditRigidMeshes.md Phase 8 step 3); `builtin:` has no donor
+    material of its own, so it falls back to submesh 0's."""
+    if not template_source.startswith('builtin:'):
+        surface_id = template_source.split(':', 1)[1] if ':' in template_source else ''
+        mat = _material_by_surface_id(context, arm_obj, surface_id)
+        if mat is not None:
+            return int(mat.get('WrapS', 1)), int(mat.get('WrapT', 1))
+    mat = _submesh0_material(context, arm_obj)
+    if mat is not None:
+        return int(mat.get('WrapS', 1)), int(mat.get('WrapT', 1))
+    return 1, 1
+
+
+def _low_poly_texture_warning(arm_obj):
+    """Dialog warning when this model borrows its tex/ folder from a paired
+    high-poly export (plan: 'a new PNG must come from the paired high-poly
+    model's tex/'), or None when the model owns its own tex/ folder."""
+    sluggie_path = arm_obj.get('SluggieFilePath')
+    if not sluggie_path:
+        return None
+    try:
+        with open(sluggie_path, 'r') as handle:
+            model = json.load(handle).get('SluggiesModel', {})
+    except (OSError, ValueError):
+        return None
+    try:
+        _descriptors, _tex_dir, owns_textures = _resolve_export_texture_context(sluggie_path, model)
+    except ValueError:
+        return None
+    if owns_textures:
+        return None
+    return "Low-poly model: load a PNG from the high-poly model's tex/ folder"
+
+
+def _default_new_material_name(obj):
+    n = 0
+    while f'{obj.name}_new{n}' in bpy.data.materials:
+        n += 1
+    return f'{obj.name}_new{n}'
+
+
+def _validate_material_name(name):
+    name = name.strip()
+    if not name:
+        return "Material name cannot be empty"
+    if _INVALID_SUBMESH_NAME_CHARS_RE.search(name):
+        return 'Material name cannot contain any of: < > : " / \\ | ? *'
+    if name in bpy.data.materials:
+        return f"A material named {name!r} already exists"
+    return None
 
 
 def _default_host_bone_choice(context, arm_obj, ordered_choices):
@@ -710,10 +802,183 @@ class SLUGGIES_OT_reassign_bone(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class SLUGGIES_OT_add_material(bpy.types.Operator):
+    """Add a new surface (material + empty texture slot) to a rigid or
+    custom submesh, from a template (PLAN_EditRigidMeshes.md 'Add material
+    button (concept)'). Blender-side only for now: export support for
+    SluggiesNewSurface materials is a follow-up."""
+    bl_idname = "sluggies.add_material"
+    bl_label = "Add Material"
+    bl_description = "Create a new surface (material + empty texture slot) on the active rigid or custom submesh"
+    bl_options = {"UNDO"}
+
+    material_name: StringProperty(
+        name="Material name",
+        description="Name for the new material (must be unique)",
+    )  # type: ignore[valid-type]
+    template_source: EnumProperty(
+        name="Template",
+        description="Donor or built-in surface this new surface's shading is cloned from",
+        items=_template_source_enum_items,
+    )  # type: ignore[valid-type]
+    assign_selected_faces: BoolProperty(
+        name="Assign selected faces",
+        description="Assign the mesh's currently selected faces to the new material slot",
+        default=True,
+    )  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context):
+        if context.mode not in ('OBJECT', 'EDIT_MESH'):
+            if hasattr(cls, 'poll_message_set'):
+                cls.poll_message_set("Switch to Object Mode or Edit Mode")
+            return False
+        obj = context.active_object
+        arm_obj = _find_target_armature(context)
+        if arm_obj is None:
+            if hasattr(cls, 'poll_message_set'):
+                cls.poll_message_set(_no_target_armature_message(context))
+            return False
+        if not _bone_metadata_is_current(arm_obj):
+            if hasattr(cls, 'poll_message_set'):
+                cls.poll_message_set(HostBones.RE_IMPORT_MESSAGE)
+            return False
+        kind, _submesh_index = _rigid_mesh_kind(obj)
+        if kind is None:
+            if hasattr(cls, 'poll_message_set'):
+                if obj is not None and obj.get('VertexBufferCompCount') == 6:
+                    cls.poll_message_set("New materials on skinned submeshes are not supported yet")
+                else:
+                    cls.poll_message_set("Select a rigid or custom submesh")
+            return False
+        return True
+
+    def invoke(self, context, event):
+        arm_obj = _find_target_armature(context)
+        obj = context.active_object
+        if arm_obj is None or obj is None:
+            self.report({"ERROR"}, _no_target_armature_message(context))
+            return {"CANCELLED"}
+
+        self.material_name = _default_new_material_name(obj)
+        template_choices = TemplateSources.build_template_source_choices(
+            _template_source_materials(context, arm_obj))
+        if template_choices:
+            self.template_source = template_choices[0].template_source
+        self.assign_selected_faces = True
+        return context.window_manager.invoke_props_dialog(self)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, 'material_name')
+        layout.prop(self, 'template_source')
+        if context.mode == 'EDIT_MESH':
+            layout.prop(self, 'assign_selected_faces')
+        arm_obj = _find_target_armature(context)
+        warning = _low_poly_texture_warning(arm_obj) if arm_obj is not None else None
+        if warning:
+            layout.label(text=warning, icon='INFO')
+
+    def execute(self, context):
+        arm_obj = _find_target_armature(context)
+        obj = context.active_object
+        if arm_obj is None or obj is None:
+            self.report({"ERROR"}, _no_target_armature_message(context))
+            return {"CANCELLED"}
+
+        kind, submesh_index = _rigid_mesh_kind(obj)
+        if kind is None:
+            self.report({"ERROR"}, "Select a rigid or custom submesh")
+            return {"CANCELLED"}
+
+        if self.template_source == 'NONE':
+            self.report({"ERROR"}, "No usable surface template found")
+            return {"CANCELLED"}
+
+        material_name = self.material_name.strip()
+        name_error = _validate_material_name(material_name)
+        if name_error:
+            self.report({"ERROR"}, name_error)
+            return {"CANCELLED"}
+
+        owner = f'sm{submesh_index}' if kind == 'donor' else obj.get('CustomSubmeshId')
+        if not owner:
+            self.report({"ERROR"}, f"{obj.name} has no CustomSubmeshId; re-create it with Add submesh")
+            return {"CANCELLED"}
+        existing_surface_ids = [
+            mat.get('SurfaceId', '') for mat in bpy.data.materials if mat.get('SurfaceId')
+        ]
+        surface_id = TemplateSources.next_new_surface_key(owner, existing_surface_ids)
+
+        sluggie_path = arm_obj.get('SluggieFilePath')
+        if not sluggie_path:
+            self.report({"ERROR"}, "Re-import this model to enable Add material")
+            return {"CANCELLED"}
+        try:
+            with open(sluggie_path, 'r') as handle:
+                model = json.load(handle).get('SluggiesModel', {})
+        except (OSError, ValueError) as exc:
+            self.report({"ERROR"}, f"Could not read {sluggie_path!r}: {exc}")
+            return {"CANCELLED"}
+        try:
+            template_texture_index = _custom_submesh_template_texture_index(model, self.template_source)
+        except ValueError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+
+        shader_mode = _template_shader_mode(context, arm_obj, self.template_source)
+        wrap_s, wrap_t = _template_wrap_modes(context, arm_obj, self.template_source)
+
+        active_uv = obj.data.uv_layers.active
+        uv_layer_name = active_uv.name if active_uv is not None else 'UVMap'
+        mat = _create_material(material_name, uv_layer_name, None, wrap_s=wrap_s)
+
+        mat['SluggiesNewSurface'] = True
+        mat.id_properties_ui('SluggiesNewSurface').update(
+            description="Marks a Blender-only surface created by Add material, absent from the donor.")
+        mat['SurfaceId'] = surface_id
+        mat.id_properties_ui('SurfaceId').update(
+            description="Stable draw-state identity for this added surface. Do not delete.")
+        mat['SluggiesSurfaceOwner'] = owner
+        mat.id_properties_ui('SluggiesSurfaceOwner').update(
+            description="The submesh (donor sm<N> or CustomSubmeshId) this surface belongs to.")
+        mat['TemplateSource'] = self.template_source
+        mat.id_properties_ui('TemplateSource').update(
+            description="Donor or built-in template this surface's shading is cloned from.")
+        mat['TemplateTextureIndex'] = template_texture_index
+        mat.id_properties_ui('TemplateTextureIndex').update(
+            description="Donor texture index this surface's GX format clones; never a fallback texture.")
+        _set_surface_material_metadata(mat, {'DisplayStateId': 7, 'ShaderMode': shader_mode})
+        mat['WrapS'] = wrap_s
+        mat['WrapT'] = wrap_t
+        mat.id_properties_ui('WrapS').update(description="GX wrap mode for U, copied from the template.")
+        mat.id_properties_ui('WrapT').update(description="GX wrap mode for V, copied from the template.")
+
+        obj.data.materials.append(mat)
+        new_slot_index = len(obj.data.materials) - 1
+        obj.active_material_index = new_slot_index
+
+        assigned_count = None
+        if context.mode == 'EDIT_MESH' and self.assign_selected_faces:
+            bm = bmesh.from_edit_mesh(obj.data)
+            assigned_count = sum(1 for f in bm.faces if f.select)
+            bpy.ops.object.material_slot_assign()
+
+        if assigned_count == 0:
+            self.report(
+                {"INFO"}, f"Added {mat.name} ({self.template_source}) to {obj.name}; no faces were assigned")
+        else:
+            self.report(
+                {"INFO"},
+                f"Added {mat.name} ({self.template_source}) to {obj.name}; "
+                "load an image into its Sluggies texture node before exporting")
+        return {"FINISHED"}
+
+
 def _draw_rigid_mesh_box(layout, context):
     """The 'Rigid mesh' box (plan: renamed 'Mesh' for a custom submesh),
     showing the active object's current attachment and the Reassign to new
-    bone button."""
+    bone / Add material buttons."""
     arm_obj = _find_target_armature(context)
     obj = context.active_object
     kind, _submesh_index = _rigid_mesh_kind(obj) if obj is not None else (None, None)
@@ -726,6 +991,165 @@ def _draw_rigid_mesh_box(layout, context):
     if kind is not None:
         box.label(text=_rigid_mesh_attachment_label(context, arm_obj, obj))
     box.operator(SLUGGIES_OT_reassign_bone.bl_idname)
+    # SLUGGIES_OT_add_material is implemented (PLAN_EditRigidMeshes.md Phase 8)
+    # but hidden from the panel: export/patch support (Phases 0-4) doesn't
+    # exist yet, so a material it creates can't be round-tripped today.
+
+
+def _add_bone_parent_enum_items(self, context):
+    arm_obj = _find_target_armature(context)
+    if arm_obj is None:
+        return [('NONE', "No armature", _no_target_armature_message(context), 0)]
+    items = []
+    for idx, b in enumerate(arm_obj.data.bones):
+        bone_id = _bone_id_from_name(b.name)
+        if bone_id is None:
+            continue
+        tag = "new" if b.get('SluggiesUserAdded') else "donor"
+        items.append((b.name, b.name, f"Parent the new bone to {b.name} ({tag})", idx))
+    return items or [('NONE', "No bones", "This armature has no bones", 0)]
+
+
+def _next_new_bone_creation_order(arm_obj):
+    orders = [
+        int(b.get('SluggiesCreationOrder', -1))
+        for b in arm_obj.data.bones if b.get('SluggiesUserAdded')
+    ]
+    return max(orders) + 1 if orders else 0
+
+
+def _unused_bone_name(arm_obj):
+    """A `bone_<N>` name not already used in *arm_obj* (plan step 2). Purely
+    cosmetic: the exporter reassigns real ids from SluggiesCreationOrder, not
+    from this name (user contract, PLAN_AddBones.md 'Proposed user contract')."""
+    n = len(arm_obj.data.bones)
+    while f'bone_{n}' in arm_obj.data.bones:
+        n += 1
+    return f'bone_{n}'
+
+
+def _create_added_bone(context, arm_obj, parent_bone_name):
+    """Create one inert leaf bone parented to *parent_bone_name* (plan step 2),
+    following the user contract: no GeoId/track, self-mirrored role 3,
+    InheritTransform true, DrawPriority 0, SRTType copied from the parent."""
+    prev_active = context.view_layer.objects.active
+    prev_mode = context.object.mode if context.object is not None else 'OBJECT'
+    context.view_layer.objects.active = arm_obj
+    bpy.ops.object.mode_set(mode='EDIT')
+    try:
+        edit_bones = arm_obj.data.edit_bones
+        parent_eb = edit_bones.get(parent_bone_name)
+        new_name = _unused_bone_name(arm_obj)
+        new_eb = edit_bones.new(new_name)
+        new_eb.parent = parent_eb
+        new_eb.use_connect = False
+        # World-aligned, facing -Y regardless of the parent bone's own
+        # direction: convert the world -Y/+Z axes into the armature object's
+        # local space, since edit-bone coordinates live there.
+        world_to_local = arm_obj.matrix_world.to_3x3().inverted()
+        local_dir = world_to_local @ Vector((0.0, -1.0, 0.0))
+        local_up = world_to_local @ Vector((0.0, 0.0, 1.0))
+        tail_offset = (
+            local_dir.normalized() * LEAF_TAIL_FALLBACK
+            if local_dir.length > 1e-9 else Vector((0.0, 0.0, LEAF_TAIL_FALLBACK))
+        )
+        # Originates at the parent's tail, not floating off to the side, so
+        # chained bones visually continue the parent like a real skeleton.
+        new_eb.head = parent_eb.tail
+        new_eb.tail = new_eb.head + tail_offset
+        new_eb.align_roll(local_up)
+        new_name = new_eb.name
+    finally:
+        bpy.ops.object.mode_set(mode=prev_mode if prev_mode in ('OBJECT', 'EDIT') else 'OBJECT')
+
+    new_bone = arm_obj.data.bones[new_name]
+    parent_bone = arm_obj.data.bones[parent_bone_name]
+    new_bone['SluggiesUserAdded'] = True
+    new_bone['SluggiesCreationOrder'] = _next_new_bone_creation_order(arm_obj)
+    new_bone['SluggiesGeoIdRaw'] = HostBones.GEO_ID_FREE
+    new_bone['SluggiesSkinned'] = False
+    new_bone['SluggiesSRTType'] = int(parent_bone.get('SluggiesSRTType', 0xC))
+    new_bone['SluggiesDrawPriority'] = 0
+    new_bone['SluggiesInheritTransform'] = True
+    new_bone['track_id'] = 0xFFFF
+
+    context.view_layer.objects.active = prev_active
+    return new_bone
+
+
+def _begin_bone_name_display(op, arm_obj):
+    """Turn on the viewport bone-name overlay for the dialog's duration,
+    remembering whether it was already on so `_end_bone_name_display` can
+    restore the prior state instead of always turning it back off."""
+    op._orig_show_names = arm_obj.data.show_names
+    if not op._orig_show_names:
+        arm_obj.data.show_names = True
+
+
+def _end_bone_name_display(op, arm_obj):
+    if arm_obj is not None and getattr(op, '_orig_show_names', True) is False:
+        arm_obj.data.show_names = False
+
+
+class SLUGGIES_OT_add_bone(bpy.types.Operator):
+    """Add a new inert leaf bone to the skeleton, for a custom submesh to
+    attach to once the donor's own free bones are exhausted (PLAN_AddBones.md,
+    Hammerspace Mode required on export)."""
+    bl_idname = "sluggies.add_bone"
+    bl_label = "Add Bone"
+    bl_description = "Add a new leaf bone parented to the chosen bone (Hammerspace only)"
+    bl_options = {"UNDO"}
+
+    parent_bone: EnumProperty(
+        name="Parent bone",
+        description="Bone the new bone is rigidly parented to",
+        items=_add_bone_parent_enum_items,
+    )  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context):
+        if context.mode != 'OBJECT':
+            if hasattr(cls, 'poll_message_set'):
+                cls.poll_message_set("Switch to Object Mode")
+            return False
+        if not _any_sluggies_armature_imported(context):
+            if hasattr(cls, 'poll_message_set'):
+                cls.poll_message_set("Import a Sluggies model first")
+            return False
+        return True
+
+    def invoke(self, context, event):
+        arm_obj = _find_target_armature(context)
+        if arm_obj is None:
+            self.report({"ERROR"}, _no_target_armature_message(context))
+            return {"CANCELLED"}
+        if not _bone_metadata_is_current(arm_obj):
+            self.report({"ERROR"}, HostBones.RE_IMPORT_MESSAGE)
+            return {"CANCELLED"}
+        active_bone = arm_obj.data.bones.active
+        if active_bone is not None and _bone_id_from_name(active_bone.name) is not None:
+            self.parent_bone = active_bone.name
+        _begin_bone_name_display(self, arm_obj)
+        return context.window_manager.invoke_props_dialog(self)
+
+    def execute(self, context):
+        arm_obj = _find_target_armature(context)
+        try:
+            if arm_obj is None:
+                self.report({"ERROR"}, _no_target_armature_message(context))
+                return {"CANCELLED"}
+            if self.parent_bone == 'NONE' or self.parent_bone not in arm_obj.data.bones:
+                self.report({"ERROR"}, f"Parent bone {self.parent_bone!r} no longer exists")
+                return {"CANCELLED"}
+
+            new_bone = _create_added_bone(context, arm_obj, self.parent_bone)
+            self.report({"INFO"}, f"Added {new_bone.name}, parented to {self.parent_bone}")
+            return {"FINISHED"}
+        finally:
+            _end_bone_name_display(self, arm_obj)
+
+    def cancel(self, context):
+        _end_bone_name_display(self, _find_target_armature(context))
 
 
 class SLUGGIES_OT_add_submesh(bpy.types.Operator):
@@ -786,58 +1210,65 @@ class SLUGGIES_OT_add_submesh(bpy.types.Operator):
             _template_source_materials(context, arm_obj))
         if template_choices:
             self.template_source = template_choices[0].template_source
+        _begin_bone_name_display(self, arm_obj)
         return context.window_manager.invoke_props_dialog(self)
 
     def execute(self, context):
         arm_obj = _find_target_armature(context)
-        if arm_obj is None:
-            self.report({"ERROR"}, _no_target_armature_message(context))
-            return {"CANCELLED"}
+        try:
+            if arm_obj is None:
+                self.report({"ERROR"}, _no_target_armature_message(context))
+                return {"CANCELLED"}
 
-        if self.host_bone == 'NONE':
-            self.report({"ERROR"}, "No free host bone available on this model")
-            return {"CANCELLED"}
-        if self.template_source == 'NONE':
-            self.report({"ERROR"}, "No usable surface template found on this model")
-            return {"CANCELLED"}
+            if self.host_bone == 'NONE':
+                self.report({"ERROR"}, "No free host bone available on this model")
+                return {"CANCELLED"}
+            if self.template_source == 'NONE':
+                self.report({"ERROR"}, "No usable surface template found on this model")
+                return {"CANCELLED"}
 
-        submesh_name = self.submesh_name.strip()
-        name_error = _validate_submesh_name(submesh_name)
-        if name_error:
-            self.report({"ERROR"}, name_error)
-            return {"CANCELLED"}
+            submesh_name = self.submesh_name.strip()
+            name_error = _validate_submesh_name(submesh_name)
+            if name_error:
+                self.report({"ERROR"}, name_error)
+                return {"CANCELLED"}
 
-        bone_id = _bone_id_from_name(self.host_bone)
-        if bone_id is None or f'bone_{bone_id}' not in arm_obj.data.bones:
-            self.report({"ERROR"}, f"Host bone {self.host_bone!r} no longer exists")
-            return {"CANCELLED"}
+            bone_id = _bone_id_from_name(self.host_bone)
+            if bone_id is None or f'bone_{bone_id}' not in arm_obj.data.bones:
+                self.report({"ERROR"}, f"Host bone {self.host_bone!r} no longer exists")
+                return {"CANCELLED"}
 
-        # Export-time re-check territory (Phase 6) aside, re-run the free-bone
-        # classification once more here: the props dialog may have stayed
-        # open while another retarget or custom submesh claimed this bone.
-        ordered = _ordered_host_bone_choices(context, arm_obj)
-        if not any(c.bone_id == bone_id for c in ordered):
-            self.report({"ERROR"}, f"bone_{bone_id} is no longer free; pick another host bone")
-            return {"CANCELLED"}
+            # Export-time re-check territory (Phase 6) aside, re-run the free-bone
+            # classification once more here: the props dialog may have stayed
+            # open while another retarget or custom submesh claimed this bone.
+            ordered = _ordered_host_bone_choices(context, arm_obj)
+            if not any(c.bone_id == bone_id for c in ordered):
+                self.report({"ERROR"}, f"bone_{bone_id} is no longer free; pick another host bone")
+                return {"CANCELLED"}
 
-        sluggie_path = arm_obj.get('SluggieFilePath')
-        if not sluggie_path:
-            self.report({"ERROR"}, "Re-import this model to enable Add submesh")
-            return {"CANCELLED"}
+            sluggie_path = arm_obj.get('SluggieFilePath')
+            if not sluggie_path:
+                self.report({"ERROR"}, "Re-import this model to enable Add submesh")
+                return {"CANCELLED"}
 
-        custom_submesh_id = _next_custom_submesh_id(context)
-        image, error = _write_custom_submesh_texture(sluggie_path, submesh_name)
-        if error:
-            self.report({"ERROR"}, error)
-            return {"CANCELLED"}
+            custom_submesh_id = _next_custom_submesh_id(context)
+            image, error = _write_custom_submesh_texture(sluggie_path, submesh_name)
+            if error:
+                self.report({"ERROR"}, error)
+                return {"CANCELLED"}
 
-        obj = _create_custom_submesh_cube(
-            context, arm_obj, bone_id, custom_submesh_id, submesh_name, self.template_source)
-        _create_custom_submesh_material(obj, custom_submesh_id, image)
-        _select_new_object(context, obj)
+            obj = _create_custom_submesh_cube(
+                context, arm_obj, bone_id, custom_submesh_id, submesh_name, self.template_source)
+            _create_custom_submesh_material(obj, custom_submesh_id, image)
+            _select_new_object(context, obj)
 
-        self.report({"INFO"}, f"Added {obj.name} on bone_{bone_id} ({self.template_source})")
-        return {"FINISHED"}
+            self.report({"INFO"}, f"Added {obj.name} on bone_{bone_id} ({self.template_source})")
+            return {"FINISHED"}
+        finally:
+            _end_bone_name_display(self, arm_obj)
+
+    def cancel(self, context):
+        _end_bone_name_display(self, _find_target_armature(context))
 
 
 def _draw_free_host_bones(layout, context):
@@ -885,6 +1316,7 @@ class SLUGGIES_PT_tools(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         layout.operator(SLUGGIES_OT_add_submesh.bl_idname)
+        layout.operator(SLUGGIES_OT_add_bone.bl_idname)
 
         layout.separator()
         _draw_rigid_mesh_box(layout, context)
@@ -895,7 +1327,9 @@ class SLUGGIES_PT_tools(bpy.types.Panel):
 
 def register():
     bpy.utils.register_class(SLUGGIES_OT_add_submesh)
+    bpy.utils.register_class(SLUGGIES_OT_add_bone)
     bpy.utils.register_class(SLUGGIES_OT_reassign_bone)
+    bpy.utils.register_class(SLUGGIES_OT_add_material)
     bpy.utils.register_class(SLUGGIES_PT_tools)
     bpy.types.Scene.sluggies_show_free_host_bones = BoolProperty(
         name="Free host bones",
@@ -907,5 +1341,7 @@ def register():
 def unregister():
     del bpy.types.Scene.sluggies_show_free_host_bones
     bpy.utils.unregister_class(SLUGGIES_PT_tools)
+    bpy.utils.unregister_class(SLUGGIES_OT_add_material)
     bpy.utils.unregister_class(SLUGGIES_OT_reassign_bone)
+    bpy.utils.unregister_class(SLUGGIES_OT_add_bone)
     bpy.utils.unregister_class(SLUGGIES_OT_add_submesh)

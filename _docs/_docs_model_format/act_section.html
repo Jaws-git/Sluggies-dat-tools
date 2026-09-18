@@ -60,7 +60,7 @@
         <tr>
             <td>0x1c</td>
             <td>uint32</td>
-            <td>User data pointer (relative to header). In Sluggers, this holds linking information between bones and animations tracks.</td>
+            <td>User data pointer (relative to header). Points at a chain of descriptors — see <a href="#user-data">User data</a> below.</td>
         </tr>
     </table>
     <h2>Bone</h2>
@@ -132,6 +132,48 @@
         <li><strong>Submesh order doesn't have to follow bone order.</strong> Vanilla rigid submeshes are in ascending owner-bone order, but a submesh appended at the end on a lower-numbered bone draws correctly (probe 2). Appending keeps every existing submesh index, and so every existing GEO ID and ptr7 facial <code>SubmeshIndex</code>, unchanged.</li>
     </ul>
     <p>The bone table is reached through the tree: the tree header sits at header+0x08 and its root pointer at header+0x0C. Each node address is the bone's start, relative to the ACT header. <code>BlockValidator</code> walks it to check the rules above.</p>
+    <h2 id="user-data">User data</h2>
+    <p>Found via <code>PLAN_AddBones.md</code>'s investigation (2026-09-18) into what silently counts bones outside the header's own <code>boneCount</code>. The header's user data pointer (0x1c) is null when <code>userDataSize</code> (0x18) is 0 — dozens of models ship no user data at all with a perfectly working bone tree. When present, it points at a chain of descriptors, each read until the header's total <code>userDataSize</code> is consumed:</p>
+    <table>
+        <tr>
+            <th>Offset</th>
+            <th>Type</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td>0x0</td>
+            <td>uint32</td>
+            <td>Descriptor size in bytes, including this 0x0C-byte header</td>
+        </tr>
+        <tr>
+            <td>0x4</td>
+            <td>uint16</td>
+            <td>Kind (see below)</td>
+        </tr>
+        <tr>
+            <td>0x6</td>
+            <td>uint16</td>
+            <td>Count (meaning depends on kind)</td>
+        </tr>
+        <tr>
+            <td>0x8</td>
+            <td>uint32</td>
+            <td>Data pointer (relative to header)</td>
+        </tr>
+    </table>
+    <p>Three kinds are seen across the corpus:</p>
+    <ul>
+        <li>
+            <strong>Kind 3 — bone-to-track table.</strong> <code>uint16[boneCount]</code>, indexed by bone id, giving the ANM track id that bone's animation reads from. <code>0xFFFF</code> means "no track" — a normal, shipped state (every player model has some: 13-14 trackless bones on Mario). This is the one kind <code>act_section.html</code> previously alluded to as "linking information between bones and animation tracks."
+        </li>
+        <li>
+            <strong>Kind 2 — the mirror table.</strong> <code>(uint8 mirror_bone_id, uint8 role)[boneCount]</code>, indexed by bone id. Almost certainly the left/right mirroring used for lefty/righty batting stances. On every player model checked, this table is a <strong>perfect involution</strong>: <code>table[table[i]] == i</code> for every bone. <code>role</code> values seen: <code>1</code> = the main root, <code>2</code> = one of five extra root bones, <code>3</code> = an ordinary bone (a bone that mirrors itself, i.e. a centreline bone, is simply <code>(own_id, 3)</code> — 23-38 of these per model), <code>0</code>/<code>4</code> = rare one-offs of unknown meaning (chunk 18 bone 54 is role 0; chunk 95 bone 17 is role 4). Two donors (chunk 37/1 and 51/1, plus three Magikoopa recolor siblings 52/1, 53/1, 54/1) have oversized, non-involution mirror tables with <code>(0,0)</code> holes and duplicate bone ids — these do not fit this model and are treated as out of scope by tooling that rebuilds this section. Because mirror ids are stored as <code>uint8</code>, bone ids in a rebuilt skeleton must stay &lt;= 255; a corrupt mirror table was confirmed in Dolphin to fail silently (no crash, no visible glitch), so there is no in-game signal to catch a bad table after the fact.
+        </li>
+        <li>
+            <strong>Kind 4 — opaque, bone-independent.</strong> Seen on nine models. Each entry is <code>(uint16 track_id, uint16 = 2)</code>, with the descriptor's own <code>count</code> field matching <code>(size - 0x0C) / 4</code>. It references animation tracks, not bones, so it is unaffected by the bone count and can be treated as an opaque blob to copy through verbatim.
+        </li>
+    </ul>
+    <p>Every player model's bone table is exactly <code>boneCount</code> entries, ids <code>0..boneCount-1</code> in table order with no gaps — the mirror and track tables are the only place a bone count appears outside the header, and this is why extending the bone table (e.g. appending new bones) requires rebuilding kinds 2 and 3 alongside it, while any kind-4 entry can simply be carried through unchanged.</p>
     <h2>SRT</h2>
     <p>SRT stands for scale, rotation, transform.</p>
     <table>
