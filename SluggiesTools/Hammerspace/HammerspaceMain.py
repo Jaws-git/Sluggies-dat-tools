@@ -3658,6 +3658,8 @@ def _apply_root_scale_patch(act_bytes: bytes, data: dict, source_model_offset: i
     bone_hierarchy = model.get('BoneHierarchyEdited') or model.get('BoneHierarchy')
     if not bone_hierarchy or not act_bytes:
         return act_bytes
+    if model.get('RootBoneScaleEdited') is None:
+        return act_bytes  # nothing to write; don't touch the source DAT at all
     act_section_absolute = _act_section_absolute(source_model_offset)
     if not act_section_absolute:
         return act_bytes
