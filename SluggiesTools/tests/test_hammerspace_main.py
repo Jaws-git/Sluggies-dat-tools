@@ -18,9 +18,9 @@ for import_path in (TOOLS_DIR, HAMMERSPACE_DIR):
 import HammerspaceMain as main
 import texture_helper
 
-REAL_MARIO_SLUGGIE = (
-    TOOLS_DIR.parent / '2_Output_Models' / '18 Mario' / '78277664_mario.gpl' / '78277664_mario.gpl.sluggie'
-)
+if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import synthetic_donor
 
 
 class BuildSKNSkinningDataTests(unittest.TestCase):
@@ -2745,10 +2745,9 @@ class BuildCustomSubmeshAdditionalTextureIndexTests(unittest.TestCase):
                 texture_index_by_file_name={},
             )
 
-    @unittest.skipUnless(REAL_MARIO_SLUGGIE.is_file(), 'real Mario export not present in this checkout')
     def test_resolved_mapping_patches_the_final_index(self):
-        with REAL_MARIO_SLUGGIE.open('r', encoding='utf-8') as source_file:
-            data = json.load(source_file)
+        with synthetic_donor.donor_environment() as env:
+            data = env.reload()
         model = data['SluggiesModel']
         model['UseHammerspace'] = True
         use_b64 = model.get('UseBase64', True)
@@ -3145,22 +3144,19 @@ def _strip_edited_fields(node) -> None:
             _strip_edited_fields(value)
 
 
-@unittest.skipUnless(REAL_MARIO_SLUGGIE.is_file(), 'real Mario export not present in this checkout')
-class PatchGPLAppendSubmeshRealDonorTests(unittest.TestCase):
-    """End-to-end smoke test against the real Mario entry00 export: appends
-    a cube CustomSubmesh through the full BuildModelBlock pipeline and
-    validates the assembled block, for each PLAN_AddSubmesh.md template
-    source. GeoId patching is Phase 3's job, so the new submesh is valid but
-    unowned here -- BlockValidator does not require an owner."""
+class PatchGPLAppendSubmeshSyntheticDonorTests(unittest.TestCase):
+    """End-to-end smoke test over the synthetic donor: appends a cube
+    CustomSubmesh through the full BuildModelBlock pipeline and validates the
+    assembled block, for each PLAN_AddSubmesh.md template source. GeoId
+    patching is Phase 3's job, so the new submesh is valid but unowned here --
+    BlockValidator does not require an owner."""
+
+    def setUp(self):
+        self.env = self.enterContext(synthetic_donor.donor_environment())
 
     def _load(self):
-        with REAL_MARIO_SLUGGIE.open('r', encoding='utf-8') as source_file:
-            data = json.load(source_file)
+        data = self.env.reload()
         model = data['SluggiesModel']
-        # The working export may carry Blender edits (for example
-        # round-trip drift in VertexBufferDataEdited) that the builder
-        # rightly applies; these tests only cover the append itself.
-        _strip_edited_fields(model)
         model['UseHammerspace'] = True
         return data, model
 
@@ -3172,7 +3168,7 @@ class PatchGPLAppendSubmeshRealDonorTests(unittest.TestCase):
             _cube_custom_submesh('custom0', host_bone_id, template_source, use_b64)
         ]
         modes = main.SectionModes(gpl='build', act='clone', tex='clone', skn='clone', trailing='clone')
-        return main.BuildModelBlock(data, modes, sluggie_path=REAL_MARIO_SLUGGIE), model
+        return main.BuildModelBlock(data, modes, sluggie_path=self.env.sluggie_path), model
 
     def _rigid_surface_id(self, model: dict) -> str:
         for submesh in model['Submeshes']:

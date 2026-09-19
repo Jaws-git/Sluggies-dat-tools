@@ -15,11 +15,9 @@ for import_path in (TOOLS_DIR, HAMMERSPACE_DIR):
 
 import build_add_submesh_fixture as fixture_mod
 
-
-REAL_MARIO_SLUGGIE = (
-    TOOLS_DIR.parent
-    / '2_Output_Models' / '18 Mario' / '78277664_mario.gpl' / '78277664_mario.gpl.sluggie'
-)
+if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import synthetic_donor
 
 
 def _rigid_submesh(name: str, offset_hex: str) -> dict:
@@ -514,13 +512,16 @@ class SectionAlignmentFactsTests(unittest.TestCase):
             fixture_mod.section_alignment_facts(b"\x00" * 8)
 
 
-@unittest.skipUnless(REAL_MARIO_SLUGGIE.is_file(), "real Mario export not present in this checkout")
-class BuildFixtureRealDonorTests(unittest.TestCase):
-    """End-to-end smoke test against the real Mario entry00 export."""
+class BuildFixtureSyntheticDonorTests(unittest.TestCase):
+    """End-to-end smoke test over the synthetic donor (see synthetic_donor.py
+    for why this does not read a real export)."""
+
+    def setUp(self):
+        self.env = self.enterContext(synthetic_donor.donor_environment())
+        self.donor_submesh_count = len(self.env.data['SluggiesModel']['Submeshes'])
 
     def test_build_fixture_validates_and_preserves_donor_submeshes(self):
-        with REAL_MARIO_SLUGGIE.open('r', encoding='utf-8') as source_file:
-            source_data = json.load(source_file)
+        source_data = self.env.reload()
 
         prepared = fixture_mod.prepare_fixture_data(source_data)
         prepared_submeshes = prepared["SluggiesModel"]["Submeshes"]
@@ -531,58 +532,56 @@ class BuildFixtureRealDonorTests(unittest.TestCase):
         for i in range(len(donor_submeshes)):
             self.assertEqual(prepared_submeshes[i], donor_submeshes[i])
 
-        fixture_path = TOOLS_DIR.parent / 'Debug' / 'fixtures' / '_test_add_submesh_probe1.sluggie'
-        try:
-            build, output_offset = fixture_mod.build_fixture(
-                REAL_MARIO_SLUGGIE, fixture_path,
-                host_bone=None, template_submesh="head",
-                allow_skinned_bone=False, write=False,
-            )
-        finally:
-            if fixture_path.exists():
-                fixture_path.unlink()
+        fixture_path = self.env.directory / '_test_add_submesh_probe1.sluggie'
+        build, output_offset = fixture_mod.build_fixture(
+            self.env.sluggie_path, fixture_path,
+            host_bone=None, template_submesh="head",
+            allow_skinned_bone=False, write=False,
+        )
 
         self.assertTrue(build.validation_report["valid"], build.validation_report.get("errors"))
         self.assertIsNone(output_offset)
         facts = build.validation_report["validator_facts"]
         self.assertEqual(len(facts["gpl_submesh_layout"]), len(donor_submeshes) + 1)
 
-    def _build_real(self, name: str, **options):
-        fixture_path = TOOLS_DIR.parent / 'Debug' / 'fixtures' / name
-        try:
-            build, _ = fixture_mod.build_fixture(
-                REAL_MARIO_SLUGGIE, fixture_path,
-                host_bone=None, template_submesh="head",
-                allow_skinned_bone=False, write=False, **options,
-            )
-        finally:
-            if fixture_path.exists():
-                fixture_path.unlink()
+    def _build_donor(self, name: str, **options):
+        build, _ = fixture_mod.build_fixture(
+            self.env.sluggie_path, self.env.directory / name,
+            host_bone=None, template_submesh="head",
+            allow_skinned_bone=False, write=False, **options,
+        )
         return build
 
     def test_default_build_puts_every_section_and_texture_on_32_bytes(self):
         # Phase 2 step 4: HammerspaceMain.BuildHEADERModelBlock now pads every
         # section start to a 32-byte boundary itself (F10), so a plain build
         # (no fixture-local workaround) already comes out aligned.
-        build = self._build_real('_test_add_submesh_aligned.sluggie')
+        build = self._build_donor('_test_add_submesh_aligned.sluggie')
         report = build.validation_report
         self.assertTrue(report["valid"], report.get("errors"))
         alignment = report["section_alignment"]
         self.assertEqual(alignment["misaligned"], [])
         self.assertTrue(alignment["textures"])
-        self.assertEqual(len(report["validator_facts"]["gpl_submesh_layout"]), 4)
+        self.assertEqual(
+            len(report["validator_facts"]["gpl_submesh_layout"]),
+            self.donor_submesh_count + 1,
+        )
 
     def test_order_probe_build_carries_half_size_clone_positions(self):
-        with REAL_MARIO_SLUGGIE.open('r', encoding='utf-8') as source_file:
-            meta = fixture_mod.prepare_fixture_data(
-                json.load(source_file), host_bone=2, position_scale=0.5,
-            )["SluggiesModel"]["AddSubmeshFixture"]
-        # Mario's cap and head are owned by bones 54 and 55, so bone 2 hosting
-        # submesh 3 breaks the vanilla ascending owner order (F3).
-        self.assertEqual(meta["ExistingOwnerBones"], {"1": 54, "2": 55})
+        host_bone = synthetic_donor.RIGID_OWNER_BONE - 1
+        meta = fixture_mod.prepare_fixture_data(
+            self.env.reload(), host_bone=host_bone, position_scale=0.5,
+        )["SluggiesModel"]["AddSubmeshFixture"]
+        # The donor's rigid submesh is owned by a later bone than the host, so
+        # hosting the new submesh here breaks the vanilla ascending owner
+        # order (F3).
+        self.assertEqual(
+            meta["ExistingOwnerBones"],
+            {str(synthetic_donor.RIGID_OWNER_SUBMESH): synthetic_donor.RIGID_OWNER_BONE},
+        )
         self.assertTrue(meta["OrderBroken"])
 
-        build = self._build_real(
+        build = self._build_donor(
             '_test_add_submesh_order_probe.sluggie',
             position_scale=0.5,
         )
@@ -592,14 +591,14 @@ class BuildFixtureRealDonorTests(unittest.TestCase):
         prefix = int(report.get("container_prefix_size", 0))
         inner = int(report.get("inner_assembled_size", len(build.block) - prefix))
         block = build.block[prefix:prefix + inner]
-        head = _gpl_positions(block, 2)
-        clone = _gpl_positions(block, 3)
+        head = _gpl_positions(block, self.donor_submesh_count - 1)
+        clone = _gpl_positions(block, self.donor_submesh_count)
         self.assertEqual(len(clone), len(head))
         self.assertNotEqual(clone, head)
         self.assertEqual(clone, tuple(round(value * 0.5) for value in head))
 
     def test_cube_probe_build_validates_with_eight_cube_corners(self):
-        build = self._build_real(
+        build = self._build_donor(
             '_test_add_submesh_cube_probe.sluggie',
             cube_half_extent=0.1,
         )
@@ -608,7 +607,7 @@ class BuildFixtureRealDonorTests(unittest.TestCase):
         self.assertEqual(report["section_alignment"]["misaligned"], [])
         prefix = int(report.get("container_prefix_size", 0))
         inner = int(report.get("inner_assembled_size", len(build.block) - prefix))
-        cube = _gpl_positions(build.block[prefix:prefix + inner], 3)
+        cube = _gpl_positions(build.block[prefix:prefix + inner], self.donor_submesh_count)
         self.assertEqual(len(cube), 24)
         self.assertEqual({abs(value) for value in cube}, {205})
 

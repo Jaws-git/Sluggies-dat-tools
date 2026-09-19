@@ -1,6 +1,5 @@
 import base64
 import copy
-import json
 import pathlib
 import struct
 import sys
@@ -18,25 +17,12 @@ import build_add_submesh_fixture as probe
 from test_add_submesh_fixture import _gpl_positions
 
 
-MODELS_DIR = TOOLS_DIR.parent / '2_Output_Models'
-REAL_BOO = MODELS_DIR / '32 Boo' / '134010752_teresa.gpl' / '134010752_teresa.gpl.sluggie'
-REAL_MARIO = MODELS_DIR / '18 Mario' / '78277664_mario.gpl' / '78277664_mario.gpl.sluggie'
-TOADETTE_SLUGGIES = sorted((MODELS_DIR / '33 Toadette').glob('135708512_kinopico.gpl*/*.sluggie'))
+import synthetic_donor  # noqa: E402
 
 BLENDER_ADDON_DIR = TOOLS_DIR.parent / 'BlenderAddonSrc'
 if str(BLENDER_ADDON_DIR) not in sys.path:
     sys.path.insert(0, str(BLENDER_ADDON_DIR))
 import TemplateSources  # noqa: E402
-
-
-def _capture_exports(provenance):
-    """Locate a built-in's capture export from its provenance.
-
-    Matched by prefix because some exported folder names carry the game's own
-    mojibake (Toadette's `kinopico.gplp`).
-    """
-    folder, _sep, model = provenance['Model'].partition('/')
-    return sorted((MODELS_DIR / folder).glob(f'{model}*/*.sluggie'))
 
 
 def _state(surface_id, state_id, mode, pad='000000', prim=0):
@@ -206,32 +192,30 @@ class BuiltinTemplateTests(unittest.TestCase):
                 records = tsf.builtin_rigid_state_records(_skinned_submesh0(), name)
                 self.assertEqual(records[-1][2], tsf.BUILTIN_TEMPLATES[name]['ShaderMode'])
 
-    def test_every_capture_still_matches_its_vanilla_source(self):
+    def test_every_entry_carries_the_provenance_its_capture_probe_needs(self):
         """Decision 9: each entry is a byte-exact capture of one whole vanilla
-        rigid draw list, re-checked against the export it came from."""
-        checked = []
+        rigid draw list. The tie back to that vanilla export is re-checked by
+        ``SluggiesTools/probe_builtin_template_captures.py`` -- the exports are
+        gitignored, so it is a hand-run probe, not a test. What is checkable
+        here is that every entry names a source the probe can actually find."""
         for name, template in tsf.BUILTIN_TEMPLATES.items():
-            provenance = template['Provenance']
-            exports = _capture_exports(provenance)
-            if not exports:
-                continue
             with self.subTest(name):
-                model = json.loads(exports[0].read_text(encoding='utf-8'))['SluggiesModel']
-                source = next(
-                    sub for sub in model['Submeshes']
-                    if sub['MeshName'] == provenance['MeshName']
-                )
-                self.assertEqual(int(source['VertexBuffer']['VertexBufferCompCount']), 3)
+                provenance = template['Provenance']
                 self.assertEqual(
-                    source['DisplayStates'][-1]['SurfaceId'], provenance['SurfaceId'],
+                    sorted(provenance),
+                    ['IdenticalRigidLists', 'MeshName', 'Model', 'SurfaceId'],
                 )
+                self.assertGreaterEqual(int(provenance['IdenticalRigidLists']), 1)
+                self.assertIn('/', provenance['Model'])
+                folder, _sep, model = provenance['Model'].partition('/')
+                self.assertTrue(folder and model)
+                self.assertTrue(provenance['MeshName'])
+                # The probe reads the source's LAST display state, so the
+                # surface id must be the one the stored record list ends on.
                 self.assertEqual(
-                    tuple(tsf._record(state) for state in source['DisplayStates']),
-                    template['States'],
+                    provenance['SurfaceId'].rsplit('_', 1)[-1],
+                    f'ds{len(template["States"]) - 1}',
                 )
-            checked.append(name)
-        if not checked:
-            self.skipTest('no built-in capture exports present in this checkout')
 
 
 class BuiltinRegistryMirrorTests(unittest.TestCase):
@@ -307,47 +291,71 @@ class PrepareFixtureTests(unittest.TestCase):
                     tsf.parse_source(bad)
 
 
-class RealDonorTests(unittest.TestCase):
-    def _build(self, source, cubes, name):
-        fixture_path = TOOLS_DIR.parent / 'Debug' / 'fixtures' / name
-        try:
-            build, offset, data = tsf.build_template_source_fixture(source, fixture_path, cubes, 0.1, write=False)
-        finally:
-            if fixture_path.exists():
-                fixture_path.unlink()
+class SyntheticDonorTests(unittest.TestCase):
+    """The fixture builder end to end over the synthetic donor, for every
+    template source kind (see synthetic_donor.py for why this does not read a
+    real export)."""
+
+    def setUp(self):
+        self.env = self.enterContext(synthetic_donor.donor_environment())
+
+    def _build(self, cubes, name):
+        build, offset, data = tsf.build_template_source_fixture(
+            self.env.sluggie_path, self.env.directory / name, cubes, 0.1, write=False,
+        )
         self.assertIsNone(offset)
         report = build.validation_report
         self.assertTrue(report['valid'], report.get('errors'))
         self.assertEqual(report['section_alignment']['misaligned'], [])
         return build, data
 
-    @unittest.skipUnless(REAL_BOO.is_file(), 'Boo export not present in this checkout')
-    def test_boo_derived_and_builtin_cubes_build(self):
+    def test_every_template_source_kind_builds_one_cube(self):
+        donor_count = len(self.env.data['SluggiesModel']['Submeshes'])
         build, data = self._build(
-            REAL_BOO, [(29, 'derived:sm0_ds5'), (49, 'builtin:rigid_spec_v1')], '_test_template_sources_boo.sluggie',
+            [(2, 'derived:sm0_ds5'), (4, 'rigid:sm1_ds5'), (7, 'builtin:rigid_spec_v1')],
+            '_test_template_sources.sluggie',
         )
         cubes = data['SluggiesModel']['TemplateSourceFixture']['Cubes']
-        self.assertEqual(cubes[0]['States'], [
-            [1, '000008', '11110000'], [1, '000000', '11002002'], [4, '000000', 'ffffff10'],
-            [3, '000000', '000028a8'], [6, '010000', '00000374'], [7, '320064', 'Spec'],
-        ])
-        self.assertEqual(cubes[1]['States'][5], [7, '640064', 'Spec'])
-        _prefix = int(build.validation_report.get('container_prefix_size', 0))
-        _inner = int(build.validation_report.get('inner_assembled_size', len(build.block) - _prefix))
-        block = build.block[_prefix:_prefix + _inner]
-        for index in (1, 2):
-            self.assertEqual({abs(v) for v in _gpl_positions(block, index)}, {205})
+        self.assertEqual(
+            [c['SubmeshIndex'] for c in cubes],
+            list(range(donor_count, donor_count + 3)),
+        )
+        self.assertEqual(
+            len(build.validation_report['validator_facts']['gpl_submesh_layout']),
+            donor_count + 3,
+        )
 
-    @unittest.skipUnless(REAL_MARIO.is_file(), 'Mario export not present in this checkout')
-    def test_mario_control_cubes_build(self):
-        build, data = self._build(
-            REAL_MARIO,
-            [(49, 'rigid:sm1_ds5'), (85, 'derived:sm0_ds5'), (11, 'builtin:rigid_spec_v1')],
-            '_test_template_sources_mario.sluggie',
+    def test_derived_cube_reproduces_the_donor_surface_state_chain(self):
+        """`derived:` rebuilds the canonical rigid record order out of the
+        host submesh-0 surface's own effective states (F4): both Type-1
+        texture layers verbatim, then the UV-count-specific Type-4, a
+        regenerated Type-3, and the donor's Type-6 and Type-7."""
+        _, data = self._build([(2, 'derived:sm0_ds5')], '_test_template_sources_derived.sluggie')
+        states = data['SluggiesModel']['TemplateSourceFixture']['Cubes'][0]['States']
+        donor_states = synthetic_donor.DISPLAY_STATE_TEMPLATE
+
+        self.assertEqual([record[0] for record in states], [1, 1, 4, 3, 6, 7])
+        # The two texture layers and the trailing Type-6/Type-7 are the
+        # donor's own records, pad bytes included.
+        self.assertEqual(tuple(states[0]), donor_states[0])
+        self.assertEqual(tuple(states[1]), donor_states[1])
+        self.assertEqual(tuple(states[4]), donor_states[4])
+        self.assertEqual(tuple(states[5]), donor_states[5])
+        self.assertEqual(states[5][2], 'Spec')
+
+    def test_cube_corners_land_at_the_requested_half_extent(self):
+        donor_count = len(self.env.data['SluggiesModel']['Submeshes'])
+        build, _ = self._build(
+            [(2, 'derived:sm0_ds5'), (4, 'builtin:rigid_spec_v1')],
+            '_test_template_sources_cubes.sluggie',
         )
-        cubes = data['SluggiesModel']['TemplateSourceFixture']['Cubes']
-        self.assertEqual([c['SubmeshIndex'] for c in cubes], [3, 4, 5])
-        self.assertEqual(len(build.validation_report['validator_facts']['gpl_submesh_layout']), 6)
+        report = build.validation_report
+        prefix = int(report.get('container_prefix_size', 0))
+        inner = int(report.get('inner_assembled_size', len(build.block) - prefix))
+        block = build.block[prefix:prefix + inner]
+        # 0.1 at QuantizeInfo 59 (divisor 2048) quantizes to 205.
+        for index in range(donor_count, donor_count + 2):
+            self.assertEqual({abs(value) for value in _gpl_positions(block, index)}, {205})
 
 
 if __name__ == '__main__':

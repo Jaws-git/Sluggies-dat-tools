@@ -1,5 +1,4 @@
 import ast
-import json
 import pathlib
 import sys
 import unittest
@@ -30,10 +29,6 @@ from HostBones import (  # noqa: E402
     skn_bone_ids,
 )
 
-MODELS_DIR = ROOT / '2_Output_Models'
-REAL_MARIO = MODELS_DIR / '18 Mario' / '78277664_mario.gpl' / '78277664_mario.gpl.sluggie'
-REAL_LUIGI = MODELS_DIR / '19 Luigi' / '82188352_luigi.gpl' / '82188352_luigi.gpl.sluggie'
-REAL_MARE = MODELS_DIR / '42 Noki' / '168900000_mare.gpl' / '168900000_mare.gpl.sluggie'
 
 
 def _rec(bone_id, parent_id, geo_id_raw=GEO_ID_FREE, skinned=False):
@@ -244,44 +239,68 @@ class BoneMetadataVersionTests(unittest.TestCase):
         self.assertTrue(bone_metadata_is_current(BONE_METADATA_VERSION))
 
 
-def _real_choices(path):
-    with path.open('r', encoding='utf-8') as handle:
-        model = json.load(handle)['SluggiesModel']
+#: A miniature model shaped like a real player export, in ``.sluggie`` JSON
+#: form: one rigid mesh owner on a leaf (a cap on the head), one SKN-driving
+#: bone (a hand), one free leaf, one free inner bone and two parentless roots.
+#: It stands in for the real Mario/Luigi/Noki exports this class used to read
+#: -- those are gitignored working files, so tests must not depend on them
+#: (the F7 survey numbers they asserted live in PLAN_AddSubmesh.md F7). What
+#: is worth testing is the composition, which a synthetic donor exercises just
+#: as well as a 91-bone one.
+MINIATURE_MODEL = {
+    'SluggiesModel': {
+        'BoneHierarchy': [
+            {'BoneId': 0, 'ParentBoneId': None, 'GeoIdRaw': 0xFFFF},  # root
+            {'BoneId': 1, 'ParentBoneId': None, 'GeoIdRaw': 0xFFFF},  # second root
+            {'BoneId': 2, 'ParentBoneId': 0, 'GeoIdRaw': 0xFFFF},     # spine (inner)
+            {'BoneId': 3, 'ParentBoneId': 2, 'GeoIdRaw': 0xFFFF},     # hand, drives skinning
+            {'BoneId': 4, 'ParentBoneId': 2, 'GeoIdRaw': 0xFFFF},     # head (inner, free)
+            {'BoneId': 5, 'ParentBoneId': 4, 'GeoIdRaw': 0},          # cap: rigid owner
+            {'BoneId': 6, 'ParentBoneId': 4, 'GeoIdRaw': 0xFFFF},     # free leaf
+        ],
+        'SkinData': {'SK1s': [{'BoneIndex': 3}], 'SK2s': [], 'SKAccs': []},
+    },
+}
+
+
+def _choices(data):
+    """The host-bone pipeline as the add-on runs it: hierarchy + SkinData ->
+    records -> classified -> ordered."""
+    model = data['SluggiesModel']
     records = bone_records_from_hierarchy(model['BoneHierarchy'], model.get('SkinData'))
     ordered = order_host_bone_choices(classify_host_bones(records), records)
     return {c.bone_id: c.status for c in ordered}, len(records)
 
 
-class RealModelHostBoneTests(unittest.TestCase):
-    """F7 survey numbers on real exports (skipped when not exported)."""
+class ModelShapedHostBoneTests(unittest.TestCase):
+    """The whole pipeline over a model-shaped donor, reproducing F7's rules."""
 
-    @unittest.skipUnless(REAL_MARIO.is_file(), "real Mario export not present")
-    def test_mario(self):
-        statuses, bone_count = _real_choices(REAL_MARIO)
-        self.assertEqual(bone_count, 91)
-        # Rigid owners: bone 54 (cap) and 55 (head).
-        self.assertNotIn(54, statuses)
-        self.assertNotIn(55, statuses)
-        # Hand bone 28 drives skinning (probe 3); bone 49 is SKN-unused (probe 4).
-        self.assertEqual(statuses[28], STATUS_DRIVES_SKINNING)
-        self.assertEqual(statuses[49], STATUS_RECOMMENDED)
-        safe = [b for b, s in statuses.items() if s in (STATUS_RECOMMENDED, STATUS_ALLOWED)]
-        self.assertEqual(len(safe), 33)
+    def test_rigid_owner_is_never_offered(self):
+        statuses, bone_count = _choices(MINIATURE_MODEL)
+        self.assertEqual(bone_count, 7)
+        self.assertNotIn(5, statuses)  # the cap owns a donor mesh (F2)
 
-    @unittest.skipUnless(REAL_LUIGI.is_file(), "real Luigi export not present")
-    def test_luigi(self):
-        statuses, bone_count = _real_choices(REAL_LUIGI)
-        self.assertEqual(bone_count, 90)
-        self.assertIn(STATUS_DRIVES_SKINNING, statuses.values())
-        safe = [b for b, s in statuses.items() if s in (STATUS_RECOMMENDED, STATUS_ALLOWED)]
-        self.assertEqual(len(safe), 34)
+    def test_skn_bone_is_offered_but_flagged(self):
+        statuses, _ = _choices(MINIATURE_MODEL)
+        self.assertEqual(statuses[3], STATUS_DRIVES_SKINNING)
 
-    @unittest.skipUnless(REAL_MARE.is_file(), "real Noki (mare) export not present")
-    def test_mare_minimum_still_has_26_safe_bones(self):
-        statuses, bone_count = _real_choices(REAL_MARE)
-        self.assertEqual(bone_count, 65)
+    def test_free_bones_are_recommended_and_roots_only_allowed(self):
+        statuses, _ = _choices(MINIATURE_MODEL)
+        self.assertEqual(statuses[4], STATUS_RECOMMENDED)
+        self.assertEqual(statuses[6], STATUS_RECOMMENDED)
+        self.assertEqual(statuses[2], STATUS_RECOMMENDED)
+        # Parentless bones are legal hosts but ranked last (F7).
+        self.assertEqual(statuses[0], STATUS_ALLOWED)
+        self.assertEqual(statuses[1], STATUS_ALLOWED)
         safe = [b for b, s in statuses.items() if s in (STATUS_RECOMMENDED, STATUS_ALLOWED)]
-        self.assertEqual(len(safe), 26)
+        self.assertEqual(sorted(safe), [0, 1, 2, 4, 6])
+
+    def test_a_single_bone_prop_offers_nothing(self):
+        # F7: a prop's only bone already owns the prop mesh.
+        statuses, bone_count = _choices({'SluggiesModel': {
+            'BoneHierarchy': [{'BoneId': 0, 'ParentBoneId': None, 'GeoIdRaw': 0}],
+        }})
+        self.assertEqual((statuses, bone_count), ({}, 1))
 
 
 class ImportSluggiesBoneMetadataAstTests(unittest.TestCase):

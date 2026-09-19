@@ -18,13 +18,13 @@ from types import SimpleNamespace
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BLENDER_ADDON_DIR = ROOT / 'BlenderAddonSrc'
 EXPORTER_PATH = BLENDER_ADDON_DIR / 'ExportSluggies.py'
-REAL_MARIO_SLUGGIE = (
-    ROOT / '2_Output_Models' / '18 Mario' / '78277664_mario.gpl' / '78277664_mario.gpl.sluggie'
-)
 if str(BLENDER_ADDON_DIR) not in sys.path:
     sys.path.insert(0, str(BLENDER_ADDON_DIR))
+if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import CustomSubmeshExport as cse  # noqa: E402
+import synthetic_donor  # noqa: E402
 
 
 def _exporter_function(name):
@@ -193,11 +193,11 @@ class SkinnedDonorObjectsTests(unittest.TestCase):
 
     def test_an_empty_skin_data_edited_is_dropped_on_a_custom_submesh_only_export(self):
         source = _execute_source()
-        self.assertIn('if _skin_data_edited_is_empty(data):', source)
-        self.assertLess(
-            source.index('if _skin_data_edited_is_empty(data):'),
-            source.rindex('_purge_skn_edited(data)'),
-        )
+        # The guard sits on the `elif` that follows the skinned-donor branch;
+        # match the call, not the whole condition, which also tests SkinData.
+        guard = '_skin_data_edited_is_empty(data):'
+        self.assertIn(guard, source)
+        self.assertLess(source.index(guard), source.rindex('_purge_skn_edited(data)'))
 
     def test_skin_encode_and_purge_only_run_when_a_skinned_mesh_is_present(self):
         source = _execute_source()
@@ -687,9 +687,6 @@ def _unpack(field, fmt):
     return list(struct.unpack(f'>{len(raw) // size}{fmt}', raw))
 
 
-def _mario_model():
-    with open(REAL_MARIO_SLUGGIE, encoding='utf-8') as handle:
-        return json.load(handle)
 
 
 class AttributePlanTests(unittest.TestCase):
@@ -881,7 +878,6 @@ class LoopAttributeGlueTests(unittest.TestCase):
         self.assertIn('_per_loop_normals', source)
 
 
-@unittest.skipUnless(REAL_MARIO_SLUGGIE.exists(), 'real Mario export not present')
 class ExportedEntryBuildsTests(unittest.TestCase):
     """Exporter-produced entries go through the real hammerspace builder:
     validation, GPL append and GeoId patch, for every template source."""
@@ -895,6 +891,9 @@ class ExportedEntryBuildsTests(unittest.TestCase):
         import HammerspaceMain
         cls.main = HammerspaceMain
 
+    def setUp(self):
+        self.env = self.enterContext(synthetic_donor.donor_environment())
+
     def _free_host_bone(self, model):
         skn_used = {int(e.get('BoneId', -1))
                     for e in (model.get('SkinData') or {}).get('SK1s', []) + (model.get('SkinData') or {}).get('SK2s', [])}
@@ -903,7 +902,7 @@ class ExportedEntryBuildsTests(unittest.TestCase):
                     and b.get('ParentBoneId') is not None)
 
     def _build(self, template_source, away=None, warnings=None):
-        data = _mario_model()
+        data = self.env.reload()
         model = data['SluggiesModel']
         model['UseHammerspace'] = True
         host_bone_id = self._free_host_bone(model)
@@ -921,7 +920,7 @@ class ExportedEntryBuildsTests(unittest.TestCase):
         )
         model['CustomSubmeshes'] = [entry]
         modes = self.main.SectionModes(gpl='build', act='clone', tex='clone', skn='clone', trailing='clone')
-        return self.main.BuildModelBlock(data, modes, sluggie_path=REAL_MARIO_SLUGGIE), entry, plan
+        return self.main.BuildModelBlock(data, modes, sluggie_path=self.env.sluggie_path), entry, plan
 
     def test_every_template_source_builds_a_valid_block(self):
         for source in ('rigid:sm1_ds5', 'derived:sm0_ds5', 'builtin:rigid_spec_v1'):
@@ -957,26 +956,41 @@ class ExportedEntryBuildsTests(unittest.TestCase):
         self.assertEqual(warnings, [])
 
 
-@unittest.skipUnless(REAL_MARIO_SLUGGIE.exists(), 'real Mario export not present')
+#: A donor rigid submesh in `.sluggie` shape: QuantizeInfo 59 (divisor 2048)
+#: int16 positions on a bone whose bind matrix is a non-trivial chain, so the
+#: round trip below actually exercises the matrix math rather than an identity.
+#: Modelled on a real export's `head` submesh but synthesized here -- a real
+#: `.sluggie` is a gitignored working file, so tests must not read one.
+ANCHOR_QUANTIZE_INFO = 59
+ANCHOR_BONE_HIERARCHY = [
+    {'BoneId': 0, 'ParentBoneId': None, 'Translation': [0.0, 0.0, 0.0],
+     'Scale': [1.0, 1.0, 1.0], 'Quaternion': [1.0, 0.0, 0.0, 0.0]},
+    {'BoneId': 1, 'ParentBoneId': 0, 'Translation': [0.0, 0.35, 0.0],
+     'Scale': [1.0, 1.0, 1.0], 'Quaternion': [0.92387953, 0.0, 0.0, 0.38268343]},  # 45 deg about z
+    {'BoneId': 2, 'ParentBoneId': 1, 'Translation': [0.05, 0.28, -0.02],
+     'Scale': [1.0, 1.0, 1.0], 'Quaternion': [-1.0, 0.0, 0.0, 0.0]},
+]
+ANCHOR_HOST_BONE_ID = 2
+#: Quantized exactly as a donor buffer is: whole int16s, so decoding and
+#: re-encoding must land back on these values bit for bit.
+ANCHOR_DONOR_INT16 = [
+    0, 0, 0,  205, -410, 96,  -1024, 33, -700,
+    2047, -2047, 1,  -3, 512, -128,  700, 700, 700,
+]
+
+
 class RoundTripAnchorTests(unittest.TestCase):
-    """Mario's rigid `head`, placed the way the importer places it, must come
+    """A rigid donor submesh, placed the way the importer places it, must come
     back to its donor quantized position bytes exactly."""
 
-    def test_imported_head_reproduces_donor_positions(self):
-        with open(REAL_MARIO_SLUGGIE, encoding='utf-8') as handle:
-            model = json.load(handle)['SluggiesModel']
-        head_index = next(i for i, sm in enumerate(model['Submeshes']) if sm.get('MeshName') == 'head')
-        vb = model['Submeshes'][head_index]['VertexBuffer']
-        self.assertEqual((vb['VertexBufferCompCount'], vb['VertexBufferQuantizeInfo']), (3, 59))
-        raw = base64.b64decode(vb['VertexBufferData'])
-        donor = struct.unpack(f'>{len(raw) // 2}h', raw)
-        divisor = 1 << (59 & 0xF)
+    def test_imported_rigid_submesh_reproduces_donor_positions(self):
+        raw = struct.pack(f'>{len(ANCHOR_DONOR_INT16)}h', *ANCHOR_DONOR_INT16)
+        divisor = 1 << (ANCHOR_QUANTIZE_INFO & 0xF)
         # Blender stores vertex coordinates and matrices as float32.
-        cos = [tuple(_f32(donor[i + k] / divisor) for k in range(3)) for i in range(0, len(donor), 3)]
+        cos = [tuple(_f32(ANCHOR_DONOR_INT16[i + k] / divisor) for k in range(3))
+               for i in range(0, len(ANCHOR_DONOR_INT16), 3)]
 
-        owner = next(b for b in model['BoneHierarchy']
-                     if not b.get('Skinned') and b.get('GeoId') == head_index)
-        host_bind = cse.bone_absolute_matrices(model['BoneHierarchy'])[int(owner['BoneId'])]
+        host_bind = cse.bone_absolute_matrices(ANCHOR_BONE_HIERARCHY)[ANCHOR_HOST_BONE_ID]
         # _apply_nonskinned_transform sets matrix_world = bind before the
         # armature parent is evaluated, so the evaluated world matrix is
         # armature_world @ bind.
@@ -988,7 +1002,7 @@ class RoundTripAnchorTests(unittest.TestCase):
         geometry = cse.bone_local_geometry(cos, triangles, obj_world, arm_world, host_bind)
         self.assertEqual(geometry.source_vertices, list(range(n)))
 
-        cse.check_position_range('head', int(owner['BoneId']), geometry)
+        cse.check_position_range('head', ANCHOR_HOST_BONE_ID, geometry)
         self.assertEqual(cse.encode_positions('head', geometry), raw)
 
 

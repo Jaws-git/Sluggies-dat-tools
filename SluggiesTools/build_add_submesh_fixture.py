@@ -578,8 +578,22 @@ def prepare_fixture_data(
     return data
 
 
+#: Model-level keys a Blender re-export adds on top of the donor. They are not
+#: ``*Edited`` suffixed, but they are just as donor-foreign: a leftover
+#: ``CustomSubmeshes`` entry makes the builder hand its host bone a GeoId for a
+#: submesh this probe never assembles ("ACT bone N GeoId M is outside GPL
+#: submesh count M"). The .sluggie files these probes read are gitignored
+#: working exports, so any of these may be present.
+DONOR_FOREIGN_ADDITION_KEYS = (
+    "CustomSubmeshes",
+    "AdditionalTextureDescriptors",
+    "DesiredTextureAssignments",
+)
+
+
 def strip_donor_edits(node) -> None:
-    """Remove every ``*Edited`` key from a .sluggie tree, in place.
+    """Remove every ``*Edited`` key and export-added section from a .sluggie
+    tree, in place.
 
     Probes must stay donor-identical apart from the appended submesh. Blender
     re-exports usually carry edits (even pure round-trip drift), and any GPL
@@ -589,6 +603,8 @@ def strip_donor_edits(node) -> None:
     if isinstance(node, dict):
         for key in [k for k in node if k.endswith("Edited")]:
             del node[key]
+        for key in DONOR_FOREIGN_ADDITION_KEYS:
+            node.pop(key, None)
         for value in node.values():
             strip_donor_edits(value)
     elif isinstance(node, list):
