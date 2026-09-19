@@ -1388,18 +1388,39 @@ def _custom_submesh_faces(cs: 'CustomSubmesh', descriptors: list[dict]) -> list[
     return faces
 
 
+def _donor_palette_name(model: dict) -> str:
+    """Return the model's TPL palette name, as carried by every donor UV
+    header (``L_mario.tpl``, ``mario.tpl``, ...).
+
+    A custom submesh has no donor UV header to inherit from, but the name is
+    per-model rather than per-submesh, so any donor channel answers for all of
+    them. Returns '' when the model has no donor UV channel to read.
+    """
+    for submesh in model.get('Submeshes') or []:
+        for uv in submesh.get('UVChannels') or []:
+            name = uv.get('PaletteName')
+            if name:
+                return name
+    return ''
+
+
 def _custom_submesh_to_submesh(
     cs: 'CustomSubmesh', submesh_index: int, records: list[list],
-    drawing_index: int, primitive_bytes: bytes,
+    drawing_index: int, primitive_bytes: bytes, palette_name: str = '',
 ) -> 'Submesh':
     """Assemble a CustomSubmesh's already-resolved geometry and display
     states into a Submesh dataclass, ready for _build_rigid_submesh_blob.
     Fields the blob writer never reads (file-offset metadata that only
-    matters for donor submeshes) are left at 0/empty."""
+    matters for donor submeshes) are left at 0/empty.
+
+    ``palette_name`` is the donor model's TPL name, which every UV header
+    must carry: a model with no embedded TEX section resolves its textures
+    through this string alone, so an empty one crashes the game on the first
+    frame the submesh is actually drawn."""
     uv_channels = [
         UVChannel(
             channel_index=uv.channel_index,
-            palette_name='',
+            palette_name=palette_name,
             texture_index=0,
             wrap_s=0,
             wrap_t=0,
@@ -1501,7 +1522,10 @@ def _build_custom_submesh(
     faces = _custom_submesh_faces(cs, descriptors)
     raw = drawlist.encodeDrawList(faces, descriptors) + b'\x00'
     primitive_bytes = raw + b'\x00' * ((-len(raw)) % 32)
-    return _custom_submesh_to_submesh(cs, submesh_index, records, drawing_index, primitive_bytes)
+    return _custom_submesh_to_submesh(
+        cs, submesh_index, records, drawing_index, primitive_bytes,
+        _donor_palette_name(model),
+    )
 
 
 def _build_rigid_submesh_blob(sub: 'Submesh') -> tuple[bytes, int]:

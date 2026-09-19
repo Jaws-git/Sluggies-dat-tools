@@ -345,6 +345,42 @@ def armature_has_new_bones(candidates, context):
     return any(b.get('SluggiesUserAdded') for b in arm_obj.data.bones)
 
 
+SRT_TYPE_ROTATION = 0x4
+SRT_TYPE_TRANSLATION = 0x8
+
+
+def _srt_type_for(bone_name, translation, rotation, scale, warnings):
+    """The SRT block's type byte for one new bone, derived from the values
+    actually being written.
+
+    The byte is a component-presence mask, not a free-form tag: bit 0x4 means
+    "rotation is live", bit 0x8 means "translation is live", and the game
+    ignores whichever component its bit doesn't claim. Surveyed over the
+    player corpus, all 1,469 vanilla `SRTType 8` bones have an identity
+    rotation and all 1,903 `SRTType 12` bones have a non-identity one, with no
+    exceptions either way.
+
+    So this cannot be inherited from the parent bone: a bone that copies its
+    parent's `8` while carrying a real rotation has that rotation silently
+    dropped in game, and the mesh riding it lands somewhere the user never saw
+    in Blender.
+    """
+    srt_type = 0
+    if abs(abs(rotation.w) - 1.0) > 1e-6 or any(
+        abs(v) > 1e-6 for v in (rotation.x, rotation.y, rotation.z)
+    ):
+        srt_type |= SRT_TYPE_ROTATION
+    if any(abs(v) > 1e-6 for v in (translation.x, translation.y, translation.z)):
+        srt_type |= SRT_TYPE_TRANSLATION
+    if any(abs(v - 1.0) > 1e-6 for v in (scale.x, scale.y, scale.z)):
+        warnings.append(
+            f"{bone_name}: bone scale is not 1; no vanilla bone carries one and the "
+            "SRT type byte has no known scale bit, so the scale is exported but the "
+            "game is expected to ignore it."
+        )
+    return srt_type
+
+
 def encode_bone_hierarchy_edited(candidates, data, warnings, context):
     """Write ``SluggiesModel.BoneHierarchyEdited`` when the target armature has
     any Add-bone leaf (PLAN_AddBones.md Phase 4 step 3).
@@ -407,6 +443,7 @@ def encode_bone_hierarchy_edited(candidates, data, warnings, context):
         local = parent.matrix_local.inverted() @ b.matrix_local
         translation, rotation, scale = local.decompose()
         geo_id_raw = int(b.get('SluggiesGeoIdRaw', GEO_ID_FREE))
+        srt_type = _srt_type_for(b.name, translation, rotation, scale, warnings)
 
         edited.append({
             "BoneId": own_id,
@@ -417,7 +454,7 @@ def encode_bone_hierarchy_edited(candidates, data, warnings, context):
             "TrackId": int(b.get('track_id', 0xFFFF)),
             "MirrorBoneId": own_id,
             "MirrorRole": 3,
-            "SRTType": int(b.get('SluggiesSRTType', 0xC)),
+            "SRTType": srt_type,
             "DrawPriority": int(b.get('SluggiesDrawPriority', 0)),
             "InheritTransform": bool(b.get('SluggiesInheritTransform', True)),
             "UserAdded": True,
@@ -3500,22 +3537,15 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     self.report({"INFO"}, skn_msg)
             else:
                 encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=self.use_custom_normals)
-        elif data["SluggiesModel"].get("SkinData"):
-            if _skin_data_edited_is_empty(data):
-                # Only an export from before this guard existed can have left
-                # an empty SkinDataEdited on a skinned model; it would unskin
-                # the model. Drop it so the donor structure is used again.
-                _purge_skn_edited(data)
-                warnings.append(
-                    "Removed an empty SkinDataEdited left by an earlier export that "
-                    "included no skinned mesh; the model's donor skinning is used again."
-                )
-            else:
-                warnings.append(
-                    "No skinned mesh was part of this export, so the model's skinning "
-                    "(SKN) was left exactly as it was. Select the skinned mesh too if "
-                    "you meant to re-export its weights."
-                )
+        elif data["SluggiesModel"].get("SkinData") and _skin_data_edited_is_empty(data):
+            # Only an export from before this guard existed can have left
+            # an empty SkinDataEdited on a skinned model; it would unskin
+            # the model. Drop it so the donor structure is used again.
+            _purge_skn_edited(data)
+            warnings.append(
+                "Removed an empty SkinDataEdited left by an earlier export that "
+                "included no skinned mesh; the model's donor skinning is used again."
+            )
 
         update_facial_pose_edits(candidates, data, warnings)
 

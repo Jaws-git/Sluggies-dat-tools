@@ -156,7 +156,8 @@ class EncodeBoneHierarchyEditedTests(unittest.TestCase):
     def setUp(self):
         ns = _extract(
             {'re', '_BONE_NAME_RE', '_bone_id_from_bone_name',
-             '_find_root_scale_armature', 'encode_bone_hierarchy_edited'},
+             '_find_root_scale_armature', 'encode_bone_hierarchy_edited',
+             'SRT_TYPE_ROTATION', 'SRT_TYPE_TRANSLATION', '_srt_type_for'},
             extra_globals={'GEO_ID_FREE': GEO_ID_FREE},
         )
         self.fn = ns['encode_bone_hierarchy_edited']
@@ -234,6 +235,49 @@ class EncodeBoneHierarchyEditedTests(unittest.TestCase):
         second_entry = next(b for b in data["SluggiesModel"]["BoneHierarchyEdited"] if b["UserAdded"] and b["ParentBoneId"] == first_entry["BoneId"])
         self.assertEqual(first_entry["BoneId"], 1)
         self.assertEqual(second_entry["BoneId"], 2)
+
+
+class SrtTypeForTests(unittest.TestCase):
+    """PLAN_AddBones.md F11: the SRT type byte is a component-presence mask, so
+    it has to be derived from the rotation/translation actually written. A bone
+    that inherited a translation-only 8 from its parent while carrying a real
+    rotation had that rotation dropped in game, moving any mesh riding it."""
+
+    def setUp(self):
+        ns = _extract({'SRT_TYPE_ROTATION', 'SRT_TYPE_TRANSLATION', '_srt_type_for'})
+        self.fn = ns['_srt_type_for']
+
+    def _call(self, translation, rotation, scale=(1.0, 1.0, 1.0), warnings=None):
+        return self.fn(
+            'bone_91', _FakeVec3(*translation), _FakeQuat(*rotation),
+            _FakeVec3(*scale), [] if warnings is None else warnings,
+        )
+
+    def test_identity_bone_claims_nothing(self):
+        self.assertEqual(self._call((0.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0)), 0)
+
+    def test_translation_only_claims_bit_8(self):
+        self.assertEqual(self._call((0.0, 0.11, 0.0), (1.0, 0.0, 0.0, 0.0)), 0x8)
+
+    def test_rotation_only_claims_bit_4(self):
+        self.assertEqual(self._call((0.0, 0.0, 0.0), (0.0, 0.0, -0.7071, -0.7071)), 0x4)
+
+    def test_rotation_and_translation_claim_both(self):
+        self.assertEqual(self._call((0.0, 0.11, 0.0), (0.0, 0.0, -0.7071, -0.7071)), 0xC)
+
+    def test_negated_w_identity_is_still_identity(self):
+        # Quaternions are stored with w negated, so -1 is as much an identity
+        # rotation as +1 and must not set the rotation bit.
+        self.assertEqual(self._call((0.0, 0.11, 0.0), (-1.0, 0.0, 0.0, 0.0)), 0x8)
+
+    def test_non_unit_scale_warns_without_changing_the_mask(self):
+        warnings = []
+        self.assertEqual(
+            self._call((0.0, 0.11, 0.0), (1.0, 0.0, 0.0, 0.0), (2.0, 1.0, 1.0), warnings),
+            0x8,
+        )
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('scale', warnings[0])
 
 
 class ValidateBoneHierarchyEditedExportTests(unittest.TestCase):

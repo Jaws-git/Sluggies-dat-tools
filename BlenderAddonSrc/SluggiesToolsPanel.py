@@ -1031,7 +1031,10 @@ def _unused_bone_name(arm_obj):
 def _create_added_bone(context, arm_obj, parent_bone_name):
     """Create one inert leaf bone parented to *parent_bone_name* (plan step 2),
     following the user contract: no GeoId/track, self-mirrored role 3,
-    InheritTransform true, DrawPriority 0, SRTType copied from the parent."""
+    InheritTransform true, DrawPriority 0. The SRT type byte is not set here:
+    it is a component-presence mask over the bone's own rotation/translation,
+    so the exporter derives it from the values it writes (PLAN_AddBones.md
+    F11) rather than inheriting a parent's mask that may not fit."""
     prev_active = context.view_layer.objects.active
     prev_mode = context.object.mode if context.object is not None else 'OBJECT'
     context.view_layer.objects.active = arm_obj
@@ -1063,12 +1066,10 @@ def _create_added_bone(context, arm_obj, parent_bone_name):
         bpy.ops.object.mode_set(mode=prev_mode if prev_mode in ('OBJECT', 'EDIT') else 'OBJECT')
 
     new_bone = arm_obj.data.bones[new_name]
-    parent_bone = arm_obj.data.bones[parent_bone_name]
     new_bone['SluggiesUserAdded'] = True
     new_bone['SluggiesCreationOrder'] = _next_new_bone_creation_order(arm_obj)
     new_bone['SluggiesGeoIdRaw'] = HostBones.GEO_ID_FREE
     new_bone['SluggiesSkinned'] = False
-    new_bone['SluggiesSRTType'] = int(parent_bone.get('SluggiesSRTType', 0xC))
     new_bone['SluggiesDrawPriority'] = 0
     new_bone['SluggiesInheritTransform'] = True
     new_bone['track_id'] = 0xFFFF
