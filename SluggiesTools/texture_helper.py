@@ -564,6 +564,21 @@ def check_png_dimensions(
     return width, height
 
 
+# Template descriptor fields that describe the *template's* size and its place
+# in the donor TEX section. They are dropped when a template is cloned into an
+# appended texture's descriptor, which has neither yet (see
+# build_hammerspace_texture_plan).
+_TEMPLATE_FOOTPRINT_FIELDS = (
+    "Width",
+    "Height",
+    "ImageDataOffset",
+    "ImageDataLength",
+    "ImagePayloadLength",
+    "ImageDataCapacity",
+    "TextureDescriptorOffset",
+)
+
+
 def _validate_parsed_tpl_against_descriptor(
     descriptor: Mapping[str, Any],
     parsed: ParsedSingleImageTpl,
@@ -904,7 +919,10 @@ def build_hammerspace_texture_plan(
     ``additional_descriptors`` is append-only. Each request is assigned index
     ``len(descriptors) + append_order`` and encoded from a PNG in the same
     model-local ``tex/`` folder using the selected donor descriptor's direct GX
-    format. Indexed and mipmapped templates are rejected.
+    format. Indexed and mipmapped templates are rejected. The template lends
+    only its format and sampler fields: an addition is always encoded at its
+    PNG's own dimensions (clamped to the GX limit), never at the template's, and
+    carries no donor slot footprint.
     """
     if not additional_descriptors and not allow_dimension_change:
         return build_texture_plan(
@@ -960,6 +978,15 @@ def build_hammerspace_texture_plan(
             "PaletteEntries": 0,
             "PaletteFormat": 0,
         })
+        # An addition clones the template's *format* and sampler fields, never
+        # its size or its slot footprint: the PNG's own dimensions are the only
+        # source of truth (the Blender add-on seeds a new texture at the GX
+        # maximum and the user is free to change it), and the appended texture
+        # has no donor slot to fit into -- BuildTEX sizes and places it from the
+        # encoded payload. Carrying the template's values here would only make
+        # them look authoritative.
+        for _stale in _TEMPLATE_FOOTPRINT_FIELDS:
+            appended_descriptor.pop(_stale, None)
         descriptors_to_encode.append(appended_descriptor)
         names_to_encode.append(name)
         template_indices[new_index] = template_index
@@ -987,8 +1014,25 @@ def build_hammerspace_texture_plan(
         # dimensions the TEX section will actually carry, not the PNG's.
         encode_width, encode_height = clamp_texture_dimensions(actual_width, actual_height)
 
+        # An appended texture has no descriptor dimensions to differ from, so
+        # there is nothing to compare; just report what it will be encoded at,
+        # and say so when the PNG had to be clamped to the GX limit.
+        if is_addition:
+            if (encode_width, encode_height) != (actual_width, actual_height):
+                slogger.info(
+                    f"texture {index} ({name}): new texture; PNG "
+                    f"{actual_width}x{actual_height} exceeds the GX limit, "
+                    f"encoding at {encode_width}x{encode_height}",
+                    source="texture_helper",
+                )
+            else:
+                slogger.info(
+                    f"texture {index} ({name}): new texture, encoding at "
+                    f"{encode_width}x{encode_height}",
+                    source="texture_helper",
+                )
         # Log an info when the actual dimensions differ from the descriptor.
-        if expected_width is not None and expected_height is not None:
+        elif expected_width is not None and expected_height is not None:
             if encode_width != expected_width or encode_height != expected_height:
                 slogger.info(
                     f"texture {index} ({name}): PNG dimensions "

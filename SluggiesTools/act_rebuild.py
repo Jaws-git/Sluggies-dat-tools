@@ -394,8 +394,14 @@ def append_leaf_bone(
     the engine reacts to a corrupt mirror table -- Phase 3 rule 8 rejects
     this for any real build.
 
-    Only knows how to extend a donor with exactly one kind-3 and one kind-2
-    user-data descriptor; anything else there (F4's "no user data at all") is
+    Handles two donor shapes for the per-bone user-data arrays: exactly one
+    kind-3 (track) plus one kind-2 (mirror) descriptor, which are both
+    extended by one entry; or **no user data at all**, which F4 documents as
+    a normal shipped state (dozens of models carry ``userDataSize = 0``) and
+    where there is simply nothing to extend -- the new bone is then trackless
+    and has no mirror entry, which F4 also shows is routine, and
+    ``track_id``/``mirror_bone_id``/``mirror_role`` are ignored. Any other
+    combination (one of the two without the other) is ambiguous and is
     refused rather than guessed at. Any other descriptor kind (F5's kind-4
     blob) is bone-count-independent and is passed through unchanged.
     """
@@ -439,11 +445,12 @@ def append_leaf_bone(
 
     track_descs = [d for d in parsed.user_data if d.kind == KIND_TRACK]
     mirror_descs = [d for d in parsed.user_data if d.kind == KIND_MIRROR]
-    if len(track_descs) != 1 or len(mirror_descs) != 1:
+    if (len(track_descs), len(mirror_descs)) not in ((1, 1), (0, 0)):
         raise ValueError(
             "append_leaf_bone only supports donors with exactly one kind-3 (track) "
-            "and one kind-2 (mirror) user-data descriptor"
+            "and one kind-2 (mirror) user-data descriptor, or with neither (F4)"
         )
+    has_per_bone_tables = bool(track_descs)
 
     def extend_pairs(payload: bytes, extra: bytes) -> bytes:
         expected = _align_up(parsed.bone_count * 2, 4)
@@ -457,21 +464,26 @@ def append_leaf_bone(
             extended += b'\x00' * (4 - len(extended) % 4)
         return extended
 
-    track = track_descs[0]
-    new_track = UserDataDescriptor(
-        kind=track.kind, count=track.count, data_ptr=track.data_ptr,
-        payload=extend_pairs(track.payload, struct.pack('>H', track_id)),
-    )
-    mirror = mirror_descs[0]
-    mirror_target = new_id if mirror_bone_id is None else mirror_bone_id
-    new_mirror = UserDataDescriptor(
-        kind=mirror.kind, count=mirror.count, data_ptr=mirror.data_ptr,
-        payload=extend_pairs(mirror.payload, struct.pack('BB', mirror_target, mirror_role)),
-    )
-    new_user_data = [
-        new_track if d.kind == KIND_TRACK else new_mirror if d.kind == KIND_MIRROR else d
-        for d in parsed.user_data
-    ]
+    if not has_per_bone_tables:
+        # F4: no user data at all -- no per-bone array to extend. Any other
+        # descriptor kind (F5's kind-4 blob) still passes through verbatim.
+        new_user_data = list(parsed.user_data)
+    else:
+        track = track_descs[0]
+        new_track = UserDataDescriptor(
+            kind=track.kind, count=track.count, data_ptr=track.data_ptr,
+            payload=extend_pairs(track.payload, struct.pack('>H', track_id)),
+        )
+        mirror = mirror_descs[0]
+        mirror_target = new_id if mirror_bone_id is None else mirror_bone_id
+        new_mirror = UserDataDescriptor(
+            kind=mirror.kind, count=mirror.count, data_ptr=mirror.data_ptr,
+            payload=extend_pairs(mirror.payload, struct.pack('BB', mirror_target, mirror_role)),
+        )
+        new_user_data = [
+            new_track if d.kind == KIND_TRACK else new_mirror if d.kind == KIND_MIRROR else d
+            for d in parsed.user_data
+        ]
 
     total_length = (
         HEADER_SIZE + len(bones) * BONE_RECORD_SIZE + len(srt_blobs) * SRT_RECORD_SIZE

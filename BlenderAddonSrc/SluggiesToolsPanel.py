@@ -17,7 +17,14 @@ from .ExportSluggies import (
     _detect_uniform_vertex_bone_id,
     _resolve_export_texture_context,
 )
-from .ImportSluggies import _create_material, _set_surface_material_metadata, LEAF_TAIL_FALLBACK
+from .ImportSluggies import _create_material, _set_surface_material_metadata
+
+
+# Every user-added bone gets this length in scene units, independent of how
+# long its parent is — the display length is cosmetic (the exporter only reads
+# the head position), and a fixed unit length keeps added bones selectable no
+# matter how small the parent they hang off is.
+ADDED_BONE_LENGTH = 1.0
 
 
 _BONE_NAME_RE = re.compile(r'^bone_(\d+)$')
@@ -1052,9 +1059,13 @@ def _create_added_bone(context, arm_obj, parent_bone_name):
         world_to_local = arm_obj.matrix_world.to_3x3().inverted()
         local_dir = world_to_local @ Vector((0.0, -1.0, 0.0))
         local_up = world_to_local @ Vector((0.0, 0.0, 1.0))
+        # `local_dir` is a world unit vector expressed in local space, so its
+        # local length already equals one world unit under the object's scale:
+        # scaling it by ADDED_BONE_LENGTH gives that length in the viewport,
+        # whatever the parent bone measures.
         tail_offset = (
-            local_dir.normalized() * LEAF_TAIL_FALLBACK
-            if local_dir.length > 1e-9 else Vector((0.0, 0.0, LEAF_TAIL_FALLBACK))
+            local_dir * ADDED_BONE_LENGTH
+            if local_dir.length > 1e-9 else Vector((0.0, 0.0, ADDED_BONE_LENGTH))
         )
         # Originates at the parent's tail, not floating off to the side, so
         # chained bones visually continue the parent like a real skeleton.

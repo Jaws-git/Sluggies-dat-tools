@@ -130,6 +130,72 @@ class ACTRebuildSyntheticTests(unittest.TestCase):
         mirror = next(d for d in reparsed.user_data if d.kind == act_rebuild.KIND_MIRROR)
         self.assertEqual((mirror.payload[4], mirror.payload[5]), (2, 3))
 
+    def test_append_leaf_bone_on_donor_without_user_data(self):
+        """F4: ``userDataSize = 0`` is a normal shipped state (dozens of models,
+        e.g. chunk 136's obstacles), so appending needs no per-bone array to
+        extend and the new bone is simply trackless with no mirror entry."""
+        built = self._build_minimal_act(bone_count=2, with_user_data=False)
+        parsed = act_rebuild.parse_act(built)
+        self.assertEqual(parsed.user_data, [])
+
+        srt_blob = struct.pack('>4x3f4f3f8x', 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.3, 0.0, 0.0)
+        appended = act_rebuild.append_leaf_bone(
+            parsed, parent_id=1, srt_blob=srt_blob, geo_file_id_raw=3,
+            # These have nowhere to go without the tables and must be ignored,
+            # not written somewhere or raised over.
+            track_id=0xFFFF, mirror_bone_id=2, mirror_role=3,
+        )
+        self.assertEqual(appended.bone_count, 3)
+        self.assertEqual(appended.user_data, [])
+
+        rebuilt_bytes = act_rebuild.rebuild_act_bytes(appended)
+        reparsed = act_rebuild.parse_act(rebuilt_bytes)
+        self.assertEqual(reparsed.bone_count, 3)
+        self.assertEqual(reparsed.user_data, [])
+        # userDataSize/userDataPtr must both stay 0, not point past the name.
+        self.assertEqual(struct.unpack_from('>II', rebuilt_bytes, 0x18), (0, 0))
+        # The geo name (and its filler) survive verbatim after the shifted ptr.
+        self.assertEqual(reparsed.name_gap, parsed.name_gap)
+        self.assertEqual(
+            struct.unpack_from('>I', rebuilt_bytes, 0x10)[0],
+            act_rebuild.HEADER_SIZE + 3 * act_rebuild.BONE_RECORD_SIZE
+            + 2 * act_rebuild.SRT_RECORD_SIZE,
+        )
+        new_bone = next(b for b in reparsed.bones if b.id == 2)
+        self.assertEqual(new_bone.parent, 0x3C)  # table_off(1)
+        self.assertEqual(new_bone.geo_file_id_raw, 3)
+        parent = next(b for b in reparsed.bones if b.id == 1)
+        self.assertEqual(parent.first_child, 0x58)  # table_off(2)
+
+    def test_append_leaf_bone_passes_through_kind4_without_per_bone_tables(self):
+        """F5's kind-4 blob is bone-count-independent, so a donor carrying only
+        that (no kind-3/kind-2) is still the F4 no-tables case."""
+        built = self._build_minimal_act(bone_count=2, with_user_data=False)
+        parsed = act_rebuild.parse_act(built)
+        kind4 = act_rebuild.UserDataDescriptor(
+            kind=4, count=1, data_ptr=0x0C, payload=struct.pack('>HH', 7, 2),
+        )
+        parsed.user_data = [kind4]
+        parsed.total_length += act_rebuild.DESCRIPTOR_HEADER_SIZE + len(kind4.payload)
+
+        appended = act_rebuild.append_leaf_bone(parsed, parent_id=1, srt_blob=b'\x00' * 0x34)
+        self.assertEqual([d.kind for d in appended.user_data], [4])
+        self.assertEqual(appended.user_data[0].payload, kind4.payload)
+        reparsed = act_rebuild.parse_act(act_rebuild.rebuild_act_bytes(appended))
+        self.assertEqual(reparsed.bone_count, 3)
+        self.assertEqual([(d.kind, d.payload) for d in reparsed.user_data],
+                         [(4, kind4.payload)])
+
+    def test_append_leaf_bone_rejects_track_without_mirror(self):
+        """One of the two per-bone tables without the other is ambiguous (which
+        array does the new entry belong to?), so it stays refused."""
+        built = self._build_minimal_act(bone_count=2, with_user_data=True)
+        parsed = act_rebuild.parse_act(built)
+        parsed.user_data = [d for d in parsed.user_data if d.kind == act_rebuild.KIND_TRACK]
+        with self.assertRaises(ValueError) as caught:
+            act_rebuild.append_leaf_bone(parsed, parent_id=1, srt_blob=b'\x00' * 0x34)
+        self.assertIn('kind-3', str(caught.exception))
+
     def test_append_leaf_bone_rejects_unknown_parent(self):
         built = self._build_minimal_act(bone_count=2, with_user_data=True)
         parsed = act_rebuild.parse_act(built)

@@ -1026,6 +1026,78 @@ class BuildHammerspaceTexturePlanTests(unittest.TestCase):
             self.assertEqual(plan[1].template_texture_index, 0)
             self.assertEqual((plan[1].width, plan[1].height), (12, 4))
 
+    def test_addition_inherits_no_size_or_footprint_from_its_template(self):
+        """An addition clones the template's format, never its dimensions or
+        its donor slot footprint: the PNG is the only size that matters, and
+        the template's ImagePayloadLength must not gate the encode."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sluggie = self._make_model(
+                temp_dir, {"0.png": (8, 8), "new.png": (64, 16)}
+            )
+            descriptors = [{
+                "TextureIndex": 0,
+                "TextureFileName": "0.png",
+                "TextureDescriptorOffset": "0x1000",
+                "Width": 8,
+                "Height": 8,
+                "Format": 0xE,
+                # A footprint the 64x16 addition would violate if inherited.
+                "ImageDataOffset": "0x2000",
+                "ImageDataLength": 64,
+                "ImagePayloadLength": 64,
+                "ImageDataCapacity": 64,
+            }]
+
+            def fake_encoder(png_path, gx_format, palette_format=None, **kwargs):
+                return _fake_parsed(
+                    width=kwargs["expected_width"],
+                    height=kwargs["expected_height"],
+                    gx_format=gx_format,
+                )
+
+            plan = build_hammerspace_texture_plan(
+                sluggie,
+                descriptors,
+                encoder=fake_encoder,
+                additional_descriptors=(AdditionalTextureDescriptor("new.png", 0),),
+            )
+
+            self.assertEqual((plan[1].width, plan[1].height), (64, 16))
+            self.assertEqual(plan[1].format, 0xE)  # format still cloned
+            self.assertEqual(plan[1].template_texture_index, 0)
+            self.assertEqual(plan.skipped, ())
+
+    def test_addition_clamps_an_oversized_png_to_the_gx_limit(self):
+        """The Blender add-on seeds a new texture at the GX maximum; anything
+        past it is clamped, and the entry reports the encoded size."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sluggie = self._make_model(
+                temp_dir, {"0.png": (8, 8), "new.png": (2048, 1024)}
+            )
+            descriptors = [{
+                "TextureIndex": 0, "TextureFileName": "0.png",
+                "Width": 8, "Height": 8, "Format": 0xE,
+            }]
+
+            def fake_encoder(png_path, gx_format, palette_format=None, **kwargs):
+                return _fake_parsed(
+                    width=kwargs["expected_width"],
+                    height=kwargs["expected_height"],
+                    gx_format=gx_format,
+                )
+
+            plan = build_hammerspace_texture_plan(
+                sluggie,
+                descriptors,
+                encoder=fake_encoder,
+                additional_descriptors=(AdditionalTextureDescriptor("new.png", 0),),
+            )
+
+            self.assertEqual(
+                (plan[1].width, plan[1].height),
+                clamp_texture_dimensions(2048, 1024),
+            )
+
     def test_multiple_additions_preserve_append_order_without_deduplication(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             sluggie = self._make_model(
