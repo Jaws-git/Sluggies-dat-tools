@@ -5,6 +5,7 @@ __pycache__
 *.tpl
 *.txt
 *.csv
+*.log
 anim_info
 
 *.brstm
