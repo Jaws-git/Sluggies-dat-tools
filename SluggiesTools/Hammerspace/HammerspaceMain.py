@@ -1176,7 +1176,7 @@ def _custom_submesh_rigid_records(states: list, surface_index: int) -> list[list
     return [
         [
             int(state['DisplayStateId']),
-            bytes.fromhex(state.get('DisplayStatePadBytes', '000000')),
+            bytes.fromhex(state.get('DisplayStateParamBytes', '000000')),
             state.get('ShaderMode', ''),
         ]
         for state in states
@@ -1206,7 +1206,7 @@ def _custom_submesh_derived_records(submesh0_states: list, surface_id: str) -> l
     def _rec(state: dict) -> list:
         return [
             int(state['DisplayStateId']),
-            bytes.fromhex(state.get('DisplayStatePadBytes', '000000')),
+            bytes.fromhex(state.get('DisplayStateParamBytes', '000000')),
             state['ShaderMode'],
         ]
 
@@ -1996,7 +1996,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
 
         draw_states = []
         for ds in sub.get('DisplayStates', []):
-            pad_hex = ds.get('DisplayStatePadBytes', '000000')
+            pad_hex = ds.get('DisplayStateParamBytesEdited') or ds.get('DisplayStateParamBytes', '000000')
             prim_list_data = (
                 ds.get('PrimListDataEdited')
                 if 'PrimListDataEdited' in ds
@@ -3080,6 +3080,7 @@ def PatchGPLMaterialStates(gpl_bytes: bytes, data: dict, model_offset: int) -> b
             if not (
                 state.get('MaterialStateAliasedByImporter')
                 or state.get('ShaderModeEdited') is not None
+                or state.get('DisplayStateParamBytesEdited') is not None
             ):
                 continue
             setting_field = _hex(state['ShaderModeFieldOffset'])
@@ -3089,7 +3090,9 @@ def PatchGPLMaterialStates(gpl_bytes: bytes, data: dict, model_offset: int) -> b
                     f'sub{submesh_index} ds{state_index}: material-state record '
                     f'offset 0x{state_relative:X} is outside cloned GPL size '
                     f'0x{len(patched):X}')
-            pad = bytes.fromhex(state.get('DisplayStatePadBytes', '000000'))
+            pad = bytes.fromhex(
+                state.get('DisplayStateParamBytesEdited') or state.get('DisplayStateParamBytes', '000000')
+            )
             setting = state.get('ShaderModeEdited') or state.get('ShaderMode', '')
             if len(setting) == 8 and all(c in '0123456789abcdefABCDEF' for c in setting):
                 setting_bytes = bytes.fromhex(setting)

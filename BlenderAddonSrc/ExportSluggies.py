@@ -3486,6 +3486,30 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 else:
                     ds.pop("ShaderModeEdited", None)
 
+            # Write back specular strength (struct offset +1 = index 0 of the
+            # 3-byte DisplayStateParamBytes) if edited via the material's
+            # "SpecularStrength" custom property. Indices 1 and 2 are preserved.
+            for ds_idx, ds in enumerate(target_submesh.get("DisplayStates", [])):
+                if ds.get("DisplayStateId") != 7:
+                    continue
+                original_hex = ds.get("DisplayStateParamBytes", "000000")
+                surface_id = ds.get("SurfaceId") or f"ds{ds_idx}"
+                mat = surf_mat.get(surface_id)
+                if mat is None or "SpecularStrength" not in mat:
+                    ds.pop("DisplayStateParamBytesEdited", None)
+                    continue
+                try:
+                    original_bytes = bytes.fromhex(original_hex).ljust(3, b'\x00')[:3]
+                except ValueError:
+                    original_bytes = b'\x00\x00\x00'
+                new_strength = max(0, min(255, int(mat["SpecularStrength"])))
+                new_bytes = bytes([new_strength, original_bytes[1], original_bytes[2]])
+                new_hex = new_bytes.hex()
+                if new_hex != original_hex:
+                    ds["DisplayStateParamBytesEdited"] = new_hex
+                else:
+                    ds.pop("DisplayStateParamBytesEdited", None)
+
             # Export per-face draw-state assignment when faces have been moved.
             try:
                 face_sid_data, face_sid_changed = _encode_face_surface_assignment(

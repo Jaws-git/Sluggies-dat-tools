@@ -98,7 +98,7 @@ def _with_texture_index(mode: str, texture_index: int) -> str:
 
 
 def _record(state: dict) -> tuple[int, str, str]:
-    return int(state["DisplayStateId"]), state["DisplayStatePadBytes"], state["ShaderMode"]
+    return int(state["DisplayStateId"]), state["DisplayStateParamBytes"], state["ShaderMode"]
 
 
 def derive_rigid_state_records(submesh0: dict, surface_id: str) -> list[tuple[int, str, str]]:
@@ -217,7 +217,7 @@ def canonical_rigid_submesh(
         display_states.append({
             "SurfaceId": f"{name}_ds{index}",
             "DisplayStateId": state_id,
-            "DisplayStatePadBytes": pad,
+            "DisplayStateParamBytes": pad,
             "ShaderMode": type3_mode if state_id == TYPE3 else mode,
             "ShaderModeFieldOffset": None,
             "PrimListPtrFieldOffset": "0x0",
@@ -331,7 +331,7 @@ def build_cube_submesh(model: dict, spec: str, name: str, half_extent: float) ->
     metadata = {
         "TemplateSource": spec,
         "States": [
-            [int(state["DisplayStateId"]), state["DisplayStatePadBytes"], state["ShaderMode"]]
+            [int(state["DisplayStateId"]), state["DisplayStateParamBytes"], state["ShaderMode"]]
             for state in submesh["DisplayStates"]
         ],
         "Cube": cube,

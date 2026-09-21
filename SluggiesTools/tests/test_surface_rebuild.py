@@ -28,7 +28,7 @@ def _display_state(face, pad='000000'):
     primitive_data = encodeDrawList([face], DESCRIPTORS) + b'\x00'
     return {
         'DisplayStateId': 7,
-        'DisplayStatePadBytes': pad,
+        'DisplayStateParamBytes': pad,
         'ShaderMode': '00000000',
         'VertexStreamLayout': DESCRIPTORS,
         'PrimListData': list(primitive_data),
@@ -38,7 +38,7 @@ def _display_state(face, pad='000000'):
 def _texture_state(texture_index, pad='000000'):
     return {
         'DisplayStateId': 1,
-        'DisplayStatePadBytes': pad,
+        'DisplayStateParamBytes': pad,
         'ShaderMode': f'{0x11110000 | texture_index:08x}',
     }
 
@@ -71,8 +71,8 @@ class SurfaceAssignmentRebuildTests(unittest.TestCase):
         self.assertEqual([state['PrimListData'] for state in states], original_payloads)
         self.assertNotIn('PrimListDataEdited', states[0])
         self.assertNotIn('PrimListDataEdited', states[1])
-        self.assertEqual(states[0]['DisplayStatePadBytes'], '040506')
-        self.assertEqual(states[1]['DisplayStatePadBytes'], '010203')
+        self.assertEqual(states[0]['DisplayStateParamBytes'], '040506')
+        self.assertEqual(states[1]['DisplayStateParamBytes'], '010203')
         self.assertTrue(
             data['SluggiesModel']['Submeshes'][0]['SurfaceAssignmentsRebuiltByImporter']
         )
@@ -87,7 +87,7 @@ class SurfaceAssignmentRebuildTests(unittest.TestCase):
 
         self.assertEqual(bytes(states[0]['PrimListData']), strip)
         self.assertNotIn('PrimListDataEdited', states[0])
-        self.assertEqual(states[0]['DisplayStatePadBytes'], '040506')
+        self.assertEqual(states[0]['DisplayStateParamBytes'], '040506')
 
     def test_rejects_partial_donor_surface_move(self):
         strip = bytes([0x98, 0, 4, 0, 1, 2, 3, 0])
@@ -143,7 +143,7 @@ class SurfaceAssignmentRebuildTests(unittest.TestCase):
 
         states = data['SluggiesModel']['Submeshes'][0]['DisplayStates']
         self.assertEqual(states[2]['ShaderMode'], states[0]['ShaderMode'])
-        self.assertEqual(states[2]['DisplayStatePadBytes'], '000200')
+        self.assertEqual(states[2]['DisplayStateParamBytes'], '000200')
         self.assertTrue(states[2]['MaterialStateAliasedByImporter'])
 
     def test_type1_draw_batch_can_move_to_its_inherited_type7_surface(self):

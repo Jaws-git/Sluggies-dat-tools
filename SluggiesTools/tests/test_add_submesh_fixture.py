@@ -324,7 +324,7 @@ def _state(state_id: int, mode: str, prim_length: int = 0, face_count: int = 0) 
     return {
         "SurfaceId": f"t_ds{state_id}_{mode}",
         "DisplayStateId": state_id,
-        "DisplayStatePadBytes": "000000",
+        "DisplayStateParamBytes": "000000",
         "ShaderMode": mode,
         "ShaderModeFieldOffset": "0x300",
         "PrimListPtrFieldOffset": "0x300",

@@ -29,7 +29,7 @@ def _state(surface_id, state_id, mode, pad='000000', prim=0):
     return {
         'SurfaceId': surface_id,
         'DisplayStateId': state_id,
-        'DisplayStatePadBytes': pad,
+        'DisplayStateParamBytes': pad,
         'ShaderMode': mode,
         'PrimListLength': prim,
         'PrimListData': 'AAA=' if prim else '',

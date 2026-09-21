@@ -273,6 +273,7 @@ patches    = []   # (submesh_idx, file_offset, raw_bytes)
 uv_patches = []   # (submesh_idx, ch_ind, file_offset, raw_bytes)
 normal_patches = []   # (submesh_idx, file_offset, raw_bytes)
 setting_patches  = []   # (submesh_idx, ds_idx, file_offset, raw_bytes)
+param_patches    = []   # (submesh_idx, ds_idx, file_offset, raw_bytes)
 bone_geo_patches = []   # (bone_id, file_offset, raw_bytes)
 
 skin_data = data["SluggiesModel"].get("SkinData")  # None for non-skinned models
@@ -496,6 +497,46 @@ for i, submesh in enumerate(submeshes):
             _slogger.info(f"Submesh {i} DS[{ds_idx}] ShaderMode: \"{old_code}\" -> \"{edit_code}\" at {off_str}", source="patch_inplace")
 
 # ---------------------------------------------------------------------------
+# Collect renderer-parameter (DisplayStateParamBytes) patches. The 3 bytes are
+# struct offsets +1..+3; index 0 (offset +1) is the confirmed specular
+# intensity for 'Spec'/'LhSp'/'RhSp' modes; indices 1 and 2 are unconfirmed and
+# are written back verbatim.
+# See INVESTIGATION_Specularity.md.
+# ---------------------------------------------------------------------------
+
+for i, submesh in enumerate(submeshes):
+    display_states = submesh.get("DisplayStates", [])
+
+    for ds_idx, ds in enumerate(display_states):
+        if ds.get("DisplayStateId") != 7:
+            continue
+        off_str = ds.get("DisplayStateParamBytesFieldOffset")
+        if not off_str:
+            continue
+        off      = int(off_str, 16)
+        old_hex  = ds.get("DisplayStateParamBytes", "000000")
+        edit_hex = ds.get("DisplayStateParamBytesEdited")
+
+        if unpatch:
+            raw = bytes.fromhex(old_hex).ljust(3, b'\x00')[:3]
+            param_patches.append((i, ds_idx, off, raw))
+            _slogger.info(f"Submesh {i} DS[{ds_idx}] ParamBytes: restore \"{old_hex}\" at {off_str}", source="patch_inplace")
+        else:
+            if edit_hex is None:
+                continue
+            try:
+                raw = bytes.fromhex(edit_hex)
+            except ValueError:
+                abort(f"Submesh {i} DS[{ds_idx}]: DisplayStateParamBytesEdited \"{edit_hex}\" is not valid hex.")
+            if len(raw) != 3:
+                abort(
+                    f"Submesh {i} DS[{ds_idx}]: DisplayStateParamBytesEdited must be exactly "
+                    f"3 bytes (6 hex chars), got {len(raw)}."
+                )
+            param_patches.append((i, ds_idx, off, raw))
+            _slogger.info(f"Submesh {i} DS[{ds_idx}] ParamBytes: \"{old_hex}\" -> \"{edit_hex}\" at {off_str}", source="patch_inplace")
+
+# ---------------------------------------------------------------------------
 # Build texture writes (patch: encode and validate; unpatch: restore from input)
 # ---------------------------------------------------------------------------
 
@@ -597,10 +638,11 @@ elif _model.get("ReimportTextures"):
 
 _textures_patched = len({w.texture_index for w in texture_writes})
 
-if patches or uv_patches or normal_patches or setting_patches or facial_patches or bone_geo_patches or root_scale_patch or texture_writes:
+if patches or uv_patches or normal_patches or setting_patches or param_patches or facial_patches or bone_geo_patches or root_scale_patch or texture_writes:
     _slogger.info(
         f"Writing {len(patches)} vertex, {len(uv_patches)} UV, "
     f"{len(normal_patches)} normal, {len(setting_patches)} shader-mode, "
+    f"{len(param_patches)} renderer-param, "
     f"{len(facial_patches)} facial-pose, {len(bone_geo_patches)} bone-geo, "
     f"{1 if root_scale_patch else 0} root-scale, "
         f"{_textures_patched} texture "
@@ -624,6 +666,10 @@ if patches or uv_patches or normal_patches or setting_patches or facial_patches 
             f.seek(offset)
             f.write(raw)
             _slogger.info(f"Submesh {i} DS[{ds_idx}] shader: wrote {raw!r} at 0x{offset:X}", source="patch_inplace")
+        for i, ds_idx, offset, raw in param_patches:
+            f.seek(offset)
+            f.write(raw)
+            _slogger.info(f"Submesh {i} DS[{ds_idx}] params: wrote {raw!r} at 0x{offset:X}", source="patch_inplace")
         for offset, raw in facial_patches:
             f.seek(offset)
             f.write(raw)
@@ -719,6 +765,7 @@ summary = (
     f"UV channels patched (in-place)      : {len(uv_patches)}\n"
     f"Normal buffers patched (in-place)   : {len(normal_patches)}\n"
     f"ShaderMode (Type-7 FourCC) patched  : {len(setting_patches)}\n"
+    f"Renderer params (specular) patched  : {len(param_patches)}\n"
     f"Facial position poses patched       : {len(facial_patches)}\n"
     f"Bone GeoId fields patched           : {len(bone_geo_patches)}\n"
     f"Root-bone SRT scale patched         : {1 if root_scale_patch else 0}\n"

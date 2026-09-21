@@ -575,14 +575,14 @@ class BuildModelBlockTests(unittest.TestCase):
                         'DisplayStateId': 1,
                         'ShaderModeFieldOffset': '0x34',
                         'ShaderMode': '11110000',
-                        'DisplayStatePadBytes': '010203',
+                        'DisplayStateParamBytes': '010203',
                         'MaterialStateAliasedByImporter': True,
                     },
                     {
                         'DisplayStateId': 7,
                         'ShaderModeFieldOffset': '0x44',
                         'ShaderMode': 'Spec',
-                        'DisplayStatePadBytes': '040506',
+                        'DisplayStateParamBytes': '040506',
                         'MaterialStateAliasedByImporter': True,
                     },
                 ],
@@ -616,7 +616,7 @@ class BuildModelBlockTests(unittest.TestCase):
                     'PrimListSizeFieldOffset': '0x0',
                     'PrimListAbsoluteOffset': '0x0',
                     'PrimListLength': 0,
-                    'DisplayStatePadBytes': '000000',
+                    'DisplayStateParamBytes': '000000',
                 }],
             }],
         }})
@@ -653,7 +653,7 @@ class BuildModelBlockTests(unittest.TestCase):
                     'PrimListSizeFieldOffset': '0x0',
                     'PrimListAbsoluteOffset': '0x0',
                     'PrimListLength': 4,
-                    'DisplayStatePadBytes': '000000',
+                    'DisplayStateParamBytes': '000000',
                 }],
             }],
         }})
@@ -699,7 +699,7 @@ class BuildModelBlockTests(unittest.TestCase):
                     'PrimListSizeFieldOffset': '0x0',
                     'PrimListAbsoluteOffset': '0x0',
                     'PrimListLength': 1,
-                    'DisplayStatePadBytes': '000000',
+                    'DisplayStateParamBytes': '000000',
                 }],
             }],
         }})
@@ -739,7 +739,7 @@ class BuildModelBlockTests(unittest.TestCase):
                     'PrimListSizeFieldOffset': '0x0',
                     'PrimListAbsoluteOffset': '0x0',
                     'PrimListLength': 1,
-                    'DisplayStatePadBytes': '000000',
+                    'DisplayStateParamBytes': '000000',
                 }],
             }],
         }})
@@ -787,7 +787,7 @@ class BuildModelBlockTests(unittest.TestCase):
                     'PrimListSizeFieldOffset': '0x0',
                     'PrimListAbsoluteOffset': '0x0',
                     'PrimListLength': 1,
-                    'DisplayStatePadBytes': '000000',
+                    'DisplayStateParamBytes': '000000',
                 }],
             }],
         }})
@@ -828,7 +828,7 @@ class BuildModelBlockTests(unittest.TestCase):
                     'PrimListSizeFieldOffset': '0x0',
                     'PrimListAbsoluteOffset': '0x0',
                     'PrimListLength': 1,
-                    'DisplayStatePadBytes': '000000',
+                    'DisplayStateParamBytes': '000000',
                 }],
             }],
         }})
@@ -2365,7 +2365,7 @@ def _ds(surface_id, state_id, mode, pad='000000', prim=0):
     return {
         'SurfaceId': surface_id,
         'DisplayStateId': state_id,
-        'DisplayStatePadBytes': pad,
+        'DisplayStateParamBytes': pad,
         'ShaderMode': mode,
         'PrimListLength': prim,
         'PrimListData': 'AAA=' if prim else '',

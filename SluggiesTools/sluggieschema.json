@@ -326,6 +326,18 @@
                       "type": "string",
                       "description": "The 4-byte setting bitmap decoded as a FourCC ASCII string (e.g. 'TOON') or hex string when non-printable. Stored verbatim during hammerspace assembly."
                     },
+                    "DisplayStateParamBytes": {
+                      "type": "string",
+                      "description": "Hex-encoded 3 raw renderer-parameter bytes at DODisplayState.absolute + 1..+3 (id byte is +0, setting FourCC is +4). Not padding: for Type-7 'Spec'/'LhSp'/'RhSp' shader modes, byte 1 (absolute +2) is the specular intensity TEV konst alpha (0-255, linear, confirmed in-game). Bytes 0 and 2 are unconfirmed/inert for 'Spec' and should be left untouched by editors. See INVESTIGATION_Specularity.md."
+                    },
+                    "DisplayStateParamBytesFieldOffset": {
+                      "type": "string",
+                      "description": "Absolute file offset of the 3 renderer-parameter bytes in dt_na.dat (hex). Located at DODisplayState.absolute + 1, i.e. ShaderModeFieldOffset - 3. Used by the in-place patcher to write DisplayStateParamBytesEdited directly without a hammerspace rebuild."
+                    },
+                    "DisplayStateParamBytesEdited": {
+                      "type": "string",
+                      "description": "Hex-encoded replacement for DisplayStateParamBytes (same 3-byte format), written by the Blender exporter when the material's specular strength custom property differs from the imported value. Absent when unchanged. Consumed by both the in-place patcher (via DisplayStateParamBytesFieldOffset) and the hammerspace GPL rebuild in preference to DisplayStateParamBytes."
+                    },
                     "PrimListPtrFieldOffset": {
                       "type": "string",
                       "description": "Absolute file offset of the primitiveListPtr field within the DODisplayState struct in dt_na.dat (hex). Located at DODisplayState.absolute + 8. Patched to redirect the primitive list into hammerspace."
@@ -365,7 +377,7 @@
                       }
                     }
                   },
-                  "required": ["DisplayStateId", "ShaderModeFieldOffset", "ShaderMode", "PrimListPtrFieldOffset", "PrimListSizeFieldOffset", "PrimListAbsoluteOffset", "PrimListLength", "PrimListData", "VertexStreamLayout"]
+                  "required": ["DisplayStateId", "ShaderModeFieldOffset", "ShaderMode", "DisplayStateParamBytes", "DisplayStateParamBytesFieldOffset", "PrimListPtrFieldOffset", "PrimListSizeFieldOffset", "PrimListAbsoluteOffset", "PrimListLength", "PrimListData", "VertexStreamLayout"]
                 }
               }
             },

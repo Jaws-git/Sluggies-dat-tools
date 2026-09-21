@@ -740,6 +740,21 @@ def _set_surface_material_metadata(mat, ds_entry):
     )
     mat.id_properties_ui("ShaderMode").update(description=shader_description)
 
+    if display_state_id == 7:
+        param_hex = ds_entry.get("DisplayStateParamBytes", "000000")
+        try:
+            # The 3 exported bytes are struct offsets +1..+3; specular
+            # intensity is offset +1, i.e. index 0.
+            specular_strength = bytes.fromhex(param_hex)[0]
+        except (ValueError, IndexError):
+            specular_strength = 0
+        mat["SpecularStrength"] = specular_strength
+        mat.id_properties_ui("SpecularStrength").update(
+            min=0, max=255, soft_min=0, soft_max=255,
+            description="Specular highlight intensity (0-255, linear TEV multiplier). "
+            "Confirmed in-game for 'Spec'/'LhSp'/'RhSp' shader modes. "
+            "Edit via the 'Set Specular Strength' panel button.")
+
 
 @lru_cache(maxsize=None)
 def _resolve_texture_image_path(sluggie_dir, tex_file):

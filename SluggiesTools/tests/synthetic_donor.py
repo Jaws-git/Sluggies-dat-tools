@@ -152,7 +152,7 @@ def _display_states(submesh_index: int) -> list[dict]:
     for index, (state_id, pad, shader_mode) in enumerate(DISPLAY_STATE_TEMPLATE):
         state = {
             'DisplayStateId': state_id,
-            'DisplayStatePadBytes': pad,
+            'DisplayStateParamBytes': pad,
             'ShaderMode': shader_mode,
             'PrimListLength': 0,
             'PrimListData': '',

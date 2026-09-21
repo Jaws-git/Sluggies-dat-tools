@@ -865,7 +865,7 @@ def rebuild_surface_assignments(data: dict) -> bool:
             )
             state_snapshots.append({
                 'DisplayStateId': state['DisplayStateId'],
-                'DisplayStatePadBytes': state.get('DisplayStatePadBytes', '000000'),
+                'DisplayStateParamBytes': state.get('DisplayStateParamBytesEdited') or state.get('DisplayStateParamBytes', '000000'),
                 'ShaderMode': state.get('ShaderModeEdited') or state.get('ShaderMode', ''),
                 'EffectiveType7State': active_type7_state,
                 'EffectiveType7Mode': effective_type7_mode,
@@ -965,7 +965,7 @@ def rebuild_surface_assignments(data: dict) -> bool:
                         'affect an earlier donor surface')
                 source_type7 = display_states[source_type7_state]
                 target_type7 = state_snapshots[target_type7_state]
-                source_type7['DisplayStatePadBytes'] = target_type7['DisplayStatePadBytes']
+                source_type7['DisplayStateParamBytes'] = target_type7['DisplayStateParamBytes']
                 source_type7['ShaderMode'] = target_type7['ShaderMode']
                 source_type7['MaterialStateAliasedByImporter'] = True
             for source_binding_state, target_binding_state, layer in binding_aliases:

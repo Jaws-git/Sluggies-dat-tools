@@ -6,7 +6,7 @@ import re
 
 import bmesh
 import bpy
-from bpy.props import BoolProperty, EnumProperty, StringProperty
+from bpy.props import BoolProperty, CollectionProperty, EnumProperty, IntProperty, StringProperty
 from mathutils import Matrix, Vector
 
 from . import CustomSubmeshExport
@@ -1283,6 +1283,70 @@ class SLUGGIES_OT_add_submesh(bpy.types.Operator):
         _end_bone_name_display(self, _find_target_armature(context))
 
 
+def _specular_materials(obj):
+    """Ordered list of Type-7 (specular-capable) materials on *obj*'s slots."""
+    if obj is None:
+        return []
+    return [
+        mat for slot in obj.material_slots
+        if (mat := slot.material) is not None and mat.get("DisplayStateId") == 7
+    ]
+
+
+class SluggiesSpecularStrengthItem(bpy.types.PropertyGroup):
+    surface_label: StringProperty()  # type: ignore[valid-type]
+    strength: IntProperty(name="Strength", min=0, max=255, soft_min=0, soft_max=255)  # type: ignore[valid-type]
+
+
+class SLUGGIES_OT_set_specular_strength(bpy.types.Operator):
+    """Edit the specular intensity (DisplayStateParamBytes index 0, struct offset +1) for every
+    Type-7 display state on the active submesh's material slots. See
+    INVESTIGATION_Specularity.md — 0-255, linear, confirmed in-game."""
+    bl_idname = "sluggies.set_specular_strength"
+    bl_label = "Set Specular Strength"
+    bl_description = "Edit specular intensity for the active submesh's specular (Type-7) surfaces"
+    bl_options = {"UNDO"}
+
+    items: CollectionProperty(type=SluggiesSpecularStrengthItem)  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        if obj is None or obj.type != 'MESH':
+            if hasattr(cls, 'poll_message_set'):
+                cls.poll_message_set("Select a submesh mesh object")
+            return False
+        if not _specular_materials(obj):
+            if hasattr(cls, 'poll_message_set'):
+                cls.poll_message_set("Active submesh has no specular (Type-7) surfaces")
+            return False
+        return True
+
+    def invoke(self, context, event):
+        self.items.clear()
+        for mat in _specular_materials(context.active_object):
+            item = self.items.add()
+            surface_id = mat.get("SurfaceId", mat.name)
+            shader_mode = mat.get("ShaderMode", "")
+            item.surface_label = f"{surface_id} ({shader_mode})" if shader_mode else surface_id
+            item.strength = int(mat.get("SpecularStrength", 0))
+        return context.window_manager.invoke_props_dialog(self, width=320)
+
+    def draw(self, context):
+        layout = self.layout
+        col = layout.column(align=True)
+        for item in self.items:
+            row = col.row(align=True)
+            row.label(text=item.surface_label)
+            row.prop(item, 'strength', text="")
+
+    def execute(self, context):
+        materials = _specular_materials(context.active_object)
+        for mat, item in zip(materials, self.items):
+            mat["SpecularStrength"] = item.strength
+        return {"FINISHED"}
+
+
 def _draw_free_host_bones(layout, context):
     """Collapsible, read-only 'Free host bones' list (plan step 4): the same
     `classify_host_bones` output the Add Submesh dialog uses, shown here so a
@@ -1329,6 +1393,7 @@ class SLUGGIES_PT_tools(bpy.types.Panel):
         layout = self.layout
         layout.operator(SLUGGIES_OT_add_submesh.bl_idname)
         layout.operator(SLUGGIES_OT_add_bone.bl_idname)
+        layout.operator(SLUGGIES_OT_set_specular_strength.bl_idname)
 
         layout.separator()
         _draw_rigid_mesh_box(layout, context)
@@ -1342,6 +1407,8 @@ def register():
     bpy.utils.register_class(SLUGGIES_OT_add_bone)
     bpy.utils.register_class(SLUGGIES_OT_reassign_bone)
     bpy.utils.register_class(SLUGGIES_OT_add_material)
+    bpy.utils.register_class(SluggiesSpecularStrengthItem)
+    bpy.utils.register_class(SLUGGIES_OT_set_specular_strength)
     bpy.utils.register_class(SLUGGIES_PT_tools)
     bpy.types.Scene.sluggies_show_free_host_bones = BoolProperty(
         name="Free host bones",
@@ -1353,6 +1420,8 @@ def register():
 def unregister():
     del bpy.types.Scene.sluggies_show_free_host_bones
     bpy.utils.unregister_class(SLUGGIES_PT_tools)
+    bpy.utils.unregister_class(SLUGGIES_OT_set_specular_strength)
+    bpy.utils.unregister_class(SluggiesSpecularStrengthItem)
     bpy.utils.unregister_class(SLUGGIES_OT_add_material)
     bpy.utils.unregister_class(SLUGGIES_OT_reassign_bone)
     bpy.utils.unregister_class(SLUGGIES_OT_add_bone)

@@ -287,7 +287,7 @@ class MembershipEditAssemblyTests(unittest.TestCase):
                     'PrimListSizeFieldOffset': '0x0',
                     'PrimListAbsoluteOffset': '0x0',
                     'PrimListLength': 1,
-                    'DisplayStatePadBytes': '000000',
+                    'DisplayStateParamBytes': '000000',
                 }],
             }],
         }}
