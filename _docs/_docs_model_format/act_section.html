@@ -122,18 +122,18 @@
         </tr>
     </table>
     <h2 id="geo-id-ownership">GEO ID ownership rules</h2>
-    <p>Surveyed across 721 exported models and confirmed in Dolphin (PLAN_AddSubmesh.md Phase 0, 2026-09-16):</p>
+    <p>Surveyed across 721 exported models and confirmed in Dolphin (2026-09-16):</p>
     <ul>
         <li><strong>Rigid submeshes are placed by their owner bone.</strong> Every rigid (<code>CompCount 3</code>) submesh is named by at least one bone's GEO ID, and its vertices are stored in that bone's local space. Skinned (<code>CompCount 6</code>) submeshes are never named by a GEO ID.</li>
         <li><strong>An unowned submesh crashes the game.</strong> A GPL submesh appended without a bone that names it crashes on load (<code>Invalid read from 0x00000008</code>, <code>PC = 0x804FF694</code>). A new submesh and its owner's GEO ID must always be written together.</li>
         <li><strong>A GEO ID never exceeds the GPL submesh count.</strong></li>
         <li><strong>One bone owns at most one mesh</strong>, because the field is a single uint16. In player models no two bones share a GEO ID. Seven effect and map-object models do give several bones the same GEO ID, so sharing is legal.</li>
-        <li><strong>A bone that drives skinning may also own a rigid mesh.</strong> None does in vanilla data, but giving Mario's hand bone 28 a mesh worked: the mesh follows the hand and skinning is unaffected (probe 3).</li>
-        <li><strong>Submesh order doesn't have to follow bone order.</strong> Vanilla rigid submeshes are in ascending owner-bone order, but a submesh appended at the end on a lower-numbered bone draws correctly (probe 2). Appending keeps every existing submesh index, and so every existing GEO ID and ptr7 facial <code>SubmeshIndex</code>, unchanged.</li>
+        <li><strong>A bone that drives skinning may also own a rigid mesh.</strong> None does in vanilla data, but giving Mario's hand bone 28 a mesh worked: the mesh follows the hand and skinning is unaffected.</li>
+        <li><strong>Submesh order doesn't have to follow bone order.</strong> Vanilla rigid submeshes are in ascending owner-bone order, but a submesh appended at the end on a lower-numbered bone draws correctly. Appending keeps every existing submesh index, and so every existing GEO ID and ptr7 facial <code>SubmeshIndex</code>, unchanged.</li>
     </ul>
     <p>The bone table is reached through the tree: the tree header sits at header+0x08 and its root pointer at header+0x0C. Each node address is the bone's start, relative to the ACT header. <code>BlockValidator</code> walks it to check the rules above.</p>
     <h2 id="user-data">User data</h2>
-    <p>Found via <code>PLAN_AddBones.md</code>'s investigation (2026-09-18) into what silently counts bones outside the header's own <code>boneCount</code>. The header's user data pointer (0x1c) is null when <code>userDataSize</code> (0x18) is 0 — dozens of models ship no user data at all with a perfectly working bone tree. When present, it points at a chain of descriptors, each read until the header's total <code>userDataSize</code> is consumed:</p>
+    <p>Found while investigating (2026-09-18) what silently counts bones outside the header's own <code>boneCount</code>. The header's user data pointer (0x1c) is null when <code>userDataSize</code> (0x18) is 0 — dozens of models ship no user data at all with a perfectly working bone tree. When present, it points at a chain of descriptors, each read until the header's total <code>userDataSize</code> is consumed:</p>
     <table>
         <tr>
             <th>Offset</th>
@@ -213,4 +213,7 @@
             <td>Padding? Don't know why it's here.</td>
         </tr>
     </table>
+    <h2 id="section-tail">Section tail and alignment</h2>
+    <p>The ACT section starts on a 32-byte boundary, like every section (see <a href="overview.html#alignment">overview</a>). Its inside has no single alignment formula. The geo-name strings follow the SRT blob directly, with no reserved null-terminator byte in the layout. The padding after the names and user data, up to the section end, varies per donor. It depends on the section that follows ACT in the model block, not on anything inside ACT (185 player models rebuilt byte-identical this way).</p>
+    <p><code>act_rebuild</code> therefore recomputes the bone table and SRT blob, which shift when the bone count changes. It carries the name/tail region through verbatim and leaves section alignment to <code>BuildHEADERModelBlock</code>.</p>
 </body>

@@ -457,12 +457,12 @@
         <tr>
             <td>0x8</td>
             <td>uint32</td>
-            <td>Primitive list pointer (relative to the mesh data header) (might be null)</td>
+            <td>Primitive list pointer (relative to the mesh data header) (might be null). Must be 32-byte aligned in absolute terms (see <a href="#alignment">Alignment</a>).</td>
         </tr>
         <tr>
             <td>0xc</td>
             <td>uint32</td>
-            <td>Primitive list size</td>
+            <td>Primitive list size. Always a multiple of 32; the list is zero-padded up to it (see <a href="#alignment">Alignment</a>).</td>
         </tr>
     </table>
     <p>Each time you analyze a draw list entry, do two things: update the draw state, and draw the triangles specified by the entry's primitive list if one exists.</p>
@@ -562,4 +562,63 @@ Now you draw triangular faces from those vertices. The code from my awful python
 
     If you haven't parsed the entire primitive list by now, repeat the entire process. The list may draw a different type of primitive as well.
     </p>
+    <h2 id="alignment">Alignment</h2>
+    <p>See the <a href="overview.html#alignment">overview</a> for the rules across the whole block. Within GPL, "aligned" means 0 mod 32 relative to the model block. The GPL section start is itself aligned, so this is the same as GPL-relative alignment.</p>
+    <table>
+        <tr>
+            <th>Data</th>
+            <th>Rule</th>
+            <th>Evidence</th>
+        </tr>
+        <tr>
+            <td>Skinned position buffer (component count 6)</td>
+            <td><strong>32-byte</strong></td>
+            <td>189 / 189</td>
+        </tr>
+        <tr>
+            <td>Primitive-list pointer</td>
+            <td><strong>32-byte</strong></td>
+            <td>9,465 / 9,465</td>
+        </tr>
+        <tr>
+            <td>Primitive-list size</td>
+            <td><strong>multiple of 32</strong></td>
+            <td>every donor list</td>
+        </tr>
+        <tr>
+            <td>Non-skinned position (component count 3)</td>
+            <td>none</td>
+            <td>3,055; every mod-4 value observed</td>
+        </tr>
+        <tr>
+            <td>Color, standalone normal, UV</td>
+            <td>none</td>
+            <td>3,244 / 3,055 / 4,562; every mod-32 value observed</td>
+        </tr>
+        <tr>
+            <td>Mesh data header (DOLayout blob) start</td>
+            <td>none, but see <em>Moving blobs</em></td>
+            <td>3,244; every mod-4 value observed</td>
+        </tr>
+    </table>
+    <ul>
+        <li><strong>Skinned positions:</strong> the SKN deformer rewrites this buffer every frame in whole 32-byte cache lines, and SKN's own layout rules are built on those lines (see <a href="skn_section.html#destination-layout">SKN destination layout</a>).</li>
+        <li><strong>Primitive lists:</strong> the GX command processor fetches display lists by DMA in 32-byte bursts, so both the pointer and the size field must be 32-byte multiples. Rebuilt lists with logical sizes of 115 and 31,261 bytes can corrupt DMA consumption despite aligned pointers. The builder emits 128 and 31,264 instead, with zero padding after the last primitive.</li>
+        <li><strong>Static attribute arrays</strong> are only read by GX indexed attribute fetch, which has no alignment constraint. Builders place them without padding, as the game does.</li>
+    </ul>
+    <h3>Moving blobs</h3>
+    <p>Vanilla mesh data headers are <strong>not</strong> aligned. On Mario, blob 0 starts at GPL+0x2C, directly after the 3-entry mesh header array. Every pointer inside a blob is relative to its mesh data header, so the blob's aligned arrays are aligned only because of the blob's own mod-32 offset. Rules for rebuilding:</p>
+    <ul>
+        <li><strong>An existing blob may only move by a multiple of 32.</strong> An early version of <code>PatchGPLAppendSubmesh</code> rounded the relocated blob region up to a plain 32-byte boundary. That broke the alignment of submesh 0's skinned positions and of every primitive list in the model; <code>BlockValidator</code> caught it on the first real-donor run. The fix rounds up to the next offset with the same mod-32 residue as the old position (<code>_align32_residue</code>).</li>
+        <li><strong>A new blob</strong> has no residue to keep. It gets a plain 32-byte-aligned base, so its own primitive lists are aligned.</li>
+        <li><strong>A replacement blob</strong> for an existing submesh is inserted before the GPL user data, on a 32-byte boundary, and its mesh header is repointed. The old blob is left in place, unreferenced.</li>
+        <li><strong>SKN offsets don't move with the blob.</strong> <code>gplVertexArr</code>, <code>gplDestArr</code> and memClrPtr are relative to submesh 0's position array, so relocating that array as a unit leaves them valid.</li>
+    </ul>
+    <p><code>BuildGPLMeshData</code> has three layout modes:</p>
+    <ul>
+        <li><strong>Preserve source layout:</strong> blobs stay at the donor's GPL offsets. This is byte-identical for unchanged data.</li>
+        <li><strong>Preserve internal layout:</strong> each blob is placed at the next offset with the donor's mod-32 residue.</li>
+        <li><strong>Flexible:</strong> blobs start at <code>align32(end of mesh header array)</code>, and each blob end is rounded up to 32.</li>
+    </ul>
+    <p>In every mode, the GPL user data starts on a 32-byte boundary. Its length isn't a multiple of 32 (40 bytes on Mario), so the section can end unaligned; <code>BuildHEADERModelBlock</code> pads it before the next section.</p>
 </body>

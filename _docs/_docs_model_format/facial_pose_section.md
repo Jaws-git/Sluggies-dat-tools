@@ -113,5 +113,5 @@ Implications:
 	SK1/SK2 sources on the mirror. `BlockValidator` enforces this for every
 	skinned model.
 - A topology rebuild that renumbers skinned vertices must remap facial run
-	lists as well (Milestone 4.6), and the mirrored layout then follows from the
+	lists as well, and the mirrored layout then follows from the
 	new destinations.

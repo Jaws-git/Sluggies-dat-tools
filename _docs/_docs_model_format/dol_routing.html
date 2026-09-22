@@ -1,0 +1,76 @@
+<head>
+    <link rel="stylesheet" type="text/css" href="style.css" />
+</head>
+
+<body>
+    <h1>main.dol Model Routing</h1>
+    <p>The game finds every model block in <code>dt_na.dat</code> through a table in <code>main.dol</code>: open the file by name, seek to an offset, read a number of bytes. Nothing inside <code>dt_na.dat</code> says where a model lives, so relocating a model (hammerspace) only means writing the block somewhere new and repointing its DOL entry. All values are big-endian. The constants below are for the US version.</p>
+
+    <h2>Directory pointer table</h2>
+    <p>A flat array of <code>uint32</code> virtual addresses at DOL file offsets <code>0x69C828</code>&ndash;<code>0x69CAD8</code>, one per directory. Convert an address to a DOL file offset by subtracting <code>0x80003F00</code>. The index into this table is the <strong>chunk number</strong> (<code>ChunkNumber</code> in a <code>.sluggie</code>; also the number in front of each export folder name).</p>
+
+    <h2>Directory entry</h2>
+    <p>Each directory is an array of 48-byte entries (12 &times; <code>uint32</code>). The index into it is the <strong>file index</strong> (<code>FileIndex</code> in a <code>.sluggie</code>). The array ends at the first entry whose word 0 is not the <code>dt_na.dat</code> name pointer. Each entry has three language slots of four words each, and every slot has the same layout:</p>
+    <table>
+        <tr>
+            <th>Offset</th>
+            <th>Type</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td>0x0</td>
+            <td>uint32</td>
+            <td>File name pointer. Always <code>0x8067F658</code>, the RAM address of the string <code>"dt_na.dat"</code></td>
+        </tr>
+        <tr>
+            <td>0x4</td>
+            <td>uint32</td>
+            <td>Length of the block in bytes</td>
+        </tr>
+        <tr>
+            <td>0x8</td>
+            <td>uint32</td>
+            <td>Byte offset of the block inside <code>dt_na.dat</code></td>
+        </tr>
+        <tr>
+            <td>0xc</td>
+            <td>uint32</td>
+            <td>Allocation size. Equal to the length in every entry the tools write</td>
+        </tr>
+    </table>
+    <table>
+        <tr>
+            <th>Slot</th>
+            <th>Entry offset</th>
+        </tr>
+        <tr>
+            <td>English (<code>en</code>)</td>
+            <td>0x00</td>
+        </tr>
+        <tr>
+            <td>Spanish (<code>sp</code>)</td>
+            <td>0x10</td>
+        </tr>
+        <tr>
+            <td>French (<code>fr</code>)</td>
+            <td>0x20</td>
+        </tr>
+    </table>
+    <p>In the stock game all three slots point at the same data. The tools read the <code>en</code> slot and write all three.</p>
+
+    <h2>What an entry points at</h2>
+    <ul>
+        <li><strong>A model block</strong> (the common case). All section pointers in its <a href="index.html">header</a> are relative to the block start, so the block can be moved as a unit.</li>
+        <li><strong>An archive</strong> of several members: <code>fileCount:u32</code>, then <code>fileCount</code> <code>u32</code> member offsets relative to the archive start (0 = empty slot), then the members in ascending order on 32-byte boundaries. A member's length is the distance to the next populated offset, or to the archive end for the last one. Members can be models or ANM blocks. Multi-part characters (stadium bosses, map objects) use this. Some equipment entries (bats, for example) also have a short prefix in front of the model. In a <code>.sluggie</code>, <code>ModelOffset</code>/<code>ModelLength</code> give the member itself, which then differs from the entry's offset/length.</li>
+        <li><strong>Shared routes:</strong> several entries can hold the same offset, so the same bytes serve several chunk/file indices. Patching one of them has to repoint all of them. <code>--untangle</code> exports split some of these shared routes on purpose.</li>
+    </ul>
+
+    <h2>Relocating a model (hammerspace)</h2>
+    <ol>
+        <li>Build the new block (or the whole archive, with one member replaced and the later member offsets shifted by the size change).</li>
+        <li>Write it at an offset at or above <code>BASE_SIZE</code> (715,046,144) in the extended <code>dt_na.dat</code>, on a 32-byte boundary.</li>
+        <li>Write the new offset and length into all three language slots of the entry, and of every entry that shares its route (length also goes into the allocation-size word).</li>
+        <li>Grow the <code>dt_na.dat</code> size field in <code>fst.bin</code> (FST entry 1, size at byte <code>0x14</code>) to match the extended file.</li>
+    </ol>
+    <p>Unpatching restores the entry from the untouched input <code>main.dol</code>, restores the original bytes from the input <code>dt_na.dat</code>, and zero-fills the hammerspace range. The implementation is <code>SluggiesTools/Hammerspace/HammerspaceHelper.py</code> (<code>readDolEntry</code>, <code>patchDolEntry</code>, <code>findSharedEntries</code>, <code>removeModelFromHammerspace</code>) and <code>ArchiveContainer.py</code>.</p>
+</body>

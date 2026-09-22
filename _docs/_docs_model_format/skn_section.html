@@ -260,7 +260,7 @@
     </ol>
     <p>The struct arrays are packed contiguously with no gaps between them. Between the end of the SKAcc struct array and the start of the variable data, zero-filled padding is inserted so that the first variable data array begins on a 32-byte boundary.</p>
 
-    <h3>Source mirror rule (critical)</h3>
+    <h3 id="source-mirror">Source mirror rule (critical)</h3>
     <p>SK1/SK2 source arrays are not packed back to back. They <strong>mirror the skinned position buffer</strong>:</p>
     <pre>srcArrPtr = VAR_DATA_OFF + gplVertexArr        (VAR_DATA_OFF = align32(end of SKAcc struct array))</pre>
     <p>This held for every SK1/SK2 entry in all 361 skinned models, with zero exceptions. The vertex-offset prefix bytes and the unused gap lines between entries are therefore mirrored as well. The source data is effectively a copy of the position buffer laid out with the same offsets.</p>
@@ -283,10 +283,24 @@
     <p>The first array after the mirrored region starts on the next 32-byte boundary after the last SK1/SK2 source (305/361 models). The other 56 models leave one extra 32-byte line, and all of them have accumulation-only slots, but no rule was identified. The builder uses no extra line; these arrays are reached only through their own pointers. Every array starts on a 32-byte boundary. Signatures seen: flush, SK2 weights, SKAcc (190 models); SK2 weights only (154); SK2 weights, SKAcc (17).</p>
     <p><strong>Entry order:</strong> vanilla SK1 and SK2 entries are in ascending destination order. The order of SKAcc entries is not sorted by bone (Luigi starts 62, 27, 18, 20, &hellip;). A Luigi build that re-sorted SKAcc entries by bone, with unchanged flush bytes, rendered correctly in-game, so SKAcc order does not appear to matter.</p>
 
-    <h3>32-byte alignment (critical)</h3>
-    <p>All variable data pointers in this section must be 32-byte aligned. See the <a href="overview.html">overview</a> for the general alignment requirement that applies across all sections. For the SKN section specifically, compute the variable data start as:</p>
+    <h3 id="alignment">32-byte alignment (critical)</h3>
+    <p>All variable data pointers in this section must be 32-byte aligned relative to the model block. The SKN section start is itself aligned (see the <a href="overview.html#alignment">overview</a>), so SKN-relative alignment is the same thing. Across the vanilla survey, 100% of arrays comply:</p>
+    <table>
+        <tr>
+            <th>Array</th>
+            <th>Count</th>
+            <th>mod 32 values</th>
+        </tr>
+        <tr><td>Source (bind-pose)</td><td>14,436</td><td>{0}</td></tr>
+        <tr><td>Weight</td><td>9,703</td><td>{0}</td></tr>
+        <tr><td>Dest-index</td><td>3,323</td><td>{0}</td></tr>
+        <tr><td>Flush index</td><td>173</td><td>{0}</td></tr>
+    </table>
+    <p>The CPU deformer appears to walk these arrays in cache-line units; the exact instruction-level reason is inferred, not confirmed. Compute the variable data start as:</p>
     <pre>VAR_DATA_OFF = (end_of_SKAcc_array + 31) &amp; ~31</pre>
-    <p>Then insert <code>VAR_DATA_OFF - end_of_SKAcc_array</code> zero bytes between the struct arrays and the variable data blob.</p>
+    <p>Then insert <code>VAR_DATA_OFF - end_of_SKAcc_array</code> zero bytes between the struct arrays and the variable data blob. The builder pads every array to a 32-byte multiple (<code>ModelFormat.pad_array</code>), so the next array starts aligned.</p>
+    <p><strong>Alignment alone is not enough.</strong> SK1/SK2 sources must also be at their exact mirrored address (see <a href="#source-mirror">Source mirror rule</a>). The Peach and Luigi failures above both passed every alignment, bounds and count check.</p>
+    <p><strong>memClrPtr needs no alignment.</strong> In 165 non-zero vanilla ranges, memClrSize is always a multiple of 32, but memClrPtr is not always 32-aligned (observed mod 32 values include 0, 4 and 8). The per-frame clear probably uses a plain store loop rather than whole-cache-line zeroing. The original survey reported 12 and 20 as well in one place; this has not been re-checked.</p>
 
     <h3>Source array prefix bytes (position/normal offset)</h3>
     <p>SK1 and SK2 entries have a <code>position_normal_offset</code> field (1 byte). The source array pointer points to the <em>start</em> of the allocated buffer, but actual vertex data begins at <code>srcArrPtr + position_normal_offset</code>. The prefix bytes (between srcArrPtr and the first vertex) must exist and should be zero-filled.</p>

@@ -350,20 +350,95 @@
 
     </div>
 
-    <h2>32-Byte Alignment Requirement</h2>
-    <p>The Wii Broadway CPU has 32-byte cache lines. Empirical scanning shows that <strong>only hot-path arrays</strong> require 32-byte alignment: skinned position buffers, GX primitive lists, and SKN source, weight, destination-index, and flush-index arrays. Static position, standalone normal, color, UV, and DOLayout data are commonly unaligned.</p>
-    <p>In observed game data, 100% of pointers in those hot-path categories satisfy this alignment. Violating their requirement causes the game to <strong>hang</strong> (infinite stall or bus error) rather than crash with an informative error.</p>
-    <p>When rebuilding a section, insert zero-filled padding where required so each hot-path array lands on a 32-byte boundary. Do not apply this rule indiscriminately to every variable-length payload.</p>
-    <pre>data_region_start = (end_of_structs + 31) &amp; ~31
-padding_needed    = data_region_start - end_of_structs</pre>
-    <p>This applies to at minimum:</p>
-    <ul>
-        <li><strong>SKN section</strong> — srcArrPtr, weightArrPtr, destIdxArrPtr, flushIndPtr</li>
-        <li><strong>GPL section</strong> — skinned position buffers and primitive list data</li>
-    </ul>
-    <h3>Section starts and texture payloads</h3>
-    <p>Relative to the model block, <strong>every section start</strong> (GPL, ACT, TEX, SKN, ptr6-ptr8) and <strong>every TEX image and palette payload</strong> must be at 0 mod 32. All 1,422 unique vanilla model blocks comply. The GX texture image-base register drops the low 5 address bits, so a misaligned payload is sampled up to 31 bytes early. Moving a section moves every texture after it, so a GPL section that grows to a length that isn't a multiple of 32 misaligns every texture in the model. The symptom is fine pixel noise over textures that still look right, not a hang (confirmed in Dolphin, 2026-09-16).</p>
-    <p>When rebuilding a block, pad each section to the next 32-byte boundary and pad between texture payloads. <code>BuildHEADERModelBlock</code> and <code>BuildTEX</code> do this, and <code>BlockValidator</code> rejects a misaligned section start or payload.</p>
+    <h2 id="alignment">32-Byte Alignment</h2>
+    <p>The Wii Broadway CPU has 32-byte cache lines, the GX command processor fetches display lists in 32-byte bursts, and the GX texture image-base register drops the low 5 address bits. Some offsets in a model block must therefore be 32-byte aligned; many others are routinely unaligned in vanilla data. Do not pad every variable-length array: add zero padding only where the table below requires it.</p>
+    <p>All alignments are relative to the start of the model block. Counts come from a survey of all 1,422 unique vanilla model blocks (337 skinned) and from scans of the 361 skinned <code>.sluggie</code> exports. "100%" means every observed instance was at 0 mod 32.</p>
+    <table>
+        <tr>
+            <th>Data</th>
+            <th>Rule</th>
+            <th>Evidence</th>
+            <th>Details</th>
+        </tr>
+        <tr>
+            <td>Section starts (GPL, ACT, TEX, SKN, ptr6-ptr8)</td>
+            <td><strong>32-byte</strong></td>
+            <td>1,422 blocks, 100%; Dolphin</td>
+            <td><a href="#section-alignment">below</a></td>
+        </tr>
+        <tr>
+            <td>TEX image and palette payloads</td>
+            <td><strong>32-byte</strong></td>
+            <td>7,011 images, 654 palettes, 100%; Dolphin</td>
+            <td><a href="texture_section.html#alignment">TEX</a></td>
+        </tr>
+        <tr>
+            <td>Skinned position buffer (submesh 0)</td>
+            <td><strong>32-byte</strong></td>
+            <td>189, 100%</td>
+            <td><a href="vertex_section.html#alignment">GPL</a></td>
+        </tr>
+        <tr>
+            <td>Primitive-list pointer</td>
+            <td><strong>32-byte</strong></td>
+            <td>9,465, 100%</td>
+            <td><a href="vertex_section.html#alignment">GPL</a></td>
+        </tr>
+        <tr>
+            <td>Primitive-list size</td>
+            <td><strong>multiple of 32</strong> (zero-padded)</td>
+            <td>every donor list</td>
+            <td><a href="vertex_section.html#alignment">GPL</a></td>
+        </tr>
+        <tr>
+            <td>DOLayout blob start</td>
+            <td>none, but a blob may only move by a multiple of 32</td>
+            <td>3,244, unaligned; builder bug</td>
+            <td><a href="vertex_section.html#alignment">GPL</a></td>
+        </tr>
+        <tr>
+            <td>Non-skinned position, standalone normal, color, UV</td>
+            <td>none</td>
+            <td>every mod-4 value observed</td>
+            <td><a href="vertex_section.html#alignment">GPL</a></td>
+        </tr>
+        <tr>
+            <td>SKN source, weight, dest-index, flush arrays</td>
+            <td><strong>32-byte</strong></td>
+            <td>14,436 / 9,703 / 3,323 / 173, 100%</td>
+            <td><a href="skn_section.html#alignment">SKN</a></td>
+        </tr>
+        <tr>
+            <td>SK1/SK2 source arrays</td>
+            <td><strong>exact position</strong>: <code>VAR_DATA_OFF + gplVertexArr</code></td>
+            <td>361/361 models; Dolphin</td>
+            <td><a href="skn_section.html#source-mirror">SKN</a></td>
+        </tr>
+        <tr>
+            <td>SK1/SK2 <code>gplVertexArr</code></td>
+            <td><strong>multiple of 32</strong> (relative to the position buffer)</td>
+            <td>12,364 entries, 100%</td>
+            <td><a href="skn_section.html#destination-layout">SKN</a></td>
+        </tr>
+        <tr>
+            <td>SKN memClrPtr</td>
+            <td>none (memClrSize is a multiple of 32)</td>
+            <td>165 non-zero ranges</td>
+            <td><a href="skn_section.html#alignment">SKN</a></td>
+        </tr>
+        <tr>
+            <td>ACT internal tail padding</td>
+            <td>no single formula</td>
+            <td>185 player models</td>
+            <td><a href="act_section.html#section-tail">ACT</a></td>
+        </tr>
+    </table>
+    <p>Failure modes differ. A misaligned texture renders with fine pixel noise, not a hang. A misaligned or wrongly sized primitive list, a misaligned skinned position buffer or a misaligned SKN array can stall the GPU or CPU, or corrupt rendering. An aligned but off-mirror SKN source produces vertex explosions.</p>
+    <p>The required kinds are listed in <code>ModelFormat.ARRAY_ALIGNMENT</code>: <code>skinned_position</code>, <code>primitive_list</code>, <code>skn_source</code>, <code>skn_weight</code>, <code>skn_destination_index</code>, <code>skn_flush_index</code>, <code>section_start</code> and <code>texture_payload</code>. <code>BlockValidator</code> checks all of them, plus primitive-list sizes, the SKN source mirror and <code>gplVertexArr</code>. It reports its totals in <code>facts['alignment']</code>.</p>
+    <h3 id="section-alignment">Section starts</h3>
+    <p>Relative to the model block, <strong>every section start</strong> (GPL, ACT, TEX, SKN, ptr6-ptr8) is at 0 mod 32 in all 1,422 unique vanilla blocks. Moving a section moves everything after it. A GPL section that grows to a length that isn't a multiple of 32 therefore misaligns TEX, and every texture in the model with it (confirmed in Dolphin, 2026-09-16). The full <code>BuildGPLMeshData</code> serializer produces exactly such a length: it ends on a 32-byte boundary, then appends the 40-byte <code>GPLUserData</code>.</p>
+    <p><code>BuildHEADERModelBlock</code> zero-pads each section to the next 32-byte boundary. When the new GPL still fits the donor span, it keeps the older rule of padding to the donor span. ptr6-ptr8 are recomputed from the aligned positions, keeping the donor spacing between trailing sections. Because every donor section is already aligned, this padding changes nothing in a byte-identical rebuild.</p>
+    <pre>aligned_start = (end_of_previous_section + 31) &amp; ~31</pre>
 
     <p>See <a href="index.html">index</a> for links to detailed per-section documentation.</p>
 </body>
