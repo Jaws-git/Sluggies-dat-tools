@@ -1,0 +1,126 @@
+<head>
+    <link rel="stylesheet" type="text/css" href="style.css" />
+</head>
+
+<body>
+    <h1>Facial Pose Section (<code>ptr7</code>)</h1>
+    <p>The optional model-header pointer at <code>+0x18</code> is block-relative and can point to facial pose data. This was verified on Birdo's high-detail <code>catherine.gpl</code>. Her low-detail <code>L_catherine.gpl</code> has a null <code>ptr7</code> and no facial pose section.</p>
+    <p>The runtime copies selected pose coordinates from this section into the GPL head position and normal arrays. Consequently, editing only the GPL position array is temporary for mapped vertices: blinking and mouth animation restore the original coordinates.</p>
+
+    <h2>Verified layout</h2>
+    <p>All pointers below are relative to the start of this section.</p>
+    <h3>Header</h3>
+    <table>
+        <tr>
+            <th>Offset</th>
+            <th>Type</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td>0x0</td>
+            <td>uint16</td>
+            <td>Maximum pose count advertised by the section</td>
+        </tr>
+        <tr>
+            <td>0x2</td>
+            <td>uint16</td>
+            <td>Facial object count</td>
+        </tr>
+        <tr>
+            <td>0x4</td>
+            <td>uint16</td>
+            <td>Attribute type/descriptor count</td>
+        </tr>
+        <tr>
+            <td>0x8</td>
+            <td>uint32</td>
+            <td>Facial object table pointer</td>
+        </tr>
+    </table>
+
+    <h3>Object table entry</h3>
+    <p>Each object-table entry is 12 bytes:</p>
+    <table>
+        <tr>
+            <th>Offset</th>
+            <th>Type</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td>0x0</td>
+            <td>uint16</td>
+            <td>Pose count for this object</td>
+        </tr>
+        <tr>
+            <td>0x2</td>
+            <td>uint16</td>
+            <td>Attribute count for this object</td>
+        </tr>
+        <tr>
+            <td>0x4</td>
+            <td>uint32</td>
+            <td>Attribute record size (<code>0x0C + pose_count * 4</code>)</td>
+        </tr>
+        <tr>
+            <td>0x8</td>
+            <td>uint32</td>
+            <td>Object attribute-data pointer</td>
+        </tr>
+    </table>
+    <p>Objects can use either separate three-component position and normal records, or one six-component record interleaving XYZ and normal XYZ. Some objects also contain auxiliary attributes that are preserved but are not Blender shape keys.</p>
+    <ol>
+        <li>Position record, identified by format bytes <code>03 01 03 02</code>.</li>
+        <li>Normal record, identified by format bytes <code>03 02 03 02</code>.</li>
+    </ol>
+
+    <h3>Attribute record</h3>
+    <table>
+        <tr>
+            <th>Offset</th>
+            <th>Type</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td>0x0</td>
+            <td>uint32</td>
+            <td>Number of mapped entries per pose</td>
+        </tr>
+        <tr>
+            <td>0x4</td>
+            <td>byte[4]</td>
+            <td>Target submesh, attribute kind, component count, component byte width</td>
+        </tr>
+        <tr>
+            <td>0x8</td>
+            <td>uint32</td>
+            <td>Run-list pointer</td>
+        </tr>
+        <tr>
+            <td>0xc</td>
+            <td>uint32[pose_count]</td>
+            <td>Pose-array pointers</td>
+        </tr>
+    </table>
+    <p>Each attribute run list ends at the next attribute's run-list pointer; the last ends at the first pose array. Each run is two big-endian <code>uint16</code> values: <code>first_vertex</code> and <code>run_length</code>. Expanding all runs gives one GPL array index for each pose entry.</p>
+    <p>Position entries contain either XYZ (6 bytes) or interleaved XYZ+normal XYZ (12 bytes), using big-endian signed 16-bit components. Pose zero is an absolute rest array: position pose zero matches the mapped GPL position vertices exactly, and normal pose zero likewise matches the mapped GPL normal vertices. Poses one and later are displacement vectors relative to pose zero, not absolute coordinates. A zero triplet in these poses means that the mapped entry remains at its rest value.</p>
+
+    <h2>Birdo high-detail model</h2>
+    <p>The section contains two facial objects. Their position records map 199 and 451 head vertices respectively, with five poses per object. The corresponding normal records map 247 and 520 normal entries. The low-detail model contains no section, which explains why ordinary GPL editing worked there.</p>
+    <p>The section-level maximum pose count is 5 in the surveyed corpus, but each object stores its own count. Observed object counts range from 2 through 6, so record sizes and pointer-array lengths must use the per-object value.</p>
+
+    <h2>In-place patch rule</h2>
+    <p>For every mapped position vertex in absolute pose zero:</p>
+    <pre>patched_pose = original_pose + (edited_GPL_position - original_GPL_position)</pre>
+    <p>Poses one and later are already deltas, so a base mesh edit does not alter them. Explicit Blender shape-key edits replace their corresponding delta buffers. <code>--unpatch</code> restores all original pose arrays.</p>
+    <p>This is separate from SK1/SK2/SKAcc skinning. Birdo's facial head remains a rigid GEO attachment on bone 56; bone 55 has no SK entry or vertex influence in either LOD and is not responsible for the per-vertex overwrite.</p>
+
+    <h2 id="skinned">Facial poses on skinned vertices (Luigi)</h2>
+    <p>Facial objects can also target the <strong>skinned</strong> submesh. Luigi's two objects (<code>SubmeshIndex 0</code>, interleaved 6-component records) map 64 and 356 vertices: 341 in <code>SK1(51)</code> (head), 12 in <code>SK2(50,51)</code> (neck) and 3 in <code>SK1(18)</code> (the first object's 64 are all <code>SK1(51)</code>). Every one is written by an SK1/SK2 entry, so the skinning deformer overwrites the position buffer each frame. Copying the pose into the GPL position array alone would therefore have no visible effect.</p>
+    <p>In-game evidence shows the pose data lands in the <strong>SKN source data</strong> at the mirrored address <code>VAR_DATA_OFF + vertex_index * stride</code> (see the <a href="skn_section.html#source-mirror">source mirror rule</a>), not through the entry's own source pointer. A rebuilt Luigi SKN with correct per-entry pointers but source arrays 0x20 bytes off the mirror stretched exactly the facial-mapped neck vertices at the back of the head down to the floor. The pose records were written 8 bytes out of step into neighbouring source records. Mirroring the sources fixed it.</p>
+    <p>No pointers into SKN exist in the facial section (checked for both SKN-relative and block-relative values), so the runtime derives the mapping itself.</p>
+    <p><strong>Implications:</strong></p>
+    <ul>
+        <li>Any SKN rebuild for a model with facial poses on skinned vertices must keep SK1/SK2 sources on the mirror. <code>BlockValidator</code> enforces this for every skinned model.</li>
+        <li>A topology rebuild that renumbers skinned vertices must remap facial run lists as well, and the mirrored layout then follows from the new destinations.</li>
+    </ul>
+</body>

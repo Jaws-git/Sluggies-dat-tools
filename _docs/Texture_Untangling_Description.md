@@ -44,9 +44,9 @@ Hash inputs that matter for uniqueness in current code:
 - image_data is always hashed.
 - tlut_data is additionally hashed for paletted textures when TLUT is present.
 
-## notes on unised characters
+## notes on unused characters
 
-Since unused characters do not have their own model data block, and instead just point to an existing (playable) models data block, an extra step is done beffore untangling.
+Since unused characters do not have their own model data block, and instead just point to an existing (playable) models data block, an extra step is done before untangling.
 Each unused character (indices 89-94) has all their data blocks cloned into hammer space at the start of the process. The untangler then works on these "new" hammerspace textures. These changes will take effect iin the output .dat file, which is then used for the main export step.
 
 An overwrite warning is issued if untangle-export is called while a dat or .dol file is already in the output folder.
