@@ -145,7 +145,7 @@ def run_export_icons(use_output=False):
         dat_path = os.path.join(ROOT_DIR, '3_Output_Dat', 'dt_na.dat')
         if not os.path.exists(dol_path) or not os.path.exists(dat_path):
             slogger.error('Missing 3_Output_Dat/main.dol or 3_Output_Dat/dt_na.dat', source="dispatcher")
-            slogger.error('Run: python start.py --prepare-icon-routes', source="dispatcher")
+            slogger.error('Run a patch step first (e.g. --add-custom-icons), or drop --use-output', source="dispatcher")
             sys.exit(1)
         cmd += ['--dol-path', dol_path, '--dat-path', dat_path]
 
@@ -535,7 +535,7 @@ def parse_args():
     mode.add_argument('--unpatch', nargs='+', metavar='FILENAME', help='restore original data for one or more .sluggies files')
     mode.add_argument('-hs', '--hammerspace', action='store_true', help='change available memory space in outputdt_na.dat')
     mode.add_argument('--export', action='store_true', help='export all models from 1_Input to 2_Output_Models')
-    mode.add_argument('--prepare-icon-routes', action='store_true', help='prepare output DOL/DAT copies and apply icon routing prepatch rules')
+    mode.add_argument('--prepare-icon-routes', action='store_true', help='EXPERIMENTAL, superseded: apply the Mii icon-block resolver experiment to output DOL/DAT copies (not part of any menu workflow)')
     mode.add_argument('--add-custom-icons', action='store_true', help='install the complete six-character custom icon pipeline')
     mode.add_argument('--export-icons', action='store_true', help='export character-select icon atlases and metadata to 2_Output_Models/_ICONS')
     mode.add_argument(

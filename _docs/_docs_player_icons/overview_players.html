@@ -156,7 +156,7 @@
     <h2>Resolved Icon Data Flow</h2>
     <div class="flow">
         <div class="flow-step dol"><strong>1. Character ID</strong><span>Unused IDs <code>0x47</code>-<code>0x4C</code>.</span></div>
-        <div class="flow-step dol"><strong>2. Color-wheel row</strong><span>Enables the character with <code>icon_valid=1</code>.</span></div>
+        <div class="flow-step dol"><strong>2. Color-wheel row</strong><span>Makes the character selectable with <code>selectable=1</code>.</span></div>
         <div class="flow-step hook"><strong>3. Donor hook</strong><span>Saves the custom ID and sends donor <code>0x00</code>-<code>0x05</code> through stock resolution.</span></div>
         <div class="flow-step table"><strong>4. Source record</strong><span>Maps character ID to a side/front resource ID.</span></div>
         <div class="flow-step hook"><strong>5. Final-row hook</strong><span>Replaces the donor resource row with the custom row.</span></div>
@@ -192,13 +192,13 @@
             <div class="block table">
                 <div class="block-title"><span>Headerless record array</span><span class="addr">101 × 8 bytes</span></div>
                 <div class="fields">
-                    <div class="row"><span class="off">+0x00</span><span><code>species_id</code> · u8</span></div>
+                    <div class="row"><span class="off">+0x00</span><span><code>wheel_group_id</code> · u8</span></div>
                     <div class="row"><span class="off">+0x01</span><span><code>captain_id</code> · u8</span></div>
                     <div class="row"><span class="off">+0x02</span><span><code>model_id</code> · u8</span></div>
                     <div class="row"><span class="off">+0x03</span><span><code>is_captain</code> · u8</span></div>
                     <div class="row"><span class="off">+0x04</span><span>flags · u8</span></div>
                     <div class="row"><span class="off">+0x05</span><span><code>variant_index</code> · u8</span></div>
-                    <div class="row key"><span class="off">+0x06</span><span><code>icon_valid</code> · u8; changed from 0 to 1 for IDs <code>0x47</code>-<code>0x4C</code></span></div>
+                    <div class="row key"><span class="off">+0x06</span><span><code>selectable</code> · u8; changed from 0 to 1 for IDs <code>0x47</code>-<code>0x4C</code></span></div>
                     <div class="row key"><span class="off">+0x07</span><span><code>icon_slot</code> · u8; validated but not sufficient by itself for unused IDs</span></div>
                 </div>
             </div>

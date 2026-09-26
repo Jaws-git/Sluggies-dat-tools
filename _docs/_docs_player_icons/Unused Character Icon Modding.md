@@ -14,7 +14,7 @@ The replacement pipeline is separate from stock icon editing. `SluggiesTools/Ico
 
 The implementation covers exactly the six unused character IDs `0x47` through `0x4C`. All six are configured and installed together.
 
-| Character ID | Stock species | Variant | Default replacement | Donor |
+| Character ID | Stock wheel group | Variant | Default replacement | Donor |
 |---:|---:|---:|---|---|
 | `0x47` | `0x0B` Yoshi | 6 | Black Yoshi | Peach (`0x04`) |
 | `0x48` | `0x0B` Yoshi | 7 | White Yoshi | Mario (`0x00`) |
@@ -23,7 +23,7 @@ The implementation covers exactly the six unused character IDs `0x47` through `0
 | `0x4B` | `0x0A` Kritter | 4 | Black Kritter | Diddy Kong (`0x03`) |
 | `0x4C` | `0x01` Koopa | 2 | Black Koopa | Daisy (`0x05`) |
 
-These rows have `icon_valid=0` in the stock DOL. The replacement process preserves their stock species, captain, model, flags, variant, and icon-slot values while enabling icon resolution.
+These rows have `selectable=0` in the stock DOL. The replacement process preserves their stock wheel group, captain, model, flags, variant, and icon-slot values while enabling icon resolution.
 
 The fixed DOL code-cave layout cannot support a seventh route. The final-row hook uses `0x168` bytes of its `0x188`-byte cave; a seventh route would require `0x19C` bytes. Configuration loaders therefore require exactly six entries.
 
@@ -71,7 +71,7 @@ Stretching is intentionally unsupported.
 
 Artwork paths are resolved relative to the configured artwork directory, normally `1_Input/_Icons/`. RGB and RGBA PNGs are accepted and normalized to RGBA. Invalid IDs, duplicate IDs, missing files, unsupported route counts, and mismatched artwork/color-wheel character sets are rejected before output files are modified.
 
-Donors provide known-good source-table records and allow the stock resolver to complete normally. The stock color-wheel table contains 71 characters with `icon_valid=1` that can serve as donors. The shipped configuration uses the first six valid donor IDs in ascending order (`0x00` through `0x05`) and requires donor IDs to be unique.
+Donors provide known-good source-table records and allow the stock resolver to complete normally. The stock color-wheel table contains 71 characters with `selectable=1` that can serve as donors. The shipped configuration uses the first six valid donor IDs in ascending order (`0x00` through `0x05`) and requires donor IDs to be unique.
 
 ## System Architecture
 
@@ -121,7 +121,7 @@ Dynamic placement is required because hammerspace availability depends on the cu
 | Side source table | `0x88B78` |
 | Front source table | `0x8A3B0` |
 | Side CMPR image | `0x93880` |
-| Front CMPR image | `0xB3880` |
+| Front CMPR image | `0xD3A80` |
 | Relocated icon-table container | `0x113C80` |
 | Relocated icon descriptor | `0x113C94` |
 | Resource table | `0x118000` |
@@ -221,18 +221,18 @@ The color-wheel table begins at DOL file offset `0x0062D650`, with an eight-byte
 
 | Row offset | Meaning |
 |---:|---|
-| `+0x00` | Species ID |
+| `+0x00` | Color-wheel group ID (characters sharing a wheel share this value; formerly called "species") |
 | `+0x01` | Captain ID |
 | `+0x02` | Model ID |
 | `+0x03` | Is-captain flag |
 | `+0x04` | Flags |
 | `+0x05` | Variant index |
-| `+0x06` | Icon-valid flag |
+| `+0x06` | Selectable flag (1 = the character can be picked on the select screen; formerly called "icon_valid") |
 | `+0x07` | Icon slot |
 
-The row address is `0x0062D650 + character_id * 8`. All eight configured bytes are validated, although the default six routes differ from stock only by setting `icon_valid` to 1.
+The row address is `0x0062D650 + character_id * 8`. All eight configured bytes are validated, although the default six routes differ from stock only by setting `selectable` to 1.
 
-The stock table has 101 entries: 71 enabled characters, six disabled unused characters, and 24 disabled team NPCs.
+The stock table has 101 entries: 71 enabled characters, six disabled unused characters, and 24 disabled Mii slots (12 male, 12 female).
 
 ## Donor-Safe Runtime Routing
 
@@ -295,7 +295,7 @@ CMPR pages let users provide normal PNG artwork and keep custom replacements ind
 
 ### Donor Substitution Instead of Resolver Widening
 
-Simply widening character bounds or setting `icon_valid` does not establish all downstream registration state for unused IDs. Donor substitution uses a route the stock game already understands, then changes only the final resource-row pointer. The complete six-route configuration is confirmed in game.
+Simply widening character bounds or setting `selectable` does not establish all downstream registration state for unused IDs. Donor substitution uses a route the stock game already understands, then changes only the final resource-row pointer. The complete six-route configuration is confirmed in game.
 
 ### Fixed Six-Character Batch
 

@@ -36,23 +36,26 @@ CW_COUNT = 101  # char ids 0x00..0x64
 #
 # Resolver flow (function containing documented breakpoint 0x80395DB0):
 #   0x80395E10  cmpwi r24, 0     ; char_id < 0     -> invalid path
-#   0x80395E18  cmpwi r24, 0x4D  ; char_id >= 0x4D -> team-NPC path (0x80395EA8)
+#   0x80395E18  cmpwi r24, 0x4D  ; char_id >= 0x4D -> Mii path (0x80395EA8)
 #   valid path: key = char_id << 16, row index resolved via runtime table 0x8071FF78
-#   team-NPC path (chars 0x4D..0x64), 0x80395EB8:
-#   0x80395EBC  li r0, 151       ; HARDCODED resource row 151 = Pink Yoshi fallback
+#   Mii path (chars 0x4D..0x64), 0x80395EB8:
+#   0x80395EBC  li r0, 151       ; HARDCODED resource row 151 = Mii icon
 #
 # Row consumption (documented "row hook" 0x8051952C, verified):
 #   idx = extsh(runtime_table[key_slot]); idx < 0 -> obj+0xB8 fallback idx
+#   (obj+0xB8 = resource ID of the keyframe the icon track lands on at frame
+#   char_id, written at 0x8051908C; unkeyed ids 0x47..0x4C hold keyframe 0x46,
+#   Pink Yoshi, row 149)
 #   row = row_table_base + idx*20 ; page = *(u16*)row
 #
 # The old "candidate table" patches (0x8062478E / 0x8062479E / 0x80653440) are NOT
 # part of this path (confirmed dead ends) and were removed.
 _VERIFIED_CODE_PATCHES = {
     # Widen the resolver bounds check so chars 0x4D..0x64 enter the keyed route
-    # path (key = char_id << 16) instead of the hardcoded team-NPC fallback.
+    # path (key = char_id << 16) instead of the hardcoded Mii fallback.
     # IN-GAME RESULT (2026-07-11): still Pink Yoshi — the keyed path fails its
     # bank-side key registration for unregistered ids (idx = -1 -> obj+0xB8
-    # fallback). Kept only as an experiment knob; superseded by
+    # fallback = held keyframe 0x46, Pink Yoshi). Kept only as an experiment knob; superseded by
     # per_char_row_from_colorwheel below.
     'widen_resolver_char_bounds': {
         'vaddr': 0x80395E18,
@@ -62,9 +65,9 @@ _VERIFIED_CODE_PATCHES = {
     },
 }
 
-# Preferred method: rewrite the team-NPC block (0x80395EA8..0x80395EC0) so the
+# Preferred method: rewrite the Mii block (0x80395EA8..0x80395EC0) so the
 # runtime row index comes from the color-wheel icon_slot byte per character
-# instead of the hardcoded 151 (Pink Yoshi):
+# instead of the hardcoded 151 (Mii icon):
 #     lis   r4, 0x8063          ; color-wheel base high half
 #     rlwinm r0, r24, 3,0,28    ; char_id * 8
 #     add   r4, r4, r0
@@ -80,19 +83,19 @@ _PER_CHAR_ROW_PATCH = {
     'vaddr': 0x80395EA8,
     'old_words': [0x2C18004D, 0x41800050, 0x2C180064, 0x41810048, 0x3FE08072, 0x38000097, 0xB01FFF78],
     'new_words': [0x3C808063, 0x57001838, 0x7C840214, 0x88041557, 0x3FE08072, 0xB01FFF78, 0x60000000],
-    'desc': 'team-NPC icon block: runtime row index = color-wheel icon_slot byte (per char) instead of hardcoded 151',
+    'desc': 'Mii icon block: runtime row index = color-wheel icon_slot byte (per char) instead of hardcoded 151',
 }
 
-# Chars routed through the team-NPC block whose icon_slot byte becomes the row
-# index. Seeded to 151 (stock Pink Yoshi row) unless a rule overrides.
-_TEAM_NPC_CHAR_RANGE = range(0x4D, 0x65)
-_PINK_YOSHI_ROW_INDEX = 151
+# Chars routed through the Mii block whose icon_slot byte becomes the row
+# index. Seeded to 151 (stock Mii icon row) unless a rule overrides.
+_MII_CHAR_RANGE = range(0x4D, 0x65)
+_MII_ICON_ROW_INDEX = 151
 
 # Optional: change the shared hardcoded fallback row index (li r0, 151) used by
-# ALL team-NPC chars 0x4D..0x64. Not per-char, but a cheap in-game probe that
+# ALL Mii chars 0x4D..0x64. Not per-char, but a cheap in-game probe that
 # verifies we control the correct instruction.
-_TEAM_NPC_ROW_VADDR = 0x80395EBC
-_TEAM_NPC_ROW_OLD_WORD = 0x38000097  # li r0, 151
+_MII_ROW_VADDR = 0x80395EBC
+_MII_ROW_OLD_WORD = 0x38000097  # li r0, 151
 
 
 class IconRoutePrepError(Exception):
@@ -120,16 +123,16 @@ def _build_default_rules():
         'description': 'Icon route prepatch. For chars 0x4D-0x64, set_icon_slot = resource row index (per_char_row_from_colorwheel).',
         'per_char_row_from_colorwheel': True,
         'widen_resolver_char_bounds': False,
-        'team_npc_shared_row_index': None,
+        'mii_shared_row_index': None,
         'rules': [
-            {'char_id': 0x47, 'set_icon_valid': 1, 'set_icon_slot': 5, 'notes': 'unused Yoshi A (keyed path, slot semantics stock)'},
-            {'char_id': 0x48, 'set_icon_valid': 1, 'set_icon_slot': 9, 'notes': 'unused Yoshi B (keyed path, slot semantics stock)'},
-            {'char_id': 0x59, 'set_icon_valid': 1, 'set_icon_slot': 10, 'notes': 'unused 0x0D #0 -> test row 10'},
-            {'char_id': 0x5A, 'set_icon_valid': 1, 'set_icon_slot': 20, 'notes': 'unused 0x0D #1 -> test row 20'},
-            {'char_id': 0x5B, 'set_icon_valid': 1, 'set_icon_slot': 30, 'notes': 'unused 0x0D #2 -> test row 30'},
-            {'char_id': 0x5C, 'set_icon_valid': 1, 'set_icon_slot': 40, 'notes': 'unused 0x0D #3 -> test row 40'},
-            {'char_id': 0x5D, 'set_icon_valid': 1, 'set_icon_slot': 50, 'notes': 'unused 0x0D #4 -> test row 50'},
-            {'char_id': 0x5E, 'set_icon_valid': 1, 'set_icon_slot': 60, 'notes': 'unused 0x0D #5 -> test row 60'},
+            {'char_id': 0x47, 'set_selectable': 1, 'set_icon_slot': 5, 'notes': 'unused Yoshi A (keyed path, slot semantics stock)'},
+            {'char_id': 0x48, 'set_selectable': 1, 'set_icon_slot': 9, 'notes': 'unused Yoshi B (keyed path, slot semantics stock)'},
+            {'char_id': 0x59, 'set_selectable': 1, 'set_icon_slot': 10, 'notes': 'unused 0x0D #0 -> test row 10'},
+            {'char_id': 0x5A, 'set_selectable': 1, 'set_icon_slot': 20, 'notes': 'unused 0x0D #1 -> test row 20'},
+            {'char_id': 0x5B, 'set_selectable': 1, 'set_icon_slot': 30, 'notes': 'unused 0x0D #2 -> test row 30'},
+            {'char_id': 0x5C, 'set_selectable': 1, 'set_icon_slot': 40, 'notes': 'unused 0x0D #3 -> test row 40'},
+            {'char_id': 0x5D, 'set_selectable': 1, 'set_icon_slot': 50, 'notes': 'unused 0x0D #4 -> test row 50'},
+            {'char_id': 0x5E, 'set_selectable': 1, 'set_icon_slot': 60, 'notes': 'unused 0x0D #5 -> test row 60'},
         ],
     }
 
@@ -270,15 +273,15 @@ def _apply_rules_to_dol(dol_path, payload, rules):
     per_char_row = bool(payload.get('per_char_row_from_colorwheel'))
     if per_char_row:
         # Seed icon_slot (= runtime row index under this patch) to the stock
-        # Pink Yoshi row for the whole team-NPC range, so non-target chars keep
+        # Mii icon row for the whole Mii range, so non-target chars keep
         # their stock look. User rules below override the targets.
-        for cid in _TEAM_NPC_CHAR_RANGE:
+        for cid in _MII_CHAR_RANGE:
             off = _char_row_offset(cid)
-            dol_bytes[off + 7] = _PINK_YOSHI_ROW_INDEX
+            dol_bytes[off + 7] = _MII_ICON_ROW_INDEX
         if payload.get('widen_resolver_char_bounds'):
             warnings.append(
                 'widen_resolver_char_bounds ignored: per_char_row_from_colorwheel requires chars '
-                '0x4D..0x64 to stay on the team-NPC path (stock bounds check).'
+                '0x4D..0x64 to stay on the Mii path (stock bounds check).'
             )
 
     for idx, rule in enumerate(rules):
@@ -297,19 +300,22 @@ def _apply_rules_to_dol(dol_path, payload, rules):
 
             new_row = bytearray(old_row)
 
-            if 'copy_species_from_char_id' in rule:
-                src_char = rule['copy_species_from_char_id']
+            # Legacy key names: species -> wheel group, icon_valid -> selectable.
+            copy_key = next((k for k in ('copy_wheel_group_from_char_id', 'copy_species_from_char_id') if k in rule), None)
+            if copy_key:
+                src_char = rule[copy_key]
                 src_off = _char_row_offset(src_char)
                 src_row = dol_bytes[src_off:src_off + CW_STRIDE]
                 if len(src_row) != CW_STRIDE:
                     raise IconRoutePrepError(f'unable to read source row char 0x{src_char:02X}')
-                # Only seed species/captain/model fields, keep variant/flags as-is.
+                # Only seed wheel-group/captain/model fields, keep variant/flags as-is.
                 new_row[0] = src_row[0]
                 new_row[1] = src_row[1]
                 new_row[2] = src_row[2]
 
-            if 'set_icon_valid' in rule:
-                new_row[6] = _u8(rule['set_icon_valid'], 'set_icon_valid')
+            selectable_key = next((k for k in ('set_selectable', 'set_icon_valid') if k in rule), None)
+            if selectable_key:
+                new_row[6] = _u8(rule[selectable_key], selectable_key)
 
             if 'set_icon_slot' in rule:
                 new_row[7] = _u8(rule['set_icon_slot'], 'set_icon_slot')
@@ -329,8 +335,8 @@ def _apply_rules_to_dol(dol_path, payload, rules):
                 'row_file_offset_hex': f'0x{row_off:X}',
                 'old_row_hex': old_row.hex(),
                 'new_row_hex': new_row.hex(),
-                'old_icon_valid': old_row[6],
-                'new_icon_valid': new_row[6],
+                'old_selectable': old_row[6],
+                'new_selectable': new_row[6],
                 'old_icon_slot': old_row[7],
                 'new_icon_slot': new_row[7],
                 'notes': rule.get('notes', ''),
@@ -352,21 +358,21 @@ def _apply_rules_to_dol(dol_path, payload, rules):
             spec['vaddr'], spec['old_word'], spec['new_word'], spec['desc'],
         ))
 
-    row_idx = payload.get('team_npc_shared_row_index')
+    row_idx = payload.get('mii_shared_row_index')
     if row_idx is not None:
         if per_char_row:
             warnings.append(
-                'team_npc_shared_row_index ignored: per_char_row_from_colorwheel replaces the '
+                'mii_shared_row_index ignored: per_char_row_from_colorwheel replaces the '
                 'shared li r0,151 instruction with the per-char loader.'
             )
         else:
-            row_idx = _u16(row_idx, 'team_npc_shared_row_index')
+            row_idx = _u16(row_idx, 'mii_shared_row_index')
             if row_idx > 0x7FFF:
-                raise IconRoutePrepError('team_npc_shared_row_index must be 0..0x7FFF (li immediate)')
+                raise IconRoutePrepError('mii_shared_row_index must be 0..0x7FFF (li immediate)')
             code_patches.append(_patch_verified_word(
                 dol_bytes, vaddr_to_file,
-                _TEAM_NPC_ROW_VADDR, _TEAM_NPC_ROW_OLD_WORD, 0x38000000 | row_idx,
-                f'team-NPC shared fallback row index 151 -> {row_idx} (li r0 immediate)',
+                _MII_ROW_VADDR, _MII_ROW_OLD_WORD, 0x38000000 | row_idx,
+                f'Mii shared fallback row index 151 -> {row_idx} (li r0 immediate)',
             ))
 
     with open(dol_path, 'wb') as f:
@@ -391,7 +397,7 @@ def _write_report(report_path, rules_path, applied_rows, code_patches, warnings)
         'patch_scope': 'Color-wheel table edits + verified resolver code patches (disassembly-confirmed).',
         'notes': [
             'Resolver internals decoded 2026-07-11 (Debug/icon_route_probe*.py):',
-            'chars >= 0x4D were hard-excluded at 0x80395E18; team-NPC block forces resource row 151 (Pink Yoshi).',
+            'chars >= 0x4D were hard-excluded at 0x80395E18; Mii block forces resource row 151 (Mii icon).',
             'widen_resolver_char_bounds lets chars 0x4D..0x64 reach the keyed icon route path.',
             'Remaining known gap: key->row-index registration data for the new ids (icon bank records).',
         ],

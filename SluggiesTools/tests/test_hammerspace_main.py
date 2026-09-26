@@ -1083,6 +1083,37 @@ class BuildModelBlockTests(unittest.TestCase):
         zero_original.assert_called_once_with(18, 0)
         write_dumps.assert_called_once_with('fixture.sluggie', 0x1000, 42, b'model-block')
 
+    def test_write_operation_accepts_explicit_aligned_destination(self):
+        build = main.ModelBlockBuild(
+            block=b'model-block',
+            parsed=self.parsed,
+            chunk_number=18,
+            file_index=0,
+            original_offset=0x1000,
+            original_length=42,
+            section_modes=main.SectionModes(),
+            section_sizes={},
+            validation_report={'valid': True},
+        )
+        destination = 0x40000000
+        with (
+            mock.patch.object(main.hh, 'readOutputDolEntry', return_value=(0, 42)),
+            mock.patch.object(main.hh, 'routedHammerspaceRanges', return_value=[]),
+            mock.patch.object(main.hh, 'findFreeMemoryChunk') as find_free,
+            mock.patch.object(main.hh, 'writeModelBlock') as write_model,
+            mock.patch.object(main.hh, 'patchDolEntry'),
+            mock.patch.object(main.hh, 'findSharedEntries', return_value=[]),
+            mock.patch.object(main.hh, 'patchFstFileSize'),
+            mock.patch.object(main.hh, 'zeroOriginalModel'),
+            mock.patch.object(main.hh, 'writeDebugDumps'),
+            mock.patch.object(main.os.path, 'getsize', return_value=destination + 1024),
+        ):
+            new_offset = main.WriteModelBlock(build, 'fixture.sluggie', destination)
+
+        self.assertEqual(new_offset, destination)
+        find_free.assert_not_called()
+        write_model.assert_called_once_with(b'model-block', destination)
+
     def test_write_expands_after_existing_hammerspace_when_no_free_run_exists(self):
         build = main.ModelBlockBuild(
             block=b'model-block',

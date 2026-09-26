@@ -31,15 +31,20 @@ COLOR_WHEEL_COUNT = 101
 INITIAL_CHARACTER_COUNT = 6
 UNUSED_CHARACTER_IDS = set(range(0x47, 0x4D))
 COLOR_WHEEL_FIELDS = (
-    'species',
+    'wheel_group',
     'captain',
     'model',
     'is_captain',
     'flags',
     'variant',
-    'icon_valid',
+    'selectable',
     'icon_slot',
 )
+# Older description files used names that misread bytes 0 and 6.
+LEGACY_FIELD_NAMES = {
+    'wheel_group': 'species',
+    'selectable': 'icon_valid',
+}
 
 
 class ColorWheelPatchError(RuntimeError):
@@ -109,6 +114,11 @@ def load_color_wheel_entries(
         color_wheel = character.get('color_wheel')
         if not isinstance(color_wheel, dict):
             raise ColorWheelPatchError(f'{name}.color_wheel is not an object')
+        color_wheel = {
+            field: color_wheel[legacy]
+            for field, legacy in LEGACY_FIELD_NAMES.items()
+            if field not in color_wheel and legacy in color_wheel
+        } | color_wheel
         missing_fields = [field for field in COLOR_WHEEL_FIELDS if field not in color_wheel]
         if missing_fields:
             raise ColorWheelPatchError(
@@ -119,7 +129,7 @@ def load_color_wheel_entries(
             for field in COLOR_WHEEL_FIELDS
         )
         if row[6] != 1:
-            raise ColorWheelPatchError(f'{name}.color_wheel.icon_valid must be 1')
+            raise ColorWheelPatchError(f'{name}.color_wheel.selectable must be 1')
         entries.append(ColorWheelEntry(name, char_id, row))
     return entries
 
@@ -208,7 +218,7 @@ def install_color_wheel(dry_run: bool = False) -> ColorWheelResult:
                 'char_id': f'0x{entry.char_id:02X}',
                 'row_offset': f'0x{_row_offset(entry.char_id):X}',
                 'row_hex': entry.row.hex(),
-                'icon_valid': entry.row[6],
+                'selectable': entry.row[6],
                 'icon_slot': entry.row[7],
             }
             for entry in entries

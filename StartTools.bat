@@ -29,14 +29,12 @@ echo.
 if /i "!tools_choice!"=="exit" goto :eof
 
 if "!tools_choice!"=="1" (
-    set "SLUGGIES_MENU_SELECTION=1 - Full export with untangling + icon routes + icon export"
+    set "SLUGGIES_MENU_SELECTION=1 - Full export with untangling + icon export"
     set "SLUGGIES_MODEL_FILES="
     set "SLUGGIES_ICON_SHARED_MODE="
     call !SLUGGIES_LAUNCHER! --export --untangle
     if errorlevel 1 goto :after_command
-    call !SLUGGIES_LAUNCHER! --prepare-icon-routes --no-overwrite-copy
-    if errorlevel 1 goto :after_command
-    call !SLUGGIES_LAUNCHER! --export-icons --use-output
+    call !SLUGGIES_LAUNCHER! --export-icons
     if errorlevel 1 goto :after_command
     call !SLUGGIES_LAUNCHER! --add-custom-icons
     goto :after_command
