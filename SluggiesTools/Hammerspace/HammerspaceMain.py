@@ -1716,6 +1716,7 @@ def _build_rigid_submesh_blob(sub: 'Submesh') -> tuple[bytes, int]:
 def PatchGPLAppendSubmesh(
     gpl_bytes: bytes, model: dict, parsed: 'SluggieParsed',
     texture_index_by_file_name: dict[str, int] | None = None,
+    donor_gpl_length: int | None = None,
 ) -> bytes:
     """Append every parsed.custom_submeshes entry to a cloned/patched GPL
     section (PLAN_AddSubmesh.md Phase 2).
@@ -1736,6 +1737,16 @@ def PatchGPLAppendSubmesh(
     blobs as a unit doesn't affect SKN either (confirmed by Phase 0 probe 3's
     animated-skinning test). New blobs are inserted right after the existing
     ones and before GPLUserData, matching BuildGPLMeshData's own blob order.
+
+    ``donor_gpl_length`` is the cloned donor GPL's size. Anything past it is
+    a payload PatchGPLUVRebuild appended (normal/UV/color arrays, primitive
+    lists) and is addressed DOLayout-relative from the existing blobs, so it
+    must keep its distance to them: the whole span from the first blob to the
+    GPL end moves as one unit, with GPLUserData's old spot left as a zeroed
+    gap, and GPLUserData is re-emitted after the new blobs. (Moving the tail
+    with GPLUserData instead shifted it by the new blobs' size, leaving every
+    appended pointer dangling -- user report 2026-09-25, Goomba.) Without
+    appended data the output is unchanged.
     """
 
     if not parsed.custom_submeshes:
@@ -1767,13 +1778,18 @@ def PatchGPLAppendSubmesh(
         min(pointer for entry in old_descriptors for pointer in entry)
         if old_descriptors else _align32(desc_ptr + old_count * 8)
     )
-    insertion_point = user_data_ptr if user_data_ptr else len(patched)
-    if not (desc_ptr <= old_blob_region_start <= insertion_point <= len(patched)):
+    tail_start = len(patched) if donor_gpl_length is None else donor_gpl_length
+    insertion_point = user_data_ptr if user_data_ptr else tail_start
+    if not (desc_ptr <= old_blob_region_start <= insertion_point <= tail_start <= len(patched)):
         raise ValueError('GPL section layout is not in the shape PatchGPLAppendSubmesh expects')
 
     pre_table            = bytes(patched[:desc_ptr])
     blobs_before_userdata = bytes(patched[old_blob_region_start:insertion_point])
-    from_userdata_onward  = bytes(patched[insertion_point:])
+    from_userdata_onward  = bytes(patched[insertion_point:tail_start])
+    appended_tail         = bytes(patched[tail_start:])
+    if appended_tail:
+        # Keep blob -> tail distances intact (see docstring).
+        blobs_before_userdata += b'\x00' * len(from_userdata_onward) + appended_tail
 
     new_count = old_count + len(new_submeshes)
 
@@ -5077,6 +5093,7 @@ def BuildModelBlock(
             or getattr(parsed, 'custom_submeshes', None)
         ):
             gpl_bytes = CloneGPL(source_model_offset, source_model_length)
+            donor_gpl_length = len(gpl_bytes)
             if has_material_state_edits:
                 gpl_bytes = PatchGPLMaterialStates(
                     gpl_bytes, data, source_model_offset
@@ -5103,6 +5120,7 @@ def BuildModelBlock(
                 }
                 gpl_bytes = PatchGPLAppendSubmesh(
                     gpl_bytes, model, parsed, texture_index_by_file_name,
+                    donor_gpl_length=donor_gpl_length,
                 )
             gpl_result = GPLBuildResult(
                 gpl_bytes=gpl_bytes,
@@ -5223,7 +5241,11 @@ def BuildModelBlock(
     )
 
 
-def WriteModelBlock(build: ModelBlockBuild, model_name: str) -> int:
+def WriteModelBlock(
+    build: ModelBlockBuild,
+    model_name: str,
+    output_offset: int | None = None,
+) -> int:
     """Write an assembled block to hammerspace and patch its output references."""
     if not build.validation_report.get('valid'):
         raise ValueError('refusing to write a model block with a failed validation report')
@@ -5246,18 +5268,41 @@ def WriteModelBlock(build: ModelBlockBuild, model_name: str) -> int:
     reserved_ranges = list(hh.routedHammerspaceRanges())
     if replacing_hammerspace_block:
         reserved_ranges.append((current_offset, current_length))
-    new_offset = hh.findFreeMemoryChunk(len(build.block), reserved_ranges=reserved_ranges)
-    if new_offset == -1:
-        if not hh.ensureOutputDat():
-            raise RuntimeError('Unable to prepare output dt_na.dat')
-        current_size = os.path.getsize(hh.OUTPUT_DAT)
-        next_region_start = (current_size + hh.HS_ALIGN_BYTES - 1) & ~(hh.HS_ALIGN_BYTES - 1)
-        required_size = next_region_start + len(build.block) + hh.HS_BUFFER_BYTES
-        if not hh.ensureOutputDat(required_size):
-            raise RuntimeError('Unable to prepare output dt_na.dat')
+    if output_offset is None:
         new_offset = hh.findFreeMemoryChunk(len(build.block), reserved_ranges=reserved_ranges)
         if new_offset == -1:
-            raise RuntimeError('No contiguous hammerspace region found after expansion')
+            if not hh.ensureOutputDat():
+                raise RuntimeError('Unable to prepare output dt_na.dat')
+            current_size = os.path.getsize(hh.OUTPUT_DAT)
+            next_region_start = (current_size + hh.HS_ALIGN_BYTES - 1) & ~(hh.HS_ALIGN_BYTES - 1)
+            required_size = next_region_start + len(build.block) + hh.HS_BUFFER_BYTES
+            if not hh.ensureOutputDat(required_size):
+                raise RuntimeError('Unable to prepare output dt_na.dat')
+            new_offset = hh.findFreeMemoryChunk(len(build.block), reserved_ranges=reserved_ranges)
+            if new_offset == -1:
+                raise RuntimeError('No contiguous hammerspace region found after expansion')
+    else:
+        new_offset = output_offset
+        if new_offset < hh.BASE_SIZE:
+            raise ValueError(
+                f'explicit hammerspace offset 0x{new_offset:08X} is before '
+                f'BASE_SIZE 0x{hh.BASE_SIZE:08X}'
+            )
+        if new_offset % hh.HS_ALIGN_BYTES:
+            raise ValueError(
+                f'explicit hammerspace offset 0x{new_offset:08X} is not '
+                f'{hh.HS_ALIGN_BYTES}-byte aligned'
+            )
+        for reserved_offset, reserved_length in reserved_ranges:
+            if (
+                new_offset < reserved_offset + reserved_length
+                and reserved_offset < new_offset + len(build.block)
+            ):
+                raise ValueError(
+                    f'explicit hammerspace block 0x{new_offset:08X}+{len(build.block):,} '
+                    f'overlaps a live routed range '
+                    f'0x{reserved_offset:08X}+{reserved_length:,}'
+                )
 
     if replacing_hammerspace_block and (
         new_offset < current_offset + current_length
@@ -5352,6 +5397,8 @@ if __name__ == '__main__':
                          help='Absolute path to a .png file for single-texture replacement')
     _parser.add_argument('--texture-index', type=int, default=None,
                          help='TextureDescriptor index targeted by --texture-file')
+    _parser.add_argument('--output-offset', type=lambda value: int(value, 0), default=None,
+                         help='Explicit aligned hammerspace DAT offset (for boundary testing)')
     _args = _parser.parse_args()
 
     if (_args.texture_file is None) != (_args.texture_index is None):
@@ -5403,7 +5450,7 @@ if __name__ == '__main__':
         if _args.dry_run:
             _slogger.info('Dry run complete; output DAT, DOL, and FST were not modified.', source='hammerspace.main')
         else:
-            WriteModelBlock(_build, _model_name)
+            WriteModelBlock(_build, _model_name, output_offset=_args.output_offset)
     except (OSError, KeyError, TypeError, ValueError, RuntimeError) as _exc:
         _slogger.error(
             f'Hammerspace operation failed | Model: {_model_name} | '

@@ -1850,6 +1850,7 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
 
         patch_append.assert_called_once_with(
             b'GPL', self.data['SluggiesModel'], self.parsed, {'new.png': 5},
+            donor_gpl_length=len(b'GPL'),
         )
 
     def test_custom_submesh_additional_texture_file_name_requires_tex_build_and_reimport(self):
@@ -3088,6 +3089,58 @@ class PatchGPLAppendSubmeshTests(unittest.TestCase):
             patched[new_dolayout_ptr:new_dolayout_ptr + len(rebuilt_blob)], rebuilt_blob,
         )
         self.assertEqual(new_name_ptr - new_dolayout_ptr, rebuilt_name_off)
+
+    def _new_sub(self):
+        return main.Submesh(
+            submesh_index=1, mesh_name='CustomSubmesh_0', faces_count=1,
+            faces_data=struct.pack('>3H', 0, 1, 2), face_texture_indices=b'',
+            vertex_data=struct.pack('>9h', 0, 0, 0, 1, 0, 0, 0, 1, 0),
+            vertex_comp_count=3, vertex_quantize_info=59,
+            uv_channels=[], color_channels=[], draw_states=[], position_data_ptr_field_offset=0,
+            vertex_count_field_offset=0, normal_buffer=None, source_layout_offset=0,
+            source_position_data_offset=0, preserve_source_layout=False,
+        )
+
+    def _append(self, gpl_bytes, donor_gpl_length=None):
+        parsed = SimpleNamespace(custom_submeshes=[SimpleNamespace(
+            custom_submesh_id='custom0', host_bone_id=5, template_source='builtin:rigid_spec_v1',
+        )])
+        with mock.patch.object(main, '_build_custom_submesh', return_value=self._new_sub()):
+            return main.PatchGPLAppendSubmesh(
+                gpl_bytes, {'Submeshes': []}, parsed, donor_gpl_length=donor_gpl_length,
+            )
+
+    def test_payloads_appended_after_donor_gpl_keep_their_blob_relative_distance(self):
+        # User report 2026-09-25 (Goomba): PatchGPLUVRebuild tail-appends
+        # rebuilt primitive lists and points at them DOLayout-relative. The
+        # tail used to move with GPLUserData, i.e. further than the blobs by
+        # the new blobs' size, so every appended pointer dangled.
+        blob_start = 0x1C
+        blob_bytes = bytearray(range(40))
+        user_data = b'USERDATA' * 5
+        donor_gpl, desc_ptr, _, _ = self._build_donor_gpl(blob_start, bytes(blob_bytes), 10, user_data)
+        payload = b'PRIMLIST' * 4
+        tail_off = (len(donor_gpl) + 31) & ~31
+        gpl = bytearray(donor_gpl) + b'\x00' * (tail_off - len(donor_gpl)) + payload
+        struct.pack_into('>I', gpl, blob_start + 0x20, tail_off - blob_start)  # blob -> payload
+
+        patched = self._append(bytes(gpl), donor_gpl_length=len(donor_gpl))
+
+        new_blob = struct.unpack_from('>I', patched, desc_ptr)[0]
+        pointer = struct.unpack_from('>I', patched, new_blob + 0x20)[0]
+        self.assertEqual(pointer, tail_off - blob_start, 'blob contents must not change')
+        self.assertEqual(patched[new_blob + pointer:new_blob + pointer + len(payload)], payload)
+        self.assertEqual((new_blob + pointer) % 32, 0, 'appended payload keeps its 32-byte alignment')
+
+        ud_len, ud_ptr = struct.unpack_from('>2I', patched, 0x04)
+        self.assertEqual(patched[ud_ptr:ud_ptr + ud_len], user_data)
+        new_custom_blob = struct.unpack_from('>I', patched, desc_ptr + 8)[0]
+        self.assertGreater(new_custom_blob, new_blob + pointer, 'new blobs follow the moved tail')
+        self.assertGreater(ud_ptr, new_custom_blob, 'GPLUserData stays last')
+
+    def test_donor_length_without_appended_tail_matches_legacy_layout(self):
+        donor_gpl, *_ = self._build_donor_gpl(0x1C, bytes(range(40)), 10, b'USERDATA' * 5)
+        self.assertEqual(self._append(donor_gpl, len(donor_gpl)), self._append(donor_gpl))
 
     def test_no_custom_submeshes_returns_input_unchanged(self):
         gpl_bytes, *_ = self._build_donor_gpl(0x1C, bytes(range(40)), 10, b'UD')

@@ -75,14 +75,59 @@ def _get_custom_split_normals(obj):
     ]
 
 
-def encode_vertex_buffer_edited(obj, comp_count, quant_info, use_custom_normals=False, use_base64=True):
+# Blender stores imported normals at lower precision than the donor's
+# quantized ints, so an untouched normal re-quantizes up to a few steps off
+# (measured: <= 0.02 deg, up to 5 steps at shift 14). Anything this close to
+# its donor value is round-trip noise, not an edit.
+_NORMAL_ROUNDTRIP_MIN_COS = math.cos(math.radians(0.1))
+
+
+def _decode_donor_components(record, comp_size, divisor, is_float):
+    fmt = '>f' if is_float else '>h'
+    values = [
+        struct.unpack_from(fmt, record, offset)[0]
+        for offset in range(0, len(record), comp_size)
+    ]
+    return values if is_float else [value / divisor for value in values]
+
+
+def _normal_is_donor_roundtrip(normal, donor_normal):
+    """True when *normal* is *donor_normal* after Blender's precision loss.
+
+    A zero-length donor normal (unused/degenerate vertex) always counts:
+    Blender cannot represent it and substitutes an arbitrary unit normal.
+    """
+    donor_length = math.sqrt(sum(c * c for c in donor_normal))
+    if donor_length < 1e-8:
+        return True
+    length = math.sqrt(sum(c * c for c in normal))
+    if length < 1e-8:
+        return False
+    cos = sum(a * b for a, b in zip(normal, donor_normal)) / (length * donor_length)
+    return cos >= _NORMAL_ROUNDTRIP_MIN_COS
+
+
+def encode_vertex_buffer_edited(obj, comp_count, quant_info, use_custom_normals=False,
+                                use_base64=True, donor_data=None):
     """Re-quantize edited vertex positions (and normals if comp_count==6)
-    back into the original binary format and return a base64 string or byte list."""
+    back into the original binary format and return a base64 string or byte list.
+
+    With *donor_data* (the donor VertexBufferData) and an unchanged vertex
+    count, interleaved normals keep their donor bytes: always when
+    *use_custom_normals* is off, and otherwise when Blender's normal is only
+    round-trip noise away from the donor value.
+    """
     mesh = obj.data
     fmt_nibble = quant_info >> 4
     shift = quant_info & 0xF
     divisor = 1 << shift
     is_float = fmt_nibble in [4, 7, 0xa]
+    comp_size = 4 if is_float else 2
+    stride = comp_count * comp_size
+
+    donor_raw = _to_bytes(donor_data) if (donor_data is not None and comp_count >= 6) else None
+    if donor_raw is not None and len(donor_raw) != len(mesh.vertices) * stride:
+        donor_raw = None
 
     custom_normals = _get_custom_split_normals(obj) if (use_custom_normals and comp_count >= 6) else None
     basis_key = None
@@ -93,12 +138,22 @@ def encode_vertex_buffer_edited(obj, comp_count, quant_info, use_custom_normals=
     for v in mesh.vertices:
         position = basis_key.data[v.index].co if basis_key is not None else v.co
         comps = [position.x, position.y, position.z]
+        donor_normal_bytes = None
         if comp_count >= 6:
             if custom_normals is not None:
                 n = custom_normals[v.index]
                 comps += [n.x, n.y, n.z]
             else:
                 comps += [v.normal.x, v.normal.y, v.normal.z]
+            if donor_raw is not None:
+                record = donor_raw[v.index * stride:(v.index + 1) * stride]
+                normal_bytes = record[3 * comp_size:6 * comp_size]
+                if custom_normals is None or _normal_is_donor_roundtrip(
+                    comps[3:6],
+                    _decode_donor_components(normal_bytes, comp_size, divisor, is_float),
+                ):
+                    donor_normal_bytes = normal_bytes
+                    comps = comps[:3]
         component_names = ('x', 'y', 'z', 'nx', 'ny', 'nz')
         for component_index, val in enumerate(comps):
             if is_float:
@@ -114,6 +169,8 @@ def encode_vertex_buffer_edited(obj, comp_count, quant_info, use_custom_normals=
                     divisor,
                     f"{obj.name} vertex {v.index} {component_names[component_index]}",
                 )
+        if donor_normal_bytes is not None:
+            raw_bytes += donor_normal_bytes
 
     return _from_bytes(bytes(raw_bytes), use_base64)
 
@@ -669,6 +726,10 @@ def encode_normal_edits(obj, json_normal_buffer, loop_indices, use_base64=True):
     interleaves [NX, NY, NZ, X, Y, Z]). Blender only carries the normal, so the
     trailing components are copied verbatim from the donor record each loop
     referenced. Returns None when that donor mapping is unavailable.
+
+    With an unchanged loop layout, a loop whose normal is only Blender
+    round-trip noise away from its donor record keeps that record verbatim,
+    so an untouched mesh exports byte-identical normals.
     """
     normal_data = bytearray()
     comp = json_normal_buffer.get("NormalBufferCompCount", 3)
@@ -678,27 +739,33 @@ def encode_normal_edits(obj, json_normal_buffer, loop_indices, use_base64=True):
     comp_size = 4 if is_float else 2
     stride = comp * comp_size
 
-    donor_tails = None
-    if comp > 3:
-        donor_raw = _to_bytes(json_normal_buffer.get("NormalBufferData"))
-        donor_faces = json_normal_buffer.get("NormalFacesData")
-        if not donor_raw or donor_faces is None or len(donor_raw) % stride:
-            return None
+    # Per-loop donor records, available only with an unchanged loop layout.
+    donor_records = None
+    donor_raw = _to_bytes(json_normal_buffer.get("NormalBufferData") or b"")
+    donor_faces = json_normal_buffer.get("NormalFacesData")
+    if donor_raw and donor_faces is not None and not len(donor_raw) % stride:
         donor_indices = list(struct.unpack(
             f'>{len(_to_bytes(donor_faces)) // 2}H', _to_bytes(donor_faces)))
-        # Trailing components can only be preserved with an unchanged loop layout.
-        if len(donor_indices) != len(loop_indices):
-            return None
         donor_count = len(donor_raw) // stride
-        if any(index >= donor_count for index in donor_indices):
-            return None
-        tail_offset = 3 * comp_size
-        donor_tails = [
-            donor_raw[index * stride + tail_offset:(index + 1) * stride]
-            for index in donor_indices
-        ]
+        if len(donor_indices) == len(loop_indices) and all(
+            index < donor_count for index in donor_indices
+        ):
+            donor_records = [
+                donor_raw[index * stride:(index + 1) * stride]
+                for index in donor_indices
+            ]
+    # Trailing components can only be preserved with an unchanged loop layout.
+    if comp > 3 and donor_records is None:
+        return None
 
     for loop_position, n in enumerate(_per_loop_normals(obj.data, loop_indices)):
+        if donor_records is not None:
+            record = donor_records[loop_position]
+            if _normal_is_donor_roundtrip(
+                n, _decode_donor_components(record[:3 * comp_size], comp_size, divisor, is_float)
+            ):
+                normal_data += record
+                continue
         for val in n[:comp]:
             if is_float:
                 if not math.isfinite(float(val)):
@@ -710,8 +777,8 @@ def encode_normal_edits(obj, json_normal_buffer, loop_indices, use_base64=True):
                 normal_data += _pack_quantized_component(
                     val, divisor, f"{obj.name} per-loop normal component"
                 )
-        if donor_tails is not None:
-            normal_data += donor_tails[loop_position]
+        if comp > 3:
+            normal_data += donor_records[loop_position][3 * comp_size:]
 
     if len(normal_data) != len(loop_indices) * stride:
         return None
@@ -866,6 +933,7 @@ def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False, use_bas
         obj["VertexBufferQuantizeInfo"],
         use_custom_normals=use_custom_normals,
         use_base64=use_base64,
+        donor_data=json_submesh.get("VertexBuffer", {}).get("VertexBufferData"),
     )
 
     face_flat = [vi for tri in triangles for vi in tri.vertices]
@@ -3408,6 +3476,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                         obj["VertexBufferQuantizeInfo"],
                         use_custom_normals=self.use_custom_normals,
                         use_base64=use_base64,
+                        donor_data=target_submesh["VertexBuffer"].get("VertexBufferData"),
                     )
                 except ValueError as exc:
                     self.report({"ERROR"}, f"{obj.name}: {exc}")
