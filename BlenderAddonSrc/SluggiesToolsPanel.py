@@ -733,80 +733,88 @@ class SLUGGIES_OT_reassign_bone(bpy.types.Operator):
             self.target_bone = f'bone_{default_choice.bone_id}'
         self.placement = (
             'KEEP_OFFSET' if int(obj.get('FacialShapeKeyCount', 0) or 0) > 0 else 'KEEP_WORLD')
+        _begin_bone_name_display(self, arm_obj)
         return context.window_manager.invoke_props_dialog(self)
 
     def execute(self, context):
         arm_obj = _find_target_armature(context)
-        obj = context.active_object
-        if arm_obj is None or obj is None:
-            self.report({"ERROR"}, _no_target_armature_message(context))
-            return {"CANCELLED"}
+        try:
+            obj = context.active_object
+            if arm_obj is None or obj is None:
+                self.report({"ERROR"}, _no_target_armature_message(context))
+                return {"CANCELLED"}
 
-        kind, submesh_index = _rigid_mesh_kind(obj)
-        if kind is None:
-            self.report({"ERROR"}, "Select a rigid or custom submesh")
-            return {"CANCELLED"}
+            kind, submesh_index = _rigid_mesh_kind(obj)
+            if kind is None:
+                self.report({"ERROR"}, "Select a rigid or custom submesh")
+                return {"CANCELLED"}
 
-        if self.target_bone == 'NONE':
-            self.report({"ERROR"}, "No other bone is free to move to")
-            return {"CANCELLED"}
-        target_bone_id = _bone_id_from_name(self.target_bone)
-        if target_bone_id is None or f'bone_{target_bone_id}' not in arm_obj.data.bones:
-            self.report({"ERROR"}, f"Target bone {self.target_bone!r} no longer exists")
-            return {"CANCELLED"}
+            if self.target_bone == 'NONE':
+                self.report({"ERROR"}, "No other bone is free to move to")
+                return {"CANCELLED"}
+            target_bone_id = _bone_id_from_name(self.target_bone)
+            if target_bone_id is None or f'bone_{target_bone_id}' not in arm_obj.data.bones:
+                self.report({"ERROR"}, f"Target bone {self.target_bone!r} no longer exists")
+                return {"CANCELLED"}
 
-        # The props dialog may have stayed open while the scene changed underneath it.
-        ordered = _reassign_choices(context, arm_obj, obj)
-        if not any(c.bone_id == target_bone_id for c in ordered):
-            self.report({"ERROR"}, f"bone_{target_bone_id} is no longer free; pick another target bone")
-            return {"CANCELLED"}
-
-        current_bone_id = _detect_uniform_vertex_bone_id(obj)
-
-        if self.placement == 'KEEP_OFFSET':
-            if current_bone_id is None:
+            # The props dialog may have stayed open while the scene changed underneath it.
+            ordered = _reassign_choices(context, arm_obj, obj)
+            if not any(c.bone_id == target_bone_id for c in ordered):
                 self.report(
-                    {"ERROR"}, f"{obj.name} has no single bone_<id> vertex group to move from")
+                    {"ERROR"}, f"bone_{target_bone_id} is no longer free; pick another target bone")
                 return {"CANCELLED"}
-            sluggie_path = arm_obj.get('SluggieFilePath')
-            bone_hierarchy = _read_bone_hierarchy(sluggie_path) if sluggie_path else None
-            if not bone_hierarchy:
-                self.report({"ERROR"}, HostBones.RE_IMPORT_MESSAGE)
-                return {"CANCELLED"}
-            bind_matrices = CustomSubmeshExport.bone_absolute_matrices(bone_hierarchy)
-            b_old = bind_matrices.get(current_bone_id)
-            b_new = bind_matrices.get(target_bone_id)
-            if b_old is None or b_new is None:
+
+            current_bone_id = _detect_uniform_vertex_bone_id(obj)
+
+            if self.placement == 'KEEP_OFFSET':
+                if current_bone_id is None:
+                    self.report(
+                        {"ERROR"}, f"{obj.name} has no single bone_<id> vertex group to move from")
+                    return {"CANCELLED"}
+                sluggie_path = arm_obj.get('SluggieFilePath')
+                bone_hierarchy = _read_bone_hierarchy(sluggie_path) if sluggie_path else None
+                if not bone_hierarchy:
+                    self.report({"ERROR"}, HostBones.RE_IMPORT_MESSAGE)
+                    return {"CANCELLED"}
+                bind_matrices = CustomSubmeshExport.bone_absolute_matrices(bone_hierarchy)
+                b_old = bind_matrices.get(current_bone_id)
+                b_new = bind_matrices.get(target_bone_id)
+                if b_old is None or b_new is None:
+                    self.report(
+                        {"ERROR"}, "Bone bind matrix missing from BoneHierarchy; re-import this model")
+                    return {"CANCELLED"}
+                arm_world = [list(row) for row in arm_obj.matrix_world]
+                obj_world = [list(row) for row in obj.matrix_world]
+                new_world = CustomSubmeshExport.keep_offset_world_matrix(
+                    obj_world, arm_world, b_old, b_new)
+                obj.matrix_world = Matrix(new_world)
+
+            for vg in list(obj.vertex_groups):
+                if _bone_id_from_name(vg.name) is not None:
+                    obj.vertex_groups.remove(vg)
+            new_vg = obj.vertex_groups.new(name=f'bone_{target_bone_id}')
+            new_vg.add(list(range(len(obj.data.vertices))), 1.0, 'REPLACE')
+
+            mod = next((m for m in obj.modifiers if m.type == 'ARMATURE'), None)
+            if mod is None:
+                mod = obj.modifiers.new(name="Armature", type='ARMATURE')
+            mod.object = arm_obj
+
+            obj['SluggiesRigidPlacement'] = self.placement
+
+            if current_bone_id is not None:
                 self.report(
-                    {"ERROR"}, "Bone bind matrix missing from BoneHierarchy; re-import this model")
-                return {"CANCELLED"}
-            arm_world = [list(row) for row in arm_obj.matrix_world]
-            obj_world = [list(row) for row in obj.matrix_world]
-            new_world = CustomSubmeshExport.keep_offset_world_matrix(
-                obj_world, arm_world, b_old, b_new)
-            obj.matrix_world = Matrix(new_world)
+                    {"INFO"},
+                    f"Moved {obj.name} from bone_{current_bone_id} to bone_{target_bone_id} "
+                    f"({self.placement})")
+            else:
+                self.report({"INFO"}, f"Moved {obj.name} to bone_{target_bone_id} ({self.placement})")
+            return {"FINISHED"}
+        finally:
+            _end_bone_name_display(self, arm_obj)
 
-        for vg in list(obj.vertex_groups):
-            if _bone_id_from_name(vg.name) is not None:
-                obj.vertex_groups.remove(vg)
-        new_vg = obj.vertex_groups.new(name=f'bone_{target_bone_id}')
-        new_vg.add(list(range(len(obj.data.vertices))), 1.0, 'REPLACE')
-
-        mod = next((m for m in obj.modifiers if m.type == 'ARMATURE'), None)
-        if mod is None:
-            mod = obj.modifiers.new(name="Armature", type='ARMATURE')
-        mod.object = arm_obj
-
-        obj['SluggiesRigidPlacement'] = self.placement
-
-        if current_bone_id is not None:
-            self.report(
-                {"INFO"},
-                f"Moved {obj.name} from bone_{current_bone_id} to bone_{target_bone_id} "
-                f"({self.placement})")
-        else:
-            self.report({"INFO"}, f"Moved {obj.name} to bone_{target_bone_id} ({self.placement})")
-        return {"FINISHED"}
+    def cancel(self, context):
+        _end_bone_name_display(self, _find_target_armature(context))
 
 
 class SLUGGIES_OT_add_material(bpy.types.Operator):
@@ -1007,11 +1015,12 @@ def _add_bone_parent_enum_items(self, context):
     arm_obj = _find_target_armature(context)
     if arm_obj is None:
         return [('NONE', "No armature", _no_target_armature_message(context), 0)]
+    # data.bones iterates depth-first through the hierarchy; list by numeric id.
+    bones = sorted(
+        (b for b in arm_obj.data.bones if _bone_id_from_name(b.name) is not None),
+        key=lambda b: _bone_id_from_name(b.name))
     items = []
-    for idx, b in enumerate(arm_obj.data.bones):
-        bone_id = _bone_id_from_name(b.name)
-        if bone_id is None:
-            continue
+    for idx, b in enumerate(bones):
         tag = "new" if b.get('SluggiesUserAdded') else "donor"
         items.append((b.name, b.name, f"Parent the new bone to {b.name} ({tag})", idx))
     return items or [('NONE', "No bones", "This armature has no bones", 0)]

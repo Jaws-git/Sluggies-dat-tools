@@ -89,12 +89,15 @@ class OrderHostBoneChoicesTests(unittest.TestCase):
         ordered = order_host_bone_choices(choices, records)
         self.assertEqual([c.bone_id for c in ordered], [2, 1, 3])
 
-    def test_recommended_group_lists_leaves_before_inner_bones(self):
-        # bone 2 is inner (parent of 3); bone 3 is a leaf.
-        records = [_rec(1, None), _rec(2, 1), _rec(3, 2)]
+    def test_each_group_is_in_numeric_bone_id_order(self):
+        # bone 2 is inner (parent of 10 and 3); 10 and 3 are leaves. Numeric
+        # order must win over leaf-ness and over string order ('10' < '2').
+        records = [_rec(1, None), _rec(2, 1), _rec(10, 2), _rec(3, 2), _rec(20, None)]
         choices = classify_host_bones(records)
         ordered = order_host_bone_choices(choices, records)
-        self.assertEqual([c.bone_id for c in ordered if c.status == STATUS_RECOMMENDED], [3, 2])
+        self.assertEqual(
+            [c.bone_id for c in ordered if c.status == STATUS_RECOMMENDED], [2, 3, 10])
+        self.assertEqual([c.bone_id for c in ordered if c.status == STATUS_ALLOWED], [1, 20])
 
 
 class ComputeRigidRetargetsTests(unittest.TestCase):

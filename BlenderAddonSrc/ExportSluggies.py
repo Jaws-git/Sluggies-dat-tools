@@ -2404,6 +2404,26 @@ def _connected_image_texture_nodes(material):
     return found
 
 
+# Mirrors texture_helper._TEMPLATE_FOOTPRINT_FIELDS plus the fields an
+# addition overwrites: what remains is what a template lends an appended
+# texture (format and sampler fields). Duplicated because the add-on stays
+# standalone.
+_TEMPLATE_UNLENT_FIELDS = frozenset((
+    "Width", "Height", "ImageDataOffset", "ImageDataLength",
+    "ImagePayloadLength", "ImageDataCapacity", "TextureDescriptorOffset",
+    "TextureIndex", "TextureFileName", "AdditionalMipCount",
+    "PaletteEntries", "PaletteFormat",
+))
+
+
+def _template_signature(descriptor):
+    """The format and sampler fields a template descriptor lends an addition."""
+    return json.dumps(
+        {k: v for k, v in descriptor.items() if k not in _TEMPLATE_UNLENT_FIELDS},
+        sort_keys=True, default=str,
+    )
+
+
 def _resolve_material_texture_changes(
     object_submeshes,
     descriptors,
@@ -2419,6 +2439,10 @@ def _resolve_material_texture_changes(
     }
     donor_count = len(descriptors)
     additions = []
+    # (file name, template signature) -> appended index. One PNG shown by
+    # several materials is appended once and shared, instead of being encoded
+    # and stored once per material.
+    appended_index_by_key = {}
     assignments = {}
     changed_materials = []
 
@@ -2469,6 +2493,9 @@ def _resolve_material_texture_changes(
                 )
             desired_index = descriptor_by_name.get(file_name)
             if desired_index is None:
+                key = (file_name, _template_signature(descriptors[original_index]))
+                desired_index = appended_index_by_key.get(key)
+            if desired_index is None:
                 desired_index = donor_count + len(additions)
                 if desired_index > 0x1FFF:
                     raise ValueError(
@@ -2478,6 +2505,7 @@ def _resolve_material_texture_changes(
                     "TextureFileName": file_name,
                     "TemplateTextureIndex": original_index,
                 })
+                appended_index_by_key[key] = desired_index
 
             if desired_index != original_index:
                 if surface_id in assignments:
@@ -2972,6 +3000,66 @@ def _resolve_export_texture_context(sluggie_path, model):
     return [], os.path.join(model_dir, 'tex'), False
 
 
+def _find_low_poly_partner(sluggie_path, model):
+    """Folder name of the exported low-poly (`_L_`) partner of a high-poly
+    model, or None when the model is itself low-poly or has no partner.
+
+    Mirrors SluggiesTools' LodPartnerGuard pairing (same chunk, matching geo
+    name stem; the Mii pairs mix .gpl and .gplp) on the export layout: the
+    partner is a sibling folder `<offset>_L_<geo name>` holding a .sluggie of
+    the same chunk. Duplicated because the add-on stays standalone."""
+    model_dir = os.path.dirname(os.path.abspath(sluggie_path))
+    folder_name = os.path.basename(model_dir)
+    geo_name = (model.get("ACTHeader") or {}).get("GeoName") or folder_name.split('_', 1)[-1]
+    if geo_name.lower().startswith('l_') or '_l_' in folder_name.lower():
+        return None
+    stem = geo_name.split('.', 1)[0].lower()
+    chunk = model.get("ChunkNumber")
+
+    parent_dir = os.path.dirname(model_dir)
+    try:
+        sibling_names = sorted(os.listdir(parent_dir))
+    except OSError:
+        return None
+    for sibling_name in sibling_names:
+        sibling_dir = os.path.join(parent_dir, sibling_name)
+        marker = sibling_name.lower().find('_l_')
+        if (
+            marker < 0
+            or not os.path.isdir(sibling_dir)
+            or sibling_name[marker + 3:].split('.', 1)[0].lower() != stem
+        ):
+            continue
+        try:
+            sluggie_names = [
+                name for name in os.listdir(sibling_dir) if name.lower().endswith('.sluggie')
+            ]
+        except OSError:
+            continue
+        for sluggie_name in sluggie_names:
+            try:
+                with open(os.path.join(sibling_dir, sluggie_name), 'r') as sibling_file:
+                    sibling_chunk = json.load(sibling_file).get('SluggiesModel', {}).get('ChunkNumber')
+            except (OSError, ValueError):
+                continue
+            if chunk is None or sibling_chunk is None or sibling_chunk == chunk:
+                return sibling_name
+    return None
+
+
+def _lod_texture_reassignment_refused_message(material_names, partner_name):
+    return (
+        "Texture reassignment is not supported on character models with a "
+        f"low-poly partner ({partner_name}) yet. The low-poly model draws with "
+        "this model's textures, and unless some of its matching surfaces are "
+        "changed too, the game crashes the moment it loads in a match. Those "
+        "surfaces can't be matched reliably yet. Keep these materials on their "
+        "original textures and use Dolphin's custom texture loading for these "
+        "parts instead. New textures on custom submeshes are still allowed. "
+        f"Materials: [{', '.join(material_names)}]"
+    )
+
+
 def _texture_export_toggles_required_message(material_names):
     return (
         "Texture change detected but 'Hammerspace Mode' and 'Reimport textures' "
@@ -3303,6 +3391,19 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 f"{', '.join(changed_materials)}",
             )
             return {"CANCELLED"}
+
+        # A high-poly model's texture retargets must be matched in its
+        # low-poly partner, surface by surface, or the game crashes when the
+        # low-poly model loads (Dolphin, 2026-09-27). There is no reliable
+        # surface matching yet, so reassignments on paired models are refused.
+        if changed_materials:
+            lod_partner = _find_low_poly_partner(self.filepath, data["SluggiesModel"])
+            if lod_partner:
+                self.report(
+                    {"ERROR"},
+                    _lod_texture_reassignment_refused_message(changed_materials, lod_partner),
+                )
+                return {"CANCELLED"}
 
         if changed_materials and not (
             self.use_hammerspace and self.reimport_textures

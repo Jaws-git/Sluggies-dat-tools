@@ -1,7 +1,7 @@
 import os
 import sys
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -16,6 +16,7 @@ _slogger.configure()
 import drawlist
 import HammerspaceHelper as hh
 import LodPartnerGuard
+import LodTextureSync
 from binfmt import (
     align4 as _align4,
     color_entry_size as _color_entry_size,
@@ -865,6 +866,63 @@ def _validate_custom_submeshes(model: dict) -> None:
 
     if errors:
         raise ValueError('; '.join(errors))
+
+
+def _merge_duplicate_texture_additions(model: dict, sluggie_path) -> None:
+    """Collapse ``AdditionalTextureDescriptors`` entries that would encode to
+    the same texture into their first occurrence, in place.
+
+    The add-on used to append one entry per material even when several showed
+    the same PNG, so each copy was encoded and stored separately (Tiny Kong,
+    2026-09-27: four 512 KB copies of one image). Merging here fixes such
+    ``.sluggie`` files without a re-export. ``DesiredTextureAssignments``
+    indices and custom submesh ``AdditionalTextureFileName`` bindings are
+    remapped to the kept entry.
+    """
+    additions = model.get('AdditionalTextureDescriptors') or []
+    if len(additions) < 2:
+        return
+    import texture_helper as _tex
+    descriptors = model.get('TextureDescriptors') or []
+    canonical = _tex.find_duplicate_additional_textures(sluggie_path, descriptors, additions)
+    kept = [order for order, first in enumerate(canonical) if first == order]
+    if len(kept) == len(additions):
+        return
+
+    donor_count = len(descriptors)
+    new_position = {order: kept.index(first) for order, first in enumerate(canonical)}
+    for order, first in enumerate(canonical):
+        if first != order:
+            _slogger.info(
+                f"[TEX] texture addition {additions[order]['TextureFileName']!r} "
+                f"(index {donor_count + order}) is identical to "
+                f"{additions[first]['TextureFileName']!r} (index {donor_count + first}); "
+                'sharing one texture',
+                source='hammerspace.main',
+            )
+
+    assignments = model.get('DesiredTextureAssignments')
+    if assignments:
+        for surface_id, index in assignments.items():
+            if isinstance(index, int) and not isinstance(index, bool)                     and donor_count <= index < donor_count + len(additions):
+                assignments[surface_id] = donor_count + new_position[index - donor_count]
+
+    kept_name = {}
+    for order, first in enumerate(canonical):
+        kept_name.setdefault(
+            additions[order].get('TextureFileName'), additions[first].get('TextureFileName'))
+    for cs in model.get('CustomSubmeshes') or []:
+        texture_assignment = cs.get('TextureAssignment') or {}
+        name = texture_assignment.get('AdditionalTextureFileName')
+        if name in kept_name:
+            texture_assignment['AdditionalTextureFileName'] = kept_name[name]
+
+    model['AdditionalTextureDescriptors'] = [additions[order] for order in kept]
+    _slogger.info(
+        f'[TEX] merged {len(additions) - len(kept)} duplicate texture addition(s); '
+        f'{len(kept)} of {len(additions)} remain',
+        source='hammerspace.main',
+    )
 
 
 def _validate_bone_hierarchy_edited(model: dict) -> None:
@@ -4867,6 +4925,82 @@ def _build_validation_report(
     }
 
 
+def _is_absolute_offset_key(key) -> bool:
+    return isinstance(key, str) and ('Offset' in key or key.endswith('AbsolutePtr'))
+
+
+def _rebase_absolute_offsets(node, key, start: int, end: int, delta: int):
+    """Shift every absolute offset in ``[start, end]`` by ``delta``, in place."""
+    if isinstance(node, dict):
+        for child_key, child in node.items():
+            node[child_key] = _rebase_absolute_offsets(child, child_key, start, end, delta)
+        return node
+    if isinstance(node, list):
+        for index, child in enumerate(node):
+            node[index] = _rebase_absolute_offsets(child, key, start, end, delta)
+        return node
+    if not _is_absolute_offset_key(key) or isinstance(node, bool):
+        return node
+    if isinstance(node, int) and start <= node <= end:
+        return node + delta
+    if isinstance(node, str) and node.lower().startswith('0x'):
+        try:
+            value = int(node, 16)
+        except ValueError:
+            return node
+        if start <= value <= end:
+            return hex(value + delta)
+    return node
+
+
+def _rebase_hammerspace_resident_source(
+    model: dict,
+    source_model_offset: int,
+    source_model_length: int,
+    original_offset: int,
+    original_length: int,
+) -> int:
+    """Point a schema exported from a hammerspace copy back at its vanilla donor.
+
+    ``export.py --untangle`` clones the unused-character directories (89-94)
+    into hammerspace and exports them from there, so their schemas carry
+    hammerspace offsets. That copy does not survive patching: WriteModelBlock
+    zeroes the block it replaces, and --unpatch restores the vanilla route.
+    The clone was a verbatim copy of the INPUT DOL entry, so the vanilla block
+    is the same donor. Every absolute offset inside the model range is shifted
+    onto it, and the archive prefix, if any, is kept like any vanilla donor's.
+    """
+    if source_model_length == original_length:
+        prefix_size = 0
+    else:
+        with open(hh.INPUT_DAT, 'rb') as source:
+            source.seek(original_offset)
+            container = source.read(original_length)
+        layout = parse_archive_container(container)
+        members = [
+            member for member in (layout.members if layout else ())
+            if member.length == source_model_length
+        ]
+        if len(members) != 1:
+            raise ValueError(
+                f'schema was exported from hammerspace (0x{source_model_offset:08X}) and '
+                f'its {source_model_length:,}-byte model cannot be matched to exactly one '
+                f'slot of the vanilla DOL entry 0x{original_offset:08X}+{original_length:,}; '
+                're-export the model')
+        prefix_size = members[0].offset
+    vanilla_model_offset = original_offset + prefix_size
+    delta = vanilla_model_offset - source_model_offset
+    _rebase_absolute_offsets(
+        model, None, source_model_offset, source_model_offset + source_model_length, delta)
+    _slogger.info(
+        f'[Container] schema was exported from a hammerspace copy at '
+        f'0x{source_model_offset:08X}; using the vanilla donor at '
+        f'0x{vanilla_model_offset:08X} instead',
+        source='hammerspace.main',
+    )
+    return vanilla_model_offset
+
+
 def BuildModelBlock(
     data: dict,
     section_modes: SectionModes | None = None,
@@ -4911,6 +5045,8 @@ def BuildModelBlock(
             "CustomSubmeshes with TextureAssignment.AdditionalTextureFileName require "
             "SectionModes.tex='build' with ReimportTextures enabled"
         )
+    if modes.tex == 'build' and model.get('ReimportTextures') and texture_plan is None:
+        _merge_duplicate_texture_additions(model, sluggie_path)
     chunk_number = model['ChunkNumber']
     file_index = model['FileIndex']
     original_offset, original_length = hh.readDolEntry(chunk_number, file_index)
@@ -4926,74 +5062,67 @@ def BuildModelBlock(
     route_container = b''
     archive_layout = None
     if source_model_offset >= hh.BASE_SIZE:
-        # Hammerspace-resident source: the model block already lives in the
-        # hammerspace region of OUTPUT_DAT (e.g. a previously patched clone or
-        # unused character).  There is no DOL-entry container prefix to
-        # preserve — the clone functions read the model block directly from
-        # source_model_offset.
-        _slogger.info(
-            f'[Container] source model is hammerspace-resident at '
-            f'0x{source_model_offset:08X}; no DOL-entry prefix to preserve',
-            source='hammerspace.main',
+        source_model_offset = _rebase_hammerspace_resident_source(
+            model, source_model_offset, source_model_length,
+            original_offset, original_length,
         )
-    else:
-        route_prefix_size = source_model_offset - original_offset
-        if route_prefix_size < 0 or route_prefix_size + source_model_length > original_length:
+    route_prefix_size = source_model_offset - original_offset
+    if route_prefix_size < 0 or route_prefix_size + source_model_length > original_length:
+        raise ValueError(
+            f'schema model range 0x{source_model_offset:08X}+{source_model_length:,} '
+            f'is outside donor DOL entry 0x{original_offset:08X}+{original_length:,}')
+    route_suffix_size = original_length - route_prefix_size - source_model_length
+    if route_prefix_size or route_suffix_size:
+        # The DOL entry holds more than this model, so read all of it: the
+        # bytes around the model have to be carried into the new block.
+        with open(_source_dat_path(original_offset), 'rb') as source:
+            source.seek(original_offset)
+            route_container = source.read(original_length)
+        if len(route_container) != original_length:
+            raise IOError(
+                f'could not read the {original_length} byte DOL entry '
+                f'at 0x{original_offset:08X}')
+        route_prefix = route_container[:route_prefix_size]
+        archive_layout = parse_archive_container(route_container)
+        if archive_layout is not None and archive_layout.member_at(route_prefix_size) is None:
+            # An archive whose table does not list this model: rebuilding it
+            # would shift members the schema knows nothing about.
             raise ValueError(
-                f'schema model range 0x{source_model_offset:08X}+{source_model_length:,} '
-                f'is outside donor DOL entry 0x{original_offset:08X}+{original_length:,}')
-        route_suffix_size = original_length - route_prefix_size - source_model_length
-        if route_prefix_size or route_suffix_size:
-            # The DOL entry holds more than this model, so read all of it: the
-            # bytes around the model have to be carried into the new block.
-            with open(_source_dat_path(original_offset), 'rb') as source:
-                source.seek(original_offset)
-                route_container = source.read(original_length)
-            if len(route_container) != original_length:
-                raise IOError(
-                    f'could not read the {original_length} byte DOL entry '
-                    f'at 0x{original_offset:08X}')
-            route_prefix = route_container[:route_prefix_size]
-            archive_layout = parse_archive_container(route_container)
-            if archive_layout is not None and archive_layout.member_at(route_prefix_size) is None:
-                # An archive whose table does not list this model: rebuilding it
-                # would shift members the schema knows nothing about.
+                f'model at 0x{source_model_offset:08X} is not a populated slot of '
+                f'the archive at 0x{original_offset:08X}')
+        if archive_layout is not None:
+            member = archive_layout.member_at(route_prefix_size)
+            if member.length != source_model_length:
                 raise ValueError(
-                    f'model at 0x{source_model_offset:08X} is not a populated slot of '
-                    f'the archive at 0x{original_offset:08X}')
-            if archive_layout is not None:
-                member = archive_layout.member_at(route_prefix_size)
-                if member.length != source_model_length:
-                    raise ValueError(
-                        f'archive slot {member.slot} spans {member.length:,} bytes but the '
-                        f'schema reports ModelLength={source_model_length:,}')
-                if member.offset % hh.HS_ALIGN_BYTES:
-                    # The block lands on a 32-byte boundary, so a member off the
-                    # boundary would drag the model's hot data off it too.
-                    raise ValueError(
-                        f'archive slot {member.slot} starts at +0x{member.offset:X}, which is '
-                        f'not a multiple of {hh.HS_ALIGN_BYTES}')
-                _slogger.info(
-                    f'[Container] DOL entry is an archive: {archive_layout.file_count} slots, '
-                    f'{len(archive_layout.members)} populated; rebuilding slot {member.slot} '
-                    f'at +0x{member.offset:X} and carrying the other '
-                    f'{len(archive_layout.members) - 1} member(s) along',
+                    f'archive slot {member.slot} spans {member.length:,} bytes but the '
+                    f'schema reports ModelLength={source_model_length:,}')
+            if member.offset % hh.HS_ALIGN_BYTES:
+                # The block lands on a 32-byte boundary, so a member off the
+                # boundary would drag the model's hot data off it too.
+                raise ValueError(
+                    f'archive slot {member.slot} starts at +0x{member.offset:X}, which is '
+                    f'not a multiple of {hh.HS_ALIGN_BYTES}')
+            _slogger.info(
+                f'[Container] DOL entry is an archive: {archive_layout.file_count} slots, '
+                f'{len(archive_layout.members)} populated; rebuilding slot {member.slot} '
+                f'at +0x{member.offset:X} and carrying the other '
+                f'{len(archive_layout.members) - 1} member(s) along',
+                source='hammerspace.main',
+            )
+        else:
+            if route_suffix_size:
+                _slogger.warning(
+                    f'[Container] DOL entry 0x{original_offset:08X}+{original_length:,} has '
+                    f'{route_suffix_size:,} bytes after the model but is not a readable '
+                    f'archive; those bytes are dropped from the rebuilt block',
                     source='hammerspace.main',
                 )
-            else:
-                if route_suffix_size:
-                    _slogger.warning(
-                        f'[Container] DOL entry 0x{original_offset:08X}+{original_length:,} has '
-                        f'{route_suffix_size:,} bytes after the model but is not a readable '
-                        f'archive; those bytes are dropped from the rebuilt block',
-                        source='hammerspace.main',
-                    )
-                if route_prefix_size:
-                    _slogger.info(
-                        f'[Container] preserving {route_prefix_size}-byte DOL entry prefix; '
-                        f'inner model starts at +0x{route_prefix_size:X}',
-                        source='hammerspace.main',
-                    )
+            if route_prefix_size:
+                _slogger.info(
+                    f'[Container] preserving {route_prefix_size}-byte DOL entry prefix; '
+                    f'inner model starts at +0x{route_prefix_size:X}',
+                    source='hammerspace.main',
+                )
 
     position_edits = _position_edits(model) if modes.gpl == 'build' else []
     if position_edits:
@@ -5067,6 +5196,7 @@ def BuildModelBlock(
         has_material_state_edits = any(
             state.get('MaterialStateAliasedByImporter')
             or state.get('ShaderModeEdited') is not None
+            or state.get('DisplayStateParamBytesEdited') is not None
             for submesh in model.get('Submeshes', [])
             for state in submesh.get('DisplayStates', [])
         )
@@ -5257,6 +5387,17 @@ def CheckLodPartner(build: ModelBlockBuild) -> None:
         _slogger.warning(f'[LOD] {warning}', source='hammerspace.main')
 
 
+def PreviewLodTextureSync(build: ModelBlockBuild) -> None:
+    """Dry-run counterpart of the texture assignment sync in WriteModelBlock:
+    logs the differences and what would be changed, writes nothing."""
+    if LodTextureSync.sync_low_block(build.block, build.chunk_number, build.file_index, dry_run=True) is build.block:
+        LodTextureSync.sync_partner_of_high(
+            build.chunk_number, build.file_index, build.block,
+            LodPartnerGuard.read_current_block(build.chunk_number, build.file_index),
+            dry_run=True,
+        )
+
+
 def WriteModelBlock(
     build: ModelBlockBuild,
     model_name: str,
@@ -5266,6 +5407,12 @@ def WriteModelBlock(
     if not build.validation_report.get('valid'):
         raise ValueError('refusing to write a model block with a failed validation report')
     CheckLodPartner(build)
+    # A low-poly model binds textures by index into its high-poly partner's
+    # TEX; its binds must follow the partner's retargets (LodTextureSync).
+    synced_block = LodTextureSync.sync_low_block(build.block, build.chunk_number, build.file_index)
+    if synced_block is not build.block:
+        build = replace(build, block=synced_block)
+    high_before = LodPartnerGuard.read_current_block(build.chunk_number, build.file_index)
 
     chunk_number = build.chunk_number
     file_index = build.file_index
@@ -5360,6 +5507,7 @@ def WriteModelBlock(
         f'Modes: {build.section_modes.as_dict()}',
         source='hammerspace.main',
     )
+    LodTextureSync.sync_partner_of_high(chunk_number, file_index, build.block, high_before)
     return new_offset
 
 
@@ -5390,6 +5538,25 @@ def WriteModelBlock(
 #
 #     print(f"    Read {length:,} bytes from INPUT at 0x{offset:08X}")
 #     return block
+
+
+def _format_report_json(value, indent=2, _level=0):
+    """Indented JSON, but with scalar-only lists kept on a single line."""
+    import json
+    pad = ' ' * (indent * (_level + 1))
+    end = ' ' * (indent * _level)
+    if isinstance(value, dict):
+        if not value:
+            return '{}'
+        items = [f'{pad}{json.dumps(str(k))}: {_format_report_json(v, indent, _level + 1)}'
+                 for k, v in value.items()]
+        return '{\n' + ',\n'.join(items) + '\n' + end + '}'
+    if isinstance(value, (list, tuple)):
+        if all(not isinstance(v, (dict, list, tuple)) for v in value):
+            return json.dumps(list(value))
+        items = [pad + _format_report_json(v, indent, _level + 1) for v in value]
+        return '[\n' + ',\n'.join(items) + '\n' + end + ']'
+    return json.dumps(value)
 
 
 # ---------------------------------------------------------------------------
@@ -5438,8 +5605,23 @@ if __name__ == '__main__':
                 source='hammerspace.main',
             )
             raise SystemExit(1)
+        _high_before = LodPartnerGuard.read_current_block(_chunk, _index)
         _success, _removed_offset, _removed_length = hh.removeModelFromHammerspace(_chunk, _index)
         if _success:
+            try:
+                _restored = LodPartnerGuard.read_current_block(_chunk, _index)
+                _summary = LodPartnerGuard.act_summary(_restored) if _restored else None
+                if _summary is not None and _summary.is_low_poly:
+                    LodTextureSync.resync_live_low(_chunk, _index)
+                elif _summary is not None:
+                    LodTextureSync.sync_partner_of_high(_chunk, _index, _restored, _high_before)
+            except (OSError, ValueError, RuntimeError) as _exc:
+                _slogger.error(
+                    f'[LOD] texture assignment sync after unpatch failed | Model: {_model_name} | '
+                    f'{type(_exc).__name__}: {_exc}',
+                    source='hammerspace.main',
+                )
+                _success = False
             _slogger.info(
                 f'Hammerspace Log: Removed | Model: {_model_name} | Chunk: {_chunk} | '
                 f'File: {_index} | Address: 0x{_removed_offset:08X} | '
@@ -5468,13 +5650,14 @@ if __name__ == '__main__':
         _build = BuildModelBlock(_data, _modes, sluggie_path=_args.sluggies_path,
                                  tex_png_overrides=_tex_png_overrides)
         _slogger.info(
-            'Build validation report:\n' + _json.dumps(_build.validation_report, indent=2),
+            'Build validation report:\n' + _format_report_json(_build.validation_report),
             source='hammerspace.main',
         )
         if not _build.validation_report['valid']:
             raise ValueError('assembled model block failed validation')
         if _args.dry_run:
             CheckLodPartner(_build)
+            PreviewLodTextureSync(_build)
             _slogger.info('Dry run complete; output DAT, DOL, and FST were not modified.', source='hammerspace.main')
         else:
             WriteModelBlock(_build, _model_name, output_offset=_args.output_offset)

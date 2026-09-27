@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 import pathlib
 import struct
 import sys
@@ -562,6 +563,29 @@ class BuildModelBlockTests(unittest.TestCase):
         patch_states.assert_called_once()
         build_gpl.assert_not_called()
         self.assertEqual(result.section_sizes['GPL'], len(b'PATCHED'))
+
+    def test_specular_only_edit_patches_cloned_gpl(self):
+        # A DisplayStateParamBytesEdited edit with no ShaderModeEdited must
+        # still route through PatchGPLMaterialStates (Tiny Kong, 2026-09-27).
+        self.data['SluggiesModel']['Submeshes'] = [{
+            'DisplayStates': [{
+                'DisplayStateId': 7,
+                'DisplayStateParamBytes': '640064',
+                'DisplayStateParamBytesEdited': '000064',
+            }],
+        }]
+        patches = self._patch_common()
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8]:
+            with (
+                mock.patch.object(main, '_validate_hammerspace_contract'),
+                mock.patch.object(main, 'rebuild_surface_assignments', return_value=False),
+                mock.patch.object(main, 'PatchGPLMaterialStates', return_value=b'PATCHED') as patch_states,
+                mock.patch.object(main, 'BuildGPLMeshData') as build_gpl,
+            ):
+                main.BuildModelBlock(self.data, main.SectionModes(gpl='build'))
+
+        patch_states.assert_called_once()
+        build_gpl.assert_not_called()
 
     def test_material_alias_patches_texture_and_drawable_states(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1800,6 +1824,40 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
             ),
         )
         build_tex.assert_called_once_with(self.parsed, plan)
+
+    def test_tex_build_merges_duplicate_additional_texture_descriptors(self):
+        """Tiny Kong, 2026-09-27: one PNG appended once per surface stored four
+        512 KB copies. Duplicates are merged before planning, and the surface
+        assignments follow the kept entry."""
+        self.data['SluggiesModel'].update({
+            'UseHammerspace': True,
+            'ReimportTextures': True,
+            'TextureDescriptors': [
+                {'TextureIndex': 0, 'TextureFileName': '0.png', 'Format': 14},
+            ],
+            'AdditionalTextureDescriptors': [
+                {'TextureFileName': 'a.png', 'TemplateTextureIndex': 0},
+                {'TextureFileName': 'a.png', 'TemplateTextureIndex': 0},
+                {'TextureFileName': 'b.png', 'TemplateTextureIndex': 0},
+                {'TextureFileName': 'a.png', 'TemplateTextureIndex': 0},
+            ],
+        })
+        plan = mock.Mock(skipped=())
+        with (
+            mock.patch.object(
+                texture_helper, 'build_hammerspace_texture_plan', return_value=plan,
+            ) as build_plan,
+            mock.patch.object(main, 'BuildTEX', return_value=b'BUILT_TEX'),
+        ):
+            self._run(main.SectionModes(tex='build'), sluggie_path='missing/model.sluggies')
+
+        self.assertEqual(
+            build_plan.call_args.kwargs['additional_descriptors'],
+            (
+                texture_helper.AdditionalTextureDescriptor('a.png', 0),
+                texture_helper.AdditionalTextureDescriptor('b.png', 0),
+            ),
+        )
 
     def test_tex_plan_built_before_gpl_append_resolves_additional_texture_index(self):
         """PLAN_AddSubmesh.md Phase 4 step 2: the TEX plan is resolved before
@@ -3328,6 +3386,121 @@ class PatchGPLAppendSubmeshSyntheticDonorTests(unittest.TestCase):
                 content[:compare_len], donor_content[:compare_len],
                 f'donor submesh {index} content changed',
             )
+
+
+class MergeDuplicateTextureAdditionsTests(unittest.TestCase):
+    """_merge_duplicate_texture_additions: identical images share one TEX entry."""
+
+    def setUp(self):
+        from PIL import Image
+        self._image = Image
+        self.temp = self.enterContext(tempfile.TemporaryDirectory())
+        os.mkdir(os.path.join(self.temp, 'tex'))
+        self.sluggie_path = os.path.join(self.temp, 'model.sluggie')
+
+    def _png(self, name, color, size=(8, 8)):
+        self._image.new('RGBA', size, color).save(os.path.join(self.temp, 'tex', name))
+
+    def _model(self, additions, **extra):
+        model = {
+            'TextureDescriptors': [
+                {'TextureIndex': 0, 'TextureFileName': '0.png', 'Format': 14},
+                {'TextureIndex': 1, 'TextureFileName': '1.png', 'Format': 14},
+                {'TextureIndex': 2, 'TextureFileName': '2.png', 'Format': 5},
+            ],
+            'AdditionalTextureDescriptors': additions,
+        }
+        model.update(extra)
+        return model
+
+    def test_identical_pixels_under_different_names_are_merged_and_remapped(self):
+        self._png('a.png', (255, 0, 0, 255))
+        self._png('a_copy.png', (255, 0, 0, 255))
+        self._png('b.png', (0, 255, 0, 255))
+        model = self._model(
+            [
+                {'TextureFileName': 'a.png', 'TemplateTextureIndex': 0},
+                {'TextureFileName': 'b.png', 'TemplateTextureIndex': 0},
+                {'TextureFileName': 'a_copy.png', 'TemplateTextureIndex': 1},
+            ],
+            DesiredTextureAssignments={'sm0_ds5': 3, 'sm0_ds9': 4, 'sm1_ds5': 5, 'sm2_ds5': 1},
+            CustomSubmeshes=[
+                {'TextureAssignment': {'AdditionalTextureFileName': 'a_copy.png'}},
+                {'TextureAssignment': {'DonorTextureIndex': 2}},
+            ],
+        )
+
+        main._merge_duplicate_texture_additions(model, self.sluggie_path)
+
+        self.assertEqual(model['AdditionalTextureDescriptors'], [
+            {'TextureFileName': 'a.png', 'TemplateTextureIndex': 0},
+            {'TextureFileName': 'b.png', 'TemplateTextureIndex': 0},
+        ])
+        self.assertEqual(
+            model['DesiredTextureAssignments'],
+            {'sm0_ds5': 3, 'sm0_ds9': 4, 'sm1_ds5': 3, 'sm2_ds5': 1},
+        )
+        self.assertEqual(
+            model['CustomSubmeshes'][0]['TextureAssignment'],
+            {'AdditionalTextureFileName': 'a.png'},
+        )
+        self.assertEqual(model['CustomSubmeshes'][1]['TextureAssignment'], {'DonorTextureIndex': 2})
+
+    def test_later_entries_shift_down_past_removed_duplicates(self):
+        self._png('a.png', (255, 0, 0, 255))
+        self._png('b.png', (0, 255, 0, 255))
+        model = self._model(
+            [
+                {'TextureFileName': 'a.png', 'TemplateTextureIndex': 0},
+                {'TextureFileName': 'a.png', 'TemplateTextureIndex': 0},
+                {'TextureFileName': 'b.png', 'TemplateTextureIndex': 0},
+            ],
+            DesiredTextureAssignments={'x': 4, 'y': 5},
+        )
+
+        main._merge_duplicate_texture_additions(model, self.sluggie_path)
+
+        self.assertEqual(model['DesiredTextureAssignments'], {'x': 3, 'y': 4})
+
+    def test_same_image_under_different_formats_is_kept_separate(self):
+        self._png('a.png', (255, 0, 0, 255))
+        additions = [
+            {'TextureFileName': 'a.png', 'TemplateTextureIndex': 0},
+            {'TextureFileName': 'a.png', 'TemplateTextureIndex': 2},
+        ]
+        model = self._model(list(additions))
+
+        main._merge_duplicate_texture_additions(model, self.sluggie_path)
+
+        self.assertEqual(model['AdditionalTextureDescriptors'], additions)
+
+    def test_different_pixels_or_sizes_are_kept_separate(self):
+        self._png('a.png', (255, 0, 0, 255))
+        self._png('b.png', (255, 0, 0, 254))
+        self._png('c.png', (255, 0, 0, 255), size=(8, 16))
+        additions = [
+            {'TextureFileName': name, 'TemplateTextureIndex': 0}
+            for name in ('a.png', 'b.png', 'c.png')
+        ]
+        model = self._model(list(additions))
+
+        main._merge_duplicate_texture_additions(model, self.sluggie_path)
+
+        self.assertEqual(model['AdditionalTextureDescriptors'], additions)
+
+    def test_unreadable_pngs_fall_back_to_file_name_identity(self):
+        model = self._model([
+            {'TextureFileName': 'gone.png', 'TemplateTextureIndex': 0},
+            {'TextureFileName': 'gone.png', 'TemplateTextureIndex': 0},
+            {'TextureFileName': 'other.png', 'TemplateTextureIndex': 0},
+        ])
+
+        main._merge_duplicate_texture_additions(model, self.sluggie_path)
+
+        self.assertEqual(
+            [a['TextureFileName'] for a in model['AdditionalTextureDescriptors']],
+            ['gone.png', 'other.png'],
+        )
 
 
 if __name__ == '__main__':

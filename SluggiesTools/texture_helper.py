@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import struct
@@ -650,6 +651,84 @@ class AdditionalTextureDescriptor:
 
     texture_file_name: str
     template_texture_index: int
+
+
+# Fields an addition overwrites on its cloned template descriptor (see
+# build_hammerspace_texture_plan); like the footprint fields, they are not part
+# of what the template lends.
+_ADDITION_OVERWRITTEN_FIELDS = (
+    "TextureIndex",
+    "TextureFileName",
+    "AdditionalMipCount",
+    "PaletteEntries",
+    "PaletteFormat",
+)
+
+
+def _template_signature(descriptor: Mapping[str, Any]) -> str:
+    """The format and sampler fields a template lends to an addition."""
+    lent = {
+        key: value for key, value in descriptor.items()
+        if key not in _TEMPLATE_FOOTPRINT_FIELDS
+        and key not in _ADDITION_OVERWRITTEN_FIELDS
+    }
+    return json.dumps(lent, sort_keys=True, default=str)
+
+
+def _png_pixel_identity(png_path: str) -> tuple | None:
+    """Size and RGBA pixel hash of a PNG, or None when it cannot be read."""
+    from PIL import Image
+
+    try:
+        with Image.open(png_path) as img:
+            rgba = img.convert("RGBA")
+            return rgba.size, hashlib.sha256(rgba.tobytes()).hexdigest()
+    except (OSError, ValueError):
+        return None
+
+
+def find_duplicate_additional_textures(
+    sluggie_path: str | os.PathLike[str] | None,
+    descriptors: Sequence[Mapping[str, Any]],
+    additions: Sequence[Mapping[str, Any]],
+) -> list[int]:
+    """Map each ``AdditionalTextureDescriptors`` entry to the first entry it duplicates.
+
+    Returns one append order per addition: its own when it is the first of its
+    kind, else the earlier addition that would encode to the same texture.
+    That is the case when both show the same image -- the same file name, or
+    identical RGBA pixels at the same size -- and their templates lend the same
+    format and sampler fields. Without this, one PNG on several surfaces is
+    encoded and stored once per surface (a 1024x1024 CMPR copy is 512 KB).
+
+    Pixels are compared only when ``sluggie_path`` is given and the PNG can be
+    read; otherwise the file name alone identifies the image, and an unreadable
+    PNG is left for the texture plan builder to report.
+    """
+    pixel_cache: dict[str, tuple | None] = {}
+
+    def image_key(name: str) -> tuple:
+        if sluggie_path is not None:
+            if name not in pixel_cache:
+                pixel_cache[name] = _png_pixel_identity(
+                    resolve_texture_path(sluggie_path, name)
+                )
+            if pixel_cache[name] is not None:
+                return ("pixels", pixel_cache[name])
+        return ("name", name)
+
+    first_by_key: dict[tuple, int] = {}
+    canonical: list[int] = []
+    for order, addition in enumerate(additions):
+        name = addition.get("TextureFileName")
+        template_index = addition.get("TemplateTextureIndex")
+        if not isinstance(name, str) or not isinstance(template_index, int)                 or not 0 <= template_index < len(descriptors):
+            # Malformed: never merged, so the plan builder reports it as-is.
+            canonical.append(order)
+            continue
+        key = (image_key(name), _template_signature(descriptors[template_index]))
+        canonical.append(first_by_key.setdefault(key, order))
+    return canonical
 
 
 @dataclass(frozen=True)

@@ -189,31 +189,21 @@ def order_host_bone_choices(
     """Group and order choices for the Add submesh dialog.
 
     Resolution order is ``recommended``, then ``allowed``, then
-    ``drives_skinning``; ``excluded`` choices are dropped. Within
-    ``recommended``, leaf bones come before inner bones (F7: vanilla rigid
-    owners are mostly leaves), then by bone id; the other groups are ordered
-    by bone id alone.
+    ``drives_skinning``; ``excluded`` choices are dropped. Each group is
+    ordered by numeric bone id, so ``bone_2`` always precedes ``bone_10``.
+    (``recommended`` used to list leaf bones before inner ones, which read
+    as a broken sort in the dialog; the default pick is nearest-bone anyway.)
+
+    *bone_records* is unused and kept for call-site compatibility.
     """
-    child_counts: Dict[int, int] = {}
-    for rec in bone_records:
-        if rec.parent_id is not None:
-            child_counts[rec.parent_id] = child_counts.get(rec.parent_id, 0) + 1
-
-    def is_leaf(bone_id: int) -> bool:
-        return child_counts.get(bone_id, 0) == 0
-
     by_status: Dict[str, List[HostBoneChoice]] = {status: [] for status in _PRESENTATION_ORDER}
     for choice in choices:
         if choice.status in by_status:
             by_status[choice.status].append(choice)
 
-    by_status[STATUS_RECOMMENDED].sort(key=lambda c: (not is_leaf(c.bone_id), c.bone_id))
-    by_status[STATUS_ALLOWED].sort(key=lambda c: c.bone_id)
-    by_status[STATUS_DRIVES_SKINNING].sort(key=lambda c: c.bone_id)
-
     ordered: List[HostBoneChoice] = []
     for status in _PRESENTATION_ORDER:
-        ordered.extend(by_status[status])
+        ordered.extend(sorted(by_status[status], key=lambda c: c.bone_id))
     return ordered
 
 

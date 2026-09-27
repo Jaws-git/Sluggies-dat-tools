@@ -1,4 +1,5 @@
 import ast
+import json
 import os
 import pathlib
 import struct
@@ -56,14 +57,19 @@ def _load_texture_helpers():
         '_resolve_material_texture_changes',
         '_resolve_export_texture_context',
         '_texture_export_toggles_required_message',
+        '_find_low_poly_partner',
+        '_lod_texture_reassignment_refused_message',
         '_custom_submesh_texture_layer',
         '_custom_submesh_template_texture_index',
         '_plan_external_texture_copy',
         '_resolve_custom_submesh_texture_changes',
+        '_template_signature',
     }
     helpers = [
         node for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name in names
+        or isinstance(node, ast.Assign)
+        and any(getattr(t, 'id', None) == '_TEMPLATE_UNLENT_FIELDS' for t in node.targets)
     ]
     module = ast.Module(body=helpers, type_ignores=[])
     namespace = {'json': __import__('json'), 'os': os}
@@ -453,7 +459,9 @@ class BlenderMaterialTextureTests(unittest.TestCase):
             )
         self.assertEqual(result, ([], {}, []))
 
-    def test_new_filename_appends_per_material_without_deduplication(self):
+    def test_new_filename_on_several_materials_is_appended_once(self):
+        """One PNG on several surfaces must not be encoded and stored once per
+        surface (Tiny Kong, 2026-09-27: four 512 KB copies of one image)."""
         with tempfile.TemporaryDirectory() as temp_dir:
             image_path = pathlib.Path(temp_dir, 'new.png')
             image_path.write_bytes(b'png')
@@ -466,10 +474,50 @@ class BlenderMaterialTextureTests(unittest.TestCase):
             )
         self.assertEqual(additions, [
             {'TextureFileName': 'new.png', 'TemplateTextureIndex': 0},
+        ])
+        self.assertEqual(assignments, {'sm0_ds1': 1, 'sm0_ds2': 1})
+        self.assertEqual(changed, ['body', 'hand'])
+
+    def test_same_filename_shares_across_templates_with_identical_format(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = pathlib.Path(temp_dir, 'new.png')
+            image_path.write_bytes(b'png')
+            first = _material_graph('body', 'sm0_ds1', 0, [image_path])
+            second = _material_graph('hand', 'sm0_ds2', 1, [image_path])
+            additions, assignments, _changed = self.resolve_changes(
+                [(self._object(first, second), {})],
+                [
+                    {'TextureIndex': 0, 'TextureFileName': '0.png', 'Format': 14,
+                     'Width': 512, 'Height': 512},
+                    {'TextureIndex': 1, 'TextureFileName': '1.png', 'Format': 14,
+                     'Width': 64, 'Height': 64},
+                ],
+                temp_dir,
+            )
+        self.assertEqual(additions, [
             {'TextureFileName': 'new.png', 'TemplateTextureIndex': 0},
         ])
-        self.assertEqual(assignments, {'sm0_ds1': 1, 'sm0_ds2': 2})
-        self.assertEqual(changed, ['body', 'hand'])
+        self.assertEqual(assignments, {'sm0_ds1': 2, 'sm0_ds2': 2})
+
+    def test_same_filename_under_different_formats_is_appended_per_format(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = pathlib.Path(temp_dir, 'new.png')
+            image_path.write_bytes(b'png')
+            first = _material_graph('body', 'sm0_ds1', 0, [image_path])
+            second = _material_graph('hand', 'sm0_ds2', 1, [image_path])
+            additions, assignments, _changed = self.resolve_changes(
+                [(self._object(first, second), {})],
+                [
+                    {'TextureIndex': 0, 'TextureFileName': '0.png', 'Format': 14},
+                    {'TextureIndex': 1, 'TextureFileName': '1.png', 'Format': 5},
+                ],
+                temp_dir,
+            )
+        self.assertEqual(additions, [
+            {'TextureFileName': 'new.png', 'TemplateTextureIndex': 0},
+            {'TextureFileName': 'new.png', 'TemplateTextureIndex': 1},
+        ])
+        self.assertEqual(assignments, {'sm0_ds1': 2, 'sm0_ds2': 3})
 
     def test_missing_model_local_png_is_rejected(self):
         material = _material_graph('body', 'sm0_ds1', 0, ['elsewhere/new.png'])
@@ -561,6 +609,64 @@ class BlenderMaterialTextureTests(unittest.TestCase):
             "are not both enabled. Enable both options before exporting. "
             "Materials: [body, right hand]",
         )
+
+
+class LowPolyPartnerTests(unittest.TestCase):
+    """Texture reassignment is refused on models with a low-poly partner
+    (Tiny Kong crashed unless some of L's surfaces were changed too)."""
+
+    def setUp(self):
+        helpers = _load_texture_helpers()
+        self.find = helpers['_find_low_poly_partner']
+        self.message = helpers['_lod_texture_reassignment_refused_message']
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def _model_dir(self, folder, chunk=75, geo_name=None):
+        path = os.path.join(self.tmp.name, folder)
+        os.makedirs(path)
+        model = {'ChunkNumber': chunk}
+        if geo_name:
+            model['ACTHeader'] = {'GeoName': geo_name}
+        sluggie = os.path.join(path, folder + '.sluggie')
+        with open(sluggie, 'w') as handle:
+            json.dump({'SluggiesModel': model}, handle)
+        return sluggie, model
+
+    def test_high_poly_with_exported_low_poly_sibling_has_a_partner(self):
+        high, model = self._model_dir('272147520_tiny_kong.gpl', geo_name='tiny_kong.gpl')
+        self._model_dir('272637184_L_tiny_kong.gpl', geo_name='L_tiny_kong.gpl')
+        self.assertEqual(self.find(high, model), '272637184_L_tiny_kong.gpl')
+
+    def test_low_poly_model_itself_has_no_partner_to_report(self):
+        self._model_dir('272147520_tiny_kong.gpl')
+        low, model = self._model_dir('272637184_L_tiny_kong.gpl', geo_name='L_tiny_kong.gpl')
+        self.assertIsNone(self.find(low, model))
+
+    def test_model_without_low_poly_sibling_has_no_partner(self):
+        stage, model = self._model_dir('649999360_sta08_boss_gesso.gpl', geo_name='sta08_boss_gesso.gpl')
+        self._model_dir('272637184_L_tiny_kong.gpl')
+        self.assertIsNone(self.find(stage, model))
+
+    def test_mii_pair_mixing_gpl_and_gplp_is_found(self):
+        high, model = self._model_dir('100_mii_m_blue.gplp', chunk=100, geo_name='mii_m_blue.gplp')
+        self._model_dir('200_L_mii_m_blue.gpl', chunk=100)
+        self.assertEqual(self.find(high, model), '200_L_mii_m_blue.gpl')
+
+    def test_sibling_of_another_chunk_is_not_a_partner(self):
+        high, model = self._model_dir('1_tiny_kong.gpl', chunk=75, geo_name='tiny_kong.gpl')
+        self._model_dir('2_L_tiny_kong.gpl', chunk=12)
+        self.assertIsNone(self.find(high, model))
+
+    def test_similar_stem_is_not_a_partner(self):
+        high, model = self._model_dir('1_mario.gpl', geo_name='mario.gpl')
+        self._model_dir('2_L_baby_mario.gpl')
+        self.assertIsNone(self.find(high, model))
+
+    def test_message_names_partner_materials_and_the_workaround(self):
+        text = self.message(['body_mat'], '272637184_L_tiny_kong.gpl')
+        for part in ('272637184_L_tiny_kong.gpl', 'body_mat', 'Dolphin', 'custom submeshes'):
+            self.assertIn(part, text)
 
 
 class CustomSubmeshTextureTests(unittest.TestCase):
