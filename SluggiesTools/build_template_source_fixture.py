@@ -44,7 +44,7 @@ POSITION_FORMAT = (3, 59)
 NORMAL_FORMAT = (3, 62)
 UV_FORMAT = (2, 62)
 COLOR_FORMAT = (4, 48)
-COLOR_WHITE = bytes.fromhex("ffffffff")
+COLOR_WHITE = bytes.fromhex("ffff")
 
 # Canonical rigid lists captured byte-exact from vanilla data, one per shader
 # mode. States, hash, layer count, provenance and the in-game verification flag
@@ -343,8 +343,12 @@ def build_cube_submesh(model: dict, spec: str, name: str, half_extent: float) ->
 
 def prepare_template_source_fixture(
     source_data: dict, cubes: list[tuple[int, str]], half_extent: float = 0.1,
+    colors: list[bytes | None] | None = None,
 ) -> dict:
-    """Append one cube submesh per ``(host_bone, template_source)`` (pure, no I/O)."""
+    """Append one cube submesh per ``(host_bone, template_source)`` (pure, no I/O).
+
+    ``colors`` optionally gives, per cube, the raw bytes of its color array
+    (default: the template's single white entry). Used by the E6 probe."""
     if not cubes:
         raise ValueError("at least one cube is required")
     data = copy.deepcopy(source_data)
@@ -354,7 +358,9 @@ def prepare_template_source_fixture(
     skn_used = probe._skn_used_bone_ids(model.get("SkinData"))
     seen: set[int] = set()
     entries = []
-    for host_bone, spec in cubes:
+    if colors is not None and len(colors) != len(cubes):
+        raise ValueError("colors must have one entry per cube")
+    for cube_number, (host_bone, spec) in enumerate(cubes):
         bone = bones.get(host_bone)
         if bone is None:
             raise ValueError(f"bone {host_bone} does not exist in BoneHierarchy")
@@ -365,6 +371,12 @@ def prepare_template_source_fixture(
         seen.add(host_bone)
         submesh_index = len(model["Submeshes"])
         submesh, metadata = build_cube_submesh(model, spec, f"custom{len(entries)}", half_extent)
+        color = colors[cube_number] if colors else None
+        if color is not None:
+            channel = submesh["ColorChannels"][0]
+            channel["ColorChannelData"] = probe._encode_field(color, bool(model.get("UseBase64", True)))
+            channel["ColorChannelLength"] = len(color)
+            metadata["ColorBytes"] = color.hex()
         model["Submeshes"].append(submesh)
         bone["GeoIdEdited"] = submesh_index
         entries.append({
@@ -380,11 +392,11 @@ def prepare_template_source_fixture(
 
 def build_template_source_fixture(
     source_path: Path, fixture_path: Path, cubes: list[tuple[int, str]],
-    half_extent: float, write: bool,
+    half_extent: float, write: bool, colors: list[bytes | None] | None = None,
 ):
     with source_path.open("r", encoding="utf-8") as source_file:
         source_data = json.load(source_file)
-    data = prepare_template_source_fixture(source_data, cubes, half_extent)
+    data = prepare_template_source_fixture(source_data, cubes, half_extent, colors)
     model = data["SluggiesModel"]
     fixture_path.parent.mkdir(parents=True, exist_ok=True)
     with fixture_path.open("w", encoding="utf-8", newline="\n") as fixture_file:
@@ -458,6 +470,10 @@ def main() -> int:
         "--cube", type=_parse_cube, action="append", required=True, metavar="BONE=SOURCE",
         help="Host bone and template source, e.g. 29=derived:sm0_ds5 or 49=builtin:rigid_spec_v1",
     )
+    parser.add_argument(
+        "--cube-color", type=bytes.fromhex, action="append", metavar="HEX",
+        help="raw color-array bytes for the matching --cube, in order (e.g. ff0000ff)",
+    )
     parser.add_argument("--half-extent", type=float, default=0.1, help="Cube half extent in bone-local units")
     parser.add_argument("--output", type=Path, help="Generated fixture .sluggie path")
     parser.add_argument("--write", action="store_true", help="Install into output DAT/DOL/FST")
@@ -466,6 +482,8 @@ def main() -> int:
     source = args.source.resolve()
     if not source.is_file():
         parser.error(f"source does not exist: {source}")
+    if args.cube_color and len(args.cube_color) != len(args.cube):
+        parser.error("--cube-color must be given once per --cube")
     tag = "_".join(f"b{bone}-{spec.split(':')[0]}" for bone, spec in args.cube)
     output = (
         args.output.resolve() if args.output
@@ -474,7 +492,9 @@ def main() -> int:
     if output == source:
         parser.error("fixture output must differ from the source .sluggie")
     try:
-        build_template_source_fixture(source, output, args.cube, args.half_extent, args.write)
+        build_template_source_fixture(
+            source, output, args.cube, args.half_extent, args.write, args.cube_color,
+        )
     except (OSError, KeyError, TypeError, ValueError, RuntimeError) as exc:
         parser.exit(1, f"error: {exc}\n")
     return 0

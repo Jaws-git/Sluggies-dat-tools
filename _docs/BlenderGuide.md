@@ -81,6 +81,13 @@ Hammerspace opens up additional memory at the end of the data file to store more
 6. when done, select all meshes you'd like to include, then export back to the original sluggie
    file with "hammerspace" and "reimport textures" activated
 
+#### New bones on low-poly (`L_`) models
+
+The game moves a character's low-poly model with the high-poly model's skeleton. When you add a bone to an `L_` model and attach a submesh to it:
+- Add the same bone, with the same parent and position, to the high-poly model too, and patch the **high-poly model first**. Otherwise the game crashes when the model loads, so the patcher refuses the `L_` patch.
+- The `L_` model's submesh follows the **high-poly** model's bone. If the two bones sit in different places, the patcher warns you, and the high-poly placement is the one you'll see.
+- An added bone without a submesh on it doesn't need a partner.
+
 #### Moving vertices to a different bone (vertex groups)
 
 In hammerspace mode you can move vertices between the model's existing `bone_<id>` vertex groups, e.g. assign all of `bone_28` to `bone_63` and remove them from `bone_28`.

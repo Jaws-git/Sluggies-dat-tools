@@ -627,11 +627,13 @@ def encode_loop_uvs(object_name, geometry, loop_uvs, uv_format=UV_FORMAT):
     return dedupe_records(records)
 
 
-def encode_color_rgba8(rgba):
-    """One entry of the canonical ``(4, 48)`` color array: four bytes R G B A,
-    matching the builder's 4-byte color stride
-    (HammerspaceMain._CUSTOM_SUBMESH_COLOR_STRIDE)."""
-    return bytes(int(round(max(0.0, min(1.0, float(c))) * 255)) for c in rgba)
+def encode_color_rgba4444(rgba):
+    """One entry of the canonical ``(4, 48)`` color array: a big-endian 16-bit
+    RGBA4444 value, matching the builder's 2-byte color stride
+    (HammerspaceMain._CUSTOM_SUBMESH_COLOR_STRIDE). QuantizeInfo 48 is
+    RGBA4444 in the engine, not RGBA8 (confirmed in Dolphin, E6)."""
+    r, g, b, a = (int(round(max(0.0, min(1.0, float(c))) * 15)) for c in rgba)
+    return ((r << 12) | (g << 8) | (b << 4) | a).to_bytes(2, 'big')
 
 
 def encode_loop_colors(geometry, loop_colors):
@@ -639,7 +641,7 @@ def encode_loop_colors(geometry, loop_colors):
     None for a mesh without colors (every loop white, one pooled entry)."""
     loops = _loop_order(geometry)
     colors = [WHITE] * len(loops) if loop_colors is None else [loop_colors[loop] for loop in loops]
-    return dedupe_records([encode_color_rgba8(c) for c in colors])
+    return dedupe_records([encode_color_rgba4444(c) for c in colors])
 
 
 def encode_field(raw, use_base64=True):

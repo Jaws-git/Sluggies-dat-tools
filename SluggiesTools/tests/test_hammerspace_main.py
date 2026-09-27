@@ -2902,7 +2902,9 @@ class CustomSubmeshTemplateRecordsTests(unittest.TestCase):
                     self.assertEqual(layer1, [])
 
     def test_builtin_template_names_offers_only_verified_templates(self):
-        self.assertEqual(main.builtin_template_names(), ('rigid_spec_v1',))
+        self.assertEqual(
+            main.builtin_template_names(), ('rigid_spec_v1', 'rigid_rhsp_v1', 'rigid_lhsp_v1'),
+        )
         self.assertEqual(
             sorted(main.builtin_template_names(verified_only=False)),
             sorted(main._CUSTOM_SUBMESH_BUILTIN_TEMPLATES),

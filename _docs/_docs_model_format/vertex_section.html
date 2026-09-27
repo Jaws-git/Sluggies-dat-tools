@@ -611,7 +611,7 @@ Now you draw triangular faces from those vertices. The code from my awful python
     <ul>
         <li><strong>An existing blob may only move by a multiple of 32.</strong> An early version of <code>PatchGPLAppendSubmesh</code> rounded the relocated blob region up to a plain 32-byte boundary. That broke the alignment of submesh 0's skinned positions and of every primitive list in the model; <code>BlockValidator</code> caught it on the first real-donor run. The fix rounds up to the next offset with the same mod-32 residue as the old position (<code>_align32_residue</code>).</li>
         <li><strong>A new blob</strong> has no residue to keep. It gets a plain 32-byte-aligned base, so its own primitive lists are aligned.</li>
-        <li><strong>A replacement blob</strong> for an existing submesh is inserted before the GPL user data, on a 32-byte boundary, and its mesh header is repointed. The old blob is left in place, unreferenced.</li>
+        <li><strong>A replacement blob</strong> for an existing submesh is inserted before the GPL user data, on a 32-byte boundary, and its mesh header is repointed. The old blob is left in place, unreferenced. Confirmed in Dolphin (2026-09-26): Mario's cap blob copied verbatim to a new spot with its descriptor repointed and the original left behind renders identically, so the engine tolerates unreferenced whole blobs and they need no zero-fill or compaction.</li>
         <li><strong>SKN offsets don't move with the blob.</strong> <code>gplVertexArr</code>, <code>gplDestArr</code> and memClrPtr are relative to submesh 0's position array, so relocating that array as a unit leaves them valid.</li>
     </ul>
     <p><code>BuildGPLMeshData</code> has three layout modes:</p>

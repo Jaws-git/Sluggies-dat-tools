@@ -20,6 +20,9 @@ from TemplateSources import (  # noqa: E402
 )
 
 
+BUILTIN_CHOICES = [f'builtin:{name}' for name in BUILTIN_TEMPLATE_NAMES]
+
+
 def _mat(surface_id, comp_count, shader_mode):
     return TemplateSourceMaterial(surface_id=surface_id, comp_count=comp_count, shader_mode=shader_mode)
 
@@ -27,7 +30,7 @@ def _mat(surface_id, comp_count, shader_mode):
 class BuildTemplateSourceChoicesTests(unittest.TestCase):
     def test_builtin_always_present_even_with_no_materials(self):
         choices = build_template_source_choices([])
-        self.assertEqual([c.template_source for c in choices], ['builtin:rigid_spec_v1'])
+        self.assertEqual([c.template_source for c in choices], BUILTIN_CHOICES)
 
     def test_rigid_surface_with_plain_shader_mode_is_offered(self):
         choices = build_template_source_choices([_mat('sm1_ds5', 3, 'Spec')])
@@ -59,7 +62,7 @@ class BuildTemplateSourceChoicesTests(unittest.TestCase):
         ])
         self.assertEqual(
             [c.template_source for c in choices],
-            ['builtin:rigid_spec_v1', 'rigid:sm1_ds5', 'derived:sm0_ds5'],
+            BUILTIN_CHOICES + ['rigid:sm1_ds5', 'derived:sm0_ds5'],
         )
 
     def test_builtin_spec_is_the_first_choice_whatever_the_model_offers(self):
@@ -83,7 +86,7 @@ class BuildTemplateSourceChoicesTests(unittest.TestCase):
 
     def test_other_comp_counts_are_ignored(self):
         choices = build_template_source_choices([_mat('sm2_ds1', 4, 'Spec')])
-        self.assertEqual([c.template_source for c in choices], ['builtin:rigid_spec_v1'])
+        self.assertEqual([c.template_source for c in choices], BUILTIN_CHOICES)
 
     def test_template_source_choice_property(self):
         self.assertEqual(TemplateSourceChoice('rigid', 'sm1_ds5').template_source, 'rigid:sm1_ds5')
@@ -104,7 +107,7 @@ class BuiltinTemplateMetadataTests(unittest.TestCase):
         )
 
     def test_only_verified_templates_are_offered(self):
-        self.assertEqual(BUILTIN_TEMPLATE_NAMES, ('rigid_spec_v1',))
+        self.assertEqual(BUILTIN_TEMPLATE_NAMES, ('rigid_spec_v1', 'rigid_rhsp_v1', 'rigid_lhsp_v1'))
         for name, template in BUILTIN_TEMPLATES.items():
             with self.subTest(name):
                 self.assertEqual(

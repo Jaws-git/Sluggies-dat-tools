@@ -47,23 +47,23 @@ BUILTIN_TEMPLATES = {
     ),
     "rigid_shdw_v1": BuiltinTemplate(
         layers=1, shader_mode="Shdw",
-        description="No specular highlight; vanilla uses it on stadiums only",
+        description="Crashes and draws black on characters; vanilla uses it on stadiums only",
         verified_in_game=False,
     ),
     "rigid_ghsp_v1": BuiltinTemplate(
         layers=2, shader_mode="GhSp",
-        description="Effect unknown; vanilla uses it only on Birdo's ring and diamond",
+        description="Drew invisible on Wario's cap; vanilla uses it only on Birdo's ring and diamond",
         verified_in_game=False,
     ),
     "rigid_rhsp_v1": BuiltinTemplate(
         layers=2, shader_mode="RhSp",
-        description="Shown and hidden together with the right hand",
-        verified_in_game=False,
+        description="Parts with vertex alpha 0 are hidden while the right hand wears the mitt",
+        verified_in_game=True,          # PLAN_EditRigidMeshes.md Phase 0 probe 7
     ),
     "rigid_lhsp_v1": BuiltinTemplate(
         layers=2, shader_mode="LhSp",
-        description="Shown and hidden together with the left hand",
-        verified_in_game=False,
+        description="Parts with vertex alpha 0 are hidden while the left hand wears the mitt",
+        verified_in_game=True,          # PLAN_EditRigidMeshes.md Phase 0 probe 7
     ),
 }
 

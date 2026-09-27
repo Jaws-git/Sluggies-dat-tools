@@ -15,6 +15,7 @@ _slogger.configure()
 
 import drawlist
 import HammerspaceHelper as hh
+import LodPartnerGuard
 from binfmt import (
     align4 as _align4,
     color_entry_size as _color_entry_size,
@@ -399,7 +400,7 @@ _CUSTOM_SUBMESH_REJECTED_DERIVED_TYPE6 = '00000375'  # F9: never occurs on a rig
 _CUSTOM_SUBMESH_POSITION_STRIDE = 6
 _CUSTOM_SUBMESH_NORMAL_STRIDE   = 6   # CompCount 3, QuantizeInfo 62 (3 x int16)
 _CUSTOM_SUBMESH_UV_STRIDE       = 4   # CompCount 2, QuantizeInfo 62 (2 x int16)
-_CUSTOM_SUBMESH_COLOR_STRIDE    = 4   # CompCount 4, QuantizeInfo 48 (RGBA8)
+_CUSTOM_SUBMESH_COLOR_STRIDE    = 2   # CompCount 4, QuantizeInfo 48 (RGBA4444)
 
 # Byte-exact captures of complete vanilla rigid draw lists, one per shader
 # mode (PLAN_EditRigidMeshes.md decision 9). Every capture source below holds
@@ -462,7 +463,10 @@ _CUSTOM_SUBMESH_BUILTIN_TEMPLATES = {
         'Sha256': '324907992ca4c44273724ddc0b2bc9983c9972cc69bcc5a57fdbb876b452df2b',
         'Layers': 1,
         'ShaderMode': 'Shdw',
-        'VerifiedInGame': False,  # awaits PLAN_EditRigidMeshes.md Phase 0 probe 7
+        # Failed PLAN_EditRigidMeshes.md Phase 0 probe 7: the Shdw mode crashes
+        # on load and draws black on a character cap, in this 1-layer form and
+        # in a copy of the cap's own 2-layer group alike.
+        'VerifiedInGame': False,
         'Provenance': {
             'Model': '137 Various A/653486528_manhole01.gpl',
             'MeshName': 'manhole',
@@ -484,7 +488,7 @@ _CUSTOM_SUBMESH_BUILTIN_TEMPLATES = {
         'Sha256': '6a5e44b42125c7033de42f0a5b8a2ad9a744d52fb4a496dce4793640f57a1560',
         'Layers': 2,
         'ShaderMode': 'GhSp',
-        'VerifiedInGame': False,  # awaits PLAN_EditRigidMeshes.md Phase 0 probe 7
+        'VerifiedInGame': False,  # probe 7: drew invisible on Wario's cap
         'Provenance': {
             'Model': '35 Birdo/142642016_catherine.gpl',
             'MeshName': 'gold_ring',
@@ -507,7 +511,7 @@ _CUSTOM_SUBMESH_BUILTIN_TEMPLATES = {
         'Sha256': 'e1ac62994ad67caefdad4b9ba68099da4b17aee417142df59cc5c27e063fbcd7',
         'Layers': 2,
         'ShaderMode': 'RhSp',
-        'VerifiedInGame': False,  # awaits PLAN_EditRigidMeshes.md Phase 0 probe 7
+        'VerifiedInGame': True,  # PLAN_EditRigidMeshes.md Phase 0 probe 7 (2026-09-26)
         'Provenance': {
             'Model': '100 Blue Male Mii/333008640_mii_male.gplp',
             'MeshName': 'r_hand',
@@ -527,7 +531,7 @@ _CUSTOM_SUBMESH_BUILTIN_TEMPLATES = {
         'Sha256': 'c246a603b25923b7978231f0d5d63dfa5eb399d239527a3798ee968e61221ade',
         'Layers': 2,
         'ShaderMode': 'LhSp',
-        'VerifiedInGame': False,  # awaits PLAN_EditRigidMeshes.md Phase 0 probe 7
+        'VerifiedInGame': True,  # PLAN_EditRigidMeshes.md Phase 0 probe 7 (2026-09-26)
         'Provenance': {
             'Model': '100 Blue Male Mii/333008640_mii_male.gplp',
             'MeshName': 'l_hand',
@@ -5241,6 +5245,18 @@ def BuildModelBlock(
     )
 
 
+def CheckLodPartner(build: ModelBlockBuild) -> None:
+    """Refuse a block that would break its high-/low-poly partner model
+    (see LodPartnerGuard: a low-poly model may only draw on bones its
+    high-poly partner has), and warn when an added bone is placed differently
+    in the two models (the low-poly model's placement is ignored)."""
+    errors = LodPartnerGuard.lod_partner_errors(build.block, build.chunk_number, build.file_index)
+    if errors:
+        raise ValueError(' '.join(errors))
+    for warning in LodPartnerGuard.lod_partner_warnings(build.block, build.chunk_number, build.file_index):
+        _slogger.warning(f'[LOD] {warning}', source='hammerspace.main')
+
+
 def WriteModelBlock(
     build: ModelBlockBuild,
     model_name: str,
@@ -5249,6 +5265,7 @@ def WriteModelBlock(
     """Write an assembled block to hammerspace and patch its output references."""
     if not build.validation_report.get('valid'):
         raise ValueError('refusing to write a model block with a failed validation report')
+    CheckLodPartner(build)
 
     chunk_number = build.chunk_number
     file_index = build.file_index
@@ -5412,6 +5429,15 @@ if __name__ == '__main__':
     _model_name = os.path.basename(_args.sluggies_path)
 
     if _args.unpatch:
+        _unpatch_errors = LodPartnerGuard.lod_partner_unpatch_errors(_chunk, _index)
+        if _unpatch_errors:
+            _slogger.error(
+                f'Hammerspace unpatch refused | Model: {_model_name} | '
+                'restoring the original model would break its partner model: '
+                + ' '.join(_unpatch_errors),
+                source='hammerspace.main',
+            )
+            raise SystemExit(1)
         _success, _removed_offset, _removed_length = hh.removeModelFromHammerspace(_chunk, _index)
         if _success:
             _slogger.info(
@@ -5448,6 +5474,7 @@ if __name__ == '__main__':
         if not _build.validation_report['valid']:
             raise ValueError('assembled model block failed validation')
         if _args.dry_run:
+            CheckLodPartner(_build)
             _slogger.info('Dry run complete; output DAT, DOL, and FST were not modified.', source='hammerspace.main')
         else:
             WriteModelBlock(_build, _model_name, output_offset=_args.output_offset)

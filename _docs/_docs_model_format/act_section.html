@@ -132,6 +132,15 @@
         <li><strong>Submesh order doesn't have to follow bone order.</strong> Vanilla rigid submeshes are in ascending owner-bone order, but a submesh appended at the end on a lower-numbered bone draws correctly. Appending keeps every existing submesh index, and so every existing GEO ID and ptr7 facial <code>SubmeshIndex</code>, unchanged.</li>
     </ul>
     <p>The bone table is reached through the tree: the tree header sits at header+0x08 and its root pointer at header+0x0C. Each node address is the bone's start, relative to the ACT header. <code>BlockValidator</code> walks it to check the rules above.</p>
+    <h2 id="lod-pairs">High- and low-poly pairs share one skeleton</h2>
+    <p>Each player character has a high-poly model and a low-poly <code>L_*</code> model, stored as file indices <code>n</code> and <code>n + 1</code> of the same chunk. Their ACT geo names match once the <code>L_</code> prefix and the extension are removed; the Mii pairs mix <code>.gpl</code> and <code>.gplp</code>. All 66 vanilla pairs have the same bone count, and 56 have identical parent, track and mirror tables.</p>
+    <p>The game poses the low-poly model with the <strong>high-poly model's</strong> bones. Confirmed in Dolphin with Mario (2026-09-27), after appending a bone 91 to one or both models:</p>
+    <ul>
+        <li><strong>A low-poly model may only draw on bones the high-poly model has.</strong> <code>L_mario</code> with a mesh on its new bone 91 crashed on model load while HP Mario had 91 bones (0-90). The same mesh on existing bone 49 loaded, even with the unused bone 91 still present. Adding bone 91 to HP Mario as well made the mesh on bone 91 load. An extra bone that owns no mesh is harmless.</li>
+        <li><strong>The low-poly model's own placement of a bone is ignored.</strong> With HP Mario's bone 91 parented to the arm and <code>L_mario</code>'s bone 91 still parented to the head, <code>L_mario</code>'s mesh followed the arm.</li>
+        <li><strong>The reverse is fine.</strong> HP Mario drawing on a new bone 91 while <code>L_mario</code> had only 91 bones worked (Dolphin, 2026-09-18).</li>
+    </ul>
+    <p>The hammerspace patcher checks the pair against the partner's currently patched state. It refuses a patch or unpatch that would leave the low-poly model drawing on a bone the high-poly model lacks. It warns when an appended bone's parent or SRT differs between the two models.</p>
     <h2 id="user-data">User data</h2>
     <p>Found while investigating (2026-09-18) what silently counts bones outside the header's own <code>boneCount</code>. The header's user data pointer (0x1c) is null when <code>userDataSize</code> (0x18) is 0 — dozens of models ship no user data at all with a perfectly working bone tree. When present, it points at a chain of descriptors, each read until the header's total <code>userDataSize</code> is consumed:</p>
     <table>
