@@ -56,14 +56,18 @@ CUSTOM_ICON_SCRIPT = os.path.join(ICONS_DIR, 'add_custom_icons.py')
 HS_DIR = os.path.join(TOOLS_DIR, 'Hammerspace')
 HS_HELPER_SCRIPT = os.path.join(HS_DIR, 'HammerspaceHelper.py')
 HS_MAIN_SCRIPT = os.path.join(HS_DIR, 'HammerspaceMain.py')
+UNTANGLE_POLICY_SCRIPT = os.path.join(HS_DIR, 'UntanglePolicy.py')
 
 # Model directory indices that hold unused characters (see folderNameMap in
 # export.py). These characters share a playable character's model block and
 # have no data block of their own, so they can only be written back through
-# hammerspace. Kept here (mirroring export.UNUSED_DIRS_TO_UNTANGLE_CLONE) so
-# the dispatcher can reject in-place patches without importing export.py, which
-# has interactive side effects at import time.
-UNUSED_CHARACTER_DIR_INDICES = frozenset({89, 90, 91, 92, 93, 94})
+# hammerspace. UntanglePolicy is the one home of this list; it does not import
+# export.py, which has interactive side effects at import time.
+if HS_DIR not in sys.path:
+    sys.path.insert(2, HS_DIR)
+import UntanglePolicy  # noqa: E402
+
+UNUSED_CHARACTER_DIR_INDICES = frozenset(UntanglePolicy.UNUSED_CHARACTER_DIRS)
 
 
 def python_script_command(script, *args):
@@ -99,6 +103,11 @@ def run_bundled_script_mode():
 
 def run_hammerspace_helper():
     subprocess.run(python_script_command(HS_HELPER_SCRIPT), cwd=HS_DIR, check=True)
+
+
+def run_resplit_unused():
+    """Give re-tangled unused-character routes their own block copies again."""
+    subprocess.run(python_script_command(UNTANGLE_POLICY_SCRIPT), cwd=HS_DIR, check=True)
 
 
 def run_export(debug=False, notex=False, untangle=False, dae=False):
@@ -527,6 +536,7 @@ def parse_args():
             '  python start.py --patch model.sluggie texture.png\n'
             '  python start.py --unpatch model.sluggie\n'
             '  python start.py --hammerspace\n'
+            '  python start.py --resplit-unused\n'
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -534,6 +544,7 @@ def parse_args():
     mode.add_argument('--patch', nargs='+', metavar='FILENAME', help='patch one or more .sluggie and/or .png files')
     mode.add_argument('--unpatch', nargs='+', metavar='FILENAME', help='restore original data for one or more .sluggies files')
     mode.add_argument('-hs', '--hammerspace', action='store_true', help='change available memory space in outputdt_na.dat')
+    mode.add_argument('--resplit-unused', action='store_true', help='repair: give unused-character routes (dirs 89-94) that point at a playable character\'s block their own copy again')
     mode.add_argument('--export', action='store_true', help='export all models from 1_Input to 2_Output_Models')
     mode.add_argument('--prepare-icon-routes', action='store_true', help='EXPERIMENTAL, superseded: apply the Mii icon-block resolver experiment to output DOL/DAT copies (not part of any menu workflow)')
     mode.add_argument('--add-custom-icons', action='store_true', help='install the complete six-character custom icon pipeline')
@@ -584,7 +595,7 @@ def parse_args():
         parser.error('--custom-icon-stage can only be used with --add-custom-icons.')
     if args.icon_fit and not args.add_custom_icons:
         parser.error('--icon-fit can only be used with --add-custom-icons.')
-    if not any([args.patch, args.unpatch, args.hammerspace, args.export, args.prepare_icon_routes, args.add_custom_icons, args.export_icons, args.patch_icons is not None]):
+    if not any([args.patch, args.unpatch, args.hammerspace, args.resplit_unused, args.export, args.prepare_icon_routes, args.add_custom_icons, args.export_icons, args.patch_icons is not None]):
         parser.print_help()
         sys.exit(0)
 
@@ -642,6 +653,8 @@ def main() -> int:
     try:
         if args.hammerspace:
             run_hammerspace_helper()
+        elif args.resplit_unused:
+            run_resplit_unused()
         elif args.export:
             run_export(debug=args.debug, notex=args.notex, untangle=args.untangle, dae=args.dae)
         elif args.prepare_icon_routes:

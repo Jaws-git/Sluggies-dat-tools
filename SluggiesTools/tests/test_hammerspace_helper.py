@@ -186,6 +186,75 @@ class FindSharedEntriesTests(unittest.TestCase):
             ):
                 self.assertEqual(helper.findSharedEntries(0, 0), [(1, 0)])
 
+    def _records(self, path, dat_offsets):
+        """Write contiguous records (no gaps) with the given en offsets."""
+        data = bytearray(48 * (len(dat_offsets) + 1))
+        for index, dat_offset in enumerate(dat_offsets):
+            struct.pack_into('>12I', data, index * 48, *([helper._DAT_FNAME_PTR, 8, dat_offset, 8] * 3))
+        path.write_bytes(data)
+
+    def test_directory_walk_stops_at_the_next_directory(self):
+        # Dirs 0/1/2 start at records 0/2/3; record 2 is (1,0) and its offset is
+        # unique. The old unbounded walk also reported it as (0,2), an alias.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dol = pathlib.Path(temp_dir) / 'output.dol'
+            self._records(output_dol, (0x10, 0x20, 0x30, 0x40))
+            with (
+                mock.patch.object(helper, 'OUTPUT_DOL', str(output_dol)),
+                mock.patch.object(helper, '_readDirPtrs', return_value=[0, 96, 144]),
+            ):
+                self.assertEqual(helper.findSharedEntries(1, 0), [])
+
+    def test_genuine_sharer_in_another_directory_is_found(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dol = pathlib.Path(temp_dir) / 'output.dol'
+            self._records(output_dol, (0x10, 0x20, 0x30, 0x30))
+            with (
+                mock.patch.object(helper, 'OUTPUT_DOL', str(output_dol)),
+                mock.patch.object(helper, '_readDirPtrs', return_value=[0, 96, 144]),
+            ):
+                self.assertEqual(helper.findSharedEntries(1, 0), [(2, 0)])
+                self.assertEqual(helper.findSharedEntries(2, 0), [(1, 0)])
+
+
+class ZeroOriginalModelTests(unittest.TestCase):
+    """Two directories share one vanilla block, like an unused character and its owner."""
+
+    ORIGINAL_OFFSET = 8
+    ORIGINAL = b'ORIGINAL'
+
+    def _run(self, output_offsets):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            output_dat = root / 'output.dat'
+            output_dol = root / 'output.dol'
+            output_dat.write_bytes(b'I' * self.ORIGINAL_OFFSET + self.ORIGINAL + b'I' * 16)
+            dol = bytearray(192)
+            for record, dat_offset in zip((0, 96), output_offsets):
+                words = [helper._DAT_FNAME_PTR, len(self.ORIGINAL), dat_offset, len(self.ORIGINAL)] * 3
+                struct.pack_into('>12I', dol, record, *words)
+            output_dol.write_bytes(dol)
+            with (
+                mock.patch.object(helper, 'OUTPUT_DAT', str(output_dat)),
+                mock.patch.object(helper, 'OUTPUT_DOL', str(output_dol)),
+                mock.patch.object(helper, '_readDirPtrs', return_value=[0, 96]),
+                mock.patch.object(helper, 'readDolEntry',
+                                  return_value=(self.ORIGINAL_OFFSET, len(self.ORIGINAL))),
+            ):
+                helper.zeroOriginalModel(1, 0)
+            data = output_dat.read_bytes()
+            return data[self.ORIGINAL_OFFSET:self.ORIGINAL_OFFSET + len(self.ORIGINAL)]
+
+    def test_range_still_routed_by_another_directory_is_kept(self):
+        # Dir 1 moved to hammerspace; dir 0 still reads the vanilla block.
+        self.assertEqual(self._run((self.ORIGINAL_OFFSET, 0x1000)), self.ORIGINAL)
+
+    def test_route_overlapping_only_part_of_the_range_also_keeps_it(self):
+        self.assertEqual(self._run((self.ORIGINAL_OFFSET + 4, 0x1000)), self.ORIGINAL)
+
+    def test_unrouted_range_is_zeroed(self):
+        self.assertEqual(self._run((0x2000, 0x1000)), b'\x00' * len(self.ORIGINAL))
+
 
 class RemoveModelFromHammerspaceTests(unittest.TestCase):
     def _files(self, temp_dir, *, current_offset):

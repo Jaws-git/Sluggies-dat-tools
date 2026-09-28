@@ -11,6 +11,13 @@ if _HS_TOOLS_DIR not in sys.path:
 import slogger as _slogger
 _slogger.configure()
 
+# Loaded as a top-level module by the patchers, and as
+# ``Hammerspace.HammerspaceHelper`` by the icon tools.
+try:
+    import UntanglePolicy
+except ImportError:
+    from . import UntanglePolicy
+
 BASE_SIZE      = 715046144      # ~715 MB
 CHUNK_SIZE     = 1024 * 1024   # 1 MB read buffer
 HS_BUFFER_BYTES = 128  # 128B safety buffer appended after every write
@@ -362,6 +369,119 @@ def zeroRange(offset: int, length: int) -> None:
             zeroed += write_size
 
 
+def zeroRangeIfUnrouted(offset: int, length: int) -> bool:
+    """Zero one OUTPUT_DAT range unless an output-DOL route still points into it.
+
+    Returns True when the range was zeroed."""
+    live = liveRoutesInto(offset, length)
+    if live:
+        routes = ', '.join(f'({c},{i})' for c, i in live)
+        _slogger.warning(
+            f"Not zeroing 0x{offset:08X} ({length:,} bytes): still used by live route(s) {routes}.",
+            source="hammerspace.helper",
+        )
+        return False
+    zeroRange(offset, length)
+    return True
+
+
+def allocateHammerspace(length: int, reserved_ranges=None) -> int:
+    """Return an aligned free hammerspace offset for ``length`` bytes.
+
+    ``reserved_ranges`` defaults to every routed hammerspace range. When no
+    free run exists, OUTPUT_DAT is grown past its current end and searched
+    again, the same way WriteModelBlock does it."""
+    if reserved_ranges is None:
+        reserved_ranges = routedHammerspaceRanges()
+    offset = findFreeMemoryChunk(length, reserved_ranges=reserved_ranges)
+    if offset != -1:
+        return offset
+    if not ensureOutputDat():
+        raise RuntimeError('Unable to prepare output dt_na.dat')
+    current_size = os.path.getsize(OUTPUT_DAT)
+    region_start = (max(current_size, BASE_SIZE) + HS_ALIGN_BYTES - 1) & ~(HS_ALIGN_BYTES - 1)
+    if not ensureOutputDat(region_start + length + HS_BUFFER_BYTES):
+        raise RuntimeError('Unable to prepare output dt_na.dat')
+    offset = findFreeMemoryChunk(length, reserved_ranges=reserved_ranges)
+    if offset == -1:
+        raise RuntimeError('No contiguous hammerspace region found after expansion')
+    return offset
+
+
+def restoreSplitBaseline(chunk_number: int, file_index: int, baseline: bytes | None = None) -> tuple:
+    """Return a split route (an unused character's, see UntanglePolicy) to its baseline.
+
+    The baseline is a fresh copy in hammerspace, used by no other route:
+    ``baseline`` when given (the vanilla entry with its untangled textures
+    re-applied, see UntangledTextures.split_baseline), else the route's
+    vanilla bytes verbatim. The vanilla block itself belongs to the playable
+    owner and is never written. The block the route left is zeroed unless
+    another route still uses it.
+
+    Also repairs a route that an older unpatch sent back onto the shared
+    vanilla block. Returns ``(success, removed_offset, removed_length)`` like
+    ``removeModelFromHammerspace``; ``(True, 0, 0)`` when nothing was removed.
+    """
+    orig_offset, orig_length = readDolEntry(chunk_number, file_index)
+    cur_offset, cur_length = readOutputDolEntry(chunk_number, file_index)
+    if orig_offset == -1 or cur_offset == -1 or orig_length <= 0:
+        _slogger.error(
+            f"Cannot read DOL entry chunk={chunk_number}, file_index={file_index}.",
+            source="hammerspace.helper",
+        )
+        return False, 0, 0
+
+    with open(INPUT_DAT, 'rb') as source:
+        source.seek(orig_offset)
+        vanilla = source.read(orig_length)
+    if len(vanilla) != orig_length:
+        _slogger.error(f"Short read of vanilla block at 0x{orig_offset:08X}.", source="hammerspace.helper")
+        return False, 0, 0
+    if baseline is not None:
+        if len(baseline) != orig_length:
+            _slogger.error(
+                f"Baseline for ({chunk_number},{file_index}) is {len(baseline):,} bytes, "
+                f"the vanilla entry {orig_length:,}.",
+                source="hammerspace.helper",
+            )
+            return False, 0, 0
+        vanilla = baseline
+
+    on_own_copy = cur_offset >= BASE_SIZE
+    if on_own_copy and cur_length == orig_length:
+        with open(OUTPUT_DAT, 'rb') as output:
+            output.seek(cur_offset)
+            if output.read(cur_length) == vanilla:
+                _slogger.info(
+                    f"Split route ({chunk_number},{file_index}) already holds its "
+                    f"baseline copy at 0x{cur_offset:08X}; nothing to do.",
+                    source="hammerspace.helper",
+                )
+                return True, 0, 0
+
+    new_offset = allocateHammerspace(orig_length)
+    writeModelBlock(vanilla, new_offset)
+    patchDolEntry(chunk_number, file_index, new_offset, orig_length)
+    patchFstFileSize(os.path.getsize(OUTPUT_DAT))
+    _slogger.info(
+        f"Split route ({chunk_number},{file_index}) now reads a fresh "
+        f"{'untangled' if baseline is not None else 'verbatim'} copy of its "
+        f"vanilla block 0x{orig_offset:08X} at 0x{new_offset:08X}.",
+        source="hammerspace.helper",
+    )
+
+    if not on_own_copy:
+        _slogger.info(
+            f"The route was on the shared block 0x{cur_offset:08X}; that block belongs to "
+            "its playable owner and was left untouched.",
+            source="hammerspace.helper",
+        )
+        return True, 0, 0
+    if zeroRangeIfUnrouted(cur_offset, cur_length):
+        return True, cur_offset, cur_length
+    return True, 0, 0
+
+
 def writeDebugDumps(
     sluggie_name:  str,
     model_offset:  int,
@@ -412,12 +532,43 @@ def _readDirPtrs() -> list[int]:
     return ptrs
 
 
+def _iterDirRecords(dol_path: str):
+    """Yield ``(chunk_number, file_index, record_offset, words)`` for every DOL file record.
+
+    Each directory is bounded the way ``export.load_dol_dirs`` bounds it: its
+    records end at the first word that is not the DAT file-name pointer, or
+    where the next directory's records begin. Directories are contiguous runs
+    in the DOL, so an unbounded walk would keep going into the following
+    directories and report the same physical record again under other chunk
+    numbers."""
+
+    dir_ptrs = _readDirPtrs()
+    with open(dol_path, 'rb') as dol:
+        for cidx, dir_ptr in enumerate(dir_ptrs):
+            other_ptrs = set(dir_ptrs[:cidx] + dir_ptrs[cidx + 1:])
+            fidx = 0
+            record = dir_ptr
+            while record not in other_ptrs:
+                dol.seek(record)
+                raw = dol.read(_ENTRY_SIZE)
+                if len(raw) < _ENTRY_SIZE:
+                    break
+                words = struct.unpack('>12I', raw)
+                if words[0] != _DAT_FNAME_PTR:
+                    break
+                yield cidx, fidx, record, words
+                fidx += 1
+                record += _ENTRY_SIZE
+
+
 def findSharedEntries(chunk_number: int, file_index: int) -> list[tuple[int, int]]:
     """Find output-DOL entries that currently share the given entry's dat offset.
 
     The output state is authoritative here: untangle mode intentionally splits
     entries that shared offsets in the stock DOL. Returns ``(chunk_number,
-    file_index)`` tuples, excluding the specified entry.
+    file_index)`` tuples, excluding the specified entry. Each directory is
+    walked only over its own records (see ``_iterDirRecords``), so the given
+    entry's own record is never reported again under another chunk number.
     """
 
     dol_path = OUTPUT_DOL if os.path.exists(OUTPUT_DOL) else INPUT_DOL
@@ -428,25 +579,32 @@ def findSharedEntries(chunk_number: int, file_index: int) -> list[tuple[int, int
     if target_offset == -1:
         return []
 
-    dir_ptrs = _readDirPtrs()
-    shared: list[tuple[int, int]] = []
+    target_record = _readDirPtrs()[chunk_number] + file_index * _ENTRY_SIZE
+    return [
+        (cidx, fidx)
+        for cidx, fidx, record, words in _iterDirRecords(dol_path)
+        if words[2] == target_offset and record != target_record
+    ]
 
-    with open(dol_path, 'rb') as dol:
-        for cidx, dir_ptr in enumerate(dir_ptrs):
-            fidx = 0
-            while True:
-                entry_off = dir_ptr + fidx * _ENTRY_SIZE
-                dol.seek(entry_off)
-                words = struct.unpack('>12I', dol.read(48))
-                if words[0] != _DAT_FNAME_PTR:
-                    break
-                if words[2] == target_offset and not (cidx == chunk_number and fidx == file_index):
-                    shared.append((cidx, fidx))
-                fidx += 1
-                if fidx > 200:
-                    break
 
-    return shared
+def liveRoutesInto(offset: int, length: int) -> list[tuple[int, int]]:
+    """Return output-DOL routes whose data overlaps ``offset``..``offset+length``.
+
+    Checks every language slot. Uses the OUTPUT main.dol, or the INPUT one
+    when no output exists yet."""
+
+    if length <= 0:
+        return []
+    dol_path = OUTPUT_DOL if os.path.exists(OUTPUT_DOL) else INPUT_DOL
+    end = offset + length
+    live = []
+    for cidx, fidx, _record, words in _iterDirRecords(dol_path):
+        for length_word, offset_word in ((1, 2), (5, 6), (9, 10)):
+            route_offset, route_length = words[offset_word], words[length_word]
+            if route_length > 0 and route_offset < end and offset < route_offset + route_length:
+                live.append((cidx, fidx))
+                break
+    return live
 
 
 def routedHammerspaceRanges() -> list[tuple[int, int]]:
@@ -634,8 +792,11 @@ def _restore_original_model_bytes(orig_offset: int, orig_length: int) -> None:
             remaining -= read_size
 
 
-def removeModelFromHammerspace(chunk_number: int, file_index: int) -> tuple:
+def removeModelFromHammerspace(chunk_number: int, file_index: int, split_baseline: bytes | None = None) -> tuple:
     """Remove a model block that was previously written to hammerspace.
+
+    An unused-character route (UntanglePolicy) goes to restoreSplitBaseline
+    instead, with ``split_baseline`` as its baseline bytes.
 
     Steps:
       1. Read the current offset and length from the OUTPUT main.dol.
@@ -670,7 +831,17 @@ def removeModelFromHammerspace(chunk_number: int, file_index: int) -> tuple:
         cur_length = struct.unpack('>I', dol.read(4))[0]  # word[1] len_en
         cur_offset = struct.unpack('>I', dol.read(4))[0]  # word[2] offset_en
 
-    shared = findSharedEntries(chunk_number, file_index)
+    if UntanglePolicy.is_split(chunk_number, file_index):
+        _slogger.info(
+            f"[1] chunk={chunk_number}, file_index={file_index} is an unused-character route "
+            f"(currently 0x{cur_offset:08X}, {cur_length:,} bytes); restoring its own "
+            "verbatim copy instead of the shared vanilla route.",
+            source="hammerspace.helper",
+        )
+        return restoreSplitBaseline(chunk_number, file_index, split_baseline)
+
+    shared = UntanglePolicy.independent_sharers(
+        chunk_number, file_index, findSharedEntries(chunk_number, file_index))
 
     _slogger.info(f"[1] Current DOL entry: chunk={chunk_number}, file_index={file_index}, "
           f"offset=0x{cur_offset:08X} ({cur_offset:,}), "
@@ -744,9 +915,24 @@ def zeroOriginalModel(chunk_number: int, file_index: int) -> None:
     for testing that the game truly loads from hammerspace rather than
     falling back to stale original data.
 
+    Never zeroes for an unused-character route (UntanglePolicy): its vanilla
+    range is its playable owner's block.
+
     Call this AFTER patchDolEntry (and shared entry patching) has redirected
     all DOL references away from the original location.
+
+    The range is left alone when an output-DOL route still points into it,
+    for example a playable character whose vanilla block an unused
+    character's route was split from.
     """
+
+    if UntanglePolicy.is_split_dir(chunk_number):
+        _slogger.info(
+            f"Not zeroing the vanilla range of unused-character route ({chunk_number},{file_index}): "
+            "it belongs to the playable owner.",
+            source="hammerspace.helper",
+        )
+        return
 
     orig_offset, orig_length = readDolEntry(chunk_number, file_index)
     if orig_offset == -1:
@@ -755,6 +941,16 @@ def zeroOriginalModel(chunk_number: int, file_index: int) -> None:
 
     if not os.path.exists(OUTPUT_DAT):
         _slogger.error("Output dat not found for zeroing.", source="hammerspace.helper")
+        return
+
+    live = liveRoutesInto(orig_offset, orig_length)
+    if live:
+        routes = ', '.join(f'({c},{i})' for c, i in live)
+        _slogger.warning(
+            f"Not zeroing original model data at 0x{orig_offset:08X} ({orig_length:,} bytes): "
+            f"still used by live route(s) {routes}.",
+            source="hammerspace.helper",
+        )
         return
 
     _slogger.info(f"Zeroing original model data: 0x{orig_offset:08X}, {orig_length:,} bytes ...", source="hammerspace.helper")

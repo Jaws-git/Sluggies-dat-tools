@@ -207,6 +207,7 @@ class LiveSyncTests(unittest.TestCase):
             mock.patch.object(sync._slogger, 'warning'),
             mock.patch.object(sync._slogger, 'info'),
             mock.patch.object(sync, 'AUTO_SYNC', True),
+            mock.patch.object(sync.hh, 'liveRoutesInto', return_value=[(75, 1)]),
         ]
         for patch in patches:
             patch.start()
@@ -272,6 +273,21 @@ class LiveSyncTests(unittest.TestCase):
                 mock.patch.object(guard, 'read_current_block', side_effect=lambda chunk, index: live[index]):
             sync.resync_live_low(75, 1)
         self.assertEqual(self._live_low(), LOW_VANILLA)
+
+    def test_low_poly_block_shared_with_another_route_is_not_written(self):
+        # An unused character's L_ route re-tangled onto its owner's block
+        # (UntanglePolicy): writing would change both models.
+        live = {0: HIGH_EDITED, 1: LOW_VANILLA}
+        with mock.patch.object(sync.hh, 'liveRoutesInto', return_value=[(75, 1), (89, 1)]):
+            with mock.patch.object(guard, 'read_current_block', return_value=LOW_VANILLA):
+                plan = sync.sync_partner_of_high(75, 0, HIGH_EDITED, HIGH_VANILLA)
+            with mock.patch.object(guard, 'read_current_block', side_effect=lambda chunk, index: live[index]):
+                sync.resync_live_low(75, 1)
+
+        self.assertEqual(len(plan.edits), 3)
+        self.assertEqual(self._live_low(), LOW_VANILLA)
+        sync._slogger.info.assert_not_called()
+        self.assertIn('shared with route(s) (89,1)', sync._slogger.warning.call_args.args[0])
 
     def test_model_without_partner_is_left_alone(self):
         with mock.patch.object(guard, 'read_current_block', return_value=_tiny({}, 'luigi.gpl')):

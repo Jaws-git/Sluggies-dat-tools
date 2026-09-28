@@ -180,6 +180,17 @@ class BuildModelBlockTests(unittest.TestCase):
     def setUp(self):
         self.data = {'SluggiesModel': {'ChunkNumber': 18, 'FileIndex': 0}}
         self.parsed = mock.sentinel.parsed
+        # WriteModelBlock's high-/low-poly partner checks read the real DOL/DAT
+        # (absent in CI); they have their own tests, so keep them out of these.
+        for patcher in (
+            mock.patch.object(main, 'CheckLodPartner'),
+            mock.patch.object(main.LodTextureSync, 'sync_low_block',
+                              side_effect=lambda block, *_args, **_kwargs: block),
+            mock.patch.object(main.LodTextureSync, 'sync_partner_of_high'),
+            mock.patch.object(main.LodPartnerGuard, 'read_current_block', return_value=None),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def _patch_common(self):
         return (
@@ -1204,6 +1215,7 @@ class BuildModelBlockTests(unittest.TestCase):
                 main.hh, 'zeroOriginalModel',
                 side_effect=lambda *_args: events.append('zero-original'),
             ),
+            mock.patch.object(main.hh, 'liveRoutesInto', return_value=[]),
             mock.patch.object(
                 main.hh, 'zeroRange',
                 side_effect=lambda *_args: events.append('zero-old'),
@@ -1270,6 +1282,7 @@ class BuildModelBlockTests(unittest.TestCase):
             mock.patch.object(main.hh, 'patchDolEntry'),
             mock.patch.object(main.hh, 'patchFstFileSize'),
             mock.patch.object(main.hh, 'zeroOriginalModel'),
+            mock.patch.object(main.hh, 'liveRoutesInto', return_value=[]),
             mock.patch.object(main.hh, 'zeroRange'),
             mock.patch.object(main.hh, 'writeDebugDumps'),
             mock.patch.object(main.os.path, 'getsize', return_value=123456),
@@ -1317,6 +1330,98 @@ class BuildModelBlockTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'failed validation report'):
                 main.WriteModelBlock(build, 'fixture.sluggie')
         read_output.assert_not_called()
+
+
+class HammerspaceResidentSourceTests(unittest.TestCase):
+    """Regression (2026-09-27): a schema exported from an untangle clone.
+
+    ``export.py --untangle`` exports dirs 89-94 from their hammerspace copies,
+    so the `.sluggie` offsets point there. Once a patch zeroes that copy, the
+    builder must fall back to the vanilla DOL entry the copy was made from,
+    and keep that entry's archive prefix (a bat is one model in a 1-slot
+    archive).
+    """
+
+    VANILLA_ENTRY = 0x1000
+    PREFIX_SIZE = 0x20
+    BASE_SIZE = 0x8000
+    CLONE_ENTRY = 0x10000
+
+    def _build(self, *, clone_zeroed: bool, chunk: int | None = None, texture_names=None):
+        data, dat_bytes, model_length = synthetic_donor.build_donor()
+        if chunk is not None:
+            data['SluggiesModel']['ChunkNumber'] = chunk
+        for descriptor, name in zip(data['SluggiesModel']['TextureDescriptors'], texture_names or ()):
+            descriptor['TextureFileName'] = name
+        block = dat_bytes[synthetic_donor.MODEL_OFFSET:]
+        prefix = bytearray(self.PREFIX_SIZE)
+        struct.pack_into('>II', prefix, 0, 1, self.PREFIX_SIZE)
+        entry = bytes(prefix) + block
+        # The export saw the model inside the hammerspace clone of that entry.
+        clone_model = self.CLONE_ENTRY + self.PREFIX_SIZE
+        main._rebase_absolute_offsets(
+            data, None, synthetic_donor.MODEL_OFFSET,
+            synthetic_donor.MODEL_OFFSET + model_length,
+            clone_model - synthetic_donor.MODEL_OFFSET,
+        )
+        self.assertEqual(data['SluggiesModel']['ModelOffset'], hex(clone_model))
+
+        input_dat = bytearray(self.VANILLA_ENTRY + len(entry))
+        input_dat[self.VANILLA_ENTRY:] = entry
+        output_dat = bytearray(self.CLONE_ENTRY + len(entry))
+        output_dat[:len(input_dat)] = input_dat
+        if not clone_zeroed:
+            output_dat[self.CLONE_ENTRY:] = entry
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = pathlib.Path(temp_dir) / 'input.dat'
+            output_path = pathlib.Path(temp_dir) / 'output.dat'
+            input_path.write_bytes(input_dat)
+            output_path.write_bytes(output_dat)
+            with (
+                mock.patch.object(main.hh, 'INPUT_DAT', str(input_path)),
+                mock.patch.object(main.hh, 'OUTPUT_DAT', str(output_path)),
+                mock.patch.object(main.hh, 'BASE_SIZE', self.BASE_SIZE),
+                mock.patch.object(main.hh, 'readDolEntry',
+                                  return_value=(self.VANILLA_ENTRY, len(entry))),
+            ):
+                return main.BuildModelBlock(data), entry
+
+    def test_zeroed_clone_builds_from_the_vanilla_entry_with_its_prefix(self):
+        result, entry = self._build(clone_zeroed=True)
+
+        self.assertTrue(result.validation_report['valid'], result.validation_report['errors'])
+        self.assertEqual(result.validation_report['container_prefix_size'], self.PREFIX_SIZE)
+        self.assertEqual(result.block[:self.PREFIX_SIZE], entry[:self.PREFIX_SIZE])
+        self.assertEqual(len(result.block), len(entry))
+        self.assertEqual(result.block, entry)
+
+    def test_intact_clone_gives_the_same_block(self):
+        zeroed, _ = self._build(clone_zeroed=True)
+        intact, _ = self._build(clone_zeroed=False)
+
+        self.assertEqual(intact.block, zeroed.block)
+
+    def test_unused_character_build_reapplies_untangled_texture_bytes(self):
+        # Texture 0 was untangled by the export (one flip), texture 1 was not.
+        import UntangledTextures
+        vanilla_result, entry = self._build(clone_zeroed=True, chunk=89)
+        textures = UntangledTextures.textures(entry, self.PREFIX_SIZE)
+        first, second = textures
+        image = entry[first.image_start:first.image_end]
+        flipped = bytes([image[0] ^ 18]) + image[1:]        # the export's attempt-1 flip
+        names = [first.name(flipped) + '.png', second.name(entry[second.image_start:second.image_end]) + '.png']
+        # Without names (plain vanilla) the build is the vanilla entry.
+        self.assertEqual(vanilla_result.block, entry)
+
+        result, _ = self._build(clone_zeroed=True, chunk=89, texture_names=names)
+
+        expected = bytearray(entry)
+        expected[first.image_start:first.image_end] = flipped
+        self.assertEqual(result.block, bytes(expected))
+
+    def test_playable_character_build_ignores_texture_names(self):
+        result, entry = self._build(clone_zeroed=True, texture_names=['tex1_4x4_0000000000000000_14.png'])
+        self.assertEqual(result.block, entry)
 
 
 class BuildTEXTests(unittest.TestCase):

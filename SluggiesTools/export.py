@@ -23,6 +23,7 @@ try:
     import HammerspaceHelper as hh
 except Exception:
     hh = None
+import UntanglePolicy
 
 EXPORT_TEX = '--notex' not in sys.argv
 DEBUG_DONT_USE_BASE64 = '--debug' in sys.argv
@@ -203,7 +204,7 @@ DIRS_END = 0x69CAD8
 DIRS_LEN = (DIRS_END - DIRS_START) // 0x4
 DIR_PTR_PTRS = range(DIRS_START, DIRS_END, 4)
 DAT_FNAME_PTR = 0x8067f658
-UNUSED_DIRS_TO_UNTANGLE_CLONE = [89, 90, 91, 92, 93, 94]
+UNUSED_DIRS_TO_UNTANGLE_CLONE = list(UntanglePolicy.UNUSED_CHARACTER_DIRS)
 
 
 def load_dol_dirs(dol_path):

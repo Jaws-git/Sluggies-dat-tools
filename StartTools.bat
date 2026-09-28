@@ -21,6 +21,7 @@ echo [6] UnPatch .sluggie model from game files
 echo. 
 echo [7] Manually resize available hammerspace (extra model data storage) - usually not necessary
 echo [8] Import edited icon sheets (.\2_Output_Models\_ICONS\sheets\)
+echo [9] Repair unused characters' models (re-split them from their playable counterparts)
 echo.
 set "tools_choice="
 set /p "tools_choice=Enter option (or type exit to quit): "
@@ -107,6 +108,14 @@ if "!tools_choice!"=="8" (
     ) else (
         call !SLUGGIES_LAUNCHER! --patch-icons
     )
+    goto :after_command
+)
+
+if "!tools_choice!"=="9" (
+    set "SLUGGIES_MENU_SELECTION=9 - Re-split unused characters"
+    set "SLUGGIES_MODEL_FILES="
+    set "SLUGGIES_ICON_SHARED_MODE="
+    call !SLUGGIES_LAUNCHER! --resplit-unused
     goto :after_command
 )
 

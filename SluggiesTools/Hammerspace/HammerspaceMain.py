@@ -17,6 +17,8 @@ import drawlist
 import HammerspaceHelper as hh
 import LodPartnerGuard
 import LodTextureSync
+import UntangledTextures
+import UntanglePolicy
 from binfmt import (
     align4 as _align4,
     color_entry_size as _color_entry_size,
@@ -5362,6 +5364,19 @@ def BuildModelBlock(
         report['assembled_size'] = len(block)
         report['original_size'] = original_length
         report['size_delta'] = len(block) - original_length
+    if UntanglePolicy.is_split_dir(chunk_number) and model.get('TextureDescriptors'):
+        # Unedited textures were cloned from the vanilla block; give them back
+        # the untangled bytes the .sluggie's texture names were exported with.
+        with open(hh.INPUT_DAT, 'rb') as source:
+            source.seek(original_offset)
+            vanilla_entry = source.read(original_length)
+        untangled = bytearray(block)
+        for note in UntangledTextures.reapply(
+            untangled, route_prefix_size, model['TextureDescriptors'],
+            vanilla_entry, route_prefix_size,
+        ):
+            _slogger.info(f'[Untangle] {note}', source='hammerspace.main')
+        block = bytes(untangled)
     return ModelBlockBuild(
         block=block,
         parsed=parsed,
@@ -5478,7 +5493,16 @@ def WriteModelBlock(
             'write, because zeroing the old block would corrupt the new one'
         )
 
-    shared_entries = hh.findSharedEntries(chunk_number, file_index)
+    found_sharers = hh.findSharedEntries(chunk_number, file_index)
+    shared_entries = UntanglePolicy.independent_sharers(chunk_number, file_index, found_sharers)
+    kept = [route for route in found_sharers if route not in shared_entries]
+    if kept:
+        _slogger.info(
+            'Unused-character split: route(s) '
+            + ', '.join(f'({c},{i})' for c, i in kept)
+            + ' share this block but keep their own route',
+            source='hammerspace.main',
+        )
     hh.writeModelBlock(build.block, new_offset)
     hh.patchDolEntry(chunk_number, file_index, new_offset, len(build.block))
     for shared_chunk, shared_index in shared_entries:
@@ -5487,7 +5511,7 @@ def WriteModelBlock(
     hh.patchFstFileSize(os.path.getsize(hh.OUTPUT_DAT))
     hh.zeroOriginalModel(chunk_number, file_index)
     if replacing_hammerspace_block and current_offset != new_offset:
-        hh.zeroRange(current_offset, current_length)
+        hh.zeroRangeIfUnrouted(current_offset, current_length)
         _slogger.info(
             f'Hammerspace Log: Replaced | Model: {model_name} | '
             f'Old address: 0x{current_offset:08X} | '
@@ -5606,7 +5630,13 @@ if __name__ == '__main__':
             )
             raise SystemExit(1)
         _high_before = LodPartnerGuard.read_current_block(_chunk, _index)
-        _success, _removed_offset, _removed_length = hh.removeModelFromHammerspace(_chunk, _index)
+        _split_baseline = None
+        if UntanglePolicy.is_split(_chunk, _index):
+            _split_baseline, _notes = UntangledTextures.split_baseline(_chunk, _index, _model)
+            for _note in _notes:
+                _slogger.info(f'[Untangle] {_note}', source='hammerspace.main')
+        _success, _removed_offset, _removed_length = hh.removeModelFromHammerspace(
+            _chunk, _index, split_baseline=_split_baseline)
         if _success:
             try:
                 _restored = LodPartnerGuard.read_current_block(_chunk, _index)

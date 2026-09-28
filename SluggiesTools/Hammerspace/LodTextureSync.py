@@ -179,6 +179,22 @@ def apply_edits(block: bytes, plan: BindSyncPlan) -> bytes:
     return bytes(patched)
 
 
+def _shared_live_range(chunk_number: int, file_index: int, offset: int, length: int) -> bool:
+    """Whether another output-DOL route still loads this range too, e.g. an
+    unused character's re-tangled route on its owner's vanilla block (see
+    UntanglePolicy). Writing into it would change that model as well, so the
+    sync skips it (logged)."""
+    others = [route for route in hh.liveRoutesInto(offset, length) if route != (chunk_number, file_index)]
+    if others:
+        _slogger.warning(
+            f'[LOD] texture assignment sync skipped for chunk {chunk_number}, file {file_index}: '
+            f'its block at 0x{offset:08X} is shared with route(s) '
+            + ', '.join(f'({c},{i})' for c, i in others),
+            source='hammerspace.main',
+        )
+    return bool(others)
+
+
 def _vanilla_block(chunk_number: int, file_index: int) -> bytes | None:
     offset, length = hh.readDolEntry(chunk_number, file_index)
     if offset == -1 or length <= 0:
@@ -309,6 +325,8 @@ def sync_partner_of_high(
                 f'low-poly partner route (chunk {chunk_number}, file {low_index}) changed '
                 'while syncing texture assignments'
             )
+        if _shared_live_range(chunk_number, low_index, offset, length):
+            return plan
         with open(hh.OUTPUT_DAT, 'r+b') as dat:
             for setting_offset, setting in plan.edits:
                 dat.seek(offset + setting_offset)
@@ -339,6 +357,8 @@ def resync_live_low(chunk_number: int, file_index: int) -> None:
     offset, length = hh.readOutputDolEntry(chunk_number, file_index)
     if length != len(block):
         raise RuntimeError(f'low-poly route (chunk {chunk_number}, file {file_index}) changed during sync')
+    if _shared_live_range(chunk_number, file_index, offset, length):
+        return
     with open(hh.OUTPUT_DAT, 'r+b') as dat:
         dat.seek(offset)
         dat.write(synced)
