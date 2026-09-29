@@ -955,6 +955,25 @@ class ExportedEntryBuildsTests(unittest.TestCase):
         self._build('builtin:rigid_spec_v1', warnings=warnings)
         self.assertEqual(warnings, [])
 
+    def test_specular_strength_is_written_only_when_given(self):
+        data = self.env.reload()
+        model = data['SluggiesModel']
+        host_bone_id = self._free_host_bone(model)
+        host_bind = cse.bone_absolute_matrices(model['BoneHierarchy'])[host_bone_id]
+        geometry = _cube_geometry(obj_world=_mul(ARMATURE_WORLD, host_bind), host_bind=host_bind)
+        normals, uvs, colors = _cube_loop_attributes()
+        plan = cse.attribute_plan(model, 'builtin:rigid_spec_v1')
+
+        def entry(**kwargs):
+            return cse.build_custom_submesh_entry(
+                'CustomSubmesh_1', 'custom0', host_bone_id, 'builtin:rigid_spec_v1', plan,
+                geometry, normals, uvs, colors, {'DonorTextureIndex': 0}, **kwargs,
+            )
+
+        self.assertNotIn('SpecularStrength', entry())
+        self.assertEqual(entry(specular_strength=50)['SpecularStrength'], 50)
+        self.assertEqual(entry(specular_strength=300)['SpecularStrength'], 255)
+
 
 #: A donor rigid submesh in `.sluggie` shape: QuantizeInfo 59 (divisor 2048)
 #: int16 positions on a bone whose bind matrix is a non-trivial chain, so the

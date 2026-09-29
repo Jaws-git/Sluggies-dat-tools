@@ -81,6 +81,19 @@ Hammerspace opens up additional memory at the end of the data file to store more
 6. when done, select all meshes you'd like to include, then export back to the original sluggie
    file with "hammerspace" and "reimport textures" activated
 
+Notes:
+- **Specular strength:** a new submesh made from a built-in template starts at 50. One made from a donor material starts at that material's current strength. Change it with **Set Specular Strength**.
+- **Bats and gloves work too.** These only have one bone by default, and it is already carrying the original mesh.
+Adding a custom bone first here is mandatory, if you want to add a new rigid mesh.
+
+#### Editing the unused characters
+
+The six unused characters (folders 89-94) share all their models with a playable character in the original game. An untangle export (StartTools menu [1]) gives each of them a copy of its own, and from then on they can be edited like any other character:
+- They always patch through hammerspace. In-place patching is refused for them.
+- An unpatch restores the unused character's own untangled data block, not the vanilly game's "shared model" state.
+- If an unused character ever shows its counterpart's edits (for example after an unpatch with an older version of the tools), run menu [9] to re-split it.
+- The high-/low-poly rules below apply to them as well.
+
 #### New bones on low-poly (`L_`) models
 
 The game moves a character's low-poly model with the high-poly model's skeleton. When you add a bone to an `L_` model and attach a submesh to it:

@@ -664,11 +664,13 @@ def sanitize_mesh_name(name):
 def build_custom_submesh_entry(
     object_name, custom_submesh_id, host_bone_id, template_source, plan,
     geometry, loop_normals, loop_uvs, loop_colors, texture_assignment,
-    use_base64=True, warnings=None,
+    use_base64=True, warnings=None, specular_strength=None,
 ):
     """Assemble one ``CustomSubmeshes`` entry (sluggieschema.json) from
     bone-local geometry and per-loop attributes, picking the position format
-    (2.3) and quantizing (2.4) on the way.
+    (2.3) and quantizing (2.4) on the way. *specular_strength* (the surface
+    material's ``SpecularStrength``) is written when given; without it the
+    patcher keeps the template's own value.
 
     When the template draws two UV channels, channel 1 mirrors channel 0
     exactly: it is the specular channel, as in donor rigid submeshes (F6).
@@ -726,4 +728,6 @@ def build_custom_submesh_entry(
     entry['FacesCount'] = faces_count
     entry['FacesData'] = encode_field(faces_data, use_base64)
     entry['TextureAssignment'] = dict(texture_assignment)
+    if specular_strength is not None:
+        entry['SpecularStrength'] = max(0, min(255, int(specular_strength)))
     return entry

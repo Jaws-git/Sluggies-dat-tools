@@ -162,6 +162,7 @@ class CustomSubmesh:
     faces_count:        int
     faces_data:         bytes
     texture_assignment: CustomSubmeshTextureAssignment
+    specular_strength:  int | None = None   # Type-7 param byte 0; None keeps the template's
 
 
 @dataclass
@@ -866,6 +867,12 @@ def _validate_custom_submeshes(model: dict) -> None:
         elif donor_index is not None and not (isinstance(donor_index, int) and 0 <= donor_index <= 0xFFFF):
             fail(f'TextureAssignment.DonorTextureIndex {donor_index!r} must be a uint16 texture index')
 
+        strength = cs.get('SpecularStrength')
+        if strength is not None and not (
+            isinstance(strength, int) and not isinstance(strength, bool) and 0 <= strength <= 255
+        ):
+            fail(f'SpecularStrength {strength!r} must be an integer 0..255')
+
     if errors:
         raise ValueError('; '.join(errors))
 
@@ -1415,6 +1422,20 @@ def _custom_submesh_patch_layer0_texture(
     raise ValueError('template has no layer-0 Type-1 texture binding to patch')
 
 
+def _custom_submesh_patch_specular_strength(
+    records: list[list], upto_index: int, strength: int,
+) -> None:
+    """Set the specular intensity (param byte 0) of the effective Type-7
+    record at or before *upto_index*; bytes 1-2 stay the template's."""
+    if not 0 <= strength <= 255:
+        raise ValueError(f'SpecularStrength {strength} is outside 0..255')
+    for record in reversed(records[:upto_index + 1]):
+        if record[0] == 7:
+            record[1] = bytes([strength]) + bytes(record[1][1:3]).ljust(2, b'\x00')
+            return
+    raise ValueError('template has no Type-7 record to carry SpecularStrength')
+
+
 def _custom_submesh_faces(cs: 'CustomSubmesh', descriptors: list[dict]) -> list[list[dict]]:
     """Zip a CustomSubmesh's per-attribute face-index buffers into the
     [v0, v1, v2]-per-triangle structure drawlist.encodeDrawList expects,
@@ -1583,6 +1604,8 @@ def _build_custom_submesh(
             )
         texture_index = mapping[file_name]
     _custom_submesh_patch_layer0_texture(records, drawing_index, texture_index)
+    if cs.specular_strength is not None:
+        _custom_submesh_patch_specular_strength(records, drawing_index, cs.specular_strength)
     faces = _custom_submesh_faces(cs, descriptors)
     raw = drawlist.encodeDrawList(faces, descriptors) + b'\x00'
     primitive_bytes = raw + b'\x00' * ((-len(raw)) % 32)
@@ -2541,6 +2564,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
             faces_count        = cs['FacesCount'],
             faces_data         = _decode(cs['FacesData'], use_b64),
             texture_assignment = texture_assignment,
+            specular_strength  = cs.get('SpecularStrength'),
         ))
 
     return SluggieParsed(

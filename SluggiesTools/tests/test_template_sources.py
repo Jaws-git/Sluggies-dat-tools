@@ -14,9 +14,11 @@ from TemplateSources import (  # noqa: E402
     HAND_VISIBILITY_ROLES,
     TemplateSourceChoice,
     TemplateSourceMaterial,
+    BUILTIN_DEFAULT_SPECULAR_STRENGTH,
     build_template_source_choices,
     builtin_template_layers,
     next_new_surface_key,
+    template_surface_id,
 )
 
 
@@ -131,6 +133,23 @@ class BuiltinTemplateMetadataTests(unittest.TestCase):
     def test_unknown_builtin_layer_lookup_raises(self):
         with self.assertRaisesRegex(ValueError, 'unknown template'):
             builtin_template_layers('rigid_nope_v1')
+
+    def test_builtin_surfaces_start_at_specular_strength_50(self):
+        self.assertEqual(BUILTIN_DEFAULT_SPECULAR_STRENGTH, 50)
+
+
+class TemplateSurfaceIdTests(unittest.TestCase):
+    """The donor surface a new surface takes its starting specular strength
+    from; built-ins have none."""
+
+    def test_rigid_and_derived_name_their_donor_surface(self):
+        self.assertEqual(template_surface_id('rigid:sm1_ds5'), 'sm1_ds5')
+        self.assertEqual(template_surface_id('derived:sm0_ds4'), 'sm0_ds4')
+
+    def test_builtin_and_malformed_sources_have_no_donor_surface(self):
+        for source in ('builtin:rigid_spec_v1', 'sm1_ds5', '', 'other:sm1_ds5'):
+            with self.subTest(source=source):
+                self.assertEqual(template_surface_id(source), '')
 
 
 class NextNewSurfaceKeyTests(unittest.TestCase):

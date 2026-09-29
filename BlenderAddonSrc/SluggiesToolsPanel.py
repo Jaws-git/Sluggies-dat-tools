@@ -34,7 +34,7 @@ _SUBMESH_NAME_RE = re.compile(r'^CustomSubmesh_(\d+)$')
 _INVALID_SUBMESH_NAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 _CUSTOM_SUBMESH_CUBE_HALF_EXTENT = 0.2
-_CUSTOM_SUBMESH_TEXTURE_SIZE = 1024
+_CUSTOM_SUBMESH_TEXTURE_SIZE = 512
 
 _HOST_BONE_STATUS_TAGS = {
     HostBones.STATUS_RECOMMENDED: "free",
@@ -225,6 +225,29 @@ def _template_shader_mode(context, arm_obj, template_source):
     surface_id = template_source.split(':', 1)[1] if ':' in template_source else ''
     mat = _material_by_surface_id(context, arm_obj, surface_id)
     return mat.get('ShaderMode', '') if mat is not None else ''
+
+
+def _template_specular_strength(context, arm_obj, template_source):
+    """Starting specular strength for a surface made from *template_source*:
+    the donor surface's current value (including an edit made with Set
+    Specular Strength) for `rigid:`/`derived:`, the built-in default
+    otherwise."""
+    surface_id = TemplateSources.template_surface_id(template_source)
+    if surface_id:
+        mat = _material_by_surface_id(context, arm_obj, surface_id)
+        if mat is not None and 'SpecularStrength' in mat:
+            return max(0, min(255, int(mat['SpecularStrength'])))
+    return TemplateSources.BUILTIN_DEFAULT_SPECULAR_STRENGTH
+
+
+def _new_surface_metadata(shader_mode, specular_strength):
+    """ds_entry for _set_surface_material_metadata on a new Type-7 surface;
+    the param bytes carry the starting specular strength (index 0)."""
+    return {
+        'DisplayStateId': 7,
+        'ShaderMode': shader_mode,
+        'DisplayStateParamBytes': bytes([specular_strength, 0, 0]).hex(),
+    }
 
 
 def _template_wrap_modes(context, arm_obj, template_source):
@@ -490,7 +513,7 @@ def _select_new_object(context, obj):
     context.view_layer.objects.active = obj
 
 
-def _create_custom_submesh_material(obj, custom_submesh_id, image):
+def _create_custom_submesh_material(obj, custom_submesh_id, image, specular_strength):
     surface_id = f'{custom_submesh_id}_ds0'
     mat = _create_material(f'{obj.name}_{surface_id}', 'UVMap', image, wrap_s=1)
     mat['SurfaceId'] = surface_id
@@ -498,7 +521,7 @@ def _create_custom_submesh_material(obj, custom_submesh_id, image):
         description="Stable draw-state identity for this custom submesh. Do not delete.")
     # Read-only for the MVP (plan step 3): the dialog only picks a template
     # source, never a shader mode directly.
-    _set_surface_material_metadata(mat, {'DisplayStateId': 7, 'ShaderMode': 'Spec'})
+    _set_surface_material_metadata(mat, _new_surface_metadata('Spec', specular_strength))
     obj.data.materials.append(mat)
     return mat
 
@@ -963,7 +986,8 @@ class SLUGGIES_OT_add_material(bpy.types.Operator):
         mat['TemplateTextureIndex'] = template_texture_index
         mat.id_properties_ui('TemplateTextureIndex').update(
             description="Donor texture index this surface's GX format clones; never a fallback texture.")
-        _set_surface_material_metadata(mat, {'DisplayStateId': 7, 'ShaderMode': shader_mode})
+        _set_surface_material_metadata(mat, _new_surface_metadata(
+            shader_mode, _template_specular_strength(context, arm_obj, self.template_source)))
         mat['WrapS'] = wrap_s
         mat['WrapT'] = wrap_t
         mat.id_properties_ui('WrapS').update(description="GX wrap mode for U, copied from the template.")
@@ -1280,7 +1304,9 @@ class SLUGGIES_OT_add_submesh(bpy.types.Operator):
 
             obj = _create_custom_submesh_cube(
                 context, arm_obj, bone_id, custom_submesh_id, submesh_name, self.template_source)
-            _create_custom_submesh_material(obj, custom_submesh_id, image)
+            _create_custom_submesh_material(
+                obj, custom_submesh_id, image,
+                _template_specular_strength(context, arm_obj, self.template_source))
             _select_new_object(context, obj)
 
             self.report({"INFO"}, f"Added {obj.name} on bone_{bone_id} ({self.template_source})")

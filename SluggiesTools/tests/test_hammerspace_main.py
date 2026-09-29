@@ -2964,6 +2964,55 @@ class BuildCustomSubmeshAdditionalTextureIndexTests(unittest.TestCase):
         self.assertEqual(main._custom_submesh_texture_layer(layer0), (0, 42))
 
 
+class CustomSubmeshSpecularStrengthTests(unittest.TestCase):
+    """CustomSubmeshes[].SpecularStrength sets param byte 0 of the drawing
+    Type-7 record; without it the template's own bytes are kept."""
+
+    def _type7_param(self, strength):
+        with synthetic_donor.donor_environment() as env:
+            data = env.reload()
+        model = data['SluggiesModel']
+        model['UseHammerspace'] = True
+        use_b64 = model.get('UseBase64', True)
+        host_bone_id = _free_host_bones(model, 1)[0]
+        cs_dict = _cube_custom_submesh('custom0', host_bone_id, 'builtin:rigid_spec_v1', use_b64)
+        if strength is not None:
+            cs_dict['SpecularStrength'] = strength
+        model['CustomSubmeshes'] = [cs_dict]
+        cs = main.ParseSluggie(data).custom_submeshes[0]
+        sub = main._build_custom_submesh(
+            model, cs, main._custom_submesh_rigid_surfaces(model), len(model['Submeshes']),
+        )
+        return [s.display_state_pad_bytes for s in sub.draw_states if s.display_state_id == 7][-1]
+
+    def test_absent_strength_keeps_the_template_bytes(self):
+        self.assertEqual(self._type7_param(None), bytes.fromhex('640064'))
+
+    def test_strength_replaces_byte0_only(self):
+        self.assertEqual(self._type7_param(50), bytes([50, 0x00, 0x64]))
+
+    def test_patch_helper_uses_the_effective_type7_record(self):
+        records = [[7, b'\x10\x01\x02', 'Spec'], [1, b'\x00\x00\x08', '11110000'],
+                   [7, b'\x20\x03\x04', 'Spec'], [7, b'\x30\x05\x06', 'Spec']]
+        main._custom_submesh_patch_specular_strength(records, 2, 255)
+        self.assertEqual(records[2][1], b'\xff\x03\x04')
+        self.assertEqual(records[0][1], b'\x10\x01\x02')
+        self.assertEqual(records[3][1], b'\x30\x05\x06')
+
+    def test_out_of_range_strength_is_rejected_by_validation(self):
+        for bad in (-1, 256, 12.5, True):
+            with self.subTest(value=bad):
+                model = _validation_base_model()
+                model['CustomSubmeshes'] = [_validation_entry(SpecularStrength=bad)]
+                with self.assertRaisesRegex(ValueError, 'SpecularStrength'):
+                    main._validate_custom_submeshes(model)
+
+    def test_in_range_strength_passes_validation(self):
+        model = _validation_base_model()
+        model['CustomSubmeshes'] = [_validation_entry(SpecularStrength=0)]
+        main._validate_custom_submeshes(model)
+
+
 class CustomSubmeshTemplateRecordsTests(unittest.TestCase):
     """PLAN_AddSubmesh.md Phase 2 step 3: resolving a CustomSubmesh's
     display-state records per TemplateSource kind."""

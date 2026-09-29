@@ -10,7 +10,7 @@
     <p>A flat array of <code>uint32</code> virtual addresses at DOL file offsets <code>0x69C828</code>&ndash;<code>0x69CAD8</code>, one per directory. Convert an address to a DOL file offset by subtracting <code>0x80003F00</code>. The index into this table is the <strong>chunk number</strong> (<code>ChunkNumber</code> in a <code>.sluggie</code>; also the number in front of each export folder name).</p>
 
     <h2>Directory entry</h2>
-    <p>Each directory is an array of 48-byte entries (12 &times; <code>uint32</code>). The index into it is the <strong>file index</strong> (<code>FileIndex</code> in a <code>.sluggie</code>). The array ends at the first entry whose word 0 is not the <code>dt_na.dat</code> name pointer. Each entry has three language slots of four words each, and every slot has the same layout:</p>
+    <p>Each directory is an array of 48-byte entries (12 &times; <code>uint32</code>). The index into it is the <strong>file index</strong> (<code>FileIndex</code> in a <code>.sluggie</code>). The array ends at the first entry whose word 0 is not the <code>dt_na.dat</code> name pointer, or where the next directory's entries begin. Directories are stored back to back, so a walk that checks only the name pointer runs on into the following directories. It then meets the same physical entry again under other chunk numbers: for example, <code>(76,197)</code>, <code>(77,182)</code> &hellip; <code>(88,17)</code> and <code>(89,2)</code> are all the entry at DOL offset <code>0x688A28</code>. Each entry has three language slots of four words each, and every slot has the same layout:</p>
     <table>
         <tr>
             <th>Offset</th>
@@ -56,13 +56,13 @@
             <td>0x20</td>
         </tr>
     </table>
-    <p>In the stock game all three slots point at the same data. The tools read the <code>en</code> slot and write all three.</p>
+    <p>In every character directory, all three slots point at the same data. 118 entries do have diverging slots, all in non-character chunks (9, 10, 16, 119-123, 128, 138 and 145-148; surveyed in the input DOL on 2026-09-27). The tools read the <code>en</code> slot and write all three, which is correct for every character entry.</p>
 
     <h2>What an entry points at</h2>
     <ul>
         <li><strong>A model block</strong> (the common case). All section pointers in its <a href="index.html">header</a> are relative to the block start, so the block can be moved as a unit.</li>
         <li><strong>An archive</strong> of several members: <code>fileCount:u32</code>, then <code>fileCount</code> <code>u32</code> member offsets relative to the archive start (0 = empty slot), then the members in ascending order on 32-byte boundaries. A member's length is the distance to the next populated offset, or to the archive end for the last one. Members can be models or ANM blocks. Multi-part characters (stadium bosses, map objects) use this. Some equipment entries (bats, for example) also have a short prefix in front of the model. In a <code>.sluggie</code>, <code>ModelOffset</code>/<code>ModelLength</code> give the member itself, which then differs from the entry's offset/length.</li>
-        <li><strong>Shared routes:</strong> several entries can hold the same offset, so the same bytes serve several chunk/file indices. Patching one of them has to repoint all of them. <code>--untangle</code> exports split some of these shared routes on purpose.</li>
+        <li><strong>Shared routes:</strong> several entries can hold the same offset, so the same bytes serve several chunk/file indices. Patching one of them repoints all of them. The exception is the unused characters' entries, which <code>--untangle</code> exports split on purpose. They always move alone; see <a href="#unused-characters">Unused characters</a>.</li>
     </ul>
 
     <h2>Relocating a model (hammerspace)</h2>
@@ -72,5 +72,48 @@
         <li>Write the new offset and length into all three language slots of the entry, and of every entry that shares its route (length also goes into the allocation-size word).</li>
         <li>Grow the <code>dt_na.dat</code> size field in <code>fst.bin</code> (FST entry 1, size at byte <code>0x14</code>) to match the extended file.</li>
     </ol>
-    <p>Unpatching restores the entry from the untouched input <code>main.dol</code>, restores the original bytes from the input <code>dt_na.dat</code>, and zero-fills the hammerspace range. The implementation is <code>SluggiesTools/Hammerspace/HammerspaceHelper.py</code> (<code>readDolEntry</code>, <code>patchDolEntry</code>, <code>findSharedEntries</code>, <code>removeModelFromHammerspace</code>) and <code>ArchiveContainer.py</code>.</p>
+    <p>The block a patch replaces is zero-filled, but only when no entry in the output <code>main.dol</code> still points into it (in any language slot). Otherwise it is left in place with a warning, so that one route's patch never blanks another route's live bytes.</p>
+    <p>Unpatching restores the entry from the untouched input <code>main.dol</code>, restores the original bytes from the input <code>dt_na.dat</code>, and zero-fills the hammerspace range. Unused-character entries are the exception (below). The implementation is <code>SluggiesTools/Hammerspace/HammerspaceHelper.py</code> (<code>readDolEntry</code>, <code>patchDolEntry</code>, <code>findSharedEntries</code>, <code>liveRoutesInto</code>, <code>removeModelFromHammerspace</code>) and <code>ArchiveContainer.py</code>.</p>
+
+    <h2 id="unused-characters">Unused characters (chunks 89-94)</h2>
+    <p>The six unused characters have no model data of their own in the stock game. Every file entry of theirs points at a block that a playable character also uses (input DOL, 2026-09-27):</p>
+    <table>
+        <tr>
+            <th>Unused chunk</th>
+            <th>Shares with</th>
+            <th>Files</th>
+        </tr>
+        <tr><td>89 Unused Yoshi A</td><td>24 Yoshi, 90</td><td>0-4, 6-14</td></tr>
+        <tr><td>90 Unused Yoshi B</td><td>24 Yoshi, 89</td><td>0-4, 6-14</td></tr>
+        <tr><td>91 Unused Toad</td><td>50 Purple Toad</td><td>0-4, 6-14</td></tr>
+        <tr><td>92 Unused Pianta</td><td>39 Pianta</td><td>0-4, 6-14</td></tr>
+        <tr><td>93 Unused Kritter</td><td>76 Kritter</td><td>0-14</td></tr>
+        <tr><td>94 Unused Koopa</td><td>30 Koopa</td><td>0-4, 6-14</td></tr>
+    </table>
+    <p>File layout of a character directory: 0 high-poly model, 1 <code>L_</code> model, 2 bat, 3 left glove, 4 right glove, 5 placeholder, 6-14 ANMs. File 5 of about 65 character directories, including 89-92 and 94, is one shared 64-byte block at <code>0x4B33140</code>. It is an archive header with count 1 and a slot at <code>+0x20</code>, and is all zeros after that.</p>
+
+    <h3>Split routes</h3>
+    <p><code>--untangle</code> exports (<code>export.py</code>, <code>clone_unused_dirs_to_hammerspace_for_untangle</code>) copy every entry of chunks 89-94 into hammerspace and repoint only those entries. The playable owner keeps the vanilla location. The list of chunks lives in <code>SluggiesTools/Hammerspace/UntanglePolicy.py</code>.</p>
+    <ul>
+        <li><strong>The game does not rely on the sharing.</strong> In a build where every CMPR texture of Unused Yoshi A's copies was recoloured red, Unused Yoshi A was fully red, including bat and gloves, while green Yoshi and Unused Yoshi B stayed green. A split build played through at-bats and fielding without glitches (Dolphin, 2026-09-27).</li>
+        <li><strong>The copies are not verbatim.</strong> The texture untangling changes a few bytes (1-15 per affected block) inside texture payloads, so each unused character gets its own Dolphin texture hashes. The <code>.sluggie</code> records the resulting texture names.</li>
+        <li><strong>The copies' <code>.sluggie</code> offsets point into hammerspace.</strong> All offsets in a <code>.sluggie</code> are absolute. So when building, the patcher rebases them onto the vanilla block, and it keeps the archive prefix of entries such as the bat. The copy's own address therefore does not matter, even after it has been zeroed.</li>
+    </ul>
+
+    <h3>Patching and unpatching a split route</h3>
+    <ul>
+        <li><strong>Patch:</strong> only the patched entry is repointed. An owner never takes its split routes along, and a split route never takes its owner. The vanilla range is never zeroed for a split route, because the owner still uses it. For the high-poly model, bat and gloves, the untangled texture bytes are re-applied to every texture the edit left unchanged.</li>
+        <li><strong>Unpatch:</strong> the entry goes to a fresh baseline copy in hammerspace, never back to the owner's block. The baseline is the vanilla block with the untangled texture bytes re-applied. It is rebuilt from the input <code>dt_na.dat</code> plus the <code>.sluggie</code> (<code>UntangledTextures.py</code> replays the untangler's flip sequence until each texture's Dolphin name matches the recorded <code>TextureFileName</code>). This reproduces all 89 intact export copies byte for byte.</li>
+        <li><strong>Repair:</strong> an entry found back on its owner's offset (left there by an unpatch from an older tool version, for example) is re-split by <code>start.py --resplit-unused</code> (StartTools menu [9]). A patch of such an entry needs no repair first, because it moves only that entry.</li>
+    </ul>
+    <p>Confirmed in Dolphin on Unused Yoshi A (2026-09-28/29). In each case green Yoshi and Unused Yoshi B stayed vanilla throughout:</p>
+    <ul>
+        <li>a re-split, then patch, unpatch and patch again of the bat;</li>
+        <li>bat mesh and UV edits;</li>
+        <li>texture reimport;</li>
+        <li>a custom submesh with an appended texture;</li>
+        <li>a specular edit;</li>
+        <li>an added bone with a custom submesh on the high-poly model, then on <code>L_</code>;</li>
+        <li>an unpatch after each step, which brought back the standard look.</li>
+    </ul>
 </body>

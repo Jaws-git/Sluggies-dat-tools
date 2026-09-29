@@ -610,6 +610,12 @@
                 }
               },
               "additionalProperties": false
+            },
+            "SpecularStrength": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255,
+              "description": "Specular intensity for this submesh's surface: byte 0 of the drawing Type-7 record's DisplayStateParamBytes (0-255, linear). Absent: the template's own value is kept. The Blender add-on starts a builtin: surface at 50 and a rigid:/derived: surface at its donor surface's strength."
             }
           },
           "required": ["CustomSubmeshId", "MeshName", "HostBoneId", "TemplateSource", "VertexBufferData", "FacesCount", "FacesData", "UVChannels", "TextureAssignment"],

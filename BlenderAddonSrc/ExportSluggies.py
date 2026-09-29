@@ -2885,7 +2885,8 @@ def _custom_submesh_loop_attributes(obj, warnings):
     return loop_normals, loop_uvs, loop_colors
 
 
-def encode_custom_submesh(context, obj, model, texture_assignment, warnings, use_base64=True):
+def encode_custom_submesh(context, obj, model, texture_assignment, warnings, use_base64=True,
+                          specular_strength=None):
     """Encode one ``SluggiesCustomSubmesh`` object as a ``CustomSubmeshes``
     entry (PLAN_AddSubmesh.md Phase 6 step 2): triangulate, map world
     positions into host-bone space, range-check and quantize, and encode
@@ -2910,7 +2911,7 @@ def encode_custom_submesh(context, obj, model, texture_assignment, warnings, use
     return CustomSubmeshExport.build_custom_submesh_entry(
         obj.name, str(obj.get("CustomSubmeshId")), host_bone_id, template_source, plan,
         geometry, loop_normals, loop_uvs, loop_colors, texture_assignment, use_base64,
-        warnings,
+        warnings, specular_strength,
     )
 
 
@@ -3477,6 +3478,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     custom_submesh_entries.append(encode_custom_submesh(
                         context, obj, model, custom_assignments[material.name],
                         warnings, use_base64,
+                        material.get("SpecularStrength"),
                     ))
             except ValueError as exc:
                 self.report({"ERROR"}, str(exc))

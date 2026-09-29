@@ -75,6 +75,21 @@ BUILTIN_TEMPLATE_NAMES: Tuple[str, ...] = tuple(
 )
 
 
+# Starting specular strength (Type-7 param byte +1, 0-255) of a surface made
+# from a `builtin:` template. The captures carry their donor's own value
+# (rigid_spec_v1: 100), so the new surface gets this one via the
+# `.sluggie`'s CustomSubmeshes[].SpecularStrength instead. `rigid:`/`derived:`
+# surfaces start at their donor surface's strength.
+BUILTIN_DEFAULT_SPECULAR_STRENGTH = 50
+
+
+def template_surface_id(template_source: str) -> str:
+    """The donor SurfaceId a `rigid:`/`derived:` source clones; '' for
+    `builtin:` or a malformed source."""
+    kind, _sep, argument = template_source.partition(":")
+    return argument if kind in ("rigid", "derived") else ""
+
+
 def builtin_template_layers(name: str) -> int:
     """Texture layers *name* binds. Raises for an unknown template, so a typo
     cannot silently fall back to the 2-layer form."""

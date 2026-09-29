@@ -130,6 +130,7 @@
         <li><strong>One bone owns at most one mesh</strong>, because the field is a single uint16. In player models no two bones share a GEO ID. Seven effect and map-object models do give several bones the same GEO ID, so sharing is legal.</li>
         <li><strong>A bone that drives skinning may also own a rigid mesh.</strong> None does in vanilla data, but giving Mario's hand bone 28 a mesh worked: the mesh follows the hand and skinning is unaffected.</li>
         <li><strong>Submesh order doesn't have to follow bone order.</strong> Vanilla rigid submeshes are in ascending owner-bone order, but a submesh appended at the end on a lower-numbered bone draws correctly. Appending keeps every existing submesh index, and so every existing GEO ID and ptr7 facial <code>SubmeshIndex</code>, unchanged.</li>
+        <li><strong>A single-bone prop can take a second bone and a second mesh.</strong> A bat (one bone that owns the bat mesh, no SKN section, ACT user data present) was given a new bone 1 under bone 0, with an appended rigid submesh owned by it. It drew correctly in game (Dolphin, 2026-09-29).</li>
     </ul>
     <p>The bone table is reached through the tree: the tree header sits at header+0x08 and its root pointer at header+0x0C. Each node address is the bone's start, relative to the ACT header. <code>BlockValidator</code> walks it to check the rules above.</p>
     <h2 id="lod-pairs">High- and low-poly pairs share one skeleton</h2>
