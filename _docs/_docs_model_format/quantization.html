@@ -40,4 +40,5 @@ divisor = 1 << (quantization & 0b1111)</code></pre>
     </tr>
 </table>
 <p>The theoretical GX table (1=float, 2=u16, 3=s16, 4=u8, 5=s8) does not match what's observed. In practice, format 4 is float (not u8), and formats 7 and 0xa also appear as floats. Any unrecognised format should be treated as float.</p>
+<p>The byte is read per array at runtime, so every array can use its own format. Color arrays are an exception to this table: quantization 48 on a color array is 2-byte RGBA4444 (see <a href="vertex_section.html">Mesh Data Section</a>).</p>
 </body>

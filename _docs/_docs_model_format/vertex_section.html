@@ -59,6 +59,11 @@
             </td>
         </tr>
     </table>
+    <ul>
+        <li><strong>The mesh count is the only submesh count.</strong> A search of the format docs, the tools and every <code>main.dol</code> reference found no second count to keep in step. A submesh appended to the end of the mesh header array, with an ACT bone naming it (see <a href="act_section.html#geo-id-ownership">GEO ID ownership rules</a>), draws in character select, static scenes and gameplay (Dolphin, 2026-09-16). The tested layout grows the mesh header array in place: it stays directly after the GPL header, every existing blob moves back as one unit (by a multiple of 32, see <a href="#alignment">Moving blobs</a>), and only each existing mesh header's two GPL-relative pointers (mesh data header and name) change. A layout that leaves the old array behind as dead bytes and puts a new array elsewhere has never been tested in game.</li>
+        <li><strong>The user data is opaque on player models.</strong> It is 40 bytes there and looks like a list of <code>(n, 0x08)</code> pairs, but it does not track the mesh count: identical blobs appear in 2- and 3-submesh models. Keep it verbatim. A 4-submesh Mario with the 3-submesh donor's blob renders correctly (Dolphin, 2026-09-16).</li>
+        <li><strong>Some stadium models keep one bounding box per submesh in it.</strong> Ten exported models (<code>sta03</code>/<code>sta03b</code>, <code>sta05</code>/<code>sta05b</code>, <code>sta08b</code>, <code>sta09</code>/<code>sta09c</code> and three <code>BG_stagelight</code> models) store <code>u32 length, u16 1, u16 submesh count</code>, then <code>6 x f32</code> per submesh: min XYZ, then max XYZ, matching that submesh's position bounds. Every vanilla box is symmetric (min = -max). When the patcher appends a submesh, it adds a box (the largest absolute coordinate on each axis), raises the count and updates the user data length in the GPL header. Before that, the Yoshi Park custom submeshes did not show at all; after it they showed, but nearly transparent (Dolphin, 2026-10-01; the transparency had another cause, see <a href="act_section.html#geo-id-ownership">GEO ID ownership rules</a>). Whether the boxes are used for culling or something else is not known. Other user data layouts are kept verbatim.</li>
+    </ul>
     <h2 id="mesh_header">Mesh Header</h2>
     <table>
         <tr>
@@ -214,6 +219,8 @@
             </td>
         </tr>
     </table>
+    <p>Only submesh 0 is ever skinned. In all 172 surveyed player-folder models with an SKN section, the one component-count-6 buffer is submesh 0's, and SKN addresses only submesh 0's positions (see <a href="skn_section.html">SKN</a>). Every other submesh is rigid: component count 3, stored in the local space of the bone that owns it.</p>
+    <p>The quantization byte is read per buffer, so each submesh can use its own position format. Donor position buffers use 50, 52-62 and 64: s16 with shift 2 (about ±8192) up to the common 59 (shift 11, about ±16), and float. Rigid submeshes almost always use 59.</p>
     <h2>Color Data</h2>
     <table>
         <tr>
@@ -266,6 +273,7 @@
             </td>
         </tr>
     </table>
+    <p>Color arrays don't follow the <a href="quantization.html">quantization</a> table. Rigid submeshes use <code>(component count 4, quantization 48)</code>, <code>(3, 0)</code> or no colors. Quantization 48 is <strong>2-byte RGBA4444</strong>, not 4-byte RGBA8: a Dolphin probe (2026-09-26) read a 4-byte <code>ff0000ff</code> entry as <code>ff00</code>, alpha 0, and the surface disappeared.</p>
     <h2>UV Map Data</h2>
     <table>
         <tr>
@@ -340,6 +348,9 @@
             </td>
         </tr>
     </table>
+    <p><strong>The palette name must be set.</strong> It is the model's TPL file name (<code>mario.tpl</code>, <code>L_mario.tpl</code>), and it is per model: every UV channel of every submesh points at the same string. A model with its own TEX section resolves textures in-block and doesn't need the name. A model without one (block header <code>+0x0C</code> is 0, e.g. every <code>L_*</code> model) resolves its textures through this name alone. A submesh with an empty name there crashes the game the first time it is drawn on screen, not at load (Dolphin, 2026-09-19, <code>L_mario</code>). <code>BlockValidator</code> doesn't check this.</p>
+    <p>Rigid submeshes usually have 2 UV channels (368 of 385 surveyed). Channel 1 feeds the specular layer, and on most rigid surfaces it holds the same coordinates as channel 0.</p>
+    <p><strong>On player models, UV channel 1 is dead data.</strong> Of the 1,076 submeshes in the corpus that declare two UV channels, 949 have a channel 1 that is a byte-for-byte copy of channel 0 (coordinates and per-loop indices). All 127 exceptions are in stadium/environment folders, where channel 1 is a real lightmap. The copy exists only so the vertex descriptor can declare a <code>texture1</code> stream: the specular shader replaces that texture coordinate with one generated from the vertex normal (see <a href="#type7">Type 7</a>). Editing channel 1 therefore has no visible effect on a character.</p>
     <h2>Normal Data</h2>
     <table>
         <tr>
@@ -399,7 +410,7 @@
                 float
             </td>
             <td>
-                Ambient percentage (?)
+                Ambient percentage (?). 0.0 in every vanilla header.
             </td>
         </tr>
     </table>
@@ -447,7 +458,7 @@
         <tr>
             <td>0x1</td>
             <td>byte[3]</td>
-            <td>Padding</td>
+            <td>Parameter bytes. Not padding: their meaning depends on the entry type. For Type 7 they hold the shader parameters, including specular strength (see <a href="#type7">Type 7</a>).</td>
         </tr>
         <tr>
             <td>0x4</td>
@@ -505,8 +516,82 @@ setting = setting >> 4
 wrapt = setting & 0b1111
 state.texture_layers[layer] = {'index': texture_index, 'wraps': wraps, 'wrapt': wrapt}</code></pre>
 <p>so a setting of 0b00000000 00000000 001 0000000000101 would set texture layer 1 to whatever the 6th texture in the texture section is. wraps and wrapt specify what happens when the s and t (x and y) coordinates extend past the edge of an image, but I just assume the default behavior of whatever modeling software I'm using which is usually fine.</p>
-    <h4>Type 7</h4>
-    <p>Stores a single setting word whose meaning isn't fully understood. The code records it as <code>state.settings[7] = setting</code> and otherwise ignores it.</p>
+<p><strong>A Type 1 binding stays in force until the next Type 1 entry for that layer.</strong> A draw uses whichever texture is bound when its primitive list runs, and that binding may have been set by an earlier draw state. (Mario's <code>sm0_ds5</code> uses the texture that <code>sm0_ds0</code> binds.) So changing one setter changes the texture of every later draw that inherits it. To rebind a surface, the hammerspace patcher changes only the low 13 bits of the setter in force. Layer, wrap modes and the primitive data are kept. It adds no new display-state entries. If the setter also feeds a surface that is not getting the same new texture, the patcher refuses the edit. See <a href="texture_section.html#appending">Appending textures</a> for binding appended textures.</p>
+    <h4 id="type7">Type 7 (shader / specular)</h4>
+    <p>A Type 7 entry selects a shader for the draws that follow and passes it three parameter bytes. The setting word is an ASCII FourCC naming the shader. For the common <code>Spec</code> family, parameter byte 1 is the surface's <strong>specular strength</strong>.</p>
+    <table>
+        <tr>
+            <th>Offset</th>
+            <th>Type</th>
+            <th>Description</th>
+        </tr>
+        <tr><td>0x0</td><td>uint8</td><td>Entry type (7)</td></tr>
+        <tr><td>0x1</td><td>uint8</td><td><strong>Specular strength</strong> (0-255, linear) for <code>Spec</code>/<code>LhSp</code>/<code>RhSp</code>/<code>GhSp</code>. For <code>Shdw</code> it is a bit index (<code>1 &lt;&lt; value</code>).</td></tr>
+        <tr><td>0x2</td><td>uint8</td><td>Unknown. 0 in 1,478 of 1,484 <code>Spec</code> entries; non-zero only on <code>SpRf</code>.</td></tr>
+        <tr><td>0x3</td><td>uint8</td><td>Unknown, and no visible effect when patched (see below). Usually 100.</td></tr>
+        <tr><td>0x4</td><td>char[4]</td><td>Shader FourCC: <code>Spec</code>, <code>LhSp</code>, <code>RhSp</code>, <code>Shdw</code>, ... An all-zero word also occurs.</td></tr>
+        <tr><td>0x8</td><td>uint32</td><td>Primitive list pointer</td></tr>
+        <tr><td>0xc</td><td>uint32</td><td>Primitive list size</td></tr>
+    </table>
+    <p>Example: Tiny Kong submesh 0, display state 5 at <code>dt_na.dat</code> offset <code>0x10394558</code> reads <code>07 64 00 64 'S' 'p' 'e' 'c'</code>: strength 100, byte 3 = 100. The exporter stores bytes 1-3 as the hex string <code>DisplayStates[i].DisplayStateParamBytes</code> (e.g. <code>"640064"</code>), and the strength byte is at <code>ShaderModeFieldOffset - 3</code> in the file.</p>
+
+    <h5>Specular strength (byte 1)</h5>
+    <p><strong>Confirmed in Dolphin, 2026-09-21.</strong> Patching Tiny Kong's submesh 0 display states 5/9/15 from strength 100/50/30 to 0/255/255 inverted their visible gloss exactly as predicted: 0 is fully matte (there is no fallback for 0), 255 is maximum, and the highlight's shape is unchanged. The value is per display state, so one submesh can carry several gloss levels. The shipped values also match the visible ranking (100 &gt; 50 &gt; 30).</p>
+    <p>In <code>main.dol</code> the <code>Spec</code> handler (<code>0x804b441c</code>) stores the byte as the alpha of a TEV konst colour, selects it with <code>GX_TEV_KCSEL_K<i>n</i>_A</code>, and adds one TEV stage:</p>
+    <pre><code>colour = previous + specularMap.rgb * (strength / 255)</code></pre>
+    <p>The konst RGB (the highlight's tint) comes from a global at <code>0x807937d0</code>, shipped as white <code>FF FF FF</code>. The highlight colour is therefore a scene property, and only its strength is per surface.</p>
+    <p><strong>A synthesised Type 7 entry with parameter bytes <code>000000</code> has no highlight at all.</strong> A new glossy surface needs byte 1 set explicitly.</p>
+    <p>Shipped strength values across all 1,484 <code>Spec</code> entries cluster on round numbers: 150 (325), 100 (302), 50 (264), 60 (162), 0 (82), then 80, 70, 200, 180, 30, 10, 140, 130, 255 and 55, plus one-offs.</p>
+
+    <h5>Byte 3 (no known effect)</h5>
+    <p>The <code>Spec</code> handler divides &plusmn;50.0 by one of its parameter bytes (0 falls back to 100) and loads the result into the sphere-map post-transform matrix (<code>GX_PTTEXMTX</code>). That would make it a highlight "spread" control, and byte 3 was the expected source: it is 100 in 777 of 1,484 <code>Spec</code> entries, and another 24 are 0. <strong>Patching byte 3 has no visible effect</strong> (Dolphin, 2026-09-21, Tiny Kong). In the cleanest test, every other specular surface on the model was set to strength 0, and the one remaining surface was compared at byte 3 = 50 and 200 with the same camera: the screenshots were identical. Which byte reaches the divide is unknown (byte 2, which is 0 on almost every <code>Spec</code> entry and would always take the fallback, is the untested candidate). Leave bytes 2 and 3 at their shipped values.</p>
+
+    <h5>How the highlight is drawn</h5>
+    <ul>
+        <li><strong>The texture coordinate comes from the normal.</strong> The handler calls <code>GXSetTexCoordGen2</code> with source <code>GX_TG_NRM</code> (normalised), a light-space rotation in <code>GX_TEXMTX</code>, and the standard sphere-map remap (<code>u = 0.5&middot;nx + 0.5</code>, <code>v = -0.5&middot;ny + 0.5</code>, template at <code>0x806d9398</code>). The target is the model's <em>last</em> texture coordinate slot (<code>GX_TEXCOORD1</code> on a two-texture character), which is why stored UV channel 1 data is ignored. There is no hardware per-vertex specular lighting.</li>
+        <li><strong>The specular map is a sphere map.</strong> It is a small texture with clamp wrapping on both axes (the layer-1 Type 1 entry, e.g. Tiny Kong's <code>11002004</code>: index 4, layer 1, <code>GX_CLAMP</code>), showing a radially symmetric bright blob that fades to black at the borders. Its descriptor has <code>EdgeLODEnable = False</code> and <code>MinLOD = 0</code>. Normals that scale past the blob clamp to the black border, i.e. no highlight. The blob's falloff is the shininess; its shape can only be changed by editing the image.</li>
+        <li><strong>The blobs are shared.</strong> The most common exported hashes are <code>tex1_64x64_d6da4880cee95b7b_14.png</code> (92 of 686 models), <code>tex1_64x64_8a05f75d65053b44_14.png</code> (59) and <code>tex1_64x64_a09662ae19841ea4_14.png</code> (41). Replacing one through Dolphin's custom textures changes the highlight on every model that uses it. Painting it black removes the highlight regardless of strength.</li>
+    </ul>
+
+    <h5>Shader FourCCs</h5>
+    <p>The shader table sits in <code>main.dol</code> at file offset <code>0x006d4048</code> (vaddr <code>0x806d7f48</code>), right after the RTTI string <code>Sys::Scene::CCompositeShader</code>. Rows are 12 bytes: <code>{ char name[4]; u32 zero; void* handler; }</code>. Counts are over all 2,407 Type 7 entries in the exported corpus.</p>
+    <table>
+        <tr><th>FourCC</th><th>Handler</th><th>Count</th><th>Notes</th></tr>
+        <tr><td><code>Spec</code></td><td><code>0x804b441c</code></td><td>1484</td><td>Sphere-map specular, described above.</td></tr>
+        <tr><td><code>Shdw</code></td><td><code>0x804a8414</code></td><td>410</td><td>Shadow. Byte 1 is a bit index; shipped params <code>000000</code>, <code>010000</code>, <code>020000</code>, <code>3c0000</code>.</td></tr>
+        <tr><td>(all zero)</td><td>-</td><td>211</td><td></td></tr>
+        <tr><td><code>RhSp</code></td><td><code>0x80307e08</code></td><td>136</td><td rowspan="3">Call <code>Spec</code> with the same arguments, then add one TEV alpha stage that picks <code>APREV</code> or <code>RASA * APREV</code> depending on a global flag (hand/equipment state). Hand roles appear only in skinned lists; don't use them as templates for new surfaces.</td></tr>
+        <tr><td><code>LhSp</code></td><td><code>0x80307d64</code></td><td>135</td></tr>
+        <tr><td><code>GhSp</code></td><td><code>0x80307eac</code></td><td>4</td></tr>
+        <tr><td><code>Audi</code></td><td><code>0x800abe24</code></td><td>15</td><td>Only byte 1 varies (<code>01</code>/<code>02</code>).</td></tr>
+        <tr><td><code>SpRf</code></td><td><code>0x804b4850</code></td><td>11</td><td>Specular plus reflection. The only shader with a non-zero byte 2 (params <code>c8323c</code>, <code>ff64ff</code>, <code>c83264</code>).</td></tr>
+        <tr><td><code>Oeka</code></td><td><code>0x8044e6b0</code></td><td>1</td><td></td></tr>
+        <tr><td><code>SpRB</code></td><td><code>0x804b5050</code></td><td>0</td><td rowspan="5">Not decoded.</td></tr>
+        <tr><td><code>CgBt</code></td><td><code>0x80256d94</code></td><td>0</td></tr>
+        <tr><td><code>Foff</code></td><td><code>0x804b596c</code></td><td>0</td></tr>
+        <tr><td><code>Bump</code></td><td><code>0x801825d4</code></td><td>0</td></tr>
+        <tr><td><code>Soft</code></td><td><code>0x804b1eec</code></td><td>0</td></tr>
+    </table>
+    <h4 id="types-4-and-6">Types 4 and 6</h4>
+    <p>Not decoded. Observed values (player-folder survey, 2026-09-16):</p>
+    <ul>
+        <li><strong>Type 4</strong> follows the UV channel count: <code>fffffff0</code> with 1 channel (15/15), <code>ffffff10</code> with 2 channels (368/368). Three or more channels occur twice, with inconsistent values.</li>
+        <li><strong>Type 6</strong> is <code>00000374</code> or <code>00000174</code> with pad <code>010000</code> in both skinned and rigid lists. <code>00000375</code> appears only in skinned lists (12).</li>
+        <li><strong>In stadiums, Type 6 follows the texture's transparency</strong> (stadium dirs 7-16, effective Type 6 when a surface draws, against its layer-0 texture's alpha, 2026-10-01): <code>00000374</code> on 2,633 surfaces, 2,588 of them with opaque textures; <code>00000570</code>/<code>00000571</code> on 263, 244 of them with cut-out textures (alpha only 0 or 255); <code>00000174</code> on 350, mostly cut-out or partly transparent. Stadium surfaces bind one texture layer, have no normals (Type 3 <code>pos+col0+tex0</code>, e.g. <code>00000ccc</code>), use Type 4 <code>fffffff0</code> and mostly have no Type 7. Stadium CMPR textures never have partial alpha; partial alpha only occurs in C4, C8 and IA8. Confirmed with a custom submesh in Yoshi Park (Dolphin, 2026-10-01): cloned from the stadium's own <code>Shdw</code> surface <code>sta03 sm1_ds4</code> (Type 6 <code>00000374</code>), it draws correctly with an opaque texture, but a cut-out texture's transparent texels come out opaque black, although 63% of the encoded CMPR texels are transparent. So <code>00000374</code> ignores texture alpha. The same mesh and texture cloned from <code>sta03 sm1_ds42</code> / <code>sta03b sm1_ds14</code> (also <code>Shdw</code>/<code>000000</code>, but Type 6 <code>00000570</code>) draw the cut-out correctly in both models (Dolphin, 2026-10-01). So Type 6 <code>00000570</code> enables alpha cut-out. The two values differ in other bits too, so how the field is laid out is still unknown.</li>
+    </ul>
+    <h3 id="rigid-state-lists">Rigid submesh state lists</h3>
+    <p>Every rigid submesh list starts with the entry types <code>1, 1, 4, 3, 6, 7</code>, optionally followed by more <code>1/6/7</code> entries (4-24 entries in total). The most common list is <code>T1(layer 0), T1(layer 1), T4 ffffff10, T3, T6 00000374, T7 Spec</code>, where only the last entry draws primitives. Longer lists can have several entries that draw: Mario's <code>head</code> has 10 entries (<code>1,1,4,3,6,7,1,1,1,7</code>), 4 of which carry primitives.</p>
+    <ul>
+        <li><strong>The vocabulary is shared with skinned lists.</strong> Every Type 3/4/6/7 value seen in rigid lists also appears in skinned submesh 0 lists. Type 3 depends only on which attributes exist and their index widths; vanilla values include <code>00002828</code>, <code>000028a8</code>, <code>000028bc</code>, <code>00003ca8</code> and <code>00003cbc</code>.</li>
+        <li><strong>Texture layer 1 binds the specular map</strong>, which is always the model's <em>last</em> texture index (e.g. 1 of 2, 4 of 5). Skinned submesh 0 binds the same index, so a model's specular binding can be read from submesh 0 even when it has no rigid submesh.</li>
+        <li><strong>Don't write a list from scratch.</strong> Types 4 and 6 aren't understood. A new rigid submesh works with a list built from known-good states in any of these ways (all Dolphin-confirmed, 2026-09-16, on Mario and on Boo, which has no rigid submesh):
+            <ul>
+                <li>a copy of an existing rigid submesh's list, with only primitive lists and the layer-0 texture index changed;</li>
+                <li>the effective layer-0/layer-1 Type 1, Type 6 and Type 7 states in force when a submesh 0 <code>Spec</code> surface draws, emitted in the order <code>T1, T1, T4, T3, T6, T7</code>, with Type 4 and Type 3 generated for the new attribute set;</li>
+                <li>a fixed canonical list (captured from Toadette's <code>pony_l3</code>, matching 17 vanilla rigid submeshes: <code>T1 11110000/000008, T1 11002003/000000, T4 ffffff10, T3 000028a8, T6 00000374/010000, T7 Spec/640064</code>) with the texture indices rebound to the host model.</li>
+            </ul>
+            All three looked the same in game. The canonical list also draws correctly in a stadium (Yoshi Park, on a root bone, see <a href="act_section.html#geo-id-ownership">GEO ID ownership rules</a>), even though stadium surfaces themselves use a different one-layer, normal-free list (see <a href="#types-4-and-6">Types 4 and 6</a>). For stadiums the patcher also has two built-ins of that stadium shape: <code>T1, T4 fffffff0, T3 (pos+col0+tex0), T6, T7 Shdw/000000</code>, with Type 6 <code>00000374</code> (opaque) or <code>00000570</code> (cut-out). No vanilla rigid submesh's whole list has this shape with the cut-out Type 6, so both are captured as the effective states of one Yoshi Park surface each (<code>sta03 sm1_ds4</code>, <code>sm1_ds42</code>); copies of those surfaces drew correctly (Dolphin, 2026-10-01). They are accepted only in stadium models (dirs 7-16) and only without normals. Avoid templates from hand-role (<code>RhSp</code>/<code>LhSp</code>) surfaces, which carry hand-visibility behaviour, and Type 6 <code>00000375</code>, which never occurs on a rigid submesh.</li>
+    </ul>
 <h3>Draw the primitives</h3>
 A draw list entry won't always have a primitive list - if the primitive list pointer is 0 you skip this step. If there is a primitive list, then the structure is as follows:
 <table>
@@ -562,6 +647,7 @@ Now you draw triangular faces from those vertices. The code from my awful python
 
     If you haven't parsed the entire primitive list by now, repeat the entire process. The list may draw a different type of primitive as well.
     </p>
+    <p><strong>Winding for new geometry:</strong> build each triangle counter-clockwise as seen from outside, then store it reversed (the inverse of the import above). Checked on Mario's <code>head</code>: 1,496 of its 1,498 decoded faces agree with their stored normals under this convention (2026-09-16). A new cube written this way looked closed from every angle in game.</p>
     <h2 id="alignment">Alignment</h2>
     <p>See the <a href="overview.html#alignment">overview</a> for the rules across the whole block. Within GPL, "aligned" means 0 mod 32 relative to the model block. The GPL section start is itself aligned, so this is the same as GPL-relative alignment.</p>
     <table>
