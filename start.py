@@ -262,11 +262,20 @@ def hammerspace_section_args(model):
         ):
             has_color_edits = True
 
+    # A custom submesh is a new GPL submesh, so it always needs the GPL
+    # builder; one bound to an appended PNG also needs the TEX builder.
+    custom_submeshes = model.get('CustomSubmeshes') or []
+    custom_texture_added = any(
+        (entry.get('TextureAssignment') or {}).get('AdditionalTextureFileName')
+        for entry in custom_submeshes
+    )
+
     args = []
     if model.get('DesiredTextureAssignments') or any(
         submesh.get('FaceSurfaceIdsEdited') is not None
         for submesh in model.get('Submeshes', [])
-    ) or changed_positions or has_uv_edits or has_normal_edits or has_color_edits:
+    ) or changed_positions or has_uv_edits or has_normal_edits or has_color_edits \
+            or custom_submeshes:
         args.extend(['--gpl', 'build'])
         if any(
             submesh.get('VertexBuffer', {}).get('VertexBufferCompCount') == 6
@@ -274,7 +283,7 @@ def hammerspace_section_args(model):
         ) and model.get('SkinDataEdited'):
             args.extend(('--skn', 'build'))
 
-    if model.get('ReimportTextures'):
+    if model.get('ReimportTextures') or custom_texture_added:
         args.extend(['--tex', 'build'])
 
     return args
@@ -481,11 +490,12 @@ def run_patching(filenames, unpatch=False):
                 )
                 continue
         else:
+            sluggie_name = filename if filename.lower().endswith('.sluggie') else f'{filename}.sluggie'
             matches = [
                 os.path.join(root, f)
                 for root, _, files in os.walk(SEARCH_DIR)
                 for f in files
-                if f == filename
+                if f == sluggie_name
             ]
 
             if not matches:
