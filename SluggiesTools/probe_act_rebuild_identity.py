@@ -1,25 +1,24 @@
-"""PLAN_AddBones.md Phase 0, probe P1 - ACT rebuild identity (manual probe).
+"""ACT rebuild identity (manual probe).
 
 Parses every ACT-bearing player model in INPUT dt_na.dat with
 ``act_rebuild.parse_act`` and re-emits it with ``act_rebuild.rebuild_act_bytes``,
-checking byte-identical output. This gates the standalone ACT writer before
-Phase 2 promotes it into the real rebuilder: if it cannot faithfully reproduce
-every donor's ACT section unchanged, it cannot be trusted to append a bone to
-one.
+checking byte-identical output. This gates the ACT writer that
+``HammerspaceMain.BuildACTBoneHierarchy`` builds on: if it cannot faithfully
+reproduce every donor's ACT section unchanged, it cannot be trusted to append
+a bone to one.
 
-The two known-malformed donors (37/1, 51/1; PLAN_AddBones.md F6) are expected
-to be refused via a non-involution kind-2 mirror table, not rebuilt.
+The known-malformed donors (37/1, 51/1 and the Magikoopa recolors 52/1-54/1;
+act_section.html#user-data) are expected to be refused via a non-involution
+kind-2 mirror table, not rebuilt.
 
 Scoped to chunk_number 18-118 (Mario .. Black Male Mii in export.py's
-folderNameMap): the playable-character models this plan actually concerns
-itself with (see PLAN_AddBones.md's non-goals -- stadiums, low-LOD and
-equipment entries are each "its own donor" and explicitly out of scope).
-A wider sweep of every DOL directory turns up non-player ACT-shaped sections
-(map props, scoreboard pieces, ...) whose bone records don't follow F1's
-layout -- e.g. chunk 136 ("Scoreboards Items and Obstacles") has a bone
-table entry with a garbage orientationPTR partway through, which F1's survey
-never claimed to cover ("verified on every player model"). Chasing that
-format is out of scope for this plan.
+folderNameMap): the playable-character models bone appending was built and
+verified for. A wider sweep of every DOL directory turns up non-player
+ACT-shaped sections (map props, scoreboard pieces, ...) whose bone records
+don't follow the documented layout (act_section.html#layout, surveyed on
+player models) -- e.g. chunk 136 ("Scoreboards Items and Obstacles") has a
+bone table entry with a garbage orientationPTR partway through. Chasing that
+format is out of scope here.
 
 This is a **probe, not a unit test**: its whole value is the sweep over the
 real game corpus, which is gitignored and cannot live in the test suite (see
@@ -46,8 +45,8 @@ for _path in (TOOLS_DIR, HAMMERSPACE_DIR):
 import act_rebuild  # noqa: E402
 import HammerspaceHelper as hh  # noqa: E402
 
-# PLAN_AddBones.md F6: these two donors have oversized, non-involution kind-2
-# mirror tables and must be refused rather than rebuilt.
+# These donors have oversized, non-involution kind-2 mirror tables and must be
+# refused rather than rebuilt (act_section.html#user-data).
 KNOWN_MALFORMED_MIRROR_TABLES = {(37, 1), (51, 1)}
 
 # export.py's folderNameMap: Mario (18) .. Black Male Mii (118). See module
@@ -120,7 +119,7 @@ def _safe_clone_act(offset: int, length: int) -> bytes | None:
         if len(data) != act_len or len(data) < act_rebuild.HEADER_SIZE:
             return None
         # A real ACT's boneCount must fit its own bone table in the section
-        # (and, per PLAN_AddBones.md F3, is capped at 255 by the mirror
+        # (and is capped at 255 by the mirror
         # table's u8 ids). This is the cheapest way to reject the remaining
         # non-model directory entries the DOL walk turns up (map props,
         # stadium items, etc.) that happen to pass the bounds check above.
@@ -135,7 +134,7 @@ def _safe_clone_act(offset: int, length: int) -> bytes | None:
 def run_corpus_identity_probe() -> int:
     """Sweep the corpus; return a process exit code."""
     if not (os.path.exists(hh.INPUT_DAT) and os.path.exists(hh.INPUT_DOL)):
-        print(f"[P1] missing game assets: need {hh.INPUT_DAT} and {hh.INPUT_DOL}")
+        print(f"[ACT identity] missing game assets: need {hh.INPUT_DAT} and {hh.INPUT_DOL}")
         return 1
 
     checked = 0
@@ -161,7 +160,7 @@ def run_corpus_identity_probe() -> int:
             parsed = act_rebuild.parse_act(act_bytes)
             act_rebuild.validate_mirror_table(parsed)
         except act_rebuild.ACTMirrorTableError:
-            # F6: a non-involution mirror table means this donor is out
+            # A non-involution mirror table means this donor is out
             # of scope for the rebuilder. The plan names two (37/1,
             # 51/1); the corpus sweep may turn up palette-swap siblings
             # that share the same donor skeleton (e.g. other Magikoopa
@@ -193,17 +192,17 @@ def run_corpus_identity_probe() -> int:
         checked += 1
 
     print(
-        f"[P1] {act_models} ACT models: {checked} identity-rebuilt, {refused} refused (F6-style "
+        f"[ACT identity] {act_models} ACT models: {checked} identity-rebuilt, {refused} refused (malformed-mirror-table "
         f"malformed mirror table) {sorted(refused_keys)}, {len(failures)} failed; "
         f"{non_model_blocks} non-model blocks skipped"
     )
 
     if act_models == 0:
-        print("[P1] FAIL: no ACT-bearing models found in INPUT dt_na.dat")
+        print("[ACT identity] FAIL: no ACT-bearing models found in INPUT dt_na.dat")
         return 1
     if failures:
         print(
-            f"[P1] FAIL: {len(failures)} of {act_models} ACT models failed identity rebuild "
+            f"[ACT identity] FAIL: {len(failures)} of {act_models} ACT models failed identity rebuild "
             f"({checked} passed, {refused} correctly refused):"
         )
         for line in failures[:20]:
@@ -211,9 +210,9 @@ def run_corpus_identity_probe() -> int:
         return 1
     missing = KNOWN_MALFORMED_MIRROR_TABLES - refused_keys
     if missing:
-        print(f"[P1] FAIL: known-malformed donor(s) {sorted(missing)} (F6) were not encountered and refused")
+        print(f"[ACT identity] FAIL: known-malformed donor(s) {sorted(missing)} were not encountered and refused")
         return 1
-    print("[P1] OK")
+    print("[ACT identity] OK")
     return 0
 
 

@@ -24,6 +24,7 @@ from binfmt import (
     color_entry_size as _color_entry_size,
     comp_size as _vb_comp_size,
     decode_field as _decode,
+    skin_bone_ids as _skin_bone_ids,
 )
 from BlockValidator import validate_model_block
 from GeometryRebuild import (
@@ -163,6 +164,7 @@ class CustomSubmesh:
     faces_data:         bytes
     texture_assignment: CustomSubmeshTextureAssignment
     specular_strength:  int | None = None   # Type-7 param byte 0; None keeps the template's
+    color_quantize_info: int = 48           # 48 RGBA4444 (default) or 0 RGB565; both 2 bytes
 
 
 @dataclass
@@ -389,6 +391,11 @@ def _position_edits(model: dict) -> list[tuple[int, dict, bytes]]:
 # BuildGPLMeshData, which don't otherwise touch CustomSubmeshes at all
 # (Phase 1 step 2 is a pure parse); GPL/ACT/TEX assembly is Phase 2-4.
 
+# Stadium model directories, 7 Mario Stadium ... 16 Toy Field; the same range as
+# export.STADIUM_DIR_INDICES (export.py can't be imported: it prompts). A custom
+# submesh in a stadium must hang on a root bone (Dolphin, 2026-10-01).
+STADIUM_CHUNKS = range(7, 17)
+
 _CUSTOM_SUBMESH_HAND_VISIBILITY_ROLES = frozenset({'RhSp', 'LhSp', 'SpRf', 'GhSp'})
 _CUSTOM_SUBMESH_REJECTED_DERIVED_TYPE6 = '00000375'  # F9: never occurs on a rigid submesh
 
@@ -398,10 +405,8 @@ _CUSTOM_SUBMESH_REJECTED_DERIVED_TYPE6 = '00000375'  # F9: never occurs on a rig
 # template's own (near-universally identical) format, but the MVP encodes
 # every CustomSubmeshes buffer in these canonical formats regardless of
 # source kind, so structural validation can check them uniformly here.
-# CompCount 3 x int16. Every accepted VertexBufferQuantizeInfo is an s16
-# format (see _CUSTOM_SUBMESH_POSITION_QUANTIZE_RANGE), so only the fixed-point
-# shift varies between custom submeshes -- the stride never does.
-_CUSTOM_SUBMESH_POSITION_STRIDE = 6
+# Positions: CompCount 3 x int16 for the s16 formats the exporter writes, or
+# 3 x f32 for the float format 64 -- see _custom_submesh_position_stride.
 _CUSTOM_SUBMESH_NORMAL_STRIDE   = 6   # CompCount 3, QuantizeInfo 62 (3 x int16)
 _CUSTOM_SUBMESH_UV_STRIDE       = 4   # CompCount 2, QuantizeInfo 62 (2 x int16)
 _CUSTOM_SUBMESH_COLOR_STRIDE    = 2   # CompCount 4, QuantizeInfo 48 (RGBA4444)
@@ -543,6 +548,60 @@ _CUSTOM_SUBMESH_BUILTIN_TEMPLATES = {
             'IdenticalRigidLists': 24,
         },
     },
+    # Stadium surfaces (2026-10-01). No vanilla rigid submesh's *whole* list
+    # has this shape with the cut-out Type 6, so these two are captured as the
+    # effective states in force when one Yoshi Park surface draws
+    # (`Provenance.Capture == 'effective'`), the way `derived:` builds its
+    # list. Stadium surfaces bind one layer, have no normals (Type 3
+    # pos+col0+tex0) and draw with `Shdw`/000000. The two differ only in the
+    # T1 pad and in Type 6: 00000374 draws transparent texels opaque black,
+    # 00000570 cuts them out. Both were confirmed as `rigid:` clones of these
+    # very surfaces, with a root host bone (Dolphin, 2026-10-01). `Normals`
+    # False: the custom submesh exports none, like the stadium surfaces.
+    # `StadiumOnly`: refused outside STADIUM_CHUNKS -- untested on characters,
+    # and rigid_shdw_v1 (the same shader, map-object capture) crashed there.
+    'stadium_shdw_opaque_v1': {
+        'States': (
+            (1, '000530', '1111001e'),
+            (4, '000000', 'fffffff0'),
+            (3, '000000', '00000ccc'),
+            (6, '010000', '00000374'),
+            (7, '000000', 'Shdw'),
+        ),
+        'Sha256': '8ff8989456b2c48477e659a93a9bf4e40ddba523c109580d71642ceb0c5c9713',
+        'Layers': 1,
+        'ShaderMode': 'Shdw',
+        'Normals': False,
+        'StadiumOnly': True,
+        'VerifiedInGame': True,  # as rigid:sm1_ds4 on sta03 (Dolphin, 2026-10-01)
+        'Provenance': {
+            'Model': '10 Yoshi Park/31388480_sta03.gpl',
+            'MeshName': 'O[v02',
+            'SurfaceId': 'sm1_ds4',
+            'Capture': 'effective',
+        },
+    },
+    'stadium_shdw_cutout_v1': {
+        'States': (
+            (1, '0002e8', '11110015'),
+            (4, '000000', 'fffffff0'),
+            (3, '000000', '00000ccc'),
+            (6, '010000', '00000570'),
+            (7, '000000', 'Shdw'),
+        ),
+        'Sha256': '1f1613fdad126805102dd913a8cba1f06933337cba99256dff1f8cd7ccb8abc3',
+        'Layers': 1,
+        'ShaderMode': 'Shdw',
+        'Normals': False,
+        'StadiumOnly': True,
+        'VerifiedInGame': True,  # as rigid:sm1_ds42 on sta03 (Dolphin, 2026-10-01)
+        'Provenance': {
+            'Model': '10 Yoshi Park/31388480_sta03.gpl',
+            'MeshName': 'O[v02',
+            'SurfaceId': 'sm1_ds42',
+            'Capture': 'effective',
+        },
+    },
 }
 
 
@@ -668,7 +727,7 @@ def _validate_custom_submeshes(model: dict) -> None:
         )
 
     use_b64 = model.get('UseBase64', True)
-    # PLAN_AddBones.md's user contract: a custom submesh may host on a
+    # A custom submesh may host on a
     # user-added bone, which has no BoneHierarchy entry at all (it doesn't
     # exist in the donor ACT) -- BoneHierarchyEdited, when present, already
     # carries every donor bone forward plus any new ones, so it is the
@@ -681,6 +740,7 @@ def _validate_custom_submeshes(model: dict) -> None:
     submesh0 = donor_submeshes[0] if donor_submeshes else None
 
     rigid_surfaces = _custom_submesh_rigid_surfaces(model)
+    is_stadium = model.get('ChunkNumber') in STADIUM_CHUNKS
 
     claimed_bones: dict[int, str] = {}
     for cs in custom_submeshes:
@@ -707,6 +767,13 @@ def _validate_custom_submeshes(model: dict) -> None:
                     fail(
                         f'host bone {host_bone_id} is also claimed by custom submesh '
                         f"'{claimed_bones[host_bone_id]}'"
+                    )
+                elif is_stadium and bone.get('ParentBoneId') is not None:
+                    fail(
+                        f'host bone {host_bone_id} has parent bone {bone["ParentBoneId"]}; '
+                        'a stadium draws a mesh on a child bone nearly transparent, so '
+                        'host it on a root bone without a mesh (see '
+                        'act_section.html#geo-id-ownership)'
                     )
                 else:
                     claimed_bones[host_bone_id] = cs_id
@@ -775,6 +842,13 @@ def _validate_custom_submeshes(model: dict) -> None:
                     '(PLAN_EditRigidMeshes.md Phase 0 probe 7); verified: '
                     f'{sorted(builtin_template_names(verified_only=True))}'
                 )
+            elif template.get('StadiumOnly') and not is_stadium:
+                fail(f'builtin: template {argument!r} is for stadium models only')
+            elif not template.get('Normals', True) and cs.get('NormalBufferData') is not None:
+                fail(
+                    f'builtin: template {argument!r} draws without normals, like '
+                    'stadium surfaces; export the submesh again without NormalBufferData'
+                )
             else:
                 # Type 3 comes from the channels this submesh exported while
                 # Type 4 follows the T1 records the template emits, so the two
@@ -806,21 +880,23 @@ def _validate_custom_submeshes(model: dict) -> None:
         )
         if (
             not isinstance(position_quantize, int) or isinstance(position_quantize, bool)
-            or position_quantize not in _CUSTOM_SUBMESH_POSITION_QUANTIZE_RANGE
+            or position_quantize not in _CUSTOM_SUBMESH_POSITION_QUANTIZE_VALUES
         ):
             fail(
                 f'VertexBufferQuantizeInfo {position_quantize!r} must be an s16 position '
                 f'format between {_CUSTOM_SUBMESH_POSITION_QUANTIZE_RANGE[0]} and '
-                f'{_CUSTOM_SUBMESH_POSITION_QUANTIZE_RANGE[-1]} (high nibble 3); custom '
-                'submeshes never use float positions'
+                f'{_CUSTOM_SUBMESH_POSITION_QUANTIZE_RANGE[-1]} (high nibble 3) or '
+                f'{_CUSTOM_SUBMESH_FLOAT_POSITION_QUANTIZE} (float)'
             )
+            position_quantize = _CUSTOM_SUBMESH_POSITION_FORMAT[1]
+        position_stride = _custom_submesh_position_stride(position_quantize)
 
         vertex_bytes = _decode(cs['VertexBufferData'], use_b64) if cs.get('VertexBufferData') else b''
         vertex_count = None
-        if not vertex_bytes or len(vertex_bytes) % _CUSTOM_SUBMESH_POSITION_STRIDE:
+        if not vertex_bytes or len(vertex_bytes) % position_stride:
             fail(f'VertexBufferData length {len(vertex_bytes)} is not a whole number of rigid position entries')
         else:
-            vertex_count = len(vertex_bytes) // _CUSTOM_SUBMESH_POSITION_STRIDE
+            vertex_count = len(vertex_bytes) // position_stride
             if vertex_count > 0xFFFF:
                 fail(f'vertex count {vertex_count} exceeds the uint16 index range')
 
@@ -866,6 +942,15 @@ def _validate_custom_submeshes(model: dict) -> None:
             )
         elif donor_index is not None and not (isinstance(donor_index, int) and 0 <= donor_index <= 0xFFFF):
             fail(f'TextureAssignment.DonorTextureIndex {donor_index!r} must be a uint16 texture index')
+
+        color_format = cs.get('ColorChannelQuantizeInfo')
+        if color_format is not None and (
+            isinstance(color_format, bool) or color_format not in _CUSTOM_SUBMESH_COLOR_FORMATS
+        ):
+            fail(
+                f'ColorChannelQuantizeInfo {color_format!r} must be one of '
+                f'{sorted(_CUSTOM_SUBMESH_COLOR_FORMATS)} (0 RGB565, 48 RGBA4444)'
+            )
 
         strength = cs.get('SpecularStrength')
         if strength is not None and not (
@@ -935,16 +1020,17 @@ def _merge_duplicate_texture_additions(model: dict, sluggie_path) -> None:
 
 
 def _validate_bone_hierarchy_edited(model: dict) -> None:
-    """PLAN_AddBones.md Phase 3: reject an invalid ``BoneHierarchyEdited``
-    before any DAT/DOL write, alongside ``_validate_custom_submeshes``. Each
-    error names the offending bone(s) so a failed patch is actionable.
+    """Reject an invalid ``BoneHierarchyEdited`` before any DAT/DOL write,
+    alongside ``_validate_custom_submeshes``. Each error names the offending
+    bone(s) so a failed patch is actionable. The rules are the ones in
+    ``_docs/_docs_model_format/act_section.html#appending-bones``.
 
     Operates purely on the ``.sluggie`` JSON (``BoneHierarchy``/
     ``BoneHierarchyEdited``/``CustomSubmeshes``/``SkinData``/
     ``SkinDataEdited``), not the parsed ACT bytes -- this is the data-level
-    gate the plan wants ahead of ``_rebuild_act_bone_hierarchy``, which is
+    gate ahead of ``_rebuild_act_bone_hierarchy``, which is
     itself only reachable once this passes. Sibling-chain order (the last
-    F10 topology case, "sibling chain reordered") has no representation in
+    unsafe topology change, "sibling chain reordered") has no representation in
     the ``.sluggie`` schema at all (only ``ParentBoneId`` per bone), so it
     cannot be checked at this layer; it is enforced by construction instead
     -- the rebuilder only ever appends a donor bone's own ``prev``/``next``
@@ -985,10 +1071,10 @@ def _validate_bone_hierarchy_edited(model: dict) -> None:
             f'{donor_count} (got {new_ids}, expected {expected_new_ids})'
         )
 
-    # Rule 6: total bone count <= 255 (F3: mirror ids are u8).
+    # Rule 6: total bone count <= 255 (the kind-2 mirror table stores u8 ids).
     total_bone_count = donor_count + len(new_ids)
     if total_bone_count > 255:
-        fail(f'total bone count {total_bone_count} exceeds the 255-bone cap (PLAN_AddBones.md F3, Phase 3 rule 6)')
+        fail(f'total bone count {total_bone_count} exceeds the 255-bone cap (the mirror table stores u8 bone ids)')
 
     # CustomSubmeshes may legitimately move a donor bone's GeoId away from
     # 0xFFFF (PLAN_AddSubmesh.md); that is not a Rule 2 violation.
@@ -1041,7 +1127,7 @@ def _validate_bone_hierarchy_edited(model: dict) -> None:
                 fail(
                     f'new bone {edited_parent_id} was inserted between donor bones '
                     f'{donor_parent_id} and {bone_id}; new bones can only hang off the '
-                    'tree as leaves (PLAN_AddBones.md F10)'
+                    'tree as leaves (inserting one reparents the donor child and breaks its animation)'
                 )
             elif (
                 edited_parent_id is not None
@@ -1065,16 +1151,24 @@ def _validate_bone_hierarchy_edited(model: dict) -> None:
         if parent_id is not None and int(parent_id) in new_id_set:
             fail(
                 f"donor bone {bone['BoneId']} names new bone {int(parent_id)} as its parent; "
-                'new bones must be leaves (PLAN_AddBones.md F10/Phase 3 rule 4)'
+                'new bones must be leaves'
             )
 
-    # Rules 7-8: every new bone has an existing, non-root parent and the
-    # user-contract defaults (no track, self-mirrored, role 3).
+    # Rules 7-8: every new bone has an existing parent and the user-contract
+    # defaults (no track, self-mirrored, role 3). A stadium may take new root
+    # bones instead: a stadium mesh must hang on a root (act_section.html
+    # #geo-id-ownership), so that is how it gets more hosts than its free
+    # vanilla roots. Under test since 2026-10-01; characters keep the rule.
+    allow_new_roots = model.get('ChunkNumber') in STADIUM_CHUNKS
     for entry in new_entries:
         bone_id = int(entry['BoneId'])
         parent_id = entry.get('ParentBoneId')
         if parent_id is None:
-            fail(f'new bone {bone_id} has no ParentBoneId; new bones may not be roots')
+            if not allow_new_roots:
+                fail(
+                    f'new bone {bone_id} has no ParentBoneId; new bones may not be '
+                    'roots (stadium models excepted)'
+                )
         elif int(parent_id) not in edited_by_id:
             fail(f"new bone {bone_id}'s parent {int(parent_id)} does not exist")
 
@@ -1097,7 +1191,7 @@ def _validate_bone_hierarchy_edited(model: dict) -> None:
     if present and len(present) != donor_count:
         fail(
             f'donor mirror table is present on {len(present)} of {donor_count} bones; '
-            'it must cover every bone or none (PLAN_AddBones.md F4/F6)'
+            'it must cover every bone or none'
         )
     else:
         for bone_id, (mirror_id, _role) in present.items():
@@ -1109,7 +1203,7 @@ def _validate_bone_hierarchy_edited(model: dict) -> None:
             if target is None or int(target) != bone_id:
                 fail(
                     f'donor mirror table is not an involution: bone {bone_id} -> {mirror_id} -> {target} '
-                    '(PLAN_AddBones.md F6 -- refuse rather than guess)'
+                    '(malformed donor mirror table; refused rather than guessed at)'
                 )
 
     # Rule 10: no new bone drives skinning.
@@ -1132,6 +1226,24 @@ def _validate_bone_hierarchy_edited(model: dict) -> None:
         raise ValueError('; '.join(errors))
 
 
+def _validate_skin_bones(model: dict) -> None:
+    """Refuse a ``SkinDataEdited`` that skins to a bone the donor's own skin
+    (``SkinData``) never uses at this LOD. Such a bone owns a rigid submesh or
+    is missing from this LOD's skin, and its matrix-palette entry is not a
+    skinning matrix: the vertices end up misplaced or invisible
+    (skn_section.html#runtime-limits). The Blender add-on already ignores
+    vertex groups for these bones; this is the patch-time backstop."""
+    edited = model.get('SkinDataEdited')
+    if not edited:
+        return
+    extra = sorted(_skin_bone_ids(edited) - _skin_bone_ids(model.get('SkinData')))
+    if extra:
+        raise ValueError(
+            f"SkinDataEdited skins to bone(s) {extra}, which the donor's skin never uses; "
+            'these bones have no skinning matrix, so the vertices would be misplaced or '
+            'invisible. Weight those vertices to bones the original model skins to')
+
+
 # ---------------------------------------------------------------------------
 # CustomSubmeshes GPL append (PLAN_AddSubmesh.md Phase 2)
 # ---------------------------------------------------------------------------
@@ -1152,9 +1264,24 @@ _CUSTOM_SUBMESH_POSITION_FORMAT = (3, 59)  # CompCount, default QuantizeInfo (F6
 # set, ordered finest first -- it picks the most precise one the mesh fits in,
 # so a prop far from its host bone widens the range instead of being rejected.
 _CUSTOM_SUBMESH_POSITION_QUANTIZE_RANGE = tuple(range(0x30, 0x3C))
+# Float positions (format 4, shift 0), as every stadium submesh stores them.
+# Not written by the exporter; set by hand in the .sluggie for testing.
+_CUSTOM_SUBMESH_FLOAT_POSITION_QUANTIZE = 0x40
+_CUSTOM_SUBMESH_POSITION_QUANTIZE_VALUES = (
+    _CUSTOM_SUBMESH_POSITION_QUANTIZE_RANGE + (_CUSTOM_SUBMESH_FLOAT_POSITION_QUANTIZE,)
+)
+
+
+def _custom_submesh_position_stride(quantize_info: int) -> int:
+    """Bytes per custom-submesh position entry (3 components)."""
+    return 3 * _vb_comp_size(quantize_info)
 _CUSTOM_SUBMESH_NORMAL_FORMAT   = (3, 62)
 _CUSTOM_SUBMESH_UV_FORMAT       = (2, 62)
 _CUSTOM_SUBMESH_COLOR_FORMAT    = (4, 48)
+# Optional CustomSubmeshes[].ColorChannelQuantizeInfo -> colour CompCount. Both
+# are 2 bytes per entry (_CUSTOM_SUBMESH_COLOR_STRIDE). Stadiums use RGB565
+# (3, 0) on 133 of 228 colour arrays; characters' rigid submeshes use both.
+_CUSTOM_SUBMESH_COLOR_FORMATS   = {48: 4, 0: 3}
 
 
 def _custom_submesh_texture_layer(mode: str) -> tuple[int, int]:
@@ -1212,7 +1339,7 @@ def _custom_submesh_canonical_layout(cs: 'CustomSubmesh') -> list[dict]:
     layout = [{
         'key': 'position',
         'index_size': _custom_submesh_index_size_for(
-            len(cs.vertex_data) // _CUSTOM_SUBMESH_POSITION_STRIDE
+            len(cs.vertex_data) // _custom_submesh_position_stride(cs.vertex_quantize_info)
         ),
     }]
     if cs.normal_data:
@@ -1422,18 +1549,30 @@ def _custom_submesh_patch_layer0_texture(
     raise ValueError('template has no layer-0 Type-1 texture binding to patch')
 
 
+# Type-7 shaders whose param byte 0 is a specular strength. In others it means
+# something else (Shdw: a bit index) or nothing (the all-zero word), and most
+# stadium surfaces have no Type 7 at all.
+_CUSTOM_SUBMESH_SPECULAR_SHADER_MODES = frozenset({'Spec', 'LhSp', 'RhSp', 'GhSp'})
+
+
 def _custom_submesh_patch_specular_strength(
     records: list[list], upto_index: int, strength: int,
-) -> None:
+) -> bool:
     """Set the specular intensity (param byte 0) of the effective Type-7
-    record at or before *upto_index*; bytes 1-2 stay the template's."""
+    record at or before *upto_index*; bytes 1-2 stay the template's.
+
+    Returns False, changing nothing, when that record is missing or is not a
+    specular shader (e.g. a `rigid:` stadium template): the Blender add-on
+    gives every new surface a starting strength regardless."""
     if not 0 <= strength <= 255:
         raise ValueError(f'SpecularStrength {strength} is outside 0..255')
     for record in reversed(records[:upto_index + 1]):
         if record[0] == 7:
+            if record[2] not in _CUSTOM_SUBMESH_SPECULAR_SHADER_MODES:
+                return False
             record[1] = bytes([strength]) + bytes(record[1][1:3]).ljust(2, b'\x00')
-            return
-    raise ValueError('template has no Type-7 record to carry SpecularStrength')
+            return True
+    return False
 
 
 def _custom_submesh_faces(cs: 'CustomSubmesh', descriptors: list[dict]) -> list[list[dict]]:
@@ -1525,8 +1664,8 @@ def _custom_submesh_to_submesh(
             channel_index=0,
             color_data=cs.color_data,
             color_faces_data=cs.color_faces_data or b'',
-            comp_count=_CUSTOM_SUBMESH_COLOR_FORMAT[0],
-            quantize_info=_CUSTOM_SUBMESH_COLOR_FORMAT[1],
+            comp_count=_CUSTOM_SUBMESH_COLOR_FORMATS[cs.color_quantize_info],
+            quantize_info=cs.color_quantize_info,
             source_data_offset=0,
         ))
     normal_buffer = None
@@ -1604,8 +1743,15 @@ def _build_custom_submesh(
             )
         texture_index = mapping[file_name]
     _custom_submesh_patch_layer0_texture(records, drawing_index, texture_index)
-    if cs.specular_strength is not None:
-        _custom_submesh_patch_specular_strength(records, drawing_index, cs.specular_strength)
+    if cs.specular_strength is not None and not _custom_submesh_patch_specular_strength(
+        records, drawing_index, cs.specular_strength,
+    ):
+        _slogger.info(
+            f"custom submesh '{cs.custom_submesh_id}': template {cs.template_source} "
+            'has no specular Type-7 shader; SpecularStrength '
+            f'{cs.specular_strength} ignored',
+            source='hammerspace.main',
+        )
     faces = _custom_submesh_faces(cs, descriptors)
     raw = drawlist.encodeDrawList(faces, descriptors) + b'\x00'
     primitive_bytes = raw + b'\x00' * ((-len(raw)) % 32)
@@ -1800,6 +1946,97 @@ def _build_rigid_submesh_blob(sub: 'Submesh') -> tuple[bytes, int]:
     return bytes(blob), name_off
 
 
+def _submesh_position_half_extents(sub) -> tuple[float, float, float]:
+    """Largest absolute X/Y/Z of a submesh's (bone-local) position array."""
+    comp = _vb_comp_size(sub.vertex_quantize_info)
+    count = len(sub.vertex_data) // (comp * 3)
+    code = 'f' if comp == 4 else 'h'
+    values = struct.unpack(f'>{count * 3}{code}', sub.vertex_data[:count * 3 * comp])
+    divisor = 1 << (sub.vertex_quantize_info & 0xF)
+    return tuple(
+        max((abs(v) for v in values[axis::3]), default=0.0) / divisor
+        for axis in range(3)
+    )
+
+
+# Stadium Type 6 values: 00000374 draws a texture's transparent texels opaque
+# (black), 00000570 cuts them out (Yoshi Park, Dolphin, 2026-10-01). Character
+# surfaces pair 00000374 with cut-out textures too, so this is stadium-only.
+_STADIUM_OPAQUE_TYPE6 = '00000374'
+
+
+def _custom_submesh_png_name(model: dict, cs) -> str | None:
+    """File name of the PNG a custom submesh's layer 0 binds."""
+    assignment = cs.texture_assignment
+    if assignment.additional_texture_file_name:
+        return assignment.additional_texture_file_name
+    for descriptor in model.get('TextureDescriptors') or []:
+        if descriptor.get('TextureIndex') == assignment.donor_texture_index:
+            return descriptor.get('TextureFileName')
+    return None
+
+
+def _warn_stadium_custom_submesh_alpha(model: dict, parsed, sluggie_path) -> None:
+    """Warn when a stadium custom submesh binds a PNG with transparent pixels
+    but its template draws with the opaque Type 6, which shows them black."""
+    if model.get('ChunkNumber') not in STADIUM_CHUNKS or sluggie_path is None:
+        return
+    import texture_helper as _tex
+    from PIL import Image
+
+    rigid_surfaces = _custom_submesh_rigid_surfaces(model)
+    for cs in parsed.custom_submeshes:
+        records, drawing_index, _kind = _resolve_custom_submesh_records(model, cs, rigid_surfaces)
+        type6 = next(
+            (mode for state_id, _pad, mode in reversed(records[:drawing_index + 1]) if state_id == 6),
+            None,
+        )
+        name = _custom_submesh_png_name(model, cs)
+        if type6 != _STADIUM_OPAQUE_TYPE6 or not name:
+            continue
+        try:
+            with Image.open(_tex.resolve_texture_path(sluggie_path, name)) as image:
+                low, _high = image.convert('RGBA').getchannel('A').getextrema()
+        except (OSError, ValueError):
+            continue  # the texture plan reports unreadable PNGs
+        if low < 255:
+            _slogger.warning(
+                f"custom submesh '{cs.custom_submesh_id}': {name} has transparent "
+                f'pixels, but template {cs.template_source} draws with Type 6 '
+                f'{_STADIUM_OPAQUE_TYPE6}, which shows them opaque black in a '
+                'stadium. Use a template whose Type 6 is 00000570 (a cut-out '
+                'stadium surface, e.g. rigid:sm1_ds42 in Yoshi Park day).',
+                source='hammerspace.main',
+            )
+
+
+def _extend_gpl_bounds_table(user_data: bytes, donor_count: int, new_submeshes) -> bytes | None:
+    """Append one box per new submesh to a stadium-style GPLUserData bounds table.
+
+    Some stadium models (sta03/sta03b, sta05/sta05b, sta08b, sta09/sta09c,
+    BG_stagelight) carry GPLUserData as ``u32 length, u16 1, u16 count`` and
+    then one ``6 x f32`` box (min XYZ, max XYZ) per submesh, matching that
+    submesh's position bounds. Every vanilla box is symmetric (min = -max),
+    so a new submesh gets ``-h .. +h`` from its largest absolute coordinate
+    per axis. Whether the game uses the boxes for culling (or something
+    else, e.g. collision) is not confirmed.
+
+    Returns the extended table, or None when *user_data* is not this layout
+    (characters store something else there and are left alone).
+    """
+    if len(user_data) < 8:
+        return None
+    length, version, count = struct.unpack_from('>IHH', user_data, 0)
+    if version != 1 or count != donor_count or length != len(user_data) or length != 8 + 24 * count:
+        return None
+    out = bytearray(user_data)
+    for sub in new_submeshes:
+        hx, hy, hz = _submesh_position_half_extents(sub)
+        out += struct.pack('>6f', -hx, -hy, -hz, hx, hy, hz)
+    struct.pack_into('>IHH', out, 0, len(out), 1, count + len(new_submeshes))
+    return bytes(out)
+
+
 def PatchGPLAppendSubmesh(
     gpl_bytes: bytes, model: dict, parsed: 'SluggieParsed',
     texture_index_by_file_name: dict[str, int] | None = None,
@@ -1880,6 +2117,21 @@ def PatchGPLAppendSubmesh(
 
     new_count = old_count + len(new_submeshes)
 
+    # A stadium-style per-submesh bounds table grows with the submesh count.
+    new_user_data_len = user_data_len
+    if user_data_ptr and user_data_len and len(from_userdata_onward) >= user_data_len:
+        extended = _extend_gpl_bounds_table(
+            from_userdata_onward[:user_data_len], old_count, new_submeshes,
+        )
+        if extended is not None:
+            from_userdata_onward = extended + from_userdata_onward[user_data_len:]
+            new_user_data_len = len(extended)
+            _slogger.info(
+                f'[GPL] extended the GPLUserData bounds table from {old_count} to '
+                f'{new_count} submesh box(es)',
+                source='hammerspace.main',
+            )
+
     out = bytearray()
     out += pre_table
     for dolayout_ptr, name_ptr in old_descriptors:
@@ -1925,6 +2177,7 @@ def PatchGPLAppendSubmesh(
 
     struct.pack_into('>I', out, 0x0c, new_count)
     if user_data_ptr:
+        struct.pack_into('>I', out, 0x04, new_user_data_len)
         struct.pack_into('>I', out, 0x08, new_user_data_off)
 
     for cs, sub in zip(parsed.custom_submeshes, new_submeshes):
@@ -2565,6 +2818,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
             faces_data         = _decode(cs['FacesData'], use_b64),
             texture_assignment = texture_assignment,
             specular_strength  = cs.get('SpecularStrength'),
+            color_quantize_info = cs.get('ColorChannelQuantizeInfo', _CUSTOM_SUBMESH_COLOR_FORMAT[1]),
         ))
 
     return SluggieParsed(
@@ -3563,10 +3817,10 @@ def _gpl_pos_offsets_from_bytes(gpl_bytes: bytes) -> list[int]:
 def BuildACTBoneHierarchy(data: dict, source_model_offset: int, source_model_length: int) -> bytes:
     """Return the ACT (Bone Hierarchy) section bytes for a hammerspace build.
 
-    Two routes (PLAN_AddBones.md Phase 2 step 4):
+    Two routes:
 
     - **Clone route** (no ``BoneHierarchyEdited``): identical to the
-      pre-Phase-2 behaviour -- ``CloneACT`` verbatim, then
+      behaviour before bones could be added -- ``CloneACT`` verbatim, then
       ``_apply_root_scale_patch`` and ``_apply_geo_id_patches``. Every
       existing hammerspace build stays byte-identical.
     - **Rebuild route** (``BoneHierarchyEdited`` present): appends every
@@ -3590,19 +3844,19 @@ def BuildACTBoneHierarchy(data: dict, source_model_offset: int, source_model_len
 
 
 def _rebuild_act_bone_hierarchy(act_bytes: bytes, data: dict, source_model_offset: int) -> bytes:
-    """PLAN_AddBones.md Phase 2: rebuild the ACT bone hierarchy instead of
-    cloning it verbatim, so new leaf bones from ``BoneHierarchyEdited`` can be
-    appended.
+    """Rebuild the ACT bone hierarchy instead of cloning it verbatim, so new
+    leaf bones from ``BoneHierarchyEdited`` can be appended
+    (``_docs/_docs_model_format/act_section.html#appending-bones``).
 
     Parses the donor ACT bytes with ``act_rebuild`` -- the same machinery
-    Phase 0's P1 probe validated as byte-identical across the full player
-    corpus -- which preserves every donor bone's own tree links, SRT block
+    ``probe_act_rebuild_identity.py`` validates as byte-identical across the
+    full player corpus -- which preserves every donor bone's own tree links, SRT block
     and header/name/tail bytes exactly. Every ``BoneHierarchyEdited`` entry
     with ``UserAdded`` set is then appended in ``BoneId`` order via
-    ``act_rebuild.append_leaf_bone`` (F10: always a new leaf at the end of
-    its parent's child chain), fed back in so each append sees the previous
-    one's result -- the same incremental pattern Phase 0 P4's ``--bulk``
-    probe already validated in Dolphin for repeated appends.
+    ``act_rebuild.append_leaf_bone`` (always a new leaf at the end of
+    its parent's child chain, the only safe topology change), fed back in so
+    each append sees the previous one's result -- the same incremental
+    pattern Dolphin-validated with 24 repeated appends (Mario, 2026-09-18).
 
     GeoId ownership: a **donor** bone's ``GeoIdEdited``/custom-submesh claim
     still goes through ``_apply_root_scale_patch``/``_apply_geo_id_patches``
@@ -3615,8 +3869,7 @@ def _rebuild_act_bone_hierarchy(act_bytes: bytes, data: dict, source_model_offse
     ``GeoIdFieldOffset`` to patch through, so its ``GeoId`` is instead owned
     directly here: a custom submesh naming a new bone as ``HostBoneId`` sets
     that bone's ``geo_file_id_raw`` on the in-memory ``BoneRecord`` before
-    the final byte serialization, mirroring what PLAN_AddBones.md's Phase 0
-    P3 probe fixture already did by hand.
+    the final byte serialization.
     """
     model = data['SluggiesModel']
     bone_hierarchy_edited = model['BoneHierarchyEdited']
@@ -3636,13 +3889,18 @@ def _rebuild_act_bone_hierarchy(act_bytes: bytes, data: dict, source_model_offse
             raise ValueError(
                 f"BoneHierarchyEdited: new bone id {bone_id} is not contiguous with the "
                 f"existing bone count ({expected_id} expected); new bone ids must be "
-                "N, N+1, ... starting at the donor bone count (PLAN_AddBones.md Phase 3 rule 5)"
+                "N, N+1, ... starting at the donor bone count"
             )
         parent_id = entry.get('ParentBoneId')
         if parent_id is None:
-            raise ValueError(f"new bone {bone_id} has no ParentBoneId; new bones may not be roots")
-        parent_id = int(parent_id)
-        if parent_id >= expected_id:
+            if model.get('ChunkNumber') not in STADIUM_CHUNKS:
+                raise ValueError(
+                    f"new bone {bone_id} has no ParentBoneId; new bones may not be roots "
+                    "(stadium models excepted)"
+                )
+        else:
+            parent_id = int(parent_id)
+        if parent_id is not None and parent_id >= expected_id:
             raise ValueError(
                 f"new bone {bone_id}'s parent {parent_id} does not exist yet; a new bone's "
                 "parent must already be present (a donor bone, or an earlier new bone in "
@@ -3892,7 +4150,7 @@ def _apply_geo_id_patches(act_bytes: bytes, data: dict, source_model_offset: int
         cs_id = cs.get('CustomSubmeshId', '<missing CustomSubmeshId>')
         host_bone_id = int(cs['HostBoneId'])
         if host_bone_id not in bones_by_id:
-            # PLAN_AddBones.md Phase 2: a host bone with no BoneHierarchy entry
+            # A host bone with no BoneHierarchy entry
             # is a user-added bone -- _rebuild_act_bone_hierarchy already owns
             # its GeoId directly (it has no donor GeoIdFieldOffset to patch
             # through), so there is nothing for this loop to do here.
@@ -4023,7 +4281,7 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
         32-byte boundary before the next payload starts, matching vanilla
         TEX sections (F10).
     """
-    from texture_helper import _image_payload_size
+    from texture_helper import _image_payload_size, mipless_sampler_fields
 
     textures = list(parsed.textures.textures) if parsed.textures else []
     if not textures:
@@ -4069,6 +4327,19 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
                     f"[BuildTEX] appended texture {index} format 0x{entry.format:02X} "
                     f"does not match template format 0x{template.format:02X}"
                 )
+            # Only the base level is encoded, so a mipmapped template's mip
+            # sampler state (filter, LOD bias, mip count) must not carry over.
+            max_lod = template.max_lod
+            desc_unknown_at_10 = template.desc_unknown_at_10
+            if len(desc_unknown_at_10) > 6 and desc_unknown_at_10[6]:
+                max_lod, desc_unknown_at_10 = mipless_sampler_fields(
+                    max_lod, desc_unknown_at_10
+                )
+                _slogger.info(
+                    f"[BuildTEX] appended texture {index}: template {template_index} "
+                    f"is mipmapped; writing single-level sampler state",
+                    source="hammerspace.main",
+                )
             textures.append(Texture(
                 texture_index=index,
                 width=entry.width,
@@ -4078,9 +4349,9 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
                 palette_format=entry.palette_format or 0,
                 edge_lod_enable=template.edge_lod_enable,
                 min_lod=template.min_lod,
-                max_lod=template.max_lod,
+                max_lod=max_lod,
                 unpacked=template.unpacked,
-                desc_unknown_at_10=template.desc_unknown_at_10,
+                desc_unknown_at_10=desc_unknown_at_10,
                 desc_unknown_at_1b=template.desc_unknown_at_1b,
                 image_data_offset=0,
                 image_data_length=0,
@@ -5050,6 +5321,7 @@ def BuildModelBlock(
     model = data['SluggiesModel']
     _validate_hammerspace_contract(model, modes)
     _validate_bone_hierarchy_edited(model)
+    _validate_skin_bones(model)
     _validate_custom_submeshes(model)
     if model.get('DesiredTextureAssignments') and (
         modes.gpl != 'build'
@@ -5278,6 +5550,7 @@ def BuildModelBlock(
                     entry.texture_file_name: entry.texture_index
                     for entry in (texture_plan.entries if texture_plan is not None else ())
                 }
+                _warn_stadium_custom_submesh_alpha(model, parsed, sluggie_path)
                 gpl_bytes = PatchGPLAppendSubmesh(
                     gpl_bytes, model, parsed, texture_index_by_file_name,
                     donor_gpl_length=donor_gpl_length,
@@ -5295,7 +5568,7 @@ def BuildModelBlock(
             pos_gpl_offsets=_gpl_pos_offsets_from_bytes(gpl_bytes),
         )
 
-    # BuildACTBoneHierarchy (PLAN_AddBones.md Phase 2) picks the clone route
+    # BuildACTBoneHierarchy picks the clone route
     # (CloneACT + _apply_root_scale_patch + _apply_geo_id_patches, both
     # ACT-section-relative so they stay correct across hammerspace
     # relocation) or the rebuild route (BoneHierarchyEdited present -- new
@@ -5588,7 +5861,7 @@ def WriteModelBlock(
 #     return block
 
 
-def _format_report_json(value, indent=2, _level=0):
+def _format_report_json(value, indent=2, _level=0, _key=None):
     """Indented JSON, but with scalar-only lists kept on a single line."""
     import json
     pad = ' ' * (indent * (_level + 1))
@@ -5596,12 +5869,15 @@ def _format_report_json(value, indent=2, _level=0):
     if isinstance(value, dict):
         if not value:
             return '{}'
-        items = [f'{pad}{json.dumps(str(k))}: {_format_report_json(v, indent, _level + 1)}'
+        items = [f'{pad}{json.dumps(str(k))}: {_format_report_json(v, indent, _level + 1, k)}'
                  for k, v in value.items()]
         return '{\n' + ',\n'.join(items) + '\n' + end + '}'
     if isinstance(value, (list, tuple)):
         if all(not isinstance(v, (dict, list, tuple)) for v in value):
             return json.dumps(list(value))
+        if _key == 'gpl_texture_references':
+            items = [pad + json.dumps(v) for v in value]
+            return '[\n' + ',\n'.join(items) + '\n' + end + ']'
         items = [pad + _format_report_json(v, indent, _level + 1) for v in value]
         return '[\n' + ',\n'.join(items) + '\n' + end + ']'
     return json.dumps(value)

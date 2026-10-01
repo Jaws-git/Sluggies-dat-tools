@@ -1,4 +1,4 @@
-"""PLAN_AddBones.md Phase 4 step 3: BoneHierarchyEdited export.
+"""Add Bone: BoneHierarchyEdited export.
 
 AST-lift + exec tests for ExportSluggies.py, mirroring
 test_reassign_bone_operator.py's conventions -- no bpy/mathutils import
@@ -8,10 +8,15 @@ for mathutils.Matrix, which is not installed in this test environment.
 
 import ast
 import pathlib
+import sys
 import unittest
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parents[2]
 EXPORT_PATH = ROOT_DIR / 'BlenderAddonSrc' / 'ExportSluggies.py'
+if str(ROOT_DIR / 'BlenderAddonSrc') not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR / 'BlenderAddonSrc'))
+
+import TemplateSources  # noqa: E402
 
 GEO_ID_FREE = 0xFFFF
 
@@ -56,6 +61,9 @@ class _FakeMatrix:
     def inverted(self):
         x, y, z = self.translation
         return _FakeMatrix((-x, -y, -z))
+
+    def copy(self):
+        return _FakeMatrix(self.translation)
 
     def __matmul__(self, other):
         ax, ay, az = self.translation
@@ -158,7 +166,7 @@ class EncodeBoneHierarchyEditedTests(unittest.TestCase):
             {'re', '_BONE_NAME_RE', '_bone_id_from_bone_name',
              '_find_root_scale_armature', 'encode_bone_hierarchy_edited',
              'SRT_TYPE_ROTATION', 'SRT_TYPE_TRANSLATION', '_srt_type_for'},
-            extra_globals={'GEO_ID_FREE': GEO_ID_FREE},
+            extra_globals={'GEO_ID_FREE': GEO_ID_FREE, 'TemplateSources': TemplateSources},
         )
         self.fn = ns['encode_bone_hierarchy_edited']
 
@@ -210,6 +218,30 @@ class EncodeBoneHierarchyEditedTests(unittest.TestCase):
         self.assertEqual(new_entry["Translation"], [0.0, 0.0, 0.3])
         self.assertEqual(new_entry["Scale"], [1.0, 1.0, 1.0])
 
+    def _root_bone_export(self, chunk):
+        donor0 = _FakeBone('bone_0', matrix_local=_FakeMatrix((5.0, 0.0, 0.0)))
+        new_bone = _FakeBone(
+            'bone_1', parent=None, matrix_local=_FakeMatrix((1.0, 2.0, 3.0)),
+            SluggiesUserAdded=True, SluggiesCreationOrder=0,
+            SluggiesGeoIdRaw=GEO_ID_FREE, SluggiesSkinned=False,
+            SluggiesDrawPriority=0, SluggiesInheritTransform=True, track_id=GEO_ID_FREE,
+        )
+        data = {"SluggiesModel": {"ChunkNumber": chunk, "BoneHierarchy": [self._donor_bone(0)]}}
+        warnings = []
+        self.fn([_FakeArmObj([donor0, new_bone])], data, warnings, _FakeContext())
+        return data["SluggiesModel"]["BoneHierarchyEdited"], warnings
+
+    def test_stadium_root_bone_exports_its_armature_space_srt(self):
+        edited, warnings = self._root_bone_export(10)
+        self.assertEqual(warnings, [])
+        self.assertEqual(edited[1]["ParentBoneId"], None)
+        self.assertEqual(edited[1]["Translation"], [1.0, 2.0, 3.0])  # not relative to bone_0
+
+    def test_root_bone_outside_stadiums_is_dropped_with_a_warning(self):
+        edited, warnings = self._root_bone_export(18)
+        self.assertEqual(len(edited), 1)
+        self.assertIn('has no valid parent bone', warnings[0])
+
     def test_creation_order_picks_id_not_blender_name(self):
         donor0 = _FakeBone('bone_0')
         # Named as if it were id 9, but creation order 0 must still win id 1.
@@ -238,7 +270,7 @@ class EncodeBoneHierarchyEditedTests(unittest.TestCase):
 
 
 class SrtTypeForTests(unittest.TestCase):
-    """PLAN_AddBones.md F11: the SRT type byte is a component-presence mask, so
+    """act_section.html#srt-type: the SRT type byte is a component-presence mask, so
     it has to be derived from the rotation/translation actually written. A bone
     that inherited a translation-only 8 from its parent while carrying a real
     rotation had that rotation dropped in game, moving any mesh riding it."""
@@ -282,7 +314,10 @@ class SrtTypeForTests(unittest.TestCase):
 
 class ValidateBoneHierarchyEditedExportTests(unittest.TestCase):
     def setUp(self):
-        self.fn = _extract({'validate_bone_hierarchy_edited_export'})['validate_bone_hierarchy_edited_export']
+        self.fn = _extract(
+            {'validate_bone_hierarchy_edited_export'},
+            extra_globals={'TemplateSources': TemplateSources},
+        )['validate_bone_hierarchy_edited_export']
 
     def _donor(self, bone_id, parent_id=None):
         return {"BoneId": bone_id, "ParentBoneId": parent_id}
@@ -330,6 +365,17 @@ class ValidateBoneHierarchyEditedExportTests(unittest.TestCase):
         }
         errors = self.fn(model, [])
         self.assertTrue(any('may not be roots' in e for e in errors))
+
+    def test_new_root_bone_is_allowed_in_a_stadium(self):
+        model = {
+            "ChunkNumber": 10,
+            "BoneHierarchy": [self._donor(0)],
+            "BoneHierarchyEdited": [
+                dict(self._donor(0), UserAdded=False),
+                dict(BoneId=1, ParentBoneId=None, UserAdded=True),
+            ],
+        }
+        self.assertEqual(self.fn(model, []), [])
 
     def test_valid_leaf_append_has_no_errors(self):
         model = {

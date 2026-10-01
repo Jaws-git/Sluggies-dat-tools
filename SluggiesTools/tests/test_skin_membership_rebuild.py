@@ -23,7 +23,7 @@ def _u16_list(values):
 
 
 def _records(slots):
-    return [byte for slot in slots for byte in [slot + 1] * STRIDE]
+    return [byte for slot in slots for byte in [(slot + 1) % 256] * STRIDE]
 
 
 def _membership_model(sk1s, sk2s, skaccs, *, faces_edited=None, n_verts=24):
@@ -178,8 +178,8 @@ class MembershipLayoutTests(unittest.TestCase):
                          [_u16_list(range(0, 8)), _u16_list(range(11, 16))])
 
     def test_partial_group_move_sharing_a_cache_line_is_rejected(self):
-        # slot 3 moves from bone 10 to bone 11 -> bone 10 splits mid-line
-        sk1s = [_sk1(10, [0, 1, 2, 4, 5, 6, 7]), _sk1(11, [3] + list(range(11, 16)))]
+        # slots 5-7 move from bone 10 to bone 11 -> slot 5 shares line 0x20 with slot 4
+        sk1s = [_sk1(10, range(0, 5)), _sk1(11, [5, 6, 7] + list(range(11, 16)))]
         sk2s = [_sk2((20, 21), range(16, 20), [128] * 8)]
         data = _membership_model(sk1s, sk2s, _donor_skacc())
 
@@ -218,6 +218,27 @@ class MembershipLayoutTests(unittest.TestCase):
         ske = data['SluggiesModel']['SkinDataEdited']
         self.assertEqual(ske['FlushIndData'], _u16_list(expected))
         self.assertEqual(ske['FlushIndSize'], len(expected))
+
+    def test_run_under_three_vertices_is_rejected(self):
+        # slots 11-12 move from bone 11 to a new bone 12: a 2-vertex SK1 run
+        sk1s = [_sk1(10, range(0, 8)), _sk1(11, range(13, 16)), _sk1(12, [11, 12])]
+        sk2s = [_sk2((20, 21), range(16, 20), [128] * 8)]
+        data = _membership_model(sk1s, sk2s, _donor_skacc())
+
+        with self.assertRaisesRegex(ValueError, 'SK1 bone 12 with a run of fewer than 3.*11-12'):
+            self._layout(data)
+
+    def test_run_over_the_locked_cache_buffer_is_split_on_a_cache_line(self):
+        # 700 x 12 = 8400 bytes > 8180: split where a slot starts a line (slot 680)
+        data = _membership_model([_sk1(10, range(0, 700))],
+                                 [_sk2((20, 21), range(704, 708), [128] * 8)], [],
+                                 n_verts=708)
+
+        self._layout(data)
+
+        placements = [(e['VertexCnt'], e['GplVertexArrValue'], e['VertexOffset'])
+                      for e in data['SluggiesModel']['SkinDataEdited']['SK1s']]
+        self.assertEqual(placements, [(680, 0x0, 0), (20, 680 * STRIDE, 0)])
 
     def test_topology_edit_combined_with_membership_edit_is_rejected(self):
         data = _membership_model(*_unchanged_direct_entries(), _donor_skacc(),

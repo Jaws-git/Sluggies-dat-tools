@@ -1,13 +1,14 @@
-"""Standalone ACT section parser/rebuilder for PLAN_AddBones.md Phase 0.
+"""Standalone ACT section parser/rebuilder.
 
-This is the "throwaway ACT writer" called for in Phase 0: parse an ACT
-section into a fully-decoded representation and re-emit it byte-for-byte
-(P1 - Rebuild identity), or re-emit it with one new leaf bone appended
-(P2-P4, via ``append_leaf_bone``). Phase 2 promotes this into the real
-``BuildACTBoneHierarchy`` rebuilder once these probes pass.
+Parses an ACT section into a fully-decoded representation and re-emits it
+byte-for-byte (``probe_act_rebuild_identity.py`` checks this over the whole
+player corpus), or re-emits it with new leaf bones appended (via
+``append_leaf_bone``). ``HammerspaceMain.BuildACTBoneHierarchy``'s rebuild
+route is built on it. Format and Dolphin evidence:
+``_docs/_docs_model_format/act_section.html`` (#layout, #user-data,
+#appending-bones, #section-tail).
 
-Layout (see PLAN_AddBones.md F1, plus the 2026-09-18 empirical survey that
-pinned down the pieces F1 left implicit):
+Layout (2026-09-18 survey over every ACT section):
 
     0x00                       header (0x20 bytes)
     0x20                       bone table: 0x1C x boneCount, bone-id order
@@ -31,10 +32,10 @@ whatever sits *after* the ACT section in the whole model block, not by
 anything internal to ACT -- so rather than guess a formula, this module
 parses each gap as an opaque byte blob (bounded by the header's own
 ``geoNamePtr``/``userDataPtr``/section-length values) and reproduces it
-verbatim. Phase 2 does not need to invent a general formula either: bone
+verbatim. The rebuild route does not need a general formula either: bone
 count is append-only, so ``userDataPtr`` only moves by exactly the
 descriptor-payload growth from the mirror/track arrays, and the model
-assembler (F9) already owns inter-section alignment.
+assembler (``BuildHEADERModelBlock``) already owns inter-section alignment.
 
 Each user-data descriptor is ``u32 size, u16 kind, u16 count, u32 dataPtr``
 (0x0C bytes) immediately followed by its own payload; ``size`` includes the
@@ -42,7 +43,7 @@ Each user-data descriptor is ``u32 size, u16 kind, u16 count, u32 dataPtr``
 after the header) and ``count`` is always observed as 0 for kind 2/3 -- ACT
 computes their array lengths from ``boneCount``, not from this field. The
 chain is walked by adding ``size`` until the running total equals
-``userDataSize`` (PLAN_AddBones.md F3).
+``userDataSize``.
 """
 from __future__ import annotations
 
@@ -67,8 +68,9 @@ class ACTParseError(ValueError):
 class ACTMirrorTableError(ValueError):
     """Raised when a model's kind-2 mirror table is not a clean involution.
 
-    PLAN_AddBones.md F6: two donors (37/1, 51/1) have oversized, non-involution
-    mirror tables and are out of scope for the rebuilder until understood.
+    Five player donors (37/1, 51/1 and the Magikoopa recolors 52/1-54/1)
+    have oversized, non-involution mirror tables and are out of scope for
+    the rebuilder until understood (act_section.html#user-data).
     """
 
 
@@ -224,7 +226,7 @@ def parse_act(act_bytes: bytes) -> ACTParsed:
 
 def validate_mirror_table(parsed: ACTParsed) -> None:
     """Raise ACTMirrorTableError unless the kind-2 mirror table (if present)
-    is a clean, boneCount-long involution (PLAN_AddBones.md F3, F6)."""
+    is a clean, boneCount-long involution (act_section.html#user-data)."""
     mirror_descriptors = [d for d in parsed.user_data if d.kind == KIND_MIRROR]
     if not mirror_descriptors:
         return
@@ -250,7 +252,7 @@ def validate_mirror_table(parsed: ACTParsed) -> None:
                 f"mirror table is not an involution: bone {bone_id} -> {mirror_id} -> {target}"
             )
     # A clean involution must consume exactly boneCount pairs; extra trailing
-    # bytes beyond that (F6's oversized tables) are the other symptom of the
+    # bytes beyond that (the malformed donors' oversized tables) are the other symptom of the
     # same malformation.
     if len(payload) != _align_up(parsed.bone_count * 2, 4):
         raise ACTMirrorTableError(
@@ -263,12 +265,12 @@ def rebuild_act_bytes(parsed: ACTParsed) -> bytes:
     """Re-emit an ACT section from its parsed representation.
 
     Recomputes the bone table and SRT blob offsets from scratch -- this is
-    the layout math that shifts once Phase 2 lets bone count change, so it
-    is what this probe exists to validate. The name/tail gaps are not
-    recomputed (see the module docstring on why there is no one alignment
-    formula for them); they are reproduced verbatim from the parse. Bone
-    table tree pointers (prev/next/parent/firstChild) are likewise carried
-    through unchanged, since Phase 0 does not alter topology.
+    the layout math that shifts when bone count changes. The name/tail gaps
+    are not recomputed (see the module docstring on why there is no one
+    alignment formula for them); they are reproduced verbatim from the parse.
+    Bone table tree pointers (prev/next/parent/firstChild) are likewise
+    carried through unchanged; ``append_leaf_bone`` is the only thing that
+    edits them.
     """
     if len(parsed.bones) != parsed.bone_count:
         raise ACTParseError("bone list length does not match bone_count")
@@ -334,7 +336,7 @@ def rebuild_act_bytes(parsed: ACTParsed) -> bytes:
     return out
 
 
-MAX_BONE_ID = 0xFF  # F3: mirror table ids are u8
+MAX_BONE_ID = 0xFF  # mirror table ids are u8
 
 
 def pack_srt_blob(
@@ -351,7 +353,7 @@ def pack_srt_blob(
     ``[X, Y, Z, -W]`` (``helper.SRT.analyze``), so this re-packs the same
     rearrangement ``SRT.analyze`` undoes on read. Layout: type byte + 3 pad,
     scale (3f), quaternion (4f raw), translation (3f), 8 reserved zero bytes
-    (PLAN_AddBones.md module docstring).
+    (act_section.html, "SRT").
     """
     sx, sy, sz = scale
     w, x, y, z = quaternion
@@ -364,7 +366,7 @@ def pack_srt_blob(
 
 def append_leaf_bone(
     parsed: ACTParsed,
-    parent_id: int,
+    parent_id: int | None,
     srt_blob: bytes | None,
     *,
     geo_file_id_raw: int = 0xFFFF,
@@ -376,45 +378,51 @@ def append_leaf_bone(
 ) -> ACTParsed:
     """Return a copy of *parsed* with one new leaf bone appended.
 
-    Originally the Phase 0 P2 probe helper; promoted by Phase 2 into the
-    general single-bone append step ``BuildACTBoneHierarchy``'s rebuild route
+    The single-bone append step ``BuildACTBoneHierarchy``'s rebuild route
     calls once per ``BoneHierarchyEdited`` entry with ``UserAdded`` set. The
     new bone takes the next bone id (``parsed.bone_count``), is appended to
-    the *end* of ``parent_id``'s child chain (F10 -- the only topology change
-    this plan permits), gets ``srt_blob`` (exactly 0x34 bytes, e.g. from
-    ``pack_srt_blob``) or no SRT at all when *srt_blob* is ``None`` (F8: a
-    null-orientation bone is legal), ``track_id`` in the kind-3 array
-    (default ``0xFFFF`` -- no track, per the user contract), and by default
-    is its own mirror with role 3 (F3's "own_id, 3" convention for a plain
-    bone).
+    the *end* of ``parent_id``'s child chain (the only safe topology change,
+    act_section.html#appending-bones), gets ``srt_blob`` (exactly 0x34 bytes,
+    e.g. from ``pack_srt_blob``) or no SRT at all when *srt_blob* is ``None``
+    (a null-orientation bone is legal), ``track_id`` in the kind-3 array
+    (default ``0xFFFF`` -- no track), and by default is its own mirror with
+    role 3 (the ``(own_id, 3)`` form of a plain centreline bone).
+
+    ``parent_id=None`` appends a new **root** bone instead: it is linked at
+    the end of the root sibling chain that starts at the header's root
+    pointer (the virtual root's first child), with a null parent pointer, the
+    same shape every vanilla root has. The header word before the root
+    pointer is left alone: it is a constant ``0xC`` (or a stale address) in
+    vanilla data and does not track the chain. Only stadiums take new roots
+    (``HammerspaceMain`` refuses them elsewhere).
 
     ``mirror_bone_id``/``mirror_role`` override the mirror entry. Overriding
-    ``mirror_bone_id`` away from the new bone's own id exists only for the
-    Phase 0 P5 probe, which deliberately breaks the involution to observe how
-    the engine reacts to a corrupt mirror table -- Phase 3 rule 8 rejects
+    ``mirror_bone_id`` away from the new bone's own id exists only to build
+    test fixtures with a deliberately broken involution (the game tolerates
+    one silently); ``HammerspaceMain._validate_bone_hierarchy_edited`` rejects
     this for any real build.
 
     Handles two donor shapes for the per-bone user-data arrays: exactly one
     kind-3 (track) plus one kind-2 (mirror) descriptor, which are both
-    extended by one entry; or **no user data at all**, which F4 documents as
-    a normal shipped state (dozens of models carry ``userDataSize = 0``) and
-    where there is simply nothing to extend -- the new bone is then trackless
-    and has no mirror entry, which F4 also shows is routine, and
+    extended by one entry; or **no user data at all**, a normal shipped
+    state (dozens of models carry ``userDataSize = 0``) where there is
+    simply nothing to extend -- the new bone is then trackless and has no
+    mirror entry, which is also routine, and
     ``track_id``/``mirror_bone_id``/``mirror_role`` are ignored. Any other
     combination (one of the two without the other) is ambiguous and is
-    refused rather than guessed at. Any other descriptor kind (F5's kind-4
+    refused rather than guessed at. Any other descriptor kind (the kind-4
     blob) is bone-count-independent and is passed through unchanged.
     """
     if srt_blob is not None and len(srt_blob) != SRT_RECORD_SIZE:
         raise ValueError(f"srt_blob must be {SRT_RECORD_SIZE} bytes, got {len(srt_blob)}")
 
     by_id = {b.id: b for b in parsed.bones}
-    if parent_id not in by_id:
+    if parent_id is not None and parent_id not in by_id:
         raise ValueError(f"parent bone {parent_id} does not exist")
 
     new_id = parsed.bone_count
     if new_id > MAX_BONE_ID:
-        raise ValueError(f"new bone id {new_id} exceeds the mirror table's u8 cap (F3)")
+        raise ValueError(f"new bone id {new_id} exceeds the mirror table's u8 cap")
 
     def table_off(bone_id: int) -> int:
         return HEADER_SIZE + bone_id * BONE_RECORD_SIZE
@@ -422,12 +430,16 @@ def append_leaf_bone(
     bones = [BoneRecord(**vars(b)) for b in parsed.bones]
     by_id = {b.id: b for b in bones}
 
-    parent = by_id[parent_id]
-    if parent.first_child == 0:
-        parent.first_child = table_off(new_id)
+    root_ptr = parsed.root_ptr
+    first_child = root_ptr if parent_id is None else by_id[parent_id].first_child
+    if first_child == 0:
+        if parent_id is None:
+            root_ptr = table_off(new_id)
+        else:
+            by_id[parent_id].first_child = table_off(new_id)
         new_prev = 0
     else:
-        cur_off = parent.first_child
+        cur_off = first_child
         cur_id = (cur_off - HEADER_SIZE) // BONE_RECORD_SIZE
         while by_id[cur_id].next != 0:
             cur_off = by_id[cur_id].next
@@ -437,7 +449,8 @@ def append_leaf_bone(
 
     bones.append(BoneRecord(
         orientation_ptr=0 if srt_blob is None else 1,  # placeholder; rebuild_act_bytes recomputes it
-        prev=new_prev, next=0, parent=table_off(parent_id), first_child=0,
+        prev=new_prev, next=0,
+        parent=0 if parent_id is None else table_off(parent_id), first_child=0,
         geo_file_id_raw=geo_file_id_raw, id=new_id,
         inheritance=inheritance, priority=priority, pad_half=0,
     ))
@@ -448,7 +461,7 @@ def append_leaf_bone(
     if (len(track_descs), len(mirror_descs)) not in ((1, 1), (0, 0)):
         raise ValueError(
             "append_leaf_bone only supports donors with exactly one kind-3 (track) "
-            "and one kind-2 (mirror) user-data descriptor, or with neither (F4)"
+            "and one kind-2 (mirror) user-data descriptor, or with neither"
         )
     has_per_bone_tables = bool(track_descs)
 
@@ -465,8 +478,8 @@ def append_leaf_bone(
         return extended
 
     if not has_per_bone_tables:
-        # F4: no user data at all -- no per-bone array to extend. Any other
-        # descriptor kind (F5's kind-4 blob) still passes through verbatim.
+        # No user data at all -- no per-bone array to extend. Any other
+        # descriptor kind (the kind-4 blob) still passes through verbatim.
         new_user_data = list(parsed.user_data)
     else:
         track = track_descs[0]
@@ -494,7 +507,7 @@ def append_leaf_bone(
 
     return ACTParsed(
         version_num=parsed.version_num, actor_id=parsed.actor_id, bone_count=new_id + 1,
-        tree_unknown=parsed.tree_unknown, root_ptr=parsed.root_ptr,
+        tree_unknown=parsed.tree_unknown, root_ptr=root_ptr,
         skin_file_id=parsed.skin_file_id, pad16=parsed.pad16,
         bones=bones, srt_blobs=srt_blobs, name_gap=parsed.name_gap, tail_gap=parsed.tail_gap,
         user_data=new_user_data, total_length=total_length,

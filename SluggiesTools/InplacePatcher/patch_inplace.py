@@ -277,6 +277,11 @@ param_patches    = []   # (submesh_idx, ds_idx, file_offset, raw_bytes)
 bone_geo_patches = []   # (bone_id, file_offset, raw_bytes)
 
 skin_data = data["SluggiesModel"].get("SkinData")  # None for non-skinned models
+if skin_data is not None and not unpatch:
+    _skn_problems = _skn.skn_edit_problems(skin_data)
+    if _skn_problems:
+        abort("Skin edit refused, it would crash or break the game: "
+              + "; ".join(_skn_problems))
 facial_patches = _facial_position_patches(data["SluggiesModel"], unpatch)
 bone_hierarchy = data["SluggiesModel"].get("BoneHierarchy") or []
 root_scale_patch = _root_scale.root_scale_patch(data["SluggiesModel"], bone_hierarchy, unpatch, abort)

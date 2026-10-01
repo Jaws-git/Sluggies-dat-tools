@@ -580,6 +580,33 @@ _TEMPLATE_FOOTPRINT_FIELDS = (
 )
 
 
+# Descriptor sampler state of a single-level texture, written over a mipmapped
+# template's when an appended texture clones it (the patcher encodes only the
+# base level). Across every vanilla descriptor only three things separate
+# mipmapped textures from plain ones: byte +0x0E (``MaxLOD``; 5 on most
+# mipmapped textures, which reads as GX_LIN_MIP_LIN, and 0 or 1 on plain ones),
+# the big-endian float at +0x10 (down to -3.0 on mipmapped textures, 0.0-0.3 on
+# plain ones, which reads as a LOD bias) and the mip count at +0x16. The plain values below are those of
+# the most common vanilla descriptor (3,799 of the 7,136 descriptors in the exported models;
+# survey 2026-10-01).
+MIPLESS_MAX_LOD = 1
+MIPLESS_LOD_BIAS = b"\x00\x00\x00\x00"
+
+
+def mipless_sampler_fields(max_lod: int, desc_unknown_at_10: bytes) -> tuple[int, bytes]:
+    """Return ``(max_lod, desc_unknown_at_10)`` with a mipmapped template's
+    mip state replaced by the single-level state above.
+
+    Bytes +0x14/+0x15 (zero on every vanilla descriptor) are kept as they are.
+    """
+    unknown_10 = bytearray(desc_unknown_at_10)
+    if len(unknown_10) < 7:
+        unknown_10 += bytes(7 - len(unknown_10))
+    unknown_10[0:4] = MIPLESS_LOD_BIAS
+    unknown_10[6] = 0
+    return MIPLESS_MAX_LOD, bytes(unknown_10)
+
+
 def _validate_parsed_tpl_against_descriptor(
     descriptor: Mapping[str, Any],
     parsed: ParsedSingleImageTpl,
@@ -998,7 +1025,9 @@ def build_hammerspace_texture_plan(
     ``additional_descriptors`` is append-only. Each request is assigned index
     ``len(descriptors) + append_order`` and encoded from a PNG in the same
     model-local ``tex/`` folder using the selected donor descriptor's direct GX
-    format. Indexed and mipmapped templates are rejected. The template lends
+    format. Indexed templates are rejected. A mipmapped template is accepted,
+    but the addition gets a single level and the single-level sampler state of
+    :func:`mipless_sampler_fields`. The template lends
     only its format and sampler fields: an addition is always encoded at its
     PNG's own dimensions (clamped to the GX limit), never at the template's, and
     carries no donor slot footprint.
@@ -1037,7 +1066,14 @@ def build_hammerspace_texture_plan(
             raise ValueError(f"template texture {template_index} does not exist")
         template = descriptors[template_index]
         if int(template.get("AdditionalMipCount") or 0):
-            raise ValueError("mipmapped descriptor templates are not supported")
+            # Only the base level is encoded; BuildTEX writes single-level
+            # sampler state for the addition (mipless_sampler_fields).
+            slogger.info(
+                f"texture {new_index} ({addition.texture_file_name}): template "
+                f"texture {template_index} is mipmapped; the new texture gets "
+                "a single level and non-mipmapped sampler settings",
+                source="texture_helper",
+            )
         gx_format = int(template.get("Format", -1))
         if gx_format in _INDEXED_FORMATS:
             raise ValueError(

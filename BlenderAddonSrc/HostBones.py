@@ -18,7 +18,7 @@ GEO_ID_FREE = 0xFFFF
 # 2: SluggiesSkinned comes from SkinData bone references. Version 1 copied
 # BoneHierarchy's "Skinned" flag, which export.py sets for every mesh-free bone
 # (GeoIdRaw == 0xFFFF), so every free bone looked like it drove skinning.
-# 3: Add bone (PLAN_AddBones.md Phase 4) needs SluggiesMirrorBoneId/
+# 3: Add Bone needs SluggiesMirrorBoneId/
 # SluggiesMirrorRole/SluggiesSRTType/SluggiesDrawPriority/
 # SluggiesInheritTransform/SluggiesUserAdded on every bone to export
 # BoneHierarchyEdited; armatures imported before these were written lack them.
@@ -134,15 +134,24 @@ def compute_rigid_retargets(
     return retargets, issues
 
 
+STADIUM_CHILD_BONE_REASON = "stadium: a mesh on a child bone draws nearly transparent"
+
+
 def classify_host_bones(
     bone_records: Iterable[BoneRecord],
     scene_claims: Optional[SceneClaims] = None,
+    roots_only: bool = False,
 ) -> List[HostBoneChoice]:
     """Classify every bone as a host candidate for a new custom submesh.
 
     Returns one :class:`HostBoneChoice` per input bone record, including
     ``excluded`` ones (callers building a dialog list drop those; see
     :func:`order_host_bone_choices`).
+
+    *roots_only* is for stadium models: there a mesh must hang on a root bone
+    (Dolphin, 2026-10-01; HammerspaceMain refuses a child host bone), so
+    every bone with a parent is excluded and a free root bone is the
+    recommended choice.
     """
     scene_claims = scene_claims or SceneClaims()
     freed_bone_ids = {r.from_bone_id for r in scene_claims.retargets}
@@ -161,6 +170,9 @@ def classify_host_bones(
             choices.append(HostBoneChoice(
                 rec.bone_id, rec.parent_id, STATUS_EXCLUDED,
                 "claimed by another custom submesh"))
+        elif roots_only and rec.parent_id is not None:
+            choices.append(HostBoneChoice(
+                rec.bone_id, rec.parent_id, STATUS_EXCLUDED, STADIUM_CHILD_BONE_REASON))
         elif rec.skinned:
             if SKINNING_HOSTS_ALLOWED:
                 choices.append(HostBoneChoice(
@@ -169,6 +181,10 @@ def classify_host_bones(
             else:
                 choices.append(HostBoneChoice(
                     rec.bone_id, rec.parent_id, STATUS_EXCLUDED, "drives skinning"))
+        elif roots_only:
+            choices.append(HostBoneChoice(
+                rec.bone_id, rec.parent_id, STATUS_RECOMMENDED,
+                "stadium: free root bone"))
         elif rec.parent_id is None:
             choices.append(HostBoneChoice(
                 rec.bone_id, rec.parent_id, STATUS_ALLOWED, "root bone"))
@@ -212,6 +228,7 @@ def reassignment_choices(
     scene_claims: Optional[SceneClaims] = None,
     moving_submesh_index: Optional[int] = None,
     moving_custom_bone_id: Optional[int] = None,
+    roots_only: bool = False,
 ) -> List[HostBoneChoice]:
     """Host-bone choices for the Reassign to new bone dialog (PLAN_EditRigidMeshes.md
     Phase 6): the same classification :func:`classify_host_bones` /
@@ -259,7 +276,7 @@ def reassignment_choices(
             b for b in custom_submesh_bone_ids if b != moving_custom_bone_id)
 
     claims = SceneClaims(retargets=retargets, custom_submesh_bone_ids=custom_submesh_bone_ids)
-    choices = classify_host_bones(bone_records, claims)
+    choices = classify_host_bones(bone_records, claims, roots_only=roots_only)
     ordered = order_host_bone_choices(choices, bone_records)
     if current_bone_id is not None:
         ordered = [c for c in ordered if c.bone_id != current_bone_id]
@@ -287,6 +304,111 @@ def skn_bone_ids(skin_data: Optional[dict]) -> Set[int]:
     return used
 
 
+@dataclass(frozen=True)
+class CustomSubmeshHost:
+    """A custom submesh object being exported and the bone it is weighted to."""
+
+    object_name: str
+    bone_id: int
+
+
+def custom_submesh_host_errors(
+    bone_records: Iterable[BoneRecord],
+    retargets: Iterable[RigidRetarget],
+    hosts: Iterable[CustomSubmeshHost],
+    submesh_names: Optional[Dict[int, str]] = None,
+) -> List[str]:
+    """Export-time re-check of custom submesh host bones (PLAN_AddSubmesh.md
+    Phase 6 step 3), on the final scene state.
+
+    A bone that was free when the cube was created may have been taken since.
+    Rejected, with the conflicting object names:
+    - a host bone the model doesn't have,
+    - a host bone that owns a donor mesh, including one moved onto it by a
+      pending retarget (the same :func:`classify_host_bones` rule the Add
+      submesh dialog uses),
+    - a bone hosting more than one custom submesh.
+
+    *submesh_names* maps donor submesh index to its Blender object name.
+    """
+    bone_records = list(bone_records)
+    retargets = tuple(retargets)
+    submesh_names = submesh_names or {}
+    record_ids = {rec.bone_id for rec in bone_records}
+    choices = {
+        choice.bone_id: choice
+        for choice in classify_host_bones(bone_records, SceneClaims(retargets=retargets))
+    }
+    moved_onto = {r.to_bone_id: r.submesh_index for r in retargets}
+    geo_raw = {rec.bone_id: rec.geo_id_raw for rec in bone_records}
+
+    names_by_bone: Dict[int, List[str]] = {}
+    for host in hosts:
+        names_by_bone.setdefault(host.bone_id, []).append(host.object_name)
+
+    errors: List[str] = []
+    for bone_id in sorted(names_by_bone):
+        names = ", ".join(names_by_bone[bone_id])
+        # Checked first and independently of the other rules: a duplicated
+        # cube (Shift+D) keeps its original's bone_<id> group, and the
+        # "one mesh per bone" rule is the message that user needs.
+        if len(names_by_bone[bone_id]) > 1:
+            errors.append(
+                f"{names}: all use host bone_{bone_id}, but a bone can own only one "
+                "mesh. Move all but one to other bones."
+            )
+        if bone_id not in record_ids:
+            errors.append(
+                f"{names}: host bone_{bone_id} does not exist in the target model."
+            )
+            continue
+        if choices[bone_id].status == STATUS_EXCLUDED:
+            submesh_index = moved_onto.get(bone_id, geo_raw[bone_id])
+            owner = submesh_names.get(submesh_index, f"submesh {submesh_index}")
+            how = "was moved onto it" if bone_id in moved_onto else "already owns it"
+            errors.append(
+                f"{names}: host bone_{bone_id} is taken, {owner} {how}. "
+                "Move the custom submesh to a free bone."
+            )
+    return errors
+
+
+def bone_metadata_mismatches(
+    armature_records: Iterable[BoneRecord],
+    sluggie_records: Iterable[BoneRecord],
+) -> List[str]:
+    """Differences between an armature's import-time bone snapshot and the
+    export target's ``BoneHierarchy``/``SkinData`` (PLAN_AddSubmesh.md Phase 5
+    step 2, export-time re-check).
+
+    Both describe the donor model, so any difference means the armature was
+    imported from another model than the one being exported to. Compares bone
+    ids, donor ``GeoIdRaw`` and the drives-skinning flag. *armature_records*
+    must leave out user-added bones, which the donor never had.
+    """
+    armature = {rec.bone_id: rec for rec in armature_records}
+    sluggie = {rec.bone_id: rec for rec in sluggie_records}
+    mismatches: List[str] = []
+    missing = sorted(set(sluggie) - set(armature))
+    extra = sorted(set(armature) - set(sluggie))
+    if missing:
+        mismatches.append(
+            "bones missing from the armature: " + ", ".join(f"bone_{b}" for b in missing))
+    if extra:
+        mismatches.append(
+            "bones not in the target .sluggie: " + ", ".join(f"bone_{b}" for b in extra))
+    for bone_id in sorted(set(armature) & set(sluggie)):
+        ours, theirs = armature[bone_id], sluggie[bone_id]
+        if ours.geo_id_raw != theirs.geo_id_raw:
+            mismatches.append(
+                f"bone_{bone_id} mesh owner 0x{ours.geo_id_raw:04X} vs "
+                f"0x{theirs.geo_id_raw:04X}")
+        if ours.skinned != theirs.skinned:
+            mismatches.append(
+                f"bone_{bone_id} drives skinning: {ours.skinned} vs {theirs.skinned}")
+    return mismatches
+
+
 def bone_metadata_is_current(version: object) -> bool:
     """Whether an armature's ``SluggiesBoneMetadataVersion`` can be trusted."""
     try:
@@ -312,3 +434,40 @@ def bone_records_from_hierarchy(
         )
         for bd in bone_hierarchy
     ]
+
+
+def added_bone_renames(
+    donor_bone_count: int,
+    added_bones: Iterable[Tuple[str, int]],
+) -> Dict[str, str]:
+    """``{current name: bone_<exported id>}`` for every Add Bone bone whose
+    Blender name disagrees with the id the exporter will give it.
+
+    *added_bones* is ``(name, SluggiesCreationOrder)`` per ``SluggiesUserAdded``
+    bone. The exporter (``encode_bone_hierarchy_edited``) numbers them
+    ``donor_bone_count, +1, ...`` in ``(creation order, name)`` order, while
+    everything else (host bones, retargets, the free-bone list) reads the id
+    from the ``bone_<N>`` name. Deleting an added bone shifts the later ids,
+    so the names must follow, or a mesh on ``bone_92`` would export onto
+    whichever bone now holds id 92.
+    """
+    ordered = sorted(added_bones, key=lambda item: (int(item[1]), item[0]))
+    renames = {}
+    for offset, (name, _order) in enumerate(ordered):
+        expected = f"bone_{donor_bone_count + offset}"
+        if name != expected:
+            renames[name] = expected
+    return renames
+
+
+def added_bone_name_error(renames: Dict[str, str]) -> Optional[str]:
+    """Export-time message for :func:`added_bone_renames`, or None."""
+    if not renames:
+        return None
+    shown = ", ".join(f"{old} exports as {new}" for old, new in sorted(renames.items())[:5])
+    more = f" (and {len(renames) - 5} more)" if len(renames) > 5 else ""
+    return (
+        f"Added bone names don't match their exported ids ({shown}{more}), usually "
+        "because an added bone was deleted. Click 'Renumber Added Bones' in the "
+        "Sluggies sidebar, then export again."
+    )

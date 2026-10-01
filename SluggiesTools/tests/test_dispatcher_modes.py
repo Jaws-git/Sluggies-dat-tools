@@ -26,6 +26,48 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
 
         self.assertEqual(start.hammerspace_section_args(model), ['--gpl', 'build'])
 
+    def test_custom_submesh_only_export_requests_gpl_build(self):
+        # PLAN_AddSubmesh.md Phase 6 step 4: no donor edit at all, just a
+        # custom submesh on an existing texture.
+        model = {
+            'Submeshes': [{}],
+            'CustomSubmeshes': [{'TextureAssignment': {'DonorTextureIndex': 0}}],
+        }
+
+        self.assertEqual(start.hammerspace_section_args(model), ['--gpl', 'build'])
+
+    def test_custom_submesh_with_new_texture_requests_gpl_and_tex_build(self):
+        model = {
+            'Submeshes': [{}],
+            'CustomSubmeshes': [
+                {'TextureAssignment': {'AdditionalTextureFileName': 'Hat.png'}},
+            ],
+        }
+
+        self.assertEqual(
+            start.hammerspace_section_args(model),
+            ['--gpl', 'build', '--tex', 'build'],
+        )
+
+    def test_custom_submesh_with_reimport_textures_adds_tex_build_once(self):
+        model = {
+            'ReimportTextures': True,
+            'Submeshes': [{}],
+            'CustomSubmeshes': [
+                {'TextureAssignment': {'AdditionalTextureFileName': 'Hat.png'}},
+            ],
+        }
+
+        self.assertEqual(
+            start.hammerspace_section_args(model),
+            ['--gpl', 'build', '--tex', 'build'],
+        )
+
+    def test_empty_custom_submesh_list_keeps_clone_defaults(self):
+        model = {'Submeshes': [{}], 'CustomSubmeshes': []}
+
+        self.assertEqual(start.hammerspace_section_args(model), [])
+
     def test_unchanged_model_keeps_clone_defaults(self):
         self.assertEqual(start.hammerspace_section_args({'Submeshes': [{}]}), [])
 
@@ -325,6 +367,20 @@ class RunPatchingDispatchTests(unittest.TestCase):
 
             with mock.patch.object(start, 'SEARCH_DIR', temp_dir):
                 start.run_patching(['model.sluggie'])
+
+            mock_run.assert_called_once()
+            cmd = mock_run.call_args[0][0]
+            self.assertNotIn('--texture-file', cmd)
+
+    @mock.patch('start._current_model_in_hammerspace', return_value=False)
+    @mock.patch('start.subprocess.run')
+    def test_sluggie_name_without_extension_routes_to_patch_sluggie(self, mock_run, _mock_hs_check):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sluggie = os.path.join(temp_dir, 'model.sluggie')
+            self._write_sluggie(sluggie)
+
+            with mock.patch.object(start, 'SEARCH_DIR', temp_dir):
+                start.run_patching(['model'])
 
             mock_run.assert_called_once()
             cmd = mock_run.call_args[0][0]

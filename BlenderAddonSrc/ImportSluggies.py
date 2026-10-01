@@ -1148,9 +1148,9 @@ def build_armature(name, bone_list, collection, skin_data=None):
             # "Skinned" flag only means GeoIdRaw == 0xFFFF.
             b['SluggiesGeoIdRaw'] = int(bd.get('GeoIdRaw', 0xFFFF))
             b['SluggiesSkinned'] = bd['BoneId'] in skn_bone_ids
-            # Round-tripped for Add bone (PLAN_AddBones.md Phase 4 step 1): a new
-            # leaf bone copies SRTType from its parent, and every bone (donor or
-            # new) needs these written into BoneHierarchyEdited on export.
+            # Round-tripped for Add Bone: every bone (donor or new) needs these
+            # written into BoneHierarchyEdited on export. (A new bone's own
+            # SRTType is derived at export, not copied from its parent.)
             if bd.get('MirrorBoneId') is not None:
                 b['SluggiesMirrorBoneId'] = int(bd['MirrorBoneId'])
             if bd.get('MirrorRole') is not None:
@@ -1235,6 +1235,9 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
             # model's tex/ directory without asking the user or reading the
             # .sluggie file again.
             arm_obj['SluggieFilePath'] = self.filepath
+            # The model directory; a stadium (TemplateSources.STADIUM_CHUNKS)
+            # takes custom submeshes only on root bones.
+            arm_obj['SluggiesChunkNumber'] = int(model_number)
 
         imported = 0
         for i, submesh in enumerate(submeshes):

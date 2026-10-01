@@ -31,6 +31,7 @@ from texture_helper import (
     check_png_dimensions,
     clamp_texture_dimensions,
     encode_png_to_tpl,
+    mipless_sampler_fields,
     parse_single_image_tpl,
     parse_single_image_tpl_file,
     read_png_dimensions,
@@ -1121,7 +1122,7 @@ class BuildHammerspaceTexturePlanTests(unittest.TestCase):
             self.assertEqual([entry.texture_index for entry in plan], [0, 1, 2])
             self.assertEqual([entry.template_texture_index for entry in plan], [None, 0, 0])
 
-    def test_addition_rejects_indexed_or_mipmapped_template(self):
+    def test_addition_rejects_indexed_template(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             sluggie = self._make_model(temp_dir, {"0.png": (8, 8), "new.png": (8, 8)})
             base = {
@@ -1133,11 +1134,36 @@ class BuildHammerspaceTexturePlanTests(unittest.TestCase):
                     sluggie, [{**base, "Format": 0x9}],
                     additional_descriptors=(AdditionalTextureDescriptor("new.png", 0),),
                 )
-            with self.assertRaisesRegex(ValueError, "mipmapped descriptor templates"):
-                build_hammerspace_texture_plan(
-                    sluggie, [{**base, "Format": 0xE, "AdditionalMipCount": 1}],
-                    additional_descriptors=(AdditionalTextureDescriptor("new.png", 0),),
-                )
+
+    def test_addition_accepts_mipmapped_template_as_single_level(self):
+        # The mipmapped donor itself is skipped (left unchanged); the addition
+        # cloned from it is encoded as a single level.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sluggie = self._make_model(temp_dir, {"0.png": (8, 8), "new.png": (8, 8)})
+            descriptors = [{
+                "TextureIndex": 0, "TextureFileName": "0.png",
+                "Width": 8, "Height": 8, "Format": 0xE,
+                "AdditionalMipCount": 1, "ImagePayloadLength": 40,
+            }]
+            plan = build_hammerspace_texture_plan(
+                sluggie, descriptors,
+                encoder=lambda _path, gx_format, _palette_format=None, **_kwargs: _fake_parsed(gx_format=gx_format),
+                warn=lambda _message: None,
+                additional_descriptors=(AdditionalTextureDescriptor("new.png", 0),),
+            )
+
+            self.assertEqual([entry.texture_index for entry in plan.entries], [1])
+            self.assertEqual(plan.entries[0].template_texture_index, 0)
+            self.assertEqual([skipped.texture_index for skipped in plan.skipped], [0])
+
+    def test_mipless_sampler_fields_clears_bias_and_mip_count(self):
+        # Texture 16 of sta03 (Yoshi Park): MaxLOD 5, LOD bias -2.4, 3 mips.
+        max_lod, unknown_10 = mipless_sampler_fields(5, bytes.fromhex("c019999a000003"))
+        self.assertEqual(max_lod, 1)
+        self.assertEqual(unknown_10, bytes(7))
+        # Bytes +0x14/+0x15 are kept.
+        self.assertEqual(mipless_sampler_fields(5, bytes.fromhex("bf800000123402"))[1],
+                         bytes.fromhex("00000000123400"))
 
     def test_addition_rejects_missing_template_and_unsafe_filename(self):
         descriptors = [{

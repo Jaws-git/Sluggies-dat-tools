@@ -2,7 +2,9 @@
 
 PLAN_AddSubmesh.md decision 9: every entry in
 ``build_template_source_fixture.BUILTIN_TEMPLATES`` is a byte-exact capture of
-one whole vanilla rigid draw list. This re-checks each capture against the
+one whole vanilla rigid draw list -- or, with ``Provenance.Capture ==
+'effective'`` (the stadium built-ins), of the effective T1/T4/T3/T6/T7 states
+in force when one named surface draws. This re-checks each capture against the
 export it was taken from, named by the entry's own ``Provenance``.
 
 This is a **probe, not a unit test**: it compares checked-in constants against
@@ -50,6 +52,24 @@ def capture_exports(provenance: dict) -> list[pathlib.Path]:
     return sorted((MODELS_DIR / folder).glob(f'{model}*/*.sluggie'))
 
 
+def effective_records(states: list, surface_id: str) -> tuple | None:
+    """The canonical (T1 L0, [T1 L1], T4, T3, T6, T7) records in force when
+    *surface_id* draws, or None when the surface is not in *states*."""
+    index = next((i for i, s in enumerate(states) if s.get('SurfaceId') == surface_id), None)
+    if index is None:
+        return None
+    layers, latest = {}, {}
+    for state in states[:index + 1]:
+        state_id = int(state['DisplayStateId'])
+        if state_id == 1:
+            layers[tsf._texture_layer(state['ShaderMode'])[0]] = state
+        else:
+            latest[state_id] = state
+    ordered = [layers[layer] for layer in sorted(layers)]
+    ordered += [latest[state_id] for state_id in (4, 3, 6, 7) if state_id in latest]
+    return tuple(tsf._record(state) for state in ordered)
+
+
 def run_capture_provenance_probe() -> int:
     """Check every built-in against its vanilla source; return an exit code."""
     checked: list[str] = []
@@ -75,6 +95,19 @@ def run_capture_provenance_probe() -> int:
         comp_count = int(source['VertexBuffer']['VertexBufferCompCount'])
         if comp_count != 3:
             failures.append(f'{name}: source submesh is not rigid (CompCount {comp_count})')
+            continue
+
+        if provenance.get('Capture') == 'effective':
+            records = effective_records(source['DisplayStates'], provenance['SurfaceId'])
+            if records != template['States']:
+                failures.append(
+                    f'{name}: capture no longer matches the effective states of '
+                    f"{provenance['SurfaceId']}\n"
+                    f'    stored: {template["States"]}\n'
+                    f'    source: {records}'
+                )
+            else:
+                checked.append(name)
             continue
 
         surface_id = source['DisplayStates'][-1]['SurfaceId']

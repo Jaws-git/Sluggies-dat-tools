@@ -275,6 +275,82 @@ class ExportExecuteWiringTests(unittest.TestCase):
         self.assertLess(copy_index, source.index('json.dump(data, f, indent=2)'))
 
 
+class IgnoredStateWarningTests(unittest.TestCase):
+    """Phase 6 step 3: ignored shape keys, materials and vertex groups."""
+
+    def _warnings(self, shape_keys=(), materials=('Hat_mat',), groups=('bone_5',)):
+        return cse.ignored_state_warnings('Hat', 5, list(shape_keys), list(materials),
+                                          'Hat_mat', list(groups))
+
+    def test_clean_object_has_no_warnings(self):
+        self.assertEqual(self._warnings(), [])
+
+    def test_lone_basis_key_is_harmless(self):
+        self.assertEqual(self._warnings(shape_keys=['Basis']), [])
+
+    def test_extra_shape_keys_are_named(self):
+        warnings = self._warnings(shape_keys=['Basis', 'Smile', 'Blink'])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('Smile, Blink', warnings[0])
+
+    def test_extra_materials_are_named_once(self):
+        warnings = self._warnings(materials=['Hat_mat', 'Other', 'Other', 'Hat_mat'])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('Other', warnings[0])
+        self.assertIn("'Hat_mat'", warnings[0])
+
+    def test_groups_other_than_the_host_bone_are_named(self):
+        warnings = self._warnings(groups=['bone_5', 'bone_7', 'paint_mask'])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('bone_7, paint_mask', warnings[0])
+        self.assertIn('bone_5', warnings[0])
+
+
+class ValidateCustomSubmeshesWiringTests(unittest.TestCase):
+    """Phase 6 step 3 runs on custom submeshes only, before any is encoded."""
+
+    def test_execute_validates_custom_submeshes_before_encoding(self):
+        source = _execute_source()
+        call = 'validate_custom_submeshes(custom_submesh_candidates, candidates, model, warnings)'
+        self.assertIn(call, source)
+        self.assertLess(source.index(call), source.index('encode_custom_submesh('))
+        self.assertLess(source.index(call),
+                        source.index('_resolve_custom_submesh_texture_changes('))
+
+    def test_execute_refuses_edit_mode_first(self):
+        # Edit Mode left the UV layers empty and crashed encoding.
+        source = _execute_source()
+        guard = "context.mode.startswith('EDIT')"
+        self.assertIn(guard, source)
+        self.assertLess(source.index(guard), source.index('open(self.filepath'))
+
+    def test_execute_refuses_out_of_step_added_bone_names_before_bone_export(self):
+        source = _execute_source()
+        guard = 'added_bone_name_error(context.selected_objects, context)'
+        self.assertIn(guard, source)
+        self.assertLess(source.index(guard), source.index('encode_bone_hierarchy_edited('))
+        self.assertLess(source.index(guard), source.index('validate_custom_submeshes('))
+
+    def test_shape_key_warning_is_only_for_custom_submeshes(self):
+        # Donor rigid heads carry facial shape keys; only the custom-submesh
+        # validator may call the ignored-state warning.
+        tree = ast.parse(EXPORTER_PATH.read_text(encoding='utf-8'))
+        callers = {
+            node.name for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and 'ignored_state_warnings' in _attribute_names(node)
+        }
+        self.assertEqual(callers, {'validate_custom_submeshes'})
+
+    def test_validator_rechecks_hosts_and_metadata(self):
+        source = ast.unparse(_exporter_function('validate_custom_submeshes'))
+        for call in ('HostBones.custom_submesh_host_errors(',
+                     'HostBones.bone_metadata_mismatches(',
+                     '_candidate_rigid_retargets(donor_candidates, model)',
+                     'update_from_editmode()'):
+            self.assertIn(call, source)
+
+
 def _translation(x, y, z):
     return [[1.0, 0.0, 0.0, x], [0.0, 1.0, 0.0, y], [0.0, 0.0, 1.0, z], [0.0, 0.0, 0.0, 1.0]]
 
@@ -734,6 +810,14 @@ class AttributePlanTests(unittest.TestCase):
         with_layer1 = without + [{'DisplayStateId': 1, 'ShaderMode': '11002004'}]
         self.assertEqual(cse.attribute_plan(self._model(without), 'builtin:rigid_spec_v1').uv_channels, 1)
         self.assertEqual(cse.attribute_plan(self._model(with_layer1), 'builtin:rigid_spec_v1').uv_channels, 2)
+
+    def test_stadium_builtins_export_one_uv_and_no_normals(self):
+        states = [{'DisplayStateId': 1, 'ShaderMode': '11110000'},
+                  {'DisplayStateId': 1, 'ShaderMode': '11002004'}]
+        for name in ('stadium_shdw_opaque_v1', 'stadium_shdw_cutout_v1'):
+            with self.subTest(name):
+                plan = cse.attribute_plan(self._model(states), f'builtin:{name}')
+                self.assertEqual((plan.normals, plan.color, plan.uv_channels), (False, True, 1))
 
     def test_malformed_source_rejected(self):
         for source in ('', 'rigid:', 'other:x'):

@@ -42,6 +42,8 @@ from binfmt import (
     comp_size as _comp_size,
     decode_field as _dec,
     encode_field as _enc,
+    SKN_MAX_SOURCE_BYTES,
+    SKN_MIN_DIRECT_VERTICES,
 )
 from compact_channel import compact_channel as _compact_channel
 from drawlist import (computeRequiredDescriptors, decodeDrawList,
@@ -379,6 +381,33 @@ def _direct_entry_label(kind: str, entry: dict, members: list[int]) -> str:
     return f'{kind} {bones} vertices {members[0]}-{members[-1]}'
 
 
+def _split_run_to_cap(kind: str, run: list[tuple[int, int]], stride: int,
+                      what: str) -> list[list[tuple[int, int]]]:
+    """Split a run of consecutive slots into SK1/SK2 entries that fit the
+    game's locked-cache buffer (binfmt.SKN_MAX_SOURCE_BYTES). A piece may only
+    start on a slot that begins a cache line, so no two pieces share a line,
+    and no piece is left under SKN_MIN_DIRECT_VERTICES when avoidable."""
+    cap = SKN_MAX_SOURCE_BYTES[kind]
+    pieces = []
+    start = 0
+    while start < len(run):
+        vertex_offset = run[start][0] * stride % CACHE_LINE_SIZE
+        fits = (cap - vertex_offset) // stride
+        if len(run) - start <= fits:
+            pieces.append(run[start:])
+            break
+        split = start + fits
+        while split > start and (run[split][0] * stride % CACHE_LINE_SIZE
+                                 or len(run) - split < SKN_MIN_DIRECT_VERTICES):
+            split -= 1
+        if split - start < SKN_MIN_DIRECT_VERTICES:
+            raise ValueError(f'{what}: vertices {run[start][0]}-{run[-1][0]} cannot be '
+                             f'split into {kind} entries of at most {cap} bytes')
+        pieces.append(run[start:split])
+        start = split
+    return pieces
+
+
 def layout_skin_membership_edit(data: dict) -> bool:
     """Lay out a membership-edited SkinDataEdited without reordering vertices.
 
@@ -481,6 +510,17 @@ def layout_skin_membership_edit(data: dict) -> bool:
                 runs[-1].append((members[k], k))
             else:
                 runs.append([(members[k], k)])
+        runs = [piece for run in runs for piece in _split_run_to_cap(kind, run, stride, what)]
+        short = [run for run in runs if len(run) < SKN_MIN_DIRECT_VERTICES]
+        if short:
+            detail = ', '.join(
+                f'vertices {run[0][0]}-{run[-1][0]}' if len(run) > 1 else f'vertex {run[0][0]}'
+                for run in short[:5])
+            raise ValueError(
+                f'skin membership edit leaves {what} with a run of fewer than '
+                f'{SKN_MIN_DIRECT_VERTICES} consecutive vertices ({detail}); the game '
+                f'crashes on an SK1/SK2 entry that small. Reassign more neighbouring '
+                'vertices together, or leave these on their original bones')
 
         bone_keys = ('BoneIndex',) if kind == 'SK1' else ('BoneIndex1', 'BoneIndex2')
         out = []

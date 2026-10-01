@@ -56,6 +56,7 @@ def _load_texture_helpers():
         '_connected_image_texture_nodes',
         '_resolve_material_texture_changes',
         '_resolve_export_texture_context',
+        '_partner_added_texture_descriptors',
         '_texture_export_toggles_required_message',
         '_find_low_poly_partner',
         '_lod_texture_reassignment_refused_message',
@@ -576,6 +577,71 @@ class BlenderMaterialTextureTests(unittest.TestCase):
         self.assertFalse(owns_textures)
         self.assertEqual(changes, ([], {}, []))
 
+    def _lowpoly_pair(self, parent, additions):
+        lowpoly_dir = parent / '314772416_L_yoshi.gpl'
+        main_dir = parent / '314420544_yoshi.gpl'
+        lowpoly_dir.mkdir()
+        (main_dir / 'tex').mkdir(parents=True)
+        lowpoly_path = lowpoly_dir / '314772416_L_yoshi.gpl.sluggie'
+        lowpoly_path.write_text('{}', encoding='utf-8')
+        (main_dir / '314420544_yoshi.gpl.sluggie').write_text(
+            __import__('json').dumps({'SluggiesModel': {
+                'TextureDescriptors': [
+                    {'TextureIndex': 0, 'TextureFileName': 'body.png'},
+                    {'TextureIndex': 1, 'TextureFileName': 'eyes.png'},
+                ],
+                'AdditionalTextureDescriptors': additions,
+            }}),
+            encoding='utf-8',
+        )
+        return lowpoly_path, main_dir
+
+    def test_lowpoly_context_includes_main_model_added_textures(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            lowpoly_path, main_dir = self._lowpoly_pair(pathlib.Path(temp_dir), [
+                {'TextureFileName': 'libloshi.png', 'TemplateTextureIndex': 1},
+                {'TextureFileName': 'other.png', 'TemplateTextureIndex': 0},
+            ])
+            resolved, tex_dir, owns_textures = self.resolve_context(
+                str(lowpoly_path), {'TextureDescriptors': []},
+            )
+        self.assertFalse(owns_textures)
+        self.assertEqual(tex_dir, str(main_dir / 'tex'))
+        self.assertEqual(resolved[2:], [
+            {'TextureIndex': 2, 'TextureFileName': 'libloshi.png'},
+            {'TextureIndex': 3, 'TextureFileName': 'other.png'},
+        ])
+
+    def test_lowpoly_context_skips_added_textures_with_repeated_names(self):
+        # The patcher merges repeated names, renumbering later additions.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            lowpoly_path, _main_dir = self._lowpoly_pair(pathlib.Path(temp_dir), [
+                {'TextureFileName': 'a.png', 'TemplateTextureIndex': 1},
+                {'TextureFileName': 'a.png', 'TemplateTextureIndex': 0},
+            ])
+            resolved, _tex_dir, _owns = self.resolve_context(
+                str(lowpoly_path), {'TextureDescriptors': []},
+            )
+        self.assertEqual(len(resolved), 2)
+
+    def test_lowpoly_donor_material_on_added_texture_is_still_a_change(self):
+        # A donor L material moved onto an added texture is a retarget, which
+        # the export refuses for models that own no TEX section.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            lowpoly_path, main_dir = self._lowpoly_pair(pathlib.Path(temp_dir), [
+                {'TextureFileName': 'libloshi.png', 'TemplateTextureIndex': 1},
+            ])
+            image_path = main_dir / 'tex' / 'libloshi.png'
+            image_path.write_bytes(b'png')
+            resolved, tex_dir, _owns = self.resolve_context(
+                str(lowpoly_path), {'TextureDescriptors': []},
+            )
+            material = _material_graph('body', 'sm0_ds1', 0, [image_path])
+            changes = self.resolve_changes(
+                [(self._object(material), {})], resolved, tex_dir,
+            )
+        self.assertEqual(changes, ([], {'sm0_ds1': 2}, ['body']))
+
     def test_non_png_image_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             image_path = pathlib.Path(temp_dir, 'new.jpg')
@@ -784,6 +850,44 @@ class CustomSubmeshTextureTests(unittest.TestCase):
         self.assertEqual(
             assignments, {'custom0_mat': {'DonorTextureIndex': 1}}
         )
+        self.assertEqual(copies, [])
+
+    def test_lowpoly_custom_submesh_binds_main_model_added_texture(self):
+        # Yoshi, 2026-10-01: the main model appends libloshi.png; a custom
+        # submesh on the L partner showing it binds TEX index 4 instead of
+        # appending (which an L model, owning no TEX, refuses).
+        resolve_context = _load_texture_helpers()['_resolve_export_texture_context']
+        with tempfile.TemporaryDirectory() as temp_dir:
+            parent = pathlib.Path(temp_dir)
+            lowpoly_dir = parent / '314772416_L_yoshi.gpl'
+            main_dir = parent / '314420544_yoshi.gpl'
+            lowpoly_dir.mkdir()
+            (main_dir / 'tex').mkdir(parents=True)
+            lowpoly_path = lowpoly_dir / '314772416_L_yoshi.gpl.sluggie'
+            lowpoly_path.write_text('{}', encoding='utf-8')
+            (main_dir / '314420544_yoshi.gpl.sluggie').write_text(
+                __import__('json').dumps({'SluggiesModel': {
+                    'TextureDescriptors': [
+                        {'TextureIndex': i, 'TextureFileName': f'{i}.png'}
+                        for i in range(4)
+                    ],
+                    'AdditionalTextureDescriptors': [
+                        {'TextureFileName': 'libloshi.png', 'TemplateTextureIndex': 1},
+                    ],
+                }}),
+                encoding='utf-8',
+            )
+            image_path = main_dir / 'tex' / 'libloshi.png'
+            image_path.write_bytes(b'png')
+            descriptors, tex_dir, _owns = resolve_context(
+                str(lowpoly_path), {'TextureDescriptors': []},
+            )
+            material = _material_graph('Mickey', 'custom0_ds0', 0, [image_path])
+            additions, assignments, copies = self.resolve_custom_changes(
+                [(material, 1)], descriptors, tex_dir,
+            )
+        self.assertEqual(additions, [])
+        self.assertEqual(assignments, {'Mickey': {'DonorTextureIndex': 4}})
         self.assertEqual(copies, [])
 
     def _external_setup(self, temp_dir):

@@ -1,4 +1,4 @@
-"""PLAN_AddBones.md Phase 0, probe P1 - ACT rebuild identity (synthetic half).
+"""ACT rebuild identity (synthetic half).
 
 Round-trip checks for ``act_rebuild``'s parse/rebuild/append pair, built from
 ACT bytes this module synthesizes itself.
@@ -130,8 +130,29 @@ class ACTRebuildSyntheticTests(unittest.TestCase):
         mirror = next(d for d in reparsed.user_data if d.kind == act_rebuild.KIND_MIRROR)
         self.assertEqual((mirror.payload[4], mirror.payload[5]), (2, 3))
 
+    def test_append_root_bone_joins_the_root_sibling_chain(self):
+        """Stadiums (2026-10-01): parent_id=None links the new bone after the
+        last root, with a null parent, and leaves the header alone."""
+        built = self._build_minimal_act(bone_count=2, with_user_data=True)
+        parsed = act_rebuild.parse_act(built)
+        first = act_rebuild.append_leaf_bone(parsed, parent_id=None, srt_blob=b'\x00' * 0x34)
+        second = act_rebuild.append_leaf_bone(first, parent_id=None, srt_blob=None)
+
+        bones = {b.id: b for b in second.bones}
+        self.assertEqual(second.root_ptr, 0x20)                 # bone 0 stays first
+        self.assertEqual(bones[0].next, 0x58)                   # -> new bone 2
+        self.assertEqual((bones[2].prev, bones[2].next, bones[2].parent), (0x20, 0x74, 0))
+        self.assertEqual((bones[3].prev, bones[3].next, bones[3].parent), (0x58, 0, 0))
+        self.assertEqual(bones[1].first_child, 0)               # nothing hung under bone 1
+        self.assertEqual(bones[0].first_child, 0x3C)            # bone 0's own child unchanged
+
+        reparsed = act_rebuild.parse_act(act_rebuild.rebuild_act_bytes(second))
+        act_rebuild.validate_mirror_table(reparsed)
+        self.assertEqual(reparsed.bone_count, 4)
+        self.assertEqual(reparsed.tree_unknown, parsed.tree_unknown)
+
     def test_append_leaf_bone_on_donor_without_user_data(self):
-        """F4: ``userDataSize = 0`` is a normal shipped state (dozens of models,
+        """``userDataSize = 0`` is a normal shipped state (dozens of models,
         e.g. chunk 136's obstacles), so appending needs no per-bone array to
         extend and the new bone is simply trackless with no mirror entry."""
         built = self._build_minimal_act(bone_count=2, with_user_data=False)
@@ -168,8 +189,8 @@ class ACTRebuildSyntheticTests(unittest.TestCase):
         self.assertEqual(parent.first_child, 0x58)  # table_off(2)
 
     def test_append_leaf_bone_passes_through_kind4_without_per_bone_tables(self):
-        """F5's kind-4 blob is bone-count-independent, so a donor carrying only
-        that (no kind-3/kind-2) is still the F4 no-tables case."""
+        """The kind-4 blob is bone-count-independent, so a donor carrying only
+        that (no kind-3/kind-2) is still the no-tables case."""
         built = self._build_minimal_act(bone_count=2, with_user_data=False)
         parsed = act_rebuild.parse_act(built)
         kind4 = act_rebuild.UserDataDescriptor(

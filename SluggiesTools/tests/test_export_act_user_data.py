@@ -1,9 +1,9 @@
-"""PLAN_AddBones.md Phase 1 - export the missing ACT facts to .sluggie.
+"""Export of the ACT user-data facts to .sluggie (act_section.html#user-data).
 
-Round-trip tests for the new export.py fields: BoneHierarchy's per-bone
-MirrorBoneId/MirrorRole (decoded from the kind-2 ACT user-data entry, F3)
+Round-trip tests for the export.py fields: BoneHierarchy's per-bone
+MirrorBoneId/MirrorRole (decoded from the kind-2 ACT user-data entry)
 and the model-level ACTUserData object (which kinds are present, plus every
-kind-4 entry preserved verbatim as an opaque blob, F5).
+kind-4 entry preserved verbatim as an opaque blob).
 
 Builds a synthetic ACT section with ``act_rebuild`` (already exercised by
 test_act_rebuild_identity.py) and feeds it through the *real* act.py parser
@@ -74,7 +74,7 @@ def _build_synthetic_act_bytes(bone_count=3, kind4_track_ids=(5, 7)):
     """Build a small ACT section: a root bone (id 0) with two children
     (ids 1, 2), a kind-3 track table, a kind-2 mirror table where bone 1
     mirrors bone 2 (and vice versa) and bone 0 self-mirrors, and a kind-4
-    entry carrying ``kind4_track_ids`` (F5's opaque '(u16 track_id, u16=2)'
+    entry carrying ``kind4_track_ids`` (the opaque '(u16 track_id, u16=2)'
     shape)."""
     assert bone_count == 3, "this helper only builds the fixed 3-bone shape below"
 
@@ -158,7 +158,7 @@ class ExportACTUserDataTests(unittest.TestCase):
         self.assertEqual((by_id[2]['MirrorBoneId'], by_id[2]['MirrorRole']), (1, 3))
 
     def test_mirror_table_absent_exports_null(self):
-        # Build a donor with no user data at all (F4's legal, shipped state).
+        # Build a donor with no user data at all (a legal, shipped state).
         bones = [
             act_rebuild.BoneRecord(
                 orientation_ptr=0, prev=0, next=0, parent=0, first_child=0,

@@ -1168,8 +1168,8 @@ def extract_act_header(model):
 def _read_act_user_data_descriptors(model):
     """Return the ACT user-data descriptor chain as a list of
     (kind, count, data_ptr, payload) tuples, or [] if the model has no ACT
-    section or no user data at all (PLAN_AddBones.md F3-F5; a model with no
-    user data is a legal, shipped state per F4)."""
+    section or no user data at all (a legal, shipped state; see
+    act_section.html#user-data)."""
     if not model.ACT or not model.ACT.userDataSize:
         return []
     act = model.ACT
@@ -1187,9 +1187,9 @@ def _read_act_user_data_descriptors(model):
 def _extract_mirror_table(model):
     """Return {bone_id: (mirror_bone_id, role)} decoded from the kind-2 ACT
     user-data entry, or {} if the model has no kind-2 entry or its table
-    doesn't fit the expected boneCount-long shape (PLAN_AddBones.md F3, F6 --
-    two known donors have oversized, non-involution mirror tables that this
-    exports as null rather than guessing at)."""
+    doesn't fit the expected boneCount-long shape (act_section.html#user-data
+    -- a few known donors have oversized, non-involution mirror tables that
+    this exports as null rather than guessing at)."""
     if not model.ACT:
         return {}
     mirror_descriptors = [d for d in _read_act_user_data_descriptors(model) if d[0] == 2]
@@ -1201,7 +1201,7 @@ def _extract_mirror_table(model):
         _slogger.warning(
             f'model at 0x{model.ACT.absolute:08X}: kind-2 mirror table payload '
             f'({len(payload)} bytes) is shorter than boneCount*2 ({bone_count * 2}); '
-            'MirrorBoneId/MirrorRole will be exported as null for all bones (F6).',
+            'MirrorBoneId/MirrorRole will be exported as null for all bones.',
             source='export.act_user_data',
         )
         return {}
@@ -1214,12 +1214,12 @@ def _extract_mirror_table(model):
 def extract_act_user_data(model):
     """Return an ACTUserData dict describing the ACT user-data descriptor
     chain, or None if the model has no ACT section or no user data at all
-    (PLAN_AddBones.md F4 -- a legal, shipped state).
+    (a legal, shipped state; see act_section.html#user-data).
 
     Kind 2 (mirror table) and kind 3 (track table) are fully decoded
     elsewhere (BoneHierarchy's MirrorBoneId/MirrorRole and TrackId); this
     only needs to preserve which kinds are present, in order, plus every
-    kind-4 entry verbatim as an opaque blob (F5) so a rebuild can reproduce
+    kind-4 entry verbatim as an opaque blob so a rebuild can reproduce
     it without understanding it.
     """
     descriptors = _read_act_user_data_descriptors(model)

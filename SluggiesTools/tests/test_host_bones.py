@@ -13,6 +13,7 @@ from HostBones import (  # noqa: E402
     BONE_METADATA_VERSION,
     GEO_ID_FREE,
     BoneRecord,
+    CustomSubmeshHost,
     HostBoneChoice,
     RigidRetarget,
     SceneClaims,
@@ -20,10 +21,14 @@ from HostBones import (  # noqa: E402
     STATUS_DRIVES_SKINNING,
     STATUS_EXCLUDED,
     STATUS_RECOMMENDED,
+    added_bone_name_error,
+    added_bone_renames,
     bone_metadata_is_current,
+    bone_metadata_mismatches,
     bone_records_from_hierarchy,
     classify_host_bones,
     compute_rigid_retargets,
+    custom_submesh_host_errors,
     order_host_bone_choices,
     reassignment_choices,
     skn_bone_ids,
@@ -33,6 +38,116 @@ from HostBones import (  # noqa: E402
 
 def _rec(bone_id, parent_id, geo_id_raw=GEO_ID_FREE, skinned=False):
     return BoneRecord(bone_id=bone_id, parent_id=parent_id, geo_id_raw=geo_id_raw, skinned=skinned)
+
+
+class CustomSubmeshHostErrorsTests(unittest.TestCase):
+    """PLAN_AddSubmesh.md Phase 6 step 3: export-time host-bone re-check."""
+
+    # bone 1 owns donor submesh 2, bones 2-4 are free.
+    RECORDS = [_rec(0, None), _rec(1, 0, geo_id_raw=2), _rec(2, 0), _rec(3, 2), _rec(4, 2)]
+
+    def test_free_distinct_hosts_pass(self):
+        hosts = [CustomSubmeshHost('Hat', 2), CustomSubmeshHost('Cape', 3)]
+        self.assertEqual(custom_submesh_host_errors(self.RECORDS, [], hosts), [])
+
+    def test_missing_bone_is_rejected(self):
+        errors = custom_submesh_host_errors(self.RECORDS, [], [CustomSubmeshHost('Hat', 9)])
+        self.assertEqual(len(errors), 1)
+        self.assertIn('Hat', errors[0])
+        self.assertIn('bone_9 does not exist', errors[0])
+
+    def test_donor_owner_is_rejected_with_its_object_name(self):
+        errors = custom_submesh_host_errors(
+            self.RECORDS, [], [CustomSubmeshHost('Hat', 1)], {2: 'mario_head'})
+        self.assertEqual(len(errors), 1)
+        self.assertIn('mario_head already owns it', errors[0])
+
+    def test_bone_taken_by_a_later_retarget_is_rejected(self):
+        retargets = [RigidRetarget(submesh_index=2, from_bone_id=1, to_bone_id=4)]
+        errors = custom_submesh_host_errors(
+            self.RECORDS, retargets, [CustomSubmeshHost('Hat', 4)], {2: 'mario_head'})
+        self.assertEqual(len(errors), 1)
+        self.assertIn('mario_head was moved onto it', errors[0])
+
+    def test_bone_freed_by_a_retarget_may_host(self):
+        retargets = [RigidRetarget(submesh_index=2, from_bone_id=1, to_bone_id=4)]
+        self.assertEqual(
+            custom_submesh_host_errors(self.RECORDS, retargets, [CustomSubmeshHost('Hat', 1)]), [])
+
+    def test_bone_claimed_twice_names_both_objects(self):
+        hosts = [CustomSubmeshHost('Hat', 3), CustomSubmeshHost('Cape', 3)]
+        errors = custom_submesh_host_errors(self.RECORDS, [], hosts)
+        self.assertEqual(len(errors), 1)
+        self.assertIn('Hat, Cape', errors[0])
+        self.assertIn('bone_3', errors[0])
+
+    def test_bone_claimed_twice_is_reported_even_when_missing(self):
+        hosts = [CustomSubmeshHost('Hat', 9), CustomSubmeshHost('Hat.001', 9)]
+        errors = custom_submesh_host_errors(self.RECORDS, [], hosts)
+        self.assertEqual(len(errors), 2)
+        self.assertIn('a bone can own only one mesh', errors[0])
+        self.assertIn('bone_9 does not exist', errors[1])
+
+    def test_skinning_bone_may_host(self):
+        records = [_rec(0, None), _rec(1, 0, skinned=True)]
+        self.assertEqual(
+            custom_submesh_host_errors(records, [], [CustomSubmeshHost('Glove', 1)]), [])
+
+
+class AddedBoneRenameTests(unittest.TestCase):
+    """Added bone names must equal the ids the exporter assigns them."""
+
+    def test_names_in_step_need_nothing(self):
+        added = [('bone_91', 0), ('bone_92', 1), ('bone_93', 2)]
+        self.assertEqual(added_bone_renames(91, added), {})
+        self.assertIsNone(added_bone_name_error({}))
+
+    def test_deleting_the_first_added_bone_shifts_the_rest(self):
+        # The 2026-09-29 scene: bone_91 (order 0) deleted, bone_92 left.
+        self.assertEqual(added_bone_renames(91, [('bone_92', 1)]), {'bone_92': 'bone_91'})
+        renames = added_bone_renames(91, [('bone_93', 2), ('bone_92', 1)])
+        self.assertEqual(renames, {'bone_92': 'bone_91', 'bone_93': 'bone_92'})
+
+    def test_order_follows_creation_order_not_name(self):
+        renames = added_bone_renames(2, [('bone_2', 1), ('bone_3', 0)])
+        self.assertEqual(renames, {'bone_2': 'bone_3', 'bone_3': 'bone_2'})
+
+    def test_error_names_the_mismatch_and_the_fix(self):
+        message = added_bone_name_error({'bone_92': 'bone_91'})
+        self.assertIn('bone_92 exports as bone_91', message)
+        self.assertIn('Renumber Added Bones', message)
+
+
+class BoneMetadataMismatchTests(unittest.TestCase):
+    """The armature's import-time snapshot must describe the export target."""
+
+    RECORDS = [_rec(0, None), _rec(1, 0, geo_id_raw=2), _rec(2, 0, skinned=True)]
+
+    def test_matching_snapshot(self):
+        self.assertEqual(bone_metadata_mismatches(list(self.RECORDS), list(self.RECORDS)), [])
+
+    def test_matching_snapshot_from_the_sluggie_itself(self):
+        hierarchy = [
+            {'BoneId': 0, 'ParentBoneId': None, 'GeoIdRaw': GEO_ID_FREE},
+            {'BoneId': 1, 'ParentBoneId': 0, 'GeoIdRaw': 2},
+            {'BoneId': 2, 'ParentBoneId': 0, 'GeoIdRaw': GEO_ID_FREE},
+        ]
+        skin = {'SK1s': [{'BoneIndex': 2}], 'SK2s': [], 'SKAccs': []}
+        self.assertEqual(
+            bone_metadata_mismatches(self.RECORDS, bone_records_from_hierarchy(hierarchy, skin)), [])
+
+    def test_bone_count_difference(self):
+        mismatches = bone_metadata_mismatches(self.RECORDS[:2], self.RECORDS)
+        self.assertEqual(mismatches, ['bones missing from the armature: bone_2'])
+        mismatches = bone_metadata_mismatches(self.RECORDS, self.RECORDS[:2])
+        self.assertEqual(mismatches, ['bones not in the target .sluggie: bone_2'])
+
+    def test_owner_and_skinning_differences(self):
+        other = [_rec(0, None), _rec(1, 0), _rec(2, 0)]
+        mismatches = bone_metadata_mismatches(self.RECORDS, other)
+        self.assertEqual(len(mismatches), 2)
+        self.assertIn('bone_1 mesh owner 0x0002 vs 0xFFFF', mismatches)
+        self.assertIn('bone_2 drives skinning: True vs False', mismatches)
 
 
 class ClassifyHostBonesTests(unittest.TestCase):
@@ -68,6 +183,26 @@ class ClassifyHostBonesTests(unittest.TestCase):
         claims = SceneClaims(custom_submesh_bone_ids=frozenset({2}))
         choices = {c.bone_id: c for c in classify_host_bones(records, claims)}
         self.assertEqual(choices[2].status, STATUS_EXCLUDED)
+
+    def test_stadium_offers_only_free_root_bones(self):
+        # Yoshi Park, 2026-10-01: a mesh on a child bone drew nearly transparent.
+        records = [_rec(0, None), _rec(1, None, geo_id_raw=0), _rec(2, 0),
+                   _rec(3, 0, skinned=True), _rec(4, None)]
+        choices = {c.bone_id: c for c in classify_host_bones(records, roots_only=True)}
+        self.assertEqual(choices[0].status, STATUS_RECOMMENDED)
+        self.assertEqual(choices[1].status, STATUS_EXCLUDED)  # owns a mesh
+        self.assertEqual(choices[2].status, STATUS_EXCLUDED)
+        self.assertIn('child bone', choices[2].reason)
+        self.assertEqual(choices[3].status, STATUS_EXCLUDED)  # child, even if skinning
+        self.assertEqual(choices[4].status, STATUS_RECOMMENDED)
+        ordered = order_host_bone_choices(choices.values(), records)
+        self.assertEqual([c.bone_id for c in ordered], [0, 4])
+
+    def test_stadium_reassignment_offers_only_root_bones(self):
+        records = [_rec(0, None), _rec(1, 0), _rec(2, None)]
+        claims = SceneClaims(custom_submesh_bone_ids=frozenset({0}))
+        ordered = reassignment_choices(records, claims, moving_custom_bone_id=0, roots_only=True)
+        self.assertEqual([c.bone_id for c in ordered], [2])
 
     def test_single_bone_prop_yields_only_excluded(self):
         records = [_rec(1, None, geo_id_raw=0)]

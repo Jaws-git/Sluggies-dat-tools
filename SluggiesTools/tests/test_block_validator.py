@@ -12,6 +12,7 @@ for import_path in (TOOLS_DIR, HAMMERSPACE_DIR):
 
 import BlockValidator
 from BlockValidator import GPL_MAGIC, validate_model_block
+from binfmt import skn_direct_entry_problem
 
 
 def _u16_to_bytes(values):
@@ -476,15 +477,19 @@ def _make_skn_two_vertex_block(
     sk2_weights=(128, 128),
     sk2_gpl_vertex_arr_value=None,
     sk2_vertex_offset=None,
-    n_verts=4,
+    n_verts=9,
     mem_clr=(0, 0),
+    sk1_count=3,
+    sk2_count=3,
 ):
-    """A minimal, self-contained SKN section with 2 skinned entries: SK1 bone
-    10 owns slot 0, SK2 pair (20, 21) owns slot 3 (gplVertexArr 0x20 +
-    vertexOffset 4, donor-style: each entry on its own cache line, slots 1-2
-    unused). quantize_info 0x30 (nibble 3) => comp_size 2 => stride 12."""
+    """A minimal, self-contained SKN section with 2 skinned entries of 3
+    vertices each (the game's minimum): SK1 bone 10 owns slots 0-2, SK2 pair
+    (20, 21) owns slots 6-8 (gplVertexArr 0x40 + vertexOffset 8, donor-style:
+    each entry on its own cache lines, slots 3-5 unused). quantize_info 0x30
+    (nibble 3) => comp_size 2 => stride 12. Sources mirror the position
+    buffer at 0xE0 + gplVertexArr."""
     stride = 12
-    block = bytearray(0x140)
+    block = bytearray(0x180)
 
     struct.pack_into('>H', block, 0x00, 1)     # SK1 count
     struct.pack_into('>H', block, 0x02, 1)     # SK2 count
@@ -502,24 +507,23 @@ def _make_skn_two_vertex_block(
     struct.pack_into('>I', block, sk1 + 0x30, 0xE0)   # source ptr
     struct.pack_into('>I', block, sk1 + 0x34, 0)      # GplVertexArrValue (slot 0)
     struct.pack_into('>H', block, sk1 + 0x38, 10)     # BoneIndex
-    struct.pack_into('>H', block, sk1 + 0x3A, 1)      # VertexCnt
+    struct.pack_into('>H', block, sk1 + 0x3A, sk1_count)  # VertexCnt
     block[sk1 + 0x3C] = 0                              # VertexOffset
 
     sk2 = 0x64
-    struct.pack_into('>I', block, sk2 + 0x60, 0x100)  # source ptr
-    struct.pack_into('>I', block, sk2 + 0x64, 0x120)  # weight ptr
-    gva2 = 0x20 if sk2_gpl_vertex_arr_value is None else sk2_gpl_vertex_arr_value
-    vo2 = (4 if sk2_gpl_vertex_arr_value is None else 0) if sk2_vertex_offset is None         else sk2_vertex_offset
+    gva2 = 0x40 if sk2_gpl_vertex_arr_value is None else sk2_gpl_vertex_arr_value
+    vo2 = (8 if sk2_gpl_vertex_arr_value is None else 0) if sk2_vertex_offset is None         else sk2_vertex_offset
+    struct.pack_into('>I', block, sk2 + 0x60, 0xE0 + gva2)  # source ptr (mirror)
+    struct.pack_into('>I', block, sk2 + 0x64, 0x160)  # weight ptr
     struct.pack_into('>I', block, sk2 + 0x68, gva2)   # GplVertexArrValue
     struct.pack_into('>H', block, sk2 + 0x6C, 20)     # BoneIndex1
     struct.pack_into('>H', block, sk2 + 0x6E, 21)     # BoneIndex2
-    struct.pack_into('>H', block, sk2 + 0x70, 1)      # VertexCnt
+    struct.pack_into('>H', block, sk2 + 0x70, sk2_count)  # VertexCnt
     block[sk2 + 0x72] = vo2                            # VertexOffset
 
-    block[0xE0:0xE0 + stride] = b'\x01' * stride       # SK1 bind-pose source
-    block[0x100:0x100 + stride] = b'\x02' * stride     # SK2 bind-pose source
-    block[0x120] = sk2_weights[0]
-    block[0x121] = sk2_weights[1]
+    block[0xE0:0xE0 + 3 * stride] = b'' * 3 * stride  # SK1 bind-pose source
+    block[0x120 + 8:0x120 + 8 + 3 * stride] = b'' * 3 * stride  # SK2 bind-pose source
+    block[0x160:0x166] = bytes(sk2_weights) * 3
 
     facts_layout = [{'position_comp_count': 6, 'position_count': n_verts}]
     return bytes(block), facts_layout
@@ -535,7 +539,7 @@ class SKNMembershipCoverageTests(unittest.TestCase):
         state = BlockValidator._ValidationState(block)
         state.facts['section_ranges']['SKN'] = {'start': 0, 'end': len(block)}
         state.facts['gpl_submesh_layout'] = facts_layout
-        BlockValidator._validate_skn(state, [], [])
+        BlockValidator._validate_skn(state, [], [], [])
         return state.errors
 
     def test_valid_two_vertex_fixture_passes(self):
@@ -554,7 +558,7 @@ class SKNMembershipCoverageTests(unittest.TestCase):
         block, layout = _make_skn_two_vertex_block(sk2_gpl_vertex_arr_value=0)
         errors = self._validate(block, layout)
         self.assertTrue(any(
-            'claim 1 position slot(s) more than once' in error for error in errors
+            'claim 3 position slot(s) more than once' in error for error in errors
         ))
 
     def test_uncovered_vertex_slot_is_not_an_error(self):
@@ -562,7 +566,7 @@ class SKNMembershipCoverageTests(unittest.TestCase):
         # no SK1/SK2/SKAcc coverage at all (verified against production data:
         # Luigi has 130 of 2808 submesh-0 vertices with zero coverage) — a
         # vertex slot beyond every SK1/SK2 entry's range must not fail.
-        block, layout = _make_skn_two_vertex_block(n_verts=5)
+        block, layout = _make_skn_two_vertex_block(n_verts=10)
         self.assertEqual(self._validate(block, layout), [])
 
 
@@ -576,12 +580,12 @@ class SKNDestinationLayoutTests(unittest.TestCase):
         state = BlockValidator._ValidationState(block)
         state.facts['section_ranges']['SKN'] = {'start': 0, 'end': len(block)}
         state.facts['gpl_submesh_layout'] = facts_layout
-        BlockValidator._validate_skn(state, [], [])
+        BlockValidator._validate_skn(state, [], [], [])
         return state
 
     def test_gpl_vertex_arr_off_cache_line_fails(self):
-        # slot 3 addressed as 0x24 + 0 instead of 0x20 + 4
-        block, layout = _make_skn_two_vertex_block(sk2_gpl_vertex_arr_value=0x24)
+        # slot 6 addressed as 0x48 + 0 instead of 0x40 + 8
+        block, layout = _make_skn_two_vertex_block(sk2_gpl_vertex_arr_value=0x48)
         errors = self._validate(block, layout).errors
         self.assertTrue(any('not on a cache-line boundary' in error for error in errors))
 
@@ -591,16 +595,16 @@ class SKNDestinationLayoutTests(unittest.TestCase):
         self.assertTrue(any('not on a 12-byte vertex boundary' in error for error in errors))
 
     def test_entries_sharing_a_cache_line_fail(self):
-        # slot 1 (0x0C) shares cache line 0x0 with SK1's slot 0
+        # slot 3 (0x24) shares cache line 0x20 with SK1's slot 2
         block, layout = _make_skn_two_vertex_block(
-            sk2_gpl_vertex_arr_value=0, sk2_vertex_offset=12)
+            sk2_gpl_vertex_arr_value=0x20, sk2_vertex_offset=4)
         errors = self._validate(block, layout).errors
-        self.assertTrue(any('share 1 cache line(s): 0x0 (SK1[0]/SK2[0])' in error
+        self.assertTrue(any('share 1 cache line(s): 0x20 (SK1[0]/SK2[0])' in error
                             for error in errors))
 
     def test_vertex_offset_skipping_a_whole_vertex_warns(self):
         state = self._validate(*_make_skn_two_vertex_block(
-            sk2_gpl_vertex_arr_value=0x20, sk2_vertex_offset=16))
+            sk2_gpl_vertex_arr_value=0x40, sk2_vertex_offset=20))
         self.assertTrue(any('skips a whole vertex' in warning for warning in state.warnings))
 
     def test_source_array_off_mirror_fails(self):
@@ -608,20 +612,77 @@ class SKNDestinationLayoutTests(unittest.TestCase):
         # dropping a donor gap line) — the Luigi facial-pose neck stretch.
         block, layout = _make_skn_two_vertex_block()
         block = bytearray(block)
-        struct.pack_into('>I', block, 0x64 + 0x60, 0x120)
-        block[0x120:0x120 + 12] = b'' * 12
+        struct.pack_into('>I', block, 0x64 + 0x60, 0x140)
         errors = self._validate(bytes(block), layout).errors
         self.assertTrue(any(
             'do not mirror the position buffer for 1 SK1/SK2' in error
-            and 'SK2[0] (source 0x120, expected 0x100)' in error
+            and 'SK2[0] (source 0x140, expected 0x120)' in error
             for error in errors
         ))
 
     def test_mem_clear_touching_direct_entry_line_fails(self):
-        block, layout = _make_skn_two_vertex_block(mem_clr=(0x30, 0x20))
+        block, layout = _make_skn_two_vertex_block(mem_clr=(0x50, 0x20))
         errors = self._validate(block, layout).errors
         self.assertTrue(any('touches cache lines of direct writes: SK2[0]' in error
                             for error in errors))
+
+
+class SKNRuntimeLimitTests(unittest.TestCase):
+    """skn_section.html#runtime-limits: SK1/SK2 entries need at least 3
+    vertices and must fit the locked-cache buffers, and the whole-line
+    write-back must not reach a GPL structure."""
+
+    def _errors(self, block, facts_layout):
+        state = BlockValidator._ValidationState(block)
+        state.facts['section_ranges']['SKN'] = {'start': 0, 'end': len(block)}
+        state.facts['gpl_submesh_layout'] = facts_layout
+        BlockValidator._validate_skn(state, [], [], [])
+        return state.errors
+
+    def test_one_and_two_vertex_entries_fail(self):
+        for count in (1, 2):
+            with self.subTest(count=count):
+                errors = self._errors(*_make_skn_two_vertex_block(sk1_count=count, sk2_count=count))
+                self.assertTrue(any(f'SK1[0]: SK1 entry has {count} vertices' in e for e in errors))
+                self.assertTrue(any(f'SK2[0]: SK2 entry has {count} vertices' in e for e in errors))
+
+    def test_entry_over_the_locked_cache_buffer_fails(self):
+        # 341 x 12 + 8 = 4100 source bytes > 4088 for SK2
+        errors = self._errors(*_make_skn_two_vertex_block(sk2_count=341))
+        self.assertTrue(any('SK2 entry source is 4100 bytes' in e and 'at most 4088' in e
+                            for e in errors))
+
+    def test_entry_at_the_vanilla_maximum_passes_the_size_rule(self):
+        self.assertIsNone(skn_direct_entry_problem('SK1', 681, 8, 12))   # 8180 bytes
+        self.assertIsNone(skn_direct_entry_problem('SK2', 340, 8, 12))   # 4088 bytes
+        self.assertIsNotNone(skn_direct_entry_problem('SK1', 682, 0, 12))
+
+    def test_write_back_is_rounded_up_to_the_next_cache_line(self):
+        self.assertEqual(BlockValidator._direct_write_back_end(0x40, 8, 3, 12), 0x80)
+        self.assertEqual(BlockValidator._direct_write_back_end(0x40, 0, 8, 12), 0xA0)
+
+    def _window(self, direct_end, structure):
+        state = BlockValidator._ValidationState(b'\x00' * 0x200)
+        BlockValidator._validate_scratch_window(
+            state, [0x100], [0x10], [], [direct_end], [structure])
+        return state.errors
+
+    def test_structure_inside_the_line_write_back_fails(self):
+        # Last vertex ends at +0x4C, but the line copy writes to +0x60.
+        end = BlockValidator._direct_write_back_end(0x20, 8, 3, 12)
+        errors = self._window(end, ('sub0.col_header', 0x150, 0x158))
+        self.assertTrue(any('SK1/SK2 write-back overwrites sub0.col_header' in e for e in errors))
+
+    def test_structure_after_the_write_back_passes(self):
+        end = BlockValidator._direct_write_back_end(0x20, 8, 3, 12)
+        self.assertEqual(self._window(end, ('sub0.col_header', 0x160, 0x168)), [])
+
+    def test_mem_clear_end_does_not_count_for_structures(self):
+        # Vanilla chunk 2 file 0: memClr ends 0x14 bytes into sub0's color header.
+        state = BlockValidator._ValidationState(b'\x00' * 0x200)
+        BlockValidator._validate_scratch_window(
+            state, [0x100], [0x44], [], [0x20], [('sub0.col_header', 0x140, 0x148)])
+        self.assertEqual(state.errors, [])
 
 
 if __name__ == '__main__':

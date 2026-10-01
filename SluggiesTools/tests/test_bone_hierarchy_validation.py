@@ -1,12 +1,12 @@
-"""PLAN_AddBones.md Phase 3 - validation.
+"""Added-bone validation (act_section.html#appending-bones).
 
 Exercises ``HammerspaceMain._validate_bone_hierarchy_edited`` directly against
 synthetic ``BoneHierarchy``/``BoneHierarchyEdited`` JSON -- this validator
 operates purely at the ``.sluggie`` data level (no ACT bytes involved), so
-unlike the Phase 2 rebuild tests it needs no donor DAT/DOL assets and runs
-unconditionally.
+it needs no donor ACT bytes and runs unconditionally.
 
-One rejection test per Phase 3 rule, plus an acceptance test, plus a
+One rejection test per validator rule (numbered as in its ``# Rule N``
+comments), plus an acceptance test, plus a
 dedicated fixture for each of rule 3's named topology cases (reparent,
 mid-chain swap, mid-chain insertion) and rule 4's donor-onto-new case.
 """
@@ -199,6 +199,15 @@ class BoneHierarchyValidationTests(unittest.TestCase):
         model['BoneHierarchyEdited'].append(_new_bone(4, None))
         with self.assertRaisesRegex(ValueError, 'may not be roots'):
             _validate(data)
+
+    def test_rule7_stadium_may_add_root_bones(self):
+        # A stadium mesh must hang on a root bone (Dolphin, 2026-10-01), so
+        # a stadium may append new roots; everything else keeps rule 7.
+        data = _base_model()
+        model = data['SluggiesModel']
+        model['ChunkNumber'] = 10
+        model['BoneHierarchyEdited'].append(_new_bone(4, None))
+        _validate(data)  # no raise
 
     def test_rule7_new_bone_parent_does_not_exist(self):
         data = _base_model()

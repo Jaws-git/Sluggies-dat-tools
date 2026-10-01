@@ -201,15 +201,25 @@ class BuiltinTemplateTests(unittest.TestCase):
         for name, template in tsf.BUILTIN_TEMPLATES.items():
             with self.subTest(name):
                 provenance = template['Provenance']
+                self.assertIn('/', provenance['Model'])
+                folder, _sep, model = provenance['Model'].partition('/')
+                self.assertTrue(folder and model)
+                self.assertTrue(provenance['MeshName'])
+                if provenance.get('Capture') == 'effective':
+                    # Effective-state capture (stadium built-ins): the probe
+                    # re-derives the canonical records at the named surface.
+                    self.assertEqual(
+                        sorted(provenance), ['Capture', 'MeshName', 'Model', 'SurfaceId'],
+                    )
+                    self.assertEqual(
+                        [record[0] for record in template['States']], [1, 4, 3, 6, 7],
+                    )
+                    continue
                 self.assertEqual(
                     sorted(provenance),
                     ['IdenticalRigidLists', 'MeshName', 'Model', 'SurfaceId'],
                 )
                 self.assertGreaterEqual(int(provenance['IdenticalRigidLists']), 1)
-                self.assertIn('/', provenance['Model'])
-                folder, _sep, model = provenance['Model'].partition('/')
-                self.assertTrue(folder and model)
-                self.assertTrue(provenance['MeshName'])
                 # The probe reads the source's LAST display state, so the
                 # surface id must be the one the stored record list ends on.
                 self.assertEqual(
@@ -231,10 +241,19 @@ class BuiltinRegistryMirrorTests(unittest.TestCase):
                 self.assertEqual(mirror.layers, template['Layers'])
                 self.assertEqual(mirror.shader_mode, template['ShaderMode'])
                 self.assertEqual(mirror.verified_in_game, template['VerifiedInGame'])
+                self.assertEqual(mirror.normals, template.get('Normals', True))
+                self.assertEqual(mirror.stadium_only, template.get('StadiumOnly', False))
                 self.assertTrue(mirror.description)
         self.assertEqual(
             TemplateSources.BUILTIN_TEMPLATE_NAMES,
             tsf.hammerspace.builtin_template_names(verified_only=True),
+        )
+
+    def test_stadium_and_specular_mirrors_match_the_tools(self):
+        self.assertEqual(tuple(TemplateSources.STADIUM_CHUNKS), tuple(tsf.hammerspace.STADIUM_CHUNKS))
+        self.assertEqual(
+            TemplateSources.SPECULAR_SHADER_MODES,
+            tsf.hammerspace._CUSTOM_SUBMESH_SPECULAR_SHADER_MODES,
         )
 
     def test_hand_visibility_role_mirror_matches_the_tools(self):

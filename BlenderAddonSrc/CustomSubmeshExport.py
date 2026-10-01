@@ -241,6 +241,45 @@ def unsupported_modifier_names(modifiers):
     return [name for name, kind in modifiers if kind != 'ARMATURE']
 
 
+def ignored_state_warnings(object_name, host_bone_id, shape_key_names, material_names,
+                           exported_material_name, vertex_group_names):
+    """Step 3: scene state a custom submesh may carry that export ignores.
+
+    - Shape keys: only the undeformed mesh (the Basis) is read, so any other
+      key never reaches the game. A lone Basis key is harmless.
+    - Materials: one surface per custom submesh; faces on any other slot are
+      exported with *exported_material_name*.
+    - Vertex groups: only ``bone_<host>`` places the mesh; every other group
+      is dropped.
+
+    Only for ``SluggiesCustomSubmesh`` objects. Donor rigid meshes (heads in
+    particular) legitimately carry facial shape keys and must not get this.
+    """
+    warnings = []
+    extra_keys = list(shape_key_names)[1:]
+    if extra_keys:
+        warnings.append(
+            f"{object_name}: shape key(s) {', '.join(extra_keys)} are ignored; custom "
+            "submeshes export only the Basis shape."
+        )
+    extra_materials = [
+        name for name in dict.fromkeys(material_names) if name != exported_material_name
+    ]
+    if extra_materials:
+        warnings.append(
+            f"{object_name}: extra material(s) {', '.join(extra_materials)} are ignored; "
+            f"every face is exported with '{exported_material_name}'."
+        )
+    host_group = f"bone_{host_bone_id}"
+    extra_groups = [name for name in vertex_group_names if name != host_group]
+    if extra_groups:
+        warnings.append(
+            f"{object_name}: vertex group(s) {', '.join(extra_groups)} are ignored; "
+            f"the mesh follows only its host bone ({host_group})."
+        )
+    return warnings
+
+
 @dataclass
 class BoneLocalGeometry:
     """A custom submesh in host-bone bind-local space, ready to quantize.
@@ -536,8 +575,9 @@ def attribute_plan(model, template_source):
       `Shdw` built-in exports one channel whatever the host binds, matching
       HammerspaceMain._custom_submesh_builtin_records.
 
-    `derived:`/`builtin:` always get normals and one color channel, the
-    canonical rigid attribute set (F9).
+    `derived:`/`builtin:` get one color channel and normals, the canonical
+    rigid attribute set (F9) -- except a built-in flagged without normals
+    (the stadium ones: stadium surfaces have none).
     """
     kind, _sep, argument = str(template_source).partition(':')
     if kind == 'rigid' and argument:
@@ -556,9 +596,11 @@ def attribute_plan(model, template_source):
         for s in states
     )
     uv_count = 2 if has_layer1 else 1
+    normals = True
     if kind == 'builtin':
         uv_count = min(uv_count, TemplateSources.builtin_template_layers(argument))
-    return AttributePlan(True, True, uv_count, {})
+        normals = TemplateSources.builtin_template_normals(argument)
+    return AttributePlan(normals, True, uv_count, {})
 
 
 def dedupe_records(records):

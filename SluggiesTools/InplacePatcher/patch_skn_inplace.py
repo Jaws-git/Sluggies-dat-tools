@@ -31,6 +31,8 @@ _slogger.configure()
 
 import root_scale as _root_scale
 from binfmt import align4 as _align4
+from binfmt import comp_size as _comp_size
+from binfmt import skin_bone_ids, skn_direct_entry_problem
 
 OUTPUT_DAT = os.path.join(_ROOT_DIR, '3_Output_Dat', 'dt_na.dat')
 
@@ -78,6 +80,34 @@ def _scaled_bind_pose(entry: dict, skin_data: dict, factors) -> bytes | None:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+def skn_edit_problems(skin_data: dict) -> list[str]:
+    """Reasons the in-place SKN edits in *skin_data* would crash or break the
+    game (skn_section.html#runtime-limits); empty when they are safe.
+
+    Checks each SK1/SK2 entry's effective vertex count (``VertexCntEdited``
+    or ``VertexCnt``) against the skinning loop's minimum and the locked-cache
+    buffer size, and that an SK1 ``BoneIndexEdited`` names a bone the model's
+    own skin already uses."""
+    stride = 6 * _comp_size(int(skin_data.get('QuantizeInfo', 0)))
+    problems = []
+    for kind in ('SK1', 'SK2'):
+        for index, entry in enumerate(skin_data.get(f'{kind}s', [])):
+            count = int(entry.get('VertexCntEdited', entry.get('VertexCnt', 0)))
+            problem = skn_direct_entry_problem(
+                kind, count, int(entry.get('VertexOffset', 0)), stride)
+            if problem:
+                problems.append(f'{kind}[{index}]: {problem}')
+    skinned = skin_bone_ids(skin_data)
+    for index, entry in enumerate(skin_data.get('SK1s', [])):
+        bone = entry.get('BoneIndexEdited')
+        if bone is not None and int(bone) not in skinned:
+            problems.append(
+                f'SK1[{index}]: bone {bone} is not one of the bones this model skins to; '
+                'its matrix is not a skinning matrix, so the vertices would be misplaced '
+                'or invisible')
+    return problems
+
 
 def skn_block_size(skin_data: dict, flush_ind_size: int = None) -> int:
     """Return the total byte length required for an SKN block.

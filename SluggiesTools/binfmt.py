@@ -61,6 +61,45 @@ def bti(b: bytes) -> int:
     return int.from_bytes(b, 'big')
 
 
+# SKN runtime limits on SK1/SK2 (direct-write) entries. See
+# _docs/_docs_model_format/skn_section.html#runtime-limits. Every vanilla
+# skinned block obeys them (180 unique blocks, 10,246 SK1/SK2 entries:
+# minimum count 3 for both kinds, maximum source bytes exactly 8180 / 4088).
+SKN_MIN_DIRECT_VERTICES = 3
+SKN_MAX_SOURCE_BYTES = {'SK1': 8180, 'SK2': 4088}
+
+
+def skn_direct_entry_problem(kind: str, vertex_count: int, vertex_offset: int,
+                             stride: int) -> str | None:
+    """Why an SK1/SK2 entry would break the game's skinning loop, or None.
+
+    The loop runs ``vertex_count - 1`` iterations through a count register,
+    so a 1-vertex entry wraps to 2**32 iterations and reads past the
+    locked-cache buffer; the entry's source (``vertex_offset + count *
+    stride`` bytes) must also fit that buffer."""
+    if vertex_count < SKN_MIN_DIRECT_VERTICES:
+        return (f'{kind} entry has {vertex_count} vertices; the game needs at least '
+                f'{SKN_MIN_DIRECT_VERTICES}')
+    source = vertex_offset + vertex_count * stride
+    if source > SKN_MAX_SOURCE_BYTES[kind]:
+        return (f'{kind} entry source is {source} bytes ({vertex_count} vertices); '
+                f'the game allows at most {SKN_MAX_SOURCE_BYTES[kind]}')
+    return None
+
+
+def skin_bone_ids(skin_data: dict | None) -> set[int]:
+    """Bones a ``.sluggie`` SkinData/SkinDataEdited dict's SK1/SK2/SKAcc
+    entries skin to (``BoneIndex``/``BoneIndex1``/``BoneIndex2``)."""
+    bones: set[int] = set()
+    for entry in (skin_data or {}).get('SK1s') or []:
+        bones.add(int(entry['BoneIndex']))
+    for entry in (skin_data or {}).get('SK2s') or []:
+        bones.update((int(entry['BoneIndex1']), int(entry['BoneIndex2'])))
+    for entry in (skin_data or {}).get('SKAccs') or []:
+        bones.add(int(entry['BoneIndex']))
+    return bones
+
+
 def decode_field(value, use_base64: bool) -> bytes | None:
     """Decode a binary field from a ``.sluggie`` JSON value.
 

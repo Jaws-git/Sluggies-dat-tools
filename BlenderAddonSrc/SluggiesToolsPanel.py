@@ -168,10 +168,39 @@ def _bone_metadata_is_current(arm_obj):
     return HostBones.bone_metadata_is_current(arm_obj.get('SluggiesBoneMetadataVersion'))
 
 
+# .sluggie path -> ChunkNumber, for armatures imported before the importer
+# stored SluggiesChunkNumber (read once per file, not on every redraw).
+_CHUNK_NUMBER_CACHE = {}
+
+
+def _model_chunk_number(arm_obj):
+    """The armature's .sluggie ChunkNumber (model directory), or None."""
+    chunk = arm_obj.get('SluggiesChunkNumber')
+    if chunk is not None:
+        return int(chunk)
+    path = arm_obj.get('SluggieFilePath')
+    if not path:
+        return None
+    if path not in _CHUNK_NUMBER_CACHE:
+        try:
+            with open(path, 'r') as handle:
+                _CHUNK_NUMBER_CACHE[path] = json.load(handle)['SluggiesModel'].get('ChunkNumber')
+        except (OSError, ValueError, KeyError):
+            _CHUNK_NUMBER_CACHE[path] = None
+    return _CHUNK_NUMBER_CACHE[path]
+
+
+def _model_is_stadium(arm_obj):
+    """Whether the armature's model is a stadium (dirs 7-16, the patcher's
+    STADIUM_CHUNKS): there a custom submesh must hang on a root bone."""
+    return TemplateSources.is_stadium_chunk(_model_chunk_number(arm_obj))
+
+
 def _ordered_host_bone_choices(context, arm_obj):
     records = _bone_records(arm_obj)
     claims = _gather_scene_claims(context, arm_obj, records)
-    choices = HostBones.classify_host_bones(records, claims)
+    choices = HostBones.classify_host_bones(
+        records, claims, roots_only=_model_is_stadium(arm_obj))
     return HostBones.order_host_bone_choices(choices, records)
 
 
@@ -238,6 +267,25 @@ def _template_specular_strength(context, arm_obj, template_source):
         if mat is not None and 'SpecularStrength' in mat:
             return max(0, min(255, int(mat['SpecularStrength'])))
     return TemplateSources.BUILTIN_DEFAULT_SPECULAR_STRENGTH
+
+
+def _set_custom_surface_metadata(mat, shader_mode, specular_strength):
+    """Metadata for a custom submesh's surface. No ShaderMode property: the
+    shader comes from the template source only, so an editable value would be
+    silently ignored on export. A surface whose template draws with a
+    specular shader gets DisplayStateId 7 and SpecularStrength, which the Set
+    Specular Strength dialog edits and the exporter writes; others get
+    neither."""
+    if shader_mode not in TemplateSources.SPECULAR_SHADER_MODES:
+        return
+    mat['DisplayStateId'] = 7
+    mat.id_properties_ui('DisplayStateId').update(
+        description="GX display-state command type for this surface.")
+    mat['SpecularStrength'] = int(specular_strength)
+    mat.id_properties_ui('SpecularStrength').update(
+        min=0, max=255, soft_min=0, soft_max=255,
+        description="Specular highlight intensity (0-255, linear TEV multiplier). "
+        "Edit via the 'Set Specular Strength' panel button.")
 
 
 def _new_surface_metadata(shader_mode, specular_strength):
@@ -360,7 +408,7 @@ def _template_source_enum_items(self, context):
     if arm_obj is None:
         return [('NONE', "None", _no_target_armature_message(context), 0)]
     choices = TemplateSources.build_template_source_choices(
-        _template_source_materials(context, arm_obj))
+        _template_source_materials(context, arm_obj), stadium=_model_is_stadium(arm_obj))
     if not choices:
         return [('NONE', "None", "No usable surface template found", 0)]
     return [
@@ -513,15 +561,13 @@ def _select_new_object(context, obj):
     context.view_layer.objects.active = obj
 
 
-def _create_custom_submesh_material(obj, custom_submesh_id, image, specular_strength):
+def _create_custom_submesh_material(obj, custom_submesh_id, image, shader_mode, specular_strength):
     surface_id = f'{custom_submesh_id}_ds0'
     mat = _create_material(f'{obj.name}_{surface_id}', 'UVMap', image, wrap_s=1)
     mat['SurfaceId'] = surface_id
     mat.id_properties_ui('SurfaceId').update(
         description="Stable draw-state identity for this custom submesh. Do not delete.")
-    # Read-only for the MVP (plan step 3): the dialog only picks a template
-    # source, never a shader mode directly.
-    _set_surface_material_metadata(mat, _new_surface_metadata('Spec', specular_strength))
+    _set_custom_surface_metadata(mat, shader_mode, specular_strength)
     obj.data.materials.append(mat)
     return mat
 
@@ -535,7 +581,8 @@ def _write_custom_submesh_texture(sluggie_path, submesh_name):
     folder (see _resolve_export_texture_context), so the new PNG lands
     where the rest of that model's textures already live.
 
-    Returns (image, error). Refuses to overwrite an existing file.
+    Returns (image, reused, error). An existing PNG of that name is never
+    overwritten: it is loaded as-is and *reused* is True.
     """
     try:
         with open(sluggie_path, 'r') as handle:
@@ -545,11 +592,15 @@ def _write_custom_submesh_texture(sluggie_path, submesh_name):
     try:
         _descriptors, tex_dir, _owns_textures = _resolve_export_texture_context(sluggie_path, model)
     except ValueError as exc:
-        return None, str(exc)
+        return None, False, str(exc)
     file_name = f'{submesh_name}.png'
     file_path = os.path.join(tex_dir, file_name)
     if os.path.exists(file_path):
-        return None, f"{file_name} already exists in tex/; refusing to overwrite"
+        try:
+            image = bpy.data.images.load(file_path, check_existing=True)
+        except RuntimeError as exc:
+            return None, False, f"Could not load existing {file_name} from tex/: {exc}"
+        return image, True, None
 
     os.makedirs(tex_dir, exist_ok=True)
     image = bpy.data.images.new(
@@ -561,7 +612,7 @@ def _write_custom_submesh_texture(sluggie_path, submesh_name):
     image.filepath_raw = file_path
     image.file_format = 'PNG'
     image.save()
-    return image, None
+    return image, False, None
 
 
 def _rigid_mesh_kind(obj):
@@ -620,6 +671,7 @@ def _reassign_choices(context, arm_obj, obj):
         records, claims,
         moving_submesh_index=submesh_index if kind == 'donor' else None,
         moving_custom_bone_id=moving_bone_id if kind == 'custom' else None,
+        roots_only=_model_is_stadium(arm_obj),
     )
 
 
@@ -745,6 +797,7 @@ class SLUGGIES_OT_reassign_bone(bpy.types.Operator):
         if arm_obj is None or obj is None:
             self.report({"ERROR"}, _no_target_armature_message(context))
             return {"CANCELLED"}
+        _renumber_added_bones_reporting(self, arm_obj)
 
         ordered = _reassign_choices(context, arm_obj, obj)
         if not ordered:
@@ -900,7 +953,7 @@ class SLUGGIES_OT_add_material(bpy.types.Operator):
 
         self.material_name = _default_new_material_name(obj)
         template_choices = TemplateSources.build_template_source_choices(
-            _template_source_materials(context, arm_obj))
+            _template_source_materials(context, arm_obj), stadium=_model_is_stadium(arm_obj))
         if template_choices:
             self.template_source = template_choices[0].template_source
         self.assign_selected_faces = True
@@ -986,8 +1039,11 @@ class SLUGGIES_OT_add_material(bpy.types.Operator):
         mat['TemplateTextureIndex'] = template_texture_index
         mat.id_properties_ui('TemplateTextureIndex').update(
             description="Donor texture index this surface's GX format clones; never a fallback texture.")
-        _set_surface_material_metadata(mat, _new_surface_metadata(
-            shader_mode, _template_specular_strength(context, arm_obj, self.template_source)))
+        specular_strength = _template_specular_strength(context, arm_obj, self.template_source)
+        if kind == 'donor':
+            _set_surface_material_metadata(mat, _new_surface_metadata(shader_mode, specular_strength))
+        else:
+            _set_custom_surface_metadata(mat, shader_mode, specular_strength)
         mat['WrapS'] = wrap_s
         mat['WrapT'] = wrap_t
         mat.id_properties_ui('WrapS').update(description="GX wrap mode for U, copied from the template.")
@@ -1058,10 +1114,67 @@ def _next_new_bone_creation_order(arm_obj):
     return max(orders) + 1 if orders else 0
 
 
+def _renumber_added_bones(arm_obj):
+    """Rename Add Bone bones to the `bone_<id>` the exporter will give them
+    (HostBones.added_bone_renames). Renaming a Bone makes Blender rename the
+    matching vertex groups on every mesh the armature deforms, so custom
+    submeshes keep their host. Two passes, since a target name can still be
+    held by another added bone. Returns the applied renames."""
+    bones = arm_obj.data.bones
+    donor_count = sum(1 for b in bones if not b.get('SluggiesUserAdded'))
+    renames = HostBones.added_bone_renames(donor_count, [
+        (b.name, int(b.get('SluggiesCreationOrder', 0)))
+        for b in bones if b.get('SluggiesUserAdded')
+    ])
+    temporary = {}
+    for index, old_name in enumerate(renames):
+        bones[old_name].name = f'__sluggies_renumber_{index}'
+        temporary[bones[f'__sluggies_renumber_{index}'].name] = renames[old_name]
+    for temp_name, new_name in temporary.items():
+        bones[temp_name].name = new_name
+    return renames
+
+
+def _renumber_added_bones_reporting(op, arm_obj):
+    renames = _renumber_added_bones(arm_obj)
+    if renames:
+        op.report({"INFO"}, "Renumbered added bones: " + ", ".join(
+            f"{old} -> {new}" for old, new in sorted(renames.items())))
+    return renames
+
+
+class SLUGGIES_OT_renumber_added_bones(bpy.types.Operator):
+    """Rename added bones to the ids they export with, after an added bone
+    was deleted. Add Bone, Add Submesh and Reassign do this automatically;
+    export refuses while the names are out of step."""
+    bl_idname = "sluggies.renumber_added_bones"
+    bl_label = "Renumber Added Bones"
+    bl_description = ("Rename added bones (and their vertex groups) to the bone ids "
+                      "they export with, e.g. after deleting an added bone")
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        if context.mode != 'OBJECT':
+            if hasattr(cls, 'poll_message_set'):
+                cls.poll_message_set("Switch to Object Mode")
+            return False
+        return _find_target_armature(context) is not None
+
+    def execute(self, context):
+        arm_obj = _find_target_armature(context)
+        if arm_obj is None:
+            self.report({"ERROR"}, _no_target_armature_message(context))
+            return {"CANCELLED"}
+        if not _renumber_added_bones_reporting(self, arm_obj):
+            self.report({"INFO"}, "Added bone names already match their ids")
+        return {"FINISHED"}
+
+
 def _unused_bone_name(arm_obj):
-    """A `bone_<N>` name not already used in *arm_obj* (plan step 2). Purely
-    cosmetic: the exporter reassigns real ids from SluggiesCreationOrder, not
-    from this name (user contract, PLAN_AddBones.md 'Proposed user contract')."""
+    """A `bone_<N>` name not already used in *arm_obj*. Purely cosmetic: the
+    exporter reassigns real ids from SluggiesCreationOrder, not from this
+    name."""
     n = len(arm_obj.data.bones)
     while f'bone_{n}' in arm_obj.data.bones:
         n += 1
@@ -1069,19 +1182,21 @@ def _unused_bone_name(arm_obj):
 
 
 def _create_added_bone(context, arm_obj, parent_bone_name):
-    """Create one inert leaf bone parented to *parent_bone_name* (plan step 2),
-    following the user contract: no GeoId/track, self-mirrored role 3,
-    InheritTransform true, DrawPriority 0. The SRT type byte is not set here:
-    it is a component-presence mask over the bone's own rotation/translation,
-    so the exporter derives it from the values it writes (PLAN_AddBones.md
-    F11) rather than inheriting a parent's mask that may not fit."""
+    """Create one inert leaf bone parented to *parent_bone_name*: no
+    GeoId/track, self-mirrored role 3, InheritTransform true, DrawPriority 0.
+    *parent_bone_name* None makes a root bone at the 3D cursor instead (only
+    for stadiums, where a custom submesh must hang on a root bone).
+    The SRT type byte is not set here: it is a component-presence mask over
+    the bone's own rotation/translation, so the exporter derives it from the
+    values it writes (act_section.html#srt-type) rather than inheriting a
+    parent's mask that may not fit."""
     prev_active = context.view_layer.objects.active
     prev_mode = context.object.mode if context.object is not None else 'OBJECT'
     context.view_layer.objects.active = arm_obj
     bpy.ops.object.mode_set(mode='EDIT')
     try:
         edit_bones = arm_obj.data.edit_bones
-        parent_eb = edit_bones.get(parent_bone_name)
+        parent_eb = edit_bones.get(parent_bone_name) if parent_bone_name else None
         new_name = _unused_bone_name(arm_obj)
         new_eb = edit_bones.new(new_name)
         new_eb.parent = parent_eb
@@ -1101,8 +1216,12 @@ def _create_added_bone(context, arm_obj, parent_bone_name):
             if local_dir.length > 1e-9 else Vector((0.0, 0.0, ADDED_BONE_LENGTH))
         )
         # Originates at the parent's tail, not floating off to the side, so
-        # chained bones visually continue the parent like a real skeleton.
-        new_eb.head = parent_eb.tail
+        # chained bones visually continue the parent like a real skeleton. A
+        # root bone starts at the 3D cursor.
+        new_eb.head = (
+            parent_eb.tail if parent_eb is not None
+            else arm_obj.matrix_world.inverted() @ context.scene.cursor.location
+        )
         new_eb.tail = new_eb.head + tail_offset
         new_eb.align_roll(local_up)
         new_name = new_eb.name
@@ -1138,8 +1257,8 @@ def _end_bone_name_display(op, arm_obj):
 
 class SLUGGIES_OT_add_bone(bpy.types.Operator):
     """Add a new inert leaf bone to the skeleton, for a custom submesh to
-    attach to once the donor's own free bones are exhausted (PLAN_AddBones.md,
-    Hammerspace Mode required on export)."""
+    attach to once the donor's own free bones are exhausted
+    (act_section.html#appending-bones; Hammerspace Mode required on export)."""
     bl_idname = "sluggies.add_bone"
     bl_label = "Add Bone"
     bl_description = "Add a new leaf bone parented to the chosen bone (Hammerspace only)"
@@ -1171,6 +1290,13 @@ class SLUGGIES_OT_add_bone(bpy.types.Operator):
         if not _bone_metadata_is_current(arm_obj):
             self.report({"ERROR"}, HostBones.RE_IMPORT_MESSAGE)
             return {"CANCELLED"}
+        _renumber_added_bones_reporting(self, arm_obj)
+        if _model_is_stadium(arm_obj):
+            # A stadium mesh must hang on a root bone, so here Add Bone makes
+            # a root bone at the 3D cursor; there is no parent to pick.
+            new_bone = _create_added_bone(context, arm_obj, None)
+            self.report({"INFO"}, f"Added root bone {new_bone.name} at the 3D cursor (stadium)")
+            return {"FINISHED"}
         active_bone = arm_obj.data.bones.active
         if active_bone is not None and _bone_id_from_name(active_bone.name) is not None:
             self.parent_bone = active_bone.name
@@ -1241,6 +1367,7 @@ class SLUGGIES_OT_add_submesh(bpy.types.Operator):
         if 'SluggieFilePath' not in arm_obj.keys() or not _bone_metadata_is_current(arm_obj):
             self.report({"ERROR"}, HostBones.RE_IMPORT_MESSAGE)
             return {"CANCELLED"}
+        _renumber_added_bones_reporting(self, arm_obj)
 
         ordered = _ordered_host_bone_choices(context, arm_obj)
         if not ordered:
@@ -1252,7 +1379,7 @@ class SLUGGIES_OT_add_submesh(bpy.types.Operator):
         if default_choice is not None:
             self.host_bone = f'bone_{default_choice.bone_id}'
         template_choices = TemplateSources.build_template_source_choices(
-            _template_source_materials(context, arm_obj))
+            _template_source_materials(context, arm_obj), stadium=_model_is_stadium(arm_obj))
         if template_choices:
             self.template_source = template_choices[0].template_source
         _begin_bone_name_display(self, arm_obj)
@@ -1297,7 +1424,7 @@ class SLUGGIES_OT_add_submesh(bpy.types.Operator):
                 return {"CANCELLED"}
 
             custom_submesh_id = _next_custom_submesh_id(context)
-            image, error = _write_custom_submesh_texture(sluggie_path, submesh_name)
+            image, texture_reused, error = _write_custom_submesh_texture(sluggie_path, submesh_name)
             if error:
                 self.report({"ERROR"}, error)
                 return {"CANCELLED"}
@@ -1306,10 +1433,14 @@ class SLUGGIES_OT_add_submesh(bpy.types.Operator):
                 context, arm_obj, bone_id, custom_submesh_id, submesh_name, self.template_source)
             _create_custom_submesh_material(
                 obj, custom_submesh_id, image,
+                _template_shader_mode(context, arm_obj, self.template_source),
                 _template_specular_strength(context, arm_obj, self.template_source))
             _select_new_object(context, obj)
 
-            self.report({"INFO"}, f"Added {obj.name} on bone_{bone_id} ({self.template_source})")
+            message = f"Added {obj.name} on bone_{bone_id} ({self.template_source})"
+            if texture_reused:
+                message += f"; using existing tex/{submesh_name}.png"
+            self.report({"INFO"}, message)
             return {"FINISHED"}
         finally:
             _end_bone_name_display(self, arm_obj)
@@ -1428,6 +1559,7 @@ class SLUGGIES_PT_tools(bpy.types.Panel):
         layout = self.layout
         layout.operator(SLUGGIES_OT_add_submesh.bl_idname)
         layout.operator(SLUGGIES_OT_add_bone.bl_idname)
+        layout.operator(SLUGGIES_OT_renumber_added_bones.bl_idname)
         layout.operator(SLUGGIES_OT_set_specular_strength.bl_idname)
 
         layout.separator()
@@ -1440,6 +1572,7 @@ class SLUGGIES_PT_tools(bpy.types.Panel):
 def register():
     bpy.utils.register_class(SLUGGIES_OT_add_submesh)
     bpy.utils.register_class(SLUGGIES_OT_add_bone)
+    bpy.utils.register_class(SLUGGIES_OT_renumber_added_bones)
     bpy.utils.register_class(SLUGGIES_OT_reassign_bone)
     bpy.utils.register_class(SLUGGIES_OT_add_material)
     bpy.utils.register_class(SluggiesSpecularStrengthItem)
@@ -1459,5 +1592,6 @@ def unregister():
     bpy.utils.unregister_class(SluggiesSpecularStrengthItem)
     bpy.utils.unregister_class(SLUGGIES_OT_add_material)
     bpy.utils.unregister_class(SLUGGIES_OT_reassign_bone)
+    bpy.utils.unregister_class(SLUGGIES_OT_renumber_added_bones)
     bpy.utils.unregister_class(SLUGGIES_OT_add_bone)
     bpy.utils.unregister_class(SLUGGIES_OT_add_submesh)

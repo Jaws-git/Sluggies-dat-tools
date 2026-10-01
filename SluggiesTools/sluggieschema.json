@@ -560,6 +560,11 @@
               "type": "string",
               "description": "Base64-encoded color index buffer, packed as big-endian uint16 triplets aligned face-for-face with FacesData. Absent when ColorChannelData is absent."
             },
+            "ColorChannelQuantizeInfo": {
+              "type": "integer",
+              "enum": [0, 48],
+              "description": "Format of ColorChannelData: 48 = RGBA4444 (CompCount 4, the default when absent), 0 = RGB565 (CompCount 3, no alpha; what most stadium colour arrays use). Both are 2 bytes per entry."
+            },
             "UVChannels": {
               "type": "array",
               "minItems": 1,
@@ -1152,11 +1157,11 @@
             },
             "MirrorBoneId": {
               "type": ["number", "null"],
-              "description": "BoneId this bone mirrors, decoded from the kind-2 ACT user-data entry (u8 mirror_bone_id, PLAN_AddBones.md F3). A bone's mirror table is a perfect involution on every well-formed donor: MirrorBoneId[MirrorBoneId[i]] == i. Self-mapped for centreline bones. Null when the donor has no kind-2 entry (F4) or its table doesn't fit the expected boneCount-long shape (F6)."
+              "description": "BoneId this bone mirrors, decoded from the kind-2 ACT user-data entry (u8 mirror_bone_id; see act_section.html#user-data). A bone's mirror table is a perfect involution on every well-formed donor: MirrorBoneId[MirrorBoneId[i]] == i. Self-mapped for centreline bones. Null when the donor has no kind-2 entry or its table doesn't fit the expected boneCount-long shape (a few malformed donors)."
             },
             "MirrorRole": {
               "type": ["number", "null"],
-              "description": "Role byte paired with MirrorBoneId in the kind-2 entry (F3): 1 = main root, 2 = extra root, 3 = ordinary bone, 0/4 = rare one-offs. Null under the same conditions as MirrorBoneId."
+              "description": "Role byte paired with MirrorBoneId in the kind-2 entry: 1 = main root, 2 = extra root, 3 = ordinary bone, 0/4 = rare one-offs. Null under the same conditions as MirrorBoneId."
             },
             "SRTType": {
               "type": "number",
@@ -1226,7 +1231,7 @@
       },
       "ACTUserData": {
         "type": ["object", "null"],
-        "description": "Describes the ACT section's user-data descriptor chain (PLAN_AddBones.md F3, F5), or null when the model has no ACT user data at all (F4 -- a legal, shipped state). Kind 2 (mirror table) and kind 3 (track table) are fully decoded elsewhere (BoneHierarchy's MirrorBoneId/MirrorRole and TrackId); this only preserves which kinds are present, in order, plus every kind-4 entry verbatim so a rebuild can reproduce the chain without needing to understand kind-4's contents.",
+        "description": "Describes the ACT section's user-data descriptor chain (act_section.html#user-data), or null when the model has no ACT user data at all (a legal, shipped state). Kind 2 (mirror table) and kind 3 (track table) are fully decoded elsewhere (BoneHierarchy's MirrorBoneId/MirrorRole and TrackId); this only preserves which kinds are present, in order, plus every kind-4 entry verbatim so a rebuild can reproduce the chain without needing to understand kind-4's contents.",
         "properties": {
           "PresentKinds": {
             "type": "array",
@@ -1235,7 +1240,7 @@
           },
           "Kind4Entries": {
             "type": "array",
-            "description": "Every kind-4 descriptor's payload, verbatim and undecoded (F5: '(u16 track_id, u16 = 2)[count]', references tracks not bones). Empty when the donor has no kind-4 entry.",
+            "description": "Every kind-4 descriptor's payload, verbatim and undecoded ('(u16 track_id, u16 = 2)[count]', references tracks not bones). Empty when the donor has no kind-4 entry.",
             "items": {
               "type": "object",
               "properties": {
@@ -1282,15 +1287,15 @@
             },
             "TrackId": {
               "type": "number",
-              "description": "Animation track index to assign to this bone in the rebuilt ACT user-data section. New (Phase 4 'Add bone') bones always use 0xFFFF (no track, PLAN_AddBones.md user contract)."
+              "description": "Animation track index to assign to this bone in the rebuilt ACT user-data section. New ('Add Bone') bones always use 0xFFFF (no track)."
             },
             "MirrorBoneId": {
               "type": "number",
-              "description": "BoneId this bone mirrors, to be written into the rebuilt kind-2 user-data entry (F3). New bones must self-mirror (equal to this entry's own BoneId) per the user contract and Phase 3 rule 8; the patcher rejects anything else."
+              "description": "BoneId this bone mirrors, to be written into the rebuilt kind-2 user-data entry. New bones must self-mirror (equal to this entry's own BoneId); the patcher rejects anything else."
             },
             "MirrorRole": {
               "type": "number",
-              "description": "Role byte paired with MirrorBoneId (F3): 1 = main root, 2 = extra root, 3 = ordinary bone. New bones must use 3 per the user contract and Phase 3 rule 8."
+              "description": "Role byte paired with MirrorBoneId: 1 = main root, 2 = extra root, 3 = ordinary bone. New bones must use 3."
             },
             "SRTType": {
               "type": "number",
@@ -1306,7 +1311,7 @@
             },
             "UserAdded": {
               "type": "boolean",
-              "description": "True when this entry is a new leaf bone added in Blender (SluggiesUserAdded marker property) rather than a donor bone carried through from BoneHierarchy. Drives Phase 3 validation: user-added bones may only append to the end of their parent's child chain (F10) and must be leaves (no bone may name a user-added bone as its parent)."
+              "description": "True when this entry is a new leaf bone added in Blender (SluggiesUserAdded marker property) rather than a donor bone carried through from BoneHierarchy. Drives the patcher's bone validation (act_section.html#appending-bones): user-added bones may only append to the end of their parent's child chain and must be leaves (no bone may name a user-added bone as its parent)."
             },
             "Translation": {
               "type": "array",

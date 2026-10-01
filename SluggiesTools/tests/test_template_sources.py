@@ -15,14 +15,22 @@ from TemplateSources import (  # noqa: E402
     TemplateSourceChoice,
     TemplateSourceMaterial,
     BUILTIN_DEFAULT_SPECULAR_STRENGTH,
+    STADIUM_CHUNKS,
     build_template_source_choices,
     builtin_template_layers,
+    builtin_template_normals,
+    is_stadium_chunk,
     next_new_surface_key,
     template_surface_id,
 )
 
 
-BUILTIN_CHOICES = [f'builtin:{name}' for name in BUILTIN_TEMPLATE_NAMES]
+# What a non-stadium model is offered: the stadium-only built-ins are hidden.
+BUILTIN_CHOICES = [
+    f'builtin:{name}' for name in BUILTIN_TEMPLATE_NAMES
+    if not BUILTIN_TEMPLATES[name].stadium_only
+]
+STADIUM_BUILTINS = ['builtin:stadium_shdw_opaque_v1', 'builtin:stadium_shdw_cutout_v1']
 
 
 def _mat(surface_id, comp_count, shader_mode):
@@ -90,6 +98,23 @@ class BuildTemplateSourceChoicesTests(unittest.TestCase):
         choices = build_template_source_choices([_mat('sm2_ds1', 4, 'Spec')])
         self.assertEqual([c.template_source for c in choices], BUILTIN_CHOICES)
 
+    def test_stadium_lists_its_builtins_first(self):
+        """A stadium preselects the opaque stadium built-in; the character
+        built-ins stay available after it (rigid_spec_v1 also works there)."""
+        choices = build_template_source_choices([_mat('sm1_ds4', 3, '11110020')], stadium=True)
+        self.assertEqual(
+            [c.template_source for c in choices],
+            STADIUM_BUILTINS + BUILTIN_CHOICES + ['rigid:sm1_ds4'],
+        )
+
+    def test_stadium_builtins_are_hidden_elsewhere(self):
+        for template_source in STADIUM_BUILTINS:
+            self.assertNotIn(template_source, BUILTIN_CHOICES)
+            self.assertNotIn(
+                template_source,
+                [c.template_source for c in build_template_source_choices([])],
+            )
+
     def test_template_source_choice_property(self):
         self.assertEqual(TemplateSourceChoice('rigid', 'sm1_ds5').template_source, 'rigid:sm1_ds5')
 
@@ -102,14 +127,30 @@ class BuiltinTemplateMetadataTests(unittest.TestCase):
     """Decision 9: five built-in shader modes, but only the ones Phase 0
     probe 7 has confirmed in game are offered by the dialogs."""
 
+    def test_stadium_builtins_export_no_normals(self):
+        for name, template in BUILTIN_TEMPLATES.items():
+            with self.subTest(name):
+                self.assertEqual(builtin_template_normals(name), not template.stadium_only)
+        with self.assertRaisesRegex(ValueError, 'unknown template'):
+            builtin_template_normals('nope')
+
+    def test_stadium_chunks(self):
+        self.assertEqual(list(STADIUM_CHUNKS), list(range(7, 17)))
+        self.assertTrue(is_stadium_chunk(10))
+        for chunk in (None, 5, 6, 17, 136, '10'):
+            self.assertFalse(is_stadium_chunk(chunk), chunk)
+
     def test_registry_covers_the_five_shader_modes(self):
         self.assertEqual(
-            sorted(t.shader_mode for t in BUILTIN_TEMPLATES.values()),
+            sorted({t.shader_mode for t in BUILTIN_TEMPLATES.values()}),
             ['GhSp', 'LhSp', 'RhSp', 'Shdw', 'Spec'],
         )
 
     def test_only_verified_templates_are_offered(self):
-        self.assertEqual(BUILTIN_TEMPLATE_NAMES, ('rigid_spec_v1', 'rigid_rhsp_v1', 'rigid_lhsp_v1'))
+        self.assertEqual(BUILTIN_TEMPLATE_NAMES, (
+            'rigid_spec_v1', 'rigid_rhsp_v1', 'rigid_lhsp_v1',
+            'stadium_shdw_opaque_v1', 'stadium_shdw_cutout_v1',
+        ))
         for name, template in BUILTIN_TEMPLATES.items():
             with self.subTest(name):
                 self.assertEqual(

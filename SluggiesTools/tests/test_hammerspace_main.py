@@ -24,6 +24,29 @@ if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
 import synthetic_donor
 
 
+class ValidationReportFormattingTests(unittest.TestCase):
+    def test_gpl_texture_references_are_compact_records(self):
+        report = main._format_report_json({
+            'validator_facts': {
+                'gpl_texture_references': [
+                    {'submesh': 0, 'display_state': 1, 'texture_index': 2},
+                    {'submesh': 1, 'display_state': 3, 'texture_index': 4},
+                ],
+                'other_fact': {'nested': {'value': 1}},
+            }
+        })
+
+        self.assertIn(
+            '    {"submesh": 0, "display_state": 1, "texture_index": 2},',
+            report,
+        )
+        self.assertIn(
+            '    {"submesh": 1, "display_state": 3, "texture_index": 4}',
+            report,
+        )
+        self.assertIn('"other_fact": {\n', report)
+
+
 class BuildSKNSkinningDataTests(unittest.TestCase):
     def test_preserves_recorded_source_array_gap_for_unchanged_geometry(self):
         def sk1(pointer):
@@ -1732,6 +1755,53 @@ class BuildTEXTests(unittest.TestCase):
         appended_ptr = struct.unpack_from('>I', section, appended_desc)[0]
         self.assertEqual(section[appended_ptr:appended_ptr + 32], b'\xAA' * 32)
 
+    def test_build_tex_appends_single_level_from_mipmapped_template(self):
+        # Texture 16 of sta03 (Yoshi Park): 3 extra mips, MaxLOD 5, LOD bias
+        # -2.4. The addition keeps the format and the other sampler bytes
+        # but must not claim mips it does not have.
+        donor = self._make_texture(
+            0, width=1, height=1, fmt=0xE,
+            image_offset=0x100, image_length=8,
+        )
+        donor.edge_lod_enable = True
+        donor.min_lod = 1
+        donor.max_lod = 5
+        donor.unpacked = 1
+        donor.desc_unknown_at_10 = bytes.fromhex('c019999a000003')
+        parsed = self._make_parsed([donor])
+        addition = texture_helper.TexturePlanEntry(
+            texture_index=1,
+            texture_file_name='new.png',
+            width=4,
+            height=4,
+            format=0xE,
+            format_name='CMPR',
+            image_data=b'\xAA' * 8,
+            palette_data=b'',
+            palette_entries=0,
+            palette_format=None,
+            template_texture_index=0,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = pathlib.Path(temp_dir) / 'dt_na.dat'
+            buf = bytearray(0x200)
+            buf[0x100:0x108] = b'\xCD' * 8
+            input_dat.write_bytes(bytes(buf))
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                section = main.BuildTEX(
+                    parsed, texture_helper.TexturePlan(entries=(addition,))
+                )
+
+        donor_desc = 4
+        appended_desc = 4 + 0x20
+        # The cloned donor keeps its mip state.
+        self.assertEqual(section[donor_desc + 0x0C:donor_desc + 0x10], bytes([1, 1, 5, 1]))
+        self.assertEqual(section[donor_desc + 0x10:donor_desc + 0x17],
+                         bytes.fromhex('c019999a000003'))
+        self.assertEqual(section[appended_desc + 0x0C:appended_desc + 0x10], bytes([1, 1, 1, 1]))
+        self.assertEqual(section[appended_desc + 0x10:appended_desc + 0x17], bytes(7))
+        self.assertEqual(section[appended_desc + 0x17], 0xE)
+
     def test_build_tex_rejects_malformed_addition_plan(self):
         parsed = self._make_parsed([
             self._make_texture(0, width=1, height=1, fmt=0xE),
@@ -2649,6 +2719,78 @@ class ValidateCustomSubmeshesTests(unittest.TestCase):
         model = _validation_base_model()
         main._validate_custom_submeshes(model)  # must not raise
 
+    def test_stadium_refuses_a_child_host_bone(self):
+        # Yoshi Park (2026-10-01): a mesh on a child bone drew nearly
+        # transparent; the same mesh on root bone 0 drew normally.
+        model = _validation_base_model()
+        model['ChunkNumber'] = 10
+        model['CustomSubmeshes'] = [_validation_entry(HostBoneId=1)]
+        with self.assertRaisesRegex(ValueError, 'host bone 1 has parent bone 0; a stadium'):
+            main._validate_custom_submeshes(model)
+
+    def test_stadium_accepts_a_root_host_bone(self):
+        model = _validation_base_model()
+        model['ChunkNumber'] = 10
+        model['CustomSubmeshes'] = [_validation_entry(HostBoneId=0)]
+        main._validate_custom_submeshes(model)  # no raise
+
+    def test_child_host_bone_is_fine_outside_stadiums(self):
+        for chunk in (None, 6, 17, 18, 136):
+            with self.subTest(chunk=chunk):
+                model = _validation_base_model()
+                if chunk is not None:
+                    model['ChunkNumber'] = chunk
+                model['CustomSubmeshes'] = [_validation_entry(HostBoneId=1)]
+                main._validate_custom_submeshes(model)  # no raise
+
+    def _stadium_builtin_model(self, chunk, **entry):
+        model = _validation_base_model()
+        model['ChunkNumber'] = chunk
+        model['CustomSubmeshes'] = [_validation_entry(
+            HostBoneId=0, TemplateSource='builtin:stadium_shdw_cutout_v1', **entry,
+        )]
+        return model
+
+    def test_stadium_builtin_is_accepted_in_a_stadium(self):
+        main._validate_custom_submeshes(self._stadium_builtin_model(10))  # no raise
+
+    def test_stadium_builtin_is_refused_outside_stadiums(self):
+        with self.assertRaisesRegex(ValueError, 'for stadium models only'):
+            main._validate_custom_submeshes(self._stadium_builtin_model(18))
+
+    def test_stadium_builtin_refuses_normals(self):
+        model = self._stadium_builtin_model(
+            10,
+            NormalBufferData=base64.b64encode(bytes(6)).decode('ascii'),
+            NormalFacesData=base64.b64encode(struct.pack('>3H', 0, 0, 0)).decode('ascii'),
+        )
+        with self.assertRaisesRegex(ValueError, 'draws without normals'):
+            main._validate_custom_submeshes(model)
+
+    def test_stadium_builtin_records_are_one_layer_shdw(self):
+        for name, type6 in (('stadium_shdw_opaque_v1', '00000374'),
+                            ('stadium_shdw_cutout_v1', '00000570')):
+            with self.subTest(name):
+                records = main._custom_submesh_builtin_records(_validation_base_model(), name)
+                self.assertEqual([r[0] for r in records], [1, 4, 3, 6, 7])
+                self.assertEqual(records[1][2], 'fffffff0')
+                self.assertEqual(records[3][2], type6)
+                self.assertEqual((records[4][1], records[4][2]), (bytes(3), 'Shdw'))
+
+    def test_stadium_chunks_match_the_exporter(self):
+        # export.py prompts on import, so read its constant from the source.
+        import ast
+        source = (pathlib.Path(main.__file__).resolve().parents[1] / 'export.py').read_text(encoding='utf-8')
+        for node in ast.parse(source).body:
+            if isinstance(node, ast.Assign) and any(
+                getattr(t, 'id', None) == 'STADIUM_DIR_INDICES' for t in node.targets
+            ):
+                self.assertEqual(eval(compile(ast.Expression(node.value), 'export', 'eval')),
+                                 main.STADIUM_CHUNKS)
+                break
+        else:
+            self.fail('export.STADIUM_DIR_INDICES not found')
+
     def test_missing_hammerspace_flag_is_rejected(self):
         model = _validation_base_model()
         model['UseHammerspace'] = False
@@ -2845,8 +2987,38 @@ class ValidateCustomSubmeshesTests(unittest.TestCase):
                 model['CustomSubmeshes'] = [entry]
                 main._validate_custom_submeshes(model)  # no raise
 
+    def test_float_positions_are_accepted_with_a_12_byte_stride(self):
+        model = _validation_base_model()
+        model['CustomSubmeshes'] = [_validation_entry(
+            VertexBufferQuantizeInfo=0x40,
+            VertexBufferData=base64.b64encode(struct.pack('>3f', 1.5, -2.0, 3.25)).decode('ascii'),
+        )]
+        main._validate_custom_submeshes(model)  # no raise
+
+        # 6 bytes is one s16 entry but only half a float entry.
+        model['CustomSubmeshes'] = [_validation_entry(VertexBufferQuantizeInfo=0x40)]
+        with self.assertRaisesRegex(ValueError, 'not a whole number of rigid position entries'):
+            main._validate_custom_submeshes(model)
+
+    def test_float_positions_reach_the_blob_header_and_bounds(self):
+        sub = main.Submesh(
+            submesh_index=1, mesh_name='CustomSubmesh_0', faces_count=1,
+            faces_data=struct.pack('>3H', 0, 1, 2), face_texture_indices=b'',
+            vertex_data=struct.pack('>9f', 0, 0, 0, 56.5, 0, 0, 0, -25.25, 76.0),
+            vertex_comp_count=3, vertex_quantize_info=0x40,
+            uv_channels=[], color_channels=[], draw_states=[], position_data_ptr_field_offset=0,
+            vertex_count_field_offset=0, normal_buffer=None, source_layout_offset=0,
+            source_position_data_offset=0, preserve_source_layout=False,
+        )
+        blob, _ = main._build_rigid_submesh_blob(sub)
+        pos_off = struct.unpack_from('>I', blob, 0x00)[0]
+        data_off, count, quant, comp = struct.unpack_from('>IHBB', blob, pos_off)
+        self.assertEqual((count, quant, comp), (3, 0x40, 3))
+        self.assertEqual(blob[data_off:data_off + 36], sub.vertex_data)
+        self.assertEqual(main._submesh_position_half_extents(sub), (56.5, 25.25, 76.0))
+
     def test_position_quantize_info_outside_the_s16_range_is_rejected(self):
-        for quantize_info in (64, 60, 47, 0x40, 'x', True):
+        for quantize_info in (60, 47, 0x41, 0x70, 'x', True):
             with self.subTest(quantize_info=quantize_info):
                 model = _validation_base_model()
                 model['CustomSubmeshes'] = [_validation_entry(
@@ -2929,7 +3101,8 @@ class BuildCustomSubmeshAdditionalTextureIndexTests(unittest.TestCase):
         model = _validation_base_model()
         cs = SimpleNamespace(
             template_source='builtin:rigid_spec_v1', custom_submesh_id='custom0',
-            vertex_data=b'\x00' * 6, normal_data=None, color_data=None, uv_channels=[],
+            vertex_data=b'\x00' * 6, vertex_quantize_info=59,
+            normal_data=None, color_data=None, uv_channels=[],
             texture_assignment=SimpleNamespace(
                 donor_texture_index=None, additional_texture_file_name='new.png',
             ),
@@ -2998,6 +3171,53 @@ class CustomSubmeshSpecularStrengthTests(unittest.TestCase):
         self.assertEqual(records[2][1], b'\xff\x03\x04')
         self.assertEqual(records[0][1], b'\x10\x01\x02')
         self.assertEqual(records[3][1], b'\x30\x05\x06')
+
+    def _color_channel(self, color_format):
+        with synthetic_donor.donor_environment() as env:
+            data = env.reload()
+        model = data['SluggiesModel']
+        model['UseHammerspace'] = True
+        host_bone_id = _free_host_bones(model, 1)[0]
+        cs_dict = _cube_custom_submesh(
+            'custom0', host_bone_id, 'builtin:rigid_spec_v1', model.get('UseBase64', True),
+        )
+        if color_format is not None:
+            cs_dict['ColorChannelQuantizeInfo'] = color_format
+        model['CustomSubmeshes'] = [cs_dict]
+        main._validate_custom_submeshes(model)
+        cs = main.ParseSluggie(data).custom_submeshes[0]
+        sub = main._build_custom_submesh(
+            model, cs, main._custom_submesh_rigid_surfaces(model), len(model['Submeshes']),
+        )
+        channel = sub.color_channels[0]
+        return channel.comp_count, channel.quantize_info
+
+    def test_color_format_defaults_to_rgba4444(self):
+        self.assertEqual(self._color_channel(None), (4, 48))
+
+    def test_color_format_rgb565_is_written_with_comp_count_3(self):
+        self.assertEqual(self._color_channel(0), (3, 0))
+
+    def test_unknown_color_format_is_rejected_by_validation(self):
+        for bad in (1, 32, True, '0'):
+            with self.subTest(value=bad):
+                model = _validation_base_model()
+                model['CustomSubmeshes'] = [_validation_entry(ColorChannelQuantizeInfo=bad)]
+                with self.assertRaisesRegex(ValueError, 'ColorChannelQuantizeInfo'):
+                    main._validate_custom_submeshes(model)
+
+    def test_patch_helper_skips_non_specular_or_missing_type7(self):
+        # rigid: stadium templates: Shdw (byte 0 is a bit index), the all-zero
+        # word, or no Type 7 at all keep their bytes.
+        for records in (
+            [[1, b'\x00\x00\x08', '11110000'], [7, b'\x01\x00\x00', 'Shdw']],
+            [[1, b'\x00\x00\x08', '11110000'], [7, b'\x00\x00\x00', '00000000']],
+            [[1, b'\x00\x00\x08', '11110000'], [6, b'\x01\x00\x00', '00000374']],
+        ):
+            with self.subTest(records=records):
+                before = [list(r) for r in records]
+                self.assertFalse(main._custom_submesh_patch_specular_strength(records, 1, 50))
+                self.assertEqual(records, before)
 
     def test_out_of_range_strength_is_rejected_by_validation(self):
         for bad in (-1, 256, 12.5, True):
@@ -3115,7 +3335,9 @@ class CustomSubmeshTemplateRecordsTests(unittest.TestCase):
 
     def test_builtin_template_names_offers_only_verified_templates(self):
         self.assertEqual(
-            main.builtin_template_names(), ('rigid_spec_v1', 'rigid_rhsp_v1', 'rigid_lhsp_v1'),
+            main.builtin_template_names(),
+            ('rigid_spec_v1', 'rigid_rhsp_v1', 'rigid_lhsp_v1',
+             'stadium_shdw_opaque_v1', 'stadium_shdw_cutout_v1'),
         )
         self.assertEqual(
             sorted(main.builtin_template_names(verified_only=False)),
@@ -3128,7 +3350,7 @@ class CustomSubmeshTemplateRecordsTests(unittest.TestCase):
         self.assertEqual(
             sorted(main._CUSTOM_SUBMESH_BUILTIN_TEMPLATES),
             ['rigid_ghsp_v1', 'rigid_lhsp_v1', 'rigid_rhsp_v1', 'rigid_shdw_v1',
-             'rigid_spec_v1'],
+             'rigid_spec_v1', 'stadium_shdw_cutout_v1', 'stadium_shdw_opaque_v1'],
         )
         for name, template in main._CUSTOM_SUBMESH_BUILTIN_TEMPLATES.items():
             with self.subTest(name):
@@ -3236,6 +3458,48 @@ class BuildRigidSubmeshBlobTests(unittest.TestCase):
         nor_ptr, nor_count, nor_quant, nor_cc = struct.unpack_from('>IHBB', blob, nor_off)
         self.assertEqual((nor_count, nor_quant, nor_cc), (1, 62, 3))
         self.assertEqual(struct.unpack_from('>3h', blob, nor_ptr), (0, 16384, 0))
+
+
+class StadiumCustomSubmeshAlphaWarningTests(unittest.TestCase):
+    """Yoshi Park, 2026-10-01: Type 6 00000374 draws transparent texels black,
+    00000570 cuts them out. The patcher warns about the first case."""
+
+    def _warnings(self, chunk, type6, alpha):
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sluggie = os.path.join(temp_dir, 'model.sluggie')
+            os.makedirs(os.path.join(temp_dir, 'tex'))
+            image = Image.new('RGBA', (4, 4), (255, 0, 0, 255))
+            image.putpixel((0, 0), (0, 0, 0, alpha))
+            image.save(os.path.join(temp_dir, 'tex', 'wall.png'))
+            model = {'ChunkNumber': chunk, 'Submeshes': [], 'TextureDescriptors': []}
+            cs = SimpleNamespace(
+                custom_submesh_id='custom0', template_source='rigid:sm1_ds4',
+                texture_assignment=SimpleNamespace(
+                    donor_texture_index=None, additional_texture_file_name='wall.png',
+                ),
+            )
+            records = [[1, b'\x00\x01\x98', '11110020'], [6, b'\x01\x00\x00', type6],
+                       [7, b'\x00\x00\x00', 'Shdw']]
+            with (
+                mock.patch.object(main, '_resolve_custom_submesh_records',
+                                  return_value=(records, 2, 'rigid')),
+                mock.patch.object(main._slogger, 'warning') as warning,
+            ):
+                main._warn_stadium_custom_submesh_alpha(
+                    model, SimpleNamespace(custom_submeshes=[cs]), sluggie,
+                )
+            return [call.args[0] for call in warning.call_args_list]
+
+    def test_transparent_png_on_opaque_type6_warns(self):
+        messages = self._warnings(10, '00000374', 0)
+        self.assertEqual(len(messages), 1)
+        self.assertIn('wall.png has transparent pixels', messages[0])
+
+    def test_cutout_type6_opaque_png_or_non_stadium_is_silent(self):
+        self.assertEqual(self._warnings(10, '00000570', 0), [])
+        self.assertEqual(self._warnings(10, '00000374', 255), [])
+        self.assertEqual(self._warnings(18, '00000374', 0), [])
 
 
 class PatchGPLAppendSubmeshTests(unittest.TestCase):
@@ -3355,6 +3619,33 @@ class PatchGPLAppendSubmeshTests(unittest.TestCase):
     def test_donor_length_without_appended_tail_matches_legacy_layout(self):
         donor_gpl, *_ = self._build_donor_gpl(0x1C, bytes(range(40)), 10, b'USERDATA' * 5)
         self.assertEqual(self._append(donor_gpl, len(donor_gpl)), self._append(donor_gpl))
+
+    def test_stadium_bounds_table_gets_a_box_for_the_new_submesh(self):
+        # sta03-style GPLUserData: length, version 1, count, one box/submesh.
+        donor_box = struct.pack('>6f', -58.0, -1.0, -62.0, 58.0, 1.0, 62.0)
+        user_data = struct.pack('>IHH', 8 + 24, 1, 1) + donor_box
+        donor_gpl, *_ = self._build_donor_gpl(0x1C, bytes(range(40)), 10, user_data)
+
+        patched = self._append(donor_gpl)
+
+        ud_len, ud_ptr = struct.unpack_from('>2I', patched, 0x04)
+        self.assertEqual(ud_len, 8 + 2 * 24)
+        table = patched[ud_ptr:ud_ptr + ud_len]
+        self.assertEqual(struct.unpack_from('>IHH', table, 0), (ud_len, 1, 2))
+        self.assertEqual(table[8:32], donor_box)
+        # _new_sub's positions (s16, /2048): (0,0,0), (1,0,0), (0,1,0).
+        h = 1 / 2048
+        self.assertEqual(struct.unpack_from('>6f', table, 32), (-h, -h, -0.0, h, h, 0.0))
+
+    def test_non_bounds_user_data_is_left_unchanged(self):
+        # Character GPLUserData has another layout (version 0, other count).
+        user_data = bytes.fromhex('0000001c000000090008010802080308') + bytes(12)
+        donor_gpl, *_ = self._build_donor_gpl(0x1C, bytes(range(40)), 10, user_data)
+
+        patched = self._append(donor_gpl)
+
+        ud_len, ud_ptr = struct.unpack_from('>2I', patched, 0x04)
+        self.assertEqual(patched[ud_ptr:ud_ptr + ud_len], user_data)
 
     def test_no_custom_submeshes_returns_input_unchanged(self):
         gpl_bytes, *_ = self._build_donor_gpl(0x1C, bytes(range(40)), 10, b'UD')

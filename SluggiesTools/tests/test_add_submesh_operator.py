@@ -95,7 +95,7 @@ class WriteCustomSubmeshTextureTests(unittest.TestCase):
         export_ns = _extract({'os', '_resolve_export_texture_context'}, EXPORT_PATH)
         self.fn.__globals__['_resolve_export_texture_context'] =             export_ns['_resolve_export_texture_context']
 
-    def test_refuses_to_overwrite_existing_file(self):
+    def test_reuses_existing_file_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
             sluggie_path = os.path.join(tmp, 'model.sluggie')
             tex_dir = os.path.join(tmp, 'tex')
@@ -103,21 +103,55 @@ class WriteCustomSubmeshTextureTests(unittest.TestCase):
             existing = os.path.join(tex_dir, 'CustomSubmesh_0.png')
             with open(existing, 'wb') as f:
                 f.write(b'not really a png')
+            loaded = object()
+            calls = {}
 
-            class _ExplodingImages:
+            class _LoadOnlyImages:
                 def new(self, *args, **kwargs):
                     raise AssertionError('bpy.data.images.new must not run when the file already exists')
 
-            class _ExplodingData:
-                images = _ExplodingImages()
+                def load(self, path, check_existing=False):
+                    calls['load'] = (path, check_existing)
+                    return loaded
 
-            class _ExplodingBpy:
-                data = _ExplodingData()
+            class _LoadOnlyData:
+                images = _LoadOnlyImages()
 
-            self.fn.__globals__['bpy'] = _ExplodingBpy()
-            image, error = self.fn(sluggie_path, 'CustomSubmesh_0')
+            class _LoadOnlyBpy:
+                data = _LoadOnlyData()
+
+            self.fn.__globals__['bpy'] = _LoadOnlyBpy()
+            image, reused, error = self.fn(sluggie_path, 'CustomSubmesh_0')
+            self.assertIsNone(error)
+            self.assertTrue(reused)
+            self.assertIs(image, loaded)
+            self.assertEqual(calls['load'], (existing, True))
+            with open(existing, 'rb') as f:
+                self.assertEqual(f.read(), b'not really a png')
+
+    def test_reports_unloadable_existing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sluggie_path = os.path.join(tmp, 'model.sluggie')
+            tex_dir = os.path.join(tmp, 'tex')
+            os.makedirs(tex_dir)
+            with open(os.path.join(tex_dir, 'CustomSubmesh_0.png'), 'wb') as f:
+                f.write(b'broken')
+
+            class _FailingImages:
+                def load(self, path, check_existing=False):
+                    raise RuntimeError('cannot read')
+
+            class _FailingData:
+                images = _FailingImages()
+
+            class _FailingBpy:
+                data = _FailingData()
+
+            self.fn.__globals__['bpy'] = _FailingBpy()
+            image, reused, error = self.fn(sluggie_path, 'CustomSubmesh_0')
             self.assertIsNone(image)
-            self.assertIn('already exists', error)
+            self.assertFalse(reused)
+            self.assertIn('cannot read', error)
 
     def test_creates_directory_and_saves_new_image(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -140,8 +174,9 @@ class WriteCustomSubmeshTextureTests(unittest.TestCase):
                 data = _FakeData()
 
             self.fn.__globals__['bpy'] = _FakeBpy()
-            image, error = self.fn(sluggie_path, 'CustomSubmesh_0')
+            image, reused, error = self.fn(sluggie_path, 'CustomSubmesh_0')
             self.assertIsNone(error)
+            self.assertFalse(reused)
             self.assertIsNotNone(image)
             self.assertTrue(calls.get('saved'))
             self.assertEqual(calls['new'][0], 'CustomSubmesh_0.png')

@@ -22,6 +22,22 @@ from typing import Iterable, List, Tuple
 # ghost visibility behaviour and is excluded (F9's "Hand-visibility roles").
 HAND_VISIBILITY_ROLES = frozenset({"RhSp", "LhSp", "SpRf", "GhSp"})
 
+# Mirrors HammerspaceMain._CUSTOM_SUBMESH_SPECULAR_SHADER_MODES: Type-7 modes
+# whose param byte 0 is a specular strength. A custom surface whose template
+# draws with any other mode gets no SpecularStrength property.
+SPECULAR_SHADER_MODES = frozenset({"Spec", "LhSp", "RhSp", "GhSp"})
+
+# Mirrors HammerspaceMain.STADIUM_CHUNKS (= export.STADIUM_DIR_INDICES): the
+# .sluggie ChunkNumber of the stadium models, 7 Mario Stadium ... 16 Toy
+# Field. In a stadium a custom submesh must hang on a root bone (Dolphin,
+# 2026-10-01); the patcher refuses anything else.
+STADIUM_CHUNKS = range(7, 17)
+
+
+def is_stadium_chunk(chunk_number) -> bool:
+    """Whether a .sluggie ChunkNumber is a stadium model directory."""
+    return isinstance(chunk_number, int) and chunk_number in STADIUM_CHUNKS
+
 
 @dataclass(frozen=True)
 class BuiltinTemplate:
@@ -31,6 +47,8 @@ class BuiltinTemplate:
     shader_mode: str        # effective Type-7 mode
     description: str        # dialog tooltip
     verified_in_game: bool  # PLAN_EditRigidMeshes.md Phase 0 probe 7
+    normals: bool = True    # False: the custom submesh exports no normals
+    stadium_only: bool = False  # offered (and accepted) only on stadium models
 
 
 # Mirrors HammerspaceMain._CUSTOM_SUBMESH_BUILTIN_TEMPLATES, which is
@@ -65,6 +83,18 @@ BUILTIN_TEMPLATES = {
         description="Parts with vertex alpha 0 are hidden while the left hand wears the mitt",
         verified_in_game=True,          # PLAN_EditRigidMeshes.md Phase 0 probe 7
     ),
+    "stadium_shdw_opaque_v1": BuiltinTemplate(
+        layers=1, shader_mode="Shdw",
+        description="Stadium surface, opaque: transparent pixels draw black",
+        verified_in_game=True,          # as rigid:sm1_ds4 on Yoshi Park (2026-10-01)
+        normals=False, stadium_only=True,
+    ),
+    "stadium_shdw_cutout_v1": BuiltinTemplate(
+        layers=1, shader_mode="Shdw",
+        description="Stadium surface, cut-out: transparent pixels are see-through (on/off only)",
+        verified_in_game=True,          # as rigid:sm1_ds42 on Yoshi Park (2026-10-01)
+        normals=False, stadium_only=True,
+    ),
 }
 
 # Only templates probe 7 has confirmed in game are offered; the others stay
@@ -88,6 +118,16 @@ def template_surface_id(template_source: str) -> str:
     `builtin:` or a malformed source."""
     kind, _sep, argument = template_source.partition(":")
     return argument if kind in ("rigid", "derived") else ""
+
+
+def builtin_template_normals(name: str) -> bool:
+    """Whether a custom submesh made from built-in *name* exports normals."""
+    try:
+        return BUILTIN_TEMPLATES[name].normals
+    except KeyError:
+        raise ValueError(
+            f"builtin: unknown template {name!r}; known: {sorted(BUILTIN_TEMPLATES)}"
+        ) from None
 
 
 def builtin_template_layers(name: str) -> int:
@@ -156,6 +196,7 @@ def next_new_surface_key(owner: str, existing_surface_ids: Iterable[str]) -> str
 
 def build_template_source_choices(
     materials: Iterable[TemplateSourceMaterial],
+    stadium: bool = False,
 ) -> List[TemplateSourceChoice]:
     """Build the dialog's template-source list in ``DIALOG_ORDER``.
 
@@ -168,6 +209,9 @@ def build_template_source_choices(
     Only built-ins that Phase 0 probe 7 has verified in game are listed
     (``BUILTIN_TEMPLATE_NAMES``), so the unverified captures are unselectable
     here; ``HammerspaceMain._validate_custom_submeshes`` refuses them too.
+
+    Stadium-only built-ins are listed only when *stadium* is true, and then
+    first, so a stadium preselects ``builtin:stadium_shdw_opaque_v1``.
     """
     rigid_by_surface = {}
     derived_by_surface = {}
@@ -180,7 +224,13 @@ def build_template_source_choices(
                 derived_by_surface.setdefault(m.surface_id, m)
 
     by_kind = {
-        "builtin": [TemplateSourceChoice("builtin", name) for name in BUILTIN_TEMPLATE_NAMES],
+        "builtin": [
+            TemplateSourceChoice("builtin", name)
+            for name in sorted(
+                (n for n in BUILTIN_TEMPLATE_NAMES if stadium or not BUILTIN_TEMPLATES[n].stadium_only),
+                key=lambda n: not (stadium and BUILTIN_TEMPLATES[n].stadium_only),
+            )
+        ],
         "rigid": [TemplateSourceChoice("rigid", s) for s in sorted(rigid_by_surface)],
         "derived": [TemplateSourceChoice("derived", s) for s in sorted(derived_by_surface)],
     }

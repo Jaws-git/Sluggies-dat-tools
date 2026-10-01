@@ -69,13 +69,17 @@ DOL_ENTRY_OFFSET = MODEL_OFFSET
 #: which `binfmt.comp_size` reads as 2 bytes per component).
 SKINNED_COMP_COUNT = 6
 SKINNED_QUANTIZE_INFO = 0x30
-SKINNED_VERTEX_COUNT = 4
+SKINNED_VERTEX_COUNT = 7
 SKINNED_VERTEX_STRIDE = SKINNED_COMP_COUNT * 2
-#: The SK1 writes vertices 0..2 directly; the SKAcc accumulates onto vertex 3.
-#: They must not overlap, or the donor's memClr range (which covers exactly
-#: the accumulation-only vertices) would collapse to empty.
+#: The SK1 writes vertices 0..2 directly (3 is the game's minimum SK1/SK2
+#: size); the SKAcc accumulates onto vertex 6. They must not overlap, or the
+#: donor's memClr range (which covers exactly the accumulation-only vertices)
+#: would collapse to empty -- and, as in every vanilla model, the
+#: accumulation-only vertex needs a cache line the SK1 never touches: the SK1
+#: ends at +0x24 (line 0x20), vertex 6 starts at +0x48 (line 0x40).
+#: Vertices 3-5 are skinned by nothing, which vanilla models do too.
 SK1_VERTEX_COUNT = 3
-SK_ACC_VERTEX = 3
+SK_ACC_VERTEX = 6
 
 #: Submesh 1 is rigid: 3 int16 components, shift 11 (divisor 2048) -- the
 #: same quantization a real rigid donor submesh uses.
@@ -476,7 +480,8 @@ def _build_skn_bytes() -> bytes:
 
     struct.pack_into('>I', section, sk1_struct + 0x30, src_off)
     struct.pack_into('>I', section, sk1_struct + 0x34, 0)
-    struct.pack_into('>H', section, sk1_struct + 0x42, SK1_VERTEX_COUNT)
+    struct.pack_into('>H', section, sk1_struct + 0x38, SKINNED_BONE)
+    struct.pack_into('>H', section, sk1_struct + 0x3A, SK1_VERTEX_COUNT)
 
     struct.pack_into('>I', section, acc_struct + 0x30, acc_src_off)
     struct.pack_into('>I', section, acc_struct + 0x34, acc_dst_off)

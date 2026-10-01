@@ -1,9 +1,9 @@
-"""PLAN_AddBones.md Phase 2 - the ACT rebuilder.
+"""The ACT rebuilder (act_section.html#appending-bones).
 
 Exercises ``HammerspaceMain.BuildACTBoneHierarchy``'s rebuild route (a
 ``BoneHierarchyEdited`` with at least one ``UserAdded`` bone) end to end,
-since Phase 4's Blender exporter (the thing that would normally produce such
-a ``.sluggie``) doesn't exist yet.
+from a hand-built ``.sluggie`` rather than one written by the Blender
+exporter.
 
 The donor ACT is **synthesized here** by ``act_rebuild.rebuild_act_bytes``,
 not cloned out of ``1_Input/dt_na.dat``: the game assets and the
@@ -125,7 +125,7 @@ def _build_donor_act_bytes() -> bytes:
 
 def _bone_hierarchy_edited(parsed: act_rebuild.ACTParsed) -> list[dict]:
     """A ``BoneHierarchyEdited`` array (all ``UserAdded=False``) describing the
-    donor exactly, as Phase 1's exporter writes it: mirror/track values come
+    donor exactly, as export.py writes it: mirror/track values come
     from the donor's own decoded user-data tables."""
     mirror_desc = next(d for d in parsed.user_data if d.kind == act_rebuild.KIND_MIRROR)
     track_desc = next(d for d in parsed.user_data if d.kind == act_rebuild.KIND_TRACK)
@@ -187,6 +187,45 @@ class ACTPhase2RebuildTests(unittest.TestCase):
             self.assertEqual(next(b for b in rebuilt.bones if b.id == bone_id).orientation_ptr, 0)
         self.assertEqual(rebuilt.srt_blobs, self.donor_parsed.srt_blobs)
 
+    def test_stadium_new_root_bone_joins_the_root_chain(self):
+        data = self._fixture_data()
+        model = data['SluggiesModel']
+        model['ChunkNumber'] = 10
+        new_id = self.donor_bone_count
+        model['BoneHierarchyEdited'].append({
+            'BoneId': new_id, 'GeoId': 0xFFFF, 'ParentBoneId': None, 'Skinned': False,
+            'TrackId': 0xFFFF, 'MirrorBoneId': new_id, 'MirrorRole': 3, 'SRTType': 0xC,
+            'DrawPriority': 0, 'InheritTransform': True, 'UserAdded': True,
+            'Translation': [1.0, 2.0, 3.0], 'Scale': [1.0, 1.0, 1.0],
+            'Quaternion': [1.0, 0.0, 0.0, 0.0], 'VertexInfluences': [],
+        })
+
+        rebuilt = act_rebuild.parse_act(self._build(data))
+        new_bone = next(b for b in rebuilt.bones if b.id == new_id)
+        self.assertEqual(new_bone.parent, 0)
+        self.assertEqual(new_bone.next, 0)
+        self.assertEqual(rebuilt.root_ptr, self.donor_parsed.root_ptr)
+        # The previously last root now points at the new bone.
+        cur, last = self.donor_parsed.root_ptr, None
+        while cur:
+            last = (cur - act_rebuild.HEADER_SIZE) // act_rebuild.BONE_RECORD_SIZE
+            cur = next(b for b in self.donor_parsed.bones if b.id == last).next
+        self.assertEqual(next(b for b in rebuilt.bones if b.id == last).next, _table_off(new_id))
+        self.assertEqual(new_bone.prev, _table_off(last))
+
+    def test_new_root_bone_is_refused_outside_stadiums(self):
+        data = self._fixture_data()
+        new_id = self.donor_bone_count
+        data['SluggiesModel']['BoneHierarchyEdited'].append({
+            'BoneId': new_id, 'GeoId': 0xFFFF, 'ParentBoneId': None, 'Skinned': False,
+            'TrackId': 0xFFFF, 'MirrorBoneId': new_id, 'MirrorRole': 3, 'SRTType': 0xC,
+            'DrawPriority': 0, 'InheritTransform': True, 'UserAdded': True,
+            'Translation': [0.0, 0.0, 0.0], 'Scale': [1.0, 1.0, 1.0],
+            'Quaternion': [1.0, 0.0, 0.0, 0.0], 'VertexInfluences': [],
+        })
+        with self.assertRaisesRegex(ValueError, 'may not be roots'):
+            self._build(data)
+
     def test_single_new_leaf_bone_appended_to_spine(self):
         data = self._fixture_data()
         model = data['SluggiesModel']
@@ -215,7 +254,7 @@ class ACTPhase2RebuildTests(unittest.TestCase):
         self.assertEqual(rebuilt.bone_count, self.donor_bone_count + 1)
         new_bone = next(b for b in rebuilt.bones if b.id == new_id)
         self.assertEqual(new_bone.parent, _table_off(1))
-        self.assertEqual(new_bone.geo_file_id_raw, 0xFFFF)  # unowned, per the user contract default
+        self.assertEqual(new_bone.geo_file_id_raw, 0xFFFF)  # unowned by default
 
         mirror_desc = next(d for d in rebuilt.user_data if d.kind == act_rebuild.KIND_MIRROR)
         self.assertEqual((mirror_desc.payload[2 * new_id], mirror_desc.payload[2 * new_id + 1]), (new_id, 3))
@@ -224,7 +263,7 @@ class ACTPhase2RebuildTests(unittest.TestCase):
 
         # Every donor bone's table record is untouched, except the spine's
         # previously-last child, whose `next` now correctly points at the new
-        # bone appended to the tail of its child chain (F10).
+        # bone appended to the tail of its child chain.
         spine_old_last_child_id = None
         cur = next(b for b in self.donor_parsed.bones if b.id == 1).first_child
         while cur != 0:
@@ -248,7 +287,7 @@ class ACTPhase2RebuildTests(unittest.TestCase):
         """Two new bones parented to the same donor bone exercise the
         'append to the end of an already-nonempty child chain' path, and a
         third parented to the first new bone exercises new-bone-parented-to-
-        new-bone -- both PLAN_AddBones.md Phase 2's tree-link emitter must
+        new-bone -- both the rebuilder's tree-link emitter must
         get right, not just a single leaf on a donor parent."""
         data = self._fixture_data()
         model = data['SluggiesModel']

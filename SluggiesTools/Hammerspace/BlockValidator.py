@@ -14,6 +14,7 @@ from collections import Counter
 from binfmt import (
     color_entry_size as _color_stride,
     comp_size as _comp_size,
+    skn_direct_entry_problem,
     u8 as _u8,
     u16 as _u16,
     u32 as _u32,
@@ -321,7 +322,13 @@ def _validate_header(state: _ValidationState) -> dict[str, int]:
     return pointers
 
 
-def _validate_gpl(state: _ValidationState, skn_positions: list[int], prim_offsets: list[int], non_pos_ranges: list[tuple[str, int, int]]) -> None:
+def _validate_gpl(
+    state: _ValidationState,
+    skn_positions: list[int],
+    prim_offsets: list[int],
+    non_pos_ranges: list[tuple[str, int, int]],
+    structure_ranges: list[tuple[str, int, int]],
+) -> None:
     if 'GPL' not in state.facts['section_ranges']:
         return
 
@@ -375,6 +382,15 @@ def _validate_gpl(state: _ValidationState, skn_positions: list[int], prim_offset
             except struct.error as exc:
                 state.fail(f'{label} parse failed: {type(exc).__name__}: {exc}')
                 return None
+
+        # GPL structures the skin write-back must never land on: an array
+        # header there is overwritten every frame (skn_section.html#runtime-limits).
+        structure_ranges.append((f'sub{submesh_index}.layout', layout_off, layout_off + 0x18))
+        header_offsets = [('pos', pos_h), ('col', col_h)] + ([('nor', nor_h)] if nor_h else [])
+        header_offsets += [(f'uv{i}', uv_h + i * 0x10) for i in range(uv_count)]
+        for header_name, header_rel in header_offsets:
+            structure_ranges.append((f'sub{submesh_index}.{header_name}_header',
+                                   layout_off + header_rel, layout_off + header_rel + 8))
 
         pos = hdr8(pos_h, f'GPL submesh[{submesh_index}] position header')
         col = hdr8(col_h, f'GPL submesh[{submesh_index}] color header')
@@ -445,6 +461,8 @@ def _validate_gpl(state: _ValidationState, skn_positions: list[int], prim_offset
                         nor_q,
                         f'GPL submesh[{submesh_index}] normal array',
                     )
+                    if pos_cc != 6:
+                        non_pos_ranges.append((f'sub{submesh_index}.nor', nor_abs, nor_abs + nor_size))
 
         uv_counts = [0] * 8
         for uv_index in range(uv_count):
@@ -487,6 +505,8 @@ def _validate_gpl(state: _ValidationState, skn_positions: list[int], prim_offset
         ds_table_abs = layout_off + ds_table_rel
         if not state.in_bounds(ds_table_abs, ds_count * 0x10, f'GPL submesh[{submesh_index}] display-state table'):
             continue
+        structure_ranges.append((f'sub{submesh_index}.ds_header', dsp_header_abs, dsp_header_abs + 0x0A))
+        structure_ranges.append((f'sub{submesh_index}.ds_table', ds_table_abs, ds_table_abs + ds_count * 0x10))
 
         active_descriptors: list[dict] = []
         lighting_limit = nor_count if nor_count else (pos_count if pos_cc == 6 else 0)
@@ -1071,7 +1091,19 @@ def _validate_trailing_sections(state: _ValidationState, gpl_submeshes: list[dic
         _validate_ptr7_facial(state, gpl_submeshes)
 
 
-def _validate_skn(state: _ValidationState, skn_write_ends: list[int], skn_stride_out: list[int]) -> None:
+def _direct_write_back_end(gva: int, vertex_offset: int, vertex_count: int, stride: int) -> int:
+    """Position-data-relative end of an SK1/SK2 entry's write-back. The game
+    copies the locked-cache buffer back in whole 32-byte lines, so the entry
+    writes up to the next line boundary, not just to its last vertex."""
+    return gva + align_up(vertex_offset + vertex_count * stride)
+
+
+def _validate_skn(
+    state: _ValidationState,
+    skn_write_ends: list[int],
+    direct_write_ends: list[int],
+    skn_stride_out: list[int],
+) -> None:
     if 'SKN' not in state.facts['section_ranges']:
         return
 
@@ -1139,11 +1171,15 @@ def _validate_skn(state: _ValidationState, skn_write_ends: list[int], skn_stride
         src_abs = skn_start + src_ptr
         if state.in_bounds(src_abs, src_size, f'SK1[{index}] source array'):
             state.check_array_alignment(src_abs, 'skn_source', f'SK1[{index}] source array')
+        problem = skn_direct_entry_problem('SK1', vertex_count, vertex_offset, stride)
+        if problem:
+            state.fail(f'SK1[{index}]: {problem}')
         sk1_slots = [gva + vertex_offset + i * stride for i in range(vertex_count)]
         direct_entries.append((f'SK1[{index}]', src_ptr, gva, vertex_offset, vertex_count))
         direct_writes.update(sk1_slots)
         direct_write_counts.update(sk1_slots)
-        skn_write_ends.append(gva + vertex_offset + vertex_count * stride)
+        direct_write_ends.append(_direct_write_back_end(gva, vertex_offset, vertex_count, stride))
+        skn_write_ends.append(direct_write_ends[-1])
 
     for index in range(n2):
         struct_abs = skn_start + sk2_ptr + index * 0x74
@@ -1171,11 +1207,15 @@ def _validate_skn(state: _ValidationState, skn_write_ends: list[int], skn_stride
         # (Luigi SK2[4]/[11]): many donor pairs legitimately sum to well
         # under 256 (e.g. 77, 115, 205) wherever an SKAcc entry supplies the
         # rest for that same vertex. No sum check is enforced here.
+        problem = skn_direct_entry_problem('SK2', vertex_count, vertex_offset, stride)
+        if problem:
+            state.fail(f'SK2[{index}]: {problem}')
         sk2_slots = [gva + vertex_offset + i * stride for i in range(vertex_count)]
         direct_entries.append((f'SK2[{index}]', src_ptr, gva, vertex_offset, vertex_count))
         direct_writes.update(sk2_slots)
         direct_write_counts.update(sk2_slots)
-        skn_write_ends.append(gva + vertex_offset + vertex_count * stride)
+        direct_write_ends.append(_direct_write_back_end(gva, vertex_offset, vertex_count, stride))
+        skn_write_ends.append(direct_write_ends[-1])
 
     for index in range(na):
         struct_abs = skn_start + acc_ptr + index * 0x44
@@ -1312,6 +1352,8 @@ def _validate_scratch_window(
     skinned_positions: list[int],
     skn_write_ends: list[int],
     non_position_ranges: list[tuple[str, int, int]],
+    direct_write_ends: list[int] | None = None,
+    structure_ranges: list[tuple[str, int, int]] | None = None,
 ) -> None:
     if not skinned_positions or not skn_write_ends:
         return
@@ -1323,6 +1365,20 @@ def _validate_scratch_window(
                 f'scratch window overlaps {label}: '
                 f'array=0x{start:X}..0x{end:X}, '
                 f'window=0x{window_start:X}..0x{window_end:X}'
+            )
+    # GPL structures (layouts, array headers, display-state tables) are only
+    # checked against the SK1/SK2 line write-back, which the game really
+    # writes every frame. The memClr range is not: vanilla chunk 2 file 0
+    # clears 0x14 bytes past its position array into sub0's color header.
+    if not direct_write_ends or not structure_ranges:
+        return
+    direct_end = window_start + max(direct_write_ends)
+    for label, start, end in structure_ranges:
+        if end > window_start and start < direct_end:
+            state.fail(
+                f'SK1/SK2 write-back overwrites {label}: '
+                f'structure=0x{start:X}..0x{end:X}, '
+                f'write-back=0x{window_start:X}..0x{direct_end:X}'
             )
 
 
@@ -1341,16 +1397,21 @@ def validate_model_block(block: bytes) -> dict:
     skinned_positions: list[int] = []
     primitive_offsets: list[int] = []
     non_position_ranges: list[tuple[str, int, int]] = []
+    structure_ranges: list[tuple[str, int, int]] = []
     skn_write_ends: list[int] = []
+    direct_write_ends: list[int] = []
     skn_stride: list[int] = []
 
     try:
-        _validate_gpl(state, skinned_positions, primitive_offsets, non_position_ranges)
+        _validate_gpl(state, skinned_positions, primitive_offsets, non_position_ranges, structure_ranges)
         _validate_tex(state)
         _validate_act_geo_ids(state, state.facts.get('gpl_submesh_layout', []))
-        _validate_skn(state, skn_write_ends, skn_stride)
+        _validate_skn(state, skn_write_ends, direct_write_ends, skn_stride)
         _validate_trailing_sections(state, state.facts.get('gpl_submesh_layout', []))
-        _validate_scratch_window(state, skinned_positions, skn_write_ends, non_position_ranges)
+        _validate_scratch_window(
+            state, skinned_positions, skn_write_ends, non_position_ranges,
+            direct_write_ends, structure_ranges,
+        )
     except Exception as exc:  # pragma: no cover - defensive trap for binary edge cases
         state.fail(f'unhandled validator exception: {type(exc).__name__}: {exc}')
 

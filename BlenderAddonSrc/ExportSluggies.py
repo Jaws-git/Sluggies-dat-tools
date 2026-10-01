@@ -7,13 +7,14 @@ import base64
 import re
 import shutil
 import struct
-import subprocess
 from bpy.props import BoolProperty, StringProperty
 from bpy_extras.io_utils import ExportHelper
 
 from .SkinWeights import quantize_skin_weights, MAX_BONE_INFLUENCES_PER_VERTEX
 from .HostBones import compute_rigid_retargets, GEO_ID_FREE
 from . import CustomSubmeshExport
+from . import TemplateSources
+from . import HostBones
 
 
 def _to_bytes(data) -> bytes:
@@ -393,8 +394,7 @@ def _bone_id_from_bone_name(name):
 
 
 def armature_has_new_bones(candidates, context):
-    """Whether the .sluggie's armature carries any Add-bone (PLAN_AddBones.md
-    Phase 4) bone, used to gate the Hammerspace/UseHammerspace requirement
+    """Whether the .sluggie's armature carries any Add Bone bone, used to gate the Hammerspace/UseHammerspace requirement
     before any other export work happens."""
     arm_obj = _find_root_scale_armature(candidates, context)
     if arm_obj is None:
@@ -438,14 +438,28 @@ def _srt_type_for(bone_name, translation, rotation, scale, warnings):
     return srt_type
 
 
+def added_bone_name_error(candidates, context):
+    """Error text when an Add Bone bone's ``bone_<N>`` name differs from the id
+    ``encode_bone_hierarchy_edited`` assigns it, else None."""
+    arm_obj = _find_root_scale_armature(candidates, context)
+    if arm_obj is None:
+        return None
+    bones = arm_obj.data.bones
+    donor_count = sum(1 for b in bones if not b.get('SluggiesUserAdded'))
+    return HostBones.added_bone_name_error(HostBones.added_bone_renames(donor_count, [
+        (b.name, int(b.get('SluggiesCreationOrder', 0)))
+        for b in bones if b.get('SluggiesUserAdded')
+    ]))
+
+
 def encode_bone_hierarchy_edited(candidates, data, warnings, context):
     """Write ``SluggiesModel.BoneHierarchyEdited`` when the target armature has
-    any Add-bone leaf (PLAN_AddBones.md Phase 4 step 3).
+    any Add Bone leaf.
 
-    Every donor bone is carried through unchanged (Phase 3 rule 2 is an
-    append-only check), and every ``SluggiesUserAdded`` bone is assigned ids
+    Every donor bone is carried through unchanged (the patcher's validation
+    is append-only), and every ``SluggiesUserAdded`` bone is assigned ids
     ``N, N+1, ...`` in ``SluggiesCreationOrder`` (the Blender bone *name* has
-    no binary meaning -- PLAN_AddBones.md's user contract). Each new bone's
+    no binary meaning). Each new bone's
     Blender rest matrix is converted to a local T/R/S against its parent,
     reusing the same bind-matrix convention
     ``CustomSubmeshExport.bone_local_matrix`` decodes back (T @ R @ S,
@@ -489,15 +503,23 @@ def encode_bone_hierarchy_edited(candidates, data, warnings, context):
         entry["UserAdded"] = False
         edited.append(entry)
 
+    stadium = TemplateSources.is_stadium_chunk(model.get("ChunkNumber"))
     for b in new_bones:
         own_id = id_by_bone_name[b.name]
         parent = b.parent
-        if parent is None or parent.name not in id_by_bone_name:
+        if parent is None and stadium:
+            # A stadium's new root bone (Add Bone makes only those there).
+            # Armature space is game space -- the importer places donor
+            # bones by their game HeadPosition -- so the rest matrix is the
+            # bone's SRT as it stands.
+            parent_id = None
+            local = b.matrix_local.copy()
+        elif parent is None or parent.name not in id_by_bone_name:
             warnings.append(f"{b.name}: has no valid parent bone; not exported.")
             continue
-        parent_id = id_by_bone_name[parent.name]
-
-        local = parent.matrix_local.inverted() @ b.matrix_local
+        else:
+            parent_id = id_by_bone_name[parent.name]
+            local = parent.matrix_local.inverted() @ b.matrix_local
         translation, rotation, scale = local.decompose()
         geo_id_raw = int(b.get('SluggiesGeoIdRaw', GEO_ID_FREE))
         srt_type = _srt_type_for(b.name, translation, rotation, scale, warnings)
@@ -527,12 +549,13 @@ def encode_bone_hierarchy_edited(candidates, data, warnings, context):
     model["BoneHierarchyEdited"] = edited
 
 
-# --- Phase 4 step 4: Blender-side pre-check for the donor-topology rules
-# HammerspaceMain._validate_bone_hierarchy_edited enforces authoritatively.
-# This is a courtesy check so a mistake is visible while the user can still
-# see and undo it in Blender; it is not a substitute for the patcher's own
-# gate (F10, PLAN_AddBones.md Phase 4 step 4), which also catches sibling-
-# chain reordering that this check cannot see from ParentBoneId alone.
+# --- Blender-side pre-check for the donor-topology rules
+# HammerspaceMain._validate_bone_hierarchy_edited enforces authoritatively
+# (act_section.html#appending-bones). This is a courtesy check so a mistake
+# is visible while the user can still see and undo it in Blender; it is not
+# a substitute for the patcher's own gate. Sibling-chain order is not in the
+# .sluggie at all, so neither check can see it; the patcher's rebuilder keeps
+# donor chains intact by construction.
 def validate_bone_hierarchy_edited_export(model, warnings):
     """Return a list of blocking error strings for ``BoneHierarchyEdited``, or
     an empty list when nothing is wrong."""
@@ -571,10 +594,14 @@ def validate_bone_hierarchy_edited_export(model, warnings):
                     f"to {edited_parent_id}"
                 )
 
+    stadium = TemplateSources.is_stadium_chunk(model.get("ChunkNumber"))
     for bone_id in new_ids:
         parent_id = edited_by_id[bone_id].get("ParentBoneId")
-        if parent_id is None:
-            errors.append(f"new bone {bone_id} has no parent; new bones may not be roots")
+        if parent_id is None and not stadium:
+            errors.append(
+                f"new bone {bone_id} has no parent; new bones may not be roots "
+                "(stadium models excepted)"
+            )
 
     return errors
 
@@ -1191,47 +1218,8 @@ def encode_unskinned_bone_reassignments(candidates, data, warnings):
     for bd in bone_list:
         bd.pop("GeoIdEdited", None)
 
-    submesh_by_vb = {}
-    for i, sm in enumerate(submeshes):
-        vb = sm.get("VertexBuffer")
-        if vb and "VertexBufferOffset" in vb:
-            submesh_by_vb[str(vb["VertexBufferOffset"])] = i
-
-    obj_by_submesh = {}
-    for obj in candidates:
-        if "VertexBufferOffset" not in obj:
-            continue
-        sub_idx = submesh_by_vb.get(str(obj["VertexBufferOffset"]))
-        if sub_idx is not None:
-            obj_by_submesh[sub_idx] = obj
-
+    retargets, issues, obj_by_submesh = _candidate_rigid_retargets(candidates, model)
     bone_by_id = {int(bd["BoneId"]): bd for bd in bone_list if "BoneId" in bd}
-    owner_bone_by_submesh = {
-        int(bd["GeoId"]): int(bd["BoneId"])
-        for bd in bone_list
-        if (not bd.get("Skinned")) and bd.get("GeoId") is not None and int(bd.get("GeoId", -1)) >= 0
-    }
-
-    def _geo_raw(bd):
-        if bd.get("GeoIdEdited") is not None:
-            return int(bd["GeoIdEdited"])
-        if bd.get("GeoIdRaw") is not None:
-            return int(bd["GeoIdRaw"])
-        if bd.get("Skinned"):
-            return GEO_ID_FREE
-        return int(bd.get("GeoId", GEO_ID_FREE))
-
-    bone_geo_raw = {bone_id: _geo_raw(bd) for bone_id, bd in bone_by_id.items()}
-
-    target_bone_by_submesh = {}
-    for sub_idx, from_bone_id in owner_bone_by_submesh.items():
-        obj = obj_by_submesh.get(sub_idx)
-        if obj is not None:
-            target_bone_by_submesh[sub_idx] = _detect_uniform_vertex_bone_id(obj)
-
-    retargets, issues = compute_rigid_retargets(
-        owner_bone_by_submesh, bone_geo_raw, target_bone_by_submesh, set(bone_by_id.keys())
-    )
 
     for issue in issues:
         obj = obj_by_submesh.get(issue.submesh_index)
@@ -1259,6 +1247,59 @@ def encode_unskinned_bone_reassignments(candidates, data, warnings):
         wrote_any = True
 
     return wrote_any
+
+
+def _candidate_rigid_retargets(candidates, model):
+    """The donor rigid-submesh retargets the selected *candidates* request,
+    against the donor ``BoneHierarchy`` (any ``GeoIdEdited`` left by an earlier
+    export is ignored, since this export rewrites it).
+
+    Returns ``(retargets, issues, obj_by_submesh)``. Shared by
+    :func:`encode_unskinned_bone_reassignments` and the custom submesh
+    host-bone re-check, so both see the same final scene state.
+    """
+    bone_list = model.get("BoneHierarchy") or []
+    submeshes = model.get("Submeshes", [])
+    submesh_by_vb = {}
+    for i, sm in enumerate(submeshes):
+        vb = sm.get("VertexBuffer")
+        if vb and "VertexBufferOffset" in vb:
+            submesh_by_vb[str(vb["VertexBufferOffset"])] = i
+
+    obj_by_submesh = {}
+    for obj in candidates:
+        if "VertexBufferOffset" not in obj:
+            continue
+        sub_idx = submesh_by_vb.get(str(obj["VertexBufferOffset"]))
+        if sub_idx is not None:
+            obj_by_submesh[sub_idx] = obj
+
+    bone_by_id = {int(bd["BoneId"]): bd for bd in bone_list if "BoneId" in bd}
+    owner_bone_by_submesh = {
+        int(bd["GeoId"]): int(bd["BoneId"])
+        for bd in bone_list
+        if (not bd.get("Skinned")) and bd.get("GeoId") is not None and int(bd.get("GeoId", -1)) >= 0
+    }
+
+    def _geo_raw(bd):
+        if bd.get("GeoIdRaw") is not None:
+            return int(bd["GeoIdRaw"])
+        if bd.get("Skinned"):
+            return GEO_ID_FREE
+        return int(bd.get("GeoId", GEO_ID_FREE))
+
+    bone_geo_raw = {bone_id: _geo_raw(bd) for bone_id, bd in bone_by_id.items()}
+
+    target_bone_by_submesh = {}
+    for sub_idx, from_bone_id in owner_bone_by_submesh.items():
+        obj = obj_by_submesh.get(sub_idx)
+        if obj is not None:
+            target_bone_by_submesh[sub_idx] = _detect_uniform_vertex_bone_id(obj)
+
+    retargets, issues = compute_rigid_retargets(
+        owner_bone_by_submesh, bone_geo_raw, target_bone_by_submesh, set(bone_by_id.keys())
+    )
+    return retargets, issues, obj_by_submesh
 
 
 def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=False):
@@ -2915,6 +2956,105 @@ def encode_custom_submesh(context, obj, model, texture_assignment, warnings, use
     )
 
 
+def _armature_donor_bone_records(arm_obj):
+    """The import-time bone snapshot on *arm_obj* (``SluggiesGeoIdRaw``,
+    ``SluggiesSkinned``), donor bones only: user-added bones have no
+    counterpart in the target's ``BoneHierarchy``."""
+    records = []
+    for bone in arm_obj.data.bones:
+        if bone.get('SluggiesUserAdded'):
+            continue
+        bone_id = _bone_id_from_bone_name(bone.name)
+        if bone_id is None:
+            continue
+        parent_id = _bone_id_from_bone_name(bone.parent.name) if bone.parent is not None else None
+        records.append(HostBones.BoneRecord(
+            bone_id=bone_id,
+            parent_id=parent_id,
+            geo_id_raw=int(bone.get('SluggiesGeoIdRaw', GEO_ID_FREE)),
+            skinned=bool(bone.get('SluggiesSkinned', False)),
+        ))
+    return records
+
+
+def validate_custom_submeshes(custom_objects, donor_candidates, model, warnings):
+    """Phase 6 step 3 (PLAN_AddSubmesh.md): checks on the final scene state
+    before any custom submesh is encoded. Raises ValueError on the first
+    blocking problem; ignored state goes into *warnings*.
+
+    - Empty meshes are rejected.
+    - Shape keys, extra materials and vertex groups other than the host bone
+      are ignored with a warning (custom submeshes only; donor heads keep
+      their facial shape keys without comment).
+    - Each armature's import-time bone snapshot must match the target
+      ``.sluggie``, or the armature belongs to another model.
+    - Host bones are re-checked with ``classify_host_bones``: a bone taken
+      since the cube was created, or claimed twice, is rejected.
+    """
+    hosts = []
+    for obj in custom_objects:
+        if obj.mode == 'EDIT':
+            obj.update_from_editmode()
+        mesh = obj.data
+        if not mesh.vertices or not mesh.polygons:
+            raise ValueError(f"{obj.name}: custom submesh has no faces")
+        host_bone_id = _detect_uniform_vertex_bone_id(obj)
+        if host_bone_id is None:
+            raise ValueError(
+                f"{obj.name}: every vertex must belong to exactly one bone_<id> vertex group "
+                "(the host bone), all the same bone"
+            )
+        hosts.append(HostBones.CustomSubmeshHost(obj.name, host_bone_id))
+        material = _custom_submesh_material(obj)
+        shape_keys = mesh.shape_keys.key_blocks if mesh.shape_keys else []
+        warnings.extend(CustomSubmeshExport.ignored_state_warnings(
+            obj.name,
+            host_bone_id,
+            [key.name for key in shape_keys],
+            [slot.material.name for slot in obj.material_slots if slot.material is not None],
+            material.name if material is not None else "",
+            [group.name for group in obj.vertex_groups],
+        ))
+
+    sluggie_records = HostBones.bone_records_from_hierarchy(
+        model.get("BoneHierarchy") or [], model.get("SkinData")
+    )
+    armatures = {}
+    for obj in custom_objects:
+        arm_obj = _custom_submesh_armature(obj)
+        if arm_obj is not None:
+            armatures.setdefault(arm_obj.name, arm_obj)
+    for arm_obj in armatures.values():
+        if not HostBones.bone_metadata_is_current(arm_obj.get('SluggiesBoneMetadataVersion')):
+            raise ValueError(
+                f"{arm_obj.name}: armature has no current bone metadata. "
+                f"{HostBones.RE_IMPORT_MESSAGE}."
+            )
+        mismatches = HostBones.bone_metadata_mismatches(
+            _armature_donor_bone_records(arm_obj), sluggie_records
+        )
+        if mismatches:
+            shown = "; ".join(mismatches[:5])
+            more = f" (and {len(mismatches) - 5} more)" if len(mismatches) > 5 else ""
+            raise ValueError(
+                f"{arm_obj.name}: armature does not match the target .sluggie "
+                f"({shown}{more}). It was imported from a different model; export to "
+                "the .sluggie it came from."
+            )
+
+    host_records = HostBones.bone_records_from_hierarchy(
+        model.get("BoneHierarchyEdited") or model.get("BoneHierarchy") or [],
+        model.get("SkinData"),
+    )
+    retargets, _issues, obj_by_submesh = _candidate_rigid_retargets(donor_candidates, model)
+    errors = HostBones.custom_submesh_host_errors(
+        host_records, retargets, hosts,
+        {index: obj.name for index, obj in obj_by_submesh.items()},
+    )
+    if errors:
+        raise ValueError(" ".join(errors))
+
+
 def _custom_submesh_material(obj):
     """The material carrying this custom submesh's own ``<CustomSubmeshId>_ds*``
     SurfaceId (the one the Add submesh operator created), first slot wins."""
@@ -2942,8 +3082,31 @@ def _merge_texture_additions(donor_additions, custom_additions):
     return merged
 
 
+def _partner_added_texture_descriptors(descriptors, additions):
+    """Descriptors for the textures a main model's export appends, so its
+    `_L_` partner can bind them as existing textures.
+
+    The patcher gives the n-th AdditionalTextureDescriptors entry TEX index
+    len(descriptors) + n. It merges entries that share a file name and
+    template format first, which renumbers the later ones, so a list with a
+    repeated name yields nothing here rather than a possibly wrong index.
+    """
+    names = [addition.get("TextureFileName") for addition in additions]
+    if not all(names) or len(set(names)) != len(names):
+        return []
+    return [
+        {"TextureIndex": len(descriptors) + order, "TextureFileName": name}
+        for order, name in enumerate(names)
+    ]
+
+
 def _resolve_export_texture_context(sluggie_path, model):
-    """Return descriptor/path context, borrowing it for a paired `_L_` model."""
+    """Return descriptor/path context, borrowing it for a paired `_L_` model.
+
+    A borrowed list also holds the main model's appended textures (indices
+    after its own descriptors): the `_L_` model binds textures by index into
+    the main model's TEX, so a custom submesh on it can use them once the
+    main model is patched."""
     model_dir = os.path.dirname(os.path.abspath(sluggie_path))
     local_descriptors = model.get("TextureDescriptors") or []
     if local_descriptors:
@@ -2989,7 +3152,13 @@ def _resolve_export_texture_context(sluggie_path, model):
                 continue
             descriptors = candidate_model.get('TextureDescriptors') or []
             if descriptors:
-                candidates.append((descriptors, tex_dir))
+                candidates.append((
+                    descriptors + _partner_added_texture_descriptors(
+                        descriptors,
+                        candidate_model.get('AdditionalTextureDescriptors') or [],
+                    ),
+                    tex_dir,
+                ))
 
     if len(candidates) > 1:
         raise ValueError(
@@ -3256,6 +3425,17 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             )
             return {"CANCELLED"}
 
+        # Edit Mode keeps the mesh in BMesh, so mesh.uv_layers etc. read as
+        # empty (IndexError on a custom submesh's UVs, Blender 5.2,
+        # 2026-09-29). Refuse instead of flushing half the data.
+        if context.mode.startswith('EDIT'):
+            self.report(
+                {"ERROR"},
+                "Export is not possible in Edit Mode. Switch to Object Mode "
+                "(Tab) and export again.",
+            )
+            return {"CANCELLED"}
+
         try:
             with open(self.filepath, 'r') as f:
                 content = f.read().strip()
@@ -3415,11 +3595,18 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             )
             return {"CANCELLED"}
 
-        # Added bones (PLAN_AddBones.md Phase 4) — model-level, written only
+        # Added bones (Add Bone) — model-level, written only
         # when the armature has any SluggiesUserAdded bone. Runs before custom
         # submesh encoding below, which resolves host bones against it: a
         # custom submesh may be hosted on a user-added bone that has no
         # BoneHierarchy entry yet.
+        # Everything below reads bone ids from bone_<N> names; refuse while an
+        # added bone's name and its exported id disagree (a deleted added
+        # bone shifts the later ids, 2026-09-29).
+        name_error = added_bone_name_error(context.selected_objects, context)
+        if name_error:
+            self.report({"ERROR"}, name_error)
+            return {"CANCELLED"}
         encode_bone_hierarchy_edited(context.selected_objects, data, warnings, context)
         bone_hierarchy_errors = validate_bone_hierarchy_edited_export(
             data["SluggiesModel"], warnings
@@ -3439,6 +3626,9 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         if custom_submesh_candidates:
             model = data["SluggiesModel"]
             try:
+                validate_custom_submeshes(
+                    custom_submesh_candidates, candidates, model, warnings
+                )
                 custom_texture_entries = []
                 for obj in custom_submesh_candidates:
                     new_materials = _find_new_materials(obj, None)
@@ -3793,7 +3983,6 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
 
         filename = os.path.basename(self.filepath)
         context.window_manager.clipboard = filename
-        subprocess.run(['clip'], input=filename.encode('utf-16-le'), check=False)
         scale_note = (
             f" (root bone scale {root_scale[0]:.4f}, {root_scale[1]:.4f}, {root_scale[2]:.4f})"
             if root_scale else ""
