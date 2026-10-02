@@ -112,10 +112,12 @@ CURATED = {
     'chemistry_hook': [(0x8015C880, 0x7C603214, 'add r3,r0,r6 in FUN_8015c800')],
     'family_path': [(0x80071BDC, 0x4184000C, 'blt cr1 after cmpwi cr1,r5,0x4d in FUN_80071bb0')],
     'portrait_normal_tests': [
-        (site + off, word, f'{"bge cr1,+8" if off == 4 else "li r3,1"} of the normal test at 0x{site:08X}')
+        (site + off, word, f'{name} of the normal test at 0x{site:08X}')
         for site in (0x8006E640, 0x8007F4DC, 0x8042BBB4, 0x8006463C, 0x80088F5C, 0x8031DBFC)
-        for off, word in ((4, 0x40840008), (8, 0x38600001))],
-    'select_voice_test': [(0x804A55D4 + 4, 0x40840008, 'bge cr1,+8 of the select-voice normal test (optional)')],
+        for off, word, name in ((0, 0x2C80004D, 'cmpwi cr1,r0,0x4d'), (4, 0x40840008, 'bge cr1,+8'),
+                                (8, 0x38600001, 'li r3,1'))],
+    'select_voice_test': [(0x804A55D4, 0x2C80004D, 'cmpwi cr1,r0,0x4d of the select-voice normal test (optional)'),
+                          (0x804A55D4 + 4, 0x40840008, 'bge cr1,+8 of the select-voice normal test (optional)')],
     'id_list_tests': [(0x80320468, 0x4084001C, 'bge cr1,+0x1C (id in r3) in FUN_80320418')],
     'name_label_rows': [
         (0x8006E660, 0x38040149, 'addi r0,r4,0x149'), (0x8007F4FC, 0x38040149, 'addi r0,r4,0x149'),

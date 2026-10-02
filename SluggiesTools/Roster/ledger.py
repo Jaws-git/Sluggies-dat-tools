@@ -63,6 +63,8 @@ def diff_is_empty(diff: dict) -> bool:
 
 def undo_diff(data: bytearray, diff: dict, what: str = 'main.dol') -> str:
     """Restore ``data`` in place. Returns ``'undone'`` or ``'already undone'``; raises on foreign changes."""
+    if diff_is_empty(diff):
+        return 'nothing to undo'
     ranges = [(a, bytes.fromhex(o), bytes.fromhex(n)) for a, o, n in diff['ranges']]
     ours = all(data[a:a + len(n)] == n for a, _o, n in ranges)
     theirs = all(data[a:a + len(o)] == o for a, o, _n in ranges)

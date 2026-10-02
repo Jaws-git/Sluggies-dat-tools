@@ -133,7 +133,7 @@ class RunnerTests(unittest.TestCase):
             f.write(self.original)
         self.config = os.path.join(self.tmp, 'roster.json')
         with open(self.config, 'w') as f:
-            json.dump({'version': 1, 'ids': [], 'wheels': [], 'grid': None}, f)
+            json.dump({'version': 1}, f)   # no 'ids' key: only the DOL hammerspace step acts
 
     def dol(self) -> bytes:
         with open(self.dol_path, 'rb') as f:

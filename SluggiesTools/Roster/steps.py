@@ -24,6 +24,7 @@ PLANNED = (
 # Modules that register steps (imported on demand, so a missing one only hides its step).
 STEP_MODULES = (
     'dol_hammerspace',
+    'ids',
 )
 
 

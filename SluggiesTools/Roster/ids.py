@@ -1,0 +1,518 @@
+"""Uncapped character IDs (plan Phase 3): new IDs 0x66-0xFE that play as a template character.
+
+Config (``ids`` in the roster preset)::
+
+    "ids": [
+      {"id": "0x66", "template": "0x00", "wheel": "0x00", "swatch": "blue"}
+    ]
+
+* ``id``: optional; the next free ID from 0x66 when left out.
+* ``template``: a stock player ID (0x00-0x4C). The new ID copies its row in
+  every per-ID table, so it has the template's model, animations, stats and
+  voice until model assignment exists.
+* ``wheel``: whose colour wheel the new ID joins (default: the template). A
+  host without a wheel gets a new wheel group (0x0E and up).
+* ``swatch``: the wheel swatch colour (name or 0-10); default: the template's.
+
+An empty ``ids`` list still moves every table (101 rows, nothing added): the
+identity relocation of plan step 3a, which must play exactly like vanilla.
+
+What a non-empty list does (plan §2.2 B, the external tool's design):
+1. every per-ID table (inventory status ``moved``, plus the model handles)
+   moves to the DOL hammerspace data section with 256 rows;
+2. hooks: roster list, availability bound, FUN_80071bb0 family path,
+   select-screen model task, model resolver and directory map, portrait
+   tests and template alias, ID pool, team list test, chemistry (match and
+   select screens), charge-effect stack copies.
+
+Toy Field-only features (the slot-machine faces) are skipped; shared code
+gets the same patches as on the exhibition draft.
+"""
+
+import struct
+from dataclasses import dataclass
+
+try:
+    from ..Dol import dolfile, inventory, relocate
+    from ..Dol.ppc import Asm, one
+    from . import dol_hammerspace, steps
+except ImportError:
+    from Dol import dolfile, inventory, relocate
+    from Dol.ppc import Asm, one
+    import dol_hammerspace
+    import steps
+
+STOCK_IDS = 0x65            # IDs 0x00-0x64; 0x65 is the "no character" sentinel
+FIRST_NEW = 0x66
+MAX_ID = 0xFE               # 0xFF ends ID lists
+ID_BOUND = 0xFF             # the game's ID range checks are widened to this
+ROWS = 0x100                # rows of every moved per-ID table
+PLAYER_END = 0x4D           # stock player IDs are 0x00-0x4C
+STOCK_WHEEL_CAP = 6         # members per wheel until plan Phase 4 lifts the caps
+MODEL_DIR_BASE = 0x12
+STATS_ROW, CHEM_BASE, NEUTRAL = 0x8E, 0x28, 1
+SWATCHES = {'red': 0, 'blue': 1, 'yellow': 2, 'green': 3, 'purple': 4, 'black': 5, 'brown': 6,
+            'lightblue': 7, 'pink': 8, 'white': 9, 'orange': 10}
+# Model-handle rows the stock init code (0x80155624) leaves as they are; other templates get (1, 2, 4).
+MODEL_REQUESTS = {0x12: (1, 0, 0), 0x21: (1, 1, 1), 0x22: (1, 1, 1), 0x23: (1, 1, 1), 0x24: (1, 1, 1),
+                  0x26: (0, 0, 0)}
+HANDLE_TABLE = 'model_handles'
+
+
+class IdConfigError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class NewId:
+    id: int
+    template: int
+    wheel: int
+    swatch: int | None
+
+
+def _number(value, what: str) -> int:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value, 0)
+        except ValueError:
+            pass
+    raise IdConfigError(f'{what}: {value!r} is not a number (use e.g. 102 or "0x66")')
+
+
+def parse_ids(config: dict) -> list[NewId]:
+    entries = config.get('ids') or []
+    used: set[int] = set()
+    out: list[NewId] = []
+    for n, entry in enumerate(entries):
+        where = f'ids[{n}]'
+        if 'id' in entry and entry['id'] is not None:
+            cid = _number(entry['id'], f'{where}.id')
+        else:
+            cid = next(i for i in range(FIRST_NEW, MAX_ID + 2) if i not in used)
+        if not FIRST_NEW <= cid <= MAX_ID:
+            raise IdConfigError(f'{where}: ID 0x{cid:02X} is outside 0x{FIRST_NEW:02X}-0x{MAX_ID:02X}')
+        if cid in used:
+            raise IdConfigError(f'{where}: ID 0x{cid:02X} is listed twice')
+        if 'template' not in entry:
+            raise IdConfigError(f'{where}: no template')
+        template = _number(entry['template'], f'{where}.template')
+        if not 0 <= template < PLAYER_END:
+            raise IdConfigError(f'{where}: template 0x{template:02X} is not a stock player ID (0x00-0x4C)')
+        wheel = _number(entry.get('wheel', template), f'{where}.wheel')
+        if not (0 <= wheel < PLAYER_END or wheel in {i.id for i in out}):
+            raise IdConfigError(f'{where}: wheel 0x{wheel:02X} is neither a stock player ID nor an earlier new ID')
+        swatch = entry.get('swatch')
+        if isinstance(swatch, str) and swatch.lower() in SWATCHES:
+            swatch = SWATCHES[swatch.lower()]
+        elif swatch is not None:
+            swatch = _number(swatch, f'{where}.swatch')
+            if not 0 <= swatch <= 10:
+                raise IdConfigError(f'{where}: swatch {swatch} is outside 0-10')
+        used.add(cid)
+        out.append(NewId(cid, template, wheel, swatch))
+    return sorted(out, key=lambda c: c.id)
+
+
+# --------------------------------------------------------------------------
+# Tables
+# --------------------------------------------------------------------------
+
+def _rows(image: dolfile.DolImage, table: inventory.Table) -> list[bytearray]:
+    """The stock rows plus the row after the table (row 0x65, copied as it is)."""
+    base = table.address + table.header
+    return [bytearray(image.read(base + i * table.row_size, table.row_size)) for i in range(STOCK_IDS + 1)]
+
+
+def selector_rows(rows: list[bytearray], new: list[NewId]) -> tuple[list[bytearray], list[str]]:
+    """Selector (colour-wheel) rows for the new IDs; may give a host row a new wheel group."""
+    log = []
+    by_id = {}
+    next_group = max(r[0] for r in rows[:STOCK_IDS]) + 1
+
+    def row_of(cid):
+        return rows[cid] if cid < len(rows) else by_id[cid]
+    for c in new:
+        host = row_of(c.wheel)
+        if host[0] == 0:
+            host[0] = next_group
+            log.append(f'0x{c.wheel:02X} gets wheel group 0x{next_group:02X}')
+            next_group += 1
+        row = bytearray(rows[c.template])
+        row[0:3] = host[0:3]
+        species = row[2]
+        shown = [r[5] for r in rows[:STOCK_IDS] if r[2] == species and r[6]]
+        earlier = [x for x in by_id.values() if x[2] == species]
+        row[3] = 0
+        row[5] = 1 + max(shown or [-1]) + len(earlier)   # unread by the game (wheel order is ID order)
+        row[6] = 1
+        if c.swatch is not None:
+            row[7] = c.swatch
+        by_id[c.id] = row
+        members = len([r for r in rows[:STOCK_IDS] if r[2] == species and r[6]]) + len(earlier) + 1
+        if members > STOCK_WHEEL_CAP:
+            raise IdConfigError(f'0x{c.id:02X}: the wheel of species 0x{species:02X} would have {members} '
+                                f'members; more than {STOCK_WHEEL_CAP} needs the wheel step (plan Phase 4)')
+    return [by_id.get(i, bytearray(8)) for i in range(FIRST_NEW, ROWS)], log
+
+
+def extended_table(image: dolfile.DolImage, table: inventory.Table, new: list[NewId],
+                   rows_out: int) -> tuple[bytes, list[str]]:
+    rows = _rows(image, table)
+    log: list[str] = []
+    head = bytearray(image.read(table.address, table.header))
+    if rows_out > STOCK_IDS + 1:
+        by_id = {c.id: c for c in new}
+        if table.name == 'selector':
+            added, log = selector_rows(rows, new)
+        else:
+            added = []
+            for cid in range(FIRST_NEW, rows_out):
+                c = by_id.get(cid)
+                row = bytearray(rows[c.template]) if c else bytearray(table.row_size)
+                if table.name == 'stats':
+                    row[0:2] = struct.pack('>H', cid)
+                    if not c:   # no character: neutral chemistry
+                        row[CHEM_BASE:CHEM_BASE + STOCK_IDS] = bytes([NEUTRAL]) * STOCK_IDS
+                added.append(row)
+        rows += added
+        if table.name == 'stats':
+            head[0] = min(rows_out, 0xFF)   # the stock row count; nothing reads it
+    return bytes(head) + b''.join(rows), log
+
+
+def handle_rows(new: list[NewId], rows_out: int) -> bytes:
+    """Model handles (bss in the stock DOL, so zeros); new IDs get their template's requests."""
+    rows = [(0, 0, 0)] * rows_out
+    for c in new:
+        rows[c.id] = MODEL_REQUESTS.get(c.template, (1, 2, 4))
+    return b''.join(struct.pack('>III', *r) for r in rows)
+
+
+def new_by_new_chemistry(stats: bytes, header: int, new: list[NewId]) -> bytes:
+    """Chemistry between two new IDs (0x66-0xFF squared): their templates' pair."""
+    n = ID_BOUND - FIRST_NEW + 1
+    table = bytearray([NEUTRAL]) * (n * n)
+    template = {c.id: c.template for c in new}
+    for a, ta in template.items():
+        for b, tb in template.items():
+            if a != b:
+                table[(a - FIRST_NEW) * n + b - FIRST_NEW] = stats[header + ta * STATS_ROW + CHEM_BASE + tb]
+    return bytes(table)
+
+
+# --------------------------------------------------------------------------
+# Hooks
+# --------------------------------------------------------------------------
+
+def _stock(group: str, address: int) -> int:
+    return inventory.site(group, address).stock
+
+
+def _branch_to(image: dolfile.DolImage, group: str, site: int, target: int, link: bool = False) -> None:
+    image.patch_word(site, _stock(group, site), one(site, lambda a: a.b(target, link)))
+
+
+def emit_alias(a: Asm, reg: str, template_of: int) -> None:
+    """``reg`` = template_of[reg] for 0x66 <= reg <= 0xFF; r12 is saved around it. Clobbers cr0."""
+    skip = f'alias_{reg}_{a.pc:x}'
+    a.cmplwi(reg, STOCK_IDS).ble(skip)
+    a.cmplwi(reg, ID_BOUND).bgt(skip)
+    a.stwu('r1', -16, 'r1').stw('r12', 8, 'r1')
+    a.load_addr('r12', template_of).lbzx(reg, 'r12', reg)
+    a.lwz('r12', 8, 'r1').addi('r1', 'r1', 16)
+    a.label(skip)
+
+
+class HookBuilder:
+    def __init__(self, image: dolfile.DolImage, hs: dol_hammerspace.DolHammerspace):
+        self.image, self.hs = image, hs
+        self.log: list[str] = []
+
+    def stub(self, a: Asm) -> int:
+        at = self.hs.code.put(a.assemble(), 4)
+        if at != a.base:
+            raise dolfile.DolError(f'stub built for 0x{a.base:08X} landed at 0x{at:08X}')
+        return at
+
+    def new_stub(self) -> Asm:
+        self.hs.code.put(b'', 4)
+        return Asm(self.hs.code.here)
+
+    def roster_hook(self, new_ids_list: int, selector: int) -> None:
+        """End of the roster builder FUN_8006ba6c: append each new ID to its species list (max 10)."""
+        site = 0x8006BD58
+        a = self.new_stub()
+        a.load_addr('r6', new_ids_list)
+        a.label('loop')
+        a.lbz('r7', 0, 'r6').cmplwi('r7', STOCK_IDS).beq('done')
+        a.load_addr('r8', selector).slwi('r9', 'r7', 3).add('r8', 'r8', 'r9')
+        a.lbz('r0', 2, 'r8')                                  # species
+        a.add('r10', 'r31', 'r0').lbz('r4', 0x4D, 'r10')      # X[0x4D + species] = count
+        a.cmplwi('r4', 10).bge('next')
+        a.mulli('r5', 'r0', 10).add('r5', 'r31', 'r5').add('r5', 'r5', 'r4')
+        a.stb('r7', 0x76, 'r5')                               # X[0x76 + species * 10 + count] = id
+        a.addi('r4', 'r4', 1).stb('r4', 0x4D, 'r10')
+        a.label('next')
+        a.addi('r6', 'r6', 1).b('loop')
+        a.label('done')
+        a.mr('r3', 'r31').b(site + 4)
+        _branch_to(self.image, 'roster_hook', site, self.stub(a))
+
+    def availability_bounds(self) -> None:
+        for s in inventory.group('availability_bounds'):
+            self.image.patch_word(s.address, s.stock, (s.stock & 0xFFFF0000) | ID_BOUND)
+
+    def select_model_task(self) -> None:
+        site = 0x804A508C          # cmpwi cr1,r4,0x65 in SelCharaMdl FUN_804a5018
+        a = self.new_stub()
+        a.cmpwi('r4', STOCK_IDS, cr=1).beq('reject', cr=1)
+        a.cmpwi('r4', ID_BOUND, cr=1).bgt('reject', cr=1)
+        a.b(0x804A5094)
+        a.label('reject')
+        a.b(0x804A5794)
+        _branch_to(self.image, 'select_model_task', site, self.stub(a))
+
+    def family_path(self) -> None:
+        site = 0x80071BDC          # blt cr1 after cmpwi cr1,r5,0x4d in FUN_80071bb0
+        a = self.new_stub()
+        a.blt('family', cr=1)
+        a.cmpwi('r5', STOCK_IDS, cr=1).ble('none', cr=1)
+        a.label('family')
+        a.b(0x80071BE8)
+        a.label('none')
+        a.b(0x80071BE0)
+        _branch_to(self.image, 'family_path', site, self.stub(a))
+
+    def model_resolver(self, template_of: int) -> None:
+        site = 0x80367078          # mr r3,r4 ; blr  in FUN_80367060
+        a = self.new_stub()
+        a.mr('r3', 'r4')
+        emit_alias(a, 'r3', template_of)
+        a.blr()
+        _branch_to(self.image, 'model_resolver', site, self.stub(a))
+
+    def model_dirs(self, dirmap: int) -> None:
+        for s in inventory.group('model_dir_sites'):
+            reg = (s.stock >> 16) & 31
+            if s.stock & 0xFFE0FFFF != 0x38800012:
+                raise dolfile.DolError(f'0x{s.address:08X}: {s.stock:08X} is not addi r4,rN,0x12')
+            a = self.new_stub()
+            a.load_addr('r12', dirmap).slwi('r4', f'r{reg}', 1).lhzx('r4', 'r12', 'r4')
+            a.b(s.address + 4)
+            self.image.patch_word(s.address, s.stock, one(s.address, lambda b, t=self.stub(a): b.b(t)))
+
+    def portrait_tests(self) -> None:
+        """Let new IDs pass the inline "normal" test (cmpwi cr1,r0,0x4d; bge cr1,+8; li r3,1)."""
+        bges = [s for s in inventory.group('portrait_normal_tests') if s.stock == 0x40840008]
+        for s in bges:
+            # the test before it must be cmpwi cr1,r0,0x4d (the stub compares r0)
+            self.image.patch_word(s.address - 4, 0x2C80004D, 0x2C80004D)
+            a = self.new_stub()
+            a.blt('normal', cr=1)
+            a.cmpwi('r0', STOCK_IDS, cr=1).ble('other', cr=1)
+            a.label('normal')
+            a.b(s.address + 4)
+            a.label('other')
+            a.b(s.address + 8)
+            self.image.patch_word(s.address, s.stock, one(s.address, lambda b, t=self.stub(a): b.b(t)))
+
+    def template_alias(self, template_of: int) -> None:
+        """Portrait renderer entry, its two preview calls and the name-label rows use the template's ID."""
+        site = 0x80395DD0          # mr r24,r4 at FUN_80395db0 entry
+        a = self.new_stub()
+        a.mr('r24', 'r4')
+        emit_alias(a, 'r24', template_of)
+        a.b(site + 4)
+        _branch_to(self.image, 'portrait_renderer', site, self.stub(a))
+        for s in inventory.group('portrait_preview_calls'):      # bl FUN_80395db0, r4 = id
+            if s.stock != one(s.address, lambda b: b.bl(0x80395DB0)):
+                raise dolfile.DolError(f'0x{s.address:08X}: {s.stock:08X} is not bl 0x80395DB0')
+            a = self.new_stub()
+            emit_alias(a, 'r4', template_of)
+            a.b(0x80395DB0)
+            self.image.patch_word(s.address, s.stock, one(s.address, lambda b, t=self.stub(a): b.bl(t)))
+        for s in inventory.group('name_label_rows'):             # addi rD,r4,0x149
+            rd = (s.stock >> 21) & 31
+            a = self.new_stub()
+            a.cmplwi('r4', STOCK_IDS).ble('stock').cmplwi('r4', ID_BOUND).bgt('stock')
+            a.stwu('r1', -16, 'r1').stw('r12', 8, 'r1')
+            a.load_addr('r12', template_of).lbzx('r12', 'r12', 'r4')
+            a.addi(f'r{rd}', 'r12', 0x149)                          # (rA = r12: never the literal-0 form)
+            a.lwz('r12', 8, 'r1').addi('r1', 'r1', 16).b(s.address + 4)
+            a.label('stock')
+            a.word(s.stock).b(s.address + 4)
+            self.image.patch_word(s.address, s.stock, one(s.address, lambda b, t=self.stub(a): b.b(t)))
+
+    def id_pool(self) -> None:
+        """FUN_80431df0 gathers up to 0x65 IDs into a 0xCA-byte heap buffer: room for 0x100."""
+        for s in inventory.group('id_limits'):
+            if s.stock == 0x386000CA:          # li r3,0xCA
+                self.image.patch_word(s.address, s.stock, 0x38600000 | 2 * (ID_BOUND + 1))
+            elif s.stock == 0x2C170065:        # cmpwi r23,0x65
+                self.image.patch_word(s.address, s.stock, 0x2C170000 | (ID_BOUND + 1))
+            # else: a Toy Field slot-machine face test (Toy Field-only feature: skipped)
+
+    def team_list(self) -> None:
+        site, reg = 0x80320468, 'r3'    # bge cr1,+0x1C after cmpwi cr1,r3,0x4d (FUN_80320418)
+        a = self.new_stub()
+        a.blt('normal', cr=1)
+        a.cmpwi(reg, STOCK_IDS, cr=1).ble('other', cr=1)
+        a.label('normal')
+        a.b(site + 4)
+        a.label('other')
+        a.b(site + 0x1C)
+        _branch_to(self.image, 'id_list_tests', site, self.stub(a))
+
+    def chemistry(self, stats_rows: int, new_chem: int) -> None:
+        """Match chemistry FUN_8015c800: replaces add r3,r0,r6 (r0 = A's stats row, r6 = B's ID)."""
+        n = ID_BOUND - FIRST_NEW + 1
+        site = 0x8015C880
+        a = self.new_stub()
+        a.cmpwi('r6', STOCK_IDS).bge('new_b')
+        a.add('r3', 'r0', 'r6').lbz('r3', CHEM_BASE, 'r3').blr()
+        a.label('new_b')
+        a.mr('r12', 'r0').lhz('r11', 0, 'r12')                   # A's ID (row bytes 0-1)
+        a.cmpwi('r11', STOCK_IDS).bge('both')
+        a.load_addr('r12', stats_rows)
+        a.mulli('r3', 'r6', STATS_ROW).add('r12', 'r12', 'r3').add('r12', 'r12', 'r11')
+        a.lbz('r3', CHEM_BASE, 'r12').blr()                      # B's row, column A
+        a.label('both')
+        a.addi('r11', 'r11', -FIRST_NEW).cmplwi('r11', n - 1).bgt('unknown')
+        a.addi('r12', 'r6', -FIRST_NEW).cmplwi('r12', n - 1).bgt('unknown')
+        a.mulli('r11', 'r11', n).add('r11', 'r11', 'r12')
+        a.load_addr('r12', new_chem).lbzx('r3', 'r12', 'r11').blr()
+        a.label('unknown')
+        a.li('r3', NEUTRAL).blr()
+        _branch_to(self.image, 'chemistry_hook', site, self.stub(a))
+
+    def select_chemistry(self, stats_rows: int, new_chem: int) -> None:
+        """The select/team screens read chemistry from stack copies of the stats rows (10 sites)."""
+        n = ID_BOUND - FIRST_NEW + 1
+        # (site, stock instruction, A's ID into r11, B's register, answer register)
+        sites = [
+            (0x80184F78, lambda a: a.lbzx('r0', 'r3', 'r0'), lambda a: a.lhz('r11', -CHEM_BASE, 'r3'), 'r0', 'r0'),
+            (0x80185170, lambda a: a.lbzx('r0', 'r3', 'r0'), lambda a: a.lhz('r11', -CHEM_BASE, 'r3'), 'r0', 'r0'),
+            (0x80187988, lambda a: a.lbz('r0', CHEM_BASE, 'r3'), lambda a: a.lhz('r11', 0, 'r30'), 'r0', 'r0'),
+            (0x801886D4, lambda a: a.lbzx('r0', 'r3', 'r0'), lambda a: a.lhz('r11', -CHEM_BASE, 'r3'), 'r0', 'r0'),
+            (0x80188A48, lambda a: a.lbzx('r0', 'r3', 'r0'), lambda a: a.lhz('r11', -CHEM_BASE, 'r3'), 'r0', 'r0'),
+            (0x80069B80, lambda a: a.lbzx('r0', 'r3', 'r31'), lambda a: a.lhz('r11', -CHEM_BASE, 'r3'), 'r31', 'r0'),
+            (0x80067978, lambda a: a.lbz('r3', CHEM_BASE, 'r26'),
+             lambda a: a.subf('r11', 'r25', 'r26').lhz('r11', 0, 'r11'), 'r25', 'r3'),
+            (0x80064EA4, lambda a: a.lbzx('r3', 'r3', 'r29'), lambda a: a.lhz('r11', -CHEM_BASE, 'r3'), 'r29', 'r3'),
+            (0x80079500, lambda a: a.lbz('r3', CHEM_BASE, 'r25'),
+             lambda a: a.subf('r11', 'r28', 'r25').lhz('r11', 0, 'r11'), 'r28', 'r3'),
+            (0x8008952C, lambda a: a.lbzx('r3', 'r3', 'r29'), lambda a: a.lhz('r11', -CHEM_BASE, 'r3'), 'r29', 'r3'),
+        ]
+        for site, stock, a_id, b, out in sites:
+            expect = one(site, stock)
+            a = self.new_stub()
+            a.cmplwi(b, STOCK_IDS - 1).bgt('new')
+            stock(a)
+            a.blr()
+            a.label('new')
+            a.stwu('r1', -16, 'r1').stw('r11', 8, 'r1').stw('r12', 12, 'r1')
+            a_id(a)
+            a.mr('r12', b)
+            a.cmplwi('r11', STOCK_IDS - 1).bgt('both')
+            a.mulli('r12', 'r12', STATS_ROW).add('r12', 'r12', 'r11')
+            a.load_addr('r11', stats_rows).add('r12', 'r12', 'r11')
+            a.lbz(out, CHEM_BASE, 'r12').b('done')
+            a.label('both')
+            a.addi('r11', 'r11', -FIRST_NEW).cmplwi('r11', n - 1).bgt('unknown')
+            a.addi('r12', 'r12', -FIRST_NEW).cmplwi('r12', n - 1).bgt('unknown')
+            a.mulli('r11', 'r11', n).add('r11', 'r11', 'r12')
+            a.load_addr('r12', new_chem).lbzx(out, 'r12', 'r11').b('done')
+            a.label('unknown')
+            a.li(out, NEUTRAL)
+            a.label('done')
+            a.lwz('r11', 8, 'r1').lwz('r12', 12, 'r1').addi('r1', 'r1', 16).blr()
+            stock_word = _stock('select_chemistry', site)
+            if stock_word != expect:
+                raise dolfile.DolError(f'select chemistry: 0x{site:08X} is {stock_word:08X}, expected {expect:08X}')
+            self.image.patch_word(site, expect, one(site, lambda c, t=self.stub(a): c.bl(t)))
+        for addr in (0x80069B50, 0x80069B60):       # FUN_80069b2c: cmpwi r3 / r4, 0x65
+            s = inventory.site('select_chemistry', addr)
+            self.image.patch_word(addr, s.stock, (s.stock & 0xFFFF0000) | (ID_BOUND + 1))
+
+    def charge_scales(self, at: dict[str, int]) -> None:
+        """The charge effects copy their scale table to the stack: point that copy at the moved table."""
+        tables = {0x800F3478: ('pitchchargescale', 'r5'), 0x800F2EC0: ('batchargescale', 'r5'),
+                  0x800FB1E0: ('effectscale_2b0', 'r3')}
+        for s in inventory.group('charge_scale'):
+            name, reg = tables[s.address]
+            a = self.new_stub()
+            a.load_addr(reg, at[name]).blr()
+            self.image.patch_word(s.address, s.stock, one(s.address, lambda b, t=self.stub(a): b.bl(t)))
+
+
+# --------------------------------------------------------------------------
+# Step
+# --------------------------------------------------------------------------
+
+def moved_tables() -> list[inventory.Table]:
+    return [t for t in inventory.tables('moved') if t.name not in ('head_list', 'dtna_directories')]
+
+
+def apply_ids(image: dolfile.DolImage, hs: dol_hammerspace.DolHammerspace, new: list[NewId]) -> list[str]:
+    rows_out = ROWS if new else STOCK_IDS + 1
+    log = []
+    refs = relocate.scan_refs(image)
+    at: dict[str, int] = {}
+    for table in moved_tables():
+        if table.name == HANDLE_TABLE:
+            blob = handle_rows(new, rows_out)
+        else:
+            blob, lines = extended_table(image, table, new, rows_out)
+            log += lines
+        at[table.name] = hs.data.put(blob, 32)
+        changes = relocate.relocate_table(image, table.all_pairs, table.address, table.length,
+                                          at[table.name], refs)
+        log.append(f'{table.name:16} {len(changes):3} words -> 0x{at[table.name]:08X} ({rows_out} rows)')
+    if not new:
+        return log + ['identity relocation (no new IDs configured): every table keeps its 101 rows']
+
+    template_of = bytes(range(STOCK_IDS + 1)) + bytes(
+        next((c.template for c in new if c.id == i), i) for i in range(FIRST_NEW, ROWS))
+    template_of_at = hs.data.put(template_of, 4)
+    dirmap = [i + MODEL_DIR_BASE for i in range(STOCK_IDS)] + [0] * (ROWS - STOCK_IDS)
+    for c in new:
+        dirmap[c.id] = c.template + MODEL_DIR_BASE
+    dirmap_at = hs.data.put(struct.pack(f'>{ROWS}H', *dirmap), 4)
+    new_ids_list = hs.data.put(bytes(c.id for c in new) + bytes([STOCK_IDS]), 4)
+    stats = inventory.table('stats')
+    stats_blob = bytes(hs.data.blob[at['stats'] - hs.data.base:at['stats'] - hs.data.base + stats.header
+                                    + ROWS * STATS_ROW])
+    new_chem = hs.data.put(new_by_new_chemistry(stats_blob, stats.header, new), 4)
+    stats_rows = at['stats'] + stats.header
+
+    hooks = HookBuilder(image, hs)
+    hooks.roster_hook(new_ids_list, at['selector'])
+    hooks.availability_bounds()
+    hooks.select_model_task()
+    hooks.family_path()
+    hooks.model_resolver(template_of_at)
+    hooks.model_dirs(dirmap_at)
+    hooks.portrait_tests()
+    hooks.template_alias(template_of_at)
+    hooks.id_pool()
+    hooks.team_list()
+    hooks.chemistry(stats_rows, new_chem)
+    hooks.select_chemistry(stats_rows, new_chem)
+    hooks.charge_scales(at)
+    log.append('new IDs: ' + ', '.join(f'0x{c.id:02X} (template 0x{c.template:02X}, wheel 0x{c.wheel:02X})'
+                                         for c in new))
+    return log
+
+
+@steps.register('ids')
+def apply(ctx: steps.RosterContext) -> list[str]:
+    if 'ids' not in ctx.config:
+        return ['no "ids" key in the roster config: tables stay in place']
+    new = parse_ids(ctx.config)
+    hs = dol_hammerspace.get(ctx)
+    log = apply_ids(ctx.dol, hs, new)
+    hs.commit()
+    return log + [f'DOL hammerspace now: {hs.summary()}']

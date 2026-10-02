@@ -1349,6 +1349,11 @@
   ],
   "portrait_normal_tests": [
    {
+    "address": "0x8006E640",
+    "stock": "0x2C80004D",
+    "note": "cmpwi cr1,r0,0x4d of the normal test at 0x8006E640"
+   },
+   {
     "address": "0x8006E644",
     "stock": "0x40840008",
     "note": "bge cr1,+8 of the normal test at 0x8006E640"
@@ -1357,6 +1362,11 @@
     "address": "0x8006E648",
     "stock": "0x38600001",
     "note": "li r3,1 of the normal test at 0x8006E640"
+   },
+   {
+    "address": "0x8007F4DC",
+    "stock": "0x2C80004D",
+    "note": "cmpwi cr1,r0,0x4d of the normal test at 0x8007F4DC"
    },
    {
     "address": "0x8007F4E0",
@@ -1369,6 +1379,11 @@
     "note": "li r3,1 of the normal test at 0x8007F4DC"
    },
    {
+    "address": "0x8042BBB4",
+    "stock": "0x2C80004D",
+    "note": "cmpwi cr1,r0,0x4d of the normal test at 0x8042BBB4"
+   },
+   {
     "address": "0x8042BBB8",
     "stock": "0x40840008",
     "note": "bge cr1,+8 of the normal test at 0x8042BBB4"
@@ -1377,6 +1392,11 @@
     "address": "0x8042BBBC",
     "stock": "0x38600001",
     "note": "li r3,1 of the normal test at 0x8042BBB4"
+   },
+   {
+    "address": "0x8006463C",
+    "stock": "0x2C80004D",
+    "note": "cmpwi cr1,r0,0x4d of the normal test at 0x8006463C"
    },
    {
     "address": "0x80064640",
@@ -1389,6 +1409,11 @@
     "note": "li r3,1 of the normal test at 0x8006463C"
    },
    {
+    "address": "0x80088F5C",
+    "stock": "0x2C80004D",
+    "note": "cmpwi cr1,r0,0x4d of the normal test at 0x80088F5C"
+   },
+   {
     "address": "0x80088F60",
     "stock": "0x40840008",
     "note": "bge cr1,+8 of the normal test at 0x80088F5C"
@@ -1397,6 +1422,11 @@
     "address": "0x80088F64",
     "stock": "0x38600001",
     "note": "li r3,1 of the normal test at 0x80088F5C"
+   },
+   {
+    "address": "0x8031DBFC",
+    "stock": "0x2C80004D",
+    "note": "cmpwi cr1,r0,0x4d of the normal test at 0x8031DBFC"
    },
    {
     "address": "0x8031DC00",
@@ -1410,6 +1440,11 @@
    }
   ],
   "select_voice_test": [
+   {
+    "address": "0x804A55D4",
+    "stock": "0x2C80004D",
+    "note": "cmpwi cr1,r0,0x4d of the select-voice normal test (optional)"
+   },
    {
     "address": "0x804A55D8",
     "stock": "0x40840008",
