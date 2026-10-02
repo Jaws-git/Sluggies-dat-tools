@@ -187,33 +187,25 @@ class ACTPhase2RebuildTests(unittest.TestCase):
             self.assertEqual(next(b for b in rebuilt.bones if b.id == bone_id).orientation_ptr, 0)
         self.assertEqual(rebuilt.srt_blobs, self.donor_parsed.srt_blobs)
 
-    def test_stadium_new_root_bone_joins_the_root_chain(self):
-        data = self._fixture_data()
-        model = data['SluggiesModel']
-        model['ChunkNumber'] = 10
-        new_id = self.donor_bone_count
-        model['BoneHierarchyEdited'].append({
-            'BoneId': new_id, 'GeoId': 0xFFFF, 'ParentBoneId': None, 'Skinned': False,
-            'TrackId': 0xFFFF, 'MirrorBoneId': new_id, 'MirrorRole': 3, 'SRTType': 0xC,
-            'DrawPriority': 0, 'InheritTransform': True, 'UserAdded': True,
-            'Translation': [1.0, 2.0, 3.0], 'Scale': [1.0, 1.0, 1.0],
-            'Quaternion': [1.0, 0.0, 0.0, 0.0], 'VertexInfluences': [],
-        })
+    def test_stadium_refuses_new_bones(self):
+        # A mesh on a new stadium bone does not draw (Dolphin, 2026-10-02).
+        for parent in (None, 1):
+            with self.subTest(parent=parent):
+                data = self._fixture_data()
+                model = data['SluggiesModel']
+                model['ChunkNumber'] = 10
+                new_id = self.donor_bone_count
+                model['BoneHierarchyEdited'].append({
+                    'BoneId': new_id, 'GeoId': 0xFFFF, 'ParentBoneId': parent, 'Skinned': False,
+                    'TrackId': 0xFFFF, 'MirrorBoneId': new_id, 'MirrorRole': 3, 'SRTType': 0xC,
+                    'DrawPriority': 0, 'InheritTransform': True, 'UserAdded': True,
+                    'Translation': [1.0, 2.0, 3.0], 'Scale': [1.0, 1.0, 1.0],
+                    'Quaternion': [1.0, 0.0, 0.0, 0.0], 'VertexInfluences': [],
+                })
+                with self.assertRaisesRegex(ValueError, 'stadium models cannot take new bones'):
+                    self._build(data)
 
-        rebuilt = act_rebuild.parse_act(self._build(data))
-        new_bone = next(b for b in rebuilt.bones if b.id == new_id)
-        self.assertEqual(new_bone.parent, 0)
-        self.assertEqual(new_bone.next, 0)
-        self.assertEqual(rebuilt.root_ptr, self.donor_parsed.root_ptr)
-        # The previously last root now points at the new bone.
-        cur, last = self.donor_parsed.root_ptr, None
-        while cur:
-            last = (cur - act_rebuild.HEADER_SIZE) // act_rebuild.BONE_RECORD_SIZE
-            cur = next(b for b in self.donor_parsed.bones if b.id == last).next
-        self.assertEqual(next(b for b in rebuilt.bones if b.id == last).next, _table_off(new_id))
-        self.assertEqual(new_bone.prev, _table_off(last))
-
-    def test_new_root_bone_is_refused_outside_stadiums(self):
+    def test_new_root_bone_is_refused(self):
         data = self._fixture_data()
         new_id = self.donor_bone_count
         data['SluggiesModel']['BoneHierarchyEdited'].append({

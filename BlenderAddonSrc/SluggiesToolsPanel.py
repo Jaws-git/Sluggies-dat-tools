@@ -34,7 +34,7 @@ _SUBMESH_NAME_RE = re.compile(r'^CustomSubmesh_(\d+)$')
 _INVALID_SUBMESH_NAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 _CUSTOM_SUBMESH_CUBE_HALF_EXTENT = 0.2
-_CUSTOM_SUBMESH_TEXTURE_SIZE = 512
+_CUSTOM_SUBMESH_TEXTURE_SIZE = 256
 
 _HOST_BONE_STATUS_TAGS = {
     HostBones.STATUS_RECOMMENDED: "free",
@@ -98,6 +98,7 @@ def _bone_records(arm_obj):
             parent_id=parent_id,
             geo_id_raw=int(b.get('SluggiesGeoIdRaw', HostBones.GEO_ID_FREE)),
             skinned=bool(b.get('SluggiesSkinned', False)),
+            user_added=bool(b.get('SluggiesUserAdded', False)),
         ))
     return records
 
@@ -192,7 +193,8 @@ def _model_chunk_number(arm_obj):
 
 def _model_is_stadium(arm_obj):
     """Whether the armature's model is a stadium (dirs 7-16, the patcher's
-    STADIUM_CHUNKS): there a custom submesh must hang on a root bone."""
+    STADIUM_CHUNKS): there a custom submesh must hang on a free vanilla root
+    bone, and new bones are refused."""
     return TemplateSources.is_stadium_chunk(_model_chunk_number(arm_obj))
 
 
@@ -1184,8 +1186,9 @@ def _unused_bone_name(arm_obj):
 def _create_added_bone(context, arm_obj, parent_bone_name):
     """Create one inert leaf bone parented to *parent_bone_name*: no
     GeoId/track, self-mirrored role 3, InheritTransform true, DrawPriority 0.
-    *parent_bone_name* None makes a root bone at the 3D cursor instead (only
-    for stadiums, where a custom submesh must hang on a root bone).
+    *parent_bone_name* None makes a root bone at the 3D cursor instead. No
+    caller does that now: new root bones were for stadiums, which no longer
+    take new bones at all (Dolphin, 2026-10-02).
     The SRT type byte is not set here: it is a component-presence mask over
     the bone's own rotation/translation, so the exporter derives it from the
     values it writes (act_section.html#srt-type) rather than inheriting a
@@ -1255,6 +1258,13 @@ def _end_bone_name_display(op, arm_obj):
         arm_obj.data.show_names = False
 
 
+STADIUM_ADD_BONE_MESSAGE = (
+    "Stadiums cannot take new bones: a mesh on a new bone does not draw in a "
+    "stadium (Dolphin, 2026-10-02). Host the custom submesh on a free vanilla "
+    "root bone instead."
+)
+
+
 class SLUGGIES_OT_add_bone(bpy.types.Operator):
     """Add a new inert leaf bone to the skeleton, for a custom submesh to
     attach to once the donor's own free bones are exhausted
@@ -1290,13 +1300,10 @@ class SLUGGIES_OT_add_bone(bpy.types.Operator):
         if not _bone_metadata_is_current(arm_obj):
             self.report({"ERROR"}, HostBones.RE_IMPORT_MESSAGE)
             return {"CANCELLED"}
-        _renumber_added_bones_reporting(self, arm_obj)
         if _model_is_stadium(arm_obj):
-            # A stadium mesh must hang on a root bone, so here Add Bone makes
-            # a root bone at the 3D cursor; there is no parent to pick.
-            new_bone = _create_added_bone(context, arm_obj, None)
-            self.report({"INFO"}, f"Added root bone {new_bone.name} at the 3D cursor (stadium)")
-            return {"FINISHED"}
+            self.report({"ERROR"}, STADIUM_ADD_BONE_MESSAGE)
+            return {"CANCELLED"}
+        _renumber_added_bones_reporting(self, arm_obj)
         active_bone = arm_obj.data.bones.active
         if active_bone is not None and _bone_id_from_name(active_bone.name) is not None:
             self.parent_bone = active_bone.name
@@ -1308,6 +1315,9 @@ class SLUGGIES_OT_add_bone(bpy.types.Operator):
         try:
             if arm_obj is None:
                 self.report({"ERROR"}, _no_target_armature_message(context))
+                return {"CANCELLED"}
+            if _model_is_stadium(arm_obj):
+                self.report({"ERROR"}, STADIUM_ADD_BONE_MESSAGE)
                 return {"CANCELLED"}
             if self.parent_bone == 'NONE' or self.parent_bone not in arm_obj.data.bones:
                 self.report({"ERROR"}, f"Parent bone {self.parent_bone!r} no longer exists")

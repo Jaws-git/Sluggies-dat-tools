@@ -44,6 +44,7 @@ class BoneRecord:
     parent_id: Optional[int]
     geo_id_raw: int
     skinned: bool
+    user_added: bool = False
 
 
 @dataclass(frozen=True)
@@ -135,6 +136,7 @@ def compute_rigid_retargets(
 
 
 STADIUM_CHILD_BONE_REASON = "stadium: a mesh on a child bone draws nearly transparent"
+STADIUM_NEW_BONE_REASON = "stadium: a mesh on a new bone does not draw"
 
 
 def classify_host_bones(
@@ -148,10 +150,11 @@ def classify_host_bones(
     ``excluded`` ones (callers building a dialog list drop those; see
     :func:`order_host_bone_choices`).
 
-    *roots_only* is for stadium models: there a mesh must hang on a root bone
-    (Dolphin, 2026-10-01; HammerspaceMain refuses a child host bone), so
-    every bone with a parent is excluded and a free root bone is the
-    recommended choice.
+    *roots_only* is for stadium models: there a mesh must hang on a free
+    vanilla root bone (Dolphin, 2026-10-01/02; HammerspaceMain refuses a
+    child or new host bone), so every bone with a parent and every
+    user-added bone is excluded, and a free vanilla root is the recommended
+    choice.
     """
     scene_claims = scene_claims or SceneClaims()
     freed_bone_ids = {r.from_bone_id for r in scene_claims.retargets}
@@ -170,6 +173,9 @@ def classify_host_bones(
             choices.append(HostBoneChoice(
                 rec.bone_id, rec.parent_id, STATUS_EXCLUDED,
                 "claimed by another custom submesh"))
+        elif roots_only and rec.user_added:
+            choices.append(HostBoneChoice(
+                rec.bone_id, rec.parent_id, STATUS_EXCLUDED, STADIUM_NEW_BONE_REASON))
         elif roots_only and rec.parent_id is not None:
             choices.append(HostBoneChoice(
                 rec.bone_id, rec.parent_id, STATUS_EXCLUDED, STADIUM_CHILD_BONE_REASON))

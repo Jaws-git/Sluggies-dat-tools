@@ -438,6 +438,25 @@ def _srt_type_for(bone_name, translation, rotation, scale, warnings):
     return srt_type
 
 
+def stadium_added_bone_error(candidates, data, context):
+    """Error text when the target is a stadium and its armature has Add Bone
+    bones, else None. A mesh on a new stadium bone does not draw, root or
+    child (Dolphin, 2026-10-02), so stadiums take no new bones."""
+    if not TemplateSources.is_stadium_chunk(data.get("SluggiesModel", {}).get("ChunkNumber")):
+        return None
+    arm_obj = _find_root_scale_armature(candidates, context)
+    if arm_obj is None:
+        return None
+    added = [b.name for b in arm_obj.data.bones if b.get('SluggiesUserAdded')]
+    if not added:
+        return None
+    return (
+        f"{arm_obj.name}: added bone(s) {', '.join(added)}: stadiums cannot take new "
+        "bones, a mesh on a new bone does not draw in a stadium (Dolphin, 2026-10-02). "
+        "Delete the added bones and host custom submeshes on free vanilla root bones."
+    )
+
+
 def added_bone_name_error(candidates, context):
     """Error text when an Add Bone bone's ``bone_<N>`` name differs from the id
     ``encode_bone_hierarchy_edited`` assigns it, else None."""
@@ -503,18 +522,10 @@ def encode_bone_hierarchy_edited(candidates, data, warnings, context):
         entry["UserAdded"] = False
         edited.append(entry)
 
-    stadium = TemplateSources.is_stadium_chunk(model.get("ChunkNumber"))
     for b in new_bones:
         own_id = id_by_bone_name[b.name]
         parent = b.parent
-        if parent is None and stadium:
-            # A stadium's new root bone (Add Bone makes only those there).
-            # Armature space is game space -- the importer places donor
-            # bones by their game HeadPosition -- so the rest matrix is the
-            # bone's SRT as it stands.
-            parent_id = None
-            local = b.matrix_local.copy()
-        elif parent is None or parent.name not in id_by_bone_name:
+        if parent is None or parent.name not in id_by_bone_name:
             warnings.append(f"{b.name}: has no valid parent bone; not exported.")
             continue
         else:
@@ -594,14 +605,16 @@ def validate_bone_hierarchy_edited_export(model, warnings):
                     f"to {edited_parent_id}"
                 )
 
-    stadium = TemplateSources.is_stadium_chunk(model.get("ChunkNumber"))
+    if new_ids and TemplateSources.is_stadium_chunk(model.get("ChunkNumber")):
+        errors.append(
+            f"new bone(s) {new_ids}: stadiums cannot take new bones, a mesh on a "
+            "new bone does not draw in a stadium (Dolphin, 2026-10-02). Delete the "
+            "added bones and host custom submeshes on free vanilla root bones."
+        )
     for bone_id in new_ids:
         parent_id = edited_by_id[bone_id].get("ParentBoneId")
-        if parent_id is None and not stadium:
-            errors.append(
-                f"new bone {bone_id} has no parent; new bones may not be roots "
-                "(stadium models excepted)"
-            )
+        if parent_id is None:
+            errors.append(f"new bone {bone_id} has no parent; new bones may not be roots")
 
     return errors
 
@@ -3606,6 +3619,10 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         name_error = added_bone_name_error(context.selected_objects, context)
         if name_error:
             self.report({"ERROR"}, name_error)
+            return {"CANCELLED"}
+        stadium_bone_error = stadium_added_bone_error(context.selected_objects, data, context)
+        if stadium_bone_error:
+            self.report({"ERROR"}, stadium_bone_error)
             return {"CANCELLED"}
         encode_bone_hierarchy_edited(context.selected_objects, data, warnings, context)
         bone_hierarchy_errors = validate_bone_hierarchy_edited_export(

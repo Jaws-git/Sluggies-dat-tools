@@ -2728,6 +2728,20 @@ class ValidateCustomSubmeshesTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'host bone 1 has parent bone 0; a stadium'):
             main._validate_custom_submeshes(model)
 
+    def test_stadium_refuses_a_new_host_bone(self):
+        # Yoshi Park (2026-10-02): a mesh on a new root bone did not draw,
+        # the same kind of mesh on vanilla root bone 0 did.
+        model = _validation_base_model()
+        model['ChunkNumber'] = 10
+        bones = [dict(b, UserAdded=False) for b in model['BoneHierarchy']]
+        new_id = len(bones)
+        bones.append({'BoneId': new_id, 'GeoId': 0xFFFF, 'GeoIdRaw': 0xFFFF,
+                      'ParentBoneId': None, 'UserAdded': True})
+        model['BoneHierarchyEdited'] = bones
+        model['CustomSubmeshes'] = [_validation_entry(HostBoneId=new_id)]
+        with self.assertRaisesRegex(ValueError, f'host bone {new_id} is a new bone'):
+            main._validate_custom_submeshes(model)
+
     def test_stadium_accepts_a_root_host_bone(self):
         model = _validation_base_model()
         model['ChunkNumber'] = 10

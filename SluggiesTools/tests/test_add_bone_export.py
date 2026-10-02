@@ -160,6 +160,30 @@ class ArmatureHasNewBonesTests(unittest.TestCase):
         self.assertFalse(self.fn([], _FakeContext()))
 
 
+class StadiumAddedBoneErrorTests(unittest.TestCase):
+    def setUp(self):
+        ns = _extract(
+            {'_find_root_scale_armature', 'stadium_added_bone_error'},
+            extra_globals={'TemplateSources': TemplateSources},
+        )
+        self.fn = ns['stadium_added_bone_error']
+
+    def _arm(self):
+        return _FakeArmObj([_FakeBone('bone_0'), _FakeBone('bone_1', SluggiesUserAdded=True)])
+
+    def test_stadium_with_added_bone_is_refused(self):
+        error = self.fn([self._arm()], {"SluggiesModel": {"ChunkNumber": 10}}, _FakeContext())
+        self.assertIn('stadiums cannot take new bones', error)
+        self.assertIn('bone_1', error)
+
+    def test_character_with_added_bone_is_fine(self):
+        self.assertIsNone(self.fn([self._arm()], {"SluggiesModel": {"ChunkNumber": 18}}, _FakeContext()))
+
+    def test_stadium_without_added_bones_is_fine(self):
+        arm = _FakeArmObj([_FakeBone('bone_0')])
+        self.assertIsNone(self.fn([arm], {"SluggiesModel": {"ChunkNumber": 10}}, _FakeContext()))
+
+
 class EncodeBoneHierarchyEditedTests(unittest.TestCase):
     def setUp(self):
         ns = _extract(
@@ -231,16 +255,14 @@ class EncodeBoneHierarchyEditedTests(unittest.TestCase):
         self.fn([_FakeArmObj([donor0, new_bone])], data, warnings, _FakeContext())
         return data["SluggiesModel"]["BoneHierarchyEdited"], warnings
 
-    def test_stadium_root_bone_exports_its_armature_space_srt(self):
-        edited, warnings = self._root_bone_export(10)
-        self.assertEqual(warnings, [])
-        self.assertEqual(edited[1]["ParentBoneId"], None)
-        self.assertEqual(edited[1]["Translation"], [1.0, 2.0, 3.0])  # not relative to bone_0
-
-    def test_root_bone_outside_stadiums_is_dropped_with_a_warning(self):
-        edited, warnings = self._root_bone_export(18)
-        self.assertEqual(len(edited), 1)
-        self.assertIn('has no valid parent bone', warnings[0])
+    def test_root_bone_is_dropped_with_a_warning(self):
+        # Stadiums included: they take no new bones at all (2026-10-02), and
+        # the export operator refuses them before this runs.
+        for chunk in (10, 18):
+            with self.subTest(chunk=chunk):
+                edited, warnings = self._root_bone_export(chunk)
+                self.assertEqual(len(edited), 1)
+                self.assertIn('has no valid parent bone', warnings[0])
 
     def test_creation_order_picks_id_not_blender_name(self):
         donor0 = _FakeBone('bone_0')
@@ -366,16 +388,20 @@ class ValidateBoneHierarchyEditedExportTests(unittest.TestCase):
         errors = self.fn(model, [])
         self.assertTrue(any('may not be roots' in e for e in errors))
 
-    def test_new_root_bone_is_allowed_in_a_stadium(self):
-        model = {
-            "ChunkNumber": 10,
-            "BoneHierarchy": [self._donor(0)],
-            "BoneHierarchyEdited": [
-                dict(self._donor(0), UserAdded=False),
-                dict(BoneId=1, ParentBoneId=None, UserAdded=True),
-            ],
-        }
-        self.assertEqual(self.fn(model, []), [])
+    def test_new_bone_is_rejected_in_a_stadium(self):
+        # A mesh on a new stadium bone does not draw (Dolphin, 2026-10-02).
+        for parent in (None, 0):
+            with self.subTest(parent=parent):
+                model = {
+                    "ChunkNumber": 10,
+                    "BoneHierarchy": [self._donor(0)],
+                    "BoneHierarchyEdited": [
+                        dict(self._donor(0), UserAdded=False),
+                        dict(BoneId=1, ParentBoneId=parent, UserAdded=True),
+                    ],
+                }
+                errors = self.fn(model, [])
+                self.assertTrue(any('stadiums cannot take new bones' in e for e in errors))
 
     def test_valid_leaf_append_has_no_errors(self):
         model = {

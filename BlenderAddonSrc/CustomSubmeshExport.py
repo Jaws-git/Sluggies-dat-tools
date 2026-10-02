@@ -726,7 +726,9 @@ def build_custom_submesh_entry(
             f'{object_name}: sits too far from host bone {host_bone_id} for the usual '
             f'position precision, so it was quantized at QuantizeInfo {quantize_info} '
             f'({low:g}..{high:g} per axis, {1 / int16_divisor(quantize_info):g} units per step, '
-            f'{2 ** steps_coarser}x coarser than normal). Host it on a nearer bone to keep full precision.'
+            f'{2 ** steps_coarser}x coarser than normal). Graphical inconsistencies such as '
+            'flickering may occur (seen in a stadium). Host it on a nearer bone, or move it '
+            'closer to this one, to keep full precision.'
         )
     positions = encode_positions(object_name, geometry, position_format)
     faces_data, faces_count = encode_faces(object_name, geometry.faces)

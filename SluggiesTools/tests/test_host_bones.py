@@ -36,8 +36,9 @@ from HostBones import (  # noqa: E402
 
 
 
-def _rec(bone_id, parent_id, geo_id_raw=GEO_ID_FREE, skinned=False):
-    return BoneRecord(bone_id=bone_id, parent_id=parent_id, geo_id_raw=geo_id_raw, skinned=skinned)
+def _rec(bone_id, parent_id, geo_id_raw=GEO_ID_FREE, skinned=False, user_added=False):
+    return BoneRecord(bone_id=bone_id, parent_id=parent_id, geo_id_raw=geo_id_raw,
+                      skinned=skinned, user_added=user_added)
 
 
 class CustomSubmeshHostErrorsTests(unittest.TestCase):
@@ -197,6 +198,17 @@ class ClassifyHostBonesTests(unittest.TestCase):
         self.assertEqual(choices[4].status, STATUS_RECOMMENDED)
         ordered = order_host_bone_choices(choices.values(), records)
         self.assertEqual([c.bone_id for c in ordered], [0, 4])
+
+    def test_stadium_excludes_new_bones(self):
+        # Yoshi Park, 2026-10-02: a mesh on a new root bone did not draw.
+        records = [_rec(0, None), _rec(7, None, user_added=True)]
+        choices = {c.bone_id: c for c in classify_host_bones(records, roots_only=True)}
+        self.assertEqual(choices[0].status, STATUS_RECOMMENDED)
+        self.assertEqual(choices[7].status, STATUS_EXCLUDED)
+        self.assertIn('new bone', choices[7].reason)
+        # Characters keep offering new bones.
+        choices = {c.bone_id: c for c in classify_host_bones(records)}
+        self.assertNotEqual(choices[7].status, STATUS_EXCLUDED)
 
     def test_stadium_reassignment_offers_only_root_bones(self):
         records = [_rec(0, None), _rec(1, 0), _rec(2, None)]

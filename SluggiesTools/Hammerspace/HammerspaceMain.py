@@ -393,8 +393,15 @@ def _position_edits(model: dict) -> list[tuple[int, dict, bytes]]:
 
 # Stadium model directories, 7 Mario Stadium ... 16 Toy Field; the same range as
 # export.STADIUM_DIR_INDICES (export.py can't be imported: it prompts). A custom
-# submesh in a stadium must hang on a root bone (Dolphin, 2026-10-01).
+# submesh in a stadium must hang on a free vanilla root bone: a mesh on a
+# child bone draws nearly transparent (Dolphin, 2026-10-01), one on a newly
+# added bone, root or child, does not draw at all (Dolphin, 2026-10-02).
 STADIUM_CHUNKS = range(7, 17)
+STADIUM_NEW_BONE_MESSAGE = (
+    'stadium models cannot take new bones: a mesh on a newly added bone does not '
+    'draw in a stadium (Dolphin, 2026-10-02). Host the custom submesh on a free '
+    'vanilla root bone instead (act_section.html#geo-id-ownership)'
+)
 
 _CUSTOM_SUBMESH_HAND_VISIBILITY_ROLES = frozenset({'RhSp', 'LhSp', 'SpRf', 'GhSp'})
 _CUSTOM_SUBMESH_REJECTED_DERIVED_TYPE6 = '00000375'  # F9: never occurs on a rigid submesh
@@ -768,6 +775,8 @@ def _validate_custom_submeshes(model: dict) -> None:
                         f'host bone {host_bone_id} is also claimed by custom submesh '
                         f"'{claimed_bones[host_bone_id]}'"
                     )
+                elif is_stadium and bone.get('UserAdded'):
+                    fail(f'host bone {host_bone_id} is a new bone; {STADIUM_NEW_BONE_MESSAGE}')
                 elif is_stadium and bone.get('ParentBoneId') is not None:
                     fail(
                         f'host bone {host_bone_id} has parent bone {bone["ParentBoneId"]}; '
@@ -1154,21 +1163,18 @@ def _validate_bone_hierarchy_edited(model: dict) -> None:
                 'new bones must be leaves'
             )
 
+    # Stadiums take no new bones at all: a mesh on one does not draw, root or
+    # child (Dolphin, 2026-10-02; act_section.html#geo-id-ownership).
+    if new_entries and model.get('ChunkNumber') in STADIUM_CHUNKS:
+        fail(f'new bone(s) {new_ids}: {STADIUM_NEW_BONE_MESSAGE}')
+
     # Rules 7-8: every new bone has an existing parent and the user-contract
-    # defaults (no track, self-mirrored, role 3). A stadium may take new root
-    # bones instead: a stadium mesh must hang on a root (act_section.html
-    # #geo-id-ownership), so that is how it gets more hosts than its free
-    # vanilla roots. Under test since 2026-10-01; characters keep the rule.
-    allow_new_roots = model.get('ChunkNumber') in STADIUM_CHUNKS
+    # defaults (no track, self-mirrored, role 3).
     for entry in new_entries:
         bone_id = int(entry['BoneId'])
         parent_id = entry.get('ParentBoneId')
         if parent_id is None:
-            if not allow_new_roots:
-                fail(
-                    f'new bone {bone_id} has no ParentBoneId; new bones may not be '
-                    'roots (stadium models excepted)'
-                )
+            fail(f'new bone {bone_id} has no ParentBoneId; new bones may not be roots')
         elif int(parent_id) not in edited_by_id:
             fail(f"new bone {bone_id}'s parent {int(parent_id)} does not exist")
 
@@ -3882,6 +3888,9 @@ def _rebuild_act_bone_hierarchy(act_bytes: bytes, data: dict, source_model_offse
         key=lambda b: int(b['BoneId']),
     )
 
+    if new_entries and model.get('ChunkNumber') in STADIUM_CHUNKS:
+        raise ValueError(f"BoneHierarchyEdited: {STADIUM_NEW_BONE_MESSAGE}")
+
     expected_id = parsed.bone_count
     for entry in new_entries:
         bone_id = int(entry['BoneId'])
@@ -3893,14 +3902,11 @@ def _rebuild_act_bone_hierarchy(act_bytes: bytes, data: dict, source_model_offse
             )
         parent_id = entry.get('ParentBoneId')
         if parent_id is None:
-            if model.get('ChunkNumber') not in STADIUM_CHUNKS:
-                raise ValueError(
-                    f"new bone {bone_id} has no ParentBoneId; new bones may not be roots "
-                    "(stadium models excepted)"
-                )
-        else:
-            parent_id = int(parent_id)
-        if parent_id is not None and parent_id >= expected_id:
+            raise ValueError(
+                f"new bone {bone_id} has no ParentBoneId; new bones may not be roots"
+            )
+        parent_id = int(parent_id)
+        if parent_id >= expected_id:
             raise ValueError(
                 f"new bone {bone_id}'s parent {parent_id} does not exist yet; a new bone's "
                 "parent must already be present (a donor bone, or an earlier new bone in "
