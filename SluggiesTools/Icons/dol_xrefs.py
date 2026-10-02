@@ -222,7 +222,9 @@ def find_address_refs(dol: bytes, header: dol_map.DolHeader, low: int, high: int
             continue
         if opcode in _LOW_HALF_OPCODES:
             source, target = (rd, ra) if opcode == 24 else (ra, rd)
-            if source in pending and site - pending[source][1] <= window * 4:
+            # rA = 0 in addi and the D-form loads/stores means the literal 0
+            # (``li``, absolute address), not register r0.
+            if (opcode == 24 or source != 0) and source in pending and site - pending[source][1] <= window * 4:
                 base, lis_site = pending[source]
                 value = base | imm if opcode == 24 else (base + _signed16(imm)) & 0xFFFFFFFF
                 if low <= value < high:
