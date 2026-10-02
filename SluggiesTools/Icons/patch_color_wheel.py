@@ -15,6 +15,10 @@ try:
     from . import clone_icon_bank as cib
 except ImportError:
     import clone_icon_bank as cib
+try:
+    from ..Dol import dolfile as _dolfile
+except ImportError:
+    from Dol import dolfile as _dolfile
 
 
 DESCRIPTION_PATH = os.path.join(cib.ICONS_DIR, 'icon_characters.json')
@@ -40,6 +44,15 @@ COLOR_WHEEL_FIELDS = (
     'selectable',
     'icon_slot',
 )
+# Wheel-list store caps: ``cmpwi cr1,rN,6`` in the exhibition builder FUN_80071bb0 and the
+# colour-wheel screen builder FUN_80430184. A species with more selectable members than
+# the cap overfills the wheel and crashes (PLAN_CharacterExpansion P8: 7 confirmed safe
+# with both caps at 7; 8 or more needs larger stack buffers, which the roster expansion adds).
+STOCK_WHEEL_CAP = 6
+MAX_SAFE_WHEEL_CAP = 7
+WHEEL_CAP_SITES = {0x80071ECC: 0x2C9C0006, 0x804303CC: 0x2C980006}
+PLAYER_ID_END = 0x4D
+
 # Older description files used names that misread bytes 0 and 6.
 LEGACY_FIELD_NAMES = {
     'wheel_group': 'species',
@@ -128,8 +141,8 @@ def load_color_wheel_entries(
             _parse_u8(color_wheel[field], f'{name}.color_wheel.{field}')
             for field in COLOR_WHEEL_FIELDS
         )
-        if row[6] != 1:
-            raise ColorWheelPatchError(f'{name}.color_wheel.selectable must be 1')
+        if row[6] not in (0, 1):
+            raise ColorWheelPatchError(f'{name}.color_wheel.selectable must be 0 or 1')
         entries.append(ColorWheelEntry(name, char_id, row))
     return entries
 
@@ -158,7 +171,9 @@ def patch_color_wheel(
         stock_row = stock_dol[offset:offset + COLOR_WHEEL_STRIDE]
         if current_row == entry.row:
             continue
-        if current_row != stock_row:
+        # A row an earlier run wrote with the other selectable value is ours too.
+        earlier_run = current_row[:6] + current_row[7:] == entry.row[:6] + entry.row[7:]
+        if current_row != stock_row and not earlier_run:
             raise ColorWheelPatchError(
                 f'unexpected row for {entry.name} at 0x{offset:X}: '
                 f'found {current_row.hex()}, expected stock {stock_row.hex()} '
@@ -169,6 +184,53 @@ def patch_color_wheel(
 
     validate_color_wheel(bytes(updated), entries, table_offset)
     return bytes(updated), changed_count
+
+
+def wheel_member_counts(dol: bytes, table_offset: int = COLOR_WHEEL_OFFSET) -> dict[int, int]:
+    """Selectable player IDs (0x00-0x4C) per species (row byte 2)."""
+    counts: dict[int, int] = {}
+    if len(dol) < table_offset + PLAYER_ID_END * COLOR_WHEEL_STRIDE:
+        return counts
+    for char_id in range(PLAYER_ID_END):
+        row = dol[table_offset + char_id * COLOR_WHEEL_STRIDE:][:COLOR_WHEEL_STRIDE]
+        if row[6]:
+            counts[row[2]] = counts.get(row[2], 0) + 1
+    return counts
+
+
+def patch_wheel_caps(dol: bytes) -> tuple[bytes, int]:
+    """Set both wheel-list caps to the largest wheel (6 stock, at most 7). Returns (dol, changed words).
+
+    Temporary measure until the roster expansion's wheel step (more than 7 members) exists.
+    """
+    largest = max(wheel_member_counts(dol).values(), default=0)
+    cap = max(STOCK_WHEEL_CAP, largest)
+    if cap > MAX_SAFE_WHEEL_CAP:
+        raise ColorWheelPatchError(
+            f'a colour wheel has {largest} selectable members; more than {MAX_SAFE_WHEEL_CAP} '
+            'crashes without the roster expansion wheel step'
+        )
+    try:
+        header = _dolfile.parse_header(dol)
+    except _dolfile.DolError:
+        header = None
+    offsets = {a: _dolfile.vaddr_to_file(header, a, 4) if header else None for a in WHEEL_CAP_SITES}
+    if any(o is None for o in offsets.values()):
+        if cap == STOCK_WHEEL_CAP:
+            return dol, 0          # (a synthetic DOL without the code: nothing to do)
+        raise ColorWheelPatchError('the wheel cap sites are not in this DOL')
+    updated = bytearray(dol)
+    changed = 0
+    for address, stock in WHEEL_CAP_SITES.items():
+        offset = offsets[address]
+        word = int.from_bytes(dol[offset:offset + 4], 'big')
+        if word & 0xFFFF0000 != stock & 0xFFFF0000 or not STOCK_WHEEL_CAP <= word & 0xFFFF <= MAX_SAFE_WHEEL_CAP:
+            raise ColorWheelPatchError(f'unexpected wheel cap word {word:08X} at 0x{address:08X}')
+        new = (stock & 0xFFFF0000) | cap
+        if word != new:
+            updated[offset:offset + 4] = new.to_bytes(4, 'big')
+            changed += 1
+    return bytes(updated), changed
 
 
 def validate_color_wheel(
@@ -194,6 +256,8 @@ def install_color_wheel(dry_run: bool = False) -> ColorWheelResult:
         raise ColorWheelPatchError(f'could not read DOL: {exc}') from exc
 
     updated_dol, changed_count = patch_color_wheel(current_dol, stock_dol, entries)
+    updated_dol, cap_changes = patch_wheel_caps(updated_dol)
+    changed_count += cap_changes
     already_configured = changed_count == 0
     if dry_run or already_configured:
         return ColorWheelResult(
@@ -203,11 +267,8 @@ def install_color_wheel(dry_run: bool = False) -> ColorWheelResult:
     os.makedirs(os.path.dirname(cib.OUTPUT_DOL), exist_ok=True)
     if not os.path.exists(cib.OUTPUT_DOL):
         shutil.copy2(cib.INPUT_DOL, cib.OUTPUT_DOL)
-    with open(cib.OUTPUT_DOL, 'r+b') as output_file:
-        for entry in entries:
-            offset = _row_offset(entry.char_id)
-            output_file.seek(offset)
-            output_file.write(entry.row)
+    with open(cib.OUTPUT_DOL, 'wb') as output_file:
+        output_file.write(updated_dol)
 
     report = {
         'table_offset': f'0x{COLOR_WHEEL_OFFSET:X}',

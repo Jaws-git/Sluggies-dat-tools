@@ -1,3 +1,4 @@
+import struct
 import unittest
 
 from SluggiesTools.Icons import patch_color_wheel as color_wheel
@@ -66,6 +67,47 @@ class PatchColorWheelTests(unittest.TestCase):
     def test_rejects_truncated_dol(self):
         with self.assertRaisesRegex(color_wheel.ColorWheelPatchError, 'truncated'):
             color_wheel.patch_color_wheel(b'', b'', ENTRIES, TABLE_OFFSET)
+
+
+class SelectableAndCapTests(unittest.TestCase):
+    def test_earlier_run_with_other_selectable_value_is_accepted(self):
+        stock = make_stock_dol()
+        updated, _ = color_wheel.patch_color_wheel(stock, stock, ENTRIES, TABLE_OFFSET)
+        off_wheel = [color_wheel.ColorWheelEntry(e.name, e.char_id, e.row[:6] + bytes(1) + e.row[7:])
+                     if e.char_id == 0x48 else e for e in ENTRIES]
+        again, changed = color_wheel.patch_color_wheel(updated, stock, off_wheel, TABLE_OFFSET)
+        self.assertEqual(changed, 1)
+        self.assertEqual(again[color_wheel._row_offset(0x48, TABLE_OFFSET) + 6], 0)
+
+    def cap_dol(self, yoshis: int) -> bytes:
+        # header: T0 over the two cap sites' region is too far apart, so use two text slots
+        dol = bytearray(color_wheel.COLOR_WHEEL_OFFSET + color_wheel.COLOR_WHEEL_COUNT * 8)
+        sites = sorted(color_wheel.WHEEL_CAP_SITES)
+        for slot, address in enumerate(sites):
+            file_offset = 0x100 + slot * 0x10
+            struct.pack_into('>I', dol, slot * 4, file_offset)
+            struct.pack_into('>I', dol, 0x48 + slot * 4, address)
+            struct.pack_into('>I', dol, 0x90 + slot * 4, 4)
+            struct.pack_into('>I', dol, file_offset, color_wheel.WHEEL_CAP_SITES[address])
+        for char_id in range(yoshis):
+            offset = color_wheel.COLOR_WHEEL_OFFSET + char_id * 8
+            dol[offset:offset + 8] = bytes([0x0B, 6, 6, 0, 0, char_id, 1, 0])
+        return bytes(dol)
+
+    def caps(self, dol):
+        return [struct.unpack_from('>I', dol, 0x100 + slot * 0x10)[0] & 0xFFFF for slot in range(2)]
+
+    def test_caps_follow_the_largest_wheel(self):
+        six, changed = color_wheel.patch_wheel_caps(self.cap_dol(6))
+        self.assertEqual((self.caps(six), changed), ([6, 6], 0))
+        seven, changed = color_wheel.patch_wheel_caps(self.cap_dol(7))
+        self.assertEqual((self.caps(seven), changed), ([7, 7], 2))
+        again, changed = color_wheel.patch_wheel_caps(seven)
+        self.assertEqual(changed, 0)
+
+    def test_eight_members_refused(self):
+        with self.assertRaisesRegex(color_wheel.ColorWheelPatchError, 'more than 7'):
+            color_wheel.patch_wheel_caps(self.cap_dol(8))
 
 
 if __name__ == '__main__':

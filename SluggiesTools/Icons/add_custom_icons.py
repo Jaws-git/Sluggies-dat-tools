@@ -377,6 +377,8 @@ def patch_final_dol(
     )
     dol = _patch_icon_entry_bytes(dol, destination)
     dol, color_changed = color_wheel.patch_color_wheel(dol, stock_dol, color_entries)
+    dol, cap_changed = color_wheel.patch_wheel_caps(dol)
+    color_changed += cap_changed
     dol, hook_regions_changed, hook_patches = hooks.patch_runtime_hooks(
         dol, stock_dol, routes, custom_rows
     )
@@ -438,7 +440,8 @@ def patch_diagnostic_dol(
         dol, color_changed = color_wheel.patch_color_wheel(
             dol, stock_dol, color_entries
         )
-        changed_regions += color_changed
+        dol, cap_changed = color_wheel.patch_wheel_caps(dol)
+        changed_regions += color_changed + cap_changed
 
     hook_patches = hooks.build_hook_patches(stock_dol, routes, custom_rows)
     enabled_names = set()
