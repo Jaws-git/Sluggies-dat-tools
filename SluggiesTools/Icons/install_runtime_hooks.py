@@ -17,6 +17,10 @@ try:
     from . import add_icon_resource_rows as resources
 except ImportError:
     import add_icon_resource_rows as resources
+try:
+    from ..Dol import dolfile as _dolfile
+except ImportError:
+    from Dol import dolfile as _dolfile
 
 
 LOWER_HOOK = 0x8050A5AC
@@ -253,18 +257,11 @@ def _build_row_stub(routes: list[resources.sources.CharacterRoute]) -> bytes:
 
 
 def _dol_sections(dol: bytes) -> list[tuple[int, int, int]]:
-    if len(dol) < 0xE4:
-        raise RuntimeHookError('DOL header is truncated')
-    sections = []
-    for index in range(18):
-        file_offset = struct.unpack_from('>I', dol, index * 4)[0]
-        address = struct.unpack_from('>I', dol, 0x48 + index * 4)[0]
-        size = struct.unpack_from('>I', dol, 0x90 + index * 4)[0]
-        if file_offset and size:
-            if file_offset + size > len(dol):
-                raise RuntimeHookError(f'DOL section {index} is truncated')
-            sections.append((file_offset, address, size))
-    return sections
+    try:
+        header = _dolfile.parse_header(dol)
+    except _dolfile.DolError as exc:
+        raise RuntimeHookError(str(exc)) from exc
+    return [(slot.file_offset, slot.address, slot.size) for slot in header.used_slots if slot.file_offset]
 
 
 def _vaddr_to_file(dol: bytes, address: int, size: int = 1) -> int:

@@ -35,10 +35,24 @@ _slogger.configure()
 ROOT = os.path.normpath(os.path.join(_TOOLS_DIR, '..'))
 INPUT_DOL = os.path.join(ROOT, '1_Input', 'main.dol')
 
-HEADER_SIZE = 0x100
-TEXT_SLOTS = 7
-DATA_SLOTS = 11
-SLOT_COUNT = TEXT_SLOTS + DATA_SLOTS
+try:
+    from ..Dol import dolfile as _dolfile
+except ImportError:
+    from Dol import dolfile as _dolfile
+
+# The header model lives in Dol/dolfile.py; these names stay importable from here.
+HEADER_SIZE = _dolfile.HEADER_SIZE
+TEXT_SLOTS = _dolfile.TEXT_SLOTS
+DATA_SLOTS = _dolfile.DATA_SLOTS
+SLOT_COUNT = _dolfile.SLOT_COUNT
+DolMapError = _dolfile.DolError
+Slot = _dolfile.Slot
+DolHeader = _dolfile.DolHeader
+parse_header = _dolfile.parse_header
+slot_at = _dolfile.slot_at
+vaddr_to_file = _dolfile.vaddr_to_file
+region_of = _dolfile.region_of
+read_word = _dolfile.read_word
 
 # How far past a ``lis`` the matching low-half instruction may sit.
 PAIR_WINDOW = 8
@@ -67,61 +81,6 @@ MEM2_PATH_ARENA_LO_SITES = {
 MEM1_ARENA_LO_VARIABLE = 0x80793E50
 
 
-class DolMapError(RuntimeError):
-    pass
-
-
-@dataclass(frozen=True)
-class Slot:
-    index: int
-    file_offset: int
-    address: int
-    size: int
-
-    @property
-    def name(self) -> str:
-        if self.index < TEXT_SLOTS:
-            return f'T{self.index}'
-        return f'D{self.index - TEXT_SLOTS}'
-
-    @property
-    def is_text(self) -> bool:
-        return self.index < TEXT_SLOTS
-
-    @property
-    def used(self) -> bool:
-        return self.size != 0
-
-    @property
-    def end(self) -> int:
-        return self.address + self.size
-
-
-@dataclass(frozen=True)
-class DolHeader:
-    slots: tuple[Slot, ...]
-    bss_address: int
-    bss_size: int
-    entry: int
-    file_size: int
-
-    @property
-    def used_slots(self) -> list[Slot]:
-        return [slot for slot in self.slots if slot.used]
-
-    @property
-    def free_slots(self) -> list[Slot]:
-        return [slot for slot in self.slots if not slot.used]
-
-    @property
-    def bss_end(self) -> int:
-        return self.bss_address + self.bss_size
-
-    @property
-    def highest_loaded(self) -> int:
-        """End of the highest byte the loader writes or zeroes."""
-        return max([self.bss_end] + [slot.end for slot in self.used_slots])
-
 
 @dataclass(frozen=True)
 class AddressConstant:
@@ -144,48 +103,6 @@ def _u32(data: bytes, offset: int) -> int:
 
 def _signed16(value: int) -> int:
     return value - 0x10000 if value & 0x8000 else value
-
-
-def parse_header(dol: bytes) -> DolHeader:
-    if len(dol) < HEADER_SIZE:
-        raise DolMapError('DOL header is truncated')
-    slots = []
-    for index in range(SLOT_COUNT):
-        slot = Slot(index, _u32(dol, index * 4), _u32(dol, 0x48 + index * 4), _u32(dol, 0x90 + index * 4))
-        if slot.used and slot.file_offset + slot.size > len(dol):
-            raise DolMapError(f'DOL section {slot.name} is truncated')
-        slots.append(slot)
-    bss_address, bss_size, entry = struct.unpack_from('>III', dol, 0xD8)
-    return DolHeader(tuple(slots), bss_address, bss_size, entry, len(dol))
-
-
-def slot_at(header: DolHeader, address: int, size: int = 1) -> Slot | None:
-    for slot in header.used_slots:
-        if slot.address <= address and address + size <= slot.end:
-            return slot
-    return None
-
-
-def vaddr_to_file(header: DolHeader, address: int, size: int = 1) -> int | None:
-    slot = slot_at(header, address, size)
-    return None if slot is None else slot.file_offset + address - slot.address
-
-
-def region_of(header: DolHeader, address: int) -> str:
-    """Name what backs ``address``: a slot name, ``bss`` or ``unmapped``."""
-    slot = slot_at(header, address)
-    if slot is not None:
-        return slot.name
-    if header.bss_address <= address < header.bss_end:
-        return 'bss'
-    return 'unmapped'
-
-
-def read_word(dol: bytes, header: DolHeader, address: int) -> int:
-    offset = vaddr_to_file(header, address, 4)
-    if offset is None:
-        raise DolMapError(f'0x{address:08X} is not file-backed')
-    return _u32(dol, offset)
 
 
 def find_address_constants(dol: bytes, header: DolHeader, low: int, high: int) -> list[AddressConstant]:

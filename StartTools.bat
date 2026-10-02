@@ -23,6 +23,8 @@ echo [7] Manually resize available hammerspace (extra model data storage) - usua
 echo [8] Import edited icon sheets (.\2_Output_Models\_ICONS\sheets\)
 echo [9] Repair unused characters' models (re-split them from their playable counterparts)
 echo.
+echo [10] Roster expansion (development): inject current expansion changes into 3_Output_Dat
+echo.
 set "tools_choice="
 set /p "tools_choice=Enter option (or type exit to quit): "
 echo.
@@ -116,6 +118,22 @@ if "!tools_choice!"=="9" (
     set "SLUGGIES_MODEL_FILES="
     set "SLUGGIES_ICON_SHARED_MODE="
     call !SLUGGIES_LAUNCHER! --resplit-unused
+    goto :after_command
+)
+
+if "!tools_choice!"=="10" (
+    set "SLUGGIES_MENU_SELECTION=10 - Roster expansion (development)"
+    set "SLUGGIES_MODEL_FILES="
+    set "SLUGGIES_ICON_SHARED_MODE="
+    echo   [Enter] inject ^(replaces the previous injection^)
+    echo   [r]     remove the previous injection only
+    set "roster_mode="
+    set /p "roster_mode=Choose: "
+    if /i "!roster_mode!"=="r" (
+        call !SLUGGIES_LAUNCHER! --roster-dev --remove
+    ) else (
+        call !SLUGGIES_LAUNCHER! --roster-dev
+    )
     goto :after_command
 )
 

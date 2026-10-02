@@ -57,6 +57,7 @@ HS_DIR = os.path.join(TOOLS_DIR, 'Hammerspace')
 HS_HELPER_SCRIPT = os.path.join(HS_DIR, 'HammerspaceHelper.py')
 HS_MAIN_SCRIPT = os.path.join(HS_DIR, 'HammerspaceMain.py')
 UNTANGLE_POLICY_SCRIPT = os.path.join(HS_DIR, 'UntanglePolicy.py')
+ROSTER_DEV_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'runner.py')
 
 # Model directory indices that hold unused characters (see folderNameMap in
 # export.py). These characters share a playable character's model block and
@@ -108,6 +109,18 @@ def run_hammerspace_helper():
 def run_resplit_unused():
     """Give re-tangled unused-character routes their own block copies again."""
     subprocess.run(python_script_command(UNTANGLE_POLICY_SCRIPT), cwd=HS_DIR, check=True)
+
+
+def run_roster_dev(config=None, remove=False, dry_run=False):
+    """Development injector: apply (or only remove) the roster-expansion steps built so far."""
+    cmd = python_script_command(ROSTER_DEV_SCRIPT)
+    if config:
+        cmd += ['--config', config]
+    if remove:
+        cmd.append('--remove')
+    if dry_run:
+        cmd.append('--dry-run')
+    subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
 
 
 def run_export(debug=False, notex=False, untangle=False, dae=False):
@@ -555,6 +568,7 @@ def parse_args():
     mode.add_argument('--unpatch', nargs='+', metavar='FILENAME', help='restore original data for one or more .sluggies files')
     mode.add_argument('-hs', '--hammerspace', action='store_true', help='change available memory space in outputdt_na.dat')
     mode.add_argument('--resplit-unused', action='store_true', help='repair: give unused-character routes (dirs 89-94) that point at a playable character\'s block their own copy again')
+    mode.add_argument('--roster-dev', action='store_true', help='DEVELOPMENT: inject the roster-expansion steps built so far into 3_Output_Dat (replaces the previous injection)')
     mode.add_argument('--export', action='store_true', help='export all models from 1_Input to 2_Output_Models')
     mode.add_argument('--prepare-icon-routes', action='store_true', help='EXPERIMENTAL, superseded: apply the Mii icon-block resolver experiment to output DOL/DAT copies (not part of any menu workflow)')
     mode.add_argument('--add-custom-icons', action='store_true', help='install the complete six-character custom icon pipeline')
@@ -573,7 +587,9 @@ def parse_args():
     parser.add_argument('--dae', action='store_true', help='export only: also write .dae model files to disk (always writes .sluggie files)')
     parser.add_argument('--use-output', action='store_true', help='export-icons only: read DOL/DAT from 3_Output_Dat instead of 1_Input')
     parser.add_argument('--no-overwrite-copy', action='store_true', help='prepare-icon-routes only: patch existing 3_Output_Dat files without recopying from 1_Input')
-    parser.add_argument('--dry-run', action='store_true', help='patch-icons/add-custom-icons: validate without writing bytes')
+    parser.add_argument('--dry-run', action='store_true', help='patch-icons/add-custom-icons/roster-dev: validate without writing bytes')
+    parser.add_argument('--config', metavar='PATH', help='roster-dev only: roster preset JSON (default: 1_Input/roster.json, else the built-in dev preset)')
+    parser.add_argument('--remove', action='store_true', help='roster-dev only: take the previous injection out and stop')
     parser.add_argument(
         '--custom-icon-stage',
         choices=tuple('abcdefghijk'),
@@ -599,13 +615,15 @@ def parse_args():
         parser.error('--use-output can only be used with --export-icons.')
     if args.no_overwrite_copy and not args.prepare_icon_routes:
         parser.error('--no-overwrite-copy can only be used with --prepare-icon-routes.')
-    if args.dry_run and not (args.patch_icons is not None or args.add_custom_icons):
-        parser.error('--dry-run can only be used with --patch-icons or --add-custom-icons.')
+    if args.dry_run and not (args.patch_icons is not None or args.add_custom_icons or args.roster_dev):
+        parser.error('--dry-run can only be used with --patch-icons, --add-custom-icons or --roster-dev.')
+    if (args.config or args.remove) and not args.roster_dev:
+        parser.error('--config and --remove can only be used with --roster-dev.')
     if args.custom_icon_stage and not args.add_custom_icons:
         parser.error('--custom-icon-stage can only be used with --add-custom-icons.')
     if args.icon_fit and not args.add_custom_icons:
         parser.error('--icon-fit can only be used with --add-custom-icons.')
-    if not any([args.patch, args.unpatch, args.hammerspace, args.resplit_unused, args.export, args.prepare_icon_routes, args.add_custom_icons, args.export_icons, args.patch_icons is not None]):
+    if not any([args.patch, args.unpatch, args.hammerspace, args.resplit_unused, args.export, args.prepare_icon_routes, args.add_custom_icons, args.export_icons, args.patch_icons is not None, args.roster_dev]):
         parser.print_help()
         sys.exit(0)
 
@@ -665,6 +683,8 @@ def main() -> int:
             run_hammerspace_helper()
         elif args.resplit_unused:
             run_resplit_unused()
+        elif args.roster_dev:
+            run_roster_dev(config=args.config, remove=args.remove, dry_run=args.dry_run)
         elif args.export:
             run_export(debug=args.debug, notex=args.notex, untangle=args.untangle, dae=args.dae)
         elif args.prepare_icon_routes:

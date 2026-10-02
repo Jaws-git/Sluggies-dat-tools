@@ -1,0 +1,7 @@
+{
+ "version": 1,
+ "comment": "Built-in development preset for menu [10]. 1_Input/roster.json takes precedence when present.",
+ "ids": [],
+ "wheels": [],
+ "grid": null
+}

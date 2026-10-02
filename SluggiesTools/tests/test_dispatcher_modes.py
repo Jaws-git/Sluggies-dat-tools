@@ -586,3 +586,23 @@ class UnusedCharacterGuardTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class RosterDevArgsTests(unittest.TestCase):
+    def parse(self, *argv):
+        with mock.patch.object(sys, 'argv', ['start.py', *argv]):
+            return start.parse_args()
+
+    def test_roster_dev_flags(self):
+        args = self.parse('--roster-dev', '--remove', '--dry-run')
+        self.assertTrue(args.roster_dev and args.remove and args.dry_run)
+        self.assertEqual(self.parse('--roster-dev', '--config', 'x.json').config, 'x.json')
+
+    def test_remove_and_config_need_roster_dev(self):
+        with mock.patch('sys.stderr'), self.assertRaises(SystemExit):
+            self.parse('--export', '--remove')
+
+    @mock.patch('start.subprocess.run')
+    def test_command(self, mock_run):
+        start.run_roster_dev(config='c.json', remove=True)
+        cmd = mock_run.call_args.args[0]
+        self.assertEqual(cmd[1:], [start.ROSTER_DEV_SCRIPT, '--config', 'c.json', '--remove'])

@@ -55,6 +55,11 @@ class AddressRefTests(unittest.TestCase):
             dol_xrefs.AddressRef(site(2), site(3), 0, WHEEL + 6),
         ])
 
+    def test_li_is_not_a_use_of_a_pending_lis_r0(self):
+        # li r29,0 is addi r29,r0,0: rA = 0 is the literal 0, not register r0.
+        words = [lis(0, 0x8063), li(29, 0x1550), addi(4, 0, 0x1556), mr(4, 0), addi(4, 4, 0x1550)]
+        self.assertEqual([(r.lis_site, r.low_site) for r in self.refs(words)], [(site(0), site(4))])
+
     def test_callee_saved_register_survives_a_call_and_a_branch(self):
         words = [lis(30, 0x8063), bl(site(1), site(0)), b(site(2), site(4)), NOP, addi(26, 30, 0x1550)]
         self.assertEqual([(r.lis_site, r.low_site) for r in self.refs(words)], [(site(0), site(4))])
