@@ -19,6 +19,7 @@ _MAX_LOG_LINES = 3000
 _LOG_COLOR = (220, 220, 220, 255)
 _PROMPT_COLOR = (255, 210, 90, 255)
 _NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+_PRIMARY_SIZE = (170, 44)
 
 
 class SluggiesGui:
@@ -150,13 +151,35 @@ class SluggiesGui:
         dpg.configure_item('stop_button', enabled=busy)
 
     # ------------------------------------------------------------------ ui
-    def _action(self, label, callback, tip=None):
-        button = dpg.add_button(label=label, callback=callback)
+    def _action(self, label, callback, tip=None, primary=False):
+        if primary:
+            button = dpg.add_button(label=label, callback=callback, width=_PRIMARY_SIZE[0], height=_PRIMARY_SIZE[1])
+            dpg.bind_item_theme(button, 'primary_theme')
+        else:
+            button = dpg.add_button(label=label, callback=callback)
         self.action_buttons.append(button)
         if tip:
             with dpg.tooltip(button):
                 dpg.add_text(tip)
         return button
+
+    def _build_themes(self):
+        with dpg.theme() as global_theme:
+            with dpg.theme_component(dpg.mvAll):
+                dpg.add_theme_color(dpg.mvThemeCol_CheckMark, (60, 255, 90, 255))
+        dpg.bind_theme(global_theme)
+        with dpg.theme(tag='primary_theme'):
+            for state, colors in (
+                (True, ((dpg.mvThemeCol_Button, (46, 140, 64, 255)),
+                        (dpg.mvThemeCol_ButtonHovered, (60, 170, 80, 255)),
+                        (dpg.mvThemeCol_ButtonActive, (36, 110, 50, 255)))),
+                (False, ((dpg.mvThemeCol_Button, (70, 80, 72, 255)),
+                         (dpg.mvThemeCol_Text, (150, 150, 150, 255)))),
+            ):
+                with dpg.theme_component(dpg.mvButton, enabled_state=state):
+                    for col, value in colors:
+                        dpg.add_theme_color(col, value)
+                    dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 4)
 
     def _build_full_tab(self):
         with dpg.tab(label='Full export'):
@@ -166,9 +189,11 @@ class SluggiesGui:
             dpg.add_text('A failing step stops the rest.')
             dpg.add_spacer(height=6)
             with dpg.group(horizontal=True):
-                self._action('Start', self._on_full_export)
+                self._action('Start', self._on_full_export, primary=True)
                 dpg.add_text('Roster preset:')
                 dpg.add_combo([], tag='full_roster', width=420)
+                dpg.add_button(label='Refresh', callback=self._refresh_configs)
+            dpg.add_text('', tag='full_roster_hint', color=_PROMPT_COLOR, wrap=700)
 
     def _on_full_export(self):
         choice = dpg.get_value('full_roster')
@@ -187,7 +212,7 @@ class SluggiesGui:
             dpg.add_checkbox(label='Also write .glb files', tag='exp_glb')
             dpg.add_checkbox(label='Skip textures', tag='exp_notex')
             dpg.add_checkbox(label='Debug (raw byte arrays instead of base64)', tag='exp_debug')
-            self._action('Export models', self._on_export)
+            self._action('Export models', self._on_export, primary=True)
 
     def _on_export(self):
         args = ['--export']
@@ -201,10 +226,10 @@ class SluggiesGui:
         with dpg.tab(label='Icons'):
             dpg.add_text('Character-select icon atlases.')
             dpg.add_checkbox(label='Read DOL/DAT from 3_Output_Dat instead of 1_Input', tag='ico_use_output')
-            self._action('Export icons', self._on_export_icons)
+            self._action('Export icons', self._on_export_icons, primary=True)
             dpg.add_separator()
             dpg.add_checkbox(label='Dry run (validate without writing)', tag='ico_dry')
-            self._action('Patch icons', self._on_patch_icons)
+            self._action('Patch icons', self._on_patch_icons, primary=True)
 
     def _on_export_icons(self):
         args = ['--export-icons']
@@ -224,9 +249,10 @@ class SluggiesGui:
             with dpg.group(horizontal=True):
                 dpg.add_combo([], tag='roster_config', width=420)
                 dpg.add_button(label='Refresh', callback=self._refresh_configs)
+            dpg.add_text('', tag='roster_hint', color=_PROMPT_COLOR, wrap=700)
             dpg.add_checkbox(label='Dry run (validate without writing)', tag='roster_dry')
             with dpg.group(horizontal=True):
-                self._action('Inject roster', self._on_roster)
+                self._action('Inject roster', self._on_roster, primary=True)
                 self._action('Reset to vanilla', lambda: self.run_command('--roster', '--remove'))
         self._refresh_configs()
 
@@ -235,6 +261,10 @@ class SluggiesGui:
             names = sorted(n for n in os.listdir(self.config_dir) if n.lower().endswith('.json'))
         except OSError:
             names = []
+        missing = '' if names else f'No roster .json files found in {self.config_dir}'
+        for tag in ('roster_hint', 'full_roster_hint'):
+            if dpg.does_item_exist(tag):
+                dpg.set_value(tag, missing)
         dpg.configure_item('roster_config', items=names)
         if names and dpg.get_value('roster_config') not in names:
             dpg.set_value('roster_config', names[0])
@@ -263,7 +293,7 @@ class SluggiesGui:
                 dpg.add_button(label='Add files...', callback=lambda: dpg.show_item('patch_dialog'))
                 dpg.add_button(label='Clear', callback=self._clear_patch_files)
             with dpg.group(horizontal=True):
-                self._action('Patch', lambda: self._on_patch(False))
+                self._action('Patch', lambda: self._on_patch(False), primary=True)
                 self._action('Unpatch', lambda: self._on_patch(True))
         with dpg.file_dialog(directory_selector=False, show=False, tag='patch_dialog', width=700, height=420,
                              callback=self._on_files_chosen, default_path=self.models_dir
@@ -302,6 +332,7 @@ class SluggiesGui:
 
     def build(self):
         dpg.create_context()
+        self._build_themes()
         with dpg.window(tag='main_window'):
             with dpg.tab_bar():
                 self._build_full_tab()
