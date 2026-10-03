@@ -106,7 +106,7 @@ class PresetTests(unittest.TestCase):
         new = ids.parse_ids(config)
         squares = [c for c in new if c.wheel is None]
         self.assertEqual(len(squares), 19)
-        self.assertTrue(all(c.template == 0x02 for c in squares))
+        self.assertTrue(all(c.template == 0x04 for c in squares))                # Peach
         self.assertTrue(all(e['icon'] == 'placeholder' and e['name']['en'] == 'Empty slot' for e in config['ids']))
         g = grid.parse_grid(config, HEADS[:41], STOCK_MAP)
         self.assertEqual((g.cols, g.rows), (12, 5))

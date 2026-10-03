@@ -26,7 +26,7 @@ from SluggiesTools.Dol import dolfile, inventory  # noqa: E402
 from SluggiesTools.Roster import grid, ids, wheels  # noqa: E402
 
 WHEEL_SIZE = 10
-SQUARE_TEMPLATE = 0x02           # Peach: the game's fallback character
+SQUARE_TEMPLATE = 0x04           # Peach: the character the game substitutes for an ID without own data (0x80367060)
 SLOT_NAME = {'en': 'Empty slot', 'fr': 'Emplacement vide', 'sp': 'Espacio vacío'}
 SWATCH_COUNT = 11
 UNUSED = [  # the six unused characters (spare rows) with the icon art shipped in 1_Input/_Icons
