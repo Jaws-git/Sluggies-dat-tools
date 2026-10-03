@@ -319,19 +319,20 @@ class HookBuilder:
             a.b(s.address + 8)
             self.image.patch_word(s.address, s.stock, one(s.address, lambda b, t=self.stub(a): b.b(t)))
 
-    def template_alias(self, template_of: int) -> None:
-        """Portrait renderer entry, its two preview calls and the name-label rows use the template's ID."""
+    def template_alias(self, template_of: int, portrait_of: int) -> None:
+        """Portrait renderer entry and its two preview calls use ``portrait_of`` (the template's ID unless the
+        icons step gives the ID its own art); the name-label rows use the template's ID (until plan Phase 8)."""
         site = 0x80395DD0          # mr r24,r4 at FUN_80395db0 entry
         a = self.new_stub()
         a.mr('r24', 'r4')
-        emit_alias(a, 'r24', template_of)
+        emit_alias(a, 'r24', portrait_of)
         a.b(site + 4)
         _branch_to(self.image, 'portrait_renderer', site, self.stub(a))
         for s in inventory.group('portrait_preview_calls'):      # bl FUN_80395db0, r4 = id
             if s.stock != one(s.address, lambda b: b.bl(0x80395DB0)):
                 raise dolfile.DolError(f'0x{s.address:08X}: {s.stock:08X} is not bl 0x80395DB0')
             a = self.new_stub()
-            emit_alias(a, 'r4', template_of)
+            emit_alias(a, 'r4', portrait_of)
             a.b(0x80395DB0)
             self.image.patch_word(s.address, s.stock, one(s.address, lambda b, t=self.stub(a): b.bl(t)))
         for s in inventory.group('name_label_rows'):             # addi rD,r4,0x149
@@ -480,6 +481,7 @@ def apply_ids(image: dolfile.DolImage, hs: dol_hammerspace.DolHammerspace, new: 
     template_of = bytes(range(STOCK_IDS + 1)) + bytes(
         next((c.template for c in new if c.id == i), i) for i in range(FIRST_NEW, ROWS))
     template_of_at = hs.data.put(template_of, 4)
+    portrait_of_at = hs.data.put(template_of, 4)     # the icons step sets an ID with own art to itself
     dirmap = [i + MODEL_DIR_BASE for i in range(STOCK_IDS)] + [0] * (ROWS - STOCK_IDS)
     for c in new:
         dirmap[c.id] = c.template + MODEL_DIR_BASE
@@ -499,7 +501,9 @@ def apply_ids(image: dolfile.DolImage, hs: dol_hammerspace.DolHammerspace, new: 
     hooks.model_resolver(template_of_at)
     hooks.model_dirs(dirmap_at)
     hooks.portrait_tests()
-    hooks.template_alias(template_of_at)
+    hooks.template_alias(template_of_at, portrait_of_at)
+    if state is not None:
+        state['portrait_of'] = portrait_of_at
     hooks.id_pool()
     hooks.team_list()
     hooks.chemistry(stats_rows, new_chem)

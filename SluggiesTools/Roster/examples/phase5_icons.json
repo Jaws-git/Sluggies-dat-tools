@@ -1,7 +1,36 @@
 {
  "version": 1,
- "comment": "Built-in development preset for menu [10]. 1_Input/roster.json takes precedence when present. The six unused characters on their families' wheels (Yoshi gets 8), with the icon art from 1_Input/_Icons (the roster step owns the icon bank).",
- "ids": [],
+ "comment": "Phase 5 gate: the Phase 4 gate (10 Yoshis, 3 Marios, wheel order) with icons: the six spare rows' art, plus own art for two new IDs: 0x66 (purple Yoshi) shows the Black Yoshi art, 0x80 (green Mario) the White Yoshi art. 0x67 and 0x68 have none and show their template's portrait.",
+ "ids": [
+  {
+   "id": "0x66",
+   "template": "0x06",
+   "swatch": "purple",
+   "icon": {
+    "side": "black_yoshi_side.png",
+    "front": "black_yoshi_front.png"
+   }
+  },
+  {
+   "id": "0x67",
+   "template": "0x06",
+   "swatch": "orange"
+  },
+  {
+   "id": "0x68",
+   "template": "0x00",
+   "swatch": "blue"
+  },
+  {
+   "id": "0x80",
+   "template": "0x00",
+   "swatch": "green",
+   "icon": {
+    "side": "white_yoshi_side.png",
+    "front": "white_yoshi_front.png"
+   }
+  }
+ ],
  "wheels": [
   {
    "id": "0x47",
@@ -63,6 +92,18 @@
     "front": "black_koopa_front.png"
    }
   }
+ ],
+ "wheel_order": [
+  [
+   "0x06",
+   "0x67",
+   "0x66"
+  ],
+  [
+   "0x00",
+   "0x80",
+   "0x68"
+  ]
  ],
  "grid": null
 }

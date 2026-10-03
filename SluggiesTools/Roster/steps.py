@@ -27,6 +27,7 @@ STEP_MODULES = (
     'layout_file',
     'ids',
     'wheels',
+    'icons',
 )
 
 
