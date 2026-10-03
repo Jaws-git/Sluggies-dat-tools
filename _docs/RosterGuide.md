@@ -10,8 +10,10 @@ The binary details are in [`_docs_roster/RosterExpansion.md`](_docs_roster/Roste
 
 ## Quick start
 
-1. Build your normal output first (menu [1], model patches, icons). The
-   expansion is applied on top of it.
+1. The expansion works on `3_Output_Dat`. Menu [1] builds it and offers the
+   roster choice itself; model patches can come before or after. Reimport
+   stock icon edits (menu [7]) before picking a configuration with icons
+   (see [IconGuide.md](IconGuide.md)).
 2. Menu **[9] Roster expansion** (also part of menu **[1]**, between the model
    and the icon export) lists every `.json` file in
    `1_Input/_RosterConfigurations/`, alphabetically, with a number to pick
@@ -122,7 +124,7 @@ roster step builds for each configuration. Menu [1] exports them after the
 injection (menu [3] exports from `1_Input` and does not see them; run
 `python start.py --export-icons --use-output` for the current output) to
 `2_Output_Models/_ICONS/roster_pages/`, each PNG named the way Dolphin dumps
-that texture, e.g. `tex1_512x64_7f44f8f0911eeb0c_14.png`. An edited copy with
+that texture, e.g. `tex1_512x64_7f44f8f0911eeb0c_14.png` (preset 03's side page). An edited copy with
 that exact name in Dolphin's `Load/Textures/RMBE01/` replaces the page in game.
 The name changes whenever the configuration's portraits change, so export again
 after editing a configuration. The stock icon pages keep their names.
@@ -132,8 +134,9 @@ after editing a configuration. The stock icon pages keep their names.
 - At most 10 members per wheel, 60 squares, IDs `0x66`–`0xFE` (153). The IDs
   are one byte, so not every character can reach 10: the 30 characters without
   a wheel would need 270 IDs on their own. Preset 03 uses 123, preset 04 142.
-- The expansion adds data the game keeps in memory during a match: the icon
-  bank grows by about 1.4 KB per distinct portrait (identical portraits are
-  stored once), the select-screen layout by up to a few tens of KB.
+- The expansion adds data the game keeps in memory during a match. The icon
+  bank: identical portraits are stored once, and the two portrait pages grow
+  in power-of-two steps (7 portraits cost about 33 KB, all 159 of preset 04
+  under 600 KB). The select-screen layout grows by up to a few tens of KB.
 - Only the exhibition draft is covered. Toy Field, minigames and Free practice
   use another character screen, which is not expanded.

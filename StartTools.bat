@@ -83,17 +83,8 @@ if "!tools_choice!"=="6" (
 if "!tools_choice!"=="7" (
     set "SLUGGIES_MENU_SELECTION=7 - Reimport icon sheets"
     set "SLUGGIES_MODEL_FILES="
-    echo Shared image handling:
-    echo   [1] strict ^(fail on conflicting shared-image edits^)
-    echo   [2] first-page ^(force lowest texture index per shared group^)
-    set "icon_shared_mode="
-    set /p "icon_shared_mode=Choose mode [1/2]: "
-    set "SLUGGIES_ICON_SHARED_MODE=!icon_shared_mode!"
-    if "!icon_shared_mode!"=="2" (
-        call !SLUGGIES_LAUNCHER! --patch-icons --shared-mode first-page
-    ) else (
-        call !SLUGGIES_LAUNCHER! --patch-icons
-    )
+    set "SLUGGIES_ICON_SHARED_MODE="
+    call !SLUGGIES_LAUNCHER! --patch-icons
     goto :after_command
 )
 

@@ -1,22 +1,71 @@
+# Icon Guide
 
-## Icon Reimport
+The character-select icons (portraits) of Mario Super Sluggers live in one
+icon bank in `dt_na.dat`. There are two kinds:
 
-After editing sheets in ``2_Output_Models/_ICONS/sheets (EDIT THESE)``, reimport with:
+- **Stock icons** sit on shared sheets: one indexed image per view (side and
+  front) with a palette per page, so most characters are palette variants of
+  the same image. You edit them as PNG sheets and reimport them.
+- **Roster icons**, for the six unused characters and new character IDs, come
+  from single PNGs that the roster expansion packs into two extra pages.
 
-1) ``python start.py --patch-icons``
-2) Patched output is written to ``3_Output_Dat/dt_na.dat``
-3) A report is generated at ``2_Output_Models/_ICONS/metadata/reimport_report.json``
+## Stock icons: export, edit, reimport
 
-``python start.py --patch-icons --dry-run`` validates and reports without writing to output.
+1. **Export:** menu **[3]** (`python start.py --export-icons`) reads the
+   original game in `1_Input`. Menu [1] also exports, but from
+   `3_Output_Dat`, after the roster choice (see below). An export warns
+   before it overwrites sheets you have edited; your `.act` palettes are
+   kept.
+2. **Edit** in `2_Output_Models/_ICONS/sheets (EDIT BASE.PNG)/side/` and
+   `/front/`:
+   - `BASE.png` is the shared indexed image of that view. Each pixel value is
+     a palette index, so keep the image indexed (or greyscale) and its size
+     (1024×256).
+   - `<view>_page_<HEX>_t<DEC>_<Character>.act` is one page's palette
+     (Adobe Color Table). Change a character's colours here; the matching
+     `.png` shows that page with its palette, for reference.
+3. **Reimport:** menu **[7]** (`python start.py --patch-icons`) writes the
+   images and palettes into `3_Output_Dat/dt_na.dat` (copied from `1_Input`
+   if missing). `--patch-icons --dry-run` only checks and reports. The report
+   is `2_Output_Models/_ICONS/metadata/reimport_report.json`.
 
-## Icons for unused characters and new characters
+**With the roster expansion:** a roster configuration with icons builds its
+own copy of the bank from the stock one. So reimport stock icon edits
+**before** you pick the roster configuration (menu [9]), and use a menu [3]
+export for them. Edits reimported while a roster configuration with icons is
+injected only show after the next roster run (from a menu [3] export) or are
+lost on it (from a menu [1] export, whose sheets point at the roster's copy).
 
-Icons for the six unused characters and for new character IDs come from the roster expansion (menu **[9]**, and part of menu **[1]**; see [RosterGuide.md](RosterGuide.md)):
+## Roster icons: unused and new characters
 
-1) Put a side and a front portrait PNG per character into `1_Input/_Icons/`. They are fitted into 48x51 (`fit`: `contain`, `cover` or `strict`).
-2) Name them in the character's entry of a roster configuration in `1_Input/_RosterConfigurations/`: `"icon": {"side": "x_side.png", "front": "x_front.png"}`. The presets' open slots use `empty_slot_side.png` / `empty_slot_front.png`. Preset [2] already does this for the six unused characters with the PNGs shipped in `1_Input/_Icons/`.
-3) Run menu [9] (or [1]) and pick that configuration, then copy `main.dol`, `dt_na.dat` and `fst.bin` into the game.
+Icons for the six unused characters and for new character IDs come from the
+roster expansion (menu **[9]**, also part of menu **[1]**; see
+[RosterGuide.md](RosterGuide.md)):
 
-No Gecko code is needed: the unused characters become selectable through their wheel entries.
+1. Put a side and a front portrait PNG per character into `1_Input/_Icons/`.
+   They are fitted into 48×51 (`fit`: `contain`, `cover` or `strict`).
+2. Name them in the character's entry of a roster configuration in
+   `1_Input/_RosterConfigurations/`:
+   `"icon": {"side": "x_side.png", "front": "x_front.png"}`. Preset
+   `02_Stock_and_Unused.json` already does this for the six unused characters
+   with the PNGs shipped in `1_Input/_Icons/`; the open slots of presets 03
+   and 04 use `empty_slot_side.png` / `empty_slot_front.png`.
+3. Run menu [9] (or [1]), pick that configuration, then copy `main.dol`,
+   `dt_na.dat` and `fst.bin` into the game.
 
-The icon export (menu [1], or [3] after a roster injection) also writes the roster's two icon pages to `2_Output_Models/_ICONS/roster_pages/`, each named the way Dolphin dumps it (`tex1_WxH_<hash>_14.png`, also listed in `dolphin_icon_names.txt`). For Dolphin's custom textures, put an edited copy under exactly that name into Dolphin's `Load/Textures/RMBE01/` folder. The name depends on the roster configuration: which portraits a configuration packs decides the page's content and size, so export again after changing it.
+No Gecko code is needed: the unused characters become selectable through
+their wheel entries.
+
+## Dolphin's custom textures
+
+`2_Output_Models/_ICONS/dolphin_icon_names.txt` lists the name Dolphin dumps
+each icon page under. An edited copy of a page with exactly that name in
+Dolphin's `Load/Textures/RMBE01/` replaces it in game, without patching.
+
+Menu [1] also writes the roster's two icon pages to
+`2_Output_Models/_ICONS/roster_pages/`, each already named the way Dolphin
+dumps it (`tex1_WxH_<hash>_14.png`). Menu [3] reads `1_Input` and does not
+see them; `python start.py --export-icons --use-output` exports the current
+output. The roster pages' names depend on the configuration (which portraits
+it packs decides the page's content and size), so export again after
+changing it.
