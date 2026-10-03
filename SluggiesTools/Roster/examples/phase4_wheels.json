@@ -1,7 +1,28 @@
 {
  "version": 1,
- "comment": "Built-in development preset for menu [10]. 1_Input/roster.json takes precedence when present. The six unused characters on their families' wheels (Yoshi gets 8 members).",
- "ids": [],
+ "comment": "Phase 4 gate: a 10-member Yoshi wheel (8 stock Yoshis incl. the two unused ones, plus 2 new IDs, one orange) and a new 3-member Mario wheel (one ID at or above 0x80).",
+ "ids": [
+  {
+   "id": "0x66",
+   "template": "0x06",
+   "swatch": "purple"
+  },
+  {
+   "id": "0x67",
+   "template": "0x06",
+   "swatch": "orange"
+  },
+  {
+   "id": "0x68",
+   "template": "0x00",
+   "swatch": "blue"
+  },
+  {
+   "id": "0x80",
+   "template": "0x00",
+   "swatch": "green"
+  }
+ ],
  "wheels": [
   {
    "id": "0x47",

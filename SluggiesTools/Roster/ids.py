@@ -48,7 +48,7 @@ MAX_ID = 0xFE               # 0xFF ends ID lists
 ID_BOUND = 0xFF             # the game's ID range checks are widened to this
 ROWS = 0x100                # rows of every moved per-ID table
 PLAYER_END = 0x4D           # stock player IDs are 0x00-0x4C
-STOCK_WHEEL_CAP = 6         # members per wheel until plan Phase 4 lifts the caps
+WHEEL_MAX = 10              # the roster struct's species lists; the wheels step lifts the game's caps
 MODEL_DIR_BASE = 0x12
 STATS_ROW, CHEM_BASE, NEUTRAL = 0x8E, 0x28, 1
 SWATCHES = {'red': 0, 'blue': 1, 'yellow': 2, 'green': 3, 'purple': 4, 'black': 5, 'brown': 6,
@@ -152,9 +152,9 @@ def selector_rows(rows: list[bytearray], new: list[NewId]) -> tuple[list[bytearr
             row[7] = c.swatch
         by_id[c.id] = row
         members = len([r for r in rows[:STOCK_IDS] if r[2] == species and r[6]]) + len(earlier) + 1
-        if members > STOCK_WHEEL_CAP:
+        if members > WHEEL_MAX:
             raise IdConfigError(f'0x{c.id:02X}: the wheel of species 0x{species:02X} would have {members} '
-                                f'members; more than {STOCK_WHEEL_CAP} needs the wheel step (plan Phase 4)')
+                                f'members; a wheel holds at most {WHEEL_MAX}')
     return [by_id.get(i, bytearray(8)) for i in range(FIRST_NEW, ROWS)], log
 
 
@@ -456,7 +456,8 @@ def moved_tables() -> list[inventory.Table]:
     return [t for t in inventory.tables('moved') if t.name not in ('head_list', 'dtna_directories')]
 
 
-def apply_ids(image: dolfile.DolImage, hs: dol_hammerspace.DolHammerspace, new: list[NewId]) -> list[str]:
+def apply_ids(image: dolfile.DolImage, hs: dol_hammerspace.DolHammerspace, new: list[NewId],
+              state: dict | None = None) -> list[str]:
     rows_out = ROWS if new else STOCK_IDS + 1
     log = []
     refs = relocate.scan_refs(image)
@@ -471,6 +472,8 @@ def apply_ids(image: dolfile.DolImage, hs: dol_hammerspace.DolHammerspace, new: 
         changes = relocate.relocate_table(image, table.all_pairs, table.address, table.length,
                                           at[table.name], refs)
         log.append(f'{table.name:16} {len(changes):3} words -> 0x{at[table.name]:08X} ({rows_out} rows)')
+    if state is not None:
+        state['tables'] = {t.name: (at[t.name] + t.header, rows_out) for t in moved_tables()}
     if not new:
         return log + ['identity relocation (no new IDs configured): every table keeps its 101 rows']
 
@@ -513,6 +516,6 @@ def apply(ctx: steps.RosterContext) -> list[str]:
         return ['no "ids" key in the roster config: tables stay in place']
     new = parse_ids(ctx.config)
     hs = dol_hammerspace.get(ctx)
-    log = apply_ids(ctx.dol, hs, new)
+    log = apply_ids(ctx.dol, hs, new, ctx.state)
     hs.commit()
     return log + [f'DOL hammerspace now: {hs.summary()}']

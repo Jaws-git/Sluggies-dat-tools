@@ -26,6 +26,7 @@ STEP_MODULES = (
     'dol_hammerspace',
     'layout_file',
     'ids',
+    'wheels',
 )
 
 

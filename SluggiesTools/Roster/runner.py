@@ -179,7 +179,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     try:
         report = run(args.output_dir, args.config, args.remove, args.dry_run)
-    except (RosterDevError, ledger.LedgerError, dolfile.DolError) as exc:
+    except (RuntimeError, ValueError) as exc:     # every step's errors (DolError, config errors, ...)
         slogger.error(str(exc), source=SOURCE)
         return 1
     for line in report['log']:

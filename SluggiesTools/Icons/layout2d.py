@@ -337,6 +337,21 @@ class Layout:
         return self.prefix + container + self.tail
 
 
+def node_records(node: bytes) -> list[tuple[int, bytes]]:
+    """``(offset in the node blob, record)`` for every key record of a node blob."""
+    count = struct.unpack_from('>H', node, 0)[0]
+    out, cursor = [], 4
+    for _n in range(count):
+        size = node[cursor + 1] * 4
+        if size < 8 or cursor + size > len(node):
+            raise Layout2dError(f'bad key record at node offset 0x{cursor:X}')
+        out.append((cursor, node[cursor:cursor + size]))
+        cursor += size
+    if cursor != len(node):
+        raise Layout2dError('node has bytes after its last key record')
+    return out
+
+
 def with_keys(node: bytes, records: list[bytes]) -> bytes:
     """A node blob with ``records`` appended (each marked as a following record)."""
     count, first_size = struct.unpack_from('>HH', node, 0)

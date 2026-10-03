@@ -181,8 +181,8 @@ class NewIdTests(unittest.TestCase):
         self.assertEqual(table[(0x66 - 0x66) * n + (0x70 - 0x66)], ids.NEUTRAL)
 
     def test_wheel_cap_refused(self):
-        many = {'ids': [{'template': 0x06} for _ in range(4)]}       # 3 shown Yoshis + 4 = 7
-        with self.assertRaisesRegex(ids.IdConfigError, 'Phase 4'):
+        many = {'ids': [{'template': 0x06} for _ in range(8)]}       # 3 shown Yoshis + 8 = 11
+        with self.assertRaisesRegex(ids.IdConfigError, 'at most 10'):
             run(many)
 
 
