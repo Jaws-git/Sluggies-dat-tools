@@ -1,18 +1,18 @@
-"""Undo records for roster-expansion steps.
+"""Undo records for the roster steps.
 
-Every step's changes are recorded so the development injector (menu [10])
-can take them back out before it runs again, newest step first:
+A run's changes are recorded so the roster runner (menu [10]) can take them
+back out before it runs again:
 
 * ``diff_bytes`` / ``undo_diff``: a byte-level diff of the whole ``main.dol``
   before and after one step (the DOL is about 7 MB, so this is cheap), with
-  any appended tail checked by hash;
+  any appended tail checked by hash; undone newest step first;
 * ``DatFile``: buffered writes to ``dt_na.dat`` that remember the bytes they
-  replace (the DAT is far too large to diff). The report stores them
-  zlib-compressed (``pack``): a run moves several MB, mostly into zeroed
-  hammerspace, which hex blew up to a 75 MB report.
+  replace (the DAT is far too large to diff); recorded and undone for the
+  whole run (``run_record`` / ``undo_run``): the bytes the run started from,
+  zlib-compressed (``pack``), and a hash of what it left.
 
-Undo refuses bytes that changed since the step wrote them (another tool
-wrote over them), and reports a record whose bytes are all back to the old
+Undo refuses bytes that changed since the run wrote them (another tool
+wrote over them), and reports a run whose bytes are all back to the old
 values as already undone (the file was regenerated, e.g. by menu [1]).
 """
 
@@ -223,10 +223,6 @@ class DatFile:
         records, self.records = self.records, []
         return records
 
-    def take_records(self) -> list[list]:
-        """This step's records packed for a report: ``[offset, packed old, packed new]`` (see ``undo``)."""
-        return [[offset, pack(old), pack(new)] for offset, old, new in self.take_raw()]
-
     def run_record(self, raw_lists: list[list]) -> list[list]:
         """One record for a whole run (``raw_lists``: each step's ``take_raw`` in run order):
         ``[offset, packed bytes the run started from, sha1 of the bytes it left, length]`` per disjoint range.
@@ -251,24 +247,4 @@ class DatFile:
             if hashlib.sha1(self.read_padded(offset, length)).hexdigest() != sha1:
                 raise LedgerError(f'{self.path}: 0x{offset:X} changed since the roster expansion wrote it')
         self.pending += [(offset, original) for offset, original, _s, _n in records]
-        return 'undone'
-
-    def run_already_undone(self, record_lists: list[list]) -> bool:
-        """True when every byte a whole run wrote is back to what the run started from (see the DOL version)."""
-        ranges = pre_run_ranges(record_lists)
-        return bool(ranges) and all(self.read_padded(o, len(old)) == old for o, old in ranges)
-
-    def undo(self, records: list[list]) -> str:
-        """Take back one step's ``records``, newest write first. Undo writes are not recorded."""
-        if not records:
-            return 'undone'
-        records = [(o, unpack(old), unpack(new)) for o, old, new in records]
-        # Bytes past the end read as zeros: a regenerated (shorter) file holds none of our appended bytes.
-        if all(self.read_padded(o, len(old)) == old for o, old, _n in records) and \
-                not all(self.read_padded(o, len(n)) == n for o, _old, n in records):
-            return 'already undone'
-        for offset, old, new in reversed(records):
-            if self.read_padded(offset, len(new)) != new:
-                raise LedgerError(f'{self.path}: 0x{offset:X} changed since the roster step wrote it')
-            self.pending.append((offset, old))
         return 'undone'

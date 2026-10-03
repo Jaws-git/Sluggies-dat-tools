@@ -128,16 +128,10 @@ class LedgerTests(unittest.TestCase):
             dat.write(0x10, b'abcd')
             dat.write(0x12, b'XY')
             self.assertEqual(dat.read(0x10, 4), b'abXY')
-            records = dat.take_records()
+            self.assertEqual(dat.take_raw(), [[0x10, bytes(4), b'abXY']])  # merged into one record
             dat.flush()
             with open(path, 'rb') as f:
                 self.assertEqual(f.read()[0x10:0x14], b'abXY')
-            dat = ledger.DatFile(path)
-            self.assertEqual(dat.undo(records), 'undone')
-            dat.flush()
-            with open(path, 'rb') as f:
-                self.assertEqual(f.read(), bytes(0x100))
-            self.assertEqual(ledger.DatFile(path).undo(records), 'already undone')
 
     def test_run_record_and_undo_run(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -166,20 +160,10 @@ class LedgerTests(unittest.TestCase):
             with self.assertRaisesRegex(ledger.LedgerError, 'changed since'):
                 ledger.DatFile(path).undo_run(record)
 
-    def test_records_are_packed_and_hex_still_reads(self):
+    def test_pack(self):
         self.assertEqual(ledger.unpack(ledger.pack(bytes(1 << 20))), bytes(1 << 20))
         self.assertLess(len(ledger.pack(bytes(1 << 20))), 2000)          # zero runs cost next to nothing
-        self.assertEqual(ledger.unpack('00ff'), b'\0\xff')              # older reports and DOL diffs
-        with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, 'dt_na.dat')
-            with open(path, 'wb') as f:
-                f.write(bytes(0x100))
-            dat = ledger.DatFile(path)
-            dat.write(0x10, b'abcd')
-            dat.flush()
-            hex_records = [[0x10, bytes(4).hex(), b'abcd'.hex()]]       # a record as older reports wrote it
-            dat = ledger.DatFile(path)
-            self.assertEqual(dat.undo(hex_records), 'undone')
+        self.assertEqual(ledger.unpack('00ff'), b'\0\xff')              # DOL diffs are hex
 
 
 class RunnerTests(unittest.TestCase):

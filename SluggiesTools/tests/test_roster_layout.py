@@ -109,10 +109,10 @@ class AllocatorTests(unittest.TestCase):
         dat = self.dat(bytes(BASE))
         at = dhs.allocate(dat, 0x40, [], BASE)
         dat.write(at, b'\x05' * 0x40)
-        records = dat.take_records()
+        records = dat.run_record([dat.take_raw()])
         dat.flush()
         regenerated = self.dat(bytes(BASE))                         # e.g. menu [1] copied 1_Input again
-        self.assertEqual(regenerated.undo(records), 'already undone')
+        self.assertEqual(regenerated.undo_run(records), 'already undone')
 
 
 class LayoutStepTests(unittest.TestCase):
