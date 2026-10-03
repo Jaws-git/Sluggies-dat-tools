@@ -103,14 +103,21 @@ texture count; descriptors (0x20 bytes) from `+0x24`.
   source tables normal_a (`+0x08`), side (`+0x0C`) and front (`+0x10`).
   Container `+0x10` is its end.
 - **Source tables**: header `0x28` bytes (`+0x08` length, `+0x18` last frame,
-  `+0x24` count), records `0x50` bytes: `+0x02` character ID (the key frame),
-  `+0x06` resource row. Records are sorted by ID, highest first; every record
-  but the first has flag `0x0100`. A view shows the record with the highest
+  `+0x24` count, `+0x26` stride `0x50`), records `0x50` bytes: `+0x00` flags
+  (`0x0014` on the first record, `0x0114` on the others), `+0x02` character
+  ID (the key frame), `+0x04` `0x0400`, `+0x06` resource row, then the
+  record's own data. Records are sorted by ID, highest first; a wrong order or
+  a wrong first-record flag makes resolved icons disappear. A view shows the record with the highest
   ID ≤ the character, so an ID without its own record shows a neighbour's
   icon (*Dolphin*: the unused characters showed Pink Yoshi `0x46`). Each
   table's last frame must cover the highest key. Side records differ only in
   byte `+0x26` (`0x02` for IDs 0x01, 0x08, 0x0B, 0x27, 0x3E–0x41, else `0x82`).
-- **Resource rows** (`0x14` bytes): u16 page, u16 0, f32 v1, u1, v2, u2.
+- **Resource table**: u32 row count, u32 length (8 + count × `0x14`), then
+  the rows (`0x14` bytes): u16 page, u16 0, f32 v1, u1, v2, u2. The stock bank
+  has 152 rows; 8 bytes follow the table at the end of the bank.
+- **Icon record** (DOL file `0x68DE88`, 48 bytes): three language slots of
+  (file name pointer, length, offset, allocation); all three point at the
+  same bank.
 - **Keys alone are enough** to give an ID its own icon (*Dolphin*); no
   runtime hook is needed.
 - Our bank: the stock texture section, then page `0x86`'s palette, then two

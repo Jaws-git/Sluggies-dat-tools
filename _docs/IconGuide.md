@@ -19,4 +19,4 @@ Icons for the six unused characters and for new character IDs come from the rost
 
 No Gecko code is needed: the unused characters become selectable through their wheel entries.
 
-The older route, `python start.py --add-custom-icons`, still exists but is superseded. Don't combine the two: once menu [10] has rebuilt the icon bank, `--add-custom-icons` refuses that output.
+Menu **[4]** is the shortcut for the six unused characters: it injects `02_Stock_and_Unused.json`.

@@ -28,6 +28,9 @@ The binary details are in [`_docs_roster/RosterExpansion.md`](_docs_roster/Roste
 
 3. Copy `main.dol`, `dt_na.dat` **and `fst.bin`** into the game.
 
+From the command line: `python start.py --roster --config <file>` (or
+`--roster --remove`). Menu **[4]** is a shortcut for `02_Stock_and_Unused.json`.
+
 Every choice first removes the previous injection, so you can switch presets
 freely. If the normal pipeline wrote fresh files in between, the old injection
 counts as already removed.
