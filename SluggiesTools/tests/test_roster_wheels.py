@@ -130,6 +130,60 @@ class LimitTests(unittest.TestCase):
         self.assertIn('orange', log[-1])
 
 
+def branch_target(image, at: int) -> int:
+    word = image.u32(at)
+    assert word >> 26 == 18, f'0x{at:08X}: {word:08X} is not a branch'
+    return (at + ((word & 0x03FFFFFC) ^ 0x02000000) - 0x02000000) & 0xFFFFFFFF
+
+
+class OrderTests(unittest.TestCase):
+    STOCK_MR = 0x7FE3FB78        # mr r3,r31
+
+    def tail(self, image, stub) -> int:
+        """Address of the stub's ``mr r3,r31`` that is followed by the branch back behind the hook site."""
+        at = stub
+        while image.is_mapped(at + 4, 4):
+            if image.u32(at) == self.STOCK_MR and image.u32(at + 4) >> 26 == 18 and                     branch_target(image, at + 4) == wheels.ROSTER_SITE + 4:
+                return at
+            at += 4
+        self.fail('no tail')
+
+    def test_stock_site(self):
+        image = fresh_image()
+        dhs.DolHammerspace.create(image)
+        log = wheels.apply(context({'wheels': [{'id': '0x47'}], 'wheel_order': [['0x47', '0x06']]}, image))
+        self.tail(image, branch_target(image, wheels.ROSTER_SITE))
+        self.assertIn('species 0x06: 0x47 0x06', log[-1])
+
+    def test_chains_after_the_new_id_hook(self):
+        image = fresh_image()
+        hs = dhs.DolHammerspace.create(image)
+        state = {}
+        config = {'ids': [{'id': '0x66', 'template': '0x06'}], 'wheel_order': [['0x66']]}
+        with mock.patch.object(relocate, 'scan_refs', return_value=[]):
+            ids.apply_ids(image, hs, ids.parse_ids(config), state)
+        hs.commit()
+        ids_stub = branch_target(image, wheels.ROSTER_SITE)
+        ids_tail = self.tail(image, ids_stub)
+        ctx = context(config, image)
+        ctx.state.update(state)
+        log = wheels.apply(ctx)
+        self.assertIn('new-ID roster hook', log[-1])
+        self.assertEqual(branch_target(image, wheels.ROSTER_SITE), ids_stub)      # the new-ID hook runs first
+        reorder = branch_target(image, ids_tail)                                   # ... then the reorder
+        self.assertGreater(reorder, ids_tail)
+        self.tail(image, reorder)
+
+    def test_order_errors(self):
+        for order, message in (([['0x47']], 'not a selectable'), ([['0x06', '0x00']], 'different wheels'),
+                               ([['0x06'], ['0x42']], 'twice')):
+            with self.assertRaisesRegex(wheels.WheelConfigError, message):
+                wheels.apply(context({'wheels': [], 'wheel_order': order}))
+
+    def test_order_table(self):
+        self.assertEqual(wheels.order_table([(6, [0x47, 6]), (0, [0x66])]), bytes([6, 0x47, 6, 0xFF, 0, 0x66, 0xFF, 0xFF]))
+
+
 def element_key(time: int, x: int, size: int = 0x3C) -> bytes:
     key = bytearray(size)
     key[1] = size // 4

@@ -1,6 +1,6 @@
 {
  "version": 1,
- "comment": "Phase 4 gate: a 10-member Yoshi wheel (8 stock Yoshis incl. the two unused ones, plus 2 new IDs, one orange) and a new 3-member Mario wheel (one ID at or above 0x80).",
+ "comment": "Phase 4 gate: a 10-member Yoshi wheel (8 stock Yoshis incl. the two unused ones, plus 2 new IDs, one orange) and a new 3-member Mario wheel (one ID at or above 0x80). Wheel order (4c): Yoshi shows orange before purple, Mario green before blue.",
  "ids": [
   {
    "id": "0x66",
@@ -60,6 +60,18 @@
    "swatch": "black",
    "comment": "Black Koopa"
   }
+ ],
+ "wheel_order": [
+  [
+   "0x06",
+   "0x67",
+   "0x66"
+  ],
+  [
+   "0x00",
+   "0x80",
+   "0x68"
+  ]
  ],
  "grid": null
 }

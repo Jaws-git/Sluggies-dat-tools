@@ -15,6 +15,14 @@ with model data of their own in dirs 89-94) selectable on a colour wheel:
   and up, plan 4b).
 * ``swatch``: name or 0-10 (default: the row's stock byte 7).
 
+Optional wheel order (plan 4c)::
+
+    "wheel_order": [["0x06", "0x66", "0x47"]]
+
+Each list names members of one wheel; they come first, in that order, and
+the other members follow as before (stock order: stock IDs, then new IDs,
+each by ID). A list may name any selectable member of a single species.
+
 With a ``wheels`` key, the config owns all six spare rows: a listed row is
 selectable (byte 6 = 1) and has its own character data (``hasmodel`` = 1,
 else the game substitutes Peach on the field); an unlisted one gets its
@@ -341,6 +349,113 @@ def orange_swatch(data: bytes) -> bytes:
 
 
 # --------------------------------------------------------------------------
+# Wheel order (plan 4c)
+# --------------------------------------------------------------------------
+
+ROSTER_SITE = 0x8006BD58        # mr r3,r31 at the end of the roster builder FUN_8006ba6c (r31 = roster X)
+ROSTER_COUNTS, ROSTER_LISTS = 0x4D, 0x76    # X + 0x4D + species: count; X + 0x76 + species * 10: IDs
+
+
+def parse_order(config: dict, members: dict[int, list[int]]) -> list[tuple[int, list[int]]]:
+    """``[(species, ids in order)]`` from ``wheel_order``; every ID must be a member of that one wheel."""
+    species_of = {cid: s for s, ids_ in members.items() for cid in ids_}
+    out, seen = [], set()
+    for n, entry in enumerate(config.get('wheel_order') or []):
+        where = f'wheel_order[{n}]'
+        order = [ids._number(v, f'{where}') for v in entry]
+        if not order:
+            continue
+        unknown = [f'0x{c:02X}' for c in order if c not in species_of]
+        if unknown:
+            raise WheelConfigError(f'{where}: not a selectable wheel member: {", ".join(unknown)}')
+        species = {species_of[c] for c in order}
+        if len(species) != 1:
+            raise WheelConfigError(f'{where}: the IDs belong to different wheels')
+        species = species.pop()
+        if species in seen or len(set(order)) != len(order):
+            raise WheelConfigError(f'{where}: a wheel or an ID is listed twice')
+        seen.add(species)
+        out.append((species, order))
+    return out
+
+
+def order_table(order: list[tuple[int, list[int]]]) -> bytes:
+    """Per wheel: species byte, the IDs, 0xFF; then a final 0xFF."""
+    return b''.join(bytes([s, *ids_, 0xFF]) for s, ids_ in order) + bytes([0xFF])
+
+
+def emit_reorder(a: Asm, table: int, scratch: int) -> Asm:
+    """Port of the external tool's ``grid_order.family_reorder``: each listed wheel's species list in the roster
+    struct becomes the listed IDs in that order, then the rest as they were. Uses r0, r4-r11; r31 = X."""
+    a.load_addr('r6', table).load_addr('r11', scratch)
+    a.label('fam')
+    a.lbz('r0', 0, 'r6').cmplwi('r0', 0xFF).beq('fams_done')
+    a.add('r10', 'r31', 'r0').lbz('r4', ROSTER_COUNTS, 'r10')               # r4 = count
+    a.mulli('r5', 'r0', 10).add('r5', 'r31', 'r5').addi('r5', 'r5', ROSTER_LISTS)
+    a.li('r7', 0)
+    a.label('copy')                                                         # scratch = the list
+    a.cmpw('r7', 'r4').bge('copied')
+    a.lbzx('r0', 'r5', 'r7').stbx('r0', 'r11', 'r7').addi('r7', 'r7', 1).b('copy')
+    a.label('copied')
+    a.li('r8', 0)                                                           # r8 = the next slot written
+    a.label('want')
+    a.addi('r6', 'r6', 1).lbz('r9', 0, 'r6').cmplwi('r9', 0xFF).beq('rest')
+    a.li('r7', 0)
+    a.label('find')
+    a.cmpw('r7', 'r4').bge('want')
+    a.lbzx('r0', 'r11', 'r7').cmpw('r0', 'r9').bne('find_next')
+    a.stbx('r9', 'r5', 'r8').addi('r8', 'r8', 1)
+    a.li('r0', ids.STOCK_IDS).stbx('r0', 'r11', 'r7').b('want')             # taken (0x65: no character)
+    a.label('find_next')
+    a.addi('r7', 'r7', 1).b('find')
+    a.label('rest')                                                         # the rest, as they were
+    a.li('r7', 0)
+    a.label('rest_loop')
+    a.cmpw('r7', 'r4').bge('fam_next')
+    a.lbzx('r0', 'r11', 'r7').cmplwi('r0', ids.STOCK_IDS).beq('rest_next')
+    a.stbx('r0', 'r5', 'r8').addi('r8', 'r8', 1)
+    a.label('rest_next')
+    a.addi('r7', 'r7', 1).b('rest_loop')
+    a.label('fam_next')
+    a.addi('r6', 'r6', 1).b('fam')
+    a.label('fams_done')
+    return a
+
+
+def install_reorder(image: dolfile.DolImage, hs: dol_hammerspace.DolHammerspace,
+                    order: list[tuple[int, list[int]]]) -> list[str]:
+    """Run the reorder at the end of the roster builder, after the ids step's new-ID hook if it is there."""
+    stock = inventory.site('roster_hook', ROSTER_SITE).stock
+    table = hs.data.put(order_table(order), 4)
+    scratch = hs.data.put(bytes(MEMBERS), 4)
+    hs.code.put(b'', 4)
+    a = emit_reorder(Asm(hs.code.here), table, scratch)
+    a.mr('r3', 'r31').b(ROSTER_SITE + 4)
+    stub = hs.code.put(a.assemble(), 4)
+    word = image.u32(ROSTER_SITE)
+    if word == stock:
+        image.write_word(ROSTER_SITE, one(ROSTER_SITE, lambda b: b.b(stub)))
+        where = f'0x{ROSTER_SITE:08X}'
+    else:
+        if word >> 26 != 18 or word & 3:
+            raise dolfile.DolError(f'0x{ROSTER_SITE:08X} is {word:08X}: neither stock nor a hook branch')
+        target = (ROSTER_SITE + ((word & 0x03FFFFFC) ^ 0x02000000) - 0x02000000) & 0xFFFFFFFF
+        code = hs.code
+
+        def u32(at):
+            return int.from_bytes(code.blob[at - code.base:at - code.base + 4], 'big')
+        tails = [at for at in range(target, min(target + 0x400, stub), 4)
+                 if u32(at) == stock and u32(at + 4) == one(at + 4, lambda b: b.b(ROSTER_SITE + 4))]
+        if len(tails) != 1:
+            raise dolfile.DolError('the roster hook at 0x{:08X} has no unique end to chain to'.format(ROSTER_SITE))
+        # inside our own text section: through the allocator, which ``commit`` writes back
+        hs.code.write(tails[0], one(tails[0], lambda b: b.b(stub)).to_bytes(4, 'big'))
+        where = f'the new-ID roster hook (0x{tails[0]:08X})'
+    return [f'wheel order after {where}: ' + '; '.join(
+        f'species 0x{s:02X}: ' + ' '.join(f'0x{c:02X}' for c in o) for s, o in order)]
+
+
+# --------------------------------------------------------------------------
 # Step
 # --------------------------------------------------------------------------
 
@@ -380,6 +495,11 @@ def apply(ctx: steps.RosterContext) -> list[str]:
         log.append(f'wheels of 7 members: {big}')
     else:
         log.append('every wheel has 6 members or fewer: caps unchanged')
+    order = parse_order(ctx.config, members)
+    if order:
+        hs = dol_hammerspace.get(ctx)
+        log += install_reorder(ctx.dol, hs, order)
+        hs.commit()
     if any(row[6] and row[7] == ORANGE_TIME for cid, row in enumerate(rows)
            if cid < ids.PLAYER_END or cid >= ids.FIRST_NEW):
         log += layout_file.get(ctx).update(lambda _lang, data: orange_swatch(data))
