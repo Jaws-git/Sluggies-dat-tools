@@ -12,9 +12,11 @@ The binary details are in [`_docs_roster/RosterExpansion.md`](_docs_roster/Roste
 
 1. Build your normal output first (menu [1], model patches, icons). The
    expansion is applied on top of it.
-2. Menu **[10] Roster expansion** lists every `.json` file in
+2. Menu **[9] Roster expansion** (also part of menu **[1]**, between the model
+   and the icon export) lists every `.json` file in
    `1_Input/_RosterConfigurations/`, alphabetically, with a number to pick
-   it, and **[r]** to take the previous injection out and stop. The shipped
+   it, **[r]** to take the previous injection out and stop, and Enter to
+   skip. The shipped
    presets:
 
    | File | What you get |
@@ -29,7 +31,7 @@ The binary details are in [`_docs_roster/RosterExpansion.md`](_docs_roster/Roste
 3. Copy `main.dol`, `dt_na.dat` **and `fst.bin`** into the game.
 
 From the command line: `python start.py --roster --config <file>` (or
-`--roster --remove`). Menu **[4]** is a shortcut for `02_Stock_and_Unused.json`.
+`--roster --remove`).
 
 Every choice first removes the previous injection, so you can switch presets
 freely. If the normal pipeline wrote fresh files in between, the old injection
@@ -109,6 +111,18 @@ Lists of IDs, one list per wheel: those members come first, in that order.
 `"grid": {}` gives the 41 stock squares on 11 columns: Luigi gets his own
 square, so a captain's square is no longer handed to Luigi. Cells without a
 square are hidden and skipped by the pointer and the D-pad.
+
+## Icons with Dolphin's custom textures
+
+The roster's own portraits sit on two texture pages (side and front) that the
+roster step builds for each configuration. Menu [1] exports them after the
+injection (menu [3] exports from `1_Input` and does not see them; run
+`python start.py --export-icons --use-output` for the current output) to
+`2_Output_Models/_ICONS/roster_pages/`, each PNG named the way Dolphin dumps
+that texture, e.g. `tex1_512x64_7f44f8f0911eeb0c_14.png`. An edited copy with
+that exact name in Dolphin's `Load/Textures/RMBE01/` replaces the page in game.
+The name changes whenever the configuration's portraits change, so export again
+after editing a configuration. The stock icon pages keep their names.
 
 ## Limits and costs
 

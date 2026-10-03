@@ -1,7 +1,7 @@
 """Registry of the roster steps, in run order.
 
 Each step's module registers it with ``@register('<key>')``; the runner
-(``runner.py``, menu [10]) runs them in ``STEPS`` order. A step function
+(``runner.py``, menu [9]) runs them in ``STEPS`` order. A step function
 takes a ``RosterContext`` and returns log lines; it changes ``ctx.dol`` and
 ``ctx.dat`` only, so the runner can record (and later undo) everything.
 """

@@ -89,7 +89,7 @@ Exporting to a .sluggie file will automatically put the file name on your clipbo
 ## Patching the game
 
 *The file name from the last step should still be in your clipboard unless you copied something else in the meantime.*
-1) cmd ``` python start.py --patch myfilename``` (or pick option 5 in starttools.bat)
+1) cmd ``` python start.py --patch myfilename``` (or pick option 4 in starttools.bat)
 2) a new folder 3_Output_Dat will appear, containing a patched dt_na.dat and main.dol file
 3) keep applying as many patches as you like, you can also specify multiple file names
 4) copy the finished dt_na.dat and main.dol files back into the unpacked game folder, overwriting the old ones

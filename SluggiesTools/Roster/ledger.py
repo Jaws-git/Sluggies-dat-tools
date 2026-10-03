@@ -1,6 +1,6 @@
 """Undo records for the roster steps.
 
-A run's changes are recorded so the roster runner (menu [10]) can take them
+A run's changes are recorded so the roster runner (menu [9]) can take them
 back out before it runs again:
 
 * ``diff_bytes`` / ``undo_diff``: a byte-level diff of the whole ``main.dol``

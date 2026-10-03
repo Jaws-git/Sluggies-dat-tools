@@ -78,6 +78,11 @@ DIR_SHEETS = 'sheets (EDIT BASE.PNG)'
 DIR_KNOWN_FALLBACK = 'known_fallback'
 DIR_RAW = 'raw'
 DIR_METADATA = 'metadata'
+DIR_ROSTER = 'roster_pages'
+# The roster expansion's own icon pages (menu [10]): CMPR, sized to the portraits a roster configuration holds,
+# so their Dolphin dump names change with the configuration.
+ROSTER_PAGES = ((0x92, 'side'), (0x93, 'front'))
+ROSTER_PAGE_FORMAT = 0x0E
 
 DIR_NAMES = {
     "4F": "Mario",
@@ -524,6 +529,7 @@ def _prepare_output_tree(root):
         DIR_KNOWN_FALLBACK,
         DIR_RAW,
         DIR_METADATA,
+        DIR_ROSTER,
     ]
 
     for rel in dirs_to_delete:
@@ -550,6 +556,7 @@ def _prepare_output_tree(root):
     ensure_dir(os.path.join(root, DIR_RAW, 'side'))
     ensure_dir(os.path.join(root, DIR_RAW, 'front'))
     ensure_dir(os.path.join(root, DIR_METADATA))
+    ensure_dir(os.path.join(root, DIR_ROSTER))
 
 
 def _extract_icon_entry(dol_path):
@@ -730,6 +737,40 @@ def _export_one_page(root, entry_offset, tex_palette, desc, texture_index, view,
         f'{nonempty_count} non-empty cells',
         source='icons.export_icons',
     )
+
+
+def _export_roster_pages(root, tex_palette, dolphin_names):
+    """The roster expansion's icon pages, if this bank has them: each decoded to a PNG named like Dolphin's
+    texture dump (``tex1_WxH_<hash>_14.png``), the name a Dolphin custom texture for that page must have.
+    Returns the number of pages written."""
+    written = {}
+    for texture_index, view in ROSTER_PAGES:
+        if texture_index >= len(tex_palette.descriptors):
+            continue
+        desc = tex_palette.descriptors[texture_index]
+        if desc.format != ROSTER_PAGE_FORMAT:
+            continue
+        image_data, _tlut = desc._read_payload()
+        dolphin_name = _dolphin_texture_name(desc, image_data, b'')
+        base_name = f'roster_{view}_page_{texture_index:02X}'
+        dolphin_names.append({
+            'view': view,
+            'texture_index_dec': texture_index,
+            'base_name': base_name,
+            'character_name': '',
+            'dolphin_name': dolphin_name,
+        })
+        if dolphin_name in written:                   # identical side and front pages: one texture for both
+            _slogger.info(f'Roster {view} page 0x{texture_index:02X} is identical to the {written[dolphin_name]} '
+                          f'page ({dolphin_name})', source='icons.export_icons')
+            continue
+        written[dolphin_name] = view
+        tpl_abs = os.path.join(root, DIR_RAW, f'{base_name}.tpl')
+        _write_single_tpl(tpl_abs, desc, image_data, b'')
+        _decode_tpl_to_png(tpl_abs, os.path.join(root, DIR_ROSTER, dolphin_name))
+        _slogger.info(f'Exported roster {view} page 0x{texture_index:02X} ({desc.width}x{desc.height} CMPR) as '
+                      f'{DIR_ROSTER}/{dolphin_name}', source='icons.export_icons')
+    return len(written)
 
 
 def _export_base_indexed_image(root, image_data, view):
@@ -953,6 +994,8 @@ def main():
                 dolphin_names,
             )
 
+        roster_pages = _export_roster_pages(OUTPUT_ROOT, tex_palette, dolphin_names)
+
     finally:
         dat_file.close()
 
@@ -1029,6 +1072,7 @@ def main():
         f'  Source DAT: {os.path.relpath(input_dat, ROOT_DIR)}\n'
         f'  Pages exported: {len(pages_rows)}\n'
         f'  Non-empty cells exported: {len(cells_rows)}\n'
+        f'  Roster expansion icon pages: {roster_pages} (in {DIR_ROSTER}, named for Dolphin custom textures)\n'
         f'  Dolphin dump names: {os.path.relpath(dolphin_names_txt, ROOT_DIR)}'
     )
     _slogger.info(summary, source='icons.export_icons')

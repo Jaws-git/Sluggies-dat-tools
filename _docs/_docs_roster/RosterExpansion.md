@@ -14,7 +14,7 @@ were compared site by site with our build (`SluggiesTools/Dol/site_inventory.jso
 unless another date is given.
 
 Code: `SluggiesTools/Roster/` (one module per step, run in this order by menu
-[10] / `start.py --roster-dev`): `dol_hammerspace`, `layout_file`, `ids`,
+[9] / `start.py --roster`): `dol_hammerspace`, `layout_file`, `ids`,
 `wheels`, `icons`, `grid`, `names`. `runner.py` records every DOL byte and
 `dt_na.dat` write of a run in `3_Output_Dat/roster_dev/report.json` and undoes
 the previous run before the next one.

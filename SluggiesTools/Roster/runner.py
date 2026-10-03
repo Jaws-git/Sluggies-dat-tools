@@ -1,4 +1,4 @@
-"""The roster expansion (``start.py --roster``, StartTools menu [10]).
+"""The roster expansion (``start.py --roster``, StartTools menu [9], also run by menu [1]).
 
 Runs every roster step (``steps.STEPS``, in order) with one roster
 configuration (``--config``, e.g. from ``1_Input/_RosterConfigurations``) on
@@ -199,7 +199,7 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
 
 def main(argv=None) -> int:
     slogger.configure()
-    parser = argparse.ArgumentParser(description='Roster expansion (menu [10]).')
+    parser = argparse.ArgumentParser(description='Roster expansion (menu [9]).')
     parser.add_argument('--config', help='the roster configuration JSON (e.g. from 1_Input/_RosterConfigurations)')
     parser.add_argument('--remove', action='store_true', help='only take the previous injection out')
     parser.add_argument('--dry-run', action='store_true', help='run in memory, write nothing')

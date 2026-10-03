@@ -4,6 +4,7 @@ import struct
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 TOOLS_DIR = Path(__file__).resolve().parents[2]
@@ -185,6 +186,51 @@ class DolphinIconNameTests(unittest.TestCase):
                 'front_page_8B_t139_YoshiRed -> tex1_1024x256_dddd_6666_9.png',
             ],
         )
+
+
+def _make_cmpr_tpl(pages):
+    """An in-memory texture section with one 64x64 CMPR descriptor per payload in ``pages``."""
+    count = len(pages)
+    data_ptr = 4 + count * 0x20
+    descriptors = b''
+    for payload in pages:
+        descriptors += struct.pack('>IIHHBBBBI3sBHB1sI', data_ptr, 0, 64, 64, 0, 0, 0, 0, 0, b'\x00\x00\x00',
+                                   0x0E, 0, 0x00, b'\x00', 0)
+        data_ptr += len(payload)
+    blob = struct.pack('>HH', count, 0) + descriptors + b''.join(pages)
+    root = File(io.BytesIO(blob))
+    tex_palette = root.add_child(0, len(blob), TEXPalette, 'icon')
+    tex_palette.analyze()
+    return tex_palette
+
+
+class RosterPageExportTests(unittest.TestCase):
+    def test_roster_pages_named_like_dolphin_dumps(self):
+        side, front = bytes(range(256)) * 8, bytes(reversed(range(256))) * 8      # 64x64 CMPR = 0x800 bytes
+        tex_palette = _make_cmpr_tpl([side, front])
+        names = []
+        with tempfile.TemporaryDirectory() as root, \
+                mock.patch.object(export_icons, 'ROSTER_PAGES', ((0, 'side'), (1, 'front'))), \
+                mock.patch.object(export_icons, '_decode_tpl_to_png') as decode:
+            for rel in (export_icons.DIR_RAW, export_icons.DIR_ROSTER):
+                os.makedirs(os.path.join(root, rel))
+            self.assertEqual(export_icons._export_roster_pages(root, tex_palette, names), 2)
+        expected = [f'tex1_64x64_{xxh64(side, 0):016x}_14.png', f'tex1_64x64_{xxh64(front, 0):016x}_14.png']
+        self.assertEqual([n['dolphin_name'] for n in names], expected)
+        self.assertEqual([os.path.basename(c.args[1]) for c in decode.call_args_list], expected)
+        self.assertEqual(names[0]['base_name'], 'roster_side_page_00')
+
+    def test_identical_pages_written_once_and_stock_banks_skipped(self):
+        page = bytes(0x800)
+        names = []
+        with tempfile.TemporaryDirectory() as root, \
+                mock.patch.object(export_icons, 'ROSTER_PAGES', ((0, 'side'), (1, 'front'), (5, 'side'))), \
+                mock.patch.object(export_icons, '_decode_tpl_to_png') as decode:
+            for rel in (export_icons.DIR_RAW, export_icons.DIR_ROSTER):
+                os.makedirs(os.path.join(root, rel))
+            self.assertEqual(export_icons._export_roster_pages(root, _make_cmpr_tpl([page, page]), names), 1)
+        self.assertEqual(len(names), 2)                                       # both listed, one file
+        self.assertEqual(decode.call_count, 1)
 
 
 if __name__ == '__main__':

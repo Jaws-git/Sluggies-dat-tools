@@ -165,7 +165,7 @@ A new bone gives a new submesh somewhere to attach when no free bone sits where 
 The six unused characters (folders 89-94) share all their models with a playable character in the original game. An untangle export (StartTools menu [1]) gives each of them a copy of its own, and from then on they can be edited like any other character:
 - They always patch through hammerspace. In-place patching is refused for them.
 - An unpatch restores the unused character's own untangled data block, not the vanilly game's "shared model" state.
-- If an unused character ever shows its counterpart's edits (for example after an unpatch with an older version of the tools), run menu [9] to re-split it.
+- If an unused character ever shows its counterpart's edits (for example after an unpatch with an older version of the tools), run menu [8] to re-split it.
 - The high-/low-poly rules below apply to them as well.
 
 #### New bones on low-poly (`L_`) models
