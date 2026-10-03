@@ -1,13 +1,16 @@
 {
  "version": 1,
- "comment": "Preset 3: preset 2 plus every wheel filled to 10 with open slots (63 new IDs, 0x66-0xA4): each plays as its wheel's host, shows the \"empty slot\" icon and the name \"Empty slot\" until you assign it something else.",
+ "comment": "Preset 3: preset 2 plus every wheel filled to 10 and a wheel of 3 for every character without one, with open slots (123 new IDs, 0x66-0xE0): each plays as its wheel's host, shows the \"empty slot\" icon and the name \"Empty slot\" until you assign it something else.",
  "ids": [
   {
    "id": "0x66",
    "template": "0x06",
    "wheel": "0x06",
    "swatch": 4,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -19,7 +22,10 @@
    "template": "0x06",
    "wheel": "0x06",
    "swatch": 6,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -31,7 +37,10 @@
    "template": "0x0C",
    "wheel": "0x0C",
    "swatch": 1,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -43,7 +52,10 @@
    "template": "0x0C",
    "wheel": "0x0C",
    "swatch": 2,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -55,7 +67,10 @@
    "template": "0x0C",
    "wheel": "0x0C",
    "swatch": 4,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -67,7 +82,10 @@
    "template": "0x0C",
    "wheel": "0x0C",
    "swatch": 6,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -79,7 +97,10 @@
    "template": "0x0C",
    "wheel": "0x0C",
    "swatch": 7,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -91,7 +112,10 @@
    "template": "0x0C",
    "wheel": "0x0C",
    "swatch": 8,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -103,7 +127,10 @@
    "template": "0x0C",
    "wheel": "0x0C",
    "swatch": 9,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -115,7 +142,10 @@
    "template": "0x0D",
    "wheel": "0x0D",
    "swatch": 6,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -127,7 +157,10 @@
    "template": "0x0D",
    "wheel": "0x0D",
    "swatch": 7,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -139,7 +172,10 @@
    "template": "0x0D",
    "wheel": "0x0D",
    "swatch": 8,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -151,7 +187,10 @@
    "template": "0x0D",
    "wheel": "0x0D",
    "swatch": 9,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -163,7 +202,10 @@
    "template": "0x10",
    "wheel": "0x10",
    "swatch": 4,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -175,7 +217,10 @@
    "template": "0x10",
    "wheel": "0x10",
    "swatch": 6,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -187,7 +232,10 @@
    "template": "0x10",
    "wheel": "0x10",
    "swatch": 7,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -199,7 +247,10 @@
    "template": "0x10",
    "wheel": "0x10",
    "swatch": 8,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -211,7 +262,10 @@
    "template": "0x10",
    "wheel": "0x10",
    "swatch": 9,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -223,7 +277,10 @@
    "template": "0x14",
    "wheel": "0x14",
    "swatch": 1,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -235,7 +292,10 @@
    "template": "0x14",
    "wheel": "0x14",
    "swatch": 2,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -247,7 +307,10 @@
    "template": "0x14",
    "wheel": "0x14",
    "swatch": 4,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -259,7 +322,10 @@
    "template": "0x14",
    "wheel": "0x14",
    "swatch": 5,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -271,7 +337,10 @@
    "template": "0x14",
    "wheel": "0x14",
    "swatch": 6,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -283,7 +352,10 @@
    "template": "0x14",
    "wheel": "0x14",
    "swatch": 7,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -295,7 +367,10 @@
    "template": "0x14",
    "wheel": "0x14",
    "swatch": 8,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -307,7 +382,10 @@
    "template": "0x14",
    "wheel": "0x14",
    "swatch": 9,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -319,7 +397,10 @@
    "template": "0x15",
    "wheel": "0x15",
    "swatch": 3,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -331,7 +412,10 @@
    "template": "0x15",
    "wheel": "0x15",
    "swatch": 4,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -343,7 +427,10 @@
    "template": "0x15",
    "wheel": "0x15",
    "swatch": 6,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -355,7 +442,10 @@
    "template": "0x15",
    "wheel": "0x15",
    "swatch": 7,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -367,7 +457,10 @@
    "template": "0x15",
    "wheel": "0x15",
    "swatch": 8,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -379,7 +472,10 @@
    "template": "0x15",
    "wheel": "0x15",
    "swatch": 9,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -391,7 +487,10 @@
    "template": "0x18",
    "wheel": "0x18",
    "swatch": 2,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -403,7 +502,10 @@
    "template": "0x18",
    "wheel": "0x18",
    "swatch": 4,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -415,7 +517,10 @@
    "template": "0x18",
    "wheel": "0x18",
    "swatch": 5,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -427,7 +532,10 @@
    "template": "0x18",
    "wheel": "0x18",
    "swatch": 6,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -439,7 +547,10 @@
    "template": "0x18",
    "wheel": "0x18",
    "swatch": 7,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -451,7 +562,10 @@
    "template": "0x18",
    "wheel": "0x18",
    "swatch": 8,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -463,7 +577,10 @@
    "template": "0x18",
    "wheel": "0x18",
    "swatch": 9,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -475,7 +592,10 @@
    "template": "0x1B",
    "wheel": "0x1B",
    "swatch": 2,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -487,7 +607,10 @@
    "template": "0x1B",
    "wheel": "0x1B",
    "swatch": 4,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -499,7 +622,10 @@
    "template": "0x1B",
    "wheel": "0x1B",
    "swatch": 5,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -511,7 +637,10 @@
    "template": "0x1B",
    "wheel": "0x1B",
    "swatch": 6,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -523,7 +652,10 @@
    "template": "0x1B",
    "wheel": "0x1B",
    "swatch": 7,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -535,7 +667,10 @@
    "template": "0x1B",
    "wheel": "0x1B",
    "swatch": 8,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -547,7 +682,10 @@
    "template": "0x1B",
    "wheel": "0x1B",
    "swatch": 9,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -559,7 +697,10 @@
    "template": "0x21",
    "wheel": "0x21",
    "swatch": 4,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -571,7 +712,10 @@
    "template": "0x21",
    "wheel": "0x21",
    "swatch": 5,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -583,7 +727,10 @@
    "template": "0x21",
    "wheel": "0x21",
    "swatch": 6,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -595,7 +742,10 @@
    "template": "0x21",
    "wheel": "0x21",
    "swatch": 7,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -607,7 +757,10 @@
    "template": "0x21",
    "wheel": "0x21",
    "swatch": 8,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -619,7 +772,10 @@
    "template": "0x21",
    "wheel": "0x21",
    "swatch": 9,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -631,7 +787,10 @@
    "template": "0x30",
    "wheel": "0x30",
    "swatch": 2,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -643,7 +802,10 @@
    "template": "0x30",
    "wheel": "0x30",
    "swatch": 4,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -655,7 +817,10 @@
    "template": "0x30",
    "wheel": "0x30",
    "swatch": 5,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -667,7 +832,10 @@
    "template": "0x30",
    "wheel": "0x30",
    "swatch": 6,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -679,7 +847,10 @@
    "template": "0x30",
    "wheel": "0x30",
    "swatch": 7,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -691,7 +862,10 @@
    "template": "0x30",
    "wheel": "0x30",
    "swatch": 8,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -703,7 +877,10 @@
    "template": "0x3A",
    "wheel": "0x3A",
    "swatch": 2,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -715,7 +892,10 @@
    "template": "0x3A",
    "wheel": "0x3A",
    "swatch": 4,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -727,7 +907,10 @@
    "template": "0x3A",
    "wheel": "0x3A",
    "swatch": 7,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -739,7 +922,10 @@
    "template": "0x3A",
    "wheel": "0x3A",
    "swatch": 8,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",
@@ -751,7 +937,910 @@
    "template": "0x3A",
    "wheel": "0x3A",
    "swatch": 9,
-   "icon": "placeholder",
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xA5",
+   "template": "0x00",
+   "wheel": "0x00",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xA6",
+   "template": "0x00",
+   "wheel": "0x00",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xA7",
+   "template": "0x01",
+   "wheel": "0x01",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xA8",
+   "template": "0x01",
+   "wheel": "0x01",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xA9",
+   "template": "0x02",
+   "wheel": "0x02",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xAA",
+   "template": "0x02",
+   "wheel": "0x02",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xAB",
+   "template": "0x03",
+   "wheel": "0x03",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xAC",
+   "template": "0x03",
+   "wheel": "0x03",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xAD",
+   "template": "0x04",
+   "wheel": "0x04",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xAE",
+   "template": "0x04",
+   "wheel": "0x04",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xAF",
+   "template": "0x05",
+   "wheel": "0x05",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xB0",
+   "template": "0x05",
+   "wheel": "0x05",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xB1",
+   "template": "0x07",
+   "wheel": "0x07",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xB2",
+   "template": "0x07",
+   "wheel": "0x07",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xB3",
+   "template": "0x08",
+   "wheel": "0x08",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xB4",
+   "template": "0x08",
+   "wheel": "0x08",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xB5",
+   "template": "0x09",
+   "wheel": "0x09",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xB6",
+   "template": "0x09",
+   "wheel": "0x09",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xB7",
+   "template": "0x0A",
+   "wheel": "0x0A",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xB8",
+   "template": "0x0A",
+   "wheel": "0x0A",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xB9",
+   "template": "0x0B",
+   "wheel": "0x0B",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xBA",
+   "template": "0x0B",
+   "wheel": "0x0B",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xBB",
+   "template": "0x0E",
+   "wheel": "0x0E",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xBC",
+   "template": "0x0E",
+   "wheel": "0x0E",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xBD",
+   "template": "0x0F",
+   "wheel": "0x0F",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xBE",
+   "template": "0x0F",
+   "wheel": "0x0F",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xBF",
+   "template": "0x11",
+   "wheel": "0x11",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xC0",
+   "template": "0x11",
+   "wheel": "0x11",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xC1",
+   "template": "0x12",
+   "wheel": "0x12",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xC2",
+   "template": "0x12",
+   "wheel": "0x12",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xC3",
+   "template": "0x13",
+   "wheel": "0x13",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xC4",
+   "template": "0x13",
+   "wheel": "0x13",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xC5",
+   "template": "0x1C",
+   "wheel": "0x1C",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xC6",
+   "template": "0x1C",
+   "wheel": "0x1C",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xC7",
+   "template": "0x25",
+   "wheel": "0x25",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xC8",
+   "template": "0x25",
+   "wheel": "0x25",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xC9",
+   "template": "0x26",
+   "wheel": "0x26",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xCA",
+   "template": "0x26",
+   "wheel": "0x26",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xCB",
+   "template": "0x27",
+   "wheel": "0x27",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xCC",
+   "template": "0x27",
+   "wheel": "0x27",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xCD",
+   "template": "0x28",
+   "wheel": "0x28",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xCE",
+   "template": "0x28",
+   "wheel": "0x28",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xCF",
+   "template": "0x29",
+   "wheel": "0x29",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xD0",
+   "template": "0x29",
+   "wheel": "0x29",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xD1",
+   "template": "0x36",
+   "wheel": "0x36",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xD2",
+   "template": "0x36",
+   "wheel": "0x36",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xD3",
+   "template": "0x37",
+   "wheel": "0x37",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xD4",
+   "template": "0x37",
+   "wheel": "0x37",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xD5",
+   "template": "0x38",
+   "wheel": "0x38",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xD6",
+   "template": "0x38",
+   "wheel": "0x38",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xD7",
+   "template": "0x39",
+   "wheel": "0x39",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xD8",
+   "template": "0x39",
+   "wheel": "0x39",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xD9",
+   "template": "0x3E",
+   "wheel": "0x3E",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xDA",
+   "template": "0x3E",
+   "wheel": "0x3E",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xDB",
+   "template": "0x3F",
+   "wheel": "0x3F",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xDC",
+   "template": "0x3F",
+   "wheel": "0x3F",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xDD",
+   "template": "0x40",
+   "wheel": "0x40",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xDE",
+   "template": "0x40",
+   "wheel": "0x40",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xDF",
+   "template": "0x41",
+   "wheel": "0x41",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xE0",
+   "template": "0x41",
+   "wheel": "0x41",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
    "name": {
     "en": "Empty slot",
     "fr": "Emplacement vide",

@@ -58,15 +58,14 @@ import struct
 import tempfile
 from dataclasses import dataclass
 
-import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image
 
 try:
     from ..Dol import dolfile
     from ..Dol.ppc import Asm, one
     from ..Icons import install_runtime_hooks as hooks
     from . import dat_hammerspace as dhs
-    from . import dol_hammerspace, ids, names, steps
+    from . import dol_hammerspace, ids, steps
 except ImportError:
     from Dol import dolfile
     from Dol.ppc import Asm, one
@@ -74,7 +73,6 @@ except ImportError:
     import dat_hammerspace as dhs
     import dol_hammerspace
     import ids
-    import names
     import steps
 
 resources = hooks.resources
@@ -101,8 +99,6 @@ PAGE_MAX = 1024                              # GX texture limit
 PAGE_MIN = 8                                 # one CMPR tile
 ALIGN = 0x20
 LAYOUTS = ('packed', 'slots')
-PLACEHOLDER = 'placeholder'                  # "icon": "placeholder": the built-in "empty slot" portrait
-PLACEHOLDER_FONT_SIZE = 11
 # The icon pipeline's donors (icon_characters.json): the records the spare rows' keys copy by default.
 SPARE_DONORS = {0x47: 0x04, 0x48: 0x00, 0x49: 0x01, 0x4A: 0x02, 0x4B: 0x03, 0x4C: 0x05}
 RESOLVER_SITE, RESOLVER_STOCK = 0x80395E1C, 0x4080008C   # bge 0x80395EA8 (the Mii block) after cmpwi r24,0x4D
@@ -149,10 +145,8 @@ def parse_icons(config: dict, icon_dir: str | None = None, check_files: bool = T
                 listed.append((f'{key}[{n}]', key, entry))
     for where, key, entry in listed:
         icon = entry['icon']
-        if icon == PLACEHOLDER:
-            icon = {'side': PLACEHOLDER, 'front': PLACEHOLDER}
         if not isinstance(icon, dict):
-            raise IconConfigError(f'{where}.icon must be "{PLACEHOLDER}" or an object with "side" and "front"')
+            raise IconConfigError(f'{where}.icon must be an object with "side" and "front"')
         if key == 'wheels':
             cid = ids._number(entry.get('id'), f'{where}.id')
             if cid not in SPARE_DONORS:
@@ -172,9 +166,6 @@ def parse_icons(config: dict, icon_dir: str | None = None, check_files: bool = T
         paths = []
         for view in ('side', 'front'):
             name = icon.get(view)
-            if name == PLACEHOLDER:
-                paths.append(PLACEHOLDER)
-                continue
             if not isinstance(name, str) or not name or os.path.basename(name) != name:
                 raise IconConfigError(f'{where}.icon.{view} must be a plain PNG file name (in 1_Input/_Icons)')
             path = os.path.join(icon_dir, name)
@@ -372,31 +363,10 @@ def pack_page(portraits: list) -> Page:
     return Page(width, height, [at[image.tobytes()] for image in portraits], page)
 
 
-def placeholder_image():
-    """The built-in "empty slot" portrait (48x51): a dark grey tile with a light border and the words EMPTY / SLOT."""
-    img = Image.new('RGBA', (artwork.ICON_WIDTH, artwork.ICON_HEIGHT), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    draw.rounded_rectangle((1, 2, artwork.ICON_WIDTH - 2, artwork.ICON_HEIGHT - 3), radius=7,
-                           fill=(64, 64, 72, 255), outline=(200, 200, 210, 255), width=2)
-    font = names.font(PLACEHOLDER_FONT_SIZE)
-    for word, y in (('EMPTY', 12), ('SLOT', 27)):
-        x0, _y0, x1, _y1 = draw.textbbox((0, 0), word, font=font)
-        draw.text(((artwork.ICON_WIDTH - (x1 - x0)) // 2 - x0, y - 3), word, font=font, fill=(255, 255, 255, 255))
-    pixels = np.array(img)                                  # alpha hardened, as the icon pipeline does
-    opaque = pixels[..., 3] >= 128
-    pixels[opaque, 3] = 255
-    pixels[~opaque] = 0
-    return Image.fromarray(pixels, 'RGBA')
-
-
-def _portrait(path: str, fit: str):
-    return placeholder_image() if path == PLACEHOLDER else artwork.load_and_harden_image(path, fit)
-
-
 def compose_pages(entries: list[IconEntry]) -> tuple[Page, Page]:
     """Side and front pages: each entry's PNGs fitted to 48x51 with its own fit mode (alpha hardened, as the
-    icon pipeline does), or the built-in placeholder."""
-    return tuple(pack_page([_portrait(getattr(e, f'{view}_path'), e.fit) for e in entries])
+    icon pipeline does)."""
+    return tuple(pack_page([artwork.load_and_harden_image(getattr(e, f'{view}_path'), e.fit) for e in entries])
                  for view in ('side', 'front'))
 
 

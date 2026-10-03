@@ -21,7 +21,7 @@ The binary details are in [`_docs_roster/RosterExpansion.md`](_docs_roster/Roste
    |---|---|
    | `01_Stock_Roster.json` | No new content. |
    | `02_Stock_and_Unused.json` | The six unused characters (Black Yoshi, White Yoshi, Black Toad, Black Pianta, Black Kritter, Black Koopa) on their families' wheels, with the icons from `1_Input/_Icons`. |
-   | `03_Unuseds_and_10_slot_colors.json` | Preset 02, and every colour wheel filled to 10 with **open slots** (63 new IDs). |
+   | `03_Unuseds_and_10_slot_colors.json` | Preset 02, every colour wheel filled to 10, and a new wheel of 3 for each of the 30 characters without one, all with **open slots** (123 new IDs). |
    | `04_all_in_one_12x5_grid.json` | Preset 03 on a 12×5 grid: Luigi gets his own square, and 19 new squares hold open slots. |
 
    Your own configurations go into the same folder and show up in the list.
@@ -32,8 +32,9 @@ Every choice first removes the previous injection, so you can switch presets
 freely. If the normal pipeline wrote fresh files in between, the old injection
 counts as already removed.
 
-**Open slots** are new IDs with nothing assigned yet. They show an "empty slot"
-icon and the name "Empty slot", and play as a template character: a wheel's
+**Open slots** are new IDs with nothing assigned yet. They show the "empty slot"
+icon (`1_Input/_Icons/empty_slot_side.png` / `empty_slot_front.png`, which you
+can edit) and the name "Empty slot", and play as a template character: a wheel's
 open slots as that wheel's own character, the new squares' as Peach (the
 game's fallback character). Assigning models, sounds and art to them is the
 next step of the project; for now you can give them your own icon and name.
@@ -52,7 +53,8 @@ All keys are optional. A missing or `null` key leaves that part stock.
     {"id": "0x66", "template": "0x06", "swatch": "purple",
      "icon": {"side": "purple_yoshi_side.png", "front": "purple_yoshi_front.png"},
      "name": "Purple Yoshi"},
-    {"id": "0x67", "template": "0x02", "wheel": null, "icon": "placeholder", "name": "Empty slot"}
+    {"id": "0x67", "template": "0x04", "wheel": null,
+     "icon": {"side": "empty_slot_side.png", "front": "empty_slot_front.png"}, "name": "Empty slot"}
   ],
   "wheels": [
     {"id": "0x47", "wheel": "0x06", "swatch": "black",
@@ -74,7 +76,7 @@ IDs are numbers or hex strings (`"0x66"`).
 | `template` | A stock character (`0x00`–`0x4C`). The new ID copies its model, animations, stats and voice. |
 | `wheel` | Whose colour wheel it joins; default the template. A character without a wheel gets one. `null`: no wheel; the ID must then be on a new grid square. |
 | `swatch` | Wheel swatch colour: `red`, `blue`, `yellow`, `green`, `purple`, `black`, `brown`, `lightblue`, `pink`, `white`, `orange`, or 0–10. Default: the template's. |
-| `icon` | Own portrait: `{"side": "…png", "front": "…png"}` from `1_Input/_Icons`, or `"placeholder"` for the built-in "empty slot" portrait. Optional `fit` (`contain`, `cover`, `strict`) and `like` (a stock ID whose icon records are copied). Without it the template's portrait shows. |
+| `icon` | Own portrait: `{"side": "…png", "front": "…png"}` from `1_Input/_Icons` (the open slots use `empty_slot_side.png` / `empty_slot_front.png`). Optional `fit` (`contain`, `cover`, `strict`) and `like` (a stock ID whose icon records are copied). Without it the template's portrait shows. |
 | `name` | A string, or `{"en": …, "fr": …, "sp": …}`; missing languages use English. Without it the ID shows "-" once any character in the config has a name, and otherwise no name text and the template's name plate. |
 
 ### `wheels`: the unused characters (`0x47`–`0x4C`)
@@ -107,7 +109,9 @@ square are hidden and skipped by the pointer and the D-pad.
 
 ## Limits and costs
 
-- At most 10 members per wheel, 60 squares, IDs `0x66`–`0xFE` (153).
+- At most 10 members per wheel, 60 squares, IDs `0x66`–`0xFE` (153). The IDs
+  are one byte, so not every character can reach 10: the 30 characters without
+  a wheel would need 270 IDs on their own. Preset 03 uses 123, preset 04 142.
 - The expansion adds data the game keeps in memory during a match: the icon
   bank grows by about 1.4 KB per distinct portrait (identical portraits are
   stored once), the select-screen layout by up to a few tens of KB.

@@ -1,15 +1,14 @@
-"""Roster expansion Phase 9: open slots (square-only IDs, the placeholder icon, shared name plates) and the presets."""
+"""Roster expansion Phase 9: open slots (square-only IDs, the "empty slot" icon, shared name plates) and the presets."""
 
 import json
 import os
 import struct
+import tempfile
 import unittest
 from unittest import mock
 
-import numpy
-
 from SluggiesTools.Dol import relocate
-from SluggiesTools.Roster import grid, icons, ids, names, wheels
+from SluggiesTools.Roster import grid, icons, ids, make_presets, names, wheels
 from SluggiesTools.tests.test_roster_grid import HEADS, STOCK_MAP
 from SluggiesTools.tests.test_roster_ids import fresh_image
 from SluggiesTools.tests.test_roster_names import plate_bank
@@ -51,21 +50,21 @@ class SquareOnlyIdTests(unittest.TestCase):
         self.assertIn(0x67, members[6])
 
 
-class PlaceholderTests(unittest.TestCase):
-    def test_parse_and_compose(self):
-        config = {'ids': [{'id': '0x66', 'template': '0x02', 'icon': 'placeholder'},
-                          {'id': '0x67', 'template': '0x06', 'icon': 'placeholder'}]}
-        entries = icons.parse_icons(config)
-        self.assertEqual([(e.side_path, e.like) for e in entries], [('placeholder', 2), ('placeholder', 6)])
-        side, front = icons.compose_pages(entries)
-        self.assertEqual(side.cells, [(0, 0), (0, 0)])                    # one shared cell
-        self.assertEqual(side.image.getpixel((24, 25))[3], 255)
-        self.assertEqual(front.cells, side.cells)
-
-    def test_placeholder_image(self):
-        img = icons.placeholder_image()
+class SlotIconTests(unittest.TestCase):
+    def test_portrait(self):
+        img = make_presets.slot_portrait()
         self.assertEqual(img.size, (48, 51))
-        self.assertEqual(set(numpy.unique(numpy.asarray(img)[..., 3])), {0, 255})   # hardened alpha
+        self.assertEqual(img.getpixel((24, 25))[3], 255)
+
+    def test_same_file_one_cell(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in make_presets.SLOT_ICON.values():
+                make_presets.slot_portrait().save(os.path.join(tmp, name))
+            config = {'ids': [{'id': f'0x{c:02X}', 'template': '0x06', 'icon': dict(make_presets.SLOT_ICON)}
+                              for c in (0x66, 0x67)]}
+            side, front = icons.compose_pages(icons.parse_icons(config, tmp))
+        self.assertEqual(side.cells, [(0, 0), (0, 0)])                    # one shared cell
+        self.assertEqual(front.cells, side.cells)
 
 
 class PlateSharingTests(unittest.TestCase):
@@ -104,13 +103,24 @@ class PresetTests(unittest.TestCase):
                     self.assertEqual(g.empty, [])
                 self.assertLessEqual(len(new), ids.MAX_ID - ids.FIRST_NEW + 1)
 
+    def test_wheels_of_ten_and_new_wheels_of_three(self):
+        new = ids.parse_ids(self.load('03_Unuseds_and_10_slot_colors.json'))
+        self.assertEqual(len(new), 123)
+        by_wheel = {}
+        for c in new:
+            by_wheel.setdefault(c.wheel, []).append(c)
+        self.assertEqual(len(by_wheel[0x00]), 2)                              # Mario: a new wheel of 3
+        self.assertEqual(len(by_wheel[0x06]), 2)                              # Yoshi: 6 + 2 unused + 2
+        self.assertEqual(sum(1 for w, g in by_wheel.items() if len(g) == 2 and w < 0x47), 31)
+
     def test_all_in_one(self):
         config = self.load('04_all_in_one_12x5_grid.json')
         new = ids.parse_ids(config)
         squares = [c for c in new if c.wheel is None]
         self.assertEqual(len(squares), 19)
         self.assertTrue(all(c.template == 0x04 for c in squares))                # Peach
-        self.assertTrue(all(e['icon'] == 'placeholder' and e['name']['en'] == 'Empty slot' for e in config['ids']))
+        self.assertTrue(all(e['icon'] == make_presets.SLOT_ICON and e['name']['en'] == 'Empty slot'
+                            for e in config['ids']))
         g = grid.parse_grid(config, HEADS[:41], STOCK_MAP)
         self.assertEqual((g.cols, g.rows), (12, 5))
 

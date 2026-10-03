@@ -4,12 +4,17 @@ this script only (re)writes these four:
 
 01_Stock_Roster.json                 the stock roster (no expansion content)
 02_Stock_and_Unused.json             + the six unused characters on their family wheels, with their icons
-03_Unuseds_and_10_slot_colors.json   + every wheel filled to 10 with open slots
+03_Unuseds_and_10_slot_colors.json   + every wheel filled to 10 with open slots, and a wheel of 3 for every
+                                       character without one
 04_all_in_one_12x5_grid.json         + a 12x5 grid whose 19 new squares are open slots
 
+It also draws the "empty slot" portrait into ``1_Input/_Icons/empty_slot_side.png`` / ``empty_slot_front.png``
+(only when missing, so an edited one stays).
+
 An open slot is a new ID with no content of its own yet: it plays as a template character (the wheel's host on a
-wheel, Peach on a new square, the game's own fallback character), shows the built-in "empty slot" icon and the name
-"Empty slot". The presets are defaults to reassign, not content (the user's own ``1_Input/roster.json`` is the place
+wheel, Peach on a new square, the game's own fallback character), shows the "empty slot" icon and the name
+"Empty slot". The 153 new IDs (0x66-0xFE) do not reach 10 for every character: 30 stock characters have no wheel,
+so they get wheels of 3 (60 IDs) next to the 63 that fill the existing wheels, and preset 4's squares take 19 more. The presets are defaults to reassign, not content (the user's own ``1_Input/roster.json`` is the place
 for that). Swatches: the colours (0-10) the wheel does not use yet, lowest first.
 """
 
@@ -24,10 +29,16 @@ OUT = os.path.join(ROOT, '1_Input', '_RosterConfigurations')
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from PIL import Image, ImageDraw  # noqa: E402
+
 from SluggiesTools.Dol import dolfile, inventory  # noqa: E402
-from SluggiesTools.Roster import grid, ids, wheels  # noqa: E402
+from SluggiesTools.Roster import grid, ids, names, wheels  # noqa: E402
 
 WHEEL_SIZE = 10
+NEW_WHEEL_SIZE = 3               # characters without a wheel (the ID budget, see above)
+ICON_DIR = os.path.join(ROOT, '1_Input', '_Icons')
+SLOT_ICON = {'side': 'empty_slot_side.png', 'front': 'empty_slot_front.png'}
+ICON_SIZE = (48, 51)
 SQUARE_TEMPLATE = 0x04           # Peach: the character the game substitutes for an ID without own data (0x80367060)
 SLOT_NAME = {'en': 'Empty slot', 'fr': 'Emplacement vide', 'sp': 'Espacio vacío'}
 SWATCH_COUNT = 11
@@ -51,12 +62,36 @@ def open_slot(cid: int, template: int, wheel, swatch: int | None) -> dict:
     entry = {'id': f'0x{cid:02X}', 'template': f'0x{template:02X}', 'wheel': None if wheel is None else f'0x{wheel:02X}'}
     if swatch is not None:
         entry['swatch'] = swatch
-    entry.update({'icon': 'placeholder', 'name': dict(SLOT_NAME)})
+    entry.update({'icon': dict(SLOT_ICON), 'name': dict(SLOT_NAME)})
     return entry
 
 
+def slot_portrait():
+    """The "empty slot" portrait (48x51): a dark grey tile with a light border and the words EMPTY / SLOT."""
+    img = Image.new('RGBA', ICON_SIZE, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle((1, 2, ICON_SIZE[0] - 2, ICON_SIZE[1] - 3), radius=7,
+                           fill=(64, 64, 72, 255), outline=(200, 200, 210, 255), width=2)
+    face = names.font(11)
+    for word, y in (('EMPTY', 12), ('SLOT', 27)):
+        x0, _y0, x1, _y1 = draw.textbbox((0, 0), word, font=face)
+        draw.text(((ICON_SIZE[0] - (x1 - x0)) // 2 - x0, y - 3), word, font=face, fill=(255, 255, 255, 255))
+    return img
+
+
+def write_slot_icons() -> list[str]:
+    written = []
+    for name in SLOT_ICON.values():
+        path = os.path.join(ICON_DIR, name)
+        if not os.path.isfile(path):
+            slot_portrait().save(path)
+            written.append(name)
+    return written
+
+
 def wheel_slots(image: dolfile.DolImage, first: int) -> list[dict]:
-    """Open slots that fill every stock wheel (with the unused characters on it) to WHEEL_SIZE."""
+    """Open slots that fill every stock wheel (with the unused characters on it) to WHEEL_SIZE, then a wheel of
+    NEW_WHEEL_SIZE for every character without one (it hosts the new wheel)."""
     table = inventory.table('selector')
     rows = [bytearray(image.read(table.address + 8 * i, 8)) for i in range(ids.PLAYER_END)]
     spares = {int(cid, 16): (int(wheel, 16), ids.SWATCHES[swatch]) for cid, wheel, swatch, _c, _a in UNUSED}
@@ -75,6 +110,12 @@ def wheel_slots(image: dolfile.DolImage, first: int) -> list[dict]:
         for swatch in free[:WHEEL_SIZE - len(members[species])]:
             out.append(open_slot(cid, host, host, swatch))
             cid += 1
+    for host, row in enumerate(rows[:wheels.SPARE_IDS.start]):
+        if row[6] and not row[0]:
+            free = [s for s in range(SWATCH_COUNT) if s != row[7]]
+            for swatch in free[:NEW_WHEEL_SIZE - 1]:
+                out.append(open_slot(cid, host, host, swatch))
+                cid += 1
     return out
 
 
@@ -101,7 +142,8 @@ def main() -> int:
                                   wheels=unused_wheels()))
     slots = wheel_slots(image, ids.FIRST_NEW)
     write('03_Unuseds_and_10_slot_colors.json', preset(
-        f'Preset 3: preset 2 plus every wheel filled to {WHEEL_SIZE} with open slots ({len(slots)} new IDs, '
+        f'Preset 3: preset 2 plus every wheel filled to {WHEEL_SIZE} and a wheel of {NEW_WHEEL_SIZE} for every '
+        f'character without one, with open slots ({len(slots)} new IDs, '
         f'0x{ids.FIRST_NEW:02X}-0x{ids.FIRST_NEW + len(slots) - 1:02X}): each plays as its wheel\'s host, shows the '
         '"empty slot" icon and the name "Empty slot" until you assign it something else.',
         ids=slots, wheels=unused_wheels()))
@@ -115,7 +157,9 @@ def main() -> int:
         'character) until you assign it something else.',
         ids=slots + squares, wheels=unused_wheels(),
         grid={'shape': [cols, rows], 'squares': [[s['id']] for s in squares]}))
-    print(f'presets written to {OUT}: {len(slots)} wheel slots, {count} square slots')
+    icons = write_slot_icons()
+    print(f'presets written to {OUT}: {len(slots)} wheel slots, {count} square slots'
+          + (f'; {", ".join(icons)} drawn into {ICON_DIR}' if icons else ''))
     return 0
 
 
