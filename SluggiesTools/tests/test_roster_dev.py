@@ -103,6 +103,22 @@ class LedgerTests(unittest.TestCase):
         with self.assertRaises(ledger.LedgerError):
             ledger.undo_diff(new, diff)
 
+    def test_regenerated_file_after_overlapping_steps(self):
+        # step 2 rewrites a byte step 1 wrote (as every step after dol_hammerspace rewrites the DOL header)
+        clean = bytes(64)
+        one = bytearray(clean)
+        one[4] = 1
+        one += b'tail'
+        two = bytearray(one)
+        two[4] = 2
+        two[9] = 9
+        diffs = [ledger.diff_bytes(clean, bytes(one)), ledger.diff_bytes(bytes(one), bytes(two))]
+        with self.assertRaises(ledger.LedgerError):
+            ledger.undo_diff(bytearray(clean), diffs[1])          # the per-step check alone fails
+        self.assertTrue(ledger.run_already_undone(clean, diffs))
+        self.assertFalse(ledger.run_already_undone(bytes(two), diffs))
+        self.assertEqual(ledger.pre_run_ranges([d['ranges'] for d in diffs]), [(4, b'\0'), (5, bytes(5))])  # step 2's range 4-9 minus byte 4
+
     def test_dat_file_records_and_undoes(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, 'dt_na.dat')

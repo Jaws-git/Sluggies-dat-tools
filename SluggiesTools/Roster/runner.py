@@ -77,16 +77,23 @@ def _read_report(path: str) -> dict | None:
 
 
 def remove_previous(report: dict | None, dol: bytearray, dat: ledger.DatFile | None) -> list[str]:
-    """Undo a previous run's steps (newest first). Returns log lines."""
+    """Undo a previous run's steps (newest first). Returns log lines.
+
+    A file the normal pipeline regenerated since (back to the bytes the run started from) counts as
+    already undone as a whole, before any per-step check."""
     if not report:
         return []
+    steps_ = report['steps']
+    dol_done = ledger.run_already_undone(bytes(dol), [s['dol'] for s in steps_])
+    dat_lists = [s['dat'] for s in steps_ if s.get('dat')]
+    if dat_lists and dat is None:
+        raise RosterDevError('the previous injection changed dt_na.dat, which is missing now')
+    dat_done = bool(dat_lists) and dat.run_already_undone(dat_lists)
     log = []
-    for step in reversed(report['steps']):
-        outcome = ledger.undo_diff(dol, step['dol'])
+    for step in reversed(steps_):
+        outcome = 'already undone' if dol_done else ledger.undo_diff(dol, step['dol'])
         if step.get('dat'):
-            if dat is None:
-                raise RosterDevError('the previous injection changed dt_na.dat, which is missing now')
-            dat_outcome = dat.undo(step['dat'])
+            dat_outcome = 'already undone' if dat_done else dat.undo(step['dat'])
             if dat_outcome != outcome:
                 outcome = f'{outcome} (dt_na.dat: {dat_outcome})'
         log.append(f'removed previous step {step["key"]}: {outcome}')
