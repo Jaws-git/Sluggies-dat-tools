@@ -7,8 +7,8 @@ and the name labels. Phases 4d, 4e and 6 grow it, and the stock copies have
 no room (only 0x10 bytes separate EN from SP), so this step moves it.
 
 One DOL record (``layout2d.CSS_LAYOUT_DOL_RECORD``), shared by all 120
-directory windows that list the file, holds three language slots. EN, SP and
-FR point at three separate copies that differ in their text textures, and the
+directory windows that list the file, holds three language slots. EN, FR and
+SP point at three separate copies that differ in their text textures, and the
 game loads only the console language's one. The step copies each into DAT
 hammerspace (``dat_hammerspace.allocate``) and repoints that language's slot.
 The copies are identical to their sources, so on its own the step must play

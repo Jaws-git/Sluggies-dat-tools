@@ -26,8 +26,10 @@ BASE_SIZE = hh.BASE_SIZE
 ALIGN = hh.HS_ALIGN_BYTES
 BUFFER = hh.HS_BUFFER_BYTES
 RECORD_SIZE = 48
-LANG_SLOTS = ((1, 2, 3), (5, 6, 7), (9, 10, 11))    # (length, offset, alloc) word indices: en, sp, fr
-LANGS = ('en', 'sp', 'fr')
+LANG_SLOTS = ((1, 2, 3), (5, 6, 7), (9, 10, 11))    # (length, offset, alloc) word indices: en, fr, sp
+# The US game's three languages in slot order: slot 2 is French and slot 3 Spanish (dir 121 file 5, the
+# character names: "Toad rouge" / "Toad rojo").
+LANGS = ('en', 'fr', 'sp')
 SCAN_CHUNK = 1 << 20
 
 

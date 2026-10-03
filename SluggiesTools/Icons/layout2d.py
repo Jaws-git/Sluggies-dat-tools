@@ -72,6 +72,8 @@ DESCRIPTOR_OFFSET = 0x14
 RESOURCE_ROW_SIZE = 0x14
 SPRITE_RECORD_SIZE = 0x3C
 FOLLOWING_RECORD_FLAG = 0x0100
+TEXTURE_DESCRIPTOR_SIZE = 0x20     # from bank +0x24; u16 count at +0x20
+TEXTURE_OFFSET_BASE = 0x20         # descriptor image / palette offsets count from bank +0x20
 
 # DOL directory record of the bank that holds the character-select grid
 # (dir 0, file 1591). All 120 directory windows that list this file share
@@ -312,6 +314,43 @@ class Layout:
         """Append an element; returns its index."""
         self.elements.append(bytes(blob))
         return len(self.elements) - 1
+
+    # --- texture pages -----------------------------------------------------------------------
+    def add_texture(self, image: bytes, width: int, height: int, gx_format: int, template_page: int) -> int:
+        """Append a texture page (palette-free); returns its page number.
+
+        The descriptor copies ``template_page``'s (sampler fields) with the new size and format. The new
+        descriptor pushes the image data 0x20 bytes down, so every existing image / palette offset (they
+        count from bank +0x20) moves with it; the image goes 32-aligned after the existing data, inside
+        the texture section, and the container follows it."""
+        prefix = bytearray(self.prefix)
+        count = struct.unpack_from('>H', prefix, 0x20)[0]
+        table = 0x24
+        data_start = table + count * TEXTURE_DESCRIPTOR_SIZE
+        if not 0 <= template_page < count:
+            raise Layout2dError(f'template page {template_page} is not a page of this bank')
+        descriptors = [bytearray(prefix[table + i * TEXTURE_DESCRIPTOR_SIZE:table + (i + 1) * TEXTURE_DESCRIPTOR_SIZE])
+                       for i in range(count)]
+        for descriptor in descriptors:
+            for field in (0, 4):
+                value = _u32(descriptor, field)
+                if value:
+                    struct.pack_into('>I', descriptor, field, value + TEXTURE_DESCRIPTOR_SIZE)
+        data = bytes(prefix[data_start:])
+        new_start = data_start + TEXTURE_DESCRIPTOR_SIZE
+        data += bytes(-(new_start + len(data)) % 32)
+        at = new_start + len(data)
+        descriptor = bytearray(descriptors[template_page])
+        struct.pack_into('>IIHH', descriptor, 0, at - TEXTURE_OFFSET_BASE, 0, height, width)
+        descriptor[0x17] = gx_format
+        struct.pack_into('>H', descriptor, 0x18, 0)
+        descriptor[0x1A] = 0
+        data += bytes(image) + bytes(-(at + len(image)) % 32)
+        head = bytearray(prefix[:table])
+        struct.pack_into('>H', head, 0x20, count + 1)
+        self.prefix = bytes(head) + b''.join(bytes(d) for d in descriptors) + bytes(descriptor) + data
+        self.prefix = self.prefix[:4] + struct.pack('>I', len(self.prefix)) + self.prefix[8:]
+        return count
 
     # --- resource rows -----------------------------------------------------------------------
     def add_row(self, page: int, uv: tuple[float, float, float, float]) -> int:
