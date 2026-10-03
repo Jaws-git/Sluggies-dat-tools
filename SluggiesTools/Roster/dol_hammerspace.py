@@ -140,6 +140,14 @@ class DolHammerspace:
         self.image.add_section('data', DATA_BASE, bytes(self.data.blob))
         set_arena_low(self.image, self.arena_low)
 
+    def write(self, address: int, blob: bytes) -> None:
+        """Write to the DOL. Bytes inside our sections also go to their allocator buffer, which ``commit``
+        writes back: a plain image write there would be lost on the next commit."""
+        self.image.write(address, blob)
+        for space in (self.code, self.data):
+            if space.base <= address and address + len(blob) <= space.here:
+                space.write(address, blob)
+
     def summary(self) -> str:
         return (f'text 0x{TEXT_BASE:08X}-0x{self.code.here:08X} (0x{len(self.code.blob):X} of '
                 f'0x{TEXT_LIMIT - TEXT_BASE:X}), data 0x{DATA_BASE:08X}-0x{self.data.here:08X}, '

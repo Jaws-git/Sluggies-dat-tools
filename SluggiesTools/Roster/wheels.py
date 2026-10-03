@@ -467,15 +467,18 @@ def apply(ctx: steps.RosterContext) -> list[str]:
     address, count = table_location(ctx, 'selector')
     rows = [bytearray(ctx.dol.read(address + 8 * i, 8)) for i in range(count)]
     log: list[str] = []
+    # The ids step may have moved the tables into our DOL data section: write through the hammerspace.
+    hs = dol_hammerspace.DolHammerspace.open(ctx.dol) and dol_hammerspace.get(ctx)
+    write = hs.write if hs else ctx.dol.write
     if spares is not None:
         listed = spare_rows(rows, spares, log)
         has_at, _n = table_location(ctx, 'hasmodel')
         for cid in SPARE_IDS:
-            ctx.dol.write(has_at + cid, bytes([1 if cid in spares else 0]))
+            write(has_at + cid, bytes([1 if cid in spares else 0]))
         log.append('spare rows: ' + (', '.join(f'0x{c:02X} -> wheel 0x{rows[c][1]:02X} swatch {rows[c][7]}'
                                                for c in listed) or 'none selectable'))
     for cid, row in enumerate(rows):
-        ctx.dol.write(address + 8 * cid, bytes(row))
+        write(address + 8 * cid, bytes(row))
 
     members = wheel_members(rows)
     largest = max(len(m) for m in members.values())

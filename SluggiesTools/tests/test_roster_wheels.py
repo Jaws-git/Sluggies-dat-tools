@@ -101,6 +101,7 @@ class LimitTests(unittest.TestCase):
         hs.commit()
         ctx = context(config, image)
         ctx.state.update(state)
+        ctx.state['hammerspace'] = hs        # as in the runner: one object for the whole run, opened before
         log = wheels.apply(ctx)
         selector, rows = ctx.state['tables']['selector']
         self.assertEqual(rows, ids.ROWS)
