@@ -28,6 +28,7 @@ STEP_MODULES = (
     'ids',
     'wheels',
     'icons',
+    'grid',
 )
 
 

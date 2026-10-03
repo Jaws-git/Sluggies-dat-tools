@@ -459,6 +459,19 @@ def install_reorder(image: dolfile.DolImage, hs: dol_hammerspace.DolHammerspace,
 # Step
 # --------------------------------------------------------------------------
 
+def has_ten_members(image: dolfile.DolImage) -> bool:
+    """Whether the 10-member code (plan 4d) is in: both member-list caps are 10."""
+    return all(image.u32(address) & 0xFFFF == MEMBERS for address in CAP_SITES)
+
+
+def lift_to_ten(ctx: steps.RosterContext) -> list[str]:
+    """Plan 4d: the 10-member code in the DOL and the popup frames in the layout."""
+    hs = dol_hammerspace.get(ctx)
+    log = ten_member_code(ctx.dol, hs)
+    hs.commit()
+    return log + layout_file.get(ctx).update(lambda _lang, data: popup_layout(data))
+
+
 @steps.register('wheels')
 def apply(ctx: steps.RosterContext) -> list[str]:
     spares = parse_wheels(ctx.config)
@@ -488,10 +501,7 @@ def apply(ctx: steps.RosterContext) -> list[str]:
             f'species 0x{s:02X}: ' + ' '.join(f'0x{c:02X}' for c in m) for s, m in full.items()))
     big = ', '.join(f'species 0x{s:02X} ({len(m)})' for s, m in sorted(members.items()) if len(m) > STOCK_CAP)
     if largest > STOCK_CAP + 1:
-        hs = dol_hammerspace.get(ctx)
-        log += ten_member_code(ctx.dol, hs)
-        hs.commit()
-        log += layout_file.get(ctx).update(lambda _lang, data: popup_layout(data))
+        log += lift_to_ten(ctx)
         log.append(f'wheels of up to {MEMBERS} members: {big}')
     elif largest == STOCK_CAP + 1:
         log += set_caps(ctx.dol, STOCK_CAP + 1)

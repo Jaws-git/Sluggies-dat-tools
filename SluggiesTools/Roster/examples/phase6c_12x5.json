@@ -1,0 +1,142 @@
+{
+ "version": 1,
+ "comment": "Phase 6c/6d gate: the Phase 5 gate on a 12x5 grid with 8 new squares (Black/White Yoshi, green/blue Mario, the four other unused characters, purple and orange Yoshi), 11 empty cells.",
+ "ids": [
+  {
+   "id": "0x66",
+   "template": "0x06",
+   "swatch": "purple",
+   "icon": {
+    "side": "black_yoshi_side.png",
+    "front": "black_yoshi_front.png"
+   }
+  },
+  {
+   "id": "0x67",
+   "template": "0x06",
+   "swatch": "orange"
+  },
+  {
+   "id": "0x68",
+   "template": "0x00",
+   "swatch": "blue"
+  },
+  {
+   "id": "0x80",
+   "template": "0x00",
+   "swatch": "green",
+   "icon": {
+    "side": "white_yoshi_side.png",
+    "front": "white_yoshi_front.png"
+   }
+  }
+ ],
+ "wheels": [
+  {
+   "id": "0x47",
+   "wheel": "0x06",
+   "swatch": "black",
+   "comment": "Black Yoshi",
+   "icon": {
+    "side": "black_yoshi_side.png",
+    "front": "black_yoshi_front.png"
+   }
+  },
+  {
+   "id": "0x48",
+   "wheel": "0x06",
+   "swatch": "white",
+   "comment": "White Yoshi",
+   "icon": {
+    "side": "white_yoshi_side.png",
+    "front": "white_yoshi_front.png"
+   }
+  },
+  {
+   "id": "0x49",
+   "wheel": "0x0D",
+   "swatch": "black",
+   "comment": "Black Toad",
+   "icon": {
+    "side": "black_toad_side.png",
+    "front": "black_toad_front.png"
+   }
+  },
+  {
+   "id": "0x4A",
+   "wheel": "0x15",
+   "swatch": "black",
+   "comment": "Black Pianta",
+   "icon": {
+    "side": "black_pianta_side.png",
+    "front": "black_pianta_front.png"
+   }
+  },
+  {
+   "id": "0x4B",
+   "wheel": "0x3A",
+   "swatch": "black",
+   "comment": "Black Kritter",
+   "icon": {
+    "side": "black_kritter_side.png",
+    "front": "black_kritter_front.png"
+   }
+  },
+  {
+   "id": "0x4C",
+   "wheel": "0x0C",
+   "swatch": "black",
+   "comment": "Black Koopa",
+   "icon": {
+    "side": "black_koopa_side.png",
+    "front": "black_koopa_front.png"
+   }
+  }
+ ],
+ "wheel_order": [
+  [
+   "0x06",
+   "0x67",
+   "0x66"
+  ],
+  [
+   "0x00",
+   "0x80",
+   "0x68"
+  ]
+ ],
+ "grid": {
+  "shape": [
+   12,
+   5
+  ],
+  "squares": [
+   [
+    "0x47",
+    "0x48"
+   ],
+   [
+    "0x80",
+    "0x68"
+   ],
+   [
+    "0x49"
+   ],
+   [
+    "0x4A"
+   ],
+   [
+    "0x4B"
+   ],
+   [
+    "0x4C"
+   ],
+   [
+    "0x66"
+   ],
+   [
+    "0x67"
+   ]
+  ]
+ }
+}
