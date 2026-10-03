@@ -340,6 +340,11 @@ def apply(ctx: steps.RosterContext, encode=encode_atlases) -> list[str]:
            f'{len(entries)} icons (' + ', '.join(f'0x{e.char_id:02X}' for e in entries) + ')']
     log += retire_hooks(ctx.dol)
     own = [e for e in entries if e.new_id]
+    # Development switch (bisecting a Dolphin issue): "icon_debug": {"dol_side": false} keeps the new IDs' keys
+    # in the bank but leaves the portrait alias and the resolver branch stock.
+    if own and not (ctx.config.get('icon_debug') or {}).get('dol_side', True):
+        log.append('icon_debug: new-ID portrait alias and resolver branch left stock (keys stay in the bank)')
+        own = []
     if own:
         portrait_of = ctx.state.get('portrait_of')
         if portrait_of is None:
