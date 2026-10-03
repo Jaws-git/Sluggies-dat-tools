@@ -25,3 +25,13 @@ Sluggers Characters Beta tool's `scripts/fonts`).
 - Copyright 2020 The Open Sans Project Authors (https://github.com/googlefonts/opensans)
 - License: SIL Open Font License, version 1.1; the full text is in
   `SluggiesTools/Roster/fonts/OpenSans-OFL.txt`
+
+## DearPyGui
+
+The tools depend on DearPyGui, a Dear ImGui-based GUI framework, for the
+graphical wrapper around the export/patch pipeline. It is installed from
+PyPI (pinned in `SluggiesTools/_build/uv.lock`) and bundled into the portable
+release by PyInstaller.
+
+- Project: https://github.com/hoffstadt/DearPyGui
+- License: MIT

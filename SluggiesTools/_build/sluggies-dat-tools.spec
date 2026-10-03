@@ -2,14 +2,20 @@
 
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 
 ROOT = Path(SPECPATH).resolve().parents[1]
 
+# DearPyGui ships no PyInstaller hook: collect its extension module
+# (dearpygui._dearpygui) and its bundled vcruntime140_1.dll explicitly,
+# plus all submodules of the pure-Python API layer.
+dearpygui_datas, dearpygui_binaries, dearpygui_hiddenimports = collect_all("dearpygui")
+
 hiddenimports = (
     collect_submodules("numpy")
     + collect_submodules("PIL")
+    + dearpygui_hiddenimports
 )
 
 a = Analysis(
@@ -21,8 +27,8 @@ a = Analysis(
         str(ROOT / "SluggiesTools" / "Hammerspace"),
         str(ROOT / "SluggiesTools" / "InplacePatcher"),
     ],
-    binaries=[],
-    datas=[],
+    binaries=dearpygui_binaries,
+    datas=dearpygui_datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},

@@ -31,6 +31,7 @@ And the helpful Sluggers community for always having an open ear and pointing me
 - Python 3.12 or newer https://www.python.org/downloads/ (source checkout only)
 - Numpy ``pip install numpy`` (source checkout only)
 - Pillow ``pip install Pillow`` (source checkout only)
+- DearPyGui ``pip install dearpygui`` (source checkout only; used by the GUI)
 - **wimgt** (source checkout only) — part of [Wiimms SZS Tools](https://szs.wiimm.de/download.html); used to convert textures between TPL and PNG. It is already bundled in the portable Windows release. No textures without this.
 - Blender 4.2 or newer https://www.blender.org/download/
 - Autism
@@ -68,7 +69,7 @@ All commands are to be used on the command line - enter "cmd" in file explorer's
 2) Try running the game to make sure everything is prepped correctly
 3) right click the Game -> properties -> Filesystem -> right click top node -> extract entire disc
 4) from the extracted disc data, copy both "dt_na.dat" and "main.dol" (and optionally fst.bin) to the folder \1_Input\
-5) cmd ```sluggies-dat-tools.exe --export --untangle``` (or, alternatively, just start the included batch file, option 1)
+5) cmd ```sluggies-dat-tools.exe --export --untangle``` (or, alternatively, just start the included batch file, option 1). Double-clicking `sluggies-dat-tools.exe` (or running `python start.py` without arguments) opens a GUI with the same actions; the console window stays open next to it and shows the live output.
 
 This will extract the entire content into a new folder \2_Output_Models\\...  
 It will contain all the player models, props and environment models. Everything is sorted into numbered and approximately named folders.

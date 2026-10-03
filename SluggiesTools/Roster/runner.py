@@ -7,6 +7,8 @@ the files in ``3_Output_Dat`` (the normal pipeline's output).
 * It first resets the roster to vanilla (``reset.py``, against ``1_Input``),
   so repeated runs never stack and no record of earlier runs is needed.
 * ``--remove`` only resets the roster to vanilla.
+* Game options (``GameOptions/``, menu [10]) that are on before the reset are
+  applied again afterwards.
 * ``--dry-run`` runs everything in memory and writes nothing.
 """
 
@@ -27,9 +29,11 @@ import slogger  # noqa: E402
 
 try:
     from ..Dol import dolfile
+    from ..GameOptions import game_options
     from . import datfile, reset, steps
 except ImportError:
     from Dol import dolfile
+    from GameOptions import game_options
     import datfile
     import reset
     import steps
@@ -111,6 +115,7 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
     with open(vanilla_path, 'rb') as f:
         vanilla = f.read()
     dat = datfile.DatFile(dat_path) if os.path.isfile(dat_path) else None
+    options = game_options.detect(dolfile.DolImage(current))
     try:
         dol_bytes, log = reset.reset(current, vanilla, dat)
     except reset.ResetError as exc:
@@ -125,6 +130,10 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
             lines = step.apply(ctx) or []
             result['steps'].append({'key': step.key, 'title': step.title, 'log': list(lines)})
             log += [f'[{step.key}] {line}' for line in lines]
+        dol_bytes = image.to_bytes()
+    if options:
+        image = dolfile.DolImage(dol_bytes)
+        log += [f'[game options] {line}' for line in game_options.apply(image, options)]
         dol_bytes = image.to_bytes()
     result['dol_sha1'] = hashlib.sha1(dol_bytes).hexdigest()
 

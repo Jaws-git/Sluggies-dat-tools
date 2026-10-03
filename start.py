@@ -100,6 +100,13 @@ def run_bundled_script_mode():
     return True
 
 
+def run_gui():
+    """Open the Dear PyGui front end; each button re-invokes this entry point."""
+    from SluggiesTools.gui import run_gui as _run_gui
+    prefix = [sys.executable] if getattr(sys, 'frozen', False) else [sys.executable, os.path.abspath(__file__)]
+    _run_gui(prefix, ROOT_DIR)
+
+
 def run_hammerspace_helper():
     subprocess.run(python_script_command(HS_HELPER_SCRIPT), cwd=HS_DIR, check=True)
 
@@ -496,6 +503,7 @@ def parse_args():
         description='Central dispatcher for Sluggies patching and export tasks.',
         epilog=(
             'Examples:\n'
+            '  python start.py            (opens the GUI; same as --gui)\n'
             '  python start.py --export\n'
             '  python start.py --export --debug --notex --untangle\n'
             '  python start.py --export --untangle\n'
@@ -517,6 +525,7 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--gui', action='store_true', help='open the graphical front end (also the default when no arguments are given)')
     mode.add_argument('--patch', nargs='+', metavar='FILENAME', help='patch one or more .sluggie and/or .png files')
     mode.add_argument('--unpatch', nargs='+', metavar='FILENAME', help='restore original data for one or more .sluggies files')
     mode.add_argument('-hs', '--hammerspace', action='store_true', help='change available memory space in outputdt_na.dat')
@@ -559,9 +568,12 @@ def parse_args():
         parser.error('--config and --remove can only be used with --roster.')
     if args.roster and not (args.config or args.remove):
         parser.error('--roster needs --config PATH (a roster configuration) or --remove.')
-    if not any([args.patch, args.unpatch, args.hammerspace, args.resplit_unused, args.export, args.export_icons, args.patch_icons is not None, args.roster]):
-        parser.print_help()
-        sys.exit(0)
+    if not any([args.gui, args.patch, args.unpatch, args.hammerspace, args.resplit_unused, args.export, args.export_icons, args.patch_icons is not None, args.roster]):
+        if len(sys.argv) == 1:
+            args.gui = True
+        else:
+            parser.print_help()
+            sys.exit(0)
 
     return args
 
@@ -615,7 +627,9 @@ def main() -> int:
         return code
 
     try:
-        if args.hammerspace:
+        if args.gui:
+            run_gui()
+        elif args.hammerspace:
             run_hammerspace_helper()
         elif args.resplit_unused:
             run_resplit_unused()
