@@ -139,6 +139,48 @@ class LedgerTests(unittest.TestCase):
                 self.assertEqual(f.read(), bytes(0x100))
             self.assertEqual(ledger.DatFile(path).undo(records), 'already undone')
 
+    def test_run_record_and_undo_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'dt_na.dat')
+            with open(path, 'wb') as f:
+                f.write(bytes(range(256)))
+            dat = ledger.DatFile(path)
+            dat.write(0x10, b'AAAA')                      # step 1
+            one = dat.take_raw()
+            dat.write(0x12, b'BBBB')                      # step 2 overwrites part of step 1
+            dat.write(0x10, bytes(range(0x10, 0x12)))     # ... and puts two bytes back
+            record = dat.run_record([one, dat.take_raw()])
+            started = b''.join(ledger.unpack(old) for _o, old, _sha, _n in sorted(record))
+            self.assertEqual((record[0][0], started), (0x10, bytes(range(0x10, 0x16))))   # the run's starting bytes
+            dat.flush()
+            self.assertEqual(ledger.DatFile(path).read(0x10, 6), b'\x10\x11BBBB')
+            dat = ledger.DatFile(path)
+            self.assertEqual(dat.undo_run(record), 'undone')
+            dat.flush()
+            with open(path, 'rb') as f:
+                self.assertEqual(f.read(), bytes(range(256)))
+            self.assertEqual(ledger.DatFile(path).undo_run(record), 'already undone')
+            dat = ledger.DatFile(path)
+            dat.write(0x12, b'XX')
+            dat.flush()
+            with self.assertRaisesRegex(ledger.LedgerError, 'changed since'):
+                ledger.DatFile(path).undo_run(record)
+
+    def test_records_are_packed_and_hex_still_reads(self):
+        self.assertEqual(ledger.unpack(ledger.pack(bytes(1 << 20))), bytes(1 << 20))
+        self.assertLess(len(ledger.pack(bytes(1 << 20))), 2000)          # zero runs cost next to nothing
+        self.assertEqual(ledger.unpack('00ff'), b'\0\xff')              # older reports and DOL diffs
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'dt_na.dat')
+            with open(path, 'wb') as f:
+                f.write(bytes(0x100))
+            dat = ledger.DatFile(path)
+            dat.write(0x10, b'abcd')
+            dat.flush()
+            hex_records = [[0x10, bytes(4).hex(), b'abcd'.hex()]]       # a record as older reports wrote it
+            dat = ledger.DatFile(path)
+            self.assertEqual(dat.undo(hex_records), 'undone')
+
 
 class RunnerTests(unittest.TestCase):
     def setUp(self):
@@ -177,6 +219,15 @@ class RunnerTests(unittest.TestCase):
             f.write(self.original)
         report = runner.run(self.tmp, self.config)
         self.assertIn('already undone', ' '.join(report['log']))
+
+    def test_cut_off_report_is_explained(self):
+        runner.run(self.tmp, self.config)
+        path = os.path.join(self.tmp, runner.REPORT_NAME)
+        with open(path, 'r+b') as f:
+            f.truncate(os.path.getsize(path) // 2)
+        with self.assertRaisesRegex(runner.RosterDevError, 'interrupted run'):
+            runner.run(self.tmp, self.config)
+        self.assertFalse(os.path.exists(path + '.tmp'))
 
     def test_missing_dol_is_reported(self):
         os.remove(self.dol_path)

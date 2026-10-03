@@ -69,8 +69,14 @@ def _display_path(path: str) -> str:
 def _read_report(path: str) -> dict | None:
     if not os.path.isfile(path):
         return None
-    with open(path, encoding='utf-8') as f:
-        report = json.load(f)
+    try:
+        with open(path, encoding='utf-8') as f:
+            report = json.load(f)
+    except ValueError as exc:
+        raise RosterDevError(
+            f'{path} is unreadable ({exc}), probably cut off by an interrupted run, so the previous injection '
+            'cannot be taken out. Restore 3_Output_Dat from the normal pipeline (or clean copies of main.dol, '
+            'dt_na.dat and fst.bin), delete that report.json, then run the roster expansion again.') from exc
     if report.get('version') != REPORT_VERSION:
         raise RosterDevError(f'{path}: unknown report version {report.get("version")!r}')
     return report
@@ -85,11 +91,14 @@ def remove_previous(report: dict | None, dol: bytearray, dat: ledger.DatFile | N
         return []
     steps_ = report['steps']
     dol_done = ledger.run_already_undone(bytes(dol), [s['dol'] for s in steps_])
+    dat_run = report.get('dat_run')                       # one record for the run (older reports: per step)
     dat_lists = [s['dat'] for s in steps_ if s.get('dat')]
-    if dat_lists and dat is None:
+    if (dat_run or dat_lists) and dat is None:
         raise RosterDevError('the previous injection changed dt_na.dat, which is missing now')
-    dat_done = bool(dat_lists) and dat.run_already_undone(dat_lists)
     log = []
+    if dat_run:
+        log.append(f'removed previous dt_na.dat writes: {dat.undo_run(dat_run)}')
+    dat_done = bool(dat_lists) and dat.run_already_undone(dat_lists)
     for step in reversed(steps_):
         outcome = 'already undone' if dol_done else ledger.undo_diff(dol, step['dol'])
         if step.get('dat'):
@@ -142,20 +151,30 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
         built = steps.implemented()
         if not built:
             log.append('no roster steps implemented yet')
+        dat_writes = []
         for step in built:
             before = image.to_bytes()
             lines = step.apply(ctx) or []
+            writes = dat.take_raw() if dat is not None else []
+            dat_writes.append(writes)
             entry = {'key': step.key, 'phase': step.phase, 'title': step.title, 'log': list(lines),
-                     'dol': ledger.diff_bytes(before, image.to_bytes()),
-                     'dat': dat.take_records() if dat is not None else []}
+                     'dol': ledger.diff_bytes(before, image.to_bytes()), 'dat_writes': len(writes)}
             report['steps'].append(entry)
             log += [f'[{step.key}] {line}' for line in lines]
+        report['dat_run'] = dat.run_record(dat_writes) if dat is not None else []
         report['not_built'] = [f'Phase {p}: {t}' for _k, p, t in steps.not_built()]
         dol_bytes = bytearray(image.to_bytes())
     report['log'] = log
     report['dol_sha1'] = hashlib.sha1(dol_bytes).hexdigest()
 
     if not dry_run:
+        # The new report is complete on disk before any output file changes, and swapped in last.
+        os.makedirs(os.path.dirname(report_path), exist_ok=True)
+        report_tmp = report_path + '.tmp'
+        if not remove_only:
+            with open(report_tmp, 'w', encoding='utf-8') as f:
+                json.dump(report, f, indent=1)
+                f.write('\n')
         tmp = dol_path + '.roster_tmp'
         with open(tmp, 'wb') as f:
             f.write(dol_bytes)
@@ -165,14 +184,11 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
             if grown:
                 log.append(patch_fst(output_dir, dat.size))
         os.replace(tmp, dol_path)
-        os.makedirs(os.path.dirname(report_path), exist_ok=True)
         if remove_only:
             if os.path.isfile(report_path):
                 os.remove(report_path)
         else:
-            with open(report_path, 'w', encoding='utf-8') as f:
-                json.dump(report, f, indent=1)
-                f.write('\n')
+            os.replace(report_tmp, report_path)
     return report
 
 

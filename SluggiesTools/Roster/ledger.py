@@ -7,15 +7,19 @@ can take them back out before it runs again, newest step first:
   before and after one step (the DOL is about 7 MB, so this is cheap), with
   any appended tail checked by hash;
 * ``DatFile``: buffered writes to ``dt_na.dat`` that remember the bytes they
-  replace (the DAT is far too large to diff).
+  replace (the DAT is far too large to diff). The report stores them
+  zlib-compressed (``pack``): a run moves several MB, mostly into zeroed
+  hammerspace, which hex blew up to a 75 MB report.
 
 Undo refuses bytes that changed since the step wrote them (another tool
 wrote over them), and reports a record whose bytes are all back to the old
 values as already undone (the file was regenerated, e.g. by menu [1]).
 """
 
+import base64
 import hashlib
 import os
+import zlib
 
 # Changed bytes closer than this are kept in one range.
 MERGE_GAP = 16
@@ -85,6 +89,20 @@ def undo_diff(data: bytearray, diff: dict, what: str = 'main.dol') -> str:
                       'restore it from the normal pipeline before running the roster expansion again')
 
 
+def pack(data: bytes) -> str:
+    """Bytes for a report: ``z:`` + base64 of the zlib stream."""
+    return 'z:' + base64.b64encode(zlib.compress(bytes(data), 6)).decode('ascii')
+
+
+def unpack(text) -> bytes:
+    """``pack``'s inverse; plain hex (DOL diffs, older reports) and raw bytes pass through."""
+    if isinstance(text, (bytes, bytearray)):
+        return bytes(text)
+    if text.startswith('z:'):
+        return zlib.decompress(base64.b64decode(text[2:]))
+    return bytes.fromhex(text)
+
+
 def pre_run_ranges(range_lists) -> list[tuple[int, bytes]]:
     """The bytes a whole run started from: ``range_lists`` are the steps' ``[offset, old hex, new hex]``
     lists in run order; where steps overlap, the first step's old bytes win. Returns disjoint ranges."""
@@ -92,7 +110,7 @@ def pre_run_ranges(range_lists) -> list[tuple[int, bytes]]:
     out = []
     for ranges in range_lists:
         for offset, old, _new in ranges:
-            old = bytes.fromhex(old)
+            old = unpack(old)
             start, end = offset, offset + len(old)
             cursor = start
             for lo, hi in covered:
@@ -137,7 +155,7 @@ class DatFile:
         self.disk_size = os.path.getsize(path)
         self.size = self.disk_size                   # grows with ``grow``; the new bytes read as zeros
         self.pending: list[tuple[int, bytes]] = []   # in write order; later writes win
-        self.records: list[list] = []                # [offset, old hex, new hex] in write order
+        self.records: list[list] = []                # [offset, old bytes, new bytes] in write order
 
     def read(self, offset: int, size: int) -> bytes:
         if offset < 0 or offset + size > self.size:
@@ -164,15 +182,15 @@ class DatFile:
         if self.read(offset, len(data)) == data:
             return
         lo, hi = offset, offset + len(data)
-        merged = [r for r in self.records if r[0] < hi and lo < r[0] + len(r[1]) // 2]
+        merged = [r for r in self.records if r[0] < hi and lo < r[0] + len(r[1])]
         for r in merged:
-            lo, hi = min(lo, r[0]), max(hi, r[0] + len(r[1]) // 2)
+            lo, hi = min(lo, r[0]), max(hi, r[0] + len(r[1]))
         old = bytearray(self.read(lo, hi - lo))
         for r in merged:                       # back to the bytes before this step
-            old[r[0] - lo:r[0] - lo + len(r[1]) // 2] = bytes.fromhex(r[1])
+            old[r[0] - lo:r[0] - lo + len(r[1])] = r[1]
         self.pending.append((offset, data))
         new = self.read(lo, hi - lo)
-        self.records = [r for r in self.records if r not in merged] + [[lo, old.hex(), new.hex()]]
+        self.records = [r for r in self.records if r not in merged] + [[lo, bytes(old), new]]
 
     def grow(self, size: int) -> None:
         """Make the file at least ``size`` bytes long (zero-filled at ``flush``). Growth is never undone."""
@@ -200,9 +218,40 @@ class DatFile:
                 f.write(blob)
         self.pending.clear()
 
-    def take_records(self) -> list[list]:
+    def take_raw(self) -> list[list]:
+        """This step's records as ``[offset, old bytes, new bytes]``; starts the next step's."""
         records, self.records = self.records, []
         return records
+
+    def take_records(self) -> list[list]:
+        """This step's records packed for a report: ``[offset, packed old, packed new]`` (see ``undo``)."""
+        return [[offset, pack(old), pack(new)] for offset, old, new in self.take_raw()]
+
+    def run_record(self, raw_lists: list[list]) -> list[list]:
+        """One record for a whole run (``raw_lists``: each step's ``take_raw`` in run order):
+        ``[offset, packed bytes the run started from, sha1 of the bytes it left, length]`` per disjoint range.
+
+        Undo only ever takes a whole run out, so the report needs neither the intermediate states nor the
+        written bytes themselves: a step that moves a grown file records the previous copy as its old
+        bytes, and the select layout's three copies made that several MB per step."""
+        out = []
+        for offset, original in pre_run_ranges(raw_lists):
+            final = self.read_padded(offset, len(original))
+            out.append([offset, pack(original), hashlib.sha1(final).hexdigest(), len(original)])
+        return out
+
+    def undo_run(self, records: list[list]) -> str:
+        """Take a whole run out (``run_record``'s records). Undo writes are not recorded."""
+        if not records:
+            return 'undone'
+        records = [(offset, unpack(original), sha1, length) for offset, original, sha1, length in records]
+        if all(self.read_padded(offset, length) == original for offset, original, _s, length in records):
+            return 'already undone'
+        for offset, _original, sha1, length in records:
+            if hashlib.sha1(self.read_padded(offset, length)).hexdigest() != sha1:
+                raise LedgerError(f'{self.path}: 0x{offset:X} changed since the roster expansion wrote it')
+        self.pending += [(offset, original) for offset, original, _s, _n in records]
+        return 'undone'
 
     def run_already_undone(self, record_lists: list[list]) -> bool:
         """True when every byte a whole run wrote is back to what the run started from (see the DOL version)."""
@@ -213,12 +262,13 @@ class DatFile:
         """Take back one step's ``records``, newest write first. Undo writes are not recorded."""
         if not records:
             return 'undone'
+        records = [(o, unpack(old), unpack(new)) for o, old, new in records]
         # Bytes past the end read as zeros: a regenerated (shorter) file holds none of our appended bytes.
-        if all(self.read_padded(o, len(old) // 2) == bytes.fromhex(old) for o, old, _n in records) and \
-                not all(self.read_padded(o, len(n) // 2) == bytes.fromhex(n) for o, _old, n in records):
+        if all(self.read_padded(o, len(old)) == old for o, old, _n in records) and \
+                not all(self.read_padded(o, len(n)) == n for o, _old, n in records):
             return 'already undone'
         for offset, old, new in reversed(records):
-            if self.read_padded(offset, len(new) // 2) != bytes.fromhex(new):
+            if self.read_padded(offset, len(new)) != new:
                 raise LedgerError(f'{self.path}: 0x{offset:X} changed since the roster step wrote it')
-            self.pending.append((offset, bytes.fromhex(old)))
+            self.pending.append((offset, old))
         return 'undone'
