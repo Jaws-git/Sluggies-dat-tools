@@ -67,7 +67,8 @@ def undo_diff(data: bytearray, diff: dict, what: str = 'main.dol') -> str:
         return 'nothing to undo'
     ranges = [(a, bytes.fromhex(o), bytes.fromhex(n)) for a, o, n in diff['ranges']]
     ours = all(data[a:a + len(n)] == n for a, _o, n in ranges)
-    theirs = all(data[a:a + len(o)] == o for a, o, _n in ranges)
+    # A range past the end lay in a section an earlier step appended: a regenerated file lacks both.
+    theirs = all(data[a:a + len(o)] == o or a >= len(data) for a, o, _n in ranges)
     tail_ok = len(data) == diff['length_after'] and (
         diff['tail_sha1'] is None or hashlib.sha1(data[diff['length_before']:]).hexdigest() == diff['tail_sha1'])
     if ours and tail_ok:
@@ -77,7 +78,7 @@ def undo_diff(data: bytearray, diff: dict, what: str = 'main.dol') -> str:
         if len(data) < diff['length_before']:
             raise LedgerError(f'{what}: shorter than before the step')
         return 'undone'
-    if theirs and len(data) == diff['length_before']:
+    if theirs and len(data) <= diff['length_before']:
         return 'already undone'
     changed = [f'0x{a:X}' for a, _o, n in ranges if data[a:a + len(n)] != n][:8]
     raise LedgerError(f'{what} changed since the roster step wrote it (offsets {", ".join(changed) or "tail"}); '
@@ -89,16 +90,24 @@ class DatFile:
 
     def __init__(self, path: str):
         self.path = path
-        self.size = os.path.getsize(path)
+        self.disk_size = os.path.getsize(path)
+        self.size = self.disk_size                   # grows with ``grow``; the new bytes read as zeros
         self.pending: list[tuple[int, bytes]] = []   # in write order; later writes win
         self.records: list[list] = []                # [offset, old hex, new hex] in write order
 
     def read(self, offset: int, size: int) -> bytes:
         if offset < 0 or offset + size > self.size:
             raise LedgerError(f'{self.path}: read 0x{offset:X}+0x{size:X} past the end (0x{self.size:X})')
-        with open(self.path, 'rb') as f:
-            f.seek(offset)
-            data = bytearray(f.read(size))
+        return self.read_padded(offset, size)
+
+    def read_padded(self, offset: int, size: int) -> bytes:
+        """Like ``read``, but bytes past the end read as zeros."""
+        data = bytearray(size)
+        if offset < self.disk_size:
+            with open(self.path, 'rb') as f:
+                f.seek(offset)
+                blob = f.read(min(size, self.disk_size - offset))
+            data[:len(blob)] = blob
         for at, blob in self.pending:
             lo, hi = max(at, offset), min(at + len(blob), offset + size)
             if lo < hi:
@@ -121,7 +130,24 @@ class DatFile:
         new = self.read(lo, hi - lo)
         self.records = [r for r in self.records if r not in merged] + [[lo, old.hex(), new.hex()]]
 
+    def grow(self, size: int) -> None:
+        """Make the file at least ``size`` bytes long (zero-filled at ``flush``). Growth is never undone."""
+        self.size = max(self.size, size)
+
+    @property
+    def grown(self) -> bool:
+        return self.size > self.disk_size
+
     def flush(self) -> None:
+        if self.size > self.disk_size:
+            with open(self.path, 'r+b') as f:
+                f.seek(self.disk_size)
+                left = self.size - self.disk_size
+                while left:
+                    step = min(left, 1 << 20)
+                    f.write(bytes(step))
+                    left -= step
+            self.disk_size = self.size
         if not self.pending:
             return
         with open(self.path, 'r+b') as f:
@@ -138,10 +164,12 @@ class DatFile:
         """Take back one step's ``records``, newest write first. Undo writes are not recorded."""
         if not records:
             return 'undone'
-        if all(self.read(o, len(old) // 2) == bytes.fromhex(old) for o, old, _n in records) and                 not all(self.read(o, len(n) // 2) == bytes.fromhex(n) for o, _old, n in records):
+        # Bytes past the end read as zeros: a regenerated (shorter) file holds none of our appended bytes.
+        if all(self.read_padded(o, len(old) // 2) == bytes.fromhex(old) for o, old, _n in records) and \
+                not all(self.read_padded(o, len(n) // 2) == bytes.fromhex(n) for o, _old, n in records):
             return 'already undone'
         for offset, old, new in reversed(records):
-            if self.read(offset, len(new) // 2) != bytes.fromhex(new):
+            if self.read_padded(offset, len(new) // 2) != bytes.fromhex(new):
                 raise LedgerError(f'{self.path}: 0x{offset:X} changed since the roster step wrote it')
             self.pending.append((offset, bytes.fromhex(old)))
         return 'undone'

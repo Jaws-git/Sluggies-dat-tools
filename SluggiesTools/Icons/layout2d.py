@@ -239,6 +239,119 @@ def grid_squares(data: bytes, element_index: int = CSS_GRID_ELEMENT) -> list[Spr
     return squares
 
 
+class Layout:
+    """An editable 2D layout bank (``parse_bank`` documents the format).
+
+    Everything before the container (header, texture descriptors, image and
+    palette data) and everything after the container endpoint is kept
+    verbatim, so the texture offsets never move. The container itself is
+    rebuilt by ``to_bytes``: the element table, the elements packed in index
+    order, then the resource section, with the container's resource offset
+    and endpoint recomputed. A parse followed by ``to_bytes`` gives back the
+    input byte for byte.
+
+    Elements and resource rows are plain byte strings, edited through the
+    helpers below (``node_blobs``/``set_nodes``, ``with_keys``, ``add_row``)
+    or replaced directly.
+    """
+
+    def __init__(self, data: bytes):
+        data = bytes(data)
+        bank = parse_bank(data)
+        container = bank.container_offset
+        descriptor = container + DESCRIPTOR_OFFSET
+        self.prefix = data[:container]
+        self.container_head = data[container:container + 8]
+        offsets = bank.element_offsets + (bank.resource_offset,)
+        if list(offsets) != sorted(offsets) or (bank.element_offsets and
+                                                bank.element_offsets[0] != descriptor + 8 + 4 * len(bank.element_offsets)):
+            raise Layout2dError('elements are not packed in index order after the element table')
+        self.elements: list[bytes] = []
+        for index, start in enumerate(bank.element_offsets):
+            length = _u32(data, start + 8)
+            if start + length != offsets[index + 1]:
+                raise Layout2dError(f'element 0x{index:X} does not end where the next one starts')
+            self.elements.append(data[start:start + length])
+        rows = resource_rows(data, bank)
+        count, length = struct.unpack_from('>II', data, bank.resource_offset)
+        if length != 8 + count * RESOURCE_ROW_SIZE:
+            raise Layout2dError('resource section has trailing bytes')
+        first = bank.resource_offset + 8
+        self.rows: list[bytes] = [data[first + i * RESOURCE_ROW_SIZE:first + (i + 1) * RESOURCE_ROW_SIZE]
+                                  for i in range(len(rows))]
+        self.tail = data[bank.endpoint:]
+
+    # --- elements ----------------------------------------------------------------------------
+    def node_blobs(self, index: int) -> list[bytes]:
+        """Element ``index``'s nodes (tracks) as blobs: u16 record count, u16 first record size, records."""
+        element = self.elements[index]
+        count = _u32(element, 4)
+        subs = list(struct.unpack_from(f'>{count}I', element, 0x0C)) + [len(element)]
+        return [element[subs[i]:subs[i + 1]] for i in range(1, count)]
+
+    def info_block(self, index: int) -> bytes:
+        element = self.elements[index]
+        count = _u32(element, 4)
+        subs = list(struct.unpack_from(f'>{count}I', element, 0x0C)) + [len(element)]
+        return element[subs[0]:subs[1]]
+
+    def set_nodes(self, index: int, nodes: list[bytes], info: bytes | None = None) -> None:
+        """Rebuild element ``index`` from node blobs; keeps its flags and (unless given) its info block."""
+        element = self.elements[index]
+        flags = element[:4]
+        info = self.info_block(index) if info is None else bytes(info)
+        head = 0x0C + 4 * (1 + len(nodes))
+        subs, cursor = [head], head + len(info)
+        for blob in nodes:
+            subs.append(cursor)
+            cursor += len(blob)
+        self.elements[index] = (flags + struct.pack('>II', len(subs), cursor) + struct.pack(f'>{len(subs)}I', *subs)
+                                + info + b''.join(bytes(b) for b in nodes))
+
+    def add_element(self, blob: bytes) -> int:
+        """Append an element; returns its index."""
+        self.elements.append(bytes(blob))
+        return len(self.elements) - 1
+
+    # --- resource rows -----------------------------------------------------------------------
+    def add_row(self, page: int, uv: tuple[float, float, float, float]) -> int:
+        """Append a resource row (texture page, four UV floats in file order); returns its index."""
+        self.rows.append(struct.pack('>HH4f', page, 0, *uv))
+        return len(self.rows) - 1
+
+    # --- write -------------------------------------------------------------------------------
+    def to_bytes(self) -> bytes:
+        count = len(self.elements)
+        table = 8 + 4 * count                            # element count + resource pointer + element pointers
+        pointers, cursor = [], table
+        for element in self.elements:
+            pointers.append(cursor)
+            cursor += len(element)
+        resource_rel = cursor                            # relative to the descriptor
+        resources = struct.pack('>II', len(self.rows), 8 + RESOURCE_ROW_SIZE * len(self.rows)) + b''.join(self.rows)
+        container = (self.container_head
+                     + struct.pack('>III', DESCRIPTOR_OFFSET, DESCRIPTOR_OFFSET + resource_rel,
+                                   DESCRIPTOR_OFFSET + resource_rel + len(resources))
+                     + struct.pack(f'>II{count}I', count, resource_rel, *pointers)
+                     + b''.join(self.elements) + resources)
+        return self.prefix + container + self.tail
+
+
+def with_keys(node: bytes, records: list[bytes]) -> bytes:
+    """A node blob with ``records`` appended (each marked as a following record)."""
+    count, first_size = struct.unpack_from('>HH', node, 0)
+    extra = []
+    for record in records:
+        record = bytearray(record)
+        if len(record) < 8 or len(record) % 4 or record[1] * 4 != len(record):
+            raise Layout2dError(f'bad key record of 0x{len(record):X} bytes')
+        record[0] = 0 if count == 0 and not extra else 1
+        extra.append(bytes(record))
+    if count == 0 and extra:
+        first_size = len(extra[0])
+    return struct.pack('>HH', count + len(extra), first_size) + node[4:] + b''.join(extra)
+
+
 def read_css_layout_route(dol_path: str = INPUT_DOL) -> dict[str, tuple[int, int]]:
     """Return ``{lang: (offset, length)}`` from the CSS layout's DOL record."""
     with open(dol_path, 'rb') as dol:

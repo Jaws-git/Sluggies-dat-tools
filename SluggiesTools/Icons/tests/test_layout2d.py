@@ -202,5 +202,53 @@ class DolRouteTests(unittest.TestCase):
                 layout2d.read_css_layout_route(path)
 
 
+class LayoutWriterTests(unittest.TestCase):
+    def setUp(self):
+        self.bank = make_bank([make_element([(1, 2, 0xFF)]), make_element([(3, 4, 0xFF), (5, 6, 0x00)]),
+                               make_element([(7, 8, 0xFF)])])
+
+    def test_round_trip(self):
+        lay = layout2d.Layout(self.bank)
+        self.assertEqual(lay.to_bytes(), self.bank)
+        for index in range(len(lay.elements)):
+            lay.set_nodes(index, lay.node_blobs(index))
+        self.assertEqual(lay.to_bytes(), self.bank)
+
+    def test_growing_an_element_moves_the_later_ones_and_the_resources(self):
+        lay = layout2d.Layout(self.bank)
+        nodes = lay.node_blobs(1)
+        nodes.append(make_track([make_sprite_record(True, 0, 50, 60)]))
+        lay.set_nodes(1, nodes)
+        row = lay.add_row(0x7C, (0.0, 0.5, 0.25, 1.0))
+        out = lay.to_bytes()
+        bank = layout2d.parse_bank(out)
+        self.assertEqual(len(out), len(self.bank) + 4 + 0x40 + layout2d.RESOURCE_ROW_SIZE)
+        self.assertEqual(out[-8:], self.bank[-8:])                    # the tail stays
+        squares = [layout2d.parse_sprite_key(t.records[0]) for t in layout2d.parse_element(out, bank, 1).tracks]
+        self.assertEqual([(s.x, s.y) for s in squares], [(3, 4), (5, 6), (50, 60)])
+        self.assertEqual(layout2d.parse_sprite_key(layout2d.parse_element(out, bank, 2).tracks[0].records[0]).x, 7)
+        self.assertEqual(layout2d.resource_rows(out, bank)[row], (0x7C, (0.0, 0.5, 0.25, 1.0)))
+        self.assertEqual(layout2d.Layout(out).to_bytes(), out)
+
+    def test_with_keys_appends_following_records(self):
+        lay = layout2d.Layout(self.bank)
+        node = lay.node_blobs(0)[0]
+        grown = layout2d.with_keys(node, [make_sprite_record(True, 20, 9, 9), make_hold_record(30)])
+        lay.set_nodes(0, [grown])
+        out = lay.to_bytes()
+        records = layout2d.parse_element(out, layout2d.parse_bank(out), 0).tracks[0].records
+        self.assertEqual(len(records), 5)
+        self.assertEqual([r[0] for r in records], [0, 1, 1, 1, 1])
+        self.assertEqual(struct.unpack_from('>H', records[3], 2)[0], 20)
+        with self.assertRaises(layout2d.Layout2dError):
+            layout2d.with_keys(node, [b'\x00\x05abc'])
+
+    def test_add_element(self):
+        lay = layout2d.Layout(self.bank)
+        index = lay.add_element(make_element([(11, 12, 0xFF)]))
+        out = lay.to_bytes()
+        self.assertEqual(layout2d.grid_squares(out, index)[0].x, 11)
+
+
 if __name__ == '__main__':
     unittest.main()

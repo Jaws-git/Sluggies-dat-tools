@@ -43,6 +43,8 @@ REPORT_NAME = os.path.join('roster_dev', 'report.json')
 USER_CONFIG = os.path.join(ROOT, '1_Input', 'roster.json')
 DEV_PRESET = os.path.join(_HERE, 'dev_preset.json')
 REPORT_VERSION = 1
+INPUT_FST = os.path.join(ROOT, '1_Input', 'fst.bin')
+FST_DAT_SIZE_OFFSET = 1 * 12 + 8       # dt_na.dat is FST entry 1; its size word (as HammerspaceHelper)
 
 
 class RosterDevError(RuntimeError):
@@ -91,6 +93,24 @@ def remove_previous(report: dict | None, dol: bytearray, dat: ledger.DatFile | N
     return log
 
 
+def patch_fst(output_dir: str, dat_size: int) -> str:
+    """Write the grown ``dt_na.dat`` size into the output ``fst.bin`` (copied from 1_Input first if missing)."""
+    fst = os.path.join(output_dir, 'fst.bin')
+    if not os.path.isfile(fst):
+        if not os.path.isfile(INPUT_FST):
+            return f'fst.bin not found: the disc file table still has the old dt_na.dat size (0x{dat_size:X} needed)'
+        with open(INPUT_FST, 'rb') as src, open(fst, 'wb') as dst:
+            dst.write(src.read())
+    with open(fst, 'r+b') as f:
+        f.seek(FST_DAT_SIZE_OFFSET)
+        old = int.from_bytes(f.read(4), 'big')
+        if old >= dat_size:
+            return f'fst.bin: dt_na.dat size 0x{old:X} already covers it'
+        f.seek(FST_DAT_SIZE_OFFSET)
+        f.write(dat_size.to_bytes(4, 'big'))
+    return f'fst.bin: dt_na.dat size 0x{old:X} -> 0x{dat_size:X}'
+
+
 def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_only: bool = False,
         dry_run: bool = False) -> dict:
     dol_path = os.path.join(output_dir, 'main.dol')
@@ -133,7 +153,10 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
         with open(tmp, 'wb') as f:
             f.write(dol_bytes)
         if dat is not None:
+            grown = dat.grown
             dat.flush()
+            if grown:
+                log.append(patch_fst(output_dir, dat.size))
         os.replace(tmp, dol_path)
         os.makedirs(os.path.dirname(report_path), exist_ok=True)
         if remove_only:
