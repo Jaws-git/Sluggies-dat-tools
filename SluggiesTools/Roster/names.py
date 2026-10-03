@@ -22,7 +22,7 @@ With at least one name:
   IDs 0x66 and up through as well;
 * the select screen's name plates (resource row ``id + 0x149`` of the select
   layout, 115x16 white text): a new texture page per language with one cell
-  per named character and one "-" cell, drawn with Open Sans ExtraBold
+  per distinct name and one "-" cell, drawn with Open Sans ExtraBold
   (``fonts/``, SIL OFL); rows for every new ID after the stock rows (an
   unnamed one shows the "-" cell); a named spare row's own row repointed to
   its cell; the four plate sites take ``row = stock rows + id - 0x66`` for
@@ -229,7 +229,7 @@ def plate_sites(image: dolfile.DolImage, hs: dol_hammerspace.DolHammerspace, fir
 # Name plates (select layout rows id + 0x149)
 # --------------------------------------------------------------------------
 
-def _font(size: int):
+def font(size: int):
     font = ImageFont.truetype(FONT, size)
     font.set_variation_by_axes([FONT_WEIGHT, 100])          # weight, width 100 (normal)
     return font
@@ -240,11 +240,11 @@ def plate_image(text: str):
     img = Image.new('RGBA', PLATE_CELL, (255, 255, 255, 0))
     draw = ImageDraw.Draw(img)
     size = FONT_SIZE
-    while size > FONT_MIN and draw.textbbox((0, 0), text, font=_font(size))[2] > PLATE_CELL[0] - 2:
+    while size > FONT_MIN and draw.textbbox((0, 0), text, font=font(size))[2] > PLATE_CELL[0] - 2:
         size -= 1
-    font = _font(size)
-    x0, _y0, x1, _y1 = draw.textbbox((0, 0), text, font=font)
-    draw.text(((PLATE_CELL[0] - (x1 - x0)) // 2 - x0, FONT_DY + (FONT_SIZE - size) // 2), text, font=font,
+    face = font(size)
+    x0, _y0, x1, _y1 = draw.textbbox((0, 0), text, font=face)
+    draw.text(((PLATE_CELL[0] - (x1 - x0)) // 2 - x0, FONT_DY + (FONT_SIZE - size) // 2), text, font=face,
               fill=(255, 255, 255, 255))
     return img
 
@@ -277,13 +277,13 @@ def plate_layout(data: bytes, names: dict[int, str], first_row: int) -> bytes:
     if len(lay.rows) != first_row:
         raise layout2d.Layout2dError(f'the select layout has {len(lay.rows)} rows, expected {first_row}')
     named = sorted(names)
-    texts = [UNNAMED] + [names[c] for c in named]
+    texts = list(dict.fromkeys([UNNAMED] + [names[c] for c in named]))     # one cell per distinct text
     width, height, at = plate_page(texts)
     page_img = Image.new('RGBA', (width, height), (255, 255, 255, 0))
     for text, xy in zip(texts, at):
         page_img.paste(plate_image(text), xy)
     page = lay.add_texture(rgb5a3(page_img), width, height, GX_RGB5A3, PLATE_TEMPLATE_PAGE)
-    cell = {c: at[1 + k] for k, c in enumerate(named)}
+    cell = {c: at[texts.index(names[c])] for c in named}
 
     def uv(xy):
         x, y = xy
@@ -319,7 +319,10 @@ def apply(ctx: steps.RosterContext) -> list[str]:
     log += plate_sites(ctx.dol, hs, first_row)
     hs.commit()
     log += files.update(lambda lang, data: plate_layout(data, {c: n[lang] for c, n in names.items()}, first_row))
-    log.append('names: ' + ', '.join(f'0x{c:02X} {n["en"]}' for c, n in sorted(names.items()))
+    by_name: dict[str, list[int]] = {}
+    for c, n in sorted(names.items()):
+        by_name.setdefault(n['en'], []).append(c)
+    log.append('names: ' + '; '.join(f'{ids.id_ranges(group)} {name}' for name, group in by_name.items())
                + f'; text entries to 0x{LAST_ID:X} (codes {CODE_ENTRIES[0]}/{CODE_ENTRIES[1]} -> '
                f'{LAST_ID + 1}/{LAST_ID + 2}); plates on rows {first_row}.. (new IDs), "-" for unnamed IDs')
     return log

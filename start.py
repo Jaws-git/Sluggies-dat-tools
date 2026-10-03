@@ -115,7 +115,7 @@ def run_roster_dev(config=None, remove=False, dry_run=False):
     """Development injector: apply (or only remove) the roster-expansion steps built so far."""
     cmd = python_script_command(ROSTER_DEV_SCRIPT)
     if config:
-        cmd += ['--config', config]
+        cmd += ['--config', os.path.abspath(config)]       # the injector runs in SluggiesTools/
     if remove:
         cmd.append('--remove')
     if dry_run:

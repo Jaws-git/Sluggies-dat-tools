@@ -1,0 +1,66 @@
+{
+ "version": 1,
+ "comment": "Preset 2: the stock roster plus the six unused characters on their families' wheels (Yoshi gets 8), with their icons from 1_Input/_Icons.",
+ "wheels": [
+  {
+   "id": "0x47",
+   "wheel": "0x06",
+   "swatch": "black",
+   "comment": "Black Yoshi",
+   "icon": {
+    "side": "black_yoshi_side.png",
+    "front": "black_yoshi_front.png"
+   }
+  },
+  {
+   "id": "0x48",
+   "wheel": "0x06",
+   "swatch": "white",
+   "comment": "White Yoshi",
+   "icon": {
+    "side": "white_yoshi_side.png",
+    "front": "white_yoshi_front.png"
+   }
+  },
+  {
+   "id": "0x49",
+   "wheel": "0x0D",
+   "swatch": "black",
+   "comment": "Black Toad",
+   "icon": {
+    "side": "black_toad_side.png",
+    "front": "black_toad_front.png"
+   }
+  },
+  {
+   "id": "0x4A",
+   "wheel": "0x15",
+   "swatch": "black",
+   "comment": "Black Pianta",
+   "icon": {
+    "side": "black_pianta_side.png",
+    "front": "black_pianta_front.png"
+   }
+  },
+  {
+   "id": "0x4B",
+   "wheel": "0x3A",
+   "swatch": "black",
+   "comment": "Black Kritter",
+   "icon": {
+    "side": "black_kritter_side.png",
+    "front": "black_kritter_front.png"
+   }
+  },
+  {
+   "id": "0x4C",
+   "wheel": "0x0C",
+   "swatch": "black",
+   "comment": "Black Koopa",
+   "icon": {
+    "side": "black_koopa_side.png",
+    "front": "black_koopa_front.png"
+   }
+  }
+ ]
+}

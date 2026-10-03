@@ -11,7 +11,10 @@ Config (``ids`` in the roster preset)::
   every per-ID table, so it has the template's model, animations, stats and
   voice until model assignment exists.
 * ``wheel``: whose colour wheel the new ID joins (default: the template). A
-  host without a wheel gets a new wheel group (0x0E and up).
+  host without a wheel gets a new wheel group (0x0E and up). ``null``: no
+  wheel at all, a square-only character (it must be on a new grid square,
+  plan Phase 6): it keeps the template's row with wheel group 0 and stays off
+  the roster's species lists, as the external tool's square characters do.
 * ``swatch``: the wheel swatch colour (name or 0-10); default: the template's.
 
 An empty ``ids`` list still moves every table (101 rows, nothing added): the
@@ -67,8 +70,23 @@ class IdConfigError(ValueError):
 class NewId:
     id: int
     template: int
-    wheel: int
+    wheel: int | None               # None: square-only (no wheel)
     swatch: int | None
+
+
+def id_ranges(values) -> str:
+    """``0x47-0x4C, 0x66`` for a set of IDs (log lines)."""
+    out, run = [], []
+    for v in sorted(set(values)):
+        if run and v == run[-1] + 1:
+            run.append(v)
+            continue
+        if run:
+            out.append(f'0x{run[0]:02X}' + (f'-0x{run[-1]:02X}' if len(run) > 1 else ''))
+        run = [v]
+    if run:
+        out.append(f'0x{run[0]:02X}' + (f'-0x{run[-1]:02X}' if len(run) > 1 else ''))
+    return ', '.join(out)
 
 
 def _number(value, what: str) -> int:
@@ -101,8 +119,15 @@ def parse_ids(config: dict) -> list[NewId]:
         template = _number(entry['template'], f'{where}.template')
         if not 0 <= template < PLAYER_END:
             raise IdConfigError(f'{where}: template 0x{template:02X} is not a stock player ID (0x00-0x4C)')
-        wheel = _number(entry.get('wheel', template), f'{where}.wheel')
-        if not (0 <= wheel < PLAYER_END or wheel in {i.id for i in out}):
+        if 'wheel' in entry and entry['wheel'] is None:
+            wheel = None
+            squares = [m for sq in ((config.get('grid') or {}).get('squares') or []) for m in sq]
+            if cid not in {_number(m, f'grid.squares') for m in squares}:
+                raise IdConfigError(f'{where}: 0x{cid:02X} has no wheel ("wheel": null), so it must be on a new '
+                                    'grid square (grid.squares)')
+        else:
+            wheel = _number(entry.get('wheel', template), f'{where}.wheel')
+        if wheel is not None and not (0 <= wheel < PLAYER_END or wheel in {i.id for i in out if i.wheel is not None}):
             raise IdConfigError(f'{where}: wheel 0x{wheel:02X} is neither a stock player ID nor an earlier new ID')
         swatch = entry.get('swatch')
         if isinstance(swatch, str) and swatch.lower() in SWATCHES:
@@ -135,6 +160,13 @@ def selector_rows(rows: list[bytearray], new: list[NewId]) -> tuple[list[bytearr
     def row_of(cid):
         return rows[cid] if cid < len(rows) else by_id[cid]
     for c in new:
+        if c.wheel is None:                               # square-only: the template's row, no wheel group
+            row = bytearray(rows[c.template])
+            row[0], row[3], row[6] = 0, 0, 1
+            if c.swatch is not None:
+                row[7] = c.swatch
+            by_id[c.id] = row
+            continue
         host = row_of(c.wheel)
         if host[0] == 0:
             host[0] = next_group
@@ -486,7 +518,7 @@ def apply_ids(image: dolfile.DolImage, hs: dol_hammerspace.DolHammerspace, new: 
     for c in new:
         dirmap[c.id] = c.template + MODEL_DIR_BASE
     dirmap_at = hs.data.put(struct.pack(f'>{ROWS}H', *dirmap), 4)
-    new_ids_list = hs.data.put(bytes(c.id for c in new) + bytes([STOCK_IDS]), 4)
+    new_ids_list = hs.data.put(bytes(c.id for c in new if c.wheel is not None) + bytes([STOCK_IDS]), 4)
     stats = inventory.table('stats')
     stats_blob = bytes(hs.data.blob[at['stats'] - hs.data.base:at['stats'] - hs.data.base + stats.header
                                     + ROWS * STATS_ROW])
@@ -509,8 +541,13 @@ def apply_ids(image: dolfile.DolImage, hs: dol_hammerspace.DolHammerspace, new: 
     hooks.chemistry(stats_rows, new_chem)
     hooks.select_chemistry(stats_rows, new_chem)
     hooks.charge_scales(at)
-    log.append('new IDs: ' + ', '.join(f'0x{c.id:02X} (template 0x{c.template:02X}, wheel 0x{c.wheel:02X})'
-                                         for c in new))
+    groups: dict[tuple, list[int]] = {}
+    for c in new:
+        groups.setdefault((c.template, c.wheel), []).append(c.id)
+    log.append(f'{len(new)} new IDs: ' + '; '.join(
+        f'{id_ranges(group)} (template 0x{template:02X}, '
+        + (f'wheel 0x{wheel:02X})' if wheel is not None else 'square only)')
+        for (template, wheel), group in groups.items()))
     return log
 
 

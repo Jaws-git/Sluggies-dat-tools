@@ -15,3 +15,13 @@ release build and verified against SHA-256
 `ac54b82806d5867d2d9f003df972164138ae4f7a7ab8f29d8397664f31c9e892`.
 Its original `gpl-2.0.txt`, documentation, support files, and runtime files are
 kept together under `tools/wiimms-szs-tools` in the Windows package.
+
+## Open Sans
+
+The roster expansion draws character name plates with Open Sans
+(`SluggiesTools/Roster/fonts/OpenSans.ttf`, the variable font, taken from the
+Sluggers Characters Beta tool's `scripts/fonts`).
+
+- Copyright 2020 The Open Sans Project Authors (https://github.com/googlefonts/opensans)
+- License: SIL Open Font License, version 1.1; the full text is in
+  `SluggiesTools/Roster/fonts/OpenSans-OFL.txt`

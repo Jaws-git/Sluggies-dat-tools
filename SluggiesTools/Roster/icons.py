@@ -58,14 +58,15 @@ import struct
 import tempfile
 from dataclasses import dataclass
 
-from PIL import Image
+import numpy as np
+from PIL import Image, ImageDraw
 
 try:
     from ..Dol import dolfile
     from ..Dol.ppc import Asm, one
     from ..Icons import install_runtime_hooks as hooks
     from . import dat_hammerspace as dhs
-    from . import dol_hammerspace, ids, steps
+    from . import dol_hammerspace, ids, names, steps
 except ImportError:
     from Dol import dolfile
     from Dol.ppc import Asm, one
@@ -73,6 +74,7 @@ except ImportError:
     import dat_hammerspace as dhs
     import dol_hammerspace
     import ids
+    import names
     import steps
 
 resources = hooks.resources
@@ -99,6 +101,8 @@ PAGE_MAX = 1024                              # GX texture limit
 PAGE_MIN = 8                                 # one CMPR tile
 ALIGN = 0x20
 LAYOUTS = ('packed', 'slots')
+PLACEHOLDER = 'placeholder'                  # "icon": "placeholder": the built-in "empty slot" portrait
+PLACEHOLDER_FONT_SIZE = 11
 # The icon pipeline's donors (icon_characters.json): the records the spare rows' keys copy by default.
 SPARE_DONORS = {0x47: 0x04, 0x48: 0x00, 0x49: 0x01, 0x4A: 0x02, 0x4B: 0x03, 0x4C: 0x05}
 RESOLVER_SITE, RESOLVER_STOCK = 0x80395E1C, 0x4080008C   # bge 0x80395EA8 (the Mii block) after cmpwi r24,0x4D
@@ -145,8 +149,10 @@ def parse_icons(config: dict, icon_dir: str | None = None, check_files: bool = T
                 listed.append((f'{key}[{n}]', key, entry))
     for where, key, entry in listed:
         icon = entry['icon']
+        if icon == PLACEHOLDER:
+            icon = {'side': PLACEHOLDER, 'front': PLACEHOLDER}
         if not isinstance(icon, dict):
-            raise IconConfigError(f'{where}.icon must be an object with "side" and "front"')
+            raise IconConfigError(f'{where}.icon must be "{PLACEHOLDER}" or an object with "side" and "front"')
         if key == 'wheels':
             cid = ids._number(entry.get('id'), f'{where}.id')
             if cid not in SPARE_DONORS:
@@ -166,6 +172,9 @@ def parse_icons(config: dict, icon_dir: str | None = None, check_files: bool = T
         paths = []
         for view in ('side', 'front'):
             name = icon.get(view)
+            if name == PLACEHOLDER:
+                paths.append(PLACEHOLDER)
+                continue
             if not isinstance(name, str) or not name or os.path.basename(name) != name:
                 raise IconConfigError(f'{where}.icon.{view} must be a plain PNG file name (in 1_Input/_Icons)')
             path = os.path.join(icon_dir, name)
@@ -363,10 +372,31 @@ def pack_page(portraits: list) -> Page:
     return Page(width, height, [at[image.tobytes()] for image in portraits], page)
 
 
+def placeholder_image():
+    """The built-in "empty slot" portrait (48x51): a dark grey tile with a light border and the words EMPTY / SLOT."""
+    img = Image.new('RGBA', (artwork.ICON_WIDTH, artwork.ICON_HEIGHT), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle((1, 2, artwork.ICON_WIDTH - 2, artwork.ICON_HEIGHT - 3), radius=7,
+                           fill=(64, 64, 72, 255), outline=(200, 200, 210, 255), width=2)
+    font = names.font(PLACEHOLDER_FONT_SIZE)
+    for word, y in (('EMPTY', 12), ('SLOT', 27)):
+        x0, _y0, x1, _y1 = draw.textbbox((0, 0), word, font=font)
+        draw.text(((artwork.ICON_WIDTH - (x1 - x0)) // 2 - x0, y - 3), word, font=font, fill=(255, 255, 255, 255))
+    pixels = np.array(img)                                  # alpha hardened, as the icon pipeline does
+    opaque = pixels[..., 3] >= 128
+    pixels[opaque, 3] = 255
+    pixels[~opaque] = 0
+    return Image.fromarray(pixels, 'RGBA')
+
+
+def _portrait(path: str, fit: str):
+    return placeholder_image() if path == PLACEHOLDER else artwork.load_and_harden_image(path, fit)
+
+
 def compose_pages(entries: list[IconEntry]) -> tuple[Page, Page]:
     """Side and front pages: each entry's PNGs fitted to 48x51 with its own fit mode (alpha hardened, as the
-    icon pipeline does)."""
-    return tuple(pack_page([artwork.load_and_harden_image(getattr(e, f'{view}_path'), e.fit) for e in entries])
+    icon pipeline does), or the built-in placeholder."""
+    return tuple(pack_page([_portrait(getattr(e, f'{view}_path'), e.fit) for e in entries])
                  for view in ('side', 'front'))
 
 
@@ -525,9 +555,11 @@ def read_record(image) -> list[int]:
 
 
 @steps.register('icons')
-def apply(ctx: steps.RosterContext, encode=encode_atlases, encode_cmpr=encode_page) -> list[str]:
+def apply(ctx: steps.RosterContext, encode=None, encode_cmpr=None) -> list[str]:
     """``encode`` (slot layout: entries -> side and front payloads) and ``encode_cmpr`` (packed: a Page -> its
-    payload) are the wimgt encoders; tests pass stand-ins."""
+    payload) are the wimgt encoders (default ``encode_atlases`` / ``encode_page``); tests pass stand-ins."""
+    encode = encode or encode_atlases
+    encode_cmpr = encode_cmpr or encode_page
     entries = parse_icons(ctx.config)
     layout = bank_layout(ctx.config)
     if not entries:
@@ -557,7 +589,7 @@ def apply(ctx: steps.RosterContext, encode=encode_atlases, encode_cmpr=encode_pa
         dhs.set_slot(words, lang, at, len(bank))
     dhs.write_record(ctx.dol, ICON_RECORD, words)
     log = [f'icon bank 0x{before[0]:08X}+0x{before[1]:X} -> 0x{at:08X}+0x{len(bank):X}: '
-           f'{len(entries)} icons (' + ', '.join(f'0x{e.char_id:02X}' for e in entries) + ')', page_note]
+           f'{len(entries)} icons (' + ids.id_ranges(e.char_id for e in entries) + ')', page_note]
     log += retire_hooks(ctx.dol)
     own = [e for e in entries if e.new_id]
     # Development switch (bisecting a Dolphin issue): "icon_debug": {"dol_side": false} keeps the new IDs' keys
@@ -574,7 +606,7 @@ def apply(ctx: steps.RosterContext, encode=encode_atlases, encode_cmpr=encode_pa
             hs.write(portrait_of + e.char_id, bytes([e.char_id]))
         log.append(resolver_branch(ctx.dol, hs))
         hs.commit()
-        log.append('own portraits: ' + ', '.join(f'0x{e.char_id:02X}' for e in own))
+        log.append('own portraits: ' + ids.id_ranges(e.char_id for e in own))
     growth = len(bank) - cib.STOCK_BANK_LENGTH
     log.append(f'icon bank game heap {growth:+,} bytes against stock (resident in MEM2 during a match)')
     return log

@@ -23,7 +23,7 @@ echo [7] Manually resize available hammerspace (extra model data storage) - usua
 echo [8] Import edited icon sheets (.\2_Output_Models\_ICONS\sheets\)
 echo [9] Repair unused characters' models (re-split them from their playable counterparts)
 echo.
-echo [10] Roster expansion (development): inject current expansion changes into 3_Output_Dat
+echo [10] Roster expansion: inject a roster preset into 3_Output_Dat
 echo.
 set "tools_choice="
 set /p "tools_choice=Enter option (or type exit to quit): "
@@ -122,17 +122,33 @@ if "!tools_choice!"=="9" (
 )
 
 if "!tools_choice!"=="10" (
-    set "SLUGGIES_MENU_SELECTION=10 - Roster expansion (development)"
+    set "SLUGGIES_MENU_SELECTION=10 - Roster expansion"
     set "SLUGGIES_MODEL_FILES="
     set "SLUGGIES_ICON_SHARED_MODE="
-    echo   [Enter] inject ^(replaces the previous injection^)
-    echo   [r]     remove the previous injection only
+    set "roster_presets=SluggiesTools\Roster\presets"
+    echo   Each choice replaces the previous injection.
+    echo   [1] Stock roster
+    echo   [2] Stock + the six unused characters
+    echo   [3] Stock + unused + every colour wheel filled to 10 ^(open slots^)
+    echo   [4] All in one: preset 3 on a 12x5 grid with 19 new squares ^(open slots^)
+    echo   [u] Your own 1_Input\roster.json
+    echo   [r] Remove the previous injection only
     set "roster_mode="
     set /p "roster_mode=Choose: "
     if /i "!roster_mode!"=="r" (
         call !SLUGGIES_LAUNCHER! --roster-dev --remove
+    ) else if /i "!roster_mode!"=="u" (
+        call !SLUGGIES_LAUNCHER! --roster-dev --config 1_Input\roster.json
+    ) else if "!roster_mode!"=="1" (
+        call !SLUGGIES_LAUNCHER! --roster-dev --config !roster_presets!\1_stock.json
+    ) else if "!roster_mode!"=="2" (
+        call !SLUGGIES_LAUNCHER! --roster-dev --config !roster_presets!\2_unused.json
+    ) else if "!roster_mode!"=="3" (
+        call !SLUGGIES_LAUNCHER! --roster-dev --config !roster_presets!\3_unused_wheels10.json
+    ) else if "!roster_mode!"=="4" (
+        call !SLUGGIES_LAUNCHER! --roster-dev --config !roster_presets!\4_all_in_one.json
     ) else (
-        call !SLUGGIES_LAUNCHER! --roster-dev
+        echo   Unknown choice: !roster_mode!
     )
     goto :after_command
 )

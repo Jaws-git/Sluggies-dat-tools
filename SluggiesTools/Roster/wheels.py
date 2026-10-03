@@ -180,10 +180,11 @@ def spare_rows(rows: list[bytearray], spares: dict, log: list[str]) -> list[int]
 
 
 def wheel_members(rows: list[bytes]) -> dict[int, list[int]]:
-    """Members per species: selectable IDs the roster builder lists (below 0x4D) plus new IDs (0x66 and up)."""
+    """Members per species: selectable IDs the roster builder lists (below 0x4D) plus new IDs (0x66 and up) on a
+    wheel (a square-only new ID has wheel group 0 and is on no species list)."""
     out: dict[int, list[int]] = {}
     for cid, row in enumerate(rows):
-        if row[6] and (cid < ids.PLAYER_END or ids.FIRST_NEW <= cid <= ids.MAX_ID):
+        if row[6] and (cid < ids.PLAYER_END or (ids.FIRST_NEW <= cid <= ids.MAX_ID and row[0])):
             out.setdefault(row[2], []).append(cid)
     return out
 
