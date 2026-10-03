@@ -3,7 +3,7 @@
 Each step's module registers it with ``@register('<key>')``; the runner
 (``runner.py``, menu [9]) runs them in ``STEPS`` order. A step function
 takes a ``RosterContext`` and returns log lines; it changes ``ctx.dol`` and
-``ctx.dat`` only, so the runner can record (and later undo) everything.
+``ctx.dat`` only; the runner writes the files once all steps have run.
 """
 
 import importlib
@@ -25,7 +25,7 @@ STEPS = (
 @dataclass
 class RosterContext:
     dol: object                    # Dol.dolfile.DolImage
-    dat: object | None             # ledger.DatFile, or None when a step needs no DAT
+    dat: object | None             # datfile.DatFile, or None when a step needs no DAT
     config: dict
     state: dict = field(default_factory=dict)   # shared between steps of one run
 

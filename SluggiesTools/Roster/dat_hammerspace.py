@@ -1,4 +1,4 @@
-"""DAT hammerspace for roster-expansion files, on the in-memory DOL and the recorded ``ledger.DatFile``.
+"""DAT hammerspace for roster-expansion files, on the in-memory DOL and the buffered ``datfile.DatFile``.
 
 The same rules as the model patcher's allocator
 (``HammerspaceHelper.allocateHammerspace``): space comes from the region past

@@ -136,7 +136,7 @@ for /f "delims=" %%F in ('dir /b /a-d /on "1_Input\_RosterConfigurations\*.json"
     echo   [!roster_count!] %%F
 )
 if "!roster_count!"=="0" echo   ^(no .json files found^)
-echo   [r] Remove the previous injection only
+echo   [r] Reset the roster to vanilla
 echo   [Enter] Skip ^(no roster changes^)
 set "roster_mode="
 set /p "roster_mode=Choose: "

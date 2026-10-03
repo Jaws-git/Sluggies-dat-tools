@@ -15,7 +15,7 @@ The binary details are in [`_docs_roster/RosterExpansion.md`](_docs_roster/Roste
 2. Menu **[9] Roster expansion** (also part of menu **[1]**, between the model
    and the icon export) lists every `.json` file in
    `1_Input/_RosterConfigurations/`, alphabetically, with a number to pick
-   it, **[r]** to take the previous injection out and stop, and Enter to
+   it, **[r]** to reset the roster to vanilla and stop, and Enter to
    skip. The shipped
    presets:
 
@@ -33,9 +33,12 @@ The binary details are in [`_docs_roster/RosterExpansion.md`](_docs_roster/Roste
 From the command line: `python start.py --roster --config <file>` (or
 `--roster --remove`).
 
-Every choice first removes the previous injection, so you can switch presets
-freely. If the normal pipeline wrote fresh files in between, the old injection
-counts as already removed.
+Every choice first resets the roster to vanilla, so you can switch presets
+freely. **[r]** (`--remove`) only does that reset. It works like the model
+unpatcher: the original bytes come from `1_Input/main.dol`, so `1_Input` must
+hold the original game files. Your model patches and untangled routes stay as
+they are; the roster's copies in `dt_na.dat`'s extra space are zeroed, and the
+file keeps its size.
 
 **Open slots** are new IDs with nothing assigned yet. They show the "empty slot"
 icon (`1_Input/_Icons/empty_slot_side.png` / `empty_slot_front.png`, which you

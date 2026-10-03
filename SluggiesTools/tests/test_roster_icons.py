@@ -10,7 +10,7 @@ from PIL import Image
 
 from SluggiesTools.Dol import relocate
 from SluggiesTools.Roster import dat_hammerspace as dhs
-from SluggiesTools.Roster import dol_hammerspace, icons, ids, ledger, steps
+from SluggiesTools.Roster import dol_hammerspace, datfile, icons, ids, steps
 from SluggiesTools.tests.test_roster_ids import fresh_image
 
 
@@ -234,7 +234,7 @@ class StepTests(unittest.TestCase):
             f.write(bytes(self.STOCK_AT) + STOCK + bytes(0x100000 - self.STOCK_AT - len(STOCK)))
         for name, colour in (('a.png', 'red'), ('b.png', 'blue')):
             portrait(colour).save(os.path.join(tmp, name))
-        self.dat = ledger.DatFile(path)
+        self.dat = datfile.DatFile(path)
         self.image = fresh_image()
         # stock words at the hook and resolver sites, the stock icon record, a minimal directory table
         for site, stock, _stub in icons.OLD_HOOKS:

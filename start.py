@@ -110,7 +110,7 @@ def run_resplit_unused():
 
 
 def run_roster(config=None, remove=False, dry_run=False):
-    """Roster expansion: inject a roster configuration (or only remove the previous injection)."""
+    """Roster expansion: inject a roster configuration (or only reset the roster to vanilla)."""
     cmd = python_script_command(ROSTER_SCRIPT)
     if config:
         cmd += ['--config', os.path.abspath(config)]       # the injector runs in SluggiesTools/
@@ -543,7 +543,7 @@ def parse_args():
     parser.add_argument('--use-output', action='store_true', help='export-icons only: read DOL/DAT from 3_Output_Dat instead of 1_Input')
     parser.add_argument('--dry-run', action='store_true', help='patch-icons/roster: validate without writing bytes')
     parser.add_argument('--config', metavar='PATH', help='roster only: the roster configuration JSON')
-    parser.add_argument('--remove', action='store_true', help='roster only: take the previous injection out and stop')
+    parser.add_argument('--remove', action='store_true', help='roster only: reset the roster to vanilla (against 1_Input) and stop')
 
     args = parser.parse_args()
 

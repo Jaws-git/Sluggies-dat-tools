@@ -11,7 +11,7 @@ from SluggiesTools.Dol import dolfile
 from SluggiesTools.Icons import layout2d
 from SluggiesTools.Icons.tests.test_layout2d import make_bank, make_element
 from SluggiesTools.Roster import dat_hammerspace as dhs
-from SluggiesTools.Roster import layout_file, ledger, runner, steps
+from SluggiesTools.Roster import datfile, layout_file, runner, steps
 from SluggiesTools.tests.test_roster_dev import synthetic_dol
 
 BASE = 0x4000                       # stands in for BASE_SIZE
@@ -69,10 +69,10 @@ class AllocatorTests(unittest.TestCase):
         self.tmp = self.enterContext(tempfile.TemporaryDirectory())
         self.path = os.path.join(self.tmp, 'dt_na.dat')
 
-    def dat(self, data: bytes) -> ledger.DatFile:
+    def dat(self, data: bytes) -> datfile.DatFile:
         with open(self.path, 'wb') as f:
             f.write(data)
-        return ledger.DatFile(self.path)
+        return datfile.DatFile(self.path)
 
     def test_skips_data_and_reserved_zero_ranges(self):
         data = bytearray(BASE + 0x200)
@@ -99,20 +99,11 @@ class AllocatorTests(unittest.TestCase):
         dat.write(at, b'\x01' * 0x200)
         dat.flush()
         self.assertEqual(os.path.getsize(self.path), at + 0x200 + dhs.BUFFER)
-        self.assertEqual(dhs.allocate(ledger.DatFile(self.path), 0x20, [], BASE), at + 0x200)
+        self.assertEqual(dhs.allocate(datfile.DatFile(self.path), 0x20, [], BASE), at + 0x200)
 
     def test_grows_a_file_without_hammerspace_from_the_base(self):
         dat = self.dat(bytes(0x100))
         self.assertEqual(dhs.allocate(dat, 0x10, [], BASE), BASE)
-
-    def test_undo_after_the_file_was_regenerated(self):
-        dat = self.dat(bytes(BASE))
-        at = dhs.allocate(dat, 0x40, [], BASE)
-        dat.write(at, b'\x05' * 0x40)
-        records = dat.run_record([dat.take_raw()])
-        dat.flush()
-        regenerated = self.dat(bytes(BASE))                         # e.g. menu [1] copied 1_Input again
-        self.assertEqual(regenerated.undo_run(records), 'already undone')
 
 
 class LayoutStepTests(unittest.TestCase):
@@ -120,6 +111,12 @@ class LayoutStepTests(unittest.TestCase):
         self.tmp = self.enterContext(tempfile.TemporaryDirectory())
         self.enterContext(mock.patch.object(dhs, 'BASE_SIZE', BASE))
         self.dol_path, self.dat_path = synthetic_files(self.tmp)
+        self.input_dir = os.path.join(self.tmp, '1_Input')
+        os.makedirs(self.input_dir)
+        with open(self.dol_path, 'rb') as f:
+            vanilla = self.vanilla_dol(f.read())
+        with open(os.path.join(self.input_dir, 'main.dol'), 'wb') as f:
+            f.write(vanilla)
         self.config = os.path.join(self.tmp, 'roster.json')
         with open(self.config, 'w') as f:
             json.dump({'version': 1}, f)
@@ -130,7 +127,7 @@ class LayoutStepTests(unittest.TestCase):
 
     def context(self) -> steps.RosterContext:
         dol, _dat = self.files()
-        return steps.RosterContext(dol=dolfile.DolImage(dol), dat=ledger.DatFile(self.dat_path), config={})
+        return steps.RosterContext(dol=dolfile.DolImage(dol), dat=datfile.DatFile(self.dat_path), config={})
 
     def test_identity_copies_one_per_language(self):
         ctx = self.context()
@@ -195,31 +192,43 @@ class LayoutStepTests(unittest.TestCase):
         files.update(lambda _lang, data: layouts()['en'])           # back to the stock size: in place
         self.assertEqual({k: v[0] for k, v in files.copies.items()}, {k: v[0] for k, v in moved.items()})
 
-    def test_runner_repeatable_and_removable(self):
+    @staticmethod
+    def vanilla_dol(dol: bytes) -> bytes:
+        """``dol`` with model A on a stock route: in the output, its hammerspace route is a model patch."""
+        image = dolfile.DolImage(dol)
+        image.write(RECORDS, record([(0x200, 0x40)] * 3))
+        return image.to_bytes()
+
+    def run_roster(self, **kwargs) -> dict:
+        kwargs.setdefault('config_path', None if kwargs.get('remove_only') else self.config)
+        return runner.run(self.tmp, input_dir=self.input_dir, **kwargs)
+
+    def test_runner_repeatable_and_resettable(self):
         dol0, dat0 = self.files()
-        report = runner.run(self.tmp, self.config)
+        report = self.run_roster()
         self.assertEqual([s['key'] for s in report['steps']][:2], ['dol_hammerspace', 'layout_file'])
         dol1, dat1 = self.files()
         self.assertGreater(len(dat1), len(dat0))
         with open(os.path.join(self.tmp, 'fst.bin'), 'rb') as f:
             self.assertEqual(struct.unpack_from('>I', f.read(), 0x14)[0], len(dat1))
-        runner.run(self.tmp, self.config)
+        self.run_roster()
         self.assertEqual(self.files(), (dol1, dat1))
-        runner.run(self.tmp, remove_only=True)
+        report = self.run_roster(remove_only=True)
         dol2, dat2 = self.files()
-        self.assertEqual(dol2, dol0)
+        self.assertEqual(dol2, dol0)                                       # the model patch's record is kept
+        self.assertIn('1 changed directory records kept', ' '.join(report['log']))
         self.assertEqual(dat2[:len(dat0)], dat0)
         self.assertEqual(dat2[len(dat0):], bytes(len(dat2) - len(dat0)))  # grown, not shrunk (accepted)
 
     def test_runner_after_regenerated_files(self):
         dol0, dat0 = self.files()
-        runner.run(self.tmp, self.config)
+        self.run_roster()
         with open(self.dol_path, 'wb') as f:
             f.write(dol0)
         with open(self.dat_path, 'wb') as f:
             f.write(dat0)
-        report = runner.run(self.tmp, self.config)
-        self.assertIn('already undone', ' '.join(report['log']))
+        self.run_roster(remove_only=True)
+        self.assertEqual(self.files(), (dol0, dat0))
 
 
 if __name__ == '__main__':

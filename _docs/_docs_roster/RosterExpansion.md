@@ -15,9 +15,16 @@ unless another date is given.
 
 Code: `SluggiesTools/Roster/` (one module per step, run in this order by menu
 [9] / `start.py --roster`): `dol_hammerspace`, `layout_file`, `ids`,
-`wheels`, `icons`, `grid`, `names`. `runner.py` records every DOL byte and
-`dt_na.dat` write of a run in `3_Output_Dat/roster_dev/report.json` and undoes
-the previous run before the next one.
+`wheels`, `icons`, `grid`, `names`. Before every run, `reset.py` resets the
+roster to vanilla against `1_Input` (no record of earlier runs is kept):
+
+- `main.dol` is rebuilt from the input DOL, keeping the output's directory
+  records. Those records are the only DOL bytes the other tools write (model
+  patches, the untangler). The roster's own three records go back to the input
+  too: select layout, icon bank, name table.
+- In `dt_na.dat` the roster writes only past the stock end, into the copies
+  those three records point at. The reset zeroes them unless another record
+  still routes there. The file and its `fst.bin` size stay grown.
 
 ## Character IDs
 
