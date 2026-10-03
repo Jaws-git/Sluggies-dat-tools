@@ -133,7 +133,6 @@ def _load_pages(pages_csv):
                 'sheet_png': row['sheet_png'],
                 'dt_na_image_offset': _parse_hex_int(row['dt_na_image_offset'], 'dt_na_image_offset'),
                 'dt_na_palette_offset': _parse_hex_int(row['dt_na_palette_offset'], 'dt_na_palette_offset'),
-                'raw_palette_file': row.get('raw_palette_file', ''),
             }
         )
 
@@ -187,37 +186,45 @@ def _read_grayscale_png_indexed_bytes(png_path):
     return bytes(tiled)
 
 
-def _act_to_rgb5a3_using_raw_modes(icons_root, raw_palette_rel, act_rgb8):
+def _source_dat_path(manifest_path):
+    """The DAT the export read (manifest ``source.dat_path``); 1_Input's DAT for older manifests."""
+    try:
+        with open(manifest_path, 'r', encoding='utf-8') as f:
+            rel = json.load(f).get('source', {}).get('dat_path', '')
+    except (OSError, ValueError):
+        rel = ''
+    return os.path.join(ROOT_DIR, _normalize_rel(rel)) if rel else INPUT_DAT
+
+
+def _read_source_palettes(dat_path, pages):
+    """The current palette bytes of every page, keyed by DAT offset. The patch keeps each entry's
+    encoding mode and alpha, so these stay valid after earlier patches of the same DAT."""
+    if not os.path.exists(dat_path):
+        raise IconPatchError(f'source DAT for the palette modes not found: {dat_path}')
+    palettes = {}
+    with open(dat_path, 'rb') as f:
+        for page in pages:
+            offset = page['dt_na_palette_offset']
+            f.seek(offset)
+            data = f.read(EXPECTED_PALETTE_LEN)
+            if len(data) != EXPECTED_PALETTE_LEN:
+                raise IconPatchError(
+                    f'palette read out of bounds at 0x{offset:X} in {dat_path}'
+                )
+            palettes[offset] = data
+    return palettes
+
+
+def _act_to_rgb5a3_using_raw_modes(raw_bytes, act_rgb8):
     """
-    Convert ACT RGB8 palette to RGB5A3, using the original raw palette binary
+    Convert ACT RGB8 palette to RGB5A3, using the original palette words
     to determine the encoding mode (RGB555 vs RGB4A3) and alpha per entry.
 
     For every entry, regardless of whether the user edited it:
     - RGB555 entries (original bit15=1): encode ACT colour as RGB555, alpha=full.
     - RGB4A3 entries (original bit15=0): encode ACT colour as RGB4A3,
-      preserving the original 3-bit alpha value from the raw binary.
-
-    Falls back to pure RGB555 encoding if the raw file is missing or invalid.
+      preserving the original 3-bit alpha value.
     """
-    raw_path = ''
-    if raw_palette_rel:
-        raw_path = os.path.join(icons_root, _normalize_rel(raw_palette_rel))
-
-    if not raw_path or not os.path.exists(raw_path):
-        raise IconPatchError(
-            f'raw palette binary not found for ACT conversion: "{raw_path}". '
-            'Re-run --export-icons to regenerate the raw files.'
-        )
-
-    with open(raw_path, 'rb') as f:
-        raw_bytes = f.read()
-
-    if len(raw_bytes) != EXPECTED_PALETTE_LEN:
-        raise IconPatchError(
-            f'raw palette binary has unexpected size {len(raw_bytes)} '
-            f'(expected {EXPECTED_PALETTE_LEN}): {raw_path}'
-        )
-
     result = bytearray()
     for i in range(256):
         raw_word = int.from_bytes(raw_bytes[i*2 : i*2+2], 'big')
@@ -245,26 +252,7 @@ def _act_to_rgb5a3_using_raw_modes(icons_root, raw_palette_rel, act_rgb8):
     return bytes(result)
 
 
-def _act_to_ia8_preserving_alpha(icons_root, raw_palette_rel, act_rgb8):
-    raw_path = ''
-    if raw_palette_rel:
-        raw_path = os.path.join(icons_root, _normalize_rel(raw_palette_rel))
-
-    if not raw_path or not os.path.exists(raw_path):
-        raise IconPatchError(
-            f'raw palette binary not found for ACT conversion: "{raw_path}". '
-            'Re-run --export-icons to regenerate the raw files.'
-        )
-
-    with open(raw_path, 'rb') as f:
-        raw_bytes = f.read()
-
-    if len(raw_bytes) != EXPECTED_PALETTE_LEN:
-        raise IconPatchError(
-            f'raw palette binary has unexpected size {len(raw_bytes)} '
-            f'(expected {EXPECTED_PALETTE_LEN}): {raw_path}'
-        )
-
+def _act_to_ia8_preserving_alpha(raw_bytes, act_rgb8):
     result = bytearray()
     for index in range(EXPECTED_PALETTE_ENTRIES):
         red = act_rgb8[index * 3]
@@ -318,7 +306,7 @@ def _find_act_file(sheets_dir, view, texture_index_dec, sheet_png=''):
     return None
 
 
-def _collect_payloads(icons_root, pages):
+def _collect_payloads(icons_root, pages, source_palettes):
     """
     Read BASE.png (shared indexed image) and per-page ACT palette files.
 
@@ -360,11 +348,11 @@ def _collect_payloads(icons_root, pages):
             palette_format = page['palette_format']
             if palette_format == PALETTE_FORMAT_IA8:
                 palette_data = _act_to_ia8_preserving_alpha(
-                    icons_root, page.get('raw_palette_file', ''), rgb8_palette
+                    source_palettes[page['dt_na_palette_offset']], rgb8_palette
                 )
             elif palette_format == PALETTE_FORMAT_RGB5A3:
                 palette_data = _act_to_rgb5a3_using_raw_modes(
-                    icons_root, page.get('raw_palette_file', ''), rgb8_palette
+                    source_palettes[page['dt_na_palette_offset']], rgb8_palette
                 )
             else:
                 raise IconPatchError(
@@ -508,7 +496,8 @@ def main(argv=None):
 
     source_info = _resolve_paths(args.source)
     pages = _load_pages(source_info['pages_csv'])
-    records = _collect_payloads(source_info['icons_root'], pages)
+    source_palettes = _read_source_palettes(_source_dat_path(source_info['manifest_path']), pages)
+    records = _collect_payloads(source_info['icons_root'], pages, source_palettes)
     image_writes = _plan_image_writes(records)
 
     if not args.dry_run:

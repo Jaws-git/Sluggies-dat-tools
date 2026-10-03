@@ -212,8 +212,7 @@ class RosterPageExportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root, \
                 mock.patch.object(export_icons, 'ROSTER_PAGES', ((0, 'side'), (1, 'front'))), \
                 mock.patch.object(export_icons, '_decode_tpl_to_png') as decode:
-            for rel in (export_icons.DIR_RAW, export_icons.DIR_ROSTER):
-                os.makedirs(os.path.join(root, rel))
+            os.makedirs(os.path.join(root, export_icons.DIR_ROSTER))
             self.assertEqual(export_icons._export_roster_pages(root, tex_palette, names), 2)
         expected = [f'tex1_64x64_{xxh64(side, 0):016x}_14.png', f'tex1_64x64_{xxh64(front, 0):016x}_14.png']
         self.assertEqual([n['dolphin_name'] for n in names], expected)
@@ -226,8 +225,7 @@ class RosterPageExportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root, \
                 mock.patch.object(export_icons, 'ROSTER_PAGES', ((0, 'side'), (1, 'front'), (5, 'side'))), \
                 mock.patch.object(export_icons, '_decode_tpl_to_png') as decode:
-            for rel in (export_icons.DIR_RAW, export_icons.DIR_ROSTER):
-                os.makedirs(os.path.join(root, rel))
+            os.makedirs(os.path.join(root, export_icons.DIR_ROSTER))
             self.assertEqual(export_icons._export_roster_pages(root, _make_cmpr_tpl([page, page]), names), 1)
         self.assertEqual(len(names), 2)                                       # both listed, one file
         self.assertEqual(decode.call_count, 1)

@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 
 from PIL import Image
@@ -76,7 +77,7 @@ OUTPUT_ROOT = os.path.join(ROOT_DIR, '2_Output_Models', '_ICONS')
 
 DIR_SHEETS = 'sheets (EDIT BASE.PNG)'
 DIR_KNOWN_FALLBACK = 'known_fallback'
-DIR_RAW = 'raw'
+DIR_LEGACY_RAW = 'raw'   # .tpl/.bin dumps of older exports; deleted on the next export
 DIR_METADATA = 'metadata'
 DIR_ROSTER = 'roster_pages'
 # The roster expansion's own icon pages (menu [10]): CMPR, sized to the portraits a roster configuration holds,
@@ -298,6 +299,14 @@ def _write_single_tpl(tpl_path, desc, image_data, tlut_data):
 
 def _decode_tpl_to_png(tpl_path, png_path):
     subprocess.run(['wimgt', 'decode', '-q', '-o', '-d', png_path, tpl_path], check=True)
+
+
+def _decode_texture_to_png(desc, image_data, tlut_data, png_path):
+    """Decode one texture to ``png_path`` through a throwaway single-image TPL (wimgt only reads files)."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        tpl_path = os.path.join(temp_dir, 'texture.tpl')
+        _write_single_tpl(tpl_path, desc, image_data, tlut_data)
+        _decode_tpl_to_png(tpl_path, png_path)
 
 
 def _rgb5a3_to_rgb8(palette_bytes):
@@ -522,12 +531,11 @@ def _prepare_output_tree(root):
     generated_dirs = [
         DIR_SHEETS,
         DIR_KNOWN_FALLBACK,
-        DIR_RAW,
         DIR_METADATA,
     ]
     dirs_to_delete = [
         DIR_KNOWN_FALLBACK,
-        DIR_RAW,
+        DIR_LEGACY_RAW,
         DIR_METADATA,
         DIR_ROSTER,
     ]
@@ -553,8 +561,6 @@ def _prepare_output_tree(root):
     ensure_dir(os.path.join(root, DIR_SHEETS, 'side'))
     ensure_dir(os.path.join(root, DIR_SHEETS, 'front'))
     ensure_dir(os.path.join(root, DIR_KNOWN_FALLBACK))
-    ensure_dir(os.path.join(root, DIR_RAW, 'side'))
-    ensure_dir(os.path.join(root, DIR_RAW, 'front'))
     ensure_dir(os.path.join(root, DIR_METADATA))
     ensure_dir(os.path.join(root, DIR_ROSTER))
 
@@ -650,28 +656,16 @@ def _export_one_page(root, entry_offset, tex_palette, desc, texture_index, view,
         'dolphin_name': _dolphin_texture_name(desc, image_data, tlut_data),
     })
 
-    tpl_rel = os.path.join(DIR_RAW, view, f'{base_name}.tpl').replace('\\', '/')
     sheet_rel = os.path.join(DIR_SHEETS, view, f'{base_name}.png').replace('\\', '/')
-    raw_img_rel = os.path.join(DIR_RAW, view, f'{base_name}_image.bin').replace('\\', '/')
-    raw_pal_rel = os.path.join(DIR_RAW, view, f'{base_name}_palette.bin').replace('\\', '/')
     act_rel = os.path.join(DIR_SHEETS, view, f'{base_name}.act').replace('\\', '/')
 
-    tpl_abs = os.path.join(root, tpl_rel)
     sheet_abs = os.path.join(root, sheet_rel)
-    raw_img_abs = os.path.join(root, raw_img_rel)
-    raw_pal_abs = os.path.join(root, raw_pal_rel)
     act_abs = os.path.join(root, act_rel)
-
-    with open(raw_img_abs, 'wb') as f:
-        f.write(image_data)
-    with open(raw_pal_abs, 'wb') as f:
-        f.write(tlut_data)
 
     # Export ACT file for Photoshop palette import
     _write_act_file(act_abs, tlut_data, desc.paletteFormat)
 
-    _write_single_tpl(tpl_abs, desc, image_data, tlut_data)
-    _decode_tpl_to_png(tpl_abs, sheet_abs)
+    _decode_texture_to_png(desc, image_data, tlut_data, sheet_abs)
 
     sheet_img = Image.open(sheet_abs).convert('RGBA')
 
@@ -726,9 +720,6 @@ def _export_one_page(root, entry_offset, tex_palette, desc, texture_index, view,
         'palette_len': palette_len,
         'sheet_png': sheet_rel,
         'grid_png': '',
-        'tpl_file': tpl_rel,
-        'raw_image_file': raw_img_rel,
-        'raw_palette_file': raw_pal_rel,
         'nonempty_cells_exported': nonempty_count,
     })
 
@@ -765,9 +756,7 @@ def _export_roster_pages(root, tex_palette, dolphin_names):
                           f'page ({dolphin_name})', source='icons.export_icons')
             continue
         written[dolphin_name] = view
-        tpl_abs = os.path.join(root, DIR_RAW, f'{base_name}.tpl')
-        _write_single_tpl(tpl_abs, desc, image_data, b'')
-        _decode_tpl_to_png(tpl_abs, os.path.join(root, DIR_ROSTER, dolphin_name))
+        _decode_texture_to_png(desc, image_data, b'', os.path.join(root, DIR_ROSTER, dolphin_name))
         _slogger.info(f'Exported roster {view} page 0x{texture_index:02X} ({desc.width}x{desc.height} CMPR) as '
                       f'{DIR_ROSTER}/{dolphin_name}', source='icons.export_icons')
     return len(written)
@@ -862,9 +851,6 @@ def _write_pages_csv(path, rows):
         'palette_len',
         'sheet_png',
         'grid_png',
-        'tpl_file',
-        'raw_image_file',
-        'raw_palette_file',
         'nonempty_cells_exported',
     ]
     with open(path, 'w', newline='', encoding='utf-8') as f:

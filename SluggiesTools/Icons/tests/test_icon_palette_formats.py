@@ -32,18 +32,26 @@ class IconPaletteFormatTests(unittest.TestCase):
         self.assertEqual(rgb[-3:], bytes((255, 255, 255)))
 
     def test_ia8_act_reimport_round_trips_intensity_and_alpha(self):
+        raw = b''.join(bytes((value, 255 - value)) for value in range(256))
+        act = b''.join(bytes((value, value, value)) for value in range(256))
+
+        converted = patch_icons_inplace._act_to_ia8_preserving_alpha(raw, act)
+
+        self.assertEqual(converted, raw)
+
+    def test_source_palettes_read_from_dat_offsets(self):
+        palette = bytes(range(256)) * 2
         with tempfile.TemporaryDirectory() as temp_dir:
-            raw_rel = 'palette.bin'
-            raw = b''.join(bytes((value, 255 - value)) for value in range(256))
-            with open(os.path.join(temp_dir, raw_rel), 'wb') as output:
-                output.write(raw)
-            act = b''.join(bytes((value, value, value)) for value in range(256))
+            dat_path = os.path.join(temp_dir, 'dt_na.dat')
+            with open(dat_path, 'wb') as output:
+                output.write(bytes(0x40) + palette + bytes(0x10))
+            pages = [{'dt_na_palette_offset': 0x40}]
 
-            converted = patch_icons_inplace._act_to_ia8_preserving_alpha(
-                temp_dir, raw_rel, act
-            )
+            palettes = patch_icons_inplace._read_source_palettes(dat_path, pages)
 
-            self.assertEqual(converted, raw)
+            self.assertEqual(palettes, {0x40: palette})
+            with self.assertRaises(patch_icons_inplace.IconPatchError):
+                patch_icons_inplace._read_source_palettes(dat_path, [{'dt_na_palette_offset': 0x60}])
 
 
 if __name__ == '__main__':
