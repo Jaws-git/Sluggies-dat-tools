@@ -30,9 +30,10 @@ import slogger  # noqa: E402
 
 try:
     from ..Dol import dolfile
-    from . import ledger, steps
+    from . import dol_hammerspace, ledger, steps
 except ImportError:
     from Dol import dolfile
+    import dol_hammerspace
     import ledger
     import steps
 
@@ -138,9 +139,21 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
     with open(dol_path, 'rb') as f:
         dol_bytes = bytearray(f.read())
     dat = ledger.DatFile(dat_path) if os.path.isfile(dat_path) else None
-    previous = _read_report(report_path)
+    log = []
+    try:
+        previous = _read_report(report_path)
+    except RosterDevError:
+        # Without our DOL sections no injection is in the files (e.g. clean copies were put back): the
+        # unreadable report describes nothing that is still there, so it is set aside.
+        if dol_hammerspace.DolHammerspace.open(dolfile.DolImage(bytes(dol_bytes))) is not None:
+            raise
+        if not dry_run:
+            os.replace(report_path, report_path + '.unreadable')
+        log.append(f'previous report unreadable, but main.dol holds no roster injection: set aside as '
+                   f'{os.path.basename(report_path)}.unreadable')
+        previous = None
 
-    log = remove_previous(previous, dol_bytes, dat)
+    log += remove_previous(previous, dol_bytes, dat)
     report = {'version': REPORT_VERSION, 'time': time.strftime('%Y-%m-%d %H:%M:%S'), 'steps': [],
               'not_built': [], 'log': []}
     if not remove_only:

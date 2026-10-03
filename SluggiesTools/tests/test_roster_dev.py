@@ -229,6 +229,18 @@ class RunnerTests(unittest.TestCase):
             runner.run(self.tmp, self.config)
         self.assertFalse(os.path.exists(path + '.tmp'))
 
+    def test_cut_off_report_over_clean_files_is_set_aside(self):
+        runner.run(self.tmp, self.config)
+        path = os.path.join(self.tmp, runner.REPORT_NAME)
+        with open(path, 'r+b') as f:
+            f.truncate(os.path.getsize(path) // 2)
+        with open(self.dol_path, 'wb') as f:       # clean files put back by hand
+            f.write(self.original)
+        report = runner.run(self.tmp, self.config)
+        self.assertIn('set aside', ' '.join(report['log']))
+        self.assertTrue(os.path.isfile(path + '.unreadable'))
+        self.assertTrue(os.path.isfile(path))
+
     def test_missing_dol_is_reported(self):
         os.remove(self.dol_path)
         with self.assertRaisesRegex(runner.RosterDevError, 'normal pipeline'):
