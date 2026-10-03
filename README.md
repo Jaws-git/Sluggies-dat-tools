@@ -31,7 +31,6 @@ And the helpful Sluggers community for always having an open ear and pointing me
 - Python 3.12 or newer https://www.python.org/downloads/ (source checkout only)
 - Numpy ``pip install numpy`` (source checkout only)
 - Pillow ``pip install Pillow`` (source checkout only)
-- Collada ``pip install pycollada`` (source checkout only, optional, for .dae export)
 - **wimgt** (source checkout only) — part of [Wiimms SZS Tools](https://szs.wiimm.de/download.html); used to convert textures between TPL and PNG. It is already bundled in the portable Windows release. No textures without this.
 - Blender 4.2 or newer https://www.blender.org/download/
 - Autism
@@ -69,12 +68,13 @@ All commands are to be used on the command line - enter "cmd" in file explorer's
 2) Try running the game to make sure everything is prepped correctly
 3) right click the Game -> properties -> Filesystem -> right click top node -> extract entire disc
 4) from the extracted disc data, copy both "dt_na.dat" and "main.dol" (and optionally fst.bin) to the folder \1_Input\
-5) cmd ```sluggies-dat-tools.exe --export --untangle``` (or, alternatively, just start the included batch file)
+5) cmd ```sluggies-dat-tools.exe --export --untangle``` (or, alternatively, just start the included batch file, option 1)
 
 This will extract the entire content into a new folder \2_Output_Models\\...  
 It will contain all the player models, props and environment models. Everything is sorted into numbered and approximately named folders.
 With the "untangle" parameter, duplicate textures will be made unique. Their file names will change compared to "vanilla" Sluggers.
 You can also use the option --notex to skip the rather slow png creation step. Removes the requirement for wimgt.
+With --glb, every model folder also gets a `.glb` file (glTF 2.0) for viewing in Blender or any other glTF viewer. It contains the mesh, the bones as an armature, and the skinning. Materials point at the PNGs in the model's `tex/` folder; low-poly `L_` models use their high-poly model's `tex/` folder. The `.glb` is for reference only: edits still go through the `.sluggie` workflow below. The older `.dae` export has been removed.
 
 ## Blender editing
 
@@ -104,14 +104,14 @@ See [Icon Guide](_docs/IconGuide.md)
 
 ## Development progress:
 ✅ SLUGGers IntermediatE (.sluggie) export  
-✅ .png texture & .dae model (optional) export  
+✅ .png texture & .glb model (optional, `--glb`) export  
 ✅ Blender Import/Export plugin  
 ✅ Vertex position editing  
 ✅ Vertex animation editing (shapekeys)  
 ✅ Full UV editing  
 ✅ Icon Modding & Assign new Icons to the unused characters  
 ✅ "Untangle" all textures so they can be replaced for one character only  
-✅ Replace player textures  
+✅ Inject new player textures  
 ❌ Hammerspace full-Model replacement  
 ❌ Armature editing  
 ❌ Animations

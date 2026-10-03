@@ -149,7 +149,6 @@ class Object(object):
     def __init__(self) -> None:
         pass
 
-# collada uses this
 # https://www.euclideanspace.com/maths/geometry/rotations/conversions/quaternionToAngle/index.htm
 def quaternion_to_axis_angle(w, x, y, z):
     angle = 2 * math.acos(w) * 180 / math.pi
@@ -200,4 +199,4 @@ def prior_deletions(deletion_dict, ind):
     key_ind = 0
     while key_ind + 1 < len(deletion_keys) and ind >= deletion_keys[key_ind + 1]:
         key_ind += 1
-    return deletion_dict[deletion_keys[key_ind]]
+    return deletion_dict[deletion_keys[key_ind]]

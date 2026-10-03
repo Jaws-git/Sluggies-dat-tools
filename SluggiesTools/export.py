@@ -28,7 +28,7 @@ import UntanglePolicy
 EXPORT_TEX = '--notex' not in sys.argv
 DEBUG_DONT_USE_BASE64 = '--debug' in sys.argv
 UNTANGLE_TEX = '--untangle' in sys.argv
-EXPORT_DAE = '--dae' in sys.argv
+EXPORT_GLB = '--glb' in sys.argv
 
 # Model directory indices that hold stadiums (see folderNameMap):
 # 7 Mario Stadium ... 16 Toy Field. When UNTANGLE_SKIP_STADIUMS is enabled,
@@ -1480,7 +1480,7 @@ for dir_ind, file_arr in dirs.items():
                         child.child.dumpRaw(dir_dir, file_index)
                     else:
                         child.child.analyze()
-                        child.child.toFile(lan_dir, export_tex=EXPORT_TEX, export_dae=EXPORT_DAE, untangle_context=dir_untangle_context)
+                        child.child.toFile(lan_dir, export_tex=EXPORT_TEX, export_glb=EXPORT_GLB, untangle_context=dir_untangle_context)
                         if isinstance(child.child, Archive):
                             archive_dir = os.path.join(lan_dir, str(child.child.absolute))
                             for i in child.child.success:
@@ -1555,4 +1555,4 @@ write_texture_hash_overlaps_report(
     outdir,
     untangle_report_lines=(untangle_context or {}).get('report_lines'),
     untangle_warnings=(untangle_context or {}).get('warnings')
-)
+)

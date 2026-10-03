@@ -8,8 +8,7 @@ from PyInstaller.utils.hooks import collect_submodules
 ROOT = Path(SPECPATH).resolve().parents[1]
 
 hiddenimports = (
-    collect_submodules("collada")
-    + collect_submodules("numpy")
+    collect_submodules("numpy")
     + collect_submodules("PIL")
 )
 

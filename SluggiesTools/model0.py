@@ -5,10 +5,14 @@ from anm import *
 import numpy as np
 import os
 import shutil
-from xml_helper import *
 import slogger
+import glb_export
 
 _LOG_DIR_INDEX = None
+# (output dir, geo name) -> (model folder name, {texture index: png name}) of every
+# model exported with textures. An L_ model has no TEX section and binds its
+# high-poly partner's (same folder, geo name without "L_", exported just before it).
+_GLB_PARTNER_TEXTURES = {}
 TEX_TEMP_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), '..', '2_Output_Models', 'tex_temp')
 )
@@ -108,7 +112,7 @@ class Archive(FileChunk):
                 _log_noncritical('failed analyzing in archive', e)
                 pass
 
-    def toFile(self, outdir, export_tex=True, export_dae=False, untangle_context=None):
+    def toFile(self, outdir, export_tex=True, export_glb=False, untangle_context=None):
         if not len(self.success):
             return
         archivedir = outdir + str(self.absolute) + '/'
@@ -116,7 +120,7 @@ class Archive(FileChunk):
             os.mkdir(archivedir)
         for success in self.success:
             f = self.files[success]
-            f.toFile(archivedir, export_tex=export_tex, export_dae=export_dae, untangle_context=untangle_context)
+            f.toFile(archivedir, export_tex=export_tex, export_glb=export_glb, untangle_context=untangle_context)
 
 # This is not the mdl0 format, I think I just called the class that for some reason
 class Model0(FileChunk):
@@ -202,36 +206,43 @@ class Model0(FileChunk):
             boneInfluences += [BoneInfluence(geoBone, 256, i, (100, 100, 100), 'Non-skinned assumption') for i in range(self.GPL.geoDescriptors[geoID].layout.DOPositionHeader.numPositions)]
         return boneInfluences
 
-    def toFile(self, outdir, export_tex=True, export_dae=False, untangle_context=None):
+    def toFile(self, outdir, export_tex=True, export_glb=False, untangle_context=None):
         try:
             file_dir = outdir + self.name
-            dae_exists = os.path.exists(os.path.join(file_dir, self.name + '.dae'))
-            if not export_tex and dae_exists:
+            glb_exists = os.path.exists(os.path.join(file_dir, self.name + '.glb'))
+            if not export_tex and glb_exists:
                 return
             if os.path.exists(file_dir):
                 # Selectively remove only export-produced files so that unrelated
                 # files placed in the output folder are not destroyed.
                 _export_exts = {'.sluggie'}
-                if export_dae:
-                    _export_exts |= {'.dae', '.png'}
+                if export_glb:
+                    # .dae: left over from the retired Collada export
+                    _export_exts |= {'.glb', '.dae', '.png'}
                 for _fname in os.listdir(file_dir):
                     _fpath = os.path.join(file_dir, _fname)
                     if os.path.isfile(_fpath) and os.path.splitext(_fname)[1].lower() in _export_exts:
                         os.remove(_fpath)
-                    elif export_dae and os.path.isdir(_fpath) and _fname == 'tex':
+                    elif export_glb and os.path.isdir(_fpath) and _fname == 'tex':
                         shutil.rmtree(_fpath)
             else:
                 os.mkdir(file_dir)
             file_dir += '/'
-            # model_data() still runs when dae export is off: untangling side effects
+            # model_data() still runs when glb export is off: untangling side effects
             # (rewriting texture bytes into the dat and recording name overrides) happen here.
             data = self.model_data(
                 export_tex=export_tex,
                 untangle_context=untangle_context,
                 texture_output_dir=file_dir if export_tex else None,
             )
-            if export_dae:
-                data.to_dae(file_dir, name=self.name)
+            geo_name = self.ACT.geoName if self.ACT else None
+            if export_glb:
+                partner = None
+                if self.TEXPalette is None and geo_name and geo_name.startswith('L_'):
+                    partner = _GLB_PARTNER_TEXTURES.get((outdir, geo_name[2:]))
+                glb_export.write_glb(data, file_dir, self.name, partner=partner)
+            if geo_name and data.textures:
+                _GLB_PARTNER_TEXTURES[(outdir, geo_name)] = (self.name, dict(data.textures))
         except Exception as e:
             _log_noncritical(f'failed exporting model {self.name}', e)
 
@@ -310,8 +321,8 @@ class Model0(FileChunk):
             vertex_deletions[descriptor_ind] = {0: 0}
             geometry = Object()
             layout = descriptor.layout
+            # Full rows: a skinned submesh interleaves its normals after each position.
             coords = np.array(layout.DOPositionHeader.data)
-            coords = [coord[:3] for coord in coords]
 
             if self.skinned:
                 deletion_count = 0
@@ -335,6 +346,9 @@ class Model0(FileChunk):
             # if descriptor_ind == 0:
             #     print(vertex_deletions)
             #     print(prior_deletions(vertex_deletions[0], 120))
+
+            geometry.position_normals = [coord[3:6] for coord in coords] if coords.ndim == 2 and coords.shape[1] >= 6 else None
+            coords = [coord[:3] for coord in coords]
 
             normals = np.array(layout.DOLightingHeader.data)
             normals = [normal[:3] for normal in normals]
@@ -414,6 +428,7 @@ class Model0(FileChunk):
                 parent = parent.parent
             bone_copy.track_id = bone.track_id
             bone_copy.GEOID = bone.GEOID
+            bone_copy.skinned = bone.skinned
             bone_copy.influences = {}
             for vertex_id in bone.vertexInfluences:
                 new_vertex_ind = vertex_id - prior_deletions(vertex_deletions[bone.GEOID], vertex_id)
@@ -457,220 +472,3 @@ class ModelData():
         self.model = model
         self.export_tex = export_tex
         self.untangle_context = untangle_context
-
-    def create_tex_dir(self, dir):
-        _copy_texture_pngs(dir)
-
-    def create_materials(self, collada_doc, collada_material):
-        out = {}
-        for ind, png in self.textures.items():
-            if not png:
-                continue
-            ind_str = str(ind)
-            image = collada_material.CImage('image_'+ind_str, './tex/'+png)
-            collada_doc.images.append(image)
-            surface = collada_material.Surface('surface_'+ind_str, image)
-            sampler2d = collada_material.Sampler2D('sampler_'+ind_str, surface)
-            tex_map = collada_material.Map(sampler2d, 'TEX')
-            effect = collada_material.Effect("effect_"+ind_str, [surface, sampler2d], "lambert",  diffuse=tex_map, transparent=tex_map, double_sided=True)
-            mat = collada_material.Material("material_"+ind_str, "material_"+ind_str, effect)
-            out[ind] = (effect, mat)
-        return out
-
-    def to_dae(self, dir, name='model'):
-        try:
-            import collada as collada_module
-            from collada import geometry as collada_geometry
-            from collada import material as collada_material
-            from collada import scene as collada_scene
-            from collada import source as collada_source
-        except ImportError as exc:
-            raise RuntimeError('DAE export requires pycollada. Install with: pip install pycollada') from exc
-
-        # texture setup stuff
-        if self.export_tex:
-            self.create_tex_dir(dir)
-        collada = collada_module.Collada()
-        controller_xmls = []
-        instancing_details = {}
-        effect_materials = self.create_materials(collada, collada_material) if self.export_tex else {}
-        mat_nodes = {}
-        for ind in effect_materials:
-            effect, material = effect_materials[ind]
-            collada.effects.append(effect)
-            collada.materials.append(material)
-            mat_node = collada_scene.MaterialNode('material_'+str(ind), material, inputs=[('TEX', 'TEXCOORD', '0')])
-            mat_nodes[ind] = mat_node
-
-        # create geometries
-        geom_nodes = []
-        non_skinned_map = {}
-        g_ind = 0
-        for geom_ind, g in enumerate(self.geometries):
-            for tex_layer in range(len(g.tex_coords)):
-                g_positions = np.array(g.positions).flatten()
-                vert_id = 'verts_arr_'+str(g_ind)
-                vert_src = collada_source.FloatSource(vert_id, g_positions, ('X', 'Y', 'Z'))
-                g_normals = np.array(g.normals + [[1, 0, 0]]).flatten()
-                normal_id = 'normals_arr_'+str(g_ind)
-                normal_src = collada_source.FloatSource(normal_id, g_normals, ('X', 'Y', 'Z'))
-                g_colors = np.array(g.colors).flatten()
-                color_id = 'colors_arr_'+str(g_ind)
-                color_components = ('R', 'G', 'B')
-                if len(g.colors) and len(g.colors[0]) == 4:
-                    color_components = ('R', 'G', 'B', 'A')
-                color_src = collada_source.FloatSource(color_id, g_colors, color_components)
-                texcoord_id = 'texcoords_arr_'+str(g_ind)
-                data = np.array(g.tex_coords[tex_layer]).flatten()
-                for i in range(1, len(data), 2):
-                    data[i] = -data[i]
-                texcoord_src = collada_source.FloatSource(texcoord_id, data, ('S', 'T'))
-                instancing_details[g_ind] = {}
-                instancing_details[g_ind]['materials'] = {}
-                geometry_id = 'geom_'+str(geom_ind)+'_layer_'+str(tex_layer)
-                geom = collada_geometry.Geometry(collada, geometry_id, geometry_id, [vert_src, normal_src, color_src, texcoord_src])
-                instancing_details[g_ind]['geometry'] = geometry_id
-                geom_mat_nodes = []
-                for m_ind, mesh in enumerate(g.meshes):
-                    # for l in list(mesh.texture_layers.keys()):
-                    #     if l != 0:
-                    #         del mesh.texture_layers[l]
-                    if tex_layer not in mesh.texture_layers:
-                        continue
-                    active_descriptors = mesh.active_descriptors
-                    material_ind = mesh.texture_layers[tex_layer]
-                    if self.export_tex:
-                        effect, material = effect_materials[material_ind]
-                        material_symbol = 'material_'+str(material_ind)
-                        instancing_details[g_ind]['materials'][material_symbol] = 'material_'+str(material_ind)
-                        geom_mat_nodes.append(mat_nodes[material_ind])
-                    else:
-                        material_symbol = ''
-
-                    input_list = collada_source.InputList()
-                    input_list.addInput(0, 'VERTEX', '#'+vert_id)
-                    offset = 1
-                    if 'lighting' in active_descriptors:
-                        input_list.addInput(offset, 'NORMAL', '#'+normal_id)
-                        offset += 1
-                    if 'color0' in active_descriptors:
-                        input_list.addInput(offset, 'COLOR', '#'+color_id)
-                        offset += 1
-                    input_list.addInput(offset, 'TEXCOORD', '#'+texcoord_id, set='0')
-                    offset += 1
-                    indices = []
-                    triangles = mesh.triangles
-                    for triangle in triangles:
-                        for vertex in triangle:
-                            indices.append(vertex.position)
-                            if 'lighting' in active_descriptors:
-                                indices.append(vertex.lighting)
-                            if 'color0' in active_descriptors:
-                                indices.append(vertex.colors[0])
-                            indices.append(vertex.tex_coords[tex_layer])
-                    triset = geom.createTriangleSet(np.array(indices), input_list, material_symbol)
-                    geom.primitives.append(triset)
-                collada.geometries.append(geom)
-                geom_nodes.append(collada_scene.GeometryNode(geom, geom_mat_nodes))
-            
-                # Create the controller for this geometry
-                controller_id = 'controller_'+str(geom_ind)+'_layer_'+str(tex_layer)
-                # First get the bones that influence this geometry
-                relevant_bones = []
-                for bone in self.bones:
-                    if bone.GEOID == geom_ind:
-                        relevant_bones.append(bone)
-                
-                # Joint name source
-                joint_names = np.array(['bone_' + str(b.id) for b in self.bones])
-                # Joint matrix source
-                joint_matrices = np.array([np.linalg.inv(b.absolute_transform) for b in self.bones])
-                # joint_matrices = np.array([b.pose.transform for b in self.bones])
-                # joint_matrices = np.array([np.identity(4) for b in self.bones])
-                # Weight source
-                joint_weights = []
-
-                joint_weight_inds = {}
-                vertex_totals = {}
-
-                for vert_ind in range(len(g.positions)):
-                    weights = []
-                    total = 0
-                    for bone_ind, bone in enumerate(self.bones):
-                        if bone.GEOID == geom_ind and vert_ind in bone.influences:
-                            w = bone.influences[vert_ind]
-                            if w not in weights:
-                                weights.append(w)
-                            total += w
-                    vertex_totals[vert_ind] = total
-                    if total not in joint_weight_inds:
-                        joint_weight_inds[total] = {}
-                    for w in weights:
-                        if w not in joint_weight_inds[total]:
-                            joint_weight_inds[total][w] = len(joint_weights)
-                            joint_weights.append(w/total)
-
-                joint_weights = np.array(joint_weights)
-
-                vcounts = []
-                vertex_weight_index = []
-                for vert_ind in range(len(g.positions)):
-                    vcount = 0
-                    for bone_ind, bone in enumerate(self.bones):
-                        if bone.GEOID == geom_ind and vert_ind in bone.influences:
-                            vcount += 1
-                            vertex_weight_index.append(bone_ind)
-                            vertex_weight_index.append(joint_weight_inds[vertex_totals[vert_ind]][bone.influences[vert_ind]])
-                    data = (vertex_weight_index[-vcount*2:])
-                    if vcount == 0:
-                        data = []
-                    total_weight = 0
-                    ws = []
-                    for i in range(0, len(data), 2):
-                        b_ind = data[i]
-                        w_ind = data[i+1]
-                        # print(joint_names[b_ind] + ': ' + '{:.10f}'.format(joint_weights[w_ind]))
-                        total_weight += joint_weights[w_ind]
-                        ws.append(joint_weights[w_ind])
-                    # if total_weight != 0 and abs(total_weight - 1) > 0.00000000000000000001:
-                        # print(total_weight)
-                        # print(' '.join(str(x) for x in ws))
-                        # print(data)
-                        # print('--------------')
-                    vcounts.append(vcount)
-                vcounts = np.array(vcounts)
-                vertex_weight_index = np.array(vertex_weight_index)
-                bind_matrix = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
-                # print(self.model.SKN)
-                if self.model.ACT is None:
-                    instancing_details[g_ind]['no_bone'] = 1
-                else:
-                    if geom_ind > 0 or self.model.SKN is None:
-                        for bone in self.bones:
-                            if bone.GEOID == geom_ind:
-                                bind_matrix = bone.absolute_transform
-                    controller = controller_xml(controller_id, geometry_id, bind_matrix, joint_names, joint_matrices, joint_weights, vcounts, vertex_weight_index)
-                    controller_xmls.append(controller)
-                    instancing_details[g_ind]['controller'] = controller_id
-                g_ind += 1
-
-        geom_node = collada_scene.Node("geom_node", children=geom_nodes)
-        # controller_node = scene.Node("geom_node", children=controller_nodes)
-        myscene = collada_scene.Scene("myscene", [geom_node])
-        collada.scenes.append(myscene)
-        collada.scene = myscene
-        c_filepath = dir + name + '.dae'
-        collada.write(c_filepath)
-        if len(controller_xmls):
-            insert_controller_library(c_filepath, controller_library(controller_xmls))
-        replace_visual_scenes(c_filepath, self.bones, instancing_details, non_skinned_map)
-        add_misc(c_filepath)
-        anim_log_path = dir + '../anim_info'
-        if not os.path.exists(anim_log_path):
-            f = open(anim_log_path, 'w+')
-            f.write(dir + name + '.dae')
-            f.write('\n')
-            for bone in self.bones:
-                f.write(str('bone_' + str(bone.id)) + ' ' + str(bone.track_id) + '\n')
-                f.write(' '.join(["{:.5f}".format(x) for x in bone.pose.translation])+'\n')
-                f.write(' '.join(["{:.5f}".format(x) for x in bone.pose.quaternion])+'\n')

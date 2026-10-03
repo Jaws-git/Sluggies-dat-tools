@@ -121,14 +121,10 @@ def run_roster(config=None, remove=False, dry_run=False):
     subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
 
 
-def run_export(debug=False, notex=False, untangle=False, dae=False):
+def run_export(debug=False, notex=False, untangle=False, glb=False):
     if importlib.util.find_spec('numpy') is None:
         slogger.error("Missing required package: numpy", source="dispatcher")
         slogger.error("Run: pip install numpy", source="dispatcher")
-        sys.exit(1)
-    if dae and importlib.util.find_spec('collada') is None:
-        slogger.error("Missing required package for --dae export: pycollada", source="dispatcher")
-        slogger.error("Run: pip install pycollada", source="dispatcher")
         sys.exit(1)
 
     extra_args = []
@@ -138,8 +134,8 @@ def run_export(debug=False, notex=False, untangle=False, dae=False):
         extra_args.append('--debug')
     if untangle:
         extra_args.append('--untangle')
-    if dae:
-        extra_args.append('--dae')
+    if glb:
+        extra_args.append('--glb')
 
     subprocess.run(
         python_script_command(EXPORT_SCRIPT, *extra_args),
@@ -503,7 +499,7 @@ def parse_args():
             '  python start.py --export\n'
             '  python start.py --export --debug --notex --untangle\n'
             '  python start.py --export --untangle\n'
-            '  python start.py --export --dae\n'
+            '  python start.py --export --glb\n'
             '  python start.py --roster --config 1_Input/_RosterConfigurations/02_Stock_and_Unused.json\n'
             '  python start.py --roster --remove\n'
             '  python start.py --export-icons\n'
@@ -539,7 +535,7 @@ def parse_args():
     parser.add_argument('--debug', action='store_true', help='export only: write binary blobs as raw byte arrays instead of base64')
     parser.add_argument('--notex', action='store_true', help='export only: skip texture extraction')
     parser.add_argument('--untangle', action='store_true', help='export only: pass untangling flag through to export process')
-    parser.add_argument('--dae', action='store_true', help='export only: also write .dae model files to disk (always writes .sluggie files)')
+    parser.add_argument('--glb', action='store_true', help='export only: also write .glb model files to disk (always writes .sluggie files)')
     parser.add_argument('--use-output', action='store_true', help='export-icons only: read DOL/DAT from 3_Output_Dat instead of 1_Input')
     parser.add_argument('--dry-run', action='store_true', help='patch-icons/roster: validate without writing bytes')
     parser.add_argument('--config', metavar='PATH', help='roster only: the roster configuration JSON')
@@ -553,8 +549,8 @@ def parse_args():
         parser.error('--notex can only be used with --export.')
     if args.untangle and not args.export:
         parser.error('--untangle can only be used with --export.')
-    if args.dae and not args.export:
-        parser.error('--dae can only be used with --export.')
+    if args.glb and not args.export:
+        parser.error('--glb can only be used with --export.')
     if args.use_output and not args.export_icons:
         parser.error('--use-output can only be used with --export-icons.')
     if args.dry_run and not (args.patch_icons is not None or args.roster):
@@ -626,7 +622,7 @@ def main() -> int:
         elif args.roster:
             run_roster(config=args.config, remove=args.remove, dry_run=args.dry_run)
         elif args.export:
-            run_export(debug=args.debug, notex=args.notex, untangle=args.untangle, dae=args.dae)
+            run_export(debug=args.debug, notex=args.notex, untangle=args.untangle, glb=args.glb)
         elif args.export_icons:
             run_export_icons(use_output=args.use_output)
         elif args.patch_icons is not None:

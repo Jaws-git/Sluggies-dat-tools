@@ -2,7 +2,6 @@ from base import *
 from act import *
 import numpy as np
 from helper import *
-from xml_helper import *
 from model0 import *
 import slogger
 
@@ -184,54 +183,6 @@ class ANM(FileChunk):
         #         print(keyframe.time)
         #         print(hex(0x04d7b200 + keyframe.setting_bank_ptr))
         return self
-
-    def toFile(self, dir):
-        log_file_dir = dir + 'anim_info'
-        if not os.path.exists(log_file_dir):
-            return
-        f = open(log_file_dir, 'r')
-        log_contents = f.readlines()
-        f.close()
-        model_dae = log_contents[0]
-        model_dae = model_dae.split('\n')[0]
-        bone_tracks = log_contents[1:]
-        track_dict = {}
-        bone_dict = {}
-        for ind in range(0, len(bone_tracks), 3):
-            pair = bone_tracks[ind].split(' ')
-            bone_str, track_id = pair[0], int(pair[1])
-            if track_id == 65535:
-                continue
-            track_dict[track_id] = bone_str
-            bone_dict[bone_str] = {}
-            bone_dict[bone_str]['translation'] = [float(x) for x in bone_tracks[ind+1].split(' ')]
-            bone_dict[bone_str]['quaternion'] = [float(x) for x in bone_tracks[ind+2].split(' ')]
-        for i, sequence in enumerate(self.sequences):
-            sequence_dict = {}
-            for track in sequence.tracks:
-                track_id = track.track_id
-                if track_id not in track_dict:
-                    continue
-                if (3 not in track.anm_types) and (0 not in track.anm_types):
-                    continue
-                keyframe_dict = {}
-                for keyframe in track.keyframes:
-                    if 3 in track.anm_types:
-                        quaternion = keyframe.settings[3]
-                    else:
-                        quaternion = bone_dict[track_dict[track_id]]['quaternion']
-                    if 0 in track.anm_types:
-                        translation = keyframe.settings[0]
-                    else:
-                        translation = bone_dict[track_dict[track_id]]['translation']
-                    final_transform = np.matmul(quaternion_rotation_matrix(quaternion), translation_matrix(translation))
-                    # final_transform = np.array([[keyframe.time, 0, 0, 0], [0, keyframe.time, 0, 0], [0, 0, keyframe.time, 0], [0, 0, 0, keyframe.time]])
-                    keyframe_dict[keyframe.time] = final_transform
-                sequence_dict[track_id] = keyframe_dict
-
-            if len(sequence_dict):
-                out_name = '/'.join(model_dae.split('/')[:-1]) + '/anm_'+str(self.absolute)+'_'+str(i)+'.dae'
-                animate_dae(model_dae, out_name, sequence_dict, track_dict)
 
     def dumpRaw(self, output_dir, file_index):
         anm_dir = os.path.join(output_dir, 'anm')
