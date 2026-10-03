@@ -1,4 +1,4 @@
-"""Roster expansion Phase 5: the icon bank built by the roster step (synthetic stock bank, no wimgt)."""
+"""Roster expansion: the icon bank built by the roster step (synthetic stock bank, no wimgt)."""
 
 import os
 import struct
@@ -9,69 +9,60 @@ from unittest import mock
 from PIL import Image
 
 from SluggiesTools.Dol import relocate
-from SluggiesTools.Icons.tests.test_update_icon_source_tables import make_plain_source_bank
 from SluggiesTools.Roster import dat_hammerspace as dhs
 from SluggiesTools.Roster import dol_hammerspace, icons, ids, ledger, steps
 from SluggiesTools.tests.test_roster_ids import fresh_image
 
-STOCK = make_plain_source_bank()[:icons.cib.STOCK_BANK_LENGTH]
-PAYLOAD = bytes(icons.pages.CMPR_IMAGE_LENGTH)
-sources = icons.sources
+
+def source_table(count: int, donor_rows) -> bytes:
+    """A source table of ``count`` records, IDs descending (the front table starts with key 0x4D, as stock);
+    IDs 0-5 point at ``donor_rows``, the others at their index; each body is filled with its index."""
+    table = bytearray(icons.SOURCE_HEADER + count * icons.SOURCE_RECORD)
+    struct.pack_into('>I', table, 0x08, len(table))
+    struct.pack_into('>HH', table, 0x24, count, icons.SOURCE_RECORD)
+    donors = dict(zip(range(6), donor_rows))
+    keys = [0x4D, *range(0x46, -1, -1)] if count == 72 else list(range(count - 1, -1, -1))
+    for index, cid in enumerate(keys):
+        start = icons.SOURCE_HEADER + index * icons.SOURCE_RECORD
+        struct.pack_into('>HHHH', table, start, 0x0014 if index == 0 else 0x0114, cid, 0x0400, donors.get(cid, index))
+        table[start + 8:start + icons.SOURCE_RECORD] = bytes([index & 0xFF]) * (icons.SOURCE_RECORD - 8)
+    return bytes(table)
+
+
+def stock_bank() -> bytes:
+    """A synthetic stock icon bank: the stock header, an empty texture section and a container with the three
+    source tables and 152 resource rows, laid out as the stock bank."""
+    bank = bytearray(icons.STOCK_BANK_LENGTH)
+    struct.pack_into('>II', bank, 0, icons.STOCK_TEXTURE_SECTION, icons.STOCK_CONTAINER)
+    struct.pack_into('>H', bank, 0x20, icons.STOCK_TEXTURE_COUNT)
+    root = icons.STOCK_CONTAINER
+    descriptor = root + icons.CONTAINER_HEAD
+    tables = [source_table(71, [0x00, 0x02, 0x03, 0x04, 0x05, 0x06]), source_table(71, [0x00, 0x02, 0x03, 0x04, 0x05, 0x06]),
+              source_table(72, [0x4F, 0x50, 0x51, 0x52, 0x53, 0x54])]
+    at = descriptor + 0x14
+    starts = []
+    for t in tables:
+        bank[at:at + len(t)] = t
+        starts.append(at)
+        at += len(t)
+    res = at
+    struct.pack_into('>II', bank, res, icons.STOCK_ROWS, 8 + icons.STOCK_ROWS * icons.ROW_SIZE)
+    struct.pack_into('>I', bank, root + icons.CONTAINER_END_FIELD, res + 8 + icons.STOCK_ROWS * icons.ROW_SIZE - root)
+    struct.pack_into('>I', bank, descriptor, 3)
+    for field, target in zip((icons.RESOURCE_FIELD,) + icons.TABLE_FIELDS, [res] + starts):
+        struct.pack_into('>i', bank, descriptor + field, target - descriptor)
+    return bytes(bank)
+
+
+STOCK = stock_bank()
 
 
 def entry(cid, like=0x00):
     return icons.IconEntry(cid, f'{cid:02x}_side.png', f'{cid:02x}_front.png', like)
 
 
-def records(bank, field):
-    offset = sources._signed_pointer(bank, field)
-    return {struct.unpack_from('>H', r, 2)[0]: r for r in icons._table(bank, offset)}, offset
-
-
-class BuildBankTests(unittest.TestCase):
-    def setUp(self):
-        self.entries = [entry(0x48), entry(0x49, 0x01), entry(0x66, 0x02)]
-        self.bank = icons.build_bank(STOCK, self.entries, PAYLOAD, PAYLOAD)
-
-    def test_rows_and_length(self):
-        res = sources.RESOURCE_TABLE_OFFSET
-        count, length = struct.unpack_from('>II', self.bank, res)
-        self.assertEqual(count, sources.STOCK_RESOURCE_COUNT + 6)
-        self.assertEqual(len(self.bank), res + length + icons.BANK_TAIL)
-        end = struct.unpack_from('>I', self.bank, icons.pages.RELOCATED_ICON_TABLE + 0x10)[0]
-        self.assertEqual(icons.pages.RELOCATED_ICON_TABLE + end, res + length)
-        third_front = res + 8 + (count - 1) * 0x14                 # entry 2, front page, slot x 128
-        page, _z, v1, u1, v2, u2 = struct.unpack_from('>HH4f', self.bank, third_front)
-        self.assertEqual((page, v1, round(u1 * 1024)), (icons.pages.FRONT_PAGE, 0.0, 128))
-
-    def test_keys(self):
-        side, _ = records(self.bank, sources.SIDE_POINTER_FIELD)
-        front, _ = records(self.bank, sources.FRONT_POINTER_FIELD)
-        normal, _ = records(self.bank, sources.NORMAL_A_POINTER_FIELD)
-        n = sources.STOCK_RESOURCE_COUNT
-        self.assertEqual([struct.unpack_from('>H', side[c], 6)[0] for c in (0x48, 0x49, 0x66)], [n, n + 1, n + 2])
-        self.assertEqual([struct.unpack_from('>H', front[c], 6)[0] for c in (0x48, 0x49, 0x66)], [n + 3, n + 4, n + 5])
-        self.assertNotIn(0x48, normal)                               # spare rows: side and front only
-        self.assertEqual(struct.unpack_from('>H', normal[0x66], 6)[0], n + 5)   # new IDs: normal_a = front row
-        self.assertEqual(side[0x49][8:], side[0x01][8:])           # like 0x01: Luigi's record body
-        self.assertEqual(side[0x66][8:], side[0x02][8:])
-
-    def test_tables_back_to_back_sorted_and_last_frame(self):
-        expect = sources.NORMAL_A_OFFSET
-        for field in (sources.NORMAL_A_POINTER_FIELD, sources.SIDE_POINTER_FIELD, sources.FRONT_POINTER_FIELD):
-            recs, offset = records(self.bank, field)
-            self.assertEqual(offset, expect)
-            table = icons._table(self.bank, offset)
-            keys = [struct.unpack_from('>H', r, 2)[0] for r in table]
-            self.assertEqual(keys, sorted(keys, reverse=True))
-            self.assertEqual([r[0] & 1 for r in table], [0] + [1] * (len(table) - 1))
-            self.assertGreaterEqual(struct.unpack_from('>H', self.bank, offset + 0x18)[0], 0x66)
-            expect = offset + sources._source_table_info(self.bank, offset)[0]
-        self.assertLessEqual(expect, icons.pages.SIDE_IMAGE_OFFSET)
-
-    def test_existing_key_refused(self):
-        with self.assertRaises(icons.IconBankError):
-            icons.build_bank(STOCK, [entry(0x01)], PAYLOAD, PAYLOAD)
+def table_length(bank, offset):
+    return struct.unpack_from('>I', bank, offset + 0x08)[0]
 
 
 def portrait(colour):
@@ -124,16 +115,16 @@ class PackedBankTests(unittest.TestCase):
 
     def test_pages(self):
         bank = self.bank
-        self.assertEqual(struct.unpack_from('>H', bank, 0x20)[0], icons.pages.PRIVATE_TEXTURE_COUNT)
+        self.assertEqual(struct.unpack_from('>H', bank, 0x20)[0], icons.TEXTURE_COUNT)
         tex_end = struct.unpack_from('>I', bank, 4)[0]
         self.assertEqual(tex_end % 0x20, 0)
-        for page_id, fill in ((icons.pages.SIDE_PAGE, 0x11), (icons.pages.FRONT_PAGE, 0x12)):
+        for page_id, fill in ((icons.SIDE_PAGE, 0x11), (icons.FRONT_PAGE, 0x12)):
             d = icons._descriptor_offset(page_id)
             image, palette, height, width = struct.unpack_from('>IIHH', bank, d)
-            self.assertEqual((width, height, palette, bank[d + 0x17]), (256, 64, 0, icons.pages.CMPR_FORMAT))
+            self.assertEqual((width, height, palette, bank[d + 0x17]), (256, 64, 0, icons.icon_art.CMPR_FORMAT))
             at = icons.TEX_BASE + image                                  # offsets count from bank +0x20
             self.assertEqual(at % 0x20, 0)
-            self.assertGreaterEqual(at, icons.cib.STOCK_ICON_TABLE)
+            self.assertGreaterEqual(at, icons.STOCK_CONTAINER)
             self.assertLessEqual(at + width * height // 2, tex_end)
             self.assertEqual(bank[at:at + width * height // 2], bytes([fill]) * (width * height // 2))
 
@@ -142,23 +133,23 @@ class PackedBankTests(unittest.TestCase):
         tex_end, desc, ptr = container(bank)
         res = ptr(icons.RESOURCE_FIELD)
         count, length = struct.unpack_from('>II', bank, res)
-        n = sources.STOCK_RESOURCE_COUNT
+        n = icons.STOCK_ROWS
         self.assertEqual(count, n + 6)
         self.assertEqual(length, 8 + count * 0x14)
         self.assertEqual(struct.unpack_from('>I', bank, tex_end + 0x10)[0], res + length - tex_end)
         self.assertEqual(len(bank), res + length + icons.BANK_TAIL)
         rows = [struct.unpack_from('>HH4f', bank, res + 8 + i * 0x14) for i in range(n, n + 6)]
-        self.assertEqual(rows[1][:2], (icons.pages.SIDE_PAGE, 0))
+        self.assertEqual(rows[1][:2], (icons.SIDE_PAGE, 0))
         self.assertEqual((rows[1][3] * 256, rows[1][5] * 256, rows[1][4] * 64), (52, 100, 51))
         self.assertEqual(rows[2][2:], rows[0][2:])                     # 0x66 shares 0x48's side portrait
-        self.assertEqual(rows[5][0], icons.pages.FRONT_PAGE)
+        self.assertEqual(rows[5][0], icons.FRONT_PAGE)
         self.assertEqual(rows[5][3] * 256, 104)
 
     def test_keys_and_tables(self):
         bank = self.bank
         tex_end, desc, ptr = container(bank)
-        expect = sources.NORMAL_A_OFFSET                               # they fit the free stock rows
-        n = sources.STOCK_RESOURCE_COUNT
+        expect = icons.TABLES_AT                               # they fit the free stock rows
+        n = icons.STOCK_ROWS
         found = {}
         for field in icons.TABLE_FIELDS:
             offset = ptr(field)
@@ -167,12 +158,12 @@ class PackedBankTests(unittest.TestCase):
             found[field] = {struct.unpack_from('>H', r, 2)[0]: struct.unpack_from('>H', r, 6)[0] for r in table}
             keys = [struct.unpack_from('>H', r, 2)[0] for r in table]
             self.assertEqual(keys, sorted(keys, reverse=True))
-            expect = offset + sources._source_table_info(bank, offset)[0]
-        self.assertEqual([found[sources.SIDE_POINTER_FIELD][c] for c in (0x48, 0x49, 0x66)], [n, n + 1, n + 2])
-        self.assertEqual(found[sources.NORMAL_A_POINTER_FIELD][0x66], n + 5)
-        self.assertNotIn(0x48, found[sources.NORMAL_A_POINTER_FIELD])
-        stock_res = icons._pointer(STOCK, icons.cib.STOCK_ICON_TABLE + 0x14, icons.RESOURCE_FIELD)
-        self.assertEqual(stock_res - icons.cib.STOCK_ICON_TABLE, ptr(icons.RESOURCE_FIELD) - tex_end)
+            expect = offset + table_length(bank, offset)
+        self.assertEqual([found[icons.SIDE_FIELD][c] for c in (0x48, 0x49, 0x66)], [n, n + 1, n + 2])
+        self.assertEqual(found[icons.NORMAL_A_FIELD][0x66], n + 5)
+        self.assertNotIn(0x48, found[icons.NORMAL_A_FIELD])
+        stock_res = icons._pointer(STOCK, icons.STOCK_CONTAINER + 0x14, icons.RESOURCE_FIELD)
+        self.assertEqual(stock_res - icons.STOCK_CONTAINER, ptr(icons.RESOURCE_FIELD) - tex_end)
         self.assertFalse(any(bank[desc + 0x14:ptr(icons.RESOURCE_FIELD)]))   # the old tables' place: zeroed
 
     def test_full_roster_moves_the_tables_after_the_pages(self):
@@ -181,10 +172,10 @@ class PackedBankTests(unittest.TestCase):
         self.assertEqual((side.width, side.height), (1024, 512))
         tex_end, _desc, ptr = container(bank)
         starts = [ptr(f) for f in icons.TABLE_FIELDS]
-        front = icons._descriptor_offset(icons.pages.FRONT_PAGE)
+        front = icons._descriptor_offset(icons.FRONT_PAGE)
         front_image = icons.TEX_BASE + struct.unpack_from('>I', bank, front)[0]
         self.assertGreaterEqual(starts[0], front_image + 1024 * 512 // 2)
-        end = starts[2] + sources._source_table_info(bank, starts[2])[0]
+        end = starts[2] + table_length(bank, starts[2])
         self.assertLessEqual(end, tex_end)                             # inside the texture section
         self.assertEqual(len(icons._table(bank, starts[1])), 71 + len(entries))
         self.assertLess(len(bank) - len(STOCK), 600_000)
@@ -198,7 +189,7 @@ class PackedBankTests(unittest.TestCase):
         side = icons.Page(1024, 64, [(0, 0)])
         bank = icons.build_packed_bank(bytes(stock), [entry(0x48)], side, side, bytes(0x8000), bytes(0x8000))
         palette = icons.TEX_BASE + struct.unpack_from('>I', bank, d86 + 4)[0]
-        self.assertEqual(palette, icons.cib.STOCK_ICON_TABLE)
+        self.assertEqual(palette, icons.STOCK_CONTAINER)
         self.assertEqual(bank[palette:palette + 0x200], bytes(range(256)) * 2)
         self.assertEqual(struct.unpack_from('>I', bank, d86)[0], 0x13660)
 
@@ -236,7 +227,7 @@ class StepTests(unittest.TestCase):
     def setUp(self):
         tmp = self.enterContext(tempfile.TemporaryDirectory())
         self.enterContext(mock.patch.object(dhs, 'BASE_SIZE', 0x100000))
-        self.enterContext(mock.patch.object(icons.cib, 'STOCK_BANK_OFFSET', self.STOCK_AT))
+        self.enterContext(mock.patch.object(icons, 'STOCK_BANK_OFFSET', self.STOCK_AT))
         self.enterContext(mock.patch.object(icons, 'ICON_DIR', tmp))
         path = os.path.join(tmp, 'dt_na.dat')
         with open(path, 'wb') as f:
@@ -246,7 +237,7 @@ class StepTests(unittest.TestCase):
         self.dat = ledger.DatFile(path)
         self.image = fresh_image()
         # stock words at the hook and resolver sites, the stock icon record, a minimal directory table
-        for site, stock, _stub in icons.HOOKS:
+        for site, stock, _stub in icons.OLD_HOOKS:
             self.image.write_word(site, stock)
         self.image.write_word(icons.RESOLVER_SITE, icons.RESOLVER_STOCK)
         record = b''.join(struct.pack('>4I', dhs.hh._DAT_FNAME_PTR, len(STOCK), self.STOCK_AT, len(STOCK))
@@ -258,11 +249,11 @@ class StepTests(unittest.TestCase):
     def run_step(self, config, state=None):
         ctx = steps.RosterContext(dol=self.image, dat=self.dat, config=config)
         ctx.state.update(state or {})
-        return ctx, icons.apply(ctx, encode=lambda entries: (PAYLOAD, PAYLOAD), encode_cmpr=blank_payload)
+        return ctx, icons.apply(ctx, encode_cmpr=blank_payload)
 
     def test_spare_rows_and_hooks(self):
-        hooked = icons.one(icons.HOOKS[0][0], lambda a: a.b(icons.HOOKS[0][2]))
-        self.image.write_word(icons.HOOKS[0][0], hooked)          # the pipeline's lower hook
+        hooked = icons.one(icons.OLD_HOOKS[0][0], lambda a: a.b(icons.OLD_HOOKS[0][2]))
+        self.image.write_word(icons.OLD_HOOKS[0][0], hooked)      # the retired pipeline's lower hook
         icon = {'side': 'a.png', 'front': 'b.png'}
         config = {'wheels': [{'id': '0x47', 'icon': icon}]}
         _ctx, log = self.run_step(config)
@@ -276,19 +267,9 @@ class StepTests(unittest.TestCase):
         self.assertEqual(bank, icons.build_packed_bank(STOCK, entries, side, front, blank_payload(side),
                                                        blank_payload(front)))
         self.assertIn('side 64x64 (1 portraits)', ' '.join(log))
-        self.assertEqual(self.image.u32(icons.HOOKS[0][0]), icons.HOOKS[0][1])
+        self.assertEqual(self.image.u32(icons.OLD_HOOKS[0][0]), icons.OLD_HOOKS[0][1])
         self.assertIn('back to stock', ' '.join(log))
         self.assertEqual(self.image.u32(icons.RESOLVER_SITE), icons.RESOLVER_STOCK)   # no new IDs with art
-
-    def test_slot_layout_switch(self):
-        config = {'wheels': [{'id': '0x47', 'icon': {'side': 'a.png', 'front': 'b.png'}}],
-                  'icon_debug': {'layout': 'slots'}}
-        self.run_step(config)
-        offset, length, _alloc = dhs.slot(dhs.read_record(self.image, icons.ICON_RECORD), 'en')
-        self.assertEqual(self.dat.read(offset, length),
-                         icons.build_bank(STOCK, icons.parse_icons(config, icons.ICON_DIR), PAYLOAD, PAYLOAD))
-        with self.assertRaisesRegex(icons.IconConfigError, 'layout'):
-            self.run_step(dict(config, icon_debug={'layout': 'tight'}))
 
     def test_new_id_with_art(self):
         hs = dol_hammerspace.DolHammerspace.create(self.image)

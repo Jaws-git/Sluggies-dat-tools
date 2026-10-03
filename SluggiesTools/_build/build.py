@@ -163,6 +163,8 @@ def verify() -> Path:
         PACKAGE / "3_Output_Dat" / "CopyFilesToGameDir.bat",
         PACKAGE / "SluggiesTools" / "export.py",
         PACKAGE / "1_Input" / "_Icons",
+        PACKAGE / "1_Input" / "_RosterConfigurations",
+        PACKAGE / "SluggiesTools" / "Roster" / "fonts" / "OpenSans.ttf",
         PACKAGE / addon_zip.name,
         PACKAGE / "docs" / "_docs_model_format" / "index.html",
     )

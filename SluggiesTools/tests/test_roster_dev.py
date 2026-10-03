@@ -246,11 +246,13 @@ class RunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(runner.RosterDevError, 'normal pipeline'):
             runner.run(self.tmp, self.config)
 
-    def test_registry_lists_planned_steps_in_order(self):
-        keys = [k for k, _p, _t in steps.PLANNED]
-        built = [s.key for s in steps.implemented()]
-        self.assertEqual(built, [k for k in keys if k in built])
-        self.assertEqual(built[0], 'dol_hammerspace')
+    def test_registry_runs_every_step_in_order(self):
+        self.assertEqual([s.key for s in steps.all_steps()], [k for k, _t in steps.STEPS])
+        self.assertEqual(steps.all_steps()[0].key, 'dol_hammerspace')
+
+    def test_config_is_required(self):
+        with self.assertRaisesRegex(runner.RosterDevError, 'no roster configuration'):
+            runner.run(self.tmp)
 
 
 if __name__ == '__main__':

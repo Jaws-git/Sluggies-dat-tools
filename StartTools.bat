@@ -14,7 +14,7 @@ echo.
 echo [1] Extract all models, icons ^& 'untangle' textures (for Dolphin texture loader)
 echo [2] Extract all models
 echo [3] Extract player icons
-echo [4] Patch all 6 unused-character icons into game files
+echo [4] Add the 6 unused characters with their icons (roster configuration 02_Stock_and_Unused)
 echo.
 echo [5] Patch .sluggie models or .png textures into game files
 echo [6] UnPatch .sluggie model from game files
@@ -23,7 +23,7 @@ echo [7] Manually resize available hammerspace (extra model data storage) - usua
 echo [8] Import edited icon sheets (.\2_Output_Models\_ICONS\sheets\)
 echo [9] Repair unused characters' models (re-split them from their playable counterparts)
 echo.
-echo [10] Roster expansion: inject a roster preset into 3_Output_Dat
+echo [10] Roster expansion: inject a roster configuration into 3_Output_Dat
 echo.
 set "tools_choice="
 set /p "tools_choice=Enter option (or type exit to quit): "
@@ -38,8 +38,6 @@ if "!tools_choice!"=="1" (
     call !SLUGGIES_LAUNCHER! --export --untangle
     if errorlevel 1 goto :after_command
     call !SLUGGIES_LAUNCHER! --export-icons
-    if errorlevel 1 goto :after_command
-    call !SLUGGIES_LAUNCHER! --add-custom-icons
     goto :after_command
 )
 if "!tools_choice!"=="2" (
@@ -57,18 +55,10 @@ if "!tools_choice!"=="3" (
     goto :after_command
 )
 if "!tools_choice!"=="4" (
-    set "SLUGGIES_MENU_SELECTION=4 - Patch custom icons"
+    set "SLUGGIES_MENU_SELECTION=4 - Unused characters (roster configuration 02_Stock_and_Unused)"
     set "SLUGGIES_MODEL_FILES="
     set "SLUGGIES_ICON_SHARED_MODE="
-    call !SLUGGIES_LAUNCHER! --add-custom-icons
-    set "tools_result=!errorlevel!"
-    if not "!tools_result!"=="0" (
-        echo.
-        echo Custom icon patching failed with exit code !tools_result!.
-    ) else (
-        echo.
-        echo Custom icon patching completed successfully.
-    )
+    call !SLUGGIES_LAUNCHER! --roster --config "1_Input\_RosterConfigurations\02_Stock_and_Unused.json"
     goto :after_command
 )
 if "!tools_choice!"=="5" (
@@ -141,9 +131,9 @@ if "!tools_choice!"=="10" (
     set "roster_file="
     if defined roster_mode for /f "delims=" %%N in ("!roster_mode!") do set "roster_file=!roster_cfg_%%N!"
     if /i "!roster_mode!"=="r" (
-        call !SLUGGIES_LAUNCHER! --roster-dev --remove
+        call !SLUGGIES_LAUNCHER! --roster --remove
     ) else if defined roster_file (
-        call !SLUGGIES_LAUNCHER! --roster-dev --config "!roster_dir!\!roster_file!"
+        call !SLUGGIES_LAUNCHER! --roster --config "!roster_dir!\!roster_file!"
     ) else (
         echo   Unknown choice: !roster_mode!
     )

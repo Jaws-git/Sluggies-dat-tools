@@ -1,8 +1,7 @@
-"""Registry of roster-expansion steps, in plan order.
+"""Registry of the roster steps, in run order.
 
-Each phase's module registers its step with ``@register('<key>')``; the
-development injector (``runner.py``, menu [10]) runs every registered step
-in ``PLANNED`` order and reports the rest as not built yet. A step function
+Each step's module registers it with ``@register('<key>')``; the runner
+(``runner.py``, menu [10]) runs them in ``STEPS`` order. A step function
 takes a ``RosterContext`` and returns log lines; it changes ``ctx.dol`` and
 ``ctx.dat`` only, so the runner can record (and later undo) everything.
 """
@@ -11,25 +10,15 @@ import importlib
 from dataclasses import dataclass, field
 from typing import Callable
 
-# (key, plan phase, title)
-PLANNED = (
-    ('dol_hammerspace', '1', 'DOL hammerspace'),
-    ('layout_file', '2', 'Select layout file in DAT hammerspace'),
-    ('ids', '3', 'Uncapped character IDs'),
-    ('wheels', '4', 'Colour wheels'),
-    ('icons', '5', 'Icons for new IDs and variants'),
-    ('grid', '6', 'Exhibition grid columns'),
-    ('names', '8', 'User-set names'),
-)
-# Modules that register steps (imported on demand, so a missing one only hides its step).
-STEP_MODULES = (
-    'dol_hammerspace',
-    'layout_file',
-    'ids',
-    'wheels',
-    'icons',
-    'grid',
-    'names',
+# (key = the module that registers it, title), in run order
+STEPS = (
+    ('dol_hammerspace', 'DOL hammerspace'),
+    ('layout_file', 'Select layout file in DAT hammerspace'),
+    ('ids', 'New character IDs'),
+    ('wheels', 'Colour wheels'),
+    ('icons', 'Icons'),
+    ('grid', 'Exhibition draft grid'),
+    ('names', 'Names'),
 )
 
 
@@ -44,7 +33,6 @@ class RosterContext:
 @dataclass(frozen=True)
 class Step:
     key: str
-    phase: str
     title: str
     apply: Callable[[RosterContext], list]
 
@@ -53,7 +41,7 @@ _REGISTRY: dict[str, Callable] = {}
 
 
 def register(key: str):
-    if key not in {k for k, _p, _t in PLANNED}:
+    if key not in {k for k, _t in STEPS}:
         raise KeyError(f'unknown roster step {key!r}')
 
     def decorate(fn):
@@ -62,20 +50,7 @@ def register(key: str):
     return decorate
 
 
-def _load_modules() -> None:
-    for name in STEP_MODULES:
-        try:
-            importlib.import_module(f'{__package__}.{name}' if __package__ else name)
-        except ModuleNotFoundError as exc:
-            if exc.name not in (name, f'{__package__}.{name}'):
-                raise
-
-
-def implemented() -> list[Step]:
-    _load_modules()
-    return [Step(k, p, t, _REGISTRY[k]) for k, p, t in PLANNED if k in _REGISTRY]
-
-
-def not_built() -> list[tuple[str, str, str]]:
-    _load_modules()
-    return [(k, p, t) for k, p, t in PLANNED if k not in _REGISTRY]
+def all_steps() -> list[Step]:
+    for key, _title in STEPS:
+        importlib.import_module(f'{__package__}.{key}' if __package__ else key)
+    return [Step(key, title, _REGISTRY[key]) for key, title in STEPS]

@@ -1,16 +1,13 @@
-"""Development injector for the roster expansion (``start.py --roster-dev``, StartTools menu [10]).
+"""The roster expansion (``start.py --roster``, StartTools menu [10]).
 
-Runs every roster-expansion step built so far, in plan order, on the files in
-``3_Output_Dat`` (the normal pipeline's output), so the expansion can be
-tested on its own while it is being built.
+Runs every roster step (``steps.STEPS``, in order) with one roster
+configuration (``--config``, e.g. from ``1_Input/_RosterConfigurations``) on
+the files in ``3_Output_Dat`` (the normal pipeline's output).
 
-* It first takes out the previous injection (each step's recorded changes,
-  newest first, from ``3_Output_Dat/roster_dev/report.json``), so repeated
-  runs never stack.
+* It first takes out the previous injection (the changes recorded in
+  ``3_Output_Dat/roster_dev/report.json``), so repeated runs never stack.
 * ``--remove`` only takes the previous injection out.
 * ``--dry-run`` runs everything in memory and writes nothing.
-* ``--config`` picks the roster preset; the default is ``1_Input/roster.json``,
-  else the built-in development preset next to this file.
 """
 
 import argparse
@@ -37,12 +34,10 @@ except ImportError:
     import ledger
     import steps
 
-SOURCE = 'roster.dev'
+SOURCE = 'roster'
 ROOT = os.path.normpath(os.path.join(_TOOLS_DIR, '..'))
 OUTPUT_DIR = os.path.join(ROOT, '3_Output_Dat')
 REPORT_NAME = os.path.join('roster_dev', 'report.json')
-USER_CONFIG = os.path.join(ROOT, '1_Input', 'roster.json')
-DEV_PRESET = os.path.join(_HERE, 'dev_preset.json')
 REPORT_VERSION = 1
 INPUT_FST = os.path.join(ROOT, '1_Input', 'fst.bin')
 FST_DAT_SIZE_OFFSET = 1 * 12 + 8       # dt_na.dat is FST entry 1; its size word (as HammerspaceHelper)
@@ -53,11 +48,15 @@ class RosterDevError(RuntimeError):
 
 
 def load_config(path: str | None) -> tuple[dict, str]:
-    for candidate in ([path] if path else [USER_CONFIG, DEV_PRESET]):
-        if candidate and os.path.isfile(candidate):
-            with open(candidate, encoding='utf-8') as f:
-                return json.load(f), candidate
-    raise RosterDevError(f'roster config not found: {path or USER_CONFIG}')
+    if not path:
+        raise RosterDevError('no roster configuration given (--config PATH, e.g. a file in 1_Input/_RosterConfigurations)')
+    if not os.path.isfile(path):
+        raise RosterDevError(f'roster configuration not found: {path}')
+    try:
+        with open(path, encoding='utf-8') as f:
+            return json.load(f), path
+    except ValueError as exc:
+        raise RosterDevError(f'{path} is not valid JSON: {exc}') from exc
 
 
 def _display_path(path: str) -> str:
@@ -154,28 +153,23 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
         previous = None
 
     log += remove_previous(previous, dol_bytes, dat)
-    report = {'version': REPORT_VERSION, 'time': time.strftime('%Y-%m-%d %H:%M:%S'), 'steps': [],
-              'not_built': [], 'log': []}
+    report = {'version': REPORT_VERSION, 'time': time.strftime('%Y-%m-%d %H:%M:%S'), 'steps': [], 'log': []}
     if not remove_only:
         config, config_source = load_config(config_path)
         report['config'] = _display_path(config_source)
         image = dolfile.DolImage(bytes(dol_bytes))
         ctx = steps.RosterContext(dol=image, dat=dat, config=config)
-        built = steps.implemented()
-        if not built:
-            log.append('no roster steps implemented yet')
         dat_writes = []
-        for step in built:
+        for step in steps.all_steps():
             before = image.to_bytes()
             lines = step.apply(ctx) or []
             writes = dat.take_raw() if dat is not None else []
             dat_writes.append(writes)
-            entry = {'key': step.key, 'phase': step.phase, 'title': step.title, 'log': list(lines),
+            entry = {'key': step.key, 'title': step.title, 'log': list(lines),
                      'dol': ledger.diff_bytes(before, image.to_bytes()), 'dat_writes': len(writes)}
             report['steps'].append(entry)
             log += [f'[{step.key}] {line}' for line in lines]
         report['dat_run'] = dat.run_record(dat_writes) if dat is not None else []
-        report['not_built'] = [f'Phase {p}: {t}' for _k, p, t in steps.not_built()]
         dol_bytes = bytearray(image.to_bytes())
     report['log'] = log
     report['dol_sha1'] = hashlib.sha1(dol_bytes).hexdigest()
@@ -207,8 +201,8 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
 
 def main(argv=None) -> int:
     slogger.configure()
-    parser = argparse.ArgumentParser(description='Roster expansion development injector (menu [10]).')
-    parser.add_argument('--config', help='roster preset JSON (default: 1_Input/roster.json, else the dev preset)')
+    parser = argparse.ArgumentParser(description='Roster expansion (menu [10]).')
+    parser.add_argument('--config', help='the roster configuration JSON (e.g. from 1_Input/_RosterConfigurations)')
     parser.add_argument('--remove', action='store_true', help='only take the previous injection out')
     parser.add_argument('--dry-run', action='store_true', help='run in memory, write nothing')
     parser.add_argument('--output-dir', default=OUTPUT_DIR, help=argparse.SUPPRESS)
@@ -220,8 +214,6 @@ def main(argv=None) -> int:
         return 1
     for line in report['log']:
         slogger.info(line, source=SOURCE)
-    for line in report['not_built']:
-        slogger.info(f'not built yet: {line}', source=SOURCE)
     what = 'removed' if args.remove else 'injected'
     slogger.info(f'roster expansion {what}{" (dry run, nothing written)" if args.dry_run else ""}; '
                  f'main.dol sha1 {report["dol_sha1"]}', source=SOURCE)

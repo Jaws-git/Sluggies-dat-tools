@@ -51,13 +51,11 @@ TOOLS_DIR = os.path.join(ROOT_DIR, 'SluggiesTools')
 ICONS_DIR = os.path.join(TOOLS_DIR, 'Icons')
 ICON_EXPORT_SCRIPT = os.path.join(ICONS_DIR, 'export_icons.py')
 ICON_PATCH_SCRIPT = os.path.join(ICONS_DIR, 'patch_icons_inplace.py')
-ICON_ROUTE_PREP_SCRIPT = os.path.join(ICONS_DIR, 'prepare_icon_routes.py')
-CUSTOM_ICON_SCRIPT = os.path.join(ICONS_DIR, 'add_custom_icons.py')
 HS_DIR = os.path.join(TOOLS_DIR, 'Hammerspace')
 HS_HELPER_SCRIPT = os.path.join(HS_DIR, 'HammerspaceHelper.py')
 HS_MAIN_SCRIPT = os.path.join(HS_DIR, 'HammerspaceMain.py')
 UNTANGLE_POLICY_SCRIPT = os.path.join(HS_DIR, 'UntanglePolicy.py')
-ROSTER_DEV_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'runner.py')
+ROSTER_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'runner.py')
 
 # Model directory indices that hold unused characters (see folderNameMap in
 # export.py). These characters share a playable character's model block and
@@ -111,9 +109,9 @@ def run_resplit_unused():
     subprocess.run(python_script_command(UNTANGLE_POLICY_SCRIPT), cwd=HS_DIR, check=True)
 
 
-def run_roster_dev(config=None, remove=False, dry_run=False):
-    """Development injector: apply (or only remove) the roster-expansion steps built so far."""
-    cmd = python_script_command(ROSTER_DEV_SCRIPT)
+def run_roster(config=None, remove=False, dry_run=False):
+    """Roster expansion: inject a roster configuration (or only remove the previous injection)."""
+    cmd = python_script_command(ROSTER_SCRIPT)
     if config:
         cmd += ['--config', os.path.abspath(config)]       # the injector runs in SluggiesTools/
     if remove:
@@ -167,7 +165,7 @@ def run_export_icons(use_output=False):
         dat_path = os.path.join(ROOT_DIR, '3_Output_Dat', 'dt_na.dat')
         if not os.path.exists(dol_path) or not os.path.exists(dat_path):
             slogger.error('Missing 3_Output_Dat/main.dol or 3_Output_Dat/dt_na.dat', source="dispatcher")
-            slogger.error('Run a patch step first (e.g. --add-custom-icons), or drop --use-output', source="dispatcher")
+            slogger.error('Run a patch step first (e.g. --roster or --patch), or drop --use-output', source="dispatcher")
             sys.exit(1)
         cmd += ['--dol-path', dol_path, '--dat-path', dat_path]
 
@@ -177,19 +175,6 @@ def run_export_icons(use_output=False):
         check=True
     )
     slogger.info('Icon export complete. Find your files in the folder "2_Output_Models/_ICONS"', source="dispatcher")
-
-
-def run_prepare_icon_routes(no_overwrite_copy=False):
-    cmd = python_script_command(ICON_ROUTE_PREP_SCRIPT)
-    if no_overwrite_copy:
-        cmd.append('--no-overwrite-copy')
-
-    subprocess.run(
-        cmd,
-        cwd=TOOLS_DIR,
-        check=True
-    )
-    slogger.info('Icon route prepatch complete. Patched files are in "3_Output_Dat"', source="dispatcher")
 
 
 def run_patch_icons(source=None, dry_run=False):
@@ -205,32 +190,6 @@ def run_patch_icons(source=None, dry_run=False):
         slogger.info('Icon reimport dry-run complete. Check metadata [META]/reimport_report.json for details.', source="dispatcher")
     else:
         slogger.info('Icon reimport complete. Patched DAT is in the folder "3_Output_Dat"', source="dispatcher")
-
-
-def run_add_custom_icons(dry_run=False, diagnostic_stage=None, icon_fit='contain'):
-    if importlib.util.find_spec('PIL') is None:
-        slogger.error('Missing required package: Pillow', source="dispatcher")
-        slogger.error('Run: pip install Pillow', source="dispatcher")
-        sys.exit(1)
-
-    cmd = python_script_command(CUSTOM_ICON_SCRIPT)
-    if dry_run:
-        cmd.append('--dry-run')
-    if diagnostic_stage:
-        cmd.extend(('--diagnostic-stage', diagnostic_stage))
-    cmd.extend(('--icon-fit', icon_fit))
-    subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
-    if dry_run:
-        slogger.info('Custom icon dry run complete. No output files were changed.', source="dispatcher")
-    else:
-        if diagnostic_stage:
-            slogger.info(
-                f'Custom icon diagnostic stage {diagnostic_stage} complete. '
-                'Patched files are in "3_Output_Dat".',
-                source="dispatcher",
-            )
-        else:
-            slogger.info('Custom icon installation complete. Patched files are in "3_Output_Dat".', source="dispatcher")
 
 
 def hammerspace_section_args(model):
@@ -545,10 +504,8 @@ def parse_args():
             '  python start.py --export --debug --notex --untangle\n'
             '  python start.py --export --untangle\n'
             '  python start.py --export --dae\n'
-            '  python start.py --prepare-icon-routes\n'
-            '  python start.py --add-custom-icons --dry-run\n'
-            '  python start.py --add-custom-icons --custom-icon-stage a\n'
-            '  python start.py --add-custom-icons\n'
+            '  python start.py --roster --config 1_Input/_RosterConfigurations/02_Stock_and_Unused.json\n'
+            '  python start.py --roster --remove\n'
             '  python start.py --export-icons\n'
             '  python start.py --export-icons --use-output\n'
             '  python start.py --patch-icons\n'
@@ -568,10 +525,8 @@ def parse_args():
     mode.add_argument('--unpatch', nargs='+', metavar='FILENAME', help='restore original data for one or more .sluggies files')
     mode.add_argument('-hs', '--hammerspace', action='store_true', help='change available memory space in outputdt_na.dat')
     mode.add_argument('--resplit-unused', action='store_true', help='repair: give unused-character routes (dirs 89-94) that point at a playable character\'s block their own copy again')
-    mode.add_argument('--roster-dev', action='store_true', help='DEVELOPMENT: inject the roster-expansion steps built so far into 3_Output_Dat (replaces the previous injection)')
+    mode.add_argument('--roster', '--roster-dev', dest='roster', action='store_true', help='inject a roster configuration (--config, e.g. from 1_Input/_RosterConfigurations) into 3_Output_Dat, replacing the previous injection')
     mode.add_argument('--export', action='store_true', help='export all models from 1_Input to 2_Output_Models')
-    mode.add_argument('--prepare-icon-routes', action='store_true', help='EXPERIMENTAL, superseded: apply the Mii icon-block resolver experiment to output DOL/DAT copies (not part of any menu workflow)')
-    mode.add_argument('--add-custom-icons', action='store_true', help='install the complete six-character custom icon pipeline')
     mode.add_argument('--export-icons', action='store_true', help='export character-select icon atlases and metadata to 2_Output_Models/_ICONS')
     mode.add_argument(
         '--patch-icons',
@@ -586,20 +541,9 @@ def parse_args():
     parser.add_argument('--untangle', action='store_true', help='export only: pass untangling flag through to export process')
     parser.add_argument('--dae', action='store_true', help='export only: also write .dae model files to disk (always writes .sluggie files)')
     parser.add_argument('--use-output', action='store_true', help='export-icons only: read DOL/DAT from 3_Output_Dat instead of 1_Input')
-    parser.add_argument('--no-overwrite-copy', action='store_true', help='prepare-icon-routes only: patch existing 3_Output_Dat files without recopying from 1_Input')
-    parser.add_argument('--dry-run', action='store_true', help='patch-icons/add-custom-icons/roster-dev: validate without writing bytes')
-    parser.add_argument('--config', metavar='PATH', help='roster-dev only: roster preset JSON (default: 1_Input/roster.json, else the built-in dev preset)')
-    parser.add_argument('--remove', action='store_true', help='roster-dev only: take the previous injection out and stop')
-    parser.add_argument(
-        '--custom-icon-stage',
-        choices=tuple('abcdefghijk'),
-        help='add-custom-icons only: cumulative diagnostic stage to build from pristine inputs',
-    )
-    parser.add_argument(
-        '--icon-fit',
-        choices=('contain', 'cover', 'strict'),
-        help='add-custom-icons only: fit source artwork into 48x51 slots (default: contain)',
-    )
+    parser.add_argument('--dry-run', action='store_true', help='patch-icons/roster: validate without writing bytes')
+    parser.add_argument('--config', metavar='PATH', help='roster only: the roster configuration JSON')
+    parser.add_argument('--remove', action='store_true', help='roster only: take the previous injection out and stop')
 
     args = parser.parse_args()
 
@@ -613,17 +557,13 @@ def parse_args():
         parser.error('--dae can only be used with --export.')
     if args.use_output and not args.export_icons:
         parser.error('--use-output can only be used with --export-icons.')
-    if args.no_overwrite_copy and not args.prepare_icon_routes:
-        parser.error('--no-overwrite-copy can only be used with --prepare-icon-routes.')
-    if args.dry_run and not (args.patch_icons is not None or args.add_custom_icons or args.roster_dev):
-        parser.error('--dry-run can only be used with --patch-icons, --add-custom-icons or --roster-dev.')
-    if (args.config or args.remove) and not args.roster_dev:
-        parser.error('--config and --remove can only be used with --roster-dev.')
-    if args.custom_icon_stage and not args.add_custom_icons:
-        parser.error('--custom-icon-stage can only be used with --add-custom-icons.')
-    if args.icon_fit and not args.add_custom_icons:
-        parser.error('--icon-fit can only be used with --add-custom-icons.')
-    if not any([args.patch, args.unpatch, args.hammerspace, args.resplit_unused, args.export, args.prepare_icon_routes, args.add_custom_icons, args.export_icons, args.patch_icons is not None, args.roster_dev]):
+    if args.dry_run and not (args.patch_icons is not None or args.roster):
+        parser.error('--dry-run can only be used with --patch-icons or --roster.')
+    if (args.config or args.remove) and not args.roster:
+        parser.error('--config and --remove can only be used with --roster.')
+    if args.roster and not (args.config or args.remove):
+        parser.error('--roster needs --config PATH (a roster configuration) or --remove.')
+    if not any([args.patch, args.unpatch, args.hammerspace, args.resplit_unused, args.export, args.export_icons, args.patch_icons is not None, args.roster]):
         parser.print_help()
         sys.exit(0)
 
@@ -683,18 +623,10 @@ def main() -> int:
             run_hammerspace_helper()
         elif args.resplit_unused:
             run_resplit_unused()
-        elif args.roster_dev:
-            run_roster_dev(config=args.config, remove=args.remove, dry_run=args.dry_run)
+        elif args.roster:
+            run_roster(config=args.config, remove=args.remove, dry_run=args.dry_run)
         elif args.export:
             run_export(debug=args.debug, notex=args.notex, untangle=args.untangle, dae=args.dae)
-        elif args.prepare_icon_routes:
-            run_prepare_icon_routes(no_overwrite_copy=args.no_overwrite_copy)
-        elif args.add_custom_icons:
-            run_add_custom_icons(
-                dry_run=args.dry_run,
-                diagnostic_stage=args.custom_icon_stage,
-                icon_fit=args.icon_fit or 'contain',
-            )
         elif args.export_icons:
             run_export_icons(use_output=args.use_output)
         elif args.patch_icons is not None:
