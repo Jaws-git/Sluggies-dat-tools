@@ -319,7 +319,12 @@ def read_record(image) -> list[int]:
 def apply(ctx: steps.RosterContext, encode=encode_atlases) -> list[str]:
     entries = parse_icons(ctx.config)
     if not entries:
-        return ['no "icon" in the roster config: the icon bank stays as it is']
+        bare = [ids._number(w.get('id'), 'wheels.id') for w in ctx.config.get('wheels') or [] if w.get('id')]
+        note = ['no "icon" in the roster config: the icon bank stays as it is']
+        if bare:
+            note.append('note: ' + ', '.join(f'0x{c:02X}' for c in bare) + ' have no icon here; unless the icon '
+                        'pipeline gave them one, they show the held stock key (Pink Yoshi)')
+        return note
     if ctx.dat is None:
         raise IconBankError('dt_na.dat is missing in the output folder')
     stock = ctx.dat.read(cib.STOCK_BANK_OFFSET, cib.STOCK_BANK_LENGTH)
