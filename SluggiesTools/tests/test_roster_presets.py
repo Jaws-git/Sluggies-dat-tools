@@ -16,7 +16,10 @@ from SluggiesTools.tests.test_roster_names import plate_bank
 from SluggiesTools.Icons import layout2d
 from SluggiesTools.Roster import dol_hammerspace as dhs
 
-PRESETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'Roster', 'presets')
+PRESETS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), '1_Input',
+                       '_RosterConfigurations')
+SHIPPED = ('01_Stock_Roster.json', '02_Stock_and_Unused.json', '03_Unuseds_and_10_slot_colors.json',
+           '04_all_in_one_12x5_grid.json')
 SQUARE_CONFIG = {'ids': [{'id': '0x66', 'template': '0x02', 'wheel': None},
                          {'id': '0x67', 'template': '0x06', 'wheel': '0x06'}],
                  'grid': {'squares': [['0x66']]}}
@@ -89,7 +92,7 @@ class PresetTests(unittest.TestCase):
             return json.load(f)
 
     def test_presets_parse(self):
-        for name in sorted(n for n in os.listdir(PRESETS) if n.endswith('.json')):
+        for name in SHIPPED:                     # (not the user's own files in that folder)
             with self.subTest(preset=name):
                 config = self.load(name)
                 new = ids.parse_ids(config)
@@ -102,7 +105,7 @@ class PresetTests(unittest.TestCase):
                 self.assertLessEqual(len(new), ids.MAX_ID - ids.FIRST_NEW + 1)
 
     def test_all_in_one(self):
-        config = self.load('4_all_in_one.json')
+        config = self.load('04_all_in_one_12x5_grid.json')
         new = ids.parse_ids(config)
         squares = [c for c in new if c.wheel is None]
         self.assertEqual(len(squares), 19)

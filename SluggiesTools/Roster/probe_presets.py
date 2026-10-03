@@ -1,4 +1,4 @@
-"""Hand-run: every menu [10] preset end to end on a scratch copy of ``1_Input`` (real files, about 1.5 GB of disk).
+"""Hand-run: every shipped roster preset end to end on a scratch copy of ``1_Input`` (real files, about 1.5 GB of disk).
 
 For each preset (in menu order, each replacing the previous injection, as the menu does):
 - the run succeeds and a second run gives the same main.dol and dt_na.dat;
@@ -26,7 +26,9 @@ from SluggiesTools.Icons import layout2d  # noqa: E402
 from SluggiesTools.Roster import dat_hammerspace as dhs  # noqa: E402
 from SluggiesTools.Roster import grid, icons, names, runner  # noqa: E402
 
-PRESETS = ('1_stock.json', '2_unused.json', '3_unused_wheels10.json', '4_all_in_one.json')
+PRESETS = ('01_Stock_Roster.json', '02_Stock_and_Unused.json', '03_Unuseds_and_10_slot_colors.json',
+           '04_all_in_one_12x5_grid.json')
+PRESET_DIR = os.path.join(ROOT, '1_Input', '_RosterConfigurations')
 INPUT = os.path.join(ROOT, '1_Input')
 
 
@@ -72,7 +74,7 @@ def main() -> int:
         stock_dol, stock_size = sha(dol), os.path.getsize(dat)
         stock_dat = sha(dat)
         for preset in PRESETS:
-            path = os.path.join(HERE, 'presets', preset)
+            path = os.path.join(PRESET_DIR, preset)
             runner.run(work, path)
             first = sha(dol), sha(dat)
             runner.run(work, path)
@@ -80,17 +82,17 @@ def main() -> int:
             with open(dol, 'rb') as f:
                 image = dolfile.DolImage(f.read())
             squares = image.u32(grid.COUNT_LOOP_B) & 0xFFFF
-            check(squares == (60 if preset.startswith('4') else 0x29),
+            check(squares == (60 if preset.startswith('04') else 0x29),
                   f'{preset}: square count word {squares}')
             icon = dhs.slot(dhs.read_record(image, icons.ICON_RECORD), 'en')[0]
-            check((icon >= dhs.BASE_SIZE) == (preset != '1_stock.json'), f'{preset}: icon bank at 0x{icon:08X}')
+            check((icon >= dhs.BASE_SIZE) == (not preset.startswith('01')), f'{preset}: icon bank at 0x{icon:08X}')
             text = dhs.slot(dhs.read_record(image, names.name_record(image)), 'en')[0]
-            check((text >= dhs.BASE_SIZE) == (preset[0] in '34'), f'{preset}: name table at 0x{text:08X}')
+            check((text >= dhs.BASE_SIZE) == (preset[:2] in ('03', '04')), f'{preset}: name table at 0x{text:08X}')
             layout = dhs.slot(dhs.read_record(image, dhs.dol_base_address(layout2d.CSS_LAYOUT_DOL_RECORD)), 'en')
             with open(dat, 'rb') as f:
                 f.seek(layout[0])
                 rows = len(layout2d.Layout(f.read(layout[1])).rows)
-            check(rows == (483 + 0xFF - 0x66 if preset[0] in '34' else 483), f'{preset}: select layout rows {rows}')
+            check(rows == (483 + 0xFF - 0x66 if preset[:2] in ('03', '04') else 483), f'{preset}: select layout rows {rows}')
         runner.run(work, remove_only=True)
         check(sha(dol) == stock_dol, 'remove: main.dol is the input DOL')
         check(sha(dat, stock_size) == stock_dat and tail_is_zero(dat, stock_size),

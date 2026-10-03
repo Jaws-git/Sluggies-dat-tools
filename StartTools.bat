@@ -125,28 +125,25 @@ if "!tools_choice!"=="10" (
     set "SLUGGIES_MENU_SELECTION=10 - Roster expansion"
     set "SLUGGIES_MODEL_FILES="
     set "SLUGGIES_ICON_SHARED_MODE="
-    set "roster_presets=SluggiesTools\Roster\presets"
-    echo   Each choice replaces the previous injection.
-    echo   [1] Stock roster
-    echo   [2] Stock + the six unused characters
-    echo   [3] Stock + unused + every colour wheel filled to 10 ^(open slots^)
-    echo   [4] All in one: preset 3 on a 12x5 grid with 19 new squares ^(open slots^)
-    echo   [u] Your own 1_Input\roster.json
+    set "roster_dir=1_Input\_RosterConfigurations"
+    for /f "delims==" %%V in ('set roster_cfg_ 2^>nul') do set "%%V="
+    set "roster_count=0"
+    echo   Roster configurations in !roster_dir! ^(each choice replaces the previous injection^):
+    for /f "delims=" %%F in ('dir /b /a-d /on "1_Input\_RosterConfigurations\*.json" 2^>nul') do (
+        set /a roster_count+=1
+        set "roster_cfg_!roster_count!=%%F"
+        echo   [!roster_count!] %%F
+    )
+    if "!roster_count!"=="0" echo   ^(no .json files found^)
     echo   [r] Remove the previous injection only
     set "roster_mode="
     set /p "roster_mode=Choose: "
+    set "roster_file="
+    if defined roster_mode for /f "delims=" %%N in ("!roster_mode!") do set "roster_file=!roster_cfg_%%N!"
     if /i "!roster_mode!"=="r" (
         call !SLUGGIES_LAUNCHER! --roster-dev --remove
-    ) else if /i "!roster_mode!"=="u" (
-        call !SLUGGIES_LAUNCHER! --roster-dev --config 1_Input\roster.json
-    ) else if "!roster_mode!"=="1" (
-        call !SLUGGIES_LAUNCHER! --roster-dev --config !roster_presets!\1_stock.json
-    ) else if "!roster_mode!"=="2" (
-        call !SLUGGIES_LAUNCHER! --roster-dev --config !roster_presets!\2_unused.json
-    ) else if "!roster_mode!"=="3" (
-        call !SLUGGIES_LAUNCHER! --roster-dev --config !roster_presets!\3_unused_wheels10.json
-    ) else if "!roster_mode!"=="4" (
-        call !SLUGGIES_LAUNCHER! --roster-dev --config !roster_presets!\4_all_in_one.json
+    ) else if defined roster_file (
+        call !SLUGGIES_LAUNCHER! --roster-dev --config "!roster_dir!\!roster_file!"
     ) else (
         echo   Unknown choice: !roster_mode!
     )

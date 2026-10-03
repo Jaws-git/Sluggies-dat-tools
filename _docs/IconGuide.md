@@ -14,8 +14,8 @@ After editing sheets in ``2_Output_Models/_ICONS/sheets (EDIT THESE)``, reimport
 Icons for the six unused characters and for new character IDs come from the roster expansion (menu **[10]**, see [RosterGuide.md](RosterGuide.md)):
 
 1) Put a side and a front portrait PNG per character into `1_Input/_Icons/`. They are fitted into 48x51 (`fit`: `contain`, `cover` or `strict`).
-2) Name them in the character's entry of `1_Input/roster.json`: `"icon": {"side": "x_side.png", "front": "x_front.png"}`, or `"icon": "placeholder"` for the built-in "empty slot" portrait. Preset [2] already does this for the six unused characters with the PNGs shipped in `1_Input/_Icons/`.
-3) Run menu [10] and choose your config ([u]) or a preset, then copy `main.dol`, `dt_na.dat` and `fst.bin` into the game.
+2) Name them in the character's entry of a roster configuration in `1_Input/_RosterConfigurations/`: `"icon": {"side": "x_side.png", "front": "x_front.png"}`, or `"icon": "placeholder"` for the built-in "empty slot" portrait. Preset [2] already does this for the six unused characters with the PNGs shipped in `1_Input/_Icons/`.
+3) Run menu [10] and pick that configuration, then copy `main.dol`, `dt_na.dat` and `fst.bin` into the game.
 
 No Gecko code is needed: the unused characters become selectable through their wheel entries.
 

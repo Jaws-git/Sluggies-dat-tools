@@ -1,9 +1,11 @@
-"""Hand-run: write the menu [10] roster presets in this folder from the stock wheels of ``1_Input/main.dol``.
+"""Hand-run: write the shipped roster presets into ``1_Input/_RosterConfigurations`` from the stock wheels of
+``1_Input/main.dol``. Menu [10] lists every ``.json`` file in that folder (the user's own too, alphabetically);
+this script only (re)writes these four:
 
-1_stock.json            the stock roster (no expansion content)
-2_unused.json           + the six unused characters on their family wheels, with their icons
-3_unused_wheels10.json  + every wheel filled to 10 with open slots
-4_all_in_one.json       + a 12x5 grid whose 19 new squares are open slots
+01_Stock_Roster.json                 the stock roster (no expansion content)
+02_Stock_and_Unused.json             + the six unused characters on their family wheels, with their icons
+03_Unuseds_and_10_slot_colors.json   + every wheel filled to 10 with open slots
+04_all_in_one_12x5_grid.json         + a 12x5 grid whose 19 new squares are open slots
 
 An open slot is a new ID with no content of its own yet: it plays as a template character (the wheel's host on a
 wheel, Peach on a new square, the game's own fallback character), shows the built-in "empty slot" icon and the name
@@ -17,8 +19,8 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TOOLS = os.path.normpath(os.path.join(HERE, '..', '..'))
-ROOT = os.path.normpath(os.path.join(TOOLS, '..'))
+ROOT = os.path.normpath(os.path.join(HERE, '..', '..'))
+OUT = os.path.join(ROOT, '1_Input', '_RosterConfigurations')
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
@@ -83,7 +85,8 @@ def preset(comment: str, **keys) -> dict:
 
 
 def write(name: str, data: dict) -> None:
-    with open(os.path.join(HERE, name), 'w', encoding='utf-8') as f:
+    os.makedirs(OUT, exist_ok=True)
+    with open(os.path.join(OUT, name), 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=1, ensure_ascii=False)
         f.write('\n')
 
@@ -91,13 +94,13 @@ def write(name: str, data: dict) -> None:
 def main() -> int:
     with open(os.path.join(ROOT, '1_Input', 'main.dol'), 'rb') as f:
         image = dolfile.DolImage(f.read())
-    write('1_stock.json', preset('Preset 1: the stock roster. No expansion content; the DOL hammerspace sections are '
+    write('01_Stock_Roster.json', preset('Preset 1: the stock roster. No expansion content; the DOL hammerspace sections are '
                                  'still added (empty).'))
-    write('2_unused.json', preset('Preset 2: the stock roster plus the six unused characters on their families\' '
+    write('02_Stock_and_Unused.json', preset('Preset 2: the stock roster plus the six unused characters on their families\' '
                                   'wheels (Yoshi gets 8), with their icons from 1_Input/_Icons.',
                                   wheels=unused_wheels()))
     slots = wheel_slots(image, ids.FIRST_NEW)
-    write('3_unused_wheels10.json', preset(
+    write('03_Unuseds_and_10_slot_colors.json', preset(
         f'Preset 3: preset 2 plus every wheel filled to {WHEEL_SIZE} with open slots ({len(slots)} new IDs, '
         f'0x{ids.FIRST_NEW:02X}-0x{ids.FIRST_NEW + len(slots) - 1:02X}): each plays as its wheel\'s host, shows the '
         '"empty slot" icon and the name "Empty slot" until you assign it something else.',
@@ -106,13 +109,13 @@ def main() -> int:
     cols, rows = 12, 5
     count = cols * rows - grid.SQUARE_HEADS
     squares = [open_slot(first_square + k, SQUARE_TEMPLATE, None, None) for k in range(count)]
-    write('4_all_in_one.json', preset(
+    write('04_all_in_one_12x5_grid.json', preset(
         f'Preset 4: preset 3 on a {cols}x{rows} grid (Luigi on his own square) whose {count} new squares are open slots '
         f'(0x{first_square:02X}-0x{first_square + count - 1:02X}), each playing as Peach (the game\'s fallback '
         'character) until you assign it something else.',
         ids=slots + squares, wheels=unused_wheels(),
         grid={'shape': [cols, rows], 'squares': [[s['id']] for s in squares]}))
-    print(f'presets written to {HERE}: {len(slots)} wheel slots, {count} square slots')
+    print(f'presets written to {OUT}: {len(slots)} wheel slots, {count} square slots')
     return 0
 
 

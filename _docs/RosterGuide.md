@@ -12,16 +12,19 @@ The binary details are in [`_docs_roster/RosterExpansion.md`](_docs_roster/Roste
 
 1. Build your normal output first (menu [1], model patches, icons). The
    expansion is applied on top of it.
-2. Menu **[10] Roster expansion** and pick a preset:
+2. Menu **[10] Roster expansion** lists every `.json` file in
+   `1_Input/_RosterConfigurations/`, alphabetically, with a number to pick
+   it, and **[r]** to take the previous injection out and stop. The shipped
+   presets:
 
-   | Choice | What you get |
+   | File | What you get |
    |---|---|
-   | **[1]** Stock roster | No new content. |
-   | **[2]** Stock + unused | The six unused characters (Black Yoshi, White Yoshi, Black Toad, Black Pianta, Black Kritter, Black Koopa) on their families' wheels, with the icons from `1_Input/_Icons`. |
-   | **[3]** Stock + unused + wheels of 10 | Preset 2, and every colour wheel filled to 10 with **open slots** (63 new IDs). |
-   | **[4]** All in one | Preset 3 on a 12×5 grid: Luigi gets his own square, and 19 new squares hold open slots. |
-   | **[u]** Your own | `1_Input/roster.json` (see below). |
-   | **[r]** Remove | Takes the previous injection out and stops. |
+   | `01_Stock_Roster.json` | No new content. |
+   | `02_Stock_and_Unused.json` | The six unused characters (Black Yoshi, White Yoshi, Black Toad, Black Pianta, Black Kritter, Black Koopa) on their families' wheels, with the icons from `1_Input/_Icons`. |
+   | `03_Unuseds_and_10_slot_colors.json` | Preset 02, and every colour wheel filled to 10 with **open slots** (63 new IDs). |
+   | `04_all_in_one_12x5_grid.json` | Preset 03 on a 12×5 grid: Luigi gets his own square, and 19 new squares hold open slots. |
+
+   Your own configurations go into the same folder and show up in the list.
 
 3. Copy `main.dol`, `dt_na.dat` **and `fst.bin`** into the game.
 
@@ -35,10 +38,10 @@ open slots as that wheel's own character, the new squares' as Peach (the
 game's fallback character). Assigning models, sounds and art to them is the
 next step of the project; for now you can give them your own icon and name.
 
-The presets live in `SluggiesTools/Roster/presets/`. Copy one to
-`1_Input/roster.json` to use it as the start of your own configuration.
+To make your own configuration, copy a preset in
+`1_Input/_RosterConfigurations/` under a new name and edit it.
 
-## Your own configuration (`1_Input/roster.json`)
+## Configuration files
 
 All keys are optional. A missing or `null` key leaves that part stock.
 
