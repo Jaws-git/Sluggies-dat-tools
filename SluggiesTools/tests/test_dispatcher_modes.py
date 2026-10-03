@@ -605,4 +605,5 @@ class RosterDevArgsTests(unittest.TestCase):
     def test_command(self, mock_run):
         start.run_roster_dev(config='c.json', remove=True)
         cmd = mock_run.call_args.args[0]
-        self.assertEqual(cmd[1:], [start.ROSTER_DEV_SCRIPT, '--config', 'c.json', '--remove'])
+        # the config path is made absolute: the injector runs in SluggiesTools/
+        self.assertEqual(cmd[1:], [start.ROSTER_DEV_SCRIPT, '--config', os.path.abspath('c.json'), '--remove'])
