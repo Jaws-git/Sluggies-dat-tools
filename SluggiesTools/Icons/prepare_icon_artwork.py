@@ -201,7 +201,7 @@ def compose_atlases(
     return side_atlas, front_atlas
 
 
-def extract_cmpr_payload(tpl_data: bytes) -> bytes:
+def extract_cmpr_payload(tpl_data: bytes, size: tuple[int, int] = (ATLAS_WIDTH, ATLAS_HEIGHT)) -> bytes:
     if len(tpl_data) < 0x20:
         raise IconArtworkError('wimgt TPL output is truncated')
     magic, image_count, table_offset = struct.unpack_from('>III', tpl_data, 0)
@@ -217,15 +217,16 @@ def extract_cmpr_payload(tpl_data: bytes) -> bytes:
     height, width, image_format, payload_offset = struct.unpack_from(
         '>HHII', tpl_data, image_header_offset
     )
-    if (width, height, image_format) != (ATLAS_WIDTH, ATLAS_HEIGHT, pages.CMPR_FORMAT):
+    if (width, height, image_format) != (*size, pages.CMPR_FORMAT):
         raise IconArtworkError(
             f'unexpected encoded image: {width}x{height}, format=0x{image_format:X}'
         )
-    payload_end = payload_offset + pages.CMPR_IMAGE_LENGTH
+    length = width * height // 2
+    payload_end = payload_offset + length
     if payload_offset < image_header_offset + 12 or payload_end > len(tpl_data):
         raise IconArtworkError('TPL CMPR payload is outside the file')
     payload = tpl_data[payload_offset:payload_end]
-    if len(payload) != pages.CMPR_IMAGE_LENGTH:
+    if len(payload) != length:
         raise IconArtworkError('TPL CMPR payload has the wrong length')
     return payload
 
@@ -249,7 +250,7 @@ def encode_atlas_cmpr(atlas: Image.Image, work_dir: str, name: str) -> bytes:
         raise IconArtworkError(f'wimgt failed to encode {name}: {detail}') from exc
     try:
         with open(tpl_path, 'rb') as tpl_file:
-            return extract_cmpr_payload(tpl_file.read())
+            return extract_cmpr_payload(tpl_file.read(), atlas.size)
     except OSError as exc:
         raise IconArtworkError(f'could not read encoded TPL {tpl_path}: {exc}') from exc
 

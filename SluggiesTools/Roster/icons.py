@@ -17,15 +17,32 @@ the same) and the template for a new ID (as the external tool does).
 What the step builds, when at least one entry has an ``icon`` (else it
 leaves the icon bank and the DOL alone):
 
-* a fresh icon bank from the stock one (dir 0 file 1574): the expanded
-  layout of the icon pipeline (private CMPR pages 0x92/0x93, the container
-  at 0x113C80, the three source tables back to back from 0x87520), with one
-  64-px atlas slot per entry (16 a row, 4 rows: at most 64), one side and one
-  front resource row per entry after the 152 stock rows, and keys pointing
-  at them: side and front for every entry, normal_a too for new IDs (it shows
-  the front row, as in the external tool). Each table's last frame (header
-  +0x18) covers the highest key. For the icon pipeline's six characters, in
-  its order and with its donors, the bank equals the pipeline's (stage f).
+* a fresh icon bank from the stock one (dir 0 file 1574), packed
+  (``build_packed_bank``, the default): the stock texture section, then page
+  0x86's palette (moved: the new page descriptors cover it), the private CMPR
+  pages 0x92 (side) and 0x93 (front) sized to the portraits they hold, then
+  the container. Each distinct portrait gets a 52x52 cell (48x51 art plus
+  transparent texels against filtering bleed, whole CMPR blocks); identical
+  portraits share one. A page is the smallest power-of-two size that holds
+  its cells (``page_size``; at most 1024x1024 = 361 cells). The source tables
+  sit at 0x87520 (free rows of a stock atlas) while they fit there, else after
+  the pages; they stay inside the texture section either way, as the page
+  images must (the external tool: images after the container drew garbage).
+  ``"icon_debug": {"layout": "slots"}`` builds the icon pipeline's layout
+  instead (``build_bank``): two 1024x256 pages with 64-px slots (at most 64
+  icons), the container moved to 0x113C80 (+526 KB against stock, mostly
+  zeros). For the pipeline's six characters, in its order and with its
+  donors, that bank equals the pipeline's (stage f).
+* in both layouts: one side and one front resource row per entry after the
+  152 stock rows, and keys pointing at them: side and front for every entry,
+  normal_a too for new IDs (it shows the front row, as in the external tool).
+  Each table's last frame (header +0x18) covers the highest key.
+
+Page image and palette offsets in a descriptor count from bank +0x20. The
+icon pipeline writes its page images at the offset itself, 0x20 bytes (one
+CMPR tile) early, and draws its art 8 px right of the slot to make up for it
+(``ARTWORK_X_OFFSET``); its descriptors also overwrite 36 bytes of page
+0x86's palette. The packed layout has neither quirk.
 * the bank in DAT hammerspace, with the icon record pointing at it;
 * the three runtime icon hooks of the icon pipeline back to their stock
   words (plan D5: keys alone draw the icons; Dolphin 2026-10-03); their
@@ -40,6 +57,8 @@ import os
 import struct
 import tempfile
 from dataclasses import dataclass
+
+from PIL import Image
 
 try:
     from ..Dol import dolfile
@@ -70,6 +89,16 @@ SLOT_ROWS = artwork.ATLAS_HEIGHT // SLOT     # 4
 MAX_ICONS = SLOTS_PER_ROW * SLOT_ROWS
 RECORD_KIND = 0x0400
 BANK_TAIL = 8                                # zero bytes after the resource table, as the pipeline's bank
+# packed layout
+TEX_BASE = 0x20                              # descriptor image / palette offsets count from here
+CONTAINER_HEAD = 0x14                        # container header before its descriptor
+RESOURCE_FIELD = 0x04
+TABLE_FIELDS = (sources.NORMAL_A_POINTER_FIELD, sources.SIDE_POINTER_FIELD, sources.FRONT_POINTER_FIELD)
+CELL = 52                                    # 48x51 art + >= 1 transparent texel right and below, whole 4x4 blocks
+PAGE_MAX = 1024                              # GX texture limit
+PAGE_MIN = 8                                 # one CMPR tile
+ALIGN = 0x20
+LAYOUTS = ('packed', 'slots')
 # The icon pipeline's donors (icon_characters.json): the records the spare rows' keys copy by default.
 SPARE_DONORS = {0x47: 0x04, 0x48: 0x00, 0x49: 0x01, 0x4A: 0x02, 0x4B: 0x03, 0x4C: 0x05}
 RESOLVER_SITE, RESOLVER_STOCK = 0x80395E1C, 0x4080008C   # bge 0x80395EA8 (the Mii block) after cmpwi r24,0x4D
@@ -147,9 +176,14 @@ def parse_icons(config: dict, icon_dir: str | None = None, check_files: bool = T
     seen = [e.char_id for e in out]
     if len(set(seen)) != len(seen):
         raise IconConfigError('an ID has two icon entries')
-    if len(out) > MAX_ICONS:
-        raise IconConfigError(f'{len(out)} icons; the two private icon pages hold {MAX_ICONS}')
     return out
+
+
+def bank_layout(config: dict) -> str:
+    layout = (config.get('icon_debug') or {}).get('layout', 'packed')
+    if layout not in LAYOUTS:
+        raise IconConfigError(f'icon_debug.layout: {layout!r} is not one of {", ".join(LAYOUTS)}')
+    return layout
 
 
 # --------------------------------------------------------------------------
@@ -215,13 +249,27 @@ def extend_table(bank: bytes, offset: int, keys: dict[int, tuple[int, int]]) -> 
     return bytes(header) + b''.join(bytes(r) for r in records)
 
 
-def build_bank(stock_bank: bytes, entries: list[IconEntry], side_payload: bytes, front_payload: bytes) -> bytes:
-    """The expanded icon bank with keys, rows and art for ``entries`` (see the module docstring)."""
+def _check_stock(stock_bank: bytes) -> None:
     if len(stock_bank) != cib.STOCK_BANK_LENGTH:
         raise IconBankError(f'stock icon bank is 0x{len(stock_bank):X} bytes, expected 0x{cib.STOCK_BANK_LENGTH:X}')
     header = struct.unpack_from('>II', stock_bank, 0) + (struct.unpack_from('>H', stock_bank, 0x20)[0],)
     if header != (cib.STOCK_TEXTURE_SECTION, cib.STOCK_ICON_TABLE, cib.STOCK_TEXTURE_COUNT):
         raise IconBankError('the stock icon bank range does not hold the stock icon bank')
+
+
+def _table_keys(entries: list[IconEntry], side_row: dict, front_row: dict) -> dict:
+    return {
+        sources.NORMAL_A_POINTER_FIELD: {e.char_id: (e.like, front_row[e.char_id]) for e in entries if e.new_id},
+        sources.SIDE_POINTER_FIELD: {e.char_id: (e.like, side_row[e.char_id]) for e in entries},
+        sources.FRONT_POINTER_FIELD: {e.char_id: (e.like, front_row[e.char_id]) for e in entries},
+    }
+
+
+def build_bank(stock_bank: bytes, entries: list[IconEntry], side_payload: bytes, front_payload: bytes) -> bytes:
+    """The icon pipeline's layout (``"layout": "slots"``) with keys, rows and art for ``entries``."""
+    _check_stock(stock_bank)
+    if len(entries) > MAX_ICONS:
+        raise IconBankError(f'{len(entries)} icons; the slot layout holds {MAX_ICONS} (use the packed layout)')
     bank = pages.add_private_texture_pages(stock_bank + bytes(cib.EXPANDED_BANK_LENGTH - len(stock_bank)))
     bank = artwork.apply_cmpr_payloads(bank, side_payload, front_payload)
     bank = bytearray(sources.relocate_icon_source_tables(bank))
@@ -246,12 +294,8 @@ def build_bank(stock_bank: bytes, entries: list[IconEntry], side_payload: bytes,
     front_row = {e.char_id: count + n + i for i, e in enumerate(entries)}
 
     # source tables: rebuilt back to back from NORMAL_A_OFFSET
-    fields = (sources.NORMAL_A_POINTER_FIELD, sources.SIDE_POINTER_FIELD, sources.FRONT_POINTER_FIELD)
-    keys = {
-        sources.NORMAL_A_POINTER_FIELD: {e.char_id: (e.like, front_row[e.char_id]) for e in entries if e.new_id},
-        sources.SIDE_POINTER_FIELD: {e.char_id: (e.like, side_row[e.char_id]) for e in entries},
-        sources.FRONT_POINTER_FIELD: {e.char_id: (e.like, front_row[e.char_id]) for e in entries},
-    }
+    fields = TABLE_FIELDS
+    keys = _table_keys(entries, side_row, front_row)
     snapshot = bytes(bank)
     starts = [sources._signed_pointer(snapshot, f) for f in fields]
     if starts[0] != sources.NORMAL_A_OFFSET:
@@ -266,6 +310,171 @@ def build_bank(stock_bank: bytes, entries: list[IconEntry], side_payload: bytes,
         raise IconBankError(f'the source tables would end at 0x{end:X}, inside the private side image')
     bank[sources.NORMAL_A_OFFSET:max(end, old_end)] = run + bytes(max(0, old_end - end))
     return bytes(bank)
+
+
+# --------------------------------------------------------------------------
+# Packed bank
+# --------------------------------------------------------------------------
+
+@dataclass
+class Page:
+    """One private page: its size, each entry's portrait cell (top-left texel; identical portraits share a cell)
+    and, for the encoder, the RGBA image."""
+    width: int
+    height: int
+    cells: list[tuple[int, int]]
+    image: object = None
+
+    @property
+    def payload_length(self) -> int:
+        return self.width * self.height // 2
+
+
+def _pow2(n: int) -> int:
+    return max(PAGE_MIN, 1 << (n - 1).bit_length())
+
+
+def page_size(cells: int) -> tuple[int, int, int]:
+    """(width, height, cells a row) of the smallest power-of-two page holding ``cells`` 52x52 cells
+    (ties: the wider page)."""
+    best = None
+    width = PAGE_MAX
+    while width >= CELL:
+        per_row = width // CELL
+        height = _pow2(-(-max(cells, 1) // per_row) * CELL)
+        if height <= PAGE_MAX and (best is None or width * height < best[0] * best[1]):
+            best = (width, height, per_row)
+        width //= 2
+    if best is None:
+        raise IconBankError(f'{cells} portraits do not fit a {PAGE_MAX}x{PAGE_MAX} page')
+    return best
+
+
+def pack_page(portraits: list) -> Page:
+    """A page for ``portraits`` (48x51 RGBA images, one per entry), identical ones in one cell."""
+    unique = {}
+    for image in portraits:
+        unique.setdefault(image.tobytes(), image)
+    width, height, per_row = page_size(len(unique))
+    at = {key: ((k % per_row) * CELL, (k // per_row) * CELL) for k, key in enumerate(unique)}
+    page = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+    for key, image in unique.items():
+        page.paste(image, at[key])
+    return Page(width, height, [at[image.tobytes()] for image in portraits], page)
+
+
+def compose_pages(entries: list[IconEntry]) -> tuple[Page, Page]:
+    """Side and front pages: each entry's PNGs fitted to 48x51 with its own fit mode (alpha hardened, as the
+    icon pipeline does)."""
+    return tuple(pack_page([artwork.load_and_harden_image(getattr(e, f'{view}_path'), e.fit) for e in entries])
+                 for view in ('side', 'front'))
+
+
+def encode_page(page: Page) -> bytes:
+    """The page's CMPR payload (wimgt)."""
+    with tempfile.TemporaryDirectory(prefix='sluggies_roster_icons_') as work:
+        return artwork.encode_atlas_cmpr(page.image, work, f'roster_{page.width}x{page.height}')
+
+
+def _descriptor_offset(page_id: int) -> int:
+    return pages.DESCRIPTOR_TABLE_OFFSET + page_id * pages.DESCRIPTOR_SIZE
+
+
+def _cmpr_descriptor(template: bytes, image: int, width: int, height: int) -> bytes:
+    descriptor = bytearray(template)
+    struct.pack_into('>IIHH', descriptor, 0, image - TEX_BASE, 0, height, width)
+    descriptor[0x17] = pages.CMPR_FORMAT
+    struct.pack_into('>H', descriptor, 0x18, 0)
+    descriptor[0x1A] = 0
+    return bytes(descriptor)
+
+
+def _pointer(bank: bytes, descriptor: int, field: int) -> int:
+    return descriptor + struct.unpack_from('>i', bank, descriptor + field)[0]
+
+
+def _covered_palettes(stock_bank: bytes, lo: int, hi: int) -> list[tuple[int, int, int]]:
+    """(page, palette offset, length) of the stock palettes that bytes [lo, hi) of the bank overlap; refuses an
+    overlapped image."""
+    out = []
+    for page_id in range(cib.STOCK_TEXTURE_COUNT):
+        d = _descriptor_offset(page_id)
+        image, palette = struct.unpack_from('>II', stock_bank, d)
+        if image and TEX_BASE + image < hi and lo < TEX_BASE + image + 0x20:
+            raise IconBankError(f'the new page descriptors would cover page 0x{page_id:02X}\'s image')
+        length = struct.unpack_from('>H', stock_bank, d + 0x18)[0] * 2
+        if palette and length and TEX_BASE + palette < hi and lo < TEX_BASE + palette + length:
+            out.append((page_id, TEX_BASE + palette, length))
+    return out
+
+
+def build_packed_bank(stock_bank: bytes, entries: list[IconEntry], side: Page, front: Page,
+                      side_payload: bytes, front_payload: bytes) -> bytes:
+    """The packed icon bank with keys, rows and art for ``entries`` (see the module docstring)."""
+    _check_stock(stock_bank)
+    n = len(entries)
+    if len(side.cells) != n or len(front.cells) != n:
+        raise IconBankError('the pages do not have one cell per entry')
+    stock_end = cib.STOCK_ICON_TABLE                     # stock texture section end = container start
+    stock_desc = stock_end + CONTAINER_HEAD
+    res = _pointer(stock_bank, stock_desc, RESOURCE_FIELD)
+    count, length = struct.unpack_from('>II', stock_bank, res)
+    if count != sources.STOCK_RESOURCE_COUNT:
+        raise IconBankError(f'resource table has 0x{count:X} rows, expected 0x{sources.STOCK_RESOURCE_COUNT:X}')
+    stock_tables = [_pointer(stock_bank, stock_desc, f) for f in TABLE_FIELDS]
+
+    tex = bytearray(stock_bank[:stock_end])
+
+    def append(blob: bytes) -> int:
+        at = len(tex)
+        tex.extend(blob + bytes(-len(blob) % ALIGN))
+        return at
+
+    # descriptors 0x92 / 0x93 (they run over the stock data after the descriptor table: move what they cover)
+    first, last = _descriptor_offset(pages.SIDE_PAGE), _descriptor_offset(pages.FRONT_PAGE) + pages.DESCRIPTOR_SIZE
+    for page_id, palette, size in _covered_palettes(stock_bank, first, last):
+        struct.pack_into('>I', tex, _descriptor_offset(page_id) + 4,
+                         append(stock_bank[palette:palette + size]) - TEX_BASE)
+    template = stock_bank[_descriptor_offset(pages.DESCRIPTOR_TEMPLATE_PAGE):][:pages.DESCRIPTOR_SIZE]
+    for page_id, page, payload in ((pages.SIDE_PAGE, side, side_payload), (pages.FRONT_PAGE, front, front_payload)):
+        if len(payload) != page.payload_length:
+            raise IconBankError(f'page 0x{page_id:02X} payload is 0x{len(payload):X} bytes, '
+                                f'expected 0x{page.payload_length:X} ({page.width}x{page.height} CMPR)')
+        tex[_descriptor_offset(page_id):last if page_id == pages.FRONT_PAGE else _descriptor_offset(page_id + 1)] = \
+            _cmpr_descriptor(template, append(payload), page.width, page.height)
+    struct.pack_into('>H', tex, 0x20, pages.PRIVATE_TEXTURE_COUNT)
+
+    # resource rows and keys
+    rows = [struct.pack('>HHffff', page_id, 0, y / page.height, x / page.width,
+                        (y + artwork.ICON_HEIGHT) / page.height, (x + artwork.ICON_WIDTH) / page.width)
+            for page_id, page in ((pages.SIDE_PAGE, side), (pages.FRONT_PAGE, front)) for x, y in page.cells]
+    side_row = {e.char_id: count + i for i, e in enumerate(entries)}
+    front_row = {e.char_id: count + n + i for i, e in enumerate(entries)}
+    keys = _table_keys(entries, side_row, front_row)
+    tables = [extend_table(stock_bank, start, keys[f]) for f, start in zip(TABLE_FIELDS, stock_tables)]
+    run = b''.join(tables)
+    if sources.NORMAL_A_OFFSET + len(run) <= stock_end and not any(stock_bank[sources.NORMAL_A_OFFSET:stock_end]):
+        at = sources.NORMAL_A_OFFSET
+        tex[at:at + len(run)] = run
+    else:
+        at = append(run)
+    table_starts = [at + sum(len(t) for t in tables[:i]) for i in range(len(tables))]
+
+    # container: the stock one after the texture section, old tables zeroed, rows appended
+    tex_end = len(tex)
+    struct.pack_into('>I', tex, 0x04, tex_end)
+    container = bytearray(stock_bank[stock_end:res + length])
+    if struct.unpack_from('>I', container, resources.ICON_TABLE_END_FIELD)[0] != len(container):
+        raise IconBankError('the stock container does not end with its resource table')
+    lo = min(stock_tables) - stock_end
+    container[lo:res - stock_end] = bytes(res - stock_end - lo)
+    container += b''.join(rows)
+    struct.pack_into('>II', container, res - stock_end, count + 2 * n, length + len(rows) * resources.RESOURCE_ROW_SIZE)
+    struct.pack_into('>I', container, resources.ICON_TABLE_END_FIELD, len(container))
+    desc = tex_end + CONTAINER_HEAD
+    for field, start in zip(TABLE_FIELDS, table_starts):
+        struct.pack_into('>i', container, CONTAINER_HEAD + field, start - desc)
+    return bytes(tex + container + bytes(BANK_TAIL))
 
 
 # --------------------------------------------------------------------------
@@ -316,8 +525,11 @@ def read_record(image) -> list[int]:
 
 
 @steps.register('icons')
-def apply(ctx: steps.RosterContext, encode=encode_atlases) -> list[str]:
+def apply(ctx: steps.RosterContext, encode=encode_atlases, encode_cmpr=encode_page) -> list[str]:
+    """``encode`` (slot layout: entries -> side and front payloads) and ``encode_cmpr`` (packed: a Page -> its
+    payload) are the wimgt encoders; tests pass stand-ins."""
     entries = parse_icons(ctx.config)
+    layout = bank_layout(ctx.config)
     if not entries:
         bare = [ids._number(w.get('id'), 'wheels.id') for w in ctx.config.get('wheels') or [] if w.get('id')]
         note = ['no "icon" in the roster config: the icon bank stays as it is']
@@ -328,7 +540,15 @@ def apply(ctx: steps.RosterContext, encode=encode_atlases) -> list[str]:
     if ctx.dat is None:
         raise IconBankError('dt_na.dat is missing in the output folder')
     stock = ctx.dat.read(cib.STOCK_BANK_OFFSET, cib.STOCK_BANK_LENGTH)
-    bank = build_bank(stock, entries, *encode(entries))
+    if layout == 'slots':
+        bank = build_bank(stock, entries, *encode(entries))
+        page_note = 'slot layout (icon_debug): two 1024x256 CMPR pages, 64-px slots'
+    else:
+        side, front = compose_pages(entries)
+        bank = build_packed_bank(stock, entries, side, front, encode_cmpr(side), encode_cmpr(front))
+        page_note = ('packed CMPR pages: ' + ', '.join(
+            f'{view} {p.width}x{p.height} ({len(set(p.cells))} portraits)'
+            for view, p in (('side', side), ('front', front))))
     words = read_record(ctx.dol)
     before = dhs.slot(words, 'en')[:2]
     at = dhs.allocate(ctx.dat, len(bank), dhs.routed_ranges(ctx.dol))
@@ -337,7 +557,7 @@ def apply(ctx: steps.RosterContext, encode=encode_atlases) -> list[str]:
         dhs.set_slot(words, lang, at, len(bank))
     dhs.write_record(ctx.dol, ICON_RECORD, words)
     log = [f'icon bank 0x{before[0]:08X}+0x{before[1]:X} -> 0x{at:08X}+0x{len(bank):X}: '
-           f'{len(entries)} icons (' + ', '.join(f'0x{e.char_id:02X}' for e in entries) + ')']
+           f'{len(entries)} icons (' + ', '.join(f'0x{e.char_id:02X}' for e in entries) + ')', page_note]
     log += retire_hooks(ctx.dol)
     own = [e for e in entries if e.new_id]
     # Development switch (bisecting a Dolphin issue): "icon_debug": {"dol_side": false} keeps the new IDs' keys
