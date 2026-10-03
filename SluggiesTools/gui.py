@@ -22,6 +22,9 @@ _NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 
 
 class SluggiesGui:
+    ROSTER_SKIP = '(no roster changes)'
+    ROSTER_RESET = '(reset roster to vanilla)'
+
     def __init__(self, command_prefix, root_dir):
         self.command_prefix = list(command_prefix)
         self.root_dir = root_dir
@@ -30,13 +33,23 @@ class SluggiesGui:
         self.output_queue = queue.Queue()
         self.process = None
         self.partial = ''
+        self.pending = []
         self.action_buttons = []
 
     # ------------------------------------------------------------------ run
     def run_command(self, *args):
+        self.run_chain([args])
+
+    def run_chain(self, steps):
+        """Run several commands in order, stopping at the first failure."""
         if self.process is not None:
             self._log_line('A command is already running.', _PROMPT_COLOR)
             return
+        self.pending = [tuple(step) for step in steps]
+        self._start_next()
+
+    def _start_next(self):
+        args = self.pending.pop(0)
         command = [*self.command_prefix, *args]
         self._log_line('> ' + ' '.join(args), _PROMPT_COLOR)
         env = dict(os.environ, PYTHONUNBUFFERED='1', PYTHONIOENCODING='utf-8')
@@ -52,6 +65,8 @@ class SluggiesGui:
             )
         except OSError as exc:
             self._log_line(f'Could not start command: {exc}', _PROMPT_COLOR)
+            self.pending = []
+            self._set_busy(False)
             return
         self._set_busy(True)
         threading.Thread(target=self._pump_output, args=(self.process,), daemon=True).start()
@@ -121,6 +136,12 @@ class SluggiesGui:
             dpg.set_value('log_pending', '')
         self._log_line(f'[finished, exit code {code}]', _PROMPT_COLOR)
         self.process = None
+        if code == 0 and self.pending:
+            self._start_next()
+            return
+        if self.pending:
+            self._log_line('Remaining steps skipped because a step failed.', _PROMPT_COLOR)
+            self.pending = []
         self._set_busy(False)
 
     def _set_busy(self, busy):
@@ -136,6 +157,28 @@ class SluggiesGui:
             with dpg.tooltip(button):
                 dpg.add_text(tip)
         return button
+
+    def _build_full_tab(self):
+        with dpg.tab(label='Full export'):
+            dpg.add_text('1) Export all models with untangled textures (overwrites 3_Output_Dat/dt_na.dat and main.dol)')
+            dpg.add_text('2) Apply the chosen roster preset')
+            dpg.add_text('3) Export the player icons from 3_Output_Dat')
+            dpg.add_text('A failing step stops the rest.')
+            dpg.add_spacer(height=6)
+            with dpg.group(horizontal=True):
+                self._action('Start', self._on_full_export)
+                dpg.add_text('Roster preset:')
+                dpg.add_combo([], tag='full_roster', width=420)
+
+    def _on_full_export(self):
+        choice = dpg.get_value('full_roster')
+        steps = [('--export', '--untangle')]
+        if choice == self.ROSTER_RESET:
+            steps.append(('--roster', '--remove'))
+        elif choice and choice != self.ROSTER_SKIP:
+            steps.append(('--roster', '--config', os.path.join(self.config_dir, choice)))
+        steps.append(('--export-icons', '--use-output'))
+        self.run_chain(steps)
 
     def _build_export_tab(self):
         with dpg.tab(label='Export'):
@@ -195,6 +238,11 @@ class SluggiesGui:
         dpg.configure_item('roster_config', items=names)
         if names and dpg.get_value('roster_config') not in names:
             dpg.set_value('roster_config', names[0])
+        if dpg.does_item_exist('full_roster'):
+            full_items = [self.ROSTER_SKIP, self.ROSTER_RESET, *names]
+            dpg.configure_item('full_roster', items=full_items)
+            if dpg.get_value('full_roster') not in full_items:
+                dpg.set_value('full_roster', self.ROSTER_SKIP)
 
     def _on_roster(self):
         name = dpg.get_value('roster_config')
@@ -256,6 +304,7 @@ class SluggiesGui:
         dpg.create_context()
         with dpg.window(tag='main_window'):
             with dpg.tab_bar():
+                self._build_full_tab()
                 self._build_export_tab()
                 self._build_icons_tab()
                 self._build_roster_tab()
