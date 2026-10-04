@@ -27,8 +27,9 @@ has been patched) and checks the pair as it would stand after the write.
 
 Partners are the two entries of one chunk at file indices ``n`` (high-poly)
 and ``n + 1`` (low-poly), confirmed by their ACT geo names: stripping the
-``L_`` prefix and the extension must give the same stem (the Mii pairs mix
-``.gpl`` and ``.gplp``). All 66 vanilla pairs follow this layout.
+``L_`` prefix and the extension must give the same stem. Names are read
+through ``binfmt.clean_geo_name`` (some game strings carry a leftover byte,
+e.g. the Mii ``mii_male.gplp``). All 66 vanilla pairs follow this layout.
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ from dataclasses import dataclass
 
 import HammerspaceHelper as hh
 import slogger as _slogger
+from binfmt import clean_geo_name
 from act_rebuild import BONE_RECORD_SIZE, HEADER_SIZE as ACT_HEADER_SIZE, SRT_RECORD_SIZE
 
 _GEO_ID_NONE = 0xFFFF
@@ -85,7 +87,7 @@ def act_summary(block: bytes) -> ActSummary | None:
     name_end = block.find(b'\x00', name_start)
     if name_end == -1:
         return None
-    geo_name = block[name_start:name_end].decode('ascii', errors='replace')
+    geo_name = clean_geo_name(block[name_start:name_end].decode('latin-1'))
 
     drawn, parents, srts = {}, {}, {}
     for index in range(bone_count):

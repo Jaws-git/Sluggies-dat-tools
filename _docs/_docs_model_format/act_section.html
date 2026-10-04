@@ -40,7 +40,7 @@
         <tr>
             <td>0x10</td>
             <td>uint32</td>
-            <td>GEO name pointer (relative to header). This is the name of the geometry vertex file the bones are for.</td>
+            <td>GEO name pointer (relative to header). This is the name of the geometry vertex file the bones are for, <code>&lt;stem&gt;.gpl</code> (or <code>.tpl</code>). <strong>Not always NUL-terminated:</strong> in 34 vanilla models (10 distinct names, all exactly 12 or 16 characters long) one leftover byte follows the extension before the zero padding, e.g. <code>nokonoko.gpl</code> + <code>B0</code>, <code>L_teresa.gpl</code> + <code>80</code>, and <code>mii_male.gpl</code> / <code>L_mii_female.gpl</code> + <code>70</code> (<code>p</code>, which read as <code>.gplp</code>). 123 other 12/16-character names are terminated normally (survey of <code>1_Input/dt_na.dat</code>, 2026-10-04). The exporter cuts names after the extension (<code>binfmt.clean_geo_name</code>) for folder names and the <code>.sluggie</code> <code>GeoName</code>; the bytes in the block are never rewritten.</td>
         </tr>
         <tr>
             <td>0x14</td>
@@ -155,7 +155,7 @@
     </ul>
     <p>The bone table is reached through the tree: the tree header sits at header+0x08 and its root pointer at header+0x0C. Each node address is the bone's start, relative to the ACT header. <code>BlockValidator</code> walks it to check the rules above.</p>
     <h2 id="lod-pairs">High- and low-poly pairs share one skeleton</h2>
-    <p>Each player character has a high-poly model and a low-poly <code>L_*</code> model, stored as file indices <code>n</code> and <code>n + 1</code> of the same chunk. Their ACT geo names match once the <code>L_</code> prefix and the extension are removed; the Mii pairs mix <code>.gpl</code> and <code>.gplp</code>. All 66 vanilla pairs have the same bone count, and 56 have identical parent, track and mirror tables.</p>
+    <p>Each player character has a high-poly model and a low-poly <code>L_*</code> model, stored as file indices <code>n</code> and <code>n + 1</code> of the same chunk. Their ACT geo names match once the <code>L_</code> prefix and the extension are removed; names are compared after cleaning (see the GEO name pointer above; the Mii pairs read as <code>.gpl</code>/<code>.gplp</code> without it). All 66 vanilla pairs have the same bone count, and 56 have identical parent, track and mirror tables.</p>
     <p>The game poses the low-poly model with the <strong>high-poly model's</strong> bones. Confirmed in Dolphin with Mario (2026-09-27), after appending a bone 91 to one or both models:</p>
     <ul>
         <li><strong>A low-poly model may only draw on bones the high-poly model has.</strong> <code>L_mario</code> with a mesh on its new bone 91 crashed on model load while HP Mario had 91 bones (0-90). The same mesh on existing bone 49 loaded, even with the unused bone 91 still present. Adding bone 91 to HP Mario as well made the mesh on bone 91 load. An extra bone that owns no mesh is harmless.</li>

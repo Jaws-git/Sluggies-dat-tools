@@ -13,6 +13,7 @@ regardless of where it sits in the package.
 from __future__ import annotations
 
 import base64
+import re
 import struct
 
 # GX vector quantize formats whose components are 4 bytes wide; everything
@@ -120,3 +121,17 @@ def encode_field(data: bytes, use_base64: bool):
     if use_base64:
         return base64.b64encode(data).decode('ascii')
     return list(data)
+
+
+# ACT geo names are "<stem>.gpl" (or ".tpl"). The game's own data leaves 34 of
+# them (10 distinct names, all 12 or 16 characters long) without their NUL
+# terminator: one leftover byte follows the extension before the zero padding,
+# e.g. "nokonoko.gpl" + 0xB0, or "mii_male.gpl" + 'p' (the Mii ".gplp").
+_GEO_NAME = re.compile(r'.+?\.(?:gpl|tpl)')
+
+
+def clean_geo_name(name: str) -> str:
+    """``name`` cut after its first ``.gpl``/``.tpl`` extension, dropping the
+    leftover byte of an unterminated game string; unchanged without one."""
+    match = _GEO_NAME.match(name)
+    return match.group(0) if match else name

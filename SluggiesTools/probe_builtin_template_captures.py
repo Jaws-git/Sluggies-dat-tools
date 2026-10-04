@@ -45,8 +45,9 @@ MODELS_DIR = TOOLS_DIR.parent / '2_Output_Models'
 def capture_exports(provenance: dict) -> list[pathlib.Path]:
     """Locate a built-in's capture export from its provenance.
 
-    Matched by prefix because some exported folder names carry the game's own
-    mojibake (Toadette's `kinopico.gplp`).
+    Matched by prefix so exports made before the geo-name cleaning
+    (2026-10-04), whose folder names still carry the game's leftover byte
+    (e.g. `mii_male.gplp`), are found too.
     """
     folder, _sep, model = provenance['Model'].partition('/')
     return sorted((MODELS_DIR / folder).glob(f'{model}*/*.sluggie'))

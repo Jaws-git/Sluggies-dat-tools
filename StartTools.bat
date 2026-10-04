@@ -11,7 +11,7 @@ echo ==================
 echo Sluggers Dat Tools
 echo ==================
 echo.
-echo [1] Extract all models & Icons ^& 'untangle' textures, choose a roster size, enable CPU vs CPU support
+echo [1] Extract all models ^& Icons ^& 'untangle' textures, choose a roster size, enable CPU vs CPU support
 echo [2] Extract all models
 echo [3] Extract player icons
 echo.

@@ -3188,7 +3188,8 @@ def _find_low_poly_partner(sluggie_path, model):
     model, or None when the model is itself low-poly or has no partner.
 
     Mirrors SluggiesTools' LodPartnerGuard pairing (same chunk, matching geo
-    name stem; the Mii pairs mix .gpl and .gplp) on the export layout: the
+    name stem; exports made before 2026-10-04 can carry a leftover byte after
+    the extension, e.g. the Mii .gplp) on the export layout: the
     partner is a sibling folder `<offset>_L_<geo name>` holding a .sluggie of
     the same chunk. Duplicated because the add-on stays standalone."""
     model_dir = os.path.dirname(os.path.abspath(sluggie_path))

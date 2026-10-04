@@ -4,7 +4,9 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -25,6 +27,7 @@ _slogger.configure()
 from base import File
 from helper import bti, itb
 from tpl import TEXPalette
+from Icons import layout2d
 
 # --- Guide-proven DOL directory table address (direct group-entry record) ---
 # The group-entry record for group 119, entry 2 sits at this DOL file offset.
@@ -174,6 +177,19 @@ SIDE_PAGE_CHARACTER_IDS = (
     0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3E, 0x3F, 0x3F, 0x40, 0x40,
     0x41, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46,
 )
+
+# Per-character portraits: <model folder>/<HP model folder>/icon/{Front,Side}Icon.png, next to its tex/.
+# The bank's source tables are layout elements 0 (normal_a), 1 (side) and 2 (front); each holds one track
+# whose records are keyed by character ID and name a resource row (+0x06): page and UV rect.
+MODELS_ROOT = os.path.join(ROOT_DIR, '2_Output_Models')
+CHARACTER_ICON_DIR = 'icon'
+CHARACTER_ICON_FILES = {'front': 'FrontIcon.png', 'side': 'SideIcon.png'}
+CHARACTER_ICON_ELEMENTS = {'side': 1, 'front': 2}
+SOURCE_RECORD_RESOURCE = 0x06
+CHARACTER_DIR_OFFSET = 0x12                # a character's model directory is its ID + 0x12
+OWN_ICON_IDS = range(0x00, 0x4D)           # players and the six unused characters (dirs 18-94); Miis share one icon
+# A prefix match: exports made before 2026-10-04 carry the game's leftover byte after '.gpl' (binfmt.clean_geo_name).
+HP_MODEL_FOLDER = re.compile(r'\d+_(?!L_).+\.gpl')
 
 SIDE_DIR_NAMES = {
     f'{page_index:02X}': SIDE_CHARACTER_NAMES[character_id]
@@ -728,13 +744,15 @@ def _export_one_page(root, entry_offset, tex_palette, desc, texture_index, view,
         f'{nonempty_count} non-empty cells',
         source='icons.export_icons',
     )
+    return sheet_img
 
 
-def _export_roster_pages(root, tex_palette, dolphin_names):
+def _export_roster_pages(root, tex_palette, dolphin_names, page_images=None):
     """The roster expansion's icon pages, if this bank has them: each decoded to a PNG named like Dolphin's
     texture dump (``tex1_WxH_<hash>_14.png``), the name a Dolphin custom texture for that page must have.
-    Returns the number of pages written."""
+    Each page's RGBA image goes into ``page_images``. Returns the number of pages written."""
     written = {}
+    page_images = {} if page_images is None else page_images
     for texture_index, view in ROSTER_PAGES:
         if texture_index >= len(tex_palette.descriptors):
             continue
@@ -752,11 +770,15 @@ def _export_roster_pages(root, tex_palette, dolphin_names):
             'dolphin_name': dolphin_name,
         })
         if dolphin_name in written:                   # identical side and front pages: one texture for both
-            _slogger.info(f'Roster {view} page 0x{texture_index:02X} is identical to the {written[dolphin_name]} '
+            page_images[texture_index] = page_images[written[dolphin_name][1]]
+            _slogger.info(f'Roster {view} page 0x{texture_index:02X} is identical to the {written[dolphin_name][0]} '
                           f'page ({dolphin_name})', source='icons.export_icons')
             continue
-        written[dolphin_name] = view
-        _decode_texture_to_png(desc, image_data, b'', os.path.join(root, DIR_ROSTER, dolphin_name))
+        written[dolphin_name] = (view, texture_index)
+        page_png = os.path.join(root, DIR_ROSTER, dolphin_name)
+        _decode_texture_to_png(desc, image_data, b'', page_png)
+        with Image.open(page_png) as page_img:
+            page_images[texture_index] = page_img.convert('RGBA')
         _slogger.info(f'Exported roster {view} page 0x{texture_index:02X} ({desc.width}x{desc.height} CMPR) as '
                       f'{DIR_ROSTER}/{dolphin_name}', source='icons.export_icons')
     return len(written)
@@ -829,6 +851,103 @@ def _copy_known_fallbacks(root):
         cell_img = sheet_img.crop((x, y, x + w, y + h))
         dest_abs = os.path.join(root, DIR_KNOWN_FALLBACK, output_name)
         cell_img.save(dest_abs)
+
+
+def _character_icon_cells(bank_bytes, page_sizes):
+    """Each character's own portrait cells, read from the bank's side and front source tables.
+
+    Returns ``(cells, problems)``: ``cells`` maps character ID to {view: (page, (x, y, w, h))} for IDs in
+    ``OWN_ICON_IDS`` with their own key; the game's fallback to the nearest lower key is deliberately not
+    followed. ``page_sizes`` maps texture index to (width, height). ``problems`` lists keys whose rect is
+    not a 48x51 cell inside a known page."""
+    bank = layout2d.parse_bank(bank_bytes)
+    rows = layout2d.resource_rows(bank_bytes, bank)
+    cells, problems = {}, []
+    for view, element_index in CHARACTER_ICON_ELEMENTS.items():
+        element = layout2d.parse_element(bank_bytes, bank, element_index)
+        for record in (r for track in element.tracks for r in track.records):
+            char_id, row = struct.unpack_from('>H', record, 2)[0], struct.unpack_from('>H', record, SOURCE_RECORD_RESOURCE)[0]
+            if char_id not in OWN_ICON_IDS:
+                continue
+            if row >= len(rows):
+                problems.append(f'0x{char_id:02X} {view}: resource row {row} does not exist')
+                continue
+            page, (v1, u1, v2, u2) = rows[row]
+            if page not in page_sizes:
+                problems.append(f'0x{char_id:02X} {view}: page 0x{page:02X} is not an exported icon page')
+                continue
+            width, height = page_sizes[page]
+            x, y = round(u1 * width), round(v1 * height)
+            w, h = round(u2 * width) - x, round(v2 * height) - y
+            if (w, h) != (GRID_CELL_WIDTH, GRID_CELL_HEIGHT) or x < 0 or y < 0 or x + w > width or y + h > height:
+                problems.append(f'0x{char_id:02X} {view}: rect ({x}, {y}, {w}x{h}) on page 0x{page:02X} '
+                                f'is not a {GRID_CELL_WIDTH}x{GRID_CELL_HEIGHT} cell inside the page')
+                continue
+            cells.setdefault(char_id, {})[view] = (page, (x, y, w, h))
+    return cells, problems
+
+
+def _character_home_folder(models_root, dir_index):
+    """The high-poly model folder (the one next to which tex/ lives) of model directory ``dir_index``:
+    ``<models_root>/<dir_index> <name>/<offset>_<geo>.gpl``, not ``L_``, holding a .sluggie.
+    Returns ``(path, None)`` or ``(None, reason)``."""
+    if not os.path.isdir(models_root):
+        return None, 'no model export'
+    folders = [name for name in os.listdir(models_root)
+               if name.split(' ', 1)[0] == str(dir_index) and os.path.isdir(os.path.join(models_root, name))]
+    if not folders:
+        return None, 'no model export'
+    if len(folders) > 1:
+        return None, 'several model folders'
+    char_dir = os.path.join(models_root, folders[0])
+    candidates = []
+    for name in sorted(os.listdir(char_dir)):
+        path = os.path.join(char_dir, name)
+        if HP_MODEL_FOLDER.match(name) and os.path.isdir(path) and \
+                any(f.endswith('.sluggie') for f in os.listdir(path)):
+            candidates.append(path)
+    if not candidates:
+        return None, 'no model export'
+    if len(candidates) > 1:
+        return None, 'several high-poly model folders'
+    return candidates[0], None
+
+
+def _export_character_icons(models_root, cells, page_images):
+    """Write ``icon/FrontIcon.png`` and ``icon/SideIcon.png`` (48x51 RGBA) into each character's high-poly
+    model folder, and remove ones whose character has no own key in this bank. Returns
+    ``(written, skipped)``: manifest rows, and {reason: [dir index, ...]}."""
+    written, skipped = [], {}
+    for char_id in OWN_ICON_IDS:
+        dir_index = char_id + CHARACTER_DIR_OFFSET
+        home, reason = _character_home_folder(models_root, dir_index)
+        if home is None:
+            skipped.setdefault(reason, []).append(dir_index)
+            continue
+        icon_dir = os.path.join(home, CHARACTER_ICON_DIR)
+        views = cells.get(char_id, {})
+        if not views:
+            skipped.setdefault('no own icon', []).append(dir_index)
+        for view, file_name in CHARACTER_ICON_FILES.items():
+            path = os.path.join(icon_dir, file_name)
+            if view not in views:
+                if os.path.exists(path):
+                    os.remove(path)
+                continue
+            page, (x, y, w, h) = views[view]
+            ensure_dir(icon_dir)
+            page_images[page].crop((x, y, x + w, y + h)).convert('RGBA').save(path, 'PNG')
+            written.append({
+                'dir': dir_index,
+                'character_id': f'0x{char_id:02X}',
+                'view': view,
+                'page': f'0x{page:02X}',
+                'rect': [x, y, w, h],
+                'png': os.path.relpath(path, models_root).replace('\\', '/'),   # relative to 2_Output_Models
+            })
+        if os.path.isdir(icon_dir) and not os.listdir(icon_dir):
+            os.rmdir(icon_dir)
+    return written, skipped
 
 
 def _write_pages_csv(path, rows):
@@ -942,6 +1061,7 @@ def main():
         pages_rows = []
         cells_rows = []
         dolphin_names = []
+        page_images = {}
 
         # Export base indexed images (shared across all pages of each view)
         side_seed_desc = tex_palette.descriptors[side_texture_indices[0]]
@@ -954,7 +1074,7 @@ def main():
 
         for texture_index in side_texture_indices:
             desc = tex_palette.descriptors[texture_index]
-            _export_one_page(
+            page_images[texture_index] = _export_one_page(
                 OUTPUT_ROOT,
                 entry_offset,
                 tex_palette,
@@ -968,7 +1088,7 @@ def main():
 
         for texture_index in front_texture_indices:
             desc = tex_palette.descriptors[texture_index]
-            _export_one_page(
+            page_images[texture_index] = _export_one_page(
                 OUTPUT_ROOT,
                 entry_offset,
                 tex_palette,
@@ -980,10 +1100,18 @@ def main():
                 dolphin_names,
             )
 
-        roster_pages = _export_roster_pages(OUTPUT_ROOT, tex_palette, dolphin_names)
+        roster_pages = _export_roster_pages(OUTPUT_ROOT, tex_palette, dolphin_names, page_images)
 
+        dat_file.seek(entry_offset)
+        bank_bytes = dat_file.read(entry_length)
     finally:
         dat_file.close()
+
+    icon_cells, icon_problems = _character_icon_cells(
+        bank_bytes, {index: image.size for index, image in page_images.items()})
+    for problem in icon_problems:
+        _slogger.warning(f'Character icon skipped: {problem}', source='icons.export_icons')
+    character_icons, icons_skipped = _export_character_icons(MODELS_ROOT, icon_cells, page_images)
 
     _copy_known_fallbacks(OUTPUT_ROOT)
 
@@ -1046,6 +1174,7 @@ def main():
         'page_count': len(pages_rows),
         'cell_png_count': len(cells_rows),
         'pages': pages_rows,
+        'character_icons': character_icons,
     }
 
     with open(manifest_json, 'w', encoding='utf-8') as f:
@@ -1059,9 +1188,14 @@ def main():
         f'  Pages exported: {len(pages_rows)}\n'
         f'  Non-empty cells exported: {len(cells_rows)}\n'
         f'  Roster expansion icon pages: {roster_pages} (in {DIR_ROSTER}, named for Dolphin custom textures)\n'
+        f'  Character icons: {len({row["dir"] for row in character_icons})} model folders '
+        f'(<model>/{CHARACTER_ICON_DIR}/FrontIcon.png, SideIcon.png)\n'
         f'  Dolphin dump names: {os.path.relpath(dolphin_names_txt, ROOT_DIR)}'
     )
     _slogger.info(summary, source='icons.export_icons')
+    for reason, dirs in sorted(icons_skipped.items()):
+        _slogger.info(f'Character icons skipped ({reason}): dirs {", ".join(str(d) for d in dirs)}',
+                      source='icons.export_icons')
 
 
 if __name__ == '__main__':

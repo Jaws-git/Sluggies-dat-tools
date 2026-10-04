@@ -7,6 +7,7 @@ import os
 import shutil
 import slogger
 import glb_export
+from binfmt import clean_geo_name
 
 _LOG_DIR_INDEX = None
 # (output dir, geo name) -> (model folder name, {texture index: png name}) of every
@@ -171,7 +172,7 @@ class Model0(FileChunk):
             self.name += '_' + self.ACT.geoName
             self.generateBones()
         elif self.GPL:
-            self.name += '_' + self.GPL.geoDescriptors[0].layout.DOTextureDataHeaders[0].paletteName
+            self.name += '_' + clean_geo_name(self.GPL.geoDescriptors[0].layout.DOTextureDataHeaders[0].paletteName)
 
     def generateBones(self):
         self.bones = self.ACT.bones()

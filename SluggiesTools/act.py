@@ -4,6 +4,7 @@ import numpy as np
 from helper import *
 from model0 import *
 import slogger
+from binfmt import clean_geo_name
 
 # The general output of all of this
 # Each bone has a child, a parent, a base transform, and a list of affected vertexes and weights
@@ -66,7 +67,10 @@ class ACTLayout(FileChunk):
         self.pad16 = self.read(2)
         self.userDataSize = self.word()
         self.userDataPtr = self.word()
-        self.geoName = self.readStr(self.geoNamePtr)
+        # The raw string can carry a leftover byte after its extension (binfmt.clean_geo_name);
+        # names, folders and .sluggie GeoName use the clean one.
+        self.geoNameRaw = self.readStr(self.geoNamePtr)
+        self.geoName = clean_geo_name(self.geoNameRaw)
 
         # The user-defined data section holds the linking information between bones and animation tracks (for some reason)
         # That gets read here and stored in the bone objects when they're created

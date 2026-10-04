@@ -7,6 +7,8 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
+from PIL import Image
+
 TOOLS_DIR = Path(__file__).resolve().parents[2]
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
@@ -204,6 +206,10 @@ def _make_cmpr_tpl(pages):
     return tex_palette
 
 
+def _write_blank_png(_tpl_path, png_path):
+    Image.new('RGBA', (64, 64)).save(png_path)
+
+
 class RosterPageExportTests(unittest.TestCase):
     def test_roster_pages_named_like_dolphin_dumps(self):
         side, front = bytes(range(256)) * 8, bytes(reversed(range(256))) * 8      # 64x64 CMPR = 0x800 bytes
@@ -211,7 +217,7 @@ class RosterPageExportTests(unittest.TestCase):
         names = []
         with tempfile.TemporaryDirectory() as root, \
                 mock.patch.object(export_icons, 'ROSTER_PAGES', ((0, 'side'), (1, 'front'))), \
-                mock.patch.object(export_icons, '_decode_tpl_to_png') as decode:
+                mock.patch.object(export_icons, '_decode_tpl_to_png', side_effect=_write_blank_png) as decode:
             os.makedirs(os.path.join(root, export_icons.DIR_ROSTER))
             self.assertEqual(export_icons._export_roster_pages(root, tex_palette, names), 2)
         expected = [f'tex1_64x64_{xxh64(side, 0):016x}_14.png', f'tex1_64x64_{xxh64(front, 0):016x}_14.png']
@@ -224,7 +230,7 @@ class RosterPageExportTests(unittest.TestCase):
         names = []
         with tempfile.TemporaryDirectory() as root, \
                 mock.patch.object(export_icons, 'ROSTER_PAGES', ((0, 'side'), (1, 'front'), (5, 'side'))), \
-                mock.patch.object(export_icons, '_decode_tpl_to_png') as decode:
+                mock.patch.object(export_icons, '_decode_tpl_to_png', side_effect=_write_blank_png) as decode:
             os.makedirs(os.path.join(root, export_icons.DIR_ROSTER))
             self.assertEqual(export_icons._export_roster_pages(root, _make_cmpr_tpl([page, page]), names), 1)
         self.assertEqual(len(names), 2)                                       # both listed, one file

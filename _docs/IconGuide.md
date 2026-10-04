@@ -56,6 +56,29 @@ roster expansion (menu **[9]**, also part of menu **[1]**; see
 No Gecko code is needed: the unused characters become selectable through
 their wheel entries.
 
+## Per-character PNGs
+
+Every icon export also writes each character's own portraits as plain RGBA
+PNGs (48×51, not indexed) into that character's model folder, next to `tex/`:
+
+```
+2_Output_Models/18 Mario/78277664_mario.gpl/icon/FrontIcon.png
+2_Output_Models/18 Mario/78277664_mario.gpl/icon/SideIcon.png
+```
+
+- The exporter finds the owner in the icon bank itself: the side and front
+  tables key each portrait by character ID, and a character's model folder
+  is its ID + `0x12` (Mario `0x00` → folder 18).
+- Only characters with a portrait of their own get them: folders 18–88, and
+  the unused characters (89–94) once a roster configuration gives them icons
+  (menu [1]). Miis share one generic icon and are skipped, as are new
+  roster IDs (they have no folder of their own).
+- Export the 3D models first: a character without a model folder is skipped
+  (the log lists it). Menu [1] does both in the right order.
+- Each export shows the bank it read: exporting from `1_Input` (menu [3])
+  removes the unused characters' PNGs that a menu [1] export wrote.
+- They are for reference only; editing them changes nothing in the game.
+
 ## Dolphin's custom textures
 
 `2_Output_Models/_ICONS/dolphin_icon_names.txt` lists the name Dolphin dumps

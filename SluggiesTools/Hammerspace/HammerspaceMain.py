@@ -529,7 +529,7 @@ _CUSTOM_SUBMESH_BUILTIN_TEMPLATES = {
         'ShaderMode': 'RhSp',
         'VerifiedInGame': True,  # PLAN_EditRigidMeshes.md Phase 0 probe 7 (2026-09-26)
         'Provenance': {
-            'Model': '100 Blue Male Mii/333008640_mii_male.gplp',
+            'Model': '100 Blue Male Mii/333008640_mii_male.gpl',
             'MeshName': 'r_hand',
             'SurfaceId': 'sm7_ds5',
             'IdenticalRigidLists': 24,
@@ -549,7 +549,7 @@ _CUSTOM_SUBMESH_BUILTIN_TEMPLATES = {
         'ShaderMode': 'LhSp',
         'VerifiedInGame': True,  # PLAN_EditRigidMeshes.md Phase 0 probe 7 (2026-09-26)
         'Provenance': {
-            'Model': '100 Blue Male Mii/333008640_mii_male.gplp',
+            'Model': '100 Blue Male Mii/333008640_mii_male.gpl',
             'MeshName': 'l_hand',
             'SurfaceId': 'sm4_ds5',
             'IdenticalRigidLists': 24,

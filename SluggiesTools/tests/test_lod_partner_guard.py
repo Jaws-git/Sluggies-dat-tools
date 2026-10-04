@@ -41,7 +41,7 @@ def _block(geo_name: str, bone_count: int, owners: dict[int, int], placed=None) 
     name_ptr = 0x20 + len(table)
     act_header = struct.pack('>IHHIIIHHII', 0, 0, bone_count, 0, 0x20, name_ptr, 0, 0, 0, 0)
     header = struct.pack('>8I', 0, 0, act, 0, 0, 0, 0, 0)
-    return header + act_header + table + geo_name.encode('ascii') + b'\x00'
+    return header + act_header + table + geo_name.encode('latin-1') + b'\x00'
 
 
 HIGH_91 = _block('mario.gpl', 91, {54: 1, 55: 2})
@@ -60,12 +60,18 @@ class ActSummaryTests(unittest.TestCase):
         self.assertTrue(summary.is_low_poly)
 
     def test_pair_stems_ignore_prefix_and_extension(self):
-        # The Mii pairs mix .gpl and .gplp.
+        # The game leaves the Mii's name unterminated: 'mii_male.gpl' + 'p'.
         high = guard.act_summary(_block('mii_male.gplp', 1, {}))
         low = guard.act_summary(_block('L_mii_male.gpl', 1, {}))
 
+        self.assertEqual(high.geo_name, 'mii_male.gpl')
         self.assertEqual(high.stem, low.stem)
         self.assertFalse(high.is_low_poly)
+
+    def test_leftover_byte_after_the_extension_is_dropped(self):
+        summary = guard.act_summary(_block('L_teresa.gpl', 1, {}))
+
+        self.assertEqual(summary.geo_name, 'L_teresa.gpl')
 
     def test_block_without_act_section_has_no_summary(self):
         self.assertIsNone(guard.act_summary(bytes(0x40)))
