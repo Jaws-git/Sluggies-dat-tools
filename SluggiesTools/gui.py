@@ -12,6 +12,7 @@ one the roster name plates are drawn with). When neither file is available it
 keeps Dear PyGui's built-in ProggyClean font.
 """
 
+import ntpath
 import os
 import platform
 import queue
@@ -54,10 +55,12 @@ def _bundled_font_path():
     return os.path.join(_app_base_dir(), _BUNDLED_FONT_REL)
 
 
+# The system font candidate is a Windows path, so it is built and inspected
+# with ntpath (not os.path) to behave the same when tests run on Linux CI.
 def _system_fonts_dir():
     if not _WINDOWS:
         return ''
-    return os.path.join(os.environ.get('SystemRoot', r'C:\Windows'), 'Fonts')
+    return ntpath.join(os.environ.get('SystemRoot', r'C:\Windows'), 'Fonts')
 
 
 def _font_candidates():
@@ -66,7 +69,7 @@ def _font_candidates():
     candidates = []
     system_dir = _system_fonts_dir()
     if system_dir:
-        candidates.append((os.path.join(system_dir, 'segoeui.ttf'), 'Segoe UI'))
+        candidates.append((ntpath.join(system_dir, 'segoeui.ttf'), 'Segoe UI'))
     candidates.append((_bundled_font_path(), 'Open Sans'))
     return candidates
 
@@ -85,7 +88,8 @@ def _select_font_path(exists=os.path.isfile):
 
 
 def _font_size_for(path):
-    if path and os.path.basename(path).lower() == 'segoeui.ttf':
+    # ntpath.basename splits on both '\' and '/'.
+    if path and ntpath.basename(path).lower() == 'segoeui.ttf':
         return _FONT_SIZE_SEGOE_UI
     return _FONT_SIZE_OPEN_SANS
 

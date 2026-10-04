@@ -79,12 +79,15 @@ class BundledFontPathTests(unittest.TestCase):
         self.assertTrue(os.path.isfile(path))
 
     def test_frozen_build_uses_the_executable_directory(self):
+        # Built with os.path so the test holds on Windows and on Linux CI.
+        release = os.path.abspath(os.path.join(os.sep, 'Release'))
         with mock.patch.object(sys, 'frozen', True, create=True), \
              mock.patch.object(sys, 'executable',
-                               r'D:\Release\sluggies-dat-tools.exe'):
+                               os.path.join(release, 'sluggies-dat-tools.exe')):
             self.assertEqual(
                 gui._bundled_font_path(),
-                r'D:\Release\SluggiesTools\Roster\fonts\OpenSans.ttf')
+                os.path.join(release, 'SluggiesTools', 'Roster', 'fonts',
+                             'OpenSans.ttf'))
 
 
 def _registry_mock():
