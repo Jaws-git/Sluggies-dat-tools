@@ -126,6 +126,7 @@ class Asm:
     def mulli(self, rt, ra, imm): return self.word(d_form(7, rt, ra, imm))
     def ori(self, ra, rs, imm): return self.word(d_form(24, rs, ra, imm))
     def andi_(self, ra, rs, imm): return self.word(d_form(28, rs, ra, imm))
+    def xori(self, ra, rs, imm): return self.word(d_form(26, rs, ra, imm))
     def add(self, rt, ra, rb): return self.word(x_form(rt, ra, rb, 266))
     def subf(self, rt, ra, rb): return self.word(x_form(rt, ra, rb, 40))  # rt = rb - ra
     def mullw(self, rt, ra, rb): return self.word(x_form(rt, ra, rb, 235))

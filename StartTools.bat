@@ -11,7 +11,7 @@ echo ==================
 echo Sluggers Dat Tools
 echo ==================
 echo.
-echo [1] Extract all models ^& 'untangle' textures (for Dolphin texture loader), choose a roster, extract icons
+echo [1] Extract all models & Icons ^& 'untangle' textures, choose a roster size, enable CPU vs CPU support
 echo [2] Extract all models
 echo [3] Extract player icons
 echo.
@@ -23,6 +23,7 @@ echo [7] Import edited icon sheets (.\2_Output_Models\_ICONS\sheets\)
 echo [8] Repair unused characters' models (re-split them from their playable counterparts)
 echo.
 echo [9] Roster expansion: inject a roster configuration into 3_Output_Dat
+echo [10] Game options: CPU vs CPU, CPU vs CPU management
 echo.
 set "tools_choice="
 set /p "tools_choice=Enter option (or type exit to quit): "
@@ -37,6 +38,8 @@ if "!tools_choice!"=="1" (
     call !SLUGGIES_LAUNCHER! --export --untangle
     if errorlevel 1 goto :after_command
     call :roster_menu
+    if errorlevel 1 goto :after_command
+    call !SLUGGIES_LAUNCHER! --game-options --on cpu_vs_cpu cpu_management
     if errorlevel 1 goto :after_command
     call !SLUGGIES_LAUNCHER! --export-icons --use-output
     goto :after_command
@@ -104,6 +107,14 @@ if "!tools_choice!"=="9" (
     goto :after_command
 )
 
+if "!tools_choice!"=="10" (
+    set "SLUGGIES_MENU_SELECTION=10 - Game options"
+    set "SLUGGIES_MODEL_FILES="
+    set "SLUGGIES_ICON_SHARED_MODE="
+    call :game_options_menu
+    goto :after_command
+)
+
 set "SLUGGIES_MENU_SELECTION=Invalid option: !tools_choice!"
 set "SLUGGIES_MODEL_FILES="
 set "SLUGGIES_ICON_SHARED_MODE="
@@ -147,3 +158,37 @@ if defined roster_file (
 )
 echo   Unknown choice: !roster_mode!
 exit /b 1
+
+:game_options_menu
+rem Shows the game options in 3_Output_Dat\main.dol and turns the chosen ones on or off. They survive roster
+rem runs; menu [1]'s export starts from a fresh main.dol, so it turns both on again. Enter changes nothing.
+rem Sets errorlevel 1 when the change failed.
+echo   Game options in 3_Output_Dat\main.dol:
+call !SLUGGIES_LAUNCHER! --game-options
+if errorlevel 1 exit /b 1
+echo   [1] CPU vs CPU on   ^(hold A + Minus on controller 1 while confirming the teams^)
+echo   [2] CPU vs CPU off
+echo   [3] CPU vs CPU management on   ^(in CPU vs CPU matches controller 1 manages the fielding team^)
+echo   [4] CPU vs CPU management off
+echo   [a] All on
+echo   [o] All off
+echo   [Enter] Skip ^(no changes^)
+set "options_mode="
+set /p "options_mode=Choose: "
+if not defined options_mode (
+    echo   No game options changed.
+    exit /b 0
+)
+set "options_args="
+if "!options_mode!"=="1" set "options_args=--on cpu_vs_cpu"
+if "!options_mode!"=="2" set "options_args=--off cpu_vs_cpu"
+if "!options_mode!"=="3" set "options_args=--on cpu_management"
+if "!options_mode!"=="4" set "options_args=--off cpu_management"
+if /i "!options_mode!"=="a" set "options_args=--on cpu_vs_cpu cpu_management"
+if /i "!options_mode!"=="o" set "options_args=--off cpu_vs_cpu cpu_management"
+if not defined options_args (
+    echo   Unknown choice: !options_mode!
+    exit /b 1
+)
+call !SLUGGIES_LAUNCHER! --game-options !options_args!
+exit /b !errorlevel!

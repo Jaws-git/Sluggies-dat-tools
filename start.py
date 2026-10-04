@@ -56,6 +56,7 @@ HS_HELPER_SCRIPT = os.path.join(HS_DIR, 'HammerspaceHelper.py')
 HS_MAIN_SCRIPT = os.path.join(HS_DIR, 'HammerspaceMain.py')
 UNTANGLE_POLICY_SCRIPT = os.path.join(HS_DIR, 'UntanglePolicy.py')
 ROSTER_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'runner.py')
+GAME_OPTIONS_SCRIPT = os.path.join(TOOLS_DIR, 'GameOptions', 'runner.py')
 
 # Model directory indices that hold unused characters (see folderNameMap in
 # export.py). These characters share a playable character's model block and
@@ -123,6 +124,18 @@ def run_roster(config=None, remove=False, dry_run=False):
         cmd += ['--config', os.path.abspath(config)]       # the injector runs in SluggiesTools/
     if remove:
         cmd.append('--remove')
+    if dry_run:
+        cmd.append('--dry-run')
+    subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
+
+
+def run_game_options(on=(), off=(), dry_run=False):
+    """Game options (CPU vs CPU, ...): turn options on or off in 3_Output_Dat/main.dol; no options = status."""
+    cmd = python_script_command(GAME_OPTIONS_SCRIPT)
+    if on:
+        cmd += ['--on', *on]
+    if off:
+        cmd += ['--off', *off]
     if dry_run:
         cmd.append('--dry-run')
     subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
@@ -510,6 +523,9 @@ def parse_args():
             '  python start.py --export --glb\n'
             '  python start.py --roster --config 1_Input/_RosterConfigurations/02_Stock_and_Unused.json\n'
             '  python start.py --roster --remove\n'
+            '  python start.py --game-options\n'
+            '  python start.py --game-options --on cpu_vs_cpu cpu_management\n'
+            '  python start.py --game-options --off cpu_management\n'
             '  python start.py --export-icons\n'
             '  python start.py --export-icons --use-output\n'
             '  python start.py --patch-icons\n'
@@ -531,6 +547,7 @@ def parse_args():
     mode.add_argument('-hs', '--hammerspace', action='store_true', help='change available memory space in outputdt_na.dat')
     mode.add_argument('--resplit-unused', action='store_true', help='repair: give unused-character routes (dirs 89-94) that point at a playable character\'s block their own copy again')
     mode.add_argument('--roster', '--roster-dev', dest='roster', action='store_true', help='inject a roster configuration (--config, e.g. from 1_Input/_RosterConfigurations) into 3_Output_Dat, replacing the previous injection')
+    mode.add_argument('--game-options', action='store_true', help='show or change game options (CPU vs CPU, ...) in 3_Output_Dat/main.dol; use with --on/--off')
     mode.add_argument('--export', action='store_true', help='export all models from 1_Input to 2_Output_Models')
     mode.add_argument('--export-icons', action='store_true', help='export character-select icon atlases and metadata to 2_Output_Models/_ICONS')
     mode.add_argument(
@@ -549,6 +566,8 @@ def parse_args():
     parser.add_argument('--dry-run', action='store_true', help='patch-icons/roster: validate without writing bytes')
     parser.add_argument('--config', metavar='PATH', help='roster only: the roster configuration JSON')
     parser.add_argument('--remove', action='store_true', help='roster only: reset the roster to vanilla (against 1_Input) and stop')
+    parser.add_argument('--on', nargs='+', default=[], metavar='OPTION', help='game-options only: turn these options on (cpu_vs_cpu, cpu_management)')
+    parser.add_argument('--off', nargs='+', default=[], metavar='OPTION', help='game-options only: turn these options off')
 
     args = parser.parse_args()
 
@@ -562,13 +581,15 @@ def parse_args():
         parser.error('--glb can only be used with --export.')
     if args.use_output and not args.export_icons:
         parser.error('--use-output can only be used with --export-icons.')
-    if args.dry_run and not (args.patch_icons is not None or args.roster):
-        parser.error('--dry-run can only be used with --patch-icons or --roster.')
+    if args.dry_run and not (args.patch_icons is not None or args.roster or args.game_options):
+        parser.error('--dry-run can only be used with --patch-icons, --roster or --game-options.')
+    if (args.on or args.off) and not args.game_options:
+        parser.error('--on and --off can only be used with --game-options.')
     if (args.config or args.remove) and not args.roster:
         parser.error('--config and --remove can only be used with --roster.')
     if args.roster and not (args.config or args.remove):
         parser.error('--roster needs --config PATH (a roster configuration) or --remove.')
-    if not any([args.gui, args.patch, args.unpatch, args.hammerspace, args.resplit_unused, args.export, args.export_icons, args.patch_icons is not None, args.roster]):
+    if not any([args.gui, args.patch, args.unpatch, args.hammerspace, args.resplit_unused, args.export, args.export_icons, args.patch_icons is not None, args.roster, args.game_options]):
         if len(sys.argv) == 1:
             args.gui = True
         else:
@@ -635,6 +656,8 @@ def main() -> int:
             run_resplit_unused()
         elif args.roster:
             run_roster(config=args.config, remove=args.remove, dry_run=args.dry_run)
+        elif args.game_options:
+            run_game_options(on=args.on, off=args.off, dry_run=args.dry_run)
         elif args.export:
             run_export(debug=args.debug, notex=args.notex, untangle=args.untangle, glb=args.glb)
         elif args.export_icons:

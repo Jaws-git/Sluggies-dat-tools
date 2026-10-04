@@ -5,21 +5,89 @@ child process, so the GUI, the CLI and StartTools.bat share one code path and
 one set of logs. Child output is shown in the log pane and echoed to the
 console window. The child's stdin is a pipe, so the interactive y/n prompts in
 the export, icon and hammerspace tools can be answered from the input row.
+
+Fonts: on Windows the GUI upgrades to the system Segoe UI when present;
+otherwise it uses the Open Sans TTF already bundled with the release (the same
+one the roster name plates are drawn with). When neither file is available it
+keeps Dear PyGui's built-in ProggyClean font.
 """
 
 import os
+import platform
 import queue
 import subprocess
 import sys
 import threading
 
 import dearpygui.dearpygui as dpg
+import slogger
 
 _MAX_LOG_LINES = 3000
 _LOG_COLOR = (220, 220, 220, 255)
 _PROMPT_COLOR = (255, 210, 90, 255)
 _NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 _PRIMARY_SIZE = (170, 44)
+
+# Font sizes for the UI. 16pt matches Dear PyGui's default at 1x DPI. Open
+# Sans is slightly wider than the built-in ProggyClean at the same point
+# size, so it is registered one size smaller to keep labels and the 24px
+# quick-send buttons fitting.
+_FONT_SIZE_SEGOE_UI = 16
+_FONT_SIZE_OPEN_SANS = 15
+_WINDOWS = platform.system() == 'Windows'
+_FONT_TAG = 'ui_font'
+# Relative to the directory that holds SluggiesTools/ -- both the repo root and
+# the portable release carry the TTF at this path.
+_BUNDLED_FONT_REL = os.path.join('SluggiesTools', 'Roster', 'fonts', 'OpenSans.ttf')
+
+
+def _app_base_dir():
+    """Directory that holds SluggiesTools/: the repo in source builds, the
+    application folder next to the executable in frozen builds (the same ROOT
+    start.py uses)."""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _bundled_font_path():
+    return os.path.join(_app_base_dir(), _BUNDLED_FONT_REL)
+
+
+def _system_fonts_dir():
+    if not _WINDOWS:
+        return ''
+    return os.path.join(os.environ.get('SystemRoot', r'C:\Windows'), 'Fonts')
+
+
+def _font_candidates():
+    """(path, label) pairs in preference order: system Segoe UI, then the
+    bundled Open Sans."""
+    candidates = []
+    system_dir = _system_fonts_dir()
+    if system_dir:
+        candidates.append((os.path.join(system_dir, 'segoeui.ttf'), 'Segoe UI'))
+    candidates.append((_bundled_font_path(), 'Open Sans'))
+    return candidates
+
+
+def _existing_font_paths(exists=os.path.isfile):
+    """Every candidate that exists, in preference order; empty keeps Dear
+    PyGui's built-in ProggyClean. The existence check is injectable so the
+    strategy is testable without touching the filesystem."""
+    return [path for path, _label in _font_candidates() if path and exists(path)]
+
+
+def _select_font_path(exists=os.path.isfile):
+    """The preferred existing candidate, or None."""
+    paths = _existing_font_paths(exists)
+    return paths[0] if paths else None
+
+
+def _font_size_for(path):
+    if path and os.path.basename(path).lower() == 'segoeui.ttf':
+        return _FONT_SIZE_SEGOE_UI
+    return _FONT_SIZE_OPEN_SANS
 
 
 class SluggiesGui:
@@ -185,7 +253,8 @@ class SluggiesGui:
         with dpg.tab(label='Full export'):
             dpg.add_text('1) Export all models with untangled textures (overwrites 3_Output_Dat/dt_na.dat and main.dol)')
             dpg.add_text('2) Apply the chosen roster preset')
-            dpg.add_text('3) Export the player icons from 3_Output_Dat')
+            dpg.add_text('3) Turn on CPU vs CPU and CPU vs CPU management')
+            dpg.add_text('4) Export the player icons from 3_Output_Dat')
             dpg.add_text('A failing step stops the rest.')
             dpg.add_spacer(height=6)
             with dpg.group(horizontal=True):
@@ -202,6 +271,7 @@ class SluggiesGui:
             steps.append(('--roster', '--remove'))
         elif choice and choice != self.ROSTER_SKIP:
             steps.append(('--roster', '--config', os.path.join(self.config_dir, choice)))
+        steps.append(('--game-options', '--on', 'cpu_vs_cpu', 'cpu_management'))
         steps.append(('--export-icons', '--use-output'))
         self.run_chain(steps)
 
@@ -330,9 +400,38 @@ class SluggiesGui:
         dpg.set_value('stdin_field', '')
         self.send_input(text)
 
+    def _setup_fonts(self):
+        """Register the UI font (Segoe UI on Windows, else bundled Open Sans);
+        without a file the built-in ProggyClean stays the default. Must run
+        inside a font registry before setup_dearpygui(); a failed registration
+        moves on to the next font (Segoe UI -> Open Sans -> ProggyClean)
+        instead of killing the window."""
+        paths = _existing_font_paths()
+        if not paths:
+            slogger.info('No UI font found; using the built-in ProggyClean font',
+                         source='gui')
+            return
+        for path in paths:
+            try:
+                with dpg.font_registry():
+                    dpg.add_font(path, _font_size_for(path), tag=_FONT_TAG)
+                if dpg.does_item_exist(_FONT_TAG):
+                    dpg.bind_font(_FONT_TAG)
+                    name = os.path.basename(path)
+                    slogger.info(f'UI font registered: {name} at {_font_size_for(path)}pt',
+                                 source='gui')
+                    return
+            except Exception:
+                pass
+            slogger.warning(f'Could not register UI font {path}', source='gui')
+        slogger.warning('No UI font could be registered; '
+                        'falling back to the built-in ProggyClean font',
+                        source='gui')
+
     def build(self):
         dpg.create_context()
         self._build_themes()
+        self._setup_fonts()
         with dpg.window(tag='main_window'):
             with dpg.tab_bar():
                 self._build_full_tab()

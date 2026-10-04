@@ -74,9 +74,63 @@ def _cpu_vs_cpu_stub(base: int, site: int) -> Asm:
     return a
 
 
+# ------------------------------------------------------ CPU vs CPU management
+
+# Port of the community Gecko code "CPU vs CPU human management". While a CPU vs CPU match runs
+# (settings +0x18 == 0xFF), controller 1 is handed the fielding team, so a human can pause and
+# make defensive changes for it. *(r13-0x1620) is a 0x1C-byte object (vtable 0x80644474, made at
+# 0x80142700) whose +4..+7 hold the team each controller manages (0xFF = none); the Gecko code
+# wrote its +4 at the stock heap address 0x900D5BD0. The game object (r3 at all three sites,
+# 0x900D5C2C = its +0x34 in the stock game) has +0x2A batting team, +0x2B fielding team,
+# +0x30 state. Found in a stock-game Dolphin save state taken mid-match (2026-10-04).
+# The stubs use r11/r12: at every site both are dead or overwritten before they are read.
+TEAM_MAP = -0x1620                                 # r13
+SETTINGS = -0xB00                                  # r13
+GAME_DEFENSE_FLAG = 0x34
+STATE_DEFENSE_CHANGE = 0x1D
+INIT_SITE, INIT_STOCK = 0x8012DB7C, 0x9803002A     # stb r0,0x2A(r3)   match init: batting team
+FLIP_SITE, FLIP_STOCK = 0x80137584, 0x98C3002A     # stb r6,0x2A(r3)   half-inning flip
+STATE_SITE, STATE_STOCK = 0x8012DB08, 0x98830030   # stb r4,0x30(r3)   game state setter
+
+
+def _if_cpu_vs_cpu(a: Asm, skip: str) -> None:
+    a.lwz(12, SETTINGS, 13).lbz(11, SETTINGS_PADS, 12)
+    a.cmpwi(11, 0xFF).bne(skip)
+
+
+def _hand_fielding_team(batting_reg: int, stock: int):
+    def stub(base: int, site: int) -> Asm:
+        a = Asm(base)
+        _if_cpu_vs_cpu(a, 'back')
+        a.lwz(12, TEAM_MAP, 13).cmpwi(12, 0).beq('back')
+        a.xori(11, batting_reg, 1).stb(11, 4, 12)    # controller 1 -> fielding team
+        a.label('back')
+        a.word(stock)
+        a.b(site + 4)
+        return a
+    return stub
+
+
+def _defense_change_stub(base: int, site: int) -> Asm:
+    # The Gecko code cleared game +0x34 on every switch to state 0x1D; here only in CPU vs CPU,
+    # so normal matches run stock code.
+    a = Asm(base)
+    a.cmpwi(4, STATE_DEFENSE_CHANGE).bne('back')
+    _if_cpu_vs_cpu(a, 'back')
+    a.li(11, 0).stb(11, GAME_DEFENSE_FLAG, 3)
+    a.label('back')
+    a.word(STATE_STOCK)
+    a.b(site + 4)
+    return a
+
+
 OPTIONS = (
     Option('cpu_vs_cpu', 'CPU vs CPU (hold A + Minus on controller 1 while confirming)',
            (Hook(CPU_SITE, CPU_STOCK, _cpu_vs_cpu_stub),)),
+    Option('cpu_management', 'CPU vs CPU management (controller 1 manages the fielding team)',
+           (Hook(INIT_SITE, INIT_STOCK, _hand_fielding_team(0, INIT_STOCK)),
+            Hook(FLIP_SITE, FLIP_STOCK, _hand_fielding_team(6, FLIP_STOCK)),
+            Hook(STATE_SITE, STATE_STOCK, _defense_change_stub))),
 )
 BY_KEY = {o.key: o for o in OPTIONS}
 
