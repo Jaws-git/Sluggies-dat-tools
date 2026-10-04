@@ -719,7 +719,7 @@ def _reassign_target_bone_enum_items(self, context):
 _PLACEMENT_KEEP_WORLD = (
     'KEEP_WORLD', "Keep world position",
     "The mesh stays exactly where it is and follows the new bone from now on. "
-    "Requires Hammerspace Mode on export.",
+    "Patched through Hammerspace, which export picks automatically.",
 )
 _PLACEMENT_KEEP_OFFSET = (
     'KEEP_OFFSET', "Keep offset to bone",
@@ -747,8 +747,8 @@ def _update_reassign_target_preview(self, context):
 
 
 class SLUGGIES_OT_reassign_bone(bpy.types.Operator):
-    """Move a rigid or custom submesh to another bone (Hammerspace only for
-    Keep world position)"""
+    """Move a rigid or custom submesh to another bone (Keep world position
+    is patched through Hammerspace)"""
     bl_idname = "sluggies.reassign_bone"
     bl_label = "Reassign to New Bone"
     bl_description = "Move the active rigid or custom submesh to another free bone"
@@ -1268,10 +1268,10 @@ STADIUM_ADD_BONE_MESSAGE = (
 class SLUGGIES_OT_add_bone(bpy.types.Operator):
     """Add a new inert leaf bone to the skeleton, for a custom submesh to
     attach to once the donor's own free bones are exhausted
-    (act_section.html#appending-bones; Hammerspace Mode required on export)."""
+    (act_section.html#appending-bones; export then uses Hammerspace)."""
     bl_idname = "sluggies.add_bone"
     bl_label = "Add Bone"
-    bl_description = "Add a new leaf bone parented to the chosen bone (Hammerspace only)"
+    bl_description = "Add a new leaf bone parented to the chosen bone"
     bl_options = {"UNDO"}
 
     parent_bone: EnumProperty(
@@ -1334,7 +1334,7 @@ class SLUGGIES_OT_add_bone(bpy.types.Operator):
 
 
 class SLUGGIES_OT_add_submesh(bpy.types.Operator):
-    """Add a custom rigid submesh, attached to a free bone (Hammerspace only)"""
+    """Add a custom rigid submesh, attached to a free bone (export then uses Hammerspace)"""
     bl_idname = "sluggies.add_submesh"
     bl_label = "Add Submesh"
     bl_description = "Create a cube rigidly attached to a free bone, for hammerspace patching"

@@ -2809,7 +2809,7 @@ class ValidateCustomSubmeshesTests(unittest.TestCase):
         model = _validation_base_model()
         model['UseHammerspace'] = False
         model['CustomSubmeshes'] = [_validation_entry()]
-        with self.assertRaisesRegex(ValueError, 'Hammerspace Mode'):
+        with self.assertRaisesRegex(ValueError, 'require UseHammerspace'):
             main._validate_custom_submeshes(model)
 
     def test_valid_rigid_entry_passes(self):

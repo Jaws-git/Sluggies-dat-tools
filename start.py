@@ -348,24 +348,46 @@ def _unused_character_dir_index(found):
     return None
 
 
+# Model-level fields only the Hammerspace builder applies.
+_HAMMERSPACE_ONLY_MODEL_FIELDS = (
+    'CustomSubmeshes',
+    'BoneHierarchyEdited',
+    'AdditionalTextureDescriptors',
+    'DesiredTextureAssignments',
+)
+# Submesh-level fields only the Hammerspace builder applies.
+_HAMMERSPACE_ONLY_SUBMESH_FIELDS = ('FacesDataEdited', 'FaceSurfaceIdsEdited')
+
+
+def _needs_hammerspace(model, sluggie_path):
+    """Whether a .sluggie must go through the Hammerspace builder.
+
+    The Blender exporter chooses the mode and writes ``UseHammerspace``. A
+    file without the flag still goes to Hammerspace when it carries edits
+    the in-place patcher cannot apply (older or hand-edited files), or when
+    it is an unused character, whose split blocks only Hammerspace patches.
+    """
+    if model.get('UseHammerspace', False):
+        return True
+    if any(model.get(field) for field in _HAMMERSPACE_ONLY_MODEL_FIELDS):
+        return True
+    if any(
+        submesh.get(field) is not None
+        for submesh in model.get('Submeshes', [])
+        for field in _HAMMERSPACE_ONLY_SUBMESH_FIELDS
+    ):
+        return True
+    return _unused_character_dir_index(sluggie_path) in UNUSED_CHARACTER_DIR_INDICES
+
+
 def _patch_sluggie(found, model, unpatch):
     """Dispatch a .sluggie patch/unpatch through Hammerspace or in-place."""
-    use_hammerspace = model.get('UseHammerspace', False)
-
-    if use_hammerspace:
+    if _needs_hammerspace(model, found):
         cmd = python_script_command(HS_MAIN_SCRIPT, found, *hammerspace_section_args(model))
         if unpatch:
             cmd.append('--unpatch')
         subprocess.run(cmd, cwd=HS_DIR, check=True)
     else:
-        if _unused_character_dir_index(found) in UNUSED_CHARACTER_DIR_INDICES:
-            slogger.error(
-                "Unused characters cannot be in-place patched. Please activate "
-                "hammerspace mode during Blender export.",
-                source="dispatcher",
-            )
-            return
-
         if _current_model_in_hammerspace(model.get('ChunkNumber'), model.get('FileIndex')):
             slogger.info(
                 f"Model is currently in hammerspace but this file requests an "
@@ -391,9 +413,8 @@ def _patch_png(target, model):
     sluggie_path = target.sluggie_path
     png_path = target.png_path
     texture_index = target.texture_index
-    use_hammerspace = model.get('UseHammerspace', False)
 
-    if use_hammerspace:
+    if _needs_hammerspace(model, sluggie_path):
         cmd = python_script_command(
             HS_MAIN_SCRIPT, sluggie_path,
             *hammerspace_section_args(model),
@@ -402,14 +423,6 @@ def _patch_png(target, model):
             '--texture-index', str(texture_index),
         )
         subprocess.run(cmd, cwd=HS_DIR, check=True)
-        return
-
-    if _unused_character_dir_index(sluggie_path) in UNUSED_CHARACTER_DIR_INDICES:
-        slogger.error(
-            "Unused characters cannot be in-place patched. Please activate "
-            "hammerspace mode during Blender export.",
-            source="dispatcher",
-        )
         return
 
     if _current_model_in_hammerspace(model.get('ChunkNumber'), model.get('FileIndex')):

@@ -730,7 +730,7 @@ def _validate_custom_submeshes(model: dict) -> None:
     errors: list[str] = []
     if not model.get('UseHammerspace'):
         raise ValueError(
-            'CustomSubmeshes require Hammerspace Mode (UseHammerspace) to be enabled'
+            'CustomSubmeshes require UseHammerspace; re-export the model from Blender'
         )
 
     use_b64 = model.get('UseBase64', True)
@@ -1057,7 +1057,7 @@ def _validate_bone_hierarchy_edited(model: dict) -> None:
     # Rule 1: Hammerspace flag set.
     if not model.get('UseHammerspace'):
         raise ValueError(
-            'BoneHierarchyEdited requires Hammerspace Mode (UseHammerspace) to be enabled'
+            'BoneHierarchyEdited requires UseHammerspace; re-export the model from Blender'
         )
 
     donor_bones = model.get('BoneHierarchy') or []

@@ -84,16 +84,16 @@ class TriangulateTests(unittest.TestCase):
 
 
 class CustomSubmeshExportGuardTests(unittest.TestCase):
-    def test_message_requires_both_export_options_and_names_objects(self):
+    def test_message_requires_reimport_textures_and_names_objects(self):
         message = _load_exporter_function(
             '_custom_submesh_export_toggles_required_message'
         )(['CustomHat', 'CustomCape'])
 
-        self.assertIn('Hammerspace Mode', message)
+        self.assertNotIn('Hammerspace Mode', message)
         self.assertIn('Reimport textures', message)
         self.assertIn('CustomHat, CustomCape', message)
 
-    def test_execute_cancels_selected_custom_submeshes_when_either_option_is_off(self):
+    def test_execute_cancels_selected_custom_submeshes_without_reimport_textures(self):
         tree = ast.parse(EXPORTER_PATH.read_text(encoding='utf-8'))
         export_class = next(
             node for node in tree.body
@@ -107,7 +107,7 @@ class CustomSubmeshExportGuardTests(unittest.TestCase):
             node for node in ast.walk(execute)
             if isinstance(node, ast.If)
             and 'custom_submesh_candidates' in ast.unparse(node.test)
-            and 'self.use_hammerspace and self.reimport_textures' in ast.unparse(node.test)
+            and 'not self.reimport_textures' in ast.unparse(node.test)
         )
         guard_body = ast.unparse(ast.Module(body=guard.body, type_ignores=[]))
         self.assertIn('_custom_submesh_export_toggles_required_message', guard_body)

@@ -668,11 +668,11 @@ class BlenderMaterialTextureTests(unittest.TestCase):
                 'unused',
             )
 
-    def test_texture_change_feedback_requires_both_toggles(self):
+    def test_texture_change_feedback_requires_reimport_textures(self):
         self.assertEqual(
             self.toggle_message(['body', 'right hand']),
-            "Texture change detected but 'Hammerspace Mode' and 'Reimport textures' "
-            "are not both enabled. Enable both options before exporting. "
+            "Texture change detected but 'Reimport textures' is not enabled. "
+            "Enable it before exporting. "
             "Materials: [body, right hand]",
         )
 

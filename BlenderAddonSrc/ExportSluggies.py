@@ -1,5 +1,6 @@
 import bpy
 import contextlib
+import copy
 import json
 import math
 import os
@@ -12,6 +13,7 @@ from bpy_extras.io_utils import ExportHelper
 from .SkinWeights import quantize_skin_weights, MAX_BONE_INFLUENCES_PER_VERTEX
 from .HostBones import compute_rigid_retargets, GEO_ID_FREE
 from . import CustomSubmeshExport
+from . import ExportMode
 from . import FieldCodec
 from . import TemplateSources
 from . import HostBones
@@ -390,8 +392,8 @@ def _bone_id_from_bone_name(name):
 
 
 def armature_has_new_bones(candidates, context):
-    """Whether the .sluggie's armature carries any Add Bone bone, used to gate the Hammerspace/UseHammerspace requirement
-    before any other export work happens."""
+    """Whether the .sluggie's armature carries any Add Bone bone; such a
+    model is always exported in Hammerspace mode."""
     arm_obj = _find_root_scale_armature(candidates, context)
     if arm_obj is None:
         return False
@@ -825,6 +827,9 @@ def encode_normal_edits(obj, json_normal_buffer, loop_indices, use_base64=True):
 
 
 def _apply_inplace_normal_edits(obj, normal_buffer, loop_indices, errors, use_base64=True):
+    """Write in-place standalone normal edits. Returns True when loops that
+    share a donor slot got different normals, which only Hammerspace can
+    store."""
     normal_edits = encode_normal_edits(
         obj, normal_buffer, loop_indices, use_base64
     )
@@ -841,7 +846,7 @@ def _apply_inplace_normal_edits(obj, normal_buffer, loop_indices, errors, use_ba
         )
         normal_buffer.pop("NormalBufferDataEdited", None)
         normal_buffer.pop("NormalFacesDataEdited", None)
-        return
+        return False
 
     norm_data, norm_faces = normal_edits
     norm_data_raw = _to_bytes(norm_data)
@@ -871,14 +876,14 @@ def _apply_inplace_normal_edits(obj, normal_buffer, loop_indices, errors, use_ba
             f"{obj.name}: standalone normal buffer conflict — loops sharing "
             f"a donor slot have different edited normals. Normal overwrite "
             f"DROPPED (would exceed original buffer size); your normal edits "
-            f"are NOT in this export. Use Hammerspace Mode for full normal "
-            f"editing support."
+            f"are NOT in this export."
         )
         normal_buffer.pop("NormalBufferDataEdited", None)
         normal_buffer.pop("NormalFacesDataEdited", None)
-    else:
-        normal_buffer["NormalBufferDataEdited"] = norm_data
-        normal_buffer["NormalFacesDataEdited"] = norm_faces
+        return True
+    normal_buffer["NormalBufferDataEdited"] = norm_data
+    normal_buffer["NormalFacesDataEdited"] = norm_faces
+    return False
 
 
 def _get_loop_color(entry):
@@ -1329,7 +1334,8 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
     - 'DestIndexDataEdited'    (SKAcc only, when count changes)
     - 'VertexCntEdited'        (any type, when count changes)
 
-    Returns True if any entries were written, False on size overflow.
+    Returns True if any entries were written, False if none were, and None
+    on size overflow (the edit then needs Hammerspace).
     """
     skin_data = data["SluggiesModel"].get("SkinData")
     if not skin_data or not (skin_data.get("SK1s") or skin_data.get("SK2s") or skin_data.get("SKAccs")):
@@ -1606,9 +1612,45 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
             f"Original: {orig_size} B, Edited: {edit_size} B, "
             f"Overflow: +{overflow} B. Reduce vertex count or simplify bone influences."
         )
-        return False
+        return None
 
     return wrote_any
+
+
+def skin_membership_changed(candidates, data):
+    """Whether a vertex of an exported skinned mesh now has other skinning
+    bones than in the donor. The in-place encoder above cannot store that
+    (it only rewrites weights inside each vertex's original entries), so the
+    export then uses Hammerspace."""
+    skin_data = data["SluggiesModel"].get("SkinData")
+    if not skin_data:
+        return False
+    vertex_size = 6 * _comp_size_skin(skin_data["QuantizeInfo"])
+    donor_sets = ExportMode.donor_skin_bone_sets(skin_data, vertex_size)
+    skinned_bone_ids = set().union(*donor_sets.values()) if donor_sets else set()
+
+    obj_by_vb = {str(obj["VertexBufferOffset"]): obj for obj in candidates if "VertexBufferOffset" in obj}
+    edited_sets = {}
+    start = 0
+    for sm in data["SluggiesModel"].get("Submeshes", []):
+        vb = sm["VertexBuffer"]
+        count = vb["VertexBufferLength"] // (
+            vb["VertexBufferCompCount"] * _comp_size_skin(vb["VertexBufferQuantizeInfo"])
+        )
+        obj = obj_by_vb.get(str(vb["VertexBufferOffset"]))
+        if obj is not None and vb.get("VertexBufferCompCount") == 6:
+            names = {group.index: group.name for group in obj.vertex_groups}
+            for local_v, vertex in enumerate(obj.data.vertices[:count]):
+                bones = set()
+                for g in vertex.groups:
+                    if g.weight <= 0:
+                        continue
+                    bone_id = _parse_bone_group_name(names.get(g.group, ""))
+                    if bone_id is not None and bone_id in skinned_bone_ids:
+                        bones.add(bone_id)
+                edited_sets[start + local_v] = bones
+        start += count
+    return ExportMode.skin_membership_changed(donor_sets, edited_sets)
 
 
 def skinned_donor_objects(candidates, data):
@@ -2279,7 +2321,7 @@ def _purge_skn_edited(data):
 
 def detect_length_mismatches(obj, json_submesh):
     """Return a list of human-readable strings describing any buffer-length
-    changes that would require Hammerspace Mode to export correctly.
+    changes that need a Hammerspace export.
 
     Checks vertex buffer and all UV channels.  An empty list means all lengths
     are compatible with in-place patching.
@@ -3242,16 +3284,16 @@ def _lod_texture_reassignment_refused_message(material_names, partner_name):
 
 def _texture_export_toggles_required_message(material_names):
     return (
-        "Texture change detected but 'Hammerspace Mode' and 'Reimport textures' "
-        "are not both enabled. Enable both options before exporting. "
+        "Texture change detected but 'Reimport textures' is not enabled. "
+        "Enable it before exporting. "
         f"Materials: [{', '.join(material_names)}]"
     )
 
 
 def _custom_submesh_export_toggles_required_message(object_names):
     return (
-        "Custom submeshes require both 'Hammerspace Mode' and 'Reimport textures' "
-        "to be enabled. Enable both options before exporting. "
+        "Custom submeshes require 'Reimport textures' to be enabled. "
+        "Enable it before exporting. "
         f"Objects: [{', '.join(object_names)}]"
     )
 
@@ -3389,15 +3431,6 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
 
     filename_ext = ".sluggie"
     filter_glob: StringProperty(default="*.sluggie", options={"HIDDEN"})  # type: ignore[valid-type]
-    use_hammerspace: BoolProperty(  # type: ignore[valid-type]
-        name="Hammerspace Mode",
-        description=(
-            "Allow vertex count changes. Encodes new face indices and dense UV "
-            "coords for writeExpandedMesh() pointer patching. "
-            "Leave off for simple in-place edits that preserve vertex count."
-        ),
-        default=False,
-    )
     use_custom_normals: BoolProperty(  # type: ignore[valid-type]
         name="Overwrite Normals",
         description=(
@@ -3412,20 +3445,13 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         description=(
             "When patching, replace the model's existing texture payloads in "
             "dt_na.dat with the edited PNGs from the model's tex/ folder. "
-            "Without Hammerspace Mode this is a strict in-place operation: "
-            "no buffers are moved, resized, or added. With Hammerspace Mode "
-            "the TEX section is rebuilt, so texture dimensions may change."
+            "A PNG whose size changed makes the export use Hammerspace, "
+            "which rebuilds the TEX section."
         ),
         default=False,
     )
 
     def execute(self, context):
-        # NOTE: The former gate that rejected the combination of
-        # reimport_textures + use_hammerspace has been removed. Hammerspace
-        # now rebuilds the TEX section (BuildTEX), so texture re-import is
-        # supported alongside hammerspace. The in-place patcher gate in
-        # SluggiesTools/patch_inplace.py remains active.
-
         # --- load and sanity-check the target JSON ---
         if not getattr(self, "filepath", "").strip():
             self.report(
@@ -3485,22 +3511,12 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             and all(prop in obj for prop in REQUIRED_PROPS)
         ]
 
-        if custom_submesh_candidates and not (
-            self.use_hammerspace and self.reimport_textures
-        ):
+        if custom_submesh_candidates and not self.reimport_textures:
             self.report(
                 {"ERROR"},
                 _custom_submesh_export_toggles_required_message(
                     [obj.name for obj in custom_submesh_candidates]
                 ),
-            )
-            return {"CANCELLED"}
-
-        if armature_has_new_bones(context.selected_objects, context) and not self.use_hammerspace:
-            self.report(
-                {"ERROR"},
-                "This armature has bone(s) added with Add Bone, which requires "
-                "Hammerspace Mode. Enable Hammerspace Mode and export again."
             )
             return {"CANCELLED"}
 
@@ -3596,9 +3612,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 )
                 return {"CANCELLED"}
 
-        if changed_materials and not (
-            self.use_hammerspace and self.reimport_textures
-        ):
+        if changed_materials and not self.reimport_textures:
             self.report(
                 {"ERROR"},
                 _texture_export_toggles_required_message(changed_materials),
@@ -3631,8 +3645,8 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             return {"CANCELLED"}
 
         # --- Custom submeshes (PLAN_AddSubmesh.md Phase 6 step 2) ---
-        # The toggle guard above guarantees Hammerspace Mode and Reimport
-        # textures, so the texture context was resolved. CustomSubmeshes
+        # The toggle guard above guarantees Reimport textures, so the
+        # texture context was resolved. CustomSubmeshes
         # always mirrors the current selection, like AdditionalTextureDescriptors.
         custom_submesh_entries = []
         custom_additions = []
@@ -3688,269 +3702,338 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 self.report({"ERROR"}, str(exc))
                 return {"CANCELLED"}
 
-        for obj, target_submesh in object_submeshes:
-            if self.use_hammerspace:
-                try:
-                    hs = encode_mesh_hammerspace(
-                        obj,
-                        target_submesh,
-                        use_custom_normals=self.use_custom_normals,
-                        use_base64=use_base64,
-                    )
-                except ValueError as exc:
-                    self.report({"ERROR"}, f"{obj.name}: {exc}")
-                    return {"CANCELLED"}
-                target_submesh["VertexBuffer"]["VertexBufferDataEdited"] = hs['VertexBufferDataEdited']
-                target_submesh["FacesDataEdited"] = hs['FacesDataEdited']
-                target_submesh["FacesCountEdited"] = hs['FacesCountEdited']
-                target_submesh["FaceTextureIndicesEdited"] = hs['FaceTextureIndicesEdited']
-                for json_channel in target_submesh.get("UVChannels", []):
-                    ch_ind = json_channel.get("UVChannelIndex", 0)
-                    if ch_ind in hs['UVEdits']:
-                        uv_data_b64, uv_faces_b64 = hs['UVEdits'][ch_ind]
-                        json_channel["UVChannelDataEdited"] = uv_data_b64
-                        json_channel["UVFacesDataEdited"] = uv_faces_b64
-                    else:
-                        layer_name = _uv_layer_name(target_submesh.get("UVChannels", []), ch_ind)
+        # --- Export mode: in-place when nothing would be lost, else Hammerspace ---
+        # Model-level reasons skip the in-place attempt. Otherwise the meshes
+        # are first encoded in place on a copy; any edit that attempt cannot
+        # store adds a reason, and the meshes are encoded again in Hammerspace
+        # mode on the real data.
+        hammerspace_reasons = ExportMode.model_level_reasons(
+            data["SluggiesModel"],
+            custom_submesh_names=[obj.name for obj in custom_submesh_candidates],
+            has_new_bones=armature_has_new_bones(context.selected_objects, context),
+            changed_materials=changed_materials,
+            resized_textures=(
+                ExportMode.texture_size_changes(local_texture_descriptors, texture_dir)
+                if self.reimport_textures and owns_texture_section else []
+            ),
+            stale_submeshes=ExportMode.stale_hammerspace_submeshes(
+                submeshes, [obj["VertexBufferOffset"] for obj, _sm in object_submeshes]
+            ),
+        )
+        use_hammerspace = bool(hammerspace_reasons)
+        object_submesh_indices = [
+            (obj, next(i for i, sm in enumerate(submeshes) if sm is target_submesh))
+            for obj, target_submesh in object_submeshes
+        ]
+        base_data, base_warnings, base_errors = data, warnings, errors
+        while True:
+            data = base_data if use_hammerspace else copy.deepcopy(base_data)
+            warnings, errors = list(base_warnings), list(base_errors)
+            written = 0
+            pass_reasons = []
+
+            for obj, submesh_index in object_submesh_indices:
+                target_submesh = data["SluggiesModel"]["Submeshes"][submesh_index]
+                if use_hammerspace:
+                    try:
+                        hs = encode_mesh_hammerspace(
+                            obj,
+                            target_submesh,
+                            use_custom_normals=self.use_custom_normals,
+                            use_base64=use_base64,
+                        )
+                    except ValueError as exc:
+                        self.report({"ERROR"}, f"{obj.name}: {exc}")
+                        return {"CANCELLED"}
+                    target_submesh["VertexBuffer"]["VertexBufferDataEdited"] = hs['VertexBufferDataEdited']
+                    target_submesh["FacesDataEdited"] = hs['FacesDataEdited']
+                    target_submesh["FacesCountEdited"] = hs['FacesCountEdited']
+                    target_submesh["FaceTextureIndicesEdited"] = hs['FaceTextureIndicesEdited']
+                    for json_channel in target_submesh.get("UVChannels", []):
+                        ch_ind = json_channel.get("UVChannelIndex", 0)
+                        if ch_ind in hs['UVEdits']:
+                            uv_data_b64, uv_faces_b64 = hs['UVEdits'][ch_ind]
+                            json_channel["UVChannelDataEdited"] = uv_data_b64
+                            json_channel["UVFacesDataEdited"] = uv_faces_b64
+                        else:
+                            layer_name = _uv_layer_name(target_submesh.get("UVChannels", []), ch_ind)
+                            warnings.append(
+                                f"{obj.name}: UV layer '{layer_name}' not found — UV channel {ch_ind} skipped."
+                            )
+
+                    # Per-loop normals (standalone NormalBuffer) and per-loop colors
+                    # (plan 3.3) — written only when the submesh actually has them.
+                    normal_buffer = target_submesh.get("NormalBuffer")
+                    if hs.get("NormalEdits") is not None and isinstance(normal_buffer, dict):
+                        normal_data_b64, normal_faces_b64 = hs["NormalEdits"]
+                        normal_buffer["NormalBufferDataEdited"] = normal_data_b64
+                        normal_buffer["NormalFacesDataEdited"] = normal_faces_b64
+                    elif isinstance(normal_buffer, dict):
+                        # Submesh has a NormalBuffer the exporter refused to encode —
+                        # drop stale per-loop edits so the original NormalBuffer stays authoritative.
+                        if (self.use_custom_normals
+                                and normal_buffer.get("NormalBufferData")):
+                            # The user asked for normals to be overwritten and the
+                            # submesh has a standalone buffer, so encode_normal_edits
+                            # bailed out: extended records (CompCount > 3) could not
+                            # keep their donor tail mapping. Silently dropping this
+                            # ships a model whose lighting is not what was edited.
+                            donor_loops = len(_to_bytes(
+                                normal_buffer.get("NormalFacesData") or b""
+                            )) // 2
+                            errors.append(
+                                f"{obj.name}: standalone normal overwrite DROPPED — "
+                                f"extended normal records (CompCount "
+                                f"{normal_buffer.get('NormalBufferCompCount')}) could not "
+                                f"preserve their donor mapping ({donor_loops} donor loops). "
+                                f"The donor normals were kept; your normal edits are NOT "
+                                f"in this export. Keep the original topology or turn "
+                                f"Overwrite Normals off."
+                            )
+                        normal_buffer.pop("NormalBufferDataEdited", None)
+                        normal_buffer.pop("NormalFacesDataEdited", None)
+                    for json_channel in target_submesh.get("ColorChannels", []):
+                        ch_ind = json_channel.get("ColorChannelIndex", 0)
+                        if ch_ind in hs["ColorEdits"]:
+                            color_data_b64, color_faces_b64 = hs["ColorEdits"][ch_ind]
+                            json_channel["ColorChannelDataEdited"] = color_data_b64
+                            json_channel["ColorFacesDataEdited"] = color_faces_b64
+                        else:
+                            json_channel.pop("ColorChannelDataEdited", None)
+                            json_channel.pop("ColorFacesDataEdited", None)
+                            warnings.append(
+                                f"{obj.name}: color attribute 'color{ch_ind}' not found — "
+                                f"color channel {ch_ind} skipped."
+                            )
+                else:
+                    mismatches = validate_against_json(obj, target_submesh)
+                    if mismatches:
                         warnings.append(
-                            f"{obj.name}: UV layer '{layer_name}' not found — UV channel {ch_ind} skipped."
+                            f"{obj.name}: metadata mismatch ({'; '.join(mismatches)}) — skipped."
                         )
+                        continue
 
-                # Per-loop normals (standalone NormalBuffer) and per-loop colors
-                # (plan 3.3) — written only when the submesh actually has them.
-                normal_buffer = target_submesh.get("NormalBuffer")
-                if hs.get("NormalEdits") is not None and isinstance(normal_buffer, dict):
-                    normal_data_b64, normal_faces_b64 = hs["NormalEdits"]
-                    normal_buffer["NormalBufferDataEdited"] = normal_data_b64
-                    normal_buffer["NormalFacesDataEdited"] = normal_faces_b64
-                elif isinstance(normal_buffer, dict):
-                    # Submesh has a NormalBuffer the exporter refused to encode —
-                    # drop stale per-loop edits so the original NormalBuffer stays authoritative.
-                    if (self.use_custom_normals
-                            and normal_buffer.get("NormalBufferData")):
-                        # The user asked for normals to be overwritten and the
-                        # submesh has a standalone buffer, so encode_normal_edits
-                        # bailed out: extended records (CompCount > 3) could not
-                        # keep their donor tail mapping. Silently dropping this
-                        # ships a model whose lighting is not what was edited.
-                        donor_loops = len(_to_bytes(
-                            normal_buffer.get("NormalFacesData") or b""
-                        )) // 2
-                        errors.append(
-                            f"{obj.name}: standalone normal overwrite DROPPED — "
-                            f"extended normal records (CompCount "
-                            f"{normal_buffer.get('NormalBufferCompCount')}) could not "
-                            f"preserve their donor mapping ({donor_loops} donor loops). "
-                            f"The donor normals were kept; your normal edits are NOT "
-                            f"in this export. Keep the original topology or turn "
-                            f"Overwrite Normals off."
+                    length_issues = detect_length_mismatches(obj, target_submesh)
+                    if length_issues:
+                        pass_reasons.append(f"{obj.name}: " + "; ".join(length_issues))
+                    elif ExportMode.topology_changed(
+                        (poly.vertices for poly in obj.data.polygons),
+                        target_submesh.get("FacesData"),
+                    ):
+                        pass_reasons.append(f"{obj.name}: faces changed")
+
+                    try:
+                        edited_data = encode_vertex_buffer_edited(
+                            obj,
+                            obj["VertexBufferCompCount"],
+                            obj["VertexBufferQuantizeInfo"],
+                            use_custom_normals=self.use_custom_normals,
+                            use_base64=use_base64,
+                            donor_data=target_submesh["VertexBuffer"].get("VertexBufferData"),
                         )
-                    normal_buffer.pop("NormalBufferDataEdited", None)
-                    normal_buffer.pop("NormalFacesDataEdited", None)
-                for json_channel in target_submesh.get("ColorChannels", []):
-                    ch_ind = json_channel.get("ColorChannelIndex", 0)
-                    if ch_ind in hs["ColorEdits"]:
-                        color_data_b64, color_faces_b64 = hs["ColorEdits"][ch_ind]
-                        json_channel["ColorChannelDataEdited"] = color_data_b64
-                        json_channel["ColorFacesDataEdited"] = color_faces_b64
-                    else:
-                        json_channel.pop("ColorChannelDataEdited", None)
-                        json_channel.pop("ColorFacesDataEdited", None)
-                        warnings.append(
-                            f"{obj.name}: color attribute 'color{ch_ind}' not found — "
-                            f"color channel {ch_ind} skipped."
-                        )
-            else:
-                mismatches = validate_against_json(obj, target_submesh)
-                if mismatches:
-                    warnings.append(
-                        f"{obj.name}: metadata mismatch ({'; '.join(mismatches)}) — skipped."
-                    )
-                    continue
-
-                length_issues = detect_length_mismatches(obj, target_submesh)
-                if length_issues:
-                    self.report({"INFO"},
-                        f"{obj.name}: buffer length change(s) detected but Hammerspace Mode is "
-                        f"off — data written in-place (will be skipped when patching): "
-                        + "; ".join(length_issues)
-                    )
-
-                try:
-                    edited_data = encode_vertex_buffer_edited(
-                        obj,
-                        obj["VertexBufferCompCount"],
-                        obj["VertexBufferQuantizeInfo"],
-                        use_custom_normals=self.use_custom_normals,
-                        use_base64=use_base64,
-                        donor_data=target_submesh["VertexBuffer"].get("VertexBufferData"),
-                    )
-                except ValueError as exc:
-                    self.report({"ERROR"}, f"{obj.name}: {exc}")
-                    return {"CANCELLED"}
-                target_submesh["VertexBuffer"]["VertexBufferDataEdited"] = edited_data
-                # Clear any stale hammerspace face data so it can't mismatch the
-                # in-place vertex buffer (which must stay at the original vertex count).
-                target_submesh.pop("FacesDataEdited", None)
-                target_submesh.pop("FacesCountEdited", None)
-                target_submesh.pop("FaceTextureIndicesEdited", None)
-                inplace_normal_buffer = target_submesh.get("NormalBuffer")
-                if (self.use_custom_normals
-                        and isinstance(inplace_normal_buffer, dict)
-                        and "NormalBufferData" in inplace_normal_buffer):
+                    except ValueError as exc:
+                        self.report({"ERROR"}, f"{obj.name}: {exc}")
+                        return {"CANCELLED"}
+                    target_submesh["VertexBuffer"]["VertexBufferDataEdited"] = edited_data
+                    # Clear any stale hammerspace face data so it can't mismatch the
+                    # in-place vertex buffer (which must stay at the original vertex count).
+                    target_submesh.pop("FacesDataEdited", None)
+                    target_submesh.pop("FacesCountEdited", None)
+                    target_submesh.pop("FaceTextureIndicesEdited", None)
                     loop_indices = [
                         li for poly in obj.data.polygons for li in poly.loop_indices
                     ]
-                    _apply_inplace_normal_edits(
-                        obj,
-                        inplace_normal_buffer,
-                        loop_indices,
-                        errors,
-                        use_base64,
-                    )
-                elif isinstance(inplace_normal_buffer, dict):
-                    inplace_normal_buffer.pop("NormalBufferDataEdited", None)
-                    inplace_normal_buffer.pop("NormalFacesDataEdited", None)
-                for json_channel in target_submesh.get("ColorChannels", []):
-                    json_channel.pop("ColorChannelDataEdited", None)
-                    json_channel.pop("ColorFacesDataEdited", None)
-
-                # Re-encode UV channels from Blender UV layers
-                hammerspace_hint_shown = False
-                _all_uv_ch = target_submesh.get("UVChannels", [])
-                for json_channel in _all_uv_ch:
-                    result = encode_uv_channel_edited(obj, json_channel, use_base64=use_base64, all_uv_channels=_all_uv_ch)
-                    ch_ind = json_channel.get("UVChannelIndex", 0)
-                    if result is None:
-                        layer_name = _uv_layer_name(_all_uv_ch, ch_ind)
-                        warnings.append(
-                            f"{obj.name}: UV layer '{layer_name}' not found — UV channel {ch_ind} skipped."
+                    inplace_normal_buffer = target_submesh.get("NormalBuffer")
+                    if (self.use_custom_normals
+                            and isinstance(inplace_normal_buffer, dict)
+                            and "NormalBufferData" in inplace_normal_buffer):
+                        if _apply_inplace_normal_edits(
+                            obj,
+                            inplace_normal_buffer,
+                            loop_indices,
+                            errors,
+                            use_base64,
+                        ):
+                            pass_reasons.append(
+                                f"{obj.name}: normals split on shared normal slots"
+                            )
+                    elif isinstance(inplace_normal_buffer, dict):
+                        inplace_normal_buffer.pop("NormalBufferDataEdited", None)
+                        inplace_normal_buffer.pop("NormalFacesDataEdited", None)
+                    # In-place patching cannot write colours: any colour edit
+                    # needs Hammerspace.
+                    for json_channel in target_submesh.get("ColorChannels", []):
+                        json_channel.pop("ColorChannelDataEdited", None)
+                        json_channel.pop("ColorFacesDataEdited", None)
+                        encoded_colors = encode_color_edits(
+                            obj, json_channel, loop_indices, use_base64=False
                         )
+                        if encoded_colors is not None and ExportMode.colors_changed(
+                            bytes(encoded_colors[0]), json_channel
+                        ):
+                            pass_reasons.append(
+                                f"{obj.name}: vertex colours "
+                                f"(color{json_channel.get('ColorChannelIndex', 0)}) edited"
+                            )
+
+                    # Re-encode UV channels from Blender UV layers
+                    uv_seam_reason_added = False
+                    _all_uv_ch = target_submesh.get("UVChannels", [])
+                    for json_channel in _all_uv_ch:
+                        result = encode_uv_channel_edited(obj, json_channel, use_base64=use_base64, all_uv_channels=_all_uv_ch)
+                        ch_ind = json_channel.get("UVChannelIndex", 0)
+                        if result is None:
+                            layer_name = _uv_layer_name(_all_uv_ch, ch_ind)
+                            warnings.append(
+                                f"{obj.name}: UV layer '{layer_name}' not found — UV channel {ch_ind} skipped."
+                            )
+                            continue
+                        uv_data_b64, conflicts = result
+                        if conflicts and not uv_seam_reason_added:
+                            pass_reasons.append(f"{obj.name}: UV seams split")
+                            uv_seam_reason_added = True
+                        json_channel["UVChannelDataEdited"] = uv_data_b64
+                        # UVFacesDataEdited is no longer written: the draw list indices
+                        # are unchanged so UVFacesData still applies after patching.
+
+                # Write back DisplayState shader modes (Type-7 FourCC codes) if edited.
+                # Prefer mat["ShaderMode"] on the surface material (new path, 2.2+).
+                # Fall back to DS_{surface_id}_ShaderMode on the object (legacy path).
+                surf_mat = {
+                    mat.get("SurfaceId"): mat
+                    for slot in obj.material_slots
+                    if (mat := slot.material) is not None and mat.get("SurfaceId")
+                }
+                for ds_idx, ds in enumerate(target_submesh.get("DisplayStates", [])):
+                    if ds.get("DisplayStateId") != 7:
                         continue
-                    uv_data_b64, conflicts = result
-                    if conflicts and not hammerspace_hint_shown:
-                        warnings.append(
-                            f"{obj.name}: UV seam conflict(s) detected "
-                            f"- Did you remember to activate hammerspace mode?"
-                        )
-                        hammerspace_hint_shown = True
-                    json_channel["UVChannelDataEdited"] = uv_data_b64
-                    # UVFacesDataEdited is no longer written: the draw list indices
-                    # are unchanged so UVFacesData still applies after patching.
+                    original = ds.get("ShaderMode", "")
+                    surface_id = ds.get("SurfaceId") or f"ds{ds_idx}"
+                    mat = surf_mat.get(surface_id)
+                    if mat is not None:
+                        new_val = str(mat.get("ShaderMode") or "")
+                    else:
+                        prop_val = f"DS_{surface_id}_ShaderMode"
+                        new_val = str(obj[prop_val]) if prop_val in obj else None
+                    if new_val is not None and new_val != original:
+                        ds["ShaderModeEdited"] = new_val
+                    else:
+                        ds.pop("ShaderModeEdited", None)
 
-            # Write back DisplayState shader modes (Type-7 FourCC codes) if edited.
-            # Prefer mat["ShaderMode"] on the surface material (new path, 2.2+).
-            # Fall back to DS_{surface_id}_ShaderMode on the object (legacy path).
-            surf_mat = {
-                mat.get("SurfaceId"): mat
-                for slot in obj.material_slots
-                if (mat := slot.material) is not None and mat.get("SurfaceId")
-            }
-            for ds_idx, ds in enumerate(target_submesh.get("DisplayStates", [])):
-                if ds.get("DisplayStateId") != 7:
-                    continue
-                original = ds.get("ShaderMode", "")
-                surface_id = ds.get("SurfaceId") or f"ds{ds_idx}"
-                mat = surf_mat.get(surface_id)
-                if mat is not None:
-                    new_val = str(mat.get("ShaderMode") or "")
-                else:
-                    prop_val = f"DS_{surface_id}_ShaderMode"
-                    new_val = str(obj[prop_val]) if prop_val in obj else None
-                if new_val is not None and new_val != original:
-                    ds["ShaderModeEdited"] = new_val
-                else:
-                    ds.pop("ShaderModeEdited", None)
+                # Write back specular strength (struct offset +1 = index 0 of the
+                # 3-byte DisplayStateParamBytes) if edited via the material's
+                # "SpecularStrength" custom property. Indices 1 and 2 are preserved.
+                for ds_idx, ds in enumerate(target_submesh.get("DisplayStates", [])):
+                    if ds.get("DisplayStateId") != 7:
+                        continue
+                    original_hex = ds.get("DisplayStateParamBytes", "000000")
+                    surface_id = ds.get("SurfaceId") or f"ds{ds_idx}"
+                    mat = surf_mat.get(surface_id)
+                    if mat is None or "SpecularStrength" not in mat:
+                        ds.pop("DisplayStateParamBytesEdited", None)
+                        continue
+                    try:
+                        original_bytes = bytes.fromhex(original_hex).ljust(3, b'\x00')[:3]
+                    except ValueError:
+                        original_bytes = b'\x00\x00\x00'
+                    new_strength = max(0, min(255, int(mat["SpecularStrength"])))
+                    new_bytes = bytes([new_strength, original_bytes[1], original_bytes[2]])
+                    new_hex = new_bytes.hex()
+                    if new_hex != original_hex:
+                        ds["DisplayStateParamBytesEdited"] = new_hex
+                    else:
+                        ds.pop("DisplayStateParamBytesEdited", None)
 
-            # Write back specular strength (struct offset +1 = index 0 of the
-            # 3-byte DisplayStateParamBytes) if edited via the material's
-            # "SpecularStrength" custom property. Indices 1 and 2 are preserved.
-            for ds_idx, ds in enumerate(target_submesh.get("DisplayStates", [])):
-                if ds.get("DisplayStateId") != 7:
-                    continue
-                original_hex = ds.get("DisplayStateParamBytes", "000000")
-                surface_id = ds.get("SurfaceId") or f"ds{ds_idx}"
-                mat = surf_mat.get(surface_id)
-                if mat is None or "SpecularStrength" not in mat:
-                    ds.pop("DisplayStateParamBytesEdited", None)
-                    continue
+                # Export per-face draw-state assignment when faces have been moved.
                 try:
-                    original_bytes = bytes.fromhex(original_hex).ljust(3, b'\x00')[:3]
-                except ValueError:
-                    original_bytes = b'\x00\x00\x00'
-                new_strength = max(0, min(255, int(mat["SpecularStrength"])))
-                new_bytes = bytes([new_strength, original_bytes[1], original_bytes[2]])
-                new_hex = new_bytes.hex()
-                if new_hex != original_hex:
-                    ds["DisplayStateParamBytesEdited"] = new_hex
-                else:
-                    ds.pop("DisplayStateParamBytesEdited", None)
-
-            # Export per-face draw-state assignment when faces have been moved.
-            try:
-                face_sid_data, face_sid_changed = _encode_face_surface_assignment(
-                    obj, target_submesh.get("DisplayStates", []),
-                    surf_mat, use_base64, warnings,
-                )
-            except ValueError as exc:
-                self.report({"ERROR"}, str(exc))
-                return {"CANCELLED"}
-            if face_sid_changed:
-                if not ENABLE_MATERIAL_REASSIGNMENT_EXPORT:
-                    self.report({"ERROR"},
-                        f"{obj.name}: material reassignment is currently disabled. "
-                        "Dolphin testing found unresolved runtime corruption even "
-                        "for complete moves between compatible donor surfaces. "
-                        "Restore every face to its originally imported material "
-                        "before exporting."
-                    )
-                    return {"CANCELLED"}
-                target_submesh["FaceSurfaceIdsEdited"] = face_sid_data
-            else:
-                target_submesh.pop("FaceSurfaceIdsEdited", None)
-
-            written += 1
-
-        # Skin data is model-level — purge stale edited fields, then re-encode.
-        # Both only make sense when a skinned donor mesh is actually part of
-        # this export: purging and re-encoding without one would drop the
-        # model's whole SK1/SK2/SKAcc structure (and any skin edit from an
-        # earlier run) on, say, a custom-submesh-only export.
-        encode_unskinned_bone_reassignments(candidates, data, warnings)
-        if skinned_donor_objects(candidates, data):
-            _purge_skn_edited(data)
-            if self.use_hammerspace:
-                try:
-                    skn_ok, skn_msg = encode_skin_hammerspace(
-                        candidates,
-                        data,
-                        warnings,
-                        use_custom_normals=self.use_custom_normals,
+                    face_sid_data, face_sid_changed = _encode_face_surface_assignment(
+                        obj, target_submesh.get("DisplayStates", []),
+                        surf_mat, use_base64, warnings,
                     )
                 except ValueError as exc:
                     self.report({"ERROR"}, str(exc))
                     return {"CANCELLED"}
-                if not skn_ok:
-                    self.report({"ERROR"}, skn_msg)
-                    return {"CANCELLED"}
-                if skn_msg:
-                    self.report({"INFO"}, skn_msg)
-            else:
-                encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=self.use_custom_normals)
-        elif data["SluggiesModel"].get("SkinData") and _skin_data_edited_is_empty(data):
-            # Only an export from before this guard existed can have left
-            # an empty SkinDataEdited on a skinned model; it would unskin
-            # the model. Drop it so the donor structure is used again.
-            _purge_skn_edited(data)
-            warnings.append(
-                "Removed an empty SkinDataEdited left by an earlier export that "
-                "included no skinned mesh; the model's donor skinning is used again."
+                if face_sid_changed:
+                    if not ENABLE_MATERIAL_REASSIGNMENT_EXPORT:
+                        self.report({"ERROR"},
+                            f"{obj.name}: material reassignment is currently disabled. "
+                            "Dolphin testing found unresolved runtime corruption even "
+                            "for complete moves between compatible donor surfaces. "
+                            "Restore every face to its originally imported material "
+                            "before exporting."
+                        )
+                        return {"CANCELLED"}
+                    target_submesh["FaceSurfaceIdsEdited"] = face_sid_data
+                    if not use_hammerspace:
+                        pass_reasons.append(f"{obj.name}: faces moved to other materials")
+                else:
+                    target_submesh.pop("FaceSurfaceIdsEdited", None)
+
+                written += 1
+
+            # The in-place skin encoder assumes the donor vertex layout, so a
+            # mesh edit that already needs Hammerspace switches before it runs.
+            if not use_hammerspace and pass_reasons:
+                hammerspace_reasons = pass_reasons
+                use_hammerspace = True
+                continue
+
+            # Skin data is model-level — purge stale edited fields, then re-encode.
+            # Both only make sense when a skinned donor mesh is actually part of
+            # this export: purging and re-encoding without one would drop the
+            # model's whole SK1/SK2/SKAcc structure (and any skin edit from an
+            # earlier run) on, say, a custom-submesh-only export.
+            encode_unskinned_bone_reassignments(candidates, data, warnings)
+            if skinned_donor_objects(candidates, data):
+                _purge_skn_edited(data)
+                if use_hammerspace:
+                    try:
+                        skn_ok, skn_msg = encode_skin_hammerspace(
+                            candidates,
+                            data,
+                            warnings,
+                            use_custom_normals=self.use_custom_normals,
+                        )
+                    except ValueError as exc:
+                        self.report({"ERROR"}, str(exc))
+                        return {"CANCELLED"}
+                    if not skn_ok:
+                        self.report({"ERROR"}, skn_msg)
+                        return {"CANCELLED"}
+                    if skn_msg:
+                        self.report({"INFO"}, skn_msg)
+                elif skin_membership_changed(candidates, data):
+                    pass_reasons.append("vertices moved between bones")
+                elif encode_skin_weights_inplace(
+                    candidates, data, warnings, use_custom_normals=self.use_custom_normals
+                ) is None:
+                    pass_reasons.append("skin data no longer fits its original size")
+            elif data["SluggiesModel"].get("SkinData") and _skin_data_edited_is_empty(data):
+                # Only an export from before this guard existed can have left
+                # an empty SkinDataEdited on a skinned model; it would unskin
+                # the model. Drop it so the donor structure is used again.
+                _purge_skn_edited(data)
+                warnings.append(
+                    "Removed an empty SkinDataEdited left by an earlier export that "
+                    "included no skinned mesh; the model's donor skinning is used again."
+                )
+
+            update_facial_pose_edits(candidates, data, warnings)
+
+            # Whole-model root-bone scale — model-level, written only when edited.
+            root_scale = encode_root_bone_scale_edited(candidates, data, warnings, context)
+
+            if use_hammerspace or not pass_reasons:
+                break
+            hammerspace_reasons = pass_reasons
+            use_hammerspace = True
+
+        self.report({"INFO"}, ExportMode.mode_message(hammerspace_reasons))
+        if use_hammerspace:
+            ExportMode.promote_inplace_uv_edits(
+                data["SluggiesModel"]["Submeshes"],
+                [obj["VertexBufferOffset"] for obj, _index in object_submesh_indices],
             )
-
-        update_facial_pose_edits(candidates, data, warnings)
-
-        # Whole-model root-bone scale — model-level, written only when edited.
-        root_scale = encode_root_bone_scale_edited(candidates, data, warnings, context)
 
         for w in warnings:
             self.report({"WARNING"}, w)
@@ -3962,7 +4045,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             self.report({"ERROR"}, "No submeshes written. Check the warnings above.")
             return {"CANCELLED"}
 
-        data["SluggiesModel"]["UseHammerspace"] = self.use_hammerspace
+        data["SluggiesModel"]["UseHammerspace"] = use_hammerspace
         data["SluggiesModel"]["ReimportTextures"] = (
             self.reimport_textures and bool(local_texture_descriptors)
         )

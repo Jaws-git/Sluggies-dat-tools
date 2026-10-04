@@ -454,13 +454,8 @@ class RunPatchingDispatchTests(unittest.TestCase):
 
 class UnusedCharacterGuardTests(unittest.TestCase):
     """Unused characters (dirs 89-94) share a playable character's model block
-    and have no data block of their own, so an in-place patch (hammerspace off)
-    must be cancelled rather than written into the shared donor block."""
-
-    EXPECTED_ERROR = (
-        "Unused characters cannot be in-place patched. Please activate "
-        "hammerspace mode during Blender export."
-    )
+    and have no data block of their own, so a file without UseHammerspace
+    still goes through Hammerspace rather than into the shared donor block."""
 
     def test_dir_index_from_export_folder_name(self):
         with mock.patch.object(start, 'SEARCH_DIR', '/x/2_Output_Models'):
@@ -488,22 +483,19 @@ class UnusedCharacterGuardTests(unittest.TestCase):
         self.assertIsNone(start._unused_character_dir_index(''))
 
     @mock.patch('start.subprocess.run')
-    def test_sluggie_inplace_for_unused_character_is_cancelled(self, mock_run):
+    def test_sluggie_inplace_for_unused_character_routes_to_hammerspace(self, mock_run):
         with tempfile.TemporaryDirectory() as temp_dir:
             found = os.path.join(temp_dir, '89 Unused Yoshi A', 'm.gpl', 'm.gpl.sluggie')
             os.makedirs(os.path.dirname(found))
             with open(found, 'w') as f:
                 json.dump({'SluggiesModel': {'UseHammerspace': False, 'Submeshes': [{}]}}, f)
 
-            with (
-                mock.patch.object(start, 'SEARCH_DIR', temp_dir),
-                mock.patch.object(start.slogger, 'error') as mock_error,
-            ):
+            with mock.patch.object(start, 'SEARCH_DIR', temp_dir):
                 start._patch_sluggie(found, {'UseHammerspace': False, 'Submeshes': [{}]}, False)
 
-            mock_run.assert_not_called()
-            mock_error.assert_called_once()
-            self.assertIn(self.EXPECTED_ERROR, mock_error.call_args[0][0])
+            mock_run.assert_called_once()
+            cmd = mock_run.call_args[0][0]
+            self.assertTrue(any('HammerspaceMain' in arg for arg in cmd))
 
     @mock.patch('start.subprocess.run')
     def test_sluggie_hammerspace_for_unused_character_is_allowed(self, mock_run):
@@ -539,7 +531,7 @@ class UnusedCharacterGuardTests(unittest.TestCase):
             self.assertTrue(any('patch_inplace' in arg for arg in cmd))
 
     @mock.patch('start.subprocess.run')
-    def test_png_inplace_for_unused_character_is_cancelled(self, mock_run):
+    def test_png_inplace_for_unused_character_routes_to_hammerspace(self, mock_run):
         with tempfile.TemporaryDirectory() as temp_dir:
             sluggie = os.path.join(temp_dir, '89 Unused Yoshi A', 'm.gpl', 'm.gpl.sluggie')
             os.makedirs(os.path.dirname(sluggie))
@@ -552,15 +544,12 @@ class UnusedCharacterGuardTests(unittest.TestCase):
                 texture_index=0,
             )
 
-            with (
-                mock.patch.object(start, 'SEARCH_DIR', temp_dir),
-                mock.patch.object(start.slogger, 'error') as mock_error,
-            ):
+            with mock.patch.object(start, 'SEARCH_DIR', temp_dir):
                 start._patch_png(target, {'UseHammerspace': False, 'Submeshes': [{}]})
 
-            mock_run.assert_not_called()
-            mock_error.assert_called_once()
-            self.assertIn(self.EXPECTED_ERROR, mock_error.call_args[0][0])
+            mock_run.assert_called_once()
+            cmd = mock_run.call_args[0][0]
+            self.assertTrue(any('HammerspaceMain' in arg for arg in cmd))
 
     @mock.patch('start.subprocess.run')
     def test_png_hammerspace_for_unused_character_is_allowed(self, mock_run):
@@ -584,8 +573,33 @@ class UnusedCharacterGuardTests(unittest.TestCase):
             self.assertTrue(any('HammerspaceMain' in arg for arg in cmd))
 
 
-if __name__ == '__main__':
-    unittest.main()
+class NeedsHammerspaceTests(unittest.TestCase):
+    """Files without UseHammerspace still go to Hammerspace when they carry
+    edits the in-place patcher cannot apply."""
+
+    PATH = '/x/2_Output_Models/18 Mario/m.gpl/m.gpl.sluggie'
+
+    def needs(self, model):
+        with mock.patch.object(start, 'SEARCH_DIR', '/x/2_Output_Models'):
+            return start._needs_hammerspace(model, self.PATH)
+
+    def test_flag_decides_for_a_plain_file(self):
+        self.assertFalse(self.needs({'UseHammerspace': False, 'Submeshes': [{}]}))
+        self.assertTrue(self.needs({'UseHammerspace': True, 'Submeshes': [{}]}))
+
+    def test_model_level_hammerspace_fields(self):
+        for field in ('CustomSubmeshes', 'BoneHierarchyEdited',
+                      'AdditionalTextureDescriptors', 'DesiredTextureAssignments'):
+            with self.subTest(field=field):
+                self.assertTrue(self.needs({'Submeshes': [{}], field: [{'x': 1}]}))
+        # An empty list is no edit.
+        self.assertFalse(self.needs({'Submeshes': [{}], 'CustomSubmeshes': []}))
+
+    def test_submesh_level_hammerspace_fields(self):
+        for field in ('FacesDataEdited', 'FaceSurfaceIdsEdited'):
+            with self.subTest(field=field):
+                self.assertTrue(self.needs({'Submeshes': [{}, {field: 'AAAA'}]}))
+
 
 class RosterArgsTests(unittest.TestCase):
     def parse(self, *argv):

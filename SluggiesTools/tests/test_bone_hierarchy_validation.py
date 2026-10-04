@@ -120,7 +120,7 @@ class BoneHierarchyValidationTests(unittest.TestCase):
         data = _base_model()
         data['SluggiesModel']['UseHammerspace'] = False
         data['SluggiesModel']['BoneHierarchyEdited'].append(_new_bone(4, 1))
-        with self.assertRaisesRegex(ValueError, 'Hammerspace Mode'):
+        with self.assertRaisesRegex(ValueError, 'requires UseHammerspace'):
             _validate(data)
 
     def test_rule2_donor_bone_deleted(self):

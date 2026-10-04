@@ -26,12 +26,25 @@ Hammerspace opens up additional memory at the end of the data file to store more
 *Pro Tip: you can add the import/export menus to your quick favorites by right clicking them. Then press "q" (default) to see all your quick favorites.*
 
 #### Exporter Options:
-> [!WARNING]
-> Some edits only work in Hammerspace mode (new submeshes, new bones, new textures, UV seams and unwraps, moving vertices between bones). See the capability lists below for what each mode supports.
-
-[] Use Hammerspace - instead of overwriting the original model data ("in-place" patching), write the edits to hammerspace. This is currently a manual setting and not determined automatically.  
 [] Include Custom Split Normals - When off, writes averaged blender normals. When on, Writes custom split normals data.   
-[] Reimport textures from tex folder - write the PNG files found in the exports back into the game files, including any edits made to them
+[] Reimport textures from tex folder - write the PNG files found in the exports back into the game files, including any edits made to them. Needed for new textures and custom submeshes.
+
+#### In-place or Hammerspace: chosen automatically
+The exporter picks the mode for you. It writes your edits **in place** (over the original model data) whenever they fit there, and switches to **Hammerspace** when an edit needs a rebuilt model. The export always reports its choice, e.g. `Export mode: Hammerspace, needed for: Hat: UV seams split`.
+
+Hammerspace is used for:
+- custom submeshes and bones added with **Add Bone**;
+- texture changes on materials, and PNGs whose size changed (with Reimport textures on);
+- added or removed vertices, and changed, added or removed faces;
+- split UV seams;
+- edited vertex colours;
+- faces moved to another material;
+- vertices moved between bones, or skin data that no longer fits its original size;
+- normals that split where the original model shares one normal (Overwrite Normals);
+- the unused characters (folders 89-94);
+- earlier Hammerspace edits on parts you didn't select this time, so they aren't lost.
+
+Everything else, such as moving vertices, editing UVs without new seams, shape keys, specular strength or a same-size PNG edit, stays in place. A model that is in hammerspace from an earlier patch and now exports in place is moved back automatically when you patch it.
 
 ## Exporter capabilities and restrictions
 ### In-Place mode
@@ -73,12 +86,12 @@ Hammerspace opens up additional memory at the end of the data file to store more
 2. Keep the imported material and its `SurfaceId`; do not create a new material.
 3. Replace the image in the Image Texture node or create a new one.
    Leave at most one Image Texture node connected to the active Material Output!
-4. Export with **Use Hammerspace** and **Reimport textures from tex folder** enabled.
+4. Export with **Reimport textures from tex folder** enabled. The export uses Hammerspace by itself.
 5. Patch the exported `.sluggie` normally.
 
 - Only Image Texture nodes connected to the Material Output count. Unconnected helper nodes are ignored, and a material with no connected image keeps its original texture.
 - If more than one Image Texture node is connected, export stops and names the material.
-- If a texture change is found but either option from step 4 is off, export stops before writing anything and lists the materials.
+- If a texture change is found but the option from step 4 is off, export stops before writing anything and lists the materials.
 - The PNG is looked up only in this model's own `tex/` folder. If it's missing, the export stops.
 - Choosing a PNG the model already has (another texture from its `tex/` folder) just points the material at that texture. Nothing new is added.
 - The same PNG on several materials is stored only once.
@@ -95,7 +108,7 @@ A new submesh is a static (rigid) mesh that follows one bone, like a hat or a he
 2. Select the armature or any of its child meshes, then open the Sluggies Tools tab in the side panel (Object Mode).
 3. Click **Add Submesh** and set a name, the host bone and the material template for your new object.
 4. A small cube appears at the host bone. Edit it freely: model, UV-unwrap, paint, and swap its texture.
-5. When done, select every mesh you'd like to include, **including the new submesh**. Then export back to the original sluggie file with **Use Hammerspace** and **Reimport textures from tex folder** enabled.
+5. When done, select every mesh you'd like to include, **including the new submesh**. Then export back to the original sluggie file with **Reimport textures from tex folder** enabled. The export uses Hammerspace by itself.
 6. Patch the exported `.sluggie` normally. The patcher picks the build steps it needs by itself.
 
 **Material templates**
@@ -151,7 +164,7 @@ A new bone gives a new submesh somewhere to attach when no free bone sits where 
 2. Click **Add Bone** and pick the parent bone. The active bone is preselected, and new bones can be parents too.
 3. The new bone starts at the parent's tail. Move and rotate it in Edit Mode as you like; its rest position is what gets exported.
 4. Attach a new submesh to it with **Add Submesh**. The new bone is listed as a free host bone.
-5. Export with **Use Hammerspace** enabled and patch normally.
+5. Export and patch normally. The export uses Hammerspace by itself.
 
 **Rules**
 - Bones can only be added, as leaves. Don't delete, rename, re-parent or reorder the original bones, and don't parent an original bone to a new one. The game's animations are built for the original skeleton, so these edits would make limbs move wrong. Export and the patcher refuse them.
@@ -163,7 +176,7 @@ A new bone gives a new submesh somewhere to attach when no free bone sits where 
 #### Editing the unused characters
 
 The six unused characters (folders 89-94) share all their models with a playable character in the original game. An untangle export (StartTools menu [1]) gives each of them a copy of its own, and from then on they can be edited like any other character:
-- They always patch through hammerspace. In-place patching is refused for them.
+- They always export and patch through hammerspace.
 - An unpatch restores the unused character's own untangled data block, not the vanilly game's "shared model" state.
 - If an unused character ever shows its counterpart's edits (for example after an unpatch with an older version of the tools), run menu [8] to re-split it.
 - The high-/low-poly rules below apply to them as well.
@@ -177,7 +190,7 @@ The game moves a character's low-poly model with the high-poly model's skeleton.
 
 #### Moving vertices to a different bone (vertex groups)
 
-In hammerspace mode you can move vertices between the model's existing `bone_<id>` vertex groups, e.g. assign all of `bone_28` to `bone_63` and remove them from `bone_28`.
+You can move vertices between the model's existing `bone_<id>` vertex groups, e.g. assign all of `bone_28` to `bone_63` and remove them from `bone_28`.
 - Keep the number of bones per vertex the same. A two-bone vertex should stay two-bone and a one-bone vertex one-bone. Reassigning a whole group is the safest edit.
 - Merge weights instead of assigning at weight 1.0 if you want to keep the original blend between bones (e.g. with a Vertex Weight Mix modifier set to *Add*). Assigning at 1.0 overwrites it.
 - If an edit would need the game's vertex order changed, the patcher stops with a message naming the affected bone entries. For example, giving part of a two-bone area a single bone does this. Undo that part, or reassign the whole area.
