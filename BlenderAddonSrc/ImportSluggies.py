@@ -1,7 +1,6 @@
 import bpy
 import json
 import os
-import base64
 import math
 import struct
 import mathutils
@@ -9,6 +8,7 @@ from functools import lru_cache
 from bpy.props import StringProperty, CollectionProperty
 from bpy_extras.io_utils import ImportHelper
 
+from . import FieldCodec
 from . import HostBones
 
 
@@ -97,10 +97,8 @@ def _parse_anm(data):
 
 
 def _to_bytes(data) -> bytes:
-    """Decode binary data that is either a base64 string or a list of byte values."""
-    if isinstance(data, list):
-        return bytes(data)
-    return base64.b64decode(data)
+    """Decode a binary field: base64 string (optionally zlib, ``z:``) or a list of byte values."""
+    return FieldCodec.decode_field(data)
 
 
 def _texture_file_map(texture_descriptors):

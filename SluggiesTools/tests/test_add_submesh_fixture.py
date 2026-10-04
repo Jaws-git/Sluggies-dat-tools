@@ -14,6 +14,7 @@ for import_path in (TOOLS_DIR, HAMMERSPACE_DIR):
         sys.path.insert(0, str(import_path))
 
 import build_add_submesh_fixture as fixture_mod
+from binfmt import decode_field
 
 if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -255,7 +256,7 @@ class OrderProbeTests(unittest.TestCase):
         template_vb = model["Submeshes"][2]["VertexBuffer"]
 
         self.assertEqual(
-            struct.unpack(">6h", base64.b64decode(clone_vb["VertexBufferData"])),
+            struct.unpack(">6h", decode_field(clone_vb["VertexBufferData"])),
             (50, -100, 3, 15000, -15000, 0),
         )
         self.assertNotIn("VertexBufferDataEdited", clone_vb)
@@ -395,30 +396,30 @@ class CubeProbeTests(unittest.TestCase):
         self.assertEqual((states[2]["PrimListData"], states[2]["PrimListLength"], states[2]["FaceCount"]), ("", 0, 0))
         self.assertEqual(states[3]["FaceCount"], 12)
         self.assertEqual(states[3]["PrimListLength"] % 32, 0)
-        self.assertEqual(len(base64.b64decode(states[3]["PrimListData"])), states[3]["PrimListLength"])
+        self.assertEqual(len(decode_field(states[3]["PrimListData"])), states[3]["PrimListLength"])
         self.assertFalse(any("PrimListDataEdited" in state for state in states))
         self.assertEqual(clone["FacesCount"], 12)
-        self.assertEqual(struct.unpack(">12H", base64.b64decode(clone["FaceTextureIndices"])), (1,) * 12)
+        self.assertEqual(struct.unpack(">12H", decode_field(clone["FaceTextureIndices"])), (1,) * 12)
 
     def test_cube_triangles_are_closed_counter_clockwise_and_in_range(self):
         clone, meta = _cube_clone()
         layout = meta["Cube"]["VertexStreamLayout"]
         state = clone["DisplayStates"][3]
-        faces = fixture_mod.drawlist.decodeDrawList(base64.b64decode(state["PrimListData"]), layout)
+        faces = fixture_mod.drawlist.decodeDrawList(decode_field(state["PrimListData"]), layout)
         self.assertEqual(len(faces), 12)
 
-        raw_positions = struct.unpack(">24h", base64.b64decode(clone["VertexBuffer"]["VertexBufferData"]))
+        raw_positions = struct.unpack(">24h", decode_field(clone["VertexBuffer"]["VertexBufferData"]))
         positions = [raw_positions[i:i + 3] for i in range(0, 24, 3)]
         self.assertEqual({abs(value) for value in raw_positions}, {205})
         self.assertEqual(len(set(positions)), 8)
-        raw_normals = struct.unpack(">18h", base64.b64decode(clone["NormalBuffer"]["NormalBufferData"]))
+        raw_normals = struct.unpack(">18h", decode_field(clone["NormalBuffer"]["NormalBufferData"]))
         normals = [raw_normals[i:i + 3] for i in range(0, 18, 3)]
         self.assertEqual(sorted(normals), sorted([
             (16384, 0, 0), (-16384, 0, 0), (0, 16384, 0), (0, -16384, 0), (0, 0, 16384), (0, 0, -16384),
         ]))
         for channel in clone["UVChannels"]:
             self.assertEqual(
-                struct.unpack(">8h", base64.b64decode(channel["UVChannelData"])),
+                struct.unpack(">8h", decode_field(channel["UVChannelData"])),
                 (0, 0, 16384, 0, 16384, 16384, 0, 16384),
             )
 
@@ -442,7 +443,7 @@ class CubeProbeTests(unittest.TestCase):
         self.assertTrue(all((end, start) in edges for start, end in edges))
 
         self.assertEqual(
-            struct.unpack(">36H", base64.b64decode(clone["FacesData"])),
+            struct.unpack(">36H", decode_field(clone["FacesData"])),
             tuple(vertex["position"] for face in faces for vertex in face),
         )
 

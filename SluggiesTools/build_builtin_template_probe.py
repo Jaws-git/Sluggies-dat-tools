@@ -31,7 +31,6 @@ Usage: python build_builtin_template_probe.py [--round 1|2] [--write | --unpatch
 from __future__ import annotations
 
 import argparse
-import base64
 import copy
 import json
 import sys
@@ -137,7 +136,7 @@ def build_cap(path: Path, probes: list[tuple[str, str]]) -> "hammerspace.ModelBl
     alpha0 = None
     if any(name in ("rigid_rhsp_v1", "rigid_lhsp_v1") for name, _ in probes):
         channel = cap["ColorChannels"][0]
-        payload = base64.b64decode(channel["ColorChannelData"])
+        payload = rebuild.decode_field(channel["ColorChannelData"])
         if channel["ColorChannelQuantizeInfo"] == 0 and set(payload) == {0xFF}:
             channel["ColorChannelQuantizeInfo"], channel["ColorChannelCompCount"] = 48, 4
         if channel["ColorChannelQuantizeInfo"] != 48:

@@ -44,7 +44,7 @@ for import_path in (TOOLS_DIR, TOOLS_DIR / "Hammerspace"):
 import HammerspaceHelper as hh
 import HammerspaceMain as hammerspace
 import build_add_submesh_fixture as probe
-from binfmt import color_entry_size, comp_size
+from binfmt import color_entry_size, comp_size, decode_field
 from drawlist import decodeDrawList, encodeDrawList
 
 MODELS_DIR = TOOLS_DIR.parent / "2_Output_Models"
@@ -78,7 +78,7 @@ def _positions(sub: dict) -> list[tuple[int, int, int]]:
     vb = sub["VertexBuffer"]
     if vb["VertexBufferCompCount"] != 3 or comp_size(vb["VertexBufferQuantizeInfo"]) != 2:
         raise ValueError(f"{sub['MeshName']}: expected rigid s16 positions")
-    raw = base64.b64decode(vb["VertexBufferData"])
+    raw = decode_field(vb["VertexBufferData"])
     return [struct.unpack_from(">3h", raw, i * 6) for i in range(len(raw) // 6)]
 
 
@@ -88,12 +88,12 @@ def _layout(state: dict) -> list[dict]:
 
 
 def _decode_state(state: dict) -> list:
-    return decodeDrawList(base64.b64decode(state["PrimListData"]), _layout(state))
+    return decodeDrawList(decode_field(state["PrimListData"]), _layout(state))
 
 
 def _encode_state(state: dict, faces: list) -> bytes:
     raw = encodeDrawList(faces, _layout(state))
-    original = base64.b64decode(state["PrimListData"])
+    original = decode_field(state["PrimListData"])
     return raw + b"\x00" if original and original[-1] == 0 else raw
 
 
@@ -129,7 +129,7 @@ def _opaque_color_index(sub: dict) -> int:
     channel = sub["ColorChannels"][0]
     if channel["ColorChannelQuantizeInfo"] != 48:
         raise ValueError(f"{sub['MeshName']}: expected RGBA4444 colors")
-    raw = base64.b64decode(channel["ColorChannelData"])
+    raw = decode_field(channel["ColorChannelData"])
     opaque = [i for i in range(len(raw) // 2) if raw[2 * i + 1] & 0x0F == 0x0F]
     if len(opaque) != 1:
         raise ValueError(f"{sub['MeshName']}: expected one opaque color entry, got {opaque}")

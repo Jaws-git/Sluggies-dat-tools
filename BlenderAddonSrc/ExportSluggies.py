@@ -3,7 +3,6 @@ import contextlib
 import json
 import math
 import os
-import base64
 import re
 import shutil
 import struct
@@ -13,22 +12,19 @@ from bpy_extras.io_utils import ExportHelper
 from .SkinWeights import quantize_skin_weights, MAX_BONE_INFLUENCES_PER_VERTEX
 from .HostBones import compute_rigid_retargets, GEO_ID_FREE
 from . import CustomSubmeshExport
+from . import FieldCodec
 from . import TemplateSources
 from . import HostBones
 
 
 def _to_bytes(data) -> bytes:
-    """Decode binary data that is either a base64 string or a list of byte values."""
-    if isinstance(data, list):
-        return bytes(data)
-    return base64.b64decode(data)
+    """Decode a binary field: base64 string (optionally zlib, ``z:``) or a list of byte values."""
+    return FieldCodec.decode_field(data)
 
 
 def _from_bytes(raw: bytes, use_base64: bool = True):
-    """Encode binary data as a base64 string or a list of byte values."""
-    if use_base64:
-        return base64.b64encode(raw).decode('ascii')
-    return list(raw)
+    """Encode binary data as base64 (zlib-compressed when shorter) or a list of byte values."""
+    return FieldCodec.encode_field(raw, use_base64)
 
 
 def _pack_quantized_component(value, divisor, context):

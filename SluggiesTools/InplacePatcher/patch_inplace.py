@@ -2,7 +2,6 @@ import os
 import sys
 import shutil
 import json
-import base64
 import struct
 
 # Resolve project directories relative to this file so the script works
@@ -29,6 +28,7 @@ import patch_skn_inplace as _skn
 import texture_helper as _tex
 import root_scale as _root_scale
 from binfmt import comp_size as _comp_size
+from binfmt import decode_field as _decode_field
 from compact_channel import compact_channel
 
 # ---------------------------------------------------------------------------
@@ -42,10 +42,8 @@ _NO_LIGHTING_MODES = frozenset({'Shdw', 'Audi', 'Oeka'})
 
 
 def _to_bytes(data) -> bytes:
-    """Decode binary data that is either a base64 string or a list of byte values."""
-    if isinstance(data, list):
-        return bytes(data)
-    return base64.b64decode(data)
+    """Decode a binary field: base64 string (optionally zlib, ``z:``) or a list of byte values."""
+    return _decode_field(data)
 
 
 def _shader_mode_to_bytes(s: str) -> bytes:

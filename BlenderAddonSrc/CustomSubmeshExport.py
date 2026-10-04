@@ -5,14 +5,15 @@ quantization rules can be unit-tested without Blender. ExportSluggies.py
 reads the Blender scene and hands plain tuples/lists to the functions here.
 """
 
-import base64
 import math
 import struct
 from dataclasses import dataclass
 
 try:  # inside Blender this module is part of the addon package
+    from . import FieldCodec
     from . import TemplateSources
 except ImportError:  # imported flat by the unit tests
+    import FieldCodec
     import TemplateSources
 
 
@@ -687,10 +688,9 @@ def encode_loop_colors(geometry, loop_colors):
 
 
 def encode_field(raw, use_base64=True):
-    """Base64 string or byte list, following the .sluggie's UseBase64 flag."""
-    if use_base64:
-        return base64.b64encode(raw).decode('ascii')
-    return list(raw)
+    """Base64 string (zlib-compressed when shorter) or byte list, following
+    the .sluggie's UseBase64 flag."""
+    return FieldCodec.encode_field(raw, use_base64)
 
 
 def _index_buffer(indices, use_base64):

@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import re
 import struct
+import zlib
 
 # GX vector quantize formats whose components are 4 bytes wide; everything
 # else in the model data is 2 bytes per component.
@@ -101,26 +102,42 @@ def skin_bone_ids(skin_data: dict | None) -> set[int]:
     return bones
 
 
-def decode_field(value, use_base64: bool) -> bytes | None:
+# Prefix of a zlib-compressed binary field: "z:" + base64(zlib(bytes)). ':' is
+# outside the base64 alphabet, so a field is self-describing and plain-base64,
+# compressed and mixed files all decode with the same code. The Blender add-on
+# keeps its own copy of this codec (BlenderAddonSrc/FieldCodec.py).
+ZLIB_FIELD_PREFIX = 'z:'
+ZLIB_FIELD_LEVEL = 6
+
+
+def decode_field(value, use_base64: bool = True) -> bytes | None:
     """Decode a binary field from a ``.sluggie`` JSON value.
 
-    With ``UseBase64`` the value is a base64 string, otherwise a list of byte
-    ints (``--debug`` export mode).  ``None`` passes through unchanged so
-    callers can probe optional fields.
+    A string is base64, or ``"z:"`` + base64 of zlib-compressed bytes; a
+    list is raw byte ints (``--debug`` export mode). ``use_base64`` is kept
+    for the callers' signature: the value's own type decides.  ``None``
+    passes through unchanged so callers can probe optional fields.
     """
     if value is None:
         return None
-    if use_base64:
+    if isinstance(value, str):
+        if value.startswith(ZLIB_FIELD_PREFIX):
+            return zlib.decompress(base64.b64decode(value[len(ZLIB_FIELD_PREFIX):]))
         return base64.b64decode(value)
     return bytes(value)
 
 
-def encode_field(data: bytes, use_base64: bool):
+def encode_field(data: bytes, use_base64: bool = True):
     """Encode a binary field for a ``.sluggie`` JSON value; inverse of
-    :func:`decode_field`."""
-    if use_base64:
-        return base64.b64encode(data).decode('ascii')
-    return list(data)
+    :func:`decode_field`. With base64, the zlib form is used whenever it is
+    shorter than plain base64 (tiny fields stay plain)."""
+    if not use_base64:
+        return list(data)
+    data = bytes(data)
+    plain = base64.b64encode(data).decode('ascii')
+    packed = ZLIB_FIELD_PREFIX + base64.b64encode(
+        zlib.compress(data, ZLIB_FIELD_LEVEL)).decode('ascii')
+    return packed if len(packed) < len(plain) else plain
 
 
 # ACT geo names are "<stem>.gpl" (or ".tpl"). The game's own data leaves 34 of

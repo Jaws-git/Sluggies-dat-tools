@@ -6,7 +6,6 @@ structurally with the AST.
 """
 
 import ast
-import base64
 import json
 import math
 import pathlib
@@ -758,7 +757,7 @@ def _cube_geometry(obj_world=None, host_bind=HOST_BIND):
 
 
 def _unpack(field, fmt):
-    raw = base64.b64decode(field)
+    raw = cse.FieldCodec.decode_field(field)
     size = struct.calcsize('>' + fmt)
     return list(struct.unpack(f'>{len(raw) // size}{fmt}', raw))
 
@@ -885,13 +884,13 @@ class LoopAttributeTests(unittest.TestCase):
 
     def test_mesh_without_colors_exports_one_white_entry(self):
         entry = self._entry()
-        self.assertEqual(base64.b64decode(entry['ColorChannelData']), b'\xff\xff')
+        self.assertEqual(cse.FieldCodec.decode_field(entry['ColorChannelData']), b'\xff\xff')
         self.assertEqual(set(_unpack(entry['ColorFacesData'], 'H')), {0})
 
     def test_loop_colors_encode_rgba4444(self):
         colors = [(1.0, 0.0, 0.0, 1.0) if loop < 18 else (0.0, 0.5, 1.0, 0.25) for loop in range(36)]
         entry = self._entry(loop_colors=colors)
-        self.assertEqual(base64.b64decode(entry['ColorChannelData']), bytes.fromhex('f00f' '08f4'))
+        self.assertEqual(cse.FieldCodec.decode_field(entry['ColorChannelData']), bytes.fromhex('f00f' '08f4'))
 
     def test_plan_without_normals_or_color_omits_them(self):
         plan = cse.AttributePlan(normals=False, color=False, uv_channels=1, entry_limits={})

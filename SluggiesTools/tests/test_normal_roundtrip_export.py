@@ -13,13 +13,17 @@ import base64
 import math
 import pathlib
 import struct
+import sys
 import unittest
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parents[2]
 EXPORT_PATH = ROOT_DIR / 'BlenderAddonSrc' / 'ExportSluggies.py'
+if str(EXPORT_PATH.parent) not in sys.path:
+    sys.path.insert(0, str(EXPORT_PATH.parent))
+import FieldCodec  # noqa: E402  (ExportSluggies imports it relatively)
 
 NAMES = {
-    'math', 'struct', 'base64',
+    'math', 'struct',
     '_to_bytes', '_from_bytes', '_pack_quantized_component',
     '_NORMAL_ROUNDTRIP_MIN_COS', '_decode_donor_components', '_normal_is_donor_roundtrip',
     'encode_vertex_buffer_edited', 'encode_normal_edits',
@@ -39,7 +43,7 @@ def _binds_name(node, names):
 def _extract(extra_globals):
     tree = ast.parse(EXPORT_PATH.read_text(encoding='utf-8'))
     nodes = [node for node in tree.body if _binds_name(node, NAMES)]
-    namespace = dict(extra_globals)
+    namespace = {'FieldCodec': FieldCodec, **extra_globals}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(EXPORT_PATH), 'exec'), namespace)
     return namespace
 

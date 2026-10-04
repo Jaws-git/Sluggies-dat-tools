@@ -10,7 +10,6 @@ In-place patching (same vertex layout):
   ``restoreSKNBlockInPlace`` — full block restore (pointer fields + data bytes)
 """
 
-import base64
 import os
 import sys
 import struct
@@ -32,16 +31,15 @@ _slogger.configure()
 import root_scale as _root_scale
 from binfmt import align4 as _align4
 from binfmt import comp_size as _comp_size
+from binfmt import decode_field as _decode_field
 from binfmt import skin_bone_ids, skn_direct_entry_problem
 
 OUTPUT_DAT = os.path.join(_ROOT_DIR, '3_Output_Dat', 'dt_na.dat')
 
 
 def _to_bytes(data) -> bytes:
-    """Decode binary data that is either a base64 string or a list of byte values."""
-    if isinstance(data, list):
-        return bytes(data)
-    return base64.b64decode(data)
+    """Decode a binary field: base64 string (optionally zlib, ``z:``) or a list of byte values."""
+    return _decode_field(data)
 
 
 # ---------------------------------------------------------------------------

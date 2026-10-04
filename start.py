@@ -2,7 +2,6 @@ import subprocess
 import sys
 import os
 import argparse
-import base64
 import json
 import importlib.util
 import runpy
@@ -36,6 +35,7 @@ if _SLUGGIES_PKG_DIR not in sys.path:
 
 import SluggiesTools.slogger as slogger  # noqa: E402 – must come after sys.path fix
 import SluggiesTools.texture_helper as _tex  # noqa: E402
+from SluggiesTools.binfmt import decode_field as _decode_field  # noqa: E402
 
 slogger.configure()
 
@@ -213,9 +213,7 @@ def hammerspace_section_args(model):
     use_base64 = model.get('UseBase64', True)
 
     def decode_binary(value):
-        if value is None:
-            return None
-        return base64.b64decode(value) if use_base64 else bytes(value)
+        return _decode_field(value, use_base64)
 
     changed_positions = []
     has_uv_edits = False

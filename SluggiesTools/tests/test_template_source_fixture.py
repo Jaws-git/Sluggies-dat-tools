@@ -1,4 +1,3 @@
-import base64
 import copy
 import pathlib
 import struct
@@ -14,6 +13,7 @@ for import_path in (TOOLS_DIR, HAMMERSPACE_DIR, TOOLS_DIR / 'tests'):
 
 import build_template_source_fixture as tsf
 import build_add_submesh_fixture as probe
+from binfmt import decode_field
 from test_add_submesh_fixture import _gpl_positions
 
 
@@ -287,12 +287,12 @@ class PrepareFixtureTests(unittest.TestCase):
             self.assertEqual(sub['NormalBuffer']['NormalAmbientPct'], 0.0)
             self.assertEqual([uv['UVChannelIndex'] for uv in sub['UVChannels']], [0, 1])
             self.assertEqual([uv['TextureIndex'] for uv in sub['UVChannels']], [1, 2])
-            self.assertEqual(base64.b64decode(sub['ColorChannels'][0]['ColorChannelData']), tsf.COLOR_WHITE)
+            self.assertEqual(decode_field(sub['ColorChannels'][0]['ColorChannelData']), tsf.COLOR_WHITE)
             states = sub['DisplayStates']
             self.assertEqual(states[3]['ShaderMode'], '000028a8')
             self.assertEqual([s['PrimListLength'] > 0 for s in states], [False] * 5 + [True])
             self.assertEqual(states[5]['FaceCount'], 12)
-            self.assertEqual(struct.unpack('>12H', base64.b64decode(sub['FaceTextureIndices'])), (0,) * 12)
+            self.assertEqual(struct.unpack('>12H', decode_field(sub['FaceTextureIndices'])), (0,) * 12)
 
     def test_host_bone_rules(self):
         with self.assertRaisesRegex(ValueError, 'already owns'):
