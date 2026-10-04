@@ -1,0 +1,74 @@
+"""Roster manifest: the facts of a roster run that exist only inside hook code, kept in the DOL data section.
+
+The grid reader (``state.py``) reads most of a roster back from the binary:
+the grid shape, the square -> head map, the head list, the selector rows,
+the names. A few facts are only compiled into hooks: the member lists of new
+squares, the wheel order, the new IDs' templates and where ``portrait_of``
+lives. The runner stores those here, as a zlib-compressed JSON blob behind
+``MAGIC`` in the roster's DOL data section:
+
+    MAGIC (16 bytes) | u32 compressed length | zlib(JSON)
+
+The reset drops it with the rest of the data section. The reader
+cross-checks every fact it can also read from the binary; on a mismatch the
+binary wins.
+"""
+
+import json
+import struct
+import zlib
+
+MAGIC = b'SLUGGIES ROSTER\x03'
+VERSION = 1
+
+
+class ManifestError(ValueError):
+    pass
+
+
+def build(state: dict) -> dict:
+    """The manifest for one run, from the steps' ``ctx.state``."""
+    grid = state.get('grid')
+    return {
+        'version': VERSION,
+        'grid': None if grid is None else {
+            'shape': [grid.cols, grid.rows],
+            'cells': [None if c is None else list(c) for c in grid.cells],
+            'squares': [list(sq) for sq in grid.squares],
+        },
+        'ids': [[c.id, c.template, c.wheel, c.swatch] for c in state.get('new_ids') or []],
+        'spares': sorted(state.get('spares') or []),
+        'wheel_order': [[s, list(o)] for s, o in state.get('wheel_order') or []],
+        'names': {str(cid): dict(n) for cid, n in sorted((state.get('names') or {}).items())},
+        'portrait_of': state.get('portrait_of'),
+    }
+
+
+def encode(manifest: dict) -> bytes:
+    raw = json.dumps(manifest, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf-8')
+    packed = zlib.compress(raw, 9)
+    return MAGIC + struct.pack('>I', len(packed)) + packed
+
+
+def find(blob: bytes) -> dict | None:
+    """The manifest in a data-section blob (4-aligned), or None."""
+    at = 0
+    while True:
+        at = blob.find(MAGIC, at)
+        if at < 0:
+            return None
+        if at % 4 == 0:
+            break
+        at += 1
+    start = at + len(MAGIC) + 4
+    if start > len(blob):
+        raise ManifestError('roster manifest is cut off')
+    length = struct.unpack_from('>I', blob, at + len(MAGIC))[0]
+    try:
+        manifest = json.loads(zlib.decompress(blob[start:start + length]).decode('utf-8'))
+    except (zlib.error, ValueError) as exc:
+        raise ManifestError(f'roster manifest is damaged: {exc}') from exc
+    if not isinstance(manifest, dict) or manifest.get('version') != VERSION:
+        raise ManifestError(f'roster manifest version {manifest.get("version") if isinstance(manifest, dict) else "?"}'
+                            f' is not {VERSION}')
+    return manifest

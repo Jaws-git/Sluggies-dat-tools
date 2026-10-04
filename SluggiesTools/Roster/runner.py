@@ -10,6 +10,8 @@ the files in ``3_Output_Dat`` (the normal pipeline's output).
 * Game options (``GameOptions/``, menu [10]) that are on before the reset are
   applied again afterwards.
 * ``--dry-run`` runs everything in memory and writes nothing.
+* After the steps it stores a manifest (``manifest.py``) of the facts only
+  hook code holds, so ``state.py`` can read the roster back.
 """
 
 import argparse
@@ -30,11 +32,13 @@ import slogger  # noqa: E402
 try:
     from ..Dol import dolfile
     from ..GameOptions import game_options
-    from . import datfile, reset, steps
+    from . import datfile, dol_hammerspace, manifest, reset, steps
 except ImportError:
     from Dol import dolfile
     from GameOptions import game_options
     import datfile
+    import dol_hammerspace
+    import manifest
     import reset
     import steps
 
@@ -96,6 +100,15 @@ def patch_fst(output_dir: str, dat_size: int) -> str:
     return f'fst.bin: dt_na.dat size 0x{old:X} -> 0x{dat_size:X}'
 
 
+def write_manifest(ctx: steps.RosterContext) -> str:
+    """Store the run's hook-only facts (``manifest.py``) in the DOL data section, for the grid reader."""
+    hs = dol_hammerspace.get(ctx)
+    blob = manifest.encode(manifest.build(ctx.state))
+    at = hs.data.put(blob, 4)
+    hs.commit()
+    return f'[manifest] roster manifest at 0x{at:08X} (0x{len(blob):X} bytes)'
+
+
 def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_only: bool = False,
         dry_run: bool = False, input_dir: str = INPUT_DIR) -> dict:
     dol_path = os.path.join(output_dir, 'main.dol')
@@ -130,6 +143,7 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
             lines = step.apply(ctx) or []
             result['steps'].append({'key': step.key, 'title': step.title, 'log': list(lines)})
             log += [f'[{step.key}] {line}' for line in lines]
+        log.append(write_manifest(ctx))
         dol_bytes = image.to_bytes()
     if options:
         image = dolfile.DolImage(dol_bytes)

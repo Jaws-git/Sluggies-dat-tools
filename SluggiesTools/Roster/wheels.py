@@ -101,6 +101,10 @@ STOCK_SPARE_ROWS = {
     0x4B: bytes.fromhex('0a3a240000040005'),   # Black Kritter
     0x4C: bytes.fromhex('010c0c0000020005'),   # Black Koopa
 }
+# Names for the spare rows: the stock name table holds "#N/A" for them (``SPARE_TEXT``).
+SPARE_NAMES = {0x47: 'Black Yoshi', 0x48: 'White Yoshi', 0x49: 'Black Toad', 0x4A: 'Black Pianta',
+               0x4B: 'Black Kritter', 0x4C: 'Black Koopa'}
+SPARE_TEXT = '#N/A'
 
 
 class WheelConfigError(ValueError):
@@ -476,6 +480,7 @@ def lift_to_ten(ctx: steps.RosterContext) -> list[str]:
 @steps.register('wheels')
 def apply(ctx: steps.RosterContext) -> list[str]:
     spares = parse_wheels(ctx.config)
+    ctx.state['spares'] = sorted(spares or [])
     if spares is None and 'ids' not in ctx.config:
         return ['no "wheels" or "ids" key in the roster config: wheels stay as they are']
     address, count = table_location(ctx, 'selector')
@@ -510,6 +515,7 @@ def apply(ctx: steps.RosterContext) -> list[str]:
     else:
         log.append('every wheel has 6 members or fewer: caps unchanged')
     order = parse_order(ctx.config, members)
+    ctx.state['wheel_order'] = order
     if order:
         hs = dol_hammerspace.get(ctx)
         log += install_reorder(ctx.dol, hs, order)

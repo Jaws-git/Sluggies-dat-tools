@@ -56,6 +56,7 @@ HS_HELPER_SCRIPT = os.path.join(HS_DIR, 'HammerspaceHelper.py')
 HS_MAIN_SCRIPT = os.path.join(HS_DIR, 'HammerspaceMain.py')
 UNTANGLE_POLICY_SCRIPT = os.path.join(HS_DIR, 'UntanglePolicy.py')
 ROSTER_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'runner.py')
+ROSTER_STATE_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'state_cli.py')
 GAME_OPTIONS_SCRIPT = os.path.join(TOOLS_DIR, 'GameOptions', 'runner.py')
 
 # Model directory indices that hold unused characters (see folderNameMap in
@@ -127,6 +128,11 @@ def run_roster(config=None, remove=False, dry_run=False):
     if dry_run:
         cmd.append('--dry-run')
     subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
+
+
+def run_roster_state():
+    """Read the draft grid from 3_Output_Dat into 3_Output_Dat/_gui/roster_state.json (GUI character grid)."""
+    subprocess.run(python_script_command(ROSTER_STATE_SCRIPT), cwd=TOOLS_DIR, check=True)
 
 
 def run_game_options(on=(), off=(), dry_run=False):
@@ -558,6 +564,7 @@ def parse_args():
     mode.add_argument('-hs', '--hammerspace', action='store_true', help='change available memory space in outputdt_na.dat')
     mode.add_argument('--resplit-unused', action='store_true', help='repair: give unused-character routes (dirs 89-94) that point at a playable character\'s block their own copy again')
     mode.add_argument('--roster', '--roster-dev', dest='roster', action='store_true', help='inject a roster configuration (--config, e.g. from 1_Input/_RosterConfigurations) into 3_Output_Dat, replacing the previous injection')
+    mode.add_argument('--roster-state', action='store_true', help='read the draft grid from 3_Output_Dat into 3_Output_Dat/_gui/roster_state.json (used by the GUI)')
     mode.add_argument('--game-options', action='store_true', help='show or change game options (CPU vs CPU, ...) in 3_Output_Dat/main.dol; use with --on/--off')
     mode.add_argument('--export', action='store_true', help='export all models from 1_Input to 2_Output_Models')
     mode.add_argument('--export-icons', action='store_true', help='export character-select icon atlases and metadata to 2_Output_Models/_ICONS')
@@ -600,7 +607,7 @@ def parse_args():
         parser.error('--config and --remove can only be used with --roster.')
     if args.roster and not (args.config or args.remove):
         parser.error('--roster needs --config PATH (a roster configuration) or --remove.')
-    if not any([args.gui, args.patch, args.unpatch, args.hammerspace, args.resplit_unused, args.export, args.export_icons, args.patch_icons is not None, args.roster, args.game_options]):
+    if not any([args.gui, args.patch, args.unpatch, args.hammerspace, args.resplit_unused, args.export, args.export_icons, args.patch_icons is not None, args.roster, args.roster_state, args.game_options]):
         if len(sys.argv) == 1:
             args.gui = True
         else:
@@ -667,6 +674,8 @@ def main() -> int:
             run_resplit_unused()
         elif args.roster:
             run_roster(config=args.config, remove=args.remove, dry_run=args.dry_run)
+        elif args.roster_state:
+            run_roster_state()
         elif args.game_options:
             run_game_options(on=args.on, off=args.off, dry_run=args.dry_run)
         elif args.export:

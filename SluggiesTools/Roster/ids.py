@@ -556,6 +556,7 @@ def apply(ctx: steps.RosterContext) -> list[str]:
     if 'ids' not in ctx.config:
         return ['no "ids" key in the roster config: tables stay in place']
     new = parse_ids(ctx.config)
+    ctx.state['new_ids'] = new
     hs = dol_hammerspace.get(ctx)
     log = apply_ids(ctx.dol, hs, new, ctx.state)
     hs.commit()

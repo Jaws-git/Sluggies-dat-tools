@@ -6,6 +6,11 @@ one set of logs. Child output is shown in the log pane and echoed to the
 console window. The child's stdin is a pipe, so the interactive y/n prompts in
 the export, icon and hammerspace tools can be answered from the input row.
 
+The "Character grid" tab (``gui_character_grid``, logic in ``gui_grid``)
+shows the draft grid of 3_Output_Dat. It reads it with ``start.py
+--roster-state`` in the background at start, when the tab is opened, on
+Refresh and after every command chain that can change the game files.
+
 Fonts: on Windows the GUI upgrades to the system Segoe UI when present;
 otherwise it uses the Open Sans TTF already bundled with the release (the same
 one the roster name plates are drawn with). When neither file is available it
@@ -21,6 +26,8 @@ import sys
 import threading
 
 import dearpygui.dearpygui as dpg
+import gui_character_grid
+import gui_grid
 import slogger
 
 _MAX_LOG_LINES = 3000
@@ -107,7 +114,9 @@ class SluggiesGui:
         self.process = None
         self.partial = ''
         self.pending = []
+        self.chain = []
         self.action_buttons = []
+        self.grid_tab = gui_character_grid.CharacterGridTab(self)
 
     # ------------------------------------------------------------------ run
     def run_command(self, *args):
@@ -119,6 +128,7 @@ class SluggiesGui:
             self._log_line('A command is already running.', _PROMPT_COLOR)
             return
         self.pending = [tuple(step) for step in steps]
+        self.chain = list(self.pending)
         self._start_next()
 
     def _start_next(self):
@@ -181,7 +191,9 @@ class SluggiesGui:
                 item = self.output_queue.get_nowait()
             except queue.Empty:
                 return
-            if isinstance(item, tuple):
+            if isinstance(item, tuple) and item[0] == 'grid_state':
+                self.grid_tab.on_read_done(item[1], item[2])
+            elif isinstance(item, tuple):
                 self._finish_process(item[1])
             else:
                 self._append_text(item)
@@ -194,6 +206,9 @@ class SluggiesGui:
             self._log_line(line.rsplit('\r', 1)[-1])
         self.partial = self.partial.rsplit('\r', 1)[-1]
         dpg.set_value('log_pending', self.partial)
+
+    def log_line(self, line, color=_LOG_COLOR):
+        self._log_line(line, color)
 
     def _log_line(self, line, color=_LOG_COLOR):
         dpg.add_text(line, parent='log_window', before='log_pending', color=color)
@@ -216,6 +231,8 @@ class SluggiesGui:
             self._log_line('Remaining steps skipped because a step failed.', _PROMPT_COLOR)
             self.pending = []
         self._set_busy(False)
+        if gui_grid.chain_writes(self.chain):
+            self.grid_tab.request_read()          # the game files may have changed: re-read the grid
 
     def _set_busy(self, busy):
         for button in self.action_buttons:
@@ -399,6 +416,10 @@ class SluggiesGui:
             self._action('Re-split unused characters', lambda: self.run_command('--resplit-unused'),
                          'Repair: give unused-character routes (dirs 89-94) their own block copies again.')
 
+    def _on_tab(self, _sender, tab):
+        if dpg.get_item_alias(tab) == 'grid_tab' and self.grid_tab.loader.status != gui_grid.StateLoader.RUNNING:
+            self.grid_tab.request_read()
+
     def _on_send(self, *_):
         text = dpg.get_value('stdin_field')
         dpg.set_value('stdin_field', '')
@@ -437,13 +458,14 @@ class SluggiesGui:
         self._build_themes()
         self._setup_fonts()
         with dpg.window(tag='main_window'):
-            with dpg.tab_bar():
+            with dpg.tab_bar(tag='main_tab_bar', callback=self._on_tab):
                 self._build_full_tab()
                 self._build_export_tab()
                 self._build_icons_tab()
                 self._build_roster_tab()
                 self._build_patch_tab()
                 self._build_maintenance_tab()
+                self.grid_tab.build()
             dpg.add_separator()
             with dpg.child_window(tag='log_window', height=-34, border=True):
                 dpg.add_text('', tag='log_pending', color=_PROMPT_COLOR)
@@ -455,10 +477,12 @@ class SluggiesGui:
                 dpg.add_button(label='n', width=24, callback=lambda: self.send_input('n'))
                 dpg.add_button(label='Enter', callback=lambda: self.send_input(''))
                 dpg.add_button(label='Stop', tag='stop_button', enabled=False, callback=self.stop_command)
-        dpg.create_viewport(title='Sluggies Tools', width=900, height=700)
+        dpg.create_viewport(title='Sluggies Tools', width=1440, height=900)   # fits the 12x5 grid unscrolled
         dpg.set_primary_window('main_window', True)
+        dpg.set_viewport_resize_callback(lambda *_: self.grid_tab.on_viewport_resize())
         dpg.setup_dearpygui()
         dpg.show_viewport()
+        self.grid_tab.request_read()
 
     def run(self):
         self.build()

@@ -772,6 +772,7 @@ def apply(ctx: steps.RosterContext) -> list[str]:
         return ['no "grid" in the roster config: the grid stays stock']
     stock_heads = ctx.dol.read(HEAD_LIST, SQUARE_HEADS)
     grid = parse_grid(ctx.config, stock_heads, ctx.dol.read(STOCK_MAP, STOCK_SQUARES))
+    ctx.state['grid'] = grid
     selector, rows = wheels.table_location(ctx, 'selector')
     for sq in grid.squares:
         for cid in sq:

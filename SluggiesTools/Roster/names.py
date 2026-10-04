@@ -303,6 +303,7 @@ def plate_layout(data: bytes, names: dict[int, str], first_row: int) -> bytes:
 @steps.register('names')
 def apply(ctx: steps.RosterContext) -> list[str]:
     names = parse_names(ctx.config)
+    ctx.state['names'] = names
     if not names:
         return ['no "name" in the roster config: names stay as they are']
     if ctx.dat is None:
