@@ -623,3 +623,39 @@ class RosterArgsTests(unittest.TestCase):
         cmd = mock_run.call_args.args[0]
         # the config path is made absolute: the runner works in SluggiesTools/
         self.assertEqual(cmd[1:], [start.ROSTER_SCRIPT, '--config', os.path.abspath('c.json'), '--remove'])
+
+
+class TargetedPatchDispatchTests(unittest.TestCase):
+    """GUI character grid Phase 4a: --target-id always goes through Hammerspace."""
+
+    @mock.patch('start.subprocess.run')
+    def test_inplace_file_with_target_goes_to_hammerspace(self, mock_run):
+        start._patch_sluggie('/tmp/model.sluggie', {'ChunkNumber': 18, 'FileIndex': 0}, False, '0x13', True)
+
+        cmd = mock_run.call_args[0][0]
+        self.assertTrue(any('HammerspaceMain' in arg for arg in cmd))
+        self.assertEqual(cmd[-3:], ['--target-id', '0x13', '--as-low'])
+
+    @mock.patch('start.subprocess.run')
+    def test_targeted_unpatch_passes_the_target(self, mock_run):
+        start._patch_sluggie('/tmp/model.sluggie', {'ChunkNumber': 18, 'FileIndex': 0}, True, '0x13')
+
+        cmd = mock_run.call_args[0][0]
+        self.assertEqual(cmd[-3:], ['--target-id', '0x13', '--unpatch'])
+
+    def test_high_poly_file_is_patched_first(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for name in ('1_L_kinopio.gpl.sluggie', '0_kinopio.gpl.sluggie'):
+                with open(os.path.join(temp_dir, name), 'w') as f:
+                    json.dump({'SluggiesModel': {}}, f)
+            with mock.patch.object(start, 'SEARCH_DIR', temp_dir), \
+                    mock.patch('start._patch_sluggie') as patch:
+                start.run_patching(['1_L_kinopio.gpl.sluggie', '0_kinopio.gpl.sluggie'], target_id='0x13')
+
+        order = [os.path.basename(call.args[0]) for call in patch.call_args_list]
+        self.assertEqual(order, ['0_kinopio.gpl.sluggie', '1_L_kinopio.gpl.sluggie'])
+
+    @mock.patch('start.subprocess.run')
+    def test_png_with_target_is_refused(self, mock_run):
+        start.run_patching(['0.png'], target_id='0x13')
+        mock_run.assert_not_called()

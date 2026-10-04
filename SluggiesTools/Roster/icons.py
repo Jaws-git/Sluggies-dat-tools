@@ -517,7 +517,7 @@ def apply(ctx: steps.RosterContext, encode_cmpr=None) -> list[str]:
                                                                  ('front', front, front_kept))))
     words = read_record(ctx.dol)
     before = dhs.slot(words, 'en')[:2]
-    at = dhs.allocate(ctx.dat, len(bank), dhs.routed_ranges(ctx.dol))
+    at = dhs.allocate(ctx.dat, len(bank), dhs.reserved(ctx))
     ctx.dat.write(at, bank)
     for lang in dhs.LANGS:
         dhs.set_slot(words, lang, at, len(bank))

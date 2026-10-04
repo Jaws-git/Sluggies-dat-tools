@@ -3,8 +3,8 @@
 The grid reader (``state.py``) reads most of a roster back from the binary:
 the grid shape, the square -> head map, the head list, the selector rows,
 the names. A few facts are only compiled into hooks: the member lists of new
-squares, the wheel order, the new IDs' templates and where ``portrait_of``
-lives. The runner stores those here, as a zlib-compressed JSON blob behind
+squares, the wheel order, the new IDs' templates, where ``portrait_of``
+lives and which new IDs have own model directories (and from whom). The runner stores those here, as a zlib-compressed JSON blob behind
 ``MAGIC`` in the roster's DOL data section:
 
     MAGIC (16 bytes) | u32 compressed length | zlib(JSON)
@@ -35,7 +35,7 @@ def build(state: dict, config: dict | None = None) -> dict:
     ``config_keys`` and ``spare_wheels`` (``[id, wheel, swatch]`` as configured) serve the read -> rebuild round
     trip (``derive.py``), which infers them for manifests written before they existed."""
     grid = state.get('grid')
-    return {
+    out = {
         'config_keys': None if config is None else [k for k in CONFIG_KEYS if k in config],
         'spare_wheels': [[cid, w, s] for cid, (w, s) in sorted((state.get('spare_wheels') or {}).items())],
         'version': VERSION,
@@ -50,6 +50,9 @@ def build(state: dict, config: dict | None = None) -> dict:
         'names': {str(cid): dict(n) for cid, n in sorted((state.get('names') or {}).items())},
         'portrait_of': state.get('portrait_of'),
     }
+    if state.get('model_dirs'):                # own model directories (model_dirs step): [id, directory, source id]
+        out['model_dirs'] = [[cid, d, src] for cid, (d, src) in sorted(state['model_dirs'].items())]
+    return out
 
 
 def encode(manifest: dict) -> bytes:

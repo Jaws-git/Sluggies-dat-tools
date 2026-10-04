@@ -392,10 +392,16 @@ def _needs_hammerspace(model, sluggie_path):
     return _unused_character_dir_index(sluggie_path) in UNUSED_CHARACTER_DIR_INDICES
 
 
-def _patch_sluggie(found, model, unpatch):
-    """Dispatch a .sluggie patch/unpatch through Hammerspace or in-place."""
-    if _needs_hammerspace(model, found):
+def _patch_sluggie(found, model, unpatch, target_id=None, as_low=False):
+    """Dispatch a .sluggie patch/unpatch through Hammerspace or in-place.
+
+    With ``target_id`` the model goes into that character's slot, which is
+    always a Hammerspace write (the in-place patcher can only write over the
+    model's own block)."""
+    if target_id is not None or _needs_hammerspace(model, found):
         cmd = python_script_command(HS_MAIN_SCRIPT, found, *hammerspace_section_args(model))
+        if target_id is not None:
+            cmd += ['--target-id', target_id] + (['--as-low'] if as_low else [])
         if unpatch:
             cmd.append('--unpatch')
         subprocess.run(cmd, cwd=HS_DIR, check=True)
@@ -458,9 +464,21 @@ def _patch_png(target, model):
     subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
 
 
-def run_patching(filenames, unpatch=False):
+def run_patching(filenames, unpatch=False, target_id=None, as_low=False):
+    if target_id is not None:
+        # A slot takes an L_ model only under its own high-poly model, so the
+        # high-poly file goes first.
+        filenames = sorted(filenames, key=lambda name: '_L_' in os.path.basename(name))
     for filename in filenames:
         is_png = filename.lower().endswith('.png')
+
+        if is_png and target_id is not None:
+            slogger.error(
+                f"'{filename}': --target-id takes .sluggie files only; patch the model's "
+                ".sluggie into the slot instead.",
+                source="dispatcher",
+            )
+            continue
 
         if is_png and unpatch:
             slogger.error(
@@ -525,7 +543,7 @@ def run_patching(filenames, unpatch=False):
 
             model = sluggies_data.get('SluggiesModel', {})
             try:
-                _patch_sluggie(found, model, unpatch)
+                _patch_sluggie(found, model, unpatch, target_id, as_low)
             except subprocess.CalledProcessError as e:
                 slogger.error(
                     f"Patch failed for '{filename}' (exit code {e.returncode})",
@@ -558,6 +576,8 @@ def parse_args():
             '  python start.py --patch texture.png\n'
             '  python start.py --patch model.sluggie texture.png\n'
             '  python start.py --unpatch model.sluggie\n'
+            '  python start.py --patch model.gpl.sluggie L_model.gpl.sluggie --target-id 0x4A\n'
+            '  python start.py --unpatch model.gpl.sluggie --target-id 0x4A\n'
             '  python start.py --hammerspace\n'
             '  python start.py --resplit-unused\n'
         ),
@@ -591,6 +611,8 @@ def parse_args():
     parser.add_argument('--dry-run', action='store_true', help='patch-icons/roster: validate without writing bytes')
     parser.add_argument('--config', metavar='PATH', help='roster only: the roster configuration JSON')
     parser.add_argument('--state', metavar='PATH', help='roster only: a derived config (--roster-derive) instead of --config')
+    parser.add_argument('--target-id', metavar='0xNN', help="patch/unpatch only: write the .sluggie models into this character ID's slot instead of their own route (always Hammerspace)")
+    parser.add_argument('--as-low', action='store_true', help='with --target-id: a high-poly model without L_ partner is the low-poly model too')
     parser.add_argument('--remove', action='store_true', help='roster only: reset the roster to vanilla (against 1_Input) and stop')
     parser.add_argument('--on', nargs='+', default=[], metavar='OPTION', help='game-options only: turn these options on (cpu_vs_cpu, cpu_management)')
     parser.add_argument('--off', nargs='+', default=[], metavar='OPTION', help='game-options only: turn these options off')
@@ -613,6 +635,10 @@ def parse_args():
         parser.error('--on and --off can only be used with --game-options.')
     if (args.config or args.remove or args.state) and not args.roster:
         parser.error('--config, --state and --remove can only be used with --roster.')
+    if args.target_id and not (args.patch or args.unpatch):
+        parser.error('--target-id can only be used with --patch or --unpatch.')
+    if args.as_low and not args.target_id:
+        parser.error('--as-low needs --target-id.')
     if args.config and args.state:
         parser.error('--config and --state cannot be used together.')
     if args.roster and not (args.config or args.remove or args.state):
@@ -701,9 +727,9 @@ def main() -> int:
                 dry_run=args.dry_run,
             )
         elif args.patch:
-            run_patching(args.patch, unpatch=False)
+            run_patching(args.patch, unpatch=False, target_id=args.target_id, as_low=args.as_low)
         elif args.unpatch:
-            run_patching(args.unpatch, unpatch=True)
+            run_patching(args.unpatch, unpatch=True, target_id=args.target_id, as_low=args.as_low)
 
         slogger.info("Command completed", source="dispatcher")
         return 0

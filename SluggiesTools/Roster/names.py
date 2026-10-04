@@ -162,7 +162,7 @@ def write_tables(ctx: steps.RosterContext, names: dict[int, dict[str, str]]) -> 
     for lang in dhs.LANGS:
         offset, length, _alloc = dhs.slot(words, lang)
         table = names_table(ctx.dat.read(offset, length), {c: n[lang] for c, n in names.items()})
-        at = dhs.allocate(ctx.dat, len(table), dhs.routed_ranges(ctx.dol))
+        at = dhs.allocate(ctx.dat, len(table), dhs.reserved(ctx))
         ctx.dat.write(at, table)
         dhs.set_slot(words, lang, at, len(table))
         dhs.write_record(ctx.dol, record, words)

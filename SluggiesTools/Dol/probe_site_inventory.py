@@ -133,6 +133,9 @@ CURATED = {
         (0x80376480, 0x38800012 | (25 << 16), 'addi r4,r25,0x12'),
         (0x804A519C, None, 'addi r4,rN,0x12'),
         (0x804A5224, None, 'addi r4,rN,0x12')],
+    'model_dir_revmap': [
+        (0x80366340, 0x281B005F, 'cmplwi r27,0x5F in FUN_8036629c (directory > 0x5E: Mii format 7)'),
+        (0x803663A8, 0x3BFBFFEE, 'subi r31,r27,0x12 in FUN_8036629c (directory -> per-model prop rows)')],
     'winner_scene_pairs': [
         (0x80152E4C, 0x3C008071, 'lis r0,0x8071 (model handles, spilled to 0x8C(r1))'),
         (0x80152EA4, 0x38849408, 'subi r4,r4,0x6BF8 -> 0x80709408'),

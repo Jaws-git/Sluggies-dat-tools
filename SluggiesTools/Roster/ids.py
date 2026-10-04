@@ -67,11 +67,24 @@ class IdConfigError(ValueError):
 
 
 @dataclass(frozen=True)
+class ModelSpec:
+    """``ids[].model``: the ID's own model directory (``model_dirs`` step)."""
+    source: int                     # whose files the directory holds (a stock player ID)
+    routes: tuple | None = None     # existing DAT routes per file ((offset, length) x 3 languages), or None: copy
+
+
+@dataclass(frozen=True)
 class NewId:
     id: int
     template: int
     wheel: int | None               # None: square-only (no wheel)
     swatch: int | None
+    model: ModelSpec | None = None  # None: the template's model directory
+
+    @property
+    def model_source(self) -> int:
+        """Whose model the ID shows (its own directory's source, else the template)."""
+        return self.model.source if self.model else self.template
 
 
 def id_ranges(values) -> str:
@@ -137,8 +150,37 @@ def parse_ids(config: dict) -> list[NewId]:
             if not 0 <= swatch <= 10:
                 raise IdConfigError(f'{where}: swatch {swatch} is outside 0-10')
         used.add(cid)
-        out.append(NewId(cid, template, wheel, swatch))
+        out.append(NewId(cid, template, wheel, swatch, _parse_model(entry.get('model'), f'{where}.model')))
     return sorted(out, key=lambda c: c.id)
+
+
+def _parse_route(value, where: str) -> tuple:
+    """``[offset, length]`` (every language) or three of them (en, fr, sp) -> ((o, l),) * 3."""
+    try:
+        if len(value) == 2 and all(isinstance(v, (int, str)) for v in value):
+            route = (_number(value[0], where), _number(value[1], where))
+            return (route,) * 3
+        if len(value) == 3:
+            return tuple((_number(v[0], where), _number(v[1], where)) for v in value)
+    except (TypeError, IndexError):
+        pass
+    raise IdConfigError(f'{where}: a route is [offset, length] or one per language ([[o, l], [o, l], [o, l]])')
+
+
+def _parse_model(value, where: str) -> ModelSpec | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or 'from' not in value:
+        raise IdConfigError(f'{where}: expected {{"from": "0xNN"}} (plus "routes" to keep existing copies)')
+    source = _number(value['from'], f'{where}.from')
+    if not 0 <= source < PLAYER_END:
+        raise IdConfigError(f'{where}.from: 0x{source:02X} is not a stock player ID (0x00-0x4C)')
+    routes = value.get('routes')
+    if routes is not None:
+        if not isinstance(routes, list) or not routes:
+            raise IdConfigError(f'{where}.routes: expected one route per file')
+        routes = tuple(_parse_route(r, f'{where}.routes[{i}]') for i, r in enumerate(routes))
+    return ModelSpec(source, routes)
 
 
 # --------------------------------------------------------------------------
@@ -216,10 +258,11 @@ def extended_table(image: dolfile.DolImage, table: inventory.Table, new: list[Ne
 
 
 def handle_rows(new: list[NewId], rows_out: int) -> bytes:
-    """Model handles (bss in the stock DOL, so zeros); new IDs get their template's requests."""
+    """Model handles (bss in the stock DOL, so zeros); new IDs get their model's requests (its own directory's
+    source, else the template)."""
     rows = [(0, 0, 0)] * rows_out
     for c in new:
-        rows[c.id] = MODEL_REQUESTS.get(c.template, (1, 2, 4))
+        rows[c.id] = MODEL_REQUESTS.get(c.model_source, (1, 2, 4))
     return b''.join(struct.pack('>III', *r) for r in rows)
 
 
@@ -518,6 +561,16 @@ def apply_ids(image: dolfile.DolImage, hs: dol_hammerspace.DolHammerspace, new: 
     for c in new:
         dirmap[c.id] = c.template + MODEL_DIR_BASE
     dirmap_at = hs.data.put(struct.pack(f'>{ROWS}H', *dirmap), 4)
+    # The model resolver aliases a new ID to its template, except an ID with its own model directory: its own ID
+    # selects that directory (dirmap, filled by the model_dirs step).
+    if any(c.model for c in new):
+        model_of = bytearray(template_of)
+        for c in new:
+            if c.model:
+                model_of[c.id] = c.id
+        model_of_at = hs.data.put(bytes(model_of), 4)
+    else:
+        model_of_at = template_of_at
     new_ids_list = hs.data.put(bytes(c.id for c in new if c.wheel is not None) + bytes([STOCK_IDS]), 4)
     stats = inventory.table('stats')
     stats_blob = bytes(hs.data.blob[at['stats'] - hs.data.base:at['stats'] - hs.data.base + stats.header
@@ -530,12 +583,13 @@ def apply_ids(image: dolfile.DolImage, hs: dol_hammerspace.DolHammerspace, new: 
     hooks.availability_bounds()
     hooks.select_model_task()
     hooks.family_path()
-    hooks.model_resolver(template_of_at)
+    hooks.model_resolver(model_of_at)
     hooks.model_dirs(dirmap_at)
     hooks.portrait_tests()
     hooks.template_alias(template_of_at, portrait_of_at)
     if state is not None:
         state['portrait_of'] = portrait_of_at
+        state['dirmap'] = dirmap_at
     hooks.id_pool()
     hooks.team_list()
     hooks.chemistry(stats_rows, new_chem)

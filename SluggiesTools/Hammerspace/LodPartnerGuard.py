@@ -144,27 +144,33 @@ def _entry_exists(chunk_number: int, file_index: int) -> bool:
     return len(raw) == 4 and struct.unpack('>I', raw)[0] == hh._DAT_FNAME_PTR
 
 
-def find_partner(chunk_number: int, file_index: int, own: ActSummary) -> tuple[int, ActSummary] | None:
+def find_partner(
+    chunk_number: int, file_index: int, own: ActSummary, any_stem: bool = False,
+) -> tuple[int, ActSummary] | None:
     """``(file_index, summary)`` of the other model of a high-/low-poly pair,
-    or None when the model has no partner."""
+    or None when the model has no partner. ``any_stem``: pair by position
+    only (a model patched into another character's slot, SlotTarget, pairs
+    with that slot's other model whatever its name)."""
     partner_index = file_index + (-1 if own.is_low_poly else 1)
     if not _entry_exists(chunk_number, partner_index):
         return None
     block = read_current_block(chunk_number, partner_index)
     partner = act_summary(block) if block else None
-    if partner is None or partner.is_low_poly == own.is_low_poly or partner.stem != own.stem:
+    if partner is None or partner.is_low_poly == own.is_low_poly or (partner.stem != own.stem and not any_stem):
         return None
     return partner_index, partner
 
 
-def _pair(new_block: bytes, chunk_number: int, file_index: int) -> tuple[ActSummary, int, ActSummary] | None:
+def _pair(
+    new_block: bytes, chunk_number: int, file_index: int, any_stem: bool = False,
+) -> tuple[ActSummary, int, ActSummary] | None:
     """``(own, partner_index, partner)`` for *new_block* as this entry, or
     None when the model has no partner or the partner cannot be read (logged)."""
     own = act_summary(new_block)
     if own is None:
         return None
     try:
-        found = find_partner(chunk_number, file_index, own)
+        found = find_partner(chunk_number, file_index, own, any_stem)
     except (OSError, struct.error, ValueError) as exc:
         _slogger.warning(
             f'[LOD] could not read the high-/low-poly partner of {own.geo_name} '
@@ -177,11 +183,11 @@ def _pair(new_block: bytes, chunk_number: int, file_index: int) -> tuple[ActSumm
     return (own, *found)
 
 
-def lod_partner_errors(new_block: bytes, chunk_number: int, file_index: int) -> list[str]:
+def lod_partner_errors(new_block: bytes, chunk_number: int, file_index: int, any_stem: bool = False) -> list[str]:
     """Blocking errors for making *new_block* the live model of this entry,
     given the partner model's current state. Empty when the pair stays valid,
     the model has no partner, or the partner cannot be read (logged)."""
-    pair = _pair(new_block, chunk_number, file_index)
+    pair = _pair(new_block, chunk_number, file_index, any_stem)
     if pair is None:
         return []
     own, partner_index, partner = pair
@@ -212,7 +218,7 @@ def lod_partner_errors(new_block: bytes, chunk_number: int, file_index: int) -> 
     ]
 
 
-def _srt_matches(a: tuple | None, b: tuple | None) -> bool:
+def srt_matches(a: tuple | None, b: tuple | None) -> bool:
     if a is None or b is None:
         return a is b
     return a[0] == b[0] and all(abs(x - y) <= _SRT_TOLERANCE for x, y in zip(a[1:], b[1:]))
@@ -228,12 +234,12 @@ def _vanilla_bone_count(chunk_number: int, file_index: int) -> int | None:
     return summary.bone_count if summary else None
 
 
-def lod_partner_warnings(new_block: bytes, chunk_number: int, file_index: int) -> list[str]:
+def lod_partner_warnings(new_block: bytes, chunk_number: int, file_index: int, any_stem: bool = False) -> list[str]:
     """Non-fatal warnings for added bones (ids past the vanilla skeleton,
     present in both models) whose parent or SRT differs between the pair:
     the low-poly model is posed with the high-poly model's bone, so its own
     placement of that bone has no effect."""
-    pair = _pair(new_block, chunk_number, file_index)
+    pair = _pair(new_block, chunk_number, file_index, any_stem)
     if pair is None:
         return []
     own, partner_index, partner = pair
@@ -253,7 +259,7 @@ def lod_partner_warnings(new_block: bytes, chunk_number: int, file_index: int) -
                 f'parent {high.parents.get(bone)} in {high.geo_name} vs '
                 f'{low.parents.get(bone)} in {low.geo_name}'
             )
-        if not _srt_matches(high.srts.get(bone), low.srts.get(bone)):
+        if not srt_matches(high.srts.get(bone), low.srts.get(bone)):
             differences.append('different SRT (position/rotation/scale)')
         if not differences:
             continue
@@ -274,7 +280,7 @@ def lod_partner_warnings(new_block: bytes, chunk_number: int, file_index: int) -
     return warnings
 
 
-def lod_partner_unpatch_errors(chunk_number: int, file_index: int) -> list[str]:
+def lod_partner_unpatch_errors(chunk_number: int, file_index: int, any_stem: bool = False) -> list[str]:
     """Blocking errors for restoring this entry's vanilla model."""
     offset, length = hh.readDolEntry(chunk_number, file_index)
     if offset == -1 or length <= 0 or not os.path.exists(hh.INPUT_DAT):
@@ -282,4 +288,4 @@ def lod_partner_unpatch_errors(chunk_number: int, file_index: int) -> list[str]:
     with open(hh.INPUT_DAT, 'rb') as dat:
         dat.seek(offset)
         vanilla = dat.read(length)
-    return lod_partner_errors(vanilla, chunk_number, file_index)
+    return lod_partner_errors(vanilla, chunk_number, file_index, any_stem)

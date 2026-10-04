@@ -17,7 +17,9 @@ JSON-able dict:
 * ``characters``: per member ``id``, ``name`` (``{'en', 'fr', 'sp'}`` or
   None, as the name table holds it), ``default_name`` (a spare row whose
   table text is still the stock "#N/A": its usual name, e.g. "Black
-  Kritter"; else None), ``template`` (new IDs), ``model_dir``, ``stats``
+  Kritter"; else None), ``template`` (new IDs), ``model_dir`` (with
+  ``own_model_dir``: a new ID's own directory, ``model_source``: whose files
+  it holds), ``stats``
   (whose stats it plays with), ``square`` and ``icon`` (``{'front', 'side'}``:
   where the game takes each portrait from, ``state_icons.resolve``; None
   without a DAT);
@@ -216,6 +218,7 @@ def read_state(image: dolfile.DolImage, dat=None) -> dict:
         luigi = False
 
     new_ids = {c[0]: {'template': c[1], 'wheel': c[2], 'swatch': c[3]} for c in (mf or {}).get('ids', [])}
+    own_dirs = {c[0]: (c[1], c[2]) for c in (mf or {}).get('model_dirs') or []}
     order = {s: o for s, o in (mf or {}).get('wheel_order', [])}
     rows_ = selector_rows(image)
     on_squares = {c for sq in new_squares for c in sq}
@@ -264,8 +267,11 @@ def read_state(image: dolfile.DolImage, dat=None) -> dict:
             template = new_ids[cid]['template'] if cid in new_ids else None
             default = (wheels.SPARE_NAMES.get(cid) if name is not None and name.get('en') == wheels.SPARE_TEXT
                        else None)
+            own = own_dirs.get(cid)
             characters.append({'id': cid, 'name': name, 'default_name': default, 'template': template,
-                               'model_dir': template_of(cid) + ids.MODEL_DIR_BASE,
+                               'model_dir': own[0] if own else template_of(cid) + ids.MODEL_DIR_BASE,
+                               'own_model_dir': own is not None,
+                               'model_source': own[1] if own else template_of(cid),
                                'stats': template_of(cid), 'square': index})
     characters.sort(key=lambda c: c['id'])
     icons_read = _resolve_icons(image, dat, mf, characters, warnings)

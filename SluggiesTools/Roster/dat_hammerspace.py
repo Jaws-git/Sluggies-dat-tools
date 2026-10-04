@@ -18,8 +18,10 @@ import struct
 import numpy as np
 
 try:
+    from ..Dol import dirtable
     from ..Hammerspace import HammerspaceHelper as hh
 except ImportError:
+    from Dol import dirtable
     from Hammerspace import HammerspaceHelper as hh
 
 BASE_SIZE = hh.BASE_SIZE
@@ -43,8 +45,9 @@ def dol_base_address(file_offset: int) -> int:
 
 
 def dir_pointers(image) -> list[int]:
-    table = dol_base_address(hh._DIRS_START)
-    return list(struct.unpack('>' + 'I' * hh._DIRS_COUNT, image.read(table, 4 * hh._DIRS_COUNT)))
+    """Every directory's record address: the stock table, or the moved one with own model directories
+    (``Dol/dirtable.py``)."""
+    return dirtable.pointers(image)
 
 
 def iter_records(image):
@@ -76,6 +79,12 @@ def routed_ranges(image, base: int | None = None) -> list[tuple[int, int]]:
             if words[offset_word] >= base and words[length_word]:
                 ranges.add((words[offset_word], words[length_word]))
     return sorted(ranges)
+
+
+def reserved(ctx) -> list[tuple[int, int]]:
+    """What a step must not allocate over: every routed range plus the routes the run keeps for later steps
+    (``model_dirs.RESERVED_KEY``: own model directories' copies, re-routed only when their step runs)."""
+    return routed_ranges(ctx.dol) + list(ctx.state.get('reserved_routes', []))
 
 
 def read_record(image, address: int) -> list[int]:

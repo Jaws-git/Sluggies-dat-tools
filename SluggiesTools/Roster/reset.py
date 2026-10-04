@@ -13,8 +13,11 @@ records the roster owns (the select layout, the icon bank and the name
 table), which go back to the input too.
 
 ``dt_na.dat``: the roster writes only past the stock end (``BASE_SIZE``), into
-the copies those three records point at. They are zeroed, so the space is
-free again; the file keeps its size (and ``fst.bin`` its entry).
+the copies those three records point at and the copies of own model
+directories (``model_dirs.py``, whose records live in the removed DOL data
+section). They are zeroed, so the space is free again; the file keeps its size
+(and ``fst.bin`` its entry). Copies the next run keeps (``keep``: the derived
+config's ``model.routes``) are left as they are.
 """
 
 import struct
@@ -22,13 +25,14 @@ import struct
 try:
     from ..Dol import dolfile
     from . import dat_hammerspace as dhs
-    from . import dol_hammerspace, icons, layout_file, names
+    from . import dol_hammerspace, icons, layout_file, model_dirs, names
 except ImportError:
     from Dol import dolfile
     import dat_hammerspace as dhs
     import dol_hammerspace
     import icons
     import layout_file
+    import model_dirs
     import names
 
 
@@ -102,15 +106,25 @@ def reset_dol(current: bytes, vanilla: bytes) -> tuple[bytes, list[str]]:
                   + f'; {kept} changed directory records kept (model patches, untangled routes)']
 
 
-def free_roster_copies(current: bytes, dat) -> list[str]:
-    """Zero the hammerspace copies the output's roster records point at (none that another record uses)."""
+def _stock_directory_records(image: dolfile.DolImage) -> list[int]:
+    """The records of the stock directories (own model directories' records are not among them)."""
+    if not _has_directory(image):
+        return []
+    return sorted({record for chunk, _i, record, _w in dhs.iter_records(image) if chunk < dhs.hh._DIRS_COUNT})
+
+
+def free_roster_copies(current: bytes, dat, keep=()) -> list[str]:
+    """Zero the hammerspace copies the output's roster records and own model directories point at (none that
+    another record uses, none in ``keep``)."""
     image = dolfile.DolImage(current)
     owned = roster_records(image)
     others = []
-    for record in directory_records(image):
+    for record in _stock_directory_records(image):
         if record not in owned:
             others += [(o, o + n) for o, n in _slots(image, record) if o >= dhs.BASE_SIZE and n]
-    copies = sorted({(o, n) for record in owned for o, n in _slots(image, record) if o >= dhs.BASE_SIZE and n})
+    others += [(o, o + n) for o, n in keep]
+    copies = {(o, n) for record in owned for o, n in _slots(image, record) if o >= dhs.BASE_SIZE and n}
+    copies = sorted(copies | set(model_dirs.own_routes(image)))
     freed = 0
     for offset, length in copies:
         if any(lo < offset + length and offset < hi for lo, hi in others):
@@ -124,8 +138,9 @@ def free_roster_copies(current: bytes, dat) -> list[str]:
     return [f'dt_na.dat: {len(copies)} roster copies in hammerspace zeroed (0x{freed:X} bytes)']
 
 
-def reset(current: bytes, vanilla: bytes, dat) -> tuple[bytes, list[str]]:
-    """The reset ``main.dol`` bytes and log lines; DAT changes go to ``dat`` (a ``datfile.DatFile``, or None)."""
-    log = free_roster_copies(current, dat) if dat is not None else []
+def reset(current: bytes, vanilla: bytes, dat, keep=()) -> tuple[bytes, list[str]]:
+    """The reset ``main.dol`` bytes and log lines; DAT changes go to ``dat`` (a ``datfile.DatFile``, or None).
+    ``keep``: DAT ranges left as they are (own model directories the next run re-uses)."""
+    log = free_roster_copies(current, dat, keep) if dat is not None else []
     data, dol_log = reset_dol(current, vanilla)
     return data, dol_log + log

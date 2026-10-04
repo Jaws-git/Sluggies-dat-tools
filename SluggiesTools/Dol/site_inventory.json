@@ -1538,6 +1538,18 @@
     "note": "addi r4,rN,0x12"
    }
   ],
+  "model_dir_revmap": [
+   {
+    "address": "0x80366340",
+    "stock": "0x281B005F",
+    "note": "cmplwi r27,0x5F in FUN_8036629c (directory > 0x5E: Mii format 7)"
+   },
+   {
+    "address": "0x803663A8",
+    "stock": "0x3BFBFFEE",
+    "note": "subi r31,r27,0x12 in FUN_8036629c (directory -> per-model prop rows)"
+   }
+  ],
   "winner_scene_pairs": [
    {
     "address": "0x80152E4C",

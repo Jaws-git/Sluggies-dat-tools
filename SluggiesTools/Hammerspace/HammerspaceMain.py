@@ -17,6 +17,7 @@ import drawlist
 import HammerspaceHelper as hh
 import LodPartnerGuard
 import LodTextureSync
+import SlotTarget
 import UntangledTextures
 import UntanglePolicy
 from binfmt import (
@@ -5693,21 +5694,41 @@ def BuildModelBlock(
     )
 
 
-def CheckLodPartner(build: ModelBlockBuild) -> None:
+def CheckLodPartner(build: ModelBlockBuild, target: 'SlotTarget.Target | None' = None) -> None:
     """Refuse a block that would break its high-/low-poly partner model
     (see LodPartnerGuard: a low-poly model may only draw on bones its
     high-poly partner has), and warn when an added bone is placed differently
-    in the two models (the low-poly model's placement is ignored)."""
-    errors = LodPartnerGuard.lod_partner_errors(build.block, build.chunk_number, build.file_index)
+    in the two models (the low-poly model's placement is ignored).
+
+    With a *target* (SlotTarget), the partner is the target slot's other
+    model, whatever its name; a high-poly model used as the low variant too
+    is its own partner, so there is nothing to check."""
+    if target is not None and target.as_low:
+        return
+    chunk_number, file_index = target.route if target else (build.chunk_number, build.file_index)
+    any_stem = target is not None
+    errors = LodPartnerGuard.lod_partner_errors(build.block, chunk_number, file_index, any_stem)
     if errors:
         raise ValueError(' '.join(errors))
-    for warning in LodPartnerGuard.lod_partner_warnings(build.block, build.chunk_number, build.file_index):
+    for warning in LodPartnerGuard.lod_partner_warnings(build.block, chunk_number, file_index, any_stem):
         _slogger.warning(f'[LOD] {warning}', source='hammerspace.main')
 
 
-def PreviewLodTextureSync(build: ModelBlockBuild) -> None:
+def CheckTarget(build: ModelBlockBuild, target: 'SlotTarget.Target') -> None:
+    """Refuse a block that may not go into *target*'s slot (SlotTarget.check); log its warnings."""
+    for warning in SlotTarget.check(
+        build.block, (build.chunk_number, build.file_index), target, build.validation_report,
+    ):
+        _slogger.warning(f'[Slot] {warning}', source='hammerspace.main')
+
+
+def PreviewLodTextureSync(build: ModelBlockBuild, target: 'SlotTarget.Target | None' = None) -> None:
     """Dry-run counterpart of the texture assignment sync in WriteModelBlock:
-    logs the differences and what would be changed, writes nothing."""
+    logs the differences and what would be changed, writes nothing. Skipped
+    for a targeted write: the target's vanilla binds belong to another
+    character, so the follow rule has nothing to compare with."""
+    if target is not None:
+        return
     if LodTextureSync.sync_low_block(build.block, build.chunk_number, build.file_index, dry_run=True) is build.block:
         LodTextureSync.sync_partner_of_high(
             build.chunk_number, build.file_index, build.block,
@@ -5720,20 +5741,29 @@ def WriteModelBlock(
     build: ModelBlockBuild,
     model_name: str,
     output_offset: int | None = None,
+    target: 'SlotTarget.Target | None' = None,
 ) -> int:
-    """Write an assembled block to hammerspace and patch its output references."""
+    """Write an assembled block to hammerspace and patch its output references.
+
+    *target* (SlotTarget) writes the block to another character's slot instead
+    of the route it was built from: the route patch, the sharers, the zeroed
+    vanilla block and the LOD checks all use the target, and the source route
+    is left alone. With ``target.as_low`` the block also becomes the slot's
+    low-poly model, as a copy of its own (WriteModelBlock is called again for
+    file 1)."""
     if not build.validation_report.get('valid'):
         raise ValueError('refusing to write a model block with a failed validation report')
-    CheckLodPartner(build)
-    # A low-poly model binds textures by index into its high-poly partner's
-    # TEX; its binds must follow the partner's retargets (LodTextureSync).
-    synced_block = LodTextureSync.sync_low_block(build.block, build.chunk_number, build.file_index)
-    if synced_block is not build.block:
-        build = replace(build, block=synced_block)
-    high_before = LodPartnerGuard.read_current_block(build.chunk_number, build.file_index)
-
-    chunk_number = build.chunk_number
-    file_index = build.file_index
+    if target is not None:
+        CheckTarget(build, target)
+    CheckLodPartner(build, target)
+    chunk_number, file_index = target.route if target else (build.chunk_number, build.file_index)
+    if target is None:
+        # A low-poly model binds textures by index into its high-poly partner's
+        # TEX; its binds must follow the partner's retargets (LodTextureSync).
+        synced_block = LodTextureSync.sync_low_block(build.block, chunk_number, file_index)
+        if synced_block is not build.block:
+            build = replace(build, block=synced_block)
+    high_before = LodPartnerGuard.read_current_block(chunk_number, file_index)
 
     current_offset, current_length = hh.readOutputDolEntry(chunk_number, file_index)
     replacing_hammerspace_block = current_offset >= hh.BASE_SIZE
@@ -5831,11 +5861,51 @@ def WriteModelBlock(
         f'Hammerspace Log: Written | Model: {model_name} | Chunk: {chunk_number} | '
         f'File: {file_index} | Address: 0x{new_offset:08X} | '
         f'Size: {len(build.block) / (1024 * 1024):.2f} MB | '
-        f'Modes: {build.section_modes.as_dict()}',
+        f'Modes: {build.section_modes.as_dict()}'
+        + (f' | Source: chunk {build.chunk_number}, file {build.file_index} | Slot: {target.describe()}'
+           if target else ''),
         source='hammerspace.main',
     )
-    LodTextureSync.sync_partner_of_high(chunk_number, file_index, build.block, high_before)
+    if target is None:
+        LodTextureSync.sync_partner_of_high(chunk_number, file_index, build.block, high_before)
+    elif target.as_low and file_index != SlotTarget.LOW_FILE:
+        WriteModelBlock(build, model_name, target=replace(target, file_index=SlotTarget.LOW_FILE))
     return new_offset
+
+
+def UnpatchTarget(target: 'SlotTarget.Target') -> bool:
+    """Return a slot to its own baseline: the vanilla block of a stock slot
+    (both files with ``as_low``). Refused when the restored model would break
+    the slot's other model (positional LOD pairing). A split route (unused
+    character) gets a verbatim copy of its vanilla block: its untangled
+    texture bytes come from its own ``.sluggie``, which a slot unpatch does
+    not have."""
+    routes = [target.route] + ([target.low_route] if target.as_low else [])
+    if not target.as_low:
+        errors = LodPartnerGuard.lod_partner_unpatch_errors(*target.route, any_stem=True)
+        if errors:
+            _slogger.error(
+                f'Slot unpatch refused | Slot: {target.describe()} | restoring its original model '
+                'would break its partner model: ' + ' '.join(errors),
+                source='hammerspace.main',
+            )
+            return False
+    success = True
+    for chunk_number, file_index in routes:
+        if UntanglePolicy.is_split(chunk_number, file_index):
+            _slogger.info(
+                f'[Untangle] slot ({chunk_number},{file_index}) gets a verbatim copy of its vanilla block',
+                source='hammerspace.main',
+            )
+        ok, removed_offset, removed_length = hh.removeModelFromHammerspace(chunk_number, file_index)
+        success = success and ok
+        if ok:
+            _slogger.info(
+                f'Hammerspace Log: Removed | Slot: chunk {chunk_number}, file {file_index} | '
+                f'Address: 0x{removed_offset:08X} | Size: {removed_length / (1024 * 1024):.2f} MB',
+                source='hammerspace.main',
+            )
+    return success
 
 
 # ---------------------------------------------------------------------------
@@ -5889,6 +5959,57 @@ def _format_report_json(value, indent=2, _level=0, _key=None):
     return json.dumps(value)
 
 
+_INLINE_SKIN_EDIT_KEYS = ('BindPoseDataEdited', 'WeightDataEdited', 'BoneIndexEdited', 'DestIndexDataEdited')
+
+
+def PromoteInplaceEdits(model: dict, modes: SectionModes) -> SectionModes:
+    """Make an in-place ``.sluggie``'s edits reach a hammerspace build.
+
+    A targeted patch (SlotTarget) is always a hammerspace build, because the
+    in-place patcher writes over the source's own block. The hammerspace
+    builder reads the same fields with two exceptions, handled here:
+
+    * in-place UV edits have no ``UVFacesDataEdited``, and the builder only
+      rebuilds channels that carry one: the donor's ``UVFacesData`` is the
+      valid per-loop mapping for an unchanged layout (the add-on's
+      ``ExportMode.promote_inplace_uv_edits`` does the same);
+    * bind-pose/weight edits written into the SK entries themselves need the
+      SKN builder.
+
+    Edits only the in-place patcher applies are refused: facial pose edits
+    and SK vertex-count changes. Returns the section modes the edits need.
+    """
+    if model.get('UseHammerspace'):
+        return modes
+    if any(obj.get('PositionPoseEdits') for obj in (model.get('FacialPoseDataEdited') or {}).get('Objects', [])):
+        raise ValueError('this file carries facial pose edits, which only the in-place patcher applies; '
+                         'it cannot be patched into another slot')
+    skin = model.get('SkinData') or {}
+    entries = [entry for key in ('SK1s', 'SK2s', 'SKAccs') for entry in skin.get(key) or []]
+    if any(entry.get('VertexCntEdited') is not None for entry in entries):
+        raise ValueError('this file changes skin entry vertex counts in place, which only the in-place '
+                         'patcher applies; it cannot be patched into another slot')
+    use_b64 = model.get('UseBase64', True)
+    gpl, skn = modes.gpl, modes.skn
+    for submesh in model.get('Submeshes') or []:
+        for channel in submesh.get('UVChannels') or []:
+            if (channel.get('UVChannelDataEdited') is not None
+                    and channel.get('UVFacesDataEdited') is None
+                    and channel.get('UVFacesData') is not None
+                    and _decode(channel['UVChannelDataEdited'], use_b64)
+                    != _decode(channel.get('UVChannelData'), use_b64)):
+                channel['UVFacesDataEdited'] = channel['UVFacesData']
+                gpl = 'build'
+    if any(entry.get(key) is not None for entry in entries for key in _INLINE_SKIN_EDIT_KEYS):
+        skn = 'build'
+    if (gpl, skn) != (modes.gpl, modes.skn):
+        _slogger.info(
+            f'[Slot] in-place edits promoted to a hammerspace build: GPL={gpl}, SKN={skn}',
+            source='hammerspace.main',
+        )
+    return replace(modes, gpl=gpl, skn=skn)
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -5913,7 +6034,13 @@ if __name__ == '__main__':
                          help='TextureDescriptor index targeted by --texture-file')
     _parser.add_argument('--output-offset', type=lambda value: int(value, 0), default=None,
                          help='Explicit aligned hammerspace DAT offset (for boundary testing)')
+    _parser.add_argument('--target-id', default=None, metavar='0xNN',
+                         help="Write into this character ID's slot instead of the model's own route")
+    _parser.add_argument('--as-low', action='store_true',
+                         help='With --target-id: the high-poly model is the low-poly model too (file 1)')
     _args = _parser.parse_args()
+    if _args.as_low and _args.target_id is None:
+        _parser.error('--as-low needs --target-id')
 
     if (_args.texture_file is None) != (_args.texture_index is None):
         _parser.error('--texture-file and --texture-index must be used together')
@@ -5924,6 +6051,22 @@ if __name__ == '__main__':
     _chunk = _model['ChunkNumber']
     _index = _model['FileIndex']
     _model_name = os.path.basename(_args.sluggies_path)
+    _target = None
+    if _args.target_id is not None:
+        try:
+            _target = SlotTarget.make_target(_args.target_id, (_chunk, _index), _args.as_low)
+        except (SlotTarget.TargetError, OSError) as _exc:
+            _slogger.error(f'Slot patch refused | Model: {_model_name} | {_exc}', source='hammerspace.main')
+            raise SystemExit(1)
+        if _target is None:
+            _slogger.info(
+                f"Slot {_args.target_id} is this model's own route (chunk {_chunk}, file {_index}); "
+                'patching it as usual',
+                source='hammerspace.main',
+            )
+
+    if _args.unpatch and _target is not None:
+        raise SystemExit(0 if UnpatchTarget(_target) else 1)
 
     if _args.unpatch:
         _unpatch_errors = LodPartnerGuard.lod_partner_unpatch_errors(_chunk, _index)
@@ -5983,6 +6126,8 @@ if __name__ == '__main__':
         _parser.error('--clone cannot be combined with build section modes')
 
     try:
+        if _target is not None:
+            _modes = PromoteInplaceEdits(_model, _modes)
         _build = BuildModelBlock(_data, _modes, sluggie_path=_args.sluggies_path,
                                  tex_png_overrides=_tex_png_overrides)
         _slogger.info(
@@ -5992,11 +6137,13 @@ if __name__ == '__main__':
         if not _build.validation_report['valid']:
             raise ValueError('assembled model block failed validation')
         if _args.dry_run:
-            CheckLodPartner(_build)
-            PreviewLodTextureSync(_build)
+            if _target is not None:
+                CheckTarget(_build, _target)
+            CheckLodPartner(_build, _target)
+            PreviewLodTextureSync(_build, _target)
             _slogger.info('Dry run complete; output DAT, DOL, and FST were not modified.', source='hammerspace.main')
         else:
-            WriteModelBlock(_build, _model_name, output_offset=_args.output_offset)
+            WriteModelBlock(_build, _model_name, output_offset=_args.output_offset, target=_target)
     except (OSError, KeyError, TypeError, ValueError, RuntimeError) as _exc:
         _slogger.error(
             f'Hammerspace operation failed | Model: {_model_name} | '

@@ -34,7 +34,7 @@ import slogger  # noqa: E402
 try:
     from ..Dol import dolfile
     from ..GameOptions import game_options
-    from . import datfile, derive, dol_hammerspace, manifest, reset, steps
+    from . import datfile, derive, dol_hammerspace, manifest, model_dirs, reset, steps
 except ImportError:
     from Dol import dolfile
     from GameOptions import game_options
@@ -42,6 +42,7 @@ except ImportError:
     import derive
     import dol_hammerspace
     import manifest
+    import model_dirs
     import reset
     import steps
 
@@ -137,7 +138,11 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
     dat = datfile.DatFile(dat_path) if os.path.isfile(dat_path) else None
     options = game_options.detect(dolfile.DolImage(current))
     try:
-        dol_bytes, log = reset.reset(current, vanilla, dat)
+        keep = model_dirs.config_routes(config) if config is not None else []
+    except ValueError as exc:
+        raise RosterDevError(str(exc)) from exc
+    try:
+        dol_bytes, log = reset.reset(current, vanilla, dat, keep)
     except reset.ResetError as exc:
         raise RosterDevError(str(exc)) from exc
 
@@ -145,7 +150,11 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
     if not remove_only:
         result['config'] = _display_path(config_source)
         image = dolfile.DolImage(dol_bytes)
-        ctx = steps.RosterContext(dol=image, dat=dat, config=config, icon_dir=icon_dir)
+        input_dat_path = os.path.join(input_dir, 'dt_na.dat')
+        ctx = steps.RosterContext(dol=image, dat=dat, config=config, icon_dir=icon_dir,
+                                  input_dol=dolfile.DolImage(vanilla),
+                                  input_dat=datfile.DatFile(input_dat_path) if os.path.isfile(input_dat_path) else None)
+        ctx.state[model_dirs.RESERVED_KEY] = list(keep)
         for step in steps.all_steps():
             lines = step.apply(ctx) or []
             result['steps'].append({'key': step.key, 'title': step.title, 'log': list(lines)})

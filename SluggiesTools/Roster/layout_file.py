@@ -77,7 +77,7 @@ class LayoutFiles:
                 self.ctx.dat.write(offset, new + bytes(length - len(new)))
             else:
                 self.ctx.dat.write(offset, bytes(length))
-                reserved = [r for r in dhs.routed_ranges(self.ctx.dol) if r != (offset, length)]
+                reserved = [r for r in dhs.reserved(self.ctx) if r != (offset, length)]
                 at = dhs.allocate(self.ctx.dat, len(new), reserved)
                 self.ctx.dat.write(at, new)
             words = dhs.read_record(self.ctx.dol, RECORD)
@@ -122,7 +122,7 @@ def apply(ctx: steps.RosterContext) -> list[str]:
             except layout2d.Layout2dError as exc:
                 raise LayoutFileError(f'the {lang} select layout at 0x{offset:08X} is not a layout bank: {exc}') \
                     from exc
-            at = dhs.allocate(ctx.dat, length, dhs.routed_ranges(ctx.dol))
+            at = dhs.allocate(ctx.dat, length, dhs.reserved(ctx))
             ctx.dat.write(at, data)
             placed[offset] = (at, length)
             lines.append(f'{lang}: 0x{offset:08X} -> 0x{at:08X} (0x{length:X} bytes)')

@@ -532,6 +532,31 @@ def _readDirPtrs() -> list[int]:
     return ptrs
 
 
+_EXTRA_DIRS_CACHE: dict = {}
+
+
+def _extraDirStarts(dol_path: str) -> list[int]:
+    """File offsets of the directories past the stock table in ``dol_path``: own model directories of new
+    IDs, whose records live in the roster's DOL data section behind a moved directory table
+    (``Dol/dirtable.py``). Empty for the input DOL, a DOL without them, or a file that is no DOL."""
+    if not os.path.exists(dol_path) or os.path.normcase(os.path.abspath(dol_path)) ==             os.path.normcase(os.path.abspath(INPUT_DOL)):
+        return []
+    stat = os.stat(dol_path)
+    key = (os.path.abspath(dol_path), stat.st_mtime_ns, stat.st_size)
+    if key not in _EXTRA_DIRS_CACHE:
+        from Dol import dirtable, dolfile
+        try:
+            with open(dol_path, 'rb') as dol:
+                image = dolfile.DolImage(dol.read())
+            pointers = dirtable.pointers(image)[_DIRS_COUNT:]
+            starts = [image.offset_of(ptr, _ENTRY_SIZE) for ptr in pointers]
+        except (dolfile.DolError, struct.error, ValueError):
+            starts = []
+        _EXTRA_DIRS_CACHE.clear()
+        _EXTRA_DIRS_CACHE[key] = starts
+    return _EXTRA_DIRS_CACHE[key]
+
+
 def _iterDirRecords(dol_path: str):
     """Yield ``(chunk_number, file_index, record_offset, words)`` for every DOL file record.
 
@@ -542,7 +567,7 @@ def _iterDirRecords(dol_path: str):
     directories and report the same physical record again under other chunk
     numbers."""
 
-    dir_ptrs = _readDirPtrs()
+    dir_ptrs = _readDirPtrs() + _extraDirStarts(dol_path)
     with open(dol_path, 'rb') as dol:
         for cidx, dir_ptr in enumerate(dir_ptrs):
             other_ptrs = set(dir_ptrs[:cidx] + dir_ptrs[cidx + 1:])
@@ -610,7 +635,8 @@ def liveRoutesInto(offset: int, length: int) -> list[tuple[int, int]]:
 def routedHammerspaceRanges() -> list[tuple[int, int]]:
     """Return every ``(offset, length)`` the OUTPUT main.dol routes into hammerspace.
 
-    Scans all model entries and all three language slots (en, sp, fr). Only
+    Scans all model entries (own model directories of new IDs included) and
+    all three language slots (en, sp, fr). Only
     ranges starting at or after ``BASE_SIZE`` are returned, deduplicated and
     sorted. These blocks are live even where their bytes are zero, so callers
     pass them to ``findFreeMemoryChunk`` as reserved ranges. Returns an empty
@@ -621,25 +647,11 @@ def routedHammerspaceRanges() -> list[tuple[int, int]]:
         return []
 
     ranges: set[tuple[int, int]] = set()
-    with open(OUTPUT_DOL, 'rb') as dol:
-        for dir_ptr in _readDirPtrs():
-            fidx = 0
-            while True:
-                dol.seek(dir_ptr + fidx * _ENTRY_SIZE)
-                raw = dol.read(_ENTRY_SIZE)
-                if len(raw) < _ENTRY_SIZE:
-                    break
-                words = struct.unpack('>12I', raw)
-                if words[0] != _DAT_FNAME_PTR:
-                    break
-                for length_word, offset_word in ((1, 2), (5, 6), (9, 10)):
-                    offset, length = words[offset_word], words[length_word]
-                    if offset >= BASE_SIZE and length > 0:
-                        ranges.add((offset, length))
-                fidx += 1
-                if fidx > 200:
-                    break
-
+    for _cidx, _fidx, _record, words in _iterDirRecords(OUTPUT_DOL):
+        for length_word, offset_word in ((1, 2), (5, 6), (9, 10)):
+            offset, length = words[offset_word], words[length_word]
+            if offset >= BASE_SIZE and length > 0:
+                ranges.add((offset, length))
     return sorted(ranges)
 
 

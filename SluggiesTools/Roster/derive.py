@@ -14,6 +14,9 @@ only truth; nothing is remembered between runs.
   manifest (``manifest.py``: new IDs, square members, wheel order). A
   top-level key is present exactly when the original config had it, as
   "ids" and "wheels" change the build even when empty.
+* ``model`` on every new ID with an own model directory: its source
+  (manifest) and the directory's current DAT routes, so its copies (and any
+  model patched into them) are kept byte for byte.
 * ``names``: only the IDs the original config named (manifest), each with
   the text its name table holds now.
 * ``icon`` on every entry that has own art, in the bank's resource-row order
@@ -40,12 +43,14 @@ from PIL import Image
 try:
     from ..Dol import dolfile, inventory, relocate
     from ..Icons import gx_decode
-    from . import icon_art, icons, ids, state, state_icons
+    from . import dat_hammerspace, icon_art, icons, ids, model_dirs, state, state_icons
 except ImportError:
     from Dol import dolfile, inventory, relocate
     from Icons import gx_decode
+    import dat_hammerspace
     import icon_art
     import icons
+    import model_dirs
     import ids
     import state
     import state_icons
@@ -131,6 +136,19 @@ def _ordered_ids(entries: dict[int, dict], rank: dict[int, int], wheel_of: dict[
         out.append(entries[cid])
     for cid in sorted(entries, key=lambda c: (rank.get(c, len(rank)), c)):
         emit(cid)
+    return out
+
+
+def model_routes(image: dolfile.DolImage, directory: int) -> list:
+    """A directory's DAT routes as ``ids[].model.routes``: ``[offset, length]`` per file, or one per language
+    when they differ."""
+    records = model_dirs.directory_records(image, directory)
+    if not records:
+        raise DeriveError(f'own model directory {directory} has no records')
+    out = []
+    for words in records:
+        slots = [list(dat_hammerspace.slot(words, lang)[:2]) for lang in dat_hammerspace.LANGS]
+        out.append(slots[0] if slots.count(slots[0]) == 3 else slots)
     return out
 
 
@@ -235,6 +253,11 @@ def derive(image: dolfile.DolImage, dat) -> Derived:
         if swatch is not None:
             entry['swatch'] = swatch
         id_entries[cid] = entry
+    for cid, directory, source in mf.get('model_dirs') or []:
+        if cid not in id_entries:
+            out.warnings.append(f'{_hex(cid)} has an own model directory but no ids entry: directory dropped')
+            continue
+        id_entries[cid]['model'] = {'from': _hex(source), 'routes': model_routes(image, directory)}
     spare_entries: dict[int, dict] = {}
     for cid, wheel, swatch in spare_wheels(image, mf):
         entry = {'id': _hex(cid)}

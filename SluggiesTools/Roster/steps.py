@@ -15,6 +15,7 @@ STEPS = (
     ('dol_hammerspace', 'DOL hammerspace'),
     ('layout_file', 'Select layout file in DAT hammerspace'),
     ('ids', 'New character IDs'),
+    ('model_dirs', 'Own model directories'),
     ('wheels', 'Colour wheels'),
     ('icons', 'Icons'),
     ('grid', 'Exhibition draft grid'),
@@ -29,6 +30,8 @@ class RosterContext:
     config: dict
     state: dict = field(default_factory=dict)   # shared between steps of one run
     icon_dir: str | None = None    # where the config's portrait PNGs are (None: 1_Input/_Icons; a derived state's folder)
+    input_dol: object | None = None  # 1_Input/main.dol (DolImage): the stock directories model_dirs copies from
+    input_dat: object | None = None  # 1_Input/dt_na.dat (anything with read(offset, size))
 
 
 @dataclass(frozen=True)
