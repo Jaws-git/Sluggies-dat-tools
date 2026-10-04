@@ -250,7 +250,7 @@ class SluggiesGui:
                     dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 4)
 
     def _build_full_tab(self):
-        with dpg.tab(label='Full export'):
+        with dpg.tab(label='All-In-One export'):
             dpg.add_text('1) Export all models with untangled textures (overwrites 3_Output_Dat/dt_na.dat and main.dol)')
             dpg.add_text('2) Apply the chosen roster preset')
             dpg.add_text('3) Turn on CPU vs CPU and CPU vs CPU management')
