@@ -69,6 +69,15 @@ class StockTests(unittest.TestCase):
         self.assertEqual(result['warnings'], [])
         self.assertFalse(result['names_read'])
 
+    def test_stock_luigi_is_listed_off_grid(self):
+        """The stock grid has no Luigi square; his family is an off-grid square so the GUI can reach it."""
+        result = state.read_state(image_for_grid())
+        [index] = result['off_grid']
+        luigi = result['squares'][index]
+        self.assertEqual((luigi['head'], luigi['off_grid'], luigi['members']), (0x01, True, [0x01]))
+        self.assertNotIn(index, result['cells'])
+        self.assertIn(0x01, [c['id'] for c in result['characters']])
+
     def test_roster_without_grid(self):
         image, _ctx = build({'ids': [{'id': '0x66', 'template': '0x06', 'wheel': '0x06'}]})
         result = state.read_state(image)
@@ -87,6 +96,7 @@ class ExpandedGridTests(unittest.TestCase):
         self.assertEqual(cells_of(result), [None if c is None else HEADS[c[1]] for c in g.cells])
         self.assertEqual(result['cells'].count(None), 3)
         self.assertEqual(members_of(result, 0x01), [0x01])
+        self.assertEqual(result['off_grid'], [])                           # Luigi has his own square here
         self.assertEqual(result['warnings'], [])
 
     def test_twelve_by_five_with_squares(self):

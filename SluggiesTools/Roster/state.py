@@ -8,6 +8,9 @@ JSON-able dict:
   square (stock grid: no, the game hands him a captain's square at runtime);
 * ``cells``: per cell in reading order, the index into ``squares`` or None
   (empty, hidden in game);
+* ``off_grid``: indices of squares on no cell (``off_grid: True``): Luigi's
+  family on the stock grid, which the GUI shows beside the grid so his
+  slots stay reachable;
 * ``squares``: per square ``kind`` (``'stock'``: a stock species family,
   ``'new'``: a roster square), ``head_index``, ``head`` (the character the
   square shows), ``members`` (its wheel, in wheel order) and ``voice``;
@@ -15,7 +18,9 @@ JSON-able dict:
   None, as the name table holds it), ``default_name`` (a spare row whose
   table text is still the stock "#N/A": its usual name, e.g. "Black
   Kritter"; else None), ``template`` (new IDs), ``model_dir``, ``stats``
-  (whose stats it plays with) and ``square``;
+  (whose stats it plays with), ``square`` and ``icon`` (``{'front', 'side'}``:
+  where the game takes each portrait from, ``state_icons.resolve``; None
+  without a DAT);
 * ``warnings``: manifest facts the binary contradicts (the binary wins).
 
 Most facts come from the binary: the grid shape (square count and D-pad
@@ -31,7 +36,7 @@ import struct
 try:
     from ..Dol import dolfile, inventory, relocate
     from . import dat_hammerspace as dhs
-    from . import dol_hammerspace, grid, ids, manifest, names, wheels
+    from . import dol_hammerspace, grid, ids, manifest, names, state_icons, wheels
 except ImportError:
     from Dol import dolfile, inventory, relocate
     import dat_hammerspace as dhs
@@ -40,6 +45,7 @@ except ImportError:
     import ids
     import manifest
     import names
+    import state_icons
     import wheels
 
 VERSION = 1
@@ -237,6 +243,14 @@ def read_state(image: dolfile.DolImage, dat=None) -> dict:
             by_square[cell] = len(squares)
             squares.append(square)
         cell_index.append(by_square[cell])
+    off_grid = []
+    if not luigi:                         # the stock grid has no Luigi square: list his family beside the grid
+        h = grid.LUIGI_HEAD
+        members = [c for c in families.get(h, []) if c not in on_squares]
+        if members:
+            off_grid.append(len(squares))
+            squares.append({'kind': 'stock', 'head_index': h, 'head': heads[h],
+                            'members': _ordered(members, order.get(h, [])), 'voice': heads[h], 'off_grid': True})
 
     text = read_names(image, dat)
     mnames = {int(k): v for k, v in (mf or {}).get('names', {}).items()}
@@ -254,9 +268,30 @@ def read_state(image: dolfile.DolImage, dat=None) -> dict:
                                'model_dir': template_of(cid) + ids.MODEL_DIR_BASE,
                                'stats': template_of(cid), 'square': index})
     characters.sort(key=lambda c: c['id'])
+    icons_read = _resolve_icons(image, dat, mf, characters, warnings)
     return {'version': VERSION, 'kind': 'stock' if mf is None else 'expanded', 'shape': [cols, rows],
-            'luigi_own_square': luigi, 'cells': cell_index, 'squares': squares, 'characters': characters,
-            'names_read': text is not None, 'warnings': warnings}
+            'luigi_own_square': luigi, 'cells': cell_index, 'off_grid': off_grid, 'squares': squares,
+            'characters': characters,
+            'names_read': text is not None, 'icons_read': icons_read, 'warnings': warnings}
+
+
+def _resolve_icons(image: dolfile.DolImage, dat, mf: dict | None, characters: list[dict], warnings: list[str]) -> bool:
+    """Each character's ``icon`` (``state_icons``); False (icons None) without a DAT or a readable bank."""
+    for c in characters:
+        c['icon'] = None
+    if dat is None:
+        return False
+    try:
+        bank = state_icons.read_bank(image, dat)
+    except state_icons.IconStateError as exc:
+        warnings.append(f'no portraits: {exc}')
+        return False
+    results, problems = state_icons.resolve_all(image, bank, [c['id'] for c in characters],
+                                                (mf or {}).get('portrait_of'))
+    for c in characters:
+        c['icon'] = results[c['id']]
+    warnings.extend(f'portrait: {p}' for p in problems)
+    return True
 
 
 # --------------------------------------------------------------------------

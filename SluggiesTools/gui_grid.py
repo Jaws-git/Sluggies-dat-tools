@@ -4,7 +4,8 @@
   result (idle / running / done / failed).
 * ``GridNav``: the pop-out levels (grid -> square -> slot) and what a click
   or ``Esc`` does.
-* Label and tooltip text for squares and slots.
+* Label and tooltip text for squares and slots, and where each portrait crop
+  is (``icon_file``) and whether it is the slot's own (``icon_note``).
 
 The roster state is the dict ``Roster/state.py`` writes
 (``3_Output_Dat/_gui/roster_state.json``).
@@ -79,6 +80,8 @@ class StateLoader:
             cols, rows = self.state['shape']
             kind = 'Stock' if self.state['kind'] == 'stock' else 'Roster'
             note = '' if self.state.get('names_read', True) else ' (no names: dt_na.dat missing)'
+            if self.state.get('names_read', True) and not self.state.get('icons_read', True):
+                note += ' (no portraits)'
             return f'{kind} grid, {cols}x{rows}, {len(self.state["squares"])} squares{note}'
         return ''
 
@@ -109,6 +112,54 @@ def name_of(state: dict, cid: int) -> str:
     return name
 
 
+def known_name(state: dict, cid: int) -> str:
+    """The name of a grid character, else just its ID (fallback keys can be characters not on the grid)."""
+    return name_of(state, cid) if cid in characters(state) else hex_id(cid)
+
+
+# --------------------------------------------------------------------------
+# Portraits
+# --------------------------------------------------------------------------
+
+FRONT, SIDE = 'front', 'side'
+
+
+def icon_ref(state: dict, cid: int, view: str) -> dict | None:
+    """Where the game takes ``cid``'s ``view`` portrait from (``Roster/state_icons.resolve``), or None."""
+    return ((characters(state).get(cid) or {}).get('icon') or {}).get(view)
+
+
+def icon_file(state: dict, state_path: str, cid: int, view: str) -> str | None:
+    """The crop PNG of a portrait (``3_Output_Dat/_gui/icons/...``), or None when there is none on disk."""
+    ref = icon_ref(state, cid, view)
+    if not ref or not ref.get('file'):
+        return None
+    path = os.path.join(os.path.dirname(state_path), state.get('icon_dir') or 'icons', ref['file'])
+    return path if os.path.isfile(path) else None
+
+
+def is_fallback(state: dict, cid: int, view: str) -> bool:
+    ref = icon_ref(state, cid, view)
+    return bool(ref) and ref['source'] != 'own'
+
+
+def icon_note(state: dict, cid: int, view: str) -> str:
+    """Where a portrait comes from, for the GUI's fallback marks."""
+    ref = icon_ref(state, cid, view)
+    if not ref:
+        return 'no portrait read'
+    source = ref['source']
+    if source == 'own':
+        return 'own portrait'
+    if source == 'neighbour':
+        return f'no own portrait: shows {known_name(state, ref["key"])} ({hex_id(ref["key"])}), the next lower key'
+    if source == 'template':
+        return f'no own portrait: shows its template {known_name(state, ref["alias"])} ({hex_id(ref["alias"])})'
+    if source == 'mii':
+        return 'Mii icon'
+    return 'shows the "?" icon'
+
+
 def square_label(state: dict, index: int) -> str:
     return name_of(state, state['squares'][index]['head'])
 
@@ -118,15 +169,19 @@ def square_tooltip(state: dict, index: int) -> list[str]:
     lines = [f'{"Stock" if sq["kind"] == "stock" else "New"} square: {name_of(state, sq["head"])}',
              f'Voice: {name_of(state, sq["voice"])} ({hex_id(sq["voice"])})',
              'Members:'] + [f'  {hex_id(m)}  {name_of(state, m)}' for m in sq['members']]
+    if is_fallback(state, sq['head'], FRONT):
+        lines.append(f'Portrait: {icon_note(state, sq["head"], FRONT)}')
     if sq['head'] == LUIGI and not state.get('luigi_own_square', True):
-        lines.append('(Luigi has no square on the stock grid; the game gives him a captain\'s square)')
+        lines.append('(not on the stock grid: the game gives Luigi a captain\'s square at runtime; '
+                     'shown beside the grid so his slots stay reachable)')
     return lines
 
 
 def stock_luigi_note(state: dict) -> str:
     if state.get('luigi_own_square', True):
         return ''
-    return 'Luigi has no square on the stock grid: the game hands him a captain\'s square at runtime.'
+    return ('Luigi has no square on the stock grid (the game hands him a captain\'s square at runtime); '
+            'he is shown to the right of the grid.')
 
 
 def slot_details(state: dict, cid: int) -> list[str]:

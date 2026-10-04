@@ -144,5 +144,55 @@ class LabelTests(unittest.TestCase):
         self.assertIn('Names: FR Violet', lines)
 
 
+def ref(source, file='a.png', key=0x06, alias=None):
+    return {'source': source, 'key': key, 'alias': alias, 'file': file}
+
+
+class PortraitTests(unittest.TestCase):
+    """Phase 2: portrait crops and their fallback marks (``Roster/state_icons`` results in the state)."""
+
+    def setUp(self):
+        self.dir = self.enterContext(tempfile.TemporaryDirectory())
+        self.state_path = os.path.join(self.dir, 'roster_state.json')
+        os.makedirs(os.path.join(self.dir, 'icons'))
+        open(os.path.join(self.dir, 'icons', 'a.png'), 'wb').close()
+        self.s = state([0x06, 0x47, 0x66], [0x50])
+        self.s['icon_dir'] = 'icons'
+        icons = {0x06: (ref('own'), ref('own')), 0x47: (ref('neighbour', key=0x46), ref('own', file='gone.png')),
+                 0x66: (ref('template', key=0x06, alias=0x06), None), 0x50: (ref('mii', key=None), ref('invalid'))}
+        for c in self.s['characters']:
+            front, side = icons[c['id']]
+            c['icon'] = {'front': front, 'side': side}
+
+    def test_icon_file(self):
+        self.assertEqual(gui_grid.icon_file(self.s, self.state_path, 0x06, gui_grid.FRONT),
+                         os.path.join(self.dir, 'icons', 'a.png'))
+        self.assertIsNone(gui_grid.icon_file(self.s, self.state_path, 0x47, gui_grid.SIDE))    # not on disk
+        self.assertIsNone(gui_grid.icon_file(self.s, self.state_path, 0x66, gui_grid.SIDE))    # not resolved
+        self.s['characters'][0]['icon'] = None                                                 # no DAT
+        self.assertIsNone(gui_grid.icon_file(self.s, self.state_path, 0x06, gui_grid.FRONT))
+
+    def test_fallback_notes(self):
+        self.assertFalse(gui_grid.is_fallback(self.s, 0x06, gui_grid.FRONT))
+        self.assertEqual(gui_grid.icon_note(self.s, 0x06, gui_grid.FRONT), 'own portrait')
+        self.assertTrue(gui_grid.is_fallback(self.s, 0x47, gui_grid.FRONT))
+        self.assertEqual(gui_grid.icon_note(self.s, 0x47, gui_grid.FRONT),
+                         'no own portrait: shows 0x46 (0x46), the next lower key')      # 0x46 is not on the grid
+        self.assertIn('its template C06 (0x06)', gui_grid.icon_note(self.s, 0x66, gui_grid.FRONT))
+        self.assertEqual(gui_grid.icon_note(self.s, 0x50, gui_grid.FRONT), 'Mii icon')
+        self.assertIn('"?"', gui_grid.icon_note(self.s, 0x50, gui_grid.SIDE))
+        self.assertFalse(gui_grid.is_fallback(self.s, 0x66, gui_grid.SIDE))
+        self.assertEqual(gui_grid.icon_note(self.s, 0x66, gui_grid.SIDE), 'no portrait read')
+
+    def test_square_tooltip_marks_a_fallback_head(self):
+        self.assertFalse(any('Portrait' in line for line in gui_grid.square_tooltip(self.s, 0)))
+        self.assertIn('Portrait: Mii icon', gui_grid.square_tooltip(self.s, 1))
+
+    def test_loader_message_without_portraits(self):
+        loader = StateLoader(self.state_path)
+        loader.status, loader.state = StateLoader.DONE, dict(self.s, icons_read=False)
+        self.assertTrue(loader.message.endswith('(no portraits)'))
+
+
 if __name__ == '__main__':
     unittest.main()

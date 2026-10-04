@@ -118,11 +118,13 @@ def run_resplit_unused():
     subprocess.run(python_script_command(UNTANGLE_POLICY_SCRIPT), cwd=HS_DIR, check=True)
 
 
-def run_roster(config=None, remove=False, dry_run=False):
-    """Roster expansion: inject a roster configuration (or only reset the roster to vanilla)."""
+def run_roster(config=None, remove=False, dry_run=False, state=None):
+    """Roster expansion: inject a roster configuration or a derived state (or only reset the roster to vanilla)."""
     cmd = python_script_command(ROSTER_SCRIPT)
     if config:
         cmd += ['--config', os.path.abspath(config)]       # the injector runs in SluggiesTools/
+    if state:
+        cmd += ['--state', os.path.abspath(state)]
     if remove:
         cmd.append('--remove')
     if dry_run:
@@ -130,9 +132,13 @@ def run_roster(config=None, remove=False, dry_run=False):
     subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
 
 
-def run_roster_state():
-    """Read the draft grid from 3_Output_Dat into 3_Output_Dat/_gui/roster_state.json (GUI character grid)."""
-    subprocess.run(python_script_command(ROSTER_STATE_SCRIPT), cwd=TOOLS_DIR, check=True)
+def run_roster_state(derive=False):
+    """Read the draft grid from 3_Output_Dat into 3_Output_Dat/_gui/roster_state.json (GUI character grid), or
+    (``derive``) write the derived config that rebuilds it into 3_Output_Dat/_gui/derived."""
+    cmd = python_script_command(ROSTER_STATE_SCRIPT)
+    if derive:
+        cmd.append('--derive')
+    subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
 
 
 def run_game_options(on=(), off=(), dry_run=False):
@@ -565,6 +571,7 @@ def parse_args():
     mode.add_argument('--resplit-unused', action='store_true', help='repair: give unused-character routes (dirs 89-94) that point at a playable character\'s block their own copy again')
     mode.add_argument('--roster', '--roster-dev', dest='roster', action='store_true', help='inject a roster configuration (--config, e.g. from 1_Input/_RosterConfigurations) into 3_Output_Dat, replacing the previous injection')
     mode.add_argument('--roster-state', action='store_true', help='read the draft grid from 3_Output_Dat into 3_Output_Dat/_gui/roster_state.json (used by the GUI)')
+    mode.add_argument('--roster-derive', action='store_true', help='write the roster config that rebuilds 3_Output_Dat as it is into 3_Output_Dat/_gui/derived (read -> rebuild; then --roster --state)')
     mode.add_argument('--game-options', action='store_true', help='show or change game options (CPU vs CPU, ...) in 3_Output_Dat/main.dol; use with --on/--off')
     mode.add_argument('--export', action='store_true', help='export all models from 1_Input to 2_Output_Models')
     mode.add_argument('--export-icons', action='store_true', help='export character-select icon atlases and metadata to 2_Output_Models/_ICONS')
@@ -583,6 +590,7 @@ def parse_args():
     parser.add_argument('--use-output', action='store_true', help='export-icons only: read DOL/DAT from 3_Output_Dat instead of 1_Input')
     parser.add_argument('--dry-run', action='store_true', help='patch-icons/roster: validate without writing bytes')
     parser.add_argument('--config', metavar='PATH', help='roster only: the roster configuration JSON')
+    parser.add_argument('--state', metavar='PATH', help='roster only: a derived config (--roster-derive) instead of --config')
     parser.add_argument('--remove', action='store_true', help='roster only: reset the roster to vanilla (against 1_Input) and stop')
     parser.add_argument('--on', nargs='+', default=[], metavar='OPTION', help='game-options only: turn these options on (cpu_vs_cpu, cpu_management)')
     parser.add_argument('--off', nargs='+', default=[], metavar='OPTION', help='game-options only: turn these options off')
@@ -603,11 +611,13 @@ def parse_args():
         parser.error('--dry-run can only be used with --patch-icons, --roster or --game-options.')
     if (args.on or args.off) and not args.game_options:
         parser.error('--on and --off can only be used with --game-options.')
-    if (args.config or args.remove) and not args.roster:
-        parser.error('--config and --remove can only be used with --roster.')
-    if args.roster and not (args.config or args.remove):
-        parser.error('--roster needs --config PATH (a roster configuration) or --remove.')
-    if not any([args.gui, args.patch, args.unpatch, args.hammerspace, args.resplit_unused, args.export, args.export_icons, args.patch_icons is not None, args.roster, args.roster_state, args.game_options]):
+    if (args.config or args.remove or args.state) and not args.roster:
+        parser.error('--config, --state and --remove can only be used with --roster.')
+    if args.config and args.state:
+        parser.error('--config and --state cannot be used together.')
+    if args.roster and not (args.config or args.remove or args.state):
+        parser.error('--roster needs --config PATH (a roster configuration), --state PATH or --remove.')
+    if not any([args.gui, args.patch, args.unpatch, args.hammerspace, args.resplit_unused, args.export, args.export_icons, args.patch_icons is not None, args.roster, args.roster_state, args.roster_derive, args.game_options]):
         if len(sys.argv) == 1:
             args.gui = True
         else:
@@ -673,9 +683,11 @@ def main() -> int:
         elif args.resplit_unused:
             run_resplit_unused()
         elif args.roster:
-            run_roster(config=args.config, remove=args.remove, dry_run=args.dry_run)
+            run_roster(config=args.config, remove=args.remove, dry_run=args.dry_run, state=args.state)
         elif args.roster_state:
             run_roster_state()
+        elif args.roster_derive:
+            run_roster_state(derive=True)
         elif args.game_options:
             run_game_options(on=args.on, off=args.off, dry_run=args.dry_run)
         elif args.export:

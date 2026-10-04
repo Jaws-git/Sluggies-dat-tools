@@ -481,6 +481,7 @@ def lift_to_ten(ctx: steps.RosterContext) -> list[str]:
 def apply(ctx: steps.RosterContext) -> list[str]:
     spares = parse_wheels(ctx.config)
     ctx.state['spares'] = sorted(spares or [])
+    ctx.state['spare_wheels'] = dict(spares or {})
     if spares is None and 'ids' not in ctx.config:
         return ['no "wheels" or "ids" key in the roster config: wheels stay as they are']
     address, count = table_location(ctx, 'selector')

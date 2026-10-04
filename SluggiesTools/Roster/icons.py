@@ -46,17 +46,21 @@ leaves the icon bank and the DOL alone):
 import os
 import struct
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 
+import numpy as np
 from PIL import Image
 
 try:
     from ..Dol import dolfile
     from ..Dol.ppc import Asm, one
+    from ..Icons import gx_decode
     from . import dat_hammerspace as dhs
     from . import dol_hammerspace, icon_art, ids, steps
 except ImportError:
     from Dol import dolfile
     from Dol.ppc import Asm, one
+    from Icons import gx_decode
     import dat_hammerspace as dhs
     import dol_hammerspace
     import icon_art
@@ -90,6 +94,7 @@ CELL = 52                                      # 48x51 art + >= 1 transparent te
 PAGE_MAX = 1024                                # GX texture limit
 PAGE_MIN = 8                                   # one CMPR tile
 ALIGN = 0x20
+KEPT_BLOCKS_EXT = '.cmpr'                      # a portrait's kept CMPR cell blocks, beside its PNG (derived states)
 # The records the spare rows' keys copy by default (the donors the retired icon pipeline used).
 SPARE_DONORS = {0x47: 0x04, 0x48: 0x00, 0x49: 0x01, 0x4A: 0x02, 0x4B: 0x03, 0x4C: 0x05}
 RESOLVER_SITE, RESOLVER_STOCK = 0x80395E1C, 0x4080008C   # bge 0x80395EA8 (the Mii block) after cmpwi r24,0x4D
@@ -230,12 +235,13 @@ def _table_keys(entries: list[IconEntry], side_row: dict, front_row: dict) -> di
 
 @dataclass
 class Page:
-    """One private page: its size, each entry's portrait cell (top-left texel; identical portraits share a cell)
-    and, for the encoder, the RGBA image."""
+    """One private page: its size, each entry's portrait cell (top-left texel; identical portraits share a cell),
+    for the encoder the RGBA image, and the CMPR blocks to keep per cell (``keep_blocks``)."""
     width: int
     height: int
     cells: list[tuple[int, int]]
     image: object = None
+    blocks: dict = dataclass_field(default_factory=dict)      # {(x, y): cell_blocks bytes}
 
     @property
     def payload_length(self) -> int:
@@ -262,23 +268,76 @@ def page_size(cells: int) -> tuple[int, int, int]:
     return best
 
 
-def pack_page(portraits: list) -> Page:
-    """A page for ``portraits`` (48x51 RGBA images, one per entry), identical ones in one cell."""
+def pack_page(portraits: list, keys: list | None = None, blocks: list | None = None) -> Page:
+    """A page for ``portraits`` (48x51 RGBA images, one per entry), identical ones in one cell.
+
+    ``keys`` (optional, one per portrait): what makes two portraits "identical" instead of their pixels (a kept
+    cell's file, so two cells stay two cells). ``blocks`` (optional, one per portrait, None or ``cell_blocks``
+    bytes): CMPR blocks to keep for that portrait's cell (``keep_blocks``)."""
+    keys = [image.tobytes() for image in portraits] if keys is None else keys
     unique = {}
-    for image in portraits:
-        unique.setdefault(image.tobytes(), image)
+    for key, image in zip(keys, portraits):
+        unique.setdefault(key, image)
     width, height, per_row = page_size(len(unique))
     at = {key: ((k % per_row) * CELL, (k // per_row) * CELL) for k, key in enumerate(unique)}
     page = Image.new('RGBA', (width, height), (0, 0, 0, 0))
     for key, image in unique.items():
         page.paste(image, at[key])
-    return Page(width, height, [at[image.tobytes()] for image in portraits], page)
+    kept = {}
+    for key, cell_blocks in zip(keys, blocks or []):
+        if cell_blocks is not None:
+            kept.setdefault(at[key], cell_blocks)
+    return Page(width, height, [at[key] for key in keys], page, kept)
+
+
+def kept_blocks_path(png_path: str) -> str:
+    """Where a portrait PNG's kept CMPR blocks live: ``<name>.cmpr`` beside it (a derived roster state's icons)."""
+    return os.path.splitext(png_path)[0] + KEPT_BLOCKS_EXT
+
+
+def _kept_blocks(png_path: str) -> bytes | None:
+    path = kept_blocks_path(png_path)
+    if not os.path.isfile(path):
+        return None
+    with open(path, 'rb') as f:
+        return f.read()
 
 
 def compose_pages(entries: list[IconEntry]) -> tuple[Page, Page]:
-    """Side and front pages: each entry's PNGs fitted to 48x51 with its own fit mode (``icon_art``)."""
-    return tuple(pack_page([icon_art.load_portrait(getattr(e, f'{view}_path'), e.fit) for e in entries])
-                 for view in ('side', 'front'))
+    """Side and front pages: each entry's PNGs fitted to 48x51 with its own fit mode (``icon_art``). A PNG with
+    kept CMPR blocks beside it (``kept_blocks_path``) is its own cell, and the encoder keeps its blocks."""
+    pages = []
+    for view in ('side', 'front'):
+        paths = [getattr(e, f'{view}_path') for e in entries]
+        blocks = [_kept_blocks(p) for p in paths]
+        keys = [('kept', os.path.normcase(os.path.abspath(p))) if b is not None else None
+                for p, b in zip(paths, blocks)]
+        portraits = [icon_art.load_portrait(p, e.fit) for p, e in zip(paths, entries)]
+        keys = [k if k is not None else image.tobytes() for k, image in zip(keys, portraits)]
+        pages.append(pack_page(portraits, keys, blocks))
+    return tuple(pages)
+
+
+def keep_blocks(page: Page, payload: bytes) -> tuple[bytes, int]:
+    """``payload`` with each kept cell's own CMPR blocks put back, so an unchanged portrait keeps its bytes through
+    a rebuild (wimgt's decode -> encode is not stable). A cell's blocks are kept only when they decode to exactly
+    the cell's pixels on the page (else the portrait changed and the new encoding stands). Returns the payload and
+    the number of cells kept."""
+    if not page.blocks:
+        return payload, 0
+    out = bytearray(payload)
+    pixels = np.asarray(page.image.convert('RGBA'))
+    kept = 0
+    for (x, y), blocks in page.blocks.items():
+        try:
+            decoded = gx_decode.decode(gx_decode.CMPR, icon_art.cell_payload(blocks, CELL), CELL, CELL)
+            if not np.array_equal(decoded, pixels[y:y + CELL, x:x + CELL]):
+                continue
+            icon_art.put_cell_blocks(out, page.width, x, y, CELL, blocks)
+        except (icon_art.IconArtError, gx_decode.GxDecodeError):
+            continue
+        kept += 1
+    return bytes(out), kept
 
 
 def encode_page(page: Page) -> bytes:
@@ -438,7 +497,7 @@ def read_record(image) -> list[int]:
 def apply(ctx: steps.RosterContext, encode_cmpr=None) -> list[str]:
     """``encode_cmpr``: a Page -> its CMPR payload (default ``encode_page``, wimgt); tests pass a stand-in."""
     encode_cmpr = encode_cmpr or encode_page
-    entries = parse_icons(ctx.config)
+    entries = parse_icons(ctx.config, ctx.icon_dir)
     if not entries:
         bare = [ids._number(w.get('id'), 'wheels.id') for w in ctx.config.get('wheels') or [] if w.get('id')]
         note = ['no "icon" in the roster config: the icon bank stays as it is']
@@ -450,9 +509,12 @@ def apply(ctx: steps.RosterContext, encode_cmpr=None) -> list[str]:
         raise IconBankError('dt_na.dat is missing in the output folder')
     stock = ctx.dat.read(STOCK_BANK_OFFSET, STOCK_BANK_LENGTH)
     side, front = compose_pages(entries)
-    bank = build_packed_bank(stock, entries, side, front, encode_cmpr(side), encode_cmpr(front))
-    page_note = ('CMPR pages: ' + ', '.join(f'{view} {p.width}x{p.height} ({len(set(p.cells))} portraits)'
-                                           for view, p in (('side', side), ('front', front))))
+    (side_payload, side_kept), (front_payload, front_kept) = (keep_blocks(p, encode_cmpr(p)) for p in (side, front))
+    bank = build_packed_bank(stock, entries, side, front, side_payload, front_payload)
+    page_note = ('CMPR pages: ' + ', '.join(f'{view} {p.width}x{p.height} ({len(set(p.cells))} portraits'
+                                           + (f', {kept} kept as encoded' if kept else '') + ')'
+                                           for view, p, kept in (('side', side, side_kept),
+                                                                 ('front', front, front_kept))))
     words = read_record(ctx.dol)
     before = dhs.slot(words, 'en')[:2]
     at = dhs.allocate(ctx.dat, len(bank), dhs.routed_ranges(ctx.dol))

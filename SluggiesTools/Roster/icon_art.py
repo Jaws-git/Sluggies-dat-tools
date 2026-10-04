@@ -70,6 +70,41 @@ def cmpr_payload(tpl: bytes, size: tuple[int, int]) -> bytes:
     return tpl[offset:offset + length]
 
 
+def _block_offset(page_width: int, bx: int, by: int) -> int:
+    """Byte offset of 4x4 sub-block (bx, by) in CMPR data: 8x8 tiles row-major, each TL, TR, BL, BR."""
+    tile = (by // 2) * (page_width // 8) + bx // 2
+    return tile * 32 + ((by % 2) * 2 + bx % 2) * 8
+
+
+def _cell_offsets(page_width: int, x: int, y: int, size: int) -> list[int]:
+    if x % 4 or y % 4 or size % 4:
+        raise IconArtError(f'cell {size}x{size} at ({x}, {y}) is not on whole CMPR sub-blocks')
+    return [_block_offset(page_width, bx, by) for by in range(y // 4, (y + size) // 4)
+            for bx in range(x // 4, (x + size) // 4)]
+
+
+def cell_blocks(payload: bytes, page_width: int, x: int, y: int, size: int) -> bytes:
+    """The CMPR sub-blocks of the ``size`` x ``size`` cell at (x, y), row by row (``cell_payload`` reads them)."""
+    return b''.join(payload[o:o + 8] for o in _cell_offsets(page_width, x, y, size))
+
+
+def put_cell_blocks(payload: bytearray, page_width: int, x: int, y: int, size: int, blocks: bytes) -> None:
+    offsets = _cell_offsets(page_width, x, y, size)
+    if len(blocks) != 8 * len(offsets):
+        raise IconArtError(f'{len(blocks)} bytes of CMPR blocks for a {size}x{size} cell (expected {8 * len(offsets)})')
+    for k, o in enumerate(offsets):
+        payload[o:o + 8] = blocks[8 * k:8 * k + 8]
+
+
+def cell_payload(blocks: bytes, size: int) -> bytes:
+    """``cell_blocks`` output as the CMPR data of a stand-alone ``size`` x ``size`` texture (for decoding; ``size``
+    rounded up to a whole tile, the extra blocks transparent)."""
+    padded = -(-size // 8) * 8
+    out = bytearray(struct.pack('>HHI', 0, 0, 0xFFFFFFFF) * (padded * padded // 16))
+    put_cell_blocks(out, padded, 0, 0, size, blocks)
+    return bytes(out)
+
+
 def encode_cmpr(image) -> bytes:
     """``image`` (RGBA, sides multiples of 8) as GX CMPR image data, encoded by wimgt."""
     with tempfile.TemporaryDirectory(prefix='sluggies_roster_icons_') as work:

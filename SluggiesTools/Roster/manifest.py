@@ -20,16 +20,24 @@ import zlib
 
 MAGIC = b'SLUGGIES ROSTER\x03'
 VERSION = 1
+# The config's top-level keys whose presence alone changes the build (``derive`` needs them back): "ids" moves the
+# per-ID tables even when empty, "wheels" owns the spare rows even when empty.
+CONFIG_KEYS = ('ids', 'wheels', 'grid', 'wheel_order')
 
 
 class ManifestError(ValueError):
     pass
 
 
-def build(state: dict) -> dict:
-    """The manifest for one run, from the steps' ``ctx.state``."""
+def build(state: dict, config: dict | None = None) -> dict:
+    """The manifest for one run, from the steps' ``ctx.state`` (and the config's keys, ``CONFIG_KEYS``).
+
+    ``config_keys`` and ``spare_wheels`` (``[id, wheel, swatch]`` as configured) serve the read -> rebuild round
+    trip (``derive.py``), which infers them for manifests written before they existed."""
     grid = state.get('grid')
     return {
+        'config_keys': None if config is None else [k for k in CONFIG_KEYS if k in config],
+        'spare_wheels': [[cid, w, s] for cid, (w, s) in sorted((state.get('spare_wheels') or {}).items())],
         'version': VERSION,
         'grid': None if grid is None else {
             'shape': [grid.cols, grid.rows],

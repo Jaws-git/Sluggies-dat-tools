@@ -28,6 +28,7 @@ class RosterContext:
     dat: object | None             # datfile.DatFile, or None when a step needs no DAT
     config: dict
     state: dict = field(default_factory=dict)   # shared between steps of one run
+    icon_dir: str | None = None    # where the config's portrait PNGs are (None: 1_Input/_Icons; a derived state's folder)
 
 
 @dataclass(frozen=True)

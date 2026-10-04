@@ -7,6 +7,8 @@ the files in ``3_Output_Dat`` (the normal pipeline's output).
 * It first resets the roster to vanilla (``reset.py``, against ``1_Input``),
   so repeated runs never stack and no record of earlier runs is needed.
 * ``--remove`` only resets the roster to vanilla.
+* ``--state FILE`` instead of ``--config``: a derived config (``derive.py``,
+  read -> rebuild) with its portraits in the ``icons`` folder beside it.
 * Game options (``GameOptions/``, menu [10]) that are on before the reset are
   applied again afterwards.
 * ``--dry-run`` runs everything in memory and writes nothing.
@@ -32,11 +34,12 @@ import slogger  # noqa: E402
 try:
     from ..Dol import dolfile
     from ..GameOptions import game_options
-    from . import datfile, dol_hammerspace, manifest, reset, steps
+    from . import datfile, derive, dol_hammerspace, manifest, reset, steps
 except ImportError:
     from Dol import dolfile
     from GameOptions import game_options
     import datfile
+    import derive
     import dol_hammerspace
     import manifest
     import reset
@@ -103,14 +106,18 @@ def patch_fst(output_dir: str, dat_size: int) -> str:
 def write_manifest(ctx: steps.RosterContext) -> str:
     """Store the run's hook-only facts (``manifest.py``) in the DOL data section, for the grid reader."""
     hs = dol_hammerspace.get(ctx)
-    blob = manifest.encode(manifest.build(ctx.state))
+    blob = manifest.encode(manifest.build(ctx.state, ctx.config))
     at = hs.data.put(blob, 4)
     hs.commit()
     return f'[manifest] roster manifest at 0x{at:08X} (0x{len(blob):X} bytes)'
 
 
 def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_only: bool = False,
-        dry_run: bool = False, input_dir: str = INPUT_DIR) -> dict:
+        dry_run: bool = False, input_dir: str = INPUT_DIR, state_path: str | None = None) -> dict:
+    """``state_path``: a derived config (``derive.write``) in place of ``config_path``."""
+    icon_dir = None
+    if state_path:
+        config_path, icon_dir = state_path, derive.icon_dir_of(state_path)
     dol_path = os.path.join(output_dir, 'main.dol')
     dat_path = os.path.join(output_dir, 'dt_na.dat')
     vanilla_path = os.path.join(input_dir, 'main.dol')
@@ -138,7 +145,7 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
     if not remove_only:
         result['config'] = _display_path(config_source)
         image = dolfile.DolImage(dol_bytes)
-        ctx = steps.RosterContext(dol=image, dat=dat, config=config)
+        ctx = steps.RosterContext(dol=image, dat=dat, config=config, icon_dir=icon_dir)
         for step in steps.all_steps():
             lines = step.apply(ctx) or []
             result['steps'].append({'key': step.key, 'title': step.title, 'log': list(lines)})
@@ -169,13 +176,15 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
 def main(argv=None) -> int:
     slogger.configure()
     parser = argparse.ArgumentParser(description='Roster expansion (menu [9]).')
-    parser.add_argument('--config', help='the roster configuration JSON (e.g. from 1_Input/_RosterConfigurations)')
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument('--config', help='the roster configuration JSON (e.g. from 1_Input/_RosterConfigurations)')
+    source.add_argument('--state', help='a derived roster config (start.py --roster-derive), portraits beside it')
     parser.add_argument('--remove', action='store_true', help='only reset the roster to vanilla (1_Input)')
     parser.add_argument('--dry-run', action='store_true', help='run in memory, write nothing')
     parser.add_argument('--output-dir', default=OUTPUT_DIR, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     try:
-        report = run(args.output_dir, args.config, args.remove, args.dry_run)
+        report = run(args.output_dir, args.config, args.remove, args.dry_run, state_path=args.state)
     except (RuntimeError, ValueError) as exc:     # every step's errors (DolError, config errors, ...)
         slogger.error(str(exc), source=SOURCE)
         return 1
