@@ -13,14 +13,17 @@ JSON-able dict:
   slots stay reachable;
 * ``squares``: per square ``kind`` (``'stock'``: a stock species family,
   ``'new'``: a roster square), ``head_index``, ``head`` (the character the
-  square shows), ``members`` (its wheel, in wheel order) and ``voice``;
+  square shows), ``members`` (its wheel, in wheel order) and ``voice`` (the
+  base character of the species the head speaks with: selector byte 2);
+  new squares also give ``voice_set``, the voice the config set, or None;
 * ``characters``: per member ``id``, ``name`` (``{'en', 'fr', 'sp'}`` or
   None, as the name table holds it), ``default_name`` (a spare row whose
   table text is still the stock "#N/A": its usual name, e.g. "Black
   Kritter"; else None), ``template`` (new IDs), ``model_dir`` (with
   ``own_model_dir``: a new ID's own directory, ``model_source``: whose files
   it holds), ``stats``
-  (whose stats it plays with), ``square`` and ``icon`` (``{'front', 'side'}``:
+  (whose stats it plays with: the configured stats source, else the
+  template), ``square`` and ``icon`` (``{'front', 'side'}``:
   where the game takes each portrait from, ``state_icons.resolve``; None
   without a DAT);
 * ``warnings``: manifest facts the binary contradicts (the binary wins).
@@ -218,6 +221,8 @@ def read_state(image: dolfile.DolImage, dat=None) -> dict:
         luigi = False
 
     new_ids = {c[0]: {'template': c[1], 'wheel': c[2], 'swatch': c[3]} for c in (mf or {}).get('ids', [])}
+    stats_of = {cid: src for cid, src in (mf or {}).get('stats') or []}
+    voices_set = ((mf or {}).get('grid') or {}).get('voices') or []
     own_dirs = {c[0]: (c[1], c[2]) for c in (mf or {}).get('model_dirs') or []}
     order = {s: o for s, o in (mf or {}).get('wheel_order', [])}
     rows_ = selector_rows(image)
@@ -226,6 +231,11 @@ def read_state(image: dolfile.DolImage, dat=None) -> dict:
 
     def template_of(cid):
         return new_ids[cid]['template'] if cid in new_ids else cid
+
+    def voice_of(cid):
+        """The base character of the species ``cid`` speaks with."""
+        species = rows_[cid][2]
+        return heads[species] if species < grid.SQUARE_HEADS else cid
 
     squares, cell_index, by_square = [], [], {}
     for cell in cells:
@@ -241,8 +251,16 @@ def read_state(image: dolfile.DolImage, dat=None) -> dict:
             else:
                 k = cell[1]
                 members = new_squares[k]
+                voice_set = voices_set[k] if k < len(voices_set) else None
                 square = {'kind': 'new', 'head_index': grid.STOCK_HEADS + k, 'head': members[0],
-                          'members': list(members), 'voice': template_of(members[0])}
+                          'members': list(members), 'voice': voice_of(members[0]), 'voice_set': voice_set}
+                if voice_set is not None:
+                    species = rows_[voice_set][2]
+                    off = [m for m in members if m in new_ids and new_ids[m]['wheel'] is None
+                           and rows_[m][2] != species]
+                    if off:
+                        warnings.append(f'square {_hex(members[0])}: voice {_hex(voice_set)} is set, but '
+                                        + ', '.join(_hex(m) for m in off) + ' speak with another species')
             by_square[cell] = len(squares)
             squares.append(square)
         cell_index.append(by_square[cell])
@@ -272,7 +290,7 @@ def read_state(image: dolfile.DolImage, dat=None) -> dict:
                                'model_dir': own[0] if own else template_of(cid) + ids.MODEL_DIR_BASE,
                                'own_model_dir': own is not None,
                                'model_source': own[1] if own else template_of(cid),
-                               'stats': template_of(cid), 'square': index})
+                               'stats': stats_of.get(cid, template_of(cid)), 'square': index})
     characters.sort(key=lambda c: c['id'])
     icons_read = _resolve_icons(image, dat, mf, characters, warnings)
     return {'version': VERSION, 'kind': 'stock' if mf is None else 'expanded', 'shape': [cols, rows],

@@ -16,10 +16,14 @@ Config (``grid`` in the roster preset; without it, or with ``null``, the grid st
 
 * ``squares`` (optional): new squares, each a list of 1-10 character IDs
   (new IDs, spare rows or stock non-head IDs), the first one shown on the
-  square. On this screen a square's members leave their template's wheel
-  and form the square's own wheel. More than 6 on a square needs the
-  10-member wheel code (plan 4d), which the step installs if the wheels
-  step has not.
+  square, or ``{"members": [...], "voice": "0xNN"}``. On this screen a
+  square's members leave their template's wheel and form the square's own
+  wheel. More than 6 on a square needs the 10-member wheel code (plan 4d),
+  which the step installs if the wheels step has not. ``voice``: a stock
+  player ID (0x00-0x4C) whose voice the square's square-only new IDs speak
+  with: their selector byte 2 (species) becomes that ID's
+  (``apply_voices``). Other members keep their own species, which their
+  wheels need.
 * ``shape`` (optional): ``[columns, rows]``, one of 11x4, 12x4, 10x5,
   11x5, 12x5; default the smallest that holds the 41 stock squares (the 40
   stock ones plus Luigi's own) and the new ones. Leftover cells are empty:
@@ -225,6 +229,10 @@ class Grid:
     rows: int
     cells: tuple
     squares: tuple                  # tuple of member-ID tuples, k = index
+    voices: tuple = ()              # per square: the voice's character ID or None (empty: no voices)
+
+    def voice(self, k: int) -> int | None:
+        return self.voices[k] if self.voices else None
 
     @property
     def size(self) -> int:
@@ -286,8 +294,20 @@ def parse_grid(config: dict, stock_heads: bytes, stock_map: bytes) -> Grid | Non
         return None
     if not isinstance(cfg, dict):
         raise GridConfigError('"grid" must be an object')
-    squares = []
+    squares, voices = [], []
     for k, sq in enumerate(cfg.get('squares') or []):
+        voice = None
+        if isinstance(sq, dict):
+            unknown = set(sq) - {'members', 'voice'}
+            if unknown:
+                raise GridConfigError(f'grid.squares[{k}]: unknown keys ' + ', '.join(sorted(unknown)))
+            if sq.get('voice') is not None:
+                voice = _id(sq['voice'], f'grid.squares[{k}].voice')
+                if not 0 <= voice < ids.PLAYER_END:
+                    raise GridConfigError(f'grid.squares[{k}].voice: 0x{voice:02X} is not a stock player ID '
+                                          '(0x00-0x4C)')
+            sq = sq.get('members')
+        voices.append(voice)
         if not isinstance(sq, list) or not 1 <= len(sq) <= SQUARE_MAX:
             raise GridConfigError(f'grid.squares[{k}] must list 1-{SQUARE_MAX} character IDs')
         members = tuple(_id(m, f'grid.squares[{k}]') for m in sq)
@@ -344,7 +364,7 @@ def parse_grid(config: dict, stock_heads: bytes, stock_map: bytes) -> Grid | Non
                    + [f'square 0x{sq[0]:02X}' for k, sq in enumerate(squares) if ('square', k) not in listed])
         if missing:
             raise GridConfigError('grid.order leaves out ' + ', '.join(missing))
-    return Grid(cols, rows, tuple(cells), tuple(squares))
+    return Grid(cols, rows, tuple(cells), tuple(squares), tuple(voices) if any(v is not None for v in voices) else ())
 
 
 # --------------------------------------------------------------------------
@@ -763,6 +783,46 @@ def grid_layout(data: bytes, grid: Grid) -> bytes:
 
 
 # --------------------------------------------------------------------------
+# Square voices
+# --------------------------------------------------------------------------
+
+# Species the field code tests directly (RosterExpansion.md, "Stats, size and voice"): a voice from one of them, or
+# a body of one of them with another voice, takes that species' branches with it.
+SPECIES_BRANCHES = {0x16: 'Noki', 0x19: 'Magikoopa', 0x24: 'Kritter'}
+
+
+def apply_voices(ctx: steps.RosterContext, grid: Grid, write) -> list[str]:
+    """Square voices: each voiced square's square-only new IDs (wheel group 0) get the voice's species (selector
+    byte 2), which picks the voice bank, the clips and the select voice. ``write(address, bytes)``."""
+    if not grid.voices:
+        return []
+    selector, rows = wheels.table_location(ctx, 'selector')
+    species = lambda cid: ctx.dol.read(selector + 8 * cid + 2, 1)[0]
+    new = {c.id: c for c in ctx.state.get('new_ids') or []}
+    log = []
+    for k, sq in enumerate(grid.squares):
+        voice = grid.voice(k)
+        if voice is None:
+            continue
+        target = species(voice)
+        voiced, kept = [], []
+        for cid in sq:
+            square_only = cid in new and new[cid].wheel is None
+            (voiced if square_only else kept).append(cid)
+        for cid in voiced:
+            write(selector + 8 * cid + 2, bytes([target]))
+            body = species(new[cid].model_source)
+            special = {s for s in (target, body) if s in SPECIES_BRANCHES}
+            if body != target and special:
+                log.append(f'warning: 0x{cid:02X} has a {", ".join(SPECIES_BRANCHES[s] for s in sorted(special))} '
+                           'voice or body: the gameplay branches of that species follow the voice (untested)')
+        log.append(f'square 0x{sq[0]:02X}: voice of 0x{voice:02X} (species 0x{target:02X}) for '
+                   + (', '.join(f'0x{c:02X}' for c in voiced) or 'no square-only member')
+                   + (f'; ' + ', '.join(f'0x{c:02X}' for c in kept) + ' keep their own (on a wheel)' if kept else ''))
+    return log
+
+
+# --------------------------------------------------------------------------
 # Step
 # --------------------------------------------------------------------------
 
@@ -785,6 +845,7 @@ def apply(ctx: steps.RosterContext) -> list[str]:
     cap = SQUARE_MAX if wheels.has_ten_members(ctx.dol) else SQUARE_STOCK_MAX
     hs = dol_hammerspace.get(ctx)
     log += grid_code(ctx.dol, hs, grid, cap)
+    log += apply_voices(ctx, grid, hs.write)
     hs.commit()
     log += layout_file.get(ctx).update(lambda _lang, data: grid_layout(data, grid))
     return log

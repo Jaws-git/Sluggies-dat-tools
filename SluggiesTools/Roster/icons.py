@@ -1,4 +1,4 @@
-"""Icons for spare rows and new IDs: the roster step owns the icon bank.
+"""Icons for spare rows, new IDs and stock characters: the roster step owns the icon bank.
 
 Config: an optional ``icon`` on a ``wheels`` entry (spare rows 0x47-0x4C) or an
 ``ids`` entry (new IDs 0x66 and up)::
@@ -6,13 +6,23 @@ Config: an optional ``icon`` on a ``wheels`` entry (spare rows 0x47-0x4C) or an
     {"id": "0x47", "wheel": "0x06", "icon": {"side": "black_yoshi_side.png",
                                              "front": "black_yoshi_front.png"}}
 
+and ``stock_icons`` entries for stock characters with own keys (0x00-0x46)::
+
+    "stock_icons": [{"id": "0x0E", "icon": {"model": "2_Output_Models/32 Toad/<offset>_toad.gpl"}}]
+
 The PNGs live in ``1_Input/_Icons`` and are fitted into 48x51 (``fit``:
-contain, cover or strict; default contain; ``icon_art``). ``like`` (optional)
-names the character whose source records the new keys copy; it decides the
-record flags, e.g. byte +0x26 of a side record (0x82 for most characters,
-0x02 for Luigi and a few others, probably a mirror flag). The default is
-``SPARE_DONORS`` for a spare row and the template for a new ID (as the
-external tool does).
+contain, cover or strict; default contain; ``icon_art``). In place of
+``side``/``front``, ``"model"`` names a ``.sluggie`` or its model folder: the
+portraits are that model's exported ``icon/SideIcon.png`` and
+``icon/FrontIcon.png`` (``model_icons``; an ``L_`` model uses its high-poly
+partner's). ``like`` (optional, not for stock entries) names the character
+whose source records the new keys copy; it decides the record flags, e.g.
+byte +0x26 of a side record (0x82 for most characters, 0x02 for Luigi and a
+few others, probably a mirror flag). The default is ``SPARE_DONORS`` for a
+spare row and the template for a new ID (as the external tool does). A stock
+entry adds no keys: its own side, front and normal_a records keep their data
+and only point at the new rows (normal_a at the side row: the stock normal_a
+art is a side-view variant).
 
 What the step builds, when at least one entry has an ``icon`` (else it
 leaves the icon bank and the DOL alone):
@@ -32,7 +42,8 @@ leaves the icon bank and the DOL alone):
 * one side and one front resource row per entry after the 152 stock rows,
   and keys pointing at them: side and front for every entry, normal_a too
   for new IDs (it shows the front row, as in the external tool). Each
-  table's last frame (header +0x18) covers the highest key.
+  table's last frame (header +0x18) covers the highest key. Stock entries
+  re-point their own keys instead.
 * the bank in DAT hammerspace, with the icon record pointing at it;
 * the three runtime hooks of the retired icon pipeline back to their stock
   words, should an older output still carry them (keys alone draw the icons;
@@ -56,7 +67,7 @@ try:
     from ..Dol.ppc import Asm, one
     from ..Icons import gx_decode
     from . import dat_hammerspace as dhs
-    from . import dol_hammerspace, icon_art, ids, steps
+    from . import dol_hammerspace, icon_art, ids, model_icons, steps
 except ImportError:
     from Dol import dolfile
     from Dol.ppc import Asm, one
@@ -65,6 +76,7 @@ except ImportError:
     import dol_hammerspace
     import icon_art
     import ids
+    import model_icons
     import steps
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
@@ -97,6 +109,8 @@ ALIGN = 0x20
 KEPT_BLOCKS_EXT = '.cmpr'                      # a portrait's kept CMPR cell blocks, beside its PNG (derived states)
 # The records the spare rows' keys copy by default (the donors the retired icon pipeline used).
 SPARE_DONORS = {0x47: 0x04, 0x48: 0x00, 0x49: 0x01, 0x4A: 0x02, 0x4B: 0x03, 0x4C: 0x05}
+STOCK_ICON_END = 0x47                          # stock IDs below own keys in all three tables (spare rows: ``wheels``)
+STOCK_KEY = 'stock_icons'                      # config: stock characters' replaced portraits
 RESOLVER_SITE, RESOLVER_STOCK = 0x80395E1C, 0x4080008C   # bge 0x80395EA8 (the Mii block) after cmpwi r24,0x4D
 RESOLVER_NORMAL, RESOLVER_MII = 0x80395E20, 0x80395EA8
 # The retired icon pipeline's runtime hooks: (site, stock word, its stub in a low-memory cave)
@@ -124,30 +138,74 @@ class IconEntry:
     def new_id(self) -> bool:
         return self.char_id >= ids.FIRST_NEW
 
+    @property
+    def stock(self) -> bool:
+        """A stock character's replaced portraits: its own keys are re-pointed, none added."""
+        return self.char_id < STOCK_ICON_END
+
 
 # --------------------------------------------------------------------------
 # Config
 # --------------------------------------------------------------------------
 
+def _icon_paths(where: str, icon: dict, icon_dir: str, check_files: bool) -> list[str]:
+    """[side, front] PNG paths of one ``icon`` object: plain names in ``icon_dir``, or a model's portraits."""
+    if icon.get('model') is not None:
+        if icon.get('side') is not None or icon.get('front') is not None:
+            raise IconConfigError(f'{where}.icon: give either "model" or "side"/"front", not both')
+        if not isinstance(icon['model'], str) or not icon['model']:
+            raise IconConfigError(f'{where}.icon.model must be the path of a .sluggie or its model folder')
+        found = model_icons.find(icon['model'])
+        if check_files and not found.ok:
+            raise IconConfigError(f'{where}.icon.model: {found.problem}')
+        home = found.home or model_icons.resolve_path(icon['model'])
+        return [found.side or os.path.join(home, model_icons.ICON_SUBDIR, model_icons.FILES['side']),
+                found.front or os.path.join(home, model_icons.ICON_SUBDIR, model_icons.FILES['front'])]
+    paths = []
+    for view in ('side', 'front'):
+        name = icon.get(view)
+        if not isinstance(name, str) or not name or os.path.basename(name) != name:
+            raise IconConfigError(f'{where}.icon.{view} must be a plain PNG file name (in 1_Input/_Icons), '
+                                  'or give "model" instead')
+        path = os.path.join(icon_dir, name)
+        if check_files and not os.path.isfile(path):
+            raise IconConfigError(f'{where}.icon.{view}: {path} not found')
+        paths.append(path)
+    return paths
+
+
 def parse_icons(config: dict, icon_dir: str | None = None, check_files: bool = True) -> list[IconEntry]:
-    """Icon entries in config order: ``wheels`` entries first, then ``ids`` entries."""
+    """Icon entries in config order: ``wheels`` entries first, then ``ids``, then ``stock_icons`` entries."""
     icon_dir = ICON_DIR if icon_dir is None else icon_dir
     out = []
     new_ids = {c.id: c for c in ids.parse_ids(config)} if config.get('ids') else {}
+    if not isinstance(config.get(STOCK_KEY) or [], list):
+        raise IconConfigError(f'"{STOCK_KEY}" must be a list of {{"id", "icon"}} entries')
     listed = []
-    for key in ('wheels', 'ids'):
+    for key in ('wheels', 'ids', STOCK_KEY):
         for n, entry in enumerate(config.get(key) or []):
+            if key == STOCK_KEY and (not isinstance(entry, dict) or entry.get('icon') is None):
+                raise IconConfigError(f'{key}[{n}] needs an "id" and an "icon"')
             if entry.get('icon') is not None:
                 listed.append((f'{key}[{n}]', key, entry))
     for where, key, entry in listed:
         icon = entry['icon']
         if not isinstance(icon, dict):
-            raise IconConfigError(f'{where}.icon must be an object with "side" and "front"')
+            raise IconConfigError(f'{where}.icon must be an object with "side" and "front" (or "model")')
         if key == 'wheels':
             cid = ids._number(entry.get('id'), f'{where}.id')
             if cid not in SPARE_DONORS:
                 raise IconConfigError(f'{where}: 0x{cid:02X} is not a spare row')
             default_like = SPARE_DONORS[cid]
+        elif key == STOCK_KEY:
+            cid = ids._number(entry.get('id'), f'{where}.id')
+            if not 0 <= cid < STOCK_ICON_END:
+                hint = ' (a spare row: give its "wheels" entry the icon)' if cid in SPARE_DONORS else ''
+                raise IconConfigError(f'{where}: 0x{cid:02X} is not a stock character with own portraits '
+                                      f'(0x00-0x{STOCK_ICON_END - 1:02X}){hint}')
+            if icon.get('like') is not None:
+                raise IconConfigError(f'{where}.icon.like: a stock character keeps its own records')
+            default_like = cid
         else:
             if entry.get('id') is None:
                 raise IconConfigError(f'{where}: an entry with an icon needs an explicit "id"')
@@ -159,15 +217,7 @@ def parse_icons(config: dict, icon_dir: str | None = None, check_files: bool = T
         fit = icon.get('fit', icon_art.DEFAULT_FIT_MODE)
         if fit not in icon_art.FIT_MODES:
             raise IconConfigError(f'{where}.icon.fit: {fit!r} is not one of {", ".join(icon_art.FIT_MODES)}')
-        paths = []
-        for view in ('side', 'front'):
-            name = icon.get(view)
-            if not isinstance(name, str) or not name or os.path.basename(name) != name:
-                raise IconConfigError(f'{where}.icon.{view} must be a plain PNG file name (in 1_Input/_Icons)')
-            path = os.path.join(icon_dir, name)
-            if check_files and not os.path.isfile(path):
-                raise IconConfigError(f'{where}.icon.{view}: {path} not found')
-            paths.append(path)
+        paths = _icon_paths(where, icon, icon_dir, check_files)
         out.append(IconEntry(cid, paths[0], paths[1], like, fit))
     seen = [e.char_id for e in out]
     if len(set(seen)) != len(seen):
@@ -188,11 +238,17 @@ def _key(record: bytes) -> int:
     return struct.unpack_from('>H', record, 2)[0]
 
 
-def extend_table(bank: bytes, offset: int, keys: dict[int, tuple[int, int]]) -> bytes:
-    """The source table at ``offset`` with ``keys`` = {id: (like, resource row)} added; returns the table bytes."""
+def extend_table(bank: bytes, offset: int, keys: dict[int, tuple[int, int]],
+                 repoint: dict[int, int] | None = None) -> bytes:
+    """The source table at ``offset`` with ``keys`` = {id: (like, resource row)} added and the existing keys in
+    ``repoint`` = {id: resource row} pointed at other rows; returns the table bytes."""
     header = bytearray(bank[offset:offset + SOURCE_HEADER])
     records = _table(bank, offset)
     by_id = {_key(r): r for r in records}
+    for cid, row in (repoint or {}).items():
+        if cid not in by_id:
+            raise IconBankError(f'0x{cid:02X} has no own key in the source table at 0x{offset:X}')
+        struct.pack_into('>H', by_id[cid], 0x06, row)
     for cid, (like, row) in keys.items():
         if cid in by_id:
             raise IconBankError(f'0x{cid:02X} already has a key in the source table at 0x{offset:X}')
@@ -222,10 +278,21 @@ def _check_stock(stock_bank: bytes) -> None:
 
 
 def _table_keys(entries: list[IconEntry], side_row: dict, front_row: dict) -> dict:
+    added = [e for e in entries if not e.stock]
     return {
-        NORMAL_A_FIELD: {e.char_id: (e.like, front_row[e.char_id]) for e in entries if e.new_id},
-        SIDE_FIELD: {e.char_id: (e.like, side_row[e.char_id]) for e in entries},
-        FRONT_FIELD: {e.char_id: (e.like, front_row[e.char_id]) for e in entries},
+        NORMAL_A_FIELD: {e.char_id: (e.like, front_row[e.char_id]) for e in added if e.new_id},
+        SIDE_FIELD: {e.char_id: (e.like, side_row[e.char_id]) for e in added},
+        FRONT_FIELD: {e.char_id: (e.like, front_row[e.char_id]) for e in added},
+    }
+
+
+def _table_repoints(entries: list[IconEntry], side_row: dict, front_row: dict) -> dict:
+    """Stock entries' own keys -> the new rows (normal_a: the side row; its stock art is a side-view variant)."""
+    stock = [e for e in entries if e.stock]
+    return {
+        NORMAL_A_FIELD: {e.char_id: side_row[e.char_id] for e in stock},
+        SIDE_FIELD: {e.char_id: side_row[e.char_id] for e in stock},
+        FRONT_FIELD: {e.char_id: front_row[e.char_id] for e in stock},
     }
 
 
@@ -420,7 +487,8 @@ def build_packed_bank(stock_bank: bytes, entries: list[IconEntry], side: Page, f
     side_row = {e.char_id: count + i for i, e in enumerate(entries)}
     front_row = {e.char_id: count + n + i for i, e in enumerate(entries)}
     keys = _table_keys(entries, side_row, front_row)
-    tables = [extend_table(stock_bank, start, keys[f]) for f, start in zip(TABLE_FIELDS, stock_tables)]
+    repoints = _table_repoints(entries, side_row, front_row)
+    tables = [extend_table(stock_bank, start, keys[f], repoints[f]) for f, start in zip(TABLE_FIELDS, stock_tables)]
     run = b''.join(tables)
     if TABLES_AT + len(run) <= stock_end and not any(stock_bank[TABLES_AT:stock_end]):
         at = TABLES_AT
@@ -536,6 +604,9 @@ def apply(ctx: steps.RosterContext, encode_cmpr=None) -> list[str]:
         log.append(resolver_branch(ctx.dol, hs))
         hs.commit()
         log.append('own portraits: ' + ids.id_ranges(e.char_id for e in own))
+    stock_entries = [e for e in entries if e.stock]
+    if stock_entries:
+        log.append('stock portraits replaced: ' + ids.id_ranges(e.char_id for e in stock_entries))
     growth = len(bank) - STOCK_BANK_LENGTH
     log.append(f'icon bank game heap {growth:+,} bytes against stock (resident in MEM2 during a match)')
     return log

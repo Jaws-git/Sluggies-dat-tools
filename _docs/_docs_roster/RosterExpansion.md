@@ -80,7 +80,7 @@ The character manager also keeps per-ID heap records (`mulli id,0x68` at
 | swatch colour | selector byte 7 |
 | model | the ID's model directory (below) |
 | icon, stats, name | the character ID |
-| voice on the select screen | the species (byte 2): a variant moved to another species' wheel speaks with that species' voice |
+| voice, on the select screen and on the field | the species (byte 2): a variant moved to another species' wheel speaks with that species' voice (see Stats, size and voice) |
 | everything on the field | the ID after the own-data substitution: an ID without own data is Peach as a whole character |
 
 The select screen does not go through that substitution: it shows the raw
@@ -122,6 +122,65 @@ other ID counts as unlocked, so new IDs are always available
 `0x80367060` returns `own_data[id] ? id : 4`, so an ID with 0 there plays as
 **Peach (ID 4)** on the field (model, animations, stats, voice; *Dolphin*
 2026-09-25). The spare rows need it set to 1; new IDs copy their template's.
+
+## Stats, size and voice
+
+Static analysis of `main.dol`, 2026-10-05, with the external tool's voice
+routing notes (`_docs/Custom Character Sounds Pipeline - Rosalina Luma
+Larry.txt`) as the starting point.
+
+**Voice is the species.** Every voice path takes the family from selector
+byte 2 of the character ID (the ID in the player's stats row, bytes 0–1):
+
+| Path | Code | What byte 2 picks |
+|---|---|---|
+| voice bank load | `0x803868AC`, `0x80233014`, `0x80233368` → `0x804B231C` | the sound group `0x80631F10[species]` (u32, 48 entries; `-1` for the Mii groups `0x29`/`0x2A`: no voice) |
+| voice clip | wrapper `0x804B2898`, r5 = species; callers `0x80386FA4`, `0x80388694`, `0x80387104`, `0x804A5628` | the clip `0x80631FD0[species × 0x30 + slot × 4]` (12 sound INFO IDs per species) |
+| family search | `0x80387028` (27 callers) | the first player of both teams whose byte 2 equals the requested family speaks |
+| select-screen voice | `0x804A5628` (slot 10, `v13`) | as the clip row; all select voices are in one shared group |
+
+So a character speaks with the species of its byte 2 everywhere, and the
+game loads that species' bank for it: there is no separate per-ID voice. The
+external tool gives its new characters own clips by a different route
+(exact-ID tables behind hooks at `0x804B2898`/`0x804B2910`, the clips added
+to the template family's bank in `MY2.brsar`); that needs sound archive
+edits, which SluggiesTools does not make.
+
+**Byte 2 is more than the voice.** It has about 83 readers. Besides wheels,
+squares and voice, gameplay code tests a few species directly: `0x19`
+(Magikoopa family; `0x800AEB4C`, `0x800B3278`, `0x80148100`, `0x8014A20C`,
+`0x80153C04`), `0x16` (Noki family; `0x801650C4`), `0x24` (Kritter family,
+together with ID `0x3E` K. Rool; `0x80387F3C`, `0x80388098`, `0x8038820C`,
+`0x803888F4`), and `0x29` (Miis). What these branches do is not decoded. A
+character whose byte 2 names one of these species while its model and
+animations come from another (or the reverse) may behave oddly; untested.
+
+**Square voice.** On the exhibition draft a new square's members are listed
+by ID (the grid's member-list hook), not by species, and a square-only new ID
+(wheel group 0) is on no species list. Its byte 2 is therefore free: the
+roster sets it to the square's voice. Every other member keeps its byte 2:
+a spare row or stock ID is on its species' list (roster builder
+`0x8006BA6C`, and the Toy Field wheels), and a new ID with a wheel is
+appended to its wheel's species list.
+
+**Stats and size.** A new ID copies one row per moved table. The rows split
+into what the character plays like and what belongs to its body:
+
+| Group | Tables |
+|---|---|
+| stats | stats (`0x8E` rows, chemistry included), pitch windup, star pitch, stamina, change-up, trajectory, catch range, character floats (`0x806291D8`, incl. the strike-zone height at `+0x1C`), throw floats, throw variant, `perid2`/`perid4`/`perid5a`/`perid6` |
+| body | size scale, hitbox (body cylinder radius/height), ice-block scale, pitch- and bat-charge scales, the two effect scales |
+
+The body tables size the model and its effects (the size scale scales
+skeleton and mesh together, `FUN_80367080` → `FUN_80382558`), so they follow
+the ID's model: its own directory's source, else the template. Within the
+vanilla colour families (same body, different stats) the body tables are
+identical except for the two Paratroopas' size scale and hitbox. The
+`perid*` and throw-variant rows are not decoded; some hold frame counts
+(they pass through the 50/60 Hz converter `FUN_804B9BD4`) and may belong to
+the animation set rather than to the stats. Chemistry: a new ID's stats row
+holds its chemistry towards the stock IDs; two new IDs use their stats
+sources' pair.
 
 ## DOL hammerspace
 
@@ -260,6 +319,14 @@ texture count; descriptors (0x20 bytes) from `+0x24`.
   records), else after the pages; page images and source tables must stay
   inside the texture section (the external tool found that images placed
   after the container draw garbage). 8 icons cost 33,600 bytes over stock.
+- **Stock characters' portraits** (`stock_icons`, IDs `0x00`–`0x46`, which
+  own keys in all three tables) are replaced by pointing their existing
+  records at packed rows; no key is added and the records' own data stays.
+  normal_a goes to the side row: in the stock bank normal_a is a side-view
+  portrait, the same row as side except for IDs 0x01, 0x08, 0x0B, 0x27 and
+  0x3E–0x41, where it is a separate, slightly different side view (2026-10-05).
+  Where the game draws normal_a is not known. (New IDs' normal_a keys show
+  the front row, as in the external tool.)
 - New descriptors for pages `0x92`/`0x93` occupy file `0x1264`–`0x12A4`,
   which covers the first 36 bytes of page `0x86`'s palette at `0x1280`, so
   that palette moves.

@@ -194,6 +194,17 @@ CONFIGS = {
                     'name': 'White'},
                    {'id': '0x4B', 'wheel': '0x06'}],
         'grid': {'squares': [['0x68']], 'shape': [11, 5]}},
+    'stats and a square voice': {
+        'ids': [{'id': '0x66', 'template': '0x06', 'wheel': None, 'stats': '0x09'},
+                {'id': '0x67', 'template': '0x00', 'wheel': None},
+                {'id': '0x68', 'template': '0x00', 'wheel': '0x06', 'stats': '0x0D'}],
+        'grid': {'squares': [{'members': ['0x66', '0x67', '0x68'], 'voice': '0x09'}], 'shape': [11, 5]}},
+    'stock portraits only': {'stock_icons': [{'id': '0x02', 'icon': ICON}]},
+    'stock portraits with new IDs': {
+        'ids': [{'id': '0x66', 'template': '0x00', 'icon': {'side': 'green.png', 'front': 'grey.png'}}],
+        'wheels': [{'id': '0x48', 'icon': ICON}],
+        'stock_icons': [{'id': '0x05', 'icon': {'side': 'grey.png', 'front': 'red.png'}},
+                        {'id': '0x01', 'icon': ICON}]},
 }
 
 
@@ -223,6 +234,22 @@ class RoundTripTests(Harness):
         self.assertEqual(derived['grid']['shape'], [11, 5])
         self.assertEqual(derived['grid']['squares'], [['0x68']])
         self.assertEqual(len([c for c in derived['grid']['order'] if c]), 42)   # every square, in reading order
+
+    def test_stats_and_voice_are_carried(self):
+        derived = self.round_trip(CONFIGS['stats and a square voice'])
+        self.assertEqual({e['id']: e.get('stats') for e in derived['ids']}, {'0x66': '0x09', '0x67': None,
+                                                                            '0x68': '0x0D'})
+        self.assertEqual(derived['grid']['squares'], [{'members': ['0x66', '0x67', '0x68'], 'voice': '0x09'}])
+
+    def test_stock_portraits_are_carried(self):
+        derived = self.round_trip(CONFIGS['stock portraits with new IDs'])
+        self.assertEqual(set(derived) - {'version', 'comment'}, {'ids', 'wheels', 'stock_icons'})
+        stock = derived['stock_icons']
+        self.assertEqual([e['id'] for e in stock], ['0x05', '0x01'])          # bank order
+        self.assertEqual(set(stock[0]['icon']), {'side', 'front', 'fit'})     # no like: own records
+        self.assertEqual(stock[1]['icon']['side'], derived['wheels'][0]['icon']['side'])   # one shared cell
+        only = self.round_trip(CONFIGS['stock portraits only'])
+        self.assertEqual(set(only) - {'version', 'comment'}, {'stock_icons'})
 
     def test_new_id_wheel_host_comes_first(self):
         """Icon entries come first (bank order), but a new-ID wheel host still precedes its members."""

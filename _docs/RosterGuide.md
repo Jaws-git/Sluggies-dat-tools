@@ -86,7 +86,7 @@ IDs are numbers or hex strings (`"0x66"`).
 | `template` | A stock character (`0x00`–`0x4C`). The new ID copies its model, animations, stats and voice. |
 | `wheel` | Whose colour wheel it joins; default the template. A character without a wheel gets one. `null`: no wheel; the ID must then be on a new grid square. |
 | `swatch` | Wheel swatch colour: `red`, `blue`, `yellow`, `green`, `purple`, `black`, `brown`, `lightblue`, `pink`, `white`, `orange`, or 0–10. Default: the template's. |
-| `icon` | Own portrait: `{"side": "…png", "front": "…png"}` from `1_Input/_Icons` (the open slots use `empty_slot_side.png` / `empty_slot_front.png`). Optional `fit` (`contain`, `cover`, `strict`) and `like` (a stock ID whose icon records are copied). Without it the template's portrait shows. |
+| `icon` | Own portrait: `{"side": "…png", "front": "…png"}` from `1_Input/_Icons` (the open slots use `empty_slot_side.png` / `empty_slot_front.png`), or `{"model": "<.sluggie or model folder>"}`: that model's exported `icon/SideIcon.png` and `icon/FrontIcon.png` (an `L_` model uses its high-poly partner's folder; a relative path counts from the repository root; both files must exist). Optional `fit` (`contain`, `cover`, `strict`) and `like` (a stock ID whose icon records are copied). Without it the template's portrait shows. |
 | `name` | A string, or `{"en": …, "fr": …, "sp": …}`; missing languages use English. Without it the ID shows "-" once any character in the config has a name, and otherwise no name text and the template's name plate. |
 
 ### `wheels`: the unused characters (`0x47`–`0x4C`)
@@ -100,6 +100,18 @@ IDs are numbers or hex strings (`"0x66"`).
 
 With a `wheels` key the config owns all six rows: unlisted ones go back to
 stock (not selectable).
+
+### `stock_icons`: new portraits for stock characters (`0x00`–`0x46`)
+
+A list of `{"id": …, "icon": …}`; `icon` as for `ids` (no `like`: the
+character keeps its own icon records, which are only pointed at the new art).
+
+```json
+"stock_icons": [{"id": "0x01", "icon": {"model": "2_Output_Models/19 Luigi/82188352_luigi.gpl"}}]
+```
+
+The unused characters (`0x47`–`0x4C`) take their icon on their `wheels`
+entry instead.
 
 ### `wheel_order`
 

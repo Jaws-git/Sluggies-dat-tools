@@ -132,7 +132,7 @@ def main_derive(output_dir: str) -> int:
         slogger.error(str(exc), source=SOURCE)
         return 1
     config = derived.config
-    parts = [f'{len(config[k])} {k}' for k in ('ids', 'wheels', 'wheel_order') if k in config]
+    parts = [f'{len(config[k])} {k}' for k in ('ids', 'wheels', 'wheel_order', 'stock_icons') if k in config]
     if 'grid' in config:
         parts.append('grid {}x{} with {} new squares'.format(*config['grid']['shape'], len(config['grid']['squares'])))
     slogger.info('derived config: ' + (', '.join(parts) or 'stock roster (nothing to carry)')

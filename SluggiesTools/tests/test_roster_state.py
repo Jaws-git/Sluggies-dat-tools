@@ -109,7 +109,7 @@ class ExpandedGridTests(unittest.TestCase):
         new = [sq for sq in result['squares'] if sq['kind'] == 'new']
         self.assertEqual([sq['members'] for sq in new], [[0x66, 0x67], [0x47]])
         self.assertEqual([sq['head_index'] for sq in new], [43, 44])
-        self.assertEqual([sq['voice'] for sq in new], [0x06, 0x47])          # template of the first member
+        self.assertEqual([sq['voice'] for sq in new], [0x06, 0x06])          # the head's species: 0x47 is a Yoshi
         # 0x47 left Yoshi's wheel for its square; 0x68 joined it
         self.assertEqual(members_of(result, 0x06), [0x06, 0x42, 0x43, 0x68])
         self.assertEqual({c['id']: c['square'] for c in result['characters']}[0x47],

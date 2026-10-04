@@ -4,7 +4,8 @@ The grid reader (``state.py``) reads most of a roster back from the binary:
 the grid shape, the square -> head map, the head list, the selector rows,
 the names. A few facts are only compiled into hooks: the member lists of new
 squares, the wheel order, the new IDs' templates, where ``portrait_of``
-lives and which new IDs have own model directories (and from whom). The runner stores those here, as a zlib-compressed JSON blob behind
+lives, which new IDs have own model directories (and from whom), stats
+sources and square voices as configured. The runner stores those here, as a zlib-compressed JSON blob behind
 ``MAGIC`` in the roster's DOL data section:
 
     MAGIC (16 bytes) | u32 compressed length | zlib(JSON)
@@ -52,6 +53,12 @@ def build(state: dict, config: dict | None = None) -> dict:
     }
     if state.get('model_dirs'):                # own model directories (model_dirs step): [id, directory, source id]
         out['model_dirs'] = [[cid, d, src] for cid, (d, src) in sorted(state['model_dirs'].items())]
+    # Omitted when unused, so configs without them keep their bytes.
+    stats = [[c.id, c.stats] for c in state.get('new_ids') or [] if c.stats is not None]
+    if stats:                                  # stats sources: [id, stock id]
+        out['stats'] = stats
+    if grid is not None and grid.voices:       # square voices, per square: a character ID or None
+        out['grid']['voices'] = list(grid.voices)
     return out
 
 

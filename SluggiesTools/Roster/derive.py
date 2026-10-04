@@ -14,6 +14,9 @@ only truth; nothing is remembered between runs.
   manifest (``manifest.py``: new IDs, square members, wheel order). A
   top-level key is present exactly when the original config had it, as
   "ids" and "wheels" change the build even when empty.
+* ``stats`` on every new ID with a configured stats source, and ``voice``
+  on every new square with a configured voice (manifest), the square then
+  written as ``{"members": [...], "voice": ...}``.
 * ``model`` on every new ID with an own model directory: its source
   (manifest) and the directory's current DAT routes, so its copies (and any
   model patched into them) are kept byte for byte.
@@ -25,7 +28,9 @@ only truth; nothing is remembered between runs.
   decoded from the page plus the cell's CMPR blocks (``<name>.cmpr`` beside
   it). The icons step keeps those blocks for a PNG that still matches them,
   so an unchanged portrait keeps its bytes (wimgt's decode -> encode drifts);
-  a replaced PNG is encoded afresh.
+  a replaced PNG is encoded afresh. A stock character whose own keys point
+  at packed cells becomes a ``stock_icons`` entry (no ``like``: its records
+  keep their own data).
 
 Rebuilding from an unchanged derived config gives byte-identical ``main.dol``
 and ``dt_na.dat`` (``tests/test_roster_derive.py``). ``write(derived,
@@ -116,8 +121,12 @@ def grid_config(st: dict) -> dict:
     order = [None if i is None else _hex(st['squares'][i]['head']) for i in st['cells']]
     while order and order[-1] is None:
         order.pop()
-    return {'shape': list(st['shape']), 'squares': [[_hex(c) for c in sq['members']] for sq in new],
-            'order': order}
+    def square(sq):
+        members = [_hex(c) for c in sq['members']]
+        if sq.get('voice_set') is None:
+            return members
+        return {'members': members, 'voice': _hex(sq['voice_set'])}
+    return {'shape': list(st['shape']), 'squares': [square(sq) for sq in new], 'order': order}
 
 
 def _ordered_ids(entries: dict[int, dict], rank: dict[int, int], wheel_of: dict[int, int | None]) -> list[dict]:
@@ -253,6 +262,9 @@ def derive(image: dolfile.DolImage, dat) -> Derived:
         if swatch is not None:
             entry['swatch'] = swatch
         id_entries[cid] = entry
+    for cid, source in mf.get('stats') or []:
+        if cid in id_entries:
+            id_entries[cid]['stats'] = _hex(source)
     for cid, directory, source in mf.get('model_dirs') or []:
         if cid not in id_entries:
             out.warnings.append(f'{_hex(cid)} has an own model directory but no ids entry: directory dropped')
@@ -279,9 +291,18 @@ def derive(image: dolfile.DolImage, dat) -> Derived:
 
     # portraits, in the bank's order
     rank = {}
+    stock_entries: dict[int, dict] = {}
     portraits, records, stock = own_portraits(image, dat)
     for i, p in enumerate(portraits):
         cid = p['id']
+        if cid < icons.STOCK_ICON_END:                 # a stock character's replaced portraits
+            stock_entries[cid] = {'id': _hex(cid), 'icon': {'side': p['side'][0], 'front': p['front'][0],
+                                                            'fit': 'strict'}}
+            for view in VIEWS:
+                name, art, blocks = p[view]
+                out.portraits.setdefault(name, (art, blocks))
+            rank[cid] = i
+            continue
         entry = id_entries.get(cid) or spare_entries.get(cid)
         if entry is None:
             out.warnings.append(f'{_hex(cid)} has own portraits but no ids/wheels entry: portraits dropped')
@@ -312,6 +333,8 @@ def derive(image: dolfile.DolImage, dat) -> Derived:
             out.warnings.append('the manifest has a grid, but the DOL\'s grid is stock: grid dropped')
     if 'wheel_order' in keys:
         config['wheel_order'] = [[_hex(c) for c in order] for _species, order in mf.get('wheel_order') or []]
+    if stock_entries:
+        config[icons.STOCK_KEY] = [stock_entries[c] for c in sorted(stock_entries, key=lambda c: rank[c])]
     return out
 
 

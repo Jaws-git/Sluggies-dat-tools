@@ -8,14 +8,25 @@ Config (``ids`` in the roster preset)::
 
 * ``id``: optional; the next free ID from 0x66 when left out.
 * ``template``: a stock player ID (0x00-0x4C). The new ID copies its row in
-  every per-ID table, so it has the template's model, animations, stats and
-  voice until model assignment exists.
+  every per-ID table unless ``model`` or ``stats`` names another source.
 * ``wheel``: whose colour wheel the new ID joins (default: the template). A
   host without a wheel gets a new wheel group (0x0E and up). ``null``: no
   wheel at all, a square-only character (it must be on a new grid square,
   plan Phase 6): it keeps the template's row with wheel group 0 and stays off
   the roster's species lists, as the external tool's square characters do.
 * ``swatch``: the wheel swatch colour (name or 0-10); default: the template's.
+* ``model``: ``{"from": "0xNN"}``, an own model directory holding that stock
+  character's files (``model_dirs`` step).
+* ``stats``: a stock player ID (0x00-0x4C) whose stats the new ID plays with;
+  default: the template.
+
+Which character each row comes from (``_docs/_docs_roster/RosterExpansion.md``,
+"Stats, size and voice"): the selector row and the own-data flag from the
+template; the ``BODY_TABLES`` rows (size and effect scales) and the model
+handles from the model source (the own directory's source, else the
+template); every other row, chemistry included, from the stats source. The
+voice is the selector row's species: a square's voice (``grid`` step) can
+change it for square-only IDs.
 
 An empty ``ids`` list still moves every table (101 rows, nothing added): the
 identity relocation of plan step 3a, which must play exactly like vanilla.
@@ -60,6 +71,11 @@ SWATCHES = {'red': 0, 'blue': 1, 'yellow': 2, 'green': 3, 'purple': 4, 'black': 
 MODEL_REQUESTS = {0x12: (1, 0, 0), 0x21: (1, 1, 1), 0x22: (1, 1, 1), 0x23: (1, 1, 1), 0x24: (1, 1, 1),
                   0x26: (0, 0, 0)}
 HANDLE_TABLE = 'model_handles'
+# Rows that size the body and its effects: they follow the ID's model. Every other moved table except the selector
+# and the own-data flag holds what the character plays like and follows the stats source.
+BODY_TABLES = frozenset({'sizescale', 'hitbox', 'icescale', 'pitchchargescale', 'batchargescale',
+                         'effectscale_c00', 'effectscale_2b0'})
+TEMPLATE_TABLES = frozenset({'selector', 'hasmodel'})
 
 
 class IdConfigError(ValueError):
@@ -80,11 +96,23 @@ class NewId:
     wheel: int | None               # None: square-only (no wheel)
     swatch: int | None
     model: ModelSpec | None = None  # None: the template's model directory
+    stats: int | None = None        # None: the template's stats
 
     @property
     def model_source(self) -> int:
         """Whose model the ID shows (its own directory's source, else the template)."""
         return self.model.source if self.model else self.template
+
+    @property
+    def stats_source(self) -> int:
+        """Whose stats the ID plays with."""
+        return self.template if self.stats is None else self.stats
+
+    def row_source(self, table: str) -> int:
+        """The stock ID whose row of ``table`` this ID copies."""
+        if table in TEMPLATE_TABLES:
+            return self.template
+        return self.model_source if table in BODY_TABLES else self.stats_source
 
 
 def id_ranges(values) -> str:
@@ -113,6 +141,14 @@ def _number(value, what: str) -> int:
     raise IdConfigError(f'{what}: {value!r} is not a number (use e.g. 102 or "0x66")')
 
 
+def square_member_lists(config: dict) -> list:
+    """The raw member lists of ``grid.squares`` (a square is a list of IDs or ``{"members": [...], ...}``)."""
+    out = []
+    for sq in (config.get('grid') or {}).get('squares') or []:
+        out.append(sq.get('members') if isinstance(sq, dict) else sq)
+    return out
+
+
 def parse_ids(config: dict) -> list[NewId]:
     entries = config.get('ids') or []
     used: set[int] = set()
@@ -134,7 +170,7 @@ def parse_ids(config: dict) -> list[NewId]:
             raise IdConfigError(f'{where}: template 0x{template:02X} is not a stock player ID (0x00-0x4C)')
         if 'wheel' in entry and entry['wheel'] is None:
             wheel = None
-            squares = [m for sq in ((config.get('grid') or {}).get('squares') or []) for m in sq]
+            squares = [m for sq in square_member_lists(config) for m in sq or []]
             if cid not in {_number(m, f'grid.squares') for m in squares}:
                 raise IdConfigError(f'{where}: 0x{cid:02X} has no wheel ("wheel": null), so it must be on a new '
                                     'grid square (grid.squares)')
@@ -149,8 +185,13 @@ def parse_ids(config: dict) -> list[NewId]:
             swatch = _number(swatch, f'{where}.swatch')
             if not 0 <= swatch <= 10:
                 raise IdConfigError(f'{where}: swatch {swatch} is outside 0-10')
+        stats = entry.get('stats')
+        if stats is not None:
+            stats = _number(stats, f'{where}.stats')
+            if not 0 <= stats < PLAYER_END:
+                raise IdConfigError(f'{where}.stats: 0x{stats:02X} is not a stock player ID (0x00-0x4C)')
         used.add(cid)
-        out.append(NewId(cid, template, wheel, swatch, _parse_model(entry.get('model'), f'{where}.model')))
+        out.append(NewId(cid, template, wheel, swatch, _parse_model(entry.get('model'), f'{where}.model'), stats))
     return sorted(out, key=lambda c: c.id)
 
 
@@ -245,7 +286,7 @@ def extended_table(image: dolfile.DolImage, table: inventory.Table, new: list[Ne
             added = []
             for cid in range(FIRST_NEW, rows_out):
                 c = by_id.get(cid)
-                row = bytearray(rows[c.template]) if c else bytearray(table.row_size)
+                row = bytearray(rows[c.row_source(table.name)]) if c else bytearray(table.row_size)
                 if table.name == 'stats':
                     row[0:2] = struct.pack('>H', cid)
                     if not c:   # no character: neutral chemistry
@@ -267,12 +308,12 @@ def handle_rows(new: list[NewId], rows_out: int) -> bytes:
 
 
 def new_by_new_chemistry(stats: bytes, header: int, new: list[NewId]) -> bytes:
-    """Chemistry between two new IDs (0x66-0xFF squared): their templates' pair."""
+    """Chemistry between two new IDs (0x66-0xFF squared): their stats sources' pair."""
     n = ID_BOUND - FIRST_NEW + 1
     table = bytearray([NEUTRAL]) * (n * n)
-    template = {c.id: c.template for c in new}
-    for a, ta in template.items():
-        for b, tb in template.items():
+    source = {c.id: c.stats_source for c in new}
+    for a, ta in source.items():
+        for b, tb in source.items():
             if a != b:
                 table[(a - FIRST_NEW) * n + b - FIRST_NEW] = stats[header + ta * STATS_ROW + CHEM_BASE + tb]
     return bytes(table)
