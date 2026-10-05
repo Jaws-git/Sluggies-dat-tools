@@ -9,6 +9,7 @@ import struct
 import subprocess
 import tempfile
 
+import numpy as np
 from PIL import Image, ImageOps
 
 ICON_WIDTH, ICON_HEIGHT = 48, 51
@@ -22,33 +23,46 @@ class IconArtError(RuntimeError):
     pass
 
 
+def check_fit_mode(fit_mode: str) -> None:
+    if fit_mode not in FIT_MODES:
+        raise IconArtError(f'unknown icon fit mode {fit_mode!r}; expected one of: {", ".join(FIT_MODES)}')
+
+
+def fit_image(image, fit_mode: str = DEFAULT_FIT_MODE, where: str = 'the image'):
+    """An RGBA ``image`` fitted into 48x51 (``contain``, ``cover`` or ``strict``), alpha not yet hardened."""
+    check_fit_mode(fit_mode)
+    size = (ICON_WIDTH, ICON_HEIGHT)
+    if image.size == size:
+        return image
+    if fit_mode == 'strict':
+        raise IconArtError(f'{where} is {image.width}x{image.height}; expected {ICON_WIDTH}x{ICON_HEIGHT}')
+    if fit_mode == 'contain':
+        contained = ImageOps.contain(image, size, Image.Resampling.LANCZOS)
+        out = Image.new('RGBA', size, (0, 0, 0, 0))
+        out.alpha_composite(contained, ((ICON_WIDTH - contained.width) // 2, (ICON_HEIGHT - contained.height) // 2))
+        return out
+    return ImageOps.fit(image, size, Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+
+
+def harden_alpha(image):
+    """``image`` (RGBA) with CMPR's 1-bit alpha: alpha >= 128 opaque, else fully transparent (black)."""
+    pixels = np.array(image.convert('RGBA'))
+    opaque = pixels[..., 3] >= 128
+    pixels[opaque, 3] = 255
+    pixels[~opaque] = 0
+    return Image.fromarray(pixels, 'RGBA')
+
+
 def load_portrait(path: str, fit_mode: str = DEFAULT_FIT_MODE):
     """The PNG at ``path`` as a 48x51 RGBA portrait: ``contain`` (letterboxed), ``cover`` (centre-cropped) or
     ``strict`` (must already be 48x51); alpha hardened."""
-    if fit_mode not in FIT_MODES:
-        raise IconArtError(f'unknown icon fit mode {fit_mode!r}; expected one of: {", ".join(FIT_MODES)}')
-    size = (ICON_WIDTH, ICON_HEIGHT)
+    check_fit_mode(fit_mode)
     try:
         with Image.open(path) as source:
             image = source.convert('RGBA')
     except OSError as exc:
         raise IconArtError(f'could not read artwork {path}: {exc}') from exc
-    if image.size != size:
-        if fit_mode == 'strict':
-            raise IconArtError(f'{path} is {image.width}x{image.height}; expected {ICON_WIDTH}x{ICON_HEIGHT}')
-        if fit_mode == 'contain':
-            contained = ImageOps.contain(image, size, Image.Resampling.LANCZOS)
-            image = Image.new('RGBA', size, (0, 0, 0, 0))
-            image.alpha_composite(contained, ((ICON_WIDTH - contained.width) // 2,
-                                              (ICON_HEIGHT - contained.height) // 2))
-        else:
-            image = ImageOps.fit(image, size, Image.Resampling.LANCZOS, centering=(0.5, 0.5))
-    pixels = image.load()
-    for y in range(ICON_HEIGHT):
-        for x in range(ICON_WIDTH):
-            r, g, b, a = pixels[x, y]
-            pixels[x, y] = (r, g, b, 255) if a >= 128 else (0, 0, 0, 0)
-    return image
+    return harden_alpha(fit_image(image, fit_mode, path))
 
 
 def cmpr_payload(tpl: bytes, size: tuple[int, int]) -> bytes:

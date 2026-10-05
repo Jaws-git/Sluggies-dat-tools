@@ -26,6 +26,11 @@ level too for one-member squares; both pick from a list) run a staging check (``
 --dry-run``: the pending edits plus the new one, the new edit's build check),
 then a confirm dialog with what the edit does (``gui_grid.slot_dialog``); Stage
 adds it to the pending list (``gui_grid.PendingEdits``, GUI memory only).
+The slot level's two portraits are image buttons too (Phase 8): a click picks
+an image file, and the icon dialog shows it, the 48x51 result (fit mode,
+"Trim transparent border", redrawn in-process with ``Roster/icon_import``) and
+the slot's other view; OK writes the result into
+``3_Output_Dat/_gui/slot/staged_icons`` and stages an ``icon`` edit on it.
 Slots and squares with pending edits get an orange border, the slot level
 lists the pending edits and previews pending portraits. **Patch Game (N)**
 runs the full dry run, shows one summary (``gui_grid.summary_dialog``) and on
@@ -205,7 +210,15 @@ class CharacterGridTab:
                              default_path=self.app.models_dir if os.path.isdir(self.app.models_dir)
                              else self.app.root_dir):
             dpg.add_file_extension('.sluggie', color=(120, 220, 120, 255))
-        pack_dir = self.pack_dir if os.path.isdir(self.pack_dir) else self.app.root_dir
+        with dpg.file_dialog(directory_selector=False, show=False, modal=True, tag='grid_image_dialog',
+                             width=760, height=460, callback=self._on_image_chosen,
+                             cancel_callback=lambda *_: self._end_action(),
+                             default_path=self.app.models_dir if os.path.isdir(self.app.models_dir)
+                             else self.app.root_dir):
+            dpg.add_file_extension('Images{.png,.jpg,.jpeg,.bmp,.gif,.tga,.webp}', color=(120, 220, 120, 255))
+            dpg.add_file_extension('.*')
+        dpg.add_texture_registry(tag='grid_dialog_textures')    # the icon dialog's; released when it closes
+        pack_dir =self.pack_dir if os.path.isdir(self.pack_dir) else self.app.root_dir
         for tag, callback in (('grid_pack_save_dialog', self._on_pack_save_chosen),
                               ('grid_pack_load_dialog', self._on_pack_load_chosen)):
             with dpg.file_dialog(directory_selector=False, show=False, modal=True, tag=tag, width=760, height=460,
@@ -379,20 +392,26 @@ class CharacterGridTab:
         return dpg.add_image_button(texture, width=w, height=h, indent=indent, user_data=user_data,
                                     callback=callback)
 
-    def _portrait_image(self, cid, view, preview=None):
-        """The slot level's enlarged portrait (``preview``: a pending portrait's PNG instead); a framed
-        placeholder where there is none."""
+    def _portrait_slot_button(self, cid, view, preview=None):
+        """The slot level's enlarged portrait as an image button (``preview``: a pending portrait's PNG instead,
+        with the pending border); a click replaces that view (Phase 8). A plain button where there is none."""
         texture = self._texture(preview, SLOT_SCALE) if preview else self._portrait_texture(cid, view, SLOT_SCALE)
-        if preview and texture is not None:
-            dpg.add_image(texture, width=PORTRAIT[0], height=PORTRAIT[1], border_color=_PENDING)
-            return
-        if texture is not None:
-            dpg.add_image(texture, width=PORTRAIT[0], height=PORTRAIT[1], border_color=(90, 90, 96, 255))
-            return
-        with dpg.drawlist(width=PORTRAIT[0], height=PORTRAIT[1]):
-            dpg.draw_rectangle((1, 1), (PORTRAIT[0] - 1, PORTRAIT[1] - 1), color=(120, 120, 120, 255),
-                               fill=(30, 30, 34, 255))
-            dpg.draw_text((10, PORTRAIT[1] // 2 - 8), 'no portrait', color=_EMPTY, size=14)
+        usable = gui_grid.can_replace_portrait(cid) and self.pending.pack is None
+        callback = lambda: self._on_portrait(cid, view)
+        if texture is None:
+            button = dpg.add_button(label='no portrait', width=PORTRAIT[0] + 2 * FRAME,
+                                    height=PORTRAIT[1] + 2 * FRAME, callback=callback)
+        else:
+            button = dpg.add_image_button(texture, width=PORTRAIT[0], height=PORTRAIT[1], callback=callback)
+        dpg.configure_item(button, enabled=usable and not self._locked())
+        if preview:
+            dpg.bind_item_theme(button, 'grid_pending_theme')
+        self.slot_buttons.append((button, usable))
+        with dpg.tooltip(button):
+            tip = gui_grid.portrait_tip(cid, view)
+            if gui_grid.can_replace_portrait(cid) and self.pending.pack is not None:
+                tip = 'A roster pack load is pending: press "Patch Game" (or Discard it) first.'
+            dpg.add_text(tip, wrap=420)
 
     @staticmethod
     def _caption(text, cell_w, fallback=False, color=None):
@@ -547,8 +566,8 @@ class CharacterGridTab:
             details.append((f'Changed since the roster pack you {self.reference.label}: {", ".join(changed)}',
                             _CHANGED))
         details += [(line, _PENDING) for line in self.pending.lines(cid)]
-        text_w = SLOT_W - 2 * PAD - 2 * (PORTRAIT[0] + GAP) - GAP
-        body = max(PORTRAIT[1] + LINE, LINE * sum(1 + len(line) * 7 // text_w for line, _c in details))
+        text_w = SLOT_W - 2 * PAD - 2 * (PORTRAIT[0] + 2 * FRAME + GAP) - GAP
+        body = max(PORTRAIT[1] + 2 * FRAME + LINE, LINE * sum(1 + len(line) * 7 // text_w for line, _c in details))
         box = self._box(SLOT_W, 2 * PAD + 2 * LINE + body + GAP + BUTTON_H + 2 * LINE)
         title = dpg.add_text(gui_grid.name_of(state, cid), parent=box)
         with dpg.item_handler_registry() as handlers:        # clicking the name renames, like the button
@@ -562,7 +581,7 @@ class CharacterGridTab:
             for view in (gui_grid.FRONT, gui_grid.SIDE):
                 with dpg.group():
                     preview = self.pending.portrait(cid, view)
-                    self._portrait_image(cid, view, preview)
+                    self._portrait_slot_button(cid, view, preview)
                     fallback = gui_grid.is_fallback(state, cid, view)
                     if preview:
                         dpg.add_text(f'{view.capitalize()} (pending)', color=_PENDING)
@@ -627,6 +646,7 @@ class CharacterGridTab:
 
     def _pending_changed(self):
         """Redraw what shows the pending list: the grid's markers, the open levels, the buttons."""
+        self._prune_staged_icons()
         self._draw_grid()
         self._draw_popups()
         self.set_busy(self.app.busy)
@@ -654,6 +674,119 @@ class CharacterGridTab:
             return
         self.action = None
         self._start_preview(cid, path)
+
+    # ------------------------------------------------------------------ portraits (Phase 8)
+    def _on_portrait(self, cid, view):
+        """A click on a slot-level portrait: pick an image, then the icon dialog."""
+        if self._locked() or not gui_grid.can_replace_portrait(cid) or self.pending.pack is not None:
+            return
+        self.action = (cid, 'icon', view)
+        self.set_busy(False)
+        if not self.app.pick_files('grid_image_dialog', f'Select an image for the {view} portrait',
+                                   gui_grid.IMAGE_FILTERS, self._on_image_paths, on_cancel=self._end_action,
+                                   initial_dir=self.app.models_dir):
+            self._end_action()
+
+    def _on_image_chosen(self, _sender, app_data):
+        app_data = app_data or {}
+        self._on_image_paths(list(app_data.get('selections', {}).values()) or [app_data.get('file_path_name')])
+
+    def _on_image_paths(self, paths):
+        action = self.action if isinstance(self.action, tuple) and len(self.action) == 3 else None
+        path = next((p for p in paths if p), None)
+        if action is None or path is None:
+            self._end_action()
+            return
+        cid, _kind, view = action
+        self._icon_dialog(cid, view, path)
+
+    def _icon_dialog(self, cid, view, path):
+        """The source image, the 48x51 result (3x, nearest) beside the slot's other view, fit and trim; each change
+        redraws the result in-process. OK stages the edit (after the staging check)."""
+        state = self.nav.state or self.loader.state
+        preview = gui_grid.IconPreview(path)
+        other = gui_grid.SIDE if view == gui_grid.FRONT else gui_grid.FRONT
+        vw, vh = dpg.get_viewport_client_width(), dpg.get_viewport_client_height()
+        win = self.confirm = dpg.add_window(
+            label=f'{view.capitalize()} portrait of {gui_grid.name_of(state, cid)} ({gui_grid.hex_id(cid)})',
+            modal=True, no_collapse=True, no_saved_settings=True, autosize=True,
+            pos=(max(0, (vw - CONFIRM_W) // 2), max(0, vh // 8)), on_close=lambda *_: self._end_action())
+        result_tex = dpg.add_dynamic_texture(PORTRAIT[0], PORTRAIT[1], [0.0] * (PORTRAIT[0] * PORTRAIT[1] * 4),
+                                             parent='grid_dialog_textures')
+        with dpg.group(horizontal=True, horizontal_spacing=2 * GAP, parent=win):
+            with dpg.group():
+                source = _source_thumbnail(preview)
+                if source is not None:
+                    tex = dpg.add_static_texture(source.width, source.height, _rgba(source),
+                                                 parent='grid_dialog_textures')
+                    dpg.add_image(tex, width=source.width, height=source.height, border_color=(90, 90, 96, 255))
+                else:
+                    with dpg.drawlist(width=PORTRAIT[0], height=PORTRAIT[1]):
+                        dpg.draw_rectangle((1, 1), (PORTRAIT[0] - 1, PORTRAIT[1] - 1), color=(120, 120, 120, 255))
+                dpg.add_text('Your image', color=_DIM)
+            with dpg.group():
+                dpg.add_image(result_tex, width=PORTRAIT[0], height=PORTRAIT[1], border_color=_PENDING)
+                dpg.add_text(f'New {view} (48x51)', color=_PENDING)
+            with dpg.group():
+                other_path = self.pending.portrait(cid, other) or gui_grid.icon_file(
+                    state, self.loader.state_path, cid, other)
+                other_tex = self._dialog_texture(other_path)
+                if other_tex is not None:
+                    dpg.add_image(other_tex, width=PORTRAIT[0], height=PORTRAIT[1], border_color=(90, 90, 96, 255))
+                dpg.add_text(f'{other.capitalize()} (kept)', color=_DIM)
+        dpg.add_spacer(height=GAP, parent=win)
+        labels = [label for _mode, label in gui_grid.FIT_CHOICES]
+        dpg.add_radio_button(labels, parent=win, horizontal=True, default_value=labels[0],
+                             callback=lambda _s, label: change(fit=dict((l, m) for m, l in gui_grid.FIT_CHOICES)[label]))
+        dpg.add_checkbox(label='Trim transparent border', parent=win, default_value=True,
+                         callback=lambda _s, ticked: change(trim=ticked))
+        messages = dpg.add_group(parent=win)
+        dpg.add_spacer(height=GAP, parent=win)
+        with dpg.group(horizontal=True, parent=win):
+            ok = dpg.add_button(label='OK', width=110, height=BUTTON_H, callback=lambda: accept())
+            dpg.bind_item_theme(ok, 'primary_theme')
+            dpg.add_button(label='Cancel', width=110, height=BUTTON_H, callback=lambda: self._end_action())
+
+        def change(fit=None, trim=None):
+            if fit is not None:
+                preview.fit = fit
+            if trim is not None:
+                preview.trim = trim
+            image = preview.result()[0]
+            if image is not None:
+                big = image.resize(PORTRAIT, Image.Resampling.NEAREST)
+            else:
+                big = Image.new('RGBA', PORTRAIT, (0, 0, 0, 0))
+            dpg.set_value(result_tex, _rgba(big))
+            dpg.delete_item(messages, children_only=True)
+            for text, kind in preview.lines():
+                dpg.add_text(text, parent=messages, wrap=CONFIRM_W, color=_LINE_COLORS[kind])
+            dpg.configure_item(ok, enabled=preview.ok)
+
+        def accept():
+            if not preview.ok:
+                return
+            folder = os.path.join(self.app.root_dir, gui_grid.STAGED_ICONS_REL)
+            try:
+                staged = preview.save(folder, cid, view)
+            except OSError as exc:
+                self.app.log_line(f'[character grid] could not write the portrait into {folder}: {exc}', _WARN)
+                return
+            self._end_action()
+            self._start_preview(cid, None, icon=preview.edit(cid, view, staged))
+        change()
+        self.confirm_default = accept
+        self.set_busy(self.app.busy)
+
+    def _dialog_texture(self, path):
+        if not path:
+            return None
+        try:
+            with Image.open(path) as png:
+                image = png.convert('RGBA').resize(PORTRAIT, Image.Resampling.NEAREST)
+        except OSError:
+            return None
+        return dpg.add_static_texture(image.width, image.height, _rgba(image), parent='grid_dialog_textures')
 
     def _on_rename(self, cid):
         """The rename dialog: a text box with a live "fits / too long" line; OK runs the staging check."""
@@ -743,14 +876,19 @@ class CharacterGridTab:
         self._end_action()
         self._start_preview(cid, None, rename=text)
 
-    def _start_preview(self, cid, sluggie, rename=None, value=None):
+    def _start_preview(self, cid, sluggie, rename=None, value=None, icon=None):
         """The staging check (the pending edits plus this one; this one's build check); the confirm dialog
         opens when it is done. ``rename``: the new name text (blank resets), a rename edit instead of patch/clear;
-        ``value``: ``(op, source)``, a stats or voice edit (source None: back to the default)."""
+        ``value``: ``(op, source)``, a stats or voice edit (source None: back to the default); ``icon``: a
+        finished icon edit (``IconPreview.edit``)."""
         if self._locked():
             return
-        kind = 'rename' if rename is not None else value[0] if value else 'patch' if sluggie else 'clear'
-        if rename is not None:
+        kind = ('icon' if icon is not None else 'rename' if rename is not None else value[0] if value
+                else 'patch' if sluggie else 'clear')
+        view = icon['view'] if icon is not None else None
+        if icon is not None:
+            edit = icon
+        elif rename is not None:
             edit = {'op': 'rename', 'id': gui_grid.hex_id(cid), 'text': rename}
         elif value is not None:
             edit = {'op': value[0], 'id': gui_grid.hex_id(cid), 'source': value[1]}
@@ -765,13 +903,14 @@ class CharacterGridTab:
             return
         self.action = (cid, sluggie)
         if not self._run([gui_grid.preview_command(self.edits_path)], 'Checking the edit...',
-                         lambda code, output: self._show_confirm(cid, sluggie, code, output, kind)):
+                         lambda code, output: self._show_confirm(cid, sluggie, code, output, kind, view)):
             self._end_action()
 
-    def _show_confirm(self, cid, sluggie, code, output, kind='patch'):
+    def _show_confirm(self, cid, sluggie, code, output, kind='patch', view=None):
         state = self.nav.state or self.loader.state
         plan = gui_grid.load_plan(self.plan_path)
-        dialog = gui_grid.slot_dialog(state, cid, sluggie is not None, plan, code, output, self.pending, kind=kind)
+        dialog = gui_grid.slot_dialog(state, cid, sluggie is not None, plan, code, output, self.pending, kind=kind,
+                                      view=view)
         if (kind in gui_grid.VALUE_KINDS and dialog.can_apply and code == 0 and plan is not None
                 and any(int(s['target'], 16) == cid for s in plan['edits'])):
             self._stage(plan)                  # a valid rename / stats / voice pick needs no second confirmation
@@ -847,6 +986,7 @@ class CharacterGridTab:
         def done(code, _output):
             if code == 0:
                 self.pending.clear()
+                self._prune_staged_icons()
                 self.app.log_line('[character grid] Patch Game done: every pending edit is written.', _OK)
             else:
                 self.app.log_line('[character grid] Patch Game stopped at a failed step: the pending edits are '
@@ -1028,9 +1168,25 @@ class CharacterGridTab:
         """Close the file dialog / the open dialog; the levels respond to clicks again."""
         if self.confirm is not None and dpg.does_item_exist(self.confirm):
             dpg.delete_item(self.confirm)
+        if dpg.does_item_exist('grid_dialog_textures'):
+            dpg.delete_item('grid_dialog_textures', children_only=True)
         self.confirm, self.confirm_default, self.action = None, None, None
         self.set_busy(self.app.busy)
 
+    def _prune_staged_icons(self):
+        """Delete normalised portraits (``_gui/slot/staged_icons``) that no pending edit uses any more."""
+        gui_grid.prune_staged_icons(os.path.join(self.app.root_dir, gui_grid.STAGED_ICONS_REL),
+                                    gui_grid.staged_icon_files(self.pending))
+
+
+
+def _rgba(image):
+    """An RGBA image as Dear PyGui texture data (floats 0-1)."""
+    return np.asarray(image.convert('RGBA'), dtype=np.float32).ravel() / 255.0
+
+
+def _source_thumbnail(preview):
+    return None if preview.source is None else gui_grid.source_thumbnail(preview.source.image)
 
 
 def swatches_per_row(count: int, viewport_width: int) -> int:

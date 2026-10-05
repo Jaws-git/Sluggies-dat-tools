@@ -147,19 +147,54 @@ Each change rebuilds the roster once (several changes in one edits file
 share that rebuild). Miis cannot take other stats; their squares are not on
 the grid.
 
+## Portraits
+
+Either portrait of a slot (front: the draft grid; side: the colour wheel and
+the batting order) can take any image:
+
+```
+python start.py --set-icon 0x0D front my_toad.png
+python start.py --set-icon 0xE1 side art.jpg --fit cover --no-trim
+```
+
+- **Formats:** PNG, JPEG, BMP, GIF, TGA and WEBP, up to 4096x4096. The
+  file's content decides, not its extension; anything else (TIFF, PSD, a
+  renamed text file) is refused. An animated GIF or WEBP gives its first
+  frame.
+- **Fitting to 48x51:** `--fit contain` (default) scales the image to fit
+  inside, with transparent bars; `cover` fills the portrait and crops the
+  overflow; `strict` takes only images of exactly 48x51. First the
+  transparent border is cropped away, so a character on a large transparent
+  canvas fills the portrait (`--no-trim` keeps it). Images smaller than
+  48x51 are scaled up and look blurry (warned).
+- **Transparency** is on/off only: alpha 128 and up is opaque, the rest
+  fully transparent. Soft edges and half-transparent shadows are rounded
+  (warned when much of the art has them).
+- **The other portrait** stays as the slot shows it now. A slot without
+  portraits of its own (a new ID showing its template's, a stock character's
+  stock art) keeps that picture as its own from then on; stock art is
+  re-encoded once, which can shift colours slightly.
+
+Putting a model into a slot replaces both portraits with the model's
+exported ones, so a portrait change staged before it is dropped; one staged
+after it wins. Clearing a slot resets both portraits. Miis (`0x4D`–`0x65`)
+show the Mii icon and cannot take portraits.
+
 ## Several changes at once
 
 Several changes can go in one run with an edits file, a JSON list of
-`patch`, `clear`, `rename`, `voice` and `stats` edits (a `rename` edit's
-`text` may be blank; a `voice` or `stats` edit's `source` may be `null` for
-the default):
+`patch`, `clear`, `rename`, `voice`, `stats` and `icon` edits (a `rename`
+edit's `text` may be blank; a `voice` or `stats` edit's `source` may be
+`null` for the default; an `icon` edit has `view`, `file` and optionally
+`fit` and `trim`):
 
 ```
 {"edits": [{"op": "patch", "id": "0xE2", "file": "2_Output_Models/27 Bowser/114968608_koopa.gpl/114968608_koopa.gpl.sluggie"},
            {"op": "clear", "id": "0x1D"},
            {"op": "rename", "id": "0x0D", "text": "Little Toad"},
            {"op": "voice", "id": "0x0D", "source": "0x09"},
-           {"op": "stats", "id": "0x0D", "source": null}]}
+           {"op": "stats", "id": "0x0D", "source": null},
+           {"op": "icon", "id": "0x0D", "view": "front", "file": "my_toad.png", "fit": "contain"}]}
 ```
 
 ```
@@ -168,8 +203,9 @@ python start.py --apply-slots edits.json
 ```
 
 A later edit for the same slot replaces an earlier one of the same kind (a
-later voice edit replaces an earlier one of the same square; a clear also
-drops the slot's earlier renames and stats edits, since it resets both). A Low model picked
+later voice edit replaces an earlier one of the same square, a later icon
+edit the earlier one of the same view; a clear also drops the slot's earlier
+renames, stats and icon edits, since it resets them). A Low model picked
 after a High model of the same character for the same slot joins it as a
 pair. If any edit is refused, nothing is written and the output names the
 refused edits.
@@ -177,7 +213,11 @@ refused edits.
 In the GUI, the **Character grid** tab does the same: click a square, then a
 slot, and use **Rename...** (or click the slot's name), **Select .sluggie...**,
 **Clear slot** or **Stats...**. The square view has **Voice...** (a
-one-member square shows it on the slot view). The rename dialog tells you
+one-member square shows it on the slot view). Clicking the slot view's front
+or side portrait picks an image for it: a dialog shows your image, the 48x51
+result beside the other portrait, the fit choices (**Fit inside**, **Fill
+and crop**, **Exact 48x51**) and **Trim transparent border**, with warnings
+and refusals. The rename dialog tells you
 live whether the name fits the plate; **Stats...** and **Voice...** show the
 current assignment and a list to pick from. A dialog shows what
 will change (models and their sizes, directory, stats, voice, name,

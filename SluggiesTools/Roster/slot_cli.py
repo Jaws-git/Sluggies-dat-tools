@@ -1,5 +1,5 @@
 """``start.py --apply-slots`` / ``--patch-slot`` / ``--clear-slot`` / ``--rename-slot`` / ``--set-voice`` /
-``--set-stats``: plan the batch chain (``slot_plan.py``).
+``--set-stats`` / ``--set-icon``: plan the batch chain (``slot_plan.py``).
 
 Reads ``3_Output_Dat`` and derives its config **once**, applies every staged
 edit to it in order (``slot_plan.plan_batch``) and writes:
@@ -14,8 +14,10 @@ A ``--patch`` / ``--clear`` / ``--rename`` / ``--voice`` / ``--stats`` is a
 batch of one; ``--apply FILE`` reads an edits file (``{"edits": [{"op":
 "patch", "id": "0xNN", "file": ...}, {"op": "clear", "id": "0xNN"}, {"op":
 "rename", "id": "0xNN", "text": ...}, {"op": "voice", "id": "0xNN", "source":
-"0xMM"}, {"op": "stats", "id": "0xNN", "source": null}, ...]}``; a null
-``source`` goes back to the default). ``--dry-run`` leaves out the build
+"0xMM"}, {"op": "stats", "id": "0xNN", "source": null}, {"op": "icon", "id":
+"0xNN", "view": "front", "file": ..., "fit": "contain", "trim": true}, ...]}``;
+a null ``source`` goes back to the default; an icon edit's image is read and
+fitted here, ``icon_import``). ``--dry-run`` leaves out the build
 checks of edits marked ``"checked"`` (the GUI's staging check).
 
 Writes nothing to the game files. Exit code 1 when an edit is refused (the
@@ -37,9 +39,10 @@ for _path in (_TOOLS_DIR, _HERE):
 import slogger  # noqa: E402
 
 try:
-    from . import derive, icons, ids, model_icons, open_slot, slot_plan, slots, state, state_cli, state_icons
+    from . import derive, icon_art, icons, ids, model_icons, open_slot, slot_plan, slots, state, state_cli, state_icons
 except ImportError:
     import derive
+    import icon_art
     import icons
     import ids
     import model_icons
@@ -75,7 +78,7 @@ class FileEnv(slot_plan.Env):
 
     def __init__(self, image, dat):
         self.image, self.dat = image, dat
-        self._bank, self._pages = None, {}
+        self._bank, self._stock_bank, self._pages = None, None, {}
         if _HS_DIR not in sys.path:
             sys.path.insert(0, _HS_DIR)
 
@@ -104,6 +107,45 @@ class FileEnv(slot_plan.Env):
         except (OSError, ValueError, state_icons.IconStateError):
             return False
         return True
+
+    def _crop(self, bank, page, rect):
+        key = (id(bank), page)
+        if key not in self._pages:
+            self._pages[key] = bank.decode_page(page)
+        x, y, w, h = rect
+        return Image.fromarray(np.ascontiguousarray(self._pages[key][y:y + h, x:x + w]), 'RGBA')
+
+    def _output_bank(self):
+        if self._bank is None:
+            self._bank = state_icons.read_bank(self.image, self.dat)
+        return self._bank
+
+    def shown_portrait(self, char, view):
+        ref = (char.get('icon') or {}).get(view)
+        if not ref:
+            return None
+        try:
+            return self._crop(self._output_bank(), ref['page'], ref['rect'])
+        except (OSError, ValueError, state_icons.IconStateError):
+            return None
+
+    def same_portrait(self, char, view, image):
+        shown = self.shown_portrait(char, view)
+        return shown is not None and shown.size == image.size and np.array_equal(np.asarray(shown),
+                                                                                  np.asarray(image.convert('RGBA')))
+
+    def stock_portrait(self, cid, view):
+        try:
+            if self._stock_bank is None:
+                self._stock_bank = state_icons.IconBank(self.dat.read(icons.STOCK_BANK_OFFSET,
+                                                                      icons.STOCK_BANK_LENGTH))
+            hit = self._stock_bank.key_in_force(view, cid)
+            if hit is None:
+                return None
+            page, rect = self._stock_bank.row_rect(hit[1])
+            return self._crop(self._stock_bank, page, rect)
+        except (OSError, ValueError, state_icons.IconStateError):
+            return None
 
     def skeleton(self, source, target):
         import SlotTarget
@@ -172,6 +214,11 @@ def run(edits: list, output_dir: str = state_cli.OUTPUT_DIR, skip_checked: bool 
         for name, view in batch.extra_portraits.items():
             with Image.open(paths[view]) as img:
                 portraits[name] = (img.convert('RGBA'), None)
+        for name, art in batch.portraits.items():   # icon edits: picked images, kept views
+            if isinstance(art, str):
+                with Image.open(art) as img:
+                    art = img.convert('RGBA')
+            portraits[name] = (art, None)
         derive.write(derive.Derived(batch.config, portraits), folder)
     tmp = plan_path(output_dir) + '.tmp'
     with open(tmp, 'w', encoding='utf-8') as f:
@@ -200,13 +247,21 @@ def main(argv=None) -> int:
                         help="give slot 0xNN's square the voice of 0xMM's family (- or default: its own)")
     parser.add_argument('--stats', nargs=2, metavar=('0xNN', '0xMM'),
                         help="let slot 0xNN play with stock player 0xMM's stats (- or default: its own)")
+    parser.add_argument('--icon', nargs=3, metavar=('0xNN', 'VIEW', 'IMAGE'),
+                        help="make an image slot 0xNN's front or side portrait (fitted to 48x51)")
+    parser.add_argument('--fit', choices=icon_art.FIT_MODES, default=icon_art.DEFAULT_FIT_MODE,
+                        help='--icon: contain (fit inside), cover (fill and crop) or strict (exactly 48x51)')
+    parser.add_argument('--no-trim', action='store_true', help='--icon: keep the transparent border')
     parser.add_argument('--apply', metavar='FILE', help='an edits file: every staged edit in one chain')
     parser.add_argument('--dry-run', action='store_true', help='leave out the build checks of "checked" edits')
     parser.add_argument('--output-dir', default=state_cli.OUTPUT_DIR, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
-    if sum(bool(a) for a in (args.patch, args.clear, args.rename, args.voice, args.stats, args.apply)) != 1:
+    if sum(bool(a) for a in (args.patch, args.clear, args.rename, args.voice, args.stats, args.icon,
+                             args.apply)) != 1:
         parser.error('give --patch 0xNN FILE, --clear 0xNN, --rename 0xNN TEXT, --voice 0xNN 0xMM, '
-                     '--stats 0xNN 0xMM or --apply FILE')
+                     '--stats 0xNN 0xMM, --icon 0xNN VIEW IMAGE or --apply FILE')
+    if args.icon and args.icon[1] not in slot_plan.VIEWS:
+        parser.error('--icon VIEW must be front or side')
     if os.path.exists(plan_path(args.output_dir)):
         os.remove(plan_path(args.output_dir))       # a failed planner leaves no stale chain behind
     try:
@@ -219,6 +274,10 @@ def main(argv=None) -> int:
         elif args.voice or args.stats:
             op, (target, source) = ('voice', args.voice) if args.voice else ('stats', args.stats)
             edits = [slot_plan.Edit(op, slots.parse_id(target), index=1, source=slot_plan.parse_source(source))]
+        elif args.icon:
+            target, view, image = args.icon
+            edits = [slot_plan.Edit('icon', slots.parse_id(target), os.path.abspath(image), index=1, view=view,
+                                    fit=args.fit, trim=not args.no_trim)]
         else:
             edits = read_edits(args.apply)
         batch = run(edits, output_dir=args.output_dir, skip_checked=args.dry_run)

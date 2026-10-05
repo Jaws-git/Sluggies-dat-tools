@@ -56,6 +56,13 @@ squares: ``grid.squares[k].voice``, which reaches only the square-only new
 IDs on it; stock squares: ``stock_voices``, which reaches the whole species:
 its wheel, spare rows and new IDs on it). A voice is named by a character;
 the square takes its family's voice (the base character of its species).
+
+Portraits (plan Phase 8, ``plan_icon``): one view (front or side) of a slot
+takes a user's image, fitted to 48x51 (``icon_import``). The other view keeps
+what the slot has: its own cell (by name, so its CMPR blocks stay), its
+model's portrait, or, without own portraits, what the game shows now (the
+template's or neighbour's crop; a stock ID's stock art), which then becomes
+the slot's own. Miis have no portrait records and are refused.
 """
 
 from __future__ import annotations
@@ -66,8 +73,10 @@ import os
 from dataclasses import dataclass, field
 
 try:
-    from . import icons, ids, model_icons, names, open_slot, voices, wheels
+    from . import icon_art, icon_import, icons, ids, model_icons, names, open_slot, voices, wheels
 except ImportError:
+    import icon_art
+    import icon_import
     import icons
     import ids
     import model_icons
@@ -200,6 +209,18 @@ class Env:
         """Whether the slot is at its baseline already (a clear would change nothing)."""
         return False
 
+    def same_portrait(self, char: dict, view: str, image) -> bool:
+        """Whether the game shows exactly ``image`` (48x51 RGBA) as the slot's ``view`` portrait now."""
+        return False
+
+    def shown_portrait(self, char: dict, view: str):
+        """The slot's ``view`` portrait as the game shows it now (RGBA image), or None when it cannot be read."""
+        return None
+
+    def stock_portrait(self, cid: int, view: str):
+        """A stock ID's own ``view`` portrait from the stock icon bank (RGBA image), or None."""
+        return None
+
 
 # --------------------------------------------------------------------------
 # Plans
@@ -214,6 +235,7 @@ class Plan:
     notes: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     extra_portraits: dict = field(default_factory=dict)  # {file name in the derived icon folder: open-slot view}
+    portraits: dict = field(default_factory=dict)        # {file name in the derived icon folder: RGBA image or PNG}
     pair: Pair | None = None        # patch: the picked file and its partner
     nothing: bool = False           # clear: the slot is at its baseline already, no commands
     # What the slot shows once the edit is written (the GUI's pending lines): 'model', 'name', 'stats', 'voice'
@@ -662,6 +684,91 @@ def plan_voice(st: dict, config: dict, cid: int, source: int | None, state_file:
     return plan
 
 
+VIEWS = ('front', 'side')
+
+
+@dataclass
+class IconPick:
+    """An icon edit's image, fitted to 48x51 (``icon_import``)."""
+    image: object                   # 48x51 RGBA, alpha hardened
+    path: str                       # the file it was read from (the GUI's normalised copy: its preview)
+    label: str                      # the user's file name, for the texts
+    notes: list = field(default_factory=list)
+    warnings: list = field(default_factory=list)
+
+
+def _icon_entry(config: dict, cid: int) -> dict | None:
+    """The config entry that holds ``cid``'s portraits (``_set_icon``'s choice), or None."""
+    if cid >= ids.FIRST_NEW:
+        return _entry(config, 'ids', cid)
+    if cid in icons.SPARE_DONORS:
+        return _entry(config, 'wheels', cid)
+    if cid < icons.STOCK_ICON_END:
+        return _entry(config, icons.STOCK_KEY, cid)
+    return None
+
+
+def has_portrait_records(cid: int) -> bool:
+    """Whether ``cid`` can show portraits of its own (Miis cannot: they show the Mii icon)."""
+    return cid >= ids.FIRST_NEW or cid in icons.SPARE_DONORS or cid < icons.STOCK_ICON_END
+
+
+def plan_icon(st: dict, config: dict, cid: int, view: str, pick: IconPick, env: Env, state_file: str,
+              compare: bool = True) -> Plan:
+    """The chain that makes ``pick`` slot ``cid``'s ``view`` portrait (module docstring). ``compare``: an image
+    the game shows already for that view gives a plan with ``nothing`` set (only meaningful while no earlier edit
+    of the batch changed the slot's portraits)."""
+    char = _character(st, cid)
+    target_name = _display(char)
+    if view not in VIEWS:
+        raise PlanError(f'{view!r} is not a portrait view (front or side)')
+    if not has_portrait_records(cid):
+        raise PlanError(f'{target_name} has no portrait records of its own (Miis show the Mii icon)')
+    plan = Plan('icon', cid, None)
+    if compare and env.same_portrait(char, view, pick.image):
+        plan.nothing = True
+        plan.notes.append(f'nothing to change: {target_name} shows this {view} portrait already')
+        return plan
+    new = copy.deepcopy(config)
+    other = 'side' if view == 'front' else 'front'
+    entry = _icon_entry(new, cid)
+    current = (entry or {}).get('icon') or {}
+    name = f'pick_{cid:02X}_{view}.png'
+    keep = f'keep_{cid:02X}_{other}.png'
+    plan.portraits[name] = pick.image
+    other_name = None
+    if current.get('model') is not None:
+        path = getattr(env.model_icons(current['model']), other)
+        if path:
+            other_name = keep
+            plan.portraits[keep] = path
+            plan.notes.append(f'its {other} portrait stays the one from {os.path.basename(current["model"])}')
+    elif current.get(other):
+        other_name = current[other]                  # its own cell: kept by name (and CMPR blocks)
+    if other_name is None:
+        stock = cid < icons.STOCK_ICON_END
+        image = env.stock_portrait(cid, other) if stock else env.shown_portrait(char, other)
+        if image is None:
+            raise PlanError(f'{target_name}: its current {other} portrait cannot be read, so it cannot be kept '
+                            'beside the new one')
+        other_name = keep
+        plan.portraits[keep] = image
+        shown = 'its stock' if stock else 'the'
+        plan.notes.append(f'{shown} {other} portrait it shows now becomes its own (kept beside the new {view} one)')
+    why = _set_icon(new, cid, {view: name, other: other_name, 'fit': icon_art.DEFAULT_FIT_MODE})
+    if why:
+        raise PlanError(f'{target_name}: {why}')
+    plan.config = new
+    _prepare(plan, state_file, [])
+    plan.commands.append(('--roster-state',))
+    plan.notes.insert(0, f'{target_name}: {view} portrait from {pick.label} (48x51)')
+    plan.notes += pick.notes
+    plan.warnings += pick.warnings
+    plan.effects['portraits'] = {view: pick.path}
+    plan.effects['portrait_note'] = f'{view} portrait from {pick.label}'
+    return plan
+
+
 def _display(char: dict) -> str:
     name = char.get('default_name') or (char.get('name') or {}).get('en')
     return f'{name} ({_hex(char["id"])})' if name and name != names.UNNAMED else _hex(char['id'])
@@ -673,30 +780,37 @@ def _display(char: dict) -> str:
 
 MODEL_OPS = ('patch', 'clear')
 VALUE_OPS = ('voice', 'stats')                        # the last one per slot (voice: per square) wins
-SLOT_OPS = MODEL_OPS + ('rename',) + VALUE_OPS
+SLOT_OPS = MODEL_OPS + ('rename',) + VALUE_OPS + ('icon',)
 DEFAULT_WORDS = ('', '-', 'default')                  # an edit's "source" that resets (CLI text)
 
 
 @dataclass
 class Edit:
     """One staged edit (an entry of the edits file)."""
-    op: str                         # 'patch' / 'clear' / 'rename' / 'voice' / 'stats'
+    op: str                         # 'patch' / 'clear' / 'rename' / 'voice' / 'stats' / 'icon'
     cid: int                        # the slot (voice: any slot of the square)
-    file: str | None = None         # patch: the picked .sluggie (a joined pair: the High model)
+    file: str | None = None         # patch: the picked .sluggie (a joined pair: the High model); icon: the image
     low: str | None = None          # patch: a Low pick joined to a pending High pick
     text: str | None = None         # rename
     checked: bool = False           # its build check already passed when it was staged (dry runs skip it)
     index: int = 0                  # position in the edits file (1-based)
     pair: Pair | None = None
     source: int | None = None       # voice / stats: the character to take them from (None: back to the default)
+    view: str | None = None         # icon: 'front' or 'side'
+    fit: str = icon_art.DEFAULT_FIT_MODE                  # icon: contain / cover / strict
+    trim: bool = icon_import.DEFAULT_TRIM                 # icon: crop the transparent border first
+    origin: str | None = None       # icon: the user's file, when ``file`` is the GUI's normalised copy
+    pick: IconPick | None = None    # icon: the loaded image (``merge_edits``)
 
     def to_json(self) -> dict:
         out = {'op': self.op, 'id': _hex(self.cid)}
-        for key in ('file', 'low', 'text'):
+        for key in ('file', 'low', 'text', 'view', 'origin'):
             if getattr(self, key) is not None:
                 out[key] = getattr(self, key)
         if self.op in VALUE_OPS:
             out['source'] = None if self.source is None else _hex(self.source)
+        if self.op == 'icon':
+            out.update(fit=self.fit, trim=self.trim)
         return out
 
 
@@ -735,8 +849,29 @@ def parse_edits(data) -> list[Edit]:
                 edit.source = parse_source(item['source'])
             except PlanError as exc:
                 raise PlanError(f'edit {n}: {exc}') from exc
+        if edit.op == 'icon':
+            edit.view, edit.origin = item.get('view'), item.get('origin')
+            edit.fit = item.get('fit', icon_art.DEFAULT_FIT_MODE)
+            edit.trim = item.get('trim', icon_import.DEFAULT_TRIM)
+            if not edit.file:
+                raise PlanError(f'edit {n}: an icon edit needs a "file" (the image)')
+            if edit.view not in VIEWS:
+                raise PlanError(f'edit {n}: an icon edit needs a "view" (front or side), not {edit.view!r}')
+            if edit.fit not in icon_art.FIT_MODES:
+                raise PlanError(f'edit {n}: "fit" must be one of {", ".join(icon_art.FIT_MODES)}')
+            if not isinstance(edit.trim, bool):
+                raise PlanError(f'edit {n}: "trim" must be true or false')
         edits.append(edit)
     return edits
+
+
+def load_icon(edit: Edit) -> IconPick:
+    """An icon edit's image, read and fitted (``icon_import``); a refusal raises ``PlanError``."""
+    try:
+        image, notes, warnings = icon_import.prepare(edit.file, edit.fit, edit.trim)
+    except (icon_import.IconImportError, icon_art.IconArtError) as exc:
+        raise PlanError(str(exc)) from exc
+    return IconPick(image, edit.file, os.path.basename(edit.origin or edit.file), notes, warnings)
 
 
 def _classify_edit(edit: Edit, classify_fn) -> Pair:
@@ -749,16 +884,19 @@ def _classify_edit(edit: Edit, classify_fn) -> Pair:
     return Pair(pair.chunk, pair.high, low.low, edit.low, pair.stem)
 
 
-def merge_edits(edits: list[Edit], classify_fn=None) -> tuple[list[Edit], list[str], list[tuple[Edit, str]]]:
+def merge_edits(edits: list[Edit], classify_fn=None,
+                load_icon_fn=None) -> tuple[list[Edit], list[str], list[tuple[Edit, str]]]:
     """``(merged, notes, refused)``: the edits in staging order after the slot rules of section 4g:
 
     * at most one model edit (patch / clear) per slot: a later one replaces an earlier one;
     * a Low-only pick after a pending High pick of the same character joins it as a pair; after another
       pending High pick or a pending clear it is refused (its High model would not be the one it binds into);
-    * a clear drops the slot's earlier renames and stats edits (it resets both); a later rename, voice or stats
-      edit replaces an earlier one of the same slot (a patch that sets stats drops earlier stats edits too, in
-      ``plan_batch``, where it is known)."""
+    * a clear drops the slot's earlier renames, stats and icon edits (it resets them); a later rename, voice or
+      stats edit replaces an earlier one of the same slot, a later icon edit the earlier one of the same view
+      (a patch that sets stats or brings portraits drops earlier stats / icon edits too, in ``plan_batch``, where
+      it is known)."""
     classify_fn = classify_fn or classify
+    load_icon_fn = load_icon_fn or load_icon
     merged: list[Edit] = []
     notes: list[str] = []
     refused: list[tuple[Edit, str]] = []
@@ -770,6 +908,18 @@ def merge_edits(edits: list[Edit], classify_fn=None) -> tuple[list[Edit], list[s
             except PlanError as exc:
                 refused.append((edit, str(exc)))
                 continue
+        if edit.op == 'icon':
+            try:
+                edit.pick = edit.pick or load_icon_fn(edit)
+            except PlanError as exc:
+                refused.append((edit, str(exc)))
+                continue
+            same = next((e for e in merged if e.cid == edit.cid and e.op == 'icon' and e.view == edit.view), None)
+            if same is not None:
+                merged.remove(same)
+                notes.append(f'{_hex(edit.cid)}: the pending {edit.view} portrait is replaced by the later one')
+            merged.append(edit)
+            continue
         earlier = (next((e for e in merged if e.cid == edit.cid and e.op in MODEL_OPS), None)
                    if edit.op in MODEL_OPS else None)
         if edit.op == 'patch' and edit.pair.high is None and earlier is not None:
@@ -802,6 +952,10 @@ def merge_edits(edits: list[Edit], classify_fn=None) -> tuple[list[Edit], list[s
             for stats in [e for e in merged if e.cid == edit.cid and e.op == 'stats']:
                 merged.remove(stats)
                 notes.append(f'{_hex(edit.cid)}: the stats edit is dropped: the later clear resets the stats')
+            for icon in [e for e in merged if e.cid == edit.cid and e.op == 'icon']:
+                merged.remove(icon)
+                notes.append(f'{_hex(edit.cid)}: the {icon.view} portrait edit is dropped: the later clear resets '
+                             'the portraits')
         elif edit.op in VALUE_OPS + ('rename',):
             same = next((e for e in merged if e.cid == edit.cid and e.op == edit.op), None)
             if same is not None:
@@ -821,6 +975,7 @@ class Batch:
     skipped: list[tuple[Edit, Plan]] = field(default_factory=list)   # clears of slots at their baseline
     refused: list[tuple[Edit, str]] = field(default_factory=list)
     extra_portraits: dict = field(default_factory=dict)
+    portraits: dict = field(default_factory=dict)  # icon edits' portraits ({file name: RGBA image or PNG path})
 
     @property
     def ok(self) -> bool:
@@ -838,7 +993,8 @@ class Batch:
 
 
 def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: str,
-               names_text: dict | None = None, skip_checked: bool = False, classify_fn=None) -> Batch:
+               names_text: dict | None = None, skip_checked: bool = False, classify_fn=None,
+               load_icon_fn=None) -> Batch:
     """One chain for every edit (section 4g): each edit is planned on the config the previous one left
     (``plan_patch`` / ``plan_clear``), then the chain is
 
@@ -849,13 +1005,17 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
     4. one ``--roster-state``.
 
     Any refused edit refuses the whole batch: no commands, no config (``refused`` names them all)."""
-    merged, notes, refused = merge_edits(edits, classify_fn)
+    merged, notes, refused = merge_edits(edits, classify_fn, load_icon_fn)
     batch = Batch(None, notes=notes, refused=refused)
     current = config
+    portraits_touched = set()                       # slots whose portraits an earlier edit of the batch changed
     for edit in merged:
         try:
             if edit.op == 'patch':
                 plan = plan_patch(st, current, edit.cid, edit.pair, env, state_file, names_text)
+            elif edit.op == 'icon':
+                plan = plan_icon(st, current, edit.cid, edit.view, edit.pick, env, state_file,
+                                 compare=edit.cid not in portraits_touched)
             elif edit.op == 'rename':
                 plan = plan_rename(st, current, edit.cid, edit.text, state_file)
             elif edit.op == 'stats':
@@ -876,6 +1036,14 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
             for earlier in [(e, p) for e, p in batch.plans if e.op == 'stats' and e.cid == edit.cid]:
                 batch.plans.remove(earlier)
                 batch.notes.append(f'{_hex(edit.cid)}: the stats edit is dropped: the later patch sets the stats')
+        if edit.op == 'patch' and 'portraits' in plan.effects:     # its model's portraits replace both views
+            for earlier in [(e, p) for e, p in batch.plans if e.op == 'icon' and e.cid == edit.cid]:
+                batch.plans.remove(earlier)
+                batch.notes.append(f'{_hex(edit.cid)}: the {earlier[0].view} portrait edit is dropped: the later '
+                                   'patch brings its model\'s portraits')
+        if edit.op in ('clear', 'icon') or 'portraits' in plan.effects or 'portrait_note' in plan.effects:
+            portraits_touched.add(edit.cid)
+        batch.portraits.update(plan.portraits)
         if edit.op == 'voice':
             square = st['squares'][_character(st, edit.cid)['square']]
             for earlier in [(e, p) for e, p in batch.plans

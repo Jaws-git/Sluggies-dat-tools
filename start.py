@@ -147,11 +147,12 @@ def self_command(*args):
 
 
 def run_slot_chain(target_id=None, sluggie=None, dry_run=False, edits_file=None, rename=None, voice=None,
-                   stats=None):
+                   stats=None, icon=None, fit=None, trim=True):
     """Write staged slot edits as one chain: an edits file (``edits_file``, ``--apply-slots``), or a batch of one:
     patch a .sluggie (and its HP/L_ partner) into a slot, name the slot (``rename``: the text, blank resets it),
     give its square another voice (``voice``) or the slot other stats (``stats``: a character ID, ``-`` resets),
-    or clear the slot (none given). Plans the chain
+    replace one portrait (``icon``: ``(view, image)``, fitted with ``fit`` / ``trim``), or clear the slot (none
+    given). Plans the chain
     (Roster/slot_cli.py: read and derive once, apply every edit; a refused edit refuses the batch and writes
     nothing), then runs its commands in order, stopping at the first failure. Returns True on success.
 
@@ -169,6 +170,10 @@ def run_slot_chain(target_id=None, sluggie=None, dry_run=False, edits_file=None,
         cmd += ['--voice', target_id, voice]
     elif stats is not None:
         cmd += ['--stats', target_id, stats]
+    elif icon is not None:
+        cmd += ['--icon', target_id, icon[0], os.path.abspath(icon[1])]
+        cmd += ['--fit', fit] if fit else []
+        cmd += [] if trim else ['--no-trim']
     else:
         cmd += ['--clear', target_id]
     if dry_run:
@@ -678,6 +683,7 @@ def parse_args():
             '  python start.py --rename-slot 0xE1 "Purple Yoshi"\n'
             '  python start.py --set-voice 0x00 0x09\n'
             '  python start.py --set-stats 0x00 -\n'
+            '  python start.py --set-icon 0xE1 front my_portrait.png --fit cover\n'
             '  python start.py --apply-slots 3_Output_Dat/_gui/slot/edits.json --dry-run\n'
             '  python start.py --save-roster my_roster.sluggiesroster\n'
             '  python start.py --load-roster my_roster.sluggiesroster --dry-run\n'
@@ -693,6 +699,7 @@ def parse_args():
     mode.add_argument('--clear-slot', metavar='0xNN', help='return a slot to its baseline: a stock slot gets its vanilla models and portraits back, a new ID a fresh copy of its template and the open-slot look')
     mode.add_argument('--set-voice', nargs=2, metavar=('SQUARE', '0xNN'), help="give a square (any of its slots' IDs) the voice of 0xNN's family, on the select screen and on the field; a stock square changes its whole species, a new square its square-only new IDs; - resets it (read -> rebuild)")
     mode.add_argument('--set-stats', nargs=2, metavar=('0xNN', '0xMM'), help="let slot 0xNN play with stock player 0xMM's stats (stats, pitching, fielding, chemistry; model, size and voice stay); - resets it to its own / its template's (read -> rebuild)")
+    mode.add_argument('--set-icon', nargs=3, metavar=('0xNN', 'VIEW', 'IMAGE'), help="make an image (PNG, JPEG, BMP, GIF, TGA or WEBP) slot 0xNN's front or side portrait, fitted to 48x51 (see --fit, --no-trim); the other view keeps what the slot shows now (read -> rebuild)")
     mode.add_argument('--rename-slot', nargs=2, metavar=('0xNN', 'TEXT'), help='name a slot (stock characters included), one name for English, French and Spanish; it must fit the name plate; a blank TEXT resets the name (read -> rebuild)')
     mode.add_argument('--apply-slots', metavar='FILE', help='write staged slot edits (an edits file with patch/clear/rename edits per slot, as the GUI\'s "Patch Game" writes it) as one chain: read once, at most one roster rebuild, then the slot patches')
     mode.add_argument('--save-roster', metavar='FILE', help='save the whole roster of 3_Output_Dat (grid, names, voices, stats, own model directories, patched models, portraits) into a roster pack (.sluggiesroster)')
@@ -717,6 +724,8 @@ def parse_args():
     parser.add_argument('--target-id', metavar='0xNN', help="patch/unpatch only: write the .sluggie models into this character ID's slot instead of their own route (always Hammerspace)")
     parser.add_argument('--as-low', action='store_true', help='with --target-id: a high-poly model without L_ partner is the low-poly model too')
     parser.add_argument('--validate-only', action='store_true', help='with --patch --target-id: build and validate the slot blocks, write nothing')
+    parser.add_argument('--fit', choices=('contain', 'cover', 'strict'), help='set-icon only: contain (fit inside, the default), cover (fill and crop) or strict (the image must be 48x51)')
+    parser.add_argument('--no-trim', action='store_true', help='set-icon only: do not crop the transparent border before fitting')
     parser.add_argument('--remove', action='store_true', help='roster only: reset the roster to vanilla (against 1_Input) and stop')
     parser.add_argument('--on', nargs='+', default=[], metavar='OPTION', help='game-options only: turn these options on (cpu_vs_cpu, cpu_management)')
     parser.add_argument('--off', nargs='+', default=[], metavar='OPTION', help='game-options only: turn these options off')
@@ -735,9 +744,14 @@ def parse_args():
         parser.error('--use-output can only be used with --export-icons.')
     if args.dry_run and not (args.roster or args.game_options or args.load_roster
                              or args.patch_slot or args.clear_slot or args.rename_slot or args.set_voice
-                             or args.set_stats or args.apply_slots):
+                             or args.set_stats or args.set_icon or args.apply_slots):
         parser.error('--dry-run can only be used with --roster, --game-options, --patch-slot, '
-                     '--clear-slot, --rename-slot, --set-voice, --set-stats, --apply-slots or --load-roster.')
+                     '--clear-slot, --rename-slot, --set-voice, --set-stats, --set-icon, --apply-slots or '
+                     '--load-roster.')
+    if (args.fit or args.no_trim) and not args.set_icon:
+        parser.error('--fit and --no-trim can only be used with --set-icon.')
+    if args.set_icon and args.set_icon[1] not in ('front', 'side'):
+        parser.error('--set-icon VIEW must be front or side.')
     if (args.on or args.off) and not args.game_options:
         parser.error('--on and --off can only be used with --game-options.')
     if (args.config or args.remove or args.state) and not args.roster:
@@ -756,7 +770,7 @@ def parse_args():
         parser.error('--config and --state cannot be used together.')
     if args.roster and not (args.config or args.remove or args.state):
         parser.error('--roster needs --config PATH (a roster configuration), --state PATH or --remove.')
-    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.rename_slot, args.set_voice, args.set_stats, args.apply_slots, args.save_roster, args.load_roster, args.write_slot_blocks, args.resplit_unused, args.export, args.export_icons, args.roster, args.roster_state, args.roster_derive, args.game_options]):
+    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.rename_slot, args.set_voice, args.set_stats, args.set_icon, args.apply_slots, args.save_roster, args.load_roster, args.write_slot_blocks, args.resplit_unused, args.export, args.export_icons, args.roster, args.roster_state, args.roster_derive, args.game_options]):
         if len(sys.argv) == 1:
             args.gui = True
         else:
@@ -857,6 +871,10 @@ def main() -> int:
                 return 1
         elif args.set_stats:
             if not run_slot_chain(args.set_stats[0], stats=args.set_stats[1], dry_run=args.dry_run):
+                return 1
+        elif args.set_icon:
+            if not run_slot_chain(args.set_icon[0], icon=tuple(args.set_icon[1:]), fit=args.fit,
+                                  trim=not args.no_trim, dry_run=args.dry_run):
                 return 1
         elif args.apply_slots:
             if not run_slot_chain(edits_file=args.apply_slots, dry_run=args.dry_run):

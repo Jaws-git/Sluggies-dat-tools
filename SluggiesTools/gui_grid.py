@@ -34,7 +34,7 @@ PACK_EXTENSION = '.sluggiesroster'
 # start.py modes whose commands can change what the grid shows: the tab re-reads after them
 WRITING_FLAGS = frozenset({'--export', '--roster', '--patch', '--unpatch', '--resplit-unused',
                            '--patch-slot', '--clear-slot', '--rename-slot', '--set-voice', '--set-stats',
-                           '--apply-slots', '--load-roster',
+                           '--set-icon', '--apply-slots', '--load-roster',
                            '--write-slot-blocks'})
 UNNAMED = '-'
 LUIGI = 0x01
@@ -336,6 +336,134 @@ def slot_details(state: dict, cid: int) -> list[str]:
 
 
 # --------------------------------------------------------------------------
+# Portrait replacement (Phase 8)
+# --------------------------------------------------------------------------
+
+MII_START, NEW_START = 0x4D, 0x66    # Mii IDs have no portrait records (Roster/slot_plan.has_portrait_records)
+STAGED_ICONS_REL = os.path.join('3_Output_Dat', '_gui', 'slot', 'staged_icons')
+IMAGE_PATTERNS = '*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tga;*.webp'
+IMAGE_FILTERS = [('Images', IMAGE_PATTERNS), ('All files', '*.*')]
+FIT_CHOICES = (('contain', 'Fit inside'), ('cover', 'Fill and crop'), ('strict', 'Exact 48x51'))
+ICON_SIZE = (48, 51)
+
+
+def can_replace_portrait(cid: int) -> bool:
+    return cid < MII_START or cid >= NEW_START
+
+
+def portrait_tip(cid: int, view: str) -> str:
+    if not can_replace_portrait(cid):
+        return f'{view.capitalize()} portrait (Miis show the Mii icon; it cannot be replaced)'
+    return f'Click to replace the {view} portrait'
+
+
+def _icon_import():
+    try:
+        from Roster import icon_import
+    except ImportError:
+        from SluggiesTools.Roster import icon_import
+    return icon_import
+
+
+class IconPreview:
+    """The icon dialog's state: the picked image (read and checked once, ``Roster/icon_import``), the fit mode and
+    the trim switch; ``result()`` redraws the 48x51 portrait in-process (Pillow only)."""
+
+    def __init__(self, path: str):
+        self.path = path
+        self.fit, self.trim = 'contain', True
+        self.source, self.error = None, None
+        self._cache = {}
+        icon_import = _icon_import()
+        try:
+            self.source = icon_import.load_user_image(path)
+        except icon_import.IconImportError as exc:
+            self.error = str(exc)
+
+    def result(self):
+        """``(48x51 RGBA portrait or None, warnings, refusal or None)`` for the current fit and trim."""
+        if self.source is None:
+            return None, [], self.error
+        key = (self.fit, self.trim)
+        if key not in self._cache:
+            icon_import = _icon_import()
+            try:
+                image, warns = icon_import.fit_user_image(self.source.image, self.fit, self.trim)
+                self._cache[key] = (image, self.source.warnings + warns, None)
+            except icon_import.IconImportError as exc:
+                self._cache[key] = (None, list(self.source.warnings), str(exc))
+        return self._cache[key]
+
+    def lines(self) -> list:
+        """The dialog's message lines: the source's facts, notes, warnings and a refusal."""
+        if self.source is None:
+            return [(f'Refused: {self.error}', ERROR)]
+        w, h = self.source.size
+        lines = [(f'{os.path.basename(self.path)}: {self.source.format}, {w}x{h}', TEXT)]
+        lines += [(note, TEXT) for note in self.source.notes]
+        _image, warns, error = self.result()
+        lines += [(f'Warning: {w_}', WARN) for w_ in warns]
+        if error:
+            lines.append((f'Refused: {error}', ERROR))
+        return lines
+
+    @property
+    def ok(self) -> bool:
+        return self.result()[0] is not None
+
+    def save(self, folder: str, cid: int, view: str) -> str:
+        """Write the portrait into ``folder`` (named by its pixels, so a preview texture never shows a stale file);
+        returns its path."""
+        import hashlib
+        image = self.result()[0]
+        digest = hashlib.sha1(image.tobytes()).hexdigest()[:12]
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, f'{cid:02X}_{view}_{digest}.png')
+        image.save(path, 'PNG')
+        return path
+
+    def edit(self, cid: int, view: str, staged: str) -> dict:
+        """The staged icon edit: the normalised copy, taken as it is (strict, no trim)."""
+        return {'op': 'icon', 'id': hex_id(cid), 'view': view, 'file': staged, 'fit': 'strict', 'trim': False,
+                'origin': self.path}
+
+
+SOURCE_BOX = (240, 240)
+
+
+def source_thumbnail(image, box=SOURCE_BOX):
+    """The icon dialog's view of the picked image: scaled to fit ``box`` (up by whole factors, nearest; down
+    smoothly)."""
+    from PIL import Image
+    w, h = image.size
+    factor = min(box[0] / w, box[1] / h)
+    if factor >= 1:
+        whole = int(factor)
+        return image.resize((w * whole, h * whole), Image.Resampling.NEAREST) if whole > 1 else image.copy()
+    return image.resize((max(1, round(w * factor)), max(1, round(h * factor))), Image.Resampling.LANCZOS)
+
+
+def staged_icon_files(pending: 'PendingEdits') -> set[str]:
+    return {e['file'] for e in pending.edits if e['op'] == 'icon' and e.get('file')}
+
+
+def prune_staged_icons(folder: str, keep: set[str]) -> None:
+    """Delete normalised portraits no pending edit uses any more."""
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return
+    keep = {os.path.normcase(os.path.abspath(p)) for p in keep}
+    for name in names:
+        path = os.path.join(folder, name)
+        if name.endswith('.png') and os.path.normcase(os.path.abspath(path)) not in keep:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+# --------------------------------------------------------------------------
 # Navigation
 # --------------------------------------------------------------------------
 
@@ -499,6 +627,11 @@ class PendingEdits:
         """The slot's pending ``op`` edit ('rename', 'stats', or 'voice': staged on the square's head)."""
         return next((e for e in self.edits if int(e['id'], 16) == cid and e['op'] == op), None)
 
+    def icon_edit(self, cid: int, view: str) -> dict | None:
+        """The slot's pending portrait edit of ``view``."""
+        return next((e for e in self.edits if int(e['id'], 16) == cid and e['op'] == 'icon' and e.get('view') == view),
+                    None)
+
     def sections_for(self, cid: int) -> list[dict]:
         return [s for s in self.sections if int(s['target'], 16) == cid]
 
@@ -517,9 +650,9 @@ class PendingEdits:
             effects = section.get('effects') or {}
             for key, label in (('model', 'Model'), ('name', 'Name'), ('stats', 'Stats'), ('voice', 'Voice'),
                                ('portrait_note', 'Portraits')):
-                if effects.get(key):
+                if effects.get(key) and not (key == 'portrait_note' and section['action'] == 'icon'):
                     out.append(f'  {label}: {effects[key]}')
-            if effects.get('portraits'):
+            if effects.get('portraits') and section['action'] == 'patch':
                 out.append('  Portraits: ' + os.path.basename(os.path.dirname(os.path.dirname(
                     effects['portraits']['front']))) + ' (previewed, marked "pending")')
         return out + self._pack_lines(cid)
@@ -554,7 +687,14 @@ def _edit_title(edit: dict) -> str:
     if edit['op'] == 'voice':
         return (f'Pending: the square speaks with {edit["source"]}\'s voice' if edit.get('source')
                 else 'Pending: the square\'s default voice')
+    if edit['op'] == 'icon':
+        return f'Pending: {edit.get("view")} portrait from {icon_label(edit)}'
     return f'Pending: {edit["op"]}'
+
+
+def icon_label(edit: dict) -> str:
+    """The user's file name of an icon edit (``origin``: the picked file, ``file``: its normalised copy)."""
+    return os.path.basename(edit.get('origin') or edit.get('file') or '?')
 
 
 # --------------------------------------------------------------------------
@@ -652,20 +792,23 @@ def _refused_lines(state: dict, plan: dict, cid: int | None = None) -> list:
     return lines
 
 
-VALUE_KINDS = ('rename', 'stats', 'voice')        # edits that change one value, no model
+VALUE_KINDS = ('rename', 'stats', 'voice', 'icon')   # edits that change one value, no model
 
 
 def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int, output: str,
-                pending: PendingEdits | None = None, rename: bool = False, kind: str | None = None) -> SlotDialog:
+                pending: PendingEdits | None = None, rename: bool = False, kind: str | None = None,
+                view: str | None = None) -> SlotDialog:
     """The confirm dialog of a staged edit, after its staging check (the pending edits plus this one, exit
     ``code``, log ``output``): what the edit does, its warnings and the verdict. ``can_apply`` (Stage stages it)
-    only when the planner and the build check passed. ``kind``: 'patch', 'clear', 'rename', 'stats' or 'voice'
-    (default from ``patch`` / ``rename``; a voice edit's ``cid`` is its square's head)."""
+    only when the planner and the build check passed. ``kind``: 'patch', 'clear', 'rename', 'stats', 'voice' or
+    'icon' (``view``: its portrait view) (default from ``patch`` / ``rename``; a voice edit's ``cid`` is its
+    square's head)."""
     kind = kind or ('rename' if rename else 'patch' if patch else 'clear')
     rename = kind in VALUE_KINDS
     target = f'{name_of(state, cid)} ({hex_id(cid)})'
     dialog = SlotDialog({'rename': f'Rename {target}?', 'patch': f'Put a model into {target}?',
                          'stats': f'Other stats for {target}?',
+                         'icon': f'New {view} portrait for {target}?',
                          'voice': f'Another voice for the square of {target}?'}.get(kind, f'Clear {target}?'))
     error = error_message(output)
     lines = dialog.lines
@@ -684,7 +827,10 @@ def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int
     if section is None:                       # a clear of a slot at its baseline, or a rename that changes nothing
         skipped = next((s for s in plan['skipped'] if int(s['target'], 16) == cid), None)
         lines += [(f'- {note}', TEXT) for note in (skipped or {}).get('notes', [])]
-        earlier = (pending.value_edit(cid, kind) if rename else pending.model_edit(cid)) if pending else None
+        earlier = None
+        if pending is not None:
+            earlier = (pending.icon_edit(cid, view) if kind == 'icon' else pending.value_edit(cid, kind) if rename
+                       else pending.model_edit(cid))
         if earlier is not None:
             lines.append((f'Stage drops the slot\'s pending {earlier["op"]}, so the slot stays as it is.', OK))
             dialog.can_apply = True
@@ -735,6 +881,8 @@ def summary_dialog(state: dict, plan: dict | None, code: int, output: str) -> Sl
         elif section['action'] in ('stats', 'voice'):
             effect = ((section.get('effects') or {}).get(section['action']) or 'default').removesuffix(' (square voice)')
             what = f'stats of {effect}' if section['action'] == 'stats' else f'square voice of {effect}'
+        elif section['action'] == 'icon':
+            what = (section.get('effects') or {}).get('portrait_note') or 'new portrait'
         lines.append((f'{name_of(state, cid)} ({hex_id(cid)}): {what}', OK))
         lines += [('    ' + text, kind) for text, kind in _section_lines(state, section, sizes, warnings=False)]
     for section in plan['skipped']:
