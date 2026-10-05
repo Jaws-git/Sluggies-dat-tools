@@ -1,0 +1,1913 @@
+{
+ "version": 1,
+ "comment": "Preset 3b: like preset 3, but the wheels that had colours already are 8 wide instead of 10; the freed IDs go to characters that had no wheel (22 of the 30 get a wheel of 4, the first 22 by ID; the other 8 stay at 3). 123 new IDs, 0x66-0xE0: each plays as its wheel's host, shows the \"empty slot\" icon and the name \"Empty slot\" until you assign it something else.",
+ "ids": [
+  {
+   "id": "0x66",
+   "template": "0x0C",
+   "wheel": "0x0C",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x67",
+   "template": "0x0C",
+   "wheel": "0x0C",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x68",
+   "template": "0x0C",
+   "wheel": "0x0C",
+   "swatch": 4,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x69",
+   "template": "0x0C",
+   "wheel": "0x0C",
+   "swatch": 6,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x6A",
+   "template": "0x0C",
+   "wheel": "0x0C",
+   "swatch": 7,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x6B",
+   "template": "0x0D",
+   "wheel": "0x0D",
+   "swatch": 6,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x6C",
+   "template": "0x0D",
+   "wheel": "0x0D",
+   "swatch": 7,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x6D",
+   "template": "0x10",
+   "wheel": "0x10",
+   "swatch": 4,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x6E",
+   "template": "0x10",
+   "wheel": "0x10",
+   "swatch": 6,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x6F",
+   "template": "0x10",
+   "wheel": "0x10",
+   "swatch": 7,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x70",
+   "template": "0x14",
+   "wheel": "0x14",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x71",
+   "template": "0x14",
+   "wheel": "0x14",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x72",
+   "template": "0x14",
+   "wheel": "0x14",
+   "swatch": 4,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x73",
+   "template": "0x14",
+   "wheel": "0x14",
+   "swatch": 5,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x74",
+   "template": "0x14",
+   "wheel": "0x14",
+   "swatch": 6,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x75",
+   "template": "0x14",
+   "wheel": "0x14",
+   "swatch": 7,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x76",
+   "template": "0x15",
+   "wheel": "0x15",
+   "swatch": 3,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x77",
+   "template": "0x15",
+   "wheel": "0x15",
+   "swatch": 4,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x78",
+   "template": "0x15",
+   "wheel": "0x15",
+   "swatch": 6,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x79",
+   "template": "0x15",
+   "wheel": "0x15",
+   "swatch": 7,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x7A",
+   "template": "0x18",
+   "wheel": "0x18",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x7B",
+   "template": "0x18",
+   "wheel": "0x18",
+   "swatch": 4,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x7C",
+   "template": "0x18",
+   "wheel": "0x18",
+   "swatch": 5,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x7D",
+   "template": "0x18",
+   "wheel": "0x18",
+   "swatch": 6,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x7E",
+   "template": "0x18",
+   "wheel": "0x18",
+   "swatch": 7,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x7F",
+   "template": "0x1B",
+   "wheel": "0x1B",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x80",
+   "template": "0x1B",
+   "wheel": "0x1B",
+   "swatch": 4,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x81",
+   "template": "0x1B",
+   "wheel": "0x1B",
+   "swatch": 5,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x82",
+   "template": "0x1B",
+   "wheel": "0x1B",
+   "swatch": 6,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x83",
+   "template": "0x1B",
+   "wheel": "0x1B",
+   "swatch": 7,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x84",
+   "template": "0x21",
+   "wheel": "0x21",
+   "swatch": 4,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x85",
+   "template": "0x21",
+   "wheel": "0x21",
+   "swatch": 5,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x86",
+   "template": "0x21",
+   "wheel": "0x21",
+   "swatch": 6,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x87",
+   "template": "0x21",
+   "wheel": "0x21",
+   "swatch": 7,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x88",
+   "template": "0x30",
+   "wheel": "0x30",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x89",
+   "template": "0x30",
+   "wheel": "0x30",
+   "swatch": 4,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x8A",
+   "template": "0x30",
+   "wheel": "0x30",
+   "swatch": 5,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x8B",
+   "template": "0x30",
+   "wheel": "0x30",
+   "swatch": 6,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x8C",
+   "template": "0x3A",
+   "wheel": "0x3A",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x8D",
+   "template": "0x3A",
+   "wheel": "0x3A",
+   "swatch": 4,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x8E",
+   "template": "0x3A",
+   "wheel": "0x3A",
+   "swatch": 7,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x8F",
+   "template": "0x00",
+   "wheel": "0x00",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x90",
+   "template": "0x00",
+   "wheel": "0x00",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x91",
+   "template": "0x00",
+   "wheel": "0x00",
+   "swatch": 3,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x92",
+   "template": "0x01",
+   "wheel": "0x01",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x93",
+   "template": "0x01",
+   "wheel": "0x01",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x94",
+   "template": "0x01",
+   "wheel": "0x01",
+   "swatch": 3,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x95",
+   "template": "0x02",
+   "wheel": "0x02",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x96",
+   "template": "0x02",
+   "wheel": "0x02",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x97",
+   "template": "0x02",
+   "wheel": "0x02",
+   "swatch": 3,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x98",
+   "template": "0x03",
+   "wheel": "0x03",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x99",
+   "template": "0x03",
+   "wheel": "0x03",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x9A",
+   "template": "0x03",
+   "wheel": "0x03",
+   "swatch": 3,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x9B",
+   "template": "0x04",
+   "wheel": "0x04",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x9C",
+   "template": "0x04",
+   "wheel": "0x04",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x9D",
+   "template": "0x04",
+   "wheel": "0x04",
+   "swatch": 3,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x9E",
+   "template": "0x05",
+   "wheel": "0x05",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0x9F",
+   "template": "0x05",
+   "wheel": "0x05",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xA0",
+   "template": "0x05",
+   "wheel": "0x05",
+   "swatch": 3,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xA1",
+   "template": "0x07",
+   "wheel": "0x07",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xA2",
+   "template": "0x07",
+   "wheel": "0x07",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xA3",
+   "template": "0x07",
+   "wheel": "0x07",
+   "swatch": 3,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xA4",
+   "template": "0x08",
+   "wheel": "0x08",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xA5",
+   "template": "0x08",
+   "wheel": "0x08",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xA6",
+   "template": "0x08",
+   "wheel": "0x08",
+   "swatch": 3,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xA7",
+   "template": "0x09",
+   "wheel": "0x09",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xA8",
+   "template": "0x09",
+   "wheel": "0x09",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xA9",
+   "template": "0x09",
+   "wheel": "0x09",
+   "swatch": 3,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xAA",
+   "template": "0x0A",
+   "wheel": "0x0A",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xAB",
+   "template": "0x0A",
+   "wheel": "0x0A",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xAC",
+   "template": "0x0A",
+   "wheel": "0x0A",
+   "swatch": 3,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xAD",
+   "template": "0x0B",
+   "wheel": "0x0B",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xAE",
+   "template": "0x0B",
+   "wheel": "0x0B",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xAF",
+   "template": "0x0B",
+   "wheel": "0x0B",
+   "swatch": 3,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xB0",
+   "template": "0x0E",
+   "wheel": "0x0E",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xB1",
+   "template": "0x0E",
+   "wheel": "0x0E",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xB2",
+   "template": "0x0E",
+   "wheel": "0x0E",
+   "swatch": 3,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xB3",
+   "template": "0x0F",
+   "wheel": "0x0F",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xB4",
+   "template": "0x0F",
+   "wheel": "0x0F",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xB5",
+   "template": "0x0F",
+   "wheel": "0x0F",
+   "swatch": 3,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xB6",
+   "template": "0x11",
+   "wheel": "0x11",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xB7",
+   "template": "0x11",
+   "wheel": "0x11",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xB8",
+   "template": "0x11",
+   "wheel": "0x11",
+   "swatch": 3,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xB9",
+   "template": "0x12",
+   "wheel": "0x12",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xBA",
+   "template": "0x12",
+   "wheel": "0x12",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xBB",
+   "template": "0x12",
+   "wheel": "0x12",
+   "swatch": 3,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xBC",
+   "template": "0x13",
+   "wheel": "0x13",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xBD",
+   "template": "0x13",
+   "wheel": "0x13",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xBE",
+   "template": "0x13",
+   "wheel": "0x13",
+   "swatch": 3,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xBF",
+   "template": "0x1C",
+   "wheel": "0x1C",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xC0",
+   "template": "0x1C",
+   "wheel": "0x1C",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xC1",
+   "template": "0x1C",
+   "wheel": "0x1C",
+   "swatch": 3,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xC2",
+   "template": "0x25",
+   "wheel": "0x25",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xC3",
+   "template": "0x25",
+   "wheel": "0x25",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xC4",
+   "template": "0x25",
+   "wheel": "0x25",
+   "swatch": 3,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xC5",
+   "template": "0x26",
+   "wheel": "0x26",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xC6",
+   "template": "0x26",
+   "wheel": "0x26",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xC7",
+   "template": "0x26",
+   "wheel": "0x26",
+   "swatch": 3,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xC8",
+   "template": "0x27",
+   "wheel": "0x27",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xC9",
+   "template": "0x27",
+   "wheel": "0x27",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xCA",
+   "template": "0x27",
+   "wheel": "0x27",
+   "swatch": 3,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xCB",
+   "template": "0x28",
+   "wheel": "0x28",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xCC",
+   "template": "0x28",
+   "wheel": "0x28",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xCD",
+   "template": "0x28",
+   "wheel": "0x28",
+   "swatch": 3,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xCE",
+   "template": "0x29",
+   "wheel": "0x29",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xCF",
+   "template": "0x29",
+   "wheel": "0x29",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xD0",
+   "template": "0x29",
+   "wheel": "0x29",
+   "swatch": 3,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xD1",
+   "template": "0x36",
+   "wheel": "0x36",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xD2",
+   "template": "0x36",
+   "wheel": "0x36",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xD3",
+   "template": "0x37",
+   "wheel": "0x37",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xD4",
+   "template": "0x37",
+   "wheel": "0x37",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xD5",
+   "template": "0x38",
+   "wheel": "0x38",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xD6",
+   "template": "0x38",
+   "wheel": "0x38",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xD7",
+   "template": "0x39",
+   "wheel": "0x39",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xD8",
+   "template": "0x39",
+   "wheel": "0x39",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xD9",
+   "template": "0x3E",
+   "wheel": "0x3E",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xDA",
+   "template": "0x3E",
+   "wheel": "0x3E",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xDB",
+   "template": "0x3F",
+   "wheel": "0x3F",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xDC",
+   "template": "0x3F",
+   "wheel": "0x3F",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xDD",
+   "template": "0x40",
+   "wheel": "0x40",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xDE",
+   "template": "0x40",
+   "wheel": "0x40",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xDF",
+   "template": "0x41",
+   "wheel": "0x41",
+   "swatch": 1,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  },
+  {
+   "id": "0xE0",
+   "template": "0x41",
+   "wheel": "0x41",
+   "swatch": 2,
+   "icon": {
+    "side": "empty_slot_side.png",
+    "front": "empty_slot_front.png"
+   },
+   "name": {
+    "en": "Empty slot",
+    "fr": "Emplacement vide",
+    "sp": "Espacio vacío"
+   }
+  }
+ ],
+ "wheels": [
+  {
+   "id": "0x47",
+   "wheel": "0x06",
+   "swatch": "black",
+   "comment": "Black Yoshi",
+   "icon": {
+    "side": "black_yoshi_side.png",
+    "front": "black_yoshi_front.png"
+   }
+  },
+  {
+   "id": "0x48",
+   "wheel": "0x06",
+   "swatch": "white",
+   "comment": "White Yoshi",
+   "icon": {
+    "side": "white_yoshi_side.png",
+    "front": "white_yoshi_front.png"
+   }
+  },
+  {
+   "id": "0x49",
+   "wheel": "0x0D",
+   "swatch": "black",
+   "comment": "Black Toad",
+   "icon": {
+    "side": "black_toad_side.png",
+    "front": "black_toad_front.png"
+   }
+  },
+  {
+   "id": "0x4A",
+   "wheel": "0x15",
+   "swatch": "black",
+   "comment": "Black Pianta",
+   "icon": {
+    "side": "black_pianta_side.png",
+    "front": "black_pianta_front.png"
+   }
+  },
+  {
+   "id": "0x4B",
+   "wheel": "0x3A",
+   "swatch": "black",
+   "comment": "Black Kritter",
+   "icon": {
+    "side": "black_kritter_side.png",
+    "front": "black_kritter_front.png"
+   }
+  },
+  {
+   "id": "0x4C",
+   "wheel": "0x0C",
+   "swatch": "black",
+   "comment": "Black Koopa",
+   "icon": {
+    "side": "black_koopa_side.png",
+    "front": "black_koopa_front.png"
+   }
+  }
+ ]
+}

@@ -77,7 +77,7 @@ if "!tools_choice!"=="5" (
     goto :after_command
 )
 if "!tools_choice!"=="6" (
-    set "SLUGGIES_MENU_SELECTION=6 - Re-split unused characters"
+    set "SLUGGIES_MENU_SELECTION=6 - Repair unused characters"
     set "SLUGGIES_MODEL_FILES="
     set "SLUGGIES_ICON_SHARED_MODE="
     call !SLUGGIES_LAUNCHER! --resplit-unused

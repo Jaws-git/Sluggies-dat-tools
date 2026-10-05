@@ -384,17 +384,18 @@ class SluggiesGui:
             self.run_command(*args)
 
     def _build_roster_tab(self):
-        with dpg.tab(label='Roster'):
+        with dpg.tab(label='Roster Size'):
             dpg.add_text('Inject a roster configuration into 3_Output_Dat.')
             with dpg.group(horizontal=True):
                 dpg.add_combo([], tag='roster_config', width=420)
                 dpg.add_button(label='Refresh', callback=self._refresh_configs)
             dpg.add_text('', tag='roster_hint', color=_PROMPT_COLOR, wrap=700)
             dpg.add_checkbox(label='Dry run (validate without writing)', tag='roster_dry')
-            with dpg.group(horizontal=True):
-                self._action('Inject roster', self._on_roster, primary=True)
-                self._action('Reset to vanilla',
-                             lambda: self._preset_guard(lambda: self.run_command('--roster', '--remove')))
+            self._action('Inject roster', self._on_roster, primary=True)
+            self._action('Reset to vanilla',
+                         lambda: self._preset_guard(lambda: self.run_command('--roster', '--remove')))
+            self._action('Repair unused characters', lambda: self.run_command('--resplit-unused'),
+                         'Repair: give unused-character routes (dirs 89-94) their own block copies again.')
         self._refresh_configs()
 
     def _refresh_configs(self):
@@ -437,52 +438,6 @@ class SluggiesGui:
         """The window's close button: with pending grid edits ask first."""
         self.grid_tab.confirm_discard(dpg.stop_dearpygui, 'Close and discard the pending edits?',
                                       'The character grid has edits that "Patch Game" has not written yet.')
-
-    def _build_patch_tab(self):
-        with dpg.tab(label='Patch'):
-            dpg.add_text('Patch or unpatch .sluggie and/or .png files.')
-            dpg.add_listbox([], tag='patch_files', num_items=6, width=-1)
-            self.patch_paths = []
-            with dpg.group(horizontal=True):
-                dpg.add_button(label='Add files...', callback=lambda: self.pick_files(
-                    'patch_dialog', 'Add files to patch',
-                    [('Sluggie and PNG files', '*.sluggie;*.png'), ('Sluggie files', '*.sluggie'),
-                     ('PNG files', '*.png'), ('All files', '*.*')],
-                    self._add_patch_files, multi=True))
-                dpg.add_button(label='Clear', callback=self._clear_patch_files)
-            with dpg.group(horizontal=True):
-                self._action('Patch', lambda: self._on_patch(False), primary=True)
-                self._action('Unpatch', lambda: self._on_patch(True))
-        with dpg.file_dialog(directory_selector=False, show=False, tag='patch_dialog', width=700, height=420,
-                             callback=self._on_files_chosen, default_path=self.models_dir
-                             if os.path.isdir(self.models_dir) else self.root_dir):
-            dpg.add_file_extension('.sluggie', color=(120, 220, 120, 255))
-            dpg.add_file_extension('.png', color=(120, 180, 255, 255))
-            dpg.add_file_extension('.*')
-
-    def _on_files_chosen(self, _sender, app_data):
-        self._add_patch_files(app_data.get('selections', {}).values())
-
-    def _add_patch_files(self, paths):
-        for path in paths:
-            if path not in self.patch_paths:
-                self.patch_paths.append(path)
-        dpg.configure_item('patch_files', items=self.patch_paths)
-
-    def _clear_patch_files(self):
-        self.patch_paths = []
-        dpg.configure_item('patch_files', items=[])
-
-    def _on_patch(self, unpatch):
-        if not self.patch_paths:
-            self._log_line('Add at least one file first.', _PROMPT_COLOR)
-            return
-        self.run_command('--unpatch' if unpatch else '--patch', *self.patch_paths)
-
-    def _build_maintenance_tab(self):
-        with dpg.tab(label='Maintenance'):
-            self._action('Re-split unused characters', lambda: self.run_command('--resplit-unused'),
-                         'Repair: give unused-character routes (dirs 89-94) their own block copies again.')
 
     def _on_tab(self, _sender, tab):
         if dpg.get_item_alias(tab) == 'grid_tab' and self.grid_tab.loader.status != gui_grid.StateLoader.RUNNING:
@@ -530,8 +485,6 @@ class SluggiesGui:
                 self._build_full_tab()
                 self._build_export_tab()
                 self._build_roster_tab()
-                self._build_patch_tab()
-                self._build_maintenance_tab()
                 self.grid_tab.build()
             dpg.add_separator()
             with dpg.child_window(tag='log_window', height=-34, border=True):
