@@ -114,6 +114,7 @@ class CharacterGridTab:
         self._name_handlers = []           # click handlers of the slot level's name (deleted with the levels)
         self.action = None                 # the action in progress (file dialog to confirm dialog), or None
         self.confirm = None                # the open dialog window
+        self._after_save = None            # runs once the pack chosen in the file dialog is saved
         self.confirm_default = None        # what Enter does in it (its OK / Close button), or None
         self.pending = gui_grid.PendingEdits()
         self.work = None                   # what the tab's own running command does (status text), or None
@@ -929,6 +930,45 @@ class CharacterGridTab:
         self.pending.discard(cid)
         self._pending_changed()
 
+    def config_risks(self):
+        """Why the current configuration would be lost by an export / roster injection (empty: vanilla, nothing
+        pending, or the grid not read yet)."""
+        risks = []
+        state = self.loader.state
+        if state is not None and state.get('kind') != 'stock':
+            risks.append('The game files hold a custom roster configuration.')
+        if len(self.pending):
+            risks.append(f'{len(self.pending)} pending grid edit{"s" if len(self.pending) != 1 else ""} '
+                         '(not written to the game yet).')
+        return risks
+
+    def config_guard(self, then, title, action):
+        """Run ``then``; when the configuration is not vanilla or has pending grid edits ask first:
+        OK (go on, pending edits are dropped) / Save Configuration (roster pack, then go on) / Cancel."""
+        risks = self.config_risks()
+        if not risks:
+            then()
+            return
+        if self.confirm is not None:
+            return                                   # another dialog is up
+        lines = [(f'{action} replaces the current configuration, which would be lost:', gui_grid.TEXT)]
+        lines += [(f'  {risk}', gui_grid.WARN) for risk in risks]
+        lines.append(('"Save Configuration" stores the game as it is in a roster pack first (pending edits are '
+                      'not part of it).', gui_grid.TEXT))
+
+        def proceed():
+            self._end_action()
+            self.pending.clear()
+            self._pending_changed()
+            then()
+
+        def save():
+            self._end_action()
+            self._pick_pack(save=True, after=proceed)
+        self.action = 'ask'
+        self._dialog(gui_grid.SlotDialog(title, lines, True), proceed, ok_label='OK',
+                     extra=('Save Configuration', save))
+
     def _on_discard_all(self):
         if self._locked() or not len(self.pending):
             return
@@ -1015,8 +1055,9 @@ class CharacterGridTab:
                              'Loading a roster pack replaces the whole roster, so the pending edits would no '
                              'longer fit.')
 
-    def _pick_pack(self, save):
+    def _pick_pack(self, save, after=None):
         self.action = 'pack'
+        self._after_save = after
         self.set_busy(self.app.busy)
         if save:
             os.makedirs(self.pack_dir, exist_ok=True)
@@ -1037,6 +1078,7 @@ class CharacterGridTab:
 
     def _on_pack_save_paths(self, paths):
         path = paths[0] if paths else None
+        after, self._after_save = self._after_save, None
         self._end_action()
         if not path:
             return
@@ -1050,6 +1092,8 @@ class CharacterGridTab:
             self.reference = gui_grid.Reference(f'saved ({os.path.basename(path)})', fingerprints)
             self.app.log_line(f'[character grid] roster saved to {path}', _OK)
             self._refresh_markers()
+            if after is not None:
+                after()
         self._run([gui_grid.save_command(path)], 'Saving the roster pack...', done)
 
     def _on_pack_load_paths(self, paths):
@@ -1132,10 +1176,10 @@ class CharacterGridTab:
         self._show_status()
         return True
 
-    def _dialog(self, dialog, on_ok, ok_label='OK', rebuild=None, toggle=None):
+    def _dialog(self, dialog, on_ok, ok_label='OK', rebuild=None, toggle=None, extra=None):
         """A modal dialog: its lines, then ``ok_label`` / Cancel (``dialog.can_apply``) or Close. ``toggle``: a
         checkbox label (ticked at first); changing it redraws the lines from ``rebuild(ticked)``. Long line lists
-        scroll."""
+        scroll. ``extra``: (label, callback) for a middle button."""
         vw, vh = dpg.get_viewport_client_width(), dpg.get_viewport_client_height()
         self.confirm = dpg.add_window(label=dialog.title, modal=True, no_collapse=True, no_saved_settings=True,
                                       autosize=True, pos=(max(0, (vw - CONFIRM_W) // 2), max(0, vh // 8)),
@@ -1158,6 +1202,8 @@ class CharacterGridTab:
             if dialog.can_apply:
                 ok = dpg.add_button(label=ok_label, width=110, height=BUTTON_H, callback=lambda: on_ok())
                 dpg.bind_item_theme(ok, 'primary_theme')
+                if extra:
+                    dpg.add_button(label=extra[0], width=170, height=BUTTON_H, callback=lambda: extra[1]())
                 dpg.add_button(label='Cancel', width=110, height=BUTTON_H, callback=lambda: self._end_action())
             else:
                 dpg.add_button(label='Close', width=110, height=BUTTON_H, callback=lambda: self._end_action())

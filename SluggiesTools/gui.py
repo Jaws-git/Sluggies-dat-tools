@@ -349,10 +349,8 @@ class SluggiesGui:
             steps.append(('--roster', '--config', os.path.join(self.config_dir, choice)))
         steps.append(('--game-options', '--on', 'cpu_vs_cpu', 'cpu_management'))
         steps.append(('--export-icons', '--use-output'))
-        if choice and choice != self.ROSTER_SKIP:
-            self._preset_guard(lambda: self.run_chain(steps))
-        else:
-            self.run_chain(steps)
+        self._config_guard(lambda: self.run_chain(steps), 'Start the all-in-one export and lose the configuration?',
+                           'The all-in-one export')
 
     def _build_export_tab(self):
         with dpg.tab(label='Export 3D'):
@@ -387,7 +385,9 @@ class SluggiesGui:
             dpg.add_checkbox(label='Dry run (validate without writing)', tag='roster_dry')
             self._action('Inject roster', self._on_roster, primary=True)
             self._action('Reset to vanilla',
-                         lambda: self._preset_guard(lambda: self.run_command('--roster', '--remove')))
+                         lambda: self._config_guard(lambda: self.run_command('--roster', '--remove'),
+                                                       'Reset to vanilla and lose the configuration?',
+                                                       'Resetting to vanilla'))
             self._action('Repair unused characters', lambda: self.run_command('--resplit-unused'),
                          'Repair: give unused-character routes (dirs 89-94) their own block copies again.')
         self._refresh_configs()
@@ -421,13 +421,13 @@ class SluggiesGui:
             args.append('--dry-run')
             self.run_command(*args)
         else:
-            self._preset_guard(lambda: self.run_command(*args))
+            self._config_guard(lambda: self.run_command(*args), 'Inject the roster and lose the configuration?',
+                               'Injecting a roster')
 
-    def _preset_guard(self, then):
-        """A preset replaces the whole roster: pending grid edits are discarded first (asks)."""
-        self.grid_tab.confirm_discard(then, 'Apply the preset and discard the pending edits?',
-                                      'A roster preset replaces the whole roster, so the pending edits of the '
-                                      'character grid would no longer fit.')
+    def _config_guard(self, then, title, action):
+        """Export / injection replace the game files: asks first when the configuration is not vanilla or the
+        grid has pending edits (OK / Save Configuration / Cancel)."""
+        self.grid_tab.config_guard(then, title, action)
 
     def _on_close_request(self, *_):
         """The window's close button: with pending grid edits ask first."""
