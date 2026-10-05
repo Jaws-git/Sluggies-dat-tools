@@ -29,18 +29,14 @@ OUT = os.path.join(ROOT, '1_Input', '_RosterConfigurations')
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from PIL import Image, ImageDraw  # noqa: E402
-
 from SluggiesTools.Dol import dolfile, inventory  # noqa: E402
-from SluggiesTools.Roster import grid, ids, names, wheels  # noqa: E402
+from SluggiesTools.Roster import grid, ids, wheels  # noqa: E402
+from SluggiesTools.Roster.open_slot import (  # noqa: E402
+    ICON_DIR, ICON_SIZE, SLOT_ICON, SLOT_NAME, slot_portrait, write_slot_icons)
 
 WHEEL_SIZE = 10
 NEW_WHEEL_SIZE = 3               # characters without a wheel (the ID budget, see above)
-ICON_DIR = os.path.join(ROOT, '1_Input', '_Icons')
-SLOT_ICON = {'side': 'empty_slot_side.png', 'front': 'empty_slot_front.png'}
-ICON_SIZE = (48, 51)
 SQUARE_TEMPLATE = 0x04           # Peach: the character the game substitutes for an ID without own data (0x80367060)
-SLOT_NAME = {'en': 'Empty slot', 'fr': 'Emplacement vide', 'sp': 'Espacio vacío'}
 SWATCH_COUNT = 11
 UNUSED = [  # the six unused characters (spare rows) with the icon art shipped in 1_Input/_Icons
     ('0x47', '0x06', 'black', 'Black Yoshi', 'black_yoshi'),
@@ -64,29 +60,6 @@ def open_slot(cid: int, template: int, wheel, swatch: int | None) -> dict:
         entry['swatch'] = swatch
     entry.update({'icon': dict(SLOT_ICON), 'name': dict(SLOT_NAME)})
     return entry
-
-
-def slot_portrait():
-    """The "empty slot" portrait (48x51): a dark grey tile with a light border and the words EMPTY / SLOT."""
-    img = Image.new('RGBA', ICON_SIZE, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    draw.rounded_rectangle((1, 2, ICON_SIZE[0] - 2, ICON_SIZE[1] - 3), radius=7,
-                           fill=(64, 64, 72, 255), outline=(200, 200, 210, 255), width=2)
-    face = names.font(11)
-    for word, y in (('EMPTY', 12), ('SLOT', 27)):
-        x0, _y0, x1, _y1 = draw.textbbox((0, 0), word, font=face)
-        draw.text(((ICON_SIZE[0] - (x1 - x0)) // 2 - x0, y - 3), word, font=face, fill=(255, 255, 255, 255))
-    return img
-
-
-def write_slot_icons() -> list[str]:
-    written = []
-    for name in SLOT_ICON.values():
-        path = os.path.join(ICON_DIR, name)
-        if not os.path.isfile(path):
-            slot_portrait().save(path)
-            written.append(name)
-    return written
 
 
 def wheel_slots(image: dolfile.DolImage, first: int) -> list[dict]:

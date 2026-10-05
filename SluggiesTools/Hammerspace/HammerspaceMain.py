@@ -5880,6 +5880,14 @@ def UnpatchTarget(target: 'SlotTarget.Target') -> bool:
     character) gets a verbatim copy of its vanilla block: its untangled
     texture bytes come from its own ``.sluggie``, which a slot unpatch does
     not have."""
+    if hh.isOwnDir(target.chunk_number):
+        _slogger.error(
+            f'Slot unpatch refused | Slot: {target.describe()} | a new ID\'s own model directory has no vanilla '
+            'block of its own; clear the slot instead (start.py --clear-slot), which gives it a fresh copy of its '
+            'template\'s files',
+            source='hammerspace.main',
+        )
+        return False
     routes = [target.route] + ([target.low_route] if target.as_low else [])
     if not target.as_low:
         errors = LodPartnerGuard.lod_partner_unpatch_errors(*target.route, any_stem=True)
@@ -5902,6 +5910,44 @@ def UnpatchTarget(target: 'SlotTarget.Target') -> bool:
         if ok:
             _slogger.info(
                 f'Hammerspace Log: Removed | Slot: chunk {chunk_number}, file {file_index} | '
+                f'Address: 0x{removed_offset:08X} | Size: {removed_length / (1024 * 1024):.2f} MB',
+                source='hammerspace.main',
+            )
+    return success
+
+
+def ClearTarget(character_id: str) -> bool:
+    """Return a stock slot's both models (HP and ``L_``) to their vanilla blocks (``start.py --clear-slot``).
+
+    Both files are restored together, so the pair stays consistent and no LOD
+    check is needed. A route that is already the vanilla one only gets its
+    bytes repaired when they differ (an in-place patch). A new ID's own model
+    directory is refused: the roster rebuild resets it."""
+    try:
+        cid, chunk_number = SlotTarget.resolve_dir(character_id)
+    except (SlotTarget.TargetError, OSError) as exc:
+        _slogger.error(f'Slot clear refused | {exc}', source='hammerspace.main')
+        return False
+    target = SlotTarget.Target(chunk_number, SlotTarget.HIGH_FILE, cid, as_low=True)
+    if hh.isOwnDir(chunk_number) or chunk_number not in SlotTarget.character_dirs():
+        _slogger.error(f'Slot clear refused | Slot: {target.describe()} | not a stock character directory',
+                       source='hammerspace.main')
+        return False
+    success = True
+    for file_index in SlotTarget.CHARACTER_FILES:
+        current = hh.readOutputDolEntry(chunk_number, file_index)
+        vanilla = hh.readDolEntry(chunk_number, file_index)
+        if current == vanilla and not UntanglePolicy.is_split(chunk_number, file_index):
+            block = LodPartnerGuard.read_current_block(chunk_number, file_index)
+            if block == LodPartnerGuard._vanilla_block(chunk_number, file_index):
+                _slogger.info(f'Slot clear | chunk {chunk_number}, file {file_index} is already vanilla',
+                              source='hammerspace.main')
+                continue
+        ok, removed_offset, removed_length = hh.removeModelFromHammerspace(chunk_number, file_index)
+        success = success and ok
+        if ok:
+            _slogger.info(
+                f'Hammerspace Log: Removed | Slot: 0x{cid:02X} (chunk {chunk_number}, file {file_index}) | '
                 f'Address: 0x{removed_offset:08X} | Size: {removed_length / (1024 * 1024):.2f} MB',
                 source='hammerspace.main',
             )
@@ -6019,7 +6065,7 @@ if __name__ == '__main__':
     import json as _json
 
     _parser = _ap.ArgumentParser(description='Build a hammerspace model block from a .sluggies file.')
-    _parser.add_argument('sluggies_path', help='Path to the .sluggies file')
+    _parser.add_argument('sluggies_path', nargs='?', help='Path to the .sluggies file')
     _parser.add_argument('--unpatch', action='store_true', help='Remove the model from hammerspace')
     _parser.add_argument('--dry-run', action='store_true', help='Assemble and validate without modifying output files')
     _parser.add_argument('--clone', action='store_true', help='Deprecated all-clone alias')
@@ -6038,9 +6084,22 @@ if __name__ == '__main__':
                          help="Write into this character ID's slot instead of the model's own route")
     _parser.add_argument('--as-low', action='store_true',
                          help='With --target-id: the high-poly model is the low-poly model too (file 1)')
+    _parser.add_argument('--validate-only', action='store_true',
+                         help='With --target-id: build and validate the block a slot patch writes; no slot or LOD '
+                              'checks, nothing written (start.py --patch-slot runs it before any write)')
+    _parser.add_argument('--clear-target', default=None, metavar='0xNN',
+                         help="Restore this stock slot's HP and L_ models to vanilla (no .sluggie)")
     _args = _parser.parse_args()
     if _args.as_low and _args.target_id is None:
         _parser.error('--as-low needs --target-id')
+    if _args.validate_only and _args.target_id is None:
+        _parser.error('--validate-only needs --target-id')
+    if _args.clear_target is not None:
+        if _args.sluggies_path is not None:
+            _parser.error('--clear-target takes no .sluggie file')
+        raise SystemExit(0 if ClearTarget(_args.clear_target) else 1)
+    if _args.sluggies_path is None:
+        _parser.error('the .sluggie path is required')
 
     if (_args.texture_file is None) != (_args.texture_index is None):
         _parser.error('--texture-file and --texture-index must be used together')
@@ -6052,7 +6111,7 @@ if __name__ == '__main__':
     _index = _model['FileIndex']
     _model_name = os.path.basename(_args.sluggies_path)
     _target = None
-    if _args.target_id is not None:
+    if _args.target_id is not None and not _args.validate_only:
         try:
             _target = SlotTarget.make_target(_args.target_id, (_chunk, _index), _args.as_low)
         except (SlotTarget.TargetError, OSError) as _exc:
@@ -6126,7 +6185,7 @@ if __name__ == '__main__':
         _parser.error('--clone cannot be combined with build section modes')
 
     try:
-        if _target is not None:
+        if _target is not None or _args.validate_only:
             _modes = PromoteInplaceEdits(_model, _modes)
         _build = BuildModelBlock(_data, _modes, sluggie_path=_args.sluggies_path,
                                  tex_png_overrides=_tex_png_overrides)
@@ -6136,7 +6195,12 @@ if __name__ == '__main__':
         )
         if not _build.validation_report['valid']:
             raise ValueError('assembled model block failed validation')
-        if _args.dry_run:
+        if _args.validate_only:
+            _slogger.info(
+                f'Slot build check passed | Model: {_model_name} | '
+                f'Size: {len(_build.block) / (1024 * 1024):.2f} MB | nothing written',
+                source='hammerspace.main')
+        elif _args.dry_run:
             if _target is not None:
                 CheckTarget(_build, _target)
             CheckLodPartner(_build, _target)

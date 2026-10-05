@@ -557,6 +557,56 @@ def _extraDirStarts(dol_path: str) -> list[int]:
     return _EXTRA_DIRS_CACHE[key]
 
 
+def _outputDirPtrs() -> list[int]:
+    """Record offsets of every directory the OUTPUT main.dol has: the stock table (input DOL), then the own
+    model directories of new IDs (``_extraDirStarts``). Only the stock ones without an output DOL."""
+    return _readDirPtrs() + _extraDirStarts(OUTPUT_DOL)
+
+
+def isOwnDir(chunk_number: int) -> bool:
+    """Whether ``chunk_number`` is past the stock directory table: an own model directory of a new ID
+    (roster ``model_dirs``), whose files are hammerspace copies of a stock directory's."""
+    return chunk_number >= _DIRS_COUNT
+
+
+_OWN_SOURCES_CACHE: dict = {}
+
+
+def ownDirSource(chunk_number: int) -> int | None:
+    """The stock directory an own model directory was copied from (roster manifest of the OUTPUT main.dol), or
+    None (a stock directory, or one the manifest does not list)."""
+    if not isOwnDir(chunk_number) or not os.path.exists(OUTPUT_DOL):
+        return None
+    stat = os.stat(OUTPUT_DOL)
+    key = (stat.st_mtime_ns, stat.st_size)
+    if key not in _OWN_SOURCES_CACHE:
+        roster_dir = os.path.join(_HS_TOOLS_DIR, 'Roster')
+        if roster_dir not in sys.path:
+            sys.path.insert(0, roster_dir)
+        import ids
+        import slots
+        from Dol import dolfile
+        try:
+            with open(OUTPUT_DOL, 'rb') as dol:
+                image = dolfile.DolImage(dol.read())
+            sources = {directory: source + ids.MODEL_DIR_BASE
+                       for directory, source in slots.own_dirs(image).values()}
+        except (dolfile.DolError, ValueError, struct.error):
+            sources = {}
+        _OWN_SOURCES_CACHE.clear()
+        _OWN_SOURCES_CACHE[key] = sources
+    return _OWN_SOURCES_CACHE[key].get(chunk_number)
+
+
+def vanillaRoute(chunk_number: int, file_index: int) -> tuple[int, int] | None:
+    """The INPUT route whose vanilla block an entry started from: the entry itself for a stock directory, the
+    same file of the source directory for an own model directory (None when its source is unknown)."""
+    if not isOwnDir(chunk_number):
+        return chunk_number, file_index
+    source = ownDirSource(chunk_number)
+    return None if source is None else (source, file_index)
+
+
 def _iterDirRecords(dol_path: str):
     """Yield ``(chunk_number, file_index, record_offset, words)`` for every DOL file record.
 
@@ -604,7 +654,7 @@ def findSharedEntries(chunk_number: int, file_index: int) -> list[tuple[int, int
     if target_offset == -1:
         return []
 
-    target_record = _readDirPtrs()[chunk_number] + file_index * _ENTRY_SIZE
+    target_record = (_readDirPtrs() + _extraDirStarts(dol_path))[chunk_number] + file_index * _ENTRY_SIZE
     return [
         (cidx, fidx)
         for cidx, fidx, record, words in _iterDirRecords(dol_path)
@@ -679,6 +729,7 @@ def readOutputDolEntry(chunk_number: int, file_index: int) -> tuple[int, int]:
 
     Unlike ``readDolEntry`` (which reads from the unmodified input), this
     reflects the current patched state written by previous hammerspace runs.
+    Own model directories of new IDs (past the stock table) are included.
 
     Returns ``(offset_en, len_en)`` from the en language slot,
     or ``(-1, -1)`` if the output DOL does not exist or the chunk is out of range."""
@@ -686,7 +737,7 @@ def readOutputDolEntry(chunk_number: int, file_index: int) -> tuple[int, int]:
     if not os.path.exists(OUTPUT_DOL):
         return -1, -1
 
-    dir_ptrs = _readDirPtrs()
+    dir_ptrs = _outputDirPtrs()
     if not (0 <= chunk_number < len(dir_ptrs)):
         return -1, -1
 
@@ -701,8 +752,9 @@ def readOutputDolEntry(chunk_number: int, file_index: int) -> tuple[int, int]:
 def patchDolEntry(chunk_number: int, file_index: int, new_offset: int, new_length: int) -> None:
     """Update the offset and length fields in the output main.dol for a model entry.
 
-    Reads the directory pointer table from the INPUT main.dol (never modified) to
-    locate the correct 48-byte entry, then writes ``new_offset`` and ``new_length``
+    Reads the directory pointer table from the INPUT main.dol (never modified),
+    plus the own model directories of the OUTPUT main.dol, to locate the
+    correct 48-byte entry, then writes ``new_offset`` and ``new_length``
     into all three language slots (en, sp, fr) of the OUTPUT main.dol.
 
     If the output main.dol does not yet exist, it is copied from the input first.
@@ -731,7 +783,7 @@ def patchDolEntry(chunk_number: int, file_index: int, new_offset: int, new_lengt
         shutil.copy2(INPUT_DOL, OUTPUT_DOL)
         _slogger.info("Copied main.dol to output folder.", source="hammerspace.helper")
 
-    dir_ptrs = _readDirPtrs()
+    dir_ptrs = _outputDirPtrs()
 
     if not (0 <= chunk_number < len(dir_ptrs)):
         _slogger.error(f"chunk_number {chunk_number} out of range (0-{len(dir_ptrs) - 1})", source="hammerspace.helper")
@@ -828,6 +880,12 @@ def removeModelFromHammerspace(chunk_number: int, file_index: int, split_baselin
         return False, 0, 0
     if not os.path.exists(OUTPUT_DAT):
         _slogger.error(f"Output dat not found: {OUTPUT_DAT}", source="hammerspace.helper")
+        return False, 0, 0
+
+    if isOwnDir(chunk_number):
+        _slogger.error(
+            f"chunk={chunk_number} is a new ID's own model directory: it has no vanilla route to restore. The "
+            "roster rebuild resets it (start.py --clear-slot).", source="hammerspace.helper")
         return False, 0, 0
 
     dir_ptrs = _readDirPtrs()
@@ -928,7 +986,8 @@ def zeroOriginalModel(chunk_number: int, file_index: int) -> None:
     falling back to stale original data.
 
     Never zeroes for an unused-character route (UntanglePolicy): its vanilla
-    range is its playable owner's block.
+    range is its playable owner's block. Nothing to do for an own model
+    directory (``isOwnDir``): it has no vanilla range of its own.
 
     Call this AFTER patchDolEntry (and shared entry patching) has redirected
     all DOL references away from the original location.
@@ -937,6 +996,10 @@ def zeroOriginalModel(chunk_number: int, file_index: int) -> None:
     for example a playable character whose vanilla block an unused
     character's route was split from.
     """
+
+    if isOwnDir(chunk_number):
+        # Its files are hammerspace copies; WriteModelBlock zeroes the replaced copy itself.
+        return
 
     if UntanglePolicy.is_split_dir(chunk_number):
         _slogger.info(

@@ -143,6 +143,15 @@ class LabelTests(unittest.TestCase):
         self.assertIn('Stats: C06 (0x06)', lines)
         self.assertIn('Names: FR Violet', lines)
 
+    def test_slot_details_own_directory_and_blocks(self):
+        s = state([0x06, 0x66])
+        s['characters'][1].update(template=0x06, model_dir=172, own_model_dir=True, model_source=0x09, stats=0x09,
+                                  blocks={'high': {'offset': 0, 'length': 3 * 1024 * 1024 // 4, 'sha1': 'ab' * 20},
+                                          'low': {'offset': 0, 'length': 1024 * 1024 // 10, 'sha1': 'cd' * 20}})
+        lines = gui_grid.slot_details(s, 0x66)
+        self.assertIn('Model: own directory 172 (files of 0x09)', lines)
+        self.assertIn('Blocks: HP 0.75 MB [abababab], L_ 0.10 MB [cdcdcdcd]', lines)
+
 
 def ref(source, file='a.png', key=0x06, alias=None):
     return {'source': source, 'key': key, 'alias': alias, 'file': file}

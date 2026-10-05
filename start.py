@@ -57,6 +57,8 @@ HS_MAIN_SCRIPT = os.path.join(HS_DIR, 'HammerspaceMain.py')
 UNTANGLE_POLICY_SCRIPT = os.path.join(HS_DIR, 'UntanglePolicy.py')
 ROSTER_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'runner.py')
 ROSTER_STATE_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'state_cli.py')
+ROSTER_SLOT_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'slot_cli.py')
+SLOT_PLAN_FILE = os.path.join(ROOT_DIR, '3_Output_Dat', '_gui', 'slot', 'plan.json')
 GAME_OPTIONS_SCRIPT = os.path.join(TOOLS_DIR, 'GameOptions', 'runner.py')
 
 # Model directory indices that hold unused characters (see folderNameMap in
@@ -139,6 +141,35 @@ def run_roster_state(derive=False):
     if derive:
         cmd.append('--derive')
     subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
+
+
+def self_command(*args):
+    """A command line that runs this dispatcher again (source and frozen builds)."""
+    if getattr(sys, 'frozen', False):
+        return [sys.executable, *args]
+    return [sys.executable, os.path.abspath(__file__), *args]
+
+
+def run_slot_chain(target_id, sluggie=None, dry_run=False):
+    """Patch a .sluggie (and its HP/L_ partner) into a slot, or clear the slot (``sluggie`` None): plan the chain
+    (Roster/slot_cli.py: read, derive, apply the change; a refused change writes nothing), then run its commands
+    in order, stopping at the first failure. Returns True on success."""
+    cmd = python_script_command(ROSTER_SLOT_SCRIPT)
+    cmd += ['--patch', target_id, os.path.abspath(sluggie)] if sluggie else ['--clear', target_id]
+    if subprocess.run(cmd, cwd=TOOLS_DIR).returncode != 0:
+        return False
+    if dry_run:
+        slogger.info('Dry run: the chain above was planned, nothing was written.', source="dispatcher")
+        return True
+    with open(SLOT_PLAN_FILE, 'r', encoding='utf-8') as f:
+        commands = json.load(f)['commands']
+    for n, args in enumerate(commands, 1):
+        slogger.info(f'Slot chain step {n}/{len(commands)}: start.py {" ".join(args)}', source="dispatcher")
+        if subprocess.run(self_command(*args), cwd=ROOT_DIR).returncode != 0:
+            slogger.error(f'Slot chain step {n} failed; the remaining {len(commands) - n} step(s) were skipped.',
+                          source="dispatcher")
+            return False
+    return True
 
 
 def run_game_options(on=(), off=(), dry_run=False):
@@ -392,16 +423,18 @@ def _needs_hammerspace(model, sluggie_path):
     return _unused_character_dir_index(sluggie_path) in UNUSED_CHARACTER_DIR_INDICES
 
 
-def _patch_sluggie(found, model, unpatch, target_id=None, as_low=False):
+def _patch_sluggie(found, model, unpatch, target_id=None, as_low=False, validate_only=False):
     """Dispatch a .sluggie patch/unpatch through Hammerspace or in-place.
 
     With ``target_id`` the model goes into that character's slot, which is
     always a Hammerspace write (the in-place patcher can only write over the
-    model's own block)."""
+    model's own block). ``validate_only`` builds and validates that block and
+    writes nothing."""
     if target_id is not None or _needs_hammerspace(model, found):
         cmd = python_script_command(HS_MAIN_SCRIPT, found, *hammerspace_section_args(model))
         if target_id is not None:
             cmd += ['--target-id', target_id] + (['--as-low'] if as_low else [])
+            cmd += ['--validate-only'] if validate_only else []
         if unpatch:
             cmd.append('--unpatch')
         subprocess.run(cmd, cwd=HS_DIR, check=True)
@@ -464,12 +497,27 @@ def _patch_png(target, model):
     subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
 
 
-def run_patching(filenames, unpatch=False, target_id=None, as_low=False):
+def run_clear_target(target_id):
+    """Return a stock slot's high- and low-poly models to vanilla (``--unpatch --target-id`` without files)."""
+    return subprocess.run(python_script_command(HS_MAIN_SCRIPT, '--clear-target', target_id),
+                          cwd=HS_DIR).returncode == 0
+
+
+def run_patching(filenames, unpatch=False, target_id=None, as_low=False, validate_only=False):
+    """Patch or unpatch each file. Returns True when every file went through.
+
+    With ``target_id`` (a slot) the files go in high-poly first, and the first
+    failure skips the rest: an ``L_`` model must not follow a high-poly model
+    that did not make it into the slot."""
+    failed = False
     if target_id is not None:
         # A slot takes an L_ model only under its own high-poly model, so the
         # high-poly file goes first.
         filenames = sorted(filenames, key=lambda name: '_L_' in os.path.basename(name))
     for filename in filenames:
+        if failed and target_id is not None:
+            slogger.error(f"'{filename}' skipped: an earlier file of this slot patch failed.", source="dispatcher")
+            continue
         is_png = filename.lower().endswith('.png')
 
         if is_png and target_id is not None:
@@ -478,6 +526,7 @@ def run_patching(filenames, unpatch=False, target_id=None, as_low=False):
                 ".sluggie into the slot instead.",
                 source="dispatcher",
             )
+            failed = True
             continue
 
         if is_png and unpatch:
@@ -520,15 +569,19 @@ def run_patching(filenames, unpatch=False, target_id=None, as_low=False):
                 continue
         else:
             sluggie_name = filename if filename.lower().endswith('.sluggie') else f'{filename}.sluggie'
-            matches = [
-                os.path.join(root, f)
-                for root, _, files in os.walk(SEARCH_DIR)
-                for f in files
-                if f == sluggie_name
-            ]
+            if os.path.isabs(sluggie_name) and os.path.isfile(sluggie_name):
+                matches = [sluggie_name]
+            else:
+                matches = [
+                    os.path.join(root, f)
+                    for root, _, files in os.walk(SEARCH_DIR)
+                    for f in files
+                    if f == sluggie_name
+                ]
 
             if not matches:
                 slogger.info(f"No file named '{filename}' found in {SEARCH_DIR}", source="dispatcher")
+                failed = True
                 continue
 
             found = matches[0]
@@ -539,17 +592,20 @@ def run_patching(filenames, unpatch=False, target_id=None, as_low=False):
                     sluggies_data = json.load(f)
             except (OSError, json.JSONDecodeError) as e:
                 slogger.error(f"Could not read '{found}': {e}", source="dispatcher")
+                failed = True
                 continue
 
             model = sluggies_data.get('SluggiesModel', {})
             try:
-                _patch_sluggie(found, model, unpatch, target_id, as_low)
+                _patch_sluggie(found, model, unpatch, target_id, as_low, validate_only)
             except subprocess.CalledProcessError as e:
                 slogger.error(
                     f"Patch failed for '{filename}' (exit code {e.returncode})",
                     source="dispatcher",
                 )
+                failed = True
                 continue
+    return not failed
 
 
 def parse_args():
@@ -578,6 +634,9 @@ def parse_args():
             '  python start.py --unpatch model.sluggie\n'
             '  python start.py --patch model.gpl.sluggie L_model.gpl.sluggie --target-id 0x4A\n'
             '  python start.py --unpatch model.gpl.sluggie --target-id 0x4A\n'
+            '  python start.py --unpatch --target-id 0x4A\n'
+            '  python start.py --patch-slot 0xE1 path/to/model.gpl.sluggie\n'
+            '  python start.py --clear-slot 0xE1\n'
             '  python start.py --hammerspace\n'
             '  python start.py --resplit-unused\n'
         ),
@@ -586,7 +645,9 @@ def parse_args():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--gui', action='store_true', help='open the graphical front end (also the default when no arguments are given)')
     mode.add_argument('--patch', nargs='+', metavar='FILENAME', help='patch one or more .sluggie and/or .png files')
-    mode.add_argument('--unpatch', nargs='+', metavar='FILENAME', help='restore original data for one or more .sluggies files')
+    mode.add_argument('--unpatch', nargs='*', metavar='FILENAME', help="restore original data for one or more .sluggies files (with --target-id and no files: that stock slot's high- and low-poly models)")
+    mode.add_argument('--patch-slot', nargs=2, metavar=('0xNN', 'FILE'), help='put a .sluggie (and its HP/L_ partner) into a slot: read -> rebuild (own model directory, stats, voice, name, portraits) -> patch (GUI character grid)')
+    mode.add_argument('--clear-slot', metavar='0xNN', help='return a slot to its baseline: a stock slot gets its vanilla models and portraits back, a new ID a fresh copy of its template and the open-slot look')
     mode.add_argument('-hs', '--hammerspace', action='store_true', help='change available memory space in outputdt_na.dat')
     mode.add_argument('--resplit-unused', action='store_true', help='repair: give unused-character routes (dirs 89-94) that point at a playable character\'s block their own copy again')
     mode.add_argument('--roster', '--roster-dev', dest='roster', action='store_true', help='inject a roster configuration (--config, e.g. from 1_Input/_RosterConfigurations) into 3_Output_Dat, replacing the previous injection')
@@ -613,6 +674,7 @@ def parse_args():
     parser.add_argument('--state', metavar='PATH', help='roster only: a derived config (--roster-derive) instead of --config')
     parser.add_argument('--target-id', metavar='0xNN', help="patch/unpatch only: write the .sluggie models into this character ID's slot instead of their own route (always Hammerspace)")
     parser.add_argument('--as-low', action='store_true', help='with --target-id: a high-poly model without L_ partner is the low-poly model too')
+    parser.add_argument('--validate-only', action='store_true', help='with --patch --target-id: build and validate the slot blocks, write nothing')
     parser.add_argument('--remove', action='store_true', help='roster only: reset the roster to vanilla (against 1_Input) and stop')
     parser.add_argument('--on', nargs='+', default=[], metavar='OPTION', help='game-options only: turn these options on (cpu_vs_cpu, cpu_management)')
     parser.add_argument('--off', nargs='+', default=[], metavar='OPTION', help='game-options only: turn these options off')
@@ -629,21 +691,29 @@ def parse_args():
         parser.error('--glb can only be used with --export.')
     if args.use_output and not args.export_icons:
         parser.error('--use-output can only be used with --export-icons.')
-    if args.dry_run and not (args.patch_icons is not None or args.roster or args.game_options):
-        parser.error('--dry-run can only be used with --patch-icons, --roster or --game-options.')
+    if args.dry_run and not (args.patch_icons is not None or args.roster or args.game_options
+                             or args.patch_slot or args.clear_slot):
+        parser.error('--dry-run can only be used with --patch-icons, --roster, --game-options, --patch-slot or '
+                     '--clear-slot.')
     if (args.on or args.off) and not args.game_options:
         parser.error('--on and --off can only be used with --game-options.')
     if (args.config or args.remove or args.state) and not args.roster:
         parser.error('--config, --state and --remove can only be used with --roster.')
-    if args.target_id and not (args.patch or args.unpatch):
+    if args.target_id and not (args.patch or args.unpatch is not None):
         parser.error('--target-id can only be used with --patch or --unpatch.')
+    if args.unpatch == [] and not args.target_id:
+        parser.error("--unpatch needs files (or --target-id 0xNN to restore a stock slot's models).")
+    if args.unpatch == [] and args.as_low:
+        parser.error("--as-low does not apply to restoring a slot's models.")
+    if args.validate_only and not (args.patch and args.target_id):
+        parser.error('--validate-only needs --patch and --target-id.')
     if args.as_low and not args.target_id:
         parser.error('--as-low needs --target-id.')
     if args.config and args.state:
         parser.error('--config and --state cannot be used together.')
     if args.roster and not (args.config or args.remove or args.state):
         parser.error('--roster needs --config PATH (a roster configuration), --state PATH or --remove.')
-    if not any([args.gui, args.patch, args.unpatch, args.hammerspace, args.resplit_unused, args.export, args.export_icons, args.patch_icons is not None, args.roster, args.roster_state, args.roster_derive, args.game_options]):
+    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.hammerspace, args.resplit_unused, args.export, args.export_icons, args.patch_icons is not None, args.roster, args.roster_state, args.roster_derive, args.game_options]):
         if len(sys.argv) == 1:
             args.gui = True
         else:
@@ -727,9 +797,23 @@ def main() -> int:
                 dry_run=args.dry_run,
             )
         elif args.patch:
-            run_patching(args.patch, unpatch=False, target_id=args.target_id, as_low=args.as_low)
-        elif args.unpatch:
-            run_patching(args.unpatch, unpatch=True, target_id=args.target_id, as_low=args.as_low)
+            # A failed slot patch fails the command (the apply chain stops on it); plain patches keep going.
+            if not run_patching(args.patch, unpatch=False, target_id=args.target_id, as_low=args.as_low,
+                                validate_only=args.validate_only) and args.target_id:
+                return 1
+        elif args.unpatch is not None:
+            if not args.unpatch:
+                if not run_clear_target(args.target_id):
+                    return 1
+            elif not run_patching(args.unpatch, unpatch=True, target_id=args.target_id,
+                                  as_low=args.as_low) and args.target_id:
+                return 1
+        elif args.patch_slot:
+            if not run_slot_chain(args.patch_slot[0], args.patch_slot[1], dry_run=args.dry_run):
+                return 1
+        elif args.clear_slot:
+            if not run_slot_chain(args.clear_slot, dry_run=args.dry_run):
+                return 1
 
         slogger.info("Command completed", source="dispatcher")
         return 0

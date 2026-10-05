@@ -169,6 +169,43 @@ class NameTests(unittest.TestCase):
         self.assertTrue(any('0x66' in w and 'Purple' in w for w in result['warnings']))
 
 
+class ModelBlockTests(unittest.TestCase):
+    """Each character's ``blocks``: its model directory's files 0/1 as routed, with a SHA-1 fingerprint."""
+
+    def test_blocks_and_fingerprints(self):
+        import hashlib
+        from SluggiesTools.Roster import dat_hammerspace
+
+        records = {}
+        for directory, at, routes in ((24, 0x80600000, [(0x100, 4), (0x200, 2)]), (172, 0x807C0000, [(0x300, 4)])):
+            for index, (offset, length) in enumerate(routes):
+                records[at + 48 * index] = struct.pack('>12I', *([dat_hammerspace.hh._DAT_FNAME_PTR, length,
+                                                                 offset, length] * 3))
+        pointers = [0x80500000] * 24 + [0x80600000] + [0x80500000] * 147 + [0x807C0000]
+
+        class Image:
+            def is_mapped(self, address, size):
+                return True
+
+            def read(self, address, size):
+                return records.get(address, bytes(size))
+
+        class Dat:
+            def read(self, offset, size):
+                return bytes([offset >> 8]) * size
+
+        characters = [{'id': 0x06, 'model_dir': 24}, {'id': 0x66, 'model_dir': 172}, {'id': 0x67, 'model_dir': 999}]
+        with mock.patch.object(dat_hammerspace, 'dir_pointers', return_value=pointers):
+            state._model_blocks(Image(), Dat(), characters, [])
+        self.assertEqual(characters[0]['blocks'], {
+            'high': {'offset': 0x100, 'length': 4, 'sha1': hashlib.sha1(b'' * 4).hexdigest()},
+            'low': {'offset': 0x200, 'length': 2, 'sha1': hashlib.sha1(b'' * 2).hexdigest()}})
+        self.assertEqual(list(characters[1]['blocks']), ['high'])        # file 1 is no record here
+        self.assertIsNone(characters[2]['blocks'])
+        state._model_blocks(Image(), None, characters, [])
+        self.assertIsNone(characters[0]['blocks'])
+
+
 class ManifestTests(unittest.TestCase):
     def test_round_trip(self):
         _image, ctx = build(SQUARES_12X5)

@@ -11,13 +11,16 @@ own route still belongs to its own character.
 
 Rules (refused with ``TargetError`` unless noted):
 
-* Only character models: both directories in the character range (18-118)
-  and file 0 or 1, and the block's role must match the file it came from.
+* Only character models: the source directory in the character range
+  (18-118), the target there too or a new ID's own model directory (roster
+  ``model_dirs``), file 0 or 1, and the block's role must match the file it
+  came from.
 * No container: a source whose DOL entry carries bytes around the model
   (an archive or prefix) cannot move to another route.
-* **Skeleton guard** (stock target directories): the target directory's
-  animations were made for its own skeleton, so the source's vanilla
-  skeleton must have the target's bone count and parent chain. Bones the
+* **Skeleton guard**: the target directory's animations were made for its
+  own skeleton, so the source's vanilla skeleton must have the target's bone
+  count and parent chain (an own model directory: its source's skeleton,
+  ``hh.vanillaRoute``). Bones the
   ``.sluggie`` adds come after them and are fine. Different rest poses are
   only a warning.
 * **``L_`` alone:** the slot's current high-poly model must be the ``L_``
@@ -118,6 +121,9 @@ def make_target(character_id: int | str, source: tuple[int, int], as_low: bool =
 
 
 def _vanilla_summary(route: tuple[int, int]) -> LodPartnerGuard.ActSummary | None:
+    route = hh.vanillaRoute(*route)
+    if route is None:
+        return None
     offset, length = hh.readDolEntry(*route)
     if offset == -1 or length <= 0:
         return None
@@ -151,7 +157,7 @@ def check(block: bytes, source: tuple[int, int], target: Target, report: dict | 
     if source[0] not in chars:
         raise TargetError(f'chunk {source[0]} is not a character directory ({chars.start}-{chars.stop - 1}): '
                           'stadiums, props and bats cannot go into a slot')
-    if target.chunk_number not in chars:
+    if target.chunk_number not in chars and not hh.isOwnDir(target.chunk_number):
         raise TargetError(f'chunk {target.chunk_number} is not a character directory')
     role_file(source[1])
     role_file(target.file_index)

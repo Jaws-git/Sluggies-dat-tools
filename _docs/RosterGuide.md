@@ -46,11 +46,46 @@ file keeps its size.
 icon (`1_Input/_Icons/empty_slot_side.png` / `empty_slot_front.png`, which you
 can edit) and the name "Empty slot", and play as a template character: a wheel's
 open slots as that wheel's own character, the new squares' as Peach (the
-game's fallback character). Assigning models, sounds and art to them is the
-next step of the project; for now you can give them your own icon and name.
+game's fallback character). You can give them your own icon and name in a
+configuration, or put an exported model into them (see "Putting a model into
+a slot" below).
 
 To make your own configuration, copy a preset in
 `1_Input/_RosterConfigurations/` under a new name and edit it.
+
+## Putting a model into a slot
+
+Once a roster is built, a slot (one character ID) can take an exported model
+without editing a configuration:
+
+```
+python start.py --patch-slot 0xE2 "2_Output_Models/27 Bowser/114968608_koopa.gpl/114968608_koopa.gpl.sluggie"
+python start.py --clear-slot 0xE2
+```
+
+The slot decides where the model goes, not the `.sluggie`'s own chunk. Picking
+the high-poly file or its `L_` file patches both when the other one is in its
+sibling folder. `--dry-run` only prints what would happen.
+
+| Slot | What `--patch-slot` does |
+|---|---|
+| New ID (`0x66`–`0xFE`) | Gets its own copy of the source character's files (model, animations, bat); a slot that already holds that character's files keeps them, so earlier patches stay. On a new grid square it takes the source's stats, and the square's voice becomes the source's if none is set yet. An "Empty slot" takes the source's name. |
+| Stock character | Model only (stats, voice and name stay). The source must have the same skeleton; otherwise use a new ID. |
+
+Both kinds take the source's exported portraits (`icon/SideIcon.png` and
+`icon/FrontIcon.png` in its high-poly folder); when one is missing, the slot
+keeps its portraits. A high-poly model without an `L_` partner is used as
+the low-poly model too, which loads it twice on the field. An `L_` model
+alone is accepted only when the slot's high-poly model is its own partner.
+
+`--clear-slot` gives a stock character its vanilla models and portraits
+back, and a new ID a fresh copy of its template's files, the template's
+stats, the "Empty slot" name and portraits. The square's voice stays.
+
+Each command first reads the roster back from `3_Output_Dat`, applies the one
+change and rebuilds the roster from that (so your other slots, names and
+portraits are kept), then patches the model. Every model is built and checked
+before anything is written; a refused change writes nothing.
 
 ## Configuration files
 

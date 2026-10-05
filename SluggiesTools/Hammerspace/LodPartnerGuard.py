@@ -130,14 +130,15 @@ def _entry_exists(chunk_number: int, file_index: int) -> bool:
     The DOL lays the chunks' runs out back to back, so an index past the end
     of this chunk's run would read the next chunk's first entry; the next
     directory pointer bounds it."""
-    dir_ptrs = hh._readDirPtrs()
+    has_output = os.path.exists(hh.OUTPUT_DOL)
+    dir_ptrs = hh._outputDirPtrs() if has_output else hh._readDirPtrs()
     if not (0 <= chunk_number < len(dir_ptrs)) or file_index < 0:
         return False
     entry = dir_ptrs[chunk_number] + file_index * hh._ENTRY_SIZE
     later_runs = [ptr for ptr in dir_ptrs if ptr > dir_ptrs[chunk_number]]
     if later_runs and entry + hh._ENTRY_SIZE > min(later_runs):
         return False
-    dol_path = hh.OUTPUT_DOL if os.path.exists(hh.OUTPUT_DOL) else hh.INPUT_DOL
+    dol_path = hh.OUTPUT_DOL if has_output else hh.INPUT_DOL
     with open(dol_path, 'rb') as dol:
         dol.seek(entry)
         raw = dol.read(4)
@@ -224,13 +225,22 @@ def srt_matches(a: tuple | None, b: tuple | None) -> bool:
     return a[0] == b[0] and all(abs(x - y) <= _SRT_TOLERANCE for x, y in zip(a[1:], b[1:]))
 
 
-def _vanilla_bone_count(chunk_number: int, file_index: int) -> int | None:
-    offset, length = hh.readDolEntry(chunk_number, file_index)
+def _vanilla_block(chunk_number: int, file_index: int) -> bytes | None:
+    """The INPUT block an entry started from (an own model directory: its source's, ``hh.vanillaRoute``)."""
+    route = hh.vanillaRoute(chunk_number, file_index)
+    if route is None or not os.path.exists(hh.INPUT_DAT):
+        return None
+    offset, length = hh.readDolEntry(*route)
     if offset == -1 or length <= 0:
         return None
     with open(hh.INPUT_DAT, 'rb') as dat:
         dat.seek(offset)
-        summary = act_summary(dat.read(length))
+        return dat.read(length)
+
+
+def _vanilla_bone_count(chunk_number: int, file_index: int) -> int | None:
+    block = _vanilla_block(chunk_number, file_index)
+    summary = act_summary(block) if block else None
     return summary.bone_count if summary else None
 
 
@@ -282,10 +292,7 @@ def lod_partner_warnings(new_block: bytes, chunk_number: int, file_index: int, a
 
 def lod_partner_unpatch_errors(chunk_number: int, file_index: int, any_stem: bool = False) -> list[str]:
     """Blocking errors for restoring this entry's vanilla model."""
-    offset, length = hh.readDolEntry(chunk_number, file_index)
-    if offset == -1 or length <= 0 or not os.path.exists(hh.INPUT_DAT):
+    vanilla = _vanilla_block(chunk_number, file_index)
+    if not vanilla:
         return []
-    with open(hh.INPUT_DAT, 'rb') as dat:
-        dat.seek(offset)
-        vanilla = dat.read(length)
     return lod_partner_errors(vanilla, chunk_number, file_index, any_stem)

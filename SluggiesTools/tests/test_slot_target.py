@@ -64,7 +64,9 @@ VANILLA = {
 }
 
 
-class SlotTargetTests(unittest.TestCase):
+class SlotHarness(unittest.TestCase):
+    """Input/output DOL and DAT with the three character directories (module docstring)."""
+
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
@@ -136,6 +138,9 @@ class SlotTargetTests(unittest.TestCase):
         self.assertEqual(self.route(route), (self.vanilla_offsets[route], len(VANILLA[route])))
         self.assertEqual(self.live(route), VANILLA[route])
 
+
+
+class SlotTargetTests(SlotHarness):
     # -- writes ----------------------------------------------------------------
 
     def test_block_reaches_the_target_route_and_the_source_is_untouched(self):
@@ -246,6 +251,88 @@ class SlotTargetTests(unittest.TestCase):
                 SlotTarget.make_target('0x13', (SOURCE, 1), as_low=True)
         with mock.patch.object(SlotTarget, 'resolve_dir', return_value=(0x12, SOURCE)):
             self.assertIsNone(SlotTarget.make_target('0x12', (SOURCE, 0)))
+
+
+OWN = 120                         # stands in for the first directory past the stock table (172 in the game)
+
+
+class OwnDirectoryTests(SlotHarness):
+    """Phase 4e: a new ID's own model directory (roster ``model_dirs``) as a slot target. Its records sit past the
+    stock table in the output DOL; its files are hammerspace copies of SOURCE's."""
+
+    def setUp(self):
+        super().setUp()
+        dol = bytearray(self.output_dol.read_bytes())
+        dat = bytearray(self.output_dat.read_bytes())
+        start = len(dol)
+        self.copies = {}
+        for file_index in (0, 1):
+            block = VANILLA[(SOURCE, file_index)]
+            offset = len(dat)
+            dat += block + bytes(-len(block) % hh.HS_ALIGN_BYTES)
+            self.copies[file_index] = (offset, len(block))
+            self.records[(OWN, file_index)] = len(dol)
+            dol += struct.pack('>12I', *([hh._DAT_FNAME_PTR, len(block), offset, len(block)] * 3))
+        dol += b'\x00' * hh._ENTRY_SIZE
+        self.output_dol.write_bytes(dol)
+        self.output_dat.write_bytes(dat)
+        for patcher in (
+            mock.patch.object(hh, '_DIRS_COUNT', OWN),
+            mock.patch.object(hh, '_extraDirStarts', return_value=[start]),
+            mock.patch.object(hh, 'ownDirSource', side_effect=lambda chunk: SOURCE if chunk == OWN else None),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_routes_of_an_own_directory(self):
+        self.assertTrue(hh.isOwnDir(OWN))
+        self.assertFalse(hh.isOwnDir(SOURCE))
+        self.assertEqual(hh.readOutputDolEntry(OWN, 1), self.copies[1])
+        self.assertEqual(hh.vanillaRoute(OWN, 1), (SOURCE, 1))
+        self.assertEqual(hh.vanillaRoute(TARGET, 1), (TARGET, 1))
+
+    def test_block_replaces_the_copy_and_leaves_every_vanilla_block(self):
+        edited = model_block('kinopio_r.gpl', TOAD, fill=0x66)
+        offset = self.write(edited, target=SlotTarget.Target(OWN, 0, 0x66))
+
+        self.assertEqual(self.route((OWN, 0)), (offset, len(edited)))
+        self.assertEqual(self.live((OWN, 0)), edited)
+        self.assertEqual(self.bytes_at(*self.copies[0]), bytes(self.copies[0][1]))   # the old copy is freed
+        self.assertEqual(self.route((OWN, 1)), self.copies[1])
+        for route in VANILLA:
+            self.assert_vanilla_route(route)       # nothing vanilla is zeroed: the directory has no vanilla range
+
+    def test_skeleton_guard_uses_the_directory_source(self):
+        with self.assertRaisesRegex(SlotTarget.TargetError, 'skeletons do not match'):
+            self.write(VANILLA[(OTHER, 0)], source=(OTHER, 0), target=SlotTarget.Target(OWN, 0, 0x66))
+        self.assertEqual(self.route((OWN, 0)), self.copies[0])
+
+    def test_unpatch_is_refused(self):
+        before = (self.output_dol.read_bytes(), self.output_dat.read_bytes())
+        self.assertFalse(main.UnpatchTarget(SlotTarget.Target(OWN, 0, 0x66)))
+        self.assertEqual(hh.removeModelFromHammerspace(OWN, 0), (False, 0, 0))
+        self.assertEqual((self.output_dol.read_bytes(), self.output_dat.read_bytes()), before)
+
+
+class ClearTargetTests(SlotHarness):
+    """``--clear-target``: both of a stock slot's models back to vanilla."""
+
+    def test_both_files_return_to_vanilla(self):
+        self.write(model_block('kinopio_r.gpl', TOAD, fill=0x11), target=SlotTarget.Target(TARGET, 0))
+        self.write(model_block('L_kinopio_r.gpl', TOAD, {3: 0}, fill=0x22), source=(SOURCE, 1),
+                   target=SlotTarget.Target(TARGET, 1))
+        with mock.patch.object(SlotTarget, 'resolve_dir', return_value=(0x13, TARGET)):
+            self.assertTrue(main.ClearTarget('0x13'))
+        self.assert_vanilla_route((TARGET, 0))
+        self.assert_vanilla_route((TARGET, 1))
+
+    def test_an_unchanged_slot_is_left_alone(self):
+        before = self.output_dat.read_bytes()
+        with mock.patch.object(SlotTarget, 'resolve_dir', return_value=(0x13, TARGET)), \
+                mock.patch.object(hh, 'removeModelFromHammerspace') as remove:
+            self.assertTrue(main.ClearTarget('0x13'))
+        remove.assert_not_called()
+        self.assertEqual(self.output_dat.read_bytes(), before)
 
 
 class SlotDirectoryTests(unittest.TestCase):

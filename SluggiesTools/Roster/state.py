@@ -23,9 +23,11 @@ JSON-able dict:
   ``own_model_dir``: a new ID's own directory, ``model_source``: whose files
   it holds), ``stats``
   (whose stats it plays with: the configured stats source, else the
-  template), ``square`` and ``icon`` (``{'front', 'side'}``:
+  template), ``square``, ``icon`` (``{'front', 'side'}``:
   where the game takes each portrait from, ``state_icons.resolve``; None
-  without a DAT);
+  without a DAT) and ``blocks`` (``{'high', 'low'}``: the model directory's
+  files 0 and 1 as the game loads them, ``offset``, ``length``, ``sha1``; a
+  patch changes the fingerprint; None without a DAT);
 * ``warnings``: manifest facts the binary contradicts (the binary wins).
 
 Most facts come from the binary: the grid shape (square count and D-pad
@@ -36,6 +38,7 @@ selector rows (species byte 2, selectable byte 6), the names (dir 121 file
 tool built is refused (``StateError``), never guessed.
 """
 
+import hashlib
 import struct
 
 try:
@@ -292,11 +295,45 @@ def read_state(image: dolfile.DolImage, dat=None) -> dict:
                                'model_source': own[1] if own else template_of(cid),
                                'stats': stats_of.get(cid, template_of(cid)), 'square': index})
     characters.sort(key=lambda c: c['id'])
+    _model_blocks(image, dat, characters, warnings)
     icons_read = _resolve_icons(image, dat, mf, characters, warnings)
     return {'version': VERSION, 'kind': 'stock' if mf is None else 'expanded', 'shape': [cols, rows],
             'luigi_own_square': luigi, 'cells': cell_index, 'off_grid': off_grid, 'squares': squares,
             'characters': characters,
             'names_read': text is not None, 'icons_read': icons_read, 'warnings': warnings}
+
+
+BLOCK_FILES = {'high': 0, 'low': 1}       # a character directory's high-poly model and its L_ partner
+
+
+def _model_blocks(image: dolfile.DolImage, dat, characters: list[dict], warnings: list[str]) -> None:
+    """Each character's ``blocks`` (module docstring); None without a DAT."""
+    for c in characters:
+        c['blocks'] = None
+    if dat is None:
+        return
+    try:
+        pointers = dhs.dir_pointers(image)
+    except dolfile.DolError as exc:
+        warnings.append(f'no model blocks: {exc}')
+        return
+    seen: dict[tuple[int, int], str] = {}
+    for c in characters:
+        if c['model_dir'] >= len(pointers):
+            continue
+        blocks = {}
+        for role, index in BLOCK_FILES.items():
+            address = pointers[c['model_dir']] + dhs.RECORD_SIZE * index
+            if not image.is_mapped(address, dhs.RECORD_SIZE):
+                continue
+            words = struct.unpack('>12I', image.read(address, dhs.RECORD_SIZE))
+            if words[0] != dhs.hh._DAT_FNAME_PTR:
+                continue
+            offset, length, _alloc = dhs.slot(words, 'en')
+            if (offset, length) not in seen:
+                seen[(offset, length)] = hashlib.sha1(dat.read(offset, length)).hexdigest()
+            blocks[role] = {'offset': offset, 'length': length, 'sha1': seen[(offset, length)]}
+        c['blocks'] = blocks
 
 
 def _resolve_icons(image: dolfile.DolImage, dat, mf: dict | None, characters: list[dict], warnings: list[str]) -> bool:

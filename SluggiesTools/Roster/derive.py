@@ -73,7 +73,7 @@ class DeriveError(ValueError):
 @dataclass
 class Derived:
     config: dict
-    portraits: dict = field(default_factory=dict)      # {file name: (48x51 RGBA image, cell blocks)}
+    portraits: dict = field(default_factory=dict)      # {file name: (48x51 RGBA image, cell blocks or None)}
     warnings: list = field(default_factory=list)
 
 
@@ -343,8 +343,8 @@ def derive(image: dolfile.DolImage, dat) -> Derived:
 # --------------------------------------------------------------------------
 
 def write(derived: Derived, folder: str) -> str:
-    """``roster.json`` and ``icons/`` (each portrait's PNG and kept CMPR blocks) in ``folder``; returns the JSON's
-    path. Portrait files from an earlier derive are removed."""
+    """``roster.json`` and ``icons/`` (each portrait's PNG and kept CMPR blocks, when it has any) in ``folder``;
+    returns the JSON's path. Portrait files from an earlier derive are removed."""
     icon_dir = os.path.join(folder, ICON_DIR)
     os.makedirs(icon_dir, exist_ok=True)
     for name in os.listdir(icon_dir):
@@ -353,8 +353,9 @@ def write(derived: Derived, folder: str) -> str:
     for name, (art, blocks) in derived.portraits.items():
         path = os.path.join(icon_dir, name)
         art.save(path, 'PNG')
-        with open(icons.kept_blocks_path(path), 'wb') as f:
-            f.write(blocks)
+        if blocks is not None:
+            with open(icons.kept_blocks_path(path), 'wb') as f:
+                f.write(blocks)
     path = os.path.join(folder, CONFIG_FILE)
     tmp = path + '.tmp'
     with open(tmp, 'w', encoding='utf-8') as f:

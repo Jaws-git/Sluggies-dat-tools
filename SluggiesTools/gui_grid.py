@@ -17,6 +17,7 @@ import os
 STATE_REL = os.path.join('3_Output_Dat', '_gui', 'roster_state.json')
 # start.py modes whose commands can change what the grid shows: the tab re-reads after them
 WRITING_FLAGS = frozenset({'--export', '--roster', '--patch', '--unpatch', '--patch-icons', '--resplit-unused',
+                           '--patch-slot', '--clear-slot',
                            '--hammerspace'})
 UNNAMED = '-'
 LUIGI = 0x01
@@ -187,11 +188,21 @@ def stock_luigi_note(state: dict) -> str:
 def slot_details(state: dict, cid: int) -> list[str]:
     c = characters(state).get(cid, {'id': cid})
     lines = [f'ID: {hex_id(cid)}']
-    if c.get('template') is not None:
+    if c.get('own_model_dir'):
+        source = known_name(state, c['model_source'])
+        if source != hex_id(c['model_source']):
+            source += f' ({hex_id(c["model_source"])})'
+        lines.append(f'Model: own directory {c["model_dir"]} (files of {source})')
+    elif c.get('template') is not None:
         lines.append(f'Model: template {name_of(state, c["template"])} ({hex_id(c["template"])}), '
                      f'directory {c["model_dir"]}')
     elif 'model_dir' in c:
         lines.append(f'Model: own, directory {c["model_dir"]}')
+    blocks = c.get('blocks') or {}
+    if blocks:
+        lines.append('Blocks: ' + ', '.join(
+            f'{label} {blocks[role]["length"] / (1024 * 1024):.2f} MB [{blocks[role]["sha1"][:8]}]'
+            for role, label in (('high', 'HP'), ('low', 'L_')) if role in blocks))
     if 'stats' in c:
         lines.append(f'Stats: {name_of(state, c["stats"])}' + ('' if c['stats'] == cid else f' ({hex_id(c["stats"])})'))
     if c.get('default_name'):
