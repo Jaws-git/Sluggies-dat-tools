@@ -100,6 +100,8 @@ class PatchNewIdTests(unittest.TestCase):
         self.assertEqual(entry['name'], NAMES_TEXT[0x09])
         self.assertEqual(entry['icon'], {'model': '/m/home', 'like': '0x04'})
         self.assertEqual(plan.config['grid']['squares'][0], {'members': ['0x66', '0x67'], 'voice': '0x09'})
+        self.assertEqual(plan.to_json()['files'], {'high': HP, 'low': LOW, 'picked': HP})       # the GUI dialog
+        self.assertEqual(plan.to_json()['source'], '0x09')
 
     def test_own_directory_of_the_same_source_is_kept(self):
         plan = self.plan(0x67)
@@ -316,8 +318,18 @@ class DispatchTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(len(calls), 3)
 
-    def test_dry_run_only_plans(self):
-        ok, calls = self.run_chain([0], dry_run=True)
+    def test_dry_run_runs_only_the_build_check(self):
+        with open(self.plan_file, 'w') as f:
+            json.dump({'commands': [['--patch', 'a', '--target-id', '0x66', '--validate-only'],
+                                    ['--roster', '--state', 's.json'], ['--patch', 'a', '--target-id', '0x66'],
+                                    ['--roster-state']]}, f)
+        ok, calls = self.run_chain([0, 0], dry_run=True)
+        self.assertTrue(ok)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1][-1], '--validate-only')
+
+    def test_dry_run_of_a_clear_only_plans(self):
+        ok, calls = self.run_chain([0], dry_run=True)                          # no build check in this chain
         self.assertTrue(ok)
         self.assertEqual(len(calls), 1)
 

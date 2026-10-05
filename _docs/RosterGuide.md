@@ -65,7 +65,8 @@ python start.py --clear-slot 0xE2
 
 The slot decides where the model goes, not the `.sluggie`'s own chunk. Picking
 the high-poly file or its `L_` file patches both when the other one is in its
-sibling folder. `--dry-run` only prints what would happen.
+sibling folder. `--dry-run` prints what would happen and builds and checks the
+models, but writes nothing.
 
 | Slot | What `--patch-slot` does |
 |---|---|
@@ -81,6 +82,12 @@ alone is accepted only when the slot's high-poly model is its own partner.
 `--clear-slot` gives a stock character its vanilla models and portraits
 back, and a new ID a fresh copy of its template's files, the template's
 stats, the "Empty slot" name and portraits. The square's voice stays.
+
+In the GUI, the **Character grid** tab does the same: click a square, then a
+slot, and use **Select .sluggie...** or **Clear slot**. A dialog shows what
+will change (models and their sizes, directory, stats, voice, name,
+portraits, warnings) and whether the checks passed; nothing is written until
+you press OK.
 
 Each command first reads the roster back from `3_Output_Dat`, applies the one
 change and rebuilds the roster from that (so your other slots, names and

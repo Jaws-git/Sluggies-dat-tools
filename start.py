@@ -153,22 +153,27 @@ def self_command(*args):
 def run_slot_chain(target_id, sluggie=None, dry_run=False):
     """Patch a .sluggie (and its HP/L_ partner) into a slot, or clear the slot (``sluggie`` None): plan the chain
     (Roster/slot_cli.py: read, derive, apply the change; a refused change writes nothing), then run its commands
-    in order, stopping at the first failure. Returns True on success."""
+    in order, stopping at the first failure. Returns True on success.
+
+    ``dry_run`` plans and runs only the chain's build check (``--validate-only``: every block built and validated,
+    nothing written); the GUI's confirm dialog shows its result."""
     cmd = python_script_command(ROSTER_SLOT_SCRIPT)
     cmd += ['--patch', target_id, os.path.abspath(sluggie)] if sluggie else ['--clear', target_id]
     if subprocess.run(cmd, cwd=TOOLS_DIR).returncode != 0:
         return False
-    if dry_run:
-        slogger.info('Dry run: the chain above was planned, nothing was written.', source="dispatcher")
-        return True
     with open(SLOT_PLAN_FILE, 'r', encoding='utf-8') as f:
         commands = json.load(f)['commands']
+    if dry_run:
+        commands = [args for args in commands if '--validate-only' in args]
     for n, args in enumerate(commands, 1):
         slogger.info(f'Slot chain step {n}/{len(commands)}: start.py {" ".join(args)}', source="dispatcher")
         if subprocess.run(self_command(*args), cwd=ROOT_DIR).returncode != 0:
             slogger.error(f'Slot chain step {n} failed; the remaining {len(commands) - n} step(s) were skipped.',
                           source="dispatcher")
             return False
+    if dry_run:
+        slogger.info('Dry run: the chain above was planned and its build check ran; nothing was written.',
+                     source="dispatcher")
     return True
 
 

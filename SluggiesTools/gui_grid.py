@@ -6,6 +6,9 @@
   or ``Esc`` does.
 * Label and tooltip text for squares and slots, and where each portrait crop
   is (``icon_file``) and whether it is the slot's own (``icon_note``).
+* ``slot_dialog``: the confirm dialog of "Select .sluggie..." / "Clear slot",
+  from the dry run's plan (``--patch-slot``/``--clear-slot --dry-run``) and
+  its output.
 
 The roster state is the dict ``Roster/state.py`` writes
 (``3_Output_Dat/_gui/roster_state.json``).
@@ -13,8 +16,11 @@ The roster state is the dict ``Roster/state.py`` writes
 
 import json
 import os
+import re
+from dataclasses import dataclass, field
 
 STATE_REL = os.path.join('3_Output_Dat', '_gui', 'roster_state.json')
+SLOT_PLAN_REL = os.path.join('3_Output_Dat', '_gui', 'slot', 'plan.json')
 # start.py modes whose commands can change what the grid shows: the tab re-reads after them
 WRITING_FLAGS = frozenset({'--export', '--roster', '--patch', '--unpatch', '--patch-icons', '--resplit-unused',
                            '--patch-slot', '--clear-slot',
@@ -28,8 +34,10 @@ def hex_id(cid: int) -> str:
 
 
 def chain_writes(steps) -> bool:
-    """Whether a command chain can change the game files the grid is read from."""
-    return any(arg in WRITING_FLAGS for step in steps for arg in step)
+    """Whether a command chain can change the game files the grid is read from (dry runs and build checks do
+    not)."""
+    return any(arg in WRITING_FLAGS for step in steps for arg in step
+               if '--dry-run' not in step and '--validate-only' not in step)
 
 
 # --------------------------------------------------------------------------
@@ -304,3 +312,100 @@ class GridNav:
             self.open_square(index)           # now a one-member square: straight to its slot
         elif self.skipped and len(members) > 1:
             self.skipped = False              # the square grew: the slot now sits above its square
+
+
+# --------------------------------------------------------------------------
+# Slot actions: the confirm dialog
+# --------------------------------------------------------------------------
+
+TEXT, WARN, ERROR, OK = 'text', 'warn', 'error', 'ok'
+_BUILD_LINE = re.compile(r'Slot build check passed \| Model: (?P<name>.+?) \| Size: [\d.]+ MB \((?P<bytes>\d+) bytes\)')
+
+
+def preview_command(cid: int, sluggie: str | None = None) -> tuple:
+    """The dry run behind the confirm dialog: plan + build check, nothing written."""
+    if sluggie:
+        return ('--patch-slot', hex_id(cid), sluggie, '--dry-run')
+    return ('--clear-slot', hex_id(cid), '--dry-run')
+
+
+def apply_command(cid: int, sluggie: str | None = None) -> tuple:
+    return preview_command(cid, sluggie)[:-1]
+
+
+def build_sizes(output: str) -> dict[str, int]:
+    """Block size per model file name, from the build check's log lines."""
+    return {m.group('name'): int(m.group('bytes')) for m in _BUILD_LINE.finditer(output)}
+
+
+def load_plan(path: str, cid: int) -> dict | None:
+    """The dry run's plan for slot ``cid``; None when there is none (refused) or it is another slot's."""
+    try:
+        with open(path, encoding='utf-8') as f:
+            plan = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return plan if plan.get('target') == hex_id(cid) else None
+
+
+def _mb(size: int) -> str:
+    return f'{size / (1024 * 1024):.2f} MB'
+
+
+@dataclass
+class SlotDialog:
+    title: str
+    lines: list = field(default_factory=list)   # [(text, TEXT/WARN/ERROR/OK)]
+    can_apply: bool = False
+
+
+def _partner_lines(files: dict, sizes: dict) -> list:
+    def label(path, role):
+        name = os.path.basename(path)
+        size = sizes.get(name)
+        return f'{name} ({role}' + (f', {_mb(size)})' if size else ')')
+
+    high, low = files.get('high'), files.get('low')
+    if high and low:
+        return [(f'Models: {label(high, "HP")} + {label(low, "L_")}, found side by side', TEXT)]
+    if high:
+        size = sizes.get(os.path.basename(high))
+        twice = f': {_mb(2 * size)} together' if size else ''
+        return [(f'Model: {label(high, "HP")}, no L_ partner beside it', WARN),
+                (f'The HP model is used as the low-poly model too, so the slot loads it twice on the field{twice}',
+                 WARN)]
+    return [(f'Model: {label(low, "L_ only")}, no high-poly partner beside it', WARN),
+            ("It goes under the slot's current high-poly model, which must be its own partner (checked)", TEXT)]
+
+
+def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int, output: str) -> SlotDialog:
+    """The confirm dialog after a patch (``patch``) or clear dry run (exit ``code``, log ``output``): what the
+    change does, its warnings and the verdict. ``can_apply`` only when the planner and the build check passed."""
+    target = f'{name_of(state, cid)} ({hex_id(cid)})'
+    dialog = SlotDialog(f'Put a model into {target}?' if patch else f'Clear {target}?')
+    error = error_message(output)
+    if plan is None:
+        error = error.removeprefix('refused, nothing written: ')        # the planner's wording; said below
+        dialog.title = f'{target}: refused'
+        dialog.lines.append((f'Refused: {error or f"the planner failed (exit code {code})"}', ERROR))
+        dialog.lines.append(('Nothing was written.', TEXT))
+        return dialog
+    lines = dialog.lines
+    if patch:
+        source = int(plan['source'], 16)
+        lines.append((f'Source: {known_name(state, source)} ({hex_id(source)}) -> {target}', TEXT))
+        lines += _partner_lines(plan.get('files') or {}, build_sizes(output))
+    notes = plan['notes'][1:] if patch else plan['notes']      # a patch's first note is the files line above
+    lines += [(f'- {note}', TEXT) for note in notes]
+    lines += [(f'Warning: {warning}', WARN) for warning in plan['warnings']]
+    if not plan['rebuild']:
+        lines.append(('- no roster rebuild needed', TEXT))
+    if code != 0:
+        lines.append((f'Build check failed: {error or f"exit code {code}"}. Nothing was written.', ERROR))
+        return dialog
+    if patch:
+        lines.append(('Checks passed: slot rules, and every model built and validated. Nothing written yet.', OK))
+    else:
+        lines.append(('Nothing written yet.', OK))
+    dialog.can_apply = True
+    return dialog

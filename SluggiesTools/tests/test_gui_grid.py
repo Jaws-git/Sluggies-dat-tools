@@ -1,4 +1,5 @@
-"""GUI character grid, Phase 1: the state loader and the pop-out navigation, without a running Dear PyGui."""
+"""GUI character grid: the state loader, the pop-out navigation and the slot actions' confirm dialog
+(Phase 4f), without a running Dear PyGui."""
 
 import json
 import os
@@ -59,6 +60,11 @@ class LoaderTests(unittest.TestCase):
         self.assertTrue(gui_grid.chain_writes([('--export', '--untangle'), ('--export-icons',)]))
         self.assertTrue(gui_grid.chain_writes([('--patch', 'a.sluggie')]))
         self.assertFalse(gui_grid.chain_writes([('--export-icons', '--use-output'), ('--roster-state',)]))
+        self.assertTrue(gui_grid.chain_writes([gui_grid.apply_command(0x66, 'a.sluggie')]))
+        self.assertTrue(gui_grid.chain_writes([gui_grid.apply_command(0x66)]))
+        self.assertFalse(gui_grid.chain_writes([gui_grid.preview_command(0x66, 'a.sluggie')]))   # dry runs write nothing
+        self.assertFalse(gui_grid.chain_writes([gui_grid.preview_command(0x66)]))
+        self.assertFalse(gui_grid.chain_writes([('--patch', 'a.sluggie', '--target-id', '0x66', '--validate-only')]))
 
 
 class NavTests(unittest.TestCase):
@@ -201,6 +207,107 @@ class PortraitTests(unittest.TestCase):
         loader = StateLoader(self.state_path)
         loader.status, loader.state = StateLoader.DONE, dict(self.s, icons_read=False)
         self.assertTrue(loader.message.endswith('(no portraits)'))
+
+
+HP = '/m/27 Bowser/114968608_koopa.gpl/114968608_koopa.gpl.sluggie'
+LOW = '/m/27 Bowser/115434464_L_koopa.gpl/115434464_L_koopa.gpl.sluggie'
+BUILD_OUTPUT = ('[2026-10-05 12:00:00] [Info] [hammerspace.main] Slot build check passed | Model: '
+                '114968608_koopa.gpl.sluggie | Size: 0.44 MB (465856 bytes) | nothing written\n'
+                '[2026-10-05 12:00:01] [Info] [hammerspace.main] Slot build check passed | Model: '
+                '115434464_L_koopa.gpl.sluggie | Size: 0.08 MB (84288 bytes) | nothing written\n')
+
+
+def patch_plan(high=HP, low=LOW, warnings=()):
+    return {'action': 'patch', 'target': '0x66', 'rebuild': True, 'source': '0x06',
+            'files': {'high': high, 'low': low, 'picked': high or low},
+            'commands': [['--patch', 'x', '--target-id', '0x66', '--validate-only'], ['--roster-state']],
+            'notes': ['a + b -> C66 (0x66)', 'C66 (0x66) gets an own model directory: a copy of C06 (0x06)\'s files',
+                      'portraits from home/icon'],
+            'warnings': list(warnings)}
+
+
+class SlotDialogTests(unittest.TestCase):
+    """The confirm dialog of "Select .sluggie..." / "Clear slot" (decision 6 warnings, sizes, verdict)."""
+
+    def setUp(self):
+        self.s = state([0x06, 0x66], [0x0D])
+
+    def text(self, dialog, kind=None):
+        return '\n'.join(t for t, k in dialog.lines if kind is None or k == kind)
+
+    def test_commands(self):
+        self.assertEqual(gui_grid.preview_command(0x66, HP), ('--patch-slot', '0x66', HP, '--dry-run'))
+        self.assertEqual(gui_grid.apply_command(0x66, HP), ('--patch-slot', '0x66', HP))
+        self.assertEqual(gui_grid.preview_command(0x0D), ('--clear-slot', '0x0D', '--dry-run'))
+        self.assertEqual(gui_grid.apply_command(0x0D), ('--clear-slot', '0x0D'))
+
+    def test_build_sizes(self):
+        self.assertEqual(gui_grid.build_sizes(BUILD_OUTPUT), {'114968608_koopa.gpl.sluggie': 465856,
+                                                              '115434464_L_koopa.gpl.sluggie': 84288})
+        self.assertEqual(gui_grid.build_sizes('nothing here'), {})
+
+    def test_load_plan_only_for_the_slot(self):
+        path = os.path.join(self.enterContext(tempfile.TemporaryDirectory()), 'plan.json')
+        self.assertIsNone(gui_grid.load_plan(path, 0x66))                      # refused: no plan file
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(patch_plan(), f)
+        self.assertEqual(gui_grid.load_plan(path, 0x66)['source'], '0x06')
+        self.assertIsNone(gui_grid.load_plan(path, 0x0D))                      # another slot's plan
+
+    def test_pair_passed(self):
+        dialog = gui_grid.slot_dialog(self.s, 0x66, True, patch_plan(), 0, BUILD_OUTPUT)
+        self.assertTrue(dialog.can_apply)
+        self.assertEqual(dialog.title, 'Put a model into C66 (0x66)?')
+        text = self.text(dialog)
+        self.assertIn('Source: C06 (0x06) -> C66 (0x66)', text)
+        self.assertIn('Models: 114968608_koopa.gpl.sluggie (HP, 0.44 MB) + 115434464_L_koopa.gpl.sluggie (L_, '
+                      '0.08 MB), found side by side', text)
+        self.assertIn('- C66 (0x66) gets an own model directory', text)
+        self.assertIn('- portraits from home/icon', text)
+        self.assertNotIn('a + b ->', text)                                     # shown as the Models line
+        self.assertIn('every model built and validated', self.text(dialog, gui_grid.OK))
+        self.assertEqual(self.text(dialog, gui_grid.WARN), '')
+
+    def test_hp_only_warns_with_the_combined_size(self):
+        plan = patch_plan(low=None, warnings=['koopa has no L_ partner beside it: ...'])
+        dialog = gui_grid.slot_dialog(self.s, 0x66, True, plan, 0, BUILD_OUTPUT)
+        self.assertTrue(dialog.can_apply)                                      # OK and Cancel
+        warn = self.text(dialog, gui_grid.WARN)
+        self.assertIn('no L_ partner beside it', warn)
+        self.assertIn('loads it twice on the field: 0.89 MB together', warn)
+        self.assertIn('Warning: koopa has no L_ partner', warn)
+
+    def test_low_only(self):
+        dialog = gui_grid.slot_dialog(self.s, 0x66, True, patch_plan(high=None), 0, BUILD_OUTPUT)
+        self.assertTrue(dialog.can_apply)
+        self.assertIn('115434464_L_koopa.gpl.sluggie (L_ only, 0.08 MB), no high-poly partner',
+                      self.text(dialog, gui_grid.WARN))
+
+    def test_refused_by_the_planner(self):
+        output = ('[2026-10-05 12:00:00] [Error] [roster.slot] refused, nothing written: the skeletons do not match '
+                  '(105 vs 89 bones)\n')
+        dialog = gui_grid.slot_dialog(self.s, 0x0D, True, None, 1, output)
+        self.assertFalse(dialog.can_apply)                                     # Close only
+        self.assertEqual(dialog.title, 'C0D (0x0D): refused')
+        self.assertIn('Refused: the skeletons do not match',
+                      self.text(dialog, gui_grid.ERROR))
+
+    def test_failed_build_check(self):
+        output = '[2026-10-05 12:00:00] [Error] [hammerspace.main] Hammerspace operation failed | x\n'
+        dialog = gui_grid.slot_dialog(self.s, 0x66, True, patch_plan(), 1, output)
+        self.assertFalse(dialog.can_apply)
+        self.assertIn('Build check failed: Hammerspace operation failed | x', self.text(dialog, gui_grid.ERROR))
+        self.assertIn('- portraits from home/icon', self.text(dialog))           # the plan is still shown
+
+    def test_clear(self):
+        plan = {'action': 'clear', 'target': '0x0D', 'rebuild': False, 'commands': [],
+                'notes': ['C0D (0x0D): vanilla high- and low-poly models from 1_Input'], 'warnings': []}
+        dialog = gui_grid.slot_dialog(self.s, 0x0D, False, plan, 0, '')
+        self.assertTrue(dialog.can_apply)
+        self.assertEqual(dialog.title, 'Clear C0D (0x0D)?')
+        self.assertIn('vanilla high- and low-poly models', self.text(dialog))
+        self.assertIn('no roster rebuild needed', self.text(dialog))
+        self.assertNotIn('Source', self.text(dialog))
 
 
 if __name__ == '__main__':

@@ -6198,7 +6198,7 @@ if __name__ == '__main__':
         if _args.validate_only:
             _slogger.info(
                 f'Slot build check passed | Model: {_model_name} | '
-                f'Size: {len(_build.block) / (1024 * 1024):.2f} MB | nothing written',
+                f'Size: {len(_build.block) / (1024 * 1024):.2f} MB ({len(_build.block)} bytes) | nothing written',
                 source='hammerspace.main')
         elif _args.dry_run:
             if _target is not None:

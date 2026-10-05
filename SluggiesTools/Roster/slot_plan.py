@@ -193,10 +193,15 @@ class Plan:
     notes: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     extra_portraits: dict = field(default_factory=dict)  # {file name in the derived icon folder: open-slot view}
+    pair: Pair | None = None        # patch: the picked file and its partner
 
     def to_json(self) -> dict:
-        return {'action': self.action, 'target': _hex(self.target), 'rebuild': self.config is not None,
-                'commands': [list(c) for c in self.commands], 'notes': self.notes, 'warnings': self.warnings}
+        out = {'action': self.action, 'target': _hex(self.target), 'rebuild': self.config is not None,
+               'commands': [list(c) for c in self.commands], 'notes': self.notes, 'warnings': self.warnings}
+        if self.pair is not None:
+            out['source'] = _hex(self.pair.source)
+            out['files'] = {'high': self.pair.high, 'low': self.pair.low, 'picked': self.pair.picked}
+        return out
 
 
 def _character(st: dict, cid: int) -> dict:
@@ -261,7 +266,7 @@ def plan_patch(st: dict, config: dict, cid: int, pair: Pair, env: Env, state_fil
     """The chain that puts ``pair``'s models into slot ``cid`` (module docstring)."""
     char = _character(st, cid)
     new = copy.deepcopy(config)
-    plan = Plan('patch', cid, None)
+    plan = Plan('patch', cid, None, pair=pair)
     source = pair.source
     target_name = _display(char)
     source_name = _hex(source)

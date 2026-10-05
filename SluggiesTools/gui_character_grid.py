@@ -19,6 +19,14 @@ Portraits that are not the slot's own (a lower key, the template's, the Mii
 or "?" icon) are marked. The textures are released and rebuilt on every
 re-read.
 
+The slot level's **Select .sluggie...** and **Clear slot** run the slot
+chain (``start.py --patch-slot`` / ``--clear-slot``): first its dry run
+(plan + build check, nothing written), then a confirm dialog with what the
+change does (``gui_grid.slot_dialog``), and on OK the chain itself. While
+that runs, the slot buttons are disabled; the re-read afterwards reopens the
+same slot. Clicks and ``Esc`` do not move the levels while the file dialog,
+the dry run or the confirm dialog is up.
+
 On the stock grid Luigi has no square (the game hands him a captain's square
 at runtime). The reader lists his family as an off-grid square, drawn to the
 right of the grid's middle row, so his slots stay reachable.
@@ -50,11 +58,17 @@ LINE = 26                        # text line height (Segoe UI 16 pt, with spacin
 SLOT_W = 720                     # level 2 may be wider than level 1: each level is its own window
 PORTRAIT = (SLOT_SCALE * ICON[0], SLOT_SCALE * ICON[1])
 BUTTON_H = 32
-SLOT_BUTTONS = (('Rename...', 5), ('Select .sluggie...', 4), ('Clear slot', 4), ('Stats...', 7))
+SELECT, CLEAR = 'Select .sluggie...', 'Clear slot'
+SLOT_BUTTONS = (('Rename...', 5), (SELECT, None), (CLEAR, None), ('Stats...', 7))   # (label, plan phase)
+CONFIRM_W = 680
+BUSY_TEXT = 'A command is running (see the log)...'
 _NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 _WARN = (255, 210, 90, 255)
 _DIM = (230, 230, 230, 255)
 _EMPTY = (110, 110, 110, 255)
+_ERROR = (255, 120, 110, 255)
+_OK = (120, 220, 140, 255)
+_LINE_COLORS = {gui_grid.TEXT: _DIM, gui_grid.WARN: _WARN, gui_grid.ERROR: _ERROR, gui_grid.OK: _OK}
 
 
 class CharacterGridTab:
@@ -64,6 +78,9 @@ class CharacterGridTab:
         self.nav = gui_grid.GridNav()
         self.popups = []                   # [(dim window, box window)], bottom first
         self.textures = {}                 # (crop path, scale) -> texture tag; released on every re-read
+        self.slot_buttons = []             # the slot level's working buttons (disabled while a command runs)
+        self.action = None                 # the slot action in progress: (ID, .sluggie or None), file dialog to confirm
+        self.confirm = None                # the confirm dialog window
 
     # ------------------------------------------------------------------ build
     def build(self):
@@ -92,6 +109,12 @@ class CharacterGridTab:
                 dpg.add_theme_color(dpg.mvThemeCol_Button, (45, 45, 48, 255))
                 dpg.add_theme_color(dpg.mvThemeCol_Text, _EMPTY)
         dpg.add_texture_registry(tag='grid_textures')
+        with dpg.file_dialog(directory_selector=False, show=False, modal=True, tag='grid_sluggie_dialog',
+                             width=760, height=460, callback=self._on_sluggie_chosen,
+                             cancel_callback=lambda *_: self._end_action(),
+                             default_path=self.app.models_dir if os.path.isdir(self.app.models_dir)
+                             else self.app.root_dir):
+            dpg.add_file_extension('.sluggie', color=(120, 220, 120, 255))
         with dpg.handler_registry():
             dpg.add_mouse_click_handler(callback=self._on_mouse_click)
             dpg.add_key_press_handler(dpg.mvKey_Escape, callback=self._on_escape)
@@ -248,13 +271,18 @@ class CharacterGridTab:
         self._draw_popups()
 
     def _on_mouse_click(self, _sender, _app_data):
-        if not self.popups:
+        if not self.popups or self.action is not None:
             return
         box = self.popups[-1][1]
         if self.nav.click(_inside(box, dpg.get_mouse_pos(local=False))):
             self._draw_popups()
 
     def _on_escape(self, *_):
+        if self.confirm is not None:
+            self._end_action()
+            return
+        if self.action is not None:
+            return
         if self.nav.back():
             self._draw_popups()
 
@@ -282,6 +310,8 @@ class CharacterGridTab:
             box = self._square_box() if level == gui_grid.SQUARE else self._slot_box()
             dpg.focus_item(box)
             self.popups.append((dim, box))
+        if self.confirm is not None and dpg.does_item_exist(self.confirm):
+            dpg.focus_item(self.confirm)
 
     def _box(self, width, height):
         vw, vh = dpg.get_viewport_client_width(), dpg.get_viewport_client_height()
@@ -321,8 +351,8 @@ class CharacterGridTab:
         return box
 
     def _slot_box(self):
-        """The slot enlarged: front and side portrait, facts, and the slot buttons (placeholders until their
-        phase)."""
+        """The slot enlarged: front and side portrait, facts, and the slot buttons (later phases' buttons are
+        placeholders)."""
         state = self.nav.state
         cid = self.nav.slot
         details = [(line, _DIM) for line in gui_grid.slot_details(state, cid)]
@@ -335,7 +365,7 @@ class CharacterGridTab:
                             _WARN if gui_grid.is_fallback(state, cid, view) else _DIM))
         text_w = SLOT_W - 2 * PAD - 2 * (PORTRAIT[0] + GAP) - GAP
         body = max(PORTRAIT[1] + LINE, LINE * sum(1 + len(line) * 7 // text_w for line, _c in details))
-        box = self._box(SLOT_W, 2 * PAD + 2 * LINE + body + GAP + BUTTON_H + LINE)
+        box = self._box(SLOT_W, 2 * PAD + 2 * LINE + body + GAP + BUTTON_H + 2 * LINE)
         dpg.add_text(gui_grid.name_of(state, cid), parent=box)
         dpg.add_separator(parent=box)
         with dpg.group(horizontal=True, horizontal_spacing=GAP, parent=box):
@@ -348,13 +378,101 @@ class CharacterGridTab:
                 for line, color in details:
                     dpg.add_text(line, color=color, wrap=text_w)
         dpg.add_spacer(height=GAP, parent=box)
+        self.slot_buttons = []
+        tips = {SELECT: 'Put an exported model (and its HP/L_ partner) into this slot; a confirm dialog shows '
+                        'what changes first.',
+                CLEAR: 'Return this slot to its baseline (stock: vanilla models and portraits; new ID: its '
+                       "template's files and the open-slot look); a confirm dialog shows what changes first."}
+        actions = {SELECT: lambda: self._on_select(cid), CLEAR: lambda: self._start_preview(cid, None)}
         with dpg.group(horizontal=True, parent=box):
             for label, phase in SLOT_BUTTONS:
-                button = dpg.add_button(label=label, height=BUTTON_H, enabled=False)
-                dpg.bind_item_theme(button, 'grid_empty_theme')
+                if phase is not None:
+                    button = dpg.add_button(label=label, height=BUTTON_H, enabled=False)
+                    dpg.bind_item_theme(button, 'grid_empty_theme')
+                    tip = f'Comes with plan Phase {phase}'
+                else:
+                    button = dpg.add_button(label=label, height=BUTTON_H, enabled=not self._locked(),
+                                            callback=actions[label])
+                    dpg.bind_item_theme(button, 'primary_theme')
+                    self.slot_buttons.append(button)
+                    tip = tips[label]
                 with dpg.tooltip(button):
-                    dpg.add_text(f'Comes with plan Phase {phase}')
+                    dpg.add_text(tip, wrap=420)
+        dpg.add_text(BUSY_TEXT if self.app.busy else '', parent=box, tag='grid_slot_busy', color=_WARN)
         return box
+
+    # ------------------------------------------------------------------ slot actions
+    def _locked(self):
+        return self.app.busy or self.action is not None
+
+    def set_busy(self, busy):
+        """The app started / finished a command: the slot buttons follow (like the other action buttons)."""
+        locked = busy or self.action is not None
+        for button in self.slot_buttons:
+            if dpg.does_item_exist(button):
+                dpg.configure_item(button, enabled=not locked)
+        if dpg.does_item_exist('grid_slot_busy'):
+            dpg.set_value('grid_slot_busy', BUSY_TEXT if busy else '')
+
+    def _on_select(self, cid):
+        if self._locked():
+            return
+        self.action = (cid, None)
+        self.set_busy(False)
+        dpg.show_item('grid_sluggie_dialog')
+
+    def _on_sluggie_chosen(self, _sender, app_data):
+        cid = self.action[0] if self.action else None
+        app_data = app_data or {}
+        paths = list(app_data.get('selections', {}).values()) or [app_data.get('file_path_name')]
+        path = next((p for p in paths if p and p.lower().endswith('.sluggie') and os.path.isfile(p)), None)
+        if cid is None or path is None:
+            self.app.log_line(f'[character grid] no .sluggie file chosen: {paths[0] or "(none)"}', _WARN)
+            self._end_action()
+            return
+        self.action = None
+        self._start_preview(cid, path)
+
+    def _start_preview(self, cid, sluggie):
+        """The dry run (plan + build check); the confirm dialog opens when it is done."""
+        if self._locked():
+            return
+        self.action = (cid, sluggie)
+        if not self.app.run_chain([gui_grid.preview_command(cid, sluggie)],
+                                  on_done=lambda code, output: self._show_confirm(cid, sluggie, code, output)):
+            self._end_action()
+
+    def _show_confirm(self, cid, sluggie, code, output):
+        state = self.nav.state or self.loader.state
+        plan = gui_grid.load_plan(os.path.join(self.app.root_dir, gui_grid.SLOT_PLAN_REL), cid)
+        dialog = gui_grid.slot_dialog(state, cid, sluggie is not None, plan, code, output)
+        vw, vh = dpg.get_viewport_client_width(), dpg.get_viewport_client_height()
+        self.confirm = dpg.add_window(label=dialog.title, modal=True, no_collapse=True, no_saved_settings=True,
+                                      autosize=True, pos=(max(0, (vw - CONFIRM_W) // 2), max(0, vh // 5)),
+                                      on_close=lambda *_: self._end_action())
+        for text, kind in dialog.lines:
+            dpg.add_text(text, parent=self.confirm, wrap=CONFIRM_W, color=_LINE_COLORS[kind])
+        dpg.add_spacer(height=GAP, parent=self.confirm)
+        with dpg.group(horizontal=True, parent=self.confirm):
+            if dialog.can_apply:
+                ok = dpg.add_button(label='OK', width=110, height=BUTTON_H,
+                                    callback=lambda: self._apply(cid, sluggie))
+                dpg.bind_item_theme(ok, 'primary_theme')
+                dpg.add_button(label='Cancel', width=110, height=BUTTON_H, callback=lambda: self._end_action())
+            else:
+                dpg.add_button(label='Close', width=110, height=BUTTON_H, callback=lambda: self._end_action())
+        self.set_busy(self.app.busy)
+
+    def _apply(self, cid, sluggie):
+        self._end_action()
+        self.app.run_chain([gui_grid.apply_command(cid, sluggie)])
+
+    def _end_action(self):
+        """Close the file / confirm dialog; the levels respond to clicks again."""
+        if self.confirm is not None and dpg.does_item_exist(self.confirm):
+            dpg.delete_item(self.confirm)
+        self.confirm, self.action = None, None
+        self.set_busy(self.app.busy)
 
 
 def swatches_per_row(count: int, viewport_width: int) -> int:

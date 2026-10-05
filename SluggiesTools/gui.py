@@ -115,6 +115,8 @@ class SluggiesGui:
         self.partial = ''
         self.pending = []
         self.chain = []
+        self.on_chain_done = None          # run_chain's callback: (exit code, the chain's output)
+        self.chain_output = []
         self.action_buttons = []
         self.grid_tab = gui_character_grid.CharacterGridTab(self)
 
@@ -122,14 +124,21 @@ class SluggiesGui:
     def run_command(self, *args):
         self.run_chain([args])
 
-    def run_chain(self, steps):
-        """Run several commands in order, stopping at the first failure."""
+    @property
+    def busy(self):
+        return self.process is not None
+
+    def run_chain(self, steps, on_done=None):
+        """Run several commands in order, stopping at the first failure. ``on_done(code, output)`` runs after the
+        last step (or the failed one) with the whole chain's output. False when a command already runs."""
         if self.process is not None:
             self._log_line('A command is already running.', _PROMPT_COLOR)
-            return
+            return False
         self.pending = [tuple(step) for step in steps]
         self.chain = list(self.pending)
+        self.on_chain_done, self.chain_output = on_done, []
         self._start_next()
+        return True
 
     def _start_next(self):
         args = self.pending.pop(0)
@@ -150,6 +159,7 @@ class SluggiesGui:
             self._log_line(f'Could not start command: {exc}', _PROMPT_COLOR)
             self.pending = []
             self._set_busy(False)
+            self._chain_done(1)
             return
         self._set_busy(True)
         threading.Thread(target=self._pump_output, args=(self.process,), daemon=True).start()
@@ -196,6 +206,8 @@ class SluggiesGui:
             elif isinstance(item, tuple):
                 self._finish_process(item[1])
             else:
+                if self.on_chain_done is not None:
+                    self.chain_output.append(item)
                 self._append_text(item)
 
     def _append_text(self, text):
@@ -233,11 +245,19 @@ class SluggiesGui:
         self._set_busy(False)
         if gui_grid.chain_writes(self.chain):
             self.grid_tab.request_read()          # the game files may have changed: re-read the grid
+        self._chain_done(code)
+
+    def _chain_done(self, code):
+        callback, self.on_chain_done = self.on_chain_done, None
+        output, self.chain_output = ''.join(self.chain_output), []
+        if callback is not None:
+            callback(code, output)
 
     def _set_busy(self, busy):
         for button in self.action_buttons:
             dpg.configure_item(button, enabled=not busy)
         dpg.configure_item('stop_button', enabled=busy)
+        self.grid_tab.set_busy(busy)
 
     # ------------------------------------------------------------------ ui
     def _action(self, label, callback, tip=None, primary=False):
