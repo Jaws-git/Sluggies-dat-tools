@@ -18,7 +18,8 @@ from SluggiesTools.Roster import dol_hammerspace as dhs
 PRESETS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), '1_Input',
                        '_RosterConfigurations')
 SHIPPED = ('01_Stock_Roster.json', '02_Stock_and_Unused.json', '03_Unuseds_and_8_color_slots.json',
-           '04_Unuseds_and_10_color_slots.json', '05_all_in_one_maximum_12x5_grid.json')
+           '04_Unuseds_and_10_color_slots.json', '05_extra _columns_12x4_grid.json',
+           '06_maximum_12x5_grid.json')
 SQUARE_CONFIG = {'ids': [{'id': '0x66', 'template': '0x02', 'wheel': None},
                          {'id': '0x67', 'template': '0x06', 'wheel': '0x06'}],
                  'grid': {'squares': [['0x66']]}}
@@ -114,7 +115,7 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(sum(1 for w, g in by_wheel.items() if len(g) == 2 and w < 0x47), 31)
 
     def test_all_in_one(self):
-        config = self.load('05_all_in_one_maximum_12x5_grid.json')
+        config = self.load('06_maximum_12x5_grid.json')
         new = ids.parse_ids(config)
         squares = [c for c in new if c.wheel is None]
         self.assertEqual(len(squares), 19)

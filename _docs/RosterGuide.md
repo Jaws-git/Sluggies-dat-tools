@@ -23,8 +23,10 @@ The binary details are in [`_docs_roster/RosterExpansion.md`](_docs_roster/Roste
    |---|---|
    | `01_Stock_Roster.json` | No new content. |
    | `02_Stock_and_Unused.json` | The six unused characters (Black Yoshi, White Yoshi, Black Toad, Black Pianta, Black Kritter, Black Koopa) on their families' wheels, with the icons from `1_Input/_Icons`. |
-   | `03_Unuseds_and_10_slot_colors.json` | Preset 02, every colour wheel filled to 10, and a new wheel of 3 for each of the 30 characters without one, all with **open slots** (123 new IDs). |
-   | `04_all_in_one_12x5_grid.json` | Preset 03 on a 12×5 grid: Luigi gets his own square, and 19 new squares hold open slots. |
+   | `03_Unuseds_and_8_color_slots.json` | Preset 02, every colour wheel filled to 8, and a new wheel of 3-4 for each of the 30 characters without one, all with **open slots** (123 new IDs). |
+   | `04_Unuseds_and_10_color_slots.json` | Preset 02, every colour wheel filled to 10, and a new wheel of 3 for each of the 30 characters without one, all with open slots (123 new IDs). |
+   | `05_extra _columns_12x4_grid.json` | Wheels of up to 8 on a 12×4 grid: 7 new squares, and the remaining IDs spread evenly over the new squares and the characters without a wheel (153 new IDs). |
+   | `06_maximum_12x5_grid.json` | Preset 04 on a 12×5 grid: Luigi gets his own square, and 19 new squares hold open slots. |
 
    Your own configurations go into the same folder and show up in the list.
 

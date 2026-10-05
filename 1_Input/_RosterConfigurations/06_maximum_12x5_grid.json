@@ -1,6 +1,6 @@
 {
  "version": 1,
- "comment": "Preset 4: preset 3 on a 12x5 grid (Luigi on his own square) whose 19 new squares are open slots (0xE1-0xF3), each playing as Peach (the game's fallback character) until you assign it something else.",
+ "comment": "Preset 6: preset 4 on a 12x5 grid (Luigi on his own square) whose 19 new squares are open slots (0xE1-0xF3), each playing as Peach (the game's fallback character) until you assign it something else.",
  "ids": [
   {
    "id": "0x66",

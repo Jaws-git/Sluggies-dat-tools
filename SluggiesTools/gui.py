@@ -414,7 +414,8 @@ class SluggiesGui:
             full_items = [self.ROSTER_SKIP, self.ROSTER_RESET, *names]
             dpg.configure_item('full_roster', items=full_items)
             if dpg.get_value('full_roster') not in full_items:
-                dpg.set_value('full_roster', self.ROSTER_SKIP)
+                default = '02_Stock_and_Unused.json'
+                dpg.set_value('full_roster', default if default in names else self.ROSTER_SKIP)
 
     def _on_roster(self):
         name = dpg.get_value('roster_config')

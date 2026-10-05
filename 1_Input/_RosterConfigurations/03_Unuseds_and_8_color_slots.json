@@ -1,6 +1,6 @@
 {
  "version": 1,
- "comment": "Preset 3b: like preset 3, but the wheels that had colours already are 8 wide instead of 10; the freed IDs go to characters that had no wheel (22 of the 30 get a wheel of 4, the first 22 by ID; the other 8 stay at 3). 123 new IDs, 0x66-0xE0: each plays as its wheel's host, shows the \"empty slot\" icon and the name \"Empty slot\" until you assign it something else.",
+ "comment": "Preset 3: preset 2 plus every wheel filled to 8; the IDs that frees go to characters without a wheel (22 of the 30 get a wheel of 4, the first 22 by ID; the other 8 get 3). 123 new IDs, 0x66-0xE0: each plays as its wheel's host, shows the \"empty slot\" icon and the name \"Empty slot\" until you assign it something else.",
  "ids": [
   {
    "id": "0x66",
