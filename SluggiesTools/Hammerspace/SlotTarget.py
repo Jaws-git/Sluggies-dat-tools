@@ -199,6 +199,74 @@ def check(block: bytes, source: tuple[int, int], target: Target, report: dict | 
     return warnings
 
 
+def _prefix_problem(own: LodPartnerGuard.ActSummary, vanilla: LodPartnerGuard.ActSummary) -> str | None:
+    """Why ``own`` cannot be posed with the animations made for ``vanilla`` (bones a ``.sluggie`` added come after
+    the vanilla ones and are fine), or None."""
+    if own.bone_count < vanilla.bone_count:
+        return f'{own.geo_name} has {own.bone_count} bones, the slot\'s skeleton {vanilla.bone_count}'
+    parents = [b for b in range(vanilla.bone_count) if own.parents.get(b) != vanilla.parents.get(b)]
+    if parents:
+        return f'{own.geo_name}\'s parent chain differs from the slot\'s skeleton (bone {parents[0]})'
+    return None
+
+
+def slot_pair_problems(high: bytes | None, low: bytes | None,
+                       vanilla: dict[int, LodPartnerGuard.ActSummary | None]) -> tuple[list[str], list[str]]:
+    """``(errors, warnings)`` for a slot holding the High model ``high`` and the Low model ``low`` (finished blocks,
+    e.g. from a roster pack). ``vanilla``: the slot directory's vanilla skeleton per file (an own model directory:
+    its source's). Errors: unreadable ACT sections or wrong roles (a Low model equal to the High model is the High
+    model used as the Low model too), a skeleton that does not start with the slot's vanilla skeleton, a Low model
+    drawing on bones the High model lacks (``LodPartnerGuard``: crashes on load). A Low model that is not the High
+    model's partner (another geo-name stem: it binds textures by index into that TEX) is a warning, as for a High
+    model patched over another character's Low model (``check``)."""
+    if high is None or low is None:
+        return ['the slot needs both a High and a Low model'], []
+    hs, ls = LodPartnerGuard.act_summary(high), LodPartnerGuard.act_summary(low)
+    if hs is None or ls is None:
+        return [f'the {"High" if hs is None else "Low"} model has no readable ACT section'], []
+    errors, warnings = [], []
+    if hs.is_low_poly:
+        errors.append(f'{hs.geo_name} is a Low model, not a High model')
+    as_low = low == high
+    if not as_low and not ls.is_low_poly:
+        errors.append(f'{ls.geo_name} is not a Low model')
+    elif not as_low and ls.stem != hs.stem:
+        warnings.append(f'the slot\'s Low model {ls.geo_name} binds its textures by index into {hs.geo_name}\'s TEX '
+                        '(it is not its partner)')
+    for own, role in ((hs, HIGH_FILE), (ls, HIGH_FILE if as_low else LOW_FILE)):
+        base = vanilla.get(role)
+        if base is None:
+            errors.append(f'no vanilla skeleton to compare {own.geo_name} with')
+            continue
+        problem = _prefix_problem(own, base)
+        if problem:
+            errors.append(f'the skeletons do not match ({problem})')
+    missing = sorted(b for b in ls.drawn_bones if b >= hs.bone_count)
+    if missing and not as_low:
+        errors.append(f'{ls.geo_name} draws on bone(s) {", ".join(map(str, missing))}, but {hs.geo_name} has only '
+                      f'{hs.bone_count} bones (the game poses both from the High skeleton)')
+    return errors, warnings
+
+
+def block_errors(block: bytes, vanilla: bytes | None) -> list[str]:
+    """``BlockValidator`` errors of a finished block that its slot's vanilla block does not have too (a few vanilla
+    blocks trip the validator, e.g. a memClr range or a CLUT count; those quirks travel with them)."""
+    from BlockValidator import validate_model_block
+    errors = validate_model_block(block)['errors']
+    if not errors:
+        return []
+    known = set(validate_model_block(vanilla)['errors']) if vanilla else set()
+    return [e for e in errors if e not in known]
+
+
+def vanilla_summaries(chunk_number: int) -> dict[int, LodPartnerGuard.ActSummary | None]:
+    """The vanilla skeleton of a slot directory's files 0 and 1 (an own model directory: its source's)."""
+    try:
+        return {f: _vanilla_summary((chunk_number, f)) for f in CHARACTER_FILES}
+    except (OSError, struct.error, ValueError) as exc:
+        raise TargetError(f'could not read the vanilla skeletons: {exc}') from exc
+
+
 def _skeleton(source: tuple[int, int], target: tuple[int, int]) -> tuple[list[str], list[str]]:
     try:
         src, dst = _vanilla_summary(source), _vanilla_summary(target)

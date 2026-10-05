@@ -146,6 +146,55 @@ changes and rebuilds the roster from that once (so your other slots, names
 and portraits are kept), then patches the models. Every model is built and
 checked before anything is written; a refused change writes nothing.
 
+## Saving and loading a roster
+
+A **roster pack** (`.sluggiesroster`) holds a whole roster in one file: the
+grid, names, square voices, stats sources, the new IDs' own model
+directories, every model patched into a slot (the finished High and Low
+blocks), and every portrait of its own.
+
+```
+python start.py --save-roster my_roster.sluggiesroster
+python start.py --load-roster my_roster.sluggiesroster --dry-run
+python start.py --load-roster my_roster.sluggiesroster
+```
+
+- **Save** reads `3_Output_Dat` and writes the pack; the game files are not
+  changed. It stores only the models that differ from the vanilla ones in
+  `1_Input`. After an untangle export (menu [1]) that includes most stock
+  characters, whose texture bytes the untangling changed, so a pack is a
+  few MB.
+- **Load** first checks the pack and lists, slot by slot, what differs from
+  the game: the same, differs (High / Low model, model directory, front /
+  side portrait, name, stats, square voice, square), only in the game, or
+  only in the pack. With `--dry-run` it stops there. Otherwise it replaces
+  the whole roster: one roster rebuild with the pack's roster when that
+  differs, stock slots whose models differ go back to vanilla first, then
+  the pack's models are written into their slots as they are (no
+  `.sluggie` is needed). Every model of the pack is checked before
+  anything is written; a damaged or unfitting pack writes nothing.
+- A pack fits any output made from the same `1_Input`: a new ID's own
+  model directory is copied afresh from `1_Input` and gets the pack's
+  models. Loading into a game that already holds the same roster does
+  nothing. Game options (CPU vs CPU) are not part of a pack and stay as
+  they are.
+- Slots that are only in the game leave the grid. A model patched into a
+  stock slot among them stays in its directory (it is not on the grid any
+  more).
+
+In the GUI, the **Character grid** tab has **Save roster...** and **Load
+roster...** (packs go to the `Roster_Packs` folder by default). Saving with
+pending edits asks first: they are not written to the game yet, so they are
+not in the pack (press **Patch Game** first to include them). Loading shows
+the differences (tick off **Only differing slots** to see every slot);
+**Stage** makes the load a pending edit like the others (slots it changes get
+the orange border), and **Patch Game** checks the pack again and replaces the
+roster with it. A pack load replaces everything, so other pending edits are
+discarded first (it asks), and the slot buttons wait until the load is
+written or discarded.
+For the rest of the session, slots that differ from the pack you saved or
+loaded last get a blue border and a "changed since" line.
+
 ## Configuration files
 
 All keys are optional. A missing or `null` key leaves that part stock.

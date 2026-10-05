@@ -34,6 +34,17 @@ edits. While a command runs the edit buttons are disabled; the re-read
 afterwards reopens the same slot. Clicks and ``Esc`` do not move the levels
 while the file dialog, a check or a dialog is up.
 
+**Save roster...** writes the game's whole roster into a roster pack
+(``start.py --save-roster``; with pending edits it asks first: they are not
+in the game yet). **Load roster...** checks a pack and shows the per-slot
+differences (``--load-roster FILE --dry-run``, ``gui_grid.load_dialog``;
+"Only differing slots" filters them); Stage makes the load the one pending
+edit (other pending edits are discarded first, it asks; slot edits wait
+until it is written or discarded), and Patch Game checks the pack again and
+loads it (``--load-roster FILE``), replacing the whole roster. The pack last saved or
+loaded is the session's reference: slots that differ from it get a blue
+border and a "changed since" line.
+
 On the stock grid Luigi has no square (the game hands him a captain's square
 at runtime). The reader lists his family as an off-grid square, drawn to the
 right of the grid's middle row, so his slots stay reachable.
@@ -69,6 +80,7 @@ RENAME, SELECT, CLEAR, DISCARD = 'Rename...', 'Select .sluggie...', 'Clear slot'
 SLOT_BUTTONS = ((RENAME, None), (SELECT, None), (CLEAR, None), ('Stats...', 7), (DISCARD, None))  # (label, phase)
 FONT_REL = os.path.join('SluggiesTools', 'Roster', 'fonts', 'OpenSans.ttf')   # the name plate's font
 CONFIRM_W = 680
+DIALOG_LINES = 24                # a dialog with more lines scrolls
 BUSY_TEXT = 'A command is running (see the log)...'
 _NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 _WARN = (255, 210, 90, 255)
@@ -77,6 +89,7 @@ _EMPTY = (110, 110, 110, 255)
 _ERROR = (255, 120, 110, 255)
 _OK = (120, 220, 140, 255)
 _PENDING = (255, 170, 70, 255)
+_CHANGED = (110, 170, 255, 255)
 _LINE_COLORS = {gui_grid.TEXT: _DIM, gui_grid.WARN: _WARN, gui_grid.ERROR: _ERROR, gui_grid.OK: _OK}
 
 
@@ -96,6 +109,9 @@ class CharacterGridTab:
         self.work = None                   # what the tab's own running command does (status text), or None
         self.edits_path = os.path.join(app.root_dir, gui_grid.EDITS_REL)
         self.plan_path = os.path.join(app.root_dir, gui_grid.SLOT_PLAN_REL)
+        self.pack_plan_path = os.path.join(app.root_dir, gui_grid.PACK_PLAN_REL)
+        self.pack_dir = os.path.join(app.root_dir, gui_grid.PACK_DIR_REL)
+        self.reference = None              # gui_grid.Reference: the pack last saved / loaded (session only)
 
     # ------------------------------------------------------------------ build
     def build(self):
@@ -110,10 +126,20 @@ class CharacterGridTab:
                                  'a summary shows first.', wrap=420)
                 dpg.add_button(label='Discard all', tag='grid_discard_all', enabled=False,
                                callback=lambda: self._on_discard_all())
+                dpg.add_spacer(width=12)
+                dpg.add_button(label='Save roster...', tag='grid_save_pack', callback=lambda: self._on_save_pack())
+                with dpg.tooltip('grid_save_pack'):
+                    dpg.add_text('Save the whole roster of 3_Output_Dat (grid, names, voices, stats, own model '
+                                 'directories, patched models, portraits) into one roster pack file.', wrap=420)
+                dpg.add_button(label='Load roster...', tag='grid_load_pack', callback=lambda: self._on_load_pack())
+                with dpg.tooltip('grid_load_pack'):
+                    dpg.add_text('Stage a roster pack: shows what differs from the game first; "Patch Game" then '
+                                 'replaces the whole roster of 3_Output_Dat with it.', wrap=420)
                 dpg.add_loading_indicator(tag='grid_spinner', style=1, radius=1.6, show=False,
                                           color=(90, 200, 120, 255), secondary_color=(60, 120, 80, 255))
                 dpg.add_text('', tag='grid_status')
             dpg.add_text('', tag='grid_note', color=_WARN, wrap=900)
+            dpg.add_text('', tag='grid_reference', color=_CHANGED, wrap=900, show=False)
             dpg.add_child_window(tag='grid_cells', border=False, horizontal_scrollbar=True)
         with dpg.theme(tag='grid_dim_theme'):
             with dpg.theme_component(dpg.mvAll):
@@ -131,6 +157,11 @@ class CharacterGridTab:
             for kind in (dpg.mvImageButton, dpg.mvButton):
                 with dpg.theme_component(kind):
                     dpg.add_theme_color(dpg.mvThemeCol_Border, _PENDING)
+                    dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 3)
+        with dpg.theme(tag='grid_changed_theme'):
+            for kind in (dpg.mvImageButton, dpg.mvButton):
+                with dpg.theme_component(kind):
+                    dpg.add_theme_color(dpg.mvThemeCol_Border, _CHANGED)
                     dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 3)
         with dpg.theme(tag='grid_danger_theme'):             # like primary_theme, in red (Discard all)
             for state, colors in (
@@ -156,6 +187,13 @@ class CharacterGridTab:
                              default_path=self.app.models_dir if os.path.isdir(self.app.models_dir)
                              else self.app.root_dir):
             dpg.add_file_extension('.sluggie', color=(120, 220, 120, 255))
+        pack_dir = self.pack_dir if os.path.isdir(self.pack_dir) else self.app.root_dir
+        for tag, callback in (('grid_pack_save_dialog', self._on_pack_save_chosen),
+                              ('grid_pack_load_dialog', self._on_pack_load_chosen)):
+            with dpg.file_dialog(directory_selector=False, show=False, modal=True, tag=tag, width=760, height=460,
+                                 callback=callback, cancel_callback=lambda *_: self._end_action(),
+                                 default_path=pack_dir, default_filename='roster'):
+                dpg.add_file_extension(gui_grid.PACK_EXTENSION, color=(120, 180, 255, 255))
         with dpg.handler_registry():
             dpg.add_mouse_click_handler(callback=self._on_mouse_click)
             dpg.add_key_press_handler(dpg.mvKey_Escape, callback=self._on_escape)
@@ -204,6 +242,9 @@ class CharacterGridTab:
         dpg.set_value('grid_status', self.work or self.loader.message)
         state = self.loader.state
         dpg.set_value('grid_note', gui_grid.stock_luigi_note(state) if state else '')
+        dpg.configure_item('grid_reference', show=self.reference is not None)
+        if self.reference is not None:
+            dpg.set_value('grid_reference', self.reference.line(state))
 
     # ------------------------------------------------------------------ level 0
     def _draw_grid(self):
@@ -237,8 +278,11 @@ class CharacterGridTab:
             self._caption(gui_grid.square_label(state, index), CELL[0],
                           gui_grid.is_fallback(state, head, gui_grid.FRONT))
         pending = self.pending.square_pending(state, index)
+        changed = self.reference is not None and self.reference.square_changed(state, index)
         if pending:
             dpg.bind_item_theme(button, 'grid_pending_theme')
+        elif changed:
+            dpg.bind_item_theme(button, 'grid_changed_theme')
         with dpg.tooltip(button):
             for line in gui_grid.square_tooltip(state, index):
                 dpg.add_text(line)
@@ -246,6 +290,12 @@ class CharacterGridTab:
                 for cid in state['squares'][index]['members']:
                     for line in self.pending.summary(cid):
                         dpg.add_text(f'{gui_grid.name_of(state, cid)}: {line}', color=_PENDING)
+            if changed:
+                for cid in state['squares'][index]['members']:
+                    fields = self.reference.changed(state, cid)
+                    if fields:
+                        dpg.add_text(f'{gui_grid.name_of(state, cid)}: changed since the pack: {", ".join(fields)}',
+                                     color=_CHANGED)
 
     def _empty_cell(self):
         w, h = GRID_ICON[0] + 2 * FRAME, GRID_ICON[1] + 2 * FRAME
@@ -408,16 +458,21 @@ class CharacterGridTab:
                                                        lambda _s, _a, u: self._open_slot(u))
                         self._caption(gui_grid.name_of(state, cid), SWATCH[0], fallback)
                         self._caption(gui_grid.hex_id(cid), SWATCH[0], color=_DIM)
+                    changed = self.reference.changed(state, cid) if self.reference is not None else []
                     if self.pending.has(cid):
                         dpg.bind_item_theme(button, 'grid_pending_theme')
                     elif cid == self.nav.slot:
                         dpg.bind_item_theme(button, 'primary_theme')
-                    if fallback or self.pending.has(cid):
+                    elif changed:
+                        dpg.bind_item_theme(button, 'grid_changed_theme')
+                    if fallback or self.pending.has(cid) or changed:
                         with dpg.tooltip(button):
                             if fallback:
                                 dpg.add_text(f'Side portrait: {gui_grid.icon_note(state, cid, gui_grid.SIDE)}')
                             for line in self.pending.summary(cid):
                                 dpg.add_text(line, color=_PENDING)
+                            if changed:
+                                dpg.add_text(f'Changed since the pack: {", ".join(changed)}', color=_CHANGED)
         dpg.add_text(f'Voice: {gui_grid.name_of(state, sq["voice"])}', parent=box, color=_DIM)
         return box
 
@@ -434,6 +489,10 @@ class CharacterGridTab:
         for view in (gui_grid.FRONT, gui_grid.SIDE):
             details.append((f'{view.capitalize()} portrait: {gui_grid.icon_note(state, cid, view)}',
                             _WARN if gui_grid.is_fallback(state, cid, view) else _DIM))
+        changed = self.reference.changed(state, cid) if self.reference is not None else []
+        if changed:
+            details.append((f'Changed since the roster pack you {self.reference.label}: {", ".join(changed)}',
+                            _CHANGED))
         details += [(line, _PENDING) for line in self.pending.lines(cid)]
         text_w = SLOT_W - 2 * PAD - 2 * (PORTRAIT[0] + GAP) - GAP
         body = max(PORTRAIT[1] + LINE, LINE * sum(1 + len(line) * 7 // text_w for line, _c in details))
@@ -478,11 +537,14 @@ class CharacterGridTab:
                     dpg.bind_item_theme(button, 'grid_empty_theme')
                     tip = f'Comes with plan Phase {phase}'
                 else:
+                    # a staged pack load replaces the roster: slot edits wait until it is written or discarded
+                    usable = self.pending.has(cid) if label == DISCARD else self.pending.pack is None
                     button = dpg.add_button(label=label, height=BUTTON_H, callback=actions[label],
-                                            enabled=not self._locked() and (label != DISCARD or self.pending.has(cid)))
+                                            enabled=not self._locked() and usable)
                     dpg.bind_item_theme(button, 'primary_theme')
-                    self.slot_buttons.append((button, label != DISCARD or self.pending.has(cid)))
-                    tip = tips[label]
+                    self.slot_buttons.append((button, usable))
+                    tip = tips[label] if usable or label == DISCARD else (
+                        'A roster pack load is pending: press "Patch Game" (or Discard it) first.')
                 with dpg.tooltip(button):
                     dpg.add_text(tip, wrap=420)
         dpg.add_text(BUSY_TEXT if self.app.busy else '', parent=box, tag='grid_slot_busy', color=_WARN)
@@ -504,6 +566,8 @@ class CharacterGridTab:
             count = len(self.pending)
             dpg.configure_item('grid_patch_game', label=f'Patch Game ({count})', enabled=bool(count) and not locked)
             dpg.configure_item('grid_discard_all', enabled=bool(count) and not locked)
+            for tag in ('grid_save_pack', 'grid_load_pack'):
+                dpg.configure_item(tag, enabled=not locked)
 
     def _pending_changed(self):
         """Redraw what shows the pending list: the grid's markers, the open levels, the buttons."""
@@ -633,11 +697,9 @@ class CharacterGridTab:
         lines = ([(reason, gui_grid.TEXT)] if reason else []) + [
             (f'{count} pending edit{"s" if count != 1 else ""} (nothing written for them yet):', gui_grid.TEXT)]
         state = self.loader.state
-        for edit in self.pending.edits:
-            cid = int(edit['id'], 16)
-            name = gui_grid.name_of(state, cid) if state else edit['id']
-            lines.append((f'  {name} ({edit["id"]}): {gui_grid._edit_title(edit).removeprefix("Pending: ")}',
-                          gui_grid.WARN))
+        for cid, text in self.pending.titles():
+            who = '' if cid is None else f'{gui_grid.name_of(state, int(cid, 16)) if state else cid} ({cid}): '
+            lines.append((f'  {who}{text}', gui_grid.WARN))
         lines.append(('Discard drops them.', gui_grid.TEXT))
 
         def discard():
@@ -651,6 +713,9 @@ class CharacterGridTab:
     def _on_patch_game(self):
         """The full dry run (fresh read, every build check), then the summary."""
         if self._locked() or not len(self.pending):
+            return
+        if self.pending.pack is not None:
+            self._patch_game_pack()
             return
         try:
             gui_grid.write_edits(self.edits_path, self.pending.to_file())
@@ -681,6 +746,129 @@ class CharacterGridTab:
             self.set_busy(self.app.busy)
         self._run([gui_grid.apply_command(self.edits_path)], 'Patching the game...', done)
 
+    # ------------------------------------------------------------------ roster packs
+    def _on_save_pack(self):
+        """Save roster...: with pending edits ask first (they are not in the game yet), then the file dialog."""
+        if self._locked():
+            return
+        if len(self.pending):
+            self.action = 'ask'
+            self._dialog(gui_grid.save_pending_dialog(self.loader.state, self.pending),
+                         lambda: (self._end_action(), self._pick_pack(save=True)), ok_label='Save without them')
+            return
+        self._pick_pack(save=True)
+
+    def _on_load_pack(self):
+        """Load roster...: pending edits are discarded first (asks), then the file dialog."""
+        if self._locked():
+            return
+        self.confirm_discard(lambda: self._pick_pack(save=False), 'Load a roster pack and discard the pending edits?',
+                             'Loading a roster pack replaces the whole roster, so the pending edits would no '
+                             'longer fit.')
+
+    def _pick_pack(self, save):
+        self.action = 'pack'
+        self.set_busy(self.app.busy)
+        if save:
+            os.makedirs(self.pack_dir, exist_ok=True)
+        filters = [('Roster packs', '*' + gui_grid.PACK_EXTENSION), ('All files', '*.*')]
+        on_paths = self._on_pack_save_paths if save else self._on_pack_load_paths
+        if not self.app.pick_files('grid_pack_save_dialog' if save else 'grid_pack_load_dialog',
+                                   'Save the roster as' if save else 'Load a roster pack', filters, on_paths,
+                                   on_cancel=self._end_action, initial_dir=self.pack_dir, save=save,
+                                   default_ext=gui_grid.PACK_EXTENSION.lstrip('.')):
+            self._end_action()
+
+    def _on_pack_save_chosen(self, _sender, app_data):
+        self._on_pack_save_paths([(app_data or {}).get('file_path_name')])
+
+    def _on_pack_load_chosen(self, _sender, app_data):
+        app_data = app_data or {}
+        self._on_pack_load_paths(list(app_data.get('selections', {}).values()) or [app_data.get('file_path_name')])
+
+    def _on_pack_save_paths(self, paths):
+        path = paths[0] if paths else None
+        self._end_action()
+        if not path:
+            return
+        path = gui_grid.with_extension(path)
+
+        def done(code, _output):
+            fingerprints = gui_grid.pack_fingerprints(path) if code == 0 else None
+            if fingerprints is None:
+                self.app.log_line('[character grid] the roster pack was not saved: see the log above.', _WARN)
+                return
+            self.reference = gui_grid.Reference(f'saved ({os.path.basename(path)})', fingerprints)
+            self.app.log_line(f'[character grid] roster saved to {path}', _OK)
+            self._refresh_markers()
+        self._run([gui_grid.save_command(path)], 'Saving the roster pack...', done)
+
+    def _on_pack_load_paths(self, paths):
+        path = next((p for p in paths if p and os.path.isfile(p)), None)
+        self._end_action()
+        if path is None:
+            self.app.log_line(f'[character grid] no roster pack chosen: {(paths or [None])[0] or "(none)"}', _WARN)
+            return
+        self.action = 'pack'
+        if not self._run([gui_grid.load_command(path, dry_run=True)], 'Comparing the pack with the game...',
+                         lambda code, output: self._show_load(path, code, output)):
+            self._end_action()
+
+    def _show_load(self, path, code, output, writing=False):
+        """The load dialog: Stage adds the load to the pending list; ``writing`` (Patch Game's summary after a
+        fresh dry run): Patch Game writes it."""
+        state = self.loader.state
+        plan = gui_grid.load_pack_plan(self.pack_plan_path)
+        if writing and code == 0 and plan is not None and plan.get('ok') and not plan.get('commands'):
+            self.pending.clear()                 # the game holds the pack's roster already: nothing stays pending
+            self._pending_changed()
+        self._dialog(gui_grid.load_dialog(state, plan, code, output, path, writing=writing),
+                     (lambda: self._load_pack(path, plan)) if writing else (lambda: self._stage_pack(path, plan)),
+                     ok_label='Patch Game' if writing else 'Stage',
+                     rebuild=lambda only: gui_grid.load_dialog(state, plan, code, output, path, only, writing),
+                     toggle='Only differing slots')
+
+    def _stage_pack(self, path, plan):
+        self._end_action()
+        self.pending.stage_pack(path, plan or {})
+        self.app.log_line(f'[character grid] roster pack {os.path.basename(path)} staged; "Patch Game" loads it.',
+                          _PENDING)
+        self._pending_changed()
+
+    def _patch_game_pack(self):
+        """Patch Game with a staged pack load: check the pack against the game again, then the summary."""
+        path = self.pending.pack['path']
+        if not os.path.isfile(path):
+            self.app.log_line(f'[character grid] the staged roster pack is gone: {path}', _WARN)
+            return
+        self.action = 'patch_game'
+        if not self._run([gui_grid.load_command(path, dry_run=True)], 'Checking the roster pack...',
+                         lambda code, output: self._show_load(path, code, output, writing=True)):
+            self._end_action()
+
+    def _load_pack(self, path, plan):
+        self._end_action()
+
+        def done(code, _output):
+            if code == 0:
+                self.pending.clear()
+                self.reference = gui_grid.Reference(f'loaded ({os.path.basename(path)})',
+                                                    (plan or {}).get('pack_fingerprints') or {})
+                self.app.log_line(f'[character grid] Patch Game done: roster pack {os.path.basename(path)} '
+                                  'loaded.', _OK)
+            else:
+                self.app.log_line('[character grid] loading the roster pack stopped at a failed step: the load stays '
+                                  'pending; the re-read shows what landed. Run Patch Game again once the cause is '
+                                  'fixed.', _WARN)
+            self._refresh_markers()
+            self.set_busy(self.app.busy)
+        self._run([gui_grid.load_command(path)], 'Loading the roster pack...', done)
+
+    def _refresh_markers(self):
+        self._show_status()
+        self._draw_grid()
+        self._draw_popups()
+
     def _run(self, steps, work, on_done):
         """Run a chain of the tab's own with the spinner and ``work`` as the status line until it is done (the
         re-read after a writing chain keeps the spinner going). False when another command runs."""
@@ -695,14 +883,27 @@ class CharacterGridTab:
         self._show_status()
         return True
 
-    def _dialog(self, dialog, on_ok, ok_label='OK'):
-        """A modal dialog: its lines, then ``ok_label`` / Cancel (``dialog.can_apply``) or Close."""
+    def _dialog(self, dialog, on_ok, ok_label='OK', rebuild=None, toggle=None):
+        """A modal dialog: its lines, then ``ok_label`` / Cancel (``dialog.can_apply``) or Close. ``toggle``: a
+        checkbox label (ticked at first); changing it redraws the lines from ``rebuild(ticked)``. Long line lists
+        scroll."""
         vw, vh = dpg.get_viewport_client_width(), dpg.get_viewport_client_height()
         self.confirm = dpg.add_window(label=dialog.title, modal=True, no_collapse=True, no_saved_settings=True,
-                                      autosize=True, pos=(max(0, (vw - CONFIRM_W) // 2), max(0, vh // 5)),
+                                      autosize=True, pos=(max(0, (vw - CONFIRM_W) // 2), max(0, vh // 8)),
                                       on_close=lambda *_: self._end_action())
-        for text, kind in dialog.lines:
-            dpg.add_text(text, parent=self.confirm, wrap=CONFIRM_W, color=_LINE_COLORS[kind])
+        if toggle:
+            dpg.add_checkbox(label=toggle, default_value=True, parent=self.confirm,
+                             callback=lambda _s, ticked: fill(rebuild(ticked)))
+        if toggle or len(dialog.lines) > DIALOG_LINES:
+            body = dpg.add_child_window(parent=self.confirm, width=CONFIRM_W + 24, height=min(vh // 2, 420))
+        else:
+            body = dpg.add_group(parent=self.confirm)
+
+        def fill(content):
+            dpg.delete_item(body, children_only=True)
+            for text, kind in content.lines:
+                dpg.add_text(text, parent=body, wrap=CONFIRM_W, color=_LINE_COLORS[kind])
+        fill(dialog)
         dpg.add_spacer(height=GAP, parent=self.confirm)
         with dpg.group(horizontal=True, parent=self.confirm):
             if dialog.can_apply:

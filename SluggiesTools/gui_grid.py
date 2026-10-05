@@ -12,6 +12,9 @@
   from the staging check's batch plan (``--apply-slots FILE --dry-run``: the
   pending edits plus the new one) and its output; ``summary_dialog``: Patch
   Game's summary of the full dry run.
+* Roster packs (Phase 6): ``load_dialog`` (the per-slot diff of
+  ``--load-roster FILE --dry-run``), ``save_pending_dialog``, and the
+  "changed since the pack was saved / loaded" marker (``Reference``).
 
 The roster state is the dict ``Roster/state.py`` writes
 (``3_Output_Dat/_gui/roster_state.json``).
@@ -25,9 +28,13 @@ from dataclasses import dataclass, field
 STATE_REL = os.path.join('3_Output_Dat', '_gui', 'roster_state.json')
 SLOT_PLAN_REL = os.path.join('3_Output_Dat', '_gui', 'slot', 'plan.json')
 EDITS_REL = os.path.join('3_Output_Dat', '_gui', 'slot', 'edits.json')
+PACK_PLAN_REL = os.path.join('3_Output_Dat', '_gui', 'pack', 'plan.json')
+PACK_DIR_REL = 'Roster_Packs'                   # where the pack dialogs start
+PACK_EXTENSION = '.sluggiesroster'
 # start.py modes whose commands can change what the grid shows: the tab re-reads after them
 WRITING_FLAGS = frozenset({'--export', '--roster', '--patch', '--unpatch', '--resplit-unused',
-                           '--patch-slot', '--clear-slot', '--rename-slot', '--apply-slots'})
+                           '--patch-slot', '--clear-slot', '--rename-slot', '--apply-slots', '--load-roster',
+                           '--write-slot-blocks'})
 UNNAMED = '-'
 LUIGI = 0x01
 
@@ -359,14 +366,34 @@ class GridNav:
 class PendingEdits:
     """The pending slot edits, in GUI memory only (decision 14). ``edits`` is the merged list in staging order
     (``plan['merged']`` of the last staging check), ``sections`` the planner's per-edit sections (notes,
-    effects) that the overlay shows. Both survive a re-read; Patch Game re-plans everything on a fresh one."""
+    effects) that the overlay shows. Both survive a re-read; Patch Game re-plans everything on a fresh one.
+
+    ``pack``: a staged roster pack load (``stage_pack``), or None. It replaces the whole roster, so it is the only
+    pending edit while it is staged: staging it drops the slot edits, and slot edits cannot be staged on top of it
+    (they would be planned against the game before the load)."""
 
     def __init__(self):
         self.edits: list[dict] = []
         self.sections: list[dict] = []
+        self.pack: dict | None = None      # {'path', 'name', 'diff': {id: fields or status}}
 
     def __len__(self) -> int:
-        return len(self.edits)
+        return len(self.edits) + (1 if self.pack else 0)
+
+    def stage_pack(self, path: str, plan: dict) -> None:
+        """Stage the load of the roster pack at ``path`` (its dry-run ``plan``): the slot edits are dropped."""
+        diff = {int(d['id'], 16): (d['fields'] if d['status'] == 'differs' else d['status'])
+                for d in plan.get('diff') or [] if d['status'] != 'same'}
+        self.clear()
+        self.pack = {'path': path, 'name': os.path.basename(path), 'diff': diff}
+
+    def _pack_lines(self, cid: int) -> list[str]:
+        if not self.pack or cid not in self.pack['diff']:
+            return []
+        what = self.pack['diff'][cid]
+        what = ('changes ' + ', '.join(PACK_FIELDS.get(f, f) for f in what) if isinstance(what, list)
+                else DIFF_TEXT.get(what, what))
+        return [f'Pending: load {self.pack["name"]}: {what}']
 
     def staging(self, edit: dict) -> dict:
         """The edits file of a staging check: the pending edits (build checks passed when they were staged)
@@ -383,14 +410,17 @@ class PendingEdits:
         self.sections = [dict(s) for s in plan.get('edits') or []]
 
     def discard(self, cid: int) -> None:
+        """Drop the slot's pending edits; a pending pack load touching the slot is dropped as a whole."""
         self.edits = [e for e in self.edits if int(e['id'], 16) != cid]
         self.sections = [s for s in self.sections if int(s['target'], 16) != cid]
+        if self.pack and cid in self.pack['diff']:
+            self.pack = None
 
     def clear(self) -> None:
-        self.edits, self.sections = [], []
+        self.edits, self.sections, self.pack = [], [], None
 
     def has(self, cid: int) -> bool:
-        return any(int(e['id'], 16) == cid for e in self.edits)
+        return any(int(e['id'], 16) == cid for e in self.edits) or bool(self._pack_lines(cid))
 
     def model_edit(self, cid: int) -> dict | None:
         return next((e for e in self.edits if int(e['id'], 16) == cid and e['op'] in ('patch', 'clear')), None)
@@ -406,7 +436,7 @@ class PendingEdits:
 
     def summary(self, cid: int) -> list[str]:
         """One line per pending edit of the slot (tooltips)."""
-        return [_edit_title(e) for e in self.edits if int(e['id'], 16) == cid]
+        return [_edit_title(e) for e in self.edits if int(e['id'], 16) == cid] + self._pack_lines(cid)
 
     def lines(self, cid: int) -> list[str]:
         """The slot level's pending lines: each edit, then what the slot shows once it is written."""
@@ -421,6 +451,14 @@ class PendingEdits:
             if effects.get('portraits'):
                 out.append('  Portraits: ' + os.path.basename(os.path.dirname(os.path.dirname(
                     effects['portraits']['front']))) + ' (previewed, marked "pending")')
+        return out + self._pack_lines(cid)
+
+    def titles(self) -> list[tuple[str | None, str]]:
+        """``(slot id or None, text)`` per pending edit, for the discard / save questions."""
+        out = [(e['id'], _edit_title(e).removeprefix('Pending: ')) for e in self.edits]
+        if self.pack:
+            n = len(self.pack['diff'])
+            out.append((None, f'load the roster pack {self.pack["name"]} ({n} slot{"s" if n != 1 else ""} change)'))
         return out
 
     def portrait(self, cid: int, view: str) -> str | None:
@@ -629,5 +667,156 @@ def summary_dialog(state: dict, plan: dict | None, code: int, output: str) -> Sl
     lines.append(('Checks passed: slot rules, and every model built and validated. Patch Game writes them now.', OK))
     dialog.can_apply = True
     return dialog
+
+
+# --------------------------------------------------------------------------
+# Roster packs (Phase 6)
+# --------------------------------------------------------------------------
+
+# the fingerprint fields (Roster/pack.py FIELDS), as the dialogs and markers name them
+PACK_FIELDS = {'high': 'High model', 'low': 'Low model', 'model': 'model directory', 'front': 'front portrait',
+               'side': 'side portrait', 'name': 'name', 'stats': 'stats', 'voice': 'square voice', 'square': 'square'}
+DIFF_TEXT = {'game': 'only in the game (leaves the grid)', 'pack': 'only in the pack (comes onto the grid)'}
+
+
+def save_command(path: str) -> tuple:
+    return ('--save-roster', path)
+
+
+def load_command(path: str, dry_run: bool = False) -> tuple:
+    return ('--load-roster', path) + (('--dry-run',) if dry_run else ())
+
+
+def with_extension(path: str) -> str:
+    return path if path.lower().endswith(PACK_EXTENSION) else path + PACK_EXTENSION
+
+
+def pack_fingerprints(path: str) -> dict | None:
+    """The per-slot fingerprints a roster pack holds (``fingerprints.json``), or None when it cannot be read."""
+    import zipfile
+    try:
+        with zipfile.ZipFile(path) as zf:
+            data = json.loads(zf.read('fingerprints.json').decode('utf-8'))
+    except (OSError, KeyError, ValueError, zipfile.BadZipFile):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def load_pack_plan(path: str) -> dict | None:
+    try:
+        with open(path, encoding='utf-8') as f:
+            plan = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return plan if plan.get('action') == 'load_pack' else None
+
+
+@dataclass
+class Reference:
+    """The roster pack last saved or loaded in this session (GUI memory only): slots that differ from it get the
+    "changed since" marker."""
+    label: str                                  # 'saved X.sluggiesroster' / 'loaded X.sluggiesroster'
+    fingerprints: dict
+
+    def changed(self, state: dict, cid: int) -> list[str]:
+        """What differs between the slot now and the pack (field names); ``[]`` when nothing does."""
+        now = (characters(state).get(cid) or {}).get('fingerprint')
+        then = self.fingerprints.get(hex_id(cid))
+        if now is None:
+            return []
+        if then is None:
+            return ['not in the pack']
+        return [label for f, label in PACK_FIELDS.items() if now.get(f) != then.get(f)]
+
+    def square_changed(self, state: dict, index: int) -> bool:
+        return any(self.changed(state, m) for m in state['squares'][index]['members'])
+
+    def count(self, state: dict) -> int:
+        return sum(bool(self.changed(state, c['id'])) for c in state['characters'])
+
+    def line(self, state: dict | None) -> str:
+        if state is None:
+            return f'Reference: the roster pack you {self.label}.'
+        n = self.count(state)
+        return (f'Reference: the roster pack you {self.label}; '
+                + (f'{n} slot{"s" if n != 1 else ""} changed since (blue border).' if n else 'no slot changed since.'))
+
+
+def _pack_name(state: dict | None, plan: dict, cid: int) -> str:
+    if state is not None and cid in characters(state):
+        return f'{name_of(state, cid)} ({hex_id(cid)})'
+    name = ((plan.get('pack_fingerprints') or {}).get(hex_id(cid)) or {}).get('name') or {}
+    return f'{name.get("en") or "?"} ({hex_id(cid)})'
+
+
+def load_dialog(state: dict | None, plan: dict | None, code: int, output: str, path: str,
+                differing_only: bool = True, writing: bool = False) -> SlotDialog:
+    """The dialog of "Load roster...", after ``--load-roster FILE --dry-run``: the per-slot diff (only the
+    differing slots with ``differing_only``), what the load does, the verdict. ``can_apply`` (Stage adds the load
+    to the pending list; with ``writing``, Patch Game's summary, Patch Game writes it) only when the pack passed
+    every check and there is something to load."""
+    name = os.path.basename(path)
+    dialog = SlotDialog(f'Patch Game: load the roster pack {name}?' if writing else f'Load the roster pack {name}?')
+    lines = dialog.lines
+    error = error_message(output)
+    if plan is None or plan.get('refused') or code != 0:
+        dialog.title = f'{name}: refused'
+        if plan is None or not plan.get('refused'):
+            error = error.removeprefix('refused, nothing written: ')
+            lines.append((f'Refused: {error or f"the planner failed (exit code {code})"}', ERROR))
+        else:
+            for refused in plan['refused']:
+                lines.append((f'Refused: {_pack_name(state, plan, int(refused["id"], 16))}: {refused["error"]}',
+                              ERROR))
+        lines.append(('Nothing was written.', TEXT))
+        return dialog
+    diff = plan.get('diff') or []
+    counts = {k: sum(d['status'] == k for d in diff) for k in ('same', 'differs', 'game', 'pack')}
+    meta = plan.get('pack_meta') or {}
+    blocks = sum(len(r) for r in (meta.get('blocks') or {}).values())
+    lines.append((f'Pack: {name} ({meta.get("slots", "?")} slots, {blocks} model blocks)', TEXT))
+    lines.append((f'{counts["same"]} slots are the same, {counts["differs"]} differ, {counts["game"]} only in the '
+                  f'game, {counts["pack"]} only in the pack.', TEXT))
+    for d in diff:
+        if d['status'] == 'same' and differing_only:
+            continue
+        if d['status'] == 'differs':
+            what = 'differs: ' + ', '.join(PACK_FIELDS.get(f, f) for f in d['fields'])
+        else:
+            what = DIFF_TEXT.get(d['status'], 'the same')
+        lines.append((f'  {_pack_name(state, plan, int(d["id"], 16))}: {what}',
+                      TEXT if d['status'] == 'same' else WARN))
+    lines += [(f'- {note}', TEXT) for note in plan.get('notes') or []]
+    lines += [(f'Warning: {w}', WARN) for w in plan.get('warnings') or []]
+    if not plan.get('commands'):
+        dialog.title = f'{name}: nothing to load'
+        lines.append(('The game holds this roster already.', OK))
+        return dialog
+    what = ['one roster rebuild' if plan.get('rebuild') else 'no roster rebuild']
+    if plan.get('clears'):
+        what.append(f'{len(plan["clears"])} stock slot(s) back to vanilla models first')
+    if plan.get('writes'):
+        what.append(f'{len(plan["writes"])} slot(s) get the pack\'s model blocks')
+    lines.append(('- ' + '; '.join(what), TEXT))
+    if writing:
+        lines.append(('Checks passed: every model block of the pack. Patch Game now replaces the whole roster of '
+                      '3_Output_Dat with the pack.', OK))
+    else:
+        lines.append(('Checks passed: every model block of the pack. Nothing written yet: Stage adds the load to '
+                      'the pending list, "Patch Game" writes it (it replaces the whole roster).', OK))
+    dialog.can_apply = True
+    return dialog
+
+
+def save_pending_dialog(state: dict | None, pending: PendingEdits) -> SlotDialog:
+    """Asked before "Save roster..." while edits are pending: the pack saves the game as it is."""
+    count = len(pending)
+    lines = [(f'{count} pending edit{"s" if count != 1 else ""} (not written to the game yet):', TEXT)]
+    for cid, text in pending.titles():
+        who = '' if cid is None else f'{name_of(state, int(cid, 16)) if state else cid} ({cid}): '
+        lines.append((f'  {who}{text}', WARN))
+    lines.append(('A roster pack saves the game as it is, so they are not in it. To include them, Cancel and run '
+                  '"Patch Game" first.', TEXT))
+    return SlotDialog('Save the roster without the pending edits?', lines, True)
 
 

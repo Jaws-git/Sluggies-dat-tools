@@ -335,6 +335,76 @@ class ClearTargetTests(SlotHarness):
         self.assertEqual(self.output_dat.read_bytes(), before)
 
 
+class SlotPairTests(unittest.TestCase):
+    """Phase 6: ``slot_pair_problems``, the checks a roster pack's blocks get before they go into a slot."""
+
+    def problems(self, high, low, skeleton=TOAD):
+        vanilla = {0: LodPartnerGuard.act_summary(model_block('kinopio_b.gpl', skeleton)),
+                   1: LodPartnerGuard.act_summary(model_block('L_kinopio_b.gpl', skeleton))}
+        return SlotTarget.slot_pair_problems(high, low, vanilla)
+
+    def test_a_matching_pair_and_the_high_model_as_low(self):
+        high, low = VANILLA[(SOURCE, 0)], VANILLA[(SOURCE, 1)]
+        self.assertEqual(self.problems(high, low), ([], []))
+        self.assertEqual(self.problems(high, high), ([], []))
+        added = model_block('kinopio_r.gpl', TOAD + [3])                    # an added bone after the vanilla ones
+        self.assertEqual(self.problems(added, low), ([], []))
+
+    def test_another_characters_low_model_is_a_warning(self):
+        errors, warnings = self.problems(VANILLA[(SOURCE, 0)], VANILLA[(TARGET, 1)])
+        self.assertEqual(errors, [])
+        self.assertIn('L_kinopio_b.gpl binds its textures', warnings[0])
+
+    def test_errors(self):
+        high, low = VANILLA[(SOURCE, 0)], VANILLA[(SOURCE, 1)]
+        self.assertIn('skeletons do not match', self.problems(VANILLA[(OTHER, 0)], VANILLA[(OTHER, 1)])[0][0])
+        self.assertIn('skeletons do not match', self.problems(model_block('kinopio_r.gpl', TOAD[:3]), low)[0][0])
+        self.assertIn('is not a Low model', self.problems(high, model_block('kinopio_x.gpl', TOAD))[0][0])
+        self.assertIn('is a Low model', self.problems(low, low)[0][0])
+        draws_past = model_block('L_kinopio_r.gpl', TOAD + [3], {4: 0})
+        self.assertIn('draws on bone(s) 4', self.problems(high, draws_past)[0][0])
+        self.assertIn('no readable ACT', self.problems(b'\x00' * 0x40, low)[0][0])
+
+
+class WriteSlotBlocksTests(SlotHarness):
+    """Phase 6: ``--write-slot-blocks`` writes a roster pack's finished blocks into a slot as they are."""
+
+    def setUp(self):
+        super().setUp()
+        self.validate = self.enterContext(mock.patch('BlockValidator.validate_model_block',
+                                                     return_value={'valid': True, 'errors': []}))
+        self.enterContext(mock.patch.object(SlotTarget, 'resolve_dir', return_value=(0x13, TARGET)))
+
+    def test_both_blocks_reach_the_slot(self):
+        high, low = model_block('kinopio_r.gpl', TOAD, fill=0x11), model_block('L_kinopio_r.gpl', TOAD, {3: 0}, fill=0x22)
+        self.assertTrue(main.WriteSlotBlocks('0x13', high, low))
+        self.assertEqual((self.live((TARGET, 0)), self.live((TARGET, 1))), (high, low))
+        self.assert_vanilla_route((SOURCE, 0))
+        self.assert_vanilla_route((SOURCE, 1))
+
+    def test_one_block_keeps_the_other_file(self):
+        high = model_block('kinopio_b.gpl', TOAD, fill=0x33)
+        self.assertTrue(main.WriteSlotBlocks('0x13', high, None))
+        self.assertEqual(self.live((TARGET, 0)), high)
+        self.assert_vanilla_route((TARGET, 1))
+
+    def test_refusals_write_nothing(self):
+        before = (self.output_dol.read_bytes(), self.output_dat.read_bytes())
+        self.assertFalse(main.WriteSlotBlocks('0x13', VANILLA[(OTHER, 0)], VANILLA[(OTHER, 1)]))   # skeleton
+        self.assertFalse(main.WriteSlotBlocks('0x13', None, model_block('L_kinopio_b.gpl', TOAD + [3], {4: 0})))
+        self.validate.side_effect = lambda block: ({'valid': True, 'errors': []} if block in VANILLA.values()
+                                                   else {'valid': False, 'errors': ['GPL broken']})
+        self.assertFalse(main.WriteSlotBlocks('0x13', model_block('kinopio_b.gpl', TOAD, fill=0x44), None))
+        self.assertEqual((self.output_dol.read_bytes(), self.output_dat.read_bytes()), before)
+
+    def test_validator_errors_the_vanilla_block_has_too_are_tolerated(self):
+        self.validate.return_value = {'valid': False, 'errors': ['TEX CLUT count 0 does not match 1 palette payload(s)']}
+        high = model_block('kinopio_b.gpl', TOAD, fill=0x55)
+        self.assertEqual(SlotTarget.block_errors(high, VANILLA[(TARGET, 0)]), [])
+        self.assertEqual(SlotTarget.block_errors(high, None), ['TEX CLUT count 0 does not match 1 palette payload(s)'])
+        self.assertTrue(main.WriteSlotBlocks('0x13', high, None))
+
+
 class SlotDirectoryTests(unittest.TestCase):
     def test_stock_ids_load_their_own_directory(self):
         image, _ctx = build_roster({'ids': [{'id': '0x66', 'template': '0x06', 'wheel': '0x06'}]})

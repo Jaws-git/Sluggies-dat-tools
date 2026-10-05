@@ -6,6 +6,10 @@ crops already there are kept, so an unchanged bank decodes nothing), and
 logs the grid as text, one line per row. Reads only; never writes the game
 files.
 
+Every character also gets its ``fingerprint`` (``pack.py``: block and portrait
+SHA-1s, name, stats, voice), which roster packs and the GUI's "changed since
+load/save" marker compare.
+
 ``--derive`` (``start.py --roster-derive``) instead writes the derived
 config (``derive.py``) to ``3_Output_Dat/_gui/derived/roster.json`` plus its
 portraits; ``start.py --roster --state`` that file rebuilds the roster from it.
@@ -26,11 +30,12 @@ import slogger  # noqa: E402
 
 try:
     from ..Dol import dolfile
-    from . import datfile, derive, state, state_icons
+    from . import datfile, derive, pack, state, state_icons
 except ImportError:
     from Dol import dolfile
     import datfile
     import derive
+    import pack
     import state
     import state_icons
 
@@ -86,6 +91,7 @@ def run(output_dir: str = OUTPUT_DIR) -> dict:
         else:
             result['icon_crops'] = {'crops': len({ref['file'] for ref in crops}), 'pages_decoded': decoded,
                                     'written': written}
+    pack.add_fingerprints(result, pack.crops_from_dir(os.path.join(output_dir, GUI_DIR, ICON_DIR)))
     path = state_path(output_dir)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + '.tmp'

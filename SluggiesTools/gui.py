@@ -198,22 +198,25 @@ class SluggiesGui:
             pass
 
     # ------------------------------------------------------------------ files
-    def pick_files(self, fallback_tag, title, filters, on_files, on_cancel=None, multi=False):
-        """Ask for files: the Windows "Open" dialog when available (``native_dialog``), else the Dear
-        PyGui dialog ``fallback_tag``, whose own callbacks handle the result. ``on_files(paths)`` /
-        ``on_cancel()`` run on the GUI thread. False when a native dialog is already open."""
+    def pick_files(self, fallback_tag, title, filters, on_files, on_cancel=None, multi=False, initial_dir=None,
+                   save=False, default_ext=None):
+        """Ask for files: the Windows "Open" dialog (``save``: "Save As") when available (``native_dialog``),
+        else the Dear PyGui dialog ``fallback_tag``, whose own callbacks handle the result. ``on_files(paths)`` /
+        ``on_cancel()`` run on the GUI thread. ``initial_dir``: where it starts (default 2_Output_Models). False
+        when a native dialog is already open."""
         if not native_dialog.enabled():
             dpg.show_item(fallback_tag)
             return True
         if self.picking:
             return False
         self.picking = True
-        initial = self.models_dir if os.path.isdir(self.models_dir) else self.root_dir
+        initial = next((d for d in (initial_dir, self.models_dir) if d and os.path.isdir(d)), self.root_dir)
         owner = native_dialog.find_owner_window(_VIEWPORT_TITLE)
 
         def work():
             try:
-                result, error = native_dialog.ask_open_files(title, initial, filters, multi, owner), None
+                result, error = native_dialog.ask_open_files(title, initial, filters, multi, owner, save,
+                                                             default_ext), None
             except Exception as exc:          # any failure: the built-in dialog takes over
                 result, error = None, str(exc)
             self.output_queue.put(('files', fallback_tag, on_files, on_cancel, result, error))

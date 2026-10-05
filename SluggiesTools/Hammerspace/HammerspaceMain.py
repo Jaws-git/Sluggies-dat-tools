@@ -5764,7 +5764,29 @@ def WriteModelBlock(
         if synced_block is not build.block:
             build = replace(build, block=synced_block)
     high_before = LodPartnerGuard.read_current_block(chunk_number, file_index)
+    new_offset = _write_route(
+        build.block, chunk_number, file_index, model_name, output_offset,
+        f' | Modes: {build.section_modes.as_dict()}'
+        + (f' | Source: chunk {build.chunk_number}, file {build.file_index} | Slot: {target.describe()}'
+           if target else ''),
+    )
+    hh.writeDebugDumps(
+        model_name,
+        build.original_offset,
+        build.original_length,
+        build.block,
+    )
+    if target is None:
+        LodTextureSync.sync_partner_of_high(chunk_number, file_index, build.block, high_before)
+    elif target.as_low and file_index != SlotTarget.LOW_FILE:
+        WriteModelBlock(build, model_name, target=replace(target, file_index=SlotTarget.LOW_FILE))
+    return new_offset
 
+
+def _write_route(block: bytes, chunk_number: int, file_index: int, model_name: str,
+                 output_offset: int | None = None, log_suffix: str = '') -> int:
+    """Write *block* to hammerspace and route ``(chunk_number, file_index)`` (and its sharers) to it; the route's
+    vanilla block is zeroed when nothing else uses it, a replaced hammerspace block when it is unrouted."""
     current_offset, current_length = hh.readOutputDolEntry(chunk_number, file_index)
     replacing_hammerspace_block = current_offset >= hh.BASE_SIZE
     if replacing_hammerspace_block:
@@ -5781,16 +5803,16 @@ def WriteModelBlock(
     if replacing_hammerspace_block:
         reserved_ranges.append((current_offset, current_length))
     if output_offset is None:
-        new_offset = hh.findFreeMemoryChunk(len(build.block), reserved_ranges=reserved_ranges)
+        new_offset = hh.findFreeMemoryChunk(len(block), reserved_ranges=reserved_ranges)
         if new_offset == -1:
             if not hh.ensureOutputDat():
                 raise RuntimeError('Unable to prepare output dt_na.dat')
             current_size = os.path.getsize(hh.OUTPUT_DAT)
             next_region_start = (current_size + hh.HS_ALIGN_BYTES - 1) & ~(hh.HS_ALIGN_BYTES - 1)
-            required_size = next_region_start + len(build.block) + hh.HS_BUFFER_BYTES
+            required_size = next_region_start + len(block) + hh.HS_BUFFER_BYTES
             if not hh.ensureOutputDat(required_size):
                 raise RuntimeError('Unable to prepare output dt_na.dat')
-            new_offset = hh.findFreeMemoryChunk(len(build.block), reserved_ranges=reserved_ranges)
+            new_offset = hh.findFreeMemoryChunk(len(block), reserved_ranges=reserved_ranges)
             if new_offset == -1:
                 raise RuntimeError('No contiguous hammerspace region found after expansion')
     else:
@@ -5808,20 +5830,20 @@ def WriteModelBlock(
         for reserved_offset, reserved_length in reserved_ranges:
             if (
                 new_offset < reserved_offset + reserved_length
-                and reserved_offset < new_offset + len(build.block)
+                and reserved_offset < new_offset + len(block)
             ):
                 raise ValueError(
-                    f'explicit hammerspace block 0x{new_offset:08X}+{len(build.block):,} '
+                    f'explicit hammerspace block 0x{new_offset:08X}+{len(block):,} '
                     f'overlaps a live routed range '
                     f'0x{reserved_offset:08X}+{reserved_length:,}'
                 )
 
     if replacing_hammerspace_block and (
         new_offset < current_offset + current_length
-        and current_offset < new_offset + len(build.block)
+        and current_offset < new_offset + len(block)
     ):
         raise RuntimeError(
-            f'new hammerspace block 0x{new_offset:08X}+{len(build.block):,} overlaps the '
+            f'new hammerspace block 0x{new_offset:08X}+{len(block):,} overlaps the '
             f'live block 0x{current_offset:08X}+{current_length:,} it replaces; refusing to '
             'write, because zeroing the old block would corrupt the new one'
         )
@@ -5836,10 +5858,10 @@ def WriteModelBlock(
             + ' share this block but keep their own route',
             source='hammerspace.main',
         )
-    hh.writeModelBlock(build.block, new_offset)
-    hh.patchDolEntry(chunk_number, file_index, new_offset, len(build.block))
+    hh.writeModelBlock(block, new_offset)
+    hh.patchDolEntry(chunk_number, file_index, new_offset, len(block))
     for shared_chunk, shared_index in shared_entries:
-        hh.patchDolEntry(shared_chunk, shared_index, new_offset, len(build.block))
+        hh.patchDolEntry(shared_chunk, shared_index, new_offset, len(block))
 
     hh.patchFstFileSize(os.path.getsize(hh.OUTPUT_DAT))
     hh.zeroOriginalModel(chunk_number, file_index)
@@ -5851,26 +5873,54 @@ def WriteModelBlock(
             f'Old size: {current_length / (1024 * 1024):.2f} MB',
             source='hammerspace.main',
         )
-    hh.writeDebugDumps(
-        model_name,
-        build.original_offset,
-        build.original_length,
-        build.block,
-    )
     _slogger.info(
         f'Hammerspace Log: Written | Model: {model_name} | Chunk: {chunk_number} | '
         f'File: {file_index} | Address: 0x{new_offset:08X} | '
-        f'Size: {len(build.block) / (1024 * 1024):.2f} MB | '
-        f'Modes: {build.section_modes.as_dict()}'
-        + (f' | Source: chunk {build.chunk_number}, file {build.file_index} | Slot: {target.describe()}'
-           if target else ''),
+        f'Size: {len(block) / (1024 * 1024):.2f} MB' + log_suffix,
         source='hammerspace.main',
     )
-    if target is None:
-        LodTextureSync.sync_partner_of_high(chunk_number, file_index, build.block, high_before)
-    elif target.as_low and file_index != SlotTarget.LOW_FILE:
-        WriteModelBlock(build, model_name, target=replace(target, file_index=SlotTarget.LOW_FILE))
     return new_offset
+
+
+def WriteSlotBlocks(character_id: str, high: bytes | None, low: bytes | None) -> bool:
+    """Write finished model blocks (a roster pack's, ``start.py --write-slot-blocks``) into a slot as they are: no
+    ``.sluggie``, no rebuild. ``high`` / ``low``: the slot's file 0 / file 1, or None to keep the one it has.
+    Refused before anything is written when a block fails ``BlockValidator`` or the pair breaks the slot rules
+    (``SlotTarget.slot_pair_problems``: roles, the slot's skeleton, the Low model's partner and bones)."""
+    try:
+        cid, chunk_number = SlotTarget.resolve_dir(character_id)
+    except (SlotTarget.TargetError, OSError) as exc:
+        _slogger.error(f'Slot write refused | {exc}', source='hammerspace.main')
+        return False
+    where = f'0x{cid:02X} (chunk {chunk_number})'
+    if chunk_number not in SlotTarget.character_dirs() and not hh.isOwnDir(chunk_number):
+        _slogger.error(f'Slot write refused | {where} is not a character directory', source='hammerspace.main')
+        return False
+    blocks = {SlotTarget.HIGH_FILE: high, SlotTarget.LOW_FILE: low}
+    for file_index, block in blocks.items():
+        if block is None:
+            continue
+        errors = SlotTarget.block_errors(block, LodPartnerGuard._vanilla_block(chunk_number, file_index))
+        if errors:
+            _slogger.error(f'Slot write refused | {where}, file {file_index}: the block fails validation: '
+                           + '; '.join(errors[:3]), source='hammerspace.main')
+            return False
+    after = {f: b if b is not None else LodPartnerGuard.read_current_block(chunk_number, f) for f, b in blocks.items()}
+    try:
+        problems, warnings = SlotTarget.slot_pair_problems(after[SlotTarget.HIGH_FILE], after[SlotTarget.LOW_FILE],
+                                                           SlotTarget.vanilla_summaries(chunk_number))
+    except SlotTarget.TargetError as exc:
+        problems, warnings = [str(exc)], []
+    for warning in warnings:
+        _slogger.warning(f'[Slot] {where}: {warning}', source='hammerspace.main')
+    if problems:
+        _slogger.error(f'Slot write refused | {where}: ' + '; '.join(problems), source='hammerspace.main')
+        return False
+    for file_index, block in blocks.items():
+        if block is not None:
+            _write_route(block, chunk_number, file_index, f'0x{cid:02X} file {file_index}',
+                         log_suffix=f' | Slot: {where} | pack block')
+    return True
 
 
 def UnpatchTarget(target: 'SlotTarget.Target') -> bool:
@@ -6089,7 +6139,26 @@ if __name__ == '__main__':
                               'checks, nothing written (start.py --patch-slot runs it before any write)')
     _parser.add_argument('--clear-target', default=None, metavar='0xNN',
                          help="Restore this stock slot's HP and L_ models to vanilla (no .sluggie)")
+    _parser.add_argument('--write-slot-blocks', nargs=3, default=None, metavar=('0xNN', 'HIGH', 'LOW'),
+                         help="Write finished model blocks (a roster pack's) into this slot as they are; '-' keeps "
+                              "that file (no .sluggie)")
     _args = _parser.parse_args()
+    if _args.write_slot_blocks is not None:
+        if _args.sluggies_path is not None:
+            _parser.error('--write-slot-blocks takes no .sluggie file')
+        _cid, *_paths = _args.write_slot_blocks
+        try:
+            _blocks = []
+            for _path in _paths:
+                if _path == '-':
+                    _blocks.append(None)
+                    continue
+                with open(_path, 'rb') as _file:
+                    _blocks.append(_file.read())
+        except OSError as _exc:
+            _slogger.error(f'Slot write refused | {_exc}', source='hammerspace.main')
+            raise SystemExit(1)
+        raise SystemExit(0 if WriteSlotBlocks(_cid, *_blocks) else 1)
     if _args.as_low and _args.target_id is None:
         _parser.error('--as-low needs --target-id')
     if _args.validate_only and _args.target_id is None:

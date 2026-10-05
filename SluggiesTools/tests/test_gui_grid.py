@@ -523,5 +523,113 @@ class SummaryDialogTests(unittest.TestCase):
         self.assertIn('Build check failed: Slot build check failed | x', self.text(dialog, gui_grid.ERROR))
 
 
+class RosterPackTests(unittest.TestCase):
+    """Phase 6: the load dialog, the save question with pending edits, and the "changed since" marker."""
+
+    def setUp(self):
+        self.state = state([0x00, 0x0D], [0x66])
+        fp = lambda cid: {'high': f'h{cid}', 'low': f'l{cid}', 'model': None, 'front': 'f', 'side': 's',
+                          'name': {'en': f'C{cid:02X}'}, 'stats': gui_grid.hex_id(cid), 'voice': '0x00',
+                          'square': '0x00'}
+        for c in self.state['characters']:
+            c['fingerprint'] = fp(c['id'])
+        self.fingerprints = {gui_grid.hex_id(c['id']): dict(c['fingerprint']) for c in self.state['characters']}
+        self.plan = {'action': 'load_pack', 'ok': True, 'rebuild': True,
+                     'commands': [['--roster', '--state', 's.json'], ['--roster-state']],
+                     'diff': [{'id': '0x00', 'status': 'same', 'fields': []},
+                              {'id': '0x0D', 'status': 'differs', 'fields': ['name', 'high']},
+                              {'id': '0x66', 'status': 'game', 'fields': []},
+                              {'id': '0x70', 'status': 'pack', 'fields': []}],
+                     'writes': [{'id': '0x0D', 'blocks': ['high']}], 'clears': ['0x0D'], 'kept_dirs': [],
+                     'notes': ['n1'], 'warnings': [], 'refused': [],
+                     'pack_fingerprints': {'0x70': {'name': {'en': 'Packed'}}},
+                     'pack_meta': {'slots': 3, 'blocks': {'0x0D': {'high': 'models/0x0D_hp.bin'}}}}
+
+    @staticmethod
+    def text(dialog, kind=None):
+        return '\n'.join(t for t, k in dialog.lines if kind is None or k == kind)
+
+    def test_load_dialog(self):
+        dialog = gui_grid.load_dialog(self.state, self.plan, 0, '', 'x/my.sluggiesroster')
+        self.assertTrue(dialog.can_apply)
+        self.assertEqual(dialog.title, 'Load the roster pack my.sluggiesroster?')
+        body = self.text(dialog)
+        self.assertIn('1 slots are the same, 1 differ, 1 only in the game, 1 only in the pack.', body)
+        self.assertIn('C0D (0x0D): differs: name, High model', body)
+        self.assertIn('Packed (0x70): only in the pack', body)
+        self.assertNotIn('C00 (0x00)', body)                       # same slots only when the filter is off
+        self.assertIn('C00 (0x00): the same', self.text(gui_grid.load_dialog(self.state, self.plan, 0, '', 'my',
+                                                                              differing_only=False)))
+        self.assertIn('one roster rebuild; 1 stock slot(s) back to vanilla models first; 1 slot(s) get', body)
+
+    def test_load_dialog_refusals_and_nothing_to_load(self):
+        refused = dict(self.plan, ok=False, refused=[{'id': '0x0D', 'error': 'the skeletons do not match'}])
+        dialog = gui_grid.load_dialog(self.state, refused, 1, '', 'my.sluggiesroster')
+        self.assertFalse(dialog.can_apply)
+        self.assertIn('Refused: C0D (0x0D): the skeletons do not match', self.text(dialog, gui_grid.ERROR))
+        dialog = gui_grid.load_dialog(self.state, None, 1, '[Error] [roster.pack] refused, nothing written: bad zip',
+                                      'my.sluggiesroster')
+        self.assertIn('Refused: bad zip', self.text(dialog))
+        nothing = dict(self.plan, commands=[])
+        dialog = gui_grid.load_dialog(self.state, nothing, 0, '', 'my.sluggiesroster')
+        self.assertFalse(dialog.can_apply)
+        self.assertIn('nothing to load', dialog.title)
+
+    def test_save_pending_dialog(self):
+        pending = gui_grid.PendingEdits()
+        pending.edits = [{'op': 'rename', 'id': '0x0D', 'text': 'Little Toad'}]
+        dialog = gui_grid.save_pending_dialog(self.state, pending)
+        self.assertTrue(dialog.can_apply)
+        self.assertIn("C0D (0x0D): rename to 'Little Toad'", self.text(dialog))
+
+    def test_reference_marks_changed_slots(self):
+        ref = gui_grid.Reference('saved (my.sluggiesroster)', self.fingerprints)
+        self.assertEqual(ref.count(self.state), 0)
+        self.assertIn('no slot changed since', ref.line(self.state))
+        self.state['characters'][1]['fingerprint']['name'] = {'en': 'Little Toad'}
+        del ref.fingerprints['0x66']
+        self.assertEqual(ref.changed(self.state, 0x0D), ['name'])
+        self.assertEqual(ref.changed(self.state, 0x66), ['not in the pack'])
+        self.assertTrue(ref.square_changed(self.state, 0))
+        self.assertIn('2 slots changed since', ref.line(self.state))
+
+    def test_load_is_staged(self):
+        """The load is one pending edit: it drops the slot edits, marks the slots it changes, Patch Game writes it."""
+        pending = gui_grid.PendingEdits()
+        pending.edits = [{'op': 'rename', 'id': '0x00', 'text': 'X'}]
+        pending.stage_pack('x/my.sluggiesroster', self.plan)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending.edits, [])
+        self.assertTrue(pending.has(0x0D))
+        self.assertFalse(pending.has(0x00))                       # the same in pack and game
+        self.assertTrue(pending.square_pending(self.state, 0))
+        self.assertEqual(pending.summary(0x0D), ['Pending: load my.sluggiesroster: changes name, High model'])
+        self.assertEqual(pending.lines(0x66), ['Pending: load my.sluggiesroster: only in the game (leaves the grid)'])
+        self.assertEqual(pending.titles(), [(None, 'load the roster pack my.sluggiesroster (3 slots change)')])
+        self.assertIn('Stage adds the load', self.text(gui_grid.load_dialog(self.state, self.plan, 0, '', 'my')))
+        writing = gui_grid.load_dialog(self.state, self.plan, 0, '', 'my', writing=True)
+        self.assertTrue(writing.title.startswith('Patch Game: load'))
+        self.assertIn('Patch Game now replaces', self.text(writing))
+        pending.discard(0x00)                                     # a slot the load leaves alone: kept
+        self.assertEqual(len(pending), 1)
+        pending.discard(0x0D)                                     # a slot it changes: the whole load goes
+        self.assertEqual(len(pending), 0)
+
+    def test_commands_and_files(self):
+        self.assertEqual(gui_grid.load_command('a', dry_run=True), ('--load-roster', 'a', '--dry-run'))
+        self.assertFalse(gui_grid.chain_writes([gui_grid.load_command('a', dry_run=True)]))
+        self.assertTrue(gui_grid.chain_writes([gui_grid.load_command('a')]))
+        self.assertFalse(gui_grid.chain_writes([gui_grid.save_command('a')]))     # saving only reads the game
+        self.assertEqual(gui_grid.with_extension('r'), 'r.sluggiesroster')
+        self.assertEqual(gui_grid.with_extension('r.SluggiesRoster'), 'r.SluggiesRoster')
+        import zipfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'p.sluggiesroster')
+            with zipfile.ZipFile(path, 'w') as zf:
+                zf.writestr('fingerprints.json', json.dumps(self.fingerprints))
+            self.assertEqual(gui_grid.pack_fingerprints(path), self.fingerprints)
+            self.assertIsNone(gui_grid.pack_fingerprints(os.path.join(tmp, 'missing')))
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -1,4 +1,4 @@
-"""The Windows "Open" dialog (comdlg32 ``GetOpenFileNameW``) through ctypes.
+"""The Windows "Open" and "Save As" dialogs (comdlg32 ``GetOpenFileNameW`` / ``GetSaveFileNameW``) through ctypes.
 
 The GUI uses it instead of Dear PyGui's built-in file dialog on Windows: it is
 the dialog users know, and Explorer sorts names numerically, so the model
@@ -16,6 +16,7 @@ import os
 import platform
 from ctypes import wintypes
 
+_OFN_OVERWRITEPROMPT = 0x00000002   # "Save As": asks before replacing an existing file
 _OFN_NOCHANGEDIR = 0x00000008       # the dialog must not move the process's working directory
 _OFN_ALLOWMULTISELECT = 0x00000200
 _OFN_PATHMUSTEXIST = 0x00000800
@@ -98,9 +99,12 @@ def find_owner_window(title: str):
         return None
 
 
-def ask_open_files(title: str, initial_dir: str, filters, multi: bool = False, owner=None):
+def ask_open_files(title: str, initial_dir: str, filters, multi: bool = False, owner=None,
+                   save: bool = False, default_ext: str | None = None):
     """Show the dialog. Returns the chosen paths (a list, one entry unless ``multi``), or None when
-    the user cancels. Raises NativeDialogError when the dialog cannot be shown."""
+    the user cancels. Raises NativeDialogError when the dialog cannot be shown. ``save``: the "Save As"
+    dialog instead (the file need not exist, overwriting asks first; ``default_ext`` without the dot is
+    appended to a name typed without one)."""
     try:
         comdlg32 = ctypes.WinDLL('comdlg32')
         ole32 = ctypes.WinDLL('ole32')
@@ -120,9 +124,15 @@ def ask_open_files(title: str, initial_dir: str, filters, multi: bool = False, o
         ofn.nMaxFile = _BUFFER_CHARS
         ofn.lpstrInitialDir = initial_dir if initial_dir and os.path.isdir(initial_dir) else None
         ofn.lpstrTitle = title
-        ofn.Flags = (_OFN_EXPLORER | _OFN_FILEMUSTEXIST | _OFN_PATHMUSTEXIST | _OFN_NOCHANGEDIR
-                     | (_OFN_ALLOWMULTISELECT if multi else 0))
-        if comdlg32.GetOpenFileNameW(ctypes.byref(ofn)):
+        if save:
+            ofn.Flags = _OFN_EXPLORER | _OFN_OVERWRITEPROMPT | _OFN_PATHMUSTEXIST | _OFN_NOCHANGEDIR
+            ofn.lpstrDefExt = default_ext
+            show = comdlg32.GetSaveFileNameW
+        else:
+            ofn.Flags = (_OFN_EXPLORER | _OFN_FILEMUSTEXIST | _OFN_PATHMUSTEXIST | _OFN_NOCHANGEDIR
+                         | (_OFN_ALLOWMULTISELECT if multi else 0))
+            show = comdlg32.GetOpenFileNameW
+        if show(ctypes.byref(ofn)):
             return parse_selection(ctypes.wstring_at(ctypes.addressof(file_buffer), _BUFFER_CHARS))
         error = comdlg32.CommDlgExtendedError()
         if error:

@@ -56,6 +56,8 @@ UNTANGLE_POLICY_SCRIPT = os.path.join(HS_DIR, 'UntanglePolicy.py')
 ROSTER_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'runner.py')
 ROSTER_STATE_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'state_cli.py')
 ROSTER_SLOT_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'slot_cli.py')
+ROSTER_PACK_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'pack_cli.py')
+PACK_PLAN_FILE = os.path.join(ROOT_DIR, '3_Output_Dat', '_gui', 'pack', 'plan.json')
 SLOT_PLAN_FILE = os.path.join(ROOT_DIR, '3_Output_Dat', '_gui', 'slot', 'plan.json')
 GAME_OPTIONS_SCRIPT = os.path.join(TOOLS_DIR, 'GameOptions', 'runner.py')
 
@@ -171,16 +173,54 @@ def run_slot_chain(target_id=None, sluggie=None, dry_run=False, edits_file=None,
         commands = json.load(f)['commands']
     if dry_run:
         commands = [args for args in commands if '--validate-only' in args]
-    for n, args in enumerate(commands, 1):
-        slogger.info(f'Slot chain step {n}/{len(commands)}: start.py {" ".join(args)}', source="dispatcher")
-        if subprocess.run(self_command(*args), cwd=ROOT_DIR).returncode != 0:
-            slogger.error(f'Slot chain step {n} failed; the remaining {len(commands) - n} step(s) were skipped.',
-                          source="dispatcher")
-            return False
+    if not run_chain_commands(commands, 'Slot chain'):
+        return False
     if dry_run:
         slogger.info('Dry run: the chain above was planned and its build checks ran; nothing was written.',
                      source="dispatcher")
     return True
+
+
+def run_chain_commands(commands, label):
+    """Run planned ``start.py`` commands in order, stopping at the first failure. Returns True on success."""
+    for n, args in enumerate(commands, 1):
+        slogger.info(f'{label} step {n}/{len(commands)}: start.py {" ".join(args)}', source="dispatcher")
+        if subprocess.run(self_command(*args), cwd=ROOT_DIR).returncode != 0:
+            slogger.error(f'{label} step {n} failed; the remaining {len(commands) - n} step(s) were skipped.',
+                          source="dispatcher")
+            return False
+    return True
+
+
+def run_save_roster(path):
+    """Write 3_Output_Dat's roster into a roster pack (Roster/pack_cli.py); the game files are only read."""
+    return subprocess.run(python_script_command(ROSTER_PACK_SCRIPT, '--save', os.path.abspath(path)),
+                          cwd=TOOLS_DIR).returncode == 0
+
+
+def run_load_roster(path, dry_run=False):
+    """Load a roster pack: check it and plan the chain (Roster/pack_cli.py: per-slot diff, every block checked;
+    a refused pack writes nothing), then run its commands in order (one roster rebuild at most, stock slots back
+    to vanilla where needed, the pack's blocks written as they are, one re-read). ``dry_run``: plan only."""
+    if subprocess.run(python_script_command(ROSTER_PACK_SCRIPT, '--load', os.path.abspath(path)),
+                      cwd=TOOLS_DIR).returncode != 0:
+        return False
+    if dry_run:
+        slogger.info('Dry run: the pack was checked and the load planned; nothing was written.', source="dispatcher")
+        return True
+    with open(PACK_PLAN_FILE, 'r', encoding='utf-8') as f:
+        commands = json.load(f)['commands']
+    if not commands:
+        slogger.info('The game holds this roster already: nothing to load.', source="dispatcher")
+        return True
+    return run_chain_commands(commands, 'Pack load')
+
+
+def run_write_slot_blocks(target_id, high, low):
+    """Write finished model blocks (a roster pack's; '-' keeps that file) into a slot as they are."""
+    paths = [p if p == '-' else os.path.abspath(p) for p in (high, low)]
+    return subprocess.run(python_script_command(HS_MAIN_SCRIPT, '--write-slot-blocks', target_id, *paths),
+                          cwd=HS_DIR).returncode == 0
 
 
 def run_game_options(on=(), off=(), dry_run=False):
@@ -631,6 +671,8 @@ def parse_args():
             '  python start.py --clear-slot 0xE1\n'
             '  python start.py --rename-slot 0xE1 "Purple Yoshi"\n'
             '  python start.py --apply-slots 3_Output_Dat/_gui/slot/edits.json --dry-run\n'
+            '  python start.py --save-roster my_roster.sluggiesroster\n'
+            '  python start.py --load-roster my_roster.sluggiesroster --dry-run\n'
             '  python start.py --resplit-unused\n'
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter
@@ -643,6 +685,9 @@ def parse_args():
     mode.add_argument('--clear-slot', metavar='0xNN', help='return a slot to its baseline: a stock slot gets its vanilla models and portraits back, a new ID a fresh copy of its template and the open-slot look')
     mode.add_argument('--rename-slot', nargs=2, metavar=('0xNN', 'TEXT'), help='name a slot (stock characters included), one name for English, French and Spanish; it must fit the name plate; a blank TEXT resets the name (read -> rebuild)')
     mode.add_argument('--apply-slots', metavar='FILE', help='write staged slot edits (an edits file with patch/clear/rename edits per slot, as the GUI\'s "Patch Game" writes it) as one chain: read once, at most one roster rebuild, then the slot patches')
+    mode.add_argument('--save-roster', metavar='FILE', help='save the whole roster of 3_Output_Dat (grid, names, voices, stats, own model directories, patched models, portraits) into a roster pack (.sluggiesroster)')
+    mode.add_argument('--load-roster', metavar='FILE', help='load a roster pack into 3_Output_Dat: replaces the whole roster (with --dry-run: check the pack and show the per-slot differences only)')
+    mode.add_argument('--write-slot-blocks', nargs=3, metavar=('0xNN', 'HIGH', 'LOW'), help="write finished model blocks (a roster pack's; '-' keeps that file) into a slot as they are (used by --load-roster)")
     mode.add_argument('--resplit-unused', action='store_true', help='repair: give unused-character routes (dirs 89-94) that point at a playable character\'s block their own copy again')
     mode.add_argument('--roster', '--roster-dev', dest='roster', action='store_true', help='inject a roster configuration (--config, e.g. from 1_Input/_RosterConfigurations) into 3_Output_Dat, replacing the previous injection')
     mode.add_argument('--roster-state', action='store_true', help='read the draft grid from 3_Output_Dat into 3_Output_Dat/_gui/roster_state.json (used by the GUI)')
@@ -678,10 +723,10 @@ def parse_args():
         parser.error('--glb can only be used with --export.')
     if args.use_output and not args.export_icons:
         parser.error('--use-output can only be used with --export-icons.')
-    if args.dry_run and not (args.roster or args.game_options
+    if args.dry_run and not (args.roster or args.game_options or args.load_roster
                              or args.patch_slot or args.clear_slot or args.rename_slot or args.apply_slots):
         parser.error('--dry-run can only be used with --roster, --game-options, --patch-slot, '
-                     '--clear-slot, --rename-slot or --apply-slots.')
+                     '--clear-slot, --rename-slot, --apply-slots or --load-roster.')
     if (args.on or args.off) and not args.game_options:
         parser.error('--on and --off can only be used with --game-options.')
     if (args.config or args.remove or args.state) and not args.roster:
@@ -700,7 +745,7 @@ def parse_args():
         parser.error('--config and --state cannot be used together.')
     if args.roster and not (args.config or args.remove or args.state):
         parser.error('--roster needs --config PATH (a roster configuration), --state PATH or --remove.')
-    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.rename_slot, args.apply_slots, args.resplit_unused, args.export, args.export_icons, args.roster, args.roster_state, args.roster_derive, args.game_options]):
+    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.rename_slot, args.apply_slots, args.save_roster, args.load_roster, args.write_slot_blocks, args.resplit_unused, args.export, args.export_icons, args.roster, args.roster_state, args.roster_derive, args.game_options]):
         if len(sys.argv) == 1:
             args.gui = True
         else:
@@ -798,6 +843,15 @@ def main() -> int:
                 return 1
         elif args.apply_slots:
             if not run_slot_chain(edits_file=args.apply_slots, dry_run=args.dry_run):
+                return 1
+        elif args.save_roster:
+            if not run_save_roster(args.save_roster):
+                return 1
+        elif args.load_roster:
+            if not run_load_roster(args.load_roster, dry_run=args.dry_run):
+                return 1
+        elif args.write_slot_blocks:
+            if not run_write_slot_blocks(*args.write_slot_blocks):
                 return 1
 
         slogger.info("Command completed", source="dispatcher")
