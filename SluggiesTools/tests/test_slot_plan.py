@@ -232,8 +232,115 @@ class ClearTests(unittest.TestCase):
                                          ('--roster-state',)])
 
 
+class RenameTests(unittest.TestCase):
+    """Phase 5: ``plan_rename`` for a stock character, a spare row and a new ID."""
+
+    def plan(self, cid, text, config=None, st=None):
+        return slot_plan.plan_rename(st or make_state(), config or make_config(), cid, text, STATE_FILE)
+
+    def test_stock_character_goes_to_stock_names(self):
+        plan = self.plan(0x0D, 'Little Toad')
+        self.assertEqual(plan.config['stock_names'],
+                         [{'id': '0x0D', 'name': {'en': 'Little Toad', 'fr': 'Little Toad', 'sp': 'Little Toad'}}])
+        self.assertEqual(plan.commands, [('--roster', '--state', STATE_FILE), ('--roster-state',)])
+        self.assertEqual(plan.effects['name'], 'Little Toad')
+        self.assertEqual(slot_plan.plan_rename(make_state(), plan.config, 0x09, 'Bow', STATE_FILE).config['stock_names'][0]['id'],
+                         '0x09')                                               # kept sorted by ID
+
+    def test_stock_rename_again_replaces_and_blank_resets(self):
+        first = self.plan(0x0D, 'Little Toad').config
+        second = self.plan(0x0D, 'Tiny Toad', config=first)
+        self.assertEqual([e['name']['en'] for e in second.config['stock_names']], ['Tiny Toad'])
+        reset = self.plan(0x0D, '  ', config=first)
+        self.assertNotIn('stock_names', reset.config)
+        self.assertEqual(reset.effects['name'], 'its stock name')
+
+    def test_blank_on_an_unrenamed_stock_character_is_nothing(self):
+        plan = self.plan(0x0D, '')
+        self.assertTrue(plan.nothing)
+        self.assertEqual((plan.config, plan.commands), (None, []))
+
+    def test_same_text_as_the_stock_name_is_nothing(self):
+        st = make_state()
+        next(c for c in st['characters'] if c['id'] == 0x0D)['name'] = {'en': 'Toad', 'fr': 'Toad', 'sp': 'Toad'}
+        self.assertTrue(self.plan(0x0D, 'Toad', st=st).nothing)
+
+    def test_new_id_and_its_reset(self):
+        plan = self.plan(0x66, 'Purple Yoshi')
+        self.assertEqual(ids_entry(plan.config, 0x66)['name'], {lang: 'Purple Yoshi' for lang in ('en', 'fr', 'sp')})
+        self.assertNotIn('stock_names', plan.config)
+        reset = self.plan(0x67, '')
+        self.assertEqual(ids_entry(reset.config, 0x67)['name'], open_slot.SLOT_NAME)
+        self.assertEqual(reset.effects['name'], 'Empty slot')
+
+    def test_spare_row_uses_its_wheels_entry(self):
+        plan = self.plan(0x47, 'Black Yoshi')
+        self.assertEqual(plan.config['wheels'][0]['name']['sp'], 'Black Yoshi')
+        reset = self.plan(0x47, '', config=plan.config)
+        self.assertNotIn('name', reset.config['wheels'][0])
+        config = make_config()
+        config['wheels'] = []
+        with self.assertRaisesRegex(slot_plan.PlanError, 'not on a wheel'):
+            self.plan(0x47, 'Black Yoshi', config=config)
+
+    def test_a_name_that_does_not_fit_is_refused(self):
+        with self.assertRaisesRegex(slot_plan.PlanError, 'too long'):
+            self.plan(0x0D, 'The Extraordinarily Long Toad Name')
+        with self.assertRaisesRegex(slot_plan.PlanError, 'control characters'):
+            self.plan(0x0D, 'Two\nLines')
+
+    def test_a_mii_has_no_plate(self):
+        with self.assertRaisesRegex(slot_plan.PlanError, 'no name plate'):
+            self.plan(0x50, 'Mii Mii')
+
+    def test_unknown_slot_is_refused(self):
+        with self.assertRaisesRegex(slot_plan.PlanError, 'not a slot'):
+            self.plan(0x99, 'X')
+
+    def test_input_config_is_not_changed(self):
+        config = make_config()
+        before = copy.deepcopy(config)
+        self.plan(0x0D, 'Little Toad', config=config)
+        self.plan(0x66, 'Purple Yoshi', config=config)
+        self.assertEqual(config, before)
+
+    def test_a_patch_does_not_overwrite_a_pending_rename_of_an_open_slot(self):
+        batch = slot_plan.plan_batch(make_state(), make_config(),
+                                     edits(('rename', '0x66', None, {'text': 'Mine'}), ('patch', '0x66', HP)),
+                                     FakeEnv(), STATE_FILE, NAMES_TEXT, classify_fn=fake_classify)
+        self.assertEqual(ids_entry(batch.config, 0x66)['name']['en'], 'Mine')
+        batch = slot_plan.plan_batch(make_state(), make_config(),
+                                     edits(('patch', '0x66', HP), ('rename', '0x66', None, {'text': 'Mine'})),
+                                     FakeEnv(), STATE_FILE, NAMES_TEXT, classify_fn=fake_classify)
+        self.assertEqual(ids_entry(batch.config, 0x66)['name']['en'], 'Mine')          # the later edit wins
+
+    def test_batch_rename_needs_one_rebuild_and_a_text(self):
+        batch = slot_plan.plan_batch(make_state(), make_config(),
+                                     edits(('rename', '0x0D', None, {'text': 'Little Toad'}),
+                                           ('rename', '0x66', None, {'text': 'Purple'})),
+                                     FakeEnv(), STATE_FILE, NAMES_TEXT, classify_fn=fake_classify)
+        self.assertEqual(batch.commands, [('--roster', '--state', STATE_FILE), ('--roster-state',)])
+        self.assertEqual(batch.to_json()['merged'], [{'op': 'rename', 'id': '0x0D', 'text': 'Little Toad'},
+                                                     {'op': 'rename', 'id': '0x66', 'text': 'Purple'}])
+        with self.assertRaisesRegex(slot_plan.PlanError, 'needs a "text"'):
+            slot_plan.parse_edits([{'op': 'rename', 'id': '0x0D'}])
+        self.assertEqual(slot_plan.parse_edits([{'op': 'rename', 'id': '0x0D', 'text': ''}])[0].text, '')
+
+    def test_a_rename_that_changes_nothing_is_skipped(self):
+        batch = slot_plan.plan_batch(make_state(), make_config(), edits(('rename', '0x0D', None, {'text': ''})),
+                                     FakeEnv(), STATE_FILE, NAMES_TEXT, classify_fn=fake_classify)
+        self.assertEqual((batch.commands, batch.plans), ([], []))
+        self.assertEqual(len(batch.skipped), 1)
+
+    def test_batch_of_one_equals_the_single_plan(self):
+        plan = self.plan(0x0D, 'Little Toad')
+        batch = slot_plan.plan_batch(make_state(), make_config(), edits(('rename', '0x0D', None, {'text': 'Little Toad'})),
+                                     FakeEnv(), STATE_FILE, NAMES_TEXT, classify_fn=fake_classify)
+        self.assertEqual((batch.commands, batch.config), (plan.commands, plan.config))
+
+
 TOAD_HP = '/m/31 Toad/1_kinopio.gpl/1_kinopio.gpl.sluggie'
-TOAD_LOW = '/m/31 Toad/2_L_kinopio.gpl/2_L_kinopio.gpl.sluggie'
+TOAD_LOW ='/m/31 Toad/2_L_kinopio.gpl/2_L_kinopio.gpl.sluggie'
 MARIO_HP = '/m/18 Mario/1_mario.gpl/1_mario.gpl.sluggie'
 LONE_LOW = '/x/2_L_koopa.gpl/2_L_koopa.gpl.sluggie'           # a Low export with no High beside it
 PAIRS = {HP: pair(), LOW: pair(), TOAD_HP: pair(TOAD_HP, TOAD_LOW, 31, 'kinopio'),
@@ -339,9 +446,9 @@ class BatchTests(unittest.TestCase):
         self.assertEqual([(e.op, e.text) for e in merged], [('clear', None), ('rename', 'Late')])
         self.assertTrue(any('"Early" is dropped' in n for n in notes))
         self.assertEqual(refused, [])
-        # rename ops are not written before Phase 5: the batch refuses them
-        batch = self.batch(edits(('rename', '0x66', None, {'text': 'Late'})))
-        self.assertIn('Phase 5', batch.refused[0][1])
+        # voice / stats ops are not written before Phase 7: the batch refuses them
+        batch = self.batch(edits(('voice', '0x66', None)))
+        self.assertIn('Phase 7', batch.refused[0][1])
 
     def test_voice_rule_counts_pending_patches(self):
         batch = self.batch(edits(('patch', '0x66', HP), ('patch', '0x67', TOAD_HP)))
@@ -447,6 +554,14 @@ class SlotCliTests(unittest.TestCase):
                 self.assertEqual(slot_cli.main(['--clear', '0x0D', '--output-dir', out]), 1)
             self.assertEqual(os.listdir(folder), [])
 
+    def test_rename_is_a_batch_of_one(self):
+        with tempfile.TemporaryDirectory() as out, mock.patch.object(slot_cli, 'run', return_value=slot_plan.Batch(None)) as run:
+            self.assertEqual(slot_cli.main(['--rename', '0x0D', 'Little Toad', '--output-dir', out]), 0)
+            self.assertEqual(slot_cli.main(['--rename', '0x0D', '', '--output-dir', out]), 0)
+        (first,), _ = run.call_args_list[0]
+        self.assertEqual([(e.op, e.cid, e.text) for e in first], [('rename', 0x0D, 'Little Toad')])
+        self.assertEqual(run.call_args_list[1].args[0][0].text, '')
+
     def test_refused_batch_writes_only_the_plan(self):
         """A refused edit: the plan names it and holds no commands; no derived config is written."""
         with tempfile.TemporaryDirectory() as out:
@@ -522,6 +637,15 @@ class DispatchTests(unittest.TestCase):
             self.assertTrue(self.start.run_slot_chain(edits_file='e.json', dry_run=True))
         planner = run.call_args_list[0].args[0]
         self.assertEqual(planner[-3:], ['--apply', os.path.abspath('e.json'), '--dry-run'])
+
+    def test_rename_tells_the_planner(self):
+        results = [mock.Mock(returncode=0) for _ in range(5)]      # planner + 3 commands, then a planner alone
+        with mock.patch('start.subprocess.run', side_effect=results) as run:
+            self.assertTrue(self.start.run_slot_chain('0x0D', rename='Little Toad'))
+            self.assertTrue(self.start.run_slot_chain('0x0D', rename='', dry_run=True))     # blank resets the name
+        planners = [call.args[0] for call in run.call_args_list if '--rename' in call.args[0]]
+        self.assertEqual(planners[0][-3:], ['--rename', '0x0D', 'Little Toad'])
+        self.assertEqual(planners[1][-4:], ['--rename', '0x0D', '', '--dry-run'])
 
     def test_dry_run_of_a_clear_only_plans(self):
         ok, calls = self.run_chain([0], dry_run=True)                          # no build check in this chain

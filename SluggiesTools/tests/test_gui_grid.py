@@ -409,6 +409,82 @@ class PendingEditsTests(unittest.TestCase):
             self.assertEqual(json.load(f), {'edits': []})
 
 
+def rename_section(cid='0x0D', text='Little Toad', nothing=False):
+    notes = ([f'nothing to rename: C0D ({cid}) is named that already'] if nothing
+             else [f'C0D ({cid}): renamed to {text!r} (English, French and Spanish)'])
+    return {'action': 'rename', 'target': cid, 'rebuild': not nothing, 'commands': [], 'notes': notes,
+            'warnings': [], 'nothing': nothing, 'effects': {} if nothing else {'name': text or 'its stock name'},
+            'edit': {'op': 'rename', 'id': cid, 'text': text}, 'checked': False}
+
+
+class RenameTests(unittest.TestCase):
+    """GUI character grid Phase 5: the rename dialog's live check, the pending overlay and the confirm dialog."""
+
+    def setUp(self):
+        self.s = state([0x06, 0x66], [0x0D])
+        self.font = os.path.join(os.path.dirname(gui_grid.__file__), 'Roster', 'fonts', 'OpenSans.ttf')
+
+    def text(self, dialog, kind=None):
+        return '\n'.join(t for t, k in dialog.lines if kind is None or k == kind)
+
+    def test_name_problem_is_the_planners_rule(self):
+        from SluggiesTools.Roster import names
+        for text in ('Little Toad', 'Purple Yoshi', 'W' * 30, 'The Extraordinarily Long Toad Name', '', '  ', ' Toad',
+                     'To\nad', 'iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii'):
+            with self.subTest(text=text):
+                self.assertEqual(gui_grid.name_problem(text, self.font) is None, names.fits(text))
+        self.assertIn('too long', gui_grid.name_problem('W' * 30, self.font))
+        self.assertIsNone(gui_grid.name_problem('Toad', os.path.join(self.font, 'missing.ttf')))   # no font: planner
+
+    def test_prefill(self):
+        self.s['characters'][0]['name'] = {'en': 'Red Toad'}
+        self.s['characters'][1]['name'] = {'en': gui_grid.UNNAMED}
+        self.assertEqual(gui_grid.rename_prefill(self.s, 0x06), 'Red Toad')
+        self.assertEqual(gui_grid.rename_prefill(self.s, 0x66), '')
+        self.s['characters'][0]['default_name'] = 'Black Yoshi'
+        self.assertEqual(gui_grid.rename_prefill(self.s, 0x06), 'Black Yoshi')
+        self.assertEqual(gui_grid.rename_prefill(self.s, 0x99), '')
+
+    def test_dialog(self):
+        dialog = gui_grid.slot_dialog(self.s, 0x0D, False, batch(rename_section(), rebuild=True), 0, '', rename=True)
+        self.assertTrue(dialog.can_apply)
+        self.assertEqual(dialog.title, 'Rename C0D (0x0D)?')
+        self.assertIn("renamed to 'Little Toad'", self.text(dialog))
+        self.assertIn('Checks passed: slot rules.', self.text(dialog, gui_grid.OK))
+        self.assertNotIn('and every model built', self.text(dialog))
+
+    def test_nothing_to_rename(self):
+        plan = batch(skipped=[rename_section(nothing=True)])
+        pending = gui_grid.PendingEdits()
+        dialog = gui_grid.slot_dialog(self.s, 0x0D, False, plan, 0, '', pending, rename=True)
+        self.assertFalse(dialog.can_apply)
+        self.assertEqual(dialog.title, 'C0D (0x0D): nothing to rename')
+        pending.accept(batch(rename_section(text='Other')))                    # undoing a pending rename is allowed
+        dialog = gui_grid.slot_dialog(self.s, 0x0D, False, plan, 0, '', pending, rename=True)
+        self.assertTrue(dialog.can_apply)
+        self.assertIn("Stage drops the slot's pending rename", self.text(dialog, gui_grid.OK))
+        pending.accept(batch(clear_section()))                                  # a pending clear is not a rename
+        self.assertFalse(gui_grid.slot_dialog(self.s, 0x0D, False, plan, 0, '', pending, rename=True).can_apply)
+
+    def test_pending_lines_and_titles(self):
+        pending = gui_grid.PendingEdits()
+        pending.accept(batch(rename_section(), rename_section('0x66', '')))
+        self.assertEqual(pending.lines(0x0D), ["Pending: rename to 'Little Toad'", '  Name: Little Toad'])
+        self.assertEqual(pending.lines(0x66), ['Pending: reset the name', '  Name: its stock name'])
+        self.assertIsNotNone(pending.rename_edit(0x0D))
+        self.assertIsNone(pending.model_edit(0x0D))                            # a rename is not a model edit
+        self.assertEqual(pending.staging({'op': 'rename', 'id': '0x06', 'text': 'X'})['edits'][-1],
+                         {'op': 'rename', 'id': '0x06', 'text': 'X'})
+
+    def test_summary_lines(self):
+        plan = batch(rename_section(), rename_section('0x66', ''), skipped=[rename_section('0x06', nothing=True)])
+        text = self.text(gui_grid.summary_dialog(self.s, plan, 0, ''))
+        self.assertIn("C0D (0x0D): rename to 'Little Toad'", text)
+        self.assertIn('C66 (0x66): reset the name', text)
+        self.assertIn('C06 (0x06): nothing to rename', text)
+        self.assertIn('--rename-slot', ' '.join(gui_grid.WRITING_FLAGS))
+
+
 class SummaryDialogTests(unittest.TestCase):
     def setUp(self):
         self.s = state([0x06, 0x66], [0x0D])

@@ -82,12 +82,33 @@ High model is its own partner.
 back, and a new ID a fresh copy of its template's files, the template's
 stats, the "Empty slot" name and portraits. The square's voice stays.
 
+## Renaming a slot
+
+Every slot can be renamed, stock characters included:
+
+```
+python start.py --rename-slot 0x0D "Little Toad"
+python start.py --rename-slot 0x0D ""
+```
+
+One name is used for English, French and Spanish, in the name tables and on
+the select screen's name plate. The name must fit the plate (115 x 16 pixels at
+the stock font size; roughly 12-14 letters). A longer name is refused;
+it is never shrunk. A blank name resets the slot: a stock character gets its
+stock name back, a new ID the "Empty slot" name. Renaming rebuilds the roster
+once, like a portrait change. Miis (`0x4D`–`0x65`) have no name plate and
+cannot be renamed.
+
+Putting a model into an "Empty slot" names it after the source character,
+unless you renamed the slot first. A rename after the patch wins.
+
 Several changes can go in one run with an edits file, a JSON list of
-`patch` and `clear` edits:
+`patch`, `clear` and `rename` edits (a `rename` edit's `text` may be blank):
 
 ```
 {"edits": [{"op": "patch", "id": "0xE2", "file": "2_Output_Models/27 Bowser/114968608_koopa.gpl/114968608_koopa.gpl.sluggie"},
-           {"op": "clear", "id": "0x1D"}]}
+           {"op": "clear", "id": "0x1D"},
+           {"op": "rename", "id": "0x0D", "text": "Little Toad"}]}
 ```
 
 ```
@@ -95,13 +116,16 @@ python start.py --apply-slots edits.json --dry-run
 python start.py --apply-slots edits.json
 ```
 
-A later edit for the same slot replaces an earlier one. A Low model picked
+A later edit for the same slot replaces an earlier one of the same kind (a
+clear also drops the slot's earlier renames, since it resets the name). A Low model picked
 after a High model of the same character for the same slot joins it as a
 pair. If any edit is refused, nothing is written and the output names the
 refused edits.
 
 In the GUI, the **Character grid** tab does the same: click a square, then a
-slot, and use **Select .sluggie...** or **Clear slot**. A dialog shows what
+slot, and use **Rename...** (or click the slot's name), **Select .sluggie...**
+or **Clear slot**. The rename dialog tells you live whether the name fits the
+plate. A dialog shows what
 will change (models and their sizes, directory, stats, voice, name,
 portraits, warnings) and whether the checks passed. **Stage** does not write
 anything yet. It adds the change to a list of pending edits:

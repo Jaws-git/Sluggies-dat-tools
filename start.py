@@ -144,9 +144,10 @@ def self_command(*args):
     return [sys.executable, os.path.abspath(__file__), *args]
 
 
-def run_slot_chain(target_id=None, sluggie=None, dry_run=False, edits_file=None):
+def run_slot_chain(target_id=None, sluggie=None, dry_run=False, edits_file=None, rename=None):
     """Write staged slot edits as one chain: an edits file (``edits_file``, ``--apply-slots``), or a batch of one:
-    patch a .sluggie (and its HP/L_ partner) into a slot, or clear the slot (``sluggie`` None). Plans the chain
+    patch a .sluggie (and its HP/L_ partner) into a slot, name the slot (``rename``: the text, blank resets it), or
+    clear the slot (neither given). Plans the chain
     (Roster/slot_cli.py: read and derive once, apply every edit; a refused edit refuses the batch and writes
     nothing), then runs its commands in order, stopping at the first failure. Returns True on success.
 
@@ -158,6 +159,8 @@ def run_slot_chain(target_id=None, sluggie=None, dry_run=False, edits_file=None)
         cmd += ['--apply', os.path.abspath(edits_file)]
     elif sluggie:
         cmd += ['--patch', target_id, os.path.abspath(sluggie)]
+    elif rename is not None:
+        cmd += ['--rename', target_id, rename]
     else:
         cmd += ['--clear', target_id]
     if dry_run:
@@ -626,6 +629,7 @@ def parse_args():
             '  python start.py --unpatch --target-id 0x4A\n'
             '  python start.py --patch-slot 0xE1 path/to/model.gpl.sluggie\n'
             '  python start.py --clear-slot 0xE1\n'
+            '  python start.py --rename-slot 0xE1 "Purple Yoshi"\n'
             '  python start.py --apply-slots 3_Output_Dat/_gui/slot/edits.json --dry-run\n'
             '  python start.py --resplit-unused\n'
         ),
@@ -637,7 +641,8 @@ def parse_args():
     mode.add_argument('--unpatch', nargs='*', metavar='FILENAME', help="restore original data for one or more .sluggies files (with --target-id and no files: that stock slot's high- and low-poly models)")
     mode.add_argument('--patch-slot', nargs=2, metavar=('0xNN', 'FILE'), help='put a .sluggie (and its HP/L_ partner) into a slot: read -> rebuild (own model directory, stats, voice, name, portraits) -> patch (GUI character grid)')
     mode.add_argument('--clear-slot', metavar='0xNN', help='return a slot to its baseline: a stock slot gets its vanilla models and portraits back, a new ID a fresh copy of its template and the open-slot look')
-    mode.add_argument('--apply-slots', metavar='FILE', help='write staged slot edits (an edits file with patch/clear edits per slot, as the GUI\'s "Patch Game" writes it) as one chain: read once, at most one roster rebuild, then the slot patches')
+    mode.add_argument('--rename-slot', nargs=2, metavar=('0xNN', 'TEXT'), help='name a slot (stock characters included), one name for English, French and Spanish; it must fit the name plate; a blank TEXT resets the name (read -> rebuild)')
+    mode.add_argument('--apply-slots', metavar='FILE', help='write staged slot edits (an edits file with patch/clear/rename edits per slot, as the GUI\'s "Patch Game" writes it) as one chain: read once, at most one roster rebuild, then the slot patches')
     mode.add_argument('--resplit-unused', action='store_true', help='repair: give unused-character routes (dirs 89-94) that point at a playable character\'s block their own copy again')
     mode.add_argument('--roster', '--roster-dev', dest='roster', action='store_true', help='inject a roster configuration (--config, e.g. from 1_Input/_RosterConfigurations) into 3_Output_Dat, replacing the previous injection')
     mode.add_argument('--roster-state', action='store_true', help='read the draft grid from 3_Output_Dat into 3_Output_Dat/_gui/roster_state.json (used by the GUI)')
@@ -674,9 +679,9 @@ def parse_args():
     if args.use_output and not args.export_icons:
         parser.error('--use-output can only be used with --export-icons.')
     if args.dry_run and not (args.roster or args.game_options
-                             or args.patch_slot or args.clear_slot or args.apply_slots):
+                             or args.patch_slot or args.clear_slot or args.rename_slot or args.apply_slots):
         parser.error('--dry-run can only be used with --roster, --game-options, --patch-slot, '
-                     '--clear-slot or --apply-slots.')
+                     '--clear-slot, --rename-slot or --apply-slots.')
     if (args.on or args.off) and not args.game_options:
         parser.error('--on and --off can only be used with --game-options.')
     if (args.config or args.remove or args.state) and not args.roster:
@@ -695,7 +700,7 @@ def parse_args():
         parser.error('--config and --state cannot be used together.')
     if args.roster and not (args.config or args.remove or args.state):
         parser.error('--roster needs --config PATH (a roster configuration), --state PATH or --remove.')
-    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.apply_slots, args.resplit_unused, args.export, args.export_icons, args.roster, args.roster_state, args.roster_derive, args.game_options]):
+    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.rename_slot, args.apply_slots, args.resplit_unused, args.export, args.export_icons, args.roster, args.roster_state, args.roster_derive, args.game_options]):
         if len(sys.argv) == 1:
             args.gui = True
         else:
@@ -787,6 +792,9 @@ def main() -> int:
                 return 1
         elif args.clear_slot:
             if not run_slot_chain(args.clear_slot, dry_run=args.dry_run):
+                return 1
+        elif args.rename_slot:
+            if not run_slot_chain(args.rename_slot[0], rename=args.rename_slot[1], dry_run=args.dry_run):
                 return 1
         elif args.apply_slots:
             if not run_slot_chain(edits_file=args.apply_slots, dry_run=args.dry_run):

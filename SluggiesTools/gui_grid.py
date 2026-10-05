@@ -27,7 +27,7 @@ SLOT_PLAN_REL = os.path.join('3_Output_Dat', '_gui', 'slot', 'plan.json')
 EDITS_REL = os.path.join('3_Output_Dat', '_gui', 'slot', 'edits.json')
 # start.py modes whose commands can change what the grid shows: the tab re-reads after them
 WRITING_FLAGS = frozenset({'--export', '--roster', '--patch', '--unpatch', '--resplit-unused',
-                           '--patch-slot', '--clear-slot', '--apply-slots'})
+                           '--patch-slot', '--clear-slot', '--rename-slot', '--apply-slots'})
 UNNAMED = '-'
 LUIGI = 0x01
 
@@ -127,6 +127,41 @@ def name_of(state: dict, cid: int) -> str:
 def known_name(state: dict, cid: int) -> str:
     """The name of a grid character, else just its ID (fallback keys can be characters not on the grid)."""
     return name_of(state, cid) if cid in characters(state) else hex_id(cid)
+
+
+# The name plate (Roster/names.py: PLATE_CELL, FONT_SIZE, FONT_WEIGHT; test-pinned to ``names.fit_problem``)
+PLATE_TEXT_WIDTH = 113               # the 115 px plate, 2 px margin
+PLATE_FONT_SIZE, PLATE_FONT_WEIGHT = 14, 800
+
+
+def name_problem(text: str, font_path: str) -> str | None:
+    """Why ``text`` cannot be a slot name (None: it can): what ``Roster.names.fit_problem`` says, measured with the
+    plate font at ``font_path`` (the GUI's rename dialog shows it live; the planner checks again)."""
+    if not text or not text.strip():
+        return 'a name cannot be empty'
+    if text != text.strip():
+        return 'a name cannot start or end with a space'
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text):
+        return 'a name cannot hold control characters or line breaks'
+    from PIL import Image, ImageDraw, ImageFont
+    try:
+        font = ImageFont.truetype(font_path, PLATE_FONT_SIZE)
+        font.set_variation_by_axes([PLATE_FONT_WEIGHT, 100])
+    except (OSError, ValueError, AttributeError):
+        return None                      # no font to measure with: the planner decides
+    width = ImageDraw.Draw(Image.new('RGBA', (115, 16))).textbbox((0, 0), text, font=font)[2]
+    if width > PLATE_TEXT_WIDTH:
+        return f'too long for the name plate ({width} px, at most {PLATE_TEXT_WIDTH})'
+    return None
+
+
+def rename_prefill(state: dict, cid: int) -> str:
+    """The text the rename dialog starts with: the slot's English name, nothing for an unnamed / open one."""
+    c = characters(state).get(cid) or {}
+    if c.get('default_name'):
+        return c['default_name']
+    name = (c.get('name') or {}).get('en') or ''
+    return '' if name == UNNAMED else name
 
 
 # --------------------------------------------------------------------------
@@ -360,6 +395,9 @@ class PendingEdits:
     def model_edit(self, cid: int) -> dict | None:
         return next((e for e in self.edits if int(e['id'], 16) == cid and e['op'] in ('patch', 'clear')), None)
 
+    def rename_edit(self, cid: int) -> dict | None:
+        return next((e for e in self.edits if int(e['id'], 16) == cid and e['op'] == 'rename'), None)
+
     def sections_for(self, cid: int) -> list[dict]:
         return [s for s in self.sections if int(s['target'], 16) == cid]
 
@@ -400,6 +438,8 @@ def _edit_title(edit: dict) -> str:
         return 'Pending: put ' + ' + '.join(files) + ' into this slot'
     if edit['op'] == 'clear':
         return 'Pending: clear this slot'
+    if edit['op'] == 'rename':
+        return f'Pending: rename to {edit["text"]!r}' if edit.get('text') else 'Pending: reset the name'
     return f'Pending: {edit["op"]}'
 
 
@@ -499,12 +539,13 @@ def _refused_lines(state: dict, plan: dict, cid: int | None = None) -> list:
 
 
 def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int, output: str,
-                pending: PendingEdits | None = None) -> SlotDialog:
+                pending: PendingEdits | None = None, rename: bool = False) -> SlotDialog:
     """The confirm dialog of a staged edit, after its staging check (the pending edits plus this one, exit
     ``code``, log ``output``): what the edit does, its warnings and the verdict. ``can_apply`` (Stage stages it)
-    only when the planner and the build check passed."""
+    only when the planner and the build check passed. ``rename``: a rename (neither patch nor clear)."""
     target = f'{name_of(state, cid)} ({hex_id(cid)})'
-    dialog = SlotDialog(f'Put a model into {target}?' if patch else f'Clear {target}?')
+    dialog = SlotDialog(f'Rename {target}?' if rename else
+                        f'Put a model into {target}?' if patch else f'Clear {target}?')
     error = error_message(output)
     lines = dialog.lines
     if plan is None or plan['refused']:
@@ -519,15 +560,15 @@ def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int
         lines.append(('Nothing was staged.', TEXT))
         return dialog
     section = next((s for s in plan['edits'] if int(s['target'], 16) == cid), None)
-    if section is None:                       # a clear of a slot at its baseline
+    if section is None:                       # a clear of a slot at its baseline, or a rename that changes nothing
         skipped = next((s for s in plan['skipped'] if int(s['target'], 16) == cid), None)
         lines += [(f'- {note}', TEXT) for note in (skipped or {}).get('notes', [])]
-        earlier = pending.model_edit(cid) if pending else None
+        earlier = (pending.rename_edit(cid) if rename else pending.model_edit(cid)) if pending else None
         if earlier is not None:
             lines.append((f'Stage drops the slot\'s pending {earlier["op"]}, so the slot stays as it is.', OK))
             dialog.can_apply = True
         else:
-            dialog.title = f'{target}: nothing to clear'
+            dialog.title = f'{target}: nothing to rename' if rename else f'{target}: nothing to clear'
         return dialog
     lines += _section_lines(state, section, build_sizes(output))
     prefix = f'{hex_id(cid)}: '
@@ -537,7 +578,7 @@ def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int
     if code != 0:
         lines.append((f'Build check failed: {error or f"exit code {code}"}. Nothing was staged.', ERROR))
         return dialog
-    checks = 'slot rules, and every model built and validated' if patch else 'slot rules'
+    checks = 'slot rules, and every model built and validated' if patch and not rename else 'slot rules'
     lines.append((f'Checks passed: {checks}. Nothing written yet: Stage adds the edit to the pending list, '
                   '"Patch Game" writes it.', OK))
     dialog.can_apply = True
@@ -565,12 +606,17 @@ def summary_dialog(state: dict, plan: dict | None, code: int, output: str) -> Sl
     sizes = build_sizes(output)
     for section in plan['edits']:
         cid = int(section['target'], 16)
-        what = 'put a model in' if section['action'] == 'patch' else 'clear'
+        what = {'patch': 'put a model in', 'rename': 'rename'}.get(section['action'], 'clear')
+        if section['action'] == 'rename':
+            text = (section.get('edit') or {}).get('text')
+            what = f'rename to {text!r}' if text else 'reset the name'
         lines.append((f'{name_of(state, cid)} ({hex_id(cid)}): {what}', OK))
         lines += [('    ' + text, kind) for text, kind in _section_lines(state, section, sizes, warnings=False)]
     for section in plan['skipped']:
         cid = int(section['target'], 16)
-        lines.append((f'{name_of(state, cid)} ({hex_id(cid)}): nothing to clear (at its baseline already)', TEXT))
+        why = ('nothing to rename (named that already)' if section['action'] == 'rename'
+               else 'nothing to clear (at its baseline already)')
+        lines.append((f'{name_of(state, cid)} ({hex_id(cid)}): {why}', TEXT))
     lines += [(f'- {note}', TEXT) for note in plan['notes']]
     lines += [(f'Warning: {warning}', WARN) for warning in plan['warnings']]
     lines.append(('- one roster rebuild' if plan['rebuild'] else '- no roster rebuild needed', TEXT))

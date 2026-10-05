@@ -38,6 +38,59 @@ class ParseTests(unittest.TestCase):
                 names.parse_names(config)
 
 
+class StockNamesTests(unittest.TestCase):
+    """GUI character grid Phase 5: ``stock_names`` renames a stock character, ``fits`` guards the plate."""
+
+    def test_parse_stock_names(self):
+        config = {'stock_names': [{'id': '0x0D', 'name': 'Little Toad'},
+                                  {'id': '0x01', 'name': {'en': 'Luigi', 'fr': 'Louis'}}],
+                  'ids': [{'id': '0x66', 'template': 6, 'name': 'Purple Yoshi'}]}
+        out = names.parse_names(config)
+        self.assertEqual(out[0x0D], {'en': 'Little Toad', 'fr': 'Little Toad', 'sp': 'Little Toad'})
+        self.assertEqual(out[0x01]['fr'], 'Louis')
+        self.assertEqual(sorted(out), [0x01, 0x0D, 0x66])
+
+    def test_stock_name_errors(self):
+        for entry, message in (({'id': '0x0D'}, 'needs an "id" and a "name"'),
+                               ({'id': '0x47', 'name': 'X'}, 'not a stock character'),
+                               ({'id': '0x4D', 'name': 'X'}, 'not a stock character'),
+                               ({'id': '0x66', 'name': 'X'}, 'not a stock character'),
+                               ({'id': '0x0D', 'name': 'A much too long name for a plate'}, 'too long')):
+            with self.subTest(entry=entry), self.assertRaisesRegex(names.NameConfigError, message):
+                names.parse_names({'stock_names': [entry]})
+        with self.assertRaisesRegex(names.NameConfigError, 'named twice'):
+            names.parse_names({'stock_names': [{'id': '0x0D', 'name': 'A'}], 'ids': [{'id': '0x0D', 'name': 'B'}]})
+
+    def test_fits(self):
+        self.assertTrue(names.fits('Little Toad'))
+        self.assertTrue(names.fits('Purple Yoshi'))
+        self.assertFalse(names.fits('The Extraordinarily Long Toad Name'))
+        for text in ('', '  ', ' Toad', 'Toad ', 'To\nad'):
+            self.assertFalse(names.fits(text), repr(text))
+        self.assertIn('too long', names.fit_problem('W' * 30))
+
+    def test_a_fitting_name_is_not_shrunk(self):
+        # fits() is the plate's own rule: a name that fits needs no smaller font than the stock size
+        from PIL import Image
+        text = 'Little Toad'
+        self.assertLessEqual(names.text_width(text), names.PLATE_CELL[0] - 2)
+        self.assertEqual(names.plate_image(text).size, names.PLATE_CELL)
+        self.assertIsInstance(names.plate_image(text), Image.Image)
+
+    def test_stock_character_in_the_table_and_the_plate_row(self):
+        msgs = names.messages(names.names_table(stock_table(), {0x0D: 'Little Toad'}))
+        self.assertEqual(msgs[0x0D].decode('utf-16-be'), 'Little Toad')
+        self.assertEqual(msgs[0x0C].decode('utf-16-be'), 'Name 12')
+        data = plate_bank()
+        first_row = len(layout2d.Layout(data).rows)
+        with mock.patch.object(names, 'PLATE_TEMPLATE_PAGE', 0):
+            out = names.plate_layout(data, {0x0D: 'Little Toad'}, first_row)
+        lay = layout2d.Layout(out)
+        page, _z, v1, _u1, _v2, _u2 = struct.unpack('>HH4f', lay.rows[names.PLATE_ROW + 0x0D])
+        self.assertEqual((page, v1 * 32), (1, 16.0))                                  # its cell, after the "-" cell
+        self.assertEqual(lay.rows[names.PLATE_ROW + 0x0E], layout2d.Layout(data).rows[names.PLATE_ROW + 0x0E])
+
+
 class TableTests(unittest.TestCase):
     def test_names_table(self):
         msgs = names.messages(names.names_table(stock_table(), {0x66: 'Purple Yoshi', 0x47: 'Black Yoshi'}))

@@ -20,8 +20,9 @@ only truth; nothing is remembered between runs.
 * ``model`` on every new ID with an own model directory: its source
   (manifest) and the directory's current DAT routes, so its copies (and any
   model patched into them) are kept byte for byte.
-* ``names``: only the IDs the original config named (manifest), each with
-  the text its name table holds now.
+* ``name`` on the entries of the IDs the original config named (manifest),
+  each with the text its name table holds now; a named stock character
+  becomes a ``stock_names`` entry.
 * ``icon`` on every entry that has own art, in the bank's resource-row order
   (the order the icons step packs them in), with the ``like`` its records
   were copied from. The portraits are the bank's own cells: the 48x51 PNG
@@ -48,7 +49,7 @@ from PIL import Image
 try:
     from ..Dol import dolfile, inventory, relocate
     from ..Icons import gx_decode
-    from . import dat_hammerspace, icon_art, icons, ids, model_dirs, state, state_icons
+    from . import dat_hammerspace, icon_art, icons, ids, model_dirs, names, state, state_icons
 except ImportError:
     from Dol import dolfile, inventory, relocate
     from Icons import gx_decode
@@ -56,6 +57,7 @@ except ImportError:
     import icon_art
     import icons
     import model_dirs
+    import names
     import ids
     import state
     import state_icons
@@ -281,9 +283,13 @@ def derive(image: dolfile.DolImage, dat) -> Derived:
 
     # names: the IDs the config named, with the text the name tables hold now
     text = state.read_names(image, dat) or {}
+    stock_names: dict[int, dict] = {}
     for key, value in (mf.get('names') or {}).items():
         cid = int(key)
         entry = id_entries.get(cid) or spare_entries.get(cid)
+        if entry is None and cid < names.RENAMEABLE_END and cid not in icons.SPARE_DONORS:
+            stock_names[cid] = {'id': _hex(cid), 'name': dict(text.get(cid) or value)}   # a renamed stock character
+            continue
         if entry is None:
             out.warnings.append(f'{_hex(cid)} is named but has no ids/wheels entry: name dropped')
             continue
@@ -335,6 +341,8 @@ def derive(image: dolfile.DolImage, dat) -> Derived:
         config['wheel_order'] = [[_hex(c) for c in order] for _species, order in mf.get('wheel_order') or []]
     if stock_entries:
         config[icons.STOCK_KEY] = [stock_entries[c] for c in sorted(stock_entries, key=lambda c: rank[c])]
+    if stock_names:
+        config[names.STOCK_KEY] = [stock_names[c] for c in sorted(stock_names)]
     return out
 
 

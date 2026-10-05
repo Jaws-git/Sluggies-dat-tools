@@ -200,6 +200,12 @@ CONFIGS = {
                 {'id': '0x68', 'template': '0x00', 'wheel': '0x06', 'stats': '0x0D'}],
         'grid': {'squares': [{'members': ['0x66', '0x67', '0x68'], 'voice': '0x09'}], 'shape': [11, 5]}},
     'stock portraits only': {'stock_icons': [{'id': '0x02', 'icon': ICON}]},
+    'stock names only': {'stock_names': [{'id': '0x0D', 'name': 'Little Toad'}]},
+    'stock names with new IDs': {
+        'ids': [{'id': '0x66', 'template': '0x00', 'name': 'Red'}],
+        'wheels': [{'id': '0x48', 'name': 'White'}],
+        'stock_names': [{'id': '0x01', 'name': {'en': 'Luigi', 'fr': 'Louis', 'sp': 'Luis'}},
+                        {'id': '0x0D', 'name': 'Little Toad'}]},
     'stock portraits with new IDs': {
         'ids': [{'id': '0x66', 'template': '0x00', 'icon': {'side': 'green.png', 'front': 'grey.png'}}],
         'wheels': [{'id': '0x48', 'icon': ICON}],
@@ -250,6 +256,27 @@ class RoundTripTests(Harness):
         self.assertEqual(stock[1]['icon']['side'], derived['wheels'][0]['icon']['side'])   # one shared cell
         only = self.round_trip(CONFIGS['stock portraits only'])
         self.assertEqual(set(only) - {'version', 'comment'}, {'stock_icons'})
+
+    def test_stock_names_are_carried(self):
+        """GUI character grid Phase 5: a renamed stock character becomes a ``stock_names`` entry (with the table's
+        text), new IDs and spare rows keep their ``name``."""
+        derived = self.round_trip(CONFIGS['stock names with new IDs'])
+        self.assertEqual(derived['stock_names'],
+                         [{'id': '0x01', 'name': {'en': 'Luigi', 'fr': 'Louis', 'sp': 'Luis'}},
+                          {'id': '0x0D', 'name': {'en': 'Little Toad', 'fr': 'Little Toad', 'sp': 'Little Toad'}}])
+        self.assertEqual(derived['ids'][0]['name']['en'], 'Red')
+        self.assertEqual(derived['wheels'][0]['name']['en'], 'White')
+        only = self.round_trip(CONFIGS['stock names only'])
+        self.assertEqual(set(only) - {'version', 'comment'}, {'stock_names'})
+
+    def test_a_stock_name_is_dropped_by_leaving_it_out(self):
+        """Rebuilding without the entry restores the stock text (the reset of a blank rename)."""
+        derived = self.round_trip(CONFIGS['stock names with new IDs'])
+        derived['stock_names'] = [e for e in derived['stock_names'] if e['id'] != '0x0D']
+        _dol, _dat, _ctx, dat, image = self.build(derived, self.icon_dir)
+        again = derive.derive(image, dat).config
+        self.assertEqual([e['id'] for e in again['stock_names']], ['0x01'])
+        self.assertEqual(state.read_names(image, dat)[0x0D]['en'], 'Name 13')
 
     def test_new_id_wheel_host_comes_first(self):
         """Icon entries come first (bank order), but a new-ID wheel host still precedes its members."""

@@ -19,7 +19,8 @@ Portraits that are not the slot's own (a lower key, the template's, the Mii
 or "?" icon) are marked. The textures are released and rebuilt on every
 re-read.
 
-Edits are staged (decision 14). The slot level's **Select .sluggie...** and
+Edits are staged (decision 14). The slot level's **Rename...** (a text box
+with a live "fits the name plate" line), **Select .sluggie...** and
 **Clear slot** run a staging check (``start.py --apply-slots edits.json
 --dry-run``: the pending edits plus the new one, the new edit's build check),
 then a confirm dialog with what the edit does (``gui_grid.slot_dialog``); Stage
@@ -64,8 +65,9 @@ LINE = 26                        # text line height (Segoe UI 16 pt, with spacin
 SLOT_W = 720                     # level 2 may be wider than level 1: each level is its own window
 PORTRAIT = (SLOT_SCALE * ICON[0], SLOT_SCALE * ICON[1])
 BUTTON_H = 32
-SELECT, CLEAR, DISCARD = 'Select .sluggie...', 'Clear slot', 'Discard pending'
-SLOT_BUTTONS = (('Rename...', 5), (SELECT, None), (CLEAR, None), ('Stats...', 7), (DISCARD, None))  # (label, phase)
+RENAME, SELECT, CLEAR, DISCARD = 'Rename...', 'Select .sluggie...', 'Clear slot', 'Discard pending'
+SLOT_BUTTONS = ((RENAME, None), (SELECT, None), (CLEAR, None), ('Stats...', 7), (DISCARD, None))  # (label, phase)
+FONT_REL = os.path.join('SluggiesTools', 'Roster', 'fonts', 'OpenSans.ttf')   # the name plate's font
 CONFIRM_W = 680
 BUSY_TEXT = 'A command is running (see the log)...'
 _NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
@@ -86,8 +88,10 @@ class CharacterGridTab:
         self.popups = []                   # [(dim window, box window)], bottom first
         self.textures = {}                 # (crop path, scale) -> texture tag; released on every re-read
         self.slot_buttons = []             # the slot level's working buttons (disabled while a command runs)
+        self._name_handlers = []           # click handlers of the slot level's name (deleted with the levels)
         self.action = None                 # the action in progress (file dialog to confirm dialog), or None
         self.confirm = None                # the open dialog window
+        self.confirm_default = None        # what Enter does in it (its OK / Close button), or None
         self.pending = gui_grid.PendingEdits()
         self.work = None                   # what the tab's own running command does (status text), or None
         self.edits_path = os.path.join(app.root_dir, gui_grid.EDITS_REL)
@@ -128,6 +132,19 @@ class CharacterGridTab:
                 with dpg.theme_component(kind):
                     dpg.add_theme_color(dpg.mvThemeCol_Border, _PENDING)
                     dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 3)
+        with dpg.theme(tag='grid_danger_theme'):             # like primary_theme, in red (Discard all)
+            for state, colors in (
+                (True, ((dpg.mvThemeCol_Button, (170, 50, 50, 255)),
+                        (dpg.mvThemeCol_ButtonHovered, (200, 65, 65, 255)),
+                        (dpg.mvThemeCol_ButtonActive, (135, 35, 35, 255)))),
+                (False, ((dpg.mvThemeCol_Button, (80, 66, 66, 255)),
+                         (dpg.mvThemeCol_Text, (150, 150, 150, 255)))),
+            ):
+                with dpg.theme_component(dpg.mvButton, enabled_state=state):
+                    for col, value in colors:
+                        dpg.add_theme_color(col, value)
+                    dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 4)
+        dpg.bind_item_theme('grid_discard_all', 'grid_danger_theme')
         with dpg.theme(tag='grid_empty_theme'):
             with dpg.theme_component(dpg.mvButton, enabled_state=False):
                 dpg.add_theme_color(dpg.mvThemeCol_Button, (45, 45, 48, 255))
@@ -142,6 +159,9 @@ class CharacterGridTab:
         with dpg.handler_registry():
             dpg.add_mouse_click_handler(callback=self._on_mouse_click)
             dpg.add_key_press_handler(dpg.mvKey_Escape, callback=self._on_escape)
+            # on release, so a held Enter cannot also accept the next dialog
+            dpg.add_key_release_handler(dpg.mvKey_Return, callback=self._on_enter)
+            dpg.add_key_release_handler(dpg.mvKey_NumPadEnter, callback=self._on_enter)
 
     # ------------------------------------------------------------------ reading
     def request_read(self):
@@ -322,6 +342,12 @@ class CharacterGridTab:
         if self.nav.back():
             self._draw_popups()
 
+    def _on_enter(self, *_):
+        """Enter presses the open dialog's default button (OK / Stage / Patch Game / Discard; Close when that is
+        all there is), unless it is disabled; Esc is Cancel (``_on_escape``)."""
+        if self.confirm is not None and self.confirm_default is not None:
+            self.confirm_default()
+
     def on_viewport_resize(self):
         self._draw_popups()
 
@@ -331,6 +357,10 @@ class CharacterGridTab:
                 if dpg.does_item_exist(item):
                     dpg.delete_item(item)
         self.popups = []
+        for registry in self._name_handlers:
+            if dpg.does_item_exist(registry):
+                dpg.delete_item(registry)
+        self._name_handlers = []
 
     def _draw_popups(self):
         self._clear_popups()
@@ -408,7 +438,13 @@ class CharacterGridTab:
         text_w = SLOT_W - 2 * PAD - 2 * (PORTRAIT[0] + GAP) - GAP
         body = max(PORTRAIT[1] + LINE, LINE * sum(1 + len(line) * 7 // text_w for line, _c in details))
         box = self._box(SLOT_W, 2 * PAD + 2 * LINE + body + GAP + BUTTON_H + 2 * LINE)
-        dpg.add_text(gui_grid.name_of(state, cid), parent=box)
+        title = dpg.add_text(gui_grid.name_of(state, cid), parent=box)
+        with dpg.item_handler_registry() as handlers:        # clicking the name renames, like the button
+            dpg.add_item_clicked_handler(callback=lambda *_: self._on_rename(cid))
+        dpg.bind_item_handler_registry(title, handlers)
+        self._name_handlers.append(handlers)
+        with dpg.tooltip(title):
+            dpg.add_text('Click to rename this slot')
         dpg.add_separator(parent=box)
         with dpg.group(horizontal=True, horizontal_spacing=GAP, parent=box):
             for view in (gui_grid.FRONT, gui_grid.SIDE):
@@ -426,12 +462,14 @@ class CharacterGridTab:
                     dpg.add_text(line, color=color, wrap=text_w)
         dpg.add_spacer(height=GAP, parent=box)
         self.slot_buttons = []
-        tips = {SELECT: 'Stage an exported model (and its High/Low partner) for this slot; a confirm dialog shows '
+        tips = {RENAME: 'Stage a new name for this slot (one name for English, French and Spanish; it must fit the '
+                        'name plate; blank resets it). "Patch Game" writes the pending edits.',
+                SELECT: 'Stage an exported model (and its High/Low partner) for this slot; a confirm dialog shows '
                         'what changes first. "Patch Game" writes the pending edits.',
                 CLEAR: "Stage a return to this slot's baseline (stock: vanilla models and portraits; new ID: its "
                        "template's files and the open-slot look); a confirm dialog shows what changes first.",
                 DISCARD: "Drop this slot's pending edits (nothing was written for them yet)."}
-        actions = {SELECT: lambda: self._on_select(cid), CLEAR: lambda: self._start_preview(cid, None),
+        actions = {RENAME: lambda: self._on_rename(cid), SELECT: lambda: self._on_select(cid), CLEAR: lambda: self._start_preview(cid, None),
                    DISCARD: lambda: self._on_discard(cid)}
         with dpg.group(horizontal=True, parent=box):
             for label, phase in SLOT_BUTTONS:
@@ -497,13 +535,59 @@ class CharacterGridTab:
         self.action = None
         self._start_preview(cid, path)
 
-    def _start_preview(self, cid, sluggie):
-        """The staging check (the pending edits plus this one; this one's build check); the confirm dialog
-        opens when it is done."""
+    def _on_rename(self, cid):
+        """The rename dialog: a text box with a live "fits / too long" line; OK runs the staging check."""
         if self._locked():
             return
-        edit = {'op': 'patch', 'id': gui_grid.hex_id(cid), 'file': sluggie} if sluggie else \
-            {'op': 'clear', 'id': gui_grid.hex_id(cid)}
+        state = self.nav.state or self.loader.state
+        font = os.path.join(self.app.root_dir, FONT_REL)
+        vw, vh = dpg.get_viewport_client_width(), dpg.get_viewport_client_height()
+        self.action = (cid, 'rename')
+        win = self.confirm = dpg.add_window(label=f'Rename {gui_grid.name_of(state, cid)} ({gui_grid.hex_id(cid)})',
+                                            modal=True, no_collapse=True, no_saved_settings=True, autosize=True,
+                                            pos=(max(0, (vw - CONFIRM_W) // 2), max(0, vh // 5)),
+                                            on_close=lambda *_: self._end_action())
+        dpg.add_text('One name is used for English, French and Spanish. It must fit the name plate '
+                     '(no shrinking). Leave it blank to reset the name.', parent=win, wrap=CONFIRM_W)
+        status, ok = 'grid_rename_status', 'grid_rename_ok'
+
+        def changed(_s=None, text=None):
+            text = (text if text is not None else dpg.get_value('grid_rename_text')).strip()
+            problem = gui_grid.name_problem(text, font) if text else None
+            dpg.set_value(status, problem or ('Resets the name' if not text else 'Fits the name plate'))
+            dpg.configure_item(status, color=_ERROR if problem else _OK if text else _DIM)
+            dpg.configure_item(ok, enabled=problem is None)
+
+        dpg.add_input_text(tag='grid_rename_text', parent=win, width=CONFIRM_W - 20, hint='New name',
+                           default_value=gui_grid.rename_prefill(state, cid), callback=changed)
+        dpg.add_text('', tag=status, parent=win)
+        dpg.add_spacer(height=GAP, parent=win)
+        with dpg.group(horizontal=True, parent=win):
+            dpg.add_button(label='OK', tag=ok, width=110, height=BUTTON_H,
+                           callback=lambda: self._on_rename_ok(cid))
+            dpg.bind_item_theme(ok, 'primary_theme')
+            dpg.add_button(label='Cancel', width=110, height=BUTTON_H, callback=lambda: self._end_action())
+        changed()
+        self.confirm_default = lambda: dpg.get_item_configuration(ok).get('enabled') and self._on_rename_ok(cid)
+        dpg.focus_item('grid_rename_text')
+        self.set_busy(self.app.busy)
+
+    def _on_rename_ok(self, cid):
+        text = dpg.get_value('grid_rename_text').strip()
+        self._end_action()
+        self._start_preview(cid, None, rename=text)
+
+    def _start_preview(self, cid, sluggie, rename=None):
+        """The staging check (the pending edits plus this one; this one's build check); the confirm dialog
+        opens when it is done. ``rename``: the new name text (blank resets), a rename edit instead of patch/clear."""
+        if self._locked():
+            return
+        if rename is not None:
+            edit = {'op': 'rename', 'id': gui_grid.hex_id(cid), 'text': rename}
+        elif sluggie:
+            edit = {'op': 'patch', 'id': gui_grid.hex_id(cid), 'file': sluggie}
+        else:
+            edit = {'op': 'clear', 'id': gui_grid.hex_id(cid)}
         try:
             gui_grid.write_edits(self.edits_path, self.pending.staging(edit))
         except OSError as exc:
@@ -511,13 +595,14 @@ class CharacterGridTab:
             return
         self.action = (cid, sluggie)
         if not self._run([gui_grid.preview_command(self.edits_path)], 'Checking the edit...',
-                         lambda code, output: self._show_confirm(cid, sluggie, code, output)):
+                         lambda code, output: self._show_confirm(cid, sluggie, code, output, rename is not None)):
             self._end_action()
 
-    def _show_confirm(self, cid, sluggie, code, output):
+    def _show_confirm(self, cid, sluggie, code, output, rename=False):
         state = self.nav.state or self.loader.state
         plan = gui_grid.load_plan(self.plan_path)
-        dialog = gui_grid.slot_dialog(state, cid, sluggie is not None, plan, code, output, self.pending)
+        dialog = gui_grid.slot_dialog(state, cid, sluggie is not None, plan, code, output, self.pending,
+                                      rename=rename)
         self._dialog(dialog, lambda: self._stage(plan), ok_label='Stage')
 
     def _stage(self, plan):
@@ -626,13 +711,14 @@ class CharacterGridTab:
                 dpg.add_button(label='Cancel', width=110, height=BUTTON_H, callback=lambda: self._end_action())
             else:
                 dpg.add_button(label='Close', width=110, height=BUTTON_H, callback=lambda: self._end_action())
+        self.confirm_default = on_ok if dialog.can_apply else self._end_action
         self.set_busy(self.app.busy)
 
     def _end_action(self):
         """Close the file dialog / the open dialog; the levels respond to clicks again."""
         if self.confirm is not None and dpg.does_item_exist(self.confirm):
             dpg.delete_item(self.confirm)
-        self.confirm, self.action = None, None
+        self.confirm, self.confirm_default, self.action = None, None, None
         self.set_busy(self.app.busy)
 
 

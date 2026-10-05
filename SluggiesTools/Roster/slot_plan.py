@@ -57,13 +57,14 @@ import os
 from dataclasses import dataclass, field
 
 try:
-    from . import icons, ids, model_icons, names, open_slot
+    from . import icons, ids, model_icons, names, open_slot, wheels
 except ImportError:
     import icons
     import ids
     import model_icons
     import names
     import open_slot
+    import wheels
 
 HIGH_FILE, LOW_FILE = 0, 1
 CHARACTER_DIRS = range(ids.MODEL_DIR_BASE, ids.MODEL_DIR_BASE + ids.STOCK_IDS)
@@ -331,7 +332,7 @@ def plan_patch(st: dict, config: dict, cid: int, pair: Pair, env: Env, state_fil
                 plan.effects['voice'] = f'{source_name} (square voice)'
         else:
             plan.notes.append(f'{target_name} keeps its stats and voice (stock square)')
-        en = (char.get('name') or {}).get('en')
+        en = (entry.get('name') or char.get('name') or {}).get('en')     # a pending rename counts
         source_text = (names_text or {}).get(source)
         if en in (None, '', names.UNNAMED, open_slot.SLOT_NAME['en']) and source_text and source_text.get('en'):
             entry['name'] = {lang: source_text.get(lang) or source_text['en'] for lang in open_slot.SLOT_NAME}
@@ -439,6 +440,67 @@ def plan_clear(st: dict, config: dict, cid: int, state_file: str, env: Env | Non
     return plan
 
 
+def plan_rename(st: dict, config: dict, cid: int, text: str, state_file: str) -> Plan:
+    """The chain that names slot ``cid`` ``text`` in all three languages (a roster rebuild: the name tables and
+    the select screen's name plates). A blank ``text`` resets the name: a stock character gets its stock name
+    back, a new ID the "Empty slot" name. A name that does not fit the plate is refused (``names.fit_problem``)."""
+    char = _character(st, cid)
+    new = copy.deepcopy(config)
+    plan = Plan('rename', cid, None)
+    target_name = _display(char)
+    text = (text or '').strip()
+    reset = not text
+    if not reset:
+        problem = names.fit_problem(text)
+        if problem:
+            raise PlanError(f'{target_name}: {problem}')
+    value = dict(open_slot.SLOT_NAME) if reset else {lang: text for lang in open_slot.SLOT_NAME}
+    current = char.get('name')
+    if cid >= ids.FIRST_NEW:
+        entry = _entry(new, 'ids', cid)
+        if entry is None:
+            raise PlanError(f'{_hex(cid)} has no ids entry in the derived config')
+        entry['name'] = value
+    elif cid in wheels.SPARE_IDS:
+        entry = _entry(new, 'wheels', cid)
+        if entry is None:
+            raise PlanError(f'{_hex(cid)} is not on a wheel, so it has no name to change')
+        if reset:
+            entry.pop('name', None)
+        else:
+            entry['name'] = value
+    elif cid < names.RENAMEABLE_END:
+        entry = _entry(new, names.STOCK_KEY, cid)
+        if reset:
+            if entry is not None:
+                new[names.STOCK_KEY].remove(entry)
+                if not new[names.STOCK_KEY]:
+                    del new[names.STOCK_KEY]
+        elif entry is not None:
+            entry['name'] = value
+        elif current != value:                        # the same text as the stock name: nothing to write
+            new.setdefault(names.STOCK_KEY, []).append({'id': _hex(cid), 'name': value})
+            new[names.STOCK_KEY].sort(key=lambda e: ids._number(e['id'], names.STOCK_KEY))
+    else:
+        raise PlanError(f'{_hex(cid)} has no name plate to change')
+    if new == config:
+        plan.nothing = True
+        plan.notes.append(f'nothing to rename: {target_name} is named that already' if not reset
+                          else f'nothing to reset: {target_name} has its default name already')
+        return plan
+    plan.config = new
+    _prepare(plan, state_file, [])
+    plan.commands.append(('--roster-state',))
+    if reset:
+        shown = open_slot.SLOT_NAME['en'] if cid >= ids.FIRST_NEW else 'its stock name'
+        plan.notes.append(f'{target_name}: name reset to {shown!r}')
+    else:
+        shown = text
+        plan.notes.append(f'{target_name}: renamed to {text!r} (English, French and Spanish)')
+    plan.effects['name'] = shown
+    return plan
+
+
 def _display(char: dict) -> str:
     name = char.get('default_name') or (char.get('name') or {}).get('en')
     return f'{name} ({_hex(char["id"])})' if name and name != names.UNNAMED else _hex(char['id'])
@@ -449,7 +511,8 @@ def _display(char: dict) -> str:
 # --------------------------------------------------------------------------
 
 MODEL_OPS = ('patch', 'clear')
-LATER_OPS = {'rename': 5, 'voice': 7, 'stats': 7}     # ops a later plan phase brings: {op: phase}
+LATER_OPS = {'voice': 7, 'stats': 7}                  # ops a later plan phase brings: {op: phase}
+SLOT_OPS = MODEL_OPS + ('rename',) + tuple(LATER_OPS)
 
 
 @dataclass
@@ -479,7 +542,7 @@ def parse_edits(data) -> list[Edit]:
         raise PlanError('the edits file holds no list of edits')
     edits = []
     for n, item in enumerate(items, 1):
-        if not isinstance(item, dict) or item.get('op') not in MODEL_OPS + tuple(LATER_OPS) or item.get('id') is None:
+        if not isinstance(item, dict) or item.get('op') not in SLOT_OPS or item.get('id') is None:
             raise PlanError(f'edit {n} is not an edit: {item!r}')
         try:
             cid = ids._number(item['id'], 'id')
@@ -488,6 +551,8 @@ def parse_edits(data) -> list[Edit]:
         edit = Edit(item['op'], cid, item.get('file'), item.get('low'), item.get('text'), bool(item.get('checked')), n)
         if edit.op == 'patch' and not edit.file:
             raise PlanError(f'edit {n}: a patch needs a "file"')
+        if edit.op == 'rename' and not isinstance(edit.text, str):
+            raise PlanError(f'edit {n}: a rename needs a "text" (blank resets the name)')
         edits.append(edit)
     return edits
 
@@ -606,6 +671,8 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
                 raise PlanError(f'{edit.op} edits come with plan Phase {LATER_OPS[edit.op]}')
             if edit.op == 'patch':
                 plan = plan_patch(st, current, edit.cid, edit.pair, env, state_file, names_text)
+            elif edit.op == 'rename':
+                plan = plan_rename(st, current, edit.cid, edit.text, state_file)
             else:
                 plan = plan_clear(st, current, edit.cid, state_file, env)
         except PlanError as exc:

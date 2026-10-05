@@ -61,6 +61,8 @@ UNNAMED = '-'
 CODE_READS = {102: (0x80486E68, 0x80486E88), 103: (0x8047C4C0, 0x8047C4D8)}
 RANGE_TESTS = (0x80486EAC, 0x80489F94, 0x804923C0)      # cmpwi crN,rX,0x4d (then bge: no name)
 INVENTORY_GROUP = 'char_names'
+STOCK_KEY = 'stock_names'                    # config: renamed stock characters, [{"id": "0x01", "name": ...}]
+RENAMEABLE_END = 0x4D                        # the name widgets show names only below the Miis
 
 PLATE_ROW = 0x149                            # resource row of character i's plate: i + 0x149
 PLATE_CELL = (115, 16)
@@ -94,9 +96,32 @@ def _name(value, where: str) -> dict[str, str]:
     return {lang: out.get(lang, out['en']) for lang in dhs.LANGS}
 
 
-def parse_names(config: dict) -> dict[int, dict[str, str]]:
-    """``{id: {lang: name}}`` from the ``name`` keys of ``ids`` and ``wheels`` entries."""
+def parse_stock_names(config: dict) -> dict[int, dict[str, str]]:
+    """``{id: {lang: name}}`` from ``stock_names`` entries (a renamed stock character: ``{"id", "name"}``).
+
+    A stock name must fit its plate (``fits``): user names are never shrunk. Only IDs below the Miis have a
+    name plate (the name widgets read nothing for 0x4D and up)."""
     out = {}
+    for n, entry in enumerate(config.get(STOCK_KEY) or []):
+        where = f'{STOCK_KEY}[{n}]'
+        if not isinstance(entry, dict) or entry.get('id') is None or entry.get('name') is None:
+            raise NameConfigError(f'{where} needs an "id" and a "name"')
+        cid = ids._number(entry['id'], f'{where}.id')
+        if cid >= RENAMEABLE_END or cid in wheels.SPARE_IDS:
+            raise NameConfigError(f'{where}: 0x{cid:02X} is not a stock character (use the wheels entry of a '
+                                  f'spare row, or the ids entry of a new ID)')
+        name = _name(entry['name'], where)
+        for lang, text in name.items():
+            problem = fit_problem(text)
+            if problem:
+                raise NameConfigError(f'{where}.name.{lang}: {problem}')
+        out[cid] = name
+    return out
+
+
+def parse_names(config: dict) -> dict[int, dict[str, str]]:
+    """``{id: {lang: name}}`` from the ``name`` keys of ``ids`` and ``wheels`` entries and ``stock_names``."""
+    out = parse_stock_names(config)
     for key in ('ids', 'wheels'):
         for n, entry in enumerate(config.get(key) or []):
             if entry.get('name') is None:
@@ -107,6 +132,8 @@ def parse_names(config: dict) -> dict[int, dict[str, str]]:
             cid = ids._number(entry['id'], f'{where}.id')
             if key == 'wheels' and cid not in wheels.SPARE_IDS:
                 raise NameConfigError(f'{where}: 0x{cid:02X} is not a spare row')
+            if cid in out:
+                raise NameConfigError(f'{where}: 0x{cid:02X} is named twice')
             out[cid] = _name(entry['name'], where)
     return out
 
@@ -233,6 +260,31 @@ def font(size: int):
     font = ImageFont.truetype(FONT, size)
     font.set_variation_by_axes([FONT_WEIGHT, 100])          # weight, width 100 (normal)
     return font
+
+
+def text_width(text: str, size: int = FONT_SIZE) -> int:
+    """Width in pixels of ``text`` drawn as a plate at ``size``."""
+    return ImageDraw.Draw(Image.new('RGBA', PLATE_CELL)).textbbox((0, 0), text, font=font(size))[2]
+
+
+def fit_problem(text: str) -> str | None:
+    """Why ``text`` is not a valid user name (None: it is). It must fit the plate at the stock size
+    (``FONT_SIZE``, 2 px of margin): user names are refused, not shrunk."""
+    if not text or not text.strip():
+        return 'a name cannot be empty'
+    if text != text.strip():
+        return 'a name cannot start or end with a space'
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text):
+        return 'a name cannot hold control characters or line breaks'
+    width = text_width(text)
+    if width > PLATE_CELL[0] - 2:
+        return f'{text!r} is too long for the name plate ({width} px, at most {PLATE_CELL[0] - 2})'
+    return None
+
+
+def fits(text: str) -> bool:
+    """Whether ``text`` fits the 115x16 name plate at the stock font size."""
+    return fit_problem(text) is None
 
 
 def plate_image(text: str):
