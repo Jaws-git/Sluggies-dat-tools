@@ -1,4 +1,4 @@
-"""GUI character grid, Phase 8: direct portrait replacement.
+"""Direct portrait replacement.
 
 * intake (``Roster/icon_import.py``): every allowed format loads, everything
   else is refused with the format or reason named; animated, small, palette

@@ -1,4 +1,4 @@
-"""GUI character grid, Phase 7: free voice and stats reassignment.
+"""Free voice and stats reassignment.
 
 * ``stock_voices`` (``Roster/voices.py``): a stock square speaks with another
   species' voice by copying that species' voice bank word and clip row; new

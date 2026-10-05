@@ -1,4 +1,4 @@
-"""Roster expansion Phase 8: user-set names (config, text tables, DOL sites, name plates)."""
+"""User-set names (config, text tables, DOL sites, name plates)."""
 
 import struct
 import unittest
@@ -39,7 +39,7 @@ class ParseTests(unittest.TestCase):
 
 
 class StockNamesTests(unittest.TestCase):
-    """GUI character grid Phase 5: ``stock_names`` renames a stock character, ``fits`` guards the plate."""
+    """``stock_names`` renames a stock character, ``fits`` guards the plate."""
 
     def test_parse_stock_names(self):
         config = {'stock_names': [{'id': '0x0D', 'name': 'Little Toad'},

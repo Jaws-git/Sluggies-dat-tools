@@ -103,6 +103,26 @@ tool found that an ID with its own directory needs its own copy of **every**
 file: sharing the template's copies made two same-template characters
 invisible when both were loaded.
 
+**Own model directories** (`ids[].model = {"from": "0xNN"}`,
+`Roster/model_dirs.py`; *Dolphin* 2026-10-05). Every file of the source
+character's directory is copied from `1_Input/dt_na.dat` into DAT
+hammerspace. The new directory's records go into the DOL data section behind
+a moved directory table: `SLGDIRS\x01`, u32 directory count, then one
+pointer per directory (`Dol/dirtable.py`), so every reader finds the new
+directories from the game's own lookup without other metadata. `dirmap[id]`
+points at the new directory. The model loader `FUN_8036629C` also treats a
+directory as a model ID (above `0x5E` selects the Mii format, directory −
+`0x12` indexes the per-model rows above), so two hooks map a new directory to
+its source's first (`revmap`, at `0x80366340` `cmplwi r27,0x5F` and
+`0x803663A8` `subi r31,r27,0x12`). The model resolver keeps an own-model ID's
+own ID, and its model handle rows and body tables (size, hitbox, effect
+scales) follow the source. The copies are vanilla bytes, without the
+untangled texture bytes of an untangle export. A rebuild keeps a directory's
+existing copies when the config lists their `routes`, so model patches made
+into it survive; the reset zeroes every other old copy. Own directories
+cost DAT space, not RAM: only the models a match loads count against its
+memory.
+
 **IDs `0x80` and up.** Team and record code (`0x8018A7D4`–`0x80196414`) loads
 IDs with `extsb`, so these IDs turn negative there. *Dolphin*: the shipped
 presets (new IDs up to `0xF3`) pass drafting, random picks and full games.
@@ -161,7 +181,10 @@ by ID (the grid's member-list hook), not by species, and a square-only new ID
 roster sets it to the square's voice. Every other member keeps its byte 2:
 a spare row or stock ID is on its species' list (roster builder
 `0x8006BA6C`, and the Toy Field wheels), and a new ID with a wheel is
-appended to its wheel's species list.
+appended to its wheel's species list. *Dolphin* (2026-10-05): two new IDs
+on one new square, with Bowser's and Mario's models and stats and the square
+voice Bowser, both speak with Bowser's voice on the select screen and on the
+field.
 
 **Stock square voices** (`stock_voices`, `Roster/voices.py`; static analysis
 2026-10-05). The two species tables have exactly five readers, all voice
@@ -180,7 +203,9 @@ species 0's clips. Data only, no hooks; the reset rebuilds the tables from
 `1_Input`. A new square's square-only members then take the byte 2 of a
 species that still speaks with the wanted voice (the voice's own species,
 or the one that took its sounds in a swap); when none does, the build is
-refused. Not yet confirmed in Dolphin.
+refused. *Dolphin* (2026-10-05): with Mario's and Bowser's voices swapped,
+each wheel speaks with the other's voice on the select screen and on the
+field.
 
 **Stats and size.** A new ID copies one row per moved table. The rows split
 into what the character plays like and what belongs to its body:
@@ -207,8 +232,9 @@ in bytes 0–1); its body rows, selector row and own-data flag stay. Chemistry
 stays symmetric: in every row, the column of a restatted ID A becomes the
 row's stats source's column for A's source, so the pair (A, B) always reads
 the stock pair (source of A, source of B), for stock and new IDs alike.
-With an `ids` key this is done in the moved tables, otherwise in place. Not
-yet confirmed in Dolphin.
+With an `ids` key this is done in the moved tables, otherwise in place.
+*Dolphin* (2026-10-05): a stock character with Bowser's stats shows and plays
+them, for stock and new slots.
 
 ## DOL hammerspace
 
@@ -239,6 +265,15 @@ values at 0, so the patched constants decide (`bl OSSetMEM1ArenaLo` at
 `0x4006C`, which must end below arena high, hence `0x808BF000` (measured by
 the external tool in six RAM dumps): about 1 MB of DOL hammerspace. All
 tables for 153 new IDs take about 80 KB, almost half of it stats.
+
+**Game options share the sections.** The gameplay options
+(`GameOptions/game_options.py`: CPU vs CPU, CPU management) put their hook
+stubs into the same text section, creating the sections on a stock output.
+So the sections alone do not mean a roster was built: a DOL whose data
+section holds nothing but the magic counts as the stock roster
+(`DolHammerspace.has_data`). Turning the last option off on a stock output
+drops the sections and restores the arena words; with a roster the stubs
+stay until the next roster run.
 
 ## DAT hammerspace
 
@@ -353,8 +388,27 @@ texture count; descriptors (0x20 bytes) from `+0x24`.
   normal_a goes to the side row: in the stock bank normal_a is a side-view
   portrait, the same row as side except for IDs 0x01, 0x08, 0x0B, 0x27 and
   0x3E–0x41, where it is a separate, slightly different side view (2026-10-05).
-  Where the game draws normal_a is not known. (New IDs' normal_a keys show
-  the front row, as in the external tool.)
+  Where the game draws normal_a is not known: with Luigi's side and front
+  replaced, no screen still showed his old portrait (*Dolphin* 2026-10-05).
+  (New IDs' normal_a keys show the front row, as in the external tool.)
+- **Stock portrait pages are C8.** All 71 stock characters' portraits (both
+  views) sit on C8 pages (format 9), at 48×51 and not on 4-texel boundaries.
+  Rebuilding one as our own cell re-encodes it to CMPR once: on Red Toad's side
+  view the visible pixels moved by 5.5/255 on average (CMPR colour drift plus
+  the hardened soft edges; the stock art has 8 alpha levels), not visible at
+  a glance.
+- **Decoding** (`Icons/gx_decode.py`, numpy, pinned to wimgt output): wimgt
+  expands an n-bit channel as `round(v × 255 / max)`, not by bit replication
+  (bit replication is off by one for a few values). In an IA8 palette entry
+  the first byte is alpha, the second intensity (the Mii icon decodes
+  correctly only this way).
+- **CMPR re-encoding is not stable.** wimgt's CMPR decode → encode changes
+  blocks (real art: 13 of 32,768) and the pixels drift, so a rebuild keeps an
+  unchanged portrait's encoded 4×4 blocks (`icons.keep_blocks`) instead of
+  encoding it again.
+- **User images** become 48×51 RGBA before encoding (`Roster/icon_import.py`):
+  trimmed to the alpha ≥ 128 box, fitted (`contain`, `cover` or `strict`),
+  and the alpha hardened to on/off for CMPR's 1-bit alpha (≥ 128 opaque).
 - New descriptors for pages `0x92`/`0x93` occupy file `0x1264`–`0x12A4`,
   which covers the first 36 bytes of page `0x86`'s palette at `0x1280`, so
   that palette moves.
@@ -486,6 +540,104 @@ image data down 0x20 bytes, so every stock offset moves with it.
 
 *Dolphin*: names show on the draft, the batting order and in the match, in
 English, French and Spanish.
+
+**Stock names** (`stock_names`, *Dolphin* 2026-10-05) replace a stock ID's
+text in all three tables and redraw its stock plate row `id + 0x149`; spare
+rows and new IDs keep their names on their `wheels`/`ids` entries. A user
+name must fit the plate without shrinking: no edge spaces or control
+characters, and at most 113 px wide at the stock size (font size 14,
+weight 800; the 115 px plate minus the 2 px margin the plate drawing shrinks
+by), `names.fit_problem`. Plates are drawn again on every rebuild, and the
+built exe (bundled Pillow/FreeType) draws a few pixels differently from a
+development Python (7 bytes in one Spanish plate); each is stable by itself,
+so byte-for-byte comparisons need both builds made by the same one.
+
+## Models in slots
+
+A `.sluggie` can be patched into another character's slot
+(`Hammerspace/SlotTarget.py`, `--target-id`). The block is still built from
+its own donor (`ChunkNumber`, `FileIndex`, `1_Input`); only the route it is
+written to changes. *Dolphin* (2026-10-04/05): Toad's High and Low models in
+Blue Toad's slot, and models in new IDs' own directories, show on the select
+screen and on the field; the source character stays unchanged.
+
+- **Always Hammerspace.** An in-place patch writes over the source's own
+  block, so in-place edits are promoted to a Hammerspace build. Facial pose
+  edits and SK vertex-count changes exist only in the in-place patcher and
+  are refused.
+- **Skeleton.** A stock slot takes only a model whose vanilla skeleton has the
+  slot's bone count and parent chain (different rest SRTs only warn); Yoshi
+  (92 bones) or Bowser (105) into a Toad slot (89) is refused. A finished
+  block (roster packs, equipment) may add bones: its skeleton must start with
+  the slot's vanilla skeleton.
+- **High and Low.** The Low model may draw only on bones its High model has,
+  and binds textures by index into the High model's TEX
+  ([`act_section.html#lod-pairs`](../_docs_model_format/act_section.html#lod-pairs)). A Low model alone goes only under the slot's
+  current High model when that is its own partner; a new ID takes a character
+  as a whole and refuses a lone Low model. A High model without a Low partner
+  is written to file 1 as well, as its own copy (a shared block would make a
+  later patch of file 1 repoint file 0 too), and is loaded twice on the field.
+- **Sharing.** In vanilla data only the unused characters share High/Low
+  blocks with other routes (split by the untangler). Bats and gloves are
+  shared widely: one bat block serves up to 13 routes. A slot patch moves
+  only the target's route; the vanilla block is zeroed only when no other
+  live route reads it.
+- **Equipment** (files 2–5, `Roster/gear.py`): a bat fits file 2 or 5, a
+  glove only its own hand's file. Equipment blocks are one-bone models inside
+  the 32-byte archive container, which is kept; an archive with several
+  members is refused. File 5's survey and its open question are in
+  [`dol_routing.html`](../_docs_model_format/dol_routing.html).
+- **What counts as vanilla.** An untangle export rewrites texture bytes of
+  stock blocks in place (after one, 46 stock characters' blocks differ from
+  `1_Input`), so for stock directories "vanilla" means the route still points
+  at the input DOL's own entry, not equal bytes. An own directory's file is
+  vanilla when it equals its source's block.
+- **Validator exceptions.** Two vanilla slot blocks fail `BlockValidator`
+  (in the slots of IDs `0x11` and `0x41`: a memClr range and a CLUT count), so
+  a finished block is judged only by errors its slot's vanilla block does not
+  have too.
+
+## Read-back: manifest, derive and packs
+
+The roster is rebuilt from scratch on every run, and the game files are the
+only record of it. To edit a built roster, the tools read it back, turn it
+into a config that rebuilds it, change that config and rebuild once.
+
+**Manifest.** Facts that exist only inside hook code (new squares' members,
+wheel order, new IDs' templates, `portrait_of`, stats sources, square and
+stock voices, own directories, which top-level config keys were given) are
+stored at the end of every roster run in the DOL data section:
+`SLUGGIES ROSTER\x03`, u32 compressed length, zlib JSON
+(`Roster/manifest.py`; preset 04's: 42,686 bytes raw, 1,634 compressed). The
+reader (`Roster/state.py`) cross-checks everything it can also read from the
+binary (shape, map, heads, names) and the binary wins on a mismatch. A
+roster DOL without a manifest (built by an older version) is refused. On the
+stock grid Luigi's family has no square; the reader lists it as an extra
+square on no cell. Portraits are resolved as the renderer does
+(`Roster/state_icons.py`: `portrait_of`, the highest key ≤ ID, the Mii and
+"?" paths) and recorded as own, neighbour, template, Mii or invalid.
+
+**Derive → rebuild** (`Roster/derive.py`): the derived config holds own
+directories as their existing DAT routes and portraits as the bank's own
+48×51 cells plus their CMPR blocks. Unchanged, derive → rebuild gives
+byte-identical `main.dol` and `dt_na.dat` (presets 01–04). The first rebuild
+after a model patch is the exception: the roster's own DAT blocks (for
+example the name table) land in other free space, because the patch took
+some. The content is the same, and the next round trip is byte-identical
+again.
+
+**Roster packs** (`.sluggiesroster`, `Roster/pack.py`): a zip of `pack.json`
+(format 2; format 1 has no equipment and loads as "equipment unchanged"),
+`state.json` (the derived config, own directories by source only),
+`icons/` (the derived portraits; their names are kept because two entries
+can share one cell), `models/0xNN_hp.bin`, `_l.bin`, `_bat.bin` … (the
+finished blocks that differ from the slot's vanilla start) and
+`fingerprints.json` (per slot: block SHA-1s, own-directory source, portrait
+pixel SHA-1s, name, stats source, square voice and head). After an untangle
+export a pack of the whole output holds about 62 blocks, 7.2 MB. Loading
+checks every block before anything is written, keeps an own directory whose
+source and blocks already match, and otherwise copies the directory afresh
+from `1_Input` and writes the pack's blocks into it.
 
 ## Game memory
 

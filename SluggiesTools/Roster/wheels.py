@@ -1,4 +1,4 @@
-"""Colour wheels (plan Phase 4): spare-row variants, wheels for single-variant hosts, up to 10 members.
+"""Colour wheels: spare-row variants, wheels for single-variant hosts, up to 10 members.
 
 Config (``wheels`` in the roster preset)::
 
@@ -12,10 +12,10 @@ with model data of their own in dirs 89-94) selectable on a colour wheel:
 * ``id``: 0x47-0x4C.
 * ``wheel``: the stock player ID whose wheel it joins (default: the row's
   stock host, byte 1). A host without a wheel gets a new wheel group (0x0E
-  and up, plan 4b).
+  and up).
 * ``swatch``: name or 0-10 (default: the row's stock byte 7).
 
-Optional wheel order (plan 4c)::
+Optional wheel order::
 
     "wheel_order": [["0x06", "0x66", "0x47"]]
 
@@ -28,7 +28,7 @@ selectable (byte 6 = 1) and has its own character data (``hasmodel`` = 1,
 else the game substitutes Peach on the field); an unlisted one gets its
 stock row back (not selectable). Without the key, the rows stay as the icon
 pipeline left them. New IDs (0x66 and up) join wheels through their own
-``ids`` entry (plan Phase 3).
+``ids`` entry.
 
 Whatever the config, the step then counts every wheel's members (selectable
 rows by species: IDs below 0x4D, which the stock roster builder scans, plus
@@ -36,14 +36,14 @@ the new IDs the roster hook appends) and lifts the game's limits as needed:
 
 * up to 6: nothing;
 * 7: the two member-list caps (``0x80071ECC``, ``0x804303CC``) become 7;
-* 8-10 (plan 4d, port of the external tool's ``wheel7``): both caps 10, 19
+* 8-10 (port of the external tool's ``wheel7``): both caps 10, 19
   stack buffers grown by 0x10, member index -> popup node remap at 4 sites,
   and popup element 0xB3 of the select layout gets the frames for 7-10
-  members (needs the layout in DAT hammerspace, plan Phase 2);
+  members (needs the layout in DAT hammerspace, ``layout_file``);
 * more than 10: refused (the roster struct holds 10 IDs per species).
 
 A selectable member with swatch 10 also recolours the unused white key of
-swatch elements 0xAD/0xAE to orange (plan 4e). ``set_caps`` accepts a cap word
+swatch elements 0xAD/0xAE to orange. ``set_caps`` accepts a cap word
 of 6 or 7 as its starting value.
 """
 
@@ -221,7 +221,7 @@ def node_stub(address: int, stock: int, base: int) -> bytes:
 
 
 def ten_member_code(image: dolfile.DolImage, hs: dol_hammerspace.DolHammerspace) -> list[str]:
-    """Plan 4d in the DOL: caps 10, the stack buffers, the node remap."""
+    """The 10-member code in the DOL: caps 10, the stack buffers, the node remap."""
     sites = inventory.group('wheel7')
     others = [s for s in sites if s.address not in CAP_SITES]
     bad = inventory.stock_mismatches(image, others)
@@ -354,7 +354,7 @@ def orange_swatch(data: bytes) -> bytes:
 
 
 # --------------------------------------------------------------------------
-# Wheel order (plan 4c)
+# Wheel order
 # --------------------------------------------------------------------------
 
 ROSTER_SITE = 0x8006BD58        # mr r3,r31 at the end of the roster builder FUN_8006ba6c (r31 = roster X)
@@ -465,12 +465,12 @@ def install_reorder(image: dolfile.DolImage, hs: dol_hammerspace.DolHammerspace,
 # --------------------------------------------------------------------------
 
 def has_ten_members(image: dolfile.DolImage) -> bool:
-    """Whether the 10-member code (plan 4d) is in: both member-list caps are 10."""
+    """Whether the 10-member code is in: both member-list caps are 10."""
     return all(image.u32(address) & 0xFFFF == MEMBERS for address in CAP_SITES)
 
 
 def lift_to_ten(ctx: steps.RosterContext) -> list[str]:
-    """Plan 4d: the 10-member code in the DOL and the popup frames in the layout."""
+    """The 10-member code in the DOL and the popup frames in the layout."""
     hs = dol_hammerspace.get(ctx)
     log = ten_member_code(ctx.dol, hs)
     hs.commit()

@@ -37,6 +37,7 @@ _PROMPT_COLOR = (255, 210, 90, 255)
 _NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 _PRIMARY_SIZE = (170, 44)
 _VIEWPORT_TITLE = 'Sluggies Tools'
+_CLOSE_DIALOG = 'close_running_dialog'
 
 # Font sizes for the UI. 16pt matches Dear PyGui's default at 1x DPI. Open
 # Sans is slightly wider than the built-in ProggyClean at the same point
@@ -111,6 +112,7 @@ class SluggiesGui:
         self.partial = ''
         self.pending = []
         self.chain = []
+        self.current = None                # the running step's arguments
         self.on_chain_done = None          # run_chain's callback: (exit code, the chain's output)
         self.chain_output = []
         self.action_buttons = []
@@ -138,7 +140,7 @@ class SluggiesGui:
         return True
 
     def _start_next(self):
-        args = self.pending.pop(0)
+        args = self.current = self.pending.pop(0)
         command = [*self.command_prefix, *args]
         self._log_line('> ' + ' '.join(args), _PROMPT_COLOR)
         env = dict(os.environ, PYTHONUNBUFFERED='1', PYTHONIOENCODING='utf-8')
@@ -430,9 +432,41 @@ class SluggiesGui:
         self.grid_tab.config_guard(then, title, action)
 
     def _on_close_request(self, *_):
-        """The window's close button: with pending grid edits ask first."""
-        self.grid_tab.confirm_discard(dpg.stop_dearpygui, 'Close and discard the pending edits?',
-                                      'The character grid has edits that "Patch Game" has not written yet.')
+        """The window's close button: while a command runs ask first (closing stops it), then with pending grid
+        edits ask again."""
+        def close():
+            def stop():
+                self.stop_command()                  # only once every question is answered with OK
+                dpg.stop_dearpygui()
+            self.grid_tab.confirm_discard(stop, 'Close and discard the pending edits?',
+                                          'The character grid has edits that "Patch Game" has not written yet.')
+        if not self.busy:
+            close()
+            return
+        if dpg.does_item_exist(_CLOSE_DIALOG):
+            return                                   # already asking
+
+        def proceed():
+            dpg.delete_item(_CLOSE_DIALOG)
+            close()
+        steps = len(self.pending) + 1
+        lines = ['A command is still running:',
+                 '  ' + ' '.join(self.current or ()),
+                 *([f'  ({steps - 1} more step{"s" if steps != 2 else ""} queued after it)'] if steps > 1 else []),
+                 'Closing stops it now. Files it is writing (2_Output_Models, 3_Output_Dat) may be left',
+                 'incomplete; run it again afterwards.']
+        vw = dpg.get_viewport_client_width()
+        with dpg.window(tag=_CLOSE_DIALOG, label='Close while a command is running?', modal=True, no_collapse=True,
+                        no_saved_settings=True, autosize=True, pos=(max(0, (vw - 560) // 2), 120),
+                        on_close=lambda *_: dpg.delete_item(_CLOSE_DIALOG)):
+            for i, line in enumerate(lines):
+                dpg.add_text(line, color=_PROMPT_COLOR if i == 1 else _LOG_COLOR)
+            dpg.add_spacer(height=6)
+            with dpg.group(horizontal=True):
+                ok = dpg.add_button(label='OK', width=110, height=30, callback=proceed)
+                dpg.bind_item_theme(ok, 'primary_theme')
+                dpg.add_button(label='Cancel', width=110, height=30,
+                               callback=lambda: dpg.delete_item(_CLOSE_DIALOG))
 
     def _on_tab(self, _sender, tab):
         if dpg.get_item_alias(tab) == 'grid_tab' and self.grid_tab.loader.status != gui_grid.StateLoader.RUNNING:
@@ -492,7 +526,7 @@ class SluggiesGui:
                 dpg.add_button(label='n', width=24, callback=lambda: self.send_input('n'))
                 dpg.add_button(label='Enter', callback=lambda: self.send_input(''))
                 dpg.add_button(label='Stop', tag='stop_button', enabled=False, callback=self.stop_command)
-        # fits the 12x5 grid unscrolled; the close button asks first while grid edits are pending
+        # fits the 12x5 grid unscrolled; the close button asks first while a command runs or grid edits are pending
         dpg.create_viewport(title=_VIEWPORT_TITLE,width=1440, height=900, disable_close=True)
         dpg.set_exit_callback(self._on_close_request)
         dpg.set_primary_window('main_window', True)

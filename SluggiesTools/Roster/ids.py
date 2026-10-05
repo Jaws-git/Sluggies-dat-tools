@@ -1,4 +1,4 @@
-"""Uncapped character IDs (plan Phase 3): new IDs 0x66-0xFE that play as a template character.
+"""Uncapped character IDs: new IDs 0x66-0xFE that play as a template character.
 
 Config (``ids`` in the roster preset)::
 
@@ -12,7 +12,7 @@ Config (``ids`` in the roster preset)::
 * ``wheel``: whose colour wheel the new ID joins (default: the template). A
   host without a wheel gets a new wheel group (0x0E and up). ``null``: no
   wheel at all, a square-only character (it must be on a new grid square,
-  plan Phase 6): it keeps the template's row with wheel group 0 and stays off
+  ``grid``): it keeps the template's row with wheel group 0 and stays off
   the roster's species lists, as the external tool's square characters do.
 * ``swatch``: the wheel swatch colour (name or 0-10); default: the template's.
 * ``model``: ``{"from": "0xNN"}``, an own model directory holding that stock
@@ -28,7 +28,7 @@ template); every other row, chemistry included, from the stats source. The
 voice is the selector row's species: a square's voice (``grid`` step) can
 change it for square-only IDs.
 
-Stock characters' stats (``stock_stats``, plan Phase 7)::
+Stock characters' stats (``stock_stats``)::
 
     "stock_stats": [{"id": "0x00", "stats": "0x09"}]
 
@@ -40,7 +40,7 @@ stock table, in every row (``restat_rows``). Without an ``ids`` key the rows
 are rewritten where they are; with one, in the moved tables.
 
 An empty ``ids`` list still moves every table (101 rows, nothing added): the
-identity relocation of plan step 3a, which must play exactly like vanilla.
+identity relocation, which must play exactly like vanilla.
 
 What a non-empty list does (plan §2.2 B, the external tool's design):
 1. every per-ID table (inventory status ``moved``, plus the model handles)
@@ -518,7 +518,7 @@ class HookBuilder:
 
     def template_alias(self, template_of: int, portrait_of: int) -> None:
         """Portrait renderer entry and its two preview calls use ``portrait_of`` (the template's ID unless the
-        icons step gives the ID its own art); the name-label rows use the template's ID (until plan Phase 8)."""
+        icons step gives the ID its own art); the name-label rows use the template's ID."""
         site = 0x80395DD0          # mr r24,r4 at FUN_80395db0 entry
         a = self.new_stub()
         a.mr('r24', 'r4')

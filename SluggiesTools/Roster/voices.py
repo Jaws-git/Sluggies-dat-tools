@@ -1,4 +1,4 @@
-"""Square voices for stock squares (GUI character grid, plan Phase 7): one species speaks with another's voice.
+"""Square voices for stock squares: one species speaks with another's voice.
 
 Config (``stock_voices`` in the roster preset)::
 

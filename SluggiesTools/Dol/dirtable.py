@@ -1,4 +1,4 @@
-"""The dt_na.dat directory pointer table, stock or moved by the roster (own model directories, GUI grid 4b).
+"""The dt_na.dat directory pointer table, stock or moved by the roster (own model directories).
 
 The game reads the table through the ``dtna_directories`` lis/low pairs
 (inventory). The stock table holds 172 directory pointers at ``0x806A0728``.

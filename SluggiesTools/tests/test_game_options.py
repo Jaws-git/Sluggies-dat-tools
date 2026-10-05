@@ -80,6 +80,33 @@ class GameOptionTests(unittest.TestCase):
         self.assertIn(ppc.one(0, lambda a: a.xori(11, 6, 1)), words)
         self.assertIn(ppc.one(0, lambda a: a.stb(11, 4, 12)), words)
 
+    def test_off_without_roster_restores_the_stock_dol(self):
+        original = self.image.to_bytes()
+        go.apply(self.image, ['cpu_vs_cpu', 'cpu_management'])
+        log = go.remove(self.image, ['cpu_vs_cpu', 'cpu_management'])
+        self.assertIn('sections are removed', log[-1])
+        self.assertEqual(self.image.to_bytes(), original)
+        self.assertIsNone(dhs.DolHammerspace.open(self.image))
+
+    def test_off_without_roster_rebuilds_the_options_still_on(self):
+        go.apply(self.image, ['cpu_vs_cpu'])
+        only_cpu = self.image.to_bytes()
+        go.apply(self.image, ['cpu_management'])
+        go.remove(self.image, ['cpu_management'])
+        self.assertEqual(go.detect(self.image), ['cpu_vs_cpu'])
+        self.assertEqual(self.image.to_bytes(), only_cpu)        # no unused stubs left behind
+
+    def test_off_with_roster_data_keeps_the_sections(self):
+        go.apply(self.image, ['cpu_vs_cpu'])
+        hs = dhs.DolHammerspace.open(self.image)
+        hs.data.put(b'\x01' * 0x20)                              # roster tables
+        hs.commit()
+        go.remove(self.image, ['cpu_vs_cpu'])
+        self.assertEqual(go.detect(self.image), [])
+        self.assertTrue(dhs.DolHammerspace.open(self.image).has_data)
+        with self.assertRaisesRegex(dhs.HammerspaceError, 'roster data'):
+            dhs.remove_sections(self.image)
+
     def test_apply_twice_is_a_no_op(self):
         go.apply(self.image, ['cpu_vs_cpu'])
         once = self.image.to_bytes()

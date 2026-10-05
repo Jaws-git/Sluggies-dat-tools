@@ -119,6 +119,10 @@ class FileLoadEnv(pack.LoadEnv):
         return SlotTarget.slot_pair_problems(high if high is not None else vanilla[0],
                                              low if low is not None else vanilla[1], summaries)
 
+    def equipment_problems(self, directory, file_index, block):
+        import SlotTarget
+        return SlotTarget.equipment_block_problems(block, directory, file_index)
+
 
 def save(path: str, output_dir: str = state_cli.OUTPUT_DIR, input_dir: str = INPUT_DIR) -> dict:
     """Write the pack of the output's roster to ``path``; returns its ``pack.json``."""
@@ -130,7 +134,7 @@ def save(path: str, output_dir: str = state_cli.OUTPUT_DIR, input_dir: str = INP
     inputs = InputFiles(input_dir)
 
     def current_block(char, role):
-        ref = char['blocks'][role]
+        ref = (char['blocks'] if role in pack.ROLES else char['equipment'])[role]
         return dat.read(ref['offset'], ref['length'])
     files = pack.pack_files(st, derived, current_block, inputs.vanilla_block)
     pack.write_pack(path, files)

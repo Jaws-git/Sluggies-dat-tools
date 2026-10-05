@@ -1,4 +1,4 @@
-"""Roster packs (GUI character grid, Phase 6): save the whole roster to one file, load it into any output.
+"""Roster packs: save the whole roster to one file, load it into any output.
 
 A pack (``*.sluggiesroster``) is a zip:
 
@@ -18,10 +18,17 @@ A pack (``*.sluggiesroster``) is a zip:
   model directory) whose block differs from the vanilla one it started from,
   as they sit in the game (blocks only use relative pointers, so they move
   between outputs unchanged);
+* ``models/0xNN_bat.bin`` / ``_glove_l`` / ``_glove_r`` / ``_extra``
+  (format 2): the equipment blocks (files 2-5) a slot changed. The
+  read decides what "changed" is (``state_cli.add_vanilla_flags``: not on its
+  vanilla route, or an own directory's copy differing from its source's), not
+  the bytes, because an untangle export rewrites texture bytes in place;
 * ``fingerprints.json``: per slot (``fingerprints``) the SHA-1 of the High and
   Low block (None: the slot shows another slot's files) and of the front and
   side portrait pixels, plus the own directory's source, name, stats source,
-  square voice and square head.
+  square voice and square head. Equipment (format 2): the SHA-1 of each
+  changed file, None while it is at its baseline; a format 1 pack has no
+  such keys and counts as "equipment unchanged".
 
 Loading (``plan_load``) compares the pack's fingerprints with the game's
 (``diff``), checks every pack block (``LoadEnv.slot_problems``: validator,
@@ -56,17 +63,21 @@ except ImportError:
     import ids
 
 EXTENSION = '.sluggiesroster'
-FORMAT = 1
+FORMAT = 2
+READABLE_FORMATS = (1, 2)                       # format 1: no equipment
 META_FILE = 'pack.json'
 STATE_FILE = 'state.json'
 FINGERPRINTS_FILE = 'fingerprints.json'
 ICON_DIR = 'icons'
 MODEL_DIR = 'models'
 ROLES = {'high': ('hp', 0), 'low': ('l', 1)}          # role: (file name suffix, file index)
-FIELDS = ('high', 'low', 'model', 'front', 'side', 'name', 'stats', 'voice', 'square')
-FIELD_LABELS = {'high': 'High model', 'low': 'Low model', 'model': 'model directory', 'front': 'front portrait',
-                'side': 'side portrait', 'name': 'name', 'stats': 'stats', 'voice': 'square voice',
-                'square': 'square'}
+EQUIP_ROLES = {'bat': ('bat', 2), 'glove_l': ('glove_l', 3), 'glove_r': ('glove_r', 4), 'extra': ('extra', 5)}
+BLOCK_ROLES = {**ROLES, **EQUIP_ROLES}
+FIELDS = ('high', 'low', *EQUIP_ROLES, 'model', 'front', 'side', 'name', 'stats', 'voice', 'square')
+FIELD_LABELS = {'high': 'High model', 'low': 'Low model', 'bat': 'bat', 'glove_l': 'left glove',
+                'glove_r': 'right glove', 'extra': 'extra bat', 'model': 'model directory',
+                'front': 'front portrait', 'side': 'side portrait', 'name': 'name', 'stats': 'stats',
+                'voice': 'square voice', 'square': 'square'}
 SAME, DIFFERS, GAME_ONLY, PACK_ONLY = 'same', 'differs', 'game', 'pack'
 ROSTER_KEYS_IGNORED = ('version', 'comment')
 
@@ -103,6 +114,10 @@ def fingerprint(st: dict, char: dict, crop) -> dict:
     owns = owns_models(char)
     square = st['squares'][char['square']]
     out = {role: (blocks.get(role) or {}).get('sha1') if owns else None for role in ROLES}
+    equipment = char.get('equipment') or {}
+    for role in EQUIP_ROLES:           # only a changed file has a fingerprint: the baseline differs per game
+        entry = equipment.get(role) or {}
+        out[role] = entry.get('sha1') if owns and entry.get('vanilla') is False else None
     out['model'] = _hex(char['model_source']) if char.get('own_model_dir') else None
     for view in ('front', 'side'):
         ref = (char.get('icon') or {}).get(view)
@@ -157,7 +172,7 @@ def diff(pack_fp: dict, game_fp: dict) -> list[SlotDiff]:
         elif g is None:
             out.append(SlotDiff(_cid(key), PACK_ONLY))
         else:
-            fields = [f for f in FIELDS if p.get(f) != g.get(f)]
+            fields = [f for f in FIELDS if p.get(f) != g.get(f) and not (f in EQUIP_ROLES and f not in p)]
             out.append(SlotDiff(_cid(key), DIFFERS if fields else SAME, fields))
     return out
 
@@ -176,7 +191,7 @@ def portable_config(config: dict) -> dict:
 
 
 def block_name(cid: int, role: str) -> str:
-    return f'{MODEL_DIR}/{_hex(cid)}_{ROLES[role][0]}.bin'
+    return f'{MODEL_DIR}/{_hex(cid)}_{BLOCK_ROLES[role][0]}.bin'
 
 
 def model_directory(cid: int, model_from: int | None) -> int:
@@ -190,15 +205,24 @@ def pack_files(st: dict, derived: derive.Derived, current_block, vanilla_block) 
     files: dict[str, bytes] = {}
     blocks: dict[str, dict] = {}
     for char in st['characters']:
-        if not owns_models(char) or not char.get('blocks'):
+        if not owns_models(char) or not (char.get('blocks') or char.get('equipment')):
             continue
         model_from = char['model_source'] if char.get('own_model_dir') else None
         directory = model_directory(char['id'], model_from)
         for role, (_suffix, file_index) in ROLES.items():
-            if role not in char['blocks']:
+            if role not in (char.get('blocks') or {}):
                 continue
             block = current_block(char, role)
             if block is None or block == vanilla_block(directory, file_index):
+                continue
+            name = block_name(char['id'], role)
+            files[name] = block
+            blocks.setdefault(_hex(char['id']), {})[role] = name
+        for role in EQUIP_ROLES:
+            if (char.get('equipment') or {}).get(role, {}).get('vanilla') is not False:
+                continue
+            block = current_block(char, role)
+            if block is None:
                 continue
             name = block_name(char['id'], role)
             files[name] = block
@@ -246,7 +270,14 @@ class Pack:
     blocks: dict                     # {(id, role): bytes}
 
     def slot_blocks(self, cid: int) -> dict:
+        """Every block the pack holds for the slot (models and equipment)."""
+        return {role: self.blocks[(cid, role)] for role in BLOCK_ROLES if (cid, role) in self.blocks}
+
+    def slot_models(self, cid: int) -> dict:
         return {role: self.blocks[(cid, role)] for role in ROLES if (cid, role) in self.blocks}
+
+    def slot_equipment(self, cid: int) -> dict:
+        return {role: self.blocks[(cid, role)] for role in EQUIP_ROLES if (cid, role) in self.blocks}
 
 
 def _member(zf: zipfile.ZipFile, name: str) -> bytes:
@@ -272,9 +303,9 @@ def read_pack(path: str) -> Pack:
         raise PackError(f'{path} is not a roster pack: {exc}') from exc
     with zf:
         meta = _load_json(zf, META_FILE)
-        if not isinstance(meta, dict) or meta.get('format') != FORMAT:
+        if not isinstance(meta, dict) or meta.get('format') not in READABLE_FORMATS:
             raise PackError(f'{os.path.basename(path)} is a roster pack of format {meta.get("format")!r}; this tool '
-                            f'reads format {FORMAT}')
+                            f'reads format {" and ".join(map(str, READABLE_FORMATS))}')
         config = _load_json(zf, STATE_FILE)
         fingerprints = _load_json(zf, FINGERPRINTS_FILE)
         if not isinstance(config, dict) or not isinstance(fingerprints, dict):
@@ -293,7 +324,7 @@ def read_pack(path: str) -> Pack:
             except (TypeError, ValueError) as exc:
                 raise PackError(f'pack.json names a block of {key!r}, not an ID') from exc
             for role, name in roles.items():
-                if role not in ROLES or name != block_name(cid, role):
+                if role not in BLOCK_ROLES or name != block_name(cid, role):
                     raise PackError(f'pack.json names an unexpected block for {key}: {role} {name!r}')
                 data = _member(zf, name)
                 expected = (fingerprints.get(key) or {}).get(role)
@@ -327,6 +358,11 @@ class LoadEnv:
         blocks (None: the vanilla file stays)."""
         raise NotImplementedError
 
+    def equipment_problems(self, directory: int, file_index: int, block: bytes) -> tuple[list[str], list[str]]:
+        """``(errors, warnings)`` for a slot whose file ``file_index`` (2-5, started from ``directory``'s vanilla
+        one) takes this finished equipment block."""
+        return [], []
+
 
 @dataclass
 class LoadPlan:
@@ -335,6 +371,8 @@ class LoadPlan:
     remove: bool = False             # a stock pack: the rebuild is a roster reset
     commands: list = field(default_factory=list)
     writes: list = field(default_factory=list)       # [(id, {'high': name, 'low': name})] of pack blocks written
+    equipment_writes: list = field(default_factory=list)   # [(id, role)]: equipment blocks written
+    equipment_clears: list = field(default_factory=list)   # [(id, file)]: equipment files back to their baseline
     clears: list = field(default_factory=list)       # stock IDs whose models go back to vanilla first
     kept_dirs: list = field(default_factory=list)    # new IDs whose own directory is kept as it is
     notes: list = field(default_factory=list)
@@ -350,6 +388,8 @@ class LoadPlan:
                 'remove': self.remove, 'commands': [list(c) for c in self.commands],
                 'diff': [d.to_json() for d in self.diff],
                 'writes': [{'id': _hex(c), 'blocks': sorted(r)} for c, r in self.writes],
+                'equipment_writes': [{'id': _hex(c), 'role': r} for c, r in self.equipment_writes],
+                'equipment_clears': [{'id': _hex(c), 'file': f} for c, f in self.equipment_clears],
                 'clears': [_hex(c) for c in self.clears], 'kept_dirs': [_hex(c) for c in self.kept_dirs],
                 'notes': self.notes, 'warnings': self.warnings,
                 'refused': [{'id': _hex(c), 'error': e} for c, e in self.refused]}
@@ -408,14 +448,20 @@ def plan_load(pack: Pack, game_st: dict, game_fp: dict, game_derived: derive.Der
         cid, source = ids._number(entry['id'], 'ids'), ids._number(entry['model']['from'], 'model.from')
         own_from[cid] = source
         game, key = game_chars.get(cid), _hex(cid)
-        same_blocks = all((pack.fingerprints.get(key) or {}).get(r) == (game_fp.get(key) or {}).get(r) for r in ROLES)
+        same_blocks = all((pack.fingerprints.get(key) or {}).get(r) == (game_fp.get(key) or {}).get(r)
+                          for r in ROLES)
+        same_equipment = all(r not in (pack.fingerprints.get(key) or {})
+                             or (pack.fingerprints.get(key) or {}).get(r) == (game_fp.get(key) or {}).get(r)
+                             for r in EQUIP_ROLES)
         game_model = (game_entries.get(cid) or {}).get('model')
         if (game is not None and game.get('own_model_dir') and game.get('model_source') == source and same_blocks
-                and isinstance(game_model, dict) and game_model.get('routes')):
+                and same_equipment and isinstance(game_model, dict) and game_model.get('routes')):
             entry['model'] = copy.deepcopy(game_model)
             plan.kept_dirs.append(cid)
-        elif pack.slot_blocks(cid):
-            plan.writes.append((cid, pack.slot_blocks(cid)))
+        else:                  # a fresh copy of the source's files: the pack's blocks go on top
+            if pack.slot_models(cid):
+                plan.writes.append((cid, pack.slot_models(cid)))
+            plan.equipment_writes += [(cid, role) for role in pack.slot_equipment(cid)]
 
     # stock slots: back to vanilla where the pack keeps a vanilla file, then the pack's blocks
     stock_writes = []
@@ -424,9 +470,16 @@ def plan_load(pack: Pack, game_st: dict, game_fp: dict, game_derived: derive.Der
         if cid >= ids.FIRST_NEW:
             continue
         g = game_fp.get(key)
+        for role, (_suffix, file_index) in EQUIP_ROLES.items():
+            if role not in p or (g is not None and p.get(role) == g.get(role)):
+                continue                      # a format 1 pack has no equipment keys: left as it is
+            if (cid, role) in pack.blocks:
+                plan.equipment_writes.append((cid, role))
+            elif g is not None and g.get(role) is not None:
+                plan.equipment_clears.append((cid, file_index))
         if g is not None and all(p.get(r) == g.get(r) for r in ROLES):
             continue
-        blocks = pack.slot_blocks(cid)
+        blocks = pack.slot_models(cid)
         if len(blocks) < len(ROLES):
             plan.clears.append(cid)
         if blocks:
@@ -439,13 +492,19 @@ def plan_load(pack: Pack, game_st: dict, game_fp: dict, game_derived: derive.Der
             plan.refused.append((cid, 'the pack holds model blocks for this new ID, but it has no own model '
                                       'directory in the pack\'s roster'))
             continue
-        blocks = pack.slot_blocks(cid)
+        blocks = pack.slot_models(cid)
         directory = model_directory(cid, own_from.get(cid))
-        errors, warnings = env.slot_problems(directory, blocks.get('high'), blocks.get('low'))
-        plan.refused += [(cid, e) for e in errors]
-        plan.warnings += [f'{_hex(cid)}: {w}' for w in warnings]
+        if blocks:
+            errors, warnings = env.slot_problems(directory, blocks.get('high'), blocks.get('low'))
+            plan.refused += [(cid, e) for e in errors]
+            plan.warnings += [f'{_hex(cid)}: {w}' for w in warnings]
+        for role, block in pack.slot_equipment(cid).items():
+            errors, warnings = env.equipment_problems(directory, EQUIP_ROLES[role][1], block)
+            plan.refused += [(cid, f'the {FIELD_LABELS[role]}: {e}') for e in errors]
+            plan.warnings += [f'{_hex(cid)}: the {FIELD_LABELS[role]}: {w}' for w in warnings]
     if plan.refused:
         plan.writes, plan.clears, plan.kept_dirs = [], [], []
+        plan.equipment_writes, plan.equipment_clears = [], []
         return plan
 
     # one rebuild when the roster differs
@@ -461,9 +520,14 @@ def plan_load(pack: Pack, game_st: dict, game_fp: dict, game_derived: derive.Der
         plan.commands.append(('--roster', '--state', state_file))
     for cid in plan.clears:
         plan.commands.append(('--unpatch', '--target-id', _hex(cid)))
+    for cid, file_index in plan.equipment_clears:
+        plan.commands.append(('--unpatch', '--target-id', _hex(cid), '--target-file', str(file_index)))
     for cid, blocks in plan.writes:
         plan.commands.append(('--write-slot-blocks', _hex(cid),
                               *(block_path(block_name(cid, r)) if r in blocks else '-' for r in ROLES)))
+    for cid, role in plan.equipment_writes:
+        plan.commands.append(('--write-slot-equipment', _hex(cid), str(EQUIP_ROLES[role][1]),
+                              block_path(block_name(cid, role))))
     if plan.commands:
         plan.commands.append(('--roster-state',))
     elif plan.config is None:

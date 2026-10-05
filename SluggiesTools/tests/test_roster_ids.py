@@ -1,4 +1,4 @@
-"""Roster expansion Phase 3: new character IDs on a synthetic DOL built from the site inventory.
+"""New character IDs on a synthetic DOL built from the site inventory.
 
 The synthetic DOL has one text section over the code the inventory names and
 one data section over the per-ID tables. Every inventory site holds its stock

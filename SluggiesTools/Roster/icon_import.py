@@ -1,4 +1,4 @@
-"""Direct portrait replacement (GUI character grid, Phase 8): a user's image file as a 48x51 portrait.
+"""Direct portrait replacement: a user's image file as a 48x51 portrait.
 
 ``load_user_image(path)`` reads and checks the file (pure, no GUI):
 

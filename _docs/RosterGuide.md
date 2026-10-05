@@ -180,13 +180,48 @@ exported ones, so a portrait change staged before it is dropped; one staged
 after it wins. Clearing a slot resets both portraits. Miis (`0x4D`–`0x65`)
 show the Mii icon and cannot take portraits.
 
+## Bats and gloves
+
+Each character directory has four equipment files besides the models: the
+**bat**, the **left glove**, the **right glove** and an **extra bat** slot
+(file 5, which only Peach, with a second bat, and Wario fill; the game's use
+of it is not confirmed). The slot's **Equipment** row in the GUI shows each one as
+Original, Modified or Empty, with **Select...** (pick an exported bat or glove
+`.sluggie`) and **Reset**. From the command line:
+
+```
+python start.py --patch-slot 0x0D "2_Output_Models/22 Peach/94021600/94021632_bat.gpl/94021632_bat.gpl.sluggie"
+python start.py --patch-slot 0x0D "<peach bat>.sluggie" --equipment 5
+python start.py --clear-slot 0x0D --equipment bat
+python start.py --clear-slot 0x0D --equipment all
+```
+
+- The file is chosen by what was exported: a bat goes into the bat slot (or,
+  with `--equipment 5`, the extra slot), a glove only into its own hand. A
+  glove into a bat slot, or a left glove into the right hand, is refused.
+- **Only that slot changes.** Most characters share their vanilla bats and
+  gloves; replacing one never touches the others.
+- The bat or glove needs the same skeleton as the slot's own (an empty extra
+  slot takes anything); bones you added are fine.
+- `--equipment N|all` on `--clear-slot` resets just those files; a plain
+  `--clear-slot` resets the models and every changed bat and glove.
+- A model patched into a **new ID** takes the bats and gloves found in its
+  character folder (`2_Output_Models/<ID> <name>/`) along. Files that are not
+  found stay as the slot had them; two candidates for one file refuse the
+  patch. Gear you picked yourself for the same file wins. `--no-gear` turns
+  this off.
+- Roster packs save changed bats and gloves too (older packs load fine and
+  leave equipment as it is).
+
 ## Several changes at once
 
 Several changes can go in one run with an edits file, a JSON list of
-`patch`, `clear`, `rename`, `voice`, `stats` and `icon` edits (a `rename`
+`patch`, `clear`, `rename`, `voice`, `stats`, `icon`, `equip` and
+`equip_clear` edits (a `rename`
 edit's `text` may be blank; a `voice` or `stats` edit's `source` may be
 `null` for the default; an `icon` edit has `view`, `file` and optionally
-`fit` and `trim`):
+`fit` and `trim`; an `equip` edit has `sluggie` and optionally `file`, 2-5;
+an `equip_clear` edit has `file`):
 
 ```
 {"edits": [{"op": "patch", "id": "0xE2", "file": "2_Output_Models/27 Bowser/114968608_koopa.gpl/114968608_koopa.gpl.sluggie"},

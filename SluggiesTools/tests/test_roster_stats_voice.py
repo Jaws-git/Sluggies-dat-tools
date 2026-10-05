@@ -1,4 +1,4 @@
-"""GUI character grid, Phase 4c: stats sources and square voices.
+"""Stats sources and square voices.
 
 * ``ids[].stats``: the stats rows come from the stats source, the body rows
   (size and effect scales) from the model source, the selector row and the

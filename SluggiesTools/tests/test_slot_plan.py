@@ -1,4 +1,4 @@
-"""GUI character grid, Phase 4e: the apply chain (``Roster/slot_plan.py``, ``slot_cli.py``).
+"""The apply chain (``Roster/slot_plan.py``, ``slot_cli.py``).
 
 The plans are built from a hand-made read state and derived config, with the
 file checks (skeletons, the slot's current high-poly model, portraits) given
@@ -233,7 +233,7 @@ class ClearTests(unittest.TestCase):
 
 
 class RenameTests(unittest.TestCase):
-    """Phase 5: ``plan_rename`` for a stock character, a spare row and a new ID."""
+    """``plan_rename`` for a stock character, a spare row and a new ID."""
 
     def plan(self, cid, text, config=None, st=None):
         return slot_plan.plan_rename(st or make_state(), config or make_config(), cid, text, STATE_FILE)

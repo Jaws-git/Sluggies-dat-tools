@@ -1,4 +1,4 @@
-"""User-set names (plan Phase 8): port of the external tool's ``char_names`` steps 1-3.
+"""User-set names: port of the external tool's ``char_names`` steps 1-3.
 
 Config: an optional ``name`` on an ``ids`` entry (new ID) or a ``wheels``
 entry (spare row 0x47-0x4C), a string or one per language::
@@ -9,7 +9,7 @@ entry (spare row 0x47-0x4C), a string or one per language::
 A language without its own name uses the English one. SluggiesTools ships
 no names: without any ``name`` in the config the step changes nothing (new
 IDs then show no name, and the select screen shows their template's name
-plate, as since Phase 3).
+plate).
 
 With at least one name:
 

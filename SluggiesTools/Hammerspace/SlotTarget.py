@@ -1,6 +1,6 @@
 """Targeted patches: a character's model written into another character's slot.
 
-GUI character grid, Phase 4a. A ``.sluggie`` is still built from its own
+A ``.sluggie`` is still built from its own
 donor (``ChunkNumber``/``FileIndex`` in ``1_Input``); only the route it is
 written to changes. The target is a character ID (``--target-id 0xNN``),
 resolved on the output DOL by ``Roster/slots.py``; the model's role picks the
@@ -31,6 +31,17 @@ Rules (refused with ``TargetError`` unless noted):
   partner): the HP block is written to file 1 as well, as a copy of its own.
 * An HP whose slot keeps another character's ``L_`` is allowed, with a
   warning (patch the ``L_`` partner next, or use ``as_low``).
+
+Equipment: files 2 (bat), 3 (left glove), 4
+(right glove) and 5 (a second bat, placeholder in most directories) are
+targets too (``Target.equipment``). The role must match (``Roster/gear.py``:
+a bat fits file 2 and file 5, a glove only its own hand); the block may carry
+the 32-byte archive container the game's equipment entries have, but no other
+archive members; the skeleton rule is the prefix rule (at least the target's
+vanilla bones, same parent chain; an empty file 5 has none to compare). There
+is no ``L_`` partner, so none of the LOD checks apply, and a shared vanilla
+bat or glove is never repointed for its other users: only the target's own
+route changes (``HammerspaceMain.WriteModelBlock`` skips the sharers).
 """
 
 from __future__ import annotations
@@ -42,11 +53,13 @@ from dataclasses import dataclass
 
 import HammerspaceHelper as hh
 import LodPartnerGuard
+from ArchiveContainer import parse_archive_container
 
 _ROSTER_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', 'Roster'))
 
 HIGH_FILE, LOW_FILE = 0, 1
 CHARACTER_FILES = (HIGH_FILE, LOW_FILE)
+EQUIPMENT_FILES = (2, 3, 4, 5)                    # bat, left glove, right glove, extra bat (``Roster/gear.py``)
 
 
 class TargetError(ValueError):
@@ -60,6 +73,13 @@ def _roster():
     import ids
     import slots
     return slots, ids
+
+
+def _gear():
+    """``Roster/gear.py`` (the equipment role table)."""
+    _roster()
+    import gear
+    return gear
 
 
 def character_dirs() -> range:
@@ -81,6 +101,11 @@ class Target:
     @property
     def low_route(self) -> tuple[int, int]:
         return self.chunk_number, LOW_FILE
+
+    @property
+    def equipment(self) -> bool:
+        """Whether the target is a bat or glove file (2-5) rather than a character model."""
+        return self.file_index in EQUIPMENT_FILES
 
     def describe(self) -> str:
         who = f'0x{self.character_id:02X} ' if self.character_id is not None else ''
@@ -109,9 +134,22 @@ def role_file(file_index: int) -> int:
     return file_index
 
 
-def make_target(character_id: int | str, source: tuple[int, int], as_low: bool = False) -> Target | None:
-    """The target for a ``.sluggie`` exported from ``source``; None when the slot is the source's own route."""
+def make_target(character_id: int | str, source: tuple[int, int], as_low: bool = False,
+                target_file: int | None = None) -> Target | None:
+    """The target for a ``.sluggie`` exported from ``source``; None when the slot is the source's own route.
+    Equipment (``source[1]`` in 2-5): the same file of the slot, or ``target_file`` (a bat into the extra slot)."""
     cid, chunk = resolve_dir(character_id)
+    if source[1] in EQUIPMENT_FILES or target_file is not None:
+        if as_low:
+            raise TargetError('--as-low applies to character models, not to equipment')
+        gear = _gear()
+        try:
+            equipment_file = gear.target_file(source[1], target_file)
+        except gear.GearError as exc:
+            raise TargetError(str(exc)) from exc
+        if (chunk, equipment_file) == tuple(source):
+            return None
+        return Target(chunk, equipment_file, cid)
     file_index = role_file(source[1])
     if as_low and file_index != HIGH_FILE:
         raise TargetError('only a High model can be used as the Low model too')
@@ -120,7 +158,17 @@ def make_target(character_id: int | str, source: tuple[int, int], as_low: bool =
     return Target(chunk, file_index, cid, as_low)
 
 
-def _vanilla_summary(route: tuple[int, int]) -> LodPartnerGuard.ActSummary | None:
+def inner_block(block: bytes) -> bytes:
+    """The model inside an equipment entry: the first member of its archive container (the 32-byte prefix the
+    game's bats and gloves carry), or the block itself when it is no archive."""
+    layout = parse_archive_container(block)
+    if layout is None:
+        return block
+    member = layout.members[0]
+    return block[member.offset:member.end]
+
+
+def _vanilla_summary(route: tuple[int, int], equipment: bool = False) -> LodPartnerGuard.ActSummary | None:
     route = hh.vanillaRoute(*route)
     if route is None:
         return None
@@ -129,7 +177,8 @@ def _vanilla_summary(route: tuple[int, int]) -> LodPartnerGuard.ActSummary | Non
         return None
     with open(hh.INPUT_DAT, 'rb') as dat:
         dat.seek(offset)
-        return LodPartnerGuard.act_summary(dat.read(length))
+        block = dat.read(length)
+    return LodPartnerGuard.act_summary(inner_block(block) if equipment else block)
 
 
 def skeleton_problems(source: LodPartnerGuard.ActSummary, target: LodPartnerGuard.ActSummary) -> tuple[list[str], list[str]]:
@@ -154,6 +203,8 @@ def skeleton_problems(source: LodPartnerGuard.ActSummary, target: LodPartnerGuar
 def check(block: bytes, source: tuple[int, int], target: Target, report: dict | None = None) -> list[str]:
     """Refuse (``TargetError``) a block that may not go to *target*; returns warnings (module docstring)."""
     chars = character_dirs()
+    if target.equipment:
+        return check_equipment(block, source, target, report)
     if source[0] not in chars:
         raise TargetError(f'chunk {source[0]} is not a character directory ({chars.start}-{chars.stop - 1}): '
                           'stadiums, props and bats cannot go into a slot')
@@ -197,6 +248,38 @@ def check(block: bytes, source: tuple[int, int], target: Target, report: dict | 
                 f'{own.geo_name}\'s TEX by index; patch {own.geo_name}\'s Low partner into the slot next, '
                 'or use the High model as the Low model too')
     return warnings
+
+
+def check_equipment(block: bytes, source: tuple[int, int], target: Target, report: dict | None = None) -> list[str]:
+    """``check`` for a bat or glove block (module docstring); returns warnings, refuses with ``TargetError``."""
+    chars = character_dirs()
+    gear = _gear()
+    if source[0] not in chars:
+        raise TargetError(f'chunk {source[0]} is not a character directory ({chars.start}-{chars.stop - 1}): '
+                          "only a character's own bats and gloves can go into a slot")
+    if target.chunk_number not in chars and not hh.isOwnDir(target.chunk_number):
+        raise TargetError(f'chunk {target.chunk_number} is not a character directory')
+    try:
+        gear.target_file(source[1], target.file_index)
+    except gear.GearError as exc:
+        raise TargetError(str(exc)) from exc
+    if report and int(report.get('archive_populated_slots', 1)) > 1:
+        raise TargetError('the source entry is an archive with several members, and only its model would move: '
+                          'it cannot go into another slot')
+    own = LodPartnerGuard.act_summary(inner_block(block))
+    if own is None:
+        raise TargetError('the built block has no readable ACT section')
+    what = gear.label(target.file_index).lower()
+    try:
+        vanilla = _vanilla_summary(target.route, equipment=True)
+    except (OSError, struct.error, ValueError) as exc:
+        raise TargetError(f"could not read the slot's vanilla {what}: {exc}") from exc
+    if vanilla is not None:
+        problem = _prefix_problem(own, vanilla)
+        if problem:
+            raise TargetError(f'the skeletons do not match ({problem}). The slot poses its {what} with the '
+                              'animations made for the vanilla one.')
+    return []
 
 
 def _prefix_problem(own: LodPartnerGuard.ActSummary, vanilla: LodPartnerGuard.ActSummary) -> str | None:
@@ -275,3 +358,32 @@ def _skeleton(source: tuple[int, int], target: tuple[int, int]) -> tuple[list[st
     if src is None or dst is None:
         raise TargetError('could not read the skeletons to compare (no ACT section in a vanilla block)')
     return skeleton_problems(src, dst)
+
+
+def equipment_block_errors(block: bytes, vanilla: bytes | None) -> list[str]:
+    """``block_errors`` for an equipment entry: the model inside its archive container is what gets validated."""
+    return block_errors(inner_block(block), inner_block(vanilla) if vanilla else None)
+
+
+def equipment_block_problems(block: bytes, chunk_number: int, file_index: int) -> tuple[list[str], list[str]]:
+    """``(errors, warnings)`` for a finished equipment block written as it is (a roster pack's) into file
+    ``file_index`` of directory ``chunk_number``: the model validates (as its vanilla block does), and a
+    non-placeholder block keeps the vanilla skeleton's prefix (an empty vanilla file has none to compare)."""
+    gear = _gear()
+    if file_index not in EQUIPMENT_FILES:
+        return [f'file {file_index} is not an equipment file'], []
+    if gear.is_placeholder(block):
+        return [], []
+    errors = equipment_block_errors(block, LodPartnerGuard._vanilla_block(chunk_number, file_index))
+    own = LodPartnerGuard.act_summary(inner_block(block))
+    if own is None:
+        return errors + ['the block has no readable ACT section'], []
+    try:
+        base = _vanilla_summary((chunk_number, file_index), equipment=True)
+    except (OSError, struct.error, ValueError) as exc:
+        return errors + [f'could not read the vanilla skeleton: {exc}'], []
+    if base is not None:
+        problem = _prefix_problem(own, base)
+        if problem:
+            errors.append(f'the skeletons do not match ({problem})')
+    return errors, []

@@ -1,4 +1,4 @@
-"""Roster expansion Phase 4: colour wheels on the synthetic inventory DOL and a synthetic layout bank."""
+"""Colour wheels on the synthetic inventory DOL and a synthetic layout bank."""
 
 import struct
 import unittest

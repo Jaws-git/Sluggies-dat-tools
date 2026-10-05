@@ -1,4 +1,4 @@
-"""GUI character grid, Phase 3: read -> rebuild (``Roster/derive.py``) gives byte-identical game files.
+"""Read -> rebuild (``Roster/derive.py``) gives byte-identical game files.
 
 The synthetic inventory DOL (``test_roster_grid.image_for_grid``) gets an icon
 record and a name record; the synthetic DAT holds the stock icon bank (with
@@ -257,7 +257,7 @@ class RoundTripTests(Harness):
         self.assertEqual(derived['grid']['squares'], [{'members': ['0x66', '0x67', '0x68'], 'voice': '0x09'}])
 
     def test_stock_stats_and_voices_are_carried(self):
-        """GUI character grid Phase 7: ``stock_stats`` and ``stock_voices`` come back from the manifest."""
+        """``stock_stats`` and ``stock_voices`` come back from the manifest."""
         derived = self.round_trip(CONFIGS['stock stats and voices with a voiced square'])
         self.assertEqual(derived['stock_stats'], [{'id': '0x00', 'stats': '0x09'}, {'id': '0x0D', 'stats': '0x00'}])
         self.assertEqual(derived['stock_voices'], [{'id': '0x00', 'voice': '0x09'}, {'id': '0x09', 'voice': '0x00'}])
@@ -277,7 +277,7 @@ class RoundTripTests(Harness):
         self.assertEqual(set(only) - {'version', 'comment'}, {'stock_icons'})
 
     def test_stock_names_are_carried(self):
-        """GUI character grid Phase 5: a renamed stock character becomes a ``stock_names`` entry (with the table's
+        """A renamed stock character becomes a ``stock_names`` entry (with the table's
         text), new IDs and spare rows keep their ``name``."""
         derived = self.round_trip(CONFIGS['stock names with new IDs'])
         self.assertEqual(derived['stock_names'],

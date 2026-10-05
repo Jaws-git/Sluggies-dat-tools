@@ -1,6 +1,6 @@
-"""GUI character grid, Phase 4b: own model directories for new IDs (``Roster/model_dirs.py``).
+"""Own model directories for new IDs (``Roster/model_dirs.py``).
 
-The Phase 3 harness (``test_roster_derive``) plus two source character
+The read -> rebuild harness (``test_roster_derive``) plus two source character
 directories (dir 18 = ID 0x00, dir 24 = ID 0x06) with three files each in the
 input DAT. Runs go through the real reset (``reset.reset``) on the previous
 run's output, as ``start.py --roster`` does, so the kept routes, the reserved

@@ -1,9 +1,9 @@
-"""Select layout file in DAT hammerspace (plan Phase 2).
+"""Select layout file in DAT hammerspace.
 
 dt_na dir 119 file 19 (= dir 0 file 1591) is the shared 2D layout bank of the
 character-select screens: the exhibition grid (element ``0xBA``), the colour
 wheel popup (``0xB3``), the swatch colours (``0xAD``/``0xAE``), the team bars
-and the name labels. Phases 4d, 4e and 6 grow it, and the stock copies have
+and the name labels. The wheels, grid and names steps grow it, and the stock copies have
 no room (only 0x10 bytes separate EN from SP), so this step moves it.
 
 One DOL record (``layout2d.CSS_LAYOUT_DOL_RECORD``), shared by all 120

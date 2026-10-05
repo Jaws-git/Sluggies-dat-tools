@@ -1,4 +1,4 @@
-"""Own model directories for new IDs (GUI character grid, Phase 4b; port of the external tool's step "2b").
+"""Own model directories for new IDs (port of the external tool's step "2b").
 
 A new ID plays with its template's model directory (``dirmap[id]`` = template
 + 0x12), so a model patched into it would change the template too. An

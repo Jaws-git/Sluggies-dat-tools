@@ -1,4 +1,4 @@
-"""Portraits from a model folder (GUI character grid, decision 7): ``icon/FrontIcon.png`` + ``icon/SideIcon.png``.
+"""Portraits from a model folder: ``icon/FrontIcon.png`` + ``icon/SideIcon.png``.
 
 The icon export (``Icons/export_icons.py``) writes each character's two
 48x51 portraits into its high-poly model folder::

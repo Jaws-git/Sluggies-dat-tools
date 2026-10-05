@@ -1,4 +1,4 @@
-"""GUI character grid, Phase 4d: portraits from a model folder and stock portrait overrides (``stock_icons``)."""
+"""Portraits from a model folder and stock portrait overrides (``stock_icons``)."""
 
 import os
 import struct

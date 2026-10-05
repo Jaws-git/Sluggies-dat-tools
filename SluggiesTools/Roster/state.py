@@ -30,7 +30,11 @@ JSON-able dict:
   where the game takes each portrait from, ``state_icons.resolve``; None
   without a DAT) and ``blocks`` (``{'high', 'low'}``: the model directory's
   files 0 and 1 as the game loads them, ``offset``, ``length``, ``sha1``; a
-  patch changes the fingerprint; None without a DAT);
+  patch changes the fingerprint; None without a DAT) and ``equipment``
+  (``{'bat', 'glove_l', 'glove_r', 'extra'}``: the model directory's files
+  2-5 the same way, plus ``placeholder`` (an empty file 5) and
+  ``shared_with`` (how many other slots of this state load the same block);
+  ``state_cli`` adds ``vanilla``: the block equals its vanilla source's);
 * ``warnings``: manifest facts the binary contradicts (the binary wins).
 
 Most facts come from the binary: the grid shape (square count and D-pad
@@ -47,11 +51,12 @@ import struct
 try:
     from ..Dol import dolfile, inventory, relocate
     from . import dat_hammerspace as dhs
-    from . import dol_hammerspace, grid, ids, manifest, names, state_icons, voices, wheels
+    from . import dol_hammerspace, gear, grid, ids, manifest, names, state_icons, voices, wheels
 except ImportError:
     from Dol import dolfile, inventory, relocate
     import dat_hammerspace as dhs
     import dol_hammerspace
+    import gear
     import grid
     import ids
     import manifest
@@ -198,7 +203,7 @@ def _manifest(image: dolfile.DolImage) -> dict | None:
         hs = dol_hammerspace.DolHammerspace.open(image)
     except dolfile.DolError as exc:
         raise StateError(f'not a roster this tool built: {exc}') from exc
-    if hs is None:
+    if hs is None or not hs.has_data:   # no sections, or only game option stubs (CPU vs CPU): a stock roster
         bad = inventory.stock_mismatches(image, inventory.group(grid.GROUP))
         if bad:
             raise StateError('not a roster this tool built: the grid code is changed but there are no roster '
@@ -328,6 +333,7 @@ def _model_blocks(image: dolfile.DolImage, dat, characters: list[dict], warnings
     """Each character's ``blocks`` (module docstring); None without a DAT."""
     for c in characters:
         c['blocks'] = None
+        c['equipment'] = None
     if dat is None:
         return
     try:
@@ -352,6 +358,28 @@ def _model_blocks(image: dolfile.DolImage, dat, characters: list[dict], warnings
                 seen[(offset, length)] = hashlib.sha1(dat.read(offset, length)).hexdigest()
             blocks[role] = {'offset': offset, 'length': length, 'sha1': seen[(offset, length)]}
         c['blocks'] = blocks
+        equipment = {}
+        for index, role in gear.ROLES.items():
+            address = pointers[c['model_dir']] + dhs.RECORD_SIZE * index
+            if not image.is_mapped(address, dhs.RECORD_SIZE):
+                continue
+            words = struct.unpack('>12I', image.read(address, dhs.RECORD_SIZE))
+            if words[0] != dhs.hh._DAT_FNAME_PTR:
+                continue
+            offset, length, _alloc = dhs.slot(words, 'en')
+            if (offset, length) not in seen:
+                seen[(offset, length)] = hashlib.sha1(dat.read(offset, length)).hexdigest()
+            equipment[role] = {'file': index, 'offset': offset, 'length': length, 'sha1': seen[(offset, length)],
+                               'placeholder': length <= gear.PLACEHOLDER_MAX
+                               and gear.is_placeholder(dat.read(offset, length))}
+        c['equipment'] = equipment
+    users: dict[tuple[int, int], int] = {}
+    for c in characters:
+        for entry in (c.get('equipment') or {}).values():
+            users[(entry['offset'], entry['length'])] = users.get((entry['offset'], entry['length']), 0) + 1
+    for c in characters:
+        for entry in (c.get('equipment') or {}).values():
+            entry['shared_with'] = users[(entry['offset'], entry['length'])] - 1
 
 
 def _resolve_icons(image: dolfile.DolImage, dat, mf: dict | None, characters: list[dict], warnings: list[str]) -> bool:

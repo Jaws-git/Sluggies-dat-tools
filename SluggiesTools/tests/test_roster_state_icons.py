@@ -1,4 +1,4 @@
-"""GUI character grid, Phase 2: portraits resolved the game's way (``Roster/state_icons.py``) and their crops.
+"""Portraits resolved the game's way (``Roster/state_icons.py``) and their crops.
 
 A synthetic stock bank (``test_roster_icons.stock_bank``) gets a real C8 page
 0 (one colour per 52-px cell, every resource row on it); the real icons step

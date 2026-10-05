@@ -1,4 +1,4 @@
-"""GUI character grid, Phase 6: roster packs (``Roster/pack.py``): fingerprints, the per-slot diff, the pack file
+"""Roster packs (``Roster/pack.py``): fingerprints, the per-slot diff, the pack file
 and the load plan.
 
 A small synthetic game: a stock square with Mario (0x00, vanilla models) and Toad (0x0D, a patched High model),

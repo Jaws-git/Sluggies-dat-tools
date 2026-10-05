@@ -6,13 +6,15 @@
   or ``Esc`` does.
 * Label and tooltip text for squares and slots, and where each portrait crop
   is (``icon_file``) and whether it is the slot's own (``icon_note``).
-* ``PendingEdits``: the staged slot edits (decision 14) and the overlay text
+* ``PendingEdits``: the staged slot edits and the overlay text
   and portrait previews they give.
 * ``slot_dialog``: the confirm dialog of "Select .sluggie..." / "Clear slot",
   from the staging check's batch plan (``--apply-slots FILE --dry-run``: the
   pending edits plus the new one) and its output; ``summary_dialog``: Patch
   Game's summary of the full dry run.
-* Roster packs (Phase 6): ``load_dialog`` (the per-slot diff of
+* Equipment: ``equipment_tiles`` (the slot level's Bat / Left glove / Right glove / Extra bat tiles:
+  state from the read, overlay from the pending edits).
+* Roster packs: ``load_dialog`` (the per-slot diff of
   ``--load-roster FILE --dry-run``), ``save_pending_dialog``, and the
   "changed since the pack was saved / loaded" marker (``Reference``).
 
@@ -35,8 +37,9 @@ PACK_EXTENSION = '.sluggiesroster'
 WRITING_FLAGS = frozenset({'--export', '--roster', '--patch', '--unpatch', '--resplit-unused',
                            '--patch-slot', '--clear-slot', '--rename-slot', '--set-voice', '--set-stats',
                            '--set-icon', '--apply-slots', '--load-roster',
-                           '--write-slot-blocks'})
+                           '--write-slot-blocks', '--write-slot-equipment', '--game-options'})
 UNNAMED = '-'
+CPU_VS_CPU_OPTIONS = ('cpu_vs_cpu', 'cpu_management')   # what the grid tab's CPU vs CPU button turns on
 LUIGI = 0x01
 
 
@@ -49,6 +52,35 @@ def chain_writes(steps) -> bool:
     not)."""
     return any(arg in WRITING_FLAGS for step in steps for arg in step
                if '--dry-run' not in step and '--validate-only' not in step)
+
+
+CPU_VS_CPU_ENABLE = 'Enable Cpu vs CPU with management'
+CPU_VS_CPU_DISABLE = 'Disable Cpu vs Cpu with management'
+
+
+def cpu_vs_cpu_command(enable: bool = True) -> tuple:
+    """The grid tab's CPU vs CPU button step: turn both options on, or both off."""
+    return ('--game-options', '--on' if enable else '--off', *CPU_VS_CPU_OPTIONS)
+
+
+def cpu_vs_cpu_button(state) -> tuple[str, bool]:
+    """The button's label and whether it enables (only fully enabled shows Disable; a half-on state enables
+    the missing option)."""
+    enabled = cpu_vs_cpu_status(state)[1]
+    return (CPU_VS_CPU_DISABLE, False) if enabled else (CPU_VS_CPU_ENABLE, True)
+
+
+def cpu_vs_cpu_status(state) -> tuple[str, bool | None]:
+    """The status label beside that button and whether both options are on (None: not known, e.g. no state yet or
+    a state written before the reader listed game options)."""
+    options = (state or {}).get('game_options')
+    if options is None:
+        return 'Cpu vs Cpu: unknown', None
+    if all(key in options for key in CPU_VS_CPU_OPTIONS):
+        return 'Cpu vs Cpu: enabled', True
+    if 'cpu_vs_cpu' in options:
+        return 'Cpu vs Cpu: enabled (without management)', False
+    return 'Cpu vs Cpu: disabled', False
 
 
 # --------------------------------------------------------------------------
@@ -173,7 +205,7 @@ def rename_prefill(state: dict, cid: int) -> str:
 
 
 # --------------------------------------------------------------------------
-# Voice and stats (Phase 7)
+# Voice and stats
 # --------------------------------------------------------------------------
 
 PLAYER_END = 0x4D                    # stock player IDs: the stats sources (Roster/ids.py PLAYER_END)
@@ -336,7 +368,7 @@ def slot_details(state: dict, cid: int) -> list[str]:
 
 
 # --------------------------------------------------------------------------
-# Portrait replacement (Phase 8)
+# Portrait replacement
 # --------------------------------------------------------------------------
 
 MII_START, NEW_START = 0x4D, 0x66    # Mii IDs have no portrait records (Roster/slot_plan.has_portrait_records)
@@ -552,11 +584,11 @@ class GridNav:
 
 
 # --------------------------------------------------------------------------
-# Staged edits (decision 14): the pending list and its overlay
+# Staged edits: the pending list and its overlay
 # --------------------------------------------------------------------------
 
 class PendingEdits:
-    """The pending slot edits, in GUI memory only (decision 14). ``edits`` is the merged list in staging order
+    """The pending slot edits, in GUI memory only. ``edits`` is the merged list in staging order
     (``plan['merged']`` of the last staging check), ``sections`` the planner's per-edit sections (notes,
     effects) that the overlay shows. Both survive a re-read; Patch Game re-plans everything on a fresh one.
 
@@ -626,6 +658,11 @@ class PendingEdits:
         return next((e for e in self.edits if int(e['id'], 16) == cid and e['op'] == 'icon' and e.get('view') == view),
                     None)
 
+    def equip_edit(self, cid: int, file: int) -> dict | None:
+        """The slot's pending equipment edit (``equip`` / ``equip_clear``) for slot file ``file`` (2-5)."""
+        return next((e for e in self.edits if int(e['id'], 16) == cid and e['op'] in EQUIP_OPS
+                     and e.get('file') == file), None)
+
     def sections_for(self, cid: int) -> list[dict]:
         return [s for s in self.sections if int(s['target'], 16) == cid]
 
@@ -646,6 +683,11 @@ class PendingEdits:
                                ('portrait_note', 'Portraits')):
                 if effects.get(key) and not (key == 'portrait_note' and section['action'] == 'icon'):
                     out.append(f'  {label}: {effects[key]}')
+            equipment = effects.get('equipment')
+            if isinstance(equipment, dict):
+                out += [f'  Equipment: {text}' for _file, text in sorted(equipment.items())]
+            elif equipment:
+                out.append(f'  Equipment: {equipment}')
             if effects.get('portraits') and section['action'] == 'patch':
                 out.append('  Portraits: ' + os.path.basename(os.path.dirname(os.path.dirname(
                     effects['portraits']['front']))) + ' (previewed, marked "pending")')
@@ -669,6 +711,13 @@ class PendingEdits:
 
 
 def _edit_title(edit: dict) -> str:
+    if edit['op'] == 'equip':
+        what = EQUIP_LABELS.get(edit.get('file'), 'equipment').lower()
+        where = f' (file {edit["file"]})' if edit.get('file') in (5,) else ''
+        bundled = ' (bundled with the model)' if edit.get('origin') == 'bundled' else ''
+        return f'Pending: {what}{where} from {os.path.basename(edit.get("sluggie") or "?")}{bundled}'
+    if edit['op'] == 'equip_clear':
+        return f'Pending: reset the {EQUIP_LABELS.get(edit.get("file"), "equipment").lower()}'
     if edit['op'] == 'patch':
         files = [os.path.basename(edit['file'])] + ([os.path.basename(edit['low'])] if edit.get('low') else [])
         return 'Pending: put ' + ' + '.join(files) + ' into this slot'
@@ -689,6 +738,65 @@ def _edit_title(edit: dict) -> str:
 def icon_label(edit: dict) -> str:
     """The user's file name of an icon edit (``origin``: the picked file, ``file``: its normalised copy)."""
     return os.path.basename(edit.get('origin') or edit.get('file') or '?')
+
+
+# --------------------------------------------------------------------------
+# Equipment tiles
+# --------------------------------------------------------------------------
+
+EQUIP_OPS = ('equip', 'equip_clear')
+# state key -> (slot file, label); the file numbers are Roster/gear.py's (test-pinned)
+EQUIP_TILES = (('bat', 2, 'Bat'), ('glove_l', 3, 'Left glove'), ('glove_r', 4, 'Right glove'),
+               ('extra', 5, 'Extra bat'))
+EQUIP_LABELS = {file: label for _role, file, label in EQUIP_TILES}
+EXTRA_FILE = 5
+EXTRA_HINT = ('File 5 is an extra slot that only Peach (a second bat) and Wario fill; what the game does with it on '
+              'other characters is not confirmed yet.')
+ORIGINAL, MODIFIED, EMPTY, PENDING_STATE = 'Original', 'Modified', 'Empty', 'Pending'
+
+
+def equipment_state(state: dict, cid: int, role: str) -> str:
+    """``Empty`` (a placeholder), ``Modified`` (not the vanilla block of its directory) or ``Original`` (also when
+    the read cannot tell, like an unused character's split copies)."""
+    entry = ((characters(state).get(cid) or {}).get('equipment') or {}).get(role) or {}
+    if entry.get('placeholder'):
+        return EMPTY
+    return MODIFIED if entry.get('vanilla') is False else ORIGINAL
+
+
+def equipment_tiles(state: dict, cid: int, pending: 'PendingEdits | None' = None) -> list[dict]:
+    """One dict per equipment file for the slot level: ``file``, ``label``, ``state`` (Original / Modified / Empty,
+    or Pending with a pending edit), ``text`` (the line under the label), ``tip`` (tooltip lines) and ``can_reset``
+    (the tile's Reset does something: modified, or a pending edit to drop). ``[]`` without equipment in the read."""
+    char = characters(state).get(cid) or {}
+    equipment = char.get('equipment')
+    if not equipment:
+        return []
+    tiles = []
+    for role, file, label in EQUIP_TILES:
+        entry = equipment.get(role)
+        if entry is None:
+            continue
+        now = equipment_state(state, cid, role)
+        edit = pending.equip_edit(cid, file) if pending is not None else None
+        tip = [f'{label} = file {file} of the slot\'s model directory']
+        if entry.get('placeholder'):
+            tip.append('empty: the shared placeholder block most characters ship in this file')
+        else:
+            tip.append(f'{_mb(entry["length"])} [{entry["sha1"][:8]}]')
+        if entry.get('shared_with') and char.get('id', cid) < NEW_START:
+            tip.append(f'also loaded by {entry["shared_with"]} other slot{"s" if entry["shared_with"] != 1 else ""}; '
+                       'a replacement only changes this slot')
+        if file == EXTRA_FILE:
+            tip.append(EXTRA_HINT)
+        if edit is not None:
+            text = _edit_title(edit).removeprefix('Pending: ')
+            tiles.append({'file': file, 'label': label, 'state': PENDING_STATE, 'text': text, 'tip': tip,
+                          'can_reset': True})
+            continue
+        tiles.append({'file': file, 'label': label, 'state': now, 'text': now, 'tip': tip,
+                      'can_reset': now == MODIFIED})
+    return tiles
 
 
 # --------------------------------------------------------------------------
@@ -761,16 +869,23 @@ def _partner_lines(files: dict, sizes: dict, joined: bool = False) -> list:
 
 
 def _section_lines(state: dict, section: dict, sizes: dict, warnings: bool = True) -> list:
-    """A planned edit's lines (4f dialog content): source and models with their sizes, notes, warnings."""
+    """A planned edit's lines (the confirm dialog's content): source and models with their sizes, notes, warnings."""
     lines = []
     cid = int(section['target'], 16)
     patch = section['action'] == 'patch'
+    equip = section['action'] == 'equip'
     if patch:
         source = int(section['source'], 16)
         lines.append((f'Source: {known_name(state, source)} ({hex_id(source)}) -> {name_of(state, cid)} '
                       f'({hex_id(cid)})', TEXT))
         lines += _partner_lines(section.get('files') or {}, sizes, joined='low' in (section.get('edit') or {}))
-    notes = section['notes'][1:] if patch else section['notes']   # a patch's first note is the files line above
+    if equip:
+        gear = section.get('gear') or {}
+        name = os.path.basename(gear.get('path') or '?')
+        size = sizes.get(name)
+        bundled = ' (bundled with the model)' if gear.get('origin') == 'bundled' else ''
+        lines.append((f'{gear.get("label", "Equipment")}: {name}{bundled}' + (f', {_mb(size)}' if size else ''), TEXT))
+    notes = section['notes'][1:] if patch or equip else section['notes']   # the first note is the line above
     lines += [(f'- {note}', TEXT) for note in notes]
     if warnings:
         lines += [(f'Warning: {warning}', WARN) for warning in section['warnings']]
@@ -789,18 +904,35 @@ def _refused_lines(state: dict, plan: dict, cid: int | None = None) -> list:
 VALUE_KINDS = ('rename', 'stats', 'voice', 'icon')   # edits that change one value, no model
 
 
+def _find_section(plan: dict, cid: int, kind: str, view: str | None, gear_file: int | None) -> dict | None:
+    """The planned section of the edit just staged (the plan also lists the pending edits' sections)."""
+    for section in plan['edits']:
+        if int(section['target'], 16) != cid or section['action'] != kind:
+            continue
+        edit = section.get('edit') or {}
+        if kind == 'icon' and view is not None and edit.get('view') != view:
+            continue
+        if kind in EQUIP_OPS and gear_file is not None and edit.get('file') != gear_file:
+            continue
+        return section
+    return None
+
+
 def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int, output: str,
                 pending: PendingEdits | None = None, rename: bool = False, kind: str | None = None,
-                view: str | None = None) -> SlotDialog:
+                view: str | None = None, gear_file: int | None = None) -> SlotDialog:
     """The confirm dialog of a staged edit, after its staging check (the pending edits plus this one, exit
     ``code``, log ``output``): what the edit does, its warnings and the verdict. ``can_apply`` (Stage stages it)
     only when the planner and the build check passed. ``kind``: 'patch', 'clear', 'rename', 'stats', 'voice' or
-    'icon' (``view``: its portrait view) (default from ``patch`` / ``rename``; a voice edit's ``cid`` is its
-    square's head)."""
+    'icon' (``view``: its portrait view), 'equip' or 'equip_clear' (``gear_file``: the slot file) (default from
+    ``patch`` / ``rename``; a voice edit's ``cid`` is its square's head)."""
     kind = kind or ('rename' if rename else 'patch' if patch else 'clear')
     rename = kind in VALUE_KINDS
     target = f'{name_of(state, cid)} ({hex_id(cid)})'
+    gear_label = EQUIP_LABELS.get(gear_file, 'equipment').lower()
     dialog = SlotDialog({'rename': f'Rename {target}?', 'patch': f'Put a model into {target}?',
+                         'equip': f'Put a {gear_label} into {target}?',
+                         'equip_clear': f'Reset the {gear_label} of {target}?',
                          'stats': f'Other stats for {target}?',
                          'icon': f'New {view} portrait for {target}?',
                          'voice': f'Another voice for the square of {target}?'}.get(kind, f'Clear {target}?'))
@@ -817,20 +949,20 @@ def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int
                 lines.append(('A pending edit no longer fits the game files: discard it on its slot.', TEXT))
         lines.append(('Nothing was staged.', TEXT))
         return dialog
-    section = next((s for s in plan['edits'] if int(s['target'], 16) == cid), None)
+    section = _find_section(plan, cid, kind, view, gear_file)
     if section is None:                       # a clear of a slot at its baseline, or a rename that changes nothing
-        skipped = next((s for s in plan['skipped'] if int(s['target'], 16) == cid), None)
+        skipped = next((s for s in plan['skipped'] if int(s['target'], 16) == cid and s['action'] == kind), None)
         lines += [(f'- {note}', TEXT) for note in (skipped or {}).get('notes', [])]
         earlier = None
         if pending is not None:
             earlier = (pending.icon_edit(cid, view) if kind == 'icon' else pending.value_edit(cid, kind) if rename
-                       else pending.model_edit(cid))
+                       else pending.equip_edit(cid, gear_file) if kind in EQUIP_OPS else pending.model_edit(cid))
         if earlier is not None:
             lines.append((f'Stage drops the slot\'s pending {earlier["op"]}, so the slot stays as it is.', OK))
             dialog.can_apply = True
         else:
-            dialog.title = {'rename': f'{target}: nothing to rename', 'clear': f'{target}: nothing to clear'}.get(
-                kind, f'{target}: nothing to change')
+            dialog.title = {'rename': f'{target}: nothing to rename', 'clear': f'{target}: nothing to clear',
+                            'equip_clear': f'{target}: nothing to reset'}.get(kind, f'{target}: nothing to change')
         return dialog
     lines += _section_lines(state, section, build_sizes(output))
     prefix = f'{hex_id(cid)}: '
@@ -840,7 +972,8 @@ def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int
     if code != 0:
         lines.append((f'Build check failed: {error or f"exit code {code}"}. Nothing was staged.', ERROR))
         return dialog
-    checks = 'slot rules, and every model built and validated' if patch and not rename else 'slot rules'
+    checks = ('slot rules, and the model built and validated' if kind == 'equip'
+              else 'slot rules, and every model built and validated' if patch and not rename else 'slot rules')
     lines.append((f'Checks passed: {checks}. Nothing written yet: Stage adds the edit to the pending list, '
                   '"Patch Game" writes it.', OK))
     dialog.can_apply = True
@@ -869,7 +1002,13 @@ def summary_dialog(state: dict, plan: dict | None, code: int, output: str) -> Sl
     for section in plan['edits']:
         cid = int(section['target'], 16)
         what = {'patch': 'put a model in', 'rename': 'rename'}.get(section['action'], 'clear')
-        if section['action'] == 'rename':
+        if section['action'] in EQUIP_OPS:
+            gear = section.get('gear') or {}
+            label = str(gear.get('label') or 'equipment').lower()
+            what = (f'put a {label} in' if section['action'] == 'equip' else f'reset the {label}')
+            if gear.get('origin') == 'bundled':
+                what += ' (bundled with the model)'
+        elif section['action'] == 'rename':
             text = (section.get('edit') or {}).get('text')
             what = f'rename to {text!r}' if text else 'reset the name'
         elif section['action'] in ('stats', 'voice'):
@@ -899,12 +1038,14 @@ def summary_dialog(state: dict, plan: dict | None, code: int, output: str) -> Sl
 
 
 # --------------------------------------------------------------------------
-# Roster packs (Phase 6)
+# Roster packs
 # --------------------------------------------------------------------------
 
 # the fingerprint fields (Roster/pack.py FIELDS), as the dialogs and markers name them
-PACK_FIELDS = {'high': 'High model', 'low': 'Low model', 'model': 'model directory', 'front': 'front portrait',
+PACK_FIELDS = {'high': 'High model', 'low': 'Low model', 'bat': 'bat', 'glove_l': 'left glove',
+               'glove_r': 'right glove', 'extra': 'extra bat', 'model': 'model directory', 'front': 'front portrait',
                'side': 'side portrait', 'name': 'name', 'stats': 'stats', 'voice': 'square voice', 'square': 'square'}
+EQUIP_FIELDS = ('bat', 'glove_l', 'glove_r', 'extra')    # absent from the fingerprints of format 1 packs
 DIFF_TEXT = {'game': 'only in the game (leaves the grid)', 'pack': 'only in the pack (comes onto the grid)'}
 
 
@@ -955,7 +1096,8 @@ class Reference:
             return []
         if then is None:
             return ['not in the pack']
-        return [label for f, label in PACK_FIELDS.items() if now.get(f) != then.get(f)]
+        return [label for f, label in PACK_FIELDS.items()
+                if now.get(f) != then.get(f) and not (f in EQUIP_FIELDS and f not in then)]
 
     def square_changed(self, state: dict, index: int) -> bool:
         return any(self.changed(state, m) for m in state['squares'][index]['members'])

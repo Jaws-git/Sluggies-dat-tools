@@ -1,6 +1,6 @@
-"""Exhibition draft grid (plan Phase 6): 11 or 12 columns, 4 or 5 rows, new squares.
+"""Exhibition draft grid: 11 or 12 columns, 4 or 5 rows, new squares.
 
-Port of the external tool's ``gridcells`` (plan section 2.2 D). Only the
+Port of the external tool's ``gridcells``. Only the
 exhibition team draft (screen A, layout element ``0xBA``) grows; the other
 grid screen (Toy Field and friends, element ``0x97``) keeps its 41 squares,
 although its objects grow too, because the grid widget code is shared.
@@ -18,7 +18,7 @@ Config (``grid`` in the roster preset; without it, or with ``null``, the grid st
   (new IDs, spare rows or stock non-head IDs), the first one shown on the
   square, or ``{"members": [...], "voice": "0xNN"}``. On this screen a
   square's members leave their template's wheel and form the square's own
-  wheel. More than 6 on a square needs the 10-member wheel code (plan 4d),
+  wheel. More than 6 on a square needs the 10-member wheel code (``wheels``),
   which the step installs if the wheels step has not. ``voice``: a stock
   player ID (0x00-0x4C) whose voice the square's square-only new IDs speak
   with: their selector byte 2 (species) becomes that ID's
@@ -36,7 +36,7 @@ Config (``grid`` in the roster preset; without it, or with ``null``, the grid st
   free cells: column 0 top to bottom, column 11 top to bottom, row 5 left to
   right.
 
-What changes (letters as in the tool and plan section 2.2 D):
+What changes (letters as in the tool):
 
 * a. the layout (each language's copy, via ``layout_file``): element 0xBA
   rebuilt with columns x rows nodes at the stock 49 px pitch, right edge at
@@ -650,7 +650,7 @@ def empty_cells(image: dolfile.DolImage, hs: dol_hammerspace.DolHammerspace, gri
 
 def grid_code(image: dolfile.DolImage, hs: dol_hammerspace.DolHammerspace, grid: Grid, cap: int,
               refs=None) -> list[str]:
-    """Everything in the DOL (b-j). ``cap``: members a square's wheel may list (6, or 10 with plan 4d)."""
+    """Everything in the DOL (b-j). ``cap``: members a square's wheel may list (6, or 10 with the 10-member wheel code)."""
     bad = inventory.stock_mismatches(image, inventory.group(GROUP)) + [
         f'0x{a:08X}' for a, w in ROW_SITES_STOCK.items() if image.u32(a) != w]
     if bad:

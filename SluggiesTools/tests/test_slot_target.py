@@ -1,4 +1,4 @@
-"""GUI character grid, Phase 4a: a model patched into another character's slot (``SlotTarget``).
+"""A model patched into another character's slot (``SlotTarget``).
 
 A synthetic input with three character directories, each holding a high-poly
 model (file 0) and its ``L_`` partner (file 1): the source (Red Toad
@@ -65,7 +65,11 @@ VANILLA = {
 
 
 class SlotHarness(unittest.TestCase):
-    """Input/output DOL and DAT with the three character directories (module docstring)."""
+    """Input/output DOL and DAT with the three character directories (module docstring). ``FILES`` / ``VANILLA``:
+    the files each directory holds and their blocks (a subclass adds the equipment files 2-5)."""
+
+    FILES = (0, 1)
+    VANILLA = VANILLA
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -78,8 +82,8 @@ class SlotHarness(unittest.TestCase):
         dat = bytearray(0x1000)
         for chunk in (SOURCE, TARGET, OTHER):
             pointers[chunk] = len(dol)
-            for file_index in (0, 1):
-                block = VANILLA[(chunk, file_index)]
+            for file_index in self.FILES:
+                block = self.VANILLA[(chunk, file_index)]
                 offset = len(dat)
                 dat += block
                 self.records[(chunk, file_index)] = len(dol)
@@ -126,7 +130,7 @@ class SlotHarness(unittest.TestCase):
     def build(self, block, source=(SOURCE, 0)):
         return main.ModelBlockBuild(
             block=block, parsed=None, chunk_number=source[0], file_index=source[1],
-            original_offset=self.vanilla_offsets[source], original_length=len(VANILLA[source]),
+            original_offset=self.vanilla_offsets[source], original_length=len(self.VANILLA[source]),
             section_modes=main.SectionModes(), section_sizes={},
             validation_report={'valid': True},
         )
@@ -135,8 +139,8 @@ class SlotHarness(unittest.TestCase):
         return main.WriteModelBlock(self.build(block, source), 'test.sluggie', target=target)
 
     def assert_vanilla_route(self, route):
-        self.assertEqual(self.route(route), (self.vanilla_offsets[route], len(VANILLA[route])))
-        self.assertEqual(self.live(route), VANILLA[route])
+        self.assertEqual(self.route(route), (self.vanilla_offsets[route], len(self.VANILLA[route])))
+        self.assertEqual(self.live(route), self.VANILLA[route])
 
 
 
@@ -257,7 +261,7 @@ OWN = 120                         # stands in for the first directory past the s
 
 
 class OwnDirectoryTests(SlotHarness):
-    """Phase 4e: a new ID's own model directory (roster ``model_dirs``) as a slot target. Its records sit past the
+    """A new ID's own model directory (roster ``model_dirs``) as a slot target. Its records sit past the
     stock table in the output DOL; its files are hammerspace copies of SOURCE's."""
 
     def setUp(self):
@@ -336,7 +340,7 @@ class ClearTargetTests(SlotHarness):
 
 
 class SlotPairTests(unittest.TestCase):
-    """Phase 6: ``slot_pair_problems``, the checks a roster pack's blocks get before they go into a slot."""
+    """``slot_pair_problems``, the checks a roster pack's blocks get before they go into a slot."""
 
     def problems(self, high, low, skeleton=TOAD):
         vanilla = {0: LodPartnerGuard.act_summary(model_block('kinopio_b.gpl', skeleton)),
@@ -367,7 +371,7 @@ class SlotPairTests(unittest.TestCase):
 
 
 class WriteSlotBlocksTests(SlotHarness):
-    """Phase 6: ``--write-slot-blocks`` writes a roster pack's finished blocks into a slot as they are."""
+    """``--write-slot-blocks`` writes a roster pack's finished blocks into a slot as they are."""
 
     def setUp(self):
         super().setUp()

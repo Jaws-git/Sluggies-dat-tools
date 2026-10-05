@@ -1,4 +1,4 @@
-"""Roster expansion Phase 9: open slots (square-only IDs, the "empty slot" icon, shared name plates) and the presets."""
+"""Open slots (square-only IDs, the "empty slot" icon, shared name plates) and the presets."""
 
 import json
 import os

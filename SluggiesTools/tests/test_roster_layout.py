@@ -1,4 +1,4 @@
-"""Roster expansion Phase 2: DAT hammerspace allocation and the select layout copies."""
+"""DAT hammerspace allocation and the select layout copies."""
 
 import json
 import os

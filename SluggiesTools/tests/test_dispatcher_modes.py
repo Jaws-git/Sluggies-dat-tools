@@ -626,7 +626,7 @@ class RosterArgsTests(unittest.TestCase):
 
 
 class TargetedPatchDispatchTests(unittest.TestCase):
-    """GUI character grid Phase 4a: --target-id always goes through Hammerspace."""
+    """--target-id always goes through Hammerspace."""
 
     @mock.patch('start.subprocess.run')
     def test_inplace_file_with_target_goes_to_hammerspace(self, mock_run):

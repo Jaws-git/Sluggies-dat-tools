@@ -19,14 +19,15 @@ Portraits that are not the slot's own (a lower key, the template's, the Mii
 or "?" icon) are marked. The textures are released and rebuilt on every
 re-read.
 
-Edits are staged (decision 14). The slot level's **Rename...** (a text box
+Edits are staged. The slot level's **Rename...** (a text box
 with a live "fits the name plate" line), **Select .sluggie...**, **Clear
 slot** and **Stats...**, and the square level's **Voice...** (on the slot
-level too for one-member squares; both pick from a list) run a staging check (``start.py --apply-slots edits.json
+level too for one-member squares; both pick from a list) and the Equipment row's tiles (Bat, Left glove, Right glove, Extra bat;
+each has **Select...** for a bat/glove ``.sluggie`` and **Reset**) run a staging check (``start.py --apply-slots edits.json
 --dry-run``: the pending edits plus the new one, the new edit's build check),
 then a confirm dialog with what the edit does (``gui_grid.slot_dialog``); Stage
 adds it to the pending list (``gui_grid.PendingEdits``, GUI memory only).
-The slot level's two portraits are image buttons too (Phase 8): a click picks
+The slot level's two portraits are image buttons too: a click picks
 an image file, and the icon dialog shows it, the 48x51 result (fit mode,
 "Trim transparent border", redrawn in-process with ``Roster/icon_import``) and
 the slot's other view; OK writes the result into
@@ -82,10 +83,16 @@ LINE = 26                        # text line height (Segoe UI 16 pt, with spacin
 SLOT_W = 720                     # level 2 may be wider than level 1: each level is its own window
 PORTRAIT = (SLOT_SCALE * ICON[0], SLOT_SCALE * ICON[1])
 BUTTON_H = 32
+EQUIP_BLOCK = 3 * LINE + BUTTON_H + 2 * GAP     # the Equipment row: heading, tile label + state, buttons
+EQUIP_BUTTON_W = 76
 BADGE_FONT = 9                   # the grid's slot-count number, in portrait pixels (scaled with the texture)
 RENAME, SELECT, CLEAR, DISCARD = 'Rename...', 'Select .sluggie...', 'Clear slot', 'Discard pending'
 STATS, VOICE = 'Stats...', 'Voice...'
-SLOT_BUTTONS = ((RENAME, None), (SELECT, None), (CLEAR, None), (STATS, None), (DISCARD, None))  # (label, phase); Discard last
+VOICE_ALL = 'Set voice (all)...'    # the square level (colour wheel): the voice reaches every member
+SLOT_BUTTONS = (RENAME, CLEAR, STATS, DISCARD)  # Discard last
+EQUIP_PAIR_W = 2 * EQUIP_BUTTON_W - 8 + 4   # a tile's Select... + Reset buttons and the gap between them
+SLOT_BUTTON_W = EQUIP_PAIR_W      # the bottom row's buttons match that, so they align under the tiles
+SELECT_W = (SLOT_W - 2 * PAD) // 3  # Select .sluggie... above the Equipment row
 VOICE_TIP = ('Stage another voice for this square (a stock square: its whole species; a new square: its members '
              'without a wheel). "Patch Game" writes the pending edits.')
 FONT_REL = os.path.join('SluggiesTools', 'Roster', 'fonts', 'OpenSans.ttf')   # the name plate's font
@@ -149,6 +156,15 @@ class CharacterGridTab:
                 dpg.add_loading_indicator(tag='grid_spinner', style=1, radius=1.6, show=False,
                                           color=(90, 200, 120, 255), secondary_color=(60, 120, 80, 255))
                 dpg.add_text('', tag='grid_status')
+                dpg.add_spacer(width=12)
+                dpg.add_button(label=gui_grid.CPU_VS_CPU_ENABLE, tag='grid_cpu_vs_cpu',
+                               callback=lambda: self._on_cpu_vs_cpu())
+                with dpg.tooltip('grid_cpu_vs_cpu'):
+                    dpg.add_text('Turn CPU vs CPU (hold A + Minus on controller 1 while confirming the teams) and '
+                                 'CPU vs CPU management (controller 1 manages the fielding team) on or off in '
+                                 '3_Output_Dat/main.dol. A roster rebuild keeps them; a fresh export (menu [1]) '
+                                 'does not.', wrap=420)
+                dpg.add_text('', tag='grid_cpu_vs_cpu_status')
             dpg.add_text('', tag='grid_note', color=_WARN, wrap=900)
             dpg.add_text('', tag='grid_reference', color=_CHANGED, wrap=900, show=False)
             dpg.add_child_window(tag='grid_cells', border=False, horizontal_scrollbar=True)
@@ -200,10 +216,6 @@ class CharacterGridTab:
                     for col, value in colors:
                         dpg.add_theme_color(col, value)
                     dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 4)
-        with dpg.theme(tag='grid_empty_theme'):
-            with dpg.theme_component(dpg.mvButton, enabled_state=False):
-                dpg.add_theme_color(dpg.mvThemeCol_Button, (45, 45, 48, 255))
-                dpg.add_theme_color(dpg.mvThemeCol_Text, _EMPTY)
         dpg.add_texture_registry(tag='grid_textures')
         with dpg.file_dialog(directory_selector=False, show=False, modal=True, tag='grid_sluggie_dialog',
                              width=760, height=460, callback=self._on_sluggie_chosen,
@@ -273,6 +285,10 @@ class CharacterGridTab:
         dpg.configure_item('grid_spinner', show=self.work is not None or self.loader.status == self.loader.RUNNING)
         dpg.set_value('grid_status', self.work or self.loader.message)
         state = self.loader.state
+        text, enabled = gui_grid.cpu_vs_cpu_status(state)
+        dpg.set_value('grid_cpu_vs_cpu_status', text)
+        dpg.configure_item('grid_cpu_vs_cpu_status', color=_OK if enabled else _WARN if enabled is False else _DIM)
+        dpg.configure_item('grid_cpu_vs_cpu', label=gui_grid.cpu_vs_cpu_button(state)[0])
         dpg.set_value('grid_note', gui_grid.stock_luigi_note(state) if state else '')
         dpg.configure_item('grid_reference', show=self.reference is not None)
         if self.reference is not None:
@@ -395,7 +411,7 @@ class CharacterGridTab:
 
     def _portrait_slot_button(self, cid, view, preview=None):
         """The slot level's enlarged portrait as an image button (``preview``: a pending portrait's PNG instead,
-        with the pending border); a click replaces that view (Phase 8). A plain button where there is none."""
+        with the pending border); a click replaces that view. A plain button where there is none."""
         texture = self._texture(preview, SLOT_SCALE) if preview else self._portrait_texture(cid, view, SLOT_SCALE)
         usable = gui_grid.can_replace_portrait(cid) and self.pending.pack is None
         callback = lambda: self._on_portrait(cid, view)
@@ -505,7 +521,7 @@ class CharacterGridTab:
         per_row = swatches_per_row(len(members), dpg.get_viewport_client_width())
         rows = -(-len(members) // per_row)
         width = max(2 * PAD + per_row * (SWATCH[0] + GAP) - GAP, 360)
-        box = self._box(width, 2 * PAD + rows * (SWATCH[1] + GAP) + 60 + BUTTON_H + GAP)
+        box = self._box(width, 2 * PAD + rows * (SWATCH[1] + GAP) + 60 + LINE + BUTTON_H + GAP)
         kind = 'Stock square' if sq['kind'] == 'stock' else 'New square'
         dpg.add_text(f'{kind}: {gui_grid.name_of(state, sq["head"])}', parent=box)
         for start in range(0, len(members), per_row):
@@ -533,15 +549,15 @@ class CharacterGridTab:
                                 dpg.add_text(line, color=_PENDING)
                             if changed:
                                 dpg.add_text(f'Changed since the pack: {", ".join(changed)}', color=_CHANGED)
-        with dpg.group(horizontal=True, parent=box):
-            dpg.add_text(f'Voice: {gui_grid.name_of(state, sq["voice"])}', color=_DIM)
-            self._voice_button(index)
+        dpg.add_text(f'Voice: {gui_grid.name_of(state, sq["voice"])}', color=_DIM, parent=box)
+        with dpg.group(horizontal=True, parent=box):             # the button on its own row, below the label
+            self._voice_button(index, label=VOICE_ALL)
         return box
 
-    def _voice_button(self, index):
+    def _voice_button(self, index, width=0, label=VOICE):
         """The square's Voice... button (square level; slot level of a one-member square)."""
         usable = self.pending.pack is None
-        button = dpg.add_button(label=VOICE, height=BUTTON_H, callback=lambda: self._on_value('voice', index),
+        button = dpg.add_button(label=label, width=width, height=BUTTON_H, callback=lambda: self._on_value('voice', index),
                                 enabled=not self._locked() and usable)
         dpg.bind_item_theme(button, 'primary_theme')
         self.slot_buttons.append((button, usable))
@@ -550,8 +566,7 @@ class CharacterGridTab:
                          'first.', wrap=420)
 
     def _slot_box(self):
-        """The slot enlarged: front and side portrait, facts, and the slot buttons (later phases' buttons are
-        placeholders)."""
+        """The slot enlarged: front and side portrait, facts, and the slot buttons."""
         state = self.nav.state
         cid = self.nav.slot
         details = [(line, _DIM) for line in gui_grid.slot_details(state, cid)]
@@ -569,7 +584,9 @@ class CharacterGridTab:
         details += [(line, _PENDING) for line in self.pending.lines(cid)]
         text_w = SLOT_W - 2 * PAD - 2 * (PORTRAIT[0] + 2 * FRAME + GAP) - GAP
         body = max(PORTRAIT[1] + 2 * FRAME + LINE, LINE * sum(1 + len(line) * 7 // text_w for line, _c in details))
-        box = self._box(SLOT_W, 2 * PAD + 2 * LINE + body + GAP + BUTTON_H + 2 * LINE)
+        tiles = gui_grid.equipment_tiles(state, cid, self.pending)
+        box = self._box(SLOT_W, 2 * PAD + 2 * LINE + body + GAP + BUTTON_H + 2 * LINE + BUTTON_H + GAP
+                        + (EQUIP_BLOCK if tiles else 0) + (BUTTON_H + GAP if self.nav.skipped else 0))
         title = dpg.add_text(gui_grid.name_of(state, cid), parent=box)
         with dpg.item_handler_registry() as handlers:        # clicking the name renames, like the button
             dpg.add_item_clicked_handler(callback=lambda *_: self._on_rename(cid))
@@ -593,38 +610,73 @@ class CharacterGridTab:
                 for line, color in details:
                     dpg.add_text(line, color=color, wrap=text_w)
         dpg.add_spacer(height=GAP, parent=box)
+        usable = self.pending.pack is None
+        select = dpg.add_button(label=SELECT, width=SELECT_W, height=BUTTON_H, parent=box,
+                                callback=lambda: self._on_select(cid), enabled=not self._locked() and usable)
+        dpg.bind_item_theme(select, 'primary_theme')
+        self.slot_buttons.append((select, usable))
+        with dpg.tooltip(select):
+            dpg.add_text('Stage an exported model (and its High/Low partner) for this slot; a confirm dialog shows '
+                         'what changes first. "Patch Game" writes the pending edits.' if usable else
+                         'A roster pack load is pending: press "Patch Game" (or Discard it) first.', wrap=420)
+        dpg.add_spacer(height=GAP, parent=box)
+        if tiles:
+            self._equipment_row(box, cid, tiles)
+            dpg.add_spacer(height=GAP, parent=box)
         tips = {RENAME: 'Stage a new name for this slot (one name for English, French and Spanish; it must fit the '
                         'name plate; blank resets it). "Patch Game" writes the pending edits.',
-                SELECT: 'Stage an exported model (and its High/Low partner) for this slot; a confirm dialog shows '
-                        'what changes first. "Patch Game" writes the pending edits.',
                 CLEAR: "Stage a return to this slot's baseline (stock: vanilla models and portraits; new ID: its "
                        "template's files and the open-slot look); a confirm dialog shows what changes first.",
                 STATS: "Stage another stock player's stats for this slot (stats, pitching, fielding, chemistry; its "
                        'model, size, voice and name stay). "Patch Game" writes the pending edits.',
                 DISCARD: "Drop this slot's pending edits (nothing was written for them yet)."}
-        actions = {RENAME: lambda: self._on_rename(cid), SELECT: lambda: self._on_select(cid), CLEAR: lambda: self._start_preview(cid, None),
+        actions = {RENAME: lambda: self._on_rename(cid), CLEAR: lambda: self._start_preview(cid, None),
                    STATS: lambda: self._on_value('stats', cid), DISCARD: lambda: self._on_discard(cid)}
-        with dpg.group(horizontal=True, parent=box):
-            for label, phase in SLOT_BUTTONS:
-                if label == DISCARD and self.nav.skipped:    # one-member square: the square's Voice... here too
-                    self._voice_button(self.nav.square_index())
-                if phase is not None:
-                    button = dpg.add_button(label=label, height=BUTTON_H, enabled=False)
-                    dpg.bind_item_theme(button, 'grid_empty_theme')
-                    tip = f'Comes with plan Phase {phase}'
-                else:
-                    # a staged pack load replaces the roster: slot edits wait until it is written or discarded
-                    usable = self.pending.has(cid) if label == DISCARD else self.pending.pack is None
-                    button = dpg.add_button(label=label, height=BUTTON_H, callback=actions[label],
-                                            enabled=not self._locked() and usable)
-                    dpg.bind_item_theme(button, 'grid_warn_theme' if label == DISCARD else 'primary_theme')
-                    self.slot_buttons.append((button, usable))
-                    tip = tips[label] if usable or label == DISCARD else (
-                        'A roster pack load is pending: press "Patch Game" (or Discard it) first.')
+        # same width and spacing as the Equipment tiles (Select... + Reset), so the columns line up
+        with dpg.group(horizontal=True, horizontal_spacing=GAP, parent=box):
+            for label in SLOT_BUTTONS:
+                # a staged pack load replaces the roster: slot edits wait until it is written or discarded
+                usable = self.pending.has(cid) if label == DISCARD else self.pending.pack is None
+                button = dpg.add_button(label=label, width=SLOT_BUTTON_W, height=BUTTON_H, callback=actions[label],
+                                        enabled=not self._locked() and usable)
+                dpg.bind_item_theme(button, 'grid_warn_theme' if label == DISCARD else 'primary_theme')
+                self.slot_buttons.append((button, usable))
+                tip = tips[label] if usable or label == DISCARD else (
+                    'A roster pack load is pending: press "Patch Game" (or Discard it) first.')
                 with dpg.tooltip(button):
                     dpg.add_text(tip, wrap=420)
+        if self.nav.skipped:                     # one-member square: the square's Voice... on a row below
+            with dpg.group(horizontal=True, horizontal_spacing=GAP, parent=box):
+                self._voice_button(self.nav.square_index(), width=SLOT_BUTTON_W)
         dpg.add_text(BUSY_TEXT if self.app.busy else '', parent=box, tag='grid_slot_busy', color=_WARN)
         return box
+
+    def _equipment_row(self, box, cid, tiles):
+        """The Equipment row of the slot level: a tile per bat / glove file (state, Select..., Reset)."""
+        dpg.add_text('Equipment', parent=box, color=_DIM)
+        usable = self.pending.pack is None
+        tile_w = (SLOT_W - 2 * PAD - (len(tiles) - 1) * GAP) // len(tiles)
+        with dpg.group(horizontal=True, horizontal_spacing=GAP, parent=box):
+            for tile in tiles:
+                color = {gui_grid.PENDING_STATE: _PENDING, gui_grid.MODIFIED: _CHANGED,
+                         gui_grid.EMPTY: _EMPTY}.get(tile['state'], _OK)
+                with dpg.group():
+                    dpg.add_text(tile['label'], color=_DIM)
+                    text = dpg.add_text(_fit(tile['text'], tile_w), color=color)
+                    with dpg.group(horizontal=True, horizontal_spacing=4):
+                        select = dpg.add_button(label='Select...', width=EQUIP_BUTTON_W, height=BUTTON_H,
+                                                callback=lambda _s, _a, u: self._on_equip_select(*u),
+                                                user_data=(cid, tile['file']), enabled=not self._locked() and usable)
+                        dpg.bind_item_theme(select, 'primary_theme')
+                        reset = dpg.add_button(label='Reset', width=EQUIP_BUTTON_W - 8, height=BUTTON_H,
+                                               callback=lambda _s, _a, u: self._on_equip_reset(*u),
+                                               user_data=(cid, tile['file']),
+                                               enabled=not self._locked() and usable and tile['can_reset'])
+                        self.slot_buttons.append((select, usable))
+                        self.slot_buttons.append((reset, usable and tile['can_reset']))
+                with dpg.tooltip(text):
+                    for line in [tile['text']] + tile['tip']:
+                        dpg.add_text(line, wrap=420)
 
     # ------------------------------------------------------------------ edits
     def _locked(self):
@@ -642,7 +694,7 @@ class CharacterGridTab:
             count = len(self.pending)
             dpg.configure_item('grid_patch_game', label=f'Patch Game ({count})', enabled=bool(count) and not locked)
             dpg.configure_item('grid_discard_all', enabled=bool(count) and not locked)
-            for tag in ('grid_save_pack', 'grid_load_pack'):
+            for tag in ('grid_save_pack', 'grid_load_pack', 'grid_cpu_vs_cpu'):
                 dpg.configure_item(tag, enabled=not locked)
 
     def _pending_changed(self):
@@ -668,15 +720,44 @@ class CharacterGridTab:
 
     def _on_sluggie_paths(self, paths):
         cid = self.action[0] if self.action else None
+        equip = self.action[2] if self.action and len(self.action) == 3 and self.action[1] == 'equip' else None
         path = next((p for p in paths if p and p.lower().endswith('.sluggie') and os.path.isfile(p)), None)
         if cid is None or path is None:
             self.app.log_line(f'[character grid] no .sluggie file chosen: {paths[0] or "(none)"}', _WARN)
             self._end_action()
             return
         self.action = None
-        self._start_preview(cid, path)
+        self._start_preview(cid, path, equip=None if equip is None else (equip, path))
 
-    # ------------------------------------------------------------------ portraits (Phase 8)
+    # ------------------------------------------------------------------ equipment
+    def _on_equip_select(self, cid, file):
+        """Select... on an equipment tile: pick a bat / glove .sluggie for slot file ``file``."""
+        if self._locked() or self.pending.pack is not None:
+            return
+        self.action = (cid, 'equip', file)
+        self.set_busy(False)
+        label = gui_grid.EQUIP_LABELS[file].lower()
+        if not self.app.pick_files('grid_sluggie_dialog', f'Select a {label} .sluggie for this slot',
+                                   [('Sluggie files', '*.sluggie')], self._on_sluggie_paths,
+                                   on_cancel=self._end_action):
+            self._end_action()
+
+    def _on_equip_reset(self, cid, file):
+        """Reset on an equipment tile: drop its pending edit, or stage the return to the baseline."""
+        if self._locked() or self.pending.pack is not None:
+            return
+        if self.pending.equip_edit(cid, file) is not None:
+            self.pending.edits = [e for e in self.pending.edits
+                                  if not (int(e['id'], 16) == cid and e['op'] in gui_grid.EQUIP_OPS
+                                          and e.get('file') == file)]
+            self.pending.sections = [sec for sec in self.pending.sections
+                                     if not (int(sec['target'], 16) == cid and sec['action'] in gui_grid.EQUIP_OPS
+                                             and (sec.get('edit') or {}).get('file') == file)]
+            self._pending_changed()
+            return
+        self._start_preview(cid, None, equip=(file, None))
+
+    # ------------------------------------------------------------------ portraits
     def _on_portrait(self, cid, view):
         """A click on a slot-level portrait: pick an image, then the icon dialog."""
         if self._locked() or not gui_grid.can_replace_portrait(cid) or self.pending.pack is not None:
@@ -877,17 +958,24 @@ class CharacterGridTab:
         self._end_action()
         self._start_preview(cid, None, rename=text)
 
-    def _start_preview(self, cid, sluggie, rename=None, value=None, icon=None):
+    def _start_preview(self, cid, sluggie, rename=None, value=None, icon=None, equip=None):
         """The staging check (the pending edits plus this one; this one's build check); the confirm dialog
         opens when it is done. ``rename``: the new name text (blank resets), a rename edit instead of patch/clear;
         ``value``: ``(op, source)``, a stats or voice edit (source None: back to the default); ``icon``: a
-        finished icon edit (``IconPreview.edit``)."""
+        finished icon edit (``IconPreview.edit``); ``equip``: ``(slot file, .sluggie or None)``, an equipment edit
+        (None: reset that file)."""
         if self._locked():
             return
-        kind = ('icon' if icon is not None else 'rename' if rename is not None else value[0] if value
+        kind = ('equip' if equip is not None and equip[1] else 'equip_clear' if equip is not None
+                else 'icon' if icon is not None else 'rename' if rename is not None else value[0] if value
                 else 'patch' if sluggie else 'clear')
         view = icon['view'] if icon is not None else None
-        if icon is not None:
+        gear_file = equip[0] if equip is not None else None
+        if equip is not None:
+            edit = ({'op': 'equip', 'id': gui_grid.hex_id(cid), 'file': equip[0], 'sluggie': equip[1],
+                     'origin': 'user'} if equip[1] else
+                    {'op': 'equip_clear', 'id': gui_grid.hex_id(cid), 'file': equip[0]})
+        elif icon is not None:
             edit = icon
         elif rename is not None:
             edit = {'op': 'rename', 'id': gui_grid.hex_id(cid), 'text': rename}
@@ -904,15 +992,16 @@ class CharacterGridTab:
             return
         self.action = (cid, sluggie)
         if not self._run([gui_grid.preview_command(self.edits_path)], 'Checking the edit...',
-                         lambda code, output: self._show_confirm(cid, sluggie, code, output, kind, view)):
+                         lambda code, output: self._show_confirm(cid, sluggie, code, output, kind, view,
+                                                                 gear_file)):
             self._end_action()
 
-    def _show_confirm(self, cid, sluggie, code, output, kind='patch', view=None):
+    def _show_confirm(self, cid, sluggie, code, output, kind='patch', view=None, gear_file=None):
         state = self.nav.state or self.loader.state
         plan = gui_grid.load_plan(self.plan_path)
         dialog = gui_grid.slot_dialog(state, cid, sluggie is not None, plan, code, output, self.pending, kind=kind,
-                                      view=view)
-        if (kind in gui_grid.VALUE_KINDS and dialog.can_apply and code == 0 and plan is not None
+                                      view=view, gear_file=gear_file)
+        if (kind in gui_grid.VALUE_KINDS + ('equip_clear',) and dialog.can_apply and code == 0 and plan is not None
                 and any(int(s['target'], 16) == cid for s in plan['edits'])):
             self._stage(plan)                  # a valid rename / stats / voice pick needs no second confirmation
             return
@@ -1156,6 +1245,20 @@ class CharacterGridTab:
             self._refresh_markers()
             self.set_busy(self.app.busy)
         self._run([gui_grid.load_command(path)], 'Loading the roster pack...', done)
+
+    def _on_cpu_vs_cpu(self):
+        """Turn CPU vs CPU and its management on or off in main.dol right away (not a staged edit: no roster data
+        changes, and roster rebuilds keep game options). The re-read after it updates the label and the button."""
+        if self._locked():
+            return
+        enable = gui_grid.cpu_vs_cpu_button(self.loader.state)[1]
+        verb = 'enabling' if enable else 'disabling'
+
+        def done(code, _output):
+            if code != 0:
+                self.app.log_line(f'[character grid] {verb} CPU vs CPU failed (see the log above).', _WARN)
+            self.set_busy(self.app.busy)
+        self._run([gui_grid.cpu_vs_cpu_command(enable)], f'{verb.capitalize()} CPU vs CPU...', done)
 
     def _refresh_markers(self):
         self._show_status()

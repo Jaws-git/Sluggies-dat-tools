@@ -11,8 +11,11 @@ An option's on/off state is stored in the DOL itself: the option is on when
 all its hook sites branch into our text section. The roster runner resets
 ``main.dol`` to ``1_Input`` before every injection. It calls ``detect`` before
 the reset and ``apply`` afterwards, so a roster re-run keeps the options.
-Turning an option off writes the stock words back. Its stub stays behind as
-unused bytes until the next roster run rebuilds the section.
+Turning an option off writes the stock words back. On a roster-built DOL its
+stub stays behind as unused bytes until the next roster run rebuilds the
+section; without a roster (sections holding only option stubs) ``remove``
+rebuilds the sections from the options still on, or drops them and restores
+the stock arena start when none is, so the DOL is stock again.
 """
 
 from dataclasses import dataclass
@@ -192,13 +195,28 @@ def apply(image: dolfile.DolImage, keys) -> list[str]:
     return log
 
 
+def _unhook(image: dolfile.DolImage, option: Option) -> bool:
+    hooked = [h for h in option.hooks if _hooked(image, h)]
+    for h in hooked:
+        image.write_word(h.site, h.stock)
+    return bool(hooked)
+
+
 def remove(image: dolfile.DolImage, keys) -> list[str]:
-    """Turn off the options in ``keys``: their hook sites get the stock words back."""
-    log = []
-    for key in keys:
-        option = _option(key)
-        hooked = [h for h in option.hooks if _hooked(image, h)]
-        for h in hooked:
-            image.write_word(h.site, h.stock)
-        log.append(f'{option.title}: ' + ('off' if hooked else 'already off'))
+    """Turn off the options in ``keys``: their hook sites get the stock words back. Without a roster (sections
+    holding only option stubs) the sections are rebuilt with the stubs of the options still on, or dropped with
+    the arena start back to stock when none is; with a roster the old stubs stay until the next roster run."""
+    log = [f'{_option(key).title}: ' + ('off' if _unhook(image, _option(key)) else 'already off') for key in keys]
+    hs = dol_hammerspace.DolHammerspace.open(image)
+    if hs is None or hs.has_data:
+        return log
+    still_on = detect(image)
+    for key in still_on:
+        _unhook(image, BY_KEY[key])
+    dol_hammerspace.remove_sections(image)
+    if still_on:
+        apply(image, still_on)
+        log.append('unused option stubs removed (the options still on were rebuilt)')
+    else:
+        log.append('no option is on: the added DOL sections are removed and the arena start is stock again')
     return log

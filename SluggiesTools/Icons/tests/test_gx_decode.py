@@ -1,4 +1,4 @@
-"""GUI character grid, Phase 2: the numpy GX decoder matches wimgt's decode of synthetic textures.
+"""The numpy GX decoder matches wimgt's decode of synthetic textures.
 
 The fixtures (``fixtures/gx``) were written once by the hand-run
 ``make_gx_fixtures.py``: a TPL per texture and wimgt's RGBA decode of it.

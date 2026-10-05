@@ -123,6 +123,12 @@ class DolHammerspace:
         return cls.open(image) or cls.create(image)
 
     @property
+    def has_data(self) -> bool:
+        """Whether the data section holds anything past its marker. Game options (``GameOptions``) put stubs into
+        the text section only, so sections without data on an otherwise stock DOL come from them, not a roster."""
+        return len(self.data.blob) > MARKER_SIZE
+
+    @property
     def arena_low(self) -> int:
         return dolfile.align_up(self.data.here)
 
@@ -154,8 +160,25 @@ class DolHammerspace:
                 f'arena low 0x{self.arena_low:08X} (limit 0x{ARENA_LO_MAX:08X})')
 
 
+def remove_sections(image: dolfile.DolImage) -> bool:
+    """Drop both sections and put the arena start back to its stock words (inventory ``arena_lo``). Only for
+    sections without data (``has_data``: game option stubs, no roster): roster code would point into them.
+    Returns whether there was anything to drop."""
+    hs = DolHammerspace.open(image)
+    if hs is None:
+        return False
+    if hs.has_data:
+        raise HammerspaceError('the roster sections hold roster data; reset the roster instead')
+    old = [s for s in (image.section_at(TEXT_BASE), image.section_at(DATA_BASE)) if s is not None]
+    for slot in sorted(old, key=lambda s: s.file_offset, reverse=True):
+        image.remove_section(slot)
+    for site in inventory.group('arena_lo'):
+        image.write_word(site.address, site.stock)
+    return True
+
+
 def get(ctx: steps.RosterContext) -> DolHammerspace:
-    """The run's DOL hammerspace (opened, or created by the Phase 1 step)."""
+    """The run's DOL hammerspace (opened, or created by this step)."""
     hs = ctx.state.get('hammerspace')
     if hs is None:
         hs = DolHammerspace.open_or_create(ctx.dol)

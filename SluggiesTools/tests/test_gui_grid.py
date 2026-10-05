@@ -1,5 +1,5 @@
-"""GUI character grid: the state loader, the pop-out navigation, the slot actions' confirm dialog (Phase 4f)
-and the staged edits with Patch Game's summary (Phase 4g), without a running Dear PyGui."""
+"""GUI character grid: the state loader, the pop-out navigation, the slot actions' confirm dialog
+and the staged edits with Patch Game's summary, without a running Dear PyGui."""
 
 import json
 import os
@@ -164,7 +164,7 @@ def ref(source, file='a.png', key=0x06, alias=None):
 
 
 class PortraitTests(unittest.TestCase):
-    """Phase 2: portrait crops and their fallback marks (``Roster/state_icons`` results in the state)."""
+    """Portrait crops and their fallback marks (``Roster/state_icons`` results in the state)."""
 
     def setUp(self):
         self.dir = self.enterContext(tempfile.TemporaryDirectory())
@@ -244,7 +244,7 @@ def batch(*sections, skipped=(), refused=(), notes=(), rebuild=True):
 
 
 class SlotDialogTests(unittest.TestCase):
-    """The confirm dialog of "Select .sluggie..." / "Clear slot" after the staging check (decision 6 warnings,
+    """The confirm dialog of "Select .sluggie..." / "Clear slot" after the staging check (High/Low warnings,
     sizes, verdict)."""
 
     def setUp(self):
@@ -356,7 +356,7 @@ class SlotDialogTests(unittest.TestCase):
 
 
 class PendingEditsTests(unittest.TestCase):
-    """The pending list (decision 14): staging files, accept / replace / discard, the overlay text."""
+    """The pending list: staging files, accept / replace / discard, the overlay text."""
 
     def setUp(self):
         self.s = state([0x06, 0x66], [0x0D])
@@ -418,7 +418,7 @@ def rename_section(cid='0x0D', text='Little Toad', nothing=False):
 
 
 class RenameTests(unittest.TestCase):
-    """GUI character grid Phase 5: the rename dialog's live check, the pending overlay and the confirm dialog."""
+    """The rename dialog's live check, the pending overlay and the confirm dialog."""
 
     def setUp(self):
         self.s = state([0x06, 0x66], [0x0D])
@@ -485,6 +485,32 @@ class RenameTests(unittest.TestCase):
         self.assertIn('--rename-slot', ' '.join(gui_grid.WRITING_FLAGS))
 
 
+class CpuVsCpuTests(unittest.TestCase):
+    def test_status(self):
+        status = gui_grid.cpu_vs_cpu_status
+        self.assertEqual(status(None), ('Cpu vs Cpu: unknown', None))
+        self.assertEqual(status({'squares': []}), ('Cpu vs Cpu: unknown', None))     # state from an older reader
+        self.assertEqual(status({'game_options': []}), ('Cpu vs Cpu: disabled', False))
+        self.assertEqual(status({'game_options': ['cpu_management']}), ('Cpu vs Cpu: disabled', False))
+        self.assertEqual(status({'game_options': ['cpu_vs_cpu']}), ('Cpu vs Cpu: enabled (without management)', False))
+        self.assertEqual(status({'game_options': ['cpu_vs_cpu', 'cpu_management']}), ('Cpu vs Cpu: enabled', True))
+
+    def test_command_writes_and_names_known_options(self):
+        from GameOptions import game_options
+        command = gui_grid.cpu_vs_cpu_command()
+        self.assertEqual(command[:2], ('--game-options', '--on'))
+        self.assertTrue(set(command[2:]) <= set(game_options.BY_KEY))
+        self.assertTrue(gui_grid.chain_writes([command]))      # the grid re-reads afterwards (status label)
+        self.assertEqual(gui_grid.cpu_vs_cpu_command(False)[:2], ('--game-options', '--off'))
+
+    def test_button_toggles_only_when_fully_enabled(self):
+        button = gui_grid.cpu_vs_cpu_button
+        self.assertEqual(button(None), (gui_grid.CPU_VS_CPU_ENABLE, True))
+        self.assertEqual(button({'game_options': ['cpu_vs_cpu']}), (gui_grid.CPU_VS_CPU_ENABLE, True))
+        self.assertEqual(button({'game_options': ['cpu_vs_cpu', 'cpu_management']}),
+                         (gui_grid.CPU_VS_CPU_DISABLE, False))
+
+
 class SummaryDialogTests(unittest.TestCase):
     def setUp(self):
         self.s = state([0x06, 0x66], [0x0D])
@@ -524,7 +550,7 @@ class SummaryDialogTests(unittest.TestCase):
 
 
 class RosterPackTests(unittest.TestCase):
-    """Phase 6: the load dialog, the save question with pending edits, and the "changed since" marker."""
+    """The load dialog, the save question with pending edits, and the "changed since" marker."""
 
     def setUp(self):
         self.state = state([0x00, 0x0D], [0x66])
@@ -643,7 +669,7 @@ def value_section(op, cid='0x0D', source='0x09', effect='C09 (0x09)', nothing=Fa
 
 
 class VoiceStatsTests(unittest.TestCase):
-    """GUI character grid Phase 7: the Stats / Voice pick lists, the pending overlay and the dialogs."""
+    """The Stats / Voice pick lists, the pending overlay and the dialogs."""
 
     def setUp(self):
         self.s = state([0x00], [0x09], [0x0D, 0x0E], [0x66, 0x67])

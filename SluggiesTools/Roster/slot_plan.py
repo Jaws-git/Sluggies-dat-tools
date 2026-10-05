@@ -1,4 +1,4 @@
-"""Patch a slot / clear a slot (GUI character grid, Phases 4e/4g): the apply chain as a list of commands.
+"""Patch a slot / clear a slot: the apply chain as a list of commands.
 
 A batch of staged edits is one chain of ``start.py`` commands, run in order
 and stopped at the first failure (``start.py --apply-slots``; ``--patch-slot``
@@ -23,7 +23,7 @@ edit's chain:
 derived config and a few file checks (``Env``); a refused change raises
 ``PlanError`` and gives no commands, so nothing is written.
 
-Patch (decisions 4-7 of the plan):
+Patch:
 
 * **New ID:** the slot keeps its own model directory when it already holds
   copies of the source character's files (its earlier patches stay), else it
@@ -43,13 +43,13 @@ Patch (decisions 4-7 of the plan):
   ``FrontIcon.png`` (``model_icons``); when one is missing the slot keeps its
   portraits and the plan says so.
 
-Clear (decision 9): a stock slot gets its vanilla HP and ``L_`` back and loses
+Clear: a stock slot gets its vanilla HP and ``L_`` back and loses
 replaced portraits (``stock_icons``) and another stats source
 (``stock_stats``); a new ID gets a fresh copy of its template's files, the
 template's stats, the "Empty slot" name and portraits. The square voice
 stays.
 
-Stats and voice (plan Phase 7, ``plan_stats`` / ``plan_voice``): any slot can
+Stats and voice (``plan_stats`` / ``plan_voice``): any slot can
 play with another stock player's stats (new IDs: ``ids[].stats``; stock IDs:
 ``stock_stats``), and any square can speak with another square's voice (new
 squares: ``grid.squares[k].voice``, which reaches only the square-only new
@@ -57,12 +57,19 @@ IDs on it; stock squares: ``stock_voices``, which reaches the whole species:
 its wheel, spare rows and new IDs on it). A voice is named by a character;
 the square takes its family's voice (the base character of its species).
 
-Portraits (plan Phase 8, ``plan_icon``): one view (front or side) of a slot
+Portraits (``plan_icon``): one view (front or side) of a slot
 takes a user's image, fitted to 48x51 (``icon_import``). The other view keeps
 what the slot has: its own cell (by name, so its CMPR blocks stay), its
 model's portrait, or, without own portraits, what the game shows now (the
 template's or neighbour's crop; a stock ID's stock art), which then becomes
 the slot's own. Miis have no portrait records and are refused.
+
+Equipment (``plan_equip`` / ``plan_equip_clear``): each slot's bat (file 2), left glove (3), right
+glove (4) and extra bat (5) can be replaced or reset on their own. The edit names a ``.sluggie`` exported from a
+character's equipment folder and the slot file it goes to (default: the file it came from; a bat also fits
+file 5, a glove only its own hand, ``gear.target_file``). It is one targeted patch of that route only: the
+vanilla bats and gloves other characters share stay as they are. A model patch into a new ID also stages the
+gear that belongs to the model (``gear.find_gear``, edits with ``origin`` ``bundled``).
 """
 
 from __future__ import annotations
@@ -73,8 +80,9 @@ import os
 from dataclasses import dataclass, field
 
 try:
-    from . import icon_art, icon_import, icons, ids, model_icons, names, open_slot, voices, wheels
+    from . import gear, icon_art, icon_import, icons, ids, model_icons, names, open_slot, voices, wheels
 except ImportError:
+    import gear
     import icon_art
     import icon_import
     import icons
@@ -175,12 +183,48 @@ def classify(path: str) -> Pair:
         raise PlanError(f'{os.path.basename(path)} comes from chunk {chunk}, not a character directory '
                         f'({CHARACTER_DIRS.start}-{CHARACTER_DIRS.stop - 1}): stadiums, props and bats cannot go '
                         'into a slot')
+    if model.get('FileIndex') in gear.ROLES:
+        raise PlanError(f'{os.path.basename(path)} is a {gear.label(model["FileIndex"]).lower()} (file '
+                        f'{model["FileIndex"]}), not a character model: use the Equipment row of the slot')
     if model.get('FileIndex') not in (HIGH_FILE, LOW_FILE):
         raise PlanError(f'{os.path.basename(path)} is file {model.get("FileIndex")} of its directory, not a '
                         'character model (only the High model, file 0, and its Low partner, file 1)')
     partner = _partner(path, chunk, is_low, stem)
     high, low = (partner, path) if is_low else (path, partner)
     return Pair(chunk, high, low, path, stem)
+
+
+@dataclass(frozen=True)
+class GearPick:
+    """A picked equipment ``.sluggie``: where it was exported from."""
+    chunk: int
+    source_file: int                # its FileIndex (2-5)
+    path: str
+
+    @property
+    def source(self) -> int:
+        return self.chunk - ids.MODEL_DIR_BASE
+
+
+def classify_gear(path: str) -> GearPick:
+    """The picked equipment file's origin; refuses anything that is not a character's bat or glove."""
+    path = os.path.abspath(path)
+    if not path.lower().endswith('.sluggie') or not os.path.isfile(path):
+        raise PlanError(f'{path} is not a .sluggie file')
+    model = _load_model(path)
+    chunk, file = model.get('ChunkNumber'), model.get('FileIndex')
+    name = os.path.basename(path)
+    if file in (HIGH_FILE, LOW_FILE):
+        raise PlanError(f'{name} is a character model (file {file}), not a bat or glove: use the Select button of '
+                        'the slot\'s model row')
+    if file not in gear.ROLES:
+        raise PlanError(f'{name} is file {file} of its directory, not equipment (2 bat, 3 left glove, 4 right '
+                        'glove, 5 extra bat)')
+    if chunk not in CHARACTER_DIRS:
+        raise PlanError(f'{name} comes from chunk {chunk}, not a character directory '
+                        f'({CHARACTER_DIRS.start}-{CHARACTER_DIRS.stop - 1}): only a character\'s own bats and '
+                        'gloves can go into a slot')
+    return GearPick(chunk, file, path)
 
 
 # --------------------------------------------------------------------------
@@ -208,6 +252,15 @@ class Env:
     def at_baseline(self, char: dict, config: dict) -> bool:
         """Whether the slot is at its baseline already (a clear would change nothing)."""
         return False
+
+    def equipment_problems(self, source: tuple[int, int], target: tuple[int, int]) -> list[str]:
+        """Errors for posing the bat/glove ``source`` (vanilla route) with the animations of ``target``'s vanilla
+        file (an empty one has none to compare: no errors)."""
+        return []
+
+    def equipment_at_baseline(self, char: dict, file: int) -> bool:
+        """Whether the slot's equipment ``file`` is at its baseline already (a reset would change nothing)."""
+        return ((char.get('equipment') or {}).get(gear.ROLES[file]) or {}).get('vanilla') is True
 
     def same_portrait(self, char: dict, view: str, image) -> bool:
         """Whether the game shows exactly ``image`` (48x51 RGBA) as the slot's ``view`` portrait now."""
@@ -238,6 +291,7 @@ class Plan:
     portraits: dict = field(default_factory=dict)        # {file name in the derived icon folder: RGBA image or PNG}
     pair: Pair | None = None        # patch: the picked file and its partner
     nothing: bool = False           # clear: the slot is at its baseline already, no commands
+    gear: dict | None = None        # equip / equip_clear: {'file', 'label', 'path', 'shared_with', 'origin'}
     # What the slot shows once the edit is written (the GUI's pending lines): 'model', 'name', 'stats', 'voice'
     # (display text) and 'portraits' ({'front', 'side'}: PNG paths to preview, or None: unchanged)
     effects: dict = field(default_factory=dict)
@@ -249,6 +303,8 @@ class Plan:
         if self.pair is not None:
             out['source'] = _hex(self.pair.source)
             out['files'] = {'high': self.pair.high, 'low': self.pair.low, 'picked': self.pair.picked}
+        if self.gear is not None:
+            out['gear'] = dict(self.gear)
         return out
 
 
@@ -344,6 +400,11 @@ def plan_patch(st: dict, config: dict, cid: int, pair: Pair, env: Env, state_fil
             if char.get('own_model_dir'):
                 plan.notes.append(f'{target_name}\'s own model directory is copied afresh from {source_name} (it '
                                   f'held {_hex(char["model_source"])}\'s files; models patched into it are dropped)')
+                changed = [gear.label(e['file']).lower() for e in (char.get('equipment') or {}).values()
+                           if e.get('vanilla') is False]
+                if changed:
+                    plan.warnings.append(f'{target_name}: the fresh directory copy also resets its equipment '
+                                         f'({", ".join(changed)}); stage the gear again after this patch')
             else:
                 plan.notes.append(f'{target_name} gets an own model directory: a copy of {source_name}\'s files')
         square = st['squares'][char['square']]
@@ -353,7 +414,7 @@ def plan_patch(st: dict, config: dict, cid: int, pair: Pair, env: Env, state_fil
                 plan.notes.append(f'{target_name} takes {source_name}\'s stats (new square)')
                 plan.effects['stats'] = source_name
             k, sq = _square_config(new, cid) or (None, None)
-            # set in the game, or by an earlier edit of the same batch (decision 5 counts pending patches)
+            # set in the game, or by an earlier edit of the same batch (pending patches count too)
             voice_set = square.get('voice_set') is not None or (isinstance(sq, dict) and sq.get('voice') is not None)
             if not voice_set:
                 if sq is None:
@@ -473,7 +534,97 @@ def plan_clear(st: dict, config: dict, cid: int, state_file: str, env: Env | Non
         plan.commands.append(('--unpatch', '--target-id', _hex(cid)))
         plan.notes.insert(0, f'{target_name}: vanilla High and Low models from 1_Input')
         plan.effects['model'] = 'vanilla High and Low models'
+        changed = [e['file'] for e in (char.get('equipment') or {}).values() if e.get('vanilla') is False]
+        for file in changed:
+            plan.commands.append(('--unpatch', '--target-id', _hex(cid), '--target-file', str(file)))
+        if changed:
+            names_ = ', '.join(gear.label(f).lower() for f in changed)
+            plan.notes.append(f'{target_name}: its {names_} go back to the vanilla ones')
+            plan.effects['equipment'] = f'vanilla {names_}'
     plan.commands.append(('--roster-state',))
+    return plan
+
+
+def _gear_text(char: dict, file: int) -> dict:
+    entry = (char.get('equipment') or {}).get(gear.ROLES[file]) or {}
+    return {'file': file, 'label': gear.label(file), 'shared_with': int(entry.get('shared_with') or 0)}
+
+
+def _own_directory_source(char: dict, entry: dict | None = None) -> int | None:
+    """The stock character whose directory's files the slot's equipment starts from: a stock ID's own, a new ID's
+    ``ids[].model.from`` (``entry``: the config as earlier edits of the batch left it), else its own directory's
+    source, else its template."""
+    if char['id'] < ids.FIRST_NEW:
+        return char['id']
+    model = (entry or {}).get('model')
+    if isinstance(model, dict) and model.get('from') is not None:
+        return ids._number(model['from'], 'model.from')
+    return char.get('model_source') if char.get('own_model_dir') else char.get('template')
+
+
+def plan_equip(st: dict, config: dict, cid: int, pick: GearPick, file: int, env: Env, state_file: str,
+               origin: str = 'user') -> Plan:
+    """The chain that puts the bat or glove ``pick`` into file ``file`` of slot ``cid`` (module docstring): one
+    build check, then one targeted write of that route only. A new ID without an own model directory gets one first
+    (a copy of its template's files, ``ids[].model.from``), so its template's equipment is not touched."""
+    char = _character(st, cid)
+    new = copy.deepcopy(config)
+    plan = Plan('equip', cid, None)
+    target_name = _display(char)
+    name = os.path.basename(pick.path)
+    plan.gear = dict(_gear_text(char, file), path=pick.path, origin=origin)
+    entry = None
+    if cid >= ids.FIRST_NEW:
+        entry = _entry(new, 'ids', cid)
+        if entry is None:
+            raise PlanError(f'{_hex(cid)} has no ids entry in the derived config')
+        if not char.get('own_model_dir') and entry.get('model') is None:
+            entry['model'] = {'from': _hex(ids._number(entry['template'], 'template'))}
+            plan.notes.append(f'{target_name} gets an own model directory (a copy of its template\'s files), so '
+                              'its equipment can differ from the template\'s')
+    source_dir = _own_directory_source(char, entry)
+    if source_dir is None:
+        raise PlanError(f'{target_name}: its model directory is unknown, so its {gear.label(file).lower()} '
+                        'cannot be checked')
+    errors = env.equipment_problems((pick.chunk, pick.source_file), (source_dir + ids.MODEL_DIR_BASE, file))
+    if errors:
+        raise PlanError(f'the skeletons do not match ({errors[0]}). The slot poses its '
+                        f'{gear.label(file).lower()} with the animations made for its own one.')
+    shared = plan.gear['shared_with']
+    if shared and cid < ids.FIRST_NEW:
+        plan.notes.append(f'the {gear.label(file).lower()} of {target_name} is shared by {shared} other '
+                          f'slot{"s" if shared != 1 else ""}: only this slot changes')
+    plan.notes.insert(0, f'{name} -> {gear.label(file).lower()} of {target_name}')
+    plan.effects['equipment'] = {file: f'{gear.label(file).lower()} from {name}'}
+    if new != config:
+        plan.config = new
+    extra = ('--target-file', str(file)) if file != pick.source_file else ()
+    plan.commands.append(('--patch', pick.path, '--target-id', _hex(cid), '--validate-only') + extra)
+    if plan.config is not None:
+        plan.commands.append(('--roster', '--state', state_file))
+    plan.commands.append(('--patch', pick.path, '--target-id', _hex(cid)) + extra)
+    plan.commands.append(('--roster-state',))
+    return plan
+
+
+def plan_equip_clear(st: dict, config: dict, cid: int, file: int, env: Env, state_file: str) -> Plan:
+    """The chain that returns file ``file`` (bat, glove or extra bat) of slot ``cid`` to its baseline: the vanilla
+    block of a stock slot, a fresh copy of its source's block for a new ID's own directory. A file at its
+    baseline already (``env.equipment_at_baseline``) gives a plan with ``nothing`` set."""
+    char = _character(st, cid)
+    plan = Plan('equip_clear', cid, None)
+    target_name = _display(char)
+    plan.gear = dict(_gear_text(char, file), origin='user')
+    what = gear.label(file).lower()
+    if env.equipment_at_baseline(char, file):
+        plan.nothing = True
+        plan.notes.append(f'nothing to reset: the {what} of {target_name} is at its baseline already')
+        return plan
+    plan.commands.append(('--unpatch', '--target-id', _hex(cid), '--target-file', str(file)))
+    plan.commands.append(('--roster-state',))
+    plan.notes.append(f'{target_name}: the {what} goes back to '
+                      + ('its template\'s' if cid >= ids.FIRST_NEW else 'the vanilla one'))
+    plan.effects['equipment'] = {file: 'back to ' + ('its template\'s' if cid >= ids.FIRST_NEW else 'vanilla')}
     return plan
 
 
@@ -775,12 +926,14 @@ def _display(char: dict) -> str:
 
 
 # --------------------------------------------------------------------------
-# Batches: staged edits, one chain (decision 14)
+# Batches: staged edits, one chain
 # --------------------------------------------------------------------------
 
 MODEL_OPS = ('patch', 'clear')
 VALUE_OPS = ('voice', 'stats')                        # the last one per slot (voice: per square) wins
-SLOT_OPS = MODEL_OPS + ('rename',) + VALUE_OPS + ('icon',)
+EQUIP_OPS = ('equip', 'equip_clear')                  # the last one per slot file wins
+SLOT_OPS = MODEL_OPS + ('rename',) + VALUE_OPS + ('icon',) + EQUIP_OPS
+ORIGINS = ('user', 'bundled')
 DEFAULT_WORDS = ('', '-', 'default')                  # an edit's "source" that resets (CLI text)
 
 
@@ -799,14 +952,27 @@ class Edit:
     view: str | None = None         # icon: 'front' or 'side'
     fit: str = icon_art.DEFAULT_FIT_MODE                  # icon: contain / cover / strict
     trim: bool = icon_import.DEFAULT_TRIM                 # icon: crop the transparent border first
-    origin: str | None = None       # icon: the user's file, when ``file`` is the GUI's normalised copy
+    origin: str | None = None       # icon: the user's file, when ``file`` is the GUI's normalised copy;
+    #                                 equip: 'user' or 'bundled' (gear taken along with a model patch)
     pick: IconPick | None = None    # icon: the loaded image (``merge_edits``)
+    gear_file: int | None = None    # equip / equip_clear: the slot file (2-5); equip: None = the file it came from
+    gear: GearPick | None = None    # equip: the picked file's origin (``merge_edits``)
+    no_gear: bool = False           # patch into a new ID: do not take the model's bats and gloves along
 
     def to_json(self) -> dict:
         out = {'op': self.op, 'id': _hex(self.cid)}
+        if self.op in EQUIP_OPS:
+            if self.gear_file is not None:
+                out['file'] = self.gear_file
+            if self.op == 'equip':
+                out['sluggie'] = self.file
+                out['origin'] = self.origin or 'user'
+            return out
         for key in ('file', 'low', 'text', 'view', 'origin'):
             if getattr(self, key) is not None:
                 out[key] = getattr(self, key)
+        if self.no_gear:
+            out['gear'] = False
         if self.op in VALUE_OPS:
             out['source'] = None if self.source is None else _hex(self.source)
         if self.op == 'icon':
@@ -837,7 +1003,24 @@ def parse_edits(data) -> list[Edit]:
             cid = ids._number(item['id'], 'id')
         except (ValueError, TypeError) as exc:
             raise PlanError(f'edit {n}: {exc}') from exc
+        if item['op'] in EQUIP_OPS:
+            edit = Edit(item['op'], cid, item.get('sluggie'), checked=bool(item.get('checked')), index=n)
+            edit.origin = item.get('origin', 'user')
+            if edit.origin not in ORIGINS:
+                raise PlanError(f'edit {n}: "origin" must be one of {", ".join(ORIGINS)}')
+            try:
+                edit.gear_file = None if item.get('file') is None else gear.parse_file(item['file'])
+            except gear.GearError as exc:
+                raise PlanError(f'edit {n}: {exc}') from exc
+            if edit.op == 'equip' and not edit.file:
+                raise PlanError(f'edit {n}: an equip edit needs a "sluggie" (the bat or glove file)')
+            if edit.op == 'equip_clear' and edit.gear_file is None:
+                raise PlanError(f'edit {n}: an equip_clear edit needs a "file" (2 bat, 3 left glove, 4 right '
+                                'glove, 5 extra bat)')
+            edits.append(edit)
+            continue
         edit = Edit(item['op'], cid, item.get('file'), item.get('low'), item.get('text'), bool(item.get('checked')), n)
+        edit.no_gear = item.get('gear') is False
         if edit.op == 'patch' and not edit.file:
             raise PlanError(f'edit {n}: a patch needs a "file"')
         if edit.op == 'rename' and not isinstance(edit.text, str):
@@ -884,9 +1067,42 @@ def _classify_edit(edit: Edit, classify_fn) -> Pair:
     return Pair(pair.chunk, pair.high, low.low, edit.low, pair.stem)
 
 
-def merge_edits(edits: list[Edit], classify_fn=None,
-                load_icon_fn=None) -> tuple[list[Edit], list[str], list[tuple[Edit, str]]]:
-    """``(merged, notes, refused)``: the edits in staging order after the slot rules of section 4g:
+def _bundled_gear(edit: Edit, merged: list[Edit], notes: list[str], find_gear_fn,
+                  classify_gear_fn) -> list[Edit] | str:
+    """The ``equip`` edits that go behind a model patch into a new ID (module docstring, "Equipment"), or the reason
+    the patch is refused (several candidate files for one slot file). Explicit (``user``) equip edits already
+    merged for the slot keep their file; the notes say what was found and what was not."""
+    pair = edit.pair
+    found, ambiguous = find_gear_fn(pair.high or pair.low, pair.chunk)
+    if ambiguous:
+        file, paths = sorted(ambiguous.items())[0]
+        return (f'{gear.label(file).lower()}: several .sluggie files of the character folder fit file {file} '
+                f'({", ".join(os.path.basename(p) for p in paths)}); leave only one, or pick the gear by hand')
+    out, lines = [], []
+    for file in gear.FILES:
+        if file not in found:
+            lines.append(f'no {gear.label(file).lower()} found')
+            continue
+        if any(e.cid == edit.cid and e.op in EQUIP_OPS and e.gear_file == file and e.origin != 'bundled'
+               for e in merged):
+            lines.append(f'{gear.label(file).lower()}: the one you staged stays')
+            continue
+        try:
+            pick = classify_gear_fn(found[file].path)
+            target = gear.target_file(pick.source_file, file)
+        except (PlanError, gear.GearError) as exc:
+            return f'{gear.label(file).lower()}: {exc}'
+        out.append(Edit('equip', edit.cid, found[file].path, index=edit.index, gear_file=target, origin='bundled',
+                        gear=pick))
+        lines.append(f'{gear.label(file).lower()}: {os.path.basename(found[file].path)}')
+    notes.append(f'{_hex(edit.cid)}: gear taken along with {os.path.basename(pair.picked)}: ' + '; '.join(lines)
+                 + ('' if len(out) == len(gear.FILES) else '; the missing ones stay as the slot has them'))
+    return out
+
+
+def merge_edits(edits: list[Edit], classify_fn=None, load_icon_fn=None, classify_gear_fn=None,
+                find_gear_fn=None) -> tuple[list[Edit], list[str], list[tuple[Edit, str]]]:
+    """``(merged, notes, refused)``: the edits in staging order after the slot rules:
 
     * at most one model edit (patch / clear) per slot: a later one replaces an earlier one;
     * a Low-only pick after a pending High pick of the same character joins it as a pair; after another
@@ -894,9 +1110,15 @@ def merge_edits(edits: list[Edit], classify_fn=None,
     * a clear drops the slot's earlier renames, stats and icon edits (it resets them); a later rename, voice or
       stats edit replaces an earlier one of the same slot, a later icon edit the earlier one of the same view
       (a patch that sets stats or brings portraits drops earlier stats / icon edits too, in ``plan_batch``, where
-      it is known)."""
+      it is known);
+    * equipment: the last edit per slot file wins (an ``equip_clear`` replaces an ``equip`` and the reverse);
+      a clear of the slot drops its earlier equipment edits (it resets the equipment); a model patch into a new ID
+      replaces the gear an earlier patch brought along (``bundled`` edits) and stages its own behind it, never over
+      a ``user`` edit of the same file."""
     classify_fn = classify_fn or classify
     load_icon_fn = load_icon_fn or load_icon
+    classify_gear_fn = classify_gear_fn or classify_gear
+    find_gear_fn = find_gear_fn or gear.find_gear
     merged: list[Edit] = []
     notes: list[str] = []
     refused: list[tuple[Edit, str]] = []
@@ -908,6 +1130,22 @@ def merge_edits(edits: list[Edit], classify_fn=None,
             except PlanError as exc:
                 refused.append((edit, str(exc)))
                 continue
+        if edit.op in EQUIP_OPS:
+            if edit.op == 'equip':
+                try:
+                    edit.gear = edit.gear or classify_gear_fn(edit.file)
+                    edit.gear_file = gear.target_file(edit.gear.source_file, edit.gear_file)
+                except (PlanError, gear.GearError) as exc:
+                    refused.append((edit, str(exc)))
+                    continue
+            same = next((e for e in merged if e.cid == edit.cid and e.op in EQUIP_OPS
+                         and e.gear_file == edit.gear_file), None)
+            if same is not None:
+                merged.remove(same)
+                notes.append(f'{_hex(edit.cid)}: the pending {gear.label(edit.gear_file).lower()} edit is replaced '
+                             'by the later one')
+            merged.append(edit)
+            continue
         if edit.op == 'icon':
             try:
                 edit.pick = edit.pick or load_icon_fn(edit)
@@ -944,7 +1182,21 @@ def merge_edits(edits: list[Edit], classify_fn=None,
         elif earlier is not None:
             merged.remove(earlier)
             notes.append(f'{_hex(edit.cid)}: the pending {earlier.op} is replaced by the later {edit.op}')
+        bundled: list[Edit] = []
+        if edit.op == 'patch' and edit.cid >= ids.FIRST_NEW and edit.pair.high is not None and not edit.no_gear:
+            bundled = _bundled_gear(edit, merged, notes, find_gear_fn, classify_gear_fn)
+            if isinstance(bundled, str):
+                refused.append((edit, bundled))
+                continue
+        if edit.op == 'patch' and edit.cid >= ids.FIRST_NEW:
+            for old in [e for e in merged if e.cid == edit.cid and e.op in EQUIP_OPS and e.origin == 'bundled']:
+                merged.remove(old)
+                notes.append(f'{_hex(edit.cid)}: the gear of the earlier patch is replaced by this patch\'s')
         if edit.op == 'clear':
+            for old in [e for e in merged if e.cid == edit.cid and e.op in EQUIP_OPS]:
+                merged.remove(old)
+                notes.append(f'{_hex(edit.cid)}: the pending {gear.label(old.gear_file).lower()} edit is dropped: '
+                             'the later clear resets the equipment')
             for rename in [e for e in merged if e.cid == edit.cid and e.op == 'rename']:
                 merged.remove(rename)
                 notes.append(f'{_hex(edit.cid)}: the rename to "{rename.text}" is dropped: the later clear resets '
@@ -961,6 +1213,7 @@ def merge_edits(edits: list[Edit], classify_fn=None,
             if same is not None:
                 merged.remove(same)
         merged.append(edit)
+        merged.extend(bundled)
     return merged, notes, refused
 
 
@@ -994,8 +1247,8 @@ class Batch:
 
 def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: str,
                names_text: dict | None = None, skip_checked: bool = False, classify_fn=None,
-               load_icon_fn=None) -> Batch:
-    """One chain for every edit (section 4g): each edit is planned on the config the previous one left
+               load_icon_fn=None, classify_gear_fn=None, find_gear_fn=None) -> Batch:
+    """One chain for every edit: each edit is planned on the config the previous one left
     (``plan_patch`` / ``plan_clear``), then the chain is
 
     1. one ``--patch ... --validate-only`` per patched slot (``skip_checked``: not for edits whose check
@@ -1005,7 +1258,7 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
     4. one ``--roster-state``.
 
     Any refused edit refuses the whole batch: no commands, no config (``refused`` names them all)."""
-    merged, notes, refused = merge_edits(edits, classify_fn, load_icon_fn)
+    merged, notes, refused = merge_edits(edits, classify_fn, load_icon_fn, classify_gear_fn, find_gear_fn)
     batch = Batch(None, notes=notes, refused=refused)
     current = config
     portraits_touched = set()                       # slots whose portraits an earlier edit of the batch changed
@@ -1016,6 +1269,11 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
             elif edit.op == 'icon':
                 plan = plan_icon(st, current, edit.cid, edit.view, edit.pick, env, state_file,
                                  compare=edit.cid not in portraits_touched)
+            elif edit.op == 'equip':
+                plan = plan_equip(st, current, edit.cid, edit.gear, edit.gear_file, env, state_file,
+                                  edit.origin or 'user')
+            elif edit.op == 'equip_clear':
+                plan = plan_equip_clear(st, current, edit.cid, edit.gear_file, env, state_file)
             elif edit.op == 'rename':
                 plan = plan_rename(st, current, edit.cid, edit.text, state_file)
             elif edit.op == 'stats':

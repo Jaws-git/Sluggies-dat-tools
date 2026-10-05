@@ -1,7 +1,7 @@
-"""Roster expansion Phase 6: the exhibition grid on the synthetic inventory DOL and a synthetic layout bank.
+"""The exhibition grid on the synthetic inventory DOL and a synthetic layout bank.
 
 The DOL words and the layout bytes were also checked against the external
-tool on the real files (plan Phase 6); these tests pin the behaviour.
+tool on the real files; these tests pin the behaviour.
 """
 
 import struct

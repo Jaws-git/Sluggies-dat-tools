@@ -39,9 +39,10 @@ for _path in (_TOOLS_DIR, _HERE):
 import slogger  # noqa: E402
 
 try:
-    from . import derive, icon_art, icons, ids, model_icons, open_slot, slot_plan, slots, state, state_cli, state_icons
+    from . import derive, gear, icon_art, icons, ids, model_icons, open_slot, slot_plan, slots, state, state_cli, state_icons
 except ImportError:
     import derive
+    import gear
     import icon_art
     import icons
     import ids
@@ -153,6 +154,18 @@ class FileEnv(slot_plan.Env):
         except SlotTarget.TargetError as exc:
             raise slot_plan.PlanError(str(exc)) from exc
 
+    def equipment_problems(self, source, target):
+        import SlotTarget
+        try:
+            src, dst = SlotTarget._vanilla_summary(source, True), SlotTarget._vanilla_summary(target, True)
+        except (OSError, ValueError) as exc:
+            raise slot_plan.PlanError(f'could not read the vanilla skeletons: {exc}') from exc
+        if src is None:
+            raise slot_plan.PlanError('could not read the equipment skeleton to compare (no ACT section)')
+        if dst is None:
+            return []                                # an empty file has no skeleton to match
+        return SlotTarget.skeleton_problems(src, dst)[0]
+
     def current_high_stem(self, cid):
         import LodPartnerGuard
         try:
@@ -193,13 +206,14 @@ class FileEnv(slot_plan.Env):
             block = LodPartnerGuard.read_current_block(directory, file_index)
             if block is None or block != LodPartnerGuard._vanilla_block(directory, file_index):
                 return False
-        return True
+        return all(e.get('vanilla') is not False for e in (char.get('equipment') or {}).values())
 
 
 def run(edits: list, output_dir: str = state_cli.OUTPUT_DIR, skip_checked: bool = False) -> slot_plan.Batch:
     """Plan the batch ``edits`` (``slot_plan.Edit``s) and write the files the chain reads."""
     image, dat = state_cli._open(output_dir)
     st = state.read_state(image, dat)
+    state_cli.add_vanilla_flags(st)                  # the equipment baseline checks need it
     derived = derive.derive(image, dat)
     folder = slot_dir(output_dir)
     state_file = os.path.join(folder, derive.CONFIG_FILE)
@@ -224,6 +238,15 @@ def run(edits: list, output_dir: str = state_cli.OUTPUT_DIR, skip_checked: bool 
         json.dump(batch.to_json(), f, ensure_ascii=False, indent=1)
     os.replace(tmp, plan_path(output_dir))
     return batch
+
+
+def _is_equipment(path: str) -> bool:
+    """Whether the picked .sluggie is a bat or glove (FileIndex 2-5) rather than a character model."""
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f).get('SluggiesModel', {}).get('FileIndex') in gear.ROLES
+    except (OSError, ValueError):
+        return False
 
 
 def read_edits(path: str) -> list:
@@ -251,6 +274,11 @@ def main(argv=None) -> int:
     parser.add_argument('--fit', choices=icon_art.FIT_MODES, default=icon_art.DEFAULT_FIT_MODE,
                         help='--icon: contain (fit inside), cover (fill and crop) or strict (exactly 48x51)')
     parser.add_argument('--no-trim', action='store_true', help='--icon: keep the transparent border')
+    parser.add_argument('--equipment', metavar='FILE', help='with --patch: the slot file (2 bat, 3 left glove, 4 right '
+                        'glove, 5 extra bat) an equipment .sluggie goes to (default: the file it was exported from); '
+                        'with --clear: reset only that file (or all)')
+    parser.add_argument('--no-gear', action='store_true', help='--patch of a model into a new ID: do not take '
+                        "the model's bats and gloves along")
     parser.add_argument('--apply', metavar='FILE', help='an edits file: every staged edit in one chain')
     parser.add_argument('--dry-run', action='store_true', help='leave out the build checks of "checked" edits')
     parser.add_argument('--output-dir', default=state_cli.OUTPUT_DIR, help=argparse.SUPPRESS)
@@ -259,13 +287,27 @@ def main(argv=None) -> int:
                              args.apply)) != 1:
         parser.error('give --patch 0xNN FILE, --clear 0xNN, --rename 0xNN TEXT, --voice 0xNN 0xMM, '
                      '--stats 0xNN 0xMM, --icon 0xNN VIEW IMAGE or --apply FILE')
+    if args.equipment and not (args.patch or args.clear):
+        parser.error('--equipment goes with --patch or --clear')
+    if args.no_gear and not args.patch:
+        parser.error('--no-gear goes with --patch')
     if args.icon and args.icon[1] not in slot_plan.VIEWS:
         parser.error('--icon VIEW must be front or side')
     if os.path.exists(plan_path(args.output_dir)):
         os.remove(plan_path(args.output_dir))       # a failed planner leaves no stale chain behind
     try:
         if args.patch:
-            edits = [slot_plan.Edit('patch', slots.parse_id(args.patch[0]), os.path.abspath(args.patch[1]), index=1)]
+            path = os.path.abspath(args.patch[1])
+            cid = slots.parse_id(args.patch[0])
+            if _is_equipment(path):
+                edits = [slot_plan.Edit('equip', cid, path, index=1, origin='user',
+                                        gear_file=None if args.equipment is None else gear.parse_file(args.equipment))]
+            else:
+                edits = [slot_plan.Edit('patch', cid, path, index=1, no_gear=args.no_gear)]
+        elif args.clear and args.equipment:
+            cid = slots.parse_id(args.clear)
+            files = gear.FILES if args.equipment.lower() == 'all' else (gear.parse_file(args.equipment),)
+            edits = [slot_plan.Edit('equip_clear', cid, index=n, gear_file=f) for n, f in enumerate(files, 1)]
         elif args.clear:
             edits = [slot_plan.Edit('clear', slots.parse_id(args.clear), index=1)]
         elif args.rename:
@@ -280,7 +322,7 @@ def main(argv=None) -> int:
         else:
             edits = read_edits(args.apply)
         batch = run(edits, output_dir=args.output_dir, skip_checked=args.dry_run)
-    except (RuntimeError, ValueError) as exc:        # PlanError, SlotError, StateError, DeriveError, config errors
+    except (RuntimeError, ValueError, gear.GearError) as exc:        # PlanError, SlotError, StateError, DeriveError, config errors
         slogger.error(f'refused, nothing written: {exc}', source=SOURCE)
         return 1
     for note in batch.notes:

@@ -1,4 +1,4 @@
-"""Which model directory a character ID's slot loads from (GUI character grid, Phase 4: patch a slot).
+"""Which model directory a character ID's slot loads from (patch a slot).
 
 ``model_dir(image, cid)`` resolves an ID the way the game does on the
 output DOL:
@@ -50,7 +50,7 @@ def _manifest(image: dolfile.DolImage) -> dict:
         hs = dol_hammerspace.DolHammerspace.open(image)
     except dolfile.DolError as exc:
         raise SlotError(f'the output main.dol is not a roster this tool built: {exc}') from exc
-    if hs is None:
+    if hs is None or not hs.has_data:   # no sections, or only game option stubs (CPU vs CPU)
         return {}
     try:
         mf = manifest.find(bytes(hs.data.blob))

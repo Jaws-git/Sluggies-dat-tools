@@ -1,4 +1,4 @@
-"""GUI character grid, Phase 1: the grid reader (``Roster/state.py``) and the roster manifest.
+"""The grid reader (``Roster/state.py``) and the roster manifest.
 
 The real roster steps run on the synthetic inventory DOL (``test_roster_ids``
 / ``test_roster_grid``); ``read_state`` must give back exactly what the
@@ -11,7 +11,7 @@ from unittest import mock
 
 from SluggiesTools.Dol import inventory, relocate
 from SluggiesTools.Roster import dol_hammerspace as dhs
-from SluggiesTools.Roster import grid, ids, layout_file, manifest, names, runner, state, steps, wheels
+from SluggiesTools.Roster import grid, ids, layout_file, manifest, names, runner, slots, state, steps, wheels
 from SluggiesTools.tests.test_roster_grid import HEADS, STOCK_MAP, image_for_grid
 from SluggiesTools.tests.test_roster_names import stock_table
 from SluggiesTools.tests.test_roster_wheels import FakeLayout
@@ -238,9 +238,22 @@ class ManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(state.StateError, 'not a roster this tool built'):
             state.read_state(image)
         image = image_for_grid()
-        dhs.DolHammerspace.create(image)                        # roster sections without a manifest
+        hs = dhs.DolHammerspace.create(image)                   # roster sections with data but no manifest
+        hs.data.put(b'\x01' * 0x20)
+        hs.commit()
         with self.assertRaisesRegex(state.StateError, 'older version'):
             state.read_state(image)
+
+    def test_game_option_stubs_alone_read_as_stock(self):
+        image = image_for_grid()
+        stock = state.read_state(image)
+        hs = dhs.DolHammerspace.create(image)                   # what GameOptions.apply leaves: text stubs only
+        hs.code.put(b'\x60\x00\x00\x00' * 4, 4)
+        hs.commit()
+        self.assertFalse(dhs.DolHammerspace.open(image).has_data)
+        result = state.read_state(image)
+        self.assertEqual((result['kind'], cells_of(result)), (stock['kind'], cells_of(stock)))
+        self.assertEqual(slots._manifest(image), {})
 
 
 class TextGridTests(unittest.TestCase):

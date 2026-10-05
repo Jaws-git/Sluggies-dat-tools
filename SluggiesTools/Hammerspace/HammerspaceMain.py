@@ -5702,8 +5702,9 @@ def CheckLodPartner(build: ModelBlockBuild, target: 'SlotTarget.Target | None' =
 
     With a *target* (SlotTarget), the partner is the target slot's other
     model, whatever its name; a high-poly model used as the low variant too
-    is its own partner, so there is nothing to check."""
-    if target is not None and target.as_low:
+    is its own partner, so there is nothing to check. Equipment (bats, gloves)
+    has no partner model at all."""
+    if target is not None and (target.as_low or target.equipment):
         return
     chunk_number, file_index = target.route if target else (build.chunk_number, build.file_index)
     any_stem = target is not None
@@ -5769,6 +5770,8 @@ def WriteModelBlock(
         f' | Modes: {build.section_modes.as_dict()}'
         + (f' | Source: chunk {build.chunk_number}, file {build.file_index} | Slot: {target.describe()}'
            if target else ''),
+        # a slot's bat or glove is its own: the vanilla block's other users keep it
+        share_route=not (target is not None and target.equipment),
     )
     hh.writeDebugDumps(
         model_name,
@@ -5784,9 +5787,10 @@ def WriteModelBlock(
 
 
 def _write_route(block: bytes, chunk_number: int, file_index: int, model_name: str,
-                 output_offset: int | None = None, log_suffix: str = '') -> int:
+                 output_offset: int | None = None, log_suffix: str = '', share_route: bool = True) -> int:
     """Write *block* to hammerspace and route ``(chunk_number, file_index)`` (and its sharers) to it; the route's
-    vanilla block is zeroed when nothing else uses it, a replaced hammerspace block when it is unrouted."""
+    vanilla block is zeroed when nothing else uses it, a replaced hammerspace block when it is unrouted.
+    ``share_route=False`` routes only this entry (equipment targets: other routes that share the block keep it)."""
     current_offset, current_length = hh.readOutputDolEntry(chunk_number, file_index)
     replacing_hammerspace_block = current_offset >= hh.BASE_SIZE
     if replacing_hammerspace_block:
@@ -5848,7 +5852,7 @@ def _write_route(block: bytes, chunk_number: int, file_index: int, model_name: s
             'write, because zeroing the old block would corrupt the new one'
         )
 
-    found_sharers = hh.findSharedEntries(chunk_number, file_index)
+    found_sharers = hh.findSharedEntries(chunk_number, file_index) if share_route else []
     shared_entries = UntanglePolicy.independent_sharers(chunk_number, file_index, found_sharers)
     kept = [route for route in found_sharers if route not in shared_entries]
     if kept:
@@ -5939,7 +5943,7 @@ def UnpatchTarget(target: 'SlotTarget.Target') -> bool:
         )
         return False
     routes = [target.route] + ([target.low_route] if target.as_low else [])
-    if not target.as_low:
+    if not target.as_low and not target.equipment:
         errors = LodPartnerGuard.lod_partner_unpatch_errors(*target.route, any_stem=True)
         if errors:
             _slogger.error(
@@ -6002,6 +6006,91 @@ def ClearTarget(character_id: str) -> bool:
                 source='hammerspace.main',
             )
     return success
+
+
+def ClearEquipment(character_id: str, file_index: int) -> bool:
+    """Return one equipment file (2 bat, 3 left glove, 4 right glove, 5 extra bat) of a slot to its baseline
+    (``start.py --unpatch --target-id 0xNN --target-file N``): the vanilla route and bytes of a stock slot (the
+    shared block other characters use is only restored, never touched for them), a fresh copy of the source's
+    vanilla block for a new ID's own directory. A file that is at its baseline already is left alone."""
+    try:
+        cid, chunk_number = SlotTarget.resolve_dir(character_id)
+    except (SlotTarget.TargetError, OSError) as exc:
+        _slogger.error(f'Equipment reset refused | {exc}', source='hammerspace.main')
+        return False
+    if file_index not in SlotTarget.EQUIPMENT_FILES:
+        _slogger.error(f'Equipment reset refused | file {file_index} is not an equipment file (2-5)',
+                       source='hammerspace.main')
+        return False
+    where = f'0x{cid:02X} (chunk {chunk_number}, file {file_index})'
+    if not hh.isOwnDir(chunk_number) and chunk_number not in SlotTarget.character_dirs():
+        _slogger.error(f'Equipment reset refused | {where} is not a character directory', source='hammerspace.main')
+        return False
+    vanilla = LodPartnerGuard._vanilla_block(chunk_number, file_index)
+    if vanilla is None:
+        _slogger.error(f'Equipment reset refused | {where} has no vanilla block to return to',
+                       source='hammerspace.main')
+        return False
+    current = LodPartnerGuard.read_current_block(chunk_number, file_index)
+    if hh.isOwnDir(chunk_number):
+        if current == vanilla:
+            _slogger.info(f'Equipment reset | {where} is already at its baseline', source='hammerspace.main')
+            return True
+        _write_route(vanilla, chunk_number, file_index, f'0x{cid:02X} file {file_index} (baseline)',
+                     log_suffix=f' | Slot: {where} | baseline copy', share_route=False)
+        return True
+    if (hh.readOutputDolEntry(chunk_number, file_index) == hh.readDolEntry(chunk_number, file_index)
+            and not UntanglePolicy.is_split(chunk_number, file_index)):
+        # Still on its own vanilla route: nothing was written for this slot. The bytes are left alone (an untangle
+        # export changes texture bytes in place; restoring the input's would undo that).
+        _slogger.info(f'Equipment reset | {where} is on its vanilla route already', source='hammerspace.main')
+        return True
+    original = hh.readDolEntry(chunk_number, file_index)
+    if not UntanglePolicy.is_split(chunk_number, file_index) and hh.liveRoutesInto(*original):
+        # Other characters still load the vanilla bytes from their own routes: point this route back at them
+        # without rewriting them (removeModelFromHammerspace would restore the input's bytes over theirs).
+        old_offset, old_length = hh.readOutputDolEntry(chunk_number, file_index)
+        hh.patchDolEntry(chunk_number, file_index, *original)
+        if old_offset >= hh.BASE_SIZE:
+            hh.zeroRangeIfUnrouted(old_offset, old_length)
+        _slogger.info(
+            f'Hammerspace Log: Removed | Slot: {where} | Address: 0x{old_offset:08X} | '
+            f'Size: {old_length / (1024 * 1024):.2f} MB | route back on the shared vanilla block',
+            source='hammerspace.main',
+        )
+        return True
+    ok, removed_offset, removed_length = hh.removeModelFromHammerspace(chunk_number, file_index)
+    if ok:
+        _slogger.info(
+            f'Hammerspace Log: Removed | Slot: {where} | Address: 0x{removed_offset:08X} | '
+            f'Size: {removed_length / (1024 * 1024):.2f} MB',
+            source='hammerspace.main',
+        )
+    return ok
+
+
+def WriteSlotEquipment(character_id: str, file_index: int, block: bytes) -> bool:
+    """Write a finished equipment block (a roster pack's, ``start.py --write-slot-equipment``) into a slot as it is.
+    Refused before anything is written when the model inside fails ``BlockValidator`` or breaks the skeleton rule
+    (``SlotTarget.equipment_block_problems``). Only the slot's own route changes."""
+    try:
+        cid, chunk_number = SlotTarget.resolve_dir(character_id)
+    except (SlotTarget.TargetError, OSError) as exc:
+        _slogger.error(f'Slot write refused | {exc}', source='hammerspace.main')
+        return False
+    where = f'0x{cid:02X} (chunk {chunk_number}, file {file_index})'
+    if chunk_number not in SlotTarget.character_dirs() and not hh.isOwnDir(chunk_number):
+        _slogger.error(f'Slot write refused | {where} is not a character directory', source='hammerspace.main')
+        return False
+    errors, warnings = SlotTarget.equipment_block_problems(block, chunk_number, file_index)
+    for warning in warnings:
+        _slogger.warning(f'[Slot] {where}: {warning}', source='hammerspace.main')
+    if errors:
+        _slogger.error(f'Slot write refused | {where}: ' + '; '.join(errors[:3]), source='hammerspace.main')
+        return False
+    _write_route(block, chunk_number, file_index, f'0x{cid:02X} file {file_index}',
+                 log_suffix=f' | Slot: {where} | pack block', share_route=False)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -6138,11 +6227,31 @@ if __name__ == '__main__':
                          help='With --target-id: build and validate the block a slot patch writes; no slot or LOD '
                               'checks, nothing written (start.py --patch-slot runs it before any write)')
     _parser.add_argument('--clear-target', default=None, metavar='0xNN',
-                         help="Restore this stock slot's HP and L_ models to vanilla (no .sluggie)")
+                         help="Restore this stock slot's HP and L_ models to vanilla (no .sluggie); with "
+                              "--target-file: only that equipment file")
+    _parser.add_argument('--target-file', type=int, default=None, metavar='N',
+                         help='With --target-id: the slot file an equipment .sluggie goes to (2 bat, 3 left glove, '
+                              '4 right glove, 5 extra bat; default: the file it was exported from)')
+    _parser.add_argument('--write-slot-equipment', nargs=3, default=None, metavar=('0xNN', 'FILE', 'BLOCK'),
+                         help="Write a finished equipment block (a roster pack's) into this slot's file 2-5 as it is")
     _parser.add_argument('--write-slot-blocks', nargs=3, default=None, metavar=('0xNN', 'HIGH', 'LOW'),
                          help="Write finished model blocks (a roster pack's) into this slot as they are; '-' keeps "
                               "that file (no .sluggie)")
     _args = _parser.parse_args()
+    if _args.write_slot_equipment is not None:
+        if _args.sluggies_path is not None:
+            _parser.error('--write-slot-equipment takes no .sluggie file')
+        _cid, _file, _path = _args.write_slot_equipment
+        try:
+            with open(_path, 'rb') as _file_handle:
+                _equipment_block = _file_handle.read()
+            _equipment_file = int(_file, 0)
+        except (OSError, ValueError) as _exc:
+            _slogger.error(f'Slot write refused | {_exc}', source='hammerspace.main')
+            raise SystemExit(1)
+        raise SystemExit(0 if WriteSlotEquipment(_cid, _equipment_file, _equipment_block) else 1)
+    if _args.target_file is not None and _args.target_id is None and _args.clear_target is None:
+        _parser.error('--target-file needs --target-id (or --clear-target)')
     if _args.write_slot_blocks is not None:
         if _args.sluggies_path is not None:
             _parser.error('--write-slot-blocks takes no .sluggie file')
@@ -6166,6 +6275,8 @@ if __name__ == '__main__':
     if _args.clear_target is not None:
         if _args.sluggies_path is not None:
             _parser.error('--clear-target takes no .sluggie file')
+        if _args.target_file is not None:
+            raise SystemExit(0 if ClearEquipment(_args.clear_target, _args.target_file) else 1)
         raise SystemExit(0 if ClearTarget(_args.clear_target) else 1)
     if _args.sluggies_path is None:
         _parser.error('the .sluggie path is required')
@@ -6182,7 +6293,7 @@ if __name__ == '__main__':
     _target = None
     if _args.target_id is not None and not _args.validate_only:
         try:
-            _target = SlotTarget.make_target(_args.target_id, (_chunk, _index), _args.as_low)
+            _target = SlotTarget.make_target(_args.target_id, (_chunk, _index), _args.as_low, _args.target_file)
         except (SlotTarget.TargetError, OSError) as _exc:
             _slogger.error(f'Slot patch refused | Model: {_model_name} | {_exc}', source='hammerspace.main')
             raise SystemExit(1)
