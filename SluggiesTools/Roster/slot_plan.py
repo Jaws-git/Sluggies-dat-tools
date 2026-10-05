@@ -44,9 +44,18 @@ Patch (decisions 4-7 of the plan):
   portraits and the plan says so.
 
 Clear (decision 9): a stock slot gets its vanilla HP and ``L_`` back and loses
-replaced portraits (``stock_icons``); a new ID gets a fresh copy of its
-template's files, the template's stats, the "Empty slot" name and portraits.
-The square voice stays.
+replaced portraits (``stock_icons``) and another stats source
+(``stock_stats``); a new ID gets a fresh copy of its template's files, the
+template's stats, the "Empty slot" name and portraits. The square voice
+stays.
+
+Stats and voice (plan Phase 7, ``plan_stats`` / ``plan_voice``): any slot can
+play with another stock player's stats (new IDs: ``ids[].stats``; stock IDs:
+``stock_stats``), and any square can speak with another square's voice (new
+squares: ``grid.squares[k].voice``, which reaches only the square-only new
+IDs on it; stock squares: ``stock_voices``, which reaches the whole species:
+its wheel, spare rows and new IDs on it). A voice is named by a character;
+the square takes its family's voice (the base character of its species).
 """
 
 from __future__ import annotations
@@ -57,13 +66,14 @@ import os
 from dataclasses import dataclass, field
 
 try:
-    from . import icons, ids, model_icons, names, open_slot, wheels
+    from . import icons, ids, model_icons, names, open_slot, voices, wheels
 except ImportError:
     import icons
     import ids
     import model_icons
     import names
     import open_slot
+    import voices
     import wheels
 
 HIGH_FILE, LOW_FILE = 0, 1
@@ -430,6 +440,11 @@ def plan_clear(st: dict, config: dict, cid: int, state_file: str, env: Env | Non
                 del new[icons.STOCK_KEY]
             plan.notes.append(f'{target_name}: its stock portraits come back')
             plan.effects['portrait_note'] = 'stock portraits come back'
+        entry = _entry(new, ids.STOCK_STATS_KEY, cid)
+        if entry is not None:
+            _drop(new, ids.STOCK_STATS_KEY, entry)
+            plan.notes.append(f'{target_name}: its own stats come back')
+            plan.effects['stats'] = 'its own'
         if new != config:
             plan.config = new
         _prepare(plan, state_file, [])
@@ -501,6 +516,152 @@ def plan_rename(st: dict, config: dict, cid: int, text: str, state_file: str) ->
     return plan
 
 
+def _drop(config: dict, key: str, entry: dict) -> None:
+    config[key].remove(entry)
+    if not config[key]:
+        del config[key]
+
+
+def _set_stock_entry(config: dict, key: str, cid: int, field_: str, value: str | None) -> None:
+    """Put ``{"id": cid, field_: value}`` into the stock list ``key`` (sorted by ID); None removes the entry."""
+    entry = _entry(config, key, cid)
+    if value is None:
+        if entry is not None:
+            _drop(config, key, entry)
+    elif entry is not None:
+        entry[field_] = value
+    else:
+        config.setdefault(key, []).append({'id': _hex(cid), field_: value})
+        config[key].sort(key=lambda e: ids._number(e['id'], key))
+
+
+def _source_name(source: int, names_text: dict | None, st: dict | None = None) -> str:
+    text = ((names_text or {}).get(source) or {}).get('en')
+    if not text and st is not None:
+        char = next((c for c in st['characters'] if c['id'] == source), None)
+        text = char and (char.get('default_name') or (char.get('name') or {}).get('en'))
+    return f'{text} ({_hex(source)})' if text else _hex(source)
+
+
+def plan_stats(st: dict, config: dict, cid: int, source: int | None, state_file: str,
+               names_text: dict | None = None) -> Plan:
+    """The chain that lets slot ``cid`` play with stock player ``source``'s stats (``None``: its default, a new
+    ID's template's, a stock ID's own). The stats rows only: model, size, voice and name stay."""
+    char = _character(st, cid)
+    new = copy.deepcopy(config)
+    plan = Plan('stats', cid, None)
+    target_name = _display(char)
+    if source is not None and not 0 <= source < ids.PLAYER_END:
+        raise PlanError(f'{_hex(source)} is not a stock player (0x00-0x{ids.PLAYER_END - 1:02X}): its stats cannot '
+                        'be copied')
+    if cid >= ids.FIRST_NEW:
+        entry = _entry(new, 'ids', cid)
+        if entry is None:
+            raise PlanError(f'{_hex(cid)} has no ids entry in the derived config')
+        default = ids._number(entry['template'], 'template')
+        if source is None or source == default:
+            entry.pop('stats', None)
+        else:
+            entry['stats'] = _hex(source)
+        default_text = f'its template {_source_name(default, names_text, st)}\'s'
+    elif cid < ids.PLAYER_END:
+        default = cid
+        _set_stock_entry(new, ids.STOCK_STATS_KEY, cid, 'stats',
+                         None if source is None or source == cid else _hex(source))
+        default_text = 'its own'
+    else:
+        raise PlanError(f'{target_name} has no stats rows of its own (Miis cannot take other stats)')
+    shown = default_text if source is None or source == default else f'{_source_name(source, names_text, st)}\'s'
+    if new == config:
+        plan.nothing = True
+        plan.notes.append(f'nothing to change: {target_name} plays with {shown} stats already')
+        return plan
+    plan.config = new
+    _prepare(plan, state_file, [])
+    plan.commands.append(('--roster-state',))
+    plan.notes.append(f'{target_name} plays with {shown} stats (stats, pitching, fielding, chemistry; its model, '
+                      'size and voice stay)')
+    plan.effects['stats'] = shown[:-2] if shown.endswith("'s") else shown
+    return plan
+
+
+def _voice_species(st: dict) -> dict[int, int]:
+    """``{base character: species}`` of the stock squares."""
+    return {sq['head']: sq['head_index'] for sq in st['squares'] if sq['kind'] == 'stock'}
+
+
+def voice_family(st: dict, source: int) -> int:
+    """The base character whose voice ``source`` names (its family); refuses characters without a voice."""
+    species_of = _voice_species(st)
+    if source in species_of:
+        return source
+    char = next((c for c in st['characters'] if c['id'] == source), None)
+    if char is None or char.get('family') not in species_of:
+        raise PlanError(f'{_hex(source)} has no voice to take: pick a character of a stock square')
+    return char['family']
+
+
+def _check_voices(st: dict, config: dict) -> None:
+    """Every new square's voice must still be spoken by some stock square after the stock squares' swaps."""
+    species_of = _voice_species(st)
+    heads = {s: h for h, s in species_of.items()}
+    try:
+        remap = voices.parse_stock_voices(config, bytes(heads.get(s, 0xFF) for s in range(voices.SPECIES)))
+    except voices.VoiceConfigError as exc:
+        raise PlanError(str(exc)) from exc
+    for sq in (config.get('grid') or {}).get('squares') or []:
+        if not isinstance(sq, dict) or sq.get('voice') is None:
+            continue
+        family = voice_family(st, ids._number(sq['voice'], 'voice'))
+        if voices.species_for_voice(species_of[family], remap) is None:
+            head = ids._number(sq['members'][0], 'members')
+            raise PlanError(f'the new square of {_hex(head)} speaks with {_source_name(family, None, st)}\'s voice, '
+                            'and no stock square would keep it: give that square another voice first')
+
+
+def plan_voice(st: dict, config: dict, cid: int, source: int | None, state_file: str,
+               names_text: dict | None = None) -> Plan:
+    """The chain that gives the square of slot ``cid`` the voice of ``source``'s family (``None``: its own; a
+    new square: none set). A stock square changes the voice of its whole species; a new square the voice of its
+    square-only new IDs (members with a wheel keep their wheel's)."""
+    char = _character(st, cid)
+    square = st['squares'][char['square']]
+    head = square['head']
+    new = copy.deepcopy(config)
+    plan = Plan('voice', head, None)
+    family = None if source is None else voice_family(st, source)
+    square_name = f'the square of {_display(_character(st, head))}'
+    if square['kind'] == 'stock':
+        if family == head:
+            family = None
+        _set_stock_entry(new, voices.STOCK_KEY, head, 'voice', None if family is None else _hex(family))
+        shown = 'its own voice' if family is None else f'{_source_name(family, names_text, st)}\'s voice'
+        reach = 'every member of the species (its wheel)'
+    else:
+        k, sq = _square_config(new, head) or (None, None)
+        if sq is None:
+            raise PlanError(f'{_hex(head)}: its square is missing from the derived config')
+        members = list(sq['members'] if isinstance(sq, dict) else sq)
+        new['grid']['squares'][k] = members if family is None else {'members': members, 'voice': _hex(family)}
+        shown = 'no set voice' if family is None else f'{_source_name(family, names_text, st)}\'s voice'
+        square_only = [m for m in members if (_entry(new, 'ids', ids._number(m, 'members')) or {}).get('wheel', 0)
+                       is None]
+        kept = [m for m in members if m not in square_only]
+        reach = ('its square-only new IDs (' + (', '.join(square_only) or 'none') + ')'
+                 + (f'; {", ".join(kept)} keep their own wheel\'s voice' if kept else ''))
+    if new == config:
+        plan.nothing = True
+        plan.notes.append(f'nothing to change: {square_name} has {shown} already')
+        return plan
+    _check_voices(st, new)
+    plan.config = new
+    _prepare(plan, state_file, [])
+    plan.commands.append(('--roster-state',))
+    plan.notes.append(f'{square_name} speaks with {shown}: {reach}, on the select screen and on the field')
+    plan.effects['voice'] = (shown[:-len("'s voice")] if shown.endswith("'s voice") else shown) + ' (square voice)'
+    return plan
+
+
 def _display(char: dict) -> str:
     name = char.get('default_name') or (char.get('name') or {}).get('en')
     return f'{name} ({_hex(char["id"])})' if name and name != names.UNNAMED else _hex(char['id'])
@@ -511,28 +672,42 @@ def _display(char: dict) -> str:
 # --------------------------------------------------------------------------
 
 MODEL_OPS = ('patch', 'clear')
-LATER_OPS = {'voice': 7, 'stats': 7}                  # ops a later plan phase brings: {op: phase}
-SLOT_OPS = MODEL_OPS + ('rename',) + tuple(LATER_OPS)
+VALUE_OPS = ('voice', 'stats')                        # the last one per slot (voice: per square) wins
+SLOT_OPS = MODEL_OPS + ('rename',) + VALUE_OPS
+DEFAULT_WORDS = ('', '-', 'default')                  # an edit's "source" that resets (CLI text)
 
 
 @dataclass
 class Edit:
     """One staged edit (an entry of the edits file)."""
-    op: str                         # 'patch' / 'clear'; later phases: 'rename', 'voice', 'stats'
-    cid: int
+    op: str                         # 'patch' / 'clear' / 'rename' / 'voice' / 'stats'
+    cid: int                        # the slot (voice: any slot of the square)
     file: str | None = None         # patch: the picked .sluggie (a joined pair: the High model)
     low: str | None = None          # patch: a Low pick joined to a pending High pick
     text: str | None = None         # rename
     checked: bool = False           # its build check already passed when it was staged (dry runs skip it)
     index: int = 0                  # position in the edits file (1-based)
     pair: Pair | None = None
+    source: int | None = None       # voice / stats: the character to take them from (None: back to the default)
 
     def to_json(self) -> dict:
         out = {'op': self.op, 'id': _hex(self.cid)}
         for key in ('file', 'low', 'text'):
             if getattr(self, key) is not None:
                 out[key] = getattr(self, key)
+        if self.op in VALUE_OPS:
+            out['source'] = None if self.source is None else _hex(self.source)
         return out
+
+
+def parse_source(value) -> int | None:
+    """An edit's ``source``: a character ID, or None for "back to the default" (null, blank, ``-``, ``default``)."""
+    if value is None or (isinstance(value, str) and value.strip().lower() in DEFAULT_WORDS):
+        return None
+    try:
+        return ids._number(value.strip() if isinstance(value, str) else value, 'source')
+    except ValueError as exc:
+        raise PlanError(str(exc)) from exc
 
 
 def parse_edits(data) -> list[Edit]:
@@ -553,6 +728,13 @@ def parse_edits(data) -> list[Edit]:
             raise PlanError(f'edit {n}: a patch needs a "file"')
         if edit.op == 'rename' and not isinstance(edit.text, str):
             raise PlanError(f'edit {n}: a rename needs a "text" (blank resets the name)')
+        if edit.op in VALUE_OPS:
+            if 'source' not in item:
+                raise PlanError(f'edit {n}: a {edit.op} edit needs a "source" (null: back to the default)')
+            try:
+                edit.source = parse_source(item['source'])
+            except PlanError as exc:
+                raise PlanError(f'edit {n}: {exc}') from exc
         edits.append(edit)
     return edits
 
@@ -573,7 +755,9 @@ def merge_edits(edits: list[Edit], classify_fn=None) -> tuple[list[Edit], list[s
     * at most one model edit (patch / clear) per slot: a later one replaces an earlier one;
     * a Low-only pick after a pending High pick of the same character joins it as a pair; after another
       pending High pick or a pending clear it is refused (its High model would not be the one it binds into);
-    * a clear drops the slot's earlier renames (it resets the name); a later rename replaces an earlier one."""
+    * a clear drops the slot's earlier renames and stats edits (it resets both); a later rename, voice or stats
+      edit replaces an earlier one of the same slot (a patch that sets stats drops earlier stats edits too, in
+      ``plan_batch``, where it is known)."""
     classify_fn = classify_fn or classify
     merged: list[Edit] = []
     notes: list[str] = []
@@ -615,7 +799,10 @@ def merge_edits(edits: list[Edit], classify_fn=None) -> tuple[list[Edit], list[s
                 merged.remove(rename)
                 notes.append(f'{_hex(edit.cid)}: the rename to "{rename.text}" is dropped: the later clear resets '
                              'the name')
-        elif edit.op in LATER_OPS:
+            for stats in [e for e in merged if e.cid == edit.cid and e.op == 'stats']:
+                merged.remove(stats)
+                notes.append(f'{_hex(edit.cid)}: the stats edit is dropped: the later clear resets the stats')
+        elif edit.op in VALUE_OPS + ('rename',):
             same = next((e for e in merged if e.cid == edit.cid and e.op == edit.op), None)
             if same is not None:
                 merged.remove(same)
@@ -667,12 +854,14 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
     current = config
     for edit in merged:
         try:
-            if edit.op in LATER_OPS:
-                raise PlanError(f'{edit.op} edits come with plan Phase {LATER_OPS[edit.op]}')
             if edit.op == 'patch':
                 plan = plan_patch(st, current, edit.cid, edit.pair, env, state_file, names_text)
             elif edit.op == 'rename':
                 plan = plan_rename(st, current, edit.cid, edit.text, state_file)
+            elif edit.op == 'stats':
+                plan = plan_stats(st, current, edit.cid, edit.source, state_file, names_text)
+            elif edit.op == 'voice':
+                plan = plan_voice(st, current, edit.cid, edit.source, state_file, names_text)
             else:
                 plan = plan_clear(st, current, edit.cid, state_file, env)
         except PlanError as exc:
@@ -683,6 +872,16 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
             continue
         if plan.config is not None:
             current = plan.config
+        if edit.op == 'patch' and 'stats' in plan.effects:
+            for earlier in [(e, p) for e, p in batch.plans if e.op == 'stats' and e.cid == edit.cid]:
+                batch.plans.remove(earlier)
+                batch.notes.append(f'{_hex(edit.cid)}: the stats edit is dropped: the later patch sets the stats')
+        if edit.op == 'voice':
+            square = st['squares'][_character(st, edit.cid)['square']]
+            for earlier in [(e, p) for e, p in batch.plans
+                            if e.op == 'voice' and e.cid != edit.cid and e.cid in square['members']]:
+                batch.plans.remove(earlier)
+                batch.notes.append(f'{_hex(edit.cid)}: the earlier voice edit of its square is replaced')
         batch.plans.append((edit, plan))
         batch.warnings += plan.warnings
         batch.extra_portraits.update(plan.extra_portraits)

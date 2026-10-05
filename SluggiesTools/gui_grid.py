@@ -33,7 +33,8 @@ PACK_DIR_REL = 'Roster_Packs'                   # where the pack dialogs start
 PACK_EXTENSION = '.sluggiesroster'
 # start.py modes whose commands can change what the grid shows: the tab re-reads after them
 WRITING_FLAGS = frozenset({'--export', '--roster', '--patch', '--unpatch', '--resplit-unused',
-                           '--patch-slot', '--clear-slot', '--rename-slot', '--apply-slots', '--load-roster',
+                           '--patch-slot', '--clear-slot', '--rename-slot', '--set-voice', '--set-stats',
+                           '--apply-slots', '--load-roster',
                            '--write-slot-blocks'})
 UNNAMED = '-'
 LUIGI = 0x01
@@ -172,6 +173,67 @@ def rename_prefill(state: dict, cid: int) -> str:
 
 
 # --------------------------------------------------------------------------
+# Voice and stats (Phase 7)
+# --------------------------------------------------------------------------
+
+PLAYER_END = 0x4D                    # stock player IDs: the stats sources (Roster/ids.py PLAYER_END)
+
+
+def _labelled(state: dict, cid: int) -> str:
+    return f'{known_name(state, cid)} ({hex_id(cid)})'
+
+
+def stats_choices(state: dict, cid: int) -> list[tuple[str, str | None]]:
+    """``(label, source)`` for the Stats dialog: the default first (``None``: a stock ID's own stats, a new ID's
+    template's), then every stock player on the grid."""
+    c = characters(state).get(cid) or {}
+    default = c.get('template') if c.get('template') is not None else cid
+    first = (f'Default: its template {_labelled(state, default)}' if c.get('template') is not None
+             else f'Default: its own ({known_name(state, cid)})')
+    sources = sorted(i for i in characters(state) if i < PLAYER_END)
+    return [(first, None)] + [(_labelled(state, i), hex_id(i)) for i in sources if i != default]
+
+
+def voice_choices(state: dict, index: int) -> list[tuple[str, str | None]]:
+    """``(label, source)`` for the Voice dialog: the default first (a stock square's own voice; a new square:
+    none set), then every stock square's head (one voice per species)."""
+    sq = state['squares'][index]
+    heads = sorted({s['head'] for s in state['squares'] if s['kind'] == 'stock'})
+    if sq['kind'] == 'stock':
+        first = f'Default: its own ({known_name(state, sq["head"])})'
+        heads = [h for h in heads if h != sq['head']]
+    else:
+        first = 'Default: none set (each member speaks with its own species\' voice)'
+    return [(first, None)] + [(_labelled(state, h), hex_id(h)) for h in heads]
+
+
+def stats_text(state: dict, cid: int) -> str:
+    c = characters(state).get(cid) or {}
+    if c.get('stats') is None:
+        return 'Stats: not read'
+    return f'Stats now: {_labelled(state, c["stats"])}'
+
+
+def voice_text(state: dict, index: int) -> str:
+    sq = state['squares'][index]
+    shown = f'Voice now: {_labelled(state, sq["voice"])}'
+    return shown + (' (set)' if sq.get('voice_set') is not None else '')
+
+
+def voice_reach(state: dict, index: int) -> str:
+    """Who a square's voice reaches (``Roster/voices.py``, the grid step's square voices)."""
+    if state['squares'][index]['kind'] == 'stock':
+        return ('A stock square speaks as one species: the voice changes for every member of its wheel (spare '
+                'rows and new IDs on it included), on the select screen and on the field. Nothing else changes.')
+    return ('A new square\'s voice reaches its members without a colour wheel; members on a wheel keep their '
+            'wheel\'s voice. It plays on the select screen and on the field.')
+
+
+def choice_index(choices: list, source: str | None) -> int:
+    return next((i for i, (_label, value) in enumerate(choices) if value == source), 0)
+
+
+# --------------------------------------------------------------------------
 # Portraits
 # --------------------------------------------------------------------------
 
@@ -216,6 +278,11 @@ def icon_note(state: dict, cid: int, view: str) -> str:
 
 def square_label(state: dict, index: int) -> str:
     return name_of(state, state['squares'][index]['head'])
+
+
+def slot_count(state: dict, index: int) -> int:
+    """How many slots (colour swatches) a square has: the number the grid shows on it."""
+    return len(state['squares'][index]['members'])
 
 
 def square_tooltip(state: dict, index: int) -> list[str]:
@@ -426,7 +493,11 @@ class PendingEdits:
         return next((e for e in self.edits if int(e['id'], 16) == cid and e['op'] in ('patch', 'clear')), None)
 
     def rename_edit(self, cid: int) -> dict | None:
-        return next((e for e in self.edits if int(e['id'], 16) == cid and e['op'] == 'rename'), None)
+        return self.value_edit(cid, 'rename')
+
+    def value_edit(self, cid: int, op: str) -> dict | None:
+        """The slot's pending ``op`` edit ('rename', 'stats', or 'voice': staged on the square's head)."""
+        return next((e for e in self.edits if int(e['id'], 16) == cid and e['op'] == op), None)
 
     def sections_for(self, cid: int) -> list[dict]:
         return [s for s in self.sections if int(s['target'], 16) == cid]
@@ -478,6 +549,11 @@ def _edit_title(edit: dict) -> str:
         return 'Pending: clear this slot'
     if edit['op'] == 'rename':
         return f'Pending: rename to {edit["text"]!r}' if edit.get('text') else 'Pending: reset the name'
+    if edit['op'] == 'stats':
+        return f'Pending: play with {edit["source"]}\'s stats' if edit.get('source') else 'Pending: default stats'
+    if edit['op'] == 'voice':
+        return (f'Pending: the square speaks with {edit["source"]}\'s voice' if edit.get('source')
+                else 'Pending: the square\'s default voice')
     return f'Pending: {edit["op"]}'
 
 
@@ -576,14 +652,21 @@ def _refused_lines(state: dict, plan: dict, cid: int | None = None) -> list:
     return lines
 
 
+VALUE_KINDS = ('rename', 'stats', 'voice')        # edits that change one value, no model
+
+
 def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int, output: str,
-                pending: PendingEdits | None = None, rename: bool = False) -> SlotDialog:
+                pending: PendingEdits | None = None, rename: bool = False, kind: str | None = None) -> SlotDialog:
     """The confirm dialog of a staged edit, after its staging check (the pending edits plus this one, exit
     ``code``, log ``output``): what the edit does, its warnings and the verdict. ``can_apply`` (Stage stages it)
-    only when the planner and the build check passed. ``rename``: a rename (neither patch nor clear)."""
+    only when the planner and the build check passed. ``kind``: 'patch', 'clear', 'rename', 'stats' or 'voice'
+    (default from ``patch`` / ``rename``; a voice edit's ``cid`` is its square's head)."""
+    kind = kind or ('rename' if rename else 'patch' if patch else 'clear')
+    rename = kind in VALUE_KINDS
     target = f'{name_of(state, cid)} ({hex_id(cid)})'
-    dialog = SlotDialog(f'Rename {target}?' if rename else
-                        f'Put a model into {target}?' if patch else f'Clear {target}?')
+    dialog = SlotDialog({'rename': f'Rename {target}?', 'patch': f'Put a model into {target}?',
+                         'stats': f'Other stats for {target}?',
+                         'voice': f'Another voice for the square of {target}?'}.get(kind, f'Clear {target}?'))
     error = error_message(output)
     lines = dialog.lines
     if plan is None or plan['refused']:
@@ -601,12 +684,13 @@ def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int
     if section is None:                       # a clear of a slot at its baseline, or a rename that changes nothing
         skipped = next((s for s in plan['skipped'] if int(s['target'], 16) == cid), None)
         lines += [(f'- {note}', TEXT) for note in (skipped or {}).get('notes', [])]
-        earlier = (pending.rename_edit(cid) if rename else pending.model_edit(cid)) if pending else None
+        earlier = (pending.value_edit(cid, kind) if rename else pending.model_edit(cid)) if pending else None
         if earlier is not None:
             lines.append((f'Stage drops the slot\'s pending {earlier["op"]}, so the slot stays as it is.', OK))
             dialog.can_apply = True
         else:
-            dialog.title = f'{target}: nothing to rename' if rename else f'{target}: nothing to clear'
+            dialog.title = {'rename': f'{target}: nothing to rename', 'clear': f'{target}: nothing to clear'}.get(
+                kind, f'{target}: nothing to change')
         return dialog
     lines += _section_lines(state, section, build_sizes(output))
     prefix = f'{hex_id(cid)}: '
@@ -648,12 +732,15 @@ def summary_dialog(state: dict, plan: dict | None, code: int, output: str) -> Sl
         if section['action'] == 'rename':
             text = (section.get('edit') or {}).get('text')
             what = f'rename to {text!r}' if text else 'reset the name'
+        elif section['action'] in ('stats', 'voice'):
+            effect = ((section.get('effects') or {}).get(section['action']) or 'default').removesuffix(' (square voice)')
+            what = f'stats of {effect}' if section['action'] == 'stats' else f'square voice of {effect}'
         lines.append((f'{name_of(state, cid)} ({hex_id(cid)}): {what}', OK))
         lines += [('    ' + text, kind) for text, kind in _section_lines(state, section, sizes, warnings=False)]
     for section in plan['skipped']:
         cid = int(section['target'], 16)
-        why = ('nothing to rename (named that already)' if section['action'] == 'rename'
-               else 'nothing to clear (at its baseline already)')
+        why = {'rename': 'nothing to rename (named that already)', 'clear': 'nothing to clear (at its baseline '
+               'already)'}.get(section['action'], 'nothing to change')
         lines.append((f'{name_of(state, cid)} ({hex_id(cid)}): {why}', TEXT))
     lines += [(f'- {note}', TEXT) for note in plan['notes']]
     lines += [(f'Warning: {warning}', WARN) for warning in plan['warnings']]

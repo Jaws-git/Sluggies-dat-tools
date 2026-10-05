@@ -31,6 +31,7 @@ from SluggiesTools.Roster import datfile, derive, icon_art, icons, layout_file, 
 from SluggiesTools.tests.test_roster_grid import image_for_grid
 from SluggiesTools.tests.test_roster_names import plate_bank, stock_table
 from SluggiesTools.tests.test_roster_state_icons import STOCK0
+from SluggiesTools.tests.test_roster_voice_stats_reassign import fill_voice_tables
 
 STOCK_AT = 0x1000
 NAMES_AT = {'en': 0xA0000, 'fr': 0xA4000, 'sp': 0xA8000}
@@ -114,6 +115,7 @@ class Harness(unittest.TestCase):
         with open(self.input_dat, 'wb') as f:
             f.write(dat)
         image = image_for_grid()
+        fill_voice_tables(image)
         for site, stock, _stub in icons.OLD_HOOKS:
             image.write_word(site, stock)
         image.write_word(icons.RESOLVER_SITE, icons.RESOLVER_STOCK)
@@ -200,6 +202,13 @@ CONFIGS = {
                 {'id': '0x68', 'template': '0x00', 'wheel': '0x06', 'stats': '0x0D'}],
         'grid': {'squares': [{'members': ['0x66', '0x67', '0x68'], 'voice': '0x09'}], 'shape': [11, 5]}},
     'stock portraits only': {'stock_icons': [{'id': '0x02', 'icon': ICON}]},
+    'stock stats and voices only': {'stock_stats': [{'id': '0x00', 'stats': '0x09'}],
+                                    'stock_voices': [{'id': '0x0D', 'voice': '0x09'}]},
+    'stock stats and voices with a voiced square': {
+        'ids': [{'id': '0x66', 'template': '0x06', 'wheel': None, 'stats': '0x0D'}],
+        'stock_stats': [{'id': '0x00', 'stats': '0x09'}, {'id': '0x0D', 'stats': '0x00'}],
+        'stock_voices': [{'id': '0x00', 'voice': '0x09'}, {'id': '0x09', 'voice': '0x00'}],
+        'grid': {'squares': [{'members': ['0x66'], 'voice': '0x09'}], 'shape': [11, 5]}},
     'stock names only': {'stock_names': [{'id': '0x0D', 'name': 'Little Toad'}]},
     'stock names with new IDs': {
         'ids': [{'id': '0x66', 'template': '0x00', 'name': 'Red'}],
@@ -246,6 +255,16 @@ class RoundTripTests(Harness):
         self.assertEqual({e['id']: e.get('stats') for e in derived['ids']}, {'0x66': '0x09', '0x67': None,
                                                                             '0x68': '0x0D'})
         self.assertEqual(derived['grid']['squares'], [{'members': ['0x66', '0x67', '0x68'], 'voice': '0x09'}])
+
+    def test_stock_stats_and_voices_are_carried(self):
+        """GUI character grid Phase 7: ``stock_stats`` and ``stock_voices`` come back from the manifest."""
+        derived = self.round_trip(CONFIGS['stock stats and voices with a voiced square'])
+        self.assertEqual(derived['stock_stats'], [{'id': '0x00', 'stats': '0x09'}, {'id': '0x0D', 'stats': '0x00'}])
+        self.assertEqual(derived['stock_voices'], [{'id': '0x00', 'voice': '0x09'}, {'id': '0x09', 'voice': '0x00'}])
+        self.assertEqual(derived['ids'][0]['stats'], '0x0D')
+        self.assertEqual(derived['grid']['squares'], [{'members': ['0x66'], 'voice': '0x09'}])
+        only = self.round_trip(CONFIGS['stock stats and voices only'])
+        self.assertEqual(set(only) - {'version', 'comment'}, {'stock_stats', 'stock_voices'})
 
     def test_stock_portraits_are_carried(self):
         derived = self.round_trip(CONFIGS['stock portraits with new IDs'])

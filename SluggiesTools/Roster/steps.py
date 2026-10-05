@@ -18,6 +18,7 @@ STEPS = (
     ('model_dirs', 'Own model directories'),
     ('wheels', 'Colour wheels'),
     ('icons', 'Icons'),
+    ('voices', 'Stock square voices'),
     ('grid', 'Exhibition draft grid'),
     ('names', 'Names'),
 )

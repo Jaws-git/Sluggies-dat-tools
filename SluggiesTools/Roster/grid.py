@@ -65,7 +65,7 @@ try:
     from ..Dol import dolfile, inventory, relocate
     from ..Dol.ppc import Asm, ha, lo, one
     from ..Icons import layout2d
-    from . import dol_hammerspace, ids, layout_file, steps, wheels
+    from . import dol_hammerspace, ids, layout_file, steps, voices, wheels
 except ImportError:
     from Dol import dolfile, inventory, relocate
     from Dol.ppc import Asm, ha, lo, one
@@ -74,6 +74,7 @@ except ImportError:
     import ids
     import layout_file
     import steps
+    import voices
     import wheels
 
 GROUP = 'gridcells_11x4'
@@ -793,18 +794,24 @@ SPECIES_BRANCHES = {0x16: 'Noki', 0x19: 'Magikoopa', 0x24: 'Kritter'}
 
 def apply_voices(ctx: steps.RosterContext, grid: Grid, write) -> list[str]:
     """Square voices: each voiced square's square-only new IDs (wheel group 0) get the voice's species (selector
-    byte 2), which picks the voice bank, the clips and the select voice. ``write(address, bytes)``."""
+    byte 2), which picks the voice bank, the clips and the select voice. When stock squares swapped voices
+    (``voices`` step), that is a species that still speaks with the voice's stock sounds. ``write(address,
+    bytes)``."""
     if not grid.voices:
         return []
     selector, rows = wheels.table_location(ctx, 'selector')
     species = lambda cid: ctx.dol.read(selector + 8 * cid + 2, 1)[0]
+    remap = ctx.state.get('voice_remap') or {}
     new = {c.id: c for c in ctx.state.get('new_ids') or []}
     log = []
     for k, sq in enumerate(grid.squares):
         voice = grid.voice(k)
         if voice is None:
             continue
-        target = species(voice)
+        target = voices.species_for_voice(species(voice), remap)
+        if target is None:
+            raise GridConfigError(f'square 0x{sq[0]:02X}: the voice of 0x{voice:02X} is given away (stock_voices) '
+                                  'and no stock square speaks with it any more: give the square another voice')
         voiced, kept = [], []
         for cid in sq:
             square_only = cid in new and new[cid].wheel is None

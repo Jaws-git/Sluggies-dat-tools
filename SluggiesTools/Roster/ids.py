@@ -28,6 +28,17 @@ template); every other row, chemistry included, from the stats source. The
 voice is the selector row's species: a square's voice (``grid`` step) can
 change it for square-only IDs.
 
+Stock characters' stats (``stock_stats``, plan Phase 7)::
+
+    "stock_stats": [{"id": "0x00", "stats": "0x09"}]
+
+A stock player ID (0x00-0x4C) plays with another stock player's stats: its
+rows of the stats tables (as for ``ids[].stats``) become the source's, its
+body rows, selector row and own-data flag stay. Chemistry stays symmetric:
+the pair (A, B) reads the pair (stats source of A, stats source of B) of the
+stock table, in every row (``restat_rows``). Without an ``ids`` key the rows
+are rewritten where they are; with one, in the moved tables.
+
 An empty ``ids`` list still moves every table (101 rows, nothing added): the
 identity relocation of plan step 3a, which must play exactly like vanilla.
 
@@ -76,6 +87,7 @@ HANDLE_TABLE = 'model_handles'
 BODY_TABLES = frozenset({'sizescale', 'hitbox', 'icescale', 'pitchchargescale', 'batchargescale',
                          'effectscale_c00', 'effectscale_2b0'})
 TEMPLATE_TABLES = frozenset({'selector', 'hasmodel'})
+STOCK_STATS_KEY = 'stock_stats'
 
 
 class IdConfigError(ValueError):
@@ -195,6 +207,28 @@ def parse_ids(config: dict) -> list[NewId]:
     return sorted(out, key=lambda c: c.id)
 
 
+def parse_stock_stats(config: dict) -> dict[int, int]:
+    """``{stock id: stats source}`` from ``stock_stats``; an entry naming the ID itself drops out."""
+    entries = config.get(STOCK_STATS_KEY) or []
+    if not isinstance(entries, list):
+        raise IdConfigError(f'"{STOCK_STATS_KEY}" must be a list of {{"id", "stats"}} entries')
+    out: dict[int, int] = {}
+    for n, entry in enumerate(entries):
+        where = f'{STOCK_STATS_KEY}[{n}]'
+        if not isinstance(entry, dict) or entry.get('id') is None or entry.get('stats') is None:
+            raise IdConfigError(f'{where}: expected {{"id": "0xNN", "stats": "0xNN"}}')
+        cid = _number(entry['id'], f'{where}.id')
+        source = _number(entry['stats'], f'{where}.stats')
+        for what, value in (('id', cid), ('stats', source)):
+            if not 0 <= value < PLAYER_END:
+                raise IdConfigError(f'{where}.{what}: 0x{value:02X} is not a stock player ID (0x00-0x4C)')
+        if cid in out:
+            raise IdConfigError(f'{where}: 0x{cid:02X} is listed twice')
+        if source != cid:
+            out[cid] = source
+    return out
+
+
 def _parse_route(value, where: str) -> tuple:
     """``[offset, length]`` (every language) or three of them (en, fr, sp) -> ((o, l),) * 3."""
     try:
@@ -273,9 +307,37 @@ def selector_rows(rows: list[bytearray], new: list[NewId]) -> tuple[list[bytearr
     return [by_id.get(i, bytearray(8)) for i in range(FIRST_NEW, ROWS)], log
 
 
+def is_stats_table(name: str) -> bool:
+    """Whether a moved table holds what a character plays like (``stats`` / ``stock_stats`` sources)."""
+    return name not in BODY_TABLES | TEMPLATE_TABLES | {HANDLE_TABLE}
+
+
+def restat_rows(name: str, rows: list[bytearray], vanilla: list[bytes], stock_stats: dict[int, int],
+                new: list[NewId]) -> None:
+    """``stock_stats`` on one table's rows (in place): each listed stock ID's row becomes its source's (the
+    stats row keeps its own ID in bytes 0-1); in the stats table every row's chemistry towards a listed ID
+    becomes the row's own stats source's chemistry towards that ID's source. ``vanilla``: the stock rows."""
+    if not stock_stats or not is_stats_table(name):
+        return
+    for cid, source in stock_stats.items():
+        rows[cid][:] = vanilla[source]
+        if name == 'stats':
+            rows[cid][0:2] = struct.pack('>H', cid)
+    if name != 'stats':
+        return
+    by_id = {c.id: c.stats_source for c in new}
+    for r, row in enumerate(rows):
+        source_row = stock_stats.get(r, r) if r <= STOCK_IDS else by_id.get(r)
+        if source_row is None:
+            continue                                   # a row without a character: neutral chemistry
+        for b, source in stock_stats.items():
+            row[CHEM_BASE + b] = vanilla[source_row][CHEM_BASE + source]
+
+
 def extended_table(image: dolfile.DolImage, table: inventory.Table, new: list[NewId],
-                   rows_out: int) -> tuple[bytes, list[str]]:
+                   rows_out: int, stock_stats: dict[int, int] | None = None) -> tuple[bytes, list[str]]:
     rows = _rows(image, table)
+    vanilla = [bytes(r) for r in rows]
     log: list[str] = []
     head = bytearray(image.read(table.address, table.header))
     if rows_out > STOCK_IDS + 1:
@@ -295,7 +357,26 @@ def extended_table(image: dolfile.DolImage, table: inventory.Table, new: list[Ne
         rows += added
         if table.name == 'stats':
             head[0] = min(rows_out, 0xFF)   # the stock row count; nothing reads it
+    restat_rows(table.name, rows, vanilla, stock_stats or {}, new)
     return bytes(head) + b''.join(rows), log
+
+
+def restat_in_place(image: dolfile.DolImage, stock_stats: dict[int, int]) -> list[str]:
+    """``stock_stats`` without an ``ids`` key: the stock tables' rows rewritten where they are."""
+    if not stock_stats:
+        return []
+    for table in moved_tables():
+        if not is_stats_table(table.name):
+            continue
+        rows = _rows(image, table)
+        vanilla = [bytes(r) for r in rows]
+        restat_rows(table.name, rows, vanilla, stock_stats, [])
+        image.write(table.address + table.header, b''.join(rows))
+    return [stock_stats_line(stock_stats) + ' (tables in place)']
+
+
+def stock_stats_line(stock_stats: dict[int, int]) -> str:
+    return 'stock stats: ' + ', '.join(f'0x{c:02X} plays with 0x{s:02X}' for c, s in sorted(stock_stats.items()))
 
 
 def handle_rows(new: list[NewId], rows_out: int) -> bytes:
@@ -574,16 +655,16 @@ def moved_tables() -> list[inventory.Table]:
 
 
 def apply_ids(image: dolfile.DolImage, hs: dol_hammerspace.DolHammerspace, new: list[NewId],
-              state: dict | None = None) -> list[str]:
+              state: dict | None = None, stock_stats: dict[int, int] | None = None) -> list[str]:
     rows_out = ROWS if new else STOCK_IDS + 1
-    log = []
+    log = [stock_stats_line(stock_stats)] if stock_stats else []
     refs = relocate.scan_refs(image)
     at: dict[str, int] = {}
     for table in moved_tables():
         if table.name == HANDLE_TABLE:
             blob = handle_rows(new, rows_out)
         else:
-            blob, lines = extended_table(image, table, new, rows_out)
+            blob, lines = extended_table(image, table, new, rows_out, stock_stats)
             log += lines
         at[table.name] = hs.data.put(blob, 32)
         changes = relocate.relocate_table(image, table.all_pairs, table.address, table.length,
@@ -614,8 +695,8 @@ def apply_ids(image: dolfile.DolImage, hs: dol_hammerspace.DolHammerspace, new: 
         model_of_at = template_of_at
     new_ids_list = hs.data.put(bytes(c.id for c in new if c.wheel is not None) + bytes([STOCK_IDS]), 4)
     stats = inventory.table('stats')
-    stats_blob = bytes(hs.data.blob[at['stats'] - hs.data.base:at['stats'] - hs.data.base + stats.header
-                                    + ROWS * STATS_ROW])
+    # the stock table (left where it was): new-by-new chemistry pairs the stats sources' stock rows
+    stats_blob = image.read(stats.address, stats.header + (STOCK_IDS + 1) * STATS_ROW)
     new_chem = hs.data.put(new_by_new_chemistry(stats_blob, stats.header, new), 4)
     stats_rows = at['stats'] + stats.header
 
@@ -648,11 +729,13 @@ def apply_ids(image: dolfile.DolImage, hs: dol_hammerspace.DolHammerspace, new: 
 
 @steps.register('ids')
 def apply(ctx: steps.RosterContext) -> list[str]:
+    stock_stats = parse_stock_stats(ctx.config)
+    ctx.state['stock_stats'] = stock_stats
     if 'ids' not in ctx.config:
-        return ['no "ids" key in the roster config: tables stay in place']
+        return ['no "ids" key in the roster config: tables stay in place'] + restat_in_place(ctx.dol, stock_stats)
     new = parse_ids(ctx.config)
     ctx.state['new_ids'] = new
     hs = dol_hammerspace.get(ctx)
-    log = apply_ids(ctx.dol, hs, new, ctx.state)
+    log = apply_ids(ctx.dol, hs, new, ctx.state, stock_stats)
     hs.commit()
     return log + [f'DOL hammerspace now: {hs.summary()}']

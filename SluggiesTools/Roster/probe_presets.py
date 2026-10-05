@@ -26,8 +26,8 @@ from SluggiesTools.Icons import layout2d  # noqa: E402
 from SluggiesTools.Roster import dat_hammerspace as dhs  # noqa: E402
 from SluggiesTools.Roster import grid, icons, names, runner  # noqa: E402
 
-PRESETS = ('01_Stock_Roster.json', '02_Stock_and_Unused.json', '03_Unuseds_and_10_slot_colors.json',
-           '04_all_in_one_12x5_grid.json')
+PRESETS = ('01_Stock_Roster.json', '02_Stock_and_Unused.json', '03_Unuseds_and_8_color_slots.json',
+           '04_Unuseds_and_10_color_slots.json', '05_all_in_one_maximum_12x5_grid.json')
 PRESET_DIR = os.path.join(ROOT, '1_Input', '_RosterConfigurations')
 INPUT = os.path.join(ROOT, '1_Input')
 

@@ -20,8 +20,9 @@ or "?" icon) are marked. The textures are released and rebuilt on every
 re-read.
 
 Edits are staged (decision 14). The slot level's **Rename...** (a text box
-with a live "fits the name plate" line), **Select .sluggie...** and
-**Clear slot** run a staging check (``start.py --apply-slots edits.json
+with a live "fits the name plate" line), **Select .sluggie...**, **Clear
+slot** and **Stats...**, and the square level's **Voice...** (on the slot
+level too for one-member squares; both pick from a list) run a staging check (``start.py --apply-slots edits.json
 --dry-run``: the pending edits plus the new one, the new edit's build check),
 then a confirm dialog with what the edit does (``gui_grid.slot_dialog``); Stage
 adds it to the pending list (``gui_grid.PendingEdits``, GUI memory only).
@@ -76,8 +77,12 @@ LINE = 26                        # text line height (Segoe UI 16 pt, with spacin
 SLOT_W = 720                     # level 2 may be wider than level 1: each level is its own window
 PORTRAIT = (SLOT_SCALE * ICON[0], SLOT_SCALE * ICON[1])
 BUTTON_H = 32
+BADGE_FONT = 9                   # the grid's slot-count number, in portrait pixels (scaled with the texture)
 RENAME, SELECT, CLEAR, DISCARD = 'Rename...', 'Select .sluggie...', 'Clear slot', 'Discard pending'
-SLOT_BUTTONS = ((RENAME, None), (SELECT, None), (CLEAR, None), ('Stats...', 7), (DISCARD, None))  # (label, phase)
+STATS, VOICE = 'Stats...', 'Voice...'
+SLOT_BUTTONS = ((RENAME, None), (SELECT, None), (CLEAR, None), (STATS, None), (DISCARD, None))  # (label, phase); Discard last
+VOICE_TIP = ('Stage another voice for this square (a stock square: its whole species; a new square: its members '
+             'without a wheel). "Patch Game" writes the pending edits.')
 FONT_REL = os.path.join('SluggiesTools', 'Roster', 'fonts', 'OpenSans.ttf')   # the name plate's font
 CONFIRM_W = 680
 DIALOG_LINES = 24                # a dialog with more lines scrolls
@@ -176,6 +181,19 @@ class CharacterGridTab:
                         dpg.add_theme_color(col, value)
                     dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 4)
         dpg.bind_item_theme('grid_discard_all', 'grid_danger_theme')
+        with dpg.theme(tag='grid_warn_theme'):               # like primary_theme, in yellow (Discard pending)
+            for state, colors in (
+                (True, ((dpg.mvThemeCol_Button, (200, 160, 30, 255)),
+                        (dpg.mvThemeCol_ButtonHovered, (225, 185, 50, 255)),
+                        (dpg.mvThemeCol_ButtonActive, (165, 130, 20, 255)),
+                        (dpg.mvThemeCol_Text, (25, 25, 25, 255)))),
+                (False, ((dpg.mvThemeCol_Button, (82, 78, 62, 255)),
+                         (dpg.mvThemeCol_Text, (150, 150, 150, 255)))),
+            ):
+                with dpg.theme_component(dpg.mvButton, enabled_state=state):
+                    for col, value in colors:
+                        dpg.add_theme_color(col, value)
+                    dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 4)
         with dpg.theme(tag='grid_empty_theme'):
             with dpg.theme_component(dpg.mvButton, enabled_state=False):
                 dpg.add_theme_color(dpg.mvThemeCol_Button, (45, 45, 48, 255))
@@ -274,7 +292,8 @@ class CharacterGridTab:
                 return
             head = state['squares'][index]['head']
             button = self._portrait_button(head, gui_grid.FRONT, GRID_SCALE, CELL[0],
-                                           index, lambda _s, _a, u: self._open_square(u))
+                                           index, lambda _s, _a, u: self._open_square(u),
+                                           badge=gui_grid.slot_count(state, index))
             self._caption(gui_grid.square_label(state, index), CELL[0],
                           gui_grid.is_fallback(state, head, gui_grid.FRONT))
         pending = self.pending.square_pending(state, index)
@@ -304,9 +323,10 @@ class CharacterGridTab:
         self._caption('empty', CELL[0], color=_EMPTY)
 
     # ------------------------------------------------------------------ portraits
-    def _texture(self, path, scale):
-        """A static texture of a crop, scaled by a whole factor (nearest-neighbour); None when unreadable."""
-        key = (path, scale)
+    def _texture(self, path, scale, badge=None):
+        """A static texture of a crop, scaled by a whole factor (nearest-neighbour); None when unreadable.
+        ``badge``: a number drawn into the bottom right corner (the grid's slot count)."""
+        key = (path, scale, badge)
         if key not in self.textures:
             try:
                 with Image.open(path) as png:
@@ -315,27 +335,46 @@ class CharacterGridTab:
                 return None
             if scale != 1:
                 image = image.resize((image.width * scale, image.height * scale), Image.Resampling.NEAREST)
+            if badge is not None:
+                self._draw_badge(image, str(badge), scale)
             data = np.asarray(image, dtype=np.float32).ravel() / 255.0
             self.textures[key] = dpg.add_static_texture(image.width, image.height, data, parent='grid_textures')
         return self.textures[key]
+
+    def _draw_badge(self, image, text, scale):
+        """A small light number on a dark rounded box in the image's bottom right corner."""
+        from PIL import ImageDraw, ImageFont
+        try:
+            font = ImageFont.truetype(os.path.join(self.app.root_dir, FONT_REL), BADGE_FONT * scale)
+            font.set_variation_by_axes([700, 100])
+        except (OSError, ValueError, AttributeError):
+            font = ImageFont.load_default()
+        draw = ImageDraw.Draw(image)
+        left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
+        pad = scale
+        w, h = right - left + 4 * pad, bottom - top + 2 * pad
+        x0, y0 = image.width - w - pad, image.height - h - pad
+        draw.rounded_rectangle((x0, y0, x0 + w, y0 + h), radius=2 * pad, fill=(20, 20, 24, 215))
+        draw.text((x0 + 2 * pad - left, y0 + pad - top), text, font=font, fill=(255, 255, 255, 255))
 
     def _release_textures(self):
         dpg.delete_item('grid_textures', children_only=True)
         self.textures = {}
 
-    def _portrait_texture(self, cid, view, scale):
+    def _portrait_texture(self, cid, view, scale, badge=None):
         state = self.loader.state
         path = gui_grid.icon_file(state, self.loader.state_path, cid, view) if state else None
-        return self._texture(path, scale) if path else None
+        return self._texture(path, scale, badge) if path else None
 
-    def _portrait_button(self, cid, view, scale, cell_w, user_data, callback):
+    def _portrait_button(self, cid, view, scale, cell_w, user_data, callback, badge=None):
         """The portrait as an image button, centred in ``cell_w``; a plain button where there is none. A
         fractional ``scale`` draws the next whole-factor texture smaller (less blur than scaling up)."""
         w, h = round(ICON[0] * scale), round(ICON[1] * scale)
-        texture = self._portrait_texture(cid, view, math.ceil(scale))
+        texture = self._portrait_texture(cid, view, math.ceil(scale), badge)
         indent = max(0, (cell_w - w - 2 * FRAME) // 2)
         if texture is None:
-            return dpg.add_button(label='no portrait', width=w + 2 * FRAME, height=h + 2 * FRAME, indent=indent,
+            label = 'no portrait' + (f' ({badge})' if badge is not None else '')
+            return dpg.add_button(label=label, width=w + 2 * FRAME, height=h + 2 * FRAME, indent=indent,
                                   user_data=user_data, callback=callback)
         return dpg.add_image_button(texture, width=w, height=h, indent=indent, user_data=user_data,
                                     callback=callback)
@@ -414,6 +453,7 @@ class CharacterGridTab:
 
     def _draw_popups(self):
         self._clear_popups()
+        self.slot_buttons = []
         state = self.nav.state
         if state is None or self.nav.square_index() is None:
             return
@@ -445,7 +485,7 @@ class CharacterGridTab:
         per_row = swatches_per_row(len(members), dpg.get_viewport_client_width())
         rows = -(-len(members) // per_row)
         width = max(2 * PAD + per_row * (SWATCH[0] + GAP) - GAP, 360)
-        box = self._box(width, 2 * PAD + rows * (SWATCH[1] + GAP) + 60)
+        box = self._box(width, 2 * PAD + rows * (SWATCH[1] + GAP) + 60 + BUTTON_H + GAP)
         kind = 'Stock square' if sq['kind'] == 'stock' else 'New square'
         dpg.add_text(f'{kind}: {gui_grid.name_of(state, sq["head"])}', parent=box)
         for start in range(0, len(members), per_row):
@@ -473,8 +513,21 @@ class CharacterGridTab:
                                 dpg.add_text(line, color=_PENDING)
                             if changed:
                                 dpg.add_text(f'Changed since the pack: {", ".join(changed)}', color=_CHANGED)
-        dpg.add_text(f'Voice: {gui_grid.name_of(state, sq["voice"])}', parent=box, color=_DIM)
+        with dpg.group(horizontal=True, parent=box):
+            dpg.add_text(f'Voice: {gui_grid.name_of(state, sq["voice"])}', color=_DIM)
+            self._voice_button(index)
         return box
+
+    def _voice_button(self, index):
+        """The square's Voice... button (square level; slot level of a one-member square)."""
+        usable = self.pending.pack is None
+        button = dpg.add_button(label=VOICE, height=BUTTON_H, callback=lambda: self._on_value('voice', index),
+                                enabled=not self._locked() and usable)
+        dpg.bind_item_theme(button, 'primary_theme')
+        self.slot_buttons.append((button, usable))
+        with dpg.tooltip(button):
+            dpg.add_text(VOICE_TIP if usable else 'A roster pack load is pending: press "Patch Game" (or Discard it) '
+                         'first.', wrap=420)
 
     def _slot_box(self):
         """The slot enlarged: front and side portrait, facts, and the slot buttons (later phases' buttons are
@@ -520,18 +573,21 @@ class CharacterGridTab:
                 for line, color in details:
                     dpg.add_text(line, color=color, wrap=text_w)
         dpg.add_spacer(height=GAP, parent=box)
-        self.slot_buttons = []
         tips = {RENAME: 'Stage a new name for this slot (one name for English, French and Spanish; it must fit the '
                         'name plate; blank resets it). "Patch Game" writes the pending edits.',
                 SELECT: 'Stage an exported model (and its High/Low partner) for this slot; a confirm dialog shows '
                         'what changes first. "Patch Game" writes the pending edits.',
                 CLEAR: "Stage a return to this slot's baseline (stock: vanilla models and portraits; new ID: its "
                        "template's files and the open-slot look); a confirm dialog shows what changes first.",
+                STATS: "Stage another stock player's stats for this slot (stats, pitching, fielding, chemistry; its "
+                       'model, size, voice and name stay). "Patch Game" writes the pending edits.',
                 DISCARD: "Drop this slot's pending edits (nothing was written for them yet)."}
         actions = {RENAME: lambda: self._on_rename(cid), SELECT: lambda: self._on_select(cid), CLEAR: lambda: self._start_preview(cid, None),
-                   DISCARD: lambda: self._on_discard(cid)}
+                   STATS: lambda: self._on_value('stats', cid), DISCARD: lambda: self._on_discard(cid)}
         with dpg.group(horizontal=True, parent=box):
             for label, phase in SLOT_BUTTONS:
+                if label == DISCARD and self.nav.skipped:    # one-member square: the square's Voice... here too
+                    self._voice_button(self.nav.square_index())
                 if phase is not None:
                     button = dpg.add_button(label=label, height=BUTTON_H, enabled=False)
                     dpg.bind_item_theme(button, 'grid_empty_theme')
@@ -541,7 +597,7 @@ class CharacterGridTab:
                     usable = self.pending.has(cid) if label == DISCARD else self.pending.pack is None
                     button = dpg.add_button(label=label, height=BUTTON_H, callback=actions[label],
                                             enabled=not self._locked() and usable)
-                    dpg.bind_item_theme(button, 'primary_theme')
+                    dpg.bind_item_theme(button, 'grid_warn_theme' if label == DISCARD else 'primary_theme')
                     self.slot_buttons.append((button, usable))
                     tip = tips[label] if usable or label == DISCARD else (
                         'A roster pack load is pending: press "Patch Game" (or Discard it) first.')
@@ -636,18 +692,68 @@ class CharacterGridTab:
         dpg.focus_item('grid_rename_text')
         self.set_busy(self.app.busy)
 
+    def _on_value(self, op, key):
+        """The Stats / Voice dialog: the current assignment and a list to pick from; OK runs the staging check.
+        ``key``: the slot's ID (stats) or the square's index (voice; the edit goes on the square's head)."""
+        if self._locked():
+            return
+        state = self.nav.state or self.loader.state
+        if op == 'voice':
+            cid = state['squares'][key]['head']
+            choices = gui_grid.voice_choices(state, key)
+            title = f'Voice of the square of {gui_grid.name_of(state, cid)}'
+            lines = [gui_grid.voice_text(state, key), gui_grid.voice_reach(state, key)]
+        else:
+            cid = key
+            choices = gui_grid.stats_choices(state, cid)
+            title = f'Stats of {gui_grid.name_of(state, cid)} ({gui_grid.hex_id(cid)})'
+            lines = [gui_grid.stats_text(state, cid),
+                     'The slot plays with the picked stock player\'s stats: stats, pitching, fielding and chemistry. '
+                     'Its model, size, voice and name stay.']
+        pending = self.pending.value_edit(cid, op)
+        if pending is not None:
+            lines.append(gui_grid._edit_title(pending))
+        current = pending.get('source') if pending is not None else None
+        vw, vh = dpg.get_viewport_client_width(), dpg.get_viewport_client_height()
+        self.action = (cid, op)
+        win = self.confirm = dpg.add_window(label=title, modal=True, no_collapse=True, no_saved_settings=True,
+                                            autosize=True, pos=(max(0, (vw - CONFIRM_W) // 2), max(0, vh // 5)),
+                                            on_close=lambda *_: self._end_action())
+        for line in lines:
+            dpg.add_text(line, parent=win, wrap=CONFIRM_W, color=_PENDING if line.startswith('Pending') else _DIM)
+        labels = [label for label, _value in choices]
+        dpg.add_combo(labels, tag='grid_value_choice', parent=win, width=CONFIRM_W - 20,
+                      default_value=labels[gui_grid.choice_index(choices, current)])
+        dpg.add_spacer(height=GAP, parent=win)
+
+        def ok():
+            label = dpg.get_value('grid_value_choice')
+            source = next((value for text, value in choices if text == label), None)
+            self._end_action()
+            self._start_preview(cid, None, value=(op, source))
+        with dpg.group(horizontal=True, parent=win):
+            button = dpg.add_button(label='OK', width=110, height=BUTTON_H, callback=lambda: ok())
+            dpg.bind_item_theme(button, 'primary_theme')
+            dpg.add_button(label='Cancel', width=110, height=BUTTON_H, callback=lambda: self._end_action())
+        self.confirm_default = ok
+        self.set_busy(self.app.busy)
+
     def _on_rename_ok(self, cid):
         text = dpg.get_value('grid_rename_text').strip()
         self._end_action()
         self._start_preview(cid, None, rename=text)
 
-    def _start_preview(self, cid, sluggie, rename=None):
+    def _start_preview(self, cid, sluggie, rename=None, value=None):
         """The staging check (the pending edits plus this one; this one's build check); the confirm dialog
-        opens when it is done. ``rename``: the new name text (blank resets), a rename edit instead of patch/clear."""
+        opens when it is done. ``rename``: the new name text (blank resets), a rename edit instead of patch/clear;
+        ``value``: ``(op, source)``, a stats or voice edit (source None: back to the default)."""
         if self._locked():
             return
+        kind = 'rename' if rename is not None else value[0] if value else 'patch' if sluggie else 'clear'
         if rename is not None:
             edit = {'op': 'rename', 'id': gui_grid.hex_id(cid), 'text': rename}
+        elif value is not None:
+            edit = {'op': value[0], 'id': gui_grid.hex_id(cid), 'source': value[1]}
         elif sluggie:
             edit = {'op': 'patch', 'id': gui_grid.hex_id(cid), 'file': sluggie}
         else:
@@ -659,14 +765,17 @@ class CharacterGridTab:
             return
         self.action = (cid, sluggie)
         if not self._run([gui_grid.preview_command(self.edits_path)], 'Checking the edit...',
-                         lambda code, output: self._show_confirm(cid, sluggie, code, output, rename is not None)):
+                         lambda code, output: self._show_confirm(cid, sluggie, code, output, kind)):
             self._end_action()
 
-    def _show_confirm(self, cid, sluggie, code, output, rename=False):
+    def _show_confirm(self, cid, sluggie, code, output, kind='patch'):
         state = self.nav.state or self.loader.state
         plan = gui_grid.load_plan(self.plan_path)
-        dialog = gui_grid.slot_dialog(state, cid, sluggie is not None, plan, code, output, self.pending,
-                                      rename=rename)
+        dialog = gui_grid.slot_dialog(state, cid, sluggie is not None, plan, code, output, self.pending, kind=kind)
+        if (kind in gui_grid.VALUE_KINDS and dialog.can_apply and code == 0 and plan is not None
+                and any(int(s['target'], 16) == cid for s in plan['edits'])):
+            self._stage(plan)                  # a valid rename / stats / voice pick needs no second confirmation
+            return
         self._dialog(dialog, lambda: self._stage(plan), ok_label='Stage')
 
     def _stage(self, plan):

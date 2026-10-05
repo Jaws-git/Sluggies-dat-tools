@@ -16,7 +16,9 @@ only truth; nothing is remembered between runs.
   "ids" and "wheels" change the build even when empty.
 * ``stats`` on every new ID with a configured stats source, and ``voice``
   on every new square with a configured voice (manifest), the square then
-  written as ``{"members": [...], "voice": ...}``.
+  written as ``{"members": [...], "voice": ...}``; stock IDs with another
+  stats source become ``stock_stats`` entries, stock squares with another
+  voice ``stock_voices`` entries (manifest).
 * ``model`` on every new ID with an own model directory: its source
   (manifest) and the directory's current DAT routes, so its copies (and any
   model patched into them) are kept byte for byte.
@@ -49,7 +51,7 @@ from PIL import Image
 try:
     from ..Dol import dolfile, inventory, relocate
     from ..Icons import gx_decode
-    from . import dat_hammerspace, icon_art, icons, ids, model_dirs, names, state, state_icons
+    from . import dat_hammerspace, icon_art, icons, ids, model_dirs, names, state, state_icons, voices
 except ImportError:
     from Dol import dolfile, inventory, relocate
     from Icons import gx_decode
@@ -61,6 +63,7 @@ except ImportError:
     import ids
     import state
     import state_icons
+    import voices
 
 CONFIG_FILE = 'roster.json'
 ICON_DIR = 'icons'                 # beside CONFIG_FILE; the runner's --state reads portraits from here
@@ -264,9 +267,12 @@ def derive(image: dolfile.DolImage, dat) -> Derived:
         if swatch is not None:
             entry['swatch'] = swatch
         id_entries[cid] = entry
+    stock_stats = []
     for cid, source in mf.get('stats') or []:
         if cid in id_entries:
             id_entries[cid]['stats'] = _hex(source)
+        elif cid < ids.PLAYER_END:
+            stock_stats.append({'id': _hex(cid), 'stats': _hex(source)})
     for cid, directory, source in mf.get('model_dirs') or []:
         if cid not in id_entries:
             out.warnings.append(f'{_hex(cid)} has an own model directory but no ids entry: directory dropped')
@@ -343,6 +349,11 @@ def derive(image: dolfile.DolImage, dat) -> Derived:
         config[icons.STOCK_KEY] = [stock_entries[c] for c in sorted(stock_entries, key=lambda c: rank[c])]
     if stock_names:
         config[names.STOCK_KEY] = [stock_names[c] for c in sorted(stock_names)]
+    if stock_stats:
+        config[ids.STOCK_STATS_KEY] = stock_stats
+    if mf.get('stock_voices'):
+        heads = state.head_list(image, voices.SPECIES)
+        config[voices.STOCK_KEY] = [{'id': _hex(heads[s]), 'voice': _hex(heads[v])} for s, v in mf['stock_voices']]
     return out
 
 

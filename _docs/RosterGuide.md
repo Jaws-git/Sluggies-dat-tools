@@ -78,9 +78,10 @@ the Low model too, which loads it twice on the field. A Low model alone is
 refused on a new ID; on a stock character it is accepted only when the slot's
 High model is its own partner.
 
-`--clear-slot` gives a stock character its vanilla models and portraits
-back, and a new ID a fresh copy of its template's files, the template's
-stats, the "Empty slot" name and portraits. The square's voice stays.
+`--clear-slot` gives a stock character its vanilla models, portraits and
+own stats back, and a new ID a fresh copy of its template's files, the
+template's stats, the "Empty slot" name and portraits. The square's voice
+stays.
 
 ## Renaming a slot
 
@@ -102,13 +103,61 @@ cannot be renamed.
 Putting a model into an "Empty slot" names it after the source character,
 unless you renamed the slot first. A rename after the patch wins.
 
+## Voice and stats
+
+Any square can speak with another character's voice, and any slot can play
+with another character's stats:
+
+```
+python start.py --set-voice 0x0D 0x09
+python start.py --set-stats 0x0D 0x09
+python start.py --set-voice 0x0D -
+python start.py --set-stats 0x0D -
+```
+
+`--set-voice` takes any slot of the square, then the character whose voice
+the square takes; `-` (or `default`) gives the square its own voice back.
+The voice belongs to the square, and it is the same on the select screen and
+on the field:
+
+- A **stock square** speaks as one species, so the voice changes for every
+  member of its colour wheel (the unused characters and new IDs on that
+  wheel included). The character's model, wheel and everything else stay;
+  only the voice changes. Two stock squares can swap voices.
+- A **new square**'s voice reaches only its members without a colour wheel.
+  Members that are on a wheel keep their wheel's voice. A new square cannot
+  use a voice that its stock square gave away and no other square took; the
+  change that would cause this is refused (give the new square another voice
+  first).
+- A voice is picked per character family: picking Blue Toad gives the
+  square Toad's voice.
+
+`--set-stats` lets a slot play with another stock character's (`0x00`–`0x4C`)
+stats: batting, pitching, fielding and chemistry. Its model, size, voice and
+name stay. Chemistry follows the stats: a stock character with Bowser's
+stats gets on with others as Bowser does, both ways. `-` gives a stock
+character its own stats back, and a new ID its template's. Putting a model
+into a new ID on a new square sets its stats to the model's character; a
+stats change after that wins. Clearing a slot also resets its stats, but not
+the square's voice.
+
+Each change rebuilds the roster once (several changes in one edits file
+share that rebuild). Miis cannot take other stats; their squares are not on
+the grid.
+
+## Several changes at once
+
 Several changes can go in one run with an edits file, a JSON list of
-`patch`, `clear` and `rename` edits (a `rename` edit's `text` may be blank):
+`patch`, `clear`, `rename`, `voice` and `stats` edits (a `rename` edit's
+`text` may be blank; a `voice` or `stats` edit's `source` may be `null` for
+the default):
 
 ```
 {"edits": [{"op": "patch", "id": "0xE2", "file": "2_Output_Models/27 Bowser/114968608_koopa.gpl/114968608_koopa.gpl.sluggie"},
            {"op": "clear", "id": "0x1D"},
-           {"op": "rename", "id": "0x0D", "text": "Little Toad"}]}
+           {"op": "rename", "id": "0x0D", "text": "Little Toad"},
+           {"op": "voice", "id": "0x0D", "source": "0x09"},
+           {"op": "stats", "id": "0x0D", "source": null}]}
 ```
 
 ```
@@ -117,15 +166,18 @@ python start.py --apply-slots edits.json
 ```
 
 A later edit for the same slot replaces an earlier one of the same kind (a
-clear also drops the slot's earlier renames, since it resets the name). A Low model picked
+later voice edit replaces an earlier one of the same square; a clear also
+drops the slot's earlier renames and stats edits, since it resets both). A Low model picked
 after a High model of the same character for the same slot joins it as a
 pair. If any edit is refused, nothing is written and the output names the
 refused edits.
 
 In the GUI, the **Character grid** tab does the same: click a square, then a
-slot, and use **Rename...** (or click the slot's name), **Select .sluggie...**
-or **Clear slot**. The rename dialog tells you live whether the name fits the
-plate. A dialog shows what
+slot, and use **Rename...** (or click the slot's name), **Select .sluggie...**,
+**Clear slot** or **Stats...**. The square view has **Voice...** (a
+one-member square shows it on the slot view). The rename dialog tells you
+live whether the name fits the plate; **Stats...** and **Voice...** show the
+current assignment and a list to pick from. A dialog shows what
 will change (models and their sizes, directory, stats, voice, name,
 portraits, warnings) and whether the checks passed. **Stage** does not write
 anything yet. It adds the change to a list of pending edits:
@@ -227,6 +279,7 @@ IDs are numbers or hex strings (`"0x66"`).
 |---|---|
 | `id` | The new ID. Optional (the next free one), but needed when the entry has an `icon` or `name`, or sits on a grid square. |
 | `template` | A stock character (`0x00`–`0x4C`). The new ID copies its model, animations, stats and voice. |
+| `stats` | A stock character (`0x00`–`0x4C`) whose stats the new ID plays with instead of the template's. |
 | `wheel` | Whose colour wheel it joins; default the template. A character without a wheel gets one. `null`: no wheel; the ID must then be on a new grid square. |
 | `swatch` | Wheel swatch colour: `red`, `blue`, `yellow`, `green`, `purple`, `black`, `brown`, `lightblue`, `pink`, `white`, `orange`, or 0–10. Default: the template's. |
 | `icon` | Own portrait: `{"side": "…png", "front": "…png"}` from `1_Input/_Icons` (the open slots use `empty_slot_side.png` / `empty_slot_front.png`), or `{"model": "<.sluggie or model folder>"}`: that model's exported `icon/SideIcon.png` and `icon/FrontIcon.png` (a Low model uses its High partner's folder; a relative path counts from the repository root; both files must exist). Optional `fit` (`contain`, `cover`, `strict`) and `like` (a stock ID whose icon records are copied). Without it the template's portrait shows. |
@@ -256,6 +309,26 @@ character keeps its own icon records, which are only pointed at the new art).
 The unused characters (`0x47`–`0x4C`) take their icon on their `wheels`
 entry instead.
 
+### `stock_stats`: other stats for stock characters (`0x00`–`0x4C`)
+
+A list of `{"id": …, "stats": …}`: the character `id` plays with the stats of
+the stock character `stats` (see "Voice and stats").
+
+```json
+"stock_stats": [{"id": "0x0D", "stats": "0x09"}]
+```
+
+### `stock_voices`: other voices for stock squares
+
+A list of `{"id": …, "voice": …}`. `id` is a stock square, named by the
+character it shows (`0x00` Mario, `0x0D` Toad, `0x01` Luigi, …); `voice` is
+the character shown on the square whose voice it takes. The whole wheel of
+that square speaks with it.
+
+```json
+"stock_voices": [{"id": "0x00", "voice": "0x09"}, {"id": "0x09", "voice": "0x00"}]
+```
+
 ### `wheel_order`
 
 Lists of IDs, one list per wheel: those members come first, in that order.
@@ -265,7 +338,7 @@ Lists of IDs, one list per wheel: those members come first, in that order.
 | Key | Meaning |
 |---|---|
 | `shape` | `[columns, rows]`: 11×4, 12×4, 10×5, 11×5 or 12×5. Default: the smallest that holds the 41 stock squares and your new ones. |
-| `squares` | New squares, each a list of 1–10 IDs; the first is shown on the square. On the draft screen they leave their family wheel and form the square's own wheel. |
+| `squares` | New squares, each a list of 1–10 IDs; the first is shown on the square. On the draft screen they leave their family wheel and form the square's own wheel. A square may also be `{"members": [...], "voice": "0xNN"}`: its members without a wheel speak with that character's voice. |
 | `order` | Every cell in reading order (a flat list or one list per row): a stock square by its character's ID, a new square by its first member, `null` for an empty cell. Default: the stock 10×4 block in place, the new squares and Luigi in the free cells (left column, right column, bottom row). |
 
 `"grid": {}` gives the 41 stock squares on 11 columns: Luigi gets his own

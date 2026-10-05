@@ -13,9 +13,11 @@ JSON-able dict:
   slots stay reachable;
 * ``squares``: per square ``kind`` (``'stock'``: a stock species family,
   ``'new'``: a roster square), ``head_index``, ``head`` (the character the
-  square shows), ``members`` (its wheel, in wheel order) and ``voice`` (the
-  base character of the species the head speaks with: selector byte 2);
-  new squares also give ``voice_set``, the voice the config set, or None;
+  square shows), ``members`` (its wheel, in wheel order), ``voice`` (the
+  base character whose voice the head speaks with: selector byte 2, through
+  the stock squares' voice swaps, ``voices.py``) and ``voice_set`` (the voice
+  the config set, or None: a new square's ``voice``, a stock square's
+  ``stock_voices`` entry);
 * ``characters``: per member ``id``, ``name`` (``{'en', 'fr', 'sp'}`` or
   None, as the name table holds it), ``default_name`` (a spare row whose
   table text is still the stock "#N/A": its usual name, e.g. "Black
@@ -23,7 +25,8 @@ JSON-able dict:
   ``own_model_dir``: a new ID's own directory, ``model_source``: whose files
   it holds), ``stats``
   (whose stats it plays with: the configured stats source, else the
-  template), ``square``, ``icon`` (``{'front', 'side'}``:
+  template), ``family`` (the base character of its species, selector byte
+  2: the square whose voice and wheel it shares), ``square``, ``icon`` (``{'front', 'side'}``:
   where the game takes each portrait from, ``state_icons.resolve``; None
   without a DAT) and ``blocks`` (``{'high', 'low'}``: the model directory's
   files 0 and 1 as the game loads them, ``offset``, ``length``, ``sha1``; a
@@ -44,7 +47,7 @@ import struct
 try:
     from ..Dol import dolfile, inventory, relocate
     from . import dat_hammerspace as dhs
-    from . import dol_hammerspace, grid, ids, manifest, names, state_icons, wheels
+    from . import dol_hammerspace, grid, ids, manifest, names, state_icons, voices, wheels
 except ImportError:
     from Dol import dolfile, inventory, relocate
     import dat_hammerspace as dhs
@@ -54,6 +57,7 @@ except ImportError:
     import manifest
     import names
     import state_icons
+    import voices
     import wheels
 
 VERSION = 1
@@ -226,6 +230,7 @@ def read_state(image: dolfile.DolImage, dat=None) -> dict:
     new_ids = {c[0]: {'template': c[1], 'wheel': c[2], 'swatch': c[3]} for c in (mf or {}).get('ids', [])}
     stats_of = {cid: src for cid, src in (mf or {}).get('stats') or []}
     voices_set = ((mf or {}).get('grid') or {}).get('voices') or []
+    remap = {s: v for s, v in (mf or {}).get('stock_voices') or []}
     own_dirs = {c[0]: (c[1], c[2]) for c in (mf or {}).get('model_dirs') or []}
     order = {s: o for s, o in (mf or {}).get('wheel_order', [])}
     rows_ = selector_rows(image)
@@ -235,10 +240,19 @@ def read_state(image: dolfile.DolImage, dat=None) -> dict:
     def template_of(cid):
         return new_ids[cid]['template'] if cid in new_ids else cid
 
-    def voice_of(cid):
-        """The base character of the species ``cid`` speaks with."""
+    def family_of(cid):
+        """The base character of ``cid``'s species (``cid`` itself outside the squares' species)."""
         species = rows_[cid][2]
         return heads[species] if species < grid.SQUARE_HEADS else cid
+
+    def voice_of(cid):
+        """The base character whose voice ``cid`` speaks with."""
+        species = voices.effective(remap, rows_[cid][2])
+        return heads[species] if species < grid.SQUARE_HEADS else cid
+
+    def stock_square_voice(h):
+        return (heads[voices.effective(remap, h)],
+                heads[remap[h]] if h in remap else None)
 
     squares, cell_index, by_square = [], [], {}
     for cell in cells:
@@ -249,8 +263,9 @@ def read_state(image: dolfile.DolImage, dat=None) -> dict:
             if cell[0] == 'stock':
                 h = cell[1]
                 members = [c for c in families.get(h, []) if c not in on_squares]
+                voice, voice_set = stock_square_voice(h)
                 square = {'kind': 'stock', 'head_index': h, 'head': heads[h],
-                          'members': _ordered(members, order.get(h, [])), 'voice': heads[h]}
+                          'members': _ordered(members, order.get(h, [])), 'voice': voice, 'voice_set': voice_set}
             else:
                 k = cell[1]
                 members = new_squares[k]
@@ -258,9 +273,9 @@ def read_state(image: dolfile.DolImage, dat=None) -> dict:
                 square = {'kind': 'new', 'head_index': grid.STOCK_HEADS + k, 'head': members[0],
                           'members': list(members), 'voice': voice_of(members[0]), 'voice_set': voice_set}
                 if voice_set is not None:
-                    species = rows_[voice_set][2]
+                    wanted = rows_[voice_set][2]
                     off = [m for m in members if m in new_ids and new_ids[m]['wheel'] is None
-                           and rows_[m][2] != species]
+                           and voices.effective(remap, rows_[m][2]) != wanted]
                     if off:
                         warnings.append(f'square {_hex(members[0])}: voice {_hex(voice_set)} is set, but '
                                         + ', '.join(_hex(m) for m in off) + ' speak with another species')
@@ -273,8 +288,10 @@ def read_state(image: dolfile.DolImage, dat=None) -> dict:
         members = [c for c in families.get(h, []) if c not in on_squares]
         if members:
             off_grid.append(len(squares))
+            voice, voice_set = stock_square_voice(h)
             squares.append({'kind': 'stock', 'head_index': h, 'head': heads[h],
-                            'members': _ordered(members, order.get(h, [])), 'voice': heads[h], 'off_grid': True})
+                            'members': _ordered(members, order.get(h, [])), 'voice': voice, 'voice_set': voice_set,
+                            'off_grid': True})
 
     text = read_names(image, dat)
     mnames = {int(k): v for k, v in (mf or {}).get('names', {}).items()}
@@ -293,7 +310,8 @@ def read_state(image: dolfile.DolImage, dat=None) -> dict:
                                'model_dir': own[0] if own else template_of(cid) + ids.MODEL_DIR_BASE,
                                'own_model_dir': own is not None,
                                'model_source': own[1] if own else template_of(cid),
-                               'stats': stats_of.get(cid, template_of(cid)), 'square': index})
+                               'stats': stats_of.get(cid, template_of(cid)), 'family': family_of(cid),
+                               'square': index})
     characters.sort(key=lambda c: c['id'])
     _model_blocks(image, dat, characters, warnings)
     icons_read = _resolve_icons(image, dat, mf, characters, warnings)

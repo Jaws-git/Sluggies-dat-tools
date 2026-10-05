@@ -55,8 +55,11 @@ def build(state: dict, config: dict | None = None) -> dict:
         out['model_dirs'] = [[cid, d, src] for cid, (d, src) in sorted(state['model_dirs'].items())]
     # Omitted when unused, so configs without them keep their bytes.
     stats = [[c.id, c.stats] for c in state.get('new_ids') or [] if c.stats is not None]
-    if stats:                                  # stats sources: [id, stock id]
-        out['stats'] = stats
+    stats += [[cid, src] for cid, src in sorted((state.get('stock_stats') or {}).items())]
+    if stats:                                  # stats sources: [id, stock id] (new IDs, then stock_stats)
+        out['stats'] = sorted(stats)
+    if state.get('voice_remap'):               # stock squares' voices: [species, voice species]
+        out['stock_voices'] = [[s, v] for s, v in sorted(state['voice_remap'].items())]
     if grid is not None and grid.voices:       # square voices, per square: a character ID or None
         out['grid']['voices'] = list(grid.voices)
     return out

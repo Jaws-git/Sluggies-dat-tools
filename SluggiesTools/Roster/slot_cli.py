@@ -1,5 +1,5 @@
-"""``start.py --apply-slots`` / ``--patch-slot`` / ``--clear-slot`` / ``--rename-slot``: plan the batch chain
-(``slot_plan.py``).
+"""``start.py --apply-slots`` / ``--patch-slot`` / ``--clear-slot`` / ``--rename-slot`` / ``--set-voice`` /
+``--set-stats``: plan the batch chain (``slot_plan.py``).
 
 Reads ``3_Output_Dat`` and derives its config **once**, applies every staged
 edit to it in order (``slot_plan.plan_batch``) and writes:
@@ -10,10 +10,12 @@ edit to it in order (``slot_plan.plan_batch``) and writes:
   sections (notes, warnings, effects) and refused edits; ``start.py`` then
   runs the commands in order.
 
-A ``--patch`` / ``--clear`` / ``--rename`` is a batch of one; ``--apply FILE``
-reads an edits file (``{"edits": [{"op": "patch", "id": "0xNN", "file": ...},
-{"op": "clear", "id": "0xNN"}, {"op": "rename", "id": "0xNN", "text": ...},
-...]}``). ``--dry-run`` leaves out the build
+A ``--patch`` / ``--clear`` / ``--rename`` / ``--voice`` / ``--stats`` is a
+batch of one; ``--apply FILE`` reads an edits file (``{"edits": [{"op":
+"patch", "id": "0xNN", "file": ...}, {"op": "clear", "id": "0xNN"}, {"op":
+"rename", "id": "0xNN", "text": ...}, {"op": "voice", "id": "0xNN", "source":
+"0xMM"}, {"op": "stats", "id": "0xNN", "source": null}, ...]}``; a null
+``source`` goes back to the default). ``--dry-run`` leaves out the build
 checks of edits marked ``"checked"`` (the GUI's staging check).
 
 Writes nothing to the game files. Exit code 1 when an edit is refused (the
@@ -141,7 +143,8 @@ class FileEnv(slot_plan.Env):
             if not self.shows_portraits(char, model_icons.ModelIcons(None, paths['side'], paths['front']), encoded=True):
                 return False
         else:
-            if slot_plan._entry(config, icons.STOCK_KEY, cid) is not None:
+            if (slot_plan._entry(config, icons.STOCK_KEY, cid) is not None
+                    or slot_plan._entry(config, ids.STOCK_STATS_KEY, cid) is not None):
                 return False
             if any(UntanglePolicy.is_split(directory, f) for f in (slot_plan.HIGH_FILE, slot_plan.LOW_FILE)):
                 return False                         # split copies: a clear also repairs them
@@ -193,12 +196,17 @@ def main(argv=None) -> int:
     parser.add_argument('--clear', metavar='0xNN', help='return a slot to its baseline')
     parser.add_argument('--rename', nargs=2, metavar=('0xNN', 'TEXT'),
                         help='name a slot (all three languages); blank TEXT resets the name')
+    parser.add_argument('--voice', nargs=2, metavar=('0xNN', '0xMM'),
+                        help="give slot 0xNN's square the voice of 0xMM's family (- or default: its own)")
+    parser.add_argument('--stats', nargs=2, metavar=('0xNN', '0xMM'),
+                        help="let slot 0xNN play with stock player 0xMM's stats (- or default: its own)")
     parser.add_argument('--apply', metavar='FILE', help='an edits file: every staged edit in one chain')
     parser.add_argument('--dry-run', action='store_true', help='leave out the build checks of "checked" edits')
     parser.add_argument('--output-dir', default=state_cli.OUTPUT_DIR, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
-    if sum(bool(a) for a in (args.patch, args.clear, args.rename, args.apply)) != 1:
-        parser.error('give --patch 0xNN FILE, --clear 0xNN, --rename 0xNN TEXT or --apply FILE')
+    if sum(bool(a) for a in (args.patch, args.clear, args.rename, args.voice, args.stats, args.apply)) != 1:
+        parser.error('give --patch 0xNN FILE, --clear 0xNN, --rename 0xNN TEXT, --voice 0xNN 0xMM, '
+                     '--stats 0xNN 0xMM or --apply FILE')
     if os.path.exists(plan_path(args.output_dir)):
         os.remove(plan_path(args.output_dir))       # a failed planner leaves no stale chain behind
     try:
@@ -208,6 +216,9 @@ def main(argv=None) -> int:
             edits = [slot_plan.Edit('clear', slots.parse_id(args.clear), index=1)]
         elif args.rename:
             edits = [slot_plan.Edit('rename', slots.parse_id(args.rename[0]), text=args.rename[1], index=1)]
+        elif args.voice or args.stats:
+            op, (target, source) = ('voice', args.voice) if args.voice else ('stats', args.stats)
+            edits = [slot_plan.Edit(op, slots.parse_id(target), index=1, source=slot_plan.parse_source(source))]
         else:
             edits = read_edits(args.apply)
         batch = run(edits, output_dir=args.output_dir, skip_checked=args.dry_run)

@@ -446,9 +446,6 @@ class BatchTests(unittest.TestCase):
         self.assertEqual([(e.op, e.text) for e in merged], [('clear', None), ('rename', 'Late')])
         self.assertTrue(any('"Early" is dropped' in n for n in notes))
         self.assertEqual(refused, [])
-        # voice / stats ops are not written before Phase 7: the batch refuses them
-        batch = self.batch(edits(('voice', '0x66', None)))
-        self.assertIn('Phase 7', batch.refused[0][1])
 
     def test_voice_rule_counts_pending_patches(self):
         batch = self.batch(edits(('patch', '0x66', HP), ('patch', '0x67', TOAD_HP)))

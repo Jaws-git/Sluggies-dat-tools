@@ -633,3 +633,84 @@ class RosterPackTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def value_section(op, cid='0x0D', source='0x09', effect='C09 (0x09)', nothing=False):
+    return {'action': op, 'target': cid, 'rebuild': not nothing, 'commands': [], 'warnings': [], 'nothing': nothing,
+            'notes': [f'nothing to change: {cid}'] if nothing else [f'{cid} {op} from {source}'],
+            'effects': {} if nothing else {op: effect + (' (square voice)' if op == 'voice' else '')},
+            'edit': {'op': op, 'id': cid, 'source': source}, 'checked': False}
+
+
+class VoiceStatsTests(unittest.TestCase):
+    """GUI character grid Phase 7: the Stats / Voice pick lists, the pending overlay and the dialogs."""
+
+    def setUp(self):
+        self.s = state([0x00], [0x09], [0x0D, 0x0E], [0x66, 0x67])
+        self.s['squares'][3]['kind'] = 'new'
+        self.s['squares'][3].update(voice=0x00, voice_set=None)
+        for c in self.s['characters']:
+            if c['id'] >= 0x66:
+                c['template'] = c['stats'] = 0x00
+
+    def test_stats_choices(self):
+        stock = gui_grid.stats_choices(self.s, 0x0D)
+        self.assertEqual(stock[0], ('Default: its own (C0D)', None))
+        self.assertEqual([v for _l, v in stock[1:]], ['0x00', '0x09', '0x0E'])      # stock players on the grid
+        new = gui_grid.stats_choices(self.s, 0x66)
+        self.assertEqual(new[0], ('Default: its template C00 (0x00)', None))
+        self.assertNotIn('0x00', [v for _l, v in new])
+        self.assertEqual(gui_grid.choice_index(stock, '0x09'), 2)
+        self.assertEqual(gui_grid.choice_index(stock, '0x77'), 0)
+        self.assertEqual(gui_grid.stats_text(self.s, 0x66), 'Stats now: C00 (0x00)')
+
+    def test_voice_choices(self):
+        stock = gui_grid.voice_choices(self.s, 2)
+        self.assertEqual(stock[0], ('Default: its own (C0D)', None))
+        self.assertEqual([v for _l, v in stock[1:]], ['0x00', '0x09'])             # one voice per stock square
+        new = gui_grid.voice_choices(self.s, 3)
+        self.assertTrue(new[0][0].startswith('Default: none set'))
+        self.assertEqual([v for _l, v in new[1:]], ['0x00', '0x09', '0x0D'])
+        self.assertIn('every member of its wheel', gui_grid.voice_reach(self.s, 2))
+        self.assertIn('without a colour wheel', gui_grid.voice_reach(self.s, 3))
+        self.s['squares'][2].update(voice=0x09, voice_set=0x09)
+        self.assertEqual(gui_grid.voice_text(self.s, 2), 'Voice now: C09 (0x09) (set)')
+
+    def test_pending_titles_and_lines(self):
+        pending = gui_grid.PendingEdits()
+        pending.accept(batch(value_section('stats'), value_section('voice', cid='0x00', source=None,
+                                                                    effect='its own voice')))
+        self.assertEqual(pending.summary(0x0D), ["Pending: play with 0x09's stats"])
+        self.assertEqual(pending.summary(0x00), ["Pending: the square's default voice"])
+        self.assertIn('  Stats: C09 (0x09)', pending.lines(0x0D))
+        self.assertIn('  Voice: its own voice (square voice)', pending.lines(0x00))
+        self.assertEqual(pending.value_edit(0x0D, 'stats')['source'], '0x09')
+        self.assertIsNone(pending.value_edit(0x0D, 'voice'))
+        self.assertTrue(pending.square_pending(self.s, 0))
+
+    def test_dialogs(self):
+        dialog = gui_grid.slot_dialog(self.s, 0x0D, False, batch(value_section('stats')), 0, '', kind='stats')
+        self.assertTrue(dialog.can_apply)
+        self.assertEqual(dialog.title, 'Other stats for C0D (0x0D)?')
+        voice = gui_grid.slot_dialog(self.s, 0x0D, False, batch(value_section('voice')), 0, '', kind='voice')
+        self.assertEqual(voice.title, 'Another voice for the square of C0D (0x0D)?')
+        nothing = gui_grid.slot_dialog(self.s, 0x0D, False, batch(skipped=[value_section('voice', nothing=True)]),
+                                       0, '', gui_grid.PendingEdits(), kind='voice')
+        self.assertEqual((nothing.title, nothing.can_apply), ('C0D (0x0D): nothing to change', False))
+        summary = gui_grid.summary_dialog(self.s, batch(value_section('stats'), value_section('voice', cid='0x00'),
+                                                        skipped=[value_section('stats', cid='0x09', nothing=True)]),
+                                          0, '')
+        text = '\n'.join(t for t, _k in summary.lines)
+        self.assertIn('C0D (0x0D): stats of C09 (0x09)', text)
+        self.assertIn('C00 (0x00): square voice of C09 (0x09)', text)
+        self.assertIn('C09 (0x09): nothing to change', text)
+
+    def test_writing_flags(self):
+        self.assertTrue(gui_grid.chain_writes([('--set-voice', '0x00', '0x09')]))
+        self.assertTrue(gui_grid.chain_writes([('--set-stats', '0x00', '-')]))
+
+
+class SlotCountTests(unittest.TestCase):
+    def test_slot_count_is_the_member_count(self):
+        s = state([0x06, 0x66, 0x67], [0x0D])
+        self.assertEqual([gui_grid.slot_count(s, i) for i in range(2)], [3, 1])

@@ -15,7 +15,7 @@ unless another date is given.
 
 Code: `SluggiesTools/Roster/` (one module per step, run in this order by menu
 [7] / `start.py --roster`): `dol_hammerspace`, `layout_file`, `ids`,
-`wheels`, `icons`, `grid`, `names`. Before every run, `reset.py` resets the
+`model_dirs`, `wheels`, `icons`, `voices`, `grid`, `names`. Before every run, `reset.py` resets the
 roster to vanilla against `1_Input` (no record of earlier runs is kept):
 
 - `main.dol` is rebuilt from the input DOL, keeping the output's directory
@@ -163,6 +163,25 @@ a spare row or stock ID is on its species' list (roster builder
 `0x8006BA6C`, and the Toy Field wheels), and a new ID with a wheel is
 appended to its wheel's species list.
 
+**Stock square voices** (`stock_voices`, `Roster/voices.py`; static analysis
+2026-10-05). The two species tables have exactly five readers, all voice
+code: `0x80233010`, `0x80233364` and `0x80386894` (bank loads) read the group
+word `0x80631F10[species]`, the clip wrapper reads both (`0x804B28DC` the
+group, as a "has a voice" test, `0x804B2904` the clip row
+`0x80631FD0 + species × 0x30`). Every other byte-2 reader (wheels, squares,
+the species branches above) never reaches them. So copying species V's group
+word and clip row over species S makes every character of S speak with V's
+voice on the select screen and on the field, with byte 2, the wheels and the
+gameplay branches unchanged. A stock square is one species, so its voice is
+changed this way, for its whole wheel (spare rows and new IDs on it
+included). Stock rows: species `0x00`–`0x28` have their own group and twelve
+clip IDs; `0x29`/`0x2A` (Miis) have group `-1` (no voice) and repeat
+species 0's clips. Data only, no hooks; the reset rebuilds the tables from
+`1_Input`. A new square's square-only members then take the byte 2 of a
+species that still speaks with the wanted voice (the voice's own species,
+or the one that took its sounds in a swap); when none does, the build is
+refused. Not yet confirmed in Dolphin.
+
 **Stats and size.** A new ID copies one row per moved table. The rows split
 into what the character plays like and what belongs to its body:
 
@@ -181,6 +200,15 @@ identical except for the two Paratroopas' size scale and hitbox. The
 the animation set rather than to the stats. Chemistry: a new ID's stats row
 holds its chemistry towards the stock IDs; two new IDs use their stats
 sources' pair.
+
+**Stock characters' stats** (`stock_stats`, 2026-10-05). A stock ID's rows
+of the stats group become another stock ID's (the stats row keeps its own ID
+in bytes 0–1); its body rows, selector row and own-data flag stay. Chemistry
+stays symmetric: in every row, the column of a restatted ID A becomes the
+row's stats source's column for A's source, so the pair (A, B) always reads
+the stock pair (source of A, source of B), for stock and new IDs alike.
+With an `ids` key this is done in the moved tables, otherwise in place. Not
+yet confirmed in Dolphin.
 
 ## DOL hammerspace
 
