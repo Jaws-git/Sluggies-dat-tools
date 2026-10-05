@@ -165,6 +165,7 @@ def verify() -> Path:
         PACKAGE / "1_Input" / "_Icons",
         PACKAGE / "1_Input" / "_RosterConfigurations",
         PACKAGE / "SluggiesTools" / "Roster" / "fonts" / "OpenSans.ttf",
+        PACKAGE / "SluggiesTools" / "Roster" / "fonts" / "OpenSans-OFL.txt",
         PACKAGE / addon_zip.name,
         PACKAGE / "docs" / "_docs_model_format" / "index.html",
     )

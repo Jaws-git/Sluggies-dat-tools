@@ -139,6 +139,10 @@ class FingerprintTests(unittest.TestCase):
 
 
 class PackFileTests(PackTestCase):
+    def test_gui_uses_the_pack_extension(self):
+        from SluggiesTools import gui_grid       # keeps its own copy: it imports nothing from Roster
+        self.assertEqual(gui_grid.PACK_EXTENSION, pack.EXTENSION)
+
     def test_round_trip(self):
         p = pack.read_pack(self.path)
         # only blocks that differ from the vanilla one the slot started from

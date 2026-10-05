@@ -33,7 +33,6 @@ except ImportError:
     import icon_art
 
 FORMATS = ('PNG', 'JPEG', 'BMP', 'GIF', 'TGA', 'WEBP')
-EXTENSIONS = ('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tga', '.webp')     # the file dialogs' filter only
 MAX_SIDE = 4096
 PARTIAL_ALPHA_SHARE = 0.03          # partial alpha on more of the art than this warns
 DEFAULT_TRIM = True

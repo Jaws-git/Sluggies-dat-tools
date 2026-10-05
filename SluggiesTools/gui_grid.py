@@ -341,7 +341,8 @@ def slot_details(state: dict, cid: int) -> list[str]:
 
 MII_START, NEW_START = 0x4D, 0x66    # Mii IDs have no portrait records (Roster/slot_plan.has_portrait_records)
 STAGED_ICONS_REL = os.path.join('3_Output_Dat', '_gui', 'slot', 'staged_icons')
-IMAGE_PATTERNS = '*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tga;*.webp'
+IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tga', '.webp')   # the picker's filter only
+IMAGE_PATTERNS = ';'.join('*' + ext for ext in IMAGE_EXTENSIONS)
 IMAGE_FILTERS = [('Images', IMAGE_PATTERNS), ('All files', '*.*')]
 FIT_CHOICES = (('contain', 'Fit inside'), ('cover', 'Fill and crop'), ('strict', 'Exact 48x51'))
 ICON_SIZE = (48, 51)
@@ -489,10 +490,6 @@ class GridNav:
             return SQUARE
         return GRID
 
-    @property
-    def depth(self) -> int:
-        return {GRID: 0, SQUARE: 1, SLOT: 1 if self.skipped else 2}[self.level]
-
     def square_index(self) -> int | None:
         if self.state is None or self.square_head is None:
             return None
@@ -619,9 +616,6 @@ class PendingEdits:
 
     def model_edit(self, cid: int) -> dict | None:
         return next((e for e in self.edits if int(e['id'], 16) == cid and e['op'] in ('patch', 'clear')), None)
-
-    def rename_edit(self, cid: int) -> dict | None:
-        return self.value_edit(cid, 'rename')
 
     def value_edit(self, cid: int, op: str) -> dict | None:
         """The slot's pending ``op`` edit ('rename', 'stats', or 'voice': staged on the square's head)."""

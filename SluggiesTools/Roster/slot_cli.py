@@ -59,7 +59,6 @@ from PIL import Image  # noqa: E402
 SOURCE = 'roster.slot'
 SLOT_DIR = 'slot'
 PLAN_FILE = 'plan.json'
-EDITS_FILE = 'edits.json'
 # A PNG the roster encoded into the bank decodes back close to, not equal to, its pixels (CMPR is lossy):
 # the "empty slot" art measured mean 2.0 / max 32 per channel, other portraits mean 88+.
 CMPR_MEAN, CMPR_MAX = 8, 64

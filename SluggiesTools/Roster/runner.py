@@ -20,7 +20,6 @@ import argparse
 import hashlib
 import json
 import os
-import shutil
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -50,7 +49,6 @@ SOURCE = 'roster'
 ROOT = os.path.normpath(os.path.join(_TOOLS_DIR, '..'))
 OUTPUT_DIR = os.path.join(ROOT, '3_Output_Dat')
 INPUT_DIR = os.path.join(ROOT, '1_Input')
-LEGACY_REPORT_DIR = 'roster_dev'          # earlier versions kept an undo report here; no longer needed
 FST_DAT_SIZE_OFFSET = 1 * 12 + 8       # dt_na.dat is FST entry 1; its size word (as HammerspaceHelper)
 
 
@@ -75,14 +73,6 @@ def _display_path(path: str) -> str:
         return os.path.relpath(path, ROOT)
     except ValueError:  # another drive
         return path
-
-
-def _remove_legacy_report(output_dir: str) -> list[str]:
-    folder = os.path.join(output_dir, LEGACY_REPORT_DIR)
-    if not os.path.isdir(folder):
-        return []
-    shutil.rmtree(folder, ignore_errors=True)
-    return [f'removed the old undo report folder {LEGACY_REPORT_DIR} (no longer needed)']
 
 
 def patch_fst(output_dir: str, dat_size: int) -> str:
@@ -177,7 +167,6 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
             if grown:
                 log.append(patch_fst(output_dir, dat.size))
         os.replace(tmp, dol_path)
-        log += _remove_legacy_report(output_dir)
     result['log'] = log
     return result
 

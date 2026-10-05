@@ -45,7 +45,6 @@ PLAYER_END = 0x4D                                  # IDs below take the track pa
 MII_END = 0x64                                     # 0x4D-0x64: the Mii path
 MII_ROW = 0x97
 INVALID_KEY = 0x4D                                 # the "?" icon
-SOURCES = ('own', 'neighbour', 'template', 'mii', 'invalid')
 
 
 class IconStateError(ValueError):

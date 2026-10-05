@@ -141,17 +141,6 @@ class RunnerTests(unittest.TestCase):
         self.run_roster(dry_run=True)
         self.assertEqual(self.dol(), self.original)
 
-    def test_reset_needs_no_record_of_earlier_runs(self):
-        self.run_roster()
-        legacy = os.path.join(self.tmp, runner.LEGACY_REPORT_DIR)
-        os.makedirs(legacy)
-        with open(os.path.join(legacy, 'report.json'), 'w') as f:
-            f.write('{"cut off')                            # an old, broken undo report
-        report = self.run_roster(remove_only=True)
-        self.assertEqual(self.dol(), self.original)
-        self.assertFalse(os.path.exists(legacy))
-        self.assertIn('no longer needed', ' '.join(report['log']))
-
     def test_refusals(self):
         self.run_roster()
         with open(os.path.join(self.input_dir, 'main.dol'), 'wb') as f:

@@ -20,7 +20,6 @@ C8 = 0x09
 CMPR = 0x0E
 PALETTE_IA8, PALETTE_RGB565, PALETTE_RGB5A3 = 0, 1, 2
 FORMATS = (IA8, C8, CMPR)
-PALETTE_FORMATS = (PALETTE_IA8, PALETTE_RGB565, PALETTE_RGB5A3)
 
 # (block width, block height, bits per texel)
 _BLOCKS = {IA8: (4, 4, 16), C8: (8, 4, 8), CMPR: (8, 8, 4)}

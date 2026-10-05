@@ -43,8 +43,8 @@ the new IDs the roster hook appends) and lifts the game's limits as needed:
 * more than 10: refused (the roster struct holds 10 IDs per species).
 
 A selectable member with swatch 10 also recolours the unused white key of
-swatch elements 0xAD/0xAE to orange (plan 4e). The cap words may already be
-7 (the icon pipeline's temporary Yoshi fix); 6 and 7 both count as stock.
+swatch elements 0xAD/0xAE to orange (plan 4e). ``set_caps`` accepts a cap word
+of 6 or 7 as its starting value.
 """
 
 import struct

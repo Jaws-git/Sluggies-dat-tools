@@ -90,12 +90,6 @@ def _existing_font_paths(exists=os.path.isfile):
     return [path for path, _label in _font_candidates() if path and exists(path)]
 
 
-def _select_font_path(exists=os.path.isfile):
-    """The preferred existing candidate, or None."""
-    paths = _existing_font_paths(exists)
-    return paths[0] if paths else None
-
-
 def _font_size_for(path):
     # ntpath.basename splits on both '\' and '/'.
     if path and ntpath.basename(path).lower() == 'segoeui.ttf':

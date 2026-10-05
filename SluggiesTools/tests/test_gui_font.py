@@ -32,21 +32,12 @@ class FontSelectionTests(unittest.TestCase):
         self.assertTrue(candidates[0][0].endswith(
             os.path.join('SluggiesTools', 'Roster', 'fonts', 'OpenSans.ttf')))
 
-    def test_select_font_path_takes_the_first_existing_candidate(self):
+    def test_existing_font_paths_skips_a_missing_segoe_ui(self):
         with mock.patch.object(gui, '_WINDOWS', True), \
              mock.patch.dict(os.environ, {'SystemRoot': r'C:\Windows'}):
-            candidates = gui._font_candidates()
-            segoe = candidates[0][0]
-            self.assertEqual(gui._select_font_path(exists=lambda path: True),
-                             segoe)
-
-    def test_select_font_path_falls_back_to_bundled_when_segment_ui_is_absent(self):
-        with mock.patch.object(gui, '_WINDOWS', True), \
-             mock.patch.dict(os.environ, {'SystemRoot': r'C:\Windows'}):
-            candidates = gui._font_candidates()
-            segoe, opensans = candidates[0][0], candidates[1][0]
+            opensans = gui._font_candidates()[1][0]
             exists = lambda path: path == opensans  # noqa: E731
-            self.assertEqual(gui._select_font_path(exists=exists), opensans)
+            self.assertEqual(gui._existing_font_paths(exists=exists), [opensans])
 
     def test_existing_font_paths_keeps_preference_order(self):
         with mock.patch.object(gui, '_WINDOWS', True), \
@@ -55,10 +46,10 @@ class FontSelectionTests(unittest.TestCase):
             self.assertEqual(gui._existing_font_paths(exists=lambda path: True),
                              expected)
 
-    def test_select_font_path_returns_none_when_nothing_exists(self):
+    def test_existing_font_paths_is_empty_when_nothing_exists(self):
         with mock.patch.object(gui, '_WINDOWS', True), \
              mock.patch.dict(os.environ, {'SystemRoot': r'C:\Windows'}):
-            self.assertIsNone(gui._select_font_path(exists=lambda path: False))
+            self.assertEqual(gui._existing_font_paths(exists=lambda path: False), [])
 
     def test_font_size_for_segment_ui_and_open_sans(self):
         self.assertEqual(gui._font_size_for(r'C:\Windows\Fonts\segoeui.ttf'),

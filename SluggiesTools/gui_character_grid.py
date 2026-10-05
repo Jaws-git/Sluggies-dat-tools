@@ -215,7 +215,7 @@ class CharacterGridTab:
                              cancel_callback=lambda *_: self._end_action(),
                              default_path=self.app.models_dir if os.path.isdir(self.app.models_dir)
                              else self.app.root_dir):
-            dpg.add_file_extension('Images{.png,.jpg,.jpeg,.bmp,.gif,.tga,.webp}', color=(120, 220, 120, 255))
+            dpg.add_file_extension('Images{' + ','.join(gui_grid.IMAGE_EXTENSIONS) + '}', color=(120, 220, 120, 255))
             dpg.add_file_extension('.*')
         dpg.add_texture_registry(tag='grid_dialog_textures')    # the icon dialog's; released when it closes
         pack_dir =self.pack_dir if os.path.isdir(self.pack_dir) else self.app.root_dir

@@ -76,7 +76,7 @@ class NavTests(unittest.TestCase):
         self.nav.open_square(0)
         self.assertEqual((self.nav.level, self.nav.levels()), (SQUARE, [SQUARE]))
         self.nav.open_slot(0x42)
-        self.assertEqual((self.nav.level, self.nav.levels(), self.nav.depth), (SLOT, [SQUARE, SLOT], 2))
+        self.assertEqual((self.nav.level, self.nav.levels()), (SLOT, [SQUARE, SLOT]))
         self.assertTrue(self.nav.click(inside_top_box=False))
         self.assertEqual(self.nav.level, SQUARE)
         self.assertTrue(self.nav.back())                        # Esc
@@ -91,7 +91,7 @@ class NavTests(unittest.TestCase):
 
     def test_one_member_square_skips_level_one(self):
         self.nav.open_square(1)
-        self.assertEqual((self.nav.level, self.nav.levels(), self.nav.depth), (SLOT, [SLOT], 1))
+        self.assertEqual((self.nav.level, self.nav.levels()), (SLOT, [SLOT]))
         self.nav.back()
         self.assertEqual(self.nav.level, GRID)
         with self.assertRaises(ValueError):
@@ -471,7 +471,7 @@ class RenameTests(unittest.TestCase):
         pending.accept(batch(rename_section(), rename_section('0x66', '')))
         self.assertEqual(pending.lines(0x0D), ["Pending: rename to 'Little Toad'", '  Name: Little Toad'])
         self.assertEqual(pending.lines(0x66), ['Pending: reset the name', '  Name: its stock name'])
-        self.assertIsNotNone(pending.rename_edit(0x0D))
+        self.assertIsNotNone(pending.value_edit(0x0D, 'rename'))
         self.assertIsNone(pending.model_edit(0x0D))                            # a rename is not a model edit
         self.assertEqual(pending.staging({'op': 'rename', 'id': '0x06', 'text': 'X'})['edits'][-1],
                          {'op': 'rename', 'id': '0x06', 'text': 'X'})
