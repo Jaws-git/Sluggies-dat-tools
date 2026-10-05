@@ -210,7 +210,7 @@ def slot_details(state: dict, cid: int) -> list[str]:
     if blocks:
         lines.append('Blocks: ' + ', '.join(
             f'{label} {blocks[role]["length"] / (1024 * 1024):.2f} MB [{blocks[role]["sha1"][:8]}]'
-            for role, label in (('high', 'HP'), ('low', 'L_')) if role in blocks))
+            for role, label in (('high', 'High'), ('low', 'Low')) if role in blocks))
     if 'stats' in c:
         lines.append(f'Stats: {name_of(state, c["stats"])}' + ('' if c['stats'] == cid else f' ({hex_id(c["stats"])})'))
     if c.get('default_name'):
@@ -367,15 +367,15 @@ def _partner_lines(files: dict, sizes: dict) -> list:
 
     high, low = files.get('high'), files.get('low')
     if high and low:
-        return [(f'Models: {label(high, "HP")} + {label(low, "L_")}, found side by side', TEXT)]
+        return [(f'Models: {label(high, "High")} + {label(low, "Low")}, found side by side', TEXT)]
     if high:
         size = sizes.get(os.path.basename(high))
         twice = f': {_mb(2 * size)} together' if size else ''
-        return [(f'Model: {label(high, "HP")}, no L_ partner beside it', WARN),
-                (f'The HP model is used as the low-poly model too, so the slot loads it twice on the field{twice}',
+        return [(f'Model: {label(high, "High")}, no Low partner beside it', WARN),
+                (f'The High model is used as the Low model too, so the slot loads it twice on the field{twice}',
                  WARN)]
-    return [(f'Model: {label(low, "L_ only")}, no high-poly partner beside it', WARN),
-            ("It goes under the slot's current high-poly model, which must be its own partner (checked)", TEXT)]
+    return [(f'Model: {label(low, "Low only")}, no High partner beside it', WARN),
+            ("It goes under the slot's current High model, which must be its own partner (checked)", TEXT)]
 
 
 def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int, output: str) -> SlotDialog:

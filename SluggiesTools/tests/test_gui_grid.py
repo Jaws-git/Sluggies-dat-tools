@@ -156,7 +156,7 @@ class LabelTests(unittest.TestCase):
                                           'low': {'offset': 0, 'length': 1024 * 1024 // 10, 'sha1': 'cd' * 20}})
         lines = gui_grid.slot_details(s, 0x66)
         self.assertIn('Model: own directory 172 (files of 0x09)', lines)
-        self.assertIn('Blocks: HP 0.75 MB [abababab], L_ 0.10 MB [cdcdcdcd]', lines)
+        self.assertIn('Blocks: High 0.75 MB [abababab], Low 0.10 MB [cdcdcdcd]', lines)
 
 
 def ref(source, file='a.png', key=0x06, alias=None):
@@ -260,7 +260,7 @@ class SlotDialogTests(unittest.TestCase):
         self.assertEqual(dialog.title, 'Put a model into C66 (0x66)?')
         text = self.text(dialog)
         self.assertIn('Source: C06 (0x06) -> C66 (0x66)', text)
-        self.assertIn('Models: 114968608_koopa.gpl.sluggie (HP, 0.44 MB) + 115434464_L_koopa.gpl.sluggie (L_, '
+        self.assertIn('Models: 114968608_koopa.gpl.sluggie (High, 0.44 MB) + 115434464_L_koopa.gpl.sluggie (Low, '
                       '0.08 MB), found side by side', text)
         self.assertIn('- C66 (0x66) gets an own model directory', text)
         self.assertIn('- portraits from home/icon', text)
@@ -269,18 +269,18 @@ class SlotDialogTests(unittest.TestCase):
         self.assertEqual(self.text(dialog, gui_grid.WARN), '')
 
     def test_hp_only_warns_with_the_combined_size(self):
-        plan = patch_plan(low=None, warnings=['koopa has no L_ partner beside it: ...'])
+        plan = patch_plan(low=None, warnings=['koopa has no Low partner beside it: ...'])
         dialog = gui_grid.slot_dialog(self.s, 0x66, True, plan, 0, BUILD_OUTPUT)
         self.assertTrue(dialog.can_apply)                                      # OK and Cancel
         warn = self.text(dialog, gui_grid.WARN)
-        self.assertIn('no L_ partner beside it', warn)
+        self.assertIn('no Low partner beside it', warn)
         self.assertIn('loads it twice on the field: 0.89 MB together', warn)
-        self.assertIn('Warning: koopa has no L_ partner', warn)
+        self.assertIn('Warning: koopa has no Low partner', warn)
 
     def test_low_only(self):
         dialog = gui_grid.slot_dialog(self.s, 0x66, True, patch_plan(high=None), 0, BUILD_OUTPUT)
         self.assertTrue(dialog.can_apply)
-        self.assertIn('115434464_L_koopa.gpl.sluggie (L_ only, 0.08 MB), no high-poly partner',
+        self.assertIn('115434464_L_koopa.gpl.sluggie (Low only, 0.08 MB), no High partner',
                       self.text(dialog, gui_grid.WARN))
 
     def test_refused_by_the_planner(self):
@@ -301,11 +301,11 @@ class SlotDialogTests(unittest.TestCase):
 
     def test_clear(self):
         plan = {'action': 'clear', 'target': '0x0D', 'rebuild': False, 'commands': [],
-                'notes': ['C0D (0x0D): vanilla high- and low-poly models from 1_Input'], 'warnings': []}
+                'notes': ['C0D (0x0D): vanilla High and Low models from 1_Input'], 'warnings': []}
         dialog = gui_grid.slot_dialog(self.s, 0x0D, False, plan, 0, '')
         self.assertTrue(dialog.can_apply)
         self.assertEqual(dialog.title, 'Clear C0D (0x0D)?')
-        self.assertIn('vanilla high- and low-poly models', self.text(dialog))
+        self.assertIn('vanilla High and Low models', self.text(dialog))
         self.assertIn('no roster rebuild needed', self.text(dialog))
         self.assertNotIn('Source', self.text(dialog))
 

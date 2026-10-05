@@ -31,8 +31,9 @@ Patch (decisions 4-7 of the plan):
 * **HP / ``L_``:** a picked file brings its partner from the sibling folder
   (same chunk, same geo-name stem). An HP without ``L_`` partner is used as
   the low-poly model too (``--as-low``, warned). An ``L_`` without HP partner
-  is allowed only when the slot's high-poly model is its partner after the
-  rebuild (``L_`` binds textures by index into its HP's TEX).
+  is refused on a new ID, and on a stock ID allowed only when the slot's
+  current high-poly model is its partner (``L_`` binds textures by index into
+  its HP's TEX).
 * **Portraits:** the source's exported ``icon/SideIcon.png`` +
   ``FrontIcon.png`` (``model_icons``); when one is missing the slot keeps its
   portraits and the plan says so.
@@ -151,7 +152,7 @@ def classify(path: str) -> Pair:
                         'into a slot')
     if model.get('FileIndex') not in (HIGH_FILE, LOW_FILE):
         raise PlanError(f'{os.path.basename(path)} is file {model.get("FileIndex")} of its directory, not a '
-                        'character model (only the high-poly model, file 0, and its L_ partner, file 1)')
+                        'character model (only the High model, file 0, and its Low partner, file 1)')
     partner = _partner(path, chunk, is_low, stem)
     high, low = (partner, path) if is_low else (path, partner)
     return Pair(chunk, high, low, path, stem)
@@ -279,6 +280,10 @@ def plan_patch(st: dict, config: dict, cid: int, pair: Pair, env: Env, state_fil
         if not 0 <= source < ids.PLAYER_END:
             raise PlanError(f'{os.path.basename(pair.picked)} comes from {_hex(source)}, which is not a stock player '
                             f'(0x00-0x{ids.PLAYER_END - 1:02X}): its files cannot become a new ID\'s directory')
+        if pair.high is None:
+            raise PlanError(f'{os.path.basename(pair.low)} has no High partner beside it. A new ID takes a '
+                            'character as a whole: patch the High model into the slot (it brings its Low '
+                            'partner along).')
         entry = _entry(new, 'ids', cid)
         if entry is None:
             raise PlanError(f'{_hex(cid)} has no ids entry in the derived config')
@@ -292,8 +297,6 @@ def plan_patch(st: dict, config: dict, cid: int, pair: Pair, env: Env, state_fil
                                   f'held {_hex(char["model_source"])}\'s files; models patched into it are dropped)')
             else:
                 plan.notes.append(f'{target_name} gets an own model directory: a copy of {source_name}\'s files')
-        if pair.high is None and kept:  # (a fresh copy's HP is the L_ model's own vanilla partner)
-            _check_low_alone(env, cid, pair, target_name)
         square = st['squares'][char['square']]
         if square['kind'] == 'new':
             if entry.get('stats') != _hex(source):
@@ -330,8 +333,8 @@ def plan_patch(st: dict, config: dict, cid: int, pair: Pair, env: Env, state_fil
         plan.notes.append(f'{target_name} keeps its stats, voice and name (stock slot)')
 
     if as_low:
-        plan.warnings.append(f'{os.path.basename(pair.high)} has no L_ partner beside it: it is used as the '
-                             'low-poly model too, so the slot loads it twice on the field (counts twice against '
+        plan.warnings.append(f'{os.path.basename(pair.high)} has no Low partner beside it: it is used as the '
+                             'Low model too, so the slot loads it twice on the field (counts twice against '
                              'the memory budget)')
     found = env.model_icons(pair.high or pair.low)
     if not found.ok:
@@ -351,7 +354,7 @@ def plan_patch(st: dict, config: dict, cid: int, pair: Pair, env: Env, state_fil
     plan.commands.append(('--patch', *files, '--target-id', _hex(cid)) + (('--as-low',) if as_low else ()))
     plan.commands.append(('--roster-state',))
     plan.notes.insert(0, f'{" + ".join(os.path.basename(f) for f in files)} -> {target_name}'
-                         + (' (HP as the low-poly model too)' if as_low else ''))
+                         + (' (High model as the Low model too)' if as_low else ''))
     return plan
 
 
@@ -359,9 +362,9 @@ def _check_low_alone(env: Env, cid: int, pair: Pair, target_name: str) -> None:
     stem = env.current_high_stem(cid)
     if stem != pair.stem:
         raise PlanError(
-            f'{os.path.basename(pair.low)} has no high-poly partner beside it, and binds its textures by index into '
-            f'its own high-poly model, but {target_name}\'s high-poly model is {stem or "nothing readable"}. Patch '
-            'the high-poly model into the slot (it brings its L_ partner along).')
+            f'{os.path.basename(pair.low)} has no High partner beside it, and binds its textures by index into '
+            f'its own High model, but {target_name}\'s High model is {stem or "nothing readable"}. Patch '
+            'the High model into the slot (it brings its Low partner along).')
 
 
 def plan_clear(st: dict, config: dict, cid: int, state_file: str) -> Plan:
@@ -397,7 +400,7 @@ def plan_clear(st: dict, config: dict, cid: int, state_file: str) -> Plan:
             plan.config = new
         _prepare(plan, state_file, [])
         plan.commands.append(('--unpatch', '--target-id', _hex(cid)))
-        plan.notes.insert(0, f'{target_name}: vanilla high- and low-poly models from 1_Input')
+        plan.notes.insert(0, f'{target_name}: vanilla High and Low models from 1_Input')
     plan.commands.append(('--roster-state',))
     return plan
 

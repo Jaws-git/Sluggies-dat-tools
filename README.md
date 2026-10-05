@@ -69,13 +69,8 @@ All commands are to be used on the command line - enter "cmd" in file explorer's
 2) Try running the game to make sure everything is prepped correctly
 3) right click the Game -> properties -> Filesystem -> right click top node -> extract entire disc
 4) from the extracted disc data, copy both "dt_na.dat" and "main.dol" (and optionally fst.bin) to the folder \1_Input\
-5) cmd ```sluggies-dat-tools.exe --export --untangle``` (or, alternatively, just start the included batch file, option 1). Double-clicking `sluggies-dat-tools.exe` (or running `python start.py` without arguments) opens a GUI with the same actions; the console window stays open next to it and shows the live output.
-
-This will extract the entire content into a new folder \2_Output_Models\\...  
-It will contain all the player models, props and environment models. Everything is sorted into numbered and approximately named folders.
-With the "untangle" parameter, duplicate textures will be made unique. Their file names will change compared to "vanilla" Sluggers.
-You can also use the option --notex to skip the rather slow png creation step. Removes the requirement for wimgt.
-With --glb, every model folder also gets a `.glb` file (glTF 2.0) for viewing in Blender or any other glTF viewer. It contains the mesh, the bones as an armature, and the skinning. Materials point at the PNGs in the model's `tex/` folder; low-poly `L_` models use their high-poly model's `tex/` folder. The `.glb` is for reference only: edits still go through the `.sluggie` workflow below. The older `.dae` export has been removed.
+5) start sluggies-dat-tools.exe for a GUI, use starttools.bat for a console menu, or call start.py directly on the CLI 
+6) Use the Full Export or the focused export tabs to extract assets into the 2_Output_Models folder
 
 ## Blender editing
 
@@ -85,21 +80,14 @@ With --glb, every model folder also gets a `.glb` file (glTF 2.0) for viewing in
 4) File -> export -> Sluggers intermediate -> select the **same** file you imported earlier to export your changes to
 
 Nothing is lost, the updated file will hold both original and edited mesh data for you.
-Exporting to a .sluggie file will automatically put the file name on your clipboard for the next step.
 
 ## Patching the game
 
-*The file name from the last step should still be in your clipboard unless you copied something else in the meantime.*
-1) cmd ``` python start.py --patch myfilename``` (or pick option 4 in starttools.bat)
-2) a new folder 3_Output_Dat will appear, containing a patched dt_na.dat and main.dol file
-3) keep applying as many patches as you like, you can also specify multiple file names
-4) copy the finished dt_na.dat and main.dol files back into the unpacked game folder, overwriting the old ones
-5) start the unpacked game containing the patched dat file using Dolphin (we are not re-packaging it into an iso file for now, Dolphin can run it just fine as is)
-
-You can call start.py with the option --unpatch to write the original model back to the dat.
-Example: ``python start.py --unpatch myfilename``
+The gui now offers a grid view that lets you edit any slot of the roster individually and even expand the stock character table with new slots.
+TODO: add CLI documentation
 
 ## Icon Editing
+TODO: Update Icon guide
 See [Icon Guide](_docs/IconGuide.md)
 
 

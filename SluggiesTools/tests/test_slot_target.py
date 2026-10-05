@@ -247,7 +247,7 @@ class SlotTargetTests(SlotHarness):
     def test_make_target_picks_the_file_by_role_and_skips_the_own_route(self):
         with mock.patch.object(SlotTarget, 'resolve_dir', return_value=(0x13, TARGET)):
             self.assertEqual(SlotTarget.make_target('0x13', (SOURCE, 1)), SlotTarget.Target(TARGET, 1, 0x13))
-            with self.assertRaisesRegex(SlotTarget.TargetError, 'high-poly'):
+            with self.assertRaisesRegex(SlotTarget.TargetError, 'High model'):
                 SlotTarget.make_target('0x13', (SOURCE, 1), as_low=True)
         with mock.patch.object(SlotTarget, 'resolve_dir', return_value=(0x12, SOURCE)):
             self.assertIsNone(SlotTarget.make_target('0x12', (SOURCE, 0)))

@@ -56,7 +56,7 @@ class FindTests(unittest.TestCase):
         os.remove(os.path.join(hp, '79000000_toad.gpl.sluggie'))         # a folder without .sluggie is no partner
         found = model_icons.find(low)
         self.assertFalse(found.ok)
-        self.assertIn('no high-poly partner', found.problem)
+        self.assertIn('no High partner', found.problem)
 
     def test_a_missing_view_refuses(self):
         hp, _low = model_tree(self.root, views=('front',))

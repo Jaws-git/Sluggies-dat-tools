@@ -69,9 +69,9 @@ def high_poly_folder(model_folder: str) -> tuple[str | None, str | None]:
                 and _has_sluggie(path):
             partners.append(path)
     if not partners:
-        return None, f'{name} has no high-poly partner folder beside it (its portraits live there)'
+        return None, f'{name} has no High partner folder beside it (its portraits live there)'
     if len(partners) > 1:
-        return None, f'{name} has several high-poly partner folders: ' + ', '.join(
+        return None, f'{name} has several High partner folders:' + ', '.join(
             os.path.basename(p) for p in partners)
     return partners[0], None
 

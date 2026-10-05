@@ -97,8 +97,8 @@ Everything else, such as moving vertices, editing UVs without new seams, shape k
 - The same PNG on several materials is stored only once.
 
 > [!WARNING]
-> **Not yet possible on player characters.** Every player character has a low-poly (`L_`) partner model that owns no textures and draws with the high-poly model's textures. If the high-poly model moves a material to another texture, some matching low-poly surfaces must follow, or the game crashes as soon as the low-poly model loads in a match. Character select still works, because it shows only the high-poly model. Those surfaces can't be matched reliably yet. So export refuses to move a material to another texture, new or existing, on any model that has an `_L_` partner folder next to it, and lists the affected materials.
-> - Still allowed: editing an existing PNG in place (same file name, so the low-poly model sees the change too), and new textures on custom submeshes.
+> **Not yet possible on player characters.** Every player character has a High model and a Low partner model (the Low model's folder name contains `_L_`). The Low model owns no textures and draws with the High model's textures. If the High model moves a material to another texture, some matching Low surfaces must follow, or the game crashes as soon as the Low model loads in a match. Character select still works, because it shows only the high-poly model. Those surfaces can't be matched reliably yet. So export refuses to move a material to another texture, new or existing, on any model that has an `_L_` partner folder next to it, and lists the affected materials.
+> - Still allowed: editing an existing PNG in place (same file name, so the Low model sees the change too), and new textures on custom submeshes.
 > - To give a character's existing surfaces a different texture, use Dolphin's custom texture loading instead.
 
 #### Adding a new submesh how-to
@@ -146,8 +146,8 @@ All three looked the same in game tests. A `rigid:` template limits how detailed
 **Textures**
 - Add Submesh saves a blank `<name>.png` into the model's `tex/` folder and connects it. Paint it or replace it.
 - The texture can be a PNG from anywhere on disk. Export copies it into the model's `tex/` folder under a free name.
-- A low-poly (`L_`) model owns no textures, so its new submesh can only use a texture the model already has.
-- The new submesh exists only in the model you patch. The game switches to the low-poly (`L_`) model at a distance, so add a matching submesh there too if it should stay visible.
+- A Low model (folder name contains `_L_`) owns no textures, so its new submesh can only use a texture the model already has.
+- The new submesh exists only in the model you patch. The game switches to the Low model at a distance, so add a matching submesh there too if it should stay visible.
 
 **Things to keep in mind**
 - **Keep the new submesh selected on every export.** The `.sluggie` holds only the new submeshes that were selected at export. One left unselected is removed from the file.
@@ -179,13 +179,13 @@ The six unused characters (folders 89-94) share all their models with a playable
 - They always export and patch through hammerspace.
 - An unpatch restores the unused character's own untangled data block, not the vanilly game's "shared model" state.
 - If an unused character ever shows its counterpart's edits (for example after an unpatch with an older version of the tools), run menu [8] to re-split it.
-- The high-/low-poly rules below apply to them as well.
+- The High/Low rules below apply to them as well.
 
-#### New bones on low-poly (`L_`) models
+#### New bones on Low models
 
-The game moves a character's low-poly model with the high-poly model's skeleton. When you add a bone to an `L_` model and attach a submesh to it:
-- Add the same bone, with the same parent and position, to the high-poly model too, and patch the **high-poly model first**. Otherwise the game crashes when the model loads, so the patcher refuses the `L_` patch.
-- The `L_` model's submesh follows the **high-poly** model's bone. If the two bones sit in different places, the patcher warns you, and the high-poly placement is the one you'll see.
+The game moves a character's Low model with the High model's skeleton. When you add a bone to a Low model and attach a submesh to it:
+- Add the same bone, with the same parent and position, to the High model too, and patch the **High model first**. Otherwise the game crashes when the model loads, so the patcher refuses the Low patch.
+- The Low model's submesh follows the **High** model's bone. If the two bones sit in different places, the patcher warns you, and the High placement is the one you'll see.
 - An added bone without a submesh on it doesn't need a partner.
 
 #### Moving vertices to a different bone (vertex groups)

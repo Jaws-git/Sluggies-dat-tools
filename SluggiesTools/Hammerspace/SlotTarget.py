@@ -104,8 +104,8 @@ def resolve_dir(character_id: int | str) -> tuple[int, int]:
 def role_file(file_index: int) -> int:
     """The file a model of this role goes to (characters keep HP at 0, ``L_`` at 1)."""
     if file_index not in CHARACTER_FILES:
-        raise TargetError(f'file {file_index} is not a character model (only file 0, the high-poly model, '
-                          'and file 1, its L_ partner, can go into a slot)')
+        raise TargetError(f'file {file_index} is not a character model (only file 0, the High model, '
+                          'and file 1, its Low partner, can go into a slot)')
     return file_index
 
 
@@ -114,7 +114,7 @@ def make_target(character_id: int | str, source: tuple[int, int], as_low: bool =
     cid, chunk = resolve_dir(character_id)
     file_index = role_file(source[1])
     if as_low and file_index != HIGH_FILE:
-        raise TargetError('only a high-poly model can be used as the low variant too')
+        raise TargetError('only a High model can be used as the Low model too')
     if (chunk, file_index) == tuple(source) and not as_low:
         return None
     return Target(chunk, file_index, cid, as_low)
@@ -168,7 +168,7 @@ def check(block: bytes, source: tuple[int, int], target: Target, report: dict | 
     if own is None:
         raise TargetError('the built block has no readable ACT section')
     if own.is_low_poly != (source[1] == LOW_FILE):
-        raise TargetError(f'{own.geo_name} is not the {"low" if source[1] else "high"}-poly model of '
+        raise TargetError(f'{own.geo_name} is not the {"Low" if source[1] else "High"} model of '
                           f'chunk {source[0]}')
 
     # Same role on both sides: a high-poly model written as the low variant
@@ -185,17 +185,17 @@ def check(block: bytes, source: tuple[int, int], target: Target, report: dict | 
         if high_summary is None or high_summary.is_low_poly or high_summary.stem != own.stem:
             current = high_summary.geo_name if high_summary else 'nothing readable'
             raise TargetError(
-                f'{own.geo_name} binds its textures by index into its own high-poly model, but the slot '
-                f'{target.describe()} currently has {current} there. Patch the high-poly model into the '
-                'slot first (or use the high-poly model as the low variant too).')
+                f'{own.geo_name} binds its textures by index into its own High model, but the slot '
+                f'{target.describe()} currently has {current} there. Patch the High model into the '
+                'slot first (or use the High model as the Low model too).')
     elif not target.as_low:
         low = LodPartnerGuard.read_current_block(target.chunk_number, LOW_FILE)
         low_summary = LodPartnerGuard.act_summary(low) if low else None
         if low_summary is not None and low_summary.stem != own.stem:
             warnings.append(
-                f'the slot\'s low-poly model is still {low_summary.geo_name}, which binds textures into '
-                f'{own.geo_name}\'s TEX by index; patch {own.geo_name}\'s L_ partner into the slot next, '
-                'or use the high-poly model as the low variant too')
+                f'the slot\'s Low model is still {low_summary.geo_name}, which binds textures into '
+                f'{own.geo_name}\'s TEX by index; patch {own.geo_name}\'s Low partner into the slot next, '
+                'or use the High model as the Low model too')
     return warnings
 
 

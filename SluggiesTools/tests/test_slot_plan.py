@@ -132,15 +132,12 @@ class PatchNewIdTests(unittest.TestCase):
         self.assertEqual(plan.commands[2], ('--patch', HP, '--target-id', '0x66', '--as-low'))
         self.assertTrue(any('loads it twice' in w for w in plan.warnings))
 
-    def test_low_alone_into_a_fresh_copy_of_its_own_source(self):
-        plan = self.plan(0x66, pair(high=None))
-        self.assertEqual(plan.commands[2], ('--patch', LOW, '--target-id', '0x66'))
-
-    def test_low_alone_into_a_kept_directory_needs_its_partner_there(self):
-        plan = self.plan(0x67, pair(high=None), FakeEnv(high_stems={0x67: 'koopa'}))
-        self.assertEqual(plan.commands[-2], ('--patch', LOW, '--target-id', '0x67'))
-        with self.assertRaisesRegex(slot_plan.PlanError, 'kinopio'):
-            self.plan(0x67, pair(high=None), FakeEnv(high_stems={0x67: 'kinopio'}))
+    def test_low_alone_is_refused_on_a_new_id(self):
+        # Fresh copy of its own source, and a kept directory whose HP is its partner: both refused.
+        with self.assertRaisesRegex(slot_plan.PlanError, 'new ID takes a character as a whole'):
+            self.plan(0x66, pair(high=None))
+        with self.assertRaisesRegex(slot_plan.PlanError, 'new ID takes a character as a whole'):
+            self.plan(0x67, pair(high=None), FakeEnv(high_stems={0x67: 'koopa'}))
 
     def test_missing_portrait_view_keeps_the_icon(self):
         plan = self.plan(0x66, env=FakeEnv(icons_ok=False))
@@ -197,8 +194,12 @@ class PatchStockTests(unittest.TestCase):
         self.assertIsNone(plan.config)
         self.assertTrue(any('no portrait records' in note for note in plan.notes))
 
+    def test_low_alone_under_its_partner_is_allowed(self):
+        plan = self.plan(0x09, pair(high=None), FakeEnv(high_stems={0x09: 'koopa'}))
+        self.assertEqual(plan.commands[-2], ('--patch', LOW, '--target-id', '0x09'))
+
     def test_low_alone_under_another_high_poly_model_is_refused(self):
-        with self.assertRaisesRegex(slot_plan.PlanError, 'high-poly'):
+        with self.assertRaisesRegex(slot_plan.PlanError, 'High model'):
             self.plan(0x0D, pair(high=None), FakeEnv(high_stems={0x0D: 'kinopio'}))
 
     def test_unknown_slot_is_refused(self):

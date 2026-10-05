@@ -64,7 +64,7 @@ python start.py --clear-slot 0xE2
 ```
 
 The slot decides where the model goes, not the `.sluggie`'s own chunk. Picking
-the high-poly file or its `L_` file patches both when the other one is in its
+the High model's file or its Low partner's (folder name with `_L_`) patches both when the other one is in its
 sibling folder. `--dry-run` prints what would happen and builds and checks the
 models, but writes nothing.
 
@@ -74,10 +74,11 @@ models, but writes nothing.
 | Stock character | Model only (stats, voice and name stay). The source must have the same skeleton; otherwise use a new ID. |
 
 Both kinds take the source's exported portraits (`icon/SideIcon.png` and
-`icon/FrontIcon.png` in its high-poly folder); when one is missing, the slot
-keeps its portraits. A high-poly model without an `L_` partner is used as
-the low-poly model too, which loads it twice on the field. An `L_` model
-alone is accepted only when the slot's high-poly model is its own partner.
+`icon/FrontIcon.png` in its High model's folder); when one is missing, the slot
+keeps its portraits. A High model without a Low partner is used as
+the Low model too, which loads it twice on the field. A Low model alone is
+refused on a new ID; on a stock character it is accepted only when the slot's
+High model is its own partner.
 
 `--clear-slot` gives a stock character its vanilla models and portraits
 back, and a new ID a fresh copy of its template's files, the template's
@@ -128,7 +129,7 @@ IDs are numbers or hex strings (`"0x66"`).
 | `template` | A stock character (`0x00`–`0x4C`). The new ID copies its model, animations, stats and voice. |
 | `wheel` | Whose colour wheel it joins; default the template. A character without a wheel gets one. `null`: no wheel; the ID must then be on a new grid square. |
 | `swatch` | Wheel swatch colour: `red`, `blue`, `yellow`, `green`, `purple`, `black`, `brown`, `lightblue`, `pink`, `white`, `orange`, or 0–10. Default: the template's. |
-| `icon` | Own portrait: `{"side": "…png", "front": "…png"}` from `1_Input/_Icons` (the open slots use `empty_slot_side.png` / `empty_slot_front.png`), or `{"model": "<.sluggie or model folder>"}`: that model's exported `icon/SideIcon.png` and `icon/FrontIcon.png` (an `L_` model uses its high-poly partner's folder; a relative path counts from the repository root; both files must exist). Optional `fit` (`contain`, `cover`, `strict`) and `like` (a stock ID whose icon records are copied). Without it the template's portrait shows. |
+| `icon` | Own portrait: `{"side": "…png", "front": "…png"}` from `1_Input/_Icons` (the open slots use `empty_slot_side.png` / `empty_slot_front.png`), or `{"model": "<.sluggie or model folder>"}`: that model's exported `icon/SideIcon.png` and `icon/FrontIcon.png` (a Low model uses its High partner's folder; a relative path counts from the repository root; both files must exist). Optional `fit` (`contain`, `cover`, `strict`) and `like` (a stock ID whose icon records are copied). Without it the template's portrait shows. |
 | `name` | A string, or `{"en": …, "fr": …, "sp": …}`; missing languages use English. Without it the ID shows "-" once any character in the config has a name, and otherwise no name text and the template's name plate. |
 
 ### `wheels`: the unused characters (`0x47`–`0x4C`)

@@ -379,7 +379,7 @@ class CharacterGridTab:
                     dpg.add_text(line, color=color, wrap=text_w)
         dpg.add_spacer(height=GAP, parent=box)
         self.slot_buttons = []
-        tips = {SELECT: 'Put an exported model (and its HP/L_ partner) into this slot; a confirm dialog shows '
+        tips = {SELECT: 'Put an exported model (and its High/Low partner) into this slot; a confirm dialog shows '
                         'what changes first.',
                 CLEAR: 'Return this slot to its baseline (stock: vanilla models and portraits; new ID: its '
                        "template's files and the open-slot look); a confirm dialog shows what changes first."}
