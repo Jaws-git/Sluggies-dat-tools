@@ -11,10 +11,8 @@ The binary details are in [`_docs_roster/RosterExpansion.md`](_docs_roster/Roste
 ## Quick start
 
 1. The expansion works on `3_Output_Dat`. Menu [1] builds it and offers the
-   roster choice itself; model patches can come before or after. Reimport
-   stock icon edits (menu [7]) before picking a configuration with icons
-   (see [IconGuide.md](IconGuide.md)).
-2. Menu **[9] Roster expansion** (also part of menu **[1]**, between the model
+   roster choice itself; model patches can come before or after.
+2. Menu **[7] Roster expansion** (also part of menu **[1]**, between the model
    and the icon export) lists every `.json` file in
    `1_Input/_RosterConfigurations/`, alphabetically, with a number to pick
    it, **[r]** to reset the roster to vanilla and stop, and Enter to
@@ -84,16 +82,45 @@ High model is its own partner.
 back, and a new ID a fresh copy of its template's files, the template's
 stats, the "Empty slot" name and portraits. The square's voice stays.
 
+Several changes can go in one run with an edits file, a JSON list of
+`patch` and `clear` edits:
+
+```
+{"edits": [{"op": "patch", "id": "0xE2", "file": "2_Output_Models/27 Bowser/114968608_koopa.gpl/114968608_koopa.gpl.sluggie"},
+           {"op": "clear", "id": "0x1D"}]}
+```
+
+```
+python start.py --apply-slots edits.json --dry-run
+python start.py --apply-slots edits.json
+```
+
+A later edit for the same slot replaces an earlier one. A Low model picked
+after a High model of the same character for the same slot joins it as a
+pair. If any edit is refused, nothing is written and the output names the
+refused edits.
+
 In the GUI, the **Character grid** tab does the same: click a square, then a
 slot, and use **Select .sluggie...** or **Clear slot**. A dialog shows what
 will change (models and their sizes, directory, stats, voice, name,
-portraits, warnings) and whether the checks passed; nothing is written until
-you press OK.
+portraits, warnings) and whether the checks passed. **Stage** does not write
+anything yet. It adds the change to a list of pending edits:
 
-Each command first reads the roster back from `3_Output_Dat`, applies the one
-change and rebuilds the roster from that (so your other slots, names and
-portraits are kept), then patches the model. Every model is built and checked
-before anything is written; a refused change writes nothing.
+- slots and squares with pending edits get an orange border, and the slot
+  view lists them and previews pending portraits;
+- **Discard pending** (slot view) and **Discard all** drop pending edits;
+- the green **Patch Game (N)** button checks all pending edits again, shows
+  one summary, and its **Patch Game** button writes them all in one run.
+
+When that run fails part-way, the pending edits are kept and the grid shows
+what landed; fix the cause and press **Patch Game** again. Pending edits live
+only while the GUI is open: closing it, or applying a roster preset, asks
+first.
+
+Each command first reads the roster back from `3_Output_Dat`, applies the
+changes and rebuilds the roster from that once (so your other slots, names
+and portraits are kept), then patches the models. Every model is built and
+checked before anything is written; a refused change writes nothing.
 
 ## Configuration files
 
@@ -171,18 +198,6 @@ Lists of IDs, one list per wheel: those members come first, in that order.
 `"grid": {}` gives the 41 stock squares on 11 columns: Luigi gets his own
 square, so a captain's square is no longer handed to Luigi. Cells without a
 square are hidden and skipped by the pointer and the D-pad.
-
-## Icons with Dolphin's custom textures
-
-The roster's own portraits sit on two texture pages (side and front) that the
-roster step builds for each configuration. Menu [1] exports them after the
-injection (menu [3] exports from `1_Input` and does not see them; run
-`python start.py --export-icons --use-output` for the current output) to
-`2_Output_Models/_ICONS/roster_pages/`, each PNG named the way Dolphin dumps
-that texture, e.g. `tex1_512x64_7f44f8f0911eeb0c_14.png` (preset 03's side page). An edited copy with
-that exact name in Dolphin's `Load/Textures/RMBE01/` replaces the page in game.
-The name changes whenever the configuration's portraits change, so export again
-after editing a configuration. The stock icon pages keep their names.
 
 ## Limits and costs
 

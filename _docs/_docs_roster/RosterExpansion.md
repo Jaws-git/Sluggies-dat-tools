@@ -14,7 +14,7 @@ were compared site by site with our build (`SluggiesTools/Dol/site_inventory.jso
 unless another date is given.
 
 Code: `SluggiesTools/Roster/` (one module per step, run in this order by menu
-[9] / `start.py --roster`): `dol_hammerspace`, `layout_file`, `ids`,
+[7] / `start.py --roster`): `dol_hammerspace`, `layout_file`, `ids`,
 `wheels`, `icons`, `grid`, `names`. Before every run, `reset.py` resets the
 roster to vanilla against `1_Input` (no record of earlier runs is kept):
 

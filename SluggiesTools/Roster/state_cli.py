@@ -55,7 +55,7 @@ def _open(output_dir: str):
     dol_path = os.path.join(output_dir, 'main.dol')
     dat_path = os.path.join(output_dir, 'dt_na.dat')
     if not os.path.isfile(dol_path):
-        raise state.StateError(f'{dol_path} is missing: run menu [1] (or the All-In-One export) first')
+        raise state.StateError(f'{dol_path} is missing: run menu [1] (or the All-In-One Export) first')
     with open(dol_path, 'rb') as f:
         image = dolfile.DolImage(f.read())
     return image, datfile.DatFile(dat_path) if os.path.isfile(dat_path) else None

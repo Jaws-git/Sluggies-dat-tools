@@ -1,4 +1,4 @@
-"""Roster expansion: DOL hammerspace, buffered DAT writes and the menu [9] runner with its reset to vanilla."""
+"""Roster expansion: DOL hammerspace, buffered DAT writes and the menu [7] runner with its reset to vanilla."""
 
 import json
 import os

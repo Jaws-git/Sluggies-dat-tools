@@ -19,13 +19,19 @@ Portraits that are not the slot's own (a lower key, the template's, the Mii
 or "?" icon) are marked. The textures are released and rebuilt on every
 re-read.
 
-The slot level's **Select .sluggie...** and **Clear slot** run the slot
-chain (``start.py --patch-slot`` / ``--clear-slot``): first its dry run
-(plan + build check, nothing written), then a confirm dialog with what the
-change does (``gui_grid.slot_dialog``), and on OK the chain itself. While
-that runs, the slot buttons are disabled; the re-read afterwards reopens the
-same slot. Clicks and ``Esc`` do not move the levels while the file dialog,
-the dry run or the confirm dialog is up.
+Edits are staged (decision 14). The slot level's **Select .sluggie...** and
+**Clear slot** run a staging check (``start.py --apply-slots edits.json
+--dry-run``: the pending edits plus the new one, the new edit's build check),
+then a confirm dialog with what the edit does (``gui_grid.slot_dialog``); Stage
+adds it to the pending list (``gui_grid.PendingEdits``, GUI memory only).
+Slots and squares with pending edits get an orange border, the slot level
+lists the pending edits and previews pending portraits. **Patch Game (N)**
+runs the full dry run, shows one summary (``gui_grid.summary_dialog``) and on
+its Patch Game button the chain itself (one roster rebuild at most); on success the list is
+cleared, on a failure it is kept. **Discard pending** / **Discard all** drop
+edits. While a command runs the edit buttons are disabled; the re-read
+afterwards reopens the same slot. Clicks and ``Esc`` do not move the levels
+while the file dialog, a check or a dialog is up.
 
 On the stock grid Luigi has no square (the game hands him a captain's square
 at runtime). The reader lists his family as an off-grid square, drawn to the
@@ -58,8 +64,8 @@ LINE = 26                        # text line height (Segoe UI 16 pt, with spacin
 SLOT_W = 720                     # level 2 may be wider than level 1: each level is its own window
 PORTRAIT = (SLOT_SCALE * ICON[0], SLOT_SCALE * ICON[1])
 BUTTON_H = 32
-SELECT, CLEAR = 'Select .sluggie...', 'Clear slot'
-SLOT_BUTTONS = (('Rename...', 5), (SELECT, None), (CLEAR, None), ('Stats...', 7))   # (label, plan phase)
+SELECT, CLEAR, DISCARD = 'Select .sluggie...', 'Clear slot', 'Discard pending'
+SLOT_BUTTONS = (('Rename...', 5), (SELECT, None), (CLEAR, None), ('Stats...', 7), (DISCARD, None))  # (label, phase)
 CONFIRM_W = 680
 BUSY_TEXT = 'A command is running (see the log)...'
 _NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
@@ -68,6 +74,7 @@ _DIM = (230, 230, 230, 255)
 _EMPTY = (110, 110, 110, 255)
 _ERROR = (255, 120, 110, 255)
 _OK = (120, 220, 140, 255)
+_PENDING = (255, 170, 70, 255)
 _LINE_COLORS = {gui_grid.TEXT: _DIM, gui_grid.WARN: _WARN, gui_grid.ERROR: _ERROR, gui_grid.OK: _OK}
 
 
@@ -79,14 +86,26 @@ class CharacterGridTab:
         self.popups = []                   # [(dim window, box window)], bottom first
         self.textures = {}                 # (crop path, scale) -> texture tag; released on every re-read
         self.slot_buttons = []             # the slot level's working buttons (disabled while a command runs)
-        self.action = None                 # the slot action in progress: (ID, .sluggie or None), file dialog to confirm
-        self.confirm = None                # the confirm dialog window
+        self.action = None                 # the action in progress (file dialog to confirm dialog), or None
+        self.confirm = None                # the open dialog window
+        self.pending = gui_grid.PendingEdits()
+        self.work = None                   # what the tab's own running command does (status text), or None
+        self.edits_path = os.path.join(app.root_dir, gui_grid.EDITS_REL)
+        self.plan_path = os.path.join(app.root_dir, gui_grid.SLOT_PLAN_REL)
 
     # ------------------------------------------------------------------ build
     def build(self):
         with dpg.tab(label='Character grid', tag='grid_tab'):
             with dpg.group(horizontal=True):
                 self.refresh_button = dpg.add_button(label='Refresh', callback=lambda: self.request_read())
+                dpg.add_button(label='Patch Game (0)', tag='grid_patch_game', enabled=False,
+                               callback=lambda: self._on_patch_game())
+                dpg.bind_item_theme('grid_patch_game', 'primary_theme')
+                with dpg.tooltip('grid_patch_game'):
+                    dpg.add_text('Write every pending edit into 3_Output_Dat in one go (one roster rebuild at most); '
+                                 'a summary shows first.', wrap=420)
+                dpg.add_button(label='Discard all', tag='grid_discard_all', enabled=False,
+                               callback=lambda: self._on_discard_all())
                 dpg.add_loading_indicator(tag='grid_spinner', style=1, radius=1.6, show=False,
                                           color=(90, 200, 120, 255), secondary_color=(60, 120, 80, 255))
                 dpg.add_text('', tag='grid_status')
@@ -104,6 +123,11 @@ class CharacterGridTab:
                 dpg.add_theme_style(dpg.mvStyleVar_WindowBorderSize, 2)
                 dpg.add_theme_style(dpg.mvStyleVar_WindowRounding, 6)
                 dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, PAD, PAD)
+        with dpg.theme(tag='grid_pending_theme'):
+            for kind in (dpg.mvImageButton, dpg.mvButton):
+                with dpg.theme_component(kind):
+                    dpg.add_theme_color(dpg.mvThemeCol_Border, _PENDING)
+                    dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 3)
         with dpg.theme(tag='grid_empty_theme'):
             with dpg.theme_component(dpg.mvButton, enabled_state=False):
                 dpg.add_theme_color(dpg.mvThemeCol_Button, (45, 45, 48, 255))
@@ -155,8 +179,9 @@ class CharacterGridTab:
             self.request_read()
 
     def _show_status(self):
-        dpg.configure_item('grid_spinner', show=self.loader.status == self.loader.RUNNING)
-        dpg.set_value('grid_status', self.loader.message)
+        """Spinner and status line: while the tab's own command runs (check, Patch Game) or the grid is read."""
+        dpg.configure_item('grid_spinner', show=self.work is not None or self.loader.status == self.loader.RUNNING)
+        dpg.set_value('grid_status', self.work or self.loader.message)
         state = self.loader.state
         dpg.set_value('grid_note', gui_grid.stock_luigi_note(state) if state else '')
 
@@ -191,9 +216,16 @@ class CharacterGridTab:
                                            index, lambda _s, _a, u: self._open_square(u))
             self._caption(gui_grid.square_label(state, index), CELL[0],
                           gui_grid.is_fallback(state, head, gui_grid.FRONT))
+        pending = self.pending.square_pending(state, index)
+        if pending:
+            dpg.bind_item_theme(button, 'grid_pending_theme')
         with dpg.tooltip(button):
             for line in gui_grid.square_tooltip(state, index):
                 dpg.add_text(line)
+            if pending:
+                for cid in state['squares'][index]['members']:
+                    for line in self.pending.summary(cid):
+                        dpg.add_text(f'{gui_grid.name_of(state, cid)}: {line}', color=_PENDING)
 
     def _empty_cell(self):
         w, h = GRID_ICON[0] + 2 * FRAME, GRID_ICON[1] + 2 * FRAME
@@ -238,9 +270,13 @@ class CharacterGridTab:
         return dpg.add_image_button(texture, width=w, height=h, indent=indent, user_data=user_data,
                                     callback=callback)
 
-    def _portrait_image(self, cid, view):
-        """The slot level's enlarged portrait; a framed placeholder where there is none."""
-        texture = self._portrait_texture(cid, view, SLOT_SCALE)
+    def _portrait_image(self, cid, view, preview=None):
+        """The slot level's enlarged portrait (``preview``: a pending portrait's PNG instead); a framed
+        placeholder where there is none."""
+        texture = self._texture(preview, SLOT_SCALE) if preview else self._portrait_texture(cid, view, SLOT_SCALE)
+        if preview and texture is not None:
+            dpg.add_image(texture, width=PORTRAIT[0], height=PORTRAIT[1], border_color=_PENDING)
+            return
         if texture is not None:
             dpg.add_image(texture, width=PORTRAIT[0], height=PORTRAIT[1], border_color=(90, 90, 96, 255))
             return
@@ -342,11 +378,16 @@ class CharacterGridTab:
                                                        lambda _s, _a, u: self._open_slot(u))
                         self._caption(gui_grid.name_of(state, cid), SWATCH[0], fallback)
                         self._caption(gui_grid.hex_id(cid), SWATCH[0], color=_DIM)
-                    if cid == self.nav.slot:
+                    if self.pending.has(cid):
+                        dpg.bind_item_theme(button, 'grid_pending_theme')
+                    elif cid == self.nav.slot:
                         dpg.bind_item_theme(button, 'primary_theme')
-                    if fallback:
+                    if fallback or self.pending.has(cid):
                         with dpg.tooltip(button):
-                            dpg.add_text(f'Side portrait: {gui_grid.icon_note(state, cid, gui_grid.SIDE)}')
+                            if fallback:
+                                dpg.add_text(f'Side portrait: {gui_grid.icon_note(state, cid, gui_grid.SIDE)}')
+                            for line in self.pending.summary(cid):
+                                dpg.add_text(line, color=_PENDING)
         dpg.add_text(f'Voice: {gui_grid.name_of(state, sq["voice"])}', parent=box, color=_DIM)
         return box
 
@@ -363,6 +404,7 @@ class CharacterGridTab:
         for view in (gui_grid.FRONT, gui_grid.SIDE):
             details.append((f'{view.capitalize()} portrait: {gui_grid.icon_note(state, cid, view)}',
                             _WARN if gui_grid.is_fallback(state, cid, view) else _DIM))
+        details += [(line, _PENDING) for line in self.pending.lines(cid)]
         text_w = SLOT_W - 2 * PAD - 2 * (PORTRAIT[0] + GAP) - GAP
         body = max(PORTRAIT[1] + LINE, LINE * sum(1 + len(line) * 7 // text_w for line, _c in details))
         box = self._box(SLOT_W, 2 * PAD + 2 * LINE + body + GAP + BUTTON_H + 2 * LINE)
@@ -371,19 +413,26 @@ class CharacterGridTab:
         with dpg.group(horizontal=True, horizontal_spacing=GAP, parent=box):
             for view in (gui_grid.FRONT, gui_grid.SIDE):
                 with dpg.group():
-                    self._portrait_image(cid, view)
+                    preview = self.pending.portrait(cid, view)
+                    self._portrait_image(cid, view, preview)
                     fallback = gui_grid.is_fallback(state, cid, view)
-                    dpg.add_text(view.capitalize() + (' *' if fallback else ''), color=_WARN if fallback else _DIM)
+                    if preview:
+                        dpg.add_text(f'{view.capitalize()} (pending)', color=_PENDING)
+                    else:
+                        dpg.add_text(view.capitalize() + (' *' if fallback else ''),
+                                     color=_WARN if fallback else _DIM)
             with dpg.group():
                 for line, color in details:
                     dpg.add_text(line, color=color, wrap=text_w)
         dpg.add_spacer(height=GAP, parent=box)
         self.slot_buttons = []
-        tips = {SELECT: 'Put an exported model (and its High/Low partner) into this slot; a confirm dialog shows '
-                        'what changes first.',
-                CLEAR: 'Return this slot to its baseline (stock: vanilla models and portraits; new ID: its '
-                       "template's files and the open-slot look); a confirm dialog shows what changes first."}
-        actions = {SELECT: lambda: self._on_select(cid), CLEAR: lambda: self._start_preview(cid, None)}
+        tips = {SELECT: 'Stage an exported model (and its High/Low partner) for this slot; a confirm dialog shows '
+                        'what changes first. "Patch Game" writes the pending edits.',
+                CLEAR: "Stage a return to this slot's baseline (stock: vanilla models and portraits; new ID: its "
+                       "template's files and the open-slot look); a confirm dialog shows what changes first.",
+                DISCARD: "Drop this slot's pending edits (nothing was written for them yet)."}
+        actions = {SELECT: lambda: self._on_select(cid), CLEAR: lambda: self._start_preview(cid, None),
+                   DISCARD: lambda: self._on_discard(cid)}
         with dpg.group(horizontal=True, parent=box):
             for label, phase in SLOT_BUTTONS:
                 if phase is not None:
@@ -391,40 +440,55 @@ class CharacterGridTab:
                     dpg.bind_item_theme(button, 'grid_empty_theme')
                     tip = f'Comes with plan Phase {phase}'
                 else:
-                    button = dpg.add_button(label=label, height=BUTTON_H, enabled=not self._locked(),
-                                            callback=actions[label])
+                    button = dpg.add_button(label=label, height=BUTTON_H, callback=actions[label],
+                                            enabled=not self._locked() and (label != DISCARD or self.pending.has(cid)))
                     dpg.bind_item_theme(button, 'primary_theme')
-                    self.slot_buttons.append(button)
+                    self.slot_buttons.append((button, label != DISCARD or self.pending.has(cid)))
                     tip = tips[label]
                 with dpg.tooltip(button):
                     dpg.add_text(tip, wrap=420)
         dpg.add_text(BUSY_TEXT if self.app.busy else '', parent=box, tag='grid_slot_busy', color=_WARN)
         return box
 
-    # ------------------------------------------------------------------ slot actions
+    # ------------------------------------------------------------------ edits
     def _locked(self):
         return self.app.busy or self.action is not None
 
     def set_busy(self, busy):
-        """The app started / finished a command: the slot buttons follow (like the other action buttons)."""
+        """The app started / finished a command: the edit buttons follow (like the other action buttons)."""
         locked = busy or self.action is not None
-        for button in self.slot_buttons:
+        for button, usable in self.slot_buttons:
             if dpg.does_item_exist(button):
-                dpg.configure_item(button, enabled=not locked)
+                dpg.configure_item(button, enabled=usable and not locked)
         if dpg.does_item_exist('grid_slot_busy'):
             dpg.set_value('grid_slot_busy', BUSY_TEXT if busy else '')
+        if dpg.does_item_exist('grid_patch_game'):
+            count = len(self.pending)
+            dpg.configure_item('grid_patch_game', label=f'Patch Game ({count})', enabled=bool(count) and not locked)
+            dpg.configure_item('grid_discard_all', enabled=bool(count) and not locked)
+
+    def _pending_changed(self):
+        """Redraw what shows the pending list: the grid's markers, the open levels, the buttons."""
+        self._draw_grid()
+        self._draw_popups()
+        self.set_busy(self.app.busy)
 
     def _on_select(self, cid):
         if self._locked():
             return
         self.action = (cid, None)
         self.set_busy(False)
-        dpg.show_item('grid_sluggie_dialog')
+        if not self.app.pick_files('grid_sluggie_dialog', 'Select a .sluggie for this slot',
+                                   [('Sluggie files', '*.sluggie')], self._on_sluggie_paths,
+                                   on_cancel=self._end_action):
+            self._end_action()
 
     def _on_sluggie_chosen(self, _sender, app_data):
-        cid = self.action[0] if self.action else None
         app_data = app_data or {}
-        paths = list(app_data.get('selections', {}).values()) or [app_data.get('file_path_name')]
+        self._on_sluggie_paths(list(app_data.get('selections', {}).values()) or [app_data.get('file_path_name')])
+
+    def _on_sluggie_paths(self, paths):
+        cid = self.action[0] if self.action else None
         path = next((p for p in paths if p and p.lower().endswith('.sluggie') and os.path.isfile(p)), None)
         if cid is None or path is None:
             self.app.log_line(f'[character grid] no .sluggie file chosen: {paths[0] or "(none)"}', _WARN)
@@ -434,18 +498,120 @@ class CharacterGridTab:
         self._start_preview(cid, path)
 
     def _start_preview(self, cid, sluggie):
-        """The dry run (plan + build check); the confirm dialog opens when it is done."""
+        """The staging check (the pending edits plus this one; this one's build check); the confirm dialog
+        opens when it is done."""
         if self._locked():
             return
+        edit = {'op': 'patch', 'id': gui_grid.hex_id(cid), 'file': sluggie} if sluggie else \
+            {'op': 'clear', 'id': gui_grid.hex_id(cid)}
+        try:
+            gui_grid.write_edits(self.edits_path, self.pending.staging(edit))
+        except OSError as exc:
+            self.app.log_line(f'[character grid] could not write {self.edits_path}: {exc}', _WARN)
+            return
         self.action = (cid, sluggie)
-        if not self.app.run_chain([gui_grid.preview_command(cid, sluggie)],
-                                  on_done=lambda code, output: self._show_confirm(cid, sluggie, code, output)):
+        if not self._run([gui_grid.preview_command(self.edits_path)], 'Checking the edit...',
+                         lambda code, output: self._show_confirm(cid, sluggie, code, output)):
             self._end_action()
 
     def _show_confirm(self, cid, sluggie, code, output):
         state = self.nav.state or self.loader.state
-        plan = gui_grid.load_plan(os.path.join(self.app.root_dir, gui_grid.SLOT_PLAN_REL), cid)
-        dialog = gui_grid.slot_dialog(state, cid, sluggie is not None, plan, code, output)
+        plan = gui_grid.load_plan(self.plan_path)
+        dialog = gui_grid.slot_dialog(state, cid, sluggie is not None, plan, code, output, self.pending)
+        self._dialog(dialog, lambda: self._stage(plan), ok_label='Stage')
+
+    def _stage(self, plan):
+        self._end_action()
+        self.pending.accept(plan)
+        self.app.log_line(f'[character grid] {len(self.pending)} pending edit(s); "Patch Game" writes them.', _PENDING)
+        self._pending_changed()
+
+    def _on_discard(self, cid):
+        if self._locked():
+            return
+        self.pending.discard(cid)
+        self._pending_changed()
+
+    def _on_discard_all(self):
+        if self._locked() or not len(self.pending):
+            return
+        self.confirm_discard(lambda: None, 'Discard all pending edits?')
+
+    def confirm_discard(self, then, title='Discard the pending edits?', reason=''):
+        """Run ``then``; with pending edits ask first (Discard drops them). Presets, closing, Discard all."""
+        if not len(self.pending):
+            then()
+            return
+        if self.confirm is not None:
+            return                                   # another dialog is up
+        count = len(self.pending)
+        lines = ([(reason, gui_grid.TEXT)] if reason else []) + [
+            (f'{count} pending edit{"s" if count != 1 else ""} (nothing written for them yet):', gui_grid.TEXT)]
+        state = self.loader.state
+        for edit in self.pending.edits:
+            cid = int(edit['id'], 16)
+            name = gui_grid.name_of(state, cid) if state else edit['id']
+            lines.append((f'  {name} ({edit["id"]}): {gui_grid._edit_title(edit).removeprefix("Pending: ")}',
+                          gui_grid.WARN))
+        lines.append(('Discard drops them.', gui_grid.TEXT))
+
+        def discard():
+            self._end_action()
+            self.pending.clear()
+            self._pending_changed()
+            then()
+        self.action = 'ask'
+        self._dialog(gui_grid.SlotDialog(title, lines, True), discard, ok_label='Discard')
+
+    def _on_patch_game(self):
+        """The full dry run (fresh read, every build check), then the summary."""
+        if self._locked() or not len(self.pending):
+            return
+        try:
+            gui_grid.write_edits(self.edits_path, self.pending.to_file())
+        except OSError as exc:
+            self.app.log_line(f'[character grid] could not write {self.edits_path}: {exc}', _WARN)
+            return
+        self.action = 'patch_game'
+        if not self._run([gui_grid.preview_command(self.edits_path)], 'Checking every pending edit...',
+                         self._show_summary):
+            self._end_action()
+
+    def _show_summary(self, code, output):
+        state = self.nav.state or self.loader.state
+        dialog = gui_grid.summary_dialog(state, gui_grid.load_plan(self.plan_path), code, output)
+        self._dialog(dialog, self._patch_game, ok_label='Patch Game')
+
+    def _patch_game(self):
+        self._end_action()
+
+        def done(code, _output):
+            if code == 0:
+                self.pending.clear()
+                self.app.log_line('[character grid] Patch Game done: every pending edit is written.', _OK)
+            else:
+                self.app.log_line('[character grid] Patch Game stopped at a failed step: the pending edits are '
+                                  'kept; the re-read shows what landed. Fix the cause and run Patch Game again.',
+                                  _WARN)
+            self.set_busy(self.app.busy)
+        self._run([gui_grid.apply_command(self.edits_path)], 'Patching the game...', done)
+
+    def _run(self, steps, work, on_done):
+        """Run a chain of the tab's own with the spinner and ``work`` as the status line until it is done (the
+        re-read after a writing chain keeps the spinner going). False when another command runs."""
+        def done(code, output):
+            self.work = None
+            self._show_status()
+            on_done(code, output)
+        self.work = work
+        if not self.app.run_chain(steps, on_done=done):
+            self.work = None
+            return False
+        self._show_status()
+        return True
+
+    def _dialog(self, dialog, on_ok, ok_label='OK'):
+        """A modal dialog: its lines, then ``ok_label`` / Cancel (``dialog.can_apply``) or Close."""
         vw, vh = dpg.get_viewport_client_width(), dpg.get_viewport_client_height()
         self.confirm = dpg.add_window(label=dialog.title, modal=True, no_collapse=True, no_saved_settings=True,
                                       autosize=True, pos=(max(0, (vw - CONFIRM_W) // 2), max(0, vh // 5)),
@@ -455,24 +621,20 @@ class CharacterGridTab:
         dpg.add_spacer(height=GAP, parent=self.confirm)
         with dpg.group(horizontal=True, parent=self.confirm):
             if dialog.can_apply:
-                ok = dpg.add_button(label='OK', width=110, height=BUTTON_H,
-                                    callback=lambda: self._apply(cid, sluggie))
+                ok = dpg.add_button(label=ok_label, width=110, height=BUTTON_H, callback=lambda: on_ok())
                 dpg.bind_item_theme(ok, 'primary_theme')
                 dpg.add_button(label='Cancel', width=110, height=BUTTON_H, callback=lambda: self._end_action())
             else:
                 dpg.add_button(label='Close', width=110, height=BUTTON_H, callback=lambda: self._end_action())
         self.set_busy(self.app.busy)
 
-    def _apply(self, cid, sluggie):
-        self._end_action()
-        self.app.run_chain([gui_grid.apply_command(cid, sluggie)])
-
     def _end_action(self):
-        """Close the file / confirm dialog; the levels respond to clicks again."""
+        """Close the file dialog / the open dialog; the levels respond to clicks again."""
         if self.confirm is not None and dpg.does_item_exist(self.confirm):
             dpg.delete_item(self.confirm)
         self.confirm, self.action = None, None
         self.set_busy(self.app.busy)
+
 
 
 def swatches_per_row(count: int, viewport_width: int) -> int:

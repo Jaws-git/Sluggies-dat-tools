@@ -206,7 +206,7 @@ def _manifest(image: dolfile.DolImage) -> dict | None:
         raise StateError(str(exc)) from exc
     if mf is None:
         raise StateError('this roster was built by an older version of the roster tool (no manifest): run the '
-                         'roster again (menu [9]) to read it here')
+                         'roster again (menu [7]) to read it here')
     return mf
 
 

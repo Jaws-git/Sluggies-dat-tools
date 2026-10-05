@@ -28,6 +28,7 @@ import threading
 import dearpygui.dearpygui as dpg
 import gui_character_grid
 import gui_grid
+import native_dialog
 import slogger
 
 _MAX_LOG_LINES = 3000
@@ -35,6 +36,7 @@ _LOG_COLOR = (220, 220, 220, 255)
 _PROMPT_COLOR = (255, 210, 90, 255)
 _NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 _PRIMARY_SIZE = (170, 44)
+_VIEWPORT_TITLE = 'Sluggies Tools'
 
 # Font sizes for the UI. 16pt matches Dear PyGui's default at 1x DPI. Open
 # Sans is slightly wider than the built-in ProggyClean at the same point
@@ -118,6 +120,7 @@ class SluggiesGui:
         self.on_chain_done = None          # run_chain's callback: (exit code, the chain's output)
         self.chain_output = []
         self.action_buttons = []
+        self.picking = False               # a native file dialog is open
         self.grid_tab = gui_character_grid.CharacterGridTab(self)
 
     # ------------------------------------------------------------------ run
@@ -194,6 +197,39 @@ class SluggiesGui:
         except OSError:
             pass
 
+    # ------------------------------------------------------------------ files
+    def pick_files(self, fallback_tag, title, filters, on_files, on_cancel=None, multi=False):
+        """Ask for files: the Windows "Open" dialog when available (``native_dialog``), else the Dear
+        PyGui dialog ``fallback_tag``, whose own callbacks handle the result. ``on_files(paths)`` /
+        ``on_cancel()`` run on the GUI thread. False when a native dialog is already open."""
+        if not native_dialog.enabled():
+            dpg.show_item(fallback_tag)
+            return True
+        if self.picking:
+            return False
+        self.picking = True
+        initial = self.models_dir if os.path.isdir(self.models_dir) else self.root_dir
+        owner = native_dialog.find_owner_window(_VIEWPORT_TITLE)
+
+        def work():
+            try:
+                result, error = native_dialog.ask_open_files(title, initial, filters, multi, owner), None
+            except Exception as exc:          # any failure: the built-in dialog takes over
+                result, error = None, str(exc)
+            self.output_queue.put(('files', fallback_tag, on_files, on_cancel, result, error))
+        threading.Thread(target=work, daemon=True).start()
+        return True
+
+    def _files_done(self, fallback_tag, on_files, on_cancel, result, error):
+        self.picking = False
+        if error is not None:
+            self._log_line(f'Windows file dialog failed ({error}); using the built-in one.', _PROMPT_COLOR)
+            dpg.show_item(fallback_tag)
+        elif result:
+            on_files(result)
+        elif on_cancel is not None:
+            on_cancel()
+
     # ------------------------------------------------------------------ log
     def _drain_queue(self):
         while True:
@@ -203,6 +239,8 @@ class SluggiesGui:
                 return
             if isinstance(item, tuple) and item[0] == 'grid_state':
                 self.grid_tab.on_read_done(item[1], item[2])
+            elif isinstance(item, tuple) and item[0] == 'files':
+                self._files_done(*item[1:])
             elif isinstance(item, tuple):
                 self._finish_process(item[1])
             else:
@@ -291,11 +329,11 @@ class SluggiesGui:
                     dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 4)
 
     def _build_full_tab(self):
-        with dpg.tab(label='All-In-One export'):
+        with dpg.tab(label='All-In-One Export'):
             dpg.add_text('1) Export all models with untangled textures (overwrites 3_Output_Dat/dt_na.dat and main.dol)')
             dpg.add_text('2) Apply the chosen roster preset')
             dpg.add_text('3) Turn on CPU vs CPU and CPU vs CPU management')
-            dpg.add_text('4) Export the player icons from 3_Output_Dat')
+            dpg.add_text('4) Write the character icons (FrontIcon/SideIcon) from 3_Output_Dat into the model folders')
             dpg.add_text('A failing step stops the rest.')
             dpg.add_spacer(height=6)
             with dpg.group(horizontal=True):
@@ -314,15 +352,21 @@ class SluggiesGui:
             steps.append(('--roster', '--config', os.path.join(self.config_dir, choice)))
         steps.append(('--game-options', '--on', 'cpu_vs_cpu', 'cpu_management'))
         steps.append(('--export-icons', '--use-output'))
-        self.run_chain(steps)
+        if choice and choice != self.ROSTER_SKIP:
+            self._preset_guard(lambda: self.run_chain(steps))
+        else:
+            self.run_chain(steps)
 
     def _build_export_tab(self):
-        with dpg.tab(label='Export'):
+        with dpg.tab(label='Export 3D'):
             dpg.add_text('Export all models from 1_Input to 2_Output_Models.')
             dpg.add_checkbox(label='Untangle (overwrites 3_Output_Dat/dt_na.dat and main.dol)', tag='exp_untangle')
             dpg.add_checkbox(label='Also write .glb files', tag='exp_glb')
             dpg.add_checkbox(label='Skip textures', tag='exp_notex')
             dpg.add_checkbox(label='Debug (raw byte arrays instead of base64)', tag='exp_debug')
+            icons = dpg.add_checkbox(label='Export Icons', tag='exp_icons', default_value=True)
+            with dpg.tooltip(icons):
+                dpg.add_text('Write FrontIcon.png and SideIcon.png into each character model folder.')
             self._action('Export models', self._on_export, primary=True)
 
     def _on_export(self):
@@ -331,28 +375,10 @@ class SluggiesGui:
                           ('exp_notex', '--notex'), ('exp_debug', '--debug')):
             if dpg.get_value(tag):
                 args.append(flag)
-        self.run_command(*args)
-
-    def _build_icons_tab(self):
-        with dpg.tab(label='Icons'):
-            dpg.add_text('Character-select icon atlases.')
-            dpg.add_checkbox(label='Read DOL/DAT from 3_Output_Dat instead of 1_Input', tag='ico_use_output')
-            self._action('Export icons', self._on_export_icons, primary=True)
-            dpg.add_separator()
-            dpg.add_checkbox(label='Dry run (validate without writing)', tag='ico_dry')
-            self._action('Patch icons', self._on_patch_icons, primary=True)
-
-    def _on_export_icons(self):
-        args = ['--export-icons']
-        if dpg.get_value('ico_use_output'):
-            args.append('--use-output')
-        self.run_command(*args)
-
-    def _on_patch_icons(self):
-        args = ['--patch-icons']
-        if dpg.get_value('ico_dry'):
-            args.append('--dry-run')
-        self.run_command(*args)
+        if dpg.get_value('exp_icons'):
+            self.run_chain([tuple(args), ('--export-icons',)])
+        else:
+            self.run_command(*args)
 
     def _build_roster_tab(self):
         with dpg.tab(label='Roster'):
@@ -364,7 +390,8 @@ class SluggiesGui:
             dpg.add_checkbox(label='Dry run (validate without writing)', tag='roster_dry')
             with dpg.group(horizontal=True):
                 self._action('Inject roster', self._on_roster, primary=True)
-                self._action('Reset to vanilla', lambda: self.run_command('--roster', '--remove'))
+                self._action('Reset to vanilla',
+                             lambda: self._preset_guard(lambda: self.run_command('--roster', '--remove')))
         self._refresh_configs()
 
     def _refresh_configs(self):
@@ -393,7 +420,20 @@ class SluggiesGui:
         args = ['--roster', '--config', os.path.join(self.config_dir, name)]
         if dpg.get_value('roster_dry'):
             args.append('--dry-run')
-        self.run_command(*args)
+            self.run_command(*args)
+        else:
+            self._preset_guard(lambda: self.run_command(*args))
+
+    def _preset_guard(self, then):
+        """A preset replaces the whole roster: pending grid edits are discarded first (asks)."""
+        self.grid_tab.confirm_discard(then, 'Apply the preset and discard the pending edits?',
+                                      'A roster preset replaces the whole roster, so the pending edits of the '
+                                      'character grid would no longer fit.')
+
+    def _on_close_request(self, *_):
+        """The window's close button: with pending grid edits ask first."""
+        self.grid_tab.confirm_discard(dpg.stop_dearpygui, 'Close and discard the pending edits?',
+                                      'The character grid has edits that "Patch Game" has not written yet.')
 
     def _build_patch_tab(self):
         with dpg.tab(label='Patch'):
@@ -401,7 +441,11 @@ class SluggiesGui:
             dpg.add_listbox([], tag='patch_files', num_items=6, width=-1)
             self.patch_paths = []
             with dpg.group(horizontal=True):
-                dpg.add_button(label='Add files...', callback=lambda: dpg.show_item('patch_dialog'))
+                dpg.add_button(label='Add files...', callback=lambda: self.pick_files(
+                    'patch_dialog', 'Add files to patch',
+                    [('Sluggie and PNG files', '*.sluggie;*.png'), ('Sluggie files', '*.sluggie'),
+                     ('PNG files', '*.png'), ('All files', '*.*')],
+                    self._add_patch_files, multi=True))
                 dpg.add_button(label='Clear', callback=self._clear_patch_files)
             with dpg.group(horizontal=True):
                 self._action('Patch', lambda: self._on_patch(False), primary=True)
@@ -414,7 +458,10 @@ class SluggiesGui:
             dpg.add_file_extension('.*')
 
     def _on_files_chosen(self, _sender, app_data):
-        for path in app_data.get('selections', {}).values():
+        self._add_patch_files(app_data.get('selections', {}).values())
+
+    def _add_patch_files(self, paths):
+        for path in paths:
             if path not in self.patch_paths:
                 self.patch_paths.append(path)
         dpg.configure_item('patch_files', items=self.patch_paths)
@@ -431,8 +478,6 @@ class SluggiesGui:
 
     def _build_maintenance_tab(self):
         with dpg.tab(label='Maintenance'):
-            self._action('Hammerspace', lambda: self.run_command('--hammerspace'),
-                         'Change the available memory space in the output dt_na.dat.')
             self._action('Re-split unused characters', lambda: self.run_command('--resplit-unused'),
                          'Repair: give unused-character routes (dirs 89-94) their own block copies again.')
 
@@ -481,7 +526,6 @@ class SluggiesGui:
             with dpg.tab_bar(tag='main_tab_bar', callback=self._on_tab):
                 self._build_full_tab()
                 self._build_export_tab()
-                self._build_icons_tab()
                 self._build_roster_tab()
                 self._build_patch_tab()
                 self._build_maintenance_tab()
@@ -497,7 +541,9 @@ class SluggiesGui:
                 dpg.add_button(label='n', width=24, callback=lambda: self.send_input('n'))
                 dpg.add_button(label='Enter', callback=lambda: self.send_input(''))
                 dpg.add_button(label='Stop', tag='stop_button', enabled=False, callback=self.stop_command)
-        dpg.create_viewport(title='Sluggies Tools', width=1440, height=900)   # fits the 12x5 grid unscrolled
+        # fits the 12x5 grid unscrolled; the close button asks first while grid edits are pending
+        dpg.create_viewport(title=_VIEWPORT_TITLE,width=1440, height=900, disable_close=True)
+        dpg.set_exit_callback(self._on_close_request)
         dpg.set_primary_window('main_window', True)
         dpg.set_viewport_resize_callback(lambda *_: self.grid_tab.on_viewport_resize())
         dpg.setup_dearpygui()

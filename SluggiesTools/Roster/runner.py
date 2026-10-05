@@ -1,4 +1,4 @@
-"""The roster expansion (``start.py --roster``, StartTools menu [9], also run by menu [1]).
+"""The roster expansion (``start.py --roster``, StartTools menu [7], also run by menu [1]).
 
 Runs every roster step (``steps.STEPS``, in order) with one roster
 configuration (``--config``, e.g. from ``1_Input/_RosterConfigurations``) on
@@ -9,7 +9,7 @@ the files in ``3_Output_Dat`` (the normal pipeline's output).
 * ``--remove`` only resets the roster to vanilla.
 * ``--state FILE`` instead of ``--config``: a derived config (``derive.py``,
   read -> rebuild) with its portraits in the ``icons`` folder beside it.
-* Game options (``GameOptions/``, menu [10]) that are on before the reset are
+* Game options (``GameOptions/``, menu [8]) that are on before the reset are
   applied again afterwards.
 * ``--dry-run`` runs everything in memory and writes nothing.
 * After the steps it stores a manifest (``manifest.py``) of the facts only
@@ -184,7 +184,7 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
 
 def main(argv=None) -> int:
     slogger.configure()
-    parser = argparse.ArgumentParser(description='Roster expansion (menu [9]).')
+    parser = argparse.ArgumentParser(description='Roster expansion (menu [7]).')
     source = parser.add_mutually_exclusive_group()
     source.add_argument('--config', help='the roster configuration JSON (e.g. from 1_Input/_RosterConfigurations)')
     source.add_argument('--state', help='a derived roster config (start.py --roster-derive), portraits beside it')

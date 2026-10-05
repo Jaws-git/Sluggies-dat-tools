@@ -1,10 +1,10 @@
-"""Game options (``start.py --game-options``, StartTools menu [10]): turn options on or off in 3_Output_Dat/main.dol.
+"""Game options (``start.py --game-options``, StartTools menu [8]): turn options on or off in 3_Output_Dat/main.dol.
 
   runner.py --on cpu_vs_cpu      turn an option on
   runner.py --off cpu_vs_cpu     turn it off (stock instructions back)
   runner.py                      list the options and whether each is on
 
-The options survive roster runs (menu [9]); menu [1]'s untangle export copies
+The options survive roster runs (menu [7]); menu [1]'s untangle export copies
 a fresh ``main.dol`` from 1_Input, so options have to be turned on again after it.
 """
 
@@ -60,7 +60,7 @@ def run(output_dir: str = OUTPUT_DIR, on=(), off=(), dry_run: bool = False) -> l
 
 def main(argv=None) -> int:
     slogger.configure()
-    parser = argparse.ArgumentParser(description='Game options in 3_Output_Dat/main.dol (menu [10]).')
+    parser = argparse.ArgumentParser(description='Game options in 3_Output_Dat/main.dol (menu [8]).')
     parser.add_argument('--on', nargs='+', default=[], metavar='OPTION', help='turn these options on')
     parser.add_argument('--off', nargs='+', default=[], metavar='OPTION', help='turn these options off')
     parser.add_argument('--dry-run', action='store_true', help='run in memory, write nothing')

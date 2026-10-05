@@ -6,9 +6,12 @@
   or ``Esc`` does.
 * Label and tooltip text for squares and slots, and where each portrait crop
   is (``icon_file``) and whether it is the slot's own (``icon_note``).
+* ``PendingEdits``: the staged slot edits (decision 14) and the overlay text
+  and portrait previews they give.
 * ``slot_dialog``: the confirm dialog of "Select .sluggie..." / "Clear slot",
-  from the dry run's plan (``--patch-slot``/``--clear-slot --dry-run``) and
-  its output.
+  from the staging check's batch plan (``--apply-slots FILE --dry-run``: the
+  pending edits plus the new one) and its output; ``summary_dialog``: Patch
+  Game's summary of the full dry run.
 
 The roster state is the dict ``Roster/state.py`` writes
 (``3_Output_Dat/_gui/roster_state.json``).
@@ -21,10 +24,10 @@ from dataclasses import dataclass, field
 
 STATE_REL = os.path.join('3_Output_Dat', '_gui', 'roster_state.json')
 SLOT_PLAN_REL = os.path.join('3_Output_Dat', '_gui', 'slot', 'plan.json')
+EDITS_REL = os.path.join('3_Output_Dat', '_gui', 'slot', 'edits.json')
 # start.py modes whose commands can change what the grid shows: the tab re-reads after them
-WRITING_FLAGS = frozenset({'--export', '--roster', '--patch', '--unpatch', '--patch-icons', '--resplit-unused',
-                           '--patch-slot', '--clear-slot',
-                           '--hammerspace'})
+WRITING_FLAGS = frozenset({'--export', '--roster', '--patch', '--unpatch', '--resplit-unused',
+                           '--patch-slot', '--clear-slot', '--apply-slots'})
 UNNAMED = '-'
 LUIGI = 0x01
 
@@ -315,22 +318,112 @@ class GridNav:
 
 
 # --------------------------------------------------------------------------
-# Slot actions: the confirm dialog
+# Staged edits (decision 14): the pending list and its overlay
+# --------------------------------------------------------------------------
+
+class PendingEdits:
+    """The pending slot edits, in GUI memory only (decision 14). ``edits`` is the merged list in staging order
+    (``plan['merged']`` of the last staging check), ``sections`` the planner's per-edit sections (notes,
+    effects) that the overlay shows. Both survive a re-read; Patch Game re-plans everything on a fresh one."""
+
+    def __init__(self):
+        self.edits: list[dict] = []
+        self.sections: list[dict] = []
+
+    def __len__(self) -> int:
+        return len(self.edits)
+
+    def staging(self, edit: dict) -> dict:
+        """The edits file of a staging check: the pending edits (build checks passed when they were staged)
+        plus the new one."""
+        return {'edits': [dict(e, checked=True) for e in self.edits] + [dict(edit)]}
+
+    def to_file(self) -> dict:
+        """The edits file Patch Game writes: every build check runs again."""
+        return {'edits': [dict(e) for e in self.edits]}
+
+    def accept(self, plan: dict) -> None:
+        """Take the staging check's merged list (the new edit staged, earlier ones replaced or joined)."""
+        self.edits = [dict(e) for e in plan.get('merged') or []]
+        self.sections = [dict(s) for s in plan.get('edits') or []]
+
+    def discard(self, cid: int) -> None:
+        self.edits = [e for e in self.edits if int(e['id'], 16) != cid]
+        self.sections = [s for s in self.sections if int(s['target'], 16) != cid]
+
+    def clear(self) -> None:
+        self.edits, self.sections = [], []
+
+    def has(self, cid: int) -> bool:
+        return any(int(e['id'], 16) == cid for e in self.edits)
+
+    def model_edit(self, cid: int) -> dict | None:
+        return next((e for e in self.edits if int(e['id'], 16) == cid and e['op'] in ('patch', 'clear')), None)
+
+    def sections_for(self, cid: int) -> list[dict]:
+        return [s for s in self.sections if int(s['target'], 16) == cid]
+
+    def square_pending(self, state: dict, index: int) -> bool:
+        return any(self.has(m) for m in state['squares'][index]['members'])
+
+    def summary(self, cid: int) -> list[str]:
+        """One line per pending edit of the slot (tooltips)."""
+        return [_edit_title(e) for e in self.edits if int(e['id'], 16) == cid]
+
+    def lines(self, cid: int) -> list[str]:
+        """The slot level's pending lines: each edit, then what the slot shows once it is written."""
+        out = []
+        for section in self.sections_for(cid):
+            out.append(_edit_title(section['edit']))
+            effects = section.get('effects') or {}
+            for key, label in (('model', 'Model'), ('name', 'Name'), ('stats', 'Stats'), ('voice', 'Voice'),
+                               ('portrait_note', 'Portraits')):
+                if effects.get(key):
+                    out.append(f'  {label}: {effects[key]}')
+            if effects.get('portraits'):
+                out.append('  Portraits: ' + os.path.basename(os.path.dirname(os.path.dirname(
+                    effects['portraits']['front']))) + ' (previewed, marked "pending")')
+        return out
+
+    def portrait(self, cid: int, view: str) -> str | None:
+        """A pending portrait to preview (the model folder's ``icon/*.png``), or None."""
+        for section in reversed(self.sections_for(cid)):
+            path = ((section.get('effects') or {}).get('portraits') or {}).get(view)
+            if path and os.path.isfile(path):
+                return path
+        return None
+
+
+def _edit_title(edit: dict) -> str:
+    if edit['op'] == 'patch':
+        files = [os.path.basename(edit['file'])] + ([os.path.basename(edit['low'])] if edit.get('low') else [])
+        return 'Pending: put ' + ' + '.join(files) + ' into this slot'
+    if edit['op'] == 'clear':
+        return 'Pending: clear this slot'
+    return f'Pending: {edit["op"]}'
+
+
+# --------------------------------------------------------------------------
+# Slot actions: the confirm dialogs
 # --------------------------------------------------------------------------
 
 TEXT, WARN, ERROR, OK = 'text', 'warn', 'error', 'ok'
 _BUILD_LINE = re.compile(r'Slot build check passed \| Model: (?P<name>.+?) \| Size: [\d.]+ MB \((?P<bytes>\d+) bytes\)')
 
 
-def preview_command(cid: int, sluggie: str | None = None) -> tuple:
-    """The dry run behind the confirm dialog: plan + build check, nothing written."""
-    if sluggie:
-        return ('--patch-slot', hex_id(cid), sluggie, '--dry-run')
-    return ('--clear-slot', hex_id(cid), '--dry-run')
+def preview_command(edits_path: str) -> tuple:
+    """The dry run behind a confirm dialog: plan the edits file + run its build checks, nothing written."""
+    return ('--apply-slots', edits_path, '--dry-run')
 
 
-def apply_command(cid: int, sluggie: str | None = None) -> tuple:
-    return preview_command(cid, sluggie)[:-1]
+def apply_command(edits_path: str) -> tuple:
+    return ('--apply-slots', edits_path)
+
+
+def write_edits(path: str, data: dict) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
 
 
 def build_sizes(output: str) -> dict[str, int]:
@@ -338,14 +431,14 @@ def build_sizes(output: str) -> dict[str, int]:
     return {m.group('name'): int(m.group('bytes')) for m in _BUILD_LINE.finditer(output)}
 
 
-def load_plan(path: str, cid: int) -> dict | None:
-    """The dry run's plan for slot ``cid``; None when there is none (refused) or it is another slot's."""
+def load_plan(path: str) -> dict | None:
+    """The dry run's batch plan; None when there is none (the planner failed before planning)."""
     try:
         with open(path, encoding='utf-8') as f:
             plan = json.load(f)
     except (OSError, ValueError):
         return None
-    return plan if plan.get('target') == hex_id(cid) else None
+    return plan if plan.get('action') == 'batch' else None
 
 
 def _mb(size: int) -> str:
@@ -359,7 +452,7 @@ class SlotDialog:
     can_apply: bool = False
 
 
-def _partner_lines(files: dict, sizes: dict) -> list:
+def _partner_lines(files: dict, sizes: dict, joined: bool = False) -> list:
     def label(path, role):
         name = os.path.basename(path)
         size = sizes.get(name)
@@ -367,7 +460,8 @@ def _partner_lines(files: dict, sizes: dict) -> list:
 
     high, low = files.get('high'), files.get('low')
     if high and low:
-        return [(f'Models: {label(high, "High")} + {label(low, "Low")}, found side by side', TEXT)]
+        how = 'the Low pick joins the pending High pick' if joined else 'found side by side'
+        return [(f'Models: {label(high, "High")} + {label(low, "Low")}, {how}', TEXT)]
     if high:
         size = sizes.get(os.path.basename(high))
         twice = f': {_mb(2 * size)} together' if size else ''
@@ -378,34 +472,116 @@ def _partner_lines(files: dict, sizes: dict) -> list:
             ("It goes under the slot's current High model, which must be its own partner (checked)", TEXT)]
 
 
-def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int, output: str) -> SlotDialog:
-    """The confirm dialog after a patch (``patch``) or clear dry run (exit ``code``, log ``output``): what the
-    change does, its warnings and the verdict. ``can_apply`` only when the planner and the build check passed."""
+def _section_lines(state: dict, section: dict, sizes: dict, warnings: bool = True) -> list:
+    """A planned edit's lines (4f dialog content): source and models with their sizes, notes, warnings."""
+    lines = []
+    cid = int(section['target'], 16)
+    patch = section['action'] == 'patch'
+    if patch:
+        source = int(section['source'], 16)
+        lines.append((f'Source: {known_name(state, source)} ({hex_id(source)}) -> {name_of(state, cid)} '
+                      f'({hex_id(cid)})', TEXT))
+        lines += _partner_lines(section.get('files') or {}, sizes, joined='low' in (section.get('edit') or {}))
+    notes = section['notes'][1:] if patch else section['notes']   # a patch's first note is the files line above
+    lines += [(f'- {note}', TEXT) for note in notes]
+    if warnings:
+        lines += [(f'Warning: {warning}', WARN) for warning in section['warnings']]
+    return lines
+
+
+def _refused_lines(state: dict, plan: dict, cid: int | None = None) -> list:
+    lines = []
+    for refused in plan['refused']:
+        rid = int(refused['target'], 16)
+        where = '' if rid == cid else f'{known_name(state, rid)} ({hex_id(rid)}): '
+        lines.append((f'Refused: {where}{refused["error"]}', ERROR))
+    return lines
+
+
+def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int, output: str,
+                pending: PendingEdits | None = None) -> SlotDialog:
+    """The confirm dialog of a staged edit, after its staging check (the pending edits plus this one, exit
+    ``code``, log ``output``): what the edit does, its warnings and the verdict. ``can_apply`` (Stage stages it)
+    only when the planner and the build check passed."""
     target = f'{name_of(state, cid)} ({hex_id(cid)})'
     dialog = SlotDialog(f'Put a model into {target}?' if patch else f'Clear {target}?')
     error = error_message(output)
-    if plan is None:
-        error = error.removeprefix('refused, nothing written: ')        # the planner's wording; said below
-        dialog.title = f'{target}: refused'
-        dialog.lines.append((f'Refused: {error or f"the planner failed (exit code {code})"}', ERROR))
-        dialog.lines.append(('Nothing was written.', TEXT))
-        return dialog
     lines = dialog.lines
-    if patch:
-        source = int(plan['source'], 16)
-        lines.append((f'Source: {known_name(state, source)} ({hex_id(source)}) -> {target}', TEXT))
-        lines += _partner_lines(plan.get('files') or {}, build_sizes(output))
-    notes = plan['notes'][1:] if patch else plan['notes']      # a patch's first note is the files line above
-    lines += [(f'- {note}', TEXT) for note in notes]
-    lines += [(f'Warning: {warning}', WARN) for warning in plan['warnings']]
-    if not plan['rebuild']:
+    if plan is None or plan['refused']:
+        dialog.title = f'{target}: refused'
+        if plan is None:
+            error = error.removeprefix('refused, nothing written: ')        # the planner's wording; said below
+            lines.append((f'Refused: {error or f"the planner failed (exit code {code})"}', ERROR))
+        else:
+            lines += _refused_lines(state, plan, cid)
+            if any(int(r['target'], 16) != cid for r in plan['refused']):
+                lines.append(('A pending edit no longer fits the game files: discard it on its slot.', TEXT))
+        lines.append(('Nothing was staged.', TEXT))
+        return dialog
+    section = next((s for s in plan['edits'] if int(s['target'], 16) == cid), None)
+    if section is None:                       # a clear of a slot at its baseline
+        skipped = next((s for s in plan['skipped'] if int(s['target'], 16) == cid), None)
+        lines += [(f'- {note}', TEXT) for note in (skipped or {}).get('notes', [])]
+        earlier = pending.model_edit(cid) if pending else None
+        if earlier is not None:
+            lines.append((f'Stage drops the slot\'s pending {earlier["op"]}, so the slot stays as it is.', OK))
+            dialog.can_apply = True
+        else:
+            dialog.title = f'{target}: nothing to clear'
+        return dialog
+    lines += _section_lines(state, section, build_sizes(output))
+    prefix = f'{hex_id(cid)}: '
+    lines += [(f'- {note.removeprefix(prefix)}', TEXT) for note in plan['notes'] if note.startswith(prefix)]
+    if not section['rebuild']:
         lines.append(('- no roster rebuild needed', TEXT))
+    if code != 0:
+        lines.append((f'Build check failed: {error or f"exit code {code}"}. Nothing was staged.', ERROR))
+        return dialog
+    checks = 'slot rules, and every model built and validated' if patch else 'slot rules'
+    lines.append((f'Checks passed: {checks}. Nothing written yet: Stage adds the edit to the pending list, '
+                  '"Patch Game" writes it.', OK))
+    dialog.can_apply = True
+    return dialog
+
+
+def summary_dialog(state: dict, plan: dict | None, code: int, output: str) -> SlotDialog:
+    """Patch Game's summary after the full dry run (every pending edit planned on a fresh read, every build
+    check run): per-slot lines, all warnings, the verdict. ``can_apply`` (Patch Game runs the chain) only when every
+    edit passed."""
+    count = len((plan or {}).get('edits') or [])
+    dialog = SlotDialog(f'Patch Game: write {count} pending edit{"s" if count != 1 else ""}?')
+    lines = dialog.lines
+    error = error_message(output)
+    if plan is None or plan['refused']:
+        dialog.title = 'Patch Game: refused'
+        if plan is None:
+            error = error.removeprefix('refused, nothing written: ')
+            lines.append((f'Refused: {error or f"the planner failed (exit code {code})"}', ERROR))
+        else:
+            lines += _refused_lines(state, plan)
+            lines.append(('Discard or replace the refused edits on their slots, then try again.', TEXT))
+        lines.append(('Nothing was written.', TEXT))
+        return dialog
+    sizes = build_sizes(output)
+    for section in plan['edits']:
+        cid = int(section['target'], 16)
+        what = 'put a model in' if section['action'] == 'patch' else 'clear'
+        lines.append((f'{name_of(state, cid)} ({hex_id(cid)}): {what}', OK))
+        lines += [('    ' + text, kind) for text, kind in _section_lines(state, section, sizes, warnings=False)]
+    for section in plan['skipped']:
+        cid = int(section['target'], 16)
+        lines.append((f'{name_of(state, cid)} ({hex_id(cid)}): nothing to clear (at its baseline already)', TEXT))
+    lines += [(f'- {note}', TEXT) for note in plan['notes']]
+    lines += [(f'Warning: {warning}', WARN) for warning in plan['warnings']]
+    lines.append(('- one roster rebuild' if plan['rebuild'] else '- no roster rebuild needed', TEXT))
     if code != 0:
         lines.append((f'Build check failed: {error or f"exit code {code}"}. Nothing was written.', ERROR))
         return dialog
-    if patch:
-        lines.append(('Checks passed: slot rules, and every model built and validated. Nothing written yet.', OK))
-    else:
-        lines.append(('Nothing written yet.', OK))
+    if not plan['edits']:
+        lines.append(('Nothing to write.', TEXT))
+        return dialog
+    lines.append(('Checks passed: slot rules, and every model built and validated. Patch Game writes them now.', OK))
     dialog.can_apply = True
     return dialog
+
+

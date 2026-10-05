@@ -104,7 +104,7 @@
     <ul>
         <li><strong>Patch:</strong> only the patched entry is repointed. An owner never takes its split routes along, and a split route never takes its owner. The vanilla range is never zeroed for a split route, because the owner still uses it. For the high-poly model, bat and gloves, the untangled texture bytes are re-applied to every texture the edit left unchanged.</li>
         <li><strong>Unpatch:</strong> the entry goes to a fresh baseline copy in hammerspace, never back to the owner's block. The baseline is the vanilla block with the untangled texture bytes re-applied. It is rebuilt from the input <code>dt_na.dat</code> plus the <code>.sluggie</code> (<code>UntangledTextures.py</code> replays the untangler's flip sequence until each texture's Dolphin name matches the recorded <code>TextureFileName</code>). This reproduces all 89 intact export copies byte for byte.</li>
-        <li><strong>Repair:</strong> an entry found back on its owner's offset (left there by an unpatch from an older tool version, for example) is re-split by <code>start.py --resplit-unused</code> (StartTools menu [8]). A patch of such an entry needs no repair first, because it moves only that entry.</li>
+        <li><strong>Repair:</strong> an entry found back on its owner's offset (left there by an unpatch from an older tool version, for example) is re-split by <code>start.py --resplit-unused</code> (StartTools menu [6]). A patch of such an entry needs no repair first, because it moves only that entry.</li>
     </ul>
     <p>Confirmed in Dolphin on Unused Yoshi A (2026-09-28/29). In each case green Yoshi and Unused Yoshi B stayed vanilla throughout:</p>
     <ul>

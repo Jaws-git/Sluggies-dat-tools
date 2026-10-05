@@ -58,7 +58,7 @@ def _manifest(image: dolfile.DolImage) -> dict:
         raise SlotError(str(exc)) from exc
     if mf is None:
         raise SlotError('this roster was built by an older version of the roster tool (no manifest): run the '
-                        'roster again (menu [9]) first')
+                        'roster again (menu [7]) first')
     return mf
 
 

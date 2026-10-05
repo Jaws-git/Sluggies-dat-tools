@@ -1,5 +1,5 @@
 """Hand-run: write the shipped roster presets into ``1_Input/_RosterConfigurations`` from the stock wheels of
-``1_Input/main.dol``. Menu [9] lists every ``.json`` file in that folder (the user's own too, alphabetically);
+``1_Input/main.dol``. Menu [7] lists every ``.json`` file in that folder (the user's own too, alphabetically);
 this script only (re)writes these four:
 
 01_Stock_Roster.json                 the stock roster (no expansion content)

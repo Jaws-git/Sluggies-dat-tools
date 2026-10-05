@@ -1,4 +1,4 @@
-"""Game options: small gameplay patches in ``main.dol`` (StartTools menu [10], ``start.py --game-options``).
+"""Game options: small gameplay patches in ``main.dol`` (StartTools menu [8], ``start.py --game-options``).
 
 Each option replaces stock instructions with branches to stubs in the DOL
 hammerspace text section (``Roster/dol_hammerspace.py``), so it works with or

@@ -1,5 +1,5 @@
-"""GUI character grid: the state loader, the pop-out navigation and the slot actions' confirm dialog
-(Phase 4f), without a running Dear PyGui."""
+"""GUI character grid: the state loader, the pop-out navigation, the slot actions' confirm dialog (Phase 4f)
+and the staged edits with Patch Game's summary (Phase 4g), without a running Dear PyGui."""
 
 import json
 import os
@@ -60,10 +60,10 @@ class LoaderTests(unittest.TestCase):
         self.assertTrue(gui_grid.chain_writes([('--export', '--untangle'), ('--export-icons',)]))
         self.assertTrue(gui_grid.chain_writes([('--patch', 'a.sluggie')]))
         self.assertFalse(gui_grid.chain_writes([('--export-icons', '--use-output'), ('--roster-state',)]))
-        self.assertTrue(gui_grid.chain_writes([gui_grid.apply_command(0x66, 'a.sluggie')]))
-        self.assertTrue(gui_grid.chain_writes([gui_grid.apply_command(0x66)]))
-        self.assertFalse(gui_grid.chain_writes([gui_grid.preview_command(0x66, 'a.sluggie')]))   # dry runs write nothing
-        self.assertFalse(gui_grid.chain_writes([gui_grid.preview_command(0x66)]))
+        self.assertTrue(gui_grid.chain_writes([gui_grid.apply_command('edits.json')]))
+        self.assertTrue(gui_grid.chain_writes([('--patch-slot', '0x66', 'a.sluggie'), ('--clear-slot', '0x66')]))
+        self.assertFalse(gui_grid.chain_writes([gui_grid.preview_command('edits.json')]))   # dry runs write nothing
+        self.assertFalse(gui_grid.chain_writes([('--clear-slot', '0x66', '--dry-run')]))
         self.assertFalse(gui_grid.chain_writes([('--patch', 'a.sluggie', '--target-id', '0x66', '--validate-only')]))
 
 
@@ -217,17 +217,35 @@ BUILD_OUTPUT = ('[2026-10-05 12:00:00] [Info] [hammerspace.main] Slot build chec
                 '115434464_L_koopa.gpl.sluggie | Size: 0.08 MB (84288 bytes) | nothing written\n')
 
 
-def patch_plan(high=HP, low=LOW, warnings=()):
-    return {'action': 'patch', 'target': '0x66', 'rebuild': True, 'source': '0x06',
+def patch_section(cid='0x66', high=HP, low=LOW, warnings=(), joined=False, effects=None):
+    edit = {'op': 'patch', 'id': cid, 'file': high or low}
+    if joined:
+        edit['low'] = low
+    return {'action': 'patch', 'target': cid, 'rebuild': True, 'source': '0x06',
             'files': {'high': high, 'low': low, 'picked': high or low},
-            'commands': [['--patch', 'x', '--target-id', '0x66', '--validate-only'], ['--roster-state']],
-            'notes': ['a + b -> C66 (0x66)', 'C66 (0x66) gets an own model directory: a copy of C06 (0x06)\'s files',
+            'commands': [['--patch', 'x', '--target-id', cid, '--validate-only'], ['--roster-state']],
+            'notes': [f'a + b -> C66 ({cid})', f'C66 ({cid}) gets an own model directory: a copy of C06 (0x06)\'s files',
                       'portraits from home/icon'],
-            'warnings': list(warnings)}
+            'warnings': list(warnings), 'nothing': False, 'effects': effects or {}, 'edit': edit, 'checked': False}
+
+
+def clear_section(cid='0x0D', nothing=False):
+    notes = ([f'nothing to clear: C0D ({cid}) is at its baseline already'] if nothing
+             else [f'C0D ({cid}): vanilla High and Low models from 1_Input'])
+    return {'action': 'clear', 'target': cid, 'rebuild': False, 'commands': [], 'notes': notes, 'warnings': [],
+            'nothing': nothing, 'effects': {} if nothing else {'model': 'vanilla High and Low models'},
+            'edit': {'op': 'clear', 'id': cid}, 'checked': False}
+
+
+def batch(*sections, skipped=(), refused=(), notes=(), rebuild=True):
+    return {'action': 'batch', 'ok': not refused, 'rebuild': rebuild, 'commands': [], 'notes': list(notes),
+            'warnings': [w for s in sections for w in s['warnings']], 'edits': list(sections),
+            'skipped': list(skipped), 'refused': list(refused), 'merged': [s['edit'] for s in sections]}
 
 
 class SlotDialogTests(unittest.TestCase):
-    """The confirm dialog of "Select .sluggie..." / "Clear slot" (decision 6 warnings, sizes, verdict)."""
+    """The confirm dialog of "Select .sluggie..." / "Clear slot" after the staging check (decision 6 warnings,
+    sizes, verdict)."""
 
     def setUp(self):
         self.s = state([0x06, 0x66], [0x0D])
@@ -236,26 +254,23 @@ class SlotDialogTests(unittest.TestCase):
         return '\n'.join(t for t, k in dialog.lines if kind is None or k == kind)
 
     def test_commands(self):
-        self.assertEqual(gui_grid.preview_command(0x66, HP), ('--patch-slot', '0x66', HP, '--dry-run'))
-        self.assertEqual(gui_grid.apply_command(0x66, HP), ('--patch-slot', '0x66', HP))
-        self.assertEqual(gui_grid.preview_command(0x0D), ('--clear-slot', '0x0D', '--dry-run'))
-        self.assertEqual(gui_grid.apply_command(0x0D), ('--clear-slot', '0x0D'))
+        self.assertEqual(gui_grid.preview_command('e.json'), ('--apply-slots', 'e.json', '--dry-run'))
+        self.assertEqual(gui_grid.apply_command('e.json'), ('--apply-slots', 'e.json'))
 
     def test_build_sizes(self):
         self.assertEqual(gui_grid.build_sizes(BUILD_OUTPUT), {'114968608_koopa.gpl.sluggie': 465856,
                                                               '115434464_L_koopa.gpl.sluggie': 84288})
         self.assertEqual(gui_grid.build_sizes('nothing here'), {})
 
-    def test_load_plan_only_for_the_slot(self):
+    def test_load_plan(self):
         path = os.path.join(self.enterContext(tempfile.TemporaryDirectory()), 'plan.json')
-        self.assertIsNone(gui_grid.load_plan(path, 0x66))                      # refused: no plan file
+        self.assertIsNone(gui_grid.load_plan(path))                            # the planner failed: no plan file
         with open(path, 'w', encoding='utf-8') as f:
-            json.dump(patch_plan(), f)
-        self.assertEqual(gui_grid.load_plan(path, 0x66)['source'], '0x06')
-        self.assertIsNone(gui_grid.load_plan(path, 0x0D))                      # another slot's plan
+            json.dump(batch(patch_section()), f)
+        self.assertEqual(gui_grid.load_plan(path)['edits'][0]['source'], '0x06')
 
     def test_pair_passed(self):
-        dialog = gui_grid.slot_dialog(self.s, 0x66, True, patch_plan(), 0, BUILD_OUTPUT)
+        dialog = gui_grid.slot_dialog(self.s, 0x66, True, batch(patch_section()), 0, BUILD_OUTPUT)
         self.assertTrue(dialog.can_apply)
         self.assertEqual(dialog.title, 'Put a model into C66 (0x66)?')
         text = self.text(dialog)
@@ -265,11 +280,19 @@ class SlotDialogTests(unittest.TestCase):
         self.assertIn('- C66 (0x66) gets an own model directory', text)
         self.assertIn('- portraits from home/icon', text)
         self.assertNotIn('a + b ->', text)                                     # shown as the Models line
-        self.assertIn('every model built and validated', self.text(dialog, gui_grid.OK))
+        self.assertIn('Stage adds the edit to the pending list', self.text(dialog, gui_grid.OK))
         self.assertEqual(self.text(dialog, gui_grid.WARN), '')
 
+    def test_joined_pair_and_merge_notes(self):
+        plan = batch(patch_section(joined=True), notes=['0x66: L.sluggie joins the pending H.sluggie as its Low partner',
+                                                        '0x0D: the pending patch is replaced by the later clear'])
+        text = self.text(gui_grid.slot_dialog(self.s, 0x66, True, plan, 0, BUILD_OUTPUT))
+        self.assertIn('the Low pick joins the pending High pick', text)
+        self.assertIn('- L.sluggie joins the pending H.sluggie', text)
+        self.assertNotIn('replaced by the later clear', text)                 # another slot's note
+
     def test_hp_only_warns_with_the_combined_size(self):
-        plan = patch_plan(low=None, warnings=['koopa has no Low partner beside it: ...'])
+        plan = batch(patch_section(low=None, warnings=['koopa has no Low partner beside it: ...']))
         dialog = gui_grid.slot_dialog(self.s, 0x66, True, plan, 0, BUILD_OUTPUT)
         self.assertTrue(dialog.can_apply)                                      # OK and Cancel
         warn = self.text(dialog, gui_grid.WARN)
@@ -278,36 +301,150 @@ class SlotDialogTests(unittest.TestCase):
         self.assertIn('Warning: koopa has no Low partner', warn)
 
     def test_low_only(self):
-        dialog = gui_grid.slot_dialog(self.s, 0x66, True, patch_plan(high=None), 0, BUILD_OUTPUT)
+        dialog = gui_grid.slot_dialog(self.s, 0x66, True, batch(patch_section(high=None)), 0, BUILD_OUTPUT)
         self.assertTrue(dialog.can_apply)
         self.assertIn('115434464_L_koopa.gpl.sluggie (Low only, 0.08 MB), no High partner',
                       self.text(dialog, gui_grid.WARN))
 
     def test_refused_by_the_planner(self):
-        output = ('[2026-10-05 12:00:00] [Error] [roster.slot] refused, nothing written: the skeletons do not match '
-                  '(105 vs 89 bones)\n')
-        dialog = gui_grid.slot_dialog(self.s, 0x0D, True, None, 1, output)
+        refused = batch(refused=[{'edit': {'op': 'patch', 'id': '0x0D', 'file': HP}, 'target': '0x0D',
+                                  'error': 'the skeletons do not match (105 vs 89 bones)'}])
+        dialog = gui_grid.slot_dialog(self.s, 0x0D, True, refused, 1, '')
         self.assertFalse(dialog.can_apply)                                     # Close only
         self.assertEqual(dialog.title, 'C0D (0x0D): refused')
-        self.assertIn('Refused: the skeletons do not match',
-                      self.text(dialog, gui_grid.ERROR))
+        self.assertIn('Refused: the skeletons do not match', self.text(dialog, gui_grid.ERROR))
+        self.assertIn('Nothing was staged', self.text(dialog))
+
+    def test_refused_pending_edit_of_another_slot_is_named(self):
+        refused = batch(refused=[{'edit': {'op': 'clear', 'id': '0x06'}, 'target': '0x06',
+                                  'error': '0x06 is not a slot of this roster'}])
+        text = self.text(gui_grid.slot_dialog(self.s, 0x0D, False, refused, 1, ''))
+        self.assertIn('Refused: C06 (0x06): 0x06 is not a slot', text)
+        self.assertIn('discard it on its slot', text)
+
+    def test_planner_failure_without_plan(self):
+        output = '[2026-10-05 12:00:00] [Error] [roster.slot] refused, nothing written: main.dol is missing\n'
+        dialog = gui_grid.slot_dialog(self.s, 0x0D, True, None, 1, output)
+        self.assertFalse(dialog.can_apply)
+        self.assertIn('Refused: main.dol is missing', self.text(dialog, gui_grid.ERROR))
 
     def test_failed_build_check(self):
         output = '[2026-10-05 12:00:00] [Error] [hammerspace.main] Hammerspace operation failed | x\n'
-        dialog = gui_grid.slot_dialog(self.s, 0x66, True, patch_plan(), 1, output)
+        dialog = gui_grid.slot_dialog(self.s, 0x66, True, batch(patch_section()), 1, output)
         self.assertFalse(dialog.can_apply)
         self.assertIn('Build check failed: Hammerspace operation failed | x', self.text(dialog, gui_grid.ERROR))
         self.assertIn('- portraits from home/icon', self.text(dialog))           # the plan is still shown
 
     def test_clear(self):
-        plan = {'action': 'clear', 'target': '0x0D', 'rebuild': False, 'commands': [],
-                'notes': ['C0D (0x0D): vanilla High and Low models from 1_Input'], 'warnings': []}
-        dialog = gui_grid.slot_dialog(self.s, 0x0D, False, plan, 0, '')
+        dialog = gui_grid.slot_dialog(self.s, 0x0D, False, batch(clear_section(), rebuild=False), 0, '')
         self.assertTrue(dialog.can_apply)
         self.assertEqual(dialog.title, 'Clear C0D (0x0D)?')
         self.assertIn('vanilla High and Low models', self.text(dialog))
         self.assertIn('no roster rebuild needed', self.text(dialog))
         self.assertNotIn('Source', self.text(dialog))
+
+    def test_nothing_to_clear(self):
+        plan = batch(skipped=[clear_section(nothing=True)])
+        dialog = gui_grid.slot_dialog(self.s, 0x0D, False, plan, 0, '', gui_grid.PendingEdits())
+        self.assertFalse(dialog.can_apply)                                     # Close only: nothing is staged
+        self.assertEqual(dialog.title, 'C0D (0x0D): nothing to clear')
+        pending = gui_grid.PendingEdits()
+        pending.accept(batch(patch_section('0x0D')))
+        dialog = gui_grid.slot_dialog(self.s, 0x0D, False, plan, 0, '', pending)
+        self.assertTrue(dialog.can_apply)                                      # Stage drops the pending patch
+        self.assertIn("Stage drops the slot's pending patch", self.text(dialog, gui_grid.OK))
+
+
+class PendingEditsTests(unittest.TestCase):
+    """The pending list (decision 14): staging files, accept / replace / discard, the overlay text."""
+
+    def setUp(self):
+        self.s = state([0x06, 0x66], [0x0D])
+        self.p = gui_grid.PendingEdits()
+        self.tmp = self.enterContext(tempfile.TemporaryDirectory())
+
+    def test_staging_file_marks_the_pending_edits_checked(self):
+        self.p.accept(batch(patch_section()))
+        self.assertEqual(self.p.staging({'op': 'clear', 'id': '0x0D'}),
+                         {'edits': [{'op': 'patch', 'id': '0x66', 'file': HP, 'checked': True},
+                                    {'op': 'clear', 'id': '0x0D'}]})
+        self.assertEqual(self.p.to_file(), {'edits': [{'op': 'patch', 'id': '0x66', 'file': HP}]})   # all re-checked
+
+    def test_accept_replaces_and_discard(self):
+        self.p.accept(batch(patch_section(), clear_section()))
+        self.assertEqual(len(self.p), 2)
+        self.assertTrue(self.p.square_pending(self.s, 0) and self.p.square_pending(self.s, 1))
+        self.p.accept(batch(clear_section()))                 # the staging check merged the 0x66 patch away
+        self.assertFalse(self.p.has(0x66))
+        self.p.discard(0x0D)
+        self.assertEqual((len(self.p), self.p.sections), (0, []))
+        self.p.accept(batch(patch_section()))
+        self.p.clear()
+        self.assertEqual(len(self.p), 0)
+
+    def test_overlay_lines_and_portrait_preview(self):
+        front = os.path.join(self.tmp, 'Bowser', 'icon', 'FrontIcon.png')
+        os.makedirs(os.path.dirname(front))
+        with open(front, 'wb') as f:
+            f.write(b'png')
+        effects = {'model': 'Bowser (0x09)\'s models in an own directory', 'name': 'Bowser', 'stats': 'Bowser (0x09)',
+                   'voice': 'Bowser (0x09) (square voice)',
+                   'portraits': {'front': front, 'side': os.path.join(self.tmp, 'missing.png')}}
+        self.p.accept(batch(patch_section(effects=effects), clear_section()))
+        lines = self.p.lines(0x66)
+        self.assertEqual(lines[0], 'Pending: put 114968608_koopa.gpl.sluggie into this slot')
+        self.assertIn('  Name: Bowser', lines)
+        self.assertIn('  Voice: Bowser (0x09) (square voice)', lines)
+        self.assertIn('  Portraits: Bowser (previewed, marked "pending")', lines)
+        self.assertEqual(self.p.portrait(0x66, gui_grid.FRONT), front)
+        self.assertIsNone(self.p.portrait(0x66, gui_grid.SIDE))                # missing file: the game's crop stays
+        self.assertEqual(self.p.lines(0x0D), ['Pending: clear this slot', '  Model: vanilla High and Low models'])
+        self.assertEqual(self.p.summary(0x0D), ['Pending: clear this slot'])
+        self.assertEqual(self.p.lines(0x06), [])
+
+    def test_write_edits(self):
+        path = os.path.join(self.tmp, 'slot', 'edits.json')
+        gui_grid.write_edits(path, {'edits': []})
+        with open(path, encoding='utf-8') as f:
+            self.assertEqual(json.load(f), {'edits': []})
+
+
+class SummaryDialogTests(unittest.TestCase):
+    def setUp(self):
+        self.s = state([0x06, 0x66], [0x0D])
+
+    def text(self, dialog, kind=None):
+        return '\n'.join(t for t, k in dialog.lines if kind is None or k == kind)
+
+    def test_all_edits_with_sizes_and_verdict(self):
+        plan = batch(patch_section(low=None, warnings=['koopa has no Low partner']), clear_section(),
+                     skipped=[clear_section('0x06', nothing=True)], notes=['0x0D: the pending patch is replaced'])
+        dialog = gui_grid.summary_dialog(self.s, plan, 0, BUILD_OUTPUT)
+        self.assertTrue(dialog.can_apply)
+        self.assertEqual(dialog.title, 'Patch Game: write 2 pending edits?')
+        text = self.text(dialog)
+        self.assertIn('C66 (0x66): put a model in', text)
+        self.assertIn('114968608_koopa.gpl.sluggie (High, 0.44 MB)', text)
+        self.assertIn('C0D (0x0D): clear', text)
+        self.assertIn('C06 (0x06): nothing to clear', text)
+        self.assertIn('- 0x0D: the pending patch is replaced', text)
+        self.assertIn('- one roster rebuild', text)
+        self.assertEqual(text.count('Warning: koopa has no Low partner'), 1)   # warnings once, at the end
+        self.assertIn('Patch Game writes them now', self.text(dialog, gui_grid.OK))
+
+    def test_refused_edit_gives_close_only(self):
+        plan = batch(refused=[{'edit': {'op': 'patch', 'id': '0x66', 'file': HP}, 'target': '0x66',
+                               'error': '0x66 is not a slot of this roster'}])
+        dialog = gui_grid.summary_dialog(self.s, plan, 1, '')
+        self.assertFalse(dialog.can_apply)
+        self.assertEqual(dialog.title, 'Patch Game: refused')
+        self.assertIn('Refused: C66 (0x66): 0x66 is not a slot', self.text(dialog, gui_grid.ERROR))
+
+    def test_failed_build_check(self):
+        output = '[2026-10-05 12:00:00] [Error] [hammerspace.main] Slot build check failed | x\n'
+        dialog = gui_grid.summary_dialog(self.s, batch(patch_section()), 1, output)
+        self.assertFalse(dialog.can_apply)
+        self.assertIn('Build check failed: Slot build check failed | x', self.text(dialog, gui_grid.ERROR))
 
 
 if __name__ == '__main__':

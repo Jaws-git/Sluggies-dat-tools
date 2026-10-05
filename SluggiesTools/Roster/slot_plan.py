@@ -1,8 +1,13 @@
-"""Patch a slot / clear a slot (GUI character grid, Phase 4e): the apply chain as a list of commands.
+"""Patch a slot / clear a slot (GUI character grid, Phases 4e/4g): the apply chain as a list of commands.
 
-One GUI action is one chain of ``start.py`` commands, run in order and
-stopped at the first failure (``start.py --patch-slot`` / ``--clear-slot``
-run the same list; the GUI runs those):
+A batch of staged edits is one chain of ``start.py`` commands, run in order
+and stopped at the first failure (``start.py --apply-slots``; ``--patch-slot``
+/ ``--clear-slot`` are batches of one). ``plan_batch`` plans each edit on the
+config the previous one left and merges the commands (one build check per
+patched slot, at most one roster rebuild, the slot commands in staging order,
+one read); ``merge_edits`` holds the per-slot rules (one model edit per slot,
+a Low pick joins a pending High pick, a clear drops earlier renames). One
+edit's chain:
 
 1. ``--patch FILES --target-id 0xNN --validate-only``: build and validate
    every block first, so a file that does not build stops the chain before
@@ -180,6 +185,10 @@ class Env:
         """Whether the slot already shows exactly these portraits (then nothing is imported)."""
         return False
 
+    def at_baseline(self, char: dict, config: dict) -> bool:
+        """Whether the slot is at its baseline already (a clear would change nothing)."""
+        return False
+
 
 # --------------------------------------------------------------------------
 # Plans
@@ -195,10 +204,15 @@ class Plan:
     warnings: list[str] = field(default_factory=list)
     extra_portraits: dict = field(default_factory=dict)  # {file name in the derived icon folder: open-slot view}
     pair: Pair | None = None        # patch: the picked file and its partner
+    nothing: bool = False           # clear: the slot is at its baseline already, no commands
+    # What the slot shows once the edit is written (the GUI's pending lines): 'model', 'name', 'stats', 'voice'
+    # (display text) and 'portraits' ({'front', 'side'}: PNG paths to preview, or None: unchanged)
+    effects: dict = field(default_factory=dict)
 
     def to_json(self) -> dict:
         out = {'action': self.action, 'target': _hex(self.target), 'rebuild': self.config is not None,
-               'commands': [list(c) for c in self.commands], 'notes': self.notes, 'warnings': self.warnings}
+               'commands': [list(c) for c in self.commands], 'notes': self.notes, 'warnings': self.warnings,
+               'nothing': self.nothing, 'effects': self.effects}
         if self.pair is not None:
             out['source'] = _hex(self.pair.source)
             out['files'] = {'high': self.pair.high, 'low': self.pair.low, 'picked': self.pair.picked}
@@ -288,6 +302,8 @@ def plan_patch(st: dict, config: dict, cid: int, pair: Pair, env: Env, state_fil
         if entry is None:
             raise PlanError(f'{_hex(cid)} has no ids entry in the derived config')
         kept = char.get('own_model_dir') and char.get('model_source') == source
+        plan.effects['model'] = (f'{source_name}\'s models in ' + ('its own directory (kept)' if kept else
+                                 f'an own directory (fresh copy of {source_name}\'s files)'))
         if kept:
             plan.notes.append(f'{target_name} keeps its own model directory (copies of {source_name}\'s files)')
         else:
@@ -302,13 +318,17 @@ def plan_patch(st: dict, config: dict, cid: int, pair: Pair, env: Env, state_fil
             if entry.get('stats') != _hex(source):
                 entry['stats'] = _hex(source)
                 plan.notes.append(f'{target_name} takes {source_name}\'s stats (new square)')
-            if square.get('voice_set') is None:
-                k, sq = _square_config(new, cid) or (None, None)
+                plan.effects['stats'] = source_name
+            k, sq = _square_config(new, cid) or (None, None)
+            # set in the game, or by an earlier edit of the same batch (decision 5 counts pending patches)
+            voice_set = square.get('voice_set') is not None or (isinstance(sq, dict) and sq.get('voice') is not None)
+            if not voice_set:
                 if sq is None:
                     raise PlanError(f'{_hex(cid)}: its square is missing from the derived config')
                 members = sq['members'] if isinstance(sq, dict) else sq
                 new['grid']['squares'][k] = {'members': list(members), 'voice': _hex(source)}
                 plan.notes.append(f'the square\'s voice becomes {source_name}\'s (first patch on it)')
+                plan.effects['voice'] = f'{source_name} (square voice)'
         else:
             plan.notes.append(f'{target_name} keeps its stats and voice (stock square)')
         en = (char.get('name') or {}).get('en')
@@ -316,6 +336,7 @@ def plan_patch(st: dict, config: dict, cid: int, pair: Pair, env: Env, state_fil
         if en in (None, '', names.UNNAMED, open_slot.SLOT_NAME['en']) and source_text and source_text.get('en'):
             entry['name'] = {lang: source_text.get(lang) or source_text['en'] for lang in open_slot.SLOT_NAME}
             plan.notes.append(f'{target_name} is named "{source_text["en"]}" (it was an open slot)')
+            plan.effects['name'] = source_text['en']
     else:
         target_dir = cid + ids.MODEL_DIR_BASE
         if target_dir != pair.chunk:
@@ -331,6 +352,7 @@ def plan_patch(st: dict, config: dict, cid: int, pair: Pair, env: Env, state_fil
         if pair.high is None:
             _check_low_alone(env, cid, pair, target_name)
         plan.notes.append(f'{target_name} keeps its stats, voice and name (stock slot)')
+        plan.effects['model'] = f'{source_name}\'s ' + ('Low model' if pair.high is None else 'models')
 
     if as_low:
         plan.warnings.append(f'{os.path.basename(pair.high)} has no Low partner beside it: it is used as the '
@@ -347,6 +369,7 @@ def plan_patch(st: dict, config: dict, cid: int, pair: Pair, env: Env, state_fil
             plan.notes.append(f'portraits not imported: {why}')
         else:
             plan.notes.append(f'portraits from {os.path.basename(found.home)}/{model_icons.ICON_SUBDIR}')
+            plan.effects['portraits'] = {'front': found.front, 'side': found.side}
 
     if new != config:
         plan.config = new
@@ -367,12 +390,17 @@ def _check_low_alone(env: Env, cid: int, pair: Pair, target_name: str) -> None:
             'the High model into the slot (it brings its Low partner along).')
 
 
-def plan_clear(st: dict, config: dict, cid: int, state_file: str) -> Plan:
-    """The chain that returns slot ``cid`` to its baseline (module docstring)."""
+def plan_clear(st: dict, config: dict, cid: int, state_file: str, env: Env | None = None) -> Plan:
+    """The chain that returns slot ``cid`` to its baseline (module docstring). A slot already at its baseline
+    (``env.at_baseline``) gets a plan with ``nothing`` set and no commands."""
     char = _character(st, cid)
     new = copy.deepcopy(config)
     plan = Plan('clear', cid, None)
     target_name = _display(char)
+    if env is not None and env.at_baseline(char, config):
+        plan.nothing = True
+        plan.notes.append(f'nothing to clear: {target_name} is at its baseline already')
+        return plan
     if cid >= ids.FIRST_NEW:
         entry = _entry(new, 'ids', cid)
         if entry is None:
@@ -384,6 +412,10 @@ def plan_clear(st: dict, config: dict, cid: int, state_file: str) -> Plan:
         like = (entry.get('icon') or {}).get('like')
         entry['icon'] = dict(open_slot.SLOT_ICON, **({'like': like} if like is not None else {}))
         plan.extra_portraits = dict((name, view) for view, name in open_slot.SLOT_ICON.items())
+        plan.effects.update(model=f'its template {_hex(template)}\'s files (fresh copy)',
+                            name=open_slot.SLOT_NAME['en'], stats=f'its template {_hex(template)}',
+                            portraits={view: os.path.join(open_slot.ICON_DIR, name)
+                                       for view, name in open_slot.SLOT_ICON.items()})
         plan.notes += [f'{target_name}: own model directory copied afresh from its template {_hex(template)}',
                        'stats back to the template\'s; name "Empty slot"; empty-slot portraits',
                        'the square\'s voice is kept']
@@ -396,11 +428,13 @@ def plan_clear(st: dict, config: dict, cid: int, state_file: str) -> Plan:
             if not new[icons.STOCK_KEY]:
                 del new[icons.STOCK_KEY]
             plan.notes.append(f'{target_name}: its stock portraits come back')
+            plan.effects['portrait_note'] = 'stock portraits come back'
         if new != config:
             plan.config = new
         _prepare(plan, state_file, [])
         plan.commands.append(('--unpatch', '--target-id', _hex(cid)))
         plan.notes.insert(0, f'{target_name}: vanilla High and Low models from 1_Input')
+        plan.effects['model'] = 'vanilla High and Low models'
     plan.commands.append(('--roster-state',))
     return plan
 
@@ -408,3 +442,195 @@ def plan_clear(st: dict, config: dict, cid: int, state_file: str) -> Plan:
 def _display(char: dict) -> str:
     name = char.get('default_name') or (char.get('name') or {}).get('en')
     return f'{name} ({_hex(char["id"])})' if name and name != names.UNNAMED else _hex(char['id'])
+
+
+# --------------------------------------------------------------------------
+# Batches: staged edits, one chain (decision 14)
+# --------------------------------------------------------------------------
+
+MODEL_OPS = ('patch', 'clear')
+LATER_OPS = {'rename': 5, 'voice': 7, 'stats': 7}     # ops a later plan phase brings: {op: phase}
+
+
+@dataclass
+class Edit:
+    """One staged edit (an entry of the edits file)."""
+    op: str                         # 'patch' / 'clear'; later phases: 'rename', 'voice', 'stats'
+    cid: int
+    file: str | None = None         # patch: the picked .sluggie (a joined pair: the High model)
+    low: str | None = None          # patch: a Low pick joined to a pending High pick
+    text: str | None = None         # rename
+    checked: bool = False           # its build check already passed when it was staged (dry runs skip it)
+    index: int = 0                  # position in the edits file (1-based)
+    pair: Pair | None = None
+
+    def to_json(self) -> dict:
+        out = {'op': self.op, 'id': _hex(self.cid)}
+        for key in ('file', 'low', 'text'):
+            if getattr(self, key) is not None:
+                out[key] = getattr(self, key)
+        return out
+
+
+def parse_edits(data) -> list[Edit]:
+    """The edits file's list (``{"edits": [...]}`` or the bare list); malformed entries raise ``PlanError``."""
+    items = data.get('edits') if isinstance(data, dict) else data
+    if not isinstance(items, list):
+        raise PlanError('the edits file holds no list of edits')
+    edits = []
+    for n, item in enumerate(items, 1):
+        if not isinstance(item, dict) or item.get('op') not in MODEL_OPS + tuple(LATER_OPS) or item.get('id') is None:
+            raise PlanError(f'edit {n} is not an edit: {item!r}')
+        try:
+            cid = ids._number(item['id'], 'id')
+        except (ValueError, TypeError) as exc:
+            raise PlanError(f'edit {n}: {exc}') from exc
+        edit = Edit(item['op'], cid, item.get('file'), item.get('low'), item.get('text'), bool(item.get('checked')), n)
+        if edit.op == 'patch' and not edit.file:
+            raise PlanError(f'edit {n}: a patch needs a "file"')
+        edits.append(edit)
+    return edits
+
+
+def _classify_edit(edit: Edit, classify_fn) -> Pair:
+    pair = classify_fn(edit.file)
+    if edit.low is None:
+        return pair
+    low = classify_fn(edit.low)
+    if pair.high is None or low.chunk != pair.chunk or low.stem != pair.stem or low.low is None:
+        raise PlanError(f'{os.path.basename(edit.low)} is not the Low partner of {os.path.basename(edit.file)}')
+    return Pair(pair.chunk, pair.high, low.low, edit.low, pair.stem)
+
+
+def merge_edits(edits: list[Edit], classify_fn=None) -> tuple[list[Edit], list[str], list[tuple[Edit, str]]]:
+    """``(merged, notes, refused)``: the edits in staging order after the slot rules of section 4g:
+
+    * at most one model edit (patch / clear) per slot: a later one replaces an earlier one;
+    * a Low-only pick after a pending High pick of the same character joins it as a pair; after another
+      pending High pick or a pending clear it is refused (its High model would not be the one it binds into);
+    * a clear drops the slot's earlier renames (it resets the name); a later rename replaces an earlier one."""
+    classify_fn = classify_fn or classify
+    merged: list[Edit] = []
+    notes: list[str] = []
+    refused: list[tuple[Edit, str]] = []
+
+    for edit in edits:
+        if edit.op == 'patch':
+            try:
+                edit.pair = edit.pair or _classify_edit(edit, classify_fn)
+            except PlanError as exc:
+                refused.append((edit, str(exc)))
+                continue
+        earlier = (next((e for e in merged if e.cid == edit.cid and e.op in MODEL_OPS), None)
+                   if edit.op in MODEL_OPS else None)
+        if edit.op == 'patch' and edit.pair.high is None and earlier is not None:
+            low_name = os.path.basename(edit.pair.low)
+            if earlier.op == 'clear':
+                refused.append((edit, f'{low_name} has no High partner beside it, and a clear of {_hex(edit.cid)} '
+                                      'is pending: patch the High model instead, or discard the pending clear '
+                                      'first'))
+                continue
+            p = earlier.pair
+            if p.high is None or p.chunk != edit.pair.chunk or p.stem != edit.pair.stem:
+                refused.append((edit, f'{low_name} has no High partner beside it, and binds its textures by index '
+                                      f'into its own High model, but the pending High model of {_hex(edit.cid)} '
+                                      f'is {os.path.basename(p.high or p.low)}. Patch the High model into the '
+                                      'slot (it brings its Low partner along).'))
+                continue
+            merged.remove(earlier)
+            edit = Edit('patch', edit.cid, p.high, edit.pair.low, index=edit.index,
+                        pair=Pair(p.chunk, p.high, edit.pair.low, edit.pair.picked, p.stem))
+            notes.append(f'{_hex(edit.cid)}: {low_name} joins the pending {os.path.basename(p.high)} as its Low '
+                         'partner')
+        elif earlier is not None:
+            merged.remove(earlier)
+            notes.append(f'{_hex(edit.cid)}: the pending {earlier.op} is replaced by the later {edit.op}')
+        if edit.op == 'clear':
+            for rename in [e for e in merged if e.cid == edit.cid and e.op == 'rename']:
+                merged.remove(rename)
+                notes.append(f'{_hex(edit.cid)}: the rename to "{rename.text}" is dropped: the later clear resets '
+                             'the name')
+        elif edit.op in LATER_OPS:
+            same = next((e for e in merged if e.cid == edit.cid and e.op == edit.op), None)
+            if same is not None:
+                merged.remove(same)
+        merged.append(edit)
+    return merged, notes, refused
+
+
+@dataclass
+class Batch:
+    """The merged chain of a list of edits."""
+    config: dict | None             # the derived config with every edit applied, or None: no roster rebuild
+    commands: list[tuple] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    plans: list[tuple[Edit, Plan]] = field(default_factory=list)
+    skipped: list[tuple[Edit, Plan]] = field(default_factory=list)   # clears of slots at their baseline
+    refused: list[tuple[Edit, str]] = field(default_factory=list)
+    extra_portraits: dict = field(default_factory=dict)
+
+    @property
+    def ok(self) -> bool:
+        return not self.refused
+
+    def to_json(self) -> dict:
+        def section(edit, plan):
+            return dict(plan.to_json(), edit=edit.to_json(), checked=edit.checked)
+        return {'action': 'batch', 'ok': self.ok, 'rebuild': self.config is not None,
+                'commands': [list(c) for c in self.commands], 'notes': self.notes, 'warnings': self.warnings,
+                'edits': [section(e, p) for e, p in self.plans],
+                'skipped': [section(e, p) for e, p in self.skipped],
+                'refused': [{'edit': e.to_json(), 'target': _hex(e.cid), 'error': error} for e, error in self.refused],
+                'merged': [e.to_json() for e, _p in self.plans]}
+
+
+def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: str,
+               names_text: dict | None = None, skip_checked: bool = False, classify_fn=None) -> Batch:
+    """One chain for every edit (section 4g): each edit is planned on the config the previous one left
+    (``plan_patch`` / ``plan_clear``), then the chain is
+
+    1. one ``--patch ... --validate-only`` per patched slot (``skip_checked``: not for edits whose check
+       already passed, the GUI's staging dry run);
+    2. one ``--roster --state`` when the merged config differs from the derived one;
+    3. each slot's ``--patch`` / ``--unpatch``, in staging order;
+    4. one ``--roster-state``.
+
+    Any refused edit refuses the whole batch: no commands, no config (``refused`` names them all)."""
+    merged, notes, refused = merge_edits(edits, classify_fn)
+    batch = Batch(None, notes=notes, refused=refused)
+    current = config
+    for edit in merged:
+        try:
+            if edit.op in LATER_OPS:
+                raise PlanError(f'{edit.op} edits come with plan Phase {LATER_OPS[edit.op]}')
+            if edit.op == 'patch':
+                plan = plan_patch(st, current, edit.cid, edit.pair, env, state_file, names_text)
+            else:
+                plan = plan_clear(st, current, edit.cid, state_file, env)
+        except PlanError as exc:
+            batch.refused.append((edit, str(exc)))
+            continue
+        if plan.nothing:
+            batch.skipped.append((edit, plan))
+            continue
+        if plan.config is not None:
+            current = plan.config
+        batch.plans.append((edit, plan))
+        batch.warnings += plan.warnings
+        batch.extra_portraits.update(plan.extra_portraits)
+    if batch.refused:
+        batch.refused.sort(key=lambda r: r[0].index)
+        return batch
+    if not batch.plans:
+        return batch                                 # only clears of slots at their baseline: nothing to run
+    for edit, plan in batch.plans:
+        if not (skip_checked and edit.checked):
+            batch.commands += [c for c in plan.commands if '--validate-only' in c]
+    if current != config:
+        batch.config = current
+        batch.commands.append(('--roster', '--state', state_file))
+    for _edit, plan in batch.plans:
+        batch.commands += [c for c in plan.commands if c[0] in ('--patch', '--unpatch') and '--validate-only' not in c]
+    batch.commands.append(('--roster-state',))
+    return batch

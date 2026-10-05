@@ -11,19 +11,17 @@ echo ==================
 echo Sluggers Dat Tools
 echo ==================
 echo.
-echo [1] Extract all models ^& Icons ^& 'untangle' textures, choose a roster size, enable CPU vs CPU support
-echo [2] Extract all models
-echo [3] Extract player icons
+echo [1] Extract all models ^& character icons ^& 'untangle' textures, choose a roster size, enable CPU vs CPU support
+echo [2] Extract all models ^& character icons
+echo [3] Extract character icons only (FrontIcon/SideIcon into the model folders)
 echo.
 echo [4] Patch .sluggie models or .png textures into game files
 echo [5] UnPatch .sluggie model from game files
 echo.
-echo [6] Manually resize available hammerspace (extra model data storage) - usually not necessary
-echo [7] Import edited icon sheets (.\2_Output_Models\_ICONS\sheets\)
-echo [8] Repair unused characters' models (re-split them from their playable counterparts)
+echo [6] Repair unused characters' models (re-split them from their playable counterparts)
 echo.
-echo [9] Roster expansion: inject a roster configuration into 3_Output_Dat
-echo [10] Game options: CPU vs CPU, CPU vs CPU management
+echo [7] Roster expansion: inject a roster configuration into 3_Output_Dat
+echo [8] Game options: CPU vs CPU, CPU vs CPU management
 echo.
 set "tools_choice="
 set /p "tools_choice=Enter option (or type exit to quit): "
@@ -45,14 +43,16 @@ if "!tools_choice!"=="1" (
     goto :after_command
 )
 if "!tools_choice!"=="2" (
-    set "SLUGGIES_MENU_SELECTION=2 - Export all models"
+    set "SLUGGIES_MENU_SELECTION=2 - Export all models and character icons"
     set "SLUGGIES_MODEL_FILES="
     set "SLUGGIES_ICON_SHARED_MODE="
     call !SLUGGIES_LAUNCHER! --export
+    if errorlevel 1 goto :after_command
+    call !SLUGGIES_LAUNCHER! --export-icons
     goto :after_command
 )
 if "!tools_choice!"=="3" (
-    set "SLUGGIES_MENU_SELECTION=3 - Export player icons only"
+    set "SLUGGIES_MENU_SELECTION=3 - Export character icons only"
     set "SLUGGIES_MODEL_FILES="
     set "SLUGGIES_ICON_SHARED_MODE="
     call !SLUGGIES_LAUNCHER! --export-icons
@@ -77,38 +77,23 @@ if "!tools_choice!"=="5" (
     goto :after_command
 )
 if "!tools_choice!"=="6" (
-    set "SLUGGIES_MENU_SELECTION=6 - Resize hammerspace"
-    set "SLUGGIES_MODEL_FILES="
-    set "SLUGGIES_ICON_SHARED_MODE="
-    call !SLUGGIES_LAUNCHER! -hs
-    goto :after_command
-)
-if "!tools_choice!"=="7" (
-    set "SLUGGIES_MENU_SELECTION=7 - Reimport icon sheets"
-    set "SLUGGIES_MODEL_FILES="
-    set "SLUGGIES_ICON_SHARED_MODE="
-    call !SLUGGIES_LAUNCHER! --patch-icons
-    goto :after_command
-)
-
-if "!tools_choice!"=="8" (
-    set "SLUGGIES_MENU_SELECTION=8 - Re-split unused characters"
+    set "SLUGGIES_MENU_SELECTION=6 - Re-split unused characters"
     set "SLUGGIES_MODEL_FILES="
     set "SLUGGIES_ICON_SHARED_MODE="
     call !SLUGGIES_LAUNCHER! --resplit-unused
     goto :after_command
 )
 
-if "!tools_choice!"=="9" (
-    set "SLUGGIES_MENU_SELECTION=9 - Roster expansion"
+if "!tools_choice!"=="7" (
+    set "SLUGGIES_MENU_SELECTION=7 - Roster expansion"
     set "SLUGGIES_MODEL_FILES="
     set "SLUGGIES_ICON_SHARED_MODE="
     call :roster_menu
     goto :after_command
 )
 
-if "!tools_choice!"=="10" (
-    set "SLUGGIES_MENU_SELECTION=10 - Game options"
+if "!tools_choice!"=="8" (
+    set "SLUGGIES_MENU_SELECTION=8 - Game options"
     set "SLUGGIES_MODEL_FILES="
     set "SLUGGIES_ICON_SHARED_MODE="
     call :game_options_menu

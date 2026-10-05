@@ -232,6 +232,172 @@ class ClearTests(unittest.TestCase):
                                          ('--roster-state',)])
 
 
+TOAD_HP = '/m/31 Toad/1_kinopio.gpl/1_kinopio.gpl.sluggie'
+TOAD_LOW = '/m/31 Toad/2_L_kinopio.gpl/2_L_kinopio.gpl.sluggie'
+MARIO_HP = '/m/18 Mario/1_mario.gpl/1_mario.gpl.sluggie'
+LONE_LOW = '/x/2_L_koopa.gpl/2_L_koopa.gpl.sluggie'           # a Low export with no High beside it
+PAIRS = {HP: pair(), LOW: pair(), TOAD_HP: pair(TOAD_HP, TOAD_LOW, 31, 'kinopio'),
+         MARIO_HP: pair(MARIO_HP, None, 18, 'mario'), LONE_LOW: slot_plan.Pair(27, None, LONE_LOW, LONE_LOW, 'koopa'),
+         TOAD_LOW: slot_plan.Pair(31, None, TOAD_LOW, TOAD_LOW, 'kinopio')}
+HP_ALONE = '/y/1_koopa.gpl/1_koopa.gpl.sluggie'                # a High export with no Low beside it
+PAIRS[HP_ALONE] = slot_plan.Pair(27, HP_ALONE, None, HP_ALONE, 'koopa')
+
+
+def fake_classify(path):
+    if path not in PAIRS:
+        raise slot_plan.PlanError(f'{path} is not a .sluggie file')
+    p = PAIRS[path]
+    return slot_plan.Pair(p.chunk, p.high, p.low, path, p.stem)
+
+
+def edits(*items):
+    return slot_plan.parse_edits([dict(op=op, id=cid, **({'file': f} if f else {}), **extra)
+                                  for op, cid, f, *rest in items for extra in [rest[0] if rest else {}]])
+
+
+class BaselineEnv(FakeEnv):
+    def __init__(self, baseline=(), **kwargs):
+        super().__init__(**kwargs)
+        self.baseline = set(baseline)
+
+    def at_baseline(self, char, config):
+        return char['id'] in self.baseline
+
+
+class BatchTests(unittest.TestCase):
+    def batch(self, items, env=None, st=None, **kwargs):
+        return slot_plan.plan_batch(st or make_state(), make_config(), items, env or FakeEnv(), STATE_FILE,
+                                    NAMES_TEXT, classify_fn=fake_classify, **kwargs)
+
+    def test_three_slots_give_one_rebuild_and_one_read(self):
+        batch = self.batch(edits(('patch', '0x66', HP), ('patch', '0x0D', TOAD_HP), ('clear', '0x67', None)))
+        self.assertTrue(batch.ok)
+        self.assertEqual(batch.commands, [
+            ('--patch', HP, LOW, '--target-id', '0x66', '--validate-only'),
+            ('--patch', TOAD_HP, TOAD_LOW, '--target-id', '0x0D', '--validate-only'),
+            ('--roster', '--state', STATE_FILE),
+            ('--patch', HP, LOW, '--target-id', '0x66'),
+            ('--patch', TOAD_HP, TOAD_LOW, '--target-id', '0x0D'),
+            ('--roster-state',)])
+        self.assertEqual(ids_entry(batch.config, 0x66)['model'], {'from': '0x09'})        # every edit in one config
+        self.assertEqual(ids_entry(batch.config, 0x67)['model'], {'from': '0x04'})
+        self.assertEqual(batch.config['stock_icons'], [{'id': '0x0D', 'icon': {'model': '/m/home'}}])
+        self.assertEqual(set(batch.extra_portraits), set(open_slot.SLOT_ICON.values()))
+        self.assertEqual([e['id'] for e in batch.to_json()['merged']], ['0x66', '0x0D', '0x67'])
+
+    def test_model_only_stock_patches_need_no_rebuild(self):
+        batch = self.batch(edits(('patch', '0x09', HP), ('patch', '0x0D', TOAD_HP)), env=FakeEnv(shows=True))
+        self.assertIsNone(batch.config)
+        self.assertNotIn(('--roster', '--state', STATE_FILE), batch.commands)
+        self.assertEqual(batch.commands[-3:], [('--patch', HP, LOW, '--target-id', '0x09'),
+                                               ('--patch', TOAD_HP, TOAD_LOW, '--target-id', '0x0D'),
+                                               ('--roster-state',)])
+
+    def test_a_refused_edit_refuses_the_batch(self):
+        env = FakeEnv(skeleton_errors=['105 vs 89 bones'])
+        batch = self.batch(edits(('patch', '0x66', HP), ('patch', '0x0D', HP), ('patch', '0x99', HP)), env=env)
+        self.assertFalse(batch.ok)
+        self.assertEqual(batch.commands, [])
+        self.assertIsNone(batch.config)
+        self.assertEqual([(e.index, e.cid) for e, _msg in batch.refused], [(2, 0x0D), (3, 0x99)])
+        self.assertIn('skeletons do not match', batch.refused[0][1])
+        self.assertIn('not a slot', batch.refused[1][1])
+
+    def test_last_model_edit_wins(self):
+        batch = self.batch(edits(('patch', '0x66', HP), ('patch', '0x66', TOAD_HP)))
+        self.assertEqual([(e.cid, e.file) for e, _p in batch.plans], [(0x66, TOAD_HP)])
+        batch = self.batch(edits(('patch', '0x0D', TOAD_HP), ('clear', '0x0D', None)))
+        self.assertEqual([e.op for e, _p in batch.plans], ['clear'])
+        self.assertEqual(batch.commands, [('--unpatch', '--target-id', '0x0D'), ('--roster-state',)])
+        self.assertTrue(any('replaced by the later clear' in n for n in batch.notes))
+
+    def test_low_pick_joins_a_pending_high_pick(self):
+        batch = self.batch(edits(('patch', '0x09', HP_ALONE), ('patch', '0x09', LONE_LOW)))
+        self.assertTrue(batch.ok)
+        (edit, plan), = batch.plans
+        self.assertEqual((edit.file, edit.low), (HP_ALONE, LONE_LOW))
+        self.assertEqual(batch.commands[-2], ('--patch', HP_ALONE, LONE_LOW, '--target-id', '0x09'))  # no --as-low
+        self.assertEqual(batch.to_json()['merged'], [{'op': 'patch', 'id': '0x09', 'file': HP_ALONE, 'low': LONE_LOW}])
+        # the staged pair comes back from the edits file as the same pair
+        again = self.batch(slot_plan.parse_edits(batch.to_json()['merged']))
+        self.assertEqual(again.commands, batch.commands)
+
+    def test_low_rule_sees_the_pending_high_pick(self):
+        # In the game 0x09 still has its own Bowser model, but the pending High pick is Mario's: refused.
+        env = FakeEnv(high_stems={0x09: 'koopa'})
+        batch = self.batch(edits(('patch', '0x09', MARIO_HP), ('patch', '0x09', LONE_LOW)), env=env)
+        self.assertFalse(batch.ok)
+        self.assertIn('pending High model of 0x09 is 1_mario.gpl.sluggie', batch.refused[0][1])
+        batch = self.batch(edits(('clear', '0x09', None), ('patch', '0x09', LONE_LOW)), env=env)
+        self.assertIn('clear of 0x09 is pending', batch.refused[0][1])
+        self.assertTrue(self.batch(edits(('patch', '0x09', LONE_LOW)), env=env).ok)     # no pending pick: the game
+
+    def test_clear_then_rename_and_rename_then_clear(self):
+        merged, notes, refused = slot_plan.merge_edits(
+            edits(('rename', '0x66', None, {'text': 'Early'}), ('clear', '0x66', None),
+                  ('rename', '0x66', None, {'text': 'Late'})), fake_classify)
+        self.assertEqual([(e.op, e.text) for e in merged], [('clear', None), ('rename', 'Late')])
+        self.assertTrue(any('"Early" is dropped' in n for n in notes))
+        self.assertEqual(refused, [])
+        # rename ops are not written before Phase 5: the batch refuses them
+        batch = self.batch(edits(('rename', '0x66', None, {'text': 'Late'})))
+        self.assertIn('Phase 5', batch.refused[0][1])
+
+    def test_voice_rule_counts_pending_patches(self):
+        batch = self.batch(edits(('patch', '0x66', HP), ('patch', '0x67', TOAD_HP)))
+        self.assertEqual(batch.config['grid']['squares'][0], {'members': ['0x66', '0x67'], 'voice': '0x09'})
+        self.assertTrue(any('voice' in n for n in batch.plans[0][1].notes))
+        self.assertFalse(any('voice' in n for n in batch.plans[1][1].notes))
+        self.assertEqual(ids_entry(batch.config, 0x67)['stats'], '0x0D')                 # stats stay per slot
+
+    def test_batch_of_one_equals_the_single_plans(self):
+        for edit, single in (
+                (('patch', '0x66', HP), lambda: slot_plan.plan_patch(make_state(), make_config(), 0x66, pair(),
+                                                                     FakeEnv(), STATE_FILE, NAMES_TEXT)),
+                (('patch', '0x09', HP), lambda: slot_plan.plan_patch(make_state(), make_config(), 0x09, pair(),
+                                                                     FakeEnv(shows=True), STATE_FILE, NAMES_TEXT)),
+                (('clear', '0x67', None), lambda: slot_plan.plan_clear(make_state(), make_config(), 0x67, STATE_FILE)),
+                (('clear', '0x0D', None), lambda: slot_plan.plan_clear(make_state(), make_config(), 0x0D, STATE_FILE))):
+            with self.subTest(edit=edit):
+                plan = single()
+                env = FakeEnv(shows=True) if edit[1] == '0x09' else FakeEnv()
+                batch = self.batch(edits(edit), env=env)
+                self.assertEqual(batch.commands, plan.commands)
+                self.assertEqual(batch.config, plan.config)
+
+    def test_staging_dry_run_skips_checked_build_checks(self):
+        items = edits(('patch', '0x66', HP, {'checked': True}), ('patch', '0x0D', TOAD_HP))
+        batch = self.batch(items, skip_checked=True)
+        self.assertEqual([c for c in batch.commands if '--validate-only' in c],
+                         [('--patch', TOAD_HP, TOAD_LOW, '--target-id', '0x0D', '--validate-only')])
+        self.assertEqual(len([c for c in self.batch(items).commands if '--validate-only' in c]), 2)
+
+    def test_clear_at_baseline_is_skipped(self):
+        batch = self.batch(edits(('clear', '0x0D', None)), env=BaselineEnv({0x0D}))
+        self.assertEqual((batch.commands, batch.plans), ([], []))
+        self.assertTrue(batch.ok)
+        self.assertTrue(batch.to_json()['skipped'][0]['nothing'])
+        self.assertIn('nothing to clear', batch.skipped[0][1].notes[0])
+        # a pending patch then the clear: the clear replaces it and is skipped, so nothing stays pending
+        batch = self.batch(edits(('patch', '0x0D', TOAD_HP), ('clear', '0x0D', None)), env=BaselineEnv({0x0D}))
+        self.assertEqual(batch.to_json()['merged'], [])
+
+    def test_effects_for_the_pending_view(self):
+        batch = self.batch(edits(('patch', '0x66', HP), ('clear', '0x67', None)))
+        effects = batch.plans[0][1].effects
+        self.assertEqual(effects['name'], 'Bowser')
+        self.assertEqual(effects['stats'], 'Bowser (0x09)')
+        self.assertEqual(effects['voice'], 'Bowser (0x09) (square voice)')
+        self.assertEqual(effects['portraits'], {'front': '/m/home/icon/FrontIcon.png', 'side': '/m/home/icon/SideIcon.png'})
+        self.assertEqual(batch.plans[1][1].effects['name'], 'Empty slot')
+        self.assertTrue(batch.plans[1][1].effects['portraits']['front'].endswith(open_slot.SLOT_ICON['front']))
+
+    def test_malformed_edits_are_refused(self):
+        for data in ({'edits': 'x'}, [{'op': 'paint', 'id': '0x66'}], [{'op': 'patch', 'id': '0x66'}]):
+            with self.subTest(data=data), self.assertRaises(slot_plan.PlanError):
+                slot_plan.parse_edits(data)
+
+
 def write_sluggie(folder, name, chunk, file_index, geo):
     os.makedirs(folder, exist_ok=True)
     path = os.path.join(folder, name)
@@ -281,6 +447,27 @@ class SlotCliTests(unittest.TestCase):
                 self.assertEqual(slot_cli.main(['--clear', '0x0D', '--output-dir', out]), 1)
             self.assertEqual(os.listdir(folder), [])
 
+    def test_refused_batch_writes_only_the_plan(self):
+        """A refused edit: the plan names it and holds no commands; no derived config is written."""
+        with tempfile.TemporaryDirectory() as out:
+            refused = slot_plan.Batch(None, refused=[(slot_plan.Edit('patch', 0x0D, 'a.sluggie', index=2), 'bones')])
+            with mock.patch.object(slot_cli.state_cli, '_open', return_value=(None, None)), \
+                    mock.patch.object(slot_cli.state, 'read_state', return_value={}), \
+                    mock.patch.object(slot_cli.state, 'read_names', return_value={}), \
+                    mock.patch.object(slot_cli.derive, 'derive', return_value=mock.Mock(config={}, warnings=[], portraits={})), \
+                    mock.patch.object(slot_cli.slot_plan, 'plan_batch', return_value=refused), \
+                    mock.patch.object(slot_cli.derive, 'write') as write:
+                edits_file = os.path.join(out, 'edits.json')
+                with open(edits_file, 'w') as f:
+                    json.dump({'edits': [{'op': 'clear', 'id': '0x66'}, {'op': 'patch', 'id': '0x0D', 'file': 'a'}]}, f)
+                self.assertEqual(slot_cli.main(['--apply', edits_file, '--output-dir', out]), 1)
+            write.assert_not_called()
+            with open(slot_cli.plan_path(out), encoding='utf-8') as f:
+                plan = json.load(f)
+            self.assertEqual((plan['ok'], plan['commands']), (False, []))
+            self.assertEqual(plan['refused'], [{'edit': {'op': 'patch', 'id': '0x0D', 'file': 'a.sluggie'},
+                                                'target': '0x0D', 'error': 'bones'}])
+
 
 class DispatchTests(unittest.TestCase):
     """``start.py --patch-slot``: the planner first, then its commands in order, stopping at a failure."""
@@ -328,6 +515,13 @@ class DispatchTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(len(calls), 2)
         self.assertEqual(calls[1][-1], '--validate-only')
+
+    def test_edits_file_dry_run_tells_the_planner(self):
+        results = [mock.Mock(returncode=0) for _ in range(4)]
+        with mock.patch('start.subprocess.run', side_effect=results) as run:
+            self.assertTrue(self.start.run_slot_chain(edits_file='e.json', dry_run=True))
+        planner = run.call_args_list[0].args[0]
+        self.assertEqual(planner[-3:], ['--apply', os.path.abspath('e.json'), '--dry-run'])
 
     def test_dry_run_of_a_clear_only_plans(self):
         ok, calls = self.run_chain([0], dry_run=True)                          # no build check in this chain

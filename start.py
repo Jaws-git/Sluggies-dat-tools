@@ -50,9 +50,7 @@ EXPORT_SCRIPT = os.path.join(ROOT_DIR, 'SluggiesTools', 'export.py')
 TOOLS_DIR = os.path.join(ROOT_DIR, 'SluggiesTools')
 ICONS_DIR = os.path.join(TOOLS_DIR, 'Icons')
 ICON_EXPORT_SCRIPT = os.path.join(ICONS_DIR, 'export_icons.py')
-ICON_PATCH_SCRIPT = os.path.join(ICONS_DIR, 'patch_icons_inplace.py')
 HS_DIR = os.path.join(TOOLS_DIR, 'Hammerspace')
-HS_HELPER_SCRIPT = os.path.join(HS_DIR, 'HammerspaceHelper.py')
 HS_MAIN_SCRIPT = os.path.join(HS_DIR, 'HammerspaceMain.py')
 UNTANGLE_POLICY_SCRIPT = os.path.join(HS_DIR, 'UntanglePolicy.py')
 ROSTER_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'runner.py')
@@ -111,10 +109,6 @@ def run_gui():
     _run_gui(prefix, ROOT_DIR)
 
 
-def run_hammerspace_helper():
-    subprocess.run(python_script_command(HS_HELPER_SCRIPT), cwd=HS_DIR, check=True)
-
-
 def run_resplit_unused():
     """Give re-tangled unused-character routes their own block copies again."""
     subprocess.run(python_script_command(UNTANGLE_POLICY_SCRIPT), cwd=HS_DIR, check=True)
@@ -150,15 +144,24 @@ def self_command(*args):
     return [sys.executable, os.path.abspath(__file__), *args]
 
 
-def run_slot_chain(target_id, sluggie=None, dry_run=False):
-    """Patch a .sluggie (and its HP/L_ partner) into a slot, or clear the slot (``sluggie`` None): plan the chain
-    (Roster/slot_cli.py: read, derive, apply the change; a refused change writes nothing), then run its commands
-    in order, stopping at the first failure. Returns True on success.
+def run_slot_chain(target_id=None, sluggie=None, dry_run=False, edits_file=None):
+    """Write staged slot edits as one chain: an edits file (``edits_file``, ``--apply-slots``), or a batch of one:
+    patch a .sluggie (and its HP/L_ partner) into a slot, or clear the slot (``sluggie`` None). Plans the chain
+    (Roster/slot_cli.py: read and derive once, apply every edit; a refused edit refuses the batch and writes
+    nothing), then runs its commands in order, stopping at the first failure. Returns True on success.
 
-    ``dry_run`` plans and runs only the chain's build check (``--validate-only``: every block built and validated,
-    nothing written); the GUI's confirm dialog shows its result."""
+    ``dry_run`` plans and runs only the chain's build checks (``--validate-only``: every block built and validated,
+    nothing written; edits marked "checked" in the edits file are skipped); the GUI's confirm dialogs show its
+    result."""
     cmd = python_script_command(ROSTER_SLOT_SCRIPT)
-    cmd += ['--patch', target_id, os.path.abspath(sluggie)] if sluggie else ['--clear', target_id]
+    if edits_file:
+        cmd += ['--apply', os.path.abspath(edits_file)]
+    elif sluggie:
+        cmd += ['--patch', target_id, os.path.abspath(sluggie)]
+    else:
+        cmd += ['--clear', target_id]
+    if dry_run:
+        cmd.append('--dry-run')
     if subprocess.run(cmd, cwd=TOOLS_DIR).returncode != 0:
         return False
     with open(SLOT_PLAN_FILE, 'r', encoding='utf-8') as f:
@@ -172,7 +175,7 @@ def run_slot_chain(target_id, sluggie=None, dry_run=False):
                           source="dispatcher")
             return False
     if dry_run:
-        slogger.info('Dry run: the chain above was planned and its build check ran; nothing was written.',
+        slogger.info('Dry run: the chain above was planned and its build checks ran; nothing was written.',
                      source="dispatcher")
     return True
 
@@ -214,14 +217,12 @@ def run_export(debug=False, notex=False, untangle=False, glb=False):
 
 
 def run_export_icons(use_output=False):
-    if importlib.util.find_spec('PIL') is None:
-        slogger.error("Missing required package: Pillow", source="dispatcher")
-        slogger.error("Run: pip install Pillow", source="dispatcher")
-        sys.exit(1)
-    if importlib.util.find_spec('numpy') is None:
-        slogger.error("Missing required package: numpy", source="dispatcher")
-        slogger.error("Run: pip install numpy", source="dispatcher")
-        sys.exit(1)
+    """Write each character's FrontIcon.png/SideIcon.png into its model folder in 2_Output_Models."""
+    for package, name in (('PIL', 'Pillow'), ('numpy', 'numpy')):
+        if importlib.util.find_spec(package) is None:
+            slogger.error(f"Missing required package: {name}", source="dispatcher")
+            slogger.error(f"Run: pip install {name}", source="dispatcher")
+            sys.exit(1)
 
     cmd = python_script_command(ICON_EXPORT_SCRIPT)
     if use_output:
@@ -238,22 +239,7 @@ def run_export_icons(use_output=False):
         cwd=TOOLS_DIR,
         check=True
     )
-    slogger.info('Icon export complete. Find your files in the folder "2_Output_Models/_ICONS"', source="dispatcher")
-
-
-def run_patch_icons(source=None, dry_run=False):
-    cmd = python_script_command(ICON_PATCH_SCRIPT)
-    if source:
-        cmd.append(source)
-    if dry_run:
-        cmd.append('--dry-run')
-
-    subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
-
-    if dry_run:
-        slogger.info('Icon reimport dry-run complete. Check metadata [META]/reimport_report.json for details.', source="dispatcher")
-    else:
-        slogger.info('Icon reimport complete. Patched DAT is in the folder "3_Output_Dat"', source="dispatcher")
+    slogger.info('Icon export complete: FrontIcon.png/SideIcon.png are in each character model folder', source="dispatcher")
 
 
 def hammerspace_section_args(model):
@@ -630,8 +616,6 @@ def parse_args():
             '  python start.py --game-options --off cpu_management\n'
             '  python start.py --export-icons\n'
             '  python start.py --export-icons --use-output\n'
-            '  python start.py --patch-icons\n'
-            '  python start.py --patch-icons --dry-run\n'
             '  python start.py --patch model.sluggie\n'
             '  python start.py --patch model1.sluggie model2.sluggie\n'
             '  python start.py --patch texture.png\n'
@@ -642,7 +626,7 @@ def parse_args():
             '  python start.py --unpatch --target-id 0x4A\n'
             '  python start.py --patch-slot 0xE1 path/to/model.gpl.sluggie\n'
             '  python start.py --clear-slot 0xE1\n'
-            '  python start.py --hammerspace\n'
+            '  python start.py --apply-slots 3_Output_Dat/_gui/slot/edits.json --dry-run\n'
             '  python start.py --resplit-unused\n'
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter
@@ -653,28 +637,21 @@ def parse_args():
     mode.add_argument('--unpatch', nargs='*', metavar='FILENAME', help="restore original data for one or more .sluggies files (with --target-id and no files: that stock slot's high- and low-poly models)")
     mode.add_argument('--patch-slot', nargs=2, metavar=('0xNN', 'FILE'), help='put a .sluggie (and its HP/L_ partner) into a slot: read -> rebuild (own model directory, stats, voice, name, portraits) -> patch (GUI character grid)')
     mode.add_argument('--clear-slot', metavar='0xNN', help='return a slot to its baseline: a stock slot gets its vanilla models and portraits back, a new ID a fresh copy of its template and the open-slot look')
-    mode.add_argument('-hs', '--hammerspace', action='store_true', help='change available memory space in outputdt_na.dat')
+    mode.add_argument('--apply-slots', metavar='FILE', help='write staged slot edits (an edits file with patch/clear edits per slot, as the GUI\'s "Patch Game" writes it) as one chain: read once, at most one roster rebuild, then the slot patches')
     mode.add_argument('--resplit-unused', action='store_true', help='repair: give unused-character routes (dirs 89-94) that point at a playable character\'s block their own copy again')
     mode.add_argument('--roster', '--roster-dev', dest='roster', action='store_true', help='inject a roster configuration (--config, e.g. from 1_Input/_RosterConfigurations) into 3_Output_Dat, replacing the previous injection')
     mode.add_argument('--roster-state', action='store_true', help='read the draft grid from 3_Output_Dat into 3_Output_Dat/_gui/roster_state.json (used by the GUI)')
     mode.add_argument('--roster-derive', action='store_true', help='write the roster config that rebuilds 3_Output_Dat as it is into 3_Output_Dat/_gui/derived (read -> rebuild; then --roster --state)')
     mode.add_argument('--game-options', action='store_true', help='show or change game options (CPU vs CPU, ...) in 3_Output_Dat/main.dol; use with --on/--off')
     mode.add_argument('--export', action='store_true', help='export all models from 1_Input to 2_Output_Models')
-    mode.add_argument('--export-icons', action='store_true', help='export character-select icon atlases and metadata to 2_Output_Models/_ICONS')
-    mode.add_argument(
-        '--patch-icons',
-        nargs='?',
-        const='',
-        metavar='SOURCE',
-        help='reimport icon sheets and patch dt_na.dat using metadata from _ICONS (optional SOURCE path)'
-    )
+    mode.add_argument('--export-icons', action='store_true', help="write each character's FrontIcon.png/SideIcon.png into its model folder in 2_Output_Models")
 
     parser.add_argument('--debug', action='store_true', help='export only: write binary blobs as raw byte arrays instead of base64')
     parser.add_argument('--notex', action='store_true', help='export only: skip texture extraction')
     parser.add_argument('--untangle', action='store_true', help='export only: pass untangling flag through to export process')
     parser.add_argument('--glb', action='store_true', help='export only: also write .glb model files to disk (always writes .sluggie files)')
     parser.add_argument('--use-output', action='store_true', help='export-icons only: read DOL/DAT from 3_Output_Dat instead of 1_Input')
-    parser.add_argument('--dry-run', action='store_true', help='patch-icons/roster: validate without writing bytes')
+    parser.add_argument('--dry-run', action='store_true', help='roster/game-options/slot chains: validate without writing bytes')
     parser.add_argument('--config', metavar='PATH', help='roster only: the roster configuration JSON')
     parser.add_argument('--state', metavar='PATH', help='roster only: a derived config (--roster-derive) instead of --config')
     parser.add_argument('--target-id', metavar='0xNN', help="patch/unpatch only: write the .sluggie models into this character ID's slot instead of their own route (always Hammerspace)")
@@ -696,10 +673,10 @@ def parse_args():
         parser.error('--glb can only be used with --export.')
     if args.use_output and not args.export_icons:
         parser.error('--use-output can only be used with --export-icons.')
-    if args.dry_run and not (args.patch_icons is not None or args.roster or args.game_options
-                             or args.patch_slot or args.clear_slot):
-        parser.error('--dry-run can only be used with --patch-icons, --roster, --game-options, --patch-slot or '
-                     '--clear-slot.')
+    if args.dry_run and not (args.roster or args.game_options
+                             or args.patch_slot or args.clear_slot or args.apply_slots):
+        parser.error('--dry-run can only be used with --roster, --game-options, --patch-slot, '
+                     '--clear-slot or --apply-slots.')
     if (args.on or args.off) and not args.game_options:
         parser.error('--on and --off can only be used with --game-options.')
     if (args.config or args.remove or args.state) and not args.roster:
@@ -718,7 +695,7 @@ def parse_args():
         parser.error('--config and --state cannot be used together.')
     if args.roster and not (args.config or args.remove or args.state):
         parser.error('--roster needs --config PATH (a roster configuration), --state PATH or --remove.')
-    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.hammerspace, args.resplit_unused, args.export, args.export_icons, args.patch_icons is not None, args.roster, args.roster_state, args.roster_derive, args.game_options]):
+    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.apply_slots, args.resplit_unused, args.export, args.export_icons, args.roster, args.roster_state, args.roster_derive, args.game_options]):
         if len(sys.argv) == 1:
             args.gui = True
         else:
@@ -779,8 +756,6 @@ def main() -> int:
     try:
         if args.gui:
             run_gui()
-        elif args.hammerspace:
-            run_hammerspace_helper()
         elif args.resplit_unused:
             run_resplit_unused()
         elif args.roster:
@@ -795,12 +770,6 @@ def main() -> int:
             run_export(debug=args.debug, notex=args.notex, untangle=args.untangle, glb=args.glb)
         elif args.export_icons:
             run_export_icons(use_output=args.use_output)
-        elif args.patch_icons is not None:
-            source_path = args.patch_icons if args.patch_icons != '' else None
-            run_patch_icons(
-                source=source_path,
-                dry_run=args.dry_run,
-            )
         elif args.patch:
             # A failed slot patch fails the command (the apply chain stops on it); plain patches keep going.
             if not run_patching(args.patch, unpatch=False, target_id=args.target_id, as_low=args.as_low,
@@ -818,6 +787,9 @@ def main() -> int:
                 return 1
         elif args.clear_slot:
             if not run_slot_chain(args.clear_slot, dry_run=args.dry_run):
+                return 1
+        elif args.apply_slots:
+            if not run_slot_chain(edits_file=args.apply_slots, dry_run=args.dry_run):
                 return 1
 
         slogger.info("Command completed", source="dispatcher")

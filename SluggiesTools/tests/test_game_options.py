@@ -1,4 +1,4 @@
-"""Game options (menu [10]): CPU vs CPU hooks in main.dol, their runner, and survival of roster runs."""
+"""Game options (menu [8]): CPU vs CPU hooks in main.dol, their runner, and survival of roster runs."""
 
 import json
 import os

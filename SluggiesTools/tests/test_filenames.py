@@ -25,9 +25,8 @@ renames one is caught immediately. Additional user PNGs are allowed in model
 Scope
 -----
 Only **model textures** are checked: every ``.png`` under ``2_Output_Models``
-that is NOT inside the icon pipeline (``_ICONS``) and NOT in the scratch space
-(``tex_temp``). Icon sheets, icon metadata, and palette-only artifacts are
-intentionally out of scope. (Indexed textures carry their palette hash inside
+that is NOT inside a leftover ``_ICONS`` folder (the removed icon sheet export)
+and NOT in the scratch space (``tex_temp``). (Indexed textures carry their palette hash inside
 the same ``tex*.png`` filename, so they are model textures and are included.)
 The per-character ``icon/FrontIcon.png`` and ``icon/SideIcon.png`` in each HP
 model folder are always exported, so they are pinned too; their fixed names
@@ -61,7 +60,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 OUTPUT_DIR = REPO_ROOT / "2_Output_Models"
 
 # Directories that are not model textures and must be ignored:
-#   _ICONS   -> icon export / reimport pipeline (sheets, raw, metadata)
+#   _ICONS   -> leftover output of the removed icon sheet export (may still exist)
 #   tex_temp -> per-export scratch space (cleared on each export)
 EXCLUDED_DIR_NAMES = frozenset({"_ICONS", "tex_temp"})
 

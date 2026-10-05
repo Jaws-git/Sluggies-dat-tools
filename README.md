@@ -87,7 +87,6 @@ The gui now offers a grid view that lets you edit any slot of the roster individ
 TODO: add CLI documentation
 
 ## Icon Editing
-TODO: Update Icon guide
 See [Icon Guide](_docs/IconGuide.md)
 
 

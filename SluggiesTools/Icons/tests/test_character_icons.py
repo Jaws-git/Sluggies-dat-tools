@@ -73,6 +73,22 @@ class CharacterIconCellTests(unittest.TestCase):
         self.assertIn('page 0x7F', problems[1])
 
 
+class PageDecodeTests(unittest.TestCase):
+    def test_reads_descriptors_and_decodes_ia8(self):
+        # bank +0x20: u16 page count; descriptors from +0x24; image offsets count from +0x20
+        bank = bytearray(0x80)
+        struct.pack_into('>H', bank, 0x20, 2)
+        struct.pack_into('>IIHH', bank, 0x24, 0x40, 0, 4, 4)
+        bank[0x24 + 0x17] = 0x03                                      # IA8
+        bank[0x44 + 0x17] = 0x7F                                      # unknown format: left out
+        bank[0x60:0x80] = bytes((0x80, 0x10)) * 16                    # alpha 0x80, intensity 0x10
+        pages = export_icons._page_descriptors(bytes(bank))
+        self.assertEqual(set(pages), {0})
+        image = export_icons._decode_page(bytes(bank), pages[0])
+        self.assertEqual((image.mode, image.size), ('RGBA', (4, 4)))
+        self.assertEqual(image.getpixel((3, 3)), (0x10, 0x10, 0x10, 0x80))
+
+
 class HomeFolderTests(unittest.TestCase):
     def test_picks_the_high_poly_folder(self):
         with tempfile.TemporaryDirectory() as root:
