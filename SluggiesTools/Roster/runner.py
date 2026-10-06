@@ -11,6 +11,9 @@ the files in ``3_Output_Dat`` (the normal pipeline's output).
   read -> rebuild) with its portraits in the ``icons`` folder beside it.
 * Game options (``GameOptions/``, menu [8]) that are on before the reset are
   applied again afterwards.
+* Stat edits (values that differ from what the roster itself writes, e.g.
+  from the stat editor) are read before the reset and written onto the new
+  layout by character ID (``StatEditor/carry.py``); removed IDs lose theirs.
 * ``--dry-run`` runs everything in memory and writes nothing.
 * After the steps it stores a manifest (``manifest.py``) of the facts only
   hook code holds, so ``state.py`` can read the roster back.
@@ -33,10 +36,12 @@ import slogger  # noqa: E402
 try:
     from ..Dol import dolfile
     from ..GameOptions import game_options
+    from ..StatEditor import bridge, carry
     from . import datfile, derive, dol_hammerspace, manifest, model_dirs, reset, steps
 except ImportError:
     from Dol import dolfile
     from GameOptions import game_options
+    from StatEditor import bridge, carry
     import datfile
     import derive
     import dol_hammerspace
@@ -127,6 +132,12 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
         vanilla = f.read()
     dat = datfile.DatFile(dat_path) if os.path.isfile(dat_path) else None
     options = game_options.detect(dolfile.DolImage(current))
+    stat_log: list[str] = []
+    try:
+        stat_edits = carry.detect(dolfile.DolImage(current), dolfile.DolImage(vanilla))
+    except (bridge.BridgeError, dolfile.DolError) as exc:
+        stat_edits = None
+        stat_log.append(f'[stat edits] not carried over, the old roster could not be read: {exc}')
     try:
         keep = model_dirs.config_routes(config) if config is not None else []
     except ValueError as exc:
@@ -150,6 +161,14 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
             result['steps'].append({'key': step.key, 'title': step.title, 'log': list(lines)})
             log += [f'[{step.key}] {line}' for line in lines]
         log.append(write_manifest(ctx))
+        dol_bytes = image.to_bytes()
+    log += stat_log
+    if stat_edits:
+        image = dolfile.DolImage(dol_bytes)
+        try:
+            log += [f'[stat edits] {line}' for line in carry.apply(image, stat_edits)]
+        except bridge.BridgeError as exc:
+            raise RosterDevError(f'stat edits could not be carried over: {exc}') from exc
         dol_bytes = image.to_bytes()
     if options:
         image = dolfile.DolImage(dol_bytes)

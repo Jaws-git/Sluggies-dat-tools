@@ -60,6 +60,7 @@ ROSTER_PACK_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'pack_cli.py')
 PACK_PLAN_FILE = os.path.join(ROOT_DIR, '3_Output_Dat', '_gui', 'pack', 'plan.json')
 SLOT_PLAN_FILE = os.path.join(ROOT_DIR, '3_Output_Dat', '_gui', 'slot', 'plan.json')
 GAME_OPTIONS_SCRIPT = os.path.join(TOOLS_DIR, 'GameOptions', 'runner.py')
+STAT_EDITOR_SCRIPT = os.path.join(TOOLS_DIR, 'StatEditor', 'cli.py')
 
 # Model directory indices that hold unused characters (see folderNameMap in
 # export.py). These characters share a playable character's model block and
@@ -254,6 +255,14 @@ def run_game_options(on=(), off=(), dry_run=False):
     if dry_run:
         cmd.append('--dry-run')
     subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
+
+
+def run_stat_bridge_export(path, focus=None):
+    """Write the stat editor bridge (stat_bridge.json) for 3_Output_Dat to ``path`` (StatEditor/cli.py)."""
+    cmd = python_script_command(STAT_EDITOR_SCRIPT, '--export', os.path.abspath(path))
+    if focus:
+        cmd += ['--focus', focus]
+    return subprocess.run(cmd, cwd=TOOLS_DIR).returncode == 0
 
 
 def run_export(debug=False, notex=False, untangle=False, glb=False):
@@ -724,6 +733,7 @@ def parse_args():
     mode.add_argument('--roster-state', action='store_true', help='read the draft grid from 3_Output_Dat into 3_Output_Dat/_gui/roster_state.json (used by the GUI)')
     mode.add_argument('--roster-derive', action='store_true', help='write the roster config that rebuilds 3_Output_Dat as it is into 3_Output_Dat/_gui/derived (read -> rebuild; then --roster --state)')
     mode.add_argument('--game-options', action='store_true', help='show or change game options (CPU vs CPU, ...) in 3_Output_Dat/main.dol; use with --on/--off')
+    mode.add_argument('--stat-bridge-export', metavar='FILE', help="write the Sluggers Stat Editor's bridge file (where 3_Output_Dat/main.dol keeps every stat table, the characters, the baseline values) to FILE")
     mode.add_argument('--export', action='store_true', help='export all models from 1_Input to 2_Output_Models')
     mode.add_argument('--export-icons', action='store_true', help="write each character's FrontIcon.png/SideIcon.png into its model folder in 2_Output_Models")
 
@@ -743,6 +753,7 @@ def parse_args():
     parser.add_argument('--equipment', metavar='FILE', help="--patch-slot: the slot file (2 bat, 3 left glove, 4 right glove, 5 extra bat; or bat, glove_l, glove_r, extra) a bat or glove .sluggie goes to (default: the file it was exported from); --clear-slot: reset only that equipment file, or 'all' four, instead of the models")
     parser.add_argument('--no-gear', action='store_true', help="--patch-slot of a model into a new ID: do not take the model's bats and gloves along")
     parser.add_argument('--no-trim', action='store_true', help='set-icon only: do not crop the transparent border before fitting')
+    parser.add_argument('--focus', metavar='0xNN', help='stat-bridge-export only: the character the stat editor preselects')
     parser.add_argument('--remove', action='store_true', help='roster only: reset the roster to vanilla (against 1_Input) and stop')
     parser.add_argument('--on', nargs='+', default=[], metavar='OPTION', help='game-options only: turn these options on (cpu_vs_cpu, cpu_management)')
     parser.add_argument('--off', nargs='+', default=[], metavar='OPTION', help='game-options only: turn these options off')
@@ -773,6 +784,8 @@ def parse_args():
         parser.error('--fit and --no-trim can only be used with --set-icon.')
     if args.set_icon and args.set_icon[1] not in ('front', 'side'):
         parser.error('--set-icon VIEW must be front or side.')
+    if args.focus and not args.stat_bridge_export:
+        parser.error('--focus can only be used with --stat-bridge-export.')
     if (args.on or args.off) and not args.game_options:
         parser.error('--on and --off can only be used with --game-options.')
     if (args.config or args.remove or args.state) and not args.roster:
@@ -795,7 +808,7 @@ def parse_args():
         parser.error('--config and --state cannot be used together.')
     if args.roster and not (args.config or args.remove or args.state):
         parser.error('--roster needs --config PATH (a roster configuration), --state PATH or --remove.')
-    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.rename_slot, args.set_voice, args.set_stats, args.set_icon, args.apply_slots, args.save_roster, args.load_roster, args.write_slot_blocks, args.write_slot_equipment, args.resplit_unused, args.export, args.export_icons, args.roster, args.roster_state, args.roster_derive, args.game_options]):
+    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.rename_slot, args.set_voice, args.set_stats, args.set_icon, args.apply_slots, args.save_roster, args.load_roster, args.write_slot_blocks, args.write_slot_equipment, args.resplit_unused, args.export, args.export_icons, args.roster, args.roster_state, args.roster_derive, args.game_options, args.stat_bridge_export]):
         if len(sys.argv) == 1:
             args.gui = True
         else:
@@ -866,6 +879,9 @@ def main() -> int:
             run_roster_state(derive=True)
         elif args.game_options:
             run_game_options(on=args.on, off=args.off, dry_run=args.dry_run)
+        elif args.stat_bridge_export:
+            if not run_stat_bridge_export(args.stat_bridge_export, focus=args.focus):
+                return 1
         elif args.export:
             run_export(debug=args.debug, notex=args.notex, untangle=args.untangle, glb=args.glb)
         elif args.export_icons:

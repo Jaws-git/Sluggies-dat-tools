@@ -67,6 +67,7 @@ import numpy as np
 from PIL import Image
 
 import gui_grid
+import native_dialog
 
 ICON = (48, 51)                  # the game's portrait size
 GRID_SCALE, SWATCH_SCALE, SLOT_SCALE = 1.5, 2, 3
@@ -79,6 +80,7 @@ OFF_GRID_GAP = 24                # space between the grid and the squares beside
 SWATCH = (128, SWATCH_SCALE * ICON[1] + 2 * FRAME + 2 * 22)
 PAD = 16
 GAP = 8
+BOX_MARGIN = 20                  # free space above and below a level's box
 LINE = 26                        # text line height (Segoe UI 16 pt, with spacing)
 SLOT_W = 720                     # level 2 may be wider than level 1: each level is its own window
 PORTRAIT = (SLOT_SCALE * ICON[0], SLOT_SCALE * ICON[1])
@@ -506,12 +508,29 @@ class CharacterGridTab:
             dpg.focus_item(self.confirm)
 
     def _box(self, width, height):
+        """A level's window, centred. Taller than the viewport: the GUI window grows down to fit (not when
+        maximized, at most to the bottom of the screen's work area); what still does not fit scrolls."""
         vw, vh = dpg.get_viewport_client_width(), dpg.get_viewport_client_height()
+        vh += self._grow_viewport(height + 2 * BOX_MARGIN - vh)
+        height = min(height, max(LINE, vh - 2 * BOX_MARGIN))
         box = dpg.add_window(no_title_bar=True, no_resize=True, no_move=True, no_collapse=True,
                              no_saved_settings=True, width=width, height=height,
                              pos=(max(0, (vw - width) // 2), max(0, (vh - height) // 2)))
         dpg.bind_item_theme(box, 'grid_box_theme')
         return box
+
+    @staticmethod
+    def _grow_viewport(missing):
+        """Make the GUI window ``missing`` px taller (fewer when the screen runs out); returns the px gained.
+        Windows only; nothing for a maximized window. The resize callback redraws the levels afterwards."""
+        if missing <= 0:
+            return 0
+        hwnd = native_dialog.find_owner_window(dpg.get_viewport_title())
+        room = native_dialog.room_below(hwnd) if hwnd else None
+        grow = min(missing, room or 0)
+        if grow > 0:
+            dpg.set_viewport_height(dpg.get_viewport_height() + grow)
+        return grow
 
     def _square_box(self):
         state = self.nav.state
