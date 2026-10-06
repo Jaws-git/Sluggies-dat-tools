@@ -15,9 +15,10 @@ batch of one; ``--apply FILE`` reads an edits file (``{"edits": [{"op":
 "patch", "id": "0xNN", "file": ...}, {"op": "clear", "id": "0xNN"}, {"op":
 "rename", "id": "0xNN", "text": ...}, {"op": "voice", "id": "0xNN", "source":
 "0xMM"}, {"op": "stats", "id": "0xNN", "source": null}, {"op": "icon", "id":
-"0xNN", "view": "front", "file": ..., "fit": "contain", "trim": true}, ...]}``;
-a null ``source`` goes back to the default; an icon edit's image is read and
-fitted here, ``icon_import``). ``--dry-run`` leaves out the build
+"0xNN", "view": "front", "file": ..., "fit": "contain", "trim": true},
+{"op": "stat_edits", "file": ...}, ...]}``; a null ``source`` goes back to
+the default; an icon edit's image is read and fitted here, ``icon_import``;
+a stat edit file is checked against ``main.dol`` here, ``StatEditor/apply``). ``--dry-run`` leaves out the build
 checks of edits marked ``"checked"`` (the GUI's staging check).
 
 Writes nothing to the game files. Exit code 1 when an edit is refused (the
@@ -146,6 +147,17 @@ class FileEnv(slot_plan.Env):
             return self._crop(self._stock_bank, page, rect)
         except (OSError, ValueError, state_icons.IconStateError):
             return None
+
+    def stat_edits(self, path):
+        from StatEditor import apply as stat_apply, bridge as stat_bridge, cli as stat_cli
+        try:
+            prepared, names = stat_cli.check(self.image, self.dat, [path])
+        except (stat_apply.EditFileError, stat_bridge.BridgeError) as exc:
+            raise slot_plan.PlanError(str(exc)) from exc
+        if not prepared.changes:
+            return slot_plan.StatCheck(None)
+        return slot_plan.StatCheck(stat_apply.summary(prepared), stat_apply.describe(prepared, names),
+                                   prepared.warnings)
 
     def skeleton(self, source, target):
         import SlotTarget
@@ -328,14 +340,16 @@ def main(argv=None) -> int:
     for note in batch.notes:
         slogger.info(note, source=SOURCE)
     for edit, plan in batch.plans + batch.skipped:
+        who = 'stat edits' if edit.op == slot_plan.STAT_EDITS else _hex(edit.cid)
         for note in plan.notes:
-            slogger.info(f'{_hex(edit.cid)}: {note}', source=SOURCE)
+            slogger.info(f'{who}: {note}', source=SOURCE)
     for warning in batch.warnings:                   # the derive's, then each edit's
         slogger.warning(warning, source=SOURCE)
     if batch.refused:
         for edit, error in batch.refused:
             slogger.error(f'refused, nothing written: {error}' if len(edits) == 1
-                          else f'refused, nothing written: edit {edit.index} ({edit.op} {_hex(edit.cid)}): {error}',
+                          else f'refused, nothing written: edit {edit.index} ({edit.op}'
+                          + ('' if edit.op == slot_plan.STAT_EDITS else f' {_hex(edit.cid)}') + f'): {error}',
                           source=SOURCE)
         return 1
     slogger.info(f'chain: {len(batch.commands)} commands for {len(batch.plans)} edit(s)'

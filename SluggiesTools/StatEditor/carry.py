@@ -47,14 +47,14 @@ class StatEdits:
         return bool(self.rows or self.chemistry or self.globals)
 
 
-def _table_mapped(image: dolfile.DolImage, name: str) -> bool:
+def table_mapped(image: dolfile.DolImage, name: str) -> bool:
     table = inventory.table(name)
     lis_site, low_site = table.all_pairs[0]
     return (image.is_mapped(lis_site, 4) and image.is_mapped(low_site, 4)
             and image.is_mapped(table.address, table.header + table.row_size * ids.STOCK_IDS))
 
 
-def _characters(roster: bridge.Roster) -> list[int]:
+def roster_ids(roster: bridge.Roster) -> list[int]:
     return list(range(ids.STOCK_IDS)) + [c.id for c in roster.new]
 
 
@@ -71,7 +71,7 @@ def detect(image: dolfile.DolImage, vanilla: dolfile.DolImage) -> StatEdits:
     """The stat edits in ``image`` (module docstring). Raises ``bridge.BridgeError`` for a DOL whose roster
     cannot be read."""
     edits = StatEdits()
-    if all(_table_mapped(d, name) for d in (image, vanilla) for name in fields.CHARACTER_TABLES):
+    if all(table_mapped(d, name) for d in (image, vanilla) for name in fields.CHARACTER_TABLES):
         roster = bridge.read_roster(image)
         layouts = bridge.table_layouts(image, roster)
         baseline = bridge.baseline_rows(vanilla, roster)
@@ -79,7 +79,7 @@ def detect(image: dolfile.DolImage, vanilla: dolfile.DolImage) -> StatEdits:
         for f in fields.CHARACTER_FIELDS:
             by_table.setdefault(f.table, []).append(f)
         for name, layout in layouts.items():
-            for cid in _characters(roster):
+            for cid in roster_ids(roster):
                 live = image.read(layout.row_address(cid), layout.row_size)
                 base = baseline[name][cid]
                 if live == base:
@@ -106,7 +106,7 @@ def detect(image: dolfile.DolImage, vanilla: dolfile.DolImage) -> StatEdits:
     return edits
 
 
-def _chem_address(a: int, b: int, layouts, matrix: int | None) -> int:
+def chem_address(a: int, b: int, layouts, matrix: int | None) -> int:
     stats = layouts['stats']
     if a < ids.STOCK_IDS:
         if b < ids.STOCK_IDS:
@@ -122,10 +122,10 @@ def apply(image: dolfile.DolImage, edits: StatEdits) -> list[str]:
     if not edits:
         return []
     layouts, present = {}, set()
-    if all(_table_mapped(image, name) for name in fields.CHARACTER_TABLES):
+    if all(table_mapped(image, name) for name in fields.CHARACTER_TABLES):
         roster = bridge.read_roster(image)
         layouts = bridge.table_layouts(image, roster)
-        present = set(_characters(roster))
+        present = set(roster_ids(roster))
     matrix = bridge.new_by_new_address(image, layouts['stats']) if layouts and roster.new else None
     fields_written, dropped = 0, set()
     for cid, values in sorted(edits.rows.items()):
@@ -141,7 +141,7 @@ def apply(image: dolfile.DolImage, edits: StatEdits) -> list[str]:
         if gone:
             dropped |= gone
             continue
-        at = _chem_address(a, b, layouts, matrix)
+        at = chem_address(a, b, layouts, matrix)
         if at in seen and seen[at] != value:          # never from detect: it reads a stock x new pair once
             raise bridge.BridgeError(f'chemistry 0x{a:02X} x 0x{b:02X}: both directions are one byte in the game, '
                                      f'but they differ ({seen[at]} / {value})')

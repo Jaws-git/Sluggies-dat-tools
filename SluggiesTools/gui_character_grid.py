@@ -1026,6 +1026,43 @@ class CharacterGridTab:
             return
         self._dialog(dialog, lambda: self._stage(plan), ok_label='Stage')
 
+    def offer_stat_edits(self, path, quiet_refusal=False):
+        """The staging check of a stat edit file the Stat Editor sent (the pending edits plus this one), then its
+        confirm dialog; Stage adds it to the pending list. ``quiet_refusal`` (a file left from an earlier session):
+        a refused or empty file only gets a log line. False when the tab is busy (the caller tries again later)."""
+        if self._locked() or self.confirm is not None:
+            return False
+        if self.pending.pack is not None:
+            self.action = 'ask'
+            self._dialog(gui_grid.SlotDialog('Stat edits: refused', [
+                ('A roster pack load is staged: it replaces the whole roster, so stat values cannot be staged on top '
+                 'of it.', gui_grid.ERROR),
+                ('Patch Game or discard the load first, then open the Stat Editor again. Nothing was staged.',
+                 gui_grid.TEXT)]), self._end_action)
+            return True
+        try:
+            gui_grid.write_edits(self.edits_path, self.pending.staging(gui_grid.stat_edit(path)))
+        except OSError as exc:
+            self.app.log_line(f'[stat editor] could not write {self.edits_path}: {exc}', _WARN)
+            return True
+        self.action = 'stat_edits'
+
+        def show(code, output):
+            state = self.nav.state or self.loader.state
+            plan = gui_grid.load_plan(self.plan_path)
+            dialog = gui_grid.stat_edits_dialog(state, plan, code, output, path)
+            if quiet_refusal and not dialog.can_apply:
+                self._end_action()
+                why = dialog.lines[0][0] if dialog.lines else dialog.title.removeprefix('Stat edits: ')
+                self.app.log_line(f'[stat editor] the edit file left from an earlier session was dropped: {why}',
+                                  _WARN)
+                return
+            self._dialog(dialog, lambda: self._stage(plan), ok_label='Stage')
+        if not self._run([gui_grid.preview_command(self.edits_path)], 'Checking the stat edits...', show):
+            self._end_action()
+            return False
+        return True
+
     def _stage(self, plan):
         self._end_action()
         self.pending.accept(plan)
@@ -1094,7 +1131,7 @@ class CharacterGridTab:
             (f'{count} pending edit{"s" if count != 1 else ""} (nothing written for them yet):', gui_grid.TEXT)]
         state = self.loader.state
         for cid, text in self.pending.titles():
-            who = '' if cid is None else f'{gui_grid.name_of(state, int(cid, 16)) if state else cid} ({cid}): '
+            who = '' if cid is None else f'{gui_grid.edit_who(state, int(cid, 16))}: '
             lines.append((f'  {who}{text}', gui_grid.WARN))
         lines.append(('Discard drops them.', gui_grid.TEXT))
 

@@ -70,6 +70,12 @@ character's equipment folder and the slot file it goes to (default: the file it 
 file 5, a glove only its own hand, ``gear.target_file``). It is one targeted patch of that route only: the
 vanilla bats and gloves other characters share stay as they are. A model patch into a new ID also stages the
 gear that belongs to the model (``gear.find_gear``, edits with ``origin`` ``bundled``).
+
+Stat edits (``plan_stat_edits``): an edit file the Sluggers Stat Editor sent back from Bridge Mode
+(``StatEditor/apply.py``). It belongs to no slot (its ``id`` is ``GAME_WIDE``) and is valid only for the
+``main.dol`` it was made from, so the chain writes every staged stat edit file in one ``--apply-stat-edits``
+before the roster rebuild; the rebuild then carries the values onto the new layout like any other stat edit
+(``StatEditor/carry.py``).
 """
 
 from __future__ import annotations
@@ -273,6 +279,20 @@ class Env:
     def stock_portrait(self, cid: int, view: str):
         """A stock ID's own ``view`` portrait from the stock icon bank (RGBA image), or None."""
         return None
+
+    def stat_edits(self, path: str) -> StatCheck:
+        """The stat edit file at ``path`` checked against the game files (``StatEditor/apply.py``); a refusal raises
+        ``PlanError``."""
+        raise NotImplementedError
+
+
+@dataclass
+class StatCheck:
+    """What a stat edit file changes: ``summary`` (``12 values on 3 characters``; None: nothing to change),
+    ``lines`` (per character and table), ``warnings``."""
+    summary: str | None
+    lines: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
 # --------------------------------------------------------------------------
@@ -929,10 +949,29 @@ def _display(char: dict) -> str:
 # Batches: staged edits, one chain
 # --------------------------------------------------------------------------
 
+def plan_stat_edits(path: str, env: Env) -> Plan:
+    """The chain step that writes the stat edit file at ``path`` (``--apply-stat-edits``, merged by ``plan_batch``);
+    ``nothing`` when the game holds its values already."""
+    check = env.stat_edits(path)
+    plan = Plan('stat_edits', GAME_WIDE, None)
+    if check.summary is None:
+        plan.nothing = True
+        plan.notes.append(f'nothing to change: the game holds the values of {os.path.basename(path)} already')
+        return plan
+    plan.commands.append(('--apply-stat-edits', path))
+    plan.notes += check.lines
+    plan.warnings += check.warnings
+    plan.effects['stat_edits'] = check.summary
+    return plan
+
+
 MODEL_OPS = ('patch', 'clear')
 VALUE_OPS = ('voice', 'stats')                        # the last one per slot (voice: per square) wins
 EQUIP_OPS = ('equip', 'equip_clear')                  # the last one per slot file wins
 SLOT_OPS = MODEL_OPS + ('rename',) + VALUE_OPS + ('icon',) + EQUIP_OPS
+STAT_EDITS = 'stat_edits'                             # not a slot edit: every one is written, in staging order
+OPS = SLOT_OPS + (STAT_EDITS,)
+GAME_WIDE = 0xFF                                      # the "id" of a stat edit: no character has it
 ORIGINS = ('user', 'bundled')
 DEFAULT_WORDS = ('', '-', 'default')                  # an edit's "source" that resets (CLI text)
 
@@ -940,9 +979,10 @@ DEFAULT_WORDS = ('', '-', 'default')                  # an edit's "source" that 
 @dataclass
 class Edit:
     """One staged edit (an entry of the edits file)."""
-    op: str                         # 'patch' / 'clear' / 'rename' / 'voice' / 'stats' / 'icon'
-    cid: int                        # the slot (voice: any slot of the square)
-    file: str | None = None         # patch: the picked .sluggie (a joined pair: the High model); icon: the image
+    op: str                         # 'patch' / 'clear' / 'rename' / 'voice' / 'stats' / 'icon' / ... / 'stat_edits'
+    cid: int                        # the slot (voice: any slot of the square; stat_edits: GAME_WIDE)
+    file: str | None = None         # patch: the picked .sluggie (a joined pair: the High model); icon: the image;
+    #                                 stat_edits: the stat editor's edit file
     low: str | None = None          # patch: a Low pick joined to a pending High pick
     text: str | None = None         # rename
     checked: bool = False           # its build check already passed when it was staged (dry runs skip it)
@@ -997,6 +1037,11 @@ def parse_edits(data) -> list[Edit]:
         raise PlanError('the edits file holds no list of edits')
     edits = []
     for n, item in enumerate(items, 1):
+        if isinstance(item, dict) and item.get('op') == STAT_EDITS:
+            if not item.get('file'):
+                raise PlanError(f'edit {n}: a stat_edits edit needs a "file" (the stat editor\'s edit file)')
+            edits.append(Edit(STAT_EDITS, GAME_WIDE, item['file'], checked=bool(item.get('checked')), index=n))
+            continue
         if not isinstance(item, dict) or item.get('op') not in SLOT_OPS or item.get('id') is None:
             raise PlanError(f'edit {n} is not an edit: {item!r}')
         try:
@@ -1124,6 +1169,9 @@ def merge_edits(edits: list[Edit], classify_fn=None, load_icon_fn=None, classify
     refused: list[tuple[Edit, str]] = []
 
     for edit in edits:
+        if edit.op == STAT_EDITS:
+            merged.append(edit)
+            continue
         if edit.op == 'patch':
             try:
                 edit.pair = edit.pair or _classify_edit(edit, classify_fn)
@@ -1253,9 +1301,11 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
 
     1. one ``--patch ... --validate-only`` per patched slot (``skip_checked``: not for edits whose check
        already passed, the GUI's staging dry run);
-    2. one ``--roster --state`` when the merged config differs from the derived one;
-    3. each slot's ``--patch`` / ``--unpatch``, in staging order;
-    4. one ``--roster-state``.
+    2. one ``--apply-stat-edits`` with every staged stat edit file (they hold values for the DOL as it is now, and
+       the rebuild carries them over);
+    3. one ``--roster --state`` when the merged config differs from the derived one;
+    4. each slot's ``--patch`` / ``--unpatch``, in staging order;
+    5. one ``--roster-state``.
 
     Any refused edit refuses the whole batch: no commands, no config (``refused`` names them all)."""
     merged, notes, refused = merge_edits(edits, classify_fn, load_icon_fn, classify_gear_fn, find_gear_fn)
@@ -1280,6 +1330,8 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
                 plan = plan_stats(st, current, edit.cid, edit.source, state_file, names_text)
             elif edit.op == 'voice':
                 plan = plan_voice(st, current, edit.cid, edit.source, state_file, names_text)
+            elif edit.op == STAT_EDITS:
+                plan = plan_stat_edits(edit.file, env)
             else:
                 plan = plan_clear(st, current, edit.cid, state_file, env)
         except PlanError as exc:
@@ -1319,6 +1371,10 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
     for edit, plan in batch.plans:
         if not (skip_checked and edit.checked):
             batch.commands += [c for c in plan.commands if '--validate-only' in c]
+    stat_files = [p for _edit, plan in batch.plans for c in plan.commands if c[0] == '--apply-stat-edits'
+                  for p in c[1:]]
+    if stat_files:                                  # one step: every file is checked against the DOL before writing
+        batch.commands.append(('--apply-stat-edits', *stat_files))
     if current != config:
         batch.config = current
         batch.commands.append(('--roster', '--state', state_file))

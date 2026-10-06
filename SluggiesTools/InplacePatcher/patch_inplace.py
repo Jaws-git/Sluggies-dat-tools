@@ -60,7 +60,7 @@ def _shader_mode_to_bytes(s: str) -> bytes:
 
 def abort(message):
     _slogger.error(message, source="patch_inplace")
-    answer = input("\nPress any key to exit...")
+    answer = _slogger.ask("\nPress any key to exit...")
     _slogger.log_user_input("Press any key to exit", answer, source="patch_inplace")
     raise SystemExit(1)
 

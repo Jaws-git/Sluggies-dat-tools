@@ -473,6 +473,50 @@ class TestClearLogFile(unittest.TestCase):
         self.slog.clear_log_file()
 
 
+class TestPromptMarker(unittest.TestCase):
+    """``ask`` announces a prompt to the GUI, which opens its hidden console on the marker line."""
+
+    def _ask(self, env_value):
+        import io
+        from unittest import mock
+        slog = importlib.import_module("SluggiesTools.slogger")
+        env = {slog.PROMPT_ENV: env_value} if env_value else {}
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=False), \
+                mock.patch("sys.stdout", out), mock.patch("builtins.input", return_value="y") as fake:
+            if not env_value:
+                os.environ.pop(slog.PROMPT_ENV, None)
+            answer = slog.ask("Continue? (y/n): ")
+        fake.assert_called_once_with("Continue? (y/n): ")
+        return slog, answer, out.getvalue()
+
+    def test_marker_line_before_prompt_under_gui(self):
+        slog, answer, out = self._ask("1")
+        self.assertEqual(answer, "y")
+        self.assertEqual(out, slog.PROMPT_MARKER + "\n")
+
+    def test_no_marker_outside_gui(self):
+        _slog, answer, out = self._ask(None)
+        self.assertEqual((answer, out), ("y", ""))
+
+    def test_prompts_go_through_ask(self):
+        """A bare ``input()`` would wait unseen while the GUI console is hidden."""
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        tools = os.path.join(root, "SluggiesTools")
+        files = [os.path.join(root, "start.py")]
+        for folder, dirs, names in os.walk(tools):
+            dirs[:] = [d for d in dirs if d not in ("tests", "_build", "__pycache__", ".venv")]
+            files += [os.path.join(folder, n) for n in names if n.endswith(".py") and n != "slogger.py"]
+        pattern = re.compile(r"(?<![\w.])input\(")
+        offenders = []
+        for path in files:
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                for number, line in enumerate(handle, 1):
+                    if pattern.search(line.split("#", 1)[0]):
+                        offenders.append(f"{os.path.relpath(path, root)}:{number}")
+        self.assertEqual(offenders, [], "use slogger.ask() instead of input()")
+
+
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     unittest.main()

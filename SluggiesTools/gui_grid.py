@@ -711,6 +711,8 @@ class PendingEdits:
 
 
 def _edit_title(edit: dict) -> str:
+    if edit['op'] == STAT_EDITS:
+        return f'Pending: stat editor values from {os.path.basename(edit.get("file") or "?")}'
     if edit['op'] == 'equip':
         what = EQUIP_LABELS.get(edit.get('file'), 'equipment').lower()
         where = f' (file {edit["file"]})' if edit.get('file') in (5,) else ''
@@ -745,6 +747,15 @@ def icon_label(edit: dict) -> str:
 # --------------------------------------------------------------------------
 
 EQUIP_OPS = ('equip', 'equip_clear')
+# A stat edit (the stat editor's edit file) belongs to no slot: its "id" is GAME_WIDE (Roster/slot_plan, test-pinned)
+STAT_EDITS, GAME_WIDE = 'stat_edits', 0xFF
+
+
+def edit_who(state: dict | None, cid: int) -> str:
+    """Who a pending or planned edit is for: ``Mario (0x00)``, or ``Stat edits`` for a game-wide stat edit."""
+    if cid == GAME_WIDE:
+        return 'Stat edits'
+    return f'{name_of(state, cid) if state else hex_id(cid)} ({hex_id(cid)})'
 # state key -> (slot file, label); the file numbers are Roster/gear.py's (test-pinned)
 EQUIP_TILES = (('bat', 2, 'Bat'), ('glove_l', 3, 'Left glove'), ('glove_r', 4, 'Right glove'),
                ('extra', 5, 'Extra bat'))
@@ -896,7 +907,8 @@ def _refused_lines(state: dict, plan: dict, cid: int | None = None) -> list:
     lines = []
     for refused in plan['refused']:
         rid = int(refused['target'], 16)
-        where = '' if rid == cid else f'{known_name(state, rid)} ({hex_id(rid)}): '
+        where = ('' if rid == cid else 'Stat edits: ' if rid == GAME_WIDE
+                 else f'{known_name(state, rid)} ({hex_id(rid)}): ')
         lines.append((f'Refused: {where}{refused["error"]}', ERROR))
     return lines
 
@@ -1016,13 +1028,15 @@ def summary_dialog(state: dict, plan: dict | None, code: int, output: str) -> Sl
             what = f'stats of {effect}' if section['action'] == 'stats' else f'square voice of {effect}'
         elif section['action'] == 'icon':
             what = (section.get('effects') or {}).get('portrait_note') or 'new portrait'
-        lines.append((f'{name_of(state, cid)} ({hex_id(cid)}): {what}', OK))
+        elif section['action'] == STAT_EDITS:
+            what = (section.get('effects') or {}).get(STAT_EDITS) or 'changed values'
+        lines.append((f'{edit_who(state, cid)}: {what}', OK))
         lines += [('    ' + text, kind) for text, kind in _section_lines(state, section, sizes, warnings=False)]
     for section in plan['skipped']:
         cid = int(section['target'], 16)
         why = {'rename': 'nothing to rename (named that already)', 'clear': 'nothing to clear (at its baseline '
                'already)'}.get(section['action'], 'nothing to change')
-        lines.append((f'{name_of(state, cid)} ({hex_id(cid)}): {why}', TEXT))
+        lines.append((f'{edit_who(state, cid)}: {why}', TEXT))
     lines += [(f'- {note}', TEXT) for note in plan['notes']]
     lines += [(f'Warning: {warning}', WARN) for warning in plan['warnings']]
     lines.append(('- one roster rebuild' if plan['rebuild'] else '- no roster rebuild needed', TEXT))
@@ -1032,7 +1046,67 @@ def summary_dialog(state: dict, plan: dict | None, code: int, output: str) -> Sl
     if not plan['edits']:
         lines.append(('Nothing to write.', TEXT))
         return dialog
-    lines.append(('Checks passed: slot rules, and every model built and validated. Patch Game writes them now.', OK))
+    lines.append(('Checks passed: slot rules, every model built and validated'
+                  + (', every stat edit file fits the game' if any(s['action'] == STAT_EDITS for s in plan['edits'])
+                     else '') + '. Patch Game writes them now.', OK))
+    dialog.can_apply = True
+    return dialog
+
+
+# --------------------------------------------------------------------------
+# Stat edits (the Stat Editor tab, StatEditor/gui_tab.py)
+# --------------------------------------------------------------------------
+
+def stat_edit(path: str) -> dict:
+    """The pending edit of a stat edit file the Stat Editor sent (``Roster/slot_plan``'s ``stat_edits`` op)."""
+    return {'op': STAT_EDITS, 'id': hex_id(GAME_WIDE), 'file': path}
+
+
+def staged_stat_files(pending: 'PendingEdits') -> list[str]:
+    """The pending stat edit files, in staging order."""
+    return [e['file'] for e in pending.edits if e['op'] == STAT_EDITS and e.get('file')]
+
+
+def _same_file(a: str | None, b: str) -> bool:
+    return bool(a) and os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def stat_edits_dialog(state: dict | None, plan: dict | None, code: int, output: str, path: str) -> SlotDialog:
+    """The confirm dialog of a stat edit file after its staging check (the pending edits plus this one): what it
+    changes per character and table, its warnings and the verdict. ``can_apply`` (Stage stages it) only when the
+    whole check passed and the file changes something."""
+    dialog = SlotDialog('Stage the Stat Editor\'s values?')
+    lines = dialog.lines
+    error = error_message(output)
+    if plan is None or plan['refused']:
+        dialog.title = 'Stat edits: refused'
+        if plan is None:
+            error = error.removeprefix('refused, nothing written: ')
+            lines.append((f'Refused: {error or f"the planner failed (exit code {code})"}', ERROR))
+        else:
+            lines += _refused_lines(state or {}, plan, GAME_WIDE)
+            if any(not _same_file((r.get('edit') or {}).get('file'), path) for r in plan['refused']):
+                lines.append(('A pending edit no longer fits the game files: discard it first.', TEXT))
+        lines.append(('Nothing was staged.', TEXT))
+        return dialog
+    section = next((s for s in plan['edits'] if s['action'] == STAT_EDITS
+                    and _same_file((s.get('edit') or {}).get('file'), path)), None)
+    if section is None:
+        dialog.title = 'Stat edits: nothing to change'
+        skipped = next((s for s in plan['skipped'] if s['action'] == STAT_EDITS
+                        and _same_file((s.get('edit') or {}).get('file'), path)), None)
+        lines += [(f'- {note}', TEXT) for note in (skipped or {}).get('notes', [])]
+        lines.append(('The Stat Editor sent no value the game does not hold already. Nothing was staged.', TEXT))
+        return dialog
+    lines.append((f'Changes: {(section.get("effects") or {}).get(STAT_EDITS) or "changed values"}', OK))
+    lines += [(f'- {note}', TEXT) for note in section['notes']]
+    lines += [(f'Warning: {warning}', WARN) for warning in section['warnings']]
+    if code != 0:
+        lines.append((f'Check failed: {error or f"exit code {code}"}. Nothing was staged.', ERROR))
+        return dialog
+    lines.append(('Checks passed: made from this main.dol, known characters and fields, every value fits. Nothing '
+                  'written yet: Stage adds the values to the pending list, "Patch Game" (Character grid tab) writes '
+                  'them.', OK))
     dialog.can_apply = True
     return dialog
 

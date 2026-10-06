@@ -1,9 +1,14 @@
-"""Stat editor bridge command line (``start.py --stat-bridge-export FILE [--focus 0xNN]``).
+"""Stat editor bridge command line (``start.py --stat-bridge-export`` / ``--apply-stat-edits``).
 
-  cli.py --export FILE [--focus 0xNN]   write the bridge for 3_Output_Dat to FILE
+  cli.py --export FILE [--focus 0xNN]     write the bridge for 3_Output_Dat to FILE
+  cli.py --apply FILE [FILE ...] [--dry-run]
+                                          write the stat editor's edit files into 3_Output_Dat/main.dol
 
-Reads ``3_Output_Dat/main.dol`` (+ ``dt_na.dat`` for names) and
-``1_Input/main.dol`` (the baseline rows); never writes the game files.
+``--export`` reads ``3_Output_Dat/main.dol`` (+ ``dt_na.dat`` for names) and
+``1_Input/main.dol`` (the baseline rows) and never writes the game files.
+``--apply`` checks every file first (``apply.prepare``: the DOL hash, IDs,
+fields, ranges), lists the changes per character and table, then writes
+``main.dol`` (nothing with ``--dry-run``, or when any file is refused).
 """
 
 import argparse
@@ -22,11 +27,11 @@ import slogger  # noqa: E402
 try:
     from ..Dol import dolfile
     from ..Roster import datfile
-    from . import bridge
+    from . import apply, bridge
 except ImportError:
     from Dol import dolfile
     from Roster import datfile
-    from StatEditor import bridge
+    from StatEditor import apply, bridge
 
 SOURCE = 'stat-bridge'
 ROOT = os.path.normpath(os.path.join(_TOOLS_DIR, '..'))
@@ -57,6 +62,40 @@ def export(path: str, output_dir: str = OUTPUT_DIR, input_dir: str = INPUT_DIR, 
     return result
 
 
+def character_names(image: dolfile.DolImage, dat) -> dict[int, str]:
+    """``{ID: name the game shows}`` (empty without ``dt_na.dat``)."""
+    if dat is None:
+        return {}
+    roster = bridge.read_roster(image)
+    return {int(c['id'], 16): c['name'] for c in bridge.character_list(image, dat, roster) if c['name']}
+
+
+def check(image: dolfile.DolImage, dat, paths: list[str]) -> tuple[apply.Prepared, dict[int, str]]:
+    """The edit files at ``paths`` checked against ``image`` (``apply.prepare``), and the names for messages."""
+    documents = [apply.read_file(p) for p in paths]
+    names = character_names(image, dat)
+    labels = [os.path.basename(p) if len(paths) == 1 else f'{os.path.basename(p)} (file {n})'
+              for n, p in enumerate(paths, 1)]
+    return apply.prepare(image, documents, labels, names), names
+
+
+def apply_files(paths: list[str], output_dir: str = OUTPUT_DIR,
+                dry_run: bool = False) -> tuple[apply.Prepared, dict[int, str]]:
+    """Check the edit files at ``paths`` and write them into ``output_dir/main.dol`` (not with ``dry_run``)."""
+    dol_path = os.path.join(output_dir, 'main.dol')
+    dat_path = os.path.join(output_dir, 'dt_na.dat')
+    image = _read_dol(dol_path, 'run the normal pipeline first (menu [1])')
+    dat = datfile.DatFile(dat_path) if os.path.isfile(dat_path) else None
+    prepared, names = check(image, dat, paths)
+    if prepared.changes and not dry_run:
+        apply.write(image, prepared)
+        tmp = dol_path + '.stats_tmp'
+        with open(tmp, 'wb') as f:
+            f.write(image.to_bytes())
+        os.replace(tmp, dol_path)
+    return prepared, names
+
+
 def _id(text: str) -> int:
     try:
         value = int(text, 0)
@@ -70,11 +109,21 @@ def _id(text: str) -> int:
 def main(argv=None) -> int:
     slogger.configure()
     parser = argparse.ArgumentParser(description='Sluggers Stat Editor bridge for 3_Output_Dat.')
-    parser.add_argument('--export', required=True, metavar='FILE', help='write stat_bridge.json to FILE')
-    parser.add_argument('--focus', type=_id, metavar='0xNN', help='the character the editor preselects')
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument('--export', metavar='FILE', help='write stat_bridge.json to FILE')
+    mode.add_argument('--apply', nargs='+', metavar='FILE', help="write the stat editor's edit files "
+                      '(stat_edits.json) into main.dol, in order (a later file wins)')
+    parser.add_argument('--focus', type=_id, metavar='0xNN', help='--export: the character the editor preselects')
+    parser.add_argument('--dry-run', action='store_true', help='--apply: check and list the changes, write nothing')
     parser.add_argument('--output-dir', default=OUTPUT_DIR, help=argparse.SUPPRESS)
     parser.add_argument('--input-dir', default=INPUT_DIR, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.focus is not None and not args.export:
+        parser.error('--focus goes with --export')
+    if args.dry_run and not args.apply:
+        parser.error('--dry-run goes with --apply')
+    if args.apply:
+        return _main_apply(args)
     try:
         result = export(args.export, args.output_dir, args.input_dir, args.focus)
     except (RuntimeError, ValueError, OSError) as exc:
@@ -89,6 +138,26 @@ def main(argv=None) -> int:
     if not result['files']['dt_na_dat']:
         slogger.warning('dt_na.dat is missing: the bridge has no character names', source=SOURCE)
     slogger.info(f'bridge written to {args.export}', source=SOURCE)
+    return 0
+
+
+def _main_apply(args) -> int:
+    try:
+        prepared, names = apply_files([os.path.abspath(p) for p in args.apply], args.output_dir, args.dry_run)
+    except (RuntimeError, ValueError, OSError) as exc:          # EditFileError, BridgeError
+        slogger.error(f'refused, nothing written: {exc}', source=SOURCE)
+        return 1
+    for line in apply.describe(prepared, names):
+        slogger.info(line, source=SOURCE)
+    for warning in prepared.warnings:
+        slogger.warning(warning, source=SOURCE)
+    same = f'; {prepared.same} already as given' if prepared.same else ''
+    if not prepared.changes:
+        slogger.info(f'nothing to change: main.dol holds these values already{same}', source=SOURCE)
+    elif args.dry_run:
+        slogger.info(f'dry run: {apply.summary(prepared)} would change{same}; nothing written', source=SOURCE)
+    else:
+        slogger.info(f'written: {apply.summary(prepared)}{same}', source=SOURCE)
     return 0
 
 

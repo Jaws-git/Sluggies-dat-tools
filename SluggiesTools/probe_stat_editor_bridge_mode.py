@@ -1,6 +1,6 @@
 """Stat editor Bridge Mode vs our field table (manual probe).
 
-Drives the stat editor's ``Bridge/sluggies_bridge.py`` without its window on
+Drives the stat editor's ``sluggies_bridge.py`` without its window on
 the real ``3_Output_Dat/main.dol``:
 
 1. writes the bridge (``cli.export``) into a temporary editor folder and
@@ -16,7 +16,9 @@ the real ``3_Output_Dat/main.dol``:
    edit file and checks every key against ``fields.py``;
 4. writes those edits onto a copy of the DOL (``carry.apply``), reopens Bridge
    Mode on it: the editor must now show the edited values with nothing left
-   to send, and ``carry.detect`` must find exactly the sent values.
+   to send, and ``carry.detect`` must find exactly the sent values;
+5. the bridge-file deletion after a send removes ``stat_bridge.json`` and
+   nothing else, and keeps a bridge that was rewritten since it was opened.
 
 This is a **probe, not a unit test**: it reads ``1_Input``, ``3_Output_Dat`` and
 a stat editor checkout, all outside the repository. Nothing in them is written.
@@ -98,7 +100,7 @@ def check_values(c: Checker, image: dolfile.DolImage, vanilla: dolfile.DolImage,
     n_new = carry.NEW_X_NEW
     for i, a in enumerate(ids_):
         for j, b in enumerate(ids_):
-            at = carry._chem_address(a, b, layouts, matrix)
+            at = carry.chem_address(a, b, layouts, matrix)
             c.same(f'chemistry 0x{a:02X} x 0x{b:02X} (current)', ns['changedChem'][i][j], image.read(at, 1)[0])
             if a >= 0x65 and b >= 0x65:
                 want = base_matrix[(a - 0x66) * n_new + b - 0x66]
@@ -164,7 +166,7 @@ def open_bridge(module, editor_py, folder: pathlib.Path, output_dir: pathlib.Pat
     path = folder / 'Bridge' / 'stat_bridge.json'
     cli.export(str(path), str(output_dir), str(INPUT_DOL.parent))
     ns = editor_namespace(editor_py)
-    session = module.load(ns, str(folder))
+    session = module.load(ns, str(folder / 'editor.py'))      # the Bridge folder is next to editor.py
     if session is None:
         raise SystemExit(f'Bridge Mode refused: {module._problem}')
     return ns, session
@@ -194,10 +196,28 @@ def edit_like_the_editor(ns: dict, session) -> dict:
     return {'new': new, 'new2': new2}
 
 
+def check_bridge_deletion(c: Checker, module, editor_py, folder: pathlib.Path) -> None:
+    """Session._delete_bridge (what Send to Sluggies calls): only stat_bridge.json goes, and only unchanged."""
+    bridge_dir = folder / 'Bridge'
+    _ns, session = open_bridge(module, editor_py, folder, OUTPUT_DIR)
+    bystanders = [bridge_dir / 'stat_edits.json', bridge_dir / 'other.json', folder / 'stat_bridge.json']
+    for p in bystanders:
+        p.write_text('{}', encoding='utf-8')
+    (bridge_dir / 'stat_bridge.json').write_bytes((bridge_dir / 'stat_bridge.json').read_bytes() + b' ')
+    session._delete_bridge()
+    c.same('a rewritten bridge is kept', (bridge_dir / 'stat_bridge.json').is_file(), True)
+    _ns, session = open_bridge(module, editor_py, folder, OUTPUT_DIR)
+    session._delete_bridge()
+    c.same('the opened bridge is deleted', (bridge_dir / 'stat_bridge.json').exists(), False)
+    c.same('nothing else is deleted', [p.is_file() for p in bystanders], [True] * len(bystanders))
+    session._delete_bridge()                               # already gone: no error, nothing else touched
+    c.same('a second call deletes nothing', [p.is_file() for p in bystanders], [True] * len(bystanders))
+
+
 def run(editor_dir: pathlib.Path) -> int:
     editor_py = editor_dir / 'editor.py'
     sys.path.insert(0, str(editor_dir))
-    from Bridge import sluggies_bridge as module
+    import sluggies_bridge as module
 
     c = Checker()
     image = dolfile.DolImage((OUTPUT_DIR / 'main.dol').read_bytes())
@@ -246,6 +266,8 @@ def run(editor_dir: pathlib.Path) -> int:
         c.same('detect: only the sent global values changed',
                {g.address for g in detected.globals} - {g.address for g in expected.globals},
                {g.address for g in to_stat_edits(edits).globals} - {g.address for g in expected.globals})
+
+        check_bridge_deletion(c, module, editor_py, tmp / 'editor3')
 
     print(f'{c.checked} checks, {len(c.problems)} problems')
     for p in c.problems[:40]:

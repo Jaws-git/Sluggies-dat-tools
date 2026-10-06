@@ -35,8 +35,10 @@ amount, s16 min/max) and the six handicap immediates (the low byte of an
 
 Every offset was checked against the vanilla DOL by
 ``probe_stat_editor_layout.py`` (16,507 fields, 0 mismatches). Ranges are the
-storage type's (plus the add/mult choices); the editor's spinbox limits are a
-UI matter and not enforced here.
+storage type's (plus the add/mult choices, and chemistry 0-2, which the editor
+also enforces); a value outside them cannot be written. The editor's own
+spinbox and dropdown limits (``Field.limits``) are only warned about: vanilla
+itself has one value outside them (``0x0B`` slap size 5, editor minimum 10).
 """
 
 import math
@@ -146,6 +148,7 @@ class Field(Value):
     index: int = 0
     table: str = ''
     offset: int = 0
+    limits: tuple | None = None     # the editor's spinbox / dropdown range (low, high; None: open), warned only
 
 
 @dataclass(frozen=True)
@@ -170,6 +173,15 @@ def _stats_offset(j: int) -> int:
 
 STATS_U16 = frozenset(range(10, 18)) | frozenset(range(22, 26))
 
+# The editor's input ranges (editor.py v4.3 ``sbStat0``-``sbStat34``): spinbox from_/to, a dropdown's list length.
+STATS_LIMITS = ((0, 1), (0, 1), (0, 3), (0, 2), (0, 4), (0, 1), (0, 12), (0, 12), (0, 12), (0, 7),
+                (10, 200), (10, 200), (0, 150), (0, 150), (0, 200), (0, 200), (0, 200), (0, 200),
+                (0, 10), (0, 10), (0, 10), (0, 10), (70, 200), (70, 200), (0, 200), (0, 100),
+                (0, 2), (0, 1), (0, 100), (0, 3))
+PITCHING_LIMITS = ((0, None), (0, None), (0, None), None, (0, None))
+# "Warning : giving a character both will crash" (the editor's frame around these two stats; 0 = None)
+CRASH_PAIR = ('fielding ability', 'baserunning ability')
+
 
 def _character_fields() -> tuple[Field, ...]:
     out = []
@@ -179,10 +191,12 @@ def _character_fields() -> tuple[Field, ...]:
         else:
             table, offset, kind = {26: ('traj', 0, 'u8'), 27: ('traj', 1, 'u8'), 28: ('stamina', 0, 'u16'),
                                    29: ('starpitch', 0, 'u8')}[j]
-        out.append(Field(kind, group='stats', name=name, index=j, table=table, offset=offset))
+        out.append(Field(kind, group='stats', name=name, index=j, table=table, offset=offset,
+                         limits=STATS_LIMITS[j]))
     for j, name in enumerate(keys(PITCHING_LIST)):
         table, offset = ('pitchwindup', 4 * j) if j < 3 else ('changeup', 4 * (j - 3))
-        out.append(Field('f32', group='pitching', name=name, index=j, table=table, offset=offset))
+        out.append(Field('f32', group='pitching', name=name, index=j, table=table, offset=offset,
+                         limits=PITCHING_LIMITS[j]))
     for j, name in enumerate(keys(SIZE_LIST)):
         table, offset = (('sizescale', 4 * j) if j < 2 else ('catchrange', 4 * (j - 2)) if j < 12
                          else ('hitbox', 4 * (j - 12)))
@@ -193,7 +207,8 @@ def _character_fields() -> tuple[Field, ...]:
 CHARACTER_FIELDS = _character_fields()
 CHARACTER_GROUPS = ('stats', 'pitching', 'size')
 BY_GROUP = {g: {f.name: f for f in CHARACTER_FIELDS if f.group == g} for g in CHARACTER_GROUPS}
-CHEMISTRY = Value('u8')
+CHEMISTRY_VALUES = (0, 1, 2)
+CHEMISTRY = Value('u8', CHEMISTRY_VALUES)
 
 
 def chemistry_offset(column: int) -> int:
@@ -271,6 +286,17 @@ def _global_fields() -> tuple[GlobalField, ...]:
 
 GLOBAL_FIELDS = _global_fields()
 GLOBAL_LOOKUP = {(f.table, f.row, f.column): f for f in GLOBAL_FIELDS}
+
+
+def limit_problem(f: Field, value) -> str | None:
+    """Why the editor itself would not offer ``value`` for ``f`` (a warning, not a refusal), or None."""
+    if f.limits is None:
+        return None
+    lo, hi = f.limits
+    if (lo is not None and value < lo) or (hi is not None and value > hi):
+        shown = f'{lo}-{hi}' if hi is not None else f'{lo} or more'
+        return f"{value} is outside the stat editor's range ({shown})"
+    return None
 
 
 def character_field(group: str, name: str) -> Field:

@@ -265,6 +265,16 @@ def run_stat_bridge_export(path, focus=None):
     return subprocess.run(cmd, cwd=TOOLS_DIR).returncode == 0
 
 
+def run_apply_stat_edits(paths, dry_run=False):
+    """Write the stat editor's edit files (stat_edits.json, in order) into 3_Output_Dat/main.dol (StatEditor/cli.py):
+    every file is checked first (made from this main.dol, known IDs and fields, storable values); ``dry_run`` lists
+    the changes and writes nothing."""
+    cmd = python_script_command(STAT_EDITOR_SCRIPT, '--apply', *[os.path.abspath(p) for p in paths])
+    if dry_run:
+        cmd.append('--dry-run')
+    return subprocess.run(cmd, cwd=TOOLS_DIR).returncode == 0
+
+
 def run_export(debug=False, notex=False, untangle=False, glb=False):
     if importlib.util.find_spec('numpy') is None:
         slogger.error("Missing required package: numpy", source="dispatcher")
@@ -707,6 +717,7 @@ def parse_args():
             '  python start.py --set-stats 0x00 -\n'
             '  python start.py --set-icon 0xE1 front my_portrait.png --fit cover\n'
             '  python start.py --apply-slots 3_Output_Dat/_gui/slot/edits.json --dry-run\n'
+            '  python start.py --apply-stat-edits stat_edits.json --dry-run\n'
             '  python start.py --save-roster my_roster.sluggiesroster\n'
             '  python start.py --load-roster my_roster.sluggiesroster --dry-run\n'
             '  python start.py --resplit-unused\n'
@@ -734,6 +745,7 @@ def parse_args():
     mode.add_argument('--roster-derive', action='store_true', help='write the roster config that rebuilds 3_Output_Dat as it is into 3_Output_Dat/_gui/derived (read -> rebuild; then --roster --state)')
     mode.add_argument('--game-options', action='store_true', help='show or change game options (CPU vs CPU, ...) in 3_Output_Dat/main.dol; use with --on/--off')
     mode.add_argument('--stat-bridge-export', metavar='FILE', help="write the Sluggers Stat Editor's bridge file (where 3_Output_Dat/main.dol keeps every stat table, the characters, the baseline values) to FILE")
+    mode.add_argument('--apply-stat-edits', nargs='+', metavar='FILE', help="write the Sluggers Stat Editor's edit files (stat_edits.json from Bridge Mode; several: in order, a later one wins) into 3_Output_Dat/main.dol; refused unless made from this main.dol (with --dry-run: list the changes only)")
     mode.add_argument('--export', action='store_true', help='export all models from 1_Input to 2_Output_Models')
     mode.add_argument('--export-icons', action='store_true', help="write each character's FrontIcon.png/SideIcon.png into its model folder in 2_Output_Models")
 
@@ -772,10 +784,10 @@ def parse_args():
         parser.error('--use-output can only be used with --export-icons.')
     if args.dry_run and not (args.roster or args.game_options or args.load_roster
                              or args.patch_slot or args.clear_slot or args.rename_slot or args.set_voice
-                             or args.set_stats or args.set_icon or args.apply_slots):
+                             or args.set_stats or args.set_icon or args.apply_slots or args.apply_stat_edits):
         parser.error('--dry-run can only be used with --roster, --game-options, --patch-slot, '
-                     '--clear-slot, --rename-slot, --set-voice, --set-stats, --set-icon, --apply-slots or '
-                     '--load-roster.')
+                     '--clear-slot, --rename-slot, --set-voice, --set-stats, --set-icon, --apply-slots, '
+                     '--apply-stat-edits or --load-roster.')
     if args.equipment and not (args.patch_slot or args.clear_slot):
         parser.error('--equipment can only be used with --patch-slot or --clear-slot.')
     if args.no_gear and not args.patch_slot:
@@ -808,7 +820,7 @@ def parse_args():
         parser.error('--config and --state cannot be used together.')
     if args.roster and not (args.config or args.remove or args.state):
         parser.error('--roster needs --config PATH (a roster configuration), --state PATH or --remove.')
-    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.rename_slot, args.set_voice, args.set_stats, args.set_icon, args.apply_slots, args.save_roster, args.load_roster, args.write_slot_blocks, args.write_slot_equipment, args.resplit_unused, args.export, args.export_icons, args.roster, args.roster_state, args.roster_derive, args.game_options, args.stat_bridge_export]):
+    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.rename_slot, args.set_voice, args.set_stats, args.set_icon, args.apply_slots, args.save_roster, args.load_roster, args.write_slot_blocks, args.write_slot_equipment, args.resplit_unused, args.export, args.export_icons, args.roster, args.roster_state, args.roster_derive, args.game_options, args.stat_bridge_export, args.apply_stat_edits]):
         if len(sys.argv) == 1:
             args.gui = True
         else:
@@ -881,6 +893,9 @@ def main() -> int:
             run_game_options(on=args.on, off=args.off, dry_run=args.dry_run)
         elif args.stat_bridge_export:
             if not run_stat_bridge_export(args.stat_bridge_export, focus=args.focus):
+                return 1
+        elif args.apply_stat_edits:
+            if not run_apply_stat_edits(args.apply_stat_edits, dry_run=args.dry_run):
                 return 1
         elif args.export:
             run_export(debug=args.debug, notex=args.notex, untangle=args.untangle, glb=args.glb)
