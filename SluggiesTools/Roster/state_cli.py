@@ -9,7 +9,8 @@ files.
 Every character also gets its ``fingerprint`` (``pack.py``: block and portrait
 SHA-1s, name, stats, voice), which roster packs and the GUI's "changed since
 load/save" marker compare. ``game_options`` lists the game options that are on
-(``GameOptions/game_options.detect``) for the grid tab's CPU vs CPU status.
+(``GameOptions/game_options.detect``) for the grid tab's CPU vs CPU status, and
+the stat edits the game holds (``read_stat_edits``) for the GUI's warnings.
 
 ``--derive`` (``start.py --roster-derive``) instead writes the derived
 config (``derive.py``) to ``3_Output_Dat/_gui/derived/roster.json`` plus its
@@ -33,10 +34,12 @@ import slogger  # noqa: E402
 try:
     from ..Dol import dolfile
     from ..GameOptions import game_options
+    from ..StatEditor import bridge as stat_bridge, carry
     from . import datfile, derive, pack, state, state_icons
 except ImportError:
     from Dol import dolfile
     from GameOptions import game_options
+    from StatEditor import bridge as stat_bridge, carry
     import datfile
     import derive
     import pack
@@ -80,14 +83,16 @@ def run_derive(output_dir: str = OUTPUT_DIR) -> tuple[derive.Derived, str]:
 def add_vanilla_flags(result: dict) -> None:
     """``vanilla`` on every character's ``equipment`` entry: a stock directory's file counts as vanilla while it is
     routed to the input DOL's own entry (an untangle export changes texture bytes in place, so bytes would call
-    nearly every block modified); an own model directory's while its bytes equal its source's vanilla block; None
-    for an unused character's split route and when the input files cannot be read. The Hammerspace modules read
-    the input DOL/DAT, so this is the one place the otherwise pure state looks at them."""
+    nearly every block modified); an own model directory's while its bytes equal its source's vanilla block; an
+    unused character's split route while it holds its own copy with its untangled baseline bytes
+    (``UntangledTextures.split_at_baseline``); None when the input files cannot be read. The Hammerspace modules
+    read the input DOL/DAT, so this is the one place the otherwise pure state looks at them."""
     hs_dir = os.path.join(_TOOLS_DIR, 'Hammerspace')
     if hs_dir not in sys.path:
         sys.path.insert(0, hs_dir)
     import HammerspaceHelper as hh
     import LodPartnerGuard
+    import UntangledTextures
     import UntanglePolicy
     for char in result.get('characters') or []:
         directory = char['model_dir']
@@ -98,10 +103,38 @@ def add_vanilla_flags(result: dict) -> None:
                     block = LodPartnerGuard._vanilla_block(directory, entry['file'])
                     if block is not None:
                         entry['vanilla'] = hashlib.sha1(block).hexdigest() == entry['sha1']
-                elif not UntanglePolicy.is_split(directory, entry['file']):
+                elif UntanglePolicy.is_split(directory, entry['file']):
+                    entry['vanilla'] = UntangledTextures.split_at_baseline(directory, entry['file'])
+                else:
                     entry['vanilla'] = (entry['offset'], entry['length']) == hh.readDolEntry(directory, entry['file'])
             except (OSError, ValueError, KeyError):
                 continue
+
+
+def input_dir(output_dir: str) -> str:
+    """``1_Input`` beside ``3_Output_Dat``."""
+    return os.path.join(os.path.dirname(os.path.abspath(output_dir)), '1_Input')
+
+
+def detect_stat_edits(image: dolfile.DolImage, input_folder: str) -> carry.StatEdits | None:
+    """The game's stat edits (``StatEditor/carry.detect`` against ``input_folder/main.dol``); None when that file or
+    the roster cannot be read."""
+    path = os.path.join(input_folder, 'main.dol')
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, 'rb') as f:
+            vanilla = dolfile.DolImage(f.read())
+        return carry.detect(image, vanilla)
+    except (OSError, stat_bridge.BridgeError, dolfile.DolError):
+        return None
+
+
+def read_stat_edits(image: dolfile.DolImage, input_folder: str) -> dict | None:
+    """The game's stat edits as ``StatEditor/carry.summary`` gives them (per character ID its edited fields and
+    chemistry count, plus the global count), for the GUI's warnings; None when they cannot be read."""
+    edits = detect_stat_edits(image, input_folder)
+    return None if edits is None else carry.summary(edits)
 
 
 def run(output_dir: str = OUTPUT_DIR) -> dict:
@@ -109,6 +142,7 @@ def run(output_dir: str = OUTPUT_DIR) -> dict:
     result = state.read_state(image, dat)
     add_vanilla_flags(result)
     result['game_options'] = game_options.detect(image)   # keys of the options that are on (GUI status line)
+    result['stat_edits'] = read_stat_edits(image, input_dir(output_dir))
     result['icon_dir'] = ICON_DIR
     result['icon_crops'] = None
     if result['icons_read']:

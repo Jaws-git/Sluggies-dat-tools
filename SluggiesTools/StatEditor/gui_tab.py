@@ -100,12 +100,8 @@ class StatEditorTab:
                 dpg.add_button(label='Open Standalone', tag='stat_open_standalone', height=44,
                                callback=lambda: self._on_open_standalone())
             dpg.add_text('', tag='stat_open_reason', color=_WARN, wrap=900)
-            dpg.add_text('Bridge Mode: the editor reads 3_Output_Dat as it is now (pending grid edits are not in it '
-                         'yet), shows the roster\'s characters, and its "Send to Sluggies" brings the changed values '
-                         'back here to stage. "Patch Game" (Character grid tab) writes them.', wrap=900, color=_DIM)
-            dpg.add_text('Standalone: the editor as it runs on its own (vanilla values, Gecko code output). On an '
-                         'expanded roster the per-character tables have moved, so those Gecko codes partly do '
-                         'nothing.', wrap=900, color=_DIM)
+            dpg.add_text('Bridge Mode: edit player stats at any roster size in Stat Editor. Stage changes in Sluggies Tools.', wrap=900, color=_DIM)
+            dpg.add_text('Standalone: Assumes vanilla roster. Gecko codes only.', wrap=900, color=_DIM)
             dpg.add_text('', tag='stat_running', color=_OK)
             dpg.add_separator()
             dpg.add_text('', tag='stat_pending_head')

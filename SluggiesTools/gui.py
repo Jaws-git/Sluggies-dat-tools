@@ -348,6 +348,9 @@ class SluggiesGui:
         for button in self.action_buttons:
             dpg.configure_item(button, enabled=not busy)
         dpg.configure_item('stop_button', enabled=busy)
+        dpg.configure_item('roster_spinner', show=busy)
+        step = ' '.join(os.path.basename(a) if os.path.isabs(a) else a for a in self.current or ())
+        dpg.set_value('roster_status', f'Running: {step}' if busy else '')
         self.grid_tab.set_busy(busy)
 
     # ------------------------------------------------------------------ ui
@@ -367,6 +370,8 @@ class SluggiesGui:
         with dpg.theme() as global_theme:
             with dpg.theme_component(dpg.mvAll):
                 dpg.add_theme_color(dpg.mvThemeCol_CheckMark, (60, 255, 90, 255))
+            with dpg.theme_component(dpg.mvText):
+                dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 8, gui_character_grid.TEXT_SPACING_Y)
         dpg.bind_theme(global_theme)
         with dpg.theme(tag='primary_theme'):
             for state, colors in (
@@ -385,7 +390,7 @@ class SluggiesGui:
         with dpg.tab(label='All-In-One Export'):
             dpg.add_text('1) Export all models with untangled textures (overwrites 3_Output_Dat/dt_na.dat and main.dol)')
             dpg.add_text('2) Apply the chosen roster preset')
-            dpg.add_text('3) Turn on CPU vs CPU and CPU vs CPU management')
+            dpg.add_text('3) Turn on CPU vs CPU and CPU vs CPU management (hold minus on game start button)')
             dpg.add_text('4) Write the character icons (FrontIcon/SideIcon) from 3_Output_Dat into the model folders')
             dpg.add_text('A failing step stops the rest.')
             dpg.add_spacer(height=6)
@@ -402,11 +407,11 @@ class SluggiesGui:
         if choice == self.ROSTER_RESET:
             steps.append(('--roster', '--remove'))
         elif choice and choice != self.ROSTER_SKIP:
-            steps.append(('--roster', '--config', os.path.join(self.config_dir, choice)))
+            steps.append(('--roster', '--config', os.path.join(self.config_dir, choice), '--fresh'))
         steps.append(('--game-options', '--on', 'cpu_vs_cpu', 'cpu_management'))
         steps.append(('--export-icons', '--use-output'))
         self._config_guard(lambda: self.run_chain(steps), 'Start the all-in-one export and lose the configuration?',
-                           'The all-in-one export')
+                           'The all-in-one export', stats_lost=True)
 
     def _build_export_tab(self):
         with dpg.tab(label='Export 3D'):
@@ -438,14 +443,28 @@ class SluggiesGui:
                 dpg.add_combo([], tag='roster_config', width=420)
                 dpg.add_button(label='Refresh', callback=self._refresh_configs)
             dpg.add_text('', tag='roster_hint', color=_PROMPT_COLOR, wrap=700)
+            dpg.add_text('Slots on both the old and the new grid keep their customisations (models, equipment, '
+                         'names, portraits, stats, voices, stat edits); slots leaving the grid are reset; new '
+                         'slots are empty.', wrap=700)
+            fresh = dpg.add_checkbox(label='Start fresh (keep no slot customisations)', tag='roster_fresh')
+            with dpg.tooltip(fresh):
+                dpg.add_text('Inject the preset as it is: new IDs lose their models, names and portraits; stock '
+                             'slots keep patched models and stat edits.')
             dpg.add_checkbox(label='Dry run (validate without writing)', tag='roster_dry')
             self._action('Inject roster', self._on_roster, primary=True)
             self._action('Reset to vanilla',
                          lambda: self._config_guard(lambda: self.run_command('--roster', '--remove'),
                                                        'Reset to vanilla and lose the configuration?',
-                                                       'Resetting to vanilla'))
+                                                       'Resetting to vanilla', stats_lost=True,
+                                                       stats_reason=gui_grid.STATS_RESET),
+                         'Grid, new IDs, names, portraits, voices, stats sources and stat edits back to 1_Input; '
+                         'models patched into stock slots stay.')
             self._action('Repair unused characters', lambda: self.run_command('--resplit-unused'),
                          'Repair: give unused-character routes (dirs 89-94) their own block copies again.')
+            with dpg.group(horizontal=True):
+                dpg.add_loading_indicator(tag='roster_spinner', style=1, radius=1.6, show=False,
+                                          color=(90, 200, 120, 255), secondary_color=(60, 120, 80, 255))
+                dpg.add_text('', tag='roster_status')
         self._refresh_configs()
 
     def _refresh_configs(self):
@@ -472,18 +491,21 @@ class SluggiesGui:
         if not name:
             self._log_line('No roster configuration selected.', _PROMPT_COLOR)
             return
-        args = ['--roster', '--config', os.path.join(self.config_dir, name)]
+        path = os.path.join(self.config_dir, name)
+        fresh = dpg.get_value('roster_fresh')
         if dpg.get_value('roster_dry'):
-            args.append('--dry-run')
-            self.run_command(*args)
+            self.run_command(*gui_grid.switch_command(path, dry_run=True, fresh=fresh))
+        elif fresh:
+            self._config_guard(lambda: self.run_command(*gui_grid.switch_command(path, fresh=True)),
+                               'Inject the roster and lose the configuration?', 'Injecting a roster (start fresh)')
         else:
-            self._config_guard(lambda: self.run_command(*args), 'Inject the roster and lose the configuration?',
-                               'Injecting a roster')
+            self.grid_tab.switch_roster(path)
 
-    def _config_guard(self, then, title, action):
-        """Export / injection replace the game files: asks first when the configuration is not vanilla or the
-        grid has pending edits (OK / Save Configuration / Cancel)."""
-        self.grid_tab.config_guard(then, title, action)
+    def _config_guard(self, then, title, action, stats_lost=False, stats_reason=gui_grid.STATS_REPLACED):
+        """Export / injection replace the game files: asks first when the configuration is not vanilla, the
+        grid has pending edits or stat edits are at risk (OK / Save Configuration / Cancel). ``stats_lost``: every
+        stat edit goes (``stats_reason`` says why)."""
+        self.grid_tab.config_guard(then, title, action, stats_lost, stats_reason)
 
     def _on_close_request(self, *_):
         """The window's close button: while a command runs ask first (closing stops it), then with pending grid
@@ -524,6 +546,7 @@ class SluggiesGui:
                                callback=lambda: dpg.delete_item(_CLOSE_DIALOG))
 
     def _on_tab(self, _sender, tab):
+        self.grid_tab.forget_copy()
         if dpg.get_item_alias(tab) == 'grid_tab' and self.grid_tab.loader.status != gui_grid.StateLoader.RUNNING:
             self.grid_tab.request_read()
 

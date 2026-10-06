@@ -79,10 +79,6 @@ class Roster:
     new: list
     stock_stats: dict[int, int]
 
-    @property
-    def ids_moved(self) -> bool:
-        return bool(self.new)
-
 
 def read_roster(image: dolfile.DolImage) -> Roster:
     """The roster's new IDs and stats sources from the manifest (``derive`` reads them the same way)."""

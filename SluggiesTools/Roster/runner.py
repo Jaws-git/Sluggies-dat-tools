@@ -6,7 +6,8 @@ the files in ``3_Output_Dat`` (the normal pipeline's output).
 
 * It first resets the roster to vanilla (``reset.py``, against ``1_Input``),
   so repeated runs never stack and no record of earlier runs is needed.
-* ``--remove`` only resets the roster to vanilla.
+* ``--remove`` only resets the roster to vanilla, stat edits included
+  (``--keep-stat-edits`` carries them, for a stock roster pack's load).
 * ``--state FILE`` instead of ``--config``: a derived config (``derive.py``,
   read -> rebuild) with its portraits in the ``icons`` folder beside it.
 * Game options (``GameOptions/``, menu [8]) that are on before the reset are
@@ -14,6 +15,9 @@ the files in ``3_Output_Dat`` (the normal pipeline's output).
 * Stat edits (values that differ from what the roster itself writes, e.g.
   from the stat editor) are read before the reset and written onto the new
   layout by character ID (``StatEditor/carry.py``); removed IDs lose theirs.
+* ``start.py --roster --config`` plans its run first (``migrate.py``): the
+  slots' other customisations travel in a merged config given here as
+  ``--state``. A ``--config`` given here directly keeps none of them.
 * ``--dry-run`` runs everything in memory and writes nothing.
 * After the steps it stores a manifest (``manifest.py``) of the facts only
   hook code holds, so ``state.py`` can read the roster back.
@@ -109,8 +113,10 @@ def write_manifest(ctx: steps.RosterContext) -> str:
 
 
 def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_only: bool = False,
-        dry_run: bool = False, input_dir: str = INPUT_DIR, state_path: str | None = None) -> dict:
-    """``state_path``: a derived config (``derive.write``) in place of ``config_path``."""
+        dry_run: bool = False, input_dir: str = INPUT_DIR, state_path: str | None = None,
+        keep_stat_edits: bool = False) -> dict:
+    """``state_path``: a derived config (``derive.write``) in place of ``config_path``. ``remove_only`` also clears
+    the stat edits unless ``keep_stat_edits``."""
     icon_dir = None
     if state_path:
         config_path, icon_dir = state_path, derive.icon_dir_of(state_path)
@@ -162,6 +168,12 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
             log += [f'[{step.key}] {line}' for line in lines]
         log.append(write_manifest(ctx))
         dol_bytes = image.to_bytes()
+    if remove_only and not keep_stat_edits:
+        if stat_edits:
+            n = len(carry.by_character(stat_edits))
+            stat_log.append(f'[stat edits] cleared: {n} character{"s" if n != 1 else ""}, '
+                            f'{len(stat_edits.globals)} global values back to 1_Input')
+        stat_edits = None
     log += stat_log
     if stat_edits:
         image = dolfile.DolImage(dol_bytes)
@@ -196,12 +208,17 @@ def main(argv=None) -> int:
     source = parser.add_mutually_exclusive_group()
     source.add_argument('--config', help='the roster configuration JSON (e.g. from 1_Input/_RosterConfigurations)')
     source.add_argument('--state', help='a derived roster config (start.py --roster-derive), portraits beside it')
-    parser.add_argument('--remove', action='store_true', help='only reset the roster to vanilla (1_Input)')
+    parser.add_argument('--remove', action='store_true', help='only reset the roster to vanilla (1_Input), stat edits '
+                        'included')
+    parser.add_argument('--keep-stat-edits', action='store_true', help='with --remove: carry the stat edits over')
     parser.add_argument('--dry-run', action='store_true', help='run in memory, write nothing')
     parser.add_argument('--output-dir', default=OUTPUT_DIR, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     try:
-        report = run(args.output_dir, args.config, args.remove, args.dry_run, state_path=args.state)
+        if args.keep_stat_edits and not args.remove:
+            raise RosterDevError('--keep-stat-edits needs --remove (every other run carries the stat edits)')
+        report = run(args.output_dir, args.config, args.remove, args.dry_run, state_path=args.state,
+                     keep_stat_edits=args.keep_stat_edits)
     except (RuntimeError, ValueError) as exc:     # every step's errors (DolError, config errors, ...)
         slogger.error(str(exc), source=SOURCE)
         return 1

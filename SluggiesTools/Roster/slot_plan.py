@@ -76,6 +76,16 @@ Stat edits (``plan_stat_edits``): an edit file the Sluggers Stat Editor sent bac
 ``main.dol`` it was made from, so the chain writes every staged stat edit file in one ``--apply-stat-edits``
 before the roster rebuild; the rebuild then carries the values onto the new layout like any other stat edit
 (``StatEditor/carry.py``).
+
+Copy (``plan_copy``, op ``copy``, the grid's paste): slot ``id`` becomes a clone of ``source`` as the game holds
+it (finished blocks, name, portraits, stats source and every stat value; the square's voice stays unless the slot is
+alone on a new square). The planner snapshots the source into ``copy_dir`` before anything is written, so pending
+edits of the source are never copied; a paste drops the slot's earlier pending edits.
+
+Stat edits and slot edits: the rebuild carries a slot's stat edits by character ID, so they stay on top of a changed
+stats source (``plan_stats``, a patch that sets a new square's stats) and through a clear; those plans say so
+(``Plan.stat_edits_kept``). ``plan_stat_reset`` (op ``stat_reset``) clears them: a ``reset:0xNN`` item in the same
+``--apply-stat-edits`` step, at its place in the staging order (a later stat edit file sets values on top of it).
 """
 
 from __future__ import annotations
@@ -259,6 +269,15 @@ class Env:
         """Whether the slot is at its baseline already (a clear would change nothing)."""
         return False
 
+    def models_at_baseline(self, char: dict) -> bool:
+        """Whether the slot's High and Low models are the vanilla blocks of its source (an unused character's split
+        copies do not count: a clear repairs them)."""
+        return False
+
+    def shows_open_slot_portraits(self, char: dict) -> bool:
+        """Whether the slot shows the "empty slot" portraits (``open_slot.SLOT_ICON``)."""
+        return False
+
     def equipment_problems(self, source: tuple[int, int], target: tuple[int, int]) -> list[str]:
         """Errors for posing the bat/glove ``source`` (vanilla route) with the animations of ``target``'s vanilla
         file (an empty one has none to compare: no errors)."""
@@ -272,6 +291,11 @@ class Env:
         """Whether the game shows exactly ``image`` (48x51 RGBA) as the slot's ``view`` portrait now."""
         return False
 
+    def close_portrait(self, char: dict, view: str, image) -> bool:
+        """Whether the slot shows ``image`` as its ``view`` portrait up to the roster's CMPR re-encoding (a portrait
+        copied from stock art never decodes back exactly)."""
+        return self.same_portrait(char, view, image)
+
     def shown_portrait(self, char: dict, view: str):
         """The slot's ``view`` portrait as the game shows it now (RGBA image), or None when it cannot be read."""
         return None
@@ -281,9 +305,36 @@ class Env:
         return None
 
     def stat_edits(self, path: str) -> StatCheck:
-        """The stat edit file at ``path`` checked against the game files (``StatEditor/apply.py``); a refusal raises
-        ``PlanError``."""
+        """The stat edit file at ``path`` (or a ``reset:0xNN`` item) checked against the game files
+        (``StatEditor/apply.py``); a refusal raises ``PlanError``."""
         raise NotImplementedError
+
+    def stat_edited(self, cid: int) -> str | None:
+        """What stat edits the game holds for ``cid`` (``StatEditor/carry.CharacterEdits.text``), or None."""
+        return None
+
+    def current_block(self, char: dict, role: str) -> bytes | None:
+        """The block the slot loads now for ``role`` (``high`` / ``low`` / an equipment role), or None."""
+        return None
+
+    def vanilla_block(self, directory: int, file: int) -> bytes | None:
+        """File ``file`` of directory ``directory`` in ``1_Input``, or None."""
+        return None
+
+    def slot_problems(self, directory: int, high: bytes, low: bytes) -> tuple[list[str], list[str]]:
+        """(errors, warnings) for loading ``high`` / ``low`` in a slot whose vanilla files are ``directory``'s
+        (validator, skeleton, High/Low pair rules: ``pack.LoadEnv.slot_problems``)."""
+        return [], []
+
+    def equipment_block_problems(self, directory: int, file: int, block: bytes) -> tuple[list[str], list[str]]:
+        """(errors, warnings) for loading the equipment ``block`` as file ``file`` of a slot whose vanilla files are
+        ``directory``'s (``SlotTarget.equipment_block_problems``)."""
+        return [], []
+
+    def stat_snapshot(self, cid: int) -> dict | None:
+        """``cid``'s live stat values (``StatEditor/apply`` copy document without ``target``: ``fields`` {group:
+        {name: hex bytes}}, ``chemistry`` {other ID: [row byte, column byte]}), or None when unreadable."""
+        return None
 
 
 @dataclass
@@ -312,19 +363,29 @@ class Plan:
     pair: Pair | None = None        # patch: the picked file and its partner
     nothing: bool = False           # clear: the slot is at its baseline already, no commands
     gear: dict | None = None        # equip / equip_clear: {'file', 'label', 'path', 'shared_with', 'origin'}
+    # The slot's stat edits that stay on top of a changed stats source or a clear (``Env.stat_edited``); the GUI
+    # offers to clear them (a ``stat_reset`` edit)
+    stat_edits_kept: str | None = None
     # What the slot shows once the edit is written (the GUI's pending lines): 'model', 'name', 'stats', 'voice'
     # (display text) and 'portraits' ({'front', 'side'}: PNG paths to preview, or None: unchanged)
     effects: dict = field(default_factory=dict)
+    copy_source: int | None = None  # copy: the character the slot becomes a clone of
+    # copy: the snapshot files the chain reads ({file name in the copy folder: bytes, RGBA image or JSON data})
+    copy_files: dict = field(default_factory=dict)
 
     def to_json(self) -> dict:
         out = {'action': self.action, 'target': _hex(self.target), 'rebuild': self.config is not None,
                'commands': [list(c) for c in self.commands], 'notes': self.notes, 'warnings': self.warnings,
                'nothing': self.nothing, 'effects': self.effects}
+        if self.copy_source is not None:
+            out['source'] = _hex(self.copy_source)
         if self.pair is not None:
             out['source'] = _hex(self.pair.source)
             out['files'] = {'high': self.pair.high, 'low': self.pair.low, 'picked': self.pair.picked}
         if self.gear is not None:
             out['gear'] = dict(self.gear)
+        if self.stat_edits_kept is not None:
+            out['stat_edits_kept'] = self.stat_edits_kept
         return out
 
 
@@ -433,6 +494,7 @@ def plan_patch(st: dict, config: dict, cid: int, pair: Pair, env: Env, state_fil
                 entry['stats'] = _hex(source)
                 plan.notes.append(f'{target_name} takes {source_name}\'s stats (new square)')
                 plan.effects['stats'] = source_name
+                _note_stat_edits(plan, env, cid, target_name)
             k, sq = _square_config(new, cid) or (None, None)
             # set in the game, or by an earlier edit of the same batch (pending patches count too)
             voice_set = square.get('voice_set') is not None or (isinstance(sq, dict) and sq.get('voice') is not None)
@@ -493,6 +555,17 @@ def plan_patch(st: dict, config: dict, cid: int, pair: Pair, env: Env, state_fil
     plan.notes.insert(0, f'{" + ".join(os.path.basename(f) for f in files)} -> {target_name}'
                          + (' (High model as the Low model too)' if as_low else ''))
     return plan
+
+
+def _note_stat_edits(plan: Plan, env: Env | None, cid: int, target_name: str, clear: bool = False) -> None:
+    """A slot whose stats source changes (or that is cleared) keeps its stat edits: the roster rebuild carries them
+    by character ID onto the new rows (``StatEditor/carry.py``). Say so; the GUI offers to clear them."""
+    kept = env.stat_edited(cid) if env is not None else None
+    if not kept:
+        return
+    plan.stat_edits_kept = kept
+    plan.notes.append(f'{target_name} keeps its stat edits ({kept}) on top of '
+                      + ('its baseline: a clear does not touch stat values' if clear else 'the new stats'))
 
 
 def _check_low_alone(env: Env, cid: int, pair: Pair, target_name: str) -> None:
@@ -562,6 +635,7 @@ def plan_clear(st: dict, config: dict, cid: int, state_file: str, env: Env | Non
             plan.notes.append(f'{target_name}: its {names_} go back to the vanilla ones')
             plan.effects['equipment'] = f'vanilla {names_}'
     plan.commands.append(('--roster-state',))
+    _note_stat_edits(plan, env, cid, target_name, clear=True)
     return plan
 
 
@@ -737,9 +811,10 @@ def _source_name(source: int, names_text: dict | None, st: dict | None = None) -
 
 
 def plan_stats(st: dict, config: dict, cid: int, source: int | None, state_file: str,
-               names_text: dict | None = None) -> Plan:
+               names_text: dict | None = None, env: Env | None = None) -> Plan:
     """The chain that lets slot ``cid`` play with stock player ``source``'s stats (``None``: its default, a new
-    ID's template's, a stock ID's own). The stats rows only: model, size, voice and name stay."""
+    ID's template's, a stock ID's own). The stats rows only: model, size, voice and name stay. The slot's stat edits
+    stay on top of the new rows (``_note_stat_edits``)."""
     char = _character(st, cid)
     new = copy.deepcopy(config)
     plan = Plan('stats', cid, None)
@@ -775,6 +850,7 @@ def plan_stats(st: dict, config: dict, cid: int, source: int | None, state_file:
     plan.notes.append(f'{target_name} plays with {shown} stats (stats, pitching, fielding, chemistry; its model, '
                       'size and voice stay)')
     plan.effects['stats'] = shown[:-2] if shown.endswith("'s") else shown
+    _note_stat_edits(plan, env, cid, target_name)
     return plan
 
 
@@ -940,6 +1016,285 @@ def plan_icon(st: dict, config: dict, cid: int, view: str, pick: IconPick, env: 
     return plan
 
 
+# --------------------------------------------------------------------------
+# Copy / paste: a slot becomes a clone of another
+# --------------------------------------------------------------------------
+
+COPY_DIR = 'copies'                 # beside the batch's roster.json: the snapshot of each copied character
+COPY_PREFIX = 'copy:'               # StatEditor/apply.COPY_PREFIX (test-pinned)
+COPY_FORMAT = 'sluggies-stat-copy'  # StatEditor/apply.COPY_FORMAT (test-pinned)
+MODEL_ROLES = {'high': HIGH_FILE, 'low': LOW_FILE}
+BLOCK_SUFFIX = {'high': 'hp', 'low': 'l', **{role: role for role in gear.ROLES.values()}}
+
+
+def copy_dir(state_file: str) -> str:
+    return os.path.join(os.path.dirname(state_file), COPY_DIR)
+
+
+def _sha(char: dict, role: str) -> str | None:
+    table = char.get('blocks') if role in MODEL_ROLES else char.get('equipment')
+    return ((table or {}).get(role) or {}).get('sha1')
+
+
+def _role_label(role: str) -> str:
+    return {'high': 'High model', 'low': 'Low model'}.get(role) or gear.label(
+        next(f for f, r in gear.ROLES.items() if r == role)).lower()
+
+
+def _set_name(config: dict, cid: int, value: dict) -> str | None:
+    """Name slot ``cid`` ``value`` (every language) in ``config`` (``plan_rename``'s entries); returns why not."""
+    if cid >= ids.FIRST_NEW:
+        entry = _entry(config, 'ids', cid)
+        if entry is None:
+            return f'{_hex(cid)} has no ids entry'
+        entry['name'] = dict(value)
+    elif cid in wheels.SPARE_IDS:
+        entry = _entry(config, 'wheels', cid)
+        if entry is None:
+            return f'{_hex(cid)} is not on a wheel'
+        entry['name'] = dict(value)
+    elif cid < names.RENAMEABLE_END:
+        _set_stock_entry(config, names.STOCK_KEY, cid, 'name', dict(value))
+    else:
+        return 'Miis have no name plate of their own'
+    return None
+
+
+def _same_stat_values(source: dict, target: dict, sid: int, tid: int) -> bool:
+    """Whether ``target``'s live stat values (``Env.stat_snapshot``) equal ``source``'s as a copy would map them."""
+    if source.get('fields') != target.get('fields'):
+        return False
+    theirs = target.get('chemistry') or {}
+    for other, pair in (source.get('chemistry') or {}).items():
+        o = int(other, 16)
+        if o == tid:
+            continue                                  # the pair of source and target is kept
+        if theirs.get(_hex(tid if o == sid else o)) != pair:
+            return False
+    return True
+
+
+def plan_copy(st: dict, config: dict, base_config: dict, cid: int, source: int, env: Env, state_file: str,
+              names_text: dict | None = None) -> Plan:
+    """The chain that makes slot ``cid`` a clone of ``source`` as the game holds it (``st``, ``base_config``: the
+    read and derived config before the batch, so pending edits of the source are not copied; ``config``: as earlier
+    edits of the batch left it).
+
+    * Models and equipment: the source's finished blocks (``Env.current_block``, snapshot files in ``copy_dir``),
+      written with ``--write-slot-blocks`` / ``--write-slot-equipment``. A new ID gets an own model directory from
+      the source's model source (kept when it has one already); a stock slot takes the models only with a matching
+      skeleton (refused otherwise); a patched gear file whose vanilla block is the source's is unpatched instead.
+      Gear that does not fit
+      is skipped with a warning; every other bat / glove file is copied (a full clone).
+    * Name, stats source and portraits (the source's own cells by name, else the pixels it shows): one roster
+      rebuild. The voice belongs to the square: only a target alone on a new square takes the source's.
+    * Stat values: ``--apply-stat-edits copy:<snapshot>`` after the rebuild (every field, and the chemistry in both
+      directions; the target's own pair with the source stays)."""
+    if source == cid:
+        raise PlanError(f'{_hex(cid)} cannot be pasted onto itself')
+    char, src = _character(st, cid), _character(st, source)
+    target_name, source_name = _display(char), _display(src)
+    if not src.get('blocks') or char.get('blocks') is None:
+        raise PlanError('the model blocks cannot be read (is dt_na.dat in 3_Output_Dat?)')
+    new = copy.deepcopy(config)
+    plan = Plan('copy', cid, None, copy_source=source)
+    folder = copy_dir(state_file)
+    tag = f'{source:02X}_{cid:02X}'
+
+    def stash(name, data):
+        plan.copy_files[name] = data
+        return os.path.join(folder, name)
+
+    blocks = {}
+    for role in list(MODEL_ROLES) + [gear.ROLES[f] for f in gear.FILES]:
+        if _sha(src, role) is None:
+            continue
+        block = env.current_block(src, role)
+        if block is None:
+            raise PlanError(f'{source_name}: its {_role_label(role)} cannot be read')
+        blocks[role] = block
+    if any(role not in blocks for role in MODEL_ROLES):
+        raise PlanError(f'{source_name} has no High and Low model to copy')
+
+    # models and equipment
+    model_source = src['model_source']
+    source_dir = model_source + ids.MODEL_DIR_BASE
+    writes, gear_unpatches, fresh = {}, [], False
+    if cid >= ids.FIRST_NEW:
+        entry = _entry(new, 'ids', cid)
+        if entry is None:
+            raise PlanError(f'{_hex(cid)} has no ids entry in the derived config')
+        if not 0 <= model_source < ids.PLAYER_END:
+            raise PlanError(f'{source_name} loads the files of {_hex(model_source)}, which is not a stock player '
+                            f'(0x00-0x{ids.PLAYER_END - 1:02X}): they cannot become a new ID\'s directory')
+        differs = [r for r in blocks if _sha(char, r) != _sha(src, r)]
+        files_of = _source_name(model_source, names_text, st)
+        if char.get('model_source') == model_source and not differs:
+            plan.notes.append(f'{target_name} loads the same model files already')
+        elif char.get('own_model_dir') and char.get('model_source') == model_source:
+            writes = {r: blocks[r] for r in differs}
+            plan.notes.append(f'{target_name} keeps its own model directory (copies of {files_of}\'s files)')
+        else:
+            entry['model'] = {'from': _hex(model_source)}
+            fresh = True
+            # the fresh copy comes from 1_Input: every file whose bytes differ goes on top (also untangled texture
+            # bytes, so the clone keeps the source's Dolphin texture hashes)
+            files = {**MODEL_ROLES, **{r: f for f, r in gear.ROLES.items()}}
+            writes = {r: b for r, b in blocks.items() if b != env.vanilla_block(source_dir, files[r])}
+            plan.notes.append(f'{target_name} gets an own model directory: a fresh copy of {files_of}\'s files'
+                              + (', then the source\'s changed files on top' if writes else '')
+                              + (' (models patched into its old directory are dropped)'
+                                 if char.get('own_model_dir') else ''))
+        check_dir = source_dir
+        if any(r in writes for r in MODEL_ROLES):
+            errors, warnings = env.slot_problems(check_dir, blocks['high'], blocks['low'])
+            if errors:
+                raise PlanError(f'{source_name}\'s models do not fit: {errors[0]}')
+            plan.warnings += warnings
+    else:
+        check_dir = char['model_dir']
+        differs = [r for r in MODEL_ROLES if _sha(char, r) != _sha(src, r)]
+        if differs:
+            errors, warnings = env.slot_problems(check_dir, blocks['high'], blocks['low'])
+            if errors:
+                raise PlanError(f'{source_name} does not fit {target_name} ({errors[0]}). A stock slot keeps its own '
+                                'animations, so only a character with the same skeleton fits; paste it onto a new '
+                                'ID instead.')
+            plan.warnings += warnings
+            writes.update({r: blocks[r] for r in differs})
+        for f in gear.FILES:
+            role = gear.ROLES[f]
+            if role not in blocks or _sha(char, role) in (None, _sha(src, role)):
+                continue
+            # a patched file whose vanilla block is the source's goes back to its vanilla route; a file still on its
+            # vanilla route is never unpatched (that would rewrite a route other slots may share)
+            if char['equipment'][role].get('vanilla') is False and blocks[role] == env.vanilla_block(check_dir, f):
+                gear_unpatches.append(f)
+            else:
+                writes[role] = blocks[role]
+    for f in gear.FILES:
+        role = gear.ROLES[f]
+        if role not in writes:
+            continue
+        errors, warnings = env.equipment_block_problems(check_dir, f, writes[role])
+        if errors:
+            del writes[role]
+            plan.warnings.append(f'{target_name} keeps its {gear.label(f).lower()}: {source_name}\'s does not fit '
+                                 f'({errors[0]})')
+        else:
+            plan.warnings += warnings
+    slot_commands = []
+    if any(r in writes for r in MODEL_ROLES):
+        slot_commands.append(('--write-slot-blocks', _hex(cid),
+                              *(stash(f'{tag}_{BLOCK_SUFFIX[r]}.bin', writes[r]) if r in writes else '-'
+                                for r in MODEL_ROLES)))
+    for f in gear_unpatches:
+        slot_commands.append(('--unpatch', '--target-id', _hex(cid), '--target-file', str(f)))
+    for f in gear.FILES:
+        role = gear.ROLES[f]
+        if role in writes:
+            slot_commands.append(('--write-slot-equipment', _hex(cid), str(f),
+                                  stash(f'{tag}_{BLOCK_SUFFIX[role]}.bin', writes[role])))
+    model_changed = fresh or any(r in writes for r in MODEL_ROLES)
+    plan.effects['model'] = f'{source_name}\'s models' if model_changed else 'unchanged (the same models already)'
+    gear_changed = [f for f in gear.FILES if gear.ROLES[f] in writes] + gear_unpatches
+    if gear_changed:
+        plan.effects['equipment'] = {f: f'{gear.label(f).lower()} of {source_name}' for f in sorted(gear_changed)}
+
+    # name
+    text = (names_text or {}).get(source) or src.get('name') or {}
+    if text.get('en') and text['en'] != names.UNNAMED:
+        value = {lang: text.get(lang) or text['en'] for lang in open_slot.SLOT_NAME}
+        if char.get('name') != value:
+            why = _set_name(new, cid, value)
+            if why:
+                plan.notes.append(f'name not copied: {why}')
+            else:
+                plan.effects['name'] = value['en']
+
+    # stats source
+    stats = src.get('stats')
+    stats_copied = False
+    if stats is None or not 0 <= stats < ids.PLAYER_END:
+        plan.notes.append(f'stats source not copied: {source_name} has no stock stats rows')
+    elif cid >= ids.FIRST_NEW:
+        entry = _entry(new, 'ids', cid)
+        if stats == ids._number(entry['template'], 'template'):
+            entry.pop('stats', None)
+        else:
+            entry['stats'] = _hex(stats)
+        stats_copied = True
+    elif cid < ids.PLAYER_END:
+        _set_stock_entry(new, ids.STOCK_STATS_KEY, cid, 'stats', None if stats == cid else _hex(stats))
+        stats_copied = True
+    else:
+        plan.notes.append('stats source not copied: Miis cannot take other stats')
+    if stats_copied and char.get('stats') != stats:
+        plan.effects['stats'] = _source_name(stats, names_text, st)
+
+    # voice: only a target alone on a new square (its square-only ID speaks with the square's voice)
+    square = st['squares'][char['square']]
+    voice = st['squares'][src['square']]['voice']
+    entry = _entry(new, 'ids', cid) if cid >= ids.FIRST_NEW else None
+    if square['kind'] == 'new' and square['members'] == [cid] and entry is not None and entry.get('wheel') is None:
+        k, sq = _square_config(new, cid) or (None, None)
+        if sq is not None and square.get('voice') != voice:
+            new['grid']['squares'][k] = {'members': list(sq['members'] if isinstance(sq, dict) else sq),
+                                         'voice': _hex(voice_family(st, voice))}
+            _check_voices(st, new)
+            plan.effects['voice'] = f'{_source_name(voice, names_text, st)} (square voice)'
+    elif square.get('voice') != voice:
+        plan.notes.append(f'{target_name} keeps its square\'s voice ({_source_name(square["voice"], names_text, st)})')
+
+    # portraits
+    if not has_portrait_records(cid):
+        plan.notes.append(f'portraits not copied: {target_name} has no portrait records (Miis show the Mii icon)')
+    elif not has_portrait_records(source):
+        plan.notes.append(f'portraits not copied: {source_name} shows the Mii icon')
+    else:
+        shown = {view: env.shown_portrait(src, view) for view in VIEWS}
+        if any(image is None for image in shown.values()):
+            plan.notes.append(f'portraits not copied: {source_name}\'s portraits cannot be read')
+        elif not all(env.close_portrait(char, view, shown[view]) for view in VIEWS):
+            own = (_icon_entry(base_config, source) or {}).get('icon') or {}
+            if all(own.get(view) for view in VIEWS):
+                icon = {view: own[view] for view in VIEWS}           # its own cells, by name: blocks kept
+            else:
+                icon = {view: f'copy_{tag}_{view}.png' for view in VIEWS}
+                plan.portraits.update({icon[view]: shown[view] for view in VIEWS})
+            why = _set_icon(new, cid, dict(icon, fit='strict'))       # 48x51 cells, as the derive writes them
+            if why:
+                plan.notes.append(f'portraits not copied: {why}')
+            else:
+                plan.effects['portraits'] = {view: stash(f'preview_{tag}_{view}.png', shown[view]) for view in VIEWS}
+                plan.effects['portrait_note'] = f'{source_name}\'s portraits'
+
+    # stat values, after the rebuild (the target's rows follow the copied stats source then)
+    stat_commands = []
+    snapshot = env.stat_snapshot(source)
+    if snapshot is None:
+        plan.notes.append('stat values not copied: the stat tables cannot be read')
+    else:
+        theirs = env.stat_snapshot(cid)
+        if theirs is None or not _same_stat_values(snapshot, theirs, source, cid) or 'stats' in plan.effects:
+            doc = dict(snapshot, format=COPY_FORMAT, source=_hex(source), target=_hex(cid))
+            stat_commands.append(('--apply-stat-edits', COPY_PREFIX + stash(f'stats_{tag}.json', doc)))
+            plan.effects['stat_edits'] = f'{source_name}\'s values (every field and chemistry)'
+
+    if new != config:
+        plan.config = new
+    if plan.config is None and not slot_commands and not stat_commands:
+        plan.nothing = True
+        plan.copy_files.clear()
+        plan.notes.insert(0, f'nothing to paste: {target_name} is a clone of {source_name} already')
+        return plan
+    _prepare(plan, state_file, [])
+    plan.commands += stat_commands + slot_commands
+    plan.commands.append(('--roster-state',))
+    plan.notes.insert(0, f'{source_name} -> {target_name} (a clone of what the game holds now)')
+    return plan
+
+
 def _display(char: dict) -> str:
     name = char.get('default_name') or (char.get('name') or {}).get('en')
     return f'{name} ({_hex(char["id"])})' if name and name != names.UNNAMED else _hex(char['id'])
@@ -965,12 +1320,37 @@ def plan_stat_edits(path: str, env: Env) -> Plan:
     return plan
 
 
-MODEL_OPS = ('patch', 'clear')
+RESET_PREFIX = 'reset:'                               # StatEditor/apply.RESET_PREFIX (test-pinned)
+
+
+def plan_stat_reset(st: dict, cid: int, env: Env, after_files: bool = False) -> Plan:
+    """The chain step that clears slot ``cid``'s stat edits (every field and chemistry value back to what the roster
+    writes without them), merged by ``plan_batch`` into its ``--apply-stat-edits`` in staging order. ``nothing``
+    when the game holds none, unless ``after_files``: an earlier staged stat edit file may set some."""
+    target_name = _display(_character(st, cid))
+    item = f'{RESET_PREFIX}{_hex(cid)}'
+    check = env.stat_edits(item)
+    plan = Plan(STAT_RESET, cid, None)
+    if check.summary is None and not after_files:
+        plan.nothing = True
+        plan.notes.append(f'nothing to clear: {target_name} has no stat edits')
+        return plan
+    plan.commands.append(('--apply-stat-edits', item))
+    plan.notes.append(f'{target_name}: its stat edits are cleared (fields and chemistry back to the values its '
+                      'stats source gives)')
+    plan.notes += check.lines
+    plan.effects['stat_edits'] = f'cleared ({check.summary})' if check.summary else 'cleared'
+    return plan
+
+
+SLOT_WRITES = ('--patch', '--unpatch', '--write-slot-blocks', '--write-slot-equipment')   # step 4 of a batch
+MODEL_OPS = ('patch', 'clear', 'copy')               # copy: the slot becomes a clone of ``source`` (paste)
 VALUE_OPS = ('voice', 'stats')                        # the last one per slot (voice: per square) wins
 EQUIP_OPS = ('equip', 'equip_clear')                  # the last one per slot file wins
-SLOT_OPS = MODEL_OPS + ('rename',) + VALUE_OPS + ('icon',) + EQUIP_OPS
+STAT_RESET = 'stat_reset'                             # one per slot; written with the stat edit files, in order
+SLOT_OPS = MODEL_OPS + ('rename',) + VALUE_OPS + ('icon',) + EQUIP_OPS + (STAT_RESET,)
+COPY = 'copy'
 STAT_EDITS = 'stat_edits'                             # not a slot edit: every one is written, in staging order
-OPS = SLOT_OPS + (STAT_EDITS,)
 GAME_WIDE = 0xFF                                      # the "id" of a stat edit: no character has it
 ORIGINS = ('user', 'bundled')
 DEFAULT_WORDS = ('', '-', 'default')                  # an edit's "source" that resets (CLI text)
@@ -988,7 +1368,8 @@ class Edit:
     checked: bool = False           # its build check already passed when it was staged (dry runs skip it)
     index: int = 0                  # position in the edits file (1-based)
     pair: Pair | None = None
-    source: int | None = None       # voice / stats: the character to take them from (None: back to the default)
+    source: int | None = None       # voice / stats: the character to take them from (None: back to the default);
+    #                                 copy: the character the slot becomes a clone of
     view: str | None = None         # icon: 'front' or 'side'
     fit: str = icon_art.DEFAULT_FIT_MODE                  # icon: contain / cover / strict
     trim: bool = icon_import.DEFAULT_TRIM                 # icon: crop the transparent border first
@@ -1013,7 +1394,7 @@ class Edit:
                 out[key] = getattr(self, key)
         if self.no_gear:
             out['gear'] = False
-        if self.op in VALUE_OPS:
+        if self.op in VALUE_OPS + (COPY,):
             out['source'] = None if self.source is None else _hex(self.source)
         if self.op == 'icon':
             out.update(fit=self.fit, trim=self.trim)
@@ -1070,6 +1451,13 @@ def parse_edits(data) -> list[Edit]:
             raise PlanError(f'edit {n}: a patch needs a "file"')
         if edit.op == 'rename' and not isinstance(edit.text, str):
             raise PlanError(f'edit {n}: a rename needs a "text" (blank resets the name)')
+        if edit.op == COPY:
+            try:
+                edit.source = parse_source(item.get('source'))
+            except PlanError as exc:
+                raise PlanError(f'edit {n}: {exc}') from exc
+            if edit.source is None:
+                raise PlanError(f'edit {n}: a copy edit needs a "source" (the character to clone)')
         if edit.op in VALUE_OPS:
             if 'source' not in item:
                 raise PlanError(f'edit {n}: a {edit.op} edit needs a "source" (null: back to the default)')
@@ -1149,7 +1537,8 @@ def merge_edits(edits: list[Edit], classify_fn=None, load_icon_fn=None, classify
                 find_gear_fn=None) -> tuple[list[Edit], list[str], list[tuple[Edit, str]]]:
     """``(merged, notes, refused)``: the edits in staging order after the slot rules:
 
-    * at most one model edit (patch / clear) per slot: a later one replaces an earlier one;
+    * at most one model edit (patch / clear / copy) per slot: a later one replaces an earlier one;
+    * a copy (paste) drops every earlier edit of its slot: the slot becomes a clone of the source as a whole;
     * a Low-only pick after a pending High pick of the same character joins it as a pair; after another
       pending High pick or a pending clear it is refused (its High model would not be the one it binds into);
     * a clear drops the slot's earlier renames, stats and icon edits (it resets them); a later rename, voice or
@@ -1170,6 +1559,19 @@ def merge_edits(edits: list[Edit], classify_fn=None, load_icon_fn=None, classify
 
     for edit in edits:
         if edit.op == STAT_EDITS:
+            merged.append(edit)
+            continue
+        if edit.op == STAT_RESET:
+            same = next((e for e in merged if e.cid == edit.cid and e.op == STAT_RESET), None)
+            if same is not None:
+                merged.remove(same)
+            merged.append(edit)
+            continue
+        if edit.op == COPY:
+            for old in [e for e in merged if e.cid == edit.cid]:
+                merged.remove(old)
+                notes.append(f'{_hex(edit.cid)}: the pending {old.op} is dropped: the later paste replaces the '
+                             'whole slot')
             merged.append(edit)
             continue
         if edit.op == 'patch':
@@ -1210,10 +1612,11 @@ def merge_edits(edits: list[Edit], classify_fn=None, load_icon_fn=None, classify
                    if edit.op in MODEL_OPS else None)
         if edit.op == 'patch' and edit.pair.high is None and earlier is not None:
             low_name = os.path.basename(edit.pair.low)
-            if earlier.op == 'clear':
-                refused.append((edit, f'{low_name} has no High partner beside it, and a clear of {_hex(edit.cid)} '
-                                      'is pending: patch the High model instead, or discard the pending clear '
-                                      'first'))
+            if earlier.op in ('clear', COPY):
+                what = 'clear' if earlier.op == 'clear' else 'paste'
+                refused.append((edit, f'{low_name} has no High partner beside it, and a {what} of '
+                                      f'{_hex(edit.cid)} is pending: patch the High model instead, or discard the '
+                                      f'pending {what} first'))
                 continue
             p = earlier.pair
             if p.high is None or p.chunk != edit.pair.chunk or p.stem != edit.pair.stem:
@@ -1277,6 +1680,7 @@ class Batch:
     refused: list[tuple[Edit, str]] = field(default_factory=list)
     extra_portraits: dict = field(default_factory=dict)
     portraits: dict = field(default_factory=dict)  # icon edits' portraits ({file name: RGBA image or PNG path})
+    copy_files: dict = field(default_factory=dict)  # pastes' snapshot files ({name in copy_dir: data})
 
     @property
     def ok(self) -> bool:
@@ -1304,7 +1708,9 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
     2. one ``--apply-stat-edits`` with every staged stat edit file (they hold values for the DOL as it is now, and
        the rebuild carries them over);
     3. one ``--roster --state`` when the merged config differs from the derived one;
-    4. each slot's ``--patch`` / ``--unpatch``, in staging order;
+    3b. one ``--apply-stat-edits`` with the pastes' stat values (``copy:`` items), after the rebuild;
+    4. each slot's ``--patch`` / ``--unpatch`` / ``--write-slot-blocks`` / ``--write-slot-equipment``, in staging
+       order;
     5. one ``--roster-state``.
 
     Any refused edit refuses the whole batch: no commands, no config (``refused`` names them all)."""
@@ -1327,11 +1733,19 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
             elif edit.op == 'rename':
                 plan = plan_rename(st, current, edit.cid, edit.text, state_file)
             elif edit.op == 'stats':
-                plan = plan_stats(st, current, edit.cid, edit.source, state_file, names_text)
+                plan = plan_stats(st, current, edit.cid, edit.source, state_file, names_text, env)
             elif edit.op == 'voice':
                 plan = plan_voice(st, current, edit.cid, edit.source, state_file, names_text)
             elif edit.op == STAT_EDITS:
                 plan = plan_stat_edits(edit.file, env)
+            elif edit.op == COPY:
+                plan = plan_copy(st, current, config, edit.cid, edit.source, env, state_file, names_text)
+                if any(e.cid == edit.source for e in merged if e is not edit):
+                    plan.notes.append(f'pending edits of {_hex(edit.source)} are not copied: the paste takes what '
+                                      'the game holds now')
+            elif edit.op == STAT_RESET:
+                plan = plan_stat_reset(st, edit.cid, env,
+                                       after_files=any(e.op == STAT_EDITS for e, _p in batch.plans))
             else:
                 plan = plan_clear(st, current, edit.cid, state_file, env)
         except PlanError as exc:
@@ -1354,6 +1768,7 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
         if edit.op in ('clear', 'icon') or 'portraits' in plan.effects or 'portrait_note' in plan.effects:
             portraits_touched.add(edit.cid)
         batch.portraits.update(plan.portraits)
+        batch.copy_files.update(plan.copy_files)
         if edit.op == 'voice':
             square = st['squares'][_character(st, edit.cid)['square']]
             for earlier in [(e, p) for e, p in batch.plans
@@ -1371,14 +1786,18 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
     for edit, plan in batch.plans:
         if not (skip_checked and edit.checked):
             batch.commands += [c for c in plan.commands if '--validate-only' in c]
-    stat_files = [p for _edit, plan in batch.plans for c in plan.commands if c[0] == '--apply-stat-edits'
-                  for p in c[1:]]
+    stat_items = [p for _edit, plan in batch.plans for c in plan.commands if c[0] == '--apply-stat-edits'
+                  for p in c[1:]]                   # files and reset:0xNN items, in staging order
+    stat_files = [p for p in stat_items if not p.startswith(COPY_PREFIX)]
+    stat_copies = [p for p in stat_items if p.startswith(COPY_PREFIX)]
     if stat_files:                                  # one step: every file is checked against the DOL before writing
         batch.commands.append(('--apply-stat-edits', *stat_files))
     if current != config:
         batch.config = current
         batch.commands.append(('--roster', '--state', state_file))
+    if stat_copies:                                 # pastes: the target's rows follow its new stats source by now
+        batch.commands.append(('--apply-stat-edits', *stat_copies))
     for _edit, plan in batch.plans:
-        batch.commands += [c for c in plan.commands if c[0] in ('--patch', '--unpatch') and '--validate-only' not in c]
+        batch.commands += [c for c in plan.commands if c[0] in SLOT_WRITES and '--validate-only' not in c]
     batch.commands.append(('--roster-state',))
     return batch

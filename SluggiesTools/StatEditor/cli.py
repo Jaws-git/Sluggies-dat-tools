@@ -2,7 +2,9 @@
 
   cli.py --export FILE [--focus 0xNN]     write the bridge for 3_Output_Dat to FILE
   cli.py --apply FILE [FILE ...] [--dry-run]
-                                          write the stat editor's edit files into 3_Output_Dat/main.dol
+                                          write the stat editor's edit files into 3_Output_Dat/main.dol;
+                                          an item reset:0xNN clears that character's stat edits;
+                                          copy:FILE writes a paste's stat snapshot
 
 ``--export`` reads ``3_Output_Dat/main.dol`` (+ ``dt_na.dat`` for names) and
 ``1_Input/main.dol`` (the baseline rows) and never writes the game files.
@@ -70,23 +72,42 @@ def character_names(image: dolfile.DolImage, dat) -> dict[int, str]:
     return {int(c['id'], 16): c['name'] for c in bridge.character_list(image, dat, roster) if c['name']}
 
 
-def check(image: dolfile.DolImage, dat, paths: list[str]) -> tuple[apply.Prepared, dict[int, str]]:
-    """The edit files at ``paths`` checked against ``image`` (``apply.prepare``), and the names for messages."""
-    documents = [apply.read_file(p) for p in paths]
+def check(image: dolfile.DolImage, dat, items: list[str],
+          input_dir: str = INPUT_DIR) -> tuple[apply.Prepared, dict[int, str]]:
+    """The items checked against ``image`` (``apply.prepare``), and the names for messages. An item is an edit
+    file's path, or ``reset:0xNN`` (clear that character's stat edits; reads ``input_dir/main.dol``)."""
+    parsed = [apply.parse_item(item) for item in items]
+    documents = [p if isinstance(p, apply.Reset) else apply.Copy(p.path, apply.read_file(p.path))
+                 if isinstance(p, apply.Copy) else apply.read_file(p) for p in parsed]
+    vanilla = None
+    if any(isinstance(p, apply.Reset) for p in parsed):
+        vanilla = _read_dol(os.path.join(input_dir, 'main.dol'), 'clearing stat edits needs the original main.dol')
     names = character_names(image, dat)
-    labels = [os.path.basename(p) if len(paths) == 1 else f'{os.path.basename(p)} (file {n})'
-              for n, p in enumerate(paths, 1)]
-    return apply.prepare(image, documents, labels, names), names
+    files = sum(isinstance(p, str) for p in parsed)
+    labels = []
+    for n, p in enumerate(parsed, 1):
+        if isinstance(p, apply.Reset):
+            labels.append(f'clearing the stat edits of {names.get(p.cid, _hex(p.cid))} ({_hex(p.cid)})')
+        elif isinstance(p, apply.Copy):
+            labels.append(f'the pasted stat values ({os.path.basename(p.path)})')
+        else:
+            labels.append(os.path.basename(p) if files == 1 else f'{os.path.basename(p)} (file {n})')
+    return apply.prepare(image, documents, labels, names, vanilla), names
 
 
-def apply_files(paths: list[str], output_dir: str = OUTPUT_DIR,
-                dry_run: bool = False) -> tuple[apply.Prepared, dict[int, str]]:
-    """Check the edit files at ``paths`` and write them into ``output_dir/main.dol`` (not with ``dry_run``)."""
+def _hex(cid: int) -> str:
+    return f'0x{cid:02X}'
+
+
+def apply_files(items: list[str], output_dir: str = OUTPUT_DIR, dry_run: bool = False,
+                input_dir: str = INPUT_DIR) -> tuple[apply.Prepared, dict[int, str]]:
+    """Check the items (edit files, ``reset:0xNN``) and write them into ``output_dir/main.dol`` (not with
+    ``dry_run``)."""
     dol_path = os.path.join(output_dir, 'main.dol')
     dat_path = os.path.join(output_dir, 'dt_na.dat')
     image = _read_dol(dol_path, 'run the normal pipeline first (menu [1])')
     dat = datfile.DatFile(dat_path) if os.path.isfile(dat_path) else None
-    prepared, names = check(image, dat, paths)
+    prepared, names = check(image, dat, items, input_dir)
     if prepared.changes and not dry_run:
         apply.write(image, prepared)
         tmp = dol_path + '.stats_tmp'
@@ -112,7 +133,8 @@ def main(argv=None) -> int:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--export', metavar='FILE', help='write stat_bridge.json to FILE')
     mode.add_argument('--apply', nargs='+', metavar='FILE', help="write the stat editor's edit files "
-                      '(stat_edits.json) into main.dol, in order (a later file wins)')
+                      '(stat_edits.json) into main.dol, in order (a later one wins); an item reset:0xNN clears '
+                      "that character's stat edits at its place in the order")
     parser.add_argument('--focus', type=_id, metavar='0xNN', help='--export: the character the editor preselects')
     parser.add_argument('--dry-run', action='store_true', help='--apply: check and list the changes, write nothing')
     parser.add_argument('--output-dir', default=OUTPUT_DIR, help=argparse.SUPPRESS)
@@ -143,7 +165,10 @@ def main(argv=None) -> int:
 
 def _main_apply(args) -> int:
     try:
-        prepared, names = apply_files([os.path.abspath(p) for p in args.apply], args.output_dir, args.dry_run)
+        items = [p if p.lower().startswith(apply.RESET_PREFIX)
+                 else apply.COPY_PREFIX + os.path.abspath(p[len(apply.COPY_PREFIX):])
+                 if p.lower().startswith(apply.COPY_PREFIX) else os.path.abspath(p) for p in args.apply]
+        prepared, names = apply_files(items, args.output_dir, args.dry_run, args.input_dir)
     except (RuntimeError, ValueError, OSError) as exc:          # EditFileError, BridgeError
         slogger.error(f'refused, nothing written: {exc}', source=SOURCE)
         return 1

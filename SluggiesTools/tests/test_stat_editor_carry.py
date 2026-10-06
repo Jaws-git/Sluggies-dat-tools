@@ -217,9 +217,15 @@ class RunnerTests(unittest.TestCase):
         self.edit(lambda ed: ed.set(0x66, SPEED, 0x0203))
         runner.run(self.tmp, config_path=self.config(EXPANDED), input_dir=self.input_dir)
         self.assertEqual(Editor(self.current()).get(0x66, SPEED), 0x0203)
-        report = runner.run(self.tmp, remove_only=True, input_dir=self.input_dir)
+        report = runner.run(self.tmp, remove_only=True, input_dir=self.input_dir, keep_stat_edits=True)
         self.assertIn('[stat edits] dropped (IDs no longer in the roster): 0x66', report['log'])
         self.assertEqual(carry.detect(self.current(), vanilla()).rows, {0x01: {BATTING: b'\x30'}})
+
+    def test_reset_to_vanilla_clears_them(self):
+        self.edit(lambda ed: ed.set(0x01, BATTING, 0x30))
+        report = runner.run(self.tmp, remove_only=True, input_dir=self.input_dir)
+        self.assertIn('[stat edits] cleared: 1 character, 0 global values back to 1_Input', report['log'])
+        self.assertFalse(carry.detect(self.current(), vanilla()))
 
 
 if __name__ == '__main__':

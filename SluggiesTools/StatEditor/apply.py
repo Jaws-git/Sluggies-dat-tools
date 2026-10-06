@@ -4,7 +4,7 @@ An edit file (format ``sluggies-stat-edits`` v1, written by the editor's
 **Send to Sluggies**) names values by character ID and field key
 (``fields.py``), never by address. ``prepare`` checks and places them:
 
-* **Valid only for the DOL it was made from** (D6): its ``main_dol_sha1``
+* **Valid only for the DOL it was made from**: its ``main_dol_sha1``
   must equal the current ``main.dol``'s. Several files (several editor
   sessions on the same game, staged one after the other) are all checked
   against that one DOL before anything is written; a later file wins where
@@ -19,8 +19,21 @@ An edit file (format ``sluggies-stat-edits`` v1, written by the editor's
   or the new x new matrix.
 * Values the game holds already are counted, not written.
 
+``Reset`` steps (``reset:0xNN``, from the GUI's "clear stat edits") put one
+character's fields and chemistry back to what the roster writes without stat
+edits (``carry.reset_spots``), at their place in the order: a later file sets
+values on top of a reset, a later reset clears what an earlier file set.
+
+``Copy`` steps (``copy:<file>``, from the character grid's paste) write a
+snapshot of one character's live values (``slot_plan.plan_copy``, format
+``sluggies-stat-copy``) onto another: every field, and its chemistry in both
+directions (the target's own pair with the source stays; the source's self
+pair becomes the target's). A snapshot names values by field and ID, so it
+fits any DOL that has both characters (no hash check); IDs the roster no
+longer has are skipped.
+
 Warnings (written anyway): a value outside the editor's own input range
-(``fields.limit_problem``), and a character left with both a fielding and a
+(``fields.limit_problem``; not for the roster's own values a reset writes back), and a character left with both a fielding and a
 baserunning ability (the editor: "giving a character both will crash").
 
 ``write`` applies a ``Prepared`` set to the image; ``describe`` gives the
@@ -58,6 +71,44 @@ class Change:
     before: object
     after: object
     field: fields.Field | None = None
+    reset: bool = False             # from a reset or a copy (``Reset`` / ``Copy``): no value the user typed
+
+
+@dataclass(frozen=True)
+class Reset:
+    """A step that clears one character's stat edits: every field and every chemistry byte of ``cid`` goes back to
+    what the roster writes without stat edits (``carry.reset_spots``). Written ``reset:0xNN`` in a command line."""
+    cid: int
+
+    @property
+    def item(self) -> str:
+        return f'{RESET_PREFIX}{_hex(self.cid)}'
+
+
+RESET_PREFIX = 'reset:'
+COPY_PREFIX = 'copy:'
+COPY_FORMAT = 'sluggies-stat-copy'
+
+
+@dataclass(frozen=True)
+class Copy:
+    """A step that writes a copy snapshot (``copy:<file>``, module docstring); ``doc`` once it is read."""
+    path: str
+    doc: dict | None = None
+
+    @property
+    def item(self) -> str:
+        return f'{COPY_PREFIX}{self.path}'
+
+
+def parse_item(text: str) -> 'Reset | Copy | str':
+    """A command-line item: ``reset:0xNN`` gives a ``Reset``, ``copy:<file>`` a ``Copy``, anything else is an
+    edit file's path."""
+    if text.lower().startswith(COPY_PREFIX):
+        return Copy(text[len(COPY_PREFIX):])
+    if not text.lower().startswith(RESET_PREFIX):
+        return text
+    return Reset(_id(text[len(RESET_PREFIX):], text))
 
 
 @dataclass
@@ -141,13 +192,11 @@ class _Placer:
     """Turns one image's roster into addresses for edit-file keys."""
 
     def __init__(self, image: dolfile.DolImage):
-        if not all(carry.table_mapped(image, name) for name in fields.CHARACTER_TABLES):
+        place = carry.placement(image)
+        if place is None:
             raise EditFileError('main.dol does not hold the stat tables where Sluggies Tools expects them')
         self.image = image
-        roster = bridge.read_roster(image)
-        self.layouts = bridge.table_layouts(image, roster)
-        self.present = set(carry.roster_ids(roster))
-        self.matrix = bridge.new_by_new_address(image, self.layouts['stats']) if roster.new else None
+        self.layouts, self.present, self.matrix = place.layouts, set(place.present), place.matrix
 
     def character(self, text: str, where: str) -> int:
         cid = _id(text, where)
@@ -170,6 +219,53 @@ class _Placer:
         raw = g.pack(value)
         return Change(None, g.table, f'{g.row} / {g.column}', g.address, raw,
                       g.unpack(self.image.read(g.address, g.size)), g.unpack(raw))
+
+
+def _parse_reset(reset: Reset, placer: _Placer, vanilla: dolfile.DolImage) -> dict[int, Change]:
+    placer.character(_hex(reset.cid), reset.item)
+    out = {}
+    for group, key, at, raw, f in carry.reset_spots(placer.image, vanilla, reset.cid):
+        now = placer.image.read(at, len(raw))
+        before, after = (f.unpack(now), f.unpack(raw)) if f is not None else (now[0], raw[0])
+        out[at] = Change(reset.cid, group, key, at, raw, before, after, f, reset=True)
+    return out
+
+
+def _parse_copy(step: Copy, placer: _Placer, label: str) -> dict[int, Change]:
+    doc = step.doc or {}
+    if doc.get('format') != COPY_FORMAT:
+        raise EditFileError(f'{label} is not a stat copy snapshot (format {doc.get("format")!r})')
+    target = placer.character(doc.get('target'), label)
+    source = _id(doc.get('source'), label)
+    out: dict[int, Change] = {}
+    for group, values in (doc.get('fields') or {}).items():
+        for name, text in (values or {}).items():
+            try:
+                f = fields.character_field(group, name)
+                raw = bytes.fromhex(text)
+            except (fields.FieldError, TypeError, ValueError) as exc:
+                raise EditFileError(f'{label}: {group}.{name}: {exc}') from None
+            if len(raw) != f.size:
+                raise EditFileError(f'{label}: {group}.{name}: {len(raw)} bytes, the field has {f.size}')
+            at = placer.layouts[f.table].row_address(target) + f.offset
+            out[at] = Change(target, f.group, f.name, at, raw, f.unpack(placer.image.read(at, f.size)), f.unpack(raw),
+                             f, reset=True)
+    for text, pair in (doc.get('chemistry') or {}).items():
+        other = _id(text, label)
+        if other == target or other not in placer.present:
+            continue                                   # the pair of source and target stays; gone IDs are skipped
+        if other == source:
+            other = target                             # the source's self pair: the target's own
+        if not (isinstance(pair, list) and len(pair) == 2):
+            raise EditFileError(f'{label}: chemistry {text}: not a [row, column] pair')
+        for a, b, value in ((target, other, pair[0]), (other, target, pair[1])):
+            if not isinstance(value, int) or not 0 <= value <= 0xFF:      # the game's own bytes, copied as they are
+                raise EditFileError(f'{label}: chemistry {text}: {value!r} is not a byte')
+            at = carry.chem_address(a, b, placer.layouts, placer.matrix)
+            if at not in out:                          # stock x new is one byte: the target's row value wins
+                out[at] = Change(a, 'chemistry', _hex(b), at, bytes([value]), placer.image.read(at, 1)[0], value,
+                                 reset=True)
+    return out
 
 
 def _parse(doc: dict, placer: _Placer, label: str) -> dict[int, Change]:
@@ -227,7 +323,7 @@ def _parse(doc: dict, placer: _Placer, label: str) -> dict[int, Change]:
 def _warnings(image: dolfile.DolImage, placer: _Placer, changes: list[Change], names: dict) -> list[str]:
     out = []
     for c in changes:
-        problem = c.field is not None and fields.limit_problem(c.field, c.after)
+        problem = c.field is not None and not c.reset and fields.limit_problem(c.field, c.after)
         if problem:
             out.append(f'{_who(c.who, names)}: {c.group}.{c.key}: {problem}')
     by_key = {(c.who, c.group, c.key): c for c in changes}
@@ -253,24 +349,37 @@ def _who(cid: int | None, names: dict) -> str:
     return f'{name} ({_hex(cid)})' if name else _hex(cid)
 
 
-def prepare(image: dolfile.DolImage, documents: list[dict], labels: list[str] | None = None,
-            names: dict | None = None) -> Prepared:
-    """Check ``documents`` (parsed edit files, in staging order) against ``image`` and place every value (module
-    docstring). ``names``: ``{ID: name}`` for messages. Raises ``EditFileError`` (``bridge.BridgeError`` for a
-    roster that cannot be read)."""
+def prepare(image: dolfile.DolImage, documents: list, labels: list[str] | None = None,
+            names: dict | None = None, vanilla: dolfile.DolImage | None = None) -> Prepared:
+    """Check ``documents`` (parsed edit files and ``Reset`` steps, in staging order) against ``image`` and place
+    every value (module docstring); a later document wins per value, so a reset clears what earlier files set and a
+    later file sets values on top of a reset. ``vanilla`` (``1_Input/main.dol``): the baseline a ``Reset`` needs.
+    ``names``: ``{ID: name}`` for messages. Raises ``EditFileError`` (``bridge.BridgeError`` for a roster that
+    cannot be read)."""
     labels = labels or [f'edit file {n}' for n in range(1, len(documents) + 1)]
     names = names or {}
     sha1 = hashlib.sha1(image.data).hexdigest()
     for doc, label in zip(documents, labels):
-        _check_header(doc, sha1, label)
+        if not isinstance(doc, (Reset, Copy)):
+            _check_header(doc, sha1, label)
+    if vanilla is None and any(isinstance(doc, Reset) for doc in documents):
+        raise EditFileError('clearing stat edits needs the original main.dol in 1_Input')
     placer = _Placer(image)
     planned: dict[int, Change] = {}
     for doc, label in zip(documents, labels):
-        planned.update(_parse(doc, placer, label))     # a later file wins
-    prepared = Prepared(files=len(documents))
+        try:
+            if isinstance(doc, Reset):
+                planned.update(_parse_reset(doc, placer, vanilla))
+            elif isinstance(doc, Copy):
+                planned.update(_parse_copy(doc, placer, label))
+            else:
+                planned.update(_parse(doc, placer, label))
+        except bridge.BridgeError as exc:
+            raise EditFileError(f'{label}: {exc}') from exc
+    prepared = Prepared(files=sum(not isinstance(doc, (Reset, Copy)) for doc in documents))
     for at, change in sorted(planned.items()):
         if image.read(at, len(change.raw)) == change.raw:
-            prepared.same += 1
+            prepared.same += not change.reset          # a reset names every spot: only the edited ones count
         else:
             prepared.changes.append(change)
     prepared.changes.sort(key=lambda c: (c.who is None, c.who or 0, c.group, c.address))

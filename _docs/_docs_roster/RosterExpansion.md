@@ -592,6 +592,24 @@ screen and on the field; the source character stays unchanged.
   `1_Input`), so for stock directories "vanilla" means the route still points
   at the input DOL's own entry, not equal bytes. An own directory's file is
   vanilla when it equals its source's block.
+- **Copy / paste** (`slot_plan.plan_copy`, edit op `copy`, `start.py
+  --copy-slot`): the target becomes a clone of the source as the game holds
+  it. The planner snapshots the source's current blocks, shown portraits
+  and live stat values into `3_Output_Dat/_gui/slot/copies/` before
+  anything is written, so pending edits never leak in. The blocks go in
+  with `--write-slot-blocks` / `--write-slot-equipment`. A new ID gets an
+  own directory from the source's model source. Any file whose bytes differ
+  from `1_Input` goes on top, so a clone also keeps the source's untangled
+  texture bytes, and with them its Dolphin texture hashes. A gear file still
+  on its vanilla route is never unpatched, because that would rewrite a
+  route other slots may share. The stat values are written by a
+  `--apply-stat-edits copy:<snapshot>` step after the roster rebuild,
+  because only then do the target's rows follow the copied stats source.
+  The step writes every field, and the chemistry in both directions; the
+  target's pair with the source stays, and the source's self pair becomes
+  the target's. Stock portraits are C8: a pasted copy is CMPR, about
+  4.5-8.5/255 mean drift on the visible pixels (Bowser, Red Toad). The
+  real-file chain was checked on 2026-10-06; not yet tested in Dolphin.
 - **Validator exceptions.** Two vanilla slot blocks fail `BlockValidator`
   (in the slots of IDs `0x11` and `0x41`: a memClr range and a CLUT count), so
   a finished block is judged only by errors its slot's vanilla block does not
@@ -638,6 +656,46 @@ export a pack of the whole output holds about 62 blocks, 7.2 MB. Loading
 checks every block before anything is written, keeps an own directory whose
 source and blocks already match, and otherwise copies the directory afresh
 from `1_Input` and writes the pack's blocks into it.
+
+**Switching presets** (`start.py --roster --config FILE`, `Roster/migrate.py`,
+since 2026-10-06): a roster run on its own resets the roster to vanilla
+first, which keeps only the stock directory records (models patched into
+stock slots) and the stat edits. The switch instead derives the current
+roster, merges it into the preset by character ID and rebuilds once from
+the merged config (`--roster --state`):
+
+- IDs on both grids keep what they hold; where they sit (template, wheel,
+  swatch, square, wheel order) comes from the preset. A new ID keeps its own
+  model directory as its existing DAT routes (not when it is only an
+  unchanged copy of its old template's files), its stats source, and its
+  name and portraits unless they are the open-slot ones; a portrait `like`
+  that was the old template is dropped. Spare rows keep name and portraits.
+  The game's `stock_names`, `stock_icons`, `stock_stats` and `stock_voices`
+  entries replace the preset's for the same ID; a new square headed by a
+  kept new ID takes that ID's old square voice. A new ID's directory holds
+  all of its source's files (models, equipment, animations), so a different
+  template does not change what poses its models, and stock IDs never change
+  directory: no block moves, and none is checked again.
+- IDs only on the old grid lose everything. New IDs leave the config (the
+  reset frees their directories, the stat carry drops their edits). Spare
+  rows 0x47-0x4C first get their stat edits cleared (`--apply-stat-edits
+  reset:0xNN`) and their models and equipment unpatched where they are not at
+  their baseline. A split copy (dirs 89-94) is at its baseline when it is the
+  route's own copy and its bytes equal the vanilla block with the exported
+  `.sluggie`'s untangled textures replayed
+  (`UntangledTextures.split_at_baseline`); on the live output all 36 split
+  files compared equal, 10-50 ms each.
+- IDs only in the preset get the preset's entry (the open slot).
+
+Who is on a grid follows from the config alone: 0x00-0x46 always, spare rows
+listed in `wheels`, new IDs in `ids` (`migrate.on_grid`; equal to the read
+state of presets 01 and 03). The preset's own portrait files are copied
+beside the derived cells as `preset_<name>`. A merged config without roster
+keys rebuilds as `--roster --remove --keep-stat-edits`. Switching a preset 03
+output to preset 03 again gave a byte-identical `main.dol`. `--fresh` gives
+the plain run. `--roster --remove` (reset to vanilla) also clears every stat
+edit since 2026-10-06; `--keep-stat-edits` keeps them (a stock roster pack's
+load uses it).
 
 ## Game memory
 

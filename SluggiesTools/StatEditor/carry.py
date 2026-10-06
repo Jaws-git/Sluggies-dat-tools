@@ -58,6 +58,27 @@ def roster_ids(roster: bridge.Roster) -> list[int]:
     return list(range(ids.STOCK_IDS)) + [c.id for c in roster.new]
 
 
+@dataclass
+class Placement:
+    """Where ``image``'s roster keeps the editor's tables: its ``layouts`` (``bridge.table_layouts``), the IDs that
+    exist (``present``, in roster order) and the new x new chemistry matrix (None without new IDs)."""
+    roster: bridge.Roster
+    layouts: dict
+    present: list[int]
+    matrix: int | None
+
+
+def placement(image: dolfile.DolImage) -> Placement | None:
+    """``image``'s ``Placement``; None when it does not map the tables (synthetic test DOLs). Raises
+    ``bridge.BridgeError`` for a roster that cannot be read."""
+    if not all(table_mapped(image, name) for name in fields.CHARACTER_TABLES):
+        return None
+    roster = bridge.read_roster(image)
+    layouts = bridge.table_layouts(image, roster)
+    matrix = bridge.new_by_new_address(image, layouts['stats']) if roster.new else None
+    return Placement(roster, layouts, roster_ids(roster), matrix)
+
+
 def _chem_pairs(cid: int, live: bytes, base: bytes) -> dict[tuple[int, int], int]:
     out = {}
     for k in range(fields.CHEM_COLUMNS):
@@ -71,15 +92,16 @@ def detect(image: dolfile.DolImage, vanilla: dolfile.DolImage) -> StatEdits:
     """The stat edits in ``image`` (module docstring). Raises ``bridge.BridgeError`` for a DOL whose roster
     cannot be read."""
     edits = StatEdits()
-    if all(table_mapped(d, name) for d in (image, vanilla) for name in fields.CHARACTER_TABLES):
-        roster = bridge.read_roster(image)
-        layouts = bridge.table_layouts(image, roster)
+    place = (placement(image) if all(table_mapped(vanilla, name) for name in fields.CHARACTER_TABLES)
+             else None)
+    if place is not None:
+        roster = place.roster
         baseline = bridge.baseline_rows(vanilla, roster)
         by_table: dict[str, list[fields.Field]] = {}
         for f in fields.CHARACTER_FIELDS:
             by_table.setdefault(f.table, []).append(f)
-        for name, layout in layouts.items():
-            for cid in roster_ids(roster):
+        for name, layout in place.layouts.items():
+            for cid in place.present:
                 live = image.read(layout.row_address(cid), layout.row_size)
                 base = baseline[name][cid]
                 if live == base:
@@ -90,8 +112,7 @@ def detect(image: dolfile.DolImage, vanilla: dolfile.DolImage) -> StatEdits:
                 if name == 'stats':
                     edits.chemistry.update(_chem_pairs(cid, live, base))
         if roster.new:
-            at = bridge.new_by_new_address(image, layouts['stats'])
-            live = image.read(at, NEW_X_NEW * NEW_X_NEW)
+            live = image.read(place.matrix, NEW_X_NEW * NEW_X_NEW)
             base = bridge.new_by_new_baseline(vanilla, roster)
             for a in roster.new:
                 for b in roster.new:
@@ -117,16 +138,85 @@ def chem_address(a: int, b: int, layouts, matrix: int | None) -> int:
     return matrix + (a - ids.FIRST_NEW) * NEW_X_NEW + b - ids.FIRST_NEW
 
 
+@dataclass(frozen=True)
+class CharacterEdits:
+    """One character's stat edits, for the plan dialogs: its edited fields (``group.name``) and the chemistry values
+    that involve it (either direction)."""
+    fields: tuple[str, ...]
+    chemistry: int
+
+    def text(self, limit: int = 4) -> str:
+        """``3 fields (stamina, slap size, charge pitch speed), 2 chemistry values``."""
+        parts = []
+        if self.fields:
+            names = [f.split('.', 1)[1] for f in self.fields]
+            shown = ', '.join(names[:limit]) + (f', +{len(names) - limit} more' if len(names) > limit else '')
+            parts.append(f'{len(names)} field{"s" if len(names) != 1 else ""} ({shown})')
+        if self.chemistry:
+            parts.append(f'{self.chemistry} chemistry value{"s" if self.chemistry != 1 else ""}')
+        return ', '.join(parts)
+
+
+def by_character(edits: StatEdits) -> dict[int, CharacterEdits]:
+    """``{ID: CharacterEdits}`` for every character with an edited field or an edited chemistry value."""
+    chem: dict[int, int] = {}
+    for a, b in edits.chemistry:
+        for cid in {a, b}:
+            chem[cid] = chem.get(cid, 0) + 1
+    out = {}
+    for cid in sorted(set(edits.rows) | set(chem)):
+        names = tuple(f'{f.group}.{f.name}' for f in sorted(edits.rows.get(cid, {}), key=lambda f: (f.table, f.offset)))
+        out[cid] = CharacterEdits(names, chem.get(cid, 0))
+    return out
+
+
+def summary(edits: StatEdits) -> dict:
+    """The JSON form the roster state carries (``state_cli``): ``{"characters": {"0xNN": {"fields": [...],
+    "chemistry": n}}, "globals": n}``."""
+    return {'characters': {f'0x{cid:02X}': {'fields': list(e.fields), 'chemistry': e.chemistry}
+                           for cid, e in by_character(edits).items()},
+            'globals': len(edits.globals)}
+
+
+def reset_spots(image: dolfile.DolImage, vanilla: dolfile.DolImage, cid: int) -> list[tuple]:
+    """Where ``cid``'s stat edits live and what the roster writes there without them: ``(group, key, address,
+    baseline bytes, field)`` for every character field (``key`` the field name) and every chemistry byte that
+    involves ``cid`` (``group`` 'chemistry', ``key`` the other ID, ``field`` None). Writing them all clears its
+    edits; spots that hold the baseline already change nothing. Raises ``bridge.BridgeError``."""
+    place = (placement(image) if all(table_mapped(vanilla, name) for name in fields.CHARACTER_TABLES)
+             else None)
+    if place is None:
+        raise bridge.BridgeError('main.dol does not hold the stat tables where Sluggies Tools expects them')
+    roster, layouts, present, matrix = place.roster, place.layouts, place.present, place.matrix
+    if cid not in present:
+        raise bridge.BridgeError(f'0x{cid:02X} is not a character of this roster')
+    baseline = bridge.baseline_rows(vanilla, roster)
+    out = [(f.group, f.name, layouts[f.table].row_address(cid) + f.offset,
+            baseline[f.table][cid][f.offset:f.offset + f.size], f) for f in fields.CHARACTER_FIELDS]
+    matrix_base = bridge.new_by_new_baseline(vanilla, roster) if roster.new else None
+    stats = layouts['stats']
+    seen = set()
+    for other in present:
+        for a, b in ((cid, other), (other, cid)):
+            at = chem_address(a, b, layouts, matrix)
+            if at in seen:
+                continue
+            seen.add(at)
+            if a >= ids.FIRST_NEW and b >= ids.FIRST_NEW:
+                raw = matrix_base[at - matrix:at - matrix + 1]
+            else:
+                row = (at - stats.address - stats.header) // stats.row_size
+                raw = baseline['stats'][row][at - stats.row_address(row):][:1]
+            out.append(('chemistry', f'0x{other:02X}', at, raw, None))
+    return out
+
+
 def apply(image: dolfile.DolImage, edits: StatEdits) -> list[str]:
     """Write ``edits`` onto ``image``'s roster (after the roster steps and the manifest); log lines."""
     if not edits:
         return []
-    layouts, present = {}, set()
-    if all(table_mapped(image, name) for name in fields.CHARACTER_TABLES):
-        roster = bridge.read_roster(image)
-        layouts = bridge.table_layouts(image, roster)
-        present = set(roster_ids(roster))
-    matrix = bridge.new_by_new_address(image, layouts['stats']) if layouts and roster.new else None
+    place = placement(image)
+    layouts, present, matrix = (place.layouts, set(place.present), place.matrix) if place else ({}, set(), None)
     fields_written, dropped = 0, set()
     for cid, values in sorted(edits.rows.items()):
         if cid not in present:

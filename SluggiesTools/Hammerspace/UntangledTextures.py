@@ -157,6 +157,18 @@ def split_baseline(chunk_number: int, file_index: int, model: dict | None) -> tu
     return bytes(block), notes
 
 
+def split_at_baseline(chunk_number: int, file_index: int, models_dir: str = _MODELS_DIR) -> bool:
+    """Whether a split route holds its baseline: its own copy (not the owner's route) whose bytes equal
+    ``split_baseline`` with the exported ``.sluggie`` (without one: the vanilla bytes). False for a patched or
+    re-tangled route."""
+    import LodPartnerGuard
+    hh = _helper()
+    if hh.readOutputDolEntry(chunk_number, file_index) == hh.readDolEntry(chunk_number, file_index):
+        return False
+    block, _notes = split_baseline(chunk_number, file_index, find_sluggie_model(chunk_number, file_index, models_dir))
+    return LodPartnerGuard.read_current_block(chunk_number, file_index) == block
+
+
 def find_sluggie_model(chunk_number: int, file_index: int, models_dir: str = _MODELS_DIR) -> dict | None:
     """The exported ``SluggiesModel`` for a route, searched in its dir folder."""
     for path in sorted(glob.glob(os.path.join(glob.escape(models_dir), f'{chunk_number} *', '**', '*.sluggie'),

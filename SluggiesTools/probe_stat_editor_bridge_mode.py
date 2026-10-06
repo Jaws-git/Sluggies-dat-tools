@@ -18,7 +18,12 @@ the real ``3_Output_Dat/main.dol``:
    Mode on it: the editor must now show the edited values with nothing left
    to send, and ``carry.detect`` must find exactly the sent values;
 5. the bridge-file deletion after a send removes ``stat_bridge.json`` and
-   nothing else, and keeps a bridge that was rewritten since it was opened.
+   nothing else, and keeps a bridge that was rewritten since it was opened;
+6. a Standalone save (written by the editor's own ``saveChanges`` from vanilla
+   plus a few edits) loaded in Bridge Mode through the editor's own loader
+   (``Session.load_save``): exactly the non-vanilla saved values land, every
+   other value (new IDs, stock x new chemistry, a value already edited in the
+   game that the save holds as vanilla) stays.
 
 This is a **probe, not a unit test**: it reads ``1_Input``, ``3_Output_Dat`` and
 a stat editor checkout, all outside the repository. Nothing in them is written.
@@ -33,10 +38,12 @@ from __future__ import annotations
 import ast
 import copy
 import json
+import os
 import pathlib
-import struct
+import re
 import sys
 import tempfile
+import tkinter
 
 TOOLS_DIR = pathlib.Path(__file__).resolve().parent
 ROOT = TOOLS_DIR.parent
@@ -214,6 +221,80 @@ def check_bridge_deletion(c: Checker, module, editor_py, folder: pathlib.Path) -
     c.same('a second call deletes nothing', [p.is_file() for p in bystanders], [True] * len(bystanders))
 
 
+SAVE_FUNCTIONS = ('saveChanges', 'loadChanges', 'loadChangesV4', 'loadChangesV3')
+DISPLAY_FUNCTIONS = ('changedTrajListUsed', 'trajDisplay', 'starBoostDisplay', 'estarHandicapDisplay',
+                     'estarDisplay', 'speedDisplay', 'hitboxDisplay', 'chemColor')
+
+
+class _Widget:
+    """Stands in for the Entry / IntVar / recap Text the save functions use."""
+    def __init__(self, value=None):
+        self.value = value
+        self.text: list[str] = []
+
+    def get(self):
+        return self.value
+
+    def configure(self, **_kw):
+        pass
+
+    def insert(self, _where, text):
+        self.text.append(text)
+
+
+def add_save_functions(ns: dict, editor_py: pathlib.Path, editor_dir: pathlib.Path, name: str) -> None:
+    """The editor's own save/load functions in ns, with widget stubs; its Save Files folder is editor_dir's
+    (the editor takes the parent of the folder editor.py is in)."""
+    tree = ast.parse(editor_py.read_text(encoding='utf-8'))
+    module = ast.Module([n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in SAVE_FUNCTIONS], [])
+    fake = str(editor_dir / 'src' / 'editor.py')
+    ns.update(abspath=os.path.abspath, getsourcefile=lambda _f: fake, re=re, tk=tkinter,
+              geckoFile=_Widget(name), geckoSecurityVar=_Widget(1), recapList=_Widget())
+    ns.update({f: (lambda *_a: None) for f in DISPLAY_FUNCTIONS})
+    exec(compile(module, fake, 'exec'), ns)
+    (editor_dir / 'Save Files').mkdir(parents=True, exist_ok=True)
+
+
+def check_save_load(c: Checker, module, editor_py: pathlib.Path, folder: pathlib.Path) -> None:
+    """A Standalone V4 save loaded in Bridge Mode: only its non-vanilla values land."""
+    standalone = editor_namespace(editor_py)
+    add_save_functions(standalone, editor_py, folder, 'probesave')
+    saved = {('Stat', 1, 19): standalone['changedStat'][1][19] % 10 + 1,
+             ('Stat', 9, 28): 77,
+             ('Size', 4, 0): 1.375,
+             ('Pitching', 0, 3): 0.7,
+             ('Chem', 0, 9): (standalone['changedChem'][0][9] + 1) % 3,
+             ('StarsTeam', 3, 5): standalone['changedStarsTeam'][3][5] + 5,
+             ('Speed', 10, 1): 9.5}
+    for (name, i, j), value in saved.items():
+        standalone['changed' + name][i][j] = value
+    standalone['saveChanges']()
+    c.same('Standalone save written', standalone['recapList'].text, ['Data saved\n'])
+
+    ns, session = open_bridge(module, editor_py, folder, OUTPUT_DIR)
+    add_save_functions(ns, editor_py, folder, 'probesave')
+    # as if edited in the game already; the save holds vanilla there
+    ns['changedStat'][1][20] = session.vanilla['Stat'][1][20] % 10 + 1
+    before = session.snapshot()
+    others = {k: copy.deepcopy(ns['changed' + k]) for k in ('Stat', 'Size', 'Pitching', 'Chem')}
+    session.load_save()
+    c.same('save loaded by the editor', 'Data loaded\n' in ns['recapList'].text, True)
+    for name in module.SAVE_LISTS:
+        vanilla, now, old = session.vanilla[name], ns['changed' + name], before[name]
+        for i, row in enumerate(vanilla):
+            for j, plain in enumerate(row):
+                want = saved.get((name, i, j), old[i][j])
+                c.same(f'loaded {name}[{i}][{j}]', now[i][j], want)
+    c.same('a game edit the save holds as vanilla is kept', ns['changedStat'][1][20], before['Stat'][1][20])
+    for k, rows in others.items():         # rows / columns past the stock 101: untouched
+        c.same(f'{k}: new IDs untouched', [r[101:] for r in ns['changed' + k]], [r[101:] for r in rows])
+        c.same(f'{k}: new ID rows untouched', ns['changed' + k][101:], rows[101:])
+    edits, _count, problems = session.collect()
+    c.same('problems after loading the save', problems, [])
+    c.same('loaded Size edit goes into the edit file',
+           edits['characters'].get('0x04', {}).get('size', {}).get(module.keys(ns['sizeList'])[0]), 1.375)
+
+
 def run(editor_dir: pathlib.Path) -> int:
     editor_py = editor_dir / 'editor.py'
     sys.path.insert(0, str(editor_dir))
@@ -268,6 +349,7 @@ def run(editor_dir: pathlib.Path) -> int:
                {g.address for g in to_stat_edits(edits).globals} - {g.address for g in expected.globals})
 
         check_bridge_deletion(c, module, editor_py, tmp / 'editor3')
+        check_save_load(c, module, editor_py, tmp / 'editor4')
 
     print(f'{c.checked} checks, {len(c.problems)} problems')
     for p in c.problems[:40]:

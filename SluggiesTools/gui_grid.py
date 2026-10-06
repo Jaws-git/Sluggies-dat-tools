@@ -31,11 +31,13 @@ STATE_REL = os.path.join('3_Output_Dat', '_gui', 'roster_state.json')
 SLOT_PLAN_REL = os.path.join('3_Output_Dat', '_gui', 'slot', 'plan.json')
 EDITS_REL = os.path.join('3_Output_Dat', '_gui', 'slot', 'edits.json')
 PACK_PLAN_REL = os.path.join('3_Output_Dat', '_gui', 'pack', 'plan.json')
+SWITCH_PLAN_REL = os.path.join('3_Output_Dat', '_gui', 'switch', 'plan.json')
 PACK_DIR_REL = 'Roster_Packs'                   # where the pack dialogs start
 PACK_EXTENSION = '.sluggiesroster'
 # start.py modes whose commands can change what the grid shows: the tab re-reads after them
 WRITING_FLAGS = frozenset({'--export', '--roster', '--patch', '--unpatch', '--resplit-unused',
-                           '--patch-slot', '--clear-slot', '--rename-slot', '--set-voice', '--set-stats',
+                           '--patch-slot', '--clear-slot', '--copy-slot', '--rename-slot', '--set-voice',
+                           '--set-stats',
                            '--set-icon', '--apply-slots', '--load-roster',
                            '--write-slot-blocks', '--write-slot-equipment', '--game-options'})
 UNNAMED = '-'
@@ -54,8 +56,8 @@ def chain_writes(steps) -> bool:
                if '--dry-run' not in step and '--validate-only' not in step)
 
 
-CPU_VS_CPU_ENABLE = 'Enable Cpu vs CPU with management'
-CPU_VS_CPU_DISABLE = 'Disable Cpu vs Cpu with management'
+CPU_VS_CPU_ENABLE = 'Enable CPU vs CPU + management'
+CPU_VS_CPU_DISABLE = 'Disable CPU vs CPU + management'
 
 
 def cpu_vs_cpu_command(enable: bool = True) -> tuple:
@@ -357,13 +359,11 @@ def slot_details(state: dict, cid: int) -> list[str]:
             for role, label in (('high', 'High'), ('low', 'Low')) if role in blocks))
     if 'stats' in c:
         lines.append(f'Stats: {name_of(state, c["stats"])}' + ('' if c['stats'] == cid else f' ({hex_id(c["stats"])})'))
+    edits = stat_edits_of(state, cid)
+    if edits:
+        lines.append(f'Stat edits: {stat_edits_text(edits)}')
     if c.get('default_name'):
         lines.append(f'Name: the game text is still {c["name"]["en"]!r}; shown with its usual name')
-    name = c.get('name') or {}
-    if name and not c.get('default_name'):
-        others = [f'{lang.upper()} {name[lang]}' for lang in ('fr', 'sp') if name.get(lang) and name[lang] != name.get('en')]
-        if others:
-            lines.append('Names: ' + ', '.join(others))
     return lines
 
 
@@ -647,7 +647,7 @@ class PendingEdits:
         return any(int(e['id'], 16) == cid for e in self.edits) or bool(self._pack_lines(cid))
 
     def model_edit(self, cid: int) -> dict | None:
-        return next((e for e in self.edits if int(e['id'], 16) == cid and e['op'] in ('patch', 'clear')), None)
+        return next((e for e in self.edits if int(e['id'], 16) == cid and e['op'] in MODEL_OPS), None)
 
     def value_edit(self, cid: int, op: str) -> dict | None:
         """The slot's pending ``op`` edit ('rename', 'stats', or 'voice': staged on the square's head)."""
@@ -680,7 +680,7 @@ class PendingEdits:
             out.append(_edit_title(section['edit']))
             effects = section.get('effects') or {}
             for key, label in (('model', 'Model'), ('name', 'Name'), ('stats', 'Stats'), ('voice', 'Voice'),
-                               ('portrait_note', 'Portraits')):
+                               ('portrait_note', 'Portraits'), (STAT_EDITS, 'Stat edits')):
                 if effects.get(key) and not (key == 'portrait_note' and section['action'] == 'icon'):
                     out.append(f'  {label}: {effects[key]}')
             equipment = effects.get('equipment')
@@ -688,6 +688,8 @@ class PendingEdits:
                 out += [f'  Equipment: {text}' for _file, text in sorted(equipment.items())]
             elif equipment:
                 out.append(f'  Equipment: {equipment}')
+            if effects.get('portraits') and section['action'] == COPY:
+                out.append('  Portraits: copied (previewed, marked "pending")')
             if effects.get('portraits') and section['action'] == 'patch':
                 out.append('  Portraits: ' + os.path.basename(os.path.dirname(os.path.dirname(
                     effects['portraits']['front']))) + ' (previewed, marked "pending")')
@@ -725,6 +727,8 @@ def _edit_title(edit: dict) -> str:
         return 'Pending: put ' + ' + '.join(files) + ' into this slot'
     if edit['op'] == 'clear':
         return 'Pending: clear this slot'
+    if edit['op'] == COPY:
+        return f'Pending: paste a clone of {edit.get("source")}'
     if edit['op'] == 'rename':
         return f'Pending: rename to {edit["text"]!r}' if edit.get('text') else 'Pending: reset the name'
     if edit['op'] == 'stats':
@@ -734,6 +738,8 @@ def _edit_title(edit: dict) -> str:
                 else 'Pending: the square\'s default voice')
     if edit['op'] == 'icon':
         return f'Pending: {edit.get("view")} portrait from {icon_label(edit)}'
+    if edit['op'] == STAT_RESET:
+        return 'Pending: clear its stat edits'
     return f'Pending: {edit["op"]}'
 
 
@@ -747,8 +753,92 @@ def icon_label(edit: dict) -> str:
 # --------------------------------------------------------------------------
 
 EQUIP_OPS = ('equip', 'equip_clear')
+COPY = 'copy'                                 # paste: the slot becomes a clone (Roster/slot_plan, test-pinned)
+MODEL_OPS = ('patch', 'clear', COPY)
 # A stat edit (the stat editor's edit file) belongs to no slot: its "id" is GAME_WIDE (Roster/slot_plan, test-pinned)
 STAT_EDITS, GAME_WIDE = 'stat_edits', 0xFF
+STAT_RESET = 'stat_reset'                     # clears one slot's stat edits (Roster/slot_plan, test-pinned)
+
+
+COPY_MULTIPLE = 'Cannot copy multiple characters at once'
+COPY_LABEL, PASTE_LABEL = 'Copy', 'Paste'
+
+
+def copy_edit(target: int, source: int) -> dict:
+    """The pending edit that makes slot ``target`` a clone of ``source`` (paste)."""
+    return {'op': COPY, 'id': hex_id(target), 'source': hex_id(source)}
+
+
+def context_menu(state: dict, members: list, copied: int | None, pack_pending: bool,
+                 locked: bool) -> list[tuple[str, bool, str | None]]:
+    """The right-click menu of a grid square or a colour-wheel swatch: ``(label, enabled, why disabled)``. A square
+    with several characters gets only a disabled line; one character gets Copy and Paste (Paste needs a copied
+    character other than this one)."""
+    if len(members) != 1:
+        return [(COPY_MULTIPLE, False, 'Open the square and right-click one of its characters.')]
+    cid = members[0]
+    busy = 'A command is running or a dialog is open.' if locked else None
+    pack = 'A roster pack load is pending: press "Patch Game" (or Discard it) first.' if pack_pending else None
+    copy_why = busy
+    if copied is None:
+        paste_why = 'Copy a character first (right-click it, Copy).'
+    elif copied == cid:
+        paste_why = 'This is the copied character itself.'
+    elif copied not in characters(state):
+        paste_why = 'The copied character is no longer on the grid.'
+    else:
+        paste_why = busy or pack
+    return [(COPY_LABEL, copy_why is None, copy_why), (PASTE_LABEL, paste_why is None, paste_why)]
+
+
+def stat_reset_edit(cid: int) -> dict:
+    """The pending edit that clears slot ``cid``'s stat edits."""
+    return {'op': STAT_RESET, 'id': hex_id(cid)}
+
+
+def stat_edits_of(state: dict | None, cid: int) -> dict | None:
+    """The stat edits the game holds for ``cid`` (``{'fields': [...], 'chemistry': n}``, from the state read), or
+    None."""
+    return (((state or {}).get('stat_edits') or {}).get('characters') or {}).get(hex_id(cid))
+
+
+def stat_edits_text(edits: dict) -> str:
+    """``3 fields (stamina, slap size, charge pitch speed), 2 chemistry values`` (``StatEditor/carry``'s wording)."""
+    parts = []
+    names = [f.split('.', 1)[-1] for f in edits.get('fields') or []]
+    if names:
+        shown = ', '.join(names[:4]) + (f', +{len(names) - 4} more' if len(names) > 4 else '')
+        parts.append(f'{len(names)} field{"s" if len(names) != 1 else ""} ({shown})')
+    if edits.get('chemistry'):
+        n = edits['chemistry']
+        parts.append(f'{n} chemistry value{"s" if n != 1 else ""}')
+    return ', '.join(parts)
+
+
+STATS_REPLACED = 'this step replaces main.dol, so they are lost'
+STATS_RESET = 'a reset to vanilla clears them'
+
+
+def stat_edit_risk(state: dict | None, lost: bool, reason: str = STATS_REPLACED) -> str | None:
+    """What an export / roster injection does to the game's stat edits (``config_risks``). ``lost``: every stat
+    edit goes (``reason``: the untangle export replaces main.dol, a reset to vanilla clears them); else the roster
+    run carries them over by character ID and only new IDs the new roster lacks lose theirs (None when no new ID
+    has any)."""
+    summary = (state or {}).get('stat_edits') or {}
+    edited = [int(k, 16) for k in summary.get('characters') or {}]
+    globals_ = summary.get('globals') or 0
+    if lost:
+        if not edited and not globals_:
+            return None
+        what = [f'{len(edited)} character{"s" if len(edited) != 1 else ""}'] if edited else []
+        what += [f'{globals_} global value{"s" if globals_ != 1 else ""}'] if globals_ else []
+        return f'Stat edits on {" and ".join(what)}: {reason}.'
+    new = sorted(c for c in edited if c >= NEW_START)
+    if not new:
+        return None
+    return (f'Stat edits on {len(new)} new ID{"s" if len(new) != 1 else ""}: a roster without '
+            f'{"that ID" if len(new) == 1 else "those IDs"} drops them (the other stat edits are carried over by '
+            'character ID).')
 
 
 def edit_who(state: dict | None, cid: int) -> str:
@@ -768,7 +858,7 @@ ORIGINAL, MODIFIED, EMPTY, PENDING_STATE = 'Original', 'Modified', 'Empty', 'Pen
 
 def equipment_state(state: dict, cid: int, role: str) -> str:
     """``Empty`` (a placeholder), ``Modified`` (not the vanilla block of its directory) or ``Original`` (also when
-    the read cannot tell, like an unused character's split copies)."""
+    the read cannot tell: the input files are unreadable)."""
     entry = ((characters(state).get(cid) or {}).get('equipment') or {}).get(role) or {}
     if entry.get('placeholder'):
         return EMPTY
@@ -857,6 +947,7 @@ class SlotDialog:
     title: str
     lines: list = field(default_factory=list)   # [(text, TEXT/WARN/ERROR/OK)]
     can_apply: bool = False
+    offer_stat_reset: bool = False              # the slot keeps stat edits: offer "Stage + clear stat edits"
 
 
 def _partner_lines(files: dict, sizes: dict, joined: bool = False) -> list:
@@ -885,6 +976,21 @@ def _section_lines(state: dict, section: dict, sizes: dict, warnings: bool = Tru
     cid = int(section['target'], 16)
     patch = section['action'] == 'patch'
     equip = section['action'] == 'equip'
+    if section['action'] == COPY:
+        source = int(section['source'], 16)
+        lines.append((f'Clone of {known_name(state, source)} ({hex_id(source)}) -> {name_of(state, cid)} '
+                      f'({hex_id(cid)}), as the game holds it now (its pending edits are not copied)', TEXT))
+        effects = section.get('effects') or {}
+        for key, label in (('model', 'Models'), ('name', 'Name'), ('stats', 'Stats'), ('voice', 'Voice'),
+                           ('portrait_note', 'Portraits'), (STAT_EDITS, 'Stat values')):
+            if effects.get(key):
+                lines.append((f'{label}: {effects[key]}', TEXT))
+        for _file, text in sorted((effects.get('equipment') or {}).items()):
+            lines.append((f'Equipment: {text}', TEXT))
+        lines += [(f'- {note}', TEXT) for note in section['notes'][1:]]
+        if warnings:
+            lines += [(f'Warning: {warning}', WARN) for warning in section['warnings']]
+        return lines
     if patch:
         source = int(section['source'], 16)
         lines.append((f'Source: {known_name(state, source)} ({hex_id(source)}) -> {name_of(state, cid)} '
@@ -947,7 +1053,8 @@ def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int
                          'equip_clear': f'Reset the {gear_label} of {target}?',
                          'stats': f'Other stats for {target}?',
                          'icon': f'New {view} portrait for {target}?',
-                         'voice': f'Another voice for the square of {target}?'}.get(kind, f'Clear {target}?'))
+                         'voice': f'Another voice for the square of {target}?',
+                         COPY: f'Paste onto {target}?'}.get(kind, f'Clear {target}?'))
     error = error_message(output)
     lines = dialog.lines
     if plan is None or plan['refused']:
@@ -984,8 +1091,16 @@ def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int
     if code != 0:
         lines.append((f'Build check failed: {error or f"exit code {code}"}. Nothing was staged.', ERROR))
         return dialog
-    checks = ('slot rules, and the model built and validated' if kind == 'equip'
+    checks = ('slot rules, and every copied block validated' if kind == COPY
+              else 'slot rules, and the model built and validated' if kind == 'equip'
               else 'slot rules, and every model built and validated' if patch and not rename else 'slot rules')
+    if section.get('stat_edits_kept'):
+        if any(e['op'] == STAT_RESET and int(e['id'], 16) == cid for e in plan.get('merged') or []):
+            lines.append(('Its stat edits are cleared too (a pending edit).', TEXT))
+        else:
+            lines.append(('"Stage + clear stat edits" also clears them, so the slot plays with exactly the new '
+                          'stats.', TEXT))
+            dialog.offer_stat_reset = True
     lines.append((f'Checks passed: {checks}. Nothing written yet: Stage adds the edit to the pending list, '
                   '"Patch Game" writes it.', OK))
     dialog.can_apply = True
@@ -1030,12 +1145,14 @@ def summary_dialog(state: dict, plan: dict | None, code: int, output: str) -> Sl
             what = (section.get('effects') or {}).get('portrait_note') or 'new portrait'
         elif section['action'] == STAT_EDITS:
             what = (section.get('effects') or {}).get(STAT_EDITS) or 'changed values'
+        elif section['action'] == STAT_RESET:
+            what = 'stat edits ' + ((section.get('effects') or {}).get(STAT_EDITS) or 'cleared')
         lines.append((f'{edit_who(state, cid)}: {what}', OK))
         lines += [('    ' + text, kind) for text, kind in _section_lines(state, section, sizes, warnings=False)]
     for section in plan['skipped']:
         cid = int(section['target'], 16)
         why = {'rename': 'nothing to rename (named that already)', 'clear': 'nothing to clear (at its baseline '
-               'already)'}.get(section['action'], 'nothing to change')
+               'already)', STAT_RESET: 'no stat edits to clear'}.get(section['action'], 'nothing to change')
         lines.append((f'{edit_who(state, cid)}: {why}', TEXT))
     lines += [(f'- {note}', TEXT) for note in plan['notes']]
     lines += [(f'Warning: {warning}', WARN) for warning in plan['warnings']]
@@ -1146,13 +1263,67 @@ def pack_fingerprints(path: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def load_pack_plan(path: str) -> dict | None:
+def load_pack_plan(path: str, action: str = 'load_pack') -> dict | None:
+    """A planner's plan file (``action``: 'load_pack', or 'switch_roster' for ``switch_plan``), or None."""
     try:
         with open(path, encoding='utf-8') as f:
             plan = json.load(f)
     except (OSError, ValueError):
         return None
-    return plan if plan.get('action') == 'load_pack' else None
+    return plan if isinstance(plan, dict) and plan.get('action') == action else None
+
+
+# --------------------------------------------------------------------------
+# Roster switch (Roster Size tab: inject a preset, keep the slots' customisations)
+# --------------------------------------------------------------------------
+
+# Roster/migrate.py's field keys (test-pinned to migrate.FIELD_LABELS)
+SWITCH_FIELDS = {'model': 'models', 'equipment': 'equipment', 'name': 'name', 'icon': 'portraits',
+                 'stats': 'stats source', 'voice': 'square voice', 'stat_edits': 'stat edits'}
+
+
+def switch_command(path: str, dry_run: bool = False, fresh: bool = False) -> tuple:
+    """``start.py --roster --config``: the switch chain (``fresh``: no slot customisations kept)."""
+    return ('--roster', '--config', path) + (('--fresh',) if fresh else ()) + (('--dry-run',) if dry_run else ())
+
+
+def switch_plan(path: str) -> dict | None:
+    return load_pack_plan(path, 'switch_roster')
+
+
+def switch_dialog(plan: dict | None, code: int, output: str, path: str) -> SlotDialog:
+    """The dialog of "Inject roster", after ``--roster --config FILE --dry-run``: which slots keep their
+    customisations, which are reset or dropped, the verdict. ``can_apply`` only when the plan and the in-memory
+    build passed."""
+    name = os.path.basename(path)
+    dialog = SlotDialog(f'Inject the roster {name}?')
+    lines = dialog.lines
+    if plan is None or code != 0:
+        dialog.title = f'{name}: refused'
+        error = error_message(output).removeprefix('refused, nothing written: ')
+        lines.append((f'Refused: {error or f"the check failed (exit code {code})"}', ERROR))
+        lines.append(('Nothing was written.', TEXT))
+        return dialog
+    names = plan.get('names') or {}
+
+    def rows(key, title, kind, empty_too=True):
+        items = [r for r in plan.get(key) or [] if empty_too or r['fields']]
+        if not items:
+            return
+        lines.append((title, TEXT))
+        for r in items:
+            who = f'{names[r["id"]]} ({r["id"]})' if names.get(r['id']) else r['id']
+            what = ', '.join(SWITCH_FIELDS.get(f, f) for f in r['fields'])
+            lines.append((f'  {who}' + (f': {what}' if what else ''), kind))
+    rows('carried', 'Kept (on both grids; where they sit comes from the preset):', OK)
+    rows('reset', 'Reset (leaving the grid, back to their baseline):', WARN)
+    rows('dropped', 'Dropped (new IDs leaving the roster) with their customisations:', WARN, empty_too=False)
+    lines += [(f'- {note}', TEXT) for note in plan.get('notes') or []]
+    lines += [(f'Warning: {w}', WARN) for w in plan.get('warnings') or []]
+    lines.append(('- Pending grid edits are dropped. Stat edits travel with their characters.', TEXT))
+    lines.append(('Checks passed: the merged roster builds. Inject writes it into 3_Output_Dat.', OK))
+    dialog.can_apply = True
+    return dialog
 
 
 @dataclass
