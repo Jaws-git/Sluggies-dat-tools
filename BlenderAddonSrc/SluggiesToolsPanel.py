@@ -1088,9 +1088,7 @@ def _draw_rigid_mesh_box(layout, context):
     if kind is not None:
         box.label(text=_rigid_mesh_attachment_label(context, arm_obj, obj))
     box.operator(SLUGGIES_OT_reassign_bone.bl_idname)
-    # SLUGGIES_OT_add_material is implemented (PLAN_EditRigidMeshes.md Phase 8)
-    # but hidden from the panel: export/patch support (Phases 0-4) doesn't
-    # exist yet, so a material it creates can't be round-tripped today.
+    box.operator(SLUGGIES_OT_add_material.bl_idname)
 
 
 def _add_bone_parent_enum_items(self, context):

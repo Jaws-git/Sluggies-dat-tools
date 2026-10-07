@@ -300,6 +300,98 @@
                 "type": "string",
                 "description": "Base64-encoded per-face draw-state index, packed as big-endian uint16 (one entry per face). Each value is the index into the DisplayStates array of the draw state that owns this face. Written by the Blender exporter when any face has been reassigned to a different surface material. Absent when face-to-surface assignment is unchanged. Used by the hammerspace GPL rebuild to route faces to the correct primitive list."
               },
+              "RigidRebuild": {
+                "type": "object",
+                "description": "Hammerspace-only whole-blob rebuild of this rigid (VertexBufferCompCount 3) donor submesh, written by the Blender exporter when the slot-preserving edit fields cannot represent the edit: changed topology, an Object Mode transform, a host-bone change that keeps the world position, or faces moved between surfaces. The donor display states are kept (with ShaderModeEdited / DisplayStateParamBytesEdited applied) and only the primitive lists are re-encoded, one GX_TRIANGLES list per drawing surface; Type-3 index widths are widened where a count needs it. The rebuilt blob is inserted before GPLUserData and the GEO descriptor repointed; the donor blob stays in place unreferenced. Never combined with the in-place *Edited fields on the same submesh (the patcher refuses the mix), and never on a submesh a ptr7 facial object references. Every buffer uses the donor's own formats (VertexBufferQuantizeInfo, NormalBuffer, ColorChannels and UVChannels quantization) and is bone-local to HostBoneId. See PLAN_EditRigidMeshes.md (local working document).",
+                "properties": {
+                  "HostBoneId": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "The bone whose space the positions and normals are in. Must equal the effective owner of this submesh: the bone whose BoneHierarchy[].GeoIdEdited (if set) or GeoIdRaw is this submesh index. GeoIdEdited stays the only ACT mechanism for moving a submesh to another bone."
+                  },
+                  "VertexBufferData": {
+                    "type": "string",
+                    "description": "Position buffer in the donor's VertexBufferQuantizeInfo (int16 formats only), host-bone local, with the rebuilt vertex count."
+                  },
+                  "NormalBufferData": {
+                    "type": "string",
+                    "description": "Pooled normal array in the donor NormalBuffer's format. Present exactly when the donor submesh has a NormalBuffer."
+                  },
+                  "NormalFacesData": {
+                    "type": "string",
+                    "description": "Per-loop normal index buffer (big-endian uint16, 3 per face, aligned with FacesData)."
+                  },
+                  "ColorChannelData": {
+                    "type": "string",
+                    "description": "Pooled colour array in the donor ColorChannels[0] format (ColorChannelQuantizeInfo 48 = 2-byte RGBA4444, 0 = 2-byte RGB565). Present exactly when the donor submesh lists a colour channel. A donor colour array the export does not list (a Type 3 without color0) is carried over by the patcher."
+                  },
+                  "ColorFacesData": {
+                    "type": "string",
+                    "description": "Per-loop colour index buffer (big-endian uint16, 3 per face, aligned with FacesData)."
+                  },
+                  "UVChannels": {
+                    "type": "array",
+                    "description": "One entry per donor UV channel (the same UVChannelIndex set), each in the donor channel's format. When the donor channels are byte-identical (channel 1 is the specular mirror of channel 0), the exporter mirrors channel 0 into channel 1.",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "UVChannelIndex": {"type": "integer", "minimum": 0},
+                        "UVChannelData": {"type": "string", "description": "Pooled ST coordinate buffer in the donor channel's quantization."},
+                        "UVFacesData": {"type": "string", "description": "Per-loop UV index buffer (big-endian uint16, 3 per face, aligned with FacesData)."}
+                      },
+                      "required": ["UVChannelIndex", "UVChannelData", "UVFacesData"]
+                    }
+                  },
+                  "FacesCount": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Number of triangles in the rebuilt submesh."
+                  },
+                  "FacesData": {
+                    "type": "string",
+                    "description": "Face index buffer, big-endian uint16 triplets into VertexBufferData, in the same winding convention as Submeshes[].FacesData."
+                  },
+                  "FaceSurfaceTable": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "description": "The surfaces the faces draw through, by key: a donor SurfaceId of this submesh that can draw (it inherits a Type 3 and a Type 7), or a new surface key sm<N>_new<K> listed in NewSurfaces. A donor surface with no faces left keeps its record with a null primitive list."
+                  },
+                  "FaceSurfaceIndices": {
+                    "type": "string",
+                    "description": "One big-endian uint16 per triangle: the index into FaceSurfaceTable of the surface that triangle draws through."
+                  },
+                  "NewSurfaces": {
+                    "type": "array",
+                    "description": "Surfaces created in Blender with Add material, in append order. Each becomes a canonical T1 L0, [T1 L1], T4, T3, T6, T7 record group appended after the last donor record, so no donor state index moves. Type 1/6/7 come from the template's effective state, Type 4 from the layers the group binds, Type 3 from this submesh's attribute set and index widths.",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "SurfaceKey": {"type": "string", "pattern": "^sm[0-9]+_new[0-9]+$", "description": "The material's SurfaceId; the <N> is this submesh index."},
+                        "MaterialName": {"type": "string", "description": "The Blender material's name, for messages."},
+                        "TemplateSource": {"type": "string", "pattern": "^(rigid|derived|builtin):.+$", "description": "Same meaning as CustomSubmeshes[].TemplateSource."},
+                        "TextureAssignment": {
+                          "type": "object",
+                          "description": "Same shape as CustomSubmeshes[].TextureAssignment: exactly one of DonorTextureIndex or AdditionalTextureFileName.",
+                          "properties": {
+                            "DonorTextureIndex": {"type": "integer", "minimum": 0},
+                            "AdditionalTextureFileName": {"type": "string"}
+                          },
+                          "additionalProperties": false
+                        },
+                        "SpecularStrength": {"type": "integer", "minimum": 0, "maximum": 255, "description": "Type-7 param byte 0 of the new surface; absent keeps the template's value."}
+                      },
+                      "required": ["SurfaceKey", "TemplateSource", "TextureAssignment"]
+                    }
+                  },
+                  "Reason": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Why the exporter chose the rebuild, for logging only: topology, object_transform, host_bone_world, surfaces."
+                  }
+                },
+                "required": ["HostBoneId", "VertexBufferData", "UVChannels", "FacesCount", "FacesData", "FaceSurfaceTable", "FaceSurfaceIndices"]
+              },
               "DrawStates": {
                 "type": "array",
                 "description": "One entry per display state (draw batch) in this submesh. Provides pointer-field offsets for writeExpandedMesh to relocate each primitive list into hammerspace, and the original data for --unpatch restoration.",
@@ -1142,6 +1234,12 @@
             "GeoId": {
               "type": "number",
               "description": "Index of the geometry submesh this bone is primarily associated with. For skinned bones (Skinned=true) this is always 0 because the geometry file ID in the ACT is 0xFFFF (skinned marker) and is normalised to 0."
+            },
+            "GeoIdEdited": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535,
+              "description": "Edited literal ACT geoFileId for this bone, written by the Blender exporter when a rigid donor submesh is moved to another bone (Reassign to new bone, or its bone_<id> vertex group changed): the old owner gets 0xFFFF (mesh-free) and the new owner the submesh index. Applied in place at GeoIdFieldOffset and by the Hammerspace ACT clone; a custom submesh may claim a bone freed this way in the same export. Absent when the bone keeps its donor ownership."
             },
             "ParentBoneId": {
               "type": ["number", "null"],

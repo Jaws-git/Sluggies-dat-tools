@@ -432,15 +432,19 @@ def _build_act_bytes() -> bytes:
     ))
 
 
+def _tex_image_pointer(index: int) -> int:
+    """TEX-relative offset of texture *index*'s payload: each sits on its own
+    32-byte boundary after the descriptor table (F10)."""
+    return _align32(4 + TEXTURE_COUNT * 0x20) + index * 0x20
+
+
 def _build_tex_bytes() -> bytes:
     """A TEX section with `TEXTURE_COUNT` 4x4 CMPR textures, each payload on
     its own 32-byte boundary (F10)."""
-    descriptor_table_end = 4 + TEXTURE_COUNT * 0x20
-    data_start = _align32(descriptor_table_end)
-    section = bytearray(data_start + TEXTURE_COUNT * 0x20)
+    section = bytearray(_tex_image_pointer(TEXTURE_COUNT))
     struct.pack_into('>HH', section, 0, TEXTURE_COUNT, 0)
     for index in range(TEXTURE_COUNT):
-        image_ptr = data_start + index * 0x20
+        image_ptr = _tex_image_pointer(index)
         descriptor = 4 + index * 0x20
         struct.pack_into('>I', section, descriptor, image_ptr)
         struct.pack_into('>HH', section, descriptor + 8, TEXTURE_WIDTH, TEXTURE_HEIGHT)
@@ -495,7 +499,7 @@ def _build_skn_bytes() -> bytes:
     return bytes(section)
 
 
-def build_donor() -> tuple[dict, bytes, int]:
+def build_donor(mutate=None) -> tuple[dict, bytes, int]:
     """Return ``(sluggie_dict, dat_bytes, model_length)``.
 
     The GPL section is ``BuildGPLMeshData``'s own output for this `.sluggie`,
@@ -503,8 +507,14 @@ def build_donor() -> tuple[dict, bytes, int]:
     section starts on a 32-byte boundary (F10), and the `.sluggie`'s absolute
     `GeoIdFieldOffset` / `SRTOffset` fields are filled in from where the ACT
     actually lands.
+
+    *mutate*, when given, is called with the `.sluggie` dict before the block
+    is built, so a test can give the donor extra data (a colour channel, a
+    normal buffer, ...) that the block then really contains.
     """
     data = build_sluggie()
+    if mutate is not None:
+        mutate(data)
     gpl_bytes = main.BuildGPLMeshData(main.ParseSluggie(data)).gpl_bytes
     act_bytes = _build_act_bytes()
     tex_bytes = _build_tex_bytes()
@@ -532,6 +542,10 @@ def build_donor() -> tuple[dict, bytes, int]:
         record = act_absolute + ACT_HEADER_SIZE + bone_id * BONE_RECORD_SIZE
         bone['GeoIdFieldOffset'] = f'0x{record + BONE_GEO_ID_FIELD:x}'
         bone['SRTOffset'] = f'0x{srt_base + bone_id * act_rebuild.SRT_RECORD_SIZE:x}'
+    tex_absolute = MODEL_OFFSET + tex_off
+    for index, descriptor in enumerate(model['TextureDescriptors']):
+        descriptor['TextureDescriptorOffset'] = f'0x{tex_absolute + 4 + index * 0x20:x}'
+        descriptor['ImageDataOffset'] = f'0x{tex_absolute + _tex_image_pointer(index):x}'
 
     dat = bytearray(MODEL_OFFSET + model_length)
     dat[MODEL_OFFSET:MODEL_OFFSET + model_length] = block
@@ -558,15 +572,15 @@ class DonorEnvironment:
 
 
 @contextlib.contextmanager
-def donor_environment():
+def donor_environment(mutate=None):
     """Materialize the donor and point `HammerspaceHelper` at it.
 
     Writes the `.sluggie` and a synthetic `dt_na.dat` into a temp directory,
     then patches `hh.INPUT_DAT` / `hh.OUTPUT_DAT` and `hh.readDolEntry` so the
     clone routes (ACT, TEX, SKN and the trailing tail are clone-only) read the
-    donor block back out of it.
+    donor block back out of it. *mutate* is passed to :func:`build_donor`.
     """
-    data, dat_bytes, model_length = build_donor()
+    data, dat_bytes, model_length = build_donor(mutate)
     with tempfile.TemporaryDirectory() as temp_dir:
         env = DonorEnvironment(pathlib.Path(temp_dir), data, model_length)
         env.input_dat.write_bytes(dat_bytes)

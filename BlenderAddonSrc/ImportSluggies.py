@@ -221,15 +221,41 @@ def _compute_bone_absolute_matrices(bone_list):
     return abs_mats
 
 
-def _apply_nonskinned_transform(obj, submesh_index, bone_list, abs_bone_mats):
+GEO_ID_FREE = 0xFFFF
+
+
+def _submesh_owner_bones(bone_list, submesh_index):
+    """``(donor owner, effective owner)`` bone ids of a rigid submesh: the
+    bone whose donor ``GeoId`` is the submesh, and the bone that owns it after
+    the file's ``GeoIdEdited`` retargets (the same bone when there are none).
+    Both are None for a skinned submesh."""
+    donor = next(
+        (int(bd['BoneId']) for bd in bone_list
+         if not bd.get('Skinned') and bd.get('GeoId') == submesh_index),
+        None,
+    )
+    edited = next(
+        (int(bd['BoneId']) for bd in bone_list
+         if bd.get('GeoIdEdited') is not None and int(bd['GeoIdEdited']) == submesh_index),
+        None,
+    )
+    return donor, donor if edited is None else edited
+
+
+def _apply_nonskinned_transform(obj, submesh_index, bone_list, abs_bone_mats, owner_bone_id=None):
     """Set *obj*.matrix_world to the absolute transform of the non-skinned bone
-    that owns *submesh_index*, if one exists.  No-op for skinned submeshes."""
-    for bd in bone_list:
-        if not bd.get('Skinned') and bd.get('GeoId') == submesh_index:
-            mat = abs_bone_mats.get(bd['BoneId'])
-            if mat is not None:
-                obj.matrix_world = mat
-            break
+    that owns *submesh_index*, if one exists.  No-op for skinned submeshes.
+
+    *owner_bone_id* names the bone to use; by default the effective owner
+    (``GeoIdEdited`` first), so a retargeted mesh re-imports on its new bone
+    (PLAN_EditRigidMeshes.md G15)."""
+    if owner_bone_id is None:
+        _donor, owner_bone_id = _submesh_owner_bones(bone_list, submesh_index)
+    if owner_bone_id is None:
+        return
+    mat = abs_bone_mats.get(owner_bone_id)
+    if mat is not None:
+        obj.matrix_world = mat
 
 
 def decode_faces(submesh):
@@ -626,14 +652,23 @@ def _apply_drawlist_vcol(mesh, display_states):
 def _has_edited_data(submesh):
     """Return True when *submesh* contains any edited mesh data."""
     vb = submesh.get("VertexBuffer") or {}
-    return bool(vb.get("VertexBufferDataEdited") or submesh.get("FacesDataEdited"))
+    return bool(
+        vb.get("VertexBufferDataEdited") or submesh.get("FacesDataEdited") or submesh.get("RigidRebuild")
+    )
 
 
 def _edited_submesh_view(submesh):
     """Return a shallow copy of *submesh* with all *Edited fields promoted to
     their primary counterparts so existing decode_* helpers can be reused
-    without modification."""
+    without modification.
+
+    A ``RigidRebuild`` (PLAN_EditRigidMeshes.md) is promoted the same way:
+    its arrays replace the donor's, and ``_FaceSurfaceIds`` lists the surface
+    key each face draws through (donor SurfaceId or new surface key)."""
     view = dict(submesh)
+    rebuild = view.get("RigidRebuild")
+    if rebuild:
+        return _rigid_rebuild_view(view, rebuild)
 
     vb = dict(view.get("VertexBuffer") or {})
     if vb.get("VertexBufferDataEdited"):
@@ -658,6 +693,63 @@ def _edited_submesh_view(submesh):
     view["UVChannels"] = edited_uvs
 
     return view
+
+
+def _rigid_rebuild_view(view, rebuild):
+    """The ``_edited_submesh_view`` of a submesh carrying a RigidRebuild."""
+    vb = dict(view.get("VertexBuffer") or {})
+    vb["VertexBufferData"] = rebuild["VertexBufferData"]
+    vb.pop("VertexBufferDataEdited", None)
+    view["VertexBuffer"] = vb
+    view["FacesData"] = rebuild["FacesData"]
+    view["FacesCount"] = int(rebuild["FacesCount"])
+    view["FaceTextureIndices"] = _from_bytes(struct.pack(f'>{view["FacesCount"]}H', *([0] * view["FacesCount"])))
+    for key in ("FacesDataEdited", "FacesCountEdited", "FaceTextureIndicesEdited", "FaceSurfaceIdsEdited"):
+        view.pop(key, None)
+
+    normal_buffer = view.get("NormalBuffer")
+    if isinstance(normal_buffer, dict) and rebuild.get("NormalBufferData"):
+        normal_buffer = dict(normal_buffer)
+        normal_buffer["NormalBufferData"] = rebuild["NormalBufferData"]
+        normal_buffer["NormalFacesData"] = rebuild["NormalFacesData"]
+        normal_buffer.pop("NormalBufferDataEdited", None)
+        normal_buffer.pop("NormalFacesDataEdited", None)
+        view["NormalBuffer"] = normal_buffer
+
+    colors = []
+    for ch in view.get("ColorChannels") or []:
+        ch = dict(ch)
+        if rebuild.get("ColorChannelData") and not colors:
+            ch["ColorChannelData"] = rebuild["ColorChannelData"]
+            ch["ColorFacesData"] = rebuild["ColorFacesData"]
+        ch.pop("ColorChannelDataEdited", None)
+        ch.pop("ColorFacesDataEdited", None)
+        colors.append(ch)
+    view["ColorChannels"] = colors
+
+    rebuilt_uv = {int(uv["UVChannelIndex"]): uv for uv in rebuild.get("UVChannels") or []}
+    uvs = []
+    for ch in view.get("UVChannels") or []:
+        ch = dict(ch)
+        source = rebuilt_uv.get(int(ch.get("UVChannelIndex", 0)))
+        if source is not None:
+            ch["UVChannelData"] = source["UVChannelData"]
+            ch["UVFacesData"] = source["UVFacesData"]
+        ch.pop("UVChannelDataEdited", None)
+        ch.pop("UVFacesDataEdited", None)
+        uvs.append(ch)
+    view["UVChannels"] = uvs
+
+    table = list(rebuild.get("FaceSurfaceTable") or [])
+    indices_raw = _to_bytes(rebuild.get("FaceSurfaceIndices"))
+    indices = struct.unpack(f'>{len(indices_raw) // 2}H', indices_raw) if indices_raw else ()
+    view["_FaceSurfaceIds"] = [table[i] for i in indices]
+    return view
+
+
+def _from_bytes(raw):
+    """Base64 string for a raw buffer (the importer's decoders accept it)."""
+    return FieldCodec.encode_field(raw, True)
 
 
 _GX_WRAP = {0: 'EXTEND', 1: 'REPEAT', 2: 'MIRROR'}
@@ -782,12 +874,29 @@ def _resolve_texture_image_path(sluggie_dir, tex_file):
     return None
 
 
+def _surface_ranges_from_face_ids(face_surface_ids):
+    """``(surface_id, start, count)`` runs of a per-face surface list, in the
+    shape ``_surface_face_ranges`` returns; a surface may appear in several
+    runs, and ``build_mesh`` gives it one material slot."""
+    ranges = []
+    for face_index, surface_id in enumerate(face_surface_ids):
+        if ranges and ranges[-1][0] == surface_id:
+            ranges[-1] = (surface_id, ranges[-1][1], ranges[-1][2] + 1)
+        else:
+            ranges.append((surface_id, face_index, 1))
+    return ranges
+
+
 def build_mesh(name, positions, normals, faces, vb_meta, collection,
                uv_channels=None, color_channels=None,
                face_texture_indices=None, sluggie_dir=None,
                submesh_meta=None, prebuilt_materials=None,
-               texture_file_map=None):
-    """Create a Blender mesh object from a vertex list and link it to *collection*."""
+               texture_file_map=None, face_surface_ids=None):
+    """Create a Blender mesh object from a vertex list and link it to *collection*.
+
+    *face_surface_ids*, when given, names the surface of every face directly
+    (a rebuilt rigid submesh routes faces by key), instead of the donor's
+    cumulative ``FaceCount`` ranges."""
     mesh = bpy.data.meshes.new(name)
     mesh.from_pydata(positions, [], faces)
     mesh.update()
@@ -886,7 +995,10 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
     if submesh_meta is not None:
         # Compute once — needed for both shader-mode properties and material creation.
         display_states = submesh_meta.get("DisplayStates", [])
-        surface_ranges = _surface_face_ranges(display_states)
+        surface_ranges = (
+            _surface_ranges_from_face_ids(face_surface_ids) if face_surface_ids is not None
+            else _surface_face_ranges(display_states)
+        )
 
         # Object-level shader mode properties are only written for the legacy path
         # (old exports without FaceCount).  When per-surface materials exist the
@@ -944,7 +1056,10 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
                 tex_to_uv[idx] = uv_ch
 
         mat_slot = {}  # surface_id -> material slot index
-        for slot_idx, (surface_id, start_fi, fc) in enumerate(surface_ranges):
+        for surface_id, start_fi, fc in surface_ranges:
+            if surface_id in mat_slot:
+                continue   # a surface listed in several face runs keeps one slot
+            slot_idx = len(mat_slot)
             fi_tex = face_texture_indices[start_fi] if start_fi < len(face_texture_indices) else 0
             uv_ch = tex_to_uv.get(fi_tex) or (uv_channels[0] if uv_channels else None)
             ch_ind = uv_ch.get('UVChannelIndex', 0) if uv_ch else 0
@@ -1171,25 +1286,105 @@ def _apply_import_rotation(obj):
     obj.matrix_world = obj.matrix_world @ mathutils.Matrix.Rotation(math.pi / 2, 4, 'X')
 
 
-def add_vertex_groups(obj, submesh_index, bone_list, arm_obj):
+def add_vertex_groups(obj, submesh_index, bone_list, arm_obj, owner_bone_id=None):
     """Add vertex groups from BoneHierarchy for *submesh_index* and attach an
-    Armature modifier pointing at *arm_obj*."""
-    for bd in bone_list:
-        for entry in bd.get('VertexInfluences', []):
-            if entry['SubmeshIndex'] != submesh_index:
-                continue
-            group_name = f"bone_{bd['BoneId']}"
-            vg = obj.vertex_groups.get(group_name)
-            if vg is None:
-                vg = obj.vertex_groups.new(name=group_name)
-            num_verts = len(obj.data.vertices)
-            raw = _to_bytes(entry['Influences'])
-            for v_idx, weight in struct.iter_unpack('>Hf', raw):
-                if v_idx < num_verts:
-                    vg.add([v_idx], weight, 'REPLACE')
+    Armature modifier pointing at *arm_obj*.
+
+    With *owner_bone_id* (a rigid submesh whose owner the file moved, or a
+    rebuilt one whose vertices the donor influences do not cover) every
+    vertex goes into ``bone_<owner>`` at weight 1.0 instead."""
+    if owner_bone_id is not None:
+        vg = obj.vertex_groups.new(name=f"bone_{owner_bone_id}")
+        vg.add(list(range(len(obj.data.vertices))), 1.0, 'REPLACE')
+    else:
+        for bd in bone_list:
+            for entry in bd.get('VertexInfluences', []):
+                if entry['SubmeshIndex'] != submesh_index:
+                    continue
+                group_name = f"bone_{bd['BoneId']}"
+                vg = obj.vertex_groups.get(group_name)
+                if vg is None:
+                    vg = obj.vertex_groups.new(name=group_name)
+                num_verts = len(obj.data.vertices)
+                raw = _to_bytes(entry['Influences'])
+                for v_idx, weight in struct.iter_unpack('>Hf', raw):
+                    if v_idx < num_verts:
+                        vg.add([v_idx], weight, 'REPLACE')
 
     mod = obj.modifiers.new(name="Armature", type='ARMATURE')
     mod.object = arm_obj
+
+
+def _template_shader_mode_from_model(model, template_source):
+    """Effective Type-7 mode of a template source, read from the .sluggie."""
+    kind, _sep, argument = str(template_source).partition(':')
+    if kind == 'builtin':
+        from . import TemplateSources
+        template = TemplateSources.BUILTIN_TEMPLATES.get(argument)
+        return template.shader_mode if template is not None else ''
+    for submesh in model.get('Submeshes') or []:
+        states = submesh.get('DisplayStates') or []
+        mode = ''
+        for state in states:
+            if int(state.get('DisplayStateId', -1)) == 7:
+                mode = state.get('ShaderModeEdited') or state.get('ShaderMode', '')
+            if state.get('SurfaceId') == argument:
+                return mode
+    return ''
+
+
+def _new_surface_materials(name, submesh, submesh_index, model, uv_layer_name, sluggie_dir, texture_file_map):
+    """Re-create the Add-material surfaces of a rebuilt rigid submesh
+    (``RigidRebuild.NewSurfaces``) as Blender materials, keyed by surface key,
+    with the metadata Add material writes (PLAN_EditRigidMeshes.md G22). The
+    image comes from the appended PNG in tex/ or from the donor texture it
+    binds; when the file is missing the node stays empty, so the next export
+    stops on it (decision 11) instead of changing the texture silently."""
+    from . import ExportSluggies
+    materials = {}
+    rebuild = submesh.get("RigidRebuild") or {}
+    uv0 = (submesh.get("UVChannels") or [{}])[0]
+    for entry in rebuild.get("NewSurfaces") or []:
+        key = entry["SurfaceKey"]
+        template = str(entry.get("TemplateSource") or "")
+        assignment = entry.get("TextureAssignment") or {}
+        tex_file = assignment.get("AdditionalTextureFileName")
+        if tex_file is None and assignment.get("DonorTextureIndex") is not None:
+            tex_file = (texture_file_map or {}).get(int(assignment["DonorTextureIndex"]))
+        img_path = _resolve_texture_image_path(sluggie_dir, tex_file) if (sluggie_dir and tex_file) else None
+        image = bpy.data.images.load(img_path, check_existing=True) if img_path else None
+        if image is None:
+            print(f"WARNING: {name}: PNG for new surface {key} ({tex_file}) not found; its texture node is left empty")
+        wrap_s, wrap_t = int(uv0.get("WrapS", 1)), int(uv0.get("WrapT", 1))
+        mat = _create_material(entry.get("MaterialName") or f"{name}_{key}", uv_layer_name, image, wrap_s)
+        mat["SluggiesNewSurface"] = True
+        mat.id_properties_ui("SluggiesNewSurface").update(
+            description="Marks a Blender-only surface created by Add material, absent from the donor.")
+        mat["SurfaceId"] = key
+        mat.id_properties_ui("SurfaceId").update(
+            description="Stable draw-state identity for this added surface. Do not delete.")
+        mat["SluggiesSurfaceOwner"] = f"sm{submesh_index}"
+        mat.id_properties_ui("SluggiesSurfaceOwner").update(
+            description="The submesh (donor sm<N> or CustomSubmeshId) this surface belongs to.")
+        mat["TemplateSource"] = template
+        mat.id_properties_ui("TemplateSource").update(
+            description="Donor or built-in template this surface's shading is cloned from.")
+        try:
+            mat["TemplateTextureIndex"] = ExportSluggies._custom_submesh_template_texture_index(model, template)
+        except ValueError:
+            mat["TemplateTextureIndex"] = 0
+        mat.id_properties_ui("TemplateTextureIndex").update(
+            description="Donor texture index this surface's GX format clones; never a fallback texture.")
+        strength = entry.get("SpecularStrength")
+        _set_surface_material_metadata(mat, {
+            "DisplayStateId": 7,
+            "ShaderMode": _template_shader_mode_from_model(model, template),
+            "DisplayStateParamBytes": bytes([int(strength) if strength is not None else 0, 0, 0]).hex(),
+        })
+        mat["WrapS"] = wrap_s
+        mat["WrapT"] = wrap_t
+        materials[key] = mat
+    return materials
 
 
 class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
@@ -1252,13 +1447,22 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
                              uv_channels, color_channels,
                              face_texture_indices=face_texture_indices, sluggie_dir=sluggie_dir,
                              submesh_meta=submesh, texture_file_map=texture_file_map)
+            # A rigid submesh follows its effective owner (GeoIdEdited first);
+            # with a RigidRebuild the donor object stays on the donor bone, as
+            # the "before" view, and the `_edit` object takes the new owner.
+            donor_owner, effective_owner = _submesh_owner_bones(bone_list or [], i)
+            rebuilt = bool(submesh.get("RigidRebuild"))
+            original_owner = donor_owner if rebuilt else effective_owner
             if arm_obj is not None:
-                add_vertex_groups(obj, i, bone_list, arm_obj)
+                add_vertex_groups(
+                    obj, i, bone_list, arm_obj,
+                    owner_bone_id=original_owner if original_owner != donor_owner else None,
+                )
                 obj.parent = arm_obj
             else:
                 _apply_import_rotation(obj)
             if bone_list:
-                _apply_nonskinned_transform(obj, i, bone_list, abs_bone_mats)
+                _apply_nonskinned_transform(obj, i, bone_list, abs_bone_mats, original_owner)
             add_facial_shape_keys(
                 obj, i, model.get("FacialPoseData"), model.get("FacialPoseDataEdited")
             )
@@ -1291,6 +1495,14 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
                             except (IndexError, ValueError):
                                 pass
 
+                    face_surface_ids = ev.get("_FaceSurfaceIds")
+                    if rebuilt:
+                        uv0_name = next(iter(obj.data.uv_layers), None)
+                        orig_materials.update(_new_surface_materials(
+                            mesh_name, submesh, i, model,
+                            uv0_name.name if uv0_name is not None else 'UVMap',
+                            sluggie_dir, texture_file_map,
+                        ))
                     edit_obj = build_mesh(
                         f"{mesh_name}_edit",
                         edit_positions, edit_normals, edit_faces,
@@ -1298,17 +1510,21 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
                         edit_uv_channels, edit_color_channels,
                         face_texture_indices=edit_fti,
                         sluggie_dir=None,
-                        submesh_meta=submesh,
+                        submesh_meta=ev,
                         prebuilt_materials=orig_materials or None,
                         texture_file_map=texture_file_map,
+                        face_surface_ids=face_surface_ids,
                     )
                     if arm_obj is not None:
-                        add_vertex_groups(edit_obj, i, bone_list, arm_obj)
+                        add_vertex_groups(
+                            edit_obj, i, bone_list, arm_obj,
+                            owner_bone_id=effective_owner if (rebuilt or effective_owner != donor_owner) else None,
+                        )
                         edit_obj.parent = arm_obj
                     else:
                         _apply_import_rotation(edit_obj)
                     if bone_list:
-                        _apply_nonskinned_transform(edit_obj, i, bone_list, abs_bone_mats)
+                        _apply_nonskinned_transform(edit_obj, i, bone_list, abs_bone_mats, effective_owner)
                     add_facial_shape_keys(
                         edit_obj, i, model.get("FacialPoseData"),
                         model.get("FacialPoseDataEdited")

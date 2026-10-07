@@ -347,11 +347,21 @@ def hammerspace_section_args(model):
             has_color_edits = True
 
     # A custom submesh is a new GPL submesh, so it always needs the GPL
-    # builder; one bound to an appended PNG also needs the TEX builder.
+    # builder; one bound to an appended PNG also needs the TEX builder. A
+    # rebuilt rigid submesh (RigidRebuild) replaces its GPL blob the same way,
+    # and a new surface on it may bind an appended PNG too.
     custom_submeshes = model.get('CustomSubmeshes') or []
+    rigid_rebuilds = [
+        submesh['RigidRebuild'] for submesh in model.get('Submeshes', [])
+        if submesh.get('RigidRebuild')
+    ]
     custom_texture_added = any(
         (entry.get('TextureAssignment') or {}).get('AdditionalTextureFileName')
         for entry in custom_submeshes
+    ) or any(
+        (surface.get('TextureAssignment') or {}).get('AdditionalTextureFileName')
+        for rebuild in rigid_rebuilds
+        for surface in rebuild.get('NewSurfaces') or []
     )
 
     args = []
@@ -359,7 +369,7 @@ def hammerspace_section_args(model):
         submesh.get('FaceSurfaceIdsEdited') is not None
         for submesh in model.get('Submeshes', [])
     ) or changed_positions or has_uv_edits or has_normal_edits or has_color_edits \
-            or custom_submeshes:
+            or custom_submeshes or rigid_rebuilds:
         args.extend(['--gpl', 'build'])
         if any(
             submesh.get('VertexBuffer', {}).get('VertexBufferCompCount') == 6
@@ -454,7 +464,7 @@ _HAMMERSPACE_ONLY_MODEL_FIELDS = (
     'DesiredTextureAssignments',
 )
 # Submesh-level fields only the Hammerspace builder applies.
-_HAMMERSPACE_ONLY_SUBMESH_FIELDS = ('FacesDataEdited', 'FaceSurfaceIdsEdited')
+_HAMMERSPACE_ONLY_SUBMESH_FIELDS = ('FacesDataEdited', 'FaceSurfaceIdsEdited', 'RigidRebuild')
 
 
 def _needs_hammerspace(model, sluggie_path):

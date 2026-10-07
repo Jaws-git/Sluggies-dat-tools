@@ -1205,9 +1205,18 @@ def rebuild_edited_uvs(data: dict) -> bool:
     rebuilt = False
 
     for sub_idx, sub in enumerate(model.get('Submeshes', [])):
-        face_count = sub.get('FacesCountEdited', sub.get('FacesCount', 0))
-        if face_count != sub.get('FacesCount'):
+        if sub.get('RigidRebuild'):
+            # Rebuilt as a whole blob by HammerspaceMain (PLAN_EditRigidMeshes.md);
+            # its UV, normal and colour data travel inside that entry.
             continue
+        face_count = sub.get('FacesCountEdited', sub.get('FacesCount', 0))
+        if sub.get('FacesCountEdited') is not None and face_count != sub.get('FacesCount'):
+            raise ValueError(
+                f'sub{sub_idx}: face count changed from {sub.get("FacesCount")} to '
+                f'{face_count}; a changed topology is only supported on rigid '
+                'submeshes through RigidRebuild (re-export from Blender), not on '
+                'the skinned body'
+            )
         loop_count = face_count * 3
         channel_edits = {}
 
@@ -1535,7 +1544,13 @@ def rebuild_edited_uvs(data: dict) -> bool:
 
 def _rebuild_submesh(model: dict, sub: dict, sub_idx: int, use_b64,
                      perm_info: dict | None) -> None:
-    """Rebuild prim lists, compact UVs, and descriptors for one changed submesh."""
+    """Rebuild prim lists, compact UVs, and descriptors for one changed submesh.
+
+    Superseded and unreferenced: a rigid (CompCount 3) submesh with changed
+    topology is rebuilt as a whole blob by ``HammerspaceMain``'s
+    ``RigidRebuild`` path (PLAN_EditRigidMeshes.md), so the static
+    vertex-count guard below must not be revived for rigid meshes. Kept for
+    the skinned submesh 0, whose topology rebuild is still unsupported."""
     vb = sub['VertexBuffer']
     is_skinned = vb['VertexBufferCompCount'] == 6
 

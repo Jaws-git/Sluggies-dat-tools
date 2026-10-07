@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import struct
 from dataclasses import dataclass, replace
@@ -122,6 +123,7 @@ class Submesh:
     source_layout_offset:           int
     source_position_data_offset:    int
     preserve_source_layout:         bool
+    rigid_rebuild:                  'RigidRebuild | None' = None   # PLAN_EditRigidMeshes.md
 
 
 @dataclass
@@ -166,6 +168,42 @@ class CustomSubmesh:
     texture_assignment: CustomSubmeshTextureAssignment
     specular_strength:  int | None = None   # Type-7 param byte 0; None keeps the template's
     color_quantize_info: int = 48           # 48 RGBA4444 (default) or 0 RGB565; both 2 bytes
+
+
+@dataclass
+class RigidRebuildNewSurface:
+    """One surface appended to a rebuilt donor rigid submesh
+    (PLAN_EditRigidMeshes.md Phase 1, ``RigidRebuild.NewSurfaces[]``)."""
+    surface_key:        str     # sm<N>_new<K>
+    material_name:      str     # for messages only
+    template_source:    str     # rigid:<SurfaceId> | derived:<SurfaceId> | builtin:<name>
+    texture_assignment: CustomSubmeshTextureAssignment
+    specular_strength:  int | None = None
+
+
+@dataclass
+class RigidRebuild:
+    """PLAN_EditRigidMeshes.md Phase 1: a donor rigid (CompCount 3) submesh
+    rebuilt as a whole blob from Blender data -- changed topology, an Object
+    Mode transform, a host-bone change that keeps the world position, or
+    faces moved between surfaces. Every buffer is in the donor's own formats
+    (decision 3) and bone-local to ``host_bone_id`` (decision 4). The donor
+    display states are kept; ``face_surface_table`` names, per surface key,
+    which donor surface (``SurfaceId``) or appended new surface each triangle
+    draws through (decision 7)."""
+    host_bone_id:         int
+    vertex_data:          bytes
+    normal_data:          bytes | None
+    normal_faces_data:    bytes | None
+    color_data:           bytes | None
+    color_faces_data:     bytes | None
+    uv_channels:          list   # [CustomSubmeshUVChannel], the donor channel set
+    faces_count:          int
+    faces_data:           bytes
+    face_surface_table:   list   # [str]
+    face_surface_indices: tuple  # one index into face_surface_table per triangle
+    new_surfaces:         list   # [RigidRebuildNewSurface], in append order
+    reasons:              list   # [str], logging only
 
 
 @dataclass
@@ -333,6 +371,10 @@ def _position_edits(model: dict) -> list[tuple[int, dict, bytes]]:
     use_b64 = model.get('UseBase64', True)
     edits = []
     for submesh_index, submesh in enumerate(model.get('Submeshes', [])):
+        if submesh.get('RigidRebuild'):
+            # Rebuilt as a whole blob (PLAN_EditRigidMeshes.md); the validator
+            # refuses in-place edit fields on the same submesh.
+            continue
         vertex_buffer = submesh.get('VertexBuffer', {})
         encoded_edit = vertex_buffer.get('VertexBufferDataEdited')
         if encoded_edit is None:
@@ -656,6 +698,36 @@ def _bone_geo_id_raw(bone: dict) -> int:
     return int(bone.get('GeoId', 0xFFFF))
 
 
+def _effective_geo_id_raw(bone: dict) -> int:
+    """The GeoId a bone holds after this build: its ``GeoIdEdited`` (a donor
+    rigid-submesh retarget, written into the ACT by ``_apply_geo_id_patches``
+    before any custom-submesh claim) when set, else the literal donor value.
+    This is what ``HostBones.classify_host_bones`` shows in Blender, so a bone
+    freed by a pending retarget is claimable here too (PLAN_EditRigidMeshes.md
+    G10)."""
+    edited = bone.get('GeoIdEdited')
+    if edited is not None:
+        return int(edited)
+    return _bone_geo_id_raw(bone)
+
+
+def _bones_by_id(model: dict) -> dict[int, dict]:
+    """Every bone this build knows, by id: the donor ``BoneHierarchy`` (which
+    carries ``GeoIdEdited`` retargets) overlaid with ``BoneHierarchyEdited``
+    (which carries user-added bones and edited placements). A donor bone's
+    ``GeoIdEdited`` is kept when the edited list lacks it: the exporter writes
+    the two lists in separate passes."""
+    bones = {int(b['BoneId']): dict(b) for b in model.get('BoneHierarchy') or []}
+    for edited in model.get('BoneHierarchyEdited') or []:
+        bone_id = int(edited['BoneId'])
+        merged = dict(edited)
+        donor = bones.get(bone_id)
+        if donor is not None and donor.get('GeoIdEdited') is not None and merged.get('GeoIdEdited') is None:
+            merged['GeoIdEdited'] = donor['GeoIdEdited']
+        bones[bone_id] = merged
+    return bones
+
+
 def _custom_submesh_effective_state(states: list, upto_index: int, display_state_id: int):
     """Last state of *display_state_id* at or before *upto_index* in *states*
     (the cumulative-state walk used throughout PLAN_AddSubmesh.md/
@@ -719,6 +791,118 @@ def _custom_submesh_rigid_surfaces(model: dict) -> dict:
     return rigid_surfaces
 
 
+def _validate_template_source(
+    model: dict, template_source, fail, *, uv_channel_count: int, has_normals: bool,
+    is_stadium: bool, rigid_surfaces: dict, layers_must_match: bool,
+) -> str | None:
+    """The per-kind checks a ``TemplateSource`` must pass, shared by custom
+    submeshes (PLAN_AddSubmesh.md Phase 1 step 3) and the new surfaces of a
+    rebuilt rigid submesh (PLAN_EditRigidMeshes.md Phase 1 step 3). Each
+    problem goes to *fail*; the kind (``rigid`` / ``derived`` / ``builtin``)
+    is returned, or None when the source is malformed.
+
+    *uv_channel_count* and *has_normals* describe the submesh the template
+    draws: a built-in's bound texture layers (its own count capped by what
+    host submesh 0 binds) must equal the custom submesh's UV channel count
+    (*layers_must_match*), while a new surface on a donor submesh only needs
+    the host to have at least that many channels (its Type 3 is cut to the
+    layers the group binds).
+    """
+    donor_submeshes = model.get('Submeshes') or []
+    submesh0 = donor_submeshes[0] if donor_submeshes else None
+    kind, sep, argument = str(template_source).partition(':')
+    if not sep or kind not in ('rigid', 'derived', 'builtin') or not argument:
+        fail(
+            f'TemplateSource {template_source!r} must be rigid:<SurfaceId>, '
+            'derived:<SurfaceId> or builtin:<name>'
+        )
+        return None
+
+    if kind == 'rigid':
+        found = rigid_surfaces.get(argument)
+        if found is None:
+            fail(f"rigid: surface {argument!r} does not exist on a rigid submesh")
+        else:
+            states, index = found
+            lighting = _custom_submesh_effective_state(states, index, 7)
+            mode = lighting.get('ShaderMode') if lighting else None
+            if mode in _CUSTOM_SUBMESH_HAND_VISIBILITY_ROLES:
+                fail(
+                    f"rigid: surface {argument!r} has hand/visibility-role "
+                    f'Type-7 {mode!r}; only plain lit surfaces are allowed'
+                )
+    elif kind == 'derived':
+        if submesh0 is None or int((submesh0.get('VertexBuffer') or {}).get('VertexBufferCompCount', 0)) != 6:
+            fail('derived: sources require a donor skinned submesh 0')
+        else:
+            states = submesh0.get('DisplayStates') or []
+            matches = [i for i, s in enumerate(states) if s.get('SurfaceId') == argument]
+            if not matches:
+                fail(f"derived: surface {argument!r} does not exist on submesh 0")
+            elif int(states[matches[0]].get('PrimListLength') or 0) <= 0:
+                fail(f"derived: surface {argument!r} draws no primitives")
+            else:
+                index = matches[0]
+                type7 = _custom_submesh_effective_state(states, index, 7)
+                type7_mode = type7.get('ShaderMode') if type7 else None
+                if type7_mode != 'Spec':
+                    fail(
+                        f"derived: surface {argument!r} has effective Type-7 "
+                        f'{type7_mode!r}; only plain Spec surfaces are allowed'
+                    )
+                type6 = _custom_submesh_effective_state(states, index, 6)
+                type6_mode = type6.get('ShaderMode') if type6 else None
+                if type6_mode == _CUSTOM_SUBMESH_REJECTED_DERIVED_TYPE6:
+                    fail(
+                        f"derived: surface {argument!r} uses Type-6 "
+                        f'{_CUSTOM_SUBMESH_REJECTED_DERIVED_TYPE6}, which never '
+                        'occurs on rigid submeshes'
+                    )
+    elif kind == 'builtin':
+        template = _CUSTOM_SUBMESH_BUILTIN_TEMPLATES.get(argument)
+        if template is None:
+            fail(
+                f'builtin: unknown template {argument!r}; known: '
+                f'{sorted(_CUSTOM_SUBMESH_BUILTIN_TEMPLATES)}'
+            )
+        elif _custom_submesh_state_records_sha256(template['States']) != template['Sha256']:
+            fail(f"builtin: stored bytes of {argument!r} do not match their recorded hash")
+        elif not template.get('VerifiedInGame'):
+            fail(
+                f'builtin: template {argument!r} is not verified in game yet '
+                '(PLAN_EditRigidMeshes.md Phase 0 probe 7); verified: '
+                f'{sorted(builtin_template_names(verified_only=True))}'
+            )
+        elif template.get('StadiumOnly') and not is_stadium:
+            fail(f'builtin: template {argument!r} is for stadium models only')
+        elif not template.get('Normals', True) and has_normals:
+            fail(
+                f'builtin: template {argument!r} draws without normals, like '
+                'stadium surfaces; export the submesh again without NormalBufferData'
+            )
+        else:
+            # Type 3 comes from the channels the submesh carries while Type 4
+            # follows the T1 records the template emits, so the two have to
+            # agree. The emitted count is the template's own layer count
+            # capped by what host submesh 0 binds -- a 2-layer built-in
+            # legitimately degrades to the 1-layer form on a host with no
+            # specular binding.
+            bound_layers = _custom_submesh_builtin_layer_count(model, argument)
+            if layers_must_match and bound_layers != uv_channel_count:
+                fail(
+                    f'builtin: template {argument!r} binds {bound_layers} texture '
+                    f'layer(s) on this model but the custom submesh has '
+                    f'{uv_channel_count} UV channel(s)'
+                )
+            elif bound_layers > uv_channel_count:
+                fail(
+                    f'builtin: template {argument!r} binds {bound_layers} texture '
+                    f'layer(s) on this model but the host submesh has only '
+                    f'{uv_channel_count} UV channel(s)'
+                )
+    return kind
+
+
 def _validate_custom_submeshes(model: dict) -> None:
     """PLAN_AddSubmesh.md Phase 1 step 3: reject an invalid CustomSubmeshes
     entry before any DAT/DOL write. Runs ahead of ParseSluggie so a bad
@@ -735,17 +919,13 @@ def _validate_custom_submeshes(model: dict) -> None:
         )
 
     use_b64 = model.get('UseBase64', True)
-    # A custom submesh may host on a
-    # user-added bone, which has no BoneHierarchy entry at all (it doesn't
-    # exist in the donor ACT) -- BoneHierarchyEdited, when present, already
-    # carries every donor bone forward plus any new ones, so it is the
-    # complete bone set to validate a HostBoneId against.
-    bones_by_id = {
-        int(b['BoneId']): b
-        for b in model.get('BoneHierarchyEdited') or model.get('BoneHierarchy') or []
-    }
-    donor_submeshes = model.get('Submeshes') or []
-    submesh0 = donor_submeshes[0] if donor_submeshes else None
+    # A custom submesh may host on a user-added bone, which has no
+    # BoneHierarchy entry at all (it doesn't exist in the donor ACT), so the
+    # bone set is the donor list overlaid with BoneHierarchyEdited; a bone's
+    # ownership is its *effective* GeoId, so a bone a donor rigid submesh is
+    # leaving (GeoIdEdited 0xFFFF) in this same export is free here, exactly
+    # as Blender's free-bone list shows it (PLAN_EditRigidMeshes.md G10).
+    bones_by_id = _bones_by_id(model)
 
     rigid_surfaces = _custom_submesh_rigid_surfaces(model)
     is_stadium = model.get('ChunkNumber') in STADIUM_CHUNKS
@@ -765,7 +945,7 @@ def _validate_custom_submeshes(model: dict) -> None:
             if bone is None:
                 fail(f'host bone {host_bone_id} does not exist in BoneHierarchy')
             else:
-                raw = _bone_geo_id_raw(bone)
+                raw = _effective_geo_id_raw(bone)
                 if raw != 0xFFFF:
                     fail(
                         f'host bone {host_bone_id} already owns submesh {raw}; '
@@ -788,92 +968,14 @@ def _validate_custom_submeshes(model: dict) -> None:
                 else:
                     claimed_bones[host_bone_id] = cs_id
 
-        template_source = cs.get('TemplateSource', '')
-        kind, sep, argument = str(template_source).partition(':')
-        if not sep or kind not in ('rigid', 'derived', 'builtin') or not argument:
-            fail(
-                f'TemplateSource {template_source!r} must be rigid:<SurfaceId>, '
-                'derived:<SurfaceId> or builtin:<name>'
-            )
-            kind = None
-
-        if kind == 'rigid':
-            found = rigid_surfaces.get(argument)
-            if found is None:
-                fail(f"rigid: surface {argument!r} does not exist on a rigid submesh")
-            else:
-                states, index = found
-                lighting = _custom_submesh_effective_state(states, index, 7)
-                mode = lighting.get('ShaderMode') if lighting else None
-                if mode in _CUSTOM_SUBMESH_HAND_VISIBILITY_ROLES:
-                    fail(
-                        f"rigid: surface {argument!r} has hand/visibility-role "
-                        f'Type-7 {mode!r}; only plain lit surfaces are allowed'
-                    )
-        elif kind == 'derived':
-            if submesh0 is None or int((submesh0.get('VertexBuffer') or {}).get('VertexBufferCompCount', 0)) != 6:
-                fail('derived: sources require a donor skinned submesh 0')
-            else:
-                states = submesh0.get('DisplayStates') or []
-                matches = [i for i, s in enumerate(states) if s.get('SurfaceId') == argument]
-                if not matches:
-                    fail(f"derived: surface {argument!r} does not exist on submesh 0")
-                elif int(states[matches[0]].get('PrimListLength') or 0) <= 0:
-                    fail(f"derived: surface {argument!r} draws no primitives")
-                else:
-                    index = matches[0]
-                    type7 = _custom_submesh_effective_state(states, index, 7)
-                    type7_mode = type7.get('ShaderMode') if type7 else None
-                    if type7_mode != 'Spec':
-                        fail(
-                            f"derived: surface {argument!r} has effective Type-7 "
-                            f'{type7_mode!r}; only plain Spec surfaces are allowed'
-                        )
-                    type6 = _custom_submesh_effective_state(states, index, 6)
-                    type6_mode = type6.get('ShaderMode') if type6 else None
-                    if type6_mode == _CUSTOM_SUBMESH_REJECTED_DERIVED_TYPE6:
-                        fail(
-                            f"derived: surface {argument!r} uses Type-6 "
-                            f'{_CUSTOM_SUBMESH_REJECTED_DERIVED_TYPE6}, which never '
-                            'occurs on rigid submeshes'
-                        )
-        elif kind == 'builtin':
-            template = _CUSTOM_SUBMESH_BUILTIN_TEMPLATES.get(argument)
-            if template is None:
-                fail(
-                    f'builtin: unknown template {argument!r}; known: '
-                    f'{sorted(_CUSTOM_SUBMESH_BUILTIN_TEMPLATES)}'
-                )
-            elif _custom_submesh_state_records_sha256(template['States']) != template['Sha256']:
-                fail(f"builtin: stored bytes of {argument!r} do not match their recorded hash")
-            elif not template.get('VerifiedInGame'):
-                fail(
-                    f'builtin: template {argument!r} is not verified in game yet '
-                    '(PLAN_EditRigidMeshes.md Phase 0 probe 7); verified: '
-                    f'{sorted(builtin_template_names(verified_only=True))}'
-                )
-            elif template.get('StadiumOnly') and not is_stadium:
-                fail(f'builtin: template {argument!r} is for stadium models only')
-            elif not template.get('Normals', True) and cs.get('NormalBufferData') is not None:
-                fail(
-                    f'builtin: template {argument!r} draws without normals, like '
-                    'stadium surfaces; export the submesh again without NormalBufferData'
-                )
-            else:
-                # Type 3 comes from the channels this submesh exported while
-                # Type 4 follows the T1 records the template emits, so the two
-                # have to agree. The emitted count is the template's own layer
-                # count capped by what host submesh 0 binds -- a 2-layer
-                # built-in legitimately degrades to the 1-layer form on a host
-                # with no specular binding.
-                bound_layers = _custom_submesh_builtin_layer_count(model, argument)
-                uv_channel_count = len(cs.get('UVChannels') or [])
-                if bound_layers != uv_channel_count:
-                    fail(
-                        f'builtin: template {argument!r} binds {bound_layers} texture '
-                        f'layer(s) on this model but the custom submesh has '
-                        f'{uv_channel_count} UV channel(s)'
-                    )
+        kind = _validate_template_source(
+            model, cs.get('TemplateSource', ''), fail,
+            uv_channel_count=len(cs.get('UVChannels') or []),
+            has_normals=cs.get('NormalBufferData') is not None,
+            is_stadium=is_stadium,
+            rigid_surfaces=rigid_surfaces,
+            layers_must_match=True,
+        )
 
         if kind in ('derived', 'builtin'):
             uv_channel_count = len(cs.get('UVChannels') or [])
@@ -1635,14 +1737,68 @@ def _donor_palette_name(model: dict) -> str:
     return ''
 
 
+def _assemble_rigid_submesh(
+    submesh_index: int, mesh_name: str, records: list[list], primitive_lists: list[bytes],
+    *, vertex_data: bytes, vertex_quantize_info: int, uv_channels: list,
+    color_channel: 'ColorChannel | None', normal_buffer: 'NormalBuffer | None',
+    faces_count: int, faces_data: bytes,
+) -> 'Submesh':
+    """Assemble already-resolved rigid geometry and display states into a
+    Submesh dataclass, ready for _build_rigid_submesh_blob. ``records`` are
+    ``[state_id, pad_bytes, shader_mode]`` lists and ``primitive_lists`` the
+    encoded (32-byte padded) list per record, ``b''`` for a record that draws
+    nothing. Fields the blob writer never reads (file-offset metadata that
+    only matters for in-place patching of donor submeshes) are left at
+    0/empty. Shared by custom submeshes and rebuilt donor rigid submeshes."""
+    if len(primitive_lists) != len(records):
+        raise ValueError(
+            f'sub{submesh_index}: {len(primitive_lists)} primitive lists for '
+            f'{len(records)} display-state records'
+        )
+    draw_states = [
+        DrawState(
+            display_state_id=state_id,
+            display_state_pad_bytes=pad,
+            prim_list_data=primitive_bytes,
+            active_descriptors=[],
+            prim_list_ptr_field_offset=0,
+            prim_list_size_field_offset=0,
+            prim_list_absolute_offset=0,
+            prim_list_length=len(primitive_bytes),
+            shader_mode_field_offset=0,
+            shader_mode=mode,
+            source_state_offset=0,
+        )
+        for (state_id, pad, mode), primitive_bytes in zip(records, primitive_lists)
+    ]
+    return Submesh(
+        submesh_index=submesh_index,
+        mesh_name=mesh_name,
+        faces_count=faces_count,
+        faces_data=faces_data,
+        face_texture_indices=b'',
+        vertex_data=vertex_data,
+        vertex_comp_count=_CUSTOM_SUBMESH_POSITION_FORMAT[0],
+        vertex_quantize_info=vertex_quantize_info,
+        uv_channels=uv_channels,
+        color_channels=[color_channel] if color_channel is not None else [],
+        draw_states=draw_states,
+        position_data_ptr_field_offset=0,
+        vertex_count_field_offset=0,
+        normal_buffer=normal_buffer,
+        source_layout_offset=0,
+        source_position_data_offset=0,
+        preserve_source_layout=False,
+    )
+
+
 def _custom_submesh_to_submesh(
     cs: 'CustomSubmesh', submesh_index: int, records: list[list],
     drawing_index: int, primitive_bytes: bytes, palette_name: str = '',
 ) -> 'Submesh':
     """Assemble a CustomSubmesh's already-resolved geometry and display
-    states into a Submesh dataclass, ready for _build_rigid_submesh_blob.
-    Fields the blob writer never reads (file-offset metadata that only
-    matters for donor submeshes) are left at 0/empty.
+    states into a Submesh dataclass, ready for _build_rigid_submesh_blob
+    (see _assemble_rigid_submesh).
 
     ``palette_name`` is the donor model's TPL name, which every UV header
     must carry: a model with no embedded TEX section resolves its textures
@@ -1665,16 +1821,16 @@ def _custom_submesh_to_submesh(
         )
         for uv in sorted(cs.uv_channels, key=lambda channel: channel.channel_index)
     ]
-    color_channels = []
+    color_channel = None
     if cs.color_data:
-        color_channels.append(ColorChannel(
+        color_channel = ColorChannel(
             channel_index=0,
             color_data=cs.color_data,
             color_faces_data=cs.color_faces_data or b'',
             comp_count=_CUSTOM_SUBMESH_COLOR_FORMATS[cs.color_quantize_info],
             quantize_info=cs.color_quantize_info,
             source_data_offset=0,
-        ))
+        )
     normal_buffer = None
     if cs.normal_data:
         normal_buffer = NormalBuffer(
@@ -1688,40 +1844,16 @@ def _custom_submesh_to_submesh(
             normal_data=cs.normal_data,
             source_header_offset=0,
         )
-    draw_states = [
-        DrawState(
-            display_state_id=state_id,
-            display_state_pad_bytes=pad,
-            prim_list_data=primitive_bytes if index == drawing_index else b'',
-            active_descriptors=[],
-            prim_list_ptr_field_offset=0,
-            prim_list_size_field_offset=0,
-            prim_list_absolute_offset=0,
-            prim_list_length=len(primitive_bytes) if index == drawing_index else 0,
-            shader_mode_field_offset=0,
-            shader_mode=mode,
-            source_state_offset=0,
-        )
-        for index, (state_id, pad, mode) in enumerate(records)
-    ]
-    return Submesh(
-        submesh_index=submesh_index,
-        mesh_name=cs.mesh_name,
-        faces_count=cs.faces_count,
-        faces_data=cs.faces_data,
-        face_texture_indices=b'',
+    return _assemble_rigid_submesh(
+        submesh_index, cs.mesh_name, records,
+        [primitive_bytes if index == drawing_index else b'' for index in range(len(records))],
         vertex_data=cs.vertex_data,
-        vertex_comp_count=_CUSTOM_SUBMESH_POSITION_FORMAT[0],
         vertex_quantize_info=cs.vertex_quantize_info,
         uv_channels=uv_channels,
-        color_channels=color_channels,
-        draw_states=draw_states,
-        position_data_ptr_field_offset=0,
-        vertex_count_field_offset=0,
+        color_channel=color_channel,
         normal_buffer=normal_buffer,
-        source_layout_offset=0,
-        source_position_data_offset=0,
-        preserve_source_layout=False,
+        faces_count=cs.faces_count,
+        faces_data=cs.faces_data,
     )
 
 
@@ -2199,6 +2331,763 @@ def PatchGPLAppendSubmesh(
 
 
 # ---------------------------------------------------------------------------
+# RigidRebuild: replace a donor rigid submesh's blob
+# (PLAN_EditRigidMeshes.md Phases 1-3)
+# ---------------------------------------------------------------------------
+# A donor rigid (CompCount 3) submesh whose edit the slot-preserving
+# Milestone 3 patchers cannot represent -- changed topology, an Object Mode
+# transform, a host-bone change that keeps the world position, or faces moved
+# between surfaces -- is rebuilt from ``Submeshes[i].RigidRebuild`` with the
+# custom-submesh serializer. The new blob goes before GPLUserData and
+# descriptor i is repointed; the old blob stays in place, unreferenced (shown
+# harmless in Dolphin, 2026-09-26). The display states are the donor's own,
+# with ShaderModeEdited / DisplayStateParamBytesEdited / texture reassignments
+# applied: only the primitive lists are re-encoded (one GX_TRIANGLES list per
+# drawing surface), plus the Type-3 index widths where a count needs it. New
+# surfaces are canonical ``T1 L0, [T1 L1], T4, T3, T6, T7`` groups appended
+# after the last donor record, so no donor state index moves.
+
+_RIGID_REBUILD_M3_FIELDS = (
+    'FacesDataEdited', 'FacesCountEdited', 'FaceTextureIndicesEdited', 'FaceSurfaceIdsEdited',
+)
+_RIGID_REBUILD_M3_CHANNEL_FIELDS = {
+    'VertexBuffer': ('VertexBufferDataEdited',),
+    'NormalBuffer': ('NormalBufferDataEdited', 'NormalFacesDataEdited'),
+    'UVChannels': ('UVChannelDataEdited', 'UVFacesDataEdited'),
+    'ColorChannels': ('ColorChannelDataEdited', 'ColorFacesDataEdited'),
+}
+_RIGID_REBUILD_NEW_SURFACE_KEY_RE = re.compile(r'^sm(\d+)_new(\d+)$')
+#: int16 position formats: GX format nibble 3 (s16), any fixed-point shift.
+_RIGID_REBUILD_POSITION_FORMAT_NIBBLE = 3
+
+
+def _rigid_rebuild_in_place_edit_fields(sub: dict) -> list[str]:
+    """Names of the in-place (Milestone 3) edit fields present on *sub*; a
+    rebuilt submesh may carry none of them (decision 1)."""
+    present = [field for field in _RIGID_REBUILD_M3_FIELDS if sub.get(field) is not None]
+    for container, fields in _RIGID_REBUILD_M3_CHANNEL_FIELDS.items():
+        entries = sub.get(container)
+        if isinstance(entries, dict):
+            entries = [entries]
+        for entry in entries or []:
+            present += [f'{container}.{field}' for field in fields if entry.get(field) is not None]
+    return present
+
+
+def _rigid_rebuild_drawable_surfaces(states: list) -> dict[str, int]:
+    """``{SurfaceId: state index}`` of every donor record that can draw: it
+    inherits a Type-3 attribute layout and a Type-7 shader (E5)."""
+    return {
+        state['SurfaceId']: index
+        for index, state in enumerate(states)
+        if state.get('SurfaceId')
+        and _custom_submesh_effective_state(states, index, 3) is not None
+        and _custom_submesh_effective_state(states, index, 7) is not None
+    }
+
+
+def _facial_pose_submeshes(model: dict) -> set[int]:
+    """Submesh indices a ptr7 facial object references (their pose data holds
+    donor vertex references, so their topology is fixed)."""
+    objects = (model.get('FacialPoseData') or {}).get('Objects') or []
+    return {
+        int(entry['SubmeshIndex']) for entry in objects
+        if isinstance(entry, dict) and entry.get('SubmeshIndex') is not None
+    }
+
+
+def _validate_rigid_rebuilds(model: dict) -> None:
+    """PLAN_EditRigidMeshes.md Phase 1 step 3: reject an invalid
+    ``Submeshes[i].RigidRebuild`` before any DAT/DOL write. Each error names
+    ``sub<i>``."""
+    submeshes = model.get('Submeshes') or []
+    rebuilt = [(index, sub) for index, sub in enumerate(submeshes) if sub.get('RigidRebuild')]
+    if not rebuilt:
+        return
+    if not model.get('UseHammerspace'):
+        raise ValueError('RigidRebuild requires UseHammerspace; re-export the model from Blender')
+
+    errors: list[str] = []
+    use_b64 = model.get('UseBase64', True)
+    bones = _bones_by_id(model)
+    rigid_surfaces = _custom_submesh_rigid_surfaces(model)
+    is_stadium = model.get('ChunkNumber') in STADIUM_CHUNKS
+    facial_submeshes = _facial_pose_submeshes(model)
+    additional_names = {
+        entry.get('TextureFileName') for entry in model.get('AdditionalTextureDescriptors') or []
+    }
+
+    def _u16_count(raw: bytes) -> int:
+        return len(raw) // 2
+
+    for index, sub in rebuilt:
+        rebuild = sub['RigidRebuild']
+
+        def fail(message: str, _index=index) -> None:
+            errors.append(f'sub{_index}: RigidRebuild {message}')
+
+        if not isinstance(rebuild, dict):
+            fail('must be an object')
+            continue
+
+        vb = sub.get('VertexBuffer') or {}
+        comp_count = vb.get('VertexBufferCompCount')
+        if comp_count != 3:
+            fail(f'needs a rigid donor submesh (VertexBufferCompCount 3), got {comp_count!r}')
+        quantize = vb.get('VertexBufferQuantizeInfo')
+        if not isinstance(quantize, int) or isinstance(quantize, bool) \
+                or (quantize >> 4) != _RIGID_REBUILD_POSITION_FORMAT_NIBBLE:
+            fail(
+                f'donor position format {quantize!r} is not int16 (high nibble '
+                f'{_RIGID_REBUILD_POSITION_FORMAT_NIBBLE}); only int16 rigid positions can be rebuilt'
+            )
+            quantize = _CUSTOM_SUBMESH_POSITION_FORMAT[1]
+        position_stride = 3 * _vb_comp_size(quantize)
+
+        in_place = _rigid_rebuild_in_place_edit_fields(sub)
+        if in_place:
+            fail('cannot be combined with in-place edit fields on the same submesh: ' + ', '.join(in_place))
+        if index in facial_submeshes:
+            fail('is not allowed on a submesh with facial poses (ptr7): the pose data references donor vertices')
+
+        host_bone_id = rebuild.get('HostBoneId')
+        if not isinstance(host_bone_id, int) or isinstance(host_bone_id, bool) or not (0 <= host_bone_id <= 0xFFFF):
+            fail(f'HostBoneId {host_bone_id!r} must be a uint16 bone index')
+        else:
+            owners = sorted(
+                bone_id for bone_id, bone in bones.items() if _effective_geo_id_raw(bone) == index
+            )
+            if host_bone_id not in bones:
+                fail(f'host bone {host_bone_id} does not exist in BoneHierarchy')
+            elif owners != [host_bone_id]:
+                fail(
+                    f'HostBoneId {host_bone_id} does not match the effective owner bone(s) '
+                    f'{owners} of submesh {index} (GeoIdEdited where set, else GeoIdRaw)'
+                )
+
+        faces_count = rebuild.get('FacesCount')
+        if not isinstance(faces_count, int) or isinstance(faces_count, bool) or not (1 <= faces_count <= 0xFFFF):
+            fail(f'FacesCount {faces_count!r} must be a uint16 value of at least 1')
+            faces_count = None
+
+        vertex_bytes = _decode(rebuild['VertexBufferData'], use_b64) if rebuild.get('VertexBufferData') else b''
+        vertex_count = None
+        if not vertex_bytes or len(vertex_bytes) % position_stride:
+            fail(f'VertexBufferData length {len(vertex_bytes)} is not a whole number of {position_stride}-byte positions')
+        else:
+            vertex_count = len(vertex_bytes) // position_stride
+            if vertex_count > 0xFFFF:
+                fail(f'vertex count {vertex_count} exceeds the uint16 index range')
+
+        if faces_count is not None:
+            faces_bytes = _decode(rebuild['FacesData'], use_b64) if rebuild.get('FacesData') is not None else b''
+            if len(faces_bytes) != faces_count * 6:
+                fail(
+                    f'FacesData length {len(faces_bytes)} does not match FacesCount '
+                    f'{faces_count} (expected {faces_count * 6} bytes)'
+                )
+            elif vertex_count is not None:
+                for vertex_index in struct.unpack(f'>{len(faces_bytes) // 2}H', faces_bytes):
+                    if vertex_index >= vertex_count:
+                        fail(f'face index {vertex_index} is out of range for {vertex_count} vertices')
+                        break
+
+        def _check_loop_buffer(label: str, data_field, faces_field, stride: int) -> None:
+            _validate_custom_submesh_indexed_array(fail, label, use_b64, data_field, faces_field, stride)
+            if faces_count is not None and faces_field is not None:
+                loops = _u16_count(_decode(faces_field, use_b64))
+                if loops != faces_count * 3:
+                    fail(f'{label} face-index buffer holds {loops} loops, expected {faces_count * 3}')
+
+        donor_normals = sub.get('NormalBuffer') if isinstance(sub.get('NormalBuffer'), dict) else None
+        if donor_normals and donor_normals.get('NormalBufferData'):
+            if rebuild.get('NormalBufferData') is None or rebuild.get('NormalFacesData') is None:
+                fail('must carry NormalBufferData and NormalFacesData: the donor submesh has a NormalBuffer')
+            else:
+                stride = int(donor_normals.get('NormalBufferCompCount', 3)) * _vb_comp_size(
+                    int(donor_normals.get('NormalBufferQuantizeInfo', _CUSTOM_SUBMESH_NORMAL_FORMAT[1]))
+                )
+                _check_loop_buffer('NormalBufferData', rebuild.get('NormalBufferData'), rebuild.get('NormalFacesData'), stride)
+        elif rebuild.get('NormalBufferData') is not None or rebuild.get('NormalFacesData') is not None:
+            fail('carries normals but the donor submesh has no NormalBuffer')
+
+        donor_colors = sub.get('ColorChannels') or []
+        if donor_colors:
+            if rebuild.get('ColorChannelData') is None or rebuild.get('ColorFacesData') is None:
+                fail('must carry ColorChannelData and ColorFacesData: the donor submesh has a color channel')
+            else:
+                stride = _color_entry_size(int(donor_colors[0].get('ColorChannelQuantizeInfo', 48)))
+                _check_loop_buffer('ColorChannelData', rebuild.get('ColorChannelData'), rebuild.get('ColorFacesData'), stride)
+        elif rebuild.get('ColorChannelData') is not None or rebuild.get('ColorFacesData') is not None:
+            fail('carries colors but the donor submesh has no color channel')
+
+        donor_uv_by_index = {int(uv['UVChannelIndex']): uv for uv in sub.get('UVChannels') or []}
+        rebuild_uv_by_index = {}
+        for uv in rebuild.get('UVChannels') or []:
+            channel = uv.get('UVChannelIndex')
+            if not isinstance(channel, int) or channel in rebuild_uv_by_index:
+                fail(f'UVChannels has a missing or repeated UVChannelIndex {channel!r}')
+                continue
+            rebuild_uv_by_index[channel] = uv
+        if set(rebuild_uv_by_index) != set(donor_uv_by_index):
+            fail(
+                f'UVChannels {sorted(rebuild_uv_by_index)} must be the donor channel set '
+                f'{sorted(donor_uv_by_index)}'
+            )
+        for channel, uv in rebuild_uv_by_index.items():
+            donor_uv = donor_uv_by_index.get(channel)
+            if donor_uv is None:
+                continue
+            stride = int(donor_uv.get('UVChannelCompCount', 2)) * _vb_comp_size(
+                int(donor_uv.get('UVChannelQuantizeInfo', _CUSTOM_SUBMESH_UV_FORMAT[1]))
+            )
+            _check_loop_buffer(f'UVChannels[{channel}]', uv.get('UVChannelData'), uv.get('UVFacesData'), stride)
+
+        states = sub.get('DisplayStates') or []
+        drawable = _rigid_rebuild_drawable_surfaces(states)
+        table = rebuild.get('FaceSurfaceTable')
+        if not isinstance(table, list) or not table or not all(isinstance(key, str) and key for key in table):
+            fail('FaceSurfaceTable must be a non-empty list of surface keys')
+            table = []
+        elif len(set(table)) != len(table):
+            fail('FaceSurfaceTable lists a surface key twice')
+
+        new_surfaces = rebuild.get('NewSurfaces') or []
+        if not isinstance(new_surfaces, list) or not all(isinstance(entry, dict) for entry in new_surfaces):
+            fail('NewSurfaces must be a list of objects')
+            new_surfaces = []
+        new_keys = [entry.get('SurfaceKey') for entry in new_surfaces]
+        if len(set(new_keys)) != len(new_keys):
+            fail('NewSurfaces keys are not unique')
+
+        for key in table:
+            if key in drawable or key in new_keys:
+                continue
+            fail(
+                f'FaceSurfaceTable key {key!r} is neither a drawing surface of this submesh '
+                f'({sorted(drawable)}) nor a NewSurfaces key'
+            )
+
+        indices_raw = _decode(rebuild['FaceSurfaceIndices'], use_b64) if rebuild.get('FaceSurfaceIndices') is not None else b''
+        used_keys: set[str] = set()
+        if len(indices_raw) % 2:
+            fail(f'FaceSurfaceIndices length {len(indices_raw)} is not a whole number of uint16 values')
+        else:
+            indices = struct.unpack(f'>{len(indices_raw) // 2}H', indices_raw)
+            if faces_count is not None and len(indices) != faces_count:
+                fail(f'FaceSurfaceIndices holds {len(indices)} entries for FacesCount {faces_count}')
+            for value in indices:
+                if value >= len(table):
+                    fail(f'FaceSurfaceIndices value {value} is out of range for {len(table)} table entries')
+                    break
+                used_keys.add(table[value])
+
+        for entry in new_surfaces:
+            key = entry.get('SurfaceKey')
+
+            def fail_surface(message: str, _key=key) -> None:
+                fail(f'new surface {_key!r}: {message}')
+
+            match = _RIGID_REBUILD_NEW_SURFACE_KEY_RE.match(str(key))
+            if match is None or int(match.group(1)) != index:
+                fail_surface(f'key must match sm{index}_new<K>')
+            if key not in table:
+                fail_surface('is not listed in FaceSurfaceTable')
+            elif key not in used_keys:
+                fail_surface('is used by no face')
+            _validate_template_source(
+                model, entry.get('TemplateSource', ''), fail_surface,
+                uv_channel_count=len(donor_uv_by_index),
+                has_normals=bool(donor_normals and donor_normals.get('NormalBufferData')),
+                is_stadium=is_stadium,
+                rigid_surfaces=rigid_surfaces,
+                layers_must_match=False,
+            )
+            assignment = entry.get('TextureAssignment') or {}
+            donor_index = assignment.get('DonorTextureIndex')
+            additional_name = assignment.get('AdditionalTextureFileName')
+            if (donor_index is None) == (additional_name is None):
+                fail_surface('TextureAssignment must set exactly one of DonorTextureIndex or AdditionalTextureFileName')
+            elif donor_index is not None and not (
+                isinstance(donor_index, int) and not isinstance(donor_index, bool) and 0 <= donor_index <= 0xFFFF
+            ):
+                fail_surface(f'TextureAssignment.DonorTextureIndex {donor_index!r} must be a uint16 texture index')
+            elif additional_name is not None and additional_name not in additional_names:
+                fail_surface(
+                    f'TextureAssignment.AdditionalTextureFileName {additional_name!r} has no '
+                    'AdditionalTextureDescriptors entry'
+                )
+            strength = entry.get('SpecularStrength')
+            if strength is not None and not (
+                isinstance(strength, int) and not isinstance(strength, bool) and 0 <= strength <= 255
+            ):
+                fail_surface(f'SpecularStrength {strength!r} must be an integer 0..255')
+
+        reasons = rebuild.get('Reason')
+        if reasons is not None and not (
+            isinstance(reasons, list) and all(isinstance(reason, str) for reason in reasons)
+        ):
+            fail('Reason must be a list of strings')
+
+    if errors:
+        raise ValueError('; '.join(errors))
+
+
+def _parse_rigid_rebuild(sub: dict, use_b64: bool) -> 'RigidRebuild | None':
+    """Decode ``Submeshes[i].RigidRebuild`` (validated by
+    ``_validate_rigid_rebuilds``) into its dataclass; None when absent."""
+    raw = sub.get('RigidRebuild')
+    if not raw:
+        return None
+
+    def _optional(field: str) -> bytes | None:
+        return _decode(raw[field], use_b64) if raw.get(field) is not None else None
+
+    new_surfaces = []
+    for entry in raw.get('NewSurfaces') or []:
+        assignment = entry.get('TextureAssignment') or {}
+        new_surfaces.append(RigidRebuildNewSurface(
+            surface_key=entry['SurfaceKey'],
+            material_name=entry.get('MaterialName', entry['SurfaceKey']),
+            template_source=entry['TemplateSource'],
+            texture_assignment=CustomSubmeshTextureAssignment(
+                donor_texture_index=assignment.get('DonorTextureIndex'),
+                additional_texture_file_name=assignment.get('AdditionalTextureFileName'),
+            ),
+            specular_strength=entry.get('SpecularStrength'),
+        ))
+    indices_raw = _optional('FaceSurfaceIndices') or b''
+    return RigidRebuild(
+        host_bone_id=int(raw['HostBoneId']),
+        vertex_data=_decode(raw['VertexBufferData'], use_b64),
+        normal_data=_optional('NormalBufferData'),
+        normal_faces_data=_optional('NormalFacesData'),
+        color_data=_optional('ColorChannelData'),
+        color_faces_data=_optional('ColorFacesData'),
+        uv_channels=[
+            CustomSubmeshUVChannel(
+                channel_index=int(uv['UVChannelIndex']),
+                uv_data=_decode(uv['UVChannelData'], use_b64),
+                uv_faces_data=_decode(uv['UVFacesData'], use_b64),
+            )
+            for uv in raw.get('UVChannels') or []
+        ],
+        faces_count=int(raw['FacesCount']),
+        faces_data=_decode(raw['FacesData'], use_b64),
+        face_surface_table=list(raw['FaceSurfaceTable']),
+        face_surface_indices=struct.unpack(f'>{len(indices_raw) // 2}H', indices_raw),
+        new_surfaces=new_surfaces,
+        reasons=list(raw.get('Reason') or []),
+    )
+
+
+def _rigid_rebuild_face_vertices(rebuild: 'RigidRebuild') -> list[list[dict]]:
+    """Per-triangle GX vertex dicts from the rebuild's per-loop index buffers
+    (loop ``3 * face + corner`` of each buffer belongs to that face corner,
+    as in the donor export)."""
+    def _indices(raw: bytes | None):
+        return struct.unpack(f'>{len(raw) // 2}H', raw) if raw else None
+
+    positions = _indices(rebuild.faces_data)
+    normals = _indices(rebuild.normal_faces_data)
+    colors = _indices(rebuild.color_faces_data)
+    uvs = {
+        f'texture{uv.channel_index}': _indices(uv.uv_faces_data) for uv in rebuild.uv_channels
+    }
+    faces = []
+    for face in range(rebuild.faces_count):
+        triangle = []
+        for corner in range(3):
+            flat = face * 3 + corner
+            vertex = {'position': positions[flat]}
+            if normals is not None:
+                vertex['lighting'] = normals[flat]
+            if colors is not None:
+                vertex['color0'] = colors[flat]
+            for key, indices in uvs.items():
+                if indices is not None:
+                    vertex[key] = indices[flat]
+            triangle.append(vertex)
+        faces.append(triangle)
+    return faces
+
+
+def _rigid_rebuild_donor_records(sub: dict) -> list[list]:
+    """The donor display states as mutable ``[state_id, pad_bytes, mode]``
+    records, with ShaderModeEdited / DisplayStateParamBytesEdited (and the
+    Type-1 rebinding apply_desired_texture_assignments wrote) applied."""
+    return [
+        [
+            int(state['DisplayStateId']),
+            bytes.fromhex(state.get('DisplayStateParamBytesEdited') or state.get('DisplayStateParamBytes', '000000')),
+            state.get('ShaderModeEdited') or state.get('ShaderMode', ''),
+        ]
+        for state in sub.get('DisplayStates') or []
+    ]
+
+
+def _rigid_rebuild_entry_counts(sub: dict, rebuild: 'RigidRebuild', color: 'ColorChannel | None') -> dict[str, int]:
+    """Entries per vertex attribute the rebuild carries, keyed like Type-3
+    descriptors (``position``, ``lighting``, ``color0``, ``texture<n>``)."""
+    vb = sub['VertexBuffer']
+    counts = {'position': len(rebuild.vertex_data) // (3 * _vb_comp_size(int(vb['VertexBufferQuantizeInfo'])))}
+    if rebuild.normal_data is not None:
+        donor_normals = sub['NormalBuffer']
+        stride = int(donor_normals.get('NormalBufferCompCount', 3)) * _vb_comp_size(int(donor_normals['NormalBufferQuantizeInfo']))
+        counts['lighting'] = len(rebuild.normal_data) // stride
+    if color is not None:
+        counts['color0'] = len(color.color_data) // _color_entry_size(color.quantize_info)
+    donor_uv_by_index = {int(uv['UVChannelIndex']): uv for uv in sub.get('UVChannels') or []}
+    for uv in rebuild.uv_channels:
+        donor_uv = donor_uv_by_index[uv.channel_index]
+        stride = int(donor_uv.get('UVChannelCompCount', 2)) * _vb_comp_size(int(donor_uv['UVChannelQuantizeInfo']))
+        counts[f'texture{uv.channel_index}'] = len(uv.uv_data) // stride
+    return counts
+
+
+def _rigid_rebuild_widen_type3(sub_index: int, records: list[list], counts: dict[str, int]) -> dict[str, int]:
+    """Widen every donor Type-3 index field whose attribute now has more
+    entries than its width addresses (E5: u8 to u16 only where counts need
+    it), in place. Returns the final index size per attribute key. A Type 3
+    that draws an attribute the rebuild does not carry is an error."""
+    final_sizes = {key: _custom_submesh_index_size_for(count) for key, count in counts.items()}
+    for record in records:
+        if record[0] != 3:
+            continue
+        descriptors = _custom_submesh_type3_descriptors(int(record[2], 16))
+        missing = [d['key'] for d in descriptors if d['key'] not in counts]
+        if missing:
+            raise ValueError(
+                f"sub{sub_index}: donor Type-3 {record[2]} draws {', '.join(missing)}, which the "
+                'RigidRebuild does not carry'
+            )
+        upgraded = {
+            d['key'] for d in descriptors
+            if d['index_size'] == 1 and _custom_submesh_index_size_for(counts[d['key']]) == 2
+        }
+        if upgraded:
+            widened = drawlist.patchType3Setting(int(record[2], 16), upgraded)
+            _slogger.info(
+                f'[RigidRebuild] sub{sub_index}: Type-3 {record[2]} -> {widened:08x}, '
+                f"{', '.join(sorted(upgraded))} widened to uint16 indices",
+                source='hammerspace.main',
+            )
+            record[2] = f'{widened:08x}'
+        for descriptor in descriptors:
+            final_sizes[descriptor['key']] = max(final_sizes[descriptor['key']], descriptor['index_size'])
+    return final_sizes
+
+
+def _rigid_rebuild_new_surface_group(
+    model: dict, sub_index: int, surface: 'RigidRebuildNewSurface', rigid_surfaces: dict,
+    attribute_sizes: dict[str, int], host_uv_count: int,
+    texture_index_by_file_name: dict[str, int] | None,
+) -> list[list]:
+    """The canonical record group (E9) appended for one new surface: Type
+    1/6/7 from the template's effective state, Type 4 from the layers the
+    group binds, Type 3 generated from the rebuilt submesh's attribute set
+    and index widths, layer 0 rebound to the resolved texture, specular
+    strength applied when given. The last record is the drawing Type 7."""
+    kind, _sep, argument = surface.template_source.partition(':')
+    if kind == 'rigid':
+        states, surface_index = rigid_surfaces[argument]
+        records = _custom_submesh_derived_records(states, states[surface_index]['SurfaceId'])
+    elif kind == 'derived':
+        submesh0 = (model.get('Submeshes') or [None])[0] or {}
+        records = _custom_submesh_derived_records(submesh0.get('DisplayStates') or [], argument)
+    elif kind == 'builtin':
+        records = _custom_submesh_builtin_records(model, argument)
+    else:
+        raise ValueError(f"sub{sub_index}: new surface '{surface.surface_key}' has malformed TemplateSource {surface.template_source!r}")
+
+    # Bind no more layers than the host submesh has UV channels, then let
+    # Type 4 follow the T1 records actually emitted.
+    layers = [record for record in records if record[0] == 1]
+    records = [
+        record for record in records
+        if record[0] != 1 or _custom_submesh_texture_layer(record[2])[0] < host_uv_count
+    ]
+    layer_count = sum(1 for record in records if record[0] == 1)
+    if layer_count == 0:
+        raise ValueError(f"sub{sub_index}: new surface '{surface.surface_key}' binds no texture layer")
+    layout = [{'key': 'position', 'index_size': attribute_sizes['position']}]
+    for key in ('lighting', 'color0'):
+        if key in attribute_sizes:
+            layout.append({'key': key, 'index_size': attribute_sizes[key]})
+    for layer in range(layer_count):
+        layout.append({'key': f'texture{layer}', 'index_size': attribute_sizes[f'texture{layer}']})
+    for record in records:
+        if record[0] == 4:
+            record[2] = _CUSTOM_SUBMESH_TYPE4_BY_UV_COUNT[layer_count]
+        elif record[0] == 3:
+            record[2] = f'{_custom_submesh_type3_setting(layout):08x}'
+    drawing_index = len(records) - 1
+    if records[drawing_index][0] != 7:
+        raise ValueError(f"sub{sub_index}: new surface '{surface.surface_key}' template does not end in a Type-7 record")
+
+    texture_index = surface.texture_assignment.donor_texture_index
+    if texture_index is None:
+        file_name = surface.texture_assignment.additional_texture_file_name
+        mapping = texture_index_by_file_name or {}
+        if file_name not in mapping:
+            raise ValueError(
+                f"sub{sub_index}: new surface '{surface.surface_key}': no resolved TEX index for "
+                f'AdditionalTextureFileName {file_name!r}; the TEX plan must be built before the GPL'
+            )
+        texture_index = mapping[file_name]
+    _custom_submesh_patch_layer0_texture(records, drawing_index, texture_index)
+    if surface.specular_strength is not None and not _custom_submesh_patch_specular_strength(
+        records, drawing_index, surface.specular_strength,
+    ):
+        _slogger.info(
+            f"[RigidRebuild] sub{sub_index}: new surface '{surface.surface_key}' template "
+            f'{surface.template_source} has no specular Type-7 shader; SpecularStrength ignored',
+            source='hammerspace.main',
+        )
+    del layers
+    return records
+
+
+def _gpl_blob_color_array(gpl_bytes: bytes, submesh_index: int) -> tuple[int, int, bytes] | None:
+    """``(quantize_info, comp_count, payload)`` of a GPL blob's colour array,
+    or None when the blob has none. Rigid Mii submeshes whose Type 3 has no
+    ``color0`` still point at a one-entry RGB565 array that the export does
+    not list as a ColorChannel; the rebuild carries it over unchanged."""
+    _magic, _len, _ptr, count, desc_ptr = struct.unpack_from('>5I', gpl_bytes, 0)
+    if submesh_index >= count:
+        return None
+    start, _name_ptr = struct.unpack_from('>II', gpl_bytes, desc_ptr + submesh_index * 8)
+    color_header = struct.unpack_from('>I', gpl_bytes, start + 0x04)[0]
+    if not color_header:
+        return None
+    pointer, entries, quantize_info, comp_count = struct.unpack_from('>IHBB', gpl_bytes, start + color_header)
+    if not pointer or not entries:
+        return None
+    payload = gpl_bytes[start + pointer:start + pointer + entries * _color_entry_size(quantize_info)]
+    return quantize_info, comp_count, payload
+
+
+def _rigid_rebuild_to_submesh(
+    model: dict, sub_index: int, rebuild: 'RigidRebuild', rigid_surfaces: dict,
+    texture_index_by_file_name: dict[str, int] | None = None,
+    donor_color_array: tuple[int, int, bytes] | None = None,
+) -> 'Submesh':
+    """PLAN_EditRigidMeshes.md Phase 2 step 1: assemble a rebuilt donor rigid
+    submesh -- donor formats, donor states, one re-encoded GX_TRIANGLES list
+    per drawing surface, appended groups for new surfaces -- into a Submesh
+    ready for _build_rigid_submesh_blob.
+
+    *donor_color_array* is the donor blob's colour array for a submesh whose
+    export lists no ColorChannel (see _gpl_blob_color_array)."""
+    sub = model['Submeshes'][sub_index]
+    vb = sub['VertexBuffer']
+    states = sub.get('DisplayStates') or []
+    label = f'sub{sub_index}'
+
+    color_channel = None
+    if rebuild.color_data is not None:
+        donor_color = sub['ColorChannels'][0]
+        color_channel = ColorChannel(
+            channel_index=int(donor_color.get('ColorChannelIndex', 0)),
+            color_data=rebuild.color_data,
+            color_faces_data=rebuild.color_faces_data or b'',
+            comp_count=int(donor_color['ColorChannelCompCount']),
+            quantize_info=int(donor_color['ColorChannelQuantizeInfo']),
+            source_data_offset=0,
+        )
+    elif donor_color_array is not None:
+        quantize_info, comp_count, payload = donor_color_array
+        color_channel = ColorChannel(
+            channel_index=0, color_data=payload, color_faces_data=b'',
+            comp_count=comp_count, quantize_info=quantize_info, source_data_offset=0,
+        )
+    normal_buffer = None
+    if rebuild.normal_data is not None:
+        donor_normals = sub['NormalBuffer']
+        normal_buffer = NormalBuffer(
+            normal_data_ptr_field_offset=0,
+            normal_count_field_offset=0,
+            normal_buffer_offset=0,
+            normal_buffer_length=len(rebuild.normal_data),
+            comp_count=int(donor_normals.get('NormalBufferCompCount', 3)),
+            quantize_info=int(donor_normals['NormalBufferQuantizeInfo']),
+            ambient_pct=float(donor_normals.get('NormalAmbientPct', 0.0)),
+            normal_data=rebuild.normal_data,
+            source_header_offset=0,
+        )
+    donor_uv_by_index = {int(uv['UVChannelIndex']): uv for uv in sub.get('UVChannels') or []}
+    uv_channels = []
+    for uv in sorted(rebuild.uv_channels, key=lambda channel: channel.channel_index):
+        donor_uv = donor_uv_by_index[uv.channel_index]
+        uv_channels.append(UVChannel(
+            channel_index=uv.channel_index,
+            palette_name=donor_uv.get('PaletteName', ''),
+            texture_index=int(donor_uv.get('TextureIndex', 0)),
+            wrap_s=int(donor_uv.get('WrapS', 0)),
+            wrap_t=int(donor_uv.get('WrapT', 0)),
+            uv_data=uv.uv_data,
+            uv_faces_data=uv.uv_faces_data,
+            comp_count=int(donor_uv.get('UVChannelCompCount', 2)),
+            quantize_info=int(donor_uv['UVChannelQuantizeInfo']),
+            uv_data_ptr_field_offset=0,
+            uv_count_field_offset=0,
+            source_data_offset=0,
+        ))
+
+    # Donor records, with index widths widened where the new counts need it.
+    records = _rigid_rebuild_donor_records(sub)
+    counts = _rigid_rebuild_entry_counts(sub, rebuild, color_channel if rebuild.color_data is not None else None)
+    attribute_sizes = _rigid_rebuild_widen_type3(sub_index, records, counts)
+
+    # Surface key -> drawing record index: donor surfaces by SurfaceId, new
+    # surfaces by their appended group's Type 7.
+    drawing_index_by_key = {
+        state['SurfaceId']: index for index, state in enumerate(states) if state.get('SurfaceId')
+    }
+    for surface in rebuild.new_surfaces:
+        group = _rigid_rebuild_new_surface_group(
+            model, sub_index, surface, rigid_surfaces, attribute_sizes,
+            len(rebuild.uv_channels), texture_index_by_file_name,
+        )
+        records.extend(group)
+        drawing_index_by_key[surface.surface_key] = len(records) - 1
+        _slogger.info(
+            f"[RigidRebuild] {label}: appended new surface '{surface.surface_key}' "
+            f"('{surface.material_name}', template {surface.template_source}) as record {len(records) - 1}",
+            source='hammerspace.main',
+        )
+
+    # Route every triangle to its surface's record and encode one list per
+    # drawing record; an emptied donor surface keeps its record with no list.
+    faces = _rigid_rebuild_face_vertices(rebuild)
+    faces_by_record: dict[int, list] = {}
+    for face, table_index in zip(faces, rebuild.face_surface_indices):
+        faces_by_record.setdefault(drawing_index_by_key[rebuild.face_surface_table[table_index]], []).append(face)
+    primitive_lists = []
+    for record_index, record in enumerate(records):
+        record_faces = faces_by_record.get(record_index)
+        if not record_faces:
+            primitive_lists.append(b'')
+            continue
+        setting = _custom_submesh_active_type3(records, record_index)
+        if setting is None:
+            raise ValueError(f'{label}: record {record_index} draws faces but has no active Type-3 layout')
+        descriptors = _custom_submesh_type3_descriptors(setting)
+        drawn = {descriptor['key'] for descriptor in descriptors}
+        undrawn = sorted(set(record_faces[0][0]) - drawn)
+        if undrawn:
+            _slogger.warning(
+                f"[RigidRebuild] {label}: record {record_index} draws without {', '.join(undrawn)} "
+                '(its Type-3 layout lacks the attribute), so those values are not used there',
+                source='hammerspace.main',
+            )
+        restricted = [[{key: vertex.get(key, 0) for key in drawn} for vertex in face] for face in record_faces]
+        raw = drawlist.encodeDrawList(restricted, descriptors) + b'\x00'
+        primitive_lists.append(raw + b'\x00' * ((-len(raw)) % 32))
+
+    donor_faces = {index: int(state.get('FaceCount') or 0) for index, state in enumerate(states)}
+    key_by_record = {value: key for key, value in drawing_index_by_key.items()}
+    summary = ', '.join(
+        f"{key_by_record.get(index, f'record {index}')}: "
+        f'{donor_faces.get(index, 0)} -> {len(faces_by_record.get(index, []))} faces'
+        for index in sorted(set(faces_by_record) | {k for k, v in donor_faces.items() if v})
+    )
+    _slogger.info(
+        f"[RigidRebuild] {label} '{sub.get('MeshName', '')}': {counts['position']} vertices, "
+        f"{rebuild.faces_count} faces, host bone {rebuild.host_bone_id}"
+        + (f" ({', '.join(rebuild.reasons)})" if rebuild.reasons else '') + f'; {summary}',
+        source='hammerspace.main',
+    )
+    return _assemble_rigid_submesh(
+        sub_index, sub.get('MeshName', ''), records, primitive_lists,
+        vertex_data=rebuild.vertex_data,
+        vertex_quantize_info=int(vb['VertexBufferQuantizeInfo']),
+        uv_channels=uv_channels,
+        color_channel=color_channel,
+        normal_buffer=normal_buffer,
+        faces_count=rebuild.faces_count,
+        faces_data=rebuild.faces_data,
+    )
+
+
+def _splice_blobs_before_user_data(
+    gpl_bytes: bytes, blobs: list[tuple[int, bytes, int]], donor_gpl_length: int | None,
+) -> tuple[bytes, int]:
+    """Insert *blobs* (``(submesh_index, blob_bytes, name_off)``) before
+    GPLUserData, each on a 32-byte boundary, and repoint their descriptors
+    (E4). Nothing else moves: every pointer inside a blob is blob-relative,
+    and the old blobs stay where they are. A payload PatchGPLUVRebuild
+    appended past *donor_gpl_length* keeps its distance to the blobs that
+    address it (GPLUserData's old spot is left as a zeroed gap, as in
+    PatchGPLAppendSubmesh). Returns ``(gpl, length)`` where ``length`` is the
+    whole new section, which has no appended tail any more."""
+    _magic, _user_data_len, user_data_ptr, count, desc_ptr = struct.unpack_from('>5I', gpl_bytes, 0)
+    tail_start = len(gpl_bytes) if donor_gpl_length is None else donor_gpl_length
+    insertion_point = user_data_ptr if user_data_ptr else tail_start
+    if not (desc_ptr <= insertion_point <= tail_start <= len(gpl_bytes)):
+        raise ValueError('GPL section layout is not in the shape the rigid rebuild expects')
+    user_data_region = bytes(gpl_bytes[insertion_point:tail_start])
+    appended_tail = bytes(gpl_bytes[tail_start:])
+    out = bytearray(gpl_bytes[:insertion_point])
+    if appended_tail:
+        out += b'\x00' * len(user_data_region) + appended_tail
+    for submesh_index, blob, name_off in blobs:
+        if submesh_index >= count:
+            raise ValueError(f'submesh {submesh_index} is outside the GPL descriptor table ({count} entries)')
+        out += b'\x00' * ((-len(out)) % 32)
+        blob_offset = len(out)
+        out += blob
+        struct.pack_into('>II', out, desc_ptr + submesh_index * 8, blob_offset, blob_offset + name_off)
+    out += b'\x00' * ((-len(out)) % 32)
+    if user_data_ptr:
+        struct.pack_into('>I', out, 0x08, len(out))
+    out += user_data_region
+    return bytes(out), len(out)
+
+
+def PatchGPLReplaceRigidSubmeshes(
+    gpl_bytes: bytes, model: dict, parsed: 'SluggieParsed',
+    texture_index_by_file_name: dict[str, int] | None = None,
+    donor_gpl_length: int | None = None,
+) -> tuple[bytes, int]:
+    """PLAN_EditRigidMeshes.md Phase 2 step 2: rebuild every donor submesh
+    that carries a RigidRebuild as a fresh blob before GPLUserData and point
+    its descriptor at it; the old blob stays unreferenced. Returns the new
+    section and its length (the value to hand PatchGPLAppendSubmesh as
+    ``donor_gpl_length``, since any UV-rebuild tail is folded in)."""
+    rebuilt = [sub for sub in parsed.mesh.submeshes if sub.rigid_rebuild is not None]
+    if not rebuilt:
+        return gpl_bytes, (len(gpl_bytes) if donor_gpl_length is None else donor_gpl_length)
+    rigid_surfaces = _custom_submesh_rigid_surfaces(model)
+    blobs = []
+    for sub in rebuilt:
+        donor_color = None
+        if sub.rigid_rebuild.color_data is None:
+            donor_color = _gpl_blob_color_array(gpl_bytes, sub.submesh_index)
+            if donor_color is not None:
+                _slogger.info(
+                    f'[RigidRebuild] sub{sub.submesh_index}: carrying the donor colour array '
+                    f'({len(donor_color[2]) // _color_entry_size(donor_color[0])} entries, '
+                    'not listed in the export) into the rebuilt blob',
+                    source='hammerspace.main',
+                )
+        new_sub = _rigid_rebuild_to_submesh(
+            model, sub.submesh_index, sub.rigid_rebuild, rigid_surfaces,
+            texture_index_by_file_name, donor_color,
+        )
+        blob, name_off = _build_rigid_submesh_blob(new_sub)
+        blobs.append((sub.submesh_index, blob, name_off))
+    out, length = _splice_blobs_before_user_data(gpl_bytes, blobs, donor_gpl_length)
+    for submesh_index, blob, _name_off in blobs:
+        _slogger.info(
+            f'[GPL] replaced submesh {submesh_index} with a {len(blob):,}-byte rebuilt blob; '
+            'the donor blob stays in place unreferenced',
+            source='hammerspace.main',
+        )
+    return out, length
+
+
+# ---------------------------------------------------------------------------
 # GPL build result
 # ---------------------------------------------------------------------------
 
@@ -2426,6 +3315,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
             preserve_source_layout         = not (
                 _geometry_arrays_edited or _uv_primitive_lists_rebuilt
             ),
+            rigid_rebuild                  = _parse_rigid_rebuild(sub, use_b64),
         ))
 
     mesh_data = MeshData(
@@ -5330,6 +6220,12 @@ def BuildModelBlock(
     _validate_bone_hierarchy_edited(model)
     _validate_skin_bones(model)
     _validate_custom_submeshes(model)
+    _validate_rigid_rebuilds(model)
+    rigid_rebuild_indices = [
+        index for index, sub in enumerate(model.get('Submeshes') or []) if sub.get('RigidRebuild')
+    ]
+    if rigid_rebuild_indices and modes.gpl != 'build':
+        raise ValueError("RigidRebuild requires SectionModes.gpl='build'")
     if model.get('DesiredTextureAssignments') and (
         modes.gpl != 'build'
         or modes.tex != 'build'
@@ -5349,6 +6245,18 @@ def BuildModelBlock(
         raise ValueError(
             "CustomSubmeshes with TextureAssignment.AdditionalTextureFileName require "
             "SectionModes.tex='build' with ReimportTextures enabled"
+        )
+    new_surface_additional_texture_names = {
+        (surface.get('TextureAssignment') or {}).get('AdditionalTextureFileName')
+        for sub in model.get('Submeshes') or []
+        for surface in (sub.get('RigidRebuild') or {}).get('NewSurfaces') or []
+    } - {None}
+    if new_surface_additional_texture_names and (
+        modes.tex != 'build' or not model.get('ReimportTextures')
+    ):
+        raise ValueError(
+            "RigidRebuild new surfaces with TextureAssignment.AdditionalTextureFileName "
+            "require SectionModes.tex='build' with ReimportTextures enabled"
         )
     if modes.tex == 'build' and model.get('ReimportTextures') and texture_plan is None:
         _merge_duplicate_texture_additions(model, sluggie_path)
@@ -5529,10 +6437,15 @@ def BuildModelBlock(
             or uv_array_edits
             or normal_array_edits
             or color_array_edits
+            or rigid_rebuild_indices
             or getattr(parsed, 'custom_submeshes', None)
         ):
             gpl_bytes = CloneGPL(source_model_offset, source_model_length)
             donor_gpl_length = len(gpl_bytes)
+            texture_index_by_file_name = {
+                entry.texture_file_name: entry.texture_index
+                for entry in (texture_plan.entries if texture_plan is not None else ())
+            }
             if has_material_state_edits:
                 gpl_bytes = PatchGPLMaterialStates(
                     gpl_bytes, data, source_model_offset
@@ -5547,16 +6460,20 @@ def BuildModelBlock(
                     if uv_lists_rebuilt
                     else PatchGPLUVArrays(gpl_bytes, model, source_model_offset)
                 )
+            if rigid_rebuild_indices:
+                # Replace before the append: the append relocates every blob,
+                # replaced ones included, as one unit (PLAN_EditRigidMeshes.md
+                # Phase 2 step 3).
+                gpl_bytes, donor_gpl_length = PatchGPLReplaceRigidSubmeshes(
+                    gpl_bytes, model, parsed, texture_index_by_file_name,
+                    donor_gpl_length=donor_gpl_length,
+                )
             if getattr(parsed, 'custom_submeshes', None):
                 # Always clone + append (never the full BuildGPLMeshData
                 # rebuild): a same-count rebuild's preserve-layout fast path
                 # is known to corrupt unmodified donor data (Phase 0 finding,
                 # PLAN_AddSubmesh.md Phase 2), and a new submesh has no donor
                 # layout to preserve regardless.
-                texture_index_by_file_name = {
-                    entry.texture_file_name: entry.texture_index
-                    for entry in (texture_plan.entries if texture_plan is not None else ())
-                }
                 _warn_stadium_custom_submesh_alpha(model, parsed, sluggie_path)
                 gpl_bytes = PatchGPLAppendSubmesh(
                     gpl_bytes, model, parsed, texture_index_by_file_name,

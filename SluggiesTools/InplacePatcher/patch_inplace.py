@@ -548,6 +548,21 @@ texture_skipped_count = 0
 
 _model = data["SluggiesModel"]
 
+# A rebuilt rigid submesh (PLAN_EditRigidMeshes.md) replaces its whole GPL
+# blob, which only the Hammerspace builder can do. The dispatcher never sends
+# such a file here; an edited or stale file could.
+_rigid_rebuilt = [
+    f"submesh {index}" for index, submesh in enumerate(_model.get("Submeshes") or [])
+    if submesh.get("RigidRebuild")
+]
+if _rigid_rebuilt and not unpatch:
+    abort(
+        f"{', '.join(_rigid_rebuilt)} carr{'ies' if len(_rigid_rebuilt) == 1 else 'y'} a "
+        "RigidRebuild (changed topology, Object Mode transform, kept world position "
+        "or moved faces). Rigid rebuilds require Hammerspace; patch with "
+        "start.py --patch, which routes the file through the Hammerspace builder."
+    )
+
 if _texture_file and not unpatch:
     # Single-texture mode: patch exactly one texture from a given PNG,
     # independent of the ReimportTextures flag.

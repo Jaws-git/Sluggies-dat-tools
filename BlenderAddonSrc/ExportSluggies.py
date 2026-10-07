@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import struct
+from dataclasses import dataclass
 from bpy.props import BoolProperty, StringProperty
 from bpy_extras.io_utils import ExportHelper
 
@@ -15,6 +16,7 @@ from .HostBones import compute_rigid_retargets, GEO_ID_FREE
 from . import CustomSubmeshExport
 from . import ExportMode
 from . import FieldCodec
+from . import RigidRebuildExport
 from . import TemplateSources
 from . import HostBones
 
@@ -2380,7 +2382,13 @@ def validate_against_json(obj, json_submesh):
     return mismatches
 
 
-def _find_new_materials(obj, json_submesh):
+NEW_SURFACE_BODY_MESSAGE = (
+    "Partial face moves and new materials are supported on rigid submeshes only; "
+    "on the body, move every face of a surface or none"
+)
+
+
+def _find_new_materials(obj, json_submesh, submesh_index=None):
     """Return a list of (material_name, reason) for materials that are NOT donor surfaces.
 
     A material is a valid donor surface when:
@@ -2388,8 +2396,12 @@ def _find_new_materials(obj, json_submesh):
       - legacy path: its name ends with ``_mat{tex_idx}`` where tex_idx is a texture index
         present in the donor's FaceTextureIndices.
 
-    Any other material (no SurfaceId, unknown SurfaceId, or unparseable legacy name)
-    is a newly created surface and must be rejected for the MVP (plan step 2.4).
+    An Add-material surface (``SluggiesNewSurface``) is accepted on a rigid
+    donor submesh when its ``SluggiesSurfaceOwner`` is that submesh
+    (``sm<submesh_index>``; PLAN_EditRigidMeshes.md G16); it is rejected on
+    the skinned body and when it belongs to another submesh. Any other
+    material (no SurfaceId, unknown SurfaceId, or unparseable legacy name) is
+    rejected.
 
     A custom submesh (``SluggiesCustomSubmesh``) has no donor submesh to compare
     against — it accepts exactly its own ``<CustomSubmeshId>_ds*`` SurfaceIds
@@ -2426,12 +2438,21 @@ def _find_new_materials(obj, json_submesh):
         except Exception:
             donor_tex_idxs = set()
 
+    rigid = RigidRebuildExport.is_rigid_submesh(json_submesh)
+    owner_key = f"sm{submesh_index}" if submesh_index is not None else None
     new_materials = []
     for slot in obj.material_slots:
         mat = slot.material
         if mat is None:
             continue
         sid = mat.get("SurfaceId")
+        if mat.get("SluggiesNewSurface"):
+            owner = mat.get("SluggiesSurfaceOwner")
+            if not rigid:
+                new_materials.append((mat.name, NEW_SURFACE_BODY_MESSAGE))
+            elif owner_key is not None and owner != owner_key:
+                new_materials.append((mat.name, f"belongs to {owner or 'another submesh'}, not {owner_key}"))
+            continue
         if sid:
             if sid not in donor_sids:
                 new_materials.append((mat.name, f"SurfaceId '{sid}' is not a donor surface"))
@@ -2545,6 +2566,10 @@ def _resolve_material_texture_changes(
                 continue
             surface_id = material.get("SurfaceId")
             if not surface_id:
+                continue
+            if material.get("SluggiesNewSurface"):
+                # An Add-material surface has no donor TextureIndex; its image
+                # is resolved with the custom-submesh resolver instead (G17).
                 continue
 
             image_nodes = _connected_image_texture_nodes(material)
@@ -3306,6 +3331,236 @@ def _custom_submesh_export_toggles_required_message(object_names):
 ENABLE_MATERIAL_REASSIGNMENT_EXPORT = True
 
 
+# ---------------------------------------------------------------------------
+# Rigid rebuild (PLAN_EditRigidMeshes.md Phase 4): bpy glue around
+# RigidRebuildExport. A donor rigid submesh whose edit the in-place fields
+# cannot hold (changed topology, Object Mode transform, kept world position on
+# another bone, faces moved between surfaces) is exported as a whole
+# Submeshes[i].RigidRebuild instead.
+# ---------------------------------------------------------------------------
+
+def _empty_image_node_errors(objects):
+    """Decision 11: an Image Texture node without an image on any Sluggies
+    material (donor, new surface, custom submesh) cancels the export, whatever
+    the texture toggles say. A new-surface or custom-submesh material with no
+    image node at all is blocked the same way; a donor material without one
+    keeps its donor texture."""
+    errors = []
+    for obj in objects:
+        for slot in obj.material_slots:
+            mat = slot.material
+            if mat is None or not (mat.get("SurfaceId") or mat.get("SluggiesNewSurface")):
+                continue
+            image_nodes = _connected_image_texture_nodes(mat)
+            if any(getattr(node, "image", None) is None for node in image_nodes):
+                errors.append(
+                    f"'{mat.name}' on {obj.name} has an Image Texture node without an image; "
+                    "load a PNG into it (or remove the node) before exporting"
+                )
+            elif not image_nodes and (mat.get("SluggiesNewSurface") or obj.get("SluggiesCustomSubmesh")):
+                errors.append(
+                    f"'{mat.name}' on {obj.name} has no image in its texture node; "
+                    "load a PNG before exporting"
+                )
+    return errors
+
+
+def _bone_geo_id_raw(bone):
+    """Literal ACT GeoId of a BoneHierarchy entry (GEO_ID_FREE when mesh-free)."""
+    if bone.get("GeoIdRaw") is not None:
+        return int(bone["GeoIdRaw"])
+    if bone.get("Skinned"):
+        return GEO_ID_FREE
+    return int(bone.get("GeoId", GEO_ID_FREE))
+
+
+def _rigid_vertex_bone_ids(obj):
+    """Per vertex, the bone ids of its positive-weight bone_<id> groups."""
+    group_bone = {group.index: _parse_bone_group_name(group.name) for group in obj.vertex_groups}
+    result = []
+    for vertex in obj.data.vertices:
+        ids = set()
+        for g in vertex.groups:
+            bone_id = group_bone.get(g.group)
+            if g.weight > 0 and bone_id is not None:
+                ids.add(bone_id)
+        result.append(ids)
+    return result
+
+
+def _slot_surfaces(obj):
+    """What each material slot says about its surface (RigidRebuildExport.SlotSurface)."""
+    slots = []
+    for slot in obj.material_slots:
+        mat = slot.material
+        if mat is None:
+            slots.append(None)
+            continue
+        slots.append(RigidRebuildExport.SlotSurface(
+            material_name=mat.name,
+            surface_id=mat.get("SurfaceId") or None,
+            new_surface=bool(mat.get("SluggiesNewSurface")),
+            owner=mat.get("SluggiesSurfaceOwner"),
+        ))
+    return slots
+
+
+def _loop_colors(mesh):
+    """Per-loop ``color0`` colours in the donor's value space, or None."""
+    attribute = mesh.color_attributes.get("color0")
+    if attribute is None:
+        return None
+    if attribute.domain == 'CORNER':
+        return [tuple(_get_loop_color(attribute.data[i])) for i in range(len(mesh.loops))]
+    if attribute.domain == 'POINT':
+        return [tuple(_get_loop_color(attribute.data[loop.vertex_index])) for loop in mesh.loops]
+    return None
+
+
+@dataclass
+class _RigidRebuildPlan:
+    """A rigid donor submesh that takes the rebuild path this export."""
+    obj: object
+    submesh_index: int
+    donor: object
+    host_bone_id: int
+    geometry: object
+    routing: object
+    reasons: list
+    loop_normals: list
+    loop_uvs: dict
+    loop_colors: object
+    new_surface_materials: dict   # surface key -> material
+
+
+def _rigid_rebuild_plan(context, obj, submesh_index, target_submesh, model, warnings):
+    """Decide a rigid donor submesh's export path (PLAN_EditRigidMeshes.md
+    decision 1) and gather what the rebuild needs. Returns None when the
+    in-place / slot-preserving path applies. Raises ValueError, naming the
+    object, for anything that must stop the export (G2, facial poses, slot
+    hygiene, unsupported position format)."""
+    donor = RigidRebuildExport.donor_rigid_submesh(
+        submesh_index, target_submesh, RigidRebuildExport.facial_pose_submeshes(model),
+    )
+    if obj.mode == 'EDIT':
+        obj.update_from_editmode()
+    mesh = obj.data
+    problem = RigidRebuildExport.vertex_bone_problem(obj.name, _rigid_vertex_bone_ids(obj))
+    if problem:
+        raise ValueError(problem)
+    host_bone_id = _detect_uniform_vertex_bone_id(obj)
+    owner_bone_id = next(
+        (int(bone["BoneId"]) for bone in model.get("BoneHierarchy") or []
+         if _bone_geo_id_raw(bone) == submesh_index),
+        None,
+    )
+    if not mesh.polygons:
+        raise ValueError(f"{obj.name}: mesh has no faces")
+    bone_hierarchy = model.get("BoneHierarchyEdited") or model.get("BoneHierarchy") or []
+    geometry = _custom_submesh_bone_local_geometry(context, obj, bone_hierarchy, host_bone_id, warnings)
+    topology_changed = ExportMode.topology_changed(
+        (poly.vertices for poly in mesh.polygons), target_submesh.get("FacesData"),
+    )
+    moved = RigidRebuildExport.positions_moved(
+        [tuple(v.co) for v in mesh.vertices], geometry, donor.position_quantize,
+    )
+    routing = RigidRebuildExport.route_faces(
+        obj.name, donor, geometry.triangles,
+        [poly.material_index for poly in mesh.polygons], _slot_surfaces(obj), topology_changed,
+    )
+    reasons = RigidRebuildExport.decide_reasons(
+        topology_changed=topology_changed, moved=moved,
+        host_changed=host_bone_id != owner_bone_id, surfaces_changed=routing.changed,
+    )
+    if not reasons:
+        return None
+    format_error = RigidRebuildExport.donor_position_format_error(donor, obj.name)
+    if format_error:
+        raise ValueError(format_error)
+    shape_keys = mesh.shape_keys.key_blocks if mesh.shape_keys else []
+    if donor.facial or len(shape_keys) > 1:
+        raise ValueError(
+            f"{obj.name}: this submesh has facial poses, so its geometry, transform and "
+            f"surfaces must stay as imported ({', '.join(reasons)} changed); only Reassign "
+            "to new bone with Keep offset to bone is possible on it."
+        )
+    warnings.extend(routing.warnings)
+    all_channels = target_submesh.get("UVChannels", [])
+    loop_uvs = {}
+    for channel in all_channels:
+        index = channel.get("UVChannelIndex", 0)
+        layer = mesh.uv_layers.get(_uv_layer_name(all_channels, index))
+        loop_uvs[index] = (
+            [tuple(layer.data[i].uv) for i in range(len(mesh.loops))] if layer is not None else None
+        )
+    new_surface_materials = {}
+    for slot in obj.material_slots:
+        mat = slot.material
+        if mat is not None and mat.get("SluggiesNewSurface") and mat.get("SurfaceId") in routing.new_keys:
+            new_surface_materials.setdefault(mat["SurfaceId"], mat)
+    return _RigidRebuildPlan(
+        obj=obj, submesh_index=submesh_index, donor=donor, host_bone_id=host_bone_id,
+        geometry=geometry, routing=routing, reasons=reasons,
+        loop_normals=_per_loop_normals(mesh, range(len(mesh.loops))),
+        loop_uvs=loop_uvs, loop_colors=_loop_colors(mesh),
+        new_surface_materials=new_surface_materials,
+    )
+
+
+def _rigid_rebuild_entry(plan, texture_assignments, use_base64, warnings):
+    """Encode one plan as its RigidRebuild entry. *texture_assignments* maps a
+    new-surface material name to its resolved TextureAssignment."""
+    new_surfaces = []
+    for key in plan.routing.new_keys:
+        mat = plan.new_surface_materials[key]
+        surface = {
+            "SurfaceKey": key,
+            "MaterialName": mat.name,
+            "TemplateSource": str(mat.get("TemplateSource") or ""),
+            "TextureAssignment": dict(texture_assignments[mat.name]),
+        }
+        if "SpecularStrength" in mat:
+            surface["SpecularStrength"] = max(0, min(255, int(mat["SpecularStrength"])))
+        new_surfaces.append(surface)
+    return RigidRebuildExport.build_rigid_rebuild_entry(
+        plan.obj.name, plan.donor, plan.host_bone_id, plan.geometry, plan.loop_normals,
+        plan.loop_uvs, plan.loop_colors, plan.routing, new_surfaces, plan.reasons,
+        use_base64, warnings,
+    )
+
+
+def _partial_move_error(obj, display_states, surf_mat):
+    """Submesh 0 (skinned) keeps the complete-move rule: a donor surface whose
+    faces are split between materials is refused with the rigid-only hint
+    (PLAN_EditRigidMeshes.md Phase 4 step 7)."""
+    original = []
+    for index, state in enumerate(display_states):
+        count = state.get("FaceCount")
+        if count is None:
+            return None
+        original += [index] * int(count)
+    polygons = obj.data.polygons
+    if len(original) != len(polygons):
+        return None
+    sid_to_index = {state.get("SurfaceId"): i for i, state in enumerate(display_states) if state.get("SurfaceId")}
+    slot_to_index = {}
+    for slot_index, slot in enumerate(obj.material_slots):
+        mat = slot.material
+        if mat is not None and mat.get("SurfaceId") in sid_to_index:
+            slot_to_index[slot_index] = sid_to_index[mat["SurfaceId"]]
+    targets = {}
+    for poly, source in zip(polygons, original):
+        targets.setdefault(source, set()).add(slot_to_index.get(poly.material_index, source))
+    for source, moved_to in targets.items():
+        if len(moved_to) > 1:
+            name = display_states[source].get("SurfaceId") or f"ds{source}"
+            return (
+                f"{obj.name}: faces of surface '{name}' were moved only partly to other "
+                f"materials. {NEW_SURFACE_BODY_MESSAGE}."
+            )
+    return None
+
+
 def _effective_type7_modes(display_states):
     active_mode = None
     effective_modes = []
@@ -3539,6 +3794,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         # lost among ordinary warnings.
         errors = []
         object_submeshes = []
+        matched_objects = {}
         for obj in candidates:
             # match by VertexBufferOffset (unique per submesh)
             target_submesh = next(
@@ -3552,20 +3808,37 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     f"{obj['VertexBufferOffset']} found in JSON — skipped."
                 )
                 continue
+            submesh_index = next(i for i, sm in enumerate(submeshes) if sm is target_submesh)
+            # Two selected objects for one submesh (e.g. a mesh and its
+            # re-imported `_edit` copy) would silently let the last one win.
+            if submesh_index in matched_objects:
+                self.report({"ERROR"},
+                    f"{matched_objects[submesh_index].name} and {obj.name} both belong to "
+                    f"submesh {submesh_index}. Select only one of them and export again."
+                )
+                return {"CANCELLED"}
+            matched_objects[submesh_index] = obj
             object_submeshes.append((obj, target_submesh))
 
-            # --- Step 2.4 (MVP): reject newly created surfaces/materials ---
-            # Only reassignment among imported donor surfaces is permitted.
-            # Any material that is not a donor surface must abort the export.
-            new_materials = _find_new_materials(obj, target_submesh)
+            # Every material must be a surface of this submesh: imported, or
+            # added with Add material (rigid submeshes only).
+            new_materials = _find_new_materials(obj, target_submesh, submesh_index)
             if new_materials:
                 names = ", ".join(f"'{n}' ({r})" for n, r in new_materials)
                 self.report({"ERROR"},
-                    f"Error: creating new materials is currently not supported "
-                    f"({obj.name}: {names}). "
-                    f"Remove the new material(s) or reassign those faces to an existing donor surface."
+                    f"Error: {obj.name} uses material(s) that are not surfaces of this "
+                    f"submesh: {names}. Use its imported materials or Add material, and "
+                    f"reassign or remove the other faces."
                 )
                 return {"CANCELLED"}
+
+        # Decision 11: an empty Image Texture node blocks the export, whatever
+        # the texture toggles say.
+        image_errors = _empty_image_node_errors(candidates + custom_submesh_candidates)
+        if image_errors:
+            for message in image_errors:
+                self.report({"ERROR"}, message)
+            return {"CANCELLED"}
 
         local_texture_descriptors = (
             data["SluggiesModel"].get("TextureDescriptors") or []
@@ -3702,6 +3975,54 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 self.report({"ERROR"}, str(exc))
                 return {"CANCELLED"}
 
+        # --- Rigid rebuilds (PLAN_EditRigidMeshes.md Phase 4) ---
+        # Each rigid donor submesh takes the in-place path unless its
+        # topology, transform, host bone (world position kept) or surfaces
+        # changed; then it is exported as a whole RigidRebuild. New
+        # Add-material surfaces resolve their images like custom submeshes.
+        rigid_plans = {}
+        new_surface_additions, new_surface_assignments, new_surface_texture_copies = [], {}, []
+        try:
+            for obj, target_submesh in object_submeshes:
+                if not RigidRebuildExport.is_rigid_submesh(target_submesh):
+                    continue
+                submesh_index = next(i for i, sm in enumerate(submeshes) if sm is target_submesh)
+                plan = _rigid_rebuild_plan(
+                    context, obj, submesh_index, target_submesh, data["SluggiesModel"], warnings,
+                )
+                if plan is not None:
+                    rigid_plans[submesh_index] = plan
+            new_surface_entries = [
+                (plan.new_surface_materials[key], int(plan.new_surface_materials[key].get("TemplateTextureIndex", -1)))
+                for plan in rigid_plans.values()
+                for key in plan.routing.new_keys
+            ]
+            if new_surface_entries:
+                if texture_dir is None:
+                    texture_descriptors, texture_dir, owns_texture_section = (
+                        _resolve_export_texture_context(self.filepath, data["SluggiesModel"])
+                    )
+                (
+                    new_surface_additions, new_surface_assignments, new_surface_texture_copies,
+                ) = _resolve_custom_submesh_texture_changes(
+                    new_surface_entries, texture_descriptors, texture_dir,
+                    path_resolver=bpy.path.abspath,
+                )
+                new_names = ", ".join(mat.name for mat, _index in new_surface_entries)
+                if new_surface_additions and not self.reimport_textures:
+                    raise ValueError(
+                        "A new material with a new PNG needs 'Reimport textures from tex "
+                        f"folder' enabled: {new_names}"
+                    )
+                if new_surface_additions and not owns_texture_section:
+                    raise ValueError(
+                        "Low-poly model textures are owned by the paired main model; a new "
+                        f"material on it can only use an existing texture: {new_names}"
+                    )
+        except ValueError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+
         # --- Export mode: in-place when nothing would be lost, else Hammerspace ---
         # Model-level reasons skip the in-place attempt. Otherwise the meshes
         # are first encoded in place on a copy; any edit that attempt cannot
@@ -3719,7 +4040,10 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             stale_submeshes=ExportMode.stale_hammerspace_submeshes(
                 submeshes, [obj["VertexBufferOffset"] for obj, _sm in object_submeshes]
             ),
-        )
+        ) + [
+            RigidRebuildExport.mode_reason(plan.obj.name, plan.reasons)
+            for plan in rigid_plans.values()
+        ]
         use_hammerspace = bool(hammerspace_reasons)
         object_submesh_indices = [
             (obj, next(i for i, sm in enumerate(submeshes) if sm is target_submesh))
@@ -3734,7 +4058,19 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
 
             for obj, submesh_index in object_submesh_indices:
                 target_submesh = data["SluggiesModel"]["Submeshes"][submesh_index]
-                if use_hammerspace:
+                plan = rigid_plans.get(submesh_index)
+                if plan is not None:
+                    # Whole-blob rebuild: none of the in-place edit fields may
+                    # stay on the submesh (the patcher refuses the mix).
+                    try:
+                        entry = _rigid_rebuild_entry(plan, new_surface_assignments, use_base64, warnings)
+                    except ValueError as exc:
+                        self.report({"ERROR"}, str(exc))
+                        return {"CANCELLED"}
+                    RigidRebuildExport.strip_in_place_edits(target_submesh)
+                    target_submesh["RigidRebuild"] = entry
+                elif use_hammerspace:
+                    target_submesh.pop("RigidRebuild", None)
                     try:
                         hs = encode_mesh_hammerspace(
                             obj,
@@ -3806,6 +4142,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                                 f"color channel {ch_ind} skipped."
                             )
                 else:
+                    target_submesh.pop("RigidRebuild", None)
                     mismatches = validate_against_json(obj, target_submesh)
                     if mismatches:
                         warnings.append(
@@ -3944,6 +4281,12 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     else:
                         ds.pop("DisplayStateParamBytesEdited", None)
 
+                if plan is not None:
+                    # Faces are routed inside the RigidRebuild entry itself.
+                    target_submesh.pop("FaceSurfaceIdsEdited", None)
+                    written += 1
+                    continue
+
                 # Export per-face draw-state assignment when faces have been moved.
                 try:
                     face_sid_data, face_sid_changed = _encode_face_surface_assignment(
@@ -3953,6 +4296,13 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 except ValueError as exc:
                     self.report({"ERROR"}, str(exc))
                     return {"CANCELLED"}
+                if face_sid_changed and not RigidRebuildExport.is_rigid_submesh(target_submesh):
+                    partial_error = _partial_move_error(
+                        obj, target_submesh.get("DisplayStates", []), surf_mat,
+                    )
+                    if partial_error:
+                        self.report({"ERROR"}, partial_error)
+                        return {"CANCELLED"}
                 if face_sid_changed:
                     if not ENABLE_MATERIAL_REASSIGNMENT_EXPORT:
                         self.report({"ERROR"},
@@ -4029,6 +4379,17 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             use_hammerspace = True
 
         self.report({"INFO"}, ExportMode.mode_message(hammerspace_reasons))
+        for obj, submesh_index in object_submesh_indices:
+            plan = rigid_plans.get(submesh_index)
+            if plan is not None:
+                self.report({"INFO"},
+                    f"{obj.name}: rigid rebuild ({', '.join(plan.reasons)}): "
+                    f"{len(plan.donor.faces)} -> {len(plan.geometry.faces)} faces, "
+                    f"{len(plan.geometry.positions)} vertices on bone_{plan.host_bone_id}; "
+                    + RigidRebuildExport.surface_report(obj.name, plan.routing)
+                )
+            elif RigidRebuildExport.is_rigid_submesh(data["SluggiesModel"]["Submeshes"][submesh_index]):
+                self.report({"INFO"}, f"{obj.name}: in-place rigid edit (no rebuild needed).")
         if use_hammerspace:
             ExportMode.promote_inplace_uv_edits(
                 data["SluggiesModel"]["Submeshes"],
@@ -4049,7 +4410,8 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         data["SluggiesModel"]["ReimportTextures"] = (
             self.reimport_textures and bool(local_texture_descriptors)
         )
-        additions = _merge_texture_additions(additions, custom_additions)
+        additions = _merge_texture_additions(additions, custom_additions + new_surface_additions)
+        custom_texture_copies = custom_texture_copies + new_surface_texture_copies
         if additions:
             data["SluggiesModel"]["AdditionalTextureDescriptors"] = additions
         else:

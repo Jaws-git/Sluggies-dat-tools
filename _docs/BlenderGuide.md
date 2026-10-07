@@ -83,13 +83,13 @@ Everything else, such as moving vertices, editing UVs without new seams, shape k
 #### Adding a new model texture how-to
 
 1. Put the new PNG in the model's own `tex/` folder.
-2. Keep the imported material and its `SurfaceId`; do not create a new material.
+2. Keep the imported material and its `SurfaceId`. (A new material is possible on rigid meshes only, through **Add material**; see "Editing rigid meshes" below.)
 3. Replace the image in the Image Texture node or create a new one.
    Leave at most one Image Texture node connected to the active Material Output!
 4. Export with **Reimport textures from tex folder** enabled. The export uses Hammerspace by itself.
 5. Patch the exported `.sluggie` normally.
 
-- Only Image Texture nodes connected to the Material Output count. Unconnected helper nodes are ignored, and a material with no connected image keeps its original texture.
+- Only Image Texture nodes connected to the Material Output count. Unconnected helper nodes are ignored, and a material with no connected image node keeps its original texture. A connected Image Texture node **without an image** stops the export and names the material: load a PNG into it or remove the node.
 - If more than one Image Texture node is connected, export stops and names the material.
 - If a texture change is found but the option from step 4 is off, export stops before writing anything and lists the materials.
 - The PNG is looked up only in this model's own `tex/` folder. If it's missing, the export stops.
@@ -157,6 +157,28 @@ All three looked the same in game tests. A `rigid:` template limits how detailed
 - **Specular strength:** a new submesh made from a built-in template starts at 50. One made from a donor material starts at that material's current strength. Change it with **Set Specular Strength**.
 - **Bats and gloves work too.** They have only one bone by default, and it already carries the original mesh. To add a new rigid mesh to them, add a custom bone first with **Add Bone**.
 
+#### Editing rigid meshes
+
+A rigid mesh is a part that follows one bone without skinning: a cap, a head, a bat, Birdo's bow. You can edit it almost freely; the exporter decides what the game data needs:
+
+- Moving vertices, editing UVs, normals or vertex colours, changing the specular strength: stored in the original data when it fits there, as before.
+- **Adding or deleting geometry, re-unwrapping with new seams, moving the whole object in Object Mode, moving faces between its materials, or using an Add material surface:** the mesh is rebuilt as a whole. The export log says `rigid rebuild (<reasons>)` and lists the faces per surface before and after, so an accidental *Assign* is easy to spot. Hammerspace is used automatically.
+
+Rules:
+- Every face must use one of **that mesh's own** materials: the imported ones, or ones made with **Add material**. A face on an empty slot, on a plain Blender material or on another mesh's material stops the export.
+- Every vertex must be in the mesh's `bone_<id>` vertex group. New vertices often have no group; **Reassign to new bone** fixes that in one click (also onto the bone the mesh is already on).
+- Meshes with facial poses (Mario's head and the like) keep their geometry, transform and surfaces. Only **Reassign to new bone** with *Keep offset to bone* works on them.
+- The skinned body (the first mesh) keeps its old rules: no new materials, and faces move between its materials only as whole surfaces.
+- A Low (`_L_`) model is edited on its own; nothing is mirrored from the High model. The game switches to it at a distance.
+
+**Reassign to new bone** (Sluggies sidebar, *Rigid mesh* box) moves the active rigid mesh to another free bone:
+- *Keep world position*: the mesh stays where it is and follows the new bone from now on (a rebuild).
+- *Keep offset to bone*: the mesh jumps so it keeps the same offset from the new bone as it had from the old one. Its data is unchanged, so this also works in place.
+
+**Add material** (same box) adds a new surface to the active rigid mesh or custom submesh. Pick a template as for Add Submesh (`builtin:rigid_spec_v1` is the default; see the template list above), assign faces to the new slot (in Edit Mode the selected faces are assigned right away), and load a PNG into its empty Image Texture node. Export stops until that node has an image. A PNG the model already has just binds that texture; a new PNG is appended with **Reimport textures from tex folder** enabled (a Low model can only use existing textures). The hand-mitt templates `rigid_rhsp_v1` / `rigid_lhsp_v1` hide the surface's vertex-alpha-0 parts while that hand wears the mitt.
+
+A re-import of the exported file shows a rebuilt mesh as a second `<name>_edit` object on its new bone, with its new materials. Select only one of the two objects when exporting again.
+
 #### Adding a new bone how-to
 A new bone gives a new submesh somewhere to attach when no free bone sits where you need one. It follows its parent bone and nothing else: it isn't animated and it can't drive skinning. Not available in stadiums (see above).
 
@@ -199,7 +221,8 @@ You can move vertices between the model's existing `bone_<id>` vertex groups, e.
 #### You can't (yet):
 - add or remove vertices on the main mesh (always the first)
 - reorder main mesh face indices
-- add new materials to imported meshes (moving faces between their existing materials is fine)
+- add new materials to the main mesh, or move only part of one of its surfaces to another material (rigid meshes allow both, see "Editing rigid meshes")
+- change the geometry, transform or surfaces of a rigid mesh with facial poses (the head)
 - remove, reorder or re-parent original bones (adding bones is fine)
 - skinning edits beyond moving vertices between existing bone vertex groups (see above)
 - skin a new submesh to more than one bone
