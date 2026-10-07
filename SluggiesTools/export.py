@@ -44,21 +44,26 @@ def _encode_bytes(data: bytes):
 
 outdir = "../2_Output_Models/"
 _export_placeholder = 'exports will be created here'
-_existing_exports = (
-    [f for f in os.listdir(outdir) if f != _export_placeholder]
-    if os.path.exists(outdir) else []
-)
-if _existing_exports:
-    answer = _slogger.ask(
-        'Previous export files already exist in 2_Output_Models. '
-        'Continue and overwrite? (y/n): '
-    ).strip().lower()
-    _slogger.log_user_input('Model export overwrite confirm', answer, source='export')
-    if answer != 'y':
-        _slogger.info('Model export canceled by user.', source='export')
-        sys.exit(0)
-else:
-    os.makedirs(outdir, exist_ok=True)
+
+
+def confirm_overwrite():
+    """Ask before overwriting earlier exports; False when the user declines."""
+    existing = (
+        [f for f in os.listdir(outdir) if f != _export_placeholder]
+        if os.path.exists(outdir) else []
+    )
+    if existing:
+        answer = _slogger.ask(
+            'Previous export files already exist in 2_Output_Models. '
+            'Continue and overwrite? (y/n): '
+        ).strip().lower()
+        _slogger.log_user_input('Model export overwrite confirm', answer, source='export')
+        if answer != 'y':
+            _slogger.info('Model export canceled by user.', source='export')
+            return False
+    else:
+        os.makedirs(outdir, exist_ok=True)
+    return True
 
 folderNameMap = {
     "1": "test_actor",
@@ -1391,168 +1396,165 @@ def prepare_untangle_output_files():
     shutil.copyfile(input_dol_path, output_dol_path)
     return output_dat_path, output_dol_path
 
-untangle_context = None
-active_dol_path = '../1_Input/main.dol'
-active_dat_path = '../1_Input/dt_na.dat'
-
-if UNTANGLE_TEX:
-    if not EXPORT_TEX:
-        _slogger.warning('--untangle has no effect with --notex; untangle mode disabled.', source='export')
-    else:
-        _slogger.info('Starting texture untangling process...', source='export')
-        untangle_output_path, untangle_output_dol_path = prepare_untangle_output_files()
-        if untangle_output_path is None:
-            sys.exit(0)
-
-        untangle_bootstrap_report = []
-        clone_count = clone_unused_dirs_to_hammerspace_for_untangle(
-            input_dol_path='../1_Input/main.dol',
-            input_dat_path='../1_Input/dt_na.dat',
-            report_lines=untangle_bootstrap_report,
-        )
-
-        active_dol_path = untangle_output_dol_path
-        active_dat_path = untangle_output_path
-
-        untangle_context = {
-            'enabled': True,
-            'seen_names': set(),
-            'seen_image_starts': {},
-            'report_lines': [
-                f'Hammerspace clone pre-pass complete: cloned {clone_count} entries from dirs 89-94.'
-            ] + untangle_bootstrap_report,
-            'warnings': [],
-            'name_overrides': {},
-            'max_attempts': 8192,
-            'dat_output_handle': open(untangle_output_path, 'r+b')
+def model_document(model, dir_ind, file_index, offset, length, untangle_context=None):
+    """The ``.sluggie`` document of one exported model: ``model`` is an analyzed ``Model0`` (alone in its DOL
+    entry, or one member of an archive container), ``offset``/``length`` its own range in the DAT."""
+    gpl_user_data, gpl_user_data_length = extract_gpl_userdata(model)
+    return {
+        "SluggiesModel": {
+            "ChunkNumber": dir_ind,
+            "FileIndex": file_index,
+            "ModelOffset": hex(offset),
+            "ModelLength": length,
+            "UseBase64": not DEBUG_DONT_USE_BASE64,
+            "GPLUserDataLength": gpl_user_data_length,
+            "GPLUserData": gpl_user_data,
+            "TEXHeader": extract_tex_header(model),
+            "TextureDescriptors": extract_texture_descriptors(model, untangle_context=untangle_context),
+            "Submeshes": extract_submeshes(model),
+            "SkinData": extract_skin_data(model),
+            "FacialPoseData": extract_facial_pose_data(model),
+            "TrailingSections": extract_trailing_sections(model),
+            "ACTHeader": extract_act_header(model),
+            "ACTUserData": extract_act_user_data(model),
+            "BoneHierarchy": extract_bone_data(model)
         }
-        _slogger.info(
-            'Hammerspace duplication complete. Unused character textures are now independent.',
-            source='export'
-        )
+    }
 
-# The export is now fully confirmed (any "overwrite 3_Output_Dat?" prompt has
-# been answered). Clear the running log so the new log starts where this
-# export begins.
-_slogger.clear_log_file()
-_slogger.info('Starting model export...', source='export')
-dirs = load_dol_dirs(active_dol_path)
-dat = Dat(open(active_dat_path, 'rb'))
 
-for dir_ind, file_arr in dirs.items():
-    set_log_dir_index(dir_ind)
-    if not UNTANGLE_TEX and dir_ind in UNUSED_DIRS_TO_UNTANGLE_CLONE:
-        _slogger.info(
-            'Skipping unused character (no untangle).',
-            source=f'export.dir{dir_ind}'
-        )
-        continue
-    dir_dir = outdir + top_level_folder_name(dir_ind) + '/'
-    if not os.path.exists(dir_dir):
-        os.mkdir(dir_dir)
-    # Stadiums (dirs 7-16) keep their original texture names and bytes:
-    # pass a None untangle context so no renaming or dat rewriting happens.
-    dir_untangle_context = untangle_context
-    if UNTANGLE_SKIP_STADIUMS and dir_ind in STADIUM_DIR_INDICES:
-        dir_untangle_context = None
-        _slogger.info(
-            'Skipping texture untangling for stadium directory.',
-            source=f'export.dir{dir_ind}'
-        )
-    for file_index, file in enumerate(file_arr):
-        languages = ['en']
-        # if file['en'][0] != file['sp'][0]:
-        #     languages = ['en', 'sp', 'fr']
-        try:
-            for lan in languages:
-                offset = file[lan][0]
-                # print(hex(offset))
-                l = file[lan][1]
-                lan_dir = dir_dir
-                if len(languages) > 1:
-                    lan_dir += lan + '/'
-                    if not os.path.exists(lan_dir):
-                        os.mkdir(lan_dir)
-                child = dat.add_child(offset, l, MaybeArchive)
-                child.analyze()
-                if child.child:
-                    if isinstance(child.child, ANM):
-                        child.child.dumpRaw(dir_dir, file_index)
-                    else:
-                        child.child.analyze()
-                        child.child.toFile(lan_dir, export_tex=EXPORT_TEX, export_glb=EXPORT_GLB, untangle_context=dir_untangle_context)
-                        if isinstance(child.child, Archive):
-                            archive_dir = os.path.join(lan_dir, str(child.child.absolute))
-                            for i in child.child.success:
-                                sub_model = child.child.files[i]
-                                sub_dir = os.path.join(archive_dir, sub_model.name)
-                                json_name = f"{sub_model.name}.sluggie"
-                                _gpl_ud, _gpl_ud_len = extract_gpl_userdata(sub_model)
-                                model_json = {
-                                    "SluggiesModel": {
-                                        "ChunkNumber": dir_ind,
-                                        "FileIndex": file_index,
-                                        "ModelOffset": hex(sub_model.absolute),
-                                        "ModelLength": sub_model.length,
-                                        "UseBase64": not DEBUG_DONT_USE_BASE64,
-                                        "GPLUserDataLength": _gpl_ud_len,
-                                        "GPLUserData": _gpl_ud,
-                                        "TEXHeader": extract_tex_header(sub_model),
-                                        "TextureDescriptors": extract_texture_descriptors(sub_model, untangle_context=dir_untangle_context),
-                                        "Submeshes": extract_submeshes(sub_model),
-                                        "SkinData": extract_skin_data(sub_model),
-                                        "FacialPoseData": extract_facial_pose_data(sub_model),
-                                        "TrailingSections": extract_trailing_sections(sub_model),
-                                        "ACTHeader": extract_act_header(sub_model),
-                                        "ACTUserData": extract_act_user_data(sub_model),
-                                        "BoneHierarchy": extract_bone_data(sub_model)
-                                    }
-                                }
-                                with open(os.path.join(sub_dir, json_name), 'w') as info_f:
-                                    info_f.write(compact_faces_json(model_json))
+def write_model_document(document, path):
+    with open(path, 'w') as info_f:
+        info_f.write(compact_faces_json(document))
+
+
+def main():
+    if not confirm_overwrite():
+        sys.exit(0)
+    untangle_context = None
+    active_dol_path = '../1_Input/main.dol'
+    active_dat_path = '../1_Input/dt_na.dat'
+
+    if UNTANGLE_TEX:
+        if not EXPORT_TEX:
+            _slogger.warning('--untangle has no effect with --notex; untangle mode disabled.', source='export')
+        else:
+            _slogger.info('Starting texture untangling process...', source='export')
+            untangle_output_path, untangle_output_dol_path = prepare_untangle_output_files()
+            if untangle_output_path is None:
+                sys.exit(0)
+
+            untangle_bootstrap_report = []
+            clone_count = clone_unused_dirs_to_hammerspace_for_untangle(
+                input_dol_path='../1_Input/main.dol',
+                input_dat_path='../1_Input/dt_na.dat',
+                report_lines=untangle_bootstrap_report,
+            )
+
+            active_dol_path = untangle_output_dol_path
+            active_dat_path = untangle_output_path
+
+            untangle_context = {
+                'enabled': True,
+                'seen_names': set(),
+                'seen_image_starts': {},
+                'report_lines': [
+                    f'Hammerspace clone pre-pass complete: cloned {clone_count} entries from dirs 89-94.'
+                ] + untangle_bootstrap_report,
+                'warnings': [],
+                'name_overrides': {},
+                'max_attempts': 8192,
+                'dat_output_handle': open(untangle_output_path, 'r+b')
+            }
+            _slogger.info(
+                'Hammerspace duplication complete. Unused character textures are now independent.',
+                source='export'
+            )
+
+    # The export is now fully confirmed (any "overwrite 3_Output_Dat?" prompt has
+    # been answered). Clear the running log so the new log starts where this
+    # export begins.
+    _slogger.clear_log_file()
+    _slogger.info('Starting model export...', source='export')
+    dirs = load_dol_dirs(active_dol_path)
+    dat = Dat(open(active_dat_path, 'rb'))
+
+    for dir_ind, file_arr in dirs.items():
+        set_log_dir_index(dir_ind)
+        if not UNTANGLE_TEX and dir_ind in UNUSED_DIRS_TO_UNTANGLE_CLONE:
+            _slogger.info(
+                'Skipping unused character (no untangle).',
+                source=f'export.dir{dir_ind}'
+            )
+            continue
+        dir_dir = outdir + top_level_folder_name(dir_ind) + '/'
+        if not os.path.exists(dir_dir):
+            os.mkdir(dir_dir)
+        # Stadiums (dirs 7-16) keep their original texture names and bytes:
+        # pass a None untangle context so no renaming or dat rewriting happens.
+        dir_untangle_context = untangle_context
+        if UNTANGLE_SKIP_STADIUMS and dir_ind in STADIUM_DIR_INDICES:
+            dir_untangle_context = None
+            _slogger.info(
+                'Skipping texture untangling for stadium directory.',
+                source=f'export.dir{dir_ind}'
+            )
+        for file_index, file in enumerate(file_arr):
+            languages = ['en']
+            # if file['en'][0] != file['sp'][0]:
+            #     languages = ['en', 'sp', 'fr']
+            try:
+                for lan in languages:
+                    offset = file[lan][0]
+                    # print(hex(offset))
+                    l = file[lan][1]
+                    lan_dir = dir_dir
+                    if len(languages) > 1:
+                        lan_dir += lan + '/'
+                        if not os.path.exists(lan_dir):
+                            os.mkdir(lan_dir)
+                    child = dat.add_child(offset, l, MaybeArchive)
+                    child.analyze()
+                    if child.child:
+                        if isinstance(child.child, ANM):
+                            child.child.dumpRaw(dir_dir, file_index)
                         else:
-                            model_name = child.child.name
-                            model_dir = os.path.join(lan_dir, model_name)
-                            json_name = f"{model_name}.sluggie"
-                            _gpl_ud, _gpl_ud_len = extract_gpl_userdata(child.child)
-                            model_json = {
-                                "SluggiesModel": {
-                                    "ChunkNumber": dir_ind,
-                                    "FileIndex": file_index,
-                                    "ModelOffset": hex(offset),
-                                    "ModelLength": l,
-                                    "UseBase64": not DEBUG_DONT_USE_BASE64,
-                                    "GPLUserDataLength": _gpl_ud_len,
-                                    "GPLUserData": _gpl_ud,
-                                    "TEXHeader": extract_tex_header(child.child),
-                                    "TextureDescriptors": extract_texture_descriptors(child.child, untangle_context=dir_untangle_context),
-                                    "Submeshes": extract_submeshes(child.child),
-                                    "SkinData": extract_skin_data(child.child),
-                                    "FacialPoseData": extract_facial_pose_data(child.child),
-                                    "TrailingSections": extract_trailing_sections(child.child),
-                                    "ACTHeader": extract_act_header(child.child),
-                                    "ACTUserData": extract_act_user_data(child.child),
-                                    "BoneHierarchy": extract_bone_data(child.child)
-                                }
-                            }
-                            with open(os.path.join(model_dir, json_name), 'w') as info_f:
-                                info_f.write(compact_faces_json(model_json))
-                del child
-        except ExpectedFormatSkip as exc:
-            _slogger.warning(f'{exc}', source=f'export.dir{dir_ind}')
-        except Exception as e:
-            _slogger.warning(f'skipping entry: {type(e).__name__}: {e}', source=f'export.dir{dir_ind}')
-            pass
-    if len(os.listdir(dir_dir)) == 0:
-        os.rmdir(dir_dir)
-    _slogger.info(f'Finished exporting', source=f'export.dir{dir_ind}')
+                            child.child.analyze()
+                            child.child.toFile(lan_dir, export_tex=EXPORT_TEX, export_glb=EXPORT_GLB, untangle_context=dir_untangle_context)
+                            if isinstance(child.child, Archive):
+                                archive_dir = os.path.join(lan_dir, str(child.child.absolute))
+                                for i in child.child.success:
+                                    sub_model = child.child.files[i]
+                                    sub_dir = os.path.join(archive_dir, sub_model.name)
+                                    write_model_document(
+                                        model_document(sub_model, dir_ind, file_index, sub_model.absolute,
+                                                       sub_model.length, dir_untangle_context),
+                                        os.path.join(sub_dir, f"{sub_model.name}.sluggie"))
+                            else:
+                                model_name = child.child.name
+                                model_dir = os.path.join(lan_dir, model_name)
+                                write_model_document(
+                                    model_document(child.child, dir_ind, file_index, offset, l, dir_untangle_context),
+                                    os.path.join(model_dir, f"{model_name}.sluggie"))
+                    del child
+            except ExpectedFormatSkip as exc:
+                _slogger.warning(f'{exc}', source=f'export.dir{dir_ind}')
+            except Exception as e:
+                _slogger.warning(f'skipping entry: {type(e).__name__}: {e}', source=f'export.dir{dir_ind}')
+                pass
+        if len(os.listdir(dir_dir)) == 0:
+            os.rmdir(dir_dir)
+        _slogger.info(f'Finished exporting', source=f'export.dir{dir_ind}')
 
-if untangle_context and untangle_context.get('dat_output_handle'):
-    untangle_context['dat_output_handle'].flush()
-    untangle_context['dat_output_handle'].close()
+    if untangle_context and untangle_context.get('dat_output_handle'):
+        untangle_context['dat_output_handle'].flush()
+        untangle_context['dat_output_handle'].close()
 
-write_texture_hash_overlaps_report(
-    outdir,
-    untangle_report_lines=(untangle_context or {}).get('report_lines'),
-    untangle_warnings=(untangle_context or {}).get('warnings')
-)
+    write_texture_hash_overlaps_report(
+        outdir,
+        untangle_report_lines=(untangle_context or {}).get('report_lines'),
+        untangle_warnings=(untangle_context or {}).get('warnings')
+    )
+
+
+if __name__ == '__main__':
+    main()

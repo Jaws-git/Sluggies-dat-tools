@@ -15,6 +15,9 @@ The "Stat Editor" tab (``StatEditor/gui_tab``) launches Philenarion's Sluggers
 Stat Editor (Bridge Mode or Standalone) and stages the values it sends back as
 pending edits of the character grid.
 
+The "Maintenance" tab (``gui_maintenance``, checks in ``maintenance``) lists
+problems in the working folders, such as duplicate model files, on Scan.
+
 Fonts: on Windows the GUI upgrades to the system Segoe UI when present;
 otherwise it uses the Open Sans TTF already bundled with the release (the same
 one the roster name plates are drawn with). When neither file is available it
@@ -32,6 +35,7 @@ import threading
 import dearpygui.dearpygui as dpg
 import gui_character_grid
 import gui_grid
+import gui_maintenance
 import native_dialog
 import slogger
 from StatEditor import gui_tab as stat_editor_tab
@@ -127,6 +131,7 @@ class SluggiesGui:
         self.console_grow = 0              # px the window grew when the console was shown
         self.grid_tab = gui_character_grid.CharacterGridTab(self)
         self.stat_tab = stat_editor_tab.StatEditorTab(self)
+        self.maintenance_tab = gui_maintenance.MaintenanceTab(self)
 
     # ------------------------------------------------------------------ run
     def run_command(self, *args):
@@ -594,6 +599,7 @@ class SluggiesGui:
                 self._build_roster_tab()
                 self.grid_tab.build()
                 self.stat_tab.build()
+                self.maintenance_tab.build()
             dpg.add_separator()
             # hidden by default; a command that waits for an answer opens it (slogger.ask's marker line)
             dpg.add_checkbox(label='Show console', tag='show_console', default_value=False,

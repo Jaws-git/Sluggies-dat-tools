@@ -154,6 +154,13 @@ class ModelLevelReasonTests(unittest.TestCase):
         self.assertFalse(ExportMode.is_unused_character_chunk(88))
         self.assertFalse(ExportMode.is_unused_character_chunk(None))
 
+    def test_slot_export(self):
+        """A slot export's donor is its own embedded block: only Hammerspace can patch it."""
+        reasons = ExportMode.model_level_reasons({'ChunkNumber': 18, 'DonorEntry': {'Offset': '0x0', 'Data': ''}})
+        self.assertEqual(len(reasons), 1)
+        self.assertIn('slot export', reasons[0])
+        self.assertEqual(ExportMode.DONOR_ENTRY_KEY, 'DonorEntry')     # HammerspaceMain.DONOR_ENTRY_KEY
+
     def test_mode_message(self):
         self.assertIn('in-place', ExportMode.mode_message([]))
         message = ExportMode.mode_message(['a', 'b'])

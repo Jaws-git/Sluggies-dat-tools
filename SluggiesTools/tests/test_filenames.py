@@ -63,6 +63,9 @@ OUTPUT_DIR = REPO_ROOT / "2_Output_Models"
 #   _ICONS   -> leftover output of the removed icon sheet export (may still exist)
 #   tex_temp -> per-export scratch space (cleared on each export)
 EXCLUDED_DIR_NAMES = frozenset({"_ICONS", "tex_temp"})
+# Top-level folders the export does not write: slot exports ("Custom Mario 01",
+# Roster/slot_export.py) are made on demand from the patched game.
+EXCLUDED_TOP_PREFIXES = ("Custom ",)
 
 # Dolphin texture PNG naming convention (see module docstring).
 TEX_PNG_RE = re.compile(
@@ -7290,12 +7293,15 @@ def collect_model_texture_paths(output_dir: pathlib.Path = OUTPUT_DIR) -> set[st
     """Return the set of relative (posix) paths of model texture PNGs.
 
     A *model texture* is any ``.png`` under ``output_dir`` that is not located
-    inside an excluded directory (``_ICONS`` / ``tex_temp``).
+    inside an excluded directory (``_ICONS`` / ``tex_temp``) or a slot export
+    folder (``Custom ...``).
     """
     found: set[str] = set()
     for path in output_dir.rglob("*.png"):
         rel = path.relative_to(output_dir)
         if any(part in EXCLUDED_DIR_NAMES for part in rel.parts):
+            continue
+        if rel.parts[0].startswith(EXCLUDED_TOP_PREFIXES):
             continue
         found.add(rel.as_posix())
     return found

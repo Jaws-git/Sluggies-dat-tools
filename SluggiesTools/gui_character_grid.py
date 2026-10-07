@@ -62,6 +62,10 @@ several characters shows only a disabled line). Copy earmarks the character
 (teal border); Paste stages a ``copy`` edit
 that makes the clicked slot a clone of it as the game holds it
 (``slot_plan.plan_copy``), with the usual staging check and confirm dialog.
+**Export as .sluggie** (below them) runs ``start.py --export-slot`` right
+away (it only reads the game): the slot as the game holds it becomes a
+``2_Output_Models/Custom <name> NN`` folder (``Roster/slot_export.py``);
+pending edits of the slot are not in it (asks first).
 One shared popup window and one shared right-click handler serve every
 portrait button (``dpg.popup`` would leave a window and a handler registry
 behind on every redraw).
@@ -1120,7 +1124,8 @@ class CharacterGridTab:
             return
         dpg.delete_item('grid_context', children_only=True)
         actions = {gui_grid.COPY_LABEL: lambda: self._on_copy(members[0]),
-                   gui_grid.PASTE_LABEL: lambda: self._on_paste(members[0])}
+                   gui_grid.PASTE_LABEL: lambda: self._on_paste(members[0]),
+                   gui_grid.EXPORT_LABEL: lambda: self._on_export(members[0])}
         entries = gui_grid.context_menu(state, members, self.copied, self.pending.pack is not None, self._locked())
         sizes = [dpg.get_text_size(label) for label, _enabled, _why in entries]
         width = max((s[0] for s in sizes if s), default=0)
@@ -1152,6 +1157,28 @@ class CharacterGridTab:
         if self._locked() or self.copied is None or self.copied == cid or self.pending.pack is not None:
             return
         self._start_preview(cid, None, copy_from=self.copied)
+
+    def _on_export(self, cid):
+        """Export as .sluggie: with pending edits on the slot ask first (they are not in the game yet)."""
+        if self._locked():
+            return
+        if self.pending.has(cid):
+            self.action = 'ask'
+            self._dialog(gui_grid.export_pending_dialog(self.loader.state, cid, self.pending),
+                         lambda: (self._end_action(), self._export(cid)), ok_label='Export without them')
+            return
+        self._export(cid)
+
+    def _export(self, cid):
+        who = f'{gui_grid.name_of(self.loader.state, cid)} ({gui_grid.hex_id(cid)})'
+
+        def done(code, _output):
+            folder = gui_grid.export_result(self.app.root_dir) if code == 0 else None
+            if folder is None:
+                self.app.log_line(f'[character grid] {who} was not exported: see the log above.', _WARN)
+                return
+            self.app.log_line(f'[character grid] {who} exported to {folder}', _OK)
+        self._run([gui_grid.export_command(cid)], f'Exporting {who}...', done)
 
     def forget_copy(self):
         """Drop the copied character (a tab switch does this)."""

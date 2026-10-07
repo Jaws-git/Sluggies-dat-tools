@@ -31,6 +31,12 @@ except ImportError:  # imported flat by the unit tests
 # are split copies that only the Hammerspace path can patch.
 UNUSED_CHARACTER_CHUNKS = (89, 90, 91, 92, 93, 94)
 
+# A slot export (the tools' "Export as .sluggie") carries its own donor block
+# under this key (SluggiesTools/Hammerspace/HammerspaceMain.DONOR_ENTRY_KEY):
+# its offsets are that block's, not the game file's, so only Hammerspace can
+# patch it.
+DONOR_ENTRY_KEY = "DonorEntry"
+
 # Mirrors SluggiesTools/texture_helper.GX_MAX_TEXTURE_DIMENSION.
 GX_MAX_TEXTURE_DIMENSION = 1024
 
@@ -176,6 +182,8 @@ def model_level_reasons(
         reasons.append(f"resized textures ({', '.join(resized_textures)})")
     if is_unused_character_chunk(model.get("ChunkNumber")):
         reasons.append("unused character (only Hammerspace can patch it)")
+    if model.get(DONOR_ENTRY_KEY) is not None:
+        reasons.append("slot export (it carries its own donor block; only Hammerspace can patch it)")
     if stale_submeshes:
         reasons.append(
             "earlier Hammerspace edits on parts not in this export "

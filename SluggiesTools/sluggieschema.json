@@ -22,6 +22,24 @@
           "type": "number",
           "description": "Full length of model data (in bytes) from offset adress to end of model data"
         },
+        "SlotExport": {
+          "type": "object",
+          "description": "Present on a slot export (\"Export as .sluggie\", start.py --export-slot): where it came from, informational only. Character: the slot's ID (\"0xNN\"); Name: the export folder's character name; Exported: the date (YYYY-MM-DD). Written right after ModelLength.",
+          "properties": {
+            "Character": { "type": "string" },
+            "Name": { "type": "string" },
+            "Exported": { "type": "string" }
+          }
+        },
+        "DonorEntry": {
+          "type": "object",
+          "description": "Present on a slot export: the DOL entry (the whole file, archive prefix included) the model was read from, as the slot held it. ChunkNumber, FileIndex and every *Offset field describe this block placed at Offset, which is where the base model's file lies in the input dt_na.dat; the bytes there are the base model's, not this one's. Every patch builds from this block instead of the DAT, so a file with DonorEntry is only patched through Hammerspace (the in-place patcher refuses it).",
+          "properties": {
+            "Offset": { "type": "string", "description": "Hex string: the absolute offset the block's first byte stands for" },
+            "Data": { "description": "The block's bytes, encoded like any binary field (see UseBase64)" }
+          },
+          "required": ["Offset", "Data"]
+        },
         "UseBase64": {
           "type": "boolean",
           "description": "Whether to use Base64 encoding for binary data buffers. If false, binary data will be represented as arrays of byte values. With Base64, a field is either plain base64 or \"z:\" followed by the base64 of its zlib-compressed bytes (written whenever that is shorter); readers accept both forms in any mix. Raw byte arrays may be more convenient for small buffers or when editing the JSON by hand."

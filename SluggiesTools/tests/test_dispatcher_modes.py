@@ -374,6 +374,39 @@ class RunPatchingDispatchTests(unittest.TestCase):
 
     @mock.patch('start._current_model_in_hammerspace', return_value=False)
     @mock.patch('start.subprocess.run')
+    def test_sluggie_name_found_twice_is_refused(self, mock_run, _mock_hs_check):
+        # A copied model folder: the bare name has two targets, so nothing is patched (the walk used to take the
+        # first one silently).
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self._write_sluggie(os.path.join(temp_dir, '18 Mario', 'model.sluggie'))
+            self._write_sluggie(os.path.join(temp_dir, '18 Mario - Copy', 'model.sluggie'))
+
+            with mock.patch.object(start, 'SEARCH_DIR', temp_dir),                     mock.patch.object(start.slogger, 'error') as error:
+                ok = start.run_patching(['model.sluggie'])
+
+            self.assertFalse(ok)
+            mock_run.assert_not_called()
+            message = error.call_args[0][0]
+            self.assertIn("exists 2 times", message)
+            self.assertIn(os.path.join('18 Mario - Copy', 'model.sluggie'), message)
+
+    @mock.patch('start._current_model_in_hammerspace', return_value=False)
+    @mock.patch('start.subprocess.run')
+    def test_full_path_patches_one_of_two_copies(self, mock_run, _mock_hs_check):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            chosen = os.path.join(temp_dir, '18 Mario - Copy', 'model.sluggie')
+            self._write_sluggie(os.path.join(temp_dir, '18 Mario', 'model.sluggie'))
+            self._write_sluggie(chosen)
+
+            with mock.patch.object(start, 'SEARCH_DIR', temp_dir):
+                ok = start.run_patching([chosen])
+
+            self.assertTrue(ok)
+            mock_run.assert_called_once()
+            self.assertIn(chosen, mock_run.call_args[0][0])
+
+    @mock.patch('start._current_model_in_hammerspace', return_value=False)
+    @mock.patch('start.subprocess.run')
     def test_sluggie_name_without_extension_routes_to_patch_sluggie(self, mock_run, _mock_hs_check):
         with tempfile.TemporaryDirectory() as temp_dir:
             sluggie = os.path.join(temp_dir, 'model.sluggie')
@@ -588,7 +621,7 @@ class NeedsHammerspaceTests(unittest.TestCase):
         self.assertTrue(self.needs({'UseHammerspace': True, 'Submeshes': [{}]}))
 
     def test_model_level_hammerspace_fields(self):
-        for field in ('CustomSubmeshes', 'BoneHierarchyEdited',
+        for field in ('DonorEntry', 'CustomSubmeshes', 'BoneHierarchyEdited',
                       'AdditionalTextureDescriptors', 'DesiredTextureAssignments'):
             with self.subTest(field=field):
                 self.assertTrue(self.needs({'Submeshes': [{}], field: [{'x': 1}]}))

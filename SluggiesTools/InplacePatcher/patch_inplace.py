@@ -236,6 +236,10 @@ with open(json_path, 'r') as f:
 
 if "SluggiesModel" not in data:
     abort(f"JSON does not contain a 'SluggiesModel' entry: {json_path}")
+if data["SluggiesModel"].get("DonorEntry") is not None:
+    # A slot export's offsets are its embedded donor block's, not the DAT's.
+    abort(f"{os.path.basename(json_path)} is a slot export (it carries its own donor block): only the "
+          "Hammerspace patcher can write it (start.py --patch does).")
 
 submeshes = data["SluggiesModel"].get("Submeshes", [])
 if not submeshes:

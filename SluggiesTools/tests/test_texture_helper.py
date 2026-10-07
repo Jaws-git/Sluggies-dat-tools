@@ -2237,6 +2237,17 @@ class ResolvePngToTextureTests(unittest.TestCase):
             self.assertEqual(os.path.basename(target.sluggie_path), "model.sluggie")
             self.assertEqual(target.texture_index, 0)
 
+    def test_bare_name_found_twice_is_refused(self):
+        # A copied model folder holds the same PNG name: the bare name has no single target.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            descriptors = [{"TextureIndex": 0, "TextureFileName": "0.png", "Width": 64, "Height": 64, "Format": 0x6}]
+            self._make_tree(temp_dir, descriptors=descriptors)
+            self._make_tree(temp_dir, descriptors=descriptors, model_name="model copy")
+
+            with self.assertRaisesRegex(ValueError, "exists 2 times") as caught:
+                resolve_png_to_texture("0.png", search_dir=temp_dir)
+            self.assertIn(os.path.join("model copy", "tex", "0.png"), str(caught.exception))
+
     def test_not_in_tex_folder(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             from PIL import Image

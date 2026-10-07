@@ -1139,7 +1139,7 @@ class BuildModelBlockTests(unittest.TestCase):
         self.assertEqual(route_events, ['find', 'patch', 'patch'])
         patch_fst.assert_called_once_with(123456)
         zero_original.assert_called_once_with(18, 0)
-        write_dumps.assert_called_once_with('fixture.sluggie', 0x1000, 42, b'model-block')
+        write_dumps.assert_called_once_with('fixture.sluggie', 0x1000, 42, b'model-block', original_block=None)
 
     def test_write_operation_accepts_explicit_aligned_destination(self):
         build = main.ModelBlockBuild(

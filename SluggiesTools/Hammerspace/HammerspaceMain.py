@@ -1,3 +1,4 @@
+import io
 import os
 import re
 import sys
@@ -44,6 +45,58 @@ import act_rebuild
 def _source_dat_path(absolute_offset: int) -> str:
     """Return the DAT containing data at an exported absolute offset."""
     return hh.OUTPUT_DAT if absolute_offset >= hh.BASE_SIZE else hh.INPUT_DAT
+
+
+# A slot export (Roster/slot_export.py) carries the DOL entry it was read
+# from: ``DonorEntry`` = {"Offset": its first byte's address, "Data": the
+# entry}. While BuildModelBlock builds such a .sluggie, every donor read comes
+# from that entry instead of the DAT files.
+DONOR_ENTRY_KEY = 'DonorEntry'
+_EMBEDDED_DONOR: tuple[int, bytes] | None = None
+
+
+def donor_entry(model: dict) -> tuple[int, bytes] | None:
+    """``(offset, bytes)`` of a ``.sluggie``'s embedded donor entry, or None (the donor is in ``1_Input``)."""
+    entry = model.get(DONOR_ENTRY_KEY)
+    if entry is None:
+        return None
+    try:
+        offset, data = _hex(entry['Offset']), _decode(entry['Data'], model.get('UseBase64', True))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f'{DONOR_ENTRY_KEY} is unreadable: {exc}') from exc
+    if not data:
+        raise ValueError(f'{DONOR_ENTRY_KEY} holds no bytes')
+    return offset, bytes(data)
+
+
+class _PlacedDonor(io.BytesIO):
+    """The embedded donor entry, read with absolute DAT offsets."""
+
+    def __init__(self, base: int, data: bytes):
+        super().__init__(data)
+        self._base = base
+
+    def seek(self, pos, whence=0):
+        if whence == 0:
+            if pos < self._base:
+                raise ValueError(f'read at 0x{pos:08X} is before the embedded donor entry (0x{self._base:08X})')
+            pos -= self._base
+        return super().seek(pos, whence) + self._base
+
+    def tell(self):
+        return super().tell() + self._base
+
+
+def _open_source(absolute_offset: int):
+    """A binary file to read donor bytes at ``absolute_offset`` from: the embedded donor entry while one is set,
+    else the DAT that holds the offset."""
+    if _EMBEDDED_DONOR is None:
+        return open(_source_dat_path(absolute_offset), 'rb')
+    base, data = _EMBEDDED_DONOR
+    if not base <= absolute_offset < base + len(data):
+        raise ValueError(f'donor read at 0x{absolute_offset:08X} is outside the embedded donor entry '
+                         f'0x{base:08X}+{len(data):,}')
+    return _PlacedDonor(base, data)
 
 
 # ---------------------------------------------------------------------------
@@ -3301,6 +3354,7 @@ class ModelBlockBuild:
     section_modes: SectionModes
     section_sizes: dict[str, int]
     validation_report: dict
+    donor_block: bytes | None = None    # a slot export's embedded donor entry (DonorEntry), else None
 
 
 # ---------------------------------------------------------------------------
@@ -4467,7 +4521,7 @@ def CloneGPL(model_offset: int, model_length: int) -> bytes:
     the raw GPL bytes unchanged.  No pointer fixups needed (all internal
     GPL pointers are GPL-section-relative or DOLayout-relative).
     """
-    with open(_source_dat_path(model_offset), 'rb') as f:
+    with _open_source(model_offset) as f:
         f.seek(model_offset)
         hdr = f.read(0x20)
         gpl_off = struct.unpack_from('>I', hdr, 0x04)[0]
@@ -4486,7 +4540,7 @@ def CloneGPL(model_offset: int, model_length: int) -> bytes:
 def PatchGPLMaterialStates(gpl_bytes: bytes, data: dict, model_offset: int) -> bytes:
     """Patch aliased Type-7 material bytes over an otherwise verbatim donor GPL."""
 
-    with open(_source_dat_path(model_offset), 'rb') as source:
+    with _open_source(model_offset) as source:
         source.seek(model_offset + 0x04)
         raw = source.read(4)
     if len(raw) != 4:
@@ -4532,7 +4586,7 @@ def PatchGPLMaterialStates(gpl_bytes: bytes, data: dict, model_offset: int) -> b
 def PatchGPLPositionArrays(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes:
     """Patch validated same-size position arrays over an otherwise cloned GPL."""
 
-    with open(_source_dat_path(model_offset), 'rb') as source:
+    with _open_source(model_offset) as source:
         source.seek(model_offset + 0x04)
         raw = source.read(4)
     if len(raw) != 4:
@@ -4559,7 +4613,7 @@ def PatchGPLPositionArrays(gpl_bytes: bytes, model: dict, model_offset: int) -> 
 def PatchGPLUVArrays(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes:
     """Patch same-size edited UV/normal arrays over an otherwise cloned donor GPL."""
 
-    with open(_source_dat_path(model_offset), 'rb') as source:
+    with _open_source(model_offset) as source:
         source.seek(model_offset + 0x04)
         raw = source.read(4)
     if len(raw) != 4:
@@ -4673,7 +4727,7 @@ def PatchGPLUVArrays(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes:
 def PatchGPLUVRebuild(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes:
     """Append resized UV/list payloads and redirect pointers over cloned GPL."""
 
-    with open(_source_dat_path(model_offset), 'rb') as source:
+    with _open_source(model_offset) as source:
         source.seek(model_offset + 0x04)
         raw = source.read(4)
     if len(raw) != 4:
@@ -5021,7 +5075,7 @@ def CloneACT(model_offset: int, model_length: int) -> bytes:
 
     Returns the raw ACT bytes unchanged, or b'' if the model has no ACT section.
     """
-    with open(_source_dat_path(model_offset), 'rb') as f:
+    with _open_source(model_offset) as f:
         f.seek(model_offset)
         hdr = f.read(0x20)
         act_off = struct.unpack_from('>I', hdr, 0x08)[0]
@@ -5050,7 +5104,7 @@ def _act_section_absolute(source_model_offset: int) -> int:
     ``SRTOffset`` (``ACT.absolute + orientationPTR``) into an ACT-section-relative
     offset, which stays valid after the hammerspace block is relocated.
     """
-    with open(_source_dat_path(source_model_offset), 'rb') as f:
+    with _open_source(source_model_offset) as f:
         f.seek(source_model_offset)
         hdr = f.read(0x20)
     if len(hdr) < 0x20:
@@ -5284,7 +5338,7 @@ def CloneTEX(model_offset: int, model_length: int) -> bytes:
 
     Returns the raw TEX bytes unchanged, or b'' if the model has no TEX section.
     """
-    with open(_source_dat_path(model_offset), 'rb') as f:
+    with _open_source(model_offset) as f:
         f.seek(model_offset)
         hdr = f.read(0x20)
         tex_off = struct.unpack_from('>I', hdr, 0x0c)[0]
@@ -5459,7 +5513,7 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
                     f"image_data_offset={tex.image_data_offset} or "
                     f"image_data_length={tex.image_data_length} is zero"
                 )
-            with open(_source_dat_path(tex.image_data_offset), 'rb') as f:
+            with _open_source(tex.image_data_offset) as f:
                 f.seek(tex.image_data_offset)
                 image_bytes = f.read(tex.image_data_length)
             if len(image_bytes) != tex.image_data_length:
@@ -5470,7 +5524,7 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
                 )
             image_payloads.append((idx, image_bytes))
             if tex.palette_data_offset and tex.palette_data_length:
-                with open(_source_dat_path(tex.palette_data_offset), 'rb') as f:
+                with _open_source(tex.palette_data_offset) as f:
                     f.seek(tex.palette_data_offset)
                     palette_bytes = f.read(tex.palette_data_length)
                 if len(palette_bytes) != tex.palette_data_length:
@@ -5582,7 +5636,7 @@ def BuildSKNSkinningDataCopyOnly(parsed: SluggieParsed, gpl_result: GPLBuildResu
     if not parsed.model_offset:
         return b''
 
-    with open(_source_dat_path(parsed.model_offset), 'rb') as f:
+    with _open_source(parsed.model_offset) as f:
         f.seek(parsed.model_offset)
         hdr = f.read(0x20)
         skn_off = struct.unpack_from('>I', hdr, 0x10)[0]
@@ -5973,7 +6027,7 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
 
 def CloneSKN(model_offset: int, model_length: int) -> bytes:
     """Clone the SKN section verbatim, excluding ptr6/ptr7/ptr8 sections."""
-    with open(_source_dat_path(model_offset), 'rb') as f:
+    with _open_source(model_offset) as f:
         f.seek(model_offset)
         hdr = f.read(0x20)
         skn_off = struct.unpack_from('>I', hdr, 0x10)[0]
@@ -5994,7 +6048,7 @@ def CloneSKN(model_offset: int, model_length: int) -> bytes:
 
 def CloneTrailingSections(model_offset: int, model_length: int) -> tuple[bytes, int]:
     """Clone the contiguous ptr6/ptr7/ptr8 tail and return its original offset."""
-    with open(_source_dat_path(model_offset), 'rb') as f:
+    with _open_source(model_offset) as f:
         f.seek(model_offset)
         hdr = f.read(0x20)
         offsets = [
@@ -6147,7 +6201,7 @@ def CloneHEADER(model_offset: int) -> bytes:
     original sizes and reassembled in the same order, these pointers remain
     valid without any fixups.
     """
-    with open(_source_dat_path(model_offset), 'rb') as f:
+    with _open_source(model_offset) as f:
         f.seek(model_offset)
         data = f.read(0x20)
     _slogger.info(f"[CloneHEADER] 0x20 bytes from offset 0x{model_offset:08X}", source="hammerspace.main")
@@ -6376,7 +6430,19 @@ def BuildModelBlock(
     resolve the PNGs. Without ``ReimportTextures`` (or when ``sluggie_path``
     is absent), the rebuilt TEX section clones every texture payload from
     INPUT dt_na.dat, which is byte-equivalent to the clone path.
+
+    A slot export's ``DonorEntry`` is the donor instead of the DOL route:
+    every donor read comes from it (``_open_source``).
     """
+    global _EMBEDDED_DONOR
+    previous, _EMBEDDED_DONOR = _EMBEDDED_DONOR, donor_entry(data['SluggiesModel'])
+    try:
+        return _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, texture_plan)
+    finally:
+        _EMBEDDED_DONOR = previous
+
+
+def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, texture_plan) -> ModelBlockBuild:
     modes = section_modes or SectionModes()
     _validate_section_modes(modes)
 
@@ -6428,7 +6494,11 @@ def BuildModelBlock(
         _merge_duplicate_texture_additions(model, sluggie_path)
     chunk_number = model['ChunkNumber']
     file_index = model['FileIndex']
-    original_offset, original_length = hh.readDolEntry(chunk_number, file_index)
+    donor = _EMBEDDED_DONOR
+    if donor is not None:
+        original_offset, original_length = donor[0], len(donor[1])
+    else:
+        original_offset, original_length = hh.readDolEntry(chunk_number, file_index)
     if original_offset == -1 or original_length <= 0:
         raise ValueError(
             f'Invalid donor DOL entry for chunk={chunk_number}, file_index={file_index}: '
@@ -6440,7 +6510,7 @@ def BuildModelBlock(
     route_prefix_size = 0
     route_container = b''
     archive_layout = None
-    if source_model_offset >= hh.BASE_SIZE:
+    if source_model_offset >= hh.BASE_SIZE and donor is None:
         source_model_offset = _rebase_hammerspace_resident_source(
             model, source_model_offset, source_model_length,
             original_offset, original_length,
@@ -6454,7 +6524,7 @@ def BuildModelBlock(
     if route_prefix_size or route_suffix_size:
         # The DOL entry holds more than this model, so read all of it: the
         # bytes around the model have to be carried into the new block.
-        with open(_source_dat_path(original_offset), 'rb') as source:
+        with _open_source(original_offset) as source:
             source.seek(original_offset)
             route_container = source.read(original_length)
         if len(route_container) != original_length:
@@ -6751,9 +6821,10 @@ def BuildModelBlock(
         report['assembled_size'] = len(block)
         report['original_size'] = original_length
         report['size_delta'] = len(block) - original_length
-    if UntanglePolicy.is_split_dir(chunk_number) and model.get('TextureDescriptors'):
+    if donor is None and UntanglePolicy.is_split_dir(chunk_number) and model.get('TextureDescriptors'):
         # Unedited textures were cloned from the vanilla block; give them back
         # the untangled bytes the .sluggie's texture names were exported with.
+        # (An embedded donor holds the exported bytes already.)
         with open(hh.INPUT_DAT, 'rb') as source:
             source.seek(original_offset)
             vanilla_entry = source.read(original_length)
@@ -6774,6 +6845,7 @@ def BuildModelBlock(
         section_modes=modes,
         section_sizes=section_sizes,
         validation_report=report,
+        donor_block=donor[1] if donor is not None else None,
     )
 
 
@@ -6861,6 +6933,7 @@ def WriteModelBlock(
         build.original_offset,
         build.original_length,
         build.block,
+        original_block=build.donor_block,
     )
     if target is None:
         LodTextureSync.sync_partner_of_high(chunk_number, file_index, build.block, high_before)
@@ -7234,7 +7307,8 @@ def PromoteInplaceEdits(model: dict, modes: SectionModes) -> SectionModes:
     """Make an in-place ``.sluggie``'s edits reach a hammerspace build.
 
     A targeted patch (SlotTarget) is always a hammerspace build, because the
-    in-place patcher writes over the source's own block. The hammerspace
+    in-place patcher writes over the source's own block; so is a slot export
+    (``DonorEntry``), whose donor is not in the DAT. The hammerspace
     builder reads the same fields with two exceptions, handled here:
 
     * in-place UV edits have no ``UVFacesDataEdited``, and the builder only
@@ -7251,12 +7325,12 @@ def PromoteInplaceEdits(model: dict, modes: SectionModes) -> SectionModes:
         return modes
     if any(obj.get('PositionPoseEdits') for obj in (model.get('FacialPoseDataEdited') or {}).get('Objects', [])):
         raise ValueError('this file carries facial pose edits, which only the in-place patcher applies; '
-                         'it cannot be patched into another slot')
+                         'it cannot be patched into another slot, and a slot export not at all')
     skin = model.get('SkinData') or {}
     entries = [entry for key in ('SK1s', 'SK2s', 'SKAccs') for entry in skin.get(key) or []]
     if any(entry.get('VertexCntEdited') is not None for entry in entries):
         raise ValueError('this file changes skin entry vertex counts in place, which only the in-place '
-                         'patcher applies; it cannot be patched into another slot')
+                         'patcher applies; it cannot be patched into another slot, and a slot export not at all')
     use_b64 = model.get('UseBase64', True)
     gpl, skn = modes.gpl, modes.skn
     for submesh in model.get('Submeshes') or []:
@@ -7403,7 +7477,11 @@ if __name__ == '__main__':
         _high_before = LodPartnerGuard.read_current_block(_chunk, _index)
         _split_baseline = None
         if UntanglePolicy.is_split(_chunk, _index):
-            _split_baseline, _notes = UntangledTextures.split_baseline(_chunk, _index, _model)
+            # a slot export's texture offsets are its own block's: the route's exported .sluggie names the
+            # untangled textures
+            _baseline_model = (UntangledTextures.find_sluggie_model(_chunk, _index)
+                               if donor_entry(_model) is not None else _model)
+            _split_baseline, _notes = UntangledTextures.split_baseline(_chunk, _index, _baseline_model)
             for _note in _notes:
                 _slogger.info(f'[Untangle] {_note}', source='hammerspace.main')
         _success, _removed_offset, _removed_length = hh.removeModelFromHammerspace(
@@ -7448,7 +7526,7 @@ if __name__ == '__main__':
         _parser.error('--clone cannot be combined with build section modes')
 
     try:
-        if _target is not None or _args.validate_only:
+        if _target is not None or _args.validate_only or donor_entry(_model) is not None:
             _modes = PromoteInplaceEdits(_model, _modes)
         _build = BuildModelBlock(_data, _modes, sluggie_path=_args.sluggies_path,
                                  tex_png_overrides=_tex_png_overrides)

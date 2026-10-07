@@ -42,6 +42,7 @@ Hammerspace is used for:
 - vertices moved between bones, or skin data that no longer fits its original size;
 - normals that split where the original model shares one normal (Overwrite Normals);
 - the unused characters (folders 89-94);
+- slot exports (**Export as .sluggie** in the character grid, `Custom <name> NN` folders): they carry their own copy of the model they were read from, which only Hammerspace can build from (see the Roster Guide, "Exporting a slot as `.sluggie` files");
 - earlier Hammerspace edits on parts you didn't select this time, so they aren't lost.
 
 Everything else, such as moving vertices, editing UVs without new seams, shape keys, specular strength or a same-size PNG edit, stays in place. A model that is in hammerspace from an earlier patch and now exports in place is moved back automatically when you patch it.

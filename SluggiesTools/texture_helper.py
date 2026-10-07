@@ -6,6 +6,7 @@ import os
 import struct
 import subprocess
 import tempfile
+import model_files
 import slogger
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -431,7 +432,8 @@ def resolve_png_to_texture(
 
     1. If ``png_path`` is not an existing file and ``search_dir`` is given,
        ``os.walk(search_dir)`` for an exact basename match (mirrors
-       ``start.py``'s ``run_patching`` search).
+       ``start.py``'s ``run_patching`` search); a name found more than once
+       raises ``model_files.AmbiguousNameError``.
     2. Require ``basename(dirname(png)) == 'tex'``; ``model_dir = dirname(tex_dir)``.
     3. Find exactly one ``*.sluggie`` in ``model_dir`` (error if 0 or >1).
     4. Load the ``.sluggie`` and read ``SluggiesModel['TextureDescriptors']``.
@@ -450,18 +452,14 @@ def resolve_png_to_texture(
     if os.path.isfile(png_path):
         located = os.path.abspath(os.fspath(png_path))
     elif search_dir is not None:
-        matches = [
-            os.path.join(root, f)
-            for root, _, files in os.walk(search_dir)
-            for f in files
-            if f == name
-        ]
-        if not matches:
+        # A name found more than once raises model_files.AmbiguousNameError (a ValueError).
+        found = model_files.find_unique(os.fspath(search_dir), name)
+        if found is None:
             raise ValueError(
                 f"PNG not found: '{name}' "
                 f"(searched {os.path.basename(os.path.abspath(os.fspath(search_dir)))})"
             )
-        located = os.path.abspath(matches[0])
+        located = os.path.abspath(found)
     else:
         raise ValueError(f"PNG not found: '{name}'")
 

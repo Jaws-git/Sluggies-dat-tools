@@ -32,6 +32,7 @@ SLOT_PLAN_REL = os.path.join('3_Output_Dat', '_gui', 'slot', 'plan.json')
 EDITS_REL = os.path.join('3_Output_Dat', '_gui', 'slot', 'edits.json')
 PACK_PLAN_REL = os.path.join('3_Output_Dat', '_gui', 'pack', 'plan.json')
 SWITCH_PLAN_REL = os.path.join('3_Output_Dat', '_gui', 'switch', 'plan.json')
+SLOT_EXPORT_REL = os.path.join('3_Output_Dat', '_gui', 'slot_export.json')    # Roster/slot_export.RESULT_FILE
 PACK_DIR_REL = 'Roster_Packs'                   # where the pack dialogs start
 PACK_EXTENSION = '.sluggiesroster'
 # start.py modes whose commands can change what the grid shows: the tab re-reads after them
@@ -762,6 +763,7 @@ STAT_RESET = 'stat_reset'                     # clears one slot's stat edits (Ro
 
 COPY_MULTIPLE = 'Cannot copy multiple characters at once'
 COPY_LABEL, PASTE_LABEL = 'Copy', 'Paste'
+EXPORT_LABEL = 'Export as .sluggie'
 
 
 def copy_edit(target: int, source: int) -> dict:
@@ -773,7 +775,7 @@ def context_menu(state: dict, members: list, copied: int | None, pack_pending: b
                  locked: bool) -> list[tuple[str, bool, str | None]]:
     """The right-click menu of a grid square or a colour-wheel swatch: ``(label, enabled, why disabled)``. A square
     with several characters gets only a disabled line; one character gets Copy and Paste (Paste needs a copied
-    character other than this one)."""
+    character other than this one), then Export as .sluggie."""
     if len(members) != 1:
         return [(COPY_MULTIPLE, False, 'Open the square and right-click one of its characters.')]
     cid = members[0]
@@ -788,7 +790,32 @@ def context_menu(state: dict, members: list, copied: int | None, pack_pending: b
         paste_why = 'The copied character is no longer on the grid.'
     else:
         paste_why = busy or pack
-    return [(COPY_LABEL, copy_why is None, copy_why), (PASTE_LABEL, paste_why is None, paste_why)]
+    return [(COPY_LABEL, copy_why is None, copy_why), (PASTE_LABEL, paste_why is None, paste_why),
+            (EXPORT_LABEL, busy is None, busy)]
+
+
+def export_command(cid: int) -> tuple:
+    """Export as .sluggie: the slot as the game holds it into ``2_Output_Models/Custom <name> NN``."""
+    return ('--export-slot', hex_id(cid))
+
+
+def export_result(root_dir: str) -> str | None:
+    """The folder the last slot export wrote (``Roster/slot_export``), or None (it failed)."""
+    try:
+        with open(os.path.join(root_dir, SLOT_EXPORT_REL), 'r', encoding='utf-8') as f:
+            return json.load(f).get('folder')
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def export_pending_dialog(state: dict | None, cid: int, pending: PendingEdits) -> 'SlotDialog':
+    """Asked before "Export as .sluggie" while the slot has pending edits: the export takes the game as it is."""
+    who = f'{name_of(state, cid) if state else hex_id(cid)} ({hex_id(cid)})'
+    lines = [(f'{who} has pending edits (not written to the game yet):', TEXT)]
+    lines += [(f'  {line}', WARN) for line in pending.lines(cid)]
+    lines.append(('The export takes the slot as the game holds it now, so they are not in it. To include them, '
+                  'Cancel and run "Patch Game" first.', TEXT))
+    return SlotDialog(f'Export {who} without its pending edits?', lines, True)
 
 
 def stat_reset_edit(cid: int) -> dict:

@@ -170,7 +170,8 @@ def split_at_baseline(chunk_number: int, file_index: int, models_dir: str = _MOD
 
 
 def find_sluggie_model(chunk_number: int, file_index: int, models_dir: str = _MODELS_DIR) -> dict | None:
-    """The exported ``SluggiesModel`` for a route, searched in its dir folder."""
+    """The exported ``SluggiesModel`` for a route, searched in its dir folder (a slot export, ``DonorEntry``, is
+    another block's export: skipped)."""
     for path in sorted(glob.glob(os.path.join(glob.escape(models_dir), f'{chunk_number} *', '**', '*.sluggie'),
                                  recursive=True)):
         try:
@@ -178,6 +179,7 @@ def find_sluggie_model(chunk_number: int, file_index: int, models_dir: str = _MO
                 model = json.load(handle)['SluggiesModel']
         except (OSError, ValueError, KeyError):
             continue
-        if model.get('ChunkNumber') == chunk_number and model.get('FileIndex') == file_index:
+        if (model.get('ChunkNumber') == chunk_number and model.get('FileIndex') == file_index
+                and model.get('DonorEntry') is None):
             return model
     return None

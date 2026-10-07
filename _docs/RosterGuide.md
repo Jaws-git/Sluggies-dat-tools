@@ -269,6 +269,36 @@ Pending edits of the copied character are not copied: patch them first.
 - Miis keep their name, stats and the Mii icon; they cannot be pasted onto
   a new ID.
 
+## Exporting a slot as `.sluggie` files
+
+Right-click a character in the **Character grid** tab and choose **Export
+as .sluggie** (below Copy and Paste) to save the slot **as the game holds it
+now** as a model export you can edit in Blender and patch into other slots:
+
+```
+python start.py --export-slot 0x00
+```
+
+- **Where:** a new folder `2_Output_Models/Custom <name> NN`, laid out like a
+  regular export: the High and Low model, the bats and gloves, the `anm`
+  files, and the portraits the slot shows (`icon/` in the High model's
+  folder). `NN` starts at `01` and counts up when that folder or one of its
+  file names is already taken.
+- **Names:** the folders keep the base model's names (`78277664_mario.gpl`);
+  the `.sluggie` files get the folder's name and number behind the geo name
+  (`78277664_mario_FireMario01.gpl.sluggie`), so each file name is unique in
+  `2_Output_Models` and can be patched by name.
+- **Base model:** each file counts as the vanilla file its slot started
+  from: a stock character's own, or a new ID's model source. So the export
+  goes into any slot that model fits, like a regular export of it (a stock
+  slot needs the same skeleton), not just the one it came from.
+- **Own donor:** each `.sluggie` carries the slot's block it was read from
+  (`DonorEntry`), and every patch builds from that block. It therefore always
+  goes through Hammerspace, also after Blender exports it (add-on 0.8.4 or
+  newer). Files are larger than a regular export (the block rides along).
+- **Not in it:** pending edits of the slot (it asks first; patch them first
+  to include them), the name, stats and voice. Pasting (above) moves those.
+
 ## Several changes at once
 
 Several changes can go in one run with an edits file, a JSON list of

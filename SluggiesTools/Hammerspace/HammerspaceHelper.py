@@ -386,6 +386,7 @@ def writeDebugDumps(
     model_offset:  int,
     model_length:  int,
     block:         bytes,
+    original_block: bytes | None = None,
 ) -> None:
     """Write debug copies of the original and hammerspace model blocks.
 
@@ -397,15 +398,21 @@ def writeDebugDumps(
       * ``<sluggie_name>_Hammerspace.SluggDebugg`` — the assembled hammerspace
         block passed as ``block``.
 
+    ``original_block``: the original block when it is not in INPUT (a slot
+    export's embedded donor entry).
+
     Existing files with the same names are overwritten.
     """
     debug_dir = os.path.join(os.path.dirname(OUTPUT_DAT), 'SluggDebugg')
     os.makedirs(debug_dir, exist_ok=True)
 
     orig_path = os.path.join(debug_dir, f"{sluggie_name}_Original.SluggDebugg")
-    with open(INPUT_DAT, 'rb') as f_in:
-        f_in.seek(model_offset)
-        orig_block = f_in.read(model_length)
+    if original_block is not None:
+        orig_block = original_block
+    else:
+        with open(INPUT_DAT, 'rb') as f_in:
+            f_in.seek(model_offset)
+            orig_block = f_in.read(model_length)
     with open(orig_path, 'wb') as f_out:
         f_out.write(orig_block)
     _slogger.info(f"[Debug] Original block    → {orig_path}", source="hammerspace.helper")
