@@ -265,13 +265,14 @@ class BuildEntryTests(unittest.TestCase):
             result = main.BuildModelBlock(data, main.SectionModes(gpl='build'), sluggie_path=env.sluggie_path)
             self.assertTrue(result.validation_report['valid'], result.validation_report.get('errors'))
 
-    def test_mirrored_channel_ignores_separate_edits_with_a_warning(self):
-        warnings = []
+    def test_mirrored_channel_ignores_separate_edits_with_an_info(self):
+        warnings, infos = [], []
         edited = [(u + 0.5, v) for u, v in self.loop_uvs]
-        entry = self._entry(loop_uvs_by_channel={0: self.loop_uvs, 1: edited}, warnings=warnings)
+        entry = self._entry(loop_uvs_by_channel={0: self.loop_uvs, 1: edited}, warnings=warnings, infos=infos)
         self.assertEqual(entry['UVChannels'][0]['UVChannelData'], entry['UVChannels'][1]['UVChannelData'])
-        self.assertEqual(len(warnings), 1)
-        self.assertIn('mirrors channel 0', warnings[0])
+        self.assertEqual(warnings, [])
+        self.assertEqual(len(infos), 1)
+        self.assertIn('mirrors channel 0', infos[0])
 
     def test_missing_second_layer_falls_back_to_channel_0(self):
         warnings = []
@@ -453,8 +454,20 @@ class ImporterGlueTests(unittest.TestCase):
     def setUp(self):
         self.helpers = _load(IMPORTER_PATH, {
             '_submesh_owner_bones', '_surface_ranges_from_face_ids', '_rigid_rebuild_view', '_from_bytes',
-            '_has_edited_data', 'GEO_ID_FREE',
+            '_has_edited_data', 'GEO_ID_FREE', '_rigid_import_placement',
         }, {'struct': struct, 'FieldCodec': FieldCodec, '_to_bytes': FieldCodec.decode_field})
+
+    def test_donor_object_stays_on_its_donor_bone(self):
+        """User report 2026-10-07: after a Keep offset to bone move (no
+        RigidRebuild), both cap objects imported on the new bone."""
+        place = self.helpers['_rigid_import_placement']
+        plain = {'VertexBuffer': {}}
+        self.assertEqual(place(plain, 54, 54), (54, False))
+        self.assertEqual(place(plain, 54, 7), (54, True))
+        edited = {'VertexBuffer': {'VertexBufferDataEdited': 'x'}}
+        self.assertEqual(place(edited, 54, 7), (54, True))
+        self.assertEqual(place({'RigidRebuild': {'HostBoneId': 7}}, 54, 7), (54, True))
+        self.assertEqual(place(plain, None, None), (None, False))
 
     def test_owner_bones_follow_geo_id_edited(self):
         owners = self.helpers['_submesh_owner_bones']
@@ -508,3 +521,75 @@ class ImporterGlueTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class CarryUnselectedRebuildTests(unittest.TestCase):
+    """A RigidRebuild left on a submesh this export does not include keeps
+    its bone move and its PNG (user report 2026-10-07: Mario's cap rebuilt
+    onto bone 31 with a new-PNG surface lost both when only a new custom
+    submesh was exported, and the patcher refused the file)."""
+
+    def _model(self):
+        return {
+            'BoneHierarchy': [
+                {'BoneId': 54, 'GeoIdRaw': 1, 'Skinned': False},
+                {'BoneId': 31, 'GeoIdRaw': 0xFFFF, 'Skinned': True},
+                {'BoneId': 52, 'GeoIdRaw': 0xFFFF, 'Skinned': True},
+            ],
+            'Submeshes': [{}, {'MeshName': 'cap', 'RigidRebuild': {
+                'HostBoneId': 31,
+                'NewSurfaces': [{'SurfaceKey': 'sm1_new0', 'TemplateSource': 'builtin:rigid_spec_v1',
+                                 'TextureAssignment': {'AdditionalTextureFileName': 'cap.png'}}],
+            }}],
+            'CustomSubmeshes': [{'CustomSubmeshId': 'custom0', 'HostBoneId': 52}],
+        }
+
+    def _geo(self, model):
+        return {b['BoneId']: b.get('GeoIdEdited') for b in model['BoneHierarchy']}
+
+    def test_bone_move_and_png_are_kept(self):
+        model = self._model()
+        previous = [{'TextureFileName': 'cap.png', 'TemplateTextureIndex': 0}]
+        result = rre.carry_unselected_rebuilds(model, [0], previous)
+        self.assertEqual(result.errors, [])
+        self.assertEqual(result.additions, previous)
+        self.assertEqual(self._geo(model), {54: 0xFFFF, 31: 1, 52: None})
+        self.assertIn('kept its earlier rigid rebuild', result.messages[0])
+
+    def test_selected_submesh_is_left_to_the_export(self):
+        model = self._model()
+        result = rre.carry_unselected_rebuilds(model, [0, 1], [])
+        self.assertEqual((result.additions, result.messages, result.errors), ([], [], []))
+        self.assertEqual(self._geo(model), {54: None, 31: None, 52: None})
+
+    def test_lost_png_is_recovered_or_reported(self):
+        model = self._model()
+        self.assertIn('no longer lists', rre.carry_unselected_rebuilds(model, [0], []).errors[0])
+        result = rre.carry_unselected_rebuilds(self._model(), [0], [], lambda name, source: 3)
+        self.assertEqual(result.additions, [{'TextureFileName': 'cap.png', 'TemplateTextureIndex': 3}])
+        result = rre.carry_unselected_rebuilds(self._model(), [0], [], lambda name, source: None)
+        self.assertEqual(len(result.errors), 1)
+
+    def test_host_bone_taken_in_this_export_is_an_error(self):
+        model = self._model()
+        model['CustomSubmeshes'][0]['HostBoneId'] = 31
+        result = rre.carry_unselected_rebuilds(model, [0], [{'TextureFileName': 'cap.png'}])
+        self.assertIn("custom submesh 'custom0'", result.errors[0])
+        model = self._model()
+        model['BoneHierarchy'][1]['GeoIdEdited'] = 2
+        result = rre.carry_unselected_rebuilds(model, [0], [{'TextureFileName': 'cap.png'}])
+        self.assertIn('gives to submesh 2', result.errors[0])
+
+    def test_rebuild_on_its_own_bone_writes_no_geo_id(self):
+        model = self._model()
+        model['Submeshes'][1]['RigidRebuild']['HostBoneId'] = 54
+        result = rre.carry_unselected_rebuilds(model, [0], [{'TextureFileName': 'cap.png'}])
+        self.assertEqual(result.errors, [])
+        self.assertEqual(self._geo(model), {54: None, 31: None, 52: None})
+
+    def test_execute_carries_before_writing_the_texture_list(self):
+        source = EXPORTER_PATH.read_text(encoding='utf-8')
+        carry = source.index('RigidRebuildExport.carry_unselected_rebuilds(')
+        self.assertLess(source.index('encode_unskinned_bone_reassignments(candidates, data, warnings)'), carry)
+        self.assertLess(carry, source.index('data["SluggiesModel"]["AdditionalTextureDescriptors"] = additions'))
+        self.assertIn('custom_additions + new_surface_additions + carried.additions', source)

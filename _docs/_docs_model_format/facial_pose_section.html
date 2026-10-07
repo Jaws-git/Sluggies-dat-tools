@@ -122,5 +122,6 @@
     <ul>
         <li>Any SKN rebuild for a model with facial poses on skinned vertices must keep SK1/SK2 sources on the mirror. <code>BlockValidator</code> enforces this for every skinned model.</li>
         <li>A topology rebuild that renumbers skinned vertices must remap facial run lists as well, and the mirrored layout then follows from the new destinations.</li>
+        <li>The same holds for rigid targets: a facial object's runs name vertex indices of its submesh (Mario's <code>head</code>, submesh 2, carries both of his objects). Adding, deleting or reordering that submesh's vertices breaks the poses, so the tools refuse topology changes, Object Mode moves and new surfaces on any submesh a facial object references. Moving such a submesh to another bone by its GEO ID alone leaves its bytes, and so the runs, unchanged.</li>
     </ul>
 </body>

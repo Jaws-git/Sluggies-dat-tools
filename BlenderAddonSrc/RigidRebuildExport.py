@@ -447,12 +447,15 @@ def build_rigid_rebuild_entry(
     reasons: Sequence[str],
     use_base64: bool = True,
     warnings: Optional[List[str]] = None,
+    infos: Optional[List[str]] = None,
 ) -> dict:
     """Assemble ``Submeshes[i].RigidRebuild`` from bone-local geometry and
     per-loop attributes (indexed by Blender loop index), in the donor's own
     formats. *loop_uvs_by_channel* maps each donor UV channel to its per-loop
-    coordinates, or None when the Blender layer is missing."""
+    coordinates, or None when the Blender layer is missing. *infos* collects
+    expected, harmless notes (reported at INFO level)."""
     warnings = warnings if warnings is not None else []
+    infos = infos if infos is not None else []
     position_format = (RIGID_COMP_COUNT, donor.position_quantize)
     try:
         cse.check_position_range(object_name, host_bone_id, geometry, donor.position_quantize)
@@ -492,7 +495,7 @@ def build_rigid_rebuild_entry(
             mirror_source = 0
             if loop_uvs is not None and loop_uvs_by_channel.get(0) is not None \
                     and list(loop_uvs) != list(loop_uvs_by_channel[0]):
-                warnings.append(
+                infos.append(
                     f'{object_name}: UV channel 1 mirrors channel 0 in the donor (specular), so its '
                     'separate edits are ignored and channel 0 is written to both.'
                 )
@@ -540,6 +543,130 @@ IN_PLACE_CHANNEL_FIELDS = {
     'UVChannels': ('UVChannelDataEdited', 'UVFacesDataEdited'),
     'ColorChannels': ('ColorChannelDataEdited', 'ColorFacesDataEdited'),
 }
+
+
+GEO_ID_FREE = 0xFFFF
+
+
+@dataclass
+class CarriedRebuilds:
+    """What :func:`carry_unselected_rebuilds` decided."""
+    additions: List[dict]       # AdditionalTextureDescriptors entries to keep
+    messages: List[str]         # one info line per kept rebuild
+    errors: List[str]           # conflicts that must stop the export
+
+
+def _donor_geo_raw(bone: dict) -> int:
+    if bone.get('GeoIdRaw') is not None:
+        return int(bone['GeoIdRaw'])
+    if bone.get('Skinned'):
+        return GEO_ID_FREE
+    return int(bone.get('GeoId', GEO_ID_FREE))
+
+
+def carry_unselected_rebuilds(
+    model: dict,
+    exported_indices: Iterable[int],
+    previous_additions: Sequence[dict],
+    recover_addition=None,
+) -> CarriedRebuilds:
+    """Keep a ``RigidRebuild`` from an earlier export consistent when its
+    mesh is not part of this export.
+
+    Edits on unselected submeshes stay in the ``.sluggie`` (that is why
+    ``ExportMode.stale_hammerspace_submeshes`` forces Hammerspace for them),
+    but two model-level facts a rebuild depends on are re-derived from the
+    selection on every export: ``BoneHierarchy[].GeoIdEdited`` and
+    ``AdditionalTextureDescriptors``. Without this, a cap rebuilt onto
+    another bone with a new-PNG surface lost both, and the patcher refused
+    the file (host bone mismatch, unknown texture). Call after this
+    export's ``GeoIdEdited`` and custom submeshes are final.
+
+    - The rebuild's host bone move is written again as ``GeoIdEdited`` (old
+      owner free, host = the submesh), unless this export already gave
+      either bone to another mesh: then it is an error that names the mesh.
+    - Each ``AdditionalTextureFileName`` its new surfaces bind is kept from
+      *previous_additions*. One missing there (an export from before this
+      fix dropped it) is rebuilt by ``recover_addition(file_name,
+      template_source)`` when given, which returns the
+      ``TemplateTextureIndex`` or None when the PNG is gone; otherwise it is
+      an error.
+    """
+    exported = set(exported_indices)
+    bones = model.get('BoneHierarchy') or []
+    bone_by_id = {int(b['BoneId']): b for b in bones if 'BoneId' in b}
+    custom_hosts = {
+        int(cs['HostBoneId']): str(cs.get('CustomSubmeshId', '?'))
+        for cs in model.get('CustomSubmeshes') or [] if cs.get('HostBoneId') is not None
+    }
+    previous_by_name = {a.get('TextureFileName'): a for a in previous_additions or []}
+    result = CarriedRebuilds([], [], [])
+
+    def effective(bone: dict) -> int:
+        edited = bone.get('GeoIdEdited')
+        return int(edited) if edited is not None else _donor_geo_raw(bone)
+
+    for index, sub in enumerate(model.get('Submeshes') or []):
+        rebuild = sub.get('RigidRebuild')
+        if not rebuild or index in exported:
+            continue
+        name = sub.get('MeshName') or f'submesh {index}'
+        label = f"{name} (submesh {index}, not selected)"
+        fix = 'select it and export again, or re-import the model to drop the earlier edit'
+        host = int(rebuild.get('HostBoneId', -1))
+        owners = [bone_id for bone_id, bone in bone_by_id.items() if _donor_geo_raw(bone) == index]
+        if host not in bone_by_id:
+            result.errors.append(f'{label}: its earlier rebuild hosts it on unknown bone {host}; {fix}.')
+            continue
+        if host in custom_hosts:
+            result.errors.append(
+                f"{label}: its earlier rebuild moved it to bone_{host}, which this export gives to "
+                f"custom submesh '{custom_hosts[host]}'; {fix}.")
+            continue
+        if host not in owners:
+            current = effective(bone_by_id[host])
+            if current not in (GEO_ID_FREE, index):
+                result.errors.append(
+                    f'{label}: its earlier rebuild moved it to bone_{host}, which this export gives to '
+                    f'submesh {current}; {fix}.')
+                continue
+            taken = [o for o in owners if effective(bone_by_id[o]) not in (GEO_ID_FREE, index)]
+            if taken:
+                result.errors.append(
+                    f'{label}: its original bone_{taken[0]} now carries submesh '
+                    f'{effective(bone_by_id[taken[0]])}; {fix}.')
+                continue
+            for owner in owners:
+                bone_by_id[owner]['GeoIdEdited'] = GEO_ID_FREE
+            bone_by_id[host]['GeoIdEdited'] = index
+
+        missing, kept = [], []
+        for surface in rebuild.get('NewSurfaces') or []:
+            file_name = (surface.get('TextureAssignment') or {}).get('AdditionalTextureFileName')
+            if not file_name:
+                continue
+            addition = previous_by_name.get(file_name)
+            if addition is None and recover_addition is not None:
+                template_index = recover_addition(file_name, str(surface.get('TemplateSource') or ''))
+                if template_index is not None:
+                    addition = {'TextureFileName': file_name, 'TemplateTextureIndex': int(template_index)}
+                    previous_by_name[file_name] = addition
+            if addition is None:
+                missing.append(file_name)
+                continue
+            kept.append(file_name)
+            if all(a.get('TextureFileName') != file_name for a in result.additions):
+                result.additions.append(dict(addition))
+        if missing:
+            result.errors.append(
+                f"{label}: its earlier rebuild binds {', '.join(missing)}, which the file no longer "
+                f'lists; {fix}.')
+            continue
+        result.messages.append(
+            f'{label}: kept its earlier rigid rebuild (bone_{host}'
+            + (f", textures {', '.join(kept)}" if kept else '')
+            + '). Select it to change it.')
+    return result
 
 
 def strip_in_place_edits(sub: dict) -> None:

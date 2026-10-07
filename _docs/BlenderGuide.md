@@ -170,6 +170,7 @@ Rules:
 - Meshes with facial poses (Mario's head and the like) keep their geometry, transform and surfaces. Only **Reassign to new bone** with *Keep offset to bone* works on them.
 - The skinned body (the first mesh) keeps its old rules: no new materials, and faces move between its materials only as whole surfaces.
 - A Low (`_L_`) model is edited on its own; nothing is mirrored from the High model. The game switches to it at a distance.
+- A mesh you leave unselected keeps the edit an earlier export gave it, including its move to another bone and any new PNG on its new surfaces. The export log says so. To drop that edit, select the original (non-`_edit`) object and export again.
 
 **Reassign to new bone** (Sluggies sidebar, *Rigid mesh* box) moves the active rigid mesh to another free bone:
 - *Keep world position*: the mesh stays where it is and follows the new bone from now on (a rebuild).
@@ -177,7 +178,7 @@ Rules:
 
 **Add material** (same box) adds a new surface to the active rigid mesh or custom submesh (a custom submesh can carry as many as you like; its faces are split between its materials just like a rigid mesh's). Pick a template as for Add Submesh (`builtin:rigid_spec_v1` is the default; see the template list above), assign faces to the new slot (in Edit Mode the selected faces are assigned right away), and load a PNG into its empty Image Texture node. Export stops until that node has an image. A PNG the model already has just binds that texture; a new PNG is appended with **Reimport textures from tex folder** enabled (a Low model can only use existing textures). The hand-mitt templates `rigid_rhsp_v1` / `rigid_lhsp_v1` hide the surface's vertex-alpha-0 parts while that hand wears the mitt.
 
-A re-import of the exported file shows a rebuilt mesh as a second `<name>_edit` object on its new bone, with its new materials. Select only one of the two objects when exporting again.
+A re-import of the exported file always shows the original mesh unchanged on its original bone. Any edit, including a move with **Reassign to new bone** (either placement), appears as a second `<name>_edit` object on its current bone, with its new materials. Select only one of the two objects when exporting again: the `_edit` object keeps your changes, the original undoes them.
 
 #### Adding a new bone how-to
 A new bone gives a new submesh somewhere to attach when no free bone sits where you need one. It follows its parent bone and nothing else: it isn't animated and it can't drive skinning. Not available in stadiums (see above).

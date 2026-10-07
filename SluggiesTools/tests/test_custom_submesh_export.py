@@ -261,7 +261,7 @@ class ExportExecuteWiringTests(unittest.TestCase):
         self.assertIn('written += len(custom_submesh_entries)', source)
         self.assertLess(source.index('written += len(custom_submesh_entries)'),
                         source.index('if written == 0'))
-        self.assertLess(source.index('_merge_texture_additions(additions, custom_additions + new_surface_additions)'),
+        self.assertLess(source.index('custom_additions + new_surface_additions + carried.additions'),
                         source.index("data['SluggiesModel']['AdditionalTextureDescriptors'] = additions"))
 
     def test_execute_copies_external_textures_only_after_validation(self):

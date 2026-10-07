@@ -3047,7 +3047,7 @@ def _new_surface_entry(key, mat, texture_assignment):
 
 
 def encode_custom_submesh(context, obj, model, texture_assignment, warnings, use_base64=True,
-                          specular_strength=None, texture_assignments=None):
+                          specular_strength=None, texture_assignments=None, infos=None):
     """Encode one ``SluggiesCustomSubmesh`` object as a ``CustomSubmeshes``
     entry (PLAN_AddSubmesh.md Phase 6 step 2): triangulate, map world
     positions into host-bone space, range-check and quantize, and encode
@@ -3091,7 +3091,8 @@ def encode_custom_submesh(context, obj, model, texture_assignment, warnings, use
                 raise ValueError(f"{obj.name}: material '{mat.name}' has no resolved texture")
             additional_surfaces.append(_new_surface_entry(key, mat, texture_assignments[mat.name]))
         face_surface_indices = RigidRebuildExport.custom_submesh_face_surface_indices(routing)
-        warnings.append(RigidRebuildExport.surface_report(obj.name, routing))
+        (infos if infos is not None else warnings).append(
+            RigidRebuildExport.surface_report(obj.name, routing))
     return CustomSubmeshExport.build_custom_submesh_entry(
         obj.name, str(obj.get("CustomSubmeshId")), host_bone_id, template_source, plan,
         geometry, loop_normals, loop_uvs, loop_colors, texture_assignment, use_base64,
@@ -3579,7 +3580,7 @@ def _rigid_rebuild_plan(context, obj, submesh_index, target_submesh, model, warn
     )
 
 
-def _rigid_rebuild_entry(plan, texture_assignments, use_base64, warnings):
+def _rigid_rebuild_entry(plan, texture_assignments, use_base64, warnings, infos):
     """Encode one plan as its RigidRebuild entry. *texture_assignments* maps a
     new-surface material name to its resolved TextureAssignment."""
     new_surfaces = []
@@ -3589,7 +3590,7 @@ def _rigid_rebuild_entry(plan, texture_assignments, use_base64, warnings):
     return RigidRebuildExport.build_rigid_rebuild_entry(
         plan.obj.name, plan.donor, plan.host_bone_id, plan.geometry, plan.loop_normals,
         plan.loop_uvs, plan.loop_colors, plan.routing, new_surfaces, plan.reasons,
-        use_base64, warnings,
+        use_base64, warnings, infos,
     )
 
 
@@ -3853,6 +3854,8 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
 
         written = 0
         warnings = []
+        # Expected, harmless notes (e.g. faces per surface, mirrored UV 1).
+        infos = []
         # Non-fatal but severe conditions: the export still completes, yet part
         # of the user's edit was discarded. Reported at ERROR level so it is not
         # lost among ordinary warnings.
@@ -4041,7 +4044,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                         context, obj, model, custom_assignments[material.name],
                         warnings, use_base64,
                         material.get("SpecularStrength"),
-                        texture_assignments=custom_assignments,
+                        texture_assignments=custom_assignments, infos=infos,
                     ))
             except ValueError as exc:
                 self.report({"ERROR"}, str(exc))
@@ -4121,10 +4124,10 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             (obj, next(i for i, sm in enumerate(submeshes) if sm is target_submesh))
             for obj, target_submesh in object_submeshes
         ]
-        base_data, base_warnings, base_errors = data, warnings, errors
+        base_data, base_warnings, base_errors, base_infos = data, warnings, errors, infos
         while True:
             data = base_data if use_hammerspace else copy.deepcopy(base_data)
-            warnings, errors = list(base_warnings), list(base_errors)
+            warnings, errors, infos = list(base_warnings), list(base_errors), list(base_infos)
             written = 0
             pass_reasons = []
 
@@ -4135,7 +4138,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     # Whole-blob rebuild: none of the in-place edit fields may
                     # stay on the submesh (the patcher refuses the mix).
                     try:
-                        entry = _rigid_rebuild_entry(plan, new_surface_assignments, use_base64, warnings)
+                        entry = _rigid_rebuild_entry(plan, new_surface_assignments, use_base64, warnings, infos)
                     except ValueError as exc:
                         self.report({"ERROR"}, str(exc))
                         return {"CANCELLED"}
@@ -4468,6 +4471,10 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 [obj["VertexBufferOffset"] for obj, _index in object_submesh_indices],
             )
 
+        # INFO stays out of the report popup: the file browser shows only
+        # WARNING and above there; the Info editor still lists these.
+        for i in infos:
+            self.report({"INFO"}, i)
         for w in warnings:
             self.report({"WARNING"}, w)
         for e in errors:
@@ -4482,7 +4489,34 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         data["SluggiesModel"]["ReimportTextures"] = (
             self.reimport_textures and bool(local_texture_descriptors)
         )
-        additions = _merge_texture_additions(additions, custom_additions + new_surface_additions)
+        # A RigidRebuild left on an unselected submesh by an earlier export
+        # keeps its bone move and its PNGs (the two model-level fields above
+        # are rebuilt from the selection on every export).
+        carry_tex_dir = texture_dir or os.path.join(os.path.dirname(os.path.abspath(self.filepath)), 'tex')
+
+        def _recover_addition(file_name, template_source):
+            if not os.path.isfile(os.path.join(carry_tex_dir, file_name)):
+                return None
+            try:
+                return _custom_submesh_template_texture_index(data["SluggiesModel"], template_source)
+            except ValueError:
+                return None
+
+        carried = RigidRebuildExport.carry_unselected_rebuilds(
+            data["SluggiesModel"],
+            [index for _obj, index in object_submesh_indices],
+            data["SluggiesModel"].get("AdditionalTextureDescriptors") or [],
+            recover_addition=_recover_addition,
+        )
+        if carried.errors:
+            for message in carried.errors:
+                self.report({"ERROR"}, message)
+            return {"CANCELLED"}
+        for message in carried.messages:
+            self.report({"INFO"}, message)
+        additions = _merge_texture_additions(
+            additions, custom_additions + new_surface_additions + carried.additions,
+        )
         custom_texture_copies = custom_texture_copies + new_surface_texture_copies
         if additions:
             data["SluggiesModel"]["AdditionalTextureDescriptors"] = additions

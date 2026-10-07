@@ -657,6 +657,19 @@ def _has_edited_data(submesh):
     )
 
 
+def _rigid_import_placement(submesh, donor_owner, effective_owner):
+    """``(original_owner, make_edit)`` for importing a submesh.
+
+    The donor object is the unedited "before" view, so a rigid one always
+    sits on its donor bone. Every edit, a bone move included, shows on the
+    ``_edit`` object, which sits on the effective owner. (Until 2026-10-07 a
+    plain ``GeoIdEdited`` move without a ``RigidRebuild`` put the donor
+    object on the new bone too, so both copies showed in the edited place.)
+    """
+    moved = donor_owner is not None and effective_owner != donor_owner
+    return donor_owner, bool(_has_edited_data(submesh) or moved)
+
+
 def _edited_submesh_view(submesh):
     """Return a shallow copy of *submesh* with all *Edited fields promoted to
     their primary counterparts so existing decode_* helpers can be reused
@@ -1447,17 +1460,14 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
                              uv_channels, color_channels,
                              face_texture_indices=face_texture_indices, sluggie_dir=sluggie_dir,
                              submesh_meta=submesh, texture_file_map=texture_file_map)
-            # A rigid submesh follows its effective owner (GeoIdEdited first);
-            # with a RigidRebuild the donor object stays on the donor bone, as
-            # the "before" view, and the `_edit` object takes the new owner.
+            # The donor object stays on its donor bone as the "before" view;
+            # the `_edit` object shows every edit, a bone move included, on
+            # the effective owner (GeoIdEdited first).
             donor_owner, effective_owner = _submesh_owner_bones(bone_list or [], i)
             rebuilt = bool(submesh.get("RigidRebuild"))
-            original_owner = donor_owner if rebuilt else effective_owner
+            original_owner, make_edit = _rigid_import_placement(submesh, donor_owner, effective_owner)
             if arm_obj is not None:
-                add_vertex_groups(
-                    obj, i, bone_list, arm_obj,
-                    owner_bone_id=original_owner if original_owner != donor_owner else None,
-                )
+                add_vertex_groups(obj, i, bone_list, arm_obj)
                 obj.parent = arm_obj
             else:
                 _apply_import_rotation(obj)
@@ -1469,7 +1479,7 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
             imported += 1
 
             # Import the edited version of this submesh when one exists
-            if _has_edited_data(submesh):
+            if make_edit:
                 ev = _edited_submesh_view(submesh)
                 ev_vb = ev.get("VertexBuffer")
                 if ev_vb:
