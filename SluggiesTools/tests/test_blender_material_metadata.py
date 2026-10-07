@@ -58,8 +58,6 @@ def _load_texture_helpers():
         '_resolve_export_texture_context',
         '_partner_added_texture_descriptors',
         '_texture_export_toggles_required_message',
-        '_find_low_poly_partner',
-        '_lod_texture_reassignment_refused_message',
         '_custom_submesh_texture_layer',
         '_custom_submesh_template_texture_index',
         '_plan_external_texture_copy',
@@ -675,64 +673,6 @@ class BlenderMaterialTextureTests(unittest.TestCase):
             "Enable it before exporting. "
             "Materials: [body, right hand]",
         )
-
-
-class LowPolyPartnerTests(unittest.TestCase):
-    """Texture reassignment is refused on models with a low-poly partner
-    (Tiny Kong crashed unless some of L's surfaces were changed too)."""
-
-    def setUp(self):
-        helpers = _load_texture_helpers()
-        self.find = helpers['_find_low_poly_partner']
-        self.message = helpers['_lod_texture_reassignment_refused_message']
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-
-    def _model_dir(self, folder, chunk=75, geo_name=None):
-        path = os.path.join(self.tmp.name, folder)
-        os.makedirs(path)
-        model = {'ChunkNumber': chunk}
-        if geo_name:
-            model['ACTHeader'] = {'GeoName': geo_name}
-        sluggie = os.path.join(path, folder + '.sluggie')
-        with open(sluggie, 'w') as handle:
-            json.dump({'SluggiesModel': model}, handle)
-        return sluggie, model
-
-    def test_high_poly_with_exported_low_poly_sibling_has_a_partner(self):
-        high, model = self._model_dir('272147520_tiny_kong.gpl', geo_name='tiny_kong.gpl')
-        self._model_dir('272637184_L_tiny_kong.gpl', geo_name='L_tiny_kong.gpl')
-        self.assertEqual(self.find(high, model), '272637184_L_tiny_kong.gpl')
-
-    def test_low_poly_model_itself_has_no_partner_to_report(self):
-        self._model_dir('272147520_tiny_kong.gpl')
-        low, model = self._model_dir('272637184_L_tiny_kong.gpl', geo_name='L_tiny_kong.gpl')
-        self.assertIsNone(self.find(low, model))
-
-    def test_model_without_low_poly_sibling_has_no_partner(self):
-        stage, model = self._model_dir('649999360_sta08_boss_gesso.gpl', geo_name='sta08_boss_gesso.gpl')
-        self._model_dir('272637184_L_tiny_kong.gpl')
-        self.assertIsNone(self.find(stage, model))
-
-    def test_mii_pair_mixing_gpl_and_gplp_is_found(self):
-        high, model = self._model_dir('100_mii_m_blue.gplp', chunk=100, geo_name='mii_m_blue.gplp')
-        self._model_dir('200_L_mii_m_blue.gpl', chunk=100)
-        self.assertEqual(self.find(high, model), '200_L_mii_m_blue.gpl')
-
-    def test_sibling_of_another_chunk_is_not_a_partner(self):
-        high, model = self._model_dir('1_tiny_kong.gpl', chunk=75, geo_name='tiny_kong.gpl')
-        self._model_dir('2_L_tiny_kong.gpl', chunk=12)
-        self.assertIsNone(self.find(high, model))
-
-    def test_similar_stem_is_not_a_partner(self):
-        high, model = self._model_dir('1_mario.gpl', geo_name='mario.gpl')
-        self._model_dir('2_L_baby_mario.gpl')
-        self.assertIsNone(self.find(high, model))
-
-    def test_message_names_partner_materials_and_the_workaround(self):
-        text = self.message(['body_mat'], '272637184_L_tiny_kong.gpl')
-        for part in ('272637184_L_tiny_kong.gpl', 'body_mat', 'Dolphin', 'custom submeshes'):
-            self.assertIn(part, text)
 
 
 class CustomSubmeshTextureTests(unittest.TestCase):

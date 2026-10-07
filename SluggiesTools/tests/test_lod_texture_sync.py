@@ -85,8 +85,8 @@ class TextureBindsTests(unittest.TestCase):
 
 class PlanBindSyncTests(unittest.TestCase):
     def test_tiny_kong_retarget_is_mirrored_into_low_poly(self):
-        # Dolphin, 2026-09-27: HP slots 00/04/07 -> texture 5 crashed with L on
-        # texture 0, and worked once the same L binds were set to texture 5.
+        # The follow rule: L binds that were in step with HP's vanilla index
+        # take HP's new one; L's own slot-0a assignment (texture 2) is kept.
         plan = sync.plan_bind_sync(LOW_VANILLA, HIGH_EDITED, HIGH_VANILLA, HIGH_VANILLA, LOW_VANILLA)
         synced = _textures(sync.apply_edits(LOW_VANILLA, plan))
 
@@ -184,10 +184,14 @@ class PlanBindSyncTests(unittest.TestCase):
 
 
 class AutoSyncDefaultTests(unittest.TestCase):
-    def test_auto_sync_is_off_until_the_rule_is_known(self):
-        # Mirroring every followed bind crashed Tiny Kong (slot 09); see the
-        # LodTextureSync docstring.
+    def test_auto_sync_is_off(self):
+        # The follow rule can pick the wrong surface; see the LodTextureSync
+        # docstring.
         self.assertFalse(sync.AUTO_SYNC)
+
+
+def _info_texts() -> list[str]:
+    return [call.args[0] for call in sync._slogger.info.call_args_list]
 
 
 class LiveSyncTests(unittest.TestCase):
@@ -225,15 +229,15 @@ class LiveSyncTests(unittest.TestCase):
 
         self.assertEqual(len(plan.edits), 3)
         self.assertEqual([_textures(self._live_low())[(0, slot)] for slot in (0, 4, 7)], [5, 5, 5])
-        sync._slogger.warning.assert_called_once()
-        self.assertIn('set L_tiny_kong.gpl to 5', sync._slogger.warning.call_args.args[0])
+        sync._slogger.warning.assert_not_called()
+        self.assertTrue(any('set L_tiny_kong.gpl to 5' in text for text in _info_texts()))
 
     def test_dry_run_logs_but_writes_nothing(self):
         with mock.patch.object(guard, 'read_current_block', return_value=LOW_VANILLA):
             sync.sync_partner_of_high(75, 0, HIGH_EDITED, HIGH_VANILLA, dry_run=True)
 
         self.assertEqual(self._live_low(), LOW_VANILLA)
-        self.assertIn('would set', sync._slogger.warning.call_args.args[0])
+        self.assertTrue(any('would set' in text for text in _info_texts()))
 
     def test_writing_a_low_poly_model_syncs_it_to_the_live_high_poly(self):
         with mock.patch.object(guard, 'read_current_block', return_value=HIGH_EDITED):
@@ -258,14 +262,18 @@ class LiveSyncTests(unittest.TestCase):
 
         self.assertEqual(len(plan.edits), 3)
         self.assertEqual(self._live_low(), LOW_VANILLA)
-        sync._slogger.info.assert_not_called()
-        self.assertIn('not changed', sync._slogger.warning.call_args.args[0])
+        sync._slogger.warning.assert_not_called()
+        texts = _info_texts()
+        self.assertEqual(len(texts), 1)
+        self.assertIn('not changed', texts[0])
+        self.assertIn('cosmetic only', texts[0])
 
     def test_with_auto_sync_off_low_poly_block_is_written_unchanged(self):
         with mock.patch.object(sync, 'AUTO_SYNC', False), \
                 mock.patch.object(guard, 'read_current_block', return_value=HIGH_EDITED):
             self.assertIs(sync.sync_low_block(LOW_VANILLA, 75, 1), LOW_VANILLA)
-        sync._slogger.warning.assert_called_once()
+        sync._slogger.info.assert_called_once()
+        sync._slogger.warning.assert_not_called()
 
     def test_with_auto_sync_off_unpatched_low_poly_is_not_resynced(self):
         live = {0: HIGH_EDITED, 1: LOW_VANILLA}
@@ -286,7 +294,7 @@ class LiveSyncTests(unittest.TestCase):
 
         self.assertEqual(len(plan.edits), 3)
         self.assertEqual(self._live_low(), LOW_VANILLA)
-        sync._slogger.info.assert_not_called()
+        self.assertFalse(any('Synced' in text or 'Re-synced' in text for text in _info_texts()))
         self.assertIn('shared with route(s) (89,1)', sync._slogger.warning.call_args.args[0])
 
     def test_model_without_partner_is_left_alone(self):

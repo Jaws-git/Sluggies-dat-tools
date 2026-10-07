@@ -96,10 +96,10 @@ Everything else, such as moving vertices, editing UVs without new seams, shape k
 - Choosing a PNG the model already has (another texture from its `tex/` folder) just points the material at that texture. Nothing new is added.
 - The same PNG on several materials is stored only once.
 
-> [!WARNING]
-> **Not yet possible on player characters.** Every player character has a High model and a Low partner model (the Low model's folder name contains `_L_`). The Low model owns no textures and draws with the High model's textures. If the High model moves a material to another texture, some matching Low surfaces must follow, or the game crashes as soon as the Low model loads in a match. Character select still works, because it shows only the high-poly model. Those surfaces can't be matched reliably yet. So export refuses to move a material to another texture, new or existing, on any model that has an `_L_` partner folder next to it, and lists the affected materials.
-> - Still allowed: editing an existing PNG in place (same file name, so the Low model sees the change too), and new textures on custom submeshes.
-> - To give a character's existing surfaces a different texture, use Dolphin's custom texture loading instead.
+> [!NOTE]
+> **Player characters and their Low model.** Every player character has a High model and a Low partner model (the Low model's folder name contains `_L_`). The Low model owns no textures and draws with the High model's textures by number. When you move a High material to another texture, the Low model keeps its original textures, so at a distance the character shows the old look. This is only cosmetic. Moving a Low model's materials to other textures isn't supported by the add-on yet. Editing an existing PNG in place (same file name) changes both models.
+>
+> **Keep new textures small.** Every added texture counts toward the memory the game has for the whole scene. A character that grows too big (High and Low together) can crash on the field at random, even though character select works. A 1024x1024 texture alone adds 512 KB; 256x256 or 512x512 is usually enough.
 
 #### Adding a new submesh how-to
 A new submesh is a static (rigid) mesh that follows one bone, like a hat or a held item. It gets its own material and texture.

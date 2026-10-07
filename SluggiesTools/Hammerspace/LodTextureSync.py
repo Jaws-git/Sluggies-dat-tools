@@ -1,34 +1,27 @@
-"""Keep a low-poly (``L_*``) model's texture binds in step with its
-high-poly partner.
+"""Compare a low-poly (``L_*``) model's texture binds with its high-poly
+partner's, and optionally bring them in step.
 
 ``L_*`` models have no TEX section: their Type-1 display states bind texture
-indices into the high-poly model's TEX. Confirmed in Dolphin on 2026-09-27
-with Tiny Kong, one change per test: HP sub0 retargeted three binds (slots
-00/04/07) from texture 0 to an appended texture 5. With ``L_tiny_kong``'s
-matching binds still on texture 0, the game crashed the moment the low-poly
-model loaded in a match (char select loads only HP, so it worked). Moving L
-to hammerspace did not help, and neither did matching the specular bytes.
-Setting the same three L binds to texture 5, in place, fixed it.
+indices into the high-poly model's TEX. When the high-poly model moves a
+surface to another texture, the low-poly model keeps showing the old one at
+a distance. That is cosmetic only. A 2026-09-27 theory that some mismatched
+binds crash the game was withdrawn on 2026-10-07: a Dolphin re-test on Tiny
+Kong (High retargeted to an appended texture, Low vanilla or partly
+mirrored, small block) never crashed, while the same pair with a large
+unbound texture crashed on load with no bind change at all. The September
+crashes were the scene memory budget (see
+``_docs/_docs_model_format/texture_section.html#low-poly-binds``).
 
-Not every mismatch crashes: six vanilla pairs bind a slot differently, and
-the working Tiny Kong build kept L on the old index for two more retargeted
-HP slots. So this module does not demand identical binds. It lets L *follow*
-HP: an L bind that was in step with HP (it equals HP's vanilla or previous
-index for that slot) takes HP's new index. An L bind that differs from both
-is L's own assignment and is kept (and reported).
-
-**That rule is wrong, so AUTO_SYNC is off.** Confirmed in Dolphin on
-2026-09-27: following it also moved L slot 09 (HP retargeted it to 5 as
-well), and the game crashed again. With the same HP and only L slot 09
-back on texture 0, it works. So L slots 00/04/07 must follow HP's retarget
-and slot 09 must not. The real rule is unknown. Until it is, the patcher
-only logs the differences (warning level) and changes nothing.
+The follow rule (an L bind that was in step with HP takes HP's new index;
+one that differs is L's own assignment and is kept) is not a reliable
+cosmetic mirror either: the same Type-1 param bytes can name different
+surfaces in the two models (Tiny Kong's body: HP slot 07 draws the surface
+L draws through slot 09). So AUTO_SYNC stays off and the patcher only logs
+the differences at info level.
 
 Binds are matched by submesh (same index and mesh name in both models) and
-by the record's three param bytes plus texture layer. The same param bytes
-can mean different surfaces in different submeshes, so the submesh is part
-of the key. Custom submeshes appended to HP have no L counterpart and are
-never touched; so far they have not caused this crash.
+by the record's three param bytes plus texture layer. Custom submeshes
+appended to HP have no L counterpart and are never touched.
 """
 
 from __future__ import annotations
@@ -45,8 +38,8 @@ _DS_RECORD_SIZE = 0x10
 _TEXTURE_BIND_ID = 1
 _TEXTURE_INDEX_MASK = 0x1FFF
 
-# Write the planned L bind edits. Off until the real rule is known (see the
-# module docstring); with it off, differences are only logged.
+# Write the planned L bind edits. Off: the follow rule can pick the wrong
+# surface (see the module docstring); with it off, differences are only logged.
 AUTO_SYNC = False
 
 
@@ -216,7 +209,7 @@ def describe(plan: BindSyncPlan, high_name: str, low_name: str, chunk_number: in
         if difference.mirrored and not AUTO_SYNC:
             action = (
                 f'{low_name} not changed (the automatic sync is off; the follow '
-                f'rule would set {difference.new_texture}, but it is unconfirmed)'
+                f'rule would set {difference.new_texture})'
             )
         elif difference.mirrored:
             action = f'{"would set" if dry_run else "set"} {low_name} to {difference.new_texture}'
@@ -233,10 +226,8 @@ def describe(plan: BindSyncPlan, high_name: str, low_name: str, chunk_number: in
     return (
         f'[LOD] Texture assignments differ between {high_name} and {low_name} '
         f'(chunk {chunk_number}). A low-poly model binds textures by index into '
-        'the high-poly TEX. Some retargeted high-poly binds must be mirrored '
-        'into the low-poly model, others must not, and which is which is not '
-        'known yet; either mistake crashes the game when the low-poly model '
-        'loads in a match. Check the pair in Dolphin.\n' + '\n'.join(lines)
+        'the high-poly TEX, so at a distance these surfaces show the texture '
+        'listed for the low-poly model (cosmetic only).\n' + '\n'.join(lines)
     )
 
 
@@ -276,7 +267,7 @@ def sync_low_block(block: bytes, chunk_number: int, file_index: int, dry_run: bo
         return block
     plan = plan_bind_sync(block, high, high, vanilla, low_vanilla)
     if plan.differences:
-        _slogger.warning(describe(plan, *_pair_names(high, block), chunk_number, dry_run),
+        _slogger.info(describe(plan, *_pair_names(high, block), chunk_number, dry_run),
                          source='hammerspace.main')
     return apply_edits(block, plan) if AUTO_SYNC else block
 
@@ -316,7 +307,7 @@ def sync_partner_of_high(
 
     plan = plan_bind_sync(low, high_after, high_before, vanilla, low_vanilla)
     if plan.differences:
-        _slogger.warning(describe(plan, *_pair_names(high_after, low), chunk_number, dry_run),
+        _slogger.info(describe(plan, *_pair_names(high_after, low), chunk_number, dry_run),
                          source='hammerspace.main')
     if plan.edits and AUTO_SYNC and not dry_run:
         offset, length = hh.readOutputDolEntry(chunk_number, low_index)
