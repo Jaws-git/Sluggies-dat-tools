@@ -8,9 +8,10 @@ this script only (re)writes these six:
                                        character without one
 04_Unuseds_and_10_color_slots.json   + every wheel filled to 10 with open slots, and a wheel of 3 for every
                                        character without one
-05_extra _columns_12x4_grid.json     8-wide wheels on a 12x4 grid: the rest of the IDs are spread evenly over the
+05_Extra_Columns_12x4_grid.json      8-wide wheels on a 12x4 grid: the rest of the IDs are spread evenly over the
                                        characters without a wheel and the 7 new squares
-06_maximum_12x5_grid.json            04 + a 12x5 grid whose 19 new squares are open slots
+06_Extra_Columns_Max_12x5_grid.json  8-wide wheels, wheels of 3 for characters without one, and a 12x5 grid whose
+                                       19 new squares share the rest of the IDs (2-3 open slots each)
 
 It also draws the "empty slot" portrait into ``1_Input/_Icons/empty_slot_side.png`` / ``empty_slot_front.png``
 (only when missing, so an edited one stays).
@@ -42,7 +43,8 @@ WHEEL_SIZE = 10
 NEW_WHEEL_SIZE = 3               # characters without a wheel (the ID budget, see above)
 WHEEL_SIZE_8 = 8                 # presets 3 and 5: stock wheels hold up to 8
 BIGGER_NEW_WHEELS = 22           # preset 3: the first 22 characters without a wheel (by ID) get 4, not 3
-SQUARE_TEMPLATE = 0x04           # Peach: the character the game substitutes for an ID without own data (0x80367060)
+SQUARE_MAX = 3                   # preset 6: members per new square
+SQUARE_TEMPLATE = 0x04          # Peach: the character the game substitutes for an ID without own data (0x80367060)
 SWATCH_COUNT = 11
 UNUSED = [  # the six unused characters (spare rows) with the icon art shipped in 1_Input/_Icons
     ('0x47', '0x06', 'black', 'Black Yoshi', 'black_yoshi'),
@@ -134,6 +136,23 @@ def even_grid_slots(image: dolfile.DolImage, first: int, cols: int, rows_: int):
     return out, squares, sizes
 
 
+def square_grid_slots(image: dolfile.DolImage, first: int, cols: int, rows_: int):
+    """Preset 6: stock wheels to 8 and a wheel of 3 for every character without one, then every remaining ID
+    spread evenly over the new squares, at most SQUARE_MAX each. Returns (ids, squares)."""
+    out = wheel_slots(image, first, WHEEL_SIZE_8)
+    count = cols * rows_ - grid.SQUARE_HEADS
+    total = min(ids.MAX_ID - first + 1 - len(out), count * SQUARE_MAX)
+    cid, squares = first + len(out), []
+    for k in range(count):
+        members = []
+        for _ in range(total // count + (k < total % count)):
+            out.append(open_slot(cid, SQUARE_TEMPLATE, None, None))
+            members.append(out[-1]['id'])
+            cid += 1
+        squares.append(members)
+    return out, squares
+
+
 def preset(comment: str, **keys) -> dict:
     out = {'version': 1, 'comment': comment}
     out.update(keys)
@@ -173,24 +192,26 @@ def main() -> int:
         + slot_text, ids=slots, wheels=unused_wheels()))
     cols, rows = 12, 4
     out, squares, sizes = even_grid_slots(image, ids.FIRST_NEW, cols, rows)
-    write('05_extra _columns_12x4_grid.json', preset(
+    write('05_Extra_Columns_12x4_grid.json', preset(
         f'Preset 5: {cols}x{rows} grid. Stock wheels (incl. the six unused characters) hold up to {WHEEL_SIZE_8} '
         f'members; the remaining IDs are spread evenly over the {hosts} characters without a wheel and the '
         f'{len(squares)} new squares ({min(sizes)}-{max(sizes)} members each). All {len(out)} new IDs '
         f'(0x{ids.FIRST_NEW:02X}-0x{ids.MAX_ID:02X}) are open slots: ' + slot_text,
         ids=out, wheels=unused_wheels(), grid={'shape': [cols, rows], 'squares': squares}))
-    first_square = ids.FIRST_NEW + len(slots)
     cols, rows = 12, 5
-    count = cols * rows - grid.SQUARE_HEADS
-    sq = [open_slot(first_square + k, SQUARE_TEMPLATE, None, None) for k in range(count)]
-    write('06_maximum_12x5_grid.json', preset(
-        f'Preset 6: preset 4 on a {cols}x{rows} grid (Luigi on his own square) whose {count} new squares are open slots '
-        f'(0x{first_square:02X}-0x{first_square + count - 1:02X}), each playing as Peach (the game\'s fallback '
-        'character) until you assign it something else.',
-        ids=slots + sq, wheels=unused_wheels(),
-        grid={'shape': [cols, rows], 'squares': [[s['id']] for s in sq]}))
+    out, squares = square_grid_slots(image, ids.FIRST_NEW, cols, rows)
+    sizes = [len(s) for s in squares]
+    first_square = int(squares[0][0], 16)
+    write('06_Extra_Columns_Max_12x5_grid.json', preset(
+        f'Preset 6: {cols}x{rows} grid (Luigi on his own square). Stock wheels (incl. the six unused characters) hold '
+        f'up to {WHEEL_SIZE_8} members and every character without a wheel gets a wheel of {NEW_WHEEL_SIZE}; the '
+        f'remaining IDs (0x{first_square:02X}-0x{ids.FIRST_NEW + len(out) - 1:02X}) fill the {len(squares)} new '
+        f'squares ({min(sizes)}-{max(sizes)} members each). All {len(out)} new IDs are open slots: each plays as its '
+        'wheel\'s host (on a new square: Peach, the game\'s fallback character), shows the "empty slot" icon and the '
+        'name "Empty slot" until you assign it something else.',
+        ids=out, wheels=unused_wheels(), grid={'shape': [cols, rows], 'squares': squares}))
     icons = write_slot_icons()
-    print(f'presets written to {OUT}: {len(slots)} wheel slots, {count} square slots'
+    print(f'presets written to {OUT}: {len(slots)} wheel slots (preset 4), {sum(sizes)} square slots (preset 6)'
           + (f'; {", ".join(icons)} drawn into {ICON_DIR}' if icons else ''))
     return 0
 

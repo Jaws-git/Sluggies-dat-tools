@@ -236,6 +236,131 @@ With an `ids` key this is done in the moved tables, otherwise in place.
 *Dolphin* (2026-10-05): a stock character with Bowser's stats shows and plays
 them, for stock and new slots.
 
+## Stat values and the stat editor bridge
+
+The values Philenarion's Sluggers Stat Editor edits, where they are, and how
+Sluggies hands them to the editor and takes the edits back. Code:
+`SluggiesTools/StatEditor/` (`fields.py` is the one field table, `bridge.py`,
+`carry.py`, `apply.py`). The editor side is `sluggies_bridge.py` in the
+editor's own repository.
+
+**Per-character fields.** Nine of the moved tables hold everything the editor
+edits per character: `stats`, `pitchwindup`, `starpitch`, `stamina`,
+`changeup`, `traj`, `catchrange`, `hitbox`, `sizescale`. Field names are the
+editor's own list entries. A name that repeats in its list gets `#index`
+(`height#5`).
+
+| Editor field | Place | Type |
+|---|---|---|
+| stats 0–9 | stats row `+0x02`…`+0x0B` (stat `j` at `+j+2`) | u8 |
+| stats 10–17 (slap/charge size and power, bunting, speed, throwing, fielding) | `+0x0C`…`+0x1B` | u16 |
+| stats 18–21 (displayed pitching, batting, fielding, speed) | `+0x1C`…`+0x1F` | u8 |
+| stats 22–25 (curveball/charge pitch speed, curve, curse ball) | `+0x20`…`+0x27` | u16 |
+| chemistry towards stock ID `k` (0–2) | `+0x28 + k` (101 columns) | u8 |
+| stats 26/27 (traj, hit curve) | `traj` row `+0`/`+1` | u8 |
+| stats 28 (stamina) / 29 (star pitch type) | `stamina` / `starpitch` row | u16 / u8 |
+| pitching 0–2 / 3–4 | `pitchwindup` / `changeup` row | f32 |
+| size 0–1 / 2–11 / 12–13 | `sizescale` / `catchrange` / `hitbox` row | f32 |
+
+Stats row bytes 0–1 are the row's own ID and are never written.
+
+*Dolphin* (2026-10-06): after expansion the game reads only the moved tables,
+for stock and new IDs. The stock tables are no longer read. The
+character-select bars come from the "displayed" bytes (`+0x1C`…`+0x1F`), not
+from the internal stats. The two are independent: editing the internal stats
+does not move the bars.
+
+**Chemistry** lives in three places. Stock × stock is the stock row's column
+and is directional. Stock × new and new × stock are **one** byte in the new
+ID's row, at the stock ID's column, so that pair is symmetric. New × new is a
+separate directional 154 × 154 matrix (IDs `0x66`–`0xFF`) in the data
+section. Its address is read from the chemistry hook stub at `0x8015C880`
+(the stub's second `lis`/`addi` pair).
+
+**Global tables.** These never move.
+
+| Table | Address | Layout |
+|---|---|---|
+| speed | Fielding `0x80625898`, Baserunning `0x80626208` | 43 f32 each, indexed by the speed stat |
+| traj heights | `0x80626E88` | 24 × 25 u8 |
+| team stars | `0x8062BD50` | 12 teams × 41 events, s16 |
+| star handicap | `0x8062C128` | 4 × 2 f32 |
+| star boosts | `0x806318D8` | 16 rows of 12 bytes: u32 op (1 add, 2 mult), f32 amount, s16 min, s16 max |
+| handicap params | `0x801808EF`, `…8FB`, `…903`, `0x80180977`, `…983`, `…98B` | the low byte of six `addi`/`li` immediates in code |
+
+**Roster runs carry stat edits.** A roster run rebuilds `main.dol` from
+`1_Input` and so resets every stat value, globals and handicap immediates
+included (dry runs with marked bytes, 2026-10-06). The runner therefore
+reads the edits before the reset and writes them back afterwards, as it does
+for the game options (`carry.detect`/`apply` in `Roster/runner.py`). No stat
+record is kept anywhere else: the edits are re-derived from the DOL on every
+run, so derive → rebuild stays byte-identical.
+
+- A per-character field is an edit where the live row differs from the row the
+  roster writes without edits. That row is the stats source's vanilla row
+  (`bridge.baseline_rows`). Edits are keyed by ID and field. They follow the
+  ID into a moved table, and they survive a stats-source change: the other
+  fields take the new source's values.
+- Chemistry is keyed `(row ID, column ID)`. IDs keep their kind, so an edit
+  always lands in the same region.
+- Globals are compared with `1_Input`.
+- Edits of IDs the new roster lacks are dropped, with a log line.
+- Edits are carried as bytes, so floats round-trip exactly.
+- `--roster --remove` clears all stat edits; `--keep-stat-edits` keeps them.
+- The all-in-one export copies `1_Input/main.dol` and loses them all.
+
+**The bridge** is two JSON files in the editor's `Bridge/` folder. That folder
+sits next to `sluggers-stat-editor.exe`, or next to `editor.py` when the editor
+runs from source.
+
+- `stat_bridge.json` (format `sluggies-stat-bridge` v1) is written by
+  `start.py --stat-bridge-export FILE [--focus 0xNN]`. It holds:
+  - `files`: the paths to `main.dol` and `dt_na.dat`, and the DOL's SHA-1.
+  - `dol_sections`: address → file offset per section.
+  - `characters`: stock `0x00`–`0x64` plus the roster's new IDs, each with its
+    displayed name, family, stats and model source, and kind.
+  - `tables`: per table, the address, file offset, header, row size, row count
+    (256 when moved with new IDs, otherwise 101) and `moved`.
+  - `chemistry`: the three regions, with the new × new matrix's place.
+  - `globals`: the global tables' places.
+  - `baseline`: base64 rows the roster writes without stat edits. A row is
+    listed only where it differs from vanilla; new IDs are always listed, and
+    the new × new matrix comes whole. The editor uses these as its defaults.
+  - `focus`: an ID to preselect, or null.
+- `stat_edits.json` (format `sluggies-stat-edits` v1) is written by the
+  editor's **Send to Sluggies**. It holds only values that differ from what
+  the bridge reported, by ID and field key (`stats`/`pitching`/`size`/
+  `chemistry`), and globals as table → row → column. Rows and columns without
+  names are numbered from `"0"`. It never contains addresses.
+- **Applying** (`start.py --apply-stat-edits FILE... [--dry-run]`, slot op
+  `stat_edits`):
+  - Checks the file:
+    - the file must carry the current `main.dol`'s SHA-1;
+    - IDs, fields and keys must be known;
+    - every value must fit its storage;
+    - chemistry must be 0–2 and the star-boost op 1 or 2;
+    - a stock × new pair given both ways must not hold two different values.
+
+    Any failure refuses the whole set.
+  - Warns about values outside the editor's own input ranges (vanilla `0x0B`
+    has slap size 5, below the editor's minimum of 10), and about a character
+    with both a fielding and a baserunning ability, which the editor marks as
+    a crash.
+  - In a Patch Game batch, stat edit files and `reset:0xNN` items (clear one
+    character's edits back to the roster's values) run as one step before the
+    roster rebuild, which then carries them.
+- **Session lifecycle.** Sluggies writes the bridge and starts the editor.
+  Send to Sluggies writes the edits, deletes the bridge and closes the editor.
+  The editor deletes only that one bridge file, and only while it still holds
+  the bytes it read.
+  - When the editor exits, Sluggies moves `stat_edits.json` into
+    `3_Output_Dat/_gui/stat` and deletes what is left.
+  - Leftovers from a crash are handled at start-up: a bridge is deleted, and an
+    edits file is offered only if its hash still fits.
+  - Without a bridge file the editor runs Standalone. Its Gecko codes target
+    the vanilla addresses, so on an expanded game they silently miss the nine
+    moved tables.
+
 ## DOL hammerspace
 
 Two sections added to `main.dol`: code at `0x807B7000` (0x9000 bytes) and data
