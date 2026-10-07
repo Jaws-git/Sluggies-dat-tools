@@ -2599,7 +2599,7 @@ class ParseSluggieCustomSubmeshesTests(unittest.TestCase):
         }}
         cs = main.ParseSluggie(data).custom_submeshes[0]
         self.assertEqual(cs.vertex_quantize_info, 54)
-        submesh = main._custom_submesh_to_submesh(cs, 3, [], 0, b'')
+        submesh = main._custom_submesh_to_submesh(cs, 3, [], [])
         self.assertEqual(submesh.vertex_comp_count, 3)
         self.assertEqual(submesh.vertex_quantize_info, 54)
 

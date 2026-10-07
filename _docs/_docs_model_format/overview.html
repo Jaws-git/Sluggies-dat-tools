@@ -350,6 +350,15 @@
 
     </div>
 
+    <h2 id="editing">Editing notes</h2>
+    <p>Facts that matter when a model is rebuilt rather than read, each documented where its structure is:</p>
+    <ul>
+        <li>An unreferenced whole mesh blob is harmless, so a submesh can be replaced by a new blob before the GPL user data with its descriptor repointed (<a href="vertex_section.html#alignment">Moving blobs</a>).</li>
+        <li>A new surface is one canonical state group appended to a rigid list; earlier records never change (<a href="vertex_section.html#rigid-state-lists">Rigid submesh state lists</a>).</li>
+        <li>Colour arrays with quantization 48 hold 2-byte RGBA4444 entries, not RGBA8 (<a href="vertex_section.html#color-data">Color data</a>).</li>
+        <li>Which Type 7 shaders work on a character surface, and what the hand roles do, is in the <a href="vertex_section.html#type7">Type 7 catalogue</a>.</li>
+    </ul>
+
     <h2 id="alignment">32-Byte Alignment</h2>
     <p>The Wii Broadway CPU has 32-byte cache lines, the GX command processor fetches display lists in 32-byte bursts, and the GX texture image-base register drops the low 5 address bits. Some offsets in a model block must therefore be 32-byte aligned; many others are routinely unaligned in vanilla data. Do not pad every variable-length array: add zero padding only where the table below requires it.</p>
     <p>All alignments are relative to the start of the model block. Counts come from a survey of all 1,422 unique vanilla model blocks (337 skinned) and from scans of the 361 skinned <code>.sluggie</code> exports. "100%" means every observed instance was at 0 mod 32.</p>

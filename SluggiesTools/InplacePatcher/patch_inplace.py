@@ -27,6 +27,7 @@ OUTPUT_DAT = os.path.join(OUTPUT_DIR, 'dt_na.dat')
 import patch_skn_inplace as _skn
 import texture_helper as _tex
 import root_scale as _root_scale
+import bone_geo_inplace as _bone_geo
 from binfmt import comp_size as _comp_size
 from binfmt import decode_field as _decode_field
 from compact_channel import compact_channel
@@ -272,7 +273,6 @@ uv_patches = []   # (submesh_idx, ch_ind, file_offset, raw_bytes)
 normal_patches = []   # (submesh_idx, file_offset, raw_bytes)
 setting_patches  = []   # (submesh_idx, ds_idx, file_offset, raw_bytes)
 param_patches    = []   # (submesh_idx, ds_idx, file_offset, raw_bytes)
-bone_geo_patches = []   # (bone_id, file_offset, raw_bytes)
 
 skin_data = data["SluggiesModel"].get("SkinData")  # None for non-skinned models
 if skin_data is not None and not unpatch:
@@ -290,51 +290,9 @@ if bind_pose_scale == (1.0, 1.0, 1.0):
     bind_pose_scale = None
 
 
-def _bone_geo_raw_original(bd: dict) -> int:
-    if bd.get('GeoIdRaw') is not None:
-        return int(bd['GeoIdRaw'])
-    if bd.get('Skinned'):
-        return 0xFFFF
-    return int(bd.get('GeoId', 0xFFFF))
-
-
-if bone_hierarchy:
-    missing_offsets = []
-    for bd in bone_hierarchy:
-        if unpatch:
-            target_geo_raw = _bone_geo_raw_original(bd)
-        else:
-            if bd.get('GeoIdEdited') is None:
-                continue
-            target_geo_raw = int(bd['GeoIdEdited'])
-
-        if target_geo_raw < 0 or target_geo_raw > 0xFFFF:
-            abort(
-                f"Bone {bd.get('BoneId', '?')}: GeoId value {target_geo_raw} is out of range (0..65535)."
-            )
-
-        field_off = bd.get('GeoIdFieldOffset')
-        if not field_off:
-            missing_offsets.append(int(bd.get('BoneId', -1)))
-            continue
-
-        original_geo_raw = _bone_geo_raw_original(bd)
-        if target_geo_raw == original_geo_raw:
-            continue
-
-        bone_geo_patches.append((
-            int(bd.get('BoneId', -1)),
-            int(field_off, 16),
-            struct.pack('>H', target_geo_raw),
-        ))
-
-    if missing_offsets and not unpatch:
-        abort(
-            "This .sluggie contains non-skinned bone reassignment edits but is missing "
-            "BoneHierarchy.GeoIdFieldOffset metadata required for ACT in-place patching. "
-            "Re-export the model with the latest SluggiesTools export.py, then export from Blender again. "
-            f"Affected bones: {', '.join(str(x) for x in sorted(x for x in missing_offsets if x >= 0))}"
-        )
+# Keep offset to bone reassignments: only the ACT GeoId words change
+# (PLAN_EditRigidMeshes.md Phase 7 step 3; planner in bone_geo_inplace.py).
+bone_geo_patches = _bone_geo.bone_geo_patches(bone_hierarchy, unpatch, abort)
 
 for i, submesh in enumerate(submeshes):
     vb = submesh.get("VertexBuffer", {})
@@ -392,9 +350,13 @@ for i, submesh in enumerate(submeshes):
                 ch_ind = ch["UVChannelIndex"]
                 if ch_ind in new_uvs and len(new_uvs[ch_ind]) != ch["UVChannelLength"]:
                     reasons.append(f"UV ch {ch_ind} {ch['UVChannelLength']} → {len(new_uvs[ch_ind])} bytes")
-            _slogger.warning(
+            # ERROR, not a warning: the user's edit is not applied (legacy
+            # files only; a current export carries RigidRebuild instead and
+            # is refused below).
+            _slogger.error(
                 f"Submesh {i}: buffer size changed ({'; '.join(reasons)}). "
-                f"Buffer size changes are not currently supported; skipping.",
+                f"Buffer size changes cannot be patched in place; this submesh's edit is NOT applied. "
+                f"Re-export from Blender (a changed size is a Hammerspace export) and patch with start.py --patch.",
                 source="patch_inplace",
             )
             continue
@@ -438,10 +400,10 @@ for i, submesh in enumerate(submeshes):
                 loop_count,
             )
             if len(compact_norm) != nb["NormalBufferLength"]:
-                _slogger.warning(
+                _slogger.error(
                     f"Submesh {i}: normal buffer size changed "
                     f"({nb['NormalBufferLength']} → {len(compact_norm)} bytes). "
-                    f"Skipping normal patch.",
+                    f"The normal edit is NOT applied; re-export from Blender and patch with start.py --patch.",
                     source="patch_inplace",
                 )
             else:

@@ -713,6 +713,33 @@
               "minimum": 0,
               "maximum": 255,
               "description": "Specular intensity for this submesh's surface: byte 0 of the drawing Type-7 record's DisplayStateParamBytes (0-255, linear). Absent: the template's own value is kept. The Blender add-on starts a builtin: surface at 50 and a rigid:/derived: surface at its donor surface's strength."
+            },
+            "AdditionalSurfaces": {
+              "type": "array",
+              "description": "Further surfaces of this custom submesh, created in Blender with Add material, in append order (PLAN_EditRigidMeshes.md Phase 9). Each becomes a canonical T1 L0, [T1 L1], T4, T3, T6, T7 record group appended after the primary template's records, exactly like a rebuilt donor submesh's NewSurfaces: Type 1/6/7 from the template's effective state, Type 4 from the layers the group binds (never more than this submesh has UV channels), Type 3 from this submesh's attribute set and index widths. Absent or empty: the submesh draws through its primary surface only.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "SurfaceKey": {"type": "string", "pattern": "^.+_new[0-9]+$", "description": "The material's SurfaceId, <CustomSubmeshId>_new<K>."},
+                  "MaterialName": {"type": "string", "description": "The Blender material's name, for messages."},
+                  "TemplateSource": {"type": "string", "pattern": "^(rigid|derived|builtin):.+$", "description": "Same meaning as CustomSubmeshes[].TemplateSource."},
+                  "TextureAssignment": {
+                    "type": "object",
+                    "description": "Same shape as CustomSubmeshes[].TextureAssignment: exactly one of DonorTextureIndex or AdditionalTextureFileName.",
+                    "properties": {
+                      "DonorTextureIndex": {"type": "integer", "minimum": 0},
+                      "AdditionalTextureFileName": {"type": "string"}
+                    },
+                    "additionalProperties": false
+                  },
+                  "SpecularStrength": {"type": "integer", "minimum": 0, "maximum": 255, "description": "Type-7 param byte 0 of the surface; absent keeps the template's value."}
+                },
+                "required": ["SurfaceKey", "TemplateSource", "TextureAssignment"]
+              }
+            },
+            "FaceSurfaceIndices": {
+              "type": "string",
+              "description": "One big-endian uint16 per triangle of FacesData: 0 = the primary surface (TemplateSource / TextureAssignment above), k = AdditionalSurfaces[k - 1]. Absent: every face draws through the primary surface. Every listed additional surface must be used by at least one face."
             }
           },
           "required": ["CustomSubmeshId", "MeshName", "HostBoneId", "TemplateSource", "VertexBufferData", "FacesCount", "FacesData", "UVChannels", "TextureAssignment"],

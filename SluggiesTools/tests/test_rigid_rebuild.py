@@ -428,6 +428,86 @@ class RigidRebuildBuildTests(unittest.TestCase):
         owners = result.validation_report['validator_facts']['act_geo_id_owners']
         self.assertEqual((owners[RIGID], owners[2]), ([OWNER], [FREE_BONE]))
 
+    # --- Phase 11 combined cases (PLAN_EditRigidMeshes.md) ---------------------
+
+    def test_rebuild_and_custom_submesh_share_one_appended_png(self):
+        """A cap-style new surface and a custom submesh on the same new PNG:
+        one AdditionalTextureDescriptors entry, two bindings to its index."""
+        from PIL import Image
+        Image.new('RGBA', (4, 4), (0, 0, 255, 255)).save(self.env.directory / 'tex' / 'shared.png')
+        self.model.update({
+            'ReimportTextures': True,
+            'AdditionalTextureDescriptors': [{'TextureFileName': 'shared.png', 'TemplateTextureIndex': 0}],
+        })
+        rebuild = _identity_rebuild(self.model)
+        rebuild['FaceSurfaceTable'] = [SURFACE, NEW_KEY]
+        rebuild['FaceSurfaceIndices'] = _u16s([0, 0, 0, 1, 1, 1])
+        rebuild['NewSurfaces'] = [_new_surface(texture={'AdditionalTextureFileName': 'shared.png'})]
+        self.model['Submeshes'][RIGID]['RigidRebuild'] = rebuild
+        custom = _custom_submesh(self.model, host_bone=FREE_BONE)
+        custom['TextureAssignment'] = {'AdditionalTextureFileName': 'shared.png'}
+        self.model['CustomSubmeshes'] = [custom]
+
+        new_index = synthetic_donor.TEXTURE_COUNT
+        plan = texture_helper.TexturePlan(entries=(texture_helper.TexturePlanEntry(
+            texture_index=new_index, texture_file_name='shared.png',
+            width=4, height=4, format=synthetic_donor.TEXTURE_FORMAT, format_name='CMPR',
+            image_data=bytes([0x33] * synthetic_donor.TEXTURE_PAYLOAD_LENGTH), palette_data=b'',
+            palette_entries=0, palette_format=None, template_texture_index=0,
+        ),))
+        with mock.patch.object(texture_helper, 'build_hammerspace_texture_plan', return_value=plan) as build_plan:
+            result, gpl = self._build(tex='build')
+        self.assertEqual(build_plan.call_count, 1)
+        self.assertEqual(result.validation_report['validator_facts']['tex_texture_count'], new_index + 1)
+        self.assertEqual(_blob(gpl, RIGID)['records'][6][4:8], bytes.fromhex(f'1111000{new_index}'))
+        self.assertEqual(_blob(gpl, 2)['records'][0][4:8], bytes.fromhex(f'1111000{new_index}'))
+        self.assertEqual(len(result.validation_report['validator_facts']['gpl_submesh_layout']), 3)
+
+    def test_rebuild_with_a_skinned_position_edit_in_one_build(self):
+        """Both paths at once: the rigid submesh is rebuilt while submesh 0
+        takes the slot-preserving position edit."""
+        skinned = self.model['Submeshes'][0]['VertexBuffer']
+        # The synthetic donor leaves absolute offsets at 0; the in-place
+        # position path needs the real one, read from the donor GPL.
+        blob_start = _blob(self.donor_gpl, 0)['start']
+        pos_header = struct.unpack_from('>I', self.donor_gpl, blob_start)[0]
+        pos_ptr = struct.unpack_from('>I', self.donor_gpl, blob_start + pos_header)[0]
+        skinned['VertexBufferOffset'] = f'0x{self.env.model_offset + 0x20 + blob_start + pos_ptr:x}'
+        donor_positions = bytearray(decode_field(skinned['VertexBufferData']))
+        donor_positions[0:2] = struct.pack('>h', 777)
+        skinned['VertexBufferDataEdited'] = base64.b64encode(bytes(donor_positions)).decode('ascii')
+        self.model['Submeshes'][RIGID]['RigidRebuild'] = _resized_rebuild(self.model, 9)
+        self.assertEqual(start.hammerspace_section_args(self.model)[:2], ['--gpl', 'build'])
+
+        result, gpl = self._build()
+        self.assertEqual(_record_faces(_blob(gpl, RIGID), 5), _fan(9))
+        self.assertEqual(_blob(gpl, 0)['positions'][2][:2], struct.pack('>h', 777))
+        donor_blob0 = _blob(self.donor_gpl, 0)
+        self.assertEqual(_blob(gpl, 0)['positions'][2][2:], donor_blob0['positions'][2][2:])
+
+    def test_swap_chain_rebuild_moves_bone_and_custom_takes_the_freed_one(self):
+        """G10 end to end: the rigid submesh leaves its bone for a free one
+        and a new custom submesh is hosted on the bone it just freed."""
+        bones = {int(b['BoneId']): b for b in self.model['BoneHierarchy']}
+        bones[OWNER]['GeoIdEdited'] = 0xFFFF
+        bones[FREE_BONE]['GeoIdEdited'] = RIGID
+        self.model['Submeshes'][RIGID]['RigidRebuild'] = _identity_rebuild(self.model, host_bone=FREE_BONE)
+        self.model['CustomSubmeshes'] = [_custom_submesh(self.model, host_bone=OWNER)]
+        result, gpl = self._build()
+        owners = result.validation_report['validator_facts']['act_geo_id_owners']
+        self.assertEqual((owners[RIGID], owners[2]), ([FREE_BONE], [OWNER]))
+        self.assertEqual(_blob(gpl, 2)['name'], b'cube')
+
+    def test_untouched_model_reports_no_rebuild_and_builds_identically(self):
+        """An export without edits takes no rebuild path and clones the GPL."""
+        self.assertEqual(ExportMode.model_level_reasons(self.model), [])
+        self.assertNotIn('RigidRebuild', self.model['Submeshes'][RIGID])
+        result = main.BuildModelBlock(
+            self.data, main.SectionModes(), sluggie_path=self.env.sluggie_path,
+        )
+        self.assertTrue(result.validation_report['valid'])
+        self.assertEqual(_gpl_section(result.block), self.donor_gpl)
+
     def test_splice_keeps_a_uv_rebuild_tail_at_its_distance(self):
         """A payload PatchGPLUVRebuild appended past the donor length is
         addressed blob-relative from the existing blobs, so it must not move

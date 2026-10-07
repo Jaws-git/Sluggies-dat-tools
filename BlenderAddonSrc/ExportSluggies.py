@@ -2405,16 +2405,25 @@ def _find_new_materials(obj, json_submesh, submesh_index=None):
 
     A custom submesh (``SluggiesCustomSubmesh``) has no donor submesh to compare
     against — it accepts exactly its own ``<CustomSubmeshId>_ds*`` SurfaceIds
-    (Phase 6 step 1 of PLAN_AddSubmesh.md) and rejects everything else.
+    (Phase 6 step 1 of PLAN_AddSubmesh.md) and its own Add-material surfaces
+    (``SluggiesNewSurface`` with ``SluggiesSurfaceOwner`` = its
+    ``CustomSubmeshId``, PLAN_EditRigidMeshes.md Phase 9) and rejects
+    everything else.
     """
     if obj.get("SluggiesCustomSubmesh"):
-        own_prefix = f'{obj.get("CustomSubmeshId")}_ds'
+        custom_id = str(obj.get("CustomSubmeshId"))
+        own_prefix = f'{custom_id}_ds'
         new_materials = []
         for slot in obj.material_slots:
             mat = slot.material
             if mat is None:
                 continue
             sid = mat.get("SurfaceId")
+            if mat.get("SluggiesNewSurface"):
+                owner = mat.get("SluggiesSurfaceOwner")
+                if owner != custom_id:
+                    new_materials.append((mat.name, f"belongs to {owner or 'another submesh'}, not {custom_id}"))
+                continue
             if not sid or not sid.startswith(own_prefix):
                 reason = (f"SurfaceId '{sid}' is not this custom submesh's own surface"
                           if sid else "no SurfaceId")
@@ -3002,13 +3011,53 @@ def _custom_submesh_loop_attributes(obj, warnings):
     return loop_normals, loop_uvs, loop_colors
 
 
+def _custom_submesh_additional_materials(obj):
+    """The Add-material surfaces of a custom submesh that at least one face
+    uses, keyed by surface key in slot order (PLAN_EditRigidMeshes.md Phase
+    9). A new-surface material no face uses is reported as ignored."""
+    custom_id = str(obj.get("CustomSubmeshId"))
+    used_slots = {poly.material_index for poly in obj.data.polygons}
+    materials, unused = {}, []
+    for slot_index, slot in enumerate(obj.material_slots):
+        mat = slot.material
+        if mat is None or not mat.get("SluggiesNewSurface") or mat.get("SluggiesSurfaceOwner") != custom_id:
+            continue
+        key = mat.get("SurfaceId")
+        if not key or not RigidRebuildExport.new_surface_key_matches(custom_id, key):
+            continue
+        if slot_index in used_slots:
+            materials.setdefault(key, mat)
+        else:
+            unused.append(mat.name)
+    return materials, unused
+
+
+def _new_surface_entry(key, mat, texture_assignment):
+    """One ``NewSurfaces`` / ``AdditionalSurfaces`` entry for an Add-material
+    surface *mat* with its resolved *texture_assignment*."""
+    surface = {
+        "SurfaceKey": key,
+        "MaterialName": mat.name,
+        "TemplateSource": str(mat.get("TemplateSource") or ""),
+        "TextureAssignment": dict(texture_assignment),
+    }
+    if "SpecularStrength" in mat:
+        surface["SpecularStrength"] = max(0, min(255, int(mat["SpecularStrength"])))
+    return surface
+
+
 def encode_custom_submesh(context, obj, model, texture_assignment, warnings, use_base64=True,
-                          specular_strength=None):
+                          specular_strength=None, texture_assignments=None):
     """Encode one ``SluggiesCustomSubmesh`` object as a ``CustomSubmeshes``
     entry (PLAN_AddSubmesh.md Phase 6 step 2): triangulate, map world
     positions into host-bone space, range-check and quantize, and encode
     per-loop normals, colors and UVs for the template's attribute set.
-    Raises ValueError with the object named."""
+    Raises ValueError with the object named.
+
+    *texture_assignments* maps each material name of the object's Add-material
+    surfaces to its resolved TextureAssignment; the faces are then routed per
+    material and those surfaces become ``AdditionalSurfaces``
+    (PLAN_EditRigidMeshes.md Phase 9)."""
     host_bone_id = _detect_uniform_vertex_bone_id(obj)
     if host_bone_id is None:
         raise ValueError(
@@ -3025,10 +3074,28 @@ def encode_custom_submesh(context, obj, model, texture_assignment, warnings, use
         context, obj, bone_hierarchy, host_bone_id, warnings,
     )
     loop_normals, loop_uvs, loop_colors = _custom_submesh_loop_attributes(obj, warnings)
+
+    additional_surfaces, face_surface_indices = [], None
+    additional_materials, _unused = _custom_submesh_additional_materials(obj)
+    if additional_materials:
+        primary = _custom_submesh_material(obj)
+        routing = RigidRebuildExport.route_custom_submesh_faces(
+            obj.name, str(obj.get("CustomSubmeshId")), str(primary.get("SurfaceId")),
+            geometry.triangles, [poly.material_index for poly in obj.data.polygons],
+            _slot_surfaces(obj),
+        )
+        warnings.extend(routing.warnings)
+        for key in routing.new_keys:
+            mat = additional_materials[key]
+            if texture_assignments is None or mat.name not in texture_assignments:
+                raise ValueError(f"{obj.name}: material '{mat.name}' has no resolved texture")
+            additional_surfaces.append(_new_surface_entry(key, mat, texture_assignments[mat.name]))
+        face_surface_indices = RigidRebuildExport.custom_submesh_face_surface_indices(routing)
+        warnings.append(RigidRebuildExport.surface_report(obj.name, routing))
     return CustomSubmeshExport.build_custom_submesh_entry(
         obj.name, str(obj.get("CustomSubmeshId")), host_bone_id, template_source, plan,
         geometry, loop_normals, loop_uvs, loop_colors, texture_assignment, use_base64,
-        warnings, specular_strength,
+        warnings, specular_strength, additional_surfaces, face_surface_indices,
     )
 
 
@@ -3083,14 +3150,19 @@ def validate_custom_submeshes(custom_objects, donor_candidates, model, warnings)
         hosts.append(HostBones.CustomSubmeshHost(obj.name, host_bone_id))
         material = _custom_submesh_material(obj)
         shape_keys = mesh.shape_keys.key_blocks if mesh.shape_keys else []
+        own_surfaces, unused_surfaces = _custom_submesh_additional_materials(obj)
+        own_names = {mat.name for mat in own_surfaces.values()}
         warnings.extend(CustomSubmeshExport.ignored_state_warnings(
             obj.name,
             host_bone_id,
             [key.name for key in shape_keys],
-            [slot.material.name for slot in obj.material_slots if slot.material is not None],
+            [slot.material.name for slot in obj.material_slots
+             if slot.material is not None and slot.material.name not in own_names],
             material.name if material is not None else "",
             [group.name for group in obj.vertex_groups],
         ))
+        for name in unused_surfaces:
+            warnings.append(f"{obj.name}: material '{name}' is used by no face and is not exported.")
 
     sluggie_records = HostBones.bone_records_from_hierarchy(
         model.get("BoneHierarchy") or [], model.get("SkinData")
@@ -3513,15 +3585,7 @@ def _rigid_rebuild_entry(plan, texture_assignments, use_base64, warnings):
     new_surfaces = []
     for key in plan.routing.new_keys:
         mat = plan.new_surface_materials[key]
-        surface = {
-            "SurfaceKey": key,
-            "MaterialName": mat.name,
-            "TemplateSource": str(mat.get("TemplateSource") or ""),
-            "TextureAssignment": dict(texture_assignments[mat.name]),
-        }
-        if "SpecularStrength" in mat:
-            surface["SpecularStrength"] = max(0, min(255, int(mat["SpecularStrength"])))
-        new_surfaces.append(surface)
+        new_surfaces.append(_new_surface_entry(key, mat, texture_assignments[mat.name]))
     return RigidRebuildExport.build_rigid_rebuild_entry(
         plan.obj.name, plan.donor, plan.host_bone_id, plan.geometry, plan.loop_normals,
         plan.loop_uvs, plan.loop_colors, plan.routing, new_surfaces, plan.reasons,
@@ -3930,6 +3994,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 validate_custom_submeshes(
                     custom_submesh_candidates, candidates, model, warnings
                 )
+                primary_materials = []
                 custom_texture_entries = []
                 for obj in custom_submesh_candidates:
                     new_materials = _find_new_materials(obj, None)
@@ -3937,7 +4002,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                         names = ", ".join(f"'{n}' ({r})" for n, r in new_materials)
                         raise ValueError(
                             f"{obj.name}: custom submeshes support only their own surface "
-                            f"material ({names})"
+                            f"materials ({names})"
                         )
                     material = _custom_submesh_material(obj)
                     if material is None:
@@ -3948,7 +4013,15 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     template_texture_index = _custom_submesh_template_texture_index(
                         model, str(obj.get("TemplateSource") or "")
                     )
+                    primary_materials.append(material)
                     custom_texture_entries.append((material, template_texture_index))
+                    # Add-material surfaces on the custom submesh resolve their
+                    # images the same way (PLAN_EditRigidMeshes.md Phase 9).
+                    additional_materials, _unused = _custom_submesh_additional_materials(obj)
+                    for extra in additional_materials.values():
+                        custom_texture_entries.append(
+                            (extra, int(extra.get("TemplateTextureIndex", -1)))
+                        )
                 (
                     custom_additions, custom_assignments, custom_texture_copies,
                 ) = _resolve_custom_submesh_texture_changes(
@@ -3963,13 +4036,12 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                         "a custom submesh on it can only use an existing texture: "
                         + ", ".join(obj.name for obj in custom_submesh_candidates)
                     )
-                for obj, (material, _template_index) in zip(
-                    custom_submesh_candidates, custom_texture_entries
-                ):
+                for obj, material in zip(custom_submesh_candidates, primary_materials):
                     custom_submesh_entries.append(encode_custom_submesh(
                         context, obj, model, custom_assignments[material.name],
                         warnings, use_base64,
                         material.get("SpecularStrength"),
+                        texture_assignments=custom_assignments,
                     ))
             except ValueError as exc:
                 self.report({"ERROR"}, str(exc))

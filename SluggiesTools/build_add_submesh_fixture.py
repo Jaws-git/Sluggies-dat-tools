@@ -588,6 +588,7 @@ DONOR_FOREIGN_ADDITION_KEYS = (
     "CustomSubmeshes",
     "AdditionalTextureDescriptors",
     "DesiredTextureAssignments",
+    "RigidRebuild",   # Submeshes[i]: a rebuilt donor rigid submesh (PLAN_EditRigidMeshes.md)
 )
 
 

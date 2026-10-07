@@ -356,8 +356,9 @@ def hammerspace_section_args(model):
         if submesh.get('RigidRebuild')
     ]
     custom_texture_added = any(
-        (entry.get('TextureAssignment') or {}).get('AdditionalTextureFileName')
+        (owner.get('TextureAssignment') or {}).get('AdditionalTextureFileName')
         for entry in custom_submeshes
+        for owner in [entry] + list(entry.get('AdditionalSurfaces') or [])
     ) or any(
         (surface.get('TextureAssignment') or {}).get('AdditionalTextureFileName')
         for rebuild in rigid_rebuilds

@@ -30,6 +30,12 @@ Cases (one build each, so a Dolphin result is attributable):
                       PNG appended to the TEX section (probe 6)
   newsurface-builtin  Mario cap: the +y half on builtin:rigid_spec_v1 with the
                       checker PNG, specular strength 50 (probe 6)
+  custom-surfaces     Phase 9: a cube custom submesh on Mario's finger bone 49
+                      with three surfaces, four faces each: the primary
+                      builtin:rigid_spec_v1 on the head texture, an added
+                      rigid:sm2_ds9 surface on the cap texture, and an added
+                      builtin:rigid_spec_v1 surface on the checker PNG
+                      (specular strength 50)
 
 Usage: python probe_rigid_rebuild.py CASE [--write | --unpatch]
 """
@@ -64,8 +70,14 @@ FINGER_BONE = 49
 GEO_ID_FREE = 0xFFFF
 CASES = (
     "identity", "topology", "retarget", "retarget-offset", "surfaces", "surfaces-empty",
-    "newsurface-rigid", "newsurface-derived", "newsurface-builtin",
+    "newsurface-rigid", "newsurface-derived", "newsurface-builtin", "custom-surfaces",
 )
+CUSTOM_ID = "probe_custom0"
+#: A cube of half-size CUBE_HALF game units around the host bone, 12
+#: triangles in Blender's loop_triangles shape (two per face, in face order).
+CUBE_HALF = 0.25
+_CUBE_CORNERS = [(x, y, z) for x in (-CUBE_HALF, CUBE_HALF) for y in (-CUBE_HALF, CUBE_HALF) for z in (-CUBE_HALF, CUBE_HALF)]
+_CUBE_QUADS = [(0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3)]
 
 
 def _b64(raw: bytes) -> str:
@@ -375,6 +387,101 @@ def prepare(case: str) -> tuple[Path, dict, int, dict, "hammerspace.SectionModes
     return path, data, index, expected, modes
 
 
+def _cube_triangles() -> list:
+    triangles = []
+    for polygon, (a, b, c, d) in enumerate(_CUBE_QUADS):
+        for corner in ((a, b, c), (a, c, d)):
+            loop = len(triangles) * 3
+            triangles.append(cse.Triangle(vertices=corner, loops=(loop, loop + 1, loop + 2), polygon_index=polygon))
+    return triangles
+
+
+def _cube_loop_attributes(triangles: list) -> tuple[list, list]:
+    normals, uvs = [], []
+    corner_uvs = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)]
+    for tri in triangles:
+        p0, p1, p2 = (_CUBE_CORNERS[v] for v in tri.vertices)
+        u = [p1[i] - p0[i] for i in range(3)]
+        v = [p2[i] - p0[i] for i in range(3)]
+        n = (u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0])
+        length = (n[0] ** 2 + n[1] ** 2 + n[2] ** 2) ** 0.5
+        for corner in range(3):
+            normals.append(tuple(c / length for c in n))
+            uvs.append(corner_uvs[corner])
+    return normals, uvs
+
+
+def prepare_custom_surfaces() -> tuple[Path, dict, int, dict, "hammerspace.SectionModes"]:
+    """Phase 9: a three-surface cube custom submesh on Mario's bone 49."""
+    path = MARIO
+    data = _load(path)
+    model = data["SluggiesModel"]
+    bones = {int(b["BoneId"]): b for b in model["BoneHierarchy"]}
+    if hammerspace._bone_geo_id_raw(bones[FINGER_BONE]) != GEO_ID_FREE:
+        raise ValueError(f"bone {FINGER_BONE} is not free")
+    host_bind = cse.bone_absolute_matrices(model["BoneHierarchy"])[FINGER_BONE]
+    identity = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]
+    triangles = _cube_triangles()
+    geometry = cse.bone_local_geometry(_CUBE_CORNERS, triangles, host_bind, identity, host_bind)
+    normals, uvs = _cube_loop_attributes(triangles)
+    template = "builtin:rigid_spec_v1"
+    plan = cse.attribute_plan(model, template)
+    head_texture = _effective_layer0_texture(model["Submeshes"][2]["DisplayStates"], "sm2_ds9")
+    cap_texture = _effective_layer0_texture(model["Submeshes"][1]["DisplayStates"], "sm1_ds5")
+    states0 = model["Submeshes"][0]["DisplayStates"]
+    _write_checker(path.parent / "tex")
+    model["ReimportTextures"] = True
+    model["AdditionalTextureDescriptors"] = [{
+        "TextureFileName": CHECKER_PNG,
+        "TemplateTextureIndex": _effective_layer0_texture(states0, states0[-1].get("SurfaceId")),
+    }]
+    surfaces = [
+        {"SurfaceKey": f"{CUSTOM_ID}_new0", "MaterialName": "probe_rigid", "TemplateSource": "rigid:sm2_ds9",
+         "TextureAssignment": {"DonorTextureIndex": cap_texture}},
+        {"SurfaceKey": f"{CUSTOM_ID}_new1", "MaterialName": "probe_builtin", "TemplateSource": template,
+         "TextureAssignment": {"AdditionalTextureFileName": CHECKER_PNG}, "SpecularStrength": 50},
+    ]
+    choice = [k // 4 for k in range(len(geometry.faces))]   # faces 0-3 primary, 4-7 new0, 8-11 new1
+    entry = cse.build_custom_submesh_entry(
+        "probe_cube", CUSTOM_ID, FINGER_BONE, template, plan, geometry, normals, uvs, None,
+        {"DonorTextureIndex": head_texture}, model.get("UseBase64", True), None, 50,
+        surfaces, choice,
+    )
+    model["UseHammerspace"] = True
+    model["CustomSubmeshes"] = [entry]
+    keys = [template] + [surface["SurfaceKey"] for surface in surfaces]
+    expected = {}
+    for face, k in zip(geometry.faces, choice):
+        expected.setdefault(keys[k], []).append(tuple(face))
+    return path, data, len(model["Submeshes"]), expected, hammerspace.SectionModes(gpl="build", tex="build")
+
+
+def check_custom(build: "hammerspace.ModelBlockBuild", index: int, expected: dict) -> None:
+    report = build.validation_report
+    if not report["valid"]:
+        raise ValueError("block invalid: " + "; ".join(report["errors"]))
+    gpl = _gpl_of(build.block)
+    blob = vis._read_blob(gpl, index)
+    drawing = [k for k, (record, _, _) in enumerate(blob["states"]) if record[0] == 7]
+    if len(drawing) != len(expected):
+        raise ValueError(f"{len(drawing)} drawing records for {len(expected)} surfaces")
+    setting = None
+    got_by_key = {}
+    for k, (record, primitive, residue) in enumerate(blob["states"]):
+        if record[0] == 3:
+            setting = int.from_bytes(record[4:8], "big")
+        if residue:
+            raise ValueError(f"record {k} primitive list is not 32-byte aligned")
+        if k in drawing:
+            faces = decodeDrawList(primitive, hammerspace._custom_submesh_type3_descriptors(setting)) if primitive else []
+            got_by_key[list(expected)[drawing.index(k)]] = [tuple(v["position"] for v in face) for face in faces]
+    for key, want in expected.items():
+        if got_by_key.get(key) != want:
+            raise ValueError(f"surface {key} draws {len(got_by_key.get(key, []))} faces, expected {len(want)}")
+    print(f"  custom submesh sm{index}: {len(blob['states'])} records, {blob['position'][0]} positions; "
+          + ", ".join(f"{key} {len(faces)}" for key, faces in expected.items()))
+
+
 def _retarget(model: dict, old_bone: int, new_bone: int, submesh_index: int) -> None:
     bones = {int(b["BoneId"]): b for b in model["BoneHierarchy"]}
     if hammerspace._bone_geo_id_raw(bones[new_bone]) != GEO_ID_FREE:
@@ -456,11 +563,16 @@ def main() -> int:
             ok, *_ = hh.removeModelFromHammerspace(model["ChunkNumber"], model["FileIndex"])
             print(f"{path.name}: {'restored' if ok else 'not in hammerspace'}")
             return 0
-        path, data, index, expected, modes = prepare(args.case)
-        model = data["SluggiesModel"]
-        donor_gpl = hammerspace.CloneGPL(int(model["ModelOffset"], 16), model["ModelLength"])
-        build = hammerspace.BuildModelBlock(data, modes, sluggie_path=path)
-        check(build, donor_gpl, index, model["Submeshes"][index], expected, args.case)
+        if args.case == "custom-surfaces":
+            path, data, index, expected, modes = prepare_custom_surfaces()
+            build = hammerspace.BuildModelBlock(data, modes, sluggie_path=path)
+            check_custom(build, index, expected)
+        else:
+            path, data, index, expected, modes = prepare(args.case)
+            model = data["SluggiesModel"]
+            donor_gpl = hammerspace.CloneGPL(int(model["ModelOffset"], 16), model["ModelLength"])
+            build = hammerspace.BuildModelBlock(data, modes, sluggie_path=path)
+            check(build, donor_gpl, index, model["Submeshes"][index], expected, args.case)
         print(f"{path.name}: {args.case} builds, {len(build.block):,} bytes, valid")
         if args.write:
             out = hammerspace.WriteModelBlock(build, f"{path.stem}.{PROBE_TAG.format(case=args.case.replace('-', '_'))}")

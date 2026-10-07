@@ -2,7 +2,7 @@ import os
 import re
 import sys
 import struct
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -168,6 +168,13 @@ class CustomSubmesh:
     texture_assignment: CustomSubmeshTextureAssignment
     specular_strength:  int | None = None   # Type-7 param byte 0; None keeps the template's
     color_quantize_info: int = 48           # 48 RGBA4444 (default) or 0 RGB565; both 2 bytes
+    # PLAN_EditRigidMeshes.md Phase 9: Add-material surfaces of this custom
+    # submesh, each an appended canonical record group (the same shape as a
+    # rebuilt donor submesh's NewSurfaces), and the per-triangle surface
+    # choice: 0 = the primary surface, k = additional_surfaces[k - 1]. An
+    # empty tuple means every face draws through the primary surface.
+    additional_surfaces: list = field(default_factory=list)   # [RigidRebuildNewSurface]
+    face_surface_indices: tuple = ()
 
 
 @dataclass
@@ -903,6 +910,108 @@ def _validate_template_source(
     return kind
 
 
+def _validate_new_surface_entry(
+    model: dict, entry: dict, fail_surface, *, uv_channel_count: int, has_normals: bool,
+    is_stadium: bool, rigid_surfaces: dict, additional_names: set,
+) -> None:
+    """The checks one appended-surface entry (``RigidRebuild.NewSurfaces[]``
+    or ``CustomSubmeshes[].AdditionalSurfaces[]``) must pass beyond its key:
+    template source (the host only needs at least the layers the group
+    binds), texture assignment and specular strength."""
+    _validate_template_source(
+        model, entry.get('TemplateSource', ''), fail_surface,
+        uv_channel_count=uv_channel_count,
+        has_normals=has_normals,
+        is_stadium=is_stadium,
+        rigid_surfaces=rigid_surfaces,
+        layers_must_match=False,
+    )
+    assignment = entry.get('TextureAssignment') or {}
+    donor_index = assignment.get('DonorTextureIndex')
+    additional_name = assignment.get('AdditionalTextureFileName')
+    if (donor_index is None) == (additional_name is None):
+        fail_surface('TextureAssignment must set exactly one of DonorTextureIndex or AdditionalTextureFileName')
+    elif donor_index is not None and not (
+        isinstance(donor_index, int) and not isinstance(donor_index, bool) and 0 <= donor_index <= 0xFFFF
+    ):
+        fail_surface(f'TextureAssignment.DonorTextureIndex {donor_index!r} must be a uint16 texture index')
+    elif additional_name is not None and additional_name not in additional_names:
+        fail_surface(
+            f'TextureAssignment.AdditionalTextureFileName {additional_name!r} has no '
+            'AdditionalTextureDescriptors entry'
+        )
+    strength = entry.get('SpecularStrength')
+    if strength is not None and not (
+        isinstance(strength, int) and not isinstance(strength, bool) and 0 <= strength <= 255
+    ):
+        fail_surface(f'SpecularStrength {strength!r} must be an integer 0..255')
+
+
+def _validate_custom_submesh_additional_surfaces(
+    model: dict, cs: dict, cs_id, fail, faces_count: int | None, use_b64: bool, *,
+    is_stadium: bool, rigid_surfaces: dict,
+) -> None:
+    """PLAN_EditRigidMeshes.md Phase 9: ``AdditionalSurfaces`` keys are
+    ``<CustomSubmeshId>_new<K>`` and unique, each entry passes the shared
+    appended-surface checks, and ``FaceSurfaceIndices`` (one uint16 per
+    triangle) stays inside ``0..len(AdditionalSurfaces)`` and uses every
+    listed surface."""
+    surfaces = cs.get('AdditionalSurfaces')
+    if surfaces is None:
+        surfaces = []
+    if not isinstance(surfaces, list) or not all(isinstance(entry, dict) for entry in surfaces):
+        fail('AdditionalSurfaces must be a list of objects')
+        surfaces = []
+    keys = [entry.get('SurfaceKey') for entry in surfaces]
+    if len(set(keys)) != len(keys):
+        fail('AdditionalSurfaces keys are not unique')
+    additional_names = {
+        descriptor.get('TextureFileName')
+        for descriptor in model.get('AdditionalTextureDescriptors') or []
+    }
+    key_pattern = re.compile(rf'^{re.escape(str(cs_id))}_new(\d+)$')
+    for entry in surfaces:
+        key = entry.get('SurfaceKey')
+
+        def fail_surface(message: str, _key=key) -> None:
+            fail(f'additional surface {_key!r}: {message}')
+
+        if not isinstance(key, str) or key_pattern.match(key) is None:
+            fail_surface(f'key must match {cs_id}_new<K>')
+        _validate_new_surface_entry(
+            model, entry, fail_surface,
+            uv_channel_count=len(cs.get('UVChannels') or []),
+            has_normals=cs.get('NormalBufferData') is not None,
+            is_stadium=is_stadium,
+            rigid_surfaces=rigid_surfaces,
+            additional_names=additional_names,
+        )
+
+    indices_field = cs.get('FaceSurfaceIndices')
+    if indices_field is None:
+        if surfaces:
+            fail('AdditionalSurfaces need FaceSurfaceIndices to say which faces use them')
+        return
+    indices_raw = _decode(indices_field, use_b64)
+    if len(indices_raw) % 2:
+        fail(f'FaceSurfaceIndices length {len(indices_raw)} is not a whole number of uint16 values')
+        return
+    indices = _u16_values(indices_raw)
+    if faces_count is not None and len(indices) != faces_count:
+        fail(f'FaceSurfaceIndices holds {len(indices)} entries for FacesCount {faces_count}')
+    used = set(indices)
+    for value in sorted(used):
+        if value > len(surfaces):
+            fail(
+                f'FaceSurfaceIndices value {value} is out of range for {len(surfaces)} '
+                'additional surface(s) (0 is the primary surface)'
+            )
+            break
+    for position, key in enumerate(keys, start=1):
+        if position not in used:
+            fail(f'additional surface {key!r} is used by no face')
+
+
 def _validate_custom_submeshes(model: dict) -> None:
     """PLAN_AddSubmesh.md Phase 1 step 3: reject an invalid CustomSubmeshes
     entry before any DAT/DOL write. Runs ahead of ParseSluggie so a bad
@@ -1070,6 +1179,11 @@ def _validate_custom_submeshes(model: dict) -> None:
         ):
             fail(f'SpecularStrength {strength!r} must be an integer 0..255')
 
+        _validate_custom_submesh_additional_surfaces(
+            model, cs, cs_id, fail, faces_count, use_b64,
+            is_stadium=is_stadium, rigid_surfaces=rigid_surfaces,
+        )
+
     if errors:
         raise ValueError('; '.join(errors))
 
@@ -1118,10 +1232,11 @@ def _merge_duplicate_texture_additions(model: dict, sluggie_path) -> None:
         kept_name.setdefault(
             additions[order].get('TextureFileName'), additions[first].get('TextureFileName'))
     for cs in model.get('CustomSubmeshes') or []:
-        texture_assignment = cs.get('TextureAssignment') or {}
-        name = texture_assignment.get('AdditionalTextureFileName')
-        if name in kept_name:
-            texture_assignment['AdditionalTextureFileName'] = kept_name[name]
+        for owner in [cs] + list(cs.get('AdditionalSurfaces') or []):
+            texture_assignment = owner.get('TextureAssignment') or {}
+            name = texture_assignment.get('AdditionalTextureFileName')
+            if name in kept_name:
+                texture_assignment['AdditionalTextureFileName'] = kept_name[name]
 
     model['AdditionalTextureDescriptors'] = [additions[order] for order in kept]
     _slogger.info(
@@ -1794,11 +1909,12 @@ def _assemble_rigid_submesh(
 
 def _custom_submesh_to_submesh(
     cs: 'CustomSubmesh', submesh_index: int, records: list[list],
-    drawing_index: int, primitive_bytes: bytes, palette_name: str = '',
+    primitive_lists: list[bytes], palette_name: str = '',
 ) -> 'Submesh':
     """Assemble a CustomSubmesh's already-resolved geometry and display
     states into a Submesh dataclass, ready for _build_rigid_submesh_blob
-    (see _assemble_rigid_submesh).
+    (see _assemble_rigid_submesh). ``primitive_lists`` holds one encoded
+    list per record, ``b''`` for a record that draws nothing.
 
     ``palette_name`` is the donor model's TPL name, which every UV header
     must carry: a model with no embedded TEX section resolves its textures
@@ -1845,8 +1961,7 @@ def _custom_submesh_to_submesh(
             source_header_offset=0,
         )
     return _assemble_rigid_submesh(
-        submesh_index, cs.mesh_name, records,
-        [primitive_bytes if index == drawing_index else b'' for index in range(len(records))],
+        submesh_index, cs.mesh_name, records, primitive_lists,
         vertex_data=cs.vertex_data,
         vertex_quantize_info=cs.vertex_quantize_info,
         uv_channels=uv_channels,
@@ -1892,11 +2007,60 @@ def _build_custom_submesh(
             source='hammerspace.main',
         )
     faces = _custom_submesh_faces(cs, descriptors)
-    raw = drawlist.encodeDrawList(faces, descriptors) + b'\x00'
-    primitive_bytes = raw + b'\x00' * ((-len(raw)) % 32)
+
+    # Phase 9 (PLAN_EditRigidMeshes.md): every Add-material surface is an
+    # appended canonical group, built exactly as for a rebuilt donor submesh,
+    # with Type 3 generated from the primary surface's attribute layout and
+    # index widths so all surfaces index the same shared arrays.
+    label = f"custom submesh '{cs.custom_submesh_id}'"
+    attribute_sizes = {descriptor['key']: descriptor['index_size'] for descriptor in descriptors}
+    drawing_index_by_surface = {0: drawing_index}
+    for position, surface in enumerate(cs.additional_surfaces, start=1):
+        group = _rigid_rebuild_new_surface_group(
+            model, label, surface, rigid_surfaces, attribute_sizes,
+            len(cs.uv_channels), texture_index_by_file_name,
+        )
+        records.extend(group)
+        drawing_index_by_surface[position] = len(records) - 1
+        _slogger.info(
+            f"{label}: appended surface '{surface.surface_key}' ('{surface.material_name}', "
+            f'template {surface.template_source}) as record {len(records) - 1}',
+            source='hammerspace.main',
+        )
+    surface_choice = cs.face_surface_indices or (0,) * cs.faces_count
+    faces_by_record: dict[int, list] = {}
+    for face, choice in zip(faces, surface_choice):
+        faces_by_record.setdefault(drawing_index_by_surface[choice], []).append(face)
+
+    primitive_lists = []
+    for record_index in range(len(records)):
+        record_faces = faces_by_record.get(record_index)
+        if not record_faces:
+            primitive_lists.append(b'')
+            continue
+        if record_index == drawing_index:
+            layout = descriptors
+        else:
+            layout = _custom_submesh_type3_descriptors(_custom_submesh_active_type3(records, record_index))
+        drawn = {descriptor['key'] for descriptor in layout}
+        restricted = [[{key: vertex.get(key, 0) for key in drawn} for vertex in face] for face in record_faces]
+        raw = drawlist.encodeDrawList(restricted, layout) + b'\x00'
+        primitive_lists.append(raw + b'\x00' * ((-len(raw)) % 32))
+    if cs.additional_surfaces:
+        key_by_record = {drawing_index: cs.template_source}
+        key_by_record.update({
+            drawing_index_by_surface[position]: surface.surface_key
+            for position, surface in enumerate(cs.additional_surfaces, start=1)
+        })
+        _slogger.info(
+            f'{label}: faces per surface ' + ', '.join(
+                f'{key_by_record[index]}: {len(faces_by_record.get(index, []))}'
+                for index in sorted(key_by_record)
+            ),
+            source='hammerspace.main',
+        )
     return _custom_submesh_to_submesh(
-        cs, submesh_index, records, drawing_index, primitive_bytes,
-        _donor_palette_name(model),
+        cs, submesh_index, records, primitive_lists, _donor_palette_name(model),
     )
 
 
@@ -2595,33 +2759,14 @@ def _validate_rigid_rebuilds(model: dict) -> None:
                 fail_surface('is not listed in FaceSurfaceTable')
             elif key not in used_keys:
                 fail_surface('is used by no face')
-            _validate_template_source(
-                model, entry.get('TemplateSource', ''), fail_surface,
+            _validate_new_surface_entry(
+                model, entry, fail_surface,
                 uv_channel_count=len(donor_uv_by_index),
                 has_normals=bool(donor_normals and donor_normals.get('NormalBufferData')),
                 is_stadium=is_stadium,
                 rigid_surfaces=rigid_surfaces,
-                layers_must_match=False,
+                additional_names=additional_names,
             )
-            assignment = entry.get('TextureAssignment') or {}
-            donor_index = assignment.get('DonorTextureIndex')
-            additional_name = assignment.get('AdditionalTextureFileName')
-            if (donor_index is None) == (additional_name is None):
-                fail_surface('TextureAssignment must set exactly one of DonorTextureIndex or AdditionalTextureFileName')
-            elif donor_index is not None and not (
-                isinstance(donor_index, int) and not isinstance(donor_index, bool) and 0 <= donor_index <= 0xFFFF
-            ):
-                fail_surface(f'TextureAssignment.DonorTextureIndex {donor_index!r} must be a uint16 texture index')
-            elif additional_name is not None and additional_name not in additional_names:
-                fail_surface(
-                    f'TextureAssignment.AdditionalTextureFileName {additional_name!r} has no '
-                    'AdditionalTextureDescriptors entry'
-                )
-            strength = entry.get('SpecularStrength')
-            if strength is not None and not (
-                isinstance(strength, int) and not isinstance(strength, bool) and 0 <= strength <= 255
-            ):
-                fail_surface(f'SpecularStrength {strength!r} must be an integer 0..255')
 
         reasons = rebuild.get('Reason')
         if reasons is not None and not (
@@ -2631,6 +2776,29 @@ def _validate_rigid_rebuilds(model: dict) -> None:
 
     if errors:
         raise ValueError('; '.join(errors))
+
+
+def _u16_values(raw: bytes) -> tuple[int, ...]:
+    return struct.unpack(f'>{len(raw) // 2}H', raw) if raw else ()
+
+
+def _parse_new_surfaces(entries) -> list['RigidRebuildNewSurface']:
+    """Decode a ``NewSurfaces`` (rigid rebuild) or ``AdditionalSurfaces``
+    (custom submesh) list, which share one shape."""
+    new_surfaces = []
+    for entry in entries or []:
+        assignment = entry.get('TextureAssignment') or {}
+        new_surfaces.append(RigidRebuildNewSurface(
+            surface_key=entry['SurfaceKey'],
+            material_name=entry.get('MaterialName', entry['SurfaceKey']),
+            template_source=entry['TemplateSource'],
+            texture_assignment=CustomSubmeshTextureAssignment(
+                donor_texture_index=assignment.get('DonorTextureIndex'),
+                additional_texture_file_name=assignment.get('AdditionalTextureFileName'),
+            ),
+            specular_strength=entry.get('SpecularStrength'),
+        ))
+    return new_surfaces
 
 
 def _parse_rigid_rebuild(sub: dict, use_b64: bool) -> 'RigidRebuild | None':
@@ -2643,19 +2811,7 @@ def _parse_rigid_rebuild(sub: dict, use_b64: bool) -> 'RigidRebuild | None':
     def _optional(field: str) -> bytes | None:
         return _decode(raw[field], use_b64) if raw.get(field) is not None else None
 
-    new_surfaces = []
-    for entry in raw.get('NewSurfaces') or []:
-        assignment = entry.get('TextureAssignment') or {}
-        new_surfaces.append(RigidRebuildNewSurface(
-            surface_key=entry['SurfaceKey'],
-            material_name=entry.get('MaterialName', entry['SurfaceKey']),
-            template_source=entry['TemplateSource'],
-            texture_assignment=CustomSubmeshTextureAssignment(
-                donor_texture_index=assignment.get('DonorTextureIndex'),
-                additional_texture_file_name=assignment.get('AdditionalTextureFileName'),
-            ),
-            specular_strength=entry.get('SpecularStrength'),
-        ))
+    new_surfaces = _parse_new_surfaces(raw.get('NewSurfaces'))
     indices_raw = _optional('FaceSurfaceIndices') or b''
     return RigidRebuild(
         host_bone_id=int(raw['HostBoneId']),
@@ -2779,15 +2935,17 @@ def _rigid_rebuild_widen_type3(sub_index: int, records: list[list], counts: dict
 
 
 def _rigid_rebuild_new_surface_group(
-    model: dict, sub_index: int, surface: 'RigidRebuildNewSurface', rigid_surfaces: dict,
+    model: dict, label: str, surface: 'RigidRebuildNewSurface', rigid_surfaces: dict,
     attribute_sizes: dict[str, int], host_uv_count: int,
     texture_index_by_file_name: dict[str, int] | None,
 ) -> list[list]:
     """The canonical record group (E9) appended for one new surface: Type
     1/6/7 from the template's effective state, Type 4 from the layers the
-    group binds, Type 3 generated from the rebuilt submesh's attribute set
-    and index widths, layer 0 rebound to the resolved texture, specular
-    strength applied when given. The last record is the drawing Type 7."""
+    group binds, Type 3 generated from the host submesh's attribute set and
+    index widths (*attribute_sizes*, ``key -> index size``), layer 0 rebound
+    to the resolved texture, specular strength applied when given. The last
+    record is the drawing Type 7. Shared by rebuilt donor submeshes (*label*
+    ``sub<N>``) and custom submeshes with additional surfaces (Phase 9)."""
     kind, _sep, argument = surface.template_source.partition(':')
     if kind == 'rigid':
         states, surface_index = rigid_surfaces[argument]
@@ -2798,18 +2956,21 @@ def _rigid_rebuild_new_surface_group(
     elif kind == 'builtin':
         records = _custom_submesh_builtin_records(model, argument)
     else:
-        raise ValueError(f"sub{sub_index}: new surface '{surface.surface_key}' has malformed TemplateSource {surface.template_source!r}")
+        raise ValueError(f"{label}: new surface '{surface.surface_key}' has malformed TemplateSource {surface.template_source!r}")
 
-    # Bind no more layers than the host submesh has UV channels, then let
-    # Type 4 follow the T1 records actually emitted.
-    layers = [record for record in records if record[0] == 1]
+    # Bind no more layers than the host submesh has UV channels (and index
+    # widths for), then let Type 4 follow the T1 records actually emitted.
+    usable_layers = min(
+        host_uv_count,
+        sum(1 for key in attribute_sizes if key.startswith('texture')),
+    )
     records = [
         record for record in records
-        if record[0] != 1 or _custom_submesh_texture_layer(record[2])[0] < host_uv_count
+        if record[0] != 1 or _custom_submesh_texture_layer(record[2])[0] < usable_layers
     ]
     layer_count = sum(1 for record in records if record[0] == 1)
     if layer_count == 0:
-        raise ValueError(f"sub{sub_index}: new surface '{surface.surface_key}' binds no texture layer")
+        raise ValueError(f"{label}: new surface '{surface.surface_key}' binds no texture layer")
     layout = [{'key': 'position', 'index_size': attribute_sizes['position']}]
     for key in ('lighting', 'color0'):
         if key in attribute_sizes:
@@ -2823,7 +2984,7 @@ def _rigid_rebuild_new_surface_group(
             record[2] = f'{_custom_submesh_type3_setting(layout):08x}'
     drawing_index = len(records) - 1
     if records[drawing_index][0] != 7:
-        raise ValueError(f"sub{sub_index}: new surface '{surface.surface_key}' template does not end in a Type-7 record")
+        raise ValueError(f"{label}: new surface '{surface.surface_key}' template does not end in a Type-7 record")
 
     texture_index = surface.texture_assignment.donor_texture_index
     if texture_index is None:
@@ -2831,7 +2992,7 @@ def _rigid_rebuild_new_surface_group(
         mapping = texture_index_by_file_name or {}
         if file_name not in mapping:
             raise ValueError(
-                f"sub{sub_index}: new surface '{surface.surface_key}': no resolved TEX index for "
+                f"{label}: new surface '{surface.surface_key}': no resolved TEX index for "
                 f'AdditionalTextureFileName {file_name!r}; the TEX plan must be built before the GPL'
             )
         texture_index = mapping[file_name]
@@ -2840,11 +3001,10 @@ def _rigid_rebuild_new_surface_group(
         records, drawing_index, surface.specular_strength,
     ):
         _slogger.info(
-            f"[RigidRebuild] sub{sub_index}: new surface '{surface.surface_key}' template "
+            f"{label}: new surface '{surface.surface_key}' template "
             f'{surface.template_source} has no specular Type-7 shader; SpecularStrength ignored',
             source='hammerspace.main',
         )
-    del layers
     return records
 
 
@@ -2946,7 +3106,7 @@ def _rigid_rebuild_to_submesh(
     }
     for surface in rebuild.new_surfaces:
         group = _rigid_rebuild_new_surface_group(
-            model, sub_index, surface, rigid_surfaces, attribute_sizes,
+            model, label, surface, rigid_surfaces, attribute_sizes,
             len(rebuild.uv_channels), texture_index_by_file_name,
         )
         records.extend(group)
@@ -3716,6 +3876,11 @@ def ParseSluggie(data: dict) -> SluggieParsed:
             texture_assignment = texture_assignment,
             specular_strength  = cs.get('SpecularStrength'),
             color_quantize_info = cs.get('ColorChannelQuantizeInfo', _CUSTOM_SUBMESH_COLOR_FORMAT[1]),
+            additional_surfaces = _parse_new_surfaces(cs.get('AdditionalSurfaces')),
+            face_surface_indices = (
+                _u16_values(_decode(cs['FaceSurfaceIndices'], use_b64))
+                if cs.get('FaceSurfaceIndices') is not None else ()
+            ),
         ))
 
     return SluggieParsed(
@@ -6236,8 +6401,9 @@ def BuildModelBlock(
             'ReimportTextures enabled'
         )
     custom_submesh_additional_texture_names = {
-        (cs.get('TextureAssignment') or {}).get('AdditionalTextureFileName')
+        (owner.get('TextureAssignment') or {}).get('AdditionalTextureFileName')
         for cs in model.get('CustomSubmeshes') or []
+        for owner in [cs] + list(cs.get('AdditionalSurfaces') or [])
     } - {None}
     if custom_submesh_additional_texture_names and (
         modes.tex != 'build' or not model.get('ReimportTextures')

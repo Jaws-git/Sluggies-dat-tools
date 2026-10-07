@@ -707,12 +707,19 @@ def build_custom_submesh_entry(
     object_name, custom_submesh_id, host_bone_id, template_source, plan,
     geometry, loop_normals, loop_uvs, loop_colors, texture_assignment,
     use_base64=True, warnings=None, specular_strength=None,
+    additional_surfaces=None, face_surface_indices=None,
 ):
     """Assemble one ``CustomSubmeshes`` entry (sluggieschema.json) from
     bone-local geometry and per-loop attributes, picking the position format
     (2.3) and quantizing (2.4) on the way. *specular_strength* (the surface
     material's ``SpecularStrength``) is written when given; without it the
     patcher keeps the template's own value.
+
+    *additional_surfaces* (``AdditionalSurfaces`` entries, in order) and
+    *face_surface_indices* (one value per exported triangle: 0 = primary,
+    k = the k-th additional surface) describe Add-material surfaces on the
+    custom submesh (PLAN_EditRigidMeshes.md Phase 9); both are written only
+    when there is at least one additional surface.
 
     When the template draws two UV channels, channel 1 mirrors channel 0
     exactly: it is the specular channel, as in donor rigid submeshes (F6).
@@ -774,4 +781,14 @@ def build_custom_submesh_entry(
     entry['TextureAssignment'] = dict(texture_assignment)
     if specular_strength is not None:
         entry['SpecularStrength'] = max(0, min(255, int(specular_strength)))
+    if additional_surfaces:
+        indices = list(face_surface_indices or [])
+        if len(indices) != faces_count:
+            raise ValueError(
+                f'{object_name}: {len(indices)} face surface indices for {faces_count} faces'
+            )
+        if max(indices) > len(additional_surfaces) or min(indices) < 0:
+            raise ValueError(f'{object_name}: a face surface index is out of range')
+        entry['AdditionalSurfaces'] = [dict(surface) for surface in additional_surfaces]
+        entry['FaceSurfaceIndices'] = _index_buffer(indices, use_base64)
     return entry

@@ -235,6 +235,34 @@ class SlotSurface:
     owner: Optional[str] = None        # SluggiesSurfaceOwner of a new surface
 
 
+def new_surface_key_matches(owner_key: str, surface_id: str) -> bool:
+    """Whether *surface_id* is an Add-material key of *owner_key*:
+    ``sm<N>_new<K>`` on a donor submesh, ``<CustomSubmeshId>_new<K>`` on a
+    custom submesh (PLAN_EditRigidMeshes.md decision 8)."""
+    return re.match(rf'^{re.escape(owner_key)}_new\d+$', surface_id or '') is not None
+
+
+@dataclass
+class CustomSubmeshSurfaces:
+    """The surface facts of a custom submesh in the shape ``route_faces``
+    reads from a donor (Phase 9): its one primary surface, no imported
+    per-face surfaces."""
+    custom_submesh_id: str
+    primary_surface_id: str
+
+    @property
+    def owner_key(self) -> str:
+        return self.custom_submesh_id
+
+    @property
+    def drawable_surfaces(self) -> Dict[str, int]:
+        return {self.primary_surface_id: 0}
+
+    @property
+    def face_surfaces(self) -> List[str]:
+        return []
+
+
 @dataclass
 class SurfaceRouting:
     table: List[str]
@@ -283,7 +311,7 @@ def route_faces(
                     f"material '{slot.material_name}' belongs to {slot.owner or 'another submesh'}, "
                     f'not {donor.owner_key}'
                 )
-            elif not NEW_SURFACE_KEY_RE.match(slot.surface_id):
+            elif not new_surface_key_matches(donor.owner_key, slot.surface_id):
                 slot_problems[slot_index] = (
                     f"material '{slot.material_name}' has an invalid new-surface key {slot.surface_id!r}"
                 )
@@ -343,6 +371,29 @@ def route_faces(
     for index in indices:
         counts_after[table[index]] = counts_after.get(table[index], 0) + 1
     return SurfaceRouting(table, indices, new_keys, changed, counts_before, counts_after, warnings)
+
+
+def route_custom_submesh_faces(
+    object_name: str,
+    custom_submesh_id: str,
+    primary_surface_id: str,
+    triangles: Sequence[cse.Triangle],
+    polygon_slots: Sequence[int],
+    slots: Sequence[Optional[SlotSurface]],
+) -> SurfaceRouting:
+    """``route_faces`` for a custom submesh (PLAN_EditRigidMeshes.md Phase
+    9): every face must use the primary ``<id>_ds0`` material or an
+    Add-material surface owned by this custom submesh; ``new_keys`` lists
+    the additional surfaces in first-use order."""
+    donor = CustomSubmeshSurfaces(custom_submesh_id, primary_surface_id)
+    return route_faces(object_name, donor, triangles, polygon_slots, slots, topology_changed=True)
+
+
+def custom_submesh_face_surface_indices(routing: SurfaceRouting) -> List[int]:
+    """Per triangle, the ``CustomSubmeshes[].FaceSurfaceIndices`` value: 0
+    for the primary surface, ``k`` for ``new_keys[k - 1]``."""
+    position = {key: k for k, key in enumerate(routing.new_keys, start=1)}
+    return [position.get(routing.table[index], 0) for index in routing.indices]
 
 
 def surface_report(object_name: str, routing: SurfaceRouting) -> str:
