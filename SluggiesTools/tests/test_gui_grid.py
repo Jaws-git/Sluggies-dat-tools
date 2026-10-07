@@ -147,7 +147,7 @@ class LabelTests(unittest.TestCase):
         self.assertEqual(lines[0], 'ID: 0x66')
         self.assertIn('Model: template C06 (0x06), directory 24', lines)
         self.assertIn('Stats: C06 (0x06)', lines)
-        self.assertIn('Names: FR Violet', lines)
+        self.assertFalse(any('Violet' in line for line in lines))     # FR/SP names are not listed
 
     def test_slot_details_own_directory_and_blocks(self):
         s = state([0x06, 0x66])

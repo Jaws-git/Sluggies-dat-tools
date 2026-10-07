@@ -57,9 +57,12 @@ ROSTER_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'runner.py')
 ROSTER_STATE_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'state_cli.py')
 ROSTER_SLOT_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'slot_cli.py')
 ROSTER_PACK_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'pack_cli.py')
+ROSTER_SWITCH_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'switch_cli.py')
 PACK_PLAN_FILE = os.path.join(ROOT_DIR, '3_Output_Dat', '_gui', 'pack', 'plan.json')
+SWITCH_PLAN_FILE = os.path.join(ROOT_DIR, '3_Output_Dat', '_gui', 'switch', 'plan.json')
 SLOT_PLAN_FILE = os.path.join(ROOT_DIR, '3_Output_Dat', '_gui', 'slot', 'plan.json')
 GAME_OPTIONS_SCRIPT = os.path.join(TOOLS_DIR, 'GameOptions', 'runner.py')
+STAT_EDITOR_SCRIPT = os.path.join(TOOLS_DIR, 'StatEditor', 'cli.py')
 
 # Model directory indices that hold unused characters (see folderNameMap in
 # export.py). These characters share a playable character's model block and
@@ -116,8 +119,10 @@ def run_resplit_unused():
     subprocess.run(python_script_command(UNTANGLE_POLICY_SCRIPT), cwd=HS_DIR, check=True)
 
 
-def run_roster(config=None, remove=False, dry_run=False, state=None):
-    """Roster expansion: inject a roster configuration or a derived state (or only reset the roster to vanilla)."""
+def run_roster(config=None, remove=False, dry_run=False, state=None, keep_stat_edits=False):
+    """Roster expansion: inject a roster configuration or a derived state (or only reset the roster to vanilla,
+    stat edits included unless ``keep_stat_edits``). A ``config`` given here keeps no slot customisations
+    (``--fresh``); ``run_roster_switch`` is the default."""
     cmd = python_script_command(ROSTER_SCRIPT)
     if config:
         cmd += ['--config', os.path.abspath(config)]       # the injector runs in SluggiesTools/
@@ -125,9 +130,31 @@ def run_roster(config=None, remove=False, dry_run=False, state=None):
         cmd += ['--state', os.path.abspath(state)]
     if remove:
         cmd.append('--remove')
+    if keep_stat_edits:
+        cmd.append('--keep-stat-edits')
     if dry_run:
         cmd.append('--dry-run')
     subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
+
+
+def run_roster_switch(config, dry_run=False):
+    """Inject a roster configuration and keep the slots' customisations (Roster/switch_cli.py: the game is read
+    and merged with the preset, IDs on both grids keep theirs, slots leaving the grid are reset), then run the
+    planned chain in order. ``dry_run``: plan, then build the merged roster in memory only. Returns True on
+    success."""
+    if subprocess.run(python_script_command(ROSTER_SWITCH_SCRIPT, '--config', os.path.abspath(config)),
+                      cwd=TOOLS_DIR).returncode != 0:
+        return False
+    with open(SWITCH_PLAN_FILE, 'r', encoding='utf-8') as f:
+        commands = json.load(f)['commands']
+    if dry_run:
+        checks = [[*c, '--dry-run'] for c in commands if c[:2] == ['--roster', '--state']]
+        if not run_chain_commands(checks, 'Roster switch check'):
+            return False
+        slogger.info('Dry run: the switch was planned and the merged roster built in memory; nothing was written.',
+                     source="dispatcher")
+        return True
+    return run_chain_commands(commands, 'Roster switch')
 
 
 def run_roster_state(derive=False):
@@ -147,12 +174,12 @@ def self_command(*args):
 
 
 def run_slot_chain(target_id=None, sluggie=None, dry_run=False, edits_file=None, rename=None, voice=None,
-                   stats=None, icon=None, fit=None, trim=True, equipment=None, no_gear=False):
+                   stats=None, icon=None, fit=None, trim=True, equipment=None, no_gear=False, copy_from=None):
     """Write staged slot edits as one chain: an edits file (``edits_file``, ``--apply-slots``), or a batch of one:
     patch a .sluggie (and its HP/L_ partner) into a slot, name the slot (``rename``: the text, blank resets it),
     give its square another voice (``voice``) or the slot other stats (``stats``: a character ID, ``-`` resets),
-    replace one portrait (``icon``: ``(view, image)``, fitted with ``fit`` / ``trim``), or clear the slot (none
-    given). Plans the chain
+    replace one portrait (``icon``: ``(view, image)``, fitted with ``fit`` / ``trim``), make the slot a clone of
+    another character (``copy_from``: its ID, the grid's paste), or clear the slot (none given). Plans the chain
     (Roster/slot_cli.py: read and derive once, apply every edit; a refused edit refuses the batch and writes
     nothing), then runs its commands in order, stopping at the first failure. Returns True on success.
 
@@ -172,6 +199,8 @@ def run_slot_chain(target_id=None, sluggie=None, dry_run=False, edits_file=None,
         cmd += ['--voice', target_id, voice]
     elif stats is not None:
         cmd += ['--stats', target_id, stats]
+    elif copy_from is not None:
+        cmd += ['--copy', copy_from, target_id]
     elif icon is not None:
         cmd += ['--icon', target_id, icon[0], os.path.abspath(icon[1])]
         cmd += ['--fit', fit] if fit else []
@@ -254,6 +283,27 @@ def run_game_options(on=(), off=(), dry_run=False):
     if dry_run:
         cmd.append('--dry-run')
     subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
+
+
+def run_stat_bridge_export(path, focus=None):
+    """Write the stat editor bridge (stat_bridge.json) for 3_Output_Dat to ``path`` (StatEditor/cli.py)."""
+    cmd = python_script_command(STAT_EDITOR_SCRIPT, '--export', os.path.abspath(path))
+    if focus:
+        cmd += ['--focus', focus]
+    return subprocess.run(cmd, cwd=TOOLS_DIR).returncode == 0
+
+
+def run_apply_stat_edits(paths, dry_run=False):
+    """Write the stat editor's edit files (stat_edits.json, in order) into 3_Output_Dat/main.dol (StatEditor/cli.py):
+    every file is checked first (made from this main.dol, known IDs and fields, storable values); ``dry_run`` lists
+    the changes and writes nothing. An item ``reset:0xNN`` clears that character's stat edits at its place in the
+    order."""
+    items = [p if p.lower().startswith('reset:') else 'copy:' + os.path.abspath(p[5:])
+             if p.lower().startswith('copy:') else os.path.abspath(p) for p in paths]
+    cmd = python_script_command(STAT_EDITOR_SCRIPT, '--apply', *items)
+    if dry_run:
+        cmd.append('--dry-run')
+    return subprocess.run(cmd, cwd=TOOLS_DIR).returncode == 0
 
 
 def run_export(debug=False, notex=False, untangle=False, glb=False):
@@ -688,6 +738,8 @@ def parse_args():
             '  python start.py --export --untangle\n'
             '  python start.py --export --glb\n'
             '  python start.py --roster --config 1_Input/_RosterConfigurations/02_Stock_and_Unused.json\n'
+            '  python start.py --roster --config 1_Input/_RosterConfigurations/03_Unuseds_and_8_color_slots.json --dry-run\n'
+            '  python start.py --roster --config 1_Input/_RosterConfigurations/01_Stock_Roster.json --fresh\n'
             '  python start.py --roster --remove\n'
             '  python start.py --game-options\n'
             '  python start.py --game-options --on cpu_vs_cpu cpu_management\n'
@@ -705,10 +757,12 @@ def parse_args():
             '  python start.py --patch-slot 0xE1 path/to/model.gpl.sluggie\n'
             '  python start.py --clear-slot 0xE1\n'
             '  python start.py --rename-slot 0xE1 "Purple Yoshi"\n'
+            '  python start.py --copy-slot 0x00 0xE1\n'
             '  python start.py --set-voice 0x00 0x09\n'
             '  python start.py --set-stats 0x00 -\n'
             '  python start.py --set-icon 0xE1 front my_portrait.png --fit cover\n'
             '  python start.py --apply-slots 3_Output_Dat/_gui/slot/edits.json --dry-run\n'
+            '  python start.py --apply-stat-edits stat_edits.json --dry-run\n'
             '  python start.py --save-roster my_roster.sluggiesroster\n'
             '  python start.py --load-roster my_roster.sluggiesroster --dry-run\n'
             '  python start.py --resplit-unused\n'
@@ -724,6 +778,9 @@ def parse_args():
     mode.add_argument('--set-voice', nargs=2, metavar=('SQUARE', '0xNN'), help="give a square (any of its slots' IDs) the voice of 0xNN's family, on the select screen and on the field; a stock square changes its whole species, a new square its square-only new IDs; - resets it (read -> rebuild)")
     mode.add_argument('--set-stats', nargs=2, metavar=('0xNN', '0xMM'), help="let slot 0xNN play with stock player 0xMM's stats (stats, pitching, fielding, chemistry; model, size and voice stay); - resets it to its own / its template's (read -> rebuild)")
     mode.add_argument('--set-icon', nargs=3, metavar=('0xNN', 'VIEW', 'IMAGE'), help="make an image (PNG, JPEG, BMP, GIF, TGA or WEBP) slot 0xNN's front or side portrait, fitted to 48x51 (see --fit, --no-trim); the other view keeps what the slot shows now (read -> rebuild)")
+    mode.add_argument('--copy-slot', nargs=2, metavar=('0xSS', '0xTT'), help='make slot 0xTT a clone of '
+                      'character 0xSS as the game holds it (models, equipment, name, portraits, stats; the '
+                      "square's voice stays unless 0xTT is alone on a new square)")
     mode.add_argument('--rename-slot', nargs=2, metavar=('0xNN', 'TEXT'), help='name a slot (stock characters included), one name for English, French and Spanish; it must fit the name plate; a blank TEXT resets the name (read -> rebuild)')
     mode.add_argument('--apply-slots', metavar='FILE', help='write staged slot edits (an edits file with patch/clear/rename edits per slot, as the GUI\'s "Patch Game" writes it) as one chain: read once, at most one roster rebuild, then the slot patches')
     mode.add_argument('--save-roster', metavar='FILE', help='save the whole roster of 3_Output_Dat (grid, names, voices, stats, own model directories, patched models, portraits) into a roster pack (.sluggiesroster)')
@@ -735,6 +792,8 @@ def parse_args():
     mode.add_argument('--roster-state', action='store_true', help='read the draft grid from 3_Output_Dat into 3_Output_Dat/_gui/roster_state.json (used by the GUI)')
     mode.add_argument('--roster-derive', action='store_true', help='write the roster config that rebuilds 3_Output_Dat as it is into 3_Output_Dat/_gui/derived (read -> rebuild; then --roster --state)')
     mode.add_argument('--game-options', action='store_true', help='show or change game options (CPU vs CPU, ...) in 3_Output_Dat/main.dol; use with --on/--off')
+    mode.add_argument('--stat-bridge-export', metavar='FILE', help="write the Sluggers Stat Editor's bridge file (where 3_Output_Dat/main.dol keeps every stat table, the characters, the baseline values) to FILE")
+    mode.add_argument('--apply-stat-edits', nargs='+', metavar='FILE', help="write the Sluggers Stat Editor's edit files (stat_edits.json from Bridge Mode; several: in order, a later one wins) into 3_Output_Dat/main.dol; refused unless made from this main.dol; an item reset:0xNN clears that character's stat edits at its place in the order (with --dry-run: list the changes only)")
     mode.add_argument('--export', action='store_true', help='export all models from 1_Input to 2_Output_Models')
     mode.add_argument('--export-icons', action='store_true', help="write each character's FrontIcon.png/SideIcon.png into its model folder in 2_Output_Models")
 
@@ -754,7 +813,10 @@ def parse_args():
     parser.add_argument('--equipment', metavar='FILE', help="--patch-slot: the slot file (2 bat, 3 left glove, 4 right glove, 5 extra bat; or bat, glove_l, glove_r, extra) a bat or glove .sluggie goes to (default: the file it was exported from); --clear-slot: reset only that equipment file, or 'all' four, instead of the models")
     parser.add_argument('--no-gear', action='store_true', help="--patch-slot of a model into a new ID: do not take the model's bats and gloves along")
     parser.add_argument('--no-trim', action='store_true', help='set-icon only: do not crop the transparent border before fitting')
-    parser.add_argument('--remove', action='store_true', help='roster only: reset the roster to vanilla (against 1_Input) and stop')
+    parser.add_argument('--focus', metavar='0xNN', help='stat-bridge-export only: the character the stat editor preselects')
+    parser.add_argument('--remove', action='store_true', help='roster only: reset the roster to vanilla (against 1_Input), stat edits included, and stop')
+    parser.add_argument('--fresh', action='store_true', help="roster --config only: do not keep the slots' customisations (models in new IDs, names, portraits, stats sources, voices; slots leaving the grid are not reset); stat edits are still carried")
+    parser.add_argument('--keep-stat-edits', action='store_true', help='roster --remove only: carry the stat edits over (used by --load-roster)')
     parser.add_argument('--on', nargs='+', default=[], metavar='OPTION', help='game-options only: turn these options on (cpu_vs_cpu, cpu_management)')
     parser.add_argument('--off', nargs='+', default=[], metavar='OPTION', help='game-options only: turn these options off')
 
@@ -772,10 +834,12 @@ def parse_args():
         parser.error('--use-output can only be used with --export-icons.')
     if args.dry_run and not (args.roster or args.game_options or args.load_roster
                              or args.patch_slot or args.clear_slot or args.rename_slot or args.set_voice
-                             or args.set_stats or args.set_icon or args.apply_slots):
+                             or args.copy_slot
+                             or args.set_stats or args.set_icon or args.apply_slots or args.apply_stat_edits):
         parser.error('--dry-run can only be used with --roster, --game-options, --patch-slot, '
-                     '--clear-slot, --rename-slot, --set-voice, --set-stats, --set-icon, --apply-slots or '
-                     '--load-roster.')
+                     '--clear-slot, --copy-slot, --rename-slot, --set-voice, --set-stats, --set-icon, '
+                     '--apply-slots, '
+                     '--apply-stat-edits or --load-roster.')
     if args.equipment and not (args.patch_slot or args.clear_slot):
         parser.error('--equipment can only be used with --patch-slot or --clear-slot.')
     if args.no_gear and not args.patch_slot:
@@ -784,10 +848,16 @@ def parse_args():
         parser.error('--fit and --no-trim can only be used with --set-icon.')
     if args.set_icon and args.set_icon[1] not in ('front', 'side'):
         parser.error('--set-icon VIEW must be front or side.')
+    if args.focus and not args.stat_bridge_export:
+        parser.error('--focus can only be used with --stat-bridge-export.')
     if (args.on or args.off) and not args.game_options:
         parser.error('--on and --off can only be used with --game-options.')
     if (args.config or args.remove or args.state) and not args.roster:
         parser.error('--config, --state and --remove can only be used with --roster.')
+    if args.fresh and not (args.roster and args.config):
+        parser.error('--fresh can only be used with --roster --config.')
+    if args.keep_stat_edits and not (args.roster and args.remove):
+        parser.error('--keep-stat-edits can only be used with --roster --remove.')
     if args.target_id and not (args.patch or args.unpatch is not None):
         parser.error('--target-id can only be used with --patch or --unpatch.')
     if args.unpatch == [] and not args.target_id:
@@ -806,7 +876,7 @@ def parse_args():
         parser.error('--config and --state cannot be used together.')
     if args.roster and not (args.config or args.remove or args.state):
         parser.error('--roster needs --config PATH (a roster configuration), --state PATH or --remove.')
-    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.rename_slot, args.set_voice, args.set_stats, args.set_icon, args.apply_slots, args.save_roster, args.load_roster, args.write_slot_blocks, args.write_slot_equipment, args.resplit_unused, args.export, args.export_icons, args.roster, args.roster_state, args.roster_derive, args.game_options]):
+    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.copy_slot, args.rename_slot, args.set_voice, args.set_stats, args.set_icon, args.apply_slots, args.save_roster, args.load_roster, args.write_slot_blocks, args.write_slot_equipment, args.resplit_unused, args.export, args.export_icons, args.roster, args.roster_state, args.roster_derive, args.game_options, args.stat_bridge_export, args.apply_stat_edits]):
         if len(sys.argv) == 1:
             args.gui = True
         else:
@@ -869,14 +939,24 @@ def main() -> int:
             run_gui()
         elif args.resplit_unused:
             run_resplit_unused()
+        elif args.roster and args.config and not (args.fresh or args.remove):
+            if not run_roster_switch(args.config, dry_run=args.dry_run):
+                return 1
         elif args.roster:
-            run_roster(config=args.config, remove=args.remove, dry_run=args.dry_run, state=args.state)
+            run_roster(config=args.config, remove=args.remove, dry_run=args.dry_run, state=args.state,
+                       keep_stat_edits=args.keep_stat_edits)
         elif args.roster_state:
             run_roster_state()
         elif args.roster_derive:
             run_roster_state(derive=True)
         elif args.game_options:
             run_game_options(on=args.on, off=args.off, dry_run=args.dry_run)
+        elif args.stat_bridge_export:
+            if not run_stat_bridge_export(args.stat_bridge_export, focus=args.focus):
+                return 1
+        elif args.apply_stat_edits:
+            if not run_apply_stat_edits(args.apply_stat_edits, dry_run=args.dry_run):
+                return 1
         elif args.export:
             run_export(debug=args.debug, notex=args.notex, untangle=args.untangle, glb=args.glb)
         elif args.export_icons:
@@ -899,6 +979,9 @@ def main() -> int:
                 return 1
         elif args.clear_slot:
             if not run_slot_chain(args.clear_slot, dry_run=args.dry_run, equipment=args.equipment):
+                return 1
+        elif args.copy_slot:
+            if not run_slot_chain(args.copy_slot[1], copy_from=args.copy_slot[0], dry_run=args.dry_run):
                 return 1
         elif args.rename_slot:
             if not run_slot_chain(args.rename_slot[0], rename=args.rename_slot[1], dry_run=args.dry_run):

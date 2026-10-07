@@ -34,7 +34,7 @@ Loading (``plan_load``) compares the pack's fingerprints with the game's
 (``diff``), checks every pack block (``LoadEnv.slot_problems``: validator,
 the slot's skeleton, the High/Low pair rules), then gives the chain: one
 roster rebuild with the pack's config when it differs from the game's
-(``--roster --state``, or ``--roster --remove`` for a stock pack), the stock
+(``--roster --state``, or ``--roster --remove --keep-stat-edits`` for a stock pack), the stock
 slots whose models differ back to vanilla (``--unpatch --target-id``) where
 the pack keeps a vanilla file, the pack blocks written as they are
 (``--write-slot-blocks``), one ``--roster-state``. An unchanged game gives
@@ -515,7 +515,7 @@ def plan_load(pack: Pack, game_st: dict, game_fp: dict, game_derived: derive.Der
           != _normal(game_derived.config, _derived_portrait_key(game_derived))):
         plan.config = config
     if plan.remove:
-        plan.commands.append(('--roster', '--remove'))
+        plan.commands.append(('--roster', '--remove', '--keep-stat-edits'))
     elif plan.config is not None:
         plan.commands.append(('--roster', '--state', state_file))
     for cid in plan.clears:
@@ -540,7 +540,30 @@ def plan_load(pack: Pack, game_st: dict, game_fp: dict, game_derived: derive.Der
     if plan.kept_dirs and plan.commands:
         plan.notes.append('own model directories kept as they are (the game holds the same blocks): '
                           + ', '.join(_hex(c) for c in plan.kept_dirs))
+    if plan.config is not None or plan.remove:
+        _stat_edit_notes(plan, game_st.get('stat_edits'), config)
     return plan
+
+
+def _stat_edit_notes(plan: LoadPlan, stat_edits: dict | None, config: dict) -> None:
+    """What the rebuild does with the game's stat edits (``state_cli.read_stat_edits``): a pack holds no stat values,
+    so they are carried over by character ID (``StatEditor/carry.py``); new IDs the pack's roster lacks lose
+    theirs."""
+    if not stat_edits:
+        return
+    edited = {_cid(k) for k in stat_edits.get('characters') or {}}
+    keep = {ids._number(e['id'], 'ids') for e in config.get('ids') or [] if isinstance(e, dict)}
+    dropped = sorted(c for c in edited if c >= ids.FIRST_NEW and c not in keep)
+    kept = len(edited) - len(dropped)
+    if kept or stat_edits.get('globals'):
+        what = [f'{kept} character{"s" if kept != 1 else ""}'] if kept else []
+        if stat_edits.get('globals'):
+            what.append(f'{stat_edits["globals"]} global value{"s" if stat_edits["globals"] != 1 else ""}')
+        plan.notes.append(f'stat edits stay ({" and ".join(what)}): the pack holds no stat values, so the game\'s '
+                          'are carried over by character ID, on top of the stats the pack\'s roster gives')
+    if dropped:
+        plan.warnings.append(f'the stat edits of {len(dropped)} new ID{"s" if len(dropped) != 1 else ""} are '
+                             f'dropped: the pack\'s roster does not have {ids.id_ranges(dropped)}')
 
 
 def extract(pack: Pack, plan: LoadPlan, folder: str) -> str:

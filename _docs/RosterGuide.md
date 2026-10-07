@@ -25,21 +25,37 @@ The binary details are in [`_docs_roster/RosterExpansion.md`](_docs_roster/Roste
    | `02_Stock_and_Unused.json` | The six unused characters (Black Yoshi, White Yoshi, Black Toad, Black Pianta, Black Kritter, Black Koopa) on their families' wheels, with the icons from `1_Input/_Icons`. |
    | `03_Unuseds_and_8_color_slots.json` | Preset 02, every colour wheel filled to 8, and a new wheel of 3-4 for each of the 30 characters without one, all with **open slots** (123 new IDs). |
    | `04_Unuseds_and_10_color_slots.json` | Preset 02, every colour wheel filled to 10, and a new wheel of 3 for each of the 30 characters without one, all with open slots (123 new IDs). |
-   | `05_extra _columns_12x4_grid.json` | Wheels of up to 8 on a 12×4 grid: 7 new squares, and the remaining IDs spread evenly over the new squares and the characters without a wheel (153 new IDs). |
-   | `06_maximum_12x5_grid.json` | Preset 04 on a 12×5 grid: Luigi gets his own square, and 19 new squares hold open slots. |
+   | `05_Extra_Columns_12x4_grid.json` | Wheels of up to 8 on a 12×4 grid: 7 new squares, and the remaining IDs spread evenly over the new squares and the characters without a wheel (153 new IDs). |
+   | `06_Extra_Columns_Max_12x5_grid.json` | Wheels of up to 8 and a new wheel of 3 for each character without one, on a 12×5 grid: Luigi gets his own square, and the remaining IDs fill 19 new squares with 2-3 open slots each (153 new IDs). |
 
    Your own configurations go into the same folder and show up in the list.
 
 3. Copy `main.dol`, `dt_na.dat` **and `fst.bin`** into the game.
 
 From the command line: `python start.py --roster --config <file>` (or
-`--roster --remove`).
+`--roster --remove`). In the GUI: the **Roster Size** tab.
 
-Every choice first resets the roster to vanilla, so you can switch presets
-freely. **[r]** (`--remove`) only does that reset. It works like the model
-unpatcher: the original bytes come from `1_Input/main.dol`, so `1_Input` must
-hold the original game files. Your model patches and untangled routes stay as
-they are; the roster's copies in `dt_na.dat`'s extra space are zeroed, and the
+Every choice replaces the previous roster, so you can switch presets freely,
+and **your slots come along**. Character by character:
+
+- **On the old and the new grid:** the slot keeps what you gave it: models
+  and gear in a new ID, its name, portraits, stats source, square voice and
+  stat edits (renamed or re-statted stock characters too). Where it sits
+  comes from the new preset, so a new ID can end up on another wheel.
+- **Only on the old grid:** it loses everything. A new ID is gone; an unused
+  character (0x47–0x4C) gets its models, gear and stat edits back to their
+  baseline, so it is clean when a later preset brings it back.
+- **Only on the new grid:** an open slot (see below).
+
+The GUI lists what is kept, reset and dropped before anything is written
+(`--dry-run` prints it). **Start fresh** (`--fresh`) injects the preset as it
+is: only models patched into stock slots and stat edits stay.
+
+**[r]** / **Reset to vanilla** (`--remove`) only resets the roster, and since
+2026-10-06 the stat edits with it. It works like the model unpatcher: the
+original bytes come from `1_Input/main.dol`, so `1_Input` must hold the
+original game files. Your model patches and untangled routes stay as they
+are; the roster's copies in `dt_na.dat`'s extra space are zeroed, and the
 file keeps its size.
 
 **Open slots** are new IDs with nothing assigned yet. They show the "empty slot"
@@ -213,11 +229,52 @@ python start.py --clear-slot 0x0D --equipment all
 - Roster packs save changed bats and gloves too (older packs load fine and
   leave equipment as it is).
 
+## Copying a character to another slot
+
+Any character on the grid can be copied onto another slot, to move a
+finished character to another grid position or to fill the field with
+clones. In the **Character grid** tab, right-click a character (a square
+with one character on the grid, or a character on an opened square's
+colour wheel) and choose **Copy**. It gets a teal border. Right-click another slot and
+choose **Paste**: the usual dialog shows what changes, and **Stage** adds
+it to the pending edits. A square with several characters shows only
+"Cannot copy multiple characters at once"; open it and right-click one of
+them. The copied character stays marked, so it can be pasted onto several
+slots.
+
+```
+python start.py --copy-slot 0x09 0xE1 --dry-run
+python start.py --copy-slot 0x09 0xE1
+```
+
+The slot becomes a clone of the character **as the game holds it now**.
+Pending edits of the copied character are not copied: patch them first.
+
+- **Models, bats and gloves:** all of them, including the unchanged ones,
+  as finished blocks (no `.sluggie` needed). A new ID gets its own model
+  directory. A stock slot keeps its own animations, so it takes only a
+  character with the same skeleton (Red Toad onto Blue Toad works,
+  Bowser onto a Toad is refused); paste onto a new ID instead. A bat or
+  glove that does not fit the slot is left as it is, with a warning.
+- **Name, portraits, stats:** the name in all three languages, both
+  portraits (stock art is re-encoded once and looks the same), the stats
+  source and every stat value, including Stat Editor edits and chemistry
+  in both directions. The pasted slot's own chemistry with the copied
+  character stays.
+- **Voice:** it belongs to the square, so the square keeps its voice. Only
+  a slot that is alone on a new square takes the copied character's
+  voice.
+- A paste drops the slot's earlier pending edits. A later model patch or
+  clear of the same slot replaces the paste.
+- Miis keep their name, stats and the Mii icon; they cannot be pasted onto
+  a new ID.
+
 ## Several changes at once
 
 Several changes can go in one run with an edits file, a JSON list of
-`patch`, `clear`, `rename`, `voice`, `stats`, `icon`, `equip` and
-`equip_clear` edits (a `rename`
+`patch`, `clear`, `copy`, `rename`, `voice`, `stats`, `icon`, `equip` and
+`equip_clear` edits (a `copy`
+edit's `source` is the character to clone; a `rename`
 edit's `text` may be blank; a `voice` or `stats` edit's `source` may be
 `null` for the default; an `icon` edit has `view`, `file` and optionally
 `fit` and `trim`; an `equip` edit has `sluggie` and optionally `file`, 2-5;

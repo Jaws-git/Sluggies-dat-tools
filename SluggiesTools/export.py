@@ -49,7 +49,7 @@ _existing_exports = (
     if os.path.exists(outdir) else []
 )
 if _existing_exports:
-    answer = input(
+    answer = _slogger.ask(
         'Previous export files already exist in 2_Output_Models. '
         'Continue and overwrite? (y/n): '
     ).strip().lower()
@@ -1379,7 +1379,7 @@ def prepare_untangle_output_files():
         os.mkdir(output_dat_dir)
 
     if os.path.exists(output_dat_path) or os.path.exists(output_dol_path):
-        answer = input('Untangle mode will overwrite 3_Output_Dat/dt_na.dat and main.dol. Continue? (y/n): ').strip().lower()
+        answer = _slogger.ask('Untangle mode will overwrite 3_Output_Dat/dt_na.dat and main.dol. Continue? (y/n): ').strip().lower()
         _slogger.log_user_input(
             'Untangle overwrite confirm', answer, source='export'
         )

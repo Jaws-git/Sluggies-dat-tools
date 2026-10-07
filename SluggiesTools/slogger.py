@@ -348,3 +348,22 @@ def log_user_input(prompt: str, answer: str, source: Optional[str] = None) -> No
         Originating tool or module name.
     """
     info(f"Input [{prompt}] -> {answer!r}", source=source)
+
+
+# The GUI sets PROMPT_ENV for its child processes (inherited by their own
+# children). ``ask`` then prints PROMPT_MARKER on a line of its own before the
+# prompt, so the GUI knows a command waits for input even when its console is
+# hidden. Every interactive prompt must go through ``ask``, not ``input``.
+PROMPT_ENV = "SLUGGIES_GUI_PROMPTS"
+PROMPT_MARKER = "\x1e[sluggies:awaiting-input]"
+
+
+def ask(prompt: str) -> str:
+    """``input(prompt)``, announced to the GUI first when it runs this process."""
+    if os.environ.get(PROMPT_ENV):
+        try:
+            sys.stdout.write(PROMPT_MARKER + "\n")
+            sys.stdout.flush()
+        except (OSError, ValueError):
+            pass
+    return input(prompt)

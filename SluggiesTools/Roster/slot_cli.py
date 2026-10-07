@@ -15,9 +15,11 @@ batch of one; ``--apply FILE`` reads an edits file (``{"edits": [{"op":
 "patch", "id": "0xNN", "file": ...}, {"op": "clear", "id": "0xNN"}, {"op":
 "rename", "id": "0xNN", "text": ...}, {"op": "voice", "id": "0xNN", "source":
 "0xMM"}, {"op": "stats", "id": "0xNN", "source": null}, {"op": "icon", "id":
-"0xNN", "view": "front", "file": ..., "fit": "contain", "trim": true}, ...]}``;
-a null ``source`` goes back to the default; an icon edit's image is read and
-fitted here, ``icon_import``). ``--dry-run`` leaves out the build
+"0xNN", "view": "front", "file": ..., "fit": "contain", "trim": true},
+{"op": "stat_edits", "file": ...}, {"op": "stat_reset", "id": "0xNN"}, {"op": "copy", "id": "0xNN", "source":
+"0xMM"}, ...]}``; a null ``source`` goes back to
+the default; an icon edit's image is read and fitted here, ``icon_import``;
+a stat edit file is checked against ``main.dol`` here, ``StatEditor/apply``). ``--dry-run`` leaves out the build
 checks of edits marked ``"checked"`` (the GUI's staging check).
 
 Writes nothing to the game files. Exit code 1 when an edit is refused (the
@@ -63,6 +65,9 @@ PLAN_FILE = 'plan.json'
 # A PNG the roster encoded into the bank decodes back close to, not equal to, its pixels (CMPR is lossy):
 # the "empty slot" art measured mean 2.0 / max 32 per channel, other portraits mean 88+.
 CMPR_MEAN, CMPR_MAX = 8, 64
+# A stock (C8) portrait re-encoded to CMPR by a paste: mean 4.5-8.5 per channel over the visible pixels (Bowser,
+# Red Toad); different portraits measure far above.
+CLOSE_MEAN = 16
 
 
 def slot_dir(output_dir: str = state_cli.OUTPUT_DIR) -> str:
@@ -76,9 +81,11 @@ def plan_path(output_dir: str = state_cli.OUTPUT_DIR) -> str:
 class FileEnv(slot_plan.Env):
     """``slot_plan.Env`` on the real files: vanilla skeletons from ``1_Input``, the slot's model from the output."""
 
-    def __init__(self, image, dat):
-        self.image, self.dat = image, dat
+    def __init__(self, image, dat, input_dir=None):
+        """``input_dir``: where ``1_Input/main.dol`` lies (the stat edits' baseline); None: no stat edit notes."""
+        self.image, self.dat, self.input_dir = image, dat, input_dir
         self._bank, self._stock_bank, self._pages = None, None, {}
+        self._stat_edits = None
         if _HS_DIR not in sys.path:
             sys.path.insert(0, _HS_DIR)
 
@@ -134,6 +141,16 @@ class FileEnv(slot_plan.Env):
         return shown is not None and shown.size == image.size and np.array_equal(np.asarray(shown),
                                                                                   np.asarray(image.convert('RGBA')))
 
+    def close_portrait(self, char, view, image):
+        shown = self.shown_portrait(char, view)
+        if shown is None or shown.size != image.size:
+            return False
+        a, b = np.asarray(shown).astype(np.int16), np.asarray(image.convert('RGBA')).astype(np.int16)
+        mask = a[..., 3] > 127
+        if not np.array_equal(mask, b[..., 3] > 127):
+            return False
+        return not mask.any() or np.abs(a[..., :3] - b[..., :3])[mask].mean() <= CLOSE_MEAN
+
     def stock_portrait(self, cid, view):
         try:
             if self._stock_bank is None:
@@ -146,6 +163,78 @@ class FileEnv(slot_plan.Env):
             return self._crop(self._stock_bank, page, rect)
         except (OSError, ValueError, state_icons.IconStateError):
             return None
+
+    def stat_edits(self, path):
+        from StatEditor import apply as stat_apply, bridge as stat_bridge, cli as stat_cli
+        try:
+            prepared, names = stat_cli.check(self.image, self.dat, [path], self.input_dir or stat_cli.INPUT_DIR)
+        except (stat_apply.EditFileError, stat_bridge.BridgeError) as exc:
+            raise slot_plan.PlanError(str(exc)) from exc
+        if not prepared.changes:
+            return slot_plan.StatCheck(None)
+        return slot_plan.StatCheck(stat_apply.summary(prepared), stat_apply.describe(prepared, names),
+                                   prepared.warnings)
+
+    def stat_edited(self, cid):
+        if self._stat_edits is None:
+            from StatEditor import carry
+            found = state_cli.detect_stat_edits(self.image, self.input_dir) if self.input_dir else None
+            self._stat_edits = carry.by_character(found) if found is not None else {}   # unreadable: no notes
+        edits = self._stat_edits.get(cid)
+        return edits.text() if edits else None
+
+    def current_block(self, char, role):
+        ref = ((char.get('blocks') if role in slot_plan.MODEL_ROLES else char.get('equipment')) or {}).get(role)
+        if not ref or self.dat is None:
+            return None
+        return self.dat.read(ref['offset'], ref['length'])
+
+    def vanilla_block(self, directory, file):
+        import LodPartnerGuard
+        try:
+            return LodPartnerGuard._vanilla_block(directory, file)
+        except (OSError, ValueError):
+            return None
+
+    def slot_problems(self, directory, high, low):
+        import LodPartnerGuard
+        import SlotTarget
+        vanilla = {f: self.vanilla_block(directory, f) for f in (slot_plan.HIGH_FILE, slot_plan.LOW_FILE)}
+        problems = []
+        for f, role, block in ((slot_plan.HIGH_FILE, 'High', high), (slot_plan.LOW_FILE, 'Low', low)):
+            errors = SlotTarget.block_errors(block, vanilla[f])
+            if errors:
+                problems.append(f'the {role} block fails validation: ' + '; '.join(errors[:3]))
+        if problems:
+            return problems, []
+        summaries = {f: LodPartnerGuard.act_summary(b) if b else None for f, b in vanilla.items()}
+        try:
+            return SlotTarget.slot_pair_problems(high, low, summaries)
+        except SlotTarget.TargetError as exc:
+            return [str(exc)], []
+
+    def equipment_block_problems(self, directory, file, block):
+        import SlotTarget
+        return SlotTarget.equipment_block_problems(block, directory, file)
+
+    def stat_snapshot(self, cid):
+        from StatEditor import bridge as stat_bridge, carry, fields as stat_fields
+        try:
+            place = carry.placement(self.image)
+        except stat_bridge.BridgeError:
+            return None
+        if place is None or cid not in place.present:
+            return None
+        values = {}
+        for f in stat_fields.CHARACTER_FIELDS:
+            raw = self.image.read(place.layouts[f.table].row_address(cid) + f.offset, f.size)
+            values.setdefault(f.group, {})[f.name] = raw.hex()
+        chemistry = {}
+        for other in place.present:
+            row = self.image.read(carry.chem_address(cid, other, place.layouts, place.matrix), 1)[0]
+            column = self.image.read(carry.chem_address(other, cid, place.layouts, place.matrix), 1)[0]
+            chemistry[_hex(other)] = [row, column]
+        return {'fields': values, 'chemistry': chemistry}
 
     def skeleton(self, source, target):
         import SlotTarget
@@ -179,6 +268,26 @@ class FileEnv(slot_plan.Env):
     def at_baseline(self, char, config):
         """Both models are the vanilla blocks of the slot's own source (a new ID: its template, with the
         open-slot name, template stats and the "empty slot" portraits; a stock ID: no replaced portraits)."""
+        cid = char['id']
+        if cid >= ids.FIRST_NEW:
+            entry = slot_plan._entry(config, 'ids', cid)
+            if (entry is None or 'stats' in entry or char.get('model_source') != char.get('template')
+                    or (char.get('name') or {}).get('en') != open_slot.SLOT_NAME['en']):
+                return False
+            if not self.shows_open_slot_portraits(char):
+                return False
+        elif (slot_plan._entry(config, icons.STOCK_KEY, cid) is not None
+              or slot_plan._entry(config, ids.STOCK_STATS_KEY, cid) is not None):
+            return False
+        if not self.models_at_baseline(char):
+            return False
+        return all(e.get('vanilla') is not False for e in (char.get('equipment') or {}).values())
+
+    def shows_open_slot_portraits(self, char):
+        paths = open_slot.slot_icon_paths()
+        return self.shows_portraits(char, model_icons.ModelIcons(None, paths['side'], paths['front']), encoded=True)
+
+    def models_at_baseline(self, char):
         import LodPartnerGuard
         import UntanglePolicy
         cid = char['id']
@@ -188,25 +297,16 @@ class FileEnv(slot_plan.Env):
             if cid < ids.FIRST_NEW or char.get('model_dir') is None:
                 return False
             directory = char['model_dir']            # no own directory yet: it loads its template's files
-        if cid >= ids.FIRST_NEW:
-            entry = slot_plan._entry(config, 'ids', cid)
-            if (entry is None or 'stats' in entry or char.get('model_source') != char.get('template')
-                    or (char.get('name') or {}).get('en') != open_slot.SLOT_NAME['en']):
-                return False
-            paths = open_slot.slot_icon_paths()
-            if not self.shows_portraits(char, model_icons.ModelIcons(None, paths['side'], paths['front']), encoded=True):
-                return False
-        else:
-            if (slot_plan._entry(config, icons.STOCK_KEY, cid) is not None
-                    or slot_plan._entry(config, ids.STOCK_STATS_KEY, cid) is not None):
-                return False
-            if any(UntanglePolicy.is_split(directory, f) for f in (slot_plan.HIGH_FILE, slot_plan.LOW_FILE)):
-                return False                         # split copies: a clear also repairs them
         for file_index in (slot_plan.HIGH_FILE, slot_plan.LOW_FILE):
+            if cid < ids.FIRST_NEW and UntanglePolicy.is_split(directory, file_index):
+                import UntangledTextures             # split copies: their own untangled baseline (re-tangled: no)
+                if not UntangledTextures.split_at_baseline(directory, file_index):
+                    return False
+                continue
             block = LodPartnerGuard.read_current_block(directory, file_index)
             if block is None or block != LodPartnerGuard._vanilla_block(directory, file_index):
                 return False
-        return all(e.get('vanilla') is not False for e in (char.get('equipment') or {}).values())
+        return True
 
 
 def run(edits: list, output_dir: str = state_cli.OUTPUT_DIR, skip_checked: bool = False) -> slot_plan.Batch:
@@ -217,10 +317,11 @@ def run(edits: list, output_dir: str = state_cli.OUTPUT_DIR, skip_checked: bool 
     derived = derive.derive(image, dat)
     folder = slot_dir(output_dir)
     state_file = os.path.join(folder, derive.CONFIG_FILE)
-    batch = slot_plan.plan_batch(st, derived.config, edits, FileEnv(image, dat), state_file,
+    batch = slot_plan.plan_batch(st, derived.config, edits, FileEnv(image, dat, state_cli.input_dir(output_dir)), state_file,
                                  state.read_names(image, dat), skip_checked=skip_checked)
     batch.warnings[:0] = derived.warnings
     os.makedirs(folder, exist_ok=True)
+    write_copy_files(batch.copy_files, slot_plan.copy_dir(state_file))
     if batch.config is not None:
         portraits = dict(derived.portraits)
         paths = open_slot.slot_icon_paths() if batch.extra_portraits else {}
@@ -238,6 +339,29 @@ def run(edits: list, output_dir: str = state_cli.OUTPUT_DIR, skip_checked: bool 
         json.dump(batch.to_json(), f, ensure_ascii=False, indent=1)
     os.replace(tmp, plan_path(output_dir))
     return batch
+
+
+def write_copy_files(files: dict, folder: str) -> None:
+    """The pastes' snapshot files (``slot_plan.plan_copy``): blocks (bytes), portraits (RGBA images) and stat values
+    (JSON data). The folder is emptied first, so no snapshot of an earlier batch is left for the chain to read."""
+    if os.path.isdir(folder):
+        for name in os.listdir(folder):
+            path = os.path.join(folder, name)
+            if os.path.isfile(path):
+                os.remove(path)
+    if not files:
+        return
+    os.makedirs(folder, exist_ok=True)
+    for name, data in files.items():
+        path = os.path.join(folder, name)
+        if isinstance(data, (bytes, bytearray)):
+            with open(path, 'wb') as f:
+                f.write(data)
+        elif isinstance(data, Image.Image):
+            data.save(path, 'PNG')
+        else:
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=1)
 
 
 def _is_equipment(path: str) -> bool:
@@ -269,6 +393,8 @@ def main(argv=None) -> int:
                         help="give slot 0xNN's square the voice of 0xMM's family (- or default: its own)")
     parser.add_argument('--stats', nargs=2, metavar=('0xNN', '0xMM'),
                         help="let slot 0xNN play with stock player 0xMM's stats (- or default: its own)")
+    parser.add_argument('--copy', nargs=2, metavar=('0xSS', '0xTT'),
+                        help='make slot 0xTT a clone of character 0xSS as the game holds it (the grid\'s paste)')
     parser.add_argument('--icon', nargs=3, metavar=('0xNN', 'VIEW', 'IMAGE'),
                         help="make an image slot 0xNN's front or side portrait (fitted to 48x51)")
     parser.add_argument('--fit', choices=icon_art.FIT_MODES, default=icon_art.DEFAULT_FIT_MODE,
@@ -283,10 +409,10 @@ def main(argv=None) -> int:
     parser.add_argument('--dry-run', action='store_true', help='leave out the build checks of "checked" edits')
     parser.add_argument('--output-dir', default=state_cli.OUTPUT_DIR, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
-    if sum(bool(a) for a in (args.patch, args.clear, args.rename, args.voice, args.stats, args.icon,
+    if sum(bool(a) for a in (args.patch, args.clear, args.rename, args.voice, args.stats, args.icon, args.copy,
                              args.apply)) != 1:
         parser.error('give --patch 0xNN FILE, --clear 0xNN, --rename 0xNN TEXT, --voice 0xNN 0xMM, '
-                     '--stats 0xNN 0xMM, --icon 0xNN VIEW IMAGE or --apply FILE')
+                     '--stats 0xNN 0xMM, --icon 0xNN VIEW IMAGE, --copy 0xSS 0xTT or --apply FILE')
     if args.equipment and not (args.patch or args.clear):
         parser.error('--equipment goes with --patch or --clear')
     if args.no_gear and not args.patch:
@@ -315,6 +441,9 @@ def main(argv=None) -> int:
         elif args.voice or args.stats:
             op, (target, source) = ('voice', args.voice) if args.voice else ('stats', args.stats)
             edits = [slot_plan.Edit(op, slots.parse_id(target), index=1, source=slot_plan.parse_source(source))]
+        elif args.copy:
+            edits = [slot_plan.Edit(slot_plan.COPY, slots.parse_id(args.copy[1]), index=1,
+                                    source=slots.parse_id(args.copy[0]))]
         elif args.icon:
             target, view, image = args.icon
             edits = [slot_plan.Edit('icon', slots.parse_id(target), os.path.abspath(image), index=1, view=view,
@@ -328,14 +457,16 @@ def main(argv=None) -> int:
     for note in batch.notes:
         slogger.info(note, source=SOURCE)
     for edit, plan in batch.plans + batch.skipped:
+        who = 'stat edits' if edit.op == slot_plan.STAT_EDITS else _hex(edit.cid)
         for note in plan.notes:
-            slogger.info(f'{_hex(edit.cid)}: {note}', source=SOURCE)
+            slogger.info(f'{who}: {note}', source=SOURCE)
     for warning in batch.warnings:                   # the derive's, then each edit's
         slogger.warning(warning, source=SOURCE)
     if batch.refused:
         for edit, error in batch.refused:
             slogger.error(f'refused, nothing written: {error}' if len(edits) == 1
-                          else f'refused, nothing written: edit {edit.index} ({edit.op} {_hex(edit.cid)}): {error}',
+                          else f'refused, nothing written: edit {edit.index} ({edit.op}'
+                          + ('' if edit.op == slot_plan.STAT_EDITS else f' {_hex(edit.cid)}') + f'): {error}',
                           source=SOURCE)
         return 1
     slogger.info(f'chain: {len(batch.commands)} commands for {len(batch.plans)} edit(s)'

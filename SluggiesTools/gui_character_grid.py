@@ -55,6 +55,16 @@ border and a "changed since" line.
 On the stock grid Luigi has no square (the game hands him a captain's square
 at runtime). The reader lists his family as an off-grid square, drawn to the
 right of the grid's middle row, so his slots stay reachable.
+
+Copy / paste: right-clicking a one-member square on the grid or a swatch on
+a colour wheel opens a menu with **Copy** and **Paste** (a square with
+several characters shows only a disabled line). Copy earmarks the character
+(teal border); Paste stages a ``copy`` edit
+that makes the clicked slot a clone of it as the game holds it
+(``slot_plan.plan_copy``), with the usual staging check and confirm dialog.
+One shared popup window and one shared right-click handler serve every
+portrait button (``dpg.popup`` would leave a window and a handler registry
+behind on every redraw).
 """
 
 import math
@@ -67,6 +77,7 @@ import numpy as np
 from PIL import Image
 
 import gui_grid
+import native_dialog
 
 ICON = (48, 51)                  # the game's portrait size
 GRID_SCALE, SWATCH_SCALE, SLOT_SCALE = 1.5, 2, 3
@@ -76,10 +87,15 @@ CELL = (104, GRID_ICON[1] + 2 * FRAME + 24)
 CELL_GAP = 2                     # horizontal space between grid cells
 ROW_PITCH = CELL[1] + 8          # cell height plus the spacing Dear PyGui puts between a cell's items and rows
 OFF_GRID_GAP = 24                # space between the grid and the squares beside it (stock Luigi)
-SWATCH = (128, SWATCH_SCALE * ICON[1] + 2 * FRAME + 2 * 22)
+# Vertical gap after every text item in the whole GUI (gui.py's global theme; ImGui's default is 4). It spaces
+# separate add_text lines only: the lines of one wrapped text stay at the font's line height. Recommended
+# maximum: 10 -- above that, dialogs with many lines scroll early and the grid captions drift apart.
+TEXT_SPACING_Y = 2
+SWATCH = (128, SWATCH_SCALE * ICON[1] + 2 * FRAME + 2 * (18 + TEXT_SPACING_Y))
 PAD = 16
 GAP = 8
-LINE = 26                        # text line height (Segoe UI 16 pt, with spacing)
+BOX_MARGIN = 20                  # free space above and below a level's box
+LINE = 22 + TEXT_SPACING_Y       # text line height (Segoe UI 16 pt, with spacing)
 SLOT_W = 720                     # level 2 may be wider than level 1: each level is its own window
 PORTRAIT = (SLOT_SCALE * ICON[0], SLOT_SCALE * ICON[1])
 BUTTON_H = 32
@@ -87,9 +103,9 @@ EQUIP_BLOCK = 3 * LINE + BUTTON_H + 2 * GAP     # the Equipment row: heading, ti
 EQUIP_BUTTON_W = 76
 BADGE_FONT = 9                   # the grid's slot-count number, in portrait pixels (scaled with the texture)
 RENAME, SELECT, CLEAR, DISCARD = 'Rename...', 'Select .sluggie...', 'Clear slot', 'Discard pending'
-STATS, VOICE = 'Stats...', 'Voice...'
+STATS, VOICE = 'Adopt stats...', 'Voice...'
 VOICE_ALL = 'Set voice (all)...'    # the square level (colour wheel): the voice reaches every member
-SLOT_BUTTONS = (RENAME, CLEAR, STATS, DISCARD)  # Discard last
+SLOT_BUTTONS = (RENAME, STATS, VOICE, CLEAR)     # Discard pending sits on a row below, under Clear slot
 EQUIP_PAIR_W = 2 * EQUIP_BUTTON_W - 8 + 4   # a tile's Select... + Reset buttons and the gap between them
 SLOT_BUTTON_W = EQUIP_PAIR_W      # the bottom row's buttons match that, so they align under the tiles
 SELECT_W = (SLOT_W - 2 * PAD) // 3  # Select .sluggie... above the Equipment row
@@ -107,6 +123,7 @@ _ERROR = (255, 120, 110, 255)
 _OK = (120, 220, 140, 255)
 _PENDING = (255, 170, 70, 255)
 _CHANGED = (110, 170, 255, 255)
+_COPIED = (80, 215, 215, 255)
 _LINE_COLORS = {gui_grid.TEXT: _DIM, gui_grid.WARN: _WARN, gui_grid.ERROR: _ERROR, gui_grid.OK: _OK}
 
 
@@ -128,8 +145,11 @@ class CharacterGridTab:
         self.edits_path = os.path.join(app.root_dir, gui_grid.EDITS_REL)
         self.plan_path = os.path.join(app.root_dir, gui_grid.SLOT_PLAN_REL)
         self.pack_plan_path = os.path.join(app.root_dir, gui_grid.PACK_PLAN_REL)
+        self.switch_plan_path = os.path.join(app.root_dir, gui_grid.SWITCH_PLAN_REL)
         self.pack_dir = os.path.join(app.root_dir, gui_grid.PACK_DIR_REL)
         self.reference = None              # gui_grid.Reference: the pack last saved / loaded (session only)
+        self.copied = None                 # the character Copy earmarked (session only), or None
+        self._menu_targets = {}            # portrait button -> the square's members, for the right-click menu
 
     # ------------------------------------------------------------------ build
     def build(self):
@@ -190,6 +210,37 @@ class CharacterGridTab:
                 with dpg.theme_component(kind):
                     dpg.add_theme_color(dpg.mvThemeCol_Border, _CHANGED)
                     dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 3)
+        with dpg.theme(tag='grid_copied_theme'):
+            for kind in (dpg.mvImageButton, dpg.mvButton):
+                with dpg.theme_component(kind):
+                    dpg.add_theme_color(dpg.mvThemeCol_Border, _COPIED)
+                    dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 3)
+        with dpg.window(tag='grid_context', popup=True, show=False, autosize=True, no_saved_settings=True):
+            pass
+        with dpg.theme(tag='grid_context_theme'):            # no box: the menu's buttons float by themselves
+            with dpg.theme_component(dpg.mvAll):
+                for col in (dpg.mvThemeCol_WindowBg, dpg.mvThemeCol_PopupBg, dpg.mvThemeCol_Border,
+                            dpg.mvThemeCol_BorderShadow):
+                    dpg.add_theme_color(col, (0, 0, 0, 0))
+                dpg.add_theme_style(dpg.mvStyleVar_WindowBorderSize, 0)
+                dpg.add_theme_style(dpg.mvStyleVar_PopupBorderSize, 0)
+                dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, 0, 0)
+                dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 4, 4)
+                dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 4)
+                dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 10, 6)
+            with dpg.theme_component(dpg.mvButton):          # Dear PyGui's default blues, opaque (nothing behind)
+                dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (29, 151, 236, 255))
+                dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (0, 119, 200, 255))
+            with dpg.theme_component(dpg.mvButton, enabled_state=False):
+                dpg.add_theme_color(dpg.mvThemeCol_Button, (60, 62, 68, 235))
+                dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (60, 62, 68, 235))
+                dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (60, 62, 68, 235))
+                dpg.add_theme_color(dpg.mvThemeCol_Text, (150, 150, 150, 255))
+                dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 4)
+                dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 10, 6)
+        dpg.bind_item_theme('grid_context', 'grid_context_theme')
+        with dpg.item_handler_registry(tag='grid_context_handlers'):
+            dpg.add_item_clicked_handler(button=dpg.mvMouseButton_Right, callback=self._on_context)
         with dpg.theme(tag='grid_danger_theme'):             # like primary_theme, in red (Discard all)
             for state, colors in (
                 (True, ((dpg.mvThemeCol_Button, (170, 50, 50, 255)),
@@ -239,7 +290,7 @@ class CharacterGridTab:
                                  default_path=pack_dir, default_filename='roster'):
                 dpg.add_file_extension(gui_grid.PACK_EXTENSION, color=(120, 180, 255, 255))
         with dpg.handler_registry():
-            dpg.add_mouse_click_handler(callback=self._on_mouse_click)
+            dpg.add_mouse_click_handler(button=dpg.mvMouseButton_Left, callback=self._on_mouse_click)
             dpg.add_key_press_handler(dpg.mvKey_Escape, callback=self._on_escape)
             # on release, so a held Enter cannot also accept the next dialog
             dpg.add_key_release_handler(dpg.mvKey_Return, callback=self._on_enter)
@@ -271,6 +322,8 @@ class CharacterGridTab:
             for warning in self.loader.state.get('warnings', []):
                 self.app.log_line(f'[character grid] warning: {warning}', _WARN)
             self.nav.refresh(self.loader.state)
+            if self.copied is not None and self.copied not in gui_grid.characters(self.loader.state):
+                self.copied = None
         self._clear_popups()
         dpg.delete_item('grid_cells', children_only=True)
         self._release_textures()
@@ -324,17 +377,24 @@ class CharacterGridTab:
             button = self._portrait_button(head, gui_grid.FRONT, GRID_SCALE, CELL[0],
                                            index, lambda _s, _a, u: self._open_square(u),
                                            badge=gui_grid.slot_count(state, index))
+            self._add_menu(button, state['squares'][index]['members'])
             self._caption(gui_grid.square_label(state, index), CELL[0],
                           gui_grid.is_fallback(state, head, gui_grid.FRONT))
         pending = self.pending.square_pending(state, index)
         changed = self.reference is not None and self.reference.square_changed(state, index)
+        copied = self.copied is not None and self.copied in state['squares'][index]['members']
         if pending:
             dpg.bind_item_theme(button, 'grid_pending_theme')
+        elif copied:
+            dpg.bind_item_theme(button, 'grid_copied_theme')
         elif changed:
             dpg.bind_item_theme(button, 'grid_changed_theme')
         with dpg.tooltip(button):
             for line in gui_grid.square_tooltip(state, index):
                 dpg.add_text(line)
+            if copied:
+                dpg.add_text(f'{gui_grid.name_of(state, self.copied)}: copied (right-click a slot, Paste)',
+                             color=_COPIED)
             if pending:
                 for cid in state['squares'][index]['members']:
                     for line in self.pending.summary(cid):
@@ -454,6 +514,8 @@ class CharacterGridTab:
     def _on_mouse_click(self, _sender, _app_data):
         if not self.popups or self.action is not None:
             return
+        if dpg.is_item_shown('grid_context') and _inside('grid_context', dpg.get_mouse_pos(local=False)):
+            return                            # a click on the right-click menu: the level stays
         box = self.popups[-1][1]
         if self.nav.click(_inside(box, dpg.get_mouse_pos(local=False))):
             self._draw_popups()
@@ -506,12 +568,29 @@ class CharacterGridTab:
             dpg.focus_item(self.confirm)
 
     def _box(self, width, height):
+        """A level's window, centred. Taller than the viewport: the GUI window grows down to fit (not when
+        maximized, at most to the bottom of the screen's work area); what still does not fit scrolls."""
         vw, vh = dpg.get_viewport_client_width(), dpg.get_viewport_client_height()
+        vh += self._grow_viewport(height + 2 * BOX_MARGIN - vh)
+        height = min(height, max(LINE, vh - 2 * BOX_MARGIN))
         box = dpg.add_window(no_title_bar=True, no_resize=True, no_move=True, no_collapse=True,
                              no_saved_settings=True, width=width, height=height,
                              pos=(max(0, (vw - width) // 2), max(0, (vh - height) // 2)))
         dpg.bind_item_theme(box, 'grid_box_theme')
         return box
+
+    @staticmethod
+    def _grow_viewport(missing):
+        """Make the GUI window ``missing`` px taller (fewer when the screen runs out); returns the px gained.
+        Windows only; nothing for a maximized window. The resize callback redraws the levels afterwards."""
+        if missing <= 0:
+            return 0
+        hwnd = native_dialog.find_owner_window(dpg.get_viewport_title())
+        room = native_dialog.room_below(hwnd) if hwnd else None
+        grow = min(missing, room or 0)
+        if grow > 0:
+            dpg.set_viewport_height(dpg.get_viewport_height() + grow)
+        return grow
 
     def _square_box(self):
         state = self.nav.state
@@ -532,6 +611,7 @@ class CharacterGridTab:
                         dpg.add_spacer(width=SWATCH[0], height=1)
                         button = self._portrait_button(cid, gui_grid.SIDE, SWATCH_SCALE, SWATCH[0], cid,
                                                        lambda _s, _a, u: self._open_slot(u))
+                        self._add_menu(button, [cid])
                         self._caption(gui_grid.name_of(state, cid), SWATCH[0], fallback)
                         self._caption(gui_grid.hex_id(cid), SWATCH[0], color=_DIM)
                     changed = self.reference.changed(state, cid) if self.reference is not None else []
@@ -539,10 +619,14 @@ class CharacterGridTab:
                         dpg.bind_item_theme(button, 'grid_pending_theme')
                     elif cid == self.nav.slot:
                         dpg.bind_item_theme(button, 'primary_theme')
+                    elif cid == self.copied:
+                        dpg.bind_item_theme(button, 'grid_copied_theme')
                     elif changed:
                         dpg.bind_item_theme(button, 'grid_changed_theme')
-                    if fallback or self.pending.has(cid) or changed:
+                    if fallback or self.pending.has(cid) or changed or cid == self.copied:
                         with dpg.tooltip(button):
+                            if cid == self.copied:
+                                dpg.add_text('Copied (right-click another slot, Paste)', color=_COPIED)
                             if fallback:
                                 dpg.add_text(f'Side portrait: {gui_grid.icon_note(state, cid, gui_grid.SIDE)}')
                             for line in self.pending.summary(cid):
@@ -586,7 +670,7 @@ class CharacterGridTab:
         body = max(PORTRAIT[1] + 2 * FRAME + LINE, LINE * sum(1 + len(line) * 7 // text_w for line, _c in details))
         tiles = gui_grid.equipment_tiles(state, cid, self.pending)
         box = self._box(SLOT_W, 2 * PAD + 2 * LINE + body + GAP + BUTTON_H + 2 * LINE + BUTTON_H + GAP
-                        + (EQUIP_BLOCK if tiles else 0) + (BUTTON_H + GAP if self.nav.skipped else 0))
+                        + (EQUIP_BLOCK if tiles else 0) + BUTTON_H + GAP)
         title = dpg.add_text(gui_grid.name_of(state, cid), parent=box)
         with dpg.item_handler_registry() as handlers:        # clicking the name renames, like the button
             dpg.add_item_clicked_handler(callback=lambda *_: self._on_rename(cid))
@@ -632,22 +716,30 @@ class CharacterGridTab:
                 DISCARD: "Drop this slot's pending edits (nothing was written for them yet)."}
         actions = {RENAME: lambda: self._on_rename(cid), CLEAR: lambda: self._start_preview(cid, None),
                    STATS: lambda: self._on_value('stats', cid), DISCARD: lambda: self._on_discard(cid)}
+        def slot_button(label, theme='primary_theme'):
+            # a staged pack load replaces the roster: slot edits wait until it is written or discarded
+            usable = self.pending.has(cid) if label == DISCARD else self.pending.pack is None
+            button = dpg.add_button(label=label, width=SLOT_BUTTON_W, height=BUTTON_H, callback=actions[label],
+                                    enabled=not self._locked() and usable)
+            dpg.bind_item_theme(button, theme)
+            self.slot_buttons.append((button, usable))
+            tip = tips[label] if usable or label == DISCARD else (
+                'A roster pack load is pending: press "Patch Game" (or Discard it) first.')
+            with dpg.tooltip(button):
+                dpg.add_text(tip, wrap=420)
+
         # same width and spacing as the Equipment tiles (Select... + Reset), so the columns line up
         with dpg.group(horizontal=True, horizontal_spacing=GAP, parent=box):
             for label in SLOT_BUTTONS:
-                # a staged pack load replaces the roster: slot edits wait until it is written or discarded
-                usable = self.pending.has(cid) if label == DISCARD else self.pending.pack is None
-                button = dpg.add_button(label=label, width=SLOT_BUTTON_W, height=BUTTON_H, callback=actions[label],
-                                        enabled=not self._locked() and usable)
-                dpg.bind_item_theme(button, 'grid_warn_theme' if label == DISCARD else 'primary_theme')
-                self.slot_buttons.append((button, usable))
-                tip = tips[label] if usable or label == DISCARD else (
-                    'A roster pack load is pending: press "Patch Game" (or Discard it) first.')
-                with dpg.tooltip(button):
-                    dpg.add_text(tip, wrap=420)
-        if self.nav.skipped:                     # one-member square: the square's Voice... on a row below
-            with dpg.group(horizontal=True, horizontal_spacing=GAP, parent=box):
-                self._voice_button(self.nav.square_index(), width=SLOT_BUTTON_W)
+                if label != VOICE:
+                    slot_button(label, 'grid_warn_theme' if label == CLEAR else 'primary_theme')
+                elif self.nav.skipped:           # one-member square: the square's Voice... shows here
+                    self._voice_button(self.nav.square_index(), width=SLOT_BUTTON_W)
+                else:                            # the voice belongs to the square: keep the column empty
+                    dpg.add_spacer(width=SLOT_BUTTON_W)
+        clear_x = SLOT_BUTTONS.index(CLEAR) * (SLOT_BUTTON_W + GAP)
+        with dpg.group(horizontal=True, parent=box, indent=clear_x):
+            slot_button(DISCARD, 'grid_warn_theme')
         dpg.add_text(BUSY_TEXT if self.app.busy else '', parent=box, tag='grid_slot_busy', color=_WARN)
         return box
 
@@ -958,20 +1050,23 @@ class CharacterGridTab:
         self._end_action()
         self._start_preview(cid, None, rename=text)
 
-    def _start_preview(self, cid, sluggie, rename=None, value=None, icon=None, equip=None):
+    def _start_preview(self, cid, sluggie, rename=None, value=None, icon=None, equip=None, copy_from=None):
         """The staging check (the pending edits plus this one; this one's build check); the confirm dialog
         opens when it is done. ``rename``: the new name text (blank resets), a rename edit instead of patch/clear;
         ``value``: ``(op, source)``, a stats or voice edit (source None: back to the default); ``icon``: a
         finished icon edit (``IconPreview.edit``); ``equip``: ``(slot file, .sluggie or None)``, an equipment edit
-        (None: reset that file)."""
+        (None: reset that file); ``copy_from``: the copied character, a paste (the slot becomes its clone)."""
         if self._locked():
             return
-        kind = ('equip' if equip is not None and equip[1] else 'equip_clear' if equip is not None
+        kind = (gui_grid.COPY if copy_from is not None
+                else 'equip' if equip is not None and equip[1] else 'equip_clear' if equip is not None
                 else 'icon' if icon is not None else 'rename' if rename is not None else value[0] if value
                 else 'patch' if sluggie else 'clear')
         view = icon['view'] if icon is not None else None
         gear_file = equip[0] if equip is not None else None
-        if equip is not None:
+        if copy_from is not None:
+            edit = gui_grid.copy_edit(cid, copy_from)
+        elif equip is not None:
             edit = ({'op': 'equip', 'id': gui_grid.hex_id(cid), 'file': equip[0], 'sluggie': equip[1],
                      'origin': 'user'} if equip[1] else
                     {'op': 'equip_clear', 'id': gui_grid.hex_id(cid), 'file': equip[0]})
@@ -1002,10 +1097,129 @@ class CharacterGridTab:
         dialog = gui_grid.slot_dialog(state, cid, sluggie is not None, plan, code, output, self.pending, kind=kind,
                                       view=view, gear_file=gear_file)
         if (kind in gui_grid.VALUE_KINDS + ('equip_clear',) and dialog.can_apply and code == 0 and plan is not None
-                and any(int(s['target'], 16) == cid for s in plan['edits'])):
+                and any(int(s['target'], 16) == cid for s in plan['edits']) and not dialog.offer_stat_reset):
             self._stage(plan)                  # a valid rename / stats / voice pick needs no second confirmation
             return
-        self._dialog(dialog, lambda: self._stage(plan), ok_label='Stage')
+        extra = (('Stage + clear stat edits', lambda: self._stage_with_stat_reset(cid, plan))
+                 if dialog.offer_stat_reset else None)
+        self._dialog(dialog, lambda: self._stage(plan), ok_label='Stage', extra=extra)
+
+    # ------------------------------------------------------------------ copy / paste
+    def _add_menu(self, button, members):
+        """Give a portrait button the right-click menu (``_on_context``) for ``members`` (its square's, or one)."""
+        self._menu_targets = {b: m for b, m in self._menu_targets.items() if dpg.does_item_exist(b)}
+        self._menu_targets[button] = list(members)
+        dpg.bind_item_handler_registry(button, 'grid_context_handlers')
+
+    def _on_context(self, _sender, app_data):
+        """A right click on a portrait button: fill the shared menu window and open it at the mouse."""
+        button = app_data[1] if isinstance(app_data, (list, tuple)) else app_data
+        members = self._menu_targets.get(button)
+        state = self.loader.state
+        if members is None or state is None or self.confirm is not None:
+            return
+        dpg.delete_item('grid_context', children_only=True)
+        actions = {gui_grid.COPY_LABEL: lambda: self._on_copy(members[0]),
+                   gui_grid.PASTE_LABEL: lambda: self._on_paste(members[0])}
+        entries = gui_grid.context_menu(state, members, self.copied, self.pending.pack is not None, self._locked())
+        sizes = [dpg.get_text_size(label) for label, _enabled, _why in entries]
+        width = max((s[0] for s in sizes if s), default=0)
+        width = int(width) + 20 if width else 0              # + FramePadding x2: one width for every button
+        for label, enabled, why in entries:
+            item = dpg.add_button(label=label, parent='grid_context', enabled=enabled, width=width,
+                                  callback=(lambda _s, _a, act: self._menu_choice(act)),
+                                  user_data=actions.get(label))
+            if why:
+                with dpg.tooltip(item):
+                    dpg.add_text(why, wrap=360)
+        dpg.configure_item('grid_context', show=True, pos=dpg.get_mouse_pos(local=False))
+
+    def _menu_choice(self, action):
+        dpg.configure_item('grid_context', show=False)
+        if action is not None:
+            action()
+
+    def _on_copy(self, cid):
+        if self._locked():
+            return
+        self.copied = cid
+        self.app.log_line(f'[character grid] copied {gui_grid.name_of(self.loader.state, cid)} ({gui_grid.hex_id(cid)}): '
+                          'right-click another slot and choose Paste.', _COPIED)
+        self._show_status()
+        self._pending_changed()
+
+    def _on_paste(self, cid):
+        if self._locked() or self.copied is None or self.copied == cid or self.pending.pack is not None:
+            return
+        self._start_preview(cid, None, copy_from=self.copied)
+
+    def forget_copy(self):
+        """Drop the copied character (a tab switch does this)."""
+        if self.copied is None:
+            return
+        self.copied = None
+        self._show_status()
+        self._pending_changed()
+
+    def _stage_with_stat_reset(self, cid, plan):
+        """Stage + clear stat edits: one more staging check with the slot's stat edits cleared behind the edit
+        just checked (its build check passed, so it is not run again); staged straight away when it passes."""
+        self._end_action()
+        edits = {'edits': [dict(e, checked=True) for e in plan.get('merged') or []] + [gui_grid.stat_reset_edit(cid)]}
+        try:
+            gui_grid.write_edits(self.edits_path, edits)
+        except OSError as exc:
+            self.app.log_line(f'[character grid] could not write {self.edits_path}: {exc}', _WARN)
+            return
+        self.action = (cid, None)
+
+        def done(code, output):
+            state = self.nav.state or self.loader.state
+            checked = gui_grid.load_plan(self.plan_path)
+            if code == 0 and checked is not None and not checked['refused']:
+                self._stage(checked)
+                return
+            self._dialog(gui_grid.slot_dialog(state, cid, False, checked, code, output, self.pending,
+                                              kind=gui_grid.STAT_RESET), self._end_action)
+        if not self._run([gui_grid.preview_command(self.edits_path)], 'Checking the edit...', done):
+            self._end_action()
+
+    def offer_stat_edits(self, path, quiet_refusal=False):
+        """The staging check of a stat edit file the Stat Editor sent (the pending edits plus this one), then its
+        confirm dialog; Stage adds it to the pending list. ``quiet_refusal`` (a file left from an earlier session):
+        a refused or empty file only gets a log line. False when the tab is busy (the caller tries again later)."""
+        if self._locked() or self.confirm is not None:
+            return False
+        if self.pending.pack is not None:
+            self.action = 'ask'
+            self._dialog(gui_grid.SlotDialog('Stat edits: refused', [
+                ('A roster pack load is staged: it replaces the whole roster, so stat values cannot be staged on top '
+                 'of it.', gui_grid.ERROR),
+                ('Patch Game or discard the load first, then open the Stat Editor again. Nothing was staged.',
+                 gui_grid.TEXT)]), self._end_action)
+            return True
+        try:
+            gui_grid.write_edits(self.edits_path, self.pending.staging(gui_grid.stat_edit(path)))
+        except OSError as exc:
+            self.app.log_line(f'[stat editor] could not write {self.edits_path}: {exc}', _WARN)
+            return True
+        self.action = 'stat_edits'
+
+        def show(code, output):
+            state = self.nav.state or self.loader.state
+            plan = gui_grid.load_plan(self.plan_path)
+            dialog = gui_grid.stat_edits_dialog(state, plan, code, output, path)
+            if quiet_refusal and not dialog.can_apply:
+                self._end_action()
+                why = dialog.lines[0][0] if dialog.lines else dialog.title.removeprefix('Stat edits: ')
+                self.app.log_line(f'[stat editor] the edit file left from an earlier session was dropped: {why}',
+                                  _WARN)
+                return
+            self._dialog(dialog, lambda: self._stage(plan), ok_label='Stage')
+        if not self._run([gui_grid.preview_command(self.edits_path)], 'Checking the stat edits...', show):
+            self._end_action()
+            return False
+        return True
 
     def _stage(self, plan):
         self._end_action()
@@ -1019,9 +1233,11 @@ class CharacterGridTab:
         self.pending.discard(cid)
         self._pending_changed()
 
-    def config_risks(self):
+    def config_risks(self, stats_lost=False, stats_reason=gui_grid.STATS_REPLACED):
         """Why the current configuration would be lost by an export / roster injection (empty: vanilla, nothing
-        pending, or the grid not read yet)."""
+        pending, or the grid not read yet). ``stats_lost``: every stat edit goes (``stats_reason``: the untangle
+        export replaces main.dol, a reset clears them); else only stat edits of new IDs are at risk
+        (``gui_grid.stat_edit_risk``)."""
         risks = []
         state = self.loader.state
         if state is not None and state.get('kind') != 'stock':
@@ -1029,12 +1245,16 @@ class CharacterGridTab:
         if len(self.pending):
             risks.append(f'{len(self.pending)} pending grid edit{"s" if len(self.pending) != 1 else ""} '
                          '(not written to the game yet).')
+        stat_risk = gui_grid.stat_edit_risk(state, stats_lost, stats_reason)
+        if stat_risk:
+            risks.append(stat_risk)
         return risks
 
-    def config_guard(self, then, title, action):
-        """Run ``then``; when the configuration is not vanilla or has pending grid edits ask first:
-        OK (go on, pending edits are dropped) / Save Configuration (roster pack, then go on) / Cancel."""
-        risks = self.config_risks()
+    def config_guard(self, then, title, action, stats_lost=False, stats_reason=gui_grid.STATS_REPLACED):
+        """Run ``then``; when the configuration is not vanilla, has pending grid edits or stat edits at risk ask
+        first: OK (go on, pending edits are dropped) / Save Configuration (roster pack, then go on) / Cancel.
+        ``stats_lost``, ``stats_reason``: ``config_risks``."""
+        risks = self.config_risks(stats_lost, stats_reason)
         if not risks:
             then()
             return
@@ -1042,8 +1262,8 @@ class CharacterGridTab:
             return                                   # another dialog is up
         lines = [(f'{action} replaces the current configuration, which would be lost:', gui_grid.TEXT)]
         lines += [(f'  {risk}', gui_grid.WARN) for risk in risks]
-        lines.append(('"Save Configuration" stores the game as it is in a roster pack first (pending edits are '
-                      'not part of it).', gui_grid.TEXT))
+        lines.append(('"Save Configuration" stores the game as it is in a roster pack first (pending edits and '
+                      'stat values are not part of it).', gui_grid.TEXT))
 
         def proceed():
             self._end_action()
@@ -1057,6 +1277,45 @@ class CharacterGridTab:
         self.action = 'ask'
         self._dialog(gui_grid.SlotDialog(title, lines, True), proceed, ok_label='OK',
                      extra=('Save Configuration', save))
+
+    def switch_roster(self, path):
+        """Roster Size tab, "Inject roster": pending edits are discarded first (asks), then the switch is planned
+        and built in memory (``--roster --config FILE --dry-run``) and its dialog lists what the slots keep and
+        lose; Inject runs the chain (``Roster/migrate.py``)."""
+        if self._locked():
+            return
+
+        def check():
+            self.action = 'switch'
+            if not self._run([gui_grid.switch_command(path, dry_run=True)], 'Planning the roster switch...',
+                             lambda code, output: self._show_switch(path, code, output)):
+                self._end_action()
+        self.confirm_discard(check, 'Inject the roster and discard the pending edits?',
+                             'Injecting a roster rebuilds the grid, so the pending edits would no longer fit.')
+
+    def _show_switch(self, path, code, output):
+        plan = gui_grid.switch_plan(self.switch_plan_path)
+
+        def save():
+            self._end_action()
+            self._pick_pack(save=True, after=lambda: self._switch(path))
+        self._dialog(gui_grid.switch_dialog(plan, code, output, path), lambda: self._switch(path), ok_label='Inject',
+                     extra=('Save Configuration', save))
+
+    def _switch(self, path):
+        self._end_action()
+        self.pending.clear()
+        self._pending_changed()
+
+        def done(code, _output):
+            if code == 0:
+                self.app.log_line(f'[character grid] roster {os.path.basename(path)} injected; slots on both grids '
+                                  'kept their customisations.', _OK)
+            else:
+                self.app.log_line('[character grid] the roster switch stopped at a failed step: see the log above; '
+                                  'the re-read shows what landed.', _WARN)
+            self.set_busy(self.app.busy)
+        self._run([gui_grid.switch_command(path)], 'Injecting the roster...', done)
 
     def _on_discard_all(self):
         if self._locked() or not len(self.pending):
@@ -1075,7 +1334,7 @@ class CharacterGridTab:
             (f'{count} pending edit{"s" if count != 1 else ""} (nothing written for them yet):', gui_grid.TEXT)]
         state = self.loader.state
         for cid, text in self.pending.titles():
-            who = '' if cid is None else f'{gui_grid.name_of(state, int(cid, 16)) if state else cid} ({cid}): '
+            who = '' if cid is None else f'{gui_grid.edit_who(state, int(cid, 16))}: '
             lines.append((f'  {who}{text}', gui_grid.WARN))
         lines.append(('Discard drops them.', gui_grid.TEXT))
 

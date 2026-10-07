@@ -99,6 +99,38 @@ def find_owner_window(title: str):
         return None
 
 
+class _MONITORINFO(ctypes.Structure):
+    _fields_ = [('cbSize', wintypes.DWORD), ('rcMonitor', wintypes.RECT), ('rcWork', wintypes.RECT),
+                ('dwFlags', wintypes.DWORD)]
+
+
+def room_below(hwnd):
+    """Pixels between the bottom of window ``hwnd`` and the bottom of its monitor's work area (above the
+    taskbar), so the window can grow down that far. None when it is maximized or minimized (no growing then),
+    or the size cannot be read."""
+    _MONITOR_DEFAULTTONEAREST = 2
+    try:
+        user32 = ctypes.WinDLL('user32', use_last_error=True)
+        user32.IsZoomed.argtypes = user32.IsIconic.argtypes = (wintypes.HWND,)
+        if user32.IsZoomed(hwnd) or user32.IsIconic(hwnd):
+            return None
+        rect = wintypes.RECT()
+        user32.GetWindowRect.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.RECT))
+        if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return None
+        user32.MonitorFromWindow.restype = wintypes.HMONITOR
+        user32.MonitorFromWindow.argtypes = (wintypes.HWND, wintypes.DWORD)
+        monitor = user32.MonitorFromWindow(hwnd, _MONITOR_DEFAULTTONEAREST)
+        info = _MONITORINFO()
+        info.cbSize = ctypes.sizeof(info)
+        user32.GetMonitorInfoW.argtypes = (wintypes.HMONITOR, ctypes.POINTER(_MONITORINFO))
+        if not monitor or not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            return None
+        return max(0, info.rcWork.bottom - rect.bottom)
+    except (OSError, AttributeError):
+        return None
+
+
 def ask_open_files(title: str, initial_dir: str, filters, multi: bool = False, owner=None,
                    save: bool = False, default_ext: str | None = None):
     """Show the dialog. Returns the chosen paths (a list, one entry unless ``multi``), or None when

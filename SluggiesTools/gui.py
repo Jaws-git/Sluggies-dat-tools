@@ -11,6 +11,10 @@ shows the draft grid of 3_Output_Dat. It reads it with ``start.py
 --roster-state`` in the background at start, when the tab is opened, on
 Refresh and after every command chain that can change the game files.
 
+The "Stat Editor" tab (``StatEditor/gui_tab``) launches Philenarion's Sluggers
+Stat Editor (Bridge Mode or Standalone) and stages the values it sends back as
+pending edits of the character grid.
+
 Fonts: on Windows the GUI upgrades to the system Segoe UI when present;
 otherwise it uses the Open Sans TTF already bundled with the release (the same
 one the roster name plates are drawn with). When neither file is available it
@@ -30,6 +34,7 @@ import gui_character_grid
 import gui_grid
 import native_dialog
 import slogger
+from StatEditor import gui_tab as stat_editor_tab
 
 _MAX_LOG_LINES = 3000
 _LOG_COLOR = (220, 220, 220, 255)
@@ -37,6 +42,8 @@ _PROMPT_COLOR = (255, 210, 90, 255)
 _NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 _PRIMARY_SIZE = (170, 44)
 _VIEWPORT_TITLE = 'Sluggies Tools'
+_VIEWPORT_SIZE = (1440, 800)    # fits the 12x5 grid, a grid note line and the "Show console" checkbox unscrolled
+_CONSOLE_HEIGHT = 240           # the window grows by this when the console is shown
 _CLOSE_DIALOG = 'close_running_dialog'
 
 # Font sizes for the UI. 16pt matches Dear PyGui's default at 1x DPI. Open
@@ -117,7 +124,9 @@ class SluggiesGui:
         self.chain_output = []
         self.action_buttons = []
         self.picking = False               # a native file dialog is open
+        self.console_grow = 0              # px the window grew when the console was shown
         self.grid_tab = gui_character_grid.CharacterGridTab(self)
+        self.stat_tab = stat_editor_tab.StatEditorTab(self)
 
     # ------------------------------------------------------------------ run
     def run_command(self, *args):
@@ -143,7 +152,7 @@ class SluggiesGui:
         args = self.current = self.pending.pop(0)
         command = [*self.command_prefix, *args]
         self._log_line('> ' + ' '.join(args), _PROMPT_COLOR)
-        env = dict(os.environ, PYTHONUNBUFFERED='1', PYTHONIOENCODING='utf-8')
+        env = dict(os.environ, PYTHONUNBUFFERED='1', PYTHONIOENCODING='utf-8', **{slogger.PROMPT_ENV: '1'})
         try:
             self.process = subprocess.Popen(
                 command,
@@ -171,7 +180,7 @@ class SluggiesGui:
                 break
             text = chunk.decode('utf-8', errors='replace')
             try:
-                sys.stdout.write(text)
+                sys.stdout.write(text.replace(slogger.PROMPT_MARKER + '\r\n', '').replace(slogger.PROMPT_MARKER + '\n', ''))
                 sys.stdout.flush()
             except (OSError, ValueError, UnicodeEncodeError):
                 pass
@@ -240,6 +249,8 @@ class SluggiesGui:
                 self.grid_tab.on_read_done(item[1], item[2])
             elif isinstance(item, tuple) and item[0] == 'files':
                 self._files_done(*item[1:])
+            elif isinstance(item, tuple) and item[0] == 'call':     # a worker thread's result, run on the GUI thread
+                item[1](*item[2:])
             elif isinstance(item, tuple):
                 self._finish_process(item[1])
             else:
@@ -252,6 +263,9 @@ class SluggiesGui:
         buffer = self.partial + text
         *lines, self.partial = buffer.split('\n')
         for line in lines:
+            if line == slogger.PROMPT_MARKER:
+                self.show_console()                # the command waits for an answer
+                continue
             self._log_line(line.rsplit('\r', 1)[-1])
         self.partial = self.partial.rsplit('\r', 1)[-1]
         dpg.set_value('log_pending', self.partial)
@@ -265,6 +279,46 @@ class SluggiesGui:
         for stale in children[:-_MAX_LOG_LINES - 1]:
             dpg.delete_item(stale)
         dpg.set_y_scroll('log_window', 1.0e9)
+
+    def show_console(self, show=True):
+        """Show or hide the console (log, input row and its buttons); the checkbox follows. The GUI window grows
+        down by _CONSOLE_HEIGHT to make room and shrinks back by what it grew when the console is hidden."""
+        dpg.set_value('show_console', show)
+        if show == dpg.get_item_configuration('console_area')['show']:
+            return
+        dpg.configure_item('console_area', show=show)
+        if show:
+            self.console_grow = self._grow_for_console()
+            dpg.set_y_scroll('log_window', 1.0e9)
+        elif self.console_grow:
+            dpg.set_viewport_height(max(_VIEWPORT_SIZE[1], dpg.get_viewport_height() - self.console_grow))
+            self.console_grow = 0
+
+    @staticmethod
+    def _grow_for_console():
+        """Make the GUI window _CONSOLE_HEIGHT taller; returns the px gained. Without room below it first moves up
+        (never above the screen top). Nothing for a maximized window (Windows: ``room_below`` gives None)."""
+        hwnd = native_dialog.find_owner_window(_VIEWPORT_TITLE)
+        if hwnd:
+            room = native_dialog.room_below(hwnd)
+            if room is None:
+                return 0
+            if room < _CONSOLE_HEIGHT:
+                x, y = dpg.get_viewport_pos()
+                up = min(_CONSOLE_HEIGHT - room, max(0, int(y)))
+                dpg.set_viewport_pos([x, y - up])
+                room += up
+            grow = min(_CONSOLE_HEIGHT, room)
+        else:
+            grow = _CONSOLE_HEIGHT
+        dpg.set_viewport_height(dpg.get_viewport_height() + grow)
+        return grow
+
+    def clear_console(self):
+        """Empty the console view only; log files are untouched. The pending partial line (an open prompt) stays."""
+        for item in dpg.get_item_children('log_window', 1):
+            if dpg.get_item_alias(item) != 'log_pending':
+                dpg.delete_item(item)
 
     def _finish_process(self, code):
         if self.partial:
@@ -294,6 +348,9 @@ class SluggiesGui:
         for button in self.action_buttons:
             dpg.configure_item(button, enabled=not busy)
         dpg.configure_item('stop_button', enabled=busy)
+        dpg.configure_item('roster_spinner', show=busy)
+        step = ' '.join(os.path.basename(a) if os.path.isabs(a) else a for a in self.current or ())
+        dpg.set_value('roster_status', f'Running: {step}' if busy else '')
         self.grid_tab.set_busy(busy)
 
     # ------------------------------------------------------------------ ui
@@ -313,6 +370,8 @@ class SluggiesGui:
         with dpg.theme() as global_theme:
             with dpg.theme_component(dpg.mvAll):
                 dpg.add_theme_color(dpg.mvThemeCol_CheckMark, (60, 255, 90, 255))
+            with dpg.theme_component(dpg.mvText):
+                dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 8, gui_character_grid.TEXT_SPACING_Y)
         dpg.bind_theme(global_theme)
         with dpg.theme(tag='primary_theme'):
             for state, colors in (
@@ -331,7 +390,7 @@ class SluggiesGui:
         with dpg.tab(label='All-In-One Export'):
             dpg.add_text('1) Export all models with untangled textures (overwrites 3_Output_Dat/dt_na.dat and main.dol)')
             dpg.add_text('2) Apply the chosen roster preset')
-            dpg.add_text('3) Turn on CPU vs CPU and CPU vs CPU management')
+            dpg.add_text('3) Turn on CPU vs CPU and CPU vs CPU management (hold minus on game start button)')
             dpg.add_text('4) Write the character icons (FrontIcon/SideIcon) from 3_Output_Dat into the model folders')
             dpg.add_text('A failing step stops the rest.')
             dpg.add_spacer(height=6)
@@ -348,17 +407,17 @@ class SluggiesGui:
         if choice == self.ROSTER_RESET:
             steps.append(('--roster', '--remove'))
         elif choice and choice != self.ROSTER_SKIP:
-            steps.append(('--roster', '--config', os.path.join(self.config_dir, choice)))
+            steps.append(('--roster', '--config', os.path.join(self.config_dir, choice), '--fresh'))
         steps.append(('--game-options', '--on', 'cpu_vs_cpu', 'cpu_management'))
         steps.append(('--export-icons', '--use-output'))
         self._config_guard(lambda: self.run_chain(steps), 'Start the all-in-one export and lose the configuration?',
-                           'The all-in-one export')
+                           'The all-in-one export', stats_lost=True)
 
     def _build_export_tab(self):
         with dpg.tab(label='Export 3D'):
             dpg.add_text('Export all models from 1_Input to 2_Output_Models.')
             dpg.add_checkbox(label='Untangle (overwrites 3_Output_Dat/dt_na.dat and main.dol)', tag='exp_untangle')
-            dpg.add_checkbox(label='Also write .glb files', tag='exp_glb')
+            dpg.add_checkbox(label='Also write .glb files', tag='exp_glb', default_value=True)
             dpg.add_checkbox(label='Skip textures', tag='exp_notex')
             dpg.add_checkbox(label='Debug (raw byte arrays instead of base64)', tag='exp_debug')
             icons = dpg.add_checkbox(label='Export Icons', tag='exp_icons', default_value=True)
@@ -384,14 +443,28 @@ class SluggiesGui:
                 dpg.add_combo([], tag='roster_config', width=420)
                 dpg.add_button(label='Refresh', callback=self._refresh_configs)
             dpg.add_text('', tag='roster_hint', color=_PROMPT_COLOR, wrap=700)
+            dpg.add_text('Slots on both the old and the new grid keep their customisations (models, equipment, '
+                         'names, portraits, stats, voices, stat edits); slots leaving the grid are reset; new '
+                         'slots are empty.', wrap=700)
+            fresh = dpg.add_checkbox(label='Start fresh (keep no slot customisations)', tag='roster_fresh')
+            with dpg.tooltip(fresh):
+                dpg.add_text('Inject the preset as it is: new IDs lose their models, names and portraits; stock '
+                             'slots keep patched models and stat edits.')
             dpg.add_checkbox(label='Dry run (validate without writing)', tag='roster_dry')
             self._action('Inject roster', self._on_roster, primary=True)
             self._action('Reset to vanilla',
                          lambda: self._config_guard(lambda: self.run_command('--roster', '--remove'),
                                                        'Reset to vanilla and lose the configuration?',
-                                                       'Resetting to vanilla'))
+                                                       'Resetting to vanilla', stats_lost=True,
+                                                       stats_reason=gui_grid.STATS_RESET),
+                         'Grid, new IDs, names, portraits, voices, stats sources and stat edits back to 1_Input; '
+                         'models patched into stock slots stay.')
             self._action('Repair unused characters', lambda: self.run_command('--resplit-unused'),
                          'Repair: give unused-character routes (dirs 89-94) their own block copies again.')
+            with dpg.group(horizontal=True):
+                dpg.add_loading_indicator(tag='roster_spinner', style=1, radius=1.6, show=False,
+                                          color=(90, 200, 120, 255), secondary_color=(60, 120, 80, 255))
+                dpg.add_text('', tag='roster_status')
         self._refresh_configs()
 
     def _refresh_configs(self):
@@ -418,28 +491,32 @@ class SluggiesGui:
         if not name:
             self._log_line('No roster configuration selected.', _PROMPT_COLOR)
             return
-        args = ['--roster', '--config', os.path.join(self.config_dir, name)]
+        path = os.path.join(self.config_dir, name)
+        fresh = dpg.get_value('roster_fresh')
         if dpg.get_value('roster_dry'):
-            args.append('--dry-run')
-            self.run_command(*args)
+            self.run_command(*gui_grid.switch_command(path, dry_run=True, fresh=fresh))
+        elif fresh:
+            self._config_guard(lambda: self.run_command(*gui_grid.switch_command(path, fresh=True)),
+                               'Inject the roster and lose the configuration?', 'Injecting a roster (start fresh)')
         else:
-            self._config_guard(lambda: self.run_command(*args), 'Inject the roster and lose the configuration?',
-                               'Injecting a roster')
+            self.grid_tab.switch_roster(path)
 
-    def _config_guard(self, then, title, action):
-        """Export / injection replace the game files: asks first when the configuration is not vanilla or the
-        grid has pending edits (OK / Save Configuration / Cancel)."""
-        self.grid_tab.config_guard(then, title, action)
+    def _config_guard(self, then, title, action, stats_lost=False, stats_reason=gui_grid.STATS_REPLACED):
+        """Export / injection replace the game files: asks first when the configuration is not vanilla, the
+        grid has pending edits or stat edits are at risk (OK / Save Configuration / Cancel). ``stats_lost``: every
+        stat edit goes (``stats_reason`` says why)."""
+        self.grid_tab.config_guard(then, title, action, stats_lost, stats_reason)
 
     def _on_close_request(self, *_):
         """The window's close button: while a command runs ask first (closing stops it), then with pending grid
-        edits ask again."""
+        edits, then while the Stat Editor is open in Bridge Mode."""
         def close():
             def stop():
                 self.stop_command()                  # only once every question is answered with OK
                 dpg.stop_dearpygui()
-            self.grid_tab.confirm_discard(stop, 'Close and discard the pending edits?',
-                                          'The character grid has edits that "Patch Game" has not written yet.')
+            self.grid_tab.confirm_discard(lambda: self.stat_tab.confirm_close(stop),
+                                          'Close and discard the pending edits?',
+                                          'There are edits that "Patch Game" has not written yet.')
         if not self.busy:
             close()
             return
@@ -469,6 +546,7 @@ class SluggiesGui:
                                callback=lambda: dpg.delete_item(_CLOSE_DIALOG))
 
     def _on_tab(self, _sender, tab):
+        self.grid_tab.forget_copy()
         if dpg.get_item_alias(tab) == 'grid_tab' and self.grid_tab.loader.status != gui_grid.StateLoader.RUNNING:
             self.grid_tab.request_read()
 
@@ -515,19 +593,25 @@ class SluggiesGui:
                 self._build_export_tab()
                 self._build_roster_tab()
                 self.grid_tab.build()
+                self.stat_tab.build()
             dpg.add_separator()
-            with dpg.child_window(tag='log_window', height=-34, border=True):
-                dpg.add_text('', tag='log_pending', color=_PROMPT_COLOR)
-            with dpg.group(horizontal=True):
-                dpg.add_input_text(tag='stdin_field', width=-250, hint='Answer to a prompt (y/n, value, ...)',
-                                   on_enter=True, callback=self._on_send)
-                dpg.add_button(label='Send', callback=self._on_send)
-                dpg.add_button(label='y', width=24, callback=lambda: self.send_input('y'))
-                dpg.add_button(label='n', width=24, callback=lambda: self.send_input('n'))
-                dpg.add_button(label='Enter', callback=lambda: self.send_input(''))
-                dpg.add_button(label='Stop', tag='stop_button', enabled=False, callback=self.stop_command)
-        # fits the 12x5 grid unscrolled; the close button asks first while a command runs or grid edits are pending
-        dpg.create_viewport(title=_VIEWPORT_TITLE,width=1440, height=900, disable_close=True)
+            # hidden by default; a command that waits for an answer opens it (slogger.ask's marker line)
+            dpg.add_checkbox(label='Show console', tag='show_console', default_value=False,
+                             callback=lambda _sender, value: self.show_console(value))
+            with dpg.group(tag='console_area', show=False):
+                with dpg.child_window(tag='log_window', height=-34, border=True):
+                    dpg.add_text('', tag='log_pending', color=_PROMPT_COLOR)
+                with dpg.group(horizontal=True):
+                    dpg.add_input_text(tag='stdin_field', width=-250, hint='Answer to a prompt (y/n, value, ...)',
+                                       on_enter=True, callback=self._on_send)
+                    dpg.add_button(label='Send', callback=self._on_send)
+                    dpg.add_button(label='y', width=24, callback=lambda: self.send_input('y'))
+                    dpg.add_button(label='n', width=24, callback=lambda: self.send_input('n'))
+                    dpg.add_button(label='Stop', tag='stop_button', enabled=False, callback=self.stop_command)
+                    dpg.add_button(label='Clear', callback=self.clear_console)
+        # the close button asks first while a command runs or grid edits are pending
+        dpg.create_viewport(title=_VIEWPORT_TITLE, width=_VIEWPORT_SIZE[0], height=_VIEWPORT_SIZE[1],
+                            disable_close=True)
         dpg.set_exit_callback(self._on_close_request)
         dpg.set_primary_window('main_window', True)
         dpg.set_viewport_resize_callback(lambda *_: self.grid_tab.on_viewport_resize())
@@ -539,6 +623,7 @@ class SluggiesGui:
         self.build()
         while dpg.is_dearpygui_running():
             self._drain_queue()
+            self.stat_tab.tick()
             dpg.render_dearpygui_frame()
         self.stop_command()
         dpg.destroy_context()

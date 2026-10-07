@@ -112,18 +112,19 @@ goto :menu
 
 :roster_menu
 rem Lists 1_Input\_RosterConfigurations\*.json and injects the chosen one (each choice replaces the previous
-rem injection). Enter injects nothing. Sets errorlevel 1 when the injection failed.
+rem injection; slots on both grids keep their customisations). Enter injects nothing. Sets errorlevel 1 when the injection failed.
 set "roster_dir=1_Input\_RosterConfigurations"
 for /f "delims==" %%V in ('set roster_cfg_ 2^>nul') do set "%%V="
 set "roster_count=0"
-echo   Roster configurations in !roster_dir! ^(each choice replaces the previous injection^):
+echo   Roster configurations in !roster_dir! ^(each choice replaces the previous injection;
+echo   slots on both the old and the new grid keep their customisations, slots leaving it are reset^):
 for /f "delims=" %%F in ('dir /b /a-d /on "1_Input\_RosterConfigurations\*.json" 2^>nul') do (
     set /a roster_count+=1
     set "roster_cfg_!roster_count!=%%F"
     echo   [!roster_count!] %%F
 )
 if "!roster_count!"=="0" echo   ^(no .json files found^)
-echo   [r] Reset the roster to vanilla
+echo   [r] Reset the roster to vanilla ^(stat edits too; models patched into stock slots stay^)
 echo   [Enter] Skip ^(no roster changes^)
 set "roster_mode="
 set /p "roster_mode=Choose: "

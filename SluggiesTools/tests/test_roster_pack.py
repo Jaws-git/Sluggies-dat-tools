@@ -7,7 +7,6 @@ directory). Model blocks are plain byte strings; the block checks are a stand-in
 """
 
 import copy
-import io
 import json
 import os
 import tempfile
@@ -304,7 +303,7 @@ class LoadPlanTests(PackTestCase):
         pack.write_pack(self.path, files)
         plan = self.plan(Game())
         self.assertTrue(plan.remove)
-        self.assertEqual(plan.commands[0], ('--roster', '--remove'))
+        self.assertEqual(plan.commands[0], ('--roster', '--remove', '--keep-stat-edits'))
         self.assertEqual(plan.to_json()['rebuild'], True)
 
 
