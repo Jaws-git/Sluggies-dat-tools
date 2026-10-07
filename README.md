@@ -72,6 +72,23 @@ All commands are to be used on the command line - enter "cmd" in file explorer's
 5) start sluggies-dat-tools.exe for a GUI, use starttools.bat for a console menu, or call start.py directly on the CLI 
 6) Use the Full Export or the focused export tabs to extract assets into the 2_Output_Models folder
 
+### .glb model files (optional)
+
+The export can also write a `<model>.glb` (glTF 2.0) next to each model's `tex/` folder: GUI checkbox "Also write .glb files", or `python start.py --export --glb`. These are for viewing in Blender or other glTF tools only; the `.sluggie` files remain the editing format, and a `.glb` can't be patched back. (The old `.dae` export is gone; `--dae` is refused.)
+
+- Every bone is a node named `bone_<id>`. Every model with bones gets a skin, so Blender imports stadiums and props as armatures too.
+- The first submesh is skinned when the model has a skin section. Every other submesh is a child of the bone that carries it.
+- Textures are referenced, not embedded (`tex/*.png`), so keep the `.glb` next to its `tex/` folder. A Low model (`_L_` folder) has no textures of its own and points into its High model's folder (`../<High folder>/tex/...`).
+- Vertex colours are stored as the custom attribute `_COLOR0`, which renderers ignore. Blender 4.5 imports it as a colour attribute that no material uses.
+
+Checked in Blender 4.5 on Mario, `L_mario`, Yoshi Park and a bat: the rest pose matches, a posed bone deforms the body, and rigid parts follow their bones.
+
+### .sluggie binary fields
+
+Binary data inside a `.sluggie` (vertex buffers, texture payloads and the like) is stored as a text string in one of two forms: plain base64, or `z:` followed by base64 of zlib-compressed bytes (level 6). The writer picks whichever is shorter, so tiny fields stay plain. Readers accept both forms in any mix; there is no file-level flag. This keeps files at about 60 % of their uncompressed size (Baby Mario: 696 KB to 434 KB). A `--debug` export writes plain byte lists instead.
+
+Blender add-ons from before 2026-10-04, and the third-party "Sluggers Characters Beta" tool, can't read the `z:` form. Update the add-on before importing new exports.
+
 ## Blender editing
 
 1) install the included SluggiesIO_BlenderAddon_Vxxx.zip file

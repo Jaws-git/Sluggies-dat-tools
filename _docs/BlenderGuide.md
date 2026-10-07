@@ -146,7 +146,7 @@ All three looked the same in game tests. A `rigid:` template limits how detailed
 **Textures**
 - Add Submesh saves a blank `<name>.png` into the model's `tex/` folder and connects it. Paint it or replace it.
 - The texture can be a PNG from anywhere on disk. Export copies it into the model's `tex/` folder under a free name.
-- A Low model (folder name contains `_L_`) owns no textures, so its new submesh can only use a texture the model already has.
+- A Low model (folder name contains `_L_`) owns no textures: it draws with its High model's textures. Its new submesh can use any PNG from the High model's `tex/` folder, including textures the High model's own export added. Patch the High model first, so those added textures exist in the game when the Low model is patched.
 - The new submesh exists only in the model you patch. The game switches to the Low model at a distance, so add a matching submesh there too if it should stay visible.
 
 **Things to keep in mind**
@@ -176,7 +176,7 @@ Rules:
 - *Keep world position*: the mesh stays where it is and follows the new bone from now on (a rebuild).
 - *Keep offset to bone*: the mesh jumps so it keeps the same offset from the new bone as it had from the old one. Its data is unchanged, so this also works in place, and `--unpatch` puts the mesh back on its original bone.
 
-**Add material** (same box) adds a new surface to the active rigid mesh or custom submesh (a custom submesh can carry as many as you like; its faces are split between its materials just like a rigid mesh's). Pick a template as for Add Submesh (`builtin:rigid_spec_v1` is the default; see the template list above), assign faces to the new slot (in Edit Mode the selected faces are assigned right away), and load a PNG into its empty Image Texture node. Export stops until that node has an image. A PNG the model already has just binds that texture; a new PNG is appended with **Reimport textures from tex folder** enabled (a Low model can only use existing textures). The hand-mitt templates `rigid_rhsp_v1` / `rigid_lhsp_v1` hide the surface's vertex-alpha-0 parts while that hand wears the mitt.
+**Add material** (same box) adds a new surface to the active rigid mesh or custom submesh (a custom submesh can carry as many as you like; its faces are split between its materials just like a rigid mesh's). Pick a template as for Add Submesh (`builtin:rigid_spec_v1` is the default; see the template list above), assign faces to the new slot (in Edit Mode the selected faces are assigned right away), and load a PNG into its empty Image Texture node. Export stops until that node has an image. A PNG the model already has just binds that texture; a new PNG is appended with **Reimport textures from tex folder** enabled (a Low model can only use its High model's textures, including the ones the High model added). The hand-mitt templates `rigid_rhsp_v1` / `rigid_lhsp_v1` hide the surface's vertex-alpha-0 parts while that hand wears the mitt.
 
 A re-import of the exported file always shows the original mesh unchanged on its original bone. Any edit, including a move with **Reassign to new bone** (either placement), appears as a second `<name>_edit` object on its current bone, with its new materials. Select only one of the two objects when exporting again: the `_edit` object keeps your changes, the original undoes them.
 
