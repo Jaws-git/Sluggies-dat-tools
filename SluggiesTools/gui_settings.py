@@ -1,4 +1,4 @@
-"""The GUI's remembered settings: one small JSON object in ``3_Output_Dat/_gui/settings.json``.
+"""The GUI's remembered settings: one small JSON object in ``_gui/settings.json``.
 
 A missing or broken file reads as no settings; a failed write is reported to the caller and changes nothing else.
 """
@@ -6,7 +6,7 @@ A missing or broken file reads as no settings; a failed write is reported to the
 import json
 import os
 
-SETTINGS_REL = os.path.join('3_Output_Dat', '_gui', 'settings.json')
+SETTINGS_REL = os.path.join('_gui', 'settings.json')
 
 
 class Settings:

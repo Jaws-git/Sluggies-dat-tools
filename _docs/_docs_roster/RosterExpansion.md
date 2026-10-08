@@ -354,7 +354,7 @@ runs from source.
   The editor deletes only that one bridge file, and only while it still holds
   the bytes it read.
   - When the editor exits, Sluggies moves `stat_edits.json` into
-    `3_Output_Dat/_gui/stat` and deletes what is left.
+    `_gui/stat` and deletes what is left.
   - Leftovers from a crash are handled at start-up: a bridge is deleted, and an
     edits file is offered only if its hash still fits.
   - Without a bridge file the editor runs Standalone. Its Gecko codes target
@@ -720,7 +720,7 @@ screen and on the field; the source character stays unchanged.
 - **Copy / paste** (`slot_plan.plan_copy`, edit op `copy`, `start.py
   --copy-slot`): the target becomes a clone of the source as the game holds
   it. The planner snapshots the source's current blocks, shown portraits
-  and live stat values into `3_Output_Dat/_gui/slot/copies/` before
+  and live stat values into `_gui/slot/copies/` before
   anything is written, so pending edits never leak in. The blocks go in
   with `--write-slot-blocks` / `--write-slot-equipment`. A new ID gets an
   own directory from the source's model source. Any file whose bytes differ

@@ -14,6 +14,12 @@ import runpy
 # ---------------------------------------------------------------------------
 if getattr(sys, 'frozen', False):
     ROOT_DIR = os.path.dirname(os.path.abspath(sys.executable))
+    # A frozen build ignores PYTHON* variables (sys.flags.ignore_environment), so the GUI's
+    # PYTHONIOENCODING=utf-8 has no effect and piped output would be cp1252: a log line with a
+    # non-cp1252 character (an arrow) then fails. The GUI decodes child output as UTF-8.
+    for _stream in (sys.stdout, sys.stderr):
+        if _stream is not None and not _stream.isatty() and hasattr(_stream, 'reconfigure'):
+            _stream.reconfigure(encoding='utf-8', errors='replace')
 else:
     ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -60,9 +66,9 @@ ROSTER_SLOT_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'slot_cli.py')
 ROSTER_PACK_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'pack_cli.py')
 ROSTER_SLOT_EXPORT_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'slot_export.py')
 ROSTER_SWITCH_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'switch_cli.py')
-PACK_PLAN_FILE = os.path.join(ROOT_DIR, '3_Output_Dat', '_gui', 'pack', 'plan.json')
-SWITCH_PLAN_FILE = os.path.join(ROOT_DIR, '3_Output_Dat', '_gui', 'switch', 'plan.json')
-SLOT_PLAN_FILE = os.path.join(ROOT_DIR, '3_Output_Dat', '_gui', 'slot', 'plan.json')
+PACK_PLAN_FILE = os.path.join(ROOT_DIR, '_gui', 'pack', 'plan.json')
+SWITCH_PLAN_FILE = os.path.join(ROOT_DIR, '_gui', 'switch', 'plan.json')
+SLOT_PLAN_FILE = os.path.join(ROOT_DIR, '_gui', 'slot', 'plan.json')
 GAME_OPTIONS_SCRIPT = os.path.join(TOOLS_DIR, 'GameOptions', 'runner.py')
 STAT_EDITOR_SCRIPT = os.path.join(TOOLS_DIR, 'StatEditor', 'cli.py')
 
@@ -160,12 +166,13 @@ def run_roster_switch(config, dry_run=False):
 
 
 def run_roster_state(derive=False):
-    """Read the draft grid from 3_Output_Dat into 3_Output_Dat/_gui/roster_state.json (GUI character grid), or
-    (``derive``) write the derived config that rebuilds it into 3_Output_Dat/_gui/derived."""
+    """Read the draft grid from 3_Output_Dat into _gui/roster_state.json (GUI character grid), or
+    (``derive``) write the derived config that rebuilds it into _gui/derived."""
     cmd = python_script_command(ROSTER_STATE_SCRIPT)
     if derive:
         cmd.append('--derive')
-    subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
+    # no check=True: the reader logs its own [Error] line, and the GUI shows the last one
+    return subprocess.run(cmd, cwd=TOOLS_DIR).returncode == 0
 
 
 def self_command(*args):
@@ -772,7 +779,7 @@ def parse_args():
             '  python start.py --set-voice 0x00 0x09\n'
             '  python start.py --set-stats 0x00 -\n'
             '  python start.py --set-icon 0xE1 front my_portrait.png --fit cover\n'
-            '  python start.py --apply-slots 3_Output_Dat/_gui/slot/edits.json --dry-run\n'
+            '  python start.py --apply-slots _gui/slot/edits.json --dry-run\n'
             '  python start.py --apply-stat-edits stat_edits.json --dry-run\n'
             '  python start.py --save-roster my_roster.sluggiesroster\n'
             '  python start.py --load-roster my_roster.sluggiesroster --dry-run\n'
@@ -803,8 +810,8 @@ def parse_args():
     mode.add_argument('--write-slot-equipment', nargs=3, metavar=('0xNN', 'FILE', 'BLOCK'), help="write a finished equipment block (a roster pack's) into a slot's file 2-5 (2 bat, 3 left glove, 4 right glove, 5 extra bat) as it is (used by --load-roster)")
     mode.add_argument('--resplit-unused', action='store_true', help='repair: give unused-character routes (dirs 89-94) that point at a playable character\'s block their own copy again')
     mode.add_argument('--roster', '--roster-dev', dest='roster', action='store_true', help='inject a roster configuration (--config, e.g. from 1_Input/_RosterConfigurations) into 3_Output_Dat, replacing the previous injection')
-    mode.add_argument('--roster-state', action='store_true', help='read the draft grid from 3_Output_Dat into 3_Output_Dat/_gui/roster_state.json (used by the GUI)')
-    mode.add_argument('--roster-derive', action='store_true', help='write the roster config that rebuilds 3_Output_Dat as it is into 3_Output_Dat/_gui/derived (read -> rebuild; then --roster --state)')
+    mode.add_argument('--roster-state', action='store_true', help='read the draft grid from 3_Output_Dat into _gui/roster_state.json (used by the GUI)')
+    mode.add_argument('--roster-derive', action='store_true', help='write the roster config that rebuilds 3_Output_Dat as it is into _gui/derived (read -> rebuild; then --roster --state)')
     mode.add_argument('--game-options', action='store_true', help='show or change game options (CPU vs CPU, ...) in 3_Output_Dat/main.dol; use with --on/--off')
     mode.add_argument('--stat-bridge-export', metavar='FILE', help="write the Sluggers Stat Editor's bridge file (where 3_Output_Dat/main.dol keeps every stat table, the characters, the baseline values) to FILE")
     mode.add_argument('--apply-stat-edits', nargs='+', metavar='FILE', help="write the Sluggers Stat Editor's edit files (stat_edits.json from Bridge Mode; several: in order, a later one wins) into 3_Output_Dat/main.dol; refused unless made from this main.dol; an item reset:0xNN clears that character's stat edits at its place in the order (with --dry-run: list the changes only)")
@@ -959,10 +966,9 @@ def main() -> int:
         elif args.roster:
             run_roster(config=args.config, remove=args.remove, dry_run=args.dry_run, state=args.state,
                        keep_stat_edits=args.keep_stat_edits)
-        elif args.roster_state:
-            run_roster_state()
-        elif args.roster_derive:
-            run_roster_state(derive=True)
+        elif args.roster_state or args.roster_derive:
+            if not run_roster_state(derive=args.roster_derive):
+                return 1
         elif args.game_options:
             run_game_options(on=args.on, off=args.off, dry_run=args.dry_run)
         elif args.stat_bridge_export:

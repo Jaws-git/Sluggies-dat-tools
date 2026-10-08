@@ -6,7 +6,7 @@ writes the game files.
 
 ``--load FILE`` checks the pack, compares it with the game and plans the
 load chain (``pack.plan_load``). It writes what the chain reads into
-``3_Output_Dat/_gui/pack/`` (``load/roster.json`` + ``icons/`` +
+``_gui/pack/`` (``load/roster.json`` + ``icons/`` +
 ``models/``) and the plan into ``_gui/pack/plan.json``: the per-slot diff,
 the commands, refused blocks. ``start.py`` then runs the commands in order
 (not with ``--dry-run``), stopping at the first failure. Exit code 1 when
@@ -48,7 +48,7 @@ INPUT_DIR = os.path.join(state_cli.ROOT, '1_Input')
 
 
 def pack_dir(output_dir: str = state_cli.OUTPUT_DIR) -> str:
-    return os.path.join(output_dir, state_cli.GUI_DIR, PACK_DIR)
+    return os.path.join(state_cli.gui_dir(output_dir), PACK_DIR)
 
 
 def plan_path(output_dir: str = state_cli.OUTPUT_DIR) -> str:

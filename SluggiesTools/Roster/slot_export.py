@@ -56,7 +56,7 @@ except ImportError:
 SOURCE = 'roster.slot_export'
 ROOT = os.path.normpath(os.path.join(_TOOLS_DIR, '..'))
 MODELS_DIR = os.path.join(ROOT, '2_Output_Models')
-RESULT_FILE = 'slot_export.json'           # in 3_Output_Dat/_gui: the folder the last export wrote (the GUI reads it)
+RESULT_FILE = 'slot_export.json'           # in _gui: what the last export wrote, or why it failed (the GUI reads it)
 FOLDER_PREFIX = 'Custom '
 DONOR_KEY = 'DonorEntry'                   # HammerspaceMain.DONOR_ENTRY_KEY
 META_KEY = 'SlotExport'
@@ -361,7 +361,7 @@ def _write_portraits(high_folder: str | None, portraits: dict) -> None:
 
 
 def result_path(output_dir: str = state_cli.OUTPUT_DIR) -> str:
-    return os.path.join(output_dir, state_cli.GUI_DIR, RESULT_FILE)
+    return os.path.join(state_cli.gui_dir(output_dir), RESULT_FILE)
 
 
 def run(cid: int, output_dir: str = state_cli.OUTPUT_DIR, models_dir: str = MODELS_DIR) -> str:
@@ -371,11 +371,16 @@ def run(cid: int, output_dir: str = state_cli.OUTPUT_DIR, models_dir: str = MODE
     with open(dat_path, 'rb') as dat_handle:
         char, entries, portraits = read_slot(cid, dat_handle, output_dir)
         folder = write_export(cid, char, entries, portraits, models_dir)
+    write_result(output_dir, {'id': _hex(cid), 'folder': folder, 'name': character_name(char)})
+    return folder
+
+
+def write_result(output_dir: str, result: dict) -> None:
+    """The GUI's summary of the last export: ``id``, then ``folder`` + ``name`` (written) or ``error`` (aborted)."""
     path = result_path(output_dir)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w', encoding='utf-8') as f:
-        json.dump({'id': _hex(cid), 'folder': folder}, f, indent=2)
-    return folder
+        json.dump(result, f, indent=2)
 
 
 def main(argv=None) -> int:
@@ -393,6 +398,10 @@ def main(argv=None) -> int:
         folder = run(cid, args.output_dir, args.models_dir)
     except (RuntimeError, ValueError, OSError) as exc:     # SlotExportError, SlotError, StateError
         slogger.error(f'slot export failed, nothing written: {exc}', source=SOURCE)
+        try:
+            write_result(args.output_dir, {'id': args.id, 'error': str(exc)})
+        except OSError:
+            pass
         return 1
     files = sorted(os.path.relpath(os.path.join(r, f), folder) for r, _d, fs in os.walk(folder)
                    for f in fs if f.endswith('.sluggie'))

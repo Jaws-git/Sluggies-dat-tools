@@ -447,12 +447,12 @@ class RoundTripTests(Harness):
 
 class CliTests(unittest.TestCase):
     def test_icon_is_a_batch_of_one(self):
-        with tempfile.TemporaryDirectory() as out, \
+        with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch.object(slot_cli, 'run', return_value=slot_plan.Batch(None)) as run:
             self.assertEqual(slot_cli.main(['--icon', '0x0D', 'side', 'x.png', '--fit', 'cover', '--no-trim',
-                                            '--output-dir', out]), 0)
+                                            '--output-dir', os.path.join(tmp, '3_Output_Dat')]), 0)
             with mock.patch('sys.stderr'), self.assertRaises(SystemExit):
-                slot_cli.main(['--icon', '0x0D', 'back', 'x.png', '--output-dir', out])
+                slot_cli.main(['--icon', '0x0D', 'back', 'x.png', '--output-dir', os.path.join(tmp, '3_Output_Dat')])
         (edit,) = run.call_args.args[0]
         self.assertEqual((edit.op, edit.cid, edit.view, edit.fit, edit.trim, edit.file),
                          ('icon', 0x0D, 'side', 'cover', False, os.path.abspath('x.png')))

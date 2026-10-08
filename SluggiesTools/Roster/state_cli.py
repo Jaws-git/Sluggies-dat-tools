@@ -1,7 +1,7 @@
 """``start.py --roster-state``: read the draft grid from 3_Output_Dat for the GUI's character grid.
 
-Writes ``3_Output_Dat/_gui/roster_state.json`` (``state.read_state``), the
-portrait crops it names into ``3_Output_Dat/_gui/icons`` (``state_icons``;
+Writes ``_gui/roster_state.json`` (``state.read_state``), the
+portrait crops it names into ``_gui/icons`` (``state_icons``;
 crops already there are kept, so an unchanged bank decodes nothing), and
 logs the grid as text, one line per row. Reads only; never writes the game
 files.
@@ -13,7 +13,7 @@ load/save" marker compare. ``game_options`` lists the game options that are on
 the stat edits the game holds (``read_stat_edits``) for the GUI's warnings.
 
 ``--derive`` (``start.py --roster-derive``) instead writes the derived
-config (``derive.py``) to ``3_Output_Dat/_gui/derived/roster.json`` plus its
+config (``derive.py``) to ``_gui/derived/roster.json`` plus its
 portraits; ``start.py --roster --state`` that file rebuilds the roster from it.
 """
 
@@ -49,18 +49,23 @@ except ImportError:
 SOURCE = 'roster.state'
 ROOT = os.path.normpath(os.path.join(_TOOLS_DIR, '..'))
 OUTPUT_DIR = os.path.join(ROOT, '3_Output_Dat')
-GUI_DIR = '_gui'
+GUI_DIR = '_gui'                             # beside 3_Output_Dat, in the repo root
 STATE_FILE = 'roster_state.json'
 ICON_DIR = 'icons'
 DERIVED_DIR = 'derived'
 
 
+def gui_dir(output_dir: str = OUTPUT_DIR) -> str:
+    """``_gui`` beside ``3_Output_Dat``: the GUI's working files."""
+    return os.path.join(os.path.dirname(os.path.abspath(output_dir)), GUI_DIR)
+
+
 def state_path(output_dir: str = OUTPUT_DIR) -> str:
-    return os.path.join(output_dir, GUI_DIR, STATE_FILE)
+    return os.path.join(gui_dir(output_dir), STATE_FILE)
 
 
 def derived_dir(output_dir: str = OUTPUT_DIR) -> str:
-    return os.path.join(output_dir, GUI_DIR, DERIVED_DIR)
+    return os.path.join(gui_dir(output_dir), DERIVED_DIR)
 
 
 def _open(output_dir: str):
@@ -149,7 +154,7 @@ def run(output_dir: str = OUTPUT_DIR) -> dict:
         crops = [ref for c in result['characters'] for ref in (c['icon'] or {}).values() if ref]
         try:
             decoded, written = state_icons.write_crops(state_icons.read_bank(image, dat), crops,
-                                                       os.path.join(output_dir, GUI_DIR, ICON_DIR))
+                                                       os.path.join(gui_dir(output_dir), ICON_DIR))
         except state_icons.IconStateError as exc:
             result['warnings'].append(f'no portraits: {exc}')
             result['icons_read'] = False
@@ -158,7 +163,7 @@ def run(output_dir: str = OUTPUT_DIR) -> dict:
         else:
             result['icon_crops'] = {'crops': len({ref['file'] for ref in crops}), 'pages_decoded': decoded,
                                     'written': written}
-    pack.add_fingerprints(result, pack.crops_from_dir(os.path.join(output_dir, GUI_DIR, ICON_DIR)))
+    pack.add_fingerprints(result, pack.crops_from_dir(os.path.join(gui_dir(output_dir), ICON_DIR)))
     path = state_path(output_dir)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + '.tmp'
@@ -172,7 +177,7 @@ def main(argv=None) -> int:
     slogger.configure()
     parser = argparse.ArgumentParser(description='Read the draft grid from 3_Output_Dat (GUI character grid).')
     parser.add_argument('--derive', action='store_true',
-                        help='write the derived config (read -> rebuild) to 3_Output_Dat/_gui/derived instead')
+                        help='write the derived config (read -> rebuild) to _gui/derived instead')
     parser.add_argument('--output-dir', default=OUTPUT_DIR, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.derive:

@@ -3,7 +3,9 @@ __pycache__
 *.dat
 *.dae
 *.tpl
+!SluggiesTools/Icons/tests/fixtures/gx/*.tpl
 *.txt
+!SluggiesTools/Roster/fonts/OpenSans-OFL.txt
 *.csv
 *.log
 anim_info
@@ -25,11 +27,22 @@ SluggiesTools/Debug/
 3_Output_Dat/sluggiespath
 3_Output_Dat/_backup
 3_Output_Dat/SluggDebugg
+_gui/
 
 .venv/
 build/
 dist/
+_internal/
 
 .clinerules
 AGENT.md
 CLAUDE.md
+SESSION_LOG.md
+INVESTIGATION_*.md
+PLAN_*.md
+build.bat
+sluggies-dat-tools.exe
+
+Dolphin-x64/
+Roster_Packs/
+*.sluggiesroster

@@ -26,11 +26,13 @@ one the roster name plates are drawn with). When neither file is available it
 keeps Dear PyGui's built-in ProggyClean font.
 """
 
+import collections
 import ntpath
 import os
 import platform
 import queue
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -116,6 +118,57 @@ def _font_size_for(path):
     return _FONT_SIZE_OPEN_SANS
 
 
+class _ProcessJob:
+    """Windows job object holding a command and every process it starts (children join their parent's job), so
+    Stop ends exactly those. Unlike ``taskkill /T``, which follows recorded parent PIDs, it cannot reach an
+    unrelated process whose long-gone parent once had the same PID."""
+
+    _PROCESS_SET_QUOTA = 0x0100
+    _PROCESS_TERMINATE = 0x0001
+
+    def __init__(self, kernel32, handle):
+        self.kernel32, self.handle = kernel32, handle
+
+    @classmethod
+    def attach(cls, process):
+        """The job for a just-started ``process``, or None when Windows refuses (Stop then ends only the
+        process itself). Children started before this call stay outside; start.py imports for far longer than
+        that before it starts any."""
+        import ctypes
+        from ctypes import wintypes
+        try:
+            kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        except OSError:
+            return None
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+        kernel32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+        # the PID is still ours: Popen holds a handle to the process, so Windows cannot reuse it yet
+        handle = kernel32.OpenProcess(cls._PROCESS_SET_QUOTA | cls._PROCESS_TERMINATE, False, process.pid)
+        assigned = bool(handle) and kernel32.AssignProcessToJobObject(job, handle)
+        if handle:
+            kernel32.CloseHandle(handle)
+        if not assigned:
+            kernel32.CloseHandle(job)
+            return None
+        return cls(kernel32, job)
+
+    def terminate(self):
+        return bool(self.handle) and bool(self.kernel32.TerminateJobObject(self.handle, 1))
+
+    def close(self):
+        if self.handle:
+            self.kernel32.CloseHandle(self.handle)
+            self.handle = None
+
+
 class SluggiesGui:
     ROSTER_SKIP = '(no roster changes)'
     ROSTER_RESET = '(reset roster to vanilla)'
@@ -127,7 +180,11 @@ class SluggiesGui:
         self.models_dir = os.path.join(root_dir, '2_Output_Models')
         self.output_queue = queue.Queue()
         self.process = None
+        self.job = None                    # Windows: the _ProcessJob holding the running step and its children
+        self.stopping = False             # Stop was pressed: the chain ends with the current step
         self.partial = ''
+        self.log_lines = collections.deque(maxlen=_MAX_LOG_LINES)
+        self.log_dirty = False             # log_lines changed since the console text was last set
         self.pending = []
         self.chain = []
         self.current = None                # the running step's arguments
@@ -175,6 +232,7 @@ class SluggiesGui:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 creationflags=_NO_WINDOW,
+                start_new_session=not _WINDOWS,       # stop_command ends the whole process group
             )
         except OSError as exc:
             self._log_line(f'Could not start command: {exc}', _PROMPT_COLOR)
@@ -182,6 +240,8 @@ class SluggiesGui:
             self._set_busy(False)
             self._chain_done(1)
             return
+        if _WINDOWS:
+            self.job = _ProcessJob.attach(self.process)
         self._set_busy(True)
         threading.Thread(target=self._pump_output, args=(self.process,), daemon=True).start()
 
@@ -201,8 +261,25 @@ class SluggiesGui:
         self.output_queue.put(('exit', process.wait()))
 
     def stop_command(self):
-        if self.process is not None:
-            self.process.terminate()
+        """End the running step and every process it started: start.py runs each tool as its own child, which
+        ``terminate()`` alone would leave running (still writing files and holding the output pipe open)."""
+        process = self.process
+        if process is None or process.poll() is not None:
+            return
+        if not self.stopping:
+            self.stopping = True
+            self._log_line('Stopping the command...', _PROMPT_COLOR)
+        if _WINDOWS:
+            if self.job is None or not self.job.terminate():
+                self._log_line('Could not end the processes the command started; only start.py is stopped.',
+                               _PROMPT_COLOR)
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)    # the child leads its own session (_start_next)
+            except OSError:
+                pass
+        if process.poll() is None:
+            process.kill()
 
     def send_input(self, text):
         process = self.process
@@ -360,16 +437,29 @@ class SluggiesGui:
                 continue
             self._log_line(line.rsplit('\r', 1)[-1])
         self.partial = self.partial.rsplit('\r', 1)[-1]
-        dpg.set_value('log_pending', self.partial)
+        self.log_dirty = True
 
     def log_line(self, line, color=_LOG_COLOR):
         self._log_line(line, color)
 
     def _log_line(self, line, color=_LOG_COLOR):
-        dpg.add_text(line, parent='log_window', before='log_pending', color=color)
-        children = dpg.get_item_children('log_window', 1)
-        for stale in children[:-_MAX_LOG_LINES - 1]:
-            dpg.delete_item(stale)
+        """Add a line to the console. ``color`` is kept for the callers; the console is one read-only text field
+        (selectable, Ctrl+C copies), so every line shows in the same color."""
+        self.log_lines.append(line)
+        self.log_dirty = True
+
+    def _flush_log(self):
+        """Show the new console lines: once per frame, not per line, as a long run prints thousands. The field is
+        as tall as its text so the console window (not the field) scrolls, and it follows the newest line."""
+        if not self.log_dirty:
+            return
+        self.log_dirty = False
+        lines = list(self.log_lines)
+        if self.partial:
+            lines.append(self.partial)
+        dpg.set_value('log_text', '\n'.join(lines))
+        line_height = (dpg.get_text_size('Ag') or (0, 0))[1] or 16
+        dpg.configure_item('log_text', height=int((len(lines) + 1) * line_height) + 8)
         dpg.set_y_scroll('log_window', 1.0e9)
 
     def show_console(self, show=True):
@@ -408,23 +498,28 @@ class SluggiesGui:
 
     def clear_console(self):
         """Empty the console view only; log files are untouched. The pending partial line (an open prompt) stays."""
-        for item in dpg.get_item_children('log_window', 1):
-            if dpg.get_item_alias(item) != 'log_pending':
-                dpg.delete_item(item)
+        self.log_lines.clear()
+        self.log_dirty = True
 
     def _finish_process(self, code):
         self._close_prompt()                       # an unanswered prompt dies with its command
         if self.partial:
             self._log_line(self.partial)
             self.partial = ''
-            dpg.set_value('log_pending', '')
-        self._log_line(f'[finished, exit code {code}]', _PROMPT_COLOR)
+        stopped, self.stopping = self.stopping, False
+        self._log_line('[stopped]' if stopped else f'[finished, exit code {code}]', _PROMPT_COLOR)
         self.process = None
+        if self.job is not None:
+            self.job.close()
+            self.job = None
+        if stopped and code == 0:
+            code = 1                               # stopped after its last line: still not a finished chain
         if code == 0 and self.pending:
             self._start_next()
             return
         if self.pending:
-            self._log_line('Remaining steps skipped because a step failed.', _PROMPT_COLOR)
+            self._log_line('Remaining steps skipped because the command was stopped.' if stopped else
+                           'Remaining steps skipped because a step failed.', _PROMPT_COLOR)
             self.pending = []
         self._set_busy(False)
         if gui_grid.chain_writes(self.chain):
@@ -478,6 +573,11 @@ class SluggiesGui:
                     for col, value in colors:
                         dpg.add_theme_color(col, value)
                     dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 4)
+        with dpg.theme(tag='log_theme'):                # the console's text field looks like plain text
+            with dpg.theme_component(dpg.mvInputText):
+                dpg.add_theme_color(dpg.mvThemeCol_FrameBg, (0, 0, 0, 0))
+                dpg.add_theme_color(dpg.mvThemeCol_Text, _LOG_COLOR)
+                dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 0, 0)
 
     def _build_full_tab(self):
         with dpg.tab(label='All-In-One Export'):
@@ -513,11 +613,12 @@ class SluggiesGui:
     def _build_export_tab(self):
         with dpg.tab(label='Export 3D'):
             dpg.add_text('Export all models from 1_Input to 2_Output_Models.')
-            dpg.add_checkbox(label='Untangle (overwrites 3_Output_Dat/dt_na.dat and main.dol)', tag='exp_untangle')
-            dpg.add_checkbox(label='Also write .glb files', tag='exp_glb', default_value=True)
-            dpg.add_checkbox(label='Skip textures', tag='exp_notex')
-            dpg.add_checkbox(label='Debug (raw byte arrays instead of base64)', tag='exp_debug')
+            dpg.add_checkbox(label='Untangle Textures (overwrites 3_Output_Dat/dt_na.dat and main.dol)', tag='exp_untangle')
             icons = dpg.add_checkbox(label='Export Icons', tag='exp_icons', default_value=True)
+            dpg.add_checkbox(label='Also write .glb files', tag='exp_glb', default_value=True)
+            dpg.add_checkbox(label='Skip Textures', tag='exp_notex')
+            dpg.add_checkbox(label='Debug (raw byte arrays instead of base64)', tag='exp_debug')
+            
             with dpg.tooltip(icons):
                 dpg.add_text('Write FrontIcon.png and SideIcon.png into each character model folder.')
             self._action('Export models', self._on_export, primary=True)
@@ -700,7 +801,9 @@ class SluggiesGui:
                              callback=lambda _sender, value: self.show_console(value))
             with dpg.group(tag='console_area', show=False):
                 with dpg.child_window(tag='log_window', height=-34, border=True):
-                    dpg.add_text('', tag='log_pending', color=_PROMPT_COLOR)
+                    # read-only text field instead of text items: lines can be selected and copied with Ctrl+C
+                    dpg.add_input_text(tag='log_text', multiline=True, readonly=True, width=-1, height=24)
+                    dpg.bind_item_theme('log_text', 'log_theme')
                 with dpg.group(horizontal=True):
                     dpg.add_input_text(tag='stdin_field', width=-250, hint='Answer to a prompt (y/n, value, ...)',
                                        on_enter=True, callback=self._on_send)
@@ -723,6 +826,7 @@ class SluggiesGui:
         self.build()
         while dpg.is_dearpygui_running():
             self._drain_queue()
+            self._flush_log()
             self.stat_tab.tick()
             dpg.render_dearpygui_frame()
         self.stop_command()

@@ -678,7 +678,7 @@ class SlotCliStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp,                 mock.patch.object(state_cli, '_open', return_value=(None, None)),                 mock.patch.object(state, 'read_state', return_value=st),                 mock.patch.object(state, 'read_names', return_value={}),                 mock.patch.object(derive, 'derive', return_value=derive.Derived({}, {})),                 mock.patch.object(state_cli, 'add_vanilla_flags',
                                   side_effect=lambda r: [e.update(vanilla=True) for c in r['characters']
                                                          for e in c['equipment'].values()]),                 mock.patch.object(slot_plan, 'plan_batch', side_effect=fake_plan_batch):
-            slot_cli.run([], output_dir=tmp)
+            slot_cli.run([], output_dir=os.path.join(tmp, '3_Output_Dat'))   # _gui goes beside it
         self.assertTrue(seen['flags'] and all(f is True for f in seen['flags']))
 
 

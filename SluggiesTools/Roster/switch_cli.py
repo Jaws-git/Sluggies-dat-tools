@@ -4,10 +4,10 @@ Reads ``3_Output_Dat`` (the state with every slot's ``vanilla`` flags and
 stat edits) and derives its config once, merges it with the preset
 (``migrate.plan_switch``) and writes:
 
-* ``3_Output_Dat/_gui/switch/roster.json`` + ``icons/``: the merged config,
+* ``_gui/switch/roster.json`` + ``icons/``: the merged config,
   with the derived portraits and the preset's own (copied under
   ``migrate.PRESET_ICON_PREFIX``);
-* ``3_Output_Dat/_gui/switch/plan.json``: the commands and the per-slot
+* ``_gui/switch/plan.json``: the commands and the per-slot
   lists (carried, reset, dropped).
 
 ``start.py`` then runs the commands in order (not with ``--dry-run``),
@@ -46,7 +46,7 @@ PLAN_FILE = 'plan.json'
 
 
 def switch_dir(output_dir: str = state_cli.OUTPUT_DIR) -> str:
-    return os.path.join(output_dir, state_cli.GUI_DIR, SWITCH_DIR)
+    return os.path.join(state_cli.gui_dir(output_dir), SWITCH_DIR)
 
 
 def plan_path(output_dir: str = state_cli.OUTPUT_DIR) -> str:

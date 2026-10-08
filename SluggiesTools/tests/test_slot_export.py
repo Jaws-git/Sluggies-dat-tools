@@ -167,8 +167,38 @@ class GuiTests(unittest.TestCase):
             os.makedirs(os.path.dirname(path))
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump({'id': '0x4A', 'folder': 'X/Custom Mario 01'}, f)
-            self.assertEqual(gui_grid.export_result(root), 'X/Custom Mario 01')
+            self.assertEqual(gui_grid.export_result(root)['folder'], 'X/Custom Mario 01')
         self.assertEqual(os.path.basename(gui_grid.SLOT_EXPORT_REL), slot_export.RESULT_FILE)
+
+    def test_summary_dialog(self):
+        with tempfile.TemporaryDirectory() as root:
+            folder = os.path.join(root, 'Custom Mario 01')
+            os.makedirs(os.path.join(folder, 'sub'))
+            for rel, size in (('a.sluggie', 1024 * 1024), (os.path.join('sub', 'b.png'), 512 * 1024)):
+                with open(os.path.join(folder, rel), 'wb') as f:
+                    f.write(bytes(size))
+            self.assertEqual(gui_grid.folder_size(folder), 1536 * 1024)
+            ok = gui_grid.export_summary_dialog(None, 0x4A, 0, {'folder': folder, 'name': 'Mario'})
+            text = [t for t, _k in ok.lines]
+            self.assertEqual(ok.title, 'Export finished')
+            self.assertFalse(ok.can_apply)
+            self.assertIn(f'Folder: {os.path.normpath(folder)}', text)
+            self.assertIn('Character: Mario', text)
+            self.assertIn('Total size: 1.50 MB', text)
+        aborted = gui_grid.export_summary_dialog(None, 0x4A, 1, {'id': '0x4A', 'error': 'dt_na.dat is missing'})
+        self.assertEqual(aborted.title, 'Export aborted')
+        self.assertIn('Reason: dt_na.dat is missing', [t for t, _k in aborted.lines])
+        crashed = gui_grid.export_summary_dialog(None, 0x4A, 1, None)
+        self.assertEqual(crashed.title, 'Export aborted')
+
+    def test_failed_export_writes_its_reason(self):
+        with tempfile.TemporaryDirectory() as out:
+            self.assertEqual(slot_export.main(['0x4A', '--output-dir', out, '--models-dir', out]), 1)
+            with open(slot_export.result_path(out), 'r', encoding='utf-8') as f:
+                result = json.load(f)
+        self.assertEqual(result['id'], '0x4A')
+        self.assertIn('dt_na.dat', result['error'])
+        self.assertNotIn('folder', result)
 
     def test_keys_match(self):
         self.assertEqual(slot_export.DONOR_KEY, main.DONOR_ENTRY_KEY)

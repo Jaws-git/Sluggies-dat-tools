@@ -10,7 +10,7 @@
   does on its own (its Gecko codes target vanilla addresses). One editor at a time: both buttons are disabled while
   it runs.
 * **Receiving:** when the editor exits, a ``Bridge/stat_edits.json`` (Send to Sluggies) is moved into
-  ``3_Output_Dat/_gui/stat`` and offered for staging (``CharacterGridTab.offer_stat_edits``: the staging check, then
+  ``_gui/stat`` and offered for staging (``CharacterGridTab.offer_stat_edits``: the staging check, then
   the confirm dialog); the bridge files are deleted either way. Staged values are pending edits like the grid's:
   Patch Game writes them.
 * **Leftovers** (a crash on either side): at start-up a left ``stat_bridge.json`` is deleted and a left

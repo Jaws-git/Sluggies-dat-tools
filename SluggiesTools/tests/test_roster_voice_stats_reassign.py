@@ -391,10 +391,10 @@ class BatchTests(unittest.TestCase):
 
 class CliTests(unittest.TestCase):
     def test_voice_and_stats_are_batches_of_one(self):
-        with tempfile.TemporaryDirectory() as out, \
+        with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch.object(slot_cli, 'run', return_value=slot_plan.Batch(None)) as run:
-            self.assertEqual(slot_cli.main(['--voice', '0x0D', '0x09', '--output-dir', out]), 0)
-            self.assertEqual(slot_cli.main(['--stats', '0x0D', '-', '--output-dir', out]), 0)
+            self.assertEqual(slot_cli.main(['--voice', '0x0D', '0x09', '--output-dir', os.path.join(tmp, '3_Output_Dat')]), 0)
+            self.assertEqual(slot_cli.main(['--stats', '0x0D', '-', '--output-dir', os.path.join(tmp, '3_Output_Dat')]), 0)
         (first,), _ = run.call_args_list[0]
         self.assertEqual([(e.op, e.cid, e.source) for e in first], [('voice', 0x0D, 0x09)])
         self.assertEqual([(e.op, e.source) for e in run.call_args_list[1].args[0]], [('stats', None)])

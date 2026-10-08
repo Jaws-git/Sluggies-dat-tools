@@ -542,7 +542,8 @@ class SlotCliTests(unittest.TestCase):
     """A refused plan leaves nothing behind: no plan file (so no stale chain), no derived config."""
 
     def test_refused_plan_writes_nothing(self):
-        with tempfile.TemporaryDirectory() as out:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, '3_Output_Dat')                   # _gui goes beside it
             folder = slot_cli.slot_dir(out)
             os.makedirs(folder)
             with open(slot_cli.plan_path(out), 'w') as f:
@@ -552,16 +553,18 @@ class SlotCliTests(unittest.TestCase):
             self.assertEqual(os.listdir(folder), [])
 
     def test_rename_is_a_batch_of_one(self):
-        with tempfile.TemporaryDirectory() as out, mock.patch.object(slot_cli, 'run', return_value=slot_plan.Batch(None)) as run:
-            self.assertEqual(slot_cli.main(['--rename', '0x0D', 'Little Toad', '--output-dir', out]), 0)
-            self.assertEqual(slot_cli.main(['--rename', '0x0D', '', '--output-dir', out]), 0)
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(slot_cli, 'run', return_value=slot_plan.Batch(None)) as run:
+            self.assertEqual(slot_cli.main(['--rename', '0x0D', 'Little Toad', '--output-dir', os.path.join(tmp, '3_Output_Dat')]), 0)
+            self.assertEqual(slot_cli.main(['--rename', '0x0D', '', '--output-dir', os.path.join(tmp, '3_Output_Dat')]), 0)
         (first,), _ = run.call_args_list[0]
         self.assertEqual([(e.op, e.cid, e.text) for e in first], [('rename', 0x0D, 'Little Toad')])
         self.assertEqual(run.call_args_list[1].args[0][0].text, '')
 
     def test_refused_batch_writes_only_the_plan(self):
         """A refused edit: the plan names it and holds no commands; no derived config is written."""
-        with tempfile.TemporaryDirectory() as out:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, '3_Output_Dat')                   # _gui goes beside it
+            os.makedirs(out)
             refused = slot_plan.Batch(None, refused=[(slot_plan.Edit('patch', 0x0D, 'a.sluggie', index=2), 'bones')])
             with mock.patch.object(slot_cli.state_cli, '_open', return_value=(None, None)), \
                     mock.patch.object(slot_cli.state, 'read_state', return_value={}), \

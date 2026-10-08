@@ -43,7 +43,7 @@ RELEASES_PAGE = 'https://github.com/Philenarion/Sluggers-Stat-Editor/releases'
 LATEST_RELEASE_API = 'https://api.github.com/repos/Philenarion/Sluggers-Stat-Editor/releases/latest'
 SETTING = 'stat_editor_path'               # the GUI settings key (``gui_settings``)
 RECEIVED_PREFIX = 'stat_edits_'            # received edit files in the staging folder: stat_edits_<time>.json
-STAGING_REL = os.path.join('3_Output_Dat', '_gui', 'stat')
+STAGING_REL = os.path.join('_gui', 'stat')
 LOG_NAME = 'editor.log'                    # the editor's stdout / stderr of the last run, in the staging folder
 RELEASE, SOURCE_KIND = 'release', 'source'
 

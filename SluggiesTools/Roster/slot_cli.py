@@ -4,9 +4,9 @@
 Reads ``3_Output_Dat`` and derives its config **once**, applies every staged
 edit to it in order (``slot_plan.plan_batch``) and writes:
 
-* ``3_Output_Dat/_gui/slot/roster.json`` + ``icons/``: the merged derived
+* ``_gui/slot/roster.json`` + ``icons/``: the merged derived
   config (only when the batch needs a roster rebuild);
-* ``3_Output_Dat/_gui/slot/plan.json``: the batch's commands, per-edit
+* ``_gui/slot/plan.json``: the batch's commands, per-edit
   sections (notes, warnings, effects) and refused edits; ``start.py`` then
   runs the commands in order.
 
@@ -71,7 +71,7 @@ CLOSE_MEAN = 16
 
 
 def slot_dir(output_dir: str = state_cli.OUTPUT_DIR) -> str:
-    return os.path.join(output_dir, state_cli.GUI_DIR, SLOT_DIR)
+    return os.path.join(state_cli.gui_dir(output_dir), SLOT_DIR)
 
 
 def plan_path(output_dir: str = state_cli.OUTPUT_DIR) -> str:

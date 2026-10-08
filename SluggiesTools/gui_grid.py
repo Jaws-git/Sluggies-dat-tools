@@ -19,7 +19,7 @@
   "changed since the pack was saved / loaded" marker (``Reference``).
 
 The roster state is the dict ``Roster/state.py`` writes
-(``3_Output_Dat/_gui/roster_state.json``).
+(``_gui/roster_state.json``).
 """
 
 import json
@@ -27,12 +27,12 @@ import os
 import re
 from dataclasses import dataclass, field
 
-STATE_REL = os.path.join('3_Output_Dat', '_gui', 'roster_state.json')
-SLOT_PLAN_REL = os.path.join('3_Output_Dat', '_gui', 'slot', 'plan.json')
-EDITS_REL = os.path.join('3_Output_Dat', '_gui', 'slot', 'edits.json')
-PACK_PLAN_REL = os.path.join('3_Output_Dat', '_gui', 'pack', 'plan.json')
-SWITCH_PLAN_REL = os.path.join('3_Output_Dat', '_gui', 'switch', 'plan.json')
-SLOT_EXPORT_REL = os.path.join('3_Output_Dat', '_gui', 'slot_export.json')    # Roster/slot_export.RESULT_FILE
+STATE_REL = os.path.join('_gui', 'roster_state.json')
+SLOT_PLAN_REL = os.path.join('_gui', 'slot', 'plan.json')
+EDITS_REL = os.path.join('_gui', 'slot', 'edits.json')
+PACK_PLAN_REL = os.path.join('_gui', 'pack', 'plan.json')
+SWITCH_PLAN_REL = os.path.join('_gui', 'switch', 'plan.json')
+SLOT_EXPORT_REL = os.path.join('_gui', 'slot_export.json')    # Roster/slot_export.RESULT_FILE
 PACK_DIR_REL = 'Roster_Packs'                   # where the pack dialogs start
 PACK_EXTENSION = '.sluggiesroster'
 # start.py modes whose commands can change what the grid shows: the tab re-reads after them
@@ -281,7 +281,7 @@ def icon_ref(state: dict, cid: int, view: str) -> dict | None:
 
 
 def icon_file(state: dict, state_path: str, cid: int, view: str) -> str | None:
-    """The crop PNG of a portrait (``3_Output_Dat/_gui/icons/...``), or None when there is none on disk."""
+    """The crop PNG of a portrait (``_gui/icons/...``), or None when there is none on disk."""
     ref = icon_ref(state, cid, view)
     if not ref or not ref.get('file'):
         return None
@@ -373,7 +373,7 @@ def slot_details(state: dict, cid: int) -> list[str]:
 # --------------------------------------------------------------------------
 
 MII_START, NEW_START = 0x4D, 0x66    # Mii IDs have no portrait records (Roster/slot_plan.has_portrait_records)
-STAGED_ICONS_REL = os.path.join('3_Output_Dat', '_gui', 'slot', 'staged_icons')
+STAGED_ICONS_REL = os.path.join('_gui', 'slot', 'staged_icons')
 IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tga', '.webp')   # the picker's filter only
 IMAGE_PATTERNS = ';'.join('*' + ext for ext in IMAGE_EXTENSIONS)
 IMAGE_FILTERS = [('Images', IMAGE_PATTERNS), ('All files', '*.*')]
@@ -813,13 +813,42 @@ def export_command(cid: int) -> tuple:
     return ('--export-slot', hex_id(cid))
 
 
-def export_result(root_dir: str) -> str | None:
-    """The folder the last slot export wrote (``Roster/slot_export``), or None (it failed)."""
+def export_result(root_dir: str) -> dict | None:
+    """The last slot export's result (``Roster/slot_export``): ``folder`` + ``name`` when it wrote one, ``error``
+    when it aborted; None when there is none (it crashed before writing it)."""
     try:
         with open(os.path.join(root_dir, SLOT_EXPORT_REL), 'r', encoding='utf-8') as f:
-            return json.load(f).get('folder')
-    except (OSError, ValueError, AttributeError):
+            result = json.load(f)
+    except (OSError, ValueError):
         return None
+    return result if isinstance(result, dict) else None
+
+
+def folder_size(folder: str) -> int:
+    """The bytes of every file under ``folder``."""
+    total = 0
+    for root, _dirs, files in os.walk(folder):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                pass
+    return total
+
+
+def export_summary_dialog(state: dict | None, cid: int, code: int, result: dict | None) -> 'SlotDialog':
+    """Shown when "Export as .sluggie" ends: the new folder, its character and total size; or why it aborted."""
+    who = f'{name_of(state, cid) if state else hex_id(cid)} ({hex_id(cid)})'
+    folder = (result or {}).get('folder') if code == 0 else None
+    if folder and os.path.isdir(folder):
+        return SlotDialog('Export finished', [
+            (f'Exported {who}.', OK),
+            (f'Folder: {os.path.normpath(folder)}', TEXT),
+            (f'Total size: {_mb(folder_size(folder))}', TEXT)])
+    error = (result or {}).get('error')
+    return SlotDialog('Export aborted', [
+        (f'{who} was not exported; nothing was written.', ERROR),
+        (f'Reason: {error}' if error else 'Reason: see the log for details.', WARN if error else TEXT)])
 
 
 def export_pending_dialog(state: dict | None, cid: int, pending: PendingEdits) -> 'SlotDialog':

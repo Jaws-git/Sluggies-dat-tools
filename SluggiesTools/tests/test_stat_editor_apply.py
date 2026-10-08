@@ -269,7 +269,7 @@ class SlotOpTests(unittest.TestCase):
         self.assertEqual(gui_grid.edit_who(None, slot_plan.GAME_WIDE), 'Stat edits')
         pending = gui_grid.PendingEdits()
         pending.edits = [{'op': 'stat_edits', 'id': '0xFF', 'file': 'C:/x/stat_edits.json'}]
-        self.assertEqual(pending.titles(), [('0xFF', 'stat editor values from stat_edits.json')])
+        self.assertEqual(pending.titles(), [('0xFF', 'stat editor value changes')])
         self.assertFalse(pending.has(0x00))
 
 

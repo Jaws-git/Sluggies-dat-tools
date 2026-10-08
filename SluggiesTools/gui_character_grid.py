@@ -11,7 +11,7 @@ Each level is a borderless window over a full-viewport dim window, so the
 dim layers stack. The dim windows never come to the front when clicked.
 
 Portraits are the crops ``--roster-state`` cut from the output's icon bank
-(``3_Output_Dat/_gui/icons``): front portraits on the grid, side portraits on
+(``_gui/icons``): front portraits on the grid, side portraits on
 the swatch row (the game uses them on wheels), both enlarged on the slot
 level. They are scaled up by whole factors with nearest-neighbour, so the
 pixels stay sharp (the grid's 1.5x draws the 2x texture smaller).
@@ -31,7 +31,7 @@ The slot level's two portraits are image buttons too: a click picks
 an image file, and the icon dialog shows it, the 48x51 result (fit mode,
 "Trim transparent border", redrawn in-process with ``Roster/icon_import``) and
 the slot's other view; OK writes the result into
-``3_Output_Dat/_gui/slot/staged_icons`` and stages an ``icon`` edit on it.
+``_gui/slot/staged_icons`` and stages an ``icon`` edit on it.
 Slots and squares with pending edits get an orange border, the slot level
 lists the pending edits and previews pending portraits. Stat edits bridged in
 from the Stat Editor (staged game-wide) mark the characters their file names
@@ -330,10 +330,7 @@ class CharacterGridTab:
                 dpg.add_button(label=gui_grid.CPU_VS_CPU_ENABLE, tag='grid_cpu_vs_cpu',
                                callback=lambda: self._on_cpu_vs_cpu())
                 with dpg.tooltip('grid_cpu_vs_cpu'):
-                    dpg.add_text('Turn CPU vs CPU (hold A + Minus on controller 1 while confirming the teams) and '
-                                 'CPU vs CPU management (controller 1 manages the fielding team) on or off in '
-                                 '3_Output_Dat/main.dol. A roster rebuild keeps them; a fresh export (menu [1]) '
-                                 'does not.', wrap=420)
+                    dpg.add_text('Turn on CPU vs CPU (hold Minus on controller starting a match)', wrap=420)
                 dpg.add_text('', tag='grid_cpu_vs_cpu_status')
                 dpg.add_loading_indicator(tag='options_spinner', style=1, radius=1.6, show=False,
                                           color=(90, 200, 120, 255), secondary_color=(60, 120, 80, 255))
@@ -1258,11 +1255,13 @@ class CharacterGridTab:
         who = f'{gui_grid.name_of(self.loader.state, cid)} ({gui_grid.hex_id(cid)})'
 
         def done(code, _output):
-            folder = gui_grid.export_result(self.app.root_dir) if code == 0 else None
+            result = gui_grid.export_result(self.app.root_dir)
+            folder = (result or {}).get('folder') if code == 0 else None
             if folder is None:
                 self.app.log_line(f'[character grid] {who} was not exported: see the log above.', _WARN)
-                return
-            self.app.log_line(f'[character grid] {who} exported to {folder}', _OK)
+            else:
+                self.app.log_line(f'[character grid] {who} exported to {folder}', _OK)
+            self._dialog(gui_grid.export_summary_dialog(self.loader.state, cid, code, result), self._end_action)
         self._run([gui_grid.export_command(cid)], f'Exporting {who}...', done)
 
     def forget_copy(self):
