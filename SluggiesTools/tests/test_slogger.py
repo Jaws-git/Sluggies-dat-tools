@@ -474,9 +474,9 @@ class TestClearLogFile(unittest.TestCase):
 
 
 class TestPromptMarker(unittest.TestCase):
-    """``ask`` announces a prompt to the GUI, which opens its hidden console on the marker line."""
+    """``ask`` announces a prompt to the GUI, which asks in a popup built from the marker line."""
 
-    def _ask(self, env_value):
+    def _ask(self, env_value, prompt="Continue? (y/n): ", **kwargs):
         import io
         from unittest import mock
         slog = importlib.import_module("SluggiesTools.slogger")
@@ -486,18 +486,34 @@ class TestPromptMarker(unittest.TestCase):
                 mock.patch("sys.stdout", out), mock.patch("builtins.input", return_value="y") as fake:
             if not env_value:
                 os.environ.pop(slog.PROMPT_ENV, None)
-            answer = slog.ask("Continue? (y/n): ")
-        fake.assert_called_once_with("Continue? (y/n): ")
+            answer = slog.ask(prompt, **kwargs)
+        fake.assert_called_once_with(prompt)
         return slog, answer, out.getvalue()
 
     def test_marker_line_before_prompt_under_gui(self):
         slog, answer, out = self._ask("1")
         self.assertEqual(answer, "y")
-        self.assertEqual(out, slog.PROMPT_MARKER + "\n")
+        self.assertTrue(out.startswith(slog.PROMPT_MARKER) and out.endswith("\n"))
+        self.assertEqual(out.count("\n"), 1)
+        self.assertEqual(slog.parse_prompt_marker(out[:-1]), ("yesno", "Continue? (y/n): "))
+
+    def test_marker_carries_kind(self):
+        slog, _answer, out = self._ask("1", "Output file name: ")
+        self.assertEqual(slog.parse_prompt_marker(out[:-1]), ("text", "Output file name: "))
+        slog, _answer, out = self._ask("1", "\nPick a\nfile: ", kind="file")
+        self.assertEqual(slog.parse_prompt_marker(out[:-1]), ("file", "\nPick a\nfile: "))
 
     def test_no_marker_outside_gui(self):
         _slog, answer, out = self._ask(None)
         self.assertEqual((answer, out), ("y", ""))
+
+    def test_parse_prompt_marker(self):
+        slog = importlib.import_module("SluggiesTools.slogger")
+        self.assertIsNone(slog.parse_prompt_marker("plain output"))
+        self.assertEqual(slog.parse_prompt_marker(slog.PROMPT_MARKER), ("text", ""))
+        self.assertEqual(slog.parse_prompt_marker(slog.PROMPT_MARKER + "{broken"), ("text", ""))
+        self.assertEqual(slog.parse_prompt_marker(slog.PROMPT_MARKER + '{"kind": "odd", "prompt": "Q"}'),
+                         ("text", "Q"))
 
     def test_prompts_go_through_ask(self):
         """A bare ``input()`` would wait unseen while the GUI console is hidden."""

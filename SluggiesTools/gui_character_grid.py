@@ -33,7 +33,11 @@ an image file, and the icon dialog shows it, the 48x51 result (fit mode,
 the slot's other view; OK writes the result into
 ``3_Output_Dat/_gui/slot/staged_icons`` and stages an ``icon`` edit on it.
 Slots and squares with pending edits get an orange border, the slot level
-lists the pending edits and previews pending portraits. **Patch Game (N)**
+lists the pending edits and previews pending portraits. Stat edits bridged in
+from the Stat Editor (staged game-wide) mark the characters their file names
+with a green border; a slot with both gets a border orange on the left half
+and green on the right (baked into the portrait texture: a Dear PyGui frame
+border has one colour). **Patch Game (N)**
 runs the full dry run, shows one summary (``gui_grid.summary_dialog``) and on
 its Patch Game button the chain itself (one roster rebuild at most); on success the list is
 cleared, on a failure it is kept. **Discard pending** / **Discard all** drop
@@ -113,6 +117,7 @@ VOICE_TIP = ('Stage another voice for this square (a stock square: its whole spe
              'without a wheel). "Patch Game" writes the pending edits.')
 FONT_REL = os.path.join('SluggiesTools', 'Roster', 'fonts', 'OpenSans.ttf')   # the name plate's font
 CONFIRM_W = 680
+PATCH_W = 230                    # the Patch Game button: fits "Patch Game & copy files (NNN)" until text sizes are known
 DIALOG_LINES = 24                # a dialog with more lines scrolls
 BUSY_TEXT = 'A command is running (see the log)...'
 _NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
@@ -122,6 +127,8 @@ _EMPTY = (110, 110, 110, 255)
 _ERROR = (255, 120, 110, 255)
 _OK = (120, 220, 140, 255)
 _PENDING = (255, 170, 70, 255)
+_STATS = (90, 215, 110, 255)     # pending Stat Editor values (bridged in)
+BORDER = 3                       # the marker borders' width
 _CHANGED = (110, 170, 255, 255)
 _COPIED = (80, 215, 215, 255)
 _LINE_COLORS = {gui_grid.TEXT: _DIM, gui_grid.WARN: _WARN, gui_grid.ERROR: _ERROR, gui_grid.OK: _OK}
@@ -156,8 +163,9 @@ class CharacterGridTab:
         with dpg.tab(label='Character grid', tag='grid_tab'):
             with dpg.group(horizontal=True):
                 self.refresh_button = dpg.add_button(label='Refresh', callback=lambda: self.request_read())
-                dpg.add_button(label='Patch Game (0)', tag='grid_patch_game', enabled=False,
-                               callback=lambda: self._on_patch_game())
+                deploy = bool(self.app.settings.get(gui_grid.DEPLOY_SETTING, False))
+                dpg.add_button(label=gui_grid.patch_label(0, deploy), tag='grid_patch_game', enabled=False,
+                               width=PATCH_W, callback=lambda: self._on_patch_game())
                 dpg.bind_item_theme('grid_patch_game', 'primary_theme')
                 with dpg.tooltip('grid_patch_game'):
                     dpg.add_text('Write every pending edit into 3_Output_Dat in one go (one roster rebuild at most); '
@@ -173,18 +181,19 @@ class CharacterGridTab:
                 with dpg.tooltip('grid_load_pack'):
                     dpg.add_text('Stage a roster pack: shows what differs from the game first; "Patch Game" then '
                                  'replaces the whole roster of 3_Output_Dat with it.', wrap=420)
+                dpg.add_spacer(width=12)
+                dpg.add_checkbox(label=gui_grid.DEPLOY_LABEL, tag='grid_deploy',
+                                 default_value=deploy,
+                                 callback=lambda _sender, value: self._on_deploy_toggle(value))
+                with dpg.tooltip('grid_deploy'):
+                    dpg.add_text('After a successful Patch Game, copy dt_na.dat, main.dol and fst.bin from '
+                                 '3_Output_Dat into the game directory (3_Output_Dat/CopyFilesToGameDir.bat). The '
+                                 'game directory is asked for the first time and kept in 3_Output_Dat/sluggiespath.',
+                                 wrap=420)
+                dpg.add_spacer(width=12)
                 dpg.add_loading_indicator(tag='grid_spinner', style=1, radius=1.6, show=False,
                                           color=(90, 200, 120, 255), secondary_color=(60, 120, 80, 255))
                 dpg.add_text('', tag='grid_status')
-                dpg.add_spacer(width=12)
-                dpg.add_button(label=gui_grid.CPU_VS_CPU_ENABLE, tag='grid_cpu_vs_cpu',
-                               callback=lambda: self._on_cpu_vs_cpu())
-                with dpg.tooltip('grid_cpu_vs_cpu'):
-                    dpg.add_text('Turn CPU vs CPU (hold A + Minus on controller 1 while confirming the teams) and '
-                                 'CPU vs CPU management (controller 1 manages the fielding team) on or off in '
-                                 '3_Output_Dat/main.dol. A roster rebuild keeps them; a fresh export (menu [1]) '
-                                 'does not.', wrap=420)
-                dpg.add_text('', tag='grid_cpu_vs_cpu_status')
             dpg.add_text('', tag='grid_note', color=_WARN, wrap=900)
             dpg.add_text('', tag='grid_reference', color=_CHANGED, wrap=900, show=False)
             dpg.add_child_window(tag='grid_cells', border=False, horizontal_scrollbar=True)
@@ -204,7 +213,20 @@ class CharacterGridTab:
             for kind in (dpg.mvImageButton, dpg.mvButton):
                 with dpg.theme_component(kind):
                     dpg.add_theme_color(dpg.mvThemeCol_Border, _PENDING)
-                    dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 3)
+                    dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, BORDER)
+        with dpg.theme(tag='grid_stats_theme'):
+            for kind in (dpg.mvImageButton, dpg.mvButton):
+                with dpg.theme_component(kind):
+                    dpg.add_theme_color(dpg.mvThemeCol_Border, _STATS)
+                    dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, BORDER)
+        with dpg.theme(tag='grid_both_theme'):               # pending edits and stat edits
+            with dpg.theme_component(dpg.mvImageButton):     # the split border is in the texture (_split_texture)
+                dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 0)
+                dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 0, 0)
+            with dpg.theme_component(dpg.mvButton):          # no portrait: orange border, green label
+                dpg.add_theme_color(dpg.mvThemeCol_Border, _PENDING)
+                dpg.add_theme_color(dpg.mvThemeCol_Text, _STATS)
+                dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, BORDER)
         with dpg.theme(tag='grid_changed_theme'):
             for kind in (dpg.mvImageButton, dpg.mvButton):
                 with dpg.theme_component(kind):
@@ -296,6 +318,23 @@ class CharacterGridTab:
             dpg.add_key_release_handler(dpg.mvKey_Return, callback=self._on_enter)
             dpg.add_key_release_handler(dpg.mvKey_NumPadEnter, callback=self._on_enter)
 
+    def build_options(self):
+        """The Options tab: game options written into main.dol right away (CPU vs CPU). Its state comes from the
+        grid's read, so the tab lives here."""
+        with dpg.tab(label='Options', tag='options_tab'):
+            with dpg.group(horizontal=True):
+                dpg.add_button(label=gui_grid.CPU_VS_CPU_ENABLE, tag='grid_cpu_vs_cpu',
+                               callback=lambda: self._on_cpu_vs_cpu())
+                with dpg.tooltip('grid_cpu_vs_cpu'):
+                    dpg.add_text('Turn CPU vs CPU (hold A + Minus on controller 1 while confirming the teams) and '
+                                 'CPU vs CPU management (controller 1 manages the fielding team) on or off in '
+                                 '3_Output_Dat/main.dol. A roster rebuild keeps them; a fresh export (menu [1]) '
+                                 'does not.', wrap=420)
+                dpg.add_text('', tag='grid_cpu_vs_cpu_status')
+                dpg.add_loading_indicator(tag='options_spinner', style=1, radius=1.6, show=False,
+                                          color=(90, 200, 120, 255), secondary_color=(60, 120, 80, 255))
+                dpg.add_text('', tag='options_status')
+
     # ------------------------------------------------------------------ reading
     def request_read(self):
         if not self.loader.start():
@@ -334,9 +373,13 @@ class CharacterGridTab:
             self.request_read()
 
     def _show_status(self):
-        """Spinner and status line: while the tab's own command runs (check, Patch Game) or the grid is read."""
-        dpg.configure_item('grid_spinner', show=self.work is not None or self.loader.status == self.loader.RUNNING)
-        dpg.set_value('grid_status', self.work or self.loader.message)
+        """Spinner and status line: while the tab's own command runs (check, Patch Game) or the grid is read. The
+        Options tab shows them too (its CPU vs CPU status comes from the read)."""
+        busy = self.work is not None or self.loader.status == self.loader.RUNNING
+        for spinner, status in (('grid_spinner', 'grid_status'), ('options_spinner', 'options_status')):
+            if dpg.does_item_exist(spinner):
+                dpg.configure_item(spinner, show=busy)
+                dpg.set_value(status, self.work or self.loader.message)
         state = self.loader.state
         text, enabled = gui_grid.cpu_vs_cpu_status(state)
         dpg.set_value('grid_cpu_vs_cpu_status', text)
@@ -374,17 +417,19 @@ class CharacterGridTab:
                 self._empty_cell()
                 return
             head = state['squares'][index]['head']
+            pending = self.pending.square_pending(state, index)
+            stats = self.pending.square_stats(state, index)
             button = self._portrait_button(head, gui_grid.FRONT, GRID_SCALE, CELL[0],
                                            index, lambda _s, _a, u: self._open_square(u),
-                                           badge=gui_grid.slot_count(state, index))
+                                           badge=gui_grid.slot_count(state, index), both=pending and stats)
             self._add_menu(button, state['squares'][index]['members'])
             self._caption(gui_grid.square_label(state, index), CELL[0],
                           gui_grid.is_fallback(state, head, gui_grid.FRONT))
-        pending = self.pending.square_pending(state, index)
         changed = self.reference is not None and self.reference.square_changed(state, index)
         copied = self.copied is not None and self.copied in state['squares'][index]['members']
-        if pending:
-            dpg.bind_item_theme(button, 'grid_pending_theme')
+        if pending or stats:
+            if not (pending and stats):                  # both: _portrait_button drew the split border
+                dpg.bind_item_theme(button, 'grid_pending_theme' if pending else 'grid_stats_theme')
         elif copied:
             dpg.bind_item_theme(button, 'grid_copied_theme')
         elif changed:
@@ -395,10 +440,12 @@ class CharacterGridTab:
             if copied:
                 dpg.add_text(f'{gui_grid.name_of(state, self.copied)}: copied (right-click a slot, Paste)',
                              color=_COPIED)
-            if pending:
+            if pending or stats:
                 for cid in state['squares'][index]['members']:
                     for line in self.pending.summary(cid):
                         dpg.add_text(f'{gui_grid.name_of(state, cid)}: {line}', color=_PENDING)
+                    for line in self.pending.stat_summary(cid):
+                        dpg.add_text(f'{gui_grid.name_of(state, cid)}: {line}', color=_STATS)
             if changed:
                 for cid in state['squares'][index]['members']:
                     fields = self.reference.changed(state, cid)
@@ -413,10 +460,11 @@ class CharacterGridTab:
         self._caption('empty', CELL[0], color=_EMPTY)
 
     # ------------------------------------------------------------------ portraits
-    def _texture(self, path, scale, badge=None):
+    def _texture(self, path, scale, badge=None, split=None):
         """A static texture of a crop, scaled by a whole factor (nearest-neighbour); None when unreadable.
-        ``badge``: a number drawn into the bottom right corner (the grid's slot count)."""
-        key = (path, scale, badge)
+        ``badge``: a number drawn into the bottom right corner (the grid's slot count). ``split``: the display size
+        ``(w, h)`` of a button with both markers (``_split_texture``)."""
+        key = (path, scale, badge, split)
         if key not in self.textures:
             try:
                 with Image.open(path) as png:
@@ -427,9 +475,29 @@ class CharacterGridTab:
                 image = image.resize((image.width * scale, image.height * scale), Image.Resampling.NEAREST)
             if badge is not None:
                 self._draw_badge(image, str(badge), scale)
+            if split is not None:
+                image = self._split_texture(image, split)
             data = np.asarray(image, dtype=np.float32).ravel() / 255.0
             self.textures[key] = dpg.add_static_texture(image.width, image.height, data, parent='grid_textures')
         return self.textures[key]
+
+    @staticmethod
+    def _split_texture(image, size):
+        """``image`` at its display ``size`` inside the image button's frame padding, with the border of a slot that
+        has both pending edits and stat edits: the left half orange, the right half green. Drawn 1:1 with no frame
+        padding (``grid_both_theme``); the padding's inner pixels stay transparent, so hover shows as usual."""
+        w, h = size
+        if image.size != (w, h):
+            image = image.resize((w, h), Image.Resampling.BILINEAR)
+        out = np.zeros((h + 2 * FRAME, w + 2 * FRAME, 4), dtype=np.uint8)
+        out[FRAME:FRAME + h, FRAME:FRAME + w] = np.asarray(image)
+        ring = np.ones(out.shape[:2], dtype=bool)
+        ring[BORDER:-BORDER, BORDER:-BORDER] = False
+        left = np.zeros_like(ring)
+        left[:, :out.shape[1] // 2] = True
+        out[ring & left] = _PENDING
+        out[ring & ~left] = _STATS
+        return Image.fromarray(out, 'RGBA')
 
     def _draw_badge(self, image, text, scale):
         """A small light number on a dark rounded box in the image's bottom right corner."""
@@ -451,23 +519,31 @@ class CharacterGridTab:
         dpg.delete_item('grid_textures', children_only=True)
         self.textures = {}
 
-    def _portrait_texture(self, cid, view, scale, badge=None):
+    def _portrait_texture(self, cid, view, scale, badge=None, split=None):
         state = self.loader.state
         path = gui_grid.icon_file(state, self.loader.state_path, cid, view) if state else None
-        return self._texture(path, scale, badge) if path else None
+        return self._texture(path, scale, badge, split) if path else None
 
-    def _portrait_button(self, cid, view, scale, cell_w, user_data, callback, badge=None):
+    def _portrait_button(self, cid, view, scale, cell_w, user_data, callback, badge=None, both=False):
         """The portrait as an image button, centred in ``cell_w``; a plain button where there is none. A
-        fractional ``scale`` draws the next whole-factor texture smaller (less blur than scaling up)."""
+        fractional ``scale`` draws the next whole-factor texture smaller (less blur than scaling up). ``both``:
+        pending edits and stat edits, the split border (``grid_both_theme`` bound here)."""
         w, h = round(ICON[0] * scale), round(ICON[1] * scale)
-        texture = self._portrait_texture(cid, view, math.ceil(scale), badge)
+        texture = self._portrait_texture(cid, view, math.ceil(scale), badge, (w, h) if both else None)
         indent = max(0, (cell_w - w - 2 * FRAME) // 2)
         if texture is None:
             label = 'no portrait' + (f' ({badge})' if badge is not None else '')
-            return dpg.add_button(label=label, width=w + 2 * FRAME, height=h + 2 * FRAME, indent=indent,
-                                  user_data=user_data, callback=callback)
-        return dpg.add_image_button(texture, width=w, height=h, indent=indent, user_data=user_data,
-                                    callback=callback)
+            button = dpg.add_button(label=label, width=w + 2 * FRAME, height=h + 2 * FRAME, indent=indent,
+                                    user_data=user_data, callback=callback)
+        elif both:
+            button = dpg.add_image_button(texture, width=w + 2 * FRAME, height=h + 2 * FRAME, indent=indent,
+                                          user_data=user_data, callback=callback)
+        else:
+            button = dpg.add_image_button(texture, width=w, height=h, indent=indent, user_data=user_data,
+                                          callback=callback)
+        if both:
+            dpg.bind_item_theme(button, 'grid_both_theme')
+        return button
 
     def _portrait_slot_button(self, cid, view, preview=None):
         """The slot level's enlarged portrait as an image button (``preview``: a pending portrait's PNG instead,
@@ -607,23 +683,25 @@ class CharacterGridTab:
             with dpg.group(horizontal=True, horizontal_spacing=GAP, parent=box):
                 for cid in members[start:start + per_row]:
                     fallback = gui_grid.is_fallback(state, cid, gui_grid.SIDE)
+                    pending, stats = self.pending.has(cid), self.pending.has_stats(cid)
                     with dpg.group():
                         dpg.add_spacer(width=SWATCH[0], height=1)
                         button = self._portrait_button(cid, gui_grid.SIDE, SWATCH_SCALE, SWATCH[0], cid,
-                                                       lambda _s, _a, u: self._open_slot(u))
+                                                       lambda _s, _a, u: self._open_slot(u), both=pending and stats)
                         self._add_menu(button, [cid])
                         self._caption(gui_grid.name_of(state, cid), SWATCH[0], fallback)
                         self._caption(gui_grid.hex_id(cid), SWATCH[0], color=_DIM)
                     changed = self.reference.changed(state, cid) if self.reference is not None else []
-                    if self.pending.has(cid):
-                        dpg.bind_item_theme(button, 'grid_pending_theme')
+                    if pending or stats:
+                        if not (pending and stats):      # both: _portrait_button drew the split border
+                            dpg.bind_item_theme(button, 'grid_pending_theme' if pending else 'grid_stats_theme')
                     elif cid == self.nav.slot:
                         dpg.bind_item_theme(button, 'primary_theme')
                     elif cid == self.copied:
                         dpg.bind_item_theme(button, 'grid_copied_theme')
                     elif changed:
                         dpg.bind_item_theme(button, 'grid_changed_theme')
-                    if fallback or self.pending.has(cid) or changed or cid == self.copied:
+                    if fallback or pending or stats or changed or cid == self.copied:
                         with dpg.tooltip(button):
                             if cid == self.copied:
                                 dpg.add_text('Copied (right-click another slot, Paste)', color=_COPIED)
@@ -631,6 +709,8 @@ class CharacterGridTab:
                                 dpg.add_text(f'Side portrait: {gui_grid.icon_note(state, cid, gui_grid.SIDE)}')
                             for line in self.pending.summary(cid):
                                 dpg.add_text(line, color=_PENDING)
+                            for line in self.pending.stat_summary(cid):
+                                dpg.add_text(line, color=_STATS)
                             if changed:
                                 dpg.add_text(f'Changed since the pack: {", ".join(changed)}', color=_CHANGED)
         dpg.add_text(f'Voice: {gui_grid.name_of(state, sq["voice"])}', color=_DIM, parent=box)
@@ -666,6 +746,7 @@ class CharacterGridTab:
             details.append((f'Changed since the roster pack you {self.reference.label}: {", ".join(changed)}',
                             _CHANGED))
         details += [(line, _PENDING) for line in self.pending.lines(cid)]
+        details += [(line, _STATS) for line in self.pending.stat_summary(cid)]
         text_w = SLOT_W - 2 * PAD - 2 * (PORTRAIT[0] + 2 * FRAME + GAP) - GAP
         body = max(PORTRAIT[1] + 2 * FRAME + LINE, LINE * sum(1 + len(line) * 7 // text_w for line, _c in details))
         tiles = gui_grid.equipment_tiles(state, cid, self.pending)
@@ -784,7 +865,11 @@ class CharacterGridTab:
             dpg.set_value('grid_slot_busy', BUSY_TEXT if busy else '')
         if dpg.does_item_exist('grid_patch_game'):
             count = len(self.pending)
-            dpg.configure_item('grid_patch_game', label=f'Patch Game ({count})', enabled=bool(count) and not locked)
+            # one width for both labels (the longer one's), so the row does not shift when Deploy is ticked
+            size = dpg.get_text_size(gui_grid.patch_label(count, True))
+            dpg.configure_item('grid_patch_game', label=gui_grid.patch_label(count, self._deploying()),
+                               width=max(PATCH_W, int(size[0]) + 20) if size else PATCH_W,
+                               enabled=bool(count) and not locked)
             dpg.configure_item('grid_discard_all', enabled=bool(count) and not locked)
             for tag in ('grid_save_pack', 'grid_load_pack', 'grid_cpu_vs_cpu'):
                 dpg.configure_item(tag, enabled=not locked)
@@ -1366,16 +1451,19 @@ class CharacterGridTab:
     def _show_summary(self, code, output):
         state = self.nav.state or self.loader.state
         dialog = gui_grid.summary_dialog(state, gui_grid.load_plan(self.plan_path), code, output)
-        self._dialog(dialog, self._patch_game, ok_label='Patch Game')
+        self._dialog(dialog, self._patch_game, ok_label=self._patch_ok_label())
 
     def _patch_game(self):
         self._end_action()
+        deploy = self._deploying()
 
         def done(code, _output):
             if code == 0:
                 self.pending.clear()
                 self._prune_staged_icons()
                 self.app.log_line('[character grid] Patch Game done: every pending edit is written.', _OK)
+                if deploy:
+                    self._deploy()
             else:
                 self.app.log_line('[character grid] Patch Game stopped at a failed step: the pending edits are '
                                   'kept; the re-read shows what landed. Fix the cause and run Patch Game again.',
@@ -1465,7 +1553,7 @@ class CharacterGridTab:
             self._pending_changed()
         self._dialog(gui_grid.load_dialog(state, plan, code, output, path, writing=writing),
                      (lambda: self._load_pack(path, plan)) if writing else (lambda: self._stage_pack(path, plan)),
-                     ok_label='Patch Game' if writing else 'Stage',
+                     ok_label=self._patch_ok_label() if writing else 'Stage',
                      rebuild=lambda only: gui_grid.load_dialog(state, plan, code, output, path, only, writing),
                      toggle='Only differing slots')
 
@@ -1489,6 +1577,7 @@ class CharacterGridTab:
 
     def _load_pack(self, path, plan):
         self._end_action()
+        deploy = self._deploying()
 
         def done(code, _output):
             if code == 0:
@@ -1497,6 +1586,8 @@ class CharacterGridTab:
                                                     (plan or {}).get('pack_fingerprints') or {})
                 self.app.log_line(f'[character grid] Patch Game done: roster pack {os.path.basename(path)} '
                                   'loaded.', _OK)
+                if deploy:
+                    self._deploy()
             else:
                 self.app.log_line('[character grid] loading the roster pack stopped at a failed step: the load stays '
                                   'pending; the re-read shows what landed. Run Patch Game again once the cause is '
@@ -1504,6 +1595,66 @@ class CharacterGridTab:
             self._refresh_markers()
             self.set_busy(self.app.busy)
         self._run([gui_grid.load_command(path)], 'Loading the roster pack...', done)
+
+    # ------------------------------------------------------------------ deploy
+    def _deploying(self):
+        return dpg.does_item_exist('grid_deploy') and bool(dpg.get_value('grid_deploy'))
+
+    def _on_deploy_toggle(self, value):
+        """The checkbox is remembered in the GUI settings; the Patch Game label follows it."""
+        try:
+            self.app.settings.set(gui_grid.DEPLOY_SETTING, bool(value))
+        except OSError as exc:
+            self.app.log_line(f'[character grid] could not save the setting: {exc}', _WARN)
+        self.set_busy(self.app.busy)
+
+    def _patch_ok_label(self):
+        return gui_grid.PATCH_DEPLOY_LABEL if self._deploying() else gui_grid.PATCH_LABEL
+
+    def _deploy(self):
+        """After a successful Patch Game with "Deploy patched files to game directory" ticked: copy the game files
+        with CopyFilesToGameDir.bat. The game directory it reads (3_Output_Dat/sluggiespath) is asked for here when
+        it is missing or no game folder, so the script never waits for input; Cancel or a blank / wrong answer
+        stops before the copy."""
+        script = os.path.join(self.app.root_dir, gui_grid.DEPLOY_SCRIPT_REL)
+        if not os.path.isfile(script):
+            self.app.log_line(f'[character grid] files not copied: {script} is missing.', _WARN)
+            return
+        path_file = os.path.join(self.app.root_dir, gui_grid.GAME_DIR_FILE_REL)
+        stored = gui_grid.read_game_dir(path_file)
+        if gui_grid.game_dir_problem(stored) is None:
+            self._copy_files(script, stored)
+            return
+
+        def answered(text):
+            game_dir = gui_grid.clean_game_dir(text)
+            problem = gui_grid.game_dir_problem(game_dir)
+            if problem is not None:
+                self.app.log_line(f'[character grid] files not copied: {problem}', _WARN)
+                return
+            try:
+                gui_grid.write_game_dir(path_file, game_dir)
+            except (OSError, UnicodeError) as exc:
+                self.app.log_line(f'[character grid] files not copied: could not write {path_file}: {exc}', _WARN)
+                return
+            self._copy_files(script, game_dir)
+        lines = ['Enter the path to your unpacked copy of Mario Super Sluggers (US): its main folder, the one '
+                 'holding DATA\\files and DATA\\sys. It is kept in 3_Output_Dat\\sluggiespath for the next time.']
+        if stored:
+            lines.append(f'The stored one cannot be used: {gui_grid.game_dir_problem(stored)}')
+        self.app.ask_text('Game directory', '\n\n'.join(lines), answered,
+                          lambda: self.app.log_line('[character grid] files not copied: the game directory prompt '
+                                                    'was cancelled', _WARN), initial=stored)
+
+    def _copy_files(self, script, game_dir):
+        def done(code, _output):
+            if code == 0:
+                self.app.log_line(f'[character grid] patched files copied to {game_dir}.', _OK)
+            else:
+                self.app.log_line('[character grid] copying the files to the game directory failed: see the log '
+                                  'above.', _WARN)
+            self.set_busy(self.app.busy)
+        self._run([gui_grid.deploy_command(script)], 'Copying the files to the game directory...', done)
 
     def _on_cpu_vs_cpu(self):
         """Turn CPU vs CPU and its management on or off in main.dol right away (not a staged edit: no roster data

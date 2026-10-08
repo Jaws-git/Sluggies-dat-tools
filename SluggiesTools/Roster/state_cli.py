@@ -9,7 +9,7 @@ files.
 Every character also gets its ``fingerprint`` (``pack.py``: block and portrait
 SHA-1s, name, stats, voice), which roster packs and the GUI's "changed since
 load/save" marker compare. ``game_options`` lists the game options that are on
-(``GameOptions/game_options.detect``) for the grid tab's CPU vs CPU status, and
+(``GameOptions/game_options.detect``) for the Options tab's CPU vs CPU status, and
 the stat edits the game holds (``read_stat_edits``) for the GUI's warnings.
 
 ``--derive`` (``start.py --roster-derive``) instead writes the derived

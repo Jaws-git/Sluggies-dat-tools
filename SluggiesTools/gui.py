@@ -3,8 +3,10 @@
 Every button runs the same ``start.py`` command line a user would type, as a
 child process, so the GUI, the CLI and StartTools.bat share one code path and
 one set of logs. Child output is shown in the log pane and echoed to the
-console window. The child's stdin is a pipe, so the interactive y/n prompts in
-the export, icon and hammerspace tools can be answered from the input row.
+console window. The child's stdin is a pipe: an interactive prompt (y/n,
+value, file name, ...) announced by ``slogger.ask`` opens a popup that sends
+the answer, so the console never has to be shown; the console's input row can
+answer too.
 
 The "Character grid" tab (``gui_character_grid``, logic in ``gui_grid``)
 shows the draft grid of 3_Output_Dat. It reads it with ``start.py
@@ -25,6 +27,7 @@ import ntpath
 import os
 import platform
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -32,6 +35,7 @@ import threading
 import dearpygui.dearpygui as dpg
 import gui_character_grid
 import gui_grid
+import gui_settings
 import native_dialog
 import slogger
 from StatEditor import gui_tab as stat_editor_tab
@@ -45,6 +49,9 @@ _VIEWPORT_TITLE = 'Sluggies Tools'
 _VIEWPORT_SIZE = (1440, 800)    # fits the 12x5 grid, a grid note line and the "Show console" checkbox unscrolled
 _CONSOLE_HEIGHT = 240           # the window grows by this when the console is shown
 _CLOSE_DIALOG = 'close_running_dialog'
+_PROMPT_DIALOG = 'prompt_dialog'
+_PROMPT_FIELD = 'prompt_dialog_field'
+_MARKER_LINE = re.compile(re.escape(slogger.PROMPT_MARKER) + r'[^\n]*\n')
 
 # Font sizes for the UI. 16pt matches Dear PyGui's default at 1x DPI. Open
 # Sans is slightly wider than the built-in ProggyClean at the same point
@@ -125,6 +132,7 @@ class SluggiesGui:
         self.action_buttons = []
         self.picking = False               # a native file dialog is open
         self.console_grow = 0              # px the window grew when the console was shown
+        self.settings = gui_settings.Settings(os.path.join(root_dir, gui_settings.SETTINGS_REL))   # one for every tab
         self.grid_tab = gui_character_grid.CharacterGridTab(self)
         self.stat_tab = stat_editor_tab.StatEditorTab(self)
 
@@ -142,7 +150,7 @@ class SluggiesGui:
         if self.process is not None:
             self._log_line('A command is already running.', _PROMPT_COLOR)
             return False
-        self.pending = [tuple(step) for step in steps]
+        self.pending = [step if isinstance(step, tuple) else tuple(step) for step in steps]   # keeps a ShellStep
         self.chain = list(self.pending)
         self.on_chain_done, self.chain_output = on_done, []
         self._start_next()
@@ -150,7 +158,7 @@ class SluggiesGui:
 
     def _start_next(self):
         args = self.current = self.pending.pop(0)
-        command = [*self.command_prefix, *args]
+        command = list(args) if isinstance(args, gui_grid.ShellStep) else [*self.command_prefix, *args]
         self._log_line('> ' + ' '.join(args), _PROMPT_COLOR)
         env = dict(os.environ, PYTHONUNBUFFERED='1', PYTHONIOENCODING='utf-8', **{slogger.PROMPT_ENV: '1'})
         try:
@@ -180,7 +188,7 @@ class SluggiesGui:
                 break
             text = chunk.decode('utf-8', errors='replace')
             try:
-                sys.stdout.write(text.replace(slogger.PROMPT_MARKER + '\r\n', '').replace(slogger.PROMPT_MARKER + '\n', ''))
+                sys.stdout.write(_MARKER_LINE.sub('', text))
                 sys.stdout.flush()
             except (OSError, ValueError, UnicodeEncodeError):
                 pass
@@ -196,11 +204,89 @@ class SluggiesGui:
         if process is None or process.stdin is None:
             return
         self._log_line(f'< {text}', _PROMPT_COLOR)
+        self._close_prompt()                       # answered, from the popup or the console's input row
         try:
             process.stdin.write((text + '\n').encode('utf-8'))
             process.stdin.flush()
         except OSError:
             pass
+
+    # ------------------------------------------------------------------ prompt
+    def _open_prompt(self, kind, prompt):
+        """A command waits for an answer (``slogger.ask``): ask in a modal popup so the console need not be shown.
+        ``kind`` is one of ``slogger.PROMPT_KINDS``; Stop command (or the popup's close button) ends the command."""
+        step = ' '.join(os.path.basename(a) if os.path.isabs(a) else a for a in self.current or ())
+        self.ask_text(f'Input needed: {step}' if step else 'Input needed',
+                      prompt.strip() or 'The command waits for an answer.', self.send_input, self.stop_command,
+                      kind=kind, cancel_label='Stop command')
+
+    def ask_text(self, title, text, on_answer, on_cancel, kind='text', initial='', cancel_label='Cancel'):
+        """A modal popup asking for an answer; ``kind`` (``slogger.PROMPT_KINDS``) picks Yes / No, Continue or a
+        field with OK (file / save: plus Browse...). The popup closes first, then ``on_answer(text)`` or, for
+        ``cancel_label`` and the close button, ``on_cancel()`` runs. One at a time: a new one replaces it."""
+        self._close_prompt()
+
+        def answer(value):
+            self._close_prompt()
+            on_answer(value)
+
+        def cancel():
+            self._close_prompt()
+            on_cancel()
+        vw = dpg.get_viewport_client_width()
+        with dpg.window(tag=_PROMPT_DIALOG, label=title, modal=True, no_collapse=True, no_saved_settings=True,
+                        autosize=True, pos=(max(0, (vw - 620) // 2), 120), on_close=lambda *_: cancel()):
+            dpg.add_text(text, wrap=600)
+            dpg.add_spacer(height=6)
+            if kind in ('text', 'file', 'save'):
+                with dpg.group(horizontal=True):
+                    dpg.add_input_text(tag=_PROMPT_FIELD, default_value=initial, width=500 if kind == 'text' else 420,
+                                       on_enter=True, callback=lambda: answer(dpg.get_value(_PROMPT_FIELD)))
+                    if kind != 'text' and native_dialog.enabled():
+                        dpg.add_button(label='Browse...', callback=lambda: self._prompt_browse(kind == 'save'))
+                dpg.add_spacer(height=6)
+            with dpg.group(horizontal=True):
+                if kind == 'yesno':
+                    yes = dpg.add_button(label='Yes', width=110, height=30, callback=lambda: answer('y'))
+                    dpg.add_button(label='No', width=110, height=30, callback=lambda: answer('n'))
+                elif kind == 'key':
+                    yes = dpg.add_button(label='Continue', width=110, height=30, callback=lambda: answer(''))
+                else:
+                    yes = dpg.add_button(label='OK', width=110, height=30,
+                                         callback=lambda: answer(dpg.get_value(_PROMPT_FIELD)))
+                dpg.bind_item_theme(yes, 'primary_theme')
+                dpg.add_button(label=cancel_label, height=30, callback=cancel)
+        if dpg.does_item_exist(_PROMPT_FIELD):
+            dpg.focus_item(_PROMPT_FIELD)
+
+    def _close_prompt(self):
+        if dpg.does_item_exist(_PROMPT_DIALOG):
+            dpg.delete_item(_PROMPT_DIALOG)
+
+    def _prompt_browse(self, save):
+        """Fill the prompt's field from the Windows "Open" / "Save As" dialog, started in the field's folder."""
+        if self.picking:
+            return
+        self.picking = True
+        current = dpg.get_value(_PROMPT_FIELD).strip().strip('"')
+        initial = next((d for d in (os.path.dirname(current), self.root_dir) if d and os.path.isdir(d)),
+                       self.root_dir)
+        owner = native_dialog.find_owner_window(_VIEWPORT_TITLE)
+
+        def work():
+            try:
+                result = native_dialog.ask_open_files('Choose a file', initial, [('All files', '*.*')],
+                                                      owner=owner, save=save)
+            except Exception as exc:          # no dialog: the path is typed into the field instead
+                result = None
+                self.output_queue.put(('call', self._log_line, f'Windows file dialog failed ({exc}).', _PROMPT_COLOR))
+            self.output_queue.put(('call', self._browse_done, result))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _browse_done(self, result):
+        self.picking = False
+        if result and dpg.does_item_exist(_PROMPT_FIELD):
+            dpg.set_value(_PROMPT_FIELD, result[0])
 
     # ------------------------------------------------------------------ files
     def pick_files(self, fallback_tag, title, filters, on_files, on_cancel=None, multi=False, initial_dir=None,
@@ -263,8 +349,9 @@ class SluggiesGui:
         buffer = self.partial + text
         *lines, self.partial = buffer.split('\n')
         for line in lines:
-            if line == slogger.PROMPT_MARKER:
-                self.show_console()                # the command waits for an answer
+            request = slogger.parse_prompt_marker(line)
+            if request is not None:
+                self._open_prompt(*request)        # the command waits for an answer
                 continue
             self._log_line(line.rsplit('\r', 1)[-1])
         self.partial = self.partial.rsplit('\r', 1)[-1]
@@ -321,6 +408,7 @@ class SluggiesGui:
                 dpg.delete_item(item)
 
     def _finish_process(self, code):
+        self._close_prompt()                       # an unanswered prompt dies with its command
         if self.partial:
             self._log_line(self.partial)
             self.partial = ''
@@ -410,7 +498,11 @@ class SluggiesGui:
             steps.append(('--roster', '--config', os.path.join(self.config_dir, choice), '--fresh'))
         steps.append(('--game-options', '--on', 'cpu_vs_cpu', 'cpu_management'))
         steps.append(('--export-icons', '--use-output'))
-        self._config_guard(lambda: self.run_chain(steps), 'Start the all-in-one export and lose the configuration?',
+
+        def start():
+            self.show_console(True)          # a long run: its progress shows in the console
+            self.run_chain(steps)
+        self._config_guard(start, 'Start the all-in-one export and lose the configuration?',
                            'The all-in-one export', stats_lost=True)
 
     def _build_export_tab(self):
@@ -547,7 +639,8 @@ class SluggiesGui:
 
     def _on_tab(self, _sender, tab):
         self.grid_tab.forget_copy()
-        if dpg.get_item_alias(tab) == 'grid_tab' and self.grid_tab.loader.status != gui_grid.StateLoader.RUNNING:
+        if (dpg.get_item_alias(tab) in ('grid_tab', 'options_tab')
+                and self.grid_tab.loader.status != gui_grid.StateLoader.RUNNING):
             self.grid_tab.request_read()
 
     def _on_send(self, *_):
@@ -594,8 +687,9 @@ class SluggiesGui:
                 self._build_roster_tab()
                 self.grid_tab.build()
                 self.stat_tab.build()
+                self.grid_tab.build_options()
             dpg.add_separator()
-            # hidden by default; a command that waits for an answer opens it (slogger.ask's marker line)
+            # hidden by default; a command that waits for an answer asks in a popup instead (_open_prompt)
             dpg.add_checkbox(label='Show console', tag='show_console', default_value=False,
                              callback=lambda _sender, value: self.show_console(value))
             with dpg.group(tag='console_area', show=False):

@@ -28,7 +28,6 @@ import webbrowser
 import dearpygui.dearpygui as dpg
 
 import gui_grid
-import gui_settings
 from StatEditor import editor_install as ei
 
 _NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
@@ -47,7 +46,7 @@ _LOG_TAIL = 8                                # lines of the editor's output show
 class StatEditorTab:
     def __init__(self, app):
         self.app = app                       # gui.SluggiesGui
-        self.settings = gui_settings.Settings(os.path.join(app.root_dir, gui_settings.SETTINGS_REL))
+        self.settings = app.settings         # gui_settings.Settings, shared with the other tabs
         self.staging_dir = os.path.join(app.root_dir, ei.STAGING_REL)
         self.bridge_out = os.path.join(app.root_dir, '3_Output_Dat', 'main.dol')
         self.install = ei.find_install(self.settings.get(ei.SETTING))
