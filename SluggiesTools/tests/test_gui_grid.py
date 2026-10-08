@@ -402,6 +402,18 @@ class PendingEditsTests(unittest.TestCase):
         self.assertEqual(self.p.summary(0x0D), ['Pending: clear this slot'])
         self.assertEqual(self.p.lines(0x06), [])
 
+    def test_stat_edits_mark_the_characters_their_file_names(self):
+        path = os.path.join(self.tmp, 'stat_edits.json')
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump({'format': 'sluggies-stat-edits', 'characters': {'0x66': {'stats': {}}, 'bad': {}}}, f)
+        self.p.edits = [gui_grid.stat_edit(path), {'op': 'clear', 'id': '0x0D'}]
+        self.assertEqual(gui_grid.stat_file_ids(path), {0x66})
+        self.assertTrue(self.p.has_stats(0x66) and self.p.square_stats(self.s, 0))
+        self.assertFalse(self.p.has_stats(0x0D) or self.p.square_stats(self.s, 1))
+        self.assertFalse(self.p.has(0x66))                      # a game-wide edit: not the slot's own pending edit
+        self.assertEqual(self.p.stat_summary(0x66), ['Pending: stat editor value changes'])
+        self.assertEqual(gui_grid.stat_file_ids(os.path.join(self.tmp, 'missing.json')), frozenset())
+
     def test_write_edits(self):
         path = os.path.join(self.tmp, 'slot', 'edits.json')
         gui_grid.write_edits(path, {'edits': []})
@@ -740,3 +752,49 @@ class SlotCountTests(unittest.TestCase):
     def test_slot_count_is_the_member_count(self):
         s = state([0x06, 0x66, 0x67], [0x0D])
         self.assertEqual([gui_grid.slot_count(s, i) for i in range(2)], [3, 1])
+
+
+class DeployTests(unittest.TestCase):
+    """Deploy patched files to game directory: the Patch Game label, the copy command and the game directory."""
+
+    def setUp(self):
+        self.root = self.enterContext(tempfile.TemporaryDirectory())
+
+    def game(self, *subdirs):
+        game_dir = os.path.join(self.root, 'Sluggers')
+        for sub in subdirs:
+            os.makedirs(os.path.join(game_dir, sub))
+        return game_dir
+
+    def test_patch_label(self):
+        self.assertEqual(gui_grid.patch_label(3, False), 'Patch Game (3)')
+        self.assertEqual(gui_grid.patch_label(3, True), 'Patch Game & copy files (3)')
+
+    def test_deploy_command_runs_as_it_is(self):
+        command = gui_grid.deploy_command(r'C:\My Tools\CopyFilesToGameDir.bat', comspec='cmd.exe')
+        self.assertIsInstance(command, gui_grid.ShellStep)
+        self.assertEqual(command, ('cmd.exe', '/c', r'C:\My Tools\CopyFilesToGameDir.bat'))
+        self.assertFalse(gui_grid.chain_writes([command]))         # the copy leaves 3_Output_Dat as it is
+
+    def test_clean_game_dir(self):
+        self.assertEqual(gui_grid.clean_game_dir('  "D:\\Games\\MSS\\"  \n'), r'D:\Games\MSS')
+        self.assertEqual(gui_grid.clean_game_dir('C:\\'), 'C:\\')
+        self.assertEqual(gui_grid.clean_game_dir('   '), '')
+        self.assertEqual(gui_grid.clean_game_dir(None), '')
+
+    def test_game_dir_problem(self):
+        self.assertIn('no game directory', gui_grid.game_dir_problem(''))
+        self.assertIn('does not exist', gui_grid.game_dir_problem(os.path.join(self.root, 'nowhere')))
+        self.assertIn('DATA', gui_grid.game_dir_problem(self.game(os.path.join('DATA', 'files'))))
+
+    def test_game_dir_ok(self):
+        self.assertIsNone(gui_grid.game_dir_problem(self.game(*gui_grid.GAME_SUBDIRS)))
+
+    def test_game_dir_file_round_trip(self):
+        path = os.path.join(self.root, 'sluggiespath')
+        self.assertEqual(gui_grid.read_game_dir(path), '')        # no file yet
+        gui_grid.write_game_dir(path, r'D:\Games\MSS')
+        self.assertEqual(gui_grid.read_game_dir(path), r'D:\Games\MSS')
+        with open(path, 'w') as f:
+            f.write('D:\\Games\\MSS \n')                         # the batch file's own echo leaves a blank
+        self.assertEqual(gui_grid.read_game_dir(path), r'D:\Games\MSS')

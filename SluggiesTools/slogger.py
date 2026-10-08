@@ -42,6 +42,7 @@ and ordering.
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import os
 import sys
@@ -351,19 +352,42 @@ def log_user_input(prompt: str, answer: str, source: Optional[str] = None) -> No
 
 
 # The GUI sets PROMPT_ENV for its child processes (inherited by their own
-# children). ``ask`` then prints PROMPT_MARKER on a line of its own before the
-# prompt, so the GUI knows a command waits for input even when its console is
-# hidden. Every interactive prompt must go through ``ask``, not ``input``.
+# children). ``ask`` then prints PROMPT_MARKER, followed by the prompt's kind
+# and text as JSON, on a line of its own before the prompt, so the GUI can ask
+# in a popup while its console is hidden. Every interactive prompt must go
+# through ``ask``, not ``input``.
 PROMPT_ENV = "SLUGGIES_GUI_PROMPTS"
 PROMPT_MARKER = "\x1e[sluggies:awaiting-input]"
+# yesno: Yes / No buttons; text: a free answer; file / save: a path to an
+# existing / a new file (with a Browse button); key: a Continue button.
+PROMPT_KINDS = ("yesno", "text", "file", "save", "key")
 
 
-def ask(prompt: str) -> str:
-    """``input(prompt)``, announced to the GUI first when it runs this process."""
+def ask(prompt: str, kind: Optional[str] = None) -> str:
+    """``input(prompt)``, announced to the GUI first when it runs this process.
+
+    ``kind`` (one of PROMPT_KINDS) picks the GUI popup; by default ``yesno``
+    when the prompt contains ``(y/n)``, else ``text``.
+    """
+    if kind is None:
+        kind = "yesno" if "(y/n)" in prompt.lower() else "text"
     if os.environ.get(PROMPT_ENV):
         try:
-            sys.stdout.write(PROMPT_MARKER + "\n")
+            sys.stdout.write(PROMPT_MARKER + json.dumps({"kind": kind, "prompt": prompt}) + "\n")
             sys.stdout.flush()
         except (OSError, ValueError):
             pass
     return input(prompt)
+
+
+def parse_prompt_marker(line: str) -> Optional[tuple[str, str]]:
+    """``(kind, prompt)`` of a marker line printed by ``ask``, else None.
+    A bare or unreadable marker gives ``('text', '')``."""
+    if not line.startswith(PROMPT_MARKER):
+        return None
+    try:
+        payload = json.loads(line[len(PROMPT_MARKER):])
+        kind, prompt = payload.get("kind"), payload.get("prompt")
+    except (ValueError, AttributeError):
+        return "text", ""
+    return (kind if kind in PROMPT_KINDS else "text"), (prompt if isinstance(prompt, str) else "")

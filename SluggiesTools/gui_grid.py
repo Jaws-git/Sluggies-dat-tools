@@ -42,7 +42,7 @@ WRITING_FLAGS = frozenset({'--export', '--roster', '--patch', '--unpatch', '--re
                            '--set-icon', '--apply-slots', '--load-roster',
                            '--write-slot-blocks', '--write-slot-equipment', '--game-options'})
 UNNAMED = '-'
-CPU_VS_CPU_OPTIONS = ('cpu_vs_cpu', 'cpu_management')   # what the grid tab's CPU vs CPU button turns on
+CPU_VS_CPU_OPTIONS = ('cpu_vs_cpu', 'cpu_management')   # what the Options tab's CPU vs CPU button turns on
 LUIGI = 0x01
 
 
@@ -62,7 +62,7 @@ CPU_VS_CPU_DISABLE = 'Disable CPU vs CPU + management'
 
 
 def cpu_vs_cpu_command(enable: bool = True) -> tuple:
-    """The grid tab's CPU vs CPU button step: turn both options on, or both off."""
+    """The Options tab's CPU vs CPU button step: turn both options on, or both off."""
     return ('--game-options', '--on' if enable else '--off', *CPU_VS_CPU_OPTIONS)
 
 
@@ -670,6 +670,20 @@ class PendingEdits:
     def square_pending(self, state: dict, index: int) -> bool:
         return any(self.has(m) for m in state['squares'][index]['members'])
 
+    def stat_edits_for(self, cid: int) -> list[dict]:
+        """The pending stat edit files (bridged in from the Stat Editor, staged game-wide) that name slot ``cid``."""
+        return [e for e in self.edits if e['op'] == STAT_EDITS and cid in stat_file_ids(e.get('file'))]
+
+    def has_stats(self, cid: int) -> bool:
+        return bool(self.stat_edits_for(cid))
+
+    def square_stats(self, state: dict, index: int) -> bool:
+        return any(self.has_stats(m) for m in state['squares'][index]['members'])
+
+    def stat_summary(self, cid: int) -> list[str]:
+        """One line per pending stat edit file that names the slot (tooltips, the slot level)."""
+        return [_edit_title(e) for e in self.stat_edits_for(cid)]
+
     def summary(self, cid: int) -> list[str]:
         """One line per pending edit of the slot (tooltips)."""
         return [_edit_title(e) for e in self.edits if int(e['id'], 16) == cid] + self._pack_lines(cid)
@@ -715,7 +729,7 @@ class PendingEdits:
 
 def _edit_title(edit: dict) -> str:
     if edit['op'] == STAT_EDITS:
-        return f'Pending: stat editor values from {os.path.basename(edit.get("file") or "?")}'
+        return f'Pending: stat editor value changes'
     if edit['op'] == 'equip':
         what = EQUIP_LABELS.get(edit.get('file'), 'equipment').lower()
         where = f' (file {edit["file"]})' if edit.get('file') in (5,) else ''
@@ -942,6 +956,63 @@ def preview_command(edits_path: str) -> tuple:
 
 def apply_command(edits_path: str) -> tuple:
     return ('--apply-slots', edits_path)
+
+
+PATCH_LABEL = 'Patch Game'
+PATCH_DEPLOY_LABEL = 'Patch Game & copy files'
+DEPLOY_LABEL = 'Deploy patched files to game directory'
+DEPLOY_SETTING = 'deploy_to_game_dir'           # the GUI settings key (``gui_settings``) of that checkbox
+DEPLOY_SCRIPT_REL = os.path.join('3_Output_Dat', 'CopyFilesToGameDir.bat')
+GAME_DIR_FILE_REL = os.path.join('3_Output_Dat', 'sluggiespath')    # the script's game directory, one line
+# where CopyFilesToGameDir.bat copies dt_na.dat (DATA/files) and main.dol / fst.bin (DATA/sys)
+GAME_SUBDIRS = (os.path.join('DATA', 'files'), os.path.join('DATA', 'sys'))
+_GAME_DIR_ENCODING = 'oem' if os.name == 'nt' else 'utf-8'           # what cmd's set /p and echo use
+
+
+class ShellStep(tuple):
+    """A command chain step run as it is, not as start.py arguments (``SluggiesGui.run_chain``)."""
+
+
+def patch_label(count: int, deploy: bool) -> str:
+    return f'{PATCH_DEPLOY_LABEL if deploy else PATCH_LABEL} ({count})'
+
+
+def deploy_command(script: str, comspec: str | None = None) -> ShellStep:
+    """Run CopyFilesToGameDir.bat (through cmd, so it also runs from a path with spaces)."""
+    return ShellStep((comspec or os.environ.get('ComSpec', 'cmd.exe'), '/c', script))
+
+
+def read_game_dir(path: str) -> str:
+    """The game directory stored in the sluggiespath file (its first line), '' when there is none."""
+    try:
+        with open(path, encoding=_GAME_DIR_ENCODING, errors='replace') as f:
+            return clean_game_dir(f.readline())
+    except OSError:
+        return ''
+
+
+def clean_game_dir(text: str) -> str:
+    """A typed or pasted directory: no surrounding blanks or quotes, no trailing separator."""
+    text = (text or '').strip().strip('"').strip()
+    return text.rstrip('\\/') if len(text) > 3 else text     # keep a drive root such as C:\
+
+
+def game_dir_problem(game_dir: str) -> str | None:
+    """Why ``game_dir`` is no unpacked Mario Super Sluggers main folder to copy into, or None when it is one."""
+    if not game_dir:
+        return 'no game directory given'
+    if not os.path.isdir(game_dir):
+        return f'the game directory does not exist: {game_dir}'
+    missing = [sub for sub in GAME_SUBDIRS if not os.path.isdir(os.path.join(game_dir, sub))]
+    if missing:
+        return f'{game_dir} has no {" or ".join(missing)} folder (not the unpacked game\'s main folder?)'
+    return None
+
+
+def write_game_dir(path: str, game_dir: str) -> None:
+    """Store the game directory for CopyFilesToGameDir.bat (it reads the first line with ``set /p``)."""
+    with open(path, 'w', encoding=_GAME_DIR_ENCODING) as f:
+        f.write(game_dir + '\n')
 
 
 def write_edits(path: str, data: dict) -> None:
@@ -1209,6 +1280,34 @@ def stat_edit(path: str) -> dict:
 def staged_stat_files(pending: 'PendingEdits') -> list[str]:
     """The pending stat edit files, in staging order."""
     return [e['file'] for e in pending.edits if e['op'] == STAT_EDITS and e.get('file')]
+
+
+_STAT_IDS: dict[tuple[str, float], frozenset[int]] = {}
+
+
+def stat_file_ids(path: str | None) -> frozenset[int]:
+    """The character IDs a stat edit file names (its ``characters`` keys; chemistry partners not counted), empty
+    when unreadable. Cached per path and modification time (the grid asks on every redraw)."""
+    try:
+        key = (os.path.normcase(os.path.abspath(path)), os.path.getmtime(path))
+    except (OSError, TypeError, ValueError):
+        return frozenset()
+    if key not in _STAT_IDS:
+        ids = set()
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                doc = json.load(f)
+            for text in (doc.get('characters') or {}) if isinstance(doc, dict) else ():
+                try:                           # StatEditor/apply._id's rules: "0xNN", 0x00-0xFF
+                    cid = int(text, 16) if text.lower().startswith('0x') else -1
+                except (AttributeError, ValueError):
+                    cid = -1
+                if 0 <= cid <= 0xFF:
+                    ids.add(cid)
+        except (OSError, ValueError, AttributeError):
+            pass
+        _STAT_IDS[key] = frozenset(ids)
+    return _STAT_IDS[key]
 
 
 def _same_file(a: str | None, b: str) -> bool:
