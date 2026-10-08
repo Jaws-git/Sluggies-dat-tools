@@ -178,12 +178,12 @@ class GuiTests(unittest.TestCase):
                 with open(os.path.join(folder, rel), 'wb') as f:
                     f.write(bytes(size))
             self.assertEqual(gui_grid.folder_size(folder), 1536 * 1024)
-            ok = gui_grid.export_summary_dialog(None, 0x4A, 0, {'folder': folder, 'name': 'Mario'})
+            ok = gui_grid.export_summary_dialog(None, 0x4A, 0, {'folder': folder})
             text = [t for t, _k in ok.lines]
             self.assertEqual(ok.title, 'Export finished')
             self.assertFalse(ok.can_apply)
+            self.assertIn('Exported 0x4A (0x4A).', text)
             self.assertIn(f'Folder: {os.path.normpath(folder)}', text)
-            self.assertIn('Character: Mario', text)
             self.assertIn('Total size: 1.50 MB', text)
         aborted = gui_grid.export_summary_dialog(None, 0x4A, 1, {'id': '0x4A', 'error': 'dt_na.dat is missing'})
         self.assertEqual(aborted.title, 'Export aborted')
