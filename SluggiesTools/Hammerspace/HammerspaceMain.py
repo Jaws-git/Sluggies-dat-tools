@@ -6720,7 +6720,42 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
                 pos_gpl_offsets=_gpl_pos_offsets_from_bytes(gpl_bytes),
             )
         else:
-            gpl_result = BuildGPLMeshData(parsed)
+            gpl_bytes = CloneGPL(source_model_offset, source_model_length)
+            donor_submesh_count = (
+                struct.unpack_from('>I', gpl_bytes, 0x0C)[0]
+                if len(gpl_bytes) >= 0x10 else None
+            )
+            if (donor_submesh_count is not None
+                    and len(model.get('Submeshes', [])) != donor_submesh_count):
+                # Only the fixture probes get here (build_add_submesh_fixture.py,
+                # build_template_source_fixture.py): they append a raw entry to
+                # Submeshes, which only the full serializer can emit.
+                gpl_result = BuildGPLMeshData(parsed)
+            else:
+                # Every edit compacted away (or none was exported): the donor
+                # GPL is the right output. The full serializer rewrites
+                # unedited donor data; here it zeroed Mario's body color
+                # header on a cap-only color edit (2026-10-08).
+                pending = [
+                    f'sub{submesh_index} ds{state_index}'
+                    for submesh_index, submesh in enumerate(model.get('Submeshes', []))
+                    for state_index, state in enumerate(submesh.get('DisplayStates', []))
+                    if state.get('PrimListDataEdited') is not None
+                ]
+                if pending:
+                    raise ValueError(
+                        'GPL build: primitive-list edits on '
+                        f'{", ".join(pending)} have no patch route; refusing the '
+                        'full GPL serializer')
+                _slogger.info(
+                    '[GPL] build requested but no GPL edit remains after '
+                    'preprocessing; using the donor GPL unchanged',
+                    source='hammerspace.main',
+                )
+                gpl_result = GPLBuildResult(
+                    gpl_bytes=gpl_bytes,
+                    pos_gpl_offsets=_gpl_pos_offsets_from_bytes(gpl_bytes),
+                )
     else:
         gpl_bytes = CloneGPL(source_model_offset, source_model_length)
         gpl_result = GPLBuildResult(

@@ -540,7 +540,7 @@ class BuildModelBlockTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'ModelLength'):
             self._build_archive_block(model_offset=0x1060, model_length=0x20)
 
-    def test_gpl_and_skn_build_modes_use_builders(self):
+    def _no_edit_gpl_build_model(self):
         self.data['SluggiesModel'].update({
             'UseHammerspace': True,
             'ModelOffset': 0x1000,
@@ -560,11 +560,15 @@ class BuildModelBlockTests(unittest.TestCase):
                 }],
             }],
         })
+
+    def test_gpl_build_without_edits_clones_donor_gpl(self):
+        # Regression (2026-10-08): with every edit compacted away, gpl=build
+        # used the full serializer, which zeroed Mario's body color header.
+        self._no_edit_gpl_build_model()
         patches = self._patch_common()
-        built_gpl = main.GPLBuildResult(b'BUILT_GPL', [9])
-        with patches[0], patches[1], patches[4], patches[5], patches[7], patches[8]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[7], patches[8]:
             with (
-                mock.patch.object(main, 'BuildGPLMeshData', return_value=built_gpl) as build_gpl,
+                mock.patch.object(main, 'BuildGPLMeshData') as build_gpl,
                 mock.patch.object(main, 'BuildSKNSkinningData', return_value=b'BUILT_SKN') as build_skn,
             ):
                 result = main.BuildModelBlock(
@@ -572,10 +576,26 @@ class BuildModelBlockTests(unittest.TestCase):
                     main.SectionModes(gpl='build', skn='build'),
                 )
 
-        build_gpl.assert_called_once_with(self.parsed)
-        build_skn.assert_called_once_with(self.parsed, built_gpl)
+        build_gpl.assert_not_called()
+        build_skn.assert_called_once_with(self.parsed, main.GPLBuildResult(b'GPL', [3]))
+        self.assertEqual(result.section_sizes['GPL'], len(b'GPL'))
         self.assertEqual(result.section_modes.gpl, 'build')
         self.assertEqual(result.section_modes.skn, 'build')
+
+    def test_gpl_build_refuses_unrouted_primitive_list_edit(self):
+        self._no_edit_gpl_build_model()
+        self.data['SluggiesModel']['Submeshes'][0]['DisplayStates'][0]['PrimListDataEdited'] = b'\x00'
+        patches = self._patch_common()
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[7], patches[8]:
+            with (
+                mock.patch.object(main, 'rebuild_surface_assignments', return_value=False),
+                mock.patch.object(main, 'rebuild_edited_uvs', return_value=False),
+                mock.patch.object(main, 'BuildGPLMeshData') as build_gpl,
+            ):
+                with self.assertRaisesRegex(ValueError, 'sub0 ds0.*no patch route'):
+                    main.BuildModelBlock(self.data, main.SectionModes(gpl='build'))
+
+        build_gpl.assert_not_called()
 
     def test_shader_mode_edit_patches_cloned_gpl(self):
         self.data['SluggiesModel']['Submeshes'] = [{

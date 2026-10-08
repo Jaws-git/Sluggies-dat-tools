@@ -1128,6 +1128,7 @@ def _compact_shared_color_array(
     donor_entries: list[bytes],
     donor_indices_by_channel: dict[str, list[int]],
     edited_by_channel: dict[str, list[bytes]],
+    edited_indices_by_channel: dict[str, list[int]],
     loop_count: int,
 ):
     """Compact the single vertex-color array shared by color0/color1.
@@ -1138,6 +1139,11 @@ def _compact_shared_color_array(
     order is preserved; a donor slot whose original entry is no longer
     referenced by any loop may be repurposed for a new value (UV-style),
     and remaining new values are appended after the donor entries.
+
+    An edited channel's loop ``n`` takes the entry
+    ``edited_by_channel[ch][edited_indices_by_channel[ch][n]]`` (Blender
+    exports one entry per loop with an identity index list).  Donor indices
+    only say which donor slots the unedited loops still reference.
 
     Returns (compact_bytes, indices_by_channel, preserve_indices).
     """
@@ -1165,7 +1171,7 @@ def _compact_shared_color_array(
         index = slot_for.get(entry)
         if index is not None:
             return index
-        for candidate in range(len(slots)):
+        for candidate in range(len(donor_entries)):
             if candidate in reused:
                 continue
             if donor_entries[candidate] in required:
@@ -1182,9 +1188,26 @@ def _compact_shared_color_array(
     preserve = True
     for channel, edited in edited_by_channel.items():
         donor_indices = donor_indices_by_channel[channel]
+        edited_indices = edited_indices_by_channel[channel]
+        if len(edited_indices) != loop_count:
+            raise ValueError(
+                f'{what}: {channel} edited index list has {len(edited_indices)} '
+                f'entries, expected {loop_count}')
+        if any(index >= len(edited) for index in edited_indices):
+            raise ValueError(
+                f'{what}: {channel} edited index {max(edited_indices)} '
+                f'exceeds edited entry count {len(edited)}')
         new_indices = []
         for loop in range(loop_count):
-            index = assign(edited[donor_indices[loop]])
+            entry = edited[edited_indices[loop]]
+            # Keep the loop's own donor slot when it still holds this value:
+            # donor arrays can repeat a value (Mario's body: ffff twice), and
+            # a value lookup would move those loops to the first copy.
+            donor_index = donor_indices[loop]
+            if slots[donor_index] == entry:
+                new_indices.append(donor_index)
+                continue
+            index = assign(entry)
             new_indices.append(index)
         if new_indices != list(donor_indices):
             preserve = False
@@ -1379,6 +1402,7 @@ def rebuild_edited_uvs(data: dict) -> bool:
                 for i in range(len(donor_color) // entry_size)
             ]
             edited_by_channel = {}
+            edited_indices_by_channel = {}
             donor_indices_by_channel = {}
             for cc in color_channels:
                 key = f"color{cc['ColorChannelIndex']}"
@@ -1402,14 +1426,18 @@ def rebuild_edited_uvs(data: dict) -> bool:
                             f'sub{sub_idx} {key}: edited index list has '
                             f'{len(expanded_indices)} entries, expected '
                             f'{loop_count}')
+                    edited_indices_by_channel[key] = expanded_indices
             compact_color, indices_by_key, color_preserve = _compact_shared_color_array(
                 f'sub{sub_idx} color',
                 donor_entries,
                 donor_indices_by_channel,
                 edited_by_channel,
+                edited_indices_by_channel,
                 loop_count,
             )
-            if compact_color == donor_color:
+            # Same bytes but moved indices is still an edit (a loop now shows
+            # another donor color), so both must match to drop it.
+            if compact_color == donor_color and color_preserve:
                 for cc in edited_color_channels:
                     cc.pop('ColorChannelDataEdited', None)
                     cc.pop('ColorFacesDataEdited', None)

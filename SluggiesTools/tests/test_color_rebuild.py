@@ -134,11 +134,11 @@ class ColorRebuildTests(unittest.TestCase):
         self.assertNotIn('PrimListDataEdited', submesh['DisplayStates'][1])
 
     def test_value_edit_preserves_donor_indices(self):
-        # donor_indices [0,1,2,0,2,3] → compaction accesses edited[0..3].
-        # All four must be distinct so each donor slot maps 1:1.
+        # One edited entry per loop (identity indices), consistent per donor
+        # slot: loops 0/3 share slot 0, loops 2/4 share slot 2.
         edited = [
             _rgba(128, 0, 0, 255), _rgba(0, 128, 0, 255),
-            _rgba(0, 0, 128, 255), _rgba(64, 64, 0, 255),
+            _rgba(0, 0, 128, 255), _rgba(128, 0, 0, 255),
             _rgba(0, 0, 128, 255), _rgba(64, 64, 0, 255),
         ]
         data = _model(edited)
@@ -154,11 +154,12 @@ class ColorRebuildTests(unittest.TestCase):
         self.assertNotIn('PrimListDataEdited', submesh['DisplayStates'][1])
 
     def test_collapsed_colors_rebuild_primitive_lists(self):
-        # edited[0] == edited[1] → donor slots 0 and 1 collapse to one slot.
-        # Indices change from [0,1,2,0,2,3] to [0,0,1,0,1,2] → prim list rebuild.
+        # Loops 0 and 1 (donor slots 0 and 1) get the same color, so the two
+        # slots collapse to one. Indices change from [0,1,2,0,2,3] to
+        # [0,0,1,0,1,2] → prim list rebuild.
         edited = [
             _rgba(128, 0, 0, 255), _rgba(128, 0, 0, 255),
-            _rgba(0, 0, 128, 255), _rgba(200, 0, 0, 255),
+            _rgba(0, 0, 128, 255), _rgba(128, 0, 0, 255),
             _rgba(0, 0, 128, 255), _rgba(128, 128, 0, 255),
         ]
         data = _model(edited)
@@ -174,6 +175,78 @@ class ColorRebuildTests(unittest.TestCase):
         self.assertEqual(
             [[vertex['color0'] for vertex in face] for face in faces],
             [[0, 0, 1], [0, 1, 2]],
+        )
+
+    def test_edit_on_a_late_loop_is_kept(self):
+        # Regression (2026-10-08, Mario cap): the edited per-loop array was
+        # read through the donor indices, so only edited[0..3] were ever
+        # looked at and a color painted on loop 5 was dropped as "unchanged".
+        donor = _donor_colors()
+        painted = _rgba(10, 20, 30, 255)
+        data = _model([donor[0], donor[1], donor[2], donor[0], donor[2], painted])
+        submesh = data['SluggiesModel']['Submeshes'][0]
+
+        self.assertTrue(rebuild_edited_uvs(data))
+
+        self.assertTrue(submesh['ColorArraysEditedByImporter'])
+        cc = submesh['ColorChannels'][0]
+        self.assertEqual(
+            bytes(cc['ColorChannelDataEdited']),
+            b''.join([donor[0], donor[1], donor[2], painted]),
+        )
+        self.assertNotIn('PrimListDataEdited', submesh['DisplayStates'][1])
+
+    def test_repeated_donor_value_round_trips_unchanged(self):
+        # Mario's body array repeats a value (ffff twice). An unedited export
+        # must keep each loop on its own donor slot, not move it to the
+        # first copy (which would rebuild every draw list for nothing).
+        white = _rgba(255, 255, 255, 255)
+        red = _rgba(255, 0, 0, 255)
+        data = _model([red, white, white, red, white, white])
+        submesh = data['SluggiesModel']['Submeshes'][0]
+        cc = submesh['ColorChannels'][0]
+        cc['ColorChannelData'] = list(red + white + white + white)
+
+        rebuild_edited_uvs(data)
+
+        self.assertNotIn('ColorChannelDataEdited', cc)
+        self.assertNotIn('ColorArraysEditedByImporter', submesh)
+        self.assertNotIn('PrimListDataEdited', submesh['DisplayStates'][1])
+
+    def test_more_new_colors_than_donor_slots_are_appended(self):
+        # Regression: once a value was appended, the slot search ran past the
+        # donor entries and raised IndexError.
+        edited = [_rgba(10 * n, 0, 0, 255) for n in range(1, 7)]
+        data = _model(edited)
+        submesh = data['SluggiesModel']['Submeshes'][0]
+
+        self.assertTrue(rebuild_edited_uvs(data))
+
+        cc = submesh['ColorChannels'][0]
+        self.assertEqual(bytes(cc['ColorChannelDataEdited']), b''.join(edited))
+        rebuilt = bytes(submesh['DisplayStates'][1]['PrimListDataEdited'])
+        faces = decodeDrawList(rebuilt, DESCRIPTORS)
+        self.assertEqual(
+            [[vertex['color0'] for vertex in face] for face in faces],
+            [[0, 1, 2], [3, 4, 5]],
+        )
+
+    def test_index_only_change_is_kept(self):
+        # Loop 5 now shows donor color 0 instead of 3: the compact bytes equal
+        # the donor array, but the indices moved, so it is still an edit.
+        donor = _donor_colors()
+        data = _model([donor[0], donor[1], donor[2], donor[0], donor[2], donor[0]])
+        submesh = data['SluggiesModel']['Submeshes'][0]
+
+        self.assertTrue(rebuild_edited_uvs(data))
+
+        self.assertTrue(submesh['ColorArraysEditedByImporter'])
+        self.assertTrue(submesh['ColorPrimitiveListsRebuiltByImporter'])
+        rebuilt = bytes(submesh['DisplayStates'][1]['PrimListDataEdited'])
+        faces = decodeDrawList(rebuilt, DESCRIPTORS)
+        self.assertEqual(
+            [[vertex['color0'] for vertex in face] for face in faces],
+            [[0, 1, 2], [0, 2, 0]],
         )
 
     def test_absent_color_channels_are_skipped(self):
