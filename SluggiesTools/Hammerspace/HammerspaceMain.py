@@ -5819,6 +5819,16 @@ def PatchGPLUVRebuild(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes
             original = _decode(nb['NormalBufferData'], use_b64)
             edited = _decode(encoded, use_b64)
             if edited != original:
+                if int((submesh.get('VertexBuffer') or {}).get('VertexBufferCompCount', 3)) == 6:
+                    # Never detach a skinned submesh's normals from its
+                    # interleaved position buffer (pos + 6): the SKN deformer
+                    # rewrites that buffer every frame, a standalone copy
+                    # freezes the lighting.  GeometryRebuild keeps the donor
+                    # layout for these, so this is a defensive guard.
+                    raise ValueError(
+                        f'sub{submesh_index}: normals of a skinned (CompCount 6) '
+                        'submesh are interleaved with its positions and cannot be '
+                        'appended as a standalone array')
                 stride = (
                     nb['NormalBufferCompCount']
                     * _vb_comp_size(nb['NormalBufferQuantizeInfo'])

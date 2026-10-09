@@ -44,7 +44,10 @@ from binfmt import (
     SKN_MAX_SOURCE_BYTES,
     SKN_MIN_DIRECT_VERTICES,
 )
-from compact_channel import compact_channel as _compact_channel
+from compact_channel import (
+    compact_channel as _compact_channel,
+    compact_channel_fixed_slots as _compact_channel_fixed_slots,
+)
 from drawlist import (computeRequiredDescriptors, decodeDrawList,
                       encodeDrawList, patchType3Setting)
 from ModelFormat import (CACHE_LINE_SIZE, align_up, compute_mem_clear_range,
@@ -920,15 +923,47 @@ def rebuild_edited_uvs(data: dict) -> bool:
                         f'sub{sub_idx}: donor normal index list has '
                         f'{len(donor_normal_indices)} entries, expected '
                         f'{loop_count}')
-                compact_norm, normal_indices, normal_preserve = _compact_channel(
-                    f'sub{sub_idx} normal',
-                    normal_stride,
-                    donor_norm,
-                    donor_normal_indices,
-                    expanded_norm,
-                    list(range(loop_count)),
-                    loop_count,
-                )
+                vertex_comp_count = int(
+                    (sub.get('VertexBuffer') or {}).get('VertexBufferCompCount', 3))
+                if vertex_comp_count == 6:
+                    # Interleaved normals of the skinned body live inside the
+                    # position buffer (pos + 6, one per position slot, lighting
+                    # index == position index) and the SKN deformer rewrites
+                    # that buffer every frame.  A standalone, re-indexed copy
+                    # would freeze the lighting in the bind pose (seen
+                    # 2026-09-27 on Tiny Kong), so the slot layout is pinned:
+                    # values are patched in place, splits are resolved per
+                    # slot by majority.
+                    compact_norm, normal_indices, conflict_slots = _compact_channel_fixed_slots(
+                        f'sub{sub_idx} normal',
+                        normal_stride,
+                        donor_norm,
+                        donor_normal_indices,
+                        expanded_norm,
+                        list(range(loop_count)),
+                        loop_count,
+                    )
+                    normal_preserve = True
+                    if conflict_slots:
+                        _slogger.warning(
+                            f'[M3.3] sub{sub_idx}: {conflict_slots} skinned vertex '
+                            'slot(s) were given more than one normal; interleaved '
+                            'normals cannot be split per face corner, so each slot '
+                            'keeps the value most of its corners asked for. Split '
+                            'the vertex in Blender (a skinned-body rebuild) to '
+                            'keep both.',
+                            source='geometry.rebuild',
+                        )
+                else:
+                    compact_norm, normal_indices, normal_preserve = _compact_channel(
+                        f'sub{sub_idx} normal',
+                        normal_stride,
+                        donor_norm,
+                        donor_normal_indices,
+                        expanded_norm,
+                        list(range(loop_count)),
+                        loop_count,
+                    )
                 if compact_norm == donor_norm:
                     normal_buffer.pop('NormalBufferDataEdited', None)
                 else:

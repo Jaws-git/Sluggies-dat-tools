@@ -197,5 +197,51 @@ class NormalRebuildTests(unittest.TestCase):
         )
 
 
+class InterleavedNormalTests(unittest.TestCase):
+    """Skinned (CompCount 6) submesh: normals live at pos + 6, one per
+    position slot, so an edit must keep the donor slot layout."""
+
+    def _skinned_model(self, edited):
+        data = _model(edited)
+        submesh = data['SluggiesModel']['Submeshes'][0]
+        _strip_uv_edits(submesh)
+        submesh['VertexBuffer'] = {'VertexBufferCompCount': 6, 'VertexBufferQuantizeInfo': 0x30}
+        return data, submesh
+
+    def test_split_slot_keeps_donor_layout_and_takes_majority_value(self):
+        # Slot 0 is referenced by loops 0 and 3; they disagree (1,0) vs (2,0).
+        # Slot 2 (loops 2 and 4) agrees on a new value.
+        edited = [
+            _record(1, 0), _record(1, 0), _record(1, 1),
+            _record(2, 0), _record(1, 1), _record(0, 1),
+        ]
+        data, submesh = self._skinned_model(edited)
+
+        self.assertTrue(rebuild_edited_uvs(data))
+
+        normal = submesh['NormalBuffer']
+        self.assertTrue(submesh['NormalArraysEditedByImporter'])
+        self.assertNotIn('NormalPrimitiveListsRebuiltByImporter', submesh)
+        self.assertNotIn('PrimListDataEdited', submesh['DisplayStates'][1])
+        compact = bytes(normal['NormalBufferDataEdited'])
+        self.assertEqual(len(compact), 4 * 4)
+        self.assertEqual(compact[0:4], _record(1, 0))   # tie: first seen wins
+        self.assertEqual(compact[8:12], _record(1, 1))
+        self.assertEqual(compact[12:16], _record(0, 1))
+
+    def test_value_edit_without_split_patches_in_place(self):
+        edited = [
+            _record(5, 0), _record(1, 0), _record(1, 1),
+            _record(5, 0), _record(1, 1), _record(0, 1),
+        ]
+        data, submesh = self._skinned_model(edited)
+
+        self.assertTrue(rebuild_edited_uvs(data))
+
+        compact = bytes(submesh['NormalBuffer']['NormalBufferDataEdited'])
+        self.assertEqual(compact, b''.join([_record(5, 0), _record(1, 0), _record(1, 1), _record(0, 1)]))
+        self.assertNotIn('NormalPrimitiveListsRebuiltByImporter', submesh)
+
+
 if __name__ == '__main__':
     unittest.main()

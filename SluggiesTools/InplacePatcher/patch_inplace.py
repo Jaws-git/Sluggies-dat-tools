@@ -30,7 +30,7 @@ import root_scale as _root_scale
 import bone_geo_inplace as _bone_geo
 from binfmt import comp_size as _comp_size
 from binfmt import decode_field as _decode_field
-from compact_channel import compact_channel
+from compact_channel import compact_channel, compact_channel_fixed_slots
 
 # ---------------------------------------------------------------------------
 # Shader-mode conversion constants and helpers
@@ -397,12 +397,30 @@ for i, submesh in enumerate(submeshes):
                 int.from_bytes(expanded_faces_raw[k*2:k*2+2], 'big')
                 for k in range(len(expanded_faces_raw) // 2)
             ]
-            compact_norm, _, _ = compact_channel(
-                f'sub{i} normal', norm_stride,
-                donor_norm, donor_indices,
-                expanded_norm, expanded_indices,
-                loop_count,
-            )
+            if int(vb.get("VertexBufferCompCount", 3)) == 6:
+                # Interleaved skinned normals (pos + 6): the slot layout is
+                # pinned to the position slots, so values are patched in
+                # place and splits resolved per slot by majority.
+                compact_norm, _, conflict_slots = compact_channel_fixed_slots(
+                    f'sub{i} normal', norm_stride,
+                    donor_norm, donor_indices,
+                    expanded_norm, expanded_indices,
+                    loop_count,
+                )
+                if conflict_slots:
+                    _slogger.warning(
+                        f"Submesh {i}: {conflict_slots} skinned vertex slot(s) were given "
+                        "more than one normal; interleaved normals cannot be split per face "
+                        "corner, so each slot keeps the value most of its corners asked for.",
+                        source="patch_inplace",
+                    )
+            else:
+                compact_norm, _, _ = compact_channel(
+                    f'sub{i} normal', norm_stride,
+                    donor_norm, donor_indices,
+                    expanded_norm, expanded_indices,
+                    loop_count,
+                )
             if len(compact_norm) != nb["NormalBufferLength"]:
                 _slogger.error(
                     f"Submesh {i}: normal buffer size changed "
