@@ -17,6 +17,7 @@ from . import CustomSubmeshExport
 from . import ExportMode
 from . import FieldCodec
 from . import RigidRebuildExport
+from . import SkinnedRebuildExport
 from . import TemplateSources
 from . import HostBones
 
@@ -934,6 +935,8 @@ def encode_color_edits(obj, json_channel, loop_indices, use_base64=True):
     'color1'), one entry per loop in FacesDataEdited loop order, plus an
     identity per-loop index buffer — the same per-loop contract as
     UVFacesDataEdited. Returns None when the attribute does not exist.
+    Unset (0, 0, 0, 0) corners are written white, as on the rebuild paths
+    (CustomSubmeshExport.fill_unset_colors).
     """
     mesh = obj.data
     ch_idx = json_channel.get("ColorChannelIndex", 0)
@@ -941,9 +944,12 @@ def encode_color_edits(obj, json_channel, loop_indices, use_base64=True):
     if attr is None:
         return None
     quant = json_channel.get("ColorChannelQuantizeInfo", 0)
+    colors = CustomSubmeshExport.fill_unset_colors(
+        obj.name, [_get_loop_color(attr.data[loop_idx]) for loop_idx in loop_indices],
+    )
     color_data = bytearray()
-    for loop_idx in loop_indices:
-        color_data += _encode_color_entry(quant, _get_loop_color(attr.data[loop_idx]))
+    for color in colors:
+        color_data += _encode_color_entry(quant, color)
     color_faces = _from_bytes(
         struct.pack(f'>{len(loop_indices)}H', *range(len(loop_indices))), use_base64
     )
@@ -2447,7 +2453,6 @@ def _find_new_materials(obj, json_submesh, submesh_index=None):
         except Exception:
             donor_tex_idxs = set()
 
-    rigid = RigidRebuildExport.is_rigid_submesh(json_submesh)
     owner_key = f"sm{submesh_index}" if submesh_index is not None else None
     new_materials = []
     for slot in obj.material_slots:
@@ -2457,9 +2462,7 @@ def _find_new_materials(obj, json_submesh, submesh_index=None):
         sid = mat.get("SurfaceId")
         if mat.get("SluggiesNewSurface"):
             owner = mat.get("SluggiesSurfaceOwner")
-            if not rigid:
-                new_materials.append((mat.name, NEW_SURFACE_BODY_MESSAGE))
-            elif owner_key is not None and owner != owner_key:
+            if owner_key is not None and owner != owner_key:
                 new_materials.append((mat.name, f"belongs to {owner or 'another submesh'}, not {owner_key}"))
             continue
         if sid:
@@ -2921,6 +2924,14 @@ def _matrix_rows(matrix):
     return [list(row) for row in matrix]
 
 
+def _armature_local_geometry(context, obj, warnings):
+    """The skinned body's geometry in armature (model) space: the same steps
+    as _custom_submesh_bone_local_geometry with the identity in place of a
+    host bone's bind matrix, since skinned positions are stored in model
+    space (the SKN bind pose mirrors them)."""
+    return _geometry_in_bind_space(context, obj, SkinnedRebuildExport.IDENTITY, warnings)
+
+
 def _custom_submesh_bone_local_geometry(context, obj, bone_hierarchy, host_bone_id, warnings):
     """World position is authoritative (PLAN_AddSubmesh.md Phase 6 step 2.2).
 
@@ -2948,7 +2959,19 @@ def _custom_submesh_bone_local_geometry(context, obj, bone_hierarchy, host_bone_
             f"{obj.name}: host bone {host_bone_id} does not exist in the target "
             ".sluggie BoneHierarchy"
         )
+    return _geometry_in_bind_space(context, obj, host_bind, warnings)
 
+
+def _geometry_in_bind_space(context, obj, host_bind, warnings):
+    """Items 1-7 of _custom_submesh_bone_local_geometry for an already
+    resolved *host_bind* matrix (armature-space bind matrix of the host
+    bone, or the identity for the skinned body)."""
+    arm_obj = _custom_submesh_armature(obj)
+    if arm_obj is None:
+        raise ValueError(
+            f"{obj.name}: mesh has no Armature modifier or armature parent; "
+            "it can't be placed relative to the skeleton"
+        )
     if obj.mode == 'EDIT':
         obj.update_from_editmode()
 
@@ -3096,7 +3119,7 @@ def encode_custom_submesh(context, obj, model, texture_assignment, warnings, use
     return CustomSubmeshExport.build_custom_submesh_entry(
         obj.name, str(obj.get("CustomSubmeshId")), host_bone_id, template_source, plan,
         geometry, loop_normals, loop_uvs, loop_colors, texture_assignment, use_base64,
-        warnings, specular_strength, additional_surfaces, face_surface_indices,
+        warnings, specular_strength, additional_surfaces, face_surface_indices, infos,
     )
 
 
@@ -3531,6 +3554,146 @@ def _rigid_rebuild_entry(plan, texture_assignments, use_base64, warnings, infos)
         plan.loop_uvs, plan.loop_colors, plan.routing, new_surfaces, plan.reasons,
         use_base64, warnings, infos,
     )
+
+
+def _vertex_bone_weights(obj):
+    """Per vertex, ``{bone id: weight}`` of its positive-weight bone_<id> groups."""
+    group_bone = {group.index: _parse_bone_group_name(group.name) for group in obj.vertex_groups}
+    result = []
+    for vertex in obj.data.vertices:
+        weights = {}
+        for g in vertex.groups:
+            bone_id = group_bone.get(g.group)
+            if g.weight > 0 and bone_id is not None:
+                weights[bone_id] = weights.get(bone_id, 0.0) + g.weight
+        result.append(weights)
+    return result
+
+
+@dataclass
+class _SkinnedRebuildPlan:
+    """The skinned body takes the rebuild path this export
+    (PLAN_ModelReplacements.md Milestone 4)."""
+    obj: object
+    submesh_index: int
+    donor: object
+    geometry: object
+    routing: object
+    reasons: list
+    normals: list                 # per exported vertex, armature space, unit
+    loop_uvs: dict
+    loop_colors: object
+    vertex_weights: list          # per Blender vertex {bone: weight}, skinned bones only
+    new_surface_materials: dict   # surface key -> material
+
+
+def _skinned_rebuild_plan(context, obj, submesh_index, target_submesh, model, warnings):
+    """Decide the skinned body's export path and gather what the rebuild
+    needs. Returns None when the slot-preserving paths (Milestone 3) apply.
+    Raises ValueError, naming the object, for anything that must stop the
+    export (slot hygiene, unweighted vertices, unsupported position format)."""
+    donor = SkinnedRebuildExport.donor_skinned_submesh(
+        submesh_index, target_submesh, model.get("SkinData"),
+        RigidRebuildExport.facial_pose_submeshes(model),
+    )
+    if obj.mode == 'EDIT':
+        obj.update_from_editmode()
+    mesh = obj.data
+    if not mesh.polygons:
+        raise ValueError(f"{obj.name}: mesh has no faces")
+    geometry = _armature_local_geometry(context, obj, warnings)
+    topology_changed = ExportMode.topology_changed(
+        (poly.vertices for poly in mesh.polygons), target_submesh.get("FacesData"),
+    )
+    moved = RigidRebuildExport.positions_moved(
+        [tuple(v.co) for v in mesh.vertices], geometry, donor.position_quantize,
+    )
+    routing = RigidRebuildExport.route_faces(
+        obj.name, donor, geometry.triangles,
+        [poly.material_index for poly in mesh.polygons], _slot_surfaces(obj), topology_changed,
+    )
+    surfaces_changed = SkinnedRebuildExport.surfaces_need_rebuild(
+        routing, donor, _effective_type7_modes(target_submesh.get("DisplayStates", [])),
+    )
+    reasons = SkinnedRebuildExport.decide_reasons(
+        topology_changed=topology_changed, moved=moved, surfaces_changed=surfaces_changed,
+    )
+    if not reasons:
+        return None
+    format_error = SkinnedRebuildExport.donor_position_format_error(donor, obj.name)
+    if format_error:
+        raise ValueError(format_error)
+    warnings.extend(routing.warnings)
+
+    bone_hierarchy = model.get("BoneHierarchyEdited") or model.get("BoneHierarchy") or []
+    parent_of = {int(b["BoneId"]): b.get("ParentBoneId") for b in bone_hierarchy if "BoneId" in b}
+    remap = SkinnedRebuildExport.remap_influences(_vertex_bone_weights(obj), donor.skinned_bones, parent_of)
+    warnings.extend(SkinnedRebuildExport.remap_report(remap, obj.name))
+    used = {v for tri in geometry.triangles for v in tri.vertices}
+    unweighted_error = SkinnedRebuildExport.unweighted_error(
+        obj.name, [v for v in remap.unweighted if v in used],
+    )
+    if unweighted_error:
+        raise ValueError(unweighted_error)
+
+    shape_keys = mesh.shape_keys.key_blocks if mesh.shape_keys else []
+    facial_warning = SkinnedRebuildExport.facial_warning(obj.name, donor, len(shape_keys))
+    if facial_warning:
+        warnings.append(facial_warning)
+
+    loop_normals = _per_loop_normals(mesh, range(len(mesh.loops)))
+    normals = CustomSubmeshExport.transform_normals(
+        SkinnedRebuildExport.vertex_normals(geometry, loop_normals, len(mesh.vertices)), geometry.to_bone,
+    )
+    all_channels = target_submesh.get("UVChannels", [])
+    loop_uvs = {}
+    for channel in all_channels:
+        index = channel.get("UVChannelIndex", 0)
+        layer = mesh.uv_layers.get(_uv_layer_name(all_channels, index))
+        loop_uvs[index] = (
+            [tuple(layer.data[i].uv) for i in range(len(mesh.loops))] if layer is not None else None
+        )
+    new_surface_materials = {}
+    for slot in obj.material_slots:
+        mat = slot.material
+        if mat is not None and mat.get("SluggiesNewSurface") and mat.get("SurfaceId") in routing.new_keys:
+            new_surface_materials.setdefault(mat["SurfaceId"], mat)
+    return _SkinnedRebuildPlan(
+        obj=obj, submesh_index=submesh_index, donor=donor, geometry=geometry, routing=routing,
+        reasons=reasons, normals=normals, loop_uvs=loop_uvs, loop_colors=_loop_colors(mesh),
+        vertex_weights=remap.weights, new_surface_materials=new_surface_materials,
+    )
+
+
+def _skinned_rebuild_entry(plan, texture_assignments, use_base64, warnings, infos):
+    """Encode one body plan as its SkinnedRebuild entry."""
+    new_surfaces = []
+    for key in plan.routing.new_keys:
+        mat = plan.new_surface_materials[key]
+        new_surfaces.append(_new_surface_entry(key, mat, texture_assignments[mat.name]))
+    return SkinnedRebuildExport.build_skinned_rebuild_entry(
+        plan.obj.name, plan.donor, plan.geometry, plan.normals, plan.loop_uvs, plan.loop_colors,
+        plan.routing, plan.vertex_weights, new_surfaces, plan.reasons, use_base64, warnings, infos,
+    )
+
+
+def _drop_facial_edits_for_submesh(data, submesh_index):
+    """Remove FacialPoseDataEdited entries for *submesh_index*: a rebuilt
+    body renumbers its vertices, so the patcher drops its poses anyway."""
+    model = data.get("SluggiesModel", {})
+    facial = model.get("FacialPoseData") or {}
+    dropped = {
+        entry.get("ObjectIndex") for entry in facial.get("Objects", [])
+        if entry.get("SubmeshIndex") == submesh_index
+    }
+    edited = model.get("FacialPoseDataEdited")
+    if not edited or not dropped:
+        return
+    kept = [entry for entry in edited.get("Objects", []) if entry.get("ObjectIndex") not in dropped]
+    if kept:
+        model["FacialPoseDataEdited"] = {"Objects": kept}
+    else:
+        model.pop("FacialPoseDataEdited", None)
 
 
 def _partial_move_error(obj, display_states, surf_mat):
@@ -3982,20 +4145,29 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         # changed; then it is exported as a whole RigidRebuild. New
         # Add-material surfaces resolve their images like custom submeshes.
         rigid_plans = {}
+        # The skinned body (PLAN_ModelReplacements.md Milestone 4): a whole
+        # SkinnedRebuild when its topology, transform or surfaces changed in
+        # a way the slot-preserving paths cannot store.
+        skinned_plans = {}
         new_surface_additions, new_surface_assignments, new_surface_texture_copies = [], {}, []
         try:
             for obj, target_submesh in object_submeshes:
-                if not RigidRebuildExport.is_rigid_submesh(target_submesh):
-                    continue
                 submesh_index = next(i for i, sm in enumerate(submeshes) if sm is target_submesh)
-                plan = _rigid_rebuild_plan(
-                    context, obj, submesh_index, target_submesh, data["SluggiesModel"], warnings,
-                )
-                if plan is not None:
-                    rigid_plans[submesh_index] = plan
+                if RigidRebuildExport.is_rigid_submesh(target_submesh):
+                    plan = _rigid_rebuild_plan(
+                        context, obj, submesh_index, target_submesh, data["SluggiesModel"], warnings,
+                    )
+                    if plan is not None:
+                        rigid_plans[submesh_index] = plan
+                elif SkinnedRebuildExport.is_skinned_submesh(target_submesh) and submesh_index == 0:
+                    plan = _skinned_rebuild_plan(
+                        context, obj, submesh_index, target_submesh, data["SluggiesModel"], warnings,
+                    )
+                    if plan is not None:
+                        skinned_plans[submesh_index] = plan
             new_surface_entries = [
                 (plan.new_surface_materials[key], int(plan.new_surface_materials[key].get("TemplateTextureIndex", -1)))
-                for plan in rigid_plans.values()
+                for plan in list(rigid_plans.values()) + list(skinned_plans.values())
                 for key in plan.routing.new_keys
             ]
             if new_surface_entries:
@@ -4044,6 +4216,9 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         ) + [
             RigidRebuildExport.mode_reason(plan.obj.name, plan.reasons)
             for plan in rigid_plans.values()
+        ] + [
+            SkinnedRebuildExport.mode_reason(plan.obj.name, plan.reasons)
+            for plan in skinned_plans.values()
         ]
         use_hammerspace = bool(hammerspace_reasons)
         object_submesh_indices = [
@@ -4060,6 +4235,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             for obj, submesh_index in object_submesh_indices:
                 target_submesh = data["SluggiesModel"]["Submeshes"][submesh_index]
                 plan = rigid_plans.get(submesh_index)
+                skinned_plan = skinned_plans.get(submesh_index)
                 if plan is not None:
                     # Whole-blob rebuild: none of the in-place edit fields may
                     # stay on the submesh (the patcher refuses the mix).
@@ -4069,9 +4245,20 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                         self.report({"ERROR"}, str(exc))
                         return {"CANCELLED"}
                     RigidRebuildExport.strip_in_place_edits(target_submesh)
+                    target_submesh.pop("SkinnedRebuild", None)
                     target_submesh["RigidRebuild"] = entry
+                elif skinned_plan is not None:
+                    try:
+                        entry = _skinned_rebuild_entry(skinned_plan, new_surface_assignments, use_base64, warnings, infos)
+                    except ValueError as exc:
+                        self.report({"ERROR"}, str(exc))
+                        return {"CANCELLED"}
+                    SkinnedRebuildExport.strip_in_place_edits(target_submesh)
+                    target_submesh.pop("RigidRebuild", None)
+                    target_submesh["SkinnedRebuild"] = entry
                 elif use_hammerspace:
                     target_submesh.pop("RigidRebuild", None)
+                    target_submesh.pop("SkinnedRebuild", None)
                     try:
                         hs = encode_mesh_hammerspace(
                             obj,
@@ -4144,6 +4331,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                             )
                 else:
                     target_submesh.pop("RigidRebuild", None)
+                    target_submesh.pop("SkinnedRebuild", None)
                     mismatches = validate_against_json(obj, target_submesh)
                     if mismatches:
                         warnings.append(
@@ -4282,8 +4470,8 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     else:
                         ds.pop("DisplayStateParamBytesEdited", None)
 
-                if plan is not None:
-                    # Faces are routed inside the RigidRebuild entry itself.
+                if plan is not None or skinned_plan is not None:
+                    # Faces are routed inside the rebuild entry itself.
                     target_submesh.pop("FaceSurfaceIdsEdited", None)
                     written += 1
                     continue
@@ -4335,7 +4523,11 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             # model's whole SK1/SK2/SKAcc structure (and any skin edit from an
             # earlier run) on, say, a custom-submesh-only export.
             encode_unskinned_bone_reassignments(candidates, data, warnings)
-            if skinned_donor_objects(candidates, data):
+            if skinned_plans:
+                # The rebuilt body carries its own weights; SkinDataEdited
+                # describes the donor's slots and must not be written.
+                _purge_skn_edited(data)
+            elif skinned_donor_objects(candidates, data):
                 _purge_skn_edited(data)
                 if use_hammerspace:
                     try:
@@ -4369,7 +4561,12 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     "included no skinned mesh; the model's donor skinning is used again."
                 )
 
-            update_facial_pose_edits(candidates, data, warnings)
+            update_facial_pose_edits(
+                [obj for obj in candidates if not any(p.obj is obj for p in skinned_plans.values())],
+                data, warnings,
+            )
+            for skinned_plan in skinned_plans.values():
+                _drop_facial_edits_for_submesh(data, skinned_plan.submesh_index)
 
             # Whole-model root-bone scale — model-level, written only when edited.
             root_scale = encode_root_bone_scale_edited(candidates, data, warnings, context)
@@ -4388,6 +4585,14 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     f"{len(plan.donor.faces)} -> {len(plan.geometry.faces)} faces, "
                     f"{len(plan.geometry.positions)} vertices on bone_{plan.host_bone_id}; "
                     + RigidRebuildExport.surface_report(obj.name, plan.routing)
+                )
+            elif submesh_index in skinned_plans:
+                skinned_plan = skinned_plans[submesh_index]
+                self.report({"INFO"},
+                    f"{obj.name}: body rebuild ({', '.join(skinned_plan.reasons)}): "
+                    f"{len(skinned_plan.donor.faces)} -> {len(skinned_plan.geometry.faces)} faces, "
+                    f"{len(skinned_plan.geometry.positions)} vertices; "
+                    + RigidRebuildExport.surface_report(obj.name, skinned_plan.routing)
                 )
             elif RigidRebuildExport.is_rigid_submesh(data["SluggiesModel"]["Submeshes"][submesh_index]):
                 self.report({"INFO"}, f"{obj.name}: in-place rigid edit (no rebuild needed).")

@@ -400,6 +400,18 @@ section holds nothing but the magic counts as the stock roster
 drops the sections and restores the arena words; with a roster the stubs
 stay until the next roster run.
 
+**Incompatible with the community Gecko codes they replace** (confirmed in
+Dolphin, 2026-10-08, on a stock roster too). With the Gecko codes "CPU vs
+CPU V2" and "CPU vs CPU human management" still enabled in Dolphin, CPU vs
+CPU matches start as normal human vs CPU matches; disabling both Gecko codes
+makes our options work. Two reasons fit: the Gecko codes hook the same
+instructions (`C2` at `0x80063D4C` and the three management sites), so
+Dolphin overwrites our branches with its own when it applies them; and they
+read and write stock heap addresses (`0x81317BB0`, `0x900D5BD0`), which any
+DOL hammerspace moves, even one holding only option stubs (the arena start
+rises from `0x807B6E80` to past the sections). Turn the Gecko codes off
+before using the options.
+
 ## DAT hammerspace
 
 Grown files are copied past the stock end of `dt_na.dat` (715,046,144 bytes)

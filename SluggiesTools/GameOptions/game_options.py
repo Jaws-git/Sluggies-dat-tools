@@ -7,6 +7,11 @@ globals, never through fixed heap addresses: the roster expansion raises the
 MEM1 arena start, so the heap addresses that stock-game Gecko codes use point
 at other data in an expanded game.
 
+Incompatible with the community Gecko codes these options port ("CPU vs CPU V2", "CPU vs CPU human
+management"): with them enabled in Dolphin, CPU vs CPU does not start, even on a stock roster
+(2026-10-08). They hook the same sites, so Dolphin overwrites our branches, and they use stock heap
+addresses that any DOL hammerspace moves. Users must disable them (``_docs/RosterGuide.md``).
+
 An option's on/off state is stored in the DOL itself: the option is on when
 all its hook sites branch into our text section. The roster runner resets
 ``main.dol`` to ``1_Input`` before every injection. It calls ``detect`` before
@@ -57,11 +62,15 @@ class Option:
 # Gecko code "CPU vs CPU V2" (C2 0x80063D4C): while controller 1 holds exactly BUTTONS, all four
 # controllers are set to the CPU. The Gecko code read controller 1's buttons at the stock heap
 # address 0x81317BB0; the stub follows the controller manager *(r13-0x2F8) instead, whose +0
-# points at the 0x2C-byte controller entries (button word at +0, as the Gecko code read it).
+# points at the 0x2C-byte controller entries. The per-frame update (0x8050BEC0) stores the held
+# buttons at entry +0x14 and +0x00 (accessors 0x8045D408/+0x14 held, 0x8045D41C/+0x16 pressed,
+# 0x8045D430/+0x18 repeat). It ORs four direction bits (0x000F) from an analog axis pair into the
+# held word, so the stub tests that both BUTTONS bits are held instead of an exact match: an exact
+# compare failed whenever that axis was off-center (Dolphin, mouse-aimed pointer, 2026-10-08).
 CPU_SITE, CPU_STOCK = 0x80063D4C, 0x88080018       # lbz r0,0x18(r8)
 SETTINGS_PADS = 0x18
 PAD_MANAGER = -0x2F8                               # r13
-BUTTONS = 0x1800                                   # KPAD A (0x0800) + Minus (0x1000)
+BUTTONS = 0x1800                                   # A (0x0800) + Minus (0x1000)
 
 
 def _cpu_vs_cpu_stub(base: int, site: int) -> Asm:
@@ -69,7 +78,7 @@ def _cpu_vs_cpu_stub(base: int, site: int) -> Asm:
     # compared again before its next use.
     a = Asm(base)
     a.lwz(10, PAD_MANAGER, 13).lwz(10, 0, 10).lha(5, 0, 10)
-    a.cmpwi(5, BUTTONS).bne('back')
+    a.andi_(5, 5, BUTTONS).cmpwi(5, BUTTONS).bne('back')
     a.li(5, -1).stw(5, SETTINGS_PADS, 8)           # controllers 1-4 -> CPU
     a.label('back')
     a.word(CPU_STOCK)
@@ -151,6 +160,13 @@ def _hooked(image: dolfile.DolImage, hook: Hook) -> bool:
     return target is not None and dol_hammerspace.TEXT_BASE <= target < dol_hammerspace.TEXT_LIMIT
 
 
+def _stub_current(image: dolfile.DolImage, hook: Hook) -> bool:
+    """The hook's stub matches what this version of the tool would write (an older version's stub doesn't)."""
+    target = branch_target(image.u32(hook.site), hook.site)
+    expected = hook.stub(target, hook.site).assemble()
+    return image.is_mapped(target, len(expected)) and image.read(target, len(expected)) == expected
+
+
 def is_on(image: dolfile.DolImage, key: str) -> bool:
     return all(_hooked(image, h) for h in _option(key).hooks)
 
@@ -177,8 +193,13 @@ def apply(image: dolfile.DolImage, keys) -> list[str]:
     for key in keys:
         option = _option(key)
         if is_on(image, key):
-            log.append(f'{option.title}: already on')
-            continue
+            if all(_stub_current(image, h) for h in option.hooks):
+                log.append(f'{option.title}: already on')
+                continue
+            # Written by an older version: hook it again with the current stub (the old one stays
+            # behind as unused bytes, like after remove on a roster DOL).
+            _unhook(image, option)
+            log.append(f'{option.title}: outdated stub replaced')
         _check_stock(image, option)
         todo.append(option)
     if not todo:

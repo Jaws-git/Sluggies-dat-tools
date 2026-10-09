@@ -38,6 +38,7 @@ from GeometryRebuild import (
 )
 from ArchiveContainer import parse_archive_container, rebuild_archive_container
 from ModelFormat import align_array_offset, compute_mem_clear_range, pad_array
+import SkinnedRebuild as _skinned
 from InplacePatcher import root_scale as _root_scale
 import act_rebuild
 
@@ -177,6 +178,7 @@ class Submesh:
     source_position_data_offset:    int
     preserve_source_layout:         bool
     rigid_rebuild:                  'RigidRebuild | None' = None   # PLAN_EditRigidMeshes.md
+    skinned_rebuild:                'SkinnedRebuild | None' = None   # PLAN_ModelReplacements.md Milestone 4
 
 
 @dataclass
@@ -255,6 +257,30 @@ class RigidRebuild:
     vertex_data:          bytes
     normal_data:          bytes | None
     normal_faces_data:    bytes | None
+    color_data:           bytes | None
+    color_faces_data:     bytes | None
+    uv_channels:          list   # [CustomSubmeshUVChannel], the donor channel set
+    faces_count:          int
+    faces_data:           bytes
+    face_surface_table:   list   # [str]
+    face_surface_indices: tuple  # one index into face_surface_table per triangle
+    new_surfaces:         list   # [RigidRebuildNewSurface], in append order
+    reasons:              list   # [str], logging only
+
+
+@dataclass
+class SkinnedRebuild:
+    """PLAN_ModelReplacements.md Milestone 4: the skinned submesh 0 rebuilt
+    as a whole from Blender data -- any vertex and face count, weights on the
+    bones the donor's own skin uses. ``vertex_data`` holds one interleaved
+    position + normal record per vertex (6 components in the donor's position
+    format, model space, Blender vertex order); ``influences`` lists
+    ``(vertex, bone, weight)`` triples. The patcher assigns position slots in
+    the canonical order (SkinnedRebuild.layout_skin), rebuilds the SKN from
+    them and re-encodes one GX_TRIANGLES list per drawing surface. The donor
+    display states are kept, as for a RigidRebuild."""
+    vertex_data:          bytes
+    influences:           list   # [(vertex, bone, weight)]
     color_data:           bytes | None
     color_faces_data:     bytes | None
     uv_channels:          list   # [CustomSubmeshUVChannel], the donor channel set
@@ -3301,6 +3327,750 @@ def PatchGPLReplaceRigidSubmeshes(
 
 
 # ---------------------------------------------------------------------------
+# SkinnedRebuild: submesh 0 rebuilt from arbitrary geometry and weights
+# (PLAN_ModelReplacements.md Milestone 4)
+# ---------------------------------------------------------------------------
+# The skinned body is rebuilt the way the external tool's build_model.py
+# does it, but as a fresh blob spliced before GPLUserData (like a
+# RigidRebuild) and with the SKN rebuilt from the canonical layout
+# (SkinnedRebuild.layout_skin): every vertex has one direct SK1/SK2 write,
+# entries sit on their own cache lines, sources mirror the position buffer,
+# memClr is 0/0. Facial poses (ptr7) that address submesh 0 are dropped,
+# because they name the donor's vertex order.
+
+_SKINNED_REBUILD_COMP_COUNT = 6
+_SKINNED_REBUILD_INFLUENCE = struct.Struct('>HHf')   # (vertex, bone, weight)
+_SKINNED_REBUILD_SUBMESH = 0
+
+
+def _skinned_rebuild_draws_lighting(states: list) -> bool:
+    """Whether any donor Type-3 state of the submesh declares a lighting
+    (normal) attribute."""
+    for state in states:
+        if int(state.get('DisplayStateId', -1)) != 3:
+            continue
+        try:
+            descriptors = _custom_submesh_type3_descriptors(int(state.get('ShaderMode', '0'), 16))
+        except ValueError:
+            continue
+        if any(descriptor['key'] == 'lighting' for descriptor in descriptors):
+            return True
+    return False
+
+
+def _validate_skinned_rebuild(model: dict) -> None:
+    """Reject an invalid ``Submeshes[0].SkinnedRebuild`` before any write.
+    Each error names ``sub<i>``."""
+    submeshes = model.get('Submeshes') or []
+    rebuilt = [(index, sub) for index, sub in enumerate(submeshes) if sub.get('SkinnedRebuild')]
+    if not rebuilt:
+        return
+    if not model.get('UseHammerspace'):
+        raise ValueError('SkinnedRebuild requires UseHammerspace; re-export the model from Blender')
+
+    errors: list[str] = []
+    use_b64 = model.get('UseBase64', True)
+    skin = model.get('SkinData') or {}
+    skinned_bones = _skin_bone_ids(skin) if skin else set()
+    rigid_surfaces = _custom_submesh_rigid_surfaces(model)
+    is_stadium = model.get('ChunkNumber') in STADIUM_CHUNKS
+    additional_names = {
+        entry.get('TextureFileName') for entry in model.get('AdditionalTextureDescriptors') or []
+    }
+
+    for index, sub in rebuilt:
+        rebuild = sub['SkinnedRebuild']
+
+        def fail(message: str, _index=index) -> None:
+            errors.append(f'sub{_index}: SkinnedRebuild {message}')
+
+        if not isinstance(rebuild, dict):
+            fail('must be an object')
+            continue
+        if index != _SKINNED_REBUILD_SUBMESH:
+            fail(f'is only supported on submesh {_SKINNED_REBUILD_SUBMESH}, the one the SKN writes into')
+        vb = sub.get('VertexBuffer') or {}
+        comp_count = vb.get('VertexBufferCompCount')
+        if comp_count != _SKINNED_REBUILD_COMP_COUNT:
+            fail(f'needs the skinned donor submesh (VertexBufferCompCount 6), got {comp_count!r}')
+        quantize = vb.get('VertexBufferQuantizeInfo')
+        if not isinstance(quantize, int) or isinstance(quantize, bool) \
+                or (quantize >> 4) != _RIGID_REBUILD_POSITION_FORMAT_NIBBLE:
+            fail(
+                f'donor position format {quantize!r} is not int16 (high nibble '
+                f'{_RIGID_REBUILD_POSITION_FORMAT_NIBBLE}); only int16 skinned positions can be rebuilt'
+            )
+            quantize = _CUSTOM_SUBMESH_POSITION_FORMAT[1]
+        stride = _SKINNED_REBUILD_COMP_COUNT * _vb_comp_size(quantize)
+        if not skin:
+            fail('needs a donor SkinData: the model has no SKN section to rebuild')
+        else:
+            skn_quantize = int(skin.get('QuantizeInfo', 0))
+            if _vb_comp_size(skn_quantize) != _vb_comp_size(quantize) or (skn_quantize & 0xF) != (quantize & 0xF):
+                fail(
+                    f'SkinData QuantizeInfo {skn_quantize} does not match the position format '
+                    f'{quantize} (the SKN sources mirror the position buffer)'
+                )
+        if sub.get('RigidRebuild'):
+            fail('cannot be combined with a RigidRebuild on the same submesh')
+        in_place = _rigid_rebuild_in_place_edit_fields(sub)
+        if in_place:
+            fail('cannot be combined with in-place edit fields on the same submesh: ' + ', '.join(in_place))
+        if model.get('SkinDataEdited'):
+            fail('cannot be combined with SkinDataEdited: the rebuild carries its own weights')
+
+        faces_count = rebuild.get('FacesCount')
+        if not isinstance(faces_count, int) or isinstance(faces_count, bool) or not (1 <= faces_count <= 0xFFFF):
+            fail(f'FacesCount {faces_count!r} must be a uint16 value of at least 1')
+            faces_count = None
+
+        vertex_bytes = _decode(rebuild['VertexBufferData'], use_b64) if rebuild.get('VertexBufferData') else b''
+        vertex_count = None
+        if not vertex_bytes or len(vertex_bytes) % stride:
+            fail(
+                f'VertexBufferData length {len(vertex_bytes)} is not a whole number of '
+                f'{stride}-byte position+normal records'
+            )
+        else:
+            vertex_count = len(vertex_bytes) // stride
+            if vertex_count > 0xFFFF:
+                fail(f'vertex count {vertex_count} exceeds the uint16 index range')
+
+        if faces_count is not None:
+            faces_bytes = _decode(rebuild['FacesData'], use_b64) if rebuild.get('FacesData') is not None else b''
+            if len(faces_bytes) != faces_count * 6:
+                fail(
+                    f'FacesData length {len(faces_bytes)} does not match FacesCount '
+                    f'{faces_count} (expected {faces_count * 6} bytes)'
+                )
+            elif vertex_count is not None:
+                for vertex_index in struct.unpack(f'>{len(faces_bytes) // 2}H', faces_bytes):
+                    if vertex_index >= vertex_count:
+                        fail(f'face index {vertex_index} is out of range for {vertex_count} vertices')
+                        break
+
+        raw_influences = _decode(rebuild['Influences'], use_b64) if rebuild.get('Influences') is not None else b''
+        if len(raw_influences) % _SKINNED_REBUILD_INFLUENCE.size:
+            fail(
+                f'Influences length {len(raw_influences)} is not a whole number of '
+                f'{_SKINNED_REBUILD_INFLUENCE.size}-byte (vertex, bone, weight) records'
+            )
+        elif vertex_count is not None:
+            weighted: set[int] = set()
+            unknown_bones: set[int] = set()
+            bad_weight = None
+            for vertex, bone, weight in _SKINNED_REBUILD_INFLUENCE.iter_unpack(raw_influences):
+                if vertex >= vertex_count:
+                    fail(f'Influences names vertex {vertex}, outside the {vertex_count} vertices')
+                    break
+                if not (weight > 0) or weight in (float('inf'), float('-inf')):
+                    if bad_weight is None:
+                        bad_weight = (vertex, bone, weight)
+                    continue
+                if skin and bone not in skinned_bones:
+                    unknown_bones.add(bone)
+                weighted.add(vertex)
+            if bad_weight is not None:
+                fail(f'Influences vertex {bad_weight[0]} bone {bad_weight[1]} has a non-positive or non-finite weight {bad_weight[2]!r}')
+            if unknown_bones:
+                fail(
+                    f"skins to bone(s) {sorted(unknown_bones)}, which the donor's skin never uses; "
+                    'these bones have no skinning matrix, so the vertices would be misplaced or '
+                    'invisible. Weight those vertices to bones the original model skins to'
+                )
+            missing = sorted(set(range(vertex_count)) - weighted)
+            if missing:
+                shown = ', '.join(str(v) for v in missing[:10])
+                more = f' (+{len(missing) - 10} more)' if len(missing) > 10 else ''
+                fail(f'{len(missing)} vertex(es) have no skin influence: {shown}{more}')
+
+        def _check_loop_buffer(label: str, data_field, faces_field, entry_stride: int) -> None:
+            _validate_custom_submesh_indexed_array(fail, label, use_b64, data_field, faces_field, entry_stride)
+            if faces_count is not None and faces_field is not None:
+                loops = len(_decode(faces_field, use_b64)) // 2
+                if loops != faces_count * 3:
+                    fail(f'{label} face-index buffer holds {loops} loops, expected {faces_count * 3}')
+
+        if rebuild.get('NormalBufferData') is not None or rebuild.get('NormalFacesData') is not None:
+            fail('carries a standalone normal array; a skinned submesh keeps its normals interleaved in VertexBufferData')
+
+        donor_colors = sub.get('ColorChannels') or []
+        if donor_colors:
+            if rebuild.get('ColorChannelData') is None or rebuild.get('ColorFacesData') is None:
+                fail('must carry ColorChannelData and ColorFacesData: the donor submesh has a color channel')
+            else:
+                entry_stride = _color_entry_size(int(donor_colors[0].get('ColorChannelQuantizeInfo', 48)))
+                _check_loop_buffer('ColorChannelData', rebuild.get('ColorChannelData'), rebuild.get('ColorFacesData'), entry_stride)
+        elif rebuild.get('ColorChannelData') is not None or rebuild.get('ColorFacesData') is not None:
+            fail('carries colors but the donor submesh has no color channel')
+
+        donor_uv_by_index = {int(uv['UVChannelIndex']): uv for uv in sub.get('UVChannels') or []}
+        rebuild_uv_by_index = {}
+        for uv in rebuild.get('UVChannels') or []:
+            channel = uv.get('UVChannelIndex')
+            if not isinstance(channel, int) or channel in rebuild_uv_by_index:
+                fail(f'UVChannels has a missing or repeated UVChannelIndex {channel!r}')
+                continue
+            rebuild_uv_by_index[channel] = uv
+        if set(rebuild_uv_by_index) != set(donor_uv_by_index):
+            fail(
+                f'UVChannels {sorted(rebuild_uv_by_index)} must be the donor channel set '
+                f'{sorted(donor_uv_by_index)}'
+            )
+        for channel, uv in rebuild_uv_by_index.items():
+            donor_uv = donor_uv_by_index.get(channel)
+            if donor_uv is None:
+                continue
+            entry_stride = int(donor_uv.get('UVChannelCompCount', 2)) * _vb_comp_size(
+                int(donor_uv.get('UVChannelQuantizeInfo', _CUSTOM_SUBMESH_UV_FORMAT[1]))
+            )
+            _check_loop_buffer(f'UVChannels[{channel}]', uv.get('UVChannelData'), uv.get('UVFacesData'), entry_stride)
+
+        states = sub.get('DisplayStates') or []
+        drawable = _rigid_rebuild_drawable_surfaces(states)
+        table = rebuild.get('FaceSurfaceTable')
+        if not isinstance(table, list) or not table or not all(isinstance(key, str) and key for key in table):
+            fail('FaceSurfaceTable must be a non-empty list of surface keys')
+            table = []
+        elif len(set(table)) != len(table):
+            fail('FaceSurfaceTable lists a surface key twice')
+
+        new_surfaces = rebuild.get('NewSurfaces') or []
+        if not isinstance(new_surfaces, list) or not all(isinstance(entry, dict) for entry in new_surfaces):
+            fail('NewSurfaces must be a list of objects')
+            new_surfaces = []
+        new_keys = [entry.get('SurfaceKey') for entry in new_surfaces]
+        if len(set(new_keys)) != len(new_keys):
+            fail('NewSurfaces keys are not unique')
+
+        for key in table:
+            if key in drawable or key in new_keys:
+                continue
+            fail(
+                f'FaceSurfaceTable key {key!r} is neither a drawing surface of this submesh '
+                f'({sorted(drawable)}) nor a NewSurfaces key'
+            )
+
+        indices_raw = _decode(rebuild['FaceSurfaceIndices'], use_b64) if rebuild.get('FaceSurfaceIndices') is not None else b''
+        used_keys: set[str] = set()
+        if len(indices_raw) % 2:
+            fail(f'FaceSurfaceIndices length {len(indices_raw)} is not a whole number of uint16 values')
+        else:
+            indices = struct.unpack(f'>{len(indices_raw) // 2}H', indices_raw)
+            if faces_count is not None and len(indices) != faces_count:
+                fail(f'FaceSurfaceIndices holds {len(indices)} entries for FacesCount {faces_count}')
+            for value in indices:
+                if value >= len(table):
+                    fail(f'FaceSurfaceIndices value {value} is out of range for {len(table)} table entries')
+                    break
+                used_keys.add(table[value])
+
+        for entry in new_surfaces:
+            key = entry.get('SurfaceKey')
+
+            def fail_surface(message: str, _key=key) -> None:
+                fail(f'new surface {_key!r}: {message}')
+
+            match = _RIGID_REBUILD_NEW_SURFACE_KEY_RE.match(str(key))
+            if match is None or int(match.group(1)) != index:
+                fail_surface(f'key must match sm{index}_new<K>')
+            if key not in table:
+                fail_surface('is not listed in FaceSurfaceTable')
+            elif key not in used_keys:
+                fail_surface('is used by no face')
+            _validate_new_surface_entry(
+                model, entry, fail_surface,
+                uv_channel_count=len(donor_uv_by_index),
+                has_normals=_skinned_rebuild_draws_lighting(states),
+                is_stadium=is_stadium,
+                rigid_surfaces=rigid_surfaces,
+                additional_names=additional_names,
+            )
+
+        reasons = rebuild.get('Reason')
+        if reasons is not None and not (
+            isinstance(reasons, list) and all(isinstance(reason, str) for reason in reasons)
+        ):
+            fail('Reason must be a list of strings')
+
+    if errors:
+        raise ValueError('; '.join(errors))
+
+
+def _parse_skinned_rebuild(sub: dict, use_b64: bool) -> 'SkinnedRebuild | None':
+    """Decode ``Submeshes[0].SkinnedRebuild`` (validated by
+    ``_validate_skinned_rebuild``) into its dataclass; None when absent."""
+    raw = sub.get('SkinnedRebuild')
+    if not raw:
+        return None
+
+    def _optional(field_name: str) -> bytes | None:
+        return _decode(raw[field_name], use_b64) if raw.get(field_name) is not None else None
+
+    indices_raw = _optional('FaceSurfaceIndices') or b''
+    influences_raw = _optional('Influences') or b''
+    return SkinnedRebuild(
+        vertex_data=_decode(raw['VertexBufferData'], use_b64),
+        influences=[
+            (int(vertex), int(bone), float(weight))
+            for vertex, bone, weight in _SKINNED_REBUILD_INFLUENCE.iter_unpack(influences_raw)
+        ],
+        color_data=_optional('ColorChannelData'),
+        color_faces_data=_optional('ColorFacesData'),
+        uv_channels=[
+            CustomSubmeshUVChannel(
+                channel_index=int(uv['UVChannelIndex']),
+                uv_data=_decode(uv['UVChannelData'], use_b64),
+                uv_faces_data=_decode(uv['UVFacesData'], use_b64),
+            )
+            for uv in raw.get('UVChannels') or []
+        ],
+        faces_count=int(raw['FacesCount']),
+        faces_data=_decode(raw['FacesData'], use_b64),
+        face_surface_table=list(raw['FaceSurfaceTable']),
+        face_surface_indices=struct.unpack(f'>{len(indices_raw) // 2}H', indices_raw),
+        new_surfaces=_parse_new_surfaces(raw.get('NewSurfaces')),
+        reasons=list(raw.get('Reason') or []),
+    )
+
+
+def _rebuild_primitive_lists(label: str, records: list[list], faces_by_record: dict[int, list]) -> list[bytes]:
+    """One encoded, 32-byte-padded GX_TRIANGLES list per display-state
+    record (``b''`` for a record that draws nothing), each restricted to the
+    attributes its active Type-3 layout draws."""
+    primitive_lists = []
+    for record_index, _record in enumerate(records):
+        record_faces = faces_by_record.get(record_index)
+        if not record_faces:
+            primitive_lists.append(b'')
+            continue
+        setting = _custom_submesh_active_type3(records, record_index)
+        if setting is None:
+            raise ValueError(f'{label}: record {record_index} draws faces but has no active Type-3 layout')
+        descriptors = _custom_submesh_type3_descriptors(setting)
+        drawn = {descriptor['key'] for descriptor in descriptors}
+        undrawn = sorted(set(record_faces[0][0]) - drawn)
+        if undrawn:
+            _slogger.warning(
+                f"{label}: record {record_index} draws without {', '.join(undrawn)} "
+                '(its Type-3 layout lacks the attribute), so those values are not used there',
+                source='hammerspace.main',
+            )
+        restricted = [[{key: vertex.get(key, 0) for key in drawn} for vertex in face] for face in record_faces]
+        raw = drawlist.encodeDrawList(restricted, descriptors) + b'\x00'
+        primitive_lists.append(raw + b'\x00' * ((-len(raw)) % 32))
+    return primitive_lists
+
+
+def _build_skinned_submesh_blob(
+    mesh_name: str, records: list[list], primitive_lists: list[bytes], *,
+    position_buffer: bytes, slot_count: int, write_back_end: int, vertex_quantize_info: int,
+    uv_channels: list, color_channel: 'ColorChannel | None', normal_header: tuple | None,
+) -> tuple[bytes, int]:
+    """Serialize a rebuilt skinned (CompCount 6) submesh as a self-contained
+    GPL blob, the external tool's ``build_body`` layout as a fresh blob:
+    headers first, then the position buffer on a 32-byte boundary, a gap up
+    to the aligned SK1/SK2 write-back end, the colour and UV arrays, the
+    display-state records and the 32-byte-aligned primitive lists. The
+    normal header points at ``position + 6`` with ``slot_count`` entries
+    (interleaved normals); *normal_header* is ``(quantize_info, comp_count,
+    ambient)`` from the donor, or None for a donor without one. Returns
+    ``(blob, name_off)`` like ``_build_rigid_submesh_blob``."""
+    if len(primitive_lists) != len(records):
+        raise ValueError(f'{len(primitive_lists)} primitive lists for {len(records)} display-state records')
+
+    def _align(offset: int, alignment: int) -> int:
+        return (offset + alignment - 1) & ~(alignment - 1)
+
+    M_uv = len(uv_channels)
+    n_ds = len(records)
+    POS_OFF = 0x18
+    COL_OFF = 0x20
+    UV_OFF = 0x28
+    NOR_OFF = UV_OFF + M_uv * 0x10
+    DSP_OFF = NOR_OFF + 0x0c
+    HDR_END = DSP_OFF + 0x0c
+
+    cursor = HDR_END
+    name_bytes = mesh_name.encode('ascii', errors='replace') + b'\x00'
+    name_off = cursor
+    cursor += len(name_bytes)
+    pal_name_offs, pal_name_bytes_list = [], []
+    for uv in uv_channels:
+        pal_b = (uv.palette_name or '').encode('ascii', errors='replace') + b'\x00'
+        pal_name_offs.append(cursor)
+        pal_name_bytes_list.append(pal_b)
+        cursor += len(pal_b)
+
+    cursor = _align(cursor, 32)
+    pos_data_off = cursor
+    cursor += max(len(position_buffer), write_back_end)
+
+    col_data, col_data_off = b'', 0
+    if color_channel is not None:
+        cursor = _align(cursor, 4)
+        col_data = _align4(color_channel.color_data)
+        col_data_off = cursor
+        cursor += len(col_data)
+
+    uv_data_offs, uv_data_list = [], []
+    for uv in uv_channels:
+        cursor = _align(cursor, 4)
+        uv_b = _align4(uv.uv_data)
+        uv_data_offs.append(cursor)
+        uv_data_list.append(uv_b)
+        cursor += len(uv_b)
+
+    cursor = _align(cursor, 4)
+    DS_OFF = cursor
+    cursor += n_ds * 0x10
+
+    pl_offs, pl_bytes_list = [], []
+    for primitive_bytes in primitive_lists:
+        if primitive_bytes:
+            cursor = _align(cursor, 32)
+            pl_b = primitive_bytes + b'\x00' * ((-len(primitive_bytes)) % 32)
+            pl_offs.append(cursor)
+            pl_bytes_list.append(pl_b)
+            cursor += len(pl_b)
+        else:
+            pl_offs.append(0)
+            pl_bytes_list.append(b'')
+
+    blob = bytearray(cursor)
+    struct.pack_into('>I', blob, 0x00, POS_OFF)
+    struct.pack_into('>I', blob, 0x04, COL_OFF)
+    struct.pack_into('>I', blob, 0x08, UV_OFF)
+    struct.pack_into('>I', blob, 0x0c, NOR_OFF if normal_header is not None else 0)
+    struct.pack_into('>I', blob, 0x10, DSP_OFF)
+    struct.pack_into('B', blob, 0x14, M_uv)
+
+    struct.pack_into('>I', blob, POS_OFF + 0x00, pos_data_off)
+    struct.pack_into('>H', blob, POS_OFF + 0x04, slot_count)
+    struct.pack_into('B', blob, POS_OFF + 0x06, vertex_quantize_info)
+    struct.pack_into('B', blob, POS_OFF + 0x07, _SKINNED_REBUILD_COMP_COUNT)
+
+    if color_channel is not None:
+        struct.pack_into('>I', blob, COL_OFF + 0x00, col_data_off)
+        struct.pack_into('>H', blob, COL_OFF + 0x04, len(color_channel.color_data) // _color_entry_size(color_channel.quantize_info))
+        struct.pack_into('B', blob, COL_OFF + 0x06, color_channel.quantize_info)
+        struct.pack_into('B', blob, COL_OFF + 0x07, color_channel.comp_count)
+
+    for j, uv in enumerate(uv_channels):
+        uv_off = UV_OFF + j * 0x10
+        uv_stride = _vb_comp_size(uv.quantize_info) * uv.comp_count
+        struct.pack_into('>I', blob, uv_off + 0x00, uv_data_offs[j])
+        struct.pack_into('>H', blob, uv_off + 0x04, len(uv.uv_data) // uv_stride if uv_stride else 0)
+        struct.pack_into('B', blob, uv_off + 0x06, uv.quantize_info)
+        struct.pack_into('B', blob, uv_off + 0x07, uv.comp_count)
+        struct.pack_into('>I', blob, uv_off + 0x08, pal_name_offs[j])
+        struct.pack_into('>I', blob, uv_off + 0x0c, 0)
+
+    if normal_header is not None:
+        nor_quantize, nor_comp_count, ambient = normal_header
+        struct.pack_into('>I', blob, NOR_OFF + 0x00, pos_data_off + 3 * _vb_comp_size(vertex_quantize_info))
+        struct.pack_into('>H', blob, NOR_OFF + 0x04, slot_count)
+        struct.pack_into('B', blob, NOR_OFF + 0x06, nor_quantize)
+        struct.pack_into('B', blob, NOR_OFF + 0x07, nor_comp_count)
+        struct.pack_into('>f', blob, NOR_OFF + 0x08, ambient)
+
+    first_pl = next((offset for offset in pl_offs if offset), 0)
+    struct.pack_into('>I', blob, DSP_OFF + 0x00, first_pl)
+    struct.pack_into('>I', blob, DSP_OFF + 0x04, DS_OFF)
+    struct.pack_into('>H', blob, DSP_OFF + 0x08, n_ds)
+    for k, (state_id, pad, mode) in enumerate(records):
+        ds_off = DS_OFF + k * 0x10
+        struct.pack_into('B', blob, ds_off + 0x00, state_id)
+        blob[ds_off + 0x01:ds_off + 0x04] = pad[:3] if len(pad) >= 3 else pad.ljust(3, b'\x00')
+        blob[ds_off + 0x04:ds_off + 0x08] = _custom_submesh_setting_bytes(mode)
+        struct.pack_into('>I', blob, ds_off + 0x08, pl_offs[k])
+        struct.pack_into('>I', blob, ds_off + 0x0c, len(pl_bytes_list[k]))
+
+    blob[name_off:name_off + len(name_bytes)] = name_bytes
+    for pal_off, pal_b in zip(pal_name_offs, pal_name_bytes_list):
+        blob[pal_off:pal_off + len(pal_b)] = pal_b
+    blob[pos_data_off:pos_data_off + len(position_buffer)] = position_buffer
+    if col_data:
+        blob[col_data_off:col_data_off + len(col_data)] = col_data
+    for uv_off, uv_b in zip(uv_data_offs, uv_data_list):
+        blob[uv_off:uv_off + len(uv_b)] = uv_b
+    for pl_off, pl_b in zip(pl_offs, pl_bytes_list):
+        if pl_b:
+            blob[pl_off:pl_off + len(pl_b)] = pl_b
+    return bytes(blob), name_off
+
+
+def _skinned_rebuild_skinning_data(
+    layout: '_skinned.SkinLayout', position_buffer: bytes, quantize_info: int,
+) -> SkinningData:
+    """The SKN structures of a canonical layout, ready for
+    ``BuildSKNSkinningData``: SK1/SK2 on their cache-line destinations
+    (sources mirror the position buffer), SKAcc supplements by bone, memClr
+    0/0, the flush array one index per SKAcc-touched line."""
+    stride = layout.stride
+    sk1s, sk2s = [], []
+    for entry in layout.direct:
+        source = _skinned.entry_source(layout, entry, position_buffer)
+        if entry.kind == 'SK1':
+            sk1s.append(SK1(
+                bone_index=entry.bones[0],
+                vertex_cnt=entry.vertex_count,
+                vertex_offset=entry.vertex_offset,
+                bind_pose_data=source,
+                vertex_arr_field_offset=0,
+                gpl_vertex_arr_field_offset=0,
+                vertex_arr_absolute_ptr=0,
+                gpl_vertex_arr_value=entry.dest,
+            ))
+        else:
+            sk2s.append(SK2(
+                bone_index1=entry.bones[0],
+                bone_index2=entry.bones[1],
+                vertex_cnt=entry.vertex_count,
+                vertex_offset=entry.vertex_offset,
+                bind_pose_data=source,
+                weight_data=bytes(unit for pair in entry.weights for unit in pair),
+                vertex_arr_field_offset=0,
+                weight_arr_field_offset=0,
+                gpl_vertex_arr_field_offset=0,
+                vertex_arr_absolute_ptr=0,
+                weight_arr_absolute_ptr=0,
+                gpl_vertex_arr_value=entry.dest,
+            ))
+    sk_accs = [
+        SKAcc(
+            bone_index=entry.bone,
+            vertex_cnt=len(entry.members),
+            bind_pose_data=b''.join(
+                position_buffer[slot * stride:(slot + 1) * stride] for slot, _vertex, _units in entry.members
+            ),
+            dest_index_data=b''.join(struct.pack('>H', slot) for slot, _vertex, _units in entry.members),
+            weight_data=bytes(units for _slot, _vertex, units in entry.members),
+            vertex_arr_field_offset=0,
+            dest_arr_field_offset=0,
+            gpl_dest_arr_field_offset=0,
+            weight_arr_field_offset=0,
+            vertex_arr_absolute_ptr=0,
+            dest_arr_absolute_ptr=0,
+            gpl_dest_arr_value=0,
+            weight_arr_absolute_ptr=0,
+        )
+        for entry in layout.accumulations
+    ]
+    return SkinningData(
+        skn_offset=0,
+        gpl_base_offset=0,
+        mem_clr_ptr_field_offset=0,
+        mem_clr_sze_field_offset=0,
+        mem_clr_ptr_value=0,
+        mem_clr_absolute_ptr=0,
+        mem_clr_size=0,
+        flush_ind_arr_field_offset=0,
+        flush_ind_absolute_ptr=None,
+        flush_ind_size=len(layout.flush),
+        flush_ind_data=b''.join(struct.pack('>H', index) for index in layout.flush),
+        quantize_info=quantize_info,
+        sk1s=sk1s,
+        sk2s=sk2s,
+        sk_accs=sk_accs,
+        preserve_source_layout=False,
+    )
+
+
+def _skinned_rebuild_to_blob(
+    model: dict, rebuild: 'SkinnedRebuild', rigid_surfaces: dict,
+    texture_index_by_file_name: dict[str, int] | None = None,
+    donor_color_array: tuple[int, int, bytes] | None = None,
+) -> tuple[bytes, int, SkinningData, '_skinned.SkinLayout']:
+    """Lay the rebuilt body out, re-encode its draw lists and serialize the
+    blob and the matching SKN structures. Returns ``(blob, name_off,
+    skinning, layout)``."""
+    sub_index = _SKINNED_REBUILD_SUBMESH
+    sub = model['Submeshes'][sub_index]
+    vb = sub['VertexBuffer']
+    states = sub.get('DisplayStates') or []
+    label = f'sub{sub_index}'
+    quantize = int(vb['VertexBufferQuantizeInfo'])
+    stride = _SKINNED_REBUILD_COMP_COUNT * _vb_comp_size(quantize)
+    vertex_count = len(rebuild.vertex_data) // stride
+
+    # Weights -> canonical slots and SK entries.
+    per_vertex: list[list] = [[] for _ in range(vertex_count)]
+    for vertex, bone, weight in rebuild.influences:
+        per_vertex[vertex].append((bone, weight))
+    units = [_skinned.quantize_weights(influences) for influences in per_vertex]
+    layout = _skinned.layout_skin(units, stride)
+    position_buffer = _skinned.build_position_buffer(layout, rebuild.vertex_data)
+
+    color_channel = None
+    if rebuild.color_data is not None:
+        donor_color = sub['ColorChannels'][0]
+        color_channel = ColorChannel(
+            channel_index=int(donor_color.get('ColorChannelIndex', 0)),
+            color_data=rebuild.color_data,
+            color_faces_data=rebuild.color_faces_data or b'',
+            comp_count=int(donor_color['ColorChannelCompCount']),
+            quantize_info=int(donor_color['ColorChannelQuantizeInfo']),
+            source_data_offset=0,
+        )
+    elif donor_color_array is not None:
+        color_quantize, color_comp_count, payload = donor_color_array
+        color_channel = ColorChannel(
+            channel_index=0, color_data=payload, color_faces_data=b'',
+            comp_count=color_comp_count, quantize_info=color_quantize, source_data_offset=0,
+        )
+    donor_uv_by_index = {int(uv['UVChannelIndex']): uv for uv in sub.get('UVChannels') or []}
+    uv_channels = []
+    for uv in sorted(rebuild.uv_channels, key=lambda channel: channel.channel_index):
+        donor_uv = donor_uv_by_index[uv.channel_index]
+        uv_channels.append(UVChannel(
+            channel_index=uv.channel_index,
+            palette_name=donor_uv.get('PaletteName', ''),
+            texture_index=int(donor_uv.get('TextureIndex', 0)),
+            wrap_s=int(donor_uv.get('WrapS', 0)),
+            wrap_t=int(donor_uv.get('WrapT', 0)),
+            uv_data=uv.uv_data,
+            uv_faces_data=uv.uv_faces_data,
+            comp_count=int(donor_uv.get('UVChannelCompCount', 2)),
+            quantize_info=int(donor_uv['UVChannelQuantizeInfo']),
+            uv_data_ptr_field_offset=0,
+            uv_count_field_offset=0,
+            source_data_offset=0,
+        ))
+
+    # Donor records with index widths widened where the new counts need it.
+    # The lighting attribute indexes the interleaved normals, so it has one
+    # entry per position slot.
+    records = _rigid_rebuild_donor_records(sub)
+    counts = {'position': layout.slot_count, 'lighting': layout.slot_count}
+    if color_channel is not None and rebuild.color_data is not None:
+        counts['color0'] = len(color_channel.color_data) // _color_entry_size(color_channel.quantize_info)
+    for uv in uv_channels:
+        counts[f'texture{uv.channel_index}'] = len(uv.uv_data) // (_vb_comp_size(uv.quantize_info) * uv.comp_count)
+    attribute_sizes = _rigid_rebuild_widen_type3(sub_index, records, counts)
+
+    drawing_index_by_key = {
+        state['SurfaceId']: index for index, state in enumerate(states) if state.get('SurfaceId')
+    }
+    for surface in rebuild.new_surfaces:
+        group = _rigid_rebuild_new_surface_group(
+            model, label, surface, rigid_surfaces, attribute_sizes,
+            len(rebuild.uv_channels), texture_index_by_file_name,
+        )
+        records.extend(group)
+        drawing_index_by_key[surface.surface_key] = len(records) - 1
+        _slogger.info(
+            f"[SkinnedRebuild] {label}: appended new surface '{surface.surface_key}' "
+            f"('{surface.material_name}', template {surface.template_source}) as record {len(records) - 1}",
+            source='hammerspace.main',
+        )
+
+    # Faces: position and lighting index the slot; colours and UVs their
+    # per-loop pooled entries.
+    positions = struct.unpack(f'>{len(rebuild.faces_data) // 2}H', rebuild.faces_data)
+    colors = (
+        struct.unpack(f'>{len(rebuild.color_faces_data) // 2}H', rebuild.color_faces_data)
+        if rebuild.color_faces_data else None
+    )
+    uv_indices = {
+        f'texture{uv.channel_index}': struct.unpack(f'>{len(uv.uv_faces_data) // 2}H', uv.uv_faces_data)
+        for uv in rebuild.uv_channels
+    }
+    faces_by_record: dict[int, list] = {}
+    for face, table_index in zip(range(rebuild.faces_count), rebuild.face_surface_indices):
+        triangle = []
+        for corner in range(3):
+            flat = face * 3 + corner
+            slot = layout.slot_of_vertex[positions[flat]]
+            vertex = {'position': slot, 'lighting': slot}
+            if colors is not None:
+                vertex['color0'] = colors[flat]
+            for key, indices in uv_indices.items():
+                vertex[key] = indices[flat]
+            triangle.append(vertex)
+        record_index = drawing_index_by_key[rebuild.face_surface_table[table_index]]
+        faces_by_record.setdefault(record_index, []).append(triangle)
+    primitive_lists = _rebuild_primitive_lists(f'[SkinnedRebuild] {label}', records, faces_by_record)
+
+    donor_faces = {index: int(state.get('FaceCount') or 0) for index, state in enumerate(states)}
+    key_by_record = {value: key for key, value in drawing_index_by_key.items()}
+    surface_summary = ', '.join(
+        f"{key_by_record.get(index, f'record {index}')}: "
+        f'{donor_faces.get(index, 0)} -> {len(faces_by_record.get(index, []))} faces'
+        for index in sorted(set(faces_by_record) | {k for k, v in donor_faces.items() if v})
+    )
+    donor_slots = int(vb.get('VertexBufferLength', 0)) // stride if stride else 0
+    _slogger.info(
+        f"[SkinnedRebuild] {label} '{sub.get('MeshName', '')}': {vertex_count} vertices, "
+        f'{rebuild.faces_count} faces (donor {donor_slots} slots, {sub.get("FacesCount")} faces)'
+        + (f" ({', '.join(rebuild.reasons)})" if rebuild.reasons else '') + f'; {surface_summary}',
+        source='hammerspace.main',
+    )
+    _slogger.info(f'[SkinnedRebuild] skin: {_skinned.summary(layout)}', source='hammerspace.main')
+
+    normal_header = None
+    donor_normals = sub.get('NormalBuffer') if isinstance(sub.get('NormalBuffer'), dict) else None
+    if donor_normals:
+        normal_header = (
+            int(donor_normals.get('NormalBufferQuantizeInfo', quantize)),
+            int(donor_normals.get('NormalBufferCompCount', _SKINNED_REBUILD_COMP_COUNT)),
+            float(donor_normals.get('NormalAmbientPct', 0.0)),
+        )
+    blob, name_off = _build_skinned_submesh_blob(
+        sub.get('MeshName', ''), records, primitive_lists,
+        position_buffer=position_buffer,
+        slot_count=layout.slot_count,
+        write_back_end=layout.write_back_end,
+        vertex_quantize_info=quantize,
+        uv_channels=uv_channels,
+        color_channel=color_channel,
+        normal_header=normal_header,
+    )
+    skinning = _skinned_rebuild_skinning_data(
+        layout, position_buffer, int((model.get('SkinData') or {}).get('QuantizeInfo', quantize)),
+    )
+    return blob, name_off, skinning, layout
+
+
+def PatchGPLReplaceSkinnedSubmesh(
+    gpl_bytes: bytes, model: dict, parsed: 'SluggieParsed',
+    texture_index_by_file_name: dict[str, int] | None = None,
+    donor_gpl_length: int | None = None,
+) -> tuple[bytes, int, SkinningData | None]:
+    """Rebuild submesh 0 from its ``SkinnedRebuild`` as a fresh blob before
+    GPLUserData, repoint its descriptor and return the SKN structures that
+    match the new position buffer (``None`` when there is no rebuild). The
+    donor blob stays in place unreferenced, as for a RigidRebuild."""
+    sub = parsed.mesh.submeshes[_SKINNED_REBUILD_SUBMESH] if parsed.mesh.submeshes else None
+    rebuild = sub.skinned_rebuild if sub is not None else None
+    if rebuild is None:
+        return gpl_bytes, (len(gpl_bytes) if donor_gpl_length is None else donor_gpl_length), None
+    rigid_surfaces = _custom_submesh_rigid_surfaces(model)
+    donor_color = None
+    if rebuild.color_data is None:
+        donor_color = _gpl_blob_color_array(gpl_bytes, _SKINNED_REBUILD_SUBMESH)
+        if donor_color is not None:
+            _slogger.info(
+                f'[SkinnedRebuild] sub{_SKINNED_REBUILD_SUBMESH}: carrying the donor colour array '
+                f'({len(donor_color[2]) // _color_entry_size(donor_color[0])} entries, '
+                'not listed in the export) into the rebuilt blob',
+                source='hammerspace.main',
+            )
+    blob, name_off, skinning, _layout = _skinned_rebuild_to_blob(
+        model, rebuild, rigid_surfaces, texture_index_by_file_name, donor_color,
+    )
+    out, length = _splice_blobs_before_user_data(
+        gpl_bytes, [(_SKINNED_REBUILD_SUBMESH, blob, name_off)], donor_gpl_length,
+    )
+    _slogger.info(
+        f'[GPL] replaced skinned submesh {_SKINNED_REBUILD_SUBMESH} with a {len(blob):,}-byte '
+        'rebuilt blob; the donor blob stays in place unreferenced',
+        source='hammerspace.main',
+    )
+    return out, length, skinning
+
+
+# ---------------------------------------------------------------------------
 # GPL build result
 # ---------------------------------------------------------------------------
 
@@ -3530,6 +4300,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
                 _geometry_arrays_edited or _uv_primitive_lists_rebuilt
             ),
             rigid_rebuild                  = _parse_rigid_rebuild(sub, use_b64),
+            skinned_rebuild                = _parse_skinned_rebuild(sub, use_b64),
         ))
 
     mesh_data = MeshData(
@@ -6452,11 +7223,22 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
     _validate_skin_bones(model)
     _validate_custom_submeshes(model)
     _validate_rigid_rebuilds(model)
+    _validate_skinned_rebuild(model)
     rigid_rebuild_indices = [
         index for index, sub in enumerate(model.get('Submeshes') or []) if sub.get('RigidRebuild')
     ]
     if rigid_rebuild_indices and modes.gpl != 'build':
         raise ValueError("RigidRebuild requires SectionModes.gpl='build'")
+    skinned_rebuild = bool(
+        (model.get('Submeshes') or [{}])[_SKINNED_REBUILD_SUBMESH].get('SkinnedRebuild')
+    )
+    if skinned_rebuild and (modes.gpl != 'build' or modes.skn != 'build'):
+        raise ValueError("SkinnedRebuild requires SectionModes.gpl='build' and skn='build'")
+    # Facial poses (ptr7) address vertices by index, and a rebuilt body has a
+    # new vertex order, so its poses are dropped (the header pointer is
+    # cleared, as the external tool does for every character). Poses on
+    # other submeshes (Mario's head) are untouched.
+    clear_facial_pointer = skinned_rebuild and _SKINNED_REBUILD_SUBMESH in _facial_pose_submeshes(model)
     if model.get('DesiredTextureAssignments') and (
         modes.gpl != 'build'
         or modes.tex != 'build'
@@ -6481,13 +7263,14 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
     new_surface_additional_texture_names = {
         (surface.get('TextureAssignment') or {}).get('AdditionalTextureFileName')
         for sub in model.get('Submeshes') or []
-        for surface in (sub.get('RigidRebuild') or {}).get('NewSurfaces') or []
+        for rebuild_key in ('RigidRebuild', 'SkinnedRebuild')
+        for surface in (sub.get(rebuild_key) or {}).get('NewSurfaces') or []
     } - {None}
     if new_surface_additional_texture_names and (
         modes.tex != 'build' or not model.get('ReimportTextures')
     ):
         raise ValueError(
-            "RigidRebuild new surfaces with TextureAssignment.AdditionalTextureFileName "
+            "RigidRebuild/SkinnedRebuild new surfaces with TextureAssignment.AdditionalTextureFileName "
             "require SectionModes.tex='build' with ReimportTextures enabled"
         )
     if modes.tex == 'build' and model.get('ReimportTextures') and texture_plan is None:
@@ -6674,6 +7457,7 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
             or normal_array_edits
             or color_array_edits
             or rigid_rebuild_indices
+            or skinned_rebuild
             or getattr(parsed, 'custom_submeshes', None)
         ):
             gpl_bytes = CloneGPL(source_model_offset, source_model_length)
@@ -6696,6 +7480,15 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
                     if uv_lists_rebuilt
                     else PatchGPLUVArrays(gpl_bytes, model, source_model_offset)
                 )
+            if skinned_rebuild:
+                # The body first: it replaces submesh 0's blob and hands back
+                # the SKN structures for the new position buffer, which the
+                # SKN build below serializes instead of the donor's.
+                gpl_bytes, donor_gpl_length, rebuilt_skinning = PatchGPLReplaceSkinnedSubmesh(
+                    gpl_bytes, model, parsed, texture_index_by_file_name,
+                    donor_gpl_length=donor_gpl_length,
+                )
+                parsed.skinning = rebuilt_skinning
             if rigid_rebuild_indices:
                 # Replace before the append: the append relocates every blob,
                 # replaced ones included, as one unit (PLAN_EditRigidMeshes.md
@@ -6818,6 +7611,16 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
         original_trailing_off=original_trailing_offset,
         trailing_sections=getattr(parsed, 'trailing_sections', None),
     )
+    if clear_facial_pointer and struct.unpack_from('>I', inner_block, 0x18)[0]:
+        cleared = bytearray(inner_block)
+        struct.pack_into('>I', cleared, 0x18, 0)
+        inner_block = bytes(cleared)
+        _slogger.warning(
+            '[SkinnedRebuild] facial poses (ptr7) address submesh 0 by vertex index, which the '
+            'rebuilt body renumbers: the pointer is cleared, so this model has no blink or '
+            'mouth animation (the section bytes stay in the block unreferenced)',
+            source='hammerspace.main',
+        )
     section_sizes = {
         'GPL': len(gpl_result.gpl_bytes),
         'ACT': len(act_bytes),

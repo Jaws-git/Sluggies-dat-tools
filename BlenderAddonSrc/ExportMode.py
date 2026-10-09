@@ -43,7 +43,7 @@ GX_MAX_TEXTURE_DIMENSION = 1024
 # Fields an earlier Hammerspace export leaves on a submesh. The in-place
 # patcher ignores every one of them, so a model that still carries them on a
 # submesh outside this export must stay in Hammerspace.
-_SUBMESH_HAMMERSPACE_FIELDS = ("FacesDataEdited", "FaceSurfaceIdsEdited", "RigidRebuild")
+_SUBMESH_HAMMERSPACE_FIELDS = ("FacesDataEdited", "FaceSurfaceIdsEdited", "RigidRebuild", "SkinnedRebuild")
 _UV_HAMMERSPACE_FIELDS = ("UVFacesDataEdited",)
 _COLOR_HAMMERSPACE_FIELDS = ("ColorChannelDataEdited",)
 

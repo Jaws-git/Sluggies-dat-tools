@@ -555,7 +555,7 @@ class RigidRebuildBuildTests(unittest.TestCase):
         rebuild['NewSurfaces'] = [_new_surface(texture={'AdditionalTextureFileName': 'new.png'})]
         self.model['Submeshes'][RIGID]['RigidRebuild'] = rebuild
 
-        with self.assertRaisesRegex(ValueError, 'RigidRebuild new surfaces .* require'):
+        with self.assertRaisesRegex(ValueError, 'RigidRebuild.* new surfaces .* require'):
             main.BuildModelBlock(self.data, main.SectionModes(gpl='build'), sluggie_path=self.env.sluggie_path)
 
         plan = texture_helper.TexturePlan(entries=(texture_helper.TexturePlanEntry(

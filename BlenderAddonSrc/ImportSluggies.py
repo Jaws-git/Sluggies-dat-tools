@@ -653,7 +653,8 @@ def _has_edited_data(submesh):
     """Return True when *submesh* contains any edited mesh data."""
     vb = submesh.get("VertexBuffer") or {}
     return bool(
-        vb.get("VertexBufferDataEdited") or submesh.get("FacesDataEdited") or submesh.get("RigidRebuild")
+        vb.get("VertexBufferDataEdited") or submesh.get("FacesDataEdited")
+        or submesh.get("RigidRebuild") or submesh.get("SkinnedRebuild")
     )
 
 
@@ -679,7 +680,7 @@ def _edited_submesh_view(submesh):
     its arrays replace the donor's, and ``_FaceSurfaceIds`` lists the surface
     key each face draws through (donor SurfaceId or new surface key)."""
     view = dict(submesh)
-    rebuild = view.get("RigidRebuild")
+    rebuild = view.get("RigidRebuild") or view.get("SkinnedRebuild")
     if rebuild:
         return _rigid_rebuild_view(view, rebuild)
 
@@ -708,8 +709,17 @@ def _edited_submesh_view(submesh):
     return view
 
 
+def _skinned_rebuild_influences(submesh):
+    """``[(vertex, bone, weight)]`` of a SkinnedRebuild, or None."""
+    rebuild = submesh.get("SkinnedRebuild") or {}
+    raw = _to_bytes(rebuild.get("Influences")) if rebuild.get("Influences") else b""
+    return list(struct.iter_unpack('>HHf', raw)) if raw else None
+
+
 def _rigid_rebuild_view(view, rebuild):
-    """The ``_edited_submesh_view`` of a submesh carrying a RigidRebuild."""
+    """The ``_edited_submesh_view`` of a submesh carrying a RigidRebuild or
+    a SkinnedRebuild (same array shape; the skinned one keeps its normals
+    interleaved in VertexBufferData)."""
     vb = dict(view.get("VertexBuffer") or {})
     vb["VertexBufferData"] = rebuild["VertexBufferData"]
     vb.pop("VertexBufferDataEdited", None)
@@ -1299,14 +1309,25 @@ def _apply_import_rotation(obj):
     obj.matrix_world = obj.matrix_world @ mathutils.Matrix.Rotation(math.pi / 2, 4, 'X')
 
 
-def add_vertex_groups(obj, submesh_index, bone_list, arm_obj, owner_bone_id=None):
+def add_vertex_groups(obj, submesh_index, bone_list, arm_obj, owner_bone_id=None, influences=None):
     """Add vertex groups from BoneHierarchy for *submesh_index* and attach an
     Armature modifier pointing at *arm_obj*.
 
     With *owner_bone_id* (a rigid submesh whose owner the file moved, or a
     rebuilt one whose vertices the donor influences do not cover) every
-    vertex goes into ``bone_<owner>`` at weight 1.0 instead."""
-    if owner_bone_id is not None:
+    vertex goes into ``bone_<owner>`` at weight 1.0 instead. With
+    *influences* (``[(vertex, bone, weight)]`` of a rebuilt body) the groups
+    come from those records."""
+    if influences is not None:
+        num_verts = len(obj.data.vertices)
+        for v_idx, bone_id, weight in influences:
+            group_name = f"bone_{bone_id}"
+            vg = obj.vertex_groups.get(group_name)
+            if vg is None:
+                vg = obj.vertex_groups.new(name=group_name)
+            if v_idx < num_verts:
+                vg.add([v_idx], weight, 'REPLACE')
+    elif owner_bone_id is not None:
         vg = obj.vertex_groups.new(name=f"bone_{owner_bone_id}")
         vg.add(list(range(len(obj.data.vertices))), 1.0, 'REPLACE')
     else:
@@ -1355,7 +1376,7 @@ def _new_surface_materials(name, submesh, submesh_index, model, uv_layer_name, s
     stops on it (decision 11) instead of changing the texture silently."""
     from . import ExportSluggies
     materials = {}
-    rebuild = submesh.get("RigidRebuild") or {}
+    rebuild = submesh.get("RigidRebuild") or submesh.get("SkinnedRebuild") or {}
     uv0 = (submesh.get("UVChannels") or [{}])[0]
     for entry in rebuild.get("NewSurfaces") or []:
         key = entry["SurfaceKey"]
@@ -1464,7 +1485,8 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
             # the `_edit` object shows every edit, a bone move included, on
             # the effective owner (GeoIdEdited first).
             donor_owner, effective_owner = _submesh_owner_bones(bone_list or [], i)
-            rebuilt = bool(submesh.get("RigidRebuild"))
+            rebuilt = bool(submesh.get("RigidRebuild") or submesh.get("SkinnedRebuild"))
+            skinned_influences = _skinned_rebuild_influences(submesh)
             original_owner, make_edit = _rigid_import_placement(submesh, donor_owner, effective_owner)
             if arm_obj is not None:
                 add_vertex_groups(obj, i, bone_list, arm_obj)
@@ -1528,7 +1550,12 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
                     if arm_obj is not None:
                         add_vertex_groups(
                             edit_obj, i, bone_list, arm_obj,
-                            owner_bone_id=effective_owner if (rebuilt or effective_owner != donor_owner) else None,
+                            owner_bone_id=(
+                                effective_owner
+                                if skinned_influences is None and (rebuilt or effective_owner != donor_owner)
+                                else None
+                            ),
+                            influences=skinned_influences,
                         )
                         edit_obj.parent = arm_obj
                     else:

@@ -192,6 +192,8 @@ class SluggiesGui:
         self.chain_output = []
         self.action_buttons = []
         self.picking = False               # a native file dialog is open
+        self.prompt_request = None         # ask_text's popup, waiting to be shown (_show_prompt_request)
+        self.prompt_closed_frame = -2      # frame the last popup was deleted in
         self.console_grow = 0              # px the window grew when the console was shown
         self.settings = gui_settings.Settings(os.path.join(root_dir, gui_settings.SETTINGS_REL))   # one for every tab
         self.grid_tab = gui_character_grid.CharacterGridTab(self)
@@ -307,6 +309,16 @@ class SluggiesGui:
         field with OK (file / save: plus Browse...). The popup closes first, then ``on_answer(text)`` or, for
         ``cancel_label`` and the close button, ``on_cancel()`` runs. One at a time: a new one replaces it."""
         self._close_prompt()
+        self.prompt_request = (title, text, on_answer, on_cancel, kind, initial, cancel_label)
+        self._show_prompt_request()
+
+    def _show_prompt_request(self):
+        """Open the popup ``ask_text`` asked for, once the previous one is gone for a frame (run calls this every
+        frame): a modal created in the frame another was deleted gets an instant on_close from Dear PyGui (every
+        second time, measured 2026-10-09), which would cancel it. Two frames: answers delete from the callback thread."""
+        if self.prompt_request is None or dpg.get_frame_count() < self.prompt_closed_frame + 2:
+            return
+        (title, text, on_answer, on_cancel, kind, initial, cancel_label), self.prompt_request = self.prompt_request, None
 
         def answer(value):
             self._close_prompt()
@@ -342,8 +354,10 @@ class SluggiesGui:
             dpg.focus_item(_PROMPT_FIELD)
 
     def _close_prompt(self):
+        self.prompt_request = None                 # a popup not shown yet is dropped too
         if dpg.does_item_exist(_PROMPT_DIALOG):
             dpg.delete_item(_PROMPT_DIALOG)
+            self.prompt_closed_frame = dpg.get_frame_count()
 
     def _prompt_browse(self, save):
         """Fill the prompt's field from the Windows "Open" / "Save As" dialog, started in the field's folder."""
@@ -827,6 +841,7 @@ class SluggiesGui:
         while dpg.is_dearpygui_running():
             self._drain_queue()
             self._flush_log()
+            self._show_prompt_request()
             self.stat_tab.tick()
             dpg.render_dearpygui_frame()
         self.stop_command()

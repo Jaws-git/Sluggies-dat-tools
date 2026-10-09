@@ -94,9 +94,16 @@ def _load_color_roundtrip_helpers():
         node for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name in names
     ]
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'CustomSubmeshExport', ROOT_DIR / 'BlenderAddonSrc' / 'CustomSubmeshExport.py',
+    )
+    custom_submesh_export = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(custom_submesh_export)
     namespace = {
         'struct': struct,
         '_from_bytes': lambda value, _use_base64=True: list(value),
+        'CustomSubmeshExport': custom_submesh_export,
     }
     exec(compile(ast.Module(body=helpers, type_ignores=[]), str(EXPORTER_PATH), 'exec'),
          namespace)

@@ -679,11 +679,43 @@ def encode_color_rgba4444(rgba):
     return ((r << 12) | (g << 8) | (b << 4) | a).to_bytes(2, 'big')
 
 
-def encode_loop_colors(geometry, loop_colors):
+UNSET_COLOR = (0.0, 0.0, 0.0, 0.0)
+
+
+def is_unset_color(rgba) -> bool:
+    """Exactly (0, 0, 0, 0): black with alpha 0. Blender fills a colour
+    attribute with it on the corners of geometry joined from an object that
+    had no such attribute, and the game draws those corners invisible
+    (vertex alpha 0; Mario body, 2026-10-09), so the exporters write white."""
+    return all(float(c) <= 0.0 for c in rgba)
+
+
+def fill_unset_colors(object_name, colors, infos=None):
+    """*colors* with every unset corner (:func:`is_unset_color`) replaced by
+    white, reporting the count to *infos* when any was replaced."""
+    filled, replaced = [], 0
+    for color in colors:
+        if is_unset_color(color):
+            filled.append(WHITE)
+            replaced += 1
+        else:
+            filled.append(color)
+    if replaced and infos is not None:
+        infos.append(
+            f'{object_name}: {replaced} face corner(s) had the vertex colour (0, 0, 0, 0), which '
+            "Blender gives geometry joined from an object without a 'color0' attribute and which "
+            'the game draws invisible; they were exported as opaque white.'
+        )
+    return filled
+
+
+def encode_loop_colors(geometry, loop_colors, object_name='', infos=None):
     """Per-loop colors. *loop_colors* is indexed by Blender loop index, or
-    None for a mesh without colors (every loop white, one pooled entry)."""
+    None for a mesh without colors (every loop white, one pooled entry).
+    Unset corners are written white (:func:`fill_unset_colors`)."""
     loops = _loop_order(geometry)
     colors = [WHITE] * len(loops) if loop_colors is None else [loop_colors[loop] for loop in loops]
+    colors = fill_unset_colors(object_name, colors, infos)
     return dedupe_records([encode_color_rgba4444(c) for c in colors])
 
 
@@ -707,7 +739,7 @@ def build_custom_submesh_entry(
     object_name, custom_submesh_id, host_bone_id, template_source, plan,
     geometry, loop_normals, loop_uvs, loop_colors, texture_assignment,
     use_base64=True, warnings=None, specular_strength=None,
-    additional_surfaces=None, face_surface_indices=None,
+    additional_surfaces=None, face_surface_indices=None, infos=None,
 ):
     """Assemble one ``CustomSubmeshes`` entry (sluggieschema.json) from
     bone-local geometry and per-loop attributes, picking the position format
@@ -759,7 +791,9 @@ def build_custom_submesh_entry(
         entry['NormalFacesData'] = _index_buffer(normal_indices, use_base64)
 
     if plan.color:
-        color_data, color_indices = encode_loop_colors(geometry, loop_colors)
+        color_data, color_indices = encode_loop_colors(
+            geometry, loop_colors, object_name, infos if infos is not None else warnings,
+        )
         _check_entry_limit(object_name, template_source, 'color0', 'colors',
                            len(color_data) // COLOR_FORMAT[0], plan)
         entry['ColorChannelData'] = encode_field(color_data, use_base64)

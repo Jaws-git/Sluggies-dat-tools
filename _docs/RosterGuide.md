@@ -394,6 +394,10 @@ python start.py --load-roster my_roster.sluggiesroster
   models. Loading into a game that already holds the same roster does
   nothing. Game options (CPU vs CPU) are not part of a pack and stay as
   they are.
+- **CPU vs CPU and the Gecko codes:** the game options replace the
+  community Gecko codes "CPU vs CPU V2" and "CPU vs CPU human management".
+  Disable both Gecko codes in Dolphin before using the options: with them
+  on, matches start as normal human vs CPU matches, even on a stock roster.
 - Slots that are only in the game leave the grid. A model patched into a
   stock slot among them stays in its directory (it is not on the grid any
   more).

@@ -103,10 +103,11 @@ def _effective(states: Sequence[dict], upto: int, state_id: int) -> Optional[dic
     return found
 
 
-def donor_rigid_submesh(index: int, sub: dict, facial_submeshes: Iterable[int] = ()) -> DonorRigidSubmesh:
+def donor_submesh_facts(index: int, sub: dict) -> dict:
+    """What any rebuild needs to know about a donor submesh: attribute
+    formats, the donor faces with their imported surfaces, and the surfaces
+    that can draw. Shared by the rigid and skinned rebuilds."""
     vb = sub['VertexBuffer']
-    if int(vb.get('VertexBufferCompCount', 0)) != RIGID_COMP_COUNT:
-        raise ValueError(f'submesh {index} is not a rigid submesh (CompCount {vb.get("VertexBufferCompCount")})')
     normals = sub.get('NormalBuffer') if isinstance(sub.get('NormalBuffer'), dict) else None
     normal_format = None
     if normals and normals.get('NormalBufferData'):
@@ -144,7 +145,7 @@ def donor_rigid_submesh(index: int, sub: dict, facial_submeshes: Iterable[int] =
         and _effective(states, k, 3) is not None
         and _effective(states, k, 7) is not None
     }
-    return DonorRigidSubmesh(
+    return dict(
         index=index,
         position_quantize=int(vb['VertexBufferQuantizeInfo']),
         normal_format=normal_format,
@@ -154,8 +155,14 @@ def donor_rigid_submesh(index: int, sub: dict, facial_submeshes: Iterable[int] =
         faces=faces,
         face_surfaces=face_surfaces,
         drawable_surfaces=drawable,
-        facial=index in set(facial_submeshes),
     )
+
+
+def donor_rigid_submesh(index: int, sub: dict, facial_submeshes: Iterable[int] = ()) -> DonorRigidSubmesh:
+    vb = sub['VertexBuffer']
+    if int(vb.get('VertexBufferCompCount', 0)) != RIGID_COMP_COUNT:
+        raise ValueError(f'submesh {index} is not a rigid submesh (CompCount {vb.get("VertexBufferCompCount")})')
+    return DonorRigidSubmesh(facial=index in set(facial_submeshes), **donor_submesh_facts(index, sub))
 
 
 def donor_position_format_error(donor: DonorRigidSubmesh, object_name: str) -> Optional[str]:
@@ -434,6 +441,74 @@ def _index_buffer(indices, use_base64: bool):
     return cse.encode_field(struct.pack(f'>{len(indices)}H', *indices), use_base64)
 
 
+def encode_color_channel(
+    object_name: str, color_format, geometry, loop_colors, use_base64: bool, infos: Optional[List[str]] = None,
+) -> dict:
+    """``ColorChannelData`` / ``ColorFacesData`` for a rebuilt donor submesh:
+    per-loop colours pooled in the donor channel's format (white when the
+    mesh has no colour attribute; unset (0, 0, 0, 0) corners written white,
+    see ``CustomSubmeshExport.fill_unset_colors``). Shared by the rigid and
+    skinned rebuilds."""
+    loops = [loop for tri in geometry.triangles for loop in tri.loops]
+    colors = [cse.WHITE] * len(loops) if loop_colors is None else [loop_colors[loop] for loop in loops]
+    colors = cse.fill_unset_colors(object_name, colors, infos)
+    color_data, color_indices = cse.dedupe_records([encode_color_entry(color_format[1], c) for c in colors])
+    _check_u16(object_name, 'colors', len(color_data) // _COLOR_ENTRY_SIZE[color_format[1] >> 4])
+    return {
+        'ColorChannelData': cse.encode_field(color_data, use_base64),
+        'ColorFacesData': _index_buffer(color_indices, use_base64),
+    }
+
+
+def encode_uv_channels(
+    object_name: str, uv_formats: Dict[int, Tuple[int, int]], uv_mirrored: bool, geometry,
+    loop_uvs_by_channel: Dict[int, Optional[Sequence[Tuple[float, float]]]], use_base64: bool,
+    warnings: List[str], infos: List[str],
+) -> list:
+    """The ``UVChannels`` list of a rebuilt donor submesh, one entry per donor
+    channel in its own format. Channel 1 mirrors channel 0 when the donor
+    channels are identical (decision 6) or when its Blender layer is missing.
+    Shared by the rigid and skinned rebuilds."""
+    encoded_uvs: Dict[int, Tuple[bytes, list]] = {}
+    channels = sorted(uv_formats)
+    for channel in channels:
+        loop_uvs = loop_uvs_by_channel.get(channel)
+        mirror_source = None
+        if uv_mirrored and channel == 1:
+            mirror_source = 0
+            if loop_uvs is not None and loop_uvs_by_channel.get(0) is not None \
+                    and list(loop_uvs) != list(loop_uvs_by_channel[0]):
+                infos.append(
+                    f'{object_name}: UV channel 1 mirrors channel 0 in the donor (specular), so its '
+                    'separate edits are ignored and channel 0 is written to both.'
+                )
+        elif loop_uvs is None:
+            if loop_uvs_by_channel.get(0) is None:
+                raise ValueError(f'{object_name}: UV map for channel {channel} not found')
+            mirror_source = 0
+            warnings.append(
+                f'{object_name}: UV map for channel {channel} not found; channel 0 is written to it.'
+            )
+        if mirror_source is not None:
+            uv_data, uv_indices = encoded_uvs[mirror_source]
+            if uv_formats[channel] != uv_formats[mirror_source]:
+                uv_data, uv_indices = cse.encode_loop_uvs(
+                    object_name, geometry, loop_uvs_by_channel[mirror_source], uv_formats[channel],
+                )
+        else:
+            uv_data, uv_indices = cse.encode_loop_uvs(object_name, geometry, loop_uvs, uv_formats[channel])
+        _check_u16(object_name, f'UVs on channel {channel}', len(uv_indices) and max(uv_indices) + 1)
+        encoded_uvs[channel] = (uv_data, uv_indices)
+    return [
+        {
+            'UVChannelIndex': channel,
+            'UVChannelData': cse.encode_field(encoded_uvs[channel][0], use_base64),
+            'UVFacesData': _index_buffer(encoded_uvs[channel][1], use_base64),
+        }
+        for channel in channels
+    ]
+
+
 def build_rigid_rebuild_entry(
     object_name: str,
     donor: DonorRigidSubmesh,
@@ -479,51 +554,12 @@ def build_rigid_rebuild_entry(
         entry['NormalBufferData'] = cse.encode_field(normal_data, use_base64)
         entry['NormalFacesData'] = _index_buffer(normal_indices, use_base64)
     if donor.color_format:
-        loops = [loop for tri in geometry.triangles for loop in tri.loops]
-        colors = [cse.WHITE] * len(loops) if loop_colors is None else [loop_colors[loop] for loop in loops]
-        color_data, color_indices = cse.dedupe_records([encode_color_entry(donor.color_format[1], c) for c in colors])
-        _check_u16(object_name, 'colors', len(color_data) // _COLOR_ENTRY_SIZE[donor.color_format[1] >> 4])
-        entry['ColorChannelData'] = cse.encode_field(color_data, use_base64)
-        entry['ColorFacesData'] = _index_buffer(color_indices, use_base64)
+        entry.update(encode_color_channel(object_name, donor.color_format, geometry, loop_colors, use_base64, infos))
 
-    encoded_uvs: Dict[int, Tuple[bytes, list]] = {}
-    channels = sorted(donor.uv_formats)
-    for channel in channels:
-        loop_uvs = loop_uvs_by_channel.get(channel)
-        mirror_source = None
-        if donor.uv_mirrored and channel == 1:
-            mirror_source = 0
-            if loop_uvs is not None and loop_uvs_by_channel.get(0) is not None \
-                    and list(loop_uvs) != list(loop_uvs_by_channel[0]):
-                infos.append(
-                    f'{object_name}: UV channel 1 mirrors channel 0 in the donor (specular), so its '
-                    'separate edits are ignored and channel 0 is written to both.'
-                )
-        elif loop_uvs is None:
-            if loop_uvs_by_channel.get(0) is None:
-                raise ValueError(f'{object_name}: UV map for channel {channel} not found')
-            mirror_source = 0
-            warnings.append(
-                f'{object_name}: UV map for channel {channel} not found; channel 0 is written to it.'
-            )
-        if mirror_source is not None:
-            uv_data, uv_indices = encoded_uvs[mirror_source]
-            if donor.uv_formats[channel] != donor.uv_formats[mirror_source]:
-                uv_data, uv_indices = cse.encode_loop_uvs(
-                    object_name, geometry, loop_uvs_by_channel[mirror_source], donor.uv_formats[channel],
-                )
-        else:
-            uv_data, uv_indices = cse.encode_loop_uvs(object_name, geometry, loop_uvs, donor.uv_formats[channel])
-        _check_u16(object_name, f'UVs on channel {channel}', len(uv_indices) and max(uv_indices) + 1)
-        encoded_uvs[channel] = (uv_data, uv_indices)
-    entry['UVChannels'] = [
-        {
-            'UVChannelIndex': channel,
-            'UVChannelData': cse.encode_field(encoded_uvs[channel][0], use_base64),
-            'UVFacesData': _index_buffer(encoded_uvs[channel][1], use_base64),
-        }
-        for channel in channels
-    ]
+    entry['UVChannels'] = encode_uv_channels(
+        object_name, donor.uv_formats, donor.uv_mirrored, geometry, loop_uvs_by_channel,
+        use_base64, warnings, infos,
+    )
     entry['FacesCount'] = faces_count
     entry['FacesData'] = cse.encode_field(faces_data, use_base64)
     entry['FaceSurfaceTable'] = list(routing.table)
@@ -607,7 +643,7 @@ def carry_unselected_rebuilds(
         return int(edited) if edited is not None else _donor_geo_raw(bone)
 
     for index, sub in enumerate(model.get('Submeshes') or []):
-        rebuild = sub.get('RigidRebuild')
+        rebuild = sub.get('RigidRebuild') or sub.get('SkinnedRebuild')
         if not rebuild or index in exported:
             continue
         name = sub.get('MeshName') or f'submesh {index}'
@@ -615,15 +651,16 @@ def carry_unselected_rebuilds(
         fix = 'select it and export again, or re-import the model to drop the earlier edit'
         host = int(rebuild.get('HostBoneId', -1))
         owners = [bone_id for bone_id, bone in bone_by_id.items() if _donor_geo_raw(bone) == index]
-        if host not in bone_by_id:
+        rigid = 'HostBoneId' in rebuild            # a rebuilt body stays on the skeleton
+        if rigid and host not in bone_by_id:
             result.errors.append(f'{label}: its earlier rebuild hosts it on unknown bone {host}; {fix}.')
             continue
-        if host in custom_hosts:
+        if rigid and host in custom_hosts:
             result.errors.append(
                 f"{label}: its earlier rebuild moved it to bone_{host}, which this export gives to "
                 f"custom submesh '{custom_hosts[host]}'; {fix}.")
             continue
-        if host not in owners:
+        if rigid and host not in owners:
             current = effective(bone_by_id[host])
             if current not in (GEO_ID_FREE, index):
                 result.errors.append(
@@ -663,7 +700,8 @@ def carry_unselected_rebuilds(
                 f'lists; {fix}.')
             continue
         result.messages.append(
-            f'{label}: kept its earlier rigid rebuild (bone_{host}'
+            f'{label}: kept its earlier '
+            + (f'rigid rebuild (bone_{host}' if rigid else 'body rebuild (')
             + (f", textures {', '.join(kept)}" if kept else '')
             + '). Select it to change it.')
     return result

@@ -421,13 +421,19 @@ def hammerspace_section_args(model):
         submesh['RigidRebuild'] for submesh in model.get('Submeshes', [])
         if submesh.get('RigidRebuild')
     ]
+    # A rebuilt skinned body (SkinnedRebuild, PLAN_ModelReplacements.md
+    # Milestone 4) replaces submesh 0's blob and the whole SKN section.
+    skinned_rebuilds = [
+        submesh['SkinnedRebuild'] for submesh in model.get('Submeshes', [])
+        if submesh.get('SkinnedRebuild')
+    ]
     custom_texture_added = any(
         (owner.get('TextureAssignment') or {}).get('AdditionalTextureFileName')
         for entry in custom_submeshes
         for owner in [entry] + list(entry.get('AdditionalSurfaces') or [])
     ) or any(
         (surface.get('TextureAssignment') or {}).get('AdditionalTextureFileName')
-        for rebuild in rigid_rebuilds
+        for rebuild in rigid_rebuilds + skinned_rebuilds
         for surface in rebuild.get('NewSurfaces') or []
     )
 
@@ -436,12 +442,12 @@ def hammerspace_section_args(model):
         submesh.get('FaceSurfaceIdsEdited') is not None
         for submesh in model.get('Submeshes', [])
     ) or changed_positions or has_uv_edits or has_normal_edits or has_color_edits \
-            or custom_submeshes or rigid_rebuilds:
+            or custom_submeshes or rigid_rebuilds or skinned_rebuilds:
         args.extend(['--gpl', 'build'])
-        if any(
+        if skinned_rebuilds or (any(
             submesh.get('VertexBuffer', {}).get('VertexBufferCompCount') == 6
             for submesh in changed_positions
-        ) and model.get('SkinDataEdited'):
+        ) and model.get('SkinDataEdited')):
             args.extend(('--skn', 'build'))
 
     if model.get('ReimportTextures') or custom_texture_added:
@@ -533,7 +539,7 @@ _HAMMERSPACE_ONLY_MODEL_FIELDS = (
     'DesiredTextureAssignments',
 )
 # Submesh-level fields only the Hammerspace builder applies.
-_HAMMERSPACE_ONLY_SUBMESH_FIELDS = ('FacesDataEdited', 'FaceSurfaceIdsEdited', 'RigidRebuild')
+_HAMMERSPACE_ONLY_SUBMESH_FIELDS = ('FacesDataEdited', 'FaceSurfaceIdsEdited', 'RigidRebuild', 'SkinnedRebuild')
 
 
 def _needs_hammerspace(model, sluggie_path):

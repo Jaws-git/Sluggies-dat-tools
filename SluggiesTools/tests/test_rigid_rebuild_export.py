@@ -311,6 +311,19 @@ class BuildEntryTests(unittest.TestCase):
         self.assertEqual(FieldCodec.decode_field(entry['ColorFacesData']), bytes(36))
         self.assertEqual(len(FieldCodec.decode_field(entry['NormalBufferData'])), 6)   # one pooled normal
 
+    def test_unset_colors_are_written_white_and_reported(self):
+        self.donor.color_format = (4, 48)       # RGBA4444
+        loops = [loop for tri in self.geometry.triangles for loop in tri.loops]
+        colors = {loop: (0.0, 0.0, 0.0, 0.0) for loop in loops}
+        colors[loops[0]] = (0.0, 0.0, 0.0, 1.0)   # opaque black is a real colour and stays
+        infos = []
+        entry = self._entry(loop_colors=colors, infos=infos)
+        self.assertEqual(FieldCodec.decode_field(entry['ColorChannelData']), bytes.fromhex('000fffff'))
+        self.assertEqual(len(infos), 1)
+        self.assertIn(f'{len(loops) - 1} face corner(s)', infos[0])
+        self._entry(loop_colors={loop: (1.0, 1.0, 1.0, 1.0) for loop in loops}, infos=infos)
+        self.assertEqual(len(infos), 1)        # all-white input reports nothing
+
     def test_new_surfaces_and_reasons_are_carried(self):
         slots = [rre.SlotSurface('head_mat', SURFACE), rre.SlotSurface('brim', 'sm1_new0', new_surface=True, owner='sm1')]
         routing = rre.route_faces('head', self.donor, self.geometry.triangles, [0, 0, 0, 1, 1, 1], slots, False)
@@ -377,9 +390,11 @@ class ExporterGlueTests(unittest.TestCase):
         donor = _Mat('cap', SurfaceId='sm1_ds5')
         self.assertEqual(find(_obj([donor, own]), self.rigid_sub, 1), [])
         self.assertEqual(find(_obj([donor, foreign]), self.rigid_sub, 1), [('other', 'belongs to sm2, not sm1')])
+        # The body takes its own Add-material surfaces too (exported through
+        # the body rebuild, PLAN_ModelReplacements.md Milestone 4).
         body = _Mat('body_new', SurfaceId='sm0_new0', SluggiesNewSurface=True, SluggiesSurfaceOwner='sm0')
-        self.assertEqual(find(_obj([body], comp_count=6), self.skinned_sub, 0),
-                         [('body_new', self.helpers['NEW_SURFACE_BODY_MESSAGE'])])
+        self.assertEqual(find(_obj([body], comp_count=6), self.skinned_sub, 0), [])
+        self.assertEqual(find(_obj([own], comp_count=6), self.skinned_sub, 0), [('brim', 'belongs to sm1, not sm0')])
 
     def test_empty_image_node_errors(self):
         node_with_image = SimpleNamespace(type='TEX_IMAGE', image=object(), inputs=())
@@ -516,7 +531,7 @@ class ImporterGlueTests(unittest.TestCase):
         self.assertIn('face_surface_ids=face_surface_ids', source)
         self.assertIn('_new_surface_materials(', source)
         self.assertIn('_apply_nonskinned_transform(edit_obj, i, bone_list, abs_bone_mats, effective_owner)', source)
-        self.assertIn("def add_vertex_groups(obj, submesh_index, bone_list, arm_obj, owner_bone_id=None)", source)
+        self.assertIn("def add_vertex_groups(obj, submesh_index, bone_list, arm_obj, owner_bone_id=None, influences=None)", source)
 
 
 if __name__ == '__main__':

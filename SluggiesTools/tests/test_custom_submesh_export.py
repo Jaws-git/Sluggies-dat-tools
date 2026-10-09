@@ -200,11 +200,17 @@ class SkinnedDonorObjectsTests(unittest.TestCase):
 
     def test_skin_encode_and_purge_only_run_when_a_skinned_mesh_is_present(self):
         source = _execute_source()
-        guard = 'if skinned_donor_objects(candidates, data):'
+        # A rebuilt body (skinned_plans) purges first, since its weights
+        # travel in the SkinnedRebuild entry; every other export goes
+        # through the skinned-donor guard.
+        guard = 'elif skinned_donor_objects(candidates, data):'
         self.assertIn(guard, source)
-        for call in ('_purge_skn_edited(data)', 'encode_skin_hammerspace(',
-                     'encode_skin_weights_inplace('):
+        body_guard = 'if skinned_plans:'
+        self.assertLess(source.index(body_guard), source.index('_purge_skn_edited(data)'))
+        self.assertLess(source.index(body_guard), source.index(guard))
+        for call in ('encode_skin_hammerspace(', 'encode_skin_weights_inplace('):
             self.assertLess(source.index(guard), source.index(call), call)
+        self.assertLess(source.index(guard), source.index('_purge_skn_edited(data)', source.index(guard)))
 
     def test_hammerspace_encoder_returns_early_without_a_skinned_object(self):
         tree = ast.parse(EXPORTER_PATH.read_text(encoding='utf-8'))
@@ -568,12 +574,14 @@ class WorldPositionTests(unittest.TestCase):
 
 class WorldPositionGlueTests(unittest.TestCase):
     def test_edit_mode_is_flushed_without_operators(self):
-        names = _attribute_names(_exporter_function('_custom_submesh_bone_local_geometry'))
+        # The shared tail of _custom_submesh_bone_local_geometry (also used
+        # by the body rebuild's _armature_local_geometry).
+        names = _attribute_names(_exporter_function('_geometry_in_bind_space'))
         self.assertIn('update_from_editmode', names)
         self.assertNotIn('ops', names)  # no mode_set, no transform_apply
 
     def test_reads_undeformed_vertices_not_the_evaluated_mesh(self):
-        names = _attribute_names(_exporter_function('_custom_submesh_bone_local_geometry'))
+        names = _attribute_names(_exporter_function('_geometry_in_bind_space'))
         self.assertIn('vertices', names)
         self.assertNotIn('evaluated_get', names)
         self.assertNotIn('to_mesh', names)
@@ -891,6 +899,31 @@ class LoopAttributeTests(unittest.TestCase):
         colors = [(1.0, 0.0, 0.0, 1.0) if loop < 18 else (0.0, 0.5, 1.0, 0.25) for loop in range(36)]
         entry = self._entry(loop_colors=colors)
         self.assertEqual(cse.FieldCodec.decode_field(entry['ColorChannelData']), bytes.fromhex('f00f' '08f4'))
+
+    def test_unset_loop_colors_are_written_white_and_reported(self):
+        colors = [(1.0, 0.0, 0.0, 1.0) if loop < 18 else (0.0, 0.0, 0.0, 0.0) for loop in range(36)]
+        normals, uvs, _ = _cube_loop_attributes()
+        infos = []
+        entry = cse.build_custom_submesh_entry(
+            'Cube', 'custom0', 12, 'builtin:rigid_spec_v1', self.PLAN, _cube_geometry(), normals, uvs,
+            colors, {'DonorTextureIndex': 0}, infos=infos,
+        )
+        self.assertEqual(cse.FieldCodec.decode_field(entry['ColorChannelData']), bytes.fromhex('f00f' 'ffff'))
+        self.assertEqual(len(infos), 1)
+        self.assertIn('18 face corner(s)', infos[0])
+
+    def test_fill_unset_colors(self):
+        self.assertTrue(cse.is_unset_color((0.0, 0.0, 0.0, 0.0)))
+        self.assertFalse(cse.is_unset_color((0.0, 0.0, 0.0, 1.0)))
+        self.assertFalse(cse.is_unset_color((1.0, 1.0, 1.0, 0.0)))
+        infos = []
+        self.assertEqual(
+            cse.fill_unset_colors('x', [(0, 0, 0, 0), (0.2, 0, 0, 0)], infos),
+            [cse.WHITE, (0.2, 0, 0, 0)],
+        )
+        self.assertEqual(len(infos), 1)
+        self.assertEqual(cse.fill_unset_colors('x', [(1, 1, 1, 1)], infos), [(1, 1, 1, 1)])
+        self.assertEqual(len(infos), 1)
 
     def test_plan_without_normals_or_color_omits_them(self):
         plan = cse.AttributePlan(normals=False, color=False, uv_channels=1, entry_limits={})

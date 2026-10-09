@@ -410,6 +410,42 @@
                 },
                 "required": ["HostBoneId", "VertexBufferData", "UVChannels", "FacesCount", "FacesData", "FaceSurfaceTable", "FaceSurfaceIndices"]
               },
+              "SkinnedRebuild": {
+                "type": "object",
+                "description": "Hammerspace-only whole rebuild of the skinned body (submesh 0, VertexBufferCompCount 6), written by the Blender exporter when the body's topology changed, it carries an Object Mode transform, or faces moved in a way the slot-preserving fields cannot store (a partial move, a move between shaders, or an Add-material surface). Any vertex and face count. The patcher assigns position slots in the canonical skin layout (one SK1/SK2 write per vertex, entries on their own cache lines, sources mirroring the position buffer, memClr 0/0), rebuilds the whole SKN section from Influences, keeps the donor display states (ShaderModeEdited / DisplayStateParamBytesEdited applied) and re-encodes one GX_TRIANGLES list per drawing surface; the rebuilt blob is inserted before GPLUserData and the GEO descriptor repointed. Facial poses (ptr7) that address submesh 0 are dropped (the header pointer is cleared). Never combined with in-place *Edited fields on the submesh, a RigidRebuild, or a model-level SkinDataEdited. See PLAN_ModelReplacements.md Milestone 4 (local working document).",
+                "properties": {
+                  "VertexBufferData": {
+                    "type": "string",
+                    "description": "One interleaved x y z nx ny nz record per vertex (big-endian int16 in the donor's VertexBufferQuantizeInfo, int16 formats only), in model space, in the exporter's vertex order. Normals are per vertex, as the skinned buffer stores them."
+                  },
+                  "Influences": {
+                    "type": "string",
+                    "description": "(vertex uint16, bone uint16, weight float32) big-endian records, one per bone influence, weights positive and normalized per vertex. Every vertex needs at least one; bones must be ones the donor's own SkinData skins to (the exporter moves other bones' weights to the nearest skinned ancestor)."
+                  },
+                  "ColorChannelData": {"type": "string", "description": "As RigidRebuild.ColorChannelData."},
+                  "ColorFacesData": {"type": "string", "description": "As RigidRebuild.ColorFacesData."},
+                  "UVChannels": {
+                    "type": "array",
+                    "description": "As RigidRebuild.UVChannels: the donor channel set, each in its format, channel 1 mirrored from channel 0 when the donor channels are identical.",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "UVChannelIndex": {"type": "integer", "minimum": 0},
+                        "UVChannelData": {"type": "string"},
+                        "UVFacesData": {"type": "string"}
+                      },
+                      "required": ["UVChannelIndex", "UVChannelData", "UVFacesData"]
+                    }
+                  },
+                  "FacesCount": {"type": "integer", "minimum": 1},
+                  "FacesData": {"type": "string", "description": "Face index buffer, big-endian uint16 triplets into VertexBufferData, in the same winding convention as Submeshes[].FacesData."},
+                  "FaceSurfaceTable": {"type": "array", "items": {"type": "string"}, "minItems": 1, "description": "As RigidRebuild.FaceSurfaceTable, with new surface keys sm0_new<K>."},
+                  "FaceSurfaceIndices": {"type": "string", "description": "As RigidRebuild.FaceSurfaceIndices."},
+                  "NewSurfaces": {"type": "array", "description": "As RigidRebuild.NewSurfaces (keys sm0_new<K>). The appended group's Type 3 declares position, lighting, colour and texture indices sized to the rebuilt counts.", "items": {"type": "object"}},
+                  "Reason": {"type": "array", "items": {"type": "string"}, "description": "Why the exporter chose the rebuild, for logging only: topology, object_transform, surfaces."}
+                },
+                "required": ["VertexBufferData", "Influences", "UVChannels", "FacesCount", "FacesData", "FaceSurfaceTable", "FaceSurfaceIndices"]
+              },
               "DrawStates": {
                 "type": "array",
                 "description": "One entry per display state (draw batch) in this submesh. Provides pointer-field offsets for writeExpandedMesh to relocate each primitive list into hammerspace, and the original data for --unpatch restoration.",

@@ -113,6 +113,28 @@ class GameOptionTests(unittest.TestCase):
         self.assertIn('already on', go.apply(self.image, ['cpu_vs_cpu'])[0])
         self.assertEqual(self.image.to_bytes(), once)
 
+    def test_cpu_stub_masks_the_held_buttons(self):
+        # The held word carries stick direction bits (0x000F); an exact compare missed A + Minus
+        # whenever the axis was off-center (2026-10-08).
+        go.apply(self.image, ['cpu_vs_cpu'])
+        stub = stub_of(self.image, go.CPU_SITE)
+        words = [self.image.u32(stub + i) for i in range(0, 0x24, 4)]
+        mask = ppc.one(0, lambda a: a.andi_(5, 5, go.BUTTONS))
+        compare = ppc.one(0, lambda a: a.cmpwi(5, go.BUTTONS))
+        self.assertIn(mask, words)
+        self.assertEqual(words.index(compare), words.index(mask) + 1)
+
+    def test_outdated_stub_is_replaced(self):
+        go.apply(self.image, ['cpu_vs_cpu'])
+        stub = stub_of(self.image, go.CPU_SITE)
+        self.image.write_word(stub + 0xC, ppc.one(stub + 0xC, lambda a: a.cmpwi(5, go.BUTTONS)))  # old exact check
+        log = go.apply(self.image, ['cpu_vs_cpu'])
+        self.assertIn('outdated stub replaced', log[0])
+        new_stub = stub_of(self.image, go.CPU_SITE)
+        self.assertNotEqual(new_stub, stub)
+        self.assertTrue(go._stub_current(self.image, go.BY_KEY['cpu_vs_cpu'].hooks[0]))
+        self.assertIn('already on', go.apply(self.image, ['cpu_vs_cpu'])[0])
+
     def test_foreign_patch_is_refused(self):
         self.image.write_word(go.CPU_SITE, 0x12345678)
         with self.assertRaisesRegex(go.GameOptionError, 'another patch'):

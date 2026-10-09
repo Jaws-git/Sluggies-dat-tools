@@ -630,6 +630,17 @@ def _rigid_mesh_kind(obj):
     return None, None
 
 
+def _add_material_mesh_kind(obj):
+    """Like _rigid_mesh_kind, but the skinned body (CompCount 6) counts as a
+    donor submesh too: a new material on it is exported through the body
+    rebuild (PLAN_ModelReplacements.md Milestone 4)."""
+    kind, submesh_index = _rigid_mesh_kind(obj)
+    if kind is None and obj is not None and obj.type == 'MESH' \
+            and obj.get('VertexBufferCompCount') == 6 and not obj.get('SluggiesCustomSubmesh'):
+        return 'donor', _submesh_index_of(obj)
+    return kind, submesh_index
+
+
 def _read_bone_hierarchy(sluggie_path):
     """The parsed .sluggie's BoneHierarchy list, or None if unreadable."""
     try:
@@ -936,13 +947,10 @@ class SLUGGIES_OT_add_material(bpy.types.Operator):
             if hasattr(cls, 'poll_message_set'):
                 cls.poll_message_set(HostBones.RE_IMPORT_MESSAGE)
             return False
-        kind, _submesh_index = _rigid_mesh_kind(obj)
+        kind, _submesh_index = _add_material_mesh_kind(obj)
         if kind is None:
             if hasattr(cls, 'poll_message_set'):
-                if obj is not None and obj.get('VertexBufferCompCount') == 6:
-                    cls.poll_message_set("New materials on skinned submeshes are not supported yet")
-                else:
-                    cls.poll_message_set("Select a rigid or custom submesh")
+                cls.poll_message_set("Select a donor or custom submesh")
             return False
         return True
 
@@ -979,9 +987,9 @@ class SLUGGIES_OT_add_material(bpy.types.Operator):
             self.report({"ERROR"}, _no_target_armature_message(context))
             return {"CANCELLED"}
 
-        kind, submesh_index = _rigid_mesh_kind(obj)
+        kind, submesh_index = _add_material_mesh_kind(obj)
         if kind is None:
-            self.report({"ERROR"}, "Select a rigid or custom submesh")
+            self.report({"ERROR"}, "Select a donor or custom submesh")
             return {"CANCELLED"}
 
         if self.template_source == 'NONE':
@@ -1079,15 +1087,19 @@ def _draw_rigid_mesh_box(layout, context):
     arm_obj = _find_target_armature(context)
     obj = context.active_object
     kind, _submesh_index = _rigid_mesh_kind(obj) if obj is not None else (None, None)
+    body = kind is None and obj is not None and _add_material_mesh_kind(obj)[0] == 'donor'
 
     box = layout.box()
-    box.label(text="Mesh" if kind == 'custom' else "Rigid mesh")
+    box.label(text="Mesh" if kind == 'custom' else "Body" if body else "Rigid mesh")
     if arm_obj is None:
         box.label(text=_no_target_armature_message(context), icon='INFO')
         return
     if kind is not None:
         box.label(text=_rigid_mesh_attachment_label(context, arm_obj, obj))
-    box.operator(SLUGGIES_OT_reassign_bone.bl_idname)
+    elif body:
+        box.label(text="Skinned body: follows its bone_<id> vertex groups")
+    if not body:
+        box.operator(SLUGGIES_OT_reassign_bone.bl_idname)
     box.operator(SLUGGIES_OT_add_material.bl_idname)
 
 
