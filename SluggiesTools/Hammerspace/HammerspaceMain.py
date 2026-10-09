@@ -278,7 +278,8 @@ class SkinnedRebuild:
     format, model space, Blender vertex order); ``influences`` lists
     ``(vertex, bone, weight)`` triples. The patcher assigns position slots in
     the canonical order (SkinnedRebuild.layout_skin), rebuilds the SKN from
-    them and re-encodes one GX_TRIANGLES list per drawing surface. The donor
+    them and re-encodes one primitive list (triangle strips plus a
+    GX_TRIANGLES block for the leftovers) per drawing surface. The donor
     display states are kept, as for a RigidRebuild."""
     vertex_data:          bytes
     influences:           list   # [(vertex, bone, weight)]
@@ -2125,7 +2126,7 @@ def _build_custom_submesh(
             layout = _custom_submesh_type3_descriptors(_custom_submesh_active_type3(records, record_index))
         drawn = {descriptor['key'] for descriptor in layout}
         restricted = [[{key: vertex.get(key, 0) for key in drawn} for vertex in face] for face in record_faces]
-        raw = drawlist.encodeDrawList(restricted, layout) + b'\x00'
+        raw = drawlist.encodeDrawList(restricted, layout, strips=True) + b'\x00'
         primitive_lists.append(raw + b'\x00' * ((-len(raw)) % 32))
     if cs.additional_surfaces:
         key_by_record = {drawing_index: cs.template_source}
@@ -2589,8 +2590,9 @@ def PatchGPLAppendSubmesh(
 # otherwise it stays in place, unreferenced (shown harmless in Dolphin,
 # 2026-09-26). The display states are the donor's own,
 # with ShaderModeEdited / DisplayStateParamBytesEdited / texture reassignments
-# applied: only the primitive lists are re-encoded (one GX_TRIANGLES list per
-# drawing surface), plus the Type-3 index widths where a count needs it. New
+# applied: only the primitive lists are re-encoded (one list of triangle
+# strips plus a GX_TRIANGLES block per drawing surface), plus the Type-3
+# index widths where a count needs it. New
 # surfaces are canonical ``T1 L0, [T1 L1], T4, T3, T6, T7`` groups appended
 # after the last donor record, so no donor state index moves.
 
@@ -3137,8 +3139,9 @@ def _rigid_rebuild_to_submesh(
     donor_color_array: tuple[int, int, bytes] | None = None,
 ) -> 'Submesh':
     """PLAN_EditRigidMeshes.md Phase 2 step 1: assemble a rebuilt donor rigid
-    submesh -- donor formats, donor states, one re-encoded GX_TRIANGLES list
-    per drawing surface, appended groups for new surfaces -- into a Submesh
+    submesh -- donor formats, donor states, one re-encoded primitive list
+    (strips plus a GX_TRIANGLES block) per drawing surface, appended groups
+    for new surfaces -- into a Submesh
     ready for _build_rigid_submesh_blob.
 
     *donor_color_array* is the donor blob's colour array for a submesh whose
@@ -3246,7 +3249,7 @@ def _rigid_rebuild_to_submesh(
                 source='hammerspace.main',
             )
         restricted = [[{key: vertex.get(key, 0) for key in drawn} for vertex in face] for face in record_faces]
-        raw = drawlist.encodeDrawList(restricted, descriptors) + b'\x00'
+        raw = drawlist.encodeDrawList(restricted, descriptors, strips=True) + b'\x00'
         primitive_lists.append(raw + b'\x00' * ((-len(raw)) % 32))
 
     donor_faces = {index: int(state.get('FaceCount') or 0) for index, state in enumerate(states)}
@@ -3861,9 +3864,10 @@ def _parse_skinned_rebuild(sub: dict, use_b64: bool) -> 'SkinnedRebuild | None':
 
 
 def _rebuild_primitive_lists(label: str, records: list[list], faces_by_record: dict[int, list]) -> list[bytes]:
-    """One encoded, 32-byte-padded GX_TRIANGLES list per display-state
-    record (``b''`` for a record that draws nothing), each restricted to the
-    attributes its active Type-3 layout draws."""
+    """One encoded, 32-byte-padded primitive list (greedy triangle strips
+    plus a GX_TRIANGLES block for the leftovers, as vanilla) per
+    display-state record (``b''`` for a record that draws nothing), each
+    restricted to the attributes its active Type-3 layout draws."""
     primitive_lists = []
     for record_index, _record in enumerate(records):
         record_faces = faces_by_record.get(record_index)
@@ -3883,7 +3887,7 @@ def _rebuild_primitive_lists(label: str, records: list[list], faces_by_record: d
                 source='hammerspace.main',
             )
         restricted = [[{key: vertex.get(key, 0) for key in drawn} for vertex in face] for face in record_faces]
-        raw = drawlist.encodeDrawList(restricted, descriptors) + b'\x00'
+        raw = drawlist.encodeDrawList(restricted, descriptors, strips=True) + b'\x00'
         primitive_lists.append(raw + b'\x00' * ((-len(raw)) % 32))
     return primitive_lists
 

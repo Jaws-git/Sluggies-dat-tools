@@ -241,7 +241,14 @@ def _record_faces(blob: dict, k: int) -> list[tuple[int, int, int]]:
         if record[0] == 3:
             setting = int.from_bytes(record[4:8], 'big')
     faces = decodeDrawList(blob['lists'][k], main._custom_submesh_type3_descriptors(setting))
-    return [tuple(vertex['position'] for vertex in face) for face in faces]
+    # Strips reorder and rotate the triangles; compare them as sorted cyclic
+    # rotations starting at the smallest corner (winding kept).
+    return sorted(_rotated(tuple(vertex['position'] for vertex in face)) for face in faces)
+
+
+def _rotated(tri: tuple[int, int, int]) -> tuple[int, int, int]:
+    k = min(range(3), key=lambda i: tri[i])
+    return (tri[k], tri[(k + 1) % 3], tri[(k + 2) % 3])
 
 
 def _skn_entries(skn: bytes) -> dict:
@@ -752,7 +759,7 @@ class SkinnedRebuildBuildTests(unittest.TestCase):
         faces = _record_faces(blob, synthetic_donor.SURFACE_STATE_INDEX)
         self.assertEqual(len(faces), N - 2)
         self.assertEqual(faces[0][0], 0)
-        self.assertEqual(faces[-1][2], acc_slot)
+        self.assertEqual(max(corner for face in faces for corner in face), acc_slot)
 
     def test_more_than_256_slots_widen_the_position_index(self):
         count = 300

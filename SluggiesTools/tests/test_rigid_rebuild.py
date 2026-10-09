@@ -205,7 +205,14 @@ def _record_faces(blob: dict, k: int) -> list[tuple[int, int, int]]:
         if record[0] == 3:
             setting = int.from_bytes(record[4:8], 'big')
     faces = decodeDrawList(blob['lists'][k], main._custom_submesh_type3_descriptors(setting))
-    return [tuple(vertex['position'] for vertex in face) for face in faces]
+    # Strips reorder and rotate the triangles; compare them as sorted cyclic
+    # rotations starting at the smallest corner (winding kept).
+    return sorted(_rotated(tuple(vertex['position'] for vertex in face)) for face in faces)
+
+
+def _rotated(tri: tuple[int, int, int]) -> tuple[int, int, int]:
+    k = min(range(3), key=lambda i: tri[i])
+    return (tri[k], tri[(k + 1) % 3], tri[(k + 2) % 3])
 
 
 def _type3(blob: dict, k: int) -> int:
@@ -484,7 +491,7 @@ class RigidRebuildBuildTests(unittest.TestCase):
         self.assertEqual(rebuilt['positions'], donor['positions'])
         self.assertEqual(rebuilt['records'], donor['records'])
         self.assertEqual(_record_faces(rebuilt, 5), _fan(synthetic_donor.RIGID_VERTEX_COUNT))
-        self.assertEqual(rebuilt['lists'][5][0], 0x90)
+        self.assertEqual(rebuilt['lists'][5][0], 0x98)      # a fan strips into one run
         self.assertEqual(len(rebuilt['lists'][5]) % 32, 0)
         self.assertEqual(result.validation_report['validator_facts']['act_geo_id_owners'][RIGID], [OWNER])
 
