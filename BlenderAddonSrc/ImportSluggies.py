@@ -369,8 +369,65 @@ def _facial_edit_lookup(facial_edited):
     return lookup
 
 
-def add_facial_shape_keys(obj, submesh_index, facial_data, facial_edited=None):
-    """Add facial expression keys; Blender Basis represents pose zero."""
+def _decode_rebuild_facial_poses(rebuild_poses, quant_info, record_stride=12):
+    """``SkinnedRebuild.FacialPoses`` (12-byte ``x y z nx ny nz`` records) or
+    ``RigidRebuild.FacialPoses`` (6-byte ``x y z`` records) ->
+    ``[(object_index, [[(vertex, (dx, dy, dz)), ...] per pose after pose
+    zero])]``, deltas in the rebuild's vertex order and position format
+    (the body's normal components are dropped; a rigid entry's normal
+    lists are not read, Blender derives shape-key normals itself)."""
+    divisor = 1 << (quant_info & 0xF)
+    result = []
+    for entry in rebuild_poses or []:
+        raw = _to_bytes(entry.get("Vertices")) if entry.get("Vertices") else b""
+        vertices = [value for (value,) in struct.iter_unpack('>H', raw)]
+        poses = []
+        for delta in entry.get("PoseDeltas") or []:
+            raw_delta = _to_bytes(delta)
+            if len(raw_delta) != len(vertices) * record_stride:
+                poses.append([])
+                continue
+            poses.append([
+                (vertex, tuple(struct.unpack_from('>3h', raw_delta, k * record_stride)[axis] / divisor for axis in range(3)))
+                for k, vertex in enumerate(vertices)
+            ])
+        result.append((entry.get("ObjectIndex"), poses))
+    return result
+
+
+def _add_rebuild_facial_shape_keys(obj, rebuild_poses, record_stride=12):
+    """Shape keys of a rebuilt submesh (``SkinnedRebuild.FacialPoses`` or
+    ``RigidRebuild.FacialPoses``): the donor's run lists name donor
+    vertices, so the keys come from the rebuild's own deltas, in its vertex
+    order."""
+    decoded = _decode_rebuild_facial_poses(rebuild_poses, obj.get("VertexBufferQuantizeInfo", 0), record_stride)
+    if not any(poses for _object_index, poses in decoded):
+        obj["FacialShapeKeyCount"] = 0
+        return 0
+    basis_key = obj.shape_key_add(name="Basis", from_mix=False)
+    shape_key_count = 0
+    for object_index, poses in decoded:
+        for pose_index, entries in enumerate(poses, start=1):
+            key = obj.shape_key_add(name=f"facial_object_{object_index}_pose_{pose_index}", from_mix=False)
+            key.value = 0.0
+            for vertex_index, delta in entries:
+                if vertex_index < len(key.data):
+                    basis = basis_key.data[vertex_index].co
+                    key.data[vertex_index].co = tuple(basis[axis] + delta[axis] for axis in range(3))
+            shape_key_count += 1
+    obj["FacialShapeKeyCount"] = shape_key_count
+    return shape_key_count
+
+
+def add_facial_shape_keys(obj, submesh_index, facial_data, facial_edited=None, rebuild_poses=None,
+                          rebuild_record_stride=12):
+    """Add facial expression keys; Blender Basis represents pose zero.
+    *rebuild_poses* (a rebuild's ``FacialPoses``, possibly empty) replaces
+    the donor's poses on a rebuilt submesh, whose vertices the donor run
+    lists no longer describe; *rebuild_record_stride* is 12 for the body's
+    interleaved records and 6 for a rigid submesh's."""
+    if rebuild_poses is not None:
+        return _add_rebuild_facial_shape_keys(obj, rebuild_poses, rebuild_record_stride)
     if not facial_data:
         return 0
     facial_objects = [
@@ -1562,9 +1619,12 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
                         _apply_import_rotation(edit_obj)
                     if bone_list:
                         _apply_nonskinned_transform(edit_obj, i, bone_list, abs_bone_mats, effective_owner)
+                    rebuild = submesh.get("SkinnedRebuild") or submesh.get("RigidRebuild")
                     add_facial_shape_keys(
                         edit_obj, i, model.get("FacialPoseData"),
-                        model.get("FacialPoseDataEdited")
+                        model.get("FacialPoseDataEdited"),
+                        rebuild_poses=(rebuild.get("FacialPoses") or []) if rebuild else None,
+                        rebuild_record_stride=12 if submesh.get("SkinnedRebuild") else 6,
                     )
                     imported += 1
 

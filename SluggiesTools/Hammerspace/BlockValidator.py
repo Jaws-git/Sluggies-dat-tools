@@ -988,6 +988,11 @@ def _validate_ptr7_facial(state: _ValidationState, gpl_submeshes: list[dict]) ->
                     f'entry count is {entry_count}'
                 )
                 continue
+            # The game reads run pairs until one with count 0 (main.dol
+            # 0x805325B8); every vanilla run list ends with that pair.
+            if run_end == run_list_offset or _read_u16(run_end - 2) != 0:
+                state.fail(f'{label} run-list does not end with a zero-count terminator pair')
+                continue
 
             target_quantize_info = None
             target_limit = None

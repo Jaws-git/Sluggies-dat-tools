@@ -26,6 +26,7 @@ import HammerspaceMain as main  # noqa: E402
 import RigidRebuildExport as rre  # noqa: E402
 import SkinnedRebuildExport as sre  # noqa: E402
 import synthetic_donor  # noqa: E402
+import test_skinned_rebuild  # noqa: E402
 
 BONE_A = synthetic_donor.SKINNED_BONE      # 3
 BONE_B = synthetic_donor.SKN_ACC_BONE      # 6
@@ -76,7 +77,9 @@ class DonorFactsTests(unittest.TestCase):
         self.assertTrue(donor.facial)
         warning = sre.facial_warning('body', donor, 3)
         self.assertIn('no facial animation', warning)
-        self.assertIn('shape keys', warning)
+        self.assertIn('Basis', warning)
+        self.assertIn('Re-import', sre.facial_warning('body', donor, 0))
+        self.assertIsNone(sre.facial_warning('body', donor, 3, carried=True))
         self.assertIsNone(sre.facial_warning('body', _donor, 0))
 
     def test_position_format_error(self):
@@ -254,6 +257,85 @@ class EntryTests(unittest.TestCase):
     def test_mode_reason(self):
         self.assertEqual(sre.mode_reason('body', ['topology']), 'body rebuild of body (topology)')
 
+    # --- facial poses (Milestone 4.7) ---
+
+    def _keys(self, moved=None, normals=False, missing=False, object_index=0, pose_count=3):
+        """Shape keys of one facial object: pose 1 moves *moved* vertices by
+        +2 on x (and tilts their normal to +X when *normals*), pose 2 is
+        missing when *missing*, else identical to the Basis."""
+        basis = list(self.local)
+        pose1 = [(x + 2.0, y, z) if i in (moved or []) else (x, y, z) for i, (x, y, z) in enumerate(basis)]
+        basis_normals = [(0.0, 0.0, 1.0)] * N if normals else None
+        pose1_normals = [(1.0, 0.0, 0.0) if i in (moved or []) else (0.0, 0.0, 1.0) for i in range(N)] if normals else None
+        return sre.FacialObjectKeys(
+            object_index=object_index, pose_count=pose_count,
+            pose_positions=[pose1, None if missing else list(basis)],
+            pose_normals=[pose1_normals, None if missing else basis_normals],
+            basis_positions=basis, basis_normals=basis_normals,
+        )
+
+    def test_facial_poses_keep_only_moved_vertices_as_deltas(self):
+        divisor = 1 << (synthetic_donor.SKINNED_QUANTIZE_INFO & 0xF)
+        warnings, infos = [], []
+        poses = sre.encode_facial_poses('body', [self._keys(moved=[2, 4])], self.geometry,
+                                        synthetic_donor.SKINNED_QUANTIZE_INFO, True, warnings, infos)
+        self.assertEqual(len(poses), 1)
+        self.assertEqual(struct.unpack('>2H', FieldCodec.decode_field(poses[0]['Vertices'])), (2, 4))
+        self.assertEqual(len(poses[0]['PoseDeltas']), 2)
+        two = 2 * divisor
+        self.assertEqual(struct.unpack('>12h', FieldCodec.decode_field(poses[0]['PoseDeltas'][0])), (two, 0, 0, 0, 0, 0) * 2)
+        self.assertEqual(FieldCodec.decode_field(poses[0]['PoseDeltas'][1]), bytes(24))
+        self.assertEqual(warnings, [])
+        self.assertEqual(len(infos), 1)
+        self.assertIn('2 vertex(es)', infos[0])
+
+    def test_facial_poses_carry_normal_deltas(self):
+        divisor = 1 << (synthetic_donor.SKINNED_QUANTIZE_INFO & 0xF)
+        poses = sre.encode_facial_poses('body', [self._keys(moved=[1], normals=True)], self.geometry,
+                                        synthetic_donor.SKINNED_QUANTIZE_INFO)
+        self.assertEqual(struct.unpack('>6h', FieldCodec.decode_field(poses[0]['PoseDeltas'][0])),
+                         (2 * divisor, 0, 0, divisor, 0, -divisor))
+
+    def test_facial_poses_missing_key_and_unmoving_object(self):
+        warnings = []
+        poses = sre.encode_facial_poses(
+            'body', [self._keys(moved=[3], missing=True), self._keys(object_index=1)], self.geometry,
+            synthetic_donor.SKINNED_QUANTIZE_INFO, True, warnings,
+        )
+        self.assertEqual(len(warnings), 2)
+        self.assertIn('no shape key for pose(s) 2', warnings[0])
+        self.assertIn('moves no vertex', warnings[1])
+        self.assertEqual(struct.unpack('>H', FieldCodec.decode_field(poses[0]['Vertices'])), (3,))
+        self.assertEqual(FieldCodec.decode_field(poses[0]['PoseDeltas'][1]), bytes(12))
+        self.assertEqual(poses[1]['ObjectIndex'], 1)
+        self.assertEqual(struct.unpack('>H', FieldCodec.decode_field(poses[1]['Vertices'])), (0,))
+        self.assertEqual([FieldCodec.decode_field(d) for d in poses[1]['PoseDeltas']], [bytes(12)] * 2)
+
+    def test_facial_poses_round_trip_through_the_patcher(self):
+        section, _objects = test_skinned_rebuild._facial_section()
+        entry = self._entry()
+        entry['FacialPoses'] = sre.encode_facial_poses(
+            'body', [self._keys(moved=[2, 4])], self.geometry, synthetic_donor.SKINNED_QUANTIZE_INFO,
+        )
+        with synthetic_donor.donor_environment() as env:
+            data = env.reload()
+            model = data['SluggiesModel']
+            model['UseHammerspace'] = True
+            model['FacialPoseData'] = test_skinned_rebuild._facial_data_from_section(section)
+            model['TrailingSections'] = [
+                {'HeaderFieldOffset': '0x18', 'OriginalPtr': '0x1000', 'Length': len(section), 'Data': base64.b64encode(section).decode()},
+            ]
+            model['Submeshes'][0]['SkinnedRebuild'] = entry
+            main._validate_skinned_rebuild(model)
+            donor_header = bytearray(main.CloneHEADER(env.model_offset))
+            struct.pack_into('>I', donor_header, 0x18, 0x1000)
+            from unittest import mock
+            with mock.patch.object(main, 'CloneHEADER', return_value=bytes(donor_header)):
+                result = main.BuildModelBlock(data, main.SectionModes(gpl='build', skn='build'), sluggie_path=env.sluggie_path)
+            self.assertTrue(result.validation_report['valid'], result.validation_report.get('errors'))
+            ptr7 = struct.unpack_from('>I', result.block, 0x18)[0]
+            self.assertEqual(test_skinned_rebuild._parse_facial_runs(result.block[ptr7:], 0)[0], [2, 4])
+
 
 class _Mat(dict):
     def __init__(self, name, **props):
@@ -283,6 +365,55 @@ class GlueTests(unittest.TestCase):
         obj = SimpleNamespace(vertex_groups=groups, data=SimpleNamespace(vertices=vertices))
         self.assertEqual(helpers['_vertex_bone_weights'](obj), [{3: 0.5, 6: 0.5}, {}])
 
+    def test_facial_shape_key_data(self):
+        helpers = _load(EXPORTER_PATH, {'_facial_shape_key_data', '_shape_key_vertex_normals'},
+                        {'SkinnedRebuildExport': sre})
+        model = {'FacialPoseData': {'PoseCount': 3, 'Objects': [
+            {'ObjectIndex': 0, 'SubmeshIndex': 0, 'PoseCount': 3},
+            {'ObjectIndex': 1, 'SubmeshIndex': 2, 'PoseCount': 2},
+        ]}}
+
+        class Key:
+            def __init__(self, cos, normals=True):
+                self.data = [SimpleNamespace(co=co) for co in cos]
+                self._normals = normals
+
+            def normals_vertex_get(self):
+                if not self._normals:
+                    raise RuntimeError('no normals')
+                return [0.0, 0.0, 1.0] * len(self.data)
+
+        blocks = {'Basis': Key([(0, 0, 0), (1, 0, 0)]), 'facial_object_0_pose_1': Key([(0, 0, 0), (1, 0.5, 0)])}
+        obj = SimpleNamespace(data=SimpleNamespace(shape_keys=SimpleNamespace(key_blocks=SimpleNamespace(get=blocks.get))))
+        keys = helpers['_facial_shape_key_data'](obj, model, 0)
+        self.assertEqual(len(keys), 1)
+        self.assertEqual((keys[0].object_index, keys[0].pose_count), (0, 3))
+        self.assertEqual(keys[0].pose_positions[0][1], (1, 0.5, 0))
+        self.assertIsNone(keys[0].pose_positions[1])
+        self.assertEqual(keys[0].basis_normals, [(0.0, 0.0, 1.0)] * 2)
+        self.assertEqual(keys[0].pose_normals, [[(0.0, 0.0, 1.0)] * 2, None])
+        self.assertIsNone(helpers['_facial_shape_key_data'](obj, model, 1))        # no object on submesh 1
+        no_basis = SimpleNamespace(data=SimpleNamespace(shape_keys=None))
+        self.assertIsNone(helpers['_facial_shape_key_data'](no_basis, model, 0))
+        self.assertIsNone(helpers['_shape_key_vertex_normals'](Key([(0, 0, 0)], normals=False)))
+
+    def test_importer_decodes_rebuild_facial_poses(self):
+        helpers = _load(IMPORTER_PATH, {'_decode_rebuild_facial_poses'},
+                        {'struct': struct, '_to_bytes': lambda value: FieldCodec.decode_field(value)})
+        poses = test_skinned_rebuild._facial_poses([2, 5], deltas=[[(2048, 0, -1024, 7, 7, 7), (0, 0, 0, 0, 0, 0)], [(1, 2, 3, 0, 0, 0)] * 2])
+        decoded = helpers['_decode_rebuild_facial_poses'](poses, synthetic_donor.SKINNED_QUANTIZE_INFO)
+        divisor = 1 << (synthetic_donor.SKINNED_QUANTIZE_INFO & 0xF)
+        self.assertEqual(decoded, [(0, [
+            [(2, (2048 / divisor, 0.0, -1024 / divisor)), (5, (0.0, 0.0, 0.0))],
+            [(2, (1 / divisor, 2 / divisor, 3 / divisor)), (5, (1 / divisor, 2 / divisor, 3 / divisor))],
+        ])])
+        self.assertEqual(helpers['_decode_rebuild_facial_poses']([], 59), [])
+        # A rigid rebuild's 6-byte x y z records.
+        rigid = [{'ObjectIndex': 1, 'Vertices': base64.b64encode(struct.pack('>H', 4)).decode(),
+                  'PoseDeltas': [base64.b64encode(struct.pack('>3h', 2048, 0, 1)).decode()]}]
+        self.assertEqual(helpers['_decode_rebuild_facial_poses'](rigid, 59, 6), [(1, [[(4, (1.0, 0.0, 1 / 2048))]])])
+        self.assertEqual(helpers['_decode_rebuild_facial_poses'](rigid, 59), [(1, [[]])])
+
     def test_execute_wiring(self):
         source = EXPORTER_PATH.read_text(encoding='utf-8')
         execute = source[source.index('    def execute(self, context):'):]
@@ -293,7 +424,9 @@ class GlueTests(unittest.TestCase):
         self.assertIn('if plan is not None or skinned_plan is not None:', execute)
         # A rebuilt body never writes SkinDataEdited and its shape keys are not encoded.
         self.assertLess(execute.index('if skinned_plans:\n'), execute.index('elif skinned_donor_objects(candidates, data):'))
-        self.assertIn('_drop_facial_edits_for_submesh(data, skinned_plan.submesh_index)', execute)
+        self.assertIn('_drop_facial_edits_for_submesh(data, rebuilt_plan.submesh_index)', execute)
+        self.assertIn('entry["FacialPoses"] = SkinnedRebuildExport.encode_facial_poses(', source)
+        self.assertIn('facial_keys = _facial_shape_key_data(obj, model, submesh_index) if donor.facial else None', source)
         self.assertIn('body rebuild (', execute)
         # The slot-preserving branches drop a stale entry.
         self.assertEqual(execute.count('target_submesh.pop("SkinnedRebuild", None)'), 3)
@@ -303,6 +436,8 @@ class GlueTests(unittest.TestCase):
         self.assertIn('rebuild = view.get("RigidRebuild") or view.get("SkinnedRebuild")', importer)
         self.assertIn('influences=skinned_influences', importer)
         self.assertIn('submesh.get("RigidRebuild") or submesh.get("SkinnedRebuild") or {}', importer)
+        self.assertIn('rebuild_poses=(rebuild.get("FacialPoses") or []) if rebuild else None', importer)
+        self.assertIn('rebuild_record_stride=12 if submesh.get("SkinnedRebuild") else 6', importer)
         panel = PANEL_PATH.read_text(encoding='utf-8')
         self.assertIn('_add_material_mesh_kind(obj)', panel)
         self.assertNotIn('New materials on skinned submeshes are not supported yet', panel)

@@ -32,13 +32,13 @@ from binfmt import (
 from BlockValidator import validate_model_block
 from GeometryRebuild import (
     apply_desired_texture_assignments,
-    layout_skin_membership_edit,
     rebuild_edited_uvs,
     rebuild_surface_assignments,
 )
 from ArchiveContainer import parse_archive_container, rebuild_archive_container
 from ModelFormat import align_array_offset, compute_mem_clear_range, pad_array
 import SkinnedRebuild as _skinned
+import FacialPoseRebuild as _facial
 from InplacePatcher import root_scale as _root_scale
 import act_rebuild
 
@@ -266,6 +266,7 @@ class RigidRebuild:
     face_surface_indices: tuple  # one index into face_surface_table per triangle
     new_surfaces:         list   # [RigidRebuildNewSurface], in append order
     reasons:              list   # [str], logging only
+    facial_poses:         list | None = None   # [FacialPoseRebuild.RigidPoses]; None = export without FacialPoses
 
 
 @dataclass
@@ -290,6 +291,7 @@ class SkinnedRebuild:
     face_surface_indices: tuple  # one index into face_surface_table per triangle
     new_surfaces:         list   # [RigidRebuildNewSurface], in append order
     reasons:              list   # [str], logging only
+    facial_poses:         list = field(default_factory=list)   # [FacialPoseRebuild.BodyPoses], Milestone 4.7
 
 
 @dataclass
@@ -2582,8 +2584,10 @@ def PatchGPLAppendSubmesh(
 # transform, a host-bone change that keeps the world position, or faces moved
 # between surfaces -- is rebuilt from ``Submeshes[i].RigidRebuild`` with the
 # custom-submesh serializer. The new blob goes before GPLUserData and
-# descriptor i is repointed; the old blob stays in place, unreferenced (shown
-# harmless in Dolphin, 2026-09-26). The display states are the donor's own,
+# descriptor i is repointed; the old blob is dropped when it leads the blob
+# region and everything after it can shift as one unit (_drop_donor_blobs),
+# otherwise it stays in place, unreferenced (shown harmless in Dolphin,
+# 2026-09-26). The display states are the donor's own,
 # with ShaderModeEdited / DisplayStateParamBytesEdited / texture reassignments
 # applied: only the primitive lists are re-encoded (one GX_TRIANGLES list per
 # drawing surface), plus the Type-3 index widths where a count needs it. New
@@ -2690,9 +2694,6 @@ def _validate_rigid_rebuilds(model: dict) -> None:
         in_place = _rigid_rebuild_in_place_edit_fields(sub)
         if in_place:
             fail('cannot be combined with in-place edit fields on the same submesh: ' + ', '.join(in_place))
-        if index in facial_submeshes:
-            fail('is not allowed on a submesh with facial poses (ptr7): the pose data references donor vertices')
-
         host_bone_id = rebuild.get('HostBoneId')
         if not isinstance(host_bone_id, int) or isinstance(host_bone_id, bool) or not (0 <= host_bone_id <= 0xFFFF):
             fail(f'HostBoneId {host_bone_id!r} must be a uint16 bone index')
@@ -2743,16 +2744,27 @@ def _validate_rigid_rebuilds(model: dict) -> None:
                     fail(f'{label} face-index buffer holds {loops} loops, expected {faces_count * 3}')
 
         donor_normals = sub.get('NormalBuffer') if isinstance(sub.get('NormalBuffer'), dict) else None
+        normal_count = normal_stride = None
         if donor_normals and donor_normals.get('NormalBufferData'):
             if rebuild.get('NormalBufferData') is None or rebuild.get('NormalFacesData') is None:
                 fail('must carry NormalBufferData and NormalFacesData: the donor submesh has a NormalBuffer')
             else:
-                stride = int(donor_normals.get('NormalBufferCompCount', 3)) * _vb_comp_size(
+                normal_stride = int(donor_normals.get('NormalBufferCompCount', 3)) * _vb_comp_size(
                     int(donor_normals.get('NormalBufferQuantizeInfo', _CUSTOM_SUBMESH_NORMAL_FORMAT[1]))
                 )
-                _check_loop_buffer('NormalBufferData', rebuild.get('NormalBufferData'), rebuild.get('NormalFacesData'), stride)
+                _check_loop_buffer('NormalBufferData', rebuild.get('NormalBufferData'), rebuild.get('NormalFacesData'), normal_stride)
+                normal_count = len(_decode(rebuild['NormalBufferData'], use_b64) or b'') // normal_stride
         elif rebuild.get('NormalBufferData') is not None or rebuild.get('NormalFacesData') is not None:
             fail('carries normals but the donor submesh has no NormalBuffer')
+
+        if index in facial_submeshes or rebuild.get('FacialPoses') is not None:
+            # Facial poses (ptr7) on this submesh follow the rebuild through
+            # FacialPoses; without them the patcher neutralizes the objects.
+            _validate_rebuild_facial_poses(
+                model, rebuild, fail, use_b64, index, object_error=_facial.rigid_object_error,
+                vertex_count=vertex_count, position_stride=position_stride,
+                normal_count=normal_count, normal_stride=normal_stride,
+            )
 
         donor_colors = sub.get('ColorChannels') or []
         if donor_colors:
@@ -2913,6 +2925,19 @@ def _parse_rigid_rebuild(sub: dict, use_b64: bool) -> 'RigidRebuild | None':
         face_surface_indices=struct.unpack(f'>{len(indices_raw) // 2}H', indices_raw),
         new_surfaces=new_surfaces,
         reasons=list(raw.get('Reason') or []),
+        facial_poses=None if raw.get('FacialPoses') is None else [
+            _facial.RigidPoses(
+                object_index=int(entry['ObjectIndex']),
+                vertices=list(_u16_values(_decode(entry['Vertices'], use_b64) or b'')),
+                deltas=[_decode(delta, use_b64) for delta in entry.get('PoseDeltas') or []],
+                normal_entries=(
+                    None if entry.get('NormalEntries') is None
+                    else list(_u16_values(_decode(entry['NormalEntries'], use_b64) or b''))
+                ),
+                normal_deltas=[_decode(delta, use_b64) for delta in entry.get('NormalPoseDeltas') or []],
+            )
+            for entry in raw['FacialPoses']
+        ],
     )
 
 
@@ -3249,22 +3274,104 @@ def _rigid_rebuild_to_submesh(
     )
 
 
+def _drop_donor_blobs(
+    gpl_bytes: bytes, replaced: list[int], insertion_point: int,
+) -> tuple[bytes, int, dict[int, int], dict[int, str]]:
+    """Remove the donor blobs of the *replaced* submeshes from the front of
+    the blob region, so a rebuilt block does not carry them unreferenced.
+
+    A blob's span runs from its DOLayout to the next blob's (or to
+    GPLUserData). A blob is dropped only when every blob below it is dropped
+    too, so that everything that stays (the remaining blobs, the string
+    table after the last blob, a PatchGPLUVRebuild tail) moves as one unit.
+    Pointers inside a blob are unsigned and blob-relative, so a remaining
+    blob can only address bytes above its own DOLayout, never the dropped
+    span; the one GPL-absolute pointer that can reach back, a descriptor's
+    name pointer, is checked. The cut is rounded down to a multiple of 32 so
+    the remaining blobs keep their mod-32 residue (skinned positions and
+    primitive lists stay aligned); the few leftover bytes stay as a zeroed
+    gap.
+
+    Returns ``(gpl, cut, dropped, kept)``: the trimmed section, the number of
+    bytes removed (every GPL-absolute offset at or past the dropped span
+    moves by ``-cut``), ``{submesh: span bytes}`` for the dropped blobs and
+    ``{submesh: reason}`` for the ones kept."""
+    _magic, _user_data_len, user_data_ptr, count, desc_ptr = struct.unpack_from('>5I', gpl_bytes, 0)
+    descriptors = [struct.unpack_from('>II', gpl_bytes, desc_ptr + i * 8) for i in range(count)]
+    by_start = sorted(range(count), key=lambda i: descriptors[i][0])
+    replaced_set = set(replaced)
+    dropped: dict[int, int] = {}
+    kept: dict[int, str] = {}
+    region_start = descriptors[by_start[0]][0] if by_start else insertion_point
+    region_end = region_start
+    for rank, index in enumerate(by_start):
+        if index not in replaced_set:
+            break
+        next_start = descriptors[by_start[rank + 1]][0] if rank + 1 < count else insertion_point
+        if next_start < region_end or next_start > insertion_point:
+            kept[index] = 'donor blob span is out of order'
+            break
+        dropped[index] = next_start - descriptors[index][0]
+        region_end = next_start
+    for index in replaced_set - set(dropped) - set(kept):
+        kept[index] = 'a donor blob that stays lies below it'
+    if not dropped:
+        return gpl_bytes, 0, dropped, kept
+
+    offenders = [i for i in range(count) if i not in dropped and descriptors[i][1] < region_end]
+    if offenders:
+        reason = f'submesh {offenders[0]} keeps its name inside the dropped span'
+        return gpl_bytes, 0, {}, {i: reason for i in replaced_set}
+
+    cut = (region_end - region_start) & ~31
+    if not cut:
+        return gpl_bytes, 0, {}, {i: 'donor blob span is under 32 bytes' for i in replaced_set}
+    out = bytearray(gpl_bytes[:region_start])
+    out += b'\x00' * (region_end - region_start - cut)
+    out += gpl_bytes[region_end:]
+    for i, (layout_ptr, name_ptr) in enumerate(descriptors):
+        if i in dropped:
+            continue
+        struct.pack_into(
+            '>II', out, desc_ptr + i * 8,
+            layout_ptr - cut if layout_ptr >= region_end else layout_ptr,
+            name_ptr - cut if name_ptr >= region_end else name_ptr,
+        )
+    if user_data_ptr:
+        struct.pack_into('>I', out, 0x08, user_data_ptr - cut)
+    return bytes(out), cut, dropped, kept
+
+
 def _splice_blobs_before_user_data(
     gpl_bytes: bytes, blobs: list[tuple[int, bytes, int]], donor_gpl_length: int | None,
-) -> tuple[bytes, int]:
+) -> tuple[bytes, int, dict[int, int]]:
     """Insert *blobs* (``(submesh_index, blob_bytes, name_off)``) before
     GPLUserData, each on a 32-byte boundary, and repoint their descriptors
-    (E4). Nothing else moves: every pointer inside a blob is blob-relative,
-    and the old blobs stay where they are. A payload PatchGPLUVRebuild
+    (E4). The replaced submeshes' donor blobs are dropped where
+    :func:`_drop_donor_blobs` allows it (the lowest blobs of the section)
+    and otherwise stay in place unreferenced. Nothing else moves: every
+    pointer inside a blob is blob-relative. A payload PatchGPLUVRebuild
     appended past *donor_gpl_length* keeps its distance to the blobs that
     address it (GPLUserData's old spot is left as a zeroed gap, as in
-    PatchGPLAppendSubmesh). Returns ``(gpl, length)`` where ``length`` is the
-    whole new section, which has no appended tail any more."""
+    PatchGPLAppendSubmesh). Returns ``(gpl, length, dropped)`` where
+    ``length`` is the whole new section, which has no appended tail any
+    more, and ``dropped`` maps each dropped submesh to its donor span size."""
     _magic, _user_data_len, user_data_ptr, count, desc_ptr = struct.unpack_from('>5I', gpl_bytes, 0)
     tail_start = len(gpl_bytes) if donor_gpl_length is None else donor_gpl_length
     insertion_point = user_data_ptr if user_data_ptr else tail_start
     if not (desc_ptr <= insertion_point <= tail_start <= len(gpl_bytes)):
         raise ValueError('GPL section layout is not in the shape the rigid rebuild expects')
+    gpl_bytes, cut, dropped, kept = _drop_donor_blobs(
+        gpl_bytes, [index for index, _blob, _name in blobs], insertion_point,
+    )
+    for index, reason in sorted(kept.items()):
+        _slogger.info(
+            f'[GPL] submesh {index}: the donor blob stays in place unreferenced ({reason})',
+            source='hammerspace.main',
+        )
+    tail_start -= cut
+    insertion_point -= cut
+    user_data_ptr = struct.unpack_from('>I', gpl_bytes, 0x08)[0]
     user_data_region = bytes(gpl_bytes[insertion_point:tail_start])
     appended_tail = bytes(gpl_bytes[tail_start:])
     out = bytearray(gpl_bytes[:insertion_point])
@@ -3281,7 +3388,7 @@ def _splice_blobs_before_user_data(
     if user_data_ptr:
         struct.pack_into('>I', out, 0x08, len(out))
     out += user_data_region
-    return bytes(out), len(out)
+    return bytes(out), len(out), dropped
 
 
 def PatchGPLReplaceRigidSubmeshes(
@@ -3291,7 +3398,8 @@ def PatchGPLReplaceRigidSubmeshes(
 ) -> tuple[bytes, int]:
     """PLAN_EditRigidMeshes.md Phase 2 step 2: rebuild every donor submesh
     that carries a RigidRebuild as a fresh blob before GPLUserData and point
-    its descriptor at it; the old blob stays unreferenced. Returns the new
+    its descriptor at it; the old blob is dropped when it leads the blob
+    region (_drop_donor_blobs), else it stays unreferenced. Returns the new
     section and its length (the value to hand PatchGPLAppendSubmesh as
     ``donor_gpl_length``, since any UV-rebuild tail is folded in)."""
     rebuilt = [sub for sub in parsed.mesh.submeshes if sub.rigid_rebuild is not None]
@@ -3316,11 +3424,11 @@ def PatchGPLReplaceRigidSubmeshes(
         )
         blob, name_off = _build_rigid_submesh_blob(new_sub)
         blobs.append((sub.submesh_index, blob, name_off))
-    out, length = _splice_blobs_before_user_data(gpl_bytes, blobs, donor_gpl_length)
+    out, length, dropped = _splice_blobs_before_user_data(gpl_bytes, blobs, donor_gpl_length)
     for submesh_index, blob, _name_off in blobs:
         _slogger.info(
-            f'[GPL] replaced submesh {submesh_index} with a {len(blob):,}-byte rebuilt blob; '
-            'the donor blob stays in place unreferenced',
+            f'[GPL] replaced submesh {submesh_index} with a {len(blob):,}-byte rebuilt blob'
+            + (f'; dropped its {dropped[submesh_index]:,}-byte donor blob' if submesh_index in dropped else ''),
             source='hammerspace.main',
         )
     return out, length
@@ -3335,8 +3443,9 @@ def PatchGPLReplaceRigidSubmeshes(
 # RigidRebuild) and with the SKN rebuilt from the canonical layout
 # (SkinnedRebuild.layout_skin): every vertex has one direct SK1/SK2 write,
 # entries sit on their own cache lines, sources mirror the position buffer,
-# memClr is 0/0. Facial poses (ptr7) that address submesh 0 are dropped,
-# because they name the donor's vertex order.
+# memClr is 0/0. Facial poses (ptr7) that address submesh 0 are rebuilt for
+# the new vertex order from the rebuild's FacialPoses (Milestone 4.7), or
+# dropped when the rebuild carries none.
 
 _SKINNED_REBUILD_COMP_COUNT = 6
 _SKINNED_REBUILD_INFLUENCE = struct.Struct('>HHf')   # (vertex, bone, weight)
@@ -3593,8 +3702,117 @@ def _validate_skinned_rebuild(model: dict) -> None:
         ):
             fail('Reason must be a list of strings')
 
+        _validate_skinned_rebuild_facial_poses(model, rebuild, fail, use_b64, vertex_count, stride, index)
+
     if errors:
         raise ValueError('; '.join(errors))
+
+
+def _validate_facial_entry_list(
+    fail, label: str, entry: dict, list_key: str, deltas_key: str, count: int | None, stride: int,
+    pose_count: int, noun: str, plural: str,
+) -> None:
+    """One ``(indices, delta arrays)`` pair of a ``FacialPoses`` entry:
+    ascending uint16 indices inside *count* entries, ``pose_count - 1``
+    delta arrays of ``len(indices) * stride`` bytes."""
+    raw_indices = _decode(entry.get(list_key)) if entry.get(list_key) is not None else b''
+    if not raw_indices or len(raw_indices) % 2:
+        fail(f'{label}: {list_key} must hold at least one uint16 index')
+        return
+    indices = struct.unpack(f'>{len(raw_indices) // 2}H', raw_indices)
+    if any(b <= a for a, b in zip(indices, indices[1:])):
+        fail(f'{label}: {list_key} must be strictly ascending')
+    if count is not None and indices[-1] >= count:
+        fail(f'{label}: {noun} {indices[-1]} is outside the {count} {plural}')
+    deltas = entry.get(deltas_key)
+    if not isinstance(deltas, list) or len(deltas) != pose_count - 1:
+        fail(f'{label}: {deltas_key} must hold {pose_count - 1} arrays (the object has {pose_count} poses)')
+        return
+    for pose_index, delta in enumerate(deltas, start=1):
+        raw = _decode(delta) if delta is not None else b''
+        if len(raw) != len(indices) * stride:
+            fail(
+                f'{label}: {deltas_key}[{pose_index - 1}] is {len(raw)} bytes, expected '
+                f'{len(indices)} x {stride}'
+            )
+            break
+
+
+def _validate_rebuild_facial_poses(
+    model: dict, rebuild: dict, fail, use_b64: bool, index: int, *, object_error, vertex_count: int | None,
+    position_stride: int, normal_count: int | None = None, normal_stride: int | None = None,
+) -> None:
+    """``FacialPoses`` of a SkinnedRebuild (Milestone 4.7) or a RigidRebuild:
+    one entry per facial object that addresses submesh *index*, each mapping
+    ascending rebuilt vertices with one delta array per pose after pose
+    zero; a rigid entry may add ``NormalEntries`` / ``NormalPoseDeltas``
+    into the rebuilt normal array. *object_error* checks the donor object's
+    attribute layout. Absent ``FacialPoses`` pass (the patcher drops or
+    neutralizes the poses)."""
+    poses = rebuild.get('FacialPoses')
+    if poses is None:
+        return
+    if not isinstance(poses, list) or not all(isinstance(entry, dict) for entry in poses):
+        fail('FacialPoses must be a list of objects')
+        return
+    facial = model.get('FacialPoseData') or {}
+    error = _facial.facial_data_error(facial) if facial else 'the model has no FacialPoseData'
+    if error:
+        fail(f'FacialPoses: {error}; re-export the model')
+        return
+    by_index = {int(entry['ObjectIndex']): entry for entry in facial.get('Objects') or []}
+    own_objects = {
+        object_index for object_index, entry in by_index.items() if int(entry['SubmeshIndex']) == index
+    }
+    seen: set[int] = set()
+    for entry in poses:
+        object_index = entry.get('ObjectIndex')
+        if not isinstance(object_index, int) or isinstance(object_index, bool) or object_index not in by_index:
+            fail(f'FacialPoses names facial object {object_index!r}, which the model does not have')
+            continue
+        if object_index not in own_objects:
+            fail(f'FacialPoses names facial object {object_index}, which does not address submesh {index}')
+            continue
+        if object_index in seen:
+            fail(f'FacialPoses lists facial object {object_index} twice')
+            continue
+        seen.add(object_index)
+        label = f'FacialPoses object {object_index}'
+        obj = _facial.decode_objects({'Objects': [by_index[object_index]]}, lambda v: _decode(v, use_b64))[0]
+        layout_error = object_error(obj, index)
+        if layout_error:
+            fail(f'{label}: {layout_error}')
+            continue
+        if normal_stride is None and any(a.kind == _facial.NORMAL_KIND and a.submesh_index == index for a in obj.attributes):
+            fail(f'{label}: the donor object has a normal attribute on submesh {index} but the rebuild has no normal array')
+            continue
+        _validate_facial_entry_list(
+            fail, label, entry, 'Vertices', 'PoseDeltas', vertex_count, position_stride, obj.pose_count,
+            'vertex', 'vertices',
+        )
+        if entry.get('NormalEntries') is None and entry.get('NormalPoseDeltas') is None:
+            continue
+        if normal_stride is None:
+            fail(f'{label}: carries NormalEntries but the rebuilt submesh has no normal array')
+            continue
+        _validate_facial_entry_list(
+            fail, label, entry, 'NormalEntries', 'NormalPoseDeltas', normal_count, normal_stride, obj.pose_count,
+            'normal entry', 'normal entries',
+        )
+    missing = sorted(own_objects - seen)
+    if missing:
+        fail(f'FacialPoses lacks facial object(s) {missing}, which address submesh {index}')
+
+
+def _validate_skinned_rebuild_facial_poses(
+    model: dict, rebuild: dict, fail, use_b64: bool, vertex_count: int | None, stride: int, index: int,
+) -> None:
+    """``FacialPoses`` (Milestone 4.7) of the skinned body: interleaved
+    ``x y z nx ny nz`` records, no normal lists."""
+    _validate_rebuild_facial_poses(
+        model, rebuild, fail, use_b64, index, object_error=_facial.body_object_error,
+        vertex_count=vertex_count, position_stride=stride,
+    )
 
 
 def _parse_skinned_rebuild(sub: dict, use_b64: bool) -> 'SkinnedRebuild | None':
@@ -3631,6 +3849,14 @@ def _parse_skinned_rebuild(sub: dict, use_b64: bool) -> 'SkinnedRebuild | None':
         face_surface_indices=struct.unpack(f'>{len(indices_raw) // 2}H', indices_raw),
         new_surfaces=_parse_new_surfaces(raw.get('NewSurfaces')),
         reasons=list(raw.get('Reason') or []),
+        facial_poses=[
+            _facial.BodyPoses(
+                object_index=int(entry['ObjectIndex']),
+                vertices=[value for (value,) in struct.iter_unpack('>H', _decode(entry['Vertices'], use_b64))],
+                deltas=[_decode(delta, use_b64) for delta in entry.get('PoseDeltas') or []],
+            )
+            for entry in raw.get('FacialPoses') or []
+        ],
     )
 
 
@@ -4032,19 +4258,96 @@ def _skinned_rebuild_to_blob(
     return blob, name_off, skinning, layout
 
 
+def _skinned_rebuild_facial_rebuilder(
+    model: dict, rebuild: 'SkinnedRebuild', layout: '_skinned.SkinLayout',
+):
+    """The ptr7 rebuilder for a body that carries ``FacialPoses``
+    (Milestone 4.7): its objects are remapped onto the new position slots.
+    None when the rebuild carries no poses (the caller clears the pointer)."""
+    if not rebuild.facial_poses:
+        return None
+    position_buffer = _skinned.build_position_buffer(layout, rebuild.vertex_data)
+    _slogger.info(
+        f'[SkinnedRebuild] facial poses (ptr7) follow the new vertex order: {_facial.summary(rebuild.facial_poses)}',
+        source='hammerspace.main',
+    )
+    return _facial.body_rebuilder(
+        rebuild.facial_poses, layout.slot_of_vertex, position_buffer, layout.stride, _SKINNED_REBUILD_SUBMESH,
+    )
+
+
+def _rigid_rebuild_facial_rebuilders(model: dict, parsed: 'SluggieParsed') -> dict:
+    """The ptr7 rebuilders of every rebuilt rigid submesh a facial object
+    addresses: its objects are remapped onto the rebuilt position and normal
+    arrays from the rebuild's ``FacialPoses``, or neutralized (entry 0, no
+    movement) when the export carries none."""
+    facial_submeshes = _facial_pose_submeshes(model)
+    rebuilders = {}
+    for sub in parsed.mesh.submeshes:
+        rebuild = sub.rigid_rebuild
+        index = sub.submesh_index
+        if rebuild is None or index not in facial_submeshes:
+            continue
+        normal_stride = None
+        if rebuild.normal_data is not None:
+            donor_normals = model['Submeshes'][index].get('NormalBuffer') or {}
+            normal_stride = int(donor_normals.get('NormalBufferCompCount', 3)) * _vb_comp_size(
+                int(donor_normals.get('NormalBufferQuantizeInfo', _CUSTOM_SUBMESH_NORMAL_FORMAT[1]))
+            )
+        if rebuild.facial_poses is None:
+            _slogger.warning(
+                f'[RigidRebuild] sub{index}: facial poses (ptr7) address it by vertex index and the export '
+                'carries no FacialPoses (older add-on, or the mesh lost its facial shape keys): its objects '
+                'are neutralized, so this mesh has no blink or mouth animation',
+                source='hammerspace.main',
+            )
+        else:
+            _slogger.info(
+                f'[RigidRebuild] sub{index}: facial poses (ptr7) follow the rebuilt arrays: '
+                f'{_facial.rigid_summary(rebuild.facial_poses)}',
+                source='hammerspace.main',
+            )
+        rebuilders[index] = _facial.rigid_rebuilder(
+            rebuild.facial_poses, rebuild.vertex_data, rebuild.normal_data, normal_stride, index,
+        )
+    return rebuilders
+
+
+def _rebuild_facial_section(model: dict, rebuilders: dict) -> bytes:
+    """The whole ptr7 section re-serialized with the objects of every
+    submesh in *rebuilders* rebuilt (the body's kind-0 SKAcc supplements
+    dropped when the body is among them) and every other object unchanged."""
+    facial = model.get('FacialPoseData') or {}
+    use_b64 = model.get('UseBase64', True)
+    drop_kinds = {_facial.ACCUMULATION_KIND} if _SKINNED_REBUILD_SUBMESH in rebuilders else frozenset()
+    section, warnings = _facial.rebuild_section(facial, lambda value: _decode(value, use_b64), rebuilders, drop_kinds)
+    for message in warnings:
+        _slogger.warning(f'[FacialPoses] {message}', source='hammerspace.main')
+    donor_length = int(facial.get('SectionLength') or 0)
+    _slogger.info(
+        f'[FacialPoses] ptr7 section rebuilt for submesh(es) {sorted(rebuilders)}: '
+        f'{donor_length:,} -> {len(section):,} bytes',
+        source='hammerspace.main',
+    )
+    return section
+
+
 def PatchGPLReplaceSkinnedSubmesh(
     gpl_bytes: bytes, model: dict, parsed: 'SluggieParsed',
     texture_index_by_file_name: dict[str, int] | None = None,
     donor_gpl_length: int | None = None,
-) -> tuple[bytes, int, SkinningData | None]:
+) -> tuple[bytes, int, SkinningData | None, object]:
     """Rebuild submesh 0 from its ``SkinnedRebuild`` as a fresh blob before
     GPLUserData, repoint its descriptor and return the SKN structures that
-    match the new position buffer (``None`` when there is no rebuild). The
-    donor blob stays in place unreferenced, as for a RigidRebuild."""
+    match the new position buffer and the ptr7 rebuilder for the body's
+    facial objects (both ``None`` when there is no rebuild; the rebuilder is
+    None when the rebuild carries no ``FacialPoses``). The donor blob is
+    dropped when it leads the blob region (vanilla submesh 0 always does),
+    else it stays in place unreferenced, as for a RigidRebuild."""
     sub = parsed.mesh.submeshes[_SKINNED_REBUILD_SUBMESH] if parsed.mesh.submeshes else None
     rebuild = sub.skinned_rebuild if sub is not None else None
     if rebuild is None:
-        return gpl_bytes, (len(gpl_bytes) if donor_gpl_length is None else donor_gpl_length), None
+        return gpl_bytes, (len(gpl_bytes) if donor_gpl_length is None else donor_gpl_length), None, None
     rigid_surfaces = _custom_submesh_rigid_surfaces(model)
     donor_color = None
     if rebuild.color_data is None:
@@ -4056,18 +4359,19 @@ def PatchGPLReplaceSkinnedSubmesh(
                 'not listed in the export) into the rebuilt blob',
                 source='hammerspace.main',
             )
-    blob, name_off, skinning, _layout = _skinned_rebuild_to_blob(
+    blob, name_off, skinning, layout = _skinned_rebuild_to_blob(
         model, rebuild, rigid_surfaces, texture_index_by_file_name, donor_color,
     )
-    out, length = _splice_blobs_before_user_data(
+    out, length, dropped = _splice_blobs_before_user_data(
         gpl_bytes, [(_SKINNED_REBUILD_SUBMESH, blob, name_off)], donor_gpl_length,
     )
     _slogger.info(
-        f'[GPL] replaced skinned submesh {_SKINNED_REBUILD_SUBMESH} with a {len(blob):,}-byte '
-        'rebuilt blob; the donor blob stays in place unreferenced',
+        f'[GPL] replaced skinned submesh {_SKINNED_REBUILD_SUBMESH} with a {len(blob):,}-byte rebuilt blob'
+        + (f'; dropped its {dropped[_SKINNED_REBUILD_SUBMESH]:,}-byte donor blob'
+           if _SKINNED_REBUILD_SUBMESH in dropped else ''),
         source='hammerspace.main',
     )
-    return out, length, skinning
+    return out, length, skinning, _skinned_rebuild_facial_rebuilder(model, rebuild, layout)
 
 
 # ---------------------------------------------------------------------------
@@ -4386,77 +4690,23 @@ def ParseSluggie(data: dict) -> SluggieParsed:
     _position_geometry_edited = bool(position_edit_submeshes)
     _geometry_edited = _topology_geometry_edited or _position_geometry_edited
     raw_skn = raw_skn_orig or raw_skn_edit
-    # Same-count reskin (PLAN_ModelReplacements.md 3.4): entry membership
-    # itself changed (vertices reassigned between donor bones), so a donor
-    # bone/pair may have gained or lost its SK1/SK2/SKAcc entry entirely.
-    # The identity-substitution loops below assume the donor's entry COUNT
-    # and per-entry identity are unchanged and only splice in payload — that
-    # would silently drop new entries and keep stale entries for bones that
-    # lost every vertex. Build straight from SkinDataEdited instead.
-    # GeometryRebuild.layout_skin_membership_edit must have run first: the
-    # exporter only writes placeholder GplVertexArrValue / VertexOffset.
-    _membership_edited = bool(raw_skn_edit and raw_skn_edit.get('MembershipEdited'))
+    if raw_skn_edit and raw_skn_edit.get('MembershipEdited'):
+        raise ValueError(
+            'this file moves vertices between bones as a SkinDataEdited membership edit, '
+            'which the patcher no longer applies; re-export it with add-on 0.8.5 or later '
+            '(the body is rebuilt instead)'
+        )
     # Flush-index data is rewritten onto SkinDataEdited by the topology-edit
-    # skinning rebuild (GeometryRebuild._rebuild_skinning) and by the
-    # membership layout pass, since it depends on the SKAcc write set. raw_skn
-    # always prefers raw_skn_orig when the donor has skin data, so pull flush
-    # data from raw_skn_edit specifically whenever either pass produced it.
+    # path, since it depends on the SKAcc write set. raw_skn always prefers
+    # raw_skn_orig when the donor has skin data, so pull flush data from
+    # raw_skn_edit specifically whenever that pass produced it.
     _flush_source = (
         raw_skn_edit
-        if ((_topology_geometry_edited or _membership_edited) and raw_skn_edit
+        if (_topology_geometry_edited and raw_skn_edit
             and raw_skn_edit.get('FlushIndData') is not None)
         else raw_skn
     )
-    if _membership_edited:
-        sk1s = [
-            SK1(
-                bone_index                  = s['BoneIndex'],
-                vertex_cnt                  = s['VertexCnt'],
-                vertex_offset               = s.get('VertexOffset', 0),
-                bind_pose_data              = _decode(s.get('BindPoseDataEdited') or s['BindPoseData'], use_b64),
-                vertex_arr_field_offset     = _hex(s.get('VertexArrFieldOffset',    '0x0')),
-                gpl_vertex_arr_field_offset = _hex(s.get('GplVertexArrFieldOffset', '0x0')),
-                vertex_arr_absolute_ptr     = _hex(s.get('VertexArrAbsolutePtr',    '0x0')),
-                gpl_vertex_arr_value        = s.get('GplVertexArrValue', 0),
-            )
-            for s in raw_skn_edit.get('SK1s', [])
-        ]
-        sk2s = [
-            SK2(
-                bone_index1                 = s['BoneIndex1'],
-                bone_index2                 = s['BoneIndex2'],
-                vertex_cnt                  = s['VertexCnt'],
-                vertex_offset               = s.get('VertexOffset', 0),
-                bind_pose_data              = _decode(s.get('BindPoseDataEdited') or s['BindPoseData'], use_b64),
-                weight_data                 = _decode(s.get('WeightDataEdited') or s['WeightData'], use_b64),
-                vertex_arr_field_offset     = _hex(s.get('VertexArrFieldOffset',    '0x0')),
-                weight_arr_field_offset     = _hex(s.get('WeightArrFieldOffset',    '0x0')),
-                gpl_vertex_arr_field_offset = _hex(s.get('GplVertexArrFieldOffset', '0x0')),
-                vertex_arr_absolute_ptr     = _hex(s.get('VertexArrAbsolutePtr',    '0x0')),
-                weight_arr_absolute_ptr     = _hex(s.get('WeightArrAbsolutePtr',    '0x0')),
-                gpl_vertex_arr_value        = s.get('GplVertexArrValue', 0),
-            )
-            for s in raw_skn_edit.get('SK2s', [])
-        ]
-        sk_accs = [
-            SKAcc(
-                bone_index                = s['BoneIndex'],
-                vertex_cnt                = s['VertexCnt'],
-                bind_pose_data            = _decode(s.get('BindPoseDataEdited') or s['BindPoseData'], use_b64),
-                dest_index_data           = _decode(s.get('DestIndexDataEdited') or s['DestIndexData'], use_b64),
-                weight_data               = _decode(s.get('WeightDataEdited') or s['WeightData'], use_b64),
-                vertex_arr_field_offset   = _hex(s.get('VertexArrFieldOffset',   '0x0')),
-                dest_arr_field_offset     = _hex(s.get('DestArrFieldOffset',     '0x0')),
-                gpl_dest_arr_field_offset = _hex(s.get('GplDestArrFieldOffset',  '0x0')),
-                weight_arr_field_offset   = _hex(s.get('WeightArrFieldOffset',   '0x0')),
-                vertex_arr_absolute_ptr   = _hex(s.get('VertexArrAbsolutePtr',   '0x0')),
-                dest_arr_absolute_ptr     = _hex(s.get('DestArrAbsolutePtr',     '0x0')),
-                gpl_dest_arr_value        = s.get('GplDestArrValue', 0),
-                weight_arr_absolute_ptr   = _hex(s.get('WeightArrAbsolutePtr',   '0x0')),
-            )
-            for s in raw_skn_edit.get('SKAccs', [])
-        ]
-    elif raw_skn:
+    if raw_skn:
         # Build lookup dicts from edited data for payload substitution.
         _edit_sk1_by_bone = {}
         _edit_sk2_by_pair = {}
@@ -4610,7 +4860,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
                 weight_arr_absolute_ptr   = _hex(s.get('WeightArrAbsolutePtr',   '0x0')),
             ))
 
-    if _membership_edited or raw_skn:
+    if raw_skn:
         skinning_data = SkinningData(
             skn_offset                = _hex(raw_skn.get('SKNOffset',                '0x0')),
             gpl_base_offset           = _hex(raw_skn.get('GplBaseOffset',            '0x0')),
@@ -6947,17 +7197,26 @@ def BuildHEADERModelBlock(
     # Recompute ptr6/ptr7/ptr8 relative to the separately cloned tail.
     if trailing_bytes:
         if trailing_sections:
-            section_ptrs = [sec.original_ptr for sec in trailing_sections if sec.original_ptr]
-            if section_ptrs:
-                original_trailing_off = min(section_ptrs)
-        if len(original_header) >= HDR_SIZE and original_trailing_off:
+            # The sections are laid out one after another in address order
+            # (the caller joins them that way), so each pointer is the tail
+            # start plus the lengths before it. Vanilla sections are
+            # contiguous, so this equals the donor's relative spacing; a
+            # rebuilt section (Milestone 4.7, ptr7) may change length.
+            cursor = tail_start
+            for section in sorted(trailing_sections, key=lambda sec: sec.original_ptr):
+                if section.header_field_offset in (0x14, 0x18, 0x1c) and section.original_ptr:
+                    struct.pack_into('>I', hdr, section.header_field_offset, cursor)
+                    _slogger.info(f'[HDR] +0x{section.header_field_offset:02X} patched: '
+                           f'0x{section.original_ptr:08X} -> 0x{cursor:08X}', source="hammerspace.main")
+                cursor += len(section.data)
+        elif len(original_header) >= HDR_SIZE and original_trailing_off:
             for field_offset in (0x14, 0x18, 0x1c):
                 orig_ptr = struct.unpack_from('>I', original_header, field_offset)[0]
                 if orig_ptr and orig_ptr >= original_trailing_off:
                     new_ptr = tail_start + (orig_ptr - original_trailing_off)
                     struct.pack_into('>I', hdr, field_offset, new_ptr)
                     _slogger.info(f'[HDR] +0x{field_offset:02X} patched: '
-                           f'0x{orig_ptr:08X} → 0x{new_ptr:08X}', source="hammerspace.main")
+                           f'0x{orig_ptr:08X} -> 0x{new_ptr:08X}', source="hammerspace.main")
 
     return (bytes(hdr) + gpl_bytes + gpl_section_padding + act_bytes + act_padding
             + tex_bytes + tex_padding + skn_padding
@@ -7234,11 +7493,15 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
     )
     if skinned_rebuild and (modes.gpl != 'build' or modes.skn != 'build'):
         raise ValueError("SkinnedRebuild requires SectionModes.gpl='build' and skn='build'")
-    # Facial poses (ptr7) address vertices by index, and a rebuilt body has a
-    # new vertex order, so its poses are dropped (the header pointer is
-    # cleared, as the external tool does for every character). Poses on
-    # other submeshes (Mario's head) are untouched.
+    # Facial poses (ptr7) address vertices by index, and a rebuilt submesh
+    # has a new vertex order. With ``FacialPoses`` in the rebuild the section
+    # is rebuilt for that order (Milestone 4.7 for the body, 2026-10-10 for
+    # rigid submeshes); a body without them drops the poses (the header
+    # pointer is cleared, as the external tool does for every character), a
+    # rigid submesh without them has its objects neutralized. Poses on
+    # submeshes that are not rebuilt are untouched.
     clear_facial_pointer = skinned_rebuild and _SKINNED_REBUILD_SUBMESH in _facial_pose_submeshes(model)
+    facial_rebuilders: dict = {}
     if model.get('DesiredTextureAssignments') and (
         modes.gpl != 'build'
         or modes.tex != 'build'
@@ -7365,8 +7628,6 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
         rebuild_surface_assignments(data)
         rebuild_edited_uvs(data)
         apply_desired_texture_assignments(data)
-    if modes.skn == 'build':
-        layout_skin_membership_edit(data)
     parsed = ParseSluggie(data)
     if getattr(parsed, 'custom_submeshes', None) and modes.gpl != 'build':
         raise ValueError("CustomSubmeshes require SectionModes.gpl='build'")
@@ -7484,11 +7745,14 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
                 # The body first: it replaces submesh 0's blob and hands back
                 # the SKN structures for the new position buffer, which the
                 # SKN build below serializes instead of the donor's.
-                gpl_bytes, donor_gpl_length, rebuilt_skinning = PatchGPLReplaceSkinnedSubmesh(
+                gpl_bytes, donor_gpl_length, rebuilt_skinning, body_facial_rebuilder = PatchGPLReplaceSkinnedSubmesh(
                     gpl_bytes, model, parsed, texture_index_by_file_name,
                     donor_gpl_length=donor_gpl_length,
                 )
                 parsed.skinning = rebuilt_skinning
+                if body_facial_rebuilder is not None:
+                    facial_rebuilders[_SKINNED_REBUILD_SUBMESH] = body_facial_rebuilder
+                    clear_facial_pointer = False
             if rigid_rebuild_indices:
                 # Replace before the append: the append relocates every blob,
                 # replaced ones included, as one unit (PLAN_EditRigidMeshes.md
@@ -7497,6 +7761,7 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
                     gpl_bytes, model, parsed, texture_index_by_file_name,
                     donor_gpl_length=donor_gpl_length,
                 )
+                facial_rebuilders.update(_rigid_rebuild_facial_rebuilders(model, parsed))
             if getattr(parsed, 'custom_submeshes', None):
                 # Always clone + append (never the full BuildGPLMeshData
                 # rebuild): a same-count rebuild's preserve-layout fast path
@@ -7589,7 +7854,24 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
             source='hammerspace.main',
         )
     parsed_trailing_sections = getattr(parsed, 'trailing_sections', None) or []
+    rebuilt_facial_section = None
+    if facial_rebuilders and not clear_facial_pointer:
+        rebuilt_facial_section = _rebuild_facial_section(model, facial_rebuilders)
+        facial_slots = [k for k, section in enumerate(parsed_trailing_sections) if section.header_field_offset == 0x18]
+        if len(facial_slots) != 1:
+            raise ValueError(
+                'a rebuilt submesh has facial poses but the file has no TrailingSections entry for ptr7 '
+                '(header +0x18); re-export the model'
+            )
+        parsed_trailing_sections = list(parsed_trailing_sections)
+        parsed_trailing_sections[facial_slots[0]] = replace(
+            parsed_trailing_sections[facial_slots[0]], data=rebuilt_facial_section,
+        )
+        parsed.trailing_sections = parsed_trailing_sections
     if parsed_trailing_sections:
+        # Address order: the header builder lays the sections out one after
+        # another and recomputes ptr6/ptr7/ptr8 from their lengths.
+        parsed_trailing_sections = sorted(parsed_trailing_sections, key=lambda section: section.original_ptr)
         trailing_bytes = b''.join(section.data for section in parsed_trailing_sections)
         original_trailing_offset = min(
             (section.original_ptr for section in parsed_trailing_sections if section.original_ptr),
@@ -7609,7 +7891,7 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
         trailing_bytes=trailing_bytes,
         original_header=original_header,
         original_trailing_off=original_trailing_offset,
-        trailing_sections=getattr(parsed, 'trailing_sections', None),
+        trailing_sections=parsed_trailing_sections or None,
     )
     if clear_facial_pointer and struct.unpack_from('>I', inner_block, 0x18)[0]:
         cleared = bytearray(inner_block)

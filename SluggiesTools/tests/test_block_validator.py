@@ -52,13 +52,14 @@ def _write_ptr7_facial(
     run_list_offset = 0x2C
     struct.pack_into('>I', section, 0x20, run_list_offset)   # run list offset
 
-    pose_base = 0x30
+    pose_base = 0x34                                         # one run, the (0, 0) terminator, then the pose
     for pose_index in range(object_pose_count):
         struct.pack_into('>I', section, 0x24 + pose_index * 4, pose_base)
 
     # One run and one 3xint16 pose sample.
     struct.pack_into('>H', section, run_list_offset, first_vertex)
     struct.pack_into('>H', section, run_list_offset + 2, vertex_count)
+    struct.pack_into('>HH', section, run_list_offset + 4, 0, 0)   # terminator the game stops at
     section[pose_base:pose_base + 6] = b'\x00\x00\x00\x00\x00\x00'
 
     block[ptr7_offset:ptr7_offset + len(section)] = section

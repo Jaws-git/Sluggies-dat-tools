@@ -17,6 +17,13 @@ A donor rigid (CompCount 3) submesh takes one of two paths per export
 The rebuild keeps the donor's formats (decision 3), pools equal values
 (decision 5), mirrors UV channel 1 from channel 0 when the donor channels are
 identical (decision 6) and names surfaces by key (decisions 7-8).
+
+A submesh with facial poses (ptr7 objects: every vanilla head) carries them
+through the rebuild as ``FacialPoses`` (2026-10-10): per facial object the
+rebuilt vertices its shape keys move with ``x y z`` int16 deltas per pose,
+and the rebuilt normal-array entries they tilt with ``nx ny nz`` deltas.
+Normal entries of facially animated vertices are pooled per vertex, never
+shared with another vertex, so each entry has one delta.
 """
 
 from __future__ import annotations
@@ -523,14 +530,25 @@ def build_rigid_rebuild_entry(
     use_base64: bool = True,
     warnings: Optional[List[str]] = None,
     infos: Optional[List[str]] = None,
+    facial_keys: Optional[Sequence['FacialObjectKeys']] = None,
 ) -> dict:
     """Assemble ``Submeshes[i].RigidRebuild`` from bone-local geometry and
     per-loop attributes (indexed by Blender loop index), in the donor's own
     formats. *loop_uvs_by_channel* maps each donor UV channel to its per-loop
     coordinates, or None when the Blender layer is missing. *infos* collects
-    expected, harmless notes (reported at INFO level)."""
+    expected, harmless notes (reported at INFO level). *facial_keys* (the
+    mesh's facial shape keys, one entry per ptr7 object on this submesh)
+    adds ``FacialPoses`` and pins the normal entries of animated vertices."""
     warnings = warnings if warnings is not None else []
     infos = infos if infos is not None else []
+    facial_entries = None
+    pinned_normal_data = None
+    if facial_keys is not None:
+        facial_entries, pinned_normal_data = encode_rigid_facial_poses(
+            object_name, facial_keys, geometry, donor.position_quantize,
+            donor.normal_format if loop_normals is not None else None, loop_normals,
+            use_base64, warnings, infos,
+        )
     position_format = (RIGID_COMP_COUNT, donor.position_quantize)
     try:
         cse.check_position_range(object_name, host_bone_id, geometry, donor.position_quantize)
@@ -549,7 +567,10 @@ def build_rigid_rebuild_entry(
         'VertexBufferData': cse.encode_field(positions, use_base64),
     }
     if donor.normal_format:
-        normal_data, normal_indices = cse.encode_loop_normals(object_name, geometry, loop_normals, donor.normal_format)
+        if pinned_normal_data is not None:
+            normal_data, normal_indices = pinned_normal_data
+        else:
+            normal_data, normal_indices = cse.encode_loop_normals(object_name, geometry, loop_normals, donor.normal_format)
         _check_u16(object_name, 'normals', len(normal_indices) and max(normal_indices) + 1)
         entry['NormalBufferData'] = cse.encode_field(normal_data, use_base64)
         entry['NormalFacesData'] = _index_buffer(normal_indices, use_base64)
@@ -567,7 +588,208 @@ def build_rigid_rebuild_entry(
     if new_surfaces:
         entry['NewSurfaces'] = [dict(surface) for surface in new_surfaces]
     entry['Reason'] = list(reasons)
+    if facial_entries is not None:
+        entry['FacialPoses'] = facial_entries
     return entry
+
+
+# ---------------------------------------------------------------------------
+# Facial poses (ptr7) on a rebuilt submesh
+# ---------------------------------------------------------------------------
+# Shared with the skinned body (PLAN_ModelReplacements.md Milestone 4.7):
+# the importer names a facial object's shape keys FACIAL_KEY_NAME, and the
+# exporter reads them back as FacialObjectKeys.
+
+FACIAL_KEY_NAME = 'facial_object_{object}_pose_{pose}'
+_AXES = ('x', 'y', 'z')
+
+
+@dataclass
+class FacialObjectKeys:
+    """One facial object's shape keys as plain data, per Blender vertex:
+    ``pose_positions[k]`` / ``pose_normals[k]`` belong to pose ``k + 1``
+    (None when the key is missing or normals are unavailable); the Basis
+    key gives ``basis_positions`` / ``basis_normals``."""
+    object_index: int
+    pose_count: int
+    pose_positions: list
+    pose_normals: list
+    basis_positions: list
+    basis_normals: Optional[list] = None
+
+
+def facial_warning(object_name: str, donor, shape_key_count: int, carried: bool = False) -> Optional[str]:
+    """The rebuild renumbers the vertices, so the donor's facial poses on
+    this submesh can only follow through the mesh's shape keys
+    (``FacialPoses``); without them the patcher drops (body) or neutralizes
+    (rigid submesh) the poses."""
+    if not donor.facial or carried:
+        return None
+    note = (
+        ' Its shape keys lack the Basis key, so they are not exported.' if shape_key_count
+        else ' Re-import the mesh to get its facial shape keys back.'
+    )
+    return (
+        f"{object_name}: this model's blink and mouth poses animate this mesh's vertices, which "
+        f'the rebuild renumbers, and the mesh has no facial shape keys to rebuild them from, so '
+        f'the patched model will have no facial animation on it.{note}'
+    )
+
+
+def _loop_vertices(geometry: cse.BoneLocalGeometry) -> List[int]:
+    """The exported vertex of every loop in ``cse._loop_order`` order."""
+    return [vertex for face in geometry.faces for vertex in face]
+
+
+def encode_facial_loop_normals(
+    object_name: str, geometry: cse.BoneLocalGeometry, loop_normals, normal_format: Tuple[int, int],
+    pinned_vertices,
+) -> Tuple[bytes, List[int]]:
+    """``cse.encode_loop_normals`` with the normal entries of
+    *pinned_vertices* (exported indices) pooled per vertex: two loops share
+    an entry only when they hold the same normal and belong to the same
+    pinned vertex, or to no pinned vertex at all. A facial pose then gives
+    every entry one delta."""
+    comp_count, quantize_info = normal_format
+    divisor = cse.int16_divisor(quantize_info)
+    loops = [loop for tri in geometry.triangles for loop in tri.loops]
+    transformed = cse.transform_normals([loop_normals[loop] for loop in loops], geometry.to_bone)
+    pinned = set(pinned_vertices)
+    pool: Dict[tuple, int] = {}
+    data = bytearray()
+    indices = []
+    for loop, normal, vertex in zip(loops, transformed, _loop_vertices(geometry)):
+        values = [cse.quantize_int16(v, divisor, f'{object_name} loop {loop} normal') for v in normal]
+        values += [0] * (comp_count - 3)
+        record = struct.pack(f'>{comp_count}h', *values)
+        key = (record, vertex if vertex in pinned else None)
+        index = pool.get(key)
+        if index is None:
+            index = pool[key] = len(pool)
+            data += record
+        indices.append(index)
+    return bytes(data), indices
+
+
+def encode_rigid_facial_poses(
+    object_name: str, objects: Sequence[FacialObjectKeys], geometry: cse.BoneLocalGeometry,
+    position_quantize: int, normal_format: Optional[Tuple[int, int]] = None, loop_normals=None,
+    use_base64: bool = True, warnings: Optional[List[str]] = None, infos: Optional[List[str]] = None,
+) -> Tuple[List[dict], Optional[Tuple[bytes, List[int]]]]:
+    """``RigidRebuild.FacialPoses`` plus the rebuilt normal arrays.
+
+    Per facial object: the exported vertices whose shape keys move them
+    (after quantization in the donor's position format) with one ``x y z``
+    int16 delta array per pose after pose zero, and, when the donor has a
+    normal array (*normal_format* with *loop_normals*), the rebuilt normal
+    entries whose vertex the keys tilt with ``nx ny nz`` deltas in the
+    normal format. Deltas are the key's displacement from the Basis key in
+    bone space; the normal delta is the change of the per-vertex shape-key
+    normal. A missing key leaves its pose at rest (warning); an object that
+    moves nothing keeps one zero entry. Returns ``(entries, (normal_data,
+    normal_indices) or None)``; the normal arrays pool animated vertices'
+    entries per vertex (``encode_facial_loop_normals``)."""
+    warnings = warnings if warnings is not None else []
+    infos = infos if infos is not None else []
+    divisor = cse.int16_divisor(position_quantize)
+    normal_divisor = cse.int16_divisor(normal_format[1]) if normal_format is not None and loop_normals is not None else None
+    matrix = geometry.to_bone
+    per_object = []
+    tilted: set = set()
+    for facial_object in objects:
+        pose_indices = range(1, facial_object.pose_count)
+        missing = [
+            pose for pose, positions in zip(pose_indices, facial_object.pose_positions) if positions is None
+        ]
+        if missing:
+            warnings.append(
+                f'{object_name}: facial object {facial_object.object_index} has no shape key for pose(s) '
+                f"{', '.join(str(pose) for pose in missing)}; those poses keep the rest shape."
+            )
+        position_rows: List[List[tuple]] = []
+        normal_rows: List[List[tuple]] = []
+        for exported, blender_vertex in enumerate(geometry.source_vertices):
+            positions_of_vertex, normals_of_vertex = [], []
+            for k, pose in enumerate(pose_indices):
+                positions = facial_object.pose_positions[k]
+                if positions is None:
+                    positions_of_vertex.append((0, 0, 0))
+                    normals_of_vertex.append((0, 0, 0))
+                    continue
+                context = f'{object_name} facial object {facial_object.object_index} pose {pose} vertex {blender_vertex}'
+                rest = cse.transform_point(matrix, facial_object.basis_positions[blender_vertex])
+                posed = cse.transform_point(matrix, positions[blender_vertex])
+                positions_of_vertex.append(tuple(
+                    cse.quantize_int16(posed[axis] - rest[axis], divisor, f'{context} {name}')
+                    for axis, name in enumerate(_AXES)
+                ))
+                normals = facial_object.pose_normals[k]
+                if normal_divisor is not None and normals is not None and facial_object.basis_normals is not None:
+                    basis_normal, pose_normal = cse.transform_normals(
+                        [facial_object.basis_normals[blender_vertex], normals[blender_vertex]], matrix,
+                    )
+                    normals_of_vertex.append(tuple(
+                        cse.quantize_int16(pose_normal[axis] - basis_normal[axis], normal_divisor, f'{context} n{name}')
+                        for axis, name in enumerate(_AXES)
+                    ))
+                else:
+                    normals_of_vertex.append((0, 0, 0))
+            position_rows.append(positions_of_vertex)
+            normal_rows.append(normals_of_vertex)
+            if any(any(row) for row in normals_of_vertex):
+                tilted.add(exported)
+        per_object.append((facial_object, position_rows, normal_rows))
+
+    normal_arrays = None
+    if normal_divisor is not None:
+        normal_arrays = encode_facial_loop_normals(object_name, geometry, loop_normals, normal_format, tilted)
+    entries = []
+    for facial_object, position_rows, normal_rows in per_object:
+        later = facial_object.pose_count - 1
+        moved = [vertex for vertex, rows in enumerate(position_rows) if any(any(row) for row in rows)]
+        nothing_moves = not moved
+        if nothing_moves:
+            moved = [0]
+            vertex_rows = [[(0, 0, 0)] * later]
+        else:
+            vertex_rows = [position_rows[vertex] for vertex in moved]
+        entry = {
+            'ObjectIndex': facial_object.object_index,
+            'Vertices': cse.encode_field(struct.pack(f'>{len(moved)}H', *moved), use_base64),
+            'PoseDeltas': [
+                cse.encode_field(struct.pack(f'>{3 * len(moved)}h', *(v for rows in vertex_rows for v in rows[k])), use_base64)
+                for k in range(later)
+            ],
+        }
+        normal_note = ''
+        if normal_arrays is not None:
+            _data, normal_indices = normal_arrays
+            entry_vertex: Dict[int, int] = {}
+            for index, vertex in zip(normal_indices, _loop_vertices(geometry)):
+                if vertex in tilted and any(any(row) for row in normal_rows[vertex]):
+                    entry_vertex[index] = vertex
+            normal_entries = sorted(entry_vertex)
+            entry_rows = [normal_rows[entry_vertex[index]] for index in normal_entries]
+            if not normal_entries:
+                normal_entries = [0]
+                entry_rows = [[(0, 0, 0)] * later]
+            entry['NormalEntries'] = cse.encode_field(struct.pack(f'>{len(normal_entries)}H', *normal_entries), use_base64)
+            entry['NormalPoseDeltas'] = [
+                cse.encode_field(struct.pack(f'>{3 * len(normal_entries)}h', *(v for rows in entry_rows for v in rows[k])), use_base64)
+                for k in range(later)
+            ]
+            normal_note = f', {len(entry_vertex)} normal entr{"y" if len(entry_vertex) == 1 else "ies"}'
+        if nothing_moves:
+            warnings.append(
+                f'{object_name}: facial object {facial_object.object_index} moves no vertex in any '
+                'shape key; it is kept with one unmoving entry.'
+            )
+        infos.append(
+            f'{object_name}: facial object {facial_object.object_index}: {len(moved)} vertex(es){normal_note} '
+            f'animated over {later} pose(s).'
+        )
+        entries.append(entry)
+    return entries, normal_arrays
 
 
 # Every in-place (Milestone 3) edit field a rebuilt submesh must not carry

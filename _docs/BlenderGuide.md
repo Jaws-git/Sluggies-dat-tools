@@ -168,7 +168,7 @@ A rigid mesh is a part that follows one bone without skinning: a cap, a head, a 
 Rules:
 - Every face must use one of **that mesh's own** materials: the imported ones, or ones made with **Add material**. A face on an empty slot, on a plain Blender material or on another mesh's material stops the export.
 - Every vertex must be in the mesh's `bone_<id>` vertex group. New vertices often have no group; **Reassign to new bone** fixes that in one click (also onto the bone the mesh is already on).
-- Meshes with facial poses (Mario's head and the like) keep their geometry, transform and surfaces. Only **Reassign to new bone** with *Keep offset to bone* works on them.
+- Meshes with facial poses (Mario's head and the like) can be edited like any other rigid mesh. Their blink and mouth poses follow the rebuild through the imported facial shape keys (`facial_object_<o>_pose_<p>` and `Basis`); the export log lists `facial object N: ... animated`. Keep those keys: without them the rebuilt mesh keeps its rest shape and no longer animates (the log warns; re-import the mesh to get the keys back). Edited key shapes are exported as the new poses.
 - The skinned body (the first mesh) keeps its old rules: no new materials, and faces move between its materials only as whole surfaces.
 - A Low (`_L_`) model is edited on its own; nothing is mirrored from the High model. The game switches to it at a distance.
 - A mesh you leave unselected keeps the edit an earlier export gave it, including its move to another bone and any new PNG on its new surfaces. The export log says so. To drop that edit, select the original (non-`_edit`) object and export again.
@@ -224,7 +224,6 @@ You can move vertices between the model's existing `bone_<id>` vertex groups, e.
 - add or remove vertices on the main mesh (always the first)
 - reorder main mesh face indices
 - add new materials to the main mesh, or move only part of one of its surfaces to another material (rigid meshes allow both, see "Editing rigid meshes")
-- change the geometry, transform or surfaces of a rigid mesh with facial poses (the head)
 - remove, reorder or re-parent original bones (adding bones is fine)
 - skinning edits beyond moving vertices between existing bone vertex groups (see above)
 - skin a new submesh to more than one bone

@@ -301,12 +301,12 @@ class ExporterWiringTests(unittest.TestCase):
         for marker in ('ExportMode.topology_changed(', 'ExportMode.colors_changed(',
                        'UV seams split', 'faces moved to other materials',
                        'normals split on shared normal slots',
-                       'skin data no longer fits its original size',
-                       'vertices moved between bones'):
+                       'skin data no longer fits its original size'):
             self.assertIn(marker, source)
-        # Bone moves are checked before the in-place skin encoder runs.
-        self.assertLess(source.index('skin_membership_changed(candidates, data)'),
-                        source.index('encode_skin_weights_inplace('))
+        # Bone moves take the body rebuild (SkinnedRebuild), not the in-place
+        # skin encoder or a membership edit.
+        self.assertNotIn('vertices moved between bones', source)
+        self.assertNotIn('skin_membership_changed(candidates, data)', source)
         self.assertNotIn('Did you remember to activate hammerspace mode', source)
 
 

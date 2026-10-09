@@ -871,7 +871,7 @@ class BuildModelBlockTests(unittest.TestCase):
         }})
 
         # A topology edit (PrimListDataEdited present) must pull flush-index
-        # data from SkinDataEdited (produced by GeometryRebuild._rebuild_skinning),
+        # data from SkinDataEdited (written by the topology-edit path),
         # not silently fall back to the untouched donor SkinData.
         self.assertEqual(parsed.skinning.flush_ind_size, 2)
         self.assertEqual(parsed.skinning.flush_ind_data, b'\xBB\xBB\xCC\xCC')

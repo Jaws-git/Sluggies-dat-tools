@@ -1714,10 +1714,9 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
     doing so leaves a previously-weighted vertex unweighted, in which case
     the unweighted error wins and includes the ignored names too.
 
-    When membership differs from the donor anywhere in the model, sets
-    SkinDataEdited['MembershipEdited'] = True and every vertex's weights are
-    freshly requantized (not just the edited ones) — accepted as an MVP
-    tradeoff rather than preserving donor weight bytes for untouched vertices.
+    A vertex whose set of bones differs from the donor's is not handled
+    here since add-on 0.8.5: the body takes the SkinnedRebuild route
+    (``_skinned_rebuild_plan``), so this encoder raises if it meets one.
 
     Bone pairs in SK2 are stored with the lower BoneId first.
     Source data (bind-pose XYZ + NxNyNz) is encoded with SkinData.QuantizeInfo.
@@ -2207,11 +2206,13 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
         "SKAccs":       new_skaccs,
     }
     if membership_edited:
-        # Tells the Python build tool (HammerspaceMain/GeometryRebuild) that
-        # entry membership itself changed, not just payload — SkinDataEdited
-        # must be rebuilt structurally rather than substituted by bone key
-        # into stale donor structure. See PLAN_ModelReplacements.md 3.4.
-        candidate_edited["MembershipEdited"] = True
+        # A changed bone set takes the body rebuild (SkinnedRebuild), which
+        # is decided before this encoder runs; reaching this means the body
+        # object was not planned for it.
+        raise ValueError(
+            "vertices moved between bones, but the body was not routed to the body rebuild; "
+            "export the body object itself (not only other parts) so its skin can be rebuilt"
+        )
 
     orig_size = _skn_block_size(skin_data)
     edit_size = _skn_block_size(candidate_edited, flush_ind_size=flush_ind_size)
@@ -3466,14 +3467,16 @@ class _RigidRebuildPlan:
     loop_uvs: dict
     loop_colors: object
     new_surface_materials: dict   # surface key -> material
+    facial_keys: object = None    # [RigidRebuildExport.FacialObjectKeys] or None
 
 
 def _rigid_rebuild_plan(context, obj, submesh_index, target_submesh, model, warnings):
     """Decide a rigid donor submesh's export path (PLAN_EditRigidMeshes.md
     decision 1) and gather what the rebuild needs. Returns None when the
     in-place / slot-preserving path applies. Raises ValueError, naming the
-    object, for anything that must stop the export (G2, facial poses, slot
-    hygiene, unsupported position format)."""
+    object, for anything that must stop the export (G2, slot hygiene,
+    unsupported position format). A submesh with facial poses carries them
+    through the rebuild as its facial shape keys (``FacialPoses``)."""
     donor = RigidRebuildExport.donor_rigid_submesh(
         submesh_index, target_submesh, RigidRebuildExport.facial_pose_submeshes(model),
     )
@@ -3513,11 +3516,16 @@ def _rigid_rebuild_plan(context, obj, submesh_index, target_submesh, model, warn
     if format_error:
         raise ValueError(format_error)
     shape_keys = mesh.shape_keys.key_blocks if mesh.shape_keys else []
-    if donor.facial or len(shape_keys) > 1:
-        raise ValueError(
-            f"{obj.name}: this submesh has facial poses, so its geometry, transform and "
-            f"surfaces must stay as imported ({', '.join(reasons)} changed); only Reassign "
-            "to new bone with Keep offset to bone is possible on it."
+    facial_keys = _facial_shape_key_data(obj, model, submesh_index) if donor.facial else None
+    facial_warning = RigidRebuildExport.facial_warning(
+        obj.name, donor, len(shape_keys), carried=facial_keys is not None,
+    )
+    if facial_warning:
+        warnings.append(facial_warning)
+    if not donor.facial and len(shape_keys) > 1:
+        warnings.append(
+            f"{obj.name}: its shape keys are ignored; this submesh has no facial poses in the "
+            "game's data to carry them as."
         )
     warnings.extend(routing.warnings)
     all_channels = target_submesh.get("UVChannels", [])
@@ -3539,6 +3547,7 @@ def _rigid_rebuild_plan(context, obj, submesh_index, target_submesh, model, warn
         loop_normals=_per_loop_normals(mesh, range(len(mesh.loops))),
         loop_uvs=loop_uvs, loop_colors=_loop_colors(mesh),
         new_surface_materials=new_surface_materials,
+        facial_keys=facial_keys,
     )
 
 
@@ -3552,7 +3561,7 @@ def _rigid_rebuild_entry(plan, texture_assignments, use_base64, warnings, infos)
     return RigidRebuildExport.build_rigid_rebuild_entry(
         plan.obj.name, plan.donor, plan.host_bone_id, plan.geometry, plan.loop_normals,
         plan.loop_uvs, plan.loop_colors, plan.routing, new_surfaces, plan.reasons,
-        use_base64, warnings, infos,
+        use_base64, warnings, infos, facial_keys=plan.facial_keys,
     )
 
 
@@ -3585,6 +3594,59 @@ class _SkinnedRebuildPlan:
     loop_colors: object
     vertex_weights: list          # per Blender vertex {bone: weight}, skinned bones only
     new_surface_materials: dict   # surface key -> material
+    facial_keys: object = None    # [SkinnedRebuildExport.FacialObjectKeys] or None (Milestone 4.7)
+
+
+def _shape_key_vertex_normals(key):
+    """Per-vertex normals of a shape key's shape (object space), or None
+    when Blender cannot compute them."""
+    try:
+        flat = list(key.normals_vertex_get())
+    except (AttributeError, RuntimeError, TypeError):
+        return None
+    return [tuple(flat[i:i + 3]) for i in range(0, len(flat), 3)]
+
+
+def _facial_shape_key_data(obj, model, submesh_index):
+    """The mesh's facial shape keys as plain data for
+    SkinnedRebuildExport.encode_facial_poses (the body) or
+    RigidRebuildExport.encode_rigid_facial_poses (a rigid submesh), one
+    entry per facial object on *submesh_index*: None when the model has no
+    such object or the mesh has no Basis key (the poses are then dropped or
+    neutralized)."""
+    facial = model.get("FacialPoseData") or {}
+    objects = [
+        entry for entry in facial.get("Objects", []) if entry.get("SubmeshIndex") == submesh_index
+    ]
+    if not objects:
+        return None
+    mesh = obj.data
+    key_blocks = mesh.shape_keys.key_blocks if mesh.shape_keys else None
+    basis = key_blocks.get("Basis") if key_blocks else None
+    if basis is None:
+        return None
+    basis_positions = [tuple(point.co) for point in basis.data]
+    basis_normals = _shape_key_vertex_normals(basis)
+    result = []
+    for entry in objects:
+        pose_count = int(entry.get("PoseCount", facial.get("PoseCount", 0)) or 0)
+        positions, normals = [], []
+        for pose in range(1, pose_count):
+            key = key_blocks.get(
+                SkinnedRebuildExport.FACIAL_KEY_NAME.format(object=entry.get("ObjectIndex"), pose=pose)
+            )
+            if key is None:
+                positions.append(None)
+                normals.append(None)
+                continue
+            positions.append([tuple(point.co) for point in key.data])
+            normals.append(_shape_key_vertex_normals(key) if basis_normals is not None else None)
+        result.append(SkinnedRebuildExport.FacialObjectKeys(
+            object_index=int(entry.get("ObjectIndex")), pose_count=pose_count,
+            pose_positions=positions, pose_normals=normals,
+            basis_positions=basis_positions, basis_normals=basis_normals,
+        ))
+    return result
 
 
 def _skinned_rebuild_plan(context, obj, submesh_index, target_submesh, model, warnings):
@@ -3615,8 +3677,12 @@ def _skinned_rebuild_plan(context, obj, submesh_index, target_submesh, model, wa
     surfaces_changed = SkinnedRebuildExport.surfaces_need_rebuild(
         routing, donor, _effective_type7_modes(target_submesh.get("DisplayStates", [])),
     )
+    # Vertex groups added, removed or reassigned: the body is rebuilt with
+    # the new weights rather than laid out around the donor's entries.
+    weights_changed = skin_membership_changed([obj], {"SluggiesModel": model})
     reasons = SkinnedRebuildExport.decide_reasons(
         topology_changed=topology_changed, moved=moved, surfaces_changed=surfaces_changed,
+        weights_changed=weights_changed,
     )
     if not reasons:
         return None
@@ -3637,7 +3703,10 @@ def _skinned_rebuild_plan(context, obj, submesh_index, target_submesh, model, wa
         raise ValueError(unweighted_error)
 
     shape_keys = mesh.shape_keys.key_blocks if mesh.shape_keys else []
-    facial_warning = SkinnedRebuildExport.facial_warning(obj.name, donor, len(shape_keys))
+    facial_keys = _facial_shape_key_data(obj, model, submesh_index) if donor.facial else None
+    facial_warning = SkinnedRebuildExport.facial_warning(
+        obj.name, donor, len(shape_keys), carried=facial_keys is not None,
+    )
     if facial_warning:
         warnings.append(facial_warning)
 
@@ -3662,6 +3731,7 @@ def _skinned_rebuild_plan(context, obj, submesh_index, target_submesh, model, wa
         obj=obj, submesh_index=submesh_index, donor=donor, geometry=geometry, routing=routing,
         reasons=reasons, normals=normals, loop_uvs=loop_uvs, loop_colors=_loop_colors(mesh),
         vertex_weights=remap.weights, new_surface_materials=new_surface_materials,
+        facial_keys=facial_keys,
     )
 
 
@@ -3671,15 +3741,22 @@ def _skinned_rebuild_entry(plan, texture_assignments, use_base64, warnings, info
     for key in plan.routing.new_keys:
         mat = plan.new_surface_materials[key]
         new_surfaces.append(_new_surface_entry(key, mat, texture_assignments[mat.name]))
-    return SkinnedRebuildExport.build_skinned_rebuild_entry(
+    entry = SkinnedRebuildExport.build_skinned_rebuild_entry(
         plan.obj.name, plan.donor, plan.geometry, plan.normals, plan.loop_uvs, plan.loop_colors,
         plan.routing, plan.vertex_weights, new_surfaces, plan.reasons, use_base64, warnings, infos,
     )
+    if plan.facial_keys is not None:
+        entry["FacialPoses"] = SkinnedRebuildExport.encode_facial_poses(
+            plan.obj.name, plan.facial_keys, plan.geometry, plan.donor.position_quantize,
+            use_base64, warnings, infos,
+        )
+    return entry
 
 
 def _drop_facial_edits_for_submesh(data, submesh_index):
     """Remove FacialPoseDataEdited entries for *submesh_index*: a rebuilt
-    body renumbers its vertices, so the patcher drops its poses anyway."""
+    submesh carries its poses in its rebuild's FacialPoses (or drops them),
+    never as in-place pose edits."""
     model = data.get("SluggiesModel", {})
     facial = model.get("FacialPoseData") or {}
     dropped = {
@@ -4545,8 +4622,6 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                         return {"CANCELLED"}
                     if skn_msg:
                         self.report({"INFO"}, skn_msg)
-                elif skin_membership_changed(candidates, data):
-                    pass_reasons.append("vertices moved between bones")
                 elif encode_skin_weights_inplace(
                     candidates, data, warnings, use_custom_normals=self.use_custom_normals
                 ) is None:
@@ -4561,12 +4636,13 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     "included no skinned mesh; the model's donor skinning is used again."
                 )
 
+            rebuilt_objects = [p.obj for p in list(skinned_plans.values()) + list(rigid_plans.values())]
             update_facial_pose_edits(
-                [obj for obj in candidates if not any(p.obj is obj for p in skinned_plans.values())],
+                [obj for obj in candidates if not any(rebuilt is obj for rebuilt in rebuilt_objects)],
                 data, warnings,
             )
-            for skinned_plan in skinned_plans.values():
-                _drop_facial_edits_for_submesh(data, skinned_plan.submesh_index)
+            for rebuilt_plan in list(skinned_plans.values()) + list(rigid_plans.values()):
+                _drop_facial_edits_for_submesh(data, rebuilt_plan.submesh_index)
 
             # Whole-model root-bone scale — model-level, written only when edited.
             root_scale = encode_root_bone_scale_edited(candidates, data, warnings, context)

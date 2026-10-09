@@ -17,10 +17,12 @@ for import_path in (ROOT_DIR, TOOLS_DIR, HAMMERSPACE_DIR, ADDON_DIR, pathlib.Pat
         sys.path.insert(0, str(import_path))
 
 import ExportMode  # noqa: E402
+import FacialPoseRebuild as fpr  # noqa: E402
 import GeometryRebuild  # noqa: E402
 import HammerspaceMain as main  # noqa: E402
 import start  # noqa: E402
 import synthetic_donor  # noqa: E402
+import test_skinned_rebuild  # noqa: E402
 import texture_helper  # noqa: E402
 from binfmt import color_entry_size, comp_size, decode_field  # noqa: E402
 from drawlist import decodeDrawList  # noqa: E402
@@ -88,6 +90,63 @@ def _resized_rebuild(model: dict, vertex_count: int) -> dict:
         ],
     })
     return rebuild
+
+
+def _with_normals(data: dict) -> None:
+    """Give the donor rigid submesh a 3 x int16 normal array (the .sluggie
+    dict only; a rebuilt blob carries the rebuild's own normals)."""
+    sub = data['SluggiesModel']['Submeshes'][RIGID]
+    count = synthetic_donor.RIGID_VERTEX_COUNT
+    sub['NormalBuffer'] = {
+        'NormalDataPtrFieldOffset': '0x0', 'NormalCountFieldOffset': '0x0', 'NormalBufferOffset': '0x0',
+        'NormalBufferLength': count * 6, 'NormalBufferCompCount': 3,
+        'NormalBufferQuantizeInfo': 62, 'NormalAmbientPct': 0.0,
+        'NormalBufferData': _b64(struct.pack(f'>{count * 3}h', *(16384 if k % 3 == 2 else 0 for k in range(count * 3)))),
+        'NormalFacesData': sub['FacesData'],
+    }
+
+
+def _resized_rebuild_with_normals(model: dict, vertex_count: int) -> dict:
+    rebuild = _resized_rebuild(model, vertex_count)
+    normals = struct.pack(f'>{vertex_count * 3}h', *(value for vertex in range(vertex_count) for value in (vertex * 100, 0, 16000)))
+    rebuild['NormalBufferData'] = _b64(normals)
+    rebuild['NormalFacesData'] = rebuild['FacesData']
+    return rebuild
+
+
+FACIAL_POSES = 3
+
+
+def _rigid_facial_section() -> bytes:
+    """A ptr7 section with one object on the donor rigid submesh: 3 x int16
+    positions on vertices 0-1 and 3 x int16 normals on entries 0 and 2."""
+    header = (struct.pack('>HHHHIII', FACIAL_POSES, 1, 2, 0, 0x34, 0x14, 0)
+              + bytes([0, RIGID, 1, 0x32]) + bytes(12)
+              + bytes([0, RIGID, 2, 0x32]) + bytes(12))
+    head = fpr.FacialObject(FACIAL_POSES, [
+        fpr.FacialAttribute(bytes([RIGID, 1, 3, 2]), fpr.runs_from_indices([0, 1]),
+                            [struct.pack('>6h', *([pose] * 6)) for pose in range(FACIAL_POSES)]),
+        fpr.FacialAttribute(bytes([RIGID, 2, 3, 2]), fpr.runs_from_indices([0, 2]),
+                            [struct.pack('>6h', *([10 + pose] * 6)) for pose in range(FACIAL_POSES)]),
+    ])
+    return fpr.serialize_section(header, [head])
+
+
+def _rigid_facial_poses(vertices, normal_entries=None, pose_count: int = FACIAL_POSES) -> list:
+    entry = {
+        'ObjectIndex': 0, 'Vertices': _u16s(vertices),
+        'PoseDeltas': [
+            _b64(struct.pack(f'>{3 * len(vertices)}h', *(pose * 1000 + vertex * 10 + c for vertex in vertices for c in range(3))))
+            for pose in range(1, pose_count)
+        ],
+    }
+    if normal_entries is not None:
+        entry['NormalEntries'] = _u16s(normal_entries)
+        entry['NormalPoseDeltas'] = [
+            _b64(struct.pack(f'>{3 * len(normal_entries)}h', *(pose * 100 + n for n in normal_entries for _c in range(3))))
+            for pose in range(1, pose_count)
+        ]
+    return [entry]
 
 
 def _new_surface(template='builtin:rigid_spec_v1', texture=None, **extra) -> dict:
@@ -191,9 +250,42 @@ class RigidRebuildValidatorTests(unittest.TestCase):
         self.sub['DisplayStates'][5]['DisplayStateParamBytesEdited'] = '100064'
         main._validate_rigid_rebuilds(self.model)
 
-    def test_facial_pose_submesh_is_refused(self):
-        self.model['FacialPoseData'] = {'Objects': [{'SubmeshIndex': RIGID}]}
-        self._refused('facial poses')
+    def test_facial_pose_submesh_without_poses_passes(self):
+        # The patcher neutralizes the objects (older export, or no shape keys).
+        self.model['FacialPoseData'] = {'Objects': [{'ObjectIndex': 0, 'SubmeshIndex': RIGID}]}
+        main._validate_rigid_rebuilds(self.model)
+
+    def test_facial_poses_are_checked_against_the_donor_object(self):
+        _with_normals({'SluggiesModel': self.model})
+        self.model['FacialPoseData'] = test_skinned_rebuild._facial_data_from_section(_rigid_facial_section())
+        rebuild = self.sub['RigidRebuild'] = _resized_rebuild_with_normals(self.model, 5)
+        rebuild['FacialPoses'] = _rigid_facial_poses([1, 3], [2])
+        main._validate_rigid_rebuilds(self.model)
+        rebuild['FacialPoses'] = _rigid_facial_poses([1, 3])            # normals may be left out (neutralized)
+        main._validate_rigid_rebuilds(self.model)
+        rebuild['FacialPoses'] = []
+        self._refused(r'lacks facial object\(s\) \[0\]')
+        rebuild['FacialPoses'] = _rigid_facial_poses([3, 1])
+        self._refused('Vertices must be strictly ascending')
+        rebuild['FacialPoses'] = _rigid_facial_poses([5])
+        self._refused('vertex 5 is outside the 5 vertices')
+        rebuild['FacialPoses'] = _rigid_facial_poses([1], [5])
+        self._refused('normal entry 5 is outside the 5 normal entries')
+        rebuild['FacialPoses'] = _rigid_facial_poses([1], pose_count=2)
+        self._refused(r'PoseDeltas must hold 2 arrays')
+        rebuild['FacialPoses'] = _rigid_facial_poses([1], [1])
+        rebuild['FacialPoses'][0]['NormalPoseDeltas'][0] = 'AAA='
+        self._refused(r'NormalPoseDeltas\[0\] is 2 bytes, expected 1 x 6')
+        rebuild['FacialPoses'] = _rigid_facial_poses([1]) + [{'ObjectIndex': 1, 'Vertices': _u16s([0]), 'PoseDeltas': []}]
+        self._refused('facial object 1, which the model does not have')
+        del self.sub['NormalBuffer']
+        rebuild = self.sub['RigidRebuild'] = _resized_rebuild(self.model, 5)
+        rebuild['FacialPoses'] = _rigid_facial_poses([1], [1])
+        self._refused('has a normal attribute on submesh 1 but the rebuild has no normal array')
+        del self.model['FacialPoseData']['Objects'][0]['Normal']
+        self._refused('carries NormalEntries but the rebuilt submesh has no normal array')
+        rebuild['FacialPoses'] = _rigid_facial_poses([1])
+        main._validate_rigid_rebuilds(self.model)
 
     def test_host_bone_must_be_the_effective_owner(self):
         self.sub['RigidRebuild']['HostBoneId'] = FREE_BONE
@@ -316,6 +408,59 @@ class RigidRebuildBuildTests(unittest.TestCase):
         )
         self.assertTrue(result.validation_report['valid'], result.validation_report.get('errors'))
         return result, _gpl_section(result.block)
+
+    def _facial_build(self, poses):
+        """Build with the donor rigid submesh carrying facial poses (one
+        object, positions and normals) and a 5-vertex rebuild; returns the
+        rebuilt ptr7 section and the GPL."""
+        self.env = self.enterContext(synthetic_donor.donor_environment(_with_normals))
+        self.data = self.env.reload()
+        self.model = self.data['SluggiesModel']
+        self.model['UseHammerspace'] = True
+        section = _rigid_facial_section()
+        self.model['FacialPoseData'] = test_skinned_rebuild._facial_data_from_section(section)
+        self.model['TrailingSections'] = [
+            {'HeaderFieldOffset': '0x18', 'OriginalPtr': '0x1000', 'Length': len(section), 'Data': _b64(section)},
+        ]
+        rebuild = _resized_rebuild_with_normals(self.model, 5)
+        if poses is not None:
+            rebuild['FacialPoses'] = poses
+        self.model['Submeshes'][RIGID]['RigidRebuild'] = rebuild
+        donor_header = bytearray(main.CloneHEADER(self.env.model_offset))
+        struct.pack_into('>I', donor_header, 0x18, 0x1000)
+        with mock.patch.object(main, 'CloneHEADER', return_value=bytes(donor_header)):
+            result, gpl = self._build()
+        ptr7 = struct.unpack_from('>I', result.block, 0x18)[0]
+        self.assertNotEqual(ptr7, 0)
+        self.assertEqual([e for e in result.validation_report['errors'] if 'ptr7' in e], [])
+        return result.block[ptr7:], gpl, rebuild
+
+    def test_facial_poses_follow_the_rebuilt_rigid_arrays(self):
+        rebuilt, gpl, rebuild = self._facial_build(_rigid_facial_poses([1, 3], [2, 4]))
+        self.assertEqual(struct.unpack_from('>HHH', rebuilt, 0), (FACIAL_POSES, 1, 2))      # descriptors kept
+        vertices, poses = test_skinned_rebuild._parse_facial_runs(rebuilt, 0)
+        self.assertEqual(vertices, [1, 3])
+        positions = base64.b64decode(rebuild['VertexBufferData'])
+        self.assertEqual(poses[0], positions[6:12] + positions[18:24])
+        self.assertEqual(struct.unpack('>6h', poses[1]), (1010, 1011, 1012, 1030, 1031, 1032))
+        # The normal attribute: second record of the object.
+        table = struct.unpack_from('>I', rebuilt, 8)[0]
+        _pc, _ac, record_size, data = struct.unpack_from('>HHII', rebuilt, table)
+        record = data + record_size
+        run = struct.unpack_from('>I', rebuilt, record + 8)[0]
+        self.assertEqual(rebuilt[run:run + 12], struct.pack('>6H', 2, 1, 4, 1, 0, 0))
+        normals = base64.b64decode(rebuild['NormalBufferData'])
+        pose_offsets = struct.unpack_from(f'>{FACIAL_POSES}I', rebuilt, record + 0x0C)
+        self.assertEqual(rebuilt[pose_offsets[0]:pose_offsets[0] + 12], normals[12:18] + normals[24:30])
+        self.assertEqual(struct.unpack('>6h', rebuilt[pose_offsets[1]:pose_offsets[1] + 12]), (102,) * 3 + (104,) * 3)
+        blob = _blob(gpl, RIGID)
+        self.assertEqual(blob['positions'][2], positions)
+
+    def test_rebuild_without_facial_poses_neutralizes_the_objects(self):
+        rebuilt, _gpl, rebuild = self._facial_build(None)
+        vertices, poses = test_skinned_rebuild._parse_facial_runs(rebuilt, 0)
+        self.assertEqual(vertices, [0])
+        self.assertEqual(poses, [base64.b64decode(rebuild['VertexBufferData'])[:6], bytes(6), bytes(6)])
 
     def test_identity_rebuild_replaces_only_the_rigid_descriptor(self):
         self.model['Submeshes'][RIGID]['RigidRebuild'] = _identity_rebuild(self.model)
@@ -511,35 +656,99 @@ class RigidRebuildBuildTests(unittest.TestCase):
     def test_splice_keeps_a_uv_rebuild_tail_at_its_distance(self):
         """A payload PatchGPLUVRebuild appended past the donor length is
         addressed blob-relative from the existing blobs, so it must not move
-        when the rebuilt blob goes in before GPLUserData."""
+        when the rebuilt blob goes in before GPLUserData. Replacing blob 1
+        under a blob 0 that stays keeps the donor blob (nothing below it may
+        shift)."""
+        gpl = bytearray(0x90)
+        struct.pack_into('>5I', gpl, 0, 0, 16, 0x80, 2, 0x14)     # user data 16 bytes at 0x80
+        struct.pack_into('>4I', gpl, 0x14, 0x30, 0x34, 0x60, 0x64)  # blobs at 0x30 and 0x60
+        gpl[0x30:0x60] = bytes(range(48))
+        gpl[0x60:0x80] = bytes(range(100, 132))
+        gpl[0x80:0x90] = b'U' * 16
+        tail = b'T' * 32
+        out, length, dropped = main._splice_blobs_before_user_data(bytes(gpl) + tail, [(1, b'N' * 40, 4)], 0x90)
+
+        self.assertEqual(dropped, {})
+        self.assertEqual(out[0x30:0x80], gpl[0x30:0x80])            # both donor blobs untouched
+        self.assertEqual(struct.unpack_from('>II', out, 0x14), (0x30, 0x34))
+        self.assertEqual(out[0x80:0x90], bytes(16))                 # user data's old spot zeroed
+        self.assertEqual(out[0x90:0xB0], tail)                      # tail kept at its distance
+        self.assertEqual(struct.unpack_from('>II', out, 0x1C), (0xC0, 0xC4))   # next 32-byte boundary
+        self.assertEqual(out[0xC0:0xE8], b'N' * 40)
+        user_ptr = struct.unpack_from('>I', out, 8)[0]
+        self.assertEqual(user_ptr, 0x100)
+        self.assertEqual(out[user_ptr:user_ptr + 16], b'U' * 16)
+        self.assertEqual((length, len(out)), (0x110, 0x110))
+
+    def test_splice_drops_the_leading_donor_blob(self):
+        """The replaced blob leads the blob region, so its span is cut and
+        user data and tail move up together; the tail keeps its distance to
+        the (here: no) remaining blobs."""
         gpl = bytearray(0x70)
         struct.pack_into('>5I', gpl, 0, 0, 16, 0x60, 1, 0x14)     # user data 16 bytes at 0x60
         struct.pack_into('>II', gpl, 0x14, 0x20, 0x24)             # one blob at 0x20
         gpl[0x20:0x60] = bytes(range(64))
         gpl[0x60:0x70] = b'U' * 16
         tail = b'T' * 32
-        out, length = main._splice_blobs_before_user_data(bytes(gpl) + tail, [(0, b'N' * 40, 4)], 0x70)
+        out, length, dropped = main._splice_blobs_before_user_data(bytes(gpl) + tail, [(0, b'N' * 40, 4)], 0x70)
 
-        self.assertEqual(out[0x20:0x60], bytes(range(64)))          # old blob untouched
-        self.assertEqual(out[0x60:0x70], bytes(16))                 # user data's old spot zeroed
-        self.assertEqual(out[0x70:0x90], tail)                      # tail kept at its distance
-        self.assertEqual(struct.unpack_from('>II', out, 0x14), (0xA0, 0xA4))   # next 32-byte boundary
-        self.assertEqual(out[0xA0:0xC8], b'N' * 40)
+        self.assertEqual(dropped, {0: 64})
+        self.assertEqual(out[0x20:0x30], bytes(16))                 # user data's old spot (moved up) zeroed
+        self.assertEqual(out[0x30:0x50], tail)
+        self.assertEqual(struct.unpack_from('>II', out, 0x14), (0x60, 0x64))   # next 32-byte boundary
+        self.assertEqual(out[0x60:0x88], b'N' * 40)
         user_ptr = struct.unpack_from('>I', out, 8)[0]
-        self.assertEqual(user_ptr, 0xE0)
+        self.assertEqual(user_ptr, 0xA0)
         self.assertEqual(out[user_ptr:user_ptr + 16], b'U' * 16)
-        self.assertEqual((length, len(out)), (0xF0, 0xF0))
+        self.assertEqual((length, len(out)), (0xB0, 0xB0))
 
-    def test_splice_without_user_data_appends_at_the_end(self):
-        gpl = bytearray(0x60)
-        struct.pack_into('>5I', gpl, 0, 0, 0, 0, 1, 0x14)
-        struct.pack_into('>II', gpl, 0x14, 0x20, 0x24)
-        gpl[0x20:0x60] = bytes(range(64))
-        out, length = main._splice_blobs_before_user_data(bytes(gpl), [(0, b'N' * 40, 4)], None)
-        self.assertEqual(out[:0x14] + out[0x1C:0x60], gpl[:0x14] + gpl[0x1C:0x60])
+    def test_splice_drop_keeps_the_remaining_blobs_mod32_residue(self):
+        """A 44-byte span is cut by 32: the 12 leftover bytes stay as a
+        zeroed gap so blob 1 moves by a multiple of 32 (its primitive lists
+        and positions stay aligned); its descriptor follows."""
+        gpl = bytearray(0x70)
+        struct.pack_into('>5I', gpl, 0, 0, 0, 0, 2, 0x14)
+        struct.pack_into('>4I', gpl, 0x14, 0x24, 0x28, 0x50, 0x54)  # spans 0x24-0x50 (44) and 0x50-0x70
+        gpl[0x24:0x50] = bytes(range(44))
+        gpl[0x50:0x70] = bytes(range(100, 132))
+        out, length, dropped = main._splice_blobs_before_user_data(bytes(gpl), [(0, b'N' * 40, 4)], None)
+
+        self.assertEqual(dropped, {0: 44})
+        self.assertEqual(out[0x24:0x30], bytes(12))
+        self.assertEqual(out[0x30:0x50], gpl[0x50:0x70])
+        self.assertEqual(struct.unpack_from('>II', out, 0x1C), (0x30, 0x34))
         self.assertEqual(struct.unpack_from('>II', out, 0x14), (0x60, 0x64))
-        self.assertEqual(struct.unpack_from('>I', out, 8)[0], 0)
+        self.assertEqual(out[0x60:0x88], b'N' * 40)
         self.assertEqual((length, len(out)), (0xA0, 0xA0))
+
+    def test_splice_drops_every_replaced_blob_from_the_front(self):
+        gpl = bytearray(0x64)
+        struct.pack_into('>5I', gpl, 0, 0, 0, 0, 2, 0x14)
+        struct.pack_into('>4I', gpl, 0x14, 0x24, 0x28, 0x44, 0x48)
+        gpl[0x24:0x64] = bytes(range(64))
+        out, length, dropped = main._splice_blobs_before_user_data(
+            bytes(gpl), [(0, b'N' * 40, 4), (1, b'M' * 40, 8)], None)
+
+        self.assertEqual(dropped, {0: 32, 1: 32})
+        self.assertEqual(struct.unpack_from('>4I', out, 0x14), (0x40, 0x44, 0x80, 0x88))
+        self.assertEqual(out[0x40:0x68], b'N' * 40)
+        self.assertEqual(out[0x80:0xA8], b'M' * 40)
+        self.assertEqual((length, len(out)), (0xC0, 0xC0))
+
+    def test_splice_keeps_a_donor_blob_whose_span_holds_another_name(self):
+        """Vanilla keeps some mesh names in a string table; a remaining
+        descriptor's name pointer is the one GPL-absolute pointer that can
+        reach into the dropped span, so such a blob stays."""
+        gpl = bytearray(0x70)
+        struct.pack_into('>5I', gpl, 0, 0, 0, 0, 2, 0x14)
+        struct.pack_into('>4I', gpl, 0x14, 0x24, 0x28, 0x50, 0x40)  # blob 1's name sits in blob 0's span
+        gpl[0x24:0x70] = bytes(range(76))
+        out, length, dropped = main._splice_blobs_before_user_data(bytes(gpl), [(0, b'N' * 40, 4)], None)
+
+        self.assertEqual(dropped, {})
+        self.assertEqual(out[0x24:0x70], gpl[0x24:0x70])
+        self.assertEqual(struct.unpack_from('>4I', out, 0x14), (0x80, 0x84, 0x50, 0x40))
+        self.assertEqual((length, len(out)), (0xC0, 0xC0))
 
     def test_new_surface_on_an_appended_texture(self):
         tex_dir = self.env.directory / 'tex'

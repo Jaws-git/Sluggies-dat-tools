@@ -6,18 +6,22 @@ encoding can be unit-tested outside Blender. ExportSluggies.py reads the
 scene and hands plain lists here.
 
 The skinned donor submesh (CompCount 6, the body) takes the rebuild path
-when its topology changed, when it carries an Object Mode transform, or when
-faces moved in a way the slot-preserving paths cannot store (a partial
-move, a move between surfaces with different shaders, or an Add-material
-surface). Otherwise the Milestone 3 fields apply (position, UV, colour and
-weight edits on the donor's own vertices).
+when its topology changed, when it carries an Object Mode transform, when
+any vertex's set of skinning bones changed (vertex groups added, removed
+or reassigned), or when faces moved in a way the slot-preserving paths
+cannot store (a partial move, a move between surfaces with different
+shaders, or an Add-material surface). Otherwise the Milestone 3 fields
+apply (position, UV, colour and weight-value edits on the donor's own
+vertices and bones).
 
 What the entry carries, in the donor's own formats: one interleaved
 position + normal record per vertex in armature (model) space, triangles,
 per-loop colours and UVs, the face -> surface routing, and ``(vertex, bone,
-weight)`` influences. The patcher assigns position slots, builds the SKN and
-re-encodes the draw lists; facial poses that address submesh 0 are dropped
-by it.
+weight)`` influences, plus ``FacialPoses`` (Milestone 4.7): the body's
+facial shape keys as sparse delta records, so the patcher can rebuild the
+donor's blink and mouth poses for the new vertex order. The patcher assigns
+position slots, builds the SKN and re-encodes the draw lists; without
+``FacialPoses`` it drops the poses that address submesh 0.
 """
 
 from __future__ import annotations
@@ -37,6 +41,7 @@ except ImportError:  # imported flat by the unit tests
 REASON_TOPOLOGY = rre.REASON_TOPOLOGY
 REASON_TRANSFORM = rre.REASON_TRANSFORM
 REASON_SURFACES = rre.REASON_SURFACES
+REASON_WEIGHTS = 'skin_weights'      # a vertex's set of skinning bones changed
 
 SKINNED_COMP_COUNT = 6
 INFLUENCE = struct.Struct('>HHf')    # (vertex, bone, weight)
@@ -107,7 +112,9 @@ def donor_position_format_error(donor: DonorSkinnedSubmesh, object_name: str) ->
     )
 
 
-def decide_reasons(*, topology_changed: bool, moved: bool, surfaces_changed: bool) -> List[str]:
+def decide_reasons(
+    *, topology_changed: bool, moved: bool, surfaces_changed: bool, weights_changed: bool = False,
+) -> List[str]:
     reasons = []
     if topology_changed:
         reasons.append(REASON_TOPOLOGY)
@@ -115,6 +122,8 @@ def decide_reasons(*, topology_changed: bool, moved: bool, surfaces_changed: boo
         reasons.append(REASON_TRANSFORM)
     if surfaces_changed:
         reasons.append(REASON_SURFACES)
+    if weights_changed:
+        reasons.append(REASON_WEIGHTS)
     return reasons
 
 
@@ -351,16 +360,99 @@ def build_skinned_rebuild_entry(
     return entry
 
 
-def facial_warning(object_name: str, donor: DonorSkinnedSubmesh, shape_key_count: int) -> Optional[str]:
-    """The rebuild renumbers the vertices, so the donor's facial poses on
-    this submesh cannot follow; the patcher drops them."""
-    if not donor.facial:
-        return None
-    note = ' Its shape keys are not exported.' if shape_key_count else ''
-    return (
-        f"{object_name}: this model's blink and mouth poses animate the body's vertices, which "
-        f'the rebuild renumbers, so the patched model will have no facial animation.{note}'
-    )
+# The facial helpers are shared with the rigid rebuild (RigidRebuildExport):
+# the key naming, the plain-data shape keys and the "no shape keys" warning.
+facial_warning = rre.facial_warning
+FACIAL_KEY_NAME = rre.FACIAL_KEY_NAME
+FacialObjectKeys = rre.FacialObjectKeys
+
+
+# ---------------------------------------------------------------------------
+# Facial poses (Milestone 4.7)
+# ---------------------------------------------------------------------------
+
+_DELTA_AXES = ('x', 'y', 'z', 'nx', 'ny', 'nz')
+
+
+def encode_facial_poses(
+    object_name: str, objects: Sequence[FacialObjectKeys], geometry: 'cse.BoneLocalGeometry',
+    quantize_info: int, use_base64: bool = True,
+    warnings: Optional[List[str]] = None, infos: Optional[List[str]] = None,
+) -> List[dict]:
+    """``FacialPoses``: per facial object, the exported vertices whose
+    shape keys move them (position or normal, after quantization) and one
+    delta record array per pose after pose zero, ``x y z nx ny nz`` int16 in
+    the donor's position format. Deltas are the shape key's displacement
+    from the Basis key, taken into armature space like the positions; a
+    missing key leaves its pose at the rest shape. An object that moves no
+    vertex keeps one zero entry so the section stays well-formed."""
+    warnings = warnings if warnings is not None else []
+    infos = infos if infos is not None else []
+    divisor = cse.int16_divisor(quantize_info)
+    matrix = geometry.to_bone
+    result = []
+    for facial_object in objects:
+        pose_indices = range(1, facial_object.pose_count)
+        missing = [
+            pose for pose, positions in zip(pose_indices, facial_object.pose_positions) if positions is None
+        ]
+        if missing:
+            warnings.append(
+                f'{object_name}: facial object {facial_object.object_index} has no shape key for pose(s) '
+                f"{', '.join(str(pose) for pose in missing)}; those poses keep the rest shape."
+            )
+        mapped: List[int] = []
+        records: List[List[tuple]] = [[] for _ in pose_indices]
+        for exported, blender_vertex in enumerate(geometry.source_vertices):
+            rows = []
+            for k, pose in enumerate(pose_indices):
+                positions = facial_object.pose_positions[k]
+                if positions is None:
+                    rows.append((0,) * 6)
+                    continue
+                rest = cse.transform_point(matrix, facial_object.basis_positions[blender_vertex])
+                posed = cse.transform_point(matrix, positions[blender_vertex])
+                values = [posed[axis] - rest[axis] for axis in range(3)]
+                normals = facial_object.pose_normals[k]
+                if normals is not None and facial_object.basis_normals is not None:
+                    basis_normal, pose_normal = cse.transform_normals(
+                        [facial_object.basis_normals[blender_vertex], normals[blender_vertex]], matrix,
+                    )
+                    values += [pose_normal[axis] - basis_normal[axis] for axis in range(3)]
+                else:
+                    values += [0.0, 0.0, 0.0]
+                rows.append(tuple(
+                    cse.quantize_int16(
+                        value, divisor,
+                        f'{object_name} facial object {facial_object.object_index} pose {pose} '
+                        f'vertex {blender_vertex} {axis}',
+                    )
+                    for value, axis in zip(values, _DELTA_AXES)
+                ))
+            if any(any(row) for row in rows):
+                mapped.append(exported)
+                for k, row in enumerate(rows):
+                    records[k].append(row)
+        if not mapped:
+            warnings.append(
+                f'{object_name}: facial object {facial_object.object_index} moves no vertex in any '
+                'shape key; it is kept with one unmoving entry.'
+            )
+            mapped = [0]
+            records = [[(0,) * 6] for _ in pose_indices]
+        infos.append(
+            f'{object_name}: facial object {facial_object.object_index}: {len(mapped)} vertex(es) '
+            f'animated over {facial_object.pose_count - 1} pose(s).'
+        )
+        result.append({
+            'ObjectIndex': facial_object.object_index,
+            'Vertices': cse.encode_field(struct.pack(f'>{len(mapped)}H', *mapped), use_base64),
+            'PoseDeltas': [
+                cse.encode_field(struct.pack(f'>{len(rows) * 6}h', *(v for row in rows for v in row)), use_base64)
+                for rows in records
+            ],
+        })
+    return result
 
 
 def mode_reason(object_name: str, reasons: Sequence[str]) -> str:

@@ -23,7 +23,10 @@ import CustomSubmeshExport as cse  # noqa: E402
 import FieldCodec  # noqa: E402
 import HammerspaceMain as main  # noqa: E402
 import RigidRebuildExport as rre  # noqa: E402
+import SkinnedRebuildExport as sre  # noqa: E402
 import synthetic_donor  # noqa: E402
+import test_rigid_rebuild  # noqa: E402
+import test_skinned_rebuild  # noqa: E402
 
 RIGID = synthetic_donor.RIGID_OWNER_SUBMESH
 OWNER = synthetic_donor.RIGID_OWNER_BONE
@@ -354,6 +357,116 @@ class BuildEntryTests(unittest.TestCase):
             'ColorChannels': [{'ColorChannelData': 'keep'}],
         })
         self.assertEqual(rre.mode_reason('cap', ['topology', 'surfaces']), 'rigid rebuild of cap (topology, surfaces)')
+
+
+class FacialPosesTests(unittest.TestCase):
+    """``RigidRebuild.FacialPoses`` (2026-10-10) on the BuildEntryTests fan."""
+
+    def setUp(self):
+        BuildEntryTests.setUp(self)
+        self.donor.normal_format = (3, 62)
+        self.donor.facial = True
+        self.loops = [loop for tri in self.geometry.triangles for loop in tri.loops]
+        self.loop_normals = {loop: (0.0, 0.0, 1.0) for loop in self.loops}
+
+    def _keys(self, moved=(), tilted=(), missing=False, object_index=0, pose_count=3):
+        """Pose 1 moves *moved* vertices by +2 on x and tilts *tilted*
+        vertices' normals to +X; pose 2 is missing when *missing*, else
+        identical to the Basis."""
+        basis = list(self.local)
+        pose1 = [(x + 2.0, y, z) if i in moved else (x, y, z) for i, (x, y, z) in enumerate(basis)]
+        basis_normals = [(0.0, 0.0, 1.0)] * len(basis)
+        pose1_normals = [(1.0, 0.0, 0.0) if i in tilted else (0.0, 0.0, 1.0) for i in range(len(basis))]
+        return rre.FacialObjectKeys(
+            object_index=object_index, pose_count=pose_count,
+            pose_positions=[pose1, None if missing else list(basis)],
+            pose_normals=[pose1_normals, None if missing else basis_normals],
+            basis_positions=basis, basis_normals=basis_normals,
+        )
+
+    def _entry(self, keys, **overrides):
+        kwargs = dict(
+            object_name='head', donor=self.donor, host_bone_id=OWNER, geometry=self.geometry,
+            loop_normals=self.loop_normals, loop_uvs_by_channel={0: self.loop_uvs, 1: self.loop_uvs},
+            loop_colors=None, routing=self.routing, new_surfaces=[], reasons=['topology'],
+            facial_keys=keys,
+        )
+        kwargs.update(overrides)
+        return rre.build_rigid_rebuild_entry(**kwargs)
+
+    def test_moved_vertices_and_pinned_normal_entries(self):
+        warnings, infos = [], []
+        entry = self._entry([self._keys(moved=(2, 4), tilted=(2, 4))], warnings=warnings, infos=infos)
+        poses = entry['FacialPoses']
+        self.assertEqual(len(poses), 1)
+        divisor = 1 << (synthetic_donor.RIGID_QUANTIZE_INFO & 0xF)
+        self.assertEqual(struct.unpack('>2H', FieldCodec.decode_field(poses[0]['Vertices'])), (2, 4))
+        self.assertEqual(struct.unpack('>6h', FieldCodec.decode_field(poses[0]['PoseDeltas'][0])), (2 * divisor, 0, 0) * 2)
+        self.assertEqual(FieldCodec.decode_field(poses[0]['PoseDeltas'][1]), bytes(12))
+        # Every loop holds +Z, so the unanimated vertices share entry 0; the
+        # tilted vertices get their own entries in first-use order (2, then 4).
+        normal_data = FieldCodec.decode_field(entry['NormalBufferData'])
+        self.assertEqual(len(normal_data), 3 * 6)
+        indices = struct.unpack(f'>{3 * 6}H', FieldCodec.decode_field(entry['NormalFacesData']))
+        faces = [face for face in self.geometry.faces]
+        for face, corner_indices in zip(faces, zip(indices[0::3], indices[1::3], indices[2::3])):
+            for vertex, index in zip(face, corner_indices):
+                self.assertEqual(index, {2: 1, 4: 2}.get(vertex, 0))
+        self.assertEqual(struct.unpack('>2H', FieldCodec.decode_field(poses[0]['NormalEntries'])), (1, 2))
+        self.assertEqual(struct.unpack('>6h', FieldCodec.decode_field(poses[0]['NormalPoseDeltas'][0])), (16384, 0, -16384) * 2)
+        self.assertEqual(FieldCodec.decode_field(poses[0]['NormalPoseDeltas'][1]), bytes(12))
+        self.assertEqual(warnings, [])
+        self.assertEqual(len(infos), 1)
+        self.assertIn('2 vertex(es), 2 normal entries', infos[0])
+
+    def test_unmoving_object_missing_key_and_no_normals(self):
+        warnings = []
+        entry = self._entry([self._keys(), self._keys(moved=(3,), missing=True, object_index=1)], warnings=warnings)
+        poses = entry['FacialPoses']
+        self.assertEqual(len(warnings), 2)
+        self.assertIn('no shape key for pose(s) 2', warnings[0])
+        self.assertIn('moves no vertex', warnings[1])
+        self.assertEqual(struct.unpack('>H', FieldCodec.decode_field(poses[0]['Vertices'])), (0,))
+        self.assertEqual([FieldCodec.decode_field(d) for d in poses[0]['PoseDeltas']], [bytes(6)] * 2)
+        self.assertEqual(struct.unpack('>H', FieldCodec.decode_field(poses[0]['NormalEntries'])), (0,))
+        self.assertEqual(struct.unpack('>H', FieldCodec.decode_field(poses[1]['Vertices'])), (3,))
+        # Nothing tilted: one pooled normal entry for the whole mesh.
+        self.assertEqual(len(FieldCodec.decode_field(entry['NormalBufferData'])), 6)
+        # A donor without normals writes no normal lists.
+        self.donor.normal_format = None
+        entry = self._entry([self._keys(moved=(1,), tilted=(1,))], loop_normals=None)
+        self.assertNotIn('NormalBufferData', entry)
+        self.assertNotIn('NormalEntries', entry['FacialPoses'][0])
+
+    def test_facial_poses_round_trip_through_the_patcher(self):
+        entry = self._entry([self._keys(moved=(2, 4), tilted=(4,))])
+        with synthetic_donor.donor_environment(test_rigid_rebuild._with_normals) as env:
+            data = env.reload()
+            model = data['SluggiesModel']
+            model['UseHammerspace'] = True
+            section = test_rigid_rebuild._rigid_facial_section()
+            model['FacialPoseData'] = test_skinned_rebuild._facial_data_from_section(section)
+            model['TrailingSections'] = [
+                {'HeaderFieldOffset': '0x18', 'OriginalPtr': '0x1000', 'Length': len(section), 'Data': _b64(section)},
+            ]
+            model['Submeshes'][RIGID]['RigidRebuild'] = entry
+            main._validate_rigid_rebuilds(model)
+            donor_header = bytearray(main.CloneHEADER(env.model_offset))
+            struct.pack_into('>I', donor_header, 0x18, 0x1000)
+            from unittest import mock
+            with mock.patch.object(main, 'CloneHEADER', return_value=bytes(donor_header)):
+                result = main.BuildModelBlock(data, main.SectionModes(gpl='build'), sluggie_path=env.sluggie_path)
+            self.assertTrue(result.validation_report['valid'], result.validation_report.get('errors'))
+            ptr7 = struct.unpack_from('>I', result.block, 0x18)[0]
+            vertices, poses = test_skinned_rebuild._parse_facial_runs(result.block[ptr7:], 0)
+            self.assertEqual(vertices, [2, 4])
+            positions = FieldCodec.decode_field(entry['VertexBufferData'])
+            self.assertEqual(poses[0], positions[12:18] + positions[24:30])
+
+    def test_facial_warning_is_shared_with_the_body(self):
+        self.assertIs(sre.facial_warning, rre.facial_warning)
+        self.assertIn('no facial animation', rre.facial_warning('head', self.donor, 0))
+        self.assertIsNone(rre.facial_warning('head', self.donor, 0, carried=True))
 
 
 # --- exporter glue (ExportSluggies.py) --------------------------------------------------

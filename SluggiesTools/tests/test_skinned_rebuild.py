@@ -17,6 +17,7 @@ for import_path in (ROOT_DIR, TOOLS_DIR, HAMMERSPACE_DIR, ADDON_DIR, pathlib.Pat
         sys.path.insert(0, str(import_path))
 
 import ExportMode  # noqa: E402
+import FacialPoseRebuild as fpr  # noqa: E402
 import HammerspaceMain as main  # noqa: E402
 import SkinnedRebuild as sr  # noqa: E402
 import start  # noqa: E402
@@ -94,6 +95,101 @@ def _with_third_bone(data: dict) -> None:
         'WeightData': _b64(bytes([1])),
         'GplDestArrValue': 0,
     })
+
+
+# --- facial fixture (Milestone 4.7) ------------------------------------------
+
+FACIAL_POSES = 3                      # pose zero + two expressions
+BODY_FACIAL_ENTRIES = (1, 3, 4)       # donor body slots object 0 maps
+HEAD_FACIAL_ENTRIES = (0, 1)          # submesh 1 vertices object 1 maps
+
+
+def _facial_section(pose_count: int = FACIAL_POSES) -> tuple[bytes, list]:
+    """A decodable ptr7 section: object 0 on the body (interleaved 6 x int16
+    position records plus one auxiliary attribute on submesh 1), object 1 on
+    the rigid head (3 x int16 positions). Returns ``(bytes, objects)``."""
+    header = (struct.pack('>HHHHIII', pose_count, 2, 2, 0, 0x34, 0x14, 0)
+              + bytes([0, 0, 1, 0x62]) + bytes(12)      # body positions, 6 x int16
+              + bytes([0, 1, 0, 0x61]) + bytes(12))     # SKAcc entry 1 supplement, 6 x int8
+    records = _records(N)
+    body_pose_zero = b''.join(records[v * STRIDE:(v + 1) * STRIDE] for v in BODY_FACIAL_ENTRIES)
+    body_deltas = [
+        struct.pack(f'>{6 * len(BODY_FACIAL_ENTRIES)}h', *(pose * 100 + k for k in range(6 * len(BODY_FACIAL_ENTRIES))))
+        for pose in range(1, pose_count)
+    ]
+    body = fpr.FacialObject(pose_count, [
+        fpr.FacialAttribute(bytes([0, 1, 6, 2]), fpr.runs_from_indices(BODY_FACIAL_ENTRIES), [body_pose_zero] + body_deltas),
+        fpr.FacialAttribute(bytes([1, 0, 6, 1]), fpr.runs_from_indices([0]), [bytes(range(6))] * pose_count),   # SKAcc entry 1
+    ])
+    head = fpr.FacialObject(pose_count, [
+        fpr.FacialAttribute(bytes([1, 1, 3, 2]), fpr.runs_from_indices(HEAD_FACIAL_ENTRIES),
+                            [struct.pack('>6h', *([pose] * 6)) for pose in range(pose_count)]),
+    ])
+    objects = [body, head]
+    return fpr.serialize_section(header, objects), objects
+
+
+def _facial_data_from_section(section: bytes) -> dict:
+    """``FacialPoseData`` as export.py stores it, read back from *section*."""
+    pose_max, object_count, type_count, _pad, table = struct.unpack_from('>HHHHI', section, 0)
+    objects = []
+    for object_index in range(object_count):
+        pose_count, attribute_count, record_size, data_offset = struct.unpack_from('>HHII', section, table + object_index * 12)
+        record_offsets = [data_offset + k * record_size for k in range(attribute_count)]
+        run_offsets = [struct.unpack_from('>I', section, offset + 8)[0] for offset in record_offsets]
+        all_pose_offsets = [
+            struct.unpack_from('>I', section, offset + 0x0C + p * 4)[0]
+            for offset in record_offsets for p in range(pose_count)
+        ]
+        attributes = []
+        for k, offset in enumerate(record_offsets):
+            entry_count = struct.unpack_from('>I', section, offset)[0]
+            fmt = section[offset + 4:offset + 8]
+            run_end = run_offsets[k + 1] if k + 1 < attribute_count else min(all_pose_offsets)
+            pose_offsets = [struct.unpack_from('>I', section, offset + 0x0C + p * 4)[0] for p in range(pose_count)]
+            size = entry_count * fmt[2] * fmt[3]
+            attributes.append({
+                'RecordOffset': hex(offset), 'EntryCount': entry_count, 'FormatData': _b64(fmt),
+                'SubmeshIndex': fmt[0], 'AttributeKind': fmt[1], 'ComponentCount': fmt[2], 'ComponentSize': fmt[3],
+                'RunListData': _b64(section[run_offsets[k]:run_end]),
+                'Runs': [{'FirstVertex': f, 'VertexCount': c} for f, c in struct.iter_unpack('>HH', section[run_offsets[k]:run_end])],
+                'PoseData': [_b64(section[p:p + size]) for p in pose_offsets],
+            })
+        position = next(a for a in attributes if a['AttributeKind'] == 1)
+        objects.append({
+            'ObjectIndex': object_index, 'PoseCount': pose_count, 'AttributeCount': attribute_count,
+            'SubmeshIndex': position['SubmeshIndex'], 'Position': position,
+            'Normal': next((a for a in attributes if a['AttributeKind'] == 2), None),
+            'AuxiliaryAttributes': [a for a in attributes if a['AttributeKind'] not in (1, 2)],
+        })
+    return {
+        'SectionLength': len(section), 'SectionData': _b64(section), 'HeaderData': _b64(section[:table]),
+        'PoseCount': pose_max, 'AttributeTypeCount': type_count, 'ObjectCount': object_count, 'Objects': objects,
+    }
+
+
+def _facial_poses(vertices, pose_count: int = FACIAL_POSES, deltas=None) -> list:
+    """A ``FacialPoses`` entry for object 0 mapping *vertices*; *deltas* is
+    per pose a list of 6-tuples per vertex (default: distinct values)."""
+    if deltas is None:
+        deltas = [[tuple(pose * 1000 + vertex * 10 + c for c in range(6)) for vertex in vertices] for pose in range(1, pose_count)]
+    return [{
+        'ObjectIndex': 0, 'Vertices': _u16s(vertices),
+        'PoseDeltas': [_b64(struct.pack(f'>{6 * len(rows)}h', *(v for row in rows for v in row))) for rows in deltas],
+    }]
+
+
+def _parse_facial_runs(section: bytes, object_index: int) -> tuple[list, list]:
+    """``(slots, pose arrays)`` of *object_index*'s position attribute."""
+    table = struct.unpack_from('>I', section, 8)[0]
+    pose_count, attribute_count, record_size, data_offset = struct.unpack_from('>HHII', section, table + object_index * 12)
+    run_offset = struct.unpack_from('>I', section, data_offset + 8)[0]
+    pose_offsets = struct.unpack_from(f'>{pose_count}I', section, data_offset + 0x0C)
+    entry_count = struct.unpack_from('>I', section, data_offset)[0]
+    run_end = struct.unpack_from('>I', section, data_offset + record_size + 8)[0] if attribute_count > 1 else min(pose_offsets)
+    slots = [s for f, c in struct.iter_unpack('>HH', section[run_offset:run_end]) for s in range(f, f + c)]
+    stride = section[data_offset + 6] * section[data_offset + 7]
+    return slots, [section[p:p + entry_count * stride] for p in pose_offsets]
 
 
 # --- block readers ----------------------------------------------------------
@@ -287,6 +383,188 @@ class LayoutSkinTests(unittest.TestCase):
         self.assertEqual(sr.entry_source(layout, layout.direct[1], buffer), records[STRIDE:] + records[STRIDE:2 * STRIDE])
 
 
+# --- facial pose section (Milestone 4.7) ------------------------------------------
+
+class FacialPoseRebuildTests(unittest.TestCase):
+    def test_section_round_trips_through_decode_and_serialize(self):
+        section, _objects = _facial_section()
+        facial = _facial_data_from_section(section)
+        self.assertIsNone(fpr.facial_data_error(facial))
+        objects = fpr.decode_objects(facial, base64.b64decode)
+        self.assertEqual([len(o.attributes) for o in objects], [2, 1])
+        self.assertEqual(objects[0].attributes[0].entry_count, len(BODY_FACIAL_ENTRIES))
+        self.assertEqual(fpr.serialize_section(base64.b64decode(facial['HeaderData']), objects), section)
+        self.assertEqual(len(section) % 32, 0)
+
+    def test_runs_from_indices_end_with_the_terminator(self):
+        self.assertEqual(fpr.runs_from_indices([0, 1, 2, 7, 9, 10]), struct.pack('>8H', 0, 3, 7, 1, 9, 2, 0, 0))
+        self.assertEqual(fpr.runs_from_indices([]), fpr.RUN_TERMINATOR)
+        self.assertTrue(fpr.run_list_terminated(fpr.runs_from_indices([5])))
+        self.assertFalse(fpr.run_list_terminated(struct.pack('>HH', 5, 1)))
+
+    def test_strip_type_descriptors(self):
+        header = struct.pack('>HHHHIII', 5, 2, 2, 0, 0x34, 0x14, 0) + bytes([0, 0, 1, 0x62]) + bytes(12) + bytes([0, 3, 0, 0x61]) + bytes(12)
+        stripped = fpr.strip_type_descriptors(header, {0})
+        self.assertEqual(len(stripped), 0x24)
+        self.assertEqual(struct.unpack_from('>HHHHIII', stripped, 0), (5, 2, 1, 0, 0x24, 0x14, 0))
+        self.assertEqual(stripped[0x14:0x18], bytes([0, 0, 1, 0x62]))
+        self.assertEqual(fpr.strip_type_descriptors(header, set()), header)
+        with self.assertRaisesRegex(ValueError, 'every facial type descriptor'):
+            fpr.strip_type_descriptors(header, {0, 1})
+
+    def test_body_object_is_remapped_onto_the_new_slots(self):
+        _section, objects = _facial_section()
+        slot_of_vertex = [6, 7, 8, 0, 1, 2, 3]            # vertices 0-2 on a later line
+        records = _records(N)
+        buffer = bytearray(9 * STRIDE)
+        for vertex, slot in enumerate(slot_of_vertex):
+            buffer[slot * STRIDE:(slot + 1) * STRIDE] = records[vertex * STRIDE:(vertex + 1) * STRIDE]
+        deltas = [[(pose, vertex, 0, 0, 0, 0) for vertex in (1, 3, 4)] for pose in (1, 2)]
+        poses = fpr.BodyPoses(0, [1, 3, 4], [struct.pack('>18h', *(v for row in rows for v in row)) for rows in deltas])
+        rebuilt, warnings = fpr.rebuild_body_object(objects[0], poses, slot_of_vertex, bytes(buffer), STRIDE, 0)
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(len(rebuilt.attributes), 1)              # the SKAcc supplement is dropped
+        position = rebuilt.attributes[0]
+        self.assertEqual(position.format_data, bytes([0, 1, 6, 2]))
+        self.assertEqual(position.run_list, struct.pack('>6H', 0, 2, 7, 1, 0, 0))   # slots 0, 1 (vertices 3, 4) and 7 (vertex 1), terminator
+        self.assertEqual(position.poses[0], records[3 * STRIDE:5 * STRIDE] + records[1 * STRIDE:2 * STRIDE])
+        self.assertEqual(position.poses[1], struct.pack('>18h', 1, 3, 0, 0, 0, 0, 1, 4, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0))
+        self.assertEqual(position.poses[2][:2], struct.pack('>h', 2))
+
+    def test_skacc_supplement_attribute_is_dropped_with_a_warning(self):
+        _section, objects = _facial_section()
+        poses = fpr.BodyPoses(0, [0], [bytes(STRIDE)] * 2)
+        rebuilt, warnings = fpr.rebuild_body_object(objects[0], poses, [0], _records(1), STRIDE, 0)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('SKAcc entry 1', warnings[0])
+        self.assertEqual([a.kind for a in rebuilt.attributes], [1])
+
+    def test_rebuild_errors(self):
+        _section, objects = _facial_section()
+        body = objects[0]
+        with self.assertRaisesRegex(ValueError, '3 poses'):
+            fpr.rebuild_body_object(body, fpr.BodyPoses(0, [0], [bytes(STRIDE)]), [0, 1], _records(2), STRIDE, 0)
+        with self.assertRaisesRegex(ValueError, 'outside'):
+            fpr.rebuild_body_object(body, fpr.BodyPoses(0, [5], [bytes(STRIDE)] * 2), [0, 1], _records(2), STRIDE, 0)
+        with self.assertRaisesRegex(ValueError, 'twice'):
+            fpr.rebuild_body_object(body, fpr.BodyPoses(0, [1, 1], [bytes(2 * STRIDE)] * 2), [0, 1], _records(2), STRIDE, 0)
+        with self.assertRaisesRegex(ValueError, 'delta array is'):
+            fpr.rebuild_body_object(body, fpr.BodyPoses(0, [1], [bytes(5)] * 2), [0, 1], _records(2), STRIDE, 0)
+        self.assertIn('separate normal', fpr.body_object_error(
+            fpr.FacialObject(2, [body.attributes[0], fpr.FacialAttribute(bytes([0, 2, 3, 2]), b'', [b'', b''])]), 0))
+        self.assertIn('6 x int16', fpr.body_object_error(objects[1], 1))
+
+    def test_rebuild_section_requires_an_entry_per_body_object(self):
+        section, _objects = _facial_section()
+        facial = _facial_data_from_section(section)
+        with self.assertRaisesRegex(ValueError, 'no entry'):
+            fpr.rebuild_section(facial, base64.b64decode, {0: fpr.body_rebuilder([], [0] * N, _records(N), STRIDE, 0)}, {0})
+        rebuilt, warnings = fpr.rebuild_section(
+            facial, base64.b64decode,
+            {0: fpr.body_rebuilder([fpr.BodyPoses(0, [2], [bytes(STRIDE)] * 2)], list(range(N)), _records(N), STRIDE, 0)},
+            {fpr.ACCUMULATION_KIND},
+        )
+        self.assertEqual(len(warnings), 1)                                     # the SKAcc supplement attribute
+        self.assertEqual(_parse_facial_runs(rebuilt, 0)[0], [2])
+        self.assertEqual(_parse_facial_runs(rebuilt, 1), _parse_facial_runs(section, 1))   # the head is untouched
+        # The kind-0 type descriptor went with it: one descriptor, table right after it.
+        self.assertEqual(struct.unpack_from('>HHHHI', rebuilt, 0), (FACIAL_POSES, 2, 1, 0, 0x24))
+        self.assertEqual(rebuilt[0x14:0x18], bytes([0, 0, 1, 0x62]))
+
+    # --- rigid targets (2026-10-10) ---
+
+    def _head(self, with_normals=True):
+        """The fixture's head object (submesh 1, 3 x int16 positions on
+        entries 0-1), plus a 3 x int16 normal attribute on entries 0 and 2."""
+        _section, objects = _facial_section()
+        head = objects[1]
+        if with_normals:
+            head = fpr.FacialObject(head.pose_count, head.attributes + [
+                fpr.FacialAttribute(bytes([1, 2, 3, 2]), fpr.runs_from_indices([0, 2]),
+                                    [struct.pack('>6h', *([10 + pose] * 6)) for pose in range(head.pose_count)]),
+            ])
+        return head
+
+    def test_rigid_object_is_remapped_onto_the_rebuilt_arrays(self):
+        positions = struct.pack('>12h', *range(100, 112))        # 4 rebuilt vertices
+        normals = struct.pack('>15h', *range(200, 215))          # 5 rebuilt normal entries
+        poses = fpr.RigidPoses(
+            1, [3, 1], [struct.pack('>6h', 1, 3, 0, 1, 1, 0), struct.pack('>6h', 2, 3, 0, 2, 1, 0)],
+            normal_entries=[4], normal_deltas=[struct.pack('>3h', 7, 0, 0), struct.pack('>3h', 8, 0, 0)],
+        )
+        rebuilt, warnings = fpr.rebuild_rigid_object(self._head(), poses, positions, normals, 6, 1)
+        self.assertEqual(warnings, [])
+        position, normal = rebuilt.attributes
+        self.assertEqual(position.format_data, bytes([1, 1, 3, 2]))
+        self.assertEqual(position.run_list, struct.pack('>6H', 1, 1, 3, 1, 0, 0))
+        self.assertEqual(position.poses[0], positions[6:12] + positions[18:24])
+        self.assertEqual(position.poses[1], struct.pack('>6h', 1, 1, 0, 1, 3, 0))      # vertex 1 first, then 3
+        self.assertEqual(position.poses[2], struct.pack('>6h', 2, 1, 0, 2, 3, 0))
+        self.assertEqual(normal.format_data, bytes([1, 2, 3, 2]))
+        self.assertEqual(normal.run_list, struct.pack('>4H', 4, 1, 0, 0))
+        self.assertEqual(normal.poses, [normals[24:30], struct.pack('>3h', 7, 0, 0), struct.pack('>3h', 8, 0, 0)])
+
+    def test_rigid_object_without_poses_is_neutralized(self):
+        positions = struct.pack('>12h', *range(100, 112))
+        normals = struct.pack('>15h', *range(200, 215))
+        rebuilt, warnings = fpr.rebuild_rigid_object(self._head(), None, positions, normals, 6, 1)
+        self.assertEqual(len(warnings), 2)
+        self.assertIn('neutralized', warnings[0])
+        for attribute, buffer in zip(rebuilt.attributes, (positions, normals)):
+            self.assertEqual(attribute.run_list, struct.pack('>4H', 0, 1, 0, 0))
+            self.assertEqual(attribute.poses, [buffer[:6], bytes(6), bytes(6)])
+        # Poses without a normal list neutralize the normal attribute alone.
+        rebuilt, warnings = fpr.rebuild_rigid_object(
+            self._head(), fpr.RigidPoses(1, [2], [bytes(6)] * 2), positions, normals, 6, 1)
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(rebuilt.attributes[0].run_list, struct.pack('>4H', 2, 1, 0, 0))
+        self.assertEqual(rebuilt.attributes[1].run_list, struct.pack('>4H', 0, 1, 0, 0))
+
+    def test_rigid_object_errors(self):
+        positions = struct.pack('>12h', *range(100, 112))
+        head = self._head()
+        with self.assertRaisesRegex(ValueError, 'no normal array'):
+            fpr.rebuild_rigid_object(head, None, positions, None, None, 1)
+        with self.assertRaisesRegex(ValueError, 'positions: maps an entry twice'):
+            fpr.rebuild_rigid_object(head, fpr.RigidPoses(1, [1, 1], [bytes(12)] * 2), positions, positions, 6, 1)
+        with self.assertRaisesRegex(ValueError, 'outside the 4 rebuilt entries'):
+            fpr.rebuild_rigid_object(head, fpr.RigidPoses(1, [4], [bytes(6)] * 2), positions, positions, 6, 1)
+        with self.assertRaisesRegex(ValueError, 'normals: pose 1 delta array is 5 bytes'):
+            fpr.rebuild_rigid_object(
+                head, fpr.RigidPoses(1, [0], [bytes(6)] * 2, [0], [bytes(5)] * 2), positions, positions, 6, 1)
+        with self.assertRaisesRegex(ValueError, 'normals: 3 delta arrays for 3 poses'):
+            fpr.rebuild_rigid_object(head, fpr.RigidPoses(1, [0], [bytes(6)] * 2, [0], [bytes(6)] * 3), positions, positions, 6, 1)
+        with self.assertRaisesRegex(ValueError, 'rebuilt array holds 8-byte'):
+            fpr.rebuild_rigid_object(head, fpr.RigidPoses(1, [0], [bytes(6)] * 2, [0], [bytes(6)] * 2), positions, positions, 8, 1)
+        _section, objects = _facial_section()
+        self.assertIn('a rigid submesh stores 3 x int16', fpr.rigid_object_error(objects[0], 0))
+        self.assertIsNone(fpr.rigid_object_error(head, 1))
+        with_color = fpr.FacialObject(3, head.attributes + [fpr.FacialAttribute(bytes([1, 3, 3, 2]), b'', [b''] * 3)])
+        self.assertIn('kind(s) [3]', fpr.rigid_object_error(with_color, 1))
+
+    def test_rebuild_section_with_body_and_rigid_targets(self):
+        section, _objects = _facial_section()
+        facial = _facial_data_from_section(section)
+        positions = struct.pack('>12h', *range(100, 112))
+        rebuilders = {
+            0: fpr.body_rebuilder([fpr.BodyPoses(0, [2], [bytes(STRIDE)] * 2)], list(range(N)), _records(N), STRIDE, 0),
+            1: fpr.rigid_rebuilder([fpr.RigidPoses(1, [3], [bytes(6)] * 2)], positions, None, None, 1),
+        }
+        rebuilt, warnings = fpr.rebuild_section(facial, base64.b64decode, rebuilders, {fpr.ACCUMULATION_KIND})
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(_parse_facial_runs(rebuilt, 0)[0], [2])
+        slots, poses = _parse_facial_runs(rebuilt, 1)
+        self.assertEqual(slots, [3])
+        self.assertEqual(poses[0], positions[18:24])
+        # A rigid-only rebuild keeps the kind-0 descriptor and the body's supplement.
+        rebuilt, warnings = fpr.rebuild_section(facial, base64.b64decode, {1: rebuilders[1]})
+        self.assertEqual(warnings, [])
+        self.assertEqual(struct.unpack_from('>HHH', rebuilt, 0), (FACIAL_POSES, 2, 2))
+        self.assertEqual(_parse_facial_runs(rebuilt, 0), _parse_facial_runs(section, 0))
+        with self.assertRaisesRegex(ValueError, 'facial object 1: addresses submesh 1 but FacialPoses has no entry'):
+            fpr.rebuild_section(facial, base64.b64decode, {1: fpr.rigid_rebuilder([], positions, None, None, 1)})
+
+
 # --- validator -------------------------------------------------------------------
 
 class SkinnedRebuildValidatorTests(unittest.TestCase):
@@ -369,6 +647,31 @@ class SkinnedRebuildValidatorTests(unittest.TestCase):
                                       'ColorFacesData': _u16s([0] * 15)}]
         self._refused('ColorChannelData')
 
+    def test_facial_poses_are_checked_against_the_donor_objects(self):
+        section, _objects = _facial_section()
+        self.model['FacialPoseData'] = _facial_data_from_section(section)
+        rebuild = self.sub['SkinnedRebuild']
+        rebuild['FacialPoses'] = _facial_poses([1, 3, 4])
+        main._validate_skinned_rebuild(self.model)
+        rebuild['FacialPoses'] = []
+        self._refused(r'lacks facial object\(s\) \[0\]')
+        rebuild['FacialPoses'] = _facial_poses([3, 1])
+        self._refused('strictly ascending')
+        rebuild['FacialPoses'] = _facial_poses([1, N])
+        self._refused(f'vertex {N} is outside')
+        rebuild['FacialPoses'] = _facial_poses([1], pose_count=2)
+        self._refused('PoseDeltas must hold 2 arrays')
+        rebuild['FacialPoses'] = _facial_poses([1])
+        rebuild['FacialPoses'][0]['PoseDeltas'][0] = 'AAA='
+        self._refused(r'PoseDeltas\[0\] is 2 bytes')
+        rebuild['FacialPoses'] = _facial_poses([1]) + [{'ObjectIndex': 1, 'Vertices': _u16s([0]), 'PoseDeltas': []}]
+        self._refused('does not address submesh 0')
+        rebuild['FacialPoses'] = _facial_poses([1]) * 2
+        self._refused('twice')
+        rebuild['FacialPoses'] = _facial_poses([1])
+        del self.model['FacialPoseData']
+        self._refused('no FacialPoseData')
+
 
 # --- builder ---------------------------------------------------------------------
 
@@ -394,9 +697,16 @@ class SkinnedRebuildBuildTests(unittest.TestCase):
 
         donor_descriptors, new_descriptors = _descriptors(self.donor_gpl), _descriptors(gpl)
         self.assertNotEqual(new_descriptors[0], donor_descriptors[0])
-        self.assertEqual(new_descriptors[1], donor_descriptors[1])
-        self.assertGreaterEqual(new_descriptors[0][0], len(self.donor_gpl))
-        self.assertEqual(new_descriptors[0][0] % 32, 0)
+        # The donor body blob led the blob region and is dropped: the head
+        # blob moves up by the span (rounded down to 32), byte for byte, and
+        # the rebuilt body goes in right after it.
+        cut = (donor_descriptors[1][0] - donor_descriptors[0][0]) & ~31
+        self.assertGreater(cut, 0)
+        self.assertEqual(new_descriptors[1], (donor_descriptors[1][0] - cut, donor_descriptors[1][1] - cut))
+        head_len = len(self.donor_gpl) - donor_descriptors[1][0]
+        self.assertEqual(gpl[new_descriptors[1][0]:new_descriptors[1][0] + head_len],
+                         self.donor_gpl[donor_descriptors[1][0]:])
+        self.assertEqual(new_descriptors[0][0], (new_descriptors[1][0] + head_len + 31) & ~31)
 
         blob = _blob(gpl, 0)
         self.assertEqual(blob['name'], b'body')
@@ -519,6 +829,69 @@ class SkinnedRebuildBuildTests(unittest.TestCase):
             self.assertNotEqual(ptr7, 0)
             self.assertEqual(result.block[ptr7:ptr7 + len(section)], section)
 
+    def test_facial_poses_rebuild_the_section_and_shift_the_following_pointer(self):
+        section, _objects = _facial_section()
+        ptr8 = bytes(range(64))
+        self.model['FacialPoseData'] = _facial_data_from_section(section)
+        self.model['TrailingSections'] = [
+            {'HeaderFieldOffset': '0x18', 'OriginalPtr': '0x1000', 'Length': len(section), 'Data': _b64(section)},
+            {'HeaderFieldOffset': '0x1c', 'OriginalPtr': hex(0x1000 + len(section)), 'Length': len(ptr8), 'Data': _b64(ptr8)},
+        ]
+        # Vertices 0-2 on BONE_B land on a later cache line than 3-6 on
+        # BONE_A: slot_of_vertex is [6, 7, 8, 0, 1, 2, 3].
+        rebuild = _rebuild(self.model, [[(BONE_B, 1.0)]] * 3 + [[(BONE_A, 1.0)]] * 4)
+        rebuild['FacialPoses'] = _facial_poses([1, 3, 4])
+        self.model['Submeshes'][0]['SkinnedRebuild'] = rebuild
+        donor_header = bytearray(main.CloneHEADER(self.env.model_offset))
+        struct.pack_into('>II', donor_header, 0x18, 0x1000, 0x1000 + len(section))
+        with mock.patch.object(main, 'CloneHEADER', return_value=bytes(donor_header)):
+            result, gpl, _skn = self._build()
+        block = result.block
+        ptr7_new, ptr8_new = struct.unpack_from('>II', block, 0x18)
+        self.assertNotEqual(ptr7_new, 0)
+        self.assertEqual(ptr7_new % 32, 0)
+        rebuilt = block[ptr7_new:ptr8_new]
+        self.assertEqual(block[ptr8_new:ptr8_new + len(ptr8)], ptr8)
+        self.assertEqual(len(rebuilt) % 32, 0)
+        slots, poses = _parse_facial_runs(rebuilt, 0)
+        self.assertEqual(slots, [0, 1, 7])
+        table = struct.unpack_from('>I', rebuilt, 8)[0]
+        _pc, _ac, _rs, data = struct.unpack_from('>HHII', rebuilt, table)
+        run = struct.unpack_from('>I', rebuilt, data + 8)[0]
+        self.assertEqual(rebuilt[run:run + 12], struct.pack('>6H', 0, 2, 7, 1, 0, 0))   # terminated
+        blob = _blob(gpl, 0)
+        self.assertEqual(poses[0], b''.join(blob['positions'][s * STRIDE:(s + 1) * STRIDE] for s in slots))
+        # Deltas follow their vertex: vertex 3 -> slot 0, 4 -> 1, 1 -> 7.
+        self.assertEqual(struct.unpack('>18h', poses[1])[::6], (1030, 1040, 1010))
+        self.assertEqual(_parse_facial_runs(rebuilt, 1), _parse_facial_runs(section, 1))
+        self.assertEqual([e for e in result.validation_report['errors'] if 'ptr7' in e], [])
+
+    def test_facial_poses_need_a_trailing_section_to_replace(self):
+        section, _objects = _facial_section()
+        self.model['FacialPoseData'] = _facial_data_from_section(section)
+        rebuild = _rebuild(self.model, [[(BONE_A, 1.0)]] * N)
+        rebuild['FacialPoses'] = _facial_poses([1])
+        self.model['Submeshes'][0]['SkinnedRebuild'] = rebuild
+        with self.assertRaisesRegex(ValueError, 'TrailingSections'):
+            main.BuildModelBlock(self.data, main.SectionModes(gpl='build', skn='build'), sluggie_path=self.env.sluggie_path)
+
+    def test_header_builder_lays_trailing_sections_out_by_length(self):
+        original = bytearray(0x20)
+        struct.pack_into('>IIII', original, 0x04, 0x20, 0, 0, 0x100)
+        struct.pack_into('>II', original, 0x14, 0x200, 0x220)      # donor: ptr6 at 0x200, ptr8 0x20 later
+        sections = [
+            main.TrailingSection(header_field_offset=0x1c, original_ptr=0x220, data=bytes(32)),
+            main.TrailingSection(header_field_offset=0x14, original_ptr=0x200, data=bytes(96)),   # grew past 0x20
+        ]
+        block = main.BuildHEADERModelBlock(
+            bytes(64), b'', b'', bytes(32), trailing_bytes=bytes(128), original_header=bytes(original),
+            original_trailing_off=0x200, trailing_sections=sections,
+        )
+        ptr6, ptr7, ptr8 = struct.unpack_from('>III', block, 0x14)
+        self.assertEqual(ptr7, 0)
+        self.assertEqual(ptr8 - ptr6, 96)
+        self.assertEqual(ptr8 + 32, len(block))
+
     def test_rebuild_requires_both_build_modes(self):
         self.model['Submeshes'][0]['SkinnedRebuild'] = _rebuild(self.model, [[(BONE_A, 1.0)]] * N)
         with self.assertRaisesRegex(ValueError, "skn='build'"):
@@ -532,7 +905,10 @@ class SkinnedRebuildBuildTests(unittest.TestCase):
         self.model['Submeshes'][1]['RigidRebuild'] = test_rigid_rebuild._identity_rebuild(self.model)
         _result, gpl, _skn = self._build()
         descriptors = _descriptors(gpl)
-        self.assertGreaterEqual(min(descriptors[0][0], descriptors[1][0]), len(self.donor_gpl))
+        # Both donor blobs are dropped (body first, then the head leads the
+        # region), so the rebuilt blobs start right after the table.
+        count, table = struct.unpack_from('>II', gpl, 0x0C)
+        self.assertEqual(min(descriptors[0][0], descriptors[1][0]), (table + count * 8 + 31) & ~31)
         self.assertEqual(_record_faces(_blob(gpl, 0), synthetic_donor.SURFACE_STATE_INDEX), _fan(N))
         self.assertEqual(test_rigid_rebuild._record_faces(test_rigid_rebuild._blob(gpl, 1), 5),
                          _fan(synthetic_donor.RIGID_VERTEX_COUNT))
@@ -562,9 +938,14 @@ class SkinnedRebuildWiringTests(unittest.TestCase):
         data = synthetic_donor.build_sluggie()
         model = data['SluggiesModel']
         model['Submeshes'][0]['SkinnedRebuild'] = _rebuild(model, [[(BONE_A, 0.25), (BONE_B, 0.75)]] * N)
+        model['Submeshes'][0]['SkinnedRebuild']['FacialPoses'] = _facial_poses([2, 5])
         parsed = main.ParseSluggie(data)
         got = parsed.mesh.submeshes[0].skinned_rebuild
         self.assertIsNone(parsed.mesh.submeshes[1].skinned_rebuild)
+        self.assertEqual(len(got.facial_poses), 1)
+        self.assertEqual((got.facial_poses[0].object_index, got.facial_poses[0].vertices), (0, [2, 5]))
+        self.assertEqual(len(got.facial_poses[0].deltas), FACIAL_POSES - 1)
+        self.assertEqual(len(got.facial_poses[0].deltas[0]), 2 * STRIDE)
         self.assertEqual(len(got.influences), 2 * N)
         self.assertEqual(got.influences[0], (0, BONE_A, 0.25))
         self.assertEqual(got.influences[1], (0, BONE_B, 0.75))

@@ -98,10 +98,12 @@ class PlacementEnumItemsTests(unittest.TestCase):
         items = self.fn(None, self._context(obj))
         self.assertEqual([i[0] for i in items], ['KEEP_WORLD', 'KEEP_OFFSET'])
 
-    def test_facial_shapekeys_restrict_to_keep_offset(self):
+    def test_facial_shapekeys_get_both_placements(self):
+        # A kept world position takes the rigid rebuild, which carries the
+        # facial poses since 2026-10-10.
         obj = _FakeObj(FacialShapeKeyCount=2)
         items = self.fn(None, self._context(obj))
-        self.assertEqual([i[0] for i in items], ['KEEP_OFFSET'])
+        self.assertEqual([i[0] for i in items], ['KEEP_WORLD', 'KEEP_OFFSET'])
 
     def test_no_active_object_offers_both(self):
         items = self.fn(None, self._context(None))

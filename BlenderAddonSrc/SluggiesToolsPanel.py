@@ -740,9 +740,9 @@ _PLACEMENT_KEEP_OFFSET = (
 
 
 def _placement_enum_items(self, context):
-    obj = context.active_object
-    if obj is not None and int(obj.get('FacialShapeKeyCount', 0) or 0) > 0:
-        return [_PLACEMENT_KEEP_OFFSET]
+    # Both placements are open to a mesh with facial shape keys too: a kept
+    # world position takes the rigid rebuild, which carries the poses
+    # (RigidRebuild.FacialPoses) since 2026-10-10.
     return [_PLACEMENT_KEEP_WORLD, _PLACEMENT_KEEP_OFFSET]
 
 
@@ -820,8 +820,7 @@ class SLUGGIES_OT_reassign_bone(bpy.types.Operator):
         default_choice = _default_reassign_target(arm_obj, obj, ordered)
         if default_choice is not None:
             self.target_bone = f'bone_{default_choice.bone_id}'
-        self.placement = (
-            'KEEP_OFFSET' if int(obj.get('FacialShapeKeyCount', 0) or 0) > 0 else 'KEEP_WORLD')
+        self.placement = 'KEEP_WORLD'
         _begin_bone_name_display(self, arm_obj)
         return context.window_manager.invoke_props_dialog(self)
 
