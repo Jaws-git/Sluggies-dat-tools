@@ -80,11 +80,12 @@ Everything else, such as moving vertices, editing UVs without new seams, shape k
 - change a material's specular strength (see In-Place mode)
 - append a new model texture by changing the connected Image Texture node on an imported donor material (not yet on player characters, see the warning below)
 >- create a new static submesh that has it's own texture and follows a bone of your choice
+- reshape the body (the first mesh) freely: add or delete geometry, paint new weights, add materials (see "Editing the body" below)
 
 #### Adding a new model texture how-to
 
 1. Put the new PNG in the model's own `tex/` folder.
-2. Keep the imported material and its `SurfaceId`. (A new material is possible on rigid meshes only, through **Add material**; see "Editing rigid meshes" below.)
+2. Keep the imported material and its `SurfaceId`. (For a new material use **Add material**; see "Editing rigid meshes" and "Editing the body" below.)
 3. Replace the image in the Image Texture node or create a new one.
    Leave at most one Image Texture node connected to the active Material Output!
 4. Export with **Reimport textures from tex folder** enabled. The export uses Hammerspace by itself.
@@ -169,7 +170,7 @@ Rules:
 - Every face must use one of **that mesh's own** materials: the imported ones, or ones made with **Add material**. A face on an empty slot, on a plain Blender material or on another mesh's material stops the export.
 - Every vertex must be in the mesh's `bone_<id>` vertex group. New vertices often have no group; **Reassign to new bone** fixes that in one click (also onto the bone the mesh is already on).
 - Meshes with facial poses (Mario's head and the like) can be edited like any other rigid mesh. Their blink and mouth poses follow the rebuild through the imported facial shape keys (`facial_object_<o>_pose_<p>` and `Basis`); the export log lists `facial object N: ... animated`. Keep those keys: without them the rebuilt mesh keeps its rest shape and no longer animates (the log warns; re-import the mesh to get the keys back). Edited key shapes are exported as the new poses.
-- The skinned body (the first mesh) keeps its old rules: no new materials, and faces move between its materials only as whole surfaces.
+- The skinned body (the first mesh) has its own rules, see "Editing the body" below.
 - A Low (`_L_`) model is edited on its own; nothing is mirrored from the High model. The game switches to it at a distance.
 - A mesh you leave unselected keeps the edit an earlier export gave it, including its move to another bone and any new PNG on its new surfaces. The export log says so. To drop that edit, select the original (non-`_edit`) object and export again.
 
@@ -177,7 +178,7 @@ Rules:
 - *Keep world position*: the mesh stays where it is and follows the new bone from now on (a rebuild).
 - *Keep offset to bone*: the mesh jumps so it keeps the same offset from the new bone as it had from the old one. Its data is unchanged, so this also works in place, and `--unpatch` puts the mesh back on its original bone.
 
-**Add material** (same box) adds a new surface to the active rigid mesh or custom submesh (a custom submesh can carry as many as you like; its faces are split between its materials just like a rigid mesh's). Pick a template as for Add Submesh (`builtin:rigid_spec_v1` is the default; see the template list above), assign faces to the new slot (in Edit Mode the selected faces are assigned right away), and load a PNG into its empty Image Texture node. Export stops until that node has an image. A PNG the model already has just binds that texture; a new PNG is appended with **Reimport textures from tex folder** enabled (a Low model can only use its High model's textures, including the ones the High model added). The hand-mitt templates `rigid_rhsp_v1` / `rigid_lhsp_v1` hide the surface's vertex-alpha-0 parts while that hand wears the mitt.
+**Add material** (same box) adds a new surface to the active rigid mesh, custom submesh or body (a custom submesh can carry as many as you like; its faces are split between its materials just like a rigid mesh's). Pick a template as for Add Submesh (`builtin:rigid_spec_v1` is the default; see the template list above), assign faces to the new slot (in Edit Mode the selected faces are assigned right away), and load a PNG into its empty Image Texture node. Export stops until that node has an image. A PNG the model already has just binds that texture; a new PNG is appended with **Reimport textures from tex folder** enabled (a Low model can only use its High model's textures, including the ones the High model added). The hand-mitt templates `rigid_rhsp_v1` / `rigid_lhsp_v1` hide the surface's vertex-alpha-0 parts while that hand wears the mitt.
 
 A re-import of the exported file always shows the original mesh unchanged on its original bone. Any edit, including a move with **Reassign to new bone** (either placement), appears as a second `<name>_edit` object on its current bone, with its new materials. Select only one of the two objects when exporting again: the `_edit` object keeps your changes, the original undoes them.
 
@@ -194,7 +195,7 @@ A new bone gives a new submesh somewhere to attach when no free bone sits where 
 - Bones can only be added, as leaves. Don't delete, rename, re-parent or reorder the original bones, and don't parent an original bone to a new one. The game's animations are built for the original skeleton, so these edits would make limbs move wrong. Export and the patcher refuse them.
 - Deleting a bone you added yourself is fine. It is simply left out of the export, and the bones you added after it move down one number each.
 - Don't scale the new bone. The game ignores bone scale, and export warns when a new bone has one.
-- Don't paint weights for a new bone onto the body mesh. Skinning to new bones isn't supported.
+- Don't paint weights for a new bone onto the body mesh. New bones can't drive skinning: export moves such weights to the nearest original bone above it that the body skins to, and warns.
 - Bone numbers are assigned in the order you added the bones. After you delete an added bone, click **Renumber Added Bones** so the names match the numbers again. Meshes on those bones keep their bone, because their vertex groups are renamed too. **Add Bone**, **Add Submesh** and **Reassign to New Bone** renumber automatically. Export is refused until the names match.
 
 #### Editing the unused characters
@@ -212,20 +213,23 @@ The game moves a character's Low model with the High model's skeleton. When you 
 - The Low model's submesh follows the **High** model's bone. If the two bones sit in different places, the patcher warns you, and the High placement is the one you'll see.
 - An added bone without a submesh on it doesn't need a partner.
 
-#### Moving vertices to a different bone (vertex groups)
+#### Editing the body
 
-You can move vertices between the model's existing `bone_<id>` vertex groups, e.g. assign all of `bone_28` to `bone_63` and remove them from `bone_28`.
-- Keep the number of bones per vertex the same. A two-bone vertex should stay two-bone and a one-bone vertex one-bone. Reassigning a whole group is the safest edit.
-- Merge weights instead of assigning at weight 1.0 if you want to keep the original blend between bones (e.g. with a Vertex Weight Mix modifier set to *Add*). Assigning at 1.0 overwrites it.
-- If an edit would need the game's vertex order changed, the patcher stops with a message naming the affected bone entries. For example, giving part of a two-bone area a single bone does this. Undo that part, or reassign the whole area.
-- Moving vertices in space is fine in the same export, but don't add, remove or reorder vertices or faces in it.
+The body is the first mesh, the one that bends with the skeleton through its `bone_<id>` vertex groups. Small edits stay in place, as before: moving vertices, editing UVs without new seams, normals, specular strength, and changing weight values while every vertex keeps the same bones.
+
+**Anything more rebuilds the whole body** in Hammerspace: adding or deleting vertices or faces, moving the body in Object Mode, changing which bones a vertex uses (adding, removing or moving vertex groups), moving only some faces of a surface to another material, moving faces to a material with another shader, or using an **Add material** surface. The export log says `body rebuild of <name> (<reasons>)`.
+
+Rules for a rebuilt body:
+- **Weights:** every vertex the faces use needs weight on at least one bone the original body skins to; export stops and counts the vertices otherwise. Weights on other bones (bones that carry a rigid mesh, added bones, bones the Low model doesn't skin) are moved to the nearest bone above them that the body does skin to, and the log says so. Weights are normalized for you; any number of bones per vertex works, but each bone past the second costs extra data.
+- **Blink and mouth poses:** a body that the game animates in the face (Luigi, for example) keeps its expressions through the imported facial shape keys (`Basis` and `facial_object_<o>_pose_<p>`). Keep those keys; the log lists `facial object N: ... animated`. Edited key shapes are exported as the new poses. Without the keys, the patched body has no facial animation (the log warns). On a few characters some face vertices also use a third bone for their expressions (Kritter, King Boo, Peach, Daisy, Diddy); after a rebuild that third-bone part of the expression is left out, and the patch log warns.
+- **Materials:** every face must use one of the body's own materials (the imported ones or ones made with **Add material**), as on rigid meshes.
+- **Shape keys** other than the facial ones are ignored.
+- **Size:** the rebuilt body is stored compactly, but every added vertex and texture still counts toward the memory the game has for the whole scene (see "Keep new textures small" above). Check the High and Low model together.
+- A Low (`_L_`) body is rebuilt on its own, with the bones the Low model skins to.
 
 #### You can't (yet):
-- add or remove vertices on the main mesh (always the first)
-- reorder main mesh face indices
-- add new materials to the main mesh, or move only part of one of its surfaces to another material (rigid meshes allow both, see "Editing rigid meshes")
 - remove, reorder or re-parent original bones (adding bones is fine)
-- skinning edits beyond moving vertices between existing bone vertex groups (see above)
+- skin the body to bones the original body doesn't skin to, including added bones (see "Editing the body")
 - skin a new submesh to more than one bone
 - remove an object's custom properties
 - rename imported objects

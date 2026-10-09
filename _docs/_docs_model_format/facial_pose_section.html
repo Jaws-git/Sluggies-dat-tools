@@ -8,7 +8,7 @@
     <p>The runtime copies selected pose coordinates from this section into the GPL head position and normal arrays. Consequently, editing only the GPL position array is temporary for mapped vertices: blinking and mouth animation restore the original coordinates.</p>
 
     <h2>Verified layout</h2>
-    <p>All pointers below are relative to the start of this section.</p>
+    <p>All pointers below are relative to the start of this section. Every fact in this layout holds for all 70 vanilla blocks that have the section (159 attribute records, survey of the input <code>dt_na.dat</code>, 2026-10-10). The runtime facts come from the game's facial code in <code>main.dol</code> (applier <code>0x805325B8</code>, loader <code>0x805324E4</code>, type resolver <code>0x80532294</code>; read 2026-10-09).</p>
     <h3>Header</h3>
     <table>
         <tr>
@@ -29,14 +29,65 @@
         <tr>
             <td>0x4</td>
             <td>uint16</td>
-            <td>Attribute type/descriptor count</td>
+            <td>Type descriptor count</td>
+        </tr>
+        <tr>
+            <td>0x6</td>
+            <td>uint16</td>
+            <td>Padding (0)</td>
         </tr>
         <tr>
             <td>0x8</td>
             <td>uint32</td>
-            <td>Facial object table pointer</td>
+            <td>Facial object table pointer (<code>0x14 + 16 &times; type count</code>)</td>
+        </tr>
+        <tr>
+            <td>0xc</td>
+            <td>uint32</td>
+            <td>Type descriptor array pointer (always <code>0x14</code>)</td>
+        </tr>
+        <tr>
+            <td>0x10</td>
+            <td>uint32</td>
+            <td>0</td>
         </tr>
     </table>
+
+    <h3 id="type-descriptors">Type descriptor</h3>
+    <p>One 16-byte descriptor per distinct attribute target, starting at <code>0x14</code>. Every attribute record's format bytes match one of them.</p>
+    <table>
+        <tr>
+            <th>Offset</th>
+            <th>Type</th>
+            <th>Description</th>
+        </tr>
+        <tr>
+            <td>0x0</td>
+            <td>uint16</td>
+            <td>Target index: a GPL submesh, or for kind 0 an SKAcc entry</td>
+        </tr>
+        <tr>
+            <td>0x2</td>
+            <td>uint8</td>
+            <td>Attribute kind (see below)</td>
+        </tr>
+        <tr>
+            <td>0x3</td>
+            <td>uint8</td>
+            <td><code>component count &lt;&lt; 4 | component size</code> (<code>0x32</code>: 3 &times; int16, <code>0x62</code>: 6 &times; int16, <code>0x61</code>: 6 &times; int8)</td>
+        </tr>
+        <tr>
+            <td>0x4</td>
+            <td>byte[12]</td>
+            <td>Zero in the file. The loader stores the resolved target pointer at <code>+0x8</code>.</td>
+        </tr>
+    </table>
+    <p>Where the loader points each kind:</p>
+    <ul>
+        <li><strong>Kind 1, 6 components</strong> (the skinned body): <code>SK1[0].srcArrPtr + first_vertex &times; stride</code>, i.e. the <a href="skn_section.html#source-mirror">SKN source mirror</a>, with slot 0 assumed at the first SK1 entry. In all 318 vanilla SKN sections with SK1 entries, <code>SK1[0]</code> has the lowest destination and <code>gplVertexArr = 0</code>, so this is the mirror base itself.</li>
+        <li><strong>Kind 1, 3 components; kind 2; kind 3:</strong> the GPL position, normal and colour arrays of submesh <code>index</code>. Kinds 4-7 go to UV channels. Vanilla uses only kinds 0, 1 and 2.</li>
+        <li><strong>Kind 0</strong> addresses the source array of SKAcc entry <code>index</code> (6 &times; int8 records, written through the same conversion path): a supplement for facial vertices with a third bone. Kritter, King Boo, Peach, Daisy and Diddy have them (11 records).</li>
+    </ul>
 
     <h3>Object table entry</h3>
     <p>Each object-table entry is 12 bytes:</p>
@@ -67,11 +118,7 @@
             <td>Object attribute-data pointer</td>
         </tr>
     </table>
-    <p>Objects can use either separate three-component position and normal records, or one six-component record interleaving XYZ and normal XYZ. Some objects also contain auxiliary attributes that are preserved but are not Blender shape keys.</p>
-    <ol>
-        <li>Position record, identified by format bytes <code>03 01 03 02</code>.</li>
-        <li>Normal record, identified by format bytes <code>03 02 03 02</code>.</li>
-    </ol>
+    <p>An object on a rigid submesh has a kind-1 position attribute of 3 &times; int16 records and usually a kind-2 normal attribute of 3 &times; int16 records. An object on the skinned body has one kind-1 attribute with interleaved <code>x y z nx ny nz</code> int16 records and no separate normal attribute (27 models, 40 objects); some add kind-0 SKAcc attributes. The format bytes of an attribute record read <code>xx 01 03 02</code> for a rigid position record, <code>xx 02 03 02</code> for a normal record and <code>xx 01 06 02</code> for a body record, where <code>xx</code> is the target submesh.</p>
 
     <h3>Attribute record</h3>
     <table>
@@ -88,7 +135,7 @@
         <tr>
             <td>0x4</td>
             <td>byte[4]</td>
-            <td>Target submesh, attribute kind, component count, component byte width</td>
+            <td>Target index, attribute kind, component count, component byte width</td>
         </tr>
         <tr>
             <td>0x8</td>
@@ -101,8 +148,9 @@
             <td>Pose-array pointers</td>
         </tr>
     </table>
-    <p>Each attribute run list ends at the next attribute's run-list pointer; the last ends at the first pose array. Each run is two big-endian <code>uint16</code> values: <code>first_vertex</code> and <code>run_length</code>. Expanding all runs gives one GPL array index for each pose entry.</p>
+    <p>Each run is two big-endian <code>uint16</code> values: <code>first_vertex</code> and <code>run_length</code>. Expanding all runs gives one target-array index for each pose entry. <strong>Every run list ends with a <code>(0, 0)</code> pair.</strong> The applier reads pairs until it meets a count of 0; the record's entry count is not used as a bound. All 159 vanilla run lists end that way, and their runs add up to the entry count. A list without the terminator makes the game read on into pose zero and use coordinates as vertex indices: a rebuilt Luigi crashed at character select that way (Dolphin, 2026-10-09). <code>BlockValidator</code> fails a list without it.</p>
     <p>Position entries contain either XYZ (6 bytes) or interleaved XYZ+normal XYZ (12 bytes), using big-endian signed 16-bit components. Pose zero is an absolute rest array: position pose zero matches the mapped GPL position vertices exactly, and normal pose zero likewise matches the mapped GPL normal vertices. Poses one and later are displacement vectors relative to pose zero, not absolute coordinates. A zero triplet in these poses means that the mapped entry remains at its rest value.</p>
+    <p><strong>Packing:</strong> vanilla sections have no gaps. After the header and type descriptors come the object table, then per object its attribute records, its run lists (in attribute order) and its pose arrays (attribute-major, then pose order). The section is zero-padded to a multiple of 32 bytes. <code>Hammerspace/FacialPoseRebuild.py</code> re-serializes all 75 exported sections byte for byte with these rules.</p>
 
     <h2>Birdo high-detail model</h2>
     <p>The section contains two facial objects. Their position records map 199 and 451 head vertices respectively, with five poses per object. The corresponding normal records map 247 and 520 normal entries. The low-detail model contains no section, which explains why ordinary GPL editing worked there.</p>
@@ -117,12 +165,21 @@
     <h2 id="skinned">Facial poses on skinned vertices (Luigi)</h2>
     <p>Facial objects can also target the <strong>skinned</strong> submesh. Luigi's two objects (<code>SubmeshIndex 0</code>, interleaved 6-component records) map 64 and 356 vertices: 341 in <code>SK1(51)</code> (head), 12 in <code>SK2(50,51)</code> (neck) and 3 in <code>SK1(18)</code> (the first object's 64 are all <code>SK1(51)</code>). Every one is written by an SK1/SK2 entry, so the skinning deformer overwrites the position buffer each frame. Copying the pose into the GPL position array alone would therefore have no visible effect.</p>
     <p>In-game evidence shows the pose data lands in the <strong>SKN source data</strong> at the mirrored address <code>VAR_DATA_OFF + vertex_index * stride</code> (see the <a href="skn_section.html#source-mirror">source mirror rule</a>), not through the entry's own source pointer. A rebuilt Luigi SKN with correct per-entry pointers but source arrays 0x20 bytes off the mirror stretched exactly the facial-mapped neck vertices at the back of the head down to the floor. The pose records were written 8 bytes out of step into neighbouring source records. Mirroring the sources fixed it.</p>
-    <p>No pointers into SKN exist in the facial section (checked for both SKN-relative and block-relative values), so the runtime derives the mapping itself.</p>
+    <p>No pointers into SKN exist in the facial section (checked for both SKN-relative and block-relative values). The loader resolves the target at load time from <code>SK1[0].srcArrPtr</code> (see <a href="#type-descriptors">Type descriptor</a>), which is the mirror base whenever the first SK1 entry starts at slot 0.</p>
     <p><strong>Implications:</strong></p>
     <ul>
         <li>Any SKN rebuild for a model with facial poses on skinned vertices must keep SK1/SK2 sources on the mirror. <code>BlockValidator</code> enforces this for every skinned model.</li>
-        <li>A topology rebuild that renumbers skinned vertices must remap facial run lists as well, and the mirrored layout then follows from the new destinations.</li>
+        <li>A topology rebuild that renumbers skinned vertices must remap facial run lists as well, and the mirrored layout then follows from the new destinations (see <a href="#rebuild">Rebuilding the section</a>).</li>
+        <li>Kind-0 attributes name SKAcc entries by index. A rebuilt SKN numbers its entries anew, so those indices mean nothing afterwards.</li>
         <li>The same holds for rigid targets: a facial object's runs name vertex indices of its submesh (Mario's <code>head</code>, submesh 2, carries both of his objects), and its normal runs name entries of the submesh's normal array. Adding, deleting or reordering that submesh's vertices breaks the poses, so a whole-blob rebuild of such a submesh (<code>RigidRebuild</code>) rebuilds the section too: since 2026-10-10 the exporter writes the mesh's facial shape keys as <code>RigidRebuild.FacialPoses</code> (per object the rebuilt vertices a pose moves with <code>x y z</code> int16 deltas, and the rebuilt normal entries it tilts with <code>nx ny nz</code> deltas; the normal entries of animated vertices are pooled per vertex so each has one delta), and the patcher maps the object's position and normal attributes onto those entries (pose zero copied from the rebuilt arrays, runs from the sorted entries with the terminator pair, other objects unchanged). A rebuild without <code>FacialPoses</code> (older export, or a mesh whose shape keys were deleted) keeps the objects well-formed but neutral: one run on entry 0 with zero deltas. Moving such a submesh to another bone by its GEO ID alone leaves its bytes, and so the runs, unchanged.</li>
     </ul>
     <p>Survey of the rigid targets (2026-10-10, all 46 exported models with a facial object on a CompCount-3 submesh): every object carries a kind-1 position attribute of 3 x int16 records and, except Mare (<code>mare.gpl</code>), a kind-2 normal attribute of 3 x int16 records; no other attribute kind addresses a rigid submesh. Both pose zeros equal the mapped GPL records (positions and normals), every run list is ascending, unique and terminated.</p>
+
+    <h2 id="rebuild">Rebuilding the section</h2>
+    <p>When the hammerspace patcher rebuilds a submesh that facial objects target, it re-serializes the whole section (<code>Hammerspace/FacialPoseRebuild.py</code>): every object on another submesh is copied unchanged, and each object on the rebuilt submesh gets new run lists and pose arrays. The new section replaces the old one in the block's trailing data, and ptr6/ptr7/ptr8 are recomputed from the new section lengths.</p>
+    <ul>
+        <li><strong>Skinned body</strong> (since 2026-10-09, Dolphin-confirmed on Luigi with added and removed vertices the same night). The exporter writes the body's facial shape keys (<code>Basis</code> plus <code>facial_object_&lt;o&gt;_pose_&lt;p&gt;</code>) as <code>SkinnedRebuild.FacialPoses</code>: per object the vertices any pose moves, in ascending order, and per pose one <code>x y z nx ny nz</code> int16 delta per vertex. The normal delta is the change of the key's vertex normal against <code>Basis</code>. After the skin layout, the patcher maps each vertex to its new slot. Pose zero is copied from the rebuilt position buffer, the deltas follow in slot order, and the runs come from the sorted slots plus the terminator. Kind-0 attributes and their type descriptors are dropped with a warning, so facial vertices with a third bone lose that supplement.</li>
+        <li><strong>Rigid submesh</strong> (<code>RigidRebuild</code>, since 2026-10-10, Dolphin-confirmed on Mario's head): see the rigid-target note above.</li>
+        <li><strong>No shape keys to rebuild from</strong> (older export, or keys deleted in Blender). A rebuilt body clears ptr7 (model header <code>+0x18</code> = 0) when an object targets it; the section bytes stay in the block, unreferenced. The game runs, with no blink or mouth animation (Dolphin, 2026-10-09, Luigi; the <em>Sluggers Characters Beta</em> tool does this for all of its characters). A rebuilt rigid submesh keeps the section and neutralizes its objects instead (one run on entry 0, zero deltas), so the poses of the other submeshes survive.</li>
+    </ul>
 </body>

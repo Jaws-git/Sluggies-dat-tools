@@ -90,9 +90,9 @@
                 <div class="row"><span class="off">0x08</span><span>→ <a href="act_section.html">ACT (Bone Data)</a></span></div>
                 <div class="row"><span class="off">0x0c</span><span>→ <a href="texture_section.html">TEX (Texture Data)</a></span></div>
                 <div class="row"><span class="off">0x10</span><span>→ <a href="skn_section.html">SKN (Skinning Data)</a></span></div>
-                <div class="row"><span class="off">0x14</span><span>unknown pointer <span class="note">(usually null; block-relative when present)</span></span></div>
-                <div class="row"><span class="off">0x18</span><span>→ <a href="facial_pose_section.html">facial pose data</a> <span class="note">(optional; block-relative; position and normal pose arrays)</span></span></div>
-                <div class="row"><span class="off">0x1c</span><span>unknown pointer <span class="note">(usually null; block-relative when present)</span></span></div>
+                <div class="row"><span class="off">0x14</span><span>unknown pointer (ptr6) <span class="note">(block-relative; null on every character model, set in 578 of 1,408 vanilla blocks: props, map objects, effects)</span></span></div>
+                <div class="row"><span class="off">0x18</span><span>→ <a href="facial_pose_section.html">facial pose data</a> (ptr7) <span class="note">(optional, 70 vanilla blocks; block-relative; position and normal pose arrays)</span></span></div>
+                <div class="row"><span class="off">0x1c</span><span>unknown pointer (ptr8) <span class="note">(null in all 1,408 vanilla blocks)</span></span></div>
             </div>
         </div>
 
@@ -147,17 +147,18 @@
                             <div class="blk c-sub">
                                 <div class="blk-title">Display State ×N  <span class="note">(16 bytes each)</span></div>
                                 <div class="fields">
-                                    <div class="row"><span class="off">0x00</span><span>type (uint8): 1 = texture bind, 3 = vertex format, 7 = unknown</span></div>
-                                    <div class="row"><span class="off">0x04</span><span>setting (bitmap32)</span></div>
-                                    <div class="row"><span class="off">0x08</span><span>→ primitive list <span class="note">(may be null)</span></span></div>
-                                    <div class="row"><span class="off">0x0c</span><span>primitive list size</span></div>
+                                    <div class="row"><span class="off">0x00</span><span>type (uint8): 1 = texture bind, 3 = vertex format, 4 = texture layers <span class="note">(not decoded)</span>, 6 = pixel state, 7 = shader <span class="note">(no other types in vanilla)</span></span></div>
+                                    <div class="row"><span class="off">0x01</span><span>parameter bytes ×3 <span class="note">(type 7: byte 1 = specular strength)</span></span></div>
+                                    <div class="row"><span class="off">0x04</span><span>setting (bitmap32) <span class="note">(type 7: shader FourCC)</span></span></div>
+                                    <div class="row"><span class="off">0x08</span><span>→ primitive list <span class="note">(may be null; 32-byte aligned)</span></span></div>
+                                    <div class="row"><span class="off">0x0c</span><span>primitive list size <span class="note">(multiple of 32)</span></span></div>
                                 </div>
                             </div>
                             <div class="blk c-sub">
                                 <div class="blk-title">Primitive List  <span class="note">(GX draw calls)</span></div>
                                 <div class="fields">
-                                    <div class="note" style="padding-left:4px">Repeating blocks until null terminator byte:</div>
-                                    <div class="row"><span class="off">+0x00</span><span>primitive type: 0x90 triangles, 0x98 tri-strip, 0x80 quads</span></div>
+                                    <div class="note" style="padding-left:4px">Repeating blocks until a 0x00 byte; zero-padded to the list size:</div>
+                                    <div class="row"><span class="off">+0x00</span><span>primitive type: 0x98 tri-strip, 0x80 quads, 0x90 triangles <span class="note">(the only opcodes in vanilla)</span></span></div>
                                     <div class="row"><span class="off">+0x01</span><span>vertex count (uint16 BE)</span></div>
                                     <div class="row"><span class="off">+0x03</span><span>vertex data — per-attribute indices, widths set by type-3 state</span></div>
                                 </div>
@@ -246,8 +247,8 @@
                 <div class="row"><span class="off">0x08</span><span>→ SK1 array</span></div>
                 <div class="row"><span class="off">0x0c</span><span>→ SK2 array</span></div>
                 <div class="row"><span class="off">0x10</span><span>→ SKAcc array</span></div>
-                <div class="row"><span class="off">0x14</span><span>→ dest buffer top <span class="note">(cleared each frame)</span></span></div>
-                <div class="row"><span class="off">0x18</span><span>dest buffer clear size</span></div>
+                <div class="row"><span class="off">0x14</span><span>memClr start <span class="note">(offset into submesh 0 positions; cleared each frame)</span></span></div>
+                <div class="row"><span class="off">0x18</span><span>memClr size</span></div>
                 <div class="row"><span class="off">0x1c</span><span>→ flush index array</span></div>
                 <div class="row"><span class="off">0x20</span><span>flush index count</span></div>
 
@@ -299,9 +300,21 @@
                 <div class="row"><span class="off">0x00</span><span>maximum pose count (uint16)</span></div>
                 <div class="row"><span class="off">0x02</span><span>facial object count (uint16)</span></div>
                 <div class="row"><span class="off">0x04</span><span>attribute type count (uint16)</span></div>
-                <div class="row"><span class="off">0x08</span><span>→ facial object table</span></div>
+                <div class="row"><span class="off">0x06</span><span>padding (uint16, 0)</span></div>
+                <div class="row"><span class="off">0x08</span><span>→ facial object table <span class="note">(= 0x14 + 16 × type count)</span></span></div>
+                <div class="row"><span class="off">0x0c</span><span>→ type descriptor array <span class="note">(always 0x14)</span></span></div>
+                <div class="row"><span class="off">0x10</span><span>0</span></div>
 
                 <div class="nested">
+                    <div class="blk c-sub">
+                        <div class="blk-title">Type Descriptor ×N <span class="note">(16 bytes each, from 0x14)</span></div>
+                        <div class="fields">
+                            <div class="row"><span class="off">0x00</span><span>target index (uint16): submesh, or SKAcc entry for kind 0</span></div>
+                            <div class="row"><span class="off">0x02</span><span>kind (uint8): 0 SKAcc source, 1 position, 2 normal, 3 colour, 4-7 UV</span></div>
+                            <div class="row"><span class="off">0x03</span><span>component count &lt;&lt; 4 | component size</span></div>
+                            <div class="row"><span class="off">0x04</span><span>zero <span class="note">(runtime: resolved target pointer at +0x08)</span></span></div>
+                        </div>
+                    </div>
                     <div class="blk c-sub">
                         <div class="blk-title">Facial Object Table Entry ×N <span class="note">(12 bytes each)</span></div>
                         <div class="fields">
@@ -321,7 +334,7 @@
                                     <div class="blk-title">Attribute Record</div>
                                     <div class="fields">
                                         <div class="row"><span class="off">0x00</span><span>mapped entry count (uint32)</span></div>
-                                        <div class="row"><span class="off">0x04</span><span>submesh / kind / component count / component size</span></div>
+                                        <div class="row"><span class="off">0x04</span><span>target index / kind / component count / component size <span class="note">(uint8 each; matches a type descriptor)</span></span></div>
                                         <div class="row"><span class="off">0x08</span><span>→ vertex run list</span></div>
                                         <div class="row"><span class="off">0x0c</span><span>→ pose pointer array <span class="note">(uint32 × object pose count)</span></span></div>
                                     </div>
@@ -331,7 +344,7 @@
                                     <div class="fields">
                                         <div class="row"><span class="off">+0x00</span><span>first GPL vertex index (uint16)</span></div>
                                         <div class="row"><span class="off">+0x02</span><span>consecutive vertex count (uint16)</span></div>
-                                        <div class="note" style="padding-left:4px">Expand runs until the attribute's mapped entry count is reached.</div>
+                                        <div class="note" style="padding-left:4px">Ends with a (0, 0) pair; the game reads runs until a count of 0. The runs add up to the mapped entry count.</div>
                                     </div>
                                 </div>
                                 <div class="blk c-sub">
@@ -357,6 +370,8 @@
         <li>A new surface is one canonical state group appended to a rigid list; earlier records never change (<a href="vertex_section.html#rigid-state-lists">Rigid submesh state lists</a>).</li>
         <li>Colour arrays with quantization 48 hold 2-byte RGBA4444 entries, not RGBA8 (<a href="vertex_section.html#color-data">Color data</a>).</li>
         <li>Which Type 7 shaders work on a character surface, and what the hand roles do, is in the <a href="vertex_section.html#type7">Type 7 catalogue</a>.</li>
+        <li>The skinned body (submesh 0) can be rebuilt from any mesh and weights: a new blob with interleaved normals and room for the skinning write-back (<a href="vertex_section.html#skinned-rebuild">Rebuilding the skinned body</a>), a new SKN in canonical layout (<a href="skn_section.html#canonical-layout">Canonical layout</a>) and remapped facial poses (<a href="facial_pose_section.html#rebuild">Rebuilding the section</a>).</li>
+        <li>Rebuilt primitive lists are triangle strips, about half the bytes of plain triangles (<a href="vertex_section.html#strips">Draw the primitives</a>). Block size counts against a scene-wide memory budget, not against the DAT.</li>
     </ul>
 
     <h2 id="alignment">32-Byte Alignment</h2>
