@@ -68,7 +68,8 @@ that makes the clicked slot a clone of it as the game holds it
 (``slot_plan.plan_copy``), with the usual staging check and confirm dialog.
 **Export as .sluggie** (below them) runs ``start.py --export-slot`` right
 away (it only reads the game): the slot as the game holds it becomes a
-``2_Output_Models/Custom <name> NN`` folder (``Roster/slot_export.py``);
+``2_Output_Models/Custom <name> NN`` folder of ``.sluggie`` + ``.glb``
+files (``Roster/slot_export.py``);
 pending edits of the slot are not in it (asks first).
 One shared popup window and one shared right-click handler serve every
 portrait button (``dpg.popup`` would leave a window and a handler registry

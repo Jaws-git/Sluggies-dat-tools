@@ -1,8 +1,8 @@
 """``start.py --export-slot 0xNN``: export a character slot as the game holds it into ``2_Output_Models``.
 
 The GUI's "Export as .sluggie" (character grid, right-click menu). Writes a folder that looks like a regular
-model export -- the High and Low model, the bats and gloves, the ``anm`` files and the portraits the slot shows
-(``icon/``) -- under ``2_Output_Models/Custom <name> <NN>``; ``NN`` counts up from 01 past the folders and file
+model export -- the High and Low model, the bats and gloves (each with its ``.glb`` next to the ``.sluggie``),
+the ``anm`` files and the portraits the slot shows (``icon/``) -- under ``2_Output_Models/Custom <name> <NN>``; ``NN`` counts up from 01 past the folders and file
 names already there.
 
 Each model is the slot's **current** block (``3_Output_Dat``), read with the regular export reader as if it lay
@@ -315,7 +315,7 @@ def write_export(cid: int, char: dict, entries: list[Entry], portraits: dict, mo
             if e.is_anm:
                 e.entry.child.dumpRaw(work, e.file_index)
                 continue
-            e.entry.child.toFile(work + os.sep, export_tex=True, export_glb=False)
+            e.entry.child.toFile(work + os.sep, export_tex=True, export_glb=True)
             for model in e.models:
                 model_folder = os.path.join(work, str(e.entry.child.absolute), model.name) \
                     if isinstance(e.entry.child, export.Archive) else os.path.join(work, model.name)
