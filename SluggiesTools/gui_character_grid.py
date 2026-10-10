@@ -326,12 +326,49 @@ class CharacterGridTab:
         """The Options tab: game options written into main.dol right away (CPU vs CPU). Its state comes from the
         grid's read, so the tab lives here."""
         with dpg.tab(label='Options', tag='options_tab'):
+            dpg.add_text('CPU League')
             with dpg.group(horizontal=True):
                 dpg.add_button(label=gui_grid.CPU_VS_CPU_ENABLE, tag='grid_cpu_vs_cpu',
                                callback=lambda: self._on_cpu_vs_cpu())
                 with dpg.tooltip('grid_cpu_vs_cpu'):
-                    dpg.add_text('Turn on CPU vs CPU (hold Minus on controller starting a match)', wrap=420)
+                    dpg.add_text('Turn on CPU vs CPU (hold Minus on controller starting a match). Turning it off '
+                                 'also turns off its management.', wrap=420)
                 dpg.add_text('', tag='grid_cpu_vs_cpu_status')
+            with dpg.group(horizontal=True):
+                dpg.add_button(label=gui_grid.CPU_MANAGEMENT_ENABLE, tag='grid_cpu_management',
+                               callback=lambda: self._on_cpu_management())
+                with dpg.tooltip('grid_cpu_management'):
+                    dpg.add_text('In a CPU vs CPU match, controller 1 manages the fielding team (pause to make '
+                                 'defensive changes). Needs CPU vs CPU turned on first.', wrap=420)
+                dpg.add_text('', tag='grid_cpu_management_status')
+            dpg.add_spacer(height=4)
+            dpg.add_separator()
+            dpg.add_spacer(height=4)
+            dpg.add_text('Player memory')
+            dpg.add_checkbox(label='I have manually increased the MEM2 limit in Dolphin to 128 MB',
+                             tag='grid_big_memory', callback=lambda _s, value: self._on_big_memory(value))
+            with dpg.tooltip('grid_big_memory'):
+                dpg.add_text('Unlocks player memory levels of +512 KB to +4 MB. They need Dolphin\'s "Emulated '
+                             'Memory Size Override" (Config > Advanced) with MEM2 at 128 MB: the game heap then '
+                             'grows by 64 MB.', wrap=420)
+                dpg.add_text('The game checks the memory size when it starts. Without the override (or on a real '
+                             'Wii) it keeps the stock heaps and uses +48 KB player memory, so models bigger than '
+                             'that will crash there.', wrap=420)
+            with dpg.group(horizontal=True):
+                dpg.add_combo(gui_grid.player_heap_choices(), tag='grid_player_heap', width=200,
+                              default_value=gui_grid.PLAYER_HEAP_STOCK_LABEL,
+                              callback=lambda _s, value: self._on_player_heap(value))
+                with dpg.tooltip('grid_player_heap'):
+                    dpg.add_text('Each player on the field gets a fixed memory area for its High model, Low model '
+                                 'and bat or glove (850 KB in the stock game). A player whose files do not fit '
+                                 'crashes the game when it is loaded onto the field. Raising it lets bigger custom '
+                                 'models play.', wrap=420)
+                    dpg.add_text('The extra memory comes from the game heap that the stadium, effects and '
+                                 'animations share (13 players x the increase). +48 KB fits a cautious estimate of '
+                                 'the stock console memory, +64 KB goes slightly past it, +128 KB well past it: '
+                                 'that may crash in a heavy scene, for example when a run is scored.', wrap=420)
+                dpg.add_text('', tag='grid_player_heap_status')
+            with dpg.group(horizontal=True):
                 dpg.add_loading_indicator(tag='options_spinner', style=1, radius=1.6, show=False,
                                           color=(90, 200, 120, 255), secondary_color=(60, 120, 80, 255))
                 dpg.add_text('', tag='options_status')
@@ -382,10 +419,20 @@ class CharacterGridTab:
                 dpg.configure_item(spinner, show=busy)
                 dpg.set_value(status, self.work or self.loader.message)
         state = self.loader.state
-        text, enabled = gui_grid.cpu_vs_cpu_status(state)
-        dpg.set_value('grid_cpu_vs_cpu_status', text)
-        dpg.configure_item('grid_cpu_vs_cpu_status', color=_OK if enabled else _WARN if enabled is False else _DIM)
+        level = gui_grid.player_heap_level(state)
+        if gui_grid.player_heap_is_big(level):
+            dpg.set_value('grid_big_memory', True)     # a 128 MB level is on: its items must stay listed
+        self._player_heap_items()
+        dpg.set_value('grid_player_heap', gui_grid.player_heap_choice(level))
+        for tag, status in (('grid_cpu_vs_cpu', gui_grid.cpu_vs_cpu_status),
+                            ('grid_cpu_management', gui_grid.cpu_management_status),
+                            ('grid_player_heap', gui_grid.player_heap_status)):
+            text, enabled = status(state)
+            dpg.set_value(f'{tag}_status', text)
+            dpg.configure_item(f'{tag}_status', color=_OK if enabled else _WARN if enabled is False else _DIM)
         dpg.configure_item('grid_cpu_vs_cpu', label=gui_grid.cpu_vs_cpu_button(state)[0])
+        dpg.configure_item('grid_cpu_management', label=gui_grid.cpu_management_button(state)[0])
+        self._enable_cpu_management(self._locked())
         dpg.set_value('grid_note', gui_grid.stock_luigi_note(state) if state else '')
         dpg.configure_item('grid_reference', show=self.reference is not None)
         if self.reference is not None:
@@ -872,8 +919,15 @@ class CharacterGridTab:
                                width=max(PATCH_W, int(size[0]) + 20) if size else PATCH_W,
                                enabled=bool(count) and not locked)
             dpg.configure_item('grid_discard_all', enabled=bool(count) and not locked)
-            for tag in ('grid_save_pack', 'grid_load_pack', 'grid_cpu_vs_cpu'):
+            for tag in ('grid_save_pack', 'grid_load_pack', 'grid_cpu_vs_cpu', 'grid_player_heap'):
                 dpg.configure_item(tag, enabled=not locked)
+        self._enable_cpu_management(locked)
+
+    def _enable_cpu_management(self, locked):
+        """The management button is usable only while the read found CPU vs CPU on."""
+        if dpg.does_item_exist('grid_cpu_management'):
+            usable = gui_grid.cpu_management_button(self.loader.state)[2]
+            dpg.configure_item('grid_cpu_management', enabled=usable and not locked)
 
     def _pending_changed(self):
         """Redraw what shows the pending list: the grid's markers, the open levels, the buttons."""
@@ -1683,18 +1737,50 @@ class CharacterGridTab:
         self._run([gui_grid.deploy_command(script)], 'Copying the files to the game directory...', done)
 
     def _on_cpu_vs_cpu(self):
-        """Turn CPU vs CPU and its management on or off in main.dol right away (not a staged edit: no roster data
-        changes, and roster rebuilds keep game options). The re-read after it updates the label and the button."""
+        """Turn CPU vs CPU on or off in main.dol right away (not a staged edit: no roster data changes, and roster
+        rebuilds keep game options). The re-read after it updates the labels and the buttons."""
         if self._locked():
             return
         enable = gui_grid.cpu_vs_cpu_button(self.loader.state)[1]
+        self._run_game_option(gui_grid.cpu_vs_cpu_command(enable), enable, 'CPU vs CPU')
+
+    def _on_cpu_management(self):
+        """Turn CPU vs CPU management on or off, like _on_cpu_vs_cpu; only while CPU vs CPU is on."""
+        if self._locked():
+            return
+        _label, enable, usable = gui_grid.cpu_management_button(self.loader.state)
+        if usable:
+            self._run_game_option(gui_grid.cpu_management_command(enable), enable, 'CPU vs CPU management')
+
+    def _player_heap_items(self):
+        dpg.configure_item('grid_player_heap', items=gui_grid.player_heap_choices(dpg.get_value('grid_big_memory')))
+
+    def _on_big_memory(self, checked):
+        """The 128 MB checkbox only unlocks the combo's big levels; with one of them on it stays ticked."""
+        if not checked and gui_grid.player_heap_is_big(gui_grid.player_heap_level(self.loader.state)):
+            dpg.set_value('grid_big_memory', True)
+            self.app.log_line('[options] a 128 MB player memory level is on: choose a stock-memory level first.',
+                              _WARN)
+        self._player_heap_items()
+
+    def _on_player_heap(self, choice):
+        """Set the player memory level in main.dol right away, like the CPU vs CPU buttons."""
+        current = gui_grid.player_heap_choice(gui_grid.player_heap_level(self.loader.state))
+        command = gui_grid.player_heap_command(choice)
+        if self._locked() or command is None or choice == current:
+            dpg.set_value('grid_player_heap', current)
+            return
+        stock = choice == gui_grid.PLAYER_HEAP_STOCK_LABEL
+        self._run_game_option(command, not stock, 'raised player memory' if stock else f'player memory {choice}')
+
+    def _run_game_option(self, command, enable, name):
         verb = 'enabling' if enable else 'disabling'
 
         def done(code, _output):
             if code != 0:
-                self.app.log_line(f'[character grid] {verb} CPU vs CPU failed (see the log above).', _WARN)
+                self.app.log_line(f'[character grid] {verb} {name} failed (see the log above).', _WARN)
             self.set_busy(self.app.busy)
-        self._run([gui_grid.cpu_vs_cpu_command(enable)], f'{verb.capitalize()} CPU vs CPU...', done)
+        self._run([command], f'{verb.capitalize()} {name}...', done)
 
     def _refresh_markers(self):
         self._show_status()

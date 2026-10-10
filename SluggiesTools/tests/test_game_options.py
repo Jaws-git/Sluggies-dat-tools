@@ -14,24 +14,33 @@ from SluggiesTools.Roster import runner as roster_runner
 from SluggiesTools.tests.test_roster_dev import ARENA, BSS, BSS_SIZE, CODE, CODE_SIZE
 
 HOOK_SITES = {h.site: h.stock for o in go.OPTIONS for h in o.hooks}
+CPU_SITES = {h.site: h.stock for key in ('cpu_vs_cpu', 'cpu_management') for h in go.BY_KEY[key].hooks}
 
 
 def synthetic_dol() -> bytes:
-    """test_roster_dev's DOL (T0 with OSInit's arena pairs) plus one small text section per hook site."""
+    """test_roster_dev's DOL (T0 with OSInit's arena pairs) plus small sections holding the hook sites (data
+    slots 8 and up: a DOL has only 7 text slots, and the hammerspace needs one; the sites only need to be mapped)."""
     sections = []
     words = [0x60000000] * (CODE_SIZE // 4)
     for lis_site, (reg, value) in ARENA.items():
         words[(lis_site - CODE) // 4] = ppc.one(lis_site, lambda a: a.lis(reg, ppc.ha(value)))
         words[(lis_site + 4 - CODE) // 4] = ppc.one(lis_site + 4, lambda a: a.addi(reg, reg, ppc.lo(value)))
-    sections.append((CODE, words))
-    for site, stock in sorted(HOOK_SITES.items()):
-        base = site - 0x10
-        block = [0x60000000] * 8
-        block[4] = stock
-        sections.append((base, block))
+    sections.append((0, CODE, words))
+    groups = []     # hook sites close together share one section
+    for site in sorted(HOOK_SITES):
+        if groups and site - groups[-1][-1] < 0x200:
+            groups[-1].append(site)
+        else:
+            groups.append([site])
+    for slot, group in enumerate(groups, start=8):
+        base = group[0] - 0x10
+        block = [0x60000000] * (-(-(group[-1] + 0x10 - base) // 0x20) * 8)    # 32-byte multiples, like real sections
+        for site in group:
+            block[(site - base) // 4] = HOOK_SITES[site]
+        sections.append((slot, base, block))
     header = bytearray(dolfile.HEADER_SIZE)
     body = b''
-    for slot, (address, block) in enumerate(sections):
+    for slot, address, block in sections:
         blob = struct.pack(f'>{len(block)}I', *block)
         struct.pack_into('>I', header, slot * 4, dolfile.HEADER_SIZE + len(body))
         struct.pack_into('>I', header, 0x48 + slot * 4, address)
@@ -57,7 +66,7 @@ class GameOptionTests(unittest.TestCase):
         self.assertEqual(go.detect(self.image), [])
         go.apply(self.image, ['cpu_vs_cpu', 'cpu_management'])
         self.assertEqual(go.detect(self.image), ['cpu_vs_cpu', 'cpu_management'])
-        for site in HOOK_SITES:
+        for site in CPU_SITES:
             self.assertTrue(dhs.TEXT_BASE <= stub_of(self.image, site) < dhs.TEXT_LIMIT)
         go.remove(self.image, ['cpu_management'])
         self.assertEqual(go.detect(self.image), ['cpu_vs_cpu'])
@@ -66,7 +75,7 @@ class GameOptionTests(unittest.TestCase):
 
     def test_stubs_replay_the_stock_word_and_return(self):
         go.apply(self.image, ['cpu_vs_cpu', 'cpu_management'])
-        for site, stock in HOOK_SITES.items():
+        for site, stock in CPU_SITES.items():
             stub = stub_of(self.image, site)
             words = [self.image.u32(stub + i) for i in range(0, 0x40, 4)]
             back = next(i for i, w in enumerate(words) if ppc.branch_target(w, stub + i * 4) == site + 4)
@@ -79,6 +88,63 @@ class GameOptionTests(unittest.TestCase):
         self.assertIn(ppc.one(0, lambda a: a.lwz(12, go.TEAM_MAP, 13)), words)
         self.assertIn(ppc.one(0, lambda a: a.xori(11, 6, 1)), words)
         self.assertIn(ppc.one(0, lambda a: a.stb(11, 4, 12)), words)
+
+    def test_player_heap_stub_sets_the_size_and_returns(self):
+        go.apply(self.image, ['player_heap_32'])
+        stub = stub_of(self.image, go.HEAP_SITE)
+        words = [self.image.u32(stub + i) for i in range(0, 12, 4)]
+        self.assertEqual(words[:2], [ppc.one(0, lambda a: a.lis(5, 0xE)), ppc.one(0, lambda a: a.addi(5, 5, -0x3800))])
+        self.assertEqual(ppc.branch_target(words[2], stub + 8), go.HEAP_SITE + 4)
+        self.assertEqual(0xE0000 - 0x3800, go.PLAYER_HEAP_STOCK + 32 * 1024)
+
+    def test_player_heap_levels_replace_each_other(self):
+        go.apply(self.image, ['cpu_vs_cpu', 'player_heap_32'])
+        self.assertEqual(go.detect(self.image), ['cpu_vs_cpu', 'player_heap_32'])
+        log = go.apply(self.image, ['player_heap_48'])
+        self.assertIn('off (replaced)', log[0])
+        self.assertEqual(go.detect(self.image), ['cpu_vs_cpu', 'player_heap_48'])
+        self.assertIn('already off', go.remove(self.image, ['player_heap_32'])[0])   # another level: untouched
+        self.assertEqual(go.detect(self.image), ['cpu_vs_cpu', 'player_heap_48'])
+        go.remove(self.image, [o.key for o in go.OPTIONS if o.group == 'player_heap'])
+        self.assertEqual(go.detect(self.image), ['cpu_vs_cpu'])
+        self.assertEqual(self.image.u32(go.HEAP_SITE), go.HEAP_STOCK_WORD)
+
+    def test_player_heap_levels_cannot_both_be_turned_on(self):
+        with self.assertRaises(go.GameOptionError):
+            go.apply(self.image, ['player_heap_32', 'player_heap_big_1024'])
+
+    def test_big_heap_hooks_all_three_sites_and_falls_back(self):
+        go.apply(self.image, ['player_heap_big_2048'])
+        self.assertEqual(go.detect(self.image), ['player_heap_big_2048'])
+        heap = stub_of(self.image, go.HEAP_SITE)
+        words = [self.image.u32(heap + i) for i in range(0, 4 * 10, 4)]
+        safe = go.PLAYER_HEAP_STOCK + go.PLAYER_HEAP_SAFE_KB * 1024
+        big = go.PLAYER_HEAP_STOCK + 2048 * 1024
+        self.assertEqual(words[:2], [ppc.one(0, lambda a: a.lis(5, ppc.ha(safe))),
+                                     ppc.one(0, lambda a: a.addi(5, 5, ppc.lo(safe)))])     # set first: the fallback
+        self.assertIn(ppc.one(0, lambda a: a.lwz(12, ppc.lo(go.MEM2_SIZE_GLOBAL), 12)), words)
+        self.assertIn(ppc.one(0, lambda a: a.lis(5, ppc.ha(big))), words)
+        root = stub_of(self.image, go.ROOT_SIZE_SITE)
+        self.assertEqual(self.image.u32(root), go.ROOT_SIZE_STOCK_WORD)                 # stock size first
+        table = stub_of(self.image, go.TABLE_READ_SITE)
+        self.assertEqual(self.image.u32(table), go.TABLE_READ_STOCK_WORD)
+        for hook in go.BY_KEY['player_heap_big_2048'].hooks:
+            site, stub = hook.site, stub_of(self.image, hook.site)
+            tail = [self.image.u32(stub + i) for i in range(0, len(hook.stub(stub, site)), 4)]
+            self.assertTrue(any(ppc.branch_target(w, stub + 4 * i) == site + 4 for i, w in enumerate(tail)))
+
+    def test_switching_from_big_to_stock_memory_level_restores_the_heap_sites(self):
+        go.apply(self.image, ['player_heap_big_512'])
+        go.apply(self.image, ['player_heap_48'])
+        self.assertEqual(go.detect(self.image), ['player_heap_48'])
+        self.assertEqual(self.image.u32(go.ROOT_SIZE_SITE), go.ROOT_SIZE_STOCK_WORD)
+        self.assertEqual(self.image.u32(go.TABLE_READ_SITE), go.TABLE_READ_STOCK_WORD)
+
+    def test_player_heap_off_restores_the_stock_dol(self):
+        original = self.image.to_bytes()
+        go.apply(self.image, ['player_heap_48'])
+        go.remove(self.image, ['player_heap_48'])
+        self.assertEqual(self.image.to_bytes(), original)
 
     def test_off_without_roster_restores_the_stock_dol(self):
         original = self.image.to_bytes()

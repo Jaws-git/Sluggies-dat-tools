@@ -767,6 +767,7 @@ def parse_args():
             '  python start.py --game-options\n'
             '  python start.py --game-options --on cpu_vs_cpu cpu_management\n'
             '  python start.py --game-options --off cpu_management\n'
+            '  python start.py --game-options --on player_heap_32\n'
             '  python start.py --export-icons\n'
             '  python start.py --export-icons --use-output\n'
             '  python start.py --patch model.sluggie\n'
@@ -844,7 +845,7 @@ def parse_args():
     parser.add_argument('--remove', action='store_true', help='roster only: reset the roster to vanilla (against 1_Input), stat edits included, and stop')
     parser.add_argument('--fresh', action='store_true', help="roster --config only: do not keep the slots' customisations (models in new IDs, names, portraits, stats sources, voices; slots leaving the grid are not reset); stat edits are still carried")
     parser.add_argument('--keep-stat-edits', action='store_true', help='roster --remove only: carry the stat edits over (used by --load-roster)')
-    parser.add_argument('--on', nargs='+', default=[], metavar='OPTION', help='game-options only: turn these options on (cpu_vs_cpu, cpu_management)')
+    parser.add_argument('--on', nargs='+', default=[], metavar='OPTION', help='game-options only: turn these options on (cpu_vs_cpu, cpu_management, player_heap_16 / _32 / _48)')
     parser.add_argument('--off', nargs='+', default=[], metavar='OPTION', help='game-options only: turn these options off')
 
     args = parser.parse_args()

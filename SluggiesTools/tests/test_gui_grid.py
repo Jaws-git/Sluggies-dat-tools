@@ -504,23 +504,85 @@ class CpuVsCpuTests(unittest.TestCase):
         self.assertEqual(status({'squares': []}), ('Cpu vs Cpu: unknown', None))     # state from an older reader
         self.assertEqual(status({'game_options': []}), ('Cpu vs Cpu: disabled', False))
         self.assertEqual(status({'game_options': ['cpu_management']}), ('Cpu vs Cpu: disabled', False))
-        self.assertEqual(status({'game_options': ['cpu_vs_cpu']}), ('Cpu vs Cpu: enabled (without management)', False))
-        self.assertEqual(status({'game_options': ['cpu_vs_cpu', 'cpu_management']}), ('Cpu vs Cpu: enabled', True))
+        self.assertEqual(status({'game_options': ['cpu_vs_cpu']}), ('Cpu vs Cpu: enabled', True))
 
-    def test_command_writes_and_names_known_options(self):
+    def test_management_status(self):
+        status = gui_grid.cpu_management_status
+        self.assertEqual(status(None), ('Management: unknown', None))
+        self.assertEqual(status({'game_options': ['cpu_vs_cpu']}), ('Management: disabled', False))
+        self.assertEqual(status({'game_options': ['cpu_management']}),
+                         ('Management: enabled (no effect without CPU vs CPU)', False))
+        self.assertEqual(status({'game_options': ['cpu_vs_cpu', 'cpu_management']}), ('Management: enabled', True))
+
+    def test_commands_write_and_name_known_options(self):
         from GameOptions import game_options
-        command = gui_grid.cpu_vs_cpu_command()
-        self.assertEqual(command[:2], ('--game-options', '--on'))
-        self.assertTrue(set(command[2:]) <= set(game_options.BY_KEY))
-        self.assertTrue(gui_grid.chain_writes([command]))      # the grid re-reads afterwards (status label)
-        self.assertEqual(gui_grid.cpu_vs_cpu_command(False)[:2], ('--game-options', '--off'))
+        for make in (gui_grid.cpu_vs_cpu_command, gui_grid.cpu_management_command):
+            command = make()
+            self.assertEqual(command[:2], ('--game-options', '--on'))
+            self.assertTrue(set(command[2:]) <= set(game_options.BY_KEY))
+            self.assertTrue(gui_grid.chain_writes([command]))      # the grid re-reads afterwards (status label)
+            self.assertEqual(make(False)[:2], ('--game-options', '--off'))
+        self.assertEqual(gui_grid.cpu_vs_cpu_command()[2:], ('cpu_vs_cpu',))
+        self.assertEqual(gui_grid.cpu_management_command()[2:], ('cpu_management',))
+        # turning CPU vs CPU off takes management with it (its button is locked afterwards)
+        self.assertEqual(gui_grid.cpu_vs_cpu_command(False)[2:], ('cpu_vs_cpu', 'cpu_management'))
 
-    def test_button_toggles_only_when_fully_enabled(self):
+    def test_buttons(self):
         button = gui_grid.cpu_vs_cpu_button
         self.assertEqual(button(None), (gui_grid.CPU_VS_CPU_ENABLE, True))
-        self.assertEqual(button({'game_options': ['cpu_vs_cpu']}), (gui_grid.CPU_VS_CPU_ENABLE, True))
+        self.assertEqual(button({'game_options': ['cpu_management']}), (gui_grid.CPU_VS_CPU_ENABLE, True))
+        self.assertEqual(button({'game_options': ['cpu_vs_cpu']}), (gui_grid.CPU_VS_CPU_DISABLE, False))
+
+    def test_management_button_needs_cpu_vs_cpu(self):
+        button = gui_grid.cpu_management_button
+        self.assertEqual(button(None), (gui_grid.CPU_MANAGEMENT_ENABLE, True, False))
+        self.assertEqual(button({'game_options': []}), (gui_grid.CPU_MANAGEMENT_ENABLE, True, False))
+        self.assertEqual(button({'game_options': ['cpu_management']}), (gui_grid.CPU_MANAGEMENT_DISABLE, False, False))
+        self.assertEqual(button({'game_options': ['cpu_vs_cpu']}), (gui_grid.CPU_MANAGEMENT_ENABLE, True, True))
         self.assertEqual(button({'game_options': ['cpu_vs_cpu', 'cpu_management']}),
-                         (gui_grid.CPU_VS_CPU_DISABLE, False))
+                         (gui_grid.CPU_MANAGEMENT_DISABLE, False, True))
+
+
+class PlayerHeapTests(unittest.TestCase):
+    def test_levels_mirror_the_game_options(self):
+        from GameOptions import game_options
+        self.assertEqual(gui_grid.PLAYER_HEAP_LEVELS_KB, game_options.PLAYER_HEAP_LEVELS_KB)
+        self.assertEqual(gui_grid.BIG_HEAP_LEVELS_KB, game_options.BIG_HEAP_LEVELS_KB)
+        self.assertEqual(gui_grid.PLAYER_HEAP_SAFE_KB, game_options.PLAYER_HEAP_SAFE_KB)
+        self.assertEqual(gui_grid.PLAYER_HEAP_STOCK, game_options.PLAYER_HEAP_STOCK)
+        self.assertEqual(sorted(gui_grid.player_heap_keys()),
+                         sorted(o.key for o in game_options.OPTIONS if o.group == 'player_heap'))
+
+    def test_level_and_status(self):
+        self.assertIsNone(gui_grid.player_heap_level(None))
+        self.assertEqual(gui_grid.player_heap_level({'game_options': ['cpu_vs_cpu']}), '')
+        self.assertEqual(gui_grid.player_heap_level({'game_options': ['player_heap_32']}), 'player_heap_32')
+        self.assertTrue(gui_grid.player_heap_is_big('player_heap_big_1024'))
+        self.assertFalse(gui_grid.player_heap_is_big('player_heap_128'))
+        self.assertEqual(gui_grid.player_heap_status(None), ('Player memory: unknown', None))
+        self.assertEqual(gui_grid.player_heap_status({'game_options': []})[1], False)
+        self.assertEqual(gui_grid.player_heap_status({'game_options': ['player_heap_48']}),
+                         ('Player memory: +48 KB (919,552 bytes per player)', True))
+        self.assertIn('128 MB', gui_grid.player_heap_status({'game_options': ['player_heap_big_4096']})[0])
+
+    def test_choices_and_commands(self):
+        normal, big = gui_grid.player_heap_choices(), gui_grid.player_heap_choices(True)
+        self.assertEqual(normal[0], gui_grid.PLAYER_HEAP_STOCK_LABEL)
+        self.assertEqual(len(normal), 1 + len(gui_grid.PLAYER_HEAP_LEVELS_KB))
+        self.assertEqual(big[:len(normal)], normal)
+        self.assertEqual(len(big), len(normal) + len(gui_grid.BIG_HEAP_LEVELS_KB))
+        self.assertIn('risky', gui_grid.player_heap_choice('player_heap_128'))
+        self.assertNotIn('risky', gui_grid.player_heap_choice('player_heap_64'))
+        self.assertNotIn('risky', gui_grid.player_heap_choice('player_heap_48'))
+        self.assertEqual(gui_grid.player_heap_choice(''), normal[0])
+        self.assertEqual(gui_grid.player_heap_choice(None), normal[0])
+        for key in gui_grid.player_heap_keys():
+            self.assertEqual(gui_grid.player_heap_command(gui_grid.player_heap_choice(key)),
+                             ('--game-options', '--on', key))
+        self.assertEqual(gui_grid.player_heap_command(normal[0]),
+                         ('--game-options', '--off', *gui_grid.player_heap_keys()))
+        self.assertIsNone(gui_grid.player_heap_command('nonsense'))
+        self.assertTrue(gui_grid.chain_writes([gui_grid.player_heap_command(normal[1])]))
 
 
 class SummaryDialogTests(unittest.TestCase):

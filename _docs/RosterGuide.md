@@ -398,6 +398,35 @@ python start.py --load-roster my_roster.sluggiesroster
   community Gecko codes "CPU vs CPU V2" and "CPU vs CPU human management".
   Disable both Gecko codes in Dolphin before using the options: with them
   on, matches start as normal human vs CPU matches, even on a stock roster.
+- **Player memory** (Options tab, or `--game-options --on player_heap_32`,
+  `_48`, `_64` or `_128`): every player on the field gets a fixed memory area for its
+  High model, Low model and bat or glove, 870,400 bytes (850 KB) in the
+  stock game. A player whose three files plus about 400 bytes don't fit
+  crashes the game as soon as it is loaded onto the field (character select
+  is not affected). Batters carry the smaller bat, so an oversized character
+  may only crash once it has to field. The option raises the area by 32, 48,
+  64 or 128 KB per player. The extra memory comes from the game heap that
+  the stadium, effects and animations share, 13 times the increase (13
+  players can be on the field). +48 KB fits a cautious estimate of what stock
+  console memory leaves room for; +64 KB goes slightly past it, +128 KB well
+  past it (the GUI marks it risky), which may crash in a heavy scene, for
+  example when a run is scored. Tested in Dolphin (2026-10-10): +32 KB let a
+  Mario whose High model crashed every time at 850 KB play; +48 KB held a
+  Mario that fills it to within 4 KB, which +32 KB crashed with; +128 KB
+  played a full match in Mario Stadium. Only one level can be on; choosing
+  another replaces it. The details are in `_docs_roster/RosterExpansion.md`
+  (*Game memory*).
+- **Player memory with 128 MB MEM2** (Options tab: tick "I have manually
+  increased the MEM2 limit in Dolphin to 128 MB"; or `player_heap_big_512`,
+  `_1024`, `_2048`, `_4096`): levels of +512 KB to +4 MB per player, for
+  Dolphin with **Config > Advanced > Emulated Memory Size Override** and MEM2
+  at 128 MB. The game ignores extra memory on its own, so these levels also
+  grow its main MEM2 heaps by 64 MB. When the game starts it checks the
+  memory size: without the override (or on a real Wii) it keeps the stock
+  heaps and uses +48 KB player memory, so the game still starts, but models
+  bigger than that crash there. Tested in Dolphin (2026-10-10): +4 MB played
+  a full game with the override; without it the game started and played on
+  +48 KB, and a model too big for +48 KB crashed.
 - Slots that are only in the game leave the grid. A model patched into a
   stock slot among them stays in its directory (it is not on the grid any
   more).

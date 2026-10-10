@@ -42,7 +42,7 @@ WRITING_FLAGS = frozenset({'--export', '--roster', '--patch', '--unpatch', '--re
                            '--set-icon', '--apply-slots', '--load-roster',
                            '--write-slot-blocks', '--write-slot-equipment', '--game-options'})
 UNNAMED = '-'
-CPU_VS_CPU_OPTIONS = ('cpu_vs_cpu', 'cpu_management')   # what the Options tab's CPU vs CPU button turns on
+CPU_VS_CPU_OPTIONS = ('cpu_vs_cpu', 'cpu_management')   # what the Options tab's CPU vs CPU button turns off
 LUIGI = 0x01
 
 
@@ -57,33 +57,146 @@ def chain_writes(steps) -> bool:
                if '--dry-run' not in step and '--validate-only' not in step)
 
 
-CPU_VS_CPU_ENABLE = 'Enable CPU vs CPU + management'
-CPU_VS_CPU_DISABLE = 'Disable CPU vs CPU + management'
+CPU_VS_CPU_ENABLE = 'Enable CPU vs CPU'
+CPU_VS_CPU_DISABLE = 'Disable CPU vs CPU'
+CPU_MANAGEMENT_ENABLE = 'Enable CPU vs CPU management'
+CPU_MANAGEMENT_DISABLE = 'Disable CPU vs CPU management'
+
+
+def _game_options(state):
+    """The game options the read found on (None: not known, e.g. no state yet or a state written before the
+    reader listed game options)."""
+    return (state or {}).get('game_options')
 
 
 def cpu_vs_cpu_command(enable: bool = True) -> tuple:
-    """The Options tab's CPU vs CPU button step: turn both options on, or both off."""
-    return ('--game-options', '--on' if enable else '--off', *CPU_VS_CPU_OPTIONS)
+    """The Options tab's CPU vs CPU button step. Turning it off also turns management off: management does
+    nothing without it, and its button is locked then, so it could not be turned off afterwards."""
+    return ('--game-options', '--on', 'cpu_vs_cpu') if enable else ('--game-options', '--off', *CPU_VS_CPU_OPTIONS)
+
+
+def cpu_management_command(enable: bool = True) -> tuple:
+    """The Options tab's CPU vs CPU management button step."""
+    return ('--game-options', '--on' if enable else '--off', 'cpu_management')
 
 
 def cpu_vs_cpu_button(state) -> tuple[str, bool]:
-    """The button's label and whether it enables (only fully enabled shows Disable; a half-on state enables
-    the missing option)."""
-    enabled = cpu_vs_cpu_status(state)[1]
-    return (CPU_VS_CPU_DISABLE, False) if enabled else (CPU_VS_CPU_ENABLE, True)
+    """The CPU vs CPU button's label and whether it enables."""
+    on = 'cpu_vs_cpu' in (_game_options(state) or ())
+    return (CPU_VS_CPU_DISABLE, False) if on else (CPU_VS_CPU_ENABLE, True)
+
+
+def cpu_management_button(state) -> tuple[str, bool, bool]:
+    """The management button's label, whether it enables, and whether it is usable (only once the read found
+    CPU vs CPU on)."""
+    options = _game_options(state) or ()
+    usable = 'cpu_vs_cpu' in options
+    if 'cpu_management' in options:
+        return CPU_MANAGEMENT_DISABLE, False, usable
+    return CPU_MANAGEMENT_ENABLE, True, usable
 
 
 def cpu_vs_cpu_status(state) -> tuple[str, bool | None]:
-    """The status label beside that button and whether both options are on (None: not known, e.g. no state yet or
-    a state written before the reader listed game options)."""
-    options = (state or {}).get('game_options')
+    """The status label beside the CPU vs CPU button and whether it is on (None: not known)."""
+    options = _game_options(state)
     if options is None:
         return 'Cpu vs Cpu: unknown', None
-    if all(key in options for key in CPU_VS_CPU_OPTIONS):
-        return 'Cpu vs Cpu: enabled', True
-    if 'cpu_vs_cpu' in options:
-        return 'Cpu vs Cpu: enabled (without management)', False
-    return 'Cpu vs Cpu: disabled', False
+    return ('Cpu vs Cpu: enabled', True) if 'cpu_vs_cpu' in options else ('Cpu vs Cpu: disabled', False)
+
+
+def cpu_management_status(state) -> tuple[str, bool | None]:
+    """The status label beside the management button and whether it is on (None: not known)."""
+    options = _game_options(state)
+    if options is None:
+        return 'Management: unknown', None
+    if 'cpu_management' not in options:
+        return 'Management: disabled', False
+    if 'cpu_vs_cpu' not in options:
+        return 'Management: enabled (no effect without CPU vs CPU)', False
+    return 'Management: enabled', True
+
+
+# Player memory: each on-field player's heap (High + Low + bat or glove) is 870,400 bytes in the stock game.
+# The game options player_heap_<KB> raise it on stock memory; player_heap_big_<KB> need Dolphin's MEM2 override
+# at 128 MB and fall back to +48 KB without it (GameOptions/game_options.py, which these mirror).
+PLAYER_HEAP_STOCK = 870_400
+PLAYER_HEAP_LEVELS_KB = (32, 48, 64, 128)
+PLAYER_HEAP_SAFE_KB = 48
+PLAYER_HEAP_RISKY_ABOVE_KB = 64     # the combo marks only the levels above this as risky
+BIG_HEAP_LEVELS_KB = (512, 1024, 2048, 4096)
+PLAYER_HEAP_STOCK_LABEL = 'Stock (850 KB)'
+
+
+def player_heap_key(extra_kb: int) -> str:
+    return f'player_heap_{extra_kb}'
+
+
+def big_heap_key(extra_kb: int) -> str:
+    return f'player_heap_big_{extra_kb}'
+
+
+def _kb_text(kb: int) -> str:
+    return f'{kb // 1024} MB' if kb >= 1024 and kb % 1024 == 0 else f'{kb} KB'
+
+
+def _player_heap_levels() -> list[tuple[str, str, int, bool]]:
+    """(option key, combo label, extra KB, big) of every level, stock-memory levels first."""
+    out = []
+    for kb in PLAYER_HEAP_LEVELS_KB:
+        risky = ', risky' if kb > PLAYER_HEAP_RISKY_ABOVE_KB else ''
+        out.append((player_heap_key(kb), f'+{kb} KB ({(PLAYER_HEAP_STOCK + kb * 1024) // 1024} KB{risky})', kb, False))
+    for kb in BIG_HEAP_LEVELS_KB:
+        out.append((big_heap_key(kb), f'+{_kb_text(kb)} (128 MB MEM2)', kb, True))
+    return out
+
+
+def player_heap_keys() -> list[str]:
+    return [key for key, _label, _kb, _big in _player_heap_levels()]
+
+
+def player_heap_choices(big_memory: bool = False) -> list[str]:
+    """The Options tab's player memory combo items, stock first; the 128 MB levels only when ``big_memory``."""
+    return [PLAYER_HEAP_STOCK_LABEL] + [label for _key, label, _kb, big in _player_heap_levels()
+                                        if big_memory or not big]
+
+
+def player_heap_level(state) -> str | None:
+    """The option key of the level the read found on ('': stock; None: not known)."""
+    options = _game_options(state)
+    if options is None:
+        return None
+    return next((key for key in player_heap_keys() if key in options), '')
+
+
+def player_heap_is_big(level: str | None) -> bool:
+    return any(key == level and big for key, _label, _kb, big in _player_heap_levels())
+
+
+def player_heap_choice(level: str | None) -> str:
+    """The combo item for a level (unknown shows stock)."""
+    return next((label for key, label, _kb, _big in _player_heap_levels() if key == level), PLAYER_HEAP_STOCK_LABEL)
+
+
+def player_heap_command(choice: str) -> tuple | None:
+    """The step that sets the chosen level: one option on (it replaces another level), or all of them off."""
+    if choice == PLAYER_HEAP_STOCK_LABEL:
+        return ('--game-options', '--off', *player_heap_keys())
+    key = next((key for key, label, _kb, _big in _player_heap_levels() if label == choice), None)
+    return None if key is None else ('--game-options', '--on', key)
+
+
+def player_heap_status(state) -> tuple[str, bool | None]:
+    """The status label beside the combo and whether a raised heap is on (None: not known)."""
+    level = player_heap_level(state)
+    if level is None:
+        return 'Player memory: unknown', None
+    if not level:
+        return f'Player memory: stock ({PLAYER_HEAP_STOCK:,} bytes per player)', False
+    kb, big = next((kb, big) for key, _label, kb, big in _player_heap_levels() if key == level)
+    text = f'Player memory: +{_kb_text(kb)} ({PLAYER_HEAP_STOCK + kb * 1024:,} bytes per player)'
+    if big:
+        text += f'; needs MEM2 at 128 MB in Dolphin, else +{PLAYER_HEAP_SAFE_KB} KB'
+    return text, True
 
 
 # --------------------------------------------------------------------------

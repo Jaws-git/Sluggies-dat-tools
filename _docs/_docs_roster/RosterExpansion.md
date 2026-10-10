@@ -392,7 +392,8 @@ the external tool in six RAM dumps): about 1 MB of DOL hammerspace. All
 tables for 153 new IDs take about 80 KB, almost half of it stats.
 
 **Game options share the sections.** The gameplay options
-(`GameOptions/game_options.py`: CPU vs CPU, CPU management) put their hook
+(`GameOptions/game_options.py`: CPU vs CPU, CPU management, player memory,
+see *Game memory*) put their hook
 stubs into the same text section, creating the sections on a stock output.
 So the sections alone do not mean a roster was built: a DOL whose data
 section holds nothing but the magic counts as the stock roster
@@ -843,3 +844,148 @@ measured on the shipped presets: the select layout grows by about 22.7 KB
 (grid, 10-member popup and name plates together; the popup alone 2,904
 bytes, a 12×5 grid 6,288 bytes); the packed icon bank grows by 33,600 bytes
 for 8 portraits and stays under 600 KB for 159.
+
+The rest of this section comes from Dolphin RAM dumps (MEM1 + MEM2, the
+Debug UI's Memory panel, *Dolphin* 2026-10-10) taken at the first pitch of
+an exhibition match. The scene was Mario Stadium and Wario City, both teams
+CPU. The heaps are Nintendo `MEM` heaps. An expanded heap starts with
+`EXPH`, its start/end at `+0x18`/`+0x1C`, its free list at `+0x3C` and its
+used list at `+0x44`. Each block has a 16-byte header: `UD` (used) or `FR`
+(free), then the size at `+4` and prev/next at `+8`/`+0xC`.
+
+### Heap map
+
+The game wraps every heap in a C++ object: vtable `0x806DF220`, made by
+`0x804FB7C0`. The size is at `+0x14`, the start at `+0x18` and the `MEM`
+handle at `+0x48`. Its initialise method (`0x804FB9F0`) calls
+`MEMCreateExpHeapEx` (`0x805C2170`). All sizes are fixed when the game
+boots:
+
+| heap | where | size | source of the size |
+|---|---|---|---|
+| MEM1 heap | `0x8080008C` | 15 MB (`0xF00000`) | see *DOL hammerspace* (its end is the hammerspace ceiling) |
+| MEM1 heap | `0x8080026C` | 10 MB | heap table entry 2 |
+| MEM1 heap | `0x812002F8` | about 5 MB, the rest of the 15 MB heap | holds table entry 0 (`0x120100`) |
+| MEM2 root heap | `0x9000086C` | 51 MB (`0x3300000`) | `fn_8039A85C`, just `lis r3,0x330; blr` (a getter called through a vtable) |
+| MEM2 game heap ("heap 3") | `0x900AE5FC` | 48 MB (`0x3000000`), inside the root heap | heap table entry 3 |
+
+The **heap table** is at `0x8062F048`: four entries of `{u32 size, u8
+parent, u8 flag}`, holding `0x120100`, `0x20000`, `0xA00000` and
+`0x3000000`. `fn_803A5840` makes the four heaps, and reads each size with
+`lwz r4,0(r28)` at `0x803A58E8`.
+
+**Dolphin's "Emulated Memory Size Override"** (MEM1 64 MB, MEM2 128 MB)
+shows up in the OS globals: MEM2 size `0x8000311C` = `0x08000000` (stock
+`0x04000000`) and MEM2 arena high `0x97FC0000` (stock `0x935E0000`). The
+game ignores the extra memory: every heap keeps its stock address and size,
+and the memory above them stays empty. With the override, MEM2 from
+`0x9330086C` up to the IOS area at `0x97FC0000` is free.
+
+In the stock-size dumps, MEM2 from the end of the root heap (`0x9330086C`)
+to the arena top (`0x935E0000`) was zero apart from one 4 KB page near the
+top: about 2.9 MB. So was MEM1 `0x81700090`–`0x817FF480`, about 1 MB. No
+heap covers either range. Whether anything claims them at other moments
+(menus, saving, a run scored) is not known.
+
+### Player heaps
+
+Every player on the field gets **its own expanded heap of 870,400 bytes**
+(`0xD4800`, 870,320 usable). There are 13 of them, created from the game
+heap back to back: batter, 3 runners and 9 fielders. At the first pitch, 10
+were in use. `fn_80364880` makes them in a loop that calls `0x803762A0`
+with `r5` = the size, from `lis r14,0xD` at `0x80365180` and `addi
+r5,r14,0x4800` at `0x8036518C`.
+
+Each one holds **that player's High model (file 0), Low model (file 1) and
+one gear file**, plus 8 tiny blocks (132 bytes). Gear is the bat (file 2)
+for the batter and a glove for a fielder. With the block headers that
+gives:
+
+```
+High + Low + gear file + about 400 bytes  <=  870,320
+```
+
+**A player whose files don't fit crashes the game when it is loaded onto
+the field.** It doesn't depend on the stadium or the other players.
+Character select loads models elsewhere and never crashes. Batting carries
+the smaller bat, so an oversized character may only crash once it has to
+field. Evidence (*Dolphin* 2026-10-10), Mario with an unbound CMPR texture
+appended to his High model, Low vanilla (77,984 bytes), glove 26,944
+bytes:
+
+| player heap | Mario High | High + Low + glove | result |
+|---|---|---|---|
+| 870,400 (stock) | 761,472 | 866,400 | good 8 of 8 |
+| 870,400 (stock) | 777,856 | 882,784 | crash 7 of 7 |
+| 903,168 (+32 KB) | 777,856 | 882,784 | good 4 of 4 |
+| 903,168 (+32 KB) | 810,624 | 915,552 | crash |
+| 919,552 (+48 KB) | 810,624 | 915,552 | good 3 runs + a full match |
+| 919,552 (+48 KB) | about 843,400 | about 948,300 | crash |
+
+Mesh and texture bytes count alike. In September, crash rates near the edge
+looked random (one build worked 4 of 7 times). Which team bats first is
+random, so those runs most likely crashed only when the character had to
+field.
+
+### Stadium heap
+
+The stadium model (file 0 of the stadium's directory) gets **its own
+expanded heap, sized to the file**: `fn_8039A4C4` makes it align32(size) +
+`0x200` bytes. It sits at `0x9143F680` in both dumps, with 264 bytes free:
+
+| stadium | file 0 | heap |
+|---|---|---|
+| Mario Stadium (dir 7) | 2,237,524 | 2,238,048 |
+| Wario City (dir 9) | 2,655,048 | 2,655,584 |
+
+So stadiums have no fixed cap. A bigger file 0 takes more of the game heap.
+The other variants (files 1 and 2) are not loaded. Two other fixed heaps
+of 391,264 bytes hold dir 159 files (1 or 13, and 20).
+
+### Game heap headroom
+
+Free in the game heap at the first pitch: 5,036,676 bytes (Mario Stadium,
+stock player heaps) and 4,115,820 bytes (Wario City, player heaps +32 KB).
+Only one animation bank (file 14, 123,296 bytes) was loaded at that moment.
+Of the 920,856-byte difference, 425,984 is the player heaps and 417,536 the
+stadium. The other 77,336 is other stadium files or the usual run-to-run
+spread (two Mario Stadium dumps differed by 24,864).
+
+How far the player heaps can grow on stock memory (cautious estimate):
+
+| item | bytes |
+|---|---|
+| free before banks, Wario City, stock player heaps | 4,665,100 |
+| the roster's 10 largest file 14 banks (worst at-bat) | −2,260,352 |
+| a run scored (the external tool's `heap_budget.py`) | −1,234,944 |
+| safety margin (the external tool's) | −524,288 |
+| left for 13 player heaps | 645,516, about **48 KB per player** |
+
+Each extra KB per player costs 13 KB of the game heap. The estimate is
+cautious: it assumes the roster's 10 largest banks are loaded together.
+But the run-scored figure and the margin come from the external tool's
+build, not from a dump of ours. A roster that grows dir 119 eats the same
+headroom. +128 KB (1.66 MB) ran a full match in Mario Stadium; Wario City
+and heavy teams are untested.
+
+### Player memory options
+
+`GameOptions/game_options.py` offers the player heap as game options. They
+are one group that shares the hook at `0x8036518C`, so only one can be on.
+`player_heap_32`, `_48`, `_64` and `_128` set the size, for example
+`lis r5,0xE` + `addi r5,r5,-0x3800` = 903,168.
+
+`player_heap_big_512`, `_1024`, `_2048` and `_4096` are for MEM2 at 128 MB.
+They also hook the root heap getter (`0x8039A85C`) and the heap table read
+(`0x803A58E8`, entry 3 only, `r28` = `0x8062F060`), and add 64 MB to both.
+The grown root heap ends at `0x9730086C`. Every stub first reads the MEM2
+size at `0x8000311C`. Below `0x08000000` it keeps the stock root heap and
+game heap, and a player heap of +48 KB, so the same DOL boots without the
+override and on a real Wii.
+
+*Dolphin* 2026-10-10, with a Mario needing 915,552 bytes:
+- `_32` crashed, `_48` and `_128` played full matches.
+- `_big_4096` played a full game with the override, and also played
+  without it (on the fallback).
+- A Mario about 29 KB over +48 KB crashed on `_big_4096` without the
+  override, which confirms the fallback is +48 KB.

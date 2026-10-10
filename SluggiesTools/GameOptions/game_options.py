@@ -28,11 +28,11 @@ from typing import Callable
 
 try:
     from ..Dol import dolfile
-    from ..Dol.ppc import Asm, branch_target, one
+    from ..Dol.ppc import Asm, branch_target, ha, lo, one
     from ..Roster import dol_hammerspace
 except ImportError:
     from Dol import dolfile
-    from Dol.ppc import Asm, branch_target, one
+    from Dol.ppc import Asm, branch_target, ha, lo, one
     import dol_hammerspace
 
 
@@ -52,6 +52,7 @@ class Option:
     key: str
     title: str
     hooks: tuple[Hook, ...]
+    group: str | None = None    # options of one group hook the same sites: only the one whose stub is there is on
 
 
 # ---------------------------------------------------------------- CPU vs CPU
@@ -136,6 +137,113 @@ def _defense_change_stub(base: int, site: int) -> Asm:
     return a
 
 
+# ------------------------------------------------------------ player memory
+#
+# Every player on the field (batter, 3 runners, 9 fielders) gets its own MEM expanded heap of
+# 0xD4800 = 870,400 bytes, made from the game heap (heap 3) by the loop in fn_80364880 (callee
+# 0x803762A0). It holds that player's High model, Low model and bat or glove; a player whose files
+# don't fit crashes the game when it is loaded onto the field (Dolphin RAM dumps and a Mario texture
+# series, 2026-10-10: High 761,472 + Low 77,984 + glove 26,944 worked 8/8, High 777,856 crashed 7/7
+# and ran with the heap at +32 KB). The stub replaces `addi r5,r14,0x4800` (r5 = the heap size).
+# Each extra KB costs 13 KB of heap 3; +48 KB is the most the 2026-10-10 budget allows on stock
+# memory (worst stadium, the roster's 10 largest animation banks, a run scored, 512 KB margin).
+# +64 and +128 KB go past that budget: development levels, they may crash at a run scored.
+#
+# Big-memory levels (Dolphin's "Emulated Memory Size Override" with MEM2 at 128 MB): the game ignores
+# the extra memory, because its heap sizes are fixed. The MEM2 root heap (0x9000086C) takes its size
+# from fn_8039A85C (`lis r3,0x330; blr`, 0x3300000); heap 3 is entry 3 of the heap table at
+# 0x8062F048 ({u32 size, u8 parent, u8 flag} x 4: 0x120100, 0x20000, 0xA00000, 0x3000000), read by
+# `lwz r4,0(r28)` at 0x803A58E8. The big levels grow both by 64 MB and give each player heap far more.
+# Every stub checks the MEM2 size the OS reports (*0x8000311C, 0x04000000 stock, 0x08000000 with the
+# override; the dumps of 2026-10-10) and keeps the stock heaps (player heap at +48 KB) without it, so
+# a DOL with a big level still boots on a real Wii or a Dolphin without the override. With the
+# override, MEM2 above 0x9330086C is empty up to the IOS area at 0x97FC0000; the grown root heap ends
+# at 0x9730086C.
+HEAP_SITE, HEAP_STOCK_WORD = 0x8036518C, 0x38AE4800    # addi r5,r14,0x4800
+PLAYER_HEAP_STOCK = 0xD4800
+PLAYER_HEAP_FIELDERS = 13
+PLAYER_HEAP_LEVELS_KB = (32, 48, 64, 128)
+PLAYER_HEAP_SAFE_KB = 48                                # the stock-memory ceiling (fallback of the big levels)
+BIG_HEAP_LEVELS_KB = (512, 1024, 2048, 4096)
+ROOT_SIZE_SITE, ROOT_SIZE_STOCK_WORD = 0x8039A85C, 0x3C600330    # lis r3,0x330
+TABLE_READ_SITE, TABLE_READ_STOCK_WORD = 0x803A58E8, 0x809C0000  # lwz r4,0(r28)
+HEAP_TABLE = 0x8062F048
+GAME_HEAP_ENTRY = HEAP_TABLE + 3 * 8
+MEM2_SIZE_GLOBAL = 0x8000311C
+MEM2_BIG = 0x08000000
+BIG_EXTRA = 0x04000000                                  # added to the root heap and to heap 3
+
+
+def player_heap_key(extra_kb: int) -> str:
+    return f'player_heap_{extra_kb}'
+
+
+def big_heap_key(extra_kb: int) -> str:
+    return f'player_heap_big_{extra_kb}'
+
+
+def _if_big_mem2(a: Asm, skip: str) -> None:
+    """Fall through when the OS reports MEM2 of 128 MB or more, else branch to ``skip`` (uses r11, r12, cr0)."""
+    a.lis(12, ha(MEM2_SIZE_GLOBAL)).lwz(12, lo(MEM2_SIZE_GLOBAL), 12)
+    a.lis(11, MEM2_BIG >> 16).cmplw(12, 11).blt(skip)
+
+
+def _player_heap_stub(size: int, big_size: int | None = None):
+    def stub(base: int, site: int) -> Asm:
+        a = Asm(base)
+        a.lis(5, ha(size)).addi(5, 5, lo(size))
+        if big_size is not None:
+            _if_big_mem2(a, 'back')
+            a.lis(5, ha(big_size)).addi(5, 5, lo(big_size))
+            a.label('back')
+        a.b(site + 4)
+        return a
+    return stub
+
+
+def _root_size_stub(base: int, site: int) -> Asm:
+    # fn_8039A85C is a leaf getter: r11, r12 and cr0 are free.
+    a = Asm(base)
+    a.lis(3, 0x330)
+    _if_big_mem2(a, 'back')
+    a.addis(3, 3, BIG_EXTRA >> 16)
+    a.label('back')
+    a.b(site + 4)
+    return a
+
+
+def _table_read_stub(base: int, site: int) -> Asm:
+    # r11 is unused in the loop and r12 is loaded again right after the site; cr0 is set again before use.
+    a = Asm(base)
+    a.lwz(4, 0, 28)
+    _if_big_mem2(a, 'back')
+    a.lis(11, ha(GAME_HEAP_ENTRY)).addi(11, 11, lo(GAME_HEAP_ENTRY))
+    a.cmplw(28, 11).bne('back')
+    a.addis(4, 4, BIG_EXTRA >> 16)
+    a.label('back')
+    a.b(site + 4)
+    return a
+
+
+def _player_heap_option(kb: int) -> Option:
+    note = '' if kb <= PLAYER_HEAP_SAFE_KB else ', past the stock-memory budget'
+    return Option(player_heap_key(kb),
+                  f'Player memory +{kb} KB (each player heap {PLAYER_HEAP_STOCK + kb * 1024:,} bytes{note})',
+                  (Hook(HEAP_SITE, HEAP_STOCK_WORD, _player_heap_stub(PLAYER_HEAP_STOCK + kb * 1024)),),
+                  group='player_heap')
+
+
+def _big_heap_option(kb: int) -> Option:
+    safe = PLAYER_HEAP_STOCK + PLAYER_HEAP_SAFE_KB * 1024
+    return Option(big_heap_key(kb),
+                  f'Player memory +{kb} KB with MEM2 at 128 MB in Dolphin (each player heap '
+                  f'{PLAYER_HEAP_STOCK + kb * 1024:,} bytes; without the override +{PLAYER_HEAP_SAFE_KB} KB)',
+                  (Hook(HEAP_SITE, HEAP_STOCK_WORD, _player_heap_stub(safe, PLAYER_HEAP_STOCK + kb * 1024)),
+                   Hook(ROOT_SIZE_SITE, ROOT_SIZE_STOCK_WORD, _root_size_stub),
+                   Hook(TABLE_READ_SITE, TABLE_READ_STOCK_WORD, _table_read_stub)),
+                  group='player_heap')
+
+
 OPTIONS = (
     Option('cpu_vs_cpu', 'CPU vs CPU (hold A + Minus on controller 1 while confirming)',
            (Hook(CPU_SITE, CPU_STOCK, _cpu_vs_cpu_stub),)),
@@ -143,7 +251,8 @@ OPTIONS = (
            (Hook(INIT_SITE, INIT_STOCK, _hand_fielding_team(0, INIT_STOCK)),
             Hook(FLIP_SITE, FLIP_STOCK, _hand_fielding_team(6, FLIP_STOCK)),
             Hook(STATE_SITE, STATE_STOCK, _defense_change_stub))),
-)
+) + tuple(_player_heap_option(kb) for kb in PLAYER_HEAP_LEVELS_KB) \
+  + tuple(_big_heap_option(kb) for kb in BIG_HEAP_LEVELS_KB)
 BY_KEY = {o.key: o for o in OPTIONS}
 
 
@@ -168,7 +277,22 @@ def _stub_current(image: dolfile.DolImage, hook: Hook) -> bool:
 
 
 def is_on(image: dolfile.DolImage, key: str) -> bool:
-    return all(_hooked(image, h) for h in _option(key).hooks)
+    option = _option(key)
+    if option.group:    # the sites are shared: the stub there tells which option of the group it is
+        return all(_hooked(image, h) and _stub_current(image, h) for h in option.hooks)
+    return all(_hooked(image, h) for h in option.hooks)
+
+
+def _group_outdated(image: dolfile.DolImage, option: Option) -> bool:
+    """The group's sites branch into our section, but to no stub of the current version (an older tool wrote
+    it): any option of the group may turn it off."""
+    return (all(_hooked(image, h) for h in option.hooks)
+            and not any(is_on(image, o.key) for o in OPTIONS if o.group == option.group))
+
+
+def _group_others(key: str) -> list[str]:
+    group = _option(key).group
+    return [o.key for o in OPTIONS if group and o.group == group and o.key != key]
 
 
 def detect(image: dolfile.DolImage) -> list[str]:
@@ -190,8 +314,17 @@ def apply(image: dolfile.DolImage, keys) -> list[str]:
     """Turn on the options in ``keys`` (others stay as they are). Returns log lines."""
     log = []
     todo = []
+    keys = list(keys)
+    for key in keys:
+        clash = [k for k in _group_others(key) if k in keys]
+        if clash:
+            raise GameOptionError(f'{key} and {", ".join(clash)} can\'t both be on (one replaces the other)')
     for key in keys:
         option = _option(key)
+        for other in _group_others(key):   # a group's options replace each other
+            if is_on(image, other):
+                _unhook(image, BY_KEY[other])
+                log.append(f'{BY_KEY[other].title}: off (replaced)')
         if is_on(image, key):
             if all(_stub_current(image, h) for h in option.hooks):
                 log.append(f'{option.title}: already on')
@@ -217,6 +350,8 @@ def apply(image: dolfile.DolImage, keys) -> list[str]:
 
 
 def _unhook(image: dolfile.DolImage, option: Option) -> bool:
+    if option.group and not is_on(image, option.key) and not _group_outdated(image, option):
+        return False    # the shared sites hold another option of the group
     hooked = [h for h in option.hooks if _hooked(image, h)]
     for h in hooked:
         image.write_word(h.site, h.stock)

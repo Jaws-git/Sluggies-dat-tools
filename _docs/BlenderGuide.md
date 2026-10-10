@@ -101,7 +101,7 @@ Everything else, such as moving vertices, editing UVs without new seams, shape k
 > [!NOTE]
 > **Player characters and their Low model.** Every player character has a High model and a Low partner model (the Low model's folder name contains `_L_`). The Low model owns no textures and draws with the High model's textures by number. When you move a High material to another texture, the Low model keeps its original textures, so at a distance the character shows the old look. This is only cosmetic. Moving a Low model's materials to other textures isn't supported by the add-on yet. Editing an existing PNG in place (same file name) changes both models.
 >
-> **Keep new textures small.** Every added texture counts toward the memory the game has for the whole scene. A character that grows too big (High and Low together) can crash on the field at random, even though character select works. A 1024x1024 texture alone adds 512 KB; 256x256 or 512x512 is usually enough.
+> **Keep new textures small.** On the field every player gets a fixed memory area of 870,400 bytes (850 KB) for its High model, Low model and bat or glove together. A character whose files don't fit crashes the game when it is loaded onto the field, often only once it has to field (fielders carry the bigger glove); character select still works. Vanilla players use about 0.5-0.65 MB of it, and a 1024x1024 texture alone adds 512 KB, so 256x256 or 512x512 is usually enough. The roster guide's **Player memory** option can raise the area (`RosterGuide.md`).
 
 #### Adding a new submesh how-to
 A new submesh is a static (rigid) mesh that follows one bone, like a hat or a held item. It gets its own material and texture.
