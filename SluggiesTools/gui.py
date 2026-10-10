@@ -178,6 +178,7 @@ class SluggiesGui:
         self.root_dir = root_dir
         self.config_dir = os.path.join(root_dir, '1_Input', '_RosterConfigurations')
         self.models_dir = os.path.join(root_dir, '2_Output_Models')
+        self.sound_input_dir = os.path.join(root_dir, '1_Input', 'sound_NA')   # the game's sound folder, copied by the user
         self.output_queue = queue.Queue()
         self.process = None
         self.job = None                    # Windows: the _ProcessJob holding the running step and its children
@@ -638,11 +639,17 @@ class SluggiesGui:
             dpg.add_checkbox(label='Untangle Textures (overwrites 3_Output_Dat/dt_na.dat and main.dol)', tag='exp_untangle')
             icons = dpg.add_checkbox(label='Export Icons', tag='exp_icons', default_value=True)
             dpg.add_checkbox(label='Also write .glb files', tag='exp_glb', default_value=True)
+            sounds = dpg.add_checkbox(label='Also export sound files', tag='exp_sounds',
+                                      default_value=os.path.isdir(self.sound_input_dir))
             dpg.add_checkbox(label='Skip Textures', tag='exp_notex')
             dpg.add_checkbox(label='Debug (raw byte arrays instead of base64)', tag='exp_debug')
-            
+
             with dpg.tooltip(icons):
                 dpg.add_text('Write FrontIcon.png and SideIcon.png into each character model folder.')
+            with dpg.tooltip(sounds):
+                dpg.add_text('Decode the voices, effects and music into 2_Output_Models/_SOUNDS as WAV files, one '
+                             'folder per sound group.\nNeeds the game\'s files/sound_NA folder (MY2.brsar and '
+                             'stream/) copied into 1_Input/sound_NA.')
             self._action('Export models', self._on_export, primary=True)
 
     def _on_export(self):
@@ -651,10 +658,12 @@ class SluggiesGui:
                           ('exp_notex', '--notex'), ('exp_debug', '--debug')):
             if dpg.get_value(tag):
                 args.append(flag)
+        steps = [tuple(args)]
         if dpg.get_value('exp_icons'):
-            self.run_chain([tuple(args), ('--export-icons',)])
-        else:
-            self.run_command(*args)
+            steps.append(('--export-icons',))
+        if dpg.get_value('exp_sounds'):
+            steps.append(('--export-sounds',))
+        self.run_chain(steps)
 
     def _build_roster_tab(self):
         with dpg.tab(label='Roster Size'):

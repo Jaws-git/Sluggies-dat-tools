@@ -91,6 +91,8 @@ def ignored_release_path(directory: str, names: list[str]) -> set[str]:
     ignored = {name for name in names if name == "__pycache__" or name.endswith(".pyc")}
     if Path(directory).name in {"SluggiesTools", "Icons"}:
         ignored.update(name for name in names if name == "tests")
+    if Path(directory).name == "1_Input":            # the user's game files never ship
+        ignored.update(name for name in names if name == "sound_NA" or name.lower().endswith((".dat", ".dol", ".bin")))
     return ignored
 
 
