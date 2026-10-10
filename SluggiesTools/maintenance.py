@@ -1,4 +1,5 @@
-"""Maintenance checks: problems in the working folders that make the tools act on the wrong file.
+"""Maintenance checks: problems in the working folders that make the tools act on the wrong file, and models of
+the output game that are too big for the memory the game gives them (``game_memory``).
 
 No Dear PyGui here; the GUI's Maintenance tab (``gui_maintenance``) runs :func:`scan` on a worker thread and
 lists what it returns. Each check is a function ``(root_dir) -> list[Problem]`` in :data:`CHECKS`.
@@ -105,8 +106,71 @@ def duplicate_models(root_dir):
     return problems
 
 
+OUTPUT_FOLDER = '3_Output_Dat'
+
+
+def _output_game(root_dir):
+    """The output ``main.dol`` read for the memory checks, or None when there is none yet."""
+    try:                             # here, so the duplicate check works without the game modules
+        from SluggiesTools import game_memory
+    except ImportError:
+        import game_memory
+    path = os.path.join(root_dir, OUTPUT_FOLDER, 'main.dol')
+    return (game_memory, game_memory.load(path), path) if os.path.isfile(path) else None
+
+
+def _model_paths(root_dir, names, directory, fallback):
+    folder = names.get(directory)
+    path = os.path.join(root_dir, MODELS_FOLDER, folder) if folder else None
+    return (path,) if path and os.path.isdir(path) else (fallback,)
+
+
+def player_memory(root_dir):
+    """One problem per character whose High + Low + bat/glove don't fit the player memory of the output game."""
+    game = _output_game(root_dir)
+    if game is None:
+        return []
+    gm, image, dol_path = game
+    heap, names = gm.player_heap(image), gm.folder_names(root_dir)
+    problems = []
+    for directory, c in sorted(gm.characters(image).items()):
+        text = gm.problem_text(c, heap, gm.describe(directory, names))
+        if text:
+            advice = ('Make its textures smaller (or fewer), or raise the player memory on the Options tab.'
+                      if heap.big_size is None else
+                      'Play it only in Dolphin with the 128 MB MEM2 override, or make its textures smaller.')
+            problems.append(Problem('Player memory', text, _model_paths(root_dir, names, directory, dol_path),
+                                    advice))
+    return problems
+
+
+def stadium_memory(root_dir):
+    """One problem per stadium file bigger than the largest stock stadium model (untested territory)."""
+    game = _output_game(root_dir)
+    if game is None:
+        return []
+    gm, image, dol_path = game
+    names = gm.folder_names(root_dir)
+    problems = []
+    for directory, files in sorted(gm.stadiums(image).items()):
+        for index, length in sorted(files.items()):
+            if length > gm.STADIUM_TESTED_MAX:
+                problems.append(Problem(
+                    'Stadium memory',
+                    f'{gm.describe(directory, names)} file {index} is {length:,} bytes, '
+                    f'{length - gm.STADIUM_TESTED_MAX:,} more than the largest stock stadium model '
+                    f'(Wario City, {gm.STADIUM_TESTED_MAX:,}).',
+                    _model_paths(root_dir, names, directory, dol_path),
+                    'A stadium has no fixed size limit: the extra bytes come out of the game memory every match '
+                    'shares (about 4 MB free at the first pitch in Wario City). Sizes past the stock maximum are '
+                    'untested; test a full match with several runs scored.'))
+    return problems
+
+
 CHECKS = (
     ('Duplicate models', duplicate_models),
+    ('Player memory', player_memory),
+    ('Stadium memory', stadium_memory),
 )
 
 

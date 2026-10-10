@@ -942,6 +942,36 @@ def _log_batch_metadata() -> None:
         )
 
 
+def _changes_game_memory(args) -> bool:
+    """Whether a command can change what players need or get in the output game (models, slots, roster, the
+    player memory game option); dry runs and build checks can't."""
+    if getattr(args, 'dry_run', False) or getattr(args, 'validate_only', False):
+        return False
+    return bool(args.patch or args.unpatch is not None or args.patch_slot or args.clear_slot or args.copy_slot
+                or args.apply_slots or args.load_roster or args.write_slot_blocks or args.write_slot_equipment
+                or args.roster or (args.game_options and (args.on or args.off)))
+
+
+def _memory_snapshot():
+    try:
+        from SluggiesTools import game_memory
+    except Exception:  # noqa: BLE001 - a warning helper must never fail a command
+        return None
+    return game_memory.snapshot(os.path.join(ROOT_DIR, '3_Output_Dat', 'main.dol'))
+
+
+def _warn_player_memory(before) -> None:
+    """Warn about the characters that no longer fit their player memory after this command."""
+    try:
+        from SluggiesTools import game_memory
+        after = _memory_snapshot()
+        lines = game_memory.changed_problems(before, after, game_memory.folder_names(ROOT_DIR))
+    except Exception:  # noqa: BLE001
+        return
+    for line in lines:
+        slogger.warning(f'Player memory: {line}', source="dispatcher")
+
+
 def main() -> int:
     """Dispatch user command. Returns 0 on success, 1 on failure."""
     source = _get_invocation_source()
@@ -961,6 +991,8 @@ def main() -> int:
         if code != 0:
             slogger.info(f"Command exited with code {code}", source="dispatcher")
         return code
+
+    memory_before = _memory_snapshot() if _changes_game_memory(args) else None
 
     try:
         if args.gui:
@@ -1042,6 +1074,8 @@ def main() -> int:
             if not run_write_slot_equipment(*args.write_slot_equipment):
                 return 1
 
+        if memory_before is not None:
+            _warn_player_memory(memory_before)
         slogger.info("Command completed", source="dispatcher")
         return 0
     except KeyboardInterrupt:

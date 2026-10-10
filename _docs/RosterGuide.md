@@ -416,6 +416,15 @@ python start.py --load-roster my_roster.sluggiesroster
   played a full match in Mario Stadium. Only one level can be on; choosing
   another replaces it. The details are in `_docs_roster/RosterExpansion.md`
   (*Game memory*).
+- **Memory warnings:** after a patch, a slot edit, a roster load or a
+  Player memory change, the log warns about every character whose High +
+  Low + bat/glove no longer fits the player memory of the output game (on
+  a 128 MB level: when it fits only with the override). The GUI's
+  **Maintenance** tab checks every character the same way (**Player
+  memory**) and lists stadium models bigger than the largest stock one
+  (Wario City, 2,655,048 bytes; **Stadium memory**). A stadium has no fixed
+  limit, its extra bytes come out of the memory the whole match shares, so
+  that one is a note about untested sizes, not a known crash.
 - **Player memory with 128 MB MEM2** (Options tab: tick "I have manually
   increased the MEM2 limit in Dolphin to 128 MB"; or `player_heap_big_512`,
   `_1024`, `_2048`, `_4096`): levels of +512 KB to +4 MB per player, for

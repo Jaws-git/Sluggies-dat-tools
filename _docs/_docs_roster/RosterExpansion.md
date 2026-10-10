@@ -989,3 +989,12 @@ override and on a real Wii.
   without it (on the fallback).
 - A Mario about 29 KB over +48 KB crashed on `_big_4096` without the
   override, which confirms the fallback is +48 KB.
+
+**Checks** (`game_memory.py`): a character fits when High + Low + its
+largest gear file (files 2-5) + 404 bytes is at most the player heap minus
+its 0x50-byte header. The 404 bytes are the 8 small blocks, 11 block
+headers and up to 32 bytes of alignment per model/gear block. The
+dispatcher (`start.py`) snapshots the output DOL before any writing command
+and warns afterwards about characters that don't fit and whose files or
+player heap changed. The Maintenance tab (`maintenance.py`) checks every
+character, and flags stadium files above the largest stock stadium model.

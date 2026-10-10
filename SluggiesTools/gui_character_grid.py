@@ -326,6 +326,8 @@ class CharacterGridTab:
         """The Options tab: game options written into main.dol right away (CPU vs CPU). Its state comes from the
         grid's read, so the tab lives here."""
         with dpg.tab(label='Options', tag='options_tab'):
+            dpg.add_text('Pending player changes. Please commit or discard them before changing the game options.',
+                         tag='options_pending', color=_ERROR, wrap=600, show=False)
             dpg.add_text('CPU League')
             with dpg.group(horizontal=True):
                 dpg.add_button(label=gui_grid.CPU_VS_CPU_ENABLE, tag='grid_cpu_vs_cpu',
@@ -919,9 +921,19 @@ class CharacterGridTab:
                                width=max(PATCH_W, int(size[0]) + 20) if size else PATCH_W,
                                enabled=bool(count) and not locked)
             dpg.configure_item('grid_discard_all', enabled=bool(count) and not locked)
-            for tag in ('grid_save_pack', 'grid_load_pack', 'grid_cpu_vs_cpu', 'grid_player_heap'):
+            for tag in ('grid_save_pack', 'grid_load_pack'):
                 dpg.configure_item(tag, enabled=not locked)
-        self._enable_cpu_management(locked)
+        options_locked = self._options_locked()
+        if dpg.does_item_exist('options_pending'):
+            dpg.configure_item('options_pending', show=bool(len(self.pending)))
+            for tag in ('grid_cpu_vs_cpu', 'grid_big_memory', 'grid_player_heap'):
+                dpg.configure_item(tag, enabled=not options_locked)
+        self._enable_cpu_management(options_locked)
+
+    def _options_locked(self):
+        """The Options tab writes main.dol right away, so it waits until pending player edits are committed or
+        discarded (Patch Game would otherwise mix them)."""
+        return self._locked() or bool(len(self.pending))
 
     def _enable_cpu_management(self, locked):
         """The management button is usable only while the read found CPU vs CPU on."""
@@ -1739,14 +1751,14 @@ class CharacterGridTab:
     def _on_cpu_vs_cpu(self):
         """Turn CPU vs CPU on or off in main.dol right away (not a staged edit: no roster data changes, and roster
         rebuilds keep game options). The re-read after it updates the labels and the buttons."""
-        if self._locked():
+        if self._options_locked():
             return
         enable = gui_grid.cpu_vs_cpu_button(self.loader.state)[1]
         self._run_game_option(gui_grid.cpu_vs_cpu_command(enable), enable, 'CPU vs CPU')
 
     def _on_cpu_management(self):
         """Turn CPU vs CPU management on or off, like _on_cpu_vs_cpu; only while CPU vs CPU is on."""
-        if self._locked():
+        if self._options_locked():
             return
         _label, enable, usable = gui_grid.cpu_management_button(self.loader.state)
         if usable:
@@ -1757,6 +1769,9 @@ class CharacterGridTab:
 
     def _on_big_memory(self, checked):
         """The 128 MB checkbox only unlocks the combo's big levels; with one of them on it stays ticked."""
+        if self._options_locked():
+            dpg.set_value('grid_big_memory', not checked)
+            return
         if not checked and gui_grid.player_heap_is_big(gui_grid.player_heap_level(self.loader.state)):
             dpg.set_value('grid_big_memory', True)
             self.app.log_line('[options] a 128 MB player memory level is on: choose a stock-memory level first.',
@@ -1767,7 +1782,7 @@ class CharacterGridTab:
         """Set the player memory level in main.dol right away, like the CPU vs CPU buttons."""
         current = gui_grid.player_heap_choice(gui_grid.player_heap_level(self.loader.state))
         command = gui_grid.player_heap_command(choice)
-        if self._locked() or command is None or choice == current:
+        if self._options_locked() or command is None or choice == current:
             dpg.set_value('grid_player_heap', current)
             return
         stock = choice == gui_grid.PLAYER_HEAP_STOCK_LABEL

@@ -27,8 +27,8 @@ class MaintenanceTab:
 
     def build(self):
         with dpg.tab(label='Maintenance', tag='maintenance_tab'):
-            dpg.add_text('Checks the working folders for problems that make the tools act on the wrong file.',
-                         wrap=900)
+            dpg.add_text('Checks the working folders for problems that make the tools act on the wrong file, and '
+                         'the output game for players and stadiums too big for the game\'s memory.', wrap=900)
             dpg.add_text(f'Checks: {", ".join(title for title, _check in maintenance.CHECKS)}.', color=_DIM)
             dpg.add_spacer(height=4)
             with dpg.group(horizontal=True):

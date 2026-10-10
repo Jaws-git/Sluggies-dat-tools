@@ -574,6 +574,14 @@ class SluggiesGui:
                 dpg.add_theme_color(dpg.mvThemeCol_CheckMark, (60, 255, 90, 255))
             with dpg.theme_component(dpg.mvText):
                 dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 8, gui_character_grid.TEXT_SPACING_Y)
+            # disabled items look disabled (Dear PyGui keeps the enabled colors unless a theme says otherwise)
+            for item_type in (dpg.mvButton, dpg.mvCheckbox, dpg.mvCombo):
+                with dpg.theme_component(item_type, enabled_state=False):
+                    for col in (dpg.mvThemeCol_Button, dpg.mvThemeCol_ButtonHovered, dpg.mvThemeCol_ButtonActive,
+                                dpg.mvThemeCol_FrameBg, dpg.mvThemeCol_FrameBgHovered, dpg.mvThemeCol_FrameBgActive):
+                        dpg.add_theme_color(col, (45, 46, 50, 255))
+                    dpg.add_theme_color(dpg.mvThemeCol_Text, (115, 115, 115, 255))
+                    dpg.add_theme_color(dpg.mvThemeCol_CheckMark, (115, 115, 115, 255))
         dpg.bind_theme(global_theme)
         with dpg.theme(tag='primary_theme'):
             for state, colors in (
