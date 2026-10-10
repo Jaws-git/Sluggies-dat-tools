@@ -210,6 +210,53 @@ every stock voice as before; Mario with Bowser's copied clips speaks with
 Bowser's voice on the field while his wheel members keep Mario's, no
 crashes.
 
+**Custom clips** (2026-10-10, `Roster/clip_files.py`, `Sound/clips.py`):
+`character_voices[].clips` and `species_clips[].clips` map voice moments
+(`v1 v3 v4 v5 v6 v7 v8 v10 v11 v12 v13 v14`, the clip row's slot order,
+`Sound/sound_packs.MOMENTS`) to clip files. A WAV of any PCM or float format
+is mixed to mono, resampled (linear) to 32,000 Hz, the stock clips' rate, cut
+at 2.5 s (the longest stock clip is 2.419 s) and DSP-ADPCM encoded with the
+coefficients of one of the first 8 waves of the select file (the one that
+reproduces it best; about 5-6 s of encoding per second of audio with 8
+candidates); an `.rwav` is taken as it is (checked: mono DSP-ADPCM). The
+encoded RWAV is what every later stage carries, byte for byte, like the
+portraits' CMPR blocks: derived configs and roster packs name clips by content
+(`<sha1[:16]>.rwav` in `clips/` beside the config, format 3 packs), the
+derive reads them back from the output archive by their INFO IDs, and an
+unchanged derive -> rebuild stays byte-identical (`tests/test_roster_derive.py`,
+"custom clips"). A relative clip name is looked up in the run's clip folder
+(`RosterContext.clip_dir`: `clips/` beside a derived config, the preset's own
+folder for a hand-written one). Species clips are written by the `voices`
+step before the square swaps (the species' row word points at the new sound,
+appended to its family file, or to the select file for `v13`, with the
+species' own clip in that slot as the entry template), so a swap or a
+character voice that copies the voice takes the replaced clips along; the
+`char_voices` step adds a character's own clips the same way (one sound per
+file, slot and content, named `zzc<hash>_s<slot>_f<file>`, species clips
+`zzs...`), and when the species' current clip in that slot already is that
+very RWAV the table takes the existing sound. Manifest: `species_clips` as
+`[species, slot, INFO ID]`, `character_voices` as `[id, voice]` for a plain
+stock voice (the old shape) or `[id, voice or null, {slot: INFO ID}, pack
+label]`. The state carries `char_clip_ids` / `char_pack` per character and
+`clip_ids` per stock square; `state_cli` turns the IDs into RWAV SHA-1s
+(`char_clips`, `clips`) for the pack fingerprints (`clips`, `species_clips`;
+absent in older packs, which count as "no custom clips").
+
+**Voice packs** (`Sound/sound_packs.py`): a custom pack is a folder
+`Sound_Packs/<name>/` with `pack.json` (format 1: `name`, `voice` = the stock
+base voice or null, `clips` per moment: the encoded `.rwav`, the prepared
+`.wav` for playback, the user's `origin` file, `seconds`), exportable as one
+`.sluggiesvoice` zip. Assigning a pack to a slot (`--set-char-voice 0xNN
+pack:NAME`, the grid's slot-level Voice...) turns it into a `character_voices`
+entry with the pack's clips (`slot_plan.plan_char_voice`, `Env.sound_pack`),
+so the game files never depend on the pack folder. A stock pack is a species'
+clip row plus its sounds as the input files hold them (`stock_packs`); the
+GUI's Sounds tab lists both kinds (`gui_sounds.py`).
+
+Real build (2026-10-10): Mario with Bowser's voice plus a custom `v1`
+(Luigi's `luigi_v1.wav` re-encoded, 9,472 B): file 14 161,152 -> 364,992 wave
+bytes, 11 sounds added. Dolphin check of custom clips still open.
+
 **Byte 2 is more than the voice.** It has about 83 readers. Besides wheels,
 squares and voice, gameplay code tests a few species directly: `0x19`
 (Magikoopa family; `0x800AEB4C`, `0x800B3278`, `0x80148100`, `0x8014A20C`,
@@ -827,13 +874,16 @@ some. The content is the same, and the next round trip is byte-identical
 again.
 
 **Roster packs** (`.sluggiesroster`, `Roster/pack.py`): a zip of `pack.json`
-(format 2; format 1 has no equipment and loads as "equipment unchanged"),
+(format 3; format 1 has no equipment and loads as "equipment unchanged",
+format 2 no voice clips and loads as "no custom clips"),
 `state.json` (the derived config, own directories by source only),
 `icons/` (the derived portraits; their names are kept because two entries
-can share one cell), `models/0xNN_hp.bin`, `_l.bin`, `_bat.bin` … (the
+can share one cell), `clips/<sha1>.rwav` (the custom voice clips, by content),
+`models/0xNN_hp.bin`, `_l.bin`, `_bat.bin` … (the
 finished blocks that differ from the slot's vanilla start) and
 `fingerprints.json` (per slot: block SHA-1s, own-directory source, portrait
-pixel SHA-1s, name, stats source, square voice and head). After an untangle
+pixel SHA-1s, name, stats source, square voice, own voice, own and species
+clip SHA-1s, and head). After an untangle
 export a pack of the whole output holds about 62 blocks, 7.2 MB. Loading
 checks every block before anything is written, keeps an own directory whose
 source and blocks already match, and otherwise copies the directory afresh
@@ -852,8 +902,9 @@ the merged config (`--roster --state`):
   unchanged copy of its old template's files), its stats source, and its
   name and portraits unless they are the open-slot ones; a portrait `like`
   that was the old template is dropped. Spare rows keep name and portraits.
-  The game's `stock_names`, `stock_icons`, `stock_stats` and `stock_voices`
-  entries replace the preset's for the same ID; a new square headed by a
+  The game's `stock_names`, `stock_icons`, `stock_stats`, `stock_voices`,
+  `character_voices` and `species_clips` entries replace the preset's for the
+  same ID (custom clips travel as the derived `clips/` files); a new square headed by a
   kept new ID takes that ID's old square voice. A new ID's directory holds
   all of its source's files (models, equipment, animations), so a different
   template does not change what poses its models, and stock IDs never change

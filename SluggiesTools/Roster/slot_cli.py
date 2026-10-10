@@ -175,12 +175,35 @@ class FileEnv(slot_plan.Env):
         return slot_plan.StatCheck(stat_apply.summary(prepared), stat_apply.describe(prepared, names),
                                    prepared.warnings)
 
-    def sound_archive(self):
+    def _sound_archive_path(self):
         try:
             from . import runner
         except ImportError:
             import runner
-        return os.path.isfile(os.path.join(self.input_dir or runner.INPUT_DIR, runner.SOUND_ARCHIVE))
+        return os.path.join(self.input_dir or runner.INPUT_DIR, runner.SOUND_ARCHIVE)
+
+    def sound_archive(self):
+        return os.path.isfile(self._sound_archive_path())
+
+    def _root_dir(self):
+        return os.path.dirname(os.path.abspath(self.input_dir or state_cli.input_dir(state_cli.OUTPUT_DIR)))
+
+    def sound_pack(self, name):
+        from Sound import sound_packs
+        try:
+            return sound_packs.find_pack(self._root_dir(), name)
+        except Exception as exc:                 # PackError, ClipError, OSError
+            raise slot_plan.PlanError(f'the voice pack {name!r} cannot be read: {exc}') from exc
+
+    def read_clip(self, path):
+        from Sound import brsar, clips
+
+        def templates():
+            return clips.voice_templates(brsar.Brsar.from_file(self._sound_archive_path()))
+        try:
+            return clips.load_clip(path, templates)[0]
+        except Exception as exc:                 # ClipError, BrsarError (either import path), OSError
+            raise slot_plan.PlanError(str(exc)) from exc
 
     def stat_edited(self, cid):
         if self._stat_edits is None:
@@ -321,7 +344,7 @@ def run(edits: list, output_dir: str = state_cli.OUTPUT_DIR, skip_checked: bool 
     image, dat = state_cli._open(output_dir)
     st = state.read_state(image, dat)
     state_cli.add_vanilla_flags(st)                  # the equipment baseline checks need it
-    derived = derive.derive(image, dat)
+    derived = derive.derive(image, dat, state_cli.open_sound(output_dir))
     folder = slot_dir(output_dir)
     state_file = os.path.join(folder, derive.CONFIG_FILE)
     batch = slot_plan.plan_batch(st, derived.config, edits, FileEnv(image, dat, state_cli.input_dir(output_dir)), state_file,
@@ -340,7 +363,7 @@ def run(edits: list, output_dir: str = state_cli.OUTPUT_DIR, skip_checked: bool 
                 with Image.open(art) as img:
                     art = img.convert('RGBA')
             portraits[name] = (art, None)
-        derive.write(derive.Derived(batch.config, portraits), folder)
+        derive.write(derive.Derived(batch.config, portraits, clips={**derived.clips, **batch.clips}), folder)
     tmp = plan_path(output_dir) + '.tmp'
     with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(batch.to_json(), f, ensure_ascii=False, indent=1)
@@ -398,8 +421,12 @@ def main(argv=None) -> int:
                         help='name a slot (all three languages); blank TEXT resets the name')
     parser.add_argument('--voice', nargs=2, metavar=('0xNN', '0xMM'),
                         help="give slot 0xNN's square the voice of 0xMM's family (- or default: its own)")
-    parser.add_argument('--char-voice', nargs=2, metavar=('0xNN', '0xMM'), help="give slot 0xNN the voice of 0xMM's "
-                        "family as its own (today: its select-screen name call); - resets it to its square's")
+    parser.add_argument('--char-voice', nargs=2, metavar=('0xNN', 'VOICE'), help="give slot 0xNN the voice of VOICE "
+                        "as its own: 0xMM (that character's family), pack:NAME (a voice pack of Sound_Packs/ on top of "
+                        "its base voice), 0xMM+pack:NAME (the pack on top of 0xMM's voice); - resets it to its square's")
+    parser.add_argument('--species-clip', nargs=3, metavar=('0xNN', 'MOMENT', 'FILE'),
+                        help="replace voice moment MOMENT (v1, v3, ... v14) of slot 0xNN's species' voice with the WAV "
+                             "or .rwav FILE, for everyone who speaks with that voice; - puts the stock clip back")
     parser.add_argument('--stats', nargs=2, metavar=('0xNN', '0xMM'),
                         help="let slot 0xNN play with stock player 0xMM's stats (- or default: its own)")
     parser.add_argument('--copy', nargs=2, metavar=('0xSS', '0xTT'),
@@ -419,10 +446,10 @@ def main(argv=None) -> int:
     parser.add_argument('--output-dir', default=state_cli.OUTPUT_DIR, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if sum(bool(a) for a in (args.patch, args.clear, args.rename, args.voice, args.char_voice, args.stats, args.icon,
-                             args.copy, args.apply)) != 1:
+                             args.copy, args.apply, args.species_clip)) != 1:
         parser.error('give --patch 0xNN FILE, --clear 0xNN, --rename 0xNN TEXT, --voice 0xNN 0xMM, '
-                     '--char-voice 0xNN 0xMM, --stats 0xNN 0xMM, --icon 0xNN VIEW IMAGE, --copy 0xSS 0xTT or '
-                     '--apply FILE')
+                     '--char-voice 0xNN VOICE, --species-clip 0xNN MOMENT FILE, --stats 0xNN 0xMM, '
+                     '--icon 0xNN VIEW IMAGE, --copy 0xSS 0xTT or --apply FILE')
     if args.equipment and not (args.patch or args.clear):
         parser.error('--equipment goes with --patch or --clear')
     if args.no_gear and not args.patch:
@@ -448,9 +475,15 @@ def main(argv=None) -> int:
             edits = [slot_plan.Edit('clear', slots.parse_id(args.clear), index=1)]
         elif args.rename:
             edits = [slot_plan.Edit('rename', slots.parse_id(args.rename[0]), text=args.rename[1], index=1)]
-        elif args.voice or args.stats or args.char_voice:
-            op, (target, source) = (('voice', args.voice) if args.voice else ('stats', args.stats) if args.stats
-                                    else (slot_plan.CHAR_VOICE, args.char_voice))
+        elif args.char_voice:
+            target, source, pack = parse_voice_source(args.char_voice[1], args.char_voice[0])
+            edits = [slot_plan.Edit(slot_plan.CHAR_VOICE, target, index=1, source=source, pack=pack)]
+        elif args.species_clip:
+            target, moment, file = args.species_clip
+            file = None if file.strip() in slot_plan.DEFAULT_WORDS else os.path.abspath(file)
+            edits = [slot_plan.Edit(slot_plan.SPECIES_CLIP, slots.parse_id(target), file, index=1, moment=moment)]
+        elif args.voice or args.stats:
+            op, (target, source) = ('voice', args.voice) if args.voice else ('stats', args.stats)
             edits = [slot_plan.Edit(op, slots.parse_id(target), index=1, source=slot_plan.parse_source(source))]
         elif args.copy:
             edits = [slot_plan.Edit(slot_plan.COPY, slots.parse_id(args.copy[1]), index=1,
@@ -485,6 +518,24 @@ def main(argv=None) -> int:
     for command in batch.commands:
         slogger.info('  start.py ' + ' '.join(_quote(a) for a in command), source=SOURCE)
     return 0
+
+
+PACK_PREFIX = 'pack:'
+
+
+def parse_voice_source(text: str, target: str) -> tuple:
+    """``--char-voice``'s VOICE: ``0xMM``, ``pack:NAME``, ``0xMM+pack:NAME`` or ``-`` ->
+    ``(target id, source or None, pack or None)``."""
+    source = pack = None
+    for part in text.split('+'):
+        part = part.strip()
+        if part.lower().startswith(PACK_PREFIX):
+            pack = part[len(PACK_PREFIX):].strip() or None
+            if pack is None:
+                raise slot_plan.PlanError('pack: needs the voice pack\'s name')
+        else:
+            source = slot_plan.parse_source(part)
+    return slots.parse_id(target), source, pack
 
 
 def _hex(cid: int) -> str:

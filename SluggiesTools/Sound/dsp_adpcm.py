@@ -21,9 +21,12 @@ plain loop, bit-exact with it. The coefficients are given (a stock wave's, chose
 coefficient training here.
 """
 
+import time
+
 import numpy as np
 
 FRAME_BYTES = 8
+YIELD_FRAMES = 16                 # encode: release the GIL every so many frames (GUI stays responsive)
 FRAME_SAMPLES = 14
 FRAME_NIBBLES = 16
 
@@ -207,6 +210,8 @@ def encode(samples, coefs, h1=0, h2=0):
     out = bytearray()
     h1, h2 = int(h1), int(h2)
     for f in range(frames):
+        if f % YIELD_FRAMES == 0:
+            time.sleep(0)                    # let other threads (a GUI's render loop) run between frames
         frame = padded[f * FRAME_SAMPLES:(f + 1) * FRAME_SAMPLES]
         a1 = np.full(128, h1, np.int64)
         a2 = np.full(128, h2, np.int64)

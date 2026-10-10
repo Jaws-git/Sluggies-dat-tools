@@ -130,7 +130,7 @@ def save(path: str, output_dir: str = state_cli.OUTPUT_DIR, input_dir: str = INP
     image, dat = state_cli._open(output_dir)
     if dat is None:
         raise pack.PackError('dt_na.dat is missing in the output: there is no roster to save')
-    derived = derive.derive(image, dat)
+    derived = derive.derive(image, dat, state_cli.open_sound(output_dir))
     inputs = InputFiles(input_dir)
 
     def current_block(char, role):
@@ -153,7 +153,7 @@ def plan(path: str, output_dir: str = state_cli.OUTPUT_DIR, input_dir: str = INP
     p = pack.read_pack(path)
     st = state_cli.run(output_dir)
     image, dat = state_cli._open(output_dir)
-    derived = derive.derive(image, dat)
+    derived = derive.derive(image, dat, state_cli.open_sound(output_dir))
     game_fp = {pack._hex(c['id']): c['fingerprint'] for c in st['characters']}
     load_dir = os.path.join(folder, LOAD_DIR)
     state_file = os.path.join(load_dir, derive.CONFIG_FILE)
@@ -190,7 +190,8 @@ def main(argv=None) -> int:
         size = os.path.getsize(args.save)
         blocks = sum(len(r) for r in meta['blocks'].values())
         slogger.info(f'roster pack written: {args.save} ({size / (1024 * 1024):.2f} MB; {meta["slots"]} slots, '
-                     f'{blocks} model blocks, {meta["portraits"]} portraits)', source=SOURCE)
+                     f'{blocks} model blocks, {meta["portraits"]} portraits, {meta.get("clips", 0)} voice clips)',
+                     source=SOURCE)
         for warning in meta['warnings']:
             slogger.warning(warning, source=SOURCE)
         return 0

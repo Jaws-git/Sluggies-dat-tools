@@ -739,7 +739,7 @@ class GuiTileTests(unittest.TestCase):
     def test_tile_files_match_the_planner(self):
         self.assertEqual([(role, file, label) for role, file, label in gui_grid.EQUIP_TILES],
                          [(gear.ROLES[f], f, gear.LABELS[gear.ROLES[f]].split(' (')[0]) for f in gear.FILES])
-        self.assertEqual(set(gui_grid.EQUIP_FIELDS), set(pack.EQUIP_ROLES))
+        self.assertEqual(set(gui_grid.EQUIP_FIELDS), set(pack.OPTIONAL_FIELDS))
         self.assertEqual(gui_grid.EQUIP_OPS, slot_plan.EQUIP_OPS)
 
 
@@ -892,7 +892,7 @@ class PackEquipmentTests(EquipPackCase):
         self.saved.gear[(0x66, 'glove_r')] = b'own-glove'
         self.save()
         p = pack.read_pack(self.path)
-        self.assertEqual(p.meta['format'], 2)
+        self.assertEqual(p.meta['format'], pack.FORMAT)
         self.assertEqual(sorted(p.meta['blocks']['0x0D']), ['bat', 'high'])
         self.assertEqual(p.slot_equipment(0x0D), {'bat': b'custom-bat'})
         self.assertEqual(p.slot_equipment(0x66), {'glove_r': b'own-glove'})
@@ -989,13 +989,13 @@ class PackEquipmentTests(EquipPackCase):
 
     def test_format_numbers(self):
         self.save()
-        self.assertEqual(pack.FORMAT, 2)
-        for number, ok in ((1, True), (2, True), (3, False)):
+        self.assertEqual(pack.FORMAT, 3)
+        for number, ok in ((1, True), (2, True), (3, True), (4, False)):
             with zipfile_meta(self.path, number):
                 if ok:
                     pack.read_pack(self.path)
                 else:
-                    with self.assertRaisesRegex(pack.PackError, 'format 3'):
+                    with self.assertRaisesRegex(pack.PackError, 'format 4'):
                         pack.read_pack(self.path)
 
     def test_the_gui_labels_every_pack_field(self):

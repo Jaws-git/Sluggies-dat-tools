@@ -65,14 +65,14 @@ def plan(config_path: str, output_dir: str = state_cli.OUTPUT_DIR, icon_dir: str
     state_cli.add_vanilla_flags(st)
     inputs = state_cli.input_dir(output_dir)
     st['stat_edits'] = state_cli.read_stat_edits(image, inputs)
-    derived = derive.derive(image, dat)
+    derived = derive.derive(image, dat, state_cli.open_sound(output_dir))
     state_file = os.path.join(folder, derive.CONFIG_FILE)
     result = migrate.plan_switch(preset, st, derived, slot_cli.FileEnv(image, dat, inputs),
-                                 state_file, icon_dir)
+                                 state_file, icon_dir, os.path.dirname(os.path.abspath(config_path)))
     missing = [p for p in result.preset_icons.values() if not os.path.isfile(p)]
     if missing:
         raise migrate.SwitchError(f'portrait {missing[0]} not found (the preset names it)')
-    derive.write(derive.Derived(result.config, dict(derived.portraits)), folder)
+    derive.write(derive.Derived(result.config, dict(derived.portraits), clips=dict(derived.clips)), folder)
     for name, source in result.preset_icons.items():
         shutil.copyfile(source, os.path.join(folder, derive.ICON_DIR, name))
         blocks = icons.kept_blocks_path(source)

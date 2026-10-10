@@ -78,10 +78,25 @@ def _open(output_dir: str):
     return image, datfile.DatFile(dat_path) if os.path.isfile(dat_path) else None
 
 
+def open_sound(output_dir: str):
+    """The output's sound archive (``Sound.brsar.Brsar``), or None when there is none (or it cannot be read)."""
+    path = os.path.join(output_dir, 'sound_NA', 'MY2.brsar')
+    if not os.path.isfile(path):
+        return None
+    try:
+        from Sound import brsar
+    except ImportError:
+        from SluggiesTools.Sound import brsar
+    try:
+        return brsar.Brsar.from_file(path)
+    except (OSError, brsar.BrsarError, ValueError, IndexError):
+        return None
+
+
 def run_derive(output_dir: str = OUTPUT_DIR) -> tuple[derive.Derived, str]:
     """Write the derived config of the output files; returns it and the JSON's path."""
     image, dat = _open(output_dir)
-    derived = derive.derive(image, dat)
+    derived = derive.derive(image, dat, open_sound(output_dir))
     return derived, derive.write(derived, derived_dir(output_dir))
 
 
@@ -146,6 +161,7 @@ def run(output_dir: str = OUTPUT_DIR) -> dict:
     image, dat = _open(output_dir)
     result = state.read_state(image, dat)
     add_vanilla_flags(result)
+    state.clip_hashes(result, open_sound(output_dir))     # char_clips / clips: the custom clips' SHA-1s
     result['game_options'] = game_options.detect(image)   # keys of the options that are on (GUI status line)
     result['stat_edits'] = read_stat_edits(image, input_dir(output_dir))
     result['icon_dir'] = ICON_DIR

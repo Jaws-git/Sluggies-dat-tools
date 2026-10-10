@@ -5,7 +5,8 @@ Layout (big-endian): header ``RSTM`` with the HEAD, ADPC and DATA chunk offsets 
 u16 rate, u32 loop start, samples, data offset, blocks, block size, block samples, last block size, last block
 samples, last block padded, ADPC interval, ADPC entry bytes}``; a channel table whose entries point at each
 channel's ADPCM info ``{16 x s16 coefs, gain, ps, h1, h2, loop ps, loop h1, loop h2}``. ADPC: the decoder
-history ``(h1, h2)`` per block and channel. DATA: blocks of ``block size`` bytes per channel, channels
+history ``(h1, h2)`` per channel every ``ADPC interval`` samples (a block's samples in all stock streams but
+``jin_ma_chance``, whose interval is 1,024: 14 entries per block). DATA: blocks of ``block size`` bytes per channel, channels
 interleaved block by block, the last block padded.
 
 Every block starts from its ADPC history, as the game's player does, so the blocks of a stream decode side by
@@ -44,6 +45,32 @@ class Stream:
     last_block_samples: int
 
 
+@dataclass
+class Info:
+    codec: int
+    rate: int
+    channels: int
+    samples: int
+    loop: tuple                 # (start, end) samples, end exclusive, or None
+
+
+INFO_BYTES = 0x200              # the RSTM header and HEAD's stream info fit in this many bytes
+
+
+def info(b):
+    """The stream info of the first ``INFO_BYTES`` (or more) of a ``.brstm``, without the sample data."""
+    if b[:4] != b'RSTM' or u16(b, 4) != 0xFEFF:
+        raise BrstmError('not a BRSTM file (no RSTM magic)')
+    base = u32(b, 0x10) + 8
+    si = base + u32(b, base + 4)
+    if si + 0x14 > len(b):
+        raise BrstmError('the stream info lies past the bytes read')
+    codec, looped, nch = b[si], b[si + 1], b[si + 2]
+    loop_start, samples = struct.unpack_from('>2I', b, si + 8)
+    return Info(codec=codec, rate=u16(b, si + 4), channels=nch, samples=samples,
+                loop=(loop_start, samples) if looped else None)
+
+
 def parse(b):
     if b[:4] != b'RSTM' or u16(b, 4) != 0xFEFF:
         raise BrstmError('not a BRSTM file (no RSTM magic)')
@@ -53,7 +80,7 @@ def parse(b):
     codec, looped, nch = b[si], b[si + 1], b[si + 2]
     rate = u16(b, si + 4)
     (loop_start, samples, data_offset, blocks, block_size, block_samples, last_size, last_samples,
-     last_padded, _interval, _entry) = struct.unpack_from('>11I', b, si + 8)
+     last_padded, interval, _entry) = struct.unpack_from('>11I', b, si + 8)
     if b[data:data + 4] != b'DATA' or data_offset != data + 0x20:
         raise BrstmError('DATA chunk not where the stream info says')
     coefs, history = [], []
@@ -67,6 +94,7 @@ def parse(b):
             history.append((s16(b, ao + 0x24), s16(b, ao + 0x26)))
         if not adpc or b[adpc:adpc + 4] != b'ADPC':
             raise BrstmError('ADPCM stream without an ADPC chunk')
+    per_block = block_samples // interval if interval and block_samples % interval == 0 else 1
     lanes = [[] for _ in range(nch)]
     for k in range(blocks):
         last = k == blocks - 1
@@ -77,7 +105,8 @@ def parse(b):
         for c in range(nch):
             chunk = b[o + c * stride:o + c * stride + size]
             if codec == ADPCM:
-                h1, h2 = (s16(b, adpc + 8 + 4 * (k * nch + c)), s16(b, adpc + 10 + 4 * (k * nch + c)))
+                entry = adpc + 8 + 4 * (k * per_block * nch + c)       # one entry per ADPC interval
+                h1, h2 = s16(b, entry), s16(b, entry + 2)
                 lanes[c].append(Lane(chunk, count, coefs[c], h1, h2))
             else:
                 lanes[c].append(chunk)
@@ -91,6 +120,23 @@ def decode(stream):
     if stream.codec == ADPCM:
         flat = [lane for channel in stream.lanes for lane in channel]
         decoded = dsp_adpcm.decode(flat)
+        # a block whose stored history is not the decoded end of the block before (jin_ma_chance stores
+        # approximate ones) is decoded again from the real one, until the chain holds
+        firsts = set(np.cumsum([0] + [len(channel) for channel in stream.lanes]).tolist())
+        for _ in range(len(flat)):
+            redo = []
+            for i in range(1, len(flat)):
+                prev, lane = decoded[i - 1], flat[i]
+                if i in firsts or len(prev) < 2:
+                    continue
+                h1, h2 = int(prev[-1]), int(prev[-2])
+                if (h1, h2) != (lane.h1, lane.h2):
+                    flat[i] = Lane(lane.data, lane.samples, lane.coefs, h1, h2)
+                    redo.append(i)
+            if not redo:
+                break
+            for i, samples in zip(redo, dsp_adpcm.decode([flat[i] for i in redo])):
+                decoded[i] = samples
         out, i = [], 0
         for channel in stream.lanes:
             parts = decoded[i:i + len(channel)]

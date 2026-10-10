@@ -35,11 +35,16 @@ only truth; nothing is remembered between runs.
   a replaced PNG is encoded afresh. A stock character whose own keys point
   at packed cells becomes a ``stock_icons`` entry (no ``like``: its records
   keep their own data).
+* ``clips`` on ``character_voices`` entries and ``species_clips`` entries
+  (manifest): the custom voice clips, read back from the output sound archive
+  (``sound``) as the encoded RWAVs the game plays, named by content
+  (``clip_files.file_name``) in ``clips/`` beside the config. Without the
+  archive they are dropped with a warning.
 
 Rebuilding from an unchanged derived config gives byte-identical ``main.dol``
 and ``dt_na.dat`` (``tests/test_roster_derive.py``). ``write(derived,
-folder)`` stores it as ``roster.json`` plus ``icons/``; the runner's
-``--state`` reads that folder.
+folder)`` stores it as ``roster.json`` plus ``icons/`` and ``clips/``; the
+runner's ``--state`` reads that folder.
 """
 
 import json
@@ -52,14 +57,19 @@ from PIL import Image
 try:
     from ..Dol import dolfile, inventory, relocate
     from ..Icons import gx_decode
-    from . import char_voices, dat_hammerspace, icon_art, icons, ids, model_dirs, names, state, state_icons, voices
+    from ..Sound import brsar, brsar_write, sound_packs
+    from . import (char_voices, clip_files, dat_hammerspace, icon_art, icons, ids, manifest, model_dirs, names, state,
+                   state_icons, voices)
 except ImportError:
     from Dol import dolfile, inventory, relocate
     from Icons import gx_decode
+    from Sound import brsar, brsar_write, sound_packs
     import char_voices
+    import clip_files
     import dat_hammerspace
     import icon_art
     import icons
+    import manifest
     import model_dirs
     import names
     import ids
@@ -69,6 +79,7 @@ except ImportError:
 
 CONFIG_FILE = 'roster.json'
 ICON_DIR = 'icons'                 # beside CONFIG_FILE; the runner's --state reads portraits from here
+CLIP_DIR = clip_files.CLIP_DIR     # beside CONFIG_FILE; the custom voice clips (encoded RWAVs)
 VIEWS = ('side', 'front')
 PAGES = {'side': icons.SIDE_PAGE, 'front': icons.FRONT_PAGE}
 
@@ -82,6 +93,7 @@ class Derived:
     config: dict
     portraits: dict = field(default_factory=dict)      # {file name: (48x51 RGBA image, cell blocks or None)}
     warnings: list = field(default_factory=list)
+    clips: dict = field(default_factory=dict)          # {file name: RWAV bytes} the config's custom voice clips
 
 
 def _hex(cid: int) -> str:
@@ -249,8 +261,44 @@ def own_portraits(image: dolfile.DolImage, dat) -> tuple[list[dict], dict, dict]
 # Derive
 # --------------------------------------------------------------------------
 
-def derive(image: dolfile.DolImage, dat) -> Derived:
-    """The derived config of the output files (module docstring)."""
+def _clip_reader(sound, out: Derived):
+    """``read(INFO ID, where) -> clip file name or None`` from the output archive (``sound``: ``Brsar`` or bytes),
+    storing the RWAV in ``out.clips``."""
+    archive = brsar.Brsar(sound) if isinstance(sound, (bytes, bytearray)) else sound
+    sounds = archive.sounds() if archive is not None else None
+
+    def read(sid, where):
+        if sounds is None:
+            out.warnings.append(f'{where}: custom clip (sound {sid}) dropped: the output sound archive is missing')
+            return None
+        if not 0 <= sid < len(sounds) or sounds[sid].type != brsar.WAVE:
+            out.warnings.append(f'{where}: custom clip dropped: sound {sid} is not a wave sound of the output archive')
+            return None
+        try:
+            rwav = brsar_write.sound_rwav(archive, sounds[sid])
+        except Exception as exc:                  # BrsarError / WriteError of either import path, struct errors
+            out.warnings.append(f'{where}: custom clip dropped: {exc}')
+            return None
+        name = clip_files.file_name(rwav)
+        out.clips.setdefault(name, rwav)
+        return name
+    return read
+
+
+def _clip_entries(read, clips: dict, where: str) -> dict:
+    """``{moment: file}`` of a manifest's ``{slot: INFO ID}`` (dropped clips left out)."""
+    out = {}
+    for slot, sid in sorted(clips.items()):
+        moment = sound_packs.MOMENT_KEYS[slot]
+        name = read(sid, f'{where}.{moment}')
+        if name is not None:
+            out[moment] = name
+    return out
+
+
+def derive(image: dolfile.DolImage, dat, sound=None) -> Derived:
+    """The derived config of the output files (module docstring). ``sound``: the output sound archive (``Brsar``
+    or bytes), needed for custom voice clips."""
     if dat is None:
         raise DeriveError('dt_na.dat is missing: the roster cannot be read back without it')
     mf = state._manifest(image)
@@ -353,11 +401,38 @@ def derive(image: dolfile.DolImage, dat) -> Derived:
         config[names.STOCK_KEY] = [stock_names[c] for c in sorted(stock_names)]
     if stock_stats:
         config[ids.STOCK_STATS_KEY] = stock_stats
+    heads = state.head_list(image, voices.SPECIES) if mf.get('stock_voices') or mf.get('species_clips') else None
     if mf.get('stock_voices'):
-        heads = state.head_list(image, voices.SPECIES)
         config[voices.STOCK_KEY] = [{'id': _hex(heads[s]), 'voice': _hex(heads[v])} for s, v in mf['stock_voices']]
-    if mf.get('character_voices'):
-        config[char_voices.KEY] = [{'id': _hex(c), 'voice': _hex(v)} for c, v in mf['character_voices']]
+    read = _clip_reader(sound, out)
+    species_clips = manifest.species_clips(mf)
+    if species_clips:
+        entries = []
+        for s in sorted({s for s, _k in species_clips}):
+            clips = _clip_entries(read, {k: i for (sp, k), i in species_clips.items() if sp == s},
+                                  f'{clip_files.SPECIES_KEY} {_hex(heads[s])}')
+            if clips:
+                entries.append({'id': _hex(heads[s]), 'clips': clips})
+        if entries:
+            config[clip_files.SPECIES_KEY] = entries
+    character_voices = manifest.character_voices(mf)
+    if character_voices:
+        entries = []
+        for c, value in sorted(character_voices.items()):
+            entry = {'id': _hex(c)}
+            if value['voice'] is not None:
+                entry['voice'] = _hex(value['voice'])
+            clips = _clip_entries(read, value['clips'], f'{char_voices.KEY} {_hex(c)}') if value['clips'] else {}
+            if clips:
+                entry['clips'] = clips
+                if value.get('pack'):
+                    entry['pack'] = value['pack']
+            if 'voice' in entry or 'clips' in entry:
+                entries.append(entry)
+            else:
+                out.warnings.append(f'{_hex(c)}: its character voice had only custom clips, which were dropped')
+        if entries:
+            config[char_voices.KEY] = entries
     return out
 
 
@@ -366,8 +441,8 @@ def derive(image: dolfile.DolImage, dat) -> Derived:
 # --------------------------------------------------------------------------
 
 def write(derived: Derived, folder: str) -> str:
-    """``roster.json`` and ``icons/`` (each portrait's PNG and kept CMPR blocks, when it has any) in ``folder``;
-    returns the JSON's path. Portrait files from an earlier derive are removed."""
+    """``roster.json``, ``icons/`` (each portrait's PNG and kept CMPR blocks, when it has any) and ``clips/`` (the
+    custom voice clips) in ``folder``; returns the JSON's path. Files from an earlier derive are removed."""
     icon_dir = os.path.join(folder, ICON_DIR)
     os.makedirs(icon_dir, exist_ok=True)
     for name in os.listdir(icon_dir):
@@ -379,6 +454,14 @@ def write(derived: Derived, folder: str) -> str:
         if blocks is not None:
             with open(icons.kept_blocks_path(path), 'wb') as f:
                 f.write(blocks)
+    clip_dir = os.path.join(folder, CLIP_DIR)
+    os.makedirs(clip_dir, exist_ok=True)
+    for name in os.listdir(clip_dir):
+        if name.endswith(clip_files.clips.RWAV_EXTENSION):    # Sound/clips, through clip_files
+            os.remove(os.path.join(clip_dir, name))
+    for name, data in derived.clips.items():
+        with open(os.path.join(clip_dir, name), 'wb') as f:
+            f.write(data)
     path = os.path.join(folder, CONFIG_FILE)
     tmp = path + '.tmp'
     with open(tmp, 'w', encoding='utf-8') as f:
@@ -390,3 +473,8 @@ def write(derived: Derived, folder: str) -> str:
 def icon_dir_of(config_path: str) -> str:
     """The portrait folder of a derived config written by ``write``."""
     return os.path.join(os.path.dirname(os.path.abspath(config_path)), ICON_DIR)
+
+
+def clip_dir_of(config_path: str) -> str:
+    """The clip folder of a derived config written by ``write``."""
+    return os.path.join(os.path.dirname(os.path.abspath(config_path)), CLIP_DIR)

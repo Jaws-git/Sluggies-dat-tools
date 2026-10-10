@@ -38,9 +38,11 @@ PACK_EXTENSION = '.sluggiesroster'
 # start.py modes whose commands can change what the grid shows: the tab re-reads after them
 WRITING_FLAGS = frozenset({'--export', '--roster', '--patch', '--unpatch', '--resplit-unused',
                            '--patch-slot', '--clear-slot', '--copy-slot', '--rename-slot', '--set-voice',
-                           '--set-stats',
+                           '--set-char-voice', '--set-species-clip', '--set-stats',
                            '--set-icon', '--apply-slots', '--load-roster',
                            '--write-slot-blocks', '--write-slot-equipment', '--game-options'})
+SOUND_PACKS_REL = 'Sound_Packs'                 # the custom voice packs (Sound/sound_packs.PACK_DIR, test-pinned)
+STAGED_CLIPS_REL = os.path.join('_gui', 'slot', 'staged_clips')   # encoded clips of pending species_clip edits
 UNNAMED = '-'
 CPU_VS_CPU_OPTIONS = ('cpu_vs_cpu', 'cpu_management')   # what the Options tab's CPU vs CPU button turns off
 LUIGI = 0x01
@@ -368,6 +370,97 @@ def voice_text(state: dict, index: int) -> str:
     return shown + (' (set)' if sq.get('voice_set') is not None else '')
 
 
+# Character voices (Roster/char_voices.py): a slot's own voice, a stock voice and/or a custom voice pack
+CHAR_VOICE = 'char_voice'                     # the edit op (Roster/slot_plan.CHAR_VOICE, test-pinned)
+SPECIES_CLIP = 'species_clip'                 # one moment of a stock voice (Roster/slot_plan.SPECIES_CLIP)
+SPECIES_CLIPS = 'species_clips'               # its effects key
+CHAR_VOICE_DEFAULT = 'Default: its square\'s voice'
+MOMENT_KEYS = ('v1', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8', 'v10', 'v11', 'v12', 'v13', 'v14')   # Sound/sound_packs, pinned
+
+
+def char_voice_choices(state: dict, cid: int, packs=()) -> list[tuple[str, str | None, str | None]]:
+    """``(label, source, pack)`` for the slot's Voice dialog: the default first (its square's voice), every stock
+    square's head (one voice per species), then every custom voice pack (``packs``: ``[(name, base voice ID or None,
+    clip count)]``) as "pack NAME (N custom clips on VOICE's voice)"."""
+    heads = sorted({s['head'] for s in state['squares'] if s['kind'] == 'stock'})
+    out = [(CHAR_VOICE_DEFAULT, None, None)]
+    out += [(_labelled(state, h), hex_id(h), None) for h in heads]
+    for name, base, count in packs:
+        rest = f'{known_name(state, base)}\'s voice' if base is not None else 'its square\'s voice'
+        out.append((f'Pack {name} ({count} custom clip{"s" if count != 1 else ""}, the rest {rest})', None, name))
+    return out
+
+
+def char_voice_text(state: dict, cid: int) -> str:
+    """The slot level's effective-voice line: ``Voice: Bowser (own)``, ``Voice: Mario (square)`` or
+    ``Voice: pack Rosalina (own, 5 custom clips on Bowser's voice)``."""
+    c = characters(state).get(cid) or {}
+    if 'voice' not in c:
+        return 'Voice: not read'
+    clips = c.get('char_clips') or c.get('char_clip_ids') or {}
+    if c.get('char_voice') is None and not clips:
+        return f'Voice: {known_name(state, c["voice"])} (square)'
+    if not clips:
+        return f'Voice: {known_name(state, c["voice"])} (own)'
+    n = len(clips)
+    base = (f'{known_name(state, c["char_voice"])}\'s voice' if c.get('char_voice') is not None
+            else 'its square\'s voice')
+    label = f'pack {c["char_pack"]}' if c.get('char_pack') else 'custom clips'
+    return f'Voice: {label} (own, {n} custom clip{"s" if n != 1 else ""} on {base})'
+
+
+def char_voice_edit(cid: int, source: str | None, pack: str | None) -> dict:
+    out = {'op': CHAR_VOICE, 'id': hex_id(cid), 'source': source}
+    if pack:
+        out['pack'] = pack
+    return out
+
+
+def species_clip_edit(head: int, moment: str, file: str | None, origin: str | None = None) -> dict:
+    """The pending edit that replaces ``moment`` of ``head``'s species voice (``file``: the staged clip, None: the
+    stock clip back; ``origin``: the user's WAV, for the texts)."""
+    out = {'op': SPECIES_CLIP, 'id': hex_id(head), 'moment': moment, 'file': file}
+    if origin:
+        out['origin'] = origin
+    return out
+
+
+def choice_for(choices: list, source: str | None, pack: str | None) -> int:
+    """The index of the Voice dialog's current choice (``char_voice_choices``)."""
+    return next((i for i, (_label, s, p) in enumerate(choices) if s == source and p == pack), 0)
+
+
+def char_voice_current(state: dict, cid: int, pending: 'PendingEdits | None') -> tuple[str | None, str | None]:
+    """``(source, pack)`` the Voice dialog starts on: the pending edit's, else what the game holds."""
+    edit = pending.value_edit(cid, CHAR_VOICE) if pending is not None else None
+    if edit is not None:
+        return edit.get('source'), edit.get('pack')
+    c = characters(state).get(cid) or {}
+    if c.get('char_pack'):
+        return None, c['char_pack']
+    return (hex_id(c['char_voice']) if c.get('char_voice') is not None else None), None
+
+
+def staged_clip_files(pending: 'PendingEdits') -> set[str]:
+    return {e['file'] for e in pending.edits if e['op'] == SPECIES_CLIP and e.get('file')}
+
+
+def prune_staged_clips(folder: str, keep: set[str]) -> None:
+    """Delete staged clips no pending edit uses any more."""
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return
+    keep = {os.path.normcase(os.path.abspath(p)) for p in keep}
+    for name in names:
+        path = os.path.join(folder, name)
+        if name.endswith('.rwav') and os.path.normcase(os.path.abspath(path)) not in keep:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
 def voice_reach(state: dict, index: int) -> str:
     """Who a square's voice reaches (``Roster/voices.py``, the grid step's square voices)."""
     if state['squares'][index]['kind'] == 'stock':
@@ -473,6 +566,8 @@ def slot_details(state: dict, cid: int) -> list[str]:
             for role, label in (('high', 'High'), ('low', 'Low')) if role in blocks))
     if 'stats' in c:
         lines.append(f'Stats: {name_of(state, c["stats"])}' + ('' if c['stats'] == cid else f' ({hex_id(c["stats"])})'))
+    if 'voice' in c:
+        lines.append(char_voice_text(state, cid))
     edits = stat_edits_of(state, cid)
     if edits:
         lines.append(f'Stat edits: {stat_edits_text(edits)}')
@@ -764,8 +859,26 @@ class PendingEdits:
         return next((e for e in self.edits if int(e['id'], 16) == cid and e['op'] in MODEL_OPS), None)
 
     def value_edit(self, cid: int, op: str) -> dict | None:
-        """The slot's pending ``op`` edit ('rename', 'stats', or 'voice': staged on the square's head)."""
+        """The slot's pending ``op`` edit ('rename', 'stats', 'char_voice', or 'voice': staged on the square's head)."""
         return next((e for e in self.edits if int(e['id'], 16) == cid and e['op'] == op), None)
+
+    def species_clip_edit(self, head: int, moment: str) -> dict | None:
+        """The pending ``species_clip`` edit of ``moment`` on the species whose square head is ``head``."""
+        return next((e for e in self.edits if int(e['id'], 16) == head and e['op'] == SPECIES_CLIP
+                     and e.get('moment') == moment), None)
+
+    def species_clip_edits(self, head: int) -> list[dict]:
+        return [e for e in self.edits if int(e['id'], 16) == head and e['op'] == SPECIES_CLIP]
+
+    def drop_species_clip(self, head: int, moment: str) -> None:
+        self.edits = [e for e in self.edits if not (int(e['id'], 16) == head and e['op'] == SPECIES_CLIP
+                                                    and e.get('moment') == moment)]
+        self.sections = [s for s in self.sections if not (int(s['target'], 16) == head and s['action'] == SPECIES_CLIP
+                                                          and (s.get('edit') or {}).get('moment') == moment)]
+
+    def char_voice_users(self, pack: str) -> list[int]:
+        """The slots whose pending voice edit assigns the pack ``pack``."""
+        return [int(e['id'], 16) for e in self.edits if e['op'] == CHAR_VOICE and e.get('pack') == pack]
 
     def icon_edit(self, cid: int, view: str) -> dict | None:
         """The slot's pending portrait edit of ``view``."""
@@ -808,6 +921,7 @@ class PendingEdits:
             out.append(_edit_title(section['edit']))
             effects = section.get('effects') or {}
             for key, label in (('model', 'Model'), ('name', 'Name'), ('stats', 'Stats'), ('voice', 'Voice'),
+                               (CHAR_VOICE, 'Own voice'), (SPECIES_CLIPS, 'Voice pack'),
                                ('portrait_note', 'Portraits'), (STAT_EDITS, 'Stat edits')):
                 if effects.get(key) and not (key == 'portrait_note' and section['action'] == 'icon'):
                     out.append(f'  {label}: {effects[key]}')
@@ -864,6 +978,17 @@ def _edit_title(edit: dict) -> str:
     if edit['op'] == 'voice':
         return (f'Pending: the square speaks with {edit["source"]}\'s voice' if edit.get('source')
                 else 'Pending: the square\'s default voice')
+    if edit['op'] == CHAR_VOICE:
+        if edit.get('pack'):
+            on = f' on {edit["source"]}\'s voice' if edit.get('source') else ''
+            return f'Pending: speaks with the voice pack {edit["pack"]!r}{on} as its own'
+        return (f'Pending: speaks with {edit["source"]}\'s voice as its own' if edit.get('source')
+                else 'Pending: speaks with its square\'s voice again')
+    if edit['op'] == SPECIES_CLIP:
+        moment = edit.get('moment', '?')
+        if edit.get('file'):
+            return f'Pending: voice pack clip {moment} from {os.path.basename(edit.get("origin") or edit["file"])}'
+        return f'Pending: voice pack clip {moment} back to the stock clip'
     if edit['op'] == 'icon':
         return f'Pending: {edit.get("view")} portrait from {icon_label(edit)}'
     if edit['op'] == STAT_RESET:
@@ -1222,7 +1347,7 @@ def _section_lines(state: dict, section: dict, sizes: dict, warnings: bool = Tru
                       f'({hex_id(cid)}), as the game holds it now (its pending edits are not copied)', TEXT))
         effects = section.get('effects') or {}
         for key, label in (('model', 'Models'), ('name', 'Name'), ('stats', 'Stats'), ('voice', 'Voice'),
-                           ('portrait_note', 'Portraits'), (STAT_EDITS, 'Stat values')):
+                           (CHAR_VOICE, 'Own voice'), ('portrait_note', 'Portraits'), (STAT_EDITS, 'Stat values')):
             if effects.get(key):
                 lines.append((f'{label}: {effects[key]}', TEXT))
         for _file, text in sorted((effects.get('equipment') or {}).items()):
@@ -1259,10 +1384,11 @@ def _refused_lines(state: dict, plan: dict, cid: int | None = None) -> list:
     return lines
 
 
-VALUE_KINDS = ('rename', 'stats', 'voice', 'icon')   # edits that change one value, no model
+VALUE_KINDS = ('rename', 'stats', 'voice', 'icon', CHAR_VOICE, SPECIES_CLIP)   # edits that change one value, no model
 
 
-def _find_section(plan: dict, cid: int, kind: str, view: str | None, gear_file: int | None) -> dict | None:
+def _find_section(plan: dict, cid: int, kind: str, view: str | None, gear_file: int | None,
+                  moment: str | None = None) -> dict | None:
     """The planned section of the edit just staged (the plan also lists the pending edits' sections)."""
     for section in plan['edits']:
         if int(section['target'], 16) != cid or section['action'] != kind:
@@ -1272,18 +1398,21 @@ def _find_section(plan: dict, cid: int, kind: str, view: str | None, gear_file: 
             continue
         if kind in EQUIP_OPS and gear_file is not None and edit.get('file') != gear_file:
             continue
+        if kind == SPECIES_CLIP and moment is not None and edit.get('moment') != moment:
+            continue
         return section
     return None
 
 
 def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int, output: str,
                 pending: PendingEdits | None = None, rename: bool = False, kind: str | None = None,
-                view: str | None = None, gear_file: int | None = None) -> SlotDialog:
+                view: str | None = None, gear_file: int | None = None, moment: str | None = None) -> SlotDialog:
     """The confirm dialog of a staged edit, after its staging check (the pending edits plus this one, exit
     ``code``, log ``output``): what the edit does, its warnings and the verdict. ``can_apply`` (Stage stages it)
-    only when the planner and the build check passed. ``kind``: 'patch', 'clear', 'rename', 'stats', 'voice' or
-    'icon' (``view``: its portrait view), 'equip' or 'equip_clear' (``gear_file``: the slot file) (default from
-    ``patch`` / ``rename``; a voice edit's ``cid`` is its square's head)."""
+    only when the planner and the build check passed. ``kind``: 'patch', 'clear', 'rename', 'stats', 'voice',
+    'char_voice', 'species_clip' (``moment``: its voice moment) or 'icon' (``view``: its portrait view), 'equip' or
+    'equip_clear' (``gear_file``: the slot file) (default from ``patch`` / ``rename``; a voice edit's ``cid`` is its
+    square's head)."""
     kind = kind or ('rename' if rename else 'patch' if patch else 'clear')
     rename = kind in VALUE_KINDS
     target = f'{name_of(state, cid)} ({hex_id(cid)})'
@@ -1294,6 +1423,8 @@ def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int
                          'stats': f'Other stats for {target}?',
                          'icon': f'New {view} portrait for {target}?',
                          'voice': f'Another voice for the square of {target}?',
+                         CHAR_VOICE: f'An own voice for {target}?',
+                         SPECIES_CLIP: f'Replace clip {moment} of the voice of {target}?',
                          COPY: f'Paste onto {target}?'}.get(kind, f'Clear {target}?'))
     error = error_message(output)
     lines = dialog.lines
@@ -1308,13 +1439,16 @@ def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int
                 lines.append(('A pending edit no longer fits the game files: discard it on its slot.', TEXT))
         lines.append(('Nothing was staged.', TEXT))
         return dialog
-    section = _find_section(plan, cid, kind, view, gear_file)
+    section = _find_section(plan, cid, kind, view, gear_file, moment)
     if section is None:                       # a clear of a slot at its baseline, or a rename that changes nothing
-        skipped = next((s for s in plan['skipped'] if int(s['target'], 16) == cid and s['action'] == kind), None)
+        skipped = next((s for s in plan['skipped'] if int(s['target'], 16) == cid and s['action'] == kind
+                        and (kind != SPECIES_CLIP or (s.get('edit') or {}).get('moment') == moment)), None)
         lines += [(f'- {note}', TEXT) for note in (skipped or {}).get('notes', [])]
         earlier = None
         if pending is not None:
-            earlier = (pending.icon_edit(cid, view) if kind == 'icon' else pending.value_edit(cid, kind) if rename
+            earlier = (pending.icon_edit(cid, view) if kind == 'icon'
+                       else pending.species_clip_edit(cid, moment) if kind == SPECIES_CLIP
+                       else pending.value_edit(cid, kind) if rename
                        else pending.equip_edit(cid, gear_file) if kind in EQUIP_OPS else pending.model_edit(cid))
         if earlier is not None:
             lines.append((f'Stage drops the slot\'s pending {earlier["op"]}, so the slot stays as it is.', OK))
@@ -1381,6 +1515,10 @@ def summary_dialog(state: dict, plan: dict | None, code: int, output: str) -> Sl
         elif section['action'] in ('stats', 'voice'):
             effect = ((section.get('effects') or {}).get(section['action']) or 'default').removesuffix(' (square voice)')
             what = f'stats of {effect}' if section['action'] == 'stats' else f'square voice of {effect}'
+        elif section['action'] == CHAR_VOICE:
+            what = f'own voice: {(section.get("effects") or {}).get(CHAR_VOICE) or "changed"}'
+        elif section['action'] == SPECIES_CLIP:
+            what = f'voice pack clip {(section.get("effects") or {}).get(SPECIES_CLIPS) or "changed"}'
         elif section['action'] == 'icon':
             what = (section.get('effects') or {}).get('portrait_note') or 'new portrait'
         elif section['action'] == STAT_EDITS:
@@ -1504,8 +1642,9 @@ def stat_edits_dialog(state: dict | None, plan: dict | None, code: int, output: 
 PACK_FIELDS = {'high': 'High model', 'low': 'Low model', 'bat': 'bat', 'glove_l': 'left glove',
                'glove_r': 'right glove', 'extra': 'extra bat', 'model': 'model directory', 'front': 'front portrait',
                'side': 'side portrait', 'name': 'name', 'stats': 'stats', 'voice': 'square voice',
-               'char_voice': 'own voice', 'square': 'square'}
-EQUIP_FIELDS = ('bat', 'glove_l', 'glove_r', 'extra')    # absent from the fingerprints of format 1 packs
+               'char_voice': 'own voice', 'clips': 'own voice clips', 'species_clips': 'voice pack clips',
+               'square': 'square'}
+EQUIP_FIELDS = ('bat', 'glove_l', 'glove_r', 'extra', 'clips', 'species_clips')   # absent from older packs' fingerprints
 DIFF_TEXT = {'game': 'only in the game (leaves the grid)', 'pack': 'only in the pack (comes onto the grid)'}
 
 
@@ -1549,7 +1688,7 @@ def load_pack_plan(path: str, action: str = 'load_pack') -> dict | None:
 # Roster/migrate.py's field keys (test-pinned to migrate.FIELD_LABELS)
 SWITCH_FIELDS = {'model': 'models', 'equipment': 'equipment', 'name': 'name', 'icon': 'portraits',
                  'stats': 'stats source', 'voice': 'square voice', 'char_voice': 'own voice',
-                 'stat_edits': 'stat edits'}
+                 'species_clips': 'voice pack clips', 'stat_edits': 'stat edits'}
 
 
 def switch_command(path: str, dry_run: bool = False, fresh: bool = False) -> tuple:

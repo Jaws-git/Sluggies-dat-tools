@@ -808,6 +808,77 @@ class VoiceStatsTests(unittest.TestCase):
     def test_writing_flags(self):
         self.assertTrue(gui_grid.chain_writes([('--set-voice', '0x00', '0x09')]))
         self.assertTrue(gui_grid.chain_writes([('--set-stats', '0x00', '-')]))
+        self.assertTrue(gui_grid.chain_writes([('--set-char-voice', '0x00', 'pack:P')]))
+        self.assertTrue(gui_grid.chain_writes([('--set-species-clip', '0x00', 'v1', 'a.wav')]))
+
+    def test_char_voice_choices_and_text(self):
+        choices = gui_grid.char_voice_choices(self.s, 0x0E, packs=[('Rosa', 0x09, 5), ('Plain', None, 1)])
+        self.assertEqual(choices[0], (gui_grid.CHAR_VOICE_DEFAULT, None, None))
+        self.assertEqual([(s, p) for _l, s, p in choices[1:4]], [('0x00', None), ('0x09', None), ('0x0D', None)])
+        self.assertEqual(choices[4], ("Pack Rosa (5 custom clips, the rest C09's voice)", None, 'Rosa'))
+        self.assertEqual(choices[5], ("Pack Plain (1 custom clip, the rest its square's voice)", None, 'Plain'))
+        self.assertEqual(gui_grid.choice_for(choices, None, 'Rosa'), 4)
+        self.assertEqual(gui_grid.choice_for(choices, '0x09', None), 2)
+        self.assertEqual(gui_grid.choice_for(choices, '0x77', None), 0)
+        c = gui_grid.characters(self.s)[0x0E]
+        c.update(voice=0x0D, char_voice=None)
+        self.assertEqual(gui_grid.char_voice_text(self.s, 0x0E), 'Voice: C0D (square)')
+        c.update(voice=0x09, char_voice=0x09)
+        self.assertEqual(gui_grid.char_voice_text(self.s, 0x0E), 'Voice: C09 (own)')
+        c.update(char_clips={'v1': 'abc', 'v13': 'def'}, char_pack='Rosa')
+        self.assertEqual(gui_grid.char_voice_text(self.s, 0x0E), "Voice: pack Rosa (own, 2 custom clips on C09's voice)")
+        self.assertEqual(gui_grid.char_voice_current(self.s, 0x0E, None), (None, 'Rosa'))
+        c.update(char_clips=None, char_pack=None)
+        self.assertEqual(gui_grid.char_voice_current(self.s, 0x0E, None), ('0x09', None))
+        pending = gui_grid.PendingEdits()
+        pending.edits = [gui_grid.char_voice_edit(0x0E, None, 'Rosa')]
+        self.assertEqual(gui_grid.char_voice_current(self.s, 0x0E, pending), (None, 'Rosa'))
+        self.assertEqual(pending.char_voice_users('Rosa'), [0x0E])
+        self.assertIn('Voice: C09 (own)', gui_grid.slot_details(self.s, 0x0E))
+
+    def test_char_voice_and_species_clip_edits(self):
+        self.assertEqual(gui_grid.char_voice_edit(0x0E, '0x09', None), {'op': 'char_voice', 'id': '0x0E', 'source': '0x09'})
+        self.assertEqual(gui_grid.char_voice_edit(0x0E, None, 'Rosa'),
+                         {'op': 'char_voice', 'id': '0x0E', 'source': None, 'pack': 'Rosa'})
+        edit = gui_grid.species_clip_edit(0x0D, 'v1', '/staged/abc.rwav', origin='C:/x/cheer.wav')
+        self.assertEqual(edit, {'op': 'species_clip', 'id': '0x0D', 'moment': 'v1', 'file': '/staged/abc.rwav',
+                                'origin': 'C:/x/cheer.wav'})
+        self.assertEqual(gui_grid._edit_title(edit), 'Pending: voice pack clip v1 from cheer.wav')
+        self.assertEqual(gui_grid._edit_title(gui_grid.species_clip_edit(0x0D, 'v13', None)),
+                         'Pending: voice pack clip v13 back to the stock clip')
+        self.assertEqual(gui_grid._edit_title(gui_grid.char_voice_edit(0x0E, '0x09', 'Rosa')),
+                         "Pending: speaks with the voice pack 'Rosa' on 0x09's voice as its own")
+        self.assertEqual(gui_grid._edit_title(gui_grid.char_voice_edit(0x0E, None, None)),
+                         'Pending: speaks with its square\'s voice again')
+        pending = gui_grid.PendingEdits()
+        pending.edits = [edit, gui_grid.species_clip_edit(0x0D, 'v13', None)]
+        self.assertEqual(pending.species_clip_edit(0x0D, 'v1'), edit)
+        self.assertIsNone(pending.species_clip_edit(0x0D, 'v3'))
+        self.assertEqual(len(pending.species_clip_edits(0x0D)), 2)
+        self.assertEqual(gui_grid.staged_clip_files(pending), {'/staged/abc.rwav'})
+        pending.drop_species_clip(0x0D, 'v1')
+        self.assertEqual([e['moment'] for e in pending.species_clip_edits(0x0D)], ['v13'])
+        self.assertTrue(pending.has(0x0D))
+        clip_section = value_section('species_clip')
+        clip_section.update(effects={'species_clips': 'v1 from cheer.wav'}, edit=edit)
+        sections = batch(clip_section, value_section('char_voice', cid='0x0E', effect='pack Rosa (2 custom, rest C09)'))
+        pending.accept(sections)
+        self.assertIn('  Voice pack: v1 from cheer.wav', pending.lines(0x0D))
+        self.assertIn('  Own voice: pack Rosa (2 custom, rest C09)', pending.lines(0x0E))
+        dialog = gui_grid.slot_dialog(self.s, 0x0E, False, sections, 0, '', kind='char_voice')
+        self.assertEqual((dialog.title, dialog.can_apply), ('An own voice for C0E (0x0E)?', True))
+        dialog = gui_grid.slot_dialog(self.s, 0x0D, False, sections, 0, '', kind='species_clip', moment='v1')
+        self.assertEqual(dialog.title, 'Replace clip v1 of the voice of C0D (0x0D)?')
+        self.assertTrue(dialog.can_apply)
+        text = '\n'.join(t for t, _k in gui_grid.summary_dialog(self.s, sections, 0, '').lines)
+        self.assertIn('C0D (0x0D): voice pack clip v1 from cheer.wav', text)
+        self.assertIn('C0E (0x0E): own voice: pack Rosa (2 custom, rest C09)', text)
+        with tempfile.TemporaryDirectory() as tmp:
+            keep, drop = os.path.join(tmp, 'keep.rwav'), os.path.join(tmp, 'drop.rwav')
+            for path in (keep, drop):
+                open(path, 'wb').close()
+            gui_grid.prune_staged_clips(tmp, {keep})
+            self.assertEqual(os.listdir(tmp), ['keep.rwav'])
 
 
 class SlotCountTests(unittest.TestCase):

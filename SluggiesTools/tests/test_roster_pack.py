@@ -9,6 +9,8 @@ directory). Model blocks are plain byte strings; the block checks are a stand-in
 import copy
 import json
 import os
+import pathlib
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -17,7 +19,12 @@ from unittest import mock
 import numpy as np
 from PIL import Image
 
-from SluggiesTools.Roster import derive, pack
+TESTS_DIR = pathlib.Path(__file__).resolve().parent
+for _p in (TESTS_DIR.parent, TESTS_DIR):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+
+from SluggiesTools.Roster import derive, pack  # noqa: E402
 
 VANILLA = {(0x12, 0): b'mario-hp', (0x12, 1): b'mario-l', (0x1F, 0): b'toad-hp', (0x1F, 1): b'toad-l',
            (0x1B, 0): b'koopa-hp', (0x1B, 1): b'koopa-l'}
@@ -197,6 +204,59 @@ class PackFileTests(PackTestCase):
         with open(os.path.join(folder, 'models', '0x0D_hp.bin'), 'rb') as f:
             self.assertEqual(f.read(), b'toad-hp-edited')
         self.assertTrue(os.path.isfile(os.path.join(folder, derive.ICON_DIR, 'side_0_0.cmpr')))
+
+    def test_voice_clips_travel(self):
+        """Custom clips (format 3): in ``clips/`` by content name, checked on read, in the fingerprints, extracted."""
+        import synthetic_sound as synth
+        from SluggiesTools.Roster import clip_files
+        rwav = synth.build_voice_archive()[1][(5, 0)]
+        name = clip_files.file_name(rwav)
+        game = Game()
+        st = game.state()
+        st['characters'][1].update(char_voice=0x09, char_clips={'v1': sha1(rwav)}, char_pack='P')
+        st['squares'][0]['clips'] = {'v13': sha1(rwav)}
+        pack.add_fingerprints(st, lambda ref: PIXELS[ref['file']])
+        fp = st['characters'][1]['fingerprint']
+        self.assertEqual((fp['clips'], fp['species_clips'], fp['char_voice']), ({'v1': sha1(rwav)}, {'v13': sha1(rwav)}, '0x09'))
+        self.assertEqual((st['characters'][2]['fingerprint']['clips'], st['characters'][2]['fingerprint']['species_clips']),
+                         (None, None))
+        derived = game.derived()
+        derived.config['character_voices'] = [{'id': '0x0D', 'voice': '0x09', 'clips': {'v1': name}, 'pack': 'P'}]
+        derived.config['species_clips'] = [{'id': '0x00', 'clips': {'v13': name}}]
+        derived.clips = {name: rwav}
+        files = pack.pack_files(st, derived, lambda c, r: game.blocks[(c['id'], r)], lambda d, f: VANILLA.get((d, f)))
+        self.assertEqual(files[f'clips/{name}'], rwav)
+        self.assertEqual(json.loads(files['pack.json'])['clips'], 1)
+        path = os.path.join(self.tmp, 'voices' + pack.EXTENSION)
+        pack.write_pack(path, files)
+        p = pack.read_pack(path)
+        self.assertEqual(p.clips, {name: rwav})
+        plan = pack.plan_load(p, game.state(), game.fingerprints(), game.derived(), FakeEnv(), 'state.json',
+                              lambda n: f'load/{n}')
+        rows = {d.cid: d for d in plan.diff}
+        self.assertEqual(rows[0x0D].fields, ['char_voice', 'clips', 'species_clips'])
+        self.assertEqual(rows[0x00].fields, ['species_clips'])
+        folder = os.path.join(self.tmp, 'load')
+        pack.extract(p, plan, folder)
+        with open(os.path.join(folder, derive.CLIP_DIR, name), 'rb') as f:
+            self.assertEqual(f.read(), rwav)
+        # a damaged or missing clip is refused
+        damaged = os.path.join(self.tmp, 'damaged' + pack.EXTENSION)
+        with zipfile.ZipFile(path) as src, zipfile.ZipFile(damaged, 'w') as dst:
+            for member in src.namelist():
+                dst.writestr(member, src.read(member) if member != f'clips/{name}' else rwav[:-4] + b'xxxx')
+        with self.assertRaisesRegex(pack.PackError, 'does not match its name'):
+            pack.read_pack(damaged)
+        missing = os.path.join(self.tmp, 'missing' + pack.EXTENSION)
+        with zipfile.ZipFile(path) as src, zipfile.ZipFile(missing, 'w') as dst:
+            for member in src.namelist():
+                if member != f'clips/{name}':
+                    dst.writestr(member, src.read(member))
+        with self.assertRaisesRegex(pack.PackError, 'voice clip v1'):
+            pack.read_pack(missing)
+        # older packs: no clip fingerprints means "no custom clips", never a difference
+        old = {k: {f: v for f, v in fp_.items() if f not in pack.CLIP_FIELDS} for k, fp_ in game.fingerprints().items()}
+        self.assertTrue(all(d.status == pack.SAME for d in pack.diff(old, game.fingerprints())))
 
 
 class LoadPlanTests(PackTestCase):

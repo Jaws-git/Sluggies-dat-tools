@@ -122,9 +122,11 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
         keep_stat_edits: bool = False) -> dict:
     """``state_path``: a derived config (``derive.write``) in place of ``config_path``. ``remove_only`` also clears
     the stat edits unless ``keep_stat_edits``."""
-    icon_dir = None
+    icon_dir = clip_dir = None
     if state_path:
-        config_path, icon_dir = state_path, derive.icon_dir_of(state_path)
+        config_path, icon_dir, clip_dir = state_path, derive.icon_dir_of(state_path), derive.clip_dir_of(state_path)
+    elif config_path:
+        clip_dir = os.path.dirname(os.path.abspath(config_path))   # a preset's clips lie beside it
     dol_path = os.path.join(output_dir, 'main.dol')
     dat_path = os.path.join(output_dir, 'dt_na.dat')
     vanilla_path = os.path.join(input_dir, 'main.dol')
@@ -172,7 +174,7 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
         ctx = steps.RosterContext(dol=image, dat=dat, config=config, icon_dir=icon_dir,
                                   input_dol=dolfile.DolImage(vanilla),
                                   input_dat=datfile.DatFile(input_dat_path) if os.path.isfile(input_dat_path) else None,
-                                  sound=sound)
+                                  sound=sound, clip_dir=clip_dir)
         ctx.state[model_dirs.RESERVED_KEY] = list(keep)
         for step in steps.all_steps():
             lines = step.apply(ctx) or []
@@ -202,11 +204,11 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
     result['dol_sha1'] = hashlib.sha1(dol_bytes).hexdigest()
     if sound is not None:
         log.append(f'sound archive: {_display_path(os.path.join(output_dir, SOUND_ARCHIVE))} '
-                   + ('rebuilt from 1_Input with the character voices' if sound_out is not sound else
-                      'is the 1_Input archive (no character voices)'))
+                   + ('rebuilt from 1_Input with the voice edits (character voices, custom clips)'
+                      if sound_out is not sound else 'is the 1_Input archive (no voice edits)'))
     else:
         log.append('no 1_Input/sound_NA/MY2.brsar: the output gets no sound archive (character voices that need '
-                   'copied clips are refused)')
+                   'copied clips, and custom clips, are refused)')
 
     if not dry_run:
         tmp = dol_path + '.roster_tmp'

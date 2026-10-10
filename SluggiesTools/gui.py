@@ -17,6 +17,14 @@ The "Stat Editor" tab (``StatEditor/gui_tab``) launches Philenarion's Sluggers
 Stat Editor (Bridge Mode or Standalone) and stages the values it sends back as
 pending edits of the character grid.
 
+The "Sounds" tab (``gui_sounds``) lists the game's voice packs (one per stock
+voice) and the custom packs in ``Sound_Packs/``: clips of a game pack are
+staged for replacement on the character grid, custom packs are built from
+WAV files and assigned to slots by the grid's slot-level Voice... button.
+
+The "Music" tab (``gui_music``) lists the game's stream sounds (music,
+jingles) with Play and Stop buttons.
+
 The "Maintenance" tab (``gui_maintenance``, checks in ``maintenance``) lists
 problems in the working folders, such as duplicate model files, on Scan.
 
@@ -39,6 +47,8 @@ import threading
 
 import dearpygui.dearpygui as dpg
 import gui_character_grid
+import gui_sounds
+import gui_music
 import gui_grid
 import gui_maintenance
 import gui_settings
@@ -199,6 +209,8 @@ class SluggiesGui:
         self.settings = gui_settings.Settings(os.path.join(root_dir, gui_settings.SETTINGS_REL))   # one for every tab
         self.grid_tab = gui_character_grid.CharacterGridTab(self)
         self.stat_tab = stat_editor_tab.StatEditorTab(self)
+        self.sounds_tab = gui_sounds.SoundsTab(self)
+        self.music_tab = gui_music.MusicTab(self)
         self.maintenance_tab = gui_maintenance.MaintenanceTab(self)
 
     # ------------------------------------------------------------------ run
@@ -776,9 +788,13 @@ class SluggiesGui:
 
     def _on_tab(self, _sender, tab):
         self.grid_tab.forget_copy()
-        if (dpg.get_item_alias(tab) in ('grid_tab', 'options_tab')
+        if (dpg.get_item_alias(tab) in ('grid_tab', 'options_tab', 'sounds_tab')
                 and self.grid_tab.loader.status != gui_grid.StateLoader.RUNNING):
             self.grid_tab.request_read()
+        if dpg.get_item_alias(tab) == 'sounds_tab':
+            self.sounds_tab.on_open()
+        if dpg.get_item_alias(tab) == 'music_tab':
+            self.music_tab.on_open()
 
     def _on_send(self, *_):
         text = dpg.get_value('stdin_field')
@@ -824,6 +840,8 @@ class SluggiesGui:
                 self._build_roster_tab()
                 self.grid_tab.build()
                 self.stat_tab.build()
+                self.sounds_tab.build()
+                self.music_tab.build()
                 self.grid_tab.build_options()
                 self.maintenance_tab.build()
             dpg.add_separator()

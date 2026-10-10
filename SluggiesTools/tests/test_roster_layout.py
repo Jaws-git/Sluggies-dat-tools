@@ -211,7 +211,7 @@ class LayoutStepTests(unittest.TestCase):
             f.write(archive)
         out = os.path.join(self.tmp, 'sound_NA', 'MY2.brsar')
         report = self.run_roster()
-        self.assertTrue(any('sound archive' in line and 'no character voices' in line for line in report['log']))
+        self.assertTrue(any('sound archive' in line and 'no voice edits' in line for line in report['log']))
         with open(out, 'rb') as f:
             self.assertEqual(f.read(), archive)
         with open(out, 'wb') as f:                              # a stale output archive is replaced by a reset too

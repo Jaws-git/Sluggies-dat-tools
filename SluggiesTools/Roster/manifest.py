@@ -62,9 +62,37 @@ def build(state: dict, config: dict | None = None) -> dict:
         out['stock_voices'] = [[s, v] for s, v in sorted(state['voice_remap'].items())]
     if grid is not None and grid.voices:       # square voices, per square: a character ID or None
         out['grid']['voices'] = list(grid.voices)
-    if state.get('char_voices'):               # character voices: [id, voice base character]
-        out['character_voices'] = [[c, v] for c, v in sorted(state['char_voices'].items())]
+    if state.get('char_voices'):               # character voices: [id, voice base character or None, {moment: INFO ID}, pack]
+        out['character_voices'] = [_voice_entry(c, v) for c, v in sorted(state['char_voices'].items())]
+    if state.get('species_clips'):             # a stock voice's replaced clips: [species, slot, INFO ID]
+        out['species_clips'] = [[s, k, i] for (s, k), i in sorted(state['species_clips'].items())]
     return out
+
+
+def _voice_entry(cid: int, value) -> list:
+    """``[id, voice]`` for a plain stock voice (the shape older manifests hold), else ``[id, voice, {slot: INFO ID},
+    pack]``. ``value``: an int (the voice) or ``char_voices.state_entry``'s dict."""
+    if isinstance(value, int):
+        return [cid, value]
+    clips = {str(k): i for k, i in sorted((value.get('clips') or {}).items())}
+    if not clips and value.get('pack') is None:
+        return [cid, value.get('voice')]
+    return [cid, value.get('voice'), clips, value.get('pack')]
+
+
+def character_voices(manifest: dict | None) -> dict:
+    """``{id: {'voice', 'clips': {slot: INFO ID}, 'pack'}}`` from a manifest, both entry shapes."""
+    out = {}
+    for entry in (manifest or {}).get('character_voices') or []:
+        cid, voice = entry[0], entry[1]
+        clips = {int(k): v for k, v in (entry[2] or {}).items()} if len(entry) > 2 else {}
+        out[cid] = {'voice': voice, 'clips': clips, 'pack': entry[3] if len(entry) > 3 else None}
+    return out
+
+
+def species_clips(manifest: dict | None) -> dict:
+    """``{(species, slot): INFO ID}`` from a manifest."""
+    return {(s, k): i for s, k, i in (manifest or {}).get('species_clips') or []}
 
 
 def encode(manifest: dict) -> bytes:

@@ -28,8 +28,13 @@ JSON-able dict:
   template), ``family`` (the base character of its species, selector byte
   2: the square whose voice and wheel it shares), ``voice`` (the base
   character whose voice it speaks with: its own character voice, else its
-  species' through the swaps) and ``char_voice`` (the configured character
-  voice, ``character_voices``, or None), ``square``, ``icon`` (``{'front', 'side'}``:
+  species' through the swaps), ``char_voice`` (the configured character
+  voice, ``character_voices``, or None), ``char_clip_ids`` (its custom clips,
+  ``{moment: INFO ID}``; None without a character voice) and ``char_pack``
+  (the voice pack label they came from, or None); squares carry ``clip_ids``
+  (the stock voice's moments ``species_clips`` replaced, ``{moment: INFO ID}``);
+  ``state_cli`` turns both into ``char_clips`` / ``clips`` (``{moment: SHA-1 of the RWAV}``, None when there are
+  none) for the fingerprints), ``square``, ``icon`` (``{'front', 'side'}``:
   where the game takes each portrait from, ``state_icons.resolve``; None
   without a DAT) and ``blocks`` (``{'high', 'low'}``: the model directory's
   files 0 and 1 as the game loads them, ``offset``, ``length``, ``sha1``; a
@@ -77,6 +82,44 @@ class StateError(ValueError):
 
 def _hex(cid: int) -> str:
     return f'0x{cid:02X}'
+
+
+def _moment(slot: int) -> str:
+    try:
+        from ..Sound import sound_packs
+    except ImportError:
+        from Sound import sound_packs
+    return sound_packs.MOMENT_KEYS[slot]
+
+
+def clip_hashes(result: dict, archive) -> None:
+    """Replace the clip INFO IDs of a read state by the SHA-1 of their RWAV (``archive``: the output ``Brsar``, or
+    None: unknown hashes): characters get ``char_clips``, squares ``clips`` (``{moment: sha1 or None}``; None when
+    there are none)."""
+    try:
+        from ..Sound import brsar, brsar_write
+    except ImportError:
+        from Sound import brsar, brsar_write
+    cache: dict[int, str | None] = {}
+
+    def sha(sid):
+        if sid not in cache:
+            cache[sid] = None
+            if archive is not None:
+                sounds = archive.sounds()
+                if 0 <= sid < len(sounds) and sounds[sid].type == brsar.WAVE:
+                    try:
+                        cache[sid] = hashlib.sha1(brsar_write.sound_rwav(archive, sounds[sid])).hexdigest()
+                    except Exception:            # BrsarError / WriteError of either import path, struct errors
+                        pass
+        return cache[sid]
+
+    def convert(ids_):
+        return {m: sha(i) for m, i in ids_.items()} if ids_ else None
+    for char in result['characters']:
+        char['char_clips'] = convert(char.get('char_clip_ids'))
+    for square in result['squares']:
+        square['clips'] = convert(square.get('clip_ids'))
 
 
 # --------------------------------------------------------------------------
@@ -239,7 +282,8 @@ def read_state(image: dolfile.DolImage, dat=None) -> dict:
     stats_of = {cid: src for cid, src in (mf or {}).get('stats') or []}
     voices_set = ((mf or {}).get('grid') or {}).get('voices') or []
     remap = {s: v for s, v in (mf or {}).get('stock_voices') or []}
-    char_voices = {c: v for c, v in (mf or {}).get('character_voices') or []}
+    char_voices = manifest.character_voices(mf)
+    replaced = manifest.species_clips(mf)          # {(species, slot): INFO ID}: a stock voice's replaced clips
     own_dirs = {c[0]: (c[1], c[2]) for c in (mf or {}).get('model_dirs') or []}
     order = {s: o for s, o in (mf or {}).get('wheel_order', [])}
     rows_ = selector_rows(image)
@@ -263,6 +307,18 @@ def read_state(image: dolfile.DolImage, dat=None) -> dict:
         return (heads[voices.effective(remap, h)],
                 heads[remap[h]] if h in remap else None)
 
+    def species_clip_ids(h):
+        """The moments of species ``h``'s own voice that ``species_clips`` replaced: ``{moment: INFO ID}``."""
+        return {_moment(k): i for (s, k), i in sorted(replaced.items()) if s == h}
+
+    def own_voice(cid):
+        """``(voice, char_voice, clip ids, pack)`` of ``cid``: its character voice when it has one."""
+        entry = char_voices.get(cid)
+        if entry is None:
+            return voice_of(cid), None, None, None
+        voice = entry['voice'] if entry['voice'] is not None else voice_of(cid)
+        return voice, entry['voice'], {_moment(k): i for k, i in sorted(entry['clips'].items())}, entry['pack']
+
     squares, cell_index, by_square = [], [], {}
     for cell in cells:
         if cell is None:
@@ -274,13 +330,15 @@ def read_state(image: dolfile.DolImage, dat=None) -> dict:
                 members = [c for c in families.get(h, []) if c not in on_squares]
                 voice, voice_set = stock_square_voice(h)
                 square = {'kind': 'stock', 'head_index': h, 'head': heads[h],
-                          'members': _ordered(members, order.get(h, [])), 'voice': voice, 'voice_set': voice_set}
+                          'members': _ordered(members, order.get(h, [])), 'voice': voice, 'voice_set': voice_set,
+                          'clip_ids': species_clip_ids(h)}
             else:
                 k = cell[1]
                 members = new_squares[k]
                 voice_set = voices_set[k] if k < len(voices_set) else None
                 square = {'kind': 'new', 'head_index': grid.STOCK_HEADS + k, 'head': members[0],
-                          'members': list(members), 'voice': voice_of(members[0]), 'voice_set': voice_set}
+                          'members': list(members), 'voice': voice_of(members[0]), 'voice_set': voice_set,
+                          'clip_ids': {}}
                 if voice_set is not None:
                     wanted = rows_[voice_set][2]
                     off = [m for m in members if m in new_ids and new_ids[m]['wheel'] is None
@@ -300,7 +358,7 @@ def read_state(image: dolfile.DolImage, dat=None) -> dict:
             voice, voice_set = stock_square_voice(h)
             squares.append({'kind': 'stock', 'head_index': h, 'head': heads[h],
                             'members': _ordered(members, order.get(h, [])), 'voice': voice, 'voice_set': voice_set,
-                            'off_grid': True})
+                            'clip_ids': species_clip_ids(h), 'off_grid': True})
 
     text = read_names(image, dat)
     mnames = {int(k): v for k, v in (mf or {}).get('names', {}).items()}
@@ -315,13 +373,14 @@ def read_state(image: dolfile.DolImage, dat=None) -> dict:
             default = (wheels.SPARE_NAMES.get(cid) if name is not None and name.get('en') == wheels.SPARE_TEXT
                        else None)
             own = own_dirs.get(cid)
+            voice, char_voice, clip_ids, pack = own_voice(cid)
             characters.append({'id': cid, 'name': name, 'default_name': default, 'template': template,
                                'model_dir': own[0] if own else template_of(cid) + ids.MODEL_DIR_BASE,
                                'own_model_dir': own is not None,
                                'model_source': own[1] if own else template_of(cid),
                                'stats': stats_of.get(cid, template_of(cid)), 'family': family_of(cid),
-                               'voice': char_voices.get(cid, voice_of(cid)), 'char_voice': char_voices.get(cid),
-                               'square': index})
+                               'voice': voice, 'char_voice': char_voice, 'char_clip_ids': clip_ids,
+                               'char_pack': pack, 'square': index})
     characters.sort(key=lambda c: c['id'])
     _model_blocks(image, dat, characters, warnings)
     icons_read = _resolve_icons(image, dat, mf, characters, warnings)

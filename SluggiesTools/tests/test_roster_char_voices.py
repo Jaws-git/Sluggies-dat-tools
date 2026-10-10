@@ -50,11 +50,12 @@ def archive_bytes():
     return _ARCHIVE
 
 
-def build(config, keys=STEPS, sound=True):
+def build(config, keys=STEPS, sound=True, clip_dir=None):
     """The roster steps on the synthetic DOL with the synthetic voice archive (``sound=False``: none)."""
     image = image_for_grid()
     fill_voice_tables(image)
-    ctx = steps.RosterContext(dol=image, dat=None, config=config, sound=archive_bytes() if sound else None)
+    ctx = steps.RosterContext(dol=image, dat=None, config=config, sound=archive_bytes() if sound else None,
+                              clip_dir=clip_dir)
     ctx.state[layout_file.STATE_KEY] = FakeLayout()
     with mock.patch.object(relocate, 'scan_refs', return_value=[]):
         for step in steps.all_steps():
@@ -70,10 +71,20 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(got, {0x66: 0x09, 0x00: 0x0D})
         self.assertEqual(char_voices.parse({}, HEADS), {})
 
+    def test_entries_with_clips(self):
+        got = char_voices.parse({'character_voices': [
+            {'id': '0x66', 'voice': '0x09', 'clips': {'v1': 'a.rwav', 'v13': 'b.wav'}, 'pack': 'P'},
+            {'id': '0x67', 'clips': {'v3': 'c.rwav'}}]}, HEADS)
+        self.assertEqual(got[0x66], char_voices.Choice(0x09, {0: 'a.rwav', 10: 'b.wav'}, 'P'))
+        self.assertEqual(got[0x67], char_voices.Choice(None, {1: 'c.rwav'}, None))
+        self.assertNotEqual(got[0x66], 0x09)                                    # clips: not a plain stock voice
+
     def test_refusals(self):
         for bad in ([{'id': '0x66'}], [{'voice': '0x09'}], [{'id': '0x66', 'voice': '0x47'}],
                     [{'id': '0x100', 'voice': '0x00'}], [{'id': '0x66', 'voice': '0x00'}, {'id': 102, 'voice': 9}],
-                    {'id': '0x66', 'voice': '0x00'}):
+                    {'id': '0x66', 'voice': '0x00'}, [{'id': '0x66', 'clips': {}}],
+                    [{'id': '0x66', 'clips': {'v2': 'x.rwav'}}], [{'id': '0x66', 'clips': {'v1': ''}}],
+                    [{'id': '0x66', 'voice': '0x00', 'pack': 3}]):
             with self.subTest(bad=bad), self.assertRaises(char_voices.CharVoiceConfigError):
                 char_voices.parse({'character_voices': bad}, HEADS)
 
@@ -145,7 +156,9 @@ class StepTests(unittest.TestCase):
         self.assertEqual(table_of(self.image, 0x68), [clip(0x0D, k) for k in range(12)])   # its row, no copies
         for cid in (0x01, 0x09, 0x0D, 0x46, 0x65):
             self.assertIsNone(table_of(self.image, cid), f'0x{cid:02X}')
-        self.assertEqual(self.ctx.state['char_voices'], {0x66: 0x0D, 0x00: 0x09, 0x67: 0x09, 0x68: 0x0D, 0x47: 0x00})
+        self.assertEqual({c: v['voice'] for c, v in self.ctx.state['char_voices'].items()},
+                         {0x66: 0x0D, 0x00: 0x09, 0x67: 0x09, 0x68: 0x0D, 0x47: 0x00})
+        self.assertTrue(all(v['clips'] == {} and v['pack'] is None for v in self.ctx.state['char_voices'].values()))
 
     def test_archive_copies(self):
         self.assertEqual(len(self.out.sounds()), len(self.vanilla.sounds()) + 33)      # 3 families x 11 clips
@@ -239,6 +252,134 @@ class StepTests(unittest.TestCase):
             char_voices.install(self.image, self.ctx.state['hammerspace'], {0x00: row_of(0)})
 
 
+def write_wav(path, seconds=0.05, rate=44100, channels=2):
+    """A short stereo 16-bit test tone."""
+    import numpy as np
+    from SluggiesTools.Sound import wavfile
+    t = np.arange(int(seconds * rate)) / rate
+    tone = (np.sin(2 * np.pi * 440 * t) * 12000).astype(np.int16)
+    wavfile.write_wav(path, rate, [tone] * channels)
+    return path
+
+
+class CustomClipTests(unittest.TestCase):
+    """Custom clips: ``species_clips`` (the voices step) and ``character_voices[].clips`` (the char_voices step),
+    from ``.rwav`` and WAV files in a clip folder."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.rwav_of = synth.build_voice_archive()[1]
+        cls.a = cls.rwav_of[(20, 0)]                                        # species 20's v1, as a custom clip
+        cls.b = cls.rwav_of[(21, 10)]                                       # species 21's name call
+        for name, data in (('a.rwav', cls.a), ('b.rwav', cls.b)):
+            with open(os.path.join(cls.tmp.name, name), 'wb') as f:
+                f.write(data)
+        write_wav(os.path.join(cls.tmp.name, 'c.wav'))
+        cls.config = {
+            **{k: v for k, v in CONFIG.items() if k != 'character_voices'},
+            'species_clips': [{'id': '0x0D', 'clips': {'v1': 'a.rwav', 'v13': 'b.rwav'}}],    # Toad's voice
+            'character_voices': [
+                {'id': '0x00', 'voice': '0x09', 'clips': {'v1': 'a.rwav', 'v13': 'b.rwav'}, 'pack': 'P'},
+                {'id': '0x67', 'clips': {'v3': 'c.wav'}},                   # no stock voice: its species row + a clip
+                {'id': '0x68', 'voice': '0x0D', 'clips': {'v1': 'a.rwav'}}, # Toad's voice, which plays a.rwav already
+            ],
+        }
+        cls.image, cls.ctx = build(cls.config, clip_dir=cls.tmp.name)
+        cls.out = brsar.Brsar(cls.ctx.state['sound_out'])
+        cls.vanilla = brsar.Brsar(archive_bytes())
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def rwav(self, archive, sid):
+        return brsar_write.sound_rwav(archive, archive.sounds()[sid])
+
+    def test_species_clips_replace_the_row_words(self):
+        row = struct.unpack('>12I', voices.clip_row(self.image, 0x0D))
+        n = len(self.vanilla.sounds())
+        self.assertGreaterEqual(row[0], n)                                   # a new sound in Toad's family file
+        self.assertEqual(self.out.sounds()[row[0]].file_id, 13)
+        self.assertEqual(self.rwav(self.out, row[0]), self.a)
+        self.assertEqual(self.out.sounds()[row[10]].file_id, 43)             # the select file
+        self.assertEqual(self.rwav(self.out, row[10]), self.b)
+        self.assertEqual(row[1:10], tuple(clip(0x0D, k) for k in range(1, 10)))
+        self.assertEqual(self.ctx.state['species_clips'], {(0x0D, 0): row[0], (0x0D, 10): row[10]})
+        self.assertTrue(self.out.sounds()[row[0]].name.startswith('zzs'))
+        # Mario's square speaks with Toad's row (stock_voices), replaced clips included
+        self.assertEqual(voices.clip_row(self.image, 0x00), voices.clip_row(self.image, 0x0D))
+
+    def test_character_clips(self):
+        n = len(self.vanilla.sounds())
+        table = table_of(self.image, 0x00)                                   # Bowser's voice + two custom clips
+        self.assertEqual(self.rwav(self.out, table[0]), self.a)
+        self.assertEqual(self.out.sounds()[table[0]].file_id, 13)            # in its family file (Toad's, the swap)
+        self.assertEqual(self.rwav(self.out, table[10]), self.b)
+        self.assertEqual(self.out.sounds()[table[10]].file_id, 43)
+        for k in (1, 2, 3, 4, 5, 6, 7, 8, 9, 11):                            # the rest: Bowser's copies
+            self.assertEqual(self.rwav(self.out, table[k]), self.rwav(self.vanilla, clip(9, k)), k)
+        # 0x00 and the species clip play the same a.rwav in the same file and slot: one sound serves both
+        self.assertEqual(table[0], struct.unpack('>12I', voices.clip_row(self.image, 0x0D))[0])
+        table = table_of(self.image, 0x67)                                   # species row + one WAV clip
+        self.assertEqual([table[k] for k in range(12) if k != 1], [clip(0x0D, k) if k not in (0, 10) else
+                                                                  struct.unpack('>12I', voices.clip_row(self.image, 0))[k]
+                                                                  for k in range(12) if k != 1])
+        self.assertGreaterEqual(table[1], n)
+        wave = brsar.parse_rwav(self.rwav(self.out, table[1]))
+        self.assertEqual((wave.format, wave.rate, len(wave.channels)), (brsar.ADPCM, 32000, 1))
+        self.assertEqual(wave.samples, 1600)                                 # 0.05 s at 32 kHz
+        self.assertEqual(table_of(self.image, 0x68), list(struct.unpack('>12I', voices.clip_row(self.image, 0x0D))))
+
+    def test_state_and_manifest(self):
+        entry = self.ctx.state['char_voices'][0x00]
+        self.assertEqual((entry['voice'], entry['pack'], sorted(entry['clips'])), (0x09, 'P', [0, 10]))
+        toad_row = struct.unpack('>12I', voices.clip_row(self.image, 0x0D))
+        self.assertEqual(self.ctx.state['char_voices'][0x68]['clips'], {0: toad_row[0]})   # plays that sound already
+        self.assertEqual(entry['clips'], {0: toad_row[0], 10: toad_row[10]})                # the species clips' sounds
+        mf = state._manifest(self.image)
+        self.assertEqual(manifest.character_voices(mf)[0x00]['clips'], entry['clips'])
+        self.assertEqual(manifest.character_voices(mf)[0x67]['voice'], None)
+        self.assertEqual(mf['character_voices'][-1][:2], [0x68, 0x0D])                 # the plain shape
+        self.assertEqual(manifest.species_clips(mf), self.ctx.state['species_clips'])
+        result = state.read_state(self.image)
+        chars = {c['id']: c for c in result['characters']}
+        self.assertEqual((chars[0x00]['char_voice'], chars[0x00]['char_pack'], sorted(chars[0x00]['char_clip_ids'])),
+                         (0x09, 'P', ['v1', 'v13']))
+        self.assertEqual((chars[0x67]['char_voice'], chars[0x67]['voice']), (None, 0x0D))   # its species' (swapped)
+        toad = next(sq for sq in result['squares'] if sq['kind'] == 'stock' and sq['head'] == 0x0D)
+        self.assertEqual(sorted(toad['clip_ids']), ['v1', 'v13'])
+        state.clip_hashes(result, self.out)
+        import hashlib
+        self.assertEqual(chars[0x00]['char_clips']['v1'], hashlib.sha1(self.a).hexdigest())
+        self.assertEqual(toad['clips']['v13'], hashlib.sha1(self.b).hexdigest())
+        self.assertIsNone(chars[0x01]['char_clips'])
+        self.assertEqual(pack.fingerprint(result, chars[0x00], lambda ref: None)['clips'], chars[0x00]['char_clips'])
+        self.assertEqual(pack.fingerprint(result, chars[0x0D], lambda ref: None)['species_clips'], toad['clips'])
+
+    def test_deterministic(self):
+        image, ctx = build(self.config, clip_dir=self.tmp.name)
+        self.assertEqual(image.to_bytes(), self.image.to_bytes())
+        self.assertEqual(ctx.state['sound_out'], self.ctx.state['sound_out'])
+
+    def test_refusals(self):
+        base = {k: v for k, v in CONFIG.items() if k != 'character_voices'}
+        with self.assertRaises(char_voices.CharVoiceConfigError) as err:
+            build({**base, 'character_voices': [{'id': '0x00', 'clips': {'v1': 'missing.rwav'}}]}, clip_dir=self.tmp.name)
+        self.assertIn('not found', str(err.exception))
+        with self.assertRaises(char_voices.CharVoiceConfigError) as err:
+            build({**base, 'character_voices': [{'id': '0x00', 'clips': {'v1': 'a.rwav'}}]}, sound=False,
+                  clip_dir=self.tmp.name)
+        self.assertIn('1_Input/sound_NA', str(err.exception))
+        from SluggiesTools.Roster import clip_files
+        with self.assertRaises(clip_files.ClipConfigError):
+            build({**base, 'species_clips': [{'id': '0x66', 'clips': {'v1': 'a.rwav'}}]}, clip_dir=self.tmp.name)
+        with self.assertRaises(clip_files.ClipConfigError) as err:
+            build({**base, 'species_clips': [{'id': '0x00', 'clips': {'v1': 'a.rwav'}}]}, sound=False,
+                  clip_dir=self.tmp.name)
+        self.assertIn('sound archive', str(err.exception))
+
+
 # --------------------------------------------------------------------------
 # Planner, CLI
 # --------------------------------------------------------------------------
@@ -246,6 +387,30 @@ class StepTests(unittest.TestCase):
 class NoArchiveEnv(slot_plan.Env):
     def sound_archive(self):
         return False
+
+
+class PackEnv(slot_plan.Env):
+    """Voice packs and clip files without disk: ``packs`` {name: CustomPack}, ``clips`` {path: RWAV bytes}."""
+
+    def __init__(self, packs=None, clips=None):
+        self.packs, self.clips = packs or {}, clips or {}
+
+    def sound_pack(self, name):
+        return self.packs.get(name)
+
+    def read_clip(self, path):
+        if path not in self.clips:
+            raise slot_plan.PlanError(f'{path}: not a clip')
+        return self.clips[path]
+
+
+def make_pack(tmp, name, voice, clips):
+    """A custom pack folder with ``clips`` {moment: RWAV bytes}."""
+    from SluggiesTools.Sound import sound_packs
+    p = sound_packs.create_pack(tmp, name, voice)
+    for moment, data in clips.items():
+        sound_packs.set_clip(p, moment, data)
+    return p
 
 
 class PlanTests(unittest.TestCase):
@@ -311,6 +476,112 @@ class PlanTests(unittest.TestCase):
         self.assertEqual([x.to_json() for x in e], [{'op': 'char_voice', 'id': '0x0D', 'source': '0x09'}])
         with self.assertRaises(slot_plan.PlanError):
             slot_plan.parse_edits([{'op': 'char_voice', 'id': '0x0D'}])
+        e = slot_plan.parse_edits([{'op': 'char_voice', 'id': '0x0D', 'pack': 'P'},
+                                   {'op': 'species_clip', 'id': '0x0D', 'moment': 'v1', 'file': 'x.wav', 'origin': 'o'},
+                                   {'op': 'species_clip', 'id': '0x0D', 'moment': 'v13', 'file': None}])
+        self.assertEqual([x.to_json() for x in e],
+                         [{'op': 'char_voice', 'id': '0x0D', 'pack': 'P', 'source': None},
+                          {'op': 'species_clip', 'id': '0x0D', 'moment': 'v1', 'file': 'x.wav', 'origin': 'o'},
+                          {'op': 'species_clip', 'id': '0x0D', 'moment': 'v13', 'file': None}])
+        for bad in ({'op': 'species_clip', 'id': '0x0D', 'file': 'x'}, {'op': 'species_clip', 'id': '0x0D', 'moment': 'v2'},
+                    {'op': 'char_voice', 'id': '0x0D', 'pack': ''}):
+            with self.subTest(bad=bad), self.assertRaises(slot_plan.PlanError):
+                slot_plan.parse_edits([bad])
+
+
+class PackPlanTests(unittest.TestCase):
+    """``plan_char_voice`` with a voice pack, ``plan_species_clip``, their merge rules and the paste."""
+
+    def setUp(self):
+        self.tmp = self.enterContext(tempfile.TemporaryDirectory())
+        rwav_of = synth.build_voice_archive()[1]
+        self.a, self.b = rwav_of[(20, 0)], rwav_of[(21, 10)]
+        from SluggiesTools.Roster import clip_files
+        self.name_a, self.name_b = clip_files.file_name(self.a), clip_files.file_name(self.b)
+        self.pack = make_pack(self.tmp, 'Rosa', 0x09, {'v1': self.a, 'v13': self.b})
+        self.empty = make_pack(self.tmp, 'Empty', None, {})
+        self.env = PackEnv({'Rosa': self.pack, 'Empty': self.empty}, {'/c.wav': self.a})
+
+    def test_pack_on_a_slot(self):
+        plan = slot_plan.plan_char_voice(make_state(), make_config(), 0x0E, None, STATE_FILE, NAMES, self.env, pack='Rosa')
+        self.assertEqual(plan.config['character_voices'],
+                         [{'id': '0x0E', 'voice': '0x09', 'clips': {'v1': self.name_a, 'v13': self.name_b}, 'pack': 'Rosa'}])
+        self.assertEqual(plan.clips, {self.name_a: self.a, self.name_b: self.b})
+        self.assertEqual(plan.effects['char_voice'], 'pack Rosa (2 custom, rest Bowser (0x09)\'s)')
+        self.assertEqual(plan.commands, [('--roster', '--state', STATE_FILE), ('--roster-state',)])
+        other = slot_plan.plan_char_voice(make_state(), make_config(), 0x0E, 0x00, STATE_FILE, NAMES, self.env, pack='Rosa')
+        self.assertEqual(other.config['character_voices'][0]['voice'], '0x00')   # the source wins over the base
+        again = slot_plan.plan_char_voice(make_state(), plan.config, 0x0E, None, STATE_FILE, NAMES, self.env, pack='Rosa')
+        self.assertTrue(again.nothing)
+        back = slot_plan.plan_char_voice(make_state(), plan.config, 0x0E, 0x09, STATE_FILE, NAMES, self.env)
+        self.assertEqual(back.config['character_voices'], [{'id': '0x0E', 'voice': '0x09'}])   # the clips go
+        self.assertEqual(back.clips, {})
+        gone = slot_plan.plan_char_voice(make_state(), plan.config, 0x0E, None, STATE_FILE, NAMES, self.env)
+        self.assertNotIn('character_voices', gone.config)
+
+    def test_pack_refusals(self):
+        for pack, env in (('Nope', self.env), ('Empty', self.env), ('Rosa', NoArchiveEnv())):
+            with self.subTest(pack=pack), self.assertRaises(slot_plan.PlanError):
+                slot_plan.plan_char_voice(make_state(), make_config(), 0x0E, None, STATE_FILE, NAMES, env, pack=pack)
+        self.empty.voice = 0x09                        # a pack with a base voice and no clips: the base alone
+        plan = slot_plan.plan_char_voice(make_state(), make_config(), 0x0E, None, STATE_FILE, NAMES, self.env, pack='Empty')
+        self.assertEqual(plan.config['character_voices'], [{'id': '0x0E', 'voice': '0x09'}])
+
+    def test_species_clip(self):
+        plan = slot_plan.plan_species_clip(make_state(), make_config(), 0x0E, 'v1', '/c.wav', self.env, STATE_FILE, NAMES)
+        self.assertEqual(plan.config['species_clips'], [{'id': '0x0D', 'clips': {'v1': self.name_a}}])  # Blue Toad -> Toad
+        self.assertEqual(plan.clips, {self.name_a: self.a})
+        self.assertEqual(plan.effects['species_clips'], 'v1 from c.wav')
+        self.assertEqual((plan.action, plan.target), ('species_clip', 0x0E))
+        again = slot_plan.plan_species_clip(make_state(), plan.config, 0x0D, 'v1', '/c.wav', self.env, STATE_FILE, NAMES)
+        self.assertTrue(again.nothing)
+        reset = slot_plan.plan_species_clip(make_state(), plan.config, 0x0D, 'v1', None, self.env, STATE_FILE, NAMES)
+        self.assertNotIn('species_clips', reset.config)
+        self.assertEqual(reset.effects['species_clips'], 'v1 back to the stock clip')
+        self.assertTrue(slot_plan.plan_species_clip(make_state(), make_config(), 0x0D, 'v1', None, self.env,
+                                                    STATE_FILE, NAMES).nothing)
+        for moment, file, env in (('v2', '/c.wav', self.env), ('v1', '/missing.wav', self.env),
+                                  ('v1', '/c.wav', NoArchiveEnv())):
+            with self.subTest(moment=moment, file=file), self.assertRaises(slot_plan.PlanError):
+                slot_plan.plan_species_clip(make_state(), make_config(), 0x0D, moment, file, env, STATE_FILE, NAMES)
+
+    def test_batch_rules(self):
+        edits = slot_plan.parse_edits([
+            {'op': 'species_clip', 'id': '0x0D', 'moment': 'v1', 'file': '/c.wav'},
+            {'op': 'species_clip', 'id': '0x0E', 'moment': 'v1', 'file': '/c.wav'},      # the same species: replaces
+            {'op': 'species_clip', 'id': '0x0D', 'moment': 'v13', 'file': '/c.wav'},
+            {'op': 'species_clip', 'id': '0x0D', 'moment': 'v13', 'file': None},          # the same moment: replaces
+            {'op': 'char_voice', 'id': '0x66', 'pack': 'Rosa'},
+            {'op': 'char_voice', 'id': '0x67', 'source': '0x09'}])
+        b = slot_plan.plan_batch(make_state(), make_config(), edits, self.env, STATE_FILE, NAMES)
+        self.assertTrue(b.ok, b.refused)
+        # the second v1 edit changes nothing (skipped); the v13 reset replaces the earlier v13 edit and, against the
+        # game, changes nothing either
+        self.assertEqual([(e.op, e.cid, e.moment) for e, _p in b.plans],
+                         [('species_clip', 0x0D, 'v1'), ('char_voice', 0x66, None), ('char_voice', 0x67, None)])
+        self.assertEqual([(e.op, e.cid, e.moment) for e, _p in b.skipped],
+                         [('species_clip', 0x0E, 'v1'), ('species_clip', 0x0D, 'v13')])
+        self.assertEqual(b.config['species_clips'], [{'id': '0x0D', 'clips': {'v1': self.name_a}}])
+        self.assertEqual(b.config['character_voices'][0]['pack'], 'Rosa')
+        self.assertEqual(set(b.clips), {self.name_a, self.name_b})
+        self.assertTrue(any('v13 clip edit is replaced' in n for n in b.notes))
+        merged, _notes, _ = slot_plan.merge_edits(slot_plan.parse_edits([
+            {'op': 'char_voice', 'id': '0x66', 'pack': 'Rosa'}, {'op': 'clear', 'id': '0x66'},
+            {'op': 'species_clip', 'id': '0x66', 'moment': 'v1', 'file': '/c.wav'}]))
+        self.assertEqual([e.op for e in merged], ['clear', 'species_clip'])          # a clear leaves species clips
+
+    def test_paste_copies_the_whole_entry(self):
+        from SluggiesTools.tests import test_slot_copy as tc
+        world = tc.make_world()
+        config = tc.make_config()
+        config['character_voices'] = [{'id': '0x0E', 'voice': '0x09', 'clips': {'v1': self.name_a}, 'pack': 'Rosa'}]
+        st = world.state()
+        next(c for c in st['characters'] if c['id'] == 0x0E).update(char_voice=0x09, char_clip_ids={'v1': 1},
+                                                                    char_pack='Rosa')
+        plan = slot_plan.plan_copy(st, config, config, 0x0D, 0x0E, tc.CopyEnv(world), tc.STATE_FILE, tc.NAMES)
+        entries = {e['id']: e for e in plan.config['character_voices']}
+        self.assertEqual(entries['0x0D'], {'id': '0x0D', 'voice': '0x09', 'clips': {'v1': self.name_a}, 'pack': 'Rosa'})
+        self.assertIn('pack Rosa', plan.effects['char_voice'])
 
 
 class CliTests(unittest.TestCase):
@@ -321,6 +592,44 @@ class CliTests(unittest.TestCase):
             self.assertEqual(slot_cli.main(['--char-voice', '0x66', '-', '--output-dir', os.path.join(tmp, 'out')]), 0)
         self.assertEqual([(e.op, e.cid, e.source) for e in run.call_args_list[0].args[0]], [('char_voice', 0x66, 0x09)])
         self.assertEqual([(e.op, e.source) for e in run.call_args_list[1].args[0]], [('char_voice', None)])
+
+    def test_parse_voice_source(self):
+        self.assertEqual(slot_cli.parse_voice_source('0x09', '0x66'), (0x66, 0x09, None))
+        self.assertEqual(slot_cli.parse_voice_source('pack:Rosa', '0x66'), (0x66, None, 'Rosa'))
+        self.assertEqual(slot_cli.parse_voice_source('0x09+pack:Rosa Lina', '0x66'), (0x66, 0x09, 'Rosa Lina'))
+        self.assertEqual(slot_cli.parse_voice_source('-', '0x66'), (0x66, None, None))
+        with self.assertRaises(slot_plan.PlanError):
+            slot_cli.parse_voice_source('pack:', '0x66')
+
+    def test_species_clip_cli(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(slot_cli, 'run', return_value=slot_plan.Batch(None)) as run:
+            self.assertEqual(slot_cli.main(['--species-clip', '0x00', 'v1', 'x.wav', '--output-dir', os.path.join(tmp, 'o')]), 0)
+            self.assertEqual(slot_cli.main(['--species-clip', '0x00', 'v13', '-', '--output-dir', os.path.join(tmp, 'o')]), 0)
+            self.assertEqual(slot_cli.main(['--char-voice', '0x00', 'pack:P', '--output-dir', os.path.join(tmp, 'o')]), 0)
+        first = run.call_args_list[0].args[0][0]
+        self.assertEqual((first.op, first.cid, first.moment, os.path.basename(first.file)), ('species_clip', 0, 'v1', 'x.wav'))
+        self.assertEqual(run.call_args_list[1].args[0][0].file, None)
+        third = run.call_args_list[2].args[0][0]
+        self.assertEqual((third.op, third.source, third.pack), ('char_voice', None, 'P'))
+
+    def test_file_env_packs_and_clips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, '1_Input', 'sound_NA'))
+            with open(os.path.join(tmp, '1_Input', 'sound_NA', 'MY2.brsar'), 'wb') as f:
+                f.write(archive_bytes())
+            env = slot_cli.FileEnv(None, None, os.path.join(tmp, '1_Input'))
+            self.assertIsNone(env.sound_pack('Nope'))
+            rwav = synth.build_voice_archive()[1][(20, 0)]
+            make_pack(tmp, 'Rosa', 0x09, {'v1': rwav})
+            self.assertEqual(env.sound_pack('Rosa').rwav_bytes('v1'), rwav)
+            path = os.path.join(tmp, 'a.rwav')
+            with open(path, 'wb') as f:
+                f.write(rwav)
+            self.assertEqual(env.read_clip(path), rwav)
+            self.assertEqual(env.read_clip(write_wav(os.path.join(tmp, 'c.wav')))[:4], b'RWAV')   # encoded on the fly
+            with self.assertRaises(slot_plan.PlanError):
+                env.read_clip(os.path.join(tmp, 'missing.wav'))
 
     def test_file_env_sound_archive(self):
         with tempfile.TemporaryDirectory() as tmp:
