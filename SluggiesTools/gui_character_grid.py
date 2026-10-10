@@ -191,8 +191,9 @@ class CharacterGridTab:
                                  default_value=deploy,
                                  callback=lambda _sender, value: self._on_deploy_toggle(value))
                 with dpg.tooltip('grid_deploy'):
-                    dpg.add_text('After a successful Patch Game, copy dt_na.dat, main.dol and fst.bin from '
-                                 '3_Output_Dat into the game directory (3_Output_Dat/CopyFilesToGameDir.bat). The '
+                    dpg.add_text('After a successful Patch Game, copy dt_na.dat, main.dol, fst.bin and the sound '
+                                 'files (sound_NA) from 3_Output_Dat into the game directory '
+                                 '(3_Output_Dat/CopyFilesToGameDir.bat). The '
                                  'game directory is asked for the first time and kept in 3_Output_Dat/sluggiespath.',
                                  wrap=420)
                 dpg.add_spacer(width=12)

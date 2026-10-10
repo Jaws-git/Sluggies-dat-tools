@@ -17,6 +17,7 @@ import json
 import os
 import shutil
 import struct
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -32,11 +33,14 @@ from SluggiesTools.tests.test_roster_grid import image_for_grid
 from SluggiesTools.tests.test_roster_names import plate_bank, stock_table
 from SluggiesTools.tests.test_roster_state_icons import STOCK0
 from SluggiesTools.tests.test_roster_voice_stats_reassign import fill_voice_tables
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import synthetic_sound as synth  # noqa: E402
 
 STOCK_AT = 0x1000
 NAMES_AT = {'en': 0xA0000, 'fr': 0xA4000, 'sp': 0xA8000}
 NAME_DIR_POINTER = 0x80692C28           # dir 121's record list (its file 5 is the name record)
 BASE = 0x100000                         # stands in for BASE_SIZE
+SOUND = synth.build_voice_archive()[0]  # 1_Input/sound_NA/MY2.brsar (its INFO IDs match fill_voice_tables)
 
 
 def drifting_cmpr(page) -> bytes:
@@ -139,7 +143,7 @@ class Harness(unittest.TestCase):
         from SluggiesTools.Dol import dolfile
         image = dolfile.DolImage(self.input_dol)
         ctx = steps.RosterContext(dol=image, dat=dat, config=config,
-                                  icon_dir=self.icon_dir if icon_dir is None else icon_dir)
+                                  icon_dir=self.icon_dir if icon_dir is None else icon_dir, sound=SOUND)
         ctx.state[layout_file.STATE_KEY] = RecordingLayout()
         for step in steps.all_steps():
             if step.key != 'layout_file':
@@ -162,6 +166,7 @@ class Harness(unittest.TestCase):
         self.assertEqual(dol2, dol1, 'main.dol differs after read -> rebuild')
         self.assertEqual(dat2, dat1, 'dt_na.dat differs after read -> rebuild')
         self.assertEqual(ctx2.state[layout_file.STATE_KEY].outputs, ctx1.state[layout_file.STATE_KEY].outputs)
+        self.assertEqual(ctx2.state.get('sound_out'), ctx1.state.get('sound_out'), 'the sound archive differs')
         again = derive.write(derive.derive(image_b, dat_b), os.path.join(self.tmp, f'derived{self.runs}b'))
         with open(again, encoding='utf-8') as f:
             config3 = json.load(f)
@@ -277,6 +282,8 @@ class RoundTripTests(Harness):
         derived = self.round_trip(CONFIGS['character voices'])
         self.assertEqual(derived['character_voices'], CONFIGS['character voices']['character_voices'])
         self.assertEqual(derived['stock_voices'], [{'id': '0x00', 'voice': '0x0D'}])
+        _dol, _dat, ctx, *_ = self.build(CONFIGS['character voices'])
+        self.assertGreater(len(ctx.state['sound_out']), len(SOUND))          # the copied clips grew the archive
 
     def test_stock_portraits_are_carried(self):
         derived = self.round_trip(CONFIGS['stock portraits with new IDs'])

@@ -1,5 +1,6 @@
-"""Maintenance checks: problems in the working folders that make the tools act on the wrong file, and models of
-the output game that are too big for the memory the game gives them (``game_memory``).
+"""Maintenance checks: problems in the working folders that make the tools act on the wrong file, models of
+the output game that are too big for the memory the game gives them (``game_memory``), and voice banks of the
+output sound archive grown past what is known to work (``Roster/char_voices``).
 
 No Dear PyGui here; the GUI's Maintenance tab (``gui_maintenance``) runs :func:`scan` on a worker thread and
 lists what it returns. Each check is a function ``(root_dir) -> list[Problem]`` in :data:`CHECKS`.
@@ -167,10 +168,58 @@ def stadium_memory(root_dir):
     return problems
 
 
+SOUND_ARCHIVE = os.path.join('sound_NA', 'MY2.brsar')
+
+
+def sound_memory(root_dir):
+    """One problem per voice family file of the output sound archive whose wave data is bigger than the largest
+    family file known to work (``char_voices.FAMILY_FILE_TESTED_MAX``): a family file loads whole whenever its
+    species plays, so copied character voices grow the match's sound memory."""
+    try:
+        from SluggiesTools.Dol import dolfile
+        from SluggiesTools.Roster import char_voices
+        from SluggiesTools.Sound import brsar
+    except ImportError:
+        from Dol import dolfile
+        from Roster import char_voices
+        from Sound import brsar
+    dol_path = os.path.join(root_dir, OUTPUT_FOLDER, 'main.dol')
+    archive_path = os.path.join(root_dir, OUTPUT_FOLDER, SOUND_ARCHIVE)
+    if not (os.path.isfile(dol_path) and os.path.isfile(archive_path)):
+        return []
+    with open(dol_path, 'rb') as handle:
+        image = dolfile.DolImage(handle.read())
+    archive = brsar.Brsar.from_file(archive_path)
+    vanilla_path = os.path.join(root_dir, '1_Input', SOUND_ARCHIVE)
+    vanilla = brsar.Brsar.from_file(vanilla_path) if os.path.isfile(vanilla_path) else None
+    problems = []
+    limit = char_voices.FAMILY_FILE_TESTED_MAX
+    seen = set()
+    for species, (fid, size) in sorted(char_voices.family_files(image, archive).items()):
+        if fid in seen or size <= limit:
+            continue
+        seen.add(fid)
+        was = ''
+        if vanilla is not None and fid < len(vanilla.files()):
+            parts = vanilla.file_bytes(fid)
+            if parts is not None:
+                was = f' (vanilla {len(parts[1]):,})'
+        problems.append(Problem(
+            'Sound memory',
+            f'Voice bank file {fid} (species 0x{species:02X}) holds {size:,} bytes of wave data{was}, '
+            f'{size - limit:,} more than the largest voice bank known to work ({limit:,}).',
+            (archive_path,),
+            'Every character voice copied into this bank loads with it whenever that species plays. Give some of '
+            "its characters their square's voice back, or spread the voices over other species; test a full "
+            'match with that species on both teams.'))
+    return problems
+
+
 CHECKS = (
     ('Duplicate models', duplicate_models),
     ('Player memory', player_memory),
     ('Stadium memory', stadium_memory),
+    ('Sound memory', sound_memory),
 )
 
 

@@ -1106,7 +1106,7 @@ DEPLOY_LABEL = 'Deploy patched files to game directory'
 DEPLOY_SETTING = 'deploy_to_game_dir'           # the GUI settings key (``gui_settings``) of that checkbox
 DEPLOY_SCRIPT_REL = os.path.join('3_Output_Dat', 'CopyFilesToGameDir.bat')
 GAME_DIR_FILE_REL = os.path.join('3_Output_Dat', 'sluggiespath')    # the script's game directory, one line
-# where CopyFilesToGameDir.bat copies dt_na.dat (DATA/files) and main.dol / fst.bin (DATA/sys)
+# where CopyFilesToGameDir.bat copies dt_na.dat and sound_NA/ (DATA/files) and main.dol / fst.bin (DATA/sys)
 GAME_SUBDIRS = (os.path.join('DATA', 'files'), os.path.join('DATA', 'sys'))
 _GAME_DIR_ENCODING = 'oem' if os.name == 'nt' else 'utf-8'           # what cmd's set /p and echo use
 

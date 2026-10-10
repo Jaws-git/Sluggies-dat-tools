@@ -13,6 +13,12 @@ numpy. Bit-exact with the plain loop (``decode_reference``); the tests compare t
 
 Nibble counts: sound archives give wave lengths in nibbles of the stream (header nibbles included);
 ``nibbles_to_samples`` converts them.
+
+Encoding (``encode``): per 14-sample frame, every predictor pair and scale (8 x 16 candidates) is tried closed
+loop on the decoder's own history, each sample rounded to the nearest nibble, and the candidate with the least
+squared error wins (the first on a tie). The candidates run side by side in numpy; ``encode_reference`` is the
+plain loop, bit-exact with it. The coefficients are given (a stock wave's, chosen by ``brsar_write``); no
+coefficient training here.
 """
 
 import numpy as np
@@ -142,3 +148,84 @@ def _decode_batch(lanes):
         out[:, k] = value
         h2, h1 = h1, value
     return [out[row, :lane.samples].copy() for row, lane in enumerate(lanes)]
+
+
+# ------------------------------------------------------------------------------------------------ encoding
+
+def samples_to_nibbles(samples):
+    """Length in nibbles of a stream of ``samples`` samples (the sound archive's wave length)."""
+    samples = int(samples)
+    full, rest = divmod(samples, FRAME_SAMPLES)
+    return full * FRAME_NIBBLES + (rest + 2 if rest else 0)
+
+
+def encode_reference(samples, coefs, h1=0, h2=0):
+    """The plain per-frame search (``encode``'s oracle): ``(frame bytes, (h1, h2) after the last sample)``."""
+    x = [int(v) for v in samples]
+    frames = (len(x) + FRAME_SAMPLES - 1) // FRAME_SAMPLES
+    x += [0] * (frames * FRAME_SAMPLES - len(x))
+    out = bytearray()
+    for f in range(frames):
+        frame = x[f * FRAME_SAMPLES:(f + 1) * FRAME_SAMPLES]
+        best = None
+        for predictor in range(8):
+            c1, c2 = coefs[2 * predictor], coefs[2 * predictor + 1]
+            for scale_exp in range(16):
+                scale = 1 << scale_exp
+                a1, a2, err, nibbles = h1, h2, 0, []
+                for t in frame:
+                    base = c1 * a1 + c2 * a2
+                    predicted = (base + 1024) >> 11
+                    q = max(-8, min(7, round((t - predicted) / scale)))
+                    v = max(-32768, min(32767, (((q * scale) << 11) + 1024 + base) >> 11))
+                    err += (t - v) ** 2
+                    nibbles.append(q & 0xF)
+                    a2, a1 = a1, v
+                if best is None or err < best[0]:
+                    best = (err, predictor, scale_exp, nibbles, a1, a2)
+        _err, predictor, scale_exp, nibbles, h1, h2 = best
+        out.append((predictor << 4) | scale_exp)
+        for k in range(0, FRAME_SAMPLES, 2):
+            out.append((nibbles[k] << 4) | nibbles[k + 1])
+    return bytes(out), (h1, h2)
+
+
+def encode(samples, coefs, h1=0, h2=0):
+    """16-bit samples -> ``(DSP-ADPCM frame bytes, (h1, h2) after the last sample)``. Whole 8-byte frames; a
+    partial last frame is zero-padded (the padding counts in the error, as the reference does)."""
+    if len(coefs) != 16:
+        raise ValueError(f'16 coefficients expected, got {len(coefs)}')
+    x = np.asarray(samples, dtype=np.int64)
+    n = len(x)
+    frames = (n + FRAME_SAMPLES - 1) // FRAME_SAMPLES
+    padded = np.zeros(frames * FRAME_SAMPLES, np.int64)
+    padded[:n] = x
+    c1 = np.repeat(np.array(coefs[0::2], np.int64), 16)            # candidate k = predictor * 16 + scale
+    c2 = np.repeat(np.array(coefs[1::2], np.int64), 16)
+    scale = np.tile(np.int64(1) << np.arange(16, dtype=np.int64), 8)
+    fscale = scale.astype(np.float64)
+    out = bytearray()
+    h1, h2 = int(h1), int(h2)
+    for f in range(frames):
+        frame = padded[f * FRAME_SAMPLES:(f + 1) * FRAME_SAMPLES]
+        a1 = np.full(128, h1, np.int64)
+        a2 = np.full(128, h2, np.int64)
+        err = np.zeros(128, np.int64)
+        nibbles = np.empty((FRAME_SAMPLES, 128), np.int64)
+        for i in range(FRAME_SAMPLES):
+            t = frame[i]
+            base = c1 * a1 + c2 * a2
+            predicted = (base + 1024) >> 11
+            q = np.clip(np.round((t - predicted) / fscale), -8, 7).astype(np.int64)
+            v = np.clip((((q * scale) << 11) + 1024 + base) >> 11, -32768, 32767)
+            err += (t - v) ** 2
+            nibbles[i] = q & 0xF
+            a2, a1 = a1, v
+        k = int(np.argmin(err))
+        predictor, scale_exp = divmod(k, 16)
+        out.append((predictor << 4) | scale_exp)
+        column = nibbles[:, k]
+        for j in range(0, FRAME_SAMPLES, 2):
+            out.append(int((column[j] << 4) | column[j + 1]))
+        h1, h2 = int(a1[k]), int(a2[k])
+    return bytes(out), (h1, h2)

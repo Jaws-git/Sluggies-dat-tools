@@ -203,6 +203,25 @@ class LayoutStepTests(unittest.TestCase):
         kwargs.setdefault('config_path', None if kwargs.get('remove_only') else self.config)
         return runner.run(self.tmp, input_dir=self.input_dir, **kwargs)
 
+    def test_runner_writes_the_sound_archive_from_the_input(self):
+        import synthetic_sound as synth
+        archive = synth.build_voice_archive(species=3)[0]
+        os.makedirs(os.path.join(self.input_dir, 'sound_NA'))
+        with open(os.path.join(self.input_dir, 'sound_NA', 'MY2.brsar'), 'wb') as f:
+            f.write(archive)
+        out = os.path.join(self.tmp, 'sound_NA', 'MY2.brsar')
+        report = self.run_roster()
+        self.assertTrue(any('sound archive' in line and 'no character voices' in line for line in report['log']))
+        with open(out, 'rb') as f:
+            self.assertEqual(f.read(), archive)
+        with open(out, 'wb') as f:                              # a stale output archive is replaced by a reset too
+            f.write(b'stale')
+        self.run_roster(remove_only=True)
+        with open(out, 'rb') as f:
+            self.assertEqual(f.read(), archive)
+        self.run_roster(dry_run=True)
+        self.assertFalse(os.path.exists(out + '.roster_tmp'))
+
     def test_runner_repeatable_and_resettable(self):
         dol0, dat0 = self.files()
         report = self.run_roster()

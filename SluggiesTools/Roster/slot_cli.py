@@ -175,6 +175,13 @@ class FileEnv(slot_plan.Env):
         return slot_plan.StatCheck(stat_apply.summary(prepared), stat_apply.describe(prepared, names),
                                    prepared.warnings)
 
+    def sound_archive(self):
+        try:
+            from . import runner
+        except ImportError:
+            import runner
+        return os.path.isfile(os.path.join(self.input_dir or runner.INPUT_DIR, runner.SOUND_ARCHIVE))
+
     def stat_edited(self, cid):
         if self._stat_edits is None:
             from StatEditor import carry

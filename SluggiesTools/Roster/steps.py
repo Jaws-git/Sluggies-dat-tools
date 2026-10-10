@@ -34,6 +34,8 @@ class RosterContext:
     icon_dir: str | None = None    # where the config's portrait PNGs are (None: 1_Input/_Icons; a derived state's folder)
     input_dol: object | None = None  # 1_Input/main.dol (DolImage): the stock directories model_dirs copies from
     input_dat: object | None = None  # 1_Input/dt_na.dat (anything with read(offset, size))
+    sound: bytes | None = None       # 1_Input/sound_NA/MY2.brsar, or None without one; a step that changes the
+    #                                  archive puts the new bytes into ctx.state['sound_out'] (the runner writes them)
 
 
 @dataclass(frozen=True)

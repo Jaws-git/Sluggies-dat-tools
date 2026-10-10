@@ -50,9 +50,11 @@ template's stats, the "Empty slot" name and portraits. The square voice
 stays.
 
 Character voice (``plan_char_voice``, op ``char_voice``): a slot speaks with
-a stock character's voice as its own (``character_voices``, today the
-select-screen name call only), whatever its square speaks with; ``None``
-takes it away; a clear resets it; a paste copies the source's.
+a stock character's voice as its own (``character_voices``: the clips are
+copied into its voice bank in the sound archive, which the rebuild writes to
+``3_Output_Dat/sound_NA``), whatever its square speaks with; ``None`` takes
+it away; a clear resets it; a paste copies the source's. Needs
+``1_Input/sound_NA/MY2.brsar`` (``Env.sound_archive``).
 
 Stats and voice (``plan_stats`` / ``plan_voice``): any slot can
 play with another stock player's stats (new IDs: ``ids[].stats``; stock IDs:
@@ -318,6 +320,10 @@ class Env:
     def stat_edited(self, cid: int) -> str | None:
         """What stat edits the game holds for ``cid`` (``StatEditor/carry.CharacterEdits.text``), or None."""
         return None
+
+    def sound_archive(self) -> bool:
+        """Whether the game's sound archive is in ``1_Input/sound_NA`` (character voices copy clips into it)."""
+        return True
 
     def current_block(self, char: dict, role: str) -> bytes | None:
         """The block the slot loads now for ``role`` (``high`` / ``low`` / an equipment role), or None."""
@@ -949,13 +955,17 @@ def _clear_char_voice(config: dict, cid: int, plan: 'Plan', target_name: str) ->
 
 
 def plan_char_voice(st: dict, config: dict, cid: int, source: int | None, state_file: str,
-                    names_text: dict | None = None) -> Plan:
+                    names_text: dict | None = None, env: Env | None = None) -> Plan:
     """The chain that gives slot ``cid`` the voice of ``source``'s family as its own (``character_voices``), or
-    takes it away (``None``: the slot speaks with its square's voice again). Today the override reaches the
-    select-screen name call only; the gameplay clips stay the square's (``Roster/char_voices.py``)."""
+    takes it away (``None``: the slot speaks with its square's voice again). The voice's clips are copied into
+    the slot's voice bank in the sound archive (``Roster/char_voices.py``), so ``1_Input/sound_NA/MY2.brsar``
+    must be there (``env.sound_archive``)."""
     char = _character(st, cid)
     if source is not None and cid >= ids.PLAYER_END and _entry(config, 'ids', cid) is None:
         raise PlanError(f'{_hex(cid)} has no voice bank (a Mii): it cannot take a voice')
+    if source is not None and env is not None and not env.sound_archive():
+        raise PlanError('a character voice copies its clips into the sound archive: copy the game\'s '
+                        'files/sound_NA/MY2.brsar (and stream/) into 1_Input/sound_NA first')
     family = None if source is None else voice_family(st, source)
     new = copy.deepcopy(config)
     plan = Plan(CHAR_VOICE, cid, None)
@@ -969,8 +979,9 @@ def plan_char_voice(st: dict, config: dict, cid: int, source: int | None, state_
     plan.config = new
     _prepare(plan, state_file, [])
     plan.commands.append(('--roster-state',))
-    plan.notes.append(f'{target_name} speaks with {shown}' + (' as its own, whatever its square speaks with; '
-                      'today its select-screen name call only (the gameplay clips stay the square\'s)'
+    plan.notes.append(f'{target_name} speaks with {shown}' + (' as its own, whatever its square speaks with, on '
+                      'the select screen and on the field (its clips are copied into the slot\'s voice bank in '
+                      '3_Output_Dat/sound_NA/MY2.brsar: copy that file into the game too)'
                       if family is not None else ''))
     plan.effects[CHAR_VOICE] = 'the square\'s' if family is None else _source_name(family, names_text, st)
     return plan
@@ -1793,7 +1804,7 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
             elif edit.op == 'voice':
                 plan = plan_voice(st, current, edit.cid, edit.source, state_file, names_text)
             elif edit.op == CHAR_VOICE:
-                plan = plan_char_voice(st, current, edit.cid, edit.source, state_file, names_text)
+                plan = plan_char_voice(st, current, edit.cid, edit.source, state_file, names_text, env)
             elif edit.op == STAT_EDITS:
                 plan = plan_stat_edits(edit.file, env)
             elif edit.op == COPY:

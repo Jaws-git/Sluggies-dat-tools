@@ -150,6 +150,26 @@ on the field:
 - A voice is picked per character family: picking Blue Toad gives the
   square Toad's voice.
 
+A **character voice** belongs to one slot, whatever its square speaks with:
+
+```
+python start.py --set-char-voice 0x8F 0x09
+python start.py --set-char-voice 0x8F -
+```
+
+The slot then speaks with that family's voice on the select screen and on
+the field, while the other members of its square keep theirs. It needs the
+game's sound archive: copy the game's `files/sound_NA` folder (`MY2.brsar`
+and `stream/`) into `1_Input/sound_NA/`. The voice's clips are copied into
+the slot's voice bank, and the rebuild writes the grown archive to
+`3_Output_Dat/sound_NA/MY2.brsar`, which goes into the game with the other
+files (`CopyFilesToGameDir.bat` copies it). Each copied voice adds about
+100–250 KB to the bank of the slot's species, which the game loads whenever
+that species plays; the Maintenance tab's "Sound memory" check warns when a
+bank grows past what is known to work. `-` gives the slot its square's voice
+back; clearing a slot does so too, and copying a character brings its voice
+along. Miis cannot take a voice.
+
 `--set-stats` lets a slot play with another stock character's (`0x00`–`0x4C`)
 stats: batting, pitching, fielding and chemistry. Its model, size, voice and
 name stay. Chemistry follows the stats: a stock character with Bowser's
@@ -535,6 +555,19 @@ that square speaks with it.
 "stock_voices": [{"id": "0x00", "voice": "0x09"}, {"id": "0x09", "voice": "0x00"}]
 ```
 
+### `character_voices`: a voice of one slot's own
+
+A list of `{"id": …, "voice": …}`. `id` is any slot on the grid (a stock
+character, an unused character on a wheel, a new ID; not a Mii); `voice` is
+the character shown on a stock square whose voice it takes. The slot speaks
+with it on the select screen and on the field whatever its square speaks
+with; the voice's clips are copied into the slot's voice bank in the sound
+archive (needs `1_Input/sound_NA/MY2.brsar`).
+
+```json
+"character_voices": [{"id": "0x8F", "voice": "0x09"}]
+```
+
 ### `wheel_order`
 
 Lists of IDs, one list per wheel: those members come first, in that order.
@@ -562,3 +595,7 @@ square are hidden and skipped by the pointer and the D-pad.
   under 600 KB). The select-screen layout grows by up to a few tens of KB.
 - Only the exhibition draft is covered. Toy Field, minigames and Free practice
   use another character screen, which is not expanded.
+- A character voice copies 11 clips (about 100–250 KB) into the voice bank of
+  the slot's species, which the game loads whenever that species plays. Several
+  voices on one species add up; the largest bank known to work held about
+  1.16 MB of clips (the Maintenance tab warns past that).

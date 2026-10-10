@@ -27,28 +27,43 @@ the table instead of the species row. Sites (inventory group ``char_voices``):
 Every other caller of the wrapper keeps the species voice (the external tool's coverage; untested callers of the
 family search are listed in ``_docs/_docs_roster/RosterExpansion.md``).
 
-**What a table holds today (2026-10-10, phase 1):** the ID's species row as the run leaves it (stock square swaps
-and the square voice included) with only slot 10, the select-screen name call ``v13``, replaced by the voice's
-stock name call. The name calls of every species live in one shared select-screen file, always loaded there, so
-they need no sound archive edit. The 11 gameplay clips stay the species' own: a gameplay clip plays only while
-its species' voice bank is loaded, so another voice's gameplay clips need copies inside the ID's species' bank
-(``MY2.brsar``), a later phase.
+**The table and the sound archive.** A gameplay clip plays only while the bank that holds it is loaded, and the
+game loads the bank of the species on the field (the group word ``0x80631F10[species]``, as the run leaves it:
+stock square swaps included). So the 11 gameplay clips of the voice are copied, byte for byte, into the ID's
+family file: the archived file that holds its species' current first clip (``MY2.brsar``, ``Sound/brsar_write``).
+Each (family file, voice, slot) is copied once, however many IDs share it; the new sounds are named
+``zz<voice clip>_f<file>`` and take the family's same-slot entry as template (player, priority, 3D parameters)
+with the voice clip's volume. The name call (slot 10, ``v13``) lives in the select file, which holds every
+species' call and is always loaded on the select screen: the table takes the voice's stock ID there, no copy.
+An ID whose species already speaks with the voice (after the swaps) gets its row as its table and no copies.
 
-The step runs after ``grid`` (which sets the square-only new IDs' species) and reads the stock rows the
-``voices`` step published (``ctx.state['stock_clips']``: a voice is its base character's *stock* sounds, whatever
-square swaps did). Tables and the hook state live in the DOL data section, the stubs in the text section; the
-manifest carries the entries for the read-back (``state.py``, ``derive.py``).
+The step runs after ``grid`` (which sets the square-only new IDs' species). It reads the vanilla archive from
+``ctx.sound`` (``1_Input/sound_NA/MY2.brsar``, read by the runner) and puts the grown archive into
+``ctx.state['sound_out']``, which the runner writes to ``3_Output_Dat/sound_NA/MY2.brsar``; without an input
+archive, voices that need copies are refused. The stock rows come from the ``voices`` step
+(``ctx.state['stock_clips']``: a voice is its base character's *stock* sounds, whatever square swaps did).
+Tables and the hook state live in the DOL data section, the stubs in the text section; the manifest carries the
+entries for the read-back (``state.py``, ``derive.py``). The output archive is rebuilt from the input on every
+run, like the DOL, so an unchanged config gives identical bytes.
+
+**Memory.** A family file loads whole whenever its species plays, so every copied voice (about 100-250 KB of wave
+data) adds to the match's sound memory. ``family_files`` reports the sizes; ``FAMILY_FILE_TESTED_MAX`` is the
+largest family file known to work (the external tool's Bowser Jr file with every Koopaling, about 1.16 MB of wave
+data); the Maintenance "Sound memory" check warns above it.
 """
 
 import struct
+from dataclasses import dataclass
 
 try:
     from ..Dol import dolfile, inventory
     from ..Dol.ppc import Asm, one
+    from ..Sound import brsar, brsar_write
     from . import dol_hammerspace, ids, steps, voices, wheels
 except ImportError:
     from Dol import dolfile, inventory
     from Dol.ppc import Asm, one
+    from Sound import brsar, brsar_write
     import dol_hammerspace
     import ids
     import steps
@@ -66,9 +81,12 @@ SEARCH_RETURN = SEARCH + 0xE4                             # 0x8038710C: the wrap
 DIRECT_RETURNS = (0x80386FAC, 0x8038869C, 0x804A5634)     # the three direct callers' return addresses
 SLOTS = 12
 NAME_CALL_SLOT = 10                                       # v13, the select-screen name call
+GAMEPLAY_SLOTS = tuple(k for k in range(SLOTS) if k != NAME_CALL_SLOT)
 OWNER, RESOLVING, ACTIVE = 0, 4, 8                        # the state words
 STATE_SIZE = 12
 STATE_MAGIC = b'SLUGGIES VOICES\x01'                      # heads the tables in the data section (a marker only)
+SOUND_PREFIX = 'zz'                                       # copied clips: zz<voice clip name>_f<family file>
+FAMILY_FILE_TESTED_MAX = 1_160_000                        # wave bytes of a family file known to work (see above)
 
 
 class CharVoiceConfigError(ValueError):
@@ -100,13 +118,127 @@ def parse(config: dict, heads: bytes) -> dict[int, int]:
     return out
 
 
+def row_ids(row: bytes) -> list[int]:
+    return list(struct.unpack('>12I', row))
+
+
 def table_for(species_row: bytes, voice_stock_row: bytes) -> bytes:
-    """The ID's 12-slot table: its species row with the name call (slot 10) replaced by the voice's."""
+    """Phase 1's table: the ID's species row with the name call (slot 10) replaced by the voice's."""
     if len(species_row) != voices.CLIP_ROW or len(voice_stock_row) != voices.CLIP_ROW:
         raise ValueError('a clip row is 0x30 bytes')
     at = 4 * NAME_CALL_SLOT
     return species_row[:at] + voice_stock_row[at:at + 4] + species_row[at + 4:]
 
+
+# ------------------------------------------------------------------------------------------------ archive
+
+def copy_name(source_name: str, file_id: int) -> str:
+    return f'{SOUND_PREFIX}{source_name}_f{file_id}'
+
+
+@dataclass
+class VoicePlan:
+    """What the archive and the tables need for a set of character voices."""
+    tables: dict                    # {ID: [12 INFO IDs]} (copied clips as ``('copy', key)`` until ``resolve``)
+    copies: list                    # [(family file, voice species, slot)] in copy order, each once
+    rows: dict                      # {ID: (species, family file, voice species)}
+    templates: dict                 # {copy key: INFO ID of the family's own clip in that slot (the entry template)}
+
+    def needs_archive(self) -> bool:
+        return bool(self.copies)
+
+
+def plan(image, chosen: dict[int, int], stock: dict[int, bytes], species_of: dict[int, int], selector: int,
+         rows: int, archive) -> VoicePlan:
+    """Per ID: its current species row (after the swaps), the family file that row's first clip lives in (needs
+    ``archive``, a ``Brsar``; None: unknown, only same-voice IDs can be planned) and the copies the voice needs."""
+    tables, copies, info, templates = {}, [], {}, {}
+    sounds = archive.sounds() if archive is not None else None
+    for cid, voice in sorted(chosen.items()):
+        if cid >= rows:
+            raise CharVoiceConfigError(f'{KEY}: 0x{cid:02X} is not a character of this roster')
+        row = image.read(selector + 8 * cid, 8)
+        species = row[2]
+        if species >= voices.SPECIES or voices.group_of(image, species) < 0:
+            raise CharVoiceConfigError(f'{KEY}: 0x{cid:02X} has no voice bank (a Mii): it cannot take a voice')
+        if not row[6]:
+            raise CharVoiceConfigError(f'{KEY}: 0x{cid:02X} is not selectable (new IDs need an "ids" entry, '
+                                       'spare rows a "wheels" entry)')
+        current = row_ids(voices.clip_row(image, species))
+        vs = species_of[voice]
+        source = row_ids(stock[vs])
+        if current == source:                                   # the species speaks with that voice already
+            tables[cid] = current
+            info[cid] = (species, None, vs)
+            continue
+        if sounds is None:
+            raise CharVoiceConfigError(f'{KEY}: 0x{cid:02X} needs {voice:#04x}\'s clips copied into its voice '
+                                       'bank, which needs the game\'s sound archive: copy files/sound_NA/MY2.brsar '
+                                       'into 1_Input/sound_NA first')
+        if not 0 <= current[0] < len(sounds) or sounds[current[0]].type != brsar.WAVE:
+            raise CharVoiceConfigError(f'{KEY}: species 0x{species:02X}\'s first clip (sound {current[0]}) is not '
+                                       'a wave sound of this archive: is 1_Input/sound_NA/MY2.brsar the game\'s?')
+        family = sounds[current[0]].file_id
+        table = []
+        for k in range(SLOTS):
+            if k == NAME_CALL_SLOT:
+                table.append(source[k])
+            else:
+                key = (family, vs, k)
+                if key not in copies:
+                    copies.append(key)
+                    templates[key] = current[k]
+                table.append(('copy', key))
+        tables[cid] = table
+        info[cid] = (species, family, vs)
+    copies.sort()
+    return VoicePlan(tables, copies, info, templates)
+
+
+def new_sounds(archive, vp: VoicePlan, stock: dict[int, bytes]) -> list:
+    """The ``NewSound`` list of a plan's copies, in copy order."""
+    sounds = archive.sounds()
+    out = []
+    for family, vs, k in vp.copies:
+        source_id = row_ids(stock[vs])[k]
+        if not 0 <= source_id < len(sounds) or sounds[source_id].type != brsar.WAVE:
+            raise CharVoiceConfigError(f'{KEY}: voice species 0x{vs:02X} clip {k} (sound {source_id}) is not a wave '
+                                       'sound of this archive')
+        source = sounds[source_id]
+        template = vp.templates[(family, vs, k)]              # the family's own clip in that slot
+        if not 0 <= template < len(sounds) or sounds[template].type != brsar.WAVE:
+            raise CharVoiceConfigError(f'{KEY}: the family\'s clip {k} (sound {template}) is not a wave sound of '
+                                       'this archive')
+        out.append(brsar_write.NewSound(copy_name(source.name, family), family, brsar_write.sound_rwav(archive, source),
+                                        template, volume=source.volume))
+    return out
+
+
+def resolve(vp: VoicePlan, ids_of: dict) -> dict[int, bytes]:
+    """The tables as bytes, the copies replaced by their new INFO IDs (``ids_of``: ``{copy key: INFO ID}``)."""
+    out = {}
+    for cid, table in vp.tables.items():
+        words = [ids_of[entry[1]] if isinstance(entry, tuple) else entry for entry in table]
+        out[cid] = struct.pack('>12I', *words)
+    return out
+
+
+def family_files(image, archive) -> dict[int, tuple[int, int]]:
+    """``{species: (family file, its wave bytes)}`` for every voiced species, as the DOL's clip rows and the
+    archive hold them now (the file of each species' first clip)."""
+    sounds, files, groups = archive.sounds(), archive.files(), archive.groups()
+    out = {}
+    for s in range(voices.SPECIES):
+        first = row_ids(voices.clip_row(image, s))[0]
+        if not 0 <= first < len(sounds) or sounds[first].type != brsar.WAVE:
+            continue
+        fid = sounds[first].file_id
+        parts = archive.file_bytes(fid, groups, files)
+        out[s] = (fid, len(parts[1]) if parts else 0)
+    return out
+
+
+# ------------------------------------------------------------------------------------------------ hooks
 
 def _mfcr(a: Asm, rt: str) -> Asm:
     return a.word(0x7C000026 | (int(rt[1:]) << 21))
@@ -221,6 +353,8 @@ def installed(image: dolfile.DolImage) -> bool:
     return not any(image.u32(s.address) == s.stock for s in inventory.group(GROUP))
 
 
+# ------------------------------------------------------------------------------------------------ step
+
 @steps.register('char_voices')
 def apply(ctx: steps.RosterContext) -> list[str]:
     if KEY not in ctx.config:
@@ -233,21 +367,37 @@ def apply(ctx: steps.RosterContext) -> list[str]:
     species_of = voices.base_species(heads)
     stock = ctx.state.get('stock_clips') or voices.stock_clips(ctx.dol)
     selector, rows = wheels.table_location(ctx, 'selector')
-    tables, log = {}, []
+    archive = brsar.Brsar(ctx.sound) if ctx.sound is not None else None
+    vp = plan(ctx.dol, chosen, stock, species_of, selector, rows, archive)
+    log = []
+    ids_of = {}
+    if vp.copies:
+        before = {fid: len(archive.file_bytes(fid)[1]) for fid in sorted({c[0] for c in vp.copies})}
+        added = new_sounds(archive, vp, stock)
+        out, new_ids = brsar_write.add_sounds(ctx.sound, added)
+        ids_of = dict(zip(vp.copies, new_ids))
+        ctx.state['sound_out'] = out
+        grown = brsar.Brsar(out)
+        for fid, old in before.items():
+            new = len(grown.file_bytes(fid)[1])
+            species = sorted(s for s, (_sp, fam, _vs) in vp.rows.items() if fam == fid)
+            warn = f' -- above the largest family file known to work ({FAMILY_FILE_TESTED_MAX:,})' \
+                if new > FAMILY_FILE_TESTED_MAX else ''
+            log.append(f'family file {fid}: wave data {old:,} -> {new:,} bytes '
+                       f'({len([c for c in vp.copies if c[0] == fid])} clips copied for '
+                       + ', '.join(f'0x{c:02X}' for c in species) + f'){warn}')
+        log.append(f'sound archive: {len(ctx.sound):,} -> {len(out):,} bytes, {len(added)} sounds added '
+                   f'(INFO IDs {new_ids[0]}..{new_ids[-1]})')
+    tables = resolve(vp, ids_of)
     for cid, voice in sorted(chosen.items()):
-        if cid >= rows:
-            raise CharVoiceConfigError(f'{KEY}: 0x{cid:02X} is not a character of this roster')
-        row = ctx.dol.read(selector + 8 * cid, 8)
-        species = row[2]
-        if species >= voices.SPECIES or voices.group_of(ctx.dol, species) < 0:
-            raise CharVoiceConfigError(f'{KEY}: 0x{cid:02X} has no voice bank (a Mii): it cannot take a voice')
-        if not row[6]:
-            raise CharVoiceConfigError(f'{KEY}: 0x{cid:02X} is not selectable (new IDs need an "ids" entry, '
-                                       'spare rows a "wheels" entry)')
-        tables[cid] = table_for(voices.clip_row(ctx.dol, species), stock[species_of[voice]])
-        log.append(f'0x{cid:02X} (species 0x{species:02X}) announces itself with 0x{voice:02X}\'s name call '
-                   f'(sound {struct.unpack(">I", tables[cid][4 * NAME_CALL_SLOT:4 * NAME_CALL_SLOT + 4])[0]}); '
-                   'its gameplay clips stay its species\'')
+        species, family, vs = vp.rows[cid]
+        words = row_ids(tables[cid])
+        if family is None:
+            log.append(f'0x{cid:02X} (species 0x{species:02X}) speaks with 0x{voice:02X}\'s voice already: its '
+                       'species row is its table')
+        else:
+            log.append(f'0x{cid:02X} (species 0x{species:02X}, family file {family}) speaks with 0x{voice:02X}\'s '
+                       f'voice: gameplay clips {words[0]}..{words[11]} (copies), name call {words[NAME_CALL_SLOT]}')
     hs = dol_hammerspace.get(ctx)
     placed = install(ctx.dol, hs, tables)
     hs.commit()

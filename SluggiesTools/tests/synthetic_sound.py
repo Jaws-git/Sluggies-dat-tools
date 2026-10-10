@@ -325,3 +325,58 @@ def build_brstm(channel_samples, rate, block_size=16, codec=2, looped=False, loo
     struct.pack_into('>HHIHH6I', header, 4, 0xFEFF, 0x0100, data_off + len(data), 0x40, 3 if adpcm else 2,
                      0x40, head_size, 0x40 + head_size if adpcm else 0, adpc_size, data_off, len(data))
     return bytes(header + head + adpc + data), expected
+
+
+# ------------------------------------------------------------------------------------------------- voice archive
+
+VOICE_SLOTS = 12                       # a species' clip row: v1 v3 v4 v5 v6 v7 v8 v10 v11 v12 v13 v14
+NAME_CALL_SLOT = 10                    # v13, in the shared select file
+
+
+def voice_id(species, slot):
+    """The INFO ID the synthetic voice archive gives species ``species``' clip ``slot`` (what
+    ``test_roster_voice_stats_reassign.fill_voice_tables`` writes into the DOL's clip rows)."""
+    return species * VOICE_SLOTS + slot
+
+
+def build_voice_archive(species=43, samples=14, rng=None):
+    """An archive shaped like the game's voice banks: per species one family file (``file == species``) holding
+    its 11 gameplay clips (RWSD entries in slot order, slot 11 at entry 10) and one shared select file
+    (``file == species count``) holding every species' name call (entry = species). Sound INFO IDs are
+    ``voice_id``; names ``sp<species>_v<slot>``; one group per species (``group_v<species>``) plus
+    ``group_sel_v``. Returns ``(bytes, {(species, slot): RWAV bytes})``."""
+    rng = rng or random.Random(77)
+    names, sounds, files, groups, rwav_of = [], [], [], [], {}
+    select_rwavs = []
+    for s in range(species):
+        coefs = random_coefs(rng)
+        rwavs = []
+        for k in range(VOICE_SLOTS):
+            rv = build_rwav([(random_adpcm(rng, samples), samples, coefs, 0, 0)], 32000)
+            rwav_of[(s, k)] = rv
+            if k == NAME_CALL_SLOT:
+                select_rwavs.append(rv)
+            else:
+                rwavs.append(rv)
+        files.append({'size': 0, 'wave_size': 0, 'external': '', 'positions': [(s, 0)]})
+        groups.append({'name': f'group_v{s:03d}', 'items': [{'file': s, 'data': build_rwsd(list(range(len(rwavs)))),
+                                                             'waves': build_rwar(rwavs)}]})
+    select = species
+    files.append({'size': 0, 'wave_size': 0, 'external': '', 'positions': [(select, 0)]})
+    groups.append({'name': 'group_sel_v', 'items': [{'file': select, 'data': build_rwsd(list(range(species))),
+                                                     'waves': build_rwar(select_rwavs)}]})
+    for s in range(species):
+        for k in range(VOICE_SLOTS):
+            name = f'sp{s:02d}_v{k}'
+            names.append(name)
+            if k == NAME_CALL_SLOT:
+                file_id, entry, volume = select, s, 127
+            else:
+                file_id, entry, volume = s, k if k < NAME_CALL_SLOT else k - 1, 107
+            sounds.append({'name': name, 'file': file_id, 'player': 0, 'type': 3, 'volume': volume,
+                           'priority': 64, 'detail': wave_detail(entry)})
+    names += [g['name'] for g in groups] + ['PLAYER_VOICE']
+    for f, g in zip(files, groups):
+        f['size'], f['wave_size'] = len(g['items'][0]['data']), len(g['items'][0]['waves'])
+    players = [{'name': 'PLAYER_VOICE', 'count': 4, 'heap': 0}]
+    return build_brsar(names, sounds, [], players, files, groups), rwav_of

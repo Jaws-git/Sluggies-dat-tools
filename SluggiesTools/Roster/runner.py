@@ -21,6 +21,10 @@ the files in ``3_Output_Dat`` (the normal pipeline's output).
 * ``--dry-run`` runs everything in memory and writes nothing.
 * After the steps it stores a manifest (``manifest.py``) of the facts only
   hook code holds, so ``state.py`` can read the roster back.
+* The sound archive ``1_Input/sound_NA/MY2.brsar`` (when present) is read
+  for the character voices step and written to ``3_Output_Dat/sound_NA/`` on
+  every run (``--remove`` included): the input bytes, or those plus the copied
+  clips. Like the DOL, the output archive never carries an earlier run.
 """
 
 import argparse
@@ -58,6 +62,7 @@ SOURCE = 'roster'
 ROOT = os.path.normpath(os.path.join(_TOOLS_DIR, '..'))
 OUTPUT_DIR = os.path.join(ROOT, '3_Output_Dat')
 INPUT_DIR = os.path.join(ROOT, '1_Input')
+SOUND_ARCHIVE = os.path.join('sound_NA', 'MY2.brsar')   # under 1_Input (read) and 3_Output_Dat (written)
 FST_DAT_SIZE_OFFSET = 1 * 12 + 8       # dt_na.dat is FST entry 1; its size word (as HammerspaceHelper)
 
 
@@ -137,6 +142,11 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
     with open(vanilla_path, 'rb') as f:
         vanilla = f.read()
     dat = datfile.DatFile(dat_path) if os.path.isfile(dat_path) else None
+    sound_in_path = os.path.join(input_dir, SOUND_ARCHIVE)
+    sound = None
+    if os.path.isfile(sound_in_path):
+        with open(sound_in_path, 'rb') as f:
+            sound = f.read()
     options = game_options.detect(dolfile.DolImage(current))
     stat_log: list[str] = []
     try:
@@ -154,13 +164,15 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
         raise RosterDevError(str(exc)) from exc
 
     result = {'steps': [], 'log': []}
+    sound_out = sound                        # the output archive: the input's bytes unless a step grows them
     if not remove_only:
         result['config'] = _display_path(config_source)
         image = dolfile.DolImage(dol_bytes)
         input_dat_path = os.path.join(input_dir, 'dt_na.dat')
         ctx = steps.RosterContext(dol=image, dat=dat, config=config, icon_dir=icon_dir,
                                   input_dol=dolfile.DolImage(vanilla),
-                                  input_dat=datfile.DatFile(input_dat_path) if os.path.isfile(input_dat_path) else None)
+                                  input_dat=datfile.DatFile(input_dat_path) if os.path.isfile(input_dat_path) else None,
+                                  sound=sound)
         ctx.state[model_dirs.RESERVED_KEY] = list(keep)
         for step in steps.all_steps():
             lines = step.apply(ctx) or []
@@ -168,6 +180,7 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
             log += [f'[{step.key}] {line}' for line in lines]
         log.append(write_manifest(ctx))
         dol_bytes = image.to_bytes()
+        sound_out = ctx.state.get('sound_out', sound)
     if remove_only and not keep_stat_edits:
         if stat_edits:
             n = len(carry.by_character(stat_edits))
@@ -187,6 +200,13 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
         log += [f'[game options] {line}' for line in game_options.apply(image, options)]
         dol_bytes = image.to_bytes()
     result['dol_sha1'] = hashlib.sha1(dol_bytes).hexdigest()
+    if sound is not None:
+        log.append(f'sound archive: {_display_path(os.path.join(output_dir, SOUND_ARCHIVE))} '
+                   + ('rebuilt from 1_Input with the character voices' if sound_out is not sound else
+                      'is the 1_Input archive (no character voices)'))
+    else:
+        log.append('no 1_Input/sound_NA/MY2.brsar: the output gets no sound archive (character voices that need '
+                   'copied clips are refused)')
 
     if not dry_run:
         tmp = dol_path + '.roster_tmp'
@@ -198,6 +218,13 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
             if grown:
                 log.append(patch_fst(output_dir, dat.size))
         os.replace(tmp, dol_path)
+        if sound_out is not None:
+            sound_path = os.path.join(output_dir, SOUND_ARCHIVE)
+            os.makedirs(os.path.dirname(sound_path), exist_ok=True)
+            tmp = sound_path + '.roster_tmp'
+            with open(tmp, 'wb') as f:
+                f.write(sound_out)
+            os.replace(tmp, sound_path)
     result['log'] = log
     return result
 

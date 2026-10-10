@@ -160,11 +160,55 @@ byte 2 of the character ID (the ID in the player's stats row, bytes 0–1):
 | select-screen voice | `0x804A5628` (slot 10, `v13`) | as the clip row; all select voices are in one shared group |
 
 So a character speaks with the species of its byte 2 everywhere, and the
-game loads that species' bank for it: there is no separate per-ID voice. The
-external tool gives its new characters own clips by a different route
-(exact-ID tables behind hooks at `0x804B2898`/`0x804B2910`, the clips added
-to the template family's bank in `MY2.brsar`); that needs sound archive
-edits, which SluggiesTools does not make.
+game loads that species' bank for it: the stock game has no per-ID voice.
+
+**Character voices** (`character_voices`, `Roster/char_voices.py`,
+2026-10-10; the external tool's `voice_hooks.py` ported, permission to reuse)
+give one ID a voice of its own. The exact ID travels as `ID * 8`, the
+selector-row offset the callers already hold in r0, to the clip wrapper
+`0x804B2898`, which remembers the ID's own 12-slot table; the lookup
+`0x804B2910` (`lwzx r5,r5,r0`) reads that table instead of the species row.
+Nine sites (inventory group `char_voices`): the wrapper entry (`stwu`,
+branch), the lookup (branch), the owner `0x80142078` (`bl` to the family
+search `0x80387028`, which publishes r0 around the call: inside the search
+r0 is the first family member, not the actor), the scripted actor resolver
+call `0x8036C674` (`bl 0x8036B4E0`; mound entrance, strikeout celebration)
+and its five `rlwinm r0,r0,3,0,28` ID-to-token conversions, which publish
+the ID while the resolver runs. The wrapper takes the token from the owner
+word when its return address is `0x8038710C` (the search), from r0 for the
+direct callers `0x80386FA8`, `0x80388698` and `0x804A5630` (the select
+screen), and none otherwise: every other caller of the wrapper, and the
+other callers of the family search, keep the species voice (coverage as the
+external tool's; not surveyed further). Stubs live in the DOL hammerspace
+text section, the tables, a 12-byte state and a pointer table (one word per
+ID up to the highest voiced one) in the data section.
+
+A gameplay clip plays only while its bank is loaded, and the game loads the
+bank of the species on the field (the group word, after any stock square
+swap), so the voice's 11 gameplay clips are copied into the ID's *family
+file*: the archived RWSD + RWAR file (`MY2.brsar`) that holds its species'
+current first clip (`v1`). `Sound/brsar_write.add_sounds` appends them
+(RWAR with the RWAVs byte for byte, RWSD entries copied from entry 0, INFO
+entries copied from the family's same-slot clip with the voice clip's
+volume, the sound table and the SYMB string table moved to their sections'
+ends, the FILE section laid out again); stock sounds keep their IDs, bytes
+and files. Each (file, voice, slot) is copied once, named
+`zz<clip>_f<file>`. The name call (slot 10, `v13`) is in the select file
+(file 160, every species' calls, always loaded on the select screen): the
+table takes the voice's stock ID there. An ID whose species already speaks
+the voice gets its row as its table and no copies. The runner reads
+`1_Input/sound_NA/MY2.brsar` and writes `3_Output_Dat/sound_NA/MY2.brsar`
+on every run, the input bytes plus the copies, so no run builds on another;
+voices that need copies are refused without the input archive. Vanilla family
+files hold 79–252 KB of wave data (the select file 726 KB); a copied voice
+adds the source's 11 clips (Bowser's into Mario's file 14: 161,152 →
+369,696 bytes). The external tool's fullest bank, about 1.16 MB, worked
+(`FAMILY_FILE_TESTED_MAX`); the Maintenance "Sound memory" check warns past
+it. *Dolphin* 2026-10-10: Mario with Bowser's name call on the select
+screen (table only); the vanilla archive plus one unused copied clip plays
+every stock voice as before; Mario with Bowser's copied clips speaks with
+Bowser's voice on the field while his wheel members keep Mario's, no
+crashes.
 
 **Byte 2 is more than the voice.** It has about 83 readers. Besides wheels,
 squares and voice, gameplay code tests a few species directly: `0x19`
