@@ -20,6 +20,7 @@ STEPS = (
     ('icons', 'Icons'),
     ('voices', 'Stock square voices'),
     ('grid', 'Exhibition draft grid'),
+    ('char_voices', 'Character voices'),
     ('names', 'Names'),
 )
 

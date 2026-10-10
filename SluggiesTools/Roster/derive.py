@@ -18,7 +18,8 @@ only truth; nothing is remembered between runs.
   on every new square with a configured voice (manifest), the square then
   written as ``{"members": [...], "voice": ...}``; stock IDs with another
   stats source become ``stock_stats`` entries, stock squares with another
-  voice ``stock_voices`` entries (manifest).
+  voice ``stock_voices`` entries, characters with a voice of their own
+  ``character_voices`` entries (manifest).
 * ``model`` on every new ID with an own model directory: its source
   (manifest) and the directory's current DAT routes, so its copies (and any
   model patched into them) are kept byte for byte.
@@ -51,10 +52,11 @@ from PIL import Image
 try:
     from ..Dol import dolfile, inventory, relocate
     from ..Icons import gx_decode
-    from . import dat_hammerspace, icon_art, icons, ids, model_dirs, names, state, state_icons, voices
+    from . import char_voices, dat_hammerspace, icon_art, icons, ids, model_dirs, names, state, state_icons, voices
 except ImportError:
     from Dol import dolfile, inventory, relocate
     from Icons import gx_decode
+    import char_voices
     import dat_hammerspace
     import icon_art
     import icons
@@ -354,6 +356,8 @@ def derive(image: dolfile.DolImage, dat) -> Derived:
     if mf.get('stock_voices'):
         heads = state.head_list(image, voices.SPECIES)
         config[voices.STOCK_KEY] = [{'id': _hex(heads[s]), 'voice': _hex(heads[v])} for s, v in mf['stock_voices']]
+    if mf.get('character_voices'):
+        config[char_voices.KEY] = [{'id': _hex(c), 'voice': _hex(v)} for c, v in mf['character_voices']]
     return out
 
 

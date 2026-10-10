@@ -53,7 +53,7 @@ import os
 from dataclasses import dataclass, field
 
 try:
-    from . import icons, ids, names, open_slot, slot_plan, voices, wheels
+    from . import char_voices, icons, ids, names, open_slot, slot_plan, voices, wheels
 except ImportError:
     import icons
     import ids
@@ -62,13 +62,14 @@ except ImportError:
     import slot_plan
     import voices
     import wheels
+    import char_voices
 
 PRESET_ICON_PREFIX = 'preset_'
 OPEN_NAMES = (None, '', names.UNNAMED, open_slot.SLOT_NAME['en'])
 STOCK_ENTRIES = ((names.STOCK_KEY, 'name'), (icons.STOCK_KEY, 'icon'), (ids.STOCK_STATS_KEY, 'stats'),
-                 (voices.STOCK_KEY, 'voice'))
+                 (voices.STOCK_KEY, 'voice'), (char_voices.KEY, 'char_voice'))
 FIELD_LABELS = {'model': 'models', 'equipment': 'equipment', 'name': 'name', 'icon': 'portraits',
-                'stats': 'stats source', 'voice': 'square voice', 'stat_edits': 'stat edits'}
+                'stats': 'stats source', 'voice': 'square voice', 'char_voice': 'own voice', 'stat_edits': 'stat edits'}
 
 
 class SwitchError(ValueError):

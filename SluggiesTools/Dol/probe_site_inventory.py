@@ -136,6 +136,19 @@ CURATED = {
     'model_dir_revmap': [
         (0x80366340, 0x281B005F, 'cmplwi r27,0x5F in FUN_8036629c (directory > 0x5E: Mii format 7)'),
         (0x803663A8, 0x3BFBFFEE, 'subi r31,r27,0x12 in FUN_8036629c (directory -> per-model prop rows)')],
+    'char_voices': [        # per-character voice routing (Roster/char_voices.py, the external tool's voice_hooks)
+        (0x804B2898, 0x9421FFC0, 'stwu r1,-0x40(r1): entry of the voice wrapper FUN_804b2898 (r0 = ID * 8 on the '
+                                 'direct paths, r5 = species, r6 = slot)'),
+        (0x804B2910, 0x7CA5002E, 'lwzx r5,r5,r0: the clip INFO ID lookup in the wrapper (r5 = slot * 4, r0 = the '
+                                 'species row)'),
+        (0x80142078, 0x48244FB1, 'bl FUN_80387028 (family search) with the exact ID * 8 still in r0'),
+        (0x8036C674, 0x4BFFEE6D, 'bl FUN_8036b4e0: the scripted actor resolver (mound entrance, strikeout '
+                                 'celebration)'),
+        (0x8036B5C0, 0x54001838, 'rlwinm r0,r0,3,0,28: ID -> ID * 8 inside the resolver (1 of 5)'),
+        (0x8036B600, 0x54001838, 'rlwinm r0,r0,3,0,28: ID -> ID * 8 inside the resolver (2 of 5)'),
+        (0x8036B674, 0x54001838, 'rlwinm r0,r0,3,0,28: ID -> ID * 8 inside the resolver (3 of 5)'),
+        (0x8036B6AC, 0x54001838, 'rlwinm r0,r0,3,0,28: ID -> ID * 8 inside the resolver (4 of 5)'),
+        (0x8036B6E4, 0x54001838, 'rlwinm r0,r0,3,0,28: ID -> ID * 8 inside the resolver (5 of 5)')],
     'winner_scene_pairs': [
         (0x80152E4C, 0x3C008071, 'lis r0,0x8071 (model handles, spilled to 0x8C(r1))'),
         (0x80152EA4, 0x38849408, 'subi r4,r4,0x6BF8 -> 0x80709408'),

@@ -73,11 +73,11 @@ MODEL_DIR = 'models'
 ROLES = {'high': ('hp', 0), 'low': ('l', 1)}          # role: (file name suffix, file index)
 EQUIP_ROLES = {'bat': ('bat', 2), 'glove_l': ('glove_l', 3), 'glove_r': ('glove_r', 4), 'extra': ('extra', 5)}
 BLOCK_ROLES = {**ROLES, **EQUIP_ROLES}
-FIELDS = ('high', 'low', *EQUIP_ROLES, 'model', 'front', 'side', 'name', 'stats', 'voice', 'square')
+FIELDS = ('high', 'low', *EQUIP_ROLES, 'model', 'front', 'side', 'name', 'stats', 'voice', 'char_voice', 'square')
 FIELD_LABELS = {'high': 'High model', 'low': 'Low model', 'bat': 'bat', 'glove_l': 'left glove',
                 'glove_r': 'right glove', 'extra': 'extra bat', 'model': 'model directory',
                 'front': 'front portrait', 'side': 'side portrait', 'name': 'name', 'stats': 'stats',
-                'voice': 'square voice', 'square': 'square'}
+                'voice': 'square voice', 'char_voice': 'own voice', 'square': 'square'}
 SAME, DIFFERS, GAME_ONLY, PACK_ONLY = 'same', 'differs', 'game', 'pack'
 ROSTER_KEYS_IGNORED = ('version', 'comment')
 
@@ -126,6 +126,7 @@ def fingerprint(st: dict, char: dict, crop) -> dict:
     out['name'] = char.get('name')
     out['stats'] = _hex(char['stats']) if char.get('stats') is not None else None
     out['voice'] = _hex(square['voice'])
+    out['char_voice'] = _hex(char['char_voice']) if char.get('char_voice') is not None else None
     out['square'] = _hex(square['head'])
     return out
 

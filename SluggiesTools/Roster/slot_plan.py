@@ -49,6 +49,11 @@ replaced portraits (``stock_icons``) and another stats source
 template's stats, the "Empty slot" name and portraits. The square voice
 stays.
 
+Character voice (``plan_char_voice``, op ``char_voice``): a slot speaks with
+a stock character's voice as its own (``character_voices``, today the
+select-screen name call only), whatever its square speaks with; ``None``
+takes it away; a clear resets it; a paste copies the source's.
+
 Stats and voice (``plan_stats`` / ``plan_voice``): any slot can
 play with another stock player's stats (new IDs: ``ids[].stats``; stock IDs:
 ``stock_stats``), and any square can speak with another square's voice (new
@@ -96,7 +101,7 @@ import os
 from dataclasses import dataclass, field
 
 try:
-    from . import gear, icon_art, icon_import, icons, ids, model_icons, names, open_slot, voices, wheels
+    from . import char_voices, gear, icon_art, icon_import, icons, ids, model_icons, names, open_slot, voices, wheels
 except ImportError:
     import gear
     import icon_art
@@ -107,6 +112,7 @@ except ImportError:
     import names
     import open_slot
     import voices
+    import char_voices
     import wheels
 
 HIGH_FILE, LOW_FILE = 0, 1
@@ -606,6 +612,7 @@ def plan_clear(st: dict, config: dict, cid: int, state_file: str, env: Env | Non
         plan.notes += [f'{target_name}: own model directory copied afresh from its template {_hex(template)}',
                        'stats back to the template\'s; name "Empty slot"; empty-slot portraits',
                        'the square\'s voice is kept']
+        _clear_char_voice(new, cid, plan, target_name)
         plan.config = new
         _prepare(plan, state_file, [])
     else:
@@ -621,6 +628,7 @@ def plan_clear(st: dict, config: dict, cid: int, state_file: str, env: Env | Non
             _drop(new, ids.STOCK_STATS_KEY, entry)
             plan.notes.append(f'{target_name}: its own stats come back')
             plan.effects['stats'] = 'its own'
+        _clear_char_voice(new, cid, plan, target_name)
         if new != config:
             plan.config = new
         _prepare(plan, state_file, [])
@@ -928,6 +936,43 @@ def plan_voice(st: dict, config: dict, cid: int, source: int | None, state_file:
     plan.commands.append(('--roster-state',))
     plan.notes.append(f'{square_name} speaks with {shown}: {reach}, on the select screen and on the field')
     plan.effects['voice'] = (shown[:-len("'s voice")] if shown.endswith("'s voice") else shown) + ' (square voice)'
+    return plan
+
+
+def _clear_char_voice(config: dict, cid: int, plan: 'Plan', target_name: str) -> None:
+    """A clear resets the slot's character voice (it belongs to the character, unlike the square voice)."""
+    entry = _entry(config, char_voices.KEY, cid)
+    if entry is not None:
+        _drop(config, char_voices.KEY, entry)
+        plan.notes.append(f'{target_name}: its own voice is reset, it speaks with its square\'s voice again')
+        plan.effects[CHAR_VOICE] = 'the square\'s'
+
+
+def plan_char_voice(st: dict, config: dict, cid: int, source: int | None, state_file: str,
+                    names_text: dict | None = None) -> Plan:
+    """The chain that gives slot ``cid`` the voice of ``source``'s family as its own (``character_voices``), or
+    takes it away (``None``: the slot speaks with its square's voice again). Today the override reaches the
+    select-screen name call only; the gameplay clips stay the square's (``Roster/char_voices.py``)."""
+    char = _character(st, cid)
+    if source is not None and cid >= ids.PLAYER_END and _entry(config, 'ids', cid) is None:
+        raise PlanError(f'{_hex(cid)} has no voice bank (a Mii): it cannot take a voice')
+    family = None if source is None else voice_family(st, source)
+    new = copy.deepcopy(config)
+    plan = Plan(CHAR_VOICE, cid, None)
+    _set_stock_entry(new, char_voices.KEY, cid, 'voice', None if family is None else _hex(family))
+    target_name = _display(char)
+    shown = 'its square\'s voice' if family is None else f'{_source_name(family, names_text, st)}\'s voice'
+    if new == config:
+        plan.nothing = True
+        plan.notes.append(f'nothing to change: {target_name} speaks with {shown} already')
+        return plan
+    plan.config = new
+    _prepare(plan, state_file, [])
+    plan.commands.append(('--roster-state',))
+    plan.notes.append(f'{target_name} speaks with {shown}' + (' as its own, whatever its square speaks with; '
+                      'today its select-screen name call only (the gameplay clips stay the square\'s)'
+                      if family is not None else ''))
+    plan.effects[CHAR_VOICE] = 'the square\'s' if family is None else _source_name(family, names_text, st)
     return plan
 
 
@@ -1245,6 +1290,12 @@ def plan_copy(st: dict, config: dict, base_config: dict, cid: int, source: int, 
             plan.effects['voice'] = f'{_source_name(voice, names_text, st)} (square voice)'
     elif square.get('voice') != voice:
         plan.notes.append(f'{target_name} keeps its square\'s voice ({_source_name(square["voice"], names_text, st)})')
+    own_voice = src.get('char_voice')
+    if cid < ids.PLAYER_END or entry is not None:
+        _set_stock_entry(new, char_voices.KEY, cid, 'voice', None if own_voice is None else _hex(own_voice))
+        if own_voice != char.get('char_voice'):
+            plan.effects[CHAR_VOICE] = ('the square\'s' if own_voice is None
+                                        else _source_name(own_voice, names_text, st))
 
     # portraits
     if not has_portrait_records(cid):
@@ -1345,7 +1396,8 @@ def plan_stat_reset(st: dict, cid: int, env: Env, after_files: bool = False) -> 
 
 SLOT_WRITES = ('--patch', '--unpatch', '--write-slot-blocks', '--write-slot-equipment')   # step 4 of a batch
 MODEL_OPS = ('patch', 'clear', 'copy')               # copy: the slot becomes a clone of ``source`` (paste)
-VALUE_OPS = ('voice', 'stats')                        # the last one per slot (voice: per square) wins
+CHAR_VOICE = 'char_voice'                             # the slot's own voice (``character_voices``)
+VALUE_OPS = ('voice', 'stats', CHAR_VOICE)            # the last one per slot (voice: per square) wins
 EQUIP_OPS = ('equip', 'equip_clear')                  # the last one per slot file wins
 STAT_RESET = 'stat_reset'                             # one per slot; written with the stat edit files, in order
 SLOT_OPS = MODEL_OPS + ('rename',) + VALUE_OPS + ('icon',) + EQUIP_OPS + (STAT_RESET,)
@@ -1655,6 +1707,10 @@ def merge_edits(edits: list[Edit], classify_fn=None, load_icon_fn=None, classify
             for stats in [e for e in merged if e.cid == edit.cid and e.op == 'stats']:
                 merged.remove(stats)
                 notes.append(f'{_hex(edit.cid)}: the stats edit is dropped: the later clear resets the stats')
+            for own in [e for e in merged if e.cid == edit.cid and e.op == CHAR_VOICE]:
+                merged.remove(own)
+                notes.append(f'{_hex(edit.cid)}: the voice edit is dropped: the later clear resets the slot\'s '
+                             'own voice')
             for icon in [e for e in merged if e.cid == edit.cid and e.op == 'icon']:
                 merged.remove(icon)
                 notes.append(f'{_hex(edit.cid)}: the {icon.view} portrait edit is dropped: the later clear resets '
@@ -1736,6 +1792,8 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
                 plan = plan_stats(st, current, edit.cid, edit.source, state_file, names_text, env)
             elif edit.op == 'voice':
                 plan = plan_voice(st, current, edit.cid, edit.source, state_file, names_text)
+            elif edit.op == CHAR_VOICE:
+                plan = plan_char_voice(st, current, edit.cid, edit.source, state_file, names_text)
             elif edit.op == STAT_EDITS:
                 plan = plan_stat_edits(edit.file, env)
             elif edit.op == COPY:

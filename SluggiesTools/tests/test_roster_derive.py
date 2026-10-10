@@ -209,6 +209,13 @@ CONFIGS = {
         'stock_stats': [{'id': '0x00', 'stats': '0x09'}, {'id': '0x0D', 'stats': '0x00'}],
         'stock_voices': [{'id': '0x00', 'voice': '0x09'}, {'id': '0x09', 'voice': '0x00'}],
         'grid': {'squares': [{'members': ['0x66'], 'voice': '0x09'}], 'shape': [11, 5]}},
+    'character voices': {
+        'ids': [{'id': '0x66', 'template': '0x06', 'wheel': None}, {'id': '0x67', 'template': '0x00', 'wheel': '0x00'}],
+        'wheels': [{'id': '0x47', 'wheel': '0x06'}],
+        'stock_voices': [{'id': '0x00', 'voice': '0x0D'}],
+        'grid': {'squares': [{'members': ['0x66'], 'voice': '0x09'}], 'shape': [12, 5]},
+        'character_voices': [{'id': '0x00', 'voice': '0x09'}, {'id': '0x47', 'voice': '0x00'},
+                             {'id': '0x66', 'voice': '0x0D'}, {'id': '0x67', 'voice': '0x09'}]},
     'stock names only': {'stock_names': [{'id': '0x0D', 'name': 'Little Toad'}]},
     'stock names with new IDs': {
         'ids': [{'id': '0x66', 'template': '0x00', 'name': 'Red'}],
@@ -265,6 +272,11 @@ class RoundTripTests(Harness):
         self.assertEqual(derived['grid']['squares'], [{'members': ['0x66'], 'voice': '0x09'}])
         only = self.round_trip(CONFIGS['stock stats and voices only'])
         self.assertEqual(set(only) - {'version', 'comment'}, {'stock_stats', 'stock_voices'})
+
+    def test_character_voices_are_carried(self):
+        derived = self.round_trip(CONFIGS['character voices'])
+        self.assertEqual(derived['character_voices'], CONFIGS['character voices']['character_voices'])
+        self.assertEqual(derived['stock_voices'], [{'id': '0x00', 'voice': '0x0D'}])
 
     def test_stock_portraits_are_carried(self):
         derived = self.round_trip(CONFIGS['stock portraits with new IDs'])

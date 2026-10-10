@@ -391,6 +391,8 @@ def main(argv=None) -> int:
                         help='name a slot (all three languages); blank TEXT resets the name')
     parser.add_argument('--voice', nargs=2, metavar=('0xNN', '0xMM'),
                         help="give slot 0xNN's square the voice of 0xMM's family (- or default: its own)")
+    parser.add_argument('--char-voice', nargs=2, metavar=('0xNN', '0xMM'), help="give slot 0xNN the voice of 0xMM's "
+                        "family as its own (today: its select-screen name call); - resets it to its square's")
     parser.add_argument('--stats', nargs=2, metavar=('0xNN', '0xMM'),
                         help="let slot 0xNN play with stock player 0xMM's stats (- or default: its own)")
     parser.add_argument('--copy', nargs=2, metavar=('0xSS', '0xTT'),
@@ -409,10 +411,11 @@ def main(argv=None) -> int:
     parser.add_argument('--dry-run', action='store_true', help='leave out the build checks of "checked" edits')
     parser.add_argument('--output-dir', default=state_cli.OUTPUT_DIR, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
-    if sum(bool(a) for a in (args.patch, args.clear, args.rename, args.voice, args.stats, args.icon, args.copy,
-                             args.apply)) != 1:
+    if sum(bool(a) for a in (args.patch, args.clear, args.rename, args.voice, args.char_voice, args.stats, args.icon,
+                             args.copy, args.apply)) != 1:
         parser.error('give --patch 0xNN FILE, --clear 0xNN, --rename 0xNN TEXT, --voice 0xNN 0xMM, '
-                     '--stats 0xNN 0xMM, --icon 0xNN VIEW IMAGE, --copy 0xSS 0xTT or --apply FILE')
+                     '--char-voice 0xNN 0xMM, --stats 0xNN 0xMM, --icon 0xNN VIEW IMAGE, --copy 0xSS 0xTT or '
+                     '--apply FILE')
     if args.equipment and not (args.patch or args.clear):
         parser.error('--equipment goes with --patch or --clear')
     if args.no_gear and not args.patch:
@@ -438,8 +441,9 @@ def main(argv=None) -> int:
             edits = [slot_plan.Edit('clear', slots.parse_id(args.clear), index=1)]
         elif args.rename:
             edits = [slot_plan.Edit('rename', slots.parse_id(args.rename[0]), text=args.rename[1], index=1)]
-        elif args.voice or args.stats:
-            op, (target, source) = ('voice', args.voice) if args.voice else ('stats', args.stats)
+        elif args.voice or args.stats or args.char_voice:
+            op, (target, source) = (('voice', args.voice) if args.voice else ('stats', args.stats) if args.stats
+                                    else (slot_plan.CHAR_VOICE, args.char_voice))
             edits = [slot_plan.Edit(op, slots.parse_id(target), index=1, source=slot_plan.parse_source(source))]
         elif args.copy:
             edits = [slot_plan.Edit(slot_plan.COPY, slots.parse_id(args.copy[1]), index=1,

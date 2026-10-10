@@ -103,8 +103,22 @@ def group_of(image, species: int) -> int:
     return struct.unpack('>i', image.read(GROUPS + 4 * species, 4))[0]
 
 
+def clip_row(image, species: int) -> bytes:
+    """The 12 sound INFO IDs (``CLIP_ROW`` bytes) species ``species`` speaks with now."""
+    return image.read(CLIPS + CLIP_ROW * species, CLIP_ROW)
+
+
+def stock_clips(image) -> dict[int, bytes]:
+    """``{species: clip row}`` of every species with a row (the Miis' two rows included), as the image holds
+    them. Read before ``write_remap`` runs, these are the stock rows: the reset puts them back before every run
+    (``ctx.state['stock_clips']``, for the character voices)."""
+    return {s: clip_row(image, s) for s in range(SPECIES + 2)}
+
+
 @steps.register('voices')
 def apply(ctx: steps.RosterContext) -> list[str]:
+    if ctx.dol.is_mapped(CLIPS, CLIP_ROW * (SPECIES + 2)):
+        ctx.state['stock_clips'] = stock_clips(ctx.dol)
     if STOCK_KEY not in ctx.config:
         return [f'no "{STOCK_KEY}" in the roster config: stock squares keep their voices']
     heads = ctx.dol.read(HEAD_LIST, SPECIES)

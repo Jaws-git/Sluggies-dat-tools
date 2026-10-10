@@ -1550,6 +1550,53 @@
     "note": "subi r31,r27,0x12 in FUN_8036629c (directory -> per-model prop rows)"
    }
   ],
+  "char_voices": [
+   {
+    "address": "0x804B2898",
+    "stock": "0x9421FFC0",
+    "note": "stwu r1,-0x40(r1): entry of the voice wrapper FUN_804b2898 (r0 = ID * 8 on the direct paths, r5 = species, r6 = slot)"
+   },
+   {
+    "address": "0x804B2910",
+    "stock": "0x7CA5002E",
+    "note": "lwzx r5,r5,r0: the clip INFO ID lookup in the wrapper (r5 = slot * 4, r0 = the species row)"
+   },
+   {
+    "address": "0x80142078",
+    "stock": "0x48244FB1",
+    "note": "bl FUN_80387028 (family search) with the exact ID * 8 still in r0"
+   },
+   {
+    "address": "0x8036C674",
+    "stock": "0x4BFFEE6D",
+    "note": "bl FUN_8036b4e0: the scripted actor resolver (mound entrance, strikeout celebration)"
+   },
+   {
+    "address": "0x8036B5C0",
+    "stock": "0x54001838",
+    "note": "rlwinm r0,r0,3,0,28: ID -> ID * 8 inside the resolver (1 of 5)"
+   },
+   {
+    "address": "0x8036B600",
+    "stock": "0x54001838",
+    "note": "rlwinm r0,r0,3,0,28: ID -> ID * 8 inside the resolver (2 of 5)"
+   },
+   {
+    "address": "0x8036B674",
+    "stock": "0x54001838",
+    "note": "rlwinm r0,r0,3,0,28: ID -> ID * 8 inside the resolver (3 of 5)"
+   },
+   {
+    "address": "0x8036B6AC",
+    "stock": "0x54001838",
+    "note": "rlwinm r0,r0,3,0,28: ID -> ID * 8 inside the resolver (4 of 5)"
+   },
+   {
+    "address": "0x8036B6E4",
+    "stock": "0x54001838",
+    "note": "rlwinm r0,r0,3,0,28: ID -> ID * 8 inside the resolver (5 of 5)"
+   }
+  ],
   "winner_scene_pairs": [
    {
     "address": "0x80152E4C",

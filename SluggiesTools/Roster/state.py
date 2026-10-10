@@ -26,7 +26,10 @@ JSON-able dict:
   it holds), ``stats``
   (whose stats it plays with: the configured stats source, else the
   template), ``family`` (the base character of its species, selector byte
-  2: the square whose voice and wheel it shares), ``square``, ``icon`` (``{'front', 'side'}``:
+  2: the square whose voice and wheel it shares), ``voice`` (the base
+  character whose voice it speaks with: its own character voice, else its
+  species' through the swaps) and ``char_voice`` (the configured character
+  voice, ``character_voices``, or None), ``square``, ``icon`` (``{'front', 'side'}``:
   where the game takes each portrait from, ``state_icons.resolve``; None
   without a DAT) and ``blocks`` (``{'high', 'low'}``: the model directory's
   files 0 and 1 as the game loads them, ``offset``, ``length``, ``sha1``; a
@@ -236,6 +239,7 @@ def read_state(image: dolfile.DolImage, dat=None) -> dict:
     stats_of = {cid: src for cid, src in (mf or {}).get('stats') or []}
     voices_set = ((mf or {}).get('grid') or {}).get('voices') or []
     remap = {s: v for s, v in (mf or {}).get('stock_voices') or []}
+    char_voices = {c: v for c, v in (mf or {}).get('character_voices') or []}
     own_dirs = {c[0]: (c[1], c[2]) for c in (mf or {}).get('model_dirs') or []}
     order = {s: o for s, o in (mf or {}).get('wheel_order', [])}
     rows_ = selector_rows(image)
@@ -316,6 +320,7 @@ def read_state(image: dolfile.DolImage, dat=None) -> dict:
                                'own_model_dir': own is not None,
                                'model_source': own[1] if own else template_of(cid),
                                'stats': stats_of.get(cid, template_of(cid)), 'family': family_of(cid),
+                               'voice': char_voices.get(cid, voice_of(cid)), 'char_voice': char_voices.get(cid),
                                'square': index})
     characters.sort(key=lambda c: c['id'])
     _model_blocks(image, dat, characters, warnings)

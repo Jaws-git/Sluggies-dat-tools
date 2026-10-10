@@ -1503,7 +1503,8 @@ def stat_edits_dialog(state: dict | None, plan: dict | None, code: int, output: 
 # the fingerprint fields (Roster/pack.py FIELDS), as the dialogs and markers name them
 PACK_FIELDS = {'high': 'High model', 'low': 'Low model', 'bat': 'bat', 'glove_l': 'left glove',
                'glove_r': 'right glove', 'extra': 'extra bat', 'model': 'model directory', 'front': 'front portrait',
-               'side': 'side portrait', 'name': 'name', 'stats': 'stats', 'voice': 'square voice', 'square': 'square'}
+               'side': 'side portrait', 'name': 'name', 'stats': 'stats', 'voice': 'square voice',
+               'char_voice': 'own voice', 'square': 'square'}
 EQUIP_FIELDS = ('bat', 'glove_l', 'glove_r', 'extra')    # absent from the fingerprints of format 1 packs
 DIFF_TEXT = {'game': 'only in the game (leaves the grid)', 'pack': 'only in the pack (comes onto the grid)'}
 
@@ -1547,7 +1548,8 @@ def load_pack_plan(path: str, action: str = 'load_pack') -> dict | None:
 
 # Roster/migrate.py's field keys (test-pinned to migrate.FIELD_LABELS)
 SWITCH_FIELDS = {'model': 'models', 'equipment': 'equipment', 'name': 'name', 'icon': 'portraits',
-                 'stats': 'stats source', 'voice': 'square voice', 'stat_edits': 'stat edits'}
+                 'stats': 'stats source', 'voice': 'square voice', 'char_voice': 'own voice',
+                 'stat_edits': 'stat edits'}
 
 
 def switch_command(path: str, dry_run: bool = False, fresh: bool = False) -> tuple:
