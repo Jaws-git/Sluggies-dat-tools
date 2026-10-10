@@ -343,6 +343,9 @@ class CharacterGridTab:
                     dpg.add_text('In a CPU vs CPU match, controller 1 manages the fielding team (pause to make '
                                  'defensive changes). Needs CPU vs CPU turned on first.', wrap=420)
                 dpg.add_text('', tag='grid_cpu_management_status')
+            # the tool's CPU vs CPU patch and Dolphin's CPU vs CPU Gecko codes must not both be active
+            dpg.add_text('Disable all CPU vs CPU Gecko codes in Dolphin now!', tag='grid_cpu_gecko_warning',
+                         color=_WARN, show=False)
             dpg.add_spacer(height=4)
             dpg.add_separator()
             dpg.add_spacer(height=4)
@@ -370,6 +373,12 @@ class CharacterGridTab:
                                  'the stock console memory, +64 KB goes slightly past it, +128 KB well past it: '
                                  'that may crash in a heavy scene, for example when a run is scored.', wrap=420)
                 dpg.add_text('', tag='grid_player_heap_status')
+            dpg.add_spacer(height=4)
+            dpg.add_separator()
+            dpg.add_spacer(height=4)
+            dpg.add_button(label='Copy to Dolphin now', tag='options_copy_now', callback=lambda: self._on_copy_now())
+            with dpg.tooltip('options_copy_now'):
+                dpg.add_text('Copy output files back to the game folder and overwrite.', wrap=420)
             with dpg.group(horizontal=True):
                 dpg.add_loading_indicator(tag='options_spinner', style=1, radius=1.6, show=False,
                                           color=(90, 200, 120, 255), secondary_color=(60, 120, 80, 255))
@@ -434,7 +443,8 @@ class CharacterGridTab:
             dpg.configure_item(f'{tag}_status', color=_OK if enabled else _WARN if enabled is False else _DIM)
         dpg.configure_item('grid_cpu_vs_cpu', label=gui_grid.cpu_vs_cpu_button(state)[0])
         dpg.configure_item('grid_cpu_management', label=gui_grid.cpu_management_button(state)[0])
-        self._enable_cpu_management(self._locked())
+        self._enable_cpu_management(self._options_locked())
+        dpg.configure_item('grid_cpu_gecko_warning', show=gui_grid.cpu_vs_cpu_status(state)[1] is True)
         dpg.set_value('grid_note', gui_grid.stock_luigi_note(state) if state else '')
         dpg.configure_item('grid_reference', show=self.reference is not None)
         if self.reference is not None:
@@ -926,7 +936,7 @@ class CharacterGridTab:
         options_locked = self._options_locked()
         if dpg.does_item_exist('options_pending'):
             dpg.configure_item('options_pending', show=bool(len(self.pending)))
-            for tag in ('grid_cpu_vs_cpu', 'grid_big_memory', 'grid_player_heap'):
+            for tag in ('grid_cpu_vs_cpu', 'grid_big_memory', 'grid_player_heap', 'options_copy_now'):
                 dpg.configure_item(tag, enabled=not options_locked)
         self._enable_cpu_management(options_locked)
 
@@ -1738,10 +1748,15 @@ class CharacterGridTab:
                           lambda: self.app.log_line('[character grid] files not copied: the game directory prompt '
                                                     'was cancelled', _WARN), initial=stored)
 
+    def _on_copy_now(self):
+        """Options tab: copy the current 3_Output_Dat game files to the game directory without patching first."""
+        if not self._options_locked():
+            self._deploy()
+
     def _copy_files(self, script, game_dir):
         def done(code, _output):
             if code == 0:
-                self.app.log_line(f'[character grid] patched files copied to {game_dir}.', _OK)
+                self.app.log_line(f'[character grid] game files copied to {game_dir}.', _OK)
             else:
                 self.app.log_line('[character grid] copying the files to the game directory failed: see the log '
                                   'above.', _WARN)

@@ -115,8 +115,31 @@ def run_bundled_script_mode():
     return True
 
 
+def _close_own_console():
+    """Started by double-click: Windows opened a console for this process alone, and the GUI's own log replaces it,
+    so detach from it (it closes). Started from a terminal or a .bat, other processes share the console: keep it."""
+    if os.name != 'nt':
+        return
+    import ctypes
+    import logging
+    kernel32 = ctypes.windll.kernel32
+    if not kernel32.GetConsoleWindow():
+        return
+    pids = (ctypes.c_uint32 * 4)()
+    if kernel32.GetConsoleProcessList(pids, 4) != 1 or not kernel32.FreeConsole():
+        return
+    old = (sys.stdout, sys.stderr)
+    sink = open(os.devnull, 'w', encoding='utf-8')     # the console handles are gone: writes go nowhere
+    sys.stdout = sys.stderr = sink
+    for logger in (logging.getLogger(), logging.getLogger('sluggies')):
+        for handler in logger.handlers:
+            if isinstance(handler, logging.StreamHandler) and handler.stream in old:
+                handler.setStream(sink)
+
+
 def run_gui():
     """Open the Dear PyGui front end; each button re-invokes this entry point."""
+    _close_own_console()
     from SluggiesTools.gui import run_gui as _run_gui
     prefix = [sys.executable] if getattr(sys, 'frozen', False) else [sys.executable, os.path.abspath(__file__)]
     _run_gui(prefix, ROOT_DIR)
