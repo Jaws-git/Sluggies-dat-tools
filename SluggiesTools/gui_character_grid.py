@@ -361,7 +361,7 @@ class CharacterGridTab:
                              'Wii) it keeps the stock heaps and uses +48 KB player memory, so models bigger than '
                              'that will crash there.', wrap=420)
             with dpg.group(horizontal=True):
-                dpg.add_combo(gui_grid.player_heap_choices(), tag='grid_player_heap', width=200,
+                dpg.add_combo(gui_grid.player_heap_choices(), tag='grid_player_heap', width=260,
                               default_value=gui_grid.PLAYER_HEAP_STOCK_LABEL,
                               callback=lambda _s, value: self._on_player_heap(value))
                 with dpg.tooltip('grid_player_heap'):
@@ -373,6 +373,8 @@ class CharacterGridTab:
                                  'animations share (13 players x the increase). +48 KB fits a cautious estimate of '
                                  'the stock console memory, +64 KB goes slightly past it, +128 KB well past it: '
                                  'that may crash in a heavy scene, for example when a run is scored.', wrap=420)
+                    dpg.add_text('Levels marked (experimental) have only been tried at Wario City; they may '
+                                 'cause problems elsewhere.', wrap=420)
                 dpg.add_text('', tag='grid_player_heap_status')
             dpg.add_spacer(height=4)
             dpg.add_separator()

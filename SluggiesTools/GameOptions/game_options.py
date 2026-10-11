@@ -162,9 +162,14 @@ def _defense_change_stub(base: int, site: int) -> Asm:
 HEAP_SITE, HEAP_STOCK_WORD = 0x8036518C, 0x38AE4800    # addi r5,r14,0x4800
 PLAYER_HEAP_STOCK = 0xD4800
 PLAYER_HEAP_FIELDERS = 13
-PLAYER_HEAP_LEVELS_KB = (32, 48, 64, 128)
+PLAYER_HEAP_LEVELS_KB = (32, 48, 64, 128, 200)
 PLAYER_HEAP_SAFE_KB = 48                                # the stock-memory ceiling (fallback of the big levels)
-BIG_HEAP_LEVELS_KB = (512, 1024, 2048, 4096)
+BIG_HEAP_LEVELS_KB = (512, 1024, 2048, 4096, 5120)
+# Experimental levels (2026-10-11): +200 KB and +5 MB worked at Wario City; other stadiums and heavy
+# scenes are untested. +5 MB works although 13 x 5 MB = 65 MB is more than the 64 MB BIG_EXTRA adds to
+# heap 3, so the stock heap 3 has slack. +6 MB crashed instantly with the MEM2 override on (13 x 6 MB =
+78 MB); +256 KB and +7/+8 MB were offered the same day and dropped.
+EXPERIMENTAL_HEAP_LEVELS_KB = frozenset((200, 5120))
 ROOT_SIZE_SITE, ROOT_SIZE_STOCK_WORD = 0x8039A85C, 0x3C600330    # lis r3,0x330
 TABLE_READ_SITE, TABLE_READ_STOCK_WORD = 0x803A58E8, 0x809C0000  # lwz r4,0(r28)
 HEAP_TABLE = 0x8062F048
@@ -227,6 +232,8 @@ def _table_read_stub(base: int, site: int) -> Asm:
 
 def _player_heap_option(kb: int) -> Option:
     note = '' if kb <= PLAYER_HEAP_SAFE_KB else ', past the stock-memory budget'
+    if kb in EXPERIMENTAL_HEAP_LEVELS_KB:
+        note += ', experimental'
     return Option(player_heap_key(kb),
                   f'Player memory +{kb} KB (each player heap {PLAYER_HEAP_STOCK + kb * 1024:,} bytes{note})',
                   (Hook(HEAP_SITE, HEAP_STOCK_WORD, _player_heap_stub(PLAYER_HEAP_STOCK + kb * 1024)),),
@@ -235,9 +242,10 @@ def _player_heap_option(kb: int) -> Option:
 
 def _big_heap_option(kb: int) -> Option:
     safe = PLAYER_HEAP_STOCK + PLAYER_HEAP_SAFE_KB * 1024
+    note = ', experimental' if kb in EXPERIMENTAL_HEAP_LEVELS_KB else ''
     return Option(big_heap_key(kb),
                   f'Player memory +{kb} KB with MEM2 at 128 MB in Dolphin (each player heap '
-                  f'{PLAYER_HEAP_STOCK + kb * 1024:,} bytes; without the override +{PLAYER_HEAP_SAFE_KB} KB)',
+                  f'{PLAYER_HEAP_STOCK + kb * 1024:,} bytes; without the override +{PLAYER_HEAP_SAFE_KB} KB{note})',
                   (Hook(HEAP_SITE, HEAP_STOCK_WORD, _player_heap_stub(safe, PLAYER_HEAP_STOCK + kb * 1024)),
                    Hook(ROOT_SIZE_SITE, ROOT_SIZE_STOCK_WORD, _root_size_stub),
                    Hook(TABLE_READ_SITE, TABLE_READ_STOCK_WORD, _table_read_stub)),

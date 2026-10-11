@@ -120,10 +120,11 @@ def cpu_management_status(state) -> tuple[str, bool | None]:
 # The game options player_heap_<KB> raise it on stock memory; player_heap_big_<KB> need Dolphin's MEM2 override
 # at 128 MB and fall back to +48 KB without it (GameOptions/game_options.py, which these mirror).
 PLAYER_HEAP_STOCK = 870_400
-PLAYER_HEAP_LEVELS_KB = (32, 48, 64, 128)
+PLAYER_HEAP_LEVELS_KB = (32, 48, 64, 128, 200)
 PLAYER_HEAP_SAFE_KB = 48
 PLAYER_HEAP_RISKY_ABOVE_KB = 64     # the combo marks only the levels above this as risky
-BIG_HEAP_LEVELS_KB = (512, 1024, 2048, 4096)
+BIG_HEAP_LEVELS_KB = (512, 1024, 2048, 4096, 5120)
+EXPERIMENTAL_HEAP_LEVELS_KB = frozenset((200, 5120))   # Wario City only, marked in the combo
 PLAYER_HEAP_STOCK_LABEL = 'Stock (850 KB)'
 
 
@@ -139,14 +140,19 @@ def _kb_text(kb: int) -> str:
     return f'{kb // 1024} MB' if kb >= 1024 and kb % 1024 == 0 else f'{kb} KB'
 
 
+def _experimental(kb: int) -> str:
+    return ' (experimental)' if kb in EXPERIMENTAL_HEAP_LEVELS_KB else ''
+
+
 def _player_heap_levels() -> list[tuple[str, str, int, bool]]:
     """(option key, combo label, extra KB, big) of every level, stock-memory levels first."""
     out = []
     for kb in PLAYER_HEAP_LEVELS_KB:
-        risky = ', risky' if kb > PLAYER_HEAP_RISKY_ABOVE_KB else ''
-        out.append((player_heap_key(kb), f'+{kb} KB ({(PLAYER_HEAP_STOCK + kb * 1024) // 1024} KB{risky})', kb, False))
+        risky = ', risky' if kb > PLAYER_HEAP_RISKY_ABOVE_KB and kb not in EXPERIMENTAL_HEAP_LEVELS_KB else ''
+        label = f'+{kb} KB ({(PLAYER_HEAP_STOCK + kb * 1024) // 1024} KB{risky})'
+        out.append((player_heap_key(kb), label + _experimental(kb), kb, False))
     for kb in BIG_HEAP_LEVELS_KB:
-        out.append((big_heap_key(kb), f'+{_kb_text(kb)} (128 MB MEM2)', kb, True))
+        out.append((big_heap_key(kb), f'+{_kb_text(kb)} (128 MB MEM2)' + _experimental(kb), kb, True))
     return out
 
 
