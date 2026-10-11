@@ -24,6 +24,8 @@ import threading
 
 import dearpygui.dearpygui as dpg
 
+from Sound import ffmpeg
+
 import gui_grid
 
 _DIM = (200, 200, 200, 255)
@@ -36,7 +38,8 @@ _CHANGED = (110, 170, 255, 255)
 _WINDOWS = os.name == 'nt'
 LIST_W = 340
 BUTTON_H = 28
-WAV_FILTERS = [('WAV files', '*.wav;*.wave'), ('Encoded clips', '*.rwav'), ('All files', '*.*')]
+WAV_FILTERS = [('Sound files', ';'.join('*' + e for e in ('.wav', '.wave', '.rwav') + ffmpeg.AUDIO_EXTENSIONS)),
+               ('WAV files', '*.wav;*.wave'), ('Encoded clips', '*.rwav'), ('All files', '*.*')]
 PACK_FILTERS = [('Voice packs', '*.sluggiesvoice'), ('All files', '*.*')]
 CLIP_DIR_SETTING = 'sounds_last_clip_dir'      # the GUI settings key: the folder the last Replace... WAV came from
 
@@ -87,7 +90,7 @@ class SoundsTab:
         # the built-in file dialogs, used when the Windows one is off (gui.pick_files); their result goes to the
         # callback the last pick stored
         start = self.app.models_dir if os.path.isdir(self.app.models_dir) else self.app.root_dir
-        for tag, extensions, save in (('sounds_wav_dialog', ('.wav', '.rwav'), False),
+        for tag, extensions, save in (('sounds_wav_dialog', ('.wav', '.rwav') + ffmpeg.AUDIO_EXTENSIONS, False),
                                       ('sounds_pack_save_dialog', ('.sluggiesvoice',), True),
                                       ('sounds_pack_load_dialog', ('.sluggiesvoice',), False)):
             with dpg.file_dialog(directory_selector=False, show=False, modal=True, tag=tag, width=760, height=460,
@@ -342,7 +345,8 @@ class SoundsTab:
                     dpg.add_button(label='Reset', width=54, height=BUTTON_H, enabled=not locked and can_reset,
                                    callback=lambda _s, _a, u: self._on_reset_stock(*u), user_data=(head, moment))
                     with dpg.tooltip(replace):
-                        dpg.add_text('Pick a WAV (any format; made mono 32 kHz, cut at 2.5 s) or an encoded .rwav. '
+                        dpg.add_text('Pick a WAV (any format; MP3, OGG, FLAC, ... with ffmpeg; made mono 32 kHz, cut at '
+                                     '2.5 s) or an encoded .rwav. '
                                      'It is staged on the character grid; "Patch Game" writes it.', wrap=360)
                     with dpg.tooltip(play):
                         dpg.add_text('Play the stock clip' if _WINDOWS else 'Playback needs Windows')

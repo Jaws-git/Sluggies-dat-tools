@@ -404,7 +404,7 @@ class StatEditorTab:
     def confirm_close(self, then):
         """Closing Sluggies Tools: while the editor is open in Bridge Mode ask first (what it sends after this is
         offered on the next start only if the game files are unchanged by then)."""
-        if self.mode != BRIDGE:
+        if self.mode != BRIDGE or self.app.skip_confirmations():
             then()
             return
         if dpg.does_item_exist(_CLOSE_DIALOG):

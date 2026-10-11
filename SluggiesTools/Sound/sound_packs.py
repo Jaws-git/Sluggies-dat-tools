@@ -29,10 +29,10 @@ from dataclasses import dataclass, field
 from Sound import brsar, clips
 
 # the 12 voice moments of a clip row, in table order (slot = index); roles per the external tool's voice_clips.MOMENTS
-MOMENTS = (('v1', 'Short cheer'), ('v3', 'Charge'), ('v4', 'Talking line'),
-           ('v5', 'Long cheer'), ('v6', 'Hit by something'), ('v7', 'Long cheer (another)'),
-           ('v8', 'Long cheer (a third)'), ('v10', 'Stagger'), ('v11', 'Small hurt'),
-           ('v12', 'Falling / disappointed'), ('v13', 'Character select'), ('v14', 'Throw grunt'))
+MOMENTS = (('v1', 'Cheer'), ('v3', 'Charge'), ('v4', 'Talking line'),
+           ('v5', 'Cheer 2'), ('v6', 'Getting hit'), ('v7', 'Cheer 3'),
+           ('v8', 'Stepping up to bat'), ('v10', 'Stagger'), ('v11', 'Hurt'),
+           ('v12', 'Falling / Failure'), ('v13', 'Character select'), ('v14', 'Throw'))
 MOMENT_KEYS = tuple(k for k, _role in MOMENTS)
 SLOT_OF = {k: i for i, (k, _role) in enumerate(MOMENTS)}
 ROLE_OF = dict(MOMENTS)

@@ -221,6 +221,10 @@ class SluggiesGui:
     def busy(self):
         return self.process is not None
 
+    def skip_confirmations(self):
+        """Options tab, "Skip confirmation popups": confirmations go on as if OK was clicked."""
+        return bool(self.settings.get(gui_grid.SKIP_CONFIRM_SETTING, False))
+
     def run_chain(self, steps, on_done=None):
         """Run several commands in order, stopping at the first failure. ``on_done(code, output)`` runs after the
         last step (or the failed one) with the whole chain's output. False when a command already runs."""
@@ -320,8 +324,15 @@ class SluggiesGui:
     def ask_text(self, title, text, on_answer, on_cancel, kind='text', initial='', cancel_label='Cancel'):
         """A modal popup asking for an answer; ``kind`` (``slogger.PROMPT_KINDS``) picks Yes / No, Continue or a
         field with OK (file / save: plus Browse...). The popup closes first, then ``on_answer(text)`` or, for
-        ``cancel_label`` and the close button, ``on_cancel()`` runs. One at a time: a new one replaces it."""
+        ``cancel_label`` and the close button, ``on_cancel()`` runs. One at a time: a new one replaces it. With
+        "Skip confirmation popups" on, Yes / No and Continue popups are answered Yes / Continue at once."""
         self._close_prompt()
+        if kind in ('yesno', 'key') and self.skip_confirmations():
+            answer = 'y' if kind == 'yesno' else ''
+            self._log_line(f'{title}: {text.strip()} -> {"Yes" if answer else "Continue"} (popup skipped)',
+                           _PROMPT_COLOR)
+            on_answer(answer)
+            return
         self.prompt_request = (title, text, on_answer, on_cancel, kind, initial, cancel_label)
         self._show_prompt_request()
 
@@ -758,7 +769,7 @@ class SluggiesGui:
             self.grid_tab.confirm_discard(lambda: self.stat_tab.confirm_close(stop),
                                           'Close and discard the pending edits?',
                                           'There are edits that "Patch Game" has not written yet.')
-        if not self.busy:
+        if not self.busy or self.skip_confirmations():
             close()
             return
         if dpg.does_item_exist(_CLOSE_DIALOG):

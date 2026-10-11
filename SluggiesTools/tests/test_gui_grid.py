@@ -546,12 +546,15 @@ class CpuVsCpuTests(unittest.TestCase):
 class PlayerHeapTests(unittest.TestCase):
     def test_levels_mirror_the_game_options(self):
         from GameOptions import game_options
-        self.assertEqual(gui_grid.PLAYER_HEAP_LEVELS_KB, game_options.PLAYER_HEAP_LEVELS_KB)
-        self.assertEqual(gui_grid.BIG_HEAP_LEVELS_KB, game_options.BIG_HEAP_LEVELS_KB)
+        # The combo offers a selection of the game options' levels, in their order.
+        known = [game_options.player_heap_key(kb) for kb in game_options.PLAYER_HEAP_LEVELS_KB] \
+            + [game_options.big_heap_key(kb) for kb in game_options.BIG_HEAP_LEVELS_KB]
+        self.assertEqual(gui_grid.player_heap_keys(), [key for key in known if key in gui_grid.player_heap_keys()])
+        for key, _label, kb, big in gui_grid.PLAYER_HEAP_LEVELS:
+            make_key = game_options.big_heap_key if big else game_options.player_heap_key
+            self.assertEqual(key, make_key(kb))
         self.assertEqual(gui_grid.PLAYER_HEAP_SAFE_KB, game_options.PLAYER_HEAP_SAFE_KB)
         self.assertEqual(gui_grid.PLAYER_HEAP_STOCK, game_options.PLAYER_HEAP_STOCK)
-        self.assertEqual(sorted(gui_grid.player_heap_keys()),
-                         sorted(o.key for o in game_options.OPTIONS if o.group == 'player_heap'))
 
     def test_level_and_status(self):
         self.assertIsNone(gui_grid.player_heap_level(None))
@@ -561,19 +564,19 @@ class PlayerHeapTests(unittest.TestCase):
         self.assertFalse(gui_grid.player_heap_is_big('player_heap_128'))
         self.assertEqual(gui_grid.player_heap_status(None), ('Player memory: unknown', None))
         self.assertEqual(gui_grid.player_heap_status({'game_options': []})[1], False)
-        self.assertEqual(gui_grid.player_heap_status({'game_options': ['player_heap_48']}),
-                         ('Player memory: +48 KB (919,552 bytes per player)', True))
+        self.assertEqual(gui_grid.player_heap_status({'game_options': ['player_heap_64']}),
+                         ('Player memory: +64 KB (935,936 bytes per player)', True))
         self.assertIn('128 MB', gui_grid.player_heap_status({'game_options': ['player_heap_big_4096']})[0])
 
     def test_choices_and_commands(self):
         normal, big = gui_grid.player_heap_choices(), gui_grid.player_heap_choices(True)
         self.assertEqual(normal[0], gui_grid.PLAYER_HEAP_STOCK_LABEL)
-        self.assertEqual(len(normal), 1 + len(gui_grid.PLAYER_HEAP_LEVELS_KB))
+        self.assertEqual(len(normal), 1 + sum(not is_big for *_rest, is_big in gui_grid.PLAYER_HEAP_LEVELS))
         self.assertEqual(big[:len(normal)], normal)
-        self.assertEqual(len(big), len(normal) + len(gui_grid.BIG_HEAP_LEVELS_KB))
-        self.assertIn('risky', gui_grid.player_heap_choice('player_heap_128'))
-        self.assertNotIn('risky', gui_grid.player_heap_choice('player_heap_64'))
-        self.assertNotIn('risky', gui_grid.player_heap_choice('player_heap_48'))
+        self.assertEqual(len(big), 1 + len(gui_grid.PLAYER_HEAP_LEVELS))
+        self.assertEqual(gui_grid.player_heap_choice('player_heap_128'), '+128 KB (978 KB)')
+        self.assertIn('experimental', gui_grid.player_heap_choice('player_heap_200'))
+        self.assertIn('experimental', gui_grid.player_heap_choice('player_heap_big_5120'))
         self.assertEqual(gui_grid.player_heap_choice(''), normal[0])
         self.assertEqual(gui_grid.player_heap_choice(None), normal[0])
         for key in gui_grid.player_heap_keys():
@@ -681,6 +684,13 @@ class RosterPackTests(unittest.TestCase):
         dialog = gui_grid.save_pending_dialog(self.state, pending)
         self.assertTrue(dialog.can_apply)
         self.assertIn("C0D (0x0D): rename to 'Little Toad'", self.text(dialog))
+
+    def test_dialog_skippable(self):
+        D, T = gui_grid.SlotDialog, gui_grid
+        self.assertTrue(T.dialog_skippable(D('ask', [('careful', T.WARN)], True)))     # OK'd, warnings logged
+        self.assertTrue(T.dialog_skippable(D('Export finished', [('done', T.OK), ('x', T.TEXT)])))
+        self.assertFalse(T.dialog_skippable(D('refused', [('no', T.ERROR)])))
+        self.assertFalse(T.dialog_skippable(D('aborted', [('why', T.WARN)])))
 
     def test_reference_marks_changed_slots(self):
         ref = gui_grid.Reference('saved (my.sluggiesroster)', self.fingerprints)

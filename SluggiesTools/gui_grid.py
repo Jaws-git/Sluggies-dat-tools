@@ -122,49 +122,33 @@ def cpu_management_status(state) -> tuple[str, bool | None]:
 # The game options player_heap_<KB> raise it on stock memory; player_heap_big_<KB> need Dolphin's MEM2 override
 # at 128 MB and fall back to +48 KB without it (GameOptions/game_options.py, which these mirror).
 PLAYER_HEAP_STOCK = 870_400
-PLAYER_HEAP_LEVELS_KB = (32, 48, 64, 128, 200)
 PLAYER_HEAP_SAFE_KB = 48
-PLAYER_HEAP_RISKY_ABOVE_KB = 64     # the combo marks only the levels above this as risky
-BIG_HEAP_LEVELS_KB = (512, 1024, 2048, 4096, 5120)
-EXPERIMENTAL_HEAP_LEVELS_KB = frozenset((200, 5120))   # Wario City only, marked in the combo
 PLAYER_HEAP_STOCK_LABEL = 'Stock (850 KB)'
-
-
-def player_heap_key(extra_kb: int) -> str:
-    return f'player_heap_{extra_kb}'
-
-
-def big_heap_key(extra_kb: int) -> str:
-    return f'player_heap_big_{extra_kb}'
+# (option key, combo label, extra KB, big), stock-memory levels first; experimental = Wario City only.
+PLAYER_HEAP_LEVELS = (
+    ('player_heap_32', '+32 KB (882 KB)', 32, False),
+    ('player_heap_64', '+64 KB (914 KB)', 64, False),
+    ('player_heap_128', '+128 KB (978 KB)', 128, False),
+    ('player_heap_200', '+200 KB (1050 KB) (experimental)', 200, False),
+    ('player_heap_big_512', '+512 KB', 512, True),
+    ('player_heap_big_1024', '+1 MB', 1024, True),
+    ('player_heap_big_2048', '+2 MB', 2048, True),
+    ('player_heap_big_4096', '+4 MB', 4096, True),
+    ('player_heap_big_5120', '+5 MB (experimental)', 5120, True),
+)
 
 
 def _kb_text(kb: int) -> str:
     return f'{kb // 1024} MB' if kb >= 1024 and kb % 1024 == 0 else f'{kb} KB'
 
 
-def _experimental(kb: int) -> str:
-    return ' (experimental)' if kb in EXPERIMENTAL_HEAP_LEVELS_KB else ''
-
-
-def _player_heap_levels() -> list[tuple[str, str, int, bool]]:
-    """(option key, combo label, extra KB, big) of every level, stock-memory levels first."""
-    out = []
-    for kb in PLAYER_HEAP_LEVELS_KB:
-        risky = ', risky' if kb > PLAYER_HEAP_RISKY_ABOVE_KB and kb not in EXPERIMENTAL_HEAP_LEVELS_KB else ''
-        label = f'+{kb} KB ({(PLAYER_HEAP_STOCK + kb * 1024) // 1024} KB{risky})'
-        out.append((player_heap_key(kb), label + _experimental(kb), kb, False))
-    for kb in BIG_HEAP_LEVELS_KB:
-        out.append((big_heap_key(kb), f'+{_kb_text(kb)} (128 MB MEM2)' + _experimental(kb), kb, True))
-    return out
-
-
 def player_heap_keys() -> list[str]:
-    return [key for key, _label, _kb, _big in _player_heap_levels()]
+    return [key for key, _label, _kb, _big in PLAYER_HEAP_LEVELS]
 
 
 def player_heap_choices(big_memory: bool = False) -> list[str]:
     """The Options tab's player memory combo items, stock first; the 128 MB levels only when ``big_memory``."""
-    return [PLAYER_HEAP_STOCK_LABEL] + [label for _key, label, _kb, big in _player_heap_levels()
+    return [PLAYER_HEAP_STOCK_LABEL] + [label for _key, label, _kb, big in PLAYER_HEAP_LEVELS
                                         if big_memory or not big]
 
 
@@ -177,19 +161,19 @@ def player_heap_level(state) -> str | None:
 
 
 def player_heap_is_big(level: str | None) -> bool:
-    return any(key == level and big for key, _label, _kb, big in _player_heap_levels())
+    return any(key == level and big for key, _label, _kb, big in PLAYER_HEAP_LEVELS)
 
 
 def player_heap_choice(level: str | None) -> str:
     """The combo item for a level (unknown shows stock)."""
-    return next((label for key, label, _kb, _big in _player_heap_levels() if key == level), PLAYER_HEAP_STOCK_LABEL)
+    return next((label for key, label, _kb, _big in PLAYER_HEAP_LEVELS if key == level), PLAYER_HEAP_STOCK_LABEL)
 
 
 def player_heap_command(choice: str) -> tuple | None:
     """The step that sets the chosen level: one option on (it replaces another level), or all of them off."""
     if choice == PLAYER_HEAP_STOCK_LABEL:
         return ('--game-options', '--off', *player_heap_keys())
-    key = next((key for key, label, _kb, _big in _player_heap_levels() if label == choice), None)
+    key = next((key for key, label, _kb, _big in PLAYER_HEAP_LEVELS if label == choice), None)
     return None if key is None else ('--game-options', '--on', key)
 
 
@@ -200,7 +184,7 @@ def player_heap_status(state) -> tuple[str, bool | None]:
         return 'Player memory: unknown', None
     if not level:
         return f'Player memory: stock ({PLAYER_HEAP_STOCK:,} bytes per player)', False
-    kb, big = next((kb, big) for key, _label, kb, big in _player_heap_levels() if key == level)
+    kb, big = next((kb, big) for key, _label, kb, big in PLAYER_HEAP_LEVELS if key == level)
     text = f'Player memory: +{_kb_text(kb)} ({PLAYER_HEAP_STOCK + kb * 1024:,} bytes per player)'
     if big:
         text += f'; needs MEM2 at 128 MB in Dolphin, else +{PLAYER_HEAP_SAFE_KB} KB'
@@ -1319,6 +1303,16 @@ class SlotDialog:
     lines: list = field(default_factory=list)   # [(text, TEXT/WARN/ERROR/OK)]
     can_apply: bool = False
     offer_stat_reset: bool = False              # the slot keeps stat edits: offer "Stage + clear stat edits"
+
+
+SKIP_CONFIRM_LABEL = 'Skip confirmation popups'
+SKIP_CONFIRM_SETTING = 'skip_confirmation_popups'   # the GUI settings key (``gui_settings``) of that checkbox
+
+
+def dialog_skippable(dialog: SlotDialog) -> bool:
+    """With "Skip confirmation popups" on: a dialog that can apply counts as OK'd; one that only informs (Close)
+    is skipped too unless it reports a warning or an error (a refusal must still be seen)."""
+    return dialog.can_apply or not any(kind in (WARN, ERROR) for _text, kind in dialog.lines)
 
 
 def _partner_lines(files: dict, sizes: dict, joined: bool = False) -> list:

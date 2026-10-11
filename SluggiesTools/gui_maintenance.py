@@ -3,6 +3,9 @@
 **Scan** runs every check in ``maintenance.CHECKS`` on a worker thread (read-only, no child process) and lists
 the problems it finds, each with its files (relative to the tools folder) and what to do. On Windows every file
 has a **Show** button that opens Explorer on it. Nothing is changed or deleted from here.
+
+The **Sound** section at the top says whether ffmpeg is installed (``Sound/ffmpeg``) and, when it isn't
+and winget is, offers to install it.
 """
 
 import os
@@ -12,6 +15,7 @@ import threading
 import dearpygui.dearpygui as dpg
 
 import maintenance
+from Sound import ffmpeg
 
 _DIM = (170, 170, 170, 255)
 _WARN = (255, 210, 90, 255)
@@ -27,6 +31,15 @@ class MaintenanceTab:
 
     def build(self):
         with dpg.tab(label='Maintenance', tag='maintenance_tab'):
+            dpg.add_text('Sound')
+            with dpg.group(horizontal=True):
+                dpg.add_text('ffmpeg: checking...', tag='maintenance_ffmpeg', color=_DIM)
+                dpg.add_button(label='Install ffmpeg (winget)', tag='maintenance_ffmpeg_install', show=False,
+                               callback=lambda: self.install_ffmpeg())
+            dpg.add_text('ffmpeg lets the sound tools read files that aren\'t WAVs (MP3, OGG, FLAC, ...). '
+                         'Installing runs "winget install Gyan.FFmpeg"; Windows may ask for permission.',
+                         color=_DIM, wrap=1300)
+            dpg.add_separator()
             dpg.add_text('Checks the working folders for problems that make the tools act on the wrong file, and '
                          'the output game for players and stadiums too big for the game\'s memory.', wrap=900)
             dpg.add_text(f'Checks: {", ".join(title for title, _check in maintenance.CHECKS)}.', color=_DIM)
@@ -38,6 +51,56 @@ class MaintenanceTab:
                 dpg.add_text('', tag='maintenance_status')
             dpg.add_separator()
             dpg.add_child_window(tag='maintenance_results', border=False, height=-1)
+        self.check_ffmpeg()
+
+    # ------------------------------------------------------------------------------------------------ ffmpeg
+
+    def check_ffmpeg(self):
+        """Look for ffmpeg on a worker thread (running ``ffmpeg -version`` takes a moment)."""
+        def work():
+            path = ffmpeg.find()
+            found = (path, ffmpeg.version(path)) if path else None
+            self.app.output_queue.put(('call', self._ffmpeg_checked, found, ffmpeg.winget() is not None))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _ffmpeg_checked(self, found, has_winget):
+        if found is not None:
+            path, version = found
+            self._ffmpeg_status(f'ffmpeg: found, {version or "version unknown"} ({path})', _OK)
+            dpg.configure_item('maintenance_ffmpeg_install', show=False)
+        elif has_winget:
+            self._ffmpeg_status('ffmpeg: not found.', _WARN)
+            dpg.configure_item('maintenance_ffmpeg_install', show=True, enabled=True)
+        else:
+            self._ffmpeg_status('ffmpeg: not found, and winget isn\'t available to install it (get "App Installer" '
+                                'from the Microsoft Store, or install ffmpeg by hand and put it on PATH).', _WARN)
+            dpg.configure_item('maintenance_ffmpeg_install', show=False)
+
+    def install_ffmpeg(self):
+        dpg.configure_item('maintenance_ffmpeg_install', enabled=False)
+        self._ffmpeg_status('ffmpeg: installing with winget (this can take a minute)...', _DIM)
+        self.app.log_line('Installing ffmpeg: winget install Gyan.FFmpeg')
+
+        def work():
+            ok, output = ffmpeg.winget_install()
+            self.app.output_queue.put(('call', self._ffmpeg_installed, ok, output))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _ffmpeg_installed(self, ok, output):
+        # winget redraws progress bars with \r; log only the lines that settled
+        lines = [line.rsplit('\r', 1)[-1].strip() for line in output.splitlines()]
+        for line in lines:
+            if line and not set(line) <= set('-\\|/ █▒'):
+                self.app.log_line('  ' + line)
+        if not ok:
+            self.app.log_line('winget did not finish the install (see above).')
+        self.check_ffmpeg()
+
+    def _ffmpeg_status(self, text, color):
+        dpg.set_value('maintenance_ffmpeg', text)
+        dpg.configure_item('maintenance_ffmpeg', color=color)
+
+    # ------------------------------------------------------------------------------------------------ scan
 
     def scan(self):
         if self.scanning:

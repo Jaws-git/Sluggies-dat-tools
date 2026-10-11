@@ -168,7 +168,7 @@ BIG_HEAP_LEVELS_KB = (512, 1024, 2048, 4096, 5120)
 # Experimental levels (2026-10-11): +200 KB and +5 MB worked at Wario City; other stadiums and heavy
 # scenes are untested. +5 MB works although 13 x 5 MB = 65 MB is more than the 64 MB BIG_EXTRA adds to
 # heap 3, so the stock heap 3 has slack. +6 MB crashed instantly with the MEM2 override on (13 x 6 MB =
-78 MB); +256 KB and +7/+8 MB were offered the same day and dropped.
+# 78 MB); +256 KB and +7/+8 MB were offered the same day and dropped.
 EXPERIMENTAL_HEAP_LEVELS_KB = frozenset((200, 5120))
 ROOT_SIZE_SITE, ROOT_SIZE_STOCK_WORD = 0x8039A85C, 0x3C600330    # lis r3,0x330
 TABLE_READ_SITE, TABLE_READ_STOCK_WORD = 0x803A58E8, 0x809C0000  # lwz r4,0(r28)

@@ -392,6 +392,24 @@ class CharacterGridTab:
                 dpg.add_loading_indicator(tag='options_spinner', style=1, radius=1.6, show=False,
                                           color=(90, 200, 120, 255), secondary_color=(60, 120, 80, 255))
                 dpg.add_text('', tag='options_status')
+            dpg.add_spacer(height=4)
+            dpg.add_separator()
+            dpg.add_spacer(height=4)
+            dpg.add_text('UI Options')
+            dpg.add_checkbox(label=gui_grid.SKIP_CONFIRM_LABEL, tag='options_skip_confirm',
+                             default_value=self.app.skip_confirmations(),
+                             callback=lambda _s, value: self._on_skip_confirm(value))
+            with dpg.tooltip('options_skip_confirm'):
+                dpg.add_text('Do not show the confirmation popups (after staging checks and dry runs, before '
+                             'writing, discarding or closing): each one goes on as if OK was clicked. Popups that '
+                             'report a refusal or an error still show; skipped ones leave their title and warnings '
+                             'in the log.', wrap=420)
+
+    def _on_skip_confirm(self, value):
+        try:
+            self.app.settings.set(gui_grid.SKIP_CONFIRM_SETTING, bool(value))
+        except OSError as exc:
+            self.app.log_line(f'[options] could not save the setting: {exc}', _WARN)
 
     # ------------------------------------------------------------------ reading
     def request_read(self):
@@ -1896,7 +1914,17 @@ class CharacterGridTab:
     def _dialog(self, dialog, on_ok, ok_label='OK', rebuild=None, toggle=None, extra=None):
         """A modal dialog: its lines, then ``ok_label`` / Cancel (``dialog.can_apply``) or Close. ``toggle``: a
         checkbox label (ticked at first); changing it redraws the lines from ``rebuild(ticked)``. Long line lists
-        scroll. ``extra``: (label, callback) for a middle button."""
+        scroll. ``extra``: (label, callback) for a middle button. With "Skip confirmation popups" on
+        (``gui_grid.dialog_skippable``) it is not shown: OK runs (Close for an info dialog), the log gets the title
+        and its warnings."""
+        if self.app.skip_confirmations() and gui_grid.dialog_skippable(dialog):
+            self.app.log_line(f'[character grid] {dialog.title} ({"OK" if dialog.can_apply else "popup"} skipped)',
+                              _DIM)
+            for text, kind in dialog.lines:
+                if kind in (gui_grid.WARN, gui_grid.ERROR):
+                    self.app.log_line(f'[character grid]   {text.strip()}', _LINE_COLORS[kind])
+            (on_ok if dialog.can_apply else self._end_action)()
+            return
         vw, vh = dpg.get_viewport_client_width(), dpg.get_viewport_client_height()
         self.confirm = dpg.add_window(label=dialog.title, modal=True, no_collapse=True, no_saved_settings=True,
                                       autosize=True, pos=(max(0, (vw - CONFIRM_W) // 2), max(0, vh // 8)),

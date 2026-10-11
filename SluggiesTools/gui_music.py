@@ -9,7 +9,7 @@ output file differs from the input one shows as replaced.
 * **Play** decodes the stream on a worker thread into a temp WAV (kept until the track changes, so a second
   Play starts at once) and plays it through ``winsound``; **Stop** stops every playback, the Sounds tab's clips
   included (winsound plays one sound at a time).
-* **Replace...** encodes a WAV into the stock stream's layout (``Sound/brstm_write``: same channels, rate and
+* **Replace...** encodes a WAV (other sound files through ffmpeg, ``Sound/clips``) into the stock stream's layout (``Sound/brstm_write``: same channels, rate and
   blocks; a WAV ``smpl`` loop is kept, else a looping stock track loops from the start) on a worker thread and
   writes ``3_Output_Dat/sound_NA/stream/<file>`` directly; CopyFilesToGameDir.bat ("Patch Game & copy files")
   copies it into the game. **Reset** writes the stock file there again (so the next copy restores the game's).
@@ -27,6 +27,8 @@ from dataclasses import dataclass
 
 import dearpygui.dearpygui as dpg
 
+from Sound import ffmpeg
+
 _DIM = (200, 200, 200, 255)
 _FAINT = (140, 140, 140, 255)
 _WARN = (255, 210, 90, 255)
@@ -35,7 +37,8 @@ _ERROR = (255, 120, 110, 255)
 _CHANGED = (110, 170, 255, 255)
 _WINDOWS = os.name == 'nt'
 BUTTON_H = 28
-WAV_FILTERS = [('WAV files', '*.wav;*.wave'), ('All files', '*.*')]
+WAV_FILTERS = [('Sound files', ';'.join('*' + e for e in ('.wav', '.wave') + ffmpeg.AUDIO_EXTENSIONS)),
+               ('WAV files', '*.wav;*.wave'), ('All files', '*.*')]
 WAV_DIR_SETTING = 'music_last_wav_dir'          # the GUI settings key: the folder the last Replace... WAV came from
 
 
@@ -135,7 +138,8 @@ class MusicTab:
         with dpg.file_dialog(directory_selector=False, show=False, modal=True, tag='music_wav_dialog', width=760,
                              height=460, callback=self._on_fallback_chosen, cancel_callback=lambda *_: None,
                              default_path=start):
-            dpg.add_file_extension('.wav', color=(120, 180, 255, 255))
+            for ext in ('.wav',) + ffmpeg.AUDIO_EXTENSIONS:
+                dpg.add_file_extension(ext, color=(120, 180, 255, 255))
             dpg.add_file_extension('.*')
 
     def _on_fallback_chosen(self, _sender, app_data):
@@ -196,7 +200,7 @@ class MusicTab:
             else 'the sound archive'
         dpg.set_value('music_info', f'The game\'s music and jingles: the stream sounds of {source}, played from '
                       '3_Output_Dat/sound_NA/stream when a file is there, else from 1_Input/sound_NA/stream. '
-                      'Replace... encodes a WAV into 3_Output_Dat/sound_NA/stream ("Patch Game & copy files" copies '
+                      'Replace... encodes a WAV (or MP3, OGG, FLAC, ... when ffmpeg is installed) into 3_Output_Dat/sound_NA/stream ("Patch Game & copy files" copies '
                       'it into the game). Stop stops every playback.')
 
     def _status(self, text, color):
@@ -261,7 +265,7 @@ class MusicTab:
                         dpg.add_text('Play the track once (decoded the first time, which takes a moment)'
                                      if _WINDOWS else 'Playback needs Windows')
                     with dpg.tooltip(replace):
-                        dpg.add_text('Pick a WAV: it is encoded in the stock track\'s format (channels, rate) and '
+                        dpg.add_text('Pick a WAV (or MP3, OGG, FLAC, ... with ffmpeg): it is encoded in the stock track\'s format (channels, rate) and '
                                      'written to 3_Output_Dat/sound_NA/stream. A loop in the WAV (smpl chunk) is '
                                      'kept; else a looping stock track loops from the start. Takes a few seconds '
                                      'per minute of music.', wrap=380)

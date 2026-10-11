@@ -2,15 +2,16 @@
 
 The stock voice clips are mono DSP-ADPCM at 32,000 Hz, 0.1-2.4 s long (the vanilla archive, 2026-10-10). A
 custom clip is brought to that shape once, at intake (``prepare``): any RIFF WAVE (PCM 8/16/24/32-bit, float
-32/64, WAVE_FORMAT_EXTENSIBLE) is mixed down to mono, resampled to ``RATE`` (linear, as the external tool's
-``voice_clips.convert`` does) and cut at ``MAX_SECONDS``. Then it is DSP-ADPCM encoded with the coefficients of
+32/64, WAVE_FORMAT_EXTENSIBLE), or any other sound file ffmpeg decodes (``Sound/ffmpeg``: MP3, OGG, FLAC, ...),
+is mixed down to mono, resampled to ``RATE`` (linear, as the external tool's ``voice_clips.convert`` does) and
+cut at ``MAX_SECONDS``. Then it is DSP-ADPCM encoded with the coefficients of
 a stock voice wave (``encode``: ``brsar_write.encode_clip`` over the templates ``voice_templates`` picks from the
 archive, the one that reproduces the clip best wins). The encoded RWAV is what the roster config, roster packs
 and the derive round trip carry (``Roster/char_voices``): it is copied into the archive byte for byte, never
 re-encoded, like the portraits' kept CMPR blocks.
 
-``load_clip`` reads either a finished ``.rwav`` (checked: mono DSP-ADPCM) or a WAV (prepared and encoded), so
-configs written by hand may name WAV files, and the GUI, which encodes at intake, names RWAVs.
+``load_clip`` reads either a finished ``.rwav`` (checked: mono DSP-ADPCM) or any other sound file (prepared and
+encoded), so configs written by hand may name WAV (or MP3, ...) files, and the GUI, which encodes at intake, names RWAVs.
 """
 
 import os
@@ -18,7 +19,7 @@ import struct
 
 import numpy as np
 
-from Sound import brsar, brsar_write, dsp_adpcm, wavfile
+from Sound import brsar, brsar_write, dsp_adpcm, ffmpeg, wavfile
 
 RATE = 32000                      # the stock voice clips' sample rate
 MAX_SECONDS = 2.5                 # longest stock voice clip: 2.419 s; longer clips are cut
@@ -42,7 +43,8 @@ def read_wav(path_or_bytes):
 
 def read_wav_frames(path_or_bytes):
     """``(rate, float64 samples in -1..1 shaped (samples, channels), loop)`` of a RIFF WAVE file (path or
-    bytes). ``loop``: ``(start, end)`` (``end`` exclusive) of the first ``smpl`` loop, or None."""
+    bytes). A path that isn't a WAV (MP3, OGG, FLAC, ...) is decoded by ffmpeg when it is installed; its loop
+    is then None. ``loop``: ``(start, end)`` (``end`` exclusive) of the first ``smpl`` loop, or None."""
     if isinstance(path_or_bytes, (bytes, bytearray)):
         b, name = bytes(path_or_bytes), 'the WAV data'
     else:
@@ -53,7 +55,14 @@ def read_wav_frames(path_or_bytes):
         except OSError as exc:
             raise ClipError(f'{name}: {exc.strerror or exc}') from exc
     if len(b) < 12 or b[:4] != b'RIFF' or b[8:12] != b'WAVE':
-        raise ClipError(f'{name} is not a WAV file')
+        if isinstance(path_or_bytes, (bytes, bytearray)):
+            raise ClipError(f'{name} is not a WAV file')
+        try:                                             # MP3, OGG, FLAC, ...: decoded by ffmpeg when installed
+            b = ffmpeg.decode_to_wav(path_or_bytes)
+        except ffmpeg.FfmpegError as exc:
+            raise ClipError(str(exc)) from exc
+        if len(b) < 12 or b[:4] != b'RIFF' or b[8:12] != b'WAVE':
+            raise ClipError(f'ffmpeg did not make a WAV of {name}')
     fmt = data = smpl = None
     o = 12
     while o + 8 <= len(b):

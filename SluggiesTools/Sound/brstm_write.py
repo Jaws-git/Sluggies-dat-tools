@@ -1,4 +1,5 @@
-"""Music replacement: a user's WAV -> a ``.brstm`` in the layout of the stock stream it replaces.
+"""Music replacement: a user's WAV (or MP3, OGG, ... through ffmpeg, ``Sound/clips``) -> a ``.brstm`` in the
+layout of the stock stream it replaces.
 
 The stock streams (``sound_NA/stream``, 2026-10-11) are all stereo DSP-ADPCM, 32,000 or 44,100 Hz, in blocks of
 8,192 bytes (14,336 samples) per channel. A replacement keeps the stock file's channel count, rate and block
@@ -311,7 +312,8 @@ def build(original, channels, loop):
 
 
 def encode_wav(path, original):
-    """A WAV file -> ``(brstm bytes, notes)`` replacing the stock stream ``original`` (its bytes).
+    """A WAV file (or any sound file ffmpeg decodes) -> ``(brstm bytes, notes)`` replacing the stock stream
+    ``original`` (its bytes).
 
     Loop: the WAV's ``smpl`` loop when it has one; else the whole track loops when the stock stream loops."""
     from Sound import clips
