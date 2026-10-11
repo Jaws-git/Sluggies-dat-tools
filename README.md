@@ -110,6 +110,7 @@ See [Icon Guide](_docs/IconGuide.md)
 ## Development progress:
 ✅ SLUGGers IntermediatE (.sluggie) export  
 ✅ .png texture & .glb model (optional, `--glb`) export  
+✅ sound export (WAV, optional, `--export-sounds`)  
 ✅ Blender Import/Export plugin  
 ✅ Vertex position editing  
 ✅ Vertex animation editing (shapekeys)  

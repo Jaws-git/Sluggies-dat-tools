@@ -1,7 +1,8 @@
 @echo off
 setlocal
-rem Copies the patched game files (dt_na.dat, main.dol, fst.bin) from this
-rem folder into the unpacked game. The target game directory is stored in the
+rem Copies the patched game files (dt_na.dat, main.dol, fst.bin, and the sound
+rem archive sound_NA\MY2.brsar plus any sound_NA\stream\*.brstm when present)
+rem from this folder into the unpacked game. The target game directory is stored in the
 rem "sluggiespath" file next to this script; on first run it is asked for.
 rem
 rem Exit code 0: every file found here was copied. Exit code 1: nothing or not
@@ -48,6 +49,8 @@ if errorlevel 1 echo WARNING: Could not save the path to "%pathfile%"; it will b
 call :copy_one dt_na.dat DATA\files\dt_na.dat
 call :copy_one main.dol DATA\sys\main.dol
 call :copy_one fst.bin DATA\sys\fst.bin
+call :copy_one sound_NA\MY2.brsar DATA\files\sound_NA\MY2.brsar
+for %%f in ("%src_dir%sound_NA\stream\*.brstm") do call :copy_one sound_NA\stream\%%~nxf DATA\files\sound_NA\stream\%%~nxf
 
 if %failed% GTR 0 goto copy_failed
 if %copied% EQU 0 goto nothing_to_copy
@@ -93,7 +96,7 @@ echo        Correct or delete the "sluggiespath" file in this folder and try aga
 goto fail
 
 :nothing_to_copy
-echo ERROR: None of dt_na.dat, main.dol or fst.bin is in "%src_dir%". Nothing was copied.
+echo ERROR: None of dt_na.dat, main.dol, fst.bin or sound_NA\MY2.brsar is in "%src_dir%". Nothing was copied.
 goto fail
 
 :copy_failed

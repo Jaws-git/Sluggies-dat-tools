@@ -53,7 +53,7 @@ import os
 from dataclasses import dataclass, field
 
 try:
-    from . import icons, ids, names, open_slot, slot_plan, voices, wheels
+    from . import char_voices, clip_files, icons, ids, names, open_slot, slot_plan, voices, wheels
 except ImportError:
     import icons
     import ids
@@ -62,13 +62,16 @@ except ImportError:
     import slot_plan
     import voices
     import wheels
+    import char_voices
+    import clip_files
 
 PRESET_ICON_PREFIX = 'preset_'
 OPEN_NAMES = (None, '', names.UNNAMED, open_slot.SLOT_NAME['en'])
 STOCK_ENTRIES = ((names.STOCK_KEY, 'name'), (icons.STOCK_KEY, 'icon'), (ids.STOCK_STATS_KEY, 'stats'),
-                 (voices.STOCK_KEY, 'voice'))
+                 (voices.STOCK_KEY, 'voice'), (char_voices.KEY, 'char_voice'), (clip_files.SPECIES_KEY, 'species_clips'))
 FIELD_LABELS = {'model': 'models', 'equipment': 'equipment', 'name': 'name', 'icon': 'portraits',
-                'stats': 'stats source', 'voice': 'square voice', 'stat_edits': 'stat edits'}
+                'stats': 'stats source', 'voice': 'square voice', 'char_voice': 'own voice',
+                'species_clips': 'voice pack clips', 'stat_edits': 'stat edits'}
 
 
 class SwitchError(ValueError):
@@ -210,11 +213,26 @@ def _merge_new_id(entry: dict, old: dict, char: dict | None, env: slot_plan.Env)
     return kept
 
 
+def _absolute_preset_clips(config: dict, clip_dir: str | None) -> None:
+    """The preset's own clip files, named relative to the preset, become absolute: the merged config is written
+    beside the derived clips, whose folder they are not in."""
+    if clip_dir is None:
+        return
+    for key in (char_voices.KEY, clip_files.SPECIES_KEY):
+        for entry in config.get(key) or []:
+            clips = entry.get('clips') if isinstance(entry, dict) else None
+            if isinstance(clips, dict):
+                for moment, name in clips.items():
+                    if isinstance(name, str) and not os.path.isabs(name):
+                        clips[moment] = os.path.join(clip_dir, name)
+
+
 def plan_switch(preset: dict, game_st: dict, game_derived, env: slot_plan.Env, state_file: str,
-                icon_dir: str = icons.ICON_DIR) -> SwitchPlan:
+                icon_dir: str = icons.ICON_DIR, clip_dir: str | None = None) -> SwitchPlan:
     """The merged config and chain that switch the game to ``preset`` (module docstring). ``game_st``: the read
     state with ``vanilla`` flags (``state_cli.add_vanilla_flags``) and ``stat_edits``; ``game_derived``: its
-    derived config (``derive.Derived``); ``icon_dir``: where the preset's portrait files are."""
+    derived config (``derive.Derived``); ``icon_dir``: where the preset's portrait files are; ``clip_dir``: where
+    its clip files are (None: left as named)."""
     config = copy.deepcopy(preset)
     plan = SwitchPlan(config)
     try:
@@ -223,6 +241,7 @@ def plan_switch(preset: dict, game_st: dict, game_derived, env: slot_plan.Env, s
     except (ValueError, StopIteration) as exc:
         raise SwitchError(f'the roster configuration is not valid: {exc}') from exc
     _prefix_preset_icons(config, icon_dir, plan)
+    _absolute_preset_clips(config, clip_dir)
     derived = game_derived.config
     chars = {c['id']: c for c in game_st.get('characters') or []}
     edited = {int(k, 16) for k in ((game_st.get('stat_edits') or {}).get('characters') or {})}

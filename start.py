@@ -57,6 +57,7 @@ EXPORT_SCRIPT = os.path.join(ROOT_DIR, 'SluggiesTools', 'export.py')
 TOOLS_DIR = os.path.join(ROOT_DIR, 'SluggiesTools')
 ICONS_DIR = os.path.join(TOOLS_DIR, 'Icons')
 ICON_EXPORT_SCRIPT = os.path.join(ICONS_DIR, 'export_icons.py')
+SOUND_EXPORT_SCRIPT = os.path.join(TOOLS_DIR, 'Sound', 'export_sounds.py')
 HS_DIR = os.path.join(TOOLS_DIR, 'Hammerspace')
 HS_MAIN_SCRIPT = os.path.join(HS_DIR, 'HammerspaceMain.py')
 UNTANGLE_POLICY_SCRIPT = os.path.join(HS_DIR, 'UntanglePolicy.py')
@@ -206,10 +207,12 @@ def self_command(*args):
 
 
 def run_slot_chain(target_id=None, sluggie=None, dry_run=False, edits_file=None, rename=None, voice=None,
-                   stats=None, icon=None, fit=None, trim=True, equipment=None, no_gear=False, copy_from=None):
+                   stats=None, icon=None, fit=None, trim=True, equipment=None, no_gear=False, copy_from=None,
+                   char_voice=None, species_clip=None):
     """Write staged slot edits as one chain: an edits file (``edits_file``, ``--apply-slots``), or a batch of one:
     patch a .sluggie (and its HP/L_ partner) into a slot, name the slot (``rename``: the text, blank resets it),
-    give its square another voice (``voice``) or the slot other stats (``stats``: a character ID, ``-`` resets),
+    give its square another voice (``voice``), the slot a voice of its own (``char_voice``) or other stats
+    (``stats``: a character ID, ``-`` resets),
     replace one portrait (``icon``: ``(view, image)``, fitted with ``fit`` / ``trim``), make the slot a clone of
     another character (``copy_from``: its ID, the grid's paste), or clear the slot (none given). Plans the chain
     (Roster/slot_cli.py: read and derive once, apply every edit; a refused edit refuses the batch and writes
@@ -229,6 +232,11 @@ def run_slot_chain(target_id=None, sluggie=None, dry_run=False, edits_file=None,
         cmd += ['--rename', target_id, rename]
     elif voice is not None:
         cmd += ['--voice', target_id, voice]
+    elif char_voice is not None:
+        cmd += ['--char-voice', target_id, char_voice]
+    elif species_clip is not None:
+        moment, file = species_clip
+        cmd += ['--species-clip', target_id, moment, file if file.strip() in ('', '-', 'default') else os.path.abspath(file)]
     elif stats is not None:
         cmd += ['--stats', target_id, stats]
     elif copy_from is not None:
@@ -393,6 +401,16 @@ def run_export_icons(use_output=False):
         check=True
     )
     slogger.info('Icon export complete: FrontIcon.png/SideIcon.png are in each character model folder', source="dispatcher")
+
+
+def run_export_sounds():
+    """Decode 1_Input/sound_NA (MY2.brsar + stream/*.brstm) into 2_Output_Models/_SOUNDS as WAV files
+    (Sound/export_sounds.py). False when the export failed."""
+    if importlib.util.find_spec('numpy') is None:
+        slogger.error("Missing required package: numpy", source="dispatcher")
+        slogger.error("Run: pip install numpy", source="dispatcher")
+        sys.exit(1)
+    return subprocess.run(python_script_command(SOUND_EXPORT_SCRIPT), cwd=TOOLS_DIR).returncode == 0
 
 
 def hammerspace_section_args(model):
@@ -807,6 +825,9 @@ def parse_args():
             '  python start.py --copy-slot 0x00 0xE1\n'
             '  python start.py --export-slot 0xE1\n'
             '  python start.py --set-voice 0x00 0x09\n'
+            '  python start.py --set-char-voice 0x66 0x09\n'
+            '  python start.py --set-char-voice 0x66 pack:Rosalina\n'
+            '  python start.py --set-species-clip 0x00 v1 my_cheer.wav\n'
             '  python start.py --set-stats 0x00 -\n'
             '  python start.py --set-icon 0xE1 front my_portrait.png --fit cover\n'
             '  python start.py --apply-slots _gui/slot/edits.json --dry-run\n'
@@ -824,6 +845,8 @@ def parse_args():
     mode.add_argument('--patch-slot', nargs=2, metavar=('0xNN', 'FILE'), help='put a .sluggie (and its HP/L_ partner) into a slot: read -> rebuild (own model directory, stats, voice, name, portraits) -> patch (GUI character grid)')
     mode.add_argument('--clear-slot', metavar='0xNN', help='return a slot to its baseline: a stock slot gets its vanilla models and portraits back, a new ID a fresh copy of its template and the open-slot look')
     mode.add_argument('--set-voice', nargs=2, metavar=('SQUARE', '0xNN'), help="give a square (any of its slots' IDs) the voice of 0xNN's family, on the select screen and on the field; a stock square changes its whole species, a new square its square-only new IDs; - resets it (read -> rebuild)")
+    mode.add_argument('--set-char-voice', nargs=2, metavar=('0xNN', 'VOICE'), help="give slot 0xNN a voice of its own, on the select screen and on the field, whatever its square speaks with: 0xMM (that character's family), pack:NAME (a voice pack from Sound_Packs/ on top of its base voice) or 0xMM+pack:NAME (the clips are copied into its voice bank in 3_Output_Dat/sound_NA/MY2.brsar; needs 1_Input/sound_NA/MY2.brsar); - resets it (read -> rebuild)")
+    mode.add_argument('--set-species-clip', nargs=3, metavar=('0xNN', 'MOMENT', 'FILE'), help="replace voice moment MOMENT (v1, v3, v4, v5, v6, v7, v8, v10, v11, v12, v13, v14) of slot 0xNN's species' voice with the WAV or .rwav FILE, for everyone who speaks with that voice (needs 1_Input/sound_NA/MY2.brsar); - puts the stock clip back (read -> rebuild)")
     mode.add_argument('--set-stats', nargs=2, metavar=('0xNN', '0xMM'), help="let slot 0xNN play with stock player 0xMM's stats (stats, pitching, fielding, chemistry; model, size and voice stay); - resets it to its own / its template's (read -> rebuild)")
     mode.add_argument('--set-icon', nargs=3, metavar=('0xNN', 'VIEW', 'IMAGE'), help="make an image (PNG, JPEG, BMP, GIF, TGA or WEBP) slot 0xNN's front or side portrait, fitted to 48x51 (see --fit, --no-trim); the other view keeps what the slot shows now (read -> rebuild)")
     mode.add_argument('--copy-slot', nargs=2, metavar=('0xSS', '0xTT'), help='make slot 0xTT a clone of '
@@ -847,6 +870,7 @@ def parse_args():
     mode.add_argument('--apply-stat-edits', nargs='+', metavar='FILE', help="write the Sluggers Stat Editor's edit files (stat_edits.json from Bridge Mode; several: in order, a later one wins) into 3_Output_Dat/main.dol; refused unless made from this main.dol; an item reset:0xNN clears that character's stat edits at its place in the order (with --dry-run: list the changes only)")
     mode.add_argument('--export', action='store_true', help='export all models from 1_Input to 2_Output_Models')
     mode.add_argument('--export-icons', action='store_true', help="write each character's FrontIcon.png/SideIcon.png into its model folder in 2_Output_Models")
+    mode.add_argument('--export-sounds', action='store_true', help="decode the game's sounds (1_Input/sound_NA: MY2.brsar and stream/*.brstm, copied from the game's files/sound_NA) into 2_Output_Models/_SOUNDS as WAV files, one folder per archive group")
 
     parser.add_argument('--debug', action='store_true', help='export only: write binary blobs as raw byte arrays instead of base64')
     parser.add_argument('--notex', action='store_true', help='export only: skip texture extraction')
@@ -885,11 +909,11 @@ def parse_args():
         parser.error('--use-output can only be used with --export-icons.')
     if args.dry_run and not (args.roster or args.game_options or args.load_roster
                              or args.patch_slot or args.clear_slot or args.rename_slot or args.set_voice
-                             or args.copy_slot
+                             or args.set_char_voice or args.set_species_clip or args.copy_slot
                              or args.set_stats or args.set_icon or args.apply_slots or args.apply_stat_edits):
         parser.error('--dry-run can only be used with --roster, --game-options, --patch-slot, '
-                     '--clear-slot, --copy-slot, --rename-slot, --set-voice, --set-stats, --set-icon, '
-                     '--apply-slots, '
+                     '--clear-slot, --copy-slot, --rename-slot, --set-voice, --set-char-voice, --set-species-clip, '
+                     '--set-stats, --set-icon, --apply-slots, '
                      '--apply-stat-edits or --load-roster.')
     if args.equipment and not (args.patch_slot or args.clear_slot):
         parser.error('--equipment can only be used with --patch-slot or --clear-slot.')
@@ -927,7 +951,7 @@ def parse_args():
         parser.error('--config and --state cannot be used together.')
     if args.roster and not (args.config or args.remove or args.state):
         parser.error('--roster needs --config PATH (a roster configuration), --state PATH or --remove.')
-    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.copy_slot, args.export_slot, args.rename_slot, args.set_voice, args.set_stats, args.set_icon, args.apply_slots, args.save_roster, args.load_roster, args.write_slot_blocks, args.write_slot_equipment, args.resplit_unused, args.export, args.export_icons, args.roster, args.roster_state, args.roster_derive, args.game_options, args.stat_bridge_export, args.apply_stat_edits]):
+    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.copy_slot, args.export_slot, args.rename_slot, args.set_voice, args.set_char_voice, args.set_species_clip, args.set_stats, args.set_icon, args.apply_slots, args.save_roster, args.load_roster, args.write_slot_blocks, args.write_slot_equipment, args.resplit_unused, args.export, args.export_icons, args.export_sounds, args.roster, args.roster_state, args.roster_derive, args.game_options, args.stat_bridge_export, args.apply_stat_edits]):
         if len(sys.argv) == 1:
             args.gui = True
         else:
@@ -1043,6 +1067,9 @@ def main() -> int:
             run_export(debug=args.debug, notex=args.notex, untangle=args.untangle, glb=args.glb)
         elif args.export_icons:
             run_export_icons(use_output=args.use_output)
+        elif args.export_sounds:
+            if not run_export_sounds():
+                return 1
         elif args.patch:
             # A failed slot patch fails the command (the apply chain stops on it); plain patches keep going.
             if not run_patching(args.patch, unpatch=False, target_id=args.target_id, as_low=args.as_low,
@@ -1070,6 +1097,13 @@ def main() -> int:
                 return 1
         elif args.set_voice:
             if not run_slot_chain(args.set_voice[0], voice=args.set_voice[1], dry_run=args.dry_run):
+                return 1
+        elif args.set_char_voice:
+            if not run_slot_chain(args.set_char_voice[0], char_voice=args.set_char_voice[1], dry_run=args.dry_run):
+                return 1
+        elif args.set_species_clip:
+            if not run_slot_chain(args.set_species_clip[0], species_clip=tuple(args.set_species_clip[1:]),
+                                  dry_run=args.dry_run):
                 return 1
         elif args.set_stats:
             if not run_slot_chain(args.set_stats[0], stats=args.set_stats[1], dry_run=args.dry_run):

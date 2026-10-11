@@ -31,11 +31,12 @@ STATE_FILE = '/out/_gui/slot/roster.json'
 
 
 def fill_voice_tables(image) -> None:
-    """Species s: voice bank 0x100 + s, clip row of the INFO IDs 0x1000 * (s + 1) + slot."""
+    """Species s: voice bank 0x100 + s, clip row of the INFO IDs s * 12 + slot (``synthetic_sound.voice_id``: the
+    IDs of the synthetic voice archive, ``build_voice_archive``)."""
     for s in range(voices.SPECIES + 2):
         image.write(voices.GROUPS + 4 * s, struct.pack('>i', 0x100 + s))
         image.write(voices.CLIPS + voices.CLIP_ROW * s,
-                    struct.pack('>12I', *(0x1000 * (s + 1) + k for k in range(12))))
+                    struct.pack('>12I', *(12 * s + k for k in range(12))))
 
 
 def group(image, s):
@@ -95,7 +96,7 @@ class VoiceTableTests(unittest.TestCase):
         fill_voice_tables(image)
         voices.write_remap(image, {0: 9, 9: 0, 0x0D: 9})
         self.assertEqual([group(image, s) for s in (0, 9, 0x0D, 1)], [0x109, 0x100, 0x109, 0x101])
-        self.assertEqual([clip0(image, s) for s in (0, 9, 0x0D)], [0xA000, 0x1000, 0xA000])
+        self.assertEqual([clip0(image, s) for s in (0, 9, 0x0D)], [108, 0, 108])
         self.assertEqual(image.read(voices.CLIPS + voices.CLIP_ROW * 0, voices.CLIP_ROW),
                          image.read(voices.CLIPS + voices.CLIP_ROW * 0x0D, voices.CLIP_ROW))
 
@@ -115,8 +116,8 @@ class StockVoiceStepTests(unittest.TestCase):
 
     def test_tables_swap_and_nothing_else_changes(self):
         self.assertEqual((group(self.image, 0), group(self.image, 9)), (0x109, 0x100))
-        self.assertEqual((clip0(self.image, 0), clip0(self.image, 9)), (0xA000, 0x1000))
-        self.assertEqual((group(self.plain, 0), clip0(self.plain, 9)), (0x100, 0xA000))
+        self.assertEqual((clip0(self.image, 0), clip0(self.image, 9)), (108, 0))
+        self.assertEqual((group(self.plain, 0), clip0(self.plain, 9)), (0x100, 108))
         for s in (1, 0x0D):
             self.assertEqual((group(self.image, s), clip0(self.image, s)), (group(self.plain, s), clip0(self.plain, s)))
         for cid in (0x00, 0x09, 0x67):

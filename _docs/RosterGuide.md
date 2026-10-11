@@ -150,6 +150,47 @@ on the field:
 - A voice is picked per character family: picking Blue Toad gives the
   square Toad's voice.
 
+A **character voice** belongs to one slot, whatever its square speaks with:
+
+```
+python start.py --set-char-voice 0x8F 0x09
+python start.py --set-char-voice 0x8F -
+```
+
+The slot then speaks with that family's voice on the select screen and on
+the field, while the other members of its square keep theirs. A **voice
+pack** (a folder in `Sound_Packs/`, made on the GUI's Sounds tab from your own
+WAV files) can go on top of a stock voice, so a custom character gets its own
+clips:
+
+```
+python start.py --set-char-voice 0x8F pack:Rosalina
+python start.py --set-char-voice 0x8F 0x09+pack:Rosalina
+python start.py --set-species-clip 0x00 v1 my_cheer.wav
+python start.py --set-species-clip 0x00 v1 -
+```
+
+The first gives the slot the pack's clips on top of the pack's base voice (the
+stock voice its unfilled moments come from), the second on top of Bowser's.
+`--set-species-clip` replaces one voice moment of a stock voice (here Mario's
+short cheer) for every character who speaks with that voice; `-` puts the
+stock clip back. The 12 voice moments are `v1` short cheer, `v3` big effort,
+`v4` talking line, `v5` long cheer, `v6` hit by something, `v7` and `v8` two
+more long cheers, `v10` stagger, `v11` small hurt, `v12` falling, `v13` the
+select-screen name call, `v14` throw grunt. A WAV of any format is made mono,
+32 kHz and at most 2.5 s long, then encoded like the game's clips (a few
+seconds per clip). All of this needs the
+game's sound archive: copy the game's `files/sound_NA` folder (`MY2.brsar`
+and `stream/`) into `1_Input/sound_NA/`. The voice's clips are copied into
+the slot's voice bank, and the rebuild writes the grown archive to
+`3_Output_Dat/sound_NA/MY2.brsar`, which goes into the game with the other
+files (`CopyFilesToGameDir.bat` copies it). Each copied voice adds about
+100–250 KB to the bank of the slot's species, which the game loads whenever
+that species plays; the Maintenance tab's "Sound memory" check warns when a
+bank grows past what is known to work. `-` gives the slot its square's voice
+back; clearing a slot does so too, and copying a character brings its voice
+along. Miis cannot take a voice.
+
 `--set-stats` lets a slot play with another stock character's (`0x00`–`0x4C`)
 stats: batting, pitching, fielding and chemistry. Its model, size, voice and
 name stay. Chemistry follows the stats: a stock character with Bowser's
@@ -334,8 +375,11 @@ refused edits.
 
 In the GUI, the **Character grid** tab does the same: click a square, then a
 slot, and use **Rename...** (or click the slot's name), **Select .sluggie...**,
-**Clear slot** or **Stats...**. The square view has **Voice...** (a
-one-member square shows it on the slot view). Clicking the slot view's front
+**Clear slot**, **Adopt stats...** or **Voice...** (the slot's own voice: a stock
+character's voice or a voice pack from the Sounds tab, whatever its square
+speaks with; the slot view shows the voice in force, "(square)" or "(own)").
+The square view has **Set voice (all)...** for the whole square (a one-member
+square shows it on the slot view too). Clicking the slot view's front
 or side portrait picks an image for it: a dialog shows your image, the 48x51
 result beside the other portrait, the fit choices (**Fit inside**, **Fill
 and crop**, **Exact 48x51**) and **Trim transparent border**, with warnings
@@ -535,6 +579,41 @@ that square speaks with it.
 "stock_voices": [{"id": "0x00", "voice": "0x09"}, {"id": "0x09", "voice": "0x00"}]
 ```
 
+### `character_voices`: a voice of one slot's own
+
+A list of `{"id": …, "voice": …}`. `id` is any slot on the grid (a stock
+character, an unused character on a wheel, a new ID; not a Mii); `voice` is
+the character shown on a stock square whose voice it takes. The slot speaks
+with it on the select screen and on the field whatever its square speaks
+with; the voice's clips are copied into the slot's voice bank in the sound
+archive (needs `1_Input/sound_NA/MY2.brsar`).
+
+```json
+"character_voices": [{"id": "0x8F", "voice": "0x09"},
+                     {"id": "0x90", "voice": "0x09", "clips": {"v1": "cheer.wav", "v13": "name.rwav"},
+                      "pack": "Rosalina"}]
+```
+
+`clips` (optional) names a clip file per voice moment (`v1` … `v14`, see
+"Voice and stats"): a WAV of any format (made mono, 32 kHz, at most 2.5 s and
+encoded when the roster is built) or an encoded `.rwav`. A relative name is
+looked up beside the config file (derived configs keep their clips in
+`clips/`); an absolute path works too. With `clips`, `voice` is optional: the
+moments without a clip keep the stock voice given, or the slot's own species
+voice without one. `pack` is only a label (the voice pack's name, shown by the
+GUI).
+
+### `species_clips`: other clips for a stock voice
+
+A list of `{"id": …, "clips": …}`. `id` is a stock square (by the character it
+shows); `clips` as above. The moments named are replaced for every character
+who speaks with that voice: the square's whole wheel, any square that took the
+voice with `stock_voices`, and any character voice that copies it.
+
+```json
+"species_clips": [{"id": "0x00", "clips": {"v1": "mario_cheer.wav"}}]
+```
+
 ### `wheel_order`
 
 Lists of IDs, one list per wheel: those members come first, in that order.
@@ -562,3 +641,55 @@ square are hidden and skipped by the pointer and the D-pad.
   under 600 KB). The select-screen layout grows by up to a few tens of KB.
 - Only the exhibition draft is covered. Toy Field, minigames and Free practice
   use another character screen, which is not expanded.
+- A character voice copies 11 clips (about 100–250 KB) into the voice bank of
+  the slot's species, which the game loads whenever that species plays. Several
+  voices on one species add up; the largest bank known to work held about
+  1.16 MB of clips (the Maintenance tab warns past that).
+- A custom clip adds its own size (about 18 KB per second of audio) to the
+  same bank; a voice pack's clips are added once per species that uses it.
+
+## Sounds tab: voice packs
+
+The GUI's **Sounds** tab lists the game's voice packs (one per stock voice: its
+12 moments, with Play) and your custom packs (`Sound_Packs/<name>/`, one folder
+per pack with the encoded clips and a copy of each prepared WAV).
+
+- **Game voice pack**: **Replace...** on a moment picks a WAV (or `.rwav`),
+  encodes it and stages a replacement for everyone who speaks with that voice
+  (the character grid's pending list; **Patch Game** writes it). **Reset** drops
+  the pending edit or stages the stock clip back. Replaced moments show blue,
+  pending ones orange.
+- **Custom pack**: **New pack...** creates one; **Replace...** fills a moment
+  from a WAV at once (nothing to stage: a pack is a library), **Reset** empties
+  it, the **Base voice** combo picks the stock voice its unfilled moments come
+  from. **Rename...**, **Delete**, **Export...** (one `.sluggiesvoice` file,
+  which **Import pack...** reads back) manage the pack. A pack reaches the game
+  through the character grid: open a slot, **Voice...**, pick the pack. After a
+  clip changed, **Stage for its slots** stages the pack again on every slot
+  that speaks with it.
+
+Roster packs (`.sluggiesroster`, format 3) carry the custom clips, so a saved
+roster plays the same voices anywhere; loading one shows "own voice clips" and
+"voice pack clips" among the differing fields.
+
+## Music tab
+
+The GUI's **Music** tab lists the game's 78 music tracks and jingles (the
+stream sounds of the sound archive) in one list: name, `.brstm` file, length,
+format, and **Play**, **Stop**, **Replace...**, **Reset**. It reads the output
+first: `3_Output_Dat/sound_NA/MY2.brsar` when it exists, and each track from
+`3_Output_Dat/sound_NA/stream/` when a file is there, else from
+`1_Input/sound_NA/`. Replaced tracks show blue.
+
+- **Play** plays a track once (the first Play of a track decodes it, a moment);
+  any **Stop** stops every playback, voice clips included.
+- **Replace...** picks a WAV (any rate, mono or stereo) and encodes it in the
+  stock track's format (stereo, its 32,000 or 44,100 Hz, same block layout), so
+  only the `.brstm` changes. It is written to `3_Output_Dat/sound_NA/stream/`
+  at once (nothing to stage); **Patch Game & copy files** (CopyFilesToGameDir)
+  copies it into the game. A loop in the WAV (`smpl` chunk, as the sound export
+  writes) is kept; otherwise a track that loops in the game loops from the
+  start. Encoding takes a few seconds per minute of music (a spinner shows
+  meanwhile); quality is about that of the stock tracks.
+- **Reset** writes the stock track to `3_Output_Dat/sound_NA/stream/` again, so
+  the next copy restores the game's.

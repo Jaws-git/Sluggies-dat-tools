@@ -49,6 +49,23 @@ replaced portraits (``stock_icons``) and another stats source
 template's stats, the "Empty slot" name and portraits. The square voice
 stays.
 
+Character voice (``plan_char_voice``, op ``char_voice``): a slot speaks with
+a stock character's voice as its own (``character_voices``: the clips are
+copied into its voice bank in the sound archive, which the rebuild writes to
+``3_Output_Dat/sound_NA``), whatever its square speaks with; ``None`` takes
+it away; a clear resets it; a paste copies the source's. With a voice pack
+(``pack``: a ``Sound_Packs/<name>`` folder, ``Env.sound_pack``), the pack's
+custom clips go on top of the stock voice (the pack's base voice unless
+``source`` names another), stored as ``clips`` (encoded RWAVs beside the
+derived config, ``Plan.clips``). Needs ``1_Input/sound_NA/MY2.brsar``
+(``Env.sound_archive``).
+
+Species clip (``plan_species_clip``, op ``species_clip``): one voice moment of
+a stock voice is replaced for everyone who speaks with it (``species_clips``:
+the clip goes into the species' voice bank, the species' clip row points at
+it), from a WAV or an encoded ``.rwav`` (``Env.read_clip``); ``file`` None
+puts the stock clip back. The edit's ``id`` is any slot of the species.
+
 Stats and voice (``plan_stats`` / ``plan_voice``): any slot can
 play with another stock player's stats (new IDs: ``ids[].stats``; stock IDs:
 ``stock_stats``), and any square can speak with another square's voice (new
@@ -96,8 +113,11 @@ import os
 from dataclasses import dataclass, field
 
 try:
-    from . import gear, icon_art, icon_import, icons, ids, model_icons, names, open_slot, voices, wheels
+    from ..Sound import sound_packs
+    from . import (char_voices, clip_files, gear, icon_art, icon_import, icons, ids, model_icons, names, open_slot,
+                   voices, wheels)
 except ImportError:
+    from Sound import sound_packs
     import gear
     import icon_art
     import icon_import
@@ -107,6 +127,8 @@ except ImportError:
     import names
     import open_slot
     import voices
+    import char_voices
+    import clip_files
     import wheels
 
 HIGH_FILE, LOW_FILE = 0, 1
@@ -313,6 +335,18 @@ class Env:
         """What stat edits the game holds for ``cid`` (``StatEditor/carry.CharacterEdits.text``), or None."""
         return None
 
+    def sound_archive(self) -> bool:
+        """Whether the game's sound archive is in ``1_Input/sound_NA`` (character voices copy clips into it)."""
+        return True
+
+    def sound_pack(self, name: str):
+        """The custom voice pack ``name`` (``Sound/sound_packs.CustomPack``, from ``Sound_Packs/``), or None."""
+        return None
+
+    def read_clip(self, path: str) -> bytes:
+        """A clip file (an encoded ``.rwav``, or a WAV to encode) as RWAV bytes; a refusal raises ``PlanError``."""
+        raise PlanError(f'cannot read the clip {os.path.basename(path)} here')
+
     def current_block(self, char: dict, role: str) -> bytes | None:
         """The block the slot loads now for ``role`` (``high`` / ``low`` / an equipment role), or None."""
         return None
@@ -372,6 +406,7 @@ class Plan:
     copy_source: int | None = None  # copy: the character the slot becomes a clone of
     # copy: the snapshot files the chain reads ({file name in the copy folder: bytes, RGBA image or JSON data})
     copy_files: dict = field(default_factory=dict)
+    clips: dict = field(default_factory=dict)        # {clip file name: RWAV bytes} the config's new custom clips
 
     def to_json(self) -> dict:
         out = {'action': self.action, 'target': _hex(self.target), 'rebuild': self.config is not None,
@@ -606,6 +641,7 @@ def plan_clear(st: dict, config: dict, cid: int, state_file: str, env: Env | Non
         plan.notes += [f'{target_name}: own model directory copied afresh from its template {_hex(template)}',
                        'stats back to the template\'s; name "Empty slot"; empty-slot portraits',
                        'the square\'s voice is kept']
+        _clear_char_voice(new, cid, plan, target_name)
         plan.config = new
         _prepare(plan, state_file, [])
     else:
@@ -621,6 +657,7 @@ def plan_clear(st: dict, config: dict, cid: int, state_file: str, env: Env | Non
             _drop(new, ids.STOCK_STATS_KEY, entry)
             plan.notes.append(f'{target_name}: its own stats come back')
             plan.effects['stats'] = 'its own'
+        _clear_char_voice(new, cid, plan, target_name)
         if new != config:
             plan.config = new
         _prepare(plan, state_file, [])
@@ -928,6 +965,141 @@ def plan_voice(st: dict, config: dict, cid: int, source: int | None, state_file:
     plan.commands.append(('--roster-state',))
     plan.notes.append(f'{square_name} speaks with {shown}: {reach}, on the select screen and on the field')
     plan.effects['voice'] = (shown[:-len("'s voice")] if shown.endswith("'s voice") else shown) + ' (square voice)'
+    return plan
+
+
+def _clear_char_voice(config: dict, cid: int, plan: 'Plan', target_name: str) -> None:
+    """A clear resets the slot's character voice (it belongs to the character, unlike the square voice)."""
+    entry = _entry(config, char_voices.KEY, cid)
+    if entry is not None:
+        _drop(config, char_voices.KEY, entry)
+        plan.notes.append(f'{target_name}: its own voice is reset, it speaks with its square\'s voice again')
+        plan.effects[CHAR_VOICE] = 'the square\'s'
+
+
+def _replace_entry(config: dict, key: str, cid: int, entry: dict | None) -> None:
+    """Put ``entry`` (whole) into the stock list ``key`` in place of ``cid``'s; None removes it."""
+    old = _entry(config, key, cid)
+    if old is not None:
+        _drop(config, key, old)
+    if entry is not None:
+        config.setdefault(key, []).append(entry)
+        config[key].sort(key=lambda e: ids._number(e['id'], key))
+
+
+def _needs_archive(env: Env | None, what: str) -> None:
+    if env is not None and not env.sound_archive():
+        raise PlanError(f'{what} the sound archive: copy the game\'s files/sound_NA/MY2.brsar (and stream/) into '
+                        '1_Input/sound_NA first')
+
+
+def plan_char_voice(st: dict, config: dict, cid: int, source: int | None, state_file: str,
+                    names_text: dict | None = None, env: Env | None = None, pack: str | None = None) -> Plan:
+    """The chain that gives slot ``cid`` the voice of ``source``'s family as its own (``character_voices``), or
+    takes it away (``None``: the slot speaks with its square's voice again). The voice's clips are copied into
+    the slot's voice bank in the sound archive (``Roster/char_voices.py``), so ``1_Input/sound_NA/MY2.brsar``
+    must be there (``env.sound_archive``). ``pack``: a custom voice pack (``env.sound_pack``) whose clips go on
+    top; ``source`` None then means the pack's base voice (none: the slot's species voice)."""
+    char = _character(st, cid)
+    if (source is not None or pack is not None) and cid >= ids.PLAYER_END and _entry(config, 'ids', cid) is None:
+        raise PlanError(f'{_hex(cid)} has no voice bank (a Mii): it cannot take a voice')
+    custom = None
+    if pack is not None:
+        custom = env.sound_pack(pack) if env is not None else None
+        if custom is None:
+            raise PlanError(f'there is no voice pack named {pack!r} in {sound_packs.PACK_DIR}')
+        if source is None:
+            source = custom.voice
+        if not custom.clips and source is None:
+            raise PlanError(f'the voice pack {pack!r} has no clips and no base voice: nothing to give the slot')
+        _needs_archive(env, 'custom clips go into')
+    elif source is not None:
+        _needs_archive(env, 'a character voice copies its clips into')
+    family = None if source is None else voice_family(st, source)
+    new = copy.deepcopy(config)
+    plan = Plan(CHAR_VOICE, cid, None)
+    target_name = _display(char)
+    if custom is not None and custom.clips:
+        entry = {'id': _hex(cid)}
+        if family is not None:
+            entry['voice'] = _hex(family)
+        entry['clips'] = {}
+        for moment in sound_packs.MOMENT_KEYS:
+            if moment in custom.clips:
+                rwav = custom.rwav_bytes(moment)
+                name = clip_files.file_name(rwav)
+                entry['clips'][moment] = name
+                plan.clips[name] = rwav
+        entry['pack'] = custom.name
+        _replace_entry(new, char_voices.KEY, cid, entry)
+        base = (f'{_source_name(family, names_text, st)}\'s voice' if family is not None
+                else 'its species\' voice')
+        shown = (f'the voice pack {custom.name!r} ({len(custom.clips)} custom clip'
+                 f'{"s" if len(custom.clips) != 1 else ""}, the rest {base})')
+        effect = f'pack {custom.name} ({len(custom.clips)} custom, rest {base[:-len(" voice")]})'
+    else:
+        _replace_entry(new, char_voices.KEY, cid,
+                       None if family is None else {'id': _hex(cid), 'voice': _hex(family)})
+        shown = 'its square\'s voice' if family is None else f'{_source_name(family, names_text, st)}\'s voice'
+        effect = 'the square\'s' if family is None else _source_name(family, names_text, st)
+    if _same_clips(new, config):
+        plan.nothing = True
+        plan.notes.append(f'nothing to change: {target_name} speaks with {shown} already')
+        return plan
+    plan.config = new
+    _prepare(plan, state_file, [])
+    plan.commands.append(('--roster-state',))
+    plan.notes.append(f'{target_name} speaks with {shown}' + (' as its own, whatever its square speaks with, on '
+                      'the select screen and on the field (its clips are copied into the slot\'s voice bank in '
+                      '3_Output_Dat/sound_NA/MY2.brsar: copy that file into the game too)'
+                      if family is not None or custom is not None else ''))
+    plan.effects[CHAR_VOICE] = effect
+    return plan
+
+
+def _same_clips(a: dict, b: dict) -> bool:
+    """Whether two configs are equal (clip files are named by content, so names compare as content)."""
+    return a == b
+
+
+def plan_species_clip(st: dict, config: dict, cid: int, moment: str, file: str | None, env: Env,
+                      state_file: str, names_text: dict | None = None) -> Plan:
+    """The chain that replaces voice moment ``moment`` of ``cid``'s species' voice for everyone who speaks with it
+    (``species_clips``) by the clip in ``file`` (a WAV or ``.rwav``, ``env.read_clip``), or puts the stock clip back
+    (``file`` None)."""
+    if moment not in sound_packs.SLOT_OF:
+        raise PlanError(f'{moment!r} is not a voice moment ({", ".join(sound_packs.MOMENT_KEYS)})')
+    head = voice_family(st, cid)
+    new = copy.deepcopy(config)
+    plan = Plan(SPECIES_CLIP, cid, None)
+    entry = _entry(new, clip_files.SPECIES_KEY, head)
+    clips = dict((entry or {}).get('clips') or {})
+    who = f'{_source_name(head, names_text, st)}\'s voice'
+    if file is None:
+        clips.pop(moment, None)
+        shown = f'{moment} ({sound_packs.ROLE_OF[moment]}) is the stock clip'
+        effect = f'{moment} back to the stock clip'
+    else:
+        _needs_archive(env, 'a replaced clip goes into')
+        rwav = env.read_clip(file)
+        name = clip_files.file_name(rwav)
+        clips[moment] = name
+        plan.clips[name] = rwav
+        shown = f'{moment} ({sound_packs.ROLE_OF[moment]}) is {os.path.basename(file)}'
+        effect = f'{moment} from {os.path.basename(file)}'
+    _replace_entry(new, clip_files.SPECIES_KEY, head,
+                   {'id': _hex(head), 'clips': {m: clips[m] for m in sound_packs.MOMENT_KEYS if m in clips}}
+                   if clips else None)
+    if new == config:
+        plan.nothing = True
+        plan.notes.append(f'nothing to change: {shown} of {who} already')
+        return plan
+    plan.config = new
+    _prepare(plan, state_file, [])
+    plan.commands.append(('--roster-state',))
+    plan.notes.append(f'{who}: {shown}, for every character who speaks with that voice (the clip goes into the '
+                      'species\' voice bank in 3_Output_Dat/sound_NA/MY2.brsar: copy that file into the game too)')
+    plan.effects[SPECIES_CLIPS] = effect
     return plan
 
 
@@ -1245,6 +1417,19 @@ def plan_copy(st: dict, config: dict, base_config: dict, cid: int, source: int, 
             plan.effects['voice'] = f'{_source_name(voice, names_text, st)} (square voice)'
     elif square.get('voice') != voice:
         plan.notes.append(f'{target_name} keeps its square\'s voice ({_source_name(square["voice"], names_text, st)})')
+    own_voice = src.get('char_voice')
+    if cid < ids.PLAYER_END or entry is not None:
+        source_entry = _entry(new, char_voices.KEY, source)      # the whole entry: voice, custom clips, pack
+        copied = None if source_entry is None else {**copy.deepcopy(source_entry), 'id': _hex(cid)}
+        _replace_entry(new, char_voices.KEY, cid, copied)
+        if own_voice != char.get('char_voice') or (source_entry or {}).get('clips') != (
+                _entry(config, char_voices.KEY, cid) or {}).get('clips'):
+            if copied is not None and copied.get('clips'):
+                plan.effects[CHAR_VOICE] = (f'pack {copied.get("pack") or "custom clips"} '
+                                            f'({len(copied["clips"])} custom)')
+            else:
+                plan.effects[CHAR_VOICE] = ('the square\'s' if own_voice is None
+                                            else _source_name(own_voice, names_text, st))
 
     # portraits
     if not has_portrait_records(cid):
@@ -1345,10 +1530,13 @@ def plan_stat_reset(st: dict, cid: int, env: Env, after_files: bool = False) -> 
 
 SLOT_WRITES = ('--patch', '--unpatch', '--write-slot-blocks', '--write-slot-equipment')   # step 4 of a batch
 MODEL_OPS = ('patch', 'clear', 'copy')               # copy: the slot becomes a clone of ``source`` (paste)
-VALUE_OPS = ('voice', 'stats')                        # the last one per slot (voice: per square) wins
+CHAR_VOICE = 'char_voice'                             # the slot's own voice (``character_voices``)
+SPECIES_CLIP = 'species_clip'                         # one moment of a stock voice (``species_clips``); per moment
+SPECIES_CLIPS = 'species_clips'                       # its effects key
+VALUE_OPS = ('voice', 'stats', CHAR_VOICE)            # the last one per slot (voice: per square) wins
 EQUIP_OPS = ('equip', 'equip_clear')                  # the last one per slot file wins
 STAT_RESET = 'stat_reset'                             # one per slot; written with the stat edit files, in order
-SLOT_OPS = MODEL_OPS + ('rename',) + VALUE_OPS + ('icon',) + EQUIP_OPS + (STAT_RESET,)
+SLOT_OPS = MODEL_OPS + ('rename',) + VALUE_OPS + ('icon',) + EQUIP_OPS + (STAT_RESET, SPECIES_CLIP)
 COPY = 'copy'
 STAT_EDITS = 'stat_edits'                             # not a slot edit: every one is written, in staging order
 GAME_WIDE = 0xFF                                      # the "id" of a stat edit: no character has it
@@ -1379,6 +1567,8 @@ class Edit:
     gear_file: int | None = None    # equip / equip_clear: the slot file (2-5); equip: None = the file it came from
     gear: GearPick | None = None    # equip: the picked file's origin (``merge_edits``)
     no_gear: bool = False           # patch into a new ID: do not take the model's bats and gloves along
+    pack: str | None = None         # char_voice: a custom voice pack's name (its clips on top of the voice)
+    moment: str | None = None       # species_clip: the voice moment (``file``: the clip; None: the stock clip back)
 
     def to_json(self) -> dict:
         out = {'op': self.op, 'id': _hex(self.cid)}
@@ -1389,7 +1579,12 @@ class Edit:
                 out['sluggie'] = self.file
                 out['origin'] = self.origin or 'user'
             return out
-        for key in ('file', 'low', 'text', 'view', 'origin'):
+        if self.op == SPECIES_CLIP:
+            out.update(moment=self.moment, file=self.file)
+            if self.origin is not None:
+                out['origin'] = self.origin
+            return out
+        for key in ('file', 'low', 'text', 'view', 'origin', 'pack'):
             if getattr(self, key) is not None:
                 out[key] = getattr(self, key)
         if self.no_gear:
@@ -1447,6 +1642,15 @@ def parse_edits(data) -> list[Edit]:
             continue
         edit = Edit(item['op'], cid, item.get('file'), item.get('low'), item.get('text'), bool(item.get('checked')), n)
         edit.no_gear = item.get('gear') is False
+        if edit.op == SPECIES_CLIP:
+            edit.moment, edit.origin = item.get('moment'), item.get('origin')
+            if edit.moment not in sound_packs.SLOT_OF:
+                raise PlanError(f'edit {n}: a species_clip edit needs a "moment" '
+                                f'({", ".join(sound_packs.MOMENT_KEYS)}), not {edit.moment!r}')
+            if edit.file is not None and not isinstance(edit.file, str):
+                raise PlanError(f'edit {n}: a species_clip edit\'s "file" is a clip file, or null for the stock clip')
+            edits.append(edit)
+            continue
         if edit.op == 'patch' and not edit.file:
             raise PlanError(f'edit {n}: a patch needs a "file"')
         if edit.op == 'rename' and not isinstance(edit.text, str):
@@ -1459,12 +1663,16 @@ def parse_edits(data) -> list[Edit]:
             if edit.source is None:
                 raise PlanError(f'edit {n}: a copy edit needs a "source" (the character to clone)')
         if edit.op in VALUE_OPS:
-            if 'source' not in item:
+            if 'source' not in item and not (edit.op == CHAR_VOICE and item.get('pack')):
                 raise PlanError(f'edit {n}: a {edit.op} edit needs a "source" (null: back to the default)')
             try:
-                edit.source = parse_source(item['source'])
+                edit.source = parse_source(item.get('source'))
             except PlanError as exc:
                 raise PlanError(f'edit {n}: {exc}') from exc
+            if edit.op == CHAR_VOICE and item.get('pack') is not None:
+                if not isinstance(item['pack'], str) or not item['pack'].strip():
+                    raise PlanError(f'edit {n}: "pack" must be a voice pack\'s name')
+                edit.pack = item['pack']
         if edit.op == 'icon':
             edit.view, edit.origin = item.get('view'), item.get('origin')
             edit.fit = item.get('fit', icon_art.DEFAULT_FIT_MODE)
@@ -1567,6 +1775,14 @@ def merge_edits(edits: list[Edit], classify_fn=None, load_icon_fn=None, classify
                 merged.remove(same)
             merged.append(edit)
             continue
+        if edit.op == SPECIES_CLIP:                   # per slot and moment: the last one wins (plan_batch: per species)
+            same = next((e for e in merged if e.cid == edit.cid and e.op == SPECIES_CLIP and e.moment == edit.moment),
+                        None)
+            if same is not None:
+                merged.remove(same)
+                notes.append(f'{_hex(edit.cid)}: the pending {edit.moment} clip edit is replaced by the later one')
+            merged.append(edit)
+            continue
         if edit.op == COPY:
             for old in [e for e in merged if e.cid == edit.cid]:
                 merged.remove(old)
@@ -1655,6 +1871,10 @@ def merge_edits(edits: list[Edit], classify_fn=None, load_icon_fn=None, classify
             for stats in [e for e in merged if e.cid == edit.cid and e.op == 'stats']:
                 merged.remove(stats)
                 notes.append(f'{_hex(edit.cid)}: the stats edit is dropped: the later clear resets the stats')
+            for own in [e for e in merged if e.cid == edit.cid and e.op == CHAR_VOICE]:
+                merged.remove(own)
+                notes.append(f'{_hex(edit.cid)}: the voice edit is dropped: the later clear resets the slot\'s '
+                             'own voice')
             for icon in [e for e in merged if e.cid == edit.cid and e.op == 'icon']:
                 merged.remove(icon)
                 notes.append(f'{_hex(edit.cid)}: the {icon.view} portrait edit is dropped: the later clear resets '
@@ -1681,6 +1901,7 @@ class Batch:
     extra_portraits: dict = field(default_factory=dict)
     portraits: dict = field(default_factory=dict)  # icon edits' portraits ({file name: RGBA image or PNG path})
     copy_files: dict = field(default_factory=dict)  # pastes' snapshot files ({name in copy_dir: data})
+    clips: dict = field(default_factory=dict)      # voice edits' custom clips ({file name: RWAV bytes})
 
     @property
     def ok(self) -> bool:
@@ -1736,6 +1957,10 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
                 plan = plan_stats(st, current, edit.cid, edit.source, state_file, names_text, env)
             elif edit.op == 'voice':
                 plan = plan_voice(st, current, edit.cid, edit.source, state_file, names_text)
+            elif edit.op == CHAR_VOICE:
+                plan = plan_char_voice(st, current, edit.cid, edit.source, state_file, names_text, env, edit.pack)
+            elif edit.op == SPECIES_CLIP:
+                plan = plan_species_clip(st, current, edit.cid, edit.moment, edit.file, env, state_file, names_text)
             elif edit.op == STAT_EDITS:
                 plan = plan_stat_edits(edit.file, env)
             elif edit.op == COPY:
@@ -1769,6 +1994,13 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
             portraits_touched.add(edit.cid)
         batch.portraits.update(plan.portraits)
         batch.copy_files.update(plan.copy_files)
+        batch.clips.update(plan.clips)
+        if edit.op == SPECIES_CLIP:                   # one edit per species and moment: the later one replaces
+            head = voice_family(st, edit.cid)
+            for earlier in [(e, p) for e, p in batch.plans if e.op == SPECIES_CLIP and e is not edit
+                            and e.moment == edit.moment and voice_family(st, e.cid) == head]:
+                batch.plans.remove(earlier)
+                batch.notes.append(f'{_hex(edit.cid)}: the earlier {edit.moment} clip edit of its voice is replaced')
         if edit.op == 'voice':
             square = st['squares'][_character(st, edit.cid)['square']]
             for earlier in [(e, p) for e, p in batch.plans

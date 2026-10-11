@@ -160,11 +160,102 @@ byte 2 of the character ID (the ID in the player's stats row, bytes 0–1):
 | select-screen voice | `0x804A5628` (slot 10, `v13`) | as the clip row; all select voices are in one shared group |
 
 So a character speaks with the species of its byte 2 everywhere, and the
-game loads that species' bank for it: there is no separate per-ID voice. The
-external tool gives its new characters own clips by a different route
-(exact-ID tables behind hooks at `0x804B2898`/`0x804B2910`, the clips added
-to the template family's bank in `MY2.brsar`); that needs sound archive
-edits, which SluggiesTools does not make.
+game loads that species' bank for it: the stock game has no per-ID voice.
+
+**Character voices** (`character_voices`, `Roster/char_voices.py`,
+2026-10-10; the external tool's `voice_hooks.py` ported, permission to reuse)
+give one ID a voice of its own. The exact ID travels as `ID * 8`, the
+selector-row offset the callers already hold in r0, to the clip wrapper
+`0x804B2898`, which remembers the ID's own 12-slot table; the lookup
+`0x804B2910` (`lwzx r5,r5,r0`) reads that table instead of the species row.
+Nine sites (inventory group `char_voices`): the wrapper entry (`stwu`,
+branch), the lookup (branch), the owner `0x80142078` (`bl` to the family
+search `0x80387028`, which publishes r0 around the call: inside the search
+r0 is the first family member, not the actor), the scripted actor resolver
+call `0x8036C674` (`bl 0x8036B4E0`; mound entrance, strikeout celebration)
+and its five `rlwinm r0,r0,3,0,28` ID-to-token conversions, which publish
+the ID while the resolver runs. The wrapper takes the token from the owner
+word when its return address is `0x8038710C` (the search), from r0 for the
+direct callers `0x80386FA8`, `0x80388698` and `0x804A5630` (the select
+screen), and none otherwise: every other caller of the wrapper, and the
+other callers of the family search, keep the species voice (coverage as the
+external tool's; not surveyed further). Stubs live in the DOL hammerspace
+text section, the tables, a 12-byte state and a pointer table (one word per
+ID up to the highest voiced one) in the data section.
+
+A gameplay clip plays only while its bank is loaded, and the game loads the
+bank of the species on the field (the group word, after any stock square
+swap), so the voice's 11 gameplay clips are copied into the ID's *family
+file*: the archived RWSD + RWAR file (`MY2.brsar`) that holds its species'
+current first clip (`v1`). `Sound/brsar_write.add_sounds` appends them
+(RWAR with the RWAVs byte for byte, RWSD entries copied from entry 0, INFO
+entries copied from the family's same-slot clip with the voice clip's
+volume, the sound table and the SYMB string table moved to their sections'
+ends, the FILE section laid out again); stock sounds keep their IDs, bytes
+and files. Each (file, voice, slot) is copied once, named
+`zz<clip>_f<file>`. The name call (slot 10, `v13`) is in the select file
+(file 160, every species' calls, always loaded on the select screen): the
+table takes the voice's stock ID there. An ID whose species already speaks
+the voice gets its row as its table and no copies. The runner reads
+`1_Input/sound_NA/MY2.brsar` and writes `3_Output_Dat/sound_NA/MY2.brsar`
+on every run, the input bytes plus the copies, so no run builds on another;
+voices that need copies are refused without the input archive. Vanilla family
+files hold 79–252 KB of wave data (the select file 726 KB); a copied voice
+adds the source's 11 clips (Bowser's into Mario's file 14: 161,152 →
+369,696 bytes). The external tool's fullest bank, about 1.16 MB, worked
+(`FAMILY_FILE_TESTED_MAX`); the Maintenance "Sound memory" check warns past
+it. *Dolphin* 2026-10-10: Mario with Bowser's name call on the select
+screen (table only); the vanilla archive plus one unused copied clip plays
+every stock voice as before; Mario with Bowser's copied clips speaks with
+Bowser's voice on the field while his wheel members keep Mario's, no
+crashes.
+
+**Custom clips** (2026-10-10, `Roster/clip_files.py`, `Sound/clips.py`):
+`character_voices[].clips` and `species_clips[].clips` map voice moments
+(`v1 v3 v4 v5 v6 v7 v8 v10 v11 v12 v13 v14`, the clip row's slot order,
+`Sound/sound_packs.MOMENTS`) to clip files. A WAV of any PCM or float format
+is mixed to mono, resampled (linear) to 32,000 Hz, the stock clips' rate, cut
+at 2.5 s (the longest stock clip is 2.419 s) and DSP-ADPCM encoded with the
+coefficients of one of the first 8 waves of the select file (the one that
+reproduces it best; about 5-6 s of encoding per second of audio with 8
+candidates); an `.rwav` is taken as it is (checked: mono DSP-ADPCM). The
+encoded RWAV is what every later stage carries, byte for byte, like the
+portraits' CMPR blocks: derived configs and roster packs name clips by content
+(`<sha1[:16]>.rwav` in `clips/` beside the config, format 3 packs), the
+derive reads them back from the output archive by their INFO IDs, and an
+unchanged derive -> rebuild stays byte-identical (`tests/test_roster_derive.py`,
+"custom clips"). A relative clip name is looked up in the run's clip folder
+(`RosterContext.clip_dir`: `clips/` beside a derived config, the preset's own
+folder for a hand-written one). Species clips are written by the `voices`
+step before the square swaps (the species' row word points at the new sound,
+appended to its family file, or to the select file for `v13`, with the
+species' own clip in that slot as the entry template), so a swap or a
+character voice that copies the voice takes the replaced clips along; the
+`char_voices` step adds a character's own clips the same way (one sound per
+file, slot and content, named `zzc<hash>_s<slot>_f<file>`, species clips
+`zzs...`), and when the species' current clip in that slot already is that
+very RWAV the table takes the existing sound. Manifest: `species_clips` as
+`[species, slot, INFO ID]`, `character_voices` as `[id, voice]` for a plain
+stock voice (the old shape) or `[id, voice or null, {slot: INFO ID}, pack
+label]`. The state carries `char_clip_ids` / `char_pack` per character and
+`clip_ids` per stock square; `state_cli` turns the IDs into RWAV SHA-1s
+(`char_clips`, `clips`) for the pack fingerprints (`clips`, `species_clips`;
+absent in older packs, which count as "no custom clips").
+
+**Voice packs** (`Sound/sound_packs.py`): a custom pack is a folder
+`Sound_Packs/<name>/` with `pack.json` (format 1: `name`, `voice` = the stock
+base voice or null, `clips` per moment: the encoded `.rwav`, the prepared
+`.wav` for playback, the user's `origin` file, `seconds`), exportable as one
+`.sluggiesvoice` zip. Assigning a pack to a slot (`--set-char-voice 0xNN
+pack:NAME`, the grid's slot-level Voice...) turns it into a `character_voices`
+entry with the pack's clips (`slot_plan.plan_char_voice`, `Env.sound_pack`),
+so the game files never depend on the pack folder. A stock pack is a species'
+clip row plus its sounds as the input files hold them (`stock_packs`); the
+GUI's Sounds tab lists both kinds (`gui_sounds.py`).
+
+Real build (2026-10-10): Mario with Bowser's voice plus a custom `v1`
+(Luigi's `luigi_v1.wav` re-encoded, 9,472 B): file 14 161,152 -> 364,992 wave
+bytes, 11 sounds added. Dolphin check of custom clips still open.
 
 **Byte 2 is more than the voice.** It has about 83 readers. Besides wheels,
 squares and voice, gameplay code tests a few species directly: `0x19`
@@ -783,13 +874,16 @@ some. The content is the same, and the next round trip is byte-identical
 again.
 
 **Roster packs** (`.sluggiesroster`, `Roster/pack.py`): a zip of `pack.json`
-(format 2; format 1 has no equipment and loads as "equipment unchanged"),
+(format 3; format 1 has no equipment and loads as "equipment unchanged",
+format 2 no voice clips and loads as "no custom clips"),
 `state.json` (the derived config, own directories by source only),
 `icons/` (the derived portraits; their names are kept because two entries
-can share one cell), `models/0xNN_hp.bin`, `_l.bin`, `_bat.bin` … (the
+can share one cell), `clips/<sha1>.rwav` (the custom voice clips, by content),
+`models/0xNN_hp.bin`, `_l.bin`, `_bat.bin` … (the
 finished blocks that differ from the slot's vanilla start) and
 `fingerprints.json` (per slot: block SHA-1s, own-directory source, portrait
-pixel SHA-1s, name, stats source, square voice and head). After an untangle
+pixel SHA-1s, name, stats source, square voice, own voice, own and species
+clip SHA-1s, and head). After an untangle
 export a pack of the whole output holds about 62 blocks, 7.2 MB. Loading
 checks every block before anything is written, keeps an own directory whose
 source and blocks already match, and otherwise copies the directory afresh
@@ -808,8 +902,9 @@ the merged config (`--roster --state`):
   unchanged copy of its old template's files), its stats source, and its
   name and portraits unless they are the open-slot ones; a portrait `like`
   that was the old template is dropped. Spare rows keep name and portraits.
-  The game's `stock_names`, `stock_icons`, `stock_stats` and `stock_voices`
-  entries replace the preset's for the same ID; a new square headed by a
+  The game's `stock_names`, `stock_icons`, `stock_stats`, `stock_voices`,
+  `character_voices` and `species_clips` entries replace the preset's for the
+  same ID (custom clips travel as the derived `clips/` files); a new square headed by a
   kept new ID takes that ID's old square voice. A new ID's directory holds
   all of its source's files (models, equipment, animations), so a different
   template does not change what poses its models, and stock IDs never change

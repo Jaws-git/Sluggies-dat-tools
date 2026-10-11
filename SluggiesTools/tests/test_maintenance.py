@@ -133,3 +133,43 @@ class FindUniqueTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SoundMemoryTests(unittest.TestCase):
+    """The output archive's voice banks against ``char_voices.FAMILY_FILE_TESTED_MAX`` (synthetic DOL + archive)."""
+
+    def setUp(self):
+        from SluggiesTools.Roster import char_voices
+        from SluggiesTools.tests.test_roster_grid import image_for_grid
+        from SluggiesTools.tests.test_roster_voice_stats_reassign import fill_voice_tables
+        import synthetic_sound as synth
+        self.char_voices = char_voices
+        self.tmp = self.enterContext(tempfile.TemporaryDirectory())
+        image = image_for_grid()
+        fill_voice_tables(image)
+        os.makedirs(os.path.join(self.tmp, '3_Output_Dat', 'sound_NA'))
+        os.makedirs(os.path.join(self.tmp, '1_Input', 'sound_NA'))
+        with open(os.path.join(self.tmp, '3_Output_Dat', 'main.dol'), 'wb') as handle:
+            handle.write(image.to_bytes())
+        self.archive = synth.build_voice_archive()[0]
+        for folder in ('3_Output_Dat', '1_Input'):
+            with open(os.path.join(self.tmp, folder, 'sound_NA', 'MY2.brsar'), 'wb') as handle:
+                handle.write(self.archive)
+
+    def test_banks_within_the_limit_are_fine(self):
+        self.assertEqual(maintenance.sound_memory(self.tmp), [])
+
+    def test_a_grown_bank_is_reported_once(self):
+        with mock.patch.object(self.char_voices, 'FAMILY_FILE_TESTED_MAX', 100):
+            problems = maintenance.sound_memory(self.tmp)
+        self.assertEqual(len(problems), 41)                                    # one per family file, each once
+        first = problems[0]
+        self.assertEqual(first.check, 'Sound memory')
+        self.assertIn('species 0x00', first.summary)
+        self.assertIn('(vanilla ', first.summary)
+        self.assertEqual(first.paths, (os.path.join(self.tmp, '3_Output_Dat', 'sound_NA', 'MY2.brsar'),))
+
+    def test_without_an_output_archive_nothing_is_checked(self):
+        os.remove(os.path.join(self.tmp, '3_Output_Dat', 'sound_NA', 'MY2.brsar'))
+        self.assertEqual(maintenance.sound_memory(self.tmp), [])
+

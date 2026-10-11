@@ -17,6 +17,7 @@ import json
 import os
 import shutil
 import struct
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -32,11 +33,14 @@ from SluggiesTools.tests.test_roster_grid import image_for_grid
 from SluggiesTools.tests.test_roster_names import plate_bank, stock_table
 from SluggiesTools.tests.test_roster_state_icons import STOCK0
 from SluggiesTools.tests.test_roster_voice_stats_reassign import fill_voice_tables
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import synthetic_sound as synth  # noqa: E402
 
 STOCK_AT = 0x1000
 NAMES_AT = {'en': 0xA0000, 'fr': 0xA4000, 'sp': 0xA8000}
 NAME_DIR_POINTER = 0x80692C28           # dir 121's record list (its file 5 is the name record)
 BASE = 0x100000                         # stands in for BASE_SIZE
+SOUND, RWAV_OF = synth.build_voice_archive()  # 1_Input/sound_NA/MY2.brsar (its INFO IDs match fill_voice_tables)
 
 
 def drifting_cmpr(page) -> bytes:
@@ -103,6 +107,11 @@ class Harness(unittest.TestCase):
         self.enterContext(mock.patch.object(relocate, 'scan_refs', return_value=[]))
         self.icon_dir = os.path.join(self.tmp, 'icons_in')
         os.makedirs(self.icon_dir)
+        self.clip_dir = os.path.join(self.tmp, 'clips_in')          # custom clips: two stock waves as files
+        os.makedirs(self.clip_dir)
+        for name, key in (('a.rwav', (20, 0)), ('b.rwav', (21, 10))):
+            with open(os.path.join(self.clip_dir, name), 'wb') as f:
+                f.write(RWAV_OF[key])
         for name, img in (('red.png', portrait((170, 40, 40, 255), hole=True)), ('blue.png', portrait((40, 90, 200, 255))),
                           ('green.png', portrait((30, 180, 60, 255), hole=True)), ('grey.png', portrait('grey'))):
             img.save(os.path.join(self.icon_dir, name))
@@ -129,7 +138,7 @@ class Harness(unittest.TestCase):
         self.input_dol = image.to_bytes()
         self.runs = 0
 
-    def build(self, config: dict, icon_dir: str | None = None):
+    def build(self, config: dict, icon_dir: str | None = None, clip_dir: str | None = None):
         """The roster steps (all but the layout copy) on fresh copies of the input files, then the manifest.
         Returns (DOL bytes, DAT bytes, context, the DAT file, the DOL image)."""
         self.runs += 1
@@ -139,7 +148,8 @@ class Harness(unittest.TestCase):
         from SluggiesTools.Dol import dolfile
         image = dolfile.DolImage(self.input_dol)
         ctx = steps.RosterContext(dol=image, dat=dat, config=config,
-                                  icon_dir=self.icon_dir if icon_dir is None else icon_dir)
+                                  icon_dir=self.icon_dir if icon_dir is None else icon_dir, sound=SOUND,
+                                  clip_dir=self.clip_dir if clip_dir is None else clip_dir)
         ctx.state[layout_file.STATE_KEY] = RecordingLayout()
         for step in steps.all_steps():
             if step.key != 'layout_file':
@@ -152,21 +162,23 @@ class Harness(unittest.TestCase):
     def round_trip(self, config: dict):
         """Build, derive, rebuild twice; returns the derived config. Asserts byte identity each time."""
         dol1, dat1, ctx1, dat, image = self.build(config)
-        derived = derive.derive(image, dat)
+        derived = derive.derive(image, dat, ctx1.state.get('sound_out', SOUND))
         self.assertEqual(derived.warnings, [])
         folder = os.path.join(self.tmp, f'derived{self.runs}')
         path = derive.write(derived, folder)
         with open(path, encoding='utf-8') as f:
             config2 = json.load(f)
-        dol2, dat2, ctx2, dat_b, image_b = self.build(config2, derive.icon_dir_of(path))
+        dol2, dat2, ctx2, dat_b, image_b = self.build(config2, derive.icon_dir_of(path), derive.clip_dir_of(path))
         self.assertEqual(dol2, dol1, 'main.dol differs after read -> rebuild')
         self.assertEqual(dat2, dat1, 'dt_na.dat differs after read -> rebuild')
         self.assertEqual(ctx2.state[layout_file.STATE_KEY].outputs, ctx1.state[layout_file.STATE_KEY].outputs)
-        again = derive.write(derive.derive(image_b, dat_b), os.path.join(self.tmp, f'derived{self.runs}b'))
+        self.assertEqual(ctx2.state.get('sound_out'), ctx1.state.get('sound_out'), 'the sound archive differs')
+        again = derive.write(derive.derive(image_b, dat_b, ctx2.state.get('sound_out', SOUND)),
+                             os.path.join(self.tmp, f'derived{self.runs}b'))
         with open(again, encoding='utf-8') as f:
             config3 = json.load(f)
         self.assertEqual(config3, config2)
-        dol3, dat3, *_ = self.build(config3, derive.icon_dir_of(again))
+        dol3, dat3, *_ = self.build(config3, derive.icon_dir_of(again), derive.clip_dir_of(again))
         self.assertEqual((dol3, dat3), (dol1, dat1), 'a second rebuild differs')
         return config2
 
@@ -209,6 +221,21 @@ CONFIGS = {
         'stock_stats': [{'id': '0x00', 'stats': '0x09'}, {'id': '0x0D', 'stats': '0x00'}],
         'stock_voices': [{'id': '0x00', 'voice': '0x09'}, {'id': '0x09', 'voice': '0x00'}],
         'grid': {'squares': [{'members': ['0x66'], 'voice': '0x09'}], 'shape': [11, 5]}},
+    'character voices': {
+        'ids': [{'id': '0x66', 'template': '0x06', 'wheel': None}, {'id': '0x67', 'template': '0x00', 'wheel': '0x00'}],
+        'wheels': [{'id': '0x47', 'wheel': '0x06'}],
+        'stock_voices': [{'id': '0x00', 'voice': '0x0D'}],
+        'grid': {'squares': [{'members': ['0x66'], 'voice': '0x09'}], 'shape': [12, 5]},
+        'character_voices': [{'id': '0x00', 'voice': '0x09'}, {'id': '0x47', 'voice': '0x00'},
+                             {'id': '0x66', 'voice': '0x0D'}, {'id': '0x67', 'voice': '0x09'}]},
+    'custom clips': {
+        'ids': [{'id': '0x66', 'template': '0x06', 'wheel': None}, {'id': '0x67', 'template': '0x00', 'wheel': '0x00'}],
+        'stock_voices': [{'id': '0x00', 'voice': '0x0D'}],
+        'species_clips': [{'id': '0x0D', 'clips': {'v1': 'a.rwav', 'v13': 'b.rwav'}}],
+        'grid': {'squares': [{'members': ['0x66'], 'voice': '0x09'}], 'shape': [12, 5]},
+        'character_voices': [{'id': '0x00', 'voice': '0x09', 'clips': {'v1': 'a.rwav', 'v13': 'b.rwav'}, 'pack': 'P'},
+                             {'id': '0x66', 'clips': {'v3': 'b.rwav'}},
+                             {'id': '0x67', 'voice': '0x0D', 'clips': {'v1': 'a.rwav'}}]},
     'stock names only': {'stock_names': [{'id': '0x0D', 'name': 'Little Toad'}]},
     'stock names with new IDs': {
         'ids': [{'id': '0x66', 'template': '0x00', 'name': 'Red'}],
@@ -265,6 +292,35 @@ class RoundTripTests(Harness):
         self.assertEqual(derived['grid']['squares'], [{'members': ['0x66'], 'voice': '0x09'}])
         only = self.round_trip(CONFIGS['stock stats and voices only'])
         self.assertEqual(set(only) - {'version', 'comment'}, {'stock_stats', 'stock_voices'})
+
+    def test_character_voices_are_carried(self):
+        derived = self.round_trip(CONFIGS['character voices'])
+        self.assertEqual(derived['character_voices'], CONFIGS['character voices']['character_voices'])
+        self.assertEqual(derived['stock_voices'], [{'id': '0x00', 'voice': '0x0D'}])
+        _dol, _dat, ctx, *_ = self.build(CONFIGS['character voices'])
+        self.assertGreater(len(ctx.state['sound_out']), len(SOUND))          # the copied clips grew the archive
+
+    def test_custom_clips_are_carried(self):
+        """Custom clips come back as content-named RWAVs in ``clips/`` beside the config, species clips too."""
+        from SluggiesTools.Roster import clip_files
+        derived = self.round_trip(CONFIGS['custom clips'])
+        a, b = clip_files.file_name(RWAV_OF[(20, 0)]), clip_files.file_name(RWAV_OF[(21, 10)])
+        self.assertEqual(derived['species_clips'], [{'id': '0x0D', 'clips': {'v1': a, 'v13': b}}])
+        self.assertEqual(derived['character_voices'],
+                         [{'id': '0x00', 'voice': '0x09', 'clips': {'v1': a, 'v13': b}, 'pack': 'P'},
+                          {'id': '0x66', 'clips': {'v3': b}},
+                          {'id': '0x67', 'voice': '0x0D', 'clips': {'v1': a}}])
+        folder = os.path.join(self.tmp, f'derived{self.runs - 2}', derive.CLIP_DIR)
+        self.assertEqual(sorted(os.listdir(folder)), sorted([a, b]))
+        with open(os.path.join(folder, a), 'rb') as f:
+            self.assertEqual(f.read(), RWAV_OF[(20, 0)])
+        # without the archive the clips are dropped with a warning (the voices stay)
+        _dol, dat, _ctx, dat_file, image = self.build(CONFIGS['custom clips'])
+        without = derive.derive(image, dat_file, None)
+        self.assertNotIn('species_clips', without.config)
+        self.assertEqual(without.config['character_voices'], [{'id': '0x00', 'voice': '0x09'},
+                                                              {'id': '0x67', 'voice': '0x0D'}])
+        self.assertTrue(any('0x66' in w for w in without.warnings))
 
     def test_stock_portraits_are_carried(self):
         derived = self.round_trip(CONFIGS['stock portraits with new IDs'])

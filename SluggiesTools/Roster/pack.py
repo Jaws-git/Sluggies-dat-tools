@@ -28,7 +28,13 @@ A pack (``*.sluggiesroster``) is a zip:
   side portrait pixels, plus the own directory's source, name, stats source,
   square voice and square head. Equipment (format 2): the SHA-1 of each
   changed file, None while it is at its baseline; a format 1 pack has no
-  such keys and counts as "equipment unchanged".
+  such keys and counts as "equipment unchanged". Voices (format 3): ``clips``
+  (the slot's own custom clips, ``{moment: SHA-1 of the RWAV}``) and
+  ``species_clips`` (its species' replaced clips), None when there are none;
+  older packs have no such keys and count as "no custom clips";
+* ``clips/<sha1>.rwav`` (format 3): the custom voice clips the config names
+  (``character_voices[].clips``, ``species_clips``), encoded, named by
+  content.
 
 Loading (``plan_load``) compares the pack's fingerprints with the game's
 (``diff``), checks every pack block (``LoadEnv.slot_problems``: validator,
@@ -56,28 +62,34 @@ import numpy as np
 from PIL import Image
 
 try:
-    from . import derive, icons, ids
+    from . import clip_files, derive, icons, ids
 except ImportError:
+    import clip_files
     import derive
     import icons
     import ids
 
 EXTENSION = '.sluggiesroster'
-FORMAT = 2
-READABLE_FORMATS = (1, 2)                       # format 1: no equipment
+FORMAT = 3
+READABLE_FORMATS = (1, 2, 3)                    # format 1: no equipment; 2: no voice clips
 META_FILE = 'pack.json'
 STATE_FILE = 'state.json'
 FINGERPRINTS_FILE = 'fingerprints.json'
 ICON_DIR = 'icons'
 MODEL_DIR = 'models'
+CLIP_DIR = derive.CLIP_DIR
 ROLES = {'high': ('hp', 0), 'low': ('l', 1)}          # role: (file name suffix, file index)
 EQUIP_ROLES = {'bat': ('bat', 2), 'glove_l': ('glove_l', 3), 'glove_r': ('glove_r', 4), 'extra': ('extra', 5)}
 BLOCK_ROLES = {**ROLES, **EQUIP_ROLES}
-FIELDS = ('high', 'low', *EQUIP_ROLES, 'model', 'front', 'side', 'name', 'stats', 'voice', 'square')
+CLIP_FIELDS = ('clips', 'species_clips')              # absent from the fingerprints of format 1 and 2 packs
+FIELDS = ('high', 'low', *EQUIP_ROLES, 'model', 'front', 'side', 'name', 'stats', 'voice', 'char_voice', *CLIP_FIELDS,
+          'square')
 FIELD_LABELS = {'high': 'High model', 'low': 'Low model', 'bat': 'bat', 'glove_l': 'left glove',
                 'glove_r': 'right glove', 'extra': 'extra bat', 'model': 'model directory',
                 'front': 'front portrait', 'side': 'side portrait', 'name': 'name', 'stats': 'stats',
-                'voice': 'square voice', 'square': 'square'}
+                'voice': 'square voice', 'char_voice': 'own voice', 'clips': 'own voice clips',
+                'species_clips': 'voice pack clips', 'square': 'square'}
+OPTIONAL_FIELDS = (*EQUIP_ROLES, *CLIP_FIELDS)        # fields older packs lack: missing counts as unchanged
 SAME, DIFFERS, GAME_ONLY, PACK_ONLY = 'same', 'differs', 'game', 'pack'
 ROSTER_KEYS_IGNORED = ('version', 'comment')
 
@@ -126,6 +138,9 @@ def fingerprint(st: dict, char: dict, crop) -> dict:
     out['name'] = char.get('name')
     out['stats'] = _hex(char['stats']) if char.get('stats') is not None else None
     out['voice'] = _hex(square['voice'])
+    out['char_voice'] = _hex(char['char_voice']) if char.get('char_voice') is not None else None
+    out['clips'] = dict(char['char_clips']) if char.get('char_clips') else None
+    out['species_clips'] = dict(square['clips']) if square.get('clips') else None
     out['square'] = _hex(square['head'])
     return out
 
@@ -172,7 +187,7 @@ def diff(pack_fp: dict, game_fp: dict) -> list[SlotDiff]:
         elif g is None:
             out.append(SlotDiff(_cid(key), PACK_ONLY))
         else:
-            fields = [f for f in FIELDS if p.get(f) != g.get(f) and not (f in EQUIP_ROLES and f not in p)]
+            fields = [f for f in FIELDS if p.get(f) != g.get(f) and not (f in OPTIONAL_FIELDS and f not in p)]
             out.append(SlotDiff(_cid(key), DIFFERS if fields else SAME, fields))
     return out
 
@@ -233,9 +248,11 @@ def pack_files(st: dict, derived: derive.Derived, current_block, vanilla_block) 
         files[f'{ICON_DIR}/{name}'] = buf.getvalue()
         if cell is not None:
             files[f'{ICON_DIR}/{name[:-4]}{icons.KEPT_BLOCKS_EXT}'] = bytes(cell)
+    for name, data in derived.clips.items():
+        files[f'{CLIP_DIR}/{name}'] = bytes(data)
     fingerprints = {_hex(c['id']): c['fingerprint'] for c in st['characters']}
     meta = {'format': FORMAT, 'kind': st['kind'], 'shape': st['shape'], 'slots': len(fingerprints),
-            'blocks': blocks, 'portraits': len(derived.portraits)}
+            'blocks': blocks, 'portraits': len(derived.portraits), 'clips': len(derived.clips)}
     files[META_FILE] = _json(meta)
     files[STATE_FILE] = _json(portable_config(derived.config))
     files[FINGERPRINTS_FILE] = _json(fingerprints)
@@ -268,6 +285,7 @@ class Pack:
     fingerprints: dict
     icons: dict                      # {file name: bytes} (PNGs and their .cmpr blocks)
     blocks: dict                     # {(id, role): bytes}
+    clips: dict = field(default_factory=dict)   # {file name: RWAV bytes} (format 3)
 
     def slot_blocks(self, cid: int) -> dict:
         """Every block the pack holds for the slot (models and equipment)."""
@@ -310,13 +328,21 @@ def read_pack(path: str) -> Pack:
         fingerprints = _load_json(zf, FINGERPRINTS_FILE)
         if not isinstance(config, dict) or not isinstance(fingerprints, dict):
             raise PackError('the pack\'s state or fingerprints are not JSON objects')
-        icons_ = {}
+        icons_, clips_ = {}, {}
         for name in zf.namelist():
             if name.startswith(ICON_DIR + '/') and not name.endswith('/'):
                 base = posixpath.basename(name)
                 if posixpath.dirname(name) != ICON_DIR or not base.endswith(('.png', icons.KEPT_BLOCKS_EXT)):
                     raise PackError(f'unexpected file in the pack: {name}')
                 icons_[base] = zf.read(name)
+            elif name.startswith(CLIP_DIR + '/') and not name.endswith('/'):
+                base = posixpath.basename(name)
+                if posixpath.dirname(name) != CLIP_DIR or not base.endswith(clip_files.clips.RWAV_EXTENSION):
+                    raise PackError(f'unexpected file in the pack: {name}')
+                data = zf.read(name)
+                if clip_files.file_name(data) != base:
+                    raise PackError(f'the voice clip {base} does not match its name: the pack is damaged')
+                clips_[base] = data
         blocks = {}
         for key, roles in (meta.get('blocks') or {}).items():
             try:
@@ -336,13 +362,24 @@ def read_pack(path: str) -> Pack:
             name = entry['icon'].get(view)
             if isinstance(name, str) and name not in icons_:
                 raise PackError(f'{entry.get("id")}: portrait {name} is missing from the pack')
-    return Pack(path, meta, config, fingerprints, icons_, blocks)
+    for entry in _clip_entries(config):
+        for moment, name in entry['clips'].items():
+            if not isinstance(name, str) or name not in clips_:
+                raise PackError(f'{entry.get("id")}: voice clip {moment} ({name}) is missing from the pack')
+    return Pack(path, meta, config, fingerprints, icons_, blocks, clips_)
 
 
 def _icon_entries(config: dict):
     for key in ('ids', 'wheels', icons.STOCK_KEY):
         for entry in config.get(key) or []:
             if isinstance(entry, dict) and isinstance(entry.get('icon'), dict):
+                yield entry
+
+
+def _clip_entries(config: dict):
+    for key in ('character_voices', clip_files.SPECIES_KEY):
+        for entry in config.get(key) or []:
+            if isinstance(entry, dict) and isinstance(entry.get('clips'), dict):
                 yield entry
 
 
@@ -571,12 +608,16 @@ def extract(pack: Pack, plan: LoadPlan, folder: str) -> str:
     portraits beside it, and the blocks it writes. Returns the config's path."""
     icon_dir = os.path.join(folder, derive.ICON_DIR)
     model_dir = os.path.join(folder, MODEL_DIR)
-    for sub in (icon_dir, model_dir):
+    clip_dir = os.path.join(folder, derive.CLIP_DIR)
+    for sub in (icon_dir, model_dir, clip_dir):
         os.makedirs(sub, exist_ok=True)
         for name in os.listdir(sub):
             os.remove(os.path.join(sub, name))
     for name, data in pack.icons.items():
         with open(os.path.join(icon_dir, name), 'wb') as f:
+            f.write(data)
+    for name, data in pack.clips.items():
+        with open(os.path.join(clip_dir, name), 'wb') as f:
             f.write(data)
     for (cid, role), data in pack.blocks.items():
         with open(os.path.join(folder, *block_name(cid, role).split('/')), 'wb') as f:

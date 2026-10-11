@@ -24,13 +24,27 @@ A new square's voice (``grid.squares[k].voice``, the ``grid`` step) works
 through byte 2 instead. When the voice's own species has given its sounds
 away, the grid step picks a species that still speaks with them
 (``species_for_voice``), e.g. the other half of a swap.
+
+**Species clips** (``species_clips``, 2026-10-10)::
+
+    "species_clips": [{"id": "0x00", "clips": {"v1": "cheer.rwav", "v13": "name.wav"}}]
+
+replace single moments of a stock voice for everyone who speaks with it: the clip (``Roster/clip_files``) is
+appended to the species' family file (slot 10, the name call, to the shared select file) with the species' own
+clip in that slot as the entry template (``Sound/brsar_write.add_sounds``), and the species' clip row word points
+at the new sound. This happens before the swaps, so a square that takes "Mario's voice" takes Mario's replaced
+clips too, and the character voices (``char_voices.py``), which copy a voice's clips, copy the replaced ones.
+Published: ``ctx.state['species_clips']`` (``{(species, slot): INFO ID}``), ``ctx.state['sound_out']``.
 """
 
 import struct
 
 try:
-    from . import ids, steps
+    from ..Sound import brsar, brsar_write
+    from . import clip_files, ids, steps
 except ImportError:
+    from Sound import brsar, brsar_write
+    import clip_files
     import ids
     import steps
 
@@ -103,15 +117,90 @@ def group_of(image, species: int) -> int:
     return struct.unpack('>i', image.read(GROUPS + 4 * species, 4))[0]
 
 
+def clip_row(image, species: int) -> bytes:
+    """The 12 sound INFO IDs (``CLIP_ROW`` bytes) species ``species`` speaks with now."""
+    return image.read(CLIPS + CLIP_ROW * species, CLIP_ROW)
+
+
+def stock_clips(image) -> dict[int, bytes]:
+    """``{species: clip row}`` of every species with a row (the Miis' two rows included), as the image holds
+    them. Read before ``write_remap`` runs, these are the stock rows: the reset puts them back before every run
+    (``ctx.state['stock_clips']``, for the character voices)."""
+    return {s: clip_row(image, s) for s in range(SPECIES + 2)}
+
+
+def current_sound(ctx: steps.RosterContext) -> bytes | None:
+    """The archive as the run holds it now: an earlier step's output, else the input."""
+    return ctx.state.get('sound_out', ctx.sound)
+
+
+def write_species_clips(ctx: steps.RosterContext, chosen: dict[int, dict[int, str]]) -> list[str]:
+    """Append every species clip to the archive and point the species' row words at the new sounds (module
+    docstring). ``chosen``: ``parse_species_clips``."""
+    sound = current_sound(ctx)
+    if sound is None:
+        raise clip_files.ClipConfigError(f'{clip_files.SPECIES_KEY}: replacing a stock voice\'s clips needs the game\'s '
+                                         'sound archive: copy files/sound_NA/MY2.brsar into 1_Input/sound_NA first')
+    archive = brsar.Brsar(sound)
+    sounds = archive.sounds()
+    loader = clip_files.ClipLoader(ctx.clip_dir, sound)
+    heads = ctx.dol.read(HEAD_LIST, SPECIES)
+    added, targets = [], []                                  # NewSound list; (species, slot) per new sound
+    seen: dict[tuple, int] = {}                              # (file, slot, rwav) -> index into added
+    for species in sorted(chosen):
+        row = struct.unpack('>12I', clip_row(ctx.dol, species))
+        where = f'{clip_files.SPECIES_KEY} 0x{heads[species]:02X}'
+        for slot in sorted(chosen[species]):
+            template = row[slot]
+            if not 0 <= template < len(sounds) or sounds[template].type != brsar.WAVE:
+                raise clip_files.ClipConfigError(f'{where}: the species\' clip {slot} (sound {template}) is not a wave '
+                                                 'sound of this archive: is 1_Input/sound_NA/MY2.brsar the game\'s?')
+            rwav = loader.load(chosen[species][slot], f'{where}.clips.{_moment(slot)}')
+            fid = sounds[template].file_id
+            key = (fid, slot, rwav)
+            if key not in seen:
+                seen[key] = len(added)
+                added.append(brsar_write.NewSound(clip_files.sound_name(rwav, slot, fid, 'zzs'), fid, rwav, template))
+            targets.append((species, slot, seen[key]))
+    out, new_ids = brsar_write.add_sounds(sound, added)
+    ctx.state['sound_out'] = out
+    placed = {}
+    for species, slot, index in targets:
+        placed[(species, slot)] = new_ids[index]
+        ctx.dol.write(CLIPS + CLIP_ROW * species + 4 * slot, struct.pack('>I', new_ids[index]))
+    ctx.state['species_clips'] = placed
+    log = [f'0x{heads[s]:02X} (species 0x{s:02X}): {_moment(k)} -> sound {new_ids[i]} ({added[i].name})'
+           for s, k, i in targets]
+    log += loader.notes
+    log.append(f'sound archive: {len(sound):,} -> {len(out):,} bytes, {len(added)} clip(s) added for '
+               f'{len(targets)} moment(s)')
+    return log
+
+
+def _moment(slot: int) -> str:
+    try:
+        from ..Sound import sound_packs
+    except ImportError:
+        from Sound import sound_packs
+    return sound_packs.MOMENT_KEYS[slot]
+
+
 @steps.register('voices')
 def apply(ctx: steps.RosterContext) -> list[str]:
+    log = []
+    if clip_files.SPECIES_KEY in ctx.config:
+        species_clips = clip_files.parse_species_clips(ctx.config, ctx.dol.read(HEAD_LIST, SPECIES))
+        if species_clips:
+            log += write_species_clips(ctx, species_clips)
+    if ctx.dol.is_mapped(CLIPS, CLIP_ROW * (SPECIES + 2)):
+        ctx.state['stock_clips'] = stock_clips(ctx.dol)
     if STOCK_KEY not in ctx.config:
-        return [f'no "{STOCK_KEY}" in the roster config: stock squares keep their voices']
+        return log + [f'no "{STOCK_KEY}" in the roster config: stock squares keep their voices']
     heads = ctx.dol.read(HEAD_LIST, SPECIES)
     remap = parse_stock_voices(ctx.config, heads)
     ctx.state['voice_remap'] = remap
     write_remap(ctx.dol, remap)
     if not remap:
-        return ['every stock square keeps its own voice']
-    return [f'square 0x{heads[s]:02X} (species 0x{s:02X}) speaks with 0x{heads[v]:02X}\'s voice '
-            f'(group {group_of(ctx.dol, s)}, clips from species 0x{v:02X})' for s, v in sorted(remap.items())]
+        return log + ['every stock square keeps its own voice']
+    return log + [f'square 0x{heads[s]:02X} (species 0x{s:02X}) speaks with 0x{heads[v]:02X}\'s voice '
+                  f'(group {group_of(ctx.dol, s)}, clips from species 0x{v:02X})' for s, v in sorted(remap.items())]
