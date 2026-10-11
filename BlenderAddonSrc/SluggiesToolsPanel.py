@@ -521,7 +521,7 @@ def _create_custom_submesh_cube(context, arm_obj, bone_id, custom_submesh_id, su
     _mark_cube_uv_seams(bm)
     bm.to_mesh(mesh)
     bm.free()
-    mesh.uv_layers.new(name='UVMap')
+    mesh.uv_layers.new(name='uv0')
 
     obj = bpy.data.objects.new(obj_name, mesh)
     context.collection.objects.link(obj)
@@ -565,7 +565,7 @@ def _select_new_object(context, obj):
 
 def _create_custom_submesh_material(obj, custom_submesh_id, image, shader_mode, specular_strength):
     surface_id = f'{custom_submesh_id}_ds0'
-    mat = _create_material(f'{obj.name}_{surface_id}', 'UVMap', image, wrap_s=1)
+    mat = _create_material(f'{obj.name}_{surface_id}', 'uv0', image, wrap_s=1)
     mat['SurfaceId'] = surface_id
     mat.id_properties_ui('SurfaceId').update(
         description="Stable draw-state identity for this custom submesh. Do not delete.")
@@ -1030,7 +1030,7 @@ class SLUGGIES_OT_add_material(bpy.types.Operator):
         wrap_s, wrap_t = _template_wrap_modes(context, arm_obj, self.template_source)
 
         active_uv = obj.data.uv_layers.active
-        uv_layer_name = active_uv.name if active_uv is not None else 'UVMap'
+        uv_layer_name = active_uv.name if active_uv is not None else 'uv0'
         mat = _create_material(material_name, uv_layer_name, None, wrap_s=wrap_s)
 
         mat['SluggiesNewSurface'] = True

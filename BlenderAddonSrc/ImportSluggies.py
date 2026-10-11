@@ -622,90 +622,6 @@ def decode_face_texture_indices(submesh, face_count):
     return [fallback] * face_count
 
 
-def _primlist_position_indices(prim_raw: bytes, active_descriptors: list) -> set:
-    """Parse a raw GX primitive stream and return the set of position attribute
-    indices referenced by any vertex in any primitive block.
-
-    Implemented inline so the addon stays independent of SluggiesTools/drawlist.py.
-    Primitive types (TRIANGLES / TRIANGLE_STRIP / QUADS / etc.) are all handled
-    identically — only the vertex count and per-vertex byte stride matter.
-    """
-    if not prim_raw or not active_descriptors:
-        return set()
-
-    # Locate 'position' within the per-vertex attribute stream.
-    pos_byte_off = 0
-    pos_size     = 0
-    byte_off     = 0
-    for d in active_descriptors:
-        if d.get('key') == 'position':
-            pos_byte_off = byte_off
-            pos_size     = d.get('index_size', 2)
-            break
-        byte_off += d.get('index_size', 2)
-    if pos_size == 0:
-        return set()
-
-    vertex_stride = sum(d.get('index_size', 2) for d in active_descriptors)
-    indices = set()
-    pos = 0
-    while pos < len(prim_raw) and prim_raw[pos] != 0:
-        pos += 1  # skip primitive-type opcode
-        if pos + 2 > len(prim_raw):
-            break
-        vert_count = (prim_raw[pos] << 8) | prim_raw[pos + 1]
-        pos += 2
-        for _ in range(vert_count):
-            if pos + vertex_stride > len(prim_raw):
-                break
-            idx = int.from_bytes(
-                prim_raw[pos + pos_byte_off : pos + pos_byte_off + pos_size], 'big'
-            )
-            indices.add(idx)
-            pos += vertex_stride
-    return indices
-
-
-def _apply_drawlist_vcol(mesh, display_states):
-    """Create a 'drawlist_regions' vertex colour attribute on *mesh* that
-    visualises which GX draw-list block references each vertex.
-
-    Only Type-7 display states that carry both PrimListData and VertexStreamLayout
-    are considered.  Their grayscale brightness is spaced evenly across [step, 1]
-    where step = 1 / total_blocks, so the first block is the darkest non-black
-    shade and the last block is pure white.  Vertices not referenced by any
-    draw list remain black (0, 0, 0).
-    """
-    blocks = [
-        ds for ds in display_states
-        if ds.get('DisplayStateId') == 7
-        and ds.get('PrimListData') is not None
-        and ds.get('VertexStreamLayout')
-    ]
-    if not blocks:
-        return
-
-    total = len(blocks)
-    step  = 1.0 / total
-
-    n_verts = len(mesh.vertices)
-    vert_brightness = [0.0] * n_verts
-
-    for i, ds in enumerate(blocks):
-        brightness = (i + 1) * step
-        prim_raw   = _to_bytes(ds['PrimListData'])
-        for vi in _primlist_position_indices(prim_raw, ds['VertexStreamLayout']):
-            if vi < n_verts:
-                vert_brightness[vi] = brightness
-
-    layer = mesh.color_attributes.new(
-        name='drawlist_regions', type='FLOAT_COLOR', domain='POINT'
-    )
-    for vi in range(n_verts):
-        v = vert_brightness[vi]
-        layer.data[vi].color = (v, v, v, 1.0)
-
-
 def _has_edited_data(submesh):
     """Return True when *submesh* contains any edited mesh data."""
     vb = submesh.get("VertexBuffer") or {}
@@ -1017,18 +933,13 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
 
     uv_layer_names = {}  # UVChannelIndex -> actual Blender layer name
     if uv_channels:
-        _used_uv_names = set()
         for ch_ind, uv_channel in enumerate(uv_channels):
             coords, uv_faces = decode_uv_channel(uv_channel)
             if not coords or not uv_faces:
                 continue
-            # Use palette name as UV layer name; fall back to "uv<index>".
-            # Deduplicate: when two channels share the same PaletteName the
-            # second one falls back to "uv<enumerate-index>" so both layers
-            # get unique names and can be looked up correctly on re-export.
-            raw_name = uv_channel.get("PaletteName") or f"uv{ch_ind}"
-            layer_name = raw_name if raw_name not in _used_uv_names else f"uv{ch_ind}"
-            _used_uv_names.add(layer_name)
+            # Positional names ("uv0", "uv1", ...) so joined objects share
+            # their UV layers instead of collecting one per model name.
+            layer_name = f"uv{ch_ind}"
             uv_layer_names[uv_channel.get("UVChannelIndex", ch_ind)] = layer_name
             uv_layer = mesh.uv_layers.new(name=layer_name)
             for poly in mesh.polygons:
@@ -1096,9 +1007,6 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
                         "Known 4-char names: Spec=specular  Shdw=no-specular  SpRf=specular-reflection  "
                         "RhSp/LhSp=right/left-hand-specular  GhSp=ghost."
                     ))
-
-        if display_states:
-            _apply_drawlist_vcol(mesh, display_states)
     else:
         display_states = []
         surface_ranges = None
@@ -1589,7 +1497,7 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
                         uv0_name = next(iter(obj.data.uv_layers), None)
                         orig_materials.update(_new_surface_materials(
                             mesh_name, submesh, i, model,
-                            uv0_name.name if uv0_name is not None else 'UVMap',
+                            uv0_name.name if uv0_name is not None else 'uv0',
                             sluggie_dir, texture_file_map,
                         ))
                     edit_obj = build_mesh(

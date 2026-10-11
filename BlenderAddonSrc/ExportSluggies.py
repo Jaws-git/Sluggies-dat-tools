@@ -621,13 +621,17 @@ def validate_bone_hierarchy_edited_export(model, warnings):
 
 
 def _uv_layer_name(all_channels, target_ch_ind):
-    """Return the Blender UV layer name for *target_ch_ind*, using the same
-    deduplication logic that ImportSluggies applies when creating UV layers.
+    """Return the Blender UV layer name for *target_ch_ind*: ``"uv<position>"``,
+    the name ImportSluggies gives each channel's layer."""
+    for enum_ind, ch in enumerate(all_channels):
+        if ch.get('UVChannelIndex', enum_ind) == target_ch_ind:
+            return f'uv{enum_ind}'
+    return f'uv{target_ch_ind}'
 
-    When two UV channels share the same PaletteName the importer falls back
-    to ``"uv<enumerate-index>"`` for the second one, so the export must
-    resolve names the same way to find the right layer.
-    """
+
+def _legacy_uv_layer_name(all_channels, target_ch_ind):
+    """Return the UV layer name older imports used: the channel's PaletteName,
+    or ``"uv<position>"`` when it was empty or already taken."""
     used = set()
     for enum_ind, ch in enumerate(all_channels):
         idx = ch.get('UVChannelIndex', enum_ind)
@@ -638,6 +642,15 @@ def _uv_layer_name(all_channels, target_ch_ind):
         if idx == target_ch_ind:
             return name
     return f'uv{target_ch_ind}'
+
+
+def _find_uv_layer(mesh, all_channels, target_ch_ind):
+    """Return *mesh*'s UV layer for *target_ch_ind*, falling back to the
+    PaletteName-based name of .blend files imported before 2026-10-11."""
+    layer = mesh.uv_layers.get(_uv_layer_name(all_channels, target_ch_ind))
+    if layer is None:
+        layer = mesh.uv_layers.get(_legacy_uv_layer_name(all_channels, target_ch_ind))
+    return layer
 
 
 def encode_uv_channel_edited(obj, json_channel, use_base64=True, all_uv_channels=None):
@@ -653,13 +666,12 @@ def encode_uv_channel_edited(obj, json_channel, use_base64=True, all_uv_channels
     (i.e. the user split a UV seam that was previously shared).
     """
     ch_ind = json_channel.get("UVChannelIndex", 0)
-    if all_uv_channels is not None:
-        layer_name = _uv_layer_name(all_uv_channels, ch_ind)
-    else:
-        layer_name = json_channel.get("PaletteName", "") or f"uv{ch_ind}"
-
     mesh_data = obj.data
-    uv_layer = mesh_data.uv_layers.get(layer_name)
+    if all_uv_channels is not None:
+        uv_layer = _find_uv_layer(mesh_data, all_uv_channels, ch_ind)
+    else:
+        uv_layer = (mesh_data.uv_layers.get(f"uv{ch_ind}")
+                    or mesh_data.uv_layers.get(json_channel.get("PaletteName", "") or f"uv{ch_ind}"))
     if uv_layer is None:
         return None
 
@@ -1015,8 +1027,7 @@ def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False, use_bas
     uv_edits = {}
     for json_channel in all_uv_channels:
         ch_ind = json_channel.get('UVChannelIndex', 0)
-        layer_name = _uv_layer_name(all_uv_channels, ch_ind)
-        uv_layer = mesh.uv_layers.get(layer_name)
+        uv_layer = _find_uv_layer(mesh, all_uv_channels, ch_ind)
         if uv_layer is None:
             continue
 
@@ -3532,7 +3543,7 @@ def _rigid_rebuild_plan(context, obj, submesh_index, target_submesh, model, warn
     loop_uvs = {}
     for channel in all_channels:
         index = channel.get("UVChannelIndex", 0)
-        layer = mesh.uv_layers.get(_uv_layer_name(all_channels, index))
+        layer = _find_uv_layer(mesh, all_channels, index)
         loop_uvs[index] = (
             [tuple(layer.data[i].uv) for i in range(len(mesh.loops))] if layer is not None else None
         )
@@ -3718,7 +3729,7 @@ def _skinned_rebuild_plan(context, obj, submesh_index, target_submesh, model, wa
     loop_uvs = {}
     for channel in all_channels:
         index = channel.get("UVChannelIndex", 0)
-        layer = mesh.uv_layers.get(_uv_layer_name(all_channels, index))
+        layer = _find_uv_layer(mesh, all_channels, index)
         loop_uvs[index] = (
             [tuple(layer.data[i].uv) for i in range(len(mesh.loops))] if layer is not None else None
         )
