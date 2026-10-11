@@ -2625,13 +2625,16 @@ def _rigid_rebuild_in_place_edit_fields(sub: dict) -> list[str]:
 
 def _rigid_rebuild_drawable_surfaces(states: list) -> dict[str, int]:
     """``{SurfaceId: state index}`` of every donor record that can draw: it
-    inherits a Type-3 attribute layout and a Type-7 shader (E5)."""
+    inherits a Type-3 attribute layout and a Type-7 shader (E5). Type 7 is
+    only required where the submesh uses it: item and stadium submeshes often
+    have none, and their surfaces still draw."""
+    needs_type7 = any(int(state.get('DisplayStateId', -1)) == 7 for state in states)
     return {
         state['SurfaceId']: index
         for index, state in enumerate(states)
         if state.get('SurfaceId')
         and _custom_submesh_effective_state(states, index, 3) is not None
-        and _custom_submesh_effective_state(states, index, 7) is not None
+        and (not needs_type7 or _custom_submesh_effective_state(states, index, 7) is not None)
     }
 
 

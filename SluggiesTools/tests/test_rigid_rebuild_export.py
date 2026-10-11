@@ -75,6 +75,26 @@ class DonorFactsTests(unittest.TestCase):
         self.assertEqual(donor.owner_key, f'sm{RIGID}')
         self.assertTrue(rre.donor_rigid_submesh(RIGID, self.sub, facial_submeshes={RIGID}).facial)
 
+    def test_type7_is_only_required_where_the_submesh_uses_it(self):
+        # Item/stadium layout (641086144_banana.gpl submesh 0): no Type 7 at
+        # all; every surface after the Type 3 draws.
+        states = [
+            {'SurfaceId': 'sm0_ds0', 'DisplayStateId': 1},
+            {'SurfaceId': 'sm0_ds1', 'DisplayStateId': 4},
+            {'SurfaceId': 'sm0_ds2', 'DisplayStateId': 3},
+            {'SurfaceId': 'sm0_ds3', 'DisplayStateId': 6},
+            {'SurfaceId': 'sm0_ds4', 'DisplayStateId': 1},
+        ]
+        expected = {'sm0_ds2': 2, 'sm0_ds3': 3, 'sm0_ds4': 4}
+        self.sub['DisplayStates'] = states
+        self.assertEqual(rre.donor_rigid_submesh(RIGID, self.sub).drawable_surfaces, expected)
+        self.assertEqual(main._rigid_rebuild_drawable_surfaces(states), expected)
+        # With a Type 7 in the submesh, records before it still cannot draw.
+        states.insert(4, {'SurfaceId': 'sm0_ds7', 'DisplayStateId': 7})
+        expected = {'sm0_ds7': 4, 'sm0_ds4': 5}
+        self.assertEqual(rre.donor_rigid_submesh(RIGID, self.sub).drawable_surfaces, expected)
+        self.assertEqual(main._rigid_rebuild_drawable_surfaces(states), expected)
+
     def test_skinned_submesh_is_refused(self):
         with self.assertRaisesRegex(ValueError, 'not a rigid submesh'):
             rre.donor_rigid_submesh(0, self.model['Submeshes'][0])

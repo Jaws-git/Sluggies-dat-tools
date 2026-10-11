@@ -146,11 +146,14 @@ def donor_submesh_facts(index: int, sub: dict) -> dict:
         face_surfaces += [state.get('SurfaceId') or f'sm{index}_ds{k}'] * int(count)
     if len(face_surfaces) != len(faces):
         face_surfaces = []
+    # Type 7 is only required where the submesh uses it: item and stadium
+    # submeshes often have none, and their surfaces still draw.
+    needs_type7 = any(int(state.get('DisplayStateId', -1)) == 7 for state in states)
     drawable = {
         state['SurfaceId']: k for k, state in enumerate(states)
         if state.get('SurfaceId')
         and _effective(states, k, 3) is not None
-        and _effective(states, k, 7) is not None
+        and (not needs_type7 or _effective(states, k, 7) is not None)
     }
     return dict(
         index=index,
