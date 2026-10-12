@@ -53,7 +53,7 @@ class SettingBankTests(unittest.TestCase):
 
 
 class WriteParseTests(unittest.TestCase):
-    def test_round_trip_shares_identical_data(self):
+    def test_round_trip_shares_settings_not_keyframe_arrays(self):
         ttype = 1 << A.CH_QUATERNION
         q = [-1.0, 0.0, 0.0, 0.0]
         keys = [_key(0.0, {A.CH_QUATERNION: q}, ttype, 0x3E), _key(10.0, {A.CH_QUATERNION: q}, ttype, 0x3E)]
@@ -67,8 +67,10 @@ class WriteParseTests(unittest.TestCase):
         self.assertEqual([[t['track_id'] for t in s] for s in anm['sequences']], [[5, 0x4001], [5]])
         self.assertEqual(anm['sequences'][0][0]['keys'][1]['settings'][A.CH_QUATERNION], q)
         self.assertEqual(anm['sequences'][0][1]['keys'][0]['set_word'], 0x40000000)
-        # one keyframe array and one setting bank for all three copies
-        self.assertEqual(len(data), 0x18 + 2 * 12 + 3 * 16 + 3 * 12 + 8)
+        # one setting bank for all keys, but a keyframe array per track (no stock file shares one)
+        self.assertEqual(len(data), 0x18 + 2 * 12 + 3 * 16 + 5 * 12 + 8)
+        key_ptrs = [struct.unpack_from('>I', data, 0x18 + 2 * 12 + 16 * t + 4)[0] for t in range(3)]
+        self.assertEqual(len(set(key_ptrs)), 3)
 
     def test_signature(self):
         ttype = 1 << A.CH_TRANSLATION

@@ -29,7 +29,8 @@ file's data area). Tracks with no channel bits (types 0x20, 0x60) carry
 opaque pointer words; their meaning is unknown.
 
 Stock files share identical setting banks and interpolation blobs between
-keyframes; the writer does the same.
+keyframes; the writer does the same. No stock file shares a keyframe array
+between tracks, and the writer never does.
 """
 
 import json
@@ -257,8 +258,12 @@ def write(magic, bank_id, sequences):
     'type', 'interp', 'replace', 'keys'}; key = {'time', 'set_blob',
     'interp_blob', 'set_word', 'interp_word'}. A blob of None keeps the raw
     word (channel-less tracks), an empty blob writes 0, any other blob is
-    pooled and the word becomes its offset. Identical setting banks,
-    interpolation blobs and keyframe arrays are stored once.
+    pooled and the word becomes its offset. Identical setting banks and
+    interpolation blobs are stored once; every track gets its own keyframe
+    array, as in every stock file (a Mario bank 7 with shared arrays crashed
+    the game and stretched the model, 2026-10-12; most likely the loader
+    relocates each track's keyframe pointers in place, twice for a shared
+    array).
     """
     tracks = [t for seq in sequences for t in seq]
     key_total = sum(len(t['keys']) for t in tracks)
@@ -267,17 +272,14 @@ def write(magic, bank_id, sequences):
                          f"({len(sequences)}/{len(tracks)}/{key_total})")
 
     settings, interps = _Pool(), _Pool()
-    arrays = {}                     # keyframe array -> offset in the key area
-    track_arrays = []
+    track_arrays = []               # (offset in the key area, keyframe array) per track
     key_area = 0
     for track in tracks:
         arr = tuple((float(k['time']),
                      _key_ref(k, settings, 'set_blob', 'set_word'),
                      _key_ref(k, interps, 'interp_blob', 'interp_word')) for k in track['keys'])
-        if arr and arr not in arrays:
-            arrays[arr] = key_area
-            key_area += KEYFRAME_SIZE * len(arr)
-        track_arrays.append(arr)
+        track_arrays.append((key_area, arr))
+        key_area += KEYFRAME_SIZE * len(arr)
 
     seq_off = HEADER_SIZE
     track_off = seq_off + SEQUENCE_SIZE * len(sequences)
@@ -293,11 +295,11 @@ def write(magic, bank_id, sequences):
     for seq in sequences:
         out += struct.pack('>IIHH', 0, cursor if seq else 0, len(seq), 0)
         cursor += TRACK_SIZE * len(seq)
-    for track, arr in zip(tracks, track_arrays):
-        out += struct.pack('>fIHHBBBB', float(track['length']), key_off + arrays[arr] if arr else 0,
+    for track, (offset, arr) in zip(tracks, track_arrays):
+        out += struct.pack('>fIHHBBBB', float(track['length']), key_off + offset if arr else 0,
                            len(arr), track['track_id'], track['quant'], track['type'],
                            track['interp'], track['replace'])
-    for arr in arrays:              # insertion order = offset order
+    for _offset, arr in track_arrays:
         for time, sref, iref in arr:
             out += struct.pack('>fII', time,
                                *(value if kind == 'raw' else bases[kind] + value
