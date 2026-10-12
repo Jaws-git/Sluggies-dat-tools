@@ -268,10 +268,11 @@
         <li><strong>An inert leaf changes nothing.</strong> Mario with bone 91 appended under the spine (bone 3), with no mesh, no track and self-mirrored, played an at-bat with no visible or behavioural change.</li>
         <li><strong>A new bone is live.</strong> A rigid submesh owned by the new bone followed the spine through every animation. A chain of four new bones, each parented to the previous one and each with its own cube, also followed Mario correctly.</li>
         <li><strong>No bone-matrix cap was found up to 115 bones.</strong> Mario with 24 appended bones (91 to 115) played normally. The largest vanilla skeleton has 131 bones (chunk 66); player characters have 52 to 107.</li>
+        <li><strong>A new bone can be animated and can drive skinning.</strong> A new bone given its own kind-3 track id (<code>0xC0</code>, an id no stock bank uses) and a bank-7 sequence keyed for it in Blender, with Mario's belly weighted to it, bent the belly as keyed (Dolphin, 2026-10-13). The order matters for the tools: the model carries the track id, so the bank is checked against the patched model and must be written after it.</li>
         <li><strong>Different donors work.</strong> King Boo (different bone count and root layout), Noki (chunk 42, with a kind-4 user data entry copied through unchanged) and a donor with no user data at all (chunk 136 <code>sta03_yoshi_train02</code>, 3 bones) all worked with a submesh on a new bone.</li>
         <li><strong>A wrong mirror entry fails silently.</strong> Bone 91 mirrored to bone 1 instead of itself caused no crash and no visible glitch.</li>
     </ul>
-    <p>Why appending is safe: nothing outside the ACT counts bones. Player models have <code>ptr6 = ptr8 = 0</code>, and <code>ptr7</code> (facial poses) indexes submeshes, not bones. GPL, TEX and SKN have no bone counter. SKN refers to bones by id, ANM is looked up by track id (a new bone has track <code>0xFFFF</code> and is skipped), and the bat/glove attach points in <code>main.dol</code> use bone ids too. Keeping every existing id keeps all of these valid. The one exception is the high-/low-poly pair, see <a href="#lod-pairs">above</a>.</p>
+    <p>Why appending is safe: nothing outside the ACT counts bones. Player models have <code>ptr6 = ptr8 = 0</code>, and <code>ptr7</code> (facial poses) indexes submeshes, not bones. GPL, TEX and SKN have no bone counter. SKN refers to bones by id (and a new bone may be skinned to, 2026-10-12), ANM is looked up by track id (a new bone has track <code>0xFFFF</code> and is skipped unless it is given one), and the bat/glove attach points in <code>main.dol</code> use bone ids too. Keeping every existing id keeps all of these valid. The one exception is the high-/low-poly pair, see <a href="#lod-pairs">above</a>.</p>
     <p>Changing existing topology is <strong>not</strong> safe, and the result is silently wrong rather than a crash:</p>
     <ul>
         <li><strong>Reparenting an existing bone</strong> changes its bind matrix while its ANM track still drives the old animated matrix. The mismatch shows as a shear at bind pose.</li>
@@ -285,8 +286,8 @@
         <li>Every existing bone keeps its id, parent and mirror pair. Its GEO ID stays unchanged unless a custom submesh claims it.</li>
         <li>New bone ids continue contiguously from the donor's count, the total stays &lt;= 255 (the mirror table stores <code>uint8</code> ids), and every new bone has a parent. Stadium models (dirs 7-16) take no new bones at all.</li>
         <li>No existing bone may be parented to a new bone.</li>
-        <li>A new bone has track <code>0xFFFF</code> and mirrors itself with role 3.</li>
-        <li>No SKN record may name a new bone: new bones never drive skinning.</li>
+        <li>A new bone has track <code>0xFFFF</code>, or a track id of its own from <code>0xC0</code>-<code>0xFF</code> (no stock skeleton or bank uses these: ids in use are <code>0x00</code>-<code>0x8C</code>, <code>0x100</code>-<code>0x127</code>, <code>0x180</code>-<code>0x199</code> and flag-style <code>0x4xxx</code>/<code>0x8xxx</code>/<code>0xCxxx</code>; survey 2026-10-12), and mirrors itself with role 3.</li>
+        <li>An SKN record may name a donor bone or a new bone, nothing else. New bones may drive skinning: Mario's hand SK1 entry on a new leaf bone under the hand deformed as vanilla (Dolphin, 2026-10-12; see <a href="skn_section.html#runtime-limits">SKN runtime limits</a>). The low-poly model may only skin to bones the high-poly model has (<a href="#lod-pairs">LOD pairs</a>).</li>
         <li>The donor's mirror table must be absent or a clean <code>boneCount</code>-long involution.</li>
     </ul>
     <h2 id="section-tail">Section tail and alignment</h2>

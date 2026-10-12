@@ -366,7 +366,7 @@ class SlotPairTests(unittest.TestCase):
         self.assertIn('is not a Low model', self.problems(high, model_block('kinopio_x.gpl', TOAD))[0][0])
         self.assertIn('is a Low model', self.problems(low, low)[0][0])
         draws_past = model_block('L_kinopio_r.gpl', TOAD + [3], {4: 0})
-        self.assertIn('draws on bone(s) 4', self.problems(high, draws_past)[0][0])
+        self.assertIn('draws or skins on bone(s) 4', self.problems(high, draws_past)[0][0])
         self.assertIn('no readable ACT', self.problems(b'\x00' * 0x40, low)[0][0])
 
 

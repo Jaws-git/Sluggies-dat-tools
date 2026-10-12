@@ -145,6 +145,23 @@ class WeightTests(unittest.TestCase):
         self.assertIn('vertex(es) have no weight', sre.unweighted_error('body', [4]))
         self.assertIsNone(sre.unweighted_error('body', []))
 
+    def test_allowed_skin_bones_adds_the_added_bones(self):
+        donor = sre.DonorSkinnedSubmesh(
+            index=0, position_quantize=0x30, normal_format=None, color_format=None, uv_formats={},
+            uv_mirrored=False, faces=[], face_surfaces=[], drawable_surfaces={}, facial=False,
+            skinned_bones={3, 6},
+        )
+        edited = [{'BoneId': 0, 'UserAdded': False}, {'BoneId': 9, 'UserAdded': True}, {'BoneId': 10, 'UserAdded': True}]
+        self.assertEqual(sre.added_bone_ids(edited), {9, 10})
+        self.assertEqual(sre.added_bone_ids(None), set())
+        self.assertEqual(sre.allowed_skin_bones(donor, edited), {3, 6, 9, 10})
+        # A weight on an added bone stays there; a donor non-skin bone still moves up.
+        remap = sre.remap_influences(
+            [{9: 1.0}, {5: 1.0}], allowed=sre.allowed_skin_bones(donor, edited),
+            parent_of={0: None, 3: 0, 5: 3, 6: 3, 9: 6, 10: 9},
+        )
+        self.assertEqual(remap.weights, [{9: 1.0}, {3: 1.0}])
+
     def test_encode_influences_normalizes_per_exported_vertex(self):
         raw = FieldCodec.decode_field(sre.encode_influences([{3: 2.0, 6: 2.0}, {3: 0.5}], [1, 0]))
         records = list(struct.iter_unpack('>HHf', raw))

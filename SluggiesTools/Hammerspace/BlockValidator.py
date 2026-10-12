@@ -1140,6 +1140,7 @@ def _validate_skn(
 
     stride = _comp_size(quantize_info) * 6
     skn_stride_out.append(stride)
+    bone_indices: dict[int, list[str]] = {}   # bone id -> entries naming it
     direct_writes: set[int] = set()
     direct_write_counts: Counter[int] = Counter()
     direct_entries: list[tuple[str, int, int, int, int]] = []
@@ -1167,6 +1168,7 @@ def _validate_skn(
         try:
             src_ptr = _u32(block, struct_abs + 0x30)
             gva = _u32(block, struct_abs + 0x34)
+            bone_indices.setdefault(_u16(block, struct_abs + 0x38), []).append(f'SK1[{index}]')
             vertex_count = _u16(block, struct_abs + 0x3A)
             vertex_offset = _u8(block, struct_abs + 0x3C)
         except struct.error as exc:
@@ -1194,6 +1196,8 @@ def _validate_skn(
             src_ptr = _u32(block, struct_abs + 0x60)
             wt_ptr = _u32(block, struct_abs + 0x64)
             gva = _u32(block, struct_abs + 0x68)
+            bone_indices.setdefault(_u16(block, struct_abs + 0x6C), []).append(f'SK2[{index}]')
+            bone_indices.setdefault(_u16(block, struct_abs + 0x6E), []).append(f'SK2[{index}]')
             vertex_count = _u16(block, struct_abs + 0x70)
             vertex_offset = _u8(block, struct_abs + 0x72)
         except struct.error as exc:
@@ -1231,6 +1235,7 @@ def _validate_skn(
             dst_ptr = _u32(block, struct_abs + 0x34)
             gda = _u32(block, struct_abs + 0x38)
             wt_ptr = _u32(block, struct_abs + 0x3C)
+            bone_indices.setdefault(_u16(block, struct_abs + 0x40), []).append(f'SKAcc[{index}]')
             vertex_count = _u16(block, struct_abs + 0x42)
         except struct.error as exc:
             state.fail(f'SKAcc[{index}] parse failed: {type(exc).__name__}: {exc}')
@@ -1254,6 +1259,17 @@ def _validate_skn(
             skn_write_ends.append(gda + (max_dest + 1) * stride)
         if state.in_bounds(wt_abs, vertex_count, f'SKAcc[{index}] weight array'):
             state.check_array_alignment(wt_abs, 'skn_weight', f'SKAcc[{index}] weight array')
+
+    # Every SKN record names a bone of this block's ACT. The game reads the
+    # bone's matrix by id; an id past the bone table reads whatever follows.
+    bone_count = state.facts.get('act_bone_count')
+    if bone_count is not None:
+        for bone in sorted(bone for bone in bone_indices if bone >= bone_count):
+            state.fail(
+                f'SKN {", ".join(bone_indices[bone])} name(s) bone {bone}, but the ACT has only '
+                f'{bone_count} bones (0-{bone_count - 1})'
+            )
+    state.facts['skn_bone_ids'] = sorted(bone_indices)
 
     duplicate_slots = sorted(slot for slot, count in direct_write_counts.items() if count > 1)
     if duplicate_slots:

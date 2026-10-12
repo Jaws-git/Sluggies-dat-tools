@@ -142,7 +142,8 @@ def problems(bank: Bank, file: int, stock: Bank, skeleton: frozenset) -> tuple[l
     foreign = bank.tracks - skeleton - stock.tracks
     if foreign:
         errors.append(f'it animates {len(foreign)} track id{"s" if len(foreign) != 1 else ""} the slot\'s skeleton '
-                      f'has no bone for ({_ids(foreign)}): it was made for another skeleton')
+                      f'has no bone for ({_ids(foreign)}): it was made for another skeleton, or it animates an '
+                      'added bone whose model is not patched in yet (patch the .sluggie first, then the animation)')
     missing = (stock.tracks & skeleton) - bank.tracks
     if missing and not errors:
         warnings.append(f'{len(missing)} bone{"s" if len(missing) != 1 else ""} the stock bank animates '

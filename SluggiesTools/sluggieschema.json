@@ -435,7 +435,7 @@
                   },
                   "Influences": {
                     "type": "string",
-                    "description": "(vertex uint16, bone uint16, weight float32) big-endian records, one per bone influence, weights positive and normalized per vertex. Every vertex needs at least one; bones must be ones the donor's own SkinData skins to (the exporter moves other bones' weights to the nearest skinned ancestor)."
+                    "description": "(vertex uint16, bone uint16, weight float32) big-endian records, one per bone influence, weights positive and normalized per vertex. Every vertex needs at least one; bones must be ones the donor's own SkinData skins to, or added bones (BoneHierarchyEdited UserAdded entries); the exporter moves other bones' weights to the nearest allowed ancestor."
                   },
                   "ColorChannelData": {"type": "string", "description": "As RigidRebuild.ColorChannelData."},
                   "ColorFacesData": {"type": "string", "description": "As RigidRebuild.ColorFacesData."},
@@ -1490,7 +1490,7 @@
             },
             "Skinned": {
               "type": "boolean",
-              "description": "True to mark this bone as a skinned deformation bone (geoFileId written as 0xFFFF in the ACT). False for rigid attachment bones."
+              "description": "True to mark this bone as a skinned deformation bone (geoFileId written as 0xFFFF in the ACT); the exporter sets it on an added bone the rebuilt body weights. False for rigid attachment bones."
             },
             "TrackId": {
               "type": "number",

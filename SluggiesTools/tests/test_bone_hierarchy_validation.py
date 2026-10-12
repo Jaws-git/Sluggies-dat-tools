@@ -273,12 +273,24 @@ class BoneHierarchyValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'not an involution'):
             _validate(data)
 
-    def test_rule10_skin_data_references_a_new_bone(self):
+    def test_rule10_skin_data_may_reference_an_added_bone(self):
+        # Dolphin, 2026-10-12: Mario's hand SK1 on a new leaf bone deformed as vanilla.
+        data = _base_model()
+        model = data['SluggiesModel']
+        model['BoneHierarchyEdited'].append(_new_bone(4, 1, Skinned=True))
+        model['SkinData'] = {'SK1s': [{'BoneIndex': 4}], 'SK2s': [], 'SKAccs': []}
+        _validate(data)
+
+    def test_rule10_skin_data_referencing_an_unknown_bone_is_refused(self):
         data = _base_model()
         model = data['SluggiesModel']
         model['BoneHierarchyEdited'].append(_new_bone(4, 1))
-        model['SkinData'] = {'SK1s': [{'BoneIndex': 4}], 'SK2s': [], 'SKAccs': []}
-        with self.assertRaisesRegex(ValueError, 'SK1 entry names bone 4'):
+        model['SkinData'] = {
+            'SK1s': [{'BoneIndex': 5}],
+            'SK2s': [{'BoneIndex1': 1, 'BoneIndex2': 6}],
+            'SKAccs': [{'BoneIndex': 7}],
+        }
+        with self.assertRaisesRegex(ValueError, 'SK1 entry names bone 5.*SK2 entry names bone 6.*SKAcc entry names bone 7'):
             _validate(data)
 
 

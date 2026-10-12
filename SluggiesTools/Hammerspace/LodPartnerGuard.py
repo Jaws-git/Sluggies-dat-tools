@@ -58,6 +58,7 @@ class ActSummary:
     drawn_bones: dict[int, int]  # bone id -> GeoId, for bones that own a submesh
     parents: dict[int, int | None]  # bone id -> parent bone id (None for a root)
     srts: dict[int, tuple | None]  # bone id -> unpacked _SRT_FORMAT, or None without an SRT
+    skin_bones: frozenset[int] = frozenset()  # bone ids the SKN section skins to (empty without SKN)
 
     @property
     def is_low_poly(self) -> bool:
@@ -103,7 +104,25 @@ def act_summary(block: bytes) -> ActSummary | None:
             struct.unpack_from(_SRT_FORMAT, block, srt_at)
             if orientation_ptr and srt_at + SRT_RECORD_SIZE <= len(block) else None
         )
-    return ActSummary(geo_name, bone_count, drawn, parents, srts)
+    return ActSummary(geo_name, bone_count, drawn, parents, srts, _skin_bones(block))
+
+
+def _skin_bones(block: bytes) -> frozenset[int]:
+    """Bone ids named by the block's SK1/SK2/SKAcc records (header word
+    +0x10 points at the SKN section); empty when the block has none."""
+    if len(block) < 0x14:
+        return frozenset()
+    skn = struct.unpack_from('>I', block, 0x10)[0]
+    if not skn or skn + 0x24 > len(block):
+        return frozenset()
+    n1, n2, na = struct.unpack_from('>HHH', block, skn)
+    sk1, sk2, acc = struct.unpack_from('>III', block, skn + 0x08)
+    fields = (
+        [skn + sk1 + i * 0x40 + 0x38 for i in range(n1)]
+        + [skn + sk2 + i * 0x74 + off for i in range(n2) for off in (0x6C, 0x6E)]
+        + [skn + acc + i * 0x44 + 0x40 for i in range(na)]
+    )
+    return frozenset(struct.unpack_from('>H', block, at)[0] for at in fields if at + 2 <= len(block))
 
 
 def read_current_block(chunk_number: int, file_index: int) -> bytes | None:
@@ -184,6 +203,16 @@ def _pair(
     return (own, *found)
 
 
+def _bone_use(summary: ActSummary, bone: int) -> str:
+    """``91 (submesh 3)``, ``91 (skin)`` or ``91 (submesh 3, skin)``."""
+    uses = []
+    if bone in summary.drawn_bones:
+        uses.append(f'submesh {summary.drawn_bones[bone]}')
+    if bone in summary.skin_bones:
+        uses.append('skin')
+    return f'{bone} ({", ".join(uses)})'
+
+
 def lod_partner_errors(new_block: bytes, chunk_number: int, file_index: int, any_stem: bool = False) -> list[str]:
     """Blocking errors for making *new_block* the live model of this entry,
     given the partner model's current state. Empty when the pair stays valid,
@@ -194,11 +223,13 @@ def lod_partner_errors(new_block: bytes, chunk_number: int, file_index: int, any
     own, partner_index, partner = pair
 
     high, low = (partner, own) if own.is_low_poly else (own, partner)
-    missing = sorted(bone for bone in low.drawn_bones if bone >= high.bone_count)
+    missing = sorted(
+        bone for bone in set(low.drawn_bones) | set(low.skin_bones) if bone >= high.bone_count
+    )
     if not missing:
         return []
 
-    bones = ', '.join(f'{bone} (submesh {low.drawn_bones[bone]})' for bone in missing)
+    bones = ', '.join(_bone_use(low, bone) for bone in missing)
     high_range = f'{high.bone_count} bones, 0-{high.bone_count - 1}'
     if own.is_low_poly:
         return [

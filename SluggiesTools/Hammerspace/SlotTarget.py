@@ -325,10 +325,10 @@ def slot_pair_problems(high: bytes | None, low: bytes | None,
         problem = _prefix_problem(own, base)
         if problem:
             errors.append(f'the skeletons do not match ({problem})')
-    missing = sorted(b for b in ls.drawn_bones if b >= hs.bone_count)
+    missing = sorted(b for b in set(ls.drawn_bones) | set(ls.skin_bones) if b >= hs.bone_count)
     if missing and not as_low:
-        errors.append(f'{ls.geo_name} draws on bone(s) {", ".join(map(str, missing))}, but {hs.geo_name} has only '
-                      f'{hs.bone_count} bones (the game poses both from the High skeleton)')
+        errors.append(f'{ls.geo_name} draws or skins on bone(s) {", ".join(map(str, missing))}, but {hs.geo_name} '
+                      f'has only {hs.bone_count} bones (the game poses both from the High skeleton)')
     return errors, warnings
 
 

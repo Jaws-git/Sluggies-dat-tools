@@ -86,6 +86,22 @@ def skinned_bone_ids(skin_data: Optional[dict]) -> set:
     return bones
 
 
+def added_bone_ids(bone_hierarchy_edited) -> set:
+    """Ids of the bones an export appends (``BoneHierarchyEdited`` entries
+    with ``UserAdded``)."""
+    return {
+        int(b['BoneId']) for b in (bone_hierarchy_edited or []) if b.get('UserAdded') and 'BoneId' in b
+    }
+
+
+def allowed_skin_bones(donor: 'DonorSkinnedSubmesh', bone_hierarchy_edited) -> set:
+    """Bones the rebuilt body may skin to: the bones the donor's own skin uses
+    at this LOD plus the added bones. An appended mesh-free bone gets a
+    skinning matrix like a vanilla one (Dolphin, 2026-10-12); other donor
+    bones do not (rigid-mesh owners, bones missing from the Low skin)."""
+    return set(donor.skinned_bones) | added_bone_ids(bone_hierarchy_edited)
+
+
 def donor_skinned_submesh(
     index: int, sub: dict, skin_data: Optional[dict], facial_submeshes: Iterable[int] = (),
 ) -> DonorSkinnedSubmesh:
@@ -170,11 +186,12 @@ class InfluenceRemap:
 
 
 def remap_influences(vertex_weights: Sequence[dict], allowed: set, parent_of: dict) -> InfluenceRemap:
-    """Move every weight on a bone the donor's skin does not use to its
-    nearest ancestor that it does use (the external tool's ``to_allowed``):
-    such bones have no skinning matrix, so weights on them leave vertices
-    invisible or misplaced. A bone with no allowed ancestor loses its
-    weight. *parent_of* maps bone id -> parent id (None at the root)."""
+    """Move every weight on a bone outside *allowed* (``allowed_skin_bones``:
+    the donor's skin bones plus added bones) to its nearest allowed ancestor
+    (the external tool's ``to_allowed``): other donor bones have no skinning
+    matrix, so weights on them leave vertices invisible or misplaced. A bone
+    with no allowed ancestor loses its weight. *parent_of* maps bone id ->
+    parent id (None at the root)."""
     cache: Dict[int, Optional[int]] = {}
 
     def to_allowed(bone: int) -> Optional[int]:
@@ -212,12 +229,13 @@ def remap_report(remap: InfluenceRemap, object_name: str) -> List[str]:
     for (bone, target), count in sorted(remap.remapped.items()):
         lines.append(
             f'{object_name}: {count} vertex weight(s) on bone_{bone}, which the original model '
-            f'does not skin to, were moved to its nearest skinned ancestor bone_{target}.'
+            f'does not skin to, were moved to its nearest skinned ancestor bone_{target}. '
+            '(Added bones may be skinned to; other original bones may not.)'
         )
     for bone, count in sorted(remap.dropped.items()):
         lines.append(
             f'{object_name}: {count} vertex weight(s) on bone_{bone} were dropped: neither it nor '
-            'any ancestor is a bone the original model skins to.'
+            'any ancestor is a bone the original model skins to or an added bone.'
         )
     return lines
 
@@ -227,7 +245,7 @@ def unweighted_error(object_name: str, unweighted: Sequence[int]) -> Optional[st
         return None
     return (
         f'{object_name}: {len(unweighted)} vertex(es) have no weight on any bone the original '
-        f'model skins to. Assign them to bone_<id> vertex groups of skinned bones.'
+        f'model skins to or any added bone. Assign them to bone_<id> vertex groups of such bones.'
     )
 
 

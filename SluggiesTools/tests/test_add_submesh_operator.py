@@ -372,7 +372,9 @@ class AddSubmeshOperatorStructureTests(unittest.TestCase):
         panel = self._class('SLUGGIES_PT_tools')
         draw_fn = next(n for n in panel.body if isinstance(n, ast.FunctionDef) and n.name == 'draw')
         draw_src = ast.get_source_segment(self.source, draw_fn)
-        self.assertIn('SLUGGIES_OT_add_submesh.bl_idname', draw_src)
+        self.assertIn('_draw_rigid_mesh_box', draw_src)
+        box_src = ast.get_source_segment(self.source, self._function('_draw_rigid_mesh_box'))
+        self.assertIn('SLUGGIES_OT_add_submesh.bl_idname', box_src)
 
     def test_panel_draw_shows_the_free_host_bones_list(self):
         panel = self._class('SLUGGIES_PT_tools')

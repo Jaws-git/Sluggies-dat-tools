@@ -1088,25 +1088,25 @@ class SLUGGIES_OT_add_material(bpy.types.Operator):
 
 def _draw_rigid_mesh_box(layout, context):
     """The 'Rigid mesh' box (plan: renamed 'Mesh' for a custom submesh),
-    showing the active object's current attachment and the Reassign to new
-    bone / Add material buttons."""
+    showing the active object's current attachment and the Add submesh /
+    Reassign to new bone / Add material buttons."""
     arm_obj = _find_target_armature(context)
     obj = context.active_object
     kind, _submesh_index = _rigid_mesh_kind(obj) if obj is not None else (None, None)
     body = kind is None and obj is not None and _add_material_mesh_kind(obj)[0] == 'donor'
 
     box = layout.box()
-    box.label(text="Mesh" if kind == 'custom' else "Body" if body else "Rigid mesh")
+    box.label(text="Mesh" if kind == 'custom' else "Skinned mesh" if body else "Rigid mesh")
     if arm_obj is None:
         box.label(text=_no_target_armature_message(context), icon='INFO')
-        return
-    if kind is not None:
+    elif kind is not None:
         box.label(text=_rigid_mesh_attachment_label(context, arm_obj, obj))
-    elif body:
-        box.label(text="Skinned body: follows its bone_<id> vertex groups")
     if not body:
+        box.operator(SLUGGIES_OT_add_submesh.bl_idname)
         box.operator(SLUGGIES_OT_reassign_bone.bl_idname)
     box.operator(SLUGGIES_OT_add_material.bl_idname)
+    if kind != 'custom':
+        box.operator(SLUGGIES_OT_set_specular_strength.bl_idname)
 
 
 def _add_bone_parent_enum_items(self, context):
@@ -1651,17 +1651,17 @@ class SLUGGIES_PT_tools(bpy.types.Panel):
         box.label(text="Import/Export")
         col = box.column(align=True)
         col.operator(SLUGGIES_OT_import.bl_idname, text="Import .sluggie", icon='IMPORT')
-        col.operator(SLUGGIES_OT_import_anm.bl_idname, text="Import Sluggers .anm", icon='IMPORT')
-        col.separator()
         col.operator(SLUGGIES_OT_export.bl_idname, text="Export .sluggie", icon='EXPORT')
+        col.separator()
+        col.operator(SLUGGIES_OT_import_anm.bl_idname, text="Import Sluggers .anm", icon='IMPORT')
         col.operator(SLUGGIES_OT_export_anm_group.bl_idname, text="Export Sluggers .anm", icon='EXPORT')
 
         layout.separator()
-        layout.operator(SLUGGIES_OT_add_submesh.bl_idname)
-        layout.operator(SLUGGIES_OT_add_bone.bl_idname)
-        layout.operator(SLUGGIES_OT_renumber_added_bones.bl_idname)
-        layout.operator(SLUGGIES_OT_toggle_bone_track.bl_idname)
-        layout.operator(SLUGGIES_OT_set_specular_strength.bl_idname)
+        box = layout.box()
+        box.label(text="Bones")
+        box.operator(SLUGGIES_OT_add_bone.bl_idname)
+        box.operator(SLUGGIES_OT_renumber_added_bones.bl_idname)
+        box.operator(SLUGGIES_OT_toggle_bone_track.bl_idname)
 
         layout.separator()
         _draw_rigid_mesh_box(layout, context)

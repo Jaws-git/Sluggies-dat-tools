@@ -1662,6 +1662,9 @@ def skin_membership_changed(candidates, data):
     vertex_size = 6 * _comp_size_skin(skin_data["QuantizeInfo"])
     donor_sets = ExportMode.donor_skin_bone_sets(skin_data, vertex_size)
     skinned_bone_ids = set().union(*donor_sets.values()) if donor_sets else set()
+    # A weight on an added bone is a membership change too (the body is then
+    # rebuilt with that bone; added bones may drive skinning, Dolphin 2026-10-12).
+    skinned_bone_ids |= SkinnedRebuildExport.added_bone_ids(data["SluggiesModel"].get("BoneHierarchyEdited"))
 
     obj_by_vb = {str(obj["VertexBufferOffset"]): obj for obj in candidates if "VertexBufferOffset" in obj}
     edited_sets = {}
@@ -3675,6 +3678,22 @@ def _facial_shape_key_data(obj, model, submesh_index):
     return result
 
 
+def _mark_skinned_added_bones(model, vertex_weights, object_name, warnings):
+    """Set ``Skinned`` on every added bone the rebuilt body weights (the
+    patcher writes GEO 0xFFFF for such a bone, as for a vanilla skinning bone)
+    and say so in the log."""
+    used = {bone for weights in vertex_weights for bone in weights}
+    skinned = []
+    for entry in model.get("BoneHierarchyEdited") or []:
+        if entry.get("UserAdded") and int(entry["BoneId"]) in used:
+            entry["Skinned"] = True
+            skinned.append(int(entry["BoneId"]))
+    if skinned:
+        warnings.append(
+            f"{object_name}: skinned to added bone(s) {', '.join(f'bone_{b}' for b in sorted(skinned))}."
+        )
+
+
 def _skinned_rebuild_plan(context, obj, submesh_index, target_submesh, model, warnings):
     """Decide the skinned body's export path and gather what the rebuild
     needs. Returns None when the slot-preserving paths (Milestone 3) apply.
@@ -3719,8 +3738,10 @@ def _skinned_rebuild_plan(context, obj, submesh_index, target_submesh, model, wa
 
     bone_hierarchy = model.get("BoneHierarchyEdited") or model.get("BoneHierarchy") or []
     parent_of = {int(b["BoneId"]): b.get("ParentBoneId") for b in bone_hierarchy if "BoneId" in b}
-    remap = SkinnedRebuildExport.remap_influences(_vertex_bone_weights(obj), donor.skinned_bones, parent_of)
+    allowed = SkinnedRebuildExport.allowed_skin_bones(donor, model.get("BoneHierarchyEdited"))
+    remap = SkinnedRebuildExport.remap_influences(_vertex_bone_weights(obj), allowed, parent_of)
     warnings.extend(SkinnedRebuildExport.remap_report(remap, obj.name))
+    _mark_skinned_added_bones(model, remap.weights, obj.name, warnings)
     used = {v for tri in geometry.triangles for v in tri.vertices}
     unweighted_error = SkinnedRebuildExport.unweighted_error(
         obj.name, [v for v in remap.unweighted if v in used],

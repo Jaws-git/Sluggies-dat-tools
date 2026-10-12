@@ -101,6 +101,26 @@ own stats back, and a new ID a fresh copy of its template's files, the
 template's stats, the "Empty slot" name and portraits. The square's voice
 stays.
 
+## Replacing a slot's animations
+
+Each character has nine animation banks (files 6-14 of its model folder;
+`44/28/17/12/4/9/24/2/5` animations, exported to the `anm` folder). A slot can
+take one bank exported from Blender (**Export Sluggers .anm**) through
+**Replace animation...** on the character grid:
+
+```
+python start.py --write-slot-animation 0x13 7 "2_Output_Assets/18 Mario/anm/7 custom.anm"
+```
+
+The whole bank is replaced; its animation count picks the file. It must fit the
+skeleton the slot holds **now**: an `.anm` that moves a bone the slot's model
+does not have is refused ("the slot's skeleton has no bone for ..."). With added
+bones (see the Blender guide), patch the `.sluggie` first and the animation
+second, in that order. Recolours that share a bank keep theirs. The stock bank
+is restored with `--unpatch --target-id 0xNN --target-file 7`, and clearing a
+slot resets every bank. A bank larger than the largest stock bank of that file
+gets a memory warning.
+
 ## Renaming a slot
 
 Every slot can be renamed, stock characters included:

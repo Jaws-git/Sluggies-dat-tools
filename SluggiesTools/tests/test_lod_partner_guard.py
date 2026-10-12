@@ -18,11 +18,12 @@ import LodPartnerGuard as guard
 GEO_NONE = 0xFFFF
 
 
-def _block(geo_name: str, bone_count: int, owners: dict[int, int], placed=None) -> bytes:
+def _block(geo_name: str, bone_count: int, owners: dict[int, int], placed=None, skin_bones=()) -> bytes:
     """A minimal model block: header, then an ACT section with a bone table
     (GeoId per bone) and the geo name right after it. *placed* maps a bone id
     to ``(parent_id, translation_y)``; those bones get a parent link and an
-    SRT record, all others have neither."""
+    SRT record, all others have neither. *skin_bones* adds an SKN section
+    with one SK1 record per bone."""
     placed = placed or {}
     act = 0x20
     srt_start = 0x20 + bone_count * 0x1C
@@ -40,8 +41,15 @@ def _block(geo_name: str, bone_count: int, owners: dict[int, int], placed=None) 
     table += srts
     name_ptr = 0x20 + len(table)
     act_header = struct.pack('>IHHIIIHHII', 0, 0, bone_count, 0, 0x20, name_ptr, 0, 0, 0, 0)
-    header = struct.pack('>8I', 0, 0, act, 0, 0, 0, 0, 0)
-    return header + act_header + table + geo_name.encode('latin-1') + b'\x00'
+    body = act_header + table + geo_name.encode('latin-1') + b'\x00'
+    skn = 0
+    if skin_bones:
+        skn = 0x20 + len(body)
+        skn_header = struct.pack('>HHHBxIIIIIII', len(skin_bones), 0, 0, 0x30, 0x24, 0, 0, 0, 0, 0, 0)
+        records = b''.join(b'\x00' * 0x38 + struct.pack('>HHBxxx', bone, 3, 0) for bone in skin_bones)
+        body += skn_header + records
+    header = struct.pack('>8I', 0, 0, act, 0, skn, 0, 0, 0)
+    return header + body
 
 
 HIGH_91 = _block('mario.gpl', 91, {54: 1, 55: 2})
@@ -73,6 +81,11 @@ class ActSummaryTests(unittest.TestCase):
 
         self.assertEqual(summary.geo_name, 'L_teresa.gpl')
 
+    def test_skin_bones_are_read_from_the_skn_section(self):
+        summary = guard.act_summary(_block('mario.gpl', 92, {54: 1}, skin_bones=(5, 91)))
+        self.assertEqual(summary.skin_bones, frozenset({5, 91}))
+        self.assertEqual(guard.act_summary(HIGH_91).skin_bones, frozenset())
+
     def test_block_without_act_section_has_no_summary(self):
         self.assertIsNone(guard.act_summary(bytes(0x40)))
 
@@ -94,6 +107,13 @@ class LodPartnerErrorsTests(unittest.TestCase):
 
     def test_low_poly_drawing_on_a_bone_the_high_poly_also_has_is_allowed(self):
         self.assertEqual(self._errors(LOW_ON_NEW_BONE, 1, HIGH_92), [])
+
+    def test_low_poly_skinning_to_a_bone_the_high_poly_lacks_is_refused(self):
+        low = _block('L_mario.gpl', 92, {54: 1, 55: 2}, skin_bones=(28, 91))
+        errors = self._errors(low, 1, HIGH_91)
+        self.assertEqual(len(errors), 1)
+        self.assertIn('bone(s) 91 (skin)', errors[0])
+        self.assertEqual(self._errors(low, 1, HIGH_92), [])
 
     def test_low_poly_with_an_empty_extra_bone_is_allowed(self):
         # Dolphin, 2026-09-27: an unused new bone past the HP skeleton loads.

@@ -85,6 +85,16 @@ class HammerspaceSkinBoneTests(unittest.TestCase):
     def test_no_skin_edit_is_a_noop(self):
         main._validate_skin_bones({'SkinData': _skin()})
 
+    def test_edited_skin_on_an_added_bone_passes(self):
+        edited = _skin()
+        edited['SK1s'][0]['BoneIndex'] = 40
+        model = {
+            'SkinData': _skin(), 'SkinDataEdited': edited,
+            'BoneHierarchyEdited': [{'BoneId': 40, 'UserAdded': True}],
+        }
+        main._validate_skin_bones(model)
+        self.assertEqual(main._allowed_skin_bones(model), {10, 20, 21, 30, 40})
+
 
 if __name__ == '__main__':
     unittest.main()

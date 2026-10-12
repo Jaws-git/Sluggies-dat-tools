@@ -183,7 +183,7 @@ Rules:
 A re-import of the exported file always shows the original mesh unchanged on its original bone. Any edit, including a move with **Reassign to new bone** (either placement), appears as a second `<name>_edit` object on its current bone, with its new materials. Select only one of the two objects when exporting again: the `_edit` object keeps your changes, the original undoes them.
 
 #### Adding a new bone how-to
-A new bone gives a new submesh somewhere to attach when no free bone sits where you need one. It follows its parent bone and nothing else: it isn't animated and it can't drive skinning. Not available in stadiums (see above).
+A new bone gives a new submesh somewhere to attach when no free bone sits where you need one, or a new joint for the body to bend at. It follows its parent bone unless you give it an animation track. Not available in stadiums (see above).
 
 1. Select the armature or any of its child meshes and open the Sluggies Tools tab (Object Mode).
 2. Click **Add Bone** and pick the parent bone. The active bone is preselected, and new bones can be parents too.
@@ -195,8 +195,21 @@ A new bone gives a new submesh somewhere to attach when no free bone sits where 
 - Bones can only be added, as leaves. Don't delete, rename, re-parent or reorder the original bones, and don't parent an original bone to a new one. The game's animations are built for the original skeleton, so these edits would make limbs move wrong. Export and the patcher refuse them.
 - Deleting a bone you added yourself is fine. It is simply left out of the export, and the bones you added after it move down one number each.
 - Don't scale the new bone. The game ignores bone scale, and export warns when a new bone has one.
-- Don't paint weights for a new bone onto the body mesh. New bones can't drive skinning: export moves such weights to the nearest original bone above it that the body skins to, and warns.
+- You can paint body weights onto a new bone: add a `bone_<id>` vertex group for it on the body and weight vertices to it like to any other bone. This rebuilds the whole body (see "Editing the body"). Give the High and the Low model the same new bone when both bodies use it.
 - Bone numbers are assigned in the order you added the bones. After you delete an added bone, click **Renumber Added Bones** so the names match the numbers again. Meshes on those bones keep their bone, because their vertex groups are renamed too. **Add Bone**, **Add Submesh** and **Reassign to New Bone** renumber automatically. Export is refused until the names match.
+
+#### Animating an added bone how-to
+An added bone follows its parent until you give it an animation track of its own. Confirmed in game (Mario, 2026-10-13): a new bone under the spine, weighted to the belly and keyed in a bank-7 animation, bent the belly as keyed.
+
+1. Tick **Animation track** in the Add Bone dialog, or select the added bone and click **Toggle Animation Track** in the sidebar. The bone gets a track number no stock animation uses (`0xC0`-`0xFF`, at most 64 animated added bones per model).
+2. Export the model and **patch it first**. The track number lives in the model's bone-to-track table, so an animation that moves the bone only fits once the patched model has the bone.
+3. Import the animation bank you want to change (**Import Sluggers .anm**, files 6-14 of the character's `anm` folder), key the added bone in the sequences where it should move, and **Export Sluggers .anm**. Sequences where the bone stays in its rest pose get no track for it.
+4. Replace the bank in the slot (**Replace animation...** on the character grid, or `--write-slot-animation`). The patcher checks the bank against the slot's skeleton as the game holds it now; an `.anm` that moves an added bone before the model is patched is refused with "the slot's skeleton has no bone for ...".
+
+Rules:
+- The bone's rest pose comes from the model, its motion from the bank: keep the two exports from the same armature.
+- A Low model is posed with the High model's skeleton (see "New bones on Low models"), so the High model needs the bone and its track; the Low model only needs the bone when its body or a submesh uses it.
+- Replacing a bank re-samples every sequence in it at whole frames with linear/slerp interpolation; stock half-frame keys are lost. Keep the bank's sequence count (the game picks animations by number).
 
 #### Editing the unused characters
 
@@ -211,7 +224,8 @@ The six unused characters (folders 89-94) share all their models with a playable
 The game moves a character's Low model with the High model's skeleton. When you add a bone to a Low model and attach a submesh to it:
 - Add the same bone, with the same parent and position, to the High model too, and patch the **High model first**. Otherwise the game crashes when the model loads, so the patcher refuses the Low patch.
 - The Low model's submesh follows the **High** model's bone. If the two bones sit in different places, the patcher warns you, and the High placement is the one you'll see.
-- An added bone without a submesh on it doesn't need a partner.
+- The same holds for an added bone the Low body is **skinned** to: the High model must have the bone too, or the patcher refuses the Low patch.
+- An added bone without a submesh on it and without body weights doesn't need a partner.
 
 #### Editing the body
 
@@ -220,7 +234,7 @@ The body is the first mesh, the one that bends with the skeleton through its `bo
 **Anything more rebuilds the whole body** in Hammerspace: adding or deleting vertices or faces, moving the body in Object Mode, changing which bones a vertex uses (adding, removing or moving vertex groups), moving only some faces of a surface to another material, moving faces to a material with another shader, or using an **Add material** surface. The export log says `body rebuild of <name> (<reasons>)`.
 
 Rules for a rebuilt body:
-- **Weights:** every vertex the faces use needs weight on at least one bone the original body skins to; export stops and counts the vertices otherwise. Weights on other bones (bones that carry a rigid mesh, added bones, bones the Low model doesn't skin) are moved to the nearest bone above them that the body does skin to, and the log says so. Weights are normalized for you; any number of bones per vertex works, but each bone past the second costs extra data.
+- **Weights:** every vertex the faces use needs weight on at least one bone the original body skins to or one added bone; export stops and counts the vertices otherwise. Weights on other bones (original bones that carry a rigid mesh, bones the Low model doesn't skin) are moved to the nearest bone above them that the body may skin to, and the log says so. Weights are normalized for you; any number of bones per vertex works, but each bone past the second costs extra data.
 - **Blink and mouth poses:** a body that the game animates in the face (Luigi, for example) keeps its expressions through the imported facial shape keys (`Basis` and `facial_object_<o>_pose_<p>`). Keep those keys; the log lists `facial object N: ... animated`. Edited key shapes are exported as the new poses. Without the keys, the patched body has no facial animation (the log warns). On a few characters some face vertices also use a third bone for their expressions (Kritter, King Boo, Peach, Daisy, Diddy); after a rebuild that third-bone part of the expression is left out, and the patch log warns.
 - **Materials:** every face must use one of the body's own materials (the imported ones or ones made with **Add material**), as on rigid meshes.
 - **Shape keys** other than the facial ones are ignored.
@@ -229,7 +243,7 @@ Rules for a rebuilt body:
 
 #### You can't (yet):
 - remove, reorder or re-parent original bones (adding bones is fine)
-- skin the body to bones the original body doesn't skin to, including added bones (see "Editing the body")
+- skin the body to original bones the original body doesn't skin to (added bones are fine, see "Editing the body")
 - skin a new submesh to more than one bone
 - remove an object's custom properties
 - rename imported objects

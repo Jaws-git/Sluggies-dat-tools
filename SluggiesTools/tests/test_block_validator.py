@@ -260,6 +260,14 @@ class BlockValidatorTests(unittest.TestCase):
         self.assertFalse(report['valid'])
         self.assertTrue(any('SKAcc[0] source array not 32-byte aligned' in error for error in report['errors']))
 
+    def test_skn_bone_index_past_the_act_bone_table_fails(self):
+        block = bytearray(make_valid_block())
+        struct.pack_into('>H', block, 0x2C0 + 0x24 + 0x40, 2)  # SKAcc[0] bone = 2, ACT has bones 0-1
+        report = validate_model_block(bytes(block))
+        self.assertFalse(report['valid'])
+        self.assertTrue(any('SKAcc[0] name(s) bone 2, but the ACT has only 2 bones' in e for e in report['errors']))
+        self.assertEqual(validate_model_block(make_valid_block())['facts']['skn_bone_ids'], [0])
+
     def test_unpadded_primitive_list_size_fails(self):
         block = bytearray(make_valid_block())
         ds0 = 0x20 + 0x24 + 0x60

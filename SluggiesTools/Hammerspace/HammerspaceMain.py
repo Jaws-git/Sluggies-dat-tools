@@ -1337,6 +1337,22 @@ def _merge_duplicate_texture_additions(model: dict, sluggie_path) -> None:
 ADDED_TRACK_IDS = range(0xC0, 0x100)
 
 
+def _added_bone_ids(model: dict) -> set[int]:
+    """Ids of the bones ``BoneHierarchyEdited`` appends (``UserAdded``)."""
+    return {
+        int(b['BoneId']) for b in (model.get('BoneHierarchyEdited') or []) if b.get('UserAdded')
+    }
+
+
+def _allowed_skin_bones(model: dict) -> set[int]:
+    """Bones a skin may use: the bones the donor's own ``SkinData`` skins to
+    at this LOD, plus any added bone. An appended mesh-free bone gets a
+    skinning matrix like a vanilla one (Dolphin, 2026-10-12: Mario's hand SK1
+    retargeted to a new leaf bone under the hand deformed as vanilla); donor
+    bones outside the vanilla skin set do not (skn_section.html#runtime-limits)."""
+    return _skin_bone_ids(model.get('SkinData')) | _added_bone_ids(model)
+
+
 def _validate_bone_hierarchy_edited(model: dict) -> None:
     """Reject an invalid ``BoneHierarchyEdited`` before any DAT/DOL write,
     alongside ``_validate_custom_submeshes``. Each error names the offending
@@ -1533,42 +1549,45 @@ def _validate_bone_hierarchy_edited(model: dict) -> None:
                     '(malformed donor mirror table; refused rather than guessed at)'
                 )
 
-    # Rule 10: no new bone drives skinning.
+    # Rule 10: every SKN record names a donor bone or an added bone (an added
+    # bone may drive skinning, Dolphin 2026-10-12).
+    known_ids = set(range(donor_count)) | set(new_ids)
     for skin_key in ('SkinData', 'SkinDataEdited'):
         skin_data = model.get(skin_key)
         if not skin_data:
             continue
         for sk1 in skin_data.get('SK1s') or []:
-            if int(sk1['BoneIndex']) >= donor_count:
-                fail(f"{skin_key}: SK1 entry names bone {sk1['BoneIndex']}, which is not a donor bone")
+            if int(sk1['BoneIndex']) not in known_ids:
+                fail(f"{skin_key}: SK1 entry names bone {sk1['BoneIndex']}, which is neither a donor nor an added bone")
         for sk2 in skin_data.get('SK2s') or []:
             for field in ('BoneIndex1', 'BoneIndex2'):
-                if int(sk2[field]) >= donor_count:
-                    fail(f"{skin_key}: SK2 entry names bone {sk2[field]}, which is not a donor bone")
+                if int(sk2[field]) not in known_ids:
+                    fail(f"{skin_key}: SK2 entry names bone {sk2[field]}, which is neither a donor nor an added bone")
         for skacc in skin_data.get('SKAccs') or []:
-            if int(skacc['BoneIndex']) >= donor_count:
-                fail(f"{skin_key}: SKAcc entry names bone {skacc['BoneIndex']}, which is not a donor bone")
+            if int(skacc['BoneIndex']) not in known_ids:
+                fail(f"{skin_key}: SKAcc entry names bone {skacc['BoneIndex']}, which is neither a donor nor an added bone")
 
     if errors:
         raise ValueError('; '.join(errors))
 
 
 def _validate_skin_bones(model: dict) -> None:
-    """Refuse a ``SkinDataEdited`` that skins to a bone the donor's own skin
-    (``SkinData``) never uses at this LOD. Such a bone owns a rigid submesh or
-    is missing from this LOD's skin, and its matrix-palette entry is not a
-    skinning matrix: the vertices end up misplaced or invisible
-    (skn_section.html#runtime-limits). The Blender add-on already ignores
-    vertex groups for these bones; this is the patch-time backstop."""
+    """Refuse a ``SkinDataEdited`` that skins to a donor bone the donor's own
+    skin (``SkinData``) never uses at this LOD. Such a bone owns a rigid
+    submesh or is missing from this LOD's skin, and its matrix-palette entry
+    is not a skinning matrix: the vertices end up misplaced or invisible
+    (skn_section.html#runtime-limits). Added bones are allowed
+    (``_allowed_skin_bones``). The Blender add-on already ignores vertex
+    groups for the refused bones; this check is the patch-time backstop."""
     edited = model.get('SkinDataEdited')
     if not edited:
         return
-    extra = sorted(_skin_bone_ids(edited) - _skin_bone_ids(model.get('SkinData')))
+    extra = sorted(_skin_bone_ids(edited) - _allowed_skin_bones(model))
     if extra:
         raise ValueError(
             f"SkinDataEdited skins to bone(s) {extra}, which the donor's skin never uses; "
             'these bones have no skinning matrix, so the vertices would be misplaced or '
-            'invisible. Weight those vertices to bones the original model skins to')
+            'invisible. Weight those vertices to bones the original model skins to, or to added bones')
 
 
 # ---------------------------------------------------------------------------
@@ -3507,7 +3526,7 @@ def _validate_skinned_rebuild(model: dict) -> None:
     errors: list[str] = []
     use_b64 = model.get('UseBase64', True)
     skin = model.get('SkinData') or {}
-    skinned_bones = _skin_bone_ids(skin) if skin else set()
+    skinned_bones = _allowed_skin_bones(model) if skin else set()
     rigid_surfaces = _custom_submesh_rigid_surfaces(model)
     is_stadium = model.get('ChunkNumber') in STADIUM_CHUNKS
     additional_names = {
@@ -3612,7 +3631,7 @@ def _validate_skinned_rebuild(model: dict) -> None:
                 fail(
                     f"skins to bone(s) {sorted(unknown_bones)}, which the donor's skin never uses; "
                     'these bones have no skinning matrix, so the vertices would be misplaced or '
-                    'invisible. Weight those vertices to bones the original model skins to'
+                    'invisible. Weight those vertices to bones the original model skins to, or to added bones'
                 )
             missing = sorted(set(range(vertex_count)) - weighted)
             if missing:
