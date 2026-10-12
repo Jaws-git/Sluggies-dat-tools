@@ -1607,7 +1607,7 @@ class SLUGGIES_OT_import_anm(bpy.types.Operator, ImportHelper):
                 self.report({"WARNING"}, f"{file_entry}: {e}")
                 continue
             sequences = anm['sequences']
-            group = anm_group_name(filepath)
+            group = anm_name
 
             for seq_i, sequence in enumerate(sequences):
                 action_name = f"{anm_name}_seq{seq_i}"
@@ -1697,19 +1697,6 @@ class SLUGGIES_OT_import_anm(bpy.types.Operator, ImportHelper):
 
         self.report({"INFO"}, f"Imported {total_actions} animation action(s)")
         return {"FINISHED"}
-
-
-def anm_group_name(filepath):
-    """Animation group label of an .anm file: "<character folder> <file
-    stem>" for an export's <character>/anm/<n>.anm, else the file stem
-    (an export's names, e.g. "Mario_7_Batting", already carry the character)."""
-    stem = os.path.splitext(os.path.basename(filepath))[0]
-    folder = os.path.dirname(os.path.abspath(filepath))
-    if os.path.basename(folder).lower() == 'anm' and stem.isdigit():
-        character = os.path.basename(os.path.dirname(folder))
-        if character:
-            return f"{character} {stem}"
-    return stem
 
 
 def _store_anm_metadata(action, anm, group, filepath, seq_index, bone_track_ids):

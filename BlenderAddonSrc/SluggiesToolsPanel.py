@@ -1652,6 +1652,7 @@ class SLUGGIES_PT_tools(bpy.types.Panel):
         col = box.column(align=True)
         col.operator(SLUGGIES_OT_import.bl_idname, text="Import .sluggie", icon='IMPORT')
         col.operator(SLUGGIES_OT_import_anm.bl_idname, text="Import Sluggers .anm", icon='IMPORT')
+        col.separator()
         col.operator(SLUGGIES_OT_export.bl_idname, text="Export .sluggie", icon='EXPORT')
         col.operator(SLUGGIES_OT_export_anm_group.bl_idname, text="Export Sluggers .anm", icon='EXPORT')
 

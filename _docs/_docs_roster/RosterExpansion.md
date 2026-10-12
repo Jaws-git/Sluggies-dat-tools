@@ -181,7 +181,18 @@ screen), and none otherwise: every other caller of the wrapper, and the
 other callers of the family search, keep the species voice (coverage as the
 external tool's; not surveyed further). Stubs live in the DOL hammerspace
 text section, the tables, a 12-byte state and a pointer table (one word per
-ID up to the highest voiced one) in the data section.
+ID up to the highest voiced one) in the data section. Checked on the clean
+DOL (2026-10-10): all nine sites hold the expected stock words, and the three
+direct callers do leave `ID * 8` in r0 (`rlwinm r0,r0,3,0,28`, then
+`add r5,rX,r0; lbz r5,2(r5)` before the `bl`), so the wrapper's token read
+is sound.
+
+An ID's table starts from its species' clip row *as the run leaves it*
+(after stock square swaps and square voices), with the chosen slots
+replaced. The replacing clips come from the chosen voice's *stock* row
+(`voices.py` publishes `ctx.state['stock_clips']` before it writes the
+swaps), so "Bowser's voice" means Bowser's own sounds whatever the swaps
+did.
 
 A gameplay clip plays only while its bank is loaded, and the game loads the
 bank of the species on the field (the group word, after any stock square
@@ -209,6 +220,25 @@ screen (table only); the vanilla archive plus one unused copied clip plays
 every stock voice as before; Mario with Bowser's copied clips speaks with
 Bowser's voice on the field while his wheel members keep Mario's, no
 crashes.
+
+The vanilla US `MY2.brsar` (2026-10-10): 14,745,728 bytes, 1,050 sounds,
+1,179 SYMB names. Family files: Mario 14 (161 KB of wave data), Bowser Jr
+40 (148 KB), Bowser 105 (252 KB); select file 160 (726 KB; sound 673 is
+`cuppa_v13`, Bowser's name call). With no sounds to add, `add_sounds` writes
+the input back byte for byte. The external tool's writer does not: it always
+moves the SYMB string table and the INFO sound table to the ends of their
+sections (SYMB 65,248 → 69,984 bytes, INFO 107,488 → 115,904 bytes), while
+its rebuilt FILE section is byte-identical; ours moves them only when it adds
+sounds. With one copied clip (Bowser's `cuppa_v1` into file 14, +27,680
+bytes: RWSD 2,112 → 2,304, RWAR 161,152 → 175,360), the archive re-parses
+with every stock sound unchanged, the other 140 files and 72 of 73 groups
+byte-identical, and the new sound decodes sample for sample like the source.
+New INFO entries are appended, so stock sound IDs never move. The external
+tool works from a different base archive (Extra Innings), so the INFO IDs in
+its voice tables do not apply to ours. Voice clips use stock coefficient
+sets, as the external tool's voices do. Its coefficient training
+(`dsp_correlate_coefs`) was not ported; effects and music use our own
+`brstm_write.train_coefs` (see "Sound archive: effects, music, volumes").
 
 **Custom clips** (2026-10-10, `Roster/clip_files.py`, `Sound/clips.py`):
 `character_voices[].clips` and `species_clips[].clips` map voice moments
@@ -326,6 +356,90 @@ the stock pair (source of A, source of B), for stock and new IDs alike.
 With an `ids` key this is done in the moved tables, otherwise in place.
 *Dolphin* (2026-10-05): a stock character with Bowser's stats shows and plays
 them, for stock and new slots.
+
+## Sound archive: effects, music, volumes
+
+`SluggiesTools/Sound/` reads and writes the game's `files/sound_NA` (copied by
+the user into `1_Input/sound_NA/`). Character voices and custom clips are
+described under "Stats, size and voice"; this section covers the other
+sounds. Static analysis of the vanilla US files, 2026-10-10..12.
+
+**Archive contents.** `MY2.brsar` holds 1,050 sounds: 853 WAVE (all
+DSP-ADPCM; 830 at 32 kHz and 23 at 44.1 kHz, one stereo, 26 looped), 78 STRM
+(music and jingles, streamed from `stream/*.brstm`) and 119 SEQ (note data
+played through an instrument bank, such as the bat hits `bb_hit_m`). It also
+has 219 files, 73 groups, 22 players and 35 banks. Groups `group_v001` to
+`group_v041` are the voice banks, one per voice, and `group_sel_v` (file 160)
+holds the select-screen name calls. No wave sits in two groups, and no wave is
+unreferenced; in 10 files several RWSD entries share a wave. Sound INFO IDs
+are the `id`s in the sound export's `index.json` (Mario's `v1` is 196).
+DSP-ADPCM decodes to exact 16-bit PCM, so the export's WAVs are lossless. The
+decoder matched the external tool's bit for bit on 29 waves and 5 streams.
+Streams are decoded block by block from the ADPC chunk's history, as the
+player does.
+
+**Sound effects** (`Sound/effects.py`, the GUI's Sound FX tab). These are the
+345 WAVE sounds of archived files outside the voice-bank groups: 299 mono at
+32 kHz, 23 mono at 44.1 kHz, 22 mono looped and one stereo. The longest is about 2.5 s. SEQ
+sounds have no single waveform and cannot be replaced. A replacement is
+encoded in the stock wave's shape: its channel count, rate and loop (a WAV
+`smpl` loop is kept, otherwise a looping stock wave loops from the start).
+Each channel is encoded twice, once with coefficients trained on the sound
+and once with the stock wave's, and the closer result is kept. Sounds are cut
+at 30 s; a wave over twice the stock size is noted, because a group loads
+into sound memory whole. `brsar_write.replace_waves` puts a wave in place when
+only that sound plays it. When other sounds share the wave, it appends the
+new one and points the sound's RWSD note at it. Either way, every sound keeps
+its INFO ID and entry. The FILE section is laid out again with
+`add_sounds`' layout, which writes wave offset 0 for items without wave
+bytes, as vanilla does, so a relayout with no changes is byte-identical to
+the vanilla archive. The library `Sound_FX/` (`effects.json` format 1 plus
+one `<sound name>.rwav` per sound) is keyed by sound name. The tab writes
+`3_Output_Dat/sound_NA/MY2.brsar` at once (`sync_output`: library waves in,
+stock waves back for sounds no longer in the library). *Not yet tested in
+Dolphin* (2026-10-12): whether replaced, looped and stereo effects play, and
+how far a group can grow before sound memory overflows.
+
+**Music** (`Sound/brstm_write.py`, the Music tab). The 78 stock streams are
+all stereo DSP-ADPCM at 32,000 or 44,100 Hz, in blocks of 8,192 bytes
+(14,336 samples) per channel. A replacement keeps the stock file's channel
+count, rate and block layout: `build` copies its HEAD chunk and patches the
+counts, the loop and the per-channel ADPCM info. The archive's STRM entry
+therefore needs no change, and only the `.brstm` is written, directly to
+`3_Output_Dat/sound_NA/stream/`. The roster run does not touch streams.
+Encoding is built for tracks several minutes long:
+- **Coefficients:** 8 predictor pairs are trained per channel, by clustering
+  the 14-sample frames on their prediction error.
+- **Block batching:** every block of every channel is encoded side by side
+  in one batch. Each frame tries the 8 predictors at 3 scales around the one
+  its residual needs (24 candidates instead of 128).
+- **Seam-free blocks:** blocks whose real starting history (the decoded end
+  of the block before) differs from the first pass are re-encoded until they
+  rejoin it, so the stream plays without seams when decoded back to back.
+- **Resampling:** FFT band-limited.
+
+**Volumes** (`Sound/volumes.py`). Every INFO sound entry (wave, sequence or
+stream) holds a `u8` volume at `+0x14`, 0–127. In vanilla the mean is 103.1,
+666 sounds use 107, and streams sit lower (36–117, mean 80.8). The byte only
+scales a sound down from its wave's own level. `sound_volumes.json` (format 1,
+`{"volumes": {name: volume}}`, beside `1_Input`) holds the user's values by
+sound name; a value equal to the stock one drops out. They are written in
+place (nothing moves), at once by the GUI and again on every run. Sounds that
+the voice steps add keep their source's volume. The tabs' **Replace gain**
+(`clips.apply_gain`, ±24 dB) scales the input samples before encoding, which
+is the only way to go louder than stock.
+
+**Order in a roster run** (`Roster/runner.py`): the input archive, then the
+voice steps (species clips, square swaps, character voices), then the effect
+library (`effects.apply_library`), then the volumes (`volumes.apply`). So
+**Patch Game** always rebuilds `3_Output_Dat/sound_NA/MY2.brsar` from
+`1_Input` with every kind of edit in it.
+
+**Input files.** Files that are not WAV (MP3, OGG, FLAC, ...) are decoded by
+ffmpeg (`Sound/ffmpeg.py`), which is looked up on PATH and then in the
+winget, Scoop and Chocolatey link folders, because a winget install adds to
+PATH only for programs started after it. A loop comes from a WAV `smpl` chunk
+only.
 
 ## Stat values and the stat editor bridge
 

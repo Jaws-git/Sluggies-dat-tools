@@ -654,7 +654,8 @@ The GUI's **Voices** tab lists the game's voice packs (one per stock voice: its
 12 moments, with Play) and your custom packs (`Sound_Packs/<name>/`, one folder
 per pack with the encoded clips and a copy of each prepared WAV).
 
-- **Game voice pack**: **Replace...** on a moment picks a WAV (or `.rwav`),
+- **Game voice pack**: **Replace...** on a moment picks a sound file (WAV, or
+  MP3, OGG, FLAC, ... with ffmpeg; see "Sound tools: volume, gain, ffmpeg") or a `.rwav`,
   encodes it and stages a replacement for everyone who speaks with that voice
   (the character grid's pending list; **Patch Game** writes it). **Reset** drops
   the pending edit or stages the stock clip back. Replaced moments show blue,
@@ -691,7 +692,8 @@ filter box narrows the list by name or group. Replaced sounds show blue.
 - **Play stock** (replaced rows) plays the original for comparison.
 - A sound's archive group loads into the game's sound memory whole, so keep a
   replacement near the stock length; the status line notes a wave more than
-  twice the stock size. Sounds are cut at 30 s.
+  twice the stock size. Sounds are cut at 30 s. As of 2026-10-12, replaced
+  effects have not been tested in the game, so check yours in Dolphin.
 - The 119 sequence sounds (for example the bat hits `bb_hit_m`) play
   instrument banks rather than one recording and are not listed.
 
@@ -706,8 +708,8 @@ first: `3_Output_Dat/sound_NA/MY2.brsar` when it exists, and each track from
 
 - **Play** plays a track once (the first Play of a track decodes it, a moment);
   any **Stop** stops every playback, voice clips included.
-- **Replace...** picks a WAV (any rate, mono or stereo) and encodes it in the
-  stock track's format (stereo, its 32,000 or 44,100 Hz, same block layout), so
+- **Replace...** picks a WAV (any rate, mono or stereo; or MP3, OGG, FLAC, ...
+  with ffmpeg) and encodes it in the stock track's format (stereo, its 32,000 or 44,100 Hz, same block layout), so
   only the `.brstm` changes. It is written to `3_Output_Dat/sound_NA/stream/`
   at once (nothing to stage); **Patch Game & copy files** (CopyFilesToGameDir)
   copies it into the game. A loop in the WAV (`smpl` chunk, as the sound export
@@ -716,3 +718,43 @@ first: `3_Output_Dat/sound_NA/MY2.brsar` when it exists, and each track from
   meanwhile); quality is about that of the stock tracks.
 - **Reset** writes the stock track to `3_Output_Dat/sound_NA/stream/` again, so
   the next copy restores the game's.
+- Playback (all sound tabs) works on Windows only.
+
+## Sound tools: volume, gain, ffmpeg
+
+The **Voices**, **Sound FX** and **Music** tabs share these:
+
+- **Volume** column and **Set volume**: every sound in the archive has a volume
+  of 0–127 (127 is the loudest; it cannot make a sound louder than its
+  recording). Most stock sounds use 107, music sits lower (36–117). The column
+  shows the volume the game has now, blue with the stock value beside it when
+  changed. **Set volume** writes it into `3_Output_Dat/sound_NA/MY2.brsar` at
+  once (nothing to stage) and keeps it in `sound_volumes.json` in the tool
+  folder, so every **Patch Game** run applies it again. Setting the stock value
+  removes the entry. A character voice that copies a stock clip keeps that
+  clip's stock volume.
+- **Replace gain** (toolbar, dB, -24 to +24, default 0) makes the file the next
+  **Replace...** encodes louder or quieter: +6 dB about doubles the level, -6 dB
+  halves it. Peaks pushed past full scale are clipped, and the log says so. An
+  encoded `.rwav` is taken as it is. To make a sound louder than the stock
+  one, use the gain; the volume can only make it quieter.
+- **ffmpeg** lets **Replace...** read MP3, OGG, FLAC and other formats besides
+  WAV. The Maintenance tab's **Sound** section says whether it is installed and,
+  if it isn't, offers **Install ffmpeg (winget)** (`winget install
+  Gyan.FFmpeg`). A loop is read from WAV files only (their `smpl` chunk).
+
+## Exporting the game's sounds
+
+```
+python start.py --export-sounds
+```
+
+(or the GUI's "Export sound files" checkbox) decodes every sound in
+`1_Input/sound_NA/` into `2_Output_Assets/_SOUNDS/` as 16-bit WAV files, one
+folder per archive group (`group_v001`... the voice banks, `group_sel_v` the
+select-screen name calls, `group_bb` the baseball effects, `group_st*` the
+stadiums), music and jingles in `stream/`. `index.json` lists every sound
+with its ID, name, group, rate, length and loop. Looping sounds keep their
+loop in the WAV, so an edited export can go back through **Replace...** with
+its loop intact. Sequence sounds (such as the bat hits) have no single
+recording and are listed in the index only.

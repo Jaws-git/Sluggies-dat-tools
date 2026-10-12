@@ -22,7 +22,9 @@ ANM_GROUP_THEMES = {
 
 def anm_file_name(file_index, character=None):
     """File stem of an exported animation bank: "<character>_<bank>_<theme>",
-    e.g. "Mario_7_Batting"; the parts that are unknown are left out."""
+    e.g. "Mario_7_Batting"; the parts that are unknown are left out.
+    ``character`` is the bare name ("Mario", not the export folder's
+    "18 Mario"); the .glb made from the .anm takes the same stem."""
     parts = [character] if character else []
     parts.append(str(file_index))
     theme = ANM_GROUP_THEMES.get(int(file_index))
