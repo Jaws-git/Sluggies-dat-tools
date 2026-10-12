@@ -21,7 +21,7 @@ from bpy_extras.io_utils import ExportHelper
 
 from . import AnmFormat
 from . import FieldCodec
-from .ImportSluggies import _anm_bone_corrections
+from .ImportSluggies import _anm_bone_corrections, game_rest_srt
 
 # A channel the original track lacks is added when the bone leaves its rest
 # value by more than this (translation in game units).
@@ -88,9 +88,8 @@ def check_target(filepath, actions):
 
 def _game_rest(bone):
     """Rest (scale, quaternion [w, x, y, z], translation) in game terms."""
-    nw, x, y, z = bone.get('game_quaternion', (-1, 0, 0, 0))
-    return (list(bone.get('game_scale', (1, 1, 1))), [-nw, x, y, z],
-            list(bone.get('game_translation', (0, 0, 0))))
+    translation, (nw, x, y, z), scale = game_rest_srt(bone)
+    return scale, [-nw, x, y, z], translation
 
 
 def _deviates(samples, rest):

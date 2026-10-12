@@ -313,7 +313,7 @@ def write_export(cid: int, char: dict, entries: list[Entry], portraits: dict, mo
         for e in entries:
             export.set_log_dir_index(e.chunk)
             if e.is_anm:
-                e.entry.child.dumpRaw(work, e.file_index)
+                e.entry.child.dumpRaw(work, e.file_index, character)
                 continue
             e.entry.child.toFile(work + os.sep, export_tex=True, export_glb=True)
             for model in e.models:

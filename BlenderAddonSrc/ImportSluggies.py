@@ -26,6 +26,20 @@ def _game_srt_matrix(trans, quat, scale):
     return T @ R @ S
 
 
+def game_rest_srt(bone):
+    """(translation, stored quaternion [-w, x, y, z], scale) of *bone*'s game
+    rest local. Imported bones carry it as game_* properties. An Add Bone bone
+    has none: its rest is what the .sluggie export writes for it
+    (ExportSluggies.encode_bone_hierarchy_edited), the Blender rest matrix
+    relative to its parent's."""
+    if bone.get('SluggiesUserAdded') and bone.parent is not None:
+        t, r, s = (bone.parent.matrix_local.inverted() @ bone.matrix_local).decompose()
+        return list(t), [-r.w, r.x, r.y, r.z], list(s)
+    return (list(bone.get('game_translation', (0, 0, 0))),
+            list(bone.get('game_quaternion', (-1, 0, 0, 0))),
+            list(bone.get('game_scale', (1, 1, 1))))
+
+
 def _anm_bone_corrections(arm_data):
     """{bone name: C} with C = inverse(game rest world) @ Blender rest matrix.
 
@@ -45,9 +59,7 @@ def _anm_bone_corrections(arm_data):
 
     def world_of(bone):
         if bone.name not in game_world:
-            local = _game_srt_matrix(bone.get('game_translation', (0, 0, 0)),
-                                     bone.get('game_quaternion', (-1, 0, 0, 0)),
-                                     bone.get('game_scale', (1, 1, 1)))
+            local = _game_srt_matrix(*game_rest_srt(bone))
             if bone.parent is not None and bone.get('SluggiesInheritTransform', True):
                 local = world_of(bone.parent) @ local
             game_world[bone.name] = local
@@ -1626,10 +1638,7 @@ class SLUGGIES_OT_import_anm(bpy.types.Operator, ImportHelper):
                                         if pose_bone.parent else mathutils.Matrix.Identity(4))
                         C_bone = corrections[bone_name]
 
-                    b = arm_data.bones[bone_name]
-                    rest_trans = list(b.get('game_translation', [0, 0, 0]))
-                    rest_quat = list(b.get('game_quaternion', [-1, 0, 0, 0]))
-                    rest_scale = list(b.get('game_scale', [1, 1, 1]))
+                    rest_trans, rest_quat, rest_scale = game_rest_srt(arm_data.bones[bone_name])
 
                     pose_bone.rotation_mode = 'QUATERNION'
                     data_path_loc = f'pose.bones["{bone_name}"].location'
@@ -1692,10 +1701,11 @@ class SLUGGIES_OT_import_anm(bpy.types.Operator, ImportHelper):
 
 def anm_group_name(filepath):
     """Animation group label of an .anm file: "<character folder> <file
-    stem>" for an export's <character>/anm/<n>.anm, else the file stem."""
+    stem>" for an export's <character>/anm/<n>.anm, else the file stem
+    (an export's names, e.g. "Mario_7_Batting", already carry the character)."""
     stem = os.path.splitext(os.path.basename(filepath))[0]
     folder = os.path.dirname(os.path.abspath(filepath))
-    if os.path.basename(folder).lower() == 'anm':
+    if os.path.basename(folder).lower() == 'anm' and stem.isdigit():
         character = os.path.basename(os.path.dirname(folder))
         if character:
             return f"{character} {stem}"

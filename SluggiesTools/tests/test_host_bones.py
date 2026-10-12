@@ -23,6 +23,8 @@ from HostBones import (  # noqa: E402
     STATUS_RECOMMENDED,
     added_bone_name_error,
     added_bone_renames,
+    ADDED_TRACK_IDS,
+    next_added_track_id,
     bone_metadata_is_current,
     bone_metadata_mismatches,
     bone_records_from_hierarchy,
@@ -117,6 +119,24 @@ class AddedBoneRenameTests(unittest.TestCase):
         message = added_bone_name_error({'bone_92': 'bone_91'})
         self.assertIn('bone_92 exports as bone_91', message)
         self.assertIn('Renumber Added Bones', message)
+
+
+class NextAddedTrackIdTests(unittest.TestCase):
+    def test_lowest_free_id_in_the_range(self):
+        self.assertEqual(next_added_track_id([0, 5, 0xFFFF]), 0xC0)
+        self.assertEqual(next_added_track_id([0xC0, 0xC2]), 0xC1)
+
+    def test_all_taken(self):
+        with self.assertRaisesRegex(ValueError, 'are taken'):
+            next_added_track_id(ADDED_TRACK_IDS)
+
+    def test_matches_the_patcher(self):
+        tools = ROOT / 'SluggiesTools'
+        for path in (tools, tools / 'Hammerspace'):
+            if str(path) not in sys.path:
+                sys.path.insert(0, str(path))
+        import HammerspaceMain
+        self.assertEqual(ADDED_TRACK_IDS, HammerspaceMain.ADDED_TRACK_IDS)
 
 
 class BoneMetadataMismatchTests(unittest.TestCase):

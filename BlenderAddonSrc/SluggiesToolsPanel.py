@@ -1199,9 +1199,11 @@ def _unused_bone_name(arm_obj):
     return f'bone_{n}'
 
 
-def _create_added_bone(context, arm_obj, parent_bone_name):
+def _create_added_bone(context, arm_obj, parent_bone_name, animation_track=False):
     """Create one inert leaf bone parented to *parent_bone_name*: no
-    GeoId/track, self-mirrored role 3, InheritTransform true, DrawPriority 0.
+    GeoId, self-mirrored role 3, InheritTransform true, DrawPriority 0, and
+    no track unless *animation_track* (then a fresh id, see
+    `_set_added_bone_track`).
     *parent_bone_name* None makes a root bone at the 3D cursor instead. No
     caller does that now: new root bones were for stadiums, which no longer
     take new bones at all (Dolphin, 2026-10-02).
@@ -1254,10 +1256,59 @@ def _create_added_bone(context, arm_obj, parent_bone_name):
     new_bone['SluggiesSkinned'] = False
     new_bone['SluggiesDrawPriority'] = 0
     new_bone['SluggiesInheritTransform'] = True
-    new_bone['track_id'] = 0xFFFF
+    new_bone['track_id'] = HostBones.NO_TRACK
+    if animation_track:
+        _set_added_bone_track(arm_obj, new_bone, True)
 
     context.view_layer.objects.active = prev_active
     return new_bone
+
+
+def _set_added_bone_track(arm_obj, bone, enabled):
+    """Give an added bone its own animation track id (HostBones.ADDED_TRACK_IDS)
+    or take it away. With a track, an .anm export writes the bone's keyframes
+    and the patcher puts the id into the model's bone-to-track table. Returns
+    the bone's track id."""
+    if not enabled:
+        bone['track_id'] = HostBones.NO_TRACK
+    elif int(bone.get('track_id', HostBones.NO_TRACK)) not in HostBones.ADDED_TRACK_IDS:
+        used = [int(b.get('track_id', HostBones.NO_TRACK)) for b in arm_obj.data.bones if b != bone]
+        bone['track_id'] = HostBones.next_added_track_id(used)
+    return int(bone['track_id'])
+
+
+class SLUGGIES_OT_toggle_bone_track(bpy.types.Operator):
+    """Give the active added bone its own animation track, or remove it"""
+    bl_idname = "sluggies.toggle_bone_track"
+    bl_label = "Toggle Animation Track"
+    bl_description = ("Give the active added bone its own animation track id, so .anm export writes its "
+                      "keyframes (experimental: new track ids are untested in game), or remove it")
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        arm_obj = _find_target_armature(context)
+        bone = arm_obj.data.bones.active if arm_obj is not None else None
+        if bone is None or not bone.get('SluggiesUserAdded'):
+            if hasattr(cls, 'poll_message_set'):
+                cls.poll_message_set("Make an added bone the active bone")
+            return False
+        return True
+
+    def execute(self, context):
+        arm_obj = _find_target_armature(context)
+        bone = arm_obj.data.bones.active
+        has_track = int(bone.get('track_id', HostBones.NO_TRACK)) != HostBones.NO_TRACK
+        try:
+            track_id = _set_added_bone_track(arm_obj, bone, not has_track)
+        except ValueError as e:
+            self.report({"ERROR"}, str(e))
+            return {"CANCELLED"}
+        if has_track:
+            self.report({"INFO"}, f"{bone.name}: no animation track")
+        else:
+            self.report({"INFO"}, f"{bone.name}: animation track 0x{track_id:X}")
+        return {"FINISHED"}
 
 
 def _begin_bone_name_display(op, arm_obj):
@@ -1294,6 +1345,12 @@ class SLUGGIES_OT_add_bone(bpy.types.Operator):
         name="Parent bone",
         description="Bone the new bone is rigidly parented to",
         items=_add_bone_parent_enum_items,
+    )  # type: ignore[valid-type]
+    animation_track: BoolProperty(
+        name="Animation track",
+        description=("Give the bone its own animation track id, so .anm export writes its keyframes "
+                     "(experimental: new track ids are untested in game)"),
+        default=False,
     )  # type: ignore[valid-type]
 
     @classmethod
@@ -1339,8 +1396,14 @@ class SLUGGIES_OT_add_bone(bpy.types.Operator):
                 self.report({"ERROR"}, f"Parent bone {self.parent_bone!r} no longer exists")
                 return {"CANCELLED"}
 
-            new_bone = _create_added_bone(context, arm_obj, self.parent_bone)
-            self.report({"INFO"}, f"Added {new_bone.name}, parented to {self.parent_bone}")
+            try:
+                new_bone = _create_added_bone(context, arm_obj, self.parent_bone, self.animation_track)
+            except ValueError as e:
+                self.report({"ERROR"}, str(e))
+                return {"CANCELLED"}
+            track = int(new_bone.get('track_id', HostBones.NO_TRACK))
+            suffix = f", animation track 0x{track:X}" if track != HostBones.NO_TRACK else ""
+            self.report({"INFO"}, f"Added {new_bone.name}, parented to {self.parent_bone}{suffix}")
             return {"FINISHED"}
         finally:
             _end_bone_name_display(self, arm_obj)
@@ -1596,6 +1659,7 @@ class SLUGGIES_PT_tools(bpy.types.Panel):
         layout.operator(SLUGGIES_OT_add_submesh.bl_idname)
         layout.operator(SLUGGIES_OT_add_bone.bl_idname)
         layout.operator(SLUGGIES_OT_renumber_added_bones.bl_idname)
+        layout.operator(SLUGGIES_OT_toggle_bone_track.bl_idname)
         layout.operator(SLUGGIES_OT_set_specular_strength.bl_idname)
 
         layout.separator()
@@ -1609,6 +1673,7 @@ def register():
     bpy.utils.register_class(SLUGGIES_OT_add_submesh)
     bpy.utils.register_class(SLUGGIES_OT_add_bone)
     bpy.utils.register_class(SLUGGIES_OT_renumber_added_bones)
+    bpy.utils.register_class(SLUGGIES_OT_toggle_bone_track)
     bpy.utils.register_class(SLUGGIES_OT_reassign_bone)
     bpy.utils.register_class(SLUGGIES_OT_add_material)
     bpy.utils.register_class(SluggiesSpecularStrengthItem)
@@ -1628,6 +1693,7 @@ def unregister():
     bpy.utils.unregister_class(SluggiesSpecularStrengthItem)
     bpy.utils.unregister_class(SLUGGIES_OT_add_material)
     bpy.utils.unregister_class(SLUGGIES_OT_reassign_bone)
+    bpy.utils.unregister_class(SLUGGIES_OT_toggle_bone_track)
     bpy.utils.unregister_class(SLUGGIES_OT_renumber_added_bones)
     bpy.utils.unregister_class(SLUGGIES_OT_add_bone)
     bpy.utils.unregister_class(SLUGGIES_OT_add_submesh)

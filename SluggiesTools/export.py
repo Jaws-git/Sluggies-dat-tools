@@ -1519,7 +1519,7 @@ def main():
                     if child.child:
                         if isinstance(child.child, ANM):
                             if EXPORT_ANIM_GLB:
-                                child.child.dumpRaw(dir_dir, file_index)
+                                child.child.dumpRaw(dir_dir, file_index, folderNameMap.get(str(dir_ind)))
                         else:
                             child.child.analyze()
                             child.child.toFile(lan_dir, export_tex=EXPORT_TEX, export_glb=EXPORT_GLB, untangle_context=dir_untangle_context)

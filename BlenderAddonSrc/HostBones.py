@@ -466,6 +466,28 @@ def added_bone_renames(
     return renames
 
 
+# Track ids an added bone may take. Stock skeletons and banks use
+# 0x00-0x8C, 0x100-0x127 and 0x180-0x199 plus flag-style ids at 0x4000 and up
+# (every High model and every bank 6-14 of dt_na.dat, surveyed 2026-10-12), so
+# no stock animation drives an id in this range. Mirrors
+# HammerspaceMain.ADDED_TRACK_IDS, which the patcher checks against.
+ADDED_TRACK_IDS = range(0xC0, 0x100)
+NO_TRACK = 0xFFFF
+
+
+def next_added_track_id(used_track_ids: Iterable[int]) -> int:
+    """The lowest :data:`ADDED_TRACK_IDS` id not in *used_track_ids* (every
+    bone's ``track_id`` on the armature). ValueError when all are taken."""
+    used = {int(t) for t in used_track_ids}
+    for track_id in ADDED_TRACK_IDS:
+        if track_id not in used:
+            return track_id
+    raise ValueError(
+        f"all {len(ADDED_TRACK_IDS)} track ids for added bones "
+        f"(0x{ADDED_TRACK_IDS[0]:X}-0x{ADDED_TRACK_IDS[-1]:X}) are taken"
+    )
+
+
 def added_bone_name_error(renames: Dict[str, str]) -> Optional[str]:
     """Export-time message for :func:`added_bone_renames`, or None."""
     if not renames:

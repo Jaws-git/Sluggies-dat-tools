@@ -219,11 +219,32 @@ class BoneHierarchyValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "parent 99 does not exist"):
             _validate(data)
 
-    def test_rule8_new_bone_has_a_track(self):
+    def test_rule8_new_bone_has_a_stock_track(self):
         data = _base_model()
         model = data['SluggiesModel']
         model['BoneHierarchyEdited'].append(_new_bone(4, 1, TrackId=7))
         with self.assertRaisesRegex(ValueError, 'TrackId 7'):
+            _validate(data)
+
+    def test_rule8_new_bones_take_their_own_tracks(self):
+        data = _base_model()
+        model = data['SluggiesModel']
+        model['BoneHierarchyEdited'] += [_new_bone(4, 1, TrackId=0xC0), _new_bone(5, 4, TrackId=0xC1)]
+        _validate(data)  # must not raise
+
+    def test_rule8_new_bones_share_a_track(self):
+        data = _base_model()
+        model = data['SluggiesModel']
+        model['BoneHierarchyEdited'] += [_new_bone(4, 1, TrackId=0xC0), _new_bone(5, 1, TrackId=0xC0)]
+        with self.assertRaisesRegex(ValueError, r'new bone 4 shares TrackId 0xC0 with bone\(s\) \[5\]'):
+            _validate(data)
+
+    def test_rule8_new_bone_shares_a_donor_track(self):
+        data = _base_model()
+        model = data['SluggiesModel']
+        model['BoneHierarchyEdited'][2]['TrackId'] = 0xC0
+        model['BoneHierarchyEdited'].append(_new_bone(4, 1, TrackId=0xC0))
+        with self.assertRaisesRegex(ValueError, r'shares TrackId 0xC0 with bone\(s\) \[2\]'):
             _validate(data)
 
     def test_rule8_new_bone_mirrors_another_bone(self):

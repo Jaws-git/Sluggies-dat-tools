@@ -1,10 +1,11 @@
 """Convert raw .anm binary files to .glb (glTF binary) using skeleton data from .sluggie JSON.
 
 Run by `start.py --export --glb` after each character folder is exported (export.py
-dumps the raw files to <character>/anm/<file index>.anm), or by hand:
+dumps the raw files to <character>/anm/<name>_<file index>[_<theme>].anm, see
+anm.anm_file_name), or by hand:
     python anm_to_gltf.py <character_directory>
 
-Each .anm becomes <character>/anm/<file index>.glb: the skeleton of the character's
+Each .anm becomes a .glb of the same name next to it: the skeleton of the character's
 .sluggie with the most bones, plus one glTF animation per ANM sequence. Tracks map to
 bones through the bones' TrackId. Keyframes are sampled LINEAR at 60 fps (the game's
 Bezier/Hermite/SQUAD tangents are not carried over).

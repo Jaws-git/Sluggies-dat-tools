@@ -23,6 +23,7 @@ mesh owner, and a bone with no SRT record at all.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import struct
 import os
 import sys
@@ -274,6 +275,34 @@ class ACTPhase2RebuildTests(unittest.TestCase):
             self.assertEqual(rebuilt_bone.parent, donor_bone.parent)
             self.assertEqual(rebuilt_bone.first_child, donor_bone.first_child)
             self.assertEqual(rebuilt_bone.geo_file_id_raw, donor_bone.geo_file_id_raw)
+
+    def test_new_bones_with_their_own_tracks(self):
+        """A new bone's TrackId lands in the kind-3 table, so an .anm track
+        with that id animates it; donor entries stay as they were."""
+        data = self._fixture_data()
+        model = data['SluggiesModel']
+        n0 = self.donor_bone_count
+        base_bone = {
+            'GeoId': 0xFFFF, 'Skinned': False, 'SRTType': 0xC, 'DrawPriority': 0,
+            'InheritTransform': True, 'UserAdded': True, 'Translation': [0.0, 0.0, 0.3],
+            'Scale': [1.0, 1.0, 1.0], 'Quaternion': [1.0, 0.0, 0.0, 0.0],
+            'VertexInfluences': [], 'MirrorRole': 3,
+        }
+        model['BoneHierarchyEdited'] += [
+            {**base_bone, 'BoneId': n0, 'ParentBoneId': 1, 'MirrorBoneId': n0, 'TrackId': 0xC0},
+            {**base_bone, 'BoneId': n0 + 1, 'ParentBoneId': n0, 'MirrorBoneId': n0 + 1, 'TrackId': 0xFFFF},
+            {**base_bone, 'BoneId': n0 + 2, 'ParentBoneId': n0, 'MirrorBoneId': n0 + 2, 'TrackId': 0xC1},
+        ]
+        rebuilt = act_rebuild.parse_act(self._build(data))
+        track_desc = next(d for d in rebuilt.user_data if d.kind == act_rebuild.KIND_TRACK)
+        tracks = struct.unpack_from(f'>{rebuilt.bone_count}H', track_desc.payload)
+        self.assertEqual(tracks, tuple(DONOR_TRACK_IDS[b] for b in sorted(DONOR_TRACK_IDS)) + (0xC0, 0xFFFF, 0xC1))
+
+    def test_a_track_on_a_donor_without_user_data_is_refused(self):
+        bare = dataclasses.replace(self.donor_parsed, user_data=[])
+        self.assertEqual(act_rebuild.append_leaf_bone(bare, 1, None).bone_count, self.donor_bone_count + 1)
+        with self.assertRaisesRegex(ValueError, 'asks for track id 0xC0, but the donor has no bone-to-track table'):
+            act_rebuild.append_leaf_bone(bare, 1, None, track_id=0xC0)
 
     def test_bulk_bones_appended_to_a_parent_with_existing_children(self):
         """Two new bones parented to the same donor bone exercise the

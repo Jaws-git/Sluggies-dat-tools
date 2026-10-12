@@ -410,7 +410,8 @@ def append_leaf_bone(
     state (dozens of models carry ``userDataSize = 0``) where there is
     simply nothing to extend -- the new bone is then trackless and has no
     mirror entry, which is also routine, and
-    ``track_id``/``mirror_bone_id``/``mirror_role`` are ignored. Any other
+    ``mirror_bone_id``/``mirror_role`` are ignored (a ``track_id`` other than
+    ``0xFFFF`` is refused: it would be silently lost). Any other
     combination (one of the two without the other) is ambiguous and is
     refused rather than guessed at. Any other descriptor kind (the kind-4
     blob) is bone-count-independent and is passed through unchanged.
@@ -479,6 +480,11 @@ def append_leaf_bone(
             extended += b'\x00' * (4 - len(extended) % 4)
         return extended
 
+    if not has_per_bone_tables and track_id != 0xFFFF:
+        raise ValueError(
+            f"new bone {new_id} asks for track id 0x{track_id:X}, but the donor has no "
+            "bone-to-track table (no ACT user data) to put it in"
+        )
     if not has_per_bone_tables:
         # No user data at all -- no per-bone array to extend. Any other
         # descriptor kind (the kind-4 blob) still passes through verbatim.

@@ -5,6 +5,32 @@ from helper import *
 from model0 import *
 import slogger
 
+# Animation bank (file index 6-14) -> what its animations are for, appended to the
+# exported file name. Banks without an entry keep the bare number.
+ANM_GROUP_THEMES = {
+    6: 'Fielding',
+    7: 'Batting',
+    8: 'Running',
+    9: 'Pitching',
+    10: 'Catcher',
+    11: 'Reactions',
+    12: 'Various',
+    13: 'Skate',
+    14: 'Entrance'
+}
+
+
+def anm_file_name(file_index, character=None):
+    """File stem of an exported animation bank: "<character>_<bank>_<theme>",
+    e.g. "Mario_7_Batting"; the parts that are unknown are left out."""
+    parts = [character] if character else []
+    parts.append(str(file_index))
+    theme = ANM_GROUP_THEMES.get(int(file_index))
+    if theme:
+        parts.append(theme)
+    return '_'.join(parts)
+
+
 class ANMVector(FileChunk):
     def analyze(self, quantization):
         # Ugh why'd I make this function return a 2d array
@@ -184,12 +210,12 @@ class ANM(FileChunk):
         #         print(hex(0x04d7b200 + keyframe.setting_bank_ptr))
         return self
 
-    def dumpRaw(self, output_dir, file_index):
+    def dumpRaw(self, output_dir, file_index, character=None):
         anm_dir = os.path.join(output_dir, 'anm')
         os.makedirs(anm_dir, exist_ok=True)
         self.f.seek(self.absolute)
         raw = self.f.read(self.length)
-        out_path = os.path.join(anm_dir, f'{file_index}.anm')
+        out_path = os.path.join(anm_dir, anm_file_name(file_index, character) + '.anm')
         with open(out_path, 'wb') as out:
             out.write(raw)
         #slogger.info(f'Exported ANM slot {file_index} ({self.length} bytes)', source='anm')

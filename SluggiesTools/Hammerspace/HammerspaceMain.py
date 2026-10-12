@@ -1328,6 +1328,15 @@ def _merge_duplicate_texture_additions(model: dict, sluggie_path) -> None:
     )
 
 
+# Track ids a new bone may read its animation from (besides 0xFFFF, no track).
+# Stock skeletons and banks use 0x00-0x8C, 0x100-0x127 and 0x180-0x199 plus
+# flag-style ids at 0x4000 and up (every High model and bank 6-14 of
+# dt_na.dat, surveyed 2026-10-12), so no stock animation drives an id in this
+# range. Whether the game animates a bone from such an id is untested
+# (2026-10-12). The Blender add-on hands them out (HostBones.ADDED_TRACK_IDS).
+ADDED_TRACK_IDS = range(0xC0, 0x100)
+
+
 def _validate_bone_hierarchy_edited(model: dict) -> None:
     """Reject an invalid ``BoneHierarchyEdited`` before any DAT/DOL write,
     alongside ``_validate_custom_submeshes``. Each error names the offending
@@ -1469,7 +1478,13 @@ def _validate_bone_hierarchy_edited(model: dict) -> None:
         fail(f'new bone(s) {new_ids}: {STADIUM_NEW_BONE_MESSAGE}')
 
     # Rules 7-8: every new bone has an existing parent and the user-contract
-    # defaults (no track, self-mirrored, role 3).
+    # defaults (self-mirrored, role 3), and either no track or its own
+    # ADDED_TRACK_IDS id that no other bone reads.
+    track_users: dict[int, list[int]] = {}
+    for bone in bone_hierarchy_edited:
+        track = bone.get('TrackId')
+        if track is not None and int(track) != 0xFFFF:
+            track_users.setdefault(int(track), []).append(int(bone['BoneId']))
     for entry in new_entries:
         bone_id = int(entry['BoneId'])
         parent_id = entry.get('ParentBoneId')
@@ -1479,8 +1494,14 @@ def _validate_bone_hierarchy_edited(model: dict) -> None:
             fail(f"new bone {bone_id}'s parent {int(parent_id)} does not exist")
 
         track_id = entry.get('TrackId')
-        if track_id is None or int(track_id) != 0xFFFF:
-            fail(f'new bone {bone_id} has TrackId {track_id!r}, expected 0xFFFF (no track)')
+        if track_id is None or (int(track_id) != 0xFFFF and int(track_id) not in ADDED_TRACK_IDS):
+            fail(
+                f'new bone {bone_id} has TrackId {track_id!r}, expected 0xFFFF (no track) or '
+                f'0x{ADDED_TRACK_IDS[0]:X}-0x{ADDED_TRACK_IDS[-1]:X} (its own animation track)'
+            )
+        elif int(track_id) != 0xFFFF and len(track_users[int(track_id)]) > 1:
+            others = sorted(b for b in track_users[int(track_id)] if b != bone_id)
+            fail(f'new bone {bone_id} shares TrackId 0x{int(track_id):X} with bone(s) {others}')
         mirror_id = entry.get('MirrorBoneId')
         if mirror_id is None or int(mirror_id) != bone_id:
             fail(f'new bone {bone_id} has MirrorBoneId {mirror_id!r}, expected its own id {bone_id}')

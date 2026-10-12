@@ -1494,7 +1494,7 @@
             },
             "TrackId": {
               "type": "number",
-              "description": "Animation track index to assign to this bone in the rebuilt ACT user-data section. New ('Add Bone') bones always use 0xFFFF (no track)."
+              "description": "Animation track index to assign to this bone in the rebuilt ACT user-data section. New ('Add Bone') bones use 0xFFFF (no track), or their own id in 0xC0-0xFF that no other bone reads (experimental, 2026-10-12: lets an .anm bank animate the bone)."
             },
             "MirrorBoneId": {
               "type": "number",
