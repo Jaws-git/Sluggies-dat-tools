@@ -14,6 +14,8 @@
   Game's summary of the full dry run.
 * Equipment: ``equipment_tiles`` (the slot level's Bat / Left glove / Right glove / Extra bat tiles:
   state from the read, overlay from the pending edits).
+* Animations: ``animations_text`` (the slot summary's stock / custom line) and the ``anim`` edits of
+  "Replace animation..." (one ``.anm`` bank each).
 * Roster packs: ``load_dialog`` (the per-slot diff of
   ``--load-roster FILE --dry-run``), ``save_pending_dialog``, and the
   "changed since the pack was saved / loaded" marker (``Reference``).
@@ -40,7 +42,8 @@ WRITING_FLAGS = frozenset({'--export', '--roster', '--patch', '--unpatch', '--re
                            '--patch-slot', '--clear-slot', '--copy-slot', '--rename-slot', '--set-voice',
                            '--set-char-voice', '--set-species-clip', '--set-stats',
                            '--set-icon', '--apply-slots', '--load-roster',
-                           '--write-slot-blocks', '--write-slot-equipment', '--game-options'})
+                           '--write-slot-blocks', '--write-slot-equipment', '--write-slot-animation',
+                           '--game-options'})
 SOUND_PACKS_REL = 'Sound_Packs'                 # the custom voice packs (Sound/sound_packs.PACK_DIR, test-pinned)
 STAGED_CLIPS_REL = os.path.join('_gui', 'slot', 'staged_clips')   # encoded clips of pending species_clip edits
 UNNAMED = '-'
@@ -561,9 +564,25 @@ def slot_details(state: dict, cid: int) -> list[str]:
     edits = stat_edits_of(state, cid)
     if edits:
         lines.append(f'Stat edits: {stat_edits_text(edits)}')
+    animations = animations_text(c)
+    if animations:
+        lines.append(animations)
     if c.get('default_name'):
         lines.append(f'Name: the game text is still {c["name"]["en"]!r}; shown with its usual name')
     return lines
+
+
+def animations_text(char: dict) -> str | None:
+    """The slot summary's animations line: stock, or which banks (files 6-14) are custom; None without a read."""
+    banks = char.get('animations')
+    if not banks:
+        return None
+    custom = [e['file'] for e in banks if e.get('vanilla') is False]
+    if custom:
+        return f'Animations: custom (bank{"s" if len(custom) != 1 else ""} {", ".join(map(str, custom))})'
+    if any(e.get('vanilla') is None for e in banks):
+        return 'Animations: unknown (1_Input could not be read)'
+    return 'Animations: stock'
 
 
 # --------------------------------------------------------------------------
@@ -880,6 +899,10 @@ class PendingEdits:
         return next((e for e in self.edits if int(e['id'], 16) == cid and e['op'] in EQUIP_OPS
                      and e.get('file') == file), None)
 
+    def anim_edits(self, cid: int) -> list[dict]:
+        """The slot's pending animation bank edits."""
+        return [e for e in self.edits if int(e['id'], 16) == cid and e['op'] == ANIM]
+
     def sections_for(self, cid: int) -> list[dict]:
         return [s for s in self.sections if int(s['target'], 16) == cid]
 
@@ -915,11 +938,12 @@ class PendingEdits:
                                ('portrait_note', 'Portraits'), (STAT_EDITS, 'Stat edits')):
                 if effects.get(key) and not (key == 'portrait_note' and section['action'] == 'icon'):
                     out.append(f'  {label}: {effects[key]}')
-            equipment = effects.get('equipment')
-            if isinstance(equipment, dict):
-                out += [f'  Equipment: {text}' for _file, text in sorted(equipment.items())]
-            elif equipment:
-                out.append(f'  Equipment: {equipment}')
+            for key, label in (('equipment', 'Equipment'), ('animations', 'Animations')):
+                value = effects.get(key)
+                if isinstance(value, dict):
+                    out += [f'  {label}: {text}' for _file, text in sorted(value.items())]
+                elif value:
+                    out.append(f'  {label}: {value}')
             if effects.get('portraits') and section['action'] == COPY:
                 out.append('  Portraits: copied (previewed, marked "pending")')
             if effects.get('portraits') and section['action'] == 'patch':
@@ -954,6 +978,9 @@ def _edit_title(edit: dict) -> str:
         return f'Pending: {what}{where} from {os.path.basename(edit.get("sluggie") or "?")}{bundled}'
     if edit['op'] == 'equip_clear':
         return f'Pending: reset the {EQUIP_LABELS.get(edit.get("file"), "equipment").lower()}'
+    if edit['op'] == ANIM:
+        bank = f'animation bank {edit["file"]}' if edit.get('file') is not None else 'an animation bank'
+        return f'Pending: {bank} from {os.path.basename(edit.get("anm") or "?")}'
     if edit['op'] == 'patch':
         files = [os.path.basename(edit['file'])] + ([os.path.basename(edit['low'])] if edit.get('low') else [])
         return 'Pending: put ' + ' + '.join(files) + ' into this slot'
@@ -996,6 +1023,8 @@ def icon_label(edit: dict) -> str:
 # --------------------------------------------------------------------------
 
 EQUIP_OPS = ('equip', 'equip_clear')
+ANIM = 'anim'                                 # one animation bank from an .anm file (Roster/slot_plan, test-pinned)
+ANIM_FILTERS = [('Animation banks', '*.anm'), ('All files', '*.*')]
 COPY = 'copy'                                 # paste: the slot becomes a clone (Roster/slot_plan, test-pinned)
 MODEL_OPS = ('patch', 'clear', COPY)
 # A stat edit (the stat editor's edit file) belongs to no slot: its "id" is GAME_WIDE (Roster/slot_plan, test-pinned)
@@ -1037,7 +1066,7 @@ def context_menu(state: dict, members: list, copied: int | None, pack_pending: b
 
 
 def export_command(cid: int) -> tuple:
-    """Export as .sluggie: the slot as the game holds it into ``2_Output_Models/Custom <name> NN``."""
+    """Export as .sluggie: the slot as the game holds it into ``2_Output_Assets/Custom <name> NN``."""
     return ('--export-slot', hex_id(cid))
 
 
@@ -1341,6 +1370,7 @@ def _section_lines(state: dict, section: dict, sizes: dict, warnings: bool = Tru
     cid = int(section['target'], 16)
     patch = section['action'] == 'patch'
     equip = section['action'] == 'equip'
+    animation = section['action'] == ANIM
     if section['action'] == COPY:
         source = int(section['source'], 16)
         lines.append((f'Clone of {known_name(state, source)} ({hex_id(source)}) -> {name_of(state, cid)} '
@@ -1367,7 +1397,14 @@ def _section_lines(state: dict, section: dict, sizes: dict, warnings: bool = Tru
         size = sizes.get(name)
         bundled = ' (bundled with the model)' if gear.get('origin') == 'bundled' else ''
         lines.append((f'{gear.get("label", "Equipment")}: {name}{bundled}' + (f', {_mb(size)}' if size else ''), TEXT))
-    notes = section['notes'][1:] if patch or equip else section['notes']   # the first note is the line above
+    if animation:
+        bank = section.get('anim') or {}
+        stock = f' (stock {_mb(bank["stock_size"])})' if bank.get('stock_size') else ''
+        lines.append((f'{bank.get("label", "Animation bank")}: {os.path.basename(bank.get("path") or "?")}, '
+                      f'{bank.get("count", "?")} animations, all replaced at once, {_mb(bank.get("size") or 0)}{stock}',
+                      TEXT))
+    # the first note is the line above
+    notes = section['notes'][1:] if patch or equip or animation else section['notes']
     lines += [(f'- {note}', TEXT) for note in notes]
     if warnings:
         lines += [(f'Warning: {warning}', WARN) for warning in section['warnings']]
@@ -1388,7 +1425,7 @@ VALUE_KINDS = ('rename', 'stats', 'voice', 'icon', CHAR_VOICE, SPECIES_CLIP)   #
 
 
 def _find_section(plan: dict, cid: int, kind: str, view: str | None, gear_file: int | None,
-                  moment: str | None = None) -> dict | None:
+                  moment: str | None = None, anm: str | None = None) -> dict | None:
     """The planned section of the edit just staged (the plan also lists the pending edits' sections)."""
     for section in plan['edits']:
         if int(section['target'], 16) != cid or section['action'] != kind:
@@ -1400,19 +1437,26 @@ def _find_section(plan: dict, cid: int, kind: str, view: str | None, gear_file: 
             continue
         if kind == SPECIES_CLIP and moment is not None and edit.get('moment') != moment:
             continue
+        if kind == ANIM and anm is not None and not _same_path(edit.get('anm'), anm):
+            continue
         return section
     return None
 
 
+def _same_path(a: str | None, b: str | None) -> bool:
+    return bool(a and b) and os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
 def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int, output: str,
                 pending: PendingEdits | None = None, rename: bool = False, kind: str | None = None,
-                view: str | None = None, gear_file: int | None = None, moment: str | None = None) -> SlotDialog:
+                view: str | None = None, gear_file: int | None = None, moment: str | None = None,
+                anm: str | None = None) -> SlotDialog:
     """The confirm dialog of a staged edit, after its staging check (the pending edits plus this one, exit
     ``code``, log ``output``): what the edit does, its warnings and the verdict. ``can_apply`` (Stage stages it)
     only when the planner and the build check passed. ``kind``: 'patch', 'clear', 'rename', 'stats', 'voice',
     'char_voice', 'species_clip' (``moment``: its voice moment) or 'icon' (``view``: its portrait view), 'equip' or
-    'equip_clear' (``gear_file``: the slot file) (default from ``patch`` / ``rename``; a voice edit's ``cid`` is its
-    square's head)."""
+    'equip_clear' (``gear_file``: the slot file), 'anim' (``anm``: the picked .anm) (default from ``patch`` /
+    ``rename``; a voice edit's ``cid`` is its square's head)."""
     kind = kind or ('rename' if rename else 'patch' if patch else 'clear')
     rename = kind in VALUE_KINDS
     target = f'{name_of(state, cid)} ({hex_id(cid)})'
@@ -1420,6 +1464,7 @@ def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int
     dialog = SlotDialog({'rename': f'Rename {target}?', 'patch': f'Put a model into {target}?',
                          'equip': f'Put a {gear_label} into {target}?',
                          'equip_clear': f'Reset the {gear_label} of {target}?',
+                         ANIM: f'Replace an animation bank of {target}?',
                          'stats': f'Other stats for {target}?',
                          'icon': f'New {view} portrait for {target}?',
                          'voice': f'Another voice for the square of {target}?',
@@ -1439,7 +1484,7 @@ def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int
                 lines.append(('A pending edit no longer fits the game files: discard it on its slot.', TEXT))
         lines.append(('Nothing was staged.', TEXT))
         return dialog
-    section = _find_section(plan, cid, kind, view, gear_file, moment)
+    section = _find_section(plan, cid, kind, view, gear_file, moment, anm)
     if section is None:                       # a clear of a slot at its baseline, or a rename that changes nothing
         skipped = next((s for s in plan['skipped'] if int(s['target'], 16) == cid and s['action'] == kind
                         and (kind != SPECIES_CLIP or (s.get('edit') or {}).get('moment') == moment)), None)
@@ -1449,7 +1494,8 @@ def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int
             earlier = (pending.icon_edit(cid, view) if kind == 'icon'
                        else pending.species_clip_edit(cid, moment) if kind == SPECIES_CLIP
                        else pending.value_edit(cid, kind) if rename
-                       else pending.equip_edit(cid, gear_file) if kind in EQUIP_OPS else pending.model_edit(cid))
+                       else pending.equip_edit(cid, gear_file) if kind in EQUIP_OPS
+                       else None if kind == ANIM else pending.model_edit(cid))
         if earlier is not None:
             lines.append((f'Stage drops the slot\'s pending {earlier["op"]}, so the slot stays as it is.', OK))
             dialog.can_apply = True
@@ -1466,6 +1512,7 @@ def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int
         lines.append((f'Build check failed: {error or f"exit code {code}"}. Nothing was staged.', ERROR))
         return dialog
     checks = ('slot rules, and every copied block validated' if kind == COPY
+              else 'slot rules, and the bank checked against the slot\'s skeleton' if kind == ANIM
               else 'slot rules, and the model built and validated' if kind == 'equip'
               else 'slot rules, and every model built and validated' if patch and not rename else 'slot rules')
     if section.get('stat_edits_kept'):
@@ -1509,6 +1556,10 @@ def summary_dialog(state: dict, plan: dict | None, code: int, output: str) -> Sl
             what = (f'put a {label} in' if section['action'] == 'equip' else f'reset the {label}')
             if gear.get('origin') == 'bundled':
                 what += ' (bundled with the model)'
+        elif section['action'] == ANIM:
+            label = str((section.get('anim') or {}).get('label') or 'animation bank').lower()
+            effect = next(iter(((section.get('effects') or {}).get('animations') or {}).values()), '')
+            what = f'{label} {effect}' if effect.startswith('back to') else f'replace {label}'
         elif section['action'] == 'rename':
             text = (section.get('edit') or {}).get('text')
             what = f'rename to {text!r}' if text else 'reset the name'

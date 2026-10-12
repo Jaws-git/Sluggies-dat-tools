@@ -17,10 +17,14 @@ The "Stat Editor" tab (``StatEditor/gui_tab``) launches Philenarion's Sluggers
 Stat Editor (Bridge Mode or Standalone) and stages the values it sends back as
 pending edits of the character grid.
 
-The "Sounds" tab (``gui_sounds``) lists the game's voice packs (one per stock
+The "Voices" tab (``gui_sounds``) lists the game's voice packs (one per stock
 voice) and the custom packs in ``Sound_Packs/``: clips of a game pack are
 staged for replacement on the character grid, custom packs are built from
 WAV files and assigned to slots by the grid's slot-level Voice... button.
+
+The "Sound FX" tab (``gui_effects``) lists the game's other wave sounds (bat,
+ball, menus, stadiums, minigames) with Play, Stop, Replace... and Reset; the
+replacements live in ``Sound_FX/`` and go into the output sound archive.
 
 The "Music" tab (``gui_music``) lists the game's stream sounds (music,
 jingles) with Play and Stop buttons.
@@ -48,6 +52,7 @@ import threading
 import dearpygui.dearpygui as dpg
 import gui_character_grid
 import gui_sounds
+import gui_effects
 import gui_music
 import gui_grid
 import gui_maintenance
@@ -187,7 +192,7 @@ class SluggiesGui:
         self.command_prefix = list(command_prefix)
         self.root_dir = root_dir
         self.config_dir = os.path.join(root_dir, '1_Input', '_RosterConfigurations')
-        self.models_dir = os.path.join(root_dir, '2_Output_Models')
+        self.models_dir = os.path.join(root_dir, '2_Output_Assets')
         self.sound_input_dir = os.path.join(root_dir, '1_Input', 'sound_NA')   # the game's sound folder, copied by the user
         self.output_queue = queue.Queue()
         self.process = None
@@ -210,6 +215,7 @@ class SluggiesGui:
         self.grid_tab = gui_character_grid.CharacterGridTab(self)
         self.stat_tab = stat_editor_tab.StatEditorTab(self)
         self.sounds_tab = gui_sounds.SoundsTab(self)
+        self.effects_tab = gui_effects.EffectsTab(self)
         self.music_tab = gui_music.MusicTab(self)
         self.maintenance_tab = gui_maintenance.MaintenanceTab(self)
 
@@ -413,7 +419,7 @@ class SluggiesGui:
                    save=False, default_ext=None):
         """Ask for files: the Windows "Open" dialog (``save``: "Save As") when available (``native_dialog``),
         else the Dear PyGui dialog ``fallback_tag``, whose own callbacks handle the result. ``on_files(paths)`` /
-        ``on_cancel()`` run on the GUI thread. ``initial_dir``: where it starts (default 2_Output_Models). False
+        ``on_cancel()`` run on the GUI thread. ``initial_dir``: where it starts (default 2_Output_Assets). False
         when a native dialog is already open."""
         if not native_dialog.enabled():
             dpg.show_item(fallback_tag)
@@ -632,6 +638,8 @@ class SluggiesGui:
             dpg.add_text('2) Apply the chosen roster preset')
             dpg.add_text('3) Turn on CPU vs CPU and CPU vs CPU management (hold minus on game start button)')
             dpg.add_text('4) Write the character icons (FrontIcon/SideIcon) from 3_Output_Dat into the model folders')
+            dpg.add_text('5) Decode the voices, effects and music into 2_Output_Assets/_SOUNDS as WAV files '
+                         '(skipped when 1_Input/sound_NA is missing)')
             dpg.add_text('A failing step stops the rest.')
             dpg.add_spacer(height=6)
             with dpg.group(horizontal=True):
@@ -650,6 +658,8 @@ class SluggiesGui:
             steps.append(('--roster', '--config', os.path.join(self.config_dir, choice), '--fresh'))
         steps.append(('--game-options', '--on', 'cpu_vs_cpu', 'cpu_management'))
         steps.append(('--export-icons', '--use-output'))
+        if os.path.isdir(self.sound_input_dir):
+            steps.append(('--export-sounds',))
 
         def start():
             self.show_console(True)          # a long run: its progress shows in the console
@@ -659,17 +669,23 @@ class SluggiesGui:
 
     def _build_export_tab(self):
         with dpg.tab(label='Export 3D'):
-            dpg.add_text('Export all models from 1_Input to 2_Output_Models.')
+            dpg.add_text('Export the models, icons and sounds from 1_Input to 2_Output_Assets.')
+            models = dpg.add_checkbox(label='Export .sluggies', tag='exp_models', default_value=True,
+                                      callback=lambda *_: self._export_options())
             dpg.add_checkbox(label='Untangle Textures (overwrites 3_Output_Dat/dt_na.dat and main.dol)', tag='exp_untangle')
             icons = dpg.add_checkbox(label='Export Icons', tag='exp_icons', default_value=True)
             dpg.add_checkbox(label='Also write .glb files', tag='exp_glb', default_value=True,
-                             callback=lambda s, v: dpg.configure_item('exp_anim_glb', enabled=v))
+                             callback=lambda *_: self._export_options())
             anims = dpg.add_checkbox(label='Export animations', tag='exp_anim_glb', default_value=True)
             sounds = dpg.add_checkbox(label='Export sound files', tag='exp_sounds',
                                       default_value=os.path.isdir(self.sound_input_dir))
             dpg.add_checkbox(label='Skip Textures', tag='exp_notex')
             dpg.add_checkbox(label='Debug (raw byte arrays instead of base64)', tag='exp_debug')
 
+            with dpg.tooltip(models):
+                dpg.add_text('Export every 3D model as a .sluggie file (the Blender add-on\'s format) into '
+                             '2_Output_Assets.\nOff: no models are exported; untangling, .glb files and the '
+                             'texture and debug options need it.')
             with dpg.tooltip(icons):
                 dpg.add_text('Write FrontIcon.png and SideIcon.png into each character model folder.')
             with dpg.tooltip(anims):
@@ -677,24 +693,37 @@ class SluggiesGui:
                              'one animation per sequence on the character\'s skeleton.\n'
                              'Needs "Also write .glb files".')
             with dpg.tooltip(sounds):
-                dpg.add_text('Decode the voices, effects and music into 2_Output_Models/_SOUNDS as WAV files, one '
+                dpg.add_text('Decode the voices, effects and music into 2_Output_Assets/_SOUNDS as WAV files, one '
                              'folder per sound group.\nNeeds the game\'s files/sound_NA folder (MY2.brsar and '
                              'stream/) copied into 1_Input/sound_NA.')
-            self._action('Export models', self._on_export, primary=True)
+            self._action('Export', self._on_export, primary=True)
+
+    def _export_options(self):
+        """The model options are available only with "Export .sluggies" on; animations also need .glb files."""
+        models = dpg.get_value('exp_models')
+        for tag in ('exp_untangle', 'exp_glb', 'exp_notex', 'exp_debug'):
+            dpg.configure_item(tag, enabled=models)
+        dpg.configure_item('exp_anim_glb', enabled=models and dpg.get_value('exp_glb'))
 
     def _on_export(self):
-        args = ['--export']
-        for tag, flag in (('exp_untangle', '--untangle'), ('exp_glb', '--glb'),
-                          ('exp_notex', '--notex'), ('exp_debug', '--debug')):
-            if dpg.get_value(tag):
-                args.append(flag)
-        if dpg.get_value('exp_glb') and dpg.get_value('exp_anim_glb'):
-            args.append('--anim-glb')
-        steps = [tuple(args)]
+        steps = []
+        if dpg.get_value('exp_models'):
+            args = ['--export']
+            for tag, flag in (('exp_untangle', '--untangle'), ('exp_glb', '--glb'),
+                              ('exp_notex', '--notex'), ('exp_debug', '--debug')):
+                if dpg.get_value(tag):
+                    args.append(flag)
+            if dpg.get_value('exp_glb') and dpg.get_value('exp_anim_glb'):
+                args.append('--anim-glb')
+            steps.append(tuple(args))
         if dpg.get_value('exp_icons'):
             steps.append(('--export-icons',))
         if dpg.get_value('exp_sounds'):
             steps.append(('--export-sounds',))
+        if not steps:
+            self.log_line('Nothing to export: tick "Export .sluggies", "Export Icons" or "Export sound files".',
+                          _PROMPT_COLOR)
+            return
         self.run_chain(steps)
 
     def _build_roster_tab(self):
@@ -791,7 +820,7 @@ class SluggiesGui:
         lines = ['A command is still running:',
                  '  ' + ' '.join(self.current or ()),
                  *([f'  ({steps - 1} more step{"s" if steps != 2 else ""} queued after it)'] if steps > 1 else []),
-                 'Closing stops it now. Files it is writing (2_Output_Models, 3_Output_Dat) may be left',
+                 'Closing stops it now. Files it is writing (2_Output_Assets, 3_Output_Dat) may be left',
                  'incomplete; run it again afterwards.']
         vw = dpg.get_viewport_client_width()
         with dpg.window(tag=_CLOSE_DIALOG, label='Close while a command is running?', modal=True, no_collapse=True,
@@ -813,6 +842,8 @@ class SluggiesGui:
             self.grid_tab.request_read()
         if dpg.get_item_alias(tab) == 'sounds_tab':
             self.sounds_tab.on_open()
+        if dpg.get_item_alias(tab) == 'effects_tab':
+            self.effects_tab.on_open()
         if dpg.get_item_alias(tab) == 'music_tab':
             self.music_tab.on_open()
 
@@ -861,6 +892,7 @@ class SluggiesGui:
                 self.grid_tab.build()
                 self.stat_tab.build()
                 self.sounds_tab.build()
+                self.effects_tab.build()
                 self.music_tab.build()
                 self.grid_tab.build_options()
                 self.maintenance_tab.build()

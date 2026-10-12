@@ -1,4 +1,4 @@
-"""Find working files in 2_Output_Models by their bare file name.
+"""Find working files in 2_Output_Assets by their bare file name.
 
 The patcher accepts a bare name (``78277664_mario.gpl.sluggie``, ``tex1_..._14.png``) and searches the models
 folder for it. A name that exists more than once (a copied model folder, or a block the export writes for two

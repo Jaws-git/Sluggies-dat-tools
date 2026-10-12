@@ -22,6 +22,7 @@ import numpy as np
 from Sound import brsar, brsar_write, dsp_adpcm, ffmpeg, wavfile
 
 RATE = 32000                      # the stock voice clips' sample rate
+MAX_GAIN_DB = 24.0                # the Replace gain's range, either way
 MAX_SECONDS = 2.5                 # longest stock voice clip: 2.419 s; longer clips are cut
 RWAV_EXTENSION = '.rwav'
 WAV_EXTENSIONS = ('.wav', '.wave')
@@ -111,13 +112,24 @@ def read_wav_frames(path_or_bytes):
     return rate, x.reshape(-1, channels), loop
 
 
-def prepare(rate, samples):
-    """Mono float samples at ``rate`` -> ``(int16 samples at RATE, notes)``: resampled, cut at ``MAX_SECONDS``,
-    peaks clipped. ``notes`` say what was done."""
+def apply_gain(x, gain_db):
+    """Float samples scaled by ``gain_db`` decibels (``-MAX_GAIN_DB``..``MAX_GAIN_DB``) -> ``(samples, notes)``.
+    Peaks pushed above full scale are left to the caller's clipping (which notes them)."""
+    gain_db = float(gain_db or 0.0)
+    if not -MAX_GAIN_DB <= gain_db <= MAX_GAIN_DB:
+        raise ClipError(f'a gain of {gain_db:+.1f} dB is outside {-MAX_GAIN_DB:+.0f}..{MAX_GAIN_DB:+.0f} dB')
+    if gain_db == 0.0:
+        return x, []
+    return np.asarray(x, dtype=np.float64) * 10.0 ** (gain_db / 20.0), [f'gain {gain_db:+.1f} dB']
+
+
+def prepare(rate, samples, gain_db=0.0):
+    """Mono float samples at ``rate`` -> ``(int16 samples at RATE, notes)``: ``gain_db`` applied, resampled, cut
+    at ``MAX_SECONDS``, peaks clipped. ``notes`` say what was done."""
     x = np.asarray(samples, dtype=np.float64)
     if not len(x):
         raise ClipError('the clip has no sound in it')
-    notes = []
+    x, notes = apply_gain(x, gain_db)
     seconds = len(x) / rate
     if rate != RATE:
         t = np.arange(int(round(seconds * RATE))) / RATE
@@ -172,10 +184,10 @@ def encode(samples, templates, rate=RATE):
         raise ClipError(str(exc)) from exc
 
 
-def encode_wav(path_or_bytes, templates):
+def encode_wav(path_or_bytes, templates, gain_db=0.0):
     """A WAV -> ``(RWAV bytes, notes)``."""
     rate, x = read_wav(path_or_bytes)
-    samples, notes = prepare(rate, x)
+    samples, notes = prepare(rate, x, gain_db)
     return encode(samples, templates), notes
 
 

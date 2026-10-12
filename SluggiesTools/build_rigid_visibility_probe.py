@@ -47,7 +47,7 @@ import build_add_submesh_fixture as probe
 from binfmt import color_entry_size, comp_size, decode_field
 from drawlist import decodeDrawList, encodeDrawList
 
-MODELS_DIR = TOOLS_DIR.parent / "2_Output_Models"
+MODELS_DIR = TOOLS_DIR.parent / "2_Output_Assets"
 PROBE_TAG = "rigid_vis_probe"
 GLOVE_SCALE = 0.1
 CANONICAL_GROUP_IDS = [1, 1, 4, 3, 6, 7]

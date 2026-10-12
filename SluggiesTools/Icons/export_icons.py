@@ -42,7 +42,7 @@ INPUT_DAT = os.path.join(ROOT_DIR, '1_Input', 'dt_na.dat')
 # Per-character portraits: <model folder>/<HP model folder>/icon/{Front,Side}Icon.png, next to its tex/.
 # The bank's source tables are layout elements 0 (normal_a), 1 (side) and 2 (front); each holds one track
 # whose records are keyed by character ID and name a resource row (+0x06): page and UV rect.
-MODELS_ROOT = os.path.join(ROOT_DIR, '2_Output_Models')
+MODELS_ROOT = os.path.join(ROOT_DIR, '2_Output_Assets')
 CHARACTER_ICON_DIR = 'icon'
 CHARACTER_ICON_FILES = {'front': 'FrontIcon.png', 'side': 'SideIcon.png'}
 CHARACTER_ICON_ELEMENTS = {'side': 1, 'front': 2}
@@ -204,7 +204,7 @@ def _export_character_icons(models_root, cells, page_images):
                 'view': view,
                 'page': f'0x{page:02X}',
                 'rect': [x, y, w, h],
-                'png': os.path.relpath(path, models_root).replace('\\', '/'),   # relative to 2_Output_Models
+                'png': os.path.relpath(path, models_root).replace('\\', '/'),   # relative to 2_Output_Assets
             })
         if os.path.isdir(icon_dir) and not os.listdir(icon_dir):
             os.rmdir(icon_dir)
@@ -226,7 +226,7 @@ def export_character_icons(dol_path, dat_path, models_root=MODELS_ROOT):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Write each character\'s FrontIcon.png/SideIcon.png into its model folder in 2_Output_Models.'
+        description='Write each character\'s FrontIcon.png/SideIcon.png into its model folder in 2_Output_Assets.'
     )
     parser.add_argument('--dol-path', default=INPUT_DOL, help='path to main.dol source')
     parser.add_argument('--dat-path', default=INPUT_DAT, help='path to dt_na.dat source')

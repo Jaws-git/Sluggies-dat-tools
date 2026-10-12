@@ -60,6 +60,7 @@ _ROSTER_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', 'Ro
 HIGH_FILE, LOW_FILE = 0, 1
 CHARACTER_FILES = (HIGH_FILE, LOW_FILE)
 EQUIPMENT_FILES = (2, 3, 4, 5)                    # bat, left glove, right glove, extra bat (``Roster/gear.py``)
+ANIMATION_FILES = tuple(range(6, 15))              # the animation banks (``Roster/anim.py``)
 
 
 class TargetError(ValueError):

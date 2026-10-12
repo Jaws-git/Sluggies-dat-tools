@@ -61,7 +61,7 @@ import build_rigid_visibility_probe as vis
 from binfmt import color_entry_size, comp_size, decode_field
 from drawlist import decodeDrawList
 
-MODELS_DIR = TOOLS_DIR.parent / "2_Output_Models"
+MODELS_DIR = TOOLS_DIR.parent / "2_Output_Assets"
 MARIO = MODELS_DIR / "18 Mario" / "78277664_mario.gpl" / "78277664_mario.gpl.sluggie"
 MII = MODELS_DIR / "100 Blue Male Mii" / "333008640_mii_male.gpl" / "333008640_mii_male.gpl.sluggie"
 CHECKER_PNG = "rigid_rebuild_probe_checker.png"

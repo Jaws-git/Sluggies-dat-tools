@@ -51,7 +51,7 @@ _BATCH_SOURCE = os.environ.get("SLUGGIES_SOURCE", "")
 _BATCH_MENU_SELECTION = os.environ.get("SLUGGIES_MENU_SELECTION", "")
 _BATCH_MODEL_FILES = os.environ.get("SLUGGIES_MODEL_FILES", "")
 _BATCH_ICON_SHARED_MODE = os.environ.get("SLUGGIES_ICON_SHARED_MODE", "")
-SEARCH_DIR = os.path.join(ROOT_DIR, '2_Output_Models')
+SEARCH_DIR = os.path.join(ROOT_DIR, '2_Output_Assets')
 PATCH_SCRIPT = os.path.join(ROOT_DIR, 'SluggiesTools', 'InplacePatcher', 'patch_inplace.py')
 EXPORT_SCRIPT = os.path.join(ROOT_DIR, 'SluggiesTools', 'export.py')
 TOOLS_DIR = os.path.join(ROOT_DIR, 'SluggiesTools')
@@ -282,7 +282,7 @@ def run_save_roster(path):
 
 
 def run_export_slot(character_id):
-    """Export a slot as the game holds it into 2_Output_Models/Custom <name> NN (Roster/slot_export.py); the game
+    """Export a slot as the game holds it into 2_Output_Assets/Custom <name> NN (Roster/slot_export.py); the game
     files are only read."""
     return subprocess.run(python_script_command(ROSTER_SLOT_EXPORT_SCRIPT, character_id),
                           cwd=TOOLS_DIR).returncode == 0
@@ -317,6 +317,13 @@ def run_write_slot_equipment(target_id, file_index, block):
     """Write a finished equipment block (a roster pack's) into a slot's file 2-5 as it is."""
     return subprocess.run(python_script_command(HS_MAIN_SCRIPT, '--write-slot-equipment', target_id,
                                                 str(file_index), os.path.abspath(block)),
+                          cwd=HS_DIR).returncode == 0
+
+
+def run_write_slot_animation(target_id, file_index, bank):
+    """Write an animation bank (.anm) into a slot's file 6-14 as it is (checked against the slot's skeleton)."""
+    return subprocess.run(python_script_command(HS_MAIN_SCRIPT, '--write-slot-animation', target_id,
+                                                str(file_index), os.path.abspath(bank)),
                           cwd=HS_DIR).returncode == 0
 
 
@@ -376,11 +383,11 @@ def run_export(debug=False, notex=False, untangle=False, glb=False, anim_glb=Fal
         cwd=TOOLS_DIR,
         check=True
     )
-    slogger.info('Export complete. Find your files in the folder "2_Output_Models"', source="dispatcher")
+    slogger.info('Export complete. Find your files in the folder "2_Output_Assets"', source="dispatcher")
 
 
 def run_export_icons(use_output=False):
-    """Write each character's FrontIcon.png/SideIcon.png into its model folder in 2_Output_Models."""
+    """Write each character's FrontIcon.png/SideIcon.png into its model folder in 2_Output_Assets."""
     for package, name in (('PIL', 'Pillow'), ('numpy', 'numpy')):
         if importlib.util.find_spec(package) is None:
             slogger.error(f"Missing required package: {name}", source="dispatcher")
@@ -406,7 +413,7 @@ def run_export_icons(use_output=False):
 
 
 def run_export_sounds():
-    """Decode 1_Input/sound_NA (MY2.brsar + stream/*.brstm) into 2_Output_Models/_SOUNDS as WAV files
+    """Decode 1_Input/sound_NA (MY2.brsar + stream/*.brstm) into 2_Output_Assets/_SOUNDS as WAV files
     (Sound/export_sounds.py). False when the export failed."""
     if importlib.util.find_spec('numpy') is None:
         slogger.error("Missing required package: numpy", source="dispatcher")
@@ -552,7 +559,7 @@ def _unused_character_dir_index(found):
 
     Export folders are named ``<dir_index> <character name>`` (see
     ``export.top_level_folder_name``), e.g. ``89 Unused Yoshi A``. The index is
-    the leading integer of the first path component under ``2_Output_Models``.
+    the leading integer of the first path component under ``2_Output_Assets``.
     """
     if not found:
         return None
@@ -683,7 +690,7 @@ def _patch_png(target, model):
 
 def run_clear_target(target_id, target_file=None):
     """Return a stock slot's high- and low-poly models to vanilla (``--unpatch --target-id`` without files); with
-    ``target_file`` (2-5): only that bat or glove file, back to its baseline."""
+    ``target_file`` (2-5): only that bat or glove file, (6-14) only that animation bank, back to its baseline."""
     cmd = python_script_command(HS_MAIN_SCRIPT, '--clear-target', target_id)
     cmd += ['--target-file', str(target_file)] if target_file is not None else []
     return subprocess.run(cmd, cwd=HS_DIR).returncode == 0
@@ -856,7 +863,7 @@ def parse_args():
                       'character 0xSS as the game holds it (models, equipment, name, portraits, stats; the '
                       "square's voice stays unless 0xTT is alone on a new square)")
     mode.add_argument('--export-slot', metavar='0xNN', help="export a slot as the game holds it (High and Low "
-                      'model, bats and gloves, anm files, portraits) into 2_Output_Models/Custom <name> NN as '
+                      'model, bats and gloves, anm files, portraits) into 2_Output_Assets/Custom <name> NN as '
                       '.sluggie files that patch into any slot their base model fits')
     mode.add_argument('--rename-slot', nargs=2, metavar=('0xNN', 'TEXT'), help='name a slot (stock characters included), one name for English, French and Spanish; it must fit the name plate; a blank TEXT resets the name (read -> rebuild)')
     mode.add_argument('--apply-slots', metavar='FILE', help='write staged slot edits (an edits file with patch/clear/rename edits per slot, as the GUI\'s "Patch Game" writes it) as one chain: read once, at most one roster rebuild, then the slot patches')
@@ -864,6 +871,7 @@ def parse_args():
     mode.add_argument('--load-roster', metavar='FILE', help='load a roster pack into 3_Output_Dat: replaces the whole roster (with --dry-run: check the pack and show the per-slot differences only)')
     mode.add_argument('--write-slot-blocks', nargs=3, metavar=('0xNN', 'HIGH', 'LOW'), help="write finished model blocks (a roster pack's; '-' keeps that file) into a slot as they are (used by --load-roster)")
     mode.add_argument('--write-slot-equipment', nargs=3, metavar=('0xNN', 'FILE', 'BLOCK'), help="write a finished equipment block (a roster pack's) into a slot's file 2-5 (2 bat, 3 left glove, 4 right glove, 5 extra bat) as it is (used by --load-roster)")
+    mode.add_argument('--write-slot-animation', nargs=3, metavar=('0xNN', 'FILE', 'ANM'), help="write an animation bank (.anm, e.g. from the Blender add-on) into a slot's file 6-14 as it is; refused unless it fits the slot's skeleton (used by the GUI's Replace animation)")
     mode.add_argument('--resplit-unused', action='store_true', help='repair: give unused-character routes (dirs 89-94) that point at a playable character\'s block their own copy again')
     mode.add_argument('--roster', '--roster-dev', dest='roster', action='store_true', help='inject a roster configuration (--config, e.g. from 1_Input/_RosterConfigurations) into 3_Output_Dat, replacing the previous injection')
     mode.add_argument('--roster-state', action='store_true', help='read the draft grid from 3_Output_Dat into _gui/roster_state.json (used by the GUI)')
@@ -871,9 +879,9 @@ def parse_args():
     mode.add_argument('--game-options', action='store_true', help='show or change game options (CPU vs CPU, ...) in 3_Output_Dat/main.dol; use with --on/--off')
     mode.add_argument('--stat-bridge-export', metavar='FILE', help="write the Sluggers Stat Editor's bridge file (where 3_Output_Dat/main.dol keeps every stat table, the characters, the baseline values) to FILE")
     mode.add_argument('--apply-stat-edits', nargs='+', metavar='FILE', help="write the Sluggers Stat Editor's edit files (stat_edits.json from Bridge Mode; several: in order, a later one wins) into 3_Output_Dat/main.dol; refused unless made from this main.dol; an item reset:0xNN clears that character's stat edits at its place in the order (with --dry-run: list the changes only)")
-    mode.add_argument('--export', action='store_true', help='export all models from 1_Input to 2_Output_Models')
-    mode.add_argument('--export-icons', action='store_true', help="write each character's FrontIcon.png/SideIcon.png into its model folder in 2_Output_Models")
-    mode.add_argument('--export-sounds', action='store_true', help="decode the game's sounds (1_Input/sound_NA: MY2.brsar and stream/*.brstm, copied from the game's files/sound_NA) into 2_Output_Models/_SOUNDS as WAV files, one folder per archive group")
+    mode.add_argument('--export', action='store_true', help='export all models from 1_Input to 2_Output_Assets')
+    mode.add_argument('--export-icons', action='store_true', help="write each character's FrontIcon.png/SideIcon.png into its model folder in 2_Output_Assets")
+    mode.add_argument('--export-sounds', action='store_true', help="decode the game's sounds (1_Input/sound_NA: MY2.brsar and stream/*.brstm, copied from the game's files/sound_NA) into 2_Output_Assets/_SOUNDS as WAV files, one folder per archive group")
 
     parser.add_argument('--debug', action='store_true', help='export only: write binary blobs as raw byte arrays instead of base64')
     parser.add_argument('--notex', action='store_true', help='export only: skip texture extraction')
@@ -885,7 +893,7 @@ def parse_args():
     parser.add_argument('--config', metavar='PATH', help='roster only: the roster configuration JSON')
     parser.add_argument('--state', metavar='PATH', help='roster only: a derived config (--roster-derive) instead of --config')
     parser.add_argument('--target-id', metavar='0xNN', help="patch/unpatch only: write the .sluggie models into this character ID's slot instead of their own route (always Hammerspace)")
-    parser.add_argument('--target-file', type=int, choices=(2, 3, 4, 5), metavar='N', help="with --target-id: the slot file an equipment .sluggie goes to (2 bat, 3 left glove, 4 right glove, 5 extra bat; default: the file it was exported from); with --unpatch --target-id and no files: reset only that equipment file")
+    parser.add_argument('--target-file', type=int, choices=range(2, 15), metavar='N', help="with --target-id: the slot file an equipment .sluggie goes to (2 bat, 3 left glove, 4 right glove, 5 extra bat; default: the file it was exported from); with --unpatch --target-id and no files: reset only that equipment file or animation bank (6-14)")
     parser.add_argument('--as-low', action='store_true', help='with --target-id: a high-poly model without L_ partner is the low-poly model too')
     parser.add_argument('--validate-only', action='store_true', help='with --patch --target-id: build and validate the slot blocks, write nothing')
     parser.add_argument('--fit', choices=('contain', 'cover', 'strict'), help='set-icon only: contain (fit inside, the default), cover (fill and crop) or strict (the image must be 48x51)')
@@ -945,6 +953,8 @@ def parse_args():
         parser.error("--unpatch needs files (or --target-id 0xNN to restore a stock slot's models).")
     if args.target_file and not args.target_id:
         parser.error('--target-file needs --target-id.')
+    if args.target_file and args.target_file > 5 and args.unpatch != []:
+        parser.error('--target-file 6-14 (an animation bank) goes with --unpatch --target-id only (no files).')
     if args.target_file and args.as_low:
         parser.error('--target-file does not combine with --as-low.')
     if args.unpatch == [] and args.as_low:
@@ -957,7 +967,7 @@ def parse_args():
         parser.error('--config and --state cannot be used together.')
     if args.roster and not (args.config or args.remove or args.state):
         parser.error('--roster needs --config PATH (a roster configuration), --state PATH or --remove.')
-    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.copy_slot, args.export_slot, args.rename_slot, args.set_voice, args.set_char_voice, args.set_species_clip, args.set_stats, args.set_icon, args.apply_slots, args.save_roster, args.load_roster, args.write_slot_blocks, args.write_slot_equipment, args.resplit_unused, args.export, args.export_icons, args.export_sounds, args.roster, args.roster_state, args.roster_derive, args.game_options, args.stat_bridge_export, args.apply_stat_edits]):
+    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.copy_slot, args.export_slot, args.rename_slot, args.set_voice, args.set_char_voice, args.set_species_clip, args.set_stats, args.set_icon, args.apply_slots, args.save_roster, args.load_roster, args.write_slot_blocks, args.write_slot_equipment, args.write_slot_animation, args.resplit_unused, args.export, args.export_icons, args.export_sounds, args.roster, args.roster_state, args.roster_derive, args.game_options, args.stat_bridge_export, args.apply_stat_edits]):
         if len(sys.argv) == 1:
             args.gui = True
         else:
@@ -1136,6 +1146,9 @@ def main() -> int:
                 return 1
         elif args.write_slot_equipment:
             if not run_write_slot_equipment(*args.write_slot_equipment):
+                return 1
+        elif args.write_slot_animation:
+            if not run_write_slot_animation(*args.write_slot_animation):
                 return 1
 
         if memory_before is not None:

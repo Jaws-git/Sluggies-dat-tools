@@ -9,8 +9,8 @@ Model exports write each character's own portraits as RGBA PNGs (48×51)
 into that character's model folder, next to `tex/`:
 
 ```
-2_Output_Models/18 Mario/78277664_mario.gpl/icon/FrontIcon.png
-2_Output_Models/18 Mario/78277664_mario.gpl/icon/SideIcon.png
+2_Output_Assets/18 Mario/78277664_mario.gpl/icon/FrontIcon.png
+2_Output_Assets/18 Mario/78277664_mario.gpl/icon/SideIcon.png
 ```
 
 - **GUI:** the **Export 3D** tab's **Export Icons** checkbox (on by

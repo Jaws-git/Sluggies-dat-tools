@@ -17,7 +17,7 @@ batch of one; ``--apply FILE`` reads an edits file (``{"edits": [{"op":
 "0xMM"}, {"op": "stats", "id": "0xNN", "source": null}, {"op": "icon", "id":
 "0xNN", "view": "front", "file": ..., "fit": "contain", "trim": true},
 {"op": "stat_edits", "file": ...}, {"op": "stat_reset", "id": "0xNN"}, {"op": "copy", "id": "0xNN", "source":
-"0xMM"}, ...]}``; a null ``source`` goes back to
+"0xMM"}, {"op": "anim", "id": "0xNN", "anm": ...}, ...]}``; a null ``source`` goes back to
 the default; an icon edit's image is read and fitted here, ``icon_import``;
 a stat edit file is checked against ``main.dol`` here, ``StatEditor/apply``). ``--dry-run`` leaves out the build
 checks of edits marked ``"checked"`` (the GUI's staging check).
@@ -219,6 +219,19 @@ class FileEnv(slot_plan.Env):
             return None
         return self.dat.read(ref['offset'], ref['length'])
 
+    def current_anim(self, char, file):
+        ref = next((e for e in char.get('animations') or [] if e.get('file') == file), None)
+        if not ref or self.dat is None:
+            return None
+        return self.dat.read(ref['offset'], ref['length'])
+
+    def anim_size_limit(self, file):
+        import HammerspaceHelper as hh
+        try:
+            return max(hh.readDolEntry(d, file)[1] for d in slot_plan.CHARACTER_DIRS)
+        except (OSError, ValueError):
+            return None
+
     def vanilla_block(self, directory, file):
         import LodPartnerGuard
         try:
@@ -311,7 +324,8 @@ class FileEnv(slot_plan.Env):
             return False
         if not self.models_at_baseline(char):
             return False
-        return all(e.get('vanilla') is not False for e in (char.get('equipment') or {}).values())
+        return all(e.get('vanilla') is not False
+                   for e in list((char.get('equipment') or {}).values()) + (char.get('animations') or []))
 
     def shows_open_slot_portraits(self, char):
         paths = open_slot.slot_icon_paths()

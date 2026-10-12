@@ -105,8 +105,10 @@ def add_vanilla_flags(result: dict) -> None:
     routed to the input DOL's own entry (an untangle export changes texture bytes in place, so bytes would call
     nearly every block modified); an own model directory's while its bytes equal its source's vanilla block; an
     unused character's split route while it holds its own copy with its untangled baseline bytes
-    (``UntangledTextures.split_at_baseline``); None when the input files cannot be read. The Hammerspace modules
-    read the input DOL/DAT, so this is the one place the otherwise pure state looks at them."""
+    (``UntangledTextures.split_at_baseline``); None when the input files cannot be read. An ``animations`` entry
+    (no textures, so the untangle export leaves its bytes alone) counts as vanilla on its input route, else while
+    its bytes equal its source's vanilla bank. The Hammerspace modules read the input DOL/DAT, so this is the one
+    place the otherwise pure state looks at them."""
     hs_dir = os.path.join(_TOOLS_DIR, 'Hammerspace')
     if hs_dir not in sys.path:
         sys.path.insert(0, hs_dir)
@@ -116,6 +118,17 @@ def add_vanilla_flags(result: dict) -> None:
     import UntanglePolicy
     for char in result.get('characters') or []:
         directory = char['model_dir']
+        for entry in char.get('animations') or []:
+            entry['vanilla'] = None
+            try:
+                if (entry['offset'], entry['length']) == hh.readDolEntry(directory, entry['file']):
+                    entry['vanilla'] = True
+                else:
+                    block = LodPartnerGuard._vanilla_block(directory, entry['file'])
+                    if block is not None:
+                        entry['vanilla'] = hashlib.sha1(block).hexdigest() == entry['sha1']
+            except (OSError, ValueError, KeyError):
+                continue
         for entry in (char.get('equipment') or {}).values():
             entry['vanilla'] = None
             try:

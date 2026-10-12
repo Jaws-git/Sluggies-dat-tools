@@ -15,7 +15,7 @@ _LOG_DIR_INDEX = None
 # high-poly partner's (same folder, geo name without "L_", exported just before it).
 _GLB_PARTNER_TEXTURES = {}
 TEX_TEMP_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), '..', '2_Output_Models', 'tex_temp')
+    os.path.join(os.path.dirname(__file__), '..', '2_Output_Assets', 'tex_temp')
 )
 
 UNTANGLE_SKIP_STADIUMS = True

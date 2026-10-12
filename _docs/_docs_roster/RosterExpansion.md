@@ -251,7 +251,7 @@ pack:NAME`, the grid's slot-level Voice...) turns it into a `character_voices`
 entry with the pack's clips (`slot_plan.plan_char_voice`, `Env.sound_pack`),
 so the game files never depend on the pack folder. A stock pack is a species'
 clip row plus its sounds as the input files hold them (`stock_packs`); the
-GUI's Sounds tab lists both kinds (`gui_sounds.py`).
+GUI's Voices tab lists both kinds (`gui_sounds.py`).
 
 Real build (2026-10-10): Mario with Bowser's voice plus a custom `v1`
 (Luigi's `luigi_v1.wav` re-encoded, 9,472 B): file 14 161,152 -> 364,992 wave

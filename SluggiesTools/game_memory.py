@@ -30,7 +30,7 @@ except ImportError:                        # as a bare module, SluggiesTools on 
     import slots
 
 OUTPUT_FOLDER = '3_Output_Dat'
-MODELS_FOLDER = '2_Output_Models'
+MODELS_FOLDER = '2_Output_Assets'
 HEAP_HEAD = 0x50                 # the expanded heap's own header inside its size
 # 8 small blocks (132 bytes), 11 block headers (176) and up to 32 bytes of alignment per model/gear block (RAM
 # dumps, 2026-10-10: High 761,472 + Low 77,984 + glove 26,944 fitted the stock 870,320, 16,384 more did not).

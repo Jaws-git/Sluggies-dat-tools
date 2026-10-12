@@ -1,4 +1,4 @@
-"""The GUI's "Sounds" tab: the game's voice packs and the user's custom ones.
+"""The GUI's "Voices" tab: the game's voice packs and the user's custom ones.
 
 Left, the pack list: **Game voice packs** (one per stock voice: the 12 voice moments of a species as
 ``1_Input/main.dol`` and ``1_Input/sound_NA/MY2.brsar`` hold them, ``Sound/sound_packs.stock_packs``) and
@@ -10,6 +10,9 @@ per voice moment (role, the current clip and its length, **Play**, **Replace...*
   prepared and encoded here, on a worker thread (``Sound/clips``), into ``_gui/slot/staged_clips/<sha>.rwav``, so
   the planner only copies bytes. Reset drops the pending edit, or stages the stock clip back when the game holds a
   replaced one. Pending moments show orange; moments the game already replaced show blue.
+* **Replace gain** (the toolbar, dB) scales the WAV either kind of Replace... encodes (``gui_volume``).
+* A game pack's **Set volume** sets the stock sound's volume byte (``gui_volume``; written right away, no staging;
+  a character's own voice copying the clip keeps the stock volume).
 * A **custom pack** is a library: Replace writes the encoded clip into the pack folder (``sound_packs.set_clip``),
   nothing is staged; the grid's slot-level **Voice...** assigns a pack to a slot. **Stage for its slots** re-stages
   the pack on every slot that speaks with it now (after a clip changed). New pack..., Rename..., Delete, Export...
@@ -27,6 +30,7 @@ import dearpygui.dearpygui as dpg
 from Sound import ffmpeg
 
 import gui_grid
+import gui_volume
 
 _DIM = (200, 200, 200, 255)
 _FAINT = (140, 140, 140, 255)
@@ -60,6 +64,7 @@ class SoundsTab:
         self.problems = []                   # unreadable pack folders
         self.error = None                    # why the archive could not be read
         self.output_size = None              # bytes of 3_Output_Dat/sound_NA/MY2.brsar, or None
+        self.volumes = {}                    # {sound name: (volume in the game, stock volume)}
         self.selected = None                 # ('stock', species) or ('custom', name), or None
         self.working = False                 # a clip is being encoded
         self._playing = None                 # the temp WAV file winsound plays from
@@ -68,11 +73,13 @@ class SoundsTab:
 
     # ------------------------------------------------------------------ build
     def build(self):
-        with dpg.tab(label='Sounds', tag='sounds_tab'):
+        with dpg.tab(label='Voices', tag='sounds_tab'):
             with dpg.group(horizontal=True):
                 dpg.add_button(label='Refresh', tag='sounds_refresh', callback=lambda: self.refresh())
                 dpg.add_button(label='New pack...', tag='sounds_new', callback=lambda: self._on_new_pack())
                 dpg.add_button(label='Import pack...', tag='sounds_import', callback=lambda: self._on_import())
+                dpg.add_spacer(width=12)
+                gui_volume.add_gain_field('sounds_gain')
                 dpg.add_spacer(width=12)
                 dpg.add_loading_indicator(tag='sounds_spinner', style=1, radius=1.6, show=False,
                                           color=(90, 200, 120, 255), secondary_color=(60, 120, 80, 255))
@@ -129,7 +136,8 @@ class SoundsTab:
         root = self.app.root_dir
 
         def work():
-            result = {'archive': None, 'stock': [], 'custom': [], 'problems': [], 'error': None, 'output_size': None}
+            result = {'archive': None, 'stock': [], 'custom': [], 'problems': [], 'error': None, 'output_size': None,
+                      'volumes': gui_volume.read_volumes(root)}
             try:
                 brsar, _clips, sound_packs = _sound_modules()
                 result['custom'], result['problems'] = sound_packs.list_packs(root)
@@ -161,6 +169,7 @@ class SoundsTab:
         dpg.configure_item('sounds_spinner', show=False)
         self.archive, self.stock, self.custom = result['archive'], result['stock'], result['custom']
         self.problems, self.error, self.output_size = result['problems'], result['error'], result['output_size']
+        self.volumes = result['volumes']
         if self.error:
             self._status(self.error, _ERROR)
         else:
@@ -298,7 +307,8 @@ class SoundsTab:
             dpg.add_table_column(label='Moment', init_width_or_weight=0.9)
             dpg.add_table_column(label='Role', init_width_or_weight=1.6)
             dpg.add_table_column(label='Clip', init_width_or_weight=2.4)
-            dpg.add_table_column(label='', init_width_or_weight=1.9)
+            dpg.add_table_column(label='Volume', init_width_or_weight=0.8)
+            dpg.add_table_column(label='', init_width_or_weight=2.5)
         return table
 
     def _draw_stock(self, pack, parent):
@@ -333,6 +343,7 @@ class SoundsTab:
                     dpg.add_text(f'replaced in the game (stock: {clip.name}, {clip.seconds:.2f} s)', color=_CHANGED)
                 else:
                     dpg.add_text(f'{clip.name}  ({clip.seconds:.2f} s, {clip.wave_bytes:,} B)')
+                gui_volume.add_volume_cell(self.volumes, clip.name)
                 with dpg.group(horizontal=True, horizontal_spacing=4):
                     play = dpg.add_button(label='Play', width=54, height=BUTTON_H, enabled=_WINDOWS and self.archive is not None,
                                           callback=lambda _s, _a, u: self._play_stock(u), user_data=clip.sound_id)
@@ -344,6 +355,10 @@ class SoundsTab:
                     can_reset = edit is not None or moment in replaced
                     dpg.add_button(label='Reset', width=54, height=BUTTON_H, enabled=not locked and can_reset,
                                    callback=lambda _s, _a, u: self._on_reset_stock(*u), user_data=(head, moment))
+                    volume = dpg.add_button(label='Set volume', width=84, height=BUTTON_H, enabled=not self.working,
+                                            callback=lambda _s, _a, u: self._on_volume(u), user_data=clip.name)
+                    with dpg.tooltip(volume):
+                        dpg.add_text(gui_volume.TOOLTIP, wrap=360)
                     with dpg.tooltip(replace):
                         dpg.add_text('Pick a WAV (any format; MP3, OGG, FLAC, ... with ffmpeg; made mono 32 kHz, cut at '
                                      '2.5 s) or an encoded .rwav. '
@@ -397,6 +412,7 @@ class SoundsTab:
                     dpg.add_text(f'{origin}  ({seconds})', color=_OK)
                 else:
                     dpg.add_text(f'(not filled: {base})', color=_FAINT)
+                dpg.add_text('')                                  # a custom clip takes its slot's stock volume
                 with dpg.group(horizontal=True, horizontal_spacing=4):
                     wav = pack.wav_path(moment) if clip is not None else None
                     dpg.add_button(label='Play', width=54, height=BUTTON_H,
@@ -409,6 +425,13 @@ class SoundsTab:
                                    callback=lambda _s, _a, u: self._on_remove_custom(*u), user_data=(pack, moment))
 
     # ------------------------------------------------------------------ playback
+    def _on_volume(self, name):
+        if not self.working:
+            def done(volume, stock):
+                self.volumes[name] = (volume, stock)
+                self._draw_detail()
+            gui_volume.ask_volume(self.app, name, self._status, 'sounds', done)
+
     def _play_bytes(self, data):
         if not _WINDOWS:
             return
@@ -457,6 +480,7 @@ class SoundsTab:
         self._status(f'Encoding {os.path.basename(path)}...', _DIM)
         dpg.configure_item('sounds_spinner', show=True)
         archive_path = os.path.join(self.app.root_dir, '1_Input', 'sound_NA', 'MY2.brsar')
+        gain = gui_volume.gain_of('sounds_gain')
 
         def work():
             rwav = wav = None
@@ -472,9 +496,11 @@ class SoundsTab:
                         rwav = handle.read()
                     clips.check_rwav(rwav, os.path.basename(path))
                     wav = clips.rwav_wav_bytes(rwav)
+                    if gain:
+                        notes = [f'gain {gain:+.1f} dB not applied: {os.path.basename(path)} is encoded already']
                 else:
                     rate, x = clips.read_wav(path)
-                    samples, notes = clips.prepare(rate, x)
+                    samples, notes = clips.prepare(rate, x, gain)
                     archive = self.archive or brsar.Brsar.from_file(archive_path)
                     rwav = clips.encode(samples, clips.voice_templates(archive))
                     from Sound import wavfile
@@ -501,7 +527,7 @@ class SoundsTab:
 
     def _pick_clip(self, title, on_path):
         """Pick one WAV, starting where the last one came from (remembered in the GUI settings), else in
-        2_Output_Models/_SOUNDS."""
+        2_Output_Assets/_SOUNDS."""
         if self.app.picking:
             return
         start = next((d for d in (self.app.settings.get(CLIP_DIR_SETTING),

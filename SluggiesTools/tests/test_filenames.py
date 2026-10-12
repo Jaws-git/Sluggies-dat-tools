@@ -1,4 +1,4 @@
-"""Stability test for exported model texture filenames in 2_Output_Models.
+"""Stability test for exported model texture filenames in 2_Output_Assets.
 
 pytest SluggiesTools/tests/test_filenames.py
 
@@ -24,7 +24,7 @@ renames one is caught immediately. Additional user PNGs are allowed in model
 
 Scope
 -----
-Only **model textures** are checked: every ``.png`` under ``2_Output_Models``
+Only **model textures** are checked: every ``.png`` under ``2_Output_Assets``
 that is NOT inside a leftover ``_ICONS`` folder (the removed icon sheet export)
 and NOT in the scratch space (``tex_temp``). (Indexed textures carry their palette hash inside
 the same ``tex*.png`` filename, so they are model textures and are included.)
@@ -57,7 +57,7 @@ from unittest import mock
 # ---------------------------------------------------------------------------
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-OUTPUT_DIR = REPO_ROOT / "2_Output_Models"
+OUTPUT_DIR = REPO_ROOT / "2_Output_Assets"
 
 # Directories that are not model textures and must be ignored:
 #   _ICONS   -> leftover output of the removed icon sheet export (may still exist)

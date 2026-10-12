@@ -7,12 +7,14 @@ the archive is ``3_Output_Dat/sound_NA/MY2.brsar`` when it exists (else ``1_Inpu
 output file differs from the input one shows as replaced.
 
 * **Play** decodes the stream on a worker thread into a temp WAV (kept until the track changes, so a second
-  Play starts at once) and plays it through ``winsound``; **Stop** stops every playback, the Sounds tab's clips
+  Play starts at once) and plays it through ``winsound``; **Stop** stops every playback, the Voices and Sound FX tabs' clips
   included (winsound plays one sound at a time).
 * **Replace...** encodes a WAV (other sound files through ffmpeg, ``Sound/clips``) into the stock stream's layout (``Sound/brstm_write``: same channels, rate and
   blocks; a WAV ``smpl`` loop is kept, else a looping stock track loops from the start) on a worker thread and
   writes ``3_Output_Dat/sound_NA/stream/<file>`` directly; CopyFilesToGameDir.bat ("Patch Game & copy files")
   copies it into the game. **Reset** writes the stock file there again (so the next copy restores the game's).
+* **Replace gain** (the toolbar, dB) scales the file Replace... encodes (``gui_volume``).
+* **Set volume** sets the sound's volume byte in the archive (``gui_volume``; written right away, no staging).
 
 Elsewhere than Windows the playback buttons are disabled. The list is read once on a worker thread; Refresh
 reads it again.
@@ -28,6 +30,8 @@ from dataclasses import dataclass
 import dearpygui.dearpygui as dpg
 
 from Sound import ffmpeg
+
+import gui_volume
 
 _DIM = (200, 200, 200, 255)
 _FAINT = (140, 140, 140, 255)
@@ -50,6 +54,8 @@ class Track:
     stock: str = None           # the .brstm under 1_Input/sound_NA, or None (missing)
     output: str = None          # the .brstm under 3_Output_Dat/sound_NA, or None (none written)
     replaced: bool = False      # the output file differs from the stock one
+    volume: int = None          # the sound's volume byte in the listed archive
+    stock_volume: int = None    # ... in 1_Input's archive
     info: object = None         # Sound.brstm.Info of the played file, or None (missing or unreadable)
     problem: str = None         # why the header could not be read
 
@@ -77,12 +83,17 @@ def read_tracks(root):
         archive_path = os.path.join(input_dir, 'MY2.brsar')
     archive = brsar.Brsar.from_file(archive_path)
     files = archive.files()
+    stock_path = os.path.join(input_dir, 'MY2.brsar')
+    stock_volumes = {}
+    if os.path.isfile(stock_path):
+        stock_volumes = {s.name: s.volume for s in brsar.Brsar.from_file(stock_path).sounds()}
     tracks = []
     for sound in archive.sounds():
         if sound.type != brsar.STRM:
             continue
         external = files[sound.file_id].external_path.replace('\\', '/')
-        track = Track(sound_id=sound.index, name=sound.name, external=external)
+        track = Track(sound_id=sound.index, name=sound.name, external=external, volume=sound.volume,
+                      stock_volume=stock_volumes.get(sound.name, sound.volume))
         if external:
             stock = os.path.join(input_dir, *external.split('/'))
             output = os.path.join(output_dir, *external.split('/'))
@@ -126,6 +137,8 @@ class MusicTab:
             with dpg.group(horizontal=True):
                 dpg.add_button(label='Refresh', tag='music_refresh', callback=lambda: self.refresh())
                 dpg.add_button(label='Stop', tag='music_stop_all', enabled=_WINDOWS, callback=lambda: self.stop())
+                dpg.add_spacer(width=12)
+                gui_volume.add_gain_field('music_gain')
                 dpg.add_spacer(width=12)
                 dpg.add_loading_indicator(tag='music_spinner', style=1, radius=1.6, show=False,
                                           color=(90, 200, 120, 255), secondary_color=(60, 120, 80, 255))
@@ -227,7 +240,8 @@ class MusicTab:
             dpg.add_table_column(label='File', init_width_or_weight=2.6)
             dpg.add_table_column(label='Length', init_width_or_weight=0.7)
             dpg.add_table_column(label='Format', init_width_or_weight=1.4)
-            dpg.add_table_column(label='', init_width_or_weight=2.6)
+            dpg.add_table_column(label='Volume', init_width_or_weight=0.8)
+            dpg.add_table_column(label='', init_width_or_weight=3.4)
         busy = self.working is not None
         for track in self.tracks:
             info = track.info
@@ -249,6 +263,7 @@ class MusicTab:
                     dpg.add_text(f'{channels}, {info.rate} Hz' + (', loops' if info.loop else ''), color=_DIM)
                 else:
                     dpg.add_text(track.problem or '', color=_ERROR if track.problem else _FAINT)
+                gui_volume.add_volume_cell({track.name: (track.volume, track.stock_volume)}, track.name)
                 with dpg.group(horizontal=True, horizontal_spacing=4):
                     play = dpg.add_button(label='Play', width=54, height=BUTTON_H,
                                           enabled=_WINDOWS and track.path is not None and info is not None,
@@ -261,6 +276,10 @@ class MusicTab:
                     reset = dpg.add_button(label='Reset', width=54, height=BUTTON_H,
                                            enabled=not busy and track.replaced and track.stock is not None,
                                            callback=lambda _s, _a, t: self._on_reset(t), user_data=track)
+                    volume = dpg.add_button(label='Set volume', width=84, height=BUTTON_H, enabled=not busy,
+                                            callback=lambda _s, _a, t: self._on_volume(t), user_data=track)
+                    with dpg.tooltip(volume):
+                        dpg.add_text(gui_volume.TOOLTIP, wrap=360)
                     with dpg.tooltip(play):
                         dpg.add_text('Play the track once (decoded the first time, which takes a moment)'
                                      if _WINDOWS else 'Playback needs Windows')
@@ -386,6 +405,7 @@ class MusicTab:
         self._draw_list()
         layout = track.stock or track.path   # the stock file gives the layout
         target = self._output_path(track)
+        gain = gui_volume.gain_of('music_gain')
 
         def work():
             notes, error, seconds = [], None, None
@@ -398,7 +418,7 @@ class MusicTab:
                 from Sound import brstm_write
                 with open(layout, 'rb') as handle:
                     original = handle.read()
-                data, notes = brstm_write.encode_wav(wav_path, original)
+                data, notes = brstm_write.encode_wav(wav_path, original, gain)
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 with open(target + '.tmp', 'wb') as handle:
                     handle.write(data)
@@ -438,6 +458,14 @@ class MusicTab:
             return
         self._status(f'{track.name} reset to the stock track.', _OK)
         self._reread(track)
+
+    def _on_volume(self, track):
+        if self.working is not None:
+            return
+        def done(volume, stock):
+            track.volume, track.stock_volume = volume, stock
+            self._draw_list()
+        gui_volume.ask_volume(self.app, track.name, self._status, 'music', done)
 
     def _reread(self, track):
         """After the output file of ``track`` changed: its state, header and decoded cache."""

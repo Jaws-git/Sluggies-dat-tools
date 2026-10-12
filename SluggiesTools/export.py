@@ -44,7 +44,7 @@ def _encode_bytes(data: bytes):
     return _encode_field(data, not DEBUG_DONT_USE_BASE64)
 
 
-outdir = "../2_Output_Models/"
+outdir = "../2_Output_Assets/"
 _export_placeholder = 'exports will be created here'
 
 
@@ -56,7 +56,7 @@ def confirm_overwrite():
     )
     if existing:
         answer = _slogger.ask(
-            'Previous export files already exist in 2_Output_Models. '
+            'Previous export files already exist in 2_Output_Assets. '
             'Continue and overwrite? (y/n): '
         ).strip().lower()
         _slogger.log_user_input('Model export overwrite confirm', answer, source='export')

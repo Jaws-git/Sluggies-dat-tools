@@ -42,7 +42,10 @@ JSON-able dict:
   (``{'bat', 'glove_l', 'glove_r', 'extra'}``: the model directory's files
   2-5 the same way, plus ``placeholder`` (an empty file 5) and
   ``shared_with`` (how many other slots of this state load the same block);
-  ``state_cli`` adds ``vanilla``: the block equals its vanilla source's);
+  ``state_cli`` adds ``vanilla``: the block equals its vanilla source's) and
+  ``animations`` (a list, one entry per animation bank, files 6-14: ``file``,
+  ``offset``, ``length``, ``sha1``, ``shared_with``, and ``state_cli``'s
+  ``vanilla``);
 * ``warnings``: manifest facts the binary contradicts (the binary wins).
 
 Most facts come from the binary: the grid shape (square count and D-pad
@@ -59,9 +62,10 @@ import struct
 try:
     from ..Dol import dolfile, inventory, relocate
     from . import dat_hammerspace as dhs
-    from . import dol_hammerspace, gear, grid, ids, manifest, names, state_icons, voices, wheels
+    from . import anim, dol_hammerspace, gear, grid, ids, manifest, names, state_icons, voices, wheels
 except ImportError:
     from Dol import dolfile, inventory, relocate
+    import anim
     import dat_hammerspace as dhs
     import dol_hammerspace
     import gear
@@ -398,6 +402,7 @@ def _model_blocks(image: dolfile.DolImage, dat, characters: list[dict], warnings
     for c in characters:
         c['blocks'] = None
         c['equipment'] = None
+        c['animations'] = None
     if dat is None:
         return
     try:
@@ -406,43 +411,48 @@ def _model_blocks(image: dolfile.DolImage, dat, characters: list[dict], warnings
         warnings.append(f'no model blocks: {exc}')
         return
     seen: dict[tuple[int, int], str] = {}
+
+    def entry_of(directory: int, index: int) -> dict | None:
+        """``{'offset', 'length', 'sha1'}`` of file ``index`` of ``directory`` as the game loads it, or None."""
+        address = pointers[directory] + dhs.RECORD_SIZE * index
+        if not image.is_mapped(address, dhs.RECORD_SIZE):
+            return None
+        words = struct.unpack('>12I', image.read(address, dhs.RECORD_SIZE))
+        if words[0] != dhs.hh._DAT_FNAME_PTR:
+            return None
+        offset, length, _alloc = dhs.slot(words, 'en')
+        if (offset, length) not in seen:
+            seen[(offset, length)] = hashlib.sha1(dat.read(offset, length)).hexdigest()
+        return {'offset': offset, 'length': length, 'sha1': seen[(offset, length)]}
+
     for c in characters:
         if c['model_dir'] >= len(pointers):
             continue
         blocks = {}
         for role, index in BLOCK_FILES.items():
-            address = pointers[c['model_dir']] + dhs.RECORD_SIZE * index
-            if not image.is_mapped(address, dhs.RECORD_SIZE):
-                continue
-            words = struct.unpack('>12I', image.read(address, dhs.RECORD_SIZE))
-            if words[0] != dhs.hh._DAT_FNAME_PTR:
-                continue
-            offset, length, _alloc = dhs.slot(words, 'en')
-            if (offset, length) not in seen:
-                seen[(offset, length)] = hashlib.sha1(dat.read(offset, length)).hexdigest()
-            blocks[role] = {'offset': offset, 'length': length, 'sha1': seen[(offset, length)]}
+            entry = entry_of(c['model_dir'], index)
+            if entry is not None:
+                blocks[role] = entry
         c['blocks'] = blocks
         equipment = {}
         for index, role in gear.ROLES.items():
-            address = pointers[c['model_dir']] + dhs.RECORD_SIZE * index
-            if not image.is_mapped(address, dhs.RECORD_SIZE):
-                continue
-            words = struct.unpack('>12I', image.read(address, dhs.RECORD_SIZE))
-            if words[0] != dhs.hh._DAT_FNAME_PTR:
-                continue
-            offset, length, _alloc = dhs.slot(words, 'en')
-            if (offset, length) not in seen:
-                seen[(offset, length)] = hashlib.sha1(dat.read(offset, length)).hexdigest()
-            equipment[role] = {'file': index, 'offset': offset, 'length': length, 'sha1': seen[(offset, length)],
-                               'placeholder': length <= gear.PLACEHOLDER_MAX
-                               and gear.is_placeholder(dat.read(offset, length))}
+            entry = entry_of(c['model_dir'], index)
+            if entry is not None:
+                equipment[role] = {'file': index, **entry, 'placeholder': entry['length'] <= gear.PLACEHOLDER_MAX
+                                   and gear.is_placeholder(dat.read(entry['offset'], entry['length']))}
         c['equipment'] = equipment
+        animations = []
+        for index in anim.FILES:
+            entry = entry_of(c['model_dir'], index)
+            if entry is not None:
+                animations.append({'file': index, **entry})
+        c['animations'] = animations
     users: dict[tuple[int, int], int] = {}
     for c in characters:
-        for entry in (c.get('equipment') or {}).values():
+        for entry in list((c.get('equipment') or {}).values()) + (c.get('animations') or []):
             users[(entry['offset'], entry['length'])] = users.get((entry['offset'], entry['length']), 0) + 1
     for c in characters:
-        for entry in (c.get('equipment') or {}).values():
+        for entry in list((c.get('equipment') or {}).values()) + (c.get('animations') or []):
             entry['shared_with'] = users[(entry['offset'], entry['length'])] - 1
 
 

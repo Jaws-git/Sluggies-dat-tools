@@ -491,23 +491,23 @@ class UnusedCharacterGuardTests(unittest.TestCase):
     still goes through Hammerspace rather than into the shared donor block."""
 
     def test_dir_index_from_export_folder_name(self):
-        with mock.patch.object(start, 'SEARCH_DIR', '/x/2_Output_Models'):
+        with mock.patch.object(start, 'SEARCH_DIR', '/x/2_Output_Assets'):
             self.assertEqual(
                 start._unused_character_dir_index(
-                    '/x/2_Output_Models/89 Unused Yoshi A/'
+                    '/x/2_Output_Assets/89 Unused Yoshi A/'
                     '715046144_yoshi.gpl/715046144_yoshi.gpl.sluggie'
                 ),
                 89,
             )
 
     def test_dir_index_non_digit_folder_returns_none(self):
-        with mock.patch.object(start, 'SEARCH_DIR', '/x/2_Output_Models'):
+        with mock.patch.object(start, 'SEARCH_DIR', '/x/2_Output_Assets'):
             self.assertIsNone(
-                start._unused_character_dir_index('/x/2_Output_Models/model/model.sluggie')
+                start._unused_character_dir_index('/x/2_Output_Assets/model/model.sluggie')
             )
 
     def test_dir_index_path_outside_search_dir_returns_none(self):
-        with mock.patch.object(start, 'SEARCH_DIR', '/x/2_Output_Models'):
+        with mock.patch.object(start, 'SEARCH_DIR', '/x/2_Output_Assets'):
             self.assertIsNone(
                 start._unused_character_dir_index('/elsewhere/89 Unused Yoshi A/model.sluggie')
             )
@@ -610,10 +610,10 @@ class NeedsHammerspaceTests(unittest.TestCase):
     """Files without UseHammerspace still go to Hammerspace when they carry
     edits the in-place patcher cannot apply."""
 
-    PATH = '/x/2_Output_Models/18 Mario/m.gpl/m.gpl.sluggie'
+    PATH = '/x/2_Output_Assets/18 Mario/m.gpl/m.gpl.sluggie'
 
     def needs(self, model):
-        with mock.patch.object(start, 'SEARCH_DIR', '/x/2_Output_Models'):
+        with mock.patch.object(start, 'SEARCH_DIR', '/x/2_Output_Assets'):
             return start._needs_hammerspace(model, self.PATH)
 
     def test_flag_decides_for_a_plain_file(self):

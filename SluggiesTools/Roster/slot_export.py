@@ -1,8 +1,8 @@
-"""``start.py --export-slot 0xNN``: export a character slot as the game holds it into ``2_Output_Models``.
+"""``start.py --export-slot 0xNN``: export a character slot as the game holds it into ``2_Output_Assets``.
 
 The GUI's "Export as .sluggie" (character grid, right-click menu). Writes a folder that looks like a regular
 model export -- the High and Low model, the bats and gloves (each with its ``.glb`` next to the ``.sluggie``),
-the ``anm`` files and the portraits the slot shows (``icon/``) -- under ``2_Output_Models/Custom <name> <NN>``; ``NN`` counts up from 01 past the folders and file
+the ``anm`` files and the portraits the slot shows (``icon/``) -- under ``2_Output_Assets/Custom <name> <NN>``; ``NN`` counts up from 01 past the folders and file
 names already there.
 
 Each model is the slot's **current** block (``3_Output_Dat``), read with the regular export reader as if it lay
@@ -18,7 +18,7 @@ records where it came from (informational only).
 Folders are named as in a regular export (``78277664_mario.gpl``, the High/Low partner and bundled-gear lookups
 ``slot_plan._partner`` / ``gear.find_gear`` pair them by name); the ``.sluggie`` files get the folder's character
 name and number behind the geo stem (``Custom Fire Mario 01`` -> ``78277664_mario_FireMario01.gpl.sluggie``), so
-a bare file name stays unique in ``2_Output_Models``.
+a bare file name stays unique in ``2_Output_Assets``.
 
 Reads the game files only; writes nothing but the new folder.
 """
@@ -55,7 +55,7 @@ except ImportError:
 
 SOURCE = 'roster.slot_export'
 ROOT = os.path.normpath(os.path.join(_TOOLS_DIR, '..'))
-MODELS_DIR = os.path.join(ROOT, '2_Output_Models')
+MODELS_DIR = os.path.join(ROOT, '2_Output_Assets')
 RESULT_FILE = 'slot_export.json'           # in _gui: what the last export wrote, or why it failed (the GUI reads it)
 FOLDER_PREFIX = 'Custom '
 DONOR_KEY = 'DonorEntry'                   # HammerspaceMain.DONOR_ENTRY_KEY
@@ -103,7 +103,7 @@ def sluggie_name(model_name: str, export_tag: str) -> str:
 
 def pick_number(character: str, model_names: list[str], taken_names: set[str], exists) -> int:
     """The lowest ``NN`` (from 01) whose folder ``exists(folder)`` says is free and whose ``.sluggie`` names are
-    not in ``taken_names`` (every file name under ``2_Output_Models``, case-folded)."""
+    not in ``taken_names`` (every file name under ``2_Output_Assets``, case-folded)."""
     for number in range(1, MAX_NUMBER + 1):
         if exists(folder_name(character, number)):
             continue

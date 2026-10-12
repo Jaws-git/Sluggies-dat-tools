@@ -33,7 +33,7 @@ except ImportError:  # pragma: no cover - SluggiesTools not on sys.path yet
 #: Matches the export's untangle ``max_attempts``.
 MAX_ATTEMPTS = 8192
 _BITS_PER_PIXEL = {0: 4, 1: 8, 2: 8, 3: 16, 4: 16, 5: 16, 6: 32, 8: 4, 9: 8, 10: 16, 14: 4}
-_MODELS_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', '2_Output_Models'))
+_MODELS_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', '2_Output_Assets'))
 
 
 def _helper():

@@ -311,15 +311,15 @@ def build(original, channels, loop):
     return out
 
 
-def encode_wav(path, original):
+def encode_wav(path, original, gain_db=0.0):
     """A WAV file (or any sound file ffmpeg decodes) -> ``(brstm bytes, notes)`` replacing the stock stream
-    ``original`` (its bytes).
+    ``original`` (its bytes), its level changed by ``gain_db`` decibels (``clips.apply_gain``).
 
     Loop: the WAV's ``smpl`` loop when it has one; else the whole track loops when the stock stream loops."""
     from Sound import clips
     info = brstm.info(original)
     rate, x, wav_loop = clips.read_wav_frames(path)
-    notes = []
+    x, notes = clips.apply_gain(x, gain_db)
     x, note = fit_channels(x, info.channels)
     if note:
         notes.append(note)

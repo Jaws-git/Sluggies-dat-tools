@@ -88,6 +88,14 @@ file 5, a glove only its own hand, ``gear.target_file``). It is one targeted pat
 vanilla bats and gloves other characters share stay as they are. A model patch into a new ID also stages the
 gear that belongs to the model (``gear.find_gear``, edits with ``origin`` ``bundled``).
 
+Animations (``plan_anim``, op ``anim``): one animation bank (files 6-14) of a slot takes an ``.anm`` file (the
+Blender add-on's export) as a whole: every animation of the bank is replaced at once. The file's sequence count names
+the bank (``anim.bank_file``); the bank must fit the slot's skeleton (``anim.problems``: the vanilla High model of the
+directory the slot's files come from, plus the High model it loads now when that is the same directory). It is one
+targeted write of that route only (``--write-slot-animation``): recolours and unused characters that share the bank
+keep theirs. A new ID without an own model directory gets one first, as for equipment. A bank equal to the vanilla
+one returns the route to its baseline; a clear resets every bank.
+
 Stat edits (``plan_stat_edits``): an edit file the Sluggers Stat Editor sent back from Bridge Mode
 (``StatEditor/apply.py``). It belongs to no slot (its ``id`` is ``GAME_WIDE``) and is valid only for the
 ``main.dol`` it was made from, so the chain writes every staged stat edit file in one ``--apply-stat-edits``
@@ -114,10 +122,11 @@ from dataclasses import dataclass, field
 
 try:
     from ..Sound import sound_packs
-    from . import (char_voices, clip_files, gear, icon_art, icon_import, icons, ids, model_icons, names, open_slot,
-                   voices, wheels)
+    from . import (anim, char_voices, clip_files, gear, icon_art, icon_import, icons, ids, model_icons, names,
+                   open_slot, voices, wheels)
 except ImportError:
     from Sound import sound_packs
+    import anim
     import gear
     import icon_art
     import icon_import
@@ -265,6 +274,31 @@ def classify_gear(path: str) -> GearPick:
     return GearPick(chunk, file, path)
 
 
+@dataclass
+class AnimPick:
+    """A picked ``.anm`` file: its bank (``anim.read_bank``) and the file (6-14) it belongs to."""
+    path: str
+    data: bytes
+    bank: anim.Bank
+    file: int
+
+
+def classify_anim(path: str) -> AnimPick:
+    """The picked animation file, read; refuses anything that is not one of the nine animation banks."""
+    path = os.path.abspath(path)
+    name = os.path.basename(path)
+    try:
+        with open(path, 'rb') as f:
+            data = f.read()
+    except OSError as exc:
+        raise PlanError(f'{name} cannot be read: {exc}') from exc
+    try:
+        bank = anim.read_bank(data)
+        return AnimPick(path, data, bank, anim.bank_file(bank))
+    except anim.AnimError as exc:
+        raise PlanError(f'{name}: {exc}') from exc
+
+
 # --------------------------------------------------------------------------
 # File checks (the default reads the game files; tests pass their own)
 # --------------------------------------------------------------------------
@@ -365,6 +399,14 @@ class Env:
         ``directory``'s (``SlotTarget.equipment_block_problems``)."""
         return [], []
 
+    def current_anim(self, char: dict, file: int) -> bytes | None:
+        """The animation bank the slot loads now as file ``file`` (6-14), or None."""
+        return None
+
+    def anim_size_limit(self, file: int) -> int | None:
+        """The largest stock bank of file ``file`` (6-14) on any character (``1_Input``), or None."""
+        return None
+
     def stat_snapshot(self, cid: int) -> dict | None:
         """``cid``'s live stat values (``StatEditor/apply`` copy document without ``target``: ``fields`` {group:
         {name: hex bytes}}, ``chemistry`` {other ID: [row byte, column byte]}), or None when unreadable."""
@@ -397,6 +439,7 @@ class Plan:
     pair: Pair | None = None        # patch: the picked file and its partner
     nothing: bool = False           # clear: the slot is at its baseline already, no commands
     gear: dict | None = None        # equip / equip_clear: {'file', 'label', 'path', 'shared_with', 'origin'}
+    anim: dict | None = None        # anim: {'file', 'label', 'path', 'size', 'stock_size', 'shared_with'}
     # The slot's stat edits that stay on top of a changed stats source or a clear (``Env.stat_edited``); the GUI
     # offers to clear them (a ``stat_reset`` edit)
     stat_edits_kept: str | None = None
@@ -419,6 +462,8 @@ class Plan:
             out['files'] = {'high': self.pair.high, 'low': self.pair.low, 'picked': self.pair.picked}
         if self.gear is not None:
             out['gear'] = dict(self.gear)
+        if self.anim is not None:
+            out['anim'] = dict(self.anim)
         if self.stat_edits_kept is not None:
             out['stat_edits_kept'] = self.stat_edits_kept
         return out
@@ -521,6 +566,11 @@ def plan_patch(st: dict, config: dict, cid: int, pair: Pair, env: Env, state_fil
                 if changed:
                     plan.warnings.append(f'{target_name}: the fresh directory copy also resets its equipment '
                                          f'({", ".join(changed)}); stage the gear again after this patch')
+                banks = custom_anims(char)
+                if banks:
+                    plan.warnings.append(f'{target_name}: the fresh directory copy also resets its custom animation '
+                                         f'bank{"s" if len(banks) != 1 else ""} ({", ".join(map(str, banks))}) to '
+                                         f'{source_name}\'s; replace them again after this patch if they fit')
             else:
                 plan.notes.append(f'{target_name} gets an own model directory: a copy of {source_name}\'s files')
         square = st['squares'][char['square']]
@@ -671,6 +721,14 @@ def plan_clear(st: dict, config: dict, cid: int, state_file: str, env: Env | Non
             names_ = ', '.join(gear.label(f).lower() for f in changed)
             plan.notes.append(f'{target_name}: its {names_} go back to the vanilla ones')
             plan.effects['equipment'] = f'vanilla {names_}'
+        banks = custom_anims(char)
+        for file in banks:
+            plan.commands.append(('--unpatch', '--target-id', _hex(cid), '--target-file', str(file)))
+        if banks:
+            plan.notes.append(f'{target_name}: its animation bank{"s" if len(banks) != 1 else ""} '
+                              f'{", ".join(map(str, banks))} go{"" if len(banks) != 1 else "es"} back to the stock '
+                              f'one{"s" if len(banks) != 1 else ""}')
+            plan.effects['animations'] = 'stock'
     plan.commands.append(('--roster-state',))
     _note_stat_edits(plan, env, cid, target_name, clear=True)
     return plan
@@ -693,6 +751,97 @@ def _own_directory_source(char: dict, entry: dict | None = None) -> int | None:
     return char.get('model_source') if char.get('own_model_dir') else char.get('template')
 
 
+def _ensure_own_directory(plan: Plan, new: dict, char: dict, what: str) -> dict | None:
+    """A new ID's ``ids`` entry in ``new`` (None for a stock ID); one without an own model directory gets one (a
+    copy of its template's files, ``ids[].model.from``), so its ``what`` can differ from the template's."""
+    cid = char['id']
+    if cid < ids.FIRST_NEW:
+        return None
+    entry = _entry(new, 'ids', cid)
+    if entry is None:
+        raise PlanError(f'{_hex(cid)} has no ids entry in the derived config')
+    if not char.get('own_model_dir') and entry.get('model') is None:
+        entry['model'] = {'from': _hex(ids._number(entry['template'], 'template'))}
+        plan.notes.append(f'{_display(char)} gets an own model directory (a copy of its template\'s files), so '
+                          f'its {what} can differ from the template\'s')
+    return entry
+
+
+def _anim_entry(char: dict, file: int) -> dict:
+    return next((e for e in char.get('animations') or [] if e.get('file') == file), {})
+
+
+def custom_anims(char: dict) -> list[int]:
+    """The slot's animation banks that are not at their baseline (``state_cli``'s ``vanilla`` flag)."""
+    return [e['file'] for e in char.get('animations') or [] if e.get('vanilla') is False]
+
+
+def plan_anim(st: dict, config: dict, cid: int, pick: AnimPick, env: Env, state_file: str) -> Plan:
+    """The chain that puts the animation bank ``pick`` into its file (6-14) of slot ``cid`` (module docstring): one
+    targeted write of that route only, after a roster rebuild when a new ID needs an own model directory first. A
+    bank the slot loads already gives a plan with ``nothing`` set; the vanilla bank of a customised file is a reset
+    (``--unpatch --target-file``)."""
+    char = _character(st, cid)
+    new = copy.deepcopy(config)
+    plan = Plan('anim', cid, None)
+    target_name = _display(char)
+    name = os.path.basename(pick.path)
+    file = pick.file
+    what = anim.label(file).lower()
+    plan.anim = {'file': file, 'label': anim.label(file), 'path': pick.path, 'size': len(pick.data),
+                 'count': pick.bank.count, 'shared_with': int(_anim_entry(char, file).get('shared_with') or 0)}
+    entry = _ensure_own_directory(plan, new, char, 'animations')
+    source = _own_directory_source(char, entry)
+    if source is None:
+        raise PlanError(f'{target_name}: its model directory is unknown, so the {what} cannot be checked')
+    directory = source + ids.MODEL_DIR_BASE
+    stock_data = env.vanilla_block(directory, file)
+    if stock_data is None:
+        raise PlanError(f'{target_name}: the vanilla {what} of directory {directory} cannot be read (1_Input)')
+    try:
+        stock = anim.read_bank(stock_data)
+    except anim.AnimError as exc:
+        raise PlanError(f'{target_name}: the vanilla {what} cannot be read: {exc}') from exc
+    plan.anim['stock_size'] = len(stock_data)
+    skeleton = anim.skeleton_tracks(env.vanilla_block(directory, HIGH_FILE))
+    if skeleton is None:
+        raise PlanError(f'{target_name}: the skeleton of directory {directory}\'s High model cannot be read')
+    loaded = _own_directory_source(char) == source         # the slot loads that directory's files already
+    if loaded:
+        skeleton |= anim.skeleton_tracks(env.current_block(char, 'high')) or frozenset()
+    errors, warnings = anim.problems(pick.bank, file, stock, skeleton)
+    if errors:
+        raise PlanError(f'{name} does not fit {target_name}: {errors[0]}')
+    plan.warnings += [f'{target_name}, {what}: {w}' for w in warnings]
+    if loaded and new == config and pick.data == env.current_anim(char, file):
+        plan.nothing = True
+        plan.notes.append(f'nothing to change: {target_name} loads this {what} already')
+        return plan
+    limit = env.anim_size_limit(file)
+    if limit is not None and len(pick.data) > limit:
+        plan.warnings.append(f'{name} ({len(pick.data):,} bytes) is bigger than any stock {what} ({limit:,} bytes): '
+                             'animation banks load into the game heap every scene shares; bigger ones are untested')
+    shared = plan.anim['shared_with']
+    if shared and cid < ids.FIRST_NEW:
+        plan.notes.append(f'the {what} of {target_name} is shared by {shared} other slot{"s" if shared != 1 else ""}: '
+                          'only this slot changes')
+    if new != config:
+        plan.config = new
+        plan.commands.append(('--roster', '--state', state_file))
+    reset = pick.data == stock_data
+    if reset and plan.config is None:
+        plan.commands.append(('--unpatch', '--target-id', _hex(cid), '--target-file', str(file)))
+    elif not reset:
+        plan.commands.append(('--write-slot-animation', _hex(cid), str(file), pick.path))
+    plan.commands.append(('--roster-state',))
+    back = 'its template\'s' if cid >= ids.FIRST_NEW else 'the stock one'
+    plan.notes.insert(0, f'{name} -> {what} of {target_name}'
+                         + (f' ({back}: back to the baseline)' if reset else
+                            f' ({pick.bank.count} animations, all replaced)'))
+    plan.effects['animations'] = {file: f'back to {back}' if reset else f'{what} from {name}'}
+    return plan
+
+
 def plan_equip(st: dict, config: dict, cid: int, pick: GearPick, file: int, env: Env, state_file: str,
                origin: str = 'user') -> Plan:
     """The chain that puts the bat or glove ``pick`` into file ``file`` of slot ``cid`` (module docstring): one
@@ -704,15 +853,7 @@ def plan_equip(st: dict, config: dict, cid: int, pick: GearPick, file: int, env:
     target_name = _display(char)
     name = os.path.basename(pick.path)
     plan.gear = dict(_gear_text(char, file), path=pick.path, origin=origin)
-    entry = None
-    if cid >= ids.FIRST_NEW:
-        entry = _entry(new, 'ids', cid)
-        if entry is None:
-            raise PlanError(f'{_hex(cid)} has no ids entry in the derived config')
-        if not char.get('own_model_dir') and entry.get('model') is None:
-            entry['model'] = {'from': _hex(ids._number(entry['template'], 'template'))}
-            plan.notes.append(f'{target_name} gets an own model directory (a copy of its template\'s files), so '
-                              'its equipment can differ from the template\'s')
+    entry = _ensure_own_directory(plan, new, char, 'equipment')
     source_dir = _own_directory_source(char, entry)
     if source_dir is None:
         raise PlanError(f'{target_name}: its model directory is unknown, so its {gear.label(file).lower()} '
@@ -1367,6 +1508,9 @@ def plan_copy(st: dict, config: dict, base_config: dict, cid: int, source: int, 
         if role in writes:
             slot_commands.append(('--write-slot-equipment', _hex(cid), str(f),
                                   stash(f'{tag}_{BLOCK_SUFFIX[role]}.bin', writes[role])))
+    if custom_anims(src):
+        plan.notes.append(f'{source_name}\'s custom animation banks are not copied: {target_name} '
+                          + ('gets the stock ones of the copied files' if fresh else 'keeps its own'))
     model_changed = fresh or any(r in writes for r in MODEL_ROLES)
     plan.effects['model'] = f'{source_name}\'s models' if model_changed else 'unchanged (the same models already)'
     gear_changed = [f for f in gear.FILES if gear.ROLES[f] in writes] + gear_unpatches
@@ -1528,15 +1672,17 @@ def plan_stat_reset(st: dict, cid: int, env: Env, after_files: bool = False) -> 
     return plan
 
 
-SLOT_WRITES = ('--patch', '--unpatch', '--write-slot-blocks', '--write-slot-equipment')   # step 4 of a batch
+SLOT_WRITES = ('--patch', '--unpatch', '--write-slot-blocks', '--write-slot-equipment',  # step 4 of a batch
+               '--write-slot-animation')
 MODEL_OPS = ('patch', 'clear', 'copy')               # copy: the slot becomes a clone of ``source`` (paste)
 CHAR_VOICE = 'char_voice'                             # the slot's own voice (``character_voices``)
 SPECIES_CLIP = 'species_clip'                         # one moment of a stock voice (``species_clips``); per moment
 SPECIES_CLIPS = 'species_clips'                       # its effects key
 VALUE_OPS = ('voice', 'stats', CHAR_VOICE)            # the last one per slot (voice: per square) wins
 EQUIP_OPS = ('equip', 'equip_clear')                  # the last one per slot file wins
+ANIM = 'anim'                                         # one animation bank (files 6-14); the last one per bank wins
 STAT_RESET = 'stat_reset'                             # one per slot; written with the stat edit files, in order
-SLOT_OPS = MODEL_OPS + ('rename',) + VALUE_OPS + ('icon',) + EQUIP_OPS + (STAT_RESET, SPECIES_CLIP)
+SLOT_OPS = MODEL_OPS + ('rename',) + VALUE_OPS + ('icon',) + EQUIP_OPS + (ANIM, STAT_RESET, SPECIES_CLIP)
 COPY = 'copy'
 STAT_EDITS = 'stat_edits'                             # not a slot edit: every one is written, in staging order
 GAME_WIDE = 0xFF                                      # the "id" of a stat edit: no character has it
@@ -1569,6 +1715,8 @@ class Edit:
     no_gear: bool = False           # patch into a new ID: do not take the model's bats and gloves along
     pack: str | None = None         # char_voice: a custom voice pack's name (its clips on top of the voice)
     moment: str | None = None       # species_clip: the voice moment (``file``: the clip; None: the stock clip back)
+    bank: int | None = None         # anim: the animation bank (6-14) the ``.anm`` in ``file`` goes to (``merge_edits``)
+    anim: AnimPick | None = None    # anim: the read ``.anm`` (``merge_edits``)
 
     def to_json(self) -> dict:
         out = {'op': self.op, 'id': _hex(self.cid)}
@@ -1578,6 +1726,11 @@ class Edit:
             if self.op == 'equip':
                 out['sluggie'] = self.file
                 out['origin'] = self.origin or 'user'
+            return out
+        if self.op == ANIM:
+            out['anm'] = self.file
+            if self.bank is not None:
+                out['file'] = self.bank
             return out
         if self.op == SPECIES_CLIP:
             out.update(moment=self.moment, file=self.file)
@@ -1639,6 +1792,14 @@ def parse_edits(data) -> list[Edit]:
                 raise PlanError(f'edit {n}: an equip_clear edit needs a "file" (2 bat, 3 left glove, 4 right '
                                 'glove, 5 extra bat)')
             edits.append(edit)
+            continue
+        if item['op'] == ANIM:
+            if not isinstance(item.get('anm'), str) or not item['anm']:
+                raise PlanError(f'edit {n}: an anim edit needs an "anm" (the animation file)')
+            bank = item.get('file')
+            if bank is not None and bank not in anim.FILES:
+                raise PlanError(f'edit {n}: "file" must be an animation bank (6-14), not {bank!r}')
+            edits.append(Edit(ANIM, cid, item['anm'], checked=bool(item.get('checked')), index=n, bank=bank))
             continue
         edit = Edit(item['op'], cid, item.get('file'), item.get('low'), item.get('text'), bool(item.get('checked')), n)
         edit.no_gear = item.get('gear') is False
@@ -1742,7 +1903,7 @@ def _bundled_gear(edit: Edit, merged: list[Edit], notes: list[str], find_gear_fn
 
 
 def merge_edits(edits: list[Edit], classify_fn=None, load_icon_fn=None, classify_gear_fn=None,
-                find_gear_fn=None) -> tuple[list[Edit], list[str], list[tuple[Edit, str]]]:
+                find_gear_fn=None, classify_anim_fn=None) -> tuple[list[Edit], list[str], list[tuple[Edit, str]]]:
     """``(merged, notes, refused)``: the edits in staging order after the slot rules:
 
     * at most one model edit (patch / clear / copy) per slot: a later one replaces an earlier one;
@@ -1756,11 +1917,14 @@ def merge_edits(edits: list[Edit], classify_fn=None, load_icon_fn=None, classify
     * equipment: the last edit per slot file wins (an ``equip_clear`` replaces an ``equip`` and the reverse);
       a clear of the slot drops its earlier equipment edits (it resets the equipment); a model patch into a new ID
       replaces the gear an earlier patch brought along (``bundled`` edits) and stages its own behind it, never over
-      a ``user`` edit of the same file."""
+      a ``user`` edit of the same file;
+    * animations: the last edit per slot and bank wins; a clear of the slot drops its earlier ones (it resets the
+      banks; a patch that copies a new ID's directory afresh does too, in ``plan_batch``)."""
     classify_fn = classify_fn or classify
     load_icon_fn = load_icon_fn or load_icon
     classify_gear_fn = classify_gear_fn or classify_gear
     find_gear_fn = find_gear_fn or gear.find_gear
+    classify_anim_fn = classify_anim_fn or classify_anim
     merged: list[Edit] = []
     notes: list[str] = []
     refused: list[tuple[Edit, str]] = []
@@ -1810,6 +1974,24 @@ def merge_edits(edits: list[Edit], classify_fn=None, load_icon_fn=None, classify
                 merged.remove(same)
                 notes.append(f'{_hex(edit.cid)}: the pending {gear.label(edit.gear_file).lower()} edit is replaced '
                              'by the later one')
+            merged.append(edit)
+            continue
+        if edit.op == ANIM:
+            try:
+                edit.anim = edit.anim or classify_anim_fn(edit.file)
+            except PlanError as exc:
+                refused.append((edit, str(exc)))
+                continue
+            if edit.bank is not None and edit.bank != edit.anim.file:
+                refused.append((edit, f'{os.path.basename(edit.file)} is animation bank {edit.anim.file}, not '
+                                      f'{edit.bank}'))
+                continue
+            edit.bank = edit.anim.file
+            same = next((e for e in merged if e.cid == edit.cid and e.op == ANIM and e.bank == edit.bank), None)
+            if same is not None:
+                merged.remove(same)
+                notes.append(f'{_hex(edit.cid)}: the pending animation bank {edit.bank} edit is replaced by the later '
+                             'one')
             merged.append(edit)
             continue
         if edit.op == 'icon':
@@ -1864,6 +2046,10 @@ def merge_edits(edits: list[Edit], classify_fn=None, load_icon_fn=None, classify
                 merged.remove(old)
                 notes.append(f'{_hex(edit.cid)}: the pending {gear.label(old.gear_file).lower()} edit is dropped: '
                              'the later clear resets the equipment')
+            for old in [e for e in merged if e.cid == edit.cid and e.op == ANIM]:
+                merged.remove(old)
+                notes.append(f'{_hex(edit.cid)}: the pending animation bank {old.bank} edit is dropped: the later '
+                             'clear resets the animations')
             for rename in [e for e in merged if e.cid == edit.cid and e.op == 'rename']:
                 merged.remove(rename)
                 notes.append(f'{_hex(edit.cid)}: the rename to "{rename.text}" is dropped: the later clear resets '
@@ -1920,7 +2106,7 @@ class Batch:
 
 def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: str,
                names_text: dict | None = None, skip_checked: bool = False, classify_fn=None,
-               load_icon_fn=None, classify_gear_fn=None, find_gear_fn=None) -> Batch:
+               load_icon_fn=None, classify_gear_fn=None, find_gear_fn=None, classify_anim_fn=None) -> Batch:
     """One chain for every edit: each edit is planned on the config the previous one left
     (``plan_patch`` / ``plan_clear``), then the chain is
 
@@ -1930,12 +2116,13 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
        the rebuild carries them over);
     3. one ``--roster --state`` when the merged config differs from the derived one;
     3b. one ``--apply-stat-edits`` with the pastes' stat values (``copy:`` items), after the rebuild;
-    4. each slot's ``--patch`` / ``--unpatch`` / ``--write-slot-blocks`` / ``--write-slot-equipment``, in staging
-       order;
+    4. each slot's ``--patch`` / ``--unpatch`` / ``--write-slot-blocks`` / ``--write-slot-equipment`` /
+       ``--write-slot-animation``, in staging order;
     5. one ``--roster-state``.
 
     Any refused edit refuses the whole batch: no commands, no config (``refused`` names them all)."""
-    merged, notes, refused = merge_edits(edits, classify_fn, load_icon_fn, classify_gear_fn, find_gear_fn)
+    merged, notes, refused = merge_edits(edits, classify_fn, load_icon_fn, classify_gear_fn, find_gear_fn,
+                                         classify_anim_fn)
     batch = Batch(None, notes=notes, refused=refused)
     current = config
     portraits_touched = set()                       # slots whose portraits an earlier edit of the batch changed
@@ -1951,6 +2138,8 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
                                   edit.origin or 'user')
             elif edit.op == 'equip_clear':
                 plan = plan_equip_clear(st, current, edit.cid, edit.gear_file, env, state_file)
+            elif edit.op == ANIM:
+                plan = plan_anim(st, current, edit.cid, edit.anim, env, state_file)
             elif edit.op == 'rename':
                 plan = plan_rename(st, current, edit.cid, edit.text, state_file)
             elif edit.op == 'stats':
@@ -1985,6 +2174,11 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
             for earlier in [(e, p) for e, p in batch.plans if e.op == 'stats' and e.cid == edit.cid]:
                 batch.plans.remove(earlier)
                 batch.notes.append(f'{_hex(edit.cid)}: the stats edit is dropped: the later patch sets the stats')
+        if edit.op == 'patch' and 'fresh copy' in str(plan.effects.get('model')):   # the copy resets the banks
+            for earlier in [(e, p) for e, p in batch.plans if e.op == ANIM and e.cid == edit.cid]:
+                batch.plans.remove(earlier)
+                batch.notes.append(f'{_hex(edit.cid)}: the animation bank {earlier[0].bank} edit is dropped: the later '
+                                   'patch copies the model directory afresh')
         if edit.op == 'patch' and 'portraits' in plan.effects:     # its model's portraits replace both views
             for earlier in [(e, p) for e, p in batch.plans if e.op == 'icon' and e.cid == edit.cid]:
                 batch.plans.remove(earlier)

@@ -75,7 +75,7 @@ Once a roster is built, a slot (one character ID) can take an exported model
 without editing a configuration:
 
 ```
-python start.py --patch-slot 0xE2 "2_Output_Models/27 Bowser/114968608_koopa.gpl/114968608_koopa.gpl.sluggie"
+python start.py --patch-slot 0xE2 "2_Output_Assets/27 Bowser/114968608_koopa.gpl/114968608_koopa.gpl.sluggie"
 python start.py --clear-slot 0xE2
 ```
 
@@ -159,7 +159,7 @@ python start.py --set-char-voice 0x8F -
 
 The slot then speaks with that family's voice on the select screen and on
 the field, while the other members of its square keep theirs. A **voice
-pack** (a folder in `Sound_Packs/`, made on the GUI's Sounds tab from your own
+pack** (a folder in `Sound_Packs/`, made on the GUI's Voices tab from your own
 WAV files) can go on top of a stock voice, so a custom character gets its own
 clips:
 
@@ -247,7 +247,7 @@ Original, Modified or Empty, with **Select...** (pick an exported bat or glove
 `.sluggie`) and **Reset**. From the command line:
 
 ```
-python start.py --patch-slot 0x0D "2_Output_Models/22 Peach/94021600/94021632_bat.gpl/94021632_bat.gpl.sluggie"
+python start.py --patch-slot 0x0D "2_Output_Assets/22 Peach/94021600/94021632_bat.gpl/94021632_bat.gpl.sluggie"
 python start.py --patch-slot 0x0D "<peach bat>.sluggie" --equipment 5
 python start.py --clear-slot 0x0D --equipment bat
 python start.py --clear-slot 0x0D --equipment all
@@ -263,7 +263,7 @@ python start.py --clear-slot 0x0D --equipment all
 - `--equipment N|all` on `--clear-slot` resets just those files; a plain
   `--clear-slot` resets the models and every changed bat and glove.
 - A model patched into a **new ID** takes the bats and gloves found in its
-  character folder (`2_Output_Models/<ID> <name>/`) along. Files that are not
+  character folder (`2_Output_Assets/<ID> <name>/`) along. Files that are not
   found stay as the slot had them; two candidates for one file refuse the
   patch. Gear you picked yourself for the same file wins. `--no-gear` turns
   this off.
@@ -320,7 +320,7 @@ now** as a model export you can edit in Blender and patch into other slots:
 python start.py --export-slot 0x00
 ```
 
-- **Where:** a new folder `2_Output_Models/Custom <name> NN`, laid out like a
+- **Where:** a new folder `2_Output_Assets/Custom <name> NN`, laid out like a
   regular export: the High and Low model, the bats and gloves, the `anm`
   files, and the portraits the slot shows (`icon/` in the High model's
   folder). `NN` starts at `01` and counts up when that folder or one of its
@@ -328,7 +328,7 @@ python start.py --export-slot 0x00
 - **Names:** the folders keep the base model's names (`78277664_mario.gpl`);
   the `.sluggie` files get the folder's name and number behind the geo name
   (`78277664_mario_FireMario01.gpl.sluggie`), so each file name is unique in
-  `2_Output_Models` and can be patched by name.
+  `2_Output_Assets` and can be patched by name.
 - **Base model:** each file counts as the vanilla file its slot started
   from: a stock character's own, or a new ID's model source. So the export
   goes into any slot that model fits, like a regular export of it (a stock
@@ -352,7 +352,7 @@ edit's `text` may be blank; a `voice` or `stats` edit's `source` may be
 an `equip_clear` edit has `file`):
 
 ```
-{"edits": [{"op": "patch", "id": "0xE2", "file": "2_Output_Models/27 Bowser/114968608_koopa.gpl/114968608_koopa.gpl.sluggie"},
+{"edits": [{"op": "patch", "id": "0xE2", "file": "2_Output_Assets/27 Bowser/114968608_koopa.gpl/114968608_koopa.gpl.sluggie"},
            {"op": "clear", "id": "0x1D"},
            {"op": "rename", "id": "0x0D", "text": "Little Toad"},
            {"op": "voice", "id": "0x0D", "source": "0x09"},
@@ -376,7 +376,7 @@ refused edits.
 In the GUI, the **Character grid** tab does the same: click a square, then a
 slot, and use **Rename...** (or click the slot's name), **Select .sluggie...**,
 **Clear slot**, **Adopt stats...** or **Voice...** (the slot's own voice: a stock
-character's voice or a voice pack from the Sounds tab, whatever its square
+character's voice or a voice pack from the Voices tab, whatever its square
 speaks with; the slot view shows the voice in force, "(square)" or "(own)").
 The square view has **Set voice (all)...** for the whole square (a one-member
 square shows it on the slot view too). Clicking the slot view's front
@@ -553,7 +553,7 @@ A list of `{"id": …, "icon": …}`; `icon` as for `ids` (no `like`: the
 character keeps its own icon records, which are only pointed at the new art).
 
 ```json
-"stock_icons": [{"id": "0x01", "icon": {"model": "2_Output_Models/19 Luigi/82188352_luigi.gpl"}}]
+"stock_icons": [{"id": "0x01", "icon": {"model": "2_Output_Assets/19 Luigi/82188352_luigi.gpl"}}]
 ```
 
 The unused characters (`0x47`–`0x4C`) take their icon on their `wheels`
@@ -648,9 +648,9 @@ square are hidden and skipped by the pointer and the D-pad.
 - A custom clip adds its own size (about 18 KB per second of audio) to the
   same bank; a voice pack's clips are added once per species that uses it.
 
-## Sounds tab: voice packs
+## Voices tab: voice packs
 
-The GUI's **Sounds** tab lists the game's voice packs (one per stock voice: its
+The GUI's **Voices** tab lists the game's voice packs (one per stock voice: its
 12 moments, with Play) and your custom packs (`Sound_Packs/<name>/`, one folder
 per pack with the encoded clips and a copy of each prepared WAV).
 
@@ -671,6 +671,29 @@ per pack with the encoded clips and a copy of each prepared WAV).
 Roster packs (`.sluggiesroster`, format 3) carry the custom clips, so a saved
 roster plays the same voices anywhere; loading one shows "own voice clips" and
 "voice pack clips" among the differing fields.
+
+## Sound FX tab
+
+The GUI's **Sound FX** tab lists the game's 345 sound effects: the wave sounds
+of the sound archive outside the voice banks (bat and ball, menus, stadiums,
+minigames, Challenge mode). Each row shows the sound's ID, name, archive group,
+length and format, with **Play**, **Replace...** and **Reset**; the
+filter box narrows the list by name or group. Replaced sounds show blue.
+
+- **Replace...** picks a WAV (or MP3, OGG, FLAC, ... with ffmpeg) and encodes
+  it in the stock sound's shape: its channels (mono or stereo), its rate, its
+  loop (a WAV `smpl` loop is kept; else a looping sound loops from the start).
+  The result is kept in `Sound_FX/` (one `.rwav` per sound plus
+  `effects.json`) and written into `3_Output_Dat/sound_NA/MY2.brsar` at once;
+  **Patch Game & copy files** copies it into the game, and every **Patch Game**
+  run puts the replacements back into the archive it rebuilds.
+- **Reset** removes the replacement and puts the stock sound back.
+- **Play stock** (replaced rows) plays the original for comparison.
+- A sound's archive group loads into the game's sound memory whole, so keep a
+  replacement near the stock length; the status line notes a wave more than
+  twice the stock size. Sounds are cut at 30 s.
+- The 119 sequence sounds (for example the bat hits `bb_hit_m`) play
+  instrument banks rather than one recording and are not listed.
 
 ## Music tab
 

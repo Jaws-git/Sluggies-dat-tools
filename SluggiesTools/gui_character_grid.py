@@ -21,9 +21,11 @@ re-read.
 
 Edits are staged. The slot level's **Rename...** (a text box
 with a live "fits the name plate" line), **Select .sluggie...**, **Clear
-slot** and **Stats...**, and the square level's **Voice...** (on the slot
-level too for one-member squares; both pick from a list) and the Equipment row's tiles (Bat, Left glove, Right glove, Extra bat;
-each has **Select...** for a bat/glove ``.sluggie`` and **Reset**) run a staging check (``start.py --apply-slots edits.json
+slot**, **Stats...** and **Voice...**, and the square level's **Set voice (all)...** (colour
+wheels only; both pick from a list) and the Equipment row's tiles (Bat, Left glove, Right glove, Extra bat;
+each has **Select...** for a bat/glove ``.sluggie`` and **Reset**) and **Replace animation...** (below Adopt stats...:
+an ``.anm`` bank, e.g. the Blender add-on's export; the whole bank is replaced) run a staging check
+(``start.py --apply-slots edits.json
 --dry-run``: the pending edits plus the new one, the new edit's build check),
 then a confirm dialog with what the edit does (``gui_grid.slot_dialog``); Stage
 adds it to the pending list (``gui_grid.PendingEdits``, GUI memory only).
@@ -68,7 +70,7 @@ that makes the clicked slot a clone of it as the game holds it
 (``slot_plan.plan_copy``), with the usual staging check and confirm dialog.
 **Export as .sluggie** (below them) runs ``start.py --export-slot`` right
 away (it only reads the game): the slot as the game holds it becomes a
-``2_Output_Models/Custom <name> NN`` folder of ``.sluggie`` + ``.glb``
+``2_Output_Assets/Custom <name> NN`` folder of ``.sluggie`` + ``.glb``
 files (``Roster/slot_export.py``);
 pending edits of the slot are not in it (asks first).
 One shared popup window and one shared right-click handler serve every
@@ -113,15 +115,17 @@ EQUIP_BUTTON_W = 76
 BADGE_FONT = 9                   # the grid's slot-count number, in portrait pixels (scaled with the texture)
 RENAME, SELECT, CLEAR, DISCARD = 'Rename...', 'Select .sluggie...', 'Clear slot', 'Discard pending'
 STATS, VOICE = 'Adopt stats...', 'Voice...'
+ANIM = 'Replace animation...'       # on the row below, under Adopt stats...
+ANIM_DIR_SETTING = 'grid_last_anim_dir'   # the GUI settings key: the folder the last .anm came from
 VOICE_ALL = 'Set voice (all)...'    # the square level (colour wheel): the voice reaches every member
-SLOT_BUTTONS = (RENAME, STATS, VOICE, CLEAR)     # Discard pending sits on a row below, under Clear slot
+SLOT_BUTTONS = (RENAME, STATS, VOICE, CLEAR)     # the row below: Replace animation..., Discard pending
 EQUIP_PAIR_W = 2 * EQUIP_BUTTON_W - 8 + 4   # a tile's Select... + Reset buttons and the gap between them
 SLOT_BUTTON_W = EQUIP_PAIR_W      # the bottom row's buttons match that, so they align under the tiles
 SELECT_W = (SLOT_W - 2 * PAD) // 3  # Select .sluggie... above the Equipment row
 VOICE_TIP = ('Stage another voice for this square (a stock square: its whole species; a new square: its members '
              'without a wheel). "Patch Game" writes the pending edits.')
 CHAR_VOICE_TIP = ('Stage a voice of this slot\'s own: another stock character\'s voice or a custom voice pack '
-                  '(Sounds tab), whatever its square speaks with. Its clips go into the slot\'s voice bank in the '
+                  '(Voices tab), whatever its square speaks with. Its clips go into the slot\'s voice bank in the '
                   'sound archive (needs 1_Input/sound_NA/MY2.brsar). "Patch Game" writes the pending edits.')
 FONT_REL = os.path.join('SluggiesTools', 'Roster', 'fonts', 'OpenSans.ttf')   # the name plate's font
 CONFIRM_W = 680
@@ -165,7 +169,7 @@ class CharacterGridTab:
         self.reference = None              # gui_grid.Reference: the pack last saved / loaded (session only)
         self.copied = None                 # the character Copy earmarked (session only), or None
         self._menu_targets = {}            # portrait button -> the square's members, for the right-click menu
-        self.on_pending_changed = []       # callbacks other tabs register (the Sounds tab shows pending clips)
+        self.on_pending_changed = []       # callbacks other tabs register (the Voices tab shows pending clips)
         self.on_state_read = []            # callbacks run after every successful read
 
     # ------------------------------------------------------------------ build
@@ -313,6 +317,13 @@ class CharacterGridTab:
                              default_path=self.app.models_dir if os.path.isdir(self.app.models_dir)
                              else self.app.root_dir):
             dpg.add_file_extension('Images{' + ','.join(gui_grid.IMAGE_EXTENSIONS) + '}', color=(120, 220, 120, 255))
+            dpg.add_file_extension('.*')
+        with dpg.file_dialog(directory_selector=False, show=False, modal=True, tag='grid_anim_dialog',
+                             width=760, height=460, callback=self._on_anim_chosen,
+                             cancel_callback=lambda *_: self._end_action(),
+                             default_path=self.app.models_dir if os.path.isdir(self.app.models_dir)
+                             else self.app.root_dir):
+            dpg.add_file_extension('.anm', color=(120, 220, 120, 255))
             dpg.add_file_extension('.*')
         dpg.add_texture_registry(tag='grid_dialog_textures')    # the icon dialog's; released when it closes
         pack_dir =self.pack_dir if os.path.isdir(self.pack_dir) else self.app.root_dir
@@ -808,7 +819,7 @@ class CharacterGridTab:
         return box
 
     def _voice_button(self, index, width=0, label=VOICE):
-        """The square's Voice... button (square level; slot level of a one-member square)."""
+        """The square's Set voice (all)... button (square level, colour wheels only)."""
         usable = self.pending.pack is None
         button = dpg.add_button(label=label, width=width, height=BUTTON_H, callback=lambda: self._on_value('voice', index),
                                 enabled=not self._locked() and usable)
@@ -884,10 +895,13 @@ class CharacterGridTab:
                 STATS: "Stage another stock player's stats for this slot (stats, pitching, fielding, chemistry; its "
                        'model, size, voice and name stay). "Patch Game" writes the pending edits.',
                 VOICE: CHAR_VOICE_TIP,
+                ANIM: 'Stage an animation bank (.anm, e.g. exported from Blender) for this slot: every animation of '
+                      'that bank is replaced at once. It must fit the slot\'s skeleton (checked); the stock .anm '
+                      'puts the bank back. "Patch Game" writes the pending edits.',
                 DISCARD: "Drop this slot's pending edits (nothing was written for them yet)."}
         actions = {RENAME: lambda: self._on_rename(cid), CLEAR: lambda: self._start_preview(cid, None),
                    STATS: lambda: self._on_value('stats', cid), VOICE: lambda: self._on_value(gui_grid.CHAR_VOICE, cid),
-                   DISCARD: lambda: self._on_discard(cid)}
+                   ANIM: lambda: self._on_anim(cid), DISCARD: lambda: self._on_discard(cid)}
         def slot_button(label, theme='primary_theme'):
             # a staged pack load replaces the roster: slot edits wait until it is written or discarded
             usable = self.pending.has(cid) if label == DISCARD else self.pending.pack is None
@@ -904,13 +918,10 @@ class CharacterGridTab:
         with dpg.group(horizontal=True, horizontal_spacing=GAP, parent=box):
             for label in SLOT_BUTTONS:       # Voice...: the slot's own voice (a stock voice or a voice pack)
                 slot_button(label, 'grid_warn_theme' if label == CLEAR else 'primary_theme')
-        voice_x = SLOT_BUTTONS.index(VOICE) * (SLOT_BUTTON_W + GAP)
-        clear_x = SLOT_BUTTONS.index(CLEAR) * (SLOT_BUTTON_W + GAP)
-        with dpg.group(horizontal=True, horizontal_spacing=GAP, parent=box, indent=voice_x):
-            if self.nav.skipped:             # one-member square: the square's Voice (all)... shows here too
-                self._voice_button(self.nav.square_index(), width=SLOT_BUTTON_W, label=VOICE_ALL)
-            else:
-                dpg.add_spacer(width=SLOT_BUTTON_W)
+        stats_x = SLOT_BUTTONS.index(STATS) * (SLOT_BUTTON_W + GAP)
+        with dpg.group(horizontal=True, horizontal_spacing=GAP, parent=box, indent=stats_x):
+            slot_button(ANIM)                # under Adopt stats...
+            dpg.add_spacer(width=SLOT_BUTTON_W)   # Set voice (all)... is a colour-wheel (square level) button only
             slot_button(DISCARD, 'grid_warn_theme')
         dpg.add_text(BUSY_TEXT if self.app.busy else '', parent=box, tag='grid_slot_busy', color=_WARN)
         return box
@@ -1021,6 +1032,39 @@ class CharacterGridTab:
             return
         self.action = None
         self._start_preview(cid, path, equip=None if equip is None else (equip, path))
+
+    # ------------------------------------------------------------------ animations
+    def _on_anim(self, cid):
+        """Replace animation...: pick an .anm bank; the staging check finds its bank (6-14) and checks it."""
+        if self._locked() or self.pending.pack is not None:
+            return
+        self.action = (cid, gui_grid.ANIM)
+        self.set_busy(False)
+        start = next((d for d in (self.app.settings.get(ANIM_DIR_SETTING), self.app.models_dir)
+                      if d and os.path.isdir(d)), self.app.root_dir)
+        dpg.configure_item('grid_anim_dialog', default_path=start)
+        if not self.app.pick_files('grid_anim_dialog', 'Select an animation bank (.anm) for this slot',
+                                   gui_grid.ANIM_FILTERS, self._on_anim_paths, on_cancel=self._end_action,
+                                   initial_dir=start):
+            self._end_action()
+
+    def _on_anim_chosen(self, _sender, app_data):
+        app_data = app_data or {}
+        self._on_anim_paths(list(app_data.get('selections', {}).values()) or [app_data.get('file_path_name')])
+
+    def _on_anim_paths(self, paths):
+        cid = self.action[0] if isinstance(self.action, tuple) and self.action[1:] == (gui_grid.ANIM,) else None
+        path = next((p for p in paths if p and os.path.isfile(p)), None)
+        if cid is None or path is None:
+            self.app.log_line(f'[character grid] no animation file chosen: {paths[0] if paths else "(none)"}', _WARN)
+            self._end_action()
+            return
+        self.action = None
+        try:
+            self.app.settings.set(ANIM_DIR_SETTING, os.path.dirname(os.path.abspath(path)))
+        except OSError:
+            pass                              # not remembered; the pick itself goes on
+        self._start_preview(cid, None, anim=os.path.abspath(path))
 
     # ------------------------------------------------------------------ equipment
     def _on_equip_select(self, cid, file):
@@ -1219,7 +1263,7 @@ class CharacterGridTab:
             title = f'Own voice of {gui_grid.name_of(state, cid)} ({gui_grid.hex_id(cid)})'
             lines = [gui_grid.char_voice_text(state, cid),
                      'The slot speaks with the picked voice as its own, on the select screen and on the field, whatever '
-                     'its square speaks with; the other members of its square keep theirs. A voice pack (Sounds tab) '
+                     'its square speaks with; the other members of its square keep theirs. A voice pack (Voices tab) '
                      'puts its custom clips on top of a stock voice.']
         else:
             cid = key
@@ -1268,15 +1312,17 @@ class CharacterGridTab:
         self._end_action()
         self._start_preview(cid, None, rename=text)
 
-    def _start_preview(self, cid, sluggie, rename=None, value=None, icon=None, equip=None, copy_from=None):
+    def _start_preview(self, cid, sluggie, rename=None, value=None, icon=None, equip=None, copy_from=None,
+                       anim=None):
         """The staging check (the pending edits plus this one; this one's build check); the confirm dialog
         opens when it is done. ``rename``: the new name text (blank resets), a rename edit instead of patch/clear;
         ``value``: ``(op, source)``, a stats or voice edit (source None: back to the default); ``icon``: a
         finished icon edit (``IconPreview.edit``); ``equip``: ``(slot file, .sluggie or None)``, an equipment edit
-        (None: reset that file); ``copy_from``: the copied character, a paste (the slot becomes its clone)."""
+        (None: reset that file); ``copy_from``: the copied character, a paste (the slot becomes its clone); ``anim``:
+        an ``.anm`` file, an animation bank edit."""
         if self._locked():
             return
-        kind = (gui_grid.COPY if copy_from is not None
+        kind = (gui_grid.COPY if copy_from is not None else gui_grid.ANIM if anim is not None
                 else 'equip' if equip is not None and equip[1] else 'equip_clear' if equip is not None
                 else 'icon' if icon is not None else 'rename' if rename is not None else value[0] if value
                 else 'patch' if sluggie else 'clear')
@@ -1284,6 +1330,8 @@ class CharacterGridTab:
         gear_file = equip[0] if equip is not None else None
         if copy_from is not None:
             edit = gui_grid.copy_edit(cid, copy_from)
+        elif anim is not None:
+            edit = {'op': gui_grid.ANIM, 'id': gui_grid.hex_id(cid), 'anm': anim}
         elif equip is not None:
             edit = ({'op': 'equip', 'id': gui_grid.hex_id(cid), 'file': equip[0], 'sluggie': equip[1],
                      'origin': 'user'} if equip[1] else
@@ -1300,17 +1348,17 @@ class CharacterGridTab:
             edit = {'op': 'patch', 'id': gui_grid.hex_id(cid), 'file': sluggie}
         else:
             edit = {'op': 'clear', 'id': gui_grid.hex_id(cid)}
-        self._check_and_confirm(cid, edit, kind, sluggie, view, gear_file)
+        self._check_and_confirm(cid, edit, kind, sluggie, view, gear_file, anm=anim)
 
     def stage_edit(self, edit, kind, moment=None):
-        """Another tab stages an edit (the Sounds tab's clip swaps): the staging check, then the confirm dialog, like
+        """Another tab stages an edit (the Voices tab's clip swaps): the staging check, then the confirm dialog, like
         the slot buttons. False when the tab is busy or a roster pack load is pending."""
         if self._locked() or self.pending.pack is not None:
             return False
         self._check_and_confirm(int(edit['id'], 16), edit, kind, None, None, None, moment)
         return True
 
-    def _check_and_confirm(self, cid, edit, kind, sluggie=None, view=None, gear_file=None, moment=None):
+    def _check_and_confirm(self, cid, edit, kind, sluggie=None, view=None, gear_file=None, moment=None, anm=None):
         try:
             gui_grid.write_edits(self.edits_path, self.pending.staging(edit))
         except OSError as exc:
@@ -1319,7 +1367,7 @@ class CharacterGridTab:
         self.action = (cid, sluggie)
         if not self._run([gui_grid.preview_command(self.edits_path)], 'Checking the edit...',
                          lambda code, output: self._show_confirm(cid, sluggie, code, output, kind, view,
-                                                                 gear_file, moment)):
+                                                                 gear_file, moment, anm)):
             self._end_action()
 
     def _voice_packs(self):
@@ -1332,11 +1380,12 @@ class CharacterGridTab:
             return []
         return [(p.name, p.voice, p.count) for p in packs]
 
-    def _show_confirm(self, cid, sluggie, code, output, kind='patch', view=None, gear_file=None, moment=None):
+    def _show_confirm(self, cid, sluggie, code, output, kind='patch', view=None, gear_file=None, moment=None,
+                      anm=None):
         state = self.nav.state or self.loader.state
         plan = gui_grid.load_plan(self.plan_path)
         dialog = gui_grid.slot_dialog(state, cid, sluggie is not None, plan, code, output, self.pending, kind=kind,
-                                      view=view, gear_file=gear_file, moment=moment)
+                                      view=view, gear_file=gear_file, moment=moment, anm=anm)
         if (kind in gui_grid.VALUE_KINDS + ('equip_clear',) and dialog.can_apply and code == 0 and plan is not None
                 and any(int(s['target'], 16) == cid for s in plan['edits']) and not dialog.offer_stat_reset):
             self._stage(plan)                  # a valid rename / stats / voice pick needs no second confirmation

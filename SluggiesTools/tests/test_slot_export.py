@@ -65,7 +65,7 @@ class NameTests(unittest.TestCase):
         self.assertEqual(slot_export.pick_number('Mario', models, set(), free), 1)
         taken_folders = {'Custom Mario 01', 'Custom Mario 02'}
         self.assertEqual(slot_export.pick_number('Mario', models, set(), taken_folders.__contains__), 3)
-        # a file name already in 2_Output_Models (another folder of the same name moved away), any case
+        # a file name already in 2_Output_Assets (another folder of the same name moved away), any case
         self.assertEqual(slot_export.pick_number('Mario', models, {'78711424_l_mario_mario01.gpl.sluggie'}, free), 2)
 
 

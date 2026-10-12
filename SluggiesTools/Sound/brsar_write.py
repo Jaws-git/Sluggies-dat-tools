@@ -22,6 +22,10 @@ its bytes. Per ``add_sounds`` call:
 
 With no sounds to add, ``add_sounds`` returns the archive unchanged (SYMB and INFO are rewritten only when
 they grow). Stream sounds (external .brstm) are out of scope here.
+
+``replace_waves`` gives existing WAVE sounds new RWAVs (the sound effects, ``Sound/effects``): the touched files'
+RWARs rebuilt, the same FILE layout; INFO changes only in the files' sizes and the groups' offsets.
+``rwav_from_channels`` builds such an RWAV in a stock wave's layout (mono or stereo, looped or not).
 """
 
 import struct
@@ -369,7 +373,14 @@ def add_sounds(data, new):
         struct.pack_into('>II', inf, file_offsets[fid] - info, len(blobs[fid][0]), len(blobs[fid][1]))
     inf = bytearray(_pad(inf))
     struct.pack_into('>I', inf, 4, len(inf))
+    return _assemble(a, groups, sym, inf, blobs), [old_n + i for i in range(len(new))]
 
+
+def _assemble(a, groups, sym, inf, blobs):
+    """The archive bytes of SYMB ``sym``, INFO ``inf`` (padded; its group and item offsets are rewritten here)
+    and every archived file's ``[structure bytes, wave bytes]`` in ``blobs``, by file id."""
+    b, base = a.b, 8
+    info = a.info
     # 5. FILE: the groups laid out again (in their file order), structure bytes then wave bytes
     file_start = _align(0x40 + len(sym) + len(inf))
     body_base = file_start + ALIGN                     # the FILE chunk header
@@ -391,7 +402,8 @@ def add_sounds(data, new):
         for io in item_offsets:
             w = blobs[u32(inf, io)][1]
             body += bytes(-len(body) % ALIGN)
-            struct.pack_into('>II', inf, io + 12, body_base + len(body) - w_off, len(w))
+            # an item without wave bytes gets offset 0, as the game's archive writes it
+            struct.pack_into('>II', inf, io + 12, body_base + len(body) - w_off if w else 0, len(w))
             body += w
         body += bytes(-len(body) % ALIGN)
         struct.pack_into('>IIII', inf, go + 0x10, g_off, g_size, w_off, body_base + len(body) - w_off)
@@ -404,4 +416,114 @@ def add_sounds(data, new):
     struct.pack_into('>6I', hdr, 0x10, 0x40, len(sym), inf_off, len(inf), file_start, len(fsec))
     out = hdr + sym + inf + bytes(file_start - inf_off - len(inf)) + fsec
     struct.pack_into('>I', out, 8, len(out))
-    return bytes(out), [old_n + i for i in range(len(new))]
+    return bytes(out)
+
+
+# ------------------------------------------------------------------------------------------------ replacing
+
+def _note_offset(r, entry):
+    """Offset of the wave index of RWSD DATA entry ``entry``'s first note (``brsar.rwsd_wave_index``'s walk)."""
+    d = u32(r, 0x10) + 8
+    e = d + u32(r, d + 4 + 8 * entry + 4)
+    notes = d + u32(r, e + 0x14)
+    return d + u32(r, notes + 8)
+
+
+def replace_waves(data, waves):
+    """``waves``: ``{INFO ID of a WAVE sound: RWAV bytes}``. Returns the archive bytes with each sound playing
+    its new RWAV; every sound keeps its INFO ID and entry, and nothing else changes.
+
+    A wave only that sound plays is replaced in its RWAR; a wave other sounds play too is left to them and the
+    new one appended, the sound's RWSD note pointed at it. The touched files' RWARs are rebuilt, the FILE section
+    laid out again (``add_sounds``' layout)."""
+    a = brsar.Brsar(data)
+    if not waves:
+        return a.b
+    b = a.b
+    sounds, files, groups = a.sounds(), a.files(), a.groups()
+    by_file = {}
+    for sid, rv in waves.items():
+        if not 0 <= sid < len(sounds) or sounds[sid].type != WAVE:
+            raise WriteError(f'sound {sid} is not a wave sound')
+        s = sounds[sid]
+        if files[s.file_id].external_path or not files[s.file_id].positions:
+            raise WriteError(f'{s.name}: file {s.file_id} is not an archived file')
+        if bytes(rv[:4]) != b'RWAV':
+            raise WriteError(f'{s.name}: not an RWAV')
+        by_file.setdefault(s.file_id, []).append((s, bytes(rv)))
+    blobs = {f.index: list(a.file_bytes(f.index, groups, files))
+             for f in files if f.positions and not f.external_path}
+    for fid, items in by_file.items():
+        r, w = blobs[fid]
+        if r[:4] != b'RWSD' or w[:4] != b'RWAR':
+            raise WriteError(f'file {fid} is not an RWSD + RWAR file')
+        r = bytearray(r)
+        rwavs = rwar_split(w)
+        own = [s for s in sounds if s.type == WAVE and s.file_id == fid]
+        entries = [s.wave_entry for s in own]
+        users = {}
+        for s in own:
+            wi = brsar.rwsd_wave_index(r, s.wave_entry)
+            users[wi] = users.get(wi, 0) + 1
+        for s, rv in items:
+            if entries.count(s.wave_entry) > 1:
+                raise WriteError(f'{s.name}: its RWSD entry is shared with another sound')
+            wi = brsar.rwsd_wave_index(r, s.wave_entry)
+            if users[wi] > 1:
+                users[wi] -= 1
+                rwavs.append(rv)
+                users[len(rwavs) - 1] = 1
+                struct.pack_into('>I', r, _note_offset(r, s.wave_entry), len(rwavs) - 1)
+            else:
+                rwavs[wi] = rv
+        blobs[fid] = [bytes(r), rwar_build(rwavs, u16(w, 6))]
+    inf = bytearray(b[a.info:a.info + a.info_size])
+    file_offsets = a.table(brsar.TABLE_FILES)
+    for fid in by_file:
+        struct.pack_into('>II', inf, file_offsets[fid] - a.info, len(blobs[fid][0]), len(blobs[fid][1]))
+    return _assemble(a, groups, bytes(b[a.symb:a.symb + a.symb_size]), inf, blobs)
+
+
+def loop_nibble(sample):
+    """The nibble address of sample ``sample`` (a wave's loop start; 2 for the first sample)."""
+    frame, rest = divmod(int(sample), dsp_adpcm.FRAME_SAMPLES)
+    return frame * dsp_adpcm.FRAME_NIBBLES + rest + 2
+
+
+def rwav_from_channels(template, rate, samples, lanes, loop_start=None):
+    """A DSP-ADPCM RWAV with ``template``'s INFO layout (its channel count) holding ``samples`` samples per channel.
+    ``lanes``: per channel ``(coefs, encoded bytes, (loop ps, loop h1, loop h2))``; ``loop_start``: the loop's first
+    sample (the loop runs to the end), or None. Channel data 32-byte aligned, one after the other."""
+    t = bytearray(template)
+    if t[:4] != b'RWAV':
+        raise WriteError('not an RWAV file')
+    info = u32(t, 0x10)
+    wi = info + 8
+    if t[wi] != ADPCM:
+        raise WriteError('the template must be a DSP-ADPCM wave')
+    if len(lanes) != t[wi + 2]:
+        raise WriteError(f'{len(lanes)} channels for a {t[wi + 2]}-channel wave')
+    size = dsp_adpcm.samples_to_bytes(samples)
+    stride = _align(size)
+    t[wi + 1] = 1 if loop_start is not None else 0
+    t[wi + 3] = (rate >> 16) & 0xFF
+    struct.pack_into('>H', t, wi + 4, rate & 0xFFFF)
+    struct.pack_into('>II', t, wi + 8, loop_nibble(loop_start or 0), dsp_adpcm.samples_to_nibbles(samples))
+    chans = wi + u32(t, wi + 0x10)
+    body = bytearray()
+    for c, (coefs, encoded, loop_context) in enumerate(lanes):
+        if len(encoded) < size:
+            raise WriteError(f'{len(encoded)} encoded bytes hold fewer than {samples} samples')
+        ci = wi + u32(t, chans + 4 * c)
+        adpcm = wi + u32(t, ci + 4)
+        struct.pack_into('>I', t, ci, c * stride)                    # relative to DATA + 8
+        struct.pack_into('>16h', t, adpcm, *coefs)
+        struct.pack_into('>HHhh', t, adpcm + 0x20, 0, encoded[0], 0, 0)
+        struct.pack_into('>Hhh', t, adpcm + 0x28, *(loop_context if loop_start is not None else (0, 0, 0)))
+        body += bytes(c * stride - len(body)) + bytes(encoded[:size])
+    head = bytearray(_pad(t[:info + u32(t, 0x14)]))
+    data = bytearray(_pad(b'DATA' + _p32(0) + bytes(body)))
+    struct.pack_into('>I', data, 4, len(data))
+    struct.pack_into('>II', head, 0x18, len(head), len(data))
+    struct.pack_into('>I', head, 8, len(head) + len(data))
+    return bytes(head + data)

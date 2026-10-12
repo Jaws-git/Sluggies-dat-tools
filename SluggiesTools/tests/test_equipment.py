@@ -244,7 +244,7 @@ class EquipmentClearTests(EquipmentHarness):
     def test_bad_arguments_are_refused(self):
         with mock.patch.object(SlotTarget, 'resolve_dir', return_value=(0x13, TARGET)):
             self.assertFalse(main.ClearEquipment('0x13', 1))
-            self.assertFalse(main.ClearEquipment('0x13', 7))
+            self.assertFalse(main.ClearEquipment('0x13', 15))          # 6-14 are animation banks (test_animations)
 
     def test_unpatch_with_a_sluggie_target(self):
         self.write(equipment_block('bat_r.gpl', fill=0x7E), source=(SOURCE, 2), target=self.target(TARGET, 2))

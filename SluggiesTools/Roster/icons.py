@@ -8,7 +8,7 @@ Config: an optional ``icon`` on a ``wheels`` entry (spare rows 0x47-0x4C) or an
 
 and ``stock_icons`` entries for stock characters with own keys (0x00-0x46)::
 
-    "stock_icons": [{"id": "0x0E", "icon": {"model": "2_Output_Models/32 Toad/<offset>_toad.gpl"}}]
+    "stock_icons": [{"id": "0x0E", "icon": {"model": "2_Output_Assets/32 Toad/<offset>_toad.gpl"}}]
 
 The PNGs live in ``1_Input/_Icons`` and are fitted into 48x51 (``fit``:
 contain, cover or strict; default contain; ``icon_art``). In place of

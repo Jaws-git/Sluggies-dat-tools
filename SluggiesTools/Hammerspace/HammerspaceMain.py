@@ -8302,18 +8302,19 @@ def ClearTarget(character_id: str) -> bool:
 
 
 def ClearEquipment(character_id: str, file_index: int) -> bool:
-    """Return one equipment file (2 bat, 3 left glove, 4 right glove, 5 extra bat) of a slot to its baseline
-    (``start.py --unpatch --target-id 0xNN --target-file N``): the vanilla route and bytes of a stock slot (the
-    shared block other characters use is only restored, never touched for them), a fresh copy of the source's
-    vanilla block for a new ID's own directory. A file that is at its baseline already is left alone."""
+    """Return one equipment file (2 bat, 3 left glove, 4 right glove, 5 extra bat) or animation bank (6-14) of a
+    slot to its baseline (``start.py --unpatch --target-id 0xNN --target-file N``): the vanilla route and bytes of a
+    stock slot (the shared block other characters use is only restored, never touched for them), a fresh copy of
+    the source's vanilla block for a new ID's own directory. A file that is at its baseline already is left
+    alone."""
     try:
         cid, chunk_number = SlotTarget.resolve_dir(character_id)
     except (SlotTarget.TargetError, OSError) as exc:
         _slogger.error(f'Equipment reset refused | {exc}', source='hammerspace.main')
         return False
-    if file_index not in SlotTarget.EQUIPMENT_FILES:
-        _slogger.error(f'Equipment reset refused | file {file_index} is not an equipment file (2-5)',
-                       source='hammerspace.main')
+    if file_index not in SlotTarget.EQUIPMENT_FILES + SlotTarget.ANIMATION_FILES:
+        _slogger.error(f'Equipment reset refused | file {file_index} is neither an equipment file (2-5) nor an '
+                       'animation bank (6-14)', source='hammerspace.main')
         return False
     where = f'0x{cid:02X} (chunk {chunk_number}, file {file_index})'
     if not hh.isOwnDir(chunk_number) and chunk_number not in SlotTarget.character_dirs():
@@ -8383,6 +8384,50 @@ def WriteSlotEquipment(character_id: str, file_index: int, block: bytes) -> bool
         return False
     _write_route(block, chunk_number, file_index, f'0x{cid:02X} file {file_index}',
                  log_suffix=f' | Slot: {where} | pack block', share_route=False)
+    return True
+
+
+def WriteSlotAnimation(character_id: str, file_index: int, bank: bytes) -> bool:
+    """Write an animation bank (an ``.anm`` file, ``start.py --write-slot-animation``) into file ``file_index``
+    (6-14) of a slot as it is. Refused before anything is written when the bank does not fit the slot
+    (``Roster/anim.problems``: its sequence count, and track ids the slot's skeleton has no bone for). Only the
+    slot's own route changes; a bank equal to the slot's vanilla one returns the route to its baseline instead
+    (``ClearEquipment``)."""
+    try:
+        cid, chunk_number = SlotTarget.resolve_dir(character_id)
+    except (SlotTarget.TargetError, OSError) as exc:
+        _slogger.error(f'Slot write refused | {exc}', source='hammerspace.main')
+        return False
+    where = f'0x{cid:02X} (chunk {chunk_number}, file {file_index})'
+    if chunk_number not in SlotTarget.character_dirs() and not hh.isOwnDir(chunk_number):
+        _slogger.error(f'Slot write refused | {where} is not a character directory', source='hammerspace.main')
+        return False
+    if file_index not in SlotTarget.ANIMATION_FILES:
+        _slogger.error(f'Slot write refused | file {file_index} is not an animation bank (6-14)',
+                       source='hammerspace.main')
+        return False
+    from Roster import anim
+    vanilla = LodPartnerGuard._vanilla_block(chunk_number, file_index)
+    try:
+        if vanilla is None:
+            raise anim.AnimError('the slot has no vanilla animation bank to compare with')
+        new, stock = anim.read_bank(bank), anim.read_bank(vanilla)
+    except anim.AnimError as exc:
+        _slogger.error(f'Slot write refused | {where}: {exc}', source='hammerspace.main')
+        return False
+    skeleton = anim.skeleton_tracks(LodPartnerGuard._vanilla_block(chunk_number, SlotTarget.HIGH_FILE)) or frozenset()
+    skeleton |= anim.skeleton_tracks(LodPartnerGuard.read_current_block(chunk_number, SlotTarget.HIGH_FILE)) or frozenset()
+    errors, warnings = anim.problems(new, file_index, stock, skeleton)
+    for warning in warnings:
+        _slogger.warning(f'[Slot] {where}: {warning}', source='hammerspace.main')
+    if errors:
+        _slogger.error(f'Slot write refused | {where}: ' + '; '.join(errors), source='hammerspace.main')
+        return False
+    if bank == vanilla:
+        _slogger.info(f'[Slot] {where}: the bank is the vanilla one: back to the baseline', source='hammerspace.main')
+        return ClearEquipment(character_id, file_index)
+    _write_route(bank, chunk_number, file_index, f'0x{cid:02X} file {file_index}',
+                 log_suffix=f' | Slot: {where} | animation bank', share_route=False)
     return True
 
 
@@ -8522,12 +8567,14 @@ if __name__ == '__main__':
                               'checks, nothing written (start.py --patch-slot runs it before any write)')
     _parser.add_argument('--clear-target', default=None, metavar='0xNN',
                          help="Restore this stock slot's HP and L_ models to vanilla (no .sluggie); with "
-                              "--target-file: only that equipment file")
+                              "--target-file: only that equipment file or animation bank (2-14)")
     _parser.add_argument('--target-file', type=int, default=None, metavar='N',
                          help='With --target-id: the slot file an equipment .sluggie goes to (2 bat, 3 left glove, '
                               '4 right glove, 5 extra bat; default: the file it was exported from)')
     _parser.add_argument('--write-slot-equipment', nargs=3, default=None, metavar=('0xNN', 'FILE', 'BLOCK'),
                          help="Write a finished equipment block (a roster pack's) into this slot's file 2-5 as it is")
+    _parser.add_argument('--write-slot-animation', nargs=3, default=None, metavar=('0xNN', 'FILE', 'ANM'),
+                         help="Write an animation bank (.anm) into this slot's file 6-14 as it is")
     _parser.add_argument('--write-slot-blocks', nargs=3, default=None, metavar=('0xNN', 'HIGH', 'LOW'),
                          help="Write finished model blocks (a roster pack's) into this slot as they are; '-' keeps "
                               "that file (no .sluggie)")
@@ -8544,6 +8591,18 @@ if __name__ == '__main__':
             _slogger.error(f'Slot write refused | {_exc}', source='hammerspace.main')
             raise SystemExit(1)
         raise SystemExit(0 if WriteSlotEquipment(_cid, _equipment_file, _equipment_block) else 1)
+    if _args.write_slot_animation is not None:
+        if _args.sluggies_path is not None:
+            _parser.error('--write-slot-animation takes no .sluggie file')
+        _cid, _file, _path = _args.write_slot_animation
+        try:
+            with open(_path, 'rb') as _file_handle:
+                _bank = _file_handle.read()
+            _bank_file = int(_file, 0)
+        except (OSError, ValueError) as _exc:
+            _slogger.error(f'Slot write refused | {_exc}', source='hammerspace.main')
+            raise SystemExit(1)
+        raise SystemExit(0 if WriteSlotAnimation(_cid, _bank_file, _bank) else 1)
     if _args.target_file is not None and _args.target_id is None and _args.clear_target is None:
         _parser.error('--target-file needs --target-id (or --clear-target)')
     if _args.write_slot_blocks is not None:

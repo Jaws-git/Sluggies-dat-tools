@@ -123,7 +123,7 @@ def resplit_retangled(find_model=None) -> tuple[list, list]:
 
     The baseline re-applies the untangled textures named by the route's
     exported `.sluggie` (``find_model(chunk, file_index)``, by default a search
-    of ``2_Output_Models``); without one it is the vanilla bytes verbatim.
+    of ``2_Output_Assets``); without one it is the vanilla bytes verbatim.
     Returns ``(repaired, failed)`` route lists. Owners are never touched.
     """
     hh = _helper()

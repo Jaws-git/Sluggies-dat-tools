@@ -87,7 +87,7 @@ def _read(path: str) -> dict:
 
 
 def character_folder(model_path: str) -> str:
-    """The character's output folder (``2_Output_Models/22 Peach``) of a model ``.sluggie`` or its folder."""
+    """The character's output folder (``2_Output_Assets/22 Peach``) of a model ``.sluggie`` or its folder."""
     path = os.path.abspath(model_path)
     folder = os.path.dirname(path) if os.path.isfile(path) else path
     return os.path.dirname(folder)

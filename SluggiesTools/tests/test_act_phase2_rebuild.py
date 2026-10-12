@@ -7,7 +7,7 @@ exporter.
 
 The donor ACT is **synthesized here** by ``act_rebuild.rebuild_act_bytes``,
 not cloned out of ``1_Input/dt_na.dat``: the game assets and the
-``2_Output_Models`` exports are both gitignored, so a test that reads them
+``2_Output_Assets`` exports are both gitignored, so a test that reads them
 skips in CI and rots locally the moment a working export changes (it did --
 an unrelated Blender export left a ``CustomSubmeshes`` entry on the Mario
 ``.sluggie`` this module used to read, which patched its host bone's GeoId

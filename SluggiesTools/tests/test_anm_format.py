@@ -119,10 +119,10 @@ class RebuiltTrackTests(unittest.TestCase):
         self.assertEqual(len(track['keys']), 2)
 
 
-STOCK = sorted(glob.glob(str(ROOT / '2_Output_Models' / '*' / 'anm' / '*.anm')))
+STOCK = sorted(glob.glob(str(ROOT / '2_Output_Assets' / '*' / 'anm' / '*.anm')))
 
 
-@unittest.skipUnless(STOCK, "no exported .anm files in 2_Output_Models")
+@unittest.skipUnless(STOCK, "no exported .anm files in 2_Output_Assets")
 class StockRoundTripTests(unittest.TestCase):
     def test_passthrough_round_trip(self):
         for path in STOCK[:40]:

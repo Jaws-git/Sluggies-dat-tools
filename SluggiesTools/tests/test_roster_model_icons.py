@@ -13,7 +13,7 @@ from SluggiesTools.tests.test_roster_icons import STOCK, container, entry, packe
 
 def model_tree(root: str, views=('side', 'front'), low=True) -> tuple[str, str]:
     """``<root>/32 Toad/`` with an HP folder (portraits for ``views``) and its ``L_`` partner; returns both."""
-    char = os.path.join(root, '2_Output_Models', '32 Toad')
+    char = os.path.join(root, '2_Output_Assets', '32 Toad')
     hp = os.path.join(char, '79000000_toad.gpl')
     low_dir = os.path.join(char, '79400000_L_toad.gpl')
     for folder in (hp, low_dir) if low else (hp,):

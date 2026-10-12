@@ -1,7 +1,7 @@
 """Sound export: the game's sounds as 16-bit WAV files (``start.py --export-sounds``).
 
 Reads ``1_Input/sound_NA/MY2.brsar`` (and the ``stream/*.brstm`` music next to it, both copied from the
-game's ``files/sound_NA`` folder) and writes ``2_Output_Models/_SOUNDS/``, laid out as the archive is::
+game's ``files/sound_NA`` folder) and writes ``2_Output_Assets/_SOUNDS/``, laid out as the archive is::
 
     _SOUNDS/<group>/<sound>.wav          wave sounds (voices, effects), one folder per archive group
                                          (group_v001 ... voice families, group_sel_v the select-screen calls,
@@ -38,7 +38,7 @@ from Sound import brsar, brstm, wavfile                      # noqa: E402
 SOURCE = 'sound.export_sounds'
 ARCHIVE_NAME = 'MY2.brsar'
 INPUT_SOUND_DIR = os.path.join(ROOT_DIR, '1_Input', 'sound_NA')
-OUTPUT_DIR = os.path.join(ROOT_DIR, '2_Output_Models', '_SOUNDS')
+OUTPUT_DIR = os.path.join(ROOT_DIR, '2_Output_Assets', '_SOUNDS')
 INDEX_NAME = 'index.json'
 UNREFERENCED_DIR = '_unreferenced'
 
@@ -229,7 +229,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description='Export the game\'s sounds as WAV files.')
     parser.add_argument('--sound-dir', default=INPUT_SOUND_DIR,
                         help='the folder holding MY2.brsar and stream/ (default: 1_Input/sound_NA)')
-    parser.add_argument('--out', default=OUTPUT_DIR, help='output folder (default: 2_Output_Models/_SOUNDS)')
+    parser.add_argument('--out', default=OUTPUT_DIR, help='output folder (default: 2_Output_Assets/_SOUNDS)')
     args = parser.parse_args(argv)
     try:
         export(args.sound_dir, args.out)

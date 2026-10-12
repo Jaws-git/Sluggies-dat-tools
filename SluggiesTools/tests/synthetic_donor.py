@@ -1,7 +1,7 @@
 """A synthetic donor model: a `.sluggie` plus the `dt_na.dat` block it describes.
 
 Tests must not read production data -- `1_Input/dt_na.dat` and the
-`2_Output_Models/*.sluggie` working exports are gitignored, so a test that
+`2_Output_Assets/*.sluggie` working exports are gitignored, so a test that
 reads them skips in CI and rots silently on the one machine that runs it (see
 `.clinerules`). This module stands in for the real Mario export that the
 end-to-end `BuildModelBlock` tests used to open.

@@ -8,7 +8,7 @@ in force when one named surface draws. This re-checks each capture against the
 export it was taken from, named by the entry's own ``Provenance``.
 
 This is a **probe, not a unit test**: it compares checked-in constants against
-real exports under ``2_Output_Models/``, which are gitignored working files
+real exports under ``2_Output_Assets/``, which are gitignored working files
 (see `.clinerules`, "tests never read production data"). A test that reads
 them can only skip in CI while rotting silently on the one machine that has
 them. The registry's self-consistency -- stored hashes, record shape, and the
@@ -39,7 +39,7 @@ for _path in (TOOLS_DIR, HAMMERSPACE_DIR):
 
 import build_template_source_fixture as tsf  # noqa: E402
 
-MODELS_DIR = TOOLS_DIR.parent / '2_Output_Models'
+MODELS_DIR = TOOLS_DIR.parent / '2_Output_Assets'
 
 
 def capture_exports(provenance: dict) -> list[pathlib.Path]:

@@ -21,7 +21,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 
-MODELS_FOLDER = '2_Output_Models'
+MODELS_FOLDER = '2_Output_Assets'
 
 # The export writes these three keys first; reading the head of the file avoids parsing every model in full.
 _IDENTITY = re.compile(r'"ChunkNumber"\s*:\s*(-?\d+)\s*,\s*"FileIndex"\s*:\s*(-?\d+)\s*,'

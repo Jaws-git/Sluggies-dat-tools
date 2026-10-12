@@ -3,7 +3,7 @@
 The icon export (``Icons/export_icons.py``) writes each character's two
 48x51 portraits into its high-poly model folder::
 
-    2_Output_Models/<dir> <name>/<offset>_<geo>.gpl/icon/{FrontIcon,SideIcon}.png
+    2_Output_Assets/<dir> <name>/<offset>_<geo>.gpl/icon/{FrontIcon,SideIcon}.png
 
 ``find(path)`` takes a ``.sluggie`` (or its model folder) and gives the two
 PNGs. An ``L_`` model has no portraits of its own: its high-poly partner's
