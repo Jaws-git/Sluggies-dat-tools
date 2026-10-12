@@ -13,6 +13,7 @@ from bpy_extras.io_utils import ExportHelper
 
 from .SkinWeights import quantize_skin_weights, MAX_BONE_INFLUENCES_PER_VERTEX
 from .HostBones import compute_rigid_retargets, GEO_ID_FREE
+from . import AnmExport
 from . import CustomSubmeshExport
 from . import ExportMode
 from . import FieldCodec
@@ -559,6 +560,20 @@ def encode_bone_hierarchy_edited(candidates, data, warnings, context):
         })
 
     model["BoneHierarchyEdited"] = edited
+
+
+def untracked_keys_warnings(candidates, context):
+    """Warnings for added bones that imported .anm actions (or the armature's
+    active action) move although they have no animation track: their TrackId
+    stays 0xFFFF and the .anm export skips them, so the motion never reaches
+    the game."""
+    arm_obj = _find_root_scale_armature(candidates, context)
+    if arm_obj is None:
+        return []
+    actions = [a for group in AnmExport.anm_groups().values() for a in group]
+    if arm_obj.animation_data is not None and arm_obj.animation_data.action not in actions:
+        actions.append(arm_obj.animation_data.action)
+    return AnmExport.untracked_keys_warnings(arm_obj, actions)
 
 
 # --- Blender-side pre-check for the donor-topology rules
@@ -4153,6 +4168,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             self.report({"ERROR"}, stadium_bone_error)
             return {"CANCELLED"}
         encode_bone_hierarchy_edited(context.selected_objects, data, warnings, context)
+        warnings.extend(untracked_keys_warnings(context.selected_objects, context))
         bone_hierarchy_errors = validate_bone_hierarchy_edited_export(
             data["SluggiesModel"], warnings
         )

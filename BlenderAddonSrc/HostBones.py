@@ -488,6 +488,33 @@ def next_added_track_id(used_track_ids: Iterable[int]) -> int:
     )
 
 
+UNTRACKED_KEYS_MESSAGE = (
+    'Keyframed bone without animation track: If you want this animation to carry over '
+    'to the game use "Toggle Animation Track" on this bone first'
+)
+
+# Pose-bone channel -> its rest value per array index. An .anm import keys
+# every bone at rest, so only a key away from these values counts as motion.
+POSE_REST_VALUES = {
+    'location': (0.0, 0.0, 0.0),
+    'rotation_quaternion': (1.0, 0.0, 0.0, 0.0),
+    'rotation_euler': (0.0, 0.0, 0.0),
+    'rotation_axis_angle': (0.0, 0.0, 1.0, 0.0),
+    'scale': (1.0, 1.0, 1.0),
+}
+POSE_REST_TOL = 1e-4
+
+
+def key_leaves_rest(channel: str, index: int, value: float) -> bool:
+    """Whether a keyframe *value* on pose-bone *channel* [*index*] moves the
+    bone away from its rest pose. Only transform channels count: nothing else
+    reaches an .anm track."""
+    rest = POSE_REST_VALUES.get(channel)
+    if rest is None or not 0 <= index < len(rest):
+        return False
+    return abs(float(value) - rest[index]) > POSE_REST_TOL
+
+
 def added_bone_name_error(renames: Dict[str, str]) -> Optional[str]:
     """Export-time message for :func:`added_bone_renames`, or None."""
     if not renames:

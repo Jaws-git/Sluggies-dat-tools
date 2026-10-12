@@ -25,6 +25,7 @@ from HostBones import (  # noqa: E402
     added_bone_renames,
     ADDED_TRACK_IDS,
     next_added_track_id,
+    key_leaves_rest,
     bone_metadata_is_current,
     bone_metadata_mismatches,
     bone_records_from_hierarchy,
@@ -137,6 +138,24 @@ class NextAddedTrackIdTests(unittest.TestCase):
                 sys.path.insert(0, str(path))
         import HammerspaceMain
         self.assertEqual(ADDED_TRACK_IDS, HammerspaceMain.ADDED_TRACK_IDS)
+
+
+class KeyLeavesRestTests(unittest.TestCase):
+    def test_rest_keys_are_not_motion(self):
+        # An .anm import keys every bone at rest.
+        self.assertFalse(key_leaves_rest('location', 0, 0.0))
+        self.assertFalse(key_leaves_rest('rotation_quaternion', 0, 1.0))
+        self.assertFalse(key_leaves_rest('rotation_quaternion', 3, 0.00005))
+        self.assertFalse(key_leaves_rest('scale', 2, 1.0))
+
+    def test_moved_keys_are_motion(self):
+        self.assertTrue(key_leaves_rest('location', 1, 0.5))
+        self.assertTrue(key_leaves_rest('rotation_quaternion', 0, 0.9))
+        self.assertTrue(key_leaves_rest('scale', 0, 1.2))
+
+    def test_only_transform_channels_count(self):
+        self.assertFalse(key_leaves_rest('bbone_curveinx', 0, 0.7))
+        self.assertFalse(key_leaves_rest('location', 5, 0.7))
 
 
 class BoneMetadataMismatchTests(unittest.TestCase):

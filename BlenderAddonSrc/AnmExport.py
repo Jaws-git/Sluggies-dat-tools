@@ -12,6 +12,7 @@ are written back as imported.
 
 import math
 import os
+import re
 import struct
 
 import bpy
@@ -21,6 +22,7 @@ from bpy_extras.io_utils import ExportHelper
 
 from . import AnmFormat
 from . import FieldCodec
+from . import HostBones
 from .ImportSluggies import _anm_bone_corrections, game_rest_srt
 
 # A channel the original track lacks is added when the bone leaves its rest
@@ -56,6 +58,51 @@ def _group_sequences(actions):
     if problems:
         raise ValueError('; '.join(problems))
     return [by_index[i][0] for i in range(count)]
+
+
+_POSE_BONE_PATH = re.compile(r'^pose\.bones\["((?:[^"\\]|\\.)*)"\]\.(\w+)$')
+
+
+def _action_fcurves(action):
+    """Every F-curve of *action*: the layered actions of Blender 4.4+ keep them
+    in channelbags, older ones in ``action.fcurves``."""
+    layers = getattr(action, 'layers', None)
+    if layers is None:
+        yield from action.fcurves
+        return
+    for layer in layers:
+        for strip in layer.strips:
+            for bag in getattr(strip, 'channelbags', ()):
+                yield from bag.fcurves
+
+
+def untracked_keyed_bones(arm_obj, actions):
+    """Names of the added bones of *arm_obj* that *actions* key away from their
+    rest pose although they have no animation track: their motion stays out
+    of the .anm export and out of the game."""
+    untracked = {b.name for b in arm_obj.data.bones
+                 if b.get('SluggiesUserAdded')
+                 and int(b.get('track_id', HostBones.NO_TRACK)) == HostBones.NO_TRACK}
+    keyed = set()
+    for action in actions:
+        if action is None or not untracked - keyed:
+            continue
+        for fc in _action_fcurves(action):
+            match = _POSE_BONE_PATH.match(fc.data_path)
+            if not match:
+                continue
+            name = match.group(1).replace('\\"', '"').replace('\\\\', '\\')
+            if name in untracked and name not in keyed and any(
+                    HostBones.key_leaves_rest(match.group(2), fc.array_index, kp.co[1])
+                    for kp in fc.keyframe_points):
+                keyed.add(name)
+    return sorted(keyed)
+
+
+def untracked_keys_warnings(arm_obj, actions):
+    """One warning line per :func:`untracked_keyed_bones` bone."""
+    return [f"{name}: {HostBones.UNTRACKED_KEYS_MESSAGE}"
+            for name in untracked_keyed_bones(arm_obj, actions)]
 
 
 def _records(action):
@@ -324,6 +371,8 @@ class SLUGGIES_OT_export_anm(bpy.types.Operator, ExportHelper):
             f.write(data)
         for note in notes:
             self.report({"INFO"}, note)
+        for warning in untracked_keys_warnings(arm_obj, actions):
+            self.report({"WARNING"}, warning)
         self.report({"INFO"}, f"Wrote {len(sequences)} sequence(s), {len(data):,} bytes to {self.filepath}")
         return {"FINISHED"}
 
