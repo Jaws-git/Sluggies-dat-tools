@@ -24,11 +24,13 @@ try:
 except Exception:
     hh = None
 import UntanglePolicy
+from anm_to_gltf import convert_anm_directory
 
 EXPORT_TEX = '--notex' not in sys.argv
 DEBUG_DONT_USE_BASE64 = '--debug' in sys.argv
 UNTANGLE_TEX = '--untangle' in sys.argv
 EXPORT_GLB = '--glb' in sys.argv
+EXPORT_ANIM_GLB = EXPORT_GLB and '--anim-glb' in sys.argv
 
 # Model directory indices that hold stadiums (see folderNameMap):
 # 7 Mario Stadium ... 16 Toy Field. When UNTANGLE_SKIP_STADIUMS is enabled,
@@ -1516,7 +1518,8 @@ def main():
                     child.analyze()
                     if child.child:
                         if isinstance(child.child, ANM):
-                            child.child.dumpRaw(dir_dir, file_index)
+                            if EXPORT_ANIM_GLB:
+                                child.child.dumpRaw(dir_dir, file_index)
                         else:
                             child.child.analyze()
                             child.child.toFile(lan_dir, export_tex=EXPORT_TEX, export_glb=EXPORT_GLB, untangle_context=dir_untangle_context)
@@ -1541,6 +1544,8 @@ def main():
             except Exception as e:
                 _slogger.warning(f'skipping entry: {type(e).__name__}: {e}', source=f'export.dir{dir_ind}')
                 pass
+        if EXPORT_ANIM_GLB and os.path.isdir(os.path.join(dir_dir, 'anm')):
+            convert_anm_directory(dir_dir)
         if len(os.listdir(dir_dir)) == 0:
             os.rmdir(dir_dir)
         _slogger.info(f'Finished exporting', source=f'export.dir{dir_ind}')

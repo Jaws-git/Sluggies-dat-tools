@@ -10,14 +10,21 @@ from bpy.props import BoolProperty, CollectionProperty, EnumProperty, IntPropert
 from mathutils import Matrix, Vector
 
 from . import CustomSubmeshExport
+from .AnmExport import SLUGGIES_OT_export_anm_group
 from . import HostBones
 from . import TemplateSources
 from .ExportSluggies import (
+    SLUGGIES_OT_export,
     _custom_submesh_template_texture_index,
     _detect_uniform_vertex_bone_id,
     _resolve_export_texture_context,
 )
-from .ImportSluggies import _create_material, _set_surface_material_metadata
+from .ImportSluggies import (
+    SLUGGIES_OT_import,
+    SLUGGIES_OT_import_anm,
+    _create_material,
+    _set_surface_material_metadata,
+)
 
 
 # Every user-added bone gets this length in scene units, independent of how
@@ -1576,6 +1583,16 @@ class SLUGGIES_PT_tools(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
+        # The File > Import/Export operators, so they are one click away.
+        box = layout.box()
+        box.label(text="Import/Export")
+        col = box.column(align=True)
+        col.operator(SLUGGIES_OT_import.bl_idname, text="Import .sluggie", icon='IMPORT')
+        col.operator(SLUGGIES_OT_import_anm.bl_idname, text="Import Sluggers .anm", icon='IMPORT')
+        col.operator(SLUGGIES_OT_export.bl_idname, text="Export .sluggie", icon='EXPORT')
+        col.operator(SLUGGIES_OT_export_anm_group.bl_idname, text="Export Sluggers .anm", icon='EXPORT')
+
+        layout.separator()
         layout.operator(SLUGGIES_OT_add_submesh.bl_idname)
         layout.operator(SLUGGIES_OT_add_bone.bl_idname)
         layout.operator(SLUGGIES_OT_renumber_added_bones.bl_idname)

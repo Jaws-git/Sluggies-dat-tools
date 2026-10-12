@@ -627,7 +627,8 @@ class SluggiesGui:
 
     def _build_full_tab(self):
         with dpg.tab(label='All-In-One Export'):
-            dpg.add_text('1) Export all models with untangled textures (overwrites 3_Output_Dat/dt_na.dat and main.dol)')
+            dpg.add_text('1) Export all models with untangled textures, plus .glb models and animations '
+                         '(overwrites 3_Output_Dat/dt_na.dat and main.dol)')
             dpg.add_text('2) Apply the chosen roster preset')
             dpg.add_text('3) Turn on CPU vs CPU and CPU vs CPU management (hold minus on game start button)')
             dpg.add_text('4) Write the character icons (FrontIcon/SideIcon) from 3_Output_Dat into the model folders')
@@ -642,7 +643,7 @@ class SluggiesGui:
 
     def _on_full_export(self):
         choice = dpg.get_value('full_roster')
-        steps = [('--export', '--untangle')]
+        steps = [('--export', '--untangle', '--glb', '--anim-glb')]
         if choice == self.ROSTER_RESET:
             steps.append(('--roster', '--remove'))
         elif choice and choice != self.ROSTER_SKIP:
@@ -661,14 +662,20 @@ class SluggiesGui:
             dpg.add_text('Export all models from 1_Input to 2_Output_Models.')
             dpg.add_checkbox(label='Untangle Textures (overwrites 3_Output_Dat/dt_na.dat and main.dol)', tag='exp_untangle')
             icons = dpg.add_checkbox(label='Export Icons', tag='exp_icons', default_value=True)
-            dpg.add_checkbox(label='Also write .glb files', tag='exp_glb', default_value=True)
-            sounds = dpg.add_checkbox(label='Also export sound files', tag='exp_sounds',
+            dpg.add_checkbox(label='Also write .glb files', tag='exp_glb', default_value=True,
+                             callback=lambda s, v: dpg.configure_item('exp_anim_glb', enabled=v))
+            anims = dpg.add_checkbox(label='Export animations', tag='exp_anim_glb', default_value=True)
+            sounds = dpg.add_checkbox(label='Export sound files', tag='exp_sounds',
                                       default_value=os.path.isdir(self.sound_input_dir))
             dpg.add_checkbox(label='Skip Textures', tag='exp_notex')
             dpg.add_checkbox(label='Debug (raw byte arrays instead of base64)', tag='exp_debug')
 
             with dpg.tooltip(icons):
                 dpg.add_text('Write FrontIcon.png and SideIcon.png into each character model folder.')
+            with dpg.tooltip(anims):
+                dpg.add_text('Write each character\'s raw animation files (anm/*.anm) and a .glb of each next to them, '
+                             'one animation per sequence on the character\'s skeleton.\n'
+                             'Needs "Also write .glb files".')
             with dpg.tooltip(sounds):
                 dpg.add_text('Decode the voices, effects and music into 2_Output_Models/_SOUNDS as WAV files, one '
                              'folder per sound group.\nNeeds the game\'s files/sound_NA folder (MY2.brsar and '
@@ -681,6 +688,8 @@ class SluggiesGui:
                           ('exp_notex', '--notex'), ('exp_debug', '--debug')):
             if dpg.get_value(tag):
                 args.append(flag)
+        if dpg.get_value('exp_glb') and dpg.get_value('exp_anim_glb'):
+            args.append('--anim-glb')
         steps = [tuple(args)]
         if dpg.get_value('exp_icons'):
             steps.append(('--export-icons',))

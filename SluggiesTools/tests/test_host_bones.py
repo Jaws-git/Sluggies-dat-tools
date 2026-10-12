@@ -489,7 +489,8 @@ class ImportSluggiesBoneMetadataAstTests(unittest.TestCase):
         self.assertIn('HostBones.BONE_METADATA_VERSION', body)
 
     def test_importer_passes_skin_data_to_build_armature(self):
-        self.assertIn('build_armature(base_name, bone_list, collection, model.get("SkinData"))', self.source)
+        self.assertRegex(self.source, r'build_armature\(base_name, bone_list, collection, model\.get\("SkinData"\),'
+                                      r'\s*reorient=self\.reorient_bones\)')
 
     def test_writes_metadata_version_on_armature_object(self):
         targets = self._assigned_targets()

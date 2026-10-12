@@ -353,7 +353,7 @@ def run_apply_stat_edits(paths, dry_run=False):
     return subprocess.run(cmd, cwd=TOOLS_DIR).returncode == 0
 
 
-def run_export(debug=False, notex=False, untangle=False, glb=False):
+def run_export(debug=False, notex=False, untangle=False, glb=False, anim_glb=False):
     if importlib.util.find_spec('numpy') is None:
         slogger.error("Missing required package: numpy", source="dispatcher")
         slogger.error("Run: pip install numpy", source="dispatcher")
@@ -368,6 +368,8 @@ def run_export(debug=False, notex=False, untangle=False, glb=False):
         extra_args.append('--untangle')
     if glb:
         extra_args.append('--glb')
+    if anim_glb:
+        extra_args.append('--anim-glb')
 
     subprocess.run(
         python_script_command(EXPORT_SCRIPT, *extra_args),
@@ -801,6 +803,7 @@ def parse_args():
             '  python start.py --export --debug --notex --untangle\n'
             '  python start.py --export --untangle\n'
             '  python start.py --export --glb\n'
+            '  python start.py --export --glb --anim-glb\n'
             '  python start.py --roster --config 1_Input/_RosterConfigurations/02_Stock_and_Unused.json\n'
             '  python start.py --roster --config 1_Input/_RosterConfigurations/03_Unuseds_and_8_color_slots.json --dry-run\n'
             '  python start.py --roster --config 1_Input/_RosterConfigurations/01_Stock_Roster.json --fresh\n'
@@ -875,7 +878,8 @@ def parse_args():
     parser.add_argument('--debug', action='store_true', help='export only: write binary blobs as raw byte arrays instead of base64')
     parser.add_argument('--notex', action='store_true', help='export only: skip texture extraction')
     parser.add_argument('--untangle', action='store_true', help='export only: pass untangling flag through to export process')
-    parser.add_argument('--glb', action='store_true', help='export only: also write .glb model files to disk (always writes .sluggie files)')
+    parser.add_argument('--glb', action='store_true', help='export only: also write .glb model files (always writes .sluggie files)')
+    parser.add_argument('--anim-glb', action='store_true', help='export with --glb only: also write each character\'s raw animation files (anm/*.anm) and a .glb of each')
     parser.add_argument('--use-output', action='store_true', help='export-icons only: read DOL/DAT from 3_Output_Dat instead of 1_Input')
     parser.add_argument('--dry-run', action='store_true', help='roster/game-options/slot chains: validate without writing bytes')
     parser.add_argument('--config', metavar='PATH', help='roster only: the roster configuration JSON')
@@ -905,6 +909,8 @@ def parse_args():
         parser.error('--untangle can only be used with --export.')
     if args.glb and not args.export:
         parser.error('--glb can only be used with --export.')
+    if args.anim_glb and not args.glb:
+        parser.error('--anim-glb can only be used with --export --glb.')
     if args.use_output and not args.export_icons:
         parser.error('--use-output can only be used with --export-icons.')
     if args.dry_run and not (args.roster or args.game_options or args.load_roster
@@ -1064,7 +1070,8 @@ def main() -> int:
             if not run_apply_stat_edits(args.apply_stat_edits, dry_run=args.dry_run):
                 return 1
         elif args.export:
-            run_export(debug=args.debug, notex=args.notex, untangle=args.untangle, glb=args.glb)
+            run_export(debug=args.debug, notex=args.notex, untangle=args.untangle, glb=args.glb,
+                       anim_glb=args.anim_glb)
         elif args.export_icons:
             run_export_icons(use_output=args.use_output)
         elif args.export_sounds:

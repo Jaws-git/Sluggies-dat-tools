@@ -5,95 +5,61 @@ import math
 import struct
 import mathutils
 from functools import lru_cache
-from bpy.props import StringProperty, CollectionProperty
+from bpy.props import BoolProperty, StringProperty, CollectionProperty
 from bpy_extras.io_utils import ImportHelper
 
+from . import AnmFormat
 from . import FieldCodec
 from . import HostBones
 
-
-ANM_MAGICS = (0x01321AFD, 0x013240DB, 0x01324210)
 
 # Fallback tail length for a bone that gets no direction from the hierarchy,
 # and the reference scale for clamping leaf-bone tails in build_armature.
 LEAF_TAIL_FALLBACK = 0.05
 
 
-def _read_quantized(data, offset, count, dimensions, quantize_info):
-    fmt_nibble = quantize_info >> 4
-    shift = quantize_info & 0x0F
-    if fmt_nibble in (0, 3):
-        fmt_char, fmt_size = '>h', 2
-    else:
-        fmt_char, fmt_size = '>f', 4
-    divisor = 1 << shift
-    result = []
-    pos = offset
-    for _ in range(count):
-        components = []
-        for _ in range(dimensions):
-            val = struct.unpack_from(fmt_char, data, pos)[0]
-            components.append(val / divisor)
-            pos += fmt_size
-        result.append(components)
-    return result, pos
+def _game_srt_matrix(trans, quat, scale):
+    """4x4 T @ R @ S from a game SRT; ``quat`` is the stored [-w, x, y, z]."""
+    T = mathutils.Matrix.Translation(trans)
+    R = mathutils.Quaternion((-quat[0], quat[1], quat[2], quat[3])).to_matrix().to_4x4()
+    S = mathutils.Matrix.Diagonal((*scale, 1))
+    return T @ R @ S
 
 
-def _parse_anm(data):
-    magic = struct.unpack_from('>I', data, 0)[0]
-    if magic not in ANM_MAGICS:
-        raise ValueError(f"Not an ANM file: magic {magic:#010x}")
+def _anm_bone_corrections(arm_data):
+    """{bone name: C} with C = inverse(game rest world) @ Blender rest matrix.
 
-    seq_arr_ptr = struct.unpack_from('>I', data, 4)[0]
-    _bank_id, seq_cnt, _track_cnt, _kf_cnt = struct.unpack_from('>HHHH', data, 8)
+    Only for armatures imported with "Reorient Bones" on: build_armature aims
+    each bone's tail at its first child, so a Blender bone's axes differ from
+    the game bone's. ANM keyframes are game locals; posing bone i to (game
+    animated world) @ C_i deforms the mesh as the game does and leaves the
+    rest pose untouched (the importer applies
+    inverse(E_local) @ inverse(C_parent) @ L_anm @ C_bone).
 
-    sequences = []
-    for si in range(seq_cnt):
-        seq_off = seq_arr_ptr + si * 12
-        _name_ptr, track_arr_ptr, track_cnt, _pad = struct.unpack_from('>IIHH', data, seq_off)
+    Game rest worlds come from the game_* bone properties and the parent chain
+    (HeadPosition matches their translations). A bone with
+    SluggiesInheritTransform off has no game parent; its animation still
+    follows its Blender parent here (no stock model has such a child bone).
+    """
+    game_world = {}
 
-        tracks = []
-        for ti in range(track_cnt):
-            t_off = track_arr_ptr + ti * 16
-            anm_time_raw, kf_arr_ptr, kf_cnt, track_id = struct.unpack_from('>fIHH', data, t_off)
-            quantize_info, anm_type_raw, interp_type, _replace = struct.unpack_from('>BBBB', data, t_off + 12)
-            anm_type = anm_type_raw & 0x1F
+    def world_of(bone):
+        if bone.name not in game_world:
+            local = _game_srt_matrix(bone.get('game_translation', (0, 0, 0)),
+                                     bone.get('game_quaternion', (-1, 0, 0, 0)),
+                                     bone.get('game_scale', (1, 1, 1)))
+            if bone.parent is not None and bone.get('SluggiesInheritTransform', True):
+                local = world_of(bone.parent) @ local
+            game_world[bone.name] = local
+        return game_world[bone.name]
 
-            active_channels = []
-            for bit in [3, 1, 0]:
-                if anm_type & (1 << bit):
-                    active_channels.append(bit)
-
-            keyframes = []
-            for ki in range(kf_cnt):
-                kf_off = kf_arr_ptr + ki * 12
-                time_val = struct.unpack_from('>f', data, kf_off)[0]
-                setting_bank_ptr = struct.unpack_from('>I', data, kf_off + 4)[0]
-
-                settings = {}
-                bank_pos = setting_bank_ptr
-                for ch in active_channels:
-                    if ch == 3:
-                        qi = 0x3E
-                        vals, bank_pos = _read_quantized(data, bank_pos, 1, 4, qi)
-                        xyzw = vals[0]
-                        settings[ch] = [-xyzw[3], xyzw[0], xyzw[1], xyzw[2]]
-                    else:
-                        vals, bank_pos = _read_quantized(data, bank_pos, 1, 3, quantize_info)
-                        settings[ch] = vals[0]
-
-                keyframes.append({'time': time_val, 'settings': settings})
-
-            tracks.append({
-                'track_id': track_id,
-                'anm_time': anm_time_raw,
-                'active_channels': active_channels,
-                'keyframes': keyframes,
-            })
-
-        sequences.append({'tracks': tracks})
-
-    return sequences
+    corrections = {}
+    for bone in arm_data.bones:
+        world = world_of(bone)
+        # A collapsed (zero-scale) rest bone has no inverse: skip its correction.
+        corrections[bone.name] = (world.inverted() @ bone.matrix_local
+                                  if abs(world.determinant()) > 1e-12 else mathutils.Matrix.Identity(4))
+    return corrections
 
 
 def _to_bytes(data) -> bytes:
@@ -1133,15 +1099,17 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
     return obj
 
 
-def build_armature(name, bone_list, collection, skin_data=None):
+def build_armature(name, bone_list, collection, skin_data=None, reorient=True):
     """Create a Blender Armature from a BoneHierarchy list and link it to *collection*.
 
     The armature object is named *name* (the imported .sluggie file name without
-    its extension). Bone names are ``bone_<id>``. Tails are aimed at the first
-    child's head when available; leaf bones continue their parent's direction
-    instead, falling back to a small global-Z offset when there is no usable
-    parent so the bone stays visible in the viewport. Returns the armature
-    object.
+    its extension). Bone names are ``bone_<id>``. With *reorient* (the import
+    option "Reorient Bones"), tails are aimed at the first child's head when
+    available; leaf bones continue their parent's direction instead, falling
+    back to a small global-Z offset when there is no usable parent so the bone
+    stays visible in the viewport. Without it, that step is skipped and every
+    bone keeps the game's own rest orientation (its local +Y is the bone axis,
+    one length for all bones). Returns the armature object.
     """
     arm_data = bpy.data.armatures.new(name)
     arm_obj  = bpy.data.objects.new(name, arm_data)
@@ -1191,9 +1159,28 @@ def build_armature(name, bone_list, collection, skin_data=None):
             if parent_eb:
                 eb.parent = parent_eb
         # Aim tail towards first child when available
-        if bd['BoneId'] in first_child_head:
+        if reorient and bd['BoneId'] in first_child_head:
             ch = first_child_head[bd['BoneId']]
             eb.tail = (ch[0], ch[1], ch[2])
+
+    heads = [bd['HeadPosition'] for bd in bone_list]
+    extent = max(
+        max(h[axis] for h in heads) - min(h[axis] for h in heads)
+        for axis in range(3)
+    ) if heads else 0.0
+
+    if not reorient:
+        # No reorientation: each bone takes the game's rest rotation (bone axis =
+        # the game bone's local +Y), all at one length scaled to the model.
+        length = max(extent * 0.03, LEAF_TAIL_FALLBACK * 0.5)
+        abs_mats = _compute_bone_absolute_matrices(bone_list)
+        for bd in bone_list:
+            eb = edit_bones.get(bone_id_to_name.get(bd['BoneId'], ''))
+            if eb is None:
+                continue
+            eb.tail = eb.head + mathutils.Vector((0.0, length, 0.0))
+            rot = abs_mats[bd['BoneId']].to_quaternion() if bd['BoneId'] in abs_mats else mathutils.Quaternion()
+            eb.matrix = mathutils.Matrix.Translation(eb.head) @ rot.to_matrix().to_4x4()
 
     # Leaf bones have no child to aim at. Continuing the parent's direction
     # keeps chain terminators — fingertips and the like — in line with the
@@ -1207,17 +1194,12 @@ def build_armature(name, bone_list, collection, skin_data=None):
     # invisible sliver. Clamp into a band scaled to the model's own bone
     # spread, falling back to the fixed stub length for models too small or
     # too degenerate to derive a scale from.
-    heads = [bd['HeadPosition'] for bd in bone_list]
-    extent = max(
-        max(h[axis] for h in heads) - min(h[axis] for h in heads)
-        for axis in range(3)
-    ) if heads else 0.0
     leaf_max = max(extent * 0.05, LEAF_TAIL_FALLBACK)
     leaf_min = LEAF_TAIL_FALLBACK * 0.5
 
     # Runs after the loop above so every parent already has its final tail.
     for bd in bone_list:
-        if bd['BoneId'] in first_child_head:
+        if not reorient or bd['BoneId'] in first_child_head:
             continue
         eb = edit_bones.get(bone_id_to_name.get(bd['BoneId'], ''))
         if eb is None or eb.parent is None:
@@ -1394,6 +1376,13 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
 
     filename_ext = ".sluggie"
     filter_glob: StringProperty(default="*.sluggie", options={"HIDDEN"}) # type: ignore[valid-type]
+    reorient_bones: BoolProperty(  # type: ignore[valid-type]
+        name="Reorient Bones",
+        description=("Aim each bone at its first child (leaf bones continue their parent) "
+                     "for a readable skeleton. Off: bones keep the game's own rest "
+                     "orientation. Only changes how the skeleton looks in Blender"),
+        default=True,
+    )
 
     def execute(self, context):
         with open(self.filepath, 'r') as f:
@@ -1421,7 +1410,9 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
             # by their VertexBufferOffset custom property and skin weights are
             # read from bone_<id> vertex groups — so this is cosmetic.
             base_name = os.path.splitext(os.path.basename(self.filepath))[0]
-            arm_obj = build_armature(base_name, bone_list, collection, model.get("SkinData"))
+            arm_obj = build_armature(base_name, bone_list, collection, model.get("SkinData"),
+                                     reorient=self.reorient_bones)
+            arm_obj['SluggiesBonesReoriented'] = bool(self.reorient_bones)
             abs_bone_mats = _compute_bone_absolute_matrices(bone_list)
             # So Add submesh (PLAN_AddSubmesh.md Phase 5 step 3) can find this
             # model's tex/ directory without asking the user or reading the
@@ -1553,8 +1544,10 @@ class SLUGGIES_OT_import_anm(bpy.types.Operator, ImportHelper):
 
     filename_ext = ".anm"
     filter_glob: StringProperty(default="*.anm", options={"HIDDEN"})  # type: ignore[valid-type]
-    files: CollectionProperty(type=bpy.types.OperatorFileListElement)  # type: ignore[valid-type]
-    directory: StringProperty(subtype='DIR_PATH')  # type: ignore[valid-type]
+    # files + directory let the file browser take a multi-selection.
+    files: CollectionProperty(type=bpy.types.OperatorFileListElement,  # type: ignore[valid-type]
+                              options={'HIDDEN', 'SKIP_SAVE'})
+    directory: StringProperty(subtype='DIR_PATH', options={'HIDDEN', 'SKIP_SAVE'})  # type: ignore[valid-type]
 
     def execute(self, context):
         arm_obj = context.active_object
@@ -1573,6 +1566,13 @@ class SLUGGIES_OT_import_anm(bpy.types.Operator, ImportHelper):
             if tid != 0xFFFF:
                 track_to_bone[tid] = bone.name
 
+        # Reoriented bones need their keyframes moved onto the tail-aimed bone
+        # frames; others share the game's rest frames (all stock rest scales
+        # are 1). Armatures from before the "Reorient Bones" option (no
+        # property) were reoriented.
+        corrections = (_anm_bone_corrections(arm_data)
+                       if arm_obj.get('SluggiesBonesReoriented', True) else None)
+
         if not self.files:
             file_list = [os.path.basename(self.filepath)]
         else:
@@ -1590,18 +1590,22 @@ class SLUGGIES_OT_import_anm(bpy.types.Operator, ImportHelper):
                 raw = f.read()
 
             try:
-                sequences = _parse_anm(raw)
-            except ValueError as e:
+                anm = AnmFormat.parse(raw)
+            except (ValueError, struct.error) as e:
                 self.report({"WARNING"}, f"{file_entry}: {e}")
                 continue
+            sequences = anm['sequences']
+            group = anm_group_name(filepath)
 
             for seq_i, sequence in enumerate(sequences):
                 action_name = f"{anm_name}_seq{seq_i}"
                 action = bpy.data.actions.new(name=action_name)
                 action.use_fake_user = True
+                _store_anm_metadata(action, anm, group, filepath, seq_i, set(track_to_bone))
                 arm_obj.animation_data.action = action
+                keyed = set()
 
-                for track in sequence['tracks']:
+                for track in sequence:
                     tid = track['track_id']
                     bone_name = track_to_bone.get(tid)
                     if bone_name is None:
@@ -1613,11 +1617,14 @@ class SLUGGIES_OT_import_anm(bpy.types.Operator, ImportHelper):
 
                     bone_mat = pose_bone.bone.matrix_local
                     if pose_bone.parent:
-                        parent_mat = pose_bone.parent.bone.matrix_local
-                        E_local = parent_mat.inverted() @ bone_mat
+                        E_local = pose_bone.parent.bone.matrix_local.inverted() @ bone_mat
                     else:
                         E_local = bone_mat
                     inv_E_local = E_local.inverted()
+                    if corrections is not None:
+                        inv_C_parent = (corrections[pose_bone.parent.name].inverted()
+                                        if pose_bone.parent else mathutils.Matrix.Identity(4))
+                        C_bone = corrections[bone_name]
 
                     b = arm_data.bones[bone_name]
                     rest_trans = list(b.get('game_translation', [0, 0, 0]))
@@ -1633,7 +1640,7 @@ class SLUGGIES_OT_import_anm(bpy.types.Operator, ImportHelper):
                     fc_rot = [action.fcurve_ensure_for_datablock(arm_obj, data_path_rot, index=i) for i in range(4)]
                     fc_scl = [action.fcurve_ensure_for_datablock(arm_obj, data_path_scl, index=i) for i in range(3)]
 
-                    for kf in track['keyframes']:
+                    for kf in track['keys']:
                         frame = kf['time']
                         settings = kf['settings']
 
@@ -1641,12 +1648,14 @@ class SLUGGIES_OT_import_anm(bpy.types.Operator, ImportHelper):
                         scale = settings.get(1, rest_scale)
                         quat = settings.get(3, rest_quat)
 
-                        T = mathutils.Matrix.Translation(trans)
-                        R = mathutils.Quaternion((-quat[0], quat[1], quat[2], quat[3])).to_matrix().to_4x4()
-                        S = mathutils.Matrix.Diagonal((*scale, 1)).to_4x4()
-                        L_anm = T @ R @ S
+                        L_anm = _game_srt_matrix(trans, quat, scale)
 
-                        matrix_basis = inv_E_local @ L_anm
+                        # Keyframes are game-space locals (child in game parent
+                        # frame); the rest SRT gives identity either way.
+                        if corrections is not None:
+                            matrix_basis = inv_E_local @ inv_C_parent @ L_anm @ C_bone
+                        else:
+                            matrix_basis = inv_E_local @ L_anm
                         loc, rot_q, scl = matrix_basis.decompose()
 
                         for i in range(3):
@@ -1658,6 +1667,22 @@ class SLUGGIES_OT_import_anm(bpy.types.Operator, ImportHelper):
 
                     for fc in fc_loc + fc_rot + fc_scl:
                         fc.update()
+                    keyed.add(bone_name)
+
+                # The game holds a bone without a track at its rest pose. Key
+                # it there, so switching to this action does not keep the
+                # pose another action left on it.
+                for pose_bone in arm_obj.pose.bones:
+                    if pose_bone.name in keyed:
+                        continue
+                    pose_bone.rotation_mode = 'QUATERNION'
+                    for prop, values in (('location', (0.0, 0.0, 0.0)),
+                                         ('rotation_quaternion', (1.0, 0.0, 0.0, 0.0)),
+                                         ('scale', (1.0, 1.0, 1.0))):
+                        data_path = f'pose.bones["{pose_bone.name}"].{prop}'
+                        for i, value in enumerate(values):
+                            fc = action.fcurve_ensure_for_datablock(arm_obj, data_path, index=i)
+                            fc.keyframe_points.insert(0, value, options={'FAST'})
 
                 total_actions += 1
 
@@ -1665,22 +1690,50 @@ class SLUGGIES_OT_import_anm(bpy.types.Operator, ImportHelper):
         return {"FINISHED"}
 
 
-# ANM import is hidden from the File > Import menu for now.
-# To reactivate: uncomment this function plus the append/remove lines
-# in register()/unregister() below.
-# def menu_func_import_anm(self, context):
-#     self.layout.operator(SLUGGIES_OT_import_anm.bl_idname, text="Sluggers animation (.anm)")
+def anm_group_name(filepath):
+    """Animation group label of an .anm file: "<character folder> <file
+    stem>" for an export's <character>/anm/<n>.anm, else the file stem."""
+    stem = os.path.splitext(os.path.basename(filepath))[0]
+    folder = os.path.dirname(os.path.abspath(filepath))
+    if os.path.basename(folder).lower() == 'anm':
+        character = os.path.basename(os.path.dirname(folder))
+        if character:
+            return f"{character} {stem}"
+    return stem
+
+
+def _store_anm_metadata(action, anm, group, filepath, seq_index, bone_track_ids):
+    """What the .anm export needs to write this sequence back: the group,
+    the sequence's place in it, and its original track list (tracks of
+    armature bones keep only their header, the rest their data)."""
+    records = AnmFormat.track_records(anm['sequences'][seq_index], bone_track_ids)
+    action['SluggiesAnmGroup'] = group
+    action['SluggiesAnmSource'] = filepath
+    action['SluggiesAnmMagic'] = anm['magic']
+    action['SluggiesAnmBankId'] = anm['bank_id']
+    action['SluggiesAnmSequence'] = seq_index
+    action['SluggiesAnmSequenceCount'] = len(anm['sequences'])
+    action['SluggiesAnmTracks'] = FieldCodec.encode_field(AnmFormat.dumps_records(records))
+    # The sequence length, editable as the action's manual frame range.
+    length = max((t['length'] for t in anm['sequences'][seq_index]), default=0.0)
+    action.use_frame_range = True
+    action.frame_start = 0
+    action.frame_end = max(length, 1.0)
+
+
+def menu_func_import_anm(self, context):
+    self.layout.operator(SLUGGIES_OT_import_anm.bl_idname, text="Sluggers animation (.anm)")
 
 
 def register():
     bpy.utils.register_class(SLUGGIES_OT_import)
     bpy.utils.register_class(SLUGGIES_OT_import_anm)
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
-    # bpy.types.TOPBAR_MT_file_import.append(menu_func_import_anm)  # hidden: ANM import
+    bpy.types.TOPBAR_MT_file_import.append(menu_func_import_anm)
 
 
 def unregister():
-    # bpy.types.TOPBAR_MT_file_import.remove(menu_func_import_anm)  # hidden: ANM import
+    bpy.types.TOPBAR_MT_file_import.remove(menu_func_import_anm)
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
     bpy.utils.unregister_class(SLUGGIES_OT_import_anm)
     bpy.utils.unregister_class(SLUGGIES_OT_import)
