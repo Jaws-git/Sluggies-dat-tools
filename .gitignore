@@ -11,6 +11,7 @@ __pycache__
 anim_info
 
 *.brstm
+*.brsar
 *.wad
 *.thp
 *.sluggie
@@ -20,6 +21,7 @@ anim_info
 
 SluggiesTools/Debug/
 2_Output_Models/
+2_Output_Assets/
 3_Output_Dat/dt_na.dat
 3_Output_Dat/main.dol
 3_Output_Dat/fst.bin
@@ -43,6 +45,11 @@ PLAN_*.md
 build.bat
 sluggies-dat-tools.exe
 
+
 Dolphin-x64/
 Roster_Packs/
+Sound_Packs/
+Sound_FX/
+sound_volumes.json
+*.sluggiesvoice
 *.sluggiesroster
