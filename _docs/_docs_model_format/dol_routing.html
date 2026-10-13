@@ -76,6 +76,18 @@
     <p>The block a patch replaces is zero-filled, but only when no entry in the output <code>main.dol</code> still points into it (in any language slot). Otherwise it is left in place with a warning, so that one route's patch never blanks another route's live bytes.</p>
     <p>Unpatching restores the entry from the untouched input <code>main.dol</code>, restores the original bytes from the input <code>dt_na.dat</code>, and zero-fills the hammerspace range. Unused-character entries are the exception (below). The implementation is <code>SluggiesTools/Hammerspace/HammerspaceHelper.py</code> (<code>readDolEntry</code>, <code>patchDolEntry</code>, <code>findSharedEntries</code>, <code>liveRoutesInto</code>, <code>removeModelFromHammerspace</code>) and <code>ArchiveContainer.py</code>.</p>
 
+    <h2 id="defragmenting">Defragmenting hammerspace</h2>
+    <p>Zero-filled blocks are reused only when a later block fits into them, and <code>dt_na.dat</code> never shrinks by itself. <code>start.py --defrag-hammerspace [--dry-run]</code> (the GUI's Maintenance tab, <strong>Defragment</strong>) packs hammerspace again. The implementation is <code>SluggiesTools/Hammerspace/Defrag.py</code>.</p>
+    <ul>
+        <li><strong>Pointers:</strong> every hammerspace block is reached only through DOL directory records. That covers the stock table and the own model directories of new IDs, in all three language slots, and the model patcher, untangle clones and roster copies (layout, icon bank, name tables, own directories) alike. A move therefore rewrites only the offset words of those slots; length and allocation size stay. <code>fst.bin</code> gets the new file size.</li>
+        <li><strong>Extents:</strong> overlapping routes (shared entries, an archive and a member, language slots of different length) merge into one extent, which moves as a unit.</li>
+        <li><strong>Layout:</strong> extents keep their order and pack upward from <code>BASE_SIZE</code>, each keeping its alignment modulo 32, so nothing moves up. The file ends 128 bytes after the last block. Non-zero bytes that no route covers are dropped.</li>
+        <li><strong>Safety:</strong> the output <code>main.dol</code>, <code>fst.bin</code> and the <code>dt_na.dat</code> tail are backed up to <code>3_Output_Dat/_defrag_backup</code>. Every route is hashed before the move and checked after it, and any failure restores the backup. A backup left by an interrupted run is restored by the next run.</li>
+        <li>Only the region past <code>BASE_SIZE</code> can shrink. Vanilla ranges zero-filled by patches stay where they are.</li>
+        <li>The three files belong together: copy <code>dt_na.dat</code>, <code>main.dol</code> and <code>fst.bin</code> to the game at the same time.</li>
+    </ul>
+    <p>First run on a real output (2026-10-13): 94 extents, 24.80 MB live of 25.40 MB, 93 moved, 629,568 bytes saved. All 8,460 routes read the same bytes as before, and only the 273 offset words of moved routes changed in <code>main.dol</code>.</p>
+
     <h2 id="unused-characters">Unused characters (chunks 89-94)</h2>
     <p>The six unused characters have no model data of their own in the stock game. Every file entry of theirs points at a block that a playable character also uses (input DOL, 2026-09-27):</p>
     <table>

@@ -62,6 +62,7 @@ SOUND_EXPORT_SCRIPT = os.path.join(TOOLS_DIR, 'Sound', 'export_sounds.py')
 HS_DIR = os.path.join(TOOLS_DIR, 'Hammerspace')
 HS_MAIN_SCRIPT = os.path.join(HS_DIR, 'HammerspaceMain.py')
 UNTANGLE_POLICY_SCRIPT = os.path.join(HS_DIR, 'UntanglePolicy.py')
+DEFRAG_SCRIPT = os.path.join(HS_DIR, 'Defrag.py')
 ROSTER_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'runner.py')
 ROSTER_STATE_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'state_cli.py')
 ROSTER_SLOT_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'slot_cli.py')
@@ -150,6 +151,15 @@ def run_gui():
 def run_resplit_unused():
     """Give re-tangled unused-character routes their own block copies again."""
     subprocess.run(python_script_command(UNTANGLE_POLICY_SCRIPT), cwd=HS_DIR, check=True)
+
+
+def run_defrag_hammerspace(dry_run=False):
+    """Pack the live hammerspace blocks of 3_Output_Dat/dt_na.dat, repoint main.dol and shrink the file
+    (Hammerspace/Defrag.py). False when it was refused or failed (the files are then as before)."""
+    cmd = python_script_command(DEFRAG_SCRIPT)
+    if dry_run:
+        cmd.append('--dry-run')
+    return subprocess.run(cmd, cwd=HS_DIR).returncode == 0
 
 
 def run_roster(config=None, remove=False, dry_run=False, state=None, keep_stat_edits=False):
@@ -844,6 +854,7 @@ def parse_args():
             '  python start.py --save-roster my_roster.sluggiesroster\n'
             '  python start.py --load-roster my_roster.sluggiesroster --dry-run\n'
             '  python start.py --resplit-unused\n'
+            '  python start.py --defrag-hammerspace --dry-run\n'
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -872,6 +883,7 @@ def parse_args():
     mode.add_argument('--write-slot-equipment', nargs=3, metavar=('0xNN', 'FILE', 'BLOCK'), help="write a finished equipment block (a roster pack's) into a slot's file 2-5 (2 bat, 3 left glove, 4 right glove, 5 extra bat) as it is (used by --load-roster)")
     mode.add_argument('--write-slot-animation', nargs=3, metavar=('0xNN', 'FILE', 'ANM'), help="write an animation bank (.anm, e.g. from the Blender add-on) into a slot's file 6-14 as it is; refused unless it fits the slot's skeleton (used by the GUI's Replace animation)")
     mode.add_argument('--resplit-unused', action='store_true', help='repair: give unused-character routes (dirs 89-94) that point at a playable character\'s block their own copy again')
+    mode.add_argument('--defrag-hammerspace', action='store_true', help='pack the hammerspace blocks of 3_Output_Dat/dt_na.dat without gaps, repoint main.dol and shrink the file (with --dry-run: report only)')
     mode.add_argument('--roster', '--roster-dev', dest='roster', action='store_true', help='inject a roster configuration (--config, e.g. from 1_Input/_RosterConfigurations) into 3_Output_Dat, replacing the previous injection')
     mode.add_argument('--roster-state', action='store_true', help='read the draft grid from 3_Output_Dat into _gui/roster_state.json (used by the GUI)')
     mode.add_argument('--roster-derive', action='store_true', help='write the roster config that rebuilds 3_Output_Dat as it is into _gui/derived (read -> rebuild; then --roster --state)')
@@ -920,14 +932,14 @@ def parse_args():
         parser.error('--anim-glb can only be used with --export --glb.')
     if args.use_output and not args.export_icons:
         parser.error('--use-output can only be used with --export-icons.')
-    if args.dry_run and not (args.roster or args.game_options or args.load_roster
+    if args.dry_run and not (args.roster or args.game_options or args.load_roster or args.defrag_hammerspace
                              or args.patch_slot or args.clear_slot or args.rename_slot or args.set_voice
                              or args.set_char_voice or args.set_species_clip or args.copy_slot
                              or args.set_stats or args.set_icon or args.apply_slots or args.apply_stat_edits):
         parser.error('--dry-run can only be used with --roster, --game-options, --patch-slot, '
                      '--clear-slot, --copy-slot, --rename-slot, --set-voice, --set-char-voice, --set-species-clip, '
                      '--set-stats, --set-icon, --apply-slots, '
-                     '--apply-stat-edits or --load-roster.')
+                     '--apply-stat-edits, --load-roster or --defrag-hammerspace.')
     if args.equipment and not (args.patch_slot or args.clear_slot):
         parser.error('--equipment can only be used with --patch-slot or --clear-slot.')
     if args.no_gear and not args.patch_slot:
@@ -966,7 +978,7 @@ def parse_args():
         parser.error('--config and --state cannot be used together.')
     if args.roster and not (args.config or args.remove or args.state):
         parser.error('--roster needs --config PATH (a roster configuration), --state PATH or --remove.')
-    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.copy_slot, args.export_slot, args.rename_slot, args.set_voice, args.set_char_voice, args.set_species_clip, args.set_stats, args.set_icon, args.apply_slots, args.save_roster, args.load_roster, args.write_slot_blocks, args.write_slot_equipment, args.write_slot_animation, args.resplit_unused, args.export, args.export_icons, args.export_sounds, args.roster, args.roster_state, args.roster_derive, args.game_options, args.stat_bridge_export, args.apply_stat_edits]):
+    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.copy_slot, args.export_slot, args.rename_slot, args.set_voice, args.set_char_voice, args.set_species_clip, args.set_stats, args.set_icon, args.apply_slots, args.save_roster, args.load_roster, args.write_slot_blocks, args.write_slot_equipment, args.write_slot_animation, args.resplit_unused, args.defrag_hammerspace, args.export, args.export_icons, args.export_sounds, args.roster, args.roster_state, args.roster_derive, args.game_options, args.stat_bridge_export, args.apply_stat_edits]):
         if len(sys.argv) == 1:
             args.gui = True
         else:
@@ -1061,6 +1073,9 @@ def main() -> int:
             run_gui()
         elif args.resplit_unused:
             run_resplit_unused()
+        elif args.defrag_hammerspace:
+            if not run_defrag_hammerspace(dry_run=args.dry_run):
+                return 1
         elif args.roster and args.config and not (args.fresh or args.remove):
             if not run_roster_switch(args.config, dry_run=args.dry_run):
                 return 1

@@ -627,6 +627,11 @@ directory record is 48 bytes: three language slots of (length, offset,
 allocation). **The slots are English, French, Spanish** (slot 2 holds
 "Toad rouge", slot 3 "Toad rojo" in the name table).
 
+Every roster copy is DOL-routed, so `start.py --defrag-hammerspace` (GUI:
+Maintenance, Defragment) moves it with the model blocks and repoints its
+records; see "Defragmenting hammerspace" in
+`_docs/_docs_model_format/dol_routing.html`.
+
 Files the expansion moves: the select-screen layout (dir 119 file 19 = dir 0
 file 1591, record `0x806920B8`, three copies of `0x138E50` bytes), the icon
 bank (dir 0 file 1574, record `0x68DE88` in file offsets) and the name table
