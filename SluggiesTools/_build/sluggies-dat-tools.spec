@@ -28,7 +28,8 @@ a = Analysis(
         str(ROOT / "SluggiesTools" / "InplacePatcher"),
     ],
     binaries=dearpygui_binaries,
-    datas=dearpygui_datas,
+    # the window icon (gui._app_icon_path reads it from _internal/icons/)
+    datas=dearpygui_datas + [(str(Path(SPECPATH) / "sluggies-dat-tools.ico"), "icons")],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
@@ -55,6 +56,8 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    # Tiny Kong's MSS art (Tiny_Kong_MSS_art.webp, 120x120).
+    icon=str(Path(SPECPATH) / "sluggies-dat-tools.ico"),
 )
 
 coll = COLLECT(

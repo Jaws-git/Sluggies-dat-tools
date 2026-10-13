@@ -87,6 +87,16 @@ _FONT_TAG = 'ui_font'
 _BUNDLED_FONT_REL = os.path.join('SluggiesTools', 'Roster', 'fonts', 'OpenSans.ttf')
 
 
+def _app_icon_path():
+    """The window icon: bundled into _internal/icons/ by the PyInstaller spec in
+    frozen builds, read from SluggiesTools/_build/ in source builds. None when missing."""
+    if getattr(sys, 'frozen', False):
+        path = os.path.join(getattr(sys, '_MEIPASS', ''), 'icons', 'sluggies-dat-tools.ico')
+    else:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '_build', 'sluggies-dat-tools.ico')
+    return path if os.path.isfile(path) else None
+
+
 def _app_base_dir():
     """Directory that holds SluggiesTools/: the repo in source builds, the
     application folder next to the executable in frozen builds (the same ROOT
@@ -914,8 +924,9 @@ class SluggiesGui:
                     dpg.add_button(label='Stop', tag='stop_button', enabled=False, callback=self.stop_command)
                     dpg.add_button(label='Clear', callback=self.clear_console)
         # the close button asks first while a command runs or grid edits are pending
+        icon = _app_icon_path() or ''
         dpg.create_viewport(title=_VIEWPORT_TITLE, width=_VIEWPORT_SIZE[0], height=_VIEWPORT_SIZE[1],
-                            disable_close=True)
+                            disable_close=True, small_icon=icon, large_icon=icon)
         dpg.set_exit_callback(self._on_close_request)
         dpg.set_primary_window('main_window', True)
         dpg.set_viewport_resize_callback(lambda *_: self.grid_tab.on_viewport_resize())
