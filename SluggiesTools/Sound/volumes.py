@@ -26,7 +26,6 @@ LIBRARY_FILE = 'sound_volumes.json'      # beside 1_Input
 FORMAT = 1
 MAX_VOLUME = 127
 VOLUME_OFFSET = 0x14                     # in a sound entry
-ARCHIVE = os.path.join('sound_NA', 'MY2.brsar')
 
 
 class VolumeError(ValueError):
@@ -115,14 +114,10 @@ def apply(data, root_dir):
     return (out if changed else data), lines
 
 
-def _paths(root_dir):
-    return os.path.join(root_dir, '1_Input', ARCHIVE), os.path.join(root_dir, '3_Output_Dat', ARCHIVE)
-
-
 def current_volume(root_dir, name):
     """The volume sound ``name`` plays with in the game now: ``3_Output_Dat``'s archive when there is one, else
     ``1_Input``'s; None when no archive names it."""
-    input_path, output_path = _paths(root_dir)
+    input_path, output_path = brsar.archive_paths(root_dir)
     path = output_path if os.path.isfile(output_path) else input_path
     for s in brsar.Brsar.from_file(path).sounds():
         if s.name == name:
@@ -134,7 +129,7 @@ def game_volumes(root_dir):
     """``{sound name: (volume in the game now, stock volume)}``: the game's from ``3_Output_Dat``'s archive when
     there is one (else ``1_Input``'s, so equal to the stock one), the stock from ``1_Input``'s. Empty without an
     input archive."""
-    input_path, output_path = _paths(root_dir)
+    input_path, output_path = brsar.archive_paths(root_dir)
     if not os.path.isfile(input_path):
         return {}
     stock = {s.name: s.volume for s in brsar.Brsar.from_file(input_path).sounds()}
@@ -148,10 +143,10 @@ def set_volume(root_dir, name, volume):
     into ``3_Output_Dat/sound_NA/MY2.brsar`` (made first, with the sound effects, when missing). Returns
     ``(old volume in the output, stock volume)``."""
     volume = check_volume(volume)
-    input_path, output_path = _paths(root_dir)
+    input_path, output_path = brsar.archive_paths(root_dir)
     stock = next((s for s in brsar.Brsar.from_file(input_path).sounds() if s.name == name), None)
     if stock is None:
-        raise VolumeError(f'{name}: no sound of that name in 1_Input/{ARCHIVE.replace(os.sep, "/")}')
+        raise VolumeError(f'{name}: no sound of that name in 1_Input/{brsar.ARCHIVE.replace(os.sep, "/")}')
     if not os.path.isfile(output_path):
         from Sound import effects
         effects.sync_output(root_dir)                      # the output archive from 1_Input's, effects in
@@ -159,7 +154,7 @@ def set_volume(root_dir, name, volume):
         base = handle.read()
     old = next((s.volume for s in brsar.Brsar(base).sounds() if s.name == name), None)
     if old is None:
-        raise VolumeError(f'{name}: no sound of that name in 3_Output_Dat/{ARCHIVE.replace(os.sep, "/")}')
+        raise VolumeError(f'{name}: no sound of that name in 3_Output_Dat/{brsar.ARCHIVE.replace(os.sep, "/")}')
     library = load_library(root_dir)
     if volume == stock.volume:
         library.pop(name, None)

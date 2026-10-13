@@ -27,8 +27,7 @@ import threading
 
 import dearpygui.dearpygui as dpg
 
-from Sound import ffmpeg
-
+import gui_audio
 import gui_grid
 import gui_volume
 
@@ -42,8 +41,6 @@ _CHANGED = (110, 170, 255, 255)
 _WINDOWS = os.name == 'nt'
 LIST_W = 340
 BUTTON_H = 28
-WAV_FILTERS = [('Sound files', ';'.join('*' + e for e in ('.wav', '.wave', '.rwav') + ffmpeg.AUDIO_EXTENSIONS)),
-               ('WAV files', '*.wav;*.wave'), ('Encoded clips', '*.rwav'), ('All files', '*.*')]
 PACK_FILTERS = [('Voice packs', '*.sluggiesvoice'), ('All files', '*.*')]
 CLIP_DIR_SETTING = 'sounds_last_clip_dir'      # the GUI settings key: the folder the last Replace... WAV came from
 
@@ -67,7 +64,8 @@ class SoundsTab:
         self.volumes = {}                    # {sound name: (volume in the game, stock volume)}
         self.selected = None                 # ('stock', species) or ('custom', name), or None
         self.working = False                 # a clip is being encoded
-        self._playing = None                 # the temp WAV file winsound plays from
+        self.player = gui_audio.ClipPlayer('sluggies_clip_')
+        self.picks = gui_audio.FilePicks(app)
         self.grid.on_pending_changed.append(self._pending_changed)
         self.grid.on_state_read.append(self._state_read)
 
@@ -94,31 +92,9 @@ class SoundsTab:
         with dpg.theme(tag='sounds_selected_theme'):
             with dpg.theme_component(dpg.mvButton):
                 dpg.add_theme_color(dpg.mvThemeCol_Button, (60, 110, 80, 255))
-        # the built-in file dialogs, used when the Windows one is off (gui.pick_files); their result goes to the
-        # callback the last pick stored
-        start = self.app.models_dir if os.path.isdir(self.app.models_dir) else self.app.root_dir
-        for tag, extensions, save in (('sounds_wav_dialog', ('.wav', '.rwav') + ffmpeg.AUDIO_EXTENSIONS, False),
-                                      ('sounds_pack_save_dialog', ('.sluggiesvoice',), True),
-                                      ('sounds_pack_load_dialog', ('.sluggiesvoice',), False)):
-            with dpg.file_dialog(directory_selector=False, show=False, modal=True, tag=tag, width=760, height=460,
-                                 callback=self._on_fallback_chosen, cancel_callback=lambda *_: None,
-                                 default_path=start, default_filename='pack' if save else ''):
-                for ext in extensions:
-                    dpg.add_file_extension(ext, color=(120, 180, 255, 255))
-                dpg.add_file_extension('.*')
-        self._fallback = None                # on_files of the pick the built-in dialog serves
-
-    def _on_fallback_chosen(self, _sender, app_data):
-        app_data = app_data or {}
-        paths = list(app_data.get('selections', {}).values()) or [app_data.get('file_path_name')]
-        callback, self._fallback = self._fallback, None
-        if callback is not None:
-            callback([p for p in paths if p])
-
-    def _pick(self, tag, title, filters, on_files, **kwargs):
-        self._fallback = on_files
-        if not self.app.pick_files(tag, title, filters, on_files, on_cancel=lambda: None, **kwargs):
-            self._fallback = None
+        self.picks.add_dialog('sounds_wav_dialog', gui_audio.sound_extensions(rwav=True))
+        self.picks.add_dialog('sounds_pack_save_dialog', ('.sluggiesvoice',), save=True)
+        self.picks.add_dialog('sounds_pack_load_dialog', ('.sluggiesvoice',))
 
     def on_open(self):
         """The tab was opened: read the archive the first time."""
@@ -141,14 +117,12 @@ class SoundsTab:
             try:
                 brsar, _clips, sound_packs = _sound_modules()
                 result['custom'], result['problems'] = sound_packs.list_packs(root)
-                archive_path = os.path.join(root, '1_Input', 'sound_NA', 'MY2.brsar')
+                archive_path, output_path = brsar.archive_paths(root)
                 dol_path = os.path.join(root, '1_Input', 'main.dol')
-                output_path = os.path.join(root, '3_Output_Dat', 'sound_NA', 'MY2.brsar')
                 if os.path.isfile(output_path):
                     result['output_size'] = os.path.getsize(output_path)
                 if not os.path.isfile(archive_path):
-                    result['error'] = ('1_Input/sound_NA/MY2.brsar is missing: copy the game\'s files/sound_NA folder '
-                                       '(MY2.brsar and stream/) into 1_Input/sound_NA.')
+                    result['error'] = gui_audio.MISSING_ARCHIVE
                 elif not os.path.isfile(dol_path):
                     result['error'] = '1_Input/main.dol is missing: the voice tables are read from it.'
                 else:
@@ -186,7 +160,8 @@ class SoundsTab:
 
     def _archive_line(self):
         parts = []
-        path = os.path.join(self.app.root_dir, '1_Input', 'sound_NA', 'MY2.brsar')
+        brsar, _clips, _sound_packs = _sound_modules()
+        path, _output = brsar.archive_paths(self.app.root_dir)
         if os.path.isfile(path):
             parts.append(f'Input archive: 1_Input/sound_NA/MY2.brsar ({os.path.getsize(path) / 2**20:.1f} MB)')
         if self.output_size is not None:
@@ -435,17 +410,8 @@ class SoundsTab:
     def _play_bytes(self, data):
         if not _WINDOWS:
             return
-        import tempfile
-        import winsound
-        # winsound cannot play asynchronously from memory: the WAV goes through a temp file (one, reused)
         try:
-            if self._playing is None:
-                handle, self._playing = tempfile.mkstemp(prefix='sluggies_clip_', suffix='.wav')
-                os.close(handle)
-            winsound.PlaySound(None, winsound.SND_PURGE)              # stop what still plays: the file is rewritten
-            with open(self._playing, 'wb') as f:
-                f.write(data)
-            winsound.PlaySound(self._playing, winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+            self.player.play(data)
         except (RuntimeError, OSError) as exc:
             self.app.log_line(f'[sounds] could not play the clip: {exc}', _WARN)
             self._status(f'Could not play the clip: {exc}', _ERROR)
@@ -479,16 +445,12 @@ class SoundsTab:
         self.working = True
         self._status(f'Encoding {os.path.basename(path)}...', _DIM)
         dpg.configure_item('sounds_spinner', show=True)
-        archive_path = os.path.join(self.app.root_dir, '1_Input', 'sound_NA', 'MY2.brsar')
+        archive_path, _output = _sound_modules()[0].archive_paths(self.app.root_dir)
         gain = gui_volume.gain_of('sounds_gain')
 
         def work():
             rwav = wav = None
             notes, error = [], None
-            # the encoder is a tight numpy loop that holds the GIL: give the render thread more turns meanwhile
-            import sys
-            interval = sys.getswitchinterval()
-            sys.setswitchinterval(0.0005)
             try:
                 brsar, clips, _sound_packs = _sound_modules()
                 if clips.is_rwav_name(path):
@@ -499,16 +461,15 @@ class SoundsTab:
                     if gain:
                         notes = [f'gain {gain:+.1f} dB not applied: {os.path.basename(path)} is encoded already']
                 else:
-                    rate, x = clips.read_wav(path)
-                    samples, notes = clips.prepare(rate, x, gain)
-                    archive = self.archive or brsar.Brsar.from_file(archive_path)
-                    rwav = clips.encode(samples, clips.voice_templates(archive))
+                    with gui_audio.render_turns():
+                        rate, x = clips.read_wav(path)
+                        samples, notes = clips.prepare(rate, x, gain)
+                        archive = self.archive or brsar.Brsar.from_file(archive_path)
+                        rwav = clips.encode(samples, clips.voice_templates(archive))
                     from Sound import wavfile
                     wav = wavfile.wav_bytes(clips.RATE, [samples])
             except Exception as exc:
                 error = str(exc)
-            finally:
-                sys.setswitchinterval(interval)
             self.app.output_queue.put(('call', self._encoded, on_done, rwav, wav, notes, error))
         threading.Thread(target=work, daemon=True).start()
 
@@ -526,25 +487,9 @@ class SoundsTab:
         on_done(rwav, wav)
 
     def _pick_clip(self, title, on_path):
-        """Pick one WAV, starting where the last one came from (remembered in the GUI settings), else in
-        2_Output_Assets/_SOUNDS."""
-        if self.app.picking:
-            return
-        start = next((d for d in (self.app.settings.get(CLIP_DIR_SETTING),
-                                  os.path.join(self.app.models_dir, '_SOUNDS')) if d and os.path.isdir(d)),
-                     self.app.models_dir)
-        if os.path.isdir(start):
-            dpg.configure_item('sounds_wav_dialog', default_path=start)
-
-        def picked(paths):
-            path = paths[0] if paths else None
-            if path:
-                try:
-                    self.app.settings.set(CLIP_DIR_SETTING, os.path.dirname(os.path.abspath(path)))
-                except OSError:
-                    pass                      # not remembered; the pick itself goes on
-            on_path(path)
-        self._pick('sounds_wav_dialog', title, WAV_FILTERS, picked, initial_dir=start)
+        """Pick one WAV (or .rwav), starting where the last one came from, else in 2_Output_Assets/_SOUNDS."""
+        self.picks.pick_sound('sounds_wav_dialog', title, CLIP_DIR_SETTING,
+                              (os.path.join(self.app.models_dir, '_SOUNDS'),), on_path, rwav=True)
 
     # ------------------------------------------------------------------ game packs
     def _on_replace_stock(self, head, moment):
@@ -554,9 +499,6 @@ class SoundsTab:
         _brsar, _clips, sound_packs = _sound_modules()
 
         def chosen(path):
-            if not path or not os.path.isfile(path):
-                return
-
             def done(rwav, _wav):
                 import hashlib
                 folder = os.path.join(self.app.root_dir, gui_grid.STAGED_CLIPS_REL)
@@ -590,9 +532,6 @@ class SoundsTab:
         _brsar, _clips, sound_packs = _sound_modules()
 
         def chosen(path):
-            if not path or not os.path.isfile(path):
-                return
-
             def done(rwav, wav):
                 try:
                     sound_packs.set_clip(pack, moment, rwav, wav, origin=path)
@@ -697,8 +636,8 @@ class SoundsTab:
                 return
             self._status(f'Exported to {written}.', _OK)
         os.makedirs(folder, exist_ok=True)
-        self._pick('sounds_pack_save_dialog', f'Export the voice pack {pack.name}', PACK_FILTERS, chosen,
-                   initial_dir=folder, save=True, default_ext=sound_packs.PACK_EXTENSION.lstrip('.'))
+        self.picks.pick('sounds_pack_save_dialog', f'Export the voice pack {pack.name}', PACK_FILTERS, chosen,
+                        initial_dir=folder, save=True, default_ext=sound_packs.PACK_EXTENSION.lstrip('.'))
 
     def _on_import(self):
         _brsar, _clips, sound_packs = _sound_modules()
@@ -720,8 +659,8 @@ class SoundsTab:
             self._status(f'Imported {pack.name!r} ({pack.count} clips).', _OK)
             self._draw_list()
             self._draw_detail()
-        self._pick('sounds_pack_load_dialog', 'Import a voice pack', PACK_FILTERS, chosen,
-                   initial_dir=sound_packs.packs_dir(self.app.root_dir))
+        self.picks.pick('sounds_pack_load_dialog', 'Import a voice pack', PACK_FILTERS, chosen,
+                        initial_dir=sound_packs.packs_dir(self.app.root_dir))
 
     def _on_restage(self, pack, users):
         """Stage the pack again on every slot that speaks with it (one edit at a time: each runs the staging

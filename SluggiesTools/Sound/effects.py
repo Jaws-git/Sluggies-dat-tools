@@ -40,7 +40,6 @@ FORMAT = 1
 VOICE_GROUP_RE = re.compile(r'group_v\d+|group_sel_v')
 MAX_SECONDS = 30.0                        # longest stock effect: about 2.5 s; longer sounds are cut
 BIG_FACTOR = 2.0                          # a wave this many times the stock one's size is noted
-ARCHIVE = os.path.join('sound_NA', 'MY2.brsar')
 
 
 class EffectError(ValueError):
@@ -336,8 +335,7 @@ def sync_output(root_dir):
     """Bring ``3_Output_Dat/sound_NA/MY2.brsar`` (made from ``1_Input``'s when missing) in line with the library:
     each effect sound plays its library wave, or the stock wave when the library has none. Returns
     ``(sounds changed, problems)``."""
-    input_path = os.path.join(root_dir, '1_Input', ARCHIVE)
-    output_path = os.path.join(root_dir, '3_Output_Dat', ARCHIVE)
+    input_path, output_path = brsar.archive_paths(root_dir)
     with open(input_path, 'rb') as handle:
         stock_bytes = handle.read()
     if os.path.isfile(output_path):

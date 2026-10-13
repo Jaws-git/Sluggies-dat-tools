@@ -20,13 +20,11 @@ reads it again.
 """
 
 import os
-import tempfile
 import threading
 
 import dearpygui.dearpygui as dpg
 
-from Sound import ffmpeg
-
+import gui_audio
 import gui_volume
 
 _DIM = (200, 200, 200, 255)
@@ -37,8 +35,6 @@ _ERROR = (255, 120, 110, 255)
 _CHANGED = (110, 170, 255, 255)
 _WINDOWS = os.name == 'nt'
 BUTTON_H = 26
-WAV_FILTERS = [('Sound files', ';'.join('*' + e for e in ('.wav', '.wave') + ffmpeg.AUDIO_EXTENSIONS)),
-               ('WAV files', '*.wav;*.wave'), ('All files', '*.*')]
 WAV_DIR_SETTING = 'effects_last_wav_dir'       # the GUI settings key: the folder the last Replace... file came from
 
 
@@ -57,8 +53,8 @@ class EffectsTab:
         self.volumes = {}                    # {sound name: (volume in the game, stock volume)}
         self.error = None                    # why the list could not be read
         self.working = None                  # the name of the sound being encoded / written, or None
-        self._playing = None                 # the temp WAV winsound plays from
-        self._fallback = None                # on_files of the pick the built-in dialog serves
+        self.player = gui_audio.ClipPlayer('sluggies_fx_')
+        self.picks = gui_audio.FilePicks(app)
 
     # ------------------------------------------------------------------ build
     def build(self):
@@ -83,20 +79,7 @@ class EffectsTab:
             dpg.add_separator()
             with dpg.child_window(tag='effects_list', border=True):
                 dpg.add_text('Reading...', color=_FAINT)
-        start = self.app.models_dir if os.path.isdir(self.app.models_dir) else self.app.root_dir
-        with dpg.file_dialog(directory_selector=False, show=False, modal=True, tag='effects_wav_dialog', width=760,
-                             height=460, callback=self._on_fallback_chosen, cancel_callback=lambda *_: None,
-                             default_path=start):
-            for ext in ('.wav',) + ffmpeg.AUDIO_EXTENSIONS:
-                dpg.add_file_extension(ext, color=(120, 180, 255, 255))
-            dpg.add_file_extension('.*')
-
-    def _on_fallback_chosen(self, _sender, app_data):
-        app_data = app_data or {}
-        paths = list(app_data.get('selections', {}).values()) or [app_data.get('file_path_name')]
-        callback, self._fallback = self._fallback, None
-        if callback is not None:
-            callback([p for p in paths if p])
+        self.picks.add_dialog('effects_wav_dialog', gui_audio.sound_extensions())
 
     def on_open(self):
         """The tab was opened: read the list the first time."""
@@ -119,10 +102,9 @@ class EffectsTab:
             try:
                 effects = _effects()
                 from Sound import brsar
-                path = os.path.join(root, '1_Input', effects.ARCHIVE)
+                path, _output = brsar.archive_paths(root)
                 if not os.path.isfile(path):
-                    error = ('1_Input/sound_NA/MY2.brsar is missing: copy the game\'s files/sound_NA folder '
-                             '(MY2.brsar and stream/) into 1_Input/sound_NA.')
+                    error = gui_audio.MISSING_ARCHIVE
                 else:
                     archive = brsar.Brsar.from_file(path)
                     found = effects.list_effects(archive)
@@ -231,17 +213,9 @@ class EffectsTab:
     def play(self, effect, stock=False):
         if not _WINDOWS or self.archive is None:
             return
-        import winsound
         from Sound import clips
         try:
-            data = clips.rwav_wav_bytes(self._wave(effect, stock))
-            if self._playing is None:
-                handle, self._playing = tempfile.mkstemp(prefix='sluggies_fx_', suffix='.wav')
-                os.close(handle)
-            winsound.PlaySound(None, winsound.SND_PURGE)              # stop what still plays: the file is rewritten
-            with open(self._playing, 'wb') as handle:
-                handle.write(data)
-            winsound.PlaySound(self._playing, winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+            self.player.play(clips.rwav_wav_bytes(self._wave(effect, stock)))
         except Exception as exc:
             self._status(f'Could not play {effect.name}: {exc}', _ERROR)
             self.app.log_line(f'[sound fx] could not play {effect.name}: {exc}', _WARN)
@@ -257,26 +231,9 @@ class EffectsTab:
         if self.app.busy:
             self._status('A command is running: try again when it is done.', _WARN)
             return
-        start = next((d for d in (self.app.settings.get(WAV_DIR_SETTING),
-                                  os.path.join(self.app.models_dir, '_SOUNDS', effect.group),
-                                  os.path.join(self.app.models_dir, '_SOUNDS')) if d and os.path.isdir(d)),
-                     self.app.models_dir)
-        if os.path.isdir(start):
-            dpg.configure_item('effects_wav_dialog', default_path=start)
-
-        def picked(paths):
-            path = paths[0] if paths else None
-            if not path or not os.path.isfile(path):
-                return
-            try:
-                self.app.settings.set(WAV_DIR_SETTING, os.path.dirname(os.path.abspath(path)))
-            except OSError:
-                pass                          # not remembered; the replace itself goes on
-            self._encode(effect, path)
-        self._fallback = picked
-        if not self.app.pick_files('effects_wav_dialog', f'Replace the sound effect {effect.name}', WAV_FILTERS,
-                                   picked, on_cancel=lambda: None, initial_dir=start):
-            self._fallback = None
+        sounds = os.path.join(self.app.models_dir, '_SOUNDS')
+        self.picks.pick_sound('effects_wav_dialog', f'Replace the sound effect {effect.name}', WAV_DIR_SETTING,
+                              (os.path.join(sounds, effect.group), sounds), lambda path: self._encode(effect, path))
 
     def _run(self, effect, message, job):
         """Run ``job()`` -> ``(notes, done message)`` on a worker thread, then write the output archive."""
@@ -287,18 +244,13 @@ class EffectsTab:
         root = self.app.root_dir
 
         def work():
-            import sys
             notes, done, error, problems = [], None, None, []
-            # the encoder holds the GIL in long numpy loops: give the render thread more turns meanwhile
-            interval = sys.getswitchinterval()
-            sys.setswitchinterval(0.0005)
             try:
-                notes, done = job()
-                _changed, problems = _effects().sync_output(root)
+                with gui_audio.render_turns():
+                    notes, done = job()
+                    _changed, problems = _effects().sync_output(root)
             except Exception as exc:
                 error = str(exc) if isinstance(exc, (ValueError, OSError)) else f'{type(exc).__name__}: {exc}'
-            finally:
-                sys.setswitchinterval(interval)
             library = None
             try:
                 library = _effects().load_library(root)

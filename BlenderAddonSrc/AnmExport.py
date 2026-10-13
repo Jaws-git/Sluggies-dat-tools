@@ -16,7 +16,6 @@ import re
 import struct
 
 import bpy
-import mathutils
 from bpy.props import EnumProperty, StringProperty
 from bpy_extras.io_utils import ExportHelper
 

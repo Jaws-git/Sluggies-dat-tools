@@ -31,11 +31,10 @@ import slogger  # noqa: E402
 try:
     from ..Dol import dolfile
     from . import dat_hammerspace as dhs
-    from . import datfile, derive, pack, state_cli
+    from . import derive, pack, state_cli
 except ImportError:
     from Dol import dolfile
     import dat_hammerspace as dhs
-    import datfile
     import derive
     import pack
     import state_cli

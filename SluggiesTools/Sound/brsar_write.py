@@ -6,8 +6,8 @@ its bytes. Per ``add_sounds`` call:
 
 - RWAR of each touched file: rebuilt with the new RWAVs appended (``rwar_split`` / ``rwar_build``). An RWAV
   comes from another file (``sound_rwav``: a stock clip copied byte for byte, the per-character stock voices)
-  or from samples (``rwav_build`` / ``encode_clip``: DSP-ADPCM with the coefficients of a stock wave of the
-  same file, ``dsp_adpcm.encode``).
+  or from samples (``rwav_build`` / ``encode_clip``: DSP-ADPCM with the coefficients of the stock wave among
+  ``candidates`` that reproduces the clip best, ``dsp_adpcm.encode``).
 - RWSD: rebuilt with one new DATA entry per clip, a relocated copy of entry 0 whose note names the new wave
   (``rwsd_add_entries``).
 - INFO: new sound entries (copies of a template sound's entry, detail and 3D-parameter blocks, with the name,
@@ -38,7 +38,6 @@ from Sound.brsar import ADPCM, WAVE, BrsarError, s16, u16, u32
 
 ALIGN = 0x20
 ENTRY_LEN, DETAIL_LEN, PARAMS_LEN = 0x2C, 0x14, 0x0C     # a sound entry, a WAVE detail and its 3D parameters
-CANDIDATES = 6                                           # stock waves whose coefficients a new clip may take
 
 
 class WriteError(BrsarError):
@@ -161,14 +160,14 @@ def rwav_error(rv, samples):
     return int(((x - decoded[:len(x)]) ** 2).sum())
 
 
-def candidates(rwavs):
-    """A file's candidate templates for new clips: its first ``CANDIDATES`` mono ADPCM waves."""
+def candidates(rwavs, count):
+    """Coefficient templates for new clips: the first ``count`` mono ADPCM waves of ``rwavs``."""
     out = []
     for rv in rwavs:
         wi = u32(rv, 0x10) + 8
         if rv[wi] == ADPCM and rv[wi + 2] == 1:
             out.append(rv)
-        if len(out) == CANDIDATES:
+        if len(out) == count:
             break
     return out
 
@@ -252,14 +251,6 @@ def sound_rwav(archive, sound):
         raise WriteError(f'{sound.name}: file {sound.file_id} is not stored in the archive')
     r, w = parts
     return brsar.rwar_wave_bytes(w, brsar.rwsd_wave_index(r, sound.wave_entry))
-
-
-def file_candidates(archive, file_id):
-    """The coefficient templates of an archived file (``candidates`` of its RWAR)."""
-    parts = archive.file_bytes(file_id)
-    if parts is None:
-        raise WriteError(f'file {file_id} is not stored in the archive')
-    return candidates(rwar_split(parts[1]))
 
 
 def add_sounds(data, new):

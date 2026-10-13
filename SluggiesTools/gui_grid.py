@@ -44,7 +44,6 @@ WRITING_FLAGS = frozenset({'--export', '--roster', '--patch', '--unpatch', '--re
                            '--set-icon', '--apply-slots', '--load-roster',
                            '--write-slot-blocks', '--write-slot-equipment', '--write-slot-animation',
                            '--game-options'})
-SOUND_PACKS_REL = 'Sound_Packs'                 # the custom voice packs (Sound/sound_packs.PACK_DIR, test-pinned)
 STAGED_CLIPS_REL = os.path.join('_gui', 'slot', 'staged_clips')   # encoded clips of pending species_clip edits
 UNNAMED = '-'
 CPU_VS_CPU_OPTIONS = ('cpu_vs_cpu', 'cpu_management')   # what the Options tab's CPU vs CPU button turns off
@@ -416,11 +415,6 @@ def species_clip_edit(head: int, moment: str, file: str | None, origin: str | No
     if origin:
         out['origin'] = origin
     return out
-
-
-def choice_for(choices: list, source: str | None, pack: str | None) -> int:
-    """The index of the Voice dialog's current choice (``char_voice_choices``)."""
-    return next((i for i, (_label, s, p) in enumerate(choices) if s == source and p == pack), 0)
 
 
 def char_voice_current(state: dict, cid: int, pending: 'PendingEdits | None') -> tuple[str | None, str | None]:
@@ -898,10 +892,6 @@ class PendingEdits:
         """The slot's pending equipment edit (``equip`` / ``equip_clear``) for slot file ``file`` (2-5)."""
         return next((e for e in self.edits if int(e['id'], 16) == cid and e['op'] in EQUIP_OPS
                      and e.get('file') == file), None)
-
-    def anim_edits(self, cid: int) -> list[dict]:
-        """The slot's pending animation bank edits."""
-        return [e for e in self.edits if int(e['id'], 16) == cid and e['op'] == ANIM]
 
     def sections_for(self, cid: int) -> list[dict]:
         return [s for s in self.sections if int(s['target'], 16) == cid]

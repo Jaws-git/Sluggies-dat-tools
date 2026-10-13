@@ -29,8 +29,7 @@ from dataclasses import dataclass
 
 import dearpygui.dearpygui as dpg
 
-from Sound import ffmpeg
-
+import gui_audio
 import gui_volume
 
 _DIM = (200, 200, 200, 255)
@@ -41,8 +40,6 @@ _ERROR = (255, 120, 110, 255)
 _CHANGED = (110, 170, 255, 255)
 _WINDOWS = os.name == 'nt'
 BUTTON_H = 28
-WAV_FILTERS = [('Sound files', ';'.join('*' + e for e in ('.wav', '.wave') + ffmpeg.AUDIO_EXTENSIONS)),
-               ('WAV files', '*.wav;*.wave'), ('All files', '*.*')]
 WAV_DIR_SETTING = 'music_last_wav_dir'          # the GUI settings key: the folder the last Replace... WAV came from
 
 
@@ -129,7 +126,7 @@ class MusicTab:
         self._cache_dir = None
         self._request = 0                    # bumped by every Play and Stop: a decode that finishes late is dropped
         self._decoding = 0                   # decodes running
-        self._fallback = None                # on_files of the pick the built-in dialog serves
+        self.picks = gui_audio.FilePicks(app)
 
     # ------------------------------------------------------------------ build
     def build(self):
@@ -147,20 +144,7 @@ class MusicTab:
             dpg.add_separator()
             with dpg.child_window(tag='music_list', border=True):
                 dpg.add_text('Reading...', color=_FAINT)
-        start = self.app.models_dir if os.path.isdir(self.app.models_dir) else self.app.root_dir
-        with dpg.file_dialog(directory_selector=False, show=False, modal=True, tag='music_wav_dialog', width=760,
-                             height=460, callback=self._on_fallback_chosen, cancel_callback=lambda *_: None,
-                             default_path=start):
-            for ext in ('.wav',) + ffmpeg.AUDIO_EXTENSIONS:
-                dpg.add_file_extension(ext, color=(120, 180, 255, 255))
-            dpg.add_file_extension('.*')
-
-    def _on_fallback_chosen(self, _sender, app_data):
-        app_data = app_data or {}
-        paths = list(app_data.get('selections', {}).values()) or [app_data.get('file_path_name')]
-        callback, self._fallback = self._fallback, None
-        if callback is not None:
-            callback([p for p in paths if p])
+        self.picks.add_dialog('music_wav_dialog', gui_audio.sound_extensions())
 
     def on_open(self):
         """The tab was opened: read the list the first time."""
@@ -180,10 +164,9 @@ class MusicTab:
         def work():
             tracks = archive_path = error = None
             try:
-                if not any(os.path.isfile(os.path.join(root, top, 'sound_NA', 'MY2.brsar'))
-                           for top in ('3_Output_Dat', '1_Input')):
-                    error = ('1_Input/sound_NA/MY2.brsar is missing: copy the game\'s files/sound_NA folder '
-                             '(MY2.brsar and stream/) into 1_Input/sound_NA.')
+                from Sound import brsar
+                if not any(os.path.isfile(path) for path in brsar.archive_paths(root)):
+                    error = gui_audio.MISSING_ARCHIVE
                 else:
                     tracks, archive_path = read_tracks(root)
             except Exception as exc:
@@ -292,9 +275,6 @@ class MusicTab:
                         dpg.add_text('Write the stock track to 3_Output_Dat/sound_NA/stream again, so the next '
                                      'copy into the game restores it.', wrap=380)
 
-    def _track(self, sound_id):
-        return next((t for t in self.tracks or [] if t.sound_id == sound_id), None)
-
     # ------------------------------------------------------------------ playback
     def stop(self):
         """Stop every playback (and drop a Play still decoding)."""
@@ -330,19 +310,14 @@ class MusicTab:
 
         def work():
             error = None
-            # the decoder holds the GIL in long numpy calls: give the render thread more turns meanwhile
-            import sys
-            interval = sys.getswitchinterval()
-            sys.setswitchinterval(0.0005)
             try:
                 from Sound import brstm, wavfile
-                with open(path, 'rb') as handle:
-                    stream = brstm.parse(handle.read())
-                wavfile.write_wav(target, stream.rate, brstm.decode(stream))
+                with gui_audio.render_turns():
+                    with open(path, 'rb') as handle:
+                        stream = brstm.parse(handle.read())
+                    wavfile.write_wav(target, stream.rate, brstm.decode(stream))
             except Exception as exc:
                 error = f'{type(exc).__name__}: {exc}'
-            finally:
-                sys.setswitchinterval(interval)
             self.app.output_queue.put(('call', self._decoded, track, path, target, request, error))
         threading.Thread(target=work, daemon=True).start()
 
@@ -378,25 +353,9 @@ class MusicTab:
     def _on_replace(self, track):
         if self.working is not None or self.app.picking or track.path is None:
             return
-        start = next((d for d in (self.app.settings.get(WAV_DIR_SETTING),
-                                  os.path.join(self.app.models_dir, '_SOUNDS', 'stream')) if d and os.path.isdir(d)),
-                     self.app.models_dir)
-        if os.path.isdir(start):
-            dpg.configure_item('music_wav_dialog', default_path=start)
-
-        def picked(paths):
-            path = paths[0] if paths else None
-            if not path or not os.path.isfile(path):
-                return
-            try:
-                self.app.settings.set(WAV_DIR_SETTING, os.path.dirname(os.path.abspath(path)))
-            except OSError:
-                pass                          # not remembered; the replace itself goes on
-            self._encode(track, path)
-        self._fallback = picked
-        if not self.app.pick_files('music_wav_dialog', f'Replace the music track {track.name}', WAV_FILTERS,
-                                   picked, on_cancel=lambda: None, initial_dir=start):
-            self._fallback = None
+        self.picks.pick_sound('music_wav_dialog', f'Replace the music track {track.name}', WAV_DIR_SETTING,
+                              (os.path.join(self.app.models_dir, '_SOUNDS', 'stream'),),
+                              lambda path: self._encode(track, path))
 
     def _encode(self, track, wav_path):
         self.working = track
@@ -409,16 +368,14 @@ class MusicTab:
 
         def work():
             notes, error, seconds = [], None, None
-            import sys
             import time
-            interval = sys.getswitchinterval()
-            sys.setswitchinterval(0.0005)
             started = time.time()
             try:
                 from Sound import brstm_write
                 with open(layout, 'rb') as handle:
                     original = handle.read()
-                data, notes = brstm_write.encode_wav(wav_path, original, gain)
+                with gui_audio.render_turns():
+                    data, notes = brstm_write.encode_wav(wav_path, original, gain)
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 with open(target + '.tmp', 'wb') as handle:
                     handle.write(data)
@@ -426,8 +383,6 @@ class MusicTab:
                 seconds = time.time() - started
             except Exception as exc:
                 error = str(exc) if isinstance(exc, (ValueError, OSError)) else f'{type(exc).__name__}: {exc}'
-            finally:
-                sys.setswitchinterval(interval)
             self.app.output_queue.put(('call', self._encoded, track, wav_path, notes, error, seconds))
         threading.Thread(target=work, daemon=True).start()
 

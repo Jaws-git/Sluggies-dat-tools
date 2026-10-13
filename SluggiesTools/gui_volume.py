@@ -11,8 +11,6 @@ The toolbar's **Replace gain** (dB, default 0, +-24) scales the sound file the t
 (``clips.apply_gain``); a finished ``.rwav`` (Voices) is taken as it is.
 """
 
-import os
-
 _DIM = (200, 200, 200, 255)
 _WARN = (255, 210, 90, 255)
 _OK = (120, 220, 140, 255)
@@ -63,7 +61,7 @@ def ask_volume(app, name, status, tag, on_done=None):
         if on_done is not None:
             on_done(volume, stock)
     app.ask_text(f'Set volume: {name}',
-                 f'Volume of {name}, 0-{volumes.MAX_VOLUME} (now {current}',
+                 f'Volume of {name}, 0-{volumes.MAX_VOLUME} (now {current}):',
                  answer, lambda: None, initial=str(current))
 
 

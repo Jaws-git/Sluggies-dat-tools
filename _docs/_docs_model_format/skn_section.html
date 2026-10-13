@@ -56,7 +56,7 @@
         <tr>
             <td>0x14</td>
             <td>uint32</td>
-            <td>Start of the memory region to clear before processing SK entries, as a byte offset from the start of <strong>submesh 0's raw position data array</strong> (same convention as gplVertexArr / gplDestArr — position-data-relative, <em>not</em> GPL-section-relative and not SKN-section-relative). Empirically verified against all 325 skinned models (324 exact, see <code>SluggiesTools/Debug/memclr_probe3.py</code>): the cleared region covers exactly the vertex slots written by SKAcc (accumulation) entries that are <em>not</em> written by any SK1/SK2 (direct-write) entry. <code>memClrPtr = min(accumulation-only slot offsets)</code>, or 0 when no such slots exist. Slot offsets: SK1/SK2 write to <code>gplVertexArr + vertexOffset + k × stride</code>; SKAcc writes to <code>gplDestArr + destIndex[k] × stride</code>.</td>
+            <td>Start of the memory region to clear before processing SK entries, as a byte offset from the start of <strong>submesh 0's raw position data array</strong> (same convention as gplVertexArr / gplDestArr — position-data-relative, <em>not</em> GPL-section-relative and not SKN-section-relative). Empirically verified against all 325 skinned models (324 exact): the cleared region covers exactly the vertex slots written by SKAcc (accumulation) entries that are <em>not</em> written by any SK1/SK2 (direct-write) entry. <code>memClrPtr = min(accumulation-only slot offsets)</code>, or 0 when no such slots exist. Slot offsets: SK1/SK2 write to <code>gplVertexArr + vertexOffset + k × stride</code>; SKAcc writes to <code>gplDestArr + destIndex[k] × stride</code>.</td>
         </tr>
         <tr>
             <td>0x18</td>
@@ -235,7 +235,7 @@
         <li><strong>Identical bind-pose source positions</strong> — at rest the two source slots hold the same XYZ/normal values.</li>
         <li><strong>Different weights</strong> — always <code>255</code> for the first occurrence and <code>1</code> for the second (i.e. ~100 % and ~0.4 %).</li>
     </ul>
-    <p>The purpose appears to be a lightweight twist/multi-stage deformer: the game engine accumulates the same bone's contribution twice into the destination vertex with two distinct weight scalings. All 936 duplicate groups measured by <code>weight_divisor_probe.py</code> are exactly <code>255 + 1</code>, giving <code>(weight_0 + weight_1) / 256 = 1.0</code>.</p>
+    <p>The purpose appears to be a lightweight twist/multi-stage deformer: the game engine accumulates the same bone's contribution twice into the destination vertex with two distinct weight scalings. All 936 duplicate groups measured across the skinned models are exactly <code>255 + 1</code>, giving <code>(weight_0 + weight_1) / 256 = 1.0</code>.</p>
     <p><strong>Implication for tools:</strong> The weight array is indexed by <em>source-array position</em>, not by destination vertex. Two source entries that share a destination index are independent records with independent weights. Any tool that maps weights by <code>(bone, destination_vertex)</code> key — such as a vertex-group system that stores a single weight per bone per vertex — will silently discard the first weight when it encounters the second, corrupting the skinning on round-trip. The original per-source-entry weight data must be preserved verbatim for all source slots whose destination index appears more than once in the same entry.</p>
 
     <h2 id="destination-layout">Destination layout rules</h2>

@@ -161,7 +161,6 @@ def _defense_change_stub(base: int, site: int) -> Asm:
 # at 0x9730086C.
 HEAP_SITE, HEAP_STOCK_WORD = 0x8036518C, 0x38AE4800    # addi r5,r14,0x4800
 PLAYER_HEAP_STOCK = 0xD4800
-PLAYER_HEAP_FIELDERS = 13
 PLAYER_HEAP_LEVELS_KB = (32, 48, 64, 128, 200)
 PLAYER_HEAP_SAFE_KB = 48                                # the stock-memory ceiling (fallback of the big levels)
 BIG_HEAP_LEVELS_KB = (512, 1024, 2048, 4096, 5120)

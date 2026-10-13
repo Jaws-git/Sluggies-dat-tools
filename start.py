@@ -482,8 +482,8 @@ def hammerspace_section_args(model):
         submesh['RigidRebuild'] for submesh in model.get('Submeshes', [])
         if submesh.get('RigidRebuild')
     ]
-    # A rebuilt skinned body (SkinnedRebuild, PLAN_ModelReplacements.md
-    # Milestone 4) replaces submesh 0's blob and the whole SKN section.
+    # A rebuilt skinned body (SkinnedRebuild) replaces submesh 0's blob and
+    # the whole SKN section.
     skinned_rebuilds = [
         submesh['SkinnedRebuild'] for submesh in model.get('Submeshes', [])
         if submesh.get('SkinnedRebuild')

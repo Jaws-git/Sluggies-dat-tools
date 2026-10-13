@@ -720,7 +720,7 @@ def extract_submeshes(model):
 def extract_skin_data(model):
     """Return a SkinData dict for a Model0 instance, or None if unskinned.
 
-    Exports all SKN/SK1/SK2/SKAcc structural fields needed by skn_patch.py:
+    Exports all SKN/SK1/SK2/SKAcc structural fields needed by InplacePatcher/patch_skn_inplace.py:
     - Absolute offsets of every pointer field (for patching)
     - Current pointer target values (for restoring on --unpatch)
     - Raw source data bytes (bind-pose positions/normals per bone entry)

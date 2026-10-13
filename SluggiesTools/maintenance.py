@@ -165,9 +165,6 @@ def stadium_memory(root_dir):
     return problems
 
 
-SOUND_ARCHIVE = os.path.join('sound_NA', 'MY2.brsar')
-
-
 def sound_memory(root_dir):
     """One problem per voice family file of the output sound archive whose wave data is bigger than the largest
     family file known to work (``char_voices.FAMILY_FILE_TESTED_MAX``): a family file loads whole whenever its
@@ -181,13 +178,12 @@ def sound_memory(root_dir):
         from Roster import char_voices
         from Sound import brsar
     dol_path = os.path.join(root_dir, OUTPUT_FOLDER, 'main.dol')
-    archive_path = os.path.join(root_dir, OUTPUT_FOLDER, SOUND_ARCHIVE)
+    vanilla_path, archive_path = brsar.archive_paths(root_dir)
     if not (os.path.isfile(dol_path) and os.path.isfile(archive_path)):
         return []
     with open(dol_path, 'rb') as handle:
         image = dolfile.DolImage(handle.read())
     archive = brsar.Brsar.from_file(archive_path)
-    vanilla_path = os.path.join(root_dir, '1_Input', SOUND_ARCHIVE)
     vanilla = brsar.Brsar.from_file(vanilla_path) if os.path.isfile(vanilla_path) else None
     problems = []
     limit = char_voices.FAMILY_FILE_TESTED_MAX

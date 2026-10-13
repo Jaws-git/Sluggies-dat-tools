@@ -32,7 +32,6 @@ class NameTests(unittest.TestCase):
         self.assertEqual(len(sound_packs.MOMENTS), 12)
         self.assertEqual(sound_packs.SLOT_OF['v13'], 10)
         self.assertEqual(sound_packs.MOMENT_KEYS[0], 'v1')
-        self.assertEqual(sound_packs.moment_label('v13'), 'v13: Character select')
         self.assertEqual(dict(sound_packs.MOMENTS), {
             'v1': 'Cheer', 'v3': 'Charge', 'v4': 'Talking line', 'v5': 'Cheer 2', 'v6': 'Getting hit',
             'v7': 'Cheer 3', 'v8': 'Stepping up to bat', 'v10': 'Stagger', 'v11': 'Hurt', 'v12': 'Falling / Failure',

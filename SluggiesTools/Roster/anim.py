@@ -30,7 +30,6 @@ from dataclasses import dataclass
 FILES = tuple(range(6, 15))
 MAGICS = (0x01321AFD, 0x013240DB, 0x01324210)      # version dates 2006-09-25, 2007-06-19, 2007-09-28
 SEQUENCES = {6: (44,), 7: (28,), 8: (17,), 9: (12,), 10: (4,), 11: (9,), 12: (24, 22), 13: (2,), 14: (5,)}
-EXTENSION = '.anm'
 HEADER_SIZE, SEQUENCE_SIZE, TRACK_SIZE = 0x18, 12, 16
 CHANNEL_MASK = 0x1F                     # type bits 0-4: translation, scale, Euler, quaternion, matrix
 NO_TRACK = 0xFFFF

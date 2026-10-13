@@ -1,7 +1,6 @@
 """Custom voice clips (``Sound/clips.py``): WAV intake, preparation, encoding and the RWAV checks, on synthetic
 sounds only."""
 
-import io
 import os
 import pathlib
 import struct

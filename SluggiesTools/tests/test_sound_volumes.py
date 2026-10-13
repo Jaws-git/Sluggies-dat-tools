@@ -55,9 +55,9 @@ class LibraryTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.root, True)
         self.data = make_archive()[0]
         os.makedirs(os.path.join(self.root, '1_Input', 'sound_NA'))
-        with open(os.path.join(self.root, '1_Input', volumes.ARCHIVE), 'wb') as handle:
+        with open(os.path.join(self.root, '1_Input', brsar.ARCHIVE), 'wb') as handle:
             handle.write(self.data)
-        self.output = os.path.join(self.root, '3_Output_Dat', volumes.ARCHIVE)
+        self.output = os.path.join(self.root, '3_Output_Dat', brsar.ARCHIVE)
 
     def read_output(self):
         with open(self.output, 'rb') as handle:

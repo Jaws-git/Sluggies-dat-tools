@@ -37,6 +37,13 @@ PCM8, PCM16, ADPCM = 0, 1, 2
 
 TABLE_SOUNDS, TABLE_BANKS, TABLE_PLAYERS, TABLE_FILES, TABLE_GROUPS = range(5)
 
+ARCHIVE = os.path.join('sound_NA', 'MY2.brsar')     # under 1_Input (the user's copy) and 3_Output_Dat (written)
+
+
+def archive_paths(root_dir):
+    """``(1_Input's archive, 3_Output_Dat's archive)`` under the repo root ``root_dir``."""
+    return os.path.join(root_dir, '1_Input', ARCHIVE), os.path.join(root_dir, '3_Output_Dat', ARCHIVE)
+
 
 def u8(b, o): return b[o]
 def u16(b, o): return struct.unpack_from('>H', b, o)[0]

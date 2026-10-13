@@ -1099,7 +1099,10 @@ In the stock-size dumps, MEM2 from the end of the root heap (`0x9330086C`)
 to the arena top (`0x935E0000`) was zero apart from one 4 KB page near the
 top: about 2.9 MB. So was MEM1 `0x81700090`–`0x817FF480`, about 1 MB. No
 heap covers either range. Whether anything claims them at other moments
-(menus, saving, a run scored) is not known.
+(menus, saving, a run scored) is not known, nor what owns the page at
+`0x935DF86C`. If the MEM2 tail stays unused, growing the root heap and the
+game heap into it (2,951,060 bytes up to `0x935DF000`) would allow about
++220 KB more per player, on a real Wii too.
 
 ### Player heaps
 
@@ -1136,10 +1139,17 @@ bytes:
 | 919,552 (+48 KB) | 810,624 | 915,552 | good 3 runs + a full match |
 | 919,552 (+48 KB) | about 843,400 | about 948,300 | crash |
 
-Mesh and texture bytes count alike. In September, crash rates near the edge
-looked random (one build worked 4 of 7 times). Which team bats first is
-random, so those runs most likely crashed only when the character had to
-field.
+Mesh and texture bytes count alike. The edge is sharp: repeated runs at the
+last good and first crashing build (5 each, same scene) gave no mixed
+results. In September, crash rates near the edge looked random (one build
+worked 4 of 7 times). Which team bats first is random, so those runs most
+likely crashed only when the character had to field.
+
+The crash is an overflow of that one player heap: the allocation for the
+player's file fails and the game uses the result unchecked. The game heap
+itself still had about 4.8 MB free in the same scene. The player heaps are
+created after the stadium heap, so their address moves with the stadium
+(`0x91FEB648` with Mario Stadium, `0x9206A248` with Wario City).
 
 ### Stadium heap
 
@@ -1153,8 +1163,16 @@ expanded heap, sized to the file**: `fn_8039A4C4` makes it align32(size) +
 | Wario City (dir 9) | 2,655,048 | 2,655,584 |
 
 So stadiums have no fixed cap. A bigger file 0 takes more of the game heap.
-The other variants (files 1 and 2) are not loaded. Two other fixed heaps
-of 391,264 bytes hold dir 159 files (1 or 13, and 20).
+The other variants (files 1 and 2) are not loaded. Stock file 0 sizes (dirs
+7-16): Mario Stadium 2,237,524; Bowser Castle 1,558,792; Wario City
+2,655,048; Yoshi Park 1,652,128; Peach Ice Garden 1,613,564; DK Jungle
+2,349,280; Luigi's Mansion 2,249,856; Daisy Cruiser 1,820,852; Bowser Jr
+Playroom 2,468,288; Toy Field 1,027,776. Wario City's is the largest, and
+the Maintenance check uses it as its threshold.
+
+Two other heaps of the same shape but fixed size (391,264 bytes, about
+250 KB free each) hold dir 159 files (1 or 13, and 20). What dir 159 holds
+is not known.
 
 ### Game heap headroom
 
@@ -1175,6 +1193,8 @@ How far the player heaps can grow on stock memory (cautious estimate):
 | safety margin (the external tool's) | −524,288 |
 | left for 13 player heaps | 645,516, about **48 KB per player** |
 
+A VS at-bat (two 573,440-byte screen captures plus the same event cost,
+2,381,824 bytes) needs less than a run scored, so the run scored decides.
 Each extra KB per player costs 13 KB of the game heap. The estimate is
 cautious: it assumes the roster's 10 largest banks are loaded together.
 But the run-scored figure and the margin come from the external tool's

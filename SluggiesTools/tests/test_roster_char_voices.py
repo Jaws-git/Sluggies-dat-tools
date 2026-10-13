@@ -88,12 +88,6 @@ class ParseTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(char_voices.CharVoiceConfigError):
                 char_voices.parse({'character_voices': bad}, HEADS)
 
-    def test_table_replaces_the_name_call_only(self):
-        table = char_voices.table_for(row_of(0), row_of(9))
-        self.assertEqual(struct.unpack('>12I', table), tuple(clip(9 if k == 10 else 0, k) for k in range(12)))
-        with self.assertRaises(ValueError):
-            char_voices.table_for(row_of(0)[:8], row_of(9))
-
     def test_inventory_group(self):
         sites = {s.address: s.stock for s in inventory.group(char_voices.GROUP)}
         self.assertEqual(sites[char_voices.WRAPPER], 0x9421FFC0)

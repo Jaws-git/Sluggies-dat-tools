@@ -80,13 +80,13 @@ def _open(output_dir: str):
 
 def open_sound(output_dir: str):
     """The output's sound archive (``Sound.brsar.Brsar``), or None when there is none (or it cannot be read)."""
-    path = os.path.join(output_dir, 'sound_NA', 'MY2.brsar')
-    if not os.path.isfile(path):
-        return None
     try:
         from Sound import brsar
     except ImportError:
         from SluggiesTools.Sound import brsar
+    path = os.path.join(output_dir, brsar.ARCHIVE)
+    if not os.path.isfile(path):
+        return None
     try:
         return brsar.Brsar.from_file(path)
     except (OSError, brsar.BrsarError, ValueError, IndexError):

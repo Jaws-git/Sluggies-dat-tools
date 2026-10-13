@@ -46,13 +46,13 @@ import slogger  # noqa: E402
 try:
     from ..Dol import dolfile
     from ..GameOptions import game_options
-    from ..Sound import effects, volumes
+    from ..Sound import brsar, effects, volumes
     from ..StatEditor import bridge, carry
     from . import datfile, derive, dol_hammerspace, manifest, model_dirs, reset, steps
 except ImportError:
     from Dol import dolfile
     from GameOptions import game_options
-    from Sound import effects, volumes
+    from Sound import brsar, effects, volumes
     from StatEditor import bridge, carry
     import datfile
     import derive
@@ -66,7 +66,7 @@ SOURCE = 'roster'
 ROOT = os.path.normpath(os.path.join(_TOOLS_DIR, '..'))
 OUTPUT_DIR = os.path.join(ROOT, '3_Output_Dat')
 INPUT_DIR = os.path.join(ROOT, '1_Input')
-SOUND_ARCHIVE = os.path.join('sound_NA', 'MY2.brsar')   # under 1_Input (read) and 3_Output_Dat (written)
+SOUND_ARCHIVE = brsar.ARCHIVE          # under 1_Input (read) and 3_Output_Dat (written)
 FST_DAT_SIZE_OFFSET = 1 * 12 + 8       # dt_na.dat is FST entry 1; its size word (as HammerspaceHelper)
 
 

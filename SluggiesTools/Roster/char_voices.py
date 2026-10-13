@@ -157,14 +157,6 @@ def row_ids(row: bytes) -> list[int]:
     return list(struct.unpack('>12I', row))
 
 
-def table_for(species_row: bytes, voice_stock_row: bytes) -> bytes:
-    """Phase 1's table: the ID's species row with the name call (slot 10) replaced by the voice's."""
-    if len(species_row) != voices.CLIP_ROW or len(voice_stock_row) != voices.CLIP_ROW:
-        raise ValueError('a clip row is 0x30 bytes')
-    at = 4 * NAME_CALL_SLOT
-    return species_row[:at] + voice_stock_row[at:at + 4] + species_row[at + 4:]
-
-
 # ------------------------------------------------------------------------------------------------ archive
 
 def copy_name(source_name: str, file_id: int) -> str:

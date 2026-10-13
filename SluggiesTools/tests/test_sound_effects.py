@@ -163,7 +163,7 @@ class EffectsTests(unittest.TestCase):
         self.root = tempfile.mkdtemp(prefix='sluggies_fx_test_')
         self.addCleanup(shutil.rmtree, self.root, True)
         os.makedirs(os.path.join(self.root, '1_Input', 'sound_NA'))
-        with open(os.path.join(self.root, '1_Input', effects.ARCHIVE), 'wb') as handle:
+        with open(os.path.join(self.root, '1_Input', brsar.ARCHIVE), 'wb') as handle:
             handle.write(self.data)
         self.hit = next(s for s in self.archive.sounds() if s.name == 'hit_a')
         self.stock = brsar_write.sound_rwav(self.archive, self.hit)
@@ -210,7 +210,7 @@ class EffectsTests(unittest.TestCase):
         self.assertIn('hit_a', lines[-1])
         # the output archive, made from 1_Input's
         self.assertEqual(effects.sync_output(self.root), (1, []))
-        output = os.path.join(self.root, '3_Output_Dat', effects.ARCHIVE)
+        output = os.path.join(self.root, '3_Output_Dat', brsar.ARCHIVE)
         self.assertEqual(brsar_write.sound_rwav(brsar.Brsar.from_file(output), self.hit.index), rv)
         self.assertEqual(effects.sync_output(self.root), (0, []))                     # nothing left to do
         self.assertTrue(effects.remove_effect(self.root, 'hit_a'))

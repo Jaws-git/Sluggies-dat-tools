@@ -21,8 +21,7 @@ import numpy as np
 import slogger
 from binfmt import load_sluggie
 from glb_export import _Glb, FLOAT, gltf_rotation, trs_matrix
-
-ANM_MAGICS = (0x01321AFD, 0x013240DB, 0x01324210)
+from Roster.anim import MAGICS as ANM_MAGICS
 FRAME_RATE = 60.0
 
 

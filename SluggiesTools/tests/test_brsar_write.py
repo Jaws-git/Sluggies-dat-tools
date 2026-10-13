@@ -102,8 +102,8 @@ class RwavRwarTests(unittest.TestCase):
         good = [0, 0, 2048, 0, 0, 2048, 1024, 1024, 3072, -1024, 4096, -2048, 1536, 512, 2560, -512]
         fitted = synth.build_rwav([(synth.random_adpcm(self.rng, 14), 14, good, 0, 0)], 32000)
         rwavs = [stereo, self.template, fitted] + [self.template] * 6
-        picked = brsar_write.candidates(rwavs)
-        self.assertEqual(len(picked), brsar_write.CANDIDATES)
+        picked = brsar_write.candidates(rwavs, 6)
+        self.assertEqual(len(picked), 6)
         self.assertEqual(picked[:2], [self.template, fitted])
         np_rng = np.random.default_rng(3)
         x = smooth(200, np_rng)
@@ -152,7 +152,6 @@ class AddSoundsTests(unittest.TestCase):
         self.assertEqual(brsar_write.sound_rwav(self.archive, self.chord.index), brsar.rwar_wave_bytes(rwar, 2))
         with self.assertRaises(brsar_write.WriteError):
             brsar_write.sound_rwav(self.archive, 0)                            # the stream sound
-        self.assertEqual(len(brsar_write.file_candidates(self.archive, 0)), 2)  # the two mono ADPCM waves
 
     def test_added_sounds(self):
         copied = brsar_write.sound_rwav(self.archive, self.hit)

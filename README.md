@@ -10,6 +10,8 @@ The portable release includes Python, the required Python packages, and
 **wimgt** from Wiimms SZS Tools. Texture conversion works without a separate
 install or changes to `PATH`.
 
+On startup we show the command prompt for like half a second just to fuck with you.
+
 ## Requirements
 - Dolphin Emulator https://dolphin-emu.org/
 - US(!) copy of Mario Super Sluggers

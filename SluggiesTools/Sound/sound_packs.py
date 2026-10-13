@@ -16,7 +16,6 @@ the slot's own species' voice). A pack travels as one ``.sluggiesvoice`` file (t
 grid assigns a pack to a slot as its own voice (``Roster/char_voices``: ``{"id", "voice", "clips", "pack"}``).
 """
 
-import io
 import json
 import os
 import posixpath
@@ -36,7 +35,6 @@ MOMENTS = (('v1', 'Cheer'), ('v3', 'Charge'), ('v4', 'Talking line'),
 MOMENT_KEYS = tuple(k for k, _role in MOMENTS)
 SLOT_OF = {k: i for i, (k, _role) in enumerate(MOMENTS)}
 ROLE_OF = dict(MOMENTS)
-NAME_CALL = 'v13'
 
 PACK_DIR = 'Sound_Packs'                  # beside 1_Input, like Roster_Packs
 PACK_FILE = 'pack.json'
@@ -47,10 +45,6 @@ NAME_RE = re.compile(r'^[^<>:"/\\|?*\x00-\x1f]{1,48}$')
 
 class PackError(ValueError):
     pass
-
-
-def moment_label(key):
-    return f'{key}: {ROLE_OF[key]}'
 
 
 def check_name(name):

@@ -827,9 +827,10 @@ class VoiceStatsTests(unittest.TestCase):
         self.assertEqual([(s, p) for _l, s, p in choices[1:4]], [('0x00', None), ('0x09', None), ('0x0D', None)])
         self.assertEqual(choices[4], ("Pack Rosa (5 custom clips, the rest C09's voice)", None, 'Rosa'))
         self.assertEqual(choices[5], ("Pack Plain (1 custom clip, the rest its square's voice)", None, 'Plain'))
-        self.assertEqual(gui_grid.choice_for(choices, None, 'Rosa'), 4)
-        self.assertEqual(gui_grid.choice_for(choices, '0x09', None), 2)
-        self.assertEqual(gui_grid.choice_for(choices, '0x77', None), 0)
+        paired = [(label, (s, p)) for label, s, p in choices]          # as the Voice dialog lists them
+        self.assertEqual(gui_grid.choice_index(paired, (None, 'Rosa')), 4)
+        self.assertEqual(gui_grid.choice_index(paired, ('0x09', None)), 2)
+        self.assertEqual(gui_grid.choice_index(paired, ('0x77', None)), 0)
         c = gui_grid.characters(self.s)[0x0E]
         c.update(voice=0x0D, char_voice=None)
         self.assertEqual(gui_grid.char_voice_text(self.s, 0x0E), 'Voice: C0D (square)')

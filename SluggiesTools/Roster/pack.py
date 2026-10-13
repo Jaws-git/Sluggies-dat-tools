@@ -287,10 +287,6 @@ class Pack:
     blocks: dict                     # {(id, role): bytes}
     clips: dict = field(default_factory=dict)   # {file name: RWAV bytes} (format 3)
 
-    def slot_blocks(self, cid: int) -> dict:
-        """Every block the pack holds for the slot (models and equipment)."""
-        return {role: self.blocks[(cid, role)] for role in BLOCK_ROLES if (cid, role) in self.blocks}
-
     def slot_models(self, cid: int) -> dict:
         return {role: self.blocks[(cid, role)] for role in ROLES if (cid, role) in self.blocks}
 

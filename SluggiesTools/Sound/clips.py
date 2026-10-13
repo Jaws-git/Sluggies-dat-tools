@@ -19,7 +19,7 @@ import struct
 
 import numpy as np
 
-from Sound import brsar, brsar_write, dsp_adpcm, ffmpeg, wavfile
+from Sound import brsar, brsar_write, ffmpeg, wavfile
 
 RATE = 32000                      # the stock voice clips' sample rate
 MAX_GAIN_DB = 24.0                # the Replace gain's range, either way
@@ -164,13 +164,7 @@ def voice_templates(archive, count=TEMPLATE_COUNT):
     parts = archive.file_bytes(file_id)
     if parts is None:
         raise ClipError(f'file {file_id} of the sound archive is not stored in it')
-    out = []
-    for rv in brsar_write.rwar_split(parts[1]):
-        wi = brsar.u32(rv, 0x10) + 8
-        if rv[wi] == brsar.ADPCM and rv[wi + 2] == 1:
-            out.append(rv)
-        if len(out) == count:
-            break
+    out = brsar_write.candidates(brsar_write.rwar_split(parts[1]), count)
     if not out:
         raise ClipError('the sound archive holds no mono DSP-ADPCM wave to take coefficients from')
     return out

@@ -13,7 +13,7 @@ from unittest import mock
 
 from SluggiesTools.tests import test_equipment as teq
 from SluggiesTools.tests import test_slot_target as tst
-from SluggiesTools.tests.test_slot_target import OTHER, SOURCE, TARGET, hh, main
+from SluggiesTools.tests.test_slot_target import OTHER, SOURCE, TARGET, main
 
 import SlotTarget  # noqa: E402 (path set up by test_slot_target)
 
