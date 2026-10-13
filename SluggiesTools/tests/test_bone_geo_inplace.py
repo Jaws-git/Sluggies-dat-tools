@@ -1,5 +1,4 @@
-"""Keep offset to bone reassignments patch in place through `GeoIdEdited`
-(PLAN_EditRigidMeshes.md Phase 7 step 3).
+"""Keep offset to bone reassignments patch in place through `GeoIdEdited`.
 
 The chain under test: the exporter's retarget rule (`HostBones.
 compute_rigid_retargets`) writes `GeoIdEdited` on the old and new owner,
@@ -44,7 +43,7 @@ def _apply(dat: bytes, patches) -> bytes:
 
 
 def _cap_like_hierarchy():
-    """Mario's cap in E1 terms: bone 54 owns submesh 1, bone 49 is free."""
+    """Mario's cap: bone 54 owns submesh 1, bone 49 is free."""
     return [
         {'BoneId': 53, 'GeoIdRaw': 0xFFFF, 'Skinned': True, 'GeoIdFieldOffset': '0x4ac6c64'},
         {'BoneId': 54, 'GeoIdRaw': 1, 'Skinned': False, 'GeoIdFieldOffset': '0x4ac6c7c'},

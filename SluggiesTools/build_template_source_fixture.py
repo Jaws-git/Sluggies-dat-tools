@@ -1,19 +1,18 @@
-"""Phase 0 probe 5 (U4): cube submeshes built from each template source.
+"""Cube submeshes built from each template source.
 
 Appends one 12-triangle cube per ``--cube BONE=SOURCE`` to a donor model and
-installs the result in hammerspace. ``SOURCE`` is one of the template sources
-from PLAN_AddSubmesh.md "Template sources":
+installs the result in hammerspace. ``SOURCE`` is one of the template sources:
 
 * ``rigid:<SurfaceId>``  clone a same-model rigid submesh and draw the cube in
-  that surface (the probe 4 path).
+  that surface.
 * ``derived:<SurfaceId>`` build a canonical rigid state list from the effective
   states of a plain ``Spec`` surface on skinned submesh 0.
 * ``builtin:rigid_spec_v1`` start from a canonical rigid state list captured
   from vanilla data, bound to the host model's own textures.
 
-Derived and built-in cubes use the canonical rigid attribute formats (F9). The
-fixture always pads GPL to a 32-byte boundary (F10). The helpers are pure and
-tested so Phase 2 can move them into ``HammerspaceMain``.
+Derived and built-in cubes use the canonical rigid attribute formats. The
+fixture always pads GPL to a 32-byte boundary. The helpers are pure and
+tested.
 """
 
 from __future__ import annotations
@@ -39,8 +38,8 @@ from build_add_submesh_fixture import drawlist, hammerspace
 TYPE1, TYPE3, TYPE4, TYPE6, TYPE7 = 1, 3, 4, 6, 7
 TEXTURE_LAYER_SHIFT = 13
 TEXTURE_INDEX_MASK = 0x1FFF
-REJECTED_TYPE6 = "00000375"  # occurs only in skinned lists (F9)
-TYPE4_BY_UV_COUNT = {1: "fffffff0", 2: "ffffff10"}  # F9
+REJECTED_TYPE6 = "00000375"  # occurs only in skinned lists
+TYPE4_BY_UV_COUNT = {1: "fffffff0", 2: "ffffff10"}
 
 POSITION_FORMAT = (3, 59)
 NORMAL_FORMAT = (3, 62)
@@ -53,7 +52,7 @@ COLOR_WHITE = bytes.fromhex("ffff")
 # all live once, in HammerspaceMain (the patch-time builder); this module only
 # adds the registry key as a "Name" field. Unlike the patch-time validator,
 # this probe builder accepts unverified templates on purpose -- building them is
-# how PLAN_EditRigidMeshes.md Phase 0 probe 7 verifies them.
+# how they are verified in Dolphin.
 BUILTIN_TEMPLATES = {
     name: {"Name": name, **template}
     for name, template in hammerspace._CUSTOM_SUBMESH_BUILTIN_TEMPLATES.items()
@@ -194,7 +193,7 @@ def builtin_rigid_state_records(submesh0: dict, name: str) -> list[tuple[int, st
 def canonical_rigid_submesh(
     name: str, records: list[tuple[int, str, str]], submesh0: dict, use_compression: bool,
 ) -> dict:
-    """Create a rigid submesh skeleton with canonical formats (F9) and *records*.
+    """Create a rigid submesh skeleton with canonical formats and *records*.
 
     The last record draws. Arrays are placeholders that the cube writer
     replaces. Type 3 is generated for positions, normals, one color entry and
@@ -350,7 +349,7 @@ def prepare_template_source_fixture(
     """Append one cube submesh per ``(host_bone, template_source)`` (pure, no I/O).
 
     ``colors`` optionally gives, per cube, the raw bytes of its color array
-    (default: the template's single white entry). Used by the E6 probe."""
+    (default: the template's single white entry). Used by the color format probe."""
     if not cubes:
         raise ValueError("at least one cube is required")
     data = copy.deepcopy(source_data)
@@ -465,7 +464,7 @@ def _parse_cube(value: str) -> tuple[int, str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build the Phase 0 template-source probe (U4).")
+    parser = argparse.ArgumentParser(description="Build the template-source probe.")
     parser.add_argument("source", type=Path, help="Source .sluggie path")
     parser.add_argument(
         "--cube", type=_parse_cube, action="append", required=True, metavar="BONE=SOURCE",

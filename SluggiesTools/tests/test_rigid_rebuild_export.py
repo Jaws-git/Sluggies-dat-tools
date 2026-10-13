@@ -1,4 +1,4 @@
-"""PLAN_EditRigidMeshes.md Phases 4, 5 and 8 (export side): the bpy-free
+"""The bpy-free
 RigidRebuildExport module is imported directly; the bpy glue in
 ExportSluggies.py / ImportSluggies.py is checked with the AST or by executing
 single helpers against small fakes."""
@@ -524,7 +524,7 @@ class ExporterGlueTests(unittest.TestCase):
         self.assertEqual(find(_obj([donor, own]), self.rigid_sub, 1), [])
         self.assertEqual(find(_obj([donor, foreign]), self.rigid_sub, 1), [('other', 'belongs to sm2, not sm1')])
         # The body takes its own Add-material surfaces too (exported through
-        # the body rebuild, PLAN_ModelReplacements.md Milestone 4).
+        # the body rebuild).
         body = _Mat('body_new', SurfaceId='sm0_new0', SluggiesNewSurface=True, SluggiesSurfaceOwner='sm0')
         self.assertEqual(find(_obj([body], comp_count=6), self.skinned_sub, 0), [])
         self.assertEqual(find(_obj([own], comp_count=6), self.skinned_sub, 0), [('brim', 'belongs to sm1, not sm0')])

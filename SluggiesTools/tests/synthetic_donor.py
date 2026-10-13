@@ -434,13 +434,13 @@ def _build_act_bytes() -> bytes:
 
 def _tex_image_pointer(index: int) -> int:
     """TEX-relative offset of texture *index*'s payload: each sits on its own
-    32-byte boundary after the descriptor table (F10)."""
+    32-byte boundary after the descriptor table."""
     return _align32(4 + TEXTURE_COUNT * 0x20) + index * 0x20
 
 
 def _build_tex_bytes() -> bytes:
     """A TEX section with `TEXTURE_COUNT` 4x4 CMPR textures, each payload on
-    its own 32-byte boundary (F10)."""
+    its own 32-byte boundary."""
     section = bytearray(_tex_image_pointer(TEXTURE_COUNT))
     struct.pack_into('>HH', section, 0, TEXTURE_COUNT, 0)
     for index in range(TEXTURE_COUNT):
@@ -504,7 +504,7 @@ def build_donor(mutate=None) -> tuple[dict, bytes, int]:
 
     The GPL section is ``BuildGPLMeshData``'s own output for this `.sluggie`,
     so the block and the JSON describe the same model by construction. Every
-    section starts on a 32-byte boundary (F10), and the `.sluggie`'s absolute
+    section starts on a 32-byte boundary, and the `.sluggie`'s absolute
     `GeoIdFieldOffset` / `SRTOffset` fields are filled in from where the ACT
     actually lands.
 

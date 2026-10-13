@@ -413,7 +413,7 @@ class PngTextureTarget:
     parent ``.sluggie`` that owns the texture, the matched
     ``TextureDescriptors`` entry, and that entry's ``TextureIndex``. This is the
     single value the dispatcher and the child patchers need to replace one
-    texture in place (PLAN_PngPatching Phase 0 / D1-D2).
+    texture in place.
     """
 
     png_path: str
@@ -428,8 +428,7 @@ def resolve_png_to_texture(
 ) -> PngTextureTarget:
     """Resolve a ``.png`` to its parent ``.sluggie`` and matched descriptor.
 
-    This is the single place that knows the exported-model-tree contract
-    (PLAN_PngPatching Phase 0 / D1-D2):
+    This is the single place that knows the exported-model-tree contract:
 
     1. If ``png_path`` is not an existing file and ``search_dir`` is given,
        ``os.walk(search_dir)`` for an exact basename match (mirrors
@@ -442,8 +441,7 @@ def resolve_png_to_texture(
        (the name is validated with :func:`validate_texture_file_name`).
     6. Return a :class:`PngTextureTarget`.
 
-    Raises :class:`ValueError` with a specific message for each failure
-    (PLAN_PngPatching, section 5).
+    Raises :class:`ValueError` with a specific message for each failure.
     """
     name = os.path.basename(os.fspath(png_path))
 
@@ -492,7 +490,7 @@ def resolve_png_to_texture(
         raise ValueError(f"'{sluggie_path}' has no TextureDescriptors; re-export the model")
 
     # 5. Match the descriptor whose TextureFileName equals the PNG's basename.
-    #    The basename is validated as a bare, safe file name (PLAN_PngPatching D2).
+    #    The basename is validated as a bare, safe file name.
     validate_texture_file_name(name)
     matched = [d for d in descriptors if d.get("TextureFileName") == name]
     if len(matched) == 0:
@@ -882,7 +880,7 @@ def build_texture_plan(
     ``warn`` is injectable for testing; it defaults to
     :func:`slogger.warning` and receives a single formatted message.
 
-    ``png_overrides`` (PLAN_PngPatching Phase 1 / D3) is an optional
+    ``png_overrides`` is an optional
     ``TextureIndex`` -> absolute-PNG-path mapping. When a descriptor's
     ``TextureIndex`` is present, that file is the encode source instead of the
     ``tex/`` copy; otherwise the ``tex/`` copy is used and behavior is
@@ -954,8 +952,7 @@ def build_texture_plan(
 
         _validate_parsed_tpl_against_descriptor(descriptor, parsed)
 
-        # In-place replacement is strictly same-footprint (PLAN_PngPatching
-        # Phase 1): the encoded payload must equal the descriptor's proven
+        # In-place replacement is strictly same-footprint: the encoded payload must equal the descriptor's proven
         # ImagePayloadLength. This is a friendlier pre-check than the
         # TextureWrite invariant that would otherwise fire downstream.
         expected_len = descriptor.get("ImagePayloadLength")
@@ -1013,7 +1010,7 @@ def build_hammerspace_texture_plan(
     applies: a descriptor with ``AdditionalMipCount > 0`` is recorded in
     ``plan.skipped`` and its donor bytes are left unchanged.
 
-    ``png_overrides`` (PLAN_PngPatching Phase 1 / D3) is an optional
+    ``png_overrides`` is an optional
     ``TextureIndex`` -> absolute-PNG-path mapping that redirects the encode
     source per texture. It is forwarded to :func:`build_texture_plan` on the
     strict path and applied on the relaxed path. On the relaxed

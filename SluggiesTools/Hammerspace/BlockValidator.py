@@ -722,10 +722,10 @@ def _validate_act_geo_ids(state: _ValidationState, gpl_submeshes: list[dict]) ->
     address ``addr`` is both the bone layout start (ACT+addr) and, 4 bytes
     later, the node's ``prev/next/parent/firstChild`` words.
 
-    Rules, all verified across 721 exported models (PLAN_AddSubmesh.md):
+    Rules, all verified across 721 exported models:
     - a ``GeoId`` other than 0xFFFF indexes an existing GPL submesh;
     - every rigid (``CompCount 3``) submesh has at least one owner bone. An
-      unowned appended submesh crashes the game (Phase 0 probe 1).
+      unowned appended submesh crashes the game.
     Several bones sharing one ``GeoId`` occurs in vanilla effect and map
     models, so duplicates are only reported as facts.
     """

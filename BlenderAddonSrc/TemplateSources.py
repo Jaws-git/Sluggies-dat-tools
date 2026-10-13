@@ -1,5 +1,4 @@
-"""Template-source candidate list for the Add submesh dialog
-(PLAN_AddSubmesh.md, Phase 5 step 3, "Template sources").
+"""Template-source candidate list for the Add submesh dialog.
 
 Pure Python, no ``bpy`` import, so it is unit-testable outside Blender. The
 caller (``SluggiesToolsPanel.py``) scans scene materials into
@@ -19,7 +18,7 @@ from typing import Iterable, List, Tuple
 
 # Mirrors HammerspaceMain._CUSTOM_SUBMESH_HAND_VISIBILITY_ROLES. A rigid
 # template drawn with one of these Type-7 shader modes inherits hand or
-# ghost visibility behaviour and is excluded (F9's "Hand-visibility roles").
+# ghost visibility behaviour and is excluded.
 HAND_VISIBILITY_ROLES = frozenset({"RhSp", "LhSp", "SpRf", "GhSp"})
 
 # Mirrors HammerspaceMain._CUSTOM_SUBMESH_SPECULAR_SHADER_MODES: Type-7 modes
@@ -46,7 +45,7 @@ class BuiltinTemplate:
     layers: int             # texture layers its captured draw list binds
     shader_mode: str        # effective Type-7 mode
     description: str        # dialog tooltip
-    verified_in_game: bool  # PLAN_EditRigidMeshes.md Phase 0 probe 7
+    verified_in_game: bool  # confirmed in Dolphin
     normals: bool = True    # False: the custom submesh exports no normals
     stadium_only: bool = False  # offered (and accepted) only on stadium models
 
@@ -61,7 +60,7 @@ BUILTIN_TEMPLATES = {
     "rigid_spec_v1": BuiltinTemplate(
         layers=2, shader_mode="Spec",
         description="Specular (default)",
-        verified_in_game=True,          # PLAN_AddSubmesh.md Phase 0 probe 5
+        verified_in_game=True,
     ),
     "rigid_shdw_v1": BuiltinTemplate(
         layers=1, shader_mode="Shdw",
@@ -76,12 +75,12 @@ BUILTIN_TEMPLATES = {
     "rigid_rhsp_v1": BuiltinTemplate(
         layers=2, shader_mode="RhSp",
         description="Parts with vertex alpha 0 are hidden while the right hand wears the mitt",
-        verified_in_game=True,          # PLAN_EditRigidMeshes.md Phase 0 probe 7
+        verified_in_game=True,
     ),
     "rigid_lhsp_v1": BuiltinTemplate(
         layers=2, shader_mode="LhSp",
         description="Parts with vertex alpha 0 are hidden while the left hand wears the mitt",
-        verified_in_game=True,          # PLAN_EditRigidMeshes.md Phase 0 probe 7
+        verified_in_game=True,
     ),
     "stadium_shdw_opaque_v1": BuiltinTemplate(
         layers=1, shader_mode="Shdw",
@@ -97,8 +96,7 @@ BUILTIN_TEMPLATES = {
     ),
 }
 
-# Only templates probe 7 has confirmed in game are offered; the others stay
-# hidden the same way U4 hid template groups it had not enabled, and
+# Only templates confirmed in game are offered; the others stay hidden, and
 # HammerspaceMain._validate_template_source refuses them at patch time.
 BUILTIN_TEMPLATE_NAMES: Tuple[str, ...] = tuple(
     name for name, template in BUILTIN_TEMPLATES.items() if template.verified_in_game
@@ -146,10 +144,10 @@ RESOLUTION_ORDER = ("rigid", "derived", "builtin")
 
 # How the Add submesh / Add material dialogs list the kinds: built-ins first
 # so `builtin:rigid_spec_v1` heads the list and is preselected even on a model
-# with copyable donor surfaces, then the donor-based sources (decision 9).
+# with copyable donor surfaces, then the donor-based sources.
 DIALOG_ORDER = ("builtin", "rigid", "derived")
 
-# Donor VertexBufferCompCount values (F1/F6): 3 = rigid, 6 = skinned
+# Donor VertexBufferCompCount values: 3 = rigid, 6 = skinned
 # interleaved. A derived: source must come from a skinned surface.
 _RIGID_COMP_COUNT = 3
 _SKINNED_COMP_COUNT = 6
@@ -177,7 +175,7 @@ class TemplateSourceChoice:
 
 def next_new_surface_key(owner: str, existing_surface_ids: Iterable[str]) -> str:
     """The lowest unused ``<owner>_new<K>`` SurfaceId for a new Add-material
-    surface (PLAN_EditRigidMeshes.md decision 8), where *owner* is
+    surface, where *owner* is
     ``sm<N>`` for a donor submesh or a ``CustomSubmeshId`` for a custom one.
     Gaps left by deleted surfaces are reused.
     """
@@ -202,11 +200,11 @@ def build_template_source_choices(
 
     Built-ins come first, headed by `builtin:rigid_spec_v1`, so the dialog
     preselects it even when the model has copyable donor surfaces; the
-    donor-based `rigid:` and `derived:` sources follow (decision 9). Within
+    donor-based `rigid:` and `derived:` sources follow. Within
     `rigid:`/`derived:`, candidates are deduplicated by SurfaceId (first-seen
     wins) and sorted by SurfaceId for a stable order.
 
-    Only built-ins that Phase 0 probe 7 has verified in game are listed
+    Only built-ins verified in game are listed
     (``BUILTIN_TEMPLATE_NAMES``), so the unverified captures are unselectable
     here; ``HammerspaceMain._validate_custom_submeshes`` refuses them too.
 

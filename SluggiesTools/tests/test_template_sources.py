@@ -63,7 +63,7 @@ class BuildTemplateSourceChoicesTests(unittest.TestCase):
         self.assertNotIn('derived:sm0_ds5', [c.template_source for c in choices])
 
     def test_listing_order_is_builtin_then_rigid_then_derived(self):
-        """Decision 9: built-ins first, so the dialog's first item -- the one
+        """Built-ins first, so the dialog's first item -- the one
         it preselects -- is builtin:rigid_spec_v1 even here, where the model
         has both a copyable rigid surface and a derivable skinned one."""
         choices = build_template_source_choices([
@@ -124,8 +124,8 @@ if __name__ == '__main__':
 
 
 class BuiltinTemplateMetadataTests(unittest.TestCase):
-    """Decision 9: five built-in shader modes, but only the ones Phase 0
-    probe 7 has confirmed in game are offered by the dialogs."""
+    """Five built-in shader modes, but only the ones
+    confirmed in game are offered by the dialogs."""
 
     def test_stadium_builtins_export_no_normals(self):
         for name, template in BUILTIN_TEMPLATES.items():
@@ -194,7 +194,7 @@ class TemplateSurfaceIdTests(unittest.TestCase):
 
 
 class NextNewSurfaceKeyTests(unittest.TestCase):
-    """PLAN_EditRigidMeshes.md decision 8: Add material's SurfaceId
+    """Add material's SurfaceId
     allocator, `<owner>_new<K>`."""
 
     def test_first_key_for_donor_owner(self):

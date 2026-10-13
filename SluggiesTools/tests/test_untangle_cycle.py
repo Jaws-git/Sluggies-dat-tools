@@ -1,4 +1,4 @@
-"""Patch / unpatch cycles on split routes and their owner (untangler Phase 3).
+"""Patch / unpatch cycles on split routes and their owner.
 
 A synthetic input: dir 24 (the owner) and dirs 89 and 90 (two unused
 characters) all route file 0 to one vanilla block, as Yoshi and the two unused

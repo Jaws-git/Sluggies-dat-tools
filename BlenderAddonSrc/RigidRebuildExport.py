@@ -1,22 +1,21 @@
-"""Pure-Python side of the rigid rebuild export (PLAN_EditRigidMeshes.md Phase 4).
+"""Pure-Python side of the rigid rebuild export.
 
 bpy-free, like CustomSubmeshExport.py, so the decision rules and the encoding
 can be unit-tested outside Blender. ExportSluggies.py reads the scene and
 hands plain lists here.
 
-A donor rigid (CompCount 3) submesh takes one of two paths per export
-(decision 1):
+A donor rigid (CompCount 3) submesh takes one of two paths per export:
 
-- the slot-preserving in-place / Milestone 3 fields when its topology equals
+- the slot-preserving in-place fields when its topology equals
   the donor's, its world-space positions equal the mesh-local ones and every
   face still uses its imported surface;
 - a whole-blob ``RigidRebuild`` otherwise -- changed topology, an Object Mode
   transform, a host-bone change that keeps the world position, or faces moved
   between surfaces (including onto a new Add-material surface).
 
-The rebuild keeps the donor's formats (decision 3), pools equal values
-(decision 5), mirrors UV channel 1 from channel 0 when the donor channels are
-identical (decision 6) and names surfaces by key (decisions 7-8).
+The rebuild keeps the donor's formats, pools equal values,
+mirrors UV channel 1 from channel 0 when the donor channels are identical
+and names surfaces by key.
 
 A submesh with facial poses (ptr7 objects: every vanilla head) carries them
 through the rebuild as ``FacialPoses`` (2026-10-10): per facial object the
@@ -176,7 +175,7 @@ def donor_rigid_submesh(index: int, sub: dict, facial_submeshes: Iterable[int] =
 
 
 def donor_position_format_error(donor: DonorRigidSubmesh, object_name: str) -> Optional[str]:
-    """Decision 3: only int16 donor positions can be rebuilt."""
+    """Only int16 donor positions can be rebuilt."""
     if (donor.position_quantize >> 4) == 3:
         return None
     return (
@@ -187,11 +186,11 @@ def donor_position_format_error(donor: DonorRigidSubmesh, object_name: str) -> O
 
 
 # ---------------------------------------------------------------------------
-# The path decision (decision 1)
+# The path decision
 # ---------------------------------------------------------------------------
 
 def vertex_bone_problem(object_name: str, vertex_bone_ids: Sequence[Iterable[int]]) -> Optional[str]:
-    """G2: *vertex_bone_ids* holds, per vertex, the bone ids of its
+    """*vertex_bone_ids* holds, per vertex, the bone ids of its
     positive-weight ``bone_<id>`` groups. Returns the error text when the mesh
     does not sit on exactly one bone, or None."""
     ungrouped = sum(1 for ids in vertex_bone_ids if not set(ids))
@@ -240,7 +239,7 @@ def decide_reasons(*, topology_changed: bool, moved: bool, host_changed: bool, s
 
 
 # ---------------------------------------------------------------------------
-# Face -> surface routing (slot hygiene, decisions 7-8)
+# Face -> surface routing (slot hygiene)
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -255,14 +254,14 @@ class SlotSurface:
 def new_surface_key_matches(owner_key: str, surface_id: str) -> bool:
     """Whether *surface_id* is an Add-material key of *owner_key*:
     ``sm<N>_new<K>`` on a donor submesh, ``<CustomSubmeshId>_new<K>`` on a
-    custom submesh (PLAN_EditRigidMeshes.md decision 8)."""
+    custom submesh."""
     return re.match(rf'^{re.escape(owner_key)}_new\d+$', surface_id or '') is not None
 
 
 @dataclass
 class CustomSubmeshSurfaces:
     """The surface facts of a custom submesh in the shape ``route_faces``
-    reads from a donor (Phase 9): its one primary surface, no imported
+    reads from a donor: its one primary surface, no imported
     per-face surfaces."""
     custom_submesh_id: str
     primary_surface_id: str
@@ -398,8 +397,7 @@ def route_custom_submesh_faces(
     polygon_slots: Sequence[int],
     slots: Sequence[Optional[SlotSurface]],
 ) -> SurfaceRouting:
-    """``route_faces`` for a custom submesh (PLAN_EditRigidMeshes.md Phase
-    9): every face must use the primary ``<id>_ds0`` material or an
+    """``route_faces`` for a custom submesh: every face must use the primary ``<id>_ds0`` material or an
     Add-material surface owned by this custom submesh; ``new_keys`` lists
     the additional surfaces in first-use order."""
     donor = CustomSubmeshSurfaces(custom_submesh_id, primary_surface_id)
@@ -477,7 +475,7 @@ def encode_uv_channels(
 ) -> list:
     """The ``UVChannels`` list of a rebuilt donor submesh, one entry per donor
     channel in its own format. Channel 1 mirrors channel 0 when the donor
-    channels are identical (decision 6) or when its Blender layer is missing.
+    channels are identical or when its Blender layer is missing.
     Shared by the rigid and skinned rebuilds."""
     encoded_uvs: Dict[int, Tuple[bytes, list]] = {}
     channels = sorted(uv_formats)
@@ -599,7 +597,7 @@ def build_rigid_rebuild_entry(
 # ---------------------------------------------------------------------------
 # Facial poses (ptr7) on a rebuilt submesh
 # ---------------------------------------------------------------------------
-# Shared with the skinned body (PLAN_ModelReplacements.md Milestone 4.7):
+# Shared with the skinned body:
 # the importer names a facial object's shape keys FACIAL_KEY_NAME, and the
 # exporter reads them back as FacialObjectKeys.
 
@@ -795,8 +793,8 @@ def encode_rigid_facial_poses(
     return entries, normal_arrays
 
 
-# Every in-place (Milestone 3) edit field a rebuilt submesh must not carry
-# (decision 1; the patcher refuses the mix).
+# Every in-place edit field a rebuilt submesh must not carry
+# (the patcher refuses the mix).
 IN_PLACE_SUBMESH_FIELDS = ('FacesDataEdited', 'FacesCountEdited', 'FaceTextureIndicesEdited', 'FaceSurfaceIdsEdited')
 IN_PLACE_CHANNEL_FIELDS = {
     'VertexBuffer': ('VertexBufferDataEdited',),

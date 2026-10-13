@@ -1,5 +1,5 @@
 """SkinnedRebuild: whole rebuild of the skinned submesh 0 from arbitrary
-geometry and weights (PLAN_ModelReplacements.md Milestone 4), on the
+geometry and weights, on the
 synthetic donor."""
 import base64
 import pathlib
@@ -97,7 +97,7 @@ def _with_third_bone(data: dict) -> None:
     })
 
 
-# --- facial fixture (Milestone 4.7) ------------------------------------------
+# --- facial fixture ------------------------------------------
 
 FACIAL_POSES = 3                      # pose zero + two expressions
 BODY_FACIAL_ENTRIES = (1, 3, 4)       # donor body slots object 0 maps
@@ -390,7 +390,7 @@ class LayoutSkinTests(unittest.TestCase):
         self.assertEqual(sr.entry_source(layout, layout.direct[1], buffer), records[STRIDE:] + records[STRIDE:2 * STRIDE])
 
 
-# --- facial pose section (Milestone 4.7) ------------------------------------------
+# --- facial pose section ------------------------------------------
 
 class FacialPoseRebuildTests(unittest.TestCase):
     def test_section_round_trips_through_decode_and_serialize(self):

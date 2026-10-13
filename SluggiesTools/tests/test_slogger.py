@@ -300,7 +300,7 @@ class TestStdoutFanOut(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestCommandLogging(unittest.TestCase):
-    """Step 2.1 – log_command records normalized arguments."""
+    """log_command records normalized arguments."""
 
     def setUp(self):
         self._tmpdir = tempfile.mkdtemp()
@@ -335,7 +335,7 @@ class TestCommandLogging(unittest.TestCase):
 
 
 class TestBatchMetadataLogging(unittest.TestCase):
-    """Step 2.3 – batch menu selection and interactive inputs are logged."""
+    """Batch menu selection and interactive inputs are logged."""
 
     def setUp(self):
         self._tmpdir = tempfile.mkdtemp()
@@ -408,7 +408,7 @@ class TestBatchMetadataLogging(unittest.TestCase):
 
 
 class TestParentChildAppend(unittest.TestCase):
-    """Step 2.2 – parent and child records append to one file without duplicates."""
+    """Parent and child records append to one file without duplicates."""
 
     def setUp(self):
         self._tmpdir = tempfile.mkdtemp()

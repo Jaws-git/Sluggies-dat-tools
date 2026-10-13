@@ -1,4 +1,4 @@
-"""Multi-surface custom submeshes (PLAN_EditRigidMeshes.md Phase 9):
+"""Multi-surface custom submeshes:
 ``CustomSubmeshes[].AdditionalSurfaces`` + ``FaceSurfaceIndices`` through the
 validator, the parser, the builder (on the synthetic donor), the dispatcher,
 and the bpy-free exporter helpers that produce them."""

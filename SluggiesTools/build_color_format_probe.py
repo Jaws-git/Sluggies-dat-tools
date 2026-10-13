@@ -1,4 +1,4 @@
-"""Phase 0 probe 4 (E6): a non-white vertex color in the donor's own 2-byte format.
+"""A non-white vertex color in the donor's own 2-byte format.
 
 Overwrites Mario's cap color array (two white RGBA4444 entries, QuantizeInfo 48)
 with entry 0 = red (f00f) and entry 1 = green (0f0f) through the same-size

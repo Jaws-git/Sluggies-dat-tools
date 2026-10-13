@@ -72,7 +72,7 @@ TEX_OFF = 0x2A0
 def make_valid_block() -> bytes:
     block = bytearray(0x400)
 
-    # Model header pointers. Every section starts at 0 mod 32 (F10).
+    # Model header pointers. Every section starts at 0 mod 32.
     struct.pack_into('>8I', block, 0x00,
         0,
         0x20,     # GPL
@@ -219,7 +219,7 @@ def make_valid_textured_block(texture_count: int = 1) -> bytearray:
     struct.pack_into('>HH', block, tex, texture_count, 0)
     data_ptr = 0x60
     for index in range(texture_count):
-        # 8-byte 4x4 CMPR payloads, each padded to a 32-byte boundary (F10).
+        # 8-byte 4x4 CMPR payloads, each padded to a 32-byte boundary.
         image_ptr = data_ptr + index * 0x20
         desc = tex + 4 + index * 0x20
         struct.pack_into('>I', block, desc, image_ptr)
@@ -364,7 +364,7 @@ class BlockValidatorTests(unittest.TestCase):
         self.assertTrue(report['valid'], report['errors'])
 
     def test_tex_image_payload_off_32_byte_boundary_fails(self):
-        # F10: the GX image-base register drops the low 5 address bits, so a
+        # the GX image-base register drops the low 5 address bits, so a
         # payload at 8 mod 32 is sampled 8 bytes early.
         block = make_valid_textured_block(texture_count=2)
         struct.pack_into('>I', block, TEX_OFF + 4 + 0x20, 0x68)
@@ -539,7 +539,7 @@ def _make_skn_two_vertex_block(
 
 
 class SKNMembershipCoverageTests(unittest.TestCase):
-    """PLAN_ModelReplacements.md 3.4: BlockValidator must independently catch
+    """BlockValidator must independently catch
     a same-count reskin that left the built SKN section with a bad weight
     encoding, a duplicated destination slot, or a vertex with no direct
     (SK1/SK2) bone influence."""

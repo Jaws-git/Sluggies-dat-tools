@@ -1,5 +1,5 @@
-"""PLAN_EditRigidMeshes.md Phase 0 probes 1-3, 5 and 6, built through the real
-RigidRebuild path (Phase 2 builder) instead of the earlier script-local splice.
+"""Dolphin probe cases for rigid rebuilds, built through the real
+RigidRebuild path (the patch-time builder) instead of the earlier script-local splice.
 
 Each case writes a ``Submeshes[i].RigidRebuild`` entry into a copy of a real
 export, builds it with ``HammerspaceMain.BuildModelBlock`` (gpl='build', plus
@@ -8,29 +8,29 @@ intent, and installs it with ``--write``. ``--unpatch`` restores the model.
 
 Cases (one build each, so a Dolphin result is attributable):
 
-  identity            Mario cap rebuilt from its own decoded data (probe 1)
+  identity            Mario cap rebuilt from its own decoded data
   topology            Mario cap midpoint-subdivided once: 4x the faces, more
                       than 256 positions, so position/normal indices widen to
-                      uint16 and the Type 3 is patched (probe 2)
+                      uint16 and the Type 3 is patched
   retarget            Mario cap re-baked into bone 49 (a finger tip) so it
                       stays on the head in the rest pose, GeoIdEdited 54 ->
-                      free, 49 -> 1; it should follow the hand in animation
-                      (probe 3). Also tests GeoIdEdited through hammerspace.
+                      free, 49 -> 1; it should follow the hand in animation.
+                      Also tests GeoIdEdited through hammerspace.
   retarget-offset     Control: GeoIdEdited only, bytes unchanged, so the cap
                       sits at the finger tip (the in-place "keep offset" path)
   surfaces            Blue Male Mii body (3 surfaces, 3 textures): half of
                       sm13_ds7 (texture 2) moves to sm13_ds6 (texture 1), a
-                      partial move (probe 5). The body's colour array is not
+                      partial move. The body's colour array is not
                       listed in the export, so this also checks the carry-over.
   surfaces-empty      Mii body: every sm13_ds6 face moves to sm13_ds5, which
-                      leaves ds6 with a null primitive list (probe 5)
+                      leaves ds6 with a null primitive list
   newsurface-rigid    Mario cap: the +y half moves to a new surface built from
                       rigid:sm2_ds9 (the head's lighting, a donor texture)
   newsurface-derived  Mario cap: the +y half on derived:sm0_ds5 with a checker
-                      PNG appended to the TEX section (probe 6)
+                      PNG appended to the TEX section
   newsurface-builtin  Mario cap: the +y half on builtin:rigid_spec_v1 with the
-                      checker PNG, specular strength 50 (probe 6)
-  custom-surfaces     Phase 9: a cube custom submesh on Mario's finger bone 49
+                      checker PNG, specular strength 50
+  custom-surfaces     A cube custom submesh on Mario's finger bone 49
                       with three surfaces, four faces each: the primary
                       builtin:rigid_spec_v1 on the head texture, an added
                       rigid:sm2_ds9 surface on the cap texture, and an added
@@ -411,7 +411,7 @@ def _cube_loop_attributes(triangles: list) -> tuple[list, list]:
 
 
 def prepare_custom_surfaces() -> tuple[Path, dict, int, dict, "hammerspace.SectionModes"]:
-    """Phase 9: a three-surface cube custom submesh on Mario's bone 49."""
+    """A three-surface cube custom submesh on Mario's bone 49."""
     path = MARIO
     data = _load(path)
     model = data["SluggiesModel"]

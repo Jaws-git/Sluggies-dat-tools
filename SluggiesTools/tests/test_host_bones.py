@@ -45,7 +45,7 @@ def _rec(bone_id, parent_id, geo_id_raw=GEO_ID_FREE, skinned=False, user_added=F
 
 
 class CustomSubmeshHostErrorsTests(unittest.TestCase):
-    """PLAN_AddSubmesh.md Phase 6 step 3: export-time host-bone re-check."""
+    """Export-time host-bone re-check."""
 
     # bone 1 owns donor submesh 2, bones 2-4 are free.
     RECORDS = [_rec(0, None), _rec(1, 0, geo_id_raw=2), _rec(2, 0), _rec(3, 2), _rec(4, 2)]
@@ -342,7 +342,7 @@ class ComputeRigidRetargetsTests(unittest.TestCase):
 
 
 class ReassignmentChoicesTests(unittest.TestCase):
-    """PLAN_EditRigidMeshes.md Phase 6: host-bone choices for the Reassign to
+    """Host-bone choices for the Reassign to
     new bone dialog."""
 
     def test_single_bone_prop_yields_an_empty_list(self):
@@ -433,7 +433,7 @@ class BoneMetadataVersionTests(unittest.TestCase):
 #: bone (a hand), one free leaf, one free inner bone and two parentless roots.
 #: It stands in for the real Mario/Luigi/Noki exports this class used to read
 #: -- those are gitignored working files, so tests must not depend on them
-#: (the F7 survey numbers they asserted live in PLAN_AddSubmesh.md F7). What
+#: (as did the survey numbers it asserted). What
 #: is worth testing is the composition, which a synthetic donor exercises just
 #: as well as a 91-bone one.
 MINIATURE_MODEL = {
@@ -462,12 +462,12 @@ def _choices(data):
 
 
 class ModelShapedHostBoneTests(unittest.TestCase):
-    """The whole pipeline over a model-shaped donor, reproducing F7's rules."""
+    """The whole pipeline over a model-shaped donor, reproducing the host-bone rules."""
 
     def test_rigid_owner_is_never_offered(self):
         statuses, bone_count = _choices(MINIATURE_MODEL)
         self.assertEqual(bone_count, 7)
-        self.assertNotIn(5, statuses)  # the cap owns a donor mesh (F2)
+        self.assertNotIn(5, statuses)  # the cap owns a donor mesh
 
     def test_skn_bone_is_offered_but_flagged(self):
         statuses, _ = _choices(MINIATURE_MODEL)
@@ -478,14 +478,14 @@ class ModelShapedHostBoneTests(unittest.TestCase):
         self.assertEqual(statuses[4], STATUS_RECOMMENDED)
         self.assertEqual(statuses[6], STATUS_RECOMMENDED)
         self.assertEqual(statuses[2], STATUS_RECOMMENDED)
-        # Parentless bones are legal hosts but ranked last (F7).
+        # Parentless bones are legal hosts but ranked last.
         self.assertEqual(statuses[0], STATUS_ALLOWED)
         self.assertEqual(statuses[1], STATUS_ALLOWED)
         safe = [b for b, s in statuses.items() if s in (STATUS_RECOMMENDED, STATUS_ALLOWED)]
         self.assertEqual(sorted(safe), [0, 1, 2, 4, 6])
 
     def test_a_single_bone_prop_offers_nothing(self):
-        # F7: a prop's only bone already owns the prop mesh.
+        # a prop's only bone already owns the prop mesh.
         statuses, bone_count = _choices({'SluggiesModel': {
             'BoneHierarchy': [{'BoneId': 0, 'ParentBoneId': None, 'GeoIdRaw': 0}],
         }})

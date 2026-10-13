@@ -1,4 +1,4 @@
-"""PLAN_AddSubmesh.md Phase 6 step 2: custom submesh export encoding.
+"""Custom submesh export encoding.
 
 The math and encoding live in the bpy-free BlenderAddonSrc/CustomSubmeshExport.py
 and are imported directly; the thin bpy glue in ExportSluggies.py is checked
@@ -226,7 +226,7 @@ class SkinnedDonorObjectsTests(unittest.TestCase):
 
 
 class ExportExecuteWiringTests(unittest.TestCase):
-    """Phase 6 step 2: SLUGGIES_OT_export.execute writes CustomSubmeshes."""
+    """SLUGGIES_OT_export.execute writes CustomSubmeshes."""
 
     def test_custom_submesh_material_picks_its_own_surface(self):
         fn = _load_exporter_function('_custom_submesh_material')
@@ -281,7 +281,7 @@ class ExportExecuteWiringTests(unittest.TestCase):
 
 
 class IgnoredStateWarningTests(unittest.TestCase):
-    """Phase 6 step 3: ignored shape keys, materials and vertex groups."""
+    """Ignored shape keys, materials and vertex groups."""
 
     def _warnings(self, shape_keys=(), materials=('Hat_mat',), groups=('bone_5',)):
         return cse.ignored_state_warnings('Hat', 5, list(shape_keys), list(materials),
@@ -312,7 +312,7 @@ class IgnoredStateWarningTests(unittest.TestCase):
 
 
 class ValidateCustomSubmeshesWiringTests(unittest.TestCase):
-    """Phase 6 step 3 runs on custom submeshes only, before any is encoded."""
+    """The export-time checks run on custom submeshes only, before any is encoded."""
 
     def test_execute_validates_custom_submeshes_before_encoding(self):
         source = _execute_source()
@@ -456,7 +456,7 @@ class MatrixHelperTests(unittest.TestCase):
 
 
 class KeepOffsetWorldMatrixTests(unittest.TestCase):
-    """PLAN_EditRigidMeshes.md Phase 6 step 2: Reassign to new bone's
+    """Reassign to new bone's
     'Keep offset to bone' placement math."""
 
     def _bind(self, tx, ty, tz, angle=0.0):
@@ -499,7 +499,7 @@ class KeepOffsetWorldMatrixTests(unittest.TestCase):
 
 
 class WorldPositionTests(unittest.TestCase):
-    """PLAN_AddSubmesh.md Phase 6 step 2 "Pure-math transform tests"."""
+    """Pure-math transform tests."""
 
     def _geometry(self, cos, obj_world, arm_world=ARMATURE_WORLD):
         return cse.bone_local_geometry(cos, _cube_triangles(), obj_world, arm_world, HOST_BIND)
@@ -603,7 +603,7 @@ def _positions_geometry(positions, source_vertices=None):
 
 
 class PositionRangeTests(unittest.TestCase):
-    """Step 2.3: range check on bone-local positions (QuantizeInfo 59, +/-16)."""
+    """Range check on bone-local positions (QuantizeInfo 59, +/-16)."""
 
     def test_in_range_positions_pass(self):
         low, high = cse.int16_range(59)
@@ -642,7 +642,7 @@ class PositionRangeTests(unittest.TestCase):
 
 
 class AdaptivePositionFormatTests(unittest.TestCase):
-    """Step 2.3 (adaptive): a mesh too far from its host bone for the canonical
+    """A mesh too far from its host bone for the canonical
     +/-16 steps down to a coarser s16 shift instead of being rejected."""
 
     def test_candidates_are_s16_from_finest_to_coarsest(self):
@@ -705,7 +705,7 @@ class AdaptivePositionFormatTests(unittest.TestCase):
 
 
 class PositionQuantizationTests(unittest.TestCase):
-    """Step 2.4: quantize with the template position format."""
+    """Quantize with the template position format."""
 
     def test_positions_encode_big_endian_int16(self):
         geometry = _positions_geometry([(0.1, -0.1, 15.5), (-16.0, 0.0, 1 / 2048)])
@@ -833,7 +833,7 @@ class AttributePlanTests(unittest.TestCase):
 
 
 class LoopAttributeTests(unittest.TestCase):
-    """Step 2.5: per-loop normals, colors and UVs; UV1 mirrors UV0."""
+    """Per-loop normals, colors and UVs; UV1 mirrors UV0."""
 
     PLAN = cse.AttributePlan(normals=True, color=True, uv_channels=2, entry_limits={})
 

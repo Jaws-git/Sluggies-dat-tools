@@ -1,4 +1,4 @@
-"""PLAN_EditRigidMeshes.md Phase 6: the Reassign to new bone button.
+"""The Reassign to new bone button.
 
 AST checks and bpy-free pure-helper tests for SluggiesToolsPanel.py, mirroring
 test_add_submesh_operator.py's conventions -- no bpy import required.
@@ -136,8 +136,7 @@ class ReadBoneHierarchyTests(unittest.TestCase):
 
 class ReassignBoneOperatorStructureTests(unittest.TestCase):
     """AST checks that don't need bpy: registration, property names, poll
-    conditions and dialog/execute wiring described in
-    PLAN_EditRigidMeshes.md's 'Reassign to new bone (concept)' section."""
+    conditions and dialog/execute wiring."""
 
     def setUp(self):
         self.source = PANEL_PATH.read_text(encoding='utf-8')

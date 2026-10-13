@@ -1,6 +1,6 @@
 """Built-in template capture provenance (manual probe).
 
-PLAN_AddSubmesh.md decision 9: every entry in
+Every entry in
 ``build_template_source_fixture.BUILTIN_TEMPLATES`` is a byte-exact capture of
 one whole vanilla rigid draw list -- or, with ``Provenance.Capture ==
 'effective'`` (the stadium built-ins), of the effective T1/T4/T3/T6/T7 states

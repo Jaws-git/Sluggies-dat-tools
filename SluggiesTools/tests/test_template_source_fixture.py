@@ -180,7 +180,7 @@ class BuiltinTemplateTests(unittest.TestCase):
 
     def test_unverified_builtins_still_build_for_probe_7(self):
         """The probe fixture must be able to build an unverified template --
-        that is how PLAN_EditRigidMeshes.md Phase 0 probe 7 verifies it. Only
+        that is how a Dolphin test verifies it. Only
         the patch-time validator and the dialogs refuse them."""
         unverified = [
             name for name, template in tsf.BUILTIN_TEMPLATES.items()
@@ -193,7 +193,7 @@ class BuiltinTemplateTests(unittest.TestCase):
                 self.assertEqual(records[-1][2], tsf.BUILTIN_TEMPLATES[name]['ShaderMode'])
 
     def test_every_entry_carries_the_provenance_its_capture_probe_needs(self):
-        """Decision 9: each entry is a byte-exact capture of one whole vanilla
+        """Each entry is a byte-exact capture of one whole vanilla
         rigid draw list. The tie back to that vanilla export is re-checked by
         ``SluggiesTools/probe_builtin_template_captures.py`` -- the exports are
         gitignored, so it is a hand-run probe, not a test. What is checkable
@@ -229,7 +229,7 @@ class BuiltinTemplateTests(unittest.TestCase):
 
 
 class BuiltinRegistryMirrorTests(unittest.TestCase):
-    """G24/decision 9: the Blender addon cannot import HammerspaceMain, so
+    """The Blender addon cannot import HammerspaceMain, so
     TemplateSources mirrors the registry by hand. These catch drift."""
 
     def test_addon_mirror_matches_the_registry(self):
@@ -346,7 +346,7 @@ class SyntheticDonorTests(unittest.TestCase):
 
     def test_derived_cube_reproduces_the_donor_surface_state_chain(self):
         """`derived:` rebuilds the canonical rigid record order out of the
-        host submesh-0 surface's own effective states (F4): both Type-1
+        host submesh-0 surface's own effective states: both Type-1
         texture layers verbatim, then the UV-count-specific Type-4, a
         regenerated Type-3, and the donor's Type-6 and Type-7."""
         _, data = self._build([(2, 'derived:sm0_ds5')], '_test_template_sources_derived.sluggie')

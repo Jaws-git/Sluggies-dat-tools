@@ -1,8 +1,7 @@
 """GeometryRebuild.py — slot-preserving preprocessing passes.
 
 Rewrites a .sluggie JSON model dict in place before ParseSluggie, for edits
-that keep the donor's vertex slots (PLAN_ModelReplacements.md Milestones
-2-3): complete surface reassignment (``rebuild_surface_assignments``),
+that keep the donor's vertex slots: complete surface reassignment (``rebuild_surface_assignments``),
 UV / normal / colour edits with compaction and primitive-list rewrites
 (``rebuild_edited_uvs``), and texture rebinding
 (``apply_desired_texture_assignments``).
@@ -802,7 +801,7 @@ def rebuild_edited_uvs(data: dict) -> bool:
 
     for sub_idx, sub in enumerate(model.get('Submeshes', [])):
         if sub.get('RigidRebuild'):
-            # Rebuilt as a whole blob by HammerspaceMain (PLAN_EditRigidMeshes.md);
+            # Rebuilt as a whole blob by HammerspaceMain;
             # its UV, normal and colour data travel inside that entry.
             continue
         face_count = sub.get('FacesCountEdited', sub.get('FacesCount', 0))

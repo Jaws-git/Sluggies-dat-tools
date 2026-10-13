@@ -1,6 +1,6 @@
 """Structural comparison of two Super Sluggers model blocks.
 
-Milestone 1 verification tool: parses an original model block and a rebuilt
+Verification tool: parses an original model block and a rebuilt
 hammerspace block section-by-section and compares them at field/array level.
 A bit-by-bit diff is NOT the goal — the rebuilt block legitimately differs in
 padding/alignment layout.  What must match:

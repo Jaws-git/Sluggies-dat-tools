@@ -15,7 +15,7 @@ for _p in (_TOOLS_DIR, _THIS_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-# Step 2.2 – Initialize universal logger in child process.
+# Initialize universal logger in child process.
 import slogger as _slogger
 _slogger.configure()
 
@@ -294,7 +294,7 @@ if bind_pose_scale == (1.0, 1.0, 1.0):
 
 
 # Keep offset to bone reassignments: only the ACT GeoId words change
-# (PLAN_EditRigidMeshes.md Phase 7 step 3; planner in bone_geo_inplace.py).
+# (planner in bone_geo_inplace.py).
 bone_geo_patches = _bone_geo.bone_geo_patches(bone_hierarchy, unpatch, abort)
 
 for i, submesh in enumerate(submeshes):
@@ -487,7 +487,7 @@ for i, submesh in enumerate(submeshes):
 # struct offsets +1..+3; index 0 (offset +1) is the confirmed specular
 # intensity for 'Spec'/'LhSp'/'RhSp' modes; indices 1 and 2 are unconfirmed and
 # are written back verbatim.
-# See INVESTIGATION_Specularity.md.
+# See _docs/_docs_model_format/overview.html (display state parameter bytes).
 # ---------------------------------------------------------------------------
 
 for i, submesh in enumerate(submeshes):
@@ -531,7 +531,7 @@ texture_skipped_count = 0
 
 _model = data["SluggiesModel"]
 
-# A rebuilt rigid submesh (PLAN_EditRigidMeshes.md) replaces its whole GPL
+# A rebuilt rigid submesh replaces its whole GPL
 # blob, which only the Hammerspace builder can do. The dispatcher never sends
 # such a file here; an edited or stale file could.
 _rigid_rebuilt = [

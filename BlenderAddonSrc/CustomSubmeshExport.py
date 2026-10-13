@@ -1,4 +1,4 @@
-"""Pure-Python encoding for custom submeshes (PLAN_AddSubmesh.md Phase 6 step 2).
+"""Pure-Python encoding for custom submeshes.
 
 bpy-free, like HostBones.py and TemplateSources.py, so the geometry and
 quantization rules can be unit-tested without Blender. ExportSluggies.py
@@ -27,7 +27,7 @@ class Triangle:
 
 
 def triangles_from_loop_triangles(loop_triangles):
-    """Step 2.1: triangulate without touching the scene.
+    """Triangulate without touching the scene.
 
     *loop_triangles* is ``mesh.loop_triangles`` (or anything shaped like it:
     ``.vertices``, ``.loops``, ``.polygon_index``). Blender already splits
@@ -62,7 +62,7 @@ def compact_vertex_indices(triangles):
 
 
 # ---------------------------------------------------------------------------
-# Step 2.2: world position is authoritative
+# world position is authoritative
 # ---------------------------------------------------------------------------
 # Matrices are 4x4 nested lists indexed [row][column] and applied to column
 # vectors, the same convention as mathutils (``M @ v``), so Blender matrices
@@ -113,8 +113,8 @@ def mat3_determinant(m):
 
 
 def normal_matrix(m):
-    """Inverse-transpose of *m*'s upper 3x3, for transforming normals
-    (step 2.2 item 5). Raises ValueError when the 3x3 is singular."""
+    """Inverse-transpose of *m*'s upper 3x3, for transforming normals.
+    Raises ValueError when the 3x3 is singular."""
     det = mat3_determinant(m)
     if abs(det) < _SINGULAR_EPSILON:
         raise ValueError('matrix is singular (zero scale on an axis?)')
@@ -180,7 +180,7 @@ def bone_absolute_matrices(bone_hierarchy):
 
 def object_to_bone_matrix(obj_world, arm_world, host_bind):
     """Combined matrix taking object-local vertex coordinates to host-bone
-    bind-local space (step 2.2 items 3-4):
+    bind-local space:
     ``p_bone = host_bind^-1 @ arm_world^-1 @ obj_world @ v.co``.
 
     ``obj_world`` already carries Object Mode location/rotation/scale, delta
@@ -192,7 +192,7 @@ def object_to_bone_matrix(obj_world, arm_world, host_bind):
 
 def keep_offset_world_matrix(obj_world, arm_world, b_old, b_new):
     """New object world matrix for Reassign to new bone's 'Keep offset to
-    bone' placement (PLAN_EditRigidMeshes.md Phase 6 step 2): the mesh keeps
+    bone' placement: the mesh keeps
     the same offset from its host bone, moving from bind matrix ``b_old`` to
     ``b_new`` (both in armature space, rest pose):
     ``M_obj' = A @ B_new @ B_old^-1 @ A^-1 @ M_obj``.
@@ -226,7 +226,7 @@ def is_mirrored(m):
 
 
 def orient_triangles(triangles, mirrored):
-    """Step 2.2 item 6: reverse every triangle's winding when the transform is
+    """Reverse every triangle's winding when the transform is
     mirrored, keeping vertices and loops paired."""
     if not mirrored:
         return list(triangles)
@@ -237,7 +237,7 @@ def orient_triangles(triangles, mirrored):
 
 
 def unsupported_modifier_names(modifiers):
-    """Step 2.2 item 7: names of modifiers export does not evaluate. Takes
+    """Names of modifiers export does not evaluate. Takes
     ``(name, type)`` pairs; only ``ARMATURE`` is expected on a custom submesh."""
     return [name for name, kind in modifiers if kind != 'ARMATURE']
 
@@ -300,7 +300,7 @@ class BoneLocalGeometry:
 
 
 def bone_local_geometry(vertex_cos, triangles, obj_world, arm_world, host_bind):
-    """Steps 2.2 items 3-6 on plain data: undeformed object-local vertex
+    """The world-to-bone transform on plain data: undeformed object-local vertex
     coordinates plus the rest-pose object/armature world matrices and the
     host bone's bind matrix in, bone-local positions with game winding out."""
     to_bone = object_to_bone_matrix(obj_world, arm_world, host_bind)
@@ -317,10 +317,9 @@ def bone_local_geometry(vertex_cos, triangles, obj_world, arm_world, host_bind):
 
 
 # ---------------------------------------------------------------------------
-# Steps 2.3-2.4: position range check and quantization
+# position range check and quantization
 # ---------------------------------------------------------------------------
-# Canonical rigid attribute formats (CompCount, QuantizeInfo), PLAN_AddSubmesh.md
-# F6/F9. Mirrors HammerspaceMain._CUSTOM_SUBMESH_*_FORMAT: the builder writes
+# Canonical rigid attribute formats (CompCount, QuantizeInfo). Mirrors HammerspaceMain._CUSTOM_SUBMESH_*_FORMAT: the builder writes
 # these headers for every CustomSubmeshes entry whatever its template source,
 # so the exporter must encode in exactly these formats.
 POSITION_FORMAT = (3, 59)
@@ -364,7 +363,7 @@ def _fits_int16(value, divisor):
 
 
 def check_position_range(object_name, host_bone_id, geometry, quantize_info=POSITION_FORMAT[1]):
-    """Step 2.3: reject a mesh whose bone-local positions don't fit *one*
+    """Reject a mesh whose bone-local positions don't fit *one*
     position format, before quantizing anything.
 
     A mesh moved far from its host bone overflows int16 (about +/-16 units for
@@ -413,7 +412,7 @@ def position_format_fits(geometry, quantize_info):
 def select_position_format(
     object_name, host_bone_id, geometry, candidates=POSITION_QUANTIZE_CANDIDATES,
 ):
-    """Step 2.3 (adaptive): the most precise s16 position format that holds
+    """The most precise s16 position format that holds
     every bone-local coordinate, as ``(CompCount, QuantizeInfo)``.
 
     A mesh that fits the canonical +/-16 gets the canonical 59 and encodes
@@ -457,7 +456,7 @@ def quantize_int16(value, divisor, context):
 
 
 def encode_positions(object_name, geometry, position_format=POSITION_FORMAT):
-    """Step 2.4: big-endian int16 position buffer in the template's position
+    """Big-endian int16 position buffer in the template's position
     format (canonical ``(3, 59)``). Run ``check_position_range`` first for the
     friendlier whole-mesh error; this still rejects each bad component with
     object, Blender vertex, axis, value and range."""
@@ -488,7 +487,7 @@ def encode_faces(object_name, faces):
 
 
 # ---------------------------------------------------------------------------
-# Step 2.5: per-loop normals, colors and UVs
+# per-loop normals, colors and UVs
 # ---------------------------------------------------------------------------
 
 # Type-3 attribute bit positions (mirrors SluggiesTools/drawlist._ATTR_BIT_SHIFT;
@@ -577,7 +576,7 @@ def attribute_plan(model, template_source):
       HammerspaceMain._custom_submesh_builtin_records.
 
     `derived:`/`builtin:` get one color channel and normals, the canonical
-    rigid attribute set (F9) -- except a built-in flagged without normals
+    rigid attribute set -- except a built-in flagged without normals
     (the stadium ones: stadium surfaces have none).
     """
     kind, _sep, argument = str(template_source).partition(':')
@@ -674,7 +673,7 @@ def encode_color_rgba4444(rgba):
     """One entry of the canonical ``(4, 48)`` color array: a big-endian 16-bit
     RGBA4444 value, matching the builder's 2-byte color stride
     (HammerspaceMain._CUSTOM_SUBMESH_COLOR_STRIDE). QuantizeInfo 48 is
-    RGBA4444 in the engine, not RGBA8 (confirmed in Dolphin, E6)."""
+    RGBA4444 in the engine, not RGBA8 (confirmed in Dolphin)."""
     r, g, b, a = (int(round(max(0.0, min(1.0, float(c))) * 15)) for c in rgba)
     return ((r << 12) | (g << 8) | (b << 4) | a).to_bytes(2, 'big')
 
@@ -750,11 +749,11 @@ def build_custom_submesh_entry(
     *additional_surfaces* (``AdditionalSurfaces`` entries, in order) and
     *face_surface_indices* (one value per exported triangle: 0 = primary,
     k = the k-th additional surface) describe Add-material surfaces on the
-    custom submesh (PLAN_EditRigidMeshes.md Phase 9); both are written only
+    custom submesh; both are written only
     when there is at least one additional surface.
 
     When the template draws two UV channels, channel 1 mirrors channel 0
-    exactly: it is the specular channel, as in donor rigid submeshes (F6).
+    exactly: it is the specular channel, as in donor rigid submeshes.
     """
     position_format = select_position_format(object_name, host_bone_id, geometry)
     quantize_info = position_format[1]

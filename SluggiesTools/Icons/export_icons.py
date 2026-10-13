@@ -22,7 +22,7 @@ ROOT_DIR = os.path.normpath(os.path.join(TOOLS_DIR, '..'))
 if TOOLS_DIR not in sys.path:
     sys.path.insert(0, TOOLS_DIR)
 
-# Step 2.2 – Initialize universal logger in child process.
+# Initialize universal logger in child process.
 import slogger as _slogger
 _slogger.configure()
 

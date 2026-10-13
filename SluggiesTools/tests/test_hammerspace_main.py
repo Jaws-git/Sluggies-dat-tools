@@ -400,7 +400,7 @@ class BuildModelBlockTests(unittest.TestCase):
             ):
                 result = main.BuildModelBlock(self.data)
 
-        # F10: every section start is padded up to the next 32-byte boundary.
+        # every section start is padded up to the next 32-byte boundary.
         self.assertEqual(struct.unpack_from('>5I', result.block), (0, 32, 64, 96, 128))
         self.assertEqual(result.block[0x20:0x23], b'GPL')
         self.assertEqual(result.block[0x23:64], b'\x00' * (64 - 0x23))
@@ -997,7 +997,7 @@ class BuildModelBlockTests(unittest.TestCase):
 
         skn_offset = struct.unpack_from('>I', block, 0x10)[0]
         unaligned_tail_offset = skn_offset + len(b'SKN')
-        tail_offset = -(-unaligned_tail_offset // 32) * 32  # F10: tail starts 32-aligned
+        tail_offset = -(-unaligned_tail_offset // 32) * 32  # tail starts 32-aligned
         self.assertEqual(struct.unpack_from('>I', block, 0x14)[0], tail_offset)
         self.assertEqual(struct.unpack_from('>I', block, 0x18)[0], tail_offset + 0x40)
         self.assertEqual(struct.unpack_from('>I', block, 0x1C)[0], tail_offset + 0x80)
@@ -1589,7 +1589,7 @@ class BuildTEXTests(unittest.TestCase):
         # --- Data region layout: images first, then palettes ---
         # Data region starts at the first 32-byte-aligned offset after the
         # descriptor table, and every individual payload start is likewise
-        # 32-byte aligned (F10), matching vanilla TEX sections.
+        # 32-byte aligned, matching vanilla TEX sections.
         data_start = (4 + 2 * 0x20 + 31) & ~31  # 0x60
         self.assertEqual(data_start % 32, 0)
         self.assertEqual(img0_off, data_start)
@@ -1698,7 +1698,7 @@ class BuildTEXTests(unittest.TestCase):
         self.assertEqual(section[desc_end:expected_data_start], b'\x00' * (expected_data_start - desc_end))
 
     def test_build_tex_pads_each_payload_to_32_byte_boundary(self):
-        # F10: every image/palette payload start is 32-byte aligned, even
+        # every image/palette payload start is 32-byte aligned, even
         # though an 8-byte payload leaves the next one at 8 mod 32 if packed
         # back-to-back with no padding.
         textures = [
@@ -2055,7 +2055,7 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
         )
 
     def test_tex_plan_built_before_gpl_append_resolves_additional_texture_index(self):
-        """PLAN_AddSubmesh.md Phase 4 step 2: the TEX plan is resolved before
+        """The TEX plan is resolved before
         the GPL append, so PatchGPLAppendSubmesh receives the custom
         submesh's real, final TEX index instead of a placeholder."""
         self.data['SluggiesModel'].update({
@@ -2288,7 +2288,7 @@ class BuildModelBlockRootScaleTests(unittest.TestCase):
 
 
 class ApplyGeoIdPatchesTests(unittest.TestCase):
-    """PLAN_AddSubmesh.md Phase 3 step 1: ``_apply_geo_id_patches`` writes
+    """``_apply_geo_id_patches`` writes
     ``GeoId = <new submesh index>`` onto each custom submesh's host bone at
     its ACT-section-relative ``GeoIdFieldOffset``.
 
@@ -2423,7 +2423,7 @@ class ApplyGeoIdPatchesTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     main._apply_geo_id_patches(act_bytes, data, self.SOURCE_MODEL_OFFSET)
 
-    # -- PLAN_AddSubmesh.md Phase 3 step 2: GeoIdEdited retargets --------
+    # -- GeoIdEdited retargets --------
 
     def test_geo_id_edited_writes_target_value(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2530,7 +2530,7 @@ class ApplyGeoIdPatchesTests(unittest.TestCase):
 
 
 class ParseSluggieCustomSubmeshesTests(unittest.TestCase):
-    """PLAN_AddSubmesh.md Phase 1 step 2: ParseSluggie produces a parsed
+    """ParseSluggie produces a parsed
     custom-submesh object without touching donor structures."""
 
     def test_no_custom_submeshes_yields_empty_list(self):
@@ -2732,7 +2732,7 @@ def _validation_entry(**overrides):
 
 
 class ValidateCustomSubmeshesTests(unittest.TestCase):
-    """PLAN_AddSubmesh.md Phase 1 step 3: reject an invalid CustomSubmeshes
+    """Reject an invalid CustomSubmeshes
     entry before any DAT/DOL write, with each error naming the entry."""
 
     def test_no_entries_is_a_noop(self):
@@ -2936,7 +2936,7 @@ class ValidateCustomSubmeshesTests(unittest.TestCase):
             main._CUSTOM_SUBMESH_BUILTIN_TEMPLATES['rigid_spec_v1'] = original
 
     def test_unverified_builtins_are_rejected(self):
-        """Decision 9: a built-in stays refused until Phase 0 probe 7 confirms
+        """A built-in stays refused until a Dolphin test confirms
         it in game, so an unverified capture cannot reach a DAT write."""
         unverified = [
             name for name, template in main._CUSTOM_SUBMESH_BUILTIN_TEMPLATES.items()
@@ -3093,7 +3093,7 @@ class ValidateCustomSubmeshesTests(unittest.TestCase):
 
 
 class CustomSubmeshType3AndTextureHelperTests(unittest.TestCase):
-    """PLAN_AddSubmesh.md Phase 2 step 3: the small bit-level helpers that
+    """The small bit-level helpers that
     encode/decode Type-1 texture bindings and Type-3 attribute layouts."""
 
     def test_texture_layer_round_trip(self):
@@ -3114,7 +3114,7 @@ class CustomSubmeshType3AndTextureHelperTests(unittest.TestCase):
         self.assertEqual(main._custom_submesh_type3_descriptors(setting), layout)
 
     def test_type3_descriptors_reproduces_vanilla_values(self):
-        # F9 survey values, decoded then re-encoded, must round-trip exactly.
+        # Vanilla survey values, decoded then re-encoded, must round-trip exactly.
         for hex_value in ('000028a8', '000028bc', '00003cbc', '00003ca8'):
             setting = int(hex_value, 16)
             layout = main._custom_submesh_type3_descriptors(setting)
@@ -3126,7 +3126,7 @@ class CustomSubmeshType3AndTextureHelperTests(unittest.TestCase):
 
 
 class BuildCustomSubmeshAdditionalTextureIndexTests(unittest.TestCase):
-    """PLAN_AddSubmesh.md Phase 4 step 2: _build_custom_submesh patches the
+    """_build_custom_submesh patches the
     new submesh's Type-1 texture binding with the final TEX index resolved
     from the caller's texture_index_by_file_name mapping -- there is no
     build-time placeholder to re-patch later."""
@@ -3268,7 +3268,7 @@ class CustomSubmeshSpecularStrengthTests(unittest.TestCase):
 
 
 class CustomSubmeshTemplateRecordsTests(unittest.TestCase):
-    """PLAN_AddSubmesh.md Phase 2 step 3: resolving a CustomSubmesh's
+    """Resolving a CustomSubmesh's
     display-state records per TemplateSource kind."""
 
     def test_rigid_records_clone_the_whole_template_list_verbatim(self):
@@ -3310,7 +3310,7 @@ class CustomSubmeshTemplateRecordsTests(unittest.TestCase):
         self.assertEqual(type4[2], 'fffffff0')  # only layer 0 is bound on submesh 0 here
 
     def test_one_layer_builtin_keeps_type4_fffffff0_on_a_two_layer_host(self):
-        """Decision 9: Type 4 follows the template's own layer count, so the
+        """Type 4 follows the template's own layer count, so the
         1-layer `Shdw` form stays 1-layer even where `Spec` binds two."""
         model = _validation_base_model()
         model['Submeshes'][0]['DisplayStates'].insert(1, _ds('sm0_ds0b', 1, '11002003'))
@@ -3412,7 +3412,7 @@ class CustomSubmeshTemplateRecordsTests(unittest.TestCase):
 
 
 class BuildRigidSubmeshBlobTests(unittest.TestCase):
-    """PLAN_AddSubmesh.md Phase 2 step 1: the self-contained single-submesh
+    """The self-contained single-submesh
     GPL blob writer a new custom submesh is serialized with."""
 
     def _submesh(self, **overrides):
@@ -3537,7 +3537,7 @@ class StadiumCustomSubmeshAlphaWarningTests(unittest.TestCase):
 
 
 class PatchGPLAppendSubmeshTests(unittest.TestCase):
-    """PLAN_AddSubmesh.md Phase 2: appends a new GEO descriptor + blob to a
+    """Appends a new GEO descriptor + blob to a
     cloned GPL section, relocating existing blobs as a single unit."""
 
     def _build_donor_gpl(self, blob_start: int, blob_bytes: bytes, name_off: int, user_data: bytes):
@@ -3770,8 +3770,8 @@ def _strip_edited_fields(node) -> None:
 class PatchGPLAppendSubmeshSyntheticDonorTests(unittest.TestCase):
     """End-to-end smoke test over the synthetic donor: appends a cube
     CustomSubmesh through the full BuildModelBlock pipeline and validates the
-    assembled block, for each PLAN_AddSubmesh.md template source. GeoId
-    patching is Phase 3's job, so the new submesh is valid but unowned here --
+    assembled block, for each template source. GeoId
+    patching is a later step, so the new submesh is valid but unowned here --
     BlockValidator does not require an owner."""
 
     def setUp(self):

@@ -1,5 +1,5 @@
-"""RigidRebuild: whole-blob rebuild of a donor rigid submesh
-(PLAN_EditRigidMeshes.md Phases 1-3), on the synthetic donor."""
+"""RigidRebuild: whole-blob rebuild of a donor rigid submesh,
+on the synthetic donor."""
 import base64
 import copy
 import pathlib
@@ -368,7 +368,7 @@ class RigidRebuildValidatorTests(unittest.TestCase):
         self._refused('donor submesh has no NormalBuffer')
 
     def test_combined_with_custom_submesh_on_a_freed_bone(self):
-        """G10: a bone a rigid submesh leaves in this export is claimable."""
+        """A bone a rigid submesh leaves in this export is claimable."""
         bones = {int(b['BoneId']): b for b in self.model['BoneHierarchy']}
         bones[OWNER]['GeoIdEdited'] = 0xFFFF
         bones[FREE_BONE]['GeoIdEdited'] = RIGID
@@ -580,7 +580,7 @@ class RigidRebuildBuildTests(unittest.TestCase):
         owners = result.validation_report['validator_facts']['act_geo_id_owners']
         self.assertEqual((owners[RIGID], owners[2]), ([OWNER], [FREE_BONE]))
 
-    # --- Phase 11 combined cases (PLAN_EditRigidMeshes.md) ---------------------
+    # --- Combined cases -------------------------------
 
     def test_rebuild_and_custom_submesh_share_one_appended_png(self):
         """A cap-style new surface and a custom submesh on the same new PNG:
@@ -638,7 +638,7 @@ class RigidRebuildBuildTests(unittest.TestCase):
         self.assertEqual(_blob(gpl, 0)['positions'][2][2:], donor_blob0['positions'][2][2:])
 
     def test_swap_chain_rebuild_moves_bone_and_custom_takes_the_freed_one(self):
-        """G10 end to end: the rigid submesh leaves its bone for a free one
+        """End to end: the rigid submesh leaves its bone for a free one
         and a new custom submesh is hosted on the bone it just freed."""
         bones = {int(b['BoneId']): b for b in self.model['BoneHierarchy']}
         bones[OWNER]['GeoIdEdited'] = 0xFFFF

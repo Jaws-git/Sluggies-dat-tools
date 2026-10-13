@@ -22,8 +22,7 @@ rewritten one are copied byte for byte, so anything this code does not
 understand (ANM blocks, padding, unreferenced slack) survives untouched.
 
 Only one member can be rewritten per call.  Editing several parts of the same
-character needs a hammerspace read-back path; see ``PLAN_EditRigidMeshes.md``
-Phase 12.
+character needs a hammerspace read-back path.
 """
 
 import struct

@@ -1,5 +1,4 @@
-"""Free-bone proposal for the Add submesh feature (PLAN_AddSubmesh.md, Phase 5
-step 2).
+"""Free-bone proposal for the Add submesh feature.
 
 Pure Python, no ``bpy`` import, so it is unit-testable outside Blender. The
 importer (``ImportSluggies.build_armature``) snapshots each bone's donor
@@ -30,9 +29,9 @@ STATUS_RECOMMENDED = "recommended"
 STATUS_ALLOWED = "allowed"
 STATUS_DRIVES_SKINNING = "drives_skinning"
 
-# Phase 0 probe 3 (2026-09-16, Mario hand bone 28): a bone that drives SKN
+# Tested in Dolphin (2026-09-16, Mario hand bone 28): a bone that drives SKN
 # skinning may still host a rigid submesh without disturbing its skinning
-# role. Kept as one constant so the U2 decision lives in one place.
+# role. Kept as one constant so the decision lives in one place.
 SKINNING_HOSTS_ALLOWED = True
 
 
@@ -183,7 +182,7 @@ def classify_host_bones(
             if SKINNING_HOSTS_ALLOWED:
                 choices.append(HostBoneChoice(
                     rec.bone_id, rec.parent_id, STATUS_DRIVES_SKINNING,
-                    "drives skinning; allowed (Phase 0 probe 3, U2)"))
+                    "drives skinning; allowed"))
             else:
                 choices.append(HostBoneChoice(
                     rec.bone_id, rec.parent_id, STATUS_EXCLUDED, "drives skinning"))
@@ -236,8 +235,8 @@ def reassignment_choices(
     moving_custom_bone_id: Optional[int] = None,
     roots_only: bool = False,
 ) -> List[HostBoneChoice]:
-    """Host-bone choices for the Reassign to new bone dialog (PLAN_EditRigidMeshes.md
-    Phase 6): the same classification :func:`classify_host_bones` /
+    """Host-bone choices for the Reassign to new bone dialog:
+    the same classification :func:`classify_host_bones` /
     :func:`order_host_bone_choices` give Add submesh, with the object being
     moved dropped from the claims first, then its own *current* bone
     excluded again as a separate, final step.
@@ -293,7 +292,7 @@ def skn_bone_ids(skin_data: Optional[dict]) -> Set[int]:
     """Bone ids referenced by any SK1, SK2 or SKAcc entry in a ``.sluggie``
     ``SkinData`` dict.
 
-    This is the "drives skinning" fact (F7). ``BoneHierarchy``'s ``Skinned``
+    This is the "drives skinning" fact. ``BoneHierarchy``'s ``Skinned``
     flag is not: ``export.py`` sets it for every bone whose ``GeoIdRaw`` is
     ``0xFFFF``.
     """
@@ -324,8 +323,8 @@ def custom_submesh_host_errors(
     hosts: Iterable[CustomSubmeshHost],
     submesh_names: Optional[Dict[int, str]] = None,
 ) -> List[str]:
-    """Export-time re-check of custom submesh host bones (PLAN_AddSubmesh.md
-    Phase 6 step 3), on the final scene state.
+    """Export-time re-check of custom submesh host bones,
+    on the final scene state.
 
     A bone that was free when the cube was created may have been taken since.
     Rejected, with the conflicting object names:
@@ -384,8 +383,7 @@ def bone_metadata_mismatches(
     sluggie_records: Iterable[BoneRecord],
 ) -> List[str]:
     """Differences between an armature's import-time bone snapshot and the
-    export target's ``BoneHierarchy``/``SkinData`` (PLAN_AddSubmesh.md Phase 5
-    step 2, export-time re-check).
+    export target's ``BoneHierarchy``/``SkinData`` (export-time re-check).
 
     Both describe the donor model, so any difference means the armature was
     imported from another model than the one being exported to. Compares bone

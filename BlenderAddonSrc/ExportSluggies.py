@@ -1254,7 +1254,7 @@ def encode_unskinned_bone_reassignments(candidates, data, warnings):
     to exactly one positive-weight bone_<id> group, and that id differs from
     the current owning bone id. The rule itself lives in
     HostBones.compute_rigid_retargets, shared with the free-bone proposal
-    (PLAN_AddSubmesh.md Phase 5 step 2) so both call sites agree on what a
+    so both call sites agree on what a
     valid retarget is.
     """
     model = data.get("SluggiesModel", {})
@@ -1718,7 +1718,7 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
     Membership (which bone(s) influence a vertex) is read directly from
     Blender's current bone_<id> vertex groups — NOT from donor SK1/SK2/SKAcc
     structure — so real bone reassignment (moving a vertex group between
-    donor bones) round-trips correctly. See PLAN_ModelReplacements.md 3.4.
+    donor bones) round-trips correctly.
 
     Splitting rules (vertices whose bone set is unchanged replicate the donor
     role assignment exactly; for edited vertices):
@@ -1795,7 +1795,7 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
     # --- Original per-vertex bone membership (donor SkinData) ---
     # Used ONLY to detect whether the user's Blender vertex-group edits
     # actually changed skin membership anywhere in the model — NOT for
-    # classification. Per PLAN_ModelReplacements.md 3.4, SkinDataEdited is
+    # classification. SkinDataEdited is
     # treated as the complete source of truth for entry membership once an
     # edit is detected; membership must not be re-derived from stale donor
     # per-entry structure.
@@ -1931,8 +1931,7 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
                 membership_edited = True
 
             # --- Classification. Membership (WHICH bones influence a
-            # vertex) always comes from Blender's current vertex groups, per
-            # PLAN_ModelReplacements.md 3.4. But the donor's choice of WHICH
+            # vertex) always comes from Blender's current vertex groups. But the donor's choice of WHICH
             # ROLE each bone plays — SK2 pair partner vs. SKAcc supplement —
             # is an authored structural fact, not simply "the two heaviest
             # weights": verified against production data (Luigi), 103
@@ -2434,16 +2433,16 @@ def _find_new_materials(obj, json_submesh, submesh_index=None):
 
     An Add-material surface (``SluggiesNewSurface``) is accepted on a rigid
     donor submesh when its ``SluggiesSurfaceOwner`` is that submesh
-    (``sm<submesh_index>``; PLAN_EditRigidMeshes.md G16); it is rejected on
+    (``sm<submesh_index>``); it is rejected on
     the skinned body and when it belongs to another submesh. Any other
     material (no SurfaceId, unknown SurfaceId, or unparseable legacy name) is
     rejected.
 
     A custom submesh (``SluggiesCustomSubmesh``) has no donor submesh to compare
     against — it accepts exactly its own ``<CustomSubmeshId>_ds*`` SurfaceIds
-    (Phase 6 step 1 of PLAN_AddSubmesh.md) and its own Add-material surfaces
+    and its own Add-material surfaces
     (``SluggiesNewSurface`` with ``SluggiesSurfaceOwner`` = its
-    ``CustomSubmeshId``, PLAN_EditRigidMeshes.md Phase 9) and rejects
+    ``CustomSubmeshId``) and rejects
     everything else.
     """
     if obj.get("SluggiesCustomSubmesh"):
@@ -2611,7 +2610,7 @@ def _resolve_material_texture_changes(
                 continue
             if material.get("SluggiesNewSurface"):
                 # An Add-material surface has no donor TextureIndex; its image
-                # is resolved with the custom-submesh resolver instead (G17).
+                # is resolved with the custom-submesh resolver instead.
                 continue
 
             image_nodes = _connected_image_texture_nodes(material)
@@ -2679,18 +2678,16 @@ def _resolve_material_texture_changes(
 
 def _custom_submesh_texture_layer(mode):
     """Decode a Type-1 ShaderMode hex string into (layer, texture_index).
-    Bits 13-15 are the texture layer, bits 0-12 are the texture index
-    (PLAN_AddSubmesh.md F9/Phase 4). Duplicated from
+    Bits 13-15 are the texture layer, bits 0-12 are the texture index. Duplicated from
     HammerspaceMain._custom_submesh_texture_layer because the add-on stays
-    standalone (no SluggiesTools imports, PLAN_AddSubmesh.md Phase 5 step 5)."""
+    standalone (no SluggiesTools imports)."""
     setting = int(mode, 16)
     return ((setting >> 13) & 7, setting & 0x1FFF)
 
 
 def _custom_submesh_template_texture_index(model, template_source):
     """Resolve a CustomSubmesh's TemplateSource to the donor texture index
-    its new descriptor should clone the GX format from (PLAN_AddSubmesh.md
-    Phase 4 step 1). A custom submesh has no donor material of its own, so
+    its new descriptor should clone the GX format from. A custom submesh has no donor material of its own, so
     this walks the same donor DisplayStates a `rigid:`/`derived:`/`builtin:`
     template resolves against at build time (mirroring
     HammerspaceMain._custom_submesh_rigid_records/_derived_records/
@@ -2702,7 +2699,7 @@ def _custom_submesh_template_texture_index(model, template_source):
       surface.
     - `builtin:<name>`: the host model's own submesh 0, first layer-0
       texture encountered (builtin templates are model-independent and
-      always rebind to the host's own submesh-0 texture, F9).
+      always rebind to the host's own submesh-0 texture).
     """
     submeshes = model.get('Submeshes') or []
     submesh0_states = (submeshes[0].get('DisplayStates') if submeshes else None) or []
@@ -2813,7 +2810,7 @@ def _resolve_custom_submesh_texture_changes(
     validate_texture_files=True,
 ):
     """Resolve each custom submesh material's connected image into a
-    TextureAssignment (PLAN_AddSubmesh.md Phase 4 step 1). Applies the same
+    TextureAssignment. Applies the same
     per-material image-inspection rules as _resolve_material_texture_changes,
     but a custom submesh has no donor material to read a `TextureIndex`
     from: each entry instead supplies the donor texture index its template
@@ -2911,8 +2908,7 @@ def _resolve_custom_submesh_texture_changes(
 
 
 def _custom_submesh_triangles(obj):
-    """Triangulate a custom submesh for export (PLAN_AddSubmesh.md Phase 6
-    step 2.1) without changing the user's mesh: reads Blender's own loop
+    """Triangulate a custom submesh for export without changing the user's mesh: reads Blender's own loop
     triangles instead of running a Triangulate operator or modifier."""
     mesh = obj.data
     mesh.calc_loop_triangles()
@@ -2963,7 +2959,7 @@ def _armature_local_geometry(context, obj, warnings):
 
 
 def _custom_submesh_bone_local_geometry(context, obj, bone_hierarchy, host_bone_id, warnings):
-    """World position is authoritative (PLAN_AddSubmesh.md Phase 6 step 2.2).
+    """World position is authoritative.
 
     Transforms are applied mathematically, never with ``transform_apply``, so
     the export leaves the user's scene as it was:
@@ -3029,7 +3025,7 @@ def _geometry_in_bind_space(context, obj, host_bind, warnings):
 
 def _custom_submesh_loop_attributes(obj, warnings):
     """Per-loop normals, UVs and colors of a custom submesh, indexed by Blender
-    loop index (PLAN_AddSubmesh.md Phase 6 step 2.5). Call after the geometry,
+    loop index. Call after the geometry,
     which flushes Edit Mode first.
 
     - Normals are Blender's loop normals (custom split normals when present).
@@ -3066,8 +3062,7 @@ def _custom_submesh_loop_attributes(obj, warnings):
 
 def _custom_submesh_additional_materials(obj):
     """The Add-material surfaces of a custom submesh that at least one face
-    uses, keyed by surface key in slot order (PLAN_EditRigidMeshes.md Phase
-    9). A new-surface material no face uses is reported as ignored."""
+    uses, keyed by surface key in slot order. A new-surface material no face uses is reported as ignored."""
     custom_id = str(obj.get("CustomSubmeshId"))
     used_slots = {poly.material_index for poly in obj.data.polygons}
     materials, unused = {}, []
@@ -3102,15 +3097,14 @@ def _new_surface_entry(key, mat, texture_assignment):
 def encode_custom_submesh(context, obj, model, texture_assignment, warnings, use_compression=True,
                           specular_strength=None, texture_assignments=None, infos=None):
     """Encode one ``SluggiesCustomSubmesh`` object as a ``CustomSubmeshes``
-    entry (PLAN_AddSubmesh.md Phase 6 step 2): triangulate, map world
+    entry: triangulate, map world
     positions into host-bone space, range-check and quantize, and encode
     per-loop normals, colors and UVs for the template's attribute set.
     Raises ValueError with the object named.
 
     *texture_assignments* maps each material name of the object's Add-material
     surfaces to its resolved TextureAssignment; the faces are then routed per
-    material and those surfaces become ``AdditionalSurfaces``
-    (PLAN_EditRigidMeshes.md Phase 9)."""
+    material and those surfaces become ``AdditionalSurfaces``."""
     host_bone_id = _detect_uniform_vertex_bone_id(obj)
     if host_bone_id is None:
         raise ValueError(
@@ -3175,7 +3169,7 @@ def _armature_donor_bone_records(arm_obj):
 
 
 def validate_custom_submeshes(custom_objects, donor_candidates, model, warnings):
-    """Phase 6 step 3 (PLAN_AddSubmesh.md): checks on the final scene state
+    """Checks on the final scene state
     before any custom submesh is encoded. Raises ValueError on the first
     blocking problem; ignored state goes into *warnings*.
 
@@ -3396,7 +3390,7 @@ ENABLE_MATERIAL_REASSIGNMENT_EXPORT = True
 
 
 # ---------------------------------------------------------------------------
-# Rigid rebuild (PLAN_EditRigidMeshes.md Phase 4): bpy glue around
+# Rigid rebuild: bpy glue around
 # RigidRebuildExport. A donor rigid submesh whose edit the in-place fields
 # cannot hold (changed topology, Object Mode transform, kept world position on
 # another bone, faces moved between surfaces) is exported as a whole
@@ -3404,7 +3398,7 @@ ENABLE_MATERIAL_REASSIGNMENT_EXPORT = True
 # ---------------------------------------------------------------------------
 
 def _empty_image_node_errors(objects):
-    """Decision 11: an Image Texture node without an image on any Sluggies
+    """An Image Texture node without an image on any Sluggies
     material (donor, new surface, custom submesh) cancels the export, whatever
     the texture toggles say. A new-surface or custom-submesh material with no
     image node at all is blocked the same way; a donor material without one
@@ -3499,10 +3493,9 @@ class _RigidRebuildPlan:
 
 
 def _rigid_rebuild_plan(context, obj, submesh_index, target_submesh, model, warnings):
-    """Decide a rigid donor submesh's export path (PLAN_EditRigidMeshes.md
-    decision 1) and gather what the rebuild needs. Returns None when the
+    """Decide a rigid donor submesh's export path and gather what the rebuild needs. Returns None when the
     in-place / slot-preserving path applies. Raises ValueError, naming the
-    object, for anything that must stop the export (G2, slot hygiene,
+    object, for anything that must stop the export (slot hygiene,
     unsupported position format). A submesh with facial poses carries them
     through the rebuild as its facial shape keys (``FacialPoses``)."""
     donor = RigidRebuildExport.donor_rigid_submesh(
@@ -3609,8 +3602,7 @@ def _vertex_bone_weights(obj):
 
 @dataclass
 class _SkinnedRebuildPlan:
-    """The skinned body takes the rebuild path this export
-    (PLAN_ModelReplacements.md Milestone 4)."""
+    """The skinned body takes the rebuild path this export."""
     obj: object
     submesh_index: int
     donor: object
@@ -3622,7 +3614,7 @@ class _SkinnedRebuildPlan:
     loop_colors: object
     vertex_weights: list          # per Blender vertex {bone: weight}, skinned bones only
     new_surface_materials: dict   # surface key -> material
-    facial_keys: object = None    # [SkinnedRebuildExport.FacialObjectKeys] or None (Milestone 4.7)
+    facial_keys: object = None    # [SkinnedRebuildExport.FacialObjectKeys] or None
 
 
 def _shape_key_vertex_normals(key):
@@ -3695,7 +3687,7 @@ def _mark_skinned_added_bones(model, vertex_weights, object_name, warnings):
 
 def _skinned_rebuild_plan(context, obj, submesh_index, target_submesh, model, warnings):
     """Decide the skinned body's export path and gather what the rebuild
-    needs. Returns None when the slot-preserving paths (Milestone 3) apply.
+    needs. Returns None when the slot-preserving paths apply.
     Raises ValueError, naming the object, for anything that must stop the
     export (slot hygiene, unweighted vertices, unsupported position format)."""
     donor = SkinnedRebuildExport.donor_skinned_submesh(
@@ -3821,8 +3813,7 @@ def _drop_facial_edits_for_submesh(data, submesh_index):
 
 def _partial_move_error(obj, display_states, surf_mat):
     """Submesh 0 (skinned) keeps the complete-move rule: a donor surface whose
-    faces are split between materials is refused with the rigid-only hint
-    (PLAN_EditRigidMeshes.md Phase 4 step 7)."""
+    faces are split between materials is refused with the rigid-only hint."""
     original = []
     for index, state in enumerate(display_states):
         count = state.get("FaceCount")
@@ -4042,7 +4033,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         submeshes = data["SluggiesModel"].get("Submeshes", [])
 
         # --- collect selected mesh objects that carry Sluggies custom properties ---
-        # Custom submeshes (PLAN_AddSubmesh.md Phase 6 step 1) have no
+        # Custom submeshes have no
         # VertexBufferOffset of their own yet — they are new submeshes, not
         # edits to an existing one — so they are collected separately and
         # excluded from the VertexBufferOffset-matching candidates below.
@@ -4124,7 +4115,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 )
                 return {"CANCELLED"}
 
-        # Decision 11: an empty Image Texture node blocks the export, whatever
+        # an empty Image Texture node blocks the export, whatever
         # the texture toggles say.
         image_errors = _empty_image_node_errors(candidates + custom_submesh_candidates)
         if image_errors:
@@ -4197,7 +4188,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 self.report({"ERROR"}, err)
             return {"CANCELLED"}
 
-        # --- Custom submeshes (PLAN_AddSubmesh.md Phase 6 step 2) ---
+        # --- Custom submeshes ---
         # The toggle guard above guarantees Reimport textures, so the
         # texture context was resolved. CustomSubmeshes
         # always mirrors the current selection, like AdditionalTextureDescriptors.
@@ -4232,7 +4223,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     primary_materials.append(material)
                     custom_texture_entries.append((material, template_texture_index))
                     # Add-material surfaces on the custom submesh resolve their
-                    # images the same way (PLAN_EditRigidMeshes.md Phase 9).
+                    # images the same way.
                     additional_materials, _unused = _custom_submesh_additional_materials(obj)
                     for extra in additional_materials.values():
                         custom_texture_entries.append(
@@ -4263,13 +4254,13 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 self.report({"ERROR"}, str(exc))
                 return {"CANCELLED"}
 
-        # --- Rigid rebuilds (PLAN_EditRigidMeshes.md Phase 4) ---
+        # --- Rigid rebuilds ---
         # Each rigid donor submesh takes the in-place path unless its
         # topology, transform, host bone (world position kept) or surfaces
         # changed; then it is exported as a whole RigidRebuild. New
         # Add-material surfaces resolve their images like custom submeshes.
         rigid_plans = {}
-        # The skinned body (PLAN_ModelReplacements.md Milestone 4): a whole
+        # The skinned body: a whole
         # SkinnedRebuild when its topology, transform or surfaces changed in
         # a way the slot-preserving paths cannot store.
         skinned_plans = {}

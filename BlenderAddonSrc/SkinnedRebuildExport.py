@@ -1,5 +1,5 @@
 """Pure-Python side of the skinned-body rebuild export
-(PLAN_ModelReplacements.md Milestone 4, ``Submeshes[0].SkinnedRebuild``).
+(``Submeshes[0].SkinnedRebuild``).
 
 bpy-free, like RigidRebuildExport.py, so the decision rules and the
 encoding can be unit-tested outside Blender. ExportSluggies.py reads the
@@ -10,14 +10,14 @@ when its topology changed, when it carries an Object Mode transform, when
 any vertex's set of skinning bones changed (vertex groups added, removed
 or reassigned), or when faces moved in a way the slot-preserving paths
 cannot store (a partial move, a move between surfaces with different
-shaders, or an Add-material surface). Otherwise the Milestone 3 fields
+shaders, or an Add-material surface). Otherwise the in-place fields
 apply (position, UV, colour and weight-value edits on the donor's own
 vertices and bones).
 
 What the entry carries, in the donor's own formats: one interleaved
 position + normal record per vertex in armature (model) space, triangles,
 per-loop colours and UVs, the face -> surface routing, and ``(vertex, bone,
-weight)`` influences, plus ``FacialPoses`` (Milestone 4.7): the body's
+weight)`` influences, plus ``FacialPoses``: the body's
 facial shape keys as sparse delta records, so the patcher can rebuild the
 donor's blink and mouth poses for the new vertex order. The patcher assigns
 position slots, builds the SKN and re-encodes the draw lists; without
@@ -148,7 +148,7 @@ def surfaces_need_rebuild(
 ) -> bool:
     """Whether the face -> surface changes need the rebuild. A complete move
     of a donor surface onto another donor surface with the same effective
-    Type-7 shader keeps the slot-preserving path (Milestone 2.4, proven in
+    Type-7 shader keeps the slot-preserving path (proven in
     Dolphin); anything else -- a new surface, a partial move, or a move
     between shaders -- moves real primitives and needs the rebuild."""
     if routing.new_keys:
@@ -386,7 +386,7 @@ FacialObjectKeys = rre.FacialObjectKeys
 
 
 # ---------------------------------------------------------------------------
-# Facial poses (Milestone 4.7)
+# Facial poses
 # ---------------------------------------------------------------------------
 
 _DELTA_AXES = ('x', 'y', 'z', 'nx', 'ny', 'nz')

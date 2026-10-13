@@ -320,7 +320,7 @@
               },
               "RigidRebuild": {
                 "type": "object",
-                "description": "Hammerspace-only whole-blob rebuild of this rigid (VertexBufferCompCount 3) donor submesh, written by the Blender exporter when the slot-preserving edit fields cannot represent the edit: changed topology, an Object Mode transform, a host-bone change that keeps the world position, or faces moved between surfaces. The donor display states are kept (with ShaderModeEdited / DisplayStateParamBytesEdited applied) and only the primitive lists are re-encoded, one list per drawing surface (greedy GX_TRIANGLESTRIP runs plus one GX_TRIANGLES block for the leftovers, about half the bytes of plain triangles); Type-3 index widths are widened where a count needs it. The rebuilt blob is inserted before GPLUserData and the GEO descriptor repointed; the donor blob stays in place unreferenced. Never combined with the in-place *Edited fields on the same submesh (the patcher refuses the mix), and never on a submesh a ptr7 facial object references. Every buffer uses the donor's own formats (VertexBufferQuantizeInfo, NormalBuffer, ColorChannels and UVChannels quantization) and is bone-local to HostBoneId. See PLAN_EditRigidMeshes.md (local working document).",
+                "description": "Hammerspace-only whole-blob rebuild of this rigid (VertexBufferCompCount 3) donor submesh, written by the Blender exporter when the slot-preserving edit fields cannot represent the edit: changed topology, an Object Mode transform, a host-bone change that keeps the world position, or faces moved between surfaces. The donor display states are kept (with ShaderModeEdited / DisplayStateParamBytesEdited applied) and only the primitive lists are re-encoded, one list per drawing surface (greedy GX_TRIANGLESTRIP runs plus one GX_TRIANGLES block for the leftovers, about half the bytes of plain triangles); Type-3 index widths are widened where a count needs it. The rebuilt blob is inserted before GPLUserData and the GEO descriptor repointed; the donor blob stays in place unreferenced. Never combined with the in-place *Edited fields on the same submesh (the patcher refuses the mix), and never on a submesh a ptr7 facial object references. Every buffer uses the donor's own formats (VertexBufferQuantizeInfo, NormalBuffer, ColorChannels and UVChannels quantization) and is bone-local to HostBoneId.",
                 "properties": {
                   "HostBoneId": {
                     "type": "integer",
@@ -427,7 +427,7 @@
               },
               "SkinnedRebuild": {
                 "type": "object",
-                "description": "Hammerspace-only whole rebuild of the skinned body (submesh 0, VertexBufferCompCount 6), written by the Blender exporter when the body's topology changed, it carries an Object Mode transform, or faces moved in a way the slot-preserving fields cannot store (a partial move, a move between shaders, or an Add-material surface). Any vertex and face count. The patcher assigns position slots in the canonical skin layout (one SK1/SK2 write per vertex, entries on their own cache lines, sources mirroring the position buffer, memClr 0/0), rebuilds the whole SKN section from Influences, keeps the donor display states (ShaderModeEdited / DisplayStateParamBytesEdited applied) and re-encodes one primitive list per drawing surface (GX_TRIANGLESTRIP runs plus a GX_TRIANGLES block, as RigidRebuild); the rebuilt blob is inserted before GPLUserData and the GEO descriptor repointed. Facial poses (ptr7) that address submesh 0 are rebuilt for the new vertex order from FacialPoses, or dropped (the header pointer is cleared) when the entry has none. Never combined with in-place *Edited fields on the submesh, a RigidRebuild, or a model-level SkinDataEdited. See PLAN_ModelReplacements.md Milestone 4 (local working document).",
+                "description": "Hammerspace-only whole rebuild of the skinned body (submesh 0, VertexBufferCompCount 6), written by the Blender exporter when the body's topology changed, it carries an Object Mode transform, or faces moved in a way the slot-preserving fields cannot store (a partial move, a move between shaders, or an Add-material surface). Any vertex and face count. The patcher assigns position slots in the canonical skin layout (one SK1/SK2 write per vertex, entries on their own cache lines, sources mirroring the position buffer, memClr 0/0), rebuilds the whole SKN section from Influences, keeps the donor display states (ShaderModeEdited / DisplayStateParamBytesEdited applied) and re-encodes one primitive list per drawing surface (GX_TRIANGLESTRIP runs plus a GX_TRIANGLES block, as RigidRebuild); the rebuilt blob is inserted before GPLUserData and the GEO descriptor repointed. Facial poses (ptr7) that address submesh 0 are rebuilt for the new vertex order from FacialPoses, or dropped (the header pointer is cleared) when the entry has none. Never combined with in-place *Edited fields on the submesh, a RigidRebuild, or a model-level SkinDataEdited.",
                 "properties": {
                   "VertexBufferData": {
                     "type": "string",
@@ -460,7 +460,7 @@
                   "Reason": {"type": "array", "items": {"type": "string"}, "description": "Why the exporter chose the rebuild, for logging only: topology, object_transform, surfaces."},
                   "FacialPoses": {
                     "type": "array",
-                    "description": "The body's facial poses for the new vertex order (PLAN_ModelReplacements.md Milestone 4.7, local working document). One entry per FacialPoseData object whose SubmeshIndex is 0 (all of them, or the patcher refuses). The patcher rebuilds the ptr7 section: the entry's vertices are mapped to their position slots, pose zero copies those slots' records from the rebuilt position buffer, later poses carry the deltas; objects on other submeshes are re-serialized unchanged; ptr6/ptr7/ptr8 are recomputed from the new section lengths. Absent (older export, or a body without facial shape keys): the ptr7 pointer is cleared and the model has no facial animation.",
+                    "description": "The body's facial poses for the new vertex order. One entry per FacialPoseData object whose SubmeshIndex is 0 (all of them, or the patcher refuses). The patcher rebuilds the ptr7 section: the entry's vertices are mapped to their position slots, pose zero copies those slots' records from the rebuilt position buffer, later poses carry the deltas; objects on other submeshes are re-serialized unchanged; ptr6/ptr7/ptr8 are recomputed from the new section lengths. Absent (older export, or a body without facial shape keys): the ptr7 pointer is cleared and the model has no facial animation.",
                     "items": {
                       "type": "object",
                       "properties": {
@@ -502,7 +502,7 @@
                     },
                     "DisplayStateParamBytes": {
                       "type": "string",
-                      "description": "Hex-encoded 3 raw renderer-parameter bytes at DODisplayState.absolute + 1..+3 (id byte is +0, setting FourCC is +4). Not padding: for Type-7 'Spec'/'LhSp'/'RhSp' shader modes, byte 1 (absolute +2) is the specular intensity TEV konst alpha (0-255, linear, confirmed in-game). Bytes 0 and 2 are unconfirmed/inert for 'Spec' and should be left untouched by editors. See INVESTIGATION_Specularity.md."
+                      "description": "Hex-encoded 3 raw renderer-parameter bytes at DODisplayState.absolute + 1..+3 (id byte is +0, setting FourCC is +4). Not padding: for Type-7 'Spec'/'LhSp'/'RhSp' shader modes, byte 1 (absolute +2) is the specular intensity TEV konst alpha (0-255, linear, confirmed in-game). Bytes 0 and 2 are unconfirmed/inert for 'Spec' and should be left untouched by editors. See _docs/_docs_model_format/overview.html."
                     },
                     "DisplayStateParamBytesFieldOffset": {
                       "type": "string",
@@ -686,7 +686,7 @@
       },
       "CustomSubmeshes": {
         "type": "array",
-        "description": "Hammerspace-only, user-created rigid submeshes appended to the donor model (PLAN_AddSubmesh.md). Kept separate from donor Submeshes, as with AdditionalTextureDescriptors. Each entry is a single-bone rigid mesh attached via ACT bone GeoId; no skinning is possible for these submeshes.",
+        "description": "Hammerspace-only, user-created rigid submeshes appended to the donor model. Kept separate from donor Submeshes, as with AdditionalTextureDescriptors. Each entry is a single-bone rigid mesh attached via ACT bone GeoId; no skinning is possible for these submeshes.",
         "items": {
           "type": "object",
           "properties": {
@@ -701,12 +701,12 @@
             "HostBoneId": {
               "type": "number",
               "minimum": 0,
-              "description": "BoneId (index into BoneHierarchy) that owns this submesh. Must be mesh-free (GeoIdRaw == 0xFFFF) and not claimed by another CustomSubmeshes entry; bones that also drive SKN skinning are allowed (Phase 0 probe 3, U2 passed)."
+              "description": "BoneId (index into BoneHierarchy) that owns this submesh. Must be mesh-free (GeoIdRaw == 0xFFFF) and not claimed by another CustomSubmeshes entry; bones that also drive SKN skinning are allowed."
             },
             "TemplateSource": {
               "type": "string",
               "pattern": "^(rigid|derived|builtin):.+$",
-              "description": "Selects the cloned display-state list, attribute formats/quantization and UV channel count. One of 'rigid:<SurfaceId>' (a same-model rigid submesh surface), 'derived:<SurfaceId>' (built from a same-model submesh-0 Spec surface) or 'builtin:<name>' (a stored generic template, e.g. 'builtin:rigid_spec_v1'). See PLAN_AddSubmesh.md 'Template sources'."
+              "description": "Selects the cloned display-state list, attribute formats/quantization and UV channel count. One of 'rigid:<SurfaceId>' (a same-model rigid submesh surface), 'derived:<SurfaceId>' (built from a same-model submesh-0 Spec surface) or 'builtin:<name>' (a stored generic template, e.g. 'builtin:rigid_spec_v1')."
             },
             "VertexBufferData": {
               "type": "string",
@@ -743,7 +743,7 @@
               "type": "array",
               "minItems": 1,
               "maxItems": 2,
-              "description": "One or two UV channels, matching the template source's UV channel count (F9; the MVP allows only 1 or 2). Channel 1, when present, mirrors channel 0 (specular), as with donor rigid submeshes.",
+              "description": "One or two UV channels, matching the template source's UV channel count (only 1 or 2 are allowed). Channel 1, when present, mirrors channel 0 (specular), as with donor rigid submeshes.",
               "items": {
                 "type": "object",
                 "properties": {
@@ -776,7 +776,7 @@
             },
             "TextureAssignment": {
               "type": "object",
-              "description": "Resolves this submesh's layer-0 texture. Exactly one of the two properties is present; validated in Python (Phase 1 step 3), not by this schema.",
+              "description": "Resolves this submesh's layer-0 texture. Exactly one of the two properties is present; validated in Python, not by this schema.",
               "properties": {
                 "DonorTextureIndex": {
                   "type": "number",
@@ -798,7 +798,7 @@
             },
             "AdditionalSurfaces": {
               "type": "array",
-              "description": "Further surfaces of this custom submesh, created in Blender with Add material, in append order (PLAN_EditRigidMeshes.md Phase 9). Each becomes a canonical T1 L0, [T1 L1], T4, T3, T6, T7 record group appended after the primary template's records, exactly like a rebuilt donor submesh's NewSurfaces: Type 1/6/7 from the template's effective state, Type 4 from the layers the group binds (never more than this submesh has UV channels), Type 3 from this submesh's attribute set and index widths. Absent or empty: the submesh draws through its primary surface only.",
+              "description": "Further surfaces of this custom submesh, created in Blender with Add material, in append order. Each becomes a canonical T1 L0, [T1 L1], T4, T3, T6, T7 record group appended after the primary template's records, exactly like a rebuilt donor submesh's NewSurfaces: Type 1/6/7 from the template's effective state, Type 4 from the layers the group binds (never more than this submesh has UV channels), Type 3 from this submesh's attribute set and index widths. Absent or empty: the submesh draws through its primary surface only.",
               "items": {
                 "type": "object",
                 "properties": {
@@ -830,7 +830,7 @@
       },
       "DesiredTextureAssignments": {
         "type": "object",
-        "description": "Phase 2 export intent keyed by donor SurfaceId. Each value is the existing or deterministically appended TEX index that Phase 3 must bind before that surface's primitive list executes.",
+        "description": "Export intent keyed by donor SurfaceId. Each value is the existing or deterministically appended TEX index that the patcher must bind before that surface's primitive list executes.",
         "additionalProperties": {
           "type": "number",
           "minimum": 0,

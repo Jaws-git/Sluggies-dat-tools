@@ -1,4 +1,4 @@
-"""Phase 0 probe 7: the unverified built-in templates on a rebuilt donor cap.
+"""The unverified built-in templates on a rebuilt donor cap.
 
 Each probed cap (main model and its LOD) is rebuilt as in
 build_rigid_visibility_probe.py: primitive lists re-encoded in donor face order,

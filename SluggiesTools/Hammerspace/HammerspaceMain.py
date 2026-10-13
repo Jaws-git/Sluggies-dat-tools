@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, replace
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-# Step 2.2 – Initialize universal logger in child process.
+# Initialize universal logger in child process.
 _HS_TOOLS_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
 if _HS_TOOLS_DIR not in sys.path:
     sys.path.insert(0, _HS_TOOLS_DIR)
@@ -178,8 +178,8 @@ class Submesh:
     source_layout_offset:           int
     source_position_data_offset:    int
     preserve_source_layout:         bool
-    rigid_rebuild:                  'RigidRebuild | None' = None   # PLAN_EditRigidMeshes.md
-    skinned_rebuild:                'SkinnedRebuild | None' = None   # PLAN_ModelReplacements.md Milestone 4
+    rigid_rebuild:                  'RigidRebuild | None' = None
+    skinned_rebuild:                'SkinnedRebuild | None' = None
 
 
 @dataclass
@@ -203,11 +203,11 @@ class CustomSubmeshTextureAssignment:
 
 @dataclass
 class CustomSubmesh:
-    """PLAN_AddSubmesh.md Phase 1: a hammerspace-only, user-created rigid
+    """A hammerspace-only, user-created rigid
     submesh appended to a donor model. Kept fully separate from donor
     Submeshes/MeshData; nothing here is written into or derived from donor
     structures. Bone-ownership, template-source and other cross-checks are
-    Phase 1 step 3's job, not this parse step."""
+    ``_validate_custom_submeshes``'s job, not this parse step."""
     custom_submesh_id:  str
     mesh_name:          str
     host_bone_id:       int
@@ -224,7 +224,7 @@ class CustomSubmesh:
     texture_assignment: CustomSubmeshTextureAssignment
     specular_strength:  int | None = None   # Type-7 param byte 0; None keeps the template's
     color_quantize_info: int = 48           # 48 RGBA4444 (default) or 0 RGB565; both 2 bytes
-    # PLAN_EditRigidMeshes.md Phase 9: Add-material surfaces of this custom
+    # Add-material surfaces of this custom
     # submesh, each an appended canonical record group (the same shape as a
     # rebuilt donor submesh's NewSurfaces), and the per-triangle surface
     # choice: 0 = the primary surface, k = additional_surfaces[k - 1]. An
@@ -236,7 +236,7 @@ class CustomSubmesh:
 @dataclass
 class RigidRebuildNewSurface:
     """One surface appended to a rebuilt donor rigid submesh
-    (PLAN_EditRigidMeshes.md Phase 1, ``RigidRebuild.NewSurfaces[]``)."""
+    (``RigidRebuild.NewSurfaces[]``)."""
     surface_key:        str     # sm<N>_new<K>
     material_name:      str     # for messages only
     template_source:    str     # rigid:<SurfaceId> | derived:<SurfaceId> | builtin:<name>
@@ -246,14 +246,14 @@ class RigidRebuildNewSurface:
 
 @dataclass
 class RigidRebuild:
-    """PLAN_EditRigidMeshes.md Phase 1: a donor rigid (CompCount 3) submesh
+    """A donor rigid (CompCount 3) submesh
     rebuilt as a whole blob from Blender data -- changed topology, an Object
     Mode transform, a host-bone change that keeps the world position, or
     faces moved between surfaces. Every buffer is in the donor's own formats
-    (decision 3) and bone-local to ``host_bone_id`` (decision 4). The donor
+    and bone-local to ``host_bone_id``. The donor
     display states are kept; ``face_surface_table`` names, per surface key,
     which donor surface (``SurfaceId``) or appended new surface each triangle
-    draws through (decision 7)."""
+    draws through."""
     host_bone_id:         int
     vertex_data:          bytes
     normal_data:          bytes | None
@@ -272,7 +272,7 @@ class RigidRebuild:
 
 @dataclass
 class SkinnedRebuild:
-    """PLAN_ModelReplacements.md Milestone 4: the skinned submesh 0 rebuilt
+    """The skinned submesh 0 rebuilt
     as a whole from Blender data -- any vertex and face count, weights on the
     bones the donor's own skin uses. ``vertex_data`` holds one interleaved
     position + normal record per vertex (6 components in the donor's position
@@ -293,7 +293,7 @@ class SkinnedRebuild:
     face_surface_indices: tuple  # one index into face_surface_table per triangle
     new_surfaces:         list   # [RigidRebuildNewSurface], in append order
     reasons:              list   # [str], logging only
-    facial_poses:         list = field(default_factory=list)   # [FacialPoseRebuild.BodyPoses], Milestone 4.7
+    facial_poses:         list = field(default_factory=list)   # [FacialPoseRebuild.BodyPoses]
 
 
 @dataclass
@@ -462,7 +462,7 @@ def _position_edits(model: dict) -> list[tuple[int, dict, bytes]]:
     edits = []
     for submesh_index, submesh in enumerate(model.get('Submeshes', [])):
         if submesh.get('RigidRebuild'):
-            # Rebuilt as a whole blob (PLAN_EditRigidMeshes.md); the validator
+            # Rebuilt as a whole blob; the validator
             # refuses in-place edit fields on the same submesh.
             continue
         vertex_buffer = submesh.get('VertexBuffer', {})
@@ -517,12 +517,12 @@ def _position_edits(model: dict) -> list[tuple[int, dict, bytes]]:
 
 
 # ---------------------------------------------------------------------------
-# CustomSubmeshes validation (PLAN_AddSubmesh.md Phase 1 step 3)
+# CustomSubmeshes validation
 # ---------------------------------------------------------------------------
 # Cross-checks a CustomSubmeshes entry against the rest of the .sluggie
 # contract before any DAT/DOL write. This runs ahead of ParseSluggie/
 # BuildGPLMeshData, which don't otherwise touch CustomSubmeshes at all
-# (Phase 1 step 2 is a pure parse); GPL/ACT/TEX assembly is Phase 2-4.
+# (ParseSluggie is a pure parse); GPL/ACT/TEX assembly comes later.
 
 # Stadium model directories, 7 Mario Stadium ... 16 Toy Field; the same range as
 # export.STADIUM_DIR_INDICES (export.py can't be imported: it prompts). A custom
@@ -537,9 +537,9 @@ STADIUM_NEW_BONE_MESSAGE = (
 )
 
 _CUSTOM_SUBMESH_HAND_VISIBILITY_ROLES = frozenset({'RhSp', 'LhSp', 'SpRf', 'GhSp'})
-_CUSTOM_SUBMESH_REJECTED_DERIVED_TYPE6 = '00000375'  # F9: never occurs on a rigid submesh
+_CUSTOM_SUBMESH_REJECTED_DERIVED_TYPE6 = '00000375'  # never occurs on a rigid submesh
 
-# Canonical rigid attribute formats (F6/F9), used for entries that don't come
+# Canonical rigid attribute formats, used for entries that don't come
 # from a same-model `rigid:` template. Byte strides of the int16/uint8
 # formats below; a `rigid:` source may in principle carry the donor
 # template's own (near-universally identical) format, but the MVP encodes
@@ -552,7 +552,7 @@ _CUSTOM_SUBMESH_UV_STRIDE       = 4   # CompCount 2, QuantizeInfo 62 (2 x int16)
 _CUSTOM_SUBMESH_COLOR_STRIDE    = 2   # CompCount 4, QuantizeInfo 48 (RGBA4444)
 
 # Byte-exact captures of complete vanilla rigid draw lists, one per shader
-# mode (PLAN_EditRigidMeshes.md decision 9). Every capture source below holds
+# mode. Every capture source below holds
 # exactly these records and nothing else, in canonical order
 # (T1 L0, [T1 L1], T4, T3, T6, T7), so `States` is the source submesh's whole
 # DisplayStates list and `IdenticalRigidLists` counts the vanilla rigid
@@ -568,8 +568,8 @@ _CUSTOM_SUBMESH_COLOR_STRIDE    = 2   # CompCount 4, QuantizeInfo 48 (RGBA4444)
 #
 # `VerifiedInGame` gates a template: _validate_template_source refuses an
 # unverified one and the Add submesh / Add material dialogs hide it
-# (TemplateSources.BUILTIN_TEMPLATE_NAMES), until PLAN_EditRigidMeshes.md
-# Phase 0 probe 7 confirms it in Dolphin. The only copy:
+# (TemplateSources.BUILTIN_TEMPLATE_NAMES), until a Dolphin test
+# confirms it. The only copy:
 # build_template_source_fixture.BUILTIN_TEMPLATES reads this whole registry,
 # including provenance.
 _CUSTOM_SUBMESH_BUILTIN_TEMPLATES = {
@@ -585,7 +585,7 @@ _CUSTOM_SUBMESH_BUILTIN_TEMPLATES = {
         'Sha256': 'ee88bc44a3fb2a5864203b941519199ec61f1097eafef479eccf87de666dd862',
         'Layers': 2,
         'ShaderMode': 'Spec',
-        'VerifiedInGame': True,  # PLAN_AddSubmesh.md Phase 0 probe 5 (U4)
+        'VerifiedInGame': True,
         'Provenance': {
             'Model': '33 Toadette/135708512_kinopico.gpl',
             'MeshName': 'pony_l3',
@@ -612,7 +612,7 @@ _CUSTOM_SUBMESH_BUILTIN_TEMPLATES = {
         'Sha256': '324907992ca4c44273724ddc0b2bc9983c9972cc69bcc5a57fdbb876b452df2b',
         'Layers': 1,
         'ShaderMode': 'Shdw',
-        # Failed PLAN_EditRigidMeshes.md Phase 0 probe 7: the Shdw mode crashes
+        # Failed in Dolphin (2026-09-26): the Shdw mode crashes
         # on load and draws black on a character cap, in this 1-layer form and
         # in a copy of the cap's own 2-layer group alike.
         'VerifiedInGame': False,
@@ -637,7 +637,7 @@ _CUSTOM_SUBMESH_BUILTIN_TEMPLATES = {
         'Sha256': '6a5e44b42125c7033de42f0a5b8a2ad9a744d52fb4a496dce4793640f57a1560',
         'Layers': 2,
         'ShaderMode': 'GhSp',
-        'VerifiedInGame': False,  # probe 7: drew invisible on Wario's cap
+        'VerifiedInGame': False,  # drew invisible on Wario's cap
         'Provenance': {
             'Model': '35 Birdo/142642016_catherine.gpl',
             'MeshName': 'gold_ring',
@@ -660,7 +660,7 @@ _CUSTOM_SUBMESH_BUILTIN_TEMPLATES = {
         'Sha256': 'e1ac62994ad67caefdad4b9ba68099da4b17aee417142df59cc5c27e063fbcd7',
         'Layers': 2,
         'ShaderMode': 'RhSp',
-        'VerifiedInGame': True,  # PLAN_EditRigidMeshes.md Phase 0 probe 7 (2026-09-26)
+        'VerifiedInGame': True,  # Dolphin, 2026-09-26
         'Provenance': {
             'Model': '100 Blue Male Mii/333008640_mii_male.gpl',
             'MeshName': 'r_hand',
@@ -680,7 +680,7 @@ _CUSTOM_SUBMESH_BUILTIN_TEMPLATES = {
         'Sha256': 'c246a603b25923b7978231f0d5d63dfa5eb399d239527a3798ee968e61221ade',
         'Layers': 2,
         'ShaderMode': 'LhSp',
-        'VerifiedInGame': True,  # PLAN_EditRigidMeshes.md Phase 0 probe 7 (2026-09-26)
+        'VerifiedInGame': True,  # Dolphin, 2026-09-26
         'Provenance': {
             'Model': '100 Blue Male Mii/333008640_mii_male.gpl',
             'MeshName': 'l_hand',
@@ -748,8 +748,7 @@ _CUSTOM_SUBMESH_BUILTIN_TEMPLATES = {
 def builtin_template_names(verified_only: bool = True) -> tuple[str, ...]:
     """Registry template names in registration order.
 
-    ``verified_only`` keeps the ones PLAN_EditRigidMeshes.md Phase 0 probe 7
-    has confirmed in game, which is what the dialogs offer and what
+    ``verified_only`` keeps the ones confirmed in game, which is what the dialogs offer and what
     ``_validate_template_source`` accepts. ``TemplateSources`` mirrors the
     result for the Blender side, which cannot import this module.
     """
@@ -780,7 +779,7 @@ def _custom_submesh_state_records_sha256(records) -> str:
 
 def _bone_geo_id_raw(bone: dict) -> int:
     """Literal ACT GeoId sentinel (0xFFFF = mesh-free), independent of the
-    BoneHierarchy[].GeoId field, which normalises skinned bones to 0 (F7)."""
+    BoneHierarchy[].GeoId field, which normalises skinned bones to 0."""
     if bone.get('GeoIdRaw') is not None:
         return int(bone['GeoIdRaw'])
     if bone.get('Skinned'):
@@ -793,8 +792,7 @@ def _effective_geo_id_raw(bone: dict) -> int:
     rigid-submesh retarget, written into the ACT by ``_apply_geo_id_patches``
     before any custom-submesh claim) when set, else the literal donor value.
     This is what ``HostBones.classify_host_bones`` shows in Blender, so a bone
-    freed by a pending retarget is claimable here too (PLAN_EditRigidMeshes.md
-    G10)."""
+    freed by a pending retarget is claimable here too."""
     edited = bone.get('GeoIdEdited')
     if edited is not None:
         return int(edited)
@@ -820,8 +818,8 @@ def _bones_by_id(model: dict) -> dict[int, dict]:
 
 def _custom_submesh_effective_state(states: list, upto_index: int, display_state_id: int):
     """Last state of *display_state_id* at or before *upto_index* in *states*
-    (the cumulative-state walk used throughout PLAN_AddSubmesh.md/
-    PLAN_ModelReplacements.md to resolve GX state carried into a draw)."""
+    (the cumulative-state walk that resolves GX state carried into a
+    draw)."""
     effective = None
     for state in states[:upto_index + 1]:
         if int(state.get('DisplayStateId', -1)) == display_state_id:
@@ -838,7 +836,7 @@ def _validate_custom_submesh_indexed_array(
     entries within the uint16 index range, and that every face-index value
     addresses an existing entry -- the "index/count limits are within
     uint16" and "quantized coordinates are within the representable range"
-    checks from PLAN_AddSubmesh.md Phase 1 step 3. Values already decoded
+    checks. Values already decoded
     from a properly strided buffer are always in-range for their own field
     width; a misaligned/truncated buffer is the actual failure mode this
     guards against.
@@ -867,8 +865,8 @@ def _validate_custom_submesh_indexed_array(
 def _custom_submesh_rigid_surfaces(model: dict) -> dict:
     """Map every rigid (CompCount 3) donor submesh's SurfaceId to
     ``(that submesh's DisplayStates list, the surface's index within it)``,
-    first-seen-wins. Shared by ``_validate_custom_submeshes`` (Phase 1 step 3)
-    and ``PatchGPLAppendSubmesh`` (Phase 2)."""
+    first-seen-wins. Shared by ``_validate_custom_submeshes``
+    and ``PatchGPLAppendSubmesh``."""
     rigid_surfaces: dict[str, tuple[list, int]] = {}
     for sub in model.get('Submeshes') or []:
         if int((sub.get('VertexBuffer') or {}).get('VertexBufferCompCount', 0)) != 3:
@@ -886,8 +884,8 @@ def _validate_template_source(
     is_stadium: bool, rigid_surfaces: dict, layers_must_match: bool,
 ) -> str | None:
     """The per-kind checks a ``TemplateSource`` must pass, shared by custom
-    submeshes (PLAN_AddSubmesh.md Phase 1 step 3) and the new surfaces of a
-    rebuilt rigid submesh (PLAN_EditRigidMeshes.md Phase 1 step 3). Each
+    submeshes and the new surfaces of a
+    rebuilt rigid submesh. Each
     problem goes to *fail*; the kind (``rigid`` / ``derived`` / ``builtin``)
     is returned, or None when the source is malformed.
 
@@ -960,7 +958,7 @@ def _validate_template_source(
         elif not template.get('VerifiedInGame'):
             fail(
                 f'builtin: template {argument!r} is not verified in game yet '
-                '(PLAN_EditRigidMeshes.md Phase 0 probe 7); verified: '
+                '; verified: '
                 f'{sorted(builtin_template_names(verified_only=True))}'
             )
         elif template.get('StadiumOnly') and not is_stadium:
@@ -1034,7 +1032,7 @@ def _validate_custom_submesh_additional_surfaces(
     model: dict, cs: dict, cs_id, fail, faces_count: int | None, use_compression: bool, *,
     is_stadium: bool, rigid_surfaces: dict,
 ) -> None:
-    """PLAN_EditRigidMeshes.md Phase 9: ``AdditionalSurfaces`` keys are
+    """``AdditionalSurfaces`` keys are
     ``<CustomSubmeshId>_new<K>`` and unique, each entry passes the shared
     appended-surface checks, and ``FaceSurfaceIndices`` (one uint16 per
     triangle) stays inside ``0..len(AdditionalSurfaces)`` and uses every
@@ -1096,7 +1094,7 @@ def _validate_custom_submesh_additional_surfaces(
 
 
 def _validate_custom_submeshes(model: dict) -> None:
-    """PLAN_AddSubmesh.md Phase 1 step 3: reject an invalid CustomSubmeshes
+    """Reject an invalid CustomSubmeshes
     entry before any DAT/DOL write. Runs ahead of ParseSluggie so a bad
     entry never reaches GPL/ACT/TEX assembly. Each error names the
     offending CustomSubmeshId so a failed patch is actionable."""
@@ -1116,7 +1114,7 @@ def _validate_custom_submeshes(model: dict) -> None:
     # bone set is the donor list overlaid with BoneHierarchyEdited; a bone's
     # ownership is its *effective* GeoId, so a bone a donor rigid submesh is
     # leaving (GeoIdEdited 0xFFFF) in this same export is free here, exactly
-    # as Blender's free-bone list shows it (PLAN_EditRigidMeshes.md G10).
+    # as Blender's free-bone list shows it.
     bones_by_id = _bones_by_id(model)
 
     rigid_surfaces = _custom_submesh_rigid_surfaces(model)
@@ -1412,7 +1410,7 @@ def _validate_bone_hierarchy_edited(model: dict) -> None:
         fail(f'total bone count {total_bone_count} exceeds the 255-bone cap (the mirror table stores u8 bone ids)')
 
     # CustomSubmeshes may legitimately move a donor bone's GeoId away from
-    # 0xFFFF (PLAN_AddSubmesh.md); that is not a Rule 2 violation.
+    # 0xFFFF; that is not a Rule 2 violation.
     claimed_donor_bones = {
         int(cs['HostBoneId'])
         for cs in model.get('CustomSubmeshes') or []
@@ -1592,7 +1590,7 @@ def _validate_skin_bones(model: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# CustomSubmeshes GPL append (PLAN_AddSubmesh.md Phase 2)
+# CustomSubmeshes GPL append
 # ---------------------------------------------------------------------------
 # Builds the display-state list and raw GPL blob for each parsed
 # CustomSubmesh and appends them to an already-cloned/patched GPL section,
@@ -1602,9 +1600,9 @@ def _validate_skin_bones(model: dict) -> None:
 
 _CUSTOM_SUBMESH_TEXTURE_LAYER_SHIFT = 13
 _CUSTOM_SUBMESH_TEXTURE_INDEX_MASK  = 0x1FFF
-_CUSTOM_SUBMESH_TYPE4_BY_UV_COUNT   = {1: 'fffffff0', 2: 'ffffff10'}  # F9
+_CUSTOM_SUBMESH_TYPE4_BY_UV_COUNT   = {1: 'fffffff0', 2: 'ffffff10'}
 
-_CUSTOM_SUBMESH_POSITION_FORMAT = (3, 59)  # CompCount, default QuantizeInfo (F6/F9)
+_CUSTOM_SUBMESH_POSITION_FORMAT = (3, 59)  # CompCount, default QuantizeInfo
 # Accepted VertexBufferQuantizeInfo values, coarsest first: the s16 formats from
 # 48 (0x30, shift 0, +/-32767) up to the default 59 (0x3B, shift 11, +/-16).
 # The exporter's CustomSubmeshExport.POSITION_QUANTIZE_CANDIDATES is the same
@@ -1682,7 +1680,7 @@ def _custom_submesh_index_size_for(count: int) -> int:
 def _custom_submesh_canonical_layout(cs: 'CustomSubmesh') -> list[dict]:
     """The attribute index layout for a `derived:`/`builtin:` custom submesh:
     position, then lighting/color0 if present, then one texture{i} per UV
-    channel -- index sizes sized to the submesh's own entry counts (F9)."""
+    channel -- index sizes sized to the submesh's own entry counts."""
     layout = [{
         'key': 'position',
         'index_size': _custom_submesh_index_size_for(
@@ -1717,7 +1715,7 @@ def _custom_submesh_rigid_records(states: list, surface_index: int) -> list[list
     """`rigid:` template source: clone every DisplayStates record of the
     template submesh verbatim (state_id, pad, mode). Whichever record ends
     up drawing is decided by the caller; every other record's primitive list
-    is dropped regardless of what it originally drew (F4/Phase 2 step 3)."""
+    is dropped regardless of what it originally drew."""
     return [
         [
             int(state['DisplayStateId']),
@@ -1792,7 +1790,7 @@ def _custom_submesh_builtin_records(model: dict, name: str) -> list[list]:
     # Type 4 follows the T1 records this template actually emits -- the
     # template's own layer count, capped by what the host binds. A 1-layer
     # built-in (`rigid_shdw_v1`) therefore keeps `T4 fffffff0` even when the
-    # host submesh binds a layer-1 specular texture (decision 9).
+    # host submesh binds a layer-1 specular texture.
     uv_count = sum(1 for record in records if record[0] == 1)
     for record in records:
         if record[0] == 4:
@@ -1824,7 +1822,7 @@ def _resolve_custom_submesh_records(
     model: dict, cs: 'CustomSubmesh', rigid_surfaces: dict,
 ) -> tuple[list[list], int, str]:
     """Return (records, drawing_index, kind) for one CustomSubmesh, per its
-    TemplateSource kind (PLAN_AddSubmesh.md "Template sources"). ``records``
+    TemplateSource kind. ``records``
     entries are mutable ``[state_id, pad_bytes, shader_mode]`` lists; the
     caller still needs to resolve the active Type-3 layout and patch the
     layer-0 texture before turning them into DrawStates."""
@@ -1859,10 +1857,10 @@ def _custom_submesh_descriptors(
 ) -> list[dict]:
     """Resolve the active Type-3 attribute layout for the drawing record.
 
-    `rigid:` reuses the template's own Type-3 setting verbatim (F4 -- clone
+    `rigid:` reuses the template's own Type-3 setting verbatim (clone
     template bytes, change only what's understood); `derived:`/`builtin:`
     regenerate Type-3 for the custom submesh's own attribute set and index
-    sizes (F9), overwriting the canonical placeholder record in place.
+    sizes, overwriting the canonical placeholder record in place.
     """
     if kind == 'rigid':
         setting = _custom_submesh_active_type3(records, drawing_index)
@@ -1885,8 +1883,7 @@ def _custom_submesh_patch_layer0_texture(
     records: list[list], upto_index: int, texture_index: int,
 ) -> None:
     """Patch the effective layer-0 Type-1 texture index to *texture_index*
-    (Phase 2 step 3: "Patch the effective Type-1 texture index for the new
-    submesh only"). Layer 1 (specular, F9) is left as the template/host's own
+    (for the new submesh only). Layer 1 (specular) is left as the template/host's own
     binding."""
     for record in reversed(records[:upto_index + 1]):
         state_id, _pad, mode = record
@@ -2103,7 +2100,7 @@ def _build_custom_submesh(
     into a Submesh dataclass ready for _build_rigid_submesh_blob.
 
     ``texture_index_by_file_name`` maps an ``AdditionalTextureFileName`` to
-    its final TEX index (PLAN_AddSubmesh.md Phase 4 step 2: the caller builds
+    its final TEX index (The caller builds
     the TEX plan first, then this patches the cloned Type-1 state with that
     final index -- there is no placeholder to re-patch later)."""
     records, drawing_index, kind = _resolve_custom_submesh_records(model, cs, rigid_surfaces)
@@ -2116,7 +2113,7 @@ def _build_custom_submesh(
             raise ValueError(
                 f"custom submesh '{cs.custom_submesh_id}': no resolved TEX index "
                 f"for AdditionalTextureFileName {file_name!r}; the TEX plan must "
-                'be built before the GPL append (PLAN_AddSubmesh.md Phase 4 step 2)'
+                'be built before the GPL append'
             )
         texture_index = mapping[file_name]
     _custom_submesh_patch_layer0_texture(records, drawing_index, texture_index)
@@ -2131,7 +2128,7 @@ def _build_custom_submesh(
         )
     faces = _custom_submesh_faces(cs, descriptors)
 
-    # Phase 9 (PLAN_EditRigidMeshes.md): every Add-material surface is an
+    # Every Add-material surface is an
     # appended canonical group, built exactly as for a rebuilt donor submesh,
     # with Type 3 generated from the primary surface's attribute layout and
     # index widths so all surfaces index the same shared arrays.
@@ -2194,7 +2191,7 @@ def _build_rigid_submesh_blob(sub: 'Submesh') -> tuple[bytes, int]:
 
     A restricted, single-submesh subset of BuildGPLMeshData's general
     (non-preserving) layout path: no skinning (custom submeshes never carry
-    SK1/SK2/SKAcc, F1) and no donor-layout preservation (a new submesh has no
+    SK1/SK2/SKAcc) and no donor-layout preservation (a new submesh has no
     donor bytes to preserve). Returns (blob_bytes, name_off), where name_off
     is relative to the start of blob_bytes -- which is also the DOLayout's
     own start, matching the GEO descriptor's DOLayoutPtr convention.
@@ -2469,23 +2466,23 @@ def PatchGPLAppendSubmesh(
     donor_gpl_length: int | None = None,
 ) -> bytes:
     """Append every parsed.custom_submeshes entry to a cloned/patched GPL
-    section (PLAN_AddSubmesh.md Phase 2).
+    section.
 
     ``texture_index_by_file_name`` resolves each custom submesh's
     ``AdditionalTextureFileName`` to its final TEX index; the caller builds
-    the TEX plan before calling this (PLAN_AddSubmesh.md Phase 4 step 2).
+    the TEX plan before calling this.
 
     Unlike PatchGPLUVRebuild's pure tail-append, the GEO descriptor table
-    must grow in place (Phase 0 only proved that shape -- the table
+    must grow in place (Dolphin only proved that shape -- the table
     immediately following the header -- works at runtime), so every existing
     blob is relocated as a single unit and each existing descriptor's
     DOLayoutPtr/namePtr (the only GPL-section-absolute pointers referencing
     it) is adjusted by the resulting shift. Nothing *inside* any existing
     blob changes: every pointer there is DOLayout-relative (self-relative to
     the blob), and SKN's cache-line write targets are offsets into submesh
-    0's own position array (F1), not absolute GPL addresses, so relocating
-    blobs as a unit doesn't affect SKN either (confirmed by Phase 0 probe 3's
-    animated-skinning test). New blobs are inserted right after the existing
+    0's own position array, not absolute GPL addresses, so relocating
+    blobs as a unit doesn't affect SKN either (confirmed by an
+    animated-skinning test in Dolphin). New blobs are inserted right after the existing
     ones and before GPLUserData, matching BuildGPLMeshData's own blob order.
 
     ``donor_gpl_length`` is the cloned donor GPL's size. Anything past it is
@@ -2619,10 +2616,9 @@ def PatchGPLAppendSubmesh(
 
 # ---------------------------------------------------------------------------
 # RigidRebuild: replace a donor rigid submesh's blob
-# (PLAN_EditRigidMeshes.md Phases 1-3)
 # ---------------------------------------------------------------------------
 # A donor rigid (CompCount 3) submesh whose edit the slot-preserving
-# Milestone 3 patchers cannot represent -- changed topology, an Object Mode
+# in-place patchers cannot represent -- changed topology, an Object Mode
 # transform, a host-bone change that keeps the world position, or faces moved
 # between surfaces -- is rebuilt from ``Submeshes[i].RigidRebuild`` with the
 # custom-submesh serializer. The new blob goes before GPLUserData and
@@ -2652,8 +2648,8 @@ _RIGID_REBUILD_POSITION_FORMAT_NIBBLE = 3
 
 
 def _rigid_rebuild_in_place_edit_fields(sub: dict) -> list[str]:
-    """Names of the in-place (Milestone 3) edit fields present on *sub*; a
-    rebuilt submesh may carry none of them (decision 1)."""
+    """Names of the in-place edit fields present on *sub*; a
+    rebuilt submesh may carry none of them."""
     present = [field for field in _RIGID_REBUILD_M3_FIELDS if sub.get(field) is not None]
     for container, fields in _RIGID_REBUILD_M3_CHANNEL_FIELDS.items():
         entries = sub.get(container)
@@ -2666,7 +2662,7 @@ def _rigid_rebuild_in_place_edit_fields(sub: dict) -> list[str]:
 
 def _rigid_rebuild_drawable_surfaces(states: list) -> dict[str, int]:
     """``{SurfaceId: state index}`` of every donor record that can draw: it
-    inherits a Type-3 attribute layout and a Type-7 shader (E5). Type 7 is
+    inherits a Type-3 attribute layout and a Type-7 shader. Type 7 is
     only required where the submesh uses it: item and stadium submeshes often
     have none, and their surfaces still draw."""
     needs_type7 = any(int(state.get('DisplayStateId', -1)) == 7 for state in states)
@@ -2690,7 +2686,7 @@ def _facial_pose_submeshes(model: dict) -> set[int]:
 
 
 def _validate_rigid_rebuilds(model: dict) -> None:
-    """PLAN_EditRigidMeshes.md Phase 1 step 3: reject an invalid
+    """Reject an invalid
     ``Submeshes[i].RigidRebuild`` before any DAT/DOL write. Each error names
     ``sub<i>``."""
     submeshes = model.get('Submeshes') or []
@@ -3053,7 +3049,7 @@ def _rigid_rebuild_entry_counts(sub: dict, rebuild: 'RigidRebuild', color: 'Colo
 
 def _rigid_rebuild_widen_type3(sub_index: int, records: list[list], counts: dict[str, int]) -> dict[str, int]:
     """Widen every donor Type-3 index field whose attribute now has more
-    entries than its width addresses (E5: u8 to u16 only where counts need
+    entries than its width addresses (u8 to u16 only where counts need
     it), in place. Returns the final index size per attribute key. A Type 3
     that draws an attribute the rebuild does not carry is an error."""
     final_sizes = {key: _custom_submesh_index_size_for(count) for key, count in counts.items()}
@@ -3089,13 +3085,13 @@ def _rigid_rebuild_new_surface_group(
     attribute_sizes: dict[str, int], host_uv_count: int,
     texture_index_by_file_name: dict[str, int] | None,
 ) -> list[list]:
-    """The canonical record group (E9) appended for one new surface: Type
+    """The canonical record group appended for one new surface: Type
     1/6/7 from the template's effective state, Type 4 from the layers the
     group binds, Type 3 generated from the host submesh's attribute set and
     index widths (*attribute_sizes*, ``key -> index size``), layer 0 rebound
     to the resolved texture, specular strength applied when given. The last
     record is the drawing Type 7. Shared by rebuilt donor submeshes (*label*
-    ``sub<N>``) and custom submeshes with additional surfaces (Phase 9)."""
+    ``sub<N>``) and custom submeshes with additional surfaces."""
     kind, _sep, argument = surface.template_source.partition(':')
     if kind == 'rigid':
         states, surface_index = rigid_surfaces[argument]
@@ -3182,7 +3178,7 @@ def _rigid_rebuild_to_submesh(
     texture_index_by_file_name: dict[str, int] | None = None,
     donor_color_array: tuple[int, int, bytes] | None = None,
 ) -> 'Submesh':
-    """PLAN_EditRigidMeshes.md Phase 2 step 1: assemble a rebuilt donor rigid
+    """Assemble a rebuilt donor rigid
     submesh -- donor formats, donor states, one re-encoded primitive list
     (strips plus a GX_TRIANGLES block) per drawing surface, appended groups
     for new surfaces -- into a Submesh
@@ -3393,8 +3389,8 @@ def _splice_blobs_before_user_data(
     gpl_bytes: bytes, blobs: list[tuple[int, bytes, int]], donor_gpl_length: int | None,
 ) -> tuple[bytes, int, dict[int, int]]:
     """Insert *blobs* (``(submesh_index, blob_bytes, name_off)``) before
-    GPLUserData, each on a 32-byte boundary, and repoint their descriptors
-    (E4). The replaced submeshes' donor blobs are dropped where
+    GPLUserData, each on a 32-byte boundary, and repoint their descriptors.
+    The replaced submeshes' donor blobs are dropped where
     :func:`_drop_donor_blobs` allows it (the lowest blobs of the section)
     and otherwise stay in place unreferenced. Nothing else moves: every
     pointer inside a blob is blob-relative. A payload PatchGPLUVRebuild
@@ -3443,7 +3439,7 @@ def PatchGPLReplaceRigidSubmeshes(
     texture_index_by_file_name: dict[str, int] | None = None,
     donor_gpl_length: int | None = None,
 ) -> tuple[bytes, int]:
-    """PLAN_EditRigidMeshes.md Phase 2 step 2: rebuild every donor submesh
+    """Rebuild every donor submesh
     that carries a RigidRebuild as a fresh blob before GPLUserData and point
     its descriptor at it; the old blob is dropped when it leads the blob
     region (_drop_donor_blobs), else it stays unreferenced. Returns the new
@@ -3483,7 +3479,6 @@ def PatchGPLReplaceRigidSubmeshes(
 
 # ---------------------------------------------------------------------------
 # SkinnedRebuild: submesh 0 rebuilt from arbitrary geometry and weights
-# (PLAN_ModelReplacements.md Milestone 4)
 # ---------------------------------------------------------------------------
 # The skinned body is rebuilt the way the external tool's build_model.py
 # does it, but as a fresh blob spliced before GPLUserData (like a
@@ -3491,7 +3486,7 @@ def PatchGPLReplaceRigidSubmeshes(
 # (SkinnedRebuild.layout_skin): every vertex has one direct SK1/SK2 write,
 # entries sit on their own cache lines, sources mirror the position buffer,
 # memClr is 0/0. Facial poses (ptr7) that address submesh 0 are rebuilt for
-# the new vertex order from the rebuild's FacialPoses (Milestone 4.7), or
+# the new vertex order from the rebuild's FacialPoses, or
 # dropped when the rebuild carries none.
 
 _SKINNED_REBUILD_COMP_COUNT = 6
@@ -3789,7 +3784,7 @@ def _validate_rebuild_facial_poses(
     model: dict, rebuild: dict, fail, use_compression: bool, index: int, *, object_error, vertex_count: int | None,
     position_stride: int, normal_count: int | None = None, normal_stride: int | None = None,
 ) -> None:
-    """``FacialPoses`` of a SkinnedRebuild (Milestone 4.7) or a RigidRebuild:
+    """``FacialPoses`` of a SkinnedRebuild or a RigidRebuild:
     one entry per facial object that addresses submesh *index*, each mapping
     ascending rebuilt vertices with one delta array per pose after pose
     zero; a rigid entry may add ``NormalEntries`` / ``NormalPoseDeltas``
@@ -3854,7 +3849,7 @@ def _validate_rebuild_facial_poses(
 def _validate_skinned_rebuild_facial_poses(
     model: dict, rebuild: dict, fail, use_compression: bool, vertex_count: int | None, stride: int, index: int,
 ) -> None:
-    """``FacialPoses`` (Milestone 4.7) of the skinned body: interleaved
+    """``FacialPoses`` of the skinned body: interleaved
     ``x y z nx ny nz`` records, no normal lists."""
     _validate_rebuild_facial_poses(
         model, rebuild, fail, use_compression, index, object_error=_facial.body_object_error,
@@ -4309,8 +4304,8 @@ def _skinned_rebuild_to_blob(
 def _skinned_rebuild_facial_rebuilder(
     model: dict, rebuild: 'SkinnedRebuild', layout: '_skinned.SkinLayout',
 ):
-    """The ptr7 rebuilder for a body that carries ``FacialPoses``
-    (Milestone 4.7): its objects are remapped onto the new position slots.
+    """The ptr7 rebuilder for a body that carries ``FacialPoses``:
+    its objects are remapped onto the new position slots.
     None when the rebuild carries no poses (the caller clears the pointer)."""
     if not rebuild.facial_poses:
         return None
@@ -4962,9 +4957,9 @@ def ParseSluggie(data: dict) -> SluggieParsed:
         act_header = None
 
     # ---- CustomSubmeshes ----------------------------------------------------
-    # PLAN_AddSubmesh.md Phase 1 step 2: parse only, never touching donor
+    # Parse only, never touching donor
     # Submeshes/MeshData. Cross-checks (host bone freedom, template validity,
-    # texture-assignment resolution, ...) are Phase 1 step 3's job.
+    # texture-assignment resolution, ...) are _validate_custom_submeshes' job.
     custom_submeshes = []
     for cs in model.get('CustomSubmeshes', []) or []:
         cs_uv_channels = [
@@ -5102,8 +5097,8 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
         return shader_mode.encode('ascii', errors='replace').ljust(4, b'\x00')[:4]
 
     # -------------------------------------------------------------------------
-    # Phase 1: per-submesh layout pass (all offsets DOLayout-relative)
-    # Phase 2: count derivation from raw buffer sizes
+    # per-submesh layout pass (all offsets DOLayout-relative)
+    # count derivation from raw buffer sizes
     # -------------------------------------------------------------------------
 
     N = len(parsed.mesh.submeshes)
@@ -5333,7 +5328,7 @@ def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
 
         blob_size = cursor
 
-        # Phase 2: derive counts from buffer sizes
+        # derive counts from buffer sizes
         pos_count = _vertex_count(sub.vertex_data, sub.vertex_comp_count, sub.vertex_quantize_info)
 
         col_count = 0
@@ -6254,8 +6249,8 @@ def _hs_abort(message: str) -> None:
 
 
 def _apply_geo_id_patches(act_bytes: bytes, data: dict, source_model_offset: int) -> bytes:
-    """Patch bone ``GeoId`` fields in a cloned ACT section
-    (PLAN_AddSubmesh.md Phase 3 steps 1-2): each custom submesh's host bone
+    """Patch bone ``GeoId`` fields in a cloned ACT section:
+    each custom submesh's host bone
     gets ``GeoId = <new submesh index>``, and every ``GeoIdEdited`` bone (the
     donor rigid-submesh retargeting the in-place patcher already supports,
     via ``BoneHierarchy[].GeoIdEdited``) gets its edited value written too.
@@ -6474,7 +6469,7 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
         descriptor table (zero padding closes the gap), and every individual
         image and palette payload is likewise zero-padded up to the next
         32-byte boundary before the next payload starts, matching vanilla
-        TEX sections (F10).
+        TEX sections.
     """
     from texture_helper import _image_payload_size, mipless_sampler_fields
 
@@ -6631,12 +6626,12 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
     desc_size = 0x20
     desc_table_size = len(textures) * desc_size
     # Match the original TEX layout by starting the packed data region at the
-    # first 32-byte boundary after the descriptor table (F10). Every
+    # first 32-byte boundary after the descriptor table. Every
     # individual image/palette payload start is also 32-byte aligned.
     data_start = (header_size + desc_table_size + 31) & ~31
 
     # Image payloads first, then palette payloads. Each payload start is
-    # 32-byte aligned (F10), matching vanilla TEX sections.
+    # 32-byte aligned, matching vanilla TEX sections.
     cursor = data_start
     image_offsets = {}
     for idx, payload in image_payloads:
@@ -6681,7 +6676,7 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
     if len(out) < data_start:
         out += b'\x00' * (data_start - len(out))
     # Data region: each payload is followed by zero padding out to the next
-    # 32-byte boundary (F10), matching the offsets computed above.
+    # 32-byte boundary, matching the offsets computed above.
     for idx, payload in image_payloads:
         out += payload
         padded_len = (len(payload) + 31) & ~31
@@ -7195,12 +7190,12 @@ def BuildHEADERModelBlock(
     HDR_SIZE = 0x20
 
     def _section_align_padding(length: int) -> bytes:
-        # F10: every section start must sit at 0 mod 32 relative to the
+        # every section start must sit at 0 mod 32 relative to the
         # block. HDR_SIZE (0x20) is itself 32-aligned, so rounding each
         # section's own length up to a multiple of 32 keeps every following
         # section start aligned too. This is a no-op whenever the section is
-        # already a multiple of 32 long, which vanilla sections always are
-        # (F10), so unchanged/byte-identical builds are unaffected.
+        # already a multiple of 32 long, which vanilla sections always are,
+        # so unchanged/byte-identical builds are unaffected.
         return b'\x00' * ((-length) % 32)
 
     gpl_off = HDR_SIZE
@@ -7223,7 +7218,7 @@ def BuildHEADERModelBlock(
         # GPL grew past what donor-span preservation can cover (or there is
         # no donor header to preserve against, e.g. a synthetic block): fall
         # back to a plain 32-byte-boundary pad so ACT/TEX/SKN still start
-        # aligned (F10).
+        # aligned.
         gpl_section_padding = _section_align_padding(len(gpl_bytes))
 
     act_off = gpl_off + len(gpl_bytes) + len(gpl_section_padding)
@@ -7259,7 +7254,7 @@ def BuildHEADERModelBlock(
             # (the caller joins them that way), so each pointer is the tail
             # start plus the lengths before it. Vanilla sections are
             # contiguous, so this equals the donor's relative spacing; a
-            # rebuilt section (Milestone 4.7, ptr7) may change length.
+            # rebuilt section (ptr7) may change length.
             cursor = tail_start
             for section in sorted(trailing_sections, key=lambda sec: sec.original_ptr):
                 if section.header_field_offset in (0x14, 0x18, 0x1c) and section.original_ptr:
@@ -7553,7 +7548,7 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
         raise ValueError("SkinnedRebuild requires SectionModes.gpl='build' and skn='build'")
     # Facial poses (ptr7) address vertices by index, and a rebuilt submesh
     # has a new vertex order. With ``FacialPoses`` in the rebuild the section
-    # is rebuilt for that order (Milestone 4.7 for the body, 2026-10-10 for
+    # is rebuilt for that order (body and, since 2026-10-10,
     # rigid submeshes); a body without them drops the poses (the header
     # pointer is cleared, as the external tool does for every character), a
     # rigid submesh without them has its objects neutralized. Poses on
@@ -7692,8 +7687,7 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
     if modes.tex == 'build':
         # Resolved before the GPL append below so a custom submesh's
         # AdditionalTextureFileName can be patched with its final TEX index
-        # immediately, instead of a placeholder re-patched later
-        # (PLAN_AddSubmesh.md Phase 4 step 2, "build order").
+        # immediately, instead of a placeholder re-patched later.
         additional_texture_descriptors = model.get('AdditionalTextureDescriptors') or []
         if texture_plan is not None and (
             model.get('ReimportTextures') or tex_png_overrides or additional_texture_descriptors
@@ -7813,8 +7807,7 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
                     clear_facial_pointer = False
             if rigid_rebuild_indices:
                 # Replace before the append: the append relocates every blob,
-                # replaced ones included, as one unit (PLAN_EditRigidMeshes.md
-                # Phase 2 step 3).
+                # replaced ones included, as one unit.
                 gpl_bytes, donor_gpl_length = PatchGPLReplaceRigidSubmeshes(
                     gpl_bytes, model, parsed, texture_index_by_file_name,
                     donor_gpl_length=donor_gpl_length,
@@ -7823,8 +7816,7 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
             if getattr(parsed, 'custom_submeshes', None):
                 # Always clone + append (never the full BuildGPLMeshData
                 # rebuild): a same-count rebuild's preserve-layout fast path
-                # is known to corrupt unmodified donor data (Phase 0 finding,
-                # PLAN_AddSubmesh.md Phase 2), and a new submesh has no donor
+                # is known to corrupt unmodified donor data, and a new submesh has no donor
                 # layout to preserve regardless.
                 _warn_stadium_custom_submesh_alpha(model, parsed, sluggie_path)
                 gpl_bytes = PatchGPLAppendSubmesh(
@@ -7898,7 +7890,7 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
         skn_bytes = BuildSKNSkinningData(parsed, gpl_result)
     else:
         skn_bytes = CloneSKN(source_model_offset, source_model_length)
-    # Bind-pose vertex scaling (PLAN_BoneScaling): apply the model's
+    # Bind-pose vertex scaling: apply the model's
     # RootBoneScaleEdited factors to the SKN bind-pose data. Covers both build
     # mode (freshly built SKN) and clone mode (verbatim SKN clone) since both
     # produce the same SKN section layout. No-op when the model has no

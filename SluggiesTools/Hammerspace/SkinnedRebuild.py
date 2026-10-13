@@ -1,5 +1,4 @@
-"""Canonical skin layout for a rebuilt skinned submesh 0 (PLAN_ModelReplacements.md
-Milestone 4.4/4.5).
+"""Canonical skin layout for a rebuilt skinned submesh 0.
 
 Pure Python, no slogger, no dataclasses from HammerspaceMain, so the layout
 rules can be unit-tested on their own. HammerspaceMain turns the result into

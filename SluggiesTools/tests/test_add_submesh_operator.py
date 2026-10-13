@@ -267,7 +267,7 @@ class ValidateSubmeshNameTests(unittest.TestCase):
 
 class AddSubmeshOperatorStructureTests(unittest.TestCase):
     """AST checks that don't need bpy: registration, property names, and the
-    dialog wiring described in PLAN_AddSubmesh.md Phase 5 step 3."""
+    dialog wiring."""
 
     def setUp(self):
         self.source = PANEL_PATH.read_text(encoding='utf-8')

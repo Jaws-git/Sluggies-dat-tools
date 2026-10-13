@@ -1,4 +1,4 @@
-"""PLAN_ModelReplacements.md Milestone 4 (export side): the bpy-free
+"""The bpy-free
 SkinnedRebuildExport module is imported directly; the bpy glue in
 ExportSluggies.py / ImportSluggies.py / SluggiesToolsPanel.py is checked
 with the AST or by executing single helpers against small fakes."""
@@ -274,7 +274,7 @@ class EntryTests(unittest.TestCase):
     def test_mode_reason(self):
         self.assertEqual(sre.mode_reason('body', ['topology']), 'body rebuild of body (topology)')
 
-    # --- facial poses (Milestone 4.7) ---
+    # --- facial poses ---
 
     def _keys(self, moved=None, normals=False, missing=False, object_index=0, pose_count=3):
         """Shape keys of one facial object: pose 1 moves *moved* vertices by

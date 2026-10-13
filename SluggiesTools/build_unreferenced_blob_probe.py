@@ -1,10 +1,10 @@
-"""Phase 0 probe 1 (E4): a rigid submesh blob moved, its old copy left behind.
+"""A rigid submesh blob moved, its old copy left behind.
 
 Copies one donor rigid submesh blob *byte-for-byte* to a new spot before
 GPLUserData, repoints its GEO descriptor at the copy and leaves the original
 blob in the GPL unreferenced. Nothing else changes, so the model must look
-identical in game. This isolates PLAN_EditRigidMeshes.md E4 ("unreferenced
-whole blobs") from any rebuild code.
+identical in game. This isolates "unreferenced whole blobs"
+from any rebuild code.
 
 Usage: python build_unreferenced_blob_probe.py SOURCE.sluggie --submesh 1 [--write]
 """

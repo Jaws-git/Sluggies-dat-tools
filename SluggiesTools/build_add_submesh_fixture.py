@@ -53,9 +53,8 @@ from binfmt import decode_field as _decode_field, encode_field as _encode_field,
 # path), never "content-mutated". The array CONTENT was not the cause of the
 # observed Dolphin texture noise. The rebuilt GPL section LENGTH was, confirmed
 # in Dolphin on 2026-09-16: it ended 8 bytes past a 32-byte boundary, which
-# shifted every texture payload off alignment (PLAN_AddSubmesh.md finding
-# F10). `HammerspaceMain.BuildHEADERModelBlock` now pads every section start
-# to a 32-byte boundary itself (Phase 2 step 4), so this no longer needs a
+# shifted every texture payload off alignment. `HammerspaceMain.BuildHEADERModelBlock` now pads every section start
+# to a 32-byte boundary itself (_docs/_docs_model_format/overview.html#alignment), so this no longer needs a
 # fixture-local workaround.
 def _clear_source_layout_fields(clone: dict) -> None:
     clone["SubmeshOffset"] = "0x0"
@@ -84,8 +83,7 @@ def _clear_source_layout_fields(clone: dict) -> None:
 def _null_primitive_lists(clone: dict) -> None:
     """Zero every primitive-bearing display state's triangle data on *clone*.
 
-    Control probe for the GX/TEV render-state-carryover theory (see
-    PLAN_AddSubmesh.md's Phase 0 status note, "control probe attempt 2"):
+    Control probe for the GX/TEV render-state-carryover theory:
     isolates whether the new submesh's *state-setting* commands (Type-1
     texture bind, Type-3/4/6/7) alone can affect a later frame's body draw,
     independent of whether any triangles are actually issued. Only the
@@ -104,8 +102,7 @@ def _null_primitive_lists(clone: dict) -> None:
 def _filter_display_states(clone: dict, exclude_types: set[int]) -> None:
     """Drop every display state whose ``DisplayStateId`` is in *exclude_types*.
 
-    Bisection probe for the "owned but undrawn" control's finding (see
-    PLAN_AddSubmesh.md's Phase 0 status note) that the body-texture noise
+    Bisection probe for the "owned but undrawn" control's finding that the body-texture noise
     survives with zero triangles drawn -- so it's caused by one or more of
     the state-setting commands (Type-1 texture bind, Type-3/4/6/7) in the
     cloned display-state list. There is no separate state-count field to
@@ -125,7 +122,7 @@ GX_FORMAT_S16 = 3
 def _scale_clone_positions(clone: dict, factor: float, use_compression: bool) -> None:
     """Scale the clone's bone-local positions by *factor* about the host bone.
 
-    Order probe marker (PLAN_AddSubmesh.md Phase 0 probe 2, U3). A byte-exact
+    Order probe marker. A byte-exact
     clone looks identical to its template, so a swap between the template and
     the clone would be invisible in game. Scaling only the clone makes every
     submesh identifiable on its bone. Normals are unchanged by a uniform scale.
@@ -228,12 +225,12 @@ def _build_cube_faces(descriptors: list[dict]) -> list[list[dict]]:
 def _replace_clone_with_cube(
     clone: dict, half_extent: float, display_state_index: int | None, use_compression: bool,
 ) -> dict:
-    """Replace the clone's geometry with a 12-triangle cube (Phase 0 probe 4).
+    """Replace the clone's geometry with a 12-triangle cube.
 
     Keeps the template's display-state list and attribute formats. The cube
     goes into one primitive-bearing state (default: the one with the largest
     primitive list); every other state's primitive list is emptied, which is
-    how Phase 2 step 3 treats a `rigid:` template. Indices follow the Type-3
+    how the patcher treats a `rigid:` template. Indices follow the Type-3
     layout in effect at that state. Positions are centred on the host bone
     (bone-local space); each face maps the whole texture (UV 0..1), and every
     UV channel gets the same coordinates, as UV1 mirrors UV0 for specular.
@@ -432,7 +429,7 @@ def _select_host_bone(
         if not allow_skinned_bone and host_bone in skn_used_ids:
             raise ValueError(
                 f"bone {host_bone} drives skinning (referenced by SK1/SK2/SKAcc); "
-                "pass --allow-skinned-bone to host a submesh on it anyway (probe 3, U2)"
+                "pass --allow-skinned-bone to host a submesh on it anyway"
             )
         return bone
 
@@ -445,10 +442,10 @@ def _select_host_bone(
     if not eligible:
         raise ValueError(
             "no eligible host bone found: every mesh-free bone is SKN-used; "
-            "pass --allow-skinned-bone to allow one (probe 3, U2)"
+            "pass --allow-skinned-bone to allow one"
         )
 
-    # F7: vanilla rigid-submesh owners are never root bones (the only root
+    # vanilla rigid-submesh owners are never root bones (the only root
     # owners are single-bone props). Prefer a non-root bone so the probe
     # actually exercises a bind-pose offset; fall back to a root bone only
     # when nothing else qualifies.
@@ -467,7 +464,7 @@ def prepare_fixture_data(
     cube_half_extent: float | None = None,
     cube_display_state: int | None = None,
 ) -> dict:
-    """Build the U1 duplicate-submesh probe .sluggie payload (pure, no I/O).
+    """Build the duplicate-submesh probe .sluggie payload (pure, no I/O).
 
     Deep-copies *source_data*, appends a byte-for-byte value clone of the
     template rigid submesh (default: the submesh named ``head``) as a new
@@ -498,11 +495,11 @@ def prepare_fixture_data(
     ``_scale_clone_positions``), so the order probe can tell every submesh
     apart in game. ``OrderBroken`` in the fixture metadata records whether the
     host bone ID is lower than an existing rigid owner's ID, which breaks the
-    vanilla ascending owner order (F3).
+    vanilla ascending owner order.
 
     ``cube_half_extent`` replaces the clone's geometry with a 12-triangle
     cube (see ``_replace_clone_with_cube``), optionally drawn in
-    ``cube_display_state``; this is the minimal-geometry probe 4.
+    ``cube_display_state``; this is the minimal-geometry probe.
     """
     data = copy.deepcopy(source_data)
     model = data["SluggiesModel"]
@@ -588,7 +585,7 @@ DONOR_FOREIGN_ADDITION_KEYS = (
     "CustomSubmeshes",
     "AdditionalTextureDescriptors",
     "DesiredTextureAssignments",
-    "RigidRebuild",   # Submeshes[i]: a rebuilt donor rigid submesh (PLAN_EditRigidMeshes.md)
+    "RigidRebuild",   # Submeshes[i]: a rebuilt donor rigid submesh
 )
 
 
@@ -674,8 +671,7 @@ def _apply_add_submesh_geo_id_patch(
 
     current = struct.unpack_from(">H", block, patch_off)[0]
     if current == new_submesh_index:
-        # BuildModelBlock consumes GeoIdEdited since PLAN_AddSubmesh.md Phase 3
-        # step 2, so the host bone set up by prepare_fixture_data is
+        # BuildModelBlock consumes GeoIdEdited, so the host bone set up by prepare_fixture_data is
         # normally patched already. Nothing left to do.
         hammerspace._slogger.info(
             f"[ACT] bone {host_bone_id} GeoId already reads submesh {new_submesh_index} "
@@ -844,12 +840,12 @@ def build_fixture(
             "re-export the model with the latest SluggiesTools export.py"
         )
     if skip_geo_id_patch:
-        # Phase 0 showed an unowned appended submesh crashes the game, and
-        # BlockValidator now rejects one (PLAN_AddSubmesh.md Phase 2 step 5),
+        # Dolphin showed an unowned appended submesh crashes the game, and
+        # BlockValidator now rejects one,
         # so this control can no longer produce a block.
         raise ValueError(
             "--skip-geo-id-patch is retired: an unowned rigid submesh crashes the "
-            "game (Phase 0) and BlockValidator now rejects it"
+            "game and BlockValidator now rejects it"
         )
 
     fixture_path.parent.mkdir(parents=True, exist_ok=True)
@@ -873,8 +869,7 @@ def build_fixture(
     require_built_submesh_count(build, new_submesh_index + 1)
 
     if skip_geo_id_patch:
-        # Control probe for the GX/TEV render-state-carryover theory (see
-        # PLAN_AddSubmesh.md's Phase 0 status note): the new submesh is still
+        # Control probe for the GX/TEV render-state-carryover theory: the new submesh is still
         # appended to GPL (same descriptor count, same section growth, same
         # relocation as the normal probe), but no bone's GeoId is patched, so
         # nothing ever references submesh `new_submesh_index` and its display
@@ -905,7 +900,7 @@ def build_fixture(
     build.validation_report["section_alignment"] = alignment
     if alignment["misaligned"]:
         raise ValueError(
-            "build has entries off a 32-byte boundary (F10): "
+            "build has entries off a 32-byte boundary: "
             + "; ".join(alignment["misaligned"])
         )
 
@@ -938,7 +933,7 @@ def build_fixture(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Build the Phase 0 duplicate-submesh (U1) hammerspace fixture."
+        description="Build the duplicate-submesh hammerspace fixture."
     )
     parser.add_argument("source", type=Path, help="Source .sluggie path")
     parser.add_argument("--output", type=Path, help="Generated fixture .sluggie path")
@@ -952,7 +947,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--allow-skinned-bone", action="store_true",
-        help="Permit picking a bone that SKN references (probe 3, U2)",
+        help="Permit picking a bone that SKN references",
     )
     parser.add_argument("--write", action="store_true", help="Install into output DAT/DOL/FST")
     parser.add_argument(
@@ -987,7 +982,7 @@ def main() -> int:
     parser.add_argument(
         "--position-scale", type=float, default=None, metavar="FACTOR",
         help=(
-            "Order probe marker (probe 2, U3): scale only the cloned submesh's positions "
+            "Order probe marker: scale only the cloned submesh's positions "
             "about its host bone, e.g. 0.5, so the clone can't be mistaken for its template "
             "in game."
         ),
@@ -995,7 +990,7 @@ def main() -> int:
     parser.add_argument(
         "--cube", type=float, default=None, metavar="HALF_EXTENT",
         help=(
-            "Minimal-geometry probe 4: replace the clone's geometry with a 12-triangle cube of "
+            "Minimal-geometry probe: replace the clone's geometry with a 12-triangle cube of "
             "this half extent in bone-local units (e.g. 0.1), keeping the template's display "
             "states and texture bindings."
         ),

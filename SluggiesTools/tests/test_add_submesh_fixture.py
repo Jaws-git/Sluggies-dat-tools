@@ -501,7 +501,7 @@ class SectionAlignmentFactsTests(unittest.TestCase):
 
     def test_tex_section_off_boundary_flags_section_and_every_payload(self):
         # TEX at 8 mod 32 with TEX-relative payloads at 0 mod 32: the shape the
-        # full GPL serializer produced for every Phase 0 in-game fixture.
+        # full GPL serializer produced for every early in-game fixture.
         facts = fixture_mod.section_alignment_facts(_synthetic_block(0x48, [0x20, 0x40], [0, 0]))
         self.assertEqual(
             facts["misaligned"],
@@ -554,8 +554,8 @@ class BuildFixtureSyntheticDonorTests(unittest.TestCase):
         return build
 
     def test_default_build_puts_every_section_and_texture_on_32_bytes(self):
-        # Phase 2 step 4: HammerspaceMain.BuildHEADERModelBlock now pads every
-        # section start to a 32-byte boundary itself (F10), so a plain build
+        # HammerspaceMain.BuildHEADERModelBlock now pads every
+        # section start to a 32-byte boundary itself, so a plain build
         # (no fixture-local workaround) already comes out aligned.
         build = self._build_donor('_test_add_submesh_aligned.sluggie')
         report = build.validation_report
@@ -575,7 +575,7 @@ class BuildFixtureSyntheticDonorTests(unittest.TestCase):
         )["SluggiesModel"]["AddSubmeshFixture"]
         # The donor's rigid submesh is owned by a later bone than the host, so
         # hosting the new submesh here breaks the vanilla ascending owner
-        # order (F3).
+        # order.
         self.assertEqual(
             meta["ExistingOwnerBones"],
             {str(synthetic_donor.RIGID_OWNER_SUBMESH): synthetic_donor.RIGID_OWNER_BONE},

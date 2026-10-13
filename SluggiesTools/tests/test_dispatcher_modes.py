@@ -27,7 +27,7 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
         self.assertEqual(start.hammerspace_section_args(model), ['--gpl', 'build'])
 
     def test_custom_submesh_only_export_requests_gpl_build(self):
-        # PLAN_AddSubmesh.md Phase 6 step 4: no donor edit at all, just a
+        # No donor edit at all, just a
         # custom submesh on an existing texture.
         model = {
             'Submeshes': [{}],
@@ -284,7 +284,7 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
 
 
 class PatchPngTests(unittest.TestCase):
-    """PLAN_PngPatching Phase 6: _patch_png dispatches to the correct child
+    """_patch_png dispatches to the correct child
     script with the right arguments."""
 
     def _make_target(self, sluggie_path='/tmp/model.sluggie', png_path='/tmp/tex/0.png', texture_index=0):
@@ -327,7 +327,7 @@ class PatchPngTests(unittest.TestCase):
 
 
 class RunPatchingDispatchTests(unittest.TestCase):
-    """PLAN_PngPatching Phase 6: run_patching routes .png and .sluggie files
+    """run_patching routes .png and .sluggie files
     correctly and handles per-file failures without aborting."""
 
     def _write_sluggie(self, path, model_data=None):

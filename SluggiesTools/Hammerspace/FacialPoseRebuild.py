@@ -1,5 +1,5 @@
 """Facial pose section (ptr7) rebuild for rebuilt submeshes: the skinned
-body (PLAN_ModelReplacements.md Milestone 4.7) and rigid submeshes under a
+body and rigid submeshes under a
 ``RigidRebuild`` (2026-10-10).
 
 Pure Python, no slogger, so the serialization rules can be unit-tested on

@@ -93,7 +93,7 @@ def _no_target_armature_message(context):
 
 
 def _bone_records(arm_obj):
-    """Read the Phase 5 step 2 import-time snapshot off *arm_obj*'s bones."""
+    """Read the import-time bone snapshot off *arm_obj*'s bones."""
     records = []
     for b in arm_obj.data.bones:
         bone_id = _bone_id_from_name(b.name)
@@ -244,7 +244,7 @@ def _material_by_surface_id(context, arm_obj, surface_id):
 
 def _submesh0_material(context, arm_obj):
     """Any submesh 0 donor material, used as the wrap-mode fallback for
-    `builtin:` templates (PLAN_EditRigidMeshes.md Phase 8 step 3)."""
+    `builtin:` templates."""
     for obj in _donor_mesh_objects(context, arm_obj):
         if _submesh_index_of(obj) != 0:
             continue
@@ -307,8 +307,8 @@ def _new_surface_metadata(shader_mode, specular_strength):
 
 
 def _template_wrap_modes(context, arm_obj, template_source):
-    """(WrapS, WrapT) copied from the template's own imported material
-    (PLAN_EditRigidMeshes.md Phase 8 step 3); `builtin:` has no donor
+    """(WrapS, WrapT) copied from the template's own imported material;
+    `builtin:` has no donor
     material of its own, so it falls back to submesh 0's."""
     if not template_source.startswith('builtin:'):
         surface_id = template_source.split(':', 1)[1] if ':' in template_source else ''
@@ -401,8 +401,8 @@ def _host_bone_enum_items(self, context):
 
 
 def _template_source_description(choice):
-    """Dialog tooltip. Built-ins carry their own description (decision 9:
-    what the shader mode does); donor sources just name their kind."""
+    """Dialog tooltip. Built-ins carry their own description (what
+    the shader mode does); donor sources just name their kind."""
     if choice.kind == 'builtin':
         template = TemplateSources.BUILTIN_TEMPLATES.get(choice.argument)
         if template is not None:
@@ -545,7 +545,7 @@ def _create_custom_submesh_cube(context, arm_obj, bone_id, custom_submesh_id, su
     # Parented like imported rigid meshes; the parent inverse cancels the
     # armature's own world transform (its 90 degree import rotation, and any
     # later move of the whole armature) so obj.location below lands in world
-    # space right after parenting. Phase 6 exports world positions, so this
+    # space right after parenting. Export uses world positions, so this
     # only affects viewport behaviour.
     obj.parent = arm_obj
     obj.matrix_parent_inverse = arm_obj.matrix_world.inverted()
@@ -623,8 +623,7 @@ def _write_custom_submesh_texture(sluggie_path, submesh_name):
 
 def _rigid_mesh_kind(obj):
     """('donor', submesh_index) for a rigid (CompCount 3) donor submesh,
-    ('custom', None) for a custom submesh, or (None, None) for anything else
-    (PLAN_EditRigidMeshes.md Phase 6)."""
+    ('custom', None) for a custom submesh, or (None, None) for anything else."""
     if obj is None or obj.type != 'MESH':
         return None, None
     if obj.get('SluggiesCustomSubmesh'):
@@ -637,7 +636,7 @@ def _rigid_mesh_kind(obj):
 def _add_material_mesh_kind(obj):
     """Like _rigid_mesh_kind, but the skinned body (CompCount 6) counts as a
     donor submesh too: a new material on it is exported through the body
-    rebuild (PLAN_ModelReplacements.md Milestone 4)."""
+    rebuild."""
     kind, submesh_index = _rigid_mesh_kind(obj)
     if kind is None and obj is not None and obj.type == 'MESH' \
             and obj.get('VertexBufferCompCount') == 6 and not obj.get('SluggiesCustomSubmesh'):
@@ -910,8 +909,7 @@ class SLUGGIES_OT_reassign_bone(bpy.types.Operator):
 
 class SLUGGIES_OT_add_material(bpy.types.Operator):
     """Add a new surface (material + empty texture slot) to a rigid or
-    custom submesh, from a template (PLAN_EditRigidMeshes.md 'Add material
-    button (concept)'). Blender-side only for now: export support for
+    custom submesh, from a template. Blender-side only for now: export support for
     SluggiesNewSurface materials is a follow-up."""
     bl_idname = "sluggies.add_material"
     bl_label = "Add Material"
@@ -1494,7 +1492,7 @@ class SLUGGIES_OT_add_submesh(bpy.types.Operator):
                 self.report({"ERROR"}, f"Host bone {self.host_bone!r} no longer exists")
                 return {"CANCELLED"}
 
-            # Export-time re-check territory (Phase 6) aside, re-run the free-bone
+            # Export-time re-check territory aside, re-run the free-bone
             # classification once more here: the props dialog may have stayed
             # open while another retarget or custom submesh claimed this bone.
             ordered = _ordered_host_bone_choices(context, arm_obj)
@@ -1550,8 +1548,8 @@ class SluggiesSpecularStrengthItem(bpy.types.PropertyGroup):
 
 class SLUGGIES_OT_set_specular_strength(bpy.types.Operator):
     """Edit the specular intensity (DisplayStateParamBytes index 0, struct offset +1) for every
-    Type-7 display state on the active submesh's material slots. See
-    INVESTIGATION_Specularity.md — 0-255, linear, confirmed in-game."""
+    Type-7 display state on the active submesh's material slots: 0-255,
+    linear, confirmed in-game (_docs/_docs_model_format/overview.html)."""
     bl_idname = "sluggies.set_specular_strength"
     bl_label = "Set Specular Strength"
     bl_description = "Edit specular intensity for the active submesh's specular (Type-7) surfaces"

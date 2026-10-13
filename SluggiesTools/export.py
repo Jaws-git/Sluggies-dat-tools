@@ -6,7 +6,7 @@ import re
 import struct
 import sys
 
-# Step 2.2 – Initialize universal logger in child process.
+# Initialize universal logger in child process.
 import slogger as _slogger
 _slogger.configure()
 
@@ -1269,7 +1269,7 @@ def extract_bone_data(model):
     # Build lookup by bone id to access ACTBoneLayout fields not on Bone.
     layout_by_id = {bl.id: bl for bl in model.ACT.bone_layouts.values()}
 
-    # bone_id -> (mirror_bone_id, role) from the kind-2 user-data entry (F3).
+    # bone_id -> (mirror_bone_id, role) from the kind-2 user-data entry.
     mirror_table = _extract_mirror_table(model)
 
     # Build per-submesh (global_vtx_start, vtx_count) for skinned index remapping.

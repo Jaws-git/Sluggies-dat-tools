@@ -2174,7 +2174,7 @@ class VerifyWriteRoundTripTests(unittest.TestCase):
 
 
 class ResolvePngToTextureTests(unittest.TestCase):
-    """PLAN_PngPatching Phase 0: resolve_png_to_texture() locates the parent
+    """resolve_png_to_texture() locates the parent
     .sluggie and matched descriptor for a PNG inside an exported model tree."""
 
     def _make_tree(
@@ -2321,7 +2321,7 @@ class ResolvePngToTextureTests(unittest.TestCase):
 
 
 class PngOverrideTests(unittest.TestCase):
-    """PLAN_PngPatching Phase 1: png_overrides redirects the encode source and
+    """png_overrides redirects the encode source and
     the strict path enforces an identical footprint."""
 
     def _make_model(self, temp_dir, names_and_sizes):

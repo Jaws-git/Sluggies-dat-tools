@@ -1,9 +1,9 @@
-"""Phase 0 probe 5 extension: draw order and hand visibility roles on a rebuilt rigid submesh.
+"""Draw order and hand visibility roles on a rebuilt rigid submesh.
 
 Rebuilds rigid submeshes of the male Mii (main model and its LOD) with every
 primitive list re-encoded as GX_TRIANGLES in donor face order. The rebuilt blob
 goes before GPLUserData and its descriptor is repointed; the old blob stays
-unreferenced (E4). Every other submesh is untouched.
+unreferenced. Every other submesh is untouched.
 
   body   identity rebuild of a 3-surface, 3-texture submesh (draw order)
   r_hand half the faces move out of RhSp into an appended Spec group
@@ -162,7 +162,7 @@ def _move_half_to_new_group(sub: dict, shader_mode: str, color0: int | None = No
 
 
 # ---------------------------------------------------------------------------
-# GPL splice (E4): new blobs before GPLUserData, old blobs unreferenced
+# GPL splice: new blobs before GPLUserData, old blobs unreferenced
 # ---------------------------------------------------------------------------
 
 def _gpl_header(gpl: bytes) -> tuple[int, int, int, int]:

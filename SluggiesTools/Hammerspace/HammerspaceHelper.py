@@ -3,7 +3,7 @@ import shutil
 import struct
 import sys
 
-# Step 2.2 – Initialize universal logger in child process.
+# Initialize universal logger in child process.
 _HS_TOOLS_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
 if _HS_TOOLS_DIR not in sys.path:
     sys.path.insert(0, _HS_TOOLS_DIR)

@@ -1,5 +1,4 @@
-"""Triangle strips in drawlist.encodeDrawList (PLAN_ModelReplacements.md
-4.1): the greedy stripifier and its round trip through decodeDrawList."""
+"""Triangle strips in drawlist.encodeDrawList: the greedy stripifier and its round trip through decodeDrawList."""
 import pathlib
 import random
 import struct

@@ -223,8 +223,7 @@ def _apply_nonskinned_transform(obj, submesh_index, bone_list, abs_bone_mats, ow
     that owns *submesh_index*, if one exists.  No-op for skinned submeshes.
 
     *owner_bone_id* names the bone to use; by default the effective owner
-    (``GeoIdEdited`` first), so a retargeted mesh re-imports on its new bone
-    (PLAN_EditRigidMeshes.md G15)."""
+    (``GeoIdEdited`` first), so a retargeted mesh re-imports on its new bone."""
     if owner_bone_id is None:
         _donor, owner_bone_id = _submesh_owner_bones(bone_list, submesh_index)
     if owner_bone_id is None:
@@ -625,7 +624,7 @@ def _edited_submesh_view(submesh):
     their primary counterparts so existing decode_* helpers can be reused
     without modification.
 
-    A ``RigidRebuild`` (PLAN_EditRigidMeshes.md) is promoted the same way:
+    A ``RigidRebuild`` is promoted the same way:
     its arrays replace the donor's, and ``_FaceSurfaceIds`` lists the surface
     key each face draws through (donor SurfaceId or new surface key)."""
     view = dict(submesh)
@@ -1234,7 +1233,7 @@ def build_armature(name, bone_list, collection, skin_data=None, reorient=True):
             b['game_quaternion'] = list(bd['Quaternion'])
             b['game_scale'] = list(bd['Scale'])
             # Donor ownership/skinning snapshot for the Add submesh free-bone
-            # proposal (PLAN_AddSubmesh.md Phase 5 step 2, HostBones.py). Fixed
+            # proposal (HostBones.py). Fixed
             # facts of the exported model, read-only, stored on Bone (not
             # EditBone) so they survive into saved .blend files.
             # SluggiesSkinned must come from SkinData: BoneHierarchy's own
@@ -1327,10 +1326,10 @@ def _template_shader_mode_from_model(model, template_source):
 def _new_surface_materials(name, submesh, submesh_index, model, uv_layer_name, sluggie_dir, texture_file_map):
     """Re-create the Add-material surfaces of a rebuilt rigid submesh
     (``RigidRebuild.NewSurfaces``) as Blender materials, keyed by surface key,
-    with the metadata Add material writes (PLAN_EditRigidMeshes.md G22). The
+    with the metadata Add material writes. The
     image comes from the appended PNG in tex/ or from the donor texture it
     binds; when the file is missing the node stays empty, so the next export
-    stops on it (decision 11) instead of changing the texture silently."""
+    stops on it instead of changing the texture silently."""
     from . import ExportSluggies
     materials = {}
     rebuild = submesh.get("RigidRebuild") or submesh.get("SkinnedRebuild") or {}
@@ -1423,7 +1422,7 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
                                      reorient=self.reorient_bones)
             arm_obj['SluggiesBonesReoriented'] = bool(self.reorient_bones)
             abs_bone_mats = _compute_bone_absolute_matrices(bone_list)
-            # So Add submesh (PLAN_AddSubmesh.md Phase 5 step 3) can find this
+            # So Add submesh can find this
             # model's tex/ directory without asking the user or reading the
             # .sluggie file again.
             arm_obj['SluggieFilePath'] = self.filepath
