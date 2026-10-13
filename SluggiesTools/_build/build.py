@@ -49,6 +49,8 @@ WIIMMS_VERSION = "v2.42a-r8989"
 WIIMMS_ARCHIVE = f"szs-{WIIMMS_VERSION}-cygwin64.zip"
 WIIMMS_URL = f"https://szs.wiimm.de/download/{WIIMMS_ARCHIVE}"
 WIIMMS_SHA256 = "ac54b82806d5867d2d9f003df972164138ae4f7a7ab8f29d8397664f31c9e892"
+# Inside PyInstaller's contents directory; start.py adds its bin/ to PATH.
+WIIMMS_DIR = PACKAGE / "_internal" / "tools" / "wiimms-szs-tools"
 
 
 def clean() -> None:
@@ -121,7 +123,7 @@ def bundle_wiimms_tools() -> None:
         print("Skipping Wiimms SZS Tools bundle on non-Windows platform")
         return
 
-    destination = PACKAGE / "tools" / "wiimms-szs-tools"
+    destination = WIIMMS_DIR
     with tempfile.TemporaryDirectory(prefix="sluggies-wiimms-") as temporary:
         archive = Path(temporary) / WIIMMS_ARCHIVE
         print(f"Downloading Wiimms SZS Tools {WIIMMS_VERSION}")
@@ -174,9 +176,9 @@ def verify() -> Path:
     missing = [path for path in required if not path.exists()]
     if platform.system() == "Windows":
         windows_required = (
-            PACKAGE / "tools" / "wiimms-szs-tools" / "bin" / "wimgt.exe",
-            PACKAGE / "tools" / "wiimms-szs-tools" / "bin" / "cygwin1.dll",
-            PACKAGE / "tools" / "wiimms-szs-tools" / "gpl-2.0.txt",
+            WIIMMS_DIR / "bin" / "wimgt.exe",
+            WIIMMS_DIR / "bin" / "cygwin1.dll",
+            WIIMMS_DIR / "gpl-2.0.txt",
         )
         missing.extend(path for path in windows_required if not path.exists())
     if missing:

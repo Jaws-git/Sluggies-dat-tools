@@ -74,7 +74,7 @@ jobs:
         run: .\dist\sluggies-dat-tools\sluggies-dat-tools.exe --help
 
       - name: Smoke test bundled wimgt
-        run: .\dist\sluggies-dat-tools\tools\wiimms-szs-tools\bin\wimgt.exe --version
+        run: .\dist\sluggies-dat-tools\_internal\tools\wiimms-szs-tools\bin\wimgt.exe --version
 
       - name: Create release archive
         shell: pwsh

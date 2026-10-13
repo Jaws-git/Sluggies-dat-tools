@@ -23,9 +23,9 @@ if getattr(sys, 'frozen', False):
 else:
     ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Portable Windows builds carry Wiimm's tools beside the application. Put that
+# Portable Windows builds carry Wiimm's tools in _internal/tools/. Put that
 # directory first so existing subprocess calls find wimgt without user setup.
-_BUNDLED_WIIMMS_BIN = os.path.join(ROOT_DIR, 'tools', 'wiimms-szs-tools', 'bin')
+_BUNDLED_WIIMMS_BIN = os.path.join(getattr(sys, '_MEIPASS', ROOT_DIR), 'tools', 'wiimms-szs-tools', 'bin')
 if os.path.isdir(_BUNDLED_WIIMMS_BIN):
     os.environ['PATH'] = _BUNDLED_WIIMMS_BIN + os.pathsep + os.environ.get('PATH', '')
 
