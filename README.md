@@ -2,24 +2,13 @@
 
 ## Portable Windows release
 
+This tool lets you export the original Super Sluggers assets, modify them, and patch them back into the game. For funny.
+
 Download the latest packaged tools and Blender add-on from the
-[Sluggies-dat-tools release site](https://jaws-git.github.io/Sluggies-dat-tools/).
+**[Sluggies-dat-tools release site](https://jaws-git.github.io/Sluggies-dat-tools/)**.  
 The portable release includes Python, the required Python packages, and
 **wimgt** from Wiimms SZS Tools. Texture conversion works without a separate
 install or changes to `PATH`.
-
-This fork of the MSS-Dat-tools is laser-focused on Mario Super Sluggers only and will probably not work with much else.
-Goal is the export of original MSS 3D player models and subsequent re-import of edited models. For funny.
-
-None of this would have been possible without the folks who created the tools and documentation for these games.
-- LlamaTrauma for the [MSS-Dat-Tools](https://github.com/LlamaTrauma/MSS-dat-tools) which this is forked off.
-- roeming for the [MSSB-Export-Models](https://github.com/roeming/MSSB-Export-Models)
-- The [Mario Sluggers Model format documentation](https://thatsrightigame.com/sluggers/format_docs/)
-- pyinstaller portable windows setup by [jackharrhy](https://github.com/jackharrhy) 
-
-And the helpful Sluggers community for always having an open ear and pointing me in the right directions.  
-"Sluggie" is short for "SLUGGers IntermediatE format".
-
 
 ## Requirements
 - Dolphin Emulator https://dolphin-emu.org/
@@ -87,18 +76,28 @@ Nothing is lost, the updated file will hold both original and edited mesh data f
 ## Icon Editing
 See [Icon Guide](_docs/IconGuide.md)
 
+## Sound Editing
+Full Guide coming soon
 
 ## Development progress:
-✅ SLUGGers IntermediatE (.sluggie) export  
-✅ .png texture & .glb model (optional, `--glb`) export  
-✅ sound export (WAV, optional, `--export-sounds`)  
+✅ SLUGGers IntermediatE (.sluggie) and .glb export  
 ✅ Blender Import/Export plugin  
-✅ Vertex position editing  
-✅ Vertex animation editing (shapekeys)  
-✅ Full UV editing  
-✅ Icon Modding & Assign new Icons to the unused characters  
+✅ Music/Voices/Sound export (WAV) and replacement 
+✅ Full Blender Model editing and reimport
+✅ Player Icon Modding
 ✅ "Untangle" all textures so they can be replaced for one character only  
-✅ Inject new player textures  
-❌ Hammerspace full-Model replacement  
-❌ Armature editing  
-❌ Animations
+✅ Increase the memory budget allocated to each player model
+✅ Extensive stat editing for vanilla and custom characters using the Philenarion Stat Editor
+✅ Add Custom Bones 
+✅ Custom Animations
+
+## Credits
+
+None of this would have been possible without the folks who created the tools and documentation for these games.
+- LlamaTrauma for the [MSS-Dat-Tools](https://github.com/LlamaTrauma/MSS-dat-tools) which this is forked off.
+- roeming for the [MSSB-Export-Models](https://github.com/roeming/MSSB-Export-Models)
+- The [Mario Sluggers Model format documentation](https://thatsrightigame.com/sluggers/format_docs/)
+- pyinstaller portable windows setup by [jackharrhy](https://github.com/jackharrhy) 
+
+And the helpful Sluggers community for always having an open ear and pointing me in the right directions.  
+"Sluggie" is short for "SLUGGers IntermediatE format".
