@@ -437,8 +437,8 @@ def _summary(report):
         f'{verb} from {report.size_before:,} to {report.size_after:,} bytes '
         f'({_mb(report.size_before - report.size_after)} saved)', source=SOURCE)
     if not report.dry_run:
-        _slogger.info('Copy dt_na.dat, main.dol and fst.bin to the game together (CopyFilesToGameDir.bat does).',
-                      source=SOURCE)
+        _slogger.info('The game files were not copied: copy dt_na.dat, main.dol and fst.bin from 3_Output_Dat to '
+                      'the game together.', source=SOURCE)
 
 
 def main(argv=None):

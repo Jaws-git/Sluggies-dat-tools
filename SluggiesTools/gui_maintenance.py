@@ -59,9 +59,6 @@ class MaintenanceTab:
                                         callback=lambda: self.confirm_defrag())
                 self.app.action_buttons.append(button)
                 dpg.add_button(label='Refresh', callback=lambda: self.check_hammerspace())
-            dpg.add_text('Packs the blocks that patching wrote past the stock end of 3_Output_Dat/dt_na.dat without '
-                         'gaps, repoints main.dol and shrinks the file (fst.bin gets the new size). Copy all three '
-                         'files to the game afterwards.', color=_DIM, wrap=1300)
             dpg.add_text('', tag='maintenance_defrag_report', wrap=1300)
             dpg.add_separator()
             dpg.add_text('Checks the working folders for problems that make the tools act on the wrong file, and '
