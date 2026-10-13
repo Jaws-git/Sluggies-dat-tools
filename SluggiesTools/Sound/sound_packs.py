@@ -4,7 +4,7 @@ of the user's clips).
 A **stock pack** is a stock character's voice: the species' clip row in the DOL (``Roster/voices.py``, 12 sound
 INFO IDs, ``MOMENTS`` order) and those sounds in ``MY2.brsar``. ``stock_packs`` lists them from the input files.
 
-A **custom pack** is a folder ``Sound_Packs/<name>/`` holding ``pack.json`` and one ``<moment>.rwav`` (the
+A **custom pack** is a folder ``_gui/Sound_Packs/<name>/`` holding ``pack.json`` and one ``<moment>.rwav`` (the
 encoded clip, ``Sound/clips.py``; what the game gets) plus ``<moment>.wav`` (the prepared clip, for playing it
 back) per moment the user filled::
 
@@ -36,7 +36,7 @@ MOMENT_KEYS = tuple(k for k, _role in MOMENTS)
 SLOT_OF = {k: i for i, (k, _role) in enumerate(MOMENTS)}
 ROLE_OF = dict(MOMENTS)
 
-PACK_DIR = 'Sound_Packs'                  # beside 1_Input, like Roster_Packs
+PACK_DIR = os.path.join('_gui', 'Sound_Packs')  # user data in _gui, like Roster_Packs
 PACK_FILE = 'pack.json'
 PACK_EXTENSION = '.sluggiesvoice'
 FORMAT = 1

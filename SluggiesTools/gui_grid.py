@@ -35,7 +35,7 @@ EDITS_REL = os.path.join('_gui', 'slot', 'edits.json')
 PACK_PLAN_REL = os.path.join('_gui', 'pack', 'plan.json')
 SWITCH_PLAN_REL = os.path.join('_gui', 'switch', 'plan.json')
 SLOT_EXPORT_REL = os.path.join('_gui', 'slot_export.json')    # Roster/slot_export.RESULT_FILE
-PACK_DIR_REL = 'Roster_Packs'                   # where the pack dialogs start
+PACK_DIR_REL = os.path.join('_gui', 'Roster_Packs')   # where the pack dialogs start
 PACK_EXTENSION = '.sluggiesroster'
 # start.py modes whose commands can change what the grid shows: the tab re-reads after them
 WRITING_FLAGS = frozenset({'--export', '--roster', '--patch', '--unpatch', '--resplit-unused',

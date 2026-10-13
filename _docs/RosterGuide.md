@@ -179,7 +179,7 @@ python start.py --set-char-voice 0x8F -
 
 The slot then speaks with that family's voice on the select screen and on
 the field, while the other members of its square keep theirs. A **voice
-pack** (a folder in `Sound_Packs/`, made on the GUI's Voices tab from your own
+pack** (a folder in `_gui/Sound_Packs/`, made on the GUI's Voices tab from your own
 WAV files) can go on top of a stock voice, so a custom character gets its own
 clips:
 
@@ -505,7 +505,7 @@ python start.py --load-roster my_roster.sluggiesroster
   more).
 
 In the GUI, the **Character grid** tab has **Save roster...** and **Load
-roster...** (packs go to the `Roster_Packs` folder by default). Saving with
+roster...** (packs go to the `_gui/Roster_Packs` folder by default). Saving with
 pending edits asks first: they are not written to the game yet, so they are
 not in the pack (press **Patch Game** first to include them). Loading shows
 the differences (tick off **Only differing slots** to see every slot);
@@ -671,7 +671,7 @@ square are hidden and skipped by the pointer and the D-pad.
 ## Voices tab: voice packs
 
 The GUI's **Voices** tab lists the game's voice packs (one per stock voice: its
-12 moments, with Play) and your custom packs (`Sound_Packs/<name>/`, one folder
+12 moments, with Play) and your custom packs (`_gui/Sound_Packs/<name>/`, one folder
 per pack with the encoded clips and a copy of each prepared WAV).
 
 - **Game voice pack**: **Replace...** on a moment picks a sound file (WAV, or
@@ -704,7 +704,7 @@ filter box narrows the list by name or group. Replaced sounds show blue.
 - **Replace...** picks a WAV (or MP3, OGG, FLAC, ... with ffmpeg) and encodes
   it in the stock sound's shape: its channels (mono or stereo), its rate, its
   loop (a WAV `smpl` loop is kept; else a looping sound loops from the start).
-  The result is kept in `Sound_FX/` (one `.rwav` per sound plus
+  The result is kept in `_gui/Sound_FX/` (one `.rwav` per sound plus
   `effects.json`) and written into `3_Output_Dat/sound_NA/MY2.brsar` at once;
   **Patch Game & copy files** copies it into the game, and every **Patch Game**
   run puts the replacements back into the archive it rebuilds.

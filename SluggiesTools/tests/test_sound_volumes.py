@@ -98,6 +98,7 @@ class LibraryTests(unittest.TestCase):
         self.assertIs(volumes.apply(self.data, self.root)[0], self.data)
 
     def test_bad_library(self):
+        os.makedirs(os.path.dirname(volumes.library_path(self.root)), exist_ok=True)
         with open(volumes.library_path(self.root), 'w', encoding='utf-8') as handle:
             json.dump({'format': 1, 'volumes': {'hit_a': 300}}, handle)
         out, lines = volumes.apply(self.data, self.root)

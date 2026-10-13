@@ -273,7 +273,7 @@ label]`. The state carries `char_clip_ids` / `char_pack` per character and
 absent in older packs, which count as "no custom clips").
 
 **Voice packs** (`Sound/sound_packs.py`): a custom pack is a folder
-`Sound_Packs/<name>/` with `pack.json` (format 1: `name`, `voice` = the stock
+`_gui/Sound_Packs/<name>/` with `pack.json` (format 1: `name`, `voice` = the stock
 base voice or null, `clips` per moment: the encoded `.rwav`, the prepared
 `.wav` for playback, the user's `origin` file, `seconds`), exportable as one
 `.sluggiesvoice` zip. Assigning a pack to a slot (`--set-char-voice 0xNN
@@ -393,7 +393,7 @@ new one and points the sound's RWSD note at it. Either way, every sound keeps
 its INFO ID and entry. The FILE section is laid out again with
 `add_sounds`' layout, which writes wave offset 0 for items without wave
 bytes, as vanilla does, so a relayout with no changes is byte-identical to
-the vanilla archive. The library `Sound_FX/` (`effects.json` format 1 plus
+the vanilla archive. The library `_gui/Sound_FX/` (`effects.json` format 1 plus
 one `<sound name>.rwav` per sound) is keyed by sound name. The tab writes
 `3_Output_Dat/sound_NA/MY2.brsar` at once (`sync_output`: library waves in,
 stock waves back for sounds no longer in the library). *Not yet tested in

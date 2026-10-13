@@ -13,7 +13,7 @@ start). Each channel is DSP-ADPCM encoded twice, with coefficients trained on th
 and with the stock wave's, and the closer one is kept. Length is free up to ``MAX_SECONDS``; a wave's group loads
 into the game's sound memory whole, so a much bigger wave is noted.
 
-**The library.** Replacements live in ``Sound_FX/`` beside ``1_Input`` (user data, like ``Sound_Packs``): one
+**The library.** Replacements live in ``_gui/Sound_FX/`` (user data, like ``_gui/Sound_Packs``): one
 ``<sound name>.rwav`` per replaced sound and ``effects.json``::
 
     {"format": 1, "effects": {"bb_swing_m": {"rwav": "bb_swing_m.rwav", "origin": "C:/.../swoosh.wav",
@@ -34,7 +34,7 @@ import numpy as np
 
 from Sound import brsar, brsar_write, brstm_write, clips, dsp_adpcm
 
-LIBRARY_DIR = 'Sound_FX'                  # beside 1_Input, like Sound_Packs
+LIBRARY_DIR = os.path.join('_gui', 'Sound_FX')   # user data in _gui, like Sound_Packs
 LIBRARY_FILE = 'effects.json'
 FORMAT = 1
 VOICE_GROUP_RE = re.compile(r'group_v\d+|group_sel_v')

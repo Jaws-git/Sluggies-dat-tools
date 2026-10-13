@@ -54,7 +54,7 @@ a stock character's voice as its own (``character_voices``: the clips are
 copied into its voice bank in the sound archive, which the rebuild writes to
 ``3_Output_Dat/sound_NA``), whatever its square speaks with; ``None`` takes
 it away; a clear resets it; a paste copies the source's. With a voice pack
-(``pack``: a ``Sound_Packs/<name>`` folder, ``Env.sound_pack``), the pack's
+(``pack``: a ``_gui/Sound_Packs/<name>`` folder, ``Env.sound_pack``), the pack's
 custom clips go on top of the stock voice (the pack's base voice unless
 ``source`` names another), stored as ``clips`` (encoded RWAVs beside the
 derived config, ``Plan.clips``). Needs ``1_Input/sound_NA/MY2.brsar``
@@ -374,7 +374,7 @@ class Env:
         return True
 
     def sound_pack(self, name: str):
-        """The custom voice pack ``name`` (``Sound/sound_packs.CustomPack``, from ``Sound_Packs/``), or None."""
+        """The custom voice pack ``name`` (``Sound/sound_packs.CustomPack``, from ``_gui/Sound_Packs/``), or None."""
         return None
 
     def read_clip(self, path: str) -> bytes:

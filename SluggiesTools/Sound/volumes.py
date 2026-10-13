@@ -5,7 +5,7 @@ at ``+0x14``, 0-127 (``brsar.Sound.volume``). Vanilla US archive (2026-10-12): 1
 107 is the default (666 sounds), the stream sounds (music) sit lower (36-117, mean 80.8). The byte only scales
 down from the wave's own level: 127 is the loudest it plays.
 
-**The library.** ``sound_volumes.json`` beside ``1_Input`` (user data, like ``Sound_FX/``)::
+**The library.** ``_gui/sound_volumes.json`` (user data, like ``_gui/Sound_FX/``)::
 
     {"format": 1, "volumes": {"bb_swing_m": 90, "STRM_TITLE": 110}}
 
@@ -22,7 +22,7 @@ import os
 
 from Sound import brsar
 
-LIBRARY_FILE = 'sound_volumes.json'      # beside 1_Input
+LIBRARY_FILE = os.path.join('_gui', 'sound_volumes.json')   # user data in _gui, like Sound_FX
 FORMAT = 1
 MAX_VOLUME = 127
 VOLUME_OFFSET = 0x14                     # in a sound entry
@@ -61,6 +61,7 @@ def load_library(root_dir):
 def save_library(root_dir, volumes):
     path = library_path(root_dir)
     doc = {'format': FORMAT, 'volumes': {name: volumes[name] for name in sorted(volumes)}}
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path + '.tmp', 'w', encoding='utf-8') as handle:
         json.dump(doc, handle, ensure_ascii=False, indent=1)
     os.replace(path + '.tmp', path)

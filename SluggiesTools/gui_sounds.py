@@ -2,7 +2,7 @@
 
 Left, the pack list: **Game voice packs** (one per stock voice: the 12 voice moments of a species as
 ``1_Input/main.dol`` and ``1_Input/sound_NA/MY2.brsar`` hold them, ``Sound/sound_packs.stock_packs``) and
-**Custom packs** (the folders of ``Sound_Packs/``, ``sound_packs.list_packs``). Right, the opened pack: one row
+**Custom packs** (the folders of ``_gui/Sound_Packs/``, ``sound_packs.list_packs``). Right, the opened pack: one row
 per voice moment (role, the current clip and its length, **Play**, **Replace...**, **Reset**).
 
 * A **game pack's** Replace stages a ``species_clip`` edit on the character grid (through
@@ -223,7 +223,7 @@ class SoundsTab:
                 label += '  [' + ', '.join(marks) + ']'
             self._list_button(label, ('stock', pack.species), _PENDING if pending else _CHANGED if replaced else None)
         dpg.add_spacer(height=8, parent=parent)
-        dpg.add_text('Custom packs (Sound_Packs/)', parent=parent, color=_DIM)
+        dpg.add_text('Custom packs (_gui/Sound_Packs/)', parent=parent, color=_DIM)
         if not self.custom:
             dpg.add_text('none yet: "New pack..." creates one', parent=parent, color=_FAINT, wrap=LIST_W - 20)
         for pack in self.custom:
@@ -577,7 +577,7 @@ class SoundsTab:
                          'Character grid tab (Voice...).', _OK)
             self._draw_list()
             self._draw_detail()
-        self.app.ask_text('New voice pack', 'Name of the new voice pack (a folder in Sound_Packs/):', answer,
+        self.app.ask_text('New voice pack', 'Name of the new voice pack (a folder in _gui/Sound_Packs/):', answer,
                           lambda: None)
 
     def _on_rename(self, pack):

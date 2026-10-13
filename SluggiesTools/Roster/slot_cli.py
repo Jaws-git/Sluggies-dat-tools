@@ -436,7 +436,7 @@ def main(argv=None) -> int:
     parser.add_argument('--voice', nargs=2, metavar=('0xNN', '0xMM'),
                         help="give slot 0xNN's square the voice of 0xMM's family (- or default: its own)")
     parser.add_argument('--char-voice', nargs=2, metavar=('0xNN', 'VOICE'), help="give slot 0xNN the voice of VOICE "
-                        "as its own: 0xMM (that character's family), pack:NAME (a voice pack of Sound_Packs/ on top of "
+                        "as its own: 0xMM (that character's family), pack:NAME (a voice pack of _gui/Sound_Packs/ on top of "
                         "its base voice), 0xMM+pack:NAME (the pack on top of 0xMM's voice); - resets it to its square's")
     parser.add_argument('--species-clip', nargs=3, metavar=('0xNN', 'MOMENT', 'FILE'),
                         help="replace voice moment MOMENT (v1, v3, ... v14) of slot 0xNN's species' voice with the WAV "

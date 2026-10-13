@@ -50,7 +50,7 @@ class CustomPackTests(unittest.TestCase):
     def test_create_fill_and_list(self):
         self.assertEqual(sound_packs.list_packs(self.tmp), ([], []))
         pack = sound_packs.create_pack(self.tmp, 'Rosa', 0x09)
-        self.assertTrue(os.path.isfile(os.path.join(self.tmp, 'Sound_Packs', 'Rosa', 'pack.json')))
+        self.assertTrue(os.path.isfile(os.path.join(self.tmp, '_gui', 'Sound_Packs', 'Rosa', 'pack.json')))
         clip = sound_packs.set_clip(pack, 'v1', self.a, b'RIFF-wav', origin='C:/x/cheer.wav')
         self.assertEqual((clip.rwav, clip.wav, clip.origin), ('v1.rwav', 'v1.wav', 'C:/x/cheer.wav'))
         self.assertEqual(clip.seconds, round(14 / 32000, 3))

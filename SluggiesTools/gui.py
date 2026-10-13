@@ -18,13 +18,13 @@ Stat Editor (Bridge Mode or Standalone) and stages the values it sends back as
 pending edits of the character grid.
 
 The "Voices" tab (``gui_sounds``) lists the game's voice packs (one per stock
-voice) and the custom packs in ``Sound_Packs/``: clips of a game pack are
+voice) and the custom packs in ``_gui/Sound_Packs/``: clips of a game pack are
 staged for replacement on the character grid, custom packs are built from
 WAV files and assigned to slots by the grid's slot-level Voice... button.
 
 The "Sound FX" tab (``gui_effects``) lists the game's other wave sounds (bat,
 ball, menus, stadiums, minigames) with Play, Stop, Replace... and Reset; the
-replacements live in ``Sound_FX/`` and go into the output sound archive.
+replacements live in ``_gui/Sound_FX/`` and go into the output sound archive.
 
 The "Music" tab (``gui_music``) lists the game's stream sounds (music,
 jingles) with Play and Stop buttons.

@@ -24,8 +24,8 @@ the files in ``3_Output_Dat`` (the normal pipeline's output).
 * The sound archive ``1_Input/sound_NA/MY2.brsar`` (when present) is read
   for the character voices step and written to ``3_Output_Dat/sound_NA/`` on
   every run (``--remove`` included): the input bytes, or those plus the copied
-  clips, plus the sound effects of ``Sound_FX/`` (``Sound/effects``, the GUI's
-  Sound FX tab) and the volumes of ``sound_volumes.json`` (``Sound/volumes``,
+  clips, plus the sound effects of ``_gui/Sound_FX/`` (``Sound/effects``, the GUI's
+  Sound FX tab) and the volumes of ``_gui/sound_volumes.json`` (``Sound/volumes``,
   the GUI's Set volume buttons). Like the DOL, the output archive never carries an earlier run.
 """
 
@@ -217,7 +217,7 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
         log.append(f'sound archive: {_display_path(os.path.join(output_dir, SOUND_ARCHIVE))} '
                    + ('rebuilt from 1_Input with the voice edits (character voices, custom clips)' if voiced
                       else 'is the 1_Input archive (no voice edits)')
-                   + (' and the sound effects of Sound_FX/ / volumes of sound_volumes.json'
+                   + (' and the sound effects of _gui/Sound_FX/ / volumes of _gui/sound_volumes.json'
                       if sound_out is not sound and fx_log else ''))
     else:
         log.append('no 1_Input/sound_NA/MY2.brsar: the output gets no sound archive (character voices that need '

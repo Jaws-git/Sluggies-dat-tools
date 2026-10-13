@@ -84,14 +84,16 @@ Full Guide coming soon
 ## Development progress:
 ✅ SLUGGers IntermediatE (.sluggie) and .glb export  
 ✅ Blender Import/Export plugin  
-✅ Music/Voices/Sound export (WAV) and replacement 
-✅ Full Blender Model editing and reimport
-✅ Player Icon Modding
-✅ "Untangle" all textures so they can be replaced for one character only  
-✅ Increase the memory budget allocated to each player model
-✅ Extensive stat editing for vanilla and custom characters using the Philenarion Stat Editor
-✅ Add Custom Bones 
-✅ Custom Animations
+✅ Music/Voices/Sound export (WAV) and replacement  
+✅ Full Blender Model editing and reimport  
+✅ Player Icon Modding  
+✅ "Untangle" all textures so they can be replaced for one character only   
+✅ Increase the memory budget allocated to each player model  
+✅ Extensive stat editing for vanilla and custom characters using the Philenarion Stat Editor  
+✅ Add Custom Bones  
+✅ Custom Animations   
+❌ Automatic animation retargeting  
+❌ "Just throw in any random glb and have it autoconverted"  
 
 ## Credits
 

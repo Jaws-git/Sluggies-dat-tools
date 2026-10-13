@@ -2,7 +2,7 @@
 
 Asks for a sound's volume byte (0-127, ``Sound/volumes``), pre-filled with the volume the sound has in the game
 now (``3_Output_Dat/sound_NA/MY2.brsar``, else ``1_Input``'s), and writes it right away (``volumes.set_volume``:
-the output archive and ``sound_volumes.json``, which "Patch Game" applies again). No staging.
+the output archive and ``_gui/sound_volumes.json``, which "Patch Game" applies again). No staging.
 
 The **Volume** column shows each sound's volume byte in the game (``volumes.game_volumes``: the output archive,
 else ``1_Input``'s), blue with the stock value beside it when changed.
@@ -19,7 +19,7 @@ _CHANGED = (110, 170, 255, 255)
 
 TOOLTIP = ('Set the sound\'s volume byte in the sound archive (0-127; 127 is the loudest, it cannot go above the '
            'wave\'s own level). Written to 3_Output_Dat/sound_NA/MY2.brsar right away and kept in '
-           'sound_volumes.json, so "Patch Game" keeps it.')
+           '_gui/sound_volumes.json, so "Patch Game" keeps it.')
 
 
 def ask_volume(app, name, status, tag, on_done=None):

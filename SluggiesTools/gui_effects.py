@@ -2,7 +2,7 @@
 
 Every effect sound of ``1_Input/sound_NA/MY2.brsar`` (``Sound/effects.list_effects``) is one row: its INFO ID,
 name, archive group, length, format and wave size, **Play**, **Replace...** and **Reset**; a filter box
-narrows the list by name or group. Replaced sounds come from the library ``Sound_FX/`` (``effects.json`` and one
+narrows the list by name or group. Replaced sounds come from the library ``_gui/Sound_FX/`` (``effects.json`` and one
 ``.rwav`` per sound) and show blue.
 
 * **Play** decodes the wave the game gets (the library's when replaced, else the stock one) and plays it through
@@ -72,7 +72,7 @@ class EffectsTab:
             dpg.add_text('The game\'s sound effects: the wave sounds of the sound archive outside the voice banks '
                          '(bat and ball, menus, stadiums, minigames). Replace... encodes a WAV (or MP3, OGG, FLAC, ... '
                          'when ffmpeg is installed) in the stock sound\'s channels, rate and loop, keeps it in '
-                         'Sound_FX/ and writes 3_Output_Dat/sound_NA/MY2.brsar ("Patch Game & copy files" copies it '
+                         '_gui/Sound_FX/ and writes 3_Output_Dat/sound_NA/MY2.brsar ("Patch Game & copy files" copies it '
                          'into the game; "Patch Game" keeps the replacements). A sound\'s group loads into sound '
                          'memory whole: keep replacements near the stock length. The sequence sounds (built from '
                          'instrument banks, e.g. bb_hit_m) are not listed.', color=_DIM, wrap=1200)

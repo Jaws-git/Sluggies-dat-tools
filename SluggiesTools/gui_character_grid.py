@@ -1379,7 +1379,7 @@ class CharacterGridTab:
             self._end_action()
 
     def _voice_packs(self):
-        """``[(name, base voice, clip count)]`` of the custom voice packs in Sound_Packs (for the Voice dialog)."""
+        """``[(name, base voice, clip count)]`` of the custom voice packs in _gui/Sound_Packs (for the Voice dialog)."""
         try:
             from Sound import sound_packs
             packs, _problems = sound_packs.list_packs(self.app.root_dir)
