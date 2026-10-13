@@ -43,6 +43,7 @@ import SluggiesTools.slogger as slogger  # noqa: E402 – must come after sys.pa
 import SluggiesTools.texture_helper as _tex  # noqa: E402
 import SluggiesTools.model_files as _model_files  # noqa: E402
 from SluggiesTools.binfmt import decode_field as _decode_field  # noqa: E402
+from SluggiesTools.binfmt import load_sluggie as _load_sluggie  # noqa: E402
 
 slogger.configure()
 
@@ -424,10 +425,10 @@ def run_export_sounds():
 
 def hammerspace_section_args(model):
     """Select rebuild modes required by exported hammerspace edit markers."""
-    use_base64 = model.get('UseBase64', True)
+    use_compression = model.get('UseCompression', True)
 
     def decode_binary(value):
-        return _decode_field(value, use_base64)
+        return _decode_field(value, use_compression)
 
     changed_positions = []
     has_uv_edits = False
@@ -745,9 +746,8 @@ def run_patching(filenames, unpatch=False, target_id=None, as_low=False, validat
             )
 
             try:
-                with open(target.sluggie_path, 'r') as f:
-                    sluggies_data = json.load(f)
-            except (OSError, json.JSONDecodeError) as e:
+                sluggies_data = _load_sluggie(target.sluggie_path)
+            except (OSError, ValueError) as e:
                 slogger.error(f"Could not read '{target.sluggie_path}': {e}", source="dispatcher")
                 continue
 
@@ -780,9 +780,8 @@ def run_patching(filenames, unpatch=False, target_id=None, as_low=False, validat
             slogger.info(f"Found: {found}", source="dispatcher")
 
             try:
-                with open(found, 'r') as f:
-                    sluggies_data = json.load(f)
-            except (OSError, json.JSONDecodeError) as e:
+                sluggies_data = _load_sluggie(found)
+            except (OSError, ValueError) as e:
                 slogger.error(f"Could not read '{found}': {e}", source="dispatcher")
                 failed = True
                 continue
@@ -883,7 +882,7 @@ def parse_args():
     mode.add_argument('--export-icons', action='store_true', help="write each character's FrontIcon.png/SideIcon.png into its model folder in 2_Output_Assets")
     mode.add_argument('--export-sounds', action='store_true', help="decode the game's sounds (1_Input/sound_NA: MY2.brsar and stream/*.brstm, copied from the game's files/sound_NA) into 2_Output_Assets/_SOUNDS as WAV files, one folder per archive group")
 
-    parser.add_argument('--debug', action='store_true', help='export only: write binary blobs as raw byte arrays instead of base64')
+    parser.add_argument('--debug', action='store_true', help='export only: write uncompressed .sluggie files with binary data as raw byte arrays instead of xz-compressed hex')
     parser.add_argument('--notex', action='store_true', help='export only: skip texture extraction')
     parser.add_argument('--untangle', action='store_true', help='export only: pass untangling flag through to export process')
     parser.add_argument('--glb', action='store_true', help='export only: also write .glb model files (always writes .sluggie files)')

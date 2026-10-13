@@ -21,19 +21,22 @@ And the helpful Sluggers community for always having an open ear and pointing me
 "Sluggie" is short for "SLUGGers IntermediatE format".
 
 
-## Requirements (not needed when using portable release)
+## Requirements
+- Dolphin Emulator https://dolphin-emu.org/
+- US(!) copy of Mario Super Sluggers
+- Blender 4.2 or newer https://www.blender.org/download/
 
+## Requirements (not needed when using portable release)
 <details>
 <summary><strong> Requirements & Setup </strong></summary>
 
-- Dolphin Emulator https://dolphin-emu.org/
-- US(!) copy of Mario Super Sluggers
-- Python 3.12 or newer https://www.python.org/downloads/ (source checkout only)
-- Numpy ``pip install numpy`` (source checkout only)
-- Pillow ``pip install Pillow`` (source checkout only)
-- DearPyGui ``pip install dearpygui`` (source checkout only; used by the GUI)
-- **wimgt** (source checkout only) — part of [Wiimms SZS Tools](https://szs.wiimm.de/download.html); used to convert textures between TPL and PNG. It is already bundled in the portable Windows release. No textures without this.
-- Blender 4.2 or newer https://www.blender.org/download/
+- Python 3.12 or newer https://www.python.org/downloads/  
+- Numpy ``pip install numpy``  
+- Pillow ``pip install Pillow``  
+- DearPyGui ``pip install dearpygui``  
+- **wimgt** — part of [Wiimms SZS Tools](https://szs.wiimm.de/download.html); used to convert textures between TPL and PNG. It is already bundled in the portable Windows release. No textures without this.
+- ffmpeg (optional, to import files other than .wav)
+- Philenarion's stat editor (optional, edit all stats of a player)
 - Autism
 
 ### Source checkout: setting up wimgt on Windows
@@ -55,10 +58,10 @@ If you do not need textures, `--notex` skips PNG conversion and does not require
 ## Workflow - Overall Concept
 ```mermaid
 flowchart LR
-    A[Extract game files] --> B[Export model data as .sluggie files]
+    A[Extract game files] --> B[Export all assets]
     B --> C[Import to Blender]
     C --> D[Make changes]
-    D --> E[Export model back to .sluggie file]
+    D --> E[Export model back to same .sluggie file]
     E --> F[Write changes to game's .dat]
 ```
 All commands are to be used on the command line - enter "cmd" in file explorer's address bar to open a new terminal in the current folder.  
@@ -69,39 +72,17 @@ All commands are to be used on the command line - enter "cmd" in file explorer's
 2) Try running the game to make sure everything is prepped correctly
 3) right click the Game -> properties -> Filesystem -> right click top node -> extract entire disc
 4) from the extracted disc data, copy both "dt_na.dat" and "main.dol" (and optionally fst.bin) to the folder \1_Input\
-5) start sluggies-dat-tools.exe for a GUI, use starttools.bat for a console menu, or call start.py directly on the CLI 
-6) Use the Full Export or the focused export tabs to extract assets into the 2_Output_Assets folder
-
-### .glb model files (optional)
-
-The export can also write a `<model>.glb` (glTF 2.0) next to each model's `tex/` folder: GUI checkbox "Also write .glb files", or `python start.py --export --glb`. These are for viewing in Blender or other glTF tools only; the `.sluggie` files remain the editing format, and a `.glb` can't be patched back. (The old `.dae` export is gone; `--dae` is refused.)
-
-- Every bone is a node named `bone_<id>`. Every model with bones gets a skin, so Blender imports stadiums and props as armatures too.
-- The first submesh is skinned when the model has a skin section. Every other submesh is a child of the bone that carries it.
-- Textures are referenced, not embedded (`tex/*.png`), so keep the `.glb` next to its `tex/` folder. A Low model (`_L_` folder) has no textures of its own and points into its High model's folder (`../<High folder>/tex/...`).
-- Vertex colours are stored as the custom attribute `_COLOR0`, which renderers ignore. Blender 4.5 imports it as a colour attribute that no material uses.
-
-Checked in Blender 4.5 on Mario, `L_mario`, Yoshi Park and a bat: the rest pose matches, a posed bone deforms the body, and rigid parts follow their bones.
-
-### .sluggie binary fields
-
-Binary data inside a `.sluggie` (vertex buffers, texture payloads and the like) is stored as a text string in one of two forms: plain base64, or `z:` followed by base64 of zlib-compressed bytes (level 6). The writer picks whichever is shorter, so tiny fields stay plain. Readers accept both forms in any mix; there is no file-level flag. This keeps files at about 60 % of their uncompressed size (Baby Mario: 696 KB to 434 KB). A `--debug` export writes plain byte lists instead.
-
-Blender add-ons from before 2026-10-04, and the third-party "Sluggers Characters Beta" tool, can't read the `z:` form. Update the add-on before importing new exports.
+5) start **sluggies-dat-tools.exe** for a GUI, use **starttools.bat** for a console menu, or call start.py directly on the CLI 
+6) Use the Full Export or the focused export tab to extract assets into the 2_Output_Assets folder
 
 ## Blender editing
 
 1) install the included SluggiesIO_BlenderAddon_Vxxx.zip file
 2) File -> import -> Sluggers intermediate -> select one .sluggie file from the output folder
-3) Edit model, according to the [Blender Guide](_docs/BlenderGuide.md)
+3) Edit model, according to the **[Blender Guide](_docs/BlenderGuide.md)**
 4) File -> export -> Sluggers intermediate -> select the **same** file you imported earlier to export your changes to
 
 Nothing is lost, the updated file will hold both original and edited mesh data for you.
-
-## Patching the game
-
-The gui now offers a grid view that lets you edit any slot of the roster individually and even expand the stock character table with new slots.
-TODO: add CLI documentation
 
 ## Icon Editing
 See [Icon Guide](_docs/IconGuide.md)

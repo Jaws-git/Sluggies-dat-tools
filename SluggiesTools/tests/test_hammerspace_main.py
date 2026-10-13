@@ -269,7 +269,7 @@ class BuildModelBlockTests(unittest.TestCase):
 
     def _position_model(self, edited):
         return {
-            'UseBase64': False,
+            'UseCompression': False,
             'Submeshes': [{
                 'FacesCount': 1,
                 'FacesCountEdited': 1,
@@ -316,7 +316,7 @@ class BuildModelBlockTests(unittest.TestCase):
 
     def test_uv_edit_patches_only_recorded_gpl_array_range(self):
         model = {
-            'UseBase64': False,
+            'UseCompression': False,
             'Submeshes': [{
                 'UVArraysEditedByImporter': True,
                 'UVChannels': [{
@@ -343,7 +343,7 @@ class BuildModelBlockTests(unittest.TestCase):
     def test_resized_uv_edit_appends_payloads_and_preserves_donor_bytes(self):
         original_gpl = bytes(range(128))
         model = {
-            'UseBase64': False,
+            'UseCompression': False,
             'Submeshes': [{
                 'SubmeshOffset': '0x30',
                 'UVArraysEditedByImporter': True,
@@ -674,7 +674,7 @@ class BuildModelBlockTests(unittest.TestCase):
 
     def test_gpl_build_tolerates_missing_primlistdata(self):
         parsed = main.ParseSluggie({'SluggiesModel': {
-            'UseBase64': False,
+            'UseCompression': False,
             'Submeshes': [{
                 'FacesCount': 0,
                 'FacesData': [0],
@@ -711,7 +711,7 @@ class BuildModelBlockTests(unittest.TestCase):
 
     def test_gpl_builder_pads_primitive_payload_and_size_to_32_bytes(self):
         parsed = main.ParseSluggie({'SluggiesModel': {
-            'UseBase64': False,
+            'UseCompression': False,
             'Submeshes': [{
                 'FacesCount': 0,
                 'FacesData': [],
@@ -756,7 +756,7 @@ class BuildModelBlockTests(unittest.TestCase):
 
     def test_parser_consumes_rebuilt_surface_primitive_list(self):
         parsed = main.ParseSluggie({'SluggiesModel': {
-            'UseBase64': False,
+            'UseCompression': False,
             'Submeshes': [{
                 'FacesCount': 0,
                 'FacesData': [],
@@ -786,7 +786,7 @@ class BuildModelBlockTests(unittest.TestCase):
 
     def test_surface_only_rebuild_preserves_donor_geometry_arrays(self):
         parsed = main.ParseSluggie({'SluggiesModel': {
-            'UseBase64': False,
+            'UseCompression': False,
             'Submeshes': [{
                 'FacesCount': 0,
                 'FacesData': [],
@@ -829,7 +829,7 @@ class BuildModelBlockTests(unittest.TestCase):
 
     def test_topology_rebuild_uses_rebuilt_flush_index_data(self):
         parsed = main.ParseSluggie({'SluggiesModel': {
-            'UseBase64': False,
+            'UseCompression': False,
             'SkinData': {
                 'QuantizeInfo': 0,
                 'SK1s': [],
@@ -878,7 +878,7 @@ class BuildModelBlockTests(unittest.TestCase):
 
     def test_unedited_skinning_still_uses_donor_flush_index_data(self):
         parsed = main.ParseSluggie({'SluggiesModel': {
-            'UseBase64': False,
+            'UseCompression': False,
             'SkinData': {
                 'QuantizeInfo': 0,
                 'SK1s': [],
@@ -2534,12 +2534,12 @@ class ParseSluggieCustomSubmeshesTests(unittest.TestCase):
     custom-submesh object without touching donor structures."""
 
     def test_no_custom_submeshes_yields_empty_list(self):
-        parsed = main.ParseSluggie({'SluggiesModel': {'UseBase64': False}})
+        parsed = main.ParseSluggie({'SluggiesModel': {'UseCompression': False}})
         self.assertEqual(parsed.custom_submeshes, [])
 
     def test_full_entry_parses_without_touching_donor_structures(self):
         data = {'SluggiesModel': {
-            'UseBase64': False,
+            'UseCompression': False,
             'Submeshes': [{
                 'FacesCount': 0,
                 'FacesData': [],
@@ -2603,7 +2603,7 @@ class ParseSluggieCustomSubmeshesTests(unittest.TestCase):
 
     def test_position_quantize_info_is_carried_through_to_the_blob_header(self):
         data = {'SluggiesModel': {
-            'UseBase64': False,
+            'UseCompression': False,
             'CustomSubmeshes': [{
                 'CustomSubmeshId': 'custom0',
                 'MeshName': 'CustomSubmesh_0',
@@ -2625,7 +2625,7 @@ class ParseSluggieCustomSubmeshesTests(unittest.TestCase):
 
     def test_texture_assignment_by_additional_texture_file_name(self):
         data = {'SluggiesModel': {
-            'UseBase64': False,
+            'UseCompression': False,
             'CustomSubmeshes': [{
                 'CustomSubmeshId': 'custom0',
                 'MeshName': 'CustomSubmesh_0',
@@ -2672,7 +2672,7 @@ def _validation_base_model():
     host candidates; bone 2 already owns submesh 1.
     """
     return {
-        'UseBase64': True,
+        'UseCompression': True,
         'UseHammerspace': True,
         'BoneHierarchy': [
             _validation_bone(0, parent=None),
@@ -3152,9 +3152,9 @@ class BuildCustomSubmeshAdditionalTextureIndexTests(unittest.TestCase):
             data = env.reload()
         model = data['SluggiesModel']
         model['UseHammerspace'] = True
-        use_b64 = model.get('UseBase64', True)
+        use_compression = model.get('UseCompression', True)
         host_bone_id = _free_host_bones(model, 1)[0]
-        cs_dict = _cube_custom_submesh('custom0', host_bone_id, 'builtin:rigid_spec_v1', use_b64)
+        cs_dict = _cube_custom_submesh('custom0', host_bone_id, 'builtin:rigid_spec_v1', use_compression)
         cs_dict['TextureAssignment'] = {'AdditionalTextureFileName': 'new.png'}
         model['CustomSubmeshes'] = [cs_dict]
         parsed = main.ParseSluggie(data)
@@ -3180,9 +3180,9 @@ class CustomSubmeshSpecularStrengthTests(unittest.TestCase):
             data = env.reload()
         model = data['SluggiesModel']
         model['UseHammerspace'] = True
-        use_b64 = model.get('UseBase64', True)
+        use_compression = model.get('UseCompression', True)
         host_bone_id = _free_host_bones(model, 1)[0]
-        cs_dict = _cube_custom_submesh('custom0', host_bone_id, 'builtin:rigid_spec_v1', use_b64)
+        cs_dict = _cube_custom_submesh('custom0', host_bone_id, 'builtin:rigid_spec_v1', use_compression)
         if strength is not None:
             cs_dict['SpecularStrength'] = strength
         model['CustomSubmeshes'] = [cs_dict]
@@ -3213,7 +3213,7 @@ class CustomSubmeshSpecularStrengthTests(unittest.TestCase):
         model['UseHammerspace'] = True
         host_bone_id = _free_host_bones(model, 1)[0]
         cs_dict = _cube_custom_submesh(
-            'custom0', host_bone_id, 'builtin:rigid_spec_v1', model.get('UseBase64', True),
+            'custom0', host_bone_id, 'builtin:rigid_spec_v1', model.get('UseCompression', True),
         )
         if color_format is not None:
             cs_dict['ColorChannelQuantizeInfo'] = color_format
@@ -3687,7 +3687,7 @@ class PatchGPLAppendSubmeshTests(unittest.TestCase):
         self.assertEqual(result, gpl_bytes)
 
 
-def _cube_custom_submesh(cs_id: str, host_bone_id: int, template_source: str, use_b64: bool) -> dict:
+def _cube_custom_submesh(cs_id: str, host_bone_id: int, template_source: str, use_compression: bool) -> dict:
     """A structurally valid 12-triangle cube CustomSubmeshes entry with a
     normal, one color entry and two UV channels, so it fits any of the three
     template sources' attribute requirements."""
@@ -3695,7 +3695,7 @@ def _cube_custom_submesh(cs_id: str, host_bone_id: int, template_source: str, us
         return struct.pack(f'>{len(values)}h', *values)
 
     def encode(data: bytes):
-        return base64.b64encode(data).decode('ascii') if use_b64 else list(data)
+        return base64.b64encode(data).decode('ascii') if use_compression else list(data)
 
     extent = 200
     corners = []
@@ -3785,10 +3785,10 @@ class PatchGPLAppendSubmeshSyntheticDonorTests(unittest.TestCase):
 
     def _build(self, template_source: str, host_index: int = 0):
         data, model = self._load()
-        use_b64 = model.get('UseBase64', True)
+        use_compression = model.get('UseCompression', True)
         host_bone_id = _free_host_bones(model, host_index + 1)[host_index]
         model['CustomSubmeshes'] = [
-            _cube_custom_submesh('custom0', host_bone_id, template_source, use_b64)
+            _cube_custom_submesh('custom0', host_bone_id, template_source, use_compression)
         ]
         modes = main.SectionModes(gpl='build', act='clone', tex='clone', skn='clone', trailing='clone')
         return main.BuildModelBlock(data, modes, sluggie_path=self.env.sluggie_path), model

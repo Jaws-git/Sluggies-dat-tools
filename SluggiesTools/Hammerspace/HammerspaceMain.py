@@ -27,6 +27,7 @@ from binfmt import (
     color_entry_size as _color_entry_size,
     comp_size as _vb_comp_size,
     decode_field as _decode,
+    load_sluggie,
     skin_bone_ids as _skin_bone_ids,
 )
 from BlockValidator import validate_model_block
@@ -62,7 +63,7 @@ def donor_entry(model: dict) -> tuple[int, bytes] | None:
     if entry is None:
         return None
     try:
-        offset, data = _hex(entry['Offset']), _decode(entry['Data'], model.get('UseBase64', True))
+        offset, data = _hex(entry['Offset']), _decode(entry['Data'], model.get('UseCompression', True))
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(f'{DONOR_ENTRY_KEY} is unreadable: {exc}') from exc
     if not data:
@@ -457,7 +458,7 @@ def _hex(val: str | int) -> int:
 
 def _position_edits(model: dict) -> list[tuple[int, dict, bytes]]:
     """Return validated unchanged-count position edits as (index, submesh, bytes)."""
-    use_b64 = model.get('UseBase64', True)
+    use_compression = model.get('UseCompression', True)
     edits = []
     for submesh_index, submesh in enumerate(model.get('Submeshes', [])):
         if submesh.get('RigidRebuild'):
@@ -468,8 +469,8 @@ def _position_edits(model: dict) -> list[tuple[int, dict, bytes]]:
         encoded_edit = vertex_buffer.get('VertexBufferDataEdited')
         if encoded_edit is None:
             continue
-        original = _decode(vertex_buffer['VertexBufferData'], use_b64)
-        edited = _decode(encoded_edit, use_b64)
+        original = _decode(vertex_buffer['VertexBufferData'], use_compression)
+        edited = _decode(encoded_edit, use_compression)
         if edited == original:
             continue
 
@@ -506,8 +507,8 @@ def _position_edits(model: dict) -> list[tuple[int, dict, bytes]]:
                 f'sub{submesh_index}: position-only edit changed face count from '
                 f'{original_face_count} to {edited_face_count}')
         encoded_faces = submesh.get('FacesDataEdited')
-        if encoded_faces is not None and _decode(encoded_faces, use_b64) != _decode(
-            submesh['FacesData'], use_b64
+        if encoded_faces is not None and _decode(encoded_faces, use_compression) != _decode(
+            submesh['FacesData'], use_compression
         ):
             raise ValueError(
                 f'sub{submesh_index}: position-only edit changed face indices/order')
@@ -829,7 +830,7 @@ def _custom_submesh_effective_state(states: list, upto_index: int, display_state
 
 
 def _validate_custom_submesh_indexed_array(
-    fail, label: str, use_b64: bool, data_field, faces_field, stride: int,
+    fail, label: str, use_compression: bool, data_field, faces_field, stride: int,
 ) -> None:
     """Structurally validate one (data, face-index) buffer pair.
 
@@ -844,7 +845,7 @@ def _validate_custom_submesh_indexed_array(
     """
     if data_field is None:
         return
-    data_bytes = _decode(data_field, use_b64)
+    data_bytes = _decode(data_field, use_compression)
     if not data_bytes or len(data_bytes) % stride:
         fail(f'{label} length {len(data_bytes)} is not a whole number of {stride}-byte entries')
         return
@@ -853,7 +854,7 @@ def _validate_custom_submesh_indexed_array(
         fail(f'{label} entry count {entry_count} exceeds the uint16 index range')
     if faces_field is None:
         return
-    faces_bytes = _decode(faces_field, use_b64)
+    faces_bytes = _decode(faces_field, use_compression)
     if not faces_bytes or len(faces_bytes) % 6:
         fail(f'{label} face-index buffer length {len(faces_bytes)} is not a whole number of uint16 triplets')
         return
@@ -1030,7 +1031,7 @@ def _validate_new_surface_entry(
 
 
 def _validate_custom_submesh_additional_surfaces(
-    model: dict, cs: dict, cs_id, fail, faces_count: int | None, use_b64: bool, *,
+    model: dict, cs: dict, cs_id, fail, faces_count: int | None, use_compression: bool, *,
     is_stadium: bool, rigid_surfaces: dict,
 ) -> None:
     """PLAN_EditRigidMeshes.md Phase 9: ``AdditionalSurfaces`` keys are
@@ -1074,7 +1075,7 @@ def _validate_custom_submesh_additional_surfaces(
         if surfaces:
             fail('AdditionalSurfaces need FaceSurfaceIndices to say which faces use them')
         return
-    indices_raw = _decode(indices_field, use_b64)
+    indices_raw = _decode(indices_field, use_compression)
     if len(indices_raw) % 2:
         fail(f'FaceSurfaceIndices length {len(indices_raw)} is not a whole number of uint16 values')
         return
@@ -1109,7 +1110,7 @@ def _validate_custom_submeshes(model: dict) -> None:
             'CustomSubmeshes require UseHammerspace; re-export the model from Blender'
         )
 
-    use_b64 = model.get('UseBase64', True)
+    use_compression = model.get('UseCompression', True)
     # A custom submesh may host on a user-added bone, which has no
     # BoneHierarchy entry at all (it doesn't exist in the donor ACT), so the
     # bone set is the donor list overlaid with BoneHierarchyEdited; a bone's
@@ -1194,7 +1195,7 @@ def _validate_custom_submeshes(model: dict) -> None:
             position_quantize = _CUSTOM_SUBMESH_POSITION_FORMAT[1]
         position_stride = _custom_submesh_position_stride(position_quantize)
 
-        vertex_bytes = _decode(cs['VertexBufferData'], use_b64) if cs.get('VertexBufferData') else b''
+        vertex_bytes = _decode(cs['VertexBufferData'], use_compression) if cs.get('VertexBufferData') else b''
         vertex_count = None
         if not vertex_bytes or len(vertex_bytes) % position_stride:
             fail(f'VertexBufferData length {len(vertex_bytes)} is not a whole number of rigid position entries')
@@ -1204,7 +1205,7 @@ def _validate_custom_submeshes(model: dict) -> None:
                 fail(f'vertex count {vertex_count} exceeds the uint16 index range')
 
         if faces_count is not None:
-            faces_bytes = _decode(cs['FacesData'], use_b64) if cs.get('FacesData') is not None else b''
+            faces_bytes = _decode(cs['FacesData'], use_compression) if cs.get('FacesData') is not None else b''
             if len(faces_bytes) != faces_count * 6:
                 fail(
                     f'FacesData length {len(faces_bytes)} does not match FacesCount '
@@ -1218,19 +1219,19 @@ def _validate_custom_submeshes(model: dict) -> None:
 
         if cs.get('NormalBufferData') is not None:
             _validate_custom_submesh_indexed_array(
-                fail, 'NormalBufferData', use_b64,
+                fail, 'NormalBufferData', use_compression,
                 cs.get('NormalBufferData'), cs.get('NormalFacesData'),
                 _CUSTOM_SUBMESH_NORMAL_STRIDE,
             )
         if cs.get('ColorChannelData') is not None:
             _validate_custom_submesh_indexed_array(
-                fail, 'ColorChannelData', use_b64,
+                fail, 'ColorChannelData', use_compression,
                 cs.get('ColorChannelData'), cs.get('ColorFacesData'),
                 _CUSTOM_SUBMESH_COLOR_STRIDE,
             )
         for uv in cs.get('UVChannels') or []:
             _validate_custom_submesh_indexed_array(
-                fail, f"UVChannels[{uv.get('UVChannelIndex')}]", use_b64,
+                fail, f"UVChannels[{uv.get('UVChannelIndex')}]", use_compression,
                 uv.get('UVChannelData'), uv.get('UVFacesData'),
                 _CUSTOM_SUBMESH_UV_STRIDE,
             )
@@ -1262,7 +1263,7 @@ def _validate_custom_submeshes(model: dict) -> None:
             fail(f'SpecularStrength {strength!r} must be an integer 0..255')
 
         _validate_custom_submesh_additional_surfaces(
-            model, cs, cs_id, fail, faces_count, use_b64,
+            model, cs, cs_id, fail, faces_count, use_compression,
             is_stadium=is_stadium, rigid_surfaces=rigid_surfaces,
         )
 
@@ -2700,7 +2701,7 @@ def _validate_rigid_rebuilds(model: dict) -> None:
         raise ValueError('RigidRebuild requires UseHammerspace; re-export the model from Blender')
 
     errors: list[str] = []
-    use_b64 = model.get('UseBase64', True)
+    use_compression = model.get('UseCompression', True)
     bones = _bones_by_id(model)
     rigid_surfaces = _custom_submesh_rigid_surfaces(model)
     is_stadium = model.get('ChunkNumber') in STADIUM_CHUNKS
@@ -2759,7 +2760,7 @@ def _validate_rigid_rebuilds(model: dict) -> None:
             fail(f'FacesCount {faces_count!r} must be a uint16 value of at least 1')
             faces_count = None
 
-        vertex_bytes = _decode(rebuild['VertexBufferData'], use_b64) if rebuild.get('VertexBufferData') else b''
+        vertex_bytes = _decode(rebuild['VertexBufferData'], use_compression) if rebuild.get('VertexBufferData') else b''
         vertex_count = None
         if not vertex_bytes or len(vertex_bytes) % position_stride:
             fail(f'VertexBufferData length {len(vertex_bytes)} is not a whole number of {position_stride}-byte positions')
@@ -2769,7 +2770,7 @@ def _validate_rigid_rebuilds(model: dict) -> None:
                 fail(f'vertex count {vertex_count} exceeds the uint16 index range')
 
         if faces_count is not None:
-            faces_bytes = _decode(rebuild['FacesData'], use_b64) if rebuild.get('FacesData') is not None else b''
+            faces_bytes = _decode(rebuild['FacesData'], use_compression) if rebuild.get('FacesData') is not None else b''
             if len(faces_bytes) != faces_count * 6:
                 fail(
                     f'FacesData length {len(faces_bytes)} does not match FacesCount '
@@ -2782,9 +2783,9 @@ def _validate_rigid_rebuilds(model: dict) -> None:
                         break
 
         def _check_loop_buffer(label: str, data_field, faces_field, stride: int) -> None:
-            _validate_custom_submesh_indexed_array(fail, label, use_b64, data_field, faces_field, stride)
+            _validate_custom_submesh_indexed_array(fail, label, use_compression, data_field, faces_field, stride)
             if faces_count is not None and faces_field is not None:
-                loops = _u16_count(_decode(faces_field, use_b64))
+                loops = _u16_count(_decode(faces_field, use_compression))
                 if loops != faces_count * 3:
                     fail(f'{label} face-index buffer holds {loops} loops, expected {faces_count * 3}')
 
@@ -2798,7 +2799,7 @@ def _validate_rigid_rebuilds(model: dict) -> None:
                     int(donor_normals.get('NormalBufferQuantizeInfo', _CUSTOM_SUBMESH_NORMAL_FORMAT[1]))
                 )
                 _check_loop_buffer('NormalBufferData', rebuild.get('NormalBufferData'), rebuild.get('NormalFacesData'), normal_stride)
-                normal_count = len(_decode(rebuild['NormalBufferData'], use_b64) or b'') // normal_stride
+                normal_count = len(_decode(rebuild['NormalBufferData'], use_compression) or b'') // normal_stride
         elif rebuild.get('NormalBufferData') is not None or rebuild.get('NormalFacesData') is not None:
             fail('carries normals but the donor submesh has no NormalBuffer')
 
@@ -2806,7 +2807,7 @@ def _validate_rigid_rebuilds(model: dict) -> None:
             # Facial poses (ptr7) on this submesh follow the rebuild through
             # FacialPoses; without them the patcher neutralizes the objects.
             _validate_rebuild_facial_poses(
-                model, rebuild, fail, use_b64, index, object_error=_facial.rigid_object_error,
+                model, rebuild, fail, use_compression, index, object_error=_facial.rigid_object_error,
                 vertex_count=vertex_count, position_stride=position_stride,
                 normal_count=normal_count, normal_stride=normal_stride,
             )
@@ -2868,7 +2869,7 @@ def _validate_rigid_rebuilds(model: dict) -> None:
                 f'({sorted(drawable)}) nor a NewSurfaces key'
             )
 
-        indices_raw = _decode(rebuild['FaceSurfaceIndices'], use_b64) if rebuild.get('FaceSurfaceIndices') is not None else b''
+        indices_raw = _decode(rebuild['FaceSurfaceIndices'], use_compression) if rebuild.get('FaceSurfaceIndices') is not None else b''
         used_keys: set[str] = set()
         if len(indices_raw) % 2:
             fail(f'FaceSurfaceIndices length {len(indices_raw)} is not a whole number of uint16 values')
@@ -2937,7 +2938,7 @@ def _parse_new_surfaces(entries) -> list['RigidRebuildNewSurface']:
     return new_surfaces
 
 
-def _parse_rigid_rebuild(sub: dict, use_b64: bool) -> 'RigidRebuild | None':
+def _parse_rigid_rebuild(sub: dict, use_compression: bool) -> 'RigidRebuild | None':
     """Decode ``Submeshes[i].RigidRebuild`` (validated by
     ``_validate_rigid_rebuilds``) into its dataclass; None when absent."""
     raw = sub.get('RigidRebuild')
@@ -2945,13 +2946,13 @@ def _parse_rigid_rebuild(sub: dict, use_b64: bool) -> 'RigidRebuild | None':
         return None
 
     def _optional(field: str) -> bytes | None:
-        return _decode(raw[field], use_b64) if raw.get(field) is not None else None
+        return _decode(raw[field], use_compression) if raw.get(field) is not None else None
 
     new_surfaces = _parse_new_surfaces(raw.get('NewSurfaces'))
     indices_raw = _optional('FaceSurfaceIndices') or b''
     return RigidRebuild(
         host_bone_id=int(raw['HostBoneId']),
-        vertex_data=_decode(raw['VertexBufferData'], use_b64),
+        vertex_data=_decode(raw['VertexBufferData'], use_compression),
         normal_data=_optional('NormalBufferData'),
         normal_faces_data=_optional('NormalFacesData'),
         color_data=_optional('ColorChannelData'),
@@ -2959,13 +2960,13 @@ def _parse_rigid_rebuild(sub: dict, use_b64: bool) -> 'RigidRebuild | None':
         uv_channels=[
             CustomSubmeshUVChannel(
                 channel_index=int(uv['UVChannelIndex']),
-                uv_data=_decode(uv['UVChannelData'], use_b64),
-                uv_faces_data=_decode(uv['UVFacesData'], use_b64),
+                uv_data=_decode(uv['UVChannelData'], use_compression),
+                uv_faces_data=_decode(uv['UVFacesData'], use_compression),
             )
             for uv in raw.get('UVChannels') or []
         ],
         faces_count=int(raw['FacesCount']),
-        faces_data=_decode(raw['FacesData'], use_b64),
+        faces_data=_decode(raw['FacesData'], use_compression),
         face_surface_table=list(raw['FaceSurfaceTable']),
         face_surface_indices=struct.unpack(f'>{len(indices_raw) // 2}H', indices_raw),
         new_surfaces=new_surfaces,
@@ -2973,13 +2974,13 @@ def _parse_rigid_rebuild(sub: dict, use_b64: bool) -> 'RigidRebuild | None':
         facial_poses=None if raw.get('FacialPoses') is None else [
             _facial.RigidPoses(
                 object_index=int(entry['ObjectIndex']),
-                vertices=list(_u16_values(_decode(entry['Vertices'], use_b64) or b'')),
-                deltas=[_decode(delta, use_b64) for delta in entry.get('PoseDeltas') or []],
+                vertices=list(_u16_values(_decode(entry['Vertices'], use_compression) or b'')),
+                deltas=[_decode(delta, use_compression) for delta in entry.get('PoseDeltas') or []],
                 normal_entries=(
                     None if entry.get('NormalEntries') is None
-                    else list(_u16_values(_decode(entry['NormalEntries'], use_b64) or b''))
+                    else list(_u16_values(_decode(entry['NormalEntries'], use_compression) or b''))
                 ),
-                normal_deltas=[_decode(delta, use_b64) for delta in entry.get('NormalPoseDeltas') or []],
+                normal_deltas=[_decode(delta, use_compression) for delta in entry.get('NormalPoseDeltas') or []],
             )
             for entry in raw['FacialPoses']
         ],
@@ -3524,7 +3525,7 @@ def _validate_skinned_rebuild(model: dict) -> None:
         raise ValueError('SkinnedRebuild requires UseHammerspace; re-export the model from Blender')
 
     errors: list[str] = []
-    use_b64 = model.get('UseBase64', True)
+    use_compression = model.get('UseCompression', True)
     skin = model.get('SkinData') or {}
     skinned_bones = _allowed_skin_bones(model) if skin else set()
     rigid_surfaces = _custom_submesh_rigid_surfaces(model)
@@ -3579,7 +3580,7 @@ def _validate_skinned_rebuild(model: dict) -> None:
             fail(f'FacesCount {faces_count!r} must be a uint16 value of at least 1')
             faces_count = None
 
-        vertex_bytes = _decode(rebuild['VertexBufferData'], use_b64) if rebuild.get('VertexBufferData') else b''
+        vertex_bytes = _decode(rebuild['VertexBufferData'], use_compression) if rebuild.get('VertexBufferData') else b''
         vertex_count = None
         if not vertex_bytes or len(vertex_bytes) % stride:
             fail(
@@ -3592,7 +3593,7 @@ def _validate_skinned_rebuild(model: dict) -> None:
                 fail(f'vertex count {vertex_count} exceeds the uint16 index range')
 
         if faces_count is not None:
-            faces_bytes = _decode(rebuild['FacesData'], use_b64) if rebuild.get('FacesData') is not None else b''
+            faces_bytes = _decode(rebuild['FacesData'], use_compression) if rebuild.get('FacesData') is not None else b''
             if len(faces_bytes) != faces_count * 6:
                 fail(
                     f'FacesData length {len(faces_bytes)} does not match FacesCount '
@@ -3604,7 +3605,7 @@ def _validate_skinned_rebuild(model: dict) -> None:
                         fail(f'face index {vertex_index} is out of range for {vertex_count} vertices')
                         break
 
-        raw_influences = _decode(rebuild['Influences'], use_b64) if rebuild.get('Influences') is not None else b''
+        raw_influences = _decode(rebuild['Influences'], use_compression) if rebuild.get('Influences') is not None else b''
         if len(raw_influences) % _SKINNED_REBUILD_INFLUENCE.size:
             fail(
                 f'Influences length {len(raw_influences)} is not a whole number of '
@@ -3640,9 +3641,9 @@ def _validate_skinned_rebuild(model: dict) -> None:
                 fail(f'{len(missing)} vertex(es) have no skin influence: {shown}{more}')
 
         def _check_loop_buffer(label: str, data_field, faces_field, entry_stride: int) -> None:
-            _validate_custom_submesh_indexed_array(fail, label, use_b64, data_field, faces_field, entry_stride)
+            _validate_custom_submesh_indexed_array(fail, label, use_compression, data_field, faces_field, entry_stride)
             if faces_count is not None and faces_field is not None:
-                loops = len(_decode(faces_field, use_b64)) // 2
+                loops = len(_decode(faces_field, use_compression)) // 2
                 if loops != faces_count * 3:
                     fail(f'{label} face-index buffer holds {loops} loops, expected {faces_count * 3}')
 
@@ -3706,7 +3707,7 @@ def _validate_skinned_rebuild(model: dict) -> None:
                 f'({sorted(drawable)}) nor a NewSurfaces key'
             )
 
-        indices_raw = _decode(rebuild['FaceSurfaceIndices'], use_b64) if rebuild.get('FaceSurfaceIndices') is not None else b''
+        indices_raw = _decode(rebuild['FaceSurfaceIndices'], use_compression) if rebuild.get('FaceSurfaceIndices') is not None else b''
         used_keys: set[str] = set()
         if len(indices_raw) % 2:
             fail(f'FaceSurfaceIndices length {len(indices_raw)} is not a whole number of uint16 values')
@@ -3748,7 +3749,7 @@ def _validate_skinned_rebuild(model: dict) -> None:
         ):
             fail('Reason must be a list of strings')
 
-        _validate_skinned_rebuild_facial_poses(model, rebuild, fail, use_b64, vertex_count, stride, index)
+        _validate_skinned_rebuild_facial_poses(model, rebuild, fail, use_compression, vertex_count, stride, index)
 
     if errors:
         raise ValueError('; '.join(errors))
@@ -3785,7 +3786,7 @@ def _validate_facial_entry_list(
 
 
 def _validate_rebuild_facial_poses(
-    model: dict, rebuild: dict, fail, use_b64: bool, index: int, *, object_error, vertex_count: int | None,
+    model: dict, rebuild: dict, fail, use_compression: bool, index: int, *, object_error, vertex_count: int | None,
     position_stride: int, normal_count: int | None = None, normal_stride: int | None = None,
 ) -> None:
     """``FacialPoses`` of a SkinnedRebuild (Milestone 4.7) or a RigidRebuild:
@@ -3824,7 +3825,7 @@ def _validate_rebuild_facial_poses(
             continue
         seen.add(object_index)
         label = f'FacialPoses object {object_index}'
-        obj = _facial.decode_objects({'Objects': [by_index[object_index]]}, lambda v: _decode(v, use_b64))[0]
+        obj = _facial.decode_objects({'Objects': [by_index[object_index]]}, lambda v: _decode(v, use_compression))[0]
         layout_error = object_error(obj, index)
         if layout_error:
             fail(f'{label}: {layout_error}')
@@ -3851,17 +3852,17 @@ def _validate_rebuild_facial_poses(
 
 
 def _validate_skinned_rebuild_facial_poses(
-    model: dict, rebuild: dict, fail, use_b64: bool, vertex_count: int | None, stride: int, index: int,
+    model: dict, rebuild: dict, fail, use_compression: bool, vertex_count: int | None, stride: int, index: int,
 ) -> None:
     """``FacialPoses`` (Milestone 4.7) of the skinned body: interleaved
     ``x y z nx ny nz`` records, no normal lists."""
     _validate_rebuild_facial_poses(
-        model, rebuild, fail, use_b64, index, object_error=_facial.body_object_error,
+        model, rebuild, fail, use_compression, index, object_error=_facial.body_object_error,
         vertex_count=vertex_count, position_stride=stride,
     )
 
 
-def _parse_skinned_rebuild(sub: dict, use_b64: bool) -> 'SkinnedRebuild | None':
+def _parse_skinned_rebuild(sub: dict, use_compression: bool) -> 'SkinnedRebuild | None':
     """Decode ``Submeshes[0].SkinnedRebuild`` (validated by
     ``_validate_skinned_rebuild``) into its dataclass; None when absent."""
     raw = sub.get('SkinnedRebuild')
@@ -3869,12 +3870,12 @@ def _parse_skinned_rebuild(sub: dict, use_b64: bool) -> 'SkinnedRebuild | None':
         return None
 
     def _optional(field_name: str) -> bytes | None:
-        return _decode(raw[field_name], use_b64) if raw.get(field_name) is not None else None
+        return _decode(raw[field_name], use_compression) if raw.get(field_name) is not None else None
 
     indices_raw = _optional('FaceSurfaceIndices') or b''
     influences_raw = _optional('Influences') or b''
     return SkinnedRebuild(
-        vertex_data=_decode(raw['VertexBufferData'], use_b64),
+        vertex_data=_decode(raw['VertexBufferData'], use_compression),
         influences=[
             (int(vertex), int(bone), float(weight))
             for vertex, bone, weight in _SKINNED_REBUILD_INFLUENCE.iter_unpack(influences_raw)
@@ -3884,13 +3885,13 @@ def _parse_skinned_rebuild(sub: dict, use_b64: bool) -> 'SkinnedRebuild | None':
         uv_channels=[
             CustomSubmeshUVChannel(
                 channel_index=int(uv['UVChannelIndex']),
-                uv_data=_decode(uv['UVChannelData'], use_b64),
-                uv_faces_data=_decode(uv['UVFacesData'], use_b64),
+                uv_data=_decode(uv['UVChannelData'], use_compression),
+                uv_faces_data=_decode(uv['UVFacesData'], use_compression),
             )
             for uv in raw.get('UVChannels') or []
         ],
         faces_count=int(raw['FacesCount']),
-        faces_data=_decode(raw['FacesData'], use_b64),
+        faces_data=_decode(raw['FacesData'], use_compression),
         face_surface_table=list(raw['FaceSurfaceTable']),
         face_surface_indices=struct.unpack(f'>{len(indices_raw) // 2}H', indices_raw),
         new_surfaces=_parse_new_surfaces(raw.get('NewSurfaces')),
@@ -3898,8 +3899,8 @@ def _parse_skinned_rebuild(sub: dict, use_b64: bool) -> 'SkinnedRebuild | None':
         facial_poses=[
             _facial.BodyPoses(
                 object_index=int(entry['ObjectIndex']),
-                vertices=[value for (value,) in struct.iter_unpack('>H', _decode(entry['Vertices'], use_b64))],
-                deltas=[_decode(delta, use_b64) for delta in entry.get('PoseDeltas') or []],
+                vertices=[value for (value,) in struct.iter_unpack('>H', _decode(entry['Vertices'], use_compression))],
+                deltas=[_decode(delta, use_compression) for delta in entry.get('PoseDeltas') or []],
             )
             for entry in raw.get('FacialPoses') or []
         ],
@@ -4365,9 +4366,9 @@ def _rebuild_facial_section(model: dict, rebuilders: dict) -> bytes:
     submesh in *rebuilders* rebuilt (the body's kind-0 SKAcc supplements
     dropped when the body is among them) and every other object unchanged."""
     facial = model.get('FacialPoseData') or {}
-    use_b64 = model.get('UseBase64', True)
+    use_compression = model.get('UseCompression', True)
     drop_kinds = {_facial.ACCUMULATION_KIND} if _SKINNED_REBUILD_SUBMESH in rebuilders else frozenset()
-    section, warnings = _facial.rebuild_section(facial, lambda value: _decode(value, use_b64), rebuilders, drop_kinds)
+    section, warnings = _facial.rebuild_section(facial, lambda value: _decode(value, use_compression), rebuilders, drop_kinds)
     for message in warnings:
         _slogger.warning(f'[FacialPoses] {message}', source='hammerspace.main')
     donor_length = int(facial.get('SectionLength') or 0)
@@ -4503,7 +4504,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
     """
 
     model   = data['SluggiesModel']
-    use_b64 = model.get('UseBase64', True)
+    use_compression = model.get('UseCompression', True)
     source_gpl_base_offset = _hex((model.get('SkinData') or {}).get('GplBaseOffset', '0x0'))
     position_edit_submeshes = set(model.get('_PositionEditSubmeshes', []))
 
@@ -4511,9 +4512,9 @@ def ParseSluggie(data: dict) -> SluggieParsed:
     submeshes = []
     for i, sub in enumerate(model.get('Submeshes', [])):
         faces_count = sub.get('FacesCountEdited', sub['FacesCount'])
-        faces_data  = _decode(sub.get('FacesDataEdited') or sub['FacesData'], use_b64)
+        faces_data  = _decode(sub.get('FacesDataEdited') or sub['FacesData'], use_compression)
         raw_fti     = sub.get('FaceTextureIndicesEdited') or sub.get('FaceTextureIndices')
-        face_tex_indices = _decode(raw_fti, use_b64) if raw_fti else b''
+        face_tex_indices = _decode(raw_fti, use_compression) if raw_fti else b''
 
         vb          = sub['VertexBuffer']
 
@@ -4535,9 +4536,9 @@ def ParseSluggie(data: dict) -> SluggieParsed:
         _geometry_arrays_edited = _topology_arrays_edited or _position_only_edited
 
         if _geometry_arrays_edited:
-            vertex_data = _decode(vb.get('VertexBufferDataEdited') or vb['VertexBufferData'], use_b64)
+            vertex_data = _decode(vb.get('VertexBufferDataEdited') or vb['VertexBufferData'], use_compression)
         else:
-            vertex_data = _decode(vb['VertexBufferData'], use_b64)
+            vertex_data = _decode(vb['VertexBufferData'], use_compression)
 
         uv_channels = []
         for uv in sub.get('UVChannels', []):
@@ -4551,8 +4552,8 @@ def ParseSluggie(data: dict) -> SluggieParsed:
                 texture_index            = uv.get('TextureIndex', 0),
                 wrap_s                   = uv.get('WrapS', 0),
                 wrap_t                   = uv.get('WrapT', 0),
-                uv_data                  = _decode(_uv_src, use_b64),
-                uv_faces_data            = _decode(uv.get('UVFacesDataEdited')   or uv['UVFacesData'],   use_b64),
+                uv_data                  = _decode(_uv_src, use_compression),
+                uv_faces_data            = _decode(uv.get('UVFacesDataEdited')   or uv['UVFacesData'],   use_compression),
                 comp_count               = uv['UVChannelCompCount'],
                 quantize_info            = uv['UVChannelQuantizeInfo'],
                 uv_data_ptr_field_offset = _hex(uv.get('UVDataPtrFieldOffset', '0x0')),
@@ -4574,8 +4575,8 @@ def ParseSluggie(data: dict) -> SluggieParsed:
                 _color_faces_src = cc['ColorFacesData']
             color_channels.append(ColorChannel(
                 channel_index    = cc['ColorChannelIndex'],
-                color_data       = _decode(_color_src, use_b64),
-                color_faces_data = _decode(_color_faces_src, use_b64),
+                color_data       = _decode(_color_src, use_compression),
+                color_faces_data = _decode(_color_faces_src, use_compression),
                 comp_count       = cc['ColorChannelCompCount'],
                 quantize_info    = cc['ColorChannelQuantizeInfo'],
                 source_data_offset = _hex(cc.get('ColorChannelOffset', '0x0')),
@@ -4592,7 +4593,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
             if prim_list_data in (None, ''):
                 prim_list_bytes = b''
             else:
-                prim_list_bytes = _decode(prim_list_data, use_b64)
+                prim_list_bytes = _decode(prim_list_data, use_compression)
             draw_states.append(DrawState(
                 display_state_id            = ds['DisplayStateId'],
                 display_state_pad_bytes     = bytes.fromhex(pad_hex),
@@ -4625,7 +4626,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
                         or sub.get('NormalArraysEditedByImporter', False)
                         else raw_nb['NormalBufferData']
                     ),
-                    use_b64,
+                    use_compression,
                 ),
                 source_header_offset         = _hex(raw_nb.get('NormalDataPtrFieldOffset', '0x0')),
             )
@@ -4650,8 +4651,8 @@ def ParseSluggie(data: dict) -> SluggieParsed:
             preserve_source_layout         = not (
                 _geometry_arrays_edited or _uv_primitive_lists_rebuilt
             ),
-            rigid_rebuild                  = _parse_rigid_rebuild(sub, use_b64),
-            skinned_rebuild                = _parse_skinned_rebuild(sub, use_b64),
+            rigid_rebuild                  = _parse_rigid_rebuild(sub, use_compression),
+            skinned_rebuild                = _parse_skinned_rebuild(sub, use_compression),
         ))
 
     mesh_data = MeshData(
@@ -4662,7 +4663,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
     # ---- GPL user data ----------------------------------------------------
     gpl_user_data_len = model.get('GPLUserDataLength', 0)
     raw_gpl_ud = model.get('GPLUserData')
-    gpl_user_data = _decode(raw_gpl_ud, use_b64) if raw_gpl_ud else None
+    gpl_user_data = _decode(raw_gpl_ud, use_compression) if raw_gpl_ud else None
 
     # ---- BoneData ----------------------------------------------------------
     raw_bones = model.get('BoneHierarchyEdited') or model.get('BoneHierarchy')
@@ -4671,7 +4672,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
         for b in raw_bones:
             influences = [
                 {'submesh_index': inf['SubmeshIndex'],
-                 'influences':    _decode(inf['Influences'], use_b64)}
+                 'influences':    _decode(inf['Influences'], use_compression)}
                 for inf in b.get('VertexInfluences', [])
             ]
             bones.append(Bone(
@@ -4707,8 +4708,8 @@ def ParseSluggie(data: dict) -> SluggieParsed:
             min_lod                   = tex.get('MinLOD', 0.0),
             max_lod                   = tex.get('MaxLOD', 0.0),
             unpacked                  = tex.get('Unpacked', 0),
-            desc_unknown_at_10        = _decode(tex['DescUnknownAt10'], use_b64) if tex.get('DescUnknownAt10') else bytes(7),
-            desc_unknown_at_1b        = _decode(tex['DescUnknownAt1B'], use_b64) if tex.get('DescUnknownAt1B') else bytes(5),
+            desc_unknown_at_10        = _decode(tex['DescUnknownAt10'], use_compression) if tex.get('DescUnknownAt10') else bytes(7),
+            desc_unknown_at_1b        = _decode(tex['DescUnknownAt1B'], use_compression) if tex.get('DescUnknownAt1B') else bytes(5),
             image_data_offset         = _hex(tex['ImageDataOffset']),
             image_data_length         = tex['ImageDataLength'],
             palette_data_offset       = _hex(tex['PaletteDataOffset']) if tex.get('PaletteDataOffset') else None,
@@ -4829,7 +4830,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
                 bone_index                  = s['BoneIndex'],
                 vertex_cnt                  = (ed or s)['VertexCnt'],
                 vertex_offset               = s.get('VertexOffset', 0),
-                bind_pose_data              = _decode(bp_src, use_b64),
+                bind_pose_data              = _decode(bp_src, use_compression),
                 vertex_arr_field_offset     = _hex(s.get('VertexArrFieldOffset',     '0x0')),
                 gpl_vertex_arr_field_offset = _hex(s.get('GplVertexArrFieldOffset',  '0x0')),
                 vertex_arr_absolute_ptr     = _hex(s.get('VertexArrAbsolutePtr',     '0x0')),
@@ -4859,8 +4860,8 @@ def ParseSluggie(data: dict) -> SluggieParsed:
                 bone_index2                 = s['BoneIndex2'],
                 vertex_cnt                  = (ed or s)['VertexCnt'],
                 vertex_offset               = s.get('VertexOffset', 0),
-                bind_pose_data              = _decode(bp_src, use_b64),
-                weight_data                 = _decode(wt_src, use_b64),
+                bind_pose_data              = _decode(bp_src, use_compression),
+                weight_data                 = _decode(wt_src, use_compression),
                 vertex_arr_field_offset     = _hex(s.get('VertexArrFieldOffset',     '0x0')),
                 weight_arr_field_offset     = _hex(s.get('WeightArrFieldOffset',     '0x0')),
                 gpl_vertex_arr_field_offset = _hex(s.get('GplVertexArrFieldOffset',  '0x0')),
@@ -4894,9 +4895,9 @@ def ParseSluggie(data: dict) -> SluggieParsed:
             sk_accs.append(SKAcc(
                 bone_index                = s['BoneIndex'],
                 vertex_cnt                = (ed or s)['VertexCnt'],
-                bind_pose_data            = _decode(bp_src, use_b64),
-                dest_index_data           = _decode(dest_src, use_b64),
-                weight_data               = _decode(wt_src, use_b64),
+                bind_pose_data            = _decode(bp_src, use_compression),
+                dest_index_data           = _decode(dest_src, use_compression),
+                weight_data               = _decode(wt_src, use_compression),
                 vertex_arr_field_offset   = _hex(s.get('VertexArrFieldOffset',   '0x0')),
                 dest_arr_field_offset     = _hex(s.get('DestArrFieldOffset',     '0x0')),
                 gpl_dest_arr_field_offset = _hex(s.get('GplDestArrFieldOffset',  '0x0')),
@@ -4923,7 +4924,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
             flush_ind_arr_field_offset= _hex(raw_skn.get('FlushIndArrFieldOffset',   '0x0')),
             flush_ind_absolute_ptr    = _hex(raw_skn['FlushIndAbsolutePtr']) if raw_skn.get('FlushIndAbsolutePtr') else None,
             flush_ind_size            = _flush_source.get('FlushIndSize', 0),
-            flush_ind_data            = _decode(_flush_source['FlushIndData'], use_b64) if _flush_source.get('FlushIndData') else b'',
+            flush_ind_data            = _decode(_flush_source['FlushIndData'], use_compression) if _flush_source.get('FlushIndData') else b'',
             quantize_info             = raw_skn['QuantizeInfo'],
             sk1s                      = sk1s,
             sk2s                      = sk2s,
@@ -4941,7 +4942,7 @@ def ParseSluggie(data: dict) -> SluggieParsed:
         trailing_sections.append(TrailingSection(
             header_field_offset = _hex(entry.get('HeaderFieldOffset', '0x0')),
             original_ptr        = _hex(entry.get('OriginalPtr', '0x0')),
-            data                = _decode(entry.get('Data'), use_b64) if entry.get('Data') else b'',
+            data                = _decode(entry.get('Data'), use_compression) if entry.get('Data') else b'',
         ))
 
     # ---- TEXHeader ---------------------------------------------------------
@@ -4969,8 +4970,8 @@ def ParseSluggie(data: dict) -> SluggieParsed:
         cs_uv_channels = [
             CustomSubmeshUVChannel(
                 channel_index = uv['UVChannelIndex'],
-                uv_data       = _decode(uv['UVChannelData'], use_b64),
-                uv_faces_data = _decode(uv['UVFacesData'], use_b64),
+                uv_data       = _decode(uv['UVChannelData'], use_compression),
+                uv_faces_data = _decode(uv['UVFacesData'], use_compression),
             )
             for uv in cs.get('UVChannels', [])
         ]
@@ -4984,23 +4985,23 @@ def ParseSluggie(data: dict) -> SluggieParsed:
             mesh_name          = cs['MeshName'],
             host_bone_id       = cs['HostBoneId'],
             template_source    = cs['TemplateSource'],
-            vertex_data        = _decode(cs['VertexBufferData'], use_b64),
+            vertex_data        = _decode(cs['VertexBufferData'], use_compression),
             vertex_quantize_info = cs.get(
                 'VertexBufferQuantizeInfo', _CUSTOM_SUBMESH_POSITION_FORMAT[1]
             ),
-            normal_data        = _decode(cs['NormalBufferData'], use_b64) if cs.get('NormalBufferData') else None,
-            normal_faces_data  = _decode(cs['NormalFacesData'], use_b64) if cs.get('NormalFacesData') else None,
-            color_data         = _decode(cs['ColorChannelData'], use_b64) if cs.get('ColorChannelData') else None,
-            color_faces_data   = _decode(cs['ColorFacesData'], use_b64) if cs.get('ColorFacesData') else None,
+            normal_data        = _decode(cs['NormalBufferData'], use_compression) if cs.get('NormalBufferData') else None,
+            normal_faces_data  = _decode(cs['NormalFacesData'], use_compression) if cs.get('NormalFacesData') else None,
+            color_data         = _decode(cs['ColorChannelData'], use_compression) if cs.get('ColorChannelData') else None,
+            color_faces_data   = _decode(cs['ColorFacesData'], use_compression) if cs.get('ColorFacesData') else None,
             uv_channels        = cs_uv_channels,
             faces_count        = cs['FacesCount'],
-            faces_data         = _decode(cs['FacesData'], use_b64),
+            faces_data         = _decode(cs['FacesData'], use_compression),
             texture_assignment = texture_assignment,
             specular_strength  = cs.get('SpecularStrength'),
             color_quantize_info = cs.get('ColorChannelQuantizeInfo', _CUSTOM_SUBMESH_COLOR_FORMAT[1]),
             additional_surfaces = _parse_new_surfaces(cs.get('AdditionalSurfaces')),
             face_surface_indices = (
-                _u16_values(_decode(cs['FaceSurfaceIndices'], use_b64))
+                _u16_values(_decode(cs['FaceSurfaceIndices'], use_compression))
                 if cs.get('FaceSurfaceIndices') is not None else ()
             ),
         ))
@@ -5687,7 +5688,7 @@ def PatchGPLUVArrays(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes:
     if len(raw) != 4:
         raise IOError(f'Could not read donor GPL offset at 0x{model_offset + 4:08X}')
     gpl_absolute = model_offset + struct.unpack('>I', raw)[0]
-    use_b64 = model.get('UseBase64', True)
+    use_compression = model.get('UseCompression', True)
     patched = bytearray(gpl_bytes)
     for submesh_index, submesh in enumerate(model.get('Submeshes', [])):
         if not submesh.get('UVArraysEditedByImporter') \
@@ -5698,8 +5699,8 @@ def PatchGPLUVArrays(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes:
             encoded = uv.get('UVChannelDataEdited')
             if encoded is None:
                 continue
-            original = _decode(uv['UVChannelData'], use_b64)
-            edited = _decode(encoded, use_b64)
+            original = _decode(uv['UVChannelData'], use_compression)
+            edited = _decode(encoded, use_compression)
             if edited == original:
                 continue
             if len(edited) != len(original):
@@ -5724,8 +5725,8 @@ def PatchGPLUVArrays(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes:
         nb = submesh.get('NormalBuffer')
         encoded = nb.get('NormalBufferDataEdited') if nb else None
         if encoded is not None:
-            original = _decode(nb['NormalBufferData'], use_b64)
-            edited = _decode(encoded, use_b64)
+            original = _decode(nb['NormalBufferData'], use_compression)
+            edited = _decode(encoded, use_compression)
             if edited != original:
                 stride = (
                     nb['NormalBufferCompCount']
@@ -5755,9 +5756,9 @@ def PatchGPLUVArrays(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes:
 
         if submesh.get('ColorArraysEditedByImporter'):
             color_channels = submesh.get('ColorChannels', [])
-            original = _decode(color_channels[0]['ColorChannelData'], use_b64)
+            original = _decode(color_channels[0]['ColorChannelData'], use_compression)
             for cc in color_channels[1:]:
-                other = _decode(cc['ColorChannelData'], use_b64)
+                other = _decode(cc['ColorChannelData'], use_compression)
                 if len(other) != len(original):
                     raise ValueError(
                         f'sub{submesh_index}: color channels report different '
@@ -5766,7 +5767,7 @@ def PatchGPLUVArrays(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes:
                 encoded = cc.get('ColorChannelDataEdited')
                 if encoded is None:
                     continue
-                edited = _decode(encoded, use_b64)
+                edited = _decode(encoded, use_compression)
                 if edited == original:
                     continue
                 if len(edited) != len(original):
@@ -5801,7 +5802,7 @@ def PatchGPLUVRebuild(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes
     if len(raw) != 4:
         raise IOError(f'Could not read donor GPL offset at 0x{model_offset + 4:08X}')
     gpl_absolute = model_offset + struct.unpack('>I', raw)[0]
-    use_b64 = model.get('UseBase64', True)
+    use_compression = model.get('UseCompression', True)
     patched = bytearray(gpl_bytes)
 
     def append_payload(payload: bytes, alignment: int) -> int:
@@ -5827,8 +5828,8 @@ def PatchGPLUVRebuild(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes
             encoded = uv.get('UVChannelDataEdited')
             if encoded is None:
                 continue
-            original = _decode(uv['UVChannelData'], use_b64)
-            edited = _decode(encoded, use_b64)
+            original = _decode(uv['UVChannelData'], use_compression)
+            edited = _decode(encoded, use_compression)
             if edited == original:
                 continue
             stride = uv['UVChannelCompCount'] * _vb_comp_size(uv['UVChannelQuantizeInfo'])
@@ -5859,8 +5860,8 @@ def PatchGPLUVRebuild(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes
         nb = submesh.get('NormalBuffer')
         encoded = nb.get('NormalBufferDataEdited') if nb else None
         if encoded is not None:
-            original = _decode(nb['NormalBufferData'], use_b64)
-            edited = _decode(encoded, use_b64)
+            original = _decode(nb['NormalBufferData'], use_compression)
+            edited = _decode(encoded, use_compression)
             if edited != original:
                 if int((submesh.get('VertexBuffer') or {}).get('VertexBufferCompCount', 3)) == 6:
                     # Never detach a skinned submesh's normals from its
@@ -5907,8 +5908,8 @@ def PatchGPLUVRebuild(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes
                 encoded = cc.get('ColorChannelDataEdited')
                 if encoded is None:
                     continue
-                original = _decode(cc['ColorChannelData'], use_b64)
-                edited = _decode(encoded, use_b64)
+                original = _decode(cc['ColorChannelData'], use_compression)
+                edited = _decode(encoded, use_compression)
                 if edited == original:
                     continue
                 entry_size = _color_entry_size(cc['ColorChannelQuantizeInfo'])
@@ -5945,7 +5946,7 @@ def PatchGPLUVRebuild(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes
         for state_index, state in enumerate(submesh.get('DisplayStates', [])):
             edited_primitive = state.get('PrimListDataEdited')
             if edited_primitive is not None:
-                raw_primitive = _decode(edited_primitive, use_b64)
+                raw_primitive = _decode(edited_primitive, use_compression)
                 if raw_primitive:
                     padded = raw_primitive + b'\x00' * ((-len(raw_primitive)) % 32)
                     primitive_offset = append_payload(padded, 32)
@@ -8553,15 +8554,15 @@ def PromoteInplaceEdits(model: dict, modes: SectionModes) -> SectionModes:
     if any(entry.get('VertexCntEdited') is not None for entry in entries):
         raise ValueError('this file changes skin entry vertex counts in place, which only the in-place '
                          'patcher applies; it cannot be patched into another slot, and a slot export not at all')
-    use_b64 = model.get('UseBase64', True)
+    use_compression = model.get('UseCompression', True)
     gpl, skn = modes.gpl, modes.skn
     for submesh in model.get('Submeshes') or []:
         for channel in submesh.get('UVChannels') or []:
             if (channel.get('UVChannelDataEdited') is not None
                     and channel.get('UVFacesDataEdited') is None
                     and channel.get('UVFacesData') is not None
-                    and _decode(channel['UVChannelDataEdited'], use_b64)
-                    != _decode(channel.get('UVChannelData'), use_b64)):
+                    and _decode(channel['UVChannelDataEdited'], use_compression)
+                    != _decode(channel.get('UVChannelData'), use_compression)):
                 channel['UVFacesDataEdited'] = channel['UVFacesData']
                 gpl = 'build'
     if any(entry.get(key) is not None for entry in entries for key in _INLINE_SKIN_EDIT_KEYS):
@@ -8677,8 +8678,7 @@ if __name__ == '__main__':
     if (_args.texture_file is None) != (_args.texture_index is None):
         _parser.error('--texture-file and --texture-index must be used together')
 
-    with open(_args.sluggies_path, 'r') as _file:
-        _data = _json.load(_file)
+    _data = load_sluggie(_args.sluggies_path)
     _model = _data['SluggiesModel']
     _chunk = _model['ChunkNumber']
     _index = _model['FileIndex']

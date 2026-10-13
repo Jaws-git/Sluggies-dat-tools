@@ -719,14 +719,14 @@ def encode_loop_colors(geometry, loop_colors, object_name='', infos=None):
     return dedupe_records([encode_color_rgba4444(c) for c in colors])
 
 
-def encode_field(raw, use_base64=True):
-    """Base64 string (zlib-compressed when shorter) or byte list, following
-    the .sluggie's UseBase64 flag."""
-    return FieldCodec.encode_field(raw, use_base64)
+def encode_field(raw, use_compression=True):
+    """``x:`` hex string, or a byte list in a --debug file, following the
+    .sluggie's UseCompression flag."""
+    return FieldCodec.encode_field(raw, use_compression)
 
 
-def _index_buffer(indices, use_base64):
-    return encode_field(struct.pack(f'>{len(indices)}H', *indices), use_base64)
+def _index_buffer(indices, use_compression):
+    return encode_field(struct.pack(f'>{len(indices)}H', *indices), use_compression)
 
 
 def sanitize_mesh_name(name):
@@ -738,7 +738,7 @@ def sanitize_mesh_name(name):
 def build_custom_submesh_entry(
     object_name, custom_submesh_id, host_bone_id, template_source, plan,
     geometry, loop_normals, loop_uvs, loop_colors, texture_assignment,
-    use_base64=True, warnings=None, specular_strength=None,
+    use_compression=True, warnings=None, specular_strength=None,
     additional_surfaces=None, face_surface_indices=None, infos=None,
 ):
     """Assemble one ``CustomSubmeshes`` entry (sluggieschema.json) from
@@ -779,7 +779,7 @@ def build_custom_submesh_entry(
         'MeshName': sanitize_mesh_name(object_name),
         'HostBoneId': int(host_bone_id),
         'TemplateSource': template_source,
-        'VertexBufferData': encode_field(positions, use_base64),
+        'VertexBufferData': encode_field(positions, use_compression),
         'VertexBufferQuantizeInfo': quantize_info,
     }
 
@@ -787,8 +787,8 @@ def build_custom_submesh_entry(
         normal_data, normal_indices = encode_loop_normals(object_name, geometry, loop_normals)
         _check_entry_limit(object_name, template_source, 'lighting', 'normals',
                            len(normal_data) // (NORMAL_FORMAT[0] * 2), plan)
-        entry['NormalBufferData'] = encode_field(normal_data, use_base64)
-        entry['NormalFacesData'] = _index_buffer(normal_indices, use_base64)
+        entry['NormalBufferData'] = encode_field(normal_data, use_compression)
+        entry['NormalFacesData'] = _index_buffer(normal_indices, use_compression)
 
     if plan.color:
         color_data, color_indices = encode_loop_colors(
@@ -796,8 +796,8 @@ def build_custom_submesh_entry(
         )
         _check_entry_limit(object_name, template_source, 'color0', 'colors',
                            len(color_data) // COLOR_FORMAT[0], plan)
-        entry['ColorChannelData'] = encode_field(color_data, use_base64)
-        entry['ColorFacesData'] = _index_buffer(color_indices, use_base64)
+        entry['ColorChannelData'] = encode_field(color_data, use_compression)
+        entry['ColorFacesData'] = _index_buffer(color_indices, use_compression)
 
     uv_data, uv_indices = encode_loop_uvs(object_name, geometry, loop_uvs)
     uv_count = len(uv_data) // (UV_FORMAT[0] * 2)
@@ -806,12 +806,12 @@ def build_custom_submesh_entry(
         _check_entry_limit(object_name, template_source, f'texture{channel}', 'UVs', uv_count, plan)
         uv_channels.append({
             'UVChannelIndex': channel,
-            'UVChannelData': encode_field(uv_data, use_base64),
-            'UVFacesData': _index_buffer(uv_indices, use_base64),
+            'UVChannelData': encode_field(uv_data, use_compression),
+            'UVFacesData': _index_buffer(uv_indices, use_compression),
         })
     entry['UVChannels'] = uv_channels
     entry['FacesCount'] = faces_count
-    entry['FacesData'] = encode_field(faces_data, use_base64)
+    entry['FacesData'] = encode_field(faces_data, use_compression)
     entry['TextureAssignment'] = dict(texture_assignment)
     if specular_strength is not None:
         entry['SpecularStrength'] = max(0, min(255, int(specular_strength)))
@@ -824,5 +824,5 @@ def build_custom_submesh_entry(
         if max(indices) > len(additional_surfaces) or min(indices) < 0:
             raise ValueError(f'{object_name}: a face surface index is out of range')
         entry['AdditionalSurfaces'] = [dict(surface) for surface in additional_surfaces]
-        entry['FaceSurfaceIndices'] = _index_buffer(indices, use_base64)
+        entry['FaceSurfaceIndices'] = _index_buffer(indices, use_compression)
     return entry

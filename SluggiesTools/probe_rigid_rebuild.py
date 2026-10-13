@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import json
 import struct
 import sys
 from pathlib import Path
@@ -58,7 +57,7 @@ import HammerspaceHelper as hh
 import HammerspaceMain as hammerspace
 import build_add_submesh_fixture as probe
 import build_rigid_visibility_probe as vis
-from binfmt import color_entry_size, comp_size, decode_field
+from binfmt import color_entry_size, comp_size, decode_field, load_sluggie
 from drawlist import decodeDrawList
 
 MODELS_DIR = TOOLS_DIR.parent / "2_Output_Assets"
@@ -93,7 +92,7 @@ def _unpack_u16(raw: bytes) -> tuple[int, ...]:
 
 
 def _load(path: Path) -> dict:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = load_sluggie(path)
     model = data["SluggiesModel"]
     probe.strip_donor_edits(model)
     model["UseHammerspace"] = True
@@ -444,7 +443,7 @@ def prepare_custom_surfaces() -> tuple[Path, dict, int, dict, "hammerspace.Secti
     choice = [k // 4 for k in range(len(geometry.faces))]   # faces 0-3 primary, 4-7 new0, 8-11 new1
     entry = cse.build_custom_submesh_entry(
         "probe_cube", CUSTOM_ID, FINGER_BONE, template, plan, geometry, normals, uvs, None,
-        {"DonorTextureIndex": head_texture}, model.get("UseBase64", True), None, 50,
+        {"DonorTextureIndex": head_texture}, model.get("UseCompression", True), None, 50,
         surfaces, choice,
     )
     model["UseHammerspace"] = True
@@ -559,7 +558,7 @@ def main() -> int:
     try:
         path = MII if args.case.startswith("surfaces") else MARIO
         if args.unpatch:
-            model = json.loads(path.read_text(encoding="utf-8"))["SluggiesModel"]
+            model = load_sluggie(path)["SluggiesModel"]
             ok, *_ = hh.removeModelFromHammerspace(model["ChunkNumber"], model["FileIndex"])
             print(f"{path.name}: {'restored' if ok else 'not in hammerspace'}")
             return 0

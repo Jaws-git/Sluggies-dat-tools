@@ -56,7 +56,7 @@ def _model(assignments=None):
             for state_idx in assignments
             for byte in state_idx.to_bytes(2, 'big')
         ]
-    return {'SluggiesModel': {'UseBase64': False, 'Submeshes': [submesh]}}
+    return {'SluggiesModel': {'UseCompression': False, 'Submeshes': [submesh]}}
 
 
 class SurfaceAssignmentRebuildTests(unittest.TestCase):
@@ -129,7 +129,7 @@ class SurfaceAssignmentRebuildTests(unittest.TestCase):
         self.assertTrue(states[0]['MaterialStateAliasedByImporter'])
 
     def test_same_type_move_aliases_source_local_texture_binding(self):
-        data = {'SluggiesModel': {'UseBase64': False, 'Submeshes': [{
+        data = {'SluggiesModel': {'UseCompression': False, 'Submeshes': [{
             'DisplayStates': [
                 _texture_state(0, '000100'),
                 _display_state(_face(0), '010203'),
@@ -147,7 +147,7 @@ class SurfaceAssignmentRebuildTests(unittest.TestCase):
         self.assertTrue(states[2]['MaterialStateAliasedByImporter'])
 
     def test_type1_draw_batch_can_move_to_its_inherited_type7_surface(self):
-        data = {'SluggiesModel': {'UseBase64': False, 'Submeshes': [{
+        data = {'SluggiesModel': {'UseCompression': False, 'Submeshes': [{
             'DisplayStates': [
                 _texture_state(0, '000008'),
                 _display_state(_face(0), '460064'),
@@ -168,7 +168,7 @@ class SurfaceAssignmentRebuildTests(unittest.TestCase):
         self.assertEqual(states[1]['ShaderMode'], '00000000')
 
     def test_type7_batch_can_adopt_later_type1_texture_without_losing_shader(self):
-        data = {'SluggiesModel': {'UseBase64': False, 'Submeshes': [{
+        data = {'SluggiesModel': {'UseCompression': False, 'Submeshes': [{
             'DisplayStates': [
                 _texture_state(0, '000008'),
                 _display_state(_face(0), '460064'),
@@ -192,7 +192,7 @@ class SurfaceAssignmentRebuildTests(unittest.TestCase):
         self.assertNotIn('MaterialStateAliasedByImporter', states[1])
 
     def test_different_texture_move_rejects_shared_source_binding(self):
-        data = {'SluggiesModel': {'UseBase64': False, 'Submeshes': [{
+        data = {'SluggiesModel': {'UseCompression': False, 'Submeshes': [{
             'DisplayStates': [
                 _texture_state(0),
                 _display_state(_face(0)),
@@ -249,7 +249,7 @@ class SurfaceAssignmentRebuildTests(unittest.TestCase):
 class DesiredTextureAssignmentTests(unittest.TestCase):
     def _data(self, states, assignments, face_textures):
         return {'SluggiesModel': {
-            'UseBase64': False,
+            'UseCompression': False,
             'TextureDescriptors': [
                 {'TextureIndex': 0},
                 {'TextureIndex': 1},

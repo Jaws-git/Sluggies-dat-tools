@@ -17,7 +17,7 @@ for import_path in (TOOLS_DIR, HAMMERSPACE_DIR):
 
 import HammerspaceMain as hammerspace
 import drawlist
-from binfmt import decode_field as _decode_field, encode_field as _encode_field
+from binfmt import decode_field as _decode_field, encode_field as _encode_field, load_sluggie
 
 
 # Fields that record where a submesh's arrays physically live in the DONOR
@@ -36,8 +36,8 @@ from binfmt import decode_field as _decode_field, encode_field as _encode_field
 # introduce any quantization/rounding drift. BuildGPLMeshData's full-rebuild
 # path re-emits every donor submesh's position/normal/color/UV arrays and
 # primitive lists by copying the SAME raw bytes ParseSluggie decoded from the
-# .sluggie's base64 fields (no float round-trip, no re-quantization -- see
-# `vertex_data = _decode(vb['VertexBufferData'], use_b64)` and its UV/color/
+# .sluggie's binary fields (no float round-trip, no re-quantization -- see
+# `vertex_data = _decode(vb['VertexBufferData'], use_compression)` and its UV/color/
 # normal/prim-list equivalents in HammerspaceMain.ParseSluggie/BuildGPLMeshData).
 # A direct byte diff against the real Mario donor confirms this: submesh 0's
 # position+normal buffer, both UV channels, the color channel, the separate
@@ -122,7 +122,7 @@ def _filter_display_states(clone: dict, exclude_types: set[int]) -> None:
 GX_FORMAT_S16 = 3
 
 
-def _scale_clone_positions(clone: dict, factor: float, use_base64: bool) -> None:
+def _scale_clone_positions(clone: dict, factor: float, use_compression: bool) -> None:
     """Scale the clone's bone-local positions by *factor* about the host bone.
 
     Order probe marker (PLAN_AddSubmesh.md Phase 0 probe 2, U3). A byte-exact
@@ -143,7 +143,7 @@ def _scale_clone_positions(clone: dict, factor: float, use_base64: bool) -> None
             f"(CompCount 3, format {GX_FORMAT_S16}); got CompCount {comp_count}, "
             f"QuantizeInfo {quantize_info}"
         )
-    raw = hammerspace._decode(vb["VertexBufferData"], use_base64)
+    raw = hammerspace._decode(vb["VertexBufferData"], use_compression)
     if len(raw) % (2 * comp_count):
         raise ValueError(
             f"position buffer length {len(raw)} is not a whole number of int16 xyz records"
@@ -157,7 +157,7 @@ def _scale_clone_positions(clone: dict, factor: float, use_base64: bool) -> None
             f"(for example {out_of_range[0]})"
         )
     packed = struct.pack(f">{len(scaled)}h", *scaled)
-    vb["VertexBufferData"] = _encode_field(packed, use_base64)
+    vb["VertexBufferData"] = _encode_field(packed, use_compression)
     # The clone must stay on the full-serializer path with its own data; a
     # stale edited payload would take precedence or trigger the position-edit
     # patch path instead.
@@ -226,7 +226,7 @@ def _build_cube_faces(descriptors: list[dict]) -> list[list[dict]]:
 
 
 def _replace_clone_with_cube(
-    clone: dict, half_extent: float, display_state_index: int | None, use_base64: bool,
+    clone: dict, half_extent: float, display_state_index: int | None, use_compression: bool,
 ) -> dict:
     """Replace the clone's geometry with a 12-triangle cube (Phase 0 probe 4).
 
@@ -299,7 +299,7 @@ def _replace_clone_with_cube(
     def face_table(key: str) -> bytes:
         return struct.pack(f">{len(faces) * 3}H", *(vertex.get(key, 0) for face in faces for vertex in face))
 
-    vb["VertexBufferData"] = _encode_field(position_bytes, use_base64)
+    vb["VertexBufferData"] = _encode_field(position_bytes, use_compression)
     vb["VertexBufferLength"] = len(position_bytes)
     vb.pop("VertexBufferDataEdited", None)
 
@@ -311,9 +311,9 @@ def _replace_clone_with_cube(
         normal_bytes = struct.pack(
             ">18h", *(component * normal_unit for normal, _u, _v in _CUBE_FACES for component in normal)
         )
-        nb["NormalBufferData"] = _encode_field(normal_bytes, use_base64)
+        nb["NormalBufferData"] = _encode_field(normal_bytes, use_compression)
         nb["NormalBufferLength"] = len(normal_bytes)
-        nb["NormalFacesData"] = _encode_field(face_table("lighting"), use_base64)
+        nb["NormalFacesData"] = _encode_field(face_table("lighting"), use_compression)
         for key in ("NormalBufferDataEdited", "NormalFacesDataEdited"):
             nb.pop(key, None)
 
@@ -322,14 +322,14 @@ def _replace_clone_with_cube(
             raise ValueError(f"UV channel {channel_index} must have 2 components")
         uv_unit = _s16_unit(int(uv["UVChannelQuantizeInfo"]), f"UV channel {channel_index}")
         uv_bytes = struct.pack(">8h", *(value * uv_unit for pair in _CUBE_UVS for value in pair))
-        uv["UVChannelData"] = _encode_field(uv_bytes, use_base64)
+        uv["UVChannelData"] = _encode_field(uv_bytes, use_compression)
         uv["UVChannelLength"] = len(uv_bytes)
-        uv["UVFacesData"] = _encode_field(face_table(f"texture{channel_index}"), use_base64)
+        uv["UVFacesData"] = _encode_field(face_table(f"texture{channel_index}"), use_compression)
         for key in ("UVChannelDataEdited", "UVFacesDataEdited"):
             uv.pop(key, None)
 
     for cc in clone.get("ColorChannels") or []:
-        cc["ColorFacesData"] = _encode_field(face_table("color0"), use_base64)
+        cc["ColorFacesData"] = _encode_field(face_table("color0"), use_compression)
         for key in ("ColorChannelDataEdited", "ColorFacesDataEdited"):
             cc.pop(key, None)
 
@@ -337,19 +337,19 @@ def _replace_clone_with_cube(
     first_face = sum(int(ds.get("FaceCount") or 0) for ds in states[:display_state_index])
     texture_index = 0
     if original_texture_indices:
-        table = _decode_field(original_texture_indices, use_base64)
+        table = _decode_field(original_texture_indices, use_compression)
         if len(table) >= 2 * (first_face + 1):
             texture_index = struct.unpack_from(">H", table, 2 * first_face)[0]
     clone["FacesCount"] = len(faces)
-    clone["FacesData"] = _encode_field(face_table("position"), use_base64)
-    clone["FaceTextureIndices"] = _encode_field(struct.pack(f">{len(faces)}H", *([texture_index] * len(faces))), use_base64)
+    clone["FacesData"] = _encode_field(face_table("position"), use_compression)
+    clone["FaceTextureIndices"] = _encode_field(struct.pack(f">{len(faces)}H", *([texture_index] * len(faces))), use_compression)
     for key in ("FacesCountEdited", "FacesDataEdited", "FaceTextureIndicesEdited"):
         clone.pop(key, None)
 
     for index, ds in enumerate(states):
         ds.pop("PrimListDataEdited", None)
         if index == display_state_index:
-            ds["PrimListData"] = _encode_field(primitive_bytes, use_base64)
+            ds["PrimListData"] = _encode_field(primitive_bytes, use_compression)
             ds["PrimListLength"] = len(primitive_bytes)
             ds["FaceCount"] = len(faces)
             ds["VertexStreamLayout"] = descriptors
@@ -532,11 +532,11 @@ def prepare_fixture_data(
     if cube_display_state is not None and cube_half_extent is None:
         raise ValueError("a cube display state needs a cube half extent")
     if position_scale is not None:
-        _scale_clone_positions(clone, position_scale, bool(model.get("UseBase64", True)))
+        _scale_clone_positions(clone, position_scale, bool(model.get("UseCompression", True)))
     cube_metadata = None
     if cube_half_extent is not None:
         cube_metadata = _replace_clone_with_cube(
-            clone, cube_half_extent, cube_display_state, bool(model.get("UseBase64", True)),
+            clone, cube_half_extent, cube_display_state, bool(model.get("UseCompression", True)),
         )
     new_submesh_index = len(submeshes)
     submeshes.append(clone)
@@ -823,8 +823,7 @@ def build_fixture(
     cube_half_extent: float | None = None,
     cube_display_state: int | None = None,
 ) -> tuple["hammerspace.ModelBlockBuild", int | None]:
-    with source_path.open("r", encoding="utf-8") as source_file:
-        source_data = json.load(source_file)
+    source_data = load_sluggie(source_path)
 
     data = prepare_fixture_data(
         source_data, host_bone, template_submesh, allow_skinned_bone, no_draw,
@@ -1035,8 +1034,7 @@ def main() -> int:
         pass
 
     try:
-        with source.open("r", encoding="utf-8") as source_file:
-            probe_data = json.load(source_file)
+        probe_data = load_sluggie(source)
         probe = prepare_fixture_data(
             probe_data, args.host_bone, template_submesh, args.allow_skinned_bone, args.no_draw,
             exclude_display_state_types, args.position_scale, args.cube, args.cube_display_state,

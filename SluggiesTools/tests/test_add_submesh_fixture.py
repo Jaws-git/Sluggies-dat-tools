@@ -117,7 +117,7 @@ def _minimal_model() -> dict:
             "FileIndex": 0,
             "ModelOffset": "0x1000",
             "ModelLength": 0x10000,
-            "UseBase64": True,
+            "UseCompression": True,
             "Submeshes": [
                 _skinned_submesh(),
                 _rigid_submesh("cap", "0x200"),

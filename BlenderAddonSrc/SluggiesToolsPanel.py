@@ -1,6 +1,5 @@
 """Sluggies Tools sidebar panel (3D View > Sidebar > Sluggies Tools)."""
 
-import json
 import os
 import re
 
@@ -10,6 +9,7 @@ from bpy.props import BoolProperty, CollectionProperty, EnumProperty, IntPropert
 from mathutils import Matrix, Vector
 
 from . import CustomSubmeshExport
+from . import FieldCodec
 from .AnmExport import SLUGGIES_OT_export_anm_group
 from . import HostBones
 from . import TemplateSources
@@ -191,8 +191,7 @@ def _model_chunk_number(arm_obj):
         return None
     if path not in _CHUNK_NUMBER_CACHE:
         try:
-            with open(path, 'r') as handle:
-                _CHUNK_NUMBER_CACHE[path] = json.load(handle)['SluggiesModel'].get('ChunkNumber')
+            _CHUNK_NUMBER_CACHE[path] = FieldCodec.load_sluggie(path)['SluggiesModel'].get('ChunkNumber')
         except (OSError, ValueError, KeyError):
             _CHUNK_NUMBER_CACHE[path] = None
     return _CHUNK_NUMBER_CACHE[path]
@@ -330,8 +329,7 @@ def _low_poly_texture_warning(arm_obj):
     if not sluggie_path:
         return None
     try:
-        with open(sluggie_path, 'r') as handle:
-            model = json.load(handle).get('SluggiesModel', {})
+        model = FieldCodec.load_sluggie(sluggie_path).get('SluggiesModel', {})
     except (OSError, ValueError):
         return None
     try:
@@ -594,8 +592,7 @@ def _write_custom_submesh_texture(sluggie_path, submesh_name):
     overwritten: it is loaded as-is and *reused* is True.
     """
     try:
-        with open(sluggie_path, 'r') as handle:
-            model = json.load(handle).get('SluggiesModel', {})
+        model = FieldCodec.load_sluggie(sluggie_path).get('SluggiesModel', {})
     except (OSError, ValueError):
         model = {}
     try:
@@ -651,8 +648,7 @@ def _add_material_mesh_kind(obj):
 def _read_bone_hierarchy(sluggie_path):
     """The parsed .sluggie's BoneHierarchy list, or None if unreadable."""
     try:
-        with open(sluggie_path, 'r') as handle:
-            model = json.load(handle).get('SluggiesModel', {})
+        model = FieldCodec.load_sluggie(sluggie_path).get('SluggiesModel', {})
     except (OSError, ValueError):
         return None
     return model.get('BoneHierarchy')
@@ -1022,8 +1018,7 @@ class SLUGGIES_OT_add_material(bpy.types.Operator):
             self.report({"ERROR"}, "Re-import this model to enable Add material")
             return {"CANCELLED"}
         try:
-            with open(sluggie_path, 'r') as handle:
-                model = json.load(handle).get('SluggiesModel', {})
+            model = FieldCodec.load_sluggie(sluggie_path).get('SluggiesModel', {})
         except (OSError, ValueError) as exc:
             self.report({"ERROR"}, f"Could not read {sluggie_path!r}: {exc}")
             return {"CANCELLED"}

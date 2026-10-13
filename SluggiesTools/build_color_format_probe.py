@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import argparse
 import base64
-import json
+
+from binfmt import load_sluggie
 import sys
 from pathlib import Path
 
@@ -28,7 +29,7 @@ RED_GREEN_RGBA4444 = bytes.fromhex("f00f0f0f")
 
 
 def build(source_path: Path, write: bool):
-    data = json.loads(source_path.read_text(encoding="utf-8"))
+    data = load_sluggie(source_path)
     model = data["SluggiesModel"]
     probe.strip_donor_edits(model)
     model["UseHammerspace"] = True

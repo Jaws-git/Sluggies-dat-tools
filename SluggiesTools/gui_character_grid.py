@@ -117,6 +117,7 @@ RENAME, SELECT, CLEAR, DISCARD = 'Rename...', 'Select .sluggie...', 'Clear slot'
 STATS, VOICE = 'Adopt stats...', 'Voice...'
 ANIM = 'Replace animation...'       # on the row below, under Adopt stats...
 ANIM_DIR_SETTING = 'grid_last_anim_dir'   # the GUI settings key: the folder the last .anm came from
+SLUGGIE_DIR_SETTING = 'grid_last_sluggie_dir'   # the GUI settings key: the folder the last slot/equipment .sluggie came from
 VOICE_ALL = 'Set voice (all)...'    # the square level (colour wheel): the voice reaches every member
 SLOT_BUTTONS = (RENAME, STATS, VOICE, CLEAR)     # the row below: Replace animation..., Discard pending
 EQUIP_PAIR_W = 2 * EQUIP_BUTTON_W - 8 + 4   # a tile's Select... + Reset buttons and the gap between them
@@ -1013,9 +1014,15 @@ class CharacterGridTab:
             return
         self.action = (cid, None)
         self.set_busy(False)
-        if not self.app.pick_files('grid_sluggie_dialog', 'Select a .sluggie for this slot',
-                                   [('Sluggie files', '*.sluggie')], self._on_sluggie_paths,
-                                   on_cancel=self._end_action):
+        self._pick_sluggie('Select a .sluggie for this slot')
+
+    def _pick_sluggie(self, title):
+        """Open the .sluggie picker in the folder the last pick came from (else the models folder)."""
+        start = next((d for d in (self.app.settings.get(SLUGGIE_DIR_SETTING), self.app.models_dir)
+                      if d and os.path.isdir(d)), self.app.root_dir)
+        dpg.configure_item('grid_sluggie_dialog', default_path=start)
+        if not self.app.pick_files('grid_sluggie_dialog', title, [('Sluggie files', '*.sluggie')],
+                                   self._on_sluggie_paths, on_cancel=self._end_action, initial_dir=start):
             self._end_action()
 
     def _on_sluggie_chosen(self, _sender, app_data):
@@ -1031,6 +1038,10 @@ class CharacterGridTab:
             self._end_action()
             return
         self.action = None
+        try:
+            self.app.settings.set(SLUGGIE_DIR_SETTING, os.path.dirname(os.path.abspath(path)))
+        except OSError:
+            pass                              # not remembered; the pick itself goes on
         self._start_preview(cid, path, equip=None if equip is None else (equip, path))
 
     # ------------------------------------------------------------------ animations
@@ -1074,10 +1085,7 @@ class CharacterGridTab:
         self.action = (cid, 'equip', file)
         self.set_busy(False)
         label = gui_grid.EQUIP_LABELS[file].lower()
-        if not self.app.pick_files('grid_sluggie_dialog', f'Select a {label} .sluggie for this slot',
-                                   [('Sluggie files', '*.sluggie')], self._on_sluggie_paths,
-                                   on_cancel=self._end_action):
-            self._end_action()
+        self._pick_sluggie(f'Select a {label} .sluggie for this slot')
 
     def _on_equip_reset(self, cid, file):
         """Reset on an equipment tile: drop its pending edit, or stage the return to the baseline."""

@@ -8,6 +8,11 @@ ROOT_DIR = pathlib.Path(__file__).resolve().parents[2]
 PANEL_PATH = ROOT_DIR / 'BlenderAddonSrc' / 'SluggiesToolsPanel.py'
 EXPORT_PATH = ROOT_DIR / 'BlenderAddonSrc' / 'ExportSluggies.py'
 
+import sys  # noqa: E402
+if str(ROOT_DIR / 'BlenderAddonSrc') not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR / 'BlenderAddonSrc'))
+import FieldCodec  # noqa: E402  (bpy-free; the exec'd add-on helpers use it)
+
 
 def _binds_name(node, names):
     if isinstance(node, ast.FunctionDef):
@@ -26,7 +31,7 @@ def _extract(names, path=PANEL_PATH):
     tree = ast.parse(path.read_text(encoding='utf-8'))
     nodes = [node for node in tree.body if _binds_name(node, names)]
     module = ast.Module(body=nodes, type_ignores=[])
-    namespace = {}
+    namespace = {'FieldCodec': FieldCodec}
     exec(compile(module, str(PANEL_PATH), 'exec'), namespace)
     return namespace
 

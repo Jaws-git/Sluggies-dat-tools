@@ -294,7 +294,7 @@ class ExporterWiringTests(unittest.TestCase):
         self.assertIn(write, source)
         self.assertLess(source.index(report), source.index(write))
         self.assertLess(source.index('ExportMode.promote_inplace_uv_edits('),
-                        source.index('json.dump(data, f, indent=2)'))
+                        source.index('FieldCodec.dump_sluggie(data, self.filepath)'))
 
     def test_in_place_losses_become_reasons(self):
         source = _execute_source()

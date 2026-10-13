@@ -13,6 +13,7 @@ _slogger.configure()
 from binfmt import (
     color_entry_size as _color_entry_size,
     comp_size as _vb_comp_size,
+    dump_sluggie as _dump_sluggie,
     encode_field as _encode_field,
 )
 
@@ -27,7 +28,7 @@ import UntanglePolicy
 from anm_to_gltf import convert_anm_directory
 
 EXPORT_TEX = '--notex' not in sys.argv
-DEBUG_DONT_USE_BASE64 = '--debug' in sys.argv
+DEBUG_NO_COMPRESSION = '--debug' in sys.argv
 UNTANGLE_TEX = '--untangle' in sys.argv
 EXPORT_GLB = '--glb' in sys.argv
 EXPORT_ANIM_GLB = EXPORT_GLB and '--anim-glb' in sys.argv
@@ -40,8 +41,8 @@ STADIUM_DIR_INDICES = range(7, 17)
 
 
 def _encode_bytes(data: bytes):
-    """Encode binary data as a base64 string, or a list of byte ints when DEBUG_DONT_USE_BASE64."""
-    return _encode_field(data, not DEBUG_DONT_USE_BASE64)
+    """Encode binary data as an "x:" hex string, or a list of byte ints when DEBUG_NO_COMPRESSION."""
+    return _encode_field(data, not DEBUG_NO_COMPRESSION)
 
 
 outdir = "../2_Output_Assets/"
@@ -570,7 +571,7 @@ def extract_submeshes(model):
                     [vertex['lighting'] for vertex in triangle] if has_lighting else [0, 0, 0]
                 )
         face_count = len(faces_raw)
-        # Pack position faces as big-endian uint16 triplets and base64-encode
+        # Pack position faces as big-endian uint16 triplets and encode them as a binary field
         flat = [idx for tri in faces_raw for idx in tri]
         faces_data = _encode_bytes(struct.pack(f'>{len(flat)}H', *flat))
         # Per-face primary texture index (uint16, one per face)
@@ -1408,7 +1409,7 @@ def model_document(model, dir_ind, file_index, offset, length, untangle_context=
             "FileIndex": file_index,
             "ModelOffset": hex(offset),
             "ModelLength": length,
-            "UseBase64": not DEBUG_DONT_USE_BASE64,
+            "UseCompression": not DEBUG_NO_COMPRESSION,
             "GPLUserDataLength": gpl_user_data_length,
             "GPLUserData": gpl_user_data,
             "TEXHeader": extract_tex_header(model),
@@ -1425,8 +1426,7 @@ def model_document(model, dir_ind, file_index, offset, length, untangle_context=
 
 
 def write_model_document(document, path):
-    with open(path, 'w') as info_f:
-        info_f.write(compact_faces_json(document))
+    _dump_sluggie(document, path, compact_faces_json(document))
 
 
 def main():

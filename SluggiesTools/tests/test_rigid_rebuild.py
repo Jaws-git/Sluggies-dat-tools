@@ -836,7 +836,7 @@ class RigidRebuildCarriedColorTests(unittest.TestCase):
 
 class RigidRebuildGuardTests(unittest.TestCase):
     def test_position_edits_skip_rebuilt_submeshes(self):
-        model = {'UseBase64': True, 'Submeshes': [{
+        model = {'UseCompression': True, 'Submeshes': [{
             'RigidRebuild': {'HostBoneId': 1},
             'VertexBuffer': {'VertexBufferData': 'AAA=', 'VertexBufferDataEdited': 'AAE='},
         }]}

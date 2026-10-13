@@ -98,7 +98,7 @@ def _model(edited_lighting_records):
     }
     return {
         'SluggiesModel': {
-            'UseBase64': False,
+            'UseCompression': False,
             'Submeshes': [submesh],
         },
     }

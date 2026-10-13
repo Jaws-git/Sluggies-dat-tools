@@ -13,6 +13,11 @@ IMPORTER_PATH = ROOT_DIR / 'BlenderAddonSrc' / 'ImportSluggies.py'
 EXPORTER_PATH = ROOT_DIR / 'BlenderAddonSrc' / 'ExportSluggies.py'
 ADDON_INIT_PATH = ROOT_DIR / 'BlenderAddonSrc' / '__init__.py'
 
+import sys  # noqa: E402
+if str(ROOT_DIR / 'BlenderAddonSrc') not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR / 'BlenderAddonSrc'))
+import FieldCodec  # noqa: E402  (bpy-free; the exec'd add-on helpers use it)
+
 
 def _load_helper(path, name):
     tree = ast.parse(path.read_text(encoding='utf-8'))
@@ -44,7 +49,7 @@ def _load_assignment_helpers():
     module = ast.Module(body=helpers, type_ignores=[])
     namespace = {
         'struct': struct,
-        '_from_bytes': lambda value, _use_base64: list(value),
+        '_from_bytes': lambda value, _use_compression: list(value),
     }
     exec(compile(module, str(EXPORTER_PATH), 'exec'), namespace)
     return namespace
@@ -71,7 +76,7 @@ def _load_texture_helpers():
         and any(getattr(t, 'id', None) == '_TEMPLATE_UNLENT_FIELDS' for t in node.targets)
     ]
     module = ast.Module(body=helpers, type_ignores=[])
-    namespace = {'json': __import__('json'), 'os': os}
+    namespace = {'json': __import__('json'), 'os': os, 'FieldCodec': FieldCodec}
     exec(compile(module, str(EXPORTER_PATH), 'exec'), namespace)
     return namespace
 
@@ -102,7 +107,7 @@ def _load_color_roundtrip_helpers():
     spec.loader.exec_module(custom_submesh_export)
     namespace = {
         'struct': struct,
-        '_from_bytes': lambda value, _use_base64=True: list(value),
+        '_from_bytes': lambda value, _use_compression=True: list(value),
         'CustomSubmeshExport': custom_submesh_export,
     }
     exec(compile(ast.Module(body=helpers, type_ignores=[]), str(EXPORTER_PATH), 'exec'),
@@ -205,7 +210,7 @@ class ColorRoundTripTests(unittest.TestCase):
             obj,
             {'ColorChannelIndex': 0, 'ColorChannelQuantizeInfo': self.QUANT_RGBA8},
             list(range(loop_count)),
-            use_base64=False,
+            use_compression=False,
         )
 
         expected = [c for rgba in donor_entries for c in rgba]

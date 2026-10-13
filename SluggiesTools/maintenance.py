@@ -15,11 +15,12 @@ reported. Slot exports (``Roster/slot_export.py``, "Custom <name> NN" folders) c
 started from on purpose, with a name of their own and their own donor block: they are not reported either.
 """
 
-import json
 import os
 import re
 from collections import defaultdict
 from dataclasses import dataclass
+
+from binfmt import load_sluggie, read_sluggie_head
 
 MODELS_FOLDER = '2_Output_Assets'
 
@@ -43,13 +44,10 @@ def model_identity(path):
     """``(ChunkNumber, FileIndex, ModelOffset)`` of a ``.sluggie``, or None when the file cannot be read or lacks
     them."""
     try:
-        with open(path, 'r', encoding='utf-8') as handle:
-            head = handle.read(_HEAD_BYTES)
-            match = _IDENTITY.search(head)
-            if match:
-                return int(match.group(1)), int(match.group(2)), match.group(3).lower()
-            handle.seek(0)
-            model = json.load(handle)['SluggiesModel']
+        match = _IDENTITY.search(read_sluggie_head(path, _HEAD_BYTES))
+        if match:
+            return int(match.group(1)), int(match.group(2)), match.group(3).lower()
+        model = load_sluggie(path)['SluggiesModel']
     except (OSError, ValueError, KeyError, TypeError):
         return None
     chunk, index, offset = model.get('ChunkNumber'), model.get('FileIndex'), model.get('ModelOffset')
@@ -61,8 +59,7 @@ def model_identity(path):
 def is_slot_export(path):
     """Whether a ``.sluggie`` is a slot export (read from the file head)."""
     try:
-        with open(path, 'r', encoding='utf-8') as handle:
-            return _SLOT_EXPORT.search(handle.read(_HEAD_BYTES)) is not None
+        return _SLOT_EXPORT.search(read_sluggie_head(path, _HEAD_BYTES)) is not None
     except (OSError, ValueError):
         return False
 

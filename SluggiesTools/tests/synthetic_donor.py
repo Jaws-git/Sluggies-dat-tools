@@ -304,7 +304,7 @@ def build_sluggie() -> dict:
         'FileIndex': FILE_INDEX,
         'ModelOffset': f'0x{MODEL_OFFSET:x}',
         'ModelLength': 0,               # filled in by build_donor
-        'UseBase64': True,
+        'UseCompression': True,
         'GPLUserDataLength': 0,
         'TextureDescriptors': _texture_descriptors(),
         'Submeshes': [

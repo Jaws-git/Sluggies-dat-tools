@@ -27,7 +27,8 @@ as unchecked, not as a failure.
 """
 from __future__ import annotations
 
-import json
+
+from binfmt import load_sluggie
 import pathlib
 import sys
 
@@ -84,7 +85,7 @@ def run_capture_provenance_probe() -> int:
             unchecked.append(f"{name} ({provenance['Model']})")
             continue
 
-        model = json.loads(exports[0].read_text(encoding='utf-8'))['SluggiesModel']
+        model = load_sluggie(exports[0])['SluggiesModel']
         source = next(
             (sub for sub in model['Submeshes'] if sub['MeshName'] == provenance['MeshName']),
             None,

@@ -39,6 +39,7 @@ for _path in (_TOOLS_DIR, _HERE):
         sys.path.insert(0, _path)
 
 import slogger  # noqa: E402
+from binfmt import load_sluggie  # noqa: E402
 
 try:
     from . import derive, gear, icon_art, icons, ids, model_icons, open_slot, slot_plan, slots, state, state_cli, state_icons
@@ -411,8 +412,7 @@ def write_copy_files(files: dict, folder: str) -> None:
 def _is_equipment(path: str) -> bool:
     """Whether the picked .sluggie is a bat or glove (FileIndex 2-5) rather than a character model."""
     try:
-        with open(path, 'r', encoding='utf-8') as f:
-            return json.load(f).get('SluggiesModel', {}).get('FileIndex') in gear.ROLES
+        return load_sluggie(path).get('SluggiesModel', {}).get('FileIndex') in gear.ROLES
     except (OSError, ValueError):
         return False
 

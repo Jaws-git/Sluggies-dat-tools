@@ -32,7 +32,8 @@ from __future__ import annotations
 
 import argparse
 import copy
-import json
+
+from binfmt import load_sluggie
 import sys
 from pathlib import Path
 
@@ -195,7 +196,7 @@ def targets(round_number: int) -> list[tuple[Path, list[tuple[str, str]]]]:
     for folder, probes in ROUNDS[round_number].items():
         paths = sorted((rebuild.MODELS_DIR / folder).glob("*.gpl/*.sluggie"))
         caps = [p for p in paths
-                if any(s["MeshName"] == "cap" for s in json.loads(p.read_text(encoding="utf-8"))["SluggiesModel"]["Submeshes"])]
+                if any(s["MeshName"] == "cap" for s in load_sluggie(p)["SluggiesModel"]["Submeshes"])]
         if len(caps) != 2:
             raise FileNotFoundError(f"{folder}: expected a main and an LOD model with a cap, found {len(caps)}")
         found += [(p, probes) for p in caps]
@@ -212,7 +213,7 @@ def main() -> int:
     try:
         for path, probes in targets(args.round):
             if args.unpatch:
-                model = json.loads(path.read_text(encoding="utf-8"))["SluggiesModel"]
+                model = load_sluggie(path)["SluggiesModel"]
                 ok, *_ = hh.removeModelFromHammerspace(model["ChunkNumber"], model["FileIndex"])
                 print(f"  {path.name}: {'restored' if ok else 'not in hammerspace'}")
                 continue

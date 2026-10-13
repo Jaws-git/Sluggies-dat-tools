@@ -38,7 +38,7 @@ OUTPUT_DAT = os.path.join(_ROOT_DIR, '3_Output_Dat', 'dt_na.dat')
 
 
 def _to_bytes(data) -> bytes:
-    """Decode a binary field: base64 string (optionally zlib, ``z:``) or a list of byte values."""
+    """Decode a binary field: ``x:`` hex string (legacy: base64 or ``z:`` zlib) or a list of byte values."""
     return _decode_field(data)
 
 
@@ -112,8 +112,8 @@ def skn_block_size(skin_data: dict, flush_ind_size: int = None) -> int:
 
     Accepts either a ``SkinData`` dict (produced by ``export.py``) or a
     ``SkinDataEdited`` dict (written by the Blender exporter).  Both carry
-    ``BindPoseData``, ``WeightData``, and ``DestIndexData`` as base64 or
-    byte-list payloads, so the same arithmetic applies to either form.
+    ``BindPoseData``, ``WeightData``, and ``DestIndexData`` as encoded
+    binary fields (hex, or byte lists in a ``--debug`` export), so the same arithmetic applies to either form.
 
     Block layout (matching the order used by ``patchSKNSourceArrays``):
 

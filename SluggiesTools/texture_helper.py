@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import model_files
 import slogger
+from binfmt import load_sluggie
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -482,9 +483,8 @@ def resolve_png_to_texture(
 
     # 4. Load the .sluggie and read its texture descriptors.
     try:
-        with open(sluggie_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError) as exc:
+        data = load_sluggie(sluggie_path)
+    except (OSError, ValueError) as exc:
         raise ValueError(f"'{sluggie_path}' could not be read: {exc}") from exc
     model = data.get("SluggiesModel", {})
     descriptors = model.get("TextureDescriptors")

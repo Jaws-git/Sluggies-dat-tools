@@ -121,7 +121,7 @@ class VertexBufferNormalTests(unittest.TestCase):
         ns = _extract({'_get_custom_split_normals': lambda _obj: custom})
         out = ns['encode_vertex_buffer_edited'](
             _Obj(_Mesh(vertices)), 6, QI, use_custom_normals=use_custom_normals,
-            use_base64=False, donor_data=list(donor),
+            use_compression=False, donor_data=list(donor),
         )
         return donor, bytes(out)
 
@@ -149,7 +149,7 @@ class VertexBufferNormalTests(unittest.TestCase):
         donor = struct.pack('>6h', 0, 0, 0, *DONOR_NORMALS[0]) * 2  # two donor vertices
         out = bytes(ns['encode_vertex_buffer_edited'](
             _Obj(_Mesh([_Vertex(0, positions[0], normal)])), 6, QI,
-            use_custom_normals=True, use_base64=False, donor_data=list(donor),
+            use_custom_normals=True, use_compression=False, donor_data=list(donor),
         ))
         expected = tuple(round(c * DIV) for c in normal)
         self.assertEqual(struct.unpack('>6h', out)[3:], expected)
@@ -171,7 +171,7 @@ class NormalBufferTests(unittest.TestCase):
         }
         ns = _extract({'_per_loop_normals': lambda _mesh, loops: [loop_normals[i] for i in loops]})
         result = ns['encode_normal_edits'](
-            _Obj(_Mesh([])), buffer, list(range(len(loop_normals))), use_base64=False,
+            _Obj(_Mesh([])), buffer, list(range(len(loop_normals))), use_compression=False,
         )
         expected = b''.join(records[i] for i in donor_indices)
         return result, expected, stride

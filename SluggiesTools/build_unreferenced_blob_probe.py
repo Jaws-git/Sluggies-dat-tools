@@ -11,7 +11,8 @@ Usage: python build_unreferenced_blob_probe.py SOURCE.sluggie --submesh 1 [--wri
 from __future__ import annotations
 
 import argparse
-import json
+
+from binfmt import load_sluggie
 import struct
 import sys
 from pathlib import Path
@@ -55,7 +56,7 @@ def relocate_blob(gpl: bytes, submesh: int) -> bytes:
 
 
 def build(source_path: Path, submesh: int, write: bool):
-    data = json.loads(source_path.read_text(encoding="utf-8"))
+    data = load_sluggie(source_path)
     model = data["SluggiesModel"]
     probe.strip_donor_edits(model)
     model["UseHammerspace"] = True

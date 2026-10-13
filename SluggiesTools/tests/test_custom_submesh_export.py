@@ -277,7 +277,7 @@ class ExportExecuteWiringTests(unittest.TestCase):
         self.assertLess(source.index('if written == 0'), copy_index)
         self.assertLess(source.index('encode_skin_hammerspace('), copy_index)
         # ... and the .sluggie that names the copied files is written after it.
-        self.assertLess(copy_index, source.index('json.dump(data, f, indent=2)'))
+        self.assertLess(copy_index, source.index('FieldCodec.dump_sluggie(data, self.filepath)'))
 
 
 class IgnoredStateWarningTests(unittest.TestCase):
@@ -970,7 +970,7 @@ class LoopAttributeTests(unittest.TestCase):
         normals, uvs, _ = _cube_loop_attributes()
         entry = cse.build_custom_submesh_entry(
             'Cube', 'custom0', 12, 'builtin:rigid_spec_v1', self.PLAN, _cube_geometry(),
-            normals, uvs, None, {'DonorTextureIndex': 0}, use_base64=False,
+            normals, uvs, None, {'DonorTextureIndex': 0}, use_compression=False,
         )
         self.assertIsInstance(entry['VertexBufferData'], list)
 
@@ -1031,7 +1031,7 @@ class ExportedEntryBuildsTests(unittest.TestCase):
         plan = cse.attribute_plan(model, template_source)
         entry = cse.build_custom_submesh_entry(
             'CustomSubmesh_1', 'custom0', host_bone_id, template_source, plan, geometry,
-            normals, uvs, colors, {'DonorTextureIndex': 0}, model.get('UseBase64', True),
+            normals, uvs, colors, {'DonorTextureIndex': 0}, model.get('UseCompression', True),
             warnings,
         )
         model['CustomSubmeshes'] = [entry]

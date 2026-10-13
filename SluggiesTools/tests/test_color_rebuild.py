@@ -111,7 +111,7 @@ def _model(edited_color_entries, edited_color_indices=None):
     }
     return {
         'SluggiesModel': {
-            'UseBase64': False,
+            'UseCompression': False,
             'Submeshes': [submesh],
         },
     }

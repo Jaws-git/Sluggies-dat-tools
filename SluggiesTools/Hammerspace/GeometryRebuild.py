@@ -148,7 +148,7 @@ def apply_desired_texture_assignments(data: dict) -> bool:
                 f'texture (requested: {requested_text})'
             )
 
-    use_b64 = model.get('UseBase64', True)
+    use_compression = model.get('UseCompression', True)
     pending_face_textures = []
     for submesh_index, submesh in enumerate(model.get('Submeshes', [])):
         display_states = submesh.get('DisplayStates', [])
@@ -158,19 +158,19 @@ def apply_desired_texture_assignments(data: dict) -> bool:
             face_count = display_state.get('FaceCount')
             if face_count is None and display_state.get('PrimListData'):
                 if decoded_state_faces is None:
-                    decoded_state_faces = _decode_original_states(submesh, use_b64)[0]
+                    decoded_state_faces = _decode_original_states(submesh, use_compression)[0]
                 face_count = len(decoded_state_faces.get(state_index, []))
             surface_indices.extend([state_index] * int(face_count or 0))
         encoded_surface_indices = submesh.get('FaceSurfaceIdsEdited')
         if encoded_surface_indices is not None:
-            surface_indices = _u16s(_dec(encoded_surface_indices, use_b64))
+            surface_indices = _u16s(_dec(encoded_surface_indices, use_compression))
 
         raw_face_textures = submesh.get('FaceTextureIndicesEdited')
         if raw_face_textures is None:
             raw_face_textures = submesh.get('FaceTextureIndices')
         if raw_face_textures is None:
             continue
-        face_textures = _u16s(_dec(raw_face_textures, use_b64))
+        face_textures = _u16s(_dec(raw_face_textures, use_compression))
         if len(face_textures) != len(surface_indices):
             raise ValueError(
                 f'sub{submesh_index}: face texture count {len(face_textures)} does not '
@@ -202,7 +202,7 @@ def apply_desired_texture_assignments(data: dict) -> bool:
     for submesh, face_textures in pending_face_textures:
         submesh['FaceTextureIndicesEdited'] = _enc(
             b''.join(_u16.pack(index) for index in face_textures),
-            use_b64,
+            use_compression,
         )
 
     return True
@@ -212,7 +212,7 @@ def apply_desired_texture_assignments(data: dict) -> bool:
 # Draw list / UV / color rebuild per submesh
 # ---------------------------------------------------------------------------
 
-def _decode_original_states(sub: dict, use_b64):
+def _decode_original_states(sub: dict, use_compression):
     """Decode every original prim list.  Returns
     (state_faces, face_lookup, first_state_by_tex, type3_index)
 
@@ -240,7 +240,7 @@ def _decode_original_states(sub: dict, use_b64):
             continue
         descs = [{'key': d['key'], 'direct': False, 'index_size': d['index_size']}
                  for d in ds['VertexStreamLayout']]
-        faces = decodeDrawList(_dec(pl, use_b64), descs)
+        faces = decodeDrawList(_dec(pl, use_compression), descs)
         state_faces[k] = faces
         first_state_by_tex.setdefault(cur_tex, k)
         for f in faces:
@@ -431,7 +431,7 @@ def _rewrite_uv_primitive_blocks(
 def rebuild_surface_assignments(data: dict) -> bool:
     """Rebuild primitive lists for unchanged faces reassigned to donor surfaces."""
     model = data['SluggiesModel']
-    use_b64 = model.get('UseBase64', True)
+    use_compression = model.get('UseCompression', True)
     rebuilt = False
 
     for sub_idx, sub in enumerate(model.get('Submeshes', [])):
@@ -439,13 +439,13 @@ def rebuild_surface_assignments(data: dict) -> bool:
         if encoded_assignments is None:
             continue
 
-        raw_assignments = _dec(encoded_assignments, use_b64)
+        raw_assignments = _dec(encoded_assignments, use_compression)
         if len(raw_assignments) % 2:
             raise ValueError(
                 f'sub{sub_idx}: FaceSurfaceIdsEdited has odd byte length '
                 f'{len(raw_assignments)}; expected big-endian uint16 values')
         target_states = _u16s(raw_assignments)
-        state_faces, _, _, _ = _decode_original_states(sub, use_b64)
+        state_faces, _, _, _ = _decode_original_states(sub, use_compression)
         original_faces = [
             (state_idx, face)
             for state_idx, faces in state_faces.items()
@@ -637,7 +637,7 @@ def rebuild_surface_assignments(data: dict) -> bool:
                  'index_size': descriptor['index_size']}
                 for descriptor in display_state['VertexStreamLayout']
             ]
-            original = _dec(display_state['PrimListData'], use_b64)
+            original = _dec(display_state['PrimListData'], use_compression)
             for block, block_faces in _primitive_blocks(
                 original, descriptors, f'sub{sub_idx} ds{source_state}'
             ):
@@ -678,7 +678,7 @@ def rebuild_surface_assignments(data: dict) -> bool:
             raw = b''.join(chunks_by_target[state_idx])
             if raw:
                 raw += b'\x00'
-            sub['DisplayStates'][state_idx]['PrimListDataEdited'] = _enc(raw, use_b64)
+            sub['DisplayStates'][state_idx]['PrimListDataEdited'] = _enc(raw, use_compression)
 
         moved_count = sum(
             source_state != target_state
@@ -797,7 +797,7 @@ def _compact_shared_color_array(
 def rebuild_edited_uvs(data: dict) -> bool:
     """Prepare unchanged-topology UV edits and rebuild only required draw lists."""
     model = data['SluggiesModel']
-    use_b64 = model.get('UseBase64', True)
+    use_compression = model.get('UseCompression', True)
     rebuilt = False
 
     for sub_idx, sub in enumerate(model.get('Submeshes', [])):
@@ -823,14 +823,14 @@ def rebuild_edited_uvs(data: dict) -> bool:
                 continue
             channel = uv['UVChannelIndex']
             stride = uv['UVChannelCompCount'] * _comp_size(uv['UVChannelQuantizeInfo'])
-            original = _dec(uv['UVChannelData'], use_b64)
-            expanded = _dec(encoded_data, use_b64)
+            original = _dec(uv['UVChannelData'], use_compression)
+            expanded = _dec(encoded_data, use_compression)
             if expanded == original:
                 uv.pop('UVChannelDataEdited', None)
                 uv.pop('UVFacesDataEdited', None)
                 continue
-            original_indices = _u16s(_dec(uv['UVFacesData'], use_b64))
-            expanded_indices = _u16s(_dec(encoded_faces, use_b64))
+            original_indices = _u16s(_dec(uv['UVFacesData'], use_compression))
+            expanded_indices = _u16s(_dec(encoded_faces, use_compression))
             compact, new_indices, preserve_indices = _compact_channel(
                 f'sub{sub_idx} uv{channel}',
                 stride,
@@ -845,9 +845,9 @@ def rebuild_edited_uvs(data: dict) -> bool:
                 uv.pop('UVFacesDataEdited', None)
                 continue
 
-            uv['UVChannelDataEdited'] = _enc(compact, use_b64)
+            uv['UVChannelDataEdited'] = _enc(compact, use_compression)
             uv['UVFacesDataEdited'] = _enc(
-                b''.join(_u16.pack(index) for index in new_indices), use_b64
+                b''.join(_u16.pack(index) for index in new_indices), use_compression
             )
             channel_edits[f'texture{channel}'] = {
                 'indices': new_indices,
@@ -874,10 +874,10 @@ def rebuild_edited_uvs(data: dict) -> bool:
                 if target_channel == source_channel or f'texture{target_channel}' in channel_edits:
                     continue
                 if (
-                    _dec(target_uv['UVChannelData'], use_b64)
-                    != _dec(source_uv['UVChannelData'], use_b64)
-                    or _dec(target_uv['UVFacesData'], use_b64)
-                    != _dec(source_uv['UVFacesData'], use_b64)
+                    _dec(target_uv['UVChannelData'], use_compression)
+                    != _dec(source_uv['UVChannelData'], use_compression)
+                    or _dec(target_uv['UVFacesData'], use_compression)
+                    != _dec(source_uv['UVFacesData'], use_compression)
                 ):
                     continue
                 target_uv['UVChannelDataEdited'] = source_uv['UVChannelDataEdited']
@@ -902,8 +902,8 @@ def rebuild_edited_uvs(data: dict) -> bool:
             normal_buffer.get('NormalBufferDataEdited') if normal_buffer else None
         )
         if edited_normal is not None:
-            donor_norm = _dec(normal_buffer['NormalBufferData'], use_b64)
-            expanded_norm = _dec(edited_normal, use_b64)
+            donor_norm = _dec(normal_buffer['NormalBufferData'], use_compression)
+            expanded_norm = _dec(edited_normal, use_compression)
             if expanded_norm == donor_norm:
                 normal_buffer.pop('NormalBufferDataEdited', None)
             else:
@@ -917,7 +917,7 @@ def rebuild_edited_uvs(data: dict) -> bool:
                         f'{len(donor_norm)} is not divisible by record '
                         f'size {normal_stride}')
                 donor_normal_indices = _u16s(
-                    _dec(normal_buffer['NormalFacesData'], use_b64))
+                    _dec(normal_buffer['NormalFacesData'], use_compression))
                 if len(donor_normal_indices) != loop_count:
                     raise ValueError(
                         f'sub{sub_idx}: donor normal index list has '
@@ -967,7 +967,7 @@ def rebuild_edited_uvs(data: dict) -> bool:
                 if compact_norm == donor_norm:
                     normal_buffer.pop('NormalBufferDataEdited', None)
                 else:
-                    normal_buffer['NormalBufferDataEdited'] = _enc(compact_norm, use_b64)
+                    normal_buffer['NormalBufferDataEdited'] = _enc(compact_norm, use_compression)
                     channel_edits['lighting'] = {
                         'indices': normal_indices,
                         'preserve_indices': normal_preserve,
@@ -995,9 +995,9 @@ def rebuild_edited_uvs(data: dict) -> bool:
         if edited_color_channels:
             entry_size = _color_entry_size(
                 color_channels[0]['ColorChannelQuantizeInfo'])
-            donor_color = _dec(color_channels[0]['ColorChannelData'], use_b64)
+            donor_color = _dec(color_channels[0]['ColorChannelData'], use_compression)
             for cc in color_channels[1:]:
-                other = _dec(cc['ColorChannelData'], use_b64)
+                other = _dec(cc['ColorChannelData'], use_compression)
                 if len(other) != len(donor_color):
                     raise ValueError(
                         f'sub{sub_idx}: color channels report different '
@@ -1012,11 +1012,11 @@ def rebuild_edited_uvs(data: dict) -> bool:
             for cc in color_channels:
                 key = f"color{cc['ColorChannelIndex']}"
                 donor_indices_by_channel[key] = _u16s(
-                    _dec(cc['ColorFacesData'], use_b64))
+                    _dec(cc['ColorFacesData'], use_compression))
                 if cc in edited_color_channels:
-                    expanded = _dec(cc['ColorChannelDataEdited'], use_b64)
+                    expanded = _dec(cc['ColorChannelDataEdited'], use_compression)
                     expanded_indices = _u16s(
-                        _dec(cc['ColorFacesDataEdited'], use_b64))
+                        _dec(cc['ColorFacesDataEdited'], use_compression))
                     if len(expanded) % entry_size:
                         raise ValueError(
                             f'sub{sub_idx} {key}: edited length '
@@ -1047,7 +1047,7 @@ def rebuild_edited_uvs(data: dict) -> bool:
                     cc.pop('ColorChannelDataEdited', None)
                     cc.pop('ColorFacesDataEdited', None)
             else:
-                compact_encoded = _enc(compact_color, use_b64)
+                compact_encoded = _enc(compact_color, use_compression)
                 for cc in color_channels:
                     key = f"color{cc['ColorChannelIndex']}"
                     if key not in indices_by_key:
@@ -1057,7 +1057,7 @@ def rebuild_edited_uvs(data: dict) -> bool:
                         b''.join(
                             _u16.pack(index) for index in indices_by_key[key]
                         ),
-                        use_b64,
+                        use_compression,
                     )
                     channel_edits[key] = {
                         'indices': indices_by_key[key],
@@ -1084,7 +1084,7 @@ def rebuild_edited_uvs(data: dict) -> bool:
         if not changed_indices:
             continue
 
-        state_faces, _, _, type3_index = _decode_original_states(sub, use_b64)
+        state_faces, _, _, type3_index = _decode_original_states(sub, use_compression)
         edited_state_faces = {}
         face_cursor = 0
         for state_index, faces in state_faces.items():
@@ -1122,7 +1122,7 @@ def rebuild_edited_uvs(data: dict) -> bool:
         total_rebuilt_blocks = 0
         for state_index, faces in state_faces.items():
             state = sub['DisplayStates'][state_index]
-            original_raw = _dec(state['PrimListData'], use_b64)
+            original_raw = _dec(state['PrimListData'], use_compression)
             if upgraded:
                 raw = encodeDrawList(edited_state_faces[state_index], new_descriptors)
                 if raw:
@@ -1139,7 +1139,7 @@ def rebuild_edited_uvs(data: dict) -> bool:
                 )
             if raw != original_raw:
                 states_to_rebuild.add(state_index)
-                state['PrimListDataEdited'] = _enc(raw, use_b64)
+                state['PrimListDataEdited'] = _enc(raw, use_compression)
             total_rebuilt_blocks += rebuilt_blocks
             face_cursor = next_face
         if face_cursor != face_count:

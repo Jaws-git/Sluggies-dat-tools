@@ -1,5 +1,4 @@
 import bpy
-import json
 import os
 import math
 import struct
@@ -75,7 +74,7 @@ def _anm_bone_corrections(arm_data):
 
 
 def _to_bytes(data) -> bytes:
-    """Decode a binary field: base64 string (optionally zlib, ``z:``) or a list of byte values."""
+    """Decode a binary field: ``x:`` hex string (legacy: base64 or ``z:`` zlib) or a list of byte values."""
     return FieldCodec.decode_field(data)
 
 
@@ -126,8 +125,7 @@ def _texture_file_map_from_sibling_sluggie(current_sluggie_path, model):
     best_score = -1
     for candidate_path in candidates:
         try:
-            with open(candidate_path, 'r') as handle:
-                candidate_root = json.load(handle)
+            candidate_root = FieldCodec.load_sluggie(candidate_path)
         except (OSError, ValueError):
             continue
         candidate_model = candidate_root.get("SluggiesModel", {})
@@ -237,7 +235,7 @@ def _apply_nonskinned_transform(obj, submesh_index, bone_list, abs_bone_mats, ow
 
 
 def decode_faces(submesh):
-    """Decode base64 uint16 BE face data back to a list of [i,j,k] triplets."""
+    """Decode encoded uint16 BE face data back to a list of [i,j,k] triplets."""
     faces_data = submesh.get("FacesData")
     face_count = submesh.get("FacesCount", 0)
     if not faces_data or not face_count:
@@ -722,7 +720,7 @@ def _rigid_rebuild_view(view, rebuild):
 
 
 def _from_bytes(raw):
-    """Base64 string for a raw buffer (the importer's decoders accept it)."""
+    """Field string for a raw buffer (the importer's decoders accept it)."""
     return FieldCodec.encode_field(raw, True)
 
 
@@ -1397,8 +1395,7 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
     )
 
     def execute(self, context):
-        with open(self.filepath, 'r') as f:
-            data = json.load(f)
+        data = FieldCodec.load_sluggie(self.filepath)
 
         model = data["SluggiesModel"]
         model_number = model["ChunkNumber"]
@@ -1710,7 +1707,7 @@ def _store_anm_metadata(action, anm, group, filepath, seq_index, bone_track_ids)
     action['SluggiesAnmBankId'] = anm['bank_id']
     action['SluggiesAnmSequence'] = seq_index
     action['SluggiesAnmSequenceCount'] = len(anm['sequences'])
-    action['SluggiesAnmTracks'] = FieldCodec.encode_field(AnmFormat.dumps_records(records))
+    action['SluggiesAnmTracks'] = FieldCodec.encode_compact(AnmFormat.dumps_records(records))
     # The sequence length, editable as the action's manual frame range.
     length = max((t['length'] for t in anm['sequences'][seq_index]), default=0.0)
     action.use_frame_range = True

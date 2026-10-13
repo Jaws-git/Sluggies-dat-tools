@@ -12,7 +12,6 @@ Bezier/Hermite/SQUAD tangents are not carried over).
 """
 
 import glob
-import json
 import os
 import struct
 import sys
@@ -20,6 +19,7 @@ import sys
 import numpy as np
 
 import slogger
+from binfmt import load_sluggie
 from glb_export import _Glb, FLOAT, gltf_rotation, trs_matrix
 
 ANM_MAGICS = (0x01321AFD, 0x013240DB, 0x01324210)
@@ -177,10 +177,9 @@ def find_sluggie(char_dir):
     best, best_bones = None, 0
     for path in glob.glob(os.path.join(char_dir, '**', '*.sluggie'), recursive=True):
         try:
-            with open(path, 'r') as f:
-                data = json.load(f)
+            data = load_sluggie(path)
             bh = data.get('SluggiesModel', data).get('BoneHierarchy')
-        except (OSError, json.JSONDecodeError, AttributeError):
+        except (OSError, ValueError, AttributeError):
             continue
         if bh and len(bh) > best_bones:
             best, best_bones = path, len(bh)
@@ -207,8 +206,7 @@ def convert_anm_directory(char_dir):
     if not sluggie_path:
         slogger.warning(f"No .sluggie with bones in {char_dir}, skipping ANM glTF conversion", source='anm_to_gltf')
         return []
-    with open(sluggie_path, 'r') as f:
-        sluggie = json.load(f)
+    sluggie = load_sluggie(sluggie_path)
     bone_hierarchy = sluggie.get('SluggiesModel', sluggie)['BoneHierarchy']
 
     results = []

@@ -34,7 +34,7 @@ if TOOLS_DIR not in sys.path:
 
 import act_rebuild  # noqa: E402
 from act import ACTLayout  # noqa: E402
-from binfmt import encode_field as _encode_field  # noqa: E402
+from binfmt import decode_field, encode_field as _encode_field  # noqa: E402
 
 
 def _load_export_functions(*names):
@@ -49,7 +49,7 @@ def _load_export_functions(*names):
         node for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name in wanted
     ], type_ignores=[])
-    ns = {'struct': struct, 'base64': base64, 'DEBUG_DONT_USE_BASE64': False,
+    ns = {'struct': struct, 'base64': base64, 'DEBUG_NO_COMPRESSION': False,
           '_encode_field': _encode_field}
 
     class _StubLogger:
@@ -191,7 +191,7 @@ class ExportACTUserDataTests(unittest.TestCase):
         entry = act_user_data['Kind4Entries'][0]
         self.assertEqual(entry['Count'], 3)
         self.assertEqual(entry['DataPtr'], 0x0C)
-        payload = base64.b64decode(entry['Payload'])
+        payload = decode_field(entry["Payload"])
         self.assertEqual(payload, b''.join(struct.pack('>HH', tid, 2) for tid in (5, 7, 42)))
 
         # Full round trip through JSON, as the .sluggie file itself does.

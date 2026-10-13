@@ -212,7 +212,7 @@ def document(model, chunk: int, file_index: int, entry_base: int, entry_bytes: b
         if key == 'ModelLength':
             out[META_KEY] = meta
     out['UseHammerspace'] = True
-    out[DONOR_KEY] = {'Offset': hex(entry_base), 'Data': encode_field(entry_bytes, base.get('UseBase64', True))}
+    out[DONOR_KEY] = {'Offset': hex(entry_base), 'Data': encode_field(entry_bytes, base.get('UseCompression', True))}
     return {'SluggiesModel': out}
 
 

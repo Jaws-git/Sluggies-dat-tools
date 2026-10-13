@@ -249,7 +249,7 @@ def unweighted_error(object_name: str, unweighted: Sequence[int]) -> Optional[st
     )
 
 
-def encode_influences(vertex_weights: Sequence[dict], source_vertices: Sequence[int], use_base64: bool = True):
+def encode_influences(vertex_weights: Sequence[dict], source_vertices: Sequence[int], use_compression: bool = True):
     """``Influences``: ``(exported vertex, bone, weight)`` records for the
     exported vertices (``source_vertices[i]`` is the Blender index of
     exported vertex ``i``), weights normalized per vertex."""
@@ -259,7 +259,7 @@ def encode_influences(vertex_weights: Sequence[dict], source_vertices: Sequence[
         total = sum(influences.values())
         for bone, weight in sorted(influences.items()):
             raw += INFLUENCE.pack(index, bone, weight / total)
-    return cse.encode_field(bytes(raw), use_base64)
+    return cse.encode_field(bytes(raw), use_compression)
 
 
 # ---------------------------------------------------------------------------
@@ -343,7 +343,7 @@ def build_skinned_rebuild_entry(
     vertex_weights: Sequence[dict],
     new_surfaces: Sequence[dict],
     reasons: Sequence[str],
-    use_base64: bool = True,
+    use_compression: bool = True,
     warnings: Optional[List[str]] = None,
     infos: Optional[List[str]] = None,
 ) -> dict:
@@ -359,19 +359,19 @@ def build_skinned_rebuild_entry(
     if len(routing.indices) != faces_count:
         raise ValueError(f'{object_name}: {len(routing.indices)} surface indices for {faces_count} faces')
     entry = {
-        'VertexBufferData': cse.encode_field(encode_vertex_records(object_name, geometry, normals, donor.position_quantize), use_base64),
-        'Influences': encode_influences(vertex_weights, geometry.source_vertices, use_base64),
+        'VertexBufferData': cse.encode_field(encode_vertex_records(object_name, geometry, normals, donor.position_quantize), use_compression),
+        'Influences': encode_influences(vertex_weights, geometry.source_vertices, use_compression),
     }
     if donor.color_format:
-        entry.update(rre.encode_color_channel(object_name, donor.color_format, geometry, loop_colors, use_base64, infos))
+        entry.update(rre.encode_color_channel(object_name, donor.color_format, geometry, loop_colors, use_compression, infos))
     entry['UVChannels'] = rre.encode_uv_channels(
         object_name, donor.uv_formats, donor.uv_mirrored, geometry, loop_uvs_by_channel,
-        use_base64, warnings, infos,
+        use_compression, warnings, infos,
     )
     entry['FacesCount'] = faces_count
-    entry['FacesData'] = cse.encode_field(faces_data, use_base64)
+    entry['FacesData'] = cse.encode_field(faces_data, use_compression)
     entry['FaceSurfaceTable'] = list(routing.table)
-    entry['FaceSurfaceIndices'] = cse.encode_field(struct.pack(f'>{len(routing.indices)}H', *routing.indices), use_base64)
+    entry['FaceSurfaceIndices'] = cse.encode_field(struct.pack(f'>{len(routing.indices)}H', *routing.indices), use_compression)
     if new_surfaces:
         entry['NewSurfaces'] = [dict(surface) for surface in new_surfaces]
     entry['Reason'] = list(reasons)
@@ -394,7 +394,7 @@ _DELTA_AXES = ('x', 'y', 'z', 'nx', 'ny', 'nz')
 
 def encode_facial_poses(
     object_name: str, objects: Sequence[FacialObjectKeys], geometry: 'cse.BoneLocalGeometry',
-    quantize_info: int, use_base64: bool = True,
+    quantize_info: int, use_compression: bool = True,
     warnings: Optional[List[str]] = None, infos: Optional[List[str]] = None,
 ) -> List[dict]:
     """``FacialPoses``: per facial object, the exported vertices whose
@@ -464,9 +464,9 @@ def encode_facial_poses(
         )
         result.append({
             'ObjectIndex': facial_object.object_index,
-            'Vertices': cse.encode_field(struct.pack(f'>{len(mapped)}H', *mapped), use_base64),
+            'Vertices': cse.encode_field(struct.pack(f'>{len(mapped)}H', *mapped), use_compression),
             'PoseDeltas': [
-                cse.encode_field(struct.pack(f'>{len(rows) * 6}h', *(v for row in rows for v in row)), use_base64)
+                cse.encode_field(struct.pack(f'>{len(rows) * 6}h', *(v for row in rows for v in row)), use_compression)
                 for rows in records
             ],
         })

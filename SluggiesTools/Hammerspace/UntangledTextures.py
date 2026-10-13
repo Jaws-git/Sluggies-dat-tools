@@ -19,7 +19,6 @@ match.
 from __future__ import annotations
 
 import glob
-import json
 import os
 import struct
 
@@ -29,6 +28,7 @@ except ImportError:  # pragma: no cover - SluggiesTools not on sys.path yet
     import sys
     sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(__file__), '..')))
     from tpl import TEXDescriptor
+from binfmt import load_sluggie
 
 #: Matches the export's untangle ``max_attempts``.
 MAX_ATTEMPTS = 8192
@@ -175,8 +175,7 @@ def find_sluggie_model(chunk_number: int, file_index: int, models_dir: str = _MO
     for path in sorted(glob.glob(os.path.join(glob.escape(models_dir), f'{chunk_number} *', '**', '*.sluggie'),
                                  recursive=True)):
         try:
-            with open(path, 'r', encoding='utf-8') as handle:
-                model = json.load(handle)['SluggiesModel']
+            model = load_sluggie(path)['SluggiesModel']
         except (OSError, ValueError, KeyError):
             continue
         if (model.get('ChunkNumber') == chunk_number and model.get('FileIndex') == file_index

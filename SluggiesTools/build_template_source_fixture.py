@@ -22,6 +22,8 @@ import argparse
 import copy
 import hashlib
 import json
+
+from binfmt import load_sluggie
 import struct
 import sys
 from pathlib import Path
@@ -190,7 +192,7 @@ def builtin_rigid_state_records(submesh0: dict, name: str) -> list[tuple[int, st
 
 
 def canonical_rigid_submesh(
-    name: str, records: list[tuple[int, str, str]], submesh0: dict, use_base64: bool,
+    name: str, records: list[tuple[int, str, str]], submesh0: dict, use_compression: bool,
 ) -> dict:
     """Create a rigid submesh skeleton with canonical formats (F9) and *records*.
 
@@ -209,7 +211,7 @@ def canonical_rigid_submesh(
     ] + [{"key": f"texture{i}", "index_size": index_size_for(4)} for i in range(uv_count)]
     type3_mode = f"{type3_setting(layout):08x}"
 
-    placeholder = probe._encode_field(b"\x00" * 6, use_base64)
+    placeholder = probe._encode_field(b"\x00" * 6, use_compression)
     texture0 = next(_texture_layer(mode)[1] for state_id, _, mode in records if state_id == TYPE1)
     display_states = []
     for index, (state_id, pad, mode) in enumerate(records):
@@ -234,7 +236,7 @@ def canonical_rigid_submesh(
         "VertexCountFieldOffset": "0x0",
         "FacesCount": 0,
         "FacesData": placeholder,
-        "FaceTextureIndices": probe._encode_field(struct.pack(">H", texture0), use_base64),
+        "FaceTextureIndices": probe._encode_field(struct.pack(">H", texture0), use_compression),
         "DisplayStates": display_states,
         "VertexBuffer": {
             "VertexBufferOffset": "0x0",
@@ -280,7 +282,7 @@ def canonical_rigid_submesh(
             "ColorChannelLength": len(COLOR_WHITE),
             "ColorChannelCompCount": COLOR_FORMAT[0],
             "ColorChannelQuantizeInfo": COLOR_FORMAT[1],
-            "ColorChannelData": probe._encode_field(COLOR_WHITE, use_base64),
+            "ColorChannelData": probe._encode_field(COLOR_WHITE, use_compression),
             "ColorFacesData": placeholder,
         }],
     }
@@ -298,7 +300,7 @@ def parse_source(spec: str) -> tuple[str, str]:
 
 def build_cube_submesh(model: dict, spec: str, name: str, half_extent: float) -> tuple[dict, dict]:
     """Return ``(submesh, metadata)`` for one cube from one template source."""
-    use_base64 = bool(model.get("UseBase64", True))
+    use_compression = bool(model.get("UseCompression", True))
     submeshes = model["Submeshes"]
     kind, argument = parse_source(spec)
     provenance = None
@@ -325,9 +327,9 @@ def build_cube_submesh(model: dict, spec: str, name: str, half_extent: float) ->
         else:
             records = builtin_rigid_state_records(submesh0, argument)
             provenance = BUILTIN_TEMPLATES[argument]["Provenance"]
-        submesh = canonical_rigid_submesh(name, records, submesh0, use_base64)
+        submesh = canonical_rigid_submesh(name, records, submesh0, use_compression)
         draw_state = len(records) - 1
-    cube = probe._replace_clone_with_cube(submesh, half_extent, draw_state, use_base64)
+    cube = probe._replace_clone_with_cube(submesh, half_extent, draw_state, use_compression)
     metadata = {
         "TemplateSource": spec,
         "States": [
@@ -374,7 +376,7 @@ def prepare_template_source_fixture(
         color = colors[cube_number] if colors else None
         if color is not None:
             channel = submesh["ColorChannels"][0]
-            channel["ColorChannelData"] = probe._encode_field(color, bool(model.get("UseBase64", True)))
+            channel["ColorChannelData"] = probe._encode_field(color, bool(model.get("UseCompression", True)))
             channel["ColorChannelLength"] = len(color)
             metadata["ColorBytes"] = color.hex()
         model["Submeshes"].append(submesh)
@@ -394,8 +396,7 @@ def build_template_source_fixture(
     source_path: Path, fixture_path: Path, cubes: list[tuple[int, str]],
     half_extent: float, write: bool, colors: list[bytes | None] | None = None,
 ):
-    with source_path.open("r", encoding="utf-8") as source_file:
-        source_data = json.load(source_file)
+    source_data = load_sluggie(source_path)
     data = prepare_template_source_fixture(source_data, cubes, half_extent, colors)
     model = data["SluggiesModel"]
     fixture_path.parent.mkdir(parents=True, exist_ok=True)

@@ -1,7 +1,6 @@
 import os
 import sys
 import shutil
-import json
 import struct
 
 # Resolve project directories relative to this file so the script works
@@ -30,6 +29,7 @@ import root_scale as _root_scale
 import bone_geo_inplace as _bone_geo
 from binfmt import comp_size as _comp_size
 from binfmt import decode_field as _decode_field
+from binfmt import load_sluggie as _load_sluggie
 from compact_channel import compact_channel, compact_channel_fixed_slots
 
 # ---------------------------------------------------------------------------
@@ -43,7 +43,7 @@ _NO_LIGHTING_MODES = frozenset({'Shdw', 'Audi', 'Oeka'})
 
 
 def _to_bytes(data) -> bytes:
-    """Decode a binary field: base64 string (optionally zlib, ``z:``) or a list of byte values."""
+    """Decode a binary field: ``x:`` hex string (legacy: base64 or ``z:`` zlib) or a list of byte values."""
     return _decode_field(data)
 
 
@@ -228,11 +228,10 @@ if not os.path.exists(json_path):
 # Load JSON
 # ---------------------------------------------------------------------------
 
-with open(json_path, 'r') as f:
-    try:
-        data = json.load(f)
-    except json.JSONDecodeError as e:
-        abort(f"JSON parse error in {json_path}: {e}")
+try:
+    data = _load_sluggie(json_path)
+except (OSError, ValueError) as e:
+    abort(f"Could not read {json_path}: {e}")
 
 if "SluggiesModel" not in data:
     abort(f"JSON does not contain a 'SluggiesModel' entry: {json_path}")

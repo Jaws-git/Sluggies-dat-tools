@@ -13,6 +13,8 @@ regardless of where it sits in the package.
 from __future__ import annotations
 
 import base64
+import json
+import lzma
 import re
 import struct
 import zlib
@@ -102,42 +104,99 @@ def skin_bone_ids(skin_data: dict | None) -> set[int]:
     return bones
 
 
-# Prefix of a zlib-compressed binary field: "z:" + base64(zlib(bytes)). ':' is
-# outside the base64 alphabet, so a field is self-describing and plain-base64,
-# compressed and mixed files all decode with the same code. The Blender add-on
-# keeps its own copy of this codec (BlenderAddonSrc/FieldCodec.py).
+# A .sluggie file is JSON. A regular file is xz-compressed as a whole and its
+# binary fields are "x:" + hex; a --debug file (UseCompression false) is plain JSON
+# with binary fields as byte-int lists. Hex keeps the bytes aligned in the
+# text, so xz compresses it about as well as raw binary (base64 does not).
+# Older files hold plain base64 fields or "z:" + base64(zlib(bytes)); ':' is
+# outside the base64 alphabet, so every value says how it is encoded and old,
+# new and mixed files all decode with the same code. The Blender add-on keeps
+# its own copy of this codec (BlenderAddonSrc/FieldCodec.py).
+HEX_FIELD_PREFIX = 'x:'
 ZLIB_FIELD_PREFIX = 'z:'
-ZLIB_FIELD_LEVEL = 6
+XZ_MAGIC = b'\xfd7zXZ\x00'
+XZ_PRESET = 6
 
 
-def decode_field(value, use_base64: bool = True) -> bytes | None:
+def decode_field(value, use_compression: bool = True) -> bytes | None:
     """Decode a binary field from a ``.sluggie`` JSON value.
 
-    A string is base64, or ``"z:"`` + base64 of zlib-compressed bytes; a
-    list is raw byte ints (``--debug`` export mode). ``use_base64`` is kept
-    for the callers' signature: the value's own type decides.  ``None``
-    passes through unchanged so callers can probe optional fields.
+    A string is ``"x:"`` + hex, legacy base64, or legacy ``"z:"`` + base64
+    of zlib-compressed bytes; a list is raw byte ints (``--debug`` export
+    mode). ``use_compression`` is kept for the callers' signature: the value's
+    own type decides.  ``None`` passes through unchanged so callers can
+    probe optional fields.
     """
     if value is None:
         return None
     if isinstance(value, str):
+        if value.startswith(HEX_FIELD_PREFIX):
+            return bytes.fromhex(value[len(HEX_FIELD_PREFIX):])
         if value.startswith(ZLIB_FIELD_PREFIX):
             return zlib.decompress(base64.b64decode(value[len(ZLIB_FIELD_PREFIX):]))
         return base64.b64decode(value)
     return bytes(value)
 
 
-def encode_field(data: bytes, use_base64: bool = True):
+def encode_field(data: bytes, use_compression: bool = True):
     """Encode a binary field for a ``.sluggie`` JSON value; inverse of
-    :func:`decode_field`. With base64, the zlib form is used whenever it is
-    shorter than plain base64 (tiny fields stay plain)."""
-    if not use_base64:
+    :func:`decode_field`: ``"x:"`` + hex, or a byte-int list when
+    ``use_compression`` is false (``--debug``)."""
+    if not use_compression:
         return list(data)
-    data = bytes(data)
-    plain = base64.b64encode(data).decode('ascii')
-    packed = ZLIB_FIELD_PREFIX + base64.b64encode(
-        zlib.compress(data, ZLIB_FIELD_LEVEL)).decode('ascii')
-    return packed if len(packed) < len(plain) else plain
+    return HEX_FIELD_PREFIX + bytes(data).hex()
+
+
+def loads_sluggie(raw: bytes) -> dict:
+    """The document of a ``.sluggie`` file's bytes: xz-compressed or plain
+    JSON. A damaged xz stream raises ``json.JSONDecodeError`` like broken
+    JSON does, so callers need one ``except``."""
+    if raw.startswith(XZ_MAGIC):
+        try:
+            raw = lzma.decompress(raw)
+        except lzma.LZMAError as exc:
+            raise json.JSONDecodeError(f'damaged xz data: {exc}', '', 0) from exc
+    return json.loads(raw.decode('utf-8-sig'))
+
+
+def load_sluggie(path) -> dict:
+    """Read a ``.sluggie`` file (see :func:`loads_sluggie`)."""
+    with open(path, 'rb') as handle:
+        return loads_sluggie(handle.read())
+
+
+def read_sluggie_head(path, size: int) -> str:
+    """The first ``size`` bytes of a ``.sluggie`` file's JSON text, without
+    decompressing the rest, for quick looks at the leading keys."""
+    with open(path, 'rb') as handle:
+        data = handle.read(1 << 16)
+        if not data.startswith(XZ_MAGIC):
+            return data[:size].decode('utf-8', errors='ignore')
+        decompressor, out = lzma.LZMADecompressor(), b''
+        try:
+            while len(out) < size and not decompressor.eof:
+                out += decompressor.decompress(data, max_length=size - len(out))
+                data = b''
+                if decompressor.needs_input:
+                    data = handle.read(1 << 16)
+                    if not data:
+                        break
+        except lzma.LZMAError as exc:
+            raise ValueError(f'damaged xz data: {exc}') from exc
+    return out.decode('utf-8', errors='ignore')
+
+
+def dump_sluggie(document: dict, path, text: str | None = None) -> None:
+    """Write a ``.sluggie`` file: xz-compressed, or plain JSON for a
+    ``--debug`` document (``SluggiesModel.UseCompression`` false). ``text`` is
+    the JSON to write (default: ``document`` indented by 2)."""
+    if text is None:
+        text = json.dumps(document, indent=2)
+    raw = text.encode('utf-8')
+    if (document.get('SluggiesModel') or {}).get('UseCompression', True):
+        raw = lzma.compress(raw, preset=XZ_PRESET)
+    with open(path, 'wb') as handle:
+        handle.write(raw)
 
 
 # ACT geo names are "<stem>.gpl" (or ".tpl"). The game's own data leaves 34 of

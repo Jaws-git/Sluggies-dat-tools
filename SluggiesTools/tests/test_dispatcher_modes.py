@@ -73,7 +73,7 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
 
     def test_static_position_edit_requests_only_gpl_build(self):
         model = {
-            'UseBase64': False,
+            'UseCompression': False,
             'Submeshes': [{
                 'VertexBuffer': {
                     'VertexBufferData': [0, 1],
@@ -90,7 +90,7 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
 
     def test_skinned_position_edit_requests_gpl_and_skn_build(self):
         model = {
-            'UseBase64': False,
+            'UseCompression': False,
             'SkinDataEdited': {'SK1s': []},
             'Submeshes': [{
                 'VertexBuffer': {
@@ -108,7 +108,7 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
 
     def test_identical_reexported_position_buffer_keeps_clone_defaults(self):
         model = {
-            'UseBase64': False,
+            'UseCompression': False,
             'Submeshes': [{
                 'VertexBuffer': {
                     'VertexBufferData': [0, 1],
@@ -122,7 +122,7 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
 
     def test_uv_edit_payload_requests_gpl_build(self):
         model = {
-            'UseBase64': False,
+            'UseCompression': False,
             'Submeshes': [{
                 'VertexBuffer': {},
                 'UVChannels': [{
@@ -139,7 +139,7 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
 
     def test_identical_stale_uv_payload_keeps_clone_defaults(self):
         model = {
-            'UseBase64': False,
+            'UseCompression': False,
             'Submeshes': [{
                 'VertexBuffer': {},
                 'UVChannels': [{
@@ -154,7 +154,7 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
 
     def test_normal_edit_payload_requests_gpl_build(self):
         model = {
-            'UseBase64': False,
+            'UseCompression': False,
             'Submeshes': [{
                 'VertexBuffer': {},
                 'NormalBuffer': {
@@ -172,7 +172,7 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
 
     def test_identical_stale_normal_payload_keeps_clone_defaults(self):
         model = {
-            'UseBase64': False,
+            'UseCompression': False,
             'Submeshes': [{
                 'VertexBuffer': {},
                 'NormalBuffer': {
@@ -187,7 +187,7 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
 
     def test_color_edit_payload_requests_gpl_build(self):
         model = {
-            'UseBase64': False,
+            'UseCompression': False,
             'Submeshes': [{
                 'VertexBuffer': {},
                 'ColorChannels': [{
@@ -205,7 +205,7 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
 
     def test_identical_stale_color_payload_keeps_clone_defaults(self):
         model = {
-            'UseBase64': False,
+            'UseCompression': False,
             'Submeshes': [{
                 'VertexBuffer': {},
                 'ColorChannels': [{
@@ -220,7 +220,7 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
 
     def test_normal_and_color_edits_request_gpl_build(self):
         model = {
-            'UseBase64': False,
+            'UseCompression': False,
             'Submeshes': [{
                 'VertexBuffer': {},
                 'NormalBuffer': {

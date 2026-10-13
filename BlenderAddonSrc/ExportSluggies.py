@@ -24,13 +24,13 @@ from . import HostBones
 
 
 def _to_bytes(data) -> bytes:
-    """Decode a binary field: base64 string (optionally zlib, ``z:``) or a list of byte values."""
+    """Decode a binary field: ``x:`` hex string (legacy: base64 or ``z:`` zlib) or a list of byte values."""
     return FieldCodec.decode_field(data)
 
 
-def _from_bytes(raw: bytes, use_base64: bool = True):
-    """Encode binary data as base64 (zlib-compressed when shorter) or a list of byte values."""
-    return FieldCodec.encode_field(raw, use_base64)
+def _from_bytes(raw: bytes, use_compression: bool = True):
+    """Encode binary data as an ``x:`` hex string, or a list of byte values in a --debug file."""
+    return FieldCodec.encode_field(raw, use_compression)
 
 
 def _pack_quantized_component(value, divisor, context):
@@ -111,9 +111,9 @@ def _normal_is_donor_roundtrip(normal, donor_normal):
 
 
 def encode_vertex_buffer_edited(obj, comp_count, quant_info, use_custom_normals=False,
-                                use_base64=True, donor_data=None):
+                                use_compression=True, donor_data=None):
     """Re-quantize edited vertex positions (and normals if comp_count==6)
-    back into the original binary format and return a base64 string or byte list.
+    back into the original binary format and return an encoded binary field (hex string or byte list).
 
     With *donor_data* (the donor VertexBufferData) and an unchanged vertex
     count, interleaved normals keep their donor bytes: always when
@@ -175,7 +175,7 @@ def encode_vertex_buffer_edited(obj, comp_count, quant_info, use_custom_normals=
         if donor_normal_bytes is not None:
             raw_bytes += donor_normal_bytes
 
-    return _from_bytes(bytes(raw_bytes), use_base64)
+    return _from_bytes(bytes(raw_bytes), use_compression)
 
 
 def _facial_vertex_indices(attribute):
@@ -221,7 +221,7 @@ def _encode_facial_key(
 
 
 def encode_facial_pose_edits(
-    obj, facial_data, submesh_index, use_base64=True, facial_edited=None
+    obj, facial_data, submesh_index, use_compression=True, facial_edited=None
 ):
     """Return sparse position-pose edits for one submesh's Blender shape keys."""
     if not facial_data or not obj.data.shape_keys:
@@ -273,7 +273,7 @@ def encode_facial_pose_edits(
             if edited_raw != _to_bytes(original_poses[pose_index]):
                 pose_edits.append({
                     "PoseIndex": pose_index,
-                    "PoseData": _from_bytes(edited_raw, use_base64),
+                    "PoseData": _from_bytes(edited_raw, use_compression),
                 })
         if pose_edits:
             object_edits.append({
@@ -292,7 +292,7 @@ def update_facial_pose_edits(candidates, data, warnings):
         return
 
     submeshes = model.get("Submeshes", [])
-    use_base64 = model.get("UseBase64", True)
+    use_compression = model.get("UseCompression", True)
     selected = {}
     for obj in candidates:
         submesh_index = next((
@@ -320,7 +320,7 @@ def update_facial_pose_edits(candidates, data, warnings):
                     f"{obj.name}: facial shape keys are missing; existing facial edits cleared."
                 )
             generated.extend(encode_facial_pose_edits(
-                obj, facial_data, submesh_index, use_base64,
+                obj, facial_data, submesh_index, use_compression,
                 model.get("FacialPoseDataEdited"),
             ))
 
@@ -668,7 +668,7 @@ def _find_uv_layer(mesh, all_channels, target_ch_ind):
     return layer
 
 
-def encode_uv_channel_edited(obj, json_channel, use_base64=True, all_uv_channels=None):
+def encode_uv_channel_edited(obj, json_channel, use_compression=True, all_uv_channels=None):
     """Re-quantize Blender UV layer back into the game's ST coordinate format.
 
     Writes each Blender UV value back into its ORIGINAL slot position, using
@@ -676,7 +676,7 @@ def encode_uv_channel_edited(obj, json_channel, use_base64=True, all_uv_channels
     loop. This preserves the original coord-array layout so the unmodified draw
     list in the .dat file keeps working correctly.
 
-    Returns uv_channel_data_b64, or None if the matching UV layer is not found.
+    Returns uv_channel_data_enc, or None if the matching UV layer is not found.
     Warns (via returned string list) when a slot receives two conflicting values
     (i.e. the user split a UV seam that was previously shared).
     """
@@ -762,7 +762,7 @@ def encode_uv_channel_edited(obj, json_channel, use_base64=True, all_uv_channels
                     f"{obj.name} UV{ch_ind} slot {slot_index} component {component_index}",
                 )
 
-    return _from_bytes(bytes(raw_bytes), use_base64), conflicts
+    return _from_bytes(bytes(raw_bytes), use_compression), conflicts
 
 
 def _per_loop_normals(mesh, loop_indices):
@@ -783,7 +783,7 @@ def _per_loop_normals(mesh, loop_indices):
     return result
 
 
-def encode_normal_edits(obj, json_normal_buffer, loop_indices, use_base64=True):
+def encode_normal_edits(obj, json_normal_buffer, loop_indices, use_compression=True):
     """Export per-loop edited normals aligned with FacesDataEdited (plan 3.3, item 1).
 
     Mirrors the per-loop UV contract of item 3.2: one quantized normal per loop
@@ -851,17 +851,17 @@ def encode_normal_edits(obj, json_normal_buffer, loop_indices, use_base64=True):
     if len(normal_data) != len(loop_indices) * stride:
         return None
     normal_faces = _from_bytes(
-        struct.pack(f'>{len(loop_indices)}H', *range(len(loop_indices))), use_base64
+        struct.pack(f'>{len(loop_indices)}H', *range(len(loop_indices))), use_compression
     )
-    return _from_bytes(bytes(normal_data), use_base64), normal_faces
+    return _from_bytes(bytes(normal_data), use_compression), normal_faces
 
 
-def _apply_inplace_normal_edits(obj, normal_buffer, loop_indices, errors, use_base64=True):
+def _apply_inplace_normal_edits(obj, normal_buffer, loop_indices, errors, use_compression=True):
     """Write in-place standalone normal edits. Returns True when loops that
     share a donor slot got different normals, which only Hammerspace can
     store."""
     normal_edits = encode_normal_edits(
-        obj, normal_buffer, loop_indices, use_base64
+        obj, normal_buffer, loop_indices, use_compression
     )
     if normal_edits is None:
         donor_loop_count = len(_to_bytes(
@@ -955,7 +955,7 @@ def _encode_color_entry(quant_info, rgba):
     raise ValueError(f"unsupported color channel format {fmt} (quantizeInfo=0x{quant_info:X})")
 
 
-def encode_color_edits(obj, json_channel, loop_indices, use_base64=True):
+def encode_color_edits(obj, json_channel, loop_indices, use_compression=True):
     """Export per-loop edited colors for one ColorChannels entry (plan 3.3, item 1).
 
     Reads the CORNER-domain color attribute the importer created ('color0' /
@@ -978,25 +978,25 @@ def encode_color_edits(obj, json_channel, loop_indices, use_base64=True):
     for color in colors:
         color_data += _encode_color_entry(quant, color)
     color_faces = _from_bytes(
-        struct.pack(f'>{len(loop_indices)}H', *range(len(loop_indices))), use_base64
+        struct.pack(f'>{len(loop_indices)}H', *range(len(loop_indices))), use_compression
     )
-    return _from_bytes(bytes(color_data), use_base64), color_faces
+    return _from_bytes(bytes(color_data), use_compression), color_faces
 
 
-def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False, use_base64=True):
+def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False, use_compression=True):
     """Encode all mesh data for hammerspace export (vertex count may differ from original).
 
     Returns a dict with:
-      'VertexBufferDataEdited':    base64 string  — full re-quantized vertex buffer
-      'FacesDataEdited':           base64 string  — uint16 BE triangulated face indices
+      'VertexBufferDataEdited':    binary field   — full re-quantized vertex buffer
+      'FacesDataEdited':           binary field   — uint16 BE triangulated face indices
       'FacesCountEdited':          int            — triangle count
-      'FaceTextureIndicesEdited':  base64 string  — uint16 BE texture index per face
+      'FaceTextureIndicesEdited':  binary field   — uint16 BE texture index per face
                                                     (derived from Blender material slots;
                                                     used to route faces to draw states)
-      'UVEdits': {ch_ind: (uv_data_b64, uv_faces_b64), ...}
-      'NormalEdits': (normal_data_b64, normal_faces_b64) or None — per-loop normals
+      'UVEdits': {ch_ind: (uv_data_enc, uv_faces_enc), ...}
+      'NormalEdits': (normal_data_enc, normal_faces_enc) or None — per-loop normals
                       when the submesh has a standalone NormalBuffer (plan 3.3)
-      'ColorEdits': {ch_ind: (color_data_b64, color_faces_b64), ...} — per-loop
+      'ColorEdits': {ch_ind: (color_data_enc, color_faces_enc), ...} — per-loop
                      colors for channels whose color attribute exists (plan 3.3)
     """
     mesh = obj.data
@@ -1008,12 +1008,12 @@ def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False, use_bas
         obj["VertexBufferCompCount"],
         obj["VertexBufferQuantizeInfo"],
         use_custom_normals=use_custom_normals,
-        use_base64=use_base64,
+        use_compression=use_compression,
         donor_data=json_submesh.get("VertexBuffer", {}).get("VertexBufferData"),
     )
 
     face_flat = [vi for tri in triangles for vi in tri.vertices]
-    faces_data = _from_bytes(struct.pack(f'>{len(face_flat)}H', *face_flat), use_base64)
+    faces_data = _from_bytes(struct.pack(f'>{len(face_flat)}H', *face_flat), use_compression)
 
     # Per-face texture index derived from Blender material slots.
     # Prefer mat["TextureIndex"] (set by 2.2 import); fall back to name parsing.
@@ -1035,7 +1035,7 @@ def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False, use_bas
         for tri in triangles
     ]
     face_tex_data = _from_bytes(
-        struct.pack(f'>{len(face_tex_flat)}H', *face_tex_flat), use_base64
+        struct.pack(f'>{len(face_tex_flat)}H', *face_tex_flat), use_compression
     )
 
     all_uv_channels = json_submesh.get('UVChannels', [])
@@ -1093,12 +1093,12 @@ def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False, use_bas
                         divisor,
                         f"{obj.name} UV{ch_ind} loop {coord_index} component {component_index}",
                     )
-        uv_data_b64 = _from_bytes(bytes(raw_bytes), use_base64)
+        uv_data_enc = _from_bytes(bytes(raw_bytes), use_compression)
 
         uv_flat = [idx for tri in uv_tri_indices for idx in tri]
-        uv_faces_b64 = _from_bytes(struct.pack(f'>{len(uv_flat)}H', *uv_flat), use_base64)
+        uv_faces_enc = _from_bytes(struct.pack(f'>{len(uv_flat)}H', *uv_flat), use_compression)
 
-        uv_edits[ch_ind] = (uv_data_b64, uv_faces_b64)
+        uv_edits[ch_ind] = (uv_data_enc, uv_faces_enc)
 
     # Per-loop normals (standalone NormalBuffer, non-skinned meshes) and per-loop
     # colors — same expanded per-loop contract as the UV edits above (plan 3.3).
@@ -1108,12 +1108,12 @@ def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False, use_bas
     normal_buffer = json_submesh.get("NormalBuffer")
     # Normals are only rewritten when the user opted in, matching in-place mode.
     if use_custom_normals and isinstance(normal_buffer, dict) and "NormalBufferData" in normal_buffer:
-        normal_edits = encode_normal_edits(obj, normal_buffer, loop_indices, use_base64)
+        normal_edits = encode_normal_edits(obj, normal_buffer, loop_indices, use_compression)
 
     color_edits = {}
     for json_channel in json_submesh.get("ColorChannels", []):
         ch_ind = json_channel.get("ColorChannelIndex", 0)
-        encoded = encode_color_edits(obj, json_channel, loop_indices, use_base64)
+        encoded = encode_color_edits(obj, json_channel, loop_indices, use_compression)
         if encoded is not None:
             color_edits[ch_ind] = encoded
 
@@ -1375,7 +1375,7 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
     if not skin_data or not (skin_data.get("SK1s") or skin_data.get("SK2s") or skin_data.get("SKAccs")):
         return False
     quant_info  = skin_data["QuantizeInfo"]
-    use_base64  = data["SluggiesModel"].get("UseBase64", True)
+    use_compression  = data["SluggiesModel"].get("UseCompression", True)
     vertex_size = 6 * _comp_size_skin(quant_info)
     fmt_nibble  = quant_info >> 4
     is_float    = fmt_nibble in [4, 7, 0xa]
@@ -1521,7 +1521,7 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
         new_count = last_kept + 1 if last_kept >= 0 else 0
         src = orig_src[:vtx_off] + b''.join(slot_bytes[:new_count])
 
-        sk1["BindPoseDataEdited"] = _from_bytes(src, use_base64)
+        sk1["BindPoseDataEdited"] = _from_bytes(src, use_compression)
         if new_count != n:
             sk1["VertexCntEdited"] = new_count
         wrote_any = True
@@ -1568,8 +1568,8 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
         src = orig_src[:vtx_off] + b''.join(slot_src[:new_count])
         wt  = b''.join(slot_wt[:new_count])
 
-        sk2["BindPoseDataEdited"] = _from_bytes(src, use_base64)
-        sk2["WeightDataEdited"]   = _from_bytes(wt, use_base64)
+        sk2["BindPoseDataEdited"] = _from_bytes(src, use_compression)
+        sk2["WeightDataEdited"]   = _from_bytes(wt, use_compression)
         if new_count != n:
             sk2["VertexCntEdited"] = new_count
         wrote_any = True
@@ -1616,10 +1616,10 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
                 # else: vertex removed from this SKAcc entry — skip entirely.
 
         new_count = len(new_dest) // 2
-        skacc["BindPoseDataEdited"]  = _from_bytes(bytes(new_src),  use_base64)
-        skacc["WeightDataEdited"]    = _from_bytes(bytes(new_wt),   use_base64)
+        skacc["BindPoseDataEdited"]  = _from_bytes(bytes(new_src),  use_compression)
+        skacc["WeightDataEdited"]    = _from_bytes(bytes(new_wt),   use_compression)
         if new_count != n:
-            skacc["DestIndexDataEdited"] = _from_bytes(bytes(new_dest), use_base64)
+            skacc["DestIndexDataEdited"] = _from_bytes(bytes(new_dest), use_compression)
             skacc["VertexCntEdited"]     = new_count
         wrote_any = True
 
@@ -1757,7 +1757,7 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
 
     submeshes  = data["SluggiesModel"].get("Submeshes", [])
     quant_info = skin_data["QuantizeInfo"]
-    use_base64 = data["SluggiesModel"].get("UseBase64", True)
+    use_compression = data["SluggiesModel"].get("UseCompression", True)
     cs         = _comp_size_skin(quant_info)
     fmt_nibble = quant_info >> 4
     is_float   = fmt_nibble in [4, 7, 0xa]
@@ -2143,7 +2143,7 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
                     val,
                     f"{obj_ref.name} vertex {v.index} SKN {component}",
                 )
-        return _from_bytes(bytes(raw), use_base64)
+        return _from_bytes(bytes(raw), use_compression)
 
     # sk1_groups/sk2_groups keys are either a donor SK1s/SK2s entry INDEX
     # (int) or a ('new_sk1', bone_id) / ('new_sk2', lo, hi) sentinel for a
@@ -2180,7 +2180,7 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
     # instead of value-matching bind-pose records (ambiguous for duplicates).
     def encode_vertex_indices(entries):
         return _from_bytes(
-            struct.pack(f'>{len(entries)}H', *(entry[1] for entry in entries)), use_base64)
+            struct.pack(f'>{len(entries)}H', *(entry[1] for entry in entries)), use_compression)
 
     new_sk1s = []
     for key in sorted(sk1_groups, key=lambda k: _sk1_identity(k)[0]):
@@ -2206,7 +2206,7 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
             "BoneIndex1": b_lo, "BoneIndex2": b_hi,
             "VertexCnt": len(entries),
             "BindPoseData": encode_src(entries),
-            "WeightData": _from_bytes(bytes(wt), use_base64),
+            "WeightData": _from_bytes(bytes(wt), use_compression),
             "VertexIndices": encode_vertex_indices(entries),
             "GplVertexArrValue": gpl_value,
         })
@@ -2221,8 +2221,8 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
         new_skaccs.append({
             "BoneIndex": bone_id, "VertexCnt": len(entries),
             "BindPoseData":   encode_src(entries),
-            "WeightData":    _from_bytes(bytes(wt), use_base64),
-            "DestIndexData": _from_bytes(bytes(dest), use_base64),
+            "WeightData":    _from_bytes(bytes(wt), use_compression),
+            "DestIndexData": _from_bytes(bytes(dest), use_compression),
             "GplDestArrValue": _orig_skacc_gda.get(bone_id, 0),
         })
 
@@ -2472,7 +2472,7 @@ def _find_new_materials(obj, json_submesh, submesh_index=None):
     }
 
     # Legacy donor texture indices (old exports without SurfaceId/FaceCount).
-    # FaceTextureIndices is a base64 uint16 BE array, one texture index per face.
+    # FaceTextureIndices is an encoded uint16 BE array, one texture index per face.
     donor_tex_idxs = set()
     fti_raw = json_submesh.get("FaceTextureIndicesEdited") or json_submesh.get("FaceTextureIndices")
     if fti_raw:
@@ -3099,7 +3099,7 @@ def _new_surface_entry(key, mat, texture_assignment):
     return surface
 
 
-def encode_custom_submesh(context, obj, model, texture_assignment, warnings, use_base64=True,
+def encode_custom_submesh(context, obj, model, texture_assignment, warnings, use_compression=True,
                           specular_strength=None, texture_assignments=None, infos=None):
     """Encode one ``SluggiesCustomSubmesh`` object as a ``CustomSubmeshes``
     entry (PLAN_AddSubmesh.md Phase 6 step 2): triangulate, map world
@@ -3148,7 +3148,7 @@ def encode_custom_submesh(context, obj, model, texture_assignment, warnings, use
             RigidRebuildExport.surface_report(obj.name, routing))
     return CustomSubmeshExport.build_custom_submesh_entry(
         obj.name, str(obj.get("CustomSubmeshId")), host_bone_id, template_source, plan,
-        geometry, loop_normals, loop_uvs, loop_colors, texture_assignment, use_base64,
+        geometry, loop_normals, loop_uvs, loop_colors, texture_assignment, use_compression,
         warnings, specular_strength, additional_surfaces, face_surface_indices, infos,
     )
 
@@ -3348,8 +3348,7 @@ def _resolve_export_texture_context(sluggie_path, model):
         for sluggie_name in sluggie_names:
             candidate_path = os.path.join(sibling_dir, sluggie_name)
             try:
-                with open(candidate_path, 'r') as candidate_file:
-                    candidate_model = json.load(candidate_file).get('SluggiesModel', {})
+                candidate_model = FieldCodec.load_sluggie(candidate_path).get('SluggiesModel', {})
             except (OSError, ValueError):
                 continue
             descriptors = candidate_model.get('TextureDescriptors') or []
@@ -3580,7 +3579,7 @@ def _rigid_rebuild_plan(context, obj, submesh_index, target_submesh, model, warn
     )
 
 
-def _rigid_rebuild_entry(plan, texture_assignments, use_base64, warnings, infos):
+def _rigid_rebuild_entry(plan, texture_assignments, use_compression, warnings, infos):
     """Encode one plan as its RigidRebuild entry. *texture_assignments* maps a
     new-surface material name to its resolved TextureAssignment."""
     new_surfaces = []
@@ -3590,7 +3589,7 @@ def _rigid_rebuild_entry(plan, texture_assignments, use_base64, warnings, infos)
     return RigidRebuildExport.build_rigid_rebuild_entry(
         plan.obj.name, plan.donor, plan.host_bone_id, plan.geometry, plan.loop_normals,
         plan.loop_uvs, plan.loop_colors, plan.routing, new_surfaces, plan.reasons,
-        use_base64, warnings, infos, facial_keys=plan.facial_keys,
+        use_compression, warnings, infos, facial_keys=plan.facial_keys,
     )
 
 
@@ -3782,7 +3781,7 @@ def _skinned_rebuild_plan(context, obj, submesh_index, target_submesh, model, wa
     )
 
 
-def _skinned_rebuild_entry(plan, texture_assignments, use_base64, warnings, infos):
+def _skinned_rebuild_entry(plan, texture_assignments, use_compression, warnings, infos):
     """Encode one body plan as its SkinnedRebuild entry."""
     new_surfaces = []
     for key in plan.routing.new_keys:
@@ -3790,12 +3789,12 @@ def _skinned_rebuild_entry(plan, texture_assignments, use_base64, warnings, info
         new_surfaces.append(_new_surface_entry(key, mat, texture_assignments[mat.name]))
     entry = SkinnedRebuildExport.build_skinned_rebuild_entry(
         plan.obj.name, plan.donor, plan.geometry, plan.normals, plan.loop_uvs, plan.loop_colors,
-        plan.routing, plan.vertex_weights, new_surfaces, plan.reasons, use_base64, warnings, infos,
+        plan.routing, plan.vertex_weights, new_surfaces, plan.reasons, use_compression, warnings, infos,
     )
     if plan.facial_keys is not None:
         entry["FacialPoses"] = SkinnedRebuildExport.encode_facial_poses(
             plan.obj.name, plan.facial_keys, plan.geometry, plan.donor.position_quantize,
-            use_base64, warnings, infos,
+            use_compression, warnings, infos,
         )
     return entry
 
@@ -3862,10 +3861,10 @@ def _effective_type7_modes(display_states):
     return effective_modes
 
 
-def _encode_face_surface_assignment(obj, display_states, surf_mat, use_base64, warnings):
+def _encode_face_surface_assignment(obj, display_states, surf_mat, use_compression, warnings):
     """Return (data, changed) encoding which display state owns each face.
 
-    data is a base64 uint16 BE array (one ds_idx per face) or None when unchanged.
+    data is an encoded uint16 BE array (one ds_idx per face) or None when unchanged.
     Returns (None, False) for old exports without FaceCount, or when face count
     differs from the original (topology change — handled by milestone 4).
     Validates duplicate, foreign, and missing SurfaceIds; appends to warnings.
@@ -3966,7 +3965,7 @@ def _encode_face_surface_assignment(obj, display_states, surf_mat, use_base64, w
             )
 
     raw = struct.pack(f'>{n_faces}H', *current_ds_idx)
-    return _from_bytes(raw, use_base64), True
+    return _from_bytes(raw, use_compression), True
 
 
 class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
@@ -4019,27 +4018,27 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             return {"CANCELLED"}
 
         try:
-            with open(self.filepath, 'r') as f:
+            with open(self.filepath, 'rb') as f:
                 content = f.read().strip()
         except Exception as e:
             self.report({"ERROR"}, f"Could not read file: {e}")
             return {"CANCELLED"}
 
         if not content:
-            self.report({"ERROR"}, "Target JSON file is empty.")
+            self.report({"ERROR"}, "Target .sluggie file is empty.")
             return {"CANCELLED"}
 
         try:
-            data = json.loads(content)
-        except json.JSONDecodeError as e:
-            self.report({"ERROR"}, f"JSON parse error: {e}")
+            data = FieldCodec.loads_sluggie(content)
+        except ValueError as e:
+            self.report({"ERROR"}, f"Could not parse the .sluggie file: {e}")
             return {"CANCELLED"}
 
         if "SluggiesModel" not in data:
             self.report({"ERROR"}, "JSON does not contain a 'SluggiesModel' entry.")
             return {"CANCELLED"}
 
-        use_base64 = data["SluggiesModel"].get("UseBase64", True)
+        use_compression = data["SluggiesModel"].get("UseCompression", True)
         submeshes = data["SluggiesModel"].get("Submeshes", [])
 
         # --- collect selected mesh objects that carry Sluggies custom properties ---
@@ -4256,7 +4255,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 for obj, material in zip(custom_submesh_candidates, primary_materials):
                     custom_submesh_entries.append(encode_custom_submesh(
                         context, obj, model, custom_assignments[material.name],
-                        warnings, use_base64,
+                        warnings, use_compression,
                         material.get("SpecularStrength"),
                         texture_assignments=custom_assignments, infos=infos,
                     ))
@@ -4365,7 +4364,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     # Whole-blob rebuild: none of the in-place edit fields may
                     # stay on the submesh (the patcher refuses the mix).
                     try:
-                        entry = _rigid_rebuild_entry(plan, new_surface_assignments, use_base64, warnings, infos)
+                        entry = _rigid_rebuild_entry(plan, new_surface_assignments, use_compression, warnings, infos)
                     except ValueError as exc:
                         self.report({"ERROR"}, str(exc))
                         return {"CANCELLED"}
@@ -4374,7 +4373,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     target_submesh["RigidRebuild"] = entry
                 elif skinned_plan is not None:
                     try:
-                        entry = _skinned_rebuild_entry(skinned_plan, new_surface_assignments, use_base64, warnings, infos)
+                        entry = _skinned_rebuild_entry(skinned_plan, new_surface_assignments, use_compression, warnings, infos)
                     except ValueError as exc:
                         self.report({"ERROR"}, str(exc))
                         return {"CANCELLED"}
@@ -4389,7 +4388,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                             obj,
                             target_submesh,
                             use_custom_normals=self.use_custom_normals,
-                            use_base64=use_base64,
+                            use_compression=use_compression,
                         )
                     except ValueError as exc:
                         self.report({"ERROR"}, f"{obj.name}: {exc}")
@@ -4401,9 +4400,9 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     for json_channel in target_submesh.get("UVChannels", []):
                         ch_ind = json_channel.get("UVChannelIndex", 0)
                         if ch_ind in hs['UVEdits']:
-                            uv_data_b64, uv_faces_b64 = hs['UVEdits'][ch_ind]
-                            json_channel["UVChannelDataEdited"] = uv_data_b64
-                            json_channel["UVFacesDataEdited"] = uv_faces_b64
+                            uv_data_enc, uv_faces_enc = hs['UVEdits'][ch_ind]
+                            json_channel["UVChannelDataEdited"] = uv_data_enc
+                            json_channel["UVFacesDataEdited"] = uv_faces_enc
                         else:
                             layer_name = _uv_layer_name(target_submesh.get("UVChannels", []), ch_ind)
                             warnings.append(
@@ -4414,9 +4413,9 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     # (plan 3.3) — written only when the submesh actually has them.
                     normal_buffer = target_submesh.get("NormalBuffer")
                     if hs.get("NormalEdits") is not None and isinstance(normal_buffer, dict):
-                        normal_data_b64, normal_faces_b64 = hs["NormalEdits"]
-                        normal_buffer["NormalBufferDataEdited"] = normal_data_b64
-                        normal_buffer["NormalFacesDataEdited"] = normal_faces_b64
+                        normal_data_enc, normal_faces_enc = hs["NormalEdits"]
+                        normal_buffer["NormalBufferDataEdited"] = normal_data_enc
+                        normal_buffer["NormalFacesDataEdited"] = normal_faces_enc
                     elif isinstance(normal_buffer, dict):
                         # Submesh has a NormalBuffer the exporter refused to encode —
                         # drop stale per-loop edits so the original NormalBuffer stays authoritative.
@@ -4444,9 +4443,9 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     for json_channel in target_submesh.get("ColorChannels", []):
                         ch_ind = json_channel.get("ColorChannelIndex", 0)
                         if ch_ind in hs["ColorEdits"]:
-                            color_data_b64, color_faces_b64 = hs["ColorEdits"][ch_ind]
-                            json_channel["ColorChannelDataEdited"] = color_data_b64
-                            json_channel["ColorFacesDataEdited"] = color_faces_b64
+                            color_data_enc, color_faces_enc = hs["ColorEdits"][ch_ind]
+                            json_channel["ColorChannelDataEdited"] = color_data_enc
+                            json_channel["ColorFacesDataEdited"] = color_faces_enc
                         else:
                             json_channel.pop("ColorChannelDataEdited", None)
                             json_channel.pop("ColorFacesDataEdited", None)
@@ -4479,7 +4478,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                             obj["VertexBufferCompCount"],
                             obj["VertexBufferQuantizeInfo"],
                             use_custom_normals=self.use_custom_normals,
-                            use_base64=use_base64,
+                            use_compression=use_compression,
                             donor_data=target_submesh["VertexBuffer"].get("VertexBufferData"),
                         )
                     except ValueError as exc:
@@ -4503,7 +4502,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                             inplace_normal_buffer,
                             loop_indices,
                             errors,
-                            use_base64,
+                            use_compression,
                         ):
                             pass_reasons.append(
                                 f"{obj.name}: normals split on shared normal slots"
@@ -4517,7 +4516,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                         json_channel.pop("ColorChannelDataEdited", None)
                         json_channel.pop("ColorFacesDataEdited", None)
                         encoded_colors = encode_color_edits(
-                            obj, json_channel, loop_indices, use_base64=False
+                            obj, json_channel, loop_indices, use_compression=False
                         )
                         if encoded_colors is not None and ExportMode.colors_changed(
                             bytes(encoded_colors[0]), json_channel
@@ -4531,7 +4530,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     uv_seam_reason_added = False
                     _all_uv_ch = target_submesh.get("UVChannels", [])
                     for json_channel in _all_uv_ch:
-                        result = encode_uv_channel_edited(obj, json_channel, use_base64=use_base64, all_uv_channels=_all_uv_ch)
+                        result = encode_uv_channel_edited(obj, json_channel, use_compression=use_compression, all_uv_channels=_all_uv_ch)
                         ch_ind = json_channel.get("UVChannelIndex", 0)
                         if result is None:
                             layer_name = _uv_layer_name(_all_uv_ch, ch_ind)
@@ -4539,11 +4538,11 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                                 f"{obj.name}: UV layer '{layer_name}' not found — UV channel {ch_ind} skipped."
                             )
                             continue
-                        uv_data_b64, conflicts = result
+                        uv_data_enc, conflicts = result
                         if conflicts and not uv_seam_reason_added:
                             pass_reasons.append(f"{obj.name}: UV seams split")
                             uv_seam_reason_added = True
-                        json_channel["UVChannelDataEdited"] = uv_data_b64
+                        json_channel["UVChannelDataEdited"] = uv_data_enc
                         # UVFacesDataEdited is no longer written: the draw list indices
                         # are unchanged so UVFacesData still applies after patching.
 
@@ -4605,7 +4604,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 try:
                     face_sid_data, face_sid_changed = _encode_face_surface_assignment(
                         obj, target_submesh.get("DisplayStates", []),
-                        surf_mat, use_base64, warnings,
+                        surf_mat, use_compression, warnings,
                     )
                 except ValueError as exc:
                     self.report({"ERROR"}, str(exc))
@@ -4798,8 +4797,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         for source_path, target_path in custom_texture_copies:
             self.report({"INFO"}, f"Copied {source_path} to {target_path}")
 
-        with open(self.filepath, 'w') as f:
-            json.dump(data, f, indent=2)
+        FieldCodec.dump_sluggie(data, self.filepath)
 
         filename = os.path.basename(self.filepath)
         context.window_manager.clipboard = filename

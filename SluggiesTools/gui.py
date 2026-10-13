@@ -680,7 +680,7 @@ class SluggiesGui:
             sounds = dpg.add_checkbox(label='Export sound files', tag='exp_sounds',
                                       default_value=os.path.isdir(self.sound_input_dir))
             dpg.add_checkbox(label='Skip Textures', tag='exp_notex')
-            dpg.add_checkbox(label='Debug (raw byte arrays instead of base64)', tag='exp_debug')
+            dpg.add_checkbox(label='Debug (uncompressed .sluggie, byte arrays instead of xz)', tag='exp_debug')
 
             with dpg.tooltip(models):
                 dpg.add_text('Export every 3D model as a .sluggie file (the Blender add-on\'s format) into '

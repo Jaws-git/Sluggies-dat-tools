@@ -447,12 +447,12 @@ def _check_u16(object_name: str, label: str, count: int) -> None:
         raise ValueError(f'{object_name}: {count} distinct {label} exceed the uint16 index range')
 
 
-def _index_buffer(indices, use_base64: bool):
-    return cse.encode_field(struct.pack(f'>{len(indices)}H', *indices), use_base64)
+def _index_buffer(indices, use_compression: bool):
+    return cse.encode_field(struct.pack(f'>{len(indices)}H', *indices), use_compression)
 
 
 def encode_color_channel(
-    object_name: str, color_format, geometry, loop_colors, use_base64: bool, infos: Optional[List[str]] = None,
+    object_name: str, color_format, geometry, loop_colors, use_compression: bool, infos: Optional[List[str]] = None,
 ) -> dict:
     """``ColorChannelData`` / ``ColorFacesData`` for a rebuilt donor submesh:
     per-loop colours pooled in the donor channel's format (white when the
@@ -465,14 +465,14 @@ def encode_color_channel(
     color_data, color_indices = cse.dedupe_records([encode_color_entry(color_format[1], c) for c in colors])
     _check_u16(object_name, 'colors', len(color_data) // _COLOR_ENTRY_SIZE[color_format[1] >> 4])
     return {
-        'ColorChannelData': cse.encode_field(color_data, use_base64),
-        'ColorFacesData': _index_buffer(color_indices, use_base64),
+        'ColorChannelData': cse.encode_field(color_data, use_compression),
+        'ColorFacesData': _index_buffer(color_indices, use_compression),
     }
 
 
 def encode_uv_channels(
     object_name: str, uv_formats: Dict[int, Tuple[int, int]], uv_mirrored: bool, geometry,
-    loop_uvs_by_channel: Dict[int, Optional[Sequence[Tuple[float, float]]]], use_base64: bool,
+    loop_uvs_by_channel: Dict[int, Optional[Sequence[Tuple[float, float]]]], use_compression: bool,
     warnings: List[str], infos: List[str],
 ) -> list:
     """The ``UVChannels`` list of a rebuilt donor submesh, one entry per donor
@@ -512,8 +512,8 @@ def encode_uv_channels(
     return [
         {
             'UVChannelIndex': channel,
-            'UVChannelData': cse.encode_field(encoded_uvs[channel][0], use_base64),
-            'UVFacesData': _index_buffer(encoded_uvs[channel][1], use_base64),
+            'UVChannelData': cse.encode_field(encoded_uvs[channel][0], use_compression),
+            'UVFacesData': _index_buffer(encoded_uvs[channel][1], use_compression),
         }
         for channel in channels
     ]
@@ -530,7 +530,7 @@ def build_rigid_rebuild_entry(
     routing: SurfaceRouting,
     new_surfaces: Sequence[dict],
     reasons: Sequence[str],
-    use_base64: bool = True,
+    use_compression: bool = True,
     warnings: Optional[List[str]] = None,
     infos: Optional[List[str]] = None,
     facial_keys: Optional[Sequence['FacialObjectKeys']] = None,
@@ -550,7 +550,7 @@ def build_rigid_rebuild_entry(
         facial_entries, pinned_normal_data = encode_rigid_facial_poses(
             object_name, facial_keys, geometry, donor.position_quantize,
             donor.normal_format if loop_normals is not None else None, loop_normals,
-            use_base64, warnings, infos,
+            use_compression, warnings, infos,
         )
     position_format = (RIGID_COMP_COUNT, donor.position_quantize)
     try:
@@ -567,7 +567,7 @@ def build_rigid_rebuild_entry(
 
     entry = {
         'HostBoneId': int(host_bone_id),
-        'VertexBufferData': cse.encode_field(positions, use_base64),
+        'VertexBufferData': cse.encode_field(positions, use_compression),
     }
     if donor.normal_format:
         if pinned_normal_data is not None:
@@ -575,19 +575,19 @@ def build_rigid_rebuild_entry(
         else:
             normal_data, normal_indices = cse.encode_loop_normals(object_name, geometry, loop_normals, donor.normal_format)
         _check_u16(object_name, 'normals', len(normal_indices) and max(normal_indices) + 1)
-        entry['NormalBufferData'] = cse.encode_field(normal_data, use_base64)
-        entry['NormalFacesData'] = _index_buffer(normal_indices, use_base64)
+        entry['NormalBufferData'] = cse.encode_field(normal_data, use_compression)
+        entry['NormalFacesData'] = _index_buffer(normal_indices, use_compression)
     if donor.color_format:
-        entry.update(encode_color_channel(object_name, donor.color_format, geometry, loop_colors, use_base64, infos))
+        entry.update(encode_color_channel(object_name, donor.color_format, geometry, loop_colors, use_compression, infos))
 
     entry['UVChannels'] = encode_uv_channels(
         object_name, donor.uv_formats, donor.uv_mirrored, geometry, loop_uvs_by_channel,
-        use_base64, warnings, infos,
+        use_compression, warnings, infos,
     )
     entry['FacesCount'] = faces_count
-    entry['FacesData'] = cse.encode_field(faces_data, use_base64)
+    entry['FacesData'] = cse.encode_field(faces_data, use_compression)
     entry['FaceSurfaceTable'] = list(routing.table)
-    entry['FaceSurfaceIndices'] = _index_buffer(routing.indices, use_base64)
+    entry['FaceSurfaceIndices'] = _index_buffer(routing.indices, use_compression)
     if new_surfaces:
         entry['NewSurfaces'] = [dict(surface) for surface in new_surfaces]
     entry['Reason'] = list(reasons)
@@ -677,7 +677,7 @@ def encode_facial_loop_normals(
 def encode_rigid_facial_poses(
     object_name: str, objects: Sequence[FacialObjectKeys], geometry: cse.BoneLocalGeometry,
     position_quantize: int, normal_format: Optional[Tuple[int, int]] = None, loop_normals=None,
-    use_base64: bool = True, warnings: Optional[List[str]] = None, infos: Optional[List[str]] = None,
+    use_compression: bool = True, warnings: Optional[List[str]] = None, infos: Optional[List[str]] = None,
 ) -> Tuple[List[dict], Optional[Tuple[bytes, List[int]]]]:
     """``RigidRebuild.FacialPoses`` plus the rebuilt normal arrays.
 
@@ -758,9 +758,9 @@ def encode_rigid_facial_poses(
             vertex_rows = [position_rows[vertex] for vertex in moved]
         entry = {
             'ObjectIndex': facial_object.object_index,
-            'Vertices': cse.encode_field(struct.pack(f'>{len(moved)}H', *moved), use_base64),
+            'Vertices': cse.encode_field(struct.pack(f'>{len(moved)}H', *moved), use_compression),
             'PoseDeltas': [
-                cse.encode_field(struct.pack(f'>{3 * len(moved)}h', *(v for rows in vertex_rows for v in rows[k])), use_base64)
+                cse.encode_field(struct.pack(f'>{3 * len(moved)}h', *(v for rows in vertex_rows for v in rows[k])), use_compression)
                 for k in range(later)
             ],
         }
@@ -776,9 +776,9 @@ def encode_rigid_facial_poses(
             if not normal_entries:
                 normal_entries = [0]
                 entry_rows = [[(0, 0, 0)] * later]
-            entry['NormalEntries'] = cse.encode_field(struct.pack(f'>{len(normal_entries)}H', *normal_entries), use_base64)
+            entry['NormalEntries'] = cse.encode_field(struct.pack(f'>{len(normal_entries)}H', *normal_entries), use_compression)
             entry['NormalPoseDeltas'] = [
-                cse.encode_field(struct.pack(f'>{3 * len(normal_entries)}h', *(v for rows in entry_rows for v in rows[k])), use_base64)
+                cse.encode_field(struct.pack(f'>{3 * len(normal_entries)}h', *(v for rows in entry_rows for v in rows[k])), use_compression)
                 for k in range(later)
             ]
             normal_note = f', {len(entry_vertex)} normal entr{"y" if len(entry_vertex) == 1 else "ies"}'

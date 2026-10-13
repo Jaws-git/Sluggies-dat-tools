@@ -116,9 +116,10 @@ stats source (``plan_stats``, a patch that sets a new square's stats) and throug
 from __future__ import annotations
 
 import copy
-import json
 import os
 from dataclasses import dataclass, field
+
+from binfmt import load_sluggie
 
 try:
     from ..Sound import sound_packs
@@ -178,8 +179,7 @@ class Pair:
 
 def _load_model(path: str) -> dict:
     try:
-        with open(path, 'r', encoding='utf-8') as f:
-            return json.load(f).get('SluggiesModel') or {}
+        return load_sluggie(path).get('SluggiesModel') or {}
     except (OSError, ValueError) as exc:
         raise PlanError(f'could not read {path}: {exc}') from exc
 

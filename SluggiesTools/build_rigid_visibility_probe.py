@@ -31,7 +31,6 @@ from __future__ import annotations
 import argparse
 import base64
 import copy
-import json
 import struct
 import sys
 from pathlib import Path
@@ -44,7 +43,7 @@ for import_path in (TOOLS_DIR, TOOLS_DIR / "Hammerspace"):
 import HammerspaceHelper as hh
 import HammerspaceMain as hammerspace
 import build_add_submesh_fixture as probe
-from binfmt import color_entry_size, comp_size, decode_field
+from binfmt import color_entry_size, comp_size, decode_field, load_sluggie
 from drawlist import decodeDrawList, encodeDrawList
 
 MODELS_DIR = TOOLS_DIR.parent / "2_Output_Assets"
@@ -58,10 +57,10 @@ def _b64(data: bytes) -> str:
 
 
 def _load(path: Path) -> dict:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = load_sluggie(path)
     model = data["SluggiesModel"]
-    if not model.get("UseBase64", True):
-        raise ValueError(f"{path.name}: probe expects base64 fields")
+    if not model.get("UseCompression", True):
+        raise ValueError(f"{path.name}: probe expects a regular (compressed) export, not a --debug one")
     probe.strip_donor_edits(model)
     model["UseHammerspace"] = True
     return data
@@ -418,7 +417,7 @@ def main() -> int:
             miis, gloves = targets(folder)
             for path in miis + gloves:
                 if args.unpatch:
-                    model = json.loads(path.read_text(encoding="utf-8"))["SluggiesModel"]
+                    model = load_sluggie(path)["SluggiesModel"]
                     ok, *_ = hh.removeModelFromHammerspace(model["ChunkNumber"], model["FileIndex"])
                     print(f"  {path.name}: {'restored' if ok else 'not in hammerspace'}")
                     continue

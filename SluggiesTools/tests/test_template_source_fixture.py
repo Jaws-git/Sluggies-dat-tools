@@ -70,7 +70,7 @@ def _bone(bone_id, geo=0xFFFF, parent=0):
 def _model():
     return {'SluggiesModel': {
         'ChunkNumber': 32, 'FileIndex': 0, 'ModelOffset': '0x1000', 'ModelLength': 0x10000,
-        'UseBase64': True,
+        'UseCompression': True,
         'Submeshes': [_skinned_submesh0()],
         'BoneHierarchy': [_bone(0, parent=None), _bone(1), _bone(2), _bone(3, geo=0)],
         'SkinData': {'SK1s': [{'BoneIndex': 1}], 'SK2s': [], 'SKAccs': []},

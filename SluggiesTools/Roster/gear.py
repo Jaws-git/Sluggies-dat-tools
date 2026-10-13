@@ -12,10 +12,11 @@ No game files are read.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from dataclasses import dataclass
+
+from binfmt import load_sluggie
 
 BAT, GLOVE_L, GLOVE_R, EXTRA = 'bat', 'glove_l', 'glove_r', 'extra'
 ROLES = {2: BAT, 3: GLOVE_L, 4: GLOVE_R, 5: EXTRA}        # file index -> role
@@ -80,8 +81,7 @@ class Gear:
 
 def _read(path: str) -> dict:
     try:
-        with open(path, 'r', encoding='utf-8') as f:
-            return json.load(f).get('SluggiesModel') or {}
+        return load_sluggie(path).get('SluggiesModel') or {}
     except (OSError, ValueError):
         return {}
 

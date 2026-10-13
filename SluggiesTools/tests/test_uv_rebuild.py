@@ -45,7 +45,7 @@ def _model(original_uv_indices, edited_records):
     original_records = [_record(0, 0), _record(10, 0), _record(10, 10), _record(0, 10)]
     return {
         'SluggiesModel': {
-            'UseBase64': False,
+            'UseCompression': False,
             'Submeshes': [{
                 'FacesCount': 2,
                 'FacesData': _u16s([0, 1, 2, 0, 2, 3]),
