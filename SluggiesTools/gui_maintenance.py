@@ -10,6 +10,10 @@ and winget is, offers to install it.
 The **Hammerspace** section shows how much of the output ``dt_na.dat`` past the stock end is gaps
 (``Hammerspace/Defrag.analyze``, read-only) and offers **Defragment** (``start.py --defrag-hammerspace``, run
 through the command runner), which reports the file size before and after.
+
+**Calculate Dolphin texture name** encodes a picked image in the chosen GX format the way the patchers do
+(``texture_helper.dolphin_texture_name``: wimgt) and shows the file name Dolphin's texture dump would give it,
+in a read-only field with a Copy button. An image already named like a Dolphin dump uses the format in its name.
 """
 
 import os
@@ -19,9 +23,18 @@ import threading
 
 import dearpygui.dearpygui as dpg
 
+import gui_audio
+import gui_grid
 import maintenance
+import texture_helper
 from Hammerspace import Defrag
 from Sound import ffmpeg
+
+# GX image formats by their wimgt names, and the palette formats indexed ones need (texture_helper)
+_FORMATS = {name.removeprefix('TPL.'): code for code, name in texture_helper.WIMGT_IMAGE_TARGETS.items()}
+_PALETTES = {name.removeprefix('P-'): code for code, name in texture_helper.WIMGT_PALETTE_TOKENS.items()}
+_INDEXED = (0x8, 0x9, 0xA)
+DOLPHIN_DIR_SETTING = 'maintenance_last_dolphin_image_dir'   # the GUI settings key: the folder the last image came from
 
 _DIM = (170, 170, 170, 255)
 _WARN = (255, 210, 90, 255)
@@ -40,6 +53,7 @@ class MaintenanceTab:
         self.app = app                       # gui.SluggiesGui
         self.scanning = False
         self.dat_size_before = None          # dt_na.dat size when Defragment started
+        self.picks = gui_audio.FilePicks(app)
 
     def build(self):
         with dpg.tab(label='Maintenance', tag='maintenance_tab'):
@@ -61,6 +75,8 @@ class MaintenanceTab:
                 dpg.add_button(label='Refresh', callback=lambda: self.check_hammerspace())
             dpg.add_text('', tag='maintenance_defrag_report', wrap=1300)
             dpg.add_separator()
+            self._build_dolphin_name()
+            dpg.add_separator()
             dpg.add_text('Checks the working folders for problems that make the tools act on the wrong file, and '
                          'the output game for players and stadiums too big for the game\'s memory.', wrap=900)
             dpg.add_text(f'Checks: {", ".join(title for title, _check in maintenance.CHECKS)}.', color=_DIM)
@@ -72,6 +88,7 @@ class MaintenanceTab:
                 dpg.add_text('', tag='maintenance_status')
             dpg.add_separator()
             dpg.add_child_window(tag='maintenance_results', border=False, height=-1)
+        self.picks.add_dialog('maintenance_dolphin_dialog', gui_grid.IMAGE_EXTENSIONS)
         self.check_ffmpeg()
         self.check_hammerspace()
 
@@ -203,6 +220,74 @@ class MaintenanceTab:
     def _report(self, text, color):
         dpg.set_value('maintenance_defrag_report', text)
         dpg.configure_item('maintenance_defrag_report', color=color)
+
+    # ------------------------------------------------------------------------------------------------ dolphin name
+
+    def _build_dolphin_name(self):
+        dpg.add_text('Dolphin texture name')
+        with dpg.group(horizontal=True):
+            dpg.add_button(label='Calculate Dolphin texture name', tag='maintenance_dolphin',
+                           callback=lambda: self.pick_dolphin_image())
+            dpg.add_text('Format:')
+            dpg.add_combo(list(_FORMATS), default_value='CMPR', tag='maintenance_dolphin_format', width=100,
+                          callback=lambda: self._dolphin_palette_shown())
+            dpg.add_text('Palette:', tag='maintenance_dolphin_palette_label', show=False)
+            dpg.add_combo(list(_PALETTES), default_value='RGB5A3', tag='maintenance_dolphin_palette', width=100,
+                          show=False)
+        dpg.add_text('Encodes an image the way the patchers write it into the game (wimgt, in the format chosen '
+                     'here) and gives the name Dolphin\'s texture dump would give it, e.g. for a texture pack. '
+                     'A file already named like a Dolphin dump keeps the format in its name.',
+                     color=_DIM, wrap=1300)
+        with dpg.group(horizontal=True):
+            dpg.add_input_text(tag='maintenance_dolphin_name', readonly=True, width=640, show=False)
+            dpg.add_button(label='Copy', tag='maintenance_dolphin_copy', show=False,
+                           callback=lambda: dpg.set_clipboard_text(dpg.get_value('maintenance_dolphin_name')))
+        dpg.add_text('', tag='maintenance_dolphin_status', color=_DIM, wrap=1300)
+
+    def _dolphin_palette_shown(self):
+        indexed = _FORMATS[dpg.get_value('maintenance_dolphin_format')] in _INDEXED
+        dpg.configure_item('maintenance_dolphin_palette_label', show=indexed)
+        dpg.configure_item('maintenance_dolphin_palette', show=indexed)
+
+    def pick_dolphin_image(self):
+        self.picks.pick_one('maintenance_dolphin_dialog', 'Select an image to name for Dolphin',
+                            gui_grid.IMAGE_FILTERS, DOLPHIN_DIR_SETTING, (), self._on_dolphin_path)
+
+    def _on_dolphin_path(self, path):
+        gx_format = texture_helper.gx_format_from_dolphin_name(path)
+        from_name = gx_format is not None
+        if not from_name:
+            gx_format = _FORMATS[dpg.get_value('maintenance_dolphin_format')]
+        palette = _PALETTES[dpg.get_value('maintenance_dolphin_palette')] if gx_format in _INDEXED else None
+        format_name = next(name for name, code in _FORMATS.items() if code == gx_format)
+        if palette is not None:
+            format_name += f' ({dpg.get_value("maintenance_dolphin_palette")} palette)'
+        dpg.configure_item('maintenance_dolphin', enabled=False)
+        self._dolphin_status(f'Encoding {os.path.basename(path)} as {format_name}...', _DIM)
+
+        def work():
+            try:
+                result, error = texture_helper.dolphin_texture_name(path, gx_format, palette), None
+            except Exception as exc:
+                result, error = None, f'{type(exc).__name__}: {exc}'
+            self.app.output_queue.put(('call', self._dolphin_done, path, format_name, from_name, result, error))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _dolphin_done(self, path, format_name, from_name, name, error):
+        dpg.configure_item('maintenance_dolphin', enabled=True)
+        shown = error is None
+        dpg.configure_item('maintenance_dolphin_name', show=shown)
+        dpg.configure_item('maintenance_dolphin_copy', show=shown)
+        if error is not None:
+            self._dolphin_status(f'{os.path.basename(path)}: could not be encoded ({error}).', _ERROR)
+            return
+        dpg.set_value('maintenance_dolphin_name', name)
+        source = 'the format in its file name' if from_name else 'the format chosen above'
+        self._dolphin_status(f'{os.path.basename(path)} as {format_name} ({source}).', _OK)
+
+    def _dolphin_status(self, text, color):
+        dpg.set_value('maintenance_dolphin_status', text)
+        dpg.configure_item('maintenance_dolphin_status', color=color)
 
     # ------------------------------------------------------------------------------------------------ scan
 

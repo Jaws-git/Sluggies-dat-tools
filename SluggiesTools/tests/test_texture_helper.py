@@ -30,7 +30,9 @@ from texture_helper import (
     texture_writes_for,
     check_png_dimensions,
     clamp_texture_dimensions,
+    dolphin_texture_name,
     encode_png_to_tpl,
+    gx_format_from_dolphin_name,
     mipless_sampler_fields,
     parse_single_image_tpl,
     parse_single_image_tpl_file,
@@ -1261,6 +1263,42 @@ class EncodePngToTplTests(unittest.TestCase):
             self.assertGreater(parsed["palette_entries"], 0)
             self.assertEqual(len(parsed["palette_data"]), parsed["palette_entries"] * 2)
             self.assertEqual(len(parsed["image_data"]), 64)
+
+
+class DolphinTextureNameTests(unittest.TestCase):
+    def test_format_from_dolphin_names(self):
+        self.assertEqual(gx_format_from_dolphin_name("tex1_64x64_1331bfb474bd989a_4.png"), 0x4)
+        self.assertEqual(gx_format_from_dolphin_name(r"C:\x\tex1_128x64_m_0123456789abcdef_14.png"), 0xE)
+        self.assertEqual(
+            gx_format_from_dolphin_name("tex1_32x32_0123456789abcdef_fedcba9876543210_9.png"), 0x9
+        )
+        self.assertEqual(gx_format_from_dolphin_name("tex1_32x32_0123456789abcdef_$_8_mip1.png"), 0x8)
+
+    def test_other_names_have_no_format(self):
+        for name in ("mario.png", "tex1_64x64_1331bfb474bd989a.png", "tex1_64x64_1331bfb474bd989a_7.png",
+                     "tex1_64x64_XYZ_4.png"):
+            self.assertIsNone(gx_format_from_dolphin_name(name), name)
+
+    def test_basename_layout(self):
+        from tpl import dolphin_texture_basename, xxh64
+
+        self.assertEqual(xxh64(b""), 0xEF46DB3751D8E999)        # the xxHash64 reference value
+        image = bytes(range(32))
+        self.assertEqual(dolphin_texture_basename(8, 4, 0x4, image),
+                         f"tex1_8x4_{xxh64(image):016x}_4")
+        # C4: only the palette entries the indices reach (0..15 here: all 16) are hashed
+        palette = bytes(range(32))
+        self.assertEqual(dolphin_texture_basename(8, 8, 0x8, image, palette),
+                         f"tex1_8x8_{xxh64(image):016x}_{xxh64(palette):016x}_8")
+
+    def test_name_of_an_encoded_png(self):
+        from tpl import xxh64
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            png = EncodePngToTplTests()._make_fixture_png(temp_dir)
+            parsed = encode_png_to_tpl(png, gx_format=0x4)
+            self.assertEqual(dolphin_texture_name(png, 0x4), f"tex1_8x8_{xxh64(parsed.image_data):016x}_4")
+
 
 class EncodePngToTplErrorTests(unittest.TestCase):
     def test_missing_wimgt_raises_texture_encoding_error(self):

@@ -89,6 +89,56 @@ def xxh64(data, seed=0):
     h64 ^= h64 >> 32
     return h64 & _U64_MASK
 
+
+def _trim_tlut_to_used_range(image_data, tlut_data):
+    """The part of the palette the image's indices reach, as Dolphin hashes it."""
+    tlut_size = len(tlut_data)
+    if tlut_size == 16 * 2:
+        min_idx = 0xffff
+        max_idx = 0
+        for b in image_data:
+            low_nibble = b & 0x0F
+            high_nibble = b >> 4
+            min_idx = min(min_idx, low_nibble, high_nibble)
+            max_idx = max(max_idx, low_nibble, high_nibble)
+        tlut_size = 2 * (max_idx + 1 - min_idx)
+        return tlut_data[2 * min_idx:2 * min_idx + tlut_size]
+    if tlut_size == 256 * 2:
+        min_idx = 0xffff
+        max_idx = 0
+        for b in image_data:
+            min_idx = min(min_idx, b)
+            max_idx = max(max_idx, b)
+        tlut_size = 2 * (max_idx + 1 - min_idx)
+        return tlut_data[2 * min_idx:2 * min_idx + tlut_size]
+    if tlut_size == 16384 * 2:
+        min_idx = 0xffff
+        max_idx = 0
+        for i in range(0, len(image_data) - 1, 2):
+            texture_halfword = int.from_bytes(image_data[i:i + 2], 'big') & 0x3FFF
+            min_idx = min(min_idx, texture_halfword)
+            max_idx = max(max_idx, texture_halfword)
+        tlut_size = 2 * (max_idx + 1 - min_idx)
+        return tlut_data[2 * min_idx:2 * min_idx + tlut_size]
+    return tlut_data
+
+
+def dolphin_texture_basename(width, height, gx_format, image_data, tlut_data=b''):
+    """Dolphin's texture dump name (without .png) for a GX payload:
+    ``tex1_<w>x<h>_<xxh64 image>[_<xxh64 used palette>]_<format>``."""
+    trimmed_tlut = _trim_tlut_to_used_range(image_data, tlut_data) if tlut_data else b''
+
+    tex_hash = xxh64(image_data, 0)
+    tlut_hash = xxh64(trimmed_tlut, 0) if len(trimmed_tlut) > 0 else 0
+
+    base_name = 'tex1_' + str(width) + 'x' + str(height)
+
+    texture_name = format(tex_hash, '016x')
+    tlut_name = '_' + format(tlut_hash, '016x') if len(trimmed_tlut) > 0 else ''
+    format_name = str(gx_format)
+    return base_name + '_' + texture_name + tlut_name + '_' + format_name
+
+
 class TEXPalette(FileChunk):
     def analyze(self):
         global globalcounter
@@ -166,50 +216,9 @@ class TEXDescriptor(FileChunk):
             tlut_data = self.parent.read(self.paletteEntries * 2)
         return image_data, tlut_data
 
-    def _trim_tlut_to_used_range(self, image_data, tlut_data):
-        tlut_size = len(tlut_data)
-        if tlut_size == 16 * 2:
-            min_idx = 0xffff
-            max_idx = 0
-            for b in image_data:
-                low_nibble = b & 0x0F
-                high_nibble = b >> 4
-                min_idx = min(min_idx, low_nibble, high_nibble)
-                max_idx = max(max_idx, low_nibble, high_nibble)
-            tlut_size = 2 * (max_idx + 1 - min_idx)
-            return tlut_data[2 * min_idx:2 * min_idx + tlut_size]
-        if tlut_size == 256 * 2:
-            min_idx = 0xffff
-            max_idx = 0
-            for b in image_data:
-                min_idx = min(min_idx, b)
-                max_idx = max(max_idx, b)
-            tlut_size = 2 * (max_idx + 1 - min_idx)
-            return tlut_data[2 * min_idx:2 * min_idx + tlut_size]
-        if tlut_size == 16384 * 2:
-            min_idx = 0xffff
-            max_idx = 0
-            for i in range(0, len(image_data) - 1, 2):
-                texture_halfword = int.from_bytes(image_data[i:i + 2], 'big') & 0x3FFF
-                min_idx = min(min_idx, texture_halfword)
-                max_idx = max(max_idx, texture_halfword)
-            tlut_size = 2 * (max_idx + 1 - min_idx)
-            return tlut_data[2 * min_idx:2 * min_idx + tlut_size]
-        return tlut_data
-
     def dolphinTextureBasenameForPayload(self, image_data, tlut_data=b''):
         """Return Dolphin-compatible base texture name for explicit payload bytes."""
-        trimmed_tlut = self._trim_tlut_to_used_range(image_data, tlut_data) if tlut_data else b''
-
-        tex_hash = xxh64(image_data, 0)
-        tlut_hash = xxh64(trimmed_tlut, 0) if len(trimmed_tlut) > 0 else 0
-
-        base_name = 'tex1_' + str(self.width) + 'x' + str(self.height)
-
-        texture_name = format(tex_hash, '016x')
-        tlut_name = '_' + format(tlut_hash, '016x') if len(trimmed_tlut) > 0 else ''
-        format_name = str(self.format)
-        return base_name + '_' + texture_name + tlut_name + '_' + format_name
+        return dolphin_texture_basename(self.width, self.height, self.format, image_data, tlut_data)
 
     def ensureUniqueDolphinBasename(self, seen_names, max_attempts=8192):
         """Return basename and payload bytes, mutating image bytes only when needed."""

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import struct
 import subprocess
 import tempfile
@@ -1691,6 +1692,37 @@ def encode_png_to_tpl(
     return parse_single_image_tpl(tpl_bytes)
 
 
+# A Dolphin dump name: tex1_<w>x<h>[_m]_<hash>[_<tlut hash>|_$]_<format>[_mip<n>]
+_DOLPHIN_NAME = re.compile(r"^tex1_\d+x\d+(?:_m)?_[0-9a-f]{16}(?:_[0-9a-f]{16}|_\$)?_(\d+)(?:_mip\d+)?$")
+
+
+def gx_format_from_dolphin_name(file_name: str) -> int | None:
+    """The GX format a Dolphin dump/load file name ends in, or None for any other name."""
+    match = _DOLPHIN_NAME.match(os.path.splitext(os.path.basename(file_name))[0])
+    if match is None or int(match.group(1)) not in _GX_FORMATS:
+        return None
+    return int(match.group(1))
+
+
+def dolphin_texture_name(
+    image_path: str | os.PathLike[str],
+    gx_format: int,
+    palette_format: int | None = None,
+    wimgt_executable: str = "wimgt",
+) -> str:
+    """The file name (without .png) Dolphin's texture dump gives ``image_path`` once it is encoded as
+    ``gx_format`` the way the patchers do it (:func:`encode_png_to_tpl`: wimgt, clamped to 1024).
+
+    Mipless, like the names the exporter writes: a texture the game draws with mipmaps gets
+    Dolphin's ``_m`` mark, which this doesn't add."""
+    from tpl import dolphin_texture_basename
+
+    parsed = encode_png_to_tpl(image_path, gx_format, palette_format, wimgt_executable)
+    return dolphin_texture_basename(
+        parsed.width, parsed.height, parsed.format, parsed.image_data, parsed.palette_data
+    )
+
+
 __all__ = [
     "ParsedSingleImageTpl",
     "TPL_MAGIC",
@@ -1711,7 +1743,9 @@ __all__ = [
     "texture_writes_for",
     "check_png_dimensions",
     "clamp_texture_dimensions",
+    "dolphin_texture_name",
     "encode_png_to_tpl",
+    "gx_format_from_dolphin_name",
     "parse_single_image_tpl",
     "parse_single_image_tpl_file",
     "parse_tpl",

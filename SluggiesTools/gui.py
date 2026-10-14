@@ -904,8 +904,8 @@ class SluggiesGui:
                 self.sounds_tab.build()
                 self.effects_tab.build()
                 self.music_tab.build()
-                self.grid_tab.build_options()
                 self.maintenance_tab.build()
+                self.grid_tab.build_options()
             dpg.add_separator()
             # hidden by default; a command that waits for an answer asks in a popup instead (_open_prompt)
             dpg.add_checkbox(label='Show console', tag='show_console', default_value=False,

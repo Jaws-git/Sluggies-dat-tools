@@ -65,7 +65,11 @@ class FilePicks:
             self._pending = None
 
     def pick_sound(self, tag, title, setting, starts, on_path, rwav=False):
-        """Pick one existing sound file for ``on_path(path)``, starting in the folder the last one came from (GUI
+        """``pick_one`` for a sound file."""
+        self.pick_one(tag, title, sound_filters(rwav), setting, starts, on_path)
+
+    def pick_one(self, tag, title, filters, setting, starts, on_path):
+        """Pick one existing file for ``on_path(path)``, starting in the folder the last one came from (GUI
         settings key ``setting``), else in the first existing folder of ``starts``, else in 2_Output_Assets."""
         if self.app.picking:
             return
@@ -83,7 +87,7 @@ class FilePicks:
             except OSError:
                 pass                          # not remembered; the pick itself goes on
             on_path(path)
-        self.pick(tag, title, sound_filters(rwav), picked, initial_dir=start)
+        self.pick(tag, title, filters, picked, initial_dir=start)
 
 
 class ClipPlayer:
