@@ -104,6 +104,13 @@ class PresetTests(unittest.TestCase):
                     self.assertEqual(g.empty, [])
                 self.assertLessEqual(len(new), ids.MAX_ID - ids.FIRST_NEW + 1)
 
+    def test_unused_preset_stays_within_seven(self):
+        """Preset 2 must not need the 10-member code (DOL hammerspace, Gecko codes): White Yoshi is on Koopa's."""
+        config = self.load('02_Stock_and_Unused.json')
+        self.assertEqual(config, make_presets.preset(config['comment'],
+                                                     wheels=make_presets.unused_wheels(make_presets.GECKO_SAFE_WHEELS)))
+        self.assertEqual({w['id']: w['wheel'] for w in config['wheels']}['0x48'], '0x0C')
+
     def test_wheels_of_ten_and_new_wheels_of_three(self):
         new = ids.parse_ids(self.load('04_Unuseds_and_10_color_slots.json'))
         self.assertEqual(len(new), 123)

@@ -112,6 +112,49 @@ def texture_binds(block: bytes) -> list[TextureBind]:
         return []
 
 
+def texture_count(block: bytes) -> int | None:
+    """Descriptor count of a model block's TEX section, or None when the
+    block has no readable TEX section (a low-poly model has none)."""
+    try:
+        tex = _u32(block, 0x0C)
+        if not tex or tex + 2 > len(block):
+            return None
+        return struct.unpack_from('>H', block, tex)[0]
+    except struct.error:
+        return None
+
+
+def low_bind_range_errors(block: bytes, chunk_number: int, file_index: int) -> list[str]:
+    """Blocking errors for a low-poly *block* that binds a texture index past
+    the end of its high-poly partner's current TEX (the bind would read a
+    descriptor that does not exist). Empty for a high-poly model, a model
+    without partner, or an unreadable partner."""
+    own = LodPartnerGuard.act_summary(block)
+    if own is None or not own.is_low_poly:
+        return []
+    try:
+        found = LodPartnerGuard.find_partner(chunk_number, file_index, own)
+        high = LodPartnerGuard.read_current_block(chunk_number, found[0]) if found else None
+    except (OSError, struct.error, ValueError):
+        return []
+    count = texture_count(high) if high else None
+    if count is None:
+        return []
+    bad = [bind for bind in texture_binds(block) if bind.texture >= count]
+    if not bad:
+        return []
+    binds = ', '.join(
+        f"sub{bind.submesh} '{bind.mesh_name}' ds{bind.display_state} -> {bind.texture}" for bind in bad
+    )
+    high_name = found[1].geo_name
+    return [
+        f'{own.geo_name} binds texture(s) its high-poly partner {high_name} '
+        f'(chunk {chunk_number}, file {found[0]}) does not have: {binds}; '
+        f'{high_name} currently has {count} texture(s), 0-{count - 1}. '
+        f'Patch {high_name} with its added textures first, or pick an existing texture.'
+    ]
+
+
 def _unique_textures(binds: list[TextureBind]) -> tuple[dict, dict[int, str]]:
     """``key -> texture`` for keys bound to one texture only (ambiguous keys
     are left out), and ``submesh -> mesh name``."""

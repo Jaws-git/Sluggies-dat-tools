@@ -22,7 +22,7 @@ The binary details are in [`_docs_roster/RosterExpansion.md`](_docs_roster/Roste
    | File | What you get |
    |---|---|
    | `01_Stock_Roster.json` | No new content. |
-   | `02_Stock_and_Unused.json` | The six unused characters (Black Yoshi, White Yoshi, Black Toad, Black Pianta, Black Kritter, Black Koopa) on their families' wheels, with the icons from `1_Input/_Icons`. |
+   | `02_Stock_and_Unused.json` | The six unused characters (Black Yoshi, White Yoshi, Black Toad, Black Pianta, Black Kritter, Black Koopa) on their families' wheels, with the icons from `1_Input/_Icons`. White Yoshi sits on the Koopa wheel, so no wheel goes above 7 and `main.dol` stays compatible with Gecko codes made for the stock game. |
    | `03_Unuseds_and_8_color_slots.json` | Preset 02, every colour wheel filled to 8, and a new wheel of 3-4 for each of the 30 characters without one, all with **open slots** (123 new IDs). |
    | `04_Unuseds_and_10_color_slots.json` | Preset 02, every colour wheel filled to 10, and a new wheel of 3 for each of the 30 characters without one, all with open slots (123 new IDs). |
    | `05_Extra_Columns_12x4_grid.json` | Wheels of up to 8 on a 12×4 grid: 7 new squares, and the remaining IDs spread evenly over the new squares and the characters without a wheel (153 new IDs). |
@@ -107,8 +107,10 @@ stays.
 
 Each character has nine animation banks (files 6-14 of its model folder;
 `44/28/17/12/4/9/24/2/5` animations, exported to the `anm` folder). A slot can
-take one bank exported from Blender (**Export Sluggers .anm**) through
-**Replace animation...** on the character grid:
+take banks exported from Blender (**Export Sluggers .anm**) through
+**Replace animation...** on the character grid; select several `.anm` files in
+its file dialog to stage them together (one check, one confirm dialog; two
+files of the same bank: the later one wins):
 
 ```
 python start.py --write-slot-animation 0x13 7 "2_Output_Assets/18 Mario/anm/7 custom.anm"

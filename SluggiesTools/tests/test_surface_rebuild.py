@@ -320,6 +320,33 @@ class DesiredTextureAssignmentTests(unittest.TestCase):
 
         self.assertEqual(states[0]['ShaderModeEdited'], '11110001')
 
+    def _low_data(self, states, assignments):
+        data = self._data(states, assignments, [0])
+        model = data['SluggiesModel']
+        del model['TextureDescriptors'], model['AdditionalTextureDescriptors']
+        return data
+
+    def test_low_poly_model_binds_partner_texture_past_its_own_count(self):
+        # An L_ model has no TEX: its indices point into the High model's TEX,
+        # which the write checks (LodTextureSync.low_bind_range_errors).
+        states = [
+            {**_texture_state(0), 'SurfaceId': 'sm0_ds0'},
+            {**_display_state(_face(0)), 'SurfaceId': 'sm0_ds1', 'FaceCount': 1},
+        ]
+        data = self._low_data(states, {'sm0_ds1': 3})
+
+        self.assertTrue(apply_desired_texture_assignments(data))
+
+        self.assertEqual(states[0]['ShaderModeEdited'], '11110003')
+
+    def test_low_poly_model_index_past_the_13_bit_field_is_rejected(self):
+        states = [
+            {**_texture_state(0), 'SurfaceId': 'sm0_ds0'},
+            {**_display_state(_face(0)), 'SurfaceId': 'sm0_ds1', 'FaceCount': 1},
+        ]
+        with self.assertRaisesRegex(ValueError, '13-bit'):
+            apply_desired_texture_assignments(self._low_data(states, {'sm0_ds1': 0x2000}))
+
 
 if __name__ == '__main__':
     unittest.main()

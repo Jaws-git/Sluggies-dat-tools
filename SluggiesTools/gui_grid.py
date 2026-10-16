@@ -15,7 +15,7 @@
 * Equipment: ``equipment_tiles`` (the slot level's Bat / Left glove / Right glove / Extra bat tiles:
   state from the read, overlay from the pending edits).
 * Animations: ``animations_text`` (the slot summary's stock / custom line) and the ``anim`` edits of
-  "Replace animation..." (one ``.anm`` bank each).
+  "Replace animation..." (one ``.anm`` bank each; several picked at once are staged together).
 * Roster packs: ``load_dialog`` (the per-slot diff of
   ``--load-roster FILE --dry-run``), ``save_pending_dialog``, and the
   "changed since the pack was saved / loaded" marker (``Reference``).
@@ -1573,21 +1573,23 @@ def _same_path(a: str | None, b: str | None) -> bool:
 def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int, output: str,
                 pending: PendingEdits | None = None, rename: bool = False, kind: str | None = None,
                 view: str | None = None, gear_file: int | None = None, moment: str | None = None,
-                anm: str | None = None) -> SlotDialog:
+                anm: str | list[str] | None = None) -> SlotDialog:
     """The confirm dialog of a staged edit, after its staging check (the pending edits plus this one, exit
     ``code``, log ``output``): what the edit does, its warnings and the verdict. ``can_apply`` (Stage stages it)
     only when the planner and the build check passed. ``kind``: 'patch', 'clear', 'rename', 'stats', 'voice',
     'char_voice', 'species_clip' (``moment``: its voice moment) or 'icon' (``view``: its portrait view), 'equip' or
-    'equip_clear' (``gear_file``: the slot file), 'anim' (``anm``: the picked .anm) (default from ``patch`` /
-    ``rename``; a voice edit's ``cid`` is its square's head)."""
+    'equip_clear' (``gear_file``: the slot file), 'anim' (``anm``: the picked .anm, or a list of them staged
+    together) (default from ``patch`` / ``rename``; a voice edit's ``cid`` is its square's head)."""
     kind = kind or ('rename' if rename else 'patch' if patch else 'clear')
     rename = kind in VALUE_KINDS
+    anms = [anm] if anm is None or isinstance(anm, str) else list(anm)
     target = f'{name_of(state, cid)} ({hex_id(cid)})'
     gear_label = EQUIP_LABELS.get(gear_file, 'equipment').lower()
     dialog = SlotDialog({'rename': f'Rename {target}?', 'patch': f'Put a model into {target}?',
                          'equip': f'Put a {gear_label} into {target}?',
                          'equip_clear': f'Reset the {gear_label} of {target}?',
-                         ANIM: f'Replace an animation bank of {target}?',
+                         ANIM: (f'Replace {len(anms)} animation banks of {target}?' if len(anms) > 1
+                                else f'Replace an animation bank of {target}?'),
                          'stats': f'Other stats for {target}?',
                          'icon': f'New {view} portrait for {target}?',
                          'voice': f'Another voice for the square of {target}?',
@@ -1607,8 +1609,13 @@ def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int
                 lines.append(('A pending edit no longer fits the game files: discard it on its slot.', TEXT))
         lines.append(('Nothing was staged.', TEXT))
         return dialog
-    section = _find_section(plan, cid, kind, view, gear_file, moment, anm)
-    if section is None:                       # a clear of a slot at its baseline, or a rename that changes nothing
+    sections = []                             # one per picked .anm (a bank picked twice: the later one stays)
+    for path in anms:
+        found = _find_section(plan, cid, kind, view, gear_file, moment, path)
+        if found is not None and not any(found is s for s in sections):
+            sections.append(found)
+    section = sections[0] if sections else None
+    if section is None:                     # a clear of a slot at its baseline, or a rename that changes nothing
         skipped = next((s for s in plan['skipped'] if int(s['target'], 16) == cid and s['action'] == kind
                         and (kind != SPECIES_CLIP or (s.get('edit') or {}).get('moment') == moment)), None)
         lines += [(f'- {note}', TEXT) for note in (skipped or {}).get('notes', [])]
@@ -1626,10 +1633,12 @@ def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int
             dialog.title = {'rename': f'{target}: nothing to rename', 'clear': f'{target}: nothing to clear',
                             'equip_clear': f'{target}: nothing to reset'}.get(kind, f'{target}: nothing to change')
         return dialog
-    lines += _section_lines(state, section, build_sizes(output))
+    sizes = build_sizes(output)
+    for each in sections:
+        lines += _section_lines(state, each, sizes)
     prefix = f'{hex_id(cid)}: '
     lines += [(f'- {note.removeprefix(prefix)}', TEXT) for note in plan['notes'] if note.startswith(prefix)]
-    if not section['rebuild']:
+    if not any(each['rebuild'] for each in sections):
         lines.append(('- no roster rebuild needed', TEXT))
     if code != 0:
         lines.append((f'Build check failed: {error or f"exit code {code}"}. Nothing was staged.', ERROR))

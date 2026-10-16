@@ -54,10 +54,14 @@ UNUSED = [  # the six unused characters (spare rows) with the icon art shipped i
     ('0x4B', '0x3A', 'black', 'Black Kritter', 'black_kritter'),
     ('0x4C', '0x0C', 'black', 'Black Koopa', 'black_koopa'),
 ]
+# Preset 2 only: White Yoshi on the Koopa wheel keeps every wheel at 7 or fewer, which the caps patch in place; 8
+# would need the 10-member code in the DOL hammerspace and so break Gecko code compatibility (``gecko_compat``).
+GECKO_SAFE_WHEELS = {'0x48': '0x0C'}
 
 
-def unused_wheels() -> list[dict]:
-    return [{'id': cid, 'wheel': wheel, 'swatch': swatch, 'comment': comment,
+def unused_wheels(moved: dict | None = None) -> list[dict]:
+    moved = moved or {}
+    return [{'id': cid, 'wheel': moved.get(cid, wheel), 'swatch': swatch, 'comment': comment,
              'icon': {'side': f'{art}_side.png', 'front': f'{art}_front.png'}}
             for cid, wheel, swatch, comment, art in UNUSED]
 
@@ -172,8 +176,9 @@ def main() -> int:
     write('01_Stock_Roster.json', preset('Preset 1: the stock roster. No expansion content; the DOL hammerspace sections are '
                                  'still added (empty).'))
     write('02_Stock_and_Unused.json', preset('Preset 2: the stock roster plus the six unused characters on their families\' '
-                                  'wheels (Yoshi gets 8), with their icons from 1_Input/_Icons.',
-                                  wheels=unused_wheels()))
+                                  'wheels (White Yoshi on the Koopa wheel, so no wheel exceeds 7 and main.dol stays '
+                                  'Gecko-code compatible), with their icons from 1_Input/_Icons.',
+                                  wheels=unused_wheels(GECKO_SAFE_WHEELS)))
     slot_text = ('each plays as its wheel\'s host, shows the "empty slot" icon and the name "Empty slot" until you '
                  'assign it something else.')
     hosts = len(wheelless(selector_rows(image)))

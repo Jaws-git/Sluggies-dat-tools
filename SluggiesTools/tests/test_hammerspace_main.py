@@ -425,11 +425,20 @@ class BuildModelBlockTests(unittest.TestCase):
 
     def test_desired_texture_assignments_require_gpl_tex_build_and_reimport(self):
         self.data['SluggiesModel']['DesiredTextureAssignments'] = {'sm0_ds1': 1}
+        self.data['SluggiesModel']['TextureDescriptors'] = [{'TextureIndex': 0}]
 
         with self.assertRaisesRegex(
             ValueError,
             'require GPL and TEX build modes with ReimportTextures enabled',
         ):
+            main.BuildModelBlock(self.data)
+
+    def test_low_poly_desired_texture_assignments_require_only_gpl_build(self):
+        # An L_ model has no TEX section to rebuild: it binds the partner's.
+        self.data['SluggiesModel']['DesiredTextureAssignments'] = {'sm0_ds1': 1}
+        self.data['SluggiesModel'].pop('TextureDescriptors', None)
+
+        with self.assertRaisesRegex(ValueError, 'DesiredTextureAssignments require the GPL build mode'):
             main.BuildModelBlock(self.data)
 
     def test_build_preserves_dol_entry_prefix_before_inner_model(self):

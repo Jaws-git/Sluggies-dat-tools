@@ -20,6 +20,7 @@ from . import FieldCodec
 from . import RigidRebuildExport
 from . import SkinnedRebuildExport
 from . import TemplateSources
+from . import TextureSlotsCore
 from . import HostBones
 
 
@@ -2584,8 +2585,13 @@ def _resolve_material_texture_changes(
     tex_dir,
     path_resolver=os.path.abspath,
     validate_texture_files=True,
+    skip_unset_images=False,
 ):
-    """Classify connected material images without mutating Blender or JSON data."""
+    """Classify connected material images without mutating Blender or JSON data.
+
+    *skip_unset_images*: an image node without an image keeps the material's
+    texture instead of failing (a `_L_` model, whose PNGs live in the main
+    model's folder and may not have been found on import)."""
     descriptor_by_name = {
         descriptor.get("TextureFileName"): int(descriptor["TextureIndex"])
         for descriptor in descriptors
@@ -2625,6 +2631,8 @@ def _resolve_material_texture_changes(
                 getattr(image, "filepath_raw", "") or getattr(image, "filepath", "")
                 if image is not None else ""
             )
+            if not image_path and skip_unset_images:
+                continue
             if not image_path:
                 raise ValueError(f"Material image has no file path: {material.name}")
 
@@ -3282,18 +3290,9 @@ def _partner_added_texture_descriptors(descriptors, additions):
     """Descriptors for the textures a main model's export appends, so its
     `_L_` partner can bind them as existing textures.
 
-    The patcher gives the n-th AdditionalTextureDescriptors entry TEX index
-    len(descriptors) + n. It merges entries that share a file name and
-    template format first, which renumbers the later ones, so a list with a
-    repeated name yields nothing here rather than a possibly wrong index.
+    See TextureSlotsCore.partner_added_texture_descriptors.
     """
-    names = [addition.get("TextureFileName") for addition in additions]
-    if not all(names) or len(set(names)) != len(names):
-        return []
-    return [
-        {"TextureIndex": len(descriptors) + order, "TextureFileName": name}
-        for order, name in enumerate(names)
-    ]
+    return TextureSlotsCore.partner_added_texture_descriptors(descriptors, additions)
 
 
 def _resolve_export_texture_context(sluggie_path, model):
@@ -4047,7 +4046,13 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             and all(prop in obj for prop in REQUIRED_PROPS)
         ]
 
-        if custom_submesh_candidates and not self.reimport_textures:
+        # A `_L_` model has no texture section of its own (it borrows the main
+        # model's), so the toggle has nothing to reimport there and is never
+        # required; its texture context is resolved below regardless.
+        if (
+            custom_submesh_candidates and not self.reimport_textures
+            and data["SluggiesModel"].get("TextureDescriptors")
+        ):
             self.report(
                 {"ERROR"},
                 _custom_submesh_export_toggles_required_message(
@@ -4067,6 +4072,28 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 f"{len(candidates)} mesh(es) selected but the target JSON only defines "
                 f"{len(submeshes)} submesh(es). Make sure you are exporting to the correct file.")
             return {"CANCELLED"}
+
+        # The Check Models error checks on the selected model, before anything
+        # is encoded. Imported here: ModelCheck imports this module.
+        from . import ModelCheck
+        check_errors = ModelCheck.export_errors(
+            context, data["SluggiesModel"], self.filepath,
+            candidates + custom_submesh_candidates + [
+                obj for obj in context.selected_objects if obj.type == 'ARMATURE'
+            ],
+            self.reimport_textures,
+        )
+        if check_errors:
+            for message in check_errors:
+                self.report({"ERROR"}, message)
+            return {"CANCELLED"}
+        try:
+            size_line = ModelCheck.export_size_line(
+                context, data["SluggiesModel"], self.filepath,
+                candidates + custom_submesh_candidates,
+            )
+        except Exception as exc:  # the estimate must never stop an export
+            size_line = f"Size estimate failed: {exc}"
 
         written = 0
         warnings = []
@@ -4129,33 +4156,40 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         owns_texture_section = bool(local_texture_descriptors)
         additions, desired_assignments, changed_materials = [], {}, []
         texture_descriptors, texture_dir = local_texture_descriptors, None
-        if self.reimport_textures:
+        # A `_L_` model binds its High model's textures by index, so a
+        # material showing another of them is a texture reassignment that
+        # needs no reimport (Manage texture slots sets these images).
+        if self.reimport_textures or not owns_texture_section:
             try:
                 texture_descriptors, texture_dir, owns_texture_section = (
                     _resolve_export_texture_context(self.filepath, data["SluggiesModel"])
                 )
-                additions, desired_assignments, changed_materials = (
-                    _resolve_material_texture_changes(
-                        object_submeshes,
-                        texture_descriptors,
-                        texture_dir,
-                        path_resolver=bpy.path.abspath,
+                if owns_texture_section or texture_descriptors:
+                    additions, desired_assignments, changed_materials = (
+                        _resolve_material_texture_changes(
+                            object_submeshes,
+                            texture_descriptors,
+                            texture_dir,
+                            path_resolver=bpy.path.abspath,
+                            validate_texture_files=owns_texture_section,
+                            skip_unset_images=not owns_texture_section,
+                        )
                     )
-                )
             except ValueError as exc:
                 self.report({"ERROR"}, str(exc))
                 return {"CANCELLED"}
 
-        if changed_materials and not owns_texture_section:
+        if additions and not owns_texture_section:
             self.report(
                 {"ERROR"},
-                "Low-poly model textures are owned by the paired main model. "
-                "Apply and export this texture change from the sibling main model: "
-                f"{', '.join(changed_materials)}",
+                "Low-poly model textures are owned by the paired main model. A low-poly "
+                "material can only show one of the main model's textures (see Manage "
+                "texture slots); add new PNGs on the main model and export it first: "
+                f"{', '.join(addition['TextureFileName'] for addition in additions)}",
             )
             return {"CANCELLED"}
 
-        if changed_materials and not self.reimport_textures:
+        if changed_materials and not self.reimport_textures and owns_texture_section:
             self.report(
                 {"ERROR"},
                 _texture_export_toggles_required_message(changed_materials),
@@ -4189,15 +4223,20 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             return {"CANCELLED"}
 
         # --- Custom submeshes ---
-        # The toggle guard above guarantees Reimport textures, so the
-        # texture context was resolved. CustomSubmeshes
-        # always mirrors the current selection, like AdditionalTextureDescriptors.
+        # The toggle guard above guarantees Reimport textures on a model that
+        # owns its textures; a `_L_` model resolves its borrowed context here.
+        # CustomSubmeshes always mirrors the current selection, like
+        # AdditionalTextureDescriptors.
         custom_submesh_entries = []
         custom_additions = []
         custom_texture_copies = []
         if custom_submesh_candidates:
             model = data["SluggiesModel"]
             try:
+                if texture_dir is None:
+                    texture_descriptors, texture_dir, owns_texture_section = (
+                        _resolve_export_texture_context(self.filepath, model)
+                    )
                 validate_custom_submeshes(
                     custom_submesh_candidates, candidates, model, warnings
                 )
@@ -4297,15 +4336,16 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     path_resolver=bpy.path.abspath,
                 )
                 new_names = ", ".join(mat.name for mat, _index in new_surface_entries)
-                if new_surface_additions and not self.reimport_textures:
-                    raise ValueError(
-                        "A new material with a new PNG needs 'Reimport textures from tex "
-                        f"folder' enabled: {new_names}"
-                    )
+                # Ownership first: on a `_L_` model the toggle would not help.
                 if new_surface_additions and not owns_texture_section:
                     raise ValueError(
                         "Low-poly model textures are owned by the paired main model; a new "
                         f"material on it can only use an existing texture: {new_names}"
+                    )
+                if new_surface_additions and not self.reimport_textures:
+                    raise ValueError(
+                        "A new material with a new PNG needs 'Reimport textures from tex "
+                        f"folder' enabled: {new_names}"
                     )
         except ValueError as exc:
             self.report({"ERROR"}, str(exc))
@@ -4691,6 +4731,8 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             use_hammerspace = True
 
         self.report({"INFO"}, ExportMode.mode_message(hammerspace_reasons))
+        if size_line:
+            self.report({"INFO"}, size_line)
         for obj, submesh_index in object_submesh_indices:
             plan = rigid_plans.get(submesh_index)
             if plan is not None:

@@ -17,6 +17,7 @@ import sys  # noqa: E402
 if str(ROOT_DIR / 'BlenderAddonSrc') not in sys.path:
     sys.path.insert(0, str(ROOT_DIR / 'BlenderAddonSrc'))
 import FieldCodec  # noqa: E402  (bpy-free; the exec'd add-on helpers use it)
+import TextureSlotsCore  # noqa: E402  (bpy-free, likewise)
 
 
 def _load_helper(path, name):
@@ -76,7 +77,10 @@ def _load_texture_helpers():
         and any(getattr(t, 'id', None) == '_TEMPLATE_UNLENT_FIELDS' for t in node.targets)
     ]
     module = ast.Module(body=helpers, type_ignores=[])
-    namespace = {'json': __import__('json'), 'os': os, 'FieldCodec': FieldCodec}
+    namespace = {
+        'json': __import__('json'), 'os': os, 'FieldCodec': FieldCodec,
+        'TextureSlotsCore': TextureSlotsCore,
+    }
     exec(compile(module, str(EXPORTER_PATH), 'exec'), namespace)
     return namespace
 

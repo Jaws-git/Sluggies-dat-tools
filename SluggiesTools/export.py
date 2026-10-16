@@ -31,7 +31,7 @@ EXPORT_TEX = '--notex' not in sys.argv
 DEBUG_NO_COMPRESSION = '--debug' in sys.argv
 UNTANGLE_TEX = '--untangle' in sys.argv
 EXPORT_GLB = '--glb' in sys.argv
-EXPORT_ANIM_GLB = EXPORT_GLB and '--anim-glb' in sys.argv
+EXPORT_ANIM = '--anim-glb' in sys.argv  # raw anm/*.anm; their .glb files also need --glb
 
 # Model directory indices that hold stadiums (see folderNameMap):
 # 7 Mario Stadium ... 16 Toy Field. When UNTANGLE_SKIP_STADIUMS is enabled,
@@ -1518,7 +1518,7 @@ def main():
                     child.analyze()
                     if child.child:
                         if isinstance(child.child, ANM):
-                            if EXPORT_ANIM_GLB:
+                            if EXPORT_ANIM:
                                 child.child.dumpRaw(dir_dir, file_index, folderNameMap.get(str(dir_ind)))
                         else:
                             child.child.analyze()
@@ -1544,7 +1544,7 @@ def main():
             except Exception as e:
                 _slogger.warning(f'skipping entry: {type(e).__name__}: {e}', source=f'export.dir{dir_ind}')
                 pass
-        if EXPORT_ANIM_GLB and os.path.isdir(os.path.join(dir_dir, 'anm')):
+        if EXPORT_ANIM and EXPORT_GLB and os.path.isdir(os.path.join(dir_dir, 'anm')):
             convert_anm_directory(dir_dir)
         if len(os.listdir(dir_dir)) == 0:
             os.rmdir(dir_dir)

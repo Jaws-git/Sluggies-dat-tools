@@ -26,7 +26,7 @@ pick, so both are patched in one go), **Clear
 slot**, **Stats...** and **Voice...**, and the square level's **Set voice (all)...** (colour
 wheels only; both pick from a list) and the Equipment row's tiles (Bat, Left glove, Right glove, Extra bat;
 each has **Select...** for a bat/glove ``.sluggie`` and **Reset**) and **Replace animation...** (below Adopt stats...:
-an ``.anm`` bank, e.g. the Blender add-on's export; the whole bank is replaced) run a staging check
+one or more ``.anm`` banks, e.g. the Blender add-on's export, staged together; each whole bank is replaced) run a staging check
 (``start.py --apply-slots edits.json
 --dry-run``: the pending edits plus the new one, the new edit's build check),
 then a confirm dialog with what the edit does (``gui_grid.slot_dialog``); Stage
@@ -954,8 +954,8 @@ class CharacterGridTab:
                 STATS: "Stage another stock player's stats for this slot (stats, pitching, fielding, chemistry; its "
                        'model, size, voice and name stay). "Patch Game" writes the pending edits.',
                 VOICE: CHAR_VOICE_TIP,
-                ANIM: 'Stage an animation bank (.anm, e.g. exported from Blender) for this slot: every animation of '
-                      'that bank is replaced at once. It must fit the slot\'s skeleton (checked); the stock .anm '
+                ANIM: 'Stage animation banks (.anm, e.g. exported from Blender) for this slot; select several files '
+                      'to stage them together. Every animation of a bank is replaced at once. It must fit the slot\'s skeleton (checked); the stock .anm '
                       'puts the bank back. "Patch Game" writes the pending edits.',
                 DISCARD: "Drop this slot's pending edits (nothing was written for them yet)."}
         actions = {RENAME: lambda: self._on_rename(cid), CLEAR: lambda: self._start_preview(cid, None),
@@ -1095,25 +1095,26 @@ class CharacterGridTab:
 
     # ------------------------------------------------------------------ animations
     def _on_anim(self, cid):
-        """Replace animation...: pick an .anm bank; the staging check finds its bank (6-14) and checks it."""
+        """Replace animation...: pick one or more .anm banks; one staging check finds each one's bank (6-14) and
+        checks it, and one confirm dialog stages them all."""
         if self._locked() or self.pending.pack is not None:
             return
         self.action = (cid, gui_grid.ANIM)
         self.set_busy(False)
-        if not self.app.pick_files('grid_anim_dialog', 'Select an animation bank (.anm) for this slot',
+        if not self.app.pick_files('grid_anim_dialog', 'Select animation banks (.anm) for this slot',
                                    gui_grid.ANIM_FILTERS, self._on_anim_paths, on_cancel=self._end_action,
-                                   remember=ANIM_DIR_SETTING):
+                                   multi=True, remember=ANIM_DIR_SETTING):
             self._end_action()
 
     def _on_anim_paths(self, paths):
         cid = self.action[0] if isinstance(self.action, tuple) and self.action[1:] == (gui_grid.ANIM,) else None
-        path = next((p for p in paths if p and os.path.isfile(p)), None)
-        if cid is None or path is None:
+        chosen = list(dict.fromkeys(os.path.abspath(p) for p in paths if p and os.path.isfile(p)))
+        if cid is None or not chosen:
             self.app.log_line(f'[character grid] no animation file chosen: {paths[0]}', _WARN)
             self._end_action()
             return
         self.action = None
-        self._start_preview(cid, None, anim=os.path.abspath(path))
+        self._start_preview(cid, None, anim=chosen)
 
     # ------------------------------------------------------------------ equipment
     def _on_equip_select(self, cid, file):
@@ -1369,7 +1370,7 @@ class CharacterGridTab:
         ``value``: ``(op, source)``, a stats or voice edit (source None: back to the default); ``icon``: a
         finished icon edit (``IconPreview.edit``); ``equip``: ``(slot file, .sluggie or None)``, an equipment edit
         (None: reset that file); ``copy_from``: the copied character, a paste (the slot becomes its clone); ``anim``:
-        an ``.anm`` file, an animation bank edit."""
+        a list of ``.anm`` files, one animation bank edit each (staged together)."""
         if self._locked():
             return
         kind = (gui_grid.COPY if copy_from is not None else gui_grid.ANIM if anim is not None
@@ -1381,7 +1382,7 @@ class CharacterGridTab:
         if copy_from is not None:
             edit = gui_grid.copy_edit(cid, copy_from)
         elif anim is not None:
-            edit = {'op': gui_grid.ANIM, 'id': gui_grid.hex_id(cid), 'anm': anim}
+            edit = [{'op': gui_grid.ANIM, 'id': gui_grid.hex_id(cid), 'anm': path} for path in anim]
         elif equip is not None:
             edit = ({'op': 'equip', 'id': gui_grid.hex_id(cid), 'file': equip[0], 'sluggie': equip[1],
                      'origin': 'user'} if equip[1] else

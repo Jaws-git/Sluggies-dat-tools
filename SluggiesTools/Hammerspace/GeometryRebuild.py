@@ -81,6 +81,15 @@ def apply_desired_texture_assignments(data: dict) -> bool:
     texture_count = len(model.get('TextureDescriptors') or []) + len(
         model.get('AdditionalTextureDescriptors') or []
     )
+    # A low-poly model has no TEX section of its own: it binds indices into
+    # its high-poly partner's TEX, which only the write can check
+    # (LodTextureSync.low_bind_range_errors). Here only the Type-1 13-bit
+    # field bounds them.
+    tex_label = 'rebuilt TEX count'
+    if not model.get('TextureDescriptors'):
+        texture_count = 0x1FFF + 1
+        tex_label = 'Type-1 13-bit texture index range'
+
     surface_lookup = {}
     submesh_info = []
 
@@ -119,7 +128,7 @@ def apply_desired_texture_assignments(data: dict) -> bool:
         if raw_texture_index < 0 or raw_texture_index >= texture_count:
             raise ValueError(
                 f"DesiredTextureAssignments['{surface_id}'] texture index "
-                f'{raw_texture_index} is outside rebuilt TEX count {texture_count}'
+                f'{raw_texture_index} is outside {tex_label} {texture_count}'
             )
         submesh_index, state_index = surface_lookup[surface_id]
         state_setters, _ = submesh_info[submesh_index]

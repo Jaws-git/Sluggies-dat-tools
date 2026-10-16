@@ -909,6 +909,72 @@ class SLUGGIES_OT_reassign_bone(bpy.types.Operator):
         _end_bone_name_display(self, _find_target_armature(context))
 
 
+def _new_surface_plan(context, arm_obj, obj, template_source):
+    """Everything Add material writes onto a new surface of *obj* made from
+    *template_source*, checked before any material is touched. Also used by
+    Check Models to turn a plain Blender material into such a surface.
+    Raises ValueError with the reason."""
+    kind, submesh_index = _add_material_mesh_kind(obj)
+    if kind is None:
+        raise ValueError("Select a donor or custom submesh")
+    owner = f'sm{submesh_index}' if kind == 'donor' else obj.get('CustomSubmeshId')
+    if not owner:
+        raise ValueError(f"{obj.name} has no CustomSubmeshId; re-create it with Add submesh")
+    existing_surface_ids = [
+        mat.get('SurfaceId', '') for mat in bpy.data.materials if mat.get('SurfaceId')
+    ]
+    surface_id = TemplateSources.next_new_surface_key(owner, existing_surface_ids)
+
+    sluggie_path = arm_obj.get('SluggieFilePath')
+    if not sluggie_path:
+        raise ValueError("Re-import this model to enable Add material")
+    try:
+        model = FieldCodec.load_sluggie(sluggie_path).get('SluggiesModel', {})
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"Could not read {sluggie_path!r}: {exc}") from exc
+    template_texture_index = _custom_submesh_template_texture_index(model, template_source)
+    wrap_s, wrap_t = _template_wrap_modes(context, arm_obj, template_source)
+    return {
+        'kind': kind,
+        'owner': owner,
+        'surface_id': surface_id,
+        'template_source': template_source,
+        'template_texture_index': template_texture_index,
+        'shader_mode': _template_shader_mode(context, arm_obj, template_source),
+        'specular_strength': _template_specular_strength(context, arm_obj, template_source),
+        'wrap_s': wrap_s,
+        'wrap_t': wrap_t,
+    }
+
+
+def _apply_new_surface_plan(mat, plan):
+    """Write a `_new_surface_plan` onto *mat*."""
+    mat['SluggiesNewSurface'] = True
+    mat.id_properties_ui('SluggiesNewSurface').update(
+        description="Marks a Blender-only surface created by Add material, absent from the donor.")
+    mat['SurfaceId'] = plan['surface_id']
+    mat.id_properties_ui('SurfaceId').update(
+        description="Stable draw-state identity for this added surface. Do not delete.")
+    mat['SluggiesSurfaceOwner'] = plan['owner']
+    mat.id_properties_ui('SluggiesSurfaceOwner').update(
+        description="The submesh (donor sm<N> or CustomSubmeshId) this surface belongs to.")
+    mat['TemplateSource'] = plan['template_source']
+    mat.id_properties_ui('TemplateSource').update(
+        description="Donor or built-in template this surface's shading is cloned from.")
+    mat['TemplateTextureIndex'] = plan['template_texture_index']
+    mat.id_properties_ui('TemplateTextureIndex').update(
+        description="Donor texture index this surface's GX format clones; never a fallback texture.")
+    if plan['kind'] == 'donor':
+        _set_surface_material_metadata(
+            mat, _new_surface_metadata(plan['shader_mode'], plan['specular_strength']))
+    else:
+        _set_custom_surface_metadata(mat, plan['shader_mode'], plan['specular_strength'])
+    mat['WrapS'] = plan['wrap_s']
+    mat['WrapT'] = plan['wrap_t']
+    mat.id_properties_ui('WrapS').update(description="GX wrap mode for U, copied from the template.")
+    mat.id_properties_ui('WrapT').update(description="GX wrap mode for V, copied from the template.")
+
+
 class SLUGGIES_OT_add_material(bpy.types.Operator):
     """Add a new surface (material + empty texture slot) to a rigid or
     custom submesh, from a template. Blender-side only for now: export support for
@@ -1004,61 +1070,16 @@ class SLUGGIES_OT_add_material(bpy.types.Operator):
             self.report({"ERROR"}, name_error)
             return {"CANCELLED"}
 
-        owner = f'sm{submesh_index}' if kind == 'donor' else obj.get('CustomSubmeshId')
-        if not owner:
-            self.report({"ERROR"}, f"{obj.name} has no CustomSubmeshId; re-create it with Add submesh")
-            return {"CANCELLED"}
-        existing_surface_ids = [
-            mat.get('SurfaceId', '') for mat in bpy.data.materials if mat.get('SurfaceId')
-        ]
-        surface_id = TemplateSources.next_new_surface_key(owner, existing_surface_ids)
-
-        sluggie_path = arm_obj.get('SluggieFilePath')
-        if not sluggie_path:
-            self.report({"ERROR"}, "Re-import this model to enable Add material")
-            return {"CANCELLED"}
         try:
-            model = FieldCodec.load_sluggie(sluggie_path).get('SluggiesModel', {})
-        except (OSError, ValueError) as exc:
-            self.report({"ERROR"}, f"Could not read {sluggie_path!r}: {exc}")
-            return {"CANCELLED"}
-        try:
-            template_texture_index = _custom_submesh_template_texture_index(model, self.template_source)
+            plan = _new_surface_plan(context, arm_obj, obj, self.template_source)
         except ValueError as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
 
-        shader_mode = _template_shader_mode(context, arm_obj, self.template_source)
-        wrap_s, wrap_t = _template_wrap_modes(context, arm_obj, self.template_source)
-
         active_uv = obj.data.uv_layers.active
         uv_layer_name = active_uv.name if active_uv is not None else 'uv0'
-        mat = _create_material(material_name, uv_layer_name, None, wrap_s=wrap_s)
-
-        mat['SluggiesNewSurface'] = True
-        mat.id_properties_ui('SluggiesNewSurface').update(
-            description="Marks a Blender-only surface created by Add material, absent from the donor.")
-        mat['SurfaceId'] = surface_id
-        mat.id_properties_ui('SurfaceId').update(
-            description="Stable draw-state identity for this added surface. Do not delete.")
-        mat['SluggiesSurfaceOwner'] = owner
-        mat.id_properties_ui('SluggiesSurfaceOwner').update(
-            description="The submesh (donor sm<N> or CustomSubmeshId) this surface belongs to.")
-        mat['TemplateSource'] = self.template_source
-        mat.id_properties_ui('TemplateSource').update(
-            description="Donor or built-in template this surface's shading is cloned from.")
-        mat['TemplateTextureIndex'] = template_texture_index
-        mat.id_properties_ui('TemplateTextureIndex').update(
-            description="Donor texture index this surface's GX format clones; never a fallback texture.")
-        specular_strength = _template_specular_strength(context, arm_obj, self.template_source)
-        if kind == 'donor':
-            _set_surface_material_metadata(mat, _new_surface_metadata(shader_mode, specular_strength))
-        else:
-            _set_custom_surface_metadata(mat, shader_mode, specular_strength)
-        mat['WrapS'] = wrap_s
-        mat['WrapT'] = wrap_t
-        mat.id_properties_ui('WrapS').update(description="GX wrap mode for U, copied from the template.")
-        mat.id_properties_ui('WrapT').update(description="GX wrap mode for V, copied from the template.")
+        mat = _create_material(material_name, uv_layer_name, None, wrap_s=plan['wrap_s'])
+        _apply_new_surface_plan(mat, plan)
 
         obj.data.materials.append(mat)
         new_slot_index = len(obj.data.materials) - 1
@@ -1722,6 +1743,10 @@ def _draw_free_host_bones(layout, context):
         col.label(text=f'bone_{choice.bone_id} ({tag})')
 
 
+# The "Animations" box (Scale Animations) is hidden from the panel for now; its operator stays registered.
+_SHOW_ANIMATIONS_BOX = False
+
+
 class SLUGGIES_PT_tools(bpy.types.Panel):
     """Sluggies Tools sidebar panel"""
     bl_label = "Sluggies Tools"
@@ -1744,21 +1769,30 @@ class SLUGGIES_PT_tools(bpy.types.Panel):
 
         layout.separator()
         box = layout.box()
+        box.label(text="Textures")
+        # By id: TextureSlotsUI registers it.
+        box.operator("sluggies.manage_texture_slots", text="Manage texture slots", icon='TEXTURE')
+
+        layout.separator()
+        box = layout.box()
         box.label(text="Bones")
         box.operator(SLUGGIES_OT_add_bone.bl_idname)
         box.operator(SLUGGIES_OT_renumber_added_bones.bl_idname)
         box.operator(SLUGGIES_OT_toggle_bone_track.bl_idname)
 
-        layout.separator()
-        box = layout.box()
-        box.label(text="Animations")
-        box.operator(SLUGGIES_OT_scale_animations.bl_idname)
-        box.prop(context.scene, 'sluggies_animation_scale', text="")
+        if _SHOW_ANIMATIONS_BOX:
+            layout.separator()
+            box = layout.box()
+            box.label(text="Animations")
+            box.operator(SLUGGIES_OT_scale_animations.bl_idname)
+            box.prop(context.scene, 'sluggies_animation_scale', text="")
 
         layout.separator()
         _draw_rigid_mesh_box(layout, context)
 
         layout.separator()
+        # By id: ModelCheckUI imports this module.
+        layout.operator("sluggies.check_models", text="Check Models", icon='CHECKMARK')
         _draw_free_host_bones(layout, context)
 
 

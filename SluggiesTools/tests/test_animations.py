@@ -366,6 +366,23 @@ class GuiTextTests(unittest.TestCase):
         summary = gui_grid.summary_dialog(st, plan, 0, '')
         self.assertTrue(any('replace animation bank 7' in text for text, _k in summary.lines))
 
+    def test_several_banks_in_one_dialog(self):
+        """Replace animation... with several .anm files: one dialog lists every bank; a bank picked twice keeps
+        the later file."""
+        paths = ['/a/7.anm', '/a/14.anm', '/b/7.anm']
+        plan = slot_plan.plan_batch(anim_state(), tsp.make_config(),
+                                    tsp.edits(*[('anim', '0x0D', None, {'anm': p}) for p in paths]),
+                                    AnimEnv(), tsp.STATE_FILE, tsp.NAMES_TEXT,
+                                    classify_anim_fn=fake_classify_anim).to_json()
+        dialog = gui_grid.slot_dialog(anim_state(), 0x0D, False, plan, 0, '', gui_grid.PendingEdits(), kind='anim',
+                                      anm=paths)
+        self.assertTrue(dialog.can_apply)
+        self.assertEqual(dialog.title, 'Replace 3 animation banks of Red Toad (0x0D)?')
+        texts = [text for text, _kind in dialog.lines]
+        self.assertTrue(any(t.startswith('Animation bank 14: 14.anm') for t in texts))
+        self.assertEqual(sum(t.startswith('Animation bank 7: 7.anm') for t in texts), 1)
+        self.assertIn('- the pending animation bank 7 edit is replaced by the later one', texts)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -764,9 +764,9 @@ class SluggiesGui:
             with dpg.tooltip(icons):
                 dpg.add_text('Write FrontIcon.png and SideIcon.png into each character model folder.')
             with dpg.tooltip(anims):
-                dpg.add_text('Write each character\'s raw animation files (anm/*.anm) and a .glb of each next to them, '
-                             'one animation per sequence on the character\'s skeleton.\n'
-                             'Needs "Also write .glb files".')
+                dpg.add_text('Write each character\'s raw animation files (anm/*.anm).\n'
+                             'With "Also write .glb files" on, also a .glb of each next to them, '
+                             'one animation per sequence on the character\'s skeleton.')
             with dpg.tooltip(sounds):
                 dpg.add_text('Decode the voices, effects and music into 2_Output_Assets/_SOUNDS as WAV files, one '
                              'folder per sound group.\nNeeds the game\'s files/sound_NA folder (MY2.brsar and '
@@ -774,11 +774,10 @@ class SluggiesGui:
             self._action('Export', self._on_export, primary=True)
 
     def _export_options(self):
-        """The model options are available only with "Export .sluggies" on; animations also need .glb files."""
+        """The model options (animations included) are available only with "Export .sluggies" on."""
         models = dpg.get_value('exp_models')
-        for tag in ('exp_untangle', 'exp_glb', 'exp_notex', 'exp_debug'):
+        for tag in ('exp_untangle', 'exp_glb', 'exp_anim_glb', 'exp_notex', 'exp_debug'):
             dpg.configure_item(tag, enabled=models)
-        dpg.configure_item('exp_anim_glb', enabled=models and dpg.get_value('exp_glb'))
 
     def _on_export(self):
         steps = []
@@ -788,7 +787,7 @@ class SluggiesGui:
                               ('exp_notex', '--notex'), ('exp_debug', '--debug')):
                 if dpg.get_value(tag):
                     args.append(flag)
-            if dpg.get_value('exp_glb') and dpg.get_value('exp_anim_glb'):
+            if dpg.get_value('exp_anim_glb'):
                 args.append('--anim-glb')
             steps.append(tuple(args))
         if dpg.get_value('exp_icons'):

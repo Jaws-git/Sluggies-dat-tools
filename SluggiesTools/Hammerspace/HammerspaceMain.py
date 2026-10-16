@@ -7585,7 +7585,9 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
     # submeshes that are not rebuilt are untouched.
     clear_facial_pointer = skinned_rebuild and _SKINNED_REBUILD_SUBMESH in _facial_pose_submeshes(model)
     facial_rebuilders: dict = {}
-    if model.get('DesiredTextureAssignments') and (
+    # A low-poly model has no TEX section: its assignments are indices into
+    # the high-poly partner's TEX (checked against it in CheckLodPartner).
+    if model.get('DesiredTextureAssignments') and model.get('TextureDescriptors') and (
         modes.gpl != 'build'
         or modes.tex != 'build'
         or not model.get('ReimportTextures')
@@ -7594,6 +7596,8 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
             'DesiredTextureAssignments require GPL and TEX build modes with '
             'ReimportTextures enabled'
         )
+    if model.get('DesiredTextureAssignments') and modes.gpl != 'build':
+        raise ValueError('DesiredTextureAssignments require the GPL build mode')
     custom_submesh_additional_texture_names = {
         (owner.get('TextureAssignment') or {}).get('AdditionalTextureFileName')
         for cs in model.get('CustomSubmeshes') or []
@@ -8066,6 +8070,8 @@ def CheckLodPartner(build: ModelBlockBuild, target: 'SlotTarget.Target | None' =
     chunk_number, file_index = target.route if target else (build.chunk_number, build.file_index)
     any_stem = target is not None
     errors = LodPartnerGuard.lod_partner_errors(build.block, chunk_number, file_index, any_stem)
+    if target is None:
+        errors += LodTextureSync.low_bind_range_errors(build.block, chunk_number, file_index)
     if errors:
         raise ValueError(' '.join(errors))
     for warning in LodPartnerGuard.lod_partner_warnings(build.block, chunk_number, file_index, any_stem):

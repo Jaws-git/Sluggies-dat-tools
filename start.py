@@ -937,7 +937,7 @@ def parse_args():
     parser.add_argument('--notex', action='store_true', help='export only: skip texture extraction')
     parser.add_argument('--untangle', action='store_true', help='export only: pass untangling flag through to export process')
     parser.add_argument('--glb', action='store_true', help='export only: also write .glb model files (always writes .sluggie files)')
-    parser.add_argument('--anim-glb', action='store_true', help='export with --glb only: also write each character\'s raw animation files (anm/*.anm) and a .glb of each')
+    parser.add_argument('--anim-glb', action='store_true', help='export only: also write each character\'s raw animation files (anm/*.anm), plus a .glb of each with --glb')
     parser.add_argument('--use-output', action='store_true', help='export-icons only: read DOL/DAT from 3_Output_Dat instead of 1_Input')
     parser.add_argument('--dry-run', action='store_true', help='roster/game-options/slot chains: validate without writing bytes')
     parser.add_argument('--accept-gecko-break', action='store_true', help='write without asking when the change breaks Gecko code compatibility (main.dol gets DOL hammerspace; used by the GUI after its summary showed the warning)')
@@ -969,8 +969,8 @@ def parse_args():
         parser.error('--untangle can only be used with --export.')
     if args.glb and not args.export:
         parser.error('--glb can only be used with --export.')
-    if args.anim_glb and not args.glb:
-        parser.error('--anim-glb can only be used with --export --glb.')
+    if args.anim_glb and not args.export:
+        parser.error('--anim-glb can only be used with --export.')
     if args.use_output and not args.export_icons:
         parser.error('--use-output can only be used with --export-icons.')
     if args.dry_run and not (args.roster or args.game_options or args.load_roster or args.defrag_hammerspace

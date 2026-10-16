@@ -303,5 +303,47 @@ class LiveSyncTests(unittest.TestCase):
         self.assertEqual(self._live_low(), LOW_VANILLA)
 
 
+def _with_tex(block: bytes, count: int) -> bytes:
+    """*block* with a TEX section of *count* descriptors (header only)."""
+    tex = len(block) + (-len(block) % 0x20)
+    patched = bytearray(block) + bytes(tex - len(block)) + struct.pack('>HH', count, 0)
+    struct.pack_into('>I', patched, 0x0C, tex)
+    return bytes(patched)
+
+
+class LowBindRangeTests(unittest.TestCase):
+    def setUp(self):
+        patch = mock.patch.object(guard, '_entry_exists', return_value=True)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def _errors(self, low: bytes, high: bytes) -> list[str]:
+        with mock.patch.object(guard, 'read_current_block', return_value=high):
+            return sync.low_bind_range_errors(low, 75, 1)
+
+    def test_texture_count_reads_the_tex_header(self):
+        self.assertEqual(sync.texture_count(_with_tex(HIGH_VANILLA, 5)), 5)
+        self.assertIsNone(sync.texture_count(LOW_VANILLA))
+
+    def test_low_bind_within_the_high_tex_passes(self):
+        low = _tiny({**VANILLA_BODY, 0: 4}, 'L_tiny_kong.gpl')
+        self.assertEqual(self._errors(low, _with_tex(HIGH_VANILLA, 5)), [])
+
+    def test_low_bind_past_the_high_tex_is_refused(self):
+        low = _tiny({**VANILLA_BODY, 0: 5}, 'L_tiny_kong.gpl')
+        errors = self._errors(low, _with_tex(HIGH_VANILLA, 5))
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("sub0 'body' ds0 -> 5", errors[0])
+        self.assertIn('5 texture(s), 0-4', errors[0])
+
+    def test_high_poly_block_is_not_checked(self):
+        self.assertEqual(sync.low_bind_range_errors(_tiny({0: 9}), 75, 0), [])
+
+    def test_partner_without_tex_is_not_checked(self):
+        low = _tiny({**VANILLA_BODY, 0: 9}, 'L_tiny_kong.gpl')
+        self.assertEqual(self._errors(low, HIGH_VANILLA), [])
+
+
 if __name__ == '__main__':
     unittest.main()
