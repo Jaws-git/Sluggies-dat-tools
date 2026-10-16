@@ -177,14 +177,26 @@ def run_roster(config=None, remove=False, dry_run=False, state=None, keep_stat_e
         cmd.append('--keep-stat-edits')
     if dry_run:
         cmd.append('--dry-run')
-    subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
+    return subprocess.run(cmd, cwd=TOOLS_DIR).returncode == 0
+
+
+def _gecko():
+    from SluggiesTools import gecko_compat
+    return gecko_compat
+
+
+def _memory_guard():
+    from SluggiesTools import memory_guard
+    return memory_guard
 
 
 def run_roster_switch(config, dry_run=False):
     """Inject a roster configuration and keep the slots' customisations (Roster/switch_cli.py: the game is read
     and merged with the preset, IDs on both grids keep theirs, slots leaving the grid are reset), then run the
-    planned chain in order. ``dry_run``: plan, then build the merged roster in memory only. Returns True on
-    success."""
+    planned chain in order. ``dry_run``: plan, then build the merged roster in memory only (a Gecko code
+    compatibility break is recorded by the roster check). Returns True on success."""
+    if dry_run:
+        _gecko().clear_check(ROOT_DIR)
     if subprocess.run(python_script_command(ROSTER_SWITCH_SCRIPT, '--config', os.path.abspath(config)),
                       cwd=TOOLS_DIR).returncode != 0:
         return False
@@ -197,6 +209,8 @@ def run_roster_switch(config, dry_run=False):
         slogger.info('Dry run: the switch was planned and the merged roster built in memory; nothing was written.',
                      source="dispatcher")
         return True
+    if not _gecko().guard_chain(commands, 'the roster switch', ROOT_DIR):
+        return False
     return run_chain_commands(commands, 'Roster switch')
 
 
@@ -231,7 +245,13 @@ def run_slot_chain(target_id=None, sluggie=None, dry_run=False, edits_file=None,
 
     ``dry_run`` plans and runs only the chain's build checks (``--validate-only``: every block built and validated,
     nothing written; edits marked "checked" in the edits file are skipped); the GUI's confirm dialogs show its
-    result."""
+    result. A chain that would break Gecko code compatibility asks first (a dry run: the planner records it,
+    ``slot_cli.gecko_check``). After the build checks, the player memory check (``memory_guard.guard``: the
+    planner's projection of every touched slot) asks before any write when a character would not fit; a dry run
+    records it."""
+    if dry_run:
+        _gecko().clear_check(ROOT_DIR)
+        _memory_guard().clear_check(ROOT_DIR)
     cmd = python_script_command(ROSTER_SLOT_SCRIPT)
     if edits_file:
         cmd += ['--apply', os.path.abspath(edits_file)]
@@ -264,23 +284,32 @@ def run_slot_chain(target_id=None, sluggie=None, dry_run=False, edits_file=None,
     if subprocess.run(cmd, cwd=TOOLS_DIR).returncode != 0:
         return False
     with open(SLOT_PLAN_FILE, 'r', encoding='utf-8') as f:
-        commands = json.load(f)['commands']
-    if dry_run:
-        commands = [args for args in commands if '--validate-only' in args]
-    if not run_chain_commands(commands, 'Slot chain'):
+        plan = json.load(f)
+    commands = plan['commands']
+    if not dry_run and not _gecko().guard_chain(commands, 'the slot edits', ROOT_DIR):
+        return False
+    checks = [args for args in commands if '--validate-only' in args]     # the planner puts them first
+    writes = [args for args in commands if '--validate-only' not in args]
+    total = len(checks) if dry_run else len(commands)
+    if not run_chain_commands(checks, 'Slot chain', total=total):
+        return False
+    if not _memory_guard().guard(plan.get('memory'), 'the slot edits', ROOT_DIR, dry_run):
         return False
     if dry_run:
         slogger.info('Dry run: the chain above was planned and its build checks ran; nothing was written.',
                      source="dispatcher")
-    return True
+        return True
+    return run_chain_commands(writes, 'Slot chain', start=len(checks) + 1, total=total)
 
 
-def run_chain_commands(commands, label):
-    """Run planned ``start.py`` commands in order, stopping at the first failure. Returns True on success."""
-    for n, args in enumerate(commands, 1):
-        slogger.info(f'{label} step {n}/{len(commands)}: start.py {" ".join(args)}', source="dispatcher")
+def run_chain_commands(commands, label, start=1, total=None):
+    """Run planned ``start.py`` commands in order, stopping at the first failure. Returns True on success.
+    ``start`` / ``total``: the steps' numbers when they are part of a longer chain."""
+    total = len(commands) + start - 1 if total is None else total
+    for n, args in enumerate(commands, start):
+        slogger.info(f'{label} step {n}/{total}: start.py {" ".join(args)}', source="dispatcher")
         if subprocess.run(self_command(*args), cwd=ROOT_DIR).returncode != 0:
-            slogger.error(f'{label} step {n} failed; the remaining {len(commands) - n} step(s) were skipped.',
+            slogger.error(f'{label} step {n} failed; the remaining {total - n} step(s) were skipped.',
                           source="dispatcher")
             return False
     return True
@@ -302,15 +331,25 @@ def run_export_slot(character_id):
 def run_load_roster(path, dry_run=False):
     """Load a roster pack: check it and plan the chain (Roster/pack_cli.py: per-slot diff, every block checked;
     a refused pack writes nothing), then run its commands in order (one roster rebuild at most, stock slots back
-    to vanilla where needed, the pack's blocks written as they are, one re-read). ``dry_run``: plan only."""
+    to vanilla where needed, the pack's blocks written as they are, one re-read). ``dry_run``: plan only. A load
+    that would break Gecko code compatibility, or leave a character over the player memory (``memory_guard``),
+    asks first (a dry run records it)."""
+    if dry_run:
+        _gecko().clear_check(ROOT_DIR)
+        _memory_guard().clear_check(ROOT_DIR)
     if subprocess.run(python_script_command(ROSTER_PACK_SCRIPT, '--load', os.path.abspath(path)),
                       cwd=TOOLS_DIR).returncode != 0:
+        return False
+    with open(PACK_PLAN_FILE, 'r', encoding='utf-8') as f:
+        plan = json.load(f)
+    commands = plan['commands']
+    if not _gecko().guard_chain(commands, 'the roster pack', ROOT_DIR, dry_run):
+        return False
+    if not _memory_guard().guard(plan.get('memory'), 'the roster pack', ROOT_DIR, dry_run):
         return False
     if dry_run:
         slogger.info('Dry run: the pack was checked and the load planned; nothing was written.', source="dispatcher")
         return True
-    with open(PACK_PLAN_FILE, 'r', encoding='utf-8') as f:
-        commands = json.load(f)['commands']
     if not commands:
         slogger.info('The game holds this roster already: nothing to load.', source="dispatcher")
         return True
@@ -347,7 +386,7 @@ def run_game_options(on=(), off=(), dry_run=False):
         cmd += ['--off', *off]
     if dry_run:
         cmd.append('--dry-run')
-    subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
+    return subprocess.run(cmd, cwd=TOOLS_DIR).returncode == 0
 
 
 def run_stat_bridge_export(path, focus=None):
@@ -901,6 +940,8 @@ def parse_args():
     parser.add_argument('--anim-glb', action='store_true', help='export with --glb only: also write each character\'s raw animation files (anm/*.anm) and a .glb of each')
     parser.add_argument('--use-output', action='store_true', help='export-icons only: read DOL/DAT from 3_Output_Dat instead of 1_Input')
     parser.add_argument('--dry-run', action='store_true', help='roster/game-options/slot chains: validate without writing bytes')
+    parser.add_argument('--accept-gecko-break', action='store_true', help='write without asking when the change breaks Gecko code compatibility (main.dol gets DOL hammerspace; used by the GUI after its summary showed the warning)')
+    parser.add_argument('--accept-memory-over', action='store_true', help='write without asking when a character would not fit its player memory (used by the GUI after its summary showed the warning)')
     parser.add_argument('--config', metavar='PATH', help='roster only: the roster configuration JSON')
     parser.add_argument('--state', metavar='PATH', help='roster only: a derived config (--roster-derive) instead of --config')
     parser.add_argument('--target-id', metavar='0xNN', help="patch/unpatch only: write the .sluggie models into this character ID's slot instead of their own route (always Hammerspace)")
@@ -1067,6 +1108,10 @@ def main() -> int:
         return code
 
     memory_before = _memory_snapshot() if _changes_game_memory(args) else None
+    if args.accept_gecko_break:
+        _gecko().accept()
+    if args.accept_memory_over:
+        _memory_guard().accept()
 
     try:
         if args.gui:
@@ -1080,13 +1125,15 @@ def main() -> int:
             if not run_roster_switch(args.config, dry_run=args.dry_run):
                 return 1
         elif args.roster:
-            run_roster(config=args.config, remove=args.remove, dry_run=args.dry_run, state=args.state,
-                       keep_stat_edits=args.keep_stat_edits)
+            if not run_roster(config=args.config, remove=args.remove, dry_run=args.dry_run, state=args.state,
+                              keep_stat_edits=args.keep_stat_edits):
+                return 1
         elif args.roster_state or args.roster_derive:
             if not run_roster_state(derive=args.roster_derive):
                 return 1
         elif args.game_options:
-            run_game_options(on=args.on, off=args.off, dry_run=args.dry_run)
+            if not run_game_options(on=args.on, off=args.off, dry_run=args.dry_run):
+                return 1
         elif args.stat_bridge_export:
             if not run_stat_bridge_export(args.stat_bridge_export, focus=args.focus):
                 return 1

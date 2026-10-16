@@ -9,8 +9,9 @@ load chain (``pack.plan_load``). It writes what the chain reads into
 ``_gui/pack/`` (``load/roster.json`` + ``icons/`` +
 ``models/``) and the plan into ``_gui/pack/plan.json``: the per-slot diff,
 the commands, refused blocks. ``start.py`` then runs the commands in order
-(not with ``--dry-run``), stopping at the first failure. Exit code 1 when
-the pack is refused (nothing written).
+(not with ``--dry-run``), stopping at the first failure; the plan's
+``memory`` (``slot_memory.project``) is the player memory check before it
+(``memory_guard``). Exit code 1 when the pack is refused (nothing written).
 """
 
 import argparse
@@ -31,12 +32,13 @@ import slogger  # noqa: E402
 try:
     from ..Dol import dolfile
     from . import dat_hammerspace as dhs
-    from . import derive, pack, state_cli
+    from . import derive, pack, slot_memory, state_cli
 except ImportError:
     from Dol import dolfile
     import dat_hammerspace as dhs
     import derive
     import pack
+    import slot_memory
     import state_cli
 
 SOURCE = 'roster.pack'
@@ -91,6 +93,10 @@ class InputFiles:
                     block = f.read(found[1])
             self._cache[key] = block
         return self._cache[key]
+
+    def vanilla_length(self, directory: int, file_index: int) -> int | None:
+        found = route(self.image, directory, file_index)
+        return found[1] if found is not None else None
 
 
 class FileLoadEnv(pack.LoadEnv):
@@ -156,10 +162,14 @@ def plan(path: str, output_dir: str = state_cli.OUTPUT_DIR, input_dir: str = INP
     game_fp = {pack._hex(c['id']): c['fingerprint'] for c in st['characters']}
     load_dir = os.path.join(folder, LOAD_DIR)
     state_file = os.path.join(load_dir, derive.CONFIG_FILE)
-    result = pack.plan_load(p, st, game_fp, derived, FileLoadEnv(InputFiles(input_dir)), state_file,
+    inputs = InputFiles(input_dir)
+    result = pack.plan_load(p, st, game_fp, derived, FileLoadEnv(inputs), state_file,
                             lambda name: os.path.join(load_dir, *name.split('/')))
     if result.ok and result.commands:
         pack.extract(p, result, load_dir)
+        final = {} if result.remove else result.config        # a stock pack: no new IDs stay
+        result.memory = slot_memory.project(st, final, result.commands, inputs.vanilla_length,
+                                            slot_memory.display_names(st))
     out = result.to_json()
     out.update(pack=os.path.abspath(path), pack_fingerprints=p.fingerprints, pack_meta=p.meta)
     tmp = plan_path(output_dir) + '.tmp'

@@ -5,7 +5,9 @@ import os
 import struct
 import tempfile
 import unittest
+from unittest import mock
 
+from SluggiesTools import gecko_compat
 from SluggiesTools.Dol import dolfile, ppc
 from SluggiesTools.GameOptions import game_options as go
 from SluggiesTools.GameOptions import runner as options_runner
@@ -214,6 +216,7 @@ class GameOptionTests(unittest.TestCase):
 class RunnerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = self.enterContext(tempfile.TemporaryDirectory())
+        self.enterContext(mock.patch.dict(os.environ, {gecko_compat.ACCEPT_ENV: '1'}))   # options add DOL sections
         self.input_dir = os.path.join(self.tmp, '1_Input')
         os.makedirs(self.input_dir)
         self.dol_path = os.path.join(self.tmp, 'main.dol')
@@ -244,6 +247,30 @@ class RunnerTests(unittest.TestCase):
         os.remove(self.dol_path)
         with self.assertRaisesRegex(options_runner.GameOptionsRunError, 'missing'):
             options_runner.run(self.tmp)
+
+    def test_gecko_break_asks_first(self):
+        del os.environ[gecko_compat.ACCEPT_ENV]
+        with mock.patch.object(gecko_compat.slogger, 'ask', return_value='n') as ask:
+            options_runner.run(self.tmp, on=['cpu_vs_cpu'], dry_run=True)
+            ask.assert_not_called()                      # a dry run never asks
+            with self.assertRaisesRegex(options_runner.GameOptionsRunError, 'Gecko'):
+                options_runner.run(self.tmp, on=['cpu_vs_cpu'])
+            self.assertEqual(ask.call_args.kwargs['kind'], 'danger')
+        with open(self.dol_path, 'rb') as f:
+            self.assertEqual(f.read(), self.original)    # cancelled: nothing written
+        with mock.patch.object(gecko_compat.slogger, 'ask', return_value='y'):
+            options_runner.run(self.tmp, on=['cpu_vs_cpu'])
+        self.assertEqual(go.detect(self.image()), ['cpu_vs_cpu'])
+        with mock.patch.object(gecko_compat.slogger, 'ask') as ask:
+            options_runner.run(self.tmp, on=['cpu_management'])   # incompatible already: nothing left to break
+            ask.assert_not_called()
+
+    def test_stock_roster_run_does_not_ask(self):
+        del os.environ[gecko_compat.ACCEPT_ENV]
+        with mock.patch.object(gecko_compat.slogger, 'ask') as ask:
+            report = roster_runner.run(self.tmp, config_path=self.config, input_dir=self.input_dir)
+            ask.assert_not_called()
+        self.assertFalse(report['gecko_break'])
 
     def test_options_survive_roster_runs(self):
         options_runner.run(self.tmp, on=['cpu_vs_cpu', 'cpu_management'])

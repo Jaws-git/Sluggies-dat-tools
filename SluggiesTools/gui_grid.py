@@ -29,6 +29,12 @@ import os
 import re
 from dataclasses import dataclass, field
 
+try:
+    import gecko_compat
+    import memory_guard
+except ImportError:                    # imported as SluggiesTools.gui_grid (tests)
+    from SluggiesTools import gecko_compat, memory_guard
+
 STATE_REL = os.path.join('_gui', 'roster_state.json')
 SLOT_PLAN_REL = os.path.join('_gui', 'slot', 'plan.json')
 EDITS_REL = os.path.join('_gui', 'slot', 'edits.json')
@@ -377,10 +383,28 @@ def char_voice_choices(state: dict, cid: int, packs=()) -> list[tuple[str, str |
     heads = sorted({s['head'] for s in state['squares'] if s['kind'] == 'stock'})
     out = [(CHAR_VOICE_DEFAULT, None, None)]
     out += [(_labelled(state, h), hex_id(h), None) for h in heads]
-    for name, base, count in packs:
-        rest = f'{known_name(state, base)}\'s voice' if base is not None else 'its square\'s voice'
-        out.append((f'Pack {name} ({count} custom clip{"s" if count != 1 else ""}, the rest {rest})', None, name))
+    out += [(_pack_label(state, name, base, count), None, name) for name, base, count in packs]
     return out
+
+
+def _pack_label(state: dict, name: str, base: int | None, count: int) -> str:
+    rest = f'{known_name(state, base)}\'s voice' if base is not None else 'its square\'s voice'
+    return f'Pack {name} ({count} custom clip{"s" if count != 1 else ""}, the rest {rest})'
+
+
+SQUARE_PACK = 'square_pack'                   # a square Voice dialog value: ``(SQUARE_PACK, pack name)``
+
+
+def square_pack_choices(state: dict, packs=()) -> list[tuple[str, tuple[str, str]]]:
+    """``(label, (SQUARE_PACK, name))`` for the square's Voice dialog, after ``voice_choices``: a pack is staged as
+    every member's own voice (``square_pack_edits``); the square voice itself holds a stock voice only."""
+    return [(_pack_label(state, name, base, count) + ', as every member\'s own voice', (SQUARE_PACK, name))
+            for name, base, count in packs]
+
+
+def square_pack_edits(state: dict, index: int, pack: str) -> list[dict]:
+    """One ``char_voice`` edit per member of square ``index`` that gives it the voice pack ``pack``."""
+    return [char_voice_edit(cid, None, pack) for cid in state['squares'][index]['members']]
 
 
 def char_voice_text(state: dict, cid: int) -> str:
@@ -806,12 +830,17 @@ class PendingEdits:
 
     ``pack``: a staged roster pack load (``stage_pack``), or None. It replaces the whole roster, so it is the only
     pending edit while it is staged: staging it drops the slot edits, and slot edits cannot be staged on top of it
-    (they would be planned against the game before the load)."""
+    (they would be planned against the game before the load).
+
+    ``gecko``: the slots whose pending edits break Gecko code compatibility (``note_gecko``, session memory).
+    ``memory``: the slots the pending edits leave over the player memory (``note_memory``: {id: the check's line})."""
 
     def __init__(self):
         self.edits: list[dict] = []
         self.sections: list[dict] = []
         self.pack: dict | None = None      # {'path', 'name', 'diff': {id: fields or status}}
+        self.gecko: set[int] = set()
+        self.memory: dict[int, str] = {}
 
     def __len__(self) -> int:
         return len(self.edits) + (1 if self.pack else 0)
@@ -831,29 +860,74 @@ class PendingEdits:
                 else DIFF_TEXT.get(what, what))
         return [f'Pending: load {self.pack["name"]}: {what}']
 
-    def staging(self, edit: dict) -> dict:
+    def staging(self, edit: dict | list[dict]) -> dict:
         """The edits file of a staging check: the pending edits (build checks passed when they were staged)
-        plus the new one."""
-        return {'edits': [dict(e, checked=True) for e in self.edits] + [dict(edit)]}
+        plus the new one (or several, staged together)."""
+        new = edit if isinstance(edit, list) else [edit]
+        return {'edits': [dict(e, checked=True) for e in self.edits] + [dict(e) for e in new]}
 
     def to_file(self) -> dict:
         """The edits file Patch Game writes: every build check runs again."""
         return {'edits': [dict(e) for e in self.edits]}
 
-    def accept(self, plan: dict) -> None:
-        """Take the staging check's merged list (the new edit staged, earlier ones replaced or joined)."""
+    def accept(self, plan: dict, gecko: dict | None = None, memory: dict | None = None) -> None:
+        """Take the staging check's merged list (the new edit staged, earlier ones replaced or joined), its
+        Gecko code compatibility result (``note_gecko``) and its player memory result (``note_memory``)."""
         self.edits = [dict(e) for e in plan.get('merged') or []]
         self.sections = [dict(s) for s in plan.get('edits') or []]
+        self.note_gecko(plan, gecko or {})
+        self.note_memory(memory or {})
+
+    def note_memory(self, check: dict) -> None:
+        """Which pending slots will not fit their player memory (``check``: ``memory_guard.read_details`` of a
+        staging check, which projects every pending edit, so it replaces the earlier result)."""
+        self.memory = {int(p['id'], 16): p['text'] for p in check.get('problems') or []
+                       if p.get('id') and self.has(int(p['id'], 16))}
+
+    def over_memory(self, cid: int) -> bool:
+        return cid in self.memory and self.has(cid)
+
+    def square_memory(self, state: dict, index: int) -> bool:
+        return any(self.over_memory(m) for m in state['squares'][index]['members'])
+
+    def memory_line(self, cid: int) -> str | None:
+        """The red line of a slot over the player memory (tooltips, the slot level), or None."""
+        return f'Player memory: {self.memory[cid]}' if self.over_memory(cid) else None
+
+    def note_gecko(self, plan: dict, check: dict) -> None:
+        """Which slots break Gecko code compatibility, after a staging check (``check``:
+        ``gecko_compat.read_details``, ``{}`` when the files are incompatible already or nothing breaks it).
+        The new edits' slots (sections not ``checked``; stat edits only write in place) are marked when they break
+        it on their own (``new_breaks``), or when no other pending slot is marked: then they complete the break.
+        With another slot marked and no answer of their own (``new_breaks`` None), they stay as they were."""
+        self.gecko &= {int(e['id'], 16) for e in self.edits}
+        if not check:
+            self.gecko.clear()
+            return
+        new = {int(s['target'], 16) for s in plan.get('edits') or []
+               if not s.get('checked') and s.get('action') not in (STAT_EDITS, STAT_RESET)}
+        if check.get('new_breaks') or not self.gecko - new:
+            self.gecko |= new
+
+    def breaks_gecko(self, cid: int) -> bool:
+        return cid in self.gecko and self.has(cid)
+
+    def square_gecko(self, state: dict, index: int) -> bool:
+        return any(self.breaks_gecko(m) for m in state['squares'][index]['members'])
 
     def discard(self, cid: int) -> None:
         """Drop the slot's pending edits; a pending pack load touching the slot is dropped as a whole."""
         self.edits = [e for e in self.edits if int(e['id'], 16) != cid]
         self.sections = [s for s in self.sections if int(s['target'], 16) != cid]
+        self.gecko.discard(cid)
+        self.memory.pop(cid, None)
         if self.pack and cid in self.pack['diff']:
             self.pack = None
 
     def clear(self) -> None:
         self.edits, self.sections, self.pack = [], [], None
+        self.gecko = set()
+        self.memory = {}
 
     def has(self, cid: int) -> bool:
         return any(int(e['id'], 16) == cid for e in self.edits) or bool(self._pack_lines(cid))
@@ -921,8 +995,14 @@ class PendingEdits:
         """The slot level's pending lines: each edit, then what the slot shows once it is written."""
         out = []
         for section in self.sections_for(cid):
-            out.append(_edit_title(section['edit']))
             effects = section.get('effects') or {}
+            if section['action'] == 'rename':                 # the title names the result: no "Name:" line
+                shown = effects.get('name')
+                reset = not section['edit'].get('text') and shown
+                out.append(f'Pending: reset the name to {shown if shown.startswith("its ") else repr(shown)}'
+                           if reset else _edit_title(section['edit']))
+                continue
+            out.append(_edit_title(section['edit']))
             for key, label in (('model', 'Model'), ('name', 'Name'), ('stats', 'Stats'), ('voice', 'Voice'),
                                (CHAR_VOICE, 'Own voice'), (SPECIES_CLIPS, 'Voice pack'),
                                ('portrait_note', 'Portraits'), (STAT_EDITS, 'Stat edits')):
@@ -1230,8 +1310,18 @@ def preview_command(edits_path: str) -> tuple:
     return ('--apply-slots', edits_path, '--dry-run')
 
 
-def apply_command(edits_path: str) -> tuple:
-    return ('--apply-slots', edits_path)
+def apply_command(edits_path: str, accept_gecko: bool = False, accept_memory: bool = False) -> tuple:
+    return ('--apply-slots', edits_path) + accept_gecko_args(accept_gecko) + accept_memory_args(accept_memory)
+
+
+def accept_gecko_args(accept: bool) -> tuple:
+    """After a summary that showed the Gecko warning was confirmed: the command must not ask again."""
+    return ('--accept-gecko-break',) if accept else ()
+
+
+def accept_memory_args(accept: bool) -> tuple:
+    """After a summary that showed the player memory warning was confirmed ("Patch anyway"): no second question."""
+    return ('--accept-memory-over',) if accept else ()
 
 
 PATCH_LABEL = 'Patch Game'
@@ -1322,6 +1412,12 @@ class SlotDialog:
     lines: list = field(default_factory=list)   # [(text, TEXT/WARN/ERROR/OK)]
     can_apply: bool = False
     offer_stat_reset: bool = False              # the slot keeps stat edits: offer "Stage + clear stat edits"
+    gecko_break: bool = False                   # applying breaks Gecko code compatibility: red Confirm, never skipped
+    memory_over: bool = False                   # a character will not fit its player memory: red "... anyway", never skipped
+
+    @property
+    def danger(self) -> bool:
+        return self.gecko_break or self.memory_over
 
 
 SKIP_CONFIRM_LABEL = 'Skip confirmation popups'
@@ -1330,8 +1426,45 @@ SKIP_CONFIRM_SETTING = 'skip_confirmation_popups'   # the GUI settings key (``gu
 
 def dialog_skippable(dialog: SlotDialog) -> bool:
     """With "Skip confirmation popups" on: a dialog that can apply counts as OK'd; one that only informs (Close)
-    is skipped too unless it reports a warning or an error (a refusal must still be seen)."""
+    is skipped too unless it reports a warning or an error (a refusal must still be seen). A Gecko code
+    compatibility warning and a player memory warning are never skipped."""
+    if dialog.danger:
+        return False
     return dialog.can_apply or not any(kind in (WARN, ERROR) for _text, kind in dialog.lines)
+
+
+def with_gecko_warning(dialog: SlotDialog, breaks: bool) -> SlotDialog:
+    """A summary whose dry run recorded a Gecko code compatibility break (``gecko_compat.read_check``): the
+    warning in red above the verdict, and the flag (red Confirm, never skipped). Dialogs that cannot apply stay
+    as they are."""
+    if breaks and dialog.can_apply:
+        dialog.lines.insert(len(dialog.lines) - 1, (gecko_compat.WARNING, ERROR))
+        dialog.gecko_break = True
+    return dialog
+
+
+def with_memory_warning(dialog: SlotDialog, check: dict, only: set | None = None) -> SlotDialog:
+    """A dialog whose dry run recorded characters over the player memory (``memory_guard.read_details``): their
+    lines in red above the verdict, and the flag (red "... anyway", never skipped). ``only``: the slots (``"0xNN"``)
+    to report (a staging check: the new edits' slots, not the pending ones it re-checked). Dialogs that cannot apply
+    stay as they are."""
+    problems = [p for p in (check or {}).get('problems') or [] if only is None or p.get('id') in only]
+    if problems and dialog.can_apply:
+        at = len(dialog.lines) - 1 if dialog.lines else 0
+        dialog.lines[at:at] = [(memory_guard.WARNING, ERROR)] + [(p['text'], ERROR) for p in problems]
+        dialog.memory_over = True
+    return dialog
+
+
+def new_targets(plan: dict | None) -> set:
+    """The slots (``"0xNN"``) of a staging check's new edits (the sections not marked ``checked``)."""
+    return {s['target'] for s in (plan or {}).get('edits') or [] if not s.get('checked') and s.get('target')}
+
+
+def anyway_label(ok_label: str) -> str:
+    """The red OK of a dialog with a player memory warning: ``Patch anyway``, ``Stage anyway``."""
+    word = ok_label.split(' (')[0].split(' & ')[0]
+    return 'Patch anyway' if word.startswith('Patch') else f'{word} anyway'
 
 
 def _partner_lines(files: dict, sizes: dict, joined: bool = False) -> list:
@@ -1582,7 +1715,7 @@ def summary_dialog(state: dict, plan: dict | None, code: int, output: str) -> Sl
     if not plan['edits']:
         lines.append(('Nothing to write.', TEXT))
         return dialog
-    lines.append(('Checks passed: slot rules, every model built and validated'
+    lines.append(('Structural checks passed: slot rules, every model built and validated'
                   + (', every stat edit file fits the game' if any(s['action'] == STAT_EDITS for s in plan['edits'])
                      else '') + '. Patch Game writes them now.', OK))
     dialog.can_apply = True
@@ -1693,8 +1826,9 @@ def save_command(path: str) -> tuple:
     return ('--save-roster', path)
 
 
-def load_command(path: str, dry_run: bool = False) -> tuple:
-    return ('--load-roster', path) + (('--dry-run',) if dry_run else ())
+def load_command(path: str, dry_run: bool = False, accept_gecko: bool = False, accept_memory: bool = False) -> tuple:
+    return (('--load-roster', path) + (('--dry-run',) if dry_run else ()) + accept_gecko_args(accept_gecko)
+            + accept_memory_args(accept_memory))
 
 
 def with_extension(path: str) -> str:
@@ -1732,9 +1866,10 @@ SWITCH_FIELDS = {'model': 'models', 'equipment': 'equipment', 'name': 'name', 'i
                  'species_clips': 'voice pack clips', 'stat_edits': 'stat edits'}
 
 
-def switch_command(path: str, dry_run: bool = False, fresh: bool = False) -> tuple:
+def switch_command(path: str, dry_run: bool = False, fresh: bool = False, accept_gecko: bool = False) -> tuple:
     """``start.py --roster --config``: the switch chain (``fresh``: no slot customisations kept)."""
-    return ('--roster', '--config', path) + (('--fresh',) if fresh else ()) + (('--dry-run',) if dry_run else ())
+    return (('--roster', '--config', path) + (('--fresh',) if fresh else ()) + (('--dry-run',) if dry_run else ())
+            + accept_gecko_args(accept_gecko))
 
 
 def switch_plan(path: str) -> dict | None:

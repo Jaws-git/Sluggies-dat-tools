@@ -590,6 +590,16 @@ class BatchTests(unittest.TestCase):
                          [('--patch', TOAD_HP, TOAD_LOW, '--target-id', '0x0D', '--validate-only')])
         self.assertEqual(len([c for c in self.batch(items).commands if '--validate-only' in c]), 2)
 
+    def test_staging_dry_run_keeps_a_check_whose_size_is_not_recorded(self):
+        class SizeEnv(FakeEnv):
+            def build_size_known(self, path):
+                return path != LOW                   # the player memory check needs every block size
+
+        items = edits(('patch', '0x66', HP, {'checked': True}), ('patch', '0x0D', TOAD_HP))
+        batch = self.batch(items, env=SizeEnv(), skip_checked=True)
+        self.assertEqual(len([c for c in batch.commands if '--validate-only' in c]), 2)
+        self.assertEqual(batch.to_json()['memory'], {})     # slot_cli fills it
+
     def test_clear_at_baseline_is_skipped(self):
         batch = self.batch(edits(('clear', '0x0D', None)), env=BaselineEnv({0x0D}))
         self.assertEqual((batch.commands, batch.plans), ([], []))

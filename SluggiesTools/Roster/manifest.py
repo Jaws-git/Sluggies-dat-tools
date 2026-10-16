@@ -10,14 +10,25 @@ sources, square voices and character voices as configured. The runner stores tho
 
     MAGIC (16 bytes) | u32 compressed length | zlib(JSON)
 
-The reset drops it with the rest of the data section. The reader
-cross-checks every fact it can also read from the binary; on a mismatch the
-binary wins.
+A run that needs no DOL code or tables (e.g. stock characters' adopted stats
+only) has no data section: adding one would raise the MEM1 arena start and
+break stock-game Gecko codes (``gecko_compat``). Such a run stores the same
+blob as the file's **trailer** instead (``put_trailer``): bytes after the
+last section that no header slot points at, so the game never loads them.
+
+The reset drops it with the rest of the data section (the trailer with
+``strip_trailer``). The reader cross-checks every fact it can also read from
+the binary; on a mismatch the binary wins.
 """
 
 import json
 import struct
 import zlib
+
+try:
+    from ..Dol import dolfile
+except ImportError:
+    from Dol import dolfile
 
 MAGIC = b'SLUGGIES ROSTER\x03'
 VERSION = 1
@@ -119,6 +130,11 @@ def find(blob: bytes) -> dict | None:
         if at % 4 == 0:
             break
         at += 1
+    return _decode(blob, at)
+
+
+def _decode(blob: bytes, at: int) -> dict:
+    """The manifest whose ``MAGIC`` starts at ``at``."""
     start = at + len(MAGIC) + 4
     if start > len(blob):
         raise ManifestError('roster manifest is cut off')
@@ -131,3 +147,45 @@ def find(blob: bytes) -> dict | None:
         raise ManifestError(f'roster manifest version {manifest.get("version") if isinstance(manifest, dict) else "?"}'
                             f' is not {VERSION}')
     return manifest
+
+
+# --------------------------------------------------------------------------
+# Trailer: the manifest of a run without DOL hammerspace
+# --------------------------------------------------------------------------
+
+def trailer_at(image: dolfile.DolImage) -> int | None:
+    """The file offset of the trailer manifest (``MAGIC`` outside every section), or None."""
+    data = image.data
+    at = data.find(MAGIC, dolfile.HEADER_SIZE)
+    while at >= 0:
+        end = at + len(MAGIC)
+        if all(end <= s.file_offset or s.file_offset + s.size <= at for s in image.header.used_slots):
+            return at
+        at = data.find(MAGIC, at + 1)
+    return None
+
+
+def find_trailer(image: dolfile.DolImage) -> dict | None:
+    """The trailer manifest, or None."""
+    at = trailer_at(image)
+    return None if at is None else _decode(bytes(image.data), at)
+
+
+def put_trailer(image: dolfile.DolImage, blob: bytes) -> int:
+    """Append an encoded manifest after the file's last byte (no section, not loaded); its file offset."""
+    if trailer_at(image) is not None:
+        raise ManifestError('main.dol already has a roster manifest trailer')
+    at = len(image.data)
+    image.data += blob
+    image.header = dolfile.parse_header(image.data)
+    return at
+
+
+def strip_trailer(image: dolfile.DolImage) -> bool:
+    """Cut the trailer manifest off (when no section's bytes follow it); whether there was one."""
+    at = trailer_at(image)
+    if at is None or any(s.file_offset >= at for s in image.header.used_slots):
+        return False
+    del image.data[at:]
+    image.header = dolfile.parse_header(image.data)
+    return True

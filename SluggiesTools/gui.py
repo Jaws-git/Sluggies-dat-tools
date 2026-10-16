@@ -64,6 +64,7 @@ from StatEditor import gui_tab as stat_editor_tab
 
 _MAX_LOG_LINES = 3000
 _LOG_COLOR = (220, 220, 220, 255)
+_DANGER_COLOR = (255, 120, 110, 255)             # gecko_compat warnings, like the grid's error lines
 _PROMPT_COLOR = (255, 210, 90, 255)
 _NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 _PRIMARY_SIZE = (170, 44)
@@ -345,7 +346,8 @@ class SluggiesGui:
         """A modal popup asking for an answer; ``kind`` (``slogger.PROMPT_KINDS``) picks Yes / No, Continue or a
         field with OK (file / save: plus Browse...). The popup closes first, then ``on_answer(text)`` or, for
         ``cancel_label`` and the close button, ``on_cancel()`` runs. One at a time: a new one replaces it. With
-        "Skip confirmation popups" on, Yes / No and Continue popups are answered Yes / Continue at once."""
+        "Skip confirmation popups" on, Yes / No and Continue popups are answered Yes / Continue at once; ``danger``
+        (a red Confirm, ``gecko_compat``) always asks."""
         self._close_prompt()
         if kind in ('yesno', 'key') and self.skip_confirmations():
             answer = 'y' if kind == 'yesno' else ''
@@ -374,7 +376,10 @@ class SluggiesGui:
         vw = dpg.get_viewport_client_width()
         with dpg.window(tag=_PROMPT_DIALOG, label=title, modal=True, no_collapse=True, no_saved_settings=True,
                         autosize=True, pos=(max(0, (vw - 620) // 2), 120), on_close=lambda *_: cancel()):
-            dpg.add_text(text, wrap=600)
+            if kind == 'danger':                   # the terminal's answer hint means nothing here
+                dpg.add_text(text.replace('(y/n)', '').strip(), wrap=600, color=_DANGER_COLOR)
+            else:
+                dpg.add_text(text, wrap=600)
             dpg.add_spacer(height=6)
             if kind in ('text', 'file', 'save'):
                 with dpg.group(horizontal=True):
@@ -389,11 +394,15 @@ class SluggiesGui:
                     dpg.add_button(label='No', width=110, height=30, callback=lambda: answer('n'))
                 elif kind == 'key':
                     yes = dpg.add_button(label='Continue', width=110, height=30, callback=lambda: answer(''))
+                elif kind == 'danger':
+                    yes = dpg.add_button(label='Confirm', width=110, height=30, callback=lambda: answer('y'))
+                    dpg.add_button(label='Cancel', width=110, height=30, callback=lambda: answer('n'))
                 else:
                     yes = dpg.add_button(label='OK', width=110, height=30,
                                          callback=lambda: answer(dpg.get_value(_PROMPT_FIELD)))
-                dpg.bind_item_theme(yes, 'primary_theme')
-                dpg.add_button(label=cancel_label, height=30, callback=cancel)
+                dpg.bind_item_theme(yes, 'danger_theme' if kind == 'danger' else 'primary_theme')
+                if kind != 'danger':
+                    dpg.add_button(label=cancel_label, height=30, callback=cancel)
         if dpg.does_item_exist(_PROMPT_FIELD):
             dpg.focus_item(_PROMPT_FIELD)
 
@@ -676,18 +685,22 @@ class SluggiesGui:
                     dpg.add_theme_color(dpg.mvThemeCol_Text, (115, 115, 115, 255))
                     dpg.add_theme_color(dpg.mvThemeCol_CheckMark, (115, 115, 115, 255))
         dpg.bind_theme(global_theme)
-        with dpg.theme(tag='primary_theme'):
-            for state, colors in (
-                (True, ((dpg.mvThemeCol_Button, (46, 140, 64, 255)),
-                        (dpg.mvThemeCol_ButtonHovered, (60, 170, 80, 255)),
-                        (dpg.mvThemeCol_ButtonActive, (36, 110, 50, 255)))),
-                (False, ((dpg.mvThemeCol_Button, (70, 80, 72, 255)),
-                         (dpg.mvThemeCol_Text, (150, 150, 150, 255)))),
-            ):
-                with dpg.theme_component(dpg.mvButton, enabled_state=state):
-                    for col, value in colors:
-                        dpg.add_theme_color(col, value)
-                    dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 4)
+        for tag, enabled, disabled in (
+            ('primary_theme', ((46, 140, 64), (60, 170, 80), (36, 110, 50)), (70, 80, 72)),
+            ('danger_theme', ((170, 50, 50), (200, 65, 65), (135, 35, 35)), (80, 66, 66)),   # Discard all, Gecko
+        ):
+            with dpg.theme(tag=tag):
+                for state, colors in (
+                    (True, ((dpg.mvThemeCol_Button, (*enabled[0], 255)),
+                            (dpg.mvThemeCol_ButtonHovered, (*enabled[1], 255)),
+                            (dpg.mvThemeCol_ButtonActive, (*enabled[2], 255)))),
+                    (False, ((dpg.mvThemeCol_Button, (*disabled, 255)),
+                             (dpg.mvThemeCol_Text, (150, 150, 150, 255)))),
+                ):
+                    with dpg.theme_component(dpg.mvButton, enabled_state=state):
+                        for col, value in colors:
+                            dpg.add_theme_color(col, value)
+                        dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 4)
         with dpg.theme(tag='log_theme'):                # the console's text field looks like plain text
             with dpg.theme_component(dpg.mvInputText):
                 dpg.add_theme_color(dpg.mvThemeCol_FrameBg, (0, 0, 0, 0))
@@ -699,11 +712,11 @@ class SluggiesGui:
             dpg.add_text('1) Export all models with untangled textures, plus .glb models and animations '
                          '(overwrites 3_Output_Dat/dt_na.dat and main.dol)')
             dpg.add_text('2) Apply the chosen roster preset')
-            dpg.add_text('3) Turn on CPU vs CPU and CPU vs CPU management (hold minus on game start button)')
-            dpg.add_text('4) Write the character icons (FrontIcon/SideIcon) from 3_Output_Dat into the model folders')
-            dpg.add_text('5) Decode the voices, effects and music into 2_Output_Assets/_SOUNDS as WAV files '
+            dpg.add_text('3) Write the character icons (FrontIcon/SideIcon) from 3_Output_Dat into the model folders')
+            dpg.add_text('4) Decode the voices, effects and music into 2_Output_Assets/_SOUNDS as WAV files '
                          '(skipped when 1_Input/sound_NA is missing)')
-            dpg.add_text('A failing step stops the rest.')
+            dpg.add_text('A failing step stops the rest. Game options (CPU vs CPU, player memory) are off afterwards: '
+                         'turn them on in the Options tab.')
             dpg.add_spacer(height=6)
             with dpg.group(horizontal=True):
                 self._action('Start', self._on_full_export, primary=True)
@@ -719,7 +732,6 @@ class SluggiesGui:
             steps.append(('--roster', '--remove'))
         elif choice and choice != self.ROSTER_SKIP:
             steps.append(('--roster', '--config', os.path.join(self.config_dir, choice), '--fresh'))
-        steps.append(('--game-options', '--on', 'cpu_vs_cpu', 'cpu_management'))
         steps.append(('--export-icons', '--use-output'))
         if os.path.isdir(self.sound_input_dir):
             steps.append(('--export-sounds',))

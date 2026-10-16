@@ -370,6 +370,42 @@ class PendingEditsTests(unittest.TestCase):
                                     {'op': 'clear', 'id': '0x0D'}]})
         self.assertEqual(self.p.to_file(), {'edits': [{'op': 'patch', 'id': '0x66', 'file': HP}]})   # all re-checked
 
+    def test_gecko_marks(self):
+        def checked(section):
+            return dict(section, checked=True)
+        self.p.accept(batch(patch_section()), {'breaks': True, 'new_breaks': True})
+        self.assertTrue(self.p.breaks_gecko(0x66))
+        self.assertTrue(self.p.square_gecko(self.s, 0))
+        self.assertFalse(self.p.square_gecko(self.s, 1))
+        # another slot's edit while 0x66 breaks it: marked only when it breaks it on its own
+        self.p.accept(batch(checked(patch_section()), clear_section()), {'breaks': True, 'new_breaks': False})
+        self.assertEqual(self.p.gecko, {0x66})
+        self.p.accept(batch(checked(patch_section()), clear_section()), {'breaks': True, 'new_breaks': None})
+        self.assertEqual(self.p.gecko, {0x66})
+        self.p.accept(batch(checked(patch_section()), clear_section()), {'breaks': True, 'new_breaks': True})
+        self.assertEqual(self.p.gecko, {0x66, 0x0D})
+        self.p.discard(0x66)
+        self.assertEqual(self.p.gecko, {0x0D})
+        self.p.accept(batch(checked(clear_section())), {})       # nothing breaks it (or incompatible already)
+        self.assertEqual(self.p.gecko, set())
+
+    def test_gecko_completing_edit_is_marked(self):
+        self.p.accept(batch(patch_section()), {})
+        self.p.accept(batch(dict(patch_section(), checked=True), clear_section()),
+                      {'breaks': True, 'new_breaks': False})          # neither alone, both together
+        self.assertEqual(self.p.gecko, {0x0D})
+        self.p.clear()
+        self.assertFalse(self.p.breaks_gecko(0x0D))
+
+    def test_gecko_ignores_stat_edit_files_and_slots_no_longer_pending(self):
+        stat = {'action': gui_grid.STAT_EDITS, 'target': '0xFF', 'warnings': [],
+                'edit': {'op': gui_grid.STAT_EDITS, 'id': '0xFF'},
+                'checked': False}
+        self.p.accept(batch(stat), {'breaks': True, 'new_breaks': True})
+        self.assertEqual(self.p.gecko, set())
+        self.p.gecko = {0x66}                                          # left from an edit dropped since
+        self.assertFalse(self.p.breaks_gecko(0x66))
+
     def test_accept_replaces_and_discard(self):
         self.p.accept(batch(patch_section(), clear_section()))
         self.assertEqual(len(self.p), 2)
@@ -480,9 +516,12 @@ class RenameTests(unittest.TestCase):
 
     def test_pending_lines_and_titles(self):
         pending = gui_grid.PendingEdits()
-        pending.accept(batch(rename_section(), rename_section('0x66', '')))
-        self.assertEqual(pending.lines(0x0D), ["Pending: rename to 'Little Toad'", '  Name: Little Toad'])
-        self.assertEqual(pending.lines(0x66), ['Pending: reset the name', '  Name: its stock name'])
+        empty = rename_section('0x67', '')
+        empty['effects']['name'] = 'Empty slot'                                # a new ID resets to the open-slot name
+        pending.accept(batch(rename_section(), rename_section('0x66', ''), empty))
+        self.assertEqual(pending.lines(0x0D), ["Pending: rename to 'Little Toad'"])
+        self.assertEqual(pending.lines(0x66), ['Pending: reset the name to its stock name'])
+        self.assertEqual(pending.lines(0x67), ["Pending: reset the name to 'Empty slot'"])
         self.assertIsNotNone(pending.value_edit(0x0D, 'rename'))
         self.assertIsNone(pending.model_edit(0x0D))                            # a rename is not a model edit
         self.assertEqual(pending.staging({'op': 'rename', 'id': '0x06', 'text': 'X'})['edits'][-1],
@@ -610,6 +649,29 @@ class SummaryDialogTests(unittest.TestCase):
         self.assertIn('- one roster rebuild', text)
         self.assertEqual(text.count('Warning: koopa has no Low partner'), 1)   # warnings once, at the end
         self.assertIn('Patch Game writes them now', self.text(dialog, gui_grid.OK))
+
+    def test_gecko_warning_before_the_verdict(self):
+        dialog = gui_grid.summary_dialog(self.s, batch(clear_section()), 0, BUILD_OUTPUT)
+        self.assertTrue(gui_grid.dialog_skippable(dialog))
+        self.assertIs(gui_grid.with_gecko_warning(dialog, False), dialog)
+        self.assertFalse(dialog.gecko_break)
+        gui_grid.with_gecko_warning(dialog, True)
+        self.assertTrue(dialog.gecko_break)
+        self.assertEqual(dialog.lines[-2], (gui_grid.gecko_compat.WARNING, gui_grid.ERROR))
+        self.assertIn('Patch Game writes them now', dialog.lines[-1][0])
+        self.assertFalse(gui_grid.dialog_skippable(dialog))   # shown even with "Skip confirmation popups"
+
+    def test_gecko_warning_skips_refusals(self):
+        dialog = gui_grid.with_gecko_warning(gui_grid.summary_dialog(self.s, None, 1, ''), True)
+        self.assertFalse(dialog.gecko_break)
+        self.assertNotIn(gui_grid.gecko_compat.WARNING, self.text(dialog))
+
+    def test_accept_gecko_commands(self):
+        self.assertEqual(gui_grid.apply_command('e.json'), ('--apply-slots', 'e.json'))
+        self.assertEqual(gui_grid.apply_command('e.json', True), ('--apply-slots', 'e.json', '--accept-gecko-break'))
+        self.assertEqual(gui_grid.load_command('p', accept_gecko=True), ('--load-roster', 'p', '--accept-gecko-break'))
+        self.assertEqual(gui_grid.switch_command('c', accept_gecko=True),
+                         ('--roster', '--config', 'c', '--accept-gecko-break'))
 
     def test_refused_edit_gives_close_only(self):
         plan = batch(refused=[{'edit': {'op': 'patch', 'id': '0x66', 'file': HP}, 'target': '0x66',
@@ -820,6 +882,19 @@ class VoiceStatsTests(unittest.TestCase):
         self.assertTrue(gui_grid.chain_writes([('--set-stats', '0x00', '-')]))
         self.assertTrue(gui_grid.chain_writes([('--set-char-voice', '0x00', 'pack:P')]))
         self.assertTrue(gui_grid.chain_writes([('--set-species-clip', '0x00', 'v1', 'a.wav')]))
+
+    def test_square_pack_choices_and_edits(self):
+        """The square's Voice dialog lists the voice packs; a pick stages a char_voice pack edit per member."""
+        choices = gui_grid.square_pack_choices(self.s, packs=[('Rosa', 0x09, 5)])
+        self.assertEqual(choices, [("Pack Rosa (5 custom clips, the rest C09's voice), as every member's own voice",
+                                    (gui_grid.SQUARE_PACK, 'Rosa'))])
+        index = next(i for i, sq in enumerate(self.s['squares']) if len(sq['members']) > 1)
+        members = self.s['squares'][index]['members']
+        edits = gui_grid.square_pack_edits(self.s, index, 'Rosa')
+        self.assertEqual(edits, [{'op': gui_grid.CHAR_VOICE, 'id': gui_grid.hex_id(m), 'source': None, 'pack': 'Rosa'}
+                                 for m in members])
+        staged = gui_grid.PendingEdits().staging(edits)['edits']
+        self.assertEqual(len(staged), len(members))
 
     def test_char_voice_choices_and_text(self):
         choices = gui_grid.char_voice_choices(self.s, 0x0E, packs=[('Rosa', 0x09, 5), ('Plain', None, 1)])

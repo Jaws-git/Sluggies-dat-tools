@@ -20,7 +20,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from SluggiesTools.Dol import inventory, relocate
+from SluggiesTools.Dol import dolfile, inventory, relocate
 from SluggiesTools.Roster import dol_hammerspace as dhs
 from SluggiesTools.Roster import grid, ids, layout_file, manifest, runner, slot_cli, slot_plan, state, steps, voices
 from SluggiesTools.tests.test_roster_grid import HEADS, image_for_grid
@@ -207,6 +207,32 @@ class StockStatsTests(unittest.TestCase):
         self.assertEqual(set(stats_row(ctx.dol, 'stats', 0x00, moved=False)[2:ids.CHEM_BASE]), {0x09})
         self.assertEqual(stats_row(ctx.dol, 'stats', 0x05, moved=False)[ids.CHEM_BASE], (0x05 + 0x09) % 4)
         self.assertEqual(ctx.state['stock_stats'], {0x00: 0x09})
+
+    def test_in_place_keeps_gecko_compatibility(self):
+        """Stock stats alone need no DOL code: the manifest is the file's trailer, no sections, stock arena start."""
+        from SluggiesTools import gecko_compat
+        from SluggiesTools.Roster import reset
+        before = image_for_grid().to_bytes()
+        image, _ctx = build({'stock_stats': [{'id': '0x0D', 'stats': '0x09'}]})
+        self.assertIsNone(dhs.DolHammerspace.open(image))
+        self.assertEqual(image.header.used_slots, dolfile.DolImage(before).header.used_slots)
+        self.assertTrue(gecko_compat.status(image.to_bytes()).compatible)
+        self.assertEqual(manifest.trailer_at(image), len(before))
+        self.assertEqual(state._manifest(image)['stats'], [[0x0D, 0x09]])
+        chars = {c['id']: c for c in state.read_state(image)['characters']}
+        self.assertEqual(chars[0x0D]['stats'], 0x09)
+        self.assertEqual(len(reset._without_roster_sections(image).to_bytes()), len(before))
+
+    def test_trailer_survives_game_option_sections(self):
+        """Sections added after the trailer (game options) leave it readable; the reset drops both."""
+        from SluggiesTools.Roster import reset
+        before = image_for_grid().to_bytes()
+        image, _ctx = build({'stock_stats': [{'id': '0x0D', 'stats': '0x09'}]})
+        dhs.DolHammerspace.create(image)                 # what game options add: sections without data
+        self.assertEqual(state._manifest(image)['stats'], [[0x0D, 0x09]])
+        bare = reset._without_roster_sections(image)
+        self.assertIsNone(manifest.trailer_at(bare))
+        self.assertEqual(len(bare.to_bytes()), len(before))
 
     def test_own_stats_change_nothing(self):
         a = ids.parse_stock_stats({'stock_stats': [{'id': '0x00', 'stats': '0x00'}]})

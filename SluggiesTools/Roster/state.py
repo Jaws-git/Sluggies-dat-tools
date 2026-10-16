@@ -257,7 +257,8 @@ def _ordered(members: list[int], order: list[int]) -> list[int]:
 # --------------------------------------------------------------------------
 
 def _manifest(image: dolfile.DolImage) -> dict | None:
-    """The manifest of a roster-built DOL, None for a stock one; refuses DOLs this tool did not build."""
+    """The manifest of a roster-built DOL (data section, else the trailer of a run without DOL code), None for a
+    stock one; refuses DOLs this tool did not build."""
     try:
         hs = dol_hammerspace.DolHammerspace.open(image)
     except dolfile.DolError as exc:
@@ -267,7 +268,10 @@ def _manifest(image: dolfile.DolImage) -> dict | None:
         if bad:
             raise StateError('not a roster this tool built: the grid code is changed but there are no roster '
                              'sections (' + '; '.join(bad[:2]) + ')')
-        return None
+        try:                            # a run without DOL code: its manifest is the file's trailer, if any
+            return manifest.find_trailer(image)
+        except manifest.ManifestError as exc:
+            raise StateError(str(exc)) from exc
     try:
         mf = manifest.find(bytes(hs.data.blob))
     except manifest.ManifestError as exc:

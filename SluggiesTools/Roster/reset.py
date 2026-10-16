@@ -6,7 +6,7 @@ report and also cleans files injected by an older version.
 
 ``main.dol`` is rebuilt from ``1_Input/main.dol``: everything the roster
 changes there (code sites, per-ID tables, the arena start, the two added
-sections) goes back to the input bytes. Kept from the output are the
+sections, the manifest trailer) goes back to the input bytes. Kept from the output are the
 directory records, which are the only DOL bytes the other tools write
 (model patches, the untangler, the icon reimport) — except the three
 records the roster owns (the select layout, the icon bank and the name
@@ -25,13 +25,14 @@ import struct
 try:
     from ..Dol import dolfile
     from . import dat_hammerspace as dhs
-    from . import dol_hammerspace, icons, layout_file, model_dirs, names
+    from . import dol_hammerspace, icons, layout_file, manifest, model_dirs, names
 except ImportError:
     from Dol import dolfile
     import dat_hammerspace as dhs
     import dol_hammerspace
     import icons
     import layout_file
+    import manifest
     import model_dirs
     import names
 
@@ -74,6 +75,7 @@ def _without_roster_sections(image: dolfile.DolImage) -> dolfile.DolImage:
         slot = image.section_at(base)
         if slot is not None:
             image.remove_section(slot)
+    manifest.strip_trailer(image)          # a run without DOL code keeps its manifest there
     return image
 
 

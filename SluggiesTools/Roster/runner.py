@@ -20,9 +20,10 @@ the files in ``3_Output_Dat`` (the normal pipeline's output).
   ``--state``. A ``--config`` given here directly keeps none of them.
 * ``--dry-run`` runs everything in memory and writes nothing.
 * After the steps it stores a manifest (``manifest.py``) of the facts only
-  hook code holds, so ``state.py`` can read the roster back. A run with
-  nothing to record and no DOL code (e.g. stock portraits only) stores none
-  and adds no DOL sections: the arena start stays stock.
+  hook code holds, so ``state.py`` can read the roster back. A run without
+  DOL code adds no DOL sections, so the arena start stays stock: it stores
+  the manifest as the file's unloaded trailer (e.g. adopted stats of stock
+  characters), or none when it records nothing (e.g. stock portraits only).
 * The sound archive ``1_Input/sound_NA/MY2.brsar`` (when present) is read
   for the character voices step and written to ``3_Output_Dat/sound_NA/`` on
   every run (``--remove`` included): the input bytes, or those plus the copied
@@ -46,12 +47,14 @@ for _path in (_TOOLS_DIR, _HERE):
 import slogger  # noqa: E402
 
 try:
+    from .. import gecko_compat
     from ..Dol import dolfile
     from ..GameOptions import game_options
     from ..Sound import brsar, effects, volumes
     from ..StatEditor import bridge, carry
     from . import datfile, derive, dol_hammerspace, manifest, model_dirs, reset, steps
 except ImportError:
+    import gecko_compat
     from Dol import dolfile
     from GameOptions import game_options
     from Sound import brsar, effects, volumes
@@ -115,16 +118,21 @@ def patch_fst(output_dir: str, dat_size: int) -> str:
 
 
 def write_manifest(ctx: steps.RosterContext) -> str:
-    """Store the run's hook-only facts (``manifest.py``) in the DOL data section, for the grid reader. Skipped
-    when no step used the DOL hammerspace and the manifest records nothing (e.g. stock portraits only): the
-    sections alone would raise the MEM1 arena start (``derive`` reads those outputs without a manifest)."""
+    """Store the run's hook-only facts (``manifest.py``) in the DOL data section, for the grid reader. When no
+    step used the DOL hammerspace, the sections alone would raise the MEM1 arena start (Gecko codes,
+    ``gecko_compat``): the manifest then becomes the file's unloaded trailer (e.g. stock characters' adopted
+    stats), or nothing when it records nothing (e.g. stock portraits only; ``derive`` reads those without one)."""
     mf = manifest.build(ctx.state, ctx.config)
     hs = ctx.state.get('hammerspace')
     if hs is None and manifest.is_empty(mf):
         return ('[manifest] none: no step needed DOL code or tables, so main.dol keeps its stock sections and '
                 'arena start')
-    hs = hs or dol_hammerspace.get(ctx)
     blob = manifest.encode(mf)
+    if hs is None:
+        at = manifest.put_trailer(ctx.dol, blob)
+        return (f'[manifest] roster manifest after the DOL sections at file offset 0x{at:X} (0x{len(blob):X} '
+                'bytes, not loaded): no step needed DOL code or tables, so main.dol keeps its stock sections and '
+                'arena start')
     at = hs.data.put(blob, 4)
     hs.commit()
     return f'[manifest] roster manifest at 0x{at:08X} (0x{len(blob):X} bytes); DOL hammerspace: {hs.summary()}'
@@ -134,7 +142,8 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
         dry_run: bool = False, input_dir: str = INPUT_DIR, state_path: str | None = None,
         keep_stat_edits: bool = False) -> dict:
     """``state_path``: a derived config (``derive.write``) in place of ``config_path``. ``remove_only`` also clears
-    the stat edits unless ``keep_stat_edits``."""
+    the stat edits unless ``keep_stat_edits``. ``gecko_break``: the run breaks Gecko code compatibility
+    (``gecko_compat``); a real run then asks first and raises RosterDevError when the user cancels. A dry run returns the new ``main.dol`` as ``dol_bytes``."""
     icon_dir = clip_dir = None
     if state_path:
         config_path, icon_dir, clip_dir = state_path, derive.icon_dir_of(state_path), derive.clip_dir_of(state_path)
@@ -215,6 +224,11 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
         log += [f'[game options] {line}' for line in game_options.apply(image, options)]
         dol_bytes = image.to_bytes()
     result['dol_sha1'] = hashlib.sha1(dol_bytes).hexdigest()
+    result['gecko_break'] = gecko_compat.breaks(current, dol_bytes)
+    if dry_run:
+        result['dol_bytes'] = dol_bytes
+    elif result['gecko_break'] and not gecko_compat.confirm('the roster run'):
+        raise RosterDevError('cancelled: the roster run would break Gecko code compatibility; nothing was written')
     if sound is not None:
         voiced = sound_out is not sound
         user_root = os.path.dirname(os.path.abspath(input_dir))
@@ -275,6 +289,8 @@ def main(argv=None) -> int:
         return 1
     for line in report['log']:
         slogger.info(line, source=SOURCE)
+    if args.dry_run and report['gecko_break']:
+        gecko_compat.record(os.path.dirname(os.path.abspath(args.output_dir)), 'the roster run')
     what = 'reset to vanilla' if args.remove else 'injected'
     slogger.info(f'roster expansion {what}{" (dry run, nothing written)" if args.dry_run else ""}; '
                  f'main.dol sha1 {report["dol_sha1"]}', source=SOURCE)

@@ -435,6 +435,12 @@ class Env:
         """The largest stock bank of file ``file`` (6-14) on any character (``1_Input``), or None."""
         return None
 
+    def build_size_known(self, path: str) -> bool:
+        """Whether a build check recorded the block size of the ``.sluggie`` at ``path`` as it is now
+        (``memory_guard.lookup_size``): a staging dry run skips the build check of a checked edit only then, so the
+        player memory check knows every size."""
+        return True
+
     def stat_snapshot(self, cid: int) -> dict | None:
         """``cid``'s live stat values (``StatEditor/apply`` copy document without ``target``: ``fields`` {group:
         {name: hex bytes}}, ``chemistry`` {other ID: [row byte, column byte]}), or None when unreadable."""
@@ -2187,6 +2193,8 @@ class Batch:
     portraits: dict = field(default_factory=dict)  # icon edits' portraits ({file name: RGBA image or PNG path})
     copy_files: dict = field(default_factory=dict)  # pastes' snapshot files ({name in copy_dir: data})
     clips: dict = field(default_factory=dict)      # voice edits' custom clips ({file name: RWAV bytes})
+    # what the chain leaves in the touched slots' player memory (``slot_memory.project``; the caller fills it)
+    memory: dict = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -2200,7 +2208,17 @@ class Batch:
                 'edits': [section(e, p) for e, p in self.plans],
                 'skipped': [section(e, p) for e, p in self.skipped],
                 'refused': [{'edit': e.to_json(), 'target': _hex(e.cid), 'error': error} for e, error in self.refused],
-                'merged': [e.to_json() for e, _p in self.plans]}
+                'merged': [e.to_json() for e, _p in self.plans], 'memory': self.memory}
+
+
+def _files_of(command: tuple) -> list[str]:
+    """The ``.sluggie`` files of a ``--patch FILES ...`` command."""
+    out = []
+    for value in command[1:]:
+        if value.startswith('--'):
+            break
+        out.append(value)
+    return out
 
 
 def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: str,
@@ -2210,7 +2228,7 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
     (``plan_patch`` / ``plan_clear``), then the chain is
 
     1. one ``--patch ... --validate-only`` per patched slot (``skip_checked``: not for edits whose check
-       already passed, the GUI's staging dry run);
+       already passed, the GUI's staging dry run, unless a block size is not recorded: ``Env.build_size_known``);
     2. one ``--apply-stat-edits`` with every staged stat edit file (they hold values for the DOL as it is now, and
        the rebuild carries them over);
     3. one ``--roster --state`` when the merged config differs from the derived one;
@@ -2305,8 +2323,9 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
     if not batch.plans:
         return batch                                 # only clears of slots at their baseline: nothing to run
     for edit, plan in batch.plans:
-        if not (skip_checked and edit.checked):
-            batch.commands += [c for c in plan.commands if '--validate-only' in c]
+        checks = [c for c in plan.commands if '--validate-only' in c]
+        if not (skip_checked and edit.checked and all(env.build_size_known(p) for c in checks for p in _files_of(c))):
+            batch.commands += checks
     stat_items = [p for _edit, plan in batch.plans for c in plan.commands if c[0] == '--apply-stat-edits'
                   for p in c[1:]]                   # files and reset:0xNN items, in staging order
     stat_files = [p for p in stat_items if not p.startswith(COPY_PREFIX)]

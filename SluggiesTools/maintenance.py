@@ -208,6 +208,17 @@ def sound_memory(root_dir):
     return problems
 
 
+def gecko_status(root_dir):
+    """Whether the output ``main.dol`` still works with Gecko codes made for the stock game
+    (``gecko_compat.Status``), None when there is none yet. Shown by the scan, not a problem: many players use
+    no Gecko codes, and the roster and game options need the DOL hammerspace."""
+    try:
+        from SluggiesTools import gecko_compat
+    except ImportError:
+        import gecko_compat
+    return gecko_compat.status_of_file(os.path.join(root_dir, OUTPUT_FOLDER, 'main.dol'))
+
+
 CHECKS = (
     ('Duplicate models', duplicate_models),
     ('Player memory', player_memory),

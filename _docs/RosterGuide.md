@@ -464,6 +464,22 @@ python start.py --load-roster my_roster.sluggiesroster
   community Gecko codes "CPU vs CPU V2" and "CPU vs CPU human management".
   Disable both Gecko codes in Dolphin before using the options: with them
   on, matches start as normal human vs CPU matches, even on a stock roster.
+- **The red Gecko warning:** Gecko codes made for the stock game (CPU vs
+  CPU and others) stop working once `main.dol` gets the tools' own code
+  area. That happens with game options and with roster changes such as new
+  characters, grid or wheel changes, a slot's own voice, and voice pack
+  clips. Renames, portraits of stock characters, **Adopt stats...** and
+  square voice changes on stock characters, and model patches keep the codes
+  working. Before the first
+  such change, the tools warn in red: Patch Game's and Inject roster's
+  summaries show a red line and a red **Confirm**, and other actions open a
+  red popup. The warning appears even with "Skip confirmation popups" on.
+  On the grid, slots whose staged edits cause the break get a red border in
+  place of the orange one, and a red line in their tooltip and slot details.
+  The red marks only show while the output game is still compatible.
+  **Cancel** writes nothing. Maintenance → Scan shows whether the output
+  game still works with these Gecko codes. The All-In-One Export leaves the
+  game options off; turn them on in the Options tab.
 - **Player memory** (Options tab, or `--game-options --on player_heap_32`,
   `_48`, `_64` or `_128`): every player on the field gets a fixed memory area for its
   High model, Low model and bat or glove, 870,400 bytes (850 KB) in the
@@ -491,6 +507,20 @@ python start.py --load-roster my_roster.sluggiesroster
   (Wario City, 2,655,048 bytes; **Stadium memory**). A stadium has no fixed
   limit, its extra bytes come out of the memory the whole match shares, so
   that one is a note about untested sizes, not a known crash.
+- **Memory check before writing:** slot edits (patches, High/Low picks,
+  bats and gloves, paste, clear) and roster pack loads are checked before
+  anything is written. After the build checks, the tool adds up what each
+  changed slot will hold (High + Low + largest bat/glove + about 400 bytes,
+  with the sizes the build checks measured) and compares it with the
+  player memory level selected in the Options tab. A 128 MB level counts
+  with its full size, since choosing it means you run the game with the
+  override. A slot that won't fit gets red lines in the staging dialog and
+  in Patch Game's summary, and the OK button becomes a red **Stage
+  anyway** / **Patch anyway**. From the command line the tool asks before
+  writing (`--accept-memory-over` skips the question). Lowering the player
+  memory level in the Options tab asks the same way when a character that
+  fits now would no longer fit. To get past a refusal, raise the player
+  memory or make the models smaller.
 - **Player memory with 128 MB MEM2** (Options tab: tick "I have manually
   increased the MEM2 limit in Dolphin to 128 MB"; or `player_heap_big_512`,
   `_1024`, `_2048`, `_4096`): levels of +512 KB to +4 MB per player, for

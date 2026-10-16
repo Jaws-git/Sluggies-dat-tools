@@ -50,9 +50,9 @@ def _manifest(image: dolfile.DolImage) -> dict:
         hs = dol_hammerspace.DolHammerspace.open(image)
     except dolfile.DolError as exc:
         raise SlotError(f'the output main.dol is not a roster this tool built: {exc}') from exc
-    if hs is None or not hs.has_data:   # no sections, or only game option stubs (CPU vs CPU)
-        return {}
     try:
+        if hs is None or not hs.has_data:   # no sections, or only game option stubs: a trailer manifest, if any
+            return manifest.find_trailer(image) or {}
         mf = manifest.find(bytes(hs.data.blob))
     except manifest.ManifestError as exc:
         raise SlotError(str(exc)) from exc

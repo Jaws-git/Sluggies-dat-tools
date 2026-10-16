@@ -8785,7 +8785,9 @@ if __name__ == '__main__':
         _parser.error('--clone cannot be combined with build section modes')
 
     try:
-        if _target is not None or _args.validate_only or donor_entry(_model) is not None:
+        # every slot-targeted run promotes (the model's own route too), so a slot write builds the very block its
+        # build check measured (memory_guard: the player memory check uses that size)
+        if _args.target_id is not None or donor_entry(_model) is not None:
             _modes = PromoteInplaceEdits(_model, _modes)
         _build = BuildModelBlock(_data, _modes, sluggie_path=_args.sluggies_path,
                                  tex_png_overrides=_tex_png_overrides)
@@ -8796,6 +8798,12 @@ if __name__ == '__main__':
         if not _build.validation_report['valid']:
             raise ValueError('assembled model block failed validation')
         if _args.validate_only:
+            try:
+                import memory_guard
+                memory_guard.record_size(hh._ROOT, _args.sluggies_path, len(_build.block))
+            except (ImportError, OSError, ValueError) as _exc:
+                _slogger.warning(f'Block size not recorded for the player memory check | {_exc}',
+                                 source='hammerspace.main')
             _slogger.info(
                 f'Slot build check passed | Model: {_model_name} | '
                 f'Size: {len(_build.block) / (1024 * 1024):.2f} MB ({len(_build.block)} bytes) | nothing written',

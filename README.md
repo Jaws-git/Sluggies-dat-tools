@@ -62,9 +62,10 @@ All commands are to be used on the command line - enter "cmd" in file explorer's
 1) Set up Dolphin & Game iso
 2) Try running the game to make sure everything is prepped correctly
 3) right click the Game -> properties -> Filesystem -> right click top node -> extract entire disc
-4) from the extracted disc data, copy both "dt_na.dat" and "main.dol" (and optionally fst.bin) to the folder \1_Input\
-5) start **sluggies-dat-tools.exe** for a GUI, use **starttools.bat** for a console menu, or call start.py directly on the CLI 
-6) Use the Full Export or the focused export tab to extract assets into the 2_Output_Assets folder
+4) from the extracted disc data, copy both "dt_na.dat" and "main.dol" (and optionally fst.bin) to the folder \1_Input\  
+5) copy the "sound_NA" folder to \1_Input\ for sound modding support
+6) start **sluggies-dat-tools.exe** for a GUI, use **starttools.bat** for a console menu, or call start.py directly on the CLI 
+7) Use the Full Export or the focused export tab to extract assets into the 2_Output_Assets folder
 
 ## Blender editing
 

@@ -41,7 +41,12 @@ lists the pending edits and previews pending portraits. Stat edits bridged in
 from the Stat Editor (staged game-wide) mark the characters their file names
 with a green border; a slot with both gets a border orange on the left half
 and green on the right (baked into the portrait texture: a Dear PyGui frame
-border has one colour). **Patch Game (N)**
+border has one colour). While the output game is Gecko compatible
+(``gecko_compat``), slots whose pending edits break that compatibility get red
+in place of orange, and a red line in their tooltips and the slot level
+(``PendingEdits.gecko``, from the staging check: ``slot_cli.gecko_check``); slots the pending edits leave over
+the player memory get the same red marks (``PendingEdits.memory``, from the staging check's ``memory_guard``
+record). **Patch Game (N)**
 runs the full dry run, shows one summary (``gui_grid.summary_dialog``) and on
 its Patch Game button the chain itself (one roster rebuild at most); on success the list is
 cleared, on a failure it is kept. **Discard pending** / **Discard all** drop
@@ -89,7 +94,9 @@ import dearpygui.dearpygui as dpg
 import numpy as np
 from PIL import Image
 
+import gecko_compat
 import gui_grid
+import memory_guard
 import native_dialog
 
 ICON = (48, 51)                  # the game's portrait size
@@ -146,6 +153,7 @@ _ERROR = (255, 120, 110, 255)
 _OK = (120, 220, 140, 255)
 _PENDING = (255, 170, 70, 255)
 _STATS = (90, 215, 110, 255)     # pending Stat Editor values (bridged in)
+_GECKO = (235, 60, 60, 255)      # pending edits that break Gecko code compatibility (gecko_compat)
 BORDER = 3                       # the marker borders' width
 _CHANGED = (110, 170, 255, 255)
 _COPIED = (80, 215, 215, 255)
@@ -173,6 +181,7 @@ class CharacterGridTab:
         self.switch_plan_path = os.path.join(app.root_dir, gui_grid.SWITCH_PLAN_REL)
         self.pack_dir = os.path.join(app.root_dir, gui_grid.PACK_DIR_REL)
         self.reference = None              # gui_grid.Reference: the pack last saved / loaded (session only)
+        self.gecko_compatible = False      # the output main.dol still works with stock-game Gecko codes (each read)
         self.copied = None                 # the character Copy earmarked (session only), or None
         self._menu_targets = {}            # portrait button -> the square's members, for the right-click menu
         self.on_pending_changed = []       # callbacks other tabs register (the Voices tab shows pending clips)
@@ -235,6 +244,11 @@ class CharacterGridTab:
                 with dpg.theme_component(kind):
                     dpg.add_theme_color(dpg.mvThemeCol_Border, _PENDING)
                     dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, BORDER)
+        with dpg.theme(tag='grid_gecko_theme'):              # pending edits that break Gecko compatibility
+            for kind in (dpg.mvImageButton, dpg.mvButton):
+                with dpg.theme_component(kind):
+                    dpg.add_theme_color(dpg.mvThemeCol_Border, _GECKO)
+                    dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, BORDER)
         with dpg.theme(tag='grid_stats_theme'):
             for kind in (dpg.mvImageButton, dpg.mvButton):
                 with dpg.theme_component(kind):
@@ -246,6 +260,14 @@ class CharacterGridTab:
                 dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 0, 0)
             with dpg.theme_component(dpg.mvButton):          # no portrait: orange border, green label
                 dpg.add_theme_color(dpg.mvThemeCol_Border, _PENDING)
+                dpg.add_theme_color(dpg.mvThemeCol_Text, _STATS)
+                dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, BORDER)
+        with dpg.theme(tag='grid_both_gecko_theme'):         # the same, with a Gecko compatibility break
+            with dpg.theme_component(dpg.mvImageButton):
+                dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 0)
+                dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 0, 0)
+            with dpg.theme_component(dpg.mvButton):
+                dpg.add_theme_color(dpg.mvThemeCol_Border, _GECKO)
                 dpg.add_theme_color(dpg.mvThemeCol_Text, _STATS)
                 dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, BORDER)
         with dpg.theme(tag='grid_changed_theme'):
@@ -284,19 +306,7 @@ class CharacterGridTab:
         dpg.bind_item_theme('grid_context', 'grid_context_theme')
         with dpg.item_handler_registry(tag='grid_context_handlers'):
             dpg.add_item_clicked_handler(button=dpg.mvMouseButton_Right, callback=self._on_context)
-        with dpg.theme(tag='grid_danger_theme'):             # like primary_theme, in red (Discard all)
-            for state, colors in (
-                (True, ((dpg.mvThemeCol_Button, (170, 50, 50, 255)),
-                        (dpg.mvThemeCol_ButtonHovered, (200, 65, 65, 255)),
-                        (dpg.mvThemeCol_ButtonActive, (135, 35, 35, 255)))),
-                (False, ((dpg.mvThemeCol_Button, (80, 66, 66, 255)),
-                         (dpg.mvThemeCol_Text, (150, 150, 150, 255)))),
-            ):
-                with dpg.theme_component(dpg.mvButton, enabled_state=state):
-                    for col, value in colors:
-                        dpg.add_theme_color(col, value)
-                    dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 4)
-        dpg.bind_item_theme('grid_discard_all', 'grid_danger_theme')
+        dpg.bind_item_theme('grid_discard_all', 'danger_theme')
         with dpg.theme(tag='grid_warn_theme'):               # like primary_theme, in yellow (Discard pending)
             for state, colors in (
                 (True, ((dpg.mvThemeCol_Button, (200, 160, 30, 255)),
@@ -427,6 +437,7 @@ class CharacterGridTab:
 
     def on_read_done(self, code, output):
         again = self.loader.finish(code, output)
+        self._read_gecko()
         if self.loader.status == self.loader.FAILED:
             self.app.log_line(f'[character grid] {self.loader.message}', _WARN)
         elif self.loader.state is not None:
@@ -445,6 +456,30 @@ class CharacterGridTab:
             callback()
         if again:
             self.request_read()
+
+    def _read_gecko(self):
+        """Whether the output game still works with stock-game Gecko codes: only then do pending edits that break
+        it get the red marks (on an incompatible game there is nothing left to break)."""
+        try:
+            status = gecko_compat.status_of_file(os.path.join(self.app.root_dir, gecko_compat.OUTPUT_FOLDER,
+                                                              'main.dol'))
+        except OSError:
+            status = None
+        self.gecko_compatible = status is not None and status.compatible
+
+    def _gecko(self, cid):
+        """A slot whose pending edits break Gecko code compatibility of a compatible game (red marks)."""
+        return self.gecko_compatible and self.pending.breaks_gecko(cid)
+
+    def _gecko_square(self, index):
+        return self.gecko_compatible and self.pending.square_gecko(self.loader.state, index)
+
+    def _red(self, cid):
+        """Red marks in place of orange: a Gecko code compatibility break or a slot over the player memory."""
+        return self._gecko(cid) or self.pending.over_memory(cid)
+
+    def _red_square(self, index):
+        return self._gecko_square(index) or self.pending.square_memory(self.loader.state, index)
 
     def _show_status(self):
         """Spinner and status line: while the tab's own command runs (check, Patch Game) or the grid is read. The
@@ -504,9 +539,11 @@ class CharacterGridTab:
             head = state['squares'][index]['head']
             pending = self.pending.square_pending(state, index)
             stats = self.pending.square_stats(state, index)
+            gecko = self._red_square(index)
             button = self._portrait_button(head, gui_grid.FRONT, GRID_SCALE, CELL[0],
                                            index, lambda _s, _a, u: self._open_square(u),
-                                           badge=gui_grid.slot_count(state, index), both=pending and stats)
+                                           badge=gui_grid.slot_count(state, index), both=pending and stats,
+                                           gecko=gecko)
             self._add_menu(button, state['squares'][index]['members'])
             self._caption(gui_grid.square_label(state, index), CELL[0],
                           gui_grid.is_fallback(state, head, gui_grid.FRONT))
@@ -514,7 +551,7 @@ class CharacterGridTab:
         copied = self.copied is not None and self.copied in state['squares'][index]['members']
         if pending or stats:
             if not (pending and stats):                  # both: _portrait_button drew the split border
-                dpg.bind_item_theme(button, 'grid_pending_theme' if pending else 'grid_stats_theme')
+                dpg.bind_item_theme(button, self._pending_theme(pending, gecko))
         elif copied:
             dpg.bind_item_theme(button, 'grid_copied_theme')
         elif changed:
@@ -531,6 +568,11 @@ class CharacterGridTab:
                         dpg.add_text(f'{gui_grid.name_of(state, cid)}: {line}', color=_PENDING)
                     for line in self.pending.stat_summary(cid):
                         dpg.add_text(f'{gui_grid.name_of(state, cid)}: {line}', color=_STATS)
+                    if self._gecko(cid):
+                        dpg.add_text(f'{gui_grid.name_of(state, cid)}: {gecko_compat.PENDING_WARNING}', color=_GECKO,
+                                     wrap=520)
+                    if self.pending.memory_line(cid):
+                        dpg.add_text(self.pending.memory_line(cid), color=_GECKO, wrap=520)
             if changed:
                 for cid in state['squares'][index]['members']:
                     fields = self.reference.changed(state, cid)
@@ -545,11 +587,11 @@ class CharacterGridTab:
         self._caption('empty', CELL[0], color=_EMPTY)
 
     # ------------------------------------------------------------------ portraits
-    def _texture(self, path, scale, badge=None, split=None):
+    def _texture(self, path, scale, badge=None, split=None, gecko=False):
         """A static texture of a crop, scaled by a whole factor (nearest-neighbour); None when unreadable.
         ``badge``: a number drawn into the bottom right corner (the grid's slot count). ``split``: the display size
-        ``(w, h)`` of a button with both markers (``_split_texture``)."""
-        key = (path, scale, badge, split)
+        ``(w, h)`` of a button with both markers (``_split_texture``; ``gecko``: its pending half red)."""
+        key = (path, scale, badge, split, gecko)
         if key not in self.textures:
             try:
                 with Image.open(path) as png:
@@ -561,15 +603,16 @@ class CharacterGridTab:
             if badge is not None:
                 self._draw_badge(image, str(badge), scale)
             if split is not None:
-                image = self._split_texture(image, split)
+                image = self._split_texture(image, split, _GECKO if gecko else _PENDING)
             data = np.asarray(image, dtype=np.float32).ravel() / 255.0
             self.textures[key] = dpg.add_static_texture(image.width, image.height, data, parent='grid_textures')
         return self.textures[key]
 
     @staticmethod
-    def _split_texture(image, size):
+    def _split_texture(image, size, left_color=_PENDING):
         """``image`` at its display ``size`` inside the image button's frame padding, with the border of a slot that
-        has both pending edits and stat edits: the left half orange, the right half green. Drawn 1:1 with no frame
+        has both pending edits and stat edits: the left half orange (``left_color``: red for a Gecko code
+        compatibility break), the right half green. Drawn 1:1 with no frame
         padding (``grid_both_theme``); the padding's inner pixels stay transparent, so hover shows as usual."""
         w, h = size
         if image.size != (w, h):
@@ -580,7 +623,7 @@ class CharacterGridTab:
         ring[BORDER:-BORDER, BORDER:-BORDER] = False
         left = np.zeros_like(ring)
         left[:, :out.shape[1] // 2] = True
-        out[ring & left] = _PENDING
+        out[ring & left] = left_color
         out[ring & ~left] = _STATS
         return Image.fromarray(out, 'RGBA')
 
@@ -604,17 +647,19 @@ class CharacterGridTab:
         dpg.delete_item('grid_textures', children_only=True)
         self.textures = {}
 
-    def _portrait_texture(self, cid, view, scale, badge=None, split=None):
+    def _portrait_texture(self, cid, view, scale, badge=None, split=None, gecko=False):
         state = self.loader.state
         path = gui_grid.icon_file(state, self.loader.state_path, cid, view) if state else None
-        return self._texture(path, scale, badge, split) if path else None
+        return self._texture(path, scale, badge, split, gecko) if path else None
 
-    def _portrait_button(self, cid, view, scale, cell_w, user_data, callback, badge=None, both=False):
+    def _portrait_button(self, cid, view, scale, cell_w, user_data, callback, badge=None, both=False, gecko=False):
         """The portrait as an image button, centred in ``cell_w``; a plain button where there is none. A
         fractional ``scale`` draws the next whole-factor texture smaller (less blur than scaling up). ``both``:
-        pending edits and stat edits, the split border (``grid_both_theme`` bound here)."""
+        pending edits and stat edits, the split border (``grid_both_theme`` bound here; ``gecko``: the pending
+        half red, ``grid_both_gecko_theme``)."""
         w, h = round(ICON[0] * scale), round(ICON[1] * scale)
-        texture = self._portrait_texture(cid, view, math.ceil(scale), badge, (w, h) if both else None)
+        texture = self._portrait_texture(cid, view, math.ceil(scale), badge, (w, h) if both else None,
+                                         both and gecko)
         indent = max(0, (cell_w - w - 2 * FRAME) // 2)
         if texture is None:
             label = 'no portrait' + (f' ({badge})' if badge is not None else '')
@@ -627,8 +672,14 @@ class CharacterGridTab:
             button = dpg.add_image_button(texture, width=w, height=h, indent=indent, user_data=user_data,
                                           callback=callback)
         if both:
-            dpg.bind_item_theme(button, 'grid_both_theme')
+            dpg.bind_item_theme(button, 'grid_both_gecko_theme' if gecko else 'grid_both_theme')
         return button
+
+    @staticmethod
+    def _pending_theme(pending, gecko):
+        """The border of a button with one marker: pending edits (red when they break Gecko code compatibility)
+        or stat edits."""
+        return ('grid_gecko_theme' if gecko else 'grid_pending_theme') if pending else 'grid_stats_theme'
 
     def _portrait_slot_button(self, cid, view, preview=None):
         """The slot level's enlarged portrait as an image button (``preview``: a pending portrait's PNG instead,
@@ -769,17 +820,19 @@ class CharacterGridTab:
                 for cid in members[start:start + per_row]:
                     fallback = gui_grid.is_fallback(state, cid, gui_grid.SIDE)
                     pending, stats = self.pending.has(cid), self.pending.has_stats(cid)
+                    gecko = self._red(cid)
                     with dpg.group():
                         dpg.add_spacer(width=SWATCH[0], height=1)
                         button = self._portrait_button(cid, gui_grid.SIDE, SWATCH_SCALE, SWATCH[0], cid,
-                                                       lambda _s, _a, u: self._open_slot(u), both=pending and stats)
+                                                       lambda _s, _a, u: self._open_slot(u), both=pending and stats,
+                                                       gecko=gecko)
                         self._add_menu(button, [cid])
                         self._caption(gui_grid.name_of(state, cid), SWATCH[0], fallback)
                         self._caption(gui_grid.hex_id(cid), SWATCH[0], color=_DIM)
                     changed = self.reference.changed(state, cid) if self.reference is not None else []
                     if pending or stats:
                         if not (pending and stats):      # both: _portrait_button drew the split border
-                            dpg.bind_item_theme(button, 'grid_pending_theme' if pending else 'grid_stats_theme')
+                            dpg.bind_item_theme(button, self._pending_theme(pending, gecko))
                     elif cid == self.nav.slot:
                         dpg.bind_item_theme(button, 'primary_theme')
                     elif cid == self.copied:
@@ -796,6 +849,10 @@ class CharacterGridTab:
                                 dpg.add_text(line, color=_PENDING)
                             for line in self.pending.stat_summary(cid):
                                 dpg.add_text(line, color=_STATS)
+                            if self._gecko(cid):
+                                dpg.add_text(gecko_compat.PENDING_WARNING, color=_GECKO, wrap=420)
+                            if self.pending.memory_line(cid):
+                                dpg.add_text(self.pending.memory_line(cid), color=_GECKO, wrap=420)
                             if changed:
                                 dpg.add_text(f'Changed since the pack: {", ".join(changed)}', color=_CHANGED)
         dpg.add_text(f'Voice: {gui_grid.name_of(state, sq["voice"])}', color=_DIM, parent=box)
@@ -832,11 +889,18 @@ class CharacterGridTab:
                             _CHANGED))
         details += [(line, _PENDING) for line in self.pending.lines(cid)]
         details += [(line, _STATS) for line in self.pending.stat_summary(cid)]
+        if self._gecko(cid):
+            details.append((gecko_compat.PENDING_WARNING, _GECKO))
+        if self.pending.memory_line(cid):
+            details.append((self.pending.memory_line(cid), _GECKO))
         text_w = SLOT_W - 2 * PAD - 2 * (PORTRAIT[0] + 2 * FRAME + GAP) - GAP
-        body = max(PORTRAIT[1] + 2 * FRAME + LINE, LINE * sum(1 + len(line) * 7 // text_w for line, _c in details))
+        # left column: the portraits, then Select .sluggie... / Select lowpoly (L_) .sluggie... below them
+        left = PORTRAIT[1] + 2 * FRAME + LINE + GAP + 2 * BUTTON_H + 4 * TEXT_SPACING_Y
+        body = max(left, sum(_text_height(line, text_w) + TEXT_SPACING_Y for line, _c in details))
         tiles = gui_grid.equipment_tiles(state, cid, self.pending)
-        box = self._box(SLOT_W, 2 * PAD + 2 * LINE + body + GAP + 2 * BUTTON_H + GAP + 2 * LINE + BUTTON_H + GAP
-                        + (EQUIP_BLOCK if tiles else 0) + BUTTON_H + 2 * GAP)
+        # title + separator, body, spacer, Equipment row, the two button rows and the busy line (item spacing 2 px)
+        box = self._box(SLOT_W, 2 * PAD + LINE + GAP + body + GAP + (EQUIP_BLOCK + GAP if tiles else 0)
+                        + 2 * (BUTTON_H + TEXT_SPACING_Y) + LINE)
         title = dpg.add_text(gui_grid.name_of(state, cid), parent=box)
         with dpg.item_handler_registry() as handlers:        # clicking the name renames, like the button
             dpg.add_item_clicked_handler(callback=lambda *_: self._on_rename(cid))
@@ -845,24 +909,26 @@ class CharacterGridTab:
         with dpg.tooltip(title):
             dpg.add_text('Click to rename this slot')
         dpg.add_separator(parent=box)
+        usable = self.pending.pack is None
+        busy_tip = 'A roster pack load is pending: press "Patch Game" (or Discard it) first.'
         with dpg.group(horizontal=True, horizontal_spacing=GAP, parent=box):
-            for view in (gui_grid.FRONT, gui_grid.SIDE):
-                with dpg.group():
-                    preview = self.pending.portrait(cid, view)
-                    self._portrait_slot_button(cid, view, preview)
-                    fallback = gui_grid.is_fallback(state, cid, view)
-                    if preview:
-                        dpg.add_text(f'{view.capitalize()} (pending)', color=_PENDING)
-                    else:
-                        dpg.add_text(view.capitalize() + (' *' if fallback else ''),
-                                     color=_WARN if fallback else _DIM)
+            with dpg.group() as left_column:            # portraits, then the Select buttons below them
+                with dpg.group(horizontal=True, horizontal_spacing=GAP):
+                    for view in (gui_grid.FRONT, gui_grid.SIDE):
+                        with dpg.group():
+                            preview = self.pending.portrait(cid, view)
+                            self._portrait_slot_button(cid, view, preview)
+                            fallback = gui_grid.is_fallback(state, cid, view)
+                            if preview:
+                                dpg.add_text(f'{view.capitalize()} (pending)', color=_PENDING)
+                            else:
+                                dpg.add_text(view.capitalize() + (' *' if fallback else ''),
+                                             color=_WARN if fallback else _DIM)
+                dpg.add_spacer(height=GAP)
             with dpg.group():
                 for line, color in details:
                     dpg.add_text(line, color=color, wrap=text_w)
-        dpg.add_spacer(height=GAP, parent=box)
-        usable = self.pending.pack is None
-        busy_tip = 'A roster pack load is pending: press "Patch Game" (or Discard it) first.'
-        with dpg.group(parent=box):                     # Select lowpoly (L_) .sluggie... below Select .sluggie...
+        with dpg.group(parent=left_column):             # Select lowpoly (L_) .sluggie... below Select .sluggie...
             for label, low, tip in (
                     (SELECT, False, 'Stage an exported model (and its High/Low partner) for this slot; a confirm '
                                     'dialog shows what changes first. "Patch Game" writes the pending edits.'),
@@ -1229,9 +1295,13 @@ class CharacterGridTab:
         packs = []
         if op == 'voice':
             cid = state['squares'][key]['head']
-            choices = gui_grid.voice_choices(state, key)
+            packs = self._voice_packs()
+            choices = gui_grid.voice_choices(state, key) + gui_grid.square_pack_choices(state, packs)
             title = f'Voice of the square of {gui_grid.name_of(state, cid)}'
             lines = [gui_grid.voice_text(state, key), gui_grid.voice_reach(state, key)]
+            if packs:
+                lines.append('A voice pack (Voices tab) is staged as the own voice of every member of the square '
+                             '(each member\'s Voice... shows it); the square\'s voice stays as it is.')
         elif op == gui_grid.CHAR_VOICE:
             cid = key
             packs = self._voice_packs()
@@ -1271,7 +1341,10 @@ class CharacterGridTab:
             label = dpg.get_value('grid_value_choice')
             source = next((value for text, value in choices if text == label), None)
             self._end_action()
-            if op == gui_grid.CHAR_VOICE:
+            if op == 'voice' and isinstance(source, tuple) and source[0] == gui_grid.SQUARE_PACK:
+                if not self._locked():
+                    self._check_and_confirm(cid, gui_grid.square_pack_edits(state, key, source[1]), gui_grid.CHAR_VOICE)
+            elif op == gui_grid.CHAR_VOICE:
                 source, pack = source if source is not None else (None, None)
                 self._start_preview(cid, None, value=(op, source, pack))
             else:
@@ -1361,10 +1434,13 @@ class CharacterGridTab:
                       anm=None):
         state = self.nav.state or self.loader.state
         plan = gui_grid.load_plan(self.plan_path)
-        dialog = gui_grid.slot_dialog(state, cid, sluggie is not None, plan, code, output, self.pending, kind=kind,
-                                      view=view, gear_file=gear_file, moment=moment, anm=anm)
+        dialog = gui_grid.with_memory_warning(
+            gui_grid.slot_dialog(state, cid, sluggie is not None, plan, code, output, self.pending, kind=kind,
+                                 view=view, gear_file=gear_file, moment=moment, anm=anm),
+            memory_guard.read_details(self.app.root_dir), only=gui_grid.new_targets(plan))
         if (kind in gui_grid.VALUE_KINDS + ('equip_clear',) and dialog.can_apply and code == 0 and plan is not None
-                and any(int(s['target'], 16) == cid for s in plan['edits']) and not dialog.offer_stat_reset):
+                and any(int(s['target'], 16) == cid for s in plan['edits']) and not dialog.offer_stat_reset
+                and not dialog.memory_over):
             self._stage(plan)                  # a valid rename / stats / voice pick needs no second confirmation
             return
         extra = (('Stage + clear stat edits', lambda: self._stage_with_stat_reset(cid, plan))
@@ -1515,7 +1591,8 @@ class CharacterGridTab:
 
     def _stage(self, plan):
         self._end_action()
-        self.pending.accept(plan)
+        self.pending.accept(plan, gecko_compat.read_details(self.app.root_dir),     # the staging check's results
+                            memory_guard.read_details(self.app.root_dir))
         self.app.log_line(f'[character grid] {len(self.pending)} pending edit(s); "Patch Game" writes them.', _PENDING)
         self._pending_changed()
 
@@ -1587,14 +1664,19 @@ class CharacterGridTab:
 
     def _show_switch(self, path, code, output):
         plan = gui_grid.switch_plan(self.switch_plan_path)
+        dialog = gui_grid.with_gecko_warning(gui_grid.switch_dialog(plan, code, output, path), self._gecko_break())
+        accept = dialog.gecko_break
 
         def save():
             self._end_action()
-            self._pick_pack(save=True, after=lambda: self._switch(path))
-        self._dialog(gui_grid.switch_dialog(plan, code, output, path), lambda: self._switch(path), ok_label='Inject',
-                     extra=('Save Configuration', save))
+            self._pick_pack(save=True, after=lambda: self._switch(path, accept))
+        self._dialog(dialog, lambda: self._switch(path, accept), ok_label='Inject', extra=('Save Configuration', save))
 
-    def _switch(self, path):
+    def _gecko_break(self):
+        """Whether the dry run that just ended recorded a Gecko code compatibility break (``gecko_compat``)."""
+        return gecko_compat.read_check(self.app.root_dir)
+
+    def _switch(self, path, accept_gecko=False):
         self._end_action()
         self.pending.clear()
         self._pending_changed()
@@ -1607,7 +1689,7 @@ class CharacterGridTab:
                 self.app.log_line('[character grid] the roster switch stopped at a failed step: see the log above; '
                                   'the re-read shows what landed.', _WARN)
             self.set_busy(self.app.busy)
-        self._run([gui_grid.switch_command(path)], 'Injecting the roster...', done)
+        self._run([gui_grid.switch_command(path, accept_gecko=accept_gecko)], 'Injecting the roster...', done)
 
     def _on_discard_all(self):
         if self._locked() or not len(self.pending):
@@ -1657,10 +1739,13 @@ class CharacterGridTab:
 
     def _show_summary(self, code, output):
         state = self.nav.state or self.loader.state
-        dialog = gui_grid.summary_dialog(state, gui_grid.load_plan(self.plan_path), code, output)
-        self._dialog(dialog, self._patch_game, ok_label=self._patch_ok_label())
+        dialog = gui_grid.with_gecko_warning(gui_grid.summary_dialog(state, gui_grid.load_plan(self.plan_path), code,
+                                                                     output), self._gecko_break())
+        dialog = gui_grid.with_memory_warning(dialog, memory_guard.read_details(self.app.root_dir))
+        accept, accept_memory = dialog.gecko_break, dialog.memory_over
+        self._dialog(dialog, lambda: self._patch_game(accept, accept_memory), ok_label=self._patch_ok_label())
 
-    def _patch_game(self):
+    def _patch_game(self, accept_gecko=False, accept_memory=False):
         self._end_action()
         deploy = self._deploying()
 
@@ -1677,7 +1762,7 @@ class CharacterGridTab:
                                   'kept; the re-read shows what landed. Fix the cause and run Patch Game again.',
                                   _WARN)
             self.set_busy(self.app.busy)
-        self._run([gui_grid.apply_command(self.edits_path)], 'Patching the game...', done)
+        self._run([gui_grid.apply_command(self.edits_path, accept_gecko, accept_memory)], 'Patching the game...', done)
 
     # ------------------------------------------------------------------ roster packs
     def _on_save_pack(self):
@@ -1752,10 +1837,16 @@ class CharacterGridTab:
         if writing and code == 0 and plan is not None and plan.get('ok') and not plan.get('commands'):
             self.pending.clear()                 # the game holds the pack's roster already: nothing stays pending
             self._pending_changed()
-        self._dialog(gui_grid.load_dialog(state, plan, code, output, path, writing=writing),
-                     (lambda: self._load_pack(path, plan)) if writing else (lambda: self._stage_pack(path, plan)),
-                     ok_label=self._patch_ok_label() if writing else 'Stage',
-                     rebuild=lambda only: gui_grid.load_dialog(state, plan, code, output, path, only, writing),
+        breaks = writing and self._gecko_break()        # staging writes nothing: Patch Game's summary warns
+        memory = memory_guard.read_details(self.app.root_dir)
+
+        def build(only=True):
+            return gui_grid.with_memory_warning(gui_grid.with_gecko_warning(
+                gui_grid.load_dialog(state, plan, code, output, path, only, writing), breaks), memory)
+        dialog = build()
+        self._dialog(dialog, (lambda: self._load_pack(path, plan, dialog.gecko_break, dialog.memory_over)) if writing
+                     else (lambda: self._stage_pack(path, plan)),
+                     ok_label=self._patch_ok_label() if writing else 'Stage', rebuild=build,
                      toggle='Only differing slots')
 
     def _stage_pack(self, path, plan):
@@ -1776,7 +1867,7 @@ class CharacterGridTab:
                          lambda code, output: self._show_load(path, code, output, writing=True)):
             self._end_action()
 
-    def _load_pack(self, path, plan):
+    def _load_pack(self, path, plan, accept_gecko=False, accept_memory=False):
         self._end_action()
         deploy = self._deploying()
 
@@ -1795,7 +1886,8 @@ class CharacterGridTab:
                                   'fixed.', _WARN)
             self._refresh_markers()
             self.set_busy(self.app.busy)
-        self._run([gui_grid.load_command(path)], 'Loading the roster pack...', done)
+        self._run([gui_grid.load_command(path, accept_gecko=accept_gecko, accept_memory=accept_memory)],
+                  'Loading the roster pack...', done)
 
     # ------------------------------------------------------------------ deploy
     def _deploying(self):
@@ -1935,7 +2027,9 @@ class CharacterGridTab:
         checkbox label (ticked at first); changing it redraws the lines from ``rebuild(ticked)``. Long line lists
         scroll. ``extra``: (label, callback) for a middle button. With "Skip confirmation popups" on
         (``gui_grid.dialog_skippable``) it is not shown: OK runs (Close for an info dialog), the log gets the title
-        and its warnings."""
+        and its warnings. A Gecko code compatibility break (``dialog.gecko_break``) is always shown, OK as a red
+        Confirm that Enter does not press; a player memory warning (``dialog.memory_over``) likewise, OK as a red
+        "... anyway" (``gui_grid.anyway_label``)."""
         if self.app.skip_confirmations() and gui_grid.dialog_skippable(dialog):
             self.app.log_line(f'[character grid] {dialog.title} ({"OK" if dialog.can_apply else "popup"} skipped)',
                               _DIM)
@@ -1964,14 +2058,17 @@ class CharacterGridTab:
         dpg.add_spacer(height=GAP, parent=self.confirm)
         with dpg.group(horizontal=True, parent=self.confirm):
             if dialog.can_apply:
-                ok = dpg.add_button(label=ok_label, width=110, height=BUTTON_H, callback=lambda: on_ok())
-                dpg.bind_item_theme(ok, 'primary_theme')
+                label = ('Confirm' if dialog.gecko_break else gui_grid.anyway_label(ok_label) if dialog.memory_over
+                         else ok_label)
+                ok = dpg.add_button(label=label, width=110 if not dialog.memory_over else 130, height=BUTTON_H,
+                                    callback=lambda: on_ok())
+                dpg.bind_item_theme(ok, 'danger_theme' if dialog.danger else 'primary_theme')
                 if extra:
                     dpg.add_button(label=extra[0], width=170, height=BUTTON_H, callback=lambda: extra[1]())
                 dpg.add_button(label='Cancel', width=110, height=BUTTON_H, callback=lambda: self._end_action())
             else:
                 dpg.add_button(label='Close', width=110, height=BUTTON_H, callback=lambda: self._end_action())
-        self.confirm_default = on_ok if dialog.can_apply else self._end_action
+        self.confirm_default = on_ok if dialog.can_apply and not dialog.danger else self._end_action
         self.set_busy(self.app.busy)
 
     def _end_action(self):
@@ -2012,6 +2109,17 @@ def _inside(item, pos) -> bool:
     x, y = dpg.get_item_pos(item)
     w, h = dpg.get_item_rect_size(item)
     return x <= pos[0] < x + w and y <= pos[1] < y + h
+
+
+def _text_height(text: str, wrap: int) -> int:
+    """A wrapped text's height in px: measured with the GUI font, else estimated (about 7 px a character)."""
+    try:
+        size = dpg.get_text_size(text, wrap_width=wrap)
+    except Exception:   # no context / fonts not built yet (tests, first frame)
+        size = None
+    if size and size[1] > 0:
+        return int(size[1] + 0.5)
+    return (LINE - TEXT_SPACING_Y) * (1 + len(text) * 7 // wrap)
 
 
 def _fit(text: str, width: int) -> str:

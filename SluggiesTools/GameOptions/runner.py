@@ -21,9 +21,13 @@ for _path in (_TOOLS_DIR, os.path.join(_TOOLS_DIR, 'Roster')):
 import slogger  # noqa: E402
 
 try:
+    from .. import game_memory, gecko_compat, memory_guard
     from ..Dol import dolfile
     from . import game_options
 except ImportError:
+    import game_memory
+    import gecko_compat
+    import memory_guard
     from Dol import dolfile
     from GameOptions import game_options
 
@@ -36,7 +40,8 @@ class GameOptionsRunError(RuntimeError):
     pass
 
 
-def run(output_dir: str = OUTPUT_DIR, on=(), off=(), dry_run: bool = False) -> list[str]:
+def build(output_dir: str = OUTPUT_DIR, on=(), off=()) -> tuple[bytes, bytes, list[str]]:
+    """``(current, new, log)``: ``main.dol`` before and after the change, built in memory."""
     dol_path = os.path.join(output_dir, 'main.dol')
     if not os.path.isfile(dol_path):
         raise GameOptionsRunError(f'{dol_path} is missing: run the normal pipeline first (menu [1])')
@@ -49,8 +54,29 @@ def run(output_dir: str = OUTPUT_DIR, on=(), off=(), dry_run: bool = False) -> l
     log = game_options.remove(image, off) + game_options.apply(image, on)
     for option in game_options.OPTIONS:
         log.append(f'{option.key}: {"on" if game_options.is_on(image, option.key) else "off"} - {option.title}')
-    data = image.to_bytes()
+    return current, image.to_bytes(), log
+
+
+def memory_problems(output_dir: str, current: bytes, data: bytes) -> list[str]:
+    """Lines for the characters a lower player memory level leaves without room (``memory_guard``)."""
+    return memory_guard.option_problems(current, data, game_memory.folder_names(os.path.dirname(
+        os.path.abspath(output_dir))))
+
+
+def run(output_dir: str = OUTPUT_DIR, on=(), off=(), dry_run: bool = False) -> list[str]:
+    """Turn options on / off. A change that breaks Gecko code compatibility (``gecko_compat``), or a lower player
+    memory level some character no longer fits (``memory_guard``), asks first; cancelled, it raises
+    GameOptionsRunError and writes nothing."""
+    current, data, log = build(output_dir, on, off)
+    if not dry_run and gecko_compat.breaks(current, data) and not gecko_compat.confirm('the game options'):
+        raise GameOptionsRunError('cancelled: the game options would break Gecko code compatibility; '
+                                      'nothing was written')
+    over = memory_problems(output_dir, current, data) if data != current else []
+    if over and not dry_run and not memory_guard.confirm('the player memory level', over):
+        raise GameOptionsRunError('cancelled: a character would not fit the lower player memory; nothing was '
+                                  'written')
     if data != current and not dry_run:
+        dol_path = os.path.join(output_dir, 'main.dol')
         tmp = dol_path + '.options_tmp'
         with open(tmp, 'wb') as f:
             f.write(data)
@@ -68,6 +94,14 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     try:
         log = run(args.output_dir, args.on, args.off, args.dry_run)
+        if args.dry_run:
+            root = os.path.dirname(os.path.abspath(args.output_dir))
+            current, data = build(args.output_dir, args.on, args.off)[:2]
+            if gecko_compat.breaks(current, data):
+                gecko_compat.record(root, 'the game options')
+            over = memory_problems(args.output_dir, current, data)
+            if over:
+                memory_guard.record(root, 'the player memory level', [{'text': line} for line in over])
     except (RuntimeError, ValueError) as exc:
         slogger.error(str(exc), source=SOURCE)
         return 1

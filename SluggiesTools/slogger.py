@@ -359,8 +359,9 @@ def log_user_input(prompt: str, answer: str, source: Optional[str] = None) -> No
 PROMPT_ENV = "SLUGGIES_GUI_PROMPTS"
 PROMPT_MARKER = "\x1e[sluggies:awaiting-input]"
 # yesno: Yes / No buttons; text: a free answer; file / save: a path to an
-# existing / a new file (with a Browse button); key: a Continue button.
-PROMPT_KINDS = ("yesno", "text", "file", "save", "key")
+# existing / a new file (with a Browse button); key: a Continue button; danger:
+# a red Confirm and Cancel (answers y / n), never skipped (gecko_compat).
+PROMPT_KINDS = ("yesno", "text", "file", "save", "key", "danger")
 
 
 def ask(prompt: str, kind: Optional[str] = None) -> str:

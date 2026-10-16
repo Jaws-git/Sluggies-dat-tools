@@ -625,7 +625,59 @@ Seen 2026-10-15: a stock-portrait-only run broke them while its sections held
 only the manifest (arena start `0x807C00A0`); an older build of the same edit
 without sections kept them working. Since then such runs add no sections (see
 *Read-back*); confirmed in Dolphin the same day: a stock-portrait patch keeps
-the Gecko codes working.
+the Gecko codes working. Since 2026-10-16 runs that need no DOL code but do
+record something (adopted stats or square voices of stock characters, a
+`wheels` key without new rows) store their manifest as an unloaded trailer
+of `main.dol` instead of creating the sections (see *Read-back*).
+
+**Compatibility check** (`SluggiesTools/gecko_compat.py`, 2026-10-16). A
+`main.dol` counts as Gecko compatible while it has no DOL hammerspace
+sections and all four `arena_lo` values are stock (`0x807B6E80` /
+`0x807B4E80`). Only two writers add the sections, and both check before they
+write: the roster runner (`Roster/runner.py`) and the game options
+(`GameOptions/runner.py`). Each compares the file before and after the change
+in memory. When the change breaks compatibility (compatible now, not after),
+the runner asks first (`slogger.ask`, kind `danger`). Cancel writes nothing.
+A game that is already incompatible is not asked about again. Planned chains
+(`--apply-slots`, `--roster --config`, `--load-roster`) write stat edits
+before their roster run. So the dispatcher builds each planned roster or
+option command in memory first and asks once, before the first command
+(`gecko_compat.guard_chain`). Their dry runs record a break in
+`_gui/gecko_check.json`; the GUI's summary dialogs then show the warning in
+red with a red Confirm, and pass `--accept-gecko-break` on. The grid's
+staging check (`slot_cli --apply FILE --dry-run`, `slot_cli.gecko_check`) also
+records `new_breaks`: whether the edits not yet staged break compatibility on
+their own. The planner plans them alone into `_gui/slot_gecko_probe/` and
+builds that roster in memory (about 2.2 s per staging check on the real files
+instead of 1.6 s, 2026-10-16, and only while the output is compatible and the
+batch breaks it). The GUI keeps the breaking slots for the session
+(`PendingEdits.gecko`) and marks them red. A slot is marked when its edit
+breaks compatibility on its own, or completes a break that no marked slot
+causes.
+
+Changes that break compatibility on a stock output:
+
+- roster runs that need DOL code: new IDs, names of new IDs, `grid`,
+  `wheel_order`, wheels of 8+ members, portraits of new IDs, own model
+  directories, `character_voices` (voice packs copied into a slot's own
+  voice);
+- the config keys `ids`, `grid` or `wheel_order`, even empty (an `ids` key
+  moves the per-ID tables into the sections);
+- every game option (CPU vs CPU, CPU management, `player_heap_*`);
+- roster presets and packs that contain any of the above.
+
+Model patches, defragmenting, stat edits, stock renames, stock portraits,
+sound effects, music and volumes only patch words in place and keep
+compatibility. So do roster runs that need no DOL code, since 2026-10-16:
+`stock_stats` (the grid's "Adopt stats..." on a stock slot: its rows are
+rewritten in place), `stock_voices`, `species_clips` (sound archive only) and
+a `wheels` key without new rows. Before that they broke it only because their
+manifest created the sections (checked 2026-10-16 by dry runs on the real
+`main.dol`; `species_clips` from the code only). Confirmed in Dolphin
+2026-10-16: Blue Noki with Mario's adopted stats, no Gecko warning, the game
+boots with the manifest trailer, Blue Noki plays with Mario's stats and the
+"CPU vs CPU" Gecko code still works. The All-In-One Export (GUI and menu [1]) no longer turns on
+CPU vs CPU: before this change, every full export broke the Gecko codes.
 
 ## DAT hammerspace
 
@@ -1002,7 +1054,15 @@ stored at the end of every roster run in the DOL data section:
 (`Roster/manifest.py`; preset 04's: 42,686 bytes raw, 1,634 compressed). A
 run that records nothing and writes no DOL code or tables (stock portraits
 only, since 2026-10-15) stores no manifest and adds no DOL sections, so the
-arena start stays stock; derive reads such an output from the DAT alone. The
+arena start stays stock; derive reads such an output from the DAT alone. A
+run that records something but writes no DOL code or tables (e.g. stock
+characters' adopted stats or square voices, since 2026-10-16) stores the same
+blob as the file's **trailer**: appended after the last byte of `main.dol`,
+outside every section, so the game never loads it and the arena start stays
+stock. The reader looks for it (the magic outside every section) when there
+is no data section; game option sections added later go after it; the reset
+cuts it off with the sections (`manifest.put_trailer` / `find_trailer` /
+`strip_trailer`). The
 reader (`Roster/state.py`) cross-checks everything it can also read from the
 binary (shape, map, heads, names) and the binary wins on a mismatch. A
 roster DOL without a manifest (built by an older version) is refused. On the
@@ -1260,3 +1320,28 @@ dispatcher (`start.py`) snapshots the output DOL before any writing command
 and warns afterwards about characters that don't fit and whose files or
 player heap changed. The Maintenance tab (`maintenance.py`) checks every
 character, and flags stadium files above the largest stock stadium model.
+
+**Check before writing** (`memory_guard.py`, 2026-10-16): planned chains
+are checked before they write. `Roster/slot_memory.py` replays the planned
+commands of a slot edit batch (`slot_plan`) or a roster pack load (`pack`)
+on the lengths of each slot's files 0-5:
+- The roster rebuild: a new ID whose `ids[].model` has no `routes` gets a
+  fresh copy of its source's `1_Input` files. A new ID without its own
+  directory loads its template's files, so the template's check covers it.
+- `--patch --target-id`: the built block (`--as-low`: in file 1 too).
+- `--unpatch`: the vanilla file.
+- `--write-slot-*`: the block file's size.
+
+A slot write stores exactly the block its build check built (`_write_route`
+records `len(block)`, and every `--target-id` run applies
+`PromoteInplaceEdits`), so each `--validate-only` records its block length
+in `_gui/build_sizes.json` (keyed by path, modification time and size).
+`start.py` runs the build checks, then `memory_guard.guard`, then the
+writes. The limit is the **selected** level's heap: the full size of a
+`player_heap_big_*` level, not its +48 KB fallback. A dry run records what
+it finds in `_gui/memory_check.json` for the GUI's dialogs (red lines,
+"... anyway"). A writing run asks (a `danger` popup), unless
+`--accept-memory-over` is given. A slot whose block size is unknown (no
+build check) is noted and not checked. `GameOptions/runner.py` asks the
+same way before a lower level leaves a character that fits now without
+room. A build check took about 0.4 s per model (Bowser High, 2026-10-16).

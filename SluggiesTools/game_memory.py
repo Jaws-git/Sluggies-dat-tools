@@ -7,7 +7,8 @@ files don't fit crashes the game when it is loaded onto the field (``_docs/_docs
 only takes more of the game heap, which every scene shares.
 
 Used by the dispatcher (``start.py``: a warning after any command that changed a character's files or the player
-heap) and the GUI's Maintenance tab (``maintenance.CHECKS``: every character and stadium).
+heap), the GUI's Maintenance tab (``maintenance.CHECKS``: every character and stadium) and the check before a write
+(``memory_guard``: slot edits, roster packs, a lower player memory level).
 """
 
 import os
@@ -52,6 +53,16 @@ class PlayerHeap:
     def usable(self) -> int:
         return self.size - HEAP_HEAD
 
+    @property
+    def selected(self) -> int:
+        """The heap of the selected level: a ``player_heap_big_*`` level's full size (the user picked it, and runs
+        the game with Dolphin's MEM2 override), else the stock-memory one."""
+        return self.big_size if self.big_size is not None else self.size
+
+    @property
+    def selected_usable(self) -> int:
+        return self.selected - HEAP_HEAD
+
 
 @dataclass(frozen=True)
 class CharacterNeed:
@@ -63,6 +74,13 @@ class CharacterNeed:
     @property
     def need(self) -> int:
         return self.high + self.low + self.gear + BLOCK_OVERHEAD
+
+
+def need_of(files: dict[int, int | None], directory: int = -1) -> CharacterNeed:
+    """The need of a slot whose files ``{index: length}`` are these (a missing or None length counts as 0)."""
+    def length(index):
+        return files.get(index) or 0
+    return CharacterNeed(directory, length(HIGH), length(LOW), max(length(i) for i in GEAR_FILES))
 
 
 def player_heap(image) -> PlayerHeap:

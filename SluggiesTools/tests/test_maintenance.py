@@ -135,6 +135,25 @@ if __name__ == '__main__':
     unittest.main()
 
 
+class GeckoStatusTests(unittest.TestCase):
+    def test_output_main_dol(self):
+        from SluggiesTools.Dol import dolfile
+        from SluggiesTools.GameOptions import game_options
+        from SluggiesTools.tests.test_game_options import synthetic_dol
+        with tempfile.TemporaryDirectory() as root:
+            self.assertIsNone(maintenance.gecko_status(root))
+            os.makedirs(os.path.join(root, '3_Output_Dat'))
+            path = os.path.join(root, '3_Output_Dat', 'main.dol')
+            with open(path, 'wb') as handle:
+                handle.write(synthetic_dol())
+            self.assertTrue(maintenance.gecko_status(root).compatible)
+            image = dolfile.DolImage(synthetic_dol())
+            game_options.apply(image, ['cpu_vs_cpu'])
+            with open(path, 'wb') as handle:
+                handle.write(image.to_bytes())
+            self.assertFalse(maintenance.gecko_status(root).compatible)
+
+
 class SoundMemoryTests(unittest.TestCase):
     """The output archive's voice banks against ``char_voices.FAMILY_FILE_TESTED_MAX`` (synthetic DOL + archive)."""
 

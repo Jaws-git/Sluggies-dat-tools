@@ -14,6 +14,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from SluggiesTools import gecko_compat
 from SluggiesTools.Dol import dolfile, relocate
 from SluggiesTools.Roster import ids, runner
 from SluggiesTools.StatEditor import bridge, carry, fields
@@ -186,6 +187,7 @@ class RunnerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = self.enterContext(tempfile.TemporaryDirectory())
         self.enterContext(mock.patch.object(relocate, 'scan_refs', return_value=[]))
+        self.enterContext(mock.patch.dict(os.environ, {gecko_compat.ACCEPT_ENV: '1'}))   # roster runs move the arena
         self.input_dir = os.path.join(self.tmp, '1_Input')
         os.makedirs(self.input_dir)
         self.dol_path = os.path.join(self.tmp, 'main.dol')
@@ -220,6 +222,19 @@ class RunnerTests(unittest.TestCase):
         report = runner.run(self.tmp, remove_only=True, input_dir=self.input_dir, keep_stat_edits=True)
         self.assertIn('[stat edits] dropped (IDs no longer in the roster): 0x66', report['log'])
         self.assertEqual(carry.detect(self.current(), vanilla()).rows, {0x01: {BATTING: b'\x30'}})
+
+    def test_gecko_break_cancelled_writes_nothing(self):
+        del os.environ[gecko_compat.ACCEPT_ENV]
+        before = self.current().to_bytes()
+        self.assertTrue(runner.run(self.tmp, config_path=self.config(EXPANDED), input_dir=self.input_dir,
+                                   dry_run=True)['gecko_break'])
+        with mock.patch.object(gecko_compat.slogger, 'ask', return_value='n'):
+            with self.assertRaisesRegex(runner.RosterDevError, 'Gecko'):
+                runner.run(self.tmp, config_path=self.config(EXPANDED), input_dir=self.input_dir)
+        self.assertEqual(self.current().to_bytes(), before)
+        with mock.patch.object(gecko_compat.slogger, 'ask', return_value='y'):
+            runner.run(self.tmp, config_path=self.config(EXPANDED), input_dir=self.input_dir)
+        self.assertFalse(gecko_compat.status(self.current().to_bytes()).compatible)
 
     def test_reset_to_vanilla_clears_them(self):
         self.edit(lambda ed: ed.set(0x01, BATTING, 0x30))

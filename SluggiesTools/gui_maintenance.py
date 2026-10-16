@@ -79,7 +79,8 @@ class MaintenanceTab:
             self._build_dolphin_name()
             dpg.add_separator()
             dpg.add_text('Checks the working folders for problems that make the tools act on the wrong file, and '
-                         'the output game for players and stadiums too big for the game\'s memory.', wrap=900)
+                         'the output game for players and stadiums too big for the game\'s memory. Also shows whether the output '
+                         'game still works with Gecko codes made for the stock game.', wrap=900)
             dpg.add_text(f'Checks: {", ".join(title for title, _check in maintenance.CHECKS)}.', color=_DIM)
             dpg.add_spacer(height=4)
             with dpg.group(horizontal=True):
@@ -330,13 +331,18 @@ class MaintenanceTab:
                 result, error = maintenance.scan(self.app.root_dir), None
             except Exception as exc:
                 result, error = None, f'{type(exc).__name__}: {exc}'
-            self.app.output_queue.put(('call', self._scan_done, result, error))
+            try:
+                gecko = maintenance.gecko_status(self.app.root_dir)
+            except Exception as exc:         # noqa: BLE001 - shown as the line's text
+                gecko = f'{type(exc).__name__}: {exc}'
+            self.app.output_queue.put(('call', self._scan_done, result, error, gecko))
         threading.Thread(target=work, daemon=True).start()
 
-    def _scan_done(self, result, error):
+    def _scan_done(self, result, error, gecko=None):
         self.scanning = False
         dpg.configure_item('maintenance_scan', enabled=True)
         dpg.delete_item('maintenance_results', children_only=True)
+        self._add_gecko(gecko)
         if error is not None:
             self._status(f'The scan failed: {error}', _ERROR)
             return
@@ -351,6 +357,20 @@ class MaintenanceTab:
         self._status(f'{len(problems)} problem{"s" if len(problems) != 1 else ""} found.', _WARN)
         for problem in problems:
             self._add_problem(problem)
+
+    def _add_gecko(self, gecko):
+        """The first result line: whether the output game still works with stock-game Gecko codes."""
+        if gecko is None:
+            text, color = 'Gecko codes: no 3_Output_Dat/main.dol yet.', _DIM
+        elif isinstance(gecko, str):
+            text, color = f'Gecko codes: the check failed ({gecko})', _ERROR
+        elif gecko.compatible:
+            text, color = f'Gecko codes: compatible ({gecko.detail}).', _OK
+        else:
+            text, color = (f'Gecko codes: not compatible ({gecko.detail}). Gecko codes made for the stock game (e.g. '
+                           'CPU vs CPU) may not work with these files.', _WARN)
+        dpg.add_text(text, parent='maintenance_results', color=color, wrap=1300)
+        dpg.add_spacer(height=6, parent='maintenance_results')
 
     def _status(self, text, color):
         dpg.set_value('maintenance_status', text)

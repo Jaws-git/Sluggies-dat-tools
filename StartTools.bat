@@ -37,8 +37,6 @@ if "!tools_choice!"=="1" (
     if errorlevel 1 goto :after_command
     call :roster_menu
     if errorlevel 1 goto :after_command
-    call !SLUGGIES_LAUNCHER! --game-options --on cpu_vs_cpu cpu_management
-    if errorlevel 1 goto :after_command
     call !SLUGGIES_LAUNCHER! --export-icons --use-output
     goto :after_command
 )

@@ -411,6 +411,7 @@ class LoadPlan:
     notes: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
     refused: list = field(default_factory=list)      # [(id, problem)]
+    memory: dict = field(default_factory=dict)       # the touched slots' player memory (``slot_memory.project``)
 
     @property
     def ok(self) -> bool:
@@ -425,7 +426,7 @@ class LoadPlan:
                 'equipment_clears': [{'id': _hex(c), 'file': f} for c, f in self.equipment_clears],
                 'clears': [_hex(c) for c in self.clears], 'kept_dirs': [_hex(c) for c in self.kept_dirs],
                 'notes': self.notes, 'warnings': self.warnings,
-                'refused': [{'id': _hex(c), 'error': e} for c, e in self.refused]}
+                'refused': [{'id': _hex(c), 'error': e} for c, e in self.refused], 'memory': self.memory}
 
 
 def roster_keys(config: dict) -> set:

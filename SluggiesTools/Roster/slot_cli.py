@@ -27,6 +27,7 @@ plan then lists the refused edits and holds no commands).
 """
 
 import argparse
+import copy
 import json
 import os
 import sys
@@ -42,8 +43,12 @@ import slogger  # noqa: E402
 from binfmt import load_sluggie  # noqa: E402
 
 try:
-    from . import derive, gear, icon_art, icons, ids, model_icons, open_slot, slot_plan, slots, state, state_cli, state_icons
+    from .. import gecko_compat, memory_guard
+    from . import (derive, gear, icon_art, icons, ids, model_icons, open_slot, slot_memory, slot_plan, slots, state,
+                   state_cli, state_icons)
 except ImportError:
+    import gecko_compat
+    import memory_guard
     import derive
     import gear
     import icon_art
@@ -51,6 +56,7 @@ except ImportError:
     import ids
     import model_icons
     import open_slot
+    import slot_memory
     import slot_plan
     import slots
     import state
@@ -63,6 +69,7 @@ from PIL import Image  # noqa: E402
 SOURCE = 'roster.slot'
 SLOT_DIR = 'slot'
 PLAN_FILE = 'plan.json'
+PROBE_DIR = 'slot_gecko_probe'     # _gui/: the new edits planned alone (``gecko_check``)
 # A PNG the roster encoded into the bank decodes back close to, not equal to, its pixels (CMPR is lossy):
 # the "empty slot" art measured mean 2.0 / max 32 per channel, other portraits mean 88+.
 CMPR_MEAN, CMPR_MAX = 8, 64
@@ -233,6 +240,18 @@ class FileEnv(slot_plan.Env):
         except (OSError, ValueError):
             return None
 
+    def vanilla_length(self, directory, file):
+        """The length of file ``file`` of directory ``directory`` in ``1_Input``, or None."""
+        import HammerspaceHelper as hh
+        try:
+            length = hh.readDolEntry(directory, file)[1]
+        except (OSError, ValueError):
+            return None
+        return length if length >= 0 else None
+
+    def build_size_known(self, path):
+        return memory_guard.lookup_size(state_cli.ROOT, path) is not None
+
     def vanilla_block(self, directory, file):
         import LodPartnerGuard
         try:
@@ -357,19 +376,27 @@ class FileEnv(slot_plan.Env):
         return True
 
 
-def run(edits: list, output_dir: str = state_cli.OUTPUT_DIR, skip_checked: bool = False) -> slot_plan.Batch:
-    """Plan the batch ``edits`` (``slot_plan.Edit``s) and write the files the chain reads."""
+def _prepare(output_dir: str) -> tuple:
+    """The game as the planner reads it: ``(image, dat, state, derived)``."""
     image, dat = state_cli._open(output_dir)
     st = state.read_state(image, dat)
     state_cli.add_vanilla_flags(st)                  # the equipment baseline checks need it
-    derived = derive.derive(image, dat, state_cli.open_sound(output_dir))
-    folder = slot_dir(output_dir)
+    return image, dat, st, derive.derive(image, dat, state_cli.open_sound(output_dir))
+
+
+def _plan_into(prepared: tuple, edits: list, output_dir: str, folder: str, skip_checked: bool) -> slot_plan.Batch:
+    """Plan ``edits`` on the ``_prepare``d game and write the files its chain reads into ``folder``."""
+    image, dat, st, derived = prepared
     state_file = os.path.join(folder, derive.CONFIG_FILE)
-    batch = slot_plan.plan_batch(st, derived.config, edits, FileEnv(image, dat, state_cli.input_dir(output_dir)), state_file,
-                                 state.read_names(image, dat), skip_checked=skip_checked)
+    env = FileEnv(image, dat, state_cli.input_dir(output_dir))
+    batch = slot_plan.plan_batch(st, derived.config, edits, env, state_file, state.read_names(image, dat),
+                                 skip_checked=skip_checked)
     batch.warnings[:0] = derived.warnings
     os.makedirs(folder, exist_ok=True)
     write_copy_files(batch.copy_files, slot_plan.copy_dir(state_file))
+    if not batch.refused:                            # after the copy files: their blocks' sizes count
+        batch.memory = slot_memory.project(st, batch.config, batch.commands, env.vanilla_length,
+                                           slot_memory.display_names(st))
     if batch.config is not None:
         portraits = dict(derived.portraits)
         paths = open_slot.slot_icon_paths() if batch.extra_portraits else {}
@@ -382,11 +409,45 @@ def run(edits: list, output_dir: str = state_cli.OUTPUT_DIR, skip_checked: bool 
                     art = img.convert('RGBA')
             portraits[name] = (art, None)
         derive.write(derive.Derived(batch.config, portraits, clips={**derived.clips, **batch.clips}), folder)
+    return batch
+
+
+def run(edits: list, output_dir: str = state_cli.OUTPUT_DIR, skip_checked: bool = False,
+        gecko: bool = False) -> slot_plan.Batch:
+    """Plan the batch ``edits`` (``slot_plan.Edit``s) and write the files the chain reads. ``gecko`` (dry runs):
+    record whether the chain breaks Gecko code compatibility (``gecko_check``)."""
+    prepared = _prepare(output_dir)
+    pristine = (prepared[2], prepared[3]) if not gecko else copy.deepcopy((prepared[2], prepared[3]))
+    batch = _plan_into(prepared, edits, output_dir, slot_dir(output_dir), skip_checked)
     tmp = plan_path(output_dir) + '.tmp'
     with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(batch.to_json(), f, ensure_ascii=False, indent=1)
     os.replace(tmp, plan_path(output_dir))
+    if gecko:
+        gecko_check(edits, batch, prepared[:2] + pristine, output_dir)
     return batch
+
+
+def gecko_check(edits: list, batch: slot_plan.Batch, prepared: tuple, output_dir: str) -> None:
+    """A dry run's Gecko code compatibility check (``gecko_compat``), recorded for the GUI: whether the chain
+    breaks it, and ``new_breaks``: whether the edits not yet staged (not ``checked``: the GUI's staging check adds
+    one to the pending ones) break it on their own, planned alone into ``_gui/slot_gecko_probe``. None when that
+    is unknown (they cannot be planned alone, e.g. a Low pick that joins a pending High pick)."""
+    root = os.path.dirname(os.path.abspath(output_dir))
+    gecko_compat.clear_check(root)
+    if batch.refused or not gecko_compat.chain_breaks(batch.commands, root):
+        return
+    new = [e for e in edits if not e.checked]
+    if len(new) == len(edits):
+        new_breaks = True
+    else:
+        try:
+            probe = _plan_into(prepared, new, output_dir, os.path.join(state_cli.gui_dir(output_dir), PROBE_DIR),
+                               skip_checked=True)
+            new_breaks = None if probe.refused else gecko_compat.chain_breaks(probe.commands, root)
+        except (RuntimeError, ValueError, OSError, gear.GearError):
+            new_breaks = None
+    gecko_compat.record(root, 'the slot edits', new_breaks=new_breaks)
 
 
 def write_copy_files(files: dict, folder: str) -> None:
@@ -511,7 +572,7 @@ def main(argv=None) -> int:
                                     fit=args.fit, trim=not args.no_trim)]
         else:
             edits = read_edits(args.apply)
-        batch = run(edits, output_dir=args.output_dir, skip_checked=args.dry_run)
+        batch = run(edits, output_dir=args.output_dir, skip_checked=args.dry_run, gecko=args.dry_run)
     except (RuntimeError, ValueError, gear.GearError) as exc:        # PlanError, SlotError, StateError, DeriveError, config errors
         slogger.error(f'refused, nothing written: {exc}', source=SOURCE)
         return 1
