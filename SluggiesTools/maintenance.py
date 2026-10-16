@@ -91,8 +91,8 @@ def duplicate_models(root_dir):
         if len(paths) > 1:
             problems.append(Problem(
                 'Duplicate models',
-                f'{len(paths)} files hold the same model (directory {chunk}, file {index}, offset {offset}); '
-                'the patcher cannot tell which one you mean.',
+                f'{len(paths)} files share the same file name (directory {chunk}, file {index}, offset {offset}); '
+                'the command line patcher will pick the first one it finds.',
                 tuple(paths), advice))
     for name in sorted({os.path.basename(path) for path in unreadable}):
         paths = by_name[name]

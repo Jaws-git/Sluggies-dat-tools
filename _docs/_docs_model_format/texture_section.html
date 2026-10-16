@@ -20,7 +20,7 @@
         <tr>
             <td>0x2</td>
             <td>uint16</td>
-            <td>Number of CLUTs (color lookup tables)</td>
+            <td>Number of CLUTs (color lookup tables). No vanilla block sets it: the only vanilla models with a palette (Donkey Kong and Baby DK High, chunks 20 and 83 file 0, one 128x128 C8 texture with 256 entries each) leave it at 0, so the game most likely ignores it. <code>BlockValidator</code> only warns about 0 with palettes present; any other mismatch fails (2026-10-15). The Hammerspace TEX builder writes the real palette count.</td>
         </tr>
     </table>
     <h2>Texture Descriptor</h2>

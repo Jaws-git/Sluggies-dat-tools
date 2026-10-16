@@ -298,25 +298,20 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(b.portraits['pick_66_front.png'].getpixel((0, 0)), (0, 0, 255, 255))
         self.assertEqual(b.commands, [('--roster', '--state', STATE_FILE), ('--roster-state',)])
 
-    def test_icon_then_patch_drops_the_icon_edit(self):
-        b = batch(icon('0x0D', 'front'), {'op': 'patch', 'id': '0x0D', 'file': HP})
-        self.assertEqual([e.op for e, _p in b.plans], ['patch'])
-        self.assertTrue(any('portrait edit is dropped' in n for n in b.notes))
-        self.assertEqual(b.config['stock_icons'], [{'id': '0x0D', 'icon': {'model': '/m/home'}}])
+    def test_icon_edit_before_a_patch_keeps_empty_slot_portraits_out(self):
+        b = batch(icon('0x66', 'front'), {'op': 'patch', 'id': '0x66', 'file': HP}, env=IconEnv(open_portraits={0x66}))
+        self.assertEqual(entry_of(b.config, 'ids', 0x66)['icon']['front'], 'pick_66_front.png')
+        b = batch({'op': 'patch', 'id': '0x66', 'file': HP}, env=IconEnv(open_portraits={0x66}))
+        self.assertEqual(entry_of(b.config, 'ids', 0x66)['icon'], {'model': '/m/home', 'like': '0x04'})
 
-    def test_patch_then_icon_keeps_it(self):
-        b = batch({'op': 'patch', 'id': '0x0D', 'file': HP}, icon('0x0D', 'front'))
-        self.assertEqual([e.op for e, _p in b.plans], ['patch', 'icon'])
-        self.assertEqual(b.config['stock_icons'][0]['icon'],
-                         {'front': 'pick_0D_front.png', 'side': 'keep_0D_side.png', 'fit': 'contain'})
-        self.assertEqual(b.portraits['keep_0D_side.png'], '/m/home/icon/SideIcon.png')
-
-    def test_a_patch_without_model_portraits_keeps_the_icon_edit_either_way(self):
+    def test_a_patch_keeps_the_icon_edit_either_way(self):
         for order in ((0, 1), (1, 0)):
             items = [icon('0x0D', 'front'), {'op': 'patch', 'id': '0x0D', 'file': HP}]
-            b = batch(*[items[i] for i in order], env=IconEnv(icons_ok=False))
+            b = batch(*[items[i] for i in order])
             self.assertEqual(sorted(e.op for e, _p in b.plans), ['icon', 'patch'])
-            self.assertEqual(b.config['stock_icons'][0]['icon']['front'], 'pick_0D_front.png')
+            self.assertFalse(any('portrait edit is dropped' in n for n in b.notes))
+            self.assertEqual(b.config['stock_icons'][0]['icon'],
+                             {'front': 'pick_0D_front.png', 'side': 'keep_0D_side.png', 'fit': 'contain'})
 
     def test_clear_drops_earlier_icon_edits_and_keeps_later_ones(self):
         merged, notes, _ = slot_plan.merge_edits(slot_plan.parse_edits([

@@ -28,7 +28,7 @@ from PIL import Image
 from SluggiesTools.Dol import relocate
 from SluggiesTools.Icons import gx_decode, layout2d
 from SluggiesTools.Roster import dat_hammerspace as dhs
-from SluggiesTools.Roster import datfile, derive, icon_art, icons, layout_file, manifest, names, runner, state, steps
+from SluggiesTools.Roster import datfile, derive, dol_hammerspace, icon_art, icons, layout_file, manifest, names, runner, state, steps
 from SluggiesTools.tests.test_roster_grid import image_for_grid
 from SluggiesTools.tests.test_roster_names import plate_bank, stock_table
 from SluggiesTools.tests.test_roster_state_icons import STOCK0
@@ -69,10 +69,12 @@ def drifting_cmpr(page) -> bytes:
 
 
 class RecordingLayout:
-    """Stands in for ``layout_file.LayoutFiles``: a plate bank to read, every transform's output recorded."""
+    """Stands in for ``layout_file.LayoutFiles``: a plate bank to read, every transform's output recorded
+    (``en``: the latest EN layout, what ``state.renamed_ids`` reads back)."""
 
     def __init__(self):
         self.outputs = []
+        self.en = plate_bank()
 
     def read(self, _lang):
         return plate_bank()
@@ -81,6 +83,8 @@ class RecordingLayout:
         for lang in dhs.LANGS:
             try:
                 self.outputs.append(transform(lang, plate_bank()))
+                if lang == 'en':
+                    self.en = self.outputs[-1]
             except (layout2d.Layout2dError, KeyError, ValueError, IndexError, struct.error) as exc:
                 self.outputs.append(type(exc).__name__)     # grid/popup edits need the real select layout
         return ['layout updated']
@@ -105,6 +109,8 @@ class Harness(unittest.TestCase):
         self.enterContext(mock.patch.object(icons, 'encode_page', drifting_cmpr))
         self.enterContext(mock.patch.object(names, 'PLATE_TEMPLATE_PAGE', 0))
         self.enterContext(mock.patch.object(relocate, 'scan_refs', return_value=[]))
+        self.layout_en = plate_bank()          # the last build's EN select layout (the layout is not in the DAT here)
+        self.enterContext(mock.patch.object(state, 'renamed_ids', lambda _image, _dat: names.renamed_ids(self.layout_en)))
         self.icon_dir = os.path.join(self.tmp, 'icons_in')
         os.makedirs(self.icon_dir)
         self.clip_dir = os.path.join(self.tmp, 'clips_in')          # custom clips: two stock waves as files
@@ -155,6 +161,7 @@ class Harness(unittest.TestCase):
             if step.key != 'layout_file':
                 step.apply(ctx)
         runner.write_manifest(ctx)
+        self.layout_en = ctx.state[layout_file.STATE_KEY].en
         dat.flush()
         with open(path, 'rb') as f:
             return image.to_bytes(), f.read(), ctx, dat, image
@@ -331,6 +338,8 @@ class RoundTripTests(Harness):
         self.assertEqual(stock[1]['icon']['side'], derived['wheels'][0]['icon']['side'])   # one shared cell
         only = self.round_trip(CONFIGS['stock portraits only'])
         self.assertEqual(set(only) - {'version', 'comment'}, {'stock_icons'})
+        image = self.build(CONFIGS['stock portraits only'])[4]
+        self.assertIsNone(dol_hammerspace.DolHammerspace.open(image))   # no DOL code: stock sections and arena
 
     def test_stock_names_are_carried(self):
         """A renamed stock character becomes a ``stock_names`` entry (with the table's
@@ -343,6 +352,10 @@ class RoundTripTests(Harness):
         self.assertEqual(derived['wheels'][0]['name']['en'], 'White')
         only = self.round_trip(CONFIGS['stock names only'])
         self.assertEqual(set(only) - {'version', 'comment'}, {'stock_names'})
+        self.assertEqual(only['stock_names'], [{'id': '0x0D', 'name': {'en': 'Little Toad', 'fr': 'Little Toad',
+                                                                       'sp': 'Little Toad'}}])
+        image = self.build(CONFIGS['stock names only'])[4]
+        self.assertIsNone(dol_hammerspace.DolHammerspace.open(image))   # pure DAT edits: stock sections and arena
 
     def test_a_stock_name_is_dropped_by_leaving_it_out(self):
         """Rebuilding without the entry restores the stock text (the reset of a blank rename)."""

@@ -618,6 +618,15 @@ DOL hammerspace moves, even one holding only option stubs (the arena start
 rises from `0x807B6E80` to past the sections). Turn the Gecko codes off
 before using the options.
 
+The same applies to roster runs: any run that adds the DOL sections (new IDs,
+names of new IDs, grid, wheel order, character voices, ...) breaks those
+Gecko codes. Renaming stock characters alone adds no sections (see *Names*).
+Seen 2026-10-15: a stock-portrait-only run broke them while its sections held
+only the manifest (arena start `0x807C00A0`); an older build of the same edit
+without sections kept them working. Since then such runs add no sections (see
+*Read-back*); confirmed in Dolphin the same day: a stock-portrait patch keeps
+the Gecko codes working.
+
 ## DAT hammerspace
 
 Grown files are copied past the stock end of `dt_na.dat` (715,046,144 bytes)
@@ -900,6 +909,16 @@ built exe (bundled Pillow/FreeType) draws a few pixels differently from a
 development Python (7 bytes in one Spanish plate); each is stable by itself,
 so byte-for-byte comparisons need both builds made by the same one.
 
+**Without new IDs the names are pure DAT edits** (since 2026-10-16). Renamed
+stock characters and spare rows are all below `0x4D`, which the stock name
+widgets already show. So the tables keep their 104 messages (the codes stay
+at 102/103), the plate page holds only the given names, and only their own
+rows are repointed. The table readers, widget tests and plate sites stay
+stock, so `main.dol` gets no DOL hammerspace and the MEM1 arena stays where
+stock Gecko codes expect it. No manifest records them: the read-back takes a
+plate row off page 124 as a rename (`names.renamed_ids`). Untested in
+Dolphin.
+
 ## Models in slots
 
 A `.sluggie` can be patched into another character's slot
@@ -911,8 +930,13 @@ screen and on the field; the source character stays unchanged.
 
 - **Always Hammerspace.** An in-place patch writes over the source's own
   block, so in-place edits are promoted to a Hammerspace build. Facial pose
-  edits and SK vertex-count changes exist only in the in-place patcher and
-  are refused.
+  edits (shape keys) go through: every Hammerspace build splices the edited
+  pose arrays into the ptr7 section (`facial_pose_edits.py`, 2026-10-15).
+  SK vertex-count changes exist only in the in-place patcher and are
+  refused. The slot editor sends such files only to their own stock slot,
+  as a plain in-place `--patch` (the slot first gets its vanilla models back
+  when both files are patched); any other slot refuses them at planning
+  time (`slot_plan.inplace_only_edits`, 2026-10-15).
 - **Skeleton.** A stock slot takes only a model whose vanilla skeleton has the
   slot's bone count and parent chain (different rest SRTs only warn); Yoshi
   (92 bones) or Bowser (105) into a Toad slot (89) is refused. A finished
@@ -958,10 +982,11 @@ screen and on the field; the source character stays unchanged.
   the target's. Stock portraits are C8: a pasted copy is CMPR, about
   4.5-8.5/255 mean drift on the visible pixels (Bowser, Red Toad). The
   real-file chain was checked on 2026-10-06; not yet tested in Dolphin.
-- **Validator exceptions.** Two vanilla slot blocks fail `BlockValidator`
-  (in the slots of IDs `0x11` and `0x41`: a memClr range and a CLUT count), so
-  a finished block is judged only by errors its slot's vanilla block does not
-  have too.
+- **Validator exceptions.** A finished block is judged only by errors its
+  slot's vanilla block does not have too. The two vanilla quirks that made
+  this necessary (Birdo's wider memClr range; the zero CLUT count of Donkey
+  Kong and Baby DK) only warn since 2026-10-15, and every vanilla High and
+  Low block of directories 18-118 now passes.
 
 ## Read-back: manifest, derive and packs
 
@@ -974,7 +999,10 @@ wheel order, new IDs' templates, `portrait_of`, stats sources, square and
 stock voices, own directories, which top-level config keys were given) are
 stored at the end of every roster run in the DOL data section:
 `SLUGGIES ROSTER\x03`, u32 compressed length, zlib JSON
-(`Roster/manifest.py`; preset 04's: 42,686 bytes raw, 1,634 compressed). The
+(`Roster/manifest.py`; preset 04's: 42,686 bytes raw, 1,634 compressed). A
+run that records nothing and writes no DOL code or tables (stock portraits
+only, since 2026-10-15) stores no manifest and adds no DOL sections, so the
+arena start stays stock; derive reads such an output from the DAT alone. The
 reader (`Roster/state.py`) cross-checks everything it can also read from the
 binary (shape, map, heads, names) and the binary wins on a mismatch. A
 roster DOL without a manifest (built by an older version) is refused. On the

@@ -40,6 +40,7 @@ from ArchiveContainer import parse_archive_container, rebuild_archive_container
 from ModelFormat import align_array_offset, compute_mem_clear_range, pad_array
 import SkinnedRebuild as _skinned
 import FacialPoseRebuild as _facial
+import facial_pose_edits as _facial_edits
 from InplacePatcher import root_scale as _root_scale
 import act_rebuild
 
@@ -4356,6 +4357,35 @@ def _rigid_rebuild_facial_rebuilders(model: dict, parsed: 'SluggieParsed') -> di
     return rebuilders
 
 
+def _facial_edit_rebuilders(model: dict, rebuilt: set) -> dict:
+    """The ptr7 rebuilders for facial position-pose edits on submeshes that are not rebuilt (*rebuilt*: the
+    submeshes with a rebuilder already): the add-on's shape-key edits (``FacialPoseDataEdited``) and pose zero
+    following a moved vertex buffer, the arrays the in-place patcher writes (``facial_pose_edits``). The arrays
+    keep their length, so the section is re-serialized with only those bytes changed."""
+    try:
+        changes = _facial_edits.changed_position_poses(model)
+    except ValueError as exc:
+        raise ValueError(f'facial pose edit refused: {exc}') from exc
+    if not changes:
+        return {}
+    submesh_of = {
+        int(entry['ObjectIndex']): entry.get('SubmeshIndex')
+        for entry in (model.get('FacialPoseData') or {}).get('Objects') or []
+    }
+    edited = {submesh_of[o] for o, _p in changes if submesh_of.get(o) is not None} - rebuilt
+    if not edited:
+        return {}
+    error = _facial.facial_data_error(model.get('FacialPoseData') or {})
+    if error:
+        raise ValueError(f'facial pose edits need the full FacialPoseData ({error}); re-export the model')
+    _slogger.info(
+        f'[FacialPoses] {len(changes)} edited position pose array(s) on submesh(es) {sorted(edited)}',
+        source='hammerspace.main',
+    )
+    rebuild = _facial_edits.replace_position_poses(changes, _facial.POSITION_KIND, submesh_of.get)
+    return {index: rebuild for index in edited}
+
+
 def _rebuild_facial_section(model: dict, rebuilders: dict) -> bytes:
     """The whole ptr7 section re-serialized with the objects of every
     submesh in *rebuilders* rebuilt (the body's kind-0 SKAcc supplements
@@ -7905,12 +7935,14 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
         )
     parsed_trailing_sections = getattr(parsed, 'trailing_sections', None) or []
     rebuilt_facial_section = None
+    if not clear_facial_pointer:
+        facial_rebuilders.update(_facial_edit_rebuilders(model, set(facial_rebuilders)))
     if facial_rebuilders and not clear_facial_pointer:
         rebuilt_facial_section = _rebuild_facial_section(model, facial_rebuilders)
         facial_slots = [k for k, section in enumerate(parsed_trailing_sections) if section.header_field_offset == 0x18]
         if len(facial_slots) != 1:
             raise ValueError(
-                'a rebuilt submesh has facial poses but the file has no TrailingSections entry for ptr7 '
+                'a rebuilt or edited submesh has facial poses but the file has no TrailingSections entry for ptr7 '
                 '(header +0x18); re-export the model'
             )
         parsed_trailing_sections = list(parsed_trailing_sections)
@@ -8533,14 +8565,13 @@ def PromoteInplaceEdits(model: dict, modes: SectionModes) -> SectionModes:
     * bind-pose/weight edits written into the SK entries themselves need the
       SKN builder.
 
-    Edits only the in-place patcher applies are refused: facial pose edits
-    and SK vertex-count changes. Returns the section modes the edits need.
+    Facial pose edits need nothing here: every build splices them into the
+    ptr7 section (``_facial_edit_rebuilders``). SK vertex-count changes exist
+    only in the in-place patcher and are refused. Returns the section modes
+    the edits need.
     """
     if model.get('UseHammerspace'):
         return modes
-    if any(obj.get('PositionPoseEdits') for obj in (model.get('FacialPoseDataEdited') or {}).get('Objects', [])):
-        raise ValueError('this file carries facial pose edits, which only the in-place patcher applies; '
-                         'it cannot be patched into another slot, and a slot export not at all')
     skin = model.get('SkinData') or {}
     entries = [entry for key in ('SK1s', 'SK2s', 'SKAccs') for entry in skin.get(key) or []]
     if any(entry.get('VertexCntEdited') is not None for entry in entries):

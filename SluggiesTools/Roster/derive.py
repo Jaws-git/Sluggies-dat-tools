@@ -306,7 +306,8 @@ def derive(image: dolfile.DolImage, dat, sound=None) -> Derived:
     out = Derived({'version': 1, 'comment': 'Derived from the game files (GUI character grid, read -> rebuild).'})
     out.warnings += st['warnings']
     if mf is None:
-        return out                                     # a stock output: nothing to carry
+        # No roster sections: a stock output, or a run without DOL code (stock portraits); only DAT facts remain
+        mf = {'config_keys': []}
     keys = config_keys(image, mf)
     config = out.config
 
@@ -340,7 +341,10 @@ def derive(image: dolfile.DolImage, dat, sound=None) -> Derived:
     # names: the IDs the config named, with the text the name tables hold now
     text = state.read_names(image, dat) or {}
     stock_names: dict[int, dict] = {}
-    for key, value in (mf.get('names') or {}).items():
+    named = mf.get('names')
+    if named is None:                          # no manifest: renamed stock characters by their plate rows
+        named = {str(cid): text[cid] for cid in state.renamed_ids(image, dat) if cid in text}
+    for key, value in named.items():
         cid = int(key)
         entry = id_entries.get(cid) or spare_entries.get(cid)
         if entry is None and cid < names.RENAMEABLE_END and cid not in icons.SPARE_DONORS:

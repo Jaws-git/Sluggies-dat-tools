@@ -31,6 +31,7 @@ import gui_grid
 from StatEditor import editor_install as ei
 
 _NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+BROWSE_DIR_SETTING = 'stat_editor_last_browse_dir'   # the GUI settings key: the folder the last Browse... came from
 _TEXT = (220, 220, 220, 255)
 _DIM = (170, 170, 170, 255)
 _WARN = (255, 210, 90, 255)
@@ -86,10 +87,7 @@ class StatEditorTab:
                 dpg.add_text('', tag='stat_update_text')
                 dpg.add_button(label='Open the download page', tag='stat_download', show=False,
                                callback=lambda: self._open_url(self.latest.page if self.latest else ei.RELEASES_PAGE))
-            with dpg.file_dialog(directory_selector=False, show=False, modal=True, tag='stat_path_dialog', width=760,
-                                 height=460, callback=self._on_browse_chosen, default_path=self.app.root_dir):
-                dpg.add_file_extension('Stat Editor{.exe,.py}', color=(120, 220, 120, 255))
-                dpg.add_file_extension('.*')
+            self.app.add_file_dialog('stat_path_dialog', ('Stat Editor{.exe,.py}', '.*'))
             dpg.add_separator()
             dpg.add_spacer(height=4)
             with dpg.group(horizontal=True):
@@ -138,16 +136,10 @@ class StatEditorTab:
         filters = [('Stat Editor (sluggers-stat-editor.exe, editor.py)', f'{ei.EXE};{ei.SOURCE}'),
                    ('All files', '*.*')]
         self.app.pick_files('stat_path_dialog', 'Select the Stat Editor (sluggers-stat-editor.exe or editor.py)',
-                            filters, self._on_browse_paths, initial_dir=start)
-
-    def _on_browse_chosen(self, _sender, app_data):
-        app_data = app_data or {}
-        self._on_browse_paths(list(app_data.get('selections', {}).values()) or [app_data.get('file_path_name')])
+                            filters, self._on_browse_paths, initial_dir=start, remember=BROWSE_DIR_SETTING)
 
     def _on_browse_paths(self, paths):
-        path = next((p for p in paths if p), None)
-        if not path:
-            return
+        path = paths[0]
         install = ei.find_install(path)
         if install is None:
             self.app.log_line(f'[stat editor] no Stat Editor at {path}: pick sluggers-stat-editor.exe or editor.py',

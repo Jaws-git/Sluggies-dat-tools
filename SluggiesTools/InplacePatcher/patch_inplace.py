@@ -27,6 +27,7 @@ import patch_skn_inplace as _skn
 import texture_helper as _tex
 import root_scale as _root_scale
 import bone_geo_inplace as _bone_geo
+import facial_pose_edits as _facial_edits
 from binfmt import comp_size as _comp_size
 from binfmt import decode_field as _decode_field
 from binfmt import load_sluggie as _load_sluggie
@@ -71,115 +72,20 @@ def abort(message):
 # ---------------------------------------------------------------------------
 
 def _facial_position_patches(model: dict, restore: bool) -> list[tuple[int, bytes]]:
-    """Build position-pose patches from exported facial metadata and Blender edits."""
-    facial = model.get('FacialPoseData')
-    if not facial:
-        return []
-
-    edited_lookup = {
-        (facial_object.get('ObjectIndex'), pose.get('PoseIndex')): _to_bytes(pose['PoseData'])
-        for facial_object in model.get('FacialPoseDataEdited', {}).get('Objects', [])
-        for pose in facial_object.get('PositionPoseEdits', [])
-    }
-
-    submesh_buffers = []
-    for submesh_index, submesh in enumerate(model.get('Submeshes', [])):
-        vb = submesh.get('VertexBuffer', {})
-        original_data = vb.get('VertexBufferData')
-        edited_data = vb.get('VertexBufferDataEdited')
-        if original_data is None or (edited_data is None and not restore):
-            continue
-        original = _to_bytes(original_data)
-        edited = original if edited_data is None else _to_bytes(edited_data)
-        vertex_stride = (
-            vb.get('VertexBufferCompCount', 3)
-            * _comp_size(vb.get('VertexBufferQuantizeInfo', 0))
-        )
-        if len(original) == len(edited) and vertex_stride > 0 and len(original) % vertex_stride == 0:
-            submesh_buffers.append((submesh_index, original, edited, vertex_stride))
-
-    facial_patches = []
-    for facial_object in facial.get('Objects', []):
-        object_index = facial_object.get('ObjectIndex')
-        submesh_index = facial_object.get('SubmeshIndex')
-        position = facial_object.get('Position', {})
-        original_poses = [_to_bytes(data) for data in position.get('PoseData', [])]
-        pose_offsets = [int(offset, 16) for offset in position.get('PoseAbsoluteOffsets', [])]
-        vertex_count = position.get('EntryCount', 0)
-        component_count = position.get('ComponentCount', 3)
-        component_size = position.get('ComponentSize', 2)
-        pose_stride = component_count * component_size
-        vertex_indices = [
-            vertex_index
-            for run in position.get('Runs', [])
-            for vertex_index in range(
-                run.get('FirstVertex', 0),
-                run.get('FirstVertex', 0) + run.get('VertexCount', 0),
-            )
-        ]
-        if (
-            submesh_index is None
-            or len(vertex_indices) != vertex_count
-            or len(original_poses) != len(pose_offsets)
-            or component_size != 2
-            or component_count < 3
-            or any(len(pose) != vertex_count * pose_stride for pose in original_poses)
-        ):
-            continue
-
-        matched = next(
-            (entry for entry in submesh_buffers if entry[0] == submesh_index),
-            None,
-        )
-        for pose_index, (pose_offset, original_pose) in enumerate(
-            zip(pose_offsets, original_poses)
-        ):
-            sparse_edit = edited_lookup.get((object_index, pose_index))
-            if restore:
-                patched_pose = original_pose
-            elif sparse_edit is not None:
-                if len(sparse_edit) != len(original_pose):
-                    abort(
-                        f"Facial object {object_index}, pose {pose_index}: edited length "
-                        f"{len(sparse_edit)} does not match original {len(original_pose)}."
-                    )
-                patched_pose = sparse_edit
-            elif pose_index == 0 and matched is not None:
-                _, original, edited, vertex_stride = matched
-                patched_pose = bytearray(original_pose)
-                for mapped_index, vertex_index in enumerate(vertex_indices):
-                    if vertex_index * vertex_stride + 6 > len(original) or len(original) != len(edited):
-                        abort(
-                            f"Submesh {submesh_index}: facial vertex {vertex_index} "
-                            "is outside the editable vertex buffer."
-                        )
-                    original_vertex = struct.unpack_from(
-                        '>3h', original, vertex_index * vertex_stride
-                    )
-                    edited_vertex = struct.unpack_from(
-                        '>3h', edited, vertex_index * vertex_stride
-                    )
-                    for component in range(3):
-                        value_offset = mapped_index * pose_stride + component * component_size
-                        value = struct.unpack_from('>h', patched_pose, value_offset)[0]
-                        value += edited_vertex[component] - original_vertex[component]
-                        if not -32768 <= value <= 32767:
-                            abort(
-                                f"Submesh {submesh_index}: facial pose coordinate overflow "
-                                f"in object {object_index}, pose {pose_index}."
-                            )
-                        struct.pack_into('>h', patched_pose, value_offset, value)
-                patched_pose = bytes(patched_pose)
-            else:
-                patched_pose = original_pose
-            facial_patches.append((pose_offset, patched_pose))
+    """``(offset, bytes)`` of every facial position pose array (``facial_pose_edits``)."""
+    try:
+        arrays = _facial_edits.position_pose_arrays(model, restore)
+    except ValueError as exc:
+        abort(f"Facial pose edit refused: {exc}.")
+    for submesh_index in sorted({a.submesh_index for a in arrays}):
+        objects = {a.object_index for a in arrays if a.submesh_index == submesh_index}
         _slogger.info(
-            f"Submesh {submesh_index}: queued {len(original_poses)} facial position poses "
-            f"({vertex_count} mapped vertices each).",
+            f"Submesh {submesh_index}: queued "
+            f"{sum(1 for a in arrays if a.submesh_index == submesh_index)} facial position poses "
+            f"({len(objects)} object(s)).",
             source="patch_inplace",
         )
-
-    return facial_patches
+    return [(a.absolute_offset, a.data) for a in arrays]
 
 
 # ---------------------------------------------------------------------------

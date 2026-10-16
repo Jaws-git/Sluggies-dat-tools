@@ -160,6 +160,7 @@
     <p>For every mapped position vertex in absolute pose zero:</p>
     <pre>patched_pose = original_pose + (edited_GPL_position - original_GPL_position)</pre>
     <p>Poses one and later are already deltas, so a base mesh edit does not alter them. Explicit Blender shape-key edits replace their corresponding delta buffers. <code>--unpatch</code> restores all original pose arrays.</p>
+    <p>The hammerspace patcher applies the same arrays to a submesh it does not rebuild (since 2026-10-15, <code>facial_pose_edits.py</code>, shared with the in-place patcher): the arrays keep their length, so the section is re-serialized with only those pose bytes changed. Confirmed in game on Birdo's <code>catherine.gpl</code> (2026-10-15); not yet tested on other characters. Before, a hammerspace build dropped them and a slot patch refused the file.</p>
     <p>This is separate from SK1/SK2/SKAcc skinning. Birdo's facial head remains a rigid GEO attachment on bone 56; bone 55 has no SK entry or vertex influence in either LOD and is not responsible for the per-vertex overwrite.</p>
 
     <h2 id="skinned">Facial poses on skinned vertices (Luigi)</h2>

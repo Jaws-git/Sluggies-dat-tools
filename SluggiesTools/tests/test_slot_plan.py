@@ -52,8 +52,9 @@ def make_config():
 
 
 class FakeEnv(slot_plan.Env):
-    def __init__(self, icons_ok=True, skeleton_errors=(), high_stems=None, shows=False):
-        self.icons_ok, self.skeleton_errors, self.shows = icons_ok, list(skeleton_errors), shows
+    def __init__(self, icons_ok=True, skeleton_errors=(), high_stems=None, open_portraits=()):
+        self.icons_ok, self.skeleton_errors = icons_ok, list(skeleton_errors)
+        self.open_portraits = set(open_portraits)
         self.high_stems = high_stems or {}
         self.skeleton_calls = []
 
@@ -70,8 +71,8 @@ class FakeEnv(slot_plan.Env):
     def current_high_stem(self, cid):
         return self.high_stems.get(cid)
 
-    def shows_portraits(self, char, found):
-        return self.shows
+    def shows_open_slot_portraits(self, char):
+        return char['id'] in self.open_portraits
 
 
 def pair(high=HP, low=LOW, chunk=27, stem='koopa'):
@@ -98,10 +99,27 @@ class PatchNewIdTests(unittest.TestCase):
         self.assertEqual(entry['model'], {'from': '0x09'})                   # fresh copy, no routes
         self.assertEqual(entry['stats'], '0x09')
         self.assertEqual(entry['name'], NAMES_TEXT[0x09])
-        self.assertEqual(entry['icon'], {'model': '/m/home', 'like': '0x04'})
+        self.assertEqual(entry['icon'], make_config()['ids'][0]['icon'])      # a patch keeps the portraits
         self.assertEqual(plan.config['grid']['squares'][0], {'members': ['0x66', '0x67'], 'voice': '0x09'})
         self.assertEqual(plan.to_json()['files'], {'high': HP, 'low': LOW, 'picked': HP})       # the GUI dialog
         self.assertEqual(plan.to_json()['source'], '0x09')
+
+    def test_empty_slot_portraits_are_replaced(self):
+        plan = self.plan(0x66, env=FakeEnv(open_portraits={0x66}))
+        self.assertEqual(ids_entry(plan.config, 0x66)['icon'], {'model': '/m/home', 'like': '0x04'})
+        self.assertEqual(plan.effects['portraits'], {'front': '/m/home/icon/FrontIcon.png',
+                                                     'side': '/m/home/icon/SideIcon.png'})
+
+    def test_empty_slot_without_model_portraits_keeps_them(self):
+        plan = self.plan(0x66, env=FakeEnv(icons_ok=False, open_portraits={0x66}))
+        self.assertEqual(ids_entry(plan.config, 0x66)['icon'], make_config()['ids'][0]['icon'])
+        self.assertNotIn('portraits', plan.effects)
+        self.assertTrue(any('SideIcon.png missing' in note for note in plan.notes))
+
+    def test_staged_portraits_are_not_replaced(self):
+        plan = slot_plan.plan_patch(make_state(), make_config(), 0x66, pair(), FakeEnv(open_portraits={0x66}),
+                                    STATE_FILE, NAMES_TEXT, portraits_staged=True)
+        self.assertEqual(ids_entry(plan.config, 0x66)['icon'], make_config()['ids'][0]['icon'])
 
     def test_own_directory_of_the_same_source_is_kept(self):
         plan = self.plan(0x67)
@@ -139,11 +157,6 @@ class PatchNewIdTests(unittest.TestCase):
         with self.assertRaisesRegex(slot_plan.PlanError, 'new ID takes a character as a whole'):
             self.plan(0x67, pair(high=None), FakeEnv(high_stems={0x67: 'koopa'}))
 
-    def test_missing_portrait_view_keeps_the_icon(self):
-        plan = self.plan(0x66, env=FakeEnv(icons_ok=False))
-        self.assertEqual(ids_entry(plan.config, 0x66)['icon'], make_config()['ids'][0]['icon'])
-        self.assertTrue(any('SideIcon.png missing' in note for note in plan.notes))
-
     def test_a_non_player_source_cannot_become_a_directory(self):
         with self.assertRaisesRegex(slot_plan.PlanError, 'not a stock player'):
             self.plan(0x66, pair(chunk=100, stem='mii'))
@@ -175,24 +188,17 @@ class PatchStockTests(unittest.TestCase):
         self.assertEqual(env.skeleton_calls, [])
 
     def test_portraits_already_shown_need_no_rebuild(self):
-        plan = self.plan(0x09, env=FakeEnv(shows=True))
+        plan = self.plan(0x09)
         self.assertIsNone(plan.config)
         self.assertEqual(plan.commands, [('--patch', HP, LOW, '--target-id', '0x09', '--validate-only'),
                                          ('--patch', HP, LOW, '--target-id', '0x09'), ('--roster-state',)])
 
-    def test_stock_portraits_go_to_stock_icons(self):
-        plan = self.plan(0x0D)
-        self.assertEqual(plan.config['stock_icons'], [{'id': '0x0D', 'icon': {'model': '/m/home'}}])
-        self.assertEqual(plan.config['ids'], make_config()['ids'])           # stats, names untouched
-
-    def test_spare_row_portraits_go_to_its_wheels_entry(self):
-        plan = self.plan(0x47)
-        self.assertEqual(plan.config['wheels'][0]['icon'], {'model': '/m/home'})
-
-    def test_id_without_own_portrait_records(self):
-        plan = self.plan(0x50)
-        self.assertIsNone(plan.config)
-        self.assertTrue(any('no portrait records' in note for note in plan.notes))
+    def test_portraits_are_never_changed(self):
+        for cid in (0x0D, 0x47, 0x50):                                        # stock, spare row, Mii
+            plan = self.plan(cid, env=FakeEnv(open_portraits={cid}))          # only new IDs take model portraits
+            self.assertIsNone(plan.config)                                    # stats, names, portraits untouched
+            self.assertNotIn('portraits', plan.effects)
+            self.assertTrue(any('keeps its portraits' in note for note in plan.notes))
 
     def test_low_alone_under_its_partner_is_allowed(self):
         plan = self.plan(0x09, pair(high=None), FakeEnv(high_stems={0x09: 'koopa'}))
@@ -205,6 +211,78 @@ class PatchStockTests(unittest.TestCase):
     def test_unknown_slot_is_refused(self):
         with self.assertRaisesRegex(slot_plan.PlanError, 'not a slot'):
             self.plan(0x99)
+
+
+class InplaceEnv(FakeEnv):
+    """Files with edits only the in-place patcher applies (``inplace``: {path: what})."""
+
+    def __init__(self, inplace, at_baseline=True, **kw):
+        super().__init__(**kw)
+        self.inplace, self.at_baseline_ = inplace, at_baseline
+
+    def inplace_only_edits(self, path):
+        return self.inplace.get(path)
+
+    def models_at_baseline(self, char):
+        return self.at_baseline_
+
+
+class PatchInplaceTests(unittest.TestCase):
+    """SK vertex-count changes: only the in-place patcher applies them, so they go into their own stock slot as
+    a plain patch, nowhere else (facial pose edits did too until a slot build applied them, 2026-10-15)."""
+
+    def plan(self, cid, p=None, env=None):
+        return slot_plan.plan_patch(make_state(), make_config(), cid, p or pair(), env, STATE_FILE, NAMES_TEXT)
+
+    def test_own_slot_is_a_plain_patch(self):
+        plan = self.plan(0x09, env=InplaceEnv({HP: 'skin entry vertex-count changes'}))
+        self.assertEqual(plan.commands, [('--patch', HP, LOW), ('--roster-state',)])
+        self.assertTrue(any('vertex-count changes' in note for note in plan.notes))
+
+    def test_own_slot_holding_other_models_is_cleared_first(self):
+        plan = self.plan(0x09, env=InplaceEnv({HP: 'skin entry vertex-count changes'}, at_baseline=False))
+        self.assertEqual(plan.commands, [('--unpatch', '--target-id', '0x09'), ('--patch', HP, LOW),
+                                         ('--roster-state',)])
+
+    def test_high_alone_keeps_the_slots_low_model(self):
+        plan = self.plan(0x09, pair(low=None), InplaceEnv({HP: 'skin entry vertex-count changes'}, at_baseline=False))
+        self.assertEqual(plan.commands, [('--patch', HP), ('--roster-state',)])     # no --as-low, no clear
+        self.assertTrue(any('keeps the Low model' in w for w in plan.warnings))
+
+    def test_low_alone(self):
+        plan = self.plan(0x09, pair(high=None), InplaceEnv({LOW: 'skin entry vertex-count changes'},
+                                                           high_stems={0x09: 'koopa'}))
+        self.assertEqual(plan.commands, [('--patch', LOW), ('--roster-state',)])
+
+    def test_other_slots_are_refused(self):
+        env = InplaceEnv({HP: 'skin entry vertex-count changes'})
+        for cid in (0x0D, 0x66, 0x67, 0x68):                    # stock, new IDs (also one holding Bowser's files)
+            with self.subTest(cid=f'0x{cid:02X}'), self.assertRaisesRegex(slot_plan.PlanError, 'own character'):
+                self.plan(cid, env=env)
+
+    def test_unused_character_is_refused(self):
+        p = pair(chunk=89, stem='x')
+        with self.assertRaisesRegex(slot_plan.PlanError, 'Hammerspace only'):
+            self.plan(0x47, p, InplaceEnv({HP: 'skin entry vertex-count changes'}))
+
+    def test_batch_has_no_build_check(self):
+        batch = slot_plan.plan_batch(make_state(), make_config(), edits(('patch', '0x09', HP)),
+                                     InplaceEnv({HP: 'skin entry vertex-count changes'}), STATE_FILE, NAMES_TEXT,
+                                     classify_fn=fake_classify)
+        self.assertEqual(batch.commands, [('--patch', HP, LOW), ('--roster-state',)])
+
+    def test_inplace_only_edits_reads_the_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            def write(model):
+                path = os.path.join(tmp, 'm.sluggie')
+                with open(path, 'w') as f:
+                    json.dump({'SluggiesModel': model}, f)
+                return path
+            facial = {'FacialPoseDataEdited': {'Objects': [{'PositionPoseEdits': [[0, 1.0]]}]}}
+            self.assertIsNone(slot_plan.inplace_only_edits(write(facial)))          # a slot build applies them
+            skin = {'SkinData': {'SK2s': [{'VertexCntEdited': 4}]}}
+            self.assertEqual(slot_plan.inplace_only_edits(write(skin)), 'skin entry vertex-count changes')
+            self.assertIsNone(slot_plan.inplace_only_edits(write(dict(skin, UseHammerspace=True))))
 
 
 class ClearTests(unittest.TestCase):
@@ -388,12 +466,12 @@ class BatchTests(unittest.TestCase):
             ('--roster-state',)])
         self.assertEqual(ids_entry(batch.config, 0x66)['model'], {'from': '0x09'})        # every edit in one config
         self.assertEqual(ids_entry(batch.config, 0x67)['model'], {'from': '0x04'})
-        self.assertEqual(batch.config['stock_icons'], [{'id': '0x0D', 'icon': {'model': '/m/home'}}])
+        self.assertNotIn('stock_icons', batch.config)
         self.assertEqual(set(batch.extra_portraits), set(open_slot.SLOT_ICON.values()))
         self.assertEqual([e['id'] for e in batch.to_json()['merged']], ['0x66', '0x0D', '0x67'])
 
     def test_model_only_stock_patches_need_no_rebuild(self):
-        batch = self.batch(edits(('patch', '0x09', HP), ('patch', '0x0D', TOAD_HP)), env=FakeEnv(shows=True))
+        batch = self.batch(edits(('patch', '0x09', HP), ('patch', '0x0D', TOAD_HP)))
         self.assertIsNone(batch.config)
         self.assertNotIn(('--roster', '--state', STATE_FILE), batch.commands)
         self.assertEqual(batch.commands[-3:], [('--patch', HP, LOW, '--target-id', '0x09'),
@@ -429,6 +507,43 @@ class BatchTests(unittest.TestCase):
         again = self.batch(slot_plan.parse_edits(batch.to_json()['merged']))
         self.assertEqual(again.commands, batch.commands)
 
+    def test_low_button_joins_the_pending_high_pick(self):
+        # LOW has its own High beside it, but the Low button joins it to the pending High pick
+        batch = self.batch(edits(('patch', '0x09', HP_ALONE), ('patch', '0x09', None, {'low': LOW})))
+        self.assertTrue(batch.ok)
+        (edit, _plan), = batch.plans
+        self.assertEqual((edit.file, edit.low), (HP_ALONE, LOW))
+        self.assertEqual(batch.commands[-2], ('--patch', HP_ALONE, LOW, '--target-id', '0x09'))
+        again = self.batch(slot_plan.parse_edits(batch.to_json()['merged']))
+        self.assertEqual(again.commands, batch.commands)
+
+    def test_low_button_refuses_a_high_model(self):
+        batch = self.batch(edits(('patch', '0x09', None, {'low': HP})))
+        self.assertFalse(batch.ok)
+        self.assertIn('is not a Low (L_) model', batch.refused[0][1])
+
+    def test_low_button_refuses_another_characters_low_model(self):
+        batch = self.batch(edits(('patch', '0x09', HP), ('patch', '0x09', None, {'low': TOAD_LOW})))
+        self.assertFalse(batch.ok)
+        self.assertIn('pending High model of 0x09 is', batch.refused[0][1])
+
+    def test_low_button_alone_is_an_ordinary_pick(self):
+        env = FakeEnv(high_stems={0x09: 'koopa'})
+        batch = self.batch(edits(('patch', '0x09', None, {'low': LONE_LOW})), env=env)
+        self.assertTrue(batch.ok)
+        self.assertEqual(batch.to_json()['merged'], [{'op': 'patch', 'id': '0x09', 'file': LONE_LOW}])
+
+    def test_high_pick_after_a_low_pick_keeps_it(self):
+        for low_edit in (('patch', '0x09', LONE_LOW), ('patch', '0x09', None, {'low': LONE_LOW})):
+            batch = self.batch(edits(low_edit, ('patch', '0x09', HP)))
+            self.assertTrue(batch.ok)
+            (edit, _plan), = batch.plans
+            self.assertEqual((edit.file, edit.low), (HP, LONE_LOW))      # not HP's own LOW
+            self.assertTrue(any('stays the Low partner' in n for n in batch.notes))
+        batch = self.batch(edits(('patch', '0x09', LONE_LOW), ('patch', '0x09', TOAD_HP)))   # another character
+        (edit, _plan), = batch.plans
+        self.assertEqual((edit.file, edit.low), (TOAD_HP, None))
+
     def test_low_rule_sees_the_pending_high_pick(self):
         # In the game 0x09 still has its own Bowser model, but the pending High pick is Mario's: refused.
         env = FakeEnv(high_stems={0x09: 'koopa'})
@@ -459,13 +574,12 @@ class BatchTests(unittest.TestCase):
                 (('patch', '0x66', HP), lambda: slot_plan.plan_patch(make_state(), make_config(), 0x66, pair(),
                                                                      FakeEnv(), STATE_FILE, NAMES_TEXT)),
                 (('patch', '0x09', HP), lambda: slot_plan.plan_patch(make_state(), make_config(), 0x09, pair(),
-                                                                     FakeEnv(shows=True), STATE_FILE, NAMES_TEXT)),
+                                                                     FakeEnv(), STATE_FILE, NAMES_TEXT)),
                 (('clear', '0x67', None), lambda: slot_plan.plan_clear(make_state(), make_config(), 0x67, STATE_FILE)),
                 (('clear', '0x0D', None), lambda: slot_plan.plan_clear(make_state(), make_config(), 0x0D, STATE_FILE))):
             with self.subTest(edit=edit):
                 plan = single()
-                env = FakeEnv(shows=True) if edit[1] == '0x09' else FakeEnv()
-                batch = self.batch(edits(edit), env=env)
+                batch = self.batch(edits(edit))
                 self.assertEqual(batch.commands, plan.commands)
                 self.assertEqual(batch.config, plan.config)
 
@@ -492,7 +606,7 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(effects['name'], 'Bowser')
         self.assertEqual(effects['stats'], 'Bowser (0x09)')
         self.assertEqual(effects['voice'], 'Bowser (0x09) (square voice)')
-        self.assertEqual(effects['portraits'], {'front': '/m/home/icon/FrontIcon.png', 'side': '/m/home/icon/SideIcon.png'})
+        self.assertNotIn('portraits', effects)
         self.assertEqual(batch.plans[1][1].effects['name'], 'Empty slot')
         self.assertTrue(batch.plans[1][1].effects['portraits']['front'].endswith(open_slot.SLOT_ICON['front']))
 

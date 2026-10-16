@@ -692,7 +692,13 @@ def _validate_tex(state: _ValidationState) -> None:
                 f'0x{image_abs:X}'
             )
 
-    if clut_count != actual_clut_count:
+    if clut_count == 0 and actual_clut_count:
+        # The only vanilla blocks with palettes (Donkey Kong and Baby DK High, chunks 20 and 83 file 0: one C8
+        # texture each) leave this count at 0; no vanilla block sets it (2026-10-15).
+        state.warn(
+            f'TEX CLUT count is 0 but {actual_clut_count} palette payload(s) exist (as in vanilla Donkey Kong)'
+        )
+    elif clut_count != actual_clut_count:
         state.fail(
             f'TEX CLUT count {clut_count} does not match {actual_clut_count} palette payload(s)'
         )
@@ -1358,7 +1364,17 @@ def _validate_skn(
     # coverage check is enforced here.
 
     expected_memclr = compute_mem_clear_range(direct_writes, accumulation_writes, stride)
-    if (memclr_ptr, memclr_size) != expected_memclr:
+    if (memclr_ptr, memclr_size) == expected_memclr:
+        pass
+    elif expected_memclr[1] and memclr_ptr == expected_memclr[0] and memclr_size > expected_memclr[1]:
+        # A wider clear from the same start is safe as long as it spares the direct writes (checked above):
+        # vanilla Birdo's High model (chunk 35 file 0) clears 0x80 bytes where the accumulation writes need
+        # 0x60 (2026-10-15).
+        state.warn(
+            f'SKN memClr range 0x{memclr_ptr:X}/0x{memclr_size:X} is wider than the accumulation writes need '
+            f'(0x{expected_memclr[0]:X}/0x{expected_memclr[1]:X})'
+        )
+    else:
         state.fail(
             f'SKN memClr range is 0x{memclr_ptr:X}/0x{memclr_size:X}, '
             f'expected position-data-relative 0x{expected_memclr[0]:X}/0x{expected_memclr[1]:X}'

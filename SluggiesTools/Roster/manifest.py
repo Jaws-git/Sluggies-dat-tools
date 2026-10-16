@@ -69,6 +69,14 @@ def build(state: dict, config: dict | None = None) -> dict:
     return out
 
 
+def is_empty(manifest: dict) -> bool:
+    """Whether a manifest records nothing (no config keys, no facts): a run without hooks or table edits, e.g.
+    stock portraits only. The runner stores none then, so the DOL keeps its stock sections and arena start.
+    Names alone count as nothing: a named new ID or spare row brings its "ids" / "wheels" key, and renamed
+    stock characters are read back from their plate rows (``names.renamed_ids``)."""
+    return not any(v for k, v in manifest.items() if k not in ('version', 'names'))
+
+
 def _voice_entry(cid: int, value) -> list:
     """``[id, voice]`` for a plain stock voice (the shape older manifests hold), else ``[id, voice, {slot: INFO ID},
     pack]``. ``value``: an int (the voice) or ``char_voices.state_entry``'s dict."""

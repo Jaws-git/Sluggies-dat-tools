@@ -441,9 +441,10 @@ class PromoteInplaceEditsTests(unittest.TestCase):
         self.assertEqual(main.PromoteInplaceEdits(model, main.SectionModes()).skn, 'build')
 
     def test_inplace_only_edits_are_refused(self):
-        with self.assertRaisesRegex(ValueError, 'facial'):
-            main.PromoteInplaceEdits(
-                {'FacialPoseDataEdited': {'Objects': [{'PositionPoseEdits': [{}]}]}}, main.SectionModes())
+        # Facial pose edits go through: every build splices them into ptr7 (2026-10-15)
+        modes = main.PromoteInplaceEdits(
+            {'FacialPoseDataEdited': {'Objects': [{'PositionPoseEdits': [{}]}]}}, main.SectionModes())
+        self.assertEqual(modes, main.SectionModes())
         with self.assertRaisesRegex(ValueError, 'vertex counts'):
             main.PromoteInplaceEdits({'SkinData': {'SK2s': [{'VertexCntEdited': 4}]}}, main.SectionModes())
 

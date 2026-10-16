@@ -61,7 +61,7 @@
         <tr>
             <td>0x18</td>
             <td>uint32</td>
-            <td>Size of memory to clear in the mesh data</td>
+            <td>Size of memory to clear in the mesh data: normally <code>align32(max(accumulation-only slot offsets) + stride - memClrPtr)</code>. Vanilla Birdo's High model (chunk 35 file 0) clears 0x80 bytes from 0x5BC8 where that formula gives 0x60, and the game runs it. It is the only exception among the 202 vanilla High/Low blocks of directories 18-118 and their 294 equipment blocks. <code>BlockValidator</code> therefore only warns about a wider range from the same start; a range that touches SK1/SK2 write lines, starts elsewhere, or is narrower still fails (2026-10-15).</td>
         </tr>
         <tr>
             <td>0x1c</td>

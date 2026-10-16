@@ -89,9 +89,11 @@ models, but writes nothing.
 | New ID (`0x66`–`0xFE`) | Gets its own copy of the source character's files (model, animations, bat); a slot that already holds that character's files keeps them, so earlier patches stay. On a new grid square it takes the source's stats, and the square's voice becomes the source's if none is set yet. An "Empty slot" takes the source's name. |
 | Stock character | Model only (stats, voice and name stay). The source must have the same skeleton; otherwise use a new ID. |
 
-Both kinds take the source's exported portraits (`icon/SideIcon.png` and
-`icon/FrontIcon.png` in its High model's folder); when one is missing, the slot
-keeps its portraits. A High model without a Low partner is used as
+Both kinds keep the slot's portraits (portrait edits, a paste or
+`--clear-slot` change them). The one exception is a new ID that still shows the
+"Empty slot" portraits: it takes the source's exported portraits
+(`icon/SideIcon.png` and `icon/FrontIcon.png` in its High model's folder),
+unless a portrait edit for it is staged before the patch. A High model without a Low partner is used as
 the Low model too, which loads it twice on the field. A Low model alone is
 refused on a new ID; on a stock character it is accepted only when the slot's
 High model is its own partner.

@@ -115,7 +115,7 @@ class RunnerTests(unittest.TestCase):
                 f.write(self.original)
         self.config = os.path.join(self.tmp, 'roster.json')
         with open(self.config, 'w') as f:
-            json.dump({'version': 1}, f)   # no 'ids' key: only the DOL hammerspace step acts
+            json.dump({'version': 1}, f)   # no step has anything to do
 
     def run_roster(self, **kwargs) -> dict:
         kwargs.setdefault('config_path', None if kwargs.get('remove_only') else self.config)
@@ -125,14 +125,31 @@ class RunnerTests(unittest.TestCase):
         with open(self.dol_path, 'rb') as f:
             return f.read()
 
-    def test_runs_are_repeatable_and_resettable(self):
+    def write_dol(self, data: bytes) -> None:
+        with open(self.dol_path, 'wb') as f:
+            f.write(data)
+
+    def injected(self) -> bytes:
+        """The original with roster sections holding data (as a roster run with hooks leaves it)."""
+        image = dolfile.DolImage(self.original)
+        hs = dhs.DolHammerspace.create(image)
+        hs.data.put(b'' * 0x10, 4)
+        hs.commit()
+        return image.to_bytes()
+
+    def test_runs_without_dol_code_keep_the_stock_layout(self):
         report = self.run_roster()
         self.assertIn('dol_hammerspace', [s['key'] for s in report['steps']])
-        first = self.dol()
-        self.assertNotEqual(first, self.original)
-        self.run_roster()
-        self.assertEqual(self.dol(), first)
-        self.run_roster(remove_only=True)
+        self.assertIn('[manifest] none', ' '.join(report['log']))
+        self.assertEqual(self.dol(), self.original)              # no sections, stock arena start
+        self.write_dol(self.injected())
+        self.run_roster()                                        # an earlier roster's sections are dropped
+        self.assertEqual(self.dol(), self.original)
+
+    def test_runs_are_resettable(self):
+        self.write_dol(self.injected())
+        report = self.run_roster(remove_only=True)
+        self.assertIn('roster sections removed', ' '.join(report['log']))
         self.assertEqual(self.dol(), self.original)
         report = self.run_roster(remove_only=True)
         self.assertIn('no roster changes', ' '.join(report['log']))
@@ -142,9 +159,8 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(self.dol(), self.original)
 
     def test_refusals(self):
-        self.run_roster()
         with open(os.path.join(self.input_dir, 'main.dol'), 'wb') as f:
-            f.write(self.dol())                              # an injected DOL as the reference
+            f.write(self.injected())                         # an injected DOL as the reference
         with self.assertRaisesRegex(runner.RosterDevError, 'already holds a roster injection'):
             self.run_roster()
         os.remove(os.path.join(self.input_dir, 'main.dol'))

@@ -62,7 +62,7 @@ import struct
 try:
     from ..Dol import dolfile, inventory, relocate
     from . import dat_hammerspace as dhs
-    from . import anim, dol_hammerspace, gear, grid, ids, manifest, names, state_icons, voices, wheels
+    from . import anim, dol_hammerspace, gear, grid, ids, layout_file, manifest, names, state_icons, voices, wheels
 except ImportError:
     from Dol import dolfile, inventory, relocate
     import anim
@@ -71,6 +71,7 @@ except ImportError:
     import gear
     import grid
     import ids
+    import layout_file
     import manifest
     import names
     import state_icons
@@ -179,6 +180,14 @@ def read_names(image: dolfile.DolImage, dat) -> dict[int, dict[str, str]] | None
         for cid in range(len(msgs) - len(names.CODE_ENTRIES)):
             out.setdefault(cid, {})[lang] = msgs[cid].decode('utf-16-be', errors='replace')
     return out
+
+
+def renamed_ids(image: dolfile.DolImage, dat) -> list[int]:
+    """The IDs below the Miis whose name plate a names run replaced (``names.renamed_ids``, EN select layout)."""
+    if dat is None:
+        return []
+    offset, length, _alloc = dhs.slot(dhs.read_record(image, layout_file.RECORD), 'en')
+    return names.renamed_ids(dat.read(offset, length))
 
 
 # --------------------------------------------------------------------------

@@ -33,15 +33,27 @@ Patch:
   named after the source.
 * **Stock ID:** model only (stats, voice and name stay). The source's
   vanilla skeleton must match the slot's (same check as ``SlotTarget``).
+* **In-place-only edits** (SK vertex-count changes: ``inplace_only_edits``;
+  facial pose edits are not, a slot build applies them): a slot build
+  refuses them, so such files go only
+  into their own stock slot, as a plain ``--patch FILES`` (no build check;
+  a slot holding other models gets its vanilla ones first, ``--unpatch
+  --target-id``, when both files are patched). Any other slot refuses them.
 * **HP / ``L_``:** a picked file brings its partner from the sibling folder
   (same chunk, same geo-name stem). An HP without ``L_`` partner is used as
   the low-poly model too (``--as-low``, warned). An ``L_`` without HP partner
   is refused on a new ID, and on a stock ID allowed only when the slot's
   current high-poly model is its partner (``L_`` binds textures by index into
-  its HP's TEX).
-* **Portraits:** the source's exported ``icon/SideIcon.png`` +
-  ``FrontIcon.png`` (``model_icons``); when one is missing the slot keeps its
-  portraits and the plan says so.
+  its HP's TEX). A **Low pick** (a patch edit with ``low`` and no ``file``,
+  the GUI's "Select lowpoly (L_) .sluggie...") is refused unless the file is
+  an ``L_`` model, then joins the slot's pending High pick (same chunk and
+  stem) or else is planned like a pick of the file itself; a High pick after
+  a pending ``L_`` pick of the same character joins it too.
+* **Portraits:** kept by a patch (portrait edits, a paste or a clear change
+  them). One exception: a new ID that shows the "empty slot" portraits takes
+  the source's exported ``icon/SideIcon.png`` + ``FrontIcon.png``
+  (``model_icons``), unless a portrait edit of the slot is staged before the
+  patch; when one is missing it keeps them and the plan says so.
 
 Clear: a stock slot gets its vanilla HP and ``L_`` back and loses
 replaced portraits (``stock_icons``) and another stats source
@@ -117,15 +129,17 @@ from __future__ import annotations
 
 import copy
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from binfmt import load_sluggie
 
 try:
+    from ..Hammerspace import UntanglePolicy
     from ..Sound import sound_packs
     from . import (anim, char_voices, clip_files, gear, icon_art, icon_import, icons, ids, model_icons, names,
                    open_slot, voices, wheels)
 except ImportError:
+    from Hammerspace import UntanglePolicy
     from Sound import sound_packs
     import anim
     import gear
@@ -216,6 +230,19 @@ def _partner(path: str, chunk: int, is_low: bool, stem: str) -> str | None:
             other = _load_model(candidate)
             if other.get('ChunkNumber') == chunk and other.get('FileIndex') == (HIGH_FILE if is_low else LOW_FILE):
                 return candidate
+    return None
+
+
+def inplace_only_edits(path: str) -> str | None:
+    """The edits of the ``.sluggie`` at ``path`` that only the in-place patcher applies (a slot build refuses them,
+    ``HammerspaceMain.PromoteInplaceEdits``), or None."""
+    model = _load_model(path)
+    if model.get('UseHammerspace'):
+        return None
+    skin = model.get('SkinData') or {}
+    if any(entry.get('VertexCntEdited') is not None
+           for key in ('SK1s', 'SK2s', 'SKAccs') for entry in skin.get(key) or []):
+        return 'skin entry vertex-count changes'
     return None
 
 
@@ -317,9 +344,10 @@ class Env:
         """Geo-name stem of the high-poly model the slot loads now (output files)."""
         raise NotImplementedError
 
-    def shows_portraits(self, char: dict, found: model_icons.ModelIcons) -> bool:
-        """Whether the slot already shows exactly these portraits (then nothing is imported)."""
-        return False
+    def inplace_only_edits(self, path: str) -> str | None:
+        """What edits of the ``.sluggie`` at ``path`` only the in-place patcher applies (module function of the same
+        name), or None."""
+        return None
 
     def at_baseline(self, char: dict, config: dict) -> bool:
         """Whether the slot is at its baseline already (a clear would change nothing)."""
@@ -527,8 +555,9 @@ def _prepare(plan: Plan, state_file: str, files: list[str]) -> None:
 
 
 def plan_patch(st: dict, config: dict, cid: int, pair: Pair, env: Env, state_file: str,
-               names_text: dict | None = None) -> Plan:
-    """The chain that puts ``pair``'s models into slot ``cid`` (module docstring)."""
+               names_text: dict | None = None, portraits_staged: bool = False) -> Plan:
+    """The chain that puts ``pair``'s models into slot ``cid`` (module docstring). ``portraits_staged``: an earlier
+    edit of the batch changes the slot's portraits (they stay, even over "empty slot" art)."""
     char = _character(st, cid)
     new = copy.deepcopy(config)
     plan = Plan('patch', cid, None, pair=pair)
@@ -537,8 +566,22 @@ def plan_patch(st: dict, config: dict, cid: int, pair: Pair, env: Env, state_fil
     source_name = _hex(source)
     if names_text and (names_text.get(source) or {}).get('en'):
         source_name = f'{names_text[source]["en"]} ({_hex(source)})'
-    as_low = pair.low is None
     files = pair.files
+    # Edits only the in-place patcher applies: such files go into their own stock slot only, as a plain patch
+    inplace = {os.path.basename(f): what for f in files if (what := env.inplace_only_edits(f))}
+    if inplace:
+        name, what = next(iter(inplace.items()))
+        if cid >= ids.FIRST_NEW or cid + ids.MODEL_DIR_BASE != pair.chunk:
+            raise PlanError(f'{name} carries {what}, which only the in-place patcher applies: it goes only into '
+                            f'its own character\'s slot ({source_name}), not into {target_name}. Export it again '
+                            'without them to use it here.')
+        if UntanglePolicy.is_split_dir(pair.chunk):
+            raise PlanError(f'{name} carries {what}, which only the in-place patcher applies, but an unused '
+                            'character\'s models are patched by Hammerspace only. Export it again without them.')
+    as_low = pair.low is None and not inplace
+    if inplace and pair.low is None:
+        plan.warnings.append(f'{os.path.basename(pair.high)} has no Low partner beside it: {target_name} keeps the '
+                             'Low model it has')
 
     if cid >= ids.FIRST_NEW:
         if not 0 <= source < ids.PLAYER_END:
@@ -619,23 +662,32 @@ def plan_patch(st: dict, config: dict, cid: int, pair: Pair, env: Env, state_fil
         plan.warnings.append(f'{os.path.basename(pair.high)} has no Low partner beside it: it is used as the '
                              'Low model too, so the slot loads it twice on the field (counts twice against '
                              'the memory budget)')
-    found = env.model_icons(pair.high or pair.low)
-    if not found.ok:
-        plan.notes.append(f'portraits not imported, {target_name} keeps its own: {found.problem}')
-    elif env.shows_portraits(char, found):
-        plan.notes.append(f'{target_name} already shows the portraits of {os.path.basename(found.home)}')
-    else:
-        why = _set_icon(new, cid, {'model': found.home})
+    if cid >= ids.FIRST_NEW and not portraits_staged and env.shows_open_slot_portraits(char):
+        found = env.model_icons(pair.high or pair.low)
+        why = found.problem or _set_icon(new, cid, {'model': found.home})
         if why:
-            plan.notes.append(f'portraits not imported: {why}')
+            plan.notes.append(f'portraits not imported, {target_name} keeps the "empty slot" ones: {why}')
         else:
-            plan.notes.append(f'portraits from {os.path.basename(found.home)}/{model_icons.ICON_SUBDIR}')
+            plan.notes.append(f'portraits from {os.path.basename(found.home)}/{model_icons.ICON_SUBDIR} (it showed '
+                              'the "empty slot" ones)')
             plan.effects['portraits'] = {'front': found.front, 'side': found.side}
+    else:
+        plan.notes.append(f'{target_name} keeps its portraits (a model patch replaces only "empty slot" ones)')
 
     if new != config:
         plan.config = new
-    _prepare(plan, state_file, files)
-    plan.commands.append(('--patch', *files, '--target-id', _hex(cid)) + (('--as-low',) if as_low else ()))
+    if inplace:
+        # Back into its own stock slot: the in-place patcher writes over the slot's vanilla blocks, so a slot
+        # holding other blocks gets its vanilla ones first. No slot build check: a Hammerspace build would refuse
+        # these edits, and the in-place patcher checks them before it writes.
+        _prepare(plan, state_file, [])
+        if pair.high and pair.low and not env.models_at_baseline(char):
+            plan.commands.append(('--unpatch', '--target-id', _hex(cid)))
+        plan.commands.append(('--patch', *files))
+        plan.notes.append(f'in-place patch ({", ".join(sorted(set(inplace.values())))}): no build check first')
+    else:
+        _prepare(plan, state_file, files)
+        plan.commands.append(('--patch', *files, '--target-id', _hex(cid)) + (('--as-low',) if as_low else ()))
     plan.commands.append(('--roster-state',))
     plan.notes.insert(0, f'{" + ".join(os.path.basename(f) for f in files)} -> {target_name}'
                          + (' (High model as the Low model too)' if as_low else ''))
@@ -1812,8 +1864,8 @@ def parse_edits(data) -> list[Edit]:
                 raise PlanError(f'edit {n}: a species_clip edit\'s "file" is a clip file, or null for the stock clip')
             edits.append(edit)
             continue
-        if edit.op == 'patch' and not edit.file:
-            raise PlanError(f'edit {n}: a patch needs a "file"')
+        if edit.op == 'patch' and not edit.file and not edit.low:
+            raise PlanError(f'edit {n}: a patch needs a "file" (or a "low": a Low model pick)')
         if edit.op == 'rename' and not isinstance(edit.text, str):
             raise PlanError(f'edit {n}: a rename needs a "text" (blank resets the name)')
         if edit.op == COPY:
@@ -1869,6 +1921,35 @@ def _classify_edit(edit: Edit, classify_fn) -> Pair:
     return Pair(pair.chunk, pair.high, low.low, edit.low, pair.stem)
 
 
+def _low_pick(edit: Edit, merged: list[Edit], notes: list[str], refused: list[tuple[Edit, str]],
+              classify_fn) -> Edit | None:
+    """A Low pick (``low`` without ``file``): refused (None) unless it is a Low (``L_``) model; joined to the slot's
+    pending High pick of the same character; with none pending, an ordinary pick of the file (it brings its High
+    partner along, or goes onto the slot's current High model, by the usual rules)."""
+    name = os.path.basename(edit.low)
+    try:
+        low = classify_fn(edit.low)
+    except PlanError as exc:
+        refused.append((edit, str(exc)))
+        return None
+    if low.low is None or low.picked != low.low:
+        refused.append((edit, f'{name} is not a Low (L_) model: pick a High model with "Select .sluggie..."'))
+        return None
+    earlier = next((e for e in merged if e.cid == edit.cid and e.op == 'patch' and e.pair.high is not None), None)
+    if earlier is None:
+        return replace(edit, file=edit.low, low=None, pair=low)
+    p = earlier.pair
+    if p.chunk != low.chunk or p.stem != low.stem:
+        refused.append((edit, f'{name} binds its textures by index into its own High model, but the pending High '
+                              f'model of {_hex(edit.cid)} is {os.path.basename(p.high)}: pick the matching High '
+                              'model, or a Low model of that character'))
+        return None
+    merged.remove(earlier)
+    notes.append(f'{_hex(edit.cid)}: {name} joins the pending {os.path.basename(p.high)} as its Low partner')
+    return Edit('patch', edit.cid, p.high, edit.low, index=edit.index, no_gear=earlier.no_gear,
+                pair=Pair(p.chunk, p.high, low.low, edit.low, p.stem))
+
+
 def _bundled_gear(edit: Edit, merged: list[Edit], notes: list[str], find_gear_fn,
                   classify_gear_fn) -> list[Edit] | str:
     """The ``equip`` edits that go behind a model patch into a new ID (module docstring, "Equipment"), or the reason
@@ -1910,10 +1991,12 @@ def merge_edits(edits: list[Edit], classify_fn=None, load_icon_fn=None, classify
     * a copy (paste) drops every earlier edit of its slot: the slot becomes a clone of the source as a whole;
     * a Low-only pick after a pending High pick of the same character joins it as a pair; after another
       pending High pick or a pending clear it is refused (its High model would not be the one it binds into);
+      a Low pick (``low`` only, ``_low_pick``) joins the pending High pick, and a High pick after a pending Low pick
+      of the same character keeps that Low model;
     * a clear drops the slot's earlier renames, stats and icon edits (it resets them); a later rename, voice or
       stats edit replaces an earlier one of the same slot, a later icon edit the earlier one of the same view
-      (a patch that sets stats or brings portraits drops earlier stats / icon edits too, in ``plan_batch``, where
-      it is known);
+      (a patch that sets stats drops earlier stats edits too, in ``plan_batch``, where it is known; a patch keeps
+      the slot's icon edits, and brings no portraits after them);
     * equipment: the last edit per slot file wins (an ``equip_clear`` replaces an ``equip`` and the reverse);
       a clear of the slot drops its earlier equipment edits (it resets the equipment); a model patch into a new ID
       replaces the gear an earlier patch brought along (``bundled`` edits) and stages its own behind it, never over
@@ -1954,12 +2037,28 @@ def merge_edits(edits: list[Edit], classify_fn=None, load_icon_fn=None, classify
                              'whole slot')
             merged.append(edit)
             continue
+        if edit.op == 'patch' and not edit.file:
+            edit = _low_pick(edit, merged, notes, refused, classify_fn)
+            if edit is None:
+                continue
         if edit.op == 'patch':
             try:
                 edit.pair = edit.pair or _classify_edit(edit, classify_fn)
             except PlanError as exc:
                 refused.append((edit, str(exc)))
                 continue
+            earlier = next((e for e in merged if e.cid == edit.cid and e.op == 'patch'), None)
+            if (earlier is not None and edit.pair.picked == edit.pair.high and earlier.pair.low is not None
+                    and earlier.pair.picked == earlier.pair.low and earlier.pair.chunk == edit.pair.chunk
+                    and earlier.pair.stem == edit.pair.stem):
+                # a High pick after a pending Low pick of the same character: the pair, whichever came first
+                low_name = os.path.basename(earlier.pair.low)
+                merged.remove(earlier)
+                edit = Edit('patch', edit.cid, edit.pair.high, earlier.pair.low, index=edit.index, no_gear=edit.no_gear,
+                            pair=Pair(edit.pair.chunk, edit.pair.high, earlier.pair.low, earlier.pair.low,
+                                      edit.pair.stem))
+                notes.append(f'{_hex(edit.cid)}: the pending {low_name} stays the Low partner of '
+                             f'{os.path.basename(edit.file)}')
         if edit.op in EQUIP_OPS:
             if edit.op == 'equip':
                 try:
@@ -2129,7 +2228,8 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
     for edit in merged:
         try:
             if edit.op == 'patch':
-                plan = plan_patch(st, current, edit.cid, edit.pair, env, state_file, names_text)
+                plan = plan_patch(st, current, edit.cid, edit.pair, env, state_file, names_text,
+                                  portraits_staged=edit.cid in portraits_touched)
             elif edit.op == 'icon':
                 plan = plan_icon(st, current, edit.cid, edit.view, edit.pick, env, state_file,
                                  compare=edit.cid not in portraits_touched)
@@ -2179,11 +2279,6 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
                 batch.plans.remove(earlier)
                 batch.notes.append(f'{_hex(edit.cid)}: the animation bank {earlier[0].bank} edit is dropped: the later '
                                    'patch copies the model directory afresh')
-        if edit.op == 'patch' and 'portraits' in plan.effects:     # its model's portraits replace both views
-            for earlier in [(e, p) for e, p in batch.plans if e.op == 'icon' and e.cid == edit.cid]:
-                batch.plans.remove(earlier)
-                batch.notes.append(f'{_hex(edit.cid)}: the {earlier[0].view} portrait edit is dropped: the later '
-                                   'patch brings its model\'s portraits')
         if edit.op in ('clear', 'icon') or 'portraits' in plan.effects or 'portrait_note' in plan.effects:
             portraits_touched.add(edit.cid)
         batch.portraits.update(plan.portraits)

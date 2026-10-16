@@ -309,6 +309,9 @@ class FileEnv(slot_plan.Env):
         summary = LodPartnerGuard.act_summary(block) if block else None
         return summary.stem if summary and not summary.is_low_poly else None
 
+    def inplace_only_edits(self, path):
+        return slot_plan.inplace_only_edits(path)
+
     def at_baseline(self, char, config):
         """Both models are the vanilla blocks of the slot's own source (a new ID: its template, with the
         open-slot name, template stats and the "empty slot" portraits; a stock ID: no replaced portraits)."""

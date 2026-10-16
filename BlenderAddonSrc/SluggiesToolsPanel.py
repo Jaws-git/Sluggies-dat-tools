@@ -5,12 +5,14 @@ import re
 
 import bmesh
 import bpy
-from bpy.props import BoolProperty, CollectionProperty, EnumProperty, IntProperty, StringProperty
+from bpy.props import (
+    BoolProperty, CollectionProperty, EnumProperty, FloatVectorProperty, IntProperty, StringProperty,
+)
 from mathutils import Matrix, Vector
 
 from . import CustomSubmeshExport
 from . import FieldCodec
-from .AnmExport import SLUGGIES_OT_export_anm_group
+from .AnmExport import SLUGGIES_OT_export_anm_group, _POSE_BONE_PATH, _action_fcurves
 from . import HostBones
 from . import TemplateSources
 from .ExportSluggies import (
@@ -1595,6 +1597,97 @@ class SLUGGIES_OT_set_specular_strength(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def _animated_root_bone_names(arm_obj):
+    """Root bones of *arm_obj* that have children. A skeleton can hold several
+    root bones, but only the one carrying the hierarchy moves the model."""
+    return [b.name for b in arm_obj.data.bones if b.parent is None and b.children]
+
+
+class SLUGGIES_OT_scale_animations(bpy.types.Operator):
+    """Multiply the root bone's scale keyframes in every action by a factor"""
+    bl_idname = "sluggies.scale_animations"
+    bl_label = "Apply scale to all animations"
+    bl_description = ("Multiply the scale keyframes of the selected armature's root bone by the "
+                      "X/Y/Z factor below, in every action of the file")
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        if _find_target_armature(context) is None:
+            if hasattr(cls, 'poll_message_set'):
+                cls.poll_message_set(_no_target_armature_message(context))
+            return False
+        return True
+
+    def execute(self, context):
+        arm_obj = _find_target_armature(context)
+        roots = set(_animated_root_bone_names(arm_obj))
+        if not roots:
+            self.report({"ERROR"}, f"{arm_obj.name} has no root bone with children")
+            return {"CANCELLED"}
+        factor = tuple(context.scene.sluggies_animation_scale)
+
+        anim = arm_obj.animation_data
+        prev_action = anim.action if anim is not None else None
+        prev_slot = getattr(anim, 'action_slot', None) if anim is not None else None
+
+        actions = keys = created = 0
+        try:
+            for action in bpy.data.actions:
+                keyed = set()
+                for fc in _action_fcurves(action):
+                    match = _POSE_BONE_PATH.match(fc.data_path)
+                    if not match or match.group(2) != 'scale' or not 0 <= fc.array_index < 3:
+                        continue
+                    name = match.group(1).replace('\\"', '"').replace('\\\\', '\\')
+                    if name not in roots or not fc.keyframe_points:
+                        continue
+                    f = factor[fc.array_index]
+                    for kp in fc.keyframe_points:
+                        kp.co[1] *= f
+                        kp.handle_left[1] *= f
+                        kp.handle_right[1] *= f
+                        keys += 1
+                    fc.update()
+                    keyed.add((name, fc.array_index))
+
+                # A root scale channel without keys holds the rest scale (1.0):
+                # key it at the action's first frame with the factor applied.
+                missing = [(name, i) for name in sorted(roots) for i in range(3)
+                           if (name, i) not in keyed]
+                if missing:
+                    frame = action.frame_range[0]
+                    for name, i in missing:
+                        fc = _ensure_action_fcurve(arm_obj, action, f'pose.bones["{name}"].scale', i, name)
+                        fc.keyframe_points.insert(frame, factor[i], options={'FAST'})
+                        fc.update()
+                        created += 1
+                actions += 1
+        finally:
+            if arm_obj.animation_data is not None:
+                arm_obj.animation_data.action = prev_action
+                if prev_slot is not None:
+                    arm_obj.animation_data.action_slot = prev_slot
+
+        self.report({"INFO"}, f"Scaled {keys} root keyframe(s) and added {created} "
+                              f"in {actions} action(s)")
+        return {"FINISHED"}
+
+
+def _ensure_action_fcurve(arm_obj, action, data_path, index, group):
+    """The F-curve of *action* for *data_path*[*index*], created if missing.
+    Blender 4.4+ creates it only for the data-block the action is assigned to,
+    so this assigns *action* to *arm_obj*; the caller restores the original."""
+    if hasattr(action, 'fcurve_ensure_for_datablock'):
+        if arm_obj.animation_data is None:
+            arm_obj.animation_data_create()
+        if arm_obj.animation_data.action != action:
+            arm_obj.animation_data.action = action
+        return action.fcurve_ensure_for_datablock(arm_obj, data_path, index=index, group_name=group)
+    fc = action.fcurves.find(data_path, index=index)
+    return fc if fc is not None else action.fcurves.new(data_path, index=index, action_group=group)
+
+
 def _draw_free_host_bones(layout, context):
     """Collapsible, read-only 'Free host bones' list (plan step 4): the same
     `classify_host_bones` output the Add Submesh dialog uses, shown here so a
@@ -1657,6 +1750,12 @@ class SLUGGIES_PT_tools(bpy.types.Panel):
         box.operator(SLUGGIES_OT_toggle_bone_track.bl_idname)
 
         layout.separator()
+        box = layout.box()
+        box.label(text="Animations")
+        box.operator(SLUGGIES_OT_scale_animations.bl_idname)
+        box.prop(context.scene, 'sluggies_animation_scale', text="")
+
+        layout.separator()
         _draw_rigid_mesh_box(layout, context)
 
         layout.separator()
@@ -1672,17 +1771,27 @@ def register():
     bpy.utils.register_class(SLUGGIES_OT_add_material)
     bpy.utils.register_class(SluggiesSpecularStrengthItem)
     bpy.utils.register_class(SLUGGIES_OT_set_specular_strength)
+    bpy.utils.register_class(SLUGGIES_OT_scale_animations)
     bpy.utils.register_class(SLUGGIES_PT_tools)
     bpy.types.Scene.sluggies_show_free_host_bones = BoolProperty(
         name="Free host bones",
         description="Show the read-only list of bones a new custom submesh could attach to",
         default=False,
     )
+    bpy.types.Scene.sluggies_animation_scale = FloatVectorProperty(
+        name="Animation scale",
+        description="X/Y/Z factor 'Apply scale to all animations' multiplies the root bone's scale keyframes by",
+        size=3,
+        subtype='XYZ',
+        default=(1.0, 1.0, 1.0),
+    )
 
 
 def unregister():
+    del bpy.types.Scene.sluggies_animation_scale
     del bpy.types.Scene.sluggies_show_free_host_bones
     bpy.utils.unregister_class(SLUGGIES_PT_tools)
+    bpy.utils.unregister_class(SLUGGIES_OT_scale_animations)
     bpy.utils.unregister_class(SLUGGIES_OT_set_specular_strength)
     bpy.utils.unregister_class(SluggiesSpecularStrengthItem)
     bpy.utils.unregister_class(SLUGGIES_OT_add_material)

@@ -11,12 +11,13 @@ The **Hammerspace** section shows how much of the output ``dt_na.dat`` past the 
 (``Hammerspace/Defrag.analyze``, read-only) and offers **Defragment** (``start.py --defrag-hammerspace``, run
 through the command runner), which reports the file size before and after.
 
-**Calculate Dolphin texture name** encodes a picked image in the chosen GX format the way the patchers do
+**Dolphin texture name** encodes an image (picked, or on Windows dropped onto its field from Explorer: ``file_drop``) in the chosen GX format the way the patchers do
 (``texture_helper.dolphin_texture_name``: wimgt) and shows the file name Dolphin's texture dump would give it,
 in a read-only field with a Copy button. An image already named like a Dolphin dump uses the format in its name.
 """
 
 import os
+import platform
 import re
 import subprocess
 import threading
@@ -226,8 +227,13 @@ class MaintenanceTab:
     def _build_dolphin_name(self):
         dpg.add_text('Dolphin texture name')
         with dpg.group(horizontal=True):
-            dpg.add_button(label='Calculate Dolphin texture name', tag='maintenance_dolphin',
-                           callback=lambda: self.pick_dolphin_image())
+            if platform.system() == 'Windows':
+                # also the drop field: an image dropped onto it from Explorer is used (on_files_dropped)
+                dpg.add_button(label='Drop an image here, or click to pick one', tag='maintenance_dolphin',
+                               width=400, height=60, callback=lambda: self.pick_dolphin_image())
+            else:                            # file_drop is Windows-only: a plain picker button
+                dpg.add_button(label='Calculate Dolphin texture name', tag='maintenance_dolphin',
+                               callback=lambda: self.pick_dolphin_image())
             dpg.add_text('Format:')
             dpg.add_combo(list(_FORMATS), default_value='CMPR', tag='maintenance_dolphin_format', width=100,
                           callback=lambda: self._dolphin_palette_shown())
@@ -252,6 +258,26 @@ class MaintenanceTab:
     def pick_dolphin_image(self):
         self.picks.pick_one('maintenance_dolphin_dialog', 'Select an image to name for Dolphin',
                             gui_grid.IMAGE_FILTERS, DOLPHIN_DIR_SETTING, (), self._on_dolphin_path)
+
+    def on_files_dropped(self, paths, point):
+        """Files dropped onto the window (``file_drop``) at client ``point``: on the drop field, name the image."""
+        tab_bar = dpg.get_value('main_tab_bar')
+        if tab_bar not in ('maintenance_tab', dpg.get_alias_id('maintenance_tab')):
+            return
+        (left, top), (right, bottom) = (dpg.get_item_rect_min('maintenance_dolphin'),
+                                        dpg.get_item_rect_max('maintenance_dolphin'))
+        if not (left <= point[0] <= right and top <= point[1] <= bottom):
+            return
+        if not dpg.get_item_configuration('maintenance_dolphin')['enabled']:
+            return                           # still encoding the last one
+        images = [path for path in paths if path.lower().endswith(gui_grid.IMAGE_EXTENSIONS)]
+        if not images:
+            self._dolphin_status(f'{os.path.basename(paths[0])} is not an image '
+                                 f'({", ".join(gui_grid.IMAGE_EXTENSIONS)}).', _ERROR)
+            return
+        if len(paths) > 1:
+            self.app.log_line(f'[maintenance] {len(paths)} files dropped; naming the first image only.')
+        self._on_dolphin_path(images[0])
 
     def _on_dolphin_path(self, path):
         gx_format = texture_helper.gx_format_from_dolphin_name(path)

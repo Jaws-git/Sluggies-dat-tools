@@ -20,7 +20,9 @@ the files in ``3_Output_Dat`` (the normal pipeline's output).
   ``--state``. A ``--config`` given here directly keeps none of them.
 * ``--dry-run`` runs everything in memory and writes nothing.
 * After the steps it stores a manifest (``manifest.py``) of the facts only
-  hook code holds, so ``state.py`` can read the roster back.
+  hook code holds, so ``state.py`` can read the roster back. A run with
+  nothing to record and no DOL code (e.g. stock portraits only) stores none
+  and adds no DOL sections: the arena start stays stock.
 * The sound archive ``1_Input/sound_NA/MY2.brsar`` (when present) is read
   for the character voices step and written to ``3_Output_Dat/sound_NA/`` on
   every run (``--remove`` included): the input bytes, or those plus the copied
@@ -113,12 +115,19 @@ def patch_fst(output_dir: str, dat_size: int) -> str:
 
 
 def write_manifest(ctx: steps.RosterContext) -> str:
-    """Store the run's hook-only facts (``manifest.py``) in the DOL data section, for the grid reader."""
-    hs = dol_hammerspace.get(ctx)
-    blob = manifest.encode(manifest.build(ctx.state, ctx.config))
+    """Store the run's hook-only facts (``manifest.py``) in the DOL data section, for the grid reader. Skipped
+    when no step used the DOL hammerspace and the manifest records nothing (e.g. stock portraits only): the
+    sections alone would raise the MEM1 arena start (``derive`` reads those outputs without a manifest)."""
+    mf = manifest.build(ctx.state, ctx.config)
+    hs = ctx.state.get('hammerspace')
+    if hs is None and manifest.is_empty(mf):
+        return ('[manifest] none: no step needed DOL code or tables, so main.dol keeps its stock sections and '
+                'arena start')
+    hs = hs or dol_hammerspace.get(ctx)
+    blob = manifest.encode(mf)
     at = hs.data.put(blob, 4)
     hs.commit()
-    return f'[manifest] roster manifest at 0x{at:08X} (0x{len(blob):X} bytes)'
+    return f'[manifest] roster manifest at 0x{at:08X} (0x{len(blob):X} bytes); DOL hammerspace: {hs.summary()}'
 
 
 def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_only: bool = False,

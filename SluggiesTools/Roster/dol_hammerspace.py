@@ -188,6 +188,10 @@ def get(ctx: steps.RosterContext) -> DolHammerspace:
 
 @steps.register('dol_hammerspace')
 def apply(ctx: steps.RosterContext) -> list[str]:
-    hs = get(ctx)
-    hs.commit()
+    """Creates nothing up front: the first step that needs DOL space does (``get``). A run without DOL code
+    (e.g. stock portraits only) keeps the stock sections and arena start, so the MEM1 heap stays where stock
+    Gecko codes expect it."""
+    hs = ctx.state.get('hammerspace') or DolHammerspace.open(ctx.dol)
+    if hs is None:
+        return ['DOL hammerspace: none yet (created by the first step that needs DOL code or tables)']
     return [f'DOL hammerspace: {hs.summary()}']

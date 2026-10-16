@@ -27,6 +27,13 @@ With at least one name:
   unnamed one shows the "-" cell); a named spare row's own row repointed to
   its cell; the four plate sites take ``row = stock rows + id - 0x66`` for
   new IDs (replacing the ids step's template alias there).
+
+Without new IDs (stock characters and spare rows only, all below the Miis'
+0x4D, which the stock name widgets already show) the names are pure DAT
+edits: the tables keep their 104 messages (the codes stay at 102/103), the
+plate page holds only the given names and their own rows are repointed. No
+DOL code, so the MEM1 arena stays where stock Gecko codes expect it. Read
+back without a manifest: a plate row off the stock page (``renamed_ids``).
 """
 
 import os
@@ -166,11 +173,18 @@ def build_table(msgs: list[bytes]) -> bytes:
     return b'\1\1' + struct.pack(f'>H{len(msgs)}I', len(msgs), *offsets) + bytes(text)
 
 
-def names_table(table: bytes, names: dict[int, str]) -> bytes:
-    """Entries 0..LAST_ID (new IDs "-" unless named), then the two codes."""
+def names_table(table: bytes, names: dict[int, str], extend: bool = True) -> bytes:
+    """Entries 0..LAST_ID (new IDs "-" unless named), then the two codes. ``extend`` False: the stock 104
+    messages with the named entries replaced (no new IDs; the codes keep their entries)."""
     msgs = messages(table)
     if len(msgs) != STOCK_MESSAGES:
         raise NameConfigError(f'the name table has {len(msgs)} messages, expected {STOCK_MESSAGES}')
+    if not extend:
+        if any(cid >= CODE_ENTRIES[0] for cid in names):
+            raise NameConfigError('only IDs below the code entries fit the stock name table')
+        for cid, name in names.items():
+            msgs[cid] = name.encode('utf-16-be')
+        return build_table(msgs)
     codes = [msgs[i] for i in CODE_ENTRIES]
     out = msgs[:CODE_ENTRIES[0]] + [UNNAMED.encode('utf-16-be')] * (LAST_ID + 1 - CODE_ENTRIES[0])
     for cid, name in names.items():
@@ -182,13 +196,13 @@ def name_record(image) -> int:
     return dhs.dir_pointers(image)[NAME_DIR] + NAME_FILE * dhs.RECORD_SIZE
 
 
-def write_tables(ctx: steps.RosterContext, names: dict[int, dict[str, str]]) -> list[str]:
+def write_tables(ctx: steps.RosterContext, names: dict[int, dict[str, str]], extend: bool = True) -> list[str]:
     record = name_record(ctx.dol)
     words = dhs.read_record(ctx.dol, record)
     log = []
     for lang in dhs.LANGS:
         offset, length, _alloc = dhs.slot(words, lang)
-        table = names_table(ctx.dat.read(offset, length), {c: n[lang] for c, n in names.items()})
+        table = names_table(ctx.dat.read(offset, length), {c: n[lang] for c, n in names.items()}, extend)
         at = dhs.allocate(ctx.dat, len(table), dhs.reserved(ctx))
         ctx.dat.write(at, table)
         dhs.set_slot(words, lang, at, len(table))
@@ -322,14 +336,15 @@ def plate_page(cells: list[str]) -> tuple[int, int, list[tuple[int, int]]]:
                            for k in range(len(cells))]
 
 
-def plate_layout(data: bytes, names: dict[int, str], first_row: int) -> bytes:
+def plate_layout(data: bytes, names: dict[int, str], first_row: int, new_ids: bool = True) -> bytes:
     """One language's select layout with the plate page, rows for 0x66..LAST_ID and the named spare rows'
-    rows repointed. ``names``: {id: that language's name}."""
+    rows repointed. ``names``: {id: that language's name}. ``new_ids`` False: no rows for new IDs and no "-"
+    cell, only the named IDs' own rows repointed."""
     lay = layout2d.Layout(data)
     if len(lay.rows) != first_row:
         raise layout2d.Layout2dError(f'the select layout has {len(lay.rows)} rows, expected {first_row}')
     named = sorted(names)
-    texts = list(dict.fromkeys([UNNAMED] + [names[c] for c in named]))     # one cell per distinct text
+    texts = list(dict.fromkeys(([UNNAMED] if new_ids else []) + [names[c] for c in named]))  # a cell per text
     width, height, at = plate_page(texts)
     page_img = Image.new('RGBA', (width, height), (255, 255, 255, 0))
     for text, xy in zip(texts, at):
@@ -340,12 +355,21 @@ def plate_layout(data: bytes, names: dict[int, str], first_row: int) -> bytes:
     def uv(xy):
         x, y = xy
         return y / height, x / width, (y + PLATE_CELL[1]) / height, (x + PLATE_CELL[0]) / width
-    for cid in range(ids.FIRST_NEW, LAST_ID + 1):
+    for cid in range(ids.FIRST_NEW, LAST_ID + 1) if new_ids else ():
         lay.add_row(page, uv(cell.get(cid, at[0])))
     for cid in named:
         if cid < ids.FIRST_NEW:
             lay.rows[PLATE_ROW + cid] = struct.pack('>HH4f', page, 0, *uv(cell[cid]))
     return lay.to_bytes()
+
+
+def renamed_ids(data: bytes) -> list[int]:
+    """The IDs below the Miis whose plate row a names run repointed (off the stock plates' page), from one
+    language's select layout: the renamed stock characters and spare rows, without a manifest."""
+    lay = layout2d.Layout(data)
+    return [cid for cid in range(RENAMEABLE_END)
+            if PLATE_ROW + cid < len(lay.rows)
+            and struct.unpack_from('>H', lay.rows[PLATE_ROW + cid])[0] != PLATE_TEMPLATE_PAGE]
 
 
 # --------------------------------------------------------------------------
@@ -360,6 +384,8 @@ def apply(ctx: steps.RosterContext) -> list[str]:
         return ['no "name" in the roster config: names stay as they are']
     if ctx.dat is None:
         raise NameConfigError('dt_na.dat is missing in the output folder')
+    if not ctx.state.get('new_ids') and all(cid < ids.FIRST_NEW for cid in names):
+        return stock_only(ctx, names)
     log = write_tables(ctx, names)
     files = layout_file.get(ctx)
     counts = {len(layout2d.Layout(files.read(lang)).rows) for lang in dhs.LANGS}
@@ -378,4 +404,14 @@ def apply(ctx: steps.RosterContext) -> list[str]:
     log.append('names: ' + '; '.join(f'{ids.id_ranges(group)} {name}' for name, group in by_name.items())
                + f'; text entries to 0x{LAST_ID:X} (codes {CODE_ENTRIES[0]}/{CODE_ENTRIES[1]} -> '
                f'{LAST_ID + 1}/{LAST_ID + 2}); plates on rows {first_row}.. (new IDs), "-" for unnamed IDs')
+    return log
+
+
+def stock_only(ctx: steps.RosterContext, names: dict[int, dict[str, str]]) -> list[str]:
+    """Names without new IDs: the stock tables and plate rows edited in DAT, no DOL code (module docstring)."""
+    log = write_tables(ctx, names, extend=False)
+    log += layout_file.get(ctx).update(lambda lang, data: plate_layout(
+        data, {c: n[lang] for c, n in names.items()}, len(layout2d.Layout(data).rows), new_ids=False))
+    log.append('names: ' + '; '.join(f'{ids.id_ranges([c])} {n["en"]}' for c, n in sorted(names.items()))
+               + ' (stock tables and plate rows only: no DOL code)')
     return log

@@ -294,6 +294,21 @@ class BlockValidatorTests(unittest.TestCase):
         self.assertFalse(report['valid'])
         self.assertTrue(any('expected position-data-relative' in error for error in report['errors']))
 
+    def test_wider_memclr_range_from_the_same_start_only_warns(self):
+        # Vanilla Birdo (chunk 35 file 0) clears 0x80 bytes where its accumulation writes need 0x60.
+        block = bytearray(make_valid_block())
+        struct.pack_into('>I', block, 0x2C0 + 0x18, 0x40)
+        report = validate_model_block(bytes(block))
+        self.assertTrue(report['valid'], report['errors'])
+        self.assertTrue(any('wider than the accumulation writes need' in w for w in report['warnings']))
+
+    def test_narrower_memclr_range_fails(self):
+        block = bytearray(make_valid_block())
+        struct.pack_into('>I', block, 0x2C0 + 0x18, 0x10)   # the accumulation writes need 0x20
+        report = validate_model_block(bytes(block))
+        self.assertFalse(report['valid'])
+        self.assertTrue(any('expected position-data-relative' in error for error in report['errors']))
+
     def test_scratch_overlap_fails(self):
         block = bytearray(make_valid_block())
         # Place sub0 color array inside SK write window (sub0 starts at 0xA0, window end 0xC0).
@@ -463,7 +478,23 @@ class BlockValidatorTests(unittest.TestCase):
         struct.pack_into('>H', block, desc + 0x18, 1)
         report = validate_model_block(bytes(block))
         self.assertTrue(any('direct format must not have a palette' in error for error in report['errors']))
-        self.assertTrue(any('CLUT count 0 does not match 1' in error for error in report['errors']))
+        # A count of 0 with palettes only warns (vanilla Donkey Kong); any other mismatch fails
+        self.assertTrue(any('CLUT count is 0 but 1 palette' in w for w in report['warnings']))
+        struct.pack_into('>H', block, TEX_OFF + 2, 2)
+        report = validate_model_block(bytes(block))
+        self.assertTrue(any('CLUT count 2 does not match 1' in error for error in report['errors']))
+
+    def test_tex_clut_count_zero_with_a_c8_palette_only_warns(self):
+        block = make_valid_textured_block()
+        desc = TEX_OFF + 4
+        struct.pack_into('>I', block, desc + 4, 0x80)        # palette after the 0x20-byte image payload
+        block[desc + 0x17] = 0x9                             # C8
+        struct.pack_into('>H', block, desc + 0x08, 4)
+        struct.pack_into('>H', block, desc + 0x0A, 8)        # 8x4 C8: one 32-byte tile
+        struct.pack_into('>H', block, desc + 0x18, 16)       # 16 entries, 32 bytes
+        report = validate_model_block(bytes(block))
+        self.assertTrue(report['valid'], report['errors'])
+        self.assertTrue(any('CLUT count is 0 but 1 palette' in w for w in report['warnings']))
 
     def test_type1_texture_index_outside_tex_count_fails(self):
         block = make_valid_textured_block(texture_count=1)

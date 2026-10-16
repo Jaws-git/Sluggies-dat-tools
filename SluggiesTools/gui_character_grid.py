@@ -20,7 +20,9 @@ or "?" icon) are marked. The textures are released and rebuilt on every
 re-read.
 
 Edits are staged. The slot level's **Rename...** (a text box
-with a live "fits the name plate" line), **Select .sluggie...**, **Clear
+with a live "fits the name plate" line), **Select .sluggie...** and **Select
+lowpoly (L_) .sluggie...** (a Low model only; it joins the slot's pending High
+pick, so both are patched in one go), **Clear
 slot**, **Stats...** and **Voice...**, and the square level's **Set voice (all)...** (colour
 wheels only; both pick from a list) and the Equipment row's tiles (Bat, Left glove, Right glove, Extra bat;
 each has **Select...** for a bat/glove ``.sluggie`` and **Reset**) and **Replace animation...** (below Adopt stats...:
@@ -114,15 +116,18 @@ EQUIP_BLOCK = 3 * LINE + BUTTON_H + 2 * GAP     # the Equipment row: heading, ti
 EQUIP_BUTTON_W = 76
 BADGE_FONT = 9                   # the grid's slot-count number, in portrait pixels (scaled with the texture)
 RENAME, SELECT, CLEAR, DISCARD = 'Rename...', 'Select .sluggie...', 'Clear slot', 'Discard pending'
+SELECT_LOW = 'Select lowpoly (L_) .sluggie...'   # beside Select .sluggie...: a Low model pick (joins a pending High)
 STATS, VOICE = 'Adopt stats...', 'Voice...'
 ANIM = 'Replace animation...'       # on the row below, under Adopt stats...
 ANIM_DIR_SETTING = 'grid_last_anim_dir'   # the GUI settings key: the folder the last .anm came from
 SLUGGIE_DIR_SETTING = 'grid_last_sluggie_dir'   # the GUI settings key: the folder the last slot/equipment .sluggie came from
+IMAGE_DIR_SETTING = 'grid_last_image_dir'       # the GUI settings key: the folder the last portrait image came from
+PACK_DIR_SETTING = 'grid_last_pack_dir'         # the GUI settings key: the folder the last roster pack was loaded / saved in
 VOICE_ALL = 'Set voice (all)...'    # the square level (colour wheel): the voice reaches every member
 SLOT_BUTTONS = (RENAME, STATS, VOICE, CLEAR)     # the row below: Replace animation..., Discard pending
 EQUIP_PAIR_W = 2 * EQUIP_BUTTON_W - 8 + 4   # a tile's Select... + Reset buttons and the gap between them
 SLOT_BUTTON_W = EQUIP_PAIR_W      # the bottom row's buttons match that, so they align under the tiles
-SELECT_W = (SLOT_W - 2 * PAD) // 3  # Select .sluggie... above the Equipment row
+SELECT_W = (SLOT_W - 2 * PAD) // 3  # Select .sluggie... and Select lowpoly (L_) .sluggie... above the Equipment row
 VOICE_TIP = ('Stage another voice for this square (a stock square: its whole species; a new square: its members '
              'without a wheel). "Patch Game" writes the pending edits.')
 CHAR_VOICE_TIP = ('Stage a voice of this slot\'s own: another stock character\'s voice or a custom voice pack '
@@ -306,34 +311,13 @@ class CharacterGridTab:
                         dpg.add_theme_color(col, value)
                     dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 4)
         dpg.add_texture_registry(tag='grid_textures')
-        with dpg.file_dialog(directory_selector=False, show=False, modal=True, tag='grid_sluggie_dialog',
-                             width=760, height=460, callback=self._on_sluggie_chosen,
-                             cancel_callback=lambda *_: self._end_action(),
-                             default_path=self.app.models_dir if os.path.isdir(self.app.models_dir)
-                             else self.app.root_dir):
-            dpg.add_file_extension('.sluggie', color=(120, 220, 120, 255))
-        with dpg.file_dialog(directory_selector=False, show=False, modal=True, tag='grid_image_dialog',
-                             width=760, height=460, callback=self._on_image_chosen,
-                             cancel_callback=lambda *_: self._end_action(),
-                             default_path=self.app.models_dir if os.path.isdir(self.app.models_dir)
-                             else self.app.root_dir):
-            dpg.add_file_extension('Images{' + ','.join(gui_grid.IMAGE_EXTENSIONS) + '}', color=(120, 220, 120, 255))
-            dpg.add_file_extension('.*')
-        with dpg.file_dialog(directory_selector=False, show=False, modal=True, tag='grid_anim_dialog',
-                             width=760, height=460, callback=self._on_anim_chosen,
-                             cancel_callback=lambda *_: self._end_action(),
-                             default_path=self.app.models_dir if os.path.isdir(self.app.models_dir)
-                             else self.app.root_dir):
-            dpg.add_file_extension('.anm', color=(120, 220, 120, 255))
-            dpg.add_file_extension('.*')
+        self.app.add_file_dialog('grid_sluggie_dialog', ('.sluggie',))
+        self.app.add_file_dialog('grid_image_dialog', ('Images{' + ','.join(gui_grid.IMAGE_EXTENSIONS) + '}', '.*'))
+        self.app.add_file_dialog('grid_anim_dialog', ('.anm', '.*'))
         dpg.add_texture_registry(tag='grid_dialog_textures')    # the icon dialog's; released when it closes
-        pack_dir =self.pack_dir if os.path.isdir(self.pack_dir) else self.app.root_dir
-        for tag, callback in (('grid_pack_save_dialog', self._on_pack_save_chosen),
-                              ('grid_pack_load_dialog', self._on_pack_load_chosen)):
-            with dpg.file_dialog(directory_selector=False, show=False, modal=True, tag=tag, width=760, height=460,
-                                 callback=callback, cancel_callback=lambda *_: self._end_action(),
-                                 default_path=pack_dir, default_filename='roster'):
-                dpg.add_file_extension(gui_grid.PACK_EXTENSION, color=(120, 180, 255, 255))
+        for tag in ('grid_pack_save_dialog', 'grid_pack_load_dialog'):
+            self.app.add_file_dialog(tag, (gui_grid.PACK_EXTENSION,), color=(120, 180, 255, 255),
+                                     default_filename='roster')
         with dpg.handler_registry():
             dpg.add_mouse_click_handler(button=dpg.mvMouseButton_Left, callback=self._on_mouse_click)
             dpg.add_key_press_handler(dpg.mvKey_Escape, callback=self._on_escape)
@@ -851,7 +835,7 @@ class CharacterGridTab:
         text_w = SLOT_W - 2 * PAD - 2 * (PORTRAIT[0] + 2 * FRAME + GAP) - GAP
         body = max(PORTRAIT[1] + 2 * FRAME + LINE, LINE * sum(1 + len(line) * 7 // text_w for line, _c in details))
         tiles = gui_grid.equipment_tiles(state, cid, self.pending)
-        box = self._box(SLOT_W, 2 * PAD + 2 * LINE + body + GAP + BUTTON_H + 2 * LINE + BUTTON_H + GAP
+        box = self._box(SLOT_W, 2 * PAD + 2 * LINE + body + GAP + 2 * BUTTON_H + GAP + 2 * LINE + BUTTON_H + GAP
                         + (EQUIP_BLOCK if tiles else 0) + BUTTON_H + 2 * GAP)
         title = dpg.add_text(gui_grid.name_of(state, cid), parent=box)
         with dpg.item_handler_registry() as handlers:        # clicking the name renames, like the button
@@ -877,14 +861,22 @@ class CharacterGridTab:
                     dpg.add_text(line, color=color, wrap=text_w)
         dpg.add_spacer(height=GAP, parent=box)
         usable = self.pending.pack is None
-        select = dpg.add_button(label=SELECT, width=SELECT_W, height=BUTTON_H, parent=box,
-                                callback=lambda: self._on_select(cid), enabled=not self._locked() and usable)
-        dpg.bind_item_theme(select, 'primary_theme')
-        self.slot_buttons.append((select, usable))
-        with dpg.tooltip(select):
-            dpg.add_text('Stage an exported model (and its High/Low partner) for this slot; a confirm dialog shows '
-                         'what changes first. "Patch Game" writes the pending edits.' if usable else
-                         'A roster pack load is pending: press "Patch Game" (or Discard it) first.', wrap=420)
+        busy_tip = 'A roster pack load is pending: press "Patch Game" (or Discard it) first.'
+        with dpg.group(parent=box):                     # Select lowpoly (L_) .sluggie... below Select .sluggie...
+            for label, low, tip in (
+                    (SELECT, False, 'Stage an exported model (and its High/Low partner) for this slot; a confirm '
+                                    'dialog shows what changes first. "Patch Game" writes the pending edits.'),
+                    (SELECT_LOW, True, 'Stage an exported Low model (L_) for this slot. With a High model pending '
+                                       'for the slot (either button first) it becomes that model\'s Low partner, '
+                                       'so High and Low are patched in one go; it must be the same character\'s '
+                                       'Low model. A High model is refused here.')):
+                select = dpg.add_button(label=label, width=SELECT_W, height=BUTTON_H,
+                                        callback=(lambda _s, _a, lo: self._on_select(cid, lo)), user_data=low,
+                                        enabled=not self._locked() and usable)
+                dpg.bind_item_theme(select, 'primary_theme')
+                self.slot_buttons.append((select, usable))
+                with dpg.tooltip(select):
+                    dpg.add_text(tip if usable else busy_tip, wrap=420)
         dpg.add_spacer(height=GAP, parent=box)
         if tiles:
             self._equipment_row(box, cid, tiles)
@@ -1009,40 +1001,31 @@ class CharacterGridTab:
         gui_grid.prune_staged_clips(os.path.join(self.app.root_dir, gui_grid.STAGED_CLIPS_REL),
                                     gui_grid.staged_clip_files(self.pending))
 
-    def _on_select(self, cid):
+    def _on_select(self, cid, low=False):
+        """Select .sluggie... / Select lowpoly (L_) .sluggie... (``low``: a Low model pick)."""
         if self._locked():
             return
-        self.action = (cid, None)
+        self.action = (cid, 'low' if low else None)
         self.set_busy(False)
-        self._pick_sluggie('Select a .sluggie for this slot')
+        self._pick_sluggie('Select a lowpoly (L_) .sluggie for this slot' if low else 'Select a .sluggie for this slot')
 
     def _pick_sluggie(self, title):
         """Open the .sluggie picker in the folder the last pick came from (else the models folder)."""
-        start = next((d for d in (self.app.settings.get(SLUGGIE_DIR_SETTING), self.app.models_dir)
-                      if d and os.path.isdir(d)), self.app.root_dir)
-        dpg.configure_item('grid_sluggie_dialog', default_path=start)
         if not self.app.pick_files('grid_sluggie_dialog', title, [('Sluggie files', '*.sluggie')],
-                                   self._on_sluggie_paths, on_cancel=self._end_action, initial_dir=start):
+                                   self._on_sluggie_paths, on_cancel=self._end_action, remember=SLUGGIE_DIR_SETTING):
             self._end_action()
-
-    def _on_sluggie_chosen(self, _sender, app_data):
-        app_data = app_data or {}
-        self._on_sluggie_paths(list(app_data.get('selections', {}).values()) or [app_data.get('file_path_name')])
 
     def _on_sluggie_paths(self, paths):
         cid = self.action[0] if self.action else None
         equip = self.action[2] if self.action and len(self.action) == 3 and self.action[1] == 'equip' else None
         path = next((p for p in paths if p and p.lower().endswith('.sluggie') and os.path.isfile(p)), None)
         if cid is None or path is None:
-            self.app.log_line(f'[character grid] no .sluggie file chosen: {paths[0] or "(none)"}', _WARN)
+            self.app.log_line(f'[character grid] no .sluggie file chosen: {paths[0]}', _WARN)
             self._end_action()
             return
+        low = self.action[1:] == ('low',)
         self.action = None
-        try:
-            self.app.settings.set(SLUGGIE_DIR_SETTING, os.path.dirname(os.path.abspath(path)))
-        except OSError:
-            pass                              # not remembered; the pick itself goes on
-        self._start_preview(cid, path, equip=None if equip is None else (equip, path))
+        self._start_preview(cid, path, equip=None if equip is None else (equip, path), low=low)
 
     # ------------------------------------------------------------------ animations
     def _on_anim(self, cid):
@@ -1051,30 +1034,19 @@ class CharacterGridTab:
             return
         self.action = (cid, gui_grid.ANIM)
         self.set_busy(False)
-        start = next((d for d in (self.app.settings.get(ANIM_DIR_SETTING), self.app.models_dir)
-                      if d and os.path.isdir(d)), self.app.root_dir)
-        dpg.configure_item('grid_anim_dialog', default_path=start)
         if not self.app.pick_files('grid_anim_dialog', 'Select an animation bank (.anm) for this slot',
                                    gui_grid.ANIM_FILTERS, self._on_anim_paths, on_cancel=self._end_action,
-                                   initial_dir=start):
+                                   remember=ANIM_DIR_SETTING):
             self._end_action()
-
-    def _on_anim_chosen(self, _sender, app_data):
-        app_data = app_data or {}
-        self._on_anim_paths(list(app_data.get('selections', {}).values()) or [app_data.get('file_path_name')])
 
     def _on_anim_paths(self, paths):
         cid = self.action[0] if isinstance(self.action, tuple) and self.action[1:] == (gui_grid.ANIM,) else None
         path = next((p for p in paths if p and os.path.isfile(p)), None)
         if cid is None or path is None:
-            self.app.log_line(f'[character grid] no animation file chosen: {paths[0] if paths else "(none)"}', _WARN)
+            self.app.log_line(f'[character grid] no animation file chosen: {paths[0]}', _WARN)
             self._end_action()
             return
         self.action = None
-        try:
-            self.app.settings.set(ANIM_DIR_SETTING, os.path.dirname(os.path.abspath(path)))
-        except OSError:
-            pass                              # not remembered; the pick itself goes on
         self._start_preview(cid, None, anim=os.path.abspath(path))
 
     # ------------------------------------------------------------------ equipment
@@ -1111,12 +1083,8 @@ class CharacterGridTab:
         self.set_busy(False)
         if not self.app.pick_files('grid_image_dialog', f'Select an image for the {view} portrait',
                                    gui_grid.IMAGE_FILTERS, self._on_image_paths, on_cancel=self._end_action,
-                                   initial_dir=self.app.models_dir):
+                                   remember=IMAGE_DIR_SETTING):
             self._end_action()
-
-    def _on_image_chosen(self, _sender, app_data):
-        app_data = app_data or {}
-        self._on_image_paths(list(app_data.get('selections', {}).values()) or [app_data.get('file_path_name')])
 
     def _on_image_paths(self, paths):
         action = self.action if isinstance(self.action, tuple) and len(self.action) == 3 else None
@@ -1321,9 +1289,10 @@ class CharacterGridTab:
         self._start_preview(cid, None, rename=text)
 
     def _start_preview(self, cid, sluggie, rename=None, value=None, icon=None, equip=None, copy_from=None,
-                       anim=None):
+                       anim=None, low=False):
         """The staging check (the pending edits plus this one; this one's build check); the confirm dialog
-        opens when it is done. ``rename``: the new name text (blank resets), a rename edit instead of patch/clear;
+        opens when it is done. ``low``: ``sluggie`` is a Low model pick (``slot_plan`` refuses a High model and joins
+        it to the slot's pending High pick); ``rename``: the new name text (blank resets), a rename edit instead of patch/clear;
         ``value``: ``(op, source)``, a stats or voice edit (source None: back to the default); ``icon``: a
         finished icon edit (``IconPreview.edit``); ``equip``: ``(slot file, .sluggie or None)``, an equipment edit
         (None: reset that file); ``copy_from``: the copied character, a paste (the slot becomes its clone); ``anim``:
@@ -1353,7 +1322,7 @@ class CharacterGridTab:
         elif value is not None:
             edit = {'op': value[0], 'id': gui_grid.hex_id(cid), 'source': value[1]}
         elif sluggie:
-            edit = {'op': 'patch', 'id': gui_grid.hex_id(cid), 'file': sluggie}
+            edit = {'op': 'patch', 'id': gui_grid.hex_id(cid), ('low' if low else 'file'): sluggie}
         else:
             edit = {'op': 'clear', 'id': gui_grid.hex_id(cid)}
         self._check_and_confirm(cid, edit, kind, sluggie, view, gear_file, anm=anim)
@@ -1741,15 +1710,8 @@ class CharacterGridTab:
         if not self.app.pick_files('grid_pack_save_dialog' if save else 'grid_pack_load_dialog',
                                    'Save the roster as' if save else 'Load a roster pack', filters, on_paths,
                                    on_cancel=self._end_action, initial_dir=self.pack_dir, save=save,
-                                   default_ext=gui_grid.PACK_EXTENSION.lstrip('.')):
+                                   default_ext=gui_grid.PACK_EXTENSION.lstrip('.'), remember=PACK_DIR_SETTING):
             self._end_action()
-
-    def _on_pack_save_chosen(self, _sender, app_data):
-        self._on_pack_save_paths([(app_data or {}).get('file_path_name')])
-
-    def _on_pack_load_chosen(self, _sender, app_data):
-        app_data = app_data or {}
-        self._on_pack_load_paths(list(app_data.get('selections', {}).values()) or [app_data.get('file_path_name')])
 
     def _on_pack_save_paths(self, paths):
         path = paths[0] if paths else None

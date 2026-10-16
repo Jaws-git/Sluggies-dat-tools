@@ -15,7 +15,8 @@ per voice moment (role, the current clip and its length, **Play**, **Replace...*
   a character's own voice copying the clip keeps the stock volume).
 * A **custom pack** is a library: Replace writes the encoded clip into the pack folder (``sound_packs.set_clip``),
   nothing is staged; the grid's slot-level **Voice...** assigns a pack to a slot. **Stage for its slots** re-stages
-  the pack on every slot that speaks with it now (after a clip changed). New pack..., Rename..., Delete, Export...
+  the pack on every slot that speaks with it now (after a clip changed). New pack..., Rename... (also the
+  toolbar's Rename pack..., for the selected pack), Delete, Export...
   (one ``.sluggiesvoice`` file) and Import... manage the library.
 
 Playback uses ``winsound`` (Windows); elsewhere the Play buttons are disabled. The archive is read once on a worker
@@ -43,6 +44,7 @@ LIST_W = 340
 BUTTON_H = 28
 PACK_FILTERS = [('Voice packs', '*.sluggiesvoice'), ('All files', '*.*')]
 CLIP_DIR_SETTING = 'sounds_last_clip_dir'      # the GUI settings key: the folder the last Replace... WAV came from
+PACK_DIR_SETTING = 'sounds_last_pack_dir'      # the GUI settings key: the folder the last voice pack was imported / exported in
 
 
 def _sound_modules():
@@ -75,6 +77,11 @@ class SoundsTab:
             with dpg.group(horizontal=True):
                 dpg.add_button(label='Refresh', tag='sounds_refresh', callback=lambda: self.refresh())
                 dpg.add_button(label='New pack...', tag='sounds_new', callback=lambda: self._on_new_pack())
+                dpg.add_button(label='Rename pack...', tag='sounds_rename', enabled=False,
+                               callback=lambda: self._on_rename_selected())
+                with dpg.tooltip('sounds_rename'):
+                    dpg.add_text('Rename the custom voice pack selected on the left (its folder in _gui/Sound_Packs/).',
+                                 wrap=360)
                 dpg.add_button(label='Import pack...', tag='sounds_import', callback=lambda: self._on_import())
                 dpg.add_spacer(width=12)
                 gui_volume.add_gain_field('sounds_gain')
@@ -263,6 +270,8 @@ class SoundsTab:
             return
         dpg.delete_item('sounds_detail', children_only=True)
         parent = 'sounds_detail'
+        dpg.configure_item('sounds_rename', enabled=self.selected is not None and self.selected[0] == 'custom'
+                           and self._custom_pack(self.selected[1]) is not None)
         if self.selected is None:
             dpg.add_text('Pick a voice pack on the left.', parent=parent, color=_FAINT)
             return
@@ -580,6 +589,12 @@ class SoundsTab:
         self.app.ask_text('New voice pack', 'Name of the new voice pack (a folder in _gui/Sound_Packs/):', answer,
                           lambda: None)
 
+    def _on_rename_selected(self):
+        """The toolbar's Rename pack...: the custom pack selected in the list."""
+        pack = self._custom_pack(self.selected[1]) if self.selected and self.selected[0] == 'custom' else None
+        if pack is not None:
+            self._on_rename(pack)
+
     def _on_rename(self, pack):
         _brsar, _clips, sound_packs = _sound_modules()
 
@@ -637,7 +652,8 @@ class SoundsTab:
             self._status(f'Exported to {written}.', _OK)
         os.makedirs(folder, exist_ok=True)
         self.picks.pick('sounds_pack_save_dialog', f'Export the voice pack {pack.name}', PACK_FILTERS, chosen,
-                        initial_dir=folder, save=True, default_ext=sound_packs.PACK_EXTENSION.lstrip('.'))
+                        initial_dir=folder, save=True, default_ext=sound_packs.PACK_EXTENSION.lstrip('.'),
+                        remember=PACK_DIR_SETTING)
 
     def _on_import(self):
         _brsar, _clips, sound_packs = _sound_modules()
@@ -660,7 +676,7 @@ class SoundsTab:
             self._draw_list()
             self._draw_detail()
         self.picks.pick('sounds_pack_load_dialog', 'Import a voice pack', PACK_FILTERS, chosen,
-                        initial_dir=sound_packs.packs_dir(self.app.root_dir))
+                        initial_dir=sound_packs.packs_dir(self.app.root_dir), remember=PACK_DIR_SETTING)
 
     def _on_restage(self, pack, users):
         """Stage the pack again on every slot that speaks with it (one edit at a time: each runs the staging

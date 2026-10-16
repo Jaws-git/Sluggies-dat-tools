@@ -50,6 +50,7 @@ import sys
 import threading
 
 import dearpygui.dearpygui as dpg
+import file_drop
 import gui_character_grid
 import gui_sounds
 import gui_effects
@@ -73,6 +74,8 @@ _CLOSE_DIALOG = 'close_running_dialog'
 _PROMPT_DIALOG = 'prompt_dialog'
 _PROMPT_FIELD = 'prompt_dialog_field'
 _MARKER_LINE = re.compile(re.escape(slogger.PROMPT_MARKER) + r'[^\n]*\n')
+_EXTENSION_COLOR = (120, 220, 120, 255)    # the built-in file dialogs' highlighted file types
+PROMPT_DIR_SETTING = 'prompt_last_dir'     # the GUI settings key: the folder the prompt's last Browse... came from
 
 # Font sizes for the UI. 16pt matches Dear PyGui's default at 1x DPI. Open
 # Sans is slightly wider than the built-in ProggyClean at the same point
@@ -218,6 +221,7 @@ class SluggiesGui:
         self.chain_output = []
         self.action_buttons = []
         self.picking = False               # a native file dialog is open
+        self.fallback_pick = None          # (on_files, on_cancel, save) of the pick a built-in file dialog serves
         self.prompt_request = None         # ask_text's popup, waiting to be shown (_show_prompt_request)
         self.prompt_closed_frame = -2      # frame the last popup was deleted in
         self.console_grow = 0              # px the window grew when the console was shown
@@ -400,13 +404,13 @@ class SluggiesGui:
             self.prompt_closed_frame = dpg.get_frame_count()
 
     def _prompt_browse(self, save):
-        """Fill the prompt's field from the Windows "Open" / "Save As" dialog, started in the field's folder."""
+        """Fill the prompt's field from the Windows "Open" / "Save As" dialog, started in the field's folder, else
+        where the last Browse... came from."""
         if self.picking:
             return
         self.picking = True
         current = dpg.get_value(_PROMPT_FIELD).strip().strip('"')
-        initial = next((d for d in (os.path.dirname(current), self.root_dir) if d and os.path.isdir(d)),
-                       self.root_dir)
+        initial = self.start_dir(os.path.dirname(current), self.settings.get(PROMPT_DIR_SETTING), self.root_dir)
         owner = native_dialog.find_owner_window(_VIEWPORT_TITLE)
 
         def work():
@@ -422,22 +426,64 @@ class SluggiesGui:
     def _browse_done(self, result):
         self.picking = False
         if result and dpg.does_item_exist(_PROMPT_FIELD):
+            self.remember_dir(PROMPT_DIR_SETTING, result[0])
             dpg.set_value(_PROMPT_FIELD, result[0])
 
     # ------------------------------------------------------------------ files
+    def start_dir(self, *dirs):
+        """The first existing folder of ``dirs`` (None / '' skipped), else 2_Output_Assets, else the repo root."""
+        return next((d for d in (*dirs, self.models_dir) if d and os.path.isdir(d)), self.root_dir)
+
+    def remember_dir(self, setting, path):
+        """Store the folder of ``path`` under GUI settings key ``setting`` (a failed write is ignored: the
+        folder is just not remembered)."""
+        folder = os.path.dirname(os.path.abspath(path))
+        if os.path.isdir(folder):
+            try:
+                self.settings.set(setting, folder)
+            except OSError:
+                pass
+
+    def add_file_dialog(self, tag, extensions, color=_EXTENSION_COLOR, default_filename=''):
+        """A hidden built-in file dialog ``tag`` listing ``extensions`` (Dear PyGui filter strings, '.*' for every
+        file): ``pick_files``' fallback, whose result goes to that pick's callbacks."""
+        with dpg.file_dialog(directory_selector=False, show=False, modal=True, tag=tag, width=760, height=460,
+                             callback=self._fallback_chosen, cancel_callback=lambda *_: self._fallback_done(None),
+                             default_path=self.start_dir(), default_filename=default_filename):
+            for ext in extensions:
+                dpg.add_file_extension(ext, color=color)
+
+    def _fallback_chosen(self, _sender, app_data):
+        """A save takes the typed name; an open takes the selected files first, as ``file_path_name`` can end in
+        the '.*' filter instead of the file's extension."""
+        app_data = app_data or {}
+        save = self.fallback_pick is not None and self.fallback_pick[2]
+        selected = [] if save else list(app_data.get('selections', {}).values())
+        self._fallback_done(selected or [app_data.get('file_path_name')])
+
+    def _fallback_done(self, paths):
+        pick, self.fallback_pick = self.fallback_pick, None
+        if pick is not None:
+            self._files_done(None, *pick[:2], [p for p in paths or () if p], None)
+
     def pick_files(self, fallback_tag, title, filters, on_files, on_cancel=None, multi=False, initial_dir=None,
-                   save=False, default_ext=None):
+                   save=False, default_ext=None, remember=None):
         """Ask for files: the Windows "Open" dialog (``save``: "Save As") when available (``native_dialog``),
-        else the Dear PyGui dialog ``fallback_tag``, whose own callbacks handle the result. ``on_files(paths)`` /
-        ``on_cancel()`` run on the GUI thread. ``initial_dir``: where it starts (default 2_Output_Assets). False
-        when a native dialog is already open."""
-        if not native_dialog.enabled():
-            dpg.show_item(fallback_tag)
-            return True
+        else the built-in dialog ``fallback_tag`` (``add_file_dialog``). ``on_files(paths)`` (never empty) /
+        ``on_cancel()`` run on the GUI thread. It starts in the folder the last pick came from (GUI settings key
+        ``remember``, updated by each pick), else in ``initial_dir``, else in 2_Output_Assets. False when a native
+        dialog is already open."""
         if self.picking:
             return False
+        initial = self.start_dir(self.settings.get(remember) if remember else None, initial_dir)
+        if remember:
+            def on_files(paths, _on_files=on_files):
+                self.remember_dir(remember, paths[0])
+                _on_files(paths)
+        if not native_dialog.enabled():
+            self._show_fallback(fallback_tag, initial, save, on_files, on_cancel)
+            return True
         self.picking = True
-        initial = next((d for d in (initial_dir, self.models_dir) if d and os.path.isdir(d)), self.root_dir)
         owner = native_dialog.find_owner_window(_VIEWPORT_TITLE)
 
         def work():
@@ -446,15 +492,22 @@ class SluggiesGui:
                                                              default_ext), None
             except Exception as exc:          # any failure: the built-in dialog takes over
                 result, error = None, str(exc)
-            self.output_queue.put(('files', fallback_tag, on_files, on_cancel, result, error))
+            self.output_queue.put(('files', (fallback_tag, initial, save), on_files, on_cancel, result, error))
         threading.Thread(target=work, daemon=True).start()
         return True
 
-    def _files_done(self, fallback_tag, on_files, on_cancel, result, error):
+    def _show_fallback(self, tag, initial, save, on_files, on_cancel):
+        self.fallback_pick = (on_files, on_cancel, save)
+        dpg.configure_item(tag, default_path=initial)
+        dpg.show_item(tag)
+
+    def _files_done(self, fallback, on_files, on_cancel, result, error):
+        """A pick's result: ``fallback`` is (built-in dialog tag, start folder, save) to try when the native dialog
+        failed (``error``)."""
         self.picking = False
         if error is not None:
             self._log_line(f'Windows file dialog failed ({error}); using the built-in one.', _PROMPT_COLOR)
-            dpg.show_item(fallback_tag)
+            self._show_fallback(*fallback, on_files, on_cancel)
         elif result:
             on_files(result)
         elif on_cancel is not None:
@@ -682,12 +735,12 @@ class SluggiesGui:
             dpg.add_text('Export the models, icons and sounds from 1_Input to 2_Output_Assets.')
             models = dpg.add_checkbox(label='Export .sluggies', tag='exp_models', default_value=True,
                                       callback=lambda *_: self._export_options())
+            dpg.add_checkbox(label='Also Write .glb files', tag='exp_glb', default_value=True,
+                                         callback=lambda *_: self._export_options())
             dpg.add_checkbox(label='Untangle Textures (overwrites 3_Output_Dat/dt_na.dat and main.dol)', tag='exp_untangle')
             icons = dpg.add_checkbox(label='Export Icons', tag='exp_icons', default_value=True)
-            dpg.add_checkbox(label='Also write .glb files', tag='exp_glb', default_value=True,
-                             callback=lambda *_: self._export_options())
-            anims = dpg.add_checkbox(label='Export animations', tag='exp_anim_glb', default_value=True)
-            sounds = dpg.add_checkbox(label='Export sound files', tag='exp_sounds',
+            anims = dpg.add_checkbox(label='Export Animations', tag='exp_anim_glb', default_value=True)
+            sounds = dpg.add_checkbox(label='Export Sound Files', tag='exp_sounds',
                                       default_value=os.path.isdir(self.sound_input_dir))
             dpg.add_checkbox(label='Skip Textures', tag='exp_notex')
             dpg.add_checkbox(label='Debug (uncompressed .sluggie, byte arrays instead of xz)', tag='exp_debug')
@@ -932,6 +985,10 @@ class SluggiesGui:
         dpg.set_viewport_resize_callback(lambda *_: self.grid_tab.on_viewport_resize())
         dpg.setup_dearpygui()
         dpg.show_viewport()
+        # files dropped from Explorer: handed to the GUI thread, which finds the field they landed on
+        file_drop.install(native_dialog.find_owner_window(_VIEWPORT_TITLE),
+                          lambda paths, point: self.output_queue.put(
+                              ('call', self.maintenance_tab.on_files_dropped, paths, point)))
         self.grid_tab.request_read()
 
     def run(self):

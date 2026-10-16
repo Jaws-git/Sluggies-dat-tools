@@ -101,6 +101,17 @@ class TableTests(unittest.TestCase):
         self.assertEqual(msgs[101].decode('utf-16-be'), 'Name 101')
         self.assertEqual(msgs[names.LAST_ID + 1:], [m for m in names.messages(stock_table())[102:]])
 
+    def test_stock_table_kept(self):
+        """Without new IDs the table keeps its 104 messages and the codes their entries."""
+        stock = names.messages(stock_table())
+        msgs = names.messages(names.names_table(stock_table(), {0x0D: 'Little Toad', 0x47: 'Inky'}, extend=False))
+        self.assertEqual(len(msgs), names.STOCK_MESSAGES)
+        self.assertEqual((msgs[0x0D].decode('utf-16-be'), msgs[0x47].decode('utf-16-be')), ('Little Toad', 'Inky'))
+        self.assertEqual([m for i, m in enumerate(msgs) if i not in (0x0D, 0x47)],
+                         [m for i, m in enumerate(stock) if i not in (0x0D, 0x47)])
+        with self.assertRaises(names.NameConfigError):
+            names.names_table(stock_table(), {0x66: 'X'}, extend=False)
+
     def test_wrong_table_refused(self):
         with self.assertRaises(names.NameConfigError):
             names.names_table(names.build_table([b'\0A'] * 10), {})
@@ -138,6 +149,22 @@ def plate_bank() -> bytes:
 
 
 class PlateTests(unittest.TestCase):
+    def test_stock_plate_layout(self):
+        """Without new IDs: no rows added, no "-" cell, only the named rows repointed; ``renamed_ids`` finds them."""
+        data = plate_bank()
+        first_row = len(layout2d.Layout(data).rows)
+        with mock.patch.object(names, 'PLATE_TEMPLATE_PAGE', 0):
+            out = names.plate_layout(data, {0x0D: 'Little Toad', 0x47: 'Inky'}, first_row, new_ids=False)
+            self.assertEqual(names.renamed_ids(out), [0x0D, 0x47])
+            self.assertEqual(names.renamed_ids(data), [])
+        lay, stock = layout2d.Layout(out), layout2d.Layout(data)
+        self.assertEqual(len(lay.rows), first_row)
+        page, _z, v1, _u1, _v2, _u2 = struct.unpack('>HH4f', lay.rows[names.PLATE_ROW + 0x0D])
+        self.assertEqual((page, v1), (1, 0.0))                                         # first cell: no "-" cell
+        self.assertEqual(struct.unpack('>HH4f', lay.rows[names.PLATE_ROW + 0x47])[2] * 32, 16.0)
+        self.assertEqual([r for i, r in enumerate(lay.rows) if i - names.PLATE_ROW not in (0x0D, 0x47)],
+                         [r for i, r in enumerate(stock.rows) if i - names.PLATE_ROW not in (0x0D, 0x47)])
+
     def test_plate_page_sizes(self):
         self.assertEqual(names.plate_page(['-', 'A'])[:2], (128, 32))
         width, height, at = names.plate_page(['x'] * 160)

@@ -351,8 +351,7 @@ def _write_portraits(high_folder: str | None, portraits: dict) -> None:
         return
     missing = [view for view, image in portraits.items() if image is None]
     if missing:
-        slogger.warning(f'portraits not written ({", ".join(missing)} unreadable): a slot this export is patched '
-                        'into keeps its own', source=SOURCE)
+        slogger.warning(f'portraits not written ({", ".join(missing)} unreadable)', source=SOURCE)
         return
     icon_dir = os.path.join(high_folder, model_icons.ICON_SUBDIR)
     os.makedirs(icon_dir, exist_ok=True)
