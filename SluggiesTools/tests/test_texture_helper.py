@@ -1325,6 +1325,7 @@ class DolphinTextureNameTests(unittest.TestCase):
         self.assertEqual(dolphin_texture_basename(8, 8, 0x8, image, palette),
                          f"tex1_8x8_{xxh64(image):016x}_{xxh64(palette):016x}_8")
 
+    @unittest.skipUnless(_wimgt_available(), "wimgt not on PATH")
     def test_name_of_an_encoded_png(self):
         from tpl import xxh64
 

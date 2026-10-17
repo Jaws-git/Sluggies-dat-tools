@@ -217,10 +217,10 @@ class TestWiring(unittest.TestCase):
         self.assertLess(fixes.index('"object_mode"'), fixes.index('"reparent"'))
         self.assertLess(fixes.index('"material_defaults"'), fixes.index('"renumber_bones"'))
 
-    def test_panel_button_sits_above_free_host_bones(self):
+    def test_panel_button_sits_below_the_bones_box(self):
         source = (BLENDER_ADDON_DIR / 'SluggiesToolsPanel.py').read_text(encoding='utf-8')
         draw = source[source.index('class SLUGGIES_PT_tools'):]
-        self.assertLess(draw.index('"sluggies.check_models"'), draw.index('_draw_free_host_bones(layout'))
+        self.assertLess(draw.index('_draw_free_host_bones(box'), draw.index('"sluggies.check_models"'))
 
 
 if __name__ == '__main__':

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import ntpath
 import os
 import re
 import struct
@@ -1716,7 +1717,8 @@ _DOLPHIN_NAME = re.compile(r"^tex1_\d+x\d+(?:_m)?_[0-9a-f]{16}(?:_[0-9a-f]{16}|_
 
 def gx_format_from_dolphin_name(file_name: str) -> int | None:
     """The GX format a Dolphin dump/load file name ends in, or None for any other name."""
-    match = _DOLPHIN_NAME.match(os.path.splitext(os.path.basename(file_name))[0])
+    # ntpath splits on both separators, so a Windows path also works on Linux
+    match = _DOLPHIN_NAME.match(os.path.splitext(ntpath.basename(file_name))[0])
     if match is None or int(match.group(1)) not in _GX_FORMATS:
         return None
     return int(match.group(1))

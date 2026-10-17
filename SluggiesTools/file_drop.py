@@ -22,8 +22,10 @@ _WM_COPYGLOBALDATA = 0x0049
 _MSGFLT_ALLOW = 1
 _SUBCLASS_ID = 0x51D6
 
-_SUBCLASSPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT, wintypes.WPARAM,
-                                   wintypes.LPARAM, ctypes.c_size_t, ctypes.c_size_t)
+# WINFUNCTYPE exists only on Windows; elsewhere the module still imports and ``install`` returns False
+_SUBCLASSPROC = (ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT, wintypes.WPARAM,
+                                    wintypes.LPARAM, ctypes.c_size_t, ctypes.c_size_t)
+                 if hasattr(ctypes, 'WINFUNCTYPE') else None)
 _installed = {}          # hwnd -> the subclass procedure, kept alive as long as the window
 
 
