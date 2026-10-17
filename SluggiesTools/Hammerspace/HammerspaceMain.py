@@ -7537,12 +7537,13 @@ def BuildModelBlock(
     """Assemble a model block without modifying output DAT, DOL, or FST files.
 
     When ``section_modes.tex == 'build'`` and the sluggie has
-    ``ReimportTextures`` set, the TEX section is rebuilt from the edited PNGs
-    in the sluggie's ``tex/`` folder via :func:`BuildTEX`. ``sluggie_path``
-    must then point at the ``.sluggies`` file so the texture plan builder can
-    resolve the PNGs. Without ``ReimportTextures`` (or when ``sluggie_path``
-    is absent), the rebuilt TEX section clones every texture payload from
-    INPUT dt_na.dat, which is byte-equivalent to the clone path.
+    ``ReimportTextures`` set, the donor textures are re-encoded from the edited
+    PNGs in the sluggie's ``tex/`` folder via :func:`BuildTEX`; without it they
+    are cloned from INPUT dt_na.dat. ``AdditionalTextureDescriptors`` are
+    encoded and appended either way. ``sluggie_path`` must point at the
+    ``.sluggies`` file whenever a PNG is read. With neither, the rebuilt TEX
+    section clones every texture payload, which is byte-equivalent to the
+    clone path.
 
     A slot export's ``DonorEntry`` is the donor instead of the DOL route:
     every donor read comes from it (``_open_source``).
@@ -7587,15 +7588,9 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
     facial_rebuilders: dict = {}
     # A low-poly model has no TEX section: its assignments are indices into
     # the high-poly partner's TEX (checked against it in CheckLodPartner).
-    if model.get('DesiredTextureAssignments') and model.get('TextureDescriptors') and (
-        modes.gpl != 'build'
-        or modes.tex != 'build'
-        or not model.get('ReimportTextures')
-    ):
-        raise ValueError(
-            'DesiredTextureAssignments require GPL and TEX build modes with '
-            'ReimportTextures enabled'
-        )
+    # New PNGs (AdditionalTextureDescriptors) need the TEX builder, whatever
+    # ReimportTextures says: that flag only decides whether the donor
+    # textures are re-encoded from tex/ or cloned.
     if model.get('DesiredTextureAssignments') and modes.gpl != 'build':
         raise ValueError('DesiredTextureAssignments require the GPL build mode')
     custom_submesh_additional_texture_names = {
@@ -7603,12 +7598,10 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
         for cs in model.get('CustomSubmeshes') or []
         for owner in [cs] + list(cs.get('AdditionalSurfaces') or [])
     } - {None}
-    if custom_submesh_additional_texture_names and (
-        modes.tex != 'build' or not model.get('ReimportTextures')
-    ):
+    if custom_submesh_additional_texture_names and modes.tex != 'build':
         raise ValueError(
             "CustomSubmeshes with TextureAssignment.AdditionalTextureFileName require "
-            "SectionModes.tex='build' with ReimportTextures enabled"
+            "SectionModes.tex='build'"
         )
     new_surface_additional_texture_names = {
         (surface.get('TextureAssignment') or {}).get('AdditionalTextureFileName')
@@ -7616,14 +7609,16 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
         for rebuild_key in ('RigidRebuild', 'SkinnedRebuild')
         for surface in (sub.get(rebuild_key) or {}).get('NewSurfaces') or []
     } - {None}
-    if new_surface_additional_texture_names and (
-        modes.tex != 'build' or not model.get('ReimportTextures')
-    ):
+    if new_surface_additional_texture_names and modes.tex != 'build':
         raise ValueError(
             "RigidRebuild/SkinnedRebuild new surfaces with TextureAssignment.AdditionalTextureFileName "
-            "require SectionModes.tex='build' with ReimportTextures enabled"
+            "require SectionModes.tex='build'"
         )
-    if modes.tex == 'build' and model.get('ReimportTextures') and texture_plan is None:
+    if model.get('AdditionalTextureDescriptors') and modes.tex != 'build':
+        raise ValueError("AdditionalTextureDescriptors require SectionModes.tex='build'")
+    if modes.tex == 'build' and texture_plan is None and (
+        model.get('ReimportTextures') or model.get('AdditionalTextureDescriptors')
+    ):
         _merge_duplicate_texture_additions(model, sluggie_path)
     chunk_number = model['ChunkNumber']
     file_index = model['FileIndex']
@@ -7730,10 +7725,6 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
                 'a caller-supplied texture_plan cannot be combined with '
                 'ReimportTextures, png overrides, or AdditionalTextureDescriptors'
             )
-        if additional_texture_descriptors and not model.get('ReimportTextures'):
-            raise ValueError(
-                "AdditionalTextureDescriptors require 'ReimportTextures' to be enabled"
-            )
         if texture_plan is None and (
             model.get('ReimportTextures') or tex_png_overrides or additional_texture_descriptors
         ):
@@ -7754,6 +7745,7 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
             plan_kwargs = {
                 'allow_dimension_change': True,
                 'png_overrides': tex_png_overrides,
+                'reimport_donor_textures': bool(model.get('ReimportTextures')),
             }
             if additions:
                 plan_kwargs['additional_descriptors'] = additions

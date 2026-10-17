@@ -13,6 +13,7 @@ import bpy
 from bpy.props import BoolProperty, CollectionProperty, IntProperty, StringProperty
 
 from . import FieldCodec
+from . import ModelCheckCore
 from . import TextureSlotsCore
 from .ExportSluggies import _connected_image_texture_nodes
 
@@ -44,12 +45,24 @@ def _lod_pair(context, arm_obj):
         return None, None
     others = [o for o in _sluggies_armatures(context) if o is not arm_obj]
     if TextureSlotsCore.is_low_path(path):
-        high = next((o for o in others
-                     if TextureSlotsCore.is_lod_pair(o.get('SluggieFilePath') or '', path)), None)
+        high = _pick_partner_armature([o for o in others
+                                       if TextureSlotsCore.is_lod_pair(o.get('SluggieFilePath') or '', path)], path)
         return high, arm_obj
-    low = next((o for o in others
-                if TextureSlotsCore.is_lod_pair(path, o.get('SluggieFilePath') or '')), None)
+    low = _pick_partner_armature([o for o in others
+                                  if TextureSlotsCore.is_lod_pair(path, o.get('SluggieFilePath') or '')], path)
     return arm_obj, low
+
+
+def _pick_partner_armature(matches, path):
+    """The armature among *matches* (all from the partner folder) whose file
+    pairs with *path*: several variants of one model may be loaded. The
+    first match when the rule leaves several."""
+    if len(matches) <= 1:
+        return matches[0] if matches else None
+    by_path = {}
+    for obj in matches:
+        by_path.setdefault(obj.get('SluggieFilePath') or '', obj)
+    return by_path.get(ModelCheckCore.pick_partner(list(by_path), path), matches[0])
 
 
 def _low_materials(low_arm):

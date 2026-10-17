@@ -134,27 +134,35 @@ def gather_scopes(context):
     return list(scopes.values())
 
 
-def export_scope(context, model, filepath, objects, reimport_textures):
-    """The exporter's scope: the armature the exporter itself uses and the
-    selected meshes it exports."""
-    meshes = [
+def _sluggies_meshes(objects):
+    return [
         obj for obj in objects
         if obj.type == 'MESH' and (obj.get('SluggiesCustomSubmesh')
                                    or all(prop in obj for prop in core.REQUIRED_PROPS))
     ]
-    # Only an armature the selection itself names: the exporter's scene-wide
-    # fallback could pick another model's armature (High and Low in one
-    # scene) and report its bones as errors here.
-    armature = None
-    for obj in meshes:
+
+
+def selection_armature(objects):
+    """The Sluggies armature *objects* (a selection) name: the parent or
+    Armature modifier target of a selected Sluggies mesh, else a selected
+    armature. Only one the selection itself names: a scene-wide fallback
+    could pick another model's armature (High and Low in one scene). Its
+    ``SluggieFilePath`` is the exporter's source file."""
+    objects = list(objects)
+    for obj in _sluggies_meshes(objects):
         candidates = [_parent_armature(obj)] + _modifier_armatures(obj)
         armature = next((a for a in candidates if is_sluggies_armature(a)), None)
         if armature is not None:
-            break
-    if armature is None:
-        armature = next((o for o in objects if is_sluggies_armature(o)), None)
+            return armature
+    return next((o for o in objects if is_sluggies_armature(o)), None)
+
+
+def export_scope(context, model, filepath, objects, reimport_textures):
+    """The exporter's scope: the armature the exporter itself uses and the
+    selected meshes it exports."""
+    meshes = _sluggies_meshes(objects)
     return ModelScope(
-        armature=armature, meshes=meshes, model=model,
+        armature=selection_armature(objects), meshes=meshes, model=model,
         sluggie_path=filepath, for_export=True, reimport_textures=reimport_textures,
     )
 
@@ -230,7 +238,7 @@ def check_sluggie_file(context, scope):
     if not scope.sluggie_path:
         yield Finding("sluggie_path", WARNING, scope.name, "No source .sluggie",
                       "The armature does not record the .sluggie it was imported from, so most "
-                      "checks and Add submesh/material can't run. Re-import the model.")
+                      "checks and Add New Submesh/Add material can't run. Re-import the model.")
     elif scope.load_error:
         yield Finding("sluggie_path", ERROR, scope.name, "Source .sluggie " + scope.load_error.split(' ')[0],
                       f"The armature's source file {scope.sluggie_path} is {scope.load_error}. "
@@ -345,22 +353,16 @@ def check_root_scale(context, scope):
 def check_texture_reimport_hint(context, scope):
     if scope.for_export or scope.model is None:
         return
-    descriptors, tex_dir, owns = scope.texture_context()
+    # New PNGs are added on every export; only edits to the model's own
+    # textures need the toggle. A changed size is the edit that shows.
+    _descriptors, tex_dir, owns = scope.texture_context()
     if not tex_dir or not owns:
         return
-    names = {d.get("TextureFileName") for d in descriptors or []}
-    new = set()
-    for obj in scope.meshes:
-        for mat in _materials(obj):
-            for node in ex._connected_image_texture_nodes(mat):
-                path = _image_path(node.image) if node.image is not None else ""
-                if path and os.path.basename(path) not in names:
-                    new.add(os.path.basename(path))
     resized = ExportMode.texture_size_changes(scope.model.get("TextureDescriptors") or [], tex_dir)
-    if new or resized:
+    if resized:
         yield Finding("reimport_hint", INFO, scope.name, "Export with Reimport textures",
-                      "New or changed textures: " + ", ".join(sorted(new | set(resized))[:8])
-                      + ". Enable 'Reimport textures from tex folder' when exporting.")
+                      "Original textures with a new size: " + ", ".join(sorted(resized)[:8])
+                      + ". Enable 'Reimport textures from tex folder' when exporting to write them.")
 
 
 # ---------------------------------------------------------------------------
@@ -381,7 +383,7 @@ def check_mesh_props(context, scope):
                 yield Finding("mesh_props", WARNING, obj.name, "Not linked to a submesh",
                               f"{obj.name} lacks the VertexBuffer* properties that tie it to a "
                               "submesh of the .sluggie, and no submesh matches it, so it is not "
-                              "exported. Re-import the model, or make new parts with Add submesh.")
+                              "exported. Re-import the model, or make new parts with Add New Submesh.")
             else:
                 yield Finding("mesh_props", WARNING, obj.name, "Submesh link lost",
                               f"{obj.name} lacks the VertexBuffer* properties that tie it to "
@@ -420,7 +422,7 @@ def check_duplicate_claims(context, scope):
         if len(objs) > 1:
             yield Finding("duplicate_custom", ERROR, objs[1].name, "Duplicated custom submesh",
                           f"{', '.join(o.name for o in objs)} share CustomSubmeshId {custom_id} "
-                          "(copied with Shift+D?). Make each new part with Add submesh.")
+                          "(copied with Shift+D?). Make each new part with Add New Submesh.")
 
 
 def check_armature_link(context, scope):
@@ -653,8 +655,6 @@ def check_textures(context, scope):
             new = bool(mat.get("SluggiesNewSurface")) or custom
             if not (mat.get("SurfaceId") or mat.get("SluggiesNewSurface")):
                 continue
-            # A texture problem blocks the export when the export reads the PNG.
-            gate = scope.reimport_textures or new
             nodes = ex._connected_image_texture_nodes(mat)
             if any(getattr(node, "image", None) is None for node in nodes):
                 yield Finding("empty_node", ERROR, obj.name, "Texture node empty",
@@ -668,10 +668,14 @@ def check_textures(context, scope):
                                   "load a PNG before exporting")
                 continue
             if len(nodes) > 1:
-                if gate:
-                    yield Finding("multi_image", ERROR, obj.name, "Several textures in material",
-                                  f"Multiple textures in one material are not supported: {mat.name}")
+                yield Finding("multi_image", ERROR, obj.name, "Several textures in material",
+                              f"Multiple textures in one material are not supported: {mat.name}")
                 continue
+            # A texture problem blocks the export when the export reads the
+            # PNG: a new PNG always, the model's own textures only with
+            # Reimport textures.
+            gate = scope.reimport_textures or new \
+                or os.path.basename(_image_path(nodes[0].image)) not in reserved
             primary = custom and str(mat.get("SurfaceId") or "").startswith(f"{obj.get('CustomSubmeshId')}_ds")
             if scope.for_export and (not gate or (new and mat not in used and not primary)):
                 # Export resolves only the new surfaces faces use.
@@ -757,9 +761,14 @@ def check_low_high_bones(scopes):
         for obj in low.meshes:
             used.update(vg.name for vg in obj.vertex_groups)
         low_added = {b.name for b in _added_bones(low.armature)} & used
-        for high in scopes:
-            if high.armature is None or not core.low_partner_matches(low.folder, high.folder):
-                continue
+        highs = [high for high in scopes
+                 if high.armature is not None and core.low_partner_matches(low.folder, high.folder)]
+        # Several variants of the High model loaded: only the one that pairs
+        # with this Low file (all of them when the rule cannot tell).
+        partner = core.pick_partner([high.sluggie_path for high in highs], low.sluggie_path)
+        if partner is not None and len(highs) > 1:
+            highs = [high for high in highs if high.sluggie_path == partner][:1]
+        for high in highs:
             missing = sorted(low_added - {b.name for b in _added_bones(high.armature)})
             if missing:
                 yield Finding("low_high_bones", WARNING, low.name, "Added bones missing on High",

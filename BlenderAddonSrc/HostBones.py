@@ -22,7 +22,7 @@ GEO_ID_FREE = 0xFFFF
 # SluggiesInheritTransform/SluggiesUserAdded on every bone to export
 # BoneHierarchyEdited; armatures imported before these were written lack them.
 BONE_METADATA_VERSION = 3
-RE_IMPORT_MESSAGE = "Re-import this model to enable Add submesh"
+RE_IMPORT_MESSAGE = "Re-import this model to enable Add New Submesh"
 
 STATUS_EXCLUDED = "excluded"
 STATUS_RECOMMENDED = "recommended"

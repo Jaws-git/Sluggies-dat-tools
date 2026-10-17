@@ -1029,6 +1029,40 @@ class BuildHammerspaceTexturePlanTests(unittest.TestCase):
             self.assertEqual(plan[1].template_texture_index, 0)
             self.assertEqual((plan[1].width, plan[1].height), (12, 4))
 
+    def test_without_donor_reimport_only_additions_are_encoded(self):
+        """reimport_donor_textures=False: the donor PNGs are neither read nor
+        required (BuildTEX clones them); the addition keeps its index."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sluggie = self._make_model(temp_dir, {"new.png": (12, 4)})
+            descriptors = [
+                {"TextureIndex": 0, "TextureFileName": "0.png", "Width": 8, "Height": 8, "Format": 0xE},
+                {"TextureIndex": 1, "TextureFileName": "1.png", "Width": 8, "Height": 8, "Format": 0xE},
+            ]
+            encoded = []
+
+            def fake_encoder(png_path, gx_format, palette_format=None, **kwargs):
+                encoded.append(os.path.basename(png_path))
+                return _fake_parsed(
+                    width=kwargs["expected_width"],
+                    height=kwargs["expected_height"],
+                    gx_format=gx_format,
+                )
+
+            for allow_dimension_change in (False, True):
+                encoded.clear()
+                plan = build_hammerspace_texture_plan(
+                    sluggie,
+                    descriptors,
+                    encoder=fake_encoder,
+                    allow_dimension_change=allow_dimension_change,
+                    additional_descriptors=(AdditionalTextureDescriptor("new.png", 1),),
+                    reimport_donor_textures=False,
+                )
+                self.assertEqual(encoded, ["new.png"])
+                self.assertEqual([entry.texture_index for entry in plan], [2])
+                self.assertEqual(plan[0].template_texture_index, 1)
+                self.assertEqual(plan.skipped, ())
+
     def test_addition_inherits_no_size_or_footprint_from_its_template(self):
         """An addition clones the template's format, never its dimensions or
         its donor slot footprint: the PNG is the only size that matters, and
@@ -2319,6 +2353,19 @@ class ResolvePngToTextureTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "expected exactly one .sluggie"):
                 resolve_png_to_texture(png)
+
+    def test_variant_sluggie_uses_the_exported_file(self):
+        # A variant saved under a new name sits next to the exported file.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model_dir, tex_dir = self._make_tree(
+                temp_dir,
+                descriptors=[{"TextureIndex": 0, "TextureFileName": "0.png", "Width": 64, "Height": 64, "Format": 0x6}],
+                sluggie_names=("model_red.sluggie", "model.sluggie"),
+            )
+
+            target = resolve_png_to_texture(os.path.join(tex_dir, "0.png"))
+
+            self.assertEqual(os.path.basename(target.sluggie_path), "model.sluggie")
 
     def test_no_matching_descriptor(self):
         with tempfile.TemporaryDirectory() as temp_dir:

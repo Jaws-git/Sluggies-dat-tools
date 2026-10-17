@@ -84,16 +84,10 @@ class TriangulateTests(unittest.TestCase):
 
 
 class CustomSubmeshExportGuardTests(unittest.TestCase):
-    def test_message_requires_reimport_textures_and_names_objects(self):
-        message = _load_exporter_function(
-            '_custom_submesh_export_toggles_required_message'
-        )(['CustomHat', 'CustomCape'])
-
-        self.assertNotIn('Hammerspace Mode', message)
-        self.assertIn('Reimport textures', message)
-        self.assertIn('CustomHat, CustomCape', message)
-
-    def test_execute_cancels_selected_custom_submeshes_without_reimport_textures(self):
+    def test_new_textures_do_not_need_reimport_textures(self):
+        """Since 2026-10-17 Reimport textures covers only the model's original
+        textures: no new PNG (custom submesh, new material, donor material)
+        cancels the export without it."""
         tree = ast.parse(EXPORTER_PATH.read_text(encoding='utf-8'))
         export_class = next(
             node for node in tree.body
@@ -103,15 +97,11 @@ class CustomSubmeshExportGuardTests(unittest.TestCase):
             node for node in export_class.body
             if isinstance(node, ast.FunctionDef) and node.name == 'execute'
         )
-        guard = next(
-            node for node in ast.walk(execute)
-            if isinstance(node, ast.If)
-            and 'custom_submesh_candidates' in ast.unparse(node.test)
-            and 'not self.reimport_textures' in ast.unparse(node.test)
-        )
-        guard_body = ast.unparse(ast.Module(body=guard.body, type_ignores=[]))
-        self.assertIn('_custom_submesh_export_toggles_required_message', guard_body)
-        self.assertIn("return {'CANCELLED'}", guard_body)
+        gates = [
+            ast.unparse(node.test) for node in ast.walk(execute)
+            if isinstance(node, ast.If) and 'not self.reimport_textures' in ast.unparse(node.test)
+        ]
+        self.assertEqual(gates, [])
 
 
 def _execute_source():
@@ -256,9 +246,6 @@ class ExportExecuteWiringTests(unittest.TestCase):
         # Texture assignments are resolved before any entry is encoded.
         self.assertLess(source.index('_resolve_custom_submesh_texture_changes('),
                         source.index('encode_custom_submesh('))
-        # ... and only after the Hammerspace/Reimport toggle guard.
-        self.assertLess(source.index('_custom_submesh_export_toggles_required_message'),
-                        source.index('encode_custom_submesh('))
 
     def test_execute_writes_merges_and_counts_custom_submeshes(self):
         source = _execute_source()
@@ -327,7 +314,7 @@ class ValidateCustomSubmeshesWiringTests(unittest.TestCase):
         source = _execute_source()
         guard = "context.mode.startswith('EDIT')"
         self.assertIn(guard, source)
-        self.assertLess(source.index(guard), source.index('open(self.filepath'))
+        self.assertLess(source.index(guard), source.index('open(source_path'))
 
     def test_execute_refuses_out_of_step_added_bone_names_before_bone_export(self):
         source = _execute_source()

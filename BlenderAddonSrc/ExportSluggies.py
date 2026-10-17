@@ -22,6 +22,7 @@ from . import SkinnedRebuildExport
 from . import TemplateSources
 from . import TextureSlotsCore
 from . import HostBones
+from . import ModelCheckCore
 
 
 def _to_bytes(data) -> bytes:
@@ -2586,12 +2587,17 @@ def _resolve_material_texture_changes(
     path_resolver=os.path.abspath,
     validate_texture_files=True,
     skip_unset_images=False,
+    require_donor_files=True,
 ):
     """Classify connected material images without mutating Blender or JSON data.
 
     *skip_unset_images*: an image node without an image keeps the material's
     texture instead of failing (a `_L_` model, whose PNGs live in the main
-    model's folder and may not have been found on import)."""
+    model's folder and may not have been found on import).
+
+    *require_donor_files* False: only a new PNG (an addition) must exist in
+    tex/; an image named like a donor texture is not read (Reimport textures
+    off: the donor payloads are kept)."""
     descriptor_by_name = {
         descriptor.get("TextureFileName"): int(descriptor["TextureIndex"])
         for descriptor in descriptors
@@ -2643,9 +2649,10 @@ def _resolve_material_texture_changes(
                     f"Material '{material.name}' image must be a PNG: {file_name}"
                 )
             local_path = os.path.join(tex_dir, file_name)
+            desired_index = descriptor_by_name.get(file_name)
             if validate_texture_files and (
-                not file_name or not os.path.isfile(local_path)
-            ):
+                require_donor_files or desired_index is None
+            ) and not os.path.isfile(local_path):
                 raise ValueError(
                     f"Texture PNG for material '{material.name}' must exist in "
                     f"the resolved tex folder: {local_path}"
@@ -2657,7 +2664,6 @@ def _resolve_material_texture_changes(
                     f"Material '{material.name}' has invalid donor TextureIndex "
                     f"{original_index}"
                 )
-            desired_index = descriptor_by_name.get(file_name)
             if desired_index is None:
                 key = (file_name, _template_signature(descriptors[original_index]))
                 desired_index = appended_index_by_key.get(key)
@@ -3338,21 +3344,34 @@ def _resolve_export_texture_context(sluggie_path, model):
             )
         except OSError:
             continue
+        owners = {}
         for sluggie_name in sluggie_names:
             candidate_path = os.path.join(sibling_dir, sluggie_name)
             try:
                 candidate_model = FieldCodec.load_sluggie(candidate_path).get('SluggiesModel', {})
             except (OSError, ValueError):
                 continue
-            descriptors = candidate_model.get('TextureDescriptors') or []
-            if descriptors:
-                candidates.append((
-                    descriptors + _partner_added_texture_descriptors(
-                        descriptors,
-                        candidate_model.get('AdditionalTextureDescriptors') or [],
-                    ),
-                    tex_dir,
-                ))
+            if candidate_model.get('TextureDescriptors'):
+                owners[candidate_path] = candidate_model
+        # Several High files in one folder (variants saved under new names):
+        # the one named like this Low file, else the exported one.
+        owner_path = ModelCheckCore.pick_partner(list(owners), sluggie_path)
+        if owner_path is None and owners:
+            raise ValueError(
+                f"Low-poly model '{folder_name}': the main model folder '{sibling_name}' holds several "
+                f".sluggie files ({', '.join(os.path.basename(p) for p in owners)}) and none is named "
+                "like this one or after its folder; rename the one to pair with"
+            )
+        if owner_path is not None:
+            owner_model = owners[owner_path]
+            descriptors = owner_model['TextureDescriptors']
+            candidates.append((
+                descriptors + _partner_added_texture_descriptors(
+                    descriptors,
+                    owner_model.get('AdditionalTextureDescriptors') or [],
+                ),
+                tex_dir,
+            ))
 
     if len(candidates) > 1:
         raise ValueError(
@@ -3362,22 +3381,6 @@ def _resolve_export_texture_context(sluggie_path, model):
         descriptors, tex_dir = candidates[0]
         return descriptors, tex_dir, False
     return [], os.path.join(model_dir, 'tex'), False
-
-
-def _texture_export_toggles_required_message(material_names):
-    return (
-        "Texture change detected but 'Reimport textures' is not enabled. "
-        "Enable it before exporting. "
-        f"Materials: [{', '.join(material_names)}]"
-    )
-
-
-def _custom_submesh_export_toggles_required_message(object_names):
-    return (
-        "Custom submeshes require 'Reimport textures' to be enabled. "
-        "Enable it before exporting. "
-        f"Objects: [{', '.join(object_names)}]"
-    )
 
 
 # Runtime testing found that cross-mode reassignment is unsafe. In particular,
@@ -3961,7 +3964,10 @@ def _encode_face_surface_assignment(obj, display_states, surf_mat, use_compressi
 class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
     bl_idname = "sluggies.export_json"
     bl_label = "Export Sluggers intermediate"
-    bl_description = "Write edited vertex data back into a Sluggers intermediate JSON file"
+    bl_description = (
+        "Write the edited model into a .sluggie file: the one it was imported "
+        "from, or a new file name (the original is left untouched)"
+    )
     bl_options = {"UNDO"}
 
     filename_ext = ".sluggie"
@@ -3978,21 +3984,35 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
     reimport_textures: BoolProperty(  # type: ignore[valid-type]
         name="Reimport textures from tex folder",
         description=(
-            "When patching, replace the model's existing texture payloads in "
+            "When patching, replace the model's original textures in "
             "dt_na.dat with the edited PNGs from the model's tex/ folder. "
             "A PNG whose size changed makes the export use Hammerspace, "
-            "which rebuilds the TEX section."
+            "which rebuilds the TEX section. New textures (new PNGs on "
+            "materials, custom submeshes and new materials) are always "
+            "added, with or without this option."
         ),
         default=False,
     )
 
+    def invoke(self, context, event):
+        # The file browser starts on the armature's source .sluggie: export
+        # back into it, or type a new name to save a variant.
+        from . import ModelCheck
+        arm_obj = ModelCheck.selection_armature(context.selected_objects)
+        source_path = str(arm_obj.get('SluggieFilePath') or "") if arm_obj is not None else ""
+        if source_path and not self.filepath:
+            self.filepath = source_path
+            context.window_manager.fileselect_add(self)
+            return {"RUNNING_MODAL"}
+        return super().invoke(context, event)
+
     def execute(self, context):
-        # --- load and sanity-check the target JSON ---
+        # --- load and sanity-check the source and target ---
         if not getattr(self, "filepath", "").strip():
             self.report(
                 {"ERROR"},
-                "No target .sluggie file was selected. Select the original "
-                ".sluggie file to update and export again.",
+                "No target .sluggie file was selected. Pick the .sluggie to "
+                "update or type a new file name, and export again.",
             )
             return {"CANCELLED"}
 
@@ -4007,15 +4027,37 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             )
             return {"CANCELLED"}
 
+        # The model is read from the armature's source .sluggie and written
+        # to the target (self.filepath), which may be a new file in any
+        # folder. Every path-relative lookup below (tex/, the Low model's
+        # partner) uses the target's folder. An armature without a source
+        # (older imports) or a missing source reads the target, as before.
+        from . import ModelCheck
+        arm_obj = ModelCheck.selection_armature(context.selected_objects)
+        source_path = str(arm_obj.get('SluggieFilePath') or "") if arm_obj is not None else ""
+        if not source_path or not os.path.isfile(source_path):
+            if source_path:
+                self.report({"WARNING"},
+                    f"The armature's source file {source_path} is missing; reading the target instead.")
+            source_path = self.filepath
+        if not os.path.isfile(source_path):
+            self.report({"ERROR"},
+                f"{os.path.basename(self.filepath)} does not exist yet and the armature records no "
+                "source .sluggie to read the model from. Re-import the model, or pick the .sluggie it "
+                "came from.")
+            return {"CANCELLED"}
+        save_as = (os.path.normcase(os.path.abspath(source_path))
+                   != os.path.normcase(os.path.abspath(self.filepath)))
+
         try:
-            with open(self.filepath, 'rb') as f:
+            with open(source_path, 'rb') as f:
                 content = f.read().strip()
         except Exception as e:
             self.report({"ERROR"}, f"Could not read file: {e}")
             return {"CANCELLED"}
 
         if not content:
-            self.report({"ERROR"}, "Target .sluggie file is empty.")
+            self.report({"ERROR"}, f"Source .sluggie file {source_path} is empty.")
             return {"CANCELLED"}
 
         try:
@@ -4027,6 +4069,17 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         if "SluggiesModel" not in data:
             self.report({"ERROR"}, "JSON does not contain a 'SluggiesModel' entry.")
             return {"CANCELLED"}
+
+        if save_as and os.path.exists(self.filepath):
+            try:
+                target_model = FieldCodec.load_sluggie(self.filepath).get("SluggiesModel")
+            except (OSError, ValueError, AttributeError):
+                target_model = None
+            overwrite_error = ModelCheckCore.overwrite_error(
+                data["SluggiesModel"], target_model, os.path.basename(self.filepath))
+            if overwrite_error:
+                self.report({"ERROR"}, overwrite_error)
+                return {"CANCELLED"}
 
         use_compression = data["SluggiesModel"].get("UseCompression", True)
         submeshes = data["SluggiesModel"].get("Submeshes", [])
@@ -4046,21 +4099,6 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             and all(prop in obj for prop in REQUIRED_PROPS)
         ]
 
-        # A `_L_` model has no texture section of its own (it borrows the main
-        # model's), so the toggle has nothing to reimport there and is never
-        # required; its texture context is resolved below regardless.
-        if (
-            custom_submesh_candidates and not self.reimport_textures
-            and data["SluggiesModel"].get("TextureDescriptors")
-        ):
-            self.report(
-                {"ERROR"},
-                _custom_submesh_export_toggles_required_message(
-                    [obj.name for obj in custom_submesh_candidates]
-                ),
-            )
-            return {"CANCELLED"}
-
         if not candidates and not custom_submesh_candidates:
             self.report({"ERROR"},
                 "No selected mesh objects with Sluggies custom properties found. "
@@ -4074,8 +4112,8 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             return {"CANCELLED"}
 
         # The Check Models error checks on the selected model, before anything
-        # is encoded. Imported here: ModelCheck imports this module.
-        from . import ModelCheck
+        # is encoded (ModelCheck is imported above, in the function: it
+        # imports this module).
         check_errors = ModelCheck.export_errors(
             context, data["SluggiesModel"], self.filepath,
             candidates + custom_submesh_candidates + [
@@ -4155,29 +4193,30 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         )
         owns_texture_section = bool(local_texture_descriptors)
         additions, desired_assignments, changed_materials = [], {}, []
-        texture_descriptors, texture_dir = local_texture_descriptors, None
-        # A `_L_` model binds its High model's textures by index, so a
-        # material showing another of them is a texture reassignment that
-        # needs no reimport (Manage texture slots sets these images).
-        if self.reimport_textures or not owns_texture_section:
-            try:
-                texture_descriptors, texture_dir, owns_texture_section = (
-                    _resolve_export_texture_context(self.filepath, data["SluggiesModel"])
-                )
-                if owns_texture_section or texture_descriptors:
-                    additions, desired_assignments, changed_materials = (
-                        _resolve_material_texture_changes(
-                            object_submeshes,
-                            texture_descriptors,
-                            texture_dir,
-                            path_resolver=bpy.path.abspath,
-                            validate_texture_files=owns_texture_section,
-                            skip_unset_images=not owns_texture_section,
-                        )
+        # A material showing another texture (a new PNG, or another of the
+        # model's textures) is exported whatever the Reimport textures toggle
+        # says: the toggle only decides whether the original textures are
+        # re-encoded from tex/. A `_L_` model binds its High model's textures
+        # by index (Manage texture slots sets these images).
+        try:
+            texture_descriptors, texture_dir, owns_texture_section = (
+                _resolve_export_texture_context(self.filepath, data["SluggiesModel"])
+            )
+            if owns_texture_section or texture_descriptors:
+                additions, desired_assignments, changed_materials = (
+                    _resolve_material_texture_changes(
+                        object_submeshes,
+                        texture_descriptors,
+                        texture_dir,
+                        path_resolver=bpy.path.abspath,
+                        validate_texture_files=owns_texture_section,
+                        skip_unset_images=not owns_texture_section,
+                        require_donor_files=self.reimport_textures,
                     )
-            except ValueError as exc:
-                self.report({"ERROR"}, str(exc))
-                return {"CANCELLED"}
+                )
+        except ValueError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
 
         if additions and not owns_texture_section:
             self.report(
@@ -4186,13 +4225,6 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 "material can only show one of the main model's textures (see Manage "
                 "texture slots); add new PNGs on the main model and export it first: "
                 f"{', '.join(addition['TextureFileName'] for addition in additions)}",
-            )
-            return {"CANCELLED"}
-
-        if changed_materials and not self.reimport_textures and owns_texture_section:
-            self.report(
-                {"ERROR"},
-                _texture_export_toggles_required_message(changed_materials),
             )
             return {"CANCELLED"}
 
@@ -4223,8 +4255,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             return {"CANCELLED"}
 
         # --- Custom submeshes ---
-        # The toggle guard above guarantees Reimport textures on a model that
-        # owns its textures; a `_L_` model resolves its borrowed context here.
+        # Their PNGs are added whatever the Reimport textures toggle says.
         # CustomSubmeshes always mirrors the current selection, like
         # AdditionalTextureDescriptors.
         custom_submesh_entries = []
@@ -4233,10 +4264,6 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         if custom_submesh_candidates:
             model = data["SluggiesModel"]
             try:
-                if texture_dir is None:
-                    texture_descriptors, texture_dir, owns_texture_section = (
-                        _resolve_export_texture_context(self.filepath, model)
-                    )
                 validate_custom_submeshes(
                     custom_submesh_candidates, candidates, model, warnings
                 )
@@ -4325,10 +4352,6 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 for key in plan.routing.new_keys
             ]
             if new_surface_entries:
-                if texture_dir is None:
-                    texture_descriptors, texture_dir, owns_texture_section = (
-                        _resolve_export_texture_context(self.filepath, data["SluggiesModel"])
-                    )
                 (
                     new_surface_additions, new_surface_assignments, new_surface_texture_copies,
                 ) = _resolve_custom_submesh_texture_changes(
@@ -4336,16 +4359,10 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     path_resolver=bpy.path.abspath,
                 )
                 new_names = ", ".join(mat.name for mat, _index in new_surface_entries)
-                # Ownership first: on a `_L_` model the toggle would not help.
                 if new_surface_additions and not owns_texture_section:
                     raise ValueError(
                         "Low-poly model textures are owned by the paired main model; a new "
                         f"material on it can only use an existing texture: {new_names}"
-                    )
-                if new_surface_additions and not self.reimport_textures:
-                    raise ValueError(
-                        "A new material with a new PNG needs 'Reimport textures from tex "
-                        f"folder' enabled: {new_names}"
                     )
         except ValueError as exc:
             self.report({"ERROR"}, str(exc))
@@ -4831,9 +4848,15 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             self.report({"INFO"}, f"Copied {source_path} to {target_path}")
 
         FieldCodec.dump_sluggie(data, self.filepath)
+        # Saved under a new name: the scene now belongs to the new file, so
+        # the next export, Check Models and Texture slots use it.
+        if save_as and arm_obj is not None:
+            arm_obj['SluggieFilePath'] = self.filepath
+            self.report({"INFO"},
+                f"Saved as a new file; {arm_obj.name} now uses {self.filepath} "
+                f"({os.path.basename(source_path)} is unchanged).")
 
-        filename = os.path.basename(self.filepath)
-        context.window_manager.clipboard = filename
+        context.window_manager.clipboard = ModelCheckCore.clipboard_text(self.filepath)
         scale_note = (
             f" (root bone scale {root_scale[0]:.4f}, {root_scale[1]:.4f}, {root_scale[2]:.4f})"
             if root_scale else ""

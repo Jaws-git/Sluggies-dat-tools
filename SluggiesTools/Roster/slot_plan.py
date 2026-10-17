@@ -131,6 +131,7 @@ import copy
 import os
 from dataclasses import dataclass, field, replace
 
+import model_files
 from binfmt import load_sluggie
 
 try:
@@ -210,13 +211,16 @@ def _role(model: dict, folder: str) -> tuple[int | None, bool, str]:
 
 
 def _partner(path: str, chunk: int, is_low: bool, stem: str) -> str | None:
-    """The other model's ``.sluggie`` in a sibling folder (same chunk, same stem, the other role)."""
+    """The other model's ``.sluggie`` in a sibling folder (same chunk, same stem, the other role). With several
+    (variants saved under new names): the one named like ``path``, else the exported one
+    (``model_files.pick_partner``), else the first."""
     folder = os.path.dirname(os.path.abspath(path))
     parent = os.path.dirname(folder)
     try:
         siblings = sorted(os.listdir(parent))
     except OSError:
         return None
+    matches = []
     for sibling in siblings:
         m = model_icons.MODEL_FOLDER.match(sibling)
         sibling_dir = os.path.join(parent, sibling)
@@ -229,8 +233,10 @@ def _partner(path: str, chunk: int, is_low: bool, stem: str) -> str | None:
             candidate = os.path.join(sibling_dir, name)
             other = _load_model(candidate)
             if other.get('ChunkNumber') == chunk and other.get('FileIndex') == (HIGH_FILE if is_low else LOW_FILE):
-                return candidate
-    return None
+                matches.append(candidate)
+    if not matches:
+        return None
+    return model_files.pick_partner(matches, path) or matches[0]
 
 
 def inplace_only_edits(path: str) -> str | None:

@@ -1576,7 +1576,7 @@
       },
       "ReimportTextures": {
         "type": "boolean",
-        "description": "Written by the Blender exporter. Optional; defaults to false when absent. When true, patch_inplace.py re-imports the edited PNGs from the model's tex/ folder and patches the existing image and palette payloads in place at their original offsets, without moving buffers, resizing the TEX section, adding texture slots, or changing texture descriptors. When false or absent, texture behavior is unchanged. Must not be combined with UseHammerspace; a file that enables both is rejected until hammerspace supports rebuilt TEX sections."
+        "description": "Written by the Blender exporter. Optional; defaults to false when absent. Covers the model's original textures (TextureDescriptors) only. When true, they are re-imported from the edited PNGs in the model's tex/ folder: in place by patch_inplace.py (same footprint), or by the Hammerspace TEX rebuild (sizes may change). When false or absent, their payloads are kept as they are. AdditionalTextureDescriptors (new PNGs) are appended by the Hammerspace TEX rebuild whatever this flag says."
       }
     }
   },

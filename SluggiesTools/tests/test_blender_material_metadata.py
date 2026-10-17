@@ -18,6 +18,7 @@ if str(ROOT_DIR / 'BlenderAddonSrc') not in sys.path:
     sys.path.insert(0, str(ROOT_DIR / 'BlenderAddonSrc'))
 import FieldCodec  # noqa: E402  (bpy-free; the exec'd add-on helpers use it)
 import TextureSlotsCore  # noqa: E402  (bpy-free, likewise)
+import ModelCheckCore  # noqa: E402  (bpy-free, likewise)
 
 
 def _load_helper(path, name):
@@ -63,7 +64,6 @@ def _load_texture_helpers():
         '_resolve_material_texture_changes',
         '_resolve_export_texture_context',
         '_partner_added_texture_descriptors',
-        '_texture_export_toggles_required_message',
         '_custom_submesh_texture_layer',
         '_custom_submesh_template_texture_index',
         '_plan_external_texture_copy',
@@ -79,7 +79,7 @@ def _load_texture_helpers():
     module = ast.Module(body=helpers, type_ignores=[])
     namespace = {
         'json': __import__('json'), 'os': os, 'FieldCodec': FieldCodec,
-        'TextureSlotsCore': TextureSlotsCore,
+        'TextureSlotsCore': TextureSlotsCore, 'ModelCheckCore': ModelCheckCore,
     }
     exec(compile(module, str(EXPORTER_PATH), 'exec'), namespace)
     return namespace
@@ -415,7 +415,6 @@ class BlenderMaterialTextureTests(unittest.TestCase):
         self.connected_nodes = helpers['_connected_image_texture_nodes']
         self.resolve_changes = helpers['_resolve_material_texture_changes']
         self.resolve_context = helpers['_resolve_export_texture_context']
-        self.toggle_message = helpers['_texture_export_toggles_required_message']
 
     @staticmethod
     def _object(*materials):
@@ -626,6 +625,23 @@ class BlenderMaterialTextureTests(unittest.TestCase):
             {'TextureIndex': 3, 'TextureFileName': 'other.png'},
         ])
 
+    def test_lowpoly_context_pairs_with_the_main_variant_of_the_same_name(self):
+        # A main model variant saved under a new name next to the exported file.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            parent = pathlib.Path(temp_dir)
+            lowpoly_path, main_dir = self._lowpoly_pair(parent, [])
+            (main_dir / '314420544_yoshi_red.gpl.sluggie').write_text(json.dumps({'SluggiesModel': {
+                'TextureDescriptors': [{'TextureIndex': 0, 'TextureFileName': 'body.png'},
+                                       {'TextureIndex': 1, 'TextureFileName': 'eyes.png'}],
+                'AdditionalTextureDescriptors': [{'TextureFileName': 'red.png', 'TemplateTextureIndex': 0}],
+            }}), encoding='utf-8')
+            exported, _tex_dir, _owns = self.resolve_context(str(lowpoly_path), {'TextureDescriptors': []})
+            variant_low = lowpoly_path.parent / '314772416_L_yoshi_red.gpl.sluggie'
+            variant_low.write_text('{}', encoding='utf-8')
+            variant, _tex_dir, _owns = self.resolve_context(str(variant_low), {'TextureDescriptors': []})
+        self.assertEqual(len(exported), 2)
+        self.assertEqual(variant[2:], [{'TextureIndex': 2, 'TextureFileName': 'red.png'}])
+
     def test_lowpoly_context_skips_added_textures_with_repeated_names(self):
         # The patcher merges repeated names, renumbering later additions.
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -682,13 +698,27 @@ class BlenderMaterialTextureTests(unittest.TestCase):
                 'unused',
             )
 
-    def test_texture_change_feedback_requires_reimport_textures(self):
-        self.assertEqual(
-            self.toggle_message(['body', 'right hand']),
-            "Texture change detected but 'Reimport textures' is not enabled. "
-            "Enable it before exporting. "
-            "Materials: [body, right hand]",
-        )
+    def test_without_reimport_only_new_pngs_must_exist_in_tex(self):
+        """Reimport textures off: a donor-named image is not read, so its PNG
+        may be missing from tex/; a new PNG is appended and must be there."""
+        descriptors = [
+            {'TextureIndex': 0, 'TextureFileName': '0.png'},
+            {'TextureIndex': 1, 'TextureFileName': '1.png'},
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            rebind = _material_graph('body', 'sm0_ds1', 0, [pathlib.Path(temp_dir, '1.png')])
+            additions, assignments, changed = self.resolve_changes(
+                [(self._object(rebind), {})], descriptors, temp_dir,
+                require_donor_files=False,
+            )
+            self.assertEqual((additions, assignments, changed), ([], {'sm0_ds1': 1}, ['body']))
+
+            new = _material_graph('hand', 'sm0_ds2', 0, [pathlib.Path(temp_dir, 'new.png')])
+            with self.assertRaisesRegex(ValueError, 'must exist in the resolved tex folder'):
+                self.resolve_changes(
+                    [(self._object(new), {})], descriptors, temp_dir,
+                    require_donor_files=False,
+                )
 
 
 class CustomSubmeshTextureTests(unittest.TestCase):

@@ -194,6 +194,84 @@ def low_partner_matches(low_folder: str, high_folder: str) -> bool:
     return high.endswith('_' + low[marker + 3:])
 
 
+_OFFSET_PREFIX_RE = re.compile(r'^\d+_')
+
+
+# A model folder may hold extra .sluggie files (variants saved under a new
+# name, same model identity). The rules below pick one of them; the
+# command line tools keep their own copy (SluggiesTools/model_files.py).
+def is_exported_name(path: str) -> bool:
+    """Whether a ``.sluggie`` carries the name the model export gives it:
+    its folder's name plus ``.sluggie``."""
+    folder = os.path.basename(os.path.dirname(os.path.abspath(path)))
+    return os.path.normcase(os.path.basename(path)) == os.path.normcase(folder + '.sluggie')
+
+
+def variant_key(path: str) -> str:
+    """The name a High and a Low ``.sluggie`` share: the basename without
+    ``.sluggie``, its leading block offset and a leading ``L_``."""
+    name = os.path.basename(path or '')
+    if name.lower().endswith('.sluggie'):
+        name = name[:-len('.sluggie')]
+    name = _OFFSET_PREFIX_RE.sub('', name)
+    if name[:2].lower() == 'l_':
+        name = name[2:]
+    return name.lower()
+
+
+def prefer_exported(paths: Iterable[str]) -> Optional[str]:
+    """The exported file among *paths*, else the only path, else None."""
+    paths = list(paths)
+    exported = [p for p in paths if is_exported_name(p)]
+    if len(exported) == 1:
+        return exported[0]
+    return paths[0] if len(paths) == 1 else None
+
+
+def pick_partner(candidates: Iterable[str], own_path: str) -> Optional[str]:
+    """The High/Low partner of *own_path* among *candidates*: the one with
+    the same :func:`variant_key`, else the exported file, else the only
+    candidate; None when that leaves several."""
+    candidates = list(candidates)
+    key = variant_key(own_path)
+    named = [c for c in candidates if variant_key(c) == key]
+    if len(named) == 1:
+        return named[0]
+    return prefer_exported(candidates)
+
+
+def model_identity(model: dict) -> Optional[Tuple[int, int, str]]:
+    """``(ChunkNumber, FileIndex, ModelOffset)`` of a ``SluggiesModel``, or
+    None when a field is missing: the game model a ``.sluggie`` patches."""
+    chunk, index, offset = model.get("ChunkNumber"), model.get("FileIndex"), model.get("ModelOffset")
+    if chunk is None or index is None or offset is None:
+        return None
+    return int(chunk), int(index), str(offset).lower()
+
+
+def overwrite_error(source_model: dict, target_model: Optional[dict], target_name: str) -> Optional[str]:
+    """Why an export of *source_model* may not replace the existing
+    ``.sluggie`` *target_model* (None when it may): a file of another game
+    model, or no ``.sluggie`` at all (*target_model* None)."""
+    if target_model is None:
+        return (f"{target_name} exists but is not a readable .sluggie file. Pick a new file "
+                "name or a .sluggie of this model.")
+    source, target = model_identity(source_model), model_identity(target_model)
+    if source is not None and target != source:
+        return (f"{target_name} belongs to a different model (directory {target[0] if target else '?'}, "
+                f"file {target[1] if target else '?'}, offset {target[2] if target else '?'}) than the "
+                f"selection (directory {source[0]}, file {source[1]}, offset {source[2]}). Pick a new "
+                "file name or a .sluggie of this model.")
+    return None
+
+
+def clipboard_text(path: str) -> str:
+    """What the exporter copies for the patcher: the bare name, which it
+    finds in 2_Output_Assets, or the full path of a file elsewhere."""
+    parts = os.path.normcase(os.path.abspath(path)).split(os.sep)
+    return os.path.basename(path) if os.path.normcase('2_Output_Assets') in parts[:-1] else os.path.abspath(path)
+
+
 def free_file_name(file_name: str, taken: Iterable[str]) -> str:
     """*file_name*, or ``<stem>_<n>.png`` with the lowest free n."""
     taken = {name.lower() for name in taken}

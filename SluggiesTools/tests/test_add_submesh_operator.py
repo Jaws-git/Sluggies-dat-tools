@@ -344,6 +344,16 @@ class AddSubmeshOperatorStructureTests(unittest.TestCase):
         poll_src = ast.get_source_segment(self.source, poll_fn)
         self.assertIn("context.mode != 'OBJECT'", poll_src)
 
+    def test_poll_needs_an_armature_or_its_child_active(self):
+        cls = self._class('SLUGGIES_OT_add_submesh')
+        poll_fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == 'poll')
+        poll_src = ast.get_source_segment(self.source, poll_fn)
+        self.assertIn('_find_target_armature(context) is None', poll_src)
+
+    def test_label_is_add_new_submesh(self):
+        cls = self._class('SLUGGIES_OT_add_submesh')
+        self.assertIn('bl_label = "Add New Submesh"', ast.get_source_segment(self.source, cls))
+
     def test_invoke_reports_error_when_no_armature_is_active(self):
         cls = self._class('SLUGGIES_OT_add_submesh')
         invoke_fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == 'invoke')
@@ -403,6 +413,103 @@ class AddSubmeshOperatorStructureTests(unittest.TestCase):
 
         unregister_src = ast.get_source_segment(self.source, self._function('unregister'))
         self.assertIn('sluggies_show_free_host_bones', unregister_src)
+
+
+class _FakeMat(dict):
+    pass
+
+
+class MakeSubmeshHelperTests(unittest.TestCase):
+    def setUp(self):
+        import ModelCheckCore
+        import RigidRebuildExport
+        ns = _extract({'_linear_to_srgb', '_is_primary_surface_of', '_is_added_surface_of'})
+        ns['ModelCheckCore'] = ModelCheckCore
+        ns['RigidRebuildExport'] = RigidRebuildExport
+        self.ns = ns
+
+    def test_linear_to_srgb_matches_the_standard_curve(self):
+        fn = self.ns['_linear_to_srgb']
+        self.assertEqual(fn(0.0), 0.0)
+        self.assertAlmostEqual(fn(1.0), 1.0)
+        self.assertAlmostEqual(fn(0.8), 0.9063, places=3)
+        self.assertEqual(fn(-1.0), 0.0)
+        self.assertAlmostEqual(fn(2.0), 1.0)
+
+    def test_primary_surface_needs_own_prefix_and_no_new_surface_flag(self):
+        fn = self.ns['_is_primary_surface_of']
+        self.assertTrue(fn(_FakeMat(SurfaceId='custom2_ds0'), 'custom2'))
+        self.assertFalse(fn(_FakeMat(SurfaceId='custom1_ds0'), 'custom2'))
+        self.assertFalse(fn(_FakeMat(SurfaceId='sm0_ds1'), 'custom2'))
+        self.assertFalse(fn(_FakeMat(), 'custom2'))
+        self.assertFalse(fn(_FakeMat(SurfaceId='custom2_ds0', SluggiesNewSurface=True), 'custom2'))
+
+    def test_added_surface_needs_owner_key_and_all_properties(self):
+        fn = self.ns['_is_added_surface_of']
+        complete = dict(SluggiesNewSurface=True, SurfaceId='custom2_new0', SluggiesSurfaceOwner='custom2',
+                        TemplateSource='builtin:rigid_spec_v1', TemplateTextureIndex=0, WrapS=1, WrapT=1)
+        self.assertTrue(fn(_FakeMat(complete), 'custom2'))
+        self.assertFalse(fn(_FakeMat(complete), 'custom3'))
+        self.assertFalse(fn(_FakeMat(complete, SurfaceId='custom2_ds0'), 'custom2'))
+        missing = dict(complete)
+        del missing['WrapT']
+        self.assertFalse(fn(_FakeMat(missing), 'custom2'))
+
+
+class MakeSubmeshOperatorStructureTests(unittest.TestCase):
+    def setUp(self):
+        self.source = PANEL_PATH.read_text(encoding='utf-8')
+        self.tree = ast.parse(self.source)
+        self.cls = next(n for n in self.tree.body
+                        if isinstance(n, ast.ClassDef) and n.name == 'SLUGGIES_OT_make_submesh')
+
+    def _method(self, name):
+        node = next(n for n in self.cls.body if isinstance(n, ast.FunctionDef) and n.name == name)
+        return ast.get_source_segment(self.source, node)
+
+    def _function(self, name):
+        node = next(n for n in self.tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
+        return ast.get_source_segment(self.source, node)
+
+    def test_declares_armature_and_host_bone(self):
+        names = {n.target.id for n in self.cls.body
+                 if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name)}
+        self.assertEqual(names, {'armature', 'host_bone'})
+
+    def test_poll_needs_a_plain_mesh_in_object_mode(self):
+        poll = self._method('poll')
+        self.assertIn("context.mode != 'OBJECT'", poll)
+        self.assertIn("obj.type != 'MESH'", poll)
+        self.assertIn('_is_donor_mesh(obj)', poll)
+
+    def test_execute_keeps_world_position_and_rebinds_to_one_bone(self):
+        src = self._method('_make_submesh')
+        self.assertIn('world = obj.matrix_world.copy()', src)
+        self.assertIn('obj.matrix_world = world', src)
+        self.assertIn('obj.vertex_groups.clear()', src)
+        self.assertIn("f'bone_{bone_id}'", src)
+        self.assertIn('mod.object = arm_obj', src)
+        self.assertIn('_ordered_host_bone_choices(context, arm_obj, exclude=obj)', src)
+
+    def test_only_a_single_uv_map_is_renamed(self):
+        src = self._method('_make_submesh')
+        self.assertIn('if len(uv_layers) == 1:', src)
+        self.assertIn('_rename_uv_map(obj, _MADE_SUBMESH_UV_NAME)', src)
+        self.assertIn("_MADE_SUBMESH_UV_NAME = 'UV0'", self.source)
+
+    def test_materials_use_the_default_template(self):
+        src = self._function('_make_submesh_materials')
+        self.assertIn('ModelCheckCore.default_template', src)
+        self.assertIn('_set_custom_primary_surface', src)
+        self.assertIn('_apply_new_surface_plan', src)
+        self.assertIn('_ensure_surface_texture', src)
+
+    def test_registered_and_shown_for_a_mesh(self):
+        self.assertIn('SLUGGIES_OT_make_submesh', self._function('register'))
+        self.assertIn('SLUGGIES_OT_make_submesh', self._function('unregister'))
+        box = self._function('_draw_rigid_mesh_box')
+        self.assertIn('SLUGGIES_OT_make_submesh.bl_idname', box)
+        self.assertIn("obj.type == 'MESH'", box)
 
 
 if __name__ == '__main__':

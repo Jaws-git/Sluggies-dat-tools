@@ -20,7 +20,9 @@ workflow (re-encoding, untangling, a removed texture, a dimension or format
 change, a changed TLUT) changes the resulting filename. This test pins the
 required exporter-generated baseline filenames so a regression that removes or
 renames one is caught immediately. Additional user PNGs are allowed in model
-``tex/`` folders and need not use Dolphin's generated naming scheme.
+``tex/`` folders and need not use Dolphin's generated naming scheme, and
+additional ``.sluggie`` files (variants saved under new names) are not checked:
+the model export keeps both and only overwrites the files it writes itself.
 
 Scope
 -----

@@ -81,7 +81,10 @@ python start.py --clear-slot 0xE2
 
 The slot decides where the model goes, not the `.sluggie`'s own chunk. Picking
 the High model's file or its Low partner's (folder name with `_L_`) patches both when the other one is in its
-sibling folder. `--dry-run` prints what would happen and builds and checks the
+sibling folder. When that folder holds several `.sluggie` files (variants saved under new names), the partner is
+the one of the same name without the leading offset and `L_` (`78277664_mario_red.gpl.sluggie` and
+`78711424_L_mario_red.gpl.sluggie`), else the exported file named after its folder. Bundled bats and gloves
+likewise come from the exported files. `--dry-run` prints what would happen and builds and checks the
 models, but writes nothing.
 
 | Slot | What `--patch-slot` does |

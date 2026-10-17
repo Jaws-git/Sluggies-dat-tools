@@ -472,13 +472,16 @@ def resolve_png_to_texture(
         )
     model_dir = os.path.dirname(tex_dir)
 
-    # 3. Exactly one .sluggie must own the model directory.
-    sluggies = [f for f in os.listdir(model_dir) if f.lower().endswith(".sluggie")]
-    if len(sluggies) != 1:
+    # 3. One .sluggie owns the model directory: the only one, or of several
+    #    (variants saved under new names) the exported one, named after it.
+    sluggies = sorted(f for f in os.listdir(model_dir) if f.lower().endswith(".sluggie"))
+    owner = model_files.prefer_exported(os.path.join(model_dir, f) for f in sluggies)
+    if owner is None:
         raise ValueError(
-            f"expected exactly one .sluggie in '{model_dir}', found {len(sluggies)}"
+            f"expected exactly one .sluggie in '{model_dir}', or one named after the folder; "
+            f"found {len(sluggies)}"
         )
-    sluggie_path = os.path.abspath(os.path.join(model_dir, sluggies[0]))
+    sluggie_path = os.path.abspath(owner)
 
     # 4. Load the .sluggie and read its texture descriptors.
     try:
@@ -992,6 +995,7 @@ def build_hammerspace_texture_plan(
     allow_dimension_change: bool = False,
     png_overrides: Mapping[int, str] | None = None,
     additional_descriptors: Sequence[AdditionalTextureDescriptor] = (),
+    reimport_donor_textures: bool = True,
 ) -> TexturePlan:
     """Encode and validate every descriptor for a hammerspace TEX rebuild.
 
@@ -1027,11 +1031,21 @@ def build_hammerspace_texture_plan(
     only its format and sampler fields: an addition is always encoded at its
     PNG's own dimensions (clamped to the GX limit), never at the template's, and
     carries no donor slot footprint.
+
+    ``reimport_donor_textures=False`` leaves the donor textures out of the
+    plan (``BuildTEX`` then clones their payloads), except those named in
+    ``png_overrides``; the additions are still encoded and appended. Their
+    PNGs in ``tex/`` are then neither read nor required.
     """
+    def encodes_donor(descriptor):
+        return reimport_donor_textures or bool(
+            png_overrides and descriptor.get("TextureIndex") in png_overrides
+        )
+
     if not additional_descriptors and not allow_dimension_change:
         return build_texture_plan(
             sluggie_path,
-            descriptors,
+            [descriptor for descriptor in descriptors if encodes_donor(descriptor)],
             wimgt_executable=wimgt_executable,
             encoder=encoder,
             warn=warn,
@@ -1050,8 +1064,12 @@ def build_hammerspace_texture_plan(
             "donor texture indices must be contiguous from zero before textures can be appended"
         )
 
-    descriptors_to_encode = list(descriptors)
-    names_to_encode = list(names)
+    kept = [
+        (descriptor, name) for descriptor, name in zip(descriptors, names)
+        if encodes_donor(descriptor)
+    ]
+    descriptors_to_encode = [descriptor for descriptor, _name in kept]
+    names_to_encode = [name for _descriptor, name in kept]
     template_indices: dict[int, int] = {}
     for append_order, addition in enumerate(additional_descriptors):
         new_index = len(descriptors) + append_order

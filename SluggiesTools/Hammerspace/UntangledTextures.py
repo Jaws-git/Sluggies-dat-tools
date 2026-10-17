@@ -28,6 +28,7 @@ except ImportError:  # pragma: no cover - SluggiesTools not on sys.path yet
     import sys
     sys.path.insert(0, os.path.normpath(os.path.join(os.path.dirname(__file__), '..')))
     from tpl import TEXDescriptor
+import model_files
 from binfmt import load_sluggie
 
 #: Matches the export's untangle ``max_attempts``.
@@ -171,9 +172,11 @@ def split_at_baseline(chunk_number: int, file_index: int, models_dir: str = _MOD
 
 def find_sluggie_model(chunk_number: int, file_index: int, models_dir: str = _MODELS_DIR) -> dict | None:
     """The exported ``SluggiesModel`` for a route, searched in its dir folder (a slot export, ``DonorEntry``, is
-    another block's export: skipped)."""
-    for path in sorted(glob.glob(os.path.join(glob.escape(models_dir), f'{chunk_number} *', '**', '*.sluggie'),
-                                 recursive=True)):
+    another block's export: skipped). Exported files (named after their folder) are tried before variants saved
+    under new names."""
+    paths = sorted(glob.glob(os.path.join(glob.escape(models_dir), f'{chunk_number} *', '**', '*.sluggie'),
+                             recursive=True))
+    for path in sorted(paths, key=lambda p: not model_files.is_exported_name(p)):
         try:
             model = load_sluggie(path)['SluggiesModel']
         except (OSError, ValueError, KeyError):

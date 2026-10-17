@@ -7,12 +7,14 @@ lists what it returns. Each check is a function ``(root_dir) -> list[Problem]`` 
 
 Duplicate models: a ``.sluggie`` is one model of the game, named by ``ChunkNumber`` (model directory),
 ``FileIndex`` and ``ModelOffset`` (archive containers hold several models under one directory file). Two
-``.sluggie`` files with the same three (a copied model folder, or "x - Copy.sluggie" next to the original) leave
-the patcher guessing: a bare file name finds several files, and the PNG and untangled-texture
-lookups take whichever they meet first. The export itself writes some blocks twice, once per directory that shares
-them (map objects, "Various A/B"): those files share a name and offset but not the directory, so they are not
-reported. Slot exports (``Roster/slot_export.py``, "Custom <name> NN" folders) carry the identity of the model they
-started from on purpose, with a name of their own and their own donor block: they are not reported either.
+``.sluggie`` files with the same name and the same three (a copied model folder) leave the patcher guessing: a
+bare file name finds several files. Files with the same three but different names are variants (the Blender
+export saves a model under a new name, "x - Copy.sluggie" too): the patcher tells them apart by name, and the
+folder lookups prefer the exported file, so they are not reported. The export itself writes some blocks twice,
+once per directory that shares them (map objects, "Various A/B"): those files share a name and offset but not the
+directory, so they are not reported. Slot exports (``Roster/slot_export.py``, "Custom <name> NN" folders) carry the
+identity of the model they started from on purpose, with a name of their own and their own donor block: they are
+not reported either.
 """
 
 import os
@@ -70,29 +72,30 @@ def _sluggies(models_dir):
 
 
 def duplicate_models(root_dir):
-    """One problem per model with more than one ``.sluggie`` (same :func:`model_identity`), plus one
-    per name shared with a ``.sluggie`` whose model cannot be read."""
+    """One problem per model with more than one ``.sluggie`` of the same name (same name and
+    :func:`model_identity`), plus one per name shared with a ``.sluggie`` whose model cannot be read."""
     models_dir = os.path.join(root_dir, MODELS_FOLDER)
     by_model, by_name, unreadable = defaultdict(list), defaultdict(list), []
     for path in _sluggies(models_dir):
         if is_slot_export(path):
             continue
-        by_name[os.path.basename(path)].append(path)
+        name = os.path.basename(path)
+        by_name[name].append(path)
         identity = model_identity(path)
         if identity is None:
             unreadable.append(path)
         else:
-            by_model[identity].append(path)
+            by_model[(name, identity)].append(path)
 
     advice = (f'Keep one file: delete the others or move them out of {MODELS_FOLDER} '
               '(a backup folder outside it keeps them safe).')
     problems = []
-    for (chunk, index, offset), paths in sorted(by_model.items()):
+    for (name, (chunk, index, offset)), paths in sorted(by_model.items()):
         if len(paths) > 1:
             problems.append(Problem(
                 'Duplicate models',
-                f'{len(paths)} files share the same file name (directory {chunk}, file {index}, offset {offset}); '
-                'the command line patcher will pick the first one it finds.',
+                f"{len(paths)} files are named '{name}' (directory {chunk}, file {index}, offset {offset}); "
+                'the command line patcher cannot tell them apart by name.',
                 tuple(paths), advice))
     for name in sorted({os.path.basename(path) for path in unreadable}):
         paths = by_name[name]

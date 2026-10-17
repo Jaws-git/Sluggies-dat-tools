@@ -423,14 +423,21 @@ class BuildModelBlockTests(unittest.TestCase):
         write_model.assert_not_called()
         patch_dol.assert_not_called()
 
-    def test_desired_texture_assignments_require_gpl_tex_build_and_reimport(self):
+    def test_desired_texture_assignments_require_gpl_build(self):
+        # Reimport textures is not needed: it only covers the donor PNGs.
         self.data['SluggiesModel']['DesiredTextureAssignments'] = {'sm0_ds1': 1}
         self.data['SluggiesModel']['TextureDescriptors'] = [{'TextureIndex': 0}]
 
-        with self.assertRaisesRegex(
-            ValueError,
-            'require GPL and TEX build modes with ReimportTextures enabled',
-        ):
+        with self.assertRaisesRegex(ValueError, 'DesiredTextureAssignments require the GPL build mode'):
+            main.BuildModelBlock(self.data)
+
+    def test_additional_texture_descriptors_require_tex_build(self):
+        self.data['SluggiesModel'].update({
+            'TextureDescriptors': [{'TextureIndex': 0, 'TextureFileName': '0.png'}],
+            'AdditionalTextureDescriptors': [{'TextureFileName': 'new.png', 'TemplateTextureIndex': 0}],
+        })
+
+        with self.assertRaisesRegex(ValueError, "AdditionalTextureDescriptors require SectionModes.tex='build'"):
             main.BuildModelBlock(self.data)
 
     def test_low_poly_desired_texture_assignments_require_only_gpl_build(self):
@@ -1923,6 +1930,7 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
             self.data['SluggiesModel']['TextureDescriptors'],
             allow_dimension_change=True,
             png_overrides=None,
+            reimport_donor_textures=True,
         )
         build_tex.assert_called_once_with(self.parsed, plan)
         clone_tex.assert_not_called()
@@ -1974,6 +1982,8 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
             self.data['SluggiesModel']['TextureDescriptors'],
             allow_dimension_change=True,
             png_overrides=overrides,
+            # Without ReimportTextures only the override is encoded.
+            reimport_donor_textures=False,
         )
         build_tex.assert_called_once_with(self.parsed, plan)
         clone_tex.assert_not_called()
@@ -2023,9 +2033,39 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
             self.data['SluggiesModel']['TextureDescriptors'],
             allow_dimension_change=True,
             png_overrides=None,
+            reimport_donor_textures=True,
             additional_descriptors=(
                 texture_helper.AdditionalTextureDescriptor('new.png', 0),
             ),
+        )
+        build_tex.assert_called_once_with(self.parsed, plan)
+
+    def test_tex_build_appends_additions_without_reimporting_donor_textures(self):
+        """New PNGs need no Reimport textures; the donor textures are then
+        cloned (left out of the plan)."""
+        self.data['SluggiesModel'].update({
+            'UseHammerspace': True,
+            'TextureDescriptors': [
+                {'TextureIndex': 0, 'TextureFileName': '0.png'},
+            ],
+            'AdditionalTextureDescriptors': [{
+                'TextureFileName': 'new.png',
+                'TemplateTextureIndex': 0,
+            }],
+        })
+        plan = mock.Mock(skipped=())
+        with (
+            mock.patch.object(
+                texture_helper, 'build_hammerspace_texture_plan', return_value=plan,
+            ) as build_plan,
+            mock.patch.object(main, 'BuildTEX', return_value=b'BUILT_TEX') as build_tex,
+        ):
+            self._run(main.SectionModes(tex='build'), sluggie_path='model.sluggies')
+
+        self.assertFalse(build_plan.call_args.kwargs['reimport_donor_textures'])
+        self.assertEqual(
+            build_plan.call_args.kwargs['additional_descriptors'],
+            (texture_helper.AdditionalTextureDescriptor('new.png', 0),),
         )
         build_tex.assert_called_once_with(self.parsed, plan)
 
@@ -2115,7 +2155,7 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
             donor_gpl_length=len(b'GPL'),
         )
 
-    def test_custom_submesh_additional_texture_file_name_requires_tex_build_and_reimport(self):
+    def test_custom_submesh_additional_texture_file_name_requires_tex_build(self):
         self.data['SluggiesModel'].update({
             'UseHammerspace': True,
             'CustomSubmeshes': [{'TextureAssignment': {'AdditionalTextureFileName': 'new.png'}}],
@@ -2129,20 +2169,6 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
                     self.data, main.SectionModes(gpl='build', tex='clone'),
                     sluggie_path='model.sluggies',
                 )
-
-    def test_additional_texture_descriptors_require_reimport_enabled(self):
-        self.data['SluggiesModel'].update({
-            'UseHammerspace': True,
-            'TextureDescriptors': [
-                {'TextureIndex': 0, 'TextureFileName': '0.png'},
-            ],
-            'AdditionalTextureDescriptors': [{
-                'TextureFileName': 'new.png',
-                'TemplateTextureIndex': 0,
-            }],
-        })
-        with self.assertRaisesRegex(ValueError, "require 'ReimportTextures'"):
-            self._run(main.SectionModes(tex='build'), sluggie_path='model.sluggies')
 
     def test_tex_build_accepts_caller_supplied_plan(self):
         self.data['SluggiesModel'].update({

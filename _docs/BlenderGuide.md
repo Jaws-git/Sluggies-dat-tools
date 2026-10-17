@@ -20,21 +20,29 @@ Hammerspace opens up additional memory at the end of the data file to store more
 
 1. Select all submeshes you want to write back to the sluggie file in the viewport
 2. File->Export->Sluggers intermediate (.sluggie)  
-3. select **the same .sluggie file for the character you imported earlier**. The updated file will contain both original and edited model data now.
+3. The file browser opens on the .sluggie the model was imported from. Either:
+   - keep it, to update that file. It then holds both the original and the edited model data; or
+   - type a **new file name** to save a variant (for example `78277664_mario_red.gpl.sluggie`). The new file holds the original and the edited model data too, and the file you imported from stays untouched. From then on the scene uses the new file: the next export, Check Models and Manage texture slots all start from it.
+
+A variant can go next to the exported file or into any other folder. A file in another folder looks for its `tex/` folder (and a High model's `icon/` folder) next to itself, so copy those folders there yourself; the tools don't redirect the paths. Patch a variant like any other `.sluggie`: by its name when it is in `2_Output_Assets`, otherwise by its full path. The export copies the matching text to the clipboard.
+
+A variant you save over an existing file must be of the same model: export refuses a `.sluggie` of another model.
+
+Re-running the model export never deletes `.sluggie` files or PNGs: it overwrites the files it exports itself (after its overwrite question), and keeps variants and textures you saved under new names.
 
 *SAVE YOUR EDITS AS .BLEND PROJECTS FOR SAFEKEEPING!*  
 *Pro Tip: you can add the import/export menus to your quick favorites by right clicking them. Then press "q" (default) to see all your quick favorites.*
 
 #### Exporter Options:
 [] Include Custom Split Normals - When off, writes averaged blender normals. When on, Writes custom split normals data.   
-[] Reimport textures from tex folder - write the PNG files found in the exports back into the game files, including any edits made to them. Needed for new textures and custom submeshes.
+[] Reimport textures from tex folder - write the model's original textures (the PNGs the model export wrote to `tex/`) back into the game files, including any edits made to them. Leave it off to keep the original textures as they are. New textures (a new PNG on a material, a custom submesh or a new material) are always added, with or without this option.
 
 #### In-place or Hammerspace: chosen automatically
 The exporter picks the mode for you. It writes your edits **in place** (over the original model data) whenever they fit there, and switches to **Hammerspace** when an edit needs a rebuilt model. The export always reports its choice, e.g. `Export mode: Hammerspace, needed for: Hat: UV seams split`.
 
 Hammerspace is used for:
 - custom submeshes and bones added with **Add Bone**;
-- texture changes on materials, and PNGs whose size changed (with Reimport textures on);
+- texture changes on materials (a new PNG, or another of the model's textures), and original PNGs whose size changed (with Reimport textures on);
 - added or removed vertices, and changed, added or removed faces;
 - split UV seams;
 - edited vertex colours;
@@ -88,12 +96,11 @@ Everything else, such as moving vertices, editing UVs without new seams, shape k
 2. Keep the imported material and its `SurfaceId`. (For a new material use **Add material**; see "Editing rigid meshes" and "Editing the body" below.)
 3. Replace the image in the Image Texture node or create a new one.
    Leave at most one Image Texture node connected to the active Material Output!
-4. Export with **Reimport textures from tex folder** enabled. The export uses Hammerspace by itself.
+4. Export. The new PNG is added whatever **Reimport textures from tex folder** says (that option only decides whether the original textures are rewritten). The export uses Hammerspace by itself.
 5. Patch the exported `.sluggie` normally.
 
 - Only Image Texture nodes connected to the Material Output count. Unconnected helper nodes are ignored, and a material with no connected image node keeps its original texture. A connected Image Texture node **without an image** stops the export and names the material: load a PNG into it or remove the node.
 - If more than one Image Texture node is connected, export stops and names the material.
-- If a texture change is found but the option from step 4 is off, export stops before writing anything and lists the materials.
 - The PNG is looked up only in this model's own `tex/` folder. If it's missing, the export stops.
 - Choosing a PNG the model already has (another texture from its `tex/` folder) just points the material at that texture. Nothing new is added.
 - The same PNG on several materials is stored only once.
@@ -108,10 +115,27 @@ A new submesh is a static (rigid) mesh that follows one bone, like a hat or a he
 
 1. Import any sluggie file.
 2. Select the armature or any of its child meshes, then open the Sluggies Tools tab in the side panel (Object Mode).
-3. Click **Add Submesh** and set a name, the host bone and the material template for your new object.
+3. Click **Add New Submesh** and set a name, the host bone and the material template for your new object.
 4. A small cube appears at the host bone. Edit it freely: model, UV-unwrap, paint, and swap its texture.
-5. When done, select every mesh you'd like to include, **including the new submesh**. Then export back to the original sluggie file with **Reimport textures from tex folder** enabled. The export uses Hammerspace by itself.
+5. When done, select every mesh you'd like to include, **including the new submesh**. Then export back to the original sluggie file. Its texture is added with or without **Reimport textures from tex folder**. The export uses Hammerspace by itself.
 6. Patch the exported `.sluggie` normally. The patcher picks the build steps it needs by itself.
+
+**Using a mesh you already have**
+Any mesh object can become a new submesh, for example one you modeled or appended from another file. It needs no Sluggies properties.
+
+1. Make the mesh the active object (Object Mode) and click **Make Active Mesh into a Submesh**.
+2. Pick the armature (preselected: the one the mesh is parented to, else a selected one, else the nearest) and a free host bone (preselected: the free bone nearest the mesh).
+3. Click OK. The mesh stays where it is in the world. The tool:
+   - removes all its vertex groups and puts every vertex on the host bone at full weight;
+   - parents it to the armature and adds or updates its Armature modifier (extra Armature modifiers are removed);
+   - renames its UV map to `UV0` when it has exactly one (with several UV maps nothing changes; the render-active one is exported);
+   - turns its materials into its own surfaces with the default template (`builtin:rigid_spec_v1`, in a stadium `builtin:stadium_shdw_opaque_v1`) and specular strength 50. The material most faces use becomes the main surface, the others become Add-material surfaces. Empty material slots are removed and their faces move to the main surface; a mesh without materials gets one;
+   - gives every material without a texture a new PNG in the material's colour in the model's `tex/` folder, and saves images without a PNG file (generated, packed, other formats) as PNGs there.
+   
+   A material that other objects use too is copied first, so they keep theirs. A mesh that shares its mesh data with another object gets its own copy.
+4. Run **Check Models** for anything it could not fix (for example a missing UV map, or several textures in one material).
+
+Running it on a copy of a new submesh (Shift+D) gives the copy its own id and materials.
 
 **Material templates**
 The template decides how the new submesh is lit. It is listed in this order, and the first entry is the default:
@@ -126,8 +150,8 @@ All three looked the same in game tests. A `rigid:` template limits how detailed
 - Bones that already carry an original mesh are never offered. A bone that drives skinning (a hand, for example) is allowed.
 - The mesh must stay weighted to exactly one `bone_<id>` vertex group, its host bone, at full weight. Use **Reassign to New Bone** to move it to another bone instead of editing the groups by hand.
 - Export re-checks the bones. It stops with the object names when a host bone was taken in the meantime (for example, by a rigid mesh you moved there) or when two new submeshes share one bone.
-- **Stadiums: use a free original root bone.** In a stadium, a new submesh must hang on one of the stadium's own bones that has no parent and no mesh. On a bone you added, it does not show at all; on a child bone it showed almost fully transparent. In a stadium, Add Submesh, Reassign to New Bone and the **Free host bones** list therefore offer only free original root bones, **Add Bone** is refused, export stops while the armature still has added bones, and the patcher refuses both. How many free root bones there are depends on the stadium: Yoshi Park's day model has one (`bone_0`, at the stadium origin), its night model has 19. Several separate pieces can share one bone: put them in one object. A model counts as a stadium when it comes from model folders 7-16 (Mario Stadium to Toy Field).
-- **Stadiums: pick a stadium template.** In a stadium, Add Submesh lists two stadium templates first: `builtin:stadium_shdw_opaque_v1` (preselected) and `builtin:stadium_shdw_cutout_v1`. They draw like the stadium's own surfaces: one texture, no normals, no specular highlight. The opaque one shows transparent pixels black; for a PNG with transparent areas use the cut-out one. Transparency is on/off only: semi-transparent pixels become fully opaque or fully clear. The patcher warns when a stadium submesh's PNG has transparent pixels but its template ignores them. The character template `builtin:rigid_spec_v1` also works in stadiums, and so does copying a stadium surface with `rigid:` (e.g. `rigid:sm1_ds42` in Yoshi Park day).
+- **Stadiums: use a free original root bone.** In a stadium, a new submesh must hang on one of the stadium's own bones that has no parent and no mesh. On a bone you added, it does not show at all; on a child bone it showed almost fully transparent. In a stadium, Add New Submesh, Reassign to New Bone and the **Free host bones** list therefore offer only free original root bones, **Add Bone** is refused, export stops while the armature still has added bones, and the patcher refuses both. How many free root bones there are depends on the stadium: Yoshi Park's day model has one (`bone_0`, at the stadium origin), its night model has 19. Several separate pieces can share one bone: put them in one object. A model counts as a stadium when it comes from model folders 7-16 (Mario Stadium to Toy Field).
+- **Stadiums: pick a stadium template.** In a stadium, Add New Submesh lists two stadium templates first: `builtin:stadium_shdw_opaque_v1` (preselected) and `builtin:stadium_shdw_cutout_v1`. They draw like the stadium's own surfaces: one texture, no normals, no specular highlight. The opaque one shows transparent pixels black; for a PNG with transparent areas use the cut-out one. Transparency is on/off only: semi-transparent pixels become fully opaque or fully clear. The patcher warns when a stadium submesh's PNG has transparent pixels but its template ignores them. The character template `builtin:rigid_spec_v1` also works in stadiums, and so does copying a stadium surface with `rigid:` (e.g. `rigid:sm1_ds42` in Yoshi Park day).
 
 **Placement**
 - What you see in the rest pose is what you get. Moves in Object Mode and in Edit Mode both count, and so do rotation, scale and mirroring. Nothing needs to be applied first, but switch back to Object Mode before exporting: export is refused in Edit Mode.
@@ -138,7 +162,7 @@ All three looked the same in game tests. A `rigid:` template limits how detailed
 - The mesh as it is, triangulated on export. The object in your scene isn't changed.
 - One UV map: the one marked for rendering. A mesh without a UV map is refused.
 - Vertex colors from `color0` (or the active color attribute). Without one, the mesh is white.
-- Its materials: the one Add Submesh created, plus any made for it with **Add material** (see "Editing rigid meshes" below). Every face must use one of those; an imported material of another mesh or a plain Blender material stops the export. An Add-material surface no face uses is skipped with a warning.
+- Its materials: the one Add New Submesh created, plus any made for it with **Add material** (see "Editing rigid meshes" below). Every face must use one of those; an imported material of another mesh or a plain Blender material stops the export. An Add-material surface no face uses is skipped with a warning.
 - These are ignored, and export warns you about them:
   - shape keys other than Basis;
   - extra materials that are not its own;
@@ -146,15 +170,15 @@ All three looked the same in game tests. A `rigid:` template limits how detailed
   - modifiers other than Armature. Apply Mirror, Subdivision and the like before exporting.
 
 **Textures**
-- Add Submesh saves a blank `<name>.png` into the model's `tex/` folder and connects it. Paint it or replace it.
+- Add New Submesh saves a blank `<name>.png` into the model's `tex/` folder and connects it. Paint it or replace it.
 - The texture can be a PNG from anywhere on disk. Export copies it into the model's `tex/` folder under a free name.
-- A Low model (folder name contains `_L_`) owns no textures: it draws with its High model's textures. Its new submesh can use any PNG from the High model's `tex/` folder, including textures the High model's own export added. Patch the High model first, so those added textures exist in the game when the Low model is patched.
+- A Low model (folder name contains `_L_`) owns no textures: it draws with its High model's textures. When the High model's folder holds several `.sluggie` files (variants), the Low file pairs with the one of the same name, without the leading offset and `L_` (`78711424_L_mario_red.gpl.sluggie` pairs with `78277664_mario_red.gpl.sluggie`). Without such a file it pairs with the exported one, named after its folder. Manage texture slots and the patcher's slot planner use the same rule. Its new submesh can use any PNG from the High model's `tex/` folder, including textures the High model's own export added. Patch the High model first, so those added textures exist in the game when the Low model is patched.
 - The new submesh exists only in the model you patch. The game switches to the Low model at a distance, so add a matching submesh there too if it should stay visible.
 
 **Things to keep in mind**
 - **Keep the new submesh selected on every export.** The `.sluggie` holds only the new submeshes that were selected at export. One left unselected is removed from the file.
-- Make every new submesh with **Add Submesh**, not by duplicating one (Shift+D). A copy keeps the original's internal id and material, which the tools don't expect.
-- Export to the `.sluggie` the armature was imported from. Export refuses a file that belongs to a different model.
+- Make every new submesh with **Add New Submesh** or **Make Active Mesh into a Submesh**, not by duplicating one (Shift+D). A copy keeps the original's internal id and material, which the tools don't expect; run **Make Active Mesh into a Submesh** on the copy to fix it.
+- Export to the `.sluggie` the armature was imported from, or to a new file name. Export refuses an existing file that belongs to a different model.
 - An armature imported with an older add-on version must be re-imported before you can add a submesh to it.
 - **Specular strength:** a new submesh made from a built-in template starts at 50. One made from a donor material starts at that material's current strength. Change it with **Set Specular Strength**.
 - **Bats and gloves work too.** They have only one bone by default, and it already carries the original mesh. To add a new rigid mesh to them, add a custom bone first with **Add Bone**.
@@ -178,7 +202,7 @@ Rules:
 - *Keep world position*: the mesh stays where it is and follows the new bone from now on (a rebuild).
 - *Keep offset to bone*: the mesh jumps so it keeps the same offset from the new bone as it had from the old one. Its data is unchanged, so this also works in place, and `--unpatch` puts the mesh back on its original bone.
 
-**Add material** (same box) adds a new surface to the active rigid mesh, custom submesh or body (a custom submesh can carry as many as you like; its faces are split between its materials just like a rigid mesh's). Pick a template as for Add Submesh (`builtin:rigid_spec_v1` is the default; see the template list above), assign faces to the new slot (in Edit Mode the selected faces are assigned right away), and load a PNG into its empty Image Texture node. Export stops until that node has an image. A PNG the model already has just binds that texture; a new PNG is appended with **Reimport textures from tex folder** enabled (a Low model can only use its High model's textures, including the ones the High model added). The hand-mitt templates `rigid_rhsp_v1` / `rigid_lhsp_v1` hide the surface's vertex-alpha-0 parts while that hand wears the mitt.
+**Add material** (same box) adds a new surface to the active rigid mesh, custom submesh or body (a custom submesh can carry as many as you like; its faces are split between its materials just like a rigid mesh's). Pick a template as for Add New Submesh (`builtin:rigid_spec_v1` is the default; see the template list above), assign faces to the new slot (in Edit Mode the selected faces are assigned right away), and load a PNG into its empty Image Texture node. Export stops until that node has an image. A PNG the model already has just binds that texture; a new PNG is appended on export (a Low model can only use its High model's textures, including the ones the High model added). The hand-mitt templates `rigid_rhsp_v1` / `rigid_lhsp_v1` hide the surface's vertex-alpha-0 parts while that hand wears the mitt.
 
 A re-import of the exported file always shows the original mesh unchanged on its original bone. Any edit, including a move with **Reassign to new bone** (either placement), appears as a second `<name>_edit` object on its current bone, with its new materials. Select only one of the two objects when exporting again: the `_edit` object keeps your changes, the original undoes them.
 
@@ -188,7 +212,7 @@ A new bone gives a new submesh somewhere to attach when no free bone sits where 
 1. Select the armature or any of its child meshes and open the Sluggies Tools tab (Object Mode).
 2. Click **Add Bone** and pick the parent bone. The active bone is preselected, and new bones can be parents too.
 3. The new bone starts at the parent's tail. Move and rotate it in Edit Mode as you like; its rest position is what gets exported.
-4. Attach a new submesh to it with **Add Submesh**. The new bone is listed as a free host bone.
+4. Attach a new submesh to it with **Add New Submesh**. The new bone is listed as a free host bone.
 5. Export and patch normally. The export uses Hammerspace by itself.
 
 **Rules**
@@ -196,7 +220,7 @@ A new bone gives a new submesh somewhere to attach when no free bone sits where 
 - Deleting a bone you added yourself is fine. It is simply left out of the export, and the bones you added after it move down one number each.
 - Don't scale the new bone. The game ignores bone scale, and export warns when a new bone has one.
 - You can paint body weights onto a new bone: add a `bone_<id>` vertex group for it on the body and weight vertices to it like to any other bone. This rebuilds the whole body (see "Editing the body"). Give the High and the Low model the same new bone when both bodies use it.
-- Bone numbers are assigned in the order you added the bones. After you delete an added bone, click **Renumber Added Bones** so the names match the numbers again. Meshes on those bones keep their bone, because their vertex groups are renamed too. **Add Bone**, **Add Submesh** and **Reassign to New Bone** renumber automatically. Export is refused until the names match.
+- Bone numbers are assigned in the order you added the bones. After you delete an added bone, click **Renumber Added Bones** so the names match the numbers again. Meshes on those bones keep their bone, because their vertex groups are renamed too. **Add Bone**, **Add New Submesh** and **Reassign to New Bone** renumber automatically. Export is refused until the names match.
 
 #### Animating an added bone how-to
 An added bone follows its parent until you give it an animation track of its own. Confirmed in game (Mario, 2026-10-13): a new bone under the spine, weighted to the belly and keyed in a bank-7 animation, bent the belly as keyed.

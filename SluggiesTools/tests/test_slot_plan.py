@@ -647,6 +647,19 @@ class ClassifyTests(unittest.TestCase):
             p = slot_plan.classify(picked)
             self.assertEqual((p.high, p.low, p.stem, p.source), (hp, low, 'koopa', 0x09))
 
+    def test_variant_pairs_with_the_partner_of_the_same_name(self):
+        # Variants saved under new names: High and Low pair by name, else with the exported file.
+        hp_dir, low_dir = os.path.join(self.char, '1_koopa.gpl'), os.path.join(self.char, '2_L_koopa.gpl')
+        hp = write_sluggie(hp_dir, '1_koopa.gpl.sluggie', 27, 0, 'koopa.gpl')
+        hp_red = write_sluggie(hp_dir, '1_koopa_red.gpl.sluggie', 27, 0, 'koopa.gpl')
+        hp_blue = write_sluggie(hp_dir, '1_koopa_blue.gpl.sluggie', 27, 0, 'koopa.gpl')
+        low_red = write_sluggie(low_dir, '2_L_koopa_red.gpl.sluggie', 27, 1, 'L_koopa.gpl')
+        low = write_sluggie(low_dir, '2_L_koopa.gpl.sluggie', 27, 1, 'L_koopa.gpl')
+        self.assertEqual(slot_plan.classify(hp_red).low, low_red)
+        self.assertEqual(slot_plan.classify(low_red).high, hp_red)
+        self.assertEqual(slot_plan.classify(hp).low, low)
+        self.assertEqual(slot_plan.classify(hp_blue).low, low)
+
     def test_partner_of_another_chunk_is_ignored(self):
         hp = write_sluggie(os.path.join(self.char, '1_koopa.gpl'), '1_koopa.gpl.sluggie', 27, 0, 'koopa.gpl')
         write_sluggie(os.path.join(self.char, '2_L_koopa.gpl'), '2_L_koopa.gpl.sluggie', 28, 1, 'L_koopa.gpl')

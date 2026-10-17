@@ -10,6 +10,7 @@ from bpy_extras.io_utils import ImportHelper
 from . import AnmFormat
 from . import FieldCodec
 from . import HostBones
+from . import ModelCheckCore
 
 
 # Fallback tail length for a bone that gets no direction from the hierarchy,
@@ -121,6 +122,9 @@ def _texture_file_map_from_sibling_sluggie(current_sluggie_path, model):
         for slug_name in sluggies:
             candidates.append(os.path.join(sibling_dir, slug_name))
 
+    # Variants saved under new names tie on the score below; the file named
+    # like this one (else the exported one) wins the tie.
+    partner = ModelCheckCore.pick_partner(candidates, current_sluggie_path)
     best_map = {}
     best_score = -1
     for candidate_path in candidates:
@@ -141,6 +145,8 @@ def _texture_file_map_from_sibling_sluggie(current_sluggie_path, model):
             score += 2
         if candidate_model.get("TEXHeader"):
             score += 1
+        if candidate_path == partner:
+            score += 0.5
         if score > best_score:
             best_score = score
             best_map = candidate_map
@@ -753,6 +759,12 @@ def _surface_face_ranges(display_states):
 def _create_material(mat_name, uv_layer_name, image, wrap_s=1):
     """Build a UV Map -> Mapping -> Image Texture -> Diffuse BSDF -> Material Output node tree."""
     mat = bpy.data.materials.new(name=mat_name)
+    _build_material_nodes(mat, uv_layer_name, image, wrap_s)
+    return mat
+
+
+def _build_material_nodes(mat, uv_layer_name, image, wrap_s=1):
+    """Replace *mat*'s node tree with the importer's texture tree (see _create_material)."""
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
     links = mat.node_tree.links
@@ -781,8 +793,6 @@ def _create_material(mat_name, uv_layer_name, image, wrap_s=1):
     links.new(mapping_node.outputs['Vector'], tex_node.inputs['Vector'])
     links.new(tex_node.outputs['Color'], bsdf_node.inputs['Color'])
     links.new(bsdf_node.outputs['BSDF'], out_node.inputs['Surface'])
-
-    return mat
 
 
 def _set_surface_material_metadata(mat, ds_entry):

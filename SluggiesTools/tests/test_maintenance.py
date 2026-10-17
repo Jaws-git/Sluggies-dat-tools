@@ -47,12 +47,24 @@ class DuplicateModelTests(unittest.TestCase):
         self.assertEqual(set(problems[0].paths), {original, copy})
         self.assertIn('directory 18, file 0', problems[0].summary)
 
-    def test_renamed_copy_in_the_same_folder_is_reported(self):
-        # Explorer's "x - Copy.sluggie": a different name, the same model.
+    def test_variant_under_a_new_name_is_not_reported(self):
+        # A variant saved by the Blender export (or "x - Copy.sluggie"): a different name, the same model.
         folder = self._path('18 Mario', 'a_mario.gpl')
         _write_sluggie(os.path.join(folder, 'a_mario.gpl.sluggie'), 18, 0, '0x100')
-        _write_sluggie(os.path.join(folder, 'a_mario.gpl - Copy.sluggie'), 18, 0, '0x100')
-        self.assertEqual(len(maintenance.duplicate_models(self.root)), 1)
+        _write_sluggie(os.path.join(folder, 'a_mario_red.gpl.sluggie'), 18, 0, '0x100')
+        _write_sluggie(self._path('18 Mario', 'variants', 'a_mario_blue.gpl.sluggie'), 18, 0, '0x100')
+        self.assertEqual(maintenance.duplicate_models(self.root), [])
+
+    def test_copied_variant_is_reported(self):
+        # The same variant name twice: the patcher's name search cannot choose.
+        first = self._path('18 Mario', 'a_mario.gpl', 'a_mario_red.gpl.sluggie')
+        second = self._path('18 Mario', 'backup', 'a_mario_red.gpl.sluggie')
+        _write_sluggie(first, 18, 0, '0x100')
+        _write_sluggie(second, 18, 0, '0x100')
+        problems = maintenance.duplicate_models(self.root)
+        self.assertEqual(len(problems), 1)
+        self.assertEqual(set(problems[0].paths), {first, second})
+        self.assertIn("'a_mario_red.gpl.sluggie'", problems[0].summary)
 
     def test_shared_block_exported_for_two_directories_is_not_reported(self):
         # The export writes a block shared by two directories into both folders, under one name.

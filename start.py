@@ -550,7 +550,10 @@ def hammerspace_section_args(model):
         ) and model.get('SkinDataEdited')):
             args.extend(('--skn', 'build'))
 
-    if model.get('ReimportTextures') or custom_texture_added:
+    # New PNGs are appended to TEX whether or not the donor textures are
+    # reimported (ReimportTextures only covers those).
+    if model.get('ReimportTextures') or model.get('AdditionalTextureDescriptors') \
+            or custom_texture_added:
         args.extend(['--tex', 'build'])
 
     return args
@@ -746,6 +749,19 @@ def run_clear_target(target_id, target_file=None):
     return subprocess.run(cmd, cwd=HS_DIR).returncode == 0
 
 
+def _is_low_file(name):
+    """Whether a file to patch is a Low model: its ``FileIndex`` (1), else ``_L_`` in its name."""
+    if name.lower().endswith('.sluggie'):
+        try:
+            path = name if os.path.isfile(name) else _model_files.find_unique(SEARCH_DIR, os.path.basename(name))
+            index = _load_sluggie(path)['SluggiesModel'].get('FileIndex') if path else None
+            if isinstance(index, int):
+                return index == 1
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    return '_L_' in os.path.basename(name)
+
+
 def run_patching(filenames, unpatch=False, target_id=None, as_low=False, validate_only=False, target_file=None):
     """Patch or unpatch each file. Returns True when every file went through.
 
@@ -755,8 +771,9 @@ def run_patching(filenames, unpatch=False, target_id=None, as_low=False, validat
     failed = False
     if target_id is not None:
         # A slot takes an L_ model only under its own high-poly model, so the
-        # high-poly file goes first.
-        filenames = sorted(filenames, key=lambda name: '_L_' in os.path.basename(name))
+        # high-poly file goes first (by the model it patches: a variant's name
+        # need not say L_).
+        filenames = sorted(filenames, key=_is_low_file)
     for filename in filenames:
         if failed and target_id is not None:
             slogger.error(f"'{filename}' skipped: an earlier file of this slot patch failed.", source="dispatcher")

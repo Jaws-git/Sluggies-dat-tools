@@ -16,6 +16,7 @@ import os
 import re
 from dataclasses import dataclass
 
+import model_files
 from binfmt import load_sluggie
 
 BAT, GLOVE_L, GLOVE_R, EXTRA = 'bat', 'glove_l', 'glove_r', 'extra'
@@ -96,7 +97,8 @@ def character_folder(model_path: str) -> str:
 def find_gear(model_path: str, chunk: int) -> tuple[dict[int, Gear], dict[int, list[str]]]:
     """``(found, ambiguous)`` for the model at ``model_path``: the equipment ``.sluggie`` per file (2-5) in its
     character folder whose ``ChunkNumber`` is ``chunk``, and the files with several candidates (nothing is guessed:
-    they are not in ``found``)."""
+    they are not in ``found``). Of several files for one equipment file, the exported one (named after its folder)
+    is taken: the others are variants saved under new names, which the user picks in the Equipment row."""
     root = character_folder(model_path)
     candidates: dict[int, list[str]] = {}
     try:
@@ -118,6 +120,7 @@ def find_gear(model_path: str, chunk: int) -> tuple[dict[int, Gear], dict[int, l
                 model = _read(path)
                 if model.get('ChunkNumber') == chunk and model.get('FileIndex') in ROLES:
                     candidates.setdefault(model['FileIndex'], []).append(path)
-    found = {f: Gear(f, paths[0]) for f, paths in candidates.items() if len(paths) == 1}
-    ambiguous = {f: paths for f, paths in candidates.items() if len(paths) > 1}
+    picked = {f: model_files.prefer_exported(paths) for f, paths in candidates.items()}
+    found = {f: Gear(f, path) for f, path in picked.items() if path is not None}
+    ambiguous = {f: candidates[f] for f, path in picked.items() if path is None}
     return found, ambiguous

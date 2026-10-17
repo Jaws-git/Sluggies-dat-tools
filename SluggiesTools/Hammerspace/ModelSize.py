@@ -1,9 +1,11 @@
 """Size of a patched model in the output dt_na.dat, and whether its player still fits the player memory.
 
-Verification tool, like CompareBlocks.py. A ``.sluggie`` is named after the original block's offset in the
-INPUT dt_na.dat (``272147520_tiny_kong.gpl.sluggie``); that offset finds the model's directory record in the
-INPUT main.dol, and the same record in the OUTPUT main.dol gives where the patched block now lives and its
-length. Reported per model:
+Verification tool, like CompareBlocks.py. The ``.sluggie`` (a path, or a bare name searched in
+2_Output_Assets) names its model's directory record by ``ChunkNumber``/``FileIndex``, so a variant saved under a
+new name works too; a file that cannot be found or read falls back to its name, which the export starts with the
+original block's offset in the INPUT dt_na.dat (``272147520_tiny_kong.gpl.sluggie``), looked up in the INPUT
+main.dol. The same record in the OUTPUT main.dol gives where the patched block now lives and its length. Reported
+per model:
 
   * the record's length and offset in the output (hammerspace when past ``BASE_SIZE``)
   * the original length, and the debug dumps in ``3_Output_Dat/SluggDebugg/`` (``writeDebugDumps``) when present
@@ -27,11 +29,33 @@ import slogger as _slogger
 _slogger.configure()
 
 import game_memory
+import model_files
+from binfmt import load_sluggie
 from Hammerspace import HammerspaceHelper as hh
 from Roster import dat_hammerspace
 
 DEBUG_DIR = os.path.join(os.path.dirname(hh.OUTPUT_DAT), 'SluggDebugg')
 FILE_NAMES = {game_memory.HIGH: 'High', game_memory.LOW: 'Low'}
+
+
+MODELS_DIR = os.path.join(hh._ROOT, '2_Output_Assets')
+
+
+def model_record(name: str, in_image) -> tuple[int, int]:
+    """``(directory, file index)`` of the model ``name`` (a path or a bare name) patches."""
+    sluggie_name = os.path.basename(name)
+    try:
+        path = name if os.path.isfile(name) else model_files.find_unique(MODELS_DIR, sluggie_name)
+    except model_files.AmbiguousNameError as exc:
+        raise SystemExit(str(exc))
+    if path:
+        try:
+            model = load_sluggie(path)['SluggiesModel']
+            if isinstance(model.get('ChunkNumber'), int) and isinstance(model.get('FileIndex'), int):
+                return model['ChunkNumber'], model['FileIndex']
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    return find_record(in_image, original_offset(sluggie_name))
 
 
 def original_offset(name: str) -> int:
@@ -70,7 +94,7 @@ def report(name: str, in_image, out_image, heap, chars, names) -> None:
     sluggie_name = os.path.basename(name)
     if not sluggie_name.endswith('.sluggie'):
         sluggie_name += '.sluggie'
-    directory, index = find_record(in_image, original_offset(sluggie_name))
+    directory, index = model_record(name if name.endswith('.sluggie') else name + '.sluggie', in_image)
     _orig_offset, orig_length = output_slot(in_image, directory, index)
     offset, length = output_slot(out_image, directory, index)
     where = 'hammerspace' if offset >= hh.BASE_SIZE else 'in place'

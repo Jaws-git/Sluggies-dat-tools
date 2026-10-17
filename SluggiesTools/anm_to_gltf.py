@@ -18,6 +18,7 @@ import sys
 
 import numpy as np
 
+import model_files
 import slogger
 from binfmt import load_sluggie
 from glb_export import _Glb, FLOAT, gltf_rotation, trs_matrix
@@ -172,9 +173,12 @@ def anm_to_glb(sequences, bone_hierarchy, name='anm'):
 
 
 def find_sluggie(char_dir):
-    """The .sluggie under char_dir with the largest BoneHierarchy (the body model)."""
+    """The .sluggie under char_dir with the largest BoneHierarchy (the body model). Exported files only
+    (named after their folder): variants saved under new names are skipped."""
     best, best_bones = None, 0
-    for path in glob.glob(os.path.join(char_dir, '**', '*.sluggie'), recursive=True):
+    for path in sorted(glob.glob(os.path.join(glob.escape(char_dir), '**', '*.sluggie'), recursive=True)):
+        if not model_files.is_exported_name(path):
+            continue
         try:
             data = load_sluggie(path)
             bh = data.get('SluggiesModel', data).get('BoneHierarchy')

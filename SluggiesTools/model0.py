@@ -30,11 +30,10 @@ UNTANGLE_IGNORE_BASENAME = {
 
 
 def _copy_texture_pngs(output_dir):
+    # Overwrites the exported PNGs only: edited textures saved under new names
+    # stay in tex/.
     tex_dir = os.path.join(output_dir, 'tex')
     os.makedirs(tex_dir, exist_ok=True)
-    for filename in os.listdir(tex_dir):
-        if filename.lower().endswith('.png'):
-            os.remove(os.path.join(tex_dir, filename))
     for filename in os.listdir(TEX_TEMP_DIR):
         shutil.copyfile(
             os.path.join(TEX_TEMP_DIR, filename),
@@ -213,20 +212,10 @@ class Model0(FileChunk):
             glb_exists = os.path.exists(os.path.join(file_dir, self.name + '.glb'))
             if not export_tex and glb_exists:
                 return
-            if os.path.exists(file_dir):
-                # Selectively remove only export-produced files so that unrelated
-                # files placed in the output folder are not destroyed.
-                _export_exts = {'.sluggie'}
-                if export_glb:
-                    # .dae: left over from the retired Collada export
-                    _export_exts |= {'.glb', '.dae', '.png'}
-                for _fname in os.listdir(file_dir):
-                    _fpath = os.path.join(file_dir, _fname)
-                    if os.path.isfile(_fpath) and os.path.splitext(_fname)[1].lower() in _export_exts:
-                        os.remove(_fpath)
-                    elif export_glb and os.path.isdir(_fpath) and _fname == 'tex':
-                        shutil.rmtree(_fpath)
-            else:
+            # Nothing in an existing folder is deleted: every exported file
+            # overwrites its earlier copy, and .sluggie files and PNGs saved
+            # under new names (model variants, edited textures) survive.
+            if not os.path.exists(file_dir):
                 os.mkdir(file_dir)
             file_dir += '/'
             # model_data() still runs when glb export is off: untangling side effects

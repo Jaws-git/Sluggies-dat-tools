@@ -272,6 +272,19 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
             ['--gpl', 'build', '--tex', 'build'],
         )
 
+    def test_additional_textures_request_tex_build_without_reimport_textures(self):
+        model = {
+            'Submeshes': [{}],
+            'ReimportTextures': False,
+            'DesiredTextureAssignments': {'sm0_ds1': 1},
+            'AdditionalTextureDescriptors': [{'TextureFileName': 'new.png', 'TemplateTextureIndex': 0}],
+        }
+
+        self.assertEqual(
+            start.hammerspace_section_args(model),
+            ['--gpl', 'build', '--tex', 'build'],
+        )
+
     def test_reimport_textures_false_keeps_tex_clone(self):
         model = {'Submeshes': [{}], 'ReimportTextures': False}
 
