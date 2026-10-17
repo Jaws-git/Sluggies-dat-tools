@@ -8,6 +8,12 @@ sampled from the posed armature at every frame of each action's frame range
 rotation keys, dropping keys that interpolation reproduces. Tracks the
 armature does not drive (no bone with that track id, channel-less tracks)
 are written back as imported.
+
+The layer roots (``AnimScale.LAYER_ROOT_TRACK_IDS``: pelvis, spine root,
+hands, neck, head) are sampled as the game plays them: position against the
+parent's full matrix, rotation and scale against the parent with its scale
+removed, so a scaled model exports as Blender shows it with
+``inherit_scale = 'NONE'`` on those bones (the import sets that).
 """
 
 import math
@@ -16,9 +22,11 @@ import re
 import struct
 
 import bpy
+import mathutils
 from bpy.props import EnumProperty, StringProperty
 from bpy_extras.io_utils import ExportHelper
 
+from . import AnimScale
 from . import AnmFormat
 from . import FieldCodec
 from . import HostBones
@@ -195,8 +203,22 @@ class _ActionSwap:
         return False
 
 
-def _sample_action(scene, arm_obj, bones, corrections, frames):
-    """{bone name: [(time, scale, quat [w,x,y,z], translation)]} of game locals."""
+def _own_local(parent, world):
+    """Local matrix of a layer root (a bone the game re-solves): its
+    translation in the parent's full frame, its rotation and scale against
+    the parent with the parent's scale removed. This is what the game plays
+    for such a bone (own scale only, at the parent's scaled offset) and what
+    Blender shows for it with ``inherit_scale = 'NONE'``."""
+    loc, rot, _scale = parent.decompose()
+    unscaled = mathutils.Matrix.Translation(loc) @ rot.to_matrix().to_4x4()
+    own = unscaled.inverted() @ world
+    own.translation = (parent.inverted() @ world).translation
+    return own
+
+
+def _sample_action(scene, arm_obj, bones, corrections, frames, layer_roots=frozenset()):
+    """{bone name: [(time, scale, quat [w,x,y,z], translation)]} of game locals;
+    *layer_roots* (bone names) are sampled with :func:`_own_local`."""
     inv_c = ({name: c.inverted() for name, c in corrections.items()}
              if corrections is not None else None)
     samples = {name: [] for name in bones}
@@ -211,7 +233,8 @@ def _sample_action(scene, arm_obj, bones, corrections, frames):
             if pb.parent is not None:
                 parent = game_world[pb.parent.name]
                 if abs(parent.determinant()) > 1e-12:
-                    local = parent.inverted() @ local
+                    local = (_own_local(parent, local) if name in layer_roots
+                             else parent.inverted() @ local)
             loc, rot, scl = local.decompose()
             samples[name].append((float(frame), list(scl), [rot.w, rot.x, rot.y, rot.z], list(loc)))
     return samples
@@ -227,6 +250,8 @@ def build_group(context, arm_obj, actions):
             bone_of_track.setdefault(int(tid), bone.name)
     corrections = (_anm_bone_corrections(arm_data)
                    if arm_obj.get('SluggiesBonesReoriented', True) else None)
+    layer_roots = frozenset(bone_of_track[tid] for tid in AnimScale.LAYER_ROOT_TRACK_IDS
+                            if tid in bone_of_track)
 
     sequences, notes = [], []
     with _ActionSwap(context, arm_obj) as swap:
@@ -244,7 +269,7 @@ def build_group(context, arm_obj, actions):
 
             swap.play(action)
             samples = _sample_action(context.scene, arm_obj, list(bone_of_track.values()),
-                                     corrections, frames)
+                                     corrections, frames, layer_roots)
 
             tracks, present = [], set()
             for record in records:

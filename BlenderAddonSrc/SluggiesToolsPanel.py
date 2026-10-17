@@ -12,7 +12,8 @@ from mathutils import Matrix, Vector
 
 from . import CustomSubmeshExport
 from . import FieldCodec
-from .AnmExport import SLUGGIES_OT_export_anm_group, _POSE_BONE_PATH, _action_fcurves
+from . import AnimScale
+from .AnmExport import SLUGGIES_OT_export_anm_group, _POSE_BONE_PATH, _action_fcurves, anm_groups
 from . import HostBones
 from . import ModelCheckCore
 from . import RigidRebuildExport
@@ -583,7 +584,7 @@ def _select_new_object(context, obj):
 
 def _create_custom_submesh_material(obj, custom_submesh_id, image, shader_mode, specular_strength):
     surface_id = f'{custom_submesh_id}_ds0'
-    mat = _create_material(f'{obj.name}_{surface_id}', 'uv0', image, wrap_s=1)
+    mat = _create_material(f'{obj.name}_{surface_id}', image, wrap_s=1)
     _set_custom_primary_surface(mat, custom_submesh_id, shader_mode, specular_strength)
     obj.data.materials.append(mat)
     return mat
@@ -1082,9 +1083,7 @@ class SLUGGIES_OT_add_material(bpy.types.Operator):
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
 
-        active_uv = obj.data.uv_layers.active
-        uv_layer_name = active_uv.name if active_uv is not None else 'uv0'
-        mat = _create_material(material_name, uv_layer_name, None, wrap_s=plan['wrap_s'])
+        mat = _create_material(material_name, None, wrap_s=plan['wrap_s'])
         _apply_new_surface_plan(mat, plan)
 
         obj.data.materials.append(mat)
@@ -1120,8 +1119,11 @@ def _draw_rigid_mesh_box(layout, context):
     plain_mesh = kind is None and not body and obj is not None and obj.type == 'MESH' \
         and not _is_donor_mesh(obj)
 
-    box = layout.box()
-    box.label(text="Mesh" if kind == 'custom' else "Skinned mesh" if body else "Rigid mesh")
+    box = _collapsible_box(
+        layout, context, 'mesh',
+        "Mesh" if kind == 'custom' else "Skinned mesh" if body else "Rigid mesh")
+    if box is None:
+        return
     if arm_obj is None and not (plain_mesh and _any_sluggies_armature_imported(context)):
         box.label(text=_no_target_armature_message(context), icon='INFO')
     elif kind is not None:
@@ -1736,7 +1738,7 @@ def _fix_surface_image(context, mat, image, tex_dir):
     return f"'{mat.name}': saved its image as tex/{os.path.basename(image.filepath_raw)}"
 
 
-def _ensure_surface_texture(context, mat, tex_dir, uv_name):
+def _ensure_surface_texture(context, mat, tex_dir):
     """Give *mat* the one PNG texture a custom submesh surface needs. Without
     one, a PNG in the material's colour is made and wired into its shader (or
     into a fresh importer-style node tree when the shader has no free colour
@@ -1757,7 +1759,7 @@ def _ensure_surface_texture(context, mat, tex_dir, uv_name):
         tex_node.location = (color_input.node.location.x - 320, color_input.node.location.y)
         mat.node_tree.links.new(tex_node.outputs['Color'], color_input)
     else:
-        _build_material_nodes(mat, uv_name, image)
+        _build_material_nodes(mat, image)
     return f"'{mat.name}': new texture tex/{image.name}"
 
 
@@ -1817,7 +1819,7 @@ def _compact_material_slots(obj):
     return materials, primary
 
 
-def _make_submesh_materials(context, obj, arm_obj, tex_dir, uv_name):
+def _make_submesh_materials(context, obj, arm_obj, tex_dir):
     """Turn every material of *obj* (already flagged as a custom submesh) into
     one of its surfaces: the primary into `<CustomSubmeshId>_ds0`, the others
     into Add-material surfaces, with the default template and specular
@@ -1849,7 +1851,7 @@ def _make_submesh_materials(context, obj, arm_obj, tex_dir, uv_name):
             _apply_new_surface_plan(mat, _new_surface_plan(context, arm_obj, obj, added_template))
     notes = []
     for mat in mesh.materials:
-        note = _ensure_surface_texture(context, mat, tex_dir, uv_name)
+        note = _ensure_surface_texture(context, mat, tex_dir)
         if note:
             notes.append(note)
     return notes
@@ -2027,15 +2029,10 @@ class SLUGGIES_OT_make_submesh(bpy.types.Operator):
         obj.matrix_world = world
 
         uv_layers = obj.data.uv_layers
-        if len(uv_layers) == 1:
-            uv_name = _MADE_SUBMESH_UV_NAME
-        else:
-            active_uv = next((layer for layer in uv_layers if layer.active_render), None)
-            uv_name = active_uv.name if active_uv is not None else ''
-            if not uv_layers:
-                notes.append("no UV map: add one and unwrap it before exporting")
+        if not uv_layers:
+            notes.append("no UV map: add one and unwrap it before exporting")
         try:
-            notes += _make_submesh_materials(context, obj, arm_obj, tex_dir, uv_name)
+            notes += _make_submesh_materials(context, obj, arm_obj, tex_dir)
         except ValueError as exc:
             notes.append(f"materials not finished: {exc}")
         if len(uv_layers) == 1:
@@ -2111,18 +2108,22 @@ class SLUGGIES_OT_set_specular_strength(bpy.types.Operator):
         return {"FINISHED"}
 
 
-def _animated_root_bone_names(arm_obj):
-    """Root bones of *arm_obj* that have children. A skeleton can hold several
-    root bones, but only the one carrying the hierarchy moves the model."""
-    return [b.name for b in arm_obj.data.bones if b.parent is None and b.children]
+def _layer_root_bones(arm_obj):
+    """{bone name: track id} of the bones the game scales the body from
+    (AnimScale.LAYER_ROOT_TRACK_IDS), sorted by track id."""
+    return AnimScale.layer_roots({b.name: b.get('track_id', HostBones.NO_TRACK)
+                                  for b in arm_obj.data.bones})
 
 
 class SLUGGIES_OT_scale_animations(bpy.types.Operator):
-    """Multiply the root bone's scale keyframes in every action by a factor"""
+    """Scale the whole model in every imported animation bank"""
     bl_idname = "sluggies.scale_animations"
-    bl_label = "Apply scale to all animations"
-    bl_description = ("Multiply the scale keyframes of the selected armature's root bone by the "
-                      "X/Y/Z factor below, in every action of the file")
+    bl_label = "Scale model in all animations"
+    bl_description = (
+        "Multiply the model's size in every imported animation bank by the X/Y/Z factor below "
+        "(scene axes, Z up). Keys the scale of the bones the game scales the body from (pelvis, "
+        "spine, hands, neck, head) in every action of every imported .anm group; export each group "
+        "and replace the banks afterwards. The bat does not follow: scale its mesh separately")
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
@@ -2135,11 +2136,37 @@ class SLUGGIES_OT_scale_animations(bpy.types.Operator):
 
     def execute(self, context):
         arm_obj = _find_target_armature(context)
-        roots = set(_animated_root_bone_names(arm_obj))
+        roots = _layer_root_bones(arm_obj)
         if not roots:
-            self.report({"ERROR"}, f"{arm_obj.name} has no root bone with children")
+            ids = ', '.join(hex(t) for t in sorted(AnimScale.LAYER_ROOT_TRACK_IDS))
+            self.report({"ERROR"}, f"{arm_obj.name} has none of the bones the game scales the body "
+                                   f"from (animation tracks {ids})")
             return {"CANCELLED"}
-        factor = tuple(context.scene.sluggies_animation_scale)
+        groups = anm_groups()
+        if not groups:
+            self.report({"ERROR"}, "Import the character's animation banks first "
+                                   "(Import Sluggers .anm, files 6-14 of its anm folder)")
+            return {"CANCELLED"}
+        factors = tuple(float(f) for f in context.scene.sluggies_animation_scale)
+        if min(factors) <= 0.0:
+            self.report({"ERROR"}, "Scale factors must be positive")
+            return {"CANCELLED"}
+        if all(abs(f - 1.0) < 1e-9 for f in factors):
+            self.report({"INFO"}, "Factor 1 on every axis: nothing to change")
+            return {"CANCELLED"}
+
+        # The factors along each bone's own axes (a scale channel is applied in
+        # the bone's frame), and the game's inheritance rule for the preview:
+        # the body below a layer root follows its position, not its scale.
+        per_bone, misaligned = {}, []
+        for name in roots:
+            bone = arm_obj.data.bones[name]
+            axes = (arm_obj.matrix_world @ bone.matrix_local).to_3x3().normalized()
+            rows = [list(axes[j]) for j in range(3)]
+            per_bone[name] = AnimScale.local_factors(rows, factors)
+            if not AnimScale.is_uniform(factors) and AnimScale.alignment(rows) < AnimScale.MIN_ALIGNMENT:
+                misaligned.append(name)
+            bone.inherit_scale = 'NONE'
 
         anim = arm_obj.animation_data
         prev_action = anim.action if anim is not None else None
@@ -2147,46 +2174,55 @@ class SLUGGIES_OT_scale_animations(bpy.types.Operator):
 
         actions = keys = created = 0
         try:
-            for action in bpy.data.actions:
-                keyed = set()
-                for fc in _action_fcurves(action):
-                    match = _POSE_BONE_PATH.match(fc.data_path)
-                    if not match or match.group(2) != 'scale' or not 0 <= fc.array_index < 3:
-                        continue
-                    name = match.group(1).replace('\\"', '"').replace('\\\\', '\\')
-                    if name not in roots or not fc.keyframe_points:
-                        continue
-                    f = factor[fc.array_index]
-                    for kp in fc.keyframe_points:
-                        kp.co[1] *= f
-                        kp.handle_left[1] *= f
-                        kp.handle_right[1] *= f
-                        keys += 1
-                    fc.update()
-                    keyed.add((name, fc.array_index))
-
-                # A root scale channel without keys holds the rest scale (1.0):
-                # key it at the action's first frame with the factor applied.
-                missing = [(name, i) for name in sorted(roots) for i in range(3)
-                           if (name, i) not in keyed]
-                if missing:
-                    frame = action.frame_range[0]
-                    for name, i in missing:
-                        fc = _ensure_action_fcurve(arm_obj, action, f'pose.bones["{name}"].scale', i, name)
-                        fc.keyframe_points.insert(frame, factor[i], options={'FAST'})
+            for group_actions in groups.values():
+                for action in group_actions:
+                    keyed = set()
+                    for fc in _action_fcurves(action):
+                        match = _POSE_BONE_PATH.match(fc.data_path)
+                        if not match or match.group(2) != 'scale' or not 0 <= fc.array_index < 3:
+                            continue
+                        name = match.group(1).replace('\\"', '"').replace('\\\\', '\\')
+                        if name not in per_bone or not fc.keyframe_points:
+                            continue
+                        f = per_bone[name][fc.array_index]
+                        for kp in fc.keyframe_points:
+                            kp.co[1] *= f
+                            kp.handle_left[1] *= f
+                            kp.handle_right[1] *= f
+                            keys += 1
                         fc.update()
-                        created += 1
-                actions += 1
+                        keyed.add((name, fc.array_index))
+
+                    # A scale channel without keys holds the rest scale (1.0):
+                    # key the factor at the action's first and last frame.
+                    missing = [(name, i) for name in per_bone for i in range(3)
+                               if (name, i) not in keyed]
+                    if missing:
+                        frames = sorted(set(action.frame_range))
+                        for name, i in missing:
+                            fc = _ensure_action_fcurve(arm_obj, action, f'pose.bones["{name}"].scale', i, name)
+                            for frame in frames:
+                                fc.keyframe_points.insert(frame, per_bone[name][i], options={'FAST'})
+                            fc.update()
+                            created += 1
+                    actions += 1
         finally:
             if arm_obj.animation_data is not None:
                 arm_obj.animation_data.action = prev_action
                 if prev_slot is not None:
                     arm_obj.animation_data.action_slot = prev_slot
 
-        self.report({"INFO"}, f"Scaled {keys} root keyframe(s) and added {created} "
-                              f"in {actions} action(s)")
+        self.report({"INFO"}, f"Scaled {len(per_bone)} bone(s) ({', '.join(per_bone)}) in {actions} "
+                              f"action(s) of {len(groups)} group(s): {keys} keyframe(s) multiplied, "
+                              f"{created} added. Export every group and replace the banks; "
+                              f"the bat needs its own mesh scale")
+        if misaligned:
+            self.report({"WARNING"}, f"Non-uniform factors are a guess on {', '.join(misaligned)}: "
+                                     f"the bone's axes do not line up with the scene's")
+        if len(groups) < 9:
+            self.report({"WARNING"}, f"{len(groups)} of the 9 banks imported; the model is scaled "
+                                     f"only in the banks you replace")
         return {"FINISHED"}
-
 
 def _ensure_action_fcurve(arm_obj, action, data_path, index, group):
     """The F-curve of *action* for *data_path*[*index*], created if missing.
@@ -2200,6 +2236,25 @@ def _ensure_action_fcurve(arm_obj, action, data_path, index, group):
         return action.fcurve_ensure_for_datablock(arm_obj, data_path, index=index, group_name=group)
     fc = action.fcurves.find(data_path, index=index)
     return fc if fc is not None else action.fcurves.new(data_path, index=index, action_group=group)
+
+
+# Sidebar boxes that collapse, each with a `Scene.sluggies_show_<key>_box`
+# toggle (expanded by default).
+_COLLAPSIBLE_BOXES = ('import_export', 'textures', 'bones', 'animations', 'mesh')
+
+
+def _collapsible_box(layout, context, key, title):
+    """A box whose title row toggles `Scene.sluggies_show_<key>_box`; returns
+    the box to draw into, or None while collapsed."""
+    box = layout.box()
+    prop = f'sluggies_show_{key}_box'
+    expanded = getattr(context.scene, prop)
+    box.prop(
+        context.scene, prop,
+        text=title, icon='TRIA_DOWN' if expanded else 'TRIA_RIGHT',
+        icon_only=False, emboss=False,
+    )
+    return box if expanded else None
 
 
 def _draw_free_host_bones(layout, context):
@@ -2236,7 +2291,8 @@ def _draw_free_host_bones(layout, context):
         col.label(text=f'bone_{choice.bone_id} ({tag})')
 
 
-# The "Animations" box (Scale Animations) is hidden from the panel for now; its operator stays registered.
+# The "Animations" box (Scale model in all animations, AnimScale) is hidden from the panel for now;
+# its operator stays registered (F3 search). Ground alignment of a scaled model is still open.
 _SHOW_ANIMATIONS_BOX = False
 
 
@@ -2251,34 +2307,35 @@ class SLUGGIES_PT_tools(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         # The File > Import/Export operators, so they are one click away.
-        box = layout.box()
-        box.label(text="Import/Export")
-        col = box.column(align=True)
-        col.operator(SLUGGIES_OT_import.bl_idname, text="Import .sluggie", icon='IMPORT')
-        col.operator(SLUGGIES_OT_export.bl_idname, text="Export .sluggie", icon='EXPORT')
-        col.separator()
-        col.operator(SLUGGIES_OT_import_anm.bl_idname, text="Import Sluggers .anm", icon='IMPORT')
-        col.operator(SLUGGIES_OT_export_anm_group.bl_idname, text="Export Sluggers .anm", icon='EXPORT')
+        box = _collapsible_box(layout, context, 'import_export', "Import/Export")
+        if box is not None:
+            col = box.column(align=True)
+            col.operator(SLUGGIES_OT_import.bl_idname, text="Import .sluggie", icon='IMPORT')
+            col.operator(SLUGGIES_OT_export.bl_idname, text="Export .sluggie", icon='EXPORT')
+            col.separator()
+            col.operator(SLUGGIES_OT_import_anm.bl_idname, text="Import Sluggers .anm", icon='IMPORT')
+            col.operator(SLUGGIES_OT_export_anm_group.bl_idname, text="Export Sluggers .anm", icon='EXPORT')
 
         layout.separator()
-        box = layout.box()
-        box.label(text="Textures")
-        # By id: TextureSlotsUI registers it.
-        box.operator("sluggies.manage_texture_slots", text="Manage texture slots", icon='TEXTURE')
+        box = _collapsible_box(layout, context, 'textures', "Textures")
+        if box is not None:
+            # By id: TextureSlotsUI registers it.
+            box.operator("sluggies.manage_texture_slots", text="Manage texture slots", icon='TEXTURE')
 
         layout.separator()
-        box = layout.box()
-        box.label(text="Bones")
-        box.operator(SLUGGIES_OT_add_bone.bl_idname)
-        box.operator(SLUGGIES_OT_renumber_added_bones.bl_idname)
-        box.operator(SLUGGIES_OT_toggle_bone_track.bl_idname)
+        box = _collapsible_box(layout, context, 'bones', "Bones")
+        if box is not None:
+            box.operator(SLUGGIES_OT_add_bone.bl_idname)
+            box.operator(SLUGGIES_OT_renumber_added_bones.bl_idname)
+            box.operator(SLUGGIES_OT_toggle_bone_track.bl_idname)
+            _draw_free_host_bones(box, context)
 
         if _SHOW_ANIMATIONS_BOX:
             layout.separator()
-            box = layout.box()
-            box.label(text="Animations")
-            box.operator(SLUGGIES_OT_scale_animations.bl_idname)
-            box.prop(context.scene, 'sluggies_animation_scale', text="")
+            box = _collapsible_box(layout, context, 'animations', "Animations")
+            if box is not None:
+                box.operator(SLUGGIES_OT_scale_animations.bl_idname)
+                box.prop(context.scene, 'sluggies_animation_scale', text="")
 
         layout.separator()
         _draw_rigid_mesh_box(layout, context)
@@ -2286,7 +2343,6 @@ class SLUGGIES_PT_tools(bpy.types.Panel):
         layout.separator()
         # By id: ModelCheckUI imports this module.
         layout.operator("sluggies.check_models", text="Check Models", icon='CHECKMARK')
-        _draw_free_host_bones(layout, context)
 
 
 def register():
@@ -2306,18 +2362,28 @@ def register():
         description="Show the read-only list of bones a new custom submesh could attach to",
         default=False,
     )
+    for key in _COLLAPSIBLE_BOXES:
+        setattr(bpy.types.Scene, f'sluggies_show_{key}_box', BoolProperty(
+            name="Expanded",
+            description="Show or hide this group",
+            default=True,
+        ))
     bpy.types.Scene.sluggies_animation_scale = FloatVectorProperty(
         name="Animation scale",
-        description="X/Y/Z factor 'Apply scale to all animations' multiplies the root bone's scale keyframes by",
+        description="X/Y/Z factor for 'Scale model in all animations', along the scene's axes (Z up)",
         size=3,
         subtype='XYZ',
         default=(1.0, 1.0, 1.0),
+        min=0.01,
+        soft_max=4.0,
     )
 
 
 def unregister():
     del bpy.types.Scene.sluggies_animation_scale
     del bpy.types.Scene.sluggies_show_free_host_bones
+    for key in _COLLAPSIBLE_BOXES:
+        delattr(bpy.types.Scene, f'sluggies_show_{key}_box')
     bpy.utils.unregister_class(SLUGGIES_PT_tools)
     bpy.utils.unregister_class(SLUGGIES_OT_scale_animations)
     bpy.utils.unregister_class(SLUGGIES_OT_set_specular_strength)

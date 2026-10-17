@@ -146,7 +146,7 @@ The template decides how the new submesh is lit. It is listed in this order, and
 All three looked the same in game tests. A `rigid:` template limits how detailed the mesh can be. If export says the mesh has too many vertices, normals or UVs for its template, pick a `derived:` or `builtin:` one.
 
 **Host bones**
-- One bone can carry only one mesh. The dialog lists only bones that are still free. The **Free host bones** list in the panel shows them too.
+- One bone can carry only one mesh. The dialog lists only bones that are still free. The **Free host bones** list at the bottom of the panel's **Bones** group shows them too.
 - Bones that already carry an original mesh are never offered. A bone that drives skinning (a hand, for example) is allowed.
 - The mesh must stay weighted to exactly one `bone_<id>` vertex group, its host bone, at full weight. Use **Reassign to New Bone** to move it to another bone instead of editing the groups by hand.
 - Export re-checks the bones. It stops with the object names when a host bone was taken in the meantime (for example, by a rigid mesh you moved there) or when two new submeshes share one bone.
@@ -234,6 +234,20 @@ Rules:
 - The bone's rest pose comes from the model, its motion from the bank: keep the two exports from the same armature.
 - A Low model is posed with the High model's skeleton (see "New bones on Low models"), so the High model needs the bone and its track; the Low model only needs the bone when its body or a submesh uses it.
 - Replacing a bank re-samples every sequence in it at whole frames with linear/slerp interpolation; stock half-frame keys are lost. Keep the bank's sequence count (the game picks animations by number).
+
+#### Scaling the whole model how-to
+The game sizes a character through its animations, not through its model: a scale on the right bones in every animation bank makes the whole body bigger or smaller, feet still on the ground. Confirmed in game (Mario, 2026-10-17, factor 1.5).
+
+1. Import the model, then all nine animation banks (**Import Sluggers .anm**, files 6-14 of the character's `anm` folder; select them all at once).
+2. In the Sluggies sidebar, *Animations* box, set the X/Y/Z factor (scene axes, Z is up; 1.5 = half again as big) and click **Scale model in all animations**. It keys the scale of the bones the game scales the body from (pelvis, spine, hands, neck, head) in every imported action, and Blender then shows the model at the size the game will.
+3. Export every group (**Export Sluggers .anm**, once per bank) and replace the nine banks in the slot (**Replace animation...** on the character grid, or `--write-slot-animation`).
+4. The bat does not follow the hand: scale the bat mesh itself (its own model, files 2/5) and patch it too. Gloves follow the hands.
+
+Rules:
+- The factor multiplies what is there: clicking twice gives the square. Re-import the banks to start over.
+- Equal X/Y/Z factors are exact. Unequal factors are applied along each bone's own axes, so parts that turn against the body (head, hands) show a seam that grows with the difference; keep it small and judge the preview.
+- The bones are found by their animation track numbers, which are the same on every character, but only Mario has been checked in game. If a body part comes out unscaled or doubly scaled on another character, that character needs a different bone set.
+- Only the banks you replace are scaled; a bank left stock shows the model at its normal size in those animations.
 
 #### Editing the unused characters
 

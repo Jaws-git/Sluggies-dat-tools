@@ -7,6 +7,7 @@ from functools import lru_cache
 from bpy.props import BoolProperty, StringProperty, CollectionProperty
 from bpy_extras.io_utils import ImportHelper
 
+from . import AnimScale
 from . import AnmFormat
 from . import FieldCodec
 from . import HostBones
@@ -19,9 +20,11 @@ LEAF_TAIL_FALLBACK = 0.05
 
 
 def _game_srt_matrix(trans, quat, scale):
-    """4x4 T @ R @ S from a game SRT; ``quat`` is the stored [-w, x, y, z]."""
+    """4x4 T @ R @ S from a game SRT; ``quat`` is the stored [-w, x, y, z].
+    The quaternion is normalized first: an s16-quantized one is off unit
+    length by up to 2e-4, which ``to_matrix`` would turn into a scale."""
     T = mathutils.Matrix.Translation(trans)
-    R = mathutils.Quaternion((-quat[0], quat[1], quat[2], quat[3])).to_matrix().to_4x4()
+    R = mathutils.Quaternion((-quat[0], quat[1], quat[2], quat[3])).normalized().to_matrix().to_4x4()
     S = mathutils.Matrix.Diagonal((*scale, 1))
     return T @ R @ S
 
@@ -756,14 +759,14 @@ def _surface_face_ranges(display_states):
     return result
 
 
-def _create_material(mat_name, uv_layer_name, image, wrap_s=1):
-    """Build a UV Map -> Mapping -> Image Texture -> Diffuse BSDF -> Material Output node tree."""
+def _create_material(mat_name, image, wrap_s=1):
+    """Build an Image Texture -> Diffuse BSDF -> Material Output node tree."""
     mat = bpy.data.materials.new(name=mat_name)
-    _build_material_nodes(mat, uv_layer_name, image, wrap_s)
+    _build_material_nodes(mat, image, wrap_s)
     return mat
 
 
-def _build_material_nodes(mat, uv_layer_name, image, wrap_s=1):
+def _build_material_nodes(mat, image, wrap_s=1):
     """Replace *mat*'s node tree with the importer's texture tree (see _create_material)."""
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
@@ -782,15 +785,6 @@ def _build_material_nodes(mat, uv_layer_name, image, wrap_s=1):
         tex_node.image = image
     tex_node.extension = _GX_WRAP.get(wrap_s, 'REPEAT')
 
-    mapping_node = nodes.new('ShaderNodeMapping')
-    mapping_node.location = (-150, 0)
-
-    uv_node = nodes.new('ShaderNodeUVMap')
-    uv_node.location = (-450, 0)
-    uv_node.uv_map = uv_layer_name
-
-    links.new(uv_node.outputs['UV'], mapping_node.inputs['Vector'])
-    links.new(mapping_node.outputs['Vector'], tex_node.inputs['Vector'])
     links.new(tex_node.outputs['Color'], bsdf_node.inputs['Color'])
     links.new(bsdf_node.outputs['BSDF'], out_node.inputs['Surface'])
 
@@ -916,7 +910,6 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
                     f"but the mesh has {loop_count} loops; per-loop normals skipped"
                 )
 
-    uv_layer_names = {}  # UVChannelIndex -> actual Blender layer name
     if uv_channels:
         for ch_ind, uv_channel in enumerate(uv_channels):
             coords, uv_faces = decode_uv_channel(uv_channel)
@@ -924,9 +917,7 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
                 continue
             # Positional names ("uv0", "uv1", ...) so joined objects share
             # their UV layers instead of collecting one per model name.
-            layer_name = f"uv{ch_ind}"
-            uv_layer_names[uv_channel.get("UVChannelIndex", ch_ind)] = layer_name
-            uv_layer = mesh.uv_layers.new(name=layer_name)
+            uv_layer = mesh.uv_layers.new(name=f"uv{ch_ind}")
             for poly in mesh.polygons:
                 face_idx = poly.index
                 if face_idx >= len(uv_faces):
@@ -1035,8 +1026,6 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
             slot_idx = len(mat_slot)
             fi_tex = face_texture_indices[start_fi] if start_fi < len(face_texture_indices) else 0
             uv_ch = tex_to_uv.get(fi_tex) or (uv_channels[0] if uv_channels else None)
-            ch_ind = uv_ch.get('UVChannelIndex', 0) if uv_ch else 0
-            layer_name = uv_layer_names.get(ch_ind) or (uv_ch.get('PaletteName') if uv_ch else None) or f'uv{ch_ind}'
             wrap_s = uv_ch.get('WrapS', 1) if uv_ch else 1
             wrap_t = uv_ch.get('WrapT', 1) if uv_ch else 1
 
@@ -1046,7 +1035,7 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
                 tex_file = (texture_file_map or {}).get(fi_tex, f'{fi_tex}.png')
                 img_path = _resolve_texture_image_path(sluggie_dir, tex_file)
                 image = bpy.data.images.load(img_path, check_existing=True) if img_path else None
-                mat = _create_material(f'{name}_{surface_id}', layer_name, image, wrap_s)
+                mat = _create_material(f'{name}_{surface_id}', image, wrap_s)
                 # Store surface identity and editable properties on the material
                 ds_entry = next((ds for ds in display_states if ds.get("SurfaceId") == surface_id), {})
                 mat["SurfaceId"] = surface_id
@@ -1087,13 +1076,11 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
         for slot_idx, tex_idx in enumerate(unique_tex):
             mat_slot[tex_idx] = slot_idx
             uv_ch = tex_to_uv.get(tex_idx) or uv_channels[0]
-            ch_ind = uv_ch.get('UVChannelIndex', 0)
-            layer_name = uv_layer_names.get(ch_ind) or uv_ch.get('PaletteName') or f'uv{ch_ind}'
             wrap_s = uv_ch.get('WrapS', 1)
             tex_file = (texture_file_map or {}).get(tex_idx, f'{tex_idx}.png')
             img_path = _resolve_texture_image_path(sluggie_dir, tex_file)
             image = bpy.data.images.load(img_path, check_existing=True) if img_path else None
-            mat = _create_material(f'{name}_mat{tex_idx}', layer_name, image, wrap_s)
+            mat = _create_material(f'{name}_mat{tex_idx}', image, wrap_s)
             obj.data.materials.append(mat)
 
         for poly in mesh.polygons:
@@ -1239,6 +1226,11 @@ def build_armature(name, bone_list, collection, skin_data=None, reorient=True):
         if bone_name and bone_name in arm_data.bones:
             b = arm_data.bones[bone_name]
             b['track_id'] = bd.get('TrackId', 0xFFFF)
+            # The game re-solves these bones (AnimScale): they follow the
+            # parent's scaled position, not its scale. No visible effect
+            # while every scale is 1, as in every stock animation.
+            if AnimScale.is_layer_root(b['track_id']):
+                b.inherit_scale = 'NONE'
             b['game_translation'] = list(bd['Translation'])
             b['game_quaternion'] = list(bd['Quaternion'])
             b['game_scale'] = list(bd['Scale'])
@@ -1333,7 +1325,7 @@ def _template_shader_mode_from_model(model, template_source):
     return ''
 
 
-def _new_surface_materials(name, submesh, submesh_index, model, uv_layer_name, sluggie_dir, texture_file_map):
+def _new_surface_materials(name, submesh, submesh_index, model, sluggie_dir, texture_file_map):
     """Re-create the Add-material surfaces of a rebuilt rigid submesh
     (``RigidRebuild.NewSurfaces``) as Blender materials, keyed by surface key,
     with the metadata Add material writes. The
@@ -1356,7 +1348,7 @@ def _new_surface_materials(name, submesh, submesh_index, model, uv_layer_name, s
         if image is None:
             print(f"WARNING: {name}: PNG for new surface {key} ({tex_file}) not found; its texture node is left empty")
         wrap_s, wrap_t = int(uv0.get("WrapS", 1)), int(uv0.get("WrapT", 1))
-        mat = _create_material(entry.get("MaterialName") or f"{name}_{key}", uv_layer_name, image, wrap_s)
+        mat = _create_material(entry.get("MaterialName") or f"{name}_{key}", image, wrap_s)
         mat["SluggiesNewSurface"] = True
         mat.id_properties_ui("SluggiesNewSurface").update(
             description="Marks a Blender-only surface created by Add material, absent from the donor.")
@@ -1503,10 +1495,8 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
 
                     face_surface_ids = ev.get("_FaceSurfaceIds")
                     if rebuilt:
-                        uv0_name = next(iter(obj.data.uv_layers), None)
                         orig_materials.update(_new_surface_materials(
                             mesh_name, submesh, i, model,
-                            uv0_name.name if uv0_name is not None else 'uv0',
                             sluggie_dir, texture_file_map,
                         ))
                     edit_obj = build_mesh(
