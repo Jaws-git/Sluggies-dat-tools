@@ -299,7 +299,7 @@ def check_donor_bones(context, scope):
         return
     bones = [core.BoneInfo(b.name, b.parent.name if b.parent else None, bool(b.get('SluggiesUserAdded')))
              for b in arm.data.bones]
-    problems = core.donor_bone_problems(bones, scope.model.get("BoneHierarchy") or [])
+    problems = core.donor_bone_problems(bones, scope.model.get("BoneHierarchy") or [], stadium=scope.stadium)
     texts = {
         "renamed": ("Original bone renamed", "Original bones renamed",
                     "keep their bone_<id> names: vertex groups follow the bone name, so weights on "

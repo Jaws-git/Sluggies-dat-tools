@@ -105,6 +105,12 @@ class TestBones(unittest.TestCase):
         self.assertEqual(problems["reparented"], ["bone_3"])
         self.assertEqual(problems["orphan"], ["bone_5"])
 
+    def test_stadium_root_bone_is_no_orphan(self):
+        # A new stadium root bone is exported (Dolphin, 2026-10-18).
+        bones = [core.BoneInfo("bone_0", None, False), core.BoneInfo("bone_1", None, True)]
+        self.assertEqual(core.donor_bone_problems(bones, _hierarchy(None), stadium=True)["orphan"], [])
+        self.assertEqual(core.donor_bone_problems(bones, _hierarchy(None))["orphan"], ["bone_1"])
+
     def test_clean_skeleton(self):
         bones = [core.BoneInfo("bone_0", None, False), core.BoneInfo("bone_1", "bone_0", False)]
         self.assertFalse(any(core.donor_bone_problems(bones, _hierarchy(None, 0)).values()))

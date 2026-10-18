@@ -356,16 +356,19 @@ class BoneInfo:
     user_added: bool
 
 
-def donor_bone_problems(bones: Sequence[BoneInfo], hierarchy: Sequence[dict]) -> Dict[str, List[str]]:
+def donor_bone_problems(bones: Sequence[BoneInfo], hierarchy: Sequence[dict],
+                        stadium: bool = False) -> Dict[str, List[str]]:
     """Original bones renamed, deleted or re-parented in Blender, and added
     bones without a parent. ``{kind: [bone names]}``; kinds 'renamed',
     'missing', 'reparented', 'orphan'. Export carries the original bones
-    from the .sluggie, so the Blender-side change is ignored there."""
+    from the .sluggie, so the Blender-side change is ignored there. In a
+    *stadium* an added bone without a parent is a new root bone, which export
+    keeps (Dolphin 2026-10-18), so it is no problem there."""
     problems = {"renamed": [], "missing": [], "reparented": [], "orphan": []}
     by_id = {}
     for bone in bones:
         if bone.user_added:
-            if bone.parent_name is None:
+            if bone.parent_name is None and not stadium:
                 problems["orphan"].append(bone.name)
             continue
         bone_id = bone_id_from_name(bone.name)
