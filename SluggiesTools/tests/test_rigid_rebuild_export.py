@@ -94,6 +94,12 @@ class DonorFactsTests(unittest.TestCase):
         expected = {'sm0_ds7': 4, 'sm0_ds4': 5}
         self.assertEqual(rre.donor_rigid_submesh(RIGID, self.sub).drawable_surfaces, expected)
         self.assertEqual(main._rigid_rebuild_drawable_surfaces(states), expected)
+        # ... unless it draws donor faces: then it draws with the Type 7 the
+        # previous mesh left (stadiums, e.g. Daisy Cruiser sta08 submesh 0).
+        states[3]['FaceCount'] = 116
+        expected = {'sm0_ds3': 3, 'sm0_ds7': 4, 'sm0_ds4': 5}
+        self.assertEqual(rre.donor_rigid_submesh(RIGID, self.sub).drawable_surfaces, expected)
+        self.assertEqual(main._rigid_rebuild_drawable_surfaces(states), expected)
 
     def test_skinned_submesh_is_refused(self):
         with self.assertRaisesRegex(ValueError, 'not a rigid submesh'):
@@ -162,6 +168,15 @@ class PositionsMovedTests(unittest.TestCase):
         moved_obj = cse.keep_offset_world_matrix(cse.mat4_mul(self.arm_world, self.host), self.arm_world, self.host, new_host)
         kept_offset = cse.bone_local_geometry(self.local, self.triangles, moved_obj, self.arm_world, new_host)
         self.assertFalse(rre.positions_moved(self.local, kept_offset, synthetic_donor.RIGID_QUANTIZE_INFO))
+
+    def test_float_donor_positions_compare_without_quantizing(self):
+        # Daisy Cruiser's mesh 0 stores float positions (QuantizeInfo 0x40);
+        # an untouched one must not raise or count as moved.
+        float_format = 0x40
+        obj_world = cse.mat4_mul(self.arm_world, self.host)
+        self.assertFalse(rre.positions_moved(self.local, self._geometry(obj_world), float_format))
+        obj_world[1][3] += 0.01
+        self.assertTrue(rre.positions_moved(self.local, self._geometry(obj_world), float_format))
 
 
 # --- face routing ---------------------------------------------------------------

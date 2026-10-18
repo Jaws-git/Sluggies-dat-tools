@@ -225,7 +225,7 @@ class ClassifyHostBonesTests(unittest.TestCase):
         self.assertEqual(choices[2].status, STATUS_EXCLUDED)
 
     def test_stadium_offers_only_free_root_bones(self):
-        # Yoshi Park, 2026-10-01: a mesh on a child bone drew nearly transparent.
+        # Every stadium bone is a root; the patcher refuses a child host bone.
         records = [_rec(0, None), _rec(1, None, geo_id_raw=0), _rec(2, 0),
                    _rec(3, 0, skinned=True), _rec(4, None)]
         choices = {c.bone_id: c for c in classify_host_bones(records, roots_only=True)}
@@ -238,13 +238,14 @@ class ClassifyHostBonesTests(unittest.TestCase):
         ordered = order_host_bone_choices(choices.values(), records)
         self.assertEqual([c.bone_id for c in ordered], [0, 4])
 
-    def test_stadium_excludes_new_bones(self):
-        # Yoshi Park, 2026-10-02: a mesh on a new root bone did not draw.
-        records = [_rec(0, None), _rec(7, None, user_added=True)]
+    def test_stadium_offers_new_root_bones_but_not_new_child_bones(self):
+        # A mesh on a new stadium root bone draws (Dolphin, 2026-10-18).
+        records = [_rec(0, None), _rec(7, None, user_added=True), _rec(8, 0, user_added=True)]
         choices = {c.bone_id: c for c in classify_host_bones(records, roots_only=True)}
         self.assertEqual(choices[0].status, STATUS_RECOMMENDED)
-        self.assertEqual(choices[7].status, STATUS_EXCLUDED)
-        self.assertIn('new bone', choices[7].reason)
+        self.assertEqual(choices[7].status, STATUS_RECOMMENDED)
+        self.assertIn('new root bone', choices[7].reason)
+        self.assertEqual(choices[8].status, STATUS_EXCLUDED)
         # Characters keep offering new bones.
         choices = {c.bone_id: c for c in classify_host_bones(records)}
         self.assertNotEqual(choices[7].status, STATUS_EXCLUDED)

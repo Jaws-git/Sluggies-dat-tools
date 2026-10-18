@@ -2783,9 +2783,8 @@ class ValidateCustomSubmeshesTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'host bone 1 has parent bone 0; a stadium'):
             main._validate_custom_submeshes(model)
 
-    def test_stadium_refuses_a_new_host_bone(self):
-        # Yoshi Park (2026-10-02): a mesh on a new root bone did not draw,
-        # the same kind of mesh on vanilla root bone 0 did.
+    def test_stadium_accepts_a_new_root_host_bone(self):
+        # A mesh on a new stadium root bone draws (Dolphin, 2026-10-18).
         model = _validation_base_model()
         model['ChunkNumber'] = 10
         bones = [dict(b, UserAdded=False) for b in model['BoneHierarchy']]
@@ -2794,8 +2793,7 @@ class ValidateCustomSubmeshesTests(unittest.TestCase):
                       'ParentBoneId': None, 'UserAdded': True})
         model['BoneHierarchyEdited'] = bones
         model['CustomSubmeshes'] = [_validation_entry(HostBoneId=new_id)]
-        with self.assertRaisesRegex(ValueError, f'host bone {new_id} is a new bone'):
-            main._validate_custom_submeshes(model)
+        main._validate_custom_submeshes(model)  # no raise
 
     def test_stadium_accepts_a_root_host_bone(self):
         model = _validation_base_model()
@@ -3705,6 +3703,37 @@ class PatchGPLAppendSubmeshTests(unittest.TestCase):
         # _new_sub's positions (s16, /2048): (0,0,0), (1,0,0), (0,1,0).
         h = 1 / 2048
         self.assertEqual(struct.unpack_from('>6f', table, 32), (-h, -h, -0.0, h, h, 0.0))
+
+    def test_bounds_table_after_a_kind0_descriptor_is_extended(self):
+        # sta02b/sta06/sta07-style chain: kind 0 (display animation entries),
+        # then the kind-1 box table the game reaches by walking the lengths.
+        kind0 = struct.pack('>IHH', 8 + 4, 0, 2) + bytes.fromhex('01020304')
+        donor_box = struct.pack('>6f', -5.0, -1.0, -5.0, 5.0, 1.0, 5.0)
+        user_data = kind0 + struct.pack('>IHH', 8 + 24, 1, 1) + donor_box
+        donor_gpl, *_ = self._build_donor_gpl(0x1C, bytes(range(40)), 10, user_data)
+
+        patched = self._append(donor_gpl)
+
+        ud_len, ud_ptr = struct.unpack_from('>2I', patched, 0x04)
+        self.assertEqual(ud_len, len(user_data) + 24)
+        out = patched[ud_ptr:ud_ptr + ud_len]
+        self.assertEqual(out[:len(kind0)], kind0, 'the kind-0 descriptor stays byte-identical')
+        self.assertEqual(struct.unpack_from('>IHH', out, len(kind0)), (8 + 2 * 24, 1, 2))
+        self.assertEqual(out[len(kind0) + 8:len(kind0) + 32], donor_box)
+
+    def test_bounds_table_the_game_never_reaches_is_left_unchanged(self):
+        # sta04/sta04c: the kind-0 length is rounded up past the unpadded
+        # kind-1 descriptor, so the game's walk misses the table (no culling
+        # there); extending it would not help and re-aligning would switch
+        # culling on.
+        kind0 = struct.pack('>IHH', 8 + 4, 0, 1) + bytes.fromhex('0102')  # 2 bytes short
+        user_data = kind0 + struct.pack('>IHH', 8 + 24, 1, 1) + bytes(24)
+        donor_gpl, *_ = self._build_donor_gpl(0x1C, bytes(range(40)), 10, user_data)
+
+        patched = self._append(donor_gpl)
+
+        ud_len, ud_ptr = struct.unpack_from('>2I', patched, 0x04)
+        self.assertEqual(patched[ud_ptr:ud_ptr + ud_len], user_data)
 
     def test_non_bounds_user_data_is_left_unchanged(self):
         # Character GPLUserData has another layout (version 0, other count).

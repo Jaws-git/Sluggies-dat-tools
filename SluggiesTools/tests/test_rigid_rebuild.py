@@ -834,6 +834,32 @@ class RigidRebuildCarriedColorTests(unittest.TestCase):
 
 # --- the paths around the builder ------------------------------------------------
 
+class SingleColorEntryTests(unittest.TestCase):
+    """The renderer binds a colour array only with 2+ entries; a vertex format
+    that reads color0 needs one (stadium cube nearly transparent, 2026-10-18)."""
+
+    @staticmethod
+    def _assemble(type3_mode: str, color_data: bytes):
+        color = main.ColorChannel(channel_index=0, color_data=color_data, color_faces_data=b'',
+                                  comp_count=4, quantize_info=0x30, source_data_offset=0)
+        records = [[3, b'\x00\x00\x00', type3_mode], [6, b'\x01\x00\x00', '00000374']]
+        sub = main._assemble_rigid_submesh(
+            7, 'cube', records, [b'', b'\x90'], vertex_data=b'', vertex_quantize_info=0x3B,
+            uv_channels=[], color_channel=color, normal_buffer=None, faces_count=0, faces_data=b'',
+        )
+        return sub.color_channels[0].color_data
+
+    def test_one_entry_read_per_vertex_is_duplicated(self):
+        self.assertEqual(self._assemble('00000ccc', b'\xff\xff'), b'\xff\xff' * 2)
+
+    def test_one_entry_without_vertex_color_stays_a_material_color(self):
+        # position + texture0 only: the Mii body's one-entry array
+        self.assertEqual(self._assemble('00000c0c', b'\xf8\x1f'), b'\xf8\x1f')
+
+    def test_several_entries_are_unchanged(self):
+        self.assertEqual(self._assemble('00000ccc', b'\x00\x01\x00\x02'), b'\x00\x01\x00\x02')
+
+
 class RigidRebuildGuardTests(unittest.TestCase):
     def test_position_edits_skip_rebuilt_submeshes(self):
         model = {'UseCompression': True, 'Submeshes': [{

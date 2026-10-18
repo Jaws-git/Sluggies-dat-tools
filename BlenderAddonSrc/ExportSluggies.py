@@ -445,20 +445,21 @@ def _srt_type_for(bone_name, translation, rotation, scale, warnings):
 
 def stadium_added_bone_error(candidates, data, context):
     """Error text when the target is a stadium and its armature has Add Bone
-    bones, else None. A mesh on a new stadium bone does not draw, root or
-    child (Dolphin, 2026-10-02), so stadiums take no new bones."""
+    bones with a parent, else None. Stadiums take new root bones only: every
+    stadium bone is a root, a mesh on a new root bone draws (Dolphin,
+    2026-10-18), and a new child bone is untested there."""
     if not TemplateSources.is_stadium_chunk(data.get("SluggiesModel", {}).get("ChunkNumber")):
         return None
     arm_obj = _find_root_scale_armature(candidates, context)
     if arm_obj is None:
         return None
-    added = [b.name for b in arm_obj.data.bones if b.get('SluggiesUserAdded')]
+    added = [b.name for b in arm_obj.data.bones if b.get('SluggiesUserAdded') and b.parent is not None]
     if not added:
         return None
     return (
-        f"{arm_obj.name}: added bone(s) {', '.join(added)}: stadiums cannot take new "
-        "bones, a mesh on a new bone does not draw in a stadium (Dolphin, 2026-10-02). "
-        "Delete the added bones and host custom submeshes on free vanilla root bones."
+        f"{arm_obj.name}: added bone(s) {', '.join(added)} have a parent bone: stadiums take "
+        "new root bones only. Clear the bone's parent (Edit Mode, Alt+P) or delete it and "
+        "use Add Bone again, which makes a root bone in a stadium."
     )
 
 
@@ -527,10 +528,16 @@ def encode_bone_hierarchy_edited(candidates, data, warnings, context):
         entry["UserAdded"] = False
         edited.append(entry)
 
+    stadium = TemplateSources.is_stadium_chunk(model.get("ChunkNumber"))
     for b in new_bones:
         own_id = id_by_bone_name[b.name]
         parent = b.parent
-        if parent is None or parent.name not in id_by_bone_name:
+        if parent is None and stadium:
+            # A new stadium root bone: armature space is the game's model
+            # space, so its rest matrix is its SRT.
+            parent_id = None
+            local = b.matrix_local
+        elif parent is None or parent.name not in id_by_bone_name:
             warnings.append(f"{b.name}: has no valid parent bone; not exported.")
             continue
         else:
@@ -624,16 +631,15 @@ def validate_bone_hierarchy_edited_export(model, warnings):
                     f"to {edited_parent_id}"
                 )
 
-    if new_ids and TemplateSources.is_stadium_chunk(model.get("ChunkNumber")):
-        errors.append(
-            f"new bone(s) {new_ids}: stadiums cannot take new bones, a mesh on a "
-            "new bone does not draw in a stadium (Dolphin, 2026-10-02). Delete the "
-            "added bones and host custom submeshes on free vanilla root bones."
-        )
-    for bone_id in new_ids:
+    stadium = TemplateSources.is_stadium_chunk(model.get("ChunkNumber"))
+    for bone_id in sorted(new_ids):
         parent_id = edited_by_id[bone_id].get("ParentBoneId")
-        if parent_id is None:
-            errors.append(f"new bone {bone_id} has no parent; new bones may not be roots")
+        if stadium and parent_id is not None:
+            errors.append(
+                f"new bone {bone_id} has a parent: stadiums take new root bones only"
+            )
+        elif not stadium and parent_id is None:
+            errors.append(f"new bone {bone_id} has no parent; new bones may not be roots outside stadiums")
 
     return errors
 
@@ -786,6 +792,37 @@ def _per_loop_normals(mesh, loop_indices):
     return result
 
 
+def _per_loop_buffer(records, what, use_compression=True):
+    """Encode one record per loop as (data, index buffer), the per-loop
+    contract of UV/normal/color edits. Up to 65,535 loops this is the identity
+    layout; a bigger mesh (a stadium ground, 2026-10-18) can't index its loops
+    with u16, so equal records are stored once. Every patcher reader looks a
+    loop's value up through the index buffer and compacts by value, so both
+    layouts give the same result."""
+    if len(records) <= 0xFFFF:
+        data, indices = b''.join(records), range(len(records))
+    else:
+        slot_of = {}
+        indices = [slot_of.setdefault(record, len(slot_of)) for record in records]
+        if len(slot_of) > 0xFFFF:
+            raise ValueError(
+                f"{what}: {len(slot_of):,} different values on {len(records):,} face corners; "
+                "the game indexes at most 65,535 per mesh. Split the mesh or reduce its seams."
+            )
+        data = b''.join(slot_of)
+    return (
+        _from_bytes(data, use_compression),
+        _from_bytes(struct.pack(f'>{len(indices)}H', *indices), use_compression),
+    )
+
+
+def _per_loop_records(data, faces, stride):
+    """Inverse of _per_loop_buffer: the record each loop points at."""
+    raw, index_raw = _to_bytes(data), _to_bytes(faces)
+    indices = struct.unpack(f'>{len(index_raw) // 2}H', index_raw)
+    return [raw[index * stride:(index + 1) * stride] for index in indices]
+
+
 def encode_normal_edits(obj, json_normal_buffer, loop_indices, use_compression=True):
     """Export per-loop edited normals aligned with FacesDataEdited (plan 3.3, item 1).
 
@@ -853,10 +890,10 @@ def encode_normal_edits(obj, json_normal_buffer, loop_indices, use_compression=T
 
     if len(normal_data) != len(loop_indices) * stride:
         return None
-    normal_faces = _from_bytes(
-        struct.pack(f'>{len(loop_indices)}H', *range(len(loop_indices))), use_compression
+    return _per_loop_buffer(
+        [bytes(normal_data[k * stride:(k + 1) * stride]) for k in range(len(loop_indices))],
+        f"{obj.name} normals", use_compression,
     )
-    return _from_bytes(bytes(normal_data), use_compression), normal_faces
 
 
 def _apply_inplace_normal_edits(obj, normal_buffer, loop_indices, errors, use_compression=True):
@@ -882,11 +919,11 @@ def _apply_inplace_normal_edits(obj, normal_buffer, loop_indices, errors, use_co
         return False
 
     norm_data, norm_faces = normal_edits
-    norm_data_raw = _to_bytes(norm_data)
     donor_faces_raw = _to_bytes(normal_buffer["NormalFacesData"])
     norm_comp = normal_buffer.get("NormalBufferCompCount", 3)
     norm_quant = normal_buffer.get("NormalBufferQuantizeInfo", 0)
     norm_stride = norm_comp * _comp_size_skin(norm_quant)
+    loop_records = _per_loop_records(norm_data, norm_faces, norm_stride)
     donor_count = len(donor_faces_raw) // 2
     donor_indices = [
         int.from_bytes(donor_faces_raw[k*2:k*2+2], 'big')
@@ -897,7 +934,7 @@ def _apply_inplace_normal_edits(obj, normal_buffer, loop_indices, errors, use_co
     slot_values = {}
     normal_conflict = False
     for slot_idx, loop_pos in zip(donor_indices, range(len(loop_indices))):
-        record = norm_data_raw[loop_pos * norm_stride:(loop_pos + 1) * norm_stride]
+        record = loop_records[loop_pos]
         if slot_idx in slot_values:
             if slot_values[slot_idx] != record:
                 normal_conflict = True
@@ -977,13 +1014,10 @@ def encode_color_edits(obj, json_channel, loop_indices, use_compression=True):
     colors = CustomSubmeshExport.fill_unset_colors(
         obj.name, [_get_loop_color(attr.data[loop_idx]) for loop_idx in loop_indices],
     )
-    color_data = bytearray()
-    for color in colors:
-        color_data += _encode_color_entry(quant, color)
-    color_faces = _from_bytes(
-        struct.pack(f'>{len(loop_indices)}H', *range(len(loop_indices))), use_compression
+    return _per_loop_buffer(
+        [_encode_color_entry(quant, color) for color in colors],
+        f"{obj.name} color{ch_idx}", use_compression,
     )
-    return _from_bytes(bytes(color_data), use_compression), color_faces
 
 
 def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False, use_compression=True):
@@ -1056,15 +1090,13 @@ def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False, use_com
         divisor = 1 << shift
         is_float = fmt_nibble in [4, 7, 0xa]
 
-        # Per-loop UV storage: each face-corner gets its own UV entry.
-        # This avoids value-based deduplication which can lose entries when
-        # the original game data contains duplicate quantized UV values at
-        # different array indices (the game's original tools kept them
-        # separate; merging them changes array length and breaks patching).
+        # Per-loop UV storage: each face-corner gets its own UV entry, in loop
+        # order. The patcher compacts it against the donor slot layout, which
+        # keeps the donor's duplicate values at their own indices (deduplicating
+        # here once changed the array length and broke patching). Only meshes
+        # past 65,535 corners store equal values once (_per_loop_buffer).
         coords = []
-        uv_tri_indices = []
         for tri in triangles:
-            tri_uvs = []
             for loop_idx in tri.loops:
                 uv = uv_layer.data[loop_idx].uv
                 s = uv.x
@@ -1074,12 +1106,11 @@ def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False, use_com
                 else:
                     qs = int(round(s * divisor))
                     qt = int(round(t * divisor))
-                tri_uvs.append(len(coords))
                 coords.append((qs, qt))
-            uv_tri_indices.append(tri_uvs)
 
-        raw_bytes = bytearray()
+        records = []
         for coord_index, (qs, qt) in enumerate(coords):
+            record = bytearray()
             for component_index, val in enumerate(
                 [qs, qt] + [0.0] * (comp_count_uv - 2)
             ):
@@ -1089,19 +1120,15 @@ def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False, use_com
                             f"{obj.name} UV{ch_ind} loop {coord_index} component "
                             f"{component_index}: value is not finite ({val})"
                         )
-                    raw_bytes += struct.pack('>f', float(val))
+                    record += struct.pack('>f', float(val))
                 else:
-                    raw_bytes += _pack_quantized_component(
+                    record += _pack_quantized_component(
                         int(val) / divisor,
                         divisor,
                         f"{obj.name} UV{ch_ind} loop {coord_index} component {component_index}",
                     )
-        uv_data_enc = _from_bytes(bytes(raw_bytes), use_compression)
-
-        uv_flat = [idx for tri in uv_tri_indices for idx in tri]
-        uv_faces_enc = _from_bytes(struct.pack(f'>{len(uv_flat)}H', *uv_flat), use_compression)
-
-        uv_edits[ch_ind] = (uv_data_enc, uv_faces_enc)
+            records.append(bytes(record))
+        uv_edits[ch_ind] = _per_loop_buffer(records, f"{obj.name} UV{ch_ind}", use_compression)
 
     # Per-loop normals (standalone NormalBuffer, non-skinned meshes) and per-loop
     # colors — same expanded per-loop contract as the UV edits above (plan 3.3).
@@ -3507,15 +3534,22 @@ def _rigid_rebuild_plan(context, obj, submesh_index, target_submesh, model, warn
     if obj.mode == 'EDIT':
         obj.update_from_editmode()
     mesh = obj.data
-    problem = RigidRebuildExport.vertex_bone_problem(obj.name, _rigid_vertex_bone_ids(obj))
-    if problem:
-        raise ValueError(problem)
-    host_bone_id = _detect_uniform_vertex_bone_id(obj)
     owner_bone_id = next(
         (int(bone["BoneId"]) for bone in model.get("BoneHierarchy") or []
          if _bone_geo_id_raw(bone) == submesh_index),
         None,
     )
+    vertex_bone_ids = _rigid_vertex_bone_ids(obj)
+    if owner_bone_id is not None and vertex_bone_ids and not any(vertex_bone_ids):
+        # Exports before 2026-10-18 gave submesh 0's owner no influences when the
+        # model also has mesh-less bones (stadiums, Miis, ...), so it imported with
+        # no bone_<id> group at all. Such a mesh still sits on its owner bone.
+        host_bone_id = owner_bone_id
+    else:
+        problem = RigidRebuildExport.vertex_bone_problem(obj.name, vertex_bone_ids)
+        if problem:
+            raise ValueError(problem)
+        host_bone_id = _detect_uniform_vertex_bone_id(obj)
     if not mesh.polygons:
         raise ValueError(f"{obj.name}: mesh has no faces")
     bone_hierarchy = model.get("BoneHierarchyEdited") or model.get("BoneHierarchy") or []

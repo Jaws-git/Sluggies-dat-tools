@@ -526,15 +526,16 @@ def _position_edits(model: dict) -> list[tuple[int, dict, bytes]]:
 # (ParseSluggie is a pure parse); GPL/ACT/TEX assembly comes later.
 
 # Stadium model directories, 7 Mario Stadium ... 16 Toy Field; the same range as
-# export.STADIUM_DIR_INDICES (export.py can't be imported: it prompts). A custom
-# submesh in a stadium must hang on a free vanilla root bone: a mesh on a
-# child bone draws nearly transparent (Dolphin, 2026-10-01), one on a newly
-# added bone, root or child, does not draw at all (Dolphin, 2026-10-02).
+# export.STADIUM_DIR_INDICES (export.py can't be imported: it prompts). Every
+# stadium bone is a root, and a custom submesh in a stadium must hang on a root
+# bone: a free vanilla one or a new one (new root bones draw correctly, Dolphin
+# 2026-10-18; the earlier "does not draw" results were a one-colour-entry bug,
+# see _assemble_rigid_submesh). New child bones stay refused there until tested.
 STADIUM_CHUNKS = range(7, 17)
 STADIUM_NEW_BONE_MESSAGE = (
-    'stadium models cannot take new bones: a mesh on a newly added bone does not '
-    'draw in a stadium (Dolphin, 2026-10-02). Host the custom submesh on a free '
-    'vanilla root bone instead (act_section.html#geo-id-ownership)'
+    'stadium models take new root bones only: every stadium bone is a root, and a '
+    'mesh on a new child bone is untested in a stadium. Add the bone without a parent '
+    '(act_section.html#geo-id-ownership)'
 )
 
 _CUSTOM_SUBMESH_HAND_VISIBILITY_ROLES = frozenset({'RhSp', 'LhSp', 'SpRf', 'GhSp'})
@@ -1147,8 +1148,6 @@ def _validate_custom_submeshes(model: dict) -> None:
                         f'host bone {host_bone_id} is also claimed by custom submesh '
                         f"'{claimed_bones[host_bone_id]}'"
                     )
-                elif is_stadium and bone.get('UserAdded'):
-                    fail(f'host bone {host_bone_id} is a new bone; {STADIUM_NEW_BONE_MESSAGE}')
                 elif is_stadium and bone.get('ParentBoneId') is not None:
                     fail(
                         f'host bone {host_bone_id} has parent bone {bone["ParentBoneId"]}; '
@@ -1488,14 +1487,17 @@ def _validate_bone_hierarchy_edited(model: dict) -> None:
                 'new bones must be leaves'
             )
 
-    # Stadiums take no new bones at all: a mesh on one does not draw, root or
-    # child (Dolphin, 2026-10-02; act_section.html#geo-id-ownership).
-    if new_entries and model.get('ChunkNumber') in STADIUM_CHUNKS:
-        fail(f'new bone(s) {new_ids}: {STADIUM_NEW_BONE_MESSAGE}')
+    # Stadiums take new root bones only (every stadium bone is a root; a mesh on
+    # a new root bone draws, Dolphin 2026-10-18; a new child bone is untested).
+    is_stadium = model.get('ChunkNumber') in STADIUM_CHUNKS
+    if is_stadium:
+        children = sorted(int(b['BoneId']) for b in new_entries if b.get('ParentBoneId') is not None)
+        if children:
+            fail(f'new bone(s) {children}: {STADIUM_NEW_BONE_MESSAGE}')
 
-    # Rules 7-8: every new bone has an existing parent and the user-contract
-    # defaults (self-mirrored, role 3), and either no track or its own
-    # ADDED_TRACK_IDS id that no other bone reads.
+    # Rules 7-8: every new bone has an existing parent (a stadium's may be a
+    # root instead) and the user-contract defaults (self-mirrored, role 3),
+    # and either no track or its own ADDED_TRACK_IDS id that no other bone reads.
     track_users: dict[int, list[int]] = {}
     for bone in bone_hierarchy_edited:
         track = bone.get('TrackId')
@@ -1505,7 +1507,8 @@ def _validate_bone_hierarchy_edited(model: dict) -> None:
         bone_id = int(entry['BoneId'])
         parent_id = entry.get('ParentBoneId')
         if parent_id is None:
-            fail(f'new bone {bone_id} has no ParentBoneId; new bones may not be roots')
+            if not is_stadium:
+                fail(f'new bone {bone_id} has no ParentBoneId; new bones may not be roots outside stadiums')
         elif int(parent_id) not in edited_by_id:
             fail(f"new bone {bone_id}'s parent {int(parent_id)} does not exist")
 
@@ -2007,6 +2010,21 @@ def _assemble_rigid_submesh(
         )
         for (state_id, pad, mode), primitive_bytes in zip(records, primitive_lists)
     ]
+    reads_vertex_color = any(
+        state_id == 3 and any(d['key'] == 'color0' for d in _custom_submesh_type3_descriptors(int(mode, 16)))
+        for state_id, _pad, mode in records
+    )
+    if (reads_vertex_color and color_channel is not None
+            and len(color_channel.color_data) == _color_entry_size(color_channel.quantize_info)):
+        # The renderer binds a colour array only when it has two or more
+        # entries (fn_8052E99C, 0x8052EBFC); one entry becomes a material
+        # colour. That is right for a vertex format without color0 (the Mii
+        # body's one-entry array), but a mesh that reads color0 per vertex
+        # with one entry (painted in one colour, or not at all) then indexes
+        # the previous mesh's array: a stadium cube drawn after Yoshi Park's
+        # field markings came out nearly transparent (Dolphin, 2026-10-18).
+        # A duplicate entry keeps every index valid and the colour the same.
+        color_channel = replace(color_channel, color_data=color_channel.color_data * 2)
     return Submesh(
         submesh_index=submesh_index,
         mesh_name=mesh_name,
@@ -2434,31 +2452,59 @@ def _warn_stadium_custom_submesh_alpha(model: dict, parsed, sluggie_path) -> Non
             )
 
 
-def _extend_gpl_bounds_table(user_data: bytes, donor_count: int, new_submeshes) -> bytes | None:
-    """Append one box per new submesh to a stadium-style GPLUserData bounds table.
+def _gpl_user_data_bounds_descriptor(user_data: bytes, donor_count: int) -> int | None:
+    """Offset of the per-mesh bounds descriptor the game reads, or None.
 
-    Some stadium models (sta03/sta03b, sta05/sta05b, sta08b, sta09/sta09c,
-    BG_stagelight) carry GPLUserData as ``u32 length, u16 1, u16 count`` and
-    then one ``6 x f32`` box (min XYZ, max XYZ) per submesh, matching that
-    submesh's position bounds. Every vanilla box is symmetric (min = -max),
-    so a new submesh gets ``-h .. +h`` from its largest absolute coordinate
-    per axis. Whether the game uses the boxes for culling (or something
-    else, e.g. collision) is not confirmed.
-
-    Returns the extended table, or None when *user_data* is not this layout
-    (characters store something else there and are left alone).
+    GPLUserData is a chain of descriptors ``u32 length, u16 kind, u16 count,
+    payload``. The game (``fn_804FF654``) walks it from the start by
+    ``length`` alone, with no alignment padding, until the stated size is
+    used up; kind 1 is the per-mesh culling-box table (box i -> mesh i,
+    ``6 x f32`` each). Walking the same way finds exactly the table the game
+    uses: sta04/sta04c pad their kind-0 length so the walk misses their
+    kind-1 table, and the game never culls there, so it must stay unreached.
+    Character user data has no kind-1 descriptor with the mesh count.
     """
-    if len(user_data) < 8:
+    offset = 0
+    while offset + 8 <= len(user_data):
+        length, kind, count = struct.unpack_from('>IHH', user_data, offset)
+        if length < 8 or offset + length > len(user_data):
+            return None
+        if kind == 1:
+            if count == donor_count and length == 8 + 24 * count:
+                return offset
+            return None
+        offset += length
+    return None
+
+
+def _extend_gpl_bounds_table(user_data: bytes, donor_count: int, new_submeshes) -> bytes | None:
+    """Append one box per new submesh to a stadium's GPLUserData bounds table.
+
+    The table is the kind-1 descriptor of the user-data chain (see
+    ``_gpl_user_data_bounds_descriptor``): first in sta03/sta03b,
+    sta05/sta05b, sta08b, sta09/sta09c, after a kind-0 descriptor in
+    sta02b, sta04b, sta06/sta06b and sta07. The game culls each mesh with
+    its box in bone-local space (vanilla boxes equal the bone-local vertex
+    extents) and reads box i for mesh i without a count check, so a new
+    mesh without a box gets garbage bounds. A new submesh gets ``-h .. +h``
+    from its largest absolute bone-local coordinate per axis, which always
+    encloses it. Every other descriptor stays byte-identical.
+
+    Returns the extended user data, or None when no reachable bounds table
+    with *donor_count* boxes exists (characters, box-less stadiums); those
+    are left alone.
+    """
+    offset = _gpl_user_data_bounds_descriptor(user_data, donor_count)
+    if offset is None:
         return None
-    length, version, count = struct.unpack_from('>IHH', user_data, 0)
-    if version != 1 or count != donor_count or length != len(user_data) or length != 8 + 24 * count:
-        return None
-    out = bytearray(user_data)
+    length = 8 + 24 * donor_count
+    boxes = bytearray()
     for sub in new_submeshes:
         hx, hy, hz = _submesh_position_half_extents(sub)
-        out += struct.pack('>6f', -hx, -hy, -hz, hx, hy, hz)
-    struct.pack_into('>IHH', out, 0, len(out), 1, count + len(new_submeshes))
-    return bytes(out)
+        boxes += struct.pack('>6f', -hx, -hy, -hz, hx, hy, hz)
+    table = bytearray(user_data[offset:offset + length]) + boxes
+    struct.pack_into('>IHH', table, 0, len(table), 1, donor_count + len(new_submeshes))
+    return user_data[:offset] + bytes(table) + user_data[offset + length:]
 
 
 def PatchGPLAppendSubmesh(
@@ -2665,14 +2711,18 @@ def _rigid_rebuild_drawable_surfaces(states: list) -> dict[str, int]:
     """``{SurfaceId: state index}`` of every donor record that can draw: it
     inherits a Type-3 attribute layout and a Type-7 shader. Type 7 is
     only required where the submesh uses it: item and stadium submeshes often
-    have none, and their surfaces still draw."""
+    have none, and their surfaces still draw. A record that draws donor faces
+    before the submesh's first Type 7 draws with the Type 7 the previous mesh
+    left (stadium draw state carries over, Dolphin 2026-10-18), so it can
+    draw too."""
     needs_type7 = any(int(state.get('DisplayStateId', -1)) == 7 for state in states)
     return {
         state['SurfaceId']: index
         for index, state in enumerate(states)
         if state.get('SurfaceId')
         and _custom_submesh_effective_state(states, index, 3) is not None
-        and (not needs_type7 or _custom_submesh_effective_state(states, index, 7) is not None)
+        and (not needs_type7 or _custom_submesh_effective_state(states, index, 7) is not None
+             or int(state.get('FaceCount') or 0) > 0)
     }
 
 
@@ -6102,9 +6152,7 @@ def _rebuild_act_bone_hierarchy(act_bytes: bytes, data: dict, source_model_offse
         key=lambda b: int(b['BoneId']),
     )
 
-    if new_entries and model.get('ChunkNumber') in STADIUM_CHUNKS:
-        raise ValueError(f"BoneHierarchyEdited: {STADIUM_NEW_BONE_MESSAGE}")
-
+    is_stadium = model.get('ChunkNumber') in STADIUM_CHUNKS
     expected_id = parsed.bone_count
     for entry in new_entries:
         bone_id = int(entry['BoneId'])
@@ -6115,12 +6163,14 @@ def _rebuild_act_bone_hierarchy(act_bytes: bytes, data: dict, source_model_offse
                 "N, N+1, ... starting at the donor bone count"
             )
         parent_id = entry.get('ParentBoneId')
-        if parent_id is None:
+        if is_stadium and parent_id is not None:
+            raise ValueError(f"BoneHierarchyEdited: new bone {bone_id}: {STADIUM_NEW_BONE_MESSAGE}")
+        if parent_id is None and not is_stadium:
             raise ValueError(
-                f"new bone {bone_id} has no ParentBoneId; new bones may not be roots"
+                f"new bone {bone_id} has no ParentBoneId; new bones may not be roots outside stadiums"
             )
-        parent_id = int(parent_id)
-        if parent_id >= expected_id:
+        parent_id = None if parent_id is None else int(parent_id)
+        if parent_id is not None and parent_id >= expected_id:
             raise ValueError(
                 f"new bone {bone_id}'s parent {parent_id} does not exist yet; a new bone's "
                 "parent must already be present (a donor bone, or an earlier new bone in "

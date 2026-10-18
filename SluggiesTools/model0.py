@@ -199,11 +199,12 @@ class Model0(FileChunk):
         if self.SKN:
             boneInfluences = self.SKN.boneInfluences()
         for geoID in list(self.ACT.non_skinned_bones.keys()):
-            if geoID > 0 or len(self.bones) == self.GPL.numDescriptors:
-                geoBone = self.ACT.non_skinned_bones[geoID]
-            else:
+            geoBone = self.ACT.non_skinned_bones[geoID]
+            if geoID >= len(self.GPL.geoDescriptors):
                 continue
-            boneInfluences += [BoneInfluence(geoBone, 256, i, (100, 100, 100), 'Non-skinned assumption') for i in range(self.GPL.geoDescriptors[geoID].layout.DOPositionHeader.numPositions)]
+            if self.GPL.geoDescriptors[geoID].layout.DOPositionHeader.compCount != 3:
+                continue  # a skinned submesh (6 components) takes its weights from SKN
+            boneInfluences +=[BoneInfluence(geoBone, 256, i, (100, 100, 100), 'Non-skinned assumption') for i in range(self.GPL.geoDescriptors[geoID].layout.DOPositionHeader.numPositions)]
         return boneInfluences
 
     def toFile(self, outdir, export_tex=True, export_glb=False, untangle_context=None):

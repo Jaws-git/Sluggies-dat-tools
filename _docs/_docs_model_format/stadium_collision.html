@@ -1,0 +1,67 @@
+<head>
+    <link rel="stylesheet" type="text/css" href="style.css" />
+</head>
+
+<body>
+    <h1>Stadium collision files</h1>
+    <p>A stadium's collision is <strong>not in its model block</strong>. Each stadium directory holds a small separate collision file next to its models, and the ball, fielders and items test against it. Decoded from <code>main.dol</code> (US) and checked against every vanilla file, each of which parses to its last byte (2026-10-18). All values are big-endian. Nothing in the tools writes these files yet.</p>
+
+    <h2 id="tables">Which file a stadium loads</h2>
+    <p>Two tables in <code>main.dol</code> have the same shape, <code>{u16 dir, u16 file[3]}</code> per stadium id, indexed by the time of day (variant 0, 1, 2): <code>0x806D99E0</code> names the collision file, <code>0x806D9980</code> the model file. Several variants can share one file.</p>
+    <table>
+        <tr><th>Id</th><th>Dir</th><th>Stadium</th><th>Model files (0/1/2)</th><th>Collision files (0/1/2)</th></tr>
+        <tr><td>0</td><td>7</td><td>Mario Stadium</td><td>0/1/2</td><td>3/3/3</td></tr>
+        <tr><td>1</td><td>8</td><td>Bowser Castle</td><td>0/1/2</td><td>3/3/<strong>4</strong></td></tr>
+        <tr><td>2</td><td>9</td><td>Wario City</td><td>0/1/0</td><td>2/2/2</td></tr>
+        <tr><td>3</td><td>10</td><td>Yoshi Park</td><td>0/1/2</td><td>3/3/<strong>4</strong></td></tr>
+        <tr><td>4</td><td>11</td><td>Peach Ice Garden</td><td>0/1/2</td><td>3/3/3</td></tr>
+        <tr><td>5</td><td>12</td><td>DK Jungle</td><td>0/1/2</td><td>3/3/3</td></tr>
+        <tr><td>6</td><td>13</td><td>Luigi's Mansion</td><td>0/1/0</td><td>2/2/2</td></tr>
+        <tr><td>7</td><td>14</td><td>Daisy Cruiser</td><td>0/1/2</td><td>3/3/3</td></tr>
+        <tr><td>8</td><td>15</td><td>Bowser Jr. Playroom</td><td>0/1/2</td><td>3/3/<strong>4</strong></td></tr>
+        <tr><td>9</td><td>16</td><td>Toy Field</td><td>0/1/0</td><td>2/2/2</td></tr>
+    </table>
+    <p>The three "file 4" collisions are tiny flat arenas (one region, &plusmn;26 to 36 units wide), most likely the minigame fields of variant 2; not verified.</p>
+    <p><strong>Loading.</strong> <code>fn_804B8620</code> loads the file through <code>fn_80398080</code> and keeps its handle in the stadium object (<code>*(r13-0x148)</code>: +0 id, +4 variant, +6 model handle, +8/+0xC/+0x10 collision handles). The completion callback <code>fn_804B8B60</code> stores the data pointer at <code>*(r13-0x138)</code> and runs the fix-up <code>fn_8038FB38</code>; <code>fn_804B8BA0</code> frees it.</p>
+
+    <h2 id="layout">File layout</h2>
+    <pre>
+u16 regionCount N, u8 0x43, u8 relocated      (0 in the file; the fix-up sets 1)
+u32 offset[N+1]                               file-relative; the fix-up turns them into pointers
+offset[0]:      N boxes, 6 x f32 each: xmin ymin zmin xmax ymax zmax
+offset[i], i = 1..N:  region i's triangles, as a list of blocks:
+    u8 0, u8 kind, u16 count                  kind 1: a strip of count+2 vertices
+                                              kind 0: a list of count*3 vertices
+    vertex: f32 x, f32 y, f32 z, u16 attr, u16 0
+    ... more blocks; a block header with count 0 ends the region
+</pre>
+    <ul>
+        <li><strong>Coordinates are stored as <code>(x, -y, -z)</code> of game space.</strong> The fix-up negates y and z of every box and vertex (and swaps the boxes' min and max for them). Game space is model space: y up, the outfield towards -z, the fence at the distance in the table at <code>0x80625770</code> (90 in Mario Stadium, 95 in Yoshi Park). So a collision coordinate is the model coordinate with y and z negated.</li>
+        <li><strong>Regions and their boxes are only an acceleration structure.</strong> The query (<code>fn_8038FCB0</code>) first collects every region whose box the tested segment can touch (outcodes of both endpoints, <code>fn_805A44D8</code>), then tests those regions' triangles (<code>fn_8038F774</code>). Nothing else uses the split, so a new object can be a new region with its own box, or extra blocks in a region whose box already contains it.</li>
+        <li><strong>Triangles are one-sided.</strong> A segment hits only the side its right-hand normal <code>(v1-v0) x (v2-v0)</code> faces; strips alternate as usual. The closest hit in [0, 1] along the segment wins. In vanilla data the ground faces up, and fences, foul poles and foul-area walls face the field.</li>
+    </ul>
+
+    <h2 id="attributes">Surface attributes</h2>
+    <p>A triangle's attribute is the <code>attr</code> of its <strong>last</strong> vertex (strip vertex <em>k+2</em>, list vertex <em>3k+2</em>); the first two vertices' values are unused. The query returns it (0 means no hit) with the hit point and normal. Its callers (about 47, among them ball flight <code>fn_800B6184</code>, a ground probe <code>fn_800B71A4</code>, fielders and items) read the low 7 bits as the surface type and bit 0x80 separately. Meanings from the data:</p>
+    <table>
+        <tr><th>Low 7 bits</th><th>Observed as</th><th>Where</th></tr>
+        <tr><td>1</td><td>Flat ground at y = 0 (grass, general field)</td><td>Every stadium</td></tr>
+        <tr><td>6</td><td>Flat ground at y &le; 0.2 (infield dirt, mound)</td><td>Mario Stadium, Yoshi Park, Bowser Jr. Playroom variant</td></tr>
+        <tr><td>2</td><td>Vertical, 4-8 high at the fence distance (outfield fence)</td><td>Mario Stadium, Bowser Castle, Yoshi Park, DK Jungle, Daisy Cruiser, Bowser Jr. Playroom</td></tr>
+        <tr><td>3</td><td>Walls and stands beyond the fence, up to 24-36 high, mixed facing</td><td>Most stadiums</td></tr>
+        <tr><td>4</td><td>Vertical at the foul-pole corners (foul poles)</td><td>Mario Stadium, Yoshi Park, Wario City</td></tr>
+        <tr><td>5</td><td>Vertical wall pieces 4-8 high; the fence kind used instead of 2</td><td>Peach Ice Garden, Wario City, Luigi's Mansion and others</td></tr>
+        <tr><td>0xC</td><td>Low sloped ground near the fence</td><td>DK Jungle only</td></tr>
+        <tr><td>0xD</td><td>Flat ground at a radius of about 106 (the deck beyond the fence?)</td><td>Daisy Cruiser only</td></tr>
+        <tr><td><strong>bit 0x80</strong></td><td><strong>Foul territory:</strong> set on every triangle whose centroid is outside the foul lines and on none inside</td><td>Every stadium</td></tr>
+    </table>
+    <p>One ball check (<code>fn_8011688C</code>) treats types 2, 3, 5, 7, 8 and 0xD alike (solid: the ball stops or bounces). Other checks look at 0xD, 0xB and the range 0x20-0x36, which no stadium file contains. The per-type physics (bounce, sound) are not traced; the fence distance table, not the collision, decides home runs.</p>
+
+    <h2 id="special-cases">Special cases</h2>
+    <ul>
+        <li><strong>Toy Field</strong> (id 9): its tiles and objects have their own collision objects, which the query asks first (<code>*(r13-0x94)</code>, <code>fn_804CEEE8</code>).</li>
+        <li><strong>Daisy Cruiser</strong> (id 7): the query rotates the collision by the ship's roll (angle from stadium object +0x1C, matrix from <code>fn_805A3744</code>, test in <code>fn_8038FF20</code>), so the collision follows the rocking ship.</li>
+        <li>Nothing seen in the code caps the region or block counts: they are u16 fields, and the list of candidate regions is allocated per query.</li>
+    </ul>
+    <p>Query entry point for reference: <code>fn_804B8424(stadium, p0, p1, outPoint, outNormal, low7Only, scaleZ, ...)</code>; the segment matrix comes from <code>fn_8038F6C8</code>, and the result keeps the attribute at +0x44 and the normal at +0x30.</p>
+</body>

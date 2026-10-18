@@ -188,23 +188,41 @@ class ACTPhase2RebuildTests(unittest.TestCase):
             self.assertEqual(next(b for b in rebuilt.bones if b.id == bone_id).orientation_ptr, 0)
         self.assertEqual(rebuilt.srt_blobs, self.donor_parsed.srt_blobs)
 
-    def test_stadium_refuses_new_bones(self):
-        # A mesh on a new stadium bone does not draw (Dolphin, 2026-10-02).
-        for parent in (None, 1):
-            with self.subTest(parent=parent):
-                data = self._fixture_data()
-                model = data['SluggiesModel']
-                model['ChunkNumber'] = 10
-                new_id = self.donor_bone_count
-                model['BoneHierarchyEdited'].append({
-                    'BoneId': new_id, 'GeoId': 0xFFFF, 'ParentBoneId': parent, 'Skinned': False,
-                    'TrackId': 0xFFFF, 'MirrorBoneId': new_id, 'MirrorRole': 3, 'SRTType': 0xC,
-                    'DrawPriority': 0, 'InheritTransform': True, 'UserAdded': True,
-                    'Translation': [1.0, 2.0, 3.0], 'Scale': [1.0, 1.0, 1.0],
-                    'Quaternion': [1.0, 0.0, 0.0, 0.0], 'VertexInfluences': [],
-                })
-                with self.assertRaisesRegex(ValueError, 'stadium models cannot take new bones'):
-                    self._build(data)
+    def _stadium_new_bone(self, data, parent):
+        model = data['SluggiesModel']
+        model['ChunkNumber'] = 10
+        new_id = self.donor_bone_count
+        model['BoneHierarchyEdited'].append({
+            'BoneId': new_id, 'GeoId': 0xFFFF, 'ParentBoneId': parent, 'Skinned': False,
+            'TrackId': 0xFFFF, 'MirrorBoneId': new_id, 'MirrorRole': 3, 'SRTType': 0xC,
+            'DrawPriority': 0, 'InheritTransform': True, 'UserAdded': True,
+            'Translation': [1.0, 2.0, 3.0], 'Scale': [1.0, 1.0, 1.0],
+            'Quaternion': [1.0, 0.0, 0.0, 0.0], 'VertexInfluences': [],
+        })
+        return new_id
+
+    def test_stadium_refuses_new_child_bones(self):
+        # Every stadium bone is a root; a mesh on a new child bone is untested.
+        data = self._fixture_data()
+        self._stadium_new_bone(data, 1)
+        with self.assertRaisesRegex(ValueError, 'stadium models take new root bones only'):
+            self._build(data)
+
+    def test_stadium_new_root_bone_is_appended_to_the_root_chain(self):
+        # A mesh on a new stadium root bone draws (Dolphin, 2026-10-18).
+        data = self._fixture_data()
+        new_id = self._stadium_new_bone(data, None)
+        rebuilt = act_rebuild.parse_act(self._build(data))
+        self.assertEqual(rebuilt.bone_count, self.donor_bone_count + 1)
+        new_bone = next(b for b in rebuilt.bones if b.id == new_id)
+        self.assertEqual(new_bone.parent, 0)
+        offset = rebuilt.root_ptr
+        while True:
+            bone = rebuilt.bones[(offset - act_rebuild.HEADER_SIZE) // act_rebuild.BONE_RECORD_SIZE]
+            if not bone.next:
+                break
+            offset = bone.next
+        self.assertEqual(bone.id, new_id, 'the new root ends the root sibling chain')
 
     def test_new_root_bone_is_refused(self):
         data = self._fixture_data()

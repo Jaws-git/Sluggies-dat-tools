@@ -98,7 +98,7 @@ def _load_color_roundtrip_helpers():
     """Load the import/export color accessors plus the exporter's quantizer."""
     import_helper = _load_helper(IMPORTER_PATH, '_set_loop_color')
     tree = ast.parse(EXPORTER_PATH.read_text(encoding='utf-8'))
-    names = {'_get_loop_color', '_encode_color_entry', 'encode_color_edits'}
+    names = {'_get_loop_color', '_encode_color_entry', 'encode_color_edits', '_per_loop_buffer'}
     helpers = [
         node for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name in names

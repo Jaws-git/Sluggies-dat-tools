@@ -100,7 +100,10 @@ class ACTLayout(FileChunk):
             # I should have had the hierarchy return the address the node starts at but oh well it's all relative anyway
             bone_layout = self.add_child(0x8 + node.addr - 0x14, 0, ACTBoneLayout, "Bone Layout #" + hex(i))
             bone_layout.analyze()
-            self.non_skinned_bones[bone_layout.geoFileId] = bone_layout.id
+            if not bone_layout.skinned:
+                # geoFileId is 0 for a mesh-less bone too (raw 0xFFFF); only
+                # a real owner may claim its submesh.
+                self.non_skinned_bones[bone_layout.geoFileId] = bone_layout.id
             if node.parent is None:
                 bone_layout.parent = None
             else:

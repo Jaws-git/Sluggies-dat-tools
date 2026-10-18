@@ -1235,9 +1235,9 @@ def _create_added_bone(context, arm_obj, parent_bone_name, animation_track=False
     GeoId, self-mirrored role 3, InheritTransform true, DrawPriority 0, and
     no track unless *animation_track* (then a fresh id, see
     `_set_added_bone_track`).
-    *parent_bone_name* None makes a root bone at the 3D cursor instead. No
-    caller does that now: new root bones were for stadiums, which no longer
-    take new bones at all (Dolphin, 2026-10-02).
+    *parent_bone_name* None makes a root bone at the 3D cursor instead: Add
+    Bone does that in stadiums, whose bones are all roots (a mesh on a new
+    root bone draws, Dolphin 2026-10-18).
     The SRT type byte is not set here: it is a component-presence mask over
     the bone's own rotation/translation, so the exporter derives it from the
     values it writes (act_section.html#srt-type) rather than inheriting a
@@ -1356,11 +1356,6 @@ def _end_bone_name_display(op, arm_obj):
         arm_obj.data.show_names = False
 
 
-STADIUM_ADD_BONE_MESSAGE = (
-    "Stadiums cannot take new bones: a mesh on a new bone does not draw in a "
-    "stadium (Dolphin, 2026-10-02). Host the custom submesh on a free vanilla "
-    "root bone instead."
-)
 
 
 class SLUGGIES_OT_add_bone(bpy.types.Operator):
@@ -1369,7 +1364,7 @@ class SLUGGIES_OT_add_bone(bpy.types.Operator):
     (act_section.html#appending-bones; export then uses Hammerspace)."""
     bl_idname = "sluggies.add_bone"
     bl_label = "Add Bone"
-    bl_description = "Add a new leaf bone parented to the chosen bone"
+    bl_description = "Add a new leaf bone parented to the chosen bone (in a stadium: a root bone at the 3D cursor)"
     bl_options = {"UNDO"}
 
     parent_bone: EnumProperty(
@@ -1404,10 +1399,10 @@ class SLUGGIES_OT_add_bone(bpy.types.Operator):
         if not _bone_metadata_is_current(arm_obj):
             self.report({"ERROR"}, HostBones.RE_IMPORT_MESSAGE)
             return {"CANCELLED"}
-        if _model_is_stadium(arm_obj):
-            self.report({"ERROR"}, STADIUM_ADD_BONE_MESSAGE)
-            return {"CANCELLED"}
         _renumber_added_bones_reporting(self, arm_obj)
+        if _model_is_stadium(arm_obj):
+            # Every stadium bone is a root: no parent to pick.
+            return self.execute(context)
         active_bone = arm_obj.data.bones.active
         if active_bone is not None and _bone_id_from_name(active_bone.name) is not None:
             self.parent_bone = active_bone.name
@@ -1421,8 +1416,13 @@ class SLUGGIES_OT_add_bone(bpy.types.Operator):
                 self.report({"ERROR"}, _no_target_armature_message(context))
                 return {"CANCELLED"}
             if _model_is_stadium(arm_obj):
-                self.report({"ERROR"}, STADIUM_ADD_BONE_MESSAGE)
-                return {"CANCELLED"}
+                try:
+                    new_bone = _create_added_bone(context, arm_obj, None, self.animation_track)
+                except ValueError as e:
+                    self.report({"ERROR"}, str(e))
+                    return {"CANCELLED"}
+                self.report({"INFO"}, f"Added root bone {new_bone.name} at the 3D cursor")
+                return {"FINISHED"}
             if self.parent_bone == 'NONE' or self.parent_bone not in arm_obj.data.bones:
                 self.report({"ERROR"}, f"Parent bone {self.parent_bone!r} no longer exists")
                 return {"CANCELLED"}

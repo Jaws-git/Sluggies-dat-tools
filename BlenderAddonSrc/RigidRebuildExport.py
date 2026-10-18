@@ -146,13 +146,16 @@ def donor_submesh_facts(index: int, sub: dict) -> dict:
     if len(face_surfaces) != len(faces):
         face_surfaces = []
     # Type 7 is only required where the submesh uses it: item and stadium
-    # submeshes often have none, and their surfaces still draw.
+    # submeshes often have none, and their surfaces still draw. A record that
+    # draws donor faces before the submesh's first Type 7 draws with the one
+    # the previous mesh left (stadiums, Daisy Cruiser sta08), so it draws too.
     needs_type7 = any(int(state.get('DisplayStateId', -1)) == 7 for state in states)
     drawable = {
         state['SurfaceId']: k for k, state in enumerate(states)
         if state.get('SurfaceId')
         and _effective(states, k, 3) is not None
-        and (not needs_type7 or _effective(states, k, 7) is not None)
+        and (not needs_type7 or _effective(states, k, 7) is not None
+             or int(state.get('FaceCount') or 0) > 0)
     }
     return dict(
         index=index,
@@ -216,12 +219,22 @@ def quantized_positions(positions: Sequence[Sequence[float]], quantize_info: int
     return [tuple(int(round(float(v) * divisor)) for v in position) for position in positions]
 
 
+FLOAT_POSITION_TOLERANCE = 1e-4  # relative; float32 storage, matrix round trip noise is ~1e-6
+
+
 def positions_moved(mesh_local: Sequence[Sequence[float]], geometry: cse.BoneLocalGeometry, quantize_info: int) -> bool:
     """Whether the bone-local positions differ from the mesh-local ones once
     both are quantized in the donor format. The importer places a rigid mesh
     at its owner bone's bind matrix, so an untouched object round-trips to
     equal values; an Object Mode move, or a host change that keeps the world
-    position, does not."""
+    position, does not. A float donor format (some stadium meshes) has no
+    quantization step, so it compares with a small relative tolerance."""
+    if (quantize_info >> 4) in (4, 7, 0xA):
+        pairs = zip((mesh_local[i] for i in geometry.source_vertices), geometry.positions)
+        return any(
+            abs(float(a) - float(b)) > FLOAT_POSITION_TOLERANCE * max(1.0, abs(float(a)))
+            for local_v, bone_v in pairs for a, b in zip(local_v, bone_v)
+        )
     local = quantized_positions([mesh_local[i] for i in geometry.source_vertices], quantize_info)
     bone = quantized_positions(geometry.positions, quantize_info)
     return local != bone

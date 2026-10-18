@@ -26,7 +26,7 @@ NAMES = {
     'math', 'struct',
     '_to_bytes', '_from_bytes', '_pack_quantized_component',
     '_NORMAL_ROUNDTRIP_MIN_COS', '_decode_donor_components', '_normal_is_donor_roundtrip',
-    'encode_vertex_buffer_edited', 'encode_normal_edits',
+    'encode_vertex_buffer_edited', 'encode_normal_edits', '_per_loop_buffer',
 }
 
 
@@ -196,6 +196,35 @@ class NormalBufferTests(unittest.TestCase):
         (data, _faces), _expected, _ = self._run(loops)
         expected = struct.pack('>3h', *(round(c * DIV) for c in loops[0])) * 5
         self.assertEqual(bytes(data), expected)
+
+
+class PerLoopBufferTests(unittest.TestCase):
+    """Per-loop UV/normal/color edits index loops with u16 (Daisy Cruiser
+    sta08 submesh 3 has more corners than that, 2026-10-18)."""
+
+    def setUp(self):
+        ns = _extract({})
+        to_bytes = ns['_to_bytes']
+        self.encode = lambda records, what: tuple(
+            to_bytes(part) for part in ns['_per_loop_buffer'](records, what))
+
+    def test_small_mesh_keeps_the_identity_layout(self):
+        records = [b'\x00\x01', b'\x00\x01', b'\x00\x02']
+        data, faces = self.encode(records, 'uv')
+        self.assertEqual(data, b''.join(records))
+        self.assertEqual(struct.unpack('>3H', faces), (0, 1, 2))
+
+    def test_big_mesh_stores_equal_values_once(self):
+        records = [struct.pack('>H', k % 7) for k in range(70_000)]
+        data, faces = self.encode(records, 'uv')
+        indices = struct.unpack(f'>{len(records)}H', faces)
+        self.assertEqual(len(data), 7 * 2)
+        self.assertEqual([data[i * 2:i * 2 + 2] for i in indices], records)
+
+    def test_too_many_different_values_is_a_clear_error(self):
+        records = [struct.pack('>I', k) for k in range(70_000)]
+        with self.assertRaisesRegex(ValueError, 'at most 65,535'):
+            self.encode(records, 'uv')
 
 
 if __name__ == '__main__':

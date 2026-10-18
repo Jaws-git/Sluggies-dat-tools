@@ -323,12 +323,12 @@ def check_donor_bones(context, scope):
 
 def check_stadium_bones(context, scope):
     arm = scope.armature
-    added = [b.name for b in _added_bones(arm)]
+    added = [b.name for b in _added_bones(arm) if b.parent is not None]
     if added and scope.stadium:
-        yield Finding("stadium_bones", ERROR, arm.name, "Stadium can't take new bones",
-                      f"{arm.name}: added bone(s) {', '.join(added)}: stadiums cannot take new bones, "
-                      "a mesh on a new bone does not draw in a stadium (Dolphin, 2026-10-02). Delete "
-                      "the added bones and host custom submeshes on free vanilla root bones.")
+        yield Finding("stadium_bones", ERROR, arm.name, "Stadium bones must be roots",
+                      f"{arm.name}: added bone(s) {', '.join(added)} have a parent bone: stadiums take "
+                      "new root bones only. Clear the bone's parent (Edit Mode, Alt+P) or delete it "
+                      "and use Add Bone again, which makes a root bone in a stadium.")
 
 
 def check_untracked_keys(context, scope):

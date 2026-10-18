@@ -393,10 +393,9 @@ def append_leaf_bone(
     pointer (the virtual root's first child), with a null parent pointer, the
     same shape every vanilla root has. The header word before the root
     pointer is left alone: it is a constant ``0xC`` (or a stale address) in
-    vanilla data and does not track the chain. No caller uses it at the
-    moment: ``HammerspaceMain`` refuses new root bones everywhere, and new
-    bones of any kind in stadiums, where a mesh on a new bone does not draw
-    (Dolphin, 2026-10-02).
+    vanilla data and does not track the chain. ``HammerspaceMain`` uses it
+    for stadiums, whose bones are all roots (a mesh on a new root bone draws,
+    Dolphin 2026-10-18), and refuses new root bones everywhere else.
 
     ``mirror_bone_id``/``mirror_role`` override the mirror entry. Overriding
     ``mirror_bone_id`` away from the new bone's own id exists only to build

@@ -9,6 +9,7 @@ from bpy_extras.io_utils import ImportHelper
 
 from . import AnimScale
 from . import AnmFormat
+from . import CustomSubmeshImport
 from . import FieldCodec
 from . import HostBones
 from . import ModelCheckCore
@@ -239,7 +240,17 @@ def _apply_nonskinned_transform(obj, submesh_index, bone_list, abs_bone_mats, ow
     if owner_bone_id is None:
         return
     mat = abs_bone_mats.get(owner_bone_id)
-    if mat is not None:
+    if mat is None:
+        return
+    if obj.parent is not None:
+        # Relative to the armature, which carries the 90 degree import
+        # rotation. Setting matrix_world instead depended on the armature's
+        # world matrix not being evaluated yet: re-creating Add Bone bones
+        # (an Edit Mode round trip) evaluated it first, and every mesh came
+        # out without the rotation (2026-10-18).
+        obj.matrix_parent_inverse = mathutils.Matrix.Identity(4)
+        obj.matrix_basis = mat
+    else:
         obj.matrix_world = mat
 
 
@@ -1380,6 +1391,162 @@ def _new_surface_materials(name, submesh, submesh_index, model, sluggie_dir, tex
     return materials
 
 
+# Length of a re-created Add Bone bone (SluggiesToolsPanel.ADDED_BONE_LENGTH; the
+# panel imports this module, so the value is repeated, not imported).
+ADDED_BONE_LENGTH = 1.0
+
+
+def _srt_local_matrix(bone):
+    """A bone's local rest matrix T @ R @ S from its .sluggie SRT fields, the
+    same math as _compute_bone_absolute_matrices (Quaternion stored as
+    ``[-qw, qx, qy, qz]``)."""
+    trans, quat, scale = bone['Translation'], bone['Quaternion'], bone['Scale']
+    rotation = mathutils.Quaternion((-quat[0], quat[1], quat[2], quat[3])).to_matrix().to_4x4()
+    return mathutils.Matrix.Translation(trans) @ rotation @ mathutils.Matrix.Diagonal((*scale, 1.0))
+
+
+def add_imported_added_bones(arm_obj, entries):
+    """Re-create the Add Bone bones of ``BoneHierarchyEdited`` (*entries* from
+    CustomSubmeshImport.added_bone_entries) on *arm_obj*, with the properties
+    Add Bone gives them. The exporter wrote each one's rest matrix relative to
+    its parent's Blender rest matrix (a stadium root's relative to the
+    armature), so this inverts it exactly. Returns the bone names."""
+    if not entries:
+        return []
+    prev_active = bpy.context.view_layer.objects.active
+    bpy.context.view_layer.objects.active = arm_obj
+    bpy.ops.object.mode_set(mode='EDIT')
+    created = []
+    try:
+        edit_bones = arm_obj.data.edit_bones
+        for order, entry in enumerate(entries):
+            name = f"bone_{int(entry['BoneId'])}"
+            if name in edit_bones:
+                continue
+            parent = entry.get('ParentBoneId')
+            parent_eb = edit_bones.get(f"bone_{int(parent)}") if parent is not None else None
+            eb = edit_bones.new(name)
+            eb.head = (0.0, 0.0, 0.0)
+            eb.tail = (0.0, ADDED_BONE_LENGTH, 0.0)
+            base = parent_eb.matrix if parent_eb is not None else mathutils.Matrix.Identity(4)
+            eb.matrix = base @ _srt_local_matrix(entry)
+            eb.parent = parent_eb
+            eb.use_connect = False
+            created.append((eb.name, order, entry))
+    finally:
+        bpy.ops.object.mode_set(mode='OBJECT')
+    for name, order, entry in created:
+        b = arm_obj.data.bones[name]
+        b['SluggiesUserAdded'] = True
+        b['SluggiesCreationOrder'] = order
+        b['SluggiesGeoIdRaw'] = int(entry.get('GeoIdRaw', GEO_ID_FREE))
+        b['SluggiesSkinned'] = bool(entry.get('Skinned', False))
+        b['SluggiesDrawPriority'] = int(entry.get('DrawPriority', 0))
+        b['SluggiesInheritTransform'] = bool(entry.get('InheritTransform', True))
+        b['track_id'] = int(entry.get('TrackId', GEO_ID_FREE))
+    bpy.context.view_layer.objects.active = prev_active
+    return [name for name, _order, _entry in created]
+
+
+def _custom_submesh_image(name, assignment, sluggie_dir, texture_file_map):
+    """The image a custom submesh surface binds: its added PNG from tex/, or
+    the donor texture it names. None (with a console note) when the file is
+    missing: the empty node then stops the next export instead of changing the
+    texture silently, as for rebuilt surfaces."""
+    tex_file = assignment.get("AdditionalTextureFileName")
+    if tex_file is None and assignment.get("DonorTextureIndex") is not None:
+        tex_file = (texture_file_map or {}).get(int(assignment["DonorTextureIndex"]))
+    img_path = _resolve_texture_image_path(sluggie_dir, tex_file) if (sluggie_dir and tex_file) else None
+    if img_path:
+        return bpy.data.images.load(img_path, check_existing=True)
+    print(f"WARNING: {name}: PNG {tex_file} not found; its texture node is left empty")
+    return None
+
+
+def _custom_submesh_materials(obj_name, cs, model, sluggie_dir, texture_file_map):
+    """The surfaces of a decoded custom submesh *cs*, as Add New Submesh and
+    Add material make them: the primary ``<id>_ds0`` first, then one material
+    per ``AdditionalSurfaces`` entry, in slot order."""
+    from . import ExportSluggies, SluggiesToolsPanel, TemplateSources
+    default_strength = TemplateSources.BUILTIN_DEFAULT_SPECULAR_STRENGTH
+    primary = _create_material(
+        f"{obj_name}_{cs.custom_submesh_id}_ds0",
+        _custom_submesh_image(obj_name, cs.texture_assignment, sluggie_dir, texture_file_map),
+        wrap_s=1,
+    )
+    SluggiesToolsPanel._set_custom_primary_surface(
+        primary, cs.custom_submesh_id, _template_shader_mode_from_model(model, cs.template_source),
+        cs.specular_strength if cs.specular_strength is not None else default_strength,
+    )
+    materials = [primary]
+    for surface in cs.additional_surfaces:
+        template = str(surface.get("TemplateSource") or "")
+        mat = _create_material(
+            surface.get("MaterialName") or f"{obj_name}_{surface['SurfaceKey']}",
+            _custom_submesh_image(obj_name, surface.get("TextureAssignment") or {}, sluggie_dir, texture_file_map),
+            wrap_s=1,
+        )
+        try:
+            template_texture_index = ExportSluggies._custom_submesh_template_texture_index(model, template)
+        except ValueError:
+            template_texture_index = 0
+        strength = surface.get("SpecularStrength")
+        SluggiesToolsPanel._apply_new_surface_plan(mat, {
+            'kind': 'custom',
+            'owner': cs.custom_submesh_id,
+            'surface_id': surface['SurfaceKey'],
+            'template_source': template,
+            'template_texture_index': template_texture_index,
+            'shader_mode': _template_shader_mode_from_model(model, template),
+            'specular_strength': int(strength) if strength is not None else default_strength,
+            'wrap_s': 1,
+            'wrap_t': 1,
+        })
+        materials.append(mat)
+    return materials
+
+
+def build_custom_submesh(cs, model, arm_obj, bind_matrices, collection, sluggie_dir, texture_file_map):
+    """Blender object for a decoded custom submesh *cs*
+    (CustomSubmeshImport.CustomSubmeshMesh): bone-local vertices placed at the
+    host bone's bind matrix (where the exporter reads them back from), weighted
+    to the host bone, with the object properties Add New Submesh writes."""
+    mesh = bpy.data.meshes.new(cs.name)
+    mesh.from_pydata(cs.positions, [], cs.faces)
+    mesh.update()
+    # from_pydata lays the loops out face by face, so loop k is corner k.
+    if cs.loop_uvs is not None:
+        uv_layer = mesh.uv_layers.new(name="uv0")
+        for loop, uv in enumerate(cs.loop_uvs):
+            uv_layer.data[loop].uv = uv
+    if cs.loop_colors is not None:
+        colors = mesh.color_attributes.new(name="color0", type='BYTE_COLOR', domain='CORNER')
+        for loop, rgba in enumerate(cs.loop_colors):
+            _set_loop_color(colors.data[loop], rgba)
+    if cs.loop_normals is not None:
+        mesh.normals_split_custom_set(cs.loop_normals)
+
+    obj = bpy.data.objects.new(cs.name, mesh)
+    collection.objects.link(obj)
+    obj['SluggiesCustomSubmesh'] = True
+    obj['CustomSubmeshId'] = cs.custom_submesh_id
+    obj['TemplateSource'] = cs.template_source
+
+    for mat in _custom_submesh_materials(obj.name, cs, model, sluggie_dir, texture_file_map):
+        mesh.materials.append(mat)
+    for poly, surface in zip(mesh.polygons, cs.face_surfaces):
+        poly.material_index = surface
+
+    group = obj.vertex_groups.new(name=f"bone_{cs.host_bone_id}")
+    group.add(list(range(len(mesh.vertices))), 1.0, 'REPLACE')
+    modifier = obj.modifiers.new(name="Armature", type='ARMATURE')
+    modifier.object = arm_obj
+    obj.parent = arm_obj
+    obj.matrix_parent_inverse = mathutils.Matrix.Identity(4)
+    obj.matrix_basis = bind_matrices[cs.host_bone_id]
+    return obj
+
+
 class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
     bl_idname = "sluggies.import_json"
     bl_label = "Import Sluggers intermediate"
@@ -1431,6 +1598,9 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
             # The model directory; a stadium (TemplateSources.STADIUM_CHUNKS)
             # takes custom submeshes only on root bones.
             arm_obj['SluggiesChunkNumber'] = int(model_number)
+            # Bones added with Add Bone (BoneHierarchyEdited), so their custom
+            # submeshes and body weights have them again.
+            add_imported_added_bones(arm_obj, CustomSubmeshImport.added_bone_entries(model))
 
         imported = 0
         for i, submesh in enumerate(submeshes):
@@ -1534,6 +1704,27 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
                         rebuild_record_stride=12 if submesh.get("SkinnedRebuild") else 6,
                     )
                     imported += 1
+
+        # Custom submeshes, placed with the bind matrices the exporter reads
+        # them back with (BoneHierarchyEdited includes the added bones).
+        custom_entries = model.get("CustomSubmeshes") or []
+        if custom_entries and arm_obj is None:
+            self.report({"WARNING"}, f"{len(custom_entries)} custom submesh(es) not imported: the model has no bones")
+        elif custom_entries:
+            bind_matrices = _compute_bone_absolute_matrices(model.get("BoneHierarchyEdited") or bone_list)
+            for entry in custom_entries:
+                try:
+                    cs = CustomSubmeshImport.decode_custom_submesh(entry)
+                except (KeyError, ValueError, struct.error) as exc:
+                    self.report({"WARNING"}, f"Custom submesh not imported: {exc}")
+                    continue
+                if cs.host_bone_id not in bind_matrices:
+                    self.report({"WARNING"}, f"{cs.name}: host bone {cs.host_bone_id} does not exist; not imported")
+                    continue
+                for problem in cs.problems:
+                    self.report({"WARNING"}, problem)
+                build_custom_submesh(cs, model, arm_obj, bind_matrices, collection, sluggie_dir, texture_file_map)
+                imported += 1
 
         context.view_layer.update()
         self.report({"INFO"}, f"Imported {imported} submesh(es) from {self.filepath}")
