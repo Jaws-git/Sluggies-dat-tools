@@ -10,12 +10,14 @@ import ast
 import pathlib
 import sys
 import unittest
+from unittest import mock
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parents[2]
 EXPORT_PATH = ROOT_DIR / 'BlenderAddonSrc' / 'ExportSluggies.py'
 if str(ROOT_DIR / 'BlenderAddonSrc') not in sys.path:
     sys.path.insert(0, str(ROOT_DIR / 'BlenderAddonSrc'))
 
+import CustomSubmeshExport  # noqa: E402
 import TemplateSources  # noqa: E402
 
 GEO_ID_FREE = 0xFFFF
@@ -160,42 +162,14 @@ class ArmatureHasNewBonesTests(unittest.TestCase):
         self.assertFalse(self.fn([], _FakeContext()))
 
 
-class StadiumAddedBoneErrorTests(unittest.TestCase):
-    def setUp(self):
-        ns = _extract(
-            {'_find_root_scale_armature', 'stadium_added_bone_error'},
-            extra_globals={'TemplateSources': TemplateSources},
-        )
-        self.fn = ns['stadium_added_bone_error']
-
-    def _arm(self, parented=True):
-        root = _FakeBone('bone_0')
-        return _FakeArmObj([root, _FakeBone('bone_1', parent=root if parented else None, SluggiesUserAdded=True)])
-
-    def test_stadium_with_added_child_bone_is_refused(self):
-        error = self.fn([self._arm()], {"SluggiesModel": {"ChunkNumber": 10}}, _FakeContext())
-        self.assertIn('stadiums take new root bones only', error)
-        self.assertIn('bone_1', error)
-
-    def test_stadium_with_added_root_bone_is_fine(self):
-        # A mesh on a new stadium root bone draws (Dolphin, 2026-10-18).
-        self.assertIsNone(self.fn([self._arm(parented=False)], {"SluggiesModel": {"ChunkNumber": 10}}, _FakeContext()))
-
-    def test_character_with_added_bone_is_fine(self):
-        self.assertIsNone(self.fn([self._arm()], {"SluggiesModel": {"ChunkNumber": 18}}, _FakeContext()))
-
-    def test_stadium_without_added_bones_is_fine(self):
-        arm = _FakeArmObj([_FakeBone('bone_0')])
-        self.assertIsNone(self.fn([arm], {"SluggiesModel": {"ChunkNumber": 10}}, _FakeContext()))
-
-
 class EncodeBoneHierarchyEditedTests(unittest.TestCase):
     def setUp(self):
         ns = _extract(
             {'re', '_BONE_NAME_RE', '_bone_id_from_bone_name',
              '_find_root_scale_armature', 'encode_bone_hierarchy_edited',
              'SRT_TYPE_ROTATION', 'SRT_TYPE_TRANSLATION', '_srt_type_for'},
-            extra_globals={'GEO_ID_FREE': GEO_ID_FREE, 'TemplateSources': TemplateSources},
+            extra_globals={'GEO_ID_FREE': GEO_ID_FREE, 'TemplateSources': TemplateSources,
+                           'CustomSubmeshExport': CustomSubmeshExport},
         )
         self.fn = ns['encode_bone_hierarchy_edited']
 
@@ -275,6 +249,31 @@ class EncodeBoneHierarchyEditedTests(unittest.TestCase):
         self.assertEqual(new_entry["BoneId"], 1)
         self.assertIsNone(new_entry["ParentBoneId"])
         self.assertEqual(new_entry["Translation"], [1.0, 2.0, 3.0])
+
+    def test_stadium_child_bone_is_relative_to_the_parents_game_frame(self):
+        # Blender shows a donor bone in its own (reoriented) frame; a new stadium
+        # child is exported against the parent's game SRT instead, so it sits in
+        # game where it sits in Blender.
+        class _Mathutils:
+            @staticmethod
+            def Matrix(rows):
+                return _FakeMatrix((rows[0][3], rows[1][3], rows[2][3]))
+        donor0 = _FakeBone('bone_0', matrix_local=_FakeMatrix((9.0, 9.0, 9.0)))
+        new_bone = _FakeBone(
+            'bone_1', parent=donor0, matrix_local=_FakeMatrix((6.0, 2.0, 3.0)),
+            SluggiesUserAdded=True, SluggiesCreationOrder=0,
+            SluggiesGeoIdRaw=GEO_ID_FREE, SluggiesSkinned=False,
+            SluggiesDrawPriority=0, SluggiesInheritTransform=True, track_id=GEO_ID_FREE,
+        )
+        donor = dict(self._donor_bone(0), Translation=[5.0, 0.0, 0.0])
+        for chunk, expected in ((10, [1.0, 2.0, 3.0]), (18, [-3.0, -7.0, -6.0])):
+            with self.subTest(chunk=chunk):
+                data = {"SluggiesModel": {"ChunkNumber": chunk, "BoneHierarchy": [donor]}}
+                with mock.patch.dict(sys.modules, {'mathutils': _Mathutils}):
+                    self.fn([_FakeArmObj([donor0, new_bone])], data, [], _FakeContext())
+                entry = data["SluggiesModel"]["BoneHierarchyEdited"][1]
+                self.assertEqual(entry["ParentBoneId"], 0)
+                self.assertEqual([round(v, 6) for v in entry["Translation"]], expected)
 
     def test_creation_order_picks_id_not_blender_name(self):
         donor0 = _FakeBone('bone_0')
@@ -400,9 +399,9 @@ class ValidateBoneHierarchyEditedExportTests(unittest.TestCase):
         errors = self.fn(model, [])
         self.assertTrue(any('may not be roots' in e for e in errors))
 
-    def test_stadium_takes_new_root_bones_only(self):
-        # Every stadium bone is a root; a new root bone draws (Dolphin, 2026-10-18).
-        for parent, refused in ((None, False), (0, True)):
+    def test_stadium_takes_new_root_and_child_bones(self):
+        # A new root bone draws, and so does a mesh on a new child bone (Dolphin, 2026-10-18).
+        for parent in (None, 0):
             with self.subTest(parent=parent):
                 model = {
                     "ChunkNumber": 10,
@@ -412,9 +411,7 @@ class ValidateBoneHierarchyEditedExportTests(unittest.TestCase):
                         dict(BoneId=1, ParentBoneId=parent, UserAdded=True),
                     ],
                 }
-                errors = self.fn(model, [])
-                self.assertEqual(any('stadiums take new root bones only' in e for e in errors), refused)
-                self.assertFalse(any('may not be roots' in e for e in errors))
+                self.assertEqual(self.fn(model, []), [])
 
     def test_valid_leaf_append_has_no_errors(self):
         model = {

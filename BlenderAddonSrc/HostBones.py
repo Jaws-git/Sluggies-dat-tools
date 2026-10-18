@@ -134,7 +134,6 @@ def compute_rigid_retargets(
     return retargets, issues
 
 
-STADIUM_CHILD_BONE_REASON = "stadium: a child bone can't host a mesh, only root bones"
 
 
 def classify_host_bones(
@@ -148,11 +147,11 @@ def classify_host_bones(
     ``excluded`` ones (callers building a dialog list drop those; see
     :func:`order_host_bone_choices`).
 
-    *roots_only* is for stadium models: every stadium bone is a root, and a
-    mesh must hang on a root bone (HammerspaceMain refuses a child host
-    bone), so every bone with a parent is excluded, and a free root bone,
-    vanilla or added with Add Bone, is the recommended choice (new root
-    bones draw correctly, Dolphin 2026-10-18).
+    *roots_only* is for stadium models (the name predates child bones there):
+    every vanilla stadium bone is a root, and every free bone, a vanilla root
+    or one added with Add Bone (root or child), is a recommended choice (new
+    root bones draw correctly, Dolphin 2026-10-18; a mesh on a new child bone
+    follows parent then child, Dolphin 2026-10-18).
     """
     scene_claims = scene_claims or SceneClaims()
     freed_bone_ids = {r.from_bone_id for r in scene_claims.retargets}
@@ -171,9 +170,6 @@ def classify_host_bones(
             choices.append(HostBoneChoice(
                 rec.bone_id, rec.parent_id, STATUS_EXCLUDED,
                 "claimed by another custom submesh"))
-        elif roots_only and rec.parent_id is not None:
-            choices.append(HostBoneChoice(
-                rec.bone_id, rec.parent_id, STATUS_EXCLUDED, STADIUM_CHILD_BONE_REASON))
         elif rec.skinned:
             if SKINNING_HOSTS_ALLOWED:
                 choices.append(HostBoneChoice(
@@ -185,7 +181,8 @@ def classify_host_bones(
         elif roots_only:
             choices.append(HostBoneChoice(
                 rec.bone_id, rec.parent_id, STATUS_RECOMMENDED,
-                "stadium: free new root bone" if rec.user_added else "stadium: free root bone"))
+                ("stadium: free new child bone" if rec.parent_id is not None else "stadium: free new root bone")
+                if rec.user_added else "stadium: free root bone"))
         elif rec.parent_id is None:
             choices.append(HostBoneChoice(
                 rec.bone_id, rec.parent_id, STATUS_ALLOWED, "root bone"))

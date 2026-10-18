@@ -24,6 +24,7 @@ from . import TextureSlotsCore
 from . import HostBones
 from . import ModelCheckCore
 from . import SluggiePath
+from . import StadiumCollisionExport
 
 
 def _to_bytes(data) -> bytes:
@@ -443,26 +444,6 @@ def _srt_type_for(bone_name, translation, rotation, scale, warnings):
     return srt_type
 
 
-def stadium_added_bone_error(candidates, data, context):
-    """Error text when the target is a stadium and its armature has Add Bone
-    bones with a parent, else None. Stadiums take new root bones only: every
-    stadium bone is a root, a mesh on a new root bone draws (Dolphin,
-    2026-10-18), and a new child bone is untested there."""
-    if not TemplateSources.is_stadium_chunk(data.get("SluggiesModel", {}).get("ChunkNumber")):
-        return None
-    arm_obj = _find_root_scale_armature(candidates, context)
-    if arm_obj is None:
-        return None
-    added = [b.name for b in arm_obj.data.bones if b.get('SluggiesUserAdded') and b.parent is not None]
-    if not added:
-        return None
-    return (
-        f"{arm_obj.name}: added bone(s) {', '.join(added)} have a parent bone: stadiums take "
-        "new root bones only. Clear the bone's parent (Edit Mode, Alt+P) or delete it and "
-        "use Add Bone again, which makes a root bone in a stadium."
-    )
-
-
 def added_bone_name_error(candidates, context):
     """Error text when an Add Bone bone's ``bone_<N>`` name differs from the id
     ``encode_bone_hierarchy_edited`` assigns it, else None."""
@@ -529,6 +510,7 @@ def encode_bone_hierarchy_edited(candidates, data, warnings, context):
         edited.append(entry)
 
     stadium = TemplateSources.is_stadium_chunk(model.get("ChunkNumber"))
+    donor_absolute = CustomSubmeshExport.bone_absolute_matrices(donor_bones) if stadium else {}
     for b in new_bones:
         own_id = id_by_bone_name[b.name]
         parent = b.parent
@@ -540,6 +522,20 @@ def encode_bone_hierarchy_edited(candidates, data, warnings, context):
         elif parent is None or parent.name not in id_by_bone_name:
             warnings.append(f"{b.name}: has no valid parent bone; not exported.")
             continue
+        elif stadium:
+            # A new stadium child bone: relative to the parent's GAME frame, so the
+            # bone sits in game where it sits in Blender (its game rest matrix is
+            # its Blender rest matrix, like a new root's). A donor parent's game
+            # frame is its BoneHierarchy SRT chain; a new parent's is its own
+            # Blender rest matrix (Blender's display frame of a donor bone is
+            # reoriented and differs from the game's).
+            parent_id = id_by_bone_name[parent.name]
+            if parent.get('SluggiesUserAdded'):
+                parent_game = parent.matrix_local
+            else:
+                from mathutils import Matrix
+                parent_game = Matrix(donor_absolute[parent_id])
+            local = parent_game.inverted() @ b.matrix_local
         else:
             parent_id = id_by_bone_name[parent.name]
             local = parent.matrix_local.inverted() @ b.matrix_local
@@ -634,11 +630,7 @@ def validate_bone_hierarchy_edited_export(model, warnings):
     stadium = TemplateSources.is_stadium_chunk(model.get("ChunkNumber"))
     for bone_id in sorted(new_ids):
         parent_id = edited_by_id[bone_id].get("ParentBoneId")
-        if stadium and parent_id is not None:
-            errors.append(
-                f"new bone {bone_id} has a parent: stadiums take new root bones only"
-            )
-        elif not stadium and parent_id is None:
+        if not stadium and parent_id is None:
             errors.append(f"new bone {bone_id} has no parent; new bones may not be roots outside stadiums")
 
     return errors
@@ -2957,6 +2949,44 @@ def _custom_submesh_triangles(obj):
     return CustomSubmeshExport.triangles_from_loop_triangles(mesh.loop_triangles)
 
 
+def encode_stadium_collision(context, objects, arm_obj, warnings):
+    """``StadiumCollision`` entries for the meshes with collision turned on
+    (StadiumCollisionExport.py): model-space faces, read like a custom
+    submesh's (undeformed mesh, rest pose, transforms applied mathematically)."""
+    if not objects:
+        return []
+    if arm_obj is None:
+        raise ValueError(
+            f"{objects[0].name}: stadium collision needs the stadium's armature; "
+            "select it too (or parent the collision mesh to it)")
+    with _armature_rest_pose(context, arm_obj):
+        arm_world = _matrix_rows(arm_obj.matrix_world)
+        obj_worlds = [_matrix_rows(obj.matrix_world) for obj in objects]
+    entries = []
+    for obj, obj_world in zip(objects, obj_worlds):
+        if obj.mode == 'EDIT':
+            obj.update_from_editmode()
+        skipped = CustomSubmeshExport.unsupported_modifier_names(
+            (modifier.name, modifier.type) for modifier in obj.modifiers)
+        if skipped:
+            warnings.append(
+                f"{obj.name}: modifier(s) {', '.join(skipped)} are not evaluated for its "
+                "collision; apply them first or that geometry is not solid in game.")
+        settings = obj.sluggies_collision
+        try:
+            surface_type = StadiumCollisionExport.surface_type_number(
+                settings.surface_type, settings.custom_type)
+            positions, faces = StadiumCollisionExport.model_space_geometry(
+                [tuple(v.co) for v in obj.data.vertices], _custom_submesh_triangles(obj),
+                obj_world, arm_world)
+            entries.append(StadiumCollisionExport.collision_entry(
+                obj.name, positions, faces, surface_type, settings.sides, settings.territory,
+                region=obj.get(StadiumCollisionExport.REGION_PROP)))
+        except ValueError as exc:
+            raise ValueError(f"{obj.name}: {exc}" if not str(exc).startswith(obj.name) else str(exc)) from exc
+    return entries
+
+
 def _custom_submesh_armature(obj):
     """The armature a custom submesh follows: its Armature modifier's object,
     else the nearest armature parent."""
@@ -4143,7 +4173,38 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             and all(prop in obj for prop in REQUIRED_PROPS)
         ]
 
-        if not candidates and not custom_submesh_candidates:
+        # Stadium collision: any selected mesh with collision turned on (a model
+        # mesh, a custom submesh or a plain collision-only mesh).
+        collision_objects = [
+            obj for obj in context.selected_objects
+            if obj.type == 'MESH' and getattr(obj, 'sluggies_collision', None) is not None
+            and obj.sluggies_collision.enabled
+        ]
+        # The stadium's original colliders (imported from StadiumCollisionVanilla)
+        # count whether selected or not: once the scene has any, the patcher
+        # rebuilds the whole collision file from them, so a deleted one is
+        # collision removed, not collision left out by the selection.
+        collision_armature = ModelCheck.selection_armature(context.selected_objects)
+        original_colliders = [
+            obj for obj in context.scene.objects
+            if obj.type == 'MESH' and StadiumCollisionExport.REGION_PROP in obj
+            and collision_armature is not None and obj.parent is collision_armature
+        ]
+        collision_objects += [
+            obj for obj in original_colliders
+            if obj.sluggies_collision.enabled and obj not in collision_objects
+        ]
+
+        # "Make invisible": the object exports its collision only, never drawn.
+        invisible_objects = [obj for obj in collision_objects if obj.sluggies_collision.invisible]
+        invisible_error = StadiumCollisionExport.invisible_model_mesh_error(
+            [obj.name for obj in invisible_objects if obj in candidates])
+        if invisible_error:
+            self.report({"ERROR"}, invisible_error)
+            return {"CANCELLED"}
+        custom_submesh_candidates = [obj for obj in custom_submesh_candidates if obj not in invisible_objects]
+
+        if not candidates and not custom_submesh_candidates and not collision_objects:
             self.report({"ERROR"},
                 "No selected mesh objects with Sluggies custom properties found. "
                 "Import the JSON first, then select the meshes you want to export.")
@@ -4283,10 +4344,6 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         name_error = added_bone_name_error(context.selected_objects, context)
         if name_error:
             self.report({"ERROR"}, name_error)
-            return {"CANCELLED"}
-        stadium_bone_error = stadium_added_bone_error(context.selected_objects, data, context)
-        if stadium_bone_error:
-            self.report({"ERROR"}, stadium_bone_error)
             return {"CANCELLED"}
         encode_bone_hierarchy_edited(context.selected_objects, data, warnings, context)
         warnings.extend(untracked_keys_warnings(context.selected_objects, context))
@@ -4819,6 +4876,43 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 [obj["VertexBufferOffset"] for obj, _index in object_submesh_indices],
             )
 
+        # StadiumCollision mirrors the selection once a file has it; a file that
+        # never had collision gets no field, so exporting a night model leaves the
+        # collision file it shares with the day model alone.
+        model = data["SluggiesModel"]
+        collision_error = StadiumCollisionExport.chunk_error(
+            model.get("ChunkNumber"), [obj.name for obj in collision_objects])
+        if collision_error:
+            self.report({"ERROR"}, collision_error)
+            return {"CANCELLED"}
+        if original_colliders:
+            model[StadiumCollisionExport.REPLACE_FIELD] = True
+        else:
+            model.pop(StadiumCollisionExport.REPLACE_FIELD, None)
+        if collision_objects or original_colliders or model.get(StadiumCollisionExport.FIELD):
+            try:
+                model[StadiumCollisionExport.FIELD] = encode_stadium_collision(
+                    context, collision_objects, arm_obj, warnings)
+            except ValueError as exc:
+                self.report({"ERROR"}, str(exc))
+                return {"CANCELLED"}
+            if original_colliders:
+                infos.append(
+                    f"Stadium collision rebuilt from the scene: {len(original_colliders)} original "
+                    "collider(s) in the scene (deleted or unticked ones are removed from the game)")
+            if collision_objects:
+                infos.append(
+                    f"Stadium collision: {len(collision_objects)} object(s) "
+                    f"({', '.join(obj.name for obj in collision_objects)})")
+                if invisible_objects:
+                    infos.append("Collision only, not drawn: "
+                                 + ", ".join(obj.name for obj in invisible_objects))
+            else:
+                infos.append("Stadium collision: no collision object selected; "
+                             "the patcher restores the stadium's vanilla collision")
+        else:
+            model.pop(StadiumCollisionExport.FIELD, None)
+
         # INFO stays out of the report popup: the file browser shows only
         # WARNING and above there; the Info editor still lists these.
         for i in infos:
@@ -4829,7 +4923,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             self.report({"ERROR"}, e)
 
         written += len(custom_submesh_entries)
-        if written == 0:
+        if written == 0 and not collision_objects:
             self.report({"ERROR"}, "No submeshes written. Check the warnings above.")
             return {"CANCELLED"}
 

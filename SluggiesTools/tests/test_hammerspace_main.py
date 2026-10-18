@@ -2774,14 +2774,13 @@ class ValidateCustomSubmeshesTests(unittest.TestCase):
         model = _validation_base_model()
         main._validate_custom_submeshes(model)  # must not raise
 
-    def test_stadium_refuses_a_child_host_bone(self):
-        # Yoshi Park (2026-10-01): a mesh on a child bone drew nearly
-        # transparent; the same mesh on root bone 0 drew normally.
+    def test_stadium_accepts_a_child_host_bone(self):
+        # A mesh on a stadium child bone follows parent then child (Dolphin, 2026-10-18);
+        # the 2026-10-01 'nearly transparent' result was the one-colour-entry bug.
         model = _validation_base_model()
         model['ChunkNumber'] = 10
         model['CustomSubmeshes'] = [_validation_entry(HostBoneId=1)]
-        with self.assertRaisesRegex(ValueError, 'host bone 1 has parent bone 0; a stadium'):
-            main._validate_custom_submeshes(model)
+        main._validate_custom_submeshes(model)
 
     def test_stadium_accepts_a_new_root_host_bone(self):
         # A mesh on a new stadium root bone draws (Dolphin, 2026-10-18).

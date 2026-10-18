@@ -201,12 +201,13 @@ class ACTPhase2RebuildTests(unittest.TestCase):
         })
         return new_id
 
-    def test_stadium_refuses_new_child_bones(self):
-        # Every stadium bone is a root; a mesh on a new child bone is untested.
+    def test_stadium_new_child_bone_is_appended_under_its_parent(self):
+        # A mesh on a new stadium child bone follows parent then child (Dolphin, 2026-10-18).
         data = self._fixture_data()
-        self._stadium_new_bone(data, 1)
-        with self.assertRaisesRegex(ValueError, 'stadium models take new root bones only'):
-            self._build(data)
+        new_id = self._stadium_new_bone(data, 1)
+        rebuilt = act_rebuild.parse_act(self._build(data))
+        new_bone = next(b for b in rebuilt.bones if b.id == new_id)
+        self.assertEqual(new_bone.parent, act_rebuild.HEADER_SIZE + 1 * act_rebuild.BONE_RECORD_SIZE)
 
     def test_stadium_new_root_bone_is_appended_to_the_root_chain(self):
         # A mesh on a new stadium root bone draws (Dolphin, 2026-10-18).

@@ -224,37 +224,35 @@ class ClassifyHostBonesTests(unittest.TestCase):
         choices = {c.bone_id: c for c in classify_host_bones(records, claims)}
         self.assertEqual(choices[2].status, STATUS_EXCLUDED)
 
-    def test_stadium_offers_only_free_root_bones(self):
-        # Every stadium bone is a root; the patcher refuses a child host bone.
-        records = [_rec(0, None), _rec(1, None, geo_id_raw=0), _rec(2, 0),
-                   _rec(3, 0, skinned=True), _rec(4, None)]
+    def test_stadium_recommends_every_free_bone(self):
+        # Root and child bones both host meshes in a stadium (Dolphin, 2026-10-18).
+        records = [_rec(0, None), _rec(1, None, geo_id_raw=0), _rec(2, 0), _rec(4, None)]
         choices = {c.bone_id: c for c in classify_host_bones(records, roots_only=True)}
         self.assertEqual(choices[0].status, STATUS_RECOMMENDED)
         self.assertEqual(choices[1].status, STATUS_EXCLUDED)  # owns a mesh
-        self.assertEqual(choices[2].status, STATUS_EXCLUDED)
-        self.assertIn('child bone', choices[2].reason)
-        self.assertEqual(choices[3].status, STATUS_EXCLUDED)  # child, even if skinning
+        self.assertEqual(choices[2].status, STATUS_RECOMMENDED)
         self.assertEqual(choices[4].status, STATUS_RECOMMENDED)
         ordered = order_host_bone_choices(choices.values(), records)
-        self.assertEqual([c.bone_id for c in ordered], [0, 4])
+        self.assertEqual(sorted(c.bone_id for c in ordered), [0, 2, 4])
 
-    def test_stadium_offers_new_root_bones_but_not_new_child_bones(self):
-        # A mesh on a new stadium root bone draws (Dolphin, 2026-10-18).
+    def test_stadium_offers_new_root_and_child_bones(self):
+        # A mesh on a new stadium root or child bone draws (Dolphin, 2026-10-18).
         records = [_rec(0, None), _rec(7, None, user_added=True), _rec(8, 0, user_added=True)]
         choices = {c.bone_id: c for c in classify_host_bones(records, roots_only=True)}
         self.assertEqual(choices[0].status, STATUS_RECOMMENDED)
         self.assertEqual(choices[7].status, STATUS_RECOMMENDED)
         self.assertIn('new root bone', choices[7].reason)
-        self.assertEqual(choices[8].status, STATUS_EXCLUDED)
+        self.assertEqual(choices[8].status, STATUS_RECOMMENDED)
+        self.assertIn('new child bone', choices[8].reason)
         # Characters keep offering new bones.
         choices = {c.bone_id: c for c in classify_host_bones(records)}
         self.assertNotEqual(choices[7].status, STATUS_EXCLUDED)
 
-    def test_stadium_reassignment_offers_only_root_bones(self):
+    def test_stadium_reassignment_offers_free_root_and_child_bones(self):
         records = [_rec(0, None), _rec(1, 0), _rec(2, None)]
         claims = SceneClaims(custom_submesh_bone_ids=frozenset({0}))
         ordered = reassignment_choices(records, claims, moving_custom_bone_id=0, roots_only=True)
-        self.assertEqual([c.bone_id for c in ordered], [2])
+        self.assertEqual(sorted(c.bone_id for c in ordered), [1, 2])
 
     def test_single_bone_prop_yields_only_excluded(self):
         records = [_rec(1, None, geo_id_raw=0)]

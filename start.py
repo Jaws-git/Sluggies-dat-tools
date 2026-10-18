@@ -63,6 +63,7 @@ HS_DIR = os.path.join(TOOLS_DIR, 'Hammerspace')
 HS_MAIN_SCRIPT = os.path.join(HS_DIR, 'HammerspaceMain.py')
 UNTANGLE_POLICY_SCRIPT = os.path.join(HS_DIR, 'UntanglePolicy.py')
 DEFRAG_SCRIPT = os.path.join(HS_DIR, 'Defrag.py')
+COLLISION_SCRIPT = os.path.join(HS_DIR, 'StadiumCollision.py')
 ROSTER_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'runner.py')
 ROSTER_STATE_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'state_cli.py')
 ROSTER_SLOT_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'slot_cli.py')
@@ -701,6 +702,13 @@ def _patch_sluggie(found, model, unpatch, target_id=None, as_low=False, validate
         if unpatch:
             cmd.append('--unpatch')
         subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
+    # A stadium's collision is a file of its own, written next to either path.
+    # Not for slot targets (characters have no collision file).
+    if target_id is None and model.get('StadiumCollision') is not None:
+        cmd = python_script_command(COLLISION_SCRIPT, found)
+        if unpatch:
+            cmd.append('--unpatch')
+        subprocess.run(cmd, cwd=HS_DIR, check=True)
 
 
 def _patch_png(target, model):

@@ -705,3 +705,32 @@ class TargetedPatchDispatchTests(unittest.TestCase):
     def test_png_with_target_is_refused(self, mock_run):
         start.run_patching(['0.png'], target_id='0x13')
         mock_run.assert_not_called()
+
+
+class StadiumCollisionDispatchTests(unittest.TestCase):
+    """A .sluggie with StadiumCollision also runs the collision writer."""
+
+    @mock.patch('start._current_model_in_hammerspace', return_value=False)
+    @mock.patch('start.subprocess.run')
+    def test_collision_script_runs_after_the_model(self, mock_run, _mock_hs_check):
+        model = {'ChunkNumber': 10, 'FileIndex': 0, 'StadiumCollision': []}
+        start._patch_sluggie('/tmp/sta.sluggie', model, False)
+        self.assertEqual(mock_run.call_count, 2)
+        cmd = mock_run.call_args_list[1][0][0]
+        self.assertIn(start.COLLISION_SCRIPT, cmd)
+        self.assertNotIn('--unpatch', cmd)
+
+    @mock.patch('start._current_model_in_hammerspace', return_value=False)
+    @mock.patch('start.subprocess.run')
+    def test_unpatch_restores_collision(self, mock_run, _mock_hs_check):
+        model = {'ChunkNumber': 10, 'FileIndex': 0, 'UseHammerspace': True, 'StadiumCollision': [{}]}
+        start._patch_sluggie('/tmp/sta.sluggie', model, True)
+        cmd = mock_run.call_args_list[-1][0][0]
+        self.assertIn(start.COLLISION_SCRIPT, cmd)
+        self.assertIn('--unpatch', cmd)
+
+    @mock.patch('start._current_model_in_hammerspace', return_value=False)
+    @mock.patch('start.subprocess.run')
+    def test_no_field_no_collision_step(self, mock_run, _mock_hs_check):
+        start._patch_sluggie('/tmp/sta.sluggie', {'ChunkNumber': 10, 'FileIndex': 0}, False)
+        mock_run.assert_called_once()

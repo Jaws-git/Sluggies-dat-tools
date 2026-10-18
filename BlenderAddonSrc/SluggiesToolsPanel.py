@@ -18,6 +18,7 @@ from . import HostBones
 from . import ModelCheckCore
 from . import RigidRebuildExport
 from . import SluggiePath
+from . import StadiumCollisionExport
 from . import TemplateSources
 from .ExportSluggies import (
     SLUGGIES_OT_export,
@@ -1140,6 +1141,9 @@ def _draw_rigid_mesh_box(layout, context):
         box.operator(SLUGGIES_OT_set_specular_strength.bl_idname)
 
 
+STADIUM_ROOT_PARENT = '__ROOT__'
+
+
 def _add_bone_parent_enum_items(self, context):
     arm_obj = _find_target_armature(context)
     if arm_obj is None:
@@ -1152,6 +1156,10 @@ def _add_bone_parent_enum_items(self, context):
     for idx, b in enumerate(bones):
         tag = "new" if b.get('SluggiesUserAdded') else "donor"
         items.append((b.name, b.name, f"Parent the new bone to {b.name} ({tag})", idx))
+    if _model_is_stadium(arm_obj):
+        # Every vanilla stadium bone is a root; a new one may be a root or a child.
+        items.insert(0, (STADIUM_ROOT_PARENT, "None (root bone)",
+                         "A new root bone at the 3D cursor", len(items)))
     return items or [('NONE', "No bones", "This armature has no bones", 0)]
 
 
@@ -1230,14 +1238,15 @@ def _unused_bone_name(arm_obj):
     return f'bone_{n}'
 
 
-def _create_added_bone(context, arm_obj, parent_bone_name, animation_track=False):
+def _create_added_bone(context, arm_obj, parent_bone_name, animation_track=False, at_cursor=False):
     """Create one inert leaf bone parented to *parent_bone_name*: no
     GeoId, self-mirrored role 3, InheritTransform true, DrawPriority 0, and
     no track unless *animation_track* (then a fresh id, see
     `_set_added_bone_track`).
-    *parent_bone_name* None makes a root bone at the 3D cursor instead: Add
-    Bone does that in stadiums, whose bones are all roots (a mesh on a new
-    root bone draws, Dolphin 2026-10-18).
+    *parent_bone_name* None makes a root bone at the 3D cursor instead (stadiums
+    only: a mesh on a new root bone draws, Dolphin 2026-10-18). *at_cursor*
+    starts a child bone at the 3D cursor too (stadiums: the bone can sit right
+    next to its mesh, which keeps full position precision).
     The SRT type byte is not set here: it is a component-presence mask over
     the bone's own rotation/translation, so the exporter derives it from the
     values it writes (act_section.html#srt-type) rather than inheriting a
@@ -1271,7 +1280,7 @@ def _create_added_bone(context, arm_obj, parent_bone_name, animation_track=False
         # chained bones visually continue the parent like a real skeleton. A
         # root bone starts at the 3D cursor.
         new_eb.head = (
-            parent_eb.tail if parent_eb is not None
+            parent_eb.tail if parent_eb is not None and not at_cursor
             else arm_obj.matrix_world.inverted() @ context.scene.cursor.location
         )
         new_eb.tail = new_eb.head + tail_offset
@@ -1364,7 +1373,8 @@ class SLUGGIES_OT_add_bone(bpy.types.Operator):
     (act_section.html#appending-bones; export then uses Hammerspace)."""
     bl_idname = "sluggies.add_bone"
     bl_label = "Add Bone"
-    bl_description = "Add a new leaf bone parented to the chosen bone (in a stadium: a root bone at the 3D cursor)"
+    bl_description = ("Add a new leaf bone parented to the chosen bone (in a stadium: a root or "
+                      "child bone at the 3D cursor)")
     bl_options = {"UNDO"}
 
     parent_bone: EnumProperty(
@@ -1400,11 +1410,11 @@ class SLUGGIES_OT_add_bone(bpy.types.Operator):
             self.report({"ERROR"}, HostBones.RE_IMPORT_MESSAGE)
             return {"CANCELLED"}
         _renumber_added_bones_reporting(self, arm_obj)
-        if _model_is_stadium(arm_obj):
-            # Every stadium bone is a root: no parent to pick.
-            return self.execute(context)
         active_bone = arm_obj.data.bones.active
-        if active_bone is not None and _bone_id_from_name(active_bone.name) is not None:
+        if _model_is_stadium(arm_obj):
+            # A root bone is the default; a parent is picked deliberately.
+            self.parent_bone = STADIUM_ROOT_PARENT
+        elif active_bone is not None and _bone_id_from_name(active_bone.name) is not None:
             self.parent_bone = active_bone.name
         _begin_bone_name_display(self, arm_obj)
         return context.window_manager.invoke_props_dialog(self)
@@ -1415,7 +1425,8 @@ class SLUGGIES_OT_add_bone(bpy.types.Operator):
             if arm_obj is None:
                 self.report({"ERROR"}, _no_target_armature_message(context))
                 return {"CANCELLED"}
-            if _model_is_stadium(arm_obj):
+            stadium = _model_is_stadium(arm_obj)
+            if stadium and self.parent_bone == STADIUM_ROOT_PARENT:
                 try:
                     new_bone = _create_added_bone(context, arm_obj, None, self.animation_track)
                 except ValueError as e:
@@ -1428,7 +1439,8 @@ class SLUGGIES_OT_add_bone(bpy.types.Operator):
                 return {"CANCELLED"}
 
             try:
-                new_bone = _create_added_bone(context, arm_obj, self.parent_bone, self.animation_track)
+                new_bone = _create_added_bone(context, arm_obj, self.parent_bone, self.animation_track,
+                                              at_cursor=stadium)
             except ValueError as e:
                 self.report({"ERROR"}, str(e))
                 return {"CANCELLED"}
@@ -2248,7 +2260,7 @@ def _ensure_action_fcurve(arm_obj, action, data_path, index, group):
 
 # Sidebar boxes that collapse, each with a `Scene.sluggies_show_<key>_box`
 # toggle (expanded by default).
-_COLLAPSIBLE_BOXES = ('import_export', 'textures', 'bones', 'animations', 'mesh')
+_COLLAPSIBLE_BOXES = ('import_export', 'textures', 'bones', 'animations', 'mesh', 'collision')
 
 
 def _collapsible_box(layout, context, key, title):
@@ -2304,6 +2316,71 @@ def _draw_free_host_bones(layout, context):
 _SHOW_ANIMATIONS_BOX = False
 
 
+class SluggiesCollisionSettings(bpy.types.PropertyGroup):
+    """``Object.sluggies_collision``: makes a mesh solid for the ball in a stadium
+    (exported as a ``StadiumCollision`` entry; StadiumCollisionExport.py)."""
+    enabled: BoolProperty(
+        name="Ball Collision",
+        description=("Export this mesh as stadium collision: the ball bounces off its faces. "
+                     "Collision is invisible; the mesh is also drawn only if it is a model mesh "
+                     "or a custom submesh"),
+        default=False,
+    )
+    invisible: BoolProperty(
+        name="Make invisible",
+        description=("Export only the collision: the mesh itself is not drawn in game. "
+                     "For new submeshes and plain meshes (a plain mesh is never drawn anyway)"),
+        default=False,
+    )
+    surface_type: EnumProperty(
+        name="Surface",
+        description="What the game does when the ball touches it",
+        items=[(ident, label, desc) for ident, _number, label, desc in StadiumCollisionExport.SURFACE_TYPES],
+        default=StadiumCollisionExport.SURFACE_TYPES[0][0],
+    )
+    custom_type: IntProperty(
+        name="Type number", description="Surface type number (1-127)", min=1, max=127, default=2,
+    )
+    sides: EnumProperty(
+        name="Sides",
+        items=[(ident, label, desc) for ident, _value, label, desc in StadiumCollisionExport.SIDES],
+        default=StadiumCollisionExport.SIDES[0][0],
+    )
+    territory: EnumProperty(
+        name="Territory",
+        items=[(ident, label, desc) for ident, _value, label, desc in StadiumCollisionExport.TERRITORIES],
+        default=StadiumCollisionExport.TERRITORIES[0][0],
+    )
+
+
+def _draw_collision_box(layout, context):
+    """The 'Stadium collision' box: the active mesh's collision settings."""
+    obj = context.active_object
+    if obj is None or obj.type != 'MESH':
+        return
+    arm_obj = _find_target_armature(context)
+    if arm_obj is not None and not _model_is_stadium(arm_obj) and not obj.sluggies_collision.enabled:
+        return
+    layout.separator()
+    box = _collapsible_box(layout, context, 'collision', "Stadium collision")
+    if box is None:
+        return
+    settings = obj.sluggies_collision
+    box.prop(settings, 'enabled')
+    if not settings.enabled:
+        return
+    col = box.column()
+    col.prop(settings, 'invisible')
+    col.prop(settings, 'surface_type')
+    if settings.surface_type == 'CUSTOM':
+        col.prop(settings, 'custom_type')
+    col.prop(settings, 'sides')
+    col.prop(settings, 'territory')
+    note = box.column(align=True)
+    note.label(text="Front = decided by face normals", icon='INFO')
+
+
+
 class SLUGGIES_PT_tools(bpy.types.Panel):
     """Sluggies Tools sidebar panel"""
     bl_label = "Sluggies Tools"
@@ -2349,6 +2426,7 @@ class SLUGGIES_PT_tools(bpy.types.Panel):
 
         layout.separator()
         _draw_rigid_mesh_box(layout, context)
+        _draw_collision_box(layout, context)
 
         layout.separator()
         # By id: ModelCheckUI imports this module.
@@ -2367,6 +2445,8 @@ def register():
     bpy.utils.register_class(SLUGGIES_OT_set_specular_strength)
     bpy.utils.register_class(SLUGGIES_OT_scale_animations)
     bpy.utils.register_class(SLUGGIES_PT_tools)
+    bpy.utils.register_class(SluggiesCollisionSettings)
+    bpy.types.Object.sluggies_collision = bpy.props.PointerProperty(type=SluggiesCollisionSettings)
     bpy.types.Scene.sluggies_show_free_host_bones = BoolProperty(
         name="Free host bones",
         description="Show the read-only list of bones a new custom submesh could attach to",
@@ -2394,6 +2474,8 @@ def unregister():
     del bpy.types.Scene.sluggies_show_free_host_bones
     for key in _COLLAPSIBLE_BOXES:
         delattr(bpy.types.Scene, f'sluggies_show_{key}_box')
+    del bpy.types.Object.sluggies_collision
+    bpy.utils.unregister_class(SluggiesCollisionSettings)
     bpy.utils.unregister_class(SLUGGIES_PT_tools)
     bpy.utils.unregister_class(SLUGGIES_OT_scale_animations)
     bpy.utils.unregister_class(SLUGGIES_OT_set_specular_strength)

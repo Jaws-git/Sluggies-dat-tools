@@ -1403,7 +1403,7 @@ def model_document(model, dir_ind, file_index, offset, length, untangle_context=
     """The ``.sluggie`` document of one exported model: ``model`` is an analyzed ``Model0`` (alone in its DOL
     entry, or one member of an archive container), ``offset``/``length`` its own range in the DAT."""
     gpl_user_data, gpl_user_data_length = extract_gpl_userdata(model)
-    return {
+    document = {
         "SluggiesModel": {
             "ChunkNumber": dir_ind,
             "FileIndex": file_index,
@@ -1423,6 +1423,18 @@ def model_document(model, dir_ind, file_index, offset, length, untangle_context=
             "BoneHierarchy": extract_bone_data(model)
         }
     }
+    if dir_ind in STADIUM_DIR_INDICES:
+        # The stadium's own collision, for the Blender importer (editable copy).
+        import StadiumCollision
+        try:
+            entries = StadiumCollision.vanilla_entries_for_model(dir_ind, file_index)
+        except (OSError, ValueError) as exc:
+            _slogger.warning(f'dir {dir_ind} file {file_index}: stadium collision not exported: {exc}',
+                             source='export')
+            entries = None
+        if entries is not None:
+            document["SluggiesModel"][StadiumCollision.FIELD_VANILLA] = entries
+    return document
 
 
 def write_model_document(document, path):

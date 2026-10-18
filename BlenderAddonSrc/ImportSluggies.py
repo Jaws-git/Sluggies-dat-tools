@@ -10,6 +10,7 @@ from bpy_extras.io_utils import ImportHelper
 from . import AnimScale
 from . import AnmFormat
 from . import CustomSubmeshImport
+from . import StadiumCollisionExport
 from . import FieldCodec
 from . import HostBones
 from . import ModelCheckCore
@@ -1547,6 +1548,39 @@ def build_custom_submesh(cs, model, arm_obj, bind_matrices, collection, sluggie_
     return obj
 
 
+def build_collision_object(entry, arm_obj, collection):
+    """A collision-only mesh for one ``StadiumCollision`` entry: model-space
+    vertices under the armature (identity basis, where the exporter reads them
+    back from), drawn as wire, with its collision settings restored. A model
+    mesh or custom submesh that was solid comes back without the setting; this
+    object carries it instead."""
+    region = entry.get('Region')
+    mesh = bpy.data.meshes.new(entry['Name'] if region is not None else f"{entry['Name']}_collision")
+    mesh.from_pydata([tuple(p) for p in entry['Positions']], [], [tuple(f) for f in entry['Faces']])
+    mesh.update()
+    obj = bpy.data.objects.new(mesh.name, mesh)
+    collection.objects.link(obj)
+    obj.parent = arm_obj
+    obj.matrix_parent_inverse = mathutils.Matrix.Identity(4)
+    obj.matrix_basis = mathutils.Matrix.Identity(4)
+    obj.display_type = 'WIRE'
+    settings = obj.sluggies_collision
+    settings.enabled = True
+    settings.invisible = True  # a collision-only object, never drawn
+    if region is not None:
+        obj[StadiumCollisionExport.REGION_PROP] = int(region)
+        obj.hide_render = True
+    number = int(entry['SurfaceType'])
+    named = next((ident for ident, n, _l, _d in StadiumCollisionExport.SURFACE_TYPES if n == number), None)
+    settings.surface_type = named or 'CUSTOM'
+    if named is None:
+        settings.custom_type = number
+    settings.sides = next(i for i, v, _l, _d in StadiumCollisionExport.SIDES if v == entry.get('Sides', 'both'))
+    settings.territory = next(
+        i for i, v, _l, _d in StadiumCollisionExport.TERRITORIES if v == entry.get('Territory', 'auto'))
+    return obj
+
+
 class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
     bl_idname = "sluggies.import_json"
     bl_label = "Import Sluggers intermediate"
@@ -1725,6 +1759,23 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
                     self.report({"WARNING"}, problem)
                 build_custom_submesh(cs, model, arm_obj, bind_matrices, collection, sluggie_dir, texture_file_map)
                 imported += 1
+
+        collision_entries = StadiumCollisionExport.import_entries(model)
+        if collision_entries and arm_obj is None:
+            self.report({"WARNING"}, f"{len(collision_entries)} collision object(s) not imported: the model has no bones")
+        elif collision_entries:
+            original = [e for e in collision_entries if e.get('Region') is not None]
+            col_collection = collection
+            if original:
+                # The stadium's own collision, in a collection of its own (hide it with one click).
+                col_collection = bpy.data.collections.new(f"{arm_obj.name} collision")
+                collection.children.link(col_collection)
+            for entry in collision_entries:
+                try:
+                    build_collision_object(
+                        entry, arm_obj, col_collection if entry.get('Region') is not None else collection)
+                except (KeyError, ValueError, TypeError) as exc:
+                    self.report({"WARNING"}, f"Collision object not imported: {exc}")
 
         context.view_layer.update()
         self.report({"INFO"}, f"Imported {imported} submesh(es) from {self.filepath}")

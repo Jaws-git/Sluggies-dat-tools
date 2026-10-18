@@ -527,16 +527,11 @@ def _position_edits(model: dict) -> list[tuple[int, dict, bytes]]:
 
 # Stadium model directories, 7 Mario Stadium ... 16 Toy Field; the same range as
 # export.STADIUM_DIR_INDICES (export.py can't be imported: it prompts). Every
-# stadium bone is a root, and a custom submesh in a stadium must hang on a root
-# bone: a free vanilla one or a new one (new root bones draw correctly, Dolphin
-# 2026-10-18; the earlier "does not draw" results were a one-colour-entry bug,
-# see _assemble_rigid_submesh). New child bones stay refused there until tested.
+# vanilla stadium bone is a root. New bones there may be roots (new root bones
+# draw correctly, Dolphin 2026-10-18; the earlier "does not draw" results were a
+# one-colour-entry bug, see _assemble_rigid_submesh) or children (a mesh on a new
+# child bone follows parent then child, Dolphin 2026-10-18, E7).
 STADIUM_CHUNKS = range(7, 17)
-STADIUM_NEW_BONE_MESSAGE = (
-    'stadium models take new root bones only: every stadium bone is a root, and a '
-    'mesh on a new child bone is untested in a stadium. Add the bone without a parent '
-    '(act_section.html#geo-id-ownership)'
-)
 
 _CUSTOM_SUBMESH_HAND_VISIBILITY_ROLES = frozenset({'RhSp', 'LhSp', 'SpRf', 'GhSp'})
 _CUSTOM_SUBMESH_REJECTED_DERIVED_TYPE6 = '00000375'  # never occurs on a rigid submesh
@@ -1148,13 +1143,6 @@ def _validate_custom_submeshes(model: dict) -> None:
                         f'host bone {host_bone_id} is also claimed by custom submesh '
                         f"'{claimed_bones[host_bone_id]}'"
                     )
-                elif is_stadium and bone.get('ParentBoneId') is not None:
-                    fail(
-                        f'host bone {host_bone_id} has parent bone {bone["ParentBoneId"]}; '
-                        'a stadium draws a mesh on a child bone nearly transparent, so '
-                        'host it on a root bone without a mesh (see '
-                        'act_section.html#geo-id-ownership)'
-                    )
                 else:
                     claimed_bones[host_bone_id] = cs_id
 
@@ -1487,13 +1475,8 @@ def _validate_bone_hierarchy_edited(model: dict) -> None:
                 'new bones must be leaves'
             )
 
-    # Stadiums take new root bones only (every stadium bone is a root; a mesh on
-    # a new root bone draws, Dolphin 2026-10-18; a new child bone is untested).
+    # Stadiums take new root and child bones (Dolphin 2026-10-18); elsewhere only children.
     is_stadium = model.get('ChunkNumber') in STADIUM_CHUNKS
-    if is_stadium:
-        children = sorted(int(b['BoneId']) for b in new_entries if b.get('ParentBoneId') is not None)
-        if children:
-            fail(f'new bone(s) {children}: {STADIUM_NEW_BONE_MESSAGE}')
 
     # Rules 7-8: every new bone has an existing parent (a stadium's may be a
     # root instead) and the user-contract defaults (self-mirrored, role 3),
@@ -6163,8 +6146,6 @@ def _rebuild_act_bone_hierarchy(act_bytes: bytes, data: dict, source_model_offse
                 "N, N+1, ... starting at the donor bone count"
             )
         parent_id = entry.get('ParentBoneId')
-        if is_stadium and parent_id is not None:
-            raise ValueError(f"BoneHierarchyEdited: new bone {bone_id}: {STADIUM_NEW_BONE_MESSAGE}")
         if parent_id is None and not is_stadium:
             raise ValueError(
                 f"new bone {bone_id} has no ParentBoneId; new bones may not be roots outside stadiums"

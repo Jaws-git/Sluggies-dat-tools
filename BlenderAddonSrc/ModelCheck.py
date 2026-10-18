@@ -321,16 +321,6 @@ def check_donor_bones(context, scope):
                           f"{', '.join(names[:8])}{' ...' if len(names) > 8 else ''}: these bones {why}.")
 
 
-def check_stadium_bones(context, scope):
-    arm = scope.armature
-    added = [b.name for b in _added_bones(arm) if b.parent is not None]
-    if added and scope.stadium:
-        yield Finding("stadium_bones", ERROR, arm.name, "Stadium bones must be roots",
-                      f"{arm.name}: added bone(s) {', '.join(added)} have a parent bone: stadiums take "
-                      "new root bones only. Clear the bone's parent (Edit Mode, Alt+P) or delete it "
-                      "and use Add Bone again, which makes a root bone in a stadium.")
-
-
 def check_untracked_keys(context, scope):
     arm = scope.armature
     if arm is None or scope.for_export or not _added_bones(arm):
@@ -739,7 +729,6 @@ CHECKS = [
     (check_wrong_model, True),
     (check_added_bone_names, True),
     (check_donor_bones, False),
-    (check_stadium_bones, True),
     (check_untracked_keys, False),
     (check_root_scale, False),
     (check_mesh_props, False),

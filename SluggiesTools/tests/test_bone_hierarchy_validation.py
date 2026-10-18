@@ -200,14 +200,13 @@ class BoneHierarchyValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'may not be roots'):
             _validate(data)
 
-    def test_stadium_refuses_new_child_bones(self):
-        # Every stadium bone is a root; a mesh on a new child bone is untested.
+    def test_stadium_accepts_new_child_bones(self):
+        # A mesh on a new stadium child bone follows parent then child (Dolphin, 2026-10-18).
         data = _base_model()
         model = data['SluggiesModel']
         model['ChunkNumber'] = 10
         model['BoneHierarchyEdited'].append(_new_bone(4, 1))
-        with self.assertRaisesRegex(ValueError, 'stadium models take new root bones only'):
-            _validate(data)
+        _validate(data)
 
     def test_stadium_accepts_new_root_bones(self):
         # A mesh on a new stadium root bone draws (Dolphin, 2026-10-18).
