@@ -786,11 +786,18 @@ texture count; descriptors (0x20 bytes) from `+0x24`.
 - Our bank: the stock texture section, then page `0x86`'s palette, then two
   CMPR pages (`0x92` side, `0x93` front) holding each distinct 48×51
   portrait once in a 52×52 cell (the smallest power-of-two page that fits),
-  then the stock container with the rows appended. The source tables sit in
-  free rows of a stock atlas at `0x87520` while they fit (about 400 new
-  records), else after the pages; page images and source tables must stay
-  inside the texture section (the external tool found that images placed
-  after the container draw garbage). 8 icons cost 33,600 bytes over stock.
+  then the stock container with the rows appended. The source tables follow
+  the pages; page images and source tables must stay inside the texture
+  section (the external tool found that images placed after the container
+  draw garbage). The six unused characters' icons cost 51,728 bytes over stock.
+- **The stock atlases stay byte-identical.** The two stock C8 atlases (bank
+  images `0x13660` and `0x53660`) are what Dolphin custom textures are keyed
+  on: `tex1_1024x256_a02bc526e5fe683e_<palette>_9` and
+  `tex1_1024x256_20b4a21f84f059dc_<palette>_9` (XXH64 of the 256 KB image;
+  the side portraits sit on the `20b4a21f` sheet). Until 2026-10-17 the
+  source tables were written into the free rows 204–227 of the second atlas
+  (bank file `0x87520`), which changed its hash with every icon change and
+  stopped every side-portrait override from loading.
 - **Stock characters' portraits** (`stock_icons`, IDs `0x00`–`0x46`, which
   own keys in all three tables) are replaced by pointing their existing
   records at packed rows; no key is added and the records' own data stays.

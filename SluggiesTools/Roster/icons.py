@@ -34,10 +34,11 @@ leaves the icon bank and the DOL alone):
   52x52 cell (48x51 art plus transparent texels against filtering bleed,
   whole CMPR blocks); identical portraits share one. A page is the smallest
   power-of-two size that holds its cells (``page_size``; at most 1024x1024 =
-  361 cells). The source tables sit at 0x87520 (free rows of a stock atlas)
-  while they fit there, else after the pages; they stay inside the texture
-  section either way, as the page images must (the external tool: images
-  after the container drew garbage). Page image and palette offsets in a
+  361 cells). The source tables follow the pages, inside the texture
+  section as the page images must be (the external tool: images after the
+  container drew garbage). They never go into the stock atlases' free rows:
+  any byte changed there changes the atlas's Dolphin texture hash and breaks
+  every custom texture made for it (2026-10-17). Page image and palette offsets in a
   descriptor count from bank +0x20.
 * one side and one front resource row per entry after the 152 stock rows,
   and keys pointing at them: side and front for every entry, normal_a too
@@ -96,7 +97,6 @@ CONTAINER_END_FIELD = 0x10                     # container +0x10: its length
 RESOURCE_FIELD = 0x04
 NORMAL_A_FIELD, SIDE_FIELD, FRONT_FIELD = 0x08, 0x0C, 0x10
 TABLE_FIELDS = (NORMAL_A_FIELD, SIDE_FIELD, FRONT_FIELD)
-TABLES_AT = 0x87520                            # free rows of a stock atlas: the source tables while they fit
 SOURCE_HEADER, SOURCE_RECORD = 0x28, 0x50
 FOLLOWING_RECORD_FLAG = 0x0100
 STOCK_ROWS, ROW_SIZE = 0x98, 0x14
@@ -489,12 +489,7 @@ def build_packed_bank(stock_bank: bytes, entries: list[IconEntry], side: Page, f
     keys = _table_keys(entries, side_row, front_row)
     repoints = _table_repoints(entries, side_row, front_row)
     tables = [extend_table(stock_bank, start, keys[f], repoints[f]) for f, start in zip(TABLE_FIELDS, stock_tables)]
-    run = b''.join(tables)
-    if TABLES_AT + len(run) <= stock_end and not any(stock_bank[TABLES_AT:stock_end]):
-        at = TABLES_AT
-        tex[at:at + len(run)] = run
-    else:
-        at = append(run)
+    at = append(b''.join(tables))                        # after the pages: the stock atlases stay byte-identical
     table_starts = [at + sum(len(t) for t in tables[:i]) for i in range(len(tables))]
 
     # container: the stock one after the texture section, old tables zeroed, rows appended

@@ -23,6 +23,7 @@ from . import TemplateSources
 from . import TextureSlotsCore
 from . import HostBones
 from . import ModelCheckCore
+from . import SluggiePath
 
 
 def _to_bytes(data) -> bytes:
@@ -3999,7 +4000,10 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         # back into it, or type a new name to save a variant.
         from . import ModelCheck
         arm_obj = ModelCheck.selection_armature(context.selected_objects)
-        source_path = str(arm_obj.get('SluggieFilePath') or "") if arm_obj is not None else ""
+        source_path = SluggiePath.resolve(arm_obj, hint=self.filepath)
+        if not source_path and arm_obj is not None and not self.filepath:
+            # Start the browser on the recorded name at least.
+            self.filepath = os.path.basename(SluggiePath.stored(arm_obj))
         if source_path and not self.filepath:
             self.filepath = source_path
             context.window_manager.fileselect_add(self)
@@ -4030,21 +4034,27 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         # The model is read from the armature's source .sluggie and written
         # to the target (self.filepath), which may be a new file in any
         # folder. Every path-relative lookup below (tex/, the Low model's
-        # partner) uses the target's folder. An armature without a source
-        # (older imports) or a missing source reads the target, as before.
+        # partner) uses the target's folder. SluggiePath.resolve finds a
+        # moved source again (and records the hit); an armature without a
+        # source (older imports) or with a lost one reads the target, which
+        # the export below then records as its source.
         from . import ModelCheck
         arm_obj = ModelCheck.selection_armature(context.selected_objects)
-        source_path = str(arm_obj.get('SluggieFilePath') or "") if arm_obj is not None else ""
-        if not source_path or not os.path.isfile(source_path):
-            if source_path:
+        source_path = SluggiePath.resolve(arm_obj, hint=self.filepath)
+        stored_path = SluggiePath.stored(arm_obj)
+        if not source_path:
+            if stored_path:
                 self.report({"WARNING"},
-                    f"The armature's source file {source_path} is missing; reading the target instead.")
+                    f"The armature's source file {stored_path} is missing; reading the target instead.")
             source_path = self.filepath
         if not os.path.isfile(source_path):
             self.report({"ERROR"},
-                f"{os.path.basename(self.filepath)} does not exist yet and the armature records no "
-                "source .sluggie to read the model from. Re-import the model, or pick the .sluggie it "
-                "came from.")
+                f"{os.path.basename(self.filepath)} does not exist yet and "
+                + (f"the armature's source file {stored_path} is missing. "
+                   if stored_path else "the armature records no source .sluggie to read the model from. ")
+                + "Export into the existing .sluggie of this model instead, "
+                + SluggiePath.LOCATE_HINT[0].lower() + SluggiePath.LOCATE_HINT[1:]
+                + ", or re-import the model.")
             return {"CANCELLED"}
         save_as = (os.path.normcase(os.path.abspath(source_path))
                    != os.path.normcase(os.path.abspath(self.filepath)))
@@ -4848,10 +4858,12 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             self.report({"INFO"}, f"Copied {source_path} to {target_path}")
 
         FieldCodec.dump_sluggie(data, self.filepath)
-        # Saved under a new name: the scene now belongs to the new file, so
-        # the next export, Check Models and Texture slots use it.
+        # The scene now belongs to the written file (a new name, or the
+        # target an armature with a lost source read): the next export,
+        # Check Models and Texture slots use it.
+        if arm_obj is not None:
+            SluggiePath.remember(arm_obj, self.filepath)
         if save_as and arm_obj is not None:
-            arm_obj['SluggieFilePath'] = self.filepath
             self.report({"INFO"},
                 f"Saved as a new file; {arm_obj.name} now uses {self.filepath} "
                 f"({os.path.basename(source_path)} is unchanged).")

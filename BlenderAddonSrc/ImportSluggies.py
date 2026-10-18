@@ -12,6 +12,7 @@ from . import AnmFormat
 from . import FieldCodec
 from . import HostBones
 from . import ModelCheckCore
+from . import SluggiePath
 
 
 # Fallback tail length for a bone that gets no direction from the hierarchy,
@@ -1424,10 +1425,9 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
                                      reorient=self.reorient_bones)
             arm_obj['SluggiesBonesReoriented'] = bool(self.reorient_bones)
             abs_bone_mats = _compute_bone_absolute_matrices(bone_list)
-            # So Add submesh can find this
-            # model's tex/ directory without asking the user or reading the
-            # .sluggie file again.
-            arm_obj['SluggieFilePath'] = self.filepath
+            # So the exporter and Add submesh can find this model's file and
+            # tex/ directory without asking the user (SluggiePath.resolve).
+            SluggiePath.remember(arm_obj, self.filepath)
             # The model directory; a stadium (TemplateSources.STADIUM_CHUNKS)
             # takes custom submeshes only on root bones.
             arm_obj['SluggiesChunkNumber'] = int(model_number)

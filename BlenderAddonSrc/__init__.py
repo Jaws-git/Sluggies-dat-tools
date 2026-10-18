@@ -11,6 +11,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 
+from . import SluggiePath
 from . import ImportSluggies
 from . import ExportSluggies
 from . import AnmExport
@@ -31,6 +32,7 @@ bl_info = {
 
 
 def register():
+    SluggiePath.register()
     ImportSluggies.register()
     ExportSluggies.register()
     AnmExport.register()
@@ -46,3 +48,4 @@ def unregister():
     AnmExport.unregister()
     ImportSluggies.unregister()
     ExportSluggies.unregister()
+    SluggiePath.unregister()

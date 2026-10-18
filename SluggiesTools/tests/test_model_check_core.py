@@ -1,6 +1,7 @@
 """Check Models rules (BlenderAddonSrc/ModelCheckCore.py), bpy-free."""
 
 import ast
+import os
 import pathlib
 import struct
 import sys
@@ -221,6 +222,77 @@ class TestWiring(unittest.TestCase):
         source = (BLENDER_ADDON_DIR / 'SluggiesToolsPanel.py').read_text(encoding='utf-8')
         draw = source[source.index('class SLUGGIES_PT_tools'):]
         self.assertLess(draw.index('_draw_free_host_bones(box'), draw.index('"sluggies.check_models"'))
+
+
+class FindSluggieFileTests(unittest.TestCase):
+    """SluggiePath.resolve's search (ModelCheckCore.find_sluggie_file)."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _file(self, *parts):
+        path = self.root.joinpath(*parts)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{}')
+        return str(path)
+
+    def test_nothing_without_a_name_or_folders(self):
+        self.assertEqual(core.find_sluggie_file('', [str(self.root)]), '')
+        self.assertEqual(core.find_sluggie_file('a.sluggie', ['', str(self.root / 'missing')]), '')
+
+    def test_folder_itself_before_its_subfolders(self):
+        sub = self._file('target', 'x.gpl', 'x.sluggie')
+        direct = self._file('target', 'x.sluggie')
+        self.assertEqual(core.find_sluggie_file('x.sluggie', [str(self.root / 'target')]), direct)
+        os.remove(direct)
+        self.assertEqual(core.find_sluggie_file('x.sluggie', [str(self.root / 'target')]), sub)
+
+    def test_folders_in_order(self):
+        second = self._file('b', 'x.sluggie')
+        first = self._file('a', 'x.sluggie')
+        self.assertEqual(core.find_sluggie_file('x.sluggie', [str(self.root / 'a'), str(self.root / 'b')]), first)
+        self.assertEqual(core.find_sluggie_file('x.sluggie', [str(self.root / 'b'), str(self.root / 'a')]), second)
+
+    def test_accept_rejects_a_namesake(self):
+        wrong = self._file('a', 'x.sluggie')
+        right = self._file('b', 'x.sluggie')
+        found = core.find_sluggie_file('x.sluggie', [str(self.root / 'a'), str(self.root / 'b')],
+                                       accept=lambda p: os.path.abspath(p) != os.path.abspath(wrong))
+        self.assertEqual(found, right)
+
+    def test_searches_the_output_assets_tree_of_a_folder(self):
+        moved = self._file('2_Output_Assets', '32 Boo', '134010752_teresa.gpl', '134010752_teresa.gpl.sluggie')
+        old_folder = self.root / '2_Output_Assets' / 'old' / 'teresa.gpl'   # gone: never created
+        self.assertEqual(core.find_sluggie_file('134010752_teresa.gpl.sluggie', [str(old_folder)]), moved)
+        # Too deep for the export layout: not found.
+        deep = self._file('2_Output_Assets', 'a', 'b', 'c', 'd', 'deep.sluggie')
+        self.assertEqual(core.find_sluggie_file('deep.sluggie', [str(old_folder)]), '')
+        self.assertTrue(os.path.isfile(deep))
+
+    def test_output_assets_root(self):
+        self.assertEqual(core.output_assets_root(os.path.join('x', '2_Output_Assets', 'a', 'b.sluggie')),
+                         os.path.join(os.path.abspath('x'), '2_Output_Assets'))
+        self.assertIsNone(core.output_assets_root(os.path.join('x', 'y', 'b.sluggie')))
+
+
+class SluggiePathWiringTests(unittest.TestCase):
+    """Every reader of the armature's .sluggie path resolves it (source text)."""
+
+    def test_no_raw_property_reads_outside_sluggie_path(self):
+        for name in ('ExportSluggies', 'ImportSluggies', 'ModelCheck', 'SluggiesToolsPanel', 'TextureSlotsUI'):
+            source = (BLENDER_ADDON_DIR / f'{name}.py').read_text(encoding='utf-8')
+            self.assertNotIn("get('SluggieFilePath')", source, name)
+            self.assertNotIn("['SluggieFilePath']", source, name)
+
+    def test_exporter_records_the_written_file(self):
+        source = (BLENDER_ADDON_DIR / 'ExportSluggies.py').read_text(encoding='utf-8')
+        dump = source.index('FieldCodec.dump_sluggie(data, self.filepath)')
+        self.assertIn('SluggiePath.remember(arm_obj, self.filepath)', source[dump:dump + 600])
 
 
 if __name__ == '__main__':

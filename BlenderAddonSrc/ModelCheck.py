@@ -22,6 +22,7 @@ from . import ExportSluggies as ex
 from . import FieldCodec
 from . import HostBones
 from . import ModelCheckCore as core
+from . import SluggiePath
 from . import SluggiesToolsPanel as panel
 from . import TemplateSources
 from .ImportSluggies import _set_surface_material_metadata
@@ -72,7 +73,7 @@ def is_sluggies_armature(obj):
     """Armatures the .sluggie importer made (its markers on the object or bones)."""
     if obj is None or obj.type != 'ARMATURE':
         return False
-    if 'SluggieFilePath' in obj or 'SluggiesBoneMetadataVersion' in obj:
+    if SluggiePath.PATH_PROP in obj or 'SluggiesBoneMetadataVersion' in obj:
         return True
     return any(b.get('SluggiesGeoIdRaw') is not None for b in obj.data.bones)
 
@@ -111,8 +112,11 @@ def gather_scopes(context):
     objects = list(context.scene.objects)
     for obj in objects:
         if is_sluggies_armature(obj):
-            path = str(obj.get('SluggieFilePath') or "")
-            model, error = _load_model(path, cache) if path else (None, "")
+            path = SluggiePath.resolve(obj)
+            if path:
+                model, error = _load_model(path, cache)
+            else:   # the recorded file is gone and the search found nothing
+                path, model, error = SluggiePath.stored(obj), None, "missing" if SluggiePath.stored(obj) else ""
             scopes[obj.name] = ModelScope(armature=obj, meshes=[], model=model,
                                           sluggie_path=path, load_error=error)
     loose = []
@@ -238,11 +242,13 @@ def check_sluggie_file(context, scope):
     if not scope.sluggie_path:
         yield Finding("sluggie_path", WARNING, scope.name, "No source .sluggie",
                       "The armature does not record the .sluggie it was imported from, so most "
-                      "checks and Add New Submesh/Add material can't run. Re-import the model.")
+                      "checks and Add New Submesh/Add material can't run. "
+                      + SluggiePath.LOCATE_HINT + ", or re-import the model.")
     elif scope.load_error:
         yield Finding("sluggie_path", ERROR, scope.name, "Source .sluggie " + scope.load_error.split(' ')[0],
                       f"The armature's source file {scope.sluggie_path} is {scope.load_error}. "
-                      "Restore the file or re-import the model.")
+                      "Restore the file, " + SluggiePath.LOCATE_HINT[0].lower() + SluggiePath.LOCATE_HINT[1:]
+                      + ", or re-import the model.")
 
 
 def check_bone_metadata(context, scope):

@@ -148,7 +148,11 @@ class PackedBankTests(unittest.TestCase):
     def test_keys_and_tables(self):
         bank = self.bank
         tex_end, desc, ptr = container(bank)
-        expect = icons.TABLES_AT                               # they fit the free stock rows
+        front = icons._descriptor_offset(icons.FRONT_PAGE)
+        page = icons.TEX_BASE + struct.unpack_from('>I', bank, front)[0]
+        expect = page + self.front.payload_length                # right after the front page, never in a stock atlas
+        self.assertEqual(bank[:icons.STOCK_CONTAINER][icons.DESCRIPTOR_TABLE + icons.TEXTURE_COUNT * icons.DESCRIPTOR_SIZE:],
+                         STOCK[icons.DESCRIPTOR_TABLE + icons.TEXTURE_COUNT * icons.DESCRIPTOR_SIZE:icons.STOCK_CONTAINER])
         n = icons.STOCK_ROWS
         found = {}
         for field in icons.TABLE_FIELDS:

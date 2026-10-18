@@ -14,6 +14,7 @@ from bpy.props import BoolProperty, CollectionProperty, IntProperty, StringPrope
 
 from . import FieldCodec
 from . import ModelCheckCore
+from . import SluggiePath
 from . import TextureSlotsCore
 from .ExportSluggies import _connected_image_texture_nodes
 
@@ -40,16 +41,16 @@ def _target_armature(context):
 def _lod_pair(context, arm_obj):
     """``(high armature or None, low armature or None)`` for *arm_obj* and
     its partner among the scene's Sluggies armatures."""
-    path = arm_obj.get('SluggieFilePath') or ''
+    path = SluggiePath.resolve(arm_obj)
     if not path:
         return None, None
     others = [o for o in _sluggies_armatures(context) if o is not arm_obj]
     if TextureSlotsCore.is_low_path(path):
         high = _pick_partner_armature([o for o in others
-                                       if TextureSlotsCore.is_lod_pair(o.get('SluggieFilePath') or '', path)], path)
+                                       if TextureSlotsCore.is_lod_pair(SluggiePath.resolve(o), path)], path)
         return high, arm_obj
     low = _pick_partner_armature([o for o in others
-                                  if TextureSlotsCore.is_lod_pair(path, o.get('SluggieFilePath') or '')], path)
+                                  if TextureSlotsCore.is_lod_pair(path, SluggiePath.resolve(o))], path)
     return arm_obj, low
 
 
@@ -61,7 +62,7 @@ def _pick_partner_armature(matches, path):
         return matches[0] if matches else None
     by_path = {}
     for obj in matches:
-        by_path.setdefault(obj.get('SluggieFilePath') or '', obj)
+        by_path.setdefault(SluggiePath.resolve(obj), obj)
     return by_path.get(ModelCheckCore.pick_partner(list(by_path), path), matches[0])
 
 
@@ -147,7 +148,7 @@ class SLUGGIES_OT_manage_texture_slots(bpy.types.Operator):
             self.hint = ("No low-poly (L_) model of this character is loaded. Import it "
                          "to choose the textures its materials use.")
         else:
-            high_path = high_arm.get('SluggieFilePath') or ''
+            high_path = SluggiePath.resolve(high_arm)
             try:
                 model = FieldCodec.load_sluggie(high_path).get('SluggiesModel', {})
             except (OSError, ValueError) as exc:

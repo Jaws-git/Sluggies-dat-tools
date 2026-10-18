@@ -265,6 +265,67 @@ def overwrite_error(source_model: dict, target_model: Optional[dict], target_nam
     return None
 
 
+OUTPUT_ASSETS = '2_Output_Assets'
+_FIND_DEPTH = 3   # 2_Output_Assets/<character>/<model>.gpl/<file>.sluggie
+
+
+def output_assets_root(path: str) -> Optional[str]:
+    """The ``2_Output_Assets`` folder *path* lies in, or None."""
+    parts = os.path.normpath(os.path.abspath(path)).split(os.sep)
+    for i in range(len(parts) - 1, -1, -1):
+        if os.path.normcase(parts[i]) == os.path.normcase(OUTPUT_ASSETS):
+            return os.sep.join(parts[:i + 1])
+    return None
+
+
+def find_sluggie_file(file_name: str, folders: Iterable[str], accept=None) -> str:
+    """The first existing ``<folder>/.../<file_name>`` for *folders*, in order,
+    or ''. Each folder is tried itself, then its direct subfolders (the
+    ``<character>/<model>.gpl/`` export layout), then the whole
+    ``2_Output_Assets`` tree it lies in. *accept(path)* -> bool rejects a
+    namesake of another model. ``.sluggie`` names carry the model's input
+    offset, so a name hit is normally the file that moved."""
+    if not file_name:
+        return ''
+    seen = set()
+
+    def ok(path):
+        key = os.path.normcase(os.path.abspath(path))
+        if key in seen:
+            return False
+        seen.add(key)
+        return os.path.isfile(path) and (accept is None or accept(path))
+
+    folders = [f for f in folders if f]
+    for folder in [f for f in folders if os.path.isdir(f)]:
+        direct = os.path.join(folder, file_name)
+        if ok(direct):
+            return direct
+        try:
+            subdirs = [e.path for e in os.scandir(folder) if e.is_dir()]
+        except OSError:
+            subdirs = []
+        for sub in subdirs:
+            candidate = os.path.join(sub, file_name)
+            if ok(candidate):
+                return candidate
+    roots = []   # also of a recorded folder that is gone: its tree may still hold the file
+    for folder in folders:
+        root = output_assets_root(folder)
+        if root and os.path.isdir(root) and root not in roots:
+            roots.append(root)
+    for root in roots:
+        base_depth = root.rstrip(os.sep).count(os.sep)
+        for dirpath, dirnames, filenames in os.walk(root):
+            if dirpath.count(os.sep) - base_depth >= _FIND_DEPTH:
+                dirnames[:] = []
+            if file_name in filenames or any(os.path.normcase(n) == os.path.normcase(file_name) for n in filenames):
+                candidate = os.path.join(dirpath, file_name)
+                if ok(candidate):
+                    return candidate
+    return ''
+
+
 def clipboard_text(path: str) -> str:
     """What the exporter copies for the patcher: the bare name, which it
     finds in 2_Output_Assets, or the full path of a file elsewhere."""

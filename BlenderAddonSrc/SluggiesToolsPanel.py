@@ -17,6 +17,7 @@ from .AnmExport import SLUGGIES_OT_export_anm_group, _POSE_BONE_PATH, _action_fc
 from . import HostBones
 from . import ModelCheckCore
 from . import RigidRebuildExport
+from . import SluggiePath
 from . import TemplateSources
 from .ExportSluggies import (
     SLUGGIES_OT_export,
@@ -195,7 +196,7 @@ def _model_chunk_number(arm_obj):
     chunk = arm_obj.get('SluggiesChunkNumber')
     if chunk is not None:
         return int(chunk)
-    path = arm_obj.get('SluggieFilePath')
+    path = SluggiePath.resolve(arm_obj, relink=False)   # draw-time caller
     if not path:
         return None
     if path not in _CHUNK_NUMBER_CACHE:
@@ -334,7 +335,7 @@ def _low_poly_texture_warning(arm_obj):
     """Dialog warning when this model borrows its tex/ folder from a paired
     high-poly export (plan: 'a new PNG must come from the paired high-poly
     model's tex/'), or None when the model owns its own tex/ folder."""
-    sluggie_path = arm_obj.get('SluggieFilePath')
+    sluggie_path = SluggiePath.resolve(arm_obj)
     if not sluggie_path:
         return None
     try:
@@ -870,10 +871,11 @@ class SLUGGIES_OT_reassign_bone(bpy.types.Operator):
                     self.report(
                         {"ERROR"}, f"{obj.name} has no single bone_<id> vertex group to move from")
                     return {"CANCELLED"}
-                sluggie_path = arm_obj.get('SluggieFilePath')
+                sluggie_path = SluggiePath.resolve(arm_obj)
                 bone_hierarchy = _read_bone_hierarchy(sluggie_path) if sluggie_path else None
                 if not bone_hierarchy:
-                    self.report({"ERROR"}, HostBones.RE_IMPORT_MESSAGE)
+                    self.report({"ERROR"}, SluggiePath.missing_message(arm_obj, "Keep offset")
+                                if not sluggie_path else HostBones.RE_IMPORT_MESSAGE)
                     return {"CANCELLED"}
                 bind_matrices = CustomSubmeshExport.bone_absolute_matrices(bone_hierarchy)
                 b_old = bind_matrices.get(current_bone_id)
@@ -932,9 +934,9 @@ def _new_surface_plan(context, arm_obj, obj, template_source):
     ]
     surface_id = TemplateSources.next_new_surface_key(owner, existing_surface_ids)
 
-    sluggie_path = arm_obj.get('SluggieFilePath')
+    sluggie_path = SluggiePath.resolve(arm_obj)
     if not sluggie_path:
-        raise ValueError("Re-import this model to enable Add material")
+        raise ValueError(SluggiePath.missing_message(arm_obj, "Add material"))
     try:
         model = FieldCodec.load_sluggie(sluggie_path).get('SluggiesModel', {})
     except (OSError, ValueError) as exc:
@@ -1483,8 +1485,11 @@ class SLUGGIES_OT_add_submesh(bpy.types.Operator):
         if arm_obj is None:
             self.report({"ERROR"}, _no_target_armature_message(context))
             return {"CANCELLED"}
-        if 'SluggieFilePath' not in arm_obj.keys() or not _bone_metadata_is_current(arm_obj):
+        if not _bone_metadata_is_current(arm_obj):
             self.report({"ERROR"}, HostBones.RE_IMPORT_MESSAGE)
+            return {"CANCELLED"}
+        if not SluggiePath.resolve(arm_obj):
+            self.report({"ERROR"}, SluggiePath.missing_message(arm_obj, "Add New Submesh"))
             return {"CANCELLED"}
         _renumber_added_bones_reporting(self, arm_obj)
 
@@ -1537,9 +1542,9 @@ class SLUGGIES_OT_add_submesh(bpy.types.Operator):
                 self.report({"ERROR"}, f"bone_{bone_id} is no longer free; pick another host bone")
                 return {"CANCELLED"}
 
-            sluggie_path = arm_obj.get('SluggieFilePath')
+            sluggie_path = SluggiePath.resolve(arm_obj)
             if not sluggie_path:
-                self.report({"ERROR"}, "Re-import this model to enable Add New Submesh")
+                self.report({"ERROR"}, SluggiePath.missing_message(arm_obj, "Add New Submesh"))
                 return {"CANCELLED"}
 
             custom_submesh_id = _next_custom_submesh_id(context)
@@ -1963,9 +1968,12 @@ class SLUGGIES_OT_make_submesh(bpy.types.Operator):
         if arm_obj is None:
             self.report({"ERROR"}, "Pick a Sluggies armature")
             return {"CANCELLED"}
-        sluggie_path = arm_obj.get('SluggieFilePath')
-        if not sluggie_path or not _bone_metadata_is_current(arm_obj):
+        if not _bone_metadata_is_current(arm_obj):
             self.report({"ERROR"}, HostBones.RE_IMPORT_MESSAGE)
+            return {"CANCELLED"}
+        sluggie_path = SluggiePath.resolve(arm_obj)
+        if not sluggie_path:
+            self.report({"ERROR"}, SluggiePath.missing_message(arm_obj, "Convert to submesh"))
             return {"CANCELLED"}
         bone_id = _bone_id_from_name(self.host_bone)
         if bone_id is None or self.host_bone not in arm_obj.data.bones:
@@ -2315,6 +2323,8 @@ class SLUGGIES_PT_tools(bpy.types.Panel):
             col.separator()
             col.operator(SLUGGIES_OT_import_anm.bl_idname, text="Import Sluggers .anm", icon='IMPORT')
             col.operator(SLUGGIES_OT_export_anm_group.bl_idname, text="Export Sluggers .anm", icon='EXPORT')
+            col.separator()
+            SluggiePath.draw_locate_button(col, context)
 
         layout.separator()
         box = _collapsible_box(layout, context, 'textures', "Textures")
