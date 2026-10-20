@@ -17,8 +17,8 @@ records where it came from (informational only).
 
 Folders are named as in a regular export (``78277664_mario.gpl``, the High/Low partner and bundled-gear lookups
 ``slot_plan._partner`` / ``gear.find_gear`` pair them by name); the ``.sluggie`` files get the folder's character
-name and number behind the geo stem (``Custom Fire Mario 01`` -> ``78277664_mario_FireMario01.gpl.sluggie``), so
-a bare file name stays unique in ``2_Output_Assets``.
+name and number behind the geo stem (``Custom Fire Mario 01`` -> ``78277664_mario_FireMario01.gpl.sluggie``,
+``.glb`` likewise), so a bare file name stays unique in ``2_Output_Assets``.
 
 Reads the game files only; writes nothing but the new folder.
 """
@@ -99,6 +99,11 @@ def sluggie_name(model_name: str, export_tag: str) -> str:
     folder keeps the regular name: the High/Low partner lookup pairs folders by their geo stem."""
     stem, dot, rest = model_name.partition('.')
     return f'{stem}_{export_tag}{dot}{rest}.sluggie'
+
+
+def glb_name(model_name: str, export_tag: str) -> str:
+    """The ``.glb`` next to a model's ``.sluggie``, named like it: ``78277664_mario_FireMario01.gpl.glb``."""
+    return sluggie_name(model_name, export_tag)[:-len('.sluggie')] + '.glb'
 
 
 def pick_number(character: str, model_names: list[str], taken_names: set[str], exists) -> int:
@@ -322,6 +327,9 @@ def write_export(cid: int, char: dict, entries: list[Entry], portraits: dict, mo
                 if not os.path.isdir(model_folder):
                     raise SlotExportError(f'file {e.file_index}: the export reader wrote no folder for {model.name}')
                 _check_textures(model, model_folder)
+                glb = os.path.join(model_folder, model.name + '.glb')
+                if os.path.isfile(glb):
+                    os.replace(glb, os.path.join(model_folder, glb_name(model.name, export_tag)))
                 export.write_model_document(document(model, e.chunk, e.file_index, e.base, e.data, meta),
                                             os.path.join(model_folder, sluggie_name(model.name, export_tag)))
                 if e.file_index == 0 and high_folder is None:

@@ -45,6 +45,8 @@ class NameTests(unittest.TestCase):
                          '78711424_L_mario_Mario02.gpl.sluggie')
         self.assertEqual(slot_export.sluggie_name('78798592_glove_L.tpl', 'Mario01'),
                          '78798592_glove_L_Mario01.tpl.sluggie')
+        self.assertEqual(slot_export.glb_name('78711424_L_mario.gpl', 'Mario02'),
+                         '78711424_L_mario_Mario02.gpl.glb')
 
     def test_safe_name(self):
         self.assertEqual(slot_export.safe_name('Mr. L: "Green"/?'), 'Mr. L Green')
@@ -170,25 +172,19 @@ class GuiTests(unittest.TestCase):
             self.assertEqual(gui_grid.export_result(root)['folder'], 'X/Custom Mario 01')
         self.assertEqual(os.path.basename(gui_grid.SLOT_EXPORT_REL), slot_export.RESULT_FILE)
 
-    def test_summary_dialog(self):
+    def test_export_toast_and_failed_dialog(self):
         with tempfile.TemporaryDirectory() as root:
             folder = os.path.join(root, 'Custom Mario 01')
-            os.makedirs(os.path.join(folder, 'sub'))
-            for rel, size in (('a.sluggie', 1024 * 1024), (os.path.join('sub', 'b.png'), 512 * 1024)):
-                with open(os.path.join(folder, rel), 'wb') as f:
-                    f.write(bytes(size))
-            self.assertEqual(gui_grid.folder_size(folder), 1536 * 1024)
-            ok = gui_grid.export_summary_dialog(None, 0x4A, 0, {'folder': folder})
-            text = [t for t, _k in ok.lines]
-            self.assertEqual(ok.title, 'Export finished')
-            self.assertFalse(ok.can_apply)
-            self.assertIn('Exported 0x4A (0x4A).', text)
-            self.assertIn(f'Folder: {os.path.normpath(folder)}', text)
-            self.assertIn('Total size: 1.50 MB', text)
-        aborted = gui_grid.export_summary_dialog(None, 0x4A, 1, {'id': '0x4A', 'error': 'dt_na.dat is missing'})
+            os.makedirs(folder)
+            self.assertEqual(gui_grid.export_toast(0, {'folder': folder}),
+                             'Custom Mario 01 has been created in 2_Output_Assets')
+            self.assertIsNone(gui_grid.export_toast(1, {'folder': folder}))
+            self.assertIsNone(gui_grid.export_toast(0, {'folder': os.path.join(root, 'gone')}))
+        self.assertIsNone(gui_grid.export_toast(0, None))
+        aborted = gui_grid.export_failed_dialog(None, 0x4A, {'id': '0x4A', 'error': 'dt_na.dat is missing'})
         self.assertEqual(aborted.title, 'Export aborted')
         self.assertIn('Reason: dt_na.dat is missing', [t for t, _k in aborted.lines])
-        crashed = gui_grid.export_summary_dialog(None, 0x4A, 1, None)
+        crashed = gui_grid.export_failed_dialog(None, 0x4A, None)
         self.assertEqual(crashed.title, 'Export aborted')
 
     def test_failed_export_writes_its_reason(self):

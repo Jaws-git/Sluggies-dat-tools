@@ -1183,27 +1183,17 @@ def export_result(root_dir: str) -> dict | None:
     return result if isinstance(result, dict) else None
 
 
-def folder_size(folder: str) -> int:
-    """The bytes of every file under ``folder``."""
-    total = 0
-    for root, _dirs, files in os.walk(folder):
-        for name in files:
-            try:
-                total += os.path.getsize(os.path.join(root, name))
-            except OSError:
-                pass
-    return total
-
-
-def export_summary_dialog(state: dict | None, cid: int, code: int, result: dict | None) -> 'SlotDialog':
-    """Shown when "Export as .sluggie" ends: the new folder, its character and total size; or why it aborted."""
-    who = f'{name_of(state, cid) if state else hex_id(cid)} ({hex_id(cid)})'
+def export_toast(code: int, result: dict | None) -> str | None:
+    """The note shown when "Export as .sluggie" wrote its folder; None when it did not (``export_failed_dialog``)."""
     folder = (result or {}).get('folder') if code == 0 else None
-    if folder and os.path.isdir(folder):
-        return SlotDialog('Export finished', [
-            (f'Exported {who}.', OK),
-            (f'Folder: {os.path.normpath(folder)}', TEXT),
-            (f'Total size: {_mb(folder_size(folder))}', TEXT)])
+    if not folder or not os.path.isdir(folder):
+        return None
+    return f'{os.path.basename(os.path.normpath(folder))} has been created in 2_Output_Assets'
+
+
+def export_failed_dialog(state: dict | None, cid: int, result: dict | None) -> 'SlotDialog':
+    """Shown when "Export as .sluggie" wrote nothing: why it aborted."""
+    who = f'{name_of(state, cid) if state else hex_id(cid)} ({hex_id(cid)})'
     error = (result or {}).get('error')
     return SlotDialog('Export aborted', [
         (f'{who} was not exported; nothing was written.', ERROR),

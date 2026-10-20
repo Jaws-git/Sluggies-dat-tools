@@ -50,9 +50,10 @@ record). **Patch Game (N)**
 runs the full dry run, shows one summary (``gui_grid.summary_dialog``) and on
 its Patch Game button the chain itself (one roster rebuild at most); on success the list is
 cleared, on a failure it is kept. **Discard pending** / **Discard all** drop
-edits. While a command runs the edit buttons are disabled; the re-read
-afterwards reopens the same slot. Clicks and ``Esc`` do not move the levels
-while the file dialog, a check or a dialog is up.
+edits. While a command runs the edit buttons are disabled and a spinner
+shows over the open level's box; the re-read afterwards reopens the same
+slot. Clicks and ``Esc`` do not move the levels while the file dialog or a
+dialog is up (a running check alone does not hold them).
 
 **Save roster...** writes the game's whole roster into a roster pack
 (``start.py --save-roster``; with pending edits it asks first: they are not
@@ -147,6 +148,8 @@ CONFIRM_W = 680
 PATCH_W = 230                    # the Patch Game button: fits "Patch Game & copy files (NNN)" until text sizes are known
 DIALOG_LINES = 24                # a dialog with more lines scrolls
 BUSY_TEXT = 'A command is running (see the log)...'
+POPUP_SPINNER_RADIUS = 4         # the spinner over a level's box while a command runs
+POPUP_SPINNER_PX = 64            # its size: radius x the font size (16 pt Segoe UI; 60 with Open Sans)
 _NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 _WARN = (255, 210, 90, 255)
 _DIM = (230, 230, 230, 255)
@@ -491,6 +494,7 @@ class CharacterGridTab:
             if dpg.does_item_exist(spinner):
                 dpg.configure_item(spinner, show=busy)
                 dpg.set_value(status, self.work or self.loader.message)
+        self._show_popup_spinner()
         state = self.loader.state
         level = gui_grid.player_heap_level(state)
         if gui_grid.player_heap_is_big(level):
@@ -754,8 +758,13 @@ class CharacterGridTab:
         self.nav.open_slot(cid)
         self._draw_popups()
 
+    def _levels_held(self):
+        """A file dialog or a dialog is up: clicks and Esc leave the levels alone. A running check alone does not
+        hold them (its dialog opens over whatever level is shown when it is done)."""
+        return self.action is not None and (self.confirm is not None or self.work is None)
+
     def _on_mouse_click(self, _sender, _app_data):
-        if not self.popups or self.action is not None:
+        if not self.popups or self._levels_held():
             return
         if dpg.is_item_shown('grid_context') and _inside('grid_context', dpg.get_mouse_pos(local=False)):
             return                            # a click on the right-click menu: the level stays
@@ -767,7 +776,7 @@ class CharacterGridTab:
         if self.confirm is not None:
             self._end_action()
             return
-        if self.action is not None:
+        if self._levels_held():
             return
         if self.nav.back():
             self._draw_popups()
@@ -807,8 +816,28 @@ class CharacterGridTab:
             box = self._square_box() if level == gui_grid.SQUARE else self._slot_box()
             dpg.focus_item(box)
             self.popups.append((dim, box))
+        self._popup_spinner()
         if self.confirm is not None and dpg.does_item_exist(self.confirm):
             dpg.focus_item(self.confirm)
+
+    def _popup_spinner(self):
+        """A spinner centred on the top level's box, shown while a command runs (``_popup_busy``). Added last, so
+        it draws over the box's (disabled) buttons; it goes with the box when the levels are redrawn."""
+        box = self.popups[-1][1]
+        cfg = dpg.get_item_configuration(box)
+        dpg.add_loading_indicator(tag='grid_popup_spinner', parent=box, style=1, radius=POPUP_SPINNER_RADIUS,
+                                  show=self._popup_busy(), color=(90, 200, 120, 255),
+                                  secondary_color=(60, 120, 80, 255),
+                                  pos=(max(0, (cfg['width'] - POPUP_SPINNER_PX) // 2),
+                                       max(0, (cfg['height'] - POPUP_SPINNER_PX) // 2)))
+
+    def _popup_busy(self):
+        """A command runs: the tab's own (check, export, Patch Game), another tab's, or the re-read after one."""
+        return self.app.busy or self.work is not None or self.loader.status == self.loader.RUNNING
+
+    def _show_popup_spinner(self):
+        if dpg.does_item_exist('grid_popup_spinner'):
+            dpg.configure_item('grid_popup_spinner', show=self._popup_busy())
 
     def _box(self, width, height):
         """A level's window, centred. Taller than the viewport: the GUI window grows down to fit (not when
@@ -1075,6 +1104,7 @@ class CharacterGridTab:
                 dpg.configure_item(button, enabled=usable and not locked)
         if dpg.does_item_exist('grid_slot_busy'):
             dpg.set_value('grid_slot_busy', BUSY_TEXT if busy else '')
+        self._show_popup_spinner()
         if dpg.does_item_exist('grid_patch_game'):
             count = len(self.pending)
             # one width for both labels (the longer one's), so the row does not shift when Deploy is ticked
@@ -1625,12 +1655,14 @@ class CharacterGridTab:
 
         def done(code, _output):
             result = gui_grid.export_result(self.app.root_dir)
-            folder = (result or {}).get('folder') if code == 0 else None
-            if folder is None:
+            toast = gui_grid.export_toast(code, result)
+            if toast is None:
                 self.app.log_line(f'[character grid] {who} was not exported: see the log above.', _WARN)
-            else:
-                self.app.log_line(f'[character grid] {who} exported to {folder}', _OK)
-            self._dialog(gui_grid.export_summary_dialog(self.loader.state, cid, code, result), self._end_action)
+                self._dialog(gui_grid.export_failed_dialog(self.loader.state, cid, result), self._end_action)
+                return
+            self.app.log_line(f'[character grid] {who} exported to {result["folder"]}', _OK)
+            self._end_action()
+            self.app.show_toast(toast, _OK)
         self._run([gui_grid.export_command(cid)], f'Exporting {who}...', done)
 
     def forget_copy(self):
