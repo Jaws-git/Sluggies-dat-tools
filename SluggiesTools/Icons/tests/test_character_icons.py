@@ -68,9 +68,20 @@ class CharacterIconCellTests(unittest.TestCase):
         bank = make_icon_bank({0x00: 0}, {0x00: 1}, ((0x00, wide), (0x7F, MARIO_UV)))
         cells, problems = export_icons._character_icon_cells(bank, PAGE_SIZES)
         self.assertEqual(cells, {})
-        self.assertEqual(len(problems), 2)
+        self.assertEqual(len(problems), 3)                 # the alternate side table shares the wide row
         self.assertIn('52x51', problems[0])
         self.assertIn('page 0x7F', problems[1])
+        self.assertIn('side_alt', problems[2])
+
+    def test_alternate_side_view_only_when_a_cell_of_its_own(self):
+        # element 0: Mario's points at his side cell (mirrored at runtime), Luigi's at his own left-facing cell
+        tables = [make_source_table({0x00: 0, 0x01: 3}), make_source_table({0x00: 0, 0x01: 1}),
+                  make_source_table({0x00: 2, 0x01: 2})]
+        bank = make_bank(tables, ((0x00, MARIO_UV), (0x02, LUIGI_UV), (0x4F, MARIO_UV), (0x02, MARIO_UV)))
+        cells, problems = export_icons._character_icon_cells(bank, PAGE_SIZES)
+        self.assertEqual(problems, [])
+        self.assertEqual(set(cells[0x00]), {'side', 'front'})
+        self.assertEqual(cells[0x01][export_icons.ALT_VIEW], (0x02, (1, 1, 48, 51)))
 
 
 class PageDecodeTests(unittest.TestCase):
@@ -133,6 +144,19 @@ class ExportCharacterIconTests(unittest.TestCase):
                     self.assertEqual((image.mode, image.size), ('RGBA', (48, 51)))
                     self.assertEqual(image.getpixel((0, 0)), (255, 0, 0, 255))
             self.assertEqual(skipped['no model export'][0], 19)
+
+    def test_alternate_side_png_comes_and_goes(self):
+        with tempfile.TemporaryDirectory() as root:
+            hp = make_model_folder(root, '19 Luigi', '1_luigi.gpl')
+            views = {'side': (0x00, (1, 1, 48, 51)), 'front': (0x4F, (1, 1, 48, 51))}
+            rows, _ = export_icons._export_character_icons(
+                root, {0x01: dict(views, side_alt=(0x00, (1, 1, 48, 51)))}, self.pages)
+            self.assertEqual([r['view'] for r in rows], ['front', 'side', 'side_alt'])
+            self.assertTrue(os.path.isfile(os.path.join(hp, 'icon', 'SideIconAlt.png')))
+            rows, _ = export_icons._export_character_icons(root, {0x01: views}, self.pages)
+            self.assertEqual(len(rows), 2)
+            self.assertFalse(os.path.exists(os.path.join(hp, 'icon', 'SideIconAlt.png')))
+            self.assertTrue(os.path.isfile(os.path.join(hp, 'icon', 'SideIcon.png')))
 
     def test_removes_icons_when_the_key_is_gone(self):
         with tempfile.TemporaryDirectory() as root:

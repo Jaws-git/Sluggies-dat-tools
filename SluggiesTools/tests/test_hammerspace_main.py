@@ -2040,6 +2040,46 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
         )
         build_tex.assert_called_once_with(self.parsed, plan)
 
+    def test_tex_build_refills_texture_replacements(self):
+        """A TextureReplacements slot is encoded from its PNG without
+        Reimport textures; the other donor textures are cloned."""
+        self.data['SluggiesModel'].update({
+            'UseHammerspace': True,
+            'TextureDescriptors': [
+                {'TextureIndex': 0, 'TextureFileName': '0.png'},
+                {'TextureIndex': 1, 'TextureFileName': '1.png'},
+            ],
+            'TextureReplacements': [{'TextureIndex': 1, 'TextureFileName': 'new.png'}],
+        })
+        plan = mock.Mock(skipped=())
+        with (
+            mock.patch.object(
+                texture_helper, 'build_hammerspace_texture_plan', return_value=plan,
+            ) as build_plan,
+            mock.patch.object(main, 'BuildTEX', return_value=b'BUILT_TEX') as build_tex,
+        ):
+            self._run(main.SectionModes(tex='build'), sluggie_path='model.sluggies')
+
+        self.assertEqual(build_plan.call_args.kwargs['png_overrides'], {
+            1: texture_helper.resolve_texture_path('model.sluggies', 'new.png'),
+        })
+        self.assertFalse(build_plan.call_args.kwargs['reimport_donor_textures'])
+        build_tex.assert_called_once_with(self.parsed, plan)
+
+    def test_texture_replacements_refuse_bad_slots(self):
+        descriptors = [
+            {'TextureIndex': 0, 'TextureFileName': '0.png'},
+            {'TextureIndex': 1, 'TextureFileName': '1.png', 'AdditionalMipCount': 2},
+        ]
+        for entries, message in (
+            ([{'TextureIndex': 2, 'TextureFileName': 'n.png'}], 'not a donor texture'),
+            ([{'TextureIndex': 1, 'TextureFileName': 'n.png'}], 'mipmapped'),
+            ([{'TextureIndex': 0, 'TextureFileName': 'n.png'}] * 2, 'replaced twice'),
+        ):
+            model = {'TextureDescriptors': descriptors, 'TextureReplacements': entries}
+            with self.assertRaisesRegex(ValueError, message):
+                main._texture_replacement_overrides(model, 'model.sluggies')
+
     def test_tex_build_appends_additions_without_reimporting_donor_textures(self):
         """New PNGs need no Reimport textures; the donor textures are then
         cloned (left out of the plan)."""

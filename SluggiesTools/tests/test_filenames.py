@@ -31,8 +31,9 @@ that is NOT inside a leftover ``_ICONS`` folder (the removed icon sheet export)
 and NOT in the scratch space (``tex_temp``). (Indexed textures carry their palette hash inside
 the same ``tex*.png`` filename, so they are model textures and are included.)
 The per-character ``icon/FrontIcon.png`` and ``icon/SideIcon.png`` in each HP
-model folder are always exported, so they are pinned too; their fixed names
-are exempt from the Dolphin naming check.
+model folder are always exported, so they are pinned too (``SideIconAlt.png``
+as well, for the eight characters with an alternate side portrait); their
+fixed names are exempt from the Dolphin naming check.
 
 Regenerating the baseline
 -------------------------
@@ -76,11 +77,11 @@ TEX_PNG_RE = re.compile(
 
 # Per-character icons written by ``export_icons.py`` into each HP model
 # folder's ``icon/`` subfolder. Fixed names, not Dolphin-hashed.
-ICON_PNG_NAMES = frozenset({"FrontIcon.png", "SideIcon.png"})
+ICON_PNG_NAMES = frozenset({"FrontIcon.png", "SideIcon.png", "SideIconAlt.png"})
 
 
 def is_character_icon(rel: str) -> bool:
-    """True for ``<model>/icon/FrontIcon.png`` / ``SideIcon.png``."""
+    """True for ``<model>/icon/FrontIcon.png`` / ``SideIcon.png`` / ``SideIconAlt.png``."""
     parts = rel.split("/")
     return len(parts) >= 2 and parts[-2] == "icon" and parts[-1] in ICON_PNG_NAMES
 
@@ -5503,6 +5504,7 @@ EXPECTED_MODEL_TEXTURES = [
     "18 Mario/78825472/78825504_glove_R.tpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
     "19 Luigi/82188352_luigi.gpl/icon/FrontIcon.png",
     "19 Luigi/82188352_luigi.gpl/icon/SideIcon.png",
+    "19 Luigi/82188352_luigi.gpl/icon/SideIconAlt.png",
     "19 Luigi/82188352_luigi.gpl/tex/tex1_1024x128_f99e15ebaabe945a_14.png",
     "19 Luigi/82188352_luigi.gpl/tex/tex1_256x128_0b2abb3009c9b611_14.png",
     "19 Luigi/82188352_luigi.gpl/tex/tex1_256x256_a2619ead7b00c3bf_14.png",
@@ -5604,6 +5606,7 @@ EXPECTED_MODEL_TEXTURES = [
     "25 Baby Mario/107923552/107923584_glove_R.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
     "26 Baby Luigi/110621536_baby_luigi.gpl/icon/FrontIcon.png",
     "26 Baby Luigi/110621536_baby_luigi.gpl/icon/SideIcon.png",
+    "26 Baby Luigi/110621536_baby_luigi.gpl/icon/SideIconAlt.png",
     "26 Baby Luigi/110621536_baby_luigi.gpl/tex/tex1_256x128_18ccd34b0950f0cb_14.png",
     "26 Baby Luigi/110621536_baby_luigi.gpl/tex/tex1_512x256_0c9bf78f424a24d2_14.png",
     "26 Baby Luigi/110621536_baby_luigi.gpl/tex/tex1_512x512_3da7ff4e0c98adb2_14.png",
@@ -5649,6 +5652,7 @@ EXPECTED_MODEL_TEXTURES = [
     "28 Wario/118719584/118719616_chall_g.gpl/tex/tex1_64x64_8a05f75d65053b44_14.png",
     "29 Waluigi/123475520_waluigi.gpl/icon/FrontIcon.png",
     "29 Waluigi/123475520_waluigi.gpl/icon/SideIcon.png",
+    "29 Waluigi/123475520_waluigi.gpl/icon/SideIconAlt.png",
     "29 Waluigi/123475520_waluigi.gpl/tex/tex1_1024x128_2dea43f386b17ea6_14.png",
     "29 Waluigi/123475520_waluigi.gpl/tex/tex1_256x128_3de451c2184e1ca4_14.png",
     "29 Waluigi/123475520_waluigi.gpl/tex/tex1_512x512_971d7f722f9c1033_14.png",
@@ -6024,6 +6028,7 @@ EXPECTED_MODEL_TEXTURES = [
     "56 Petey Piranha/215977888/215977920_glove_R.tpl/tex/tex1_256x128_bad847c5de37e3d7_14.png",
     "57 Dixie Kong/221064800_dixie_kong.gpl/icon/FrontIcon.png",
     "57 Dixie Kong/221064800_dixie_kong.gpl/icon/SideIcon.png",
+    "57 Dixie Kong/221064800_dixie_kong.gpl/icon/SideIconAlt.png",
     "57 Dixie Kong/221064800_dixie_kong.gpl/tex/tex1_1024x128_158c02aa1fc1dd09_14.png",
     "57 Dixie Kong/221064800_dixie_kong.gpl/tex/tex1_128x128_c206cadb80815595_5.png",
     "57 Dixie Kong/221064800_dixie_kong.gpl/tex/tex1_256x128_631cc621df27a71f_14.png",
@@ -6801,6 +6806,7 @@ EXPECTED_MODEL_TEXTURES = [
     "8 Bowser Castle/14677280_sta02c.gpl/tex/tex1_8x8_41e1bc4951ea8378_14.png",
     "80 King K Rool/288419712_king_k_rool.gpl/icon/FrontIcon.png",
     "80 King K Rool/288419712_king_k_rool.gpl/icon/SideIcon.png",
+    "80 King K Rool/288419712_king_k_rool.gpl/icon/SideIconAlt.png",
     "80 King K Rool/288419712_king_k_rool.gpl/tex/tex1_256x128_dd93d19f06f372e5_14.png",
     "80 King K Rool/288419712_king_k_rool.gpl/tex/tex1_256x256_e7c75bf130c1c975_14.png",
     "80 King K Rool/288419712_king_k_rool.gpl/tex/tex1_512x128_f3430af9efb0c349_14.png",
@@ -6817,6 +6823,7 @@ EXPECTED_MODEL_TEXTURES = [
     "80 King K Rool/289011776/289011808_glove_R.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
     "81 Baby Peach/292322944_baby_peach.gpl/icon/FrontIcon.png",
     "81 Baby Peach/292322944_baby_peach.gpl/icon/SideIcon.png",
+    "81 Baby Peach/292322944_baby_peach.gpl/icon/SideIconAlt.png",
     "81 Baby Peach/292322944_baby_peach.gpl/tex/tex1_1024x128_086950571866d5ae_14.png",
     "81 Baby Peach/292322944_baby_peach.gpl/tex/tex1_256x128_aed2aaed87932cc5_14.png",
     "81 Baby Peach/292322944_baby_peach.gpl/tex/tex1_512x128_2f422efb9c0ab09b_14.png",
@@ -6830,6 +6837,7 @@ EXPECTED_MODEL_TEXTURES = [
     "81 Baby Peach/292902336/292902368_glove_R.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
     "82 Baby Daisy/296433664_baby_daisy.gpl/icon/FrontIcon.png",
     "82 Baby Daisy/296433664_baby_daisy.gpl/icon/SideIcon.png",
+    "82 Baby Daisy/296433664_baby_daisy.gpl/icon/SideIconAlt.png",
     "82 Baby Daisy/296433664_baby_daisy.gpl/tex/tex1_1024x256_d95b6d776c779456_14.png",
     "82 Baby Daisy/296433664_baby_daisy.gpl/tex/tex1_256x128_db3583451ef1d82f_14.png",
     "82 Baby Daisy/296433664_baby_daisy.gpl/tex/tex1_512x512_c85bf0fa710e1eb0_14.png",
@@ -6842,6 +6850,7 @@ EXPECTED_MODEL_TEXTURES = [
     "82 Baby Daisy/297046336/297046368_glove_R.gpl/tex/tex1_64x64_d6da4880cee95b7b_14.png",
     "83 Baby DK/299506912_baby_donkey.gpl/icon/FrontIcon.png",
     "83 Baby DK/299506912_baby_donkey.gpl/icon/SideIcon.png",
+    "83 Baby DK/299506912_baby_donkey.gpl/icon/SideIconAlt.png",
     "83 Baby DK/299506912_baby_donkey.gpl/tex/tex1_1024x128_4e5953ebeb745390_14.png",
     "83 Baby DK/299506912_baby_donkey.gpl/tex/tex1_128x128_831f0b674dfc986e_7230bba26ca65890_9.png",
     "83 Baby DK/299506912_baby_donkey.gpl/tex/tex1_256x128_62e421780c2bec9c_14.png",

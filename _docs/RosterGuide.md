@@ -234,11 +234,13 @@ the grid.
 ## Portraits
 
 Either portrait of a slot (front: the draft grid; side: the colour wheel and
-the batting order) can take any image:
+the batting order), and the alternate side portrait (`side_alt`: the side
+view facing the other way), can take any image:
 
 ```
 python start.py --set-icon 0x0D front my_toad.png
 python start.py --set-icon 0xE1 side art.jpg --fit cover --no-trim
+python start.py --set-icon 0xE1 side_alt art_left.png
 ```
 
 - **Formats:** PNG, JPEG, BMP, GIF, TGA and WEBP, up to 4096x4096. The
@@ -254,15 +256,27 @@ python start.py --set-icon 0xE1 side art.jpg --fit cover --no-trim
 - **Transparency** is on/off only: alpha 128 and up is opaque, the rest
   fully transparent. Soft edges and half-transparent shadows are rounded
   (warned when much of the art has them).
-- **The other portrait** stays as the slot shows it now. A slot without
+- **The other portraits** stay as the slot shows them now. A slot without
   portraits of its own (a new ID showing its template's, a stock character's
   stock art) keeps that picture as its own from then on; stock art is
   re-encoded once, which can shift colours slightly.
+- **The alternate side portrait** is optional. The game shows the side
+  portrait facing both ways; without an alternate one it mirrors the side
+  portrait, which is what most stock characters do. Eight stock characters
+  whose art is asymmetric (Luigi's "L", Baby Luigi, Waluigi, Dixie Kong,
+  King K. Rool, Baby Peach, Baby Daisy, Baby DK) carry a second drawing
+  instead. Setting one for a slot stops the mirroring: both side portraits
+  are drawn as given. A slot keeps its alternate portrait through other
+  portrait edits; one that had none keeps mirroring. The slot summary shows
+  "Has alternate side icon" where there is one.
 
-Putting a model into a slot replaces both portraits with the model's
-exported ones, so a portrait change staged before it is dropped; one staged
-after it wins. Clearing a slot resets both portraits. Miis (`0x4D`–`0x65`)
-show the Mii icon and cannot take portraits.
+Putting a model into a slot replaces the portraits with the model's exported
+ones (its `SideIconAlt.png` too, when it has one), so a portrait change
+staged before it is dropped; one staged after it wins. Clearing a slot resets
+the portraits, which also drops an alternate side portrait from a character
+that had none (a stock character gets its stock art back, one of the eight
+above included). Miis (`0x4D`–`0x65`) show the Mii icon and cannot take
+portraits.
 
 ## Bats and gloves
 
@@ -337,6 +351,57 @@ Pending edits of the copied character are not copied: patch them first.
 - Miis keep their name, stats and the Mii icon; they cannot be pasted onto
   a new ID.
 
+## Importing a character file (`.slgmodel`)
+
+The Sluggers Characters patcher shares its custom characters as
+`<name>.slgmodel` files: the finished High and Low model built on a stock
+player (the "base", e.g. Daisy for Rosalina), the two portraits and the
+character's own voice clips, plus a glTF copy of the model for Blender. Such a
+file goes into a slot like a High + Low `.sluggie` pair whose blocks are
+already built: nothing is rebuilt, the blocks are checked against the slot's
+skeleton and written as they are.
+
+In the **Character grid** tab, open a slot and press **Import .slgmodel...**,
+or drop the file onto the window while the slot is open.
+The usual dialog shows what the file holds (name, base, author, what it
+leaves out) and what changes; **Stage** adds it to the pending edits.
+
+```
+python start.py --import-slgmodel rosalina.slgmodel --dry-run
+python start.py --import-slgmodel rosalina.slgmodel --target-id 0x66
+python start.py --patch-slot 0x05 rosalina.slgmodel
+```
+
+Without `--target-id` the first open new ID (an "Empty slot" at its baseline)
+is the target.
+
+- **A new ID** takes the whole character: an own model directory copied
+  from the base, the file's name (kept when it does not fit the name plate)
+  and portraits (the base's stock art for a missing view), the base's stats
+  on a new square (a stock square keeps its stats) and the square's voice
+  when none is set yet. The file's voice clips become a voice pack
+  `_gui/Sound_Packs/<name>` on the base's voice and the slot's own voice
+  (**Voices** tab); that needs the game's `files/sound_NA/MY2.brsar` in
+  `1_Input/sound_NA`, otherwise the clips are left out with a warning and
+  the slot speaks with its square's voice. A file without clips gives the
+  slot the base's voice when its square speaks with another family's.
+- **A stock slot** takes the models only (its name, stats, voice and
+  portraits stay), and only the base's own slot or one with the same
+  skeleton (as for a paste).
+- **Not in the file**, so the base's apply: the size (the stat editor's
+  `sizescale` field changes it), the colour swatch, stat values, chemistry,
+  the bat, items, abilities and animations. The dialog lists what the
+  author left out.
+- A file without a Low model uses its High model as the Low model too
+  (counted twice in the player memory check). A file whose `model.glb` was
+  edited in Blender after it was exported is refused (its game model is out
+  of date; export it again with the patcher). The deltas inside the file
+  rebuild the blocks from `1_Input/main.dol`, `dt_na.dat` and
+  `sound_NA/MY2.brsar`, which must be the clean game: a modded copy is
+  refused.
+- An import drops the slot's earlier pending edits; a later rename,
+  portrait or voice edit of the same slot goes on top.
+
 ## Exporting a slot as `.sluggie` files
 
 Right-click a character in the **Character grid** tab and choose **Export
@@ -374,8 +439,9 @@ Several changes can go in one run with an edits file, a JSON list of
 `equip_clear` edits (a `copy`
 edit's `source` is the character to clone; a `rename`
 edit's `text` may be blank; a `voice` or `stats` edit's `source` may be
-`null` for the default; an `icon` edit has `view`, `file` and optionally
-`fit` and `trim`; an `equip` edit has `sluggie` and optionally `file`, 2-5;
+`null` for the default; an `icon` edit has `view` (`front`, `side` or
+`side_alt`), `file` and optionally `fit` and `trim`; an `equip` edit has
+`sluggie` and optionally `file`, 2-5;
 an `equip_clear` edit has `file`):
 
 ```
@@ -407,10 +473,12 @@ character's voice or a voice pack from the Voices tab, whatever its square
 speaks with; the slot view shows the voice in force, "(square)" or "(own)").
 The square view has **Set voice (all)...** for the whole square (a one-member
 square shows it on the slot view too). Clicking the slot view's front
-or side portrait picks an image for it: a dialog shows your image, the 48x51
-result beside the other portrait, the fit choices (**Fit inside**, **Fill
-and crop**, **Exact 48x51**) and **Trim transparent border**, with warnings
-and refusals. The rename dialog tells you
+or side portrait picks an image for it, and **[Set Side Alt Icon]** beside
+the Side label picks the alternate side portrait (the side view facing the
+other way; its tooltip shows the one the slot has): a dialog shows your
+image, the 48x51 result beside the other portrait, the fit choices (**Fit
+inside**, **Fill and crop**, **Exact 48x51**) and **Trim transparent
+border**, with warnings and refusals. The rename dialog tells you
 live whether the name fits the plate; **Stats...** and **Voice...** show the
 current assignment and a list to pick from. A dialog shows what
 will change (models and their sizes, directory, stats, voice, name,

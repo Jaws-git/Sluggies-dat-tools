@@ -8,13 +8,16 @@ scene and hands plain lists here.
 The skinned donor submesh (CompCount 6, the body) takes the rebuild path
 when its topology changed, when it carries an Object Mode transform, when
 any vertex's set of skinning bones changed (vertex groups added, removed
-or reassigned), or when faces moved in a way the slot-preserving paths
+or reassigned), when faces moved in a way the slot-preserving paths
 cannot store (a partial move, a move between surfaces with different
-shaders, or an Add-material surface). Otherwise the in-place fields
+shaders, or an Add-material surface), or when its positions no longer fit
+the donor's position format. Otherwise the in-place fields
 apply (position, UV, colour and weight-value edits on the donor's own
 vertices and bones).
 
-What the entry carries, in the donor's own formats: one interleaved
+What the entry carries, in the donor's own formats (positions that outgrew
+the donor's s16 range step to a coarser shift, ``VertexBufferQuantizeInfo``;
+the patcher moves the SKN and normal headers with it): one interleaved
 position + normal record per vertex in armature (model) space, triangles,
 per-loop colours and UVs, the face -> surface routing, and ``(vertex, bone,
 weight)`` influences, plus ``FacialPoses``: the body's
@@ -41,6 +44,7 @@ except ImportError:  # imported flat by the unit tests
 REASON_TOPOLOGY = rre.REASON_TOPOLOGY
 REASON_TRANSFORM = rre.REASON_TRANSFORM
 REASON_SURFACES = rre.REASON_SURFACES
+REASON_POSITION_RANGE = rre.REASON_POSITION_RANGE
 REASON_WEIGHTS = 'skin_weights'      # a vertex's set of skinning bones changed
 
 SKINNED_COMP_COUNT = 6
@@ -130,6 +134,7 @@ def donor_position_format_error(donor: DonorSkinnedSubmesh, object_name: str) ->
 
 def decide_reasons(
     *, topology_changed: bool, moved: bool, surfaces_changed: bool, weights_changed: bool = False,
+    out_of_range: bool = False,
 ) -> List[str]:
     reasons = []
     if topology_changed:
@@ -140,6 +145,8 @@ def decide_reasons(
         reasons.append(REASON_SURFACES)
     if weights_changed:
         reasons.append(REASON_WEIGHTS)
+    if out_of_range:
+        reasons.append(REASON_POSITION_RANGE)
     return reasons
 
 
@@ -286,8 +293,8 @@ def vertex_normals(geometry: 'cse.BoneLocalGeometry', loop_normals, vertex_count
 
 
 def position_range_error(object_name: str, geometry: 'cse.BoneLocalGeometry', quantize_info: int) -> Optional[str]:
-    """The donor's int16 position format bounds the body (about +/-16 units
-    for format 59); the error names the vertex that overshoots most."""
+    """An int16 position format bounds the body (about +/-16 units for
+    format 59); the error names the vertex that overshoots most."""
     divisor = cse.int16_divisor(quantize_info)
     low, high = cse.int16_range(quantize_info)
     worst = None
@@ -305,10 +312,21 @@ def position_range_error(object_name: str, geometry: 'cse.BoneLocalGeometry', qu
     position = geometry.positions[worst[1]]
     return (
         f'{object_name}: vertex {geometry.source_vertices[worst[1]]} is at '
-        f'({position[0]:.4f}, {position[1]:.4f}, {position[2]:.4f}) in armature space; the donor '
-        f'stores body positions in format {quantize_info}, so every axis must stay within '
+        f'({position[0]:.4f}, {position[1]:.4f}, {position[2]:.4f}) in armature space; even '
+        f'position format {quantize_info}, the widest available, keeps every axis within '
         f'{low:g}..{high:g}. Scale the body down or move it closer to the armature origin.'
     )
+
+
+def select_body_position_format(object_name: str, geometry: 'cse.BoneLocalGeometry', donor_quantize: int) -> int:
+    """The most precise s16 format, from the donor's own down to 48, that
+    holds every body position (the interleaved normals fit any of them).
+    Raises ValueError naming the worst vertex when none does."""
+    candidates = cse.donor_position_candidates(donor_quantize)
+    for quantize_info in candidates:
+        if cse.position_format_fits(geometry, quantize_info):
+            return quantize_info
+    raise ValueError(position_range_error(object_name, geometry, candidates[-1]))
 
 
 def encode_vertex_records(object_name: str, geometry: 'cse.BoneLocalGeometry', normals, quantize_info: int) -> bytes:
@@ -352,16 +370,19 @@ def build_skinned_rebuild_entry(
     ``{bone: weight}`` on skinned bones only (see :func:`remap_influences`)."""
     warnings = warnings if warnings is not None else []
     infos = infos if infos is not None else []
-    range_error = position_range_error(object_name, geometry, donor.position_quantize)
-    if range_error:
-        raise ValueError(range_error)
+    position_quantize = select_body_position_format(object_name, geometry, donor.position_quantize)
+    widened = cse.widened_position_info(object_name, donor.position_quantize, position_quantize)
+    if widened:
+        infos.append(widened)
     faces_data, faces_count = cse.encode_faces(object_name, geometry.faces)
     if len(routing.indices) != faces_count:
         raise ValueError(f'{object_name}: {len(routing.indices)} surface indices for {faces_count} faces')
     entry = {
-        'VertexBufferData': cse.encode_field(encode_vertex_records(object_name, geometry, normals, donor.position_quantize), use_compression),
+        'VertexBufferData': cse.encode_field(encode_vertex_records(object_name, geometry, normals, position_quantize), use_compression),
         'Influences': encode_influences(vertex_weights, geometry.source_vertices, use_compression),
     }
+    if widened:
+        entry['VertexBufferQuantizeInfo'] = position_quantize
     if donor.color_format:
         entry.update(rre.encode_color_channel(object_name, donor.color_format, geometry, loop_colors, use_compression, infos))
     entry['UVChannels'] = rre.encode_uv_channels(
@@ -400,7 +421,8 @@ def encode_facial_poses(
     """``FacialPoses``: per facial object, the exported vertices whose
     shape keys move them (position or normal, after quantization) and one
     delta record array per pose after pose zero, ``x y z nx ny nz`` int16 in
-    the donor's position format. Deltas are the shape key's displacement
+    the body's position format (*quantize_info*: the entry's own
+    ``VertexBufferQuantizeInfo`` when it has one, else the donor's). Deltas are the shape key's displacement
     from the Basis key, taken into armature space like the positions; a
     missing key leaves its pose at the rest shape. An object that moves no
     vertex keeps one zero entry so the section stays well-formed."""

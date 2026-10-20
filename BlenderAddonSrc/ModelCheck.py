@@ -704,14 +704,14 @@ def _image_findings(scope, obj, mat, image, new, tex_dir, reserved):
                       + (" It is packed into the .blend; the fix writes it into tex/." if packed else ""),
                       "image_to_tex" if packed and tex_dir else None, fix_tex if packed else {})
         return
-    if tex_dir and not new and not _same_dir(os.path.dirname(path), tex_dir) \
+    if tex_dir and not new and not scope.for_export and not _same_dir(os.path.dirname(path), tex_dir) \
             and not _same_file_bytes(path, os.path.join(tex_dir, os.path.basename(path))):
-        # The export reads tex/<name>: a PNG elsewhere is only lost when
-        # tex/ lacks it or holds other bytes.
-        yield Finding("outside_tex", ERROR, obj.name, "PNG outside tex/",
-                      f"Texture PNG for material '{mat.name}' must exist in the resolved tex folder: "
-                      f"{os.path.join(tex_dir, os.path.basename(path))}. The fix copies {path} there "
-                      "(a free name if taken) and points the image at the copy.",
+        # The patcher reads tex/<name>; the export copies a PNG from
+        # elsewhere in (a free name if taken), so this only tells.
+        yield Finding("outside_tex", WARNING, obj.name, "PNG outside tex/",
+                      f"Texture PNG for material '{mat.name}' is not in the resolved tex folder: "
+                      f"{os.path.join(tex_dir, os.path.basename(path))}. The export copies it there; "
+                      f"the fix copies {path} now (a free name if taken) and points the image at the copy.",
                       "copy_to_tex", {**fix_tex, "reserved": reserved})
     size = ExportMode.png_dimensions(path)
     if size and max(size) > core.GX_MAX_TEXTURE_DIMENSION and not scope.for_export:

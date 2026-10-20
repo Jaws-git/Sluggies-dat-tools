@@ -354,7 +354,7 @@ def read_pack(path: str) -> Pack:
                     raise PackError(f'the {role} block of {key} does not match its fingerprint: the pack is damaged')
                 blocks[(cid, role)] = data
     for entry in _icon_entries(config):
-        for view in ('side', 'front'):
+        for view in icons.VIEWS:
             name = entry['icon'].get(view)
             if isinstance(name, str) and name not in icons_:
                 raise PackError(f'{entry.get("id")}: portrait {name} is missing from the pack')
@@ -438,7 +438,7 @@ def _normal(config: dict, portrait_key) -> dict:
     configs whose portraits are stored under different names."""
     out = copy.deepcopy(config)
     for entry in _icon_entries(out):
-        for view in ('side', 'front'):
+        for view in icons.VIEWS:
             if isinstance(entry['icon'].get(view), str):
                 entry['icon'][view] = portrait_key(entry['icon'][view])
     return out

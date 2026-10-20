@@ -189,6 +189,37 @@ class RosterResolveTests(Fixture):
         cids = [*range(ids.STOCK_IDS), 0x66, 0x67]
         self.assertEqual(set(self.resolve(*cids)), set(cids))
 
+    def test_alternate_side_view_without_a_cell_of_its_own(self):
+        r = self.resolve(0x00, 0x48, 0x66)
+        alt = state_icons.ALT_VIEW
+        self.assertEqual((r[0x00][alt]['source'], r[0x00][alt]['row']), ('own', r[0x00]['side']['row']))
+        self.assertEqual((r[0x48][alt]['source'], r[0x48][alt]['key']), ('neighbour', 0x46))   # no normal_a key
+        self.assertEqual((r[0x66][alt]['source'], r[0x66][alt]['page']), ('own', icons.FRONT_PAGE))
+        for cid in (0x00, 0x48, 0x66):
+            self.assertFalse(r[cid][alt]['distinct'])
+            self.assertFalse(state_icons.has_alternate(r[cid]))
+
+
+class AlternateSideTests(Fixture):
+    CONFIG = {'ids': [{'id': '0x66', 'template': '0x00', 'icon': {'side': 'a.png', 'front': 'b.png',
+                                                                   'side_alt': 'c.png'}}],
+              'wheels': [{'id': '0x48', 'icon': {'side': 'a.png', 'front': 'b.png', 'side_alt': 'c.png'}}]}
+
+    def setUp(self):
+        super().setUp()
+        Image.new('RGBA', (48, 51), 'blue').save(os.path.join(self.tmp, 'c.png'))
+        self.build()
+
+    def test_resolves_as_a_distinct_cell(self):
+        r = self.resolve(0x48, 0x66)
+        for cid in (0x48, 0x66):
+            alt = r[cid][state_icons.ALT_VIEW]
+            self.assertEqual((alt['source'], alt['key'], alt['page']), ('own', cid, icons.SIDE_PAGE))
+            self.assertNotEqual(alt['rect'], r[cid]['side']['rect'])
+            self.assertTrue(alt['distinct'])
+            self.assertTrue(state_icons.has_alternate(r[cid]))
+        self.assertFalse(state_icons.has_alternate(None))
+
 
 class CropTests(Fixture):
     def setUp(self):

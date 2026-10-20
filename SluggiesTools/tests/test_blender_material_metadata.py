@@ -543,6 +543,33 @@ class BlenderMaterialTextureTests(unittest.TestCase):
                     temp_dir,
                 )
 
+    def test_png_outside_tex_is_planned_as_copy(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tex_dir = pathlib.Path(temp_dir, 'tex')
+            tex_dir.mkdir()
+            tex_dir.joinpath('0.png').write_bytes(b'donor')
+            outside = pathlib.Path(temp_dir, 'new.png')
+            outside.write_bytes(b'png')
+            # Same name as the donor PNG, other bytes: takes a free name.
+            edited = pathlib.Path(temp_dir, 'edited', '0.png')
+            edited.parent.mkdir()
+            edited.write_bytes(b'edited')
+            body = _material_graph('body', 'sm0_ds1', 0, [outside])
+            hand = _material_graph('hand', 'sm0_ds2', 0, [edited])
+            planned = {}
+            additions, assignments, _changed = self.resolve_changes(
+                [(self._object(body, hand), {})],
+                [{'TextureIndex': 0, 'TextureFileName': '0.png'}],
+                str(tex_dir),
+                planned_copies=planned,
+            )
+        self.assertEqual(planned, {'new.png': str(outside), '0_1.png': str(edited)})
+        self.assertEqual(additions, [
+            {'TextureFileName': 'new.png', 'TemplateTextureIndex': 0},
+            {'TextureFileName': '0_1.png', 'TemplateTextureIndex': 0},
+        ])
+        self.assertEqual(assignments, {'sm0_ds1': 1, 'sm0_ds2': 2})
+
     def test_missing_png_is_not_checked_when_reimport_is_disabled(self):
         material = _material_graph('body', 'sm0_ds1', 0, ['missing/0.png'])
 

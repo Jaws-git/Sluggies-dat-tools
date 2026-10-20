@@ -2,15 +2,22 @@
 
 The character-select icons (portraits) of Mario Super Sluggers live in one
 icon bank in `dt_na.dat`. Each character has a side and a front portrait.
+The side portrait is shown facing both ways: most characters are mirrored
+for the other facing, but eight whose art is asymmetric (Luigi, Baby Luigi,
+Waluigi, Dixie Kong, King K. Rool, Baby Peach, Baby Daisy, Baby DK) carry a
+second drawing, the **alternate side portrait**, so Luigi's "L" reads the
+right way round in both.
 
 ## Character icons in the model folders
 
 Model exports write each character's own portraits as RGBA PNGs (48×51)
-into that character's model folder, next to `tex/`:
+into that character's model folder, next to `tex/`; a character with an
+alternate side portrait of its own gets it as a third PNG:
 
 ```
 2_Output_Assets/18 Mario/78277664_mario.gpl/icon/FrontIcon.png
 2_Output_Assets/18 Mario/78277664_mario.gpl/icon/SideIcon.png
+2_Output_Assets/19 Luigi/<offset>_luigi.gpl/icon/SideIconAlt.png
 ```
 
 - **GUI:** the **Export 3D** tab's **Export Icons** checkbox (on by
@@ -46,7 +53,10 @@ roster expansion (menu **[7]**, also part of menu **[1]**; see
    They are fitted into 48×51 (`fit`: `contain`, `cover` or `strict`).
 2. Name them in the character's entry of a roster configuration in
    `1_Input/_RosterConfigurations/`:
-   `"icon": {"side": "x_side.png", "front": "x_front.png"}`. Preset
+   `"icon": {"side": "x_side.png", "front": "x_front.png"}`, plus
+   `"side_alt": "x_side_left.png"` for a character whose side portrait must
+   not be mirrored for the other facing (without it the game mirrors the
+   side portrait). Preset
    `02_Stock_and_Unused.json` already does this for the six unused characters
    with the PNGs shipped in `1_Input/_Icons/`; the open slots of presets 03
    and 04 use `empty_slot_side.png` / `empty_slot_front.png`.

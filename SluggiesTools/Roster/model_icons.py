@@ -1,15 +1,18 @@
-"""Portraits from a model folder: ``icon/FrontIcon.png`` + ``icon/SideIcon.png``.
+"""Portraits from a model folder: ``icon/FrontIcon.png`` + ``icon/SideIcon.png`` (+ ``SideIconAlt.png``).
 
 The icon export (``Icons/export_icons.py``) writes each character's two
-48x51 portraits into its high-poly model folder::
+48x51 portraits into its high-poly model folder, plus the alternate side view
+(the side portrait facing the other way) for a character that has one of its
+own::
 
-    2_Output_Assets/<dir> <name>/<offset>_<geo>.gpl/icon/{FrontIcon,SideIcon}.png
+    2_Output_Assets/<dir> <name>/<offset>_<geo>.gpl/icon/{FrontIcon,SideIcon,SideIconAlt}.png
 
-``find(path)`` takes a ``.sluggie`` (or its model folder) and gives the two
+``find(path)`` takes a ``.sluggie`` (or its model folder) and gives the
 PNGs. An ``L_`` model has no portraits of its own: its high-poly partner's
 folder (a sibling folder with the same geo-name stem, holding a ``.sluggie``)
-is used. When either view is missing, nothing is imported: ``problem`` says
-why, and the slot keeps its current portrait.
+is used. When the side or the front view is missing, nothing is imported:
+``problem`` says why, and the slot keeps its current portrait. The alternate
+side view is optional (``side_alt`` None without it).
 
 Roster config: ``"icon": {"model": "<.sluggie or model folder>"}`` in place
 of ``side``/``front`` (``icons.parse_icons``); a relative path counts from the
@@ -22,7 +25,9 @@ from dataclasses import dataclass
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 ICON_SUBDIR = 'icon'                                       # export_icons.CHARACTER_ICON_DIR
-FILES = {'side': 'SideIcon.png', 'front': 'FrontIcon.png'}  # export_icons.CHARACTER_ICON_FILES
+ALT_VIEW = 'side_alt'                                      # export_icons.ALT_VIEW
+FILES = {'side': 'SideIcon.png', 'front': 'FrontIcon.png', ALT_VIEW: 'SideIconAlt.png'}  # export_icons.CHARACTER_ICON_FILES
+REQUIRED = ('side', 'front')                               # the alternate side view is optional
 # <offset>_<geo>; exports made before 2026-10-04 can carry a leftover byte after '.gpl' (binfmt.clean_geo_name)
 MODEL_FOLDER = re.compile(r'^\d+_(?P<low>L_)?(?P<geo>.+)$', re.IGNORECASE)
 
@@ -33,6 +38,7 @@ class ModelIcons:
     side: str | None            # path of SideIcon.png (None: missing)
     front: str | None
     problem: str | None = None  # why nothing is imported (None: both views found)
+    side_alt: str | None = None  # path of SideIconAlt.png (None: the model has no alternate side view)
 
     @property
     def ok(self) -> bool:
@@ -92,9 +98,9 @@ def find(path: str) -> ModelIcons:
         return ModelIcons(None, None, None, reason)
     found = {view: os.path.join(home, ICON_SUBDIR, name) for view, name in FILES.items()}
     found = {view: p if os.path.isfile(p) else None for view, p in found.items()}
-    missing = [f'{ICON_SUBDIR}/{FILES[view]}' for view in ('side', 'front') if found[view] is None]
+    missing = [f'{ICON_SUBDIR}/{FILES[view]}' for view in REQUIRED if found[view] is None]
     problem = None
     if missing:
         problem = (f'{" and ".join(missing)} missing in {os.path.basename(home)}: no portraits imported '
                    '(export the icons first, menu [1])')
-    return ModelIcons(home, found['side'], found['front'], problem)
+    return ModelIcons(home, found['side'], found['front'], problem, found[ALT_VIEW])

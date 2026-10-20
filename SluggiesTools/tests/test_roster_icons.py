@@ -295,6 +295,95 @@ class StepTests(unittest.TestCase):
         self.assertEqual(self.image.to_bytes(), before)
         self.assertIn('stays as it is', log[0])
 
+    def test_alternate_side_view(self):
+        config = {'wheels': [{'id': '0x47', 'icon': {'side': 'a.png', 'front': 'b.png', 'side_alt': 'b.png'}}]}
+        entries = icons.parse_icons(config, icons.ICON_DIR)
+        self.assertTrue(entries[0].has_alt)
+        side, front = icons.compose_pages(entries)
+        self.assertEqual((side.cells, front.cells), ([(0, 0), (52, 0)], [(0, 0)]))   # the alt cell after the side one
+        _ctx, log = self.run_step(config)
+        self.assertIn('alternate side views: 0x47', ' '.join(log))
+        offset, length, _alloc = dhs.slot(dhs.read_record(self.image, icons.ICON_RECORD), 'en')
+        bank = self.dat.read(offset, length)
+        _tex_end, _desc, ptr = container(bank)
+        normal_a = {struct.unpack_from('>H', r, 2)[0]: struct.unpack_from('>H', r, 6)[0]
+                    for r in icons._table(bank, ptr(icons.NORMAL_A_FIELD))}
+        self.assertEqual(normal_a[0x47], icons.STOCK_ROWS + 2)
+
+
+def with_mirror_bits(stock: bytes) -> bytes:
+    """``stock`` with the mirror bit set on every side record (as the real bank has for most characters)."""
+    bank = bytearray(stock)
+    start = icons._pointer(bank, icons.STOCK_CONTAINER + icons.CONTAINER_HEAD, icons.SIDE_FIELD)
+    count = struct.unpack_from('>H', bank, start + 0x24)[0]
+    for i in range(count):
+        bank[start + icons.SOURCE_HEADER + i * icons.SOURCE_RECORD + icons.SIDE_FLAG_OFFSET] |= icons.SIDE_MIRROR_BIT
+    return bytes(bank)
+
+
+class AlternateSideTests(unittest.TestCase):
+    """An entry with an alternate side view: its cell follows the side cells on the side page, its normal_a key
+    points at its row (after the side and front rows) and the mirror bit of its side record is cleared."""
+
+    def setUp(self):
+        alt = lambda cid, like: icons.IconEntry(cid, f'{cid:02x}_side.png', f'{cid:02x}_front.png', like,
+                                                side_alt_path=f'{cid:02x}_alt.png')
+        self.entries = [entry(0x48), alt(0x49, 0x01), alt(0x01, 0x01), alt(0x66, 0x02)]
+        n = len(self.entries)
+        width, height, per_row = icons.page_size(n + 3)
+        grid = [((k % per_row) * 52, (k // per_row) * 52) for k in range(n + 3)]
+        self.side = icons.Page(width, height, grid)
+        self.front = icons.Page(width, height, grid[:n])
+
+    def build(self, stock=STOCK):
+        return icons.build_packed_bank(stock, self.entries, self.side, self.front,
+                                       bytes(self.side.payload_length), bytes(self.front.payload_length))
+
+    @staticmethod
+    def records(bank, field):
+        _tex_end, _desc, ptr = container(bank)
+        return {struct.unpack_from('>H', r, 2)[0]: r for r in icons._table(bank, ptr(field))}
+
+    def test_rows_and_keys(self):
+        bank = self.build()
+        n, m = icons.STOCK_ROWS, len(self.entries)
+        _tex_end, _desc, ptr = container(bank)
+        res = ptr(icons.RESOURCE_FIELD)
+        count = struct.unpack_from('>I', bank, res)[0]
+        self.assertEqual(count, n + 2 * m + 3)
+        rows = [struct.unpack_from('>HH4f', bank, res + 8 + i * 0x14) for i in range(n, count)]
+        self.assertEqual([r[0] for r in rows[2 * m:]], [icons.SIDE_PAGE] * 3)     # the alternate cells: side page
+        self.assertEqual(round(rows[2 * m][3] * self.side.width), self.side.cells[m][0])
+        row = lambda field, cid: struct.unpack_from('>H', self.records(bank, field)[cid], 6)[0]
+        self.assertEqual([row(icons.NORMAL_A_FIELD, c) for c in (0x49, 0x01, 0x66)],
+                         [n + 2 * m, n + 2 * m + 1, n + 2 * m + 2])
+        self.assertNotIn(0x48, self.records(bank, icons.NORMAL_A_FIELD))        # a spare row without one: no key
+        self.assertEqual(row(icons.SIDE_FIELD, 0x49), n + 1)
+        self.assertEqual(row(icons.FRONT_FIELD, 0x01), n + m + 2)
+
+    def test_mirror_bit_cleared_for_entries_with_an_alternate_view(self):
+        bank = self.build(with_mirror_bits(STOCK))
+        side = self.records(bank, icons.SIDE_FIELD)
+        flag = lambda cid: side[cid][icons.SIDE_FLAG_OFFSET] & icons.SIDE_MIRROR_BIT
+        self.assertEqual([flag(c) for c in (0x49, 0x01, 0x66)], [0, 0, 0])
+        self.assertEqual(flag(0x48), icons.SIDE_MIRROR_BIT)            # no alternate view: the side cell is mirrored
+        self.assertEqual(flag(0x00), icons.SIDE_MIRROR_BIT)            # an untouched stock record
+
+    def test_cell_count_is_checked(self):
+        with self.assertRaisesRegex(icons.IconBankError, 'alternate'):
+            icons.build_packed_bank(STOCK, self.entries, self.front, self.front,
+                                    bytes(self.front.payload_length), bytes(self.front.payload_length))
+
+    def test_parse(self):
+        config = {'wheels': [{'id': '0x47', 'icon': {'side': 'a.png', 'front': 'b.png', 'side_alt': 'c.png'}},
+                             {'id': '0x48', 'icon': {'side': 'a.png', 'front': 'b.png'}}]}
+        out = icons.parse_icons(config, check_files=False)
+        self.assertTrue(out[0].side_alt_path.endswith('c.png'))
+        self.assertIsNone(out[1].side_alt_path)
+        with self.assertRaisesRegex(icons.IconConfigError, 'side_alt'):
+            icons.parse_icons({'wheels': [{'id': '0x47', 'icon': {'side': 'a.png', 'front': 'b.png',
+                                                                  'side_alt': 'x/c.png'}}]}, check_files=False)
+
 
 if __name__ == '__main__':
     unittest.main()

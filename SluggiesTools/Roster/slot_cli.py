@@ -22,6 +22,14 @@ the default; an icon edit's image is read and fitted here, ``icon_import``;
 a stat edit file is checked against ``main.dol`` here, ``StatEditor/apply``). ``--dry-run`` leaves out the build
 checks of edits marked ``"checked"`` (the GUI's staging check).
 
+A character file of the Sluggers Characters patcher (``--slgmodel FILE [--target 0xNN]``, or ``--patch 0xNN
+FILE.slgmodel``; edit ``{"op": "slgmodel", "id": "0xNN", "file": ...}``) is read here against ``1_Input``
+(``Roster/slgmodel.py``), its voice clips are encoded (cached by content in ``_gui/slot/clip_cache``) and stashed
+beside the batch's snapshot files with a ``<tag>_pack.json``; the chain's ``--write-voice-pack FILE`` step (this
+script, after the blocks are written) creates the voice pack ``_gui/Sound_Packs/<name>`` from them, so a failed
+chain or a dry run leaves no pack behind. Without ``--target`` the first open new ID (named "Empty slot", at its
+baseline) is the target.
+
 Writes nothing to the game files. Exit code 1 when an edit is refused (the
 plan then lists the refused edits and holds no commands).
 """
@@ -44,8 +52,8 @@ from binfmt import load_sluggie  # noqa: E402
 
 try:
     from .. import gecko_compat, memory_guard
-    from . import (derive, gear, icon_art, icons, ids, model_icons, open_slot, slot_memory, slot_plan, slots, state,
-                   state_cli, state_icons)
+    from . import (derive, gear, icon_art, icons, ids, model_icons, open_slot, slgmodel, slot_memory, slot_plan, slots,
+                   state, state_cli, state_icons)
 except ImportError:
     import gecko_compat
     import memory_guard
@@ -56,6 +64,7 @@ except ImportError:
     import ids
     import model_icons
     import open_slot
+    import slgmodel
     import slot_memory
     import slot_plan
     import slots
@@ -70,6 +79,7 @@ SOURCE = 'roster.slot'
 SLOT_DIR = 'slot'
 PLAN_FILE = 'plan.json'
 PROBE_DIR = 'slot_gecko_probe'     # _gui/: the new edits planned alone (``gecko_check``)
+CLIP_CACHE = 'clip_cache'          # _gui/slot/: encoded voice clips of character files, by WAV SHA-1
 # A PNG the roster encoded into the bank decodes back close to, not equal to, its pixels (CMPR is lossy):
 # the "empty slot" art measured mean 2.0 / max 32 per channel, other portraits mean 88+.
 CMPR_MEAN, CMPR_MAX = 8, 64
@@ -299,6 +309,51 @@ class FileEnv(slot_plan.Env):
             chemistry[_hex(other)] = [row, column]
         return {'fields': values, 'chemistry': chemistry}
 
+    def read_slgmodel(self, path):
+        try:
+            return slgmodel.read(path, self.input_dir or state_cli.input_dir(state_cli.OUTPUT_DIR))
+        except slgmodel.SlgError as exc:
+            raise slot_plan.PlanError(str(exc)) from exc
+
+    def encode_wav(self, data, label):
+        """A character file's WAV as an RWAV, encoded once per content (``CLIP_CACHE``)."""
+        import hashlib
+        from Sound import brsar, clips
+        folder = os.path.join(self._root_dir(), state_cli.GUI_DIR, SLOT_DIR, CLIP_CACHE)
+        cached = os.path.join(folder, hashlib.sha1(data).hexdigest() + clips.RWAV_EXTENSION)
+        if os.path.isfile(cached):
+            try:
+                with open(cached, 'rb') as handle:
+                    rwav = handle.read()
+                clips.check_rwav(rwav, label)
+                return rwav, []
+            except (OSError, clips.ClipError):
+                pass
+        try:
+            templates = clips.voice_templates(brsar.Brsar.from_file(self._sound_archive_path()))
+            rwav, notes = clips.encode_wav(data, templates)
+        except Exception as exc:                 # ClipError, BrsarError (either import path), OSError
+            raise slot_plan.PlanError(f'{label}: {exc}') from exc
+        try:
+            os.makedirs(folder, exist_ok=True)
+            with open(cached, 'wb') as handle:
+                handle.write(rwav)
+        except OSError:
+            pass                                 # the cache is a convenience
+        return rwav, notes
+
+    def free_pack_name(self, name):
+        from Sound import sound_packs
+        base = ''.join('-' if ch in '<>:"/|?*' or ord(ch) < 0x20 else ch for ch in str(name)).strip(' .')[:40]
+        base = base or 'Character'
+        if sound_packs.check_name(base) is not None:
+            base = 'Character'
+        candidate, n = base, 1
+        while os.path.exists(sound_packs.pack_folder(self._root_dir(), candidate)):
+            n += 1
+            candidate = f'{base} {n}'
+        return candidate
+
     def skeleton(self, source, target):
         import SlotTarget
         try:
@@ -413,10 +468,11 @@ def _plan_into(prepared: tuple, edits: list, output_dir: str, folder: str, skip_
 
 
 def run(edits: list, output_dir: str = state_cli.OUTPUT_DIR, skip_checked: bool = False,
-        gecko: bool = False) -> slot_plan.Batch:
+        gecko: bool = False, prepared: tuple | None = None) -> slot_plan.Batch:
     """Plan the batch ``edits`` (``slot_plan.Edit``s) and write the files the chain reads. ``gecko`` (dry runs):
-    record whether the chain breaks Gecko code compatibility (``gecko_check``)."""
-    prepared = _prepare(output_dir)
+    record whether the chain breaks Gecko code compatibility (``gecko_check``). ``prepared``: the game as
+    ``_prepare`` read it already."""
+    prepared = prepared or _prepare(output_dir)
     pristine = (prepared[2], prepared[3]) if not gecko else copy.deepcopy((prepared[2], prepared[3]))
     batch = _plan_into(prepared, edits, output_dir, slot_dir(output_dir), skip_checked)
     tmp = plan_path(output_dir) + '.tmp'
@@ -473,6 +529,57 @@ def write_copy_files(files: dict, folder: str) -> None:
                 json.dump(data, f, ensure_ascii=False, indent=1)
 
 
+def write_voice_pack(spec_path: str, root_dir: str) -> str:
+    """The chain's ``--write-voice-pack`` step: create the voice pack a character file import planned
+    (``Plan.voice_pack`` as ``<tag>_pack.json`` in the batch's copy folder: {'name', 'voice', 'origin', 'clips':
+    {moment: {'rwav', 'wav'}: file names beside it}}) under ``_gui/Sound_Packs``. Runs after the game is written,
+    so a failed chain leaves no pack behind. A name taken meanwhile gets a suffix (the config names the planned
+    one; the pack is the user's copy of the clips either way). Returns the pack's name; ``PlanError`` when it
+    cannot be written."""
+    from Sound import sound_packs
+    folder = os.path.dirname(os.path.abspath(spec_path))
+    try:
+        with open(spec_path, 'r', encoding='utf-8') as f:
+            spec = json.load(f)
+        files = {}
+        for moment, clip in spec['clips'].items():
+            with open(os.path.join(folder, clip['rwav']), 'rb') as f:
+                rwav = f.read()
+            wav = None
+            if clip.get('wav'):
+                with open(os.path.join(folder, clip['wav']), 'rb') as f:
+                    wav = f.read()
+            files[moment] = (rwav, wav)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise slot_plan.PlanError(f'the voice pack files of {os.path.basename(spec_path)} cannot be read: {exc}') from exc
+    name = str(spec.get('name') or 'Character')
+    candidate, n = name, 1
+    while os.path.exists(sound_packs.pack_folder(root_dir, candidate)):
+        n += 1
+        candidate = f'{name} {n}'
+    try:
+        pack = sound_packs.create_pack(root_dir, candidate, spec.get('voice'))
+        for moment, (rwav, wav) in files.items():
+            sound_packs.set_clip(pack, moment, rwav, wav, origin=spec.get('origin'))
+    except (sound_packs.PackError, OSError, ValueError) as exc:
+        raise slot_plan.PlanError(f'the voice pack {candidate!r} could not be written: {exc}') from exc
+    slogger.info(f'voice pack {candidate!r} written to {pack.folder} ({len(files)} clips)', source=SOURCE)
+    return candidate
+
+
+def pick_open_slot(prepared: tuple, output_dir: str = state_cli.OUTPUT_DIR) -> int:
+    """The first new ID on the grid that is an open slot (named "Empty slot", at its baseline), for a character
+    file import without a target; ``PlanError`` when there is none."""
+    image, dat, st, derived = prepared
+    env = FileEnv(image, dat, state_cli.input_dir(output_dir))
+    for char in sorted(st['characters'], key=lambda c: c['id']):
+        if (char['id'] >= ids.FIRST_NEW and (char.get('name') or {}).get('en') == open_slot.SLOT_NAME['en']
+                and env.at_baseline(char, derived.config)):
+            return char['id']
+    raise slot_plan.PlanError('no open new ID on the grid (an "Empty slot" at its baseline): give the target slot '
+                              'with --target-id 0xNN')
+
+
 def _is_equipment(path: str) -> bool:
     """Whether the picked .sluggie is a bat or glove (FileIndex 2-5) rather than a character model."""
     try:
@@ -509,6 +616,11 @@ def main(argv=None) -> int:
                         help="let slot 0xNN play with stock player 0xMM's stats (- or default: its own)")
     parser.add_argument('--copy', nargs=2, metavar=('0xSS', '0xTT'),
                         help='make slot 0xTT a clone of character 0xSS as the game holds it (the grid\'s paste)')
+    parser.add_argument('--slgmodel', metavar='FILE', help='put a character file of the Sluggers Characters patcher '
+                        '(.slgmodel) into a slot: --target 0xNN, or the first open new ID')
+    parser.add_argument('--target', metavar='0xNN', help='--slgmodel: the slot')
+    parser.add_argument('--write-voice-pack', metavar='FILE', help='chain step of a character file import: create '
+                        'the voice pack planned in FILE (<tag>_pack.json beside the batch\'s snapshot files)')
     parser.add_argument('--icon', nargs=3, metavar=('0xNN', 'VIEW', 'IMAGE'),
                         help="make an image slot 0xNN's front or side portrait (fitted to 48x51)")
     parser.add_argument('--fit', choices=icon_art.FIT_MODES, default=icon_art.DEFAULT_FIT_MODE,
@@ -523,24 +635,46 @@ def main(argv=None) -> int:
     parser.add_argument('--dry-run', action='store_true', help='leave out the build checks of "checked" edits')
     parser.add_argument('--output-dir', default=state_cli.OUTPUT_DIR, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.write_voice_pack:
+        try:
+            write_voice_pack(os.path.abspath(args.write_voice_pack), os.path.dirname(os.path.abspath(args.output_dir)))
+        except slot_plan.PlanError as exc:
+            slogger.error(str(exc), source=SOURCE)
+            return 1
+        return 0
     if sum(bool(a) for a in (args.patch, args.clear, args.rename, args.voice, args.char_voice, args.stats, args.icon,
-                             args.copy, args.apply, args.species_clip)) != 1:
+                             args.copy, args.apply, args.species_clip, args.slgmodel)) != 1:
         parser.error('give --patch 0xNN FILE, --clear 0xNN, --rename 0xNN TEXT, --voice 0xNN 0xMM, '
                      '--char-voice 0xNN VOICE, --species-clip 0xNN MOMENT FILE, --stats 0xNN 0xMM, '
-                     '--icon 0xNN VIEW IMAGE, --copy 0xSS 0xTT or --apply FILE')
+                     '--icon 0xNN VIEW IMAGE, --copy 0xSS 0xTT, --slgmodel FILE [--target 0xNN], --apply FILE '
+                     'or --write-voice-pack FILE')
+    if args.target and not args.slgmodel:
+        parser.error('--target goes with --slgmodel')
     if args.equipment and not (args.patch or args.clear):
         parser.error('--equipment goes with --patch or --clear')
     if args.no_gear and not args.patch:
         parser.error('--no-gear goes with --patch')
-    if args.icon and args.icon[1] not in slot_plan.VIEWS:
-        parser.error('--icon VIEW must be front or side')
+    if args.icon and args.icon[1] not in slot_plan.ICON_VIEWS:
+        parser.error('--icon VIEW must be front, side or side_alt')
     if os.path.exists(plan_path(args.output_dir)):
         os.remove(plan_path(args.output_dir))       # a failed planner leaves no stale chain behind
+    prepared = None
     try:
-        if args.patch:
+        if args.slgmodel:
+            path = os.path.abspath(args.slgmodel)
+            if args.target:
+                cid = slots.parse_id(args.target)
+            else:
+                prepared = _prepare(args.output_dir)
+                cid = pick_open_slot(prepared, args.output_dir)
+                slogger.info(f'target: the open slot {_hex(cid)}', source=SOURCE)
+            edits = [slot_plan.Edit(slot_plan.SLGMODEL, cid, path, index=1)]
+        elif args.patch:
             path = os.path.abspath(args.patch[1])
             cid = slots.parse_id(args.patch[0])
-            if _is_equipment(path):
+            if slgmodel.is_slgmodel(path):
+                edits = [slot_plan.Edit(slot_plan.SLGMODEL, cid, path, index=1)]
+            elif _is_equipment(path):
                 edits = [slot_plan.Edit('equip', cid, path, index=1, origin='user',
                                         gear_file=None if args.equipment is None else gear.parse_file(args.equipment))]
             else:
@@ -572,7 +706,8 @@ def main(argv=None) -> int:
                                     fit=args.fit, trim=not args.no_trim)]
         else:
             edits = read_edits(args.apply)
-        batch = run(edits, output_dir=args.output_dir, skip_checked=args.dry_run, gecko=args.dry_run)
+        batch = run(edits, output_dir=args.output_dir, skip_checked=args.dry_run, gecko=args.dry_run,
+                    prepared=prepared)
     except (RuntimeError, ValueError, gear.GearError) as exc:        # PlanError, SlotError, StateError, DeriveError, config errors
         slogger.error(f'refused, nothing written: {exc}', source=SOURCE)
         return 1

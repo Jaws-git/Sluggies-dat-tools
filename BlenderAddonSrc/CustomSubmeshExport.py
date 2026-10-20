@@ -440,6 +440,28 @@ def select_position_format(
     raise AssertionError('coarsest candidate reported a fit it does not have')
 
 
+def donor_position_candidates(donor_quantize):
+    """The s16 position formats a rebuilt donor submesh may use, finest
+    first: the donor's own, then one shift coarser at a time down to 48.
+    A mesh that still fits the donor's format keeps it byte for byte; one
+    that outgrew it (a stadium prop stretched past +/-4 in format 61) trades
+    precision for range instead of being refused."""
+    return tuple(range(int(donor_quantize), POSITION_QUANTIZE_CANDIDATES[-1] - 1, -1))
+
+
+def widened_position_info(object_name, donor_quantize, quantize_info):
+    """The INFO line for a rebuilt donor submesh stored coarser than its
+    donor, or None when it kept the donor's format."""
+    if quantize_info == donor_quantize:
+        return None
+    _low, high = int16_range(quantize_info)
+    return (
+        f'{object_name}: positions reach past the original format {donor_quantize} '
+        f'(+/-{int16_range(donor_quantize)[1]:.4g}), so they are stored in format {quantize_info} '
+        f'(+/-{high:.4g}, steps of 1/{int16_divisor(quantize_info)} unit).'
+    )
+
+
 def quantize_int16(value, divisor, context):
     """Quantize one component to int16, rejecting (never clamping) a value
     that is not finite or doesn't fit. *context* names what is being encoded."""

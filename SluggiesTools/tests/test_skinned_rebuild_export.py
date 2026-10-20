@@ -20,6 +20,7 @@ for path in (ADDON_DIR, TOOLS_DIR, TOOLS_DIR / 'Hammerspace', pathlib.Path(__fil
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
+import BlockValidator  # noqa: E402
 import CustomSubmeshExport as cse  # noqa: E402
 import FieldCodec  # noqa: E402
 import HammerspaceMain as main  # noqa: E402
@@ -238,6 +239,50 @@ class EntryTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, 'armature origin'):
             self._entry(geometry=far)
+
+    def test_in_range_body_keeps_the_donor_format_without_a_field(self):
+        self.assertNotIn('VertexBufferQuantizeInfo', self._entry())
+
+    def test_out_of_range_body_widens_from_a_finer_donor_format(self):
+        far = cse.bone_local_geometry(
+            [(x + 40.0, y, z) for x, y, z in self.local], self.triangles, cse.IDENTITY4, cse.IDENTITY4, sre.IDENTITY,
+        )
+        self.donor.position_quantize = 59
+        infos = []
+        entry = self._entry(geometry=far, infos=infos)
+        expected = next(q for q in range(59, 47, -1) if cse.position_format_fits(far, q))
+        self.assertLess(expected, 59)
+        self.assertEqual(entry['VertexBufferQuantizeInfo'], expected)
+        self.assertTrue(any(f'stored in format {expected}' in line for line in infos), infos)
+        records = FieldCodec.decode_field(entry['VertexBufferData'])
+        self.assertEqual(struct.unpack_from('>3h', records, 6), (0, 0, 1 << (expected & 0xF)))   # +Z normal
+
+    def test_follow_position_shift(self):
+        self.assertEqual(main._follow_position_shift(0x0B, 0x3B, 0x39), 0x09)    # SKN header: type nibble 0 kept
+        self.assertEqual(main._follow_position_shift(0x3B, 0x3B, 0x39), 0x39)    # normal header
+        self.assertEqual(main._follow_position_shift(0x3E, 0x3B, 0x39), 0x3E)    # its own shift: untouched
+
+    def test_rebuild_format_reaches_the_gpl_headers(self):
+        # The synthetic donor is already at the coarsest 48, so a finer format
+        # stands in for a widened one: the patcher writes whatever the entry says.
+        entry = self._entry()
+        records = bytearray(FieldCodec.decode_field(entry['VertexBufferData']))
+        values = struct.unpack(f'>{len(records) // 2}h', records)
+        entry['VertexBufferData'] = FieldCodec.encode_field(struct.pack(f'>{len(values)}h', *(v * 2 for v in values)), True)
+        entry['VertexBufferQuantizeInfo'] = 0x31
+        self.model['UseHammerspace'] = True
+        self.sub['SkinnedRebuild'] = entry
+        main._validate_skinned_rebuild(self.model)
+        with synthetic_donor.donor_environment() as env:
+            data = env.reload()
+            data['SluggiesModel']['UseHammerspace'] = True
+            data['SluggiesModel']['Submeshes'][0]['SkinnedRebuild'] = entry
+            result = main.BuildModelBlock(
+                data, main.SectionModes(gpl='build', skn='build'), sluggie_path=env.sluggie_path,
+            )
+            self.assertTrue(result.validation_report['valid'], result.validation_report.get('errors'))
+            layout = BlockValidator.validate_model_block(result.block)['facts']['gpl_submesh_layout']
+            self.assertEqual(layout[0]['position_quantize_info'], 0x31)
 
     def test_colors_use_the_donor_format(self):
         self.donor.color_format = (4, 48)

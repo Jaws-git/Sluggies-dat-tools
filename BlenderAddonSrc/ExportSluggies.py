@@ -2608,6 +2608,7 @@ def _resolve_material_texture_changes(
     validate_texture_files=True,
     skip_unset_images=False,
     require_donor_files=True,
+    planned_copies=None,
 ):
     """Classify connected material images without mutating Blender or JSON data.
 
@@ -2617,7 +2618,11 @@ def _resolve_material_texture_changes(
 
     *require_donor_files* False: only a new PNG (an addition) must exist in
     tex/; an image named like a donor texture is not read (Reimport textures
-    off: the donor payloads are kept)."""
+    off: the donor payloads are kept).
+
+    *planned_copies* (a dict, see `_plan_external_texture_copy`): an existing
+    PNG outside tex/ that the export reads is planned as a copy into tex/
+    instead of failing; the caller performs the copies."""
     descriptor_by_name = {
         descriptor.get("TextureFileName"): int(descriptor["TextureIndex"])
         for descriptor in descriptors
@@ -2670,7 +2675,20 @@ def _resolve_material_texture_changes(
                 )
             local_path = os.path.join(tex_dir, file_name)
             desired_index = descriptor_by_name.get(file_name)
-            if validate_texture_files and (
+            source_path = os.path.abspath(os.path.normpath(resolved_path))
+            if planned_copies is not None and validate_texture_files and (
+                require_donor_files or desired_index is None
+            ) and os.path.isfile(source_path) and (
+                os.path.normcase(os.path.dirname(source_path))
+                != os.path.normcase(os.path.abspath(tex_dir))
+            ):
+                # Linked from outside tex/: copied in (or an identical file
+                # there reused); a name tex/ holds with other bytes takes
+                # a free name, which then appends a new texture.
+                file_name = _plan_external_texture_copy(source_path, tex_dir, planned_copies)
+                local_path = os.path.join(tex_dir, file_name)
+                desired_index = descriptor_by_name.get(file_name)
+            if validate_texture_files and file_name not in (planned_copies or {}) and (
                 require_donor_files or desired_index is None
             ) and not os.path.isfile(local_path):
                 raise ValueError(
@@ -2842,6 +2860,7 @@ def _resolve_custom_submesh_texture_changes(
     tex_dir,
     path_resolver=os.path.abspath,
     validate_texture_files=True,
+    planned_copies=None,
 ):
     """Resolve each custom submesh material's connected image into a
     TextureAssignment. Applies the same
@@ -2864,6 +2883,10 @@ def _resolve_custom_submesh_texture_changes(
       descriptor (a rebind, "as before"), or
       {"AdditionalTextureFileName": name} for a newly appended one.
     - `texture_copies` is a list of (source_path, tex_dir_path) pairs.
+
+    *planned_copies*: a dict shared with the other resolvers of one export,
+    so no two sources claim one tex/ name (`texture_copies` then lists the
+    shared plan).
     """
     descriptor_by_name = {
         descriptor.get("TextureFileName"): int(descriptor["TextureIndex"])
@@ -2873,7 +2896,8 @@ def _resolve_custom_submesh_texture_changes(
     donor_count = len(descriptors)
     additions = []
     assignments = {}
-    planned_copies = {}
+    if planned_copies is None:
+        planned_copies = {}
 
     for material, template_texture_index in custom_submesh_entries:
         if template_texture_index < 0 or template_texture_index >= donor_count:
@@ -3424,7 +3448,9 @@ def _resolve_export_texture_context(sluggie_path, model):
             owner_model = owners[owner_path]
             descriptors = owner_model['TextureDescriptors']
             candidates.append((
-                descriptors + _partner_added_texture_descriptors(
+                TextureSlotsCore.replaced_texture_descriptors(
+                    descriptors, owner_model.get('TextureReplacements'),
+                ) + _partner_added_texture_descriptors(
                     descriptors,
                     owner_model.get('AdditionalTextureDescriptors') or [],
                 ),
@@ -3597,6 +3623,7 @@ def _rigid_rebuild_plan(context, obj, submesh_index, target_submesh, model, warn
     reasons = RigidRebuildExport.decide_reasons(
         topology_changed=topology_changed, moved=moved,
         host_changed=host_bone_id != owner_bone_id, surfaces_changed=routing.changed,
+        out_of_range=RigidRebuildExport.outgrew_position_format(geometry, donor.position_quantize),
     )
     if not reasons:
         return None
@@ -3786,6 +3813,7 @@ def _skinned_rebuild_plan(context, obj, submesh_index, target_submesh, model, wa
     reasons = SkinnedRebuildExport.decide_reasons(
         topology_changed=topology_changed, moved=moved, surfaces_changed=surfaces_changed,
         weights_changed=weights_changed,
+        out_of_range=RigidRebuildExport.outgrew_position_format(geometry, donor.position_quantize),
     )
     if not reasons:
         return None
@@ -3852,7 +3880,8 @@ def _skinned_rebuild_entry(plan, texture_assignments, use_compression, warnings,
     )
     if plan.facial_keys is not None:
         entry["FacialPoses"] = SkinnedRebuildExport.encode_facial_poses(
-            plan.obj.name, plan.facial_keys, plan.geometry, plan.donor.position_quantize,
+            plan.obj.name, plan.facial_keys, plan.geometry,
+            entry.get("VertexBufferQuantizeInfo", plan.donor.position_quantize),
             use_compression, warnings, infos,
         )
     return entry
@@ -4298,6 +4327,9 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         )
         owns_texture_section = bool(local_texture_descriptors)
         additions, desired_assignments, changed_materials = [], {}, []
+        # tex/ file name -> source PNG linked from outside tex/, copied in
+        # once nothing can cancel the export.
+        planned_texture_copies = {}
         # A material showing another texture (a new PNG, or another of the
         # model's textures) is exported whatever the Reimport textures toggle
         # says: the toggle only decides whether the original textures are
@@ -4317,6 +4349,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                         validate_texture_files=owns_texture_section,
                         skip_unset_images=not owns_texture_section,
                         require_donor_files=self.reimport_textures,
+                        planned_copies=planned_texture_copies,
                     )
                 )
         except ValueError as exc:
@@ -4361,7 +4394,6 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         # AdditionalTextureDescriptors.
         custom_submesh_entries = []
         custom_additions = []
-        custom_texture_copies = []
         if custom_submesh_candidates:
             model = data["SluggiesModel"]
             try:
@@ -4397,12 +4429,13 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                             (extra, int(extra.get("TemplateTextureIndex", -1)))
                         )
                 (
-                    custom_additions, custom_assignments, custom_texture_copies,
+                    custom_additions, custom_assignments, _copies,
                 ) = _resolve_custom_submesh_texture_changes(
                     custom_texture_entries,
                     texture_descriptors,
                     texture_dir,
                     path_resolver=bpy.path.abspath,
+                    planned_copies=planned_texture_copies,
                 )
                 if custom_additions and not owns_texture_section:
                     raise ValueError(
@@ -4424,14 +4457,15 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         # --- Rigid rebuilds ---
         # Each rigid donor submesh takes the in-place path unless its
         # topology, transform, host bone (world position kept) or surfaces
-        # changed; then it is exported as a whole RigidRebuild. New
+        # changed, or its positions outgrew the donor's format; then it is
+        # exported as a whole RigidRebuild. New
         # Add-material surfaces resolve their images like custom submeshes.
         rigid_plans = {}
         # The skinned body: a whole
         # SkinnedRebuild when its topology, transform or surfaces changed in
         # a way the slot-preserving paths cannot store.
         skinned_plans = {}
-        new_surface_additions, new_surface_assignments, new_surface_texture_copies = [], {}, []
+        new_surface_additions, new_surface_assignments = [], {}
         try:
             for obj, target_submesh in object_submeshes:
                 submesh_index = next(i for i, sm in enumerate(submeshes) if sm is target_submesh)
@@ -4454,10 +4488,11 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             ]
             if new_surface_entries:
                 (
-                    new_surface_additions, new_surface_assignments, new_surface_texture_copies,
+                    new_surface_additions, new_surface_assignments, _copies,
                 ) = _resolve_custom_submesh_texture_changes(
                     new_surface_entries, texture_descriptors, texture_dir,
                     path_resolver=bpy.path.abspath,
+                    planned_copies=planned_texture_copies,
                 )
                 new_names = ", ".join(mat.name for mat, _index in new_surface_entries)
                 if new_surface_additions and not owns_texture_section:
@@ -4959,7 +4994,10 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         additions = _merge_texture_additions(
             additions, custom_additions + new_surface_additions + carried.additions,
         )
-        custom_texture_copies = custom_texture_copies + new_surface_texture_copies
+        texture_copies = [
+            (source_path, os.path.join(texture_dir, name))
+            for name, source_path in planned_texture_copies.items()
+        ]
         if additions:
             data["SluggiesModel"]["AdditionalTextureDescriptors"] = additions
         else:
@@ -4972,17 +5010,26 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             data["SluggiesModel"]["CustomSubmeshes"] = custom_submesh_entries
         else:
             data["SluggiesModel"].pop("CustomSubmeshes", None)
+        # A vanilla texture no surface shows any more takes the first new PNG
+        # shown in its place instead of appending it.
+        reused = TextureSlotsCore.reuse_freed_texture_slots(data["SluggiesModel"])
+        for message in reused:
+            self.report({"INFO"}, message)
+        if reused:
+            self.report({"INFO"},
+                "Texture slots were refilled: a paired low-poly (_L_) model may now show other "
+                "textures; check it with Manage texture slots.")
 
-        # Custom submesh PNGs linked from outside tex/ are copied in now, once
-        # nothing can cancel the export, so the patcher finds them by name.
+        # PNGs linked from outside tex/ are copied in now, once nothing can
+        # cancel the export, so the patcher finds them by name.
         try:
-            for source_path, target_path in custom_texture_copies:
+            for source_path, target_path in texture_copies:
                 os.makedirs(os.path.dirname(target_path), exist_ok=True)
                 shutil.copyfile(source_path, target_path)
         except OSError as exc:
-            self.report({"ERROR"}, f"Could not copy custom submesh texture into tex/: {exc}")
+            self.report({"ERROR"}, f"Could not copy texture into tex/: {exc}")
             return {"CANCELLED"}
-        for source_path, target_path in custom_texture_copies:
+        for source_path, target_path in texture_copies:
             self.report({"INFO"}, f"Copied {source_path} to {target_path}")
 
         FieldCodec.dump_sluggie(data, self.filepath)

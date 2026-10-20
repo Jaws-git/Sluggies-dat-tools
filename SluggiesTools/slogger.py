@@ -360,8 +360,9 @@ PROMPT_ENV = "SLUGGIES_GUI_PROMPTS"
 PROMPT_MARKER = "\x1e[sluggies:awaiting-input]"
 # yesno: Yes / No buttons; text: a free answer; file / save: a path to an
 # existing / a new file (with a Browse button); key: a Continue button; danger:
-# a red Confirm and Cancel (answers y / n), never skipped (gecko_compat).
-PROMPT_KINDS = ("yesno", "text", "file", "save", "key", "danger")
+# a red Confirm and Cancel (answers y / n), never skipped (gecko_compat);
+# overwrite: Yes / No like yesno, but never skipped (an export replacing files).
+PROMPT_KINDS = ("yesno", "text", "file", "save", "key", "danger", "overwrite")
 
 
 def ask(prompt: str, kind: Optional[str] = None) -> str:

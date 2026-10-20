@@ -234,13 +234,15 @@ def self_command(*args):
 
 def run_slot_chain(target_id=None, sluggie=None, dry_run=False, edits_file=None, rename=None, voice=None,
                    stats=None, icon=None, fit=None, trim=True, equipment=None, no_gear=False, copy_from=None,
-                   char_voice=None, species_clip=None):
+                   char_voice=None, species_clip=None, slgmodel=None):
     """Write staged slot edits as one chain: an edits file (``edits_file``, ``--apply-slots``), or a batch of one:
     patch a .sluggie (and its HP/L_ partner) into a slot, name the slot (``rename``: the text, blank resets it),
     give its square another voice (``voice``), the slot a voice of its own (``char_voice``) or other stats
     (``stats``: a character ID, ``-`` resets),
     replace one portrait (``icon``: ``(view, image)``, fitted with ``fit`` / ``trim``), make the slot a clone of
-    another character (``copy_from``: its ID, the grid's paste), or clear the slot (none given). Plans the chain
+    another character (``copy_from``: its ID, the grid's paste), import a character file (``slgmodel``: a
+    ``.slgmodel`` of the Sluggers Characters patcher; ``target_id`` None: the first open new ID), or clear the slot
+    (none given). Plans the chain
     (Roster/slot_cli.py: read and derive once, apply every edit; a refused edit refuses the batch and writes
     nothing), then runs its commands in order, stopping at the first failure. Returns True on success.
 
@@ -273,6 +275,8 @@ def run_slot_chain(target_id=None, sluggie=None, dry_run=False, edits_file=None,
         cmd += ['--stats', target_id, stats]
     elif copy_from is not None:
         cmd += ['--copy', copy_from, target_id]
+    elif slgmodel is not None:
+        cmd += ['--slgmodel', os.path.abspath(slgmodel)] + (['--target', target_id] if target_id else [])
     elif icon is not None:
         cmd += ['--icon', target_id, icon[0], os.path.abspath(icon[1])]
         cmd += ['--fit', fit] if fit else []
@@ -355,6 +359,13 @@ def run_load_roster(path, dry_run=False):
         slogger.info('The game holds this roster already: nothing to load.', source="dispatcher")
         return True
     return run_chain_commands(commands, 'Pack load')
+
+
+def run_write_voice_pack(path):
+    """Chain step of a character file import: create the voice pack planned in ``path`` (Roster/slot_cli.py
+    --write-voice-pack; the pack goes to _gui/Sound_Packs, the game files are not touched)."""
+    return subprocess.run(python_script_command(ROSTER_SLOT_SCRIPT, '--write-voice-pack', os.path.abspath(path)),
+                          cwd=TOOLS_DIR).returncode == 0
 
 
 def run_write_slot_blocks(target_id, high, low):
@@ -460,7 +471,8 @@ def run_export_icons(use_output=False):
         cwd=TOOLS_DIR,
         check=True
     )
-    slogger.info('Icon export complete: FrontIcon.png/SideIcon.png are in each character model folder', source="dispatcher")
+    slogger.info('Icon export complete: FrontIcon.png/SideIcon.png (and SideIconAlt.png where the character has an '
+                 'alternate side portrait) are in each character model folder', source="dispatcher")
 
 
 def run_export_sounds():
@@ -554,7 +566,7 @@ def hammerspace_section_args(model):
     # New PNGs are appended to TEX whether or not the donor textures are
     # reimported (ReimportTextures only covers those).
     if model.get('ReimportTextures') or model.get('AdditionalTextureDescriptors') \
-            or custom_texture_added:
+            or model.get('TextureReplacements') or custom_texture_added:
         args.extend(['--tex', 'build'])
 
     return args
@@ -640,6 +652,7 @@ _HAMMERSPACE_ONLY_MODEL_FIELDS = (
     'CustomSubmeshes',
     'BoneHierarchyEdited',
     'AdditionalTextureDescriptors',
+    'TextureReplacements',
     'DesiredTextureAssignments',
 )
 # Submesh-level fields only the Hammerspace builder applies.
@@ -903,6 +916,7 @@ def parse_args():
             '  python start.py --unpatch model.gpl.sluggie --target-id 0x4A\n'
             '  python start.py --unpatch --target-id 0x4A\n'
             '  python start.py --patch-slot 0xE1 path/to/model.gpl.sluggie\n'
+            '  python start.py --import-slgmodel path/to/rosalina.slgmodel --target-id 0x66\n'
             '  python start.py --clear-slot 0xE1\n'
             '  python start.py --rename-slot 0xE1 "Purple Yoshi"\n'
             '  python start.py --copy-slot 0x00 0xE1\n'
@@ -927,6 +941,7 @@ def parse_args():
     mode.add_argument('--patch', nargs='+', metavar='FILENAME', help='patch one or more .sluggie and/or .png files')
     mode.add_argument('--unpatch', nargs='*', metavar='FILENAME', help="restore original data for one or more .sluggies files (with --target-id and no files: that stock slot's high- and low-poly models)")
     mode.add_argument('--patch-slot', nargs=2, metavar=('0xNN', 'FILE'), help='put a .sluggie (and its HP/L_ partner) into a slot: read -> rebuild (own model directory, stats, voice, name, portraits) -> patch (GUI character grid)')
+    mode.add_argument('--import-slgmodel', metavar='FILE', help="put a character file of the Sluggers Characters patcher (.slgmodel: finished High/Low model blocks built on a stock player, portraits, voice clips) into a slot: --target-id 0xNN (a new ID takes the whole character: name, portraits, voice pack, the base's stats; a stock slot the models only), or without it the first open new ID (read -> rebuild -> write the blocks as they are)")
     mode.add_argument('--clear-slot', metavar='0xNN', help='return a slot to its baseline: a stock slot gets its vanilla models and portraits back, a new ID a fresh copy of its template and the open-slot look')
     mode.add_argument('--set-voice', nargs=2, metavar=('SQUARE', '0xNN'), help="give a square (any of its slots' IDs) the voice of 0xNN's family, on the select screen and on the field; a stock square changes its whole species, a new square its square-only new IDs; - resets it (read -> rebuild)")
     mode.add_argument('--set-char-voice', nargs=2, metavar=('0xNN', 'VOICE'), help="give slot 0xNN a voice of its own, on the select screen and on the field, whatever its square speaks with: 0xMM (that character's family), pack:NAME (a voice pack from _gui/Sound_Packs/ on top of its base voice) or 0xMM+pack:NAME (the clips are copied into its voice bank in 3_Output_Dat/sound_NA/MY2.brsar; needs 1_Input/sound_NA/MY2.brsar); - resets it (read -> rebuild)")
@@ -946,6 +961,7 @@ def parse_args():
     mode.add_argument('--write-slot-blocks', nargs=3, metavar=('0xNN', 'HIGH', 'LOW'), help="write finished model blocks (a roster pack's; '-' keeps that file) into a slot as they are (used by --load-roster)")
     mode.add_argument('--write-slot-equipment', nargs=3, metavar=('0xNN', 'FILE', 'BLOCK'), help="write a finished equipment block (a roster pack's) into a slot's file 2-5 (2 bat, 3 left glove, 4 right glove, 5 extra bat) as it is (used by --load-roster)")
     mode.add_argument('--write-slot-animation', nargs=3, metavar=('0xNN', 'FILE', 'ANM'), help="write an animation bank (.anm, e.g. from the Blender add-on) into a slot's file 6-14 as it is; refused unless it fits the slot's skeleton (used by the GUI's Replace animation)")
+    mode.add_argument('--write-voice-pack', metavar='FILE', help="create the voice pack a character file import planned (its <tag>_pack.json in _gui/slot/copies) in _gui/Sound_Packs (used by --import-slgmodel's chain)")
     mode.add_argument('--resplit-unused', action='store_true', help='repair: give unused-character routes (dirs 89-94) that point at a playable character\'s block their own copy again')
     mode.add_argument('--defrag-hammerspace', action='store_true', help='pack the hammerspace blocks of 3_Output_Dat/dt_na.dat without gaps, repoint main.dol and shrink the file (with --dry-run: report only)')
     mode.add_argument('--roster', '--roster-dev', dest='roster', action='store_true', help='inject a roster configuration (--config, e.g. from 1_Input/_RosterConfigurations) into 3_Output_Dat, replacing the previous injection')
@@ -1001,9 +1017,10 @@ def parse_args():
     if args.dry_run and not (args.roster or args.game_options or args.load_roster or args.defrag_hammerspace
                              or args.patch_slot or args.clear_slot or args.rename_slot or args.set_voice
                              or args.set_char_voice or args.set_species_clip or args.copy_slot
-                             or args.set_stats or args.set_icon or args.apply_slots or args.apply_stat_edits):
+                             or args.set_stats or args.set_icon or args.apply_slots or args.apply_stat_edits
+                             or args.import_slgmodel):
         parser.error('--dry-run can only be used with --roster, --game-options, --patch-slot, '
-                     '--clear-slot, --copy-slot, --rename-slot, --set-voice, --set-char-voice, --set-species-clip, '
+                     '--clear-slot, --copy-slot, --import-slgmodel, --rename-slot, --set-voice, --set-char-voice, --set-species-clip, '
                      '--set-stats, --set-icon, --apply-slots, '
                      '--apply-stat-edits, --load-roster or --defrag-hammerspace.')
     if args.equipment and not (args.patch_slot or args.clear_slot):
@@ -1024,8 +1041,8 @@ def parse_args():
         parser.error('--fresh can only be used with --roster --config.')
     if args.keep_stat_edits and not (args.roster and args.remove):
         parser.error('--keep-stat-edits can only be used with --roster --remove.')
-    if args.target_id and not (args.patch or args.unpatch is not None):
-        parser.error('--target-id can only be used with --patch or --unpatch.')
+    if args.target_id and not (args.patch or args.unpatch is not None or args.import_slgmodel):
+        parser.error('--target-id can only be used with --patch, --unpatch or --import-slgmodel.')
     if args.unpatch == [] and not args.target_id:
         parser.error("--unpatch needs files (or --target-id 0xNN to restore a stock slot's models).")
     if args.target_file and not args.target_id:
@@ -1044,7 +1061,7 @@ def parse_args():
         parser.error('--config and --state cannot be used together.')
     if args.roster and not (args.config or args.remove or args.state):
         parser.error('--roster needs --config PATH (a roster configuration), --state PATH or --remove.')
-    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.copy_slot, args.export_slot, args.rename_slot, args.set_voice, args.set_char_voice, args.set_species_clip, args.set_stats, args.set_icon, args.apply_slots, args.save_roster, args.load_roster, args.write_slot_blocks, args.write_slot_equipment, args.write_slot_animation, args.resplit_unused, args.defrag_hammerspace, args.export, args.export_icons, args.export_sounds, args.roster, args.roster_state, args.roster_derive, args.game_options, args.stat_bridge_export, args.apply_stat_edits]):
+    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.copy_slot, args.import_slgmodel, args.export_slot, args.rename_slot, args.set_voice, args.set_char_voice, args.set_species_clip, args.set_stats, args.set_icon, args.apply_slots, args.save_roster, args.load_roster, args.write_slot_blocks, args.write_slot_equipment, args.write_slot_animation, args.write_voice_pack, args.resplit_unused, args.defrag_hammerspace, args.export, args.export_icons, args.export_sounds, args.roster, args.roster_state, args.roster_derive, args.game_options, args.stat_bridge_export, args.apply_stat_edits]):
         if len(sys.argv) == 1:
             args.gui = True
         else:
@@ -1088,7 +1105,7 @@ def _changes_game_memory(args) -> bool:
     if getattr(args, 'dry_run', False) or getattr(args, 'validate_only', False):
         return False
     return bool(args.patch or args.unpatch is not None or args.patch_slot or args.clear_slot or args.copy_slot
-                or args.apply_slots or args.load_roster or args.write_slot_blocks or args.write_slot_equipment
+                or args.import_slgmodel or args.apply_slots or args.load_roster or args.write_slot_blocks or args.write_slot_equipment
                 or args.roster or (args.game_options and (args.on or args.off)))
 
 
@@ -1195,6 +1212,9 @@ def main() -> int:
         elif args.copy_slot:
             if not run_slot_chain(args.copy_slot[1], copy_from=args.copy_slot[0], dry_run=args.dry_run):
                 return 1
+        elif args.import_slgmodel:
+            if not run_slot_chain(args.target_id, slgmodel=args.import_slgmodel, dry_run=args.dry_run):
+                return 1
         elif args.rename_slot:
             if not run_slot_chain(args.rename_slot[0], rename=args.rename_slot[1], dry_run=args.dry_run):
                 return 1
@@ -1235,6 +1255,9 @@ def main() -> int:
                 return 1
         elif args.write_slot_animation:
             if not run_write_slot_animation(*args.write_slot_animation):
+                return 1
+        elif args.write_voice_pack:
+            if not run_write_voice_pack(args.write_voice_pack):
                 return 1
 
         if memory_before is not None:

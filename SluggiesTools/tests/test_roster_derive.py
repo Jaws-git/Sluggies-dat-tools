@@ -254,6 +254,12 @@ CONFIGS = {
         'wheels': [{'id': '0x48', 'icon': ICON}],
         'stock_icons': [{'id': '0x05', 'icon': {'side': 'grey.png', 'front': 'red.png'}},
                         {'id': '0x01', 'icon': ICON}]},
+    'alternate side views': {
+        'ids': [{'id': '0x66', 'template': '0x00', 'icon': dict(ICON, side_alt='green.png')},
+                {'id': '0x67', 'template': '0x00', 'icon': ICON}],
+        'wheels': [{'id': '0x48', 'icon': dict(ICON, side_alt='grey.png')}, {'id': '0x49', 'icon': ICON}],
+        'stock_icons': [{'id': '0x05', 'icon': {'side': 'grey.png', 'front': 'red.png', 'side_alt': 'green.png'}},
+                        {'id': '0x01', 'icon': ICON}]},
 }
 
 
@@ -283,6 +289,18 @@ class RoundTripTests(Harness):
         self.assertEqual(derived['grid']['shape'], [11, 5])
         self.assertEqual(derived['grid']['squares'], [['0x68']])
         self.assertEqual(len([c for c in derived['grid']['order'] if c]), 42)   # every square, in reading order
+
+    def test_alternate_side_views_are_carried(self):
+        derived = self.round_trip(CONFIGS['alternate side views'])
+        by_id = {e['id']: e for e in derived['ids'] + derived['wheels'] + derived['stock_icons']}
+        for cid in ('0x66', '0x48', '0x05'):
+            self.assertIn('side_alt', by_id[cid]['icon'], cid)
+            self.assertTrue(by_id[cid]['icon']['side_alt'].startswith('side_'))     # a side-page cell
+        self.assertEqual(by_id['0x48']['icon']['side_alt'], by_id['0x05']['icon']['side'])   # one shared cell
+        for cid in ('0x67', '0x49', '0x01'):
+            self.assertNotIn('side_alt', by_id[cid]['icon'], cid)
+        self.assertEqual(by_id['0x66']['icon']['like'], '0x00')
+        self.assertEqual(by_id['0x48']['icon']['like'], '0x00')             # a spare row with a normal_a key
 
     def test_stats_and_voice_are_carried(self):
         derived = self.round_trip(CONFIGS['stats and a square voice'])

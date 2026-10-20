@@ -34,7 +34,8 @@ only truth; nothing is remembered between runs.
   so an unchanged portrait keeps its bytes (wimgt's decode -> encode drifts);
   a replaced PNG is encoded afresh. A stock character whose own keys point
   at packed cells becomes a ``stock_icons`` entry (no ``like``: its records
-  keep their own data).
+  keep their own data). An entry whose normal_a key points at an alternate
+  side cell (the rows after the side and front ones) gets ``side_alt`` too.
 * ``clips`` on ``character_voices`` entries and ``species_clips`` entries
   (manifest): the custom voice clips, read back from the output sound archive
   (``sound``) as the encoded RWAVs the game plays, named by content
@@ -81,7 +82,8 @@ CONFIG_FILE = 'roster.json'
 ICON_DIR = 'icons'                 # beside CONFIG_FILE; the runner's --state reads portraits from here
 CLIP_DIR = clip_files.CLIP_DIR     # beside CONFIG_FILE; the custom voice clips (encoded RWAVs)
 VIEWS = ('side', 'front')
-PAGES = {'side': icons.SIDE_PAGE, 'front': icons.FRONT_PAGE}
+ALT_VIEW = icons.ALT_VIEW          # the alternate side view: an optional third cell, on the side page
+PAGES = {'side': icons.SIDE_PAGE, 'front': icons.FRONT_PAGE, ALT_VIEW: icons.SIDE_PAGE}
 
 
 class DeriveError(ValueError):
@@ -190,15 +192,20 @@ def _records(bank: bytes, field_: int) -> dict[int, bytes]:
 
 
 def _same_donor(record: bytes, donor: bytes) -> bool:
-    """Whether ``record`` is a copy of ``donor`` as ``extend_table`` makes it (key, kind, row and the
-    following-record flag replaced)."""
+    """Whether ``record`` is a copy of ``donor`` as ``extend_table`` makes it (key, kind, row, the
+    following-record flag and the side record's mirror bit replaced)."""
     flags = lambda r: int.from_bytes(r[0:2], 'big') & ~icons.FOLLOWING_RECORD_FLAG
-    return record[8:] == donor[8:] and flags(record) == flags(donor)
+    body = lambda r: bytes(r[8:icons.SIDE_FLAG_OFFSET]) + bytes([r[icons.SIDE_FLAG_OFFSET] & ~icons.SIDE_MIRROR_BIT
+                                                               & 0xFF]) + bytes(r[icons.SIDE_FLAG_OFFSET + 1:])
+    return body(record) == body(donor) and flags(record) == flags(donor)
 
 
-def _like(cid: int, default: int, records: dict[int, dict[int, bytes]], stock: dict[int, dict[int, bytes]]) -> int | None:
-    """The ``like`` whose stock records ``cid``'s records copy (``default`` first), or None."""
-    fields = [icons.SIDE_FIELD, icons.FRONT_FIELD] + ([icons.NORMAL_A_FIELD] if cid >= ids.FIRST_NEW else [])
+def _like(cid: int, default: int, records: dict[int, dict[int, bytes]], stock: dict[int, dict[int, bytes]],
+          has_alt: bool = False) -> int | None:
+    """The ``like`` whose stock records ``cid``'s records copy (``default`` first), or None. ``has_alt``: the entry
+    has a normal_a key of its own (an alternate side view), which a spare row otherwise has not."""
+    fields = [icons.SIDE_FIELD, icons.FRONT_FIELD] + ([icons.NORMAL_A_FIELD] if cid >= ids.FIRST_NEW or has_alt
+                                                       else [])
     for like in [default] + [c for c in range(ids.PLAYER_END) if c != default]:
         ok = True
         for f in fields:
@@ -221,16 +228,36 @@ def own_portraits(image: dolfile.DolImage, dat) -> tuple[list[dict], dict, dict]
     'front': ...}``), plus the bank's and the stock bank's source records per table (for ``_like``). A stock bank
     gives no entries."""
     bank = state_icons.read_bank(image, dat)
-    n, rest = divmod(len(bank.rows) - icons.STOCK_ROWS, 2)
-    if n <= 0:
+    total = len(bank.rows) - icons.STOCK_ROWS
+    if total <= 0:
         return [], {}, {}
-    if rest:
+    # one front key per entry points past the stock rows: n entries, then 2n rows + one per alternate side view
+    n = sum(1 for _key, row in bank.tables['front'] if row >= icons.STOCK_ROWS)
+    if n <= 0 or total < 2 * n:
         raise DeriveError(f'the icon bank has {len(bank.rows)} resource rows: not a bank the icons step packed')
-    by_row = {view: {row: key for key, row in bank.tables[view]} for view in VIEWS}
+    by_row = {view: {row: key for key, row in bank.tables[view]} for view in (*VIEWS, ALT_VIEW)}
     stock_data = dat.read(icons.STOCK_BANK_OFFSET, icons.STOCK_BANK_LENGTH)
     records = {f: _records(bank.data, f) for f in icons.TABLE_FIELDS}
     stock = {f: _records(stock_data, f) for f in icons.TABLE_FIELDS}
     pages = {}
+
+    def cell_of(cid, view, row):
+        """``(name, art, blocks)`` of the cell ``row`` names; the name is the page's prefix plus the cell position,
+        so a cell two rows share (an alternate view that equals another entry's side cell) keeps one name."""
+        page_id, (x, y, w, h) = bank.row_rect(row)
+        if page_id != PAGES[view] or (w, h) != (icon_art.ICON_WIDTH, icon_art.ICON_HEIGHT) or x % 4 or y % 4:
+            raise DeriveError(f'{_hex(cid)} {view}: resource row {row} is not a packed portrait cell')
+        prefix = 'side' if page_id == icons.SIDE_PAGE else 'front'
+        if page_id not in pages:
+            pages[page_id] = bank.page(page_id)
+        page = pages[page_id]
+        if page['format'] != gx_decode.CMPR:
+            raise DeriveError(f'page 0x{page_id:02X} is not CMPR')
+        blocks = icon_art.cell_blocks(page['image'], page['width'], x, y, icons.CELL)
+        cell = gx_decode.decode(gx_decode.CMPR, icon_art.cell_payload(blocks, icons.CELL), icons.CELL, icons.CELL)
+        art = Image.fromarray(cell[:icon_art.ICON_HEIGHT, :icon_art.ICON_WIDTH], 'RGBA')
+        return f'{prefix}_{x}_{y}.png', art, blocks
+
     out = []
     for i in range(n):
         rows = {'side': icons.STOCK_ROWS + i, 'front': icons.STOCK_ROWS + n + i}
@@ -241,19 +268,15 @@ def own_portraits(image: dolfile.DolImage, dat) -> tuple[list[dict], dict, dict]
         cid = cids['side']
         entry = {'id': cid}
         for view in VIEWS:
-            page_id, (x, y, w, h) = bank.row_rect(rows[view])
-            if page_id != PAGES[view] or (w, h) != (icon_art.ICON_WIDTH, icon_art.ICON_HEIGHT) or x % 4 or y % 4:
-                raise DeriveError(f'{_hex(cid)} {view}: resource row {rows[view]} is not a packed portrait cell')
-            if page_id not in pages:
-                pages[page_id] = bank.page(page_id)
-            page = pages[page_id]
-            if page['format'] != gx_decode.CMPR:
-                raise DeriveError(f'page 0x{page_id:02X} is not CMPR')
-            blocks = icon_art.cell_blocks(page['image'], page['width'], x, y, icons.CELL)
-            cell = gx_decode.decode(gx_decode.CMPR, icon_art.cell_payload(blocks, icons.CELL), icons.CELL, icons.CELL)
-            art = Image.fromarray(cell[:icon_art.ICON_HEIGHT, :icon_art.ICON_WIDTH], 'RGBA')
-            entry[view] = (f'{view}_{x}_{y}.png', art, blocks)
+            entry[view] = cell_of(cid, view, rows[view])
         out.append(entry)
+    by_id = {e['id']: e for e in out}
+    for row in range(icons.STOCK_ROWS + 2 * n, len(bank.rows)):
+        cid = by_row[ALT_VIEW].get(row)
+        if cid is None or cid not in by_id:
+            raise DeriveError(f'icon bank row {row}: no normal_a key of a packed entry points at this alternate '
+                              f'side cell')
+        by_id[cid][ALT_VIEW] = cell_of(cid, ALT_VIEW, row)
     return out, records, stock
 
 
@@ -361,10 +384,11 @@ def derive(image: dolfile.DolImage, dat, sound=None) -> Derived:
     portraits, records, stock = own_portraits(image, dat)
     for i, p in enumerate(portraits):
         cid = p['id']
+        views = [*VIEWS] + ([ALT_VIEW] if ALT_VIEW in p else [])
+        icon = {view: p[view][0] for view in views}
         if cid < icons.STOCK_ICON_END:                 # a stock character's replaced portraits
-            stock_entries[cid] = {'id': _hex(cid), 'icon': {'side': p['side'][0], 'front': p['front'][0],
-                                                            'fit': 'strict'}}
-            for view in VIEWS:
+            stock_entries[cid] = {'id': _hex(cid), 'icon': dict(icon, fit='strict')}
+            for view in views:
                 name, art, blocks = p[view]
                 out.portraits.setdefault(name, (art, blocks))
             rank[cid] = i
@@ -374,13 +398,13 @@ def derive(image: dolfile.DolImage, dat, sound=None) -> Derived:
             out.warnings.append(f'{_hex(cid)} has own portraits but no ids/wheels entry: portraits dropped')
             continue
         default = new_ids[cid][1] if cid in new_ids else icons.SPARE_DONORS[cid]
-        like = _like(cid, default, records, stock)
+        like = _like(cid, default, records, stock, ALT_VIEW in p)
         if like is None:
             out.warnings.append(f'{_hex(cid)}: its icon records copy no stock record; '
                                 f'using 0x{default:02X} (record flags may change)')
             like = default
-        entry['icon'] = {'side': p['side'][0], 'front': p['front'][0], 'like': _hex(like), 'fit': 'strict'}
-        for view in VIEWS:
+        entry['icon'] = dict(icon, like=_hex(like), fit='strict')
+        for view in views:
             name, art, blocks = p[view]
             out.portraits.setdefault(name, (art, blocks))
         rank[cid] = i

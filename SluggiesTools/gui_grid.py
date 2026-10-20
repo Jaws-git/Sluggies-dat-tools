@@ -49,7 +49,7 @@ WRITING_FLAGS = frozenset({'--export', '--roster', '--patch', '--unpatch', '--re
                            '--set-char-voice', '--set-species-clip', '--set-stats',
                            '--set-icon', '--apply-slots', '--load-roster',
                            '--write-slot-blocks', '--write-slot-equipment', '--write-slot-animation',
-                           '--game-options'})
+                           '--write-voice-pack', '--game-options'})
 STAGED_CLIPS_REL = os.path.join('_gui', 'slot', 'staged_clips')   # encoded clips of pending species_clip edits
 UNNAMED = '-'
 CPU_VS_CPU_OPTIONS = ('cpu_vs_cpu', 'cpu_management')   # what the Options tab's CPU vs CPU button turns off
@@ -490,6 +490,24 @@ def choice_index(choices: list, source: str | None) -> int:
 # --------------------------------------------------------------------------
 
 FRONT, SIDE = 'front', 'side'
+SIDE_ALT = 'side_alt'                    # the alternate side view (Roster/icons.ALT_VIEW): facing the other way
+VIEW_LABELS = {FRONT: 'front', SIDE: 'side', SIDE_ALT: 'alternate side'}
+HAS_ALT_TEXT = 'Has alternate side icon'
+SET_ALT_TEXT = '[Set Side Alt Icon]'
+
+
+def view_label(view: str) -> str:
+    return VIEW_LABELS.get(view, view)
+
+
+def has_alt_icon(state: dict, cid: int) -> bool:
+    """Whether the slot shows an alternate side portrait of its own (a cell distinct from the side and front
+    ones; most characters mirror their side cell instead)."""
+    try:
+        from Roster import state_icons
+    except ImportError:
+        from SluggiesTools.Roster import state_icons
+    return state_icons.has_alternate((characters(state).get(cid) or {}).get('icon'))
 
 
 def icon_ref(state: dict, cid: int, view: str) -> dict | None:
@@ -587,6 +605,8 @@ def slot_details(state: dict, cid: int) -> list[str]:
         lines.append(animations)
     if c.get('default_name'):
         lines.append(f'Name: the game text is still {c["name"]["en"]!r}; shown with its usual name')
+    if has_alt_icon(state, cid):
+        lines.append(HAS_ALT_TEXT)
     return lines
 
 
@@ -621,9 +641,14 @@ def can_replace_portrait(cid: int) -> bool:
 
 
 def portrait_tip(cid: int, view: str) -> str:
+    label = view_label(view)
     if not can_replace_portrait(cid):
-        return f'{view.capitalize()} portrait (Miis show the Mii icon; it cannot be replaced)'
-    return f'Click to replace the {view} portrait'
+        return f'{label.capitalize()} portrait (Miis show the Mii icon; it cannot be replaced)'
+    if view == SIDE_ALT:
+        return ('Click to pick an alternate side portrait: the side view facing the other way. Without one the '
+                'game mirrors the side portrait; characters with asymmetric art (Luigi\'s "L", Waluigi\'s "Γ") '
+                'carry a second drawing instead. "Clear slot" drops it again where the character had none.')
+    return f'Click to replace the {label} portrait'
 
 
 def _icon_import():
@@ -1016,6 +1041,8 @@ class PendingEdits:
                     out.append(f'  {label}: {value}')
             if effects.get('portraits') and section['action'] == COPY:
                 out.append('  Portraits: copied (previewed, marked "pending")')
+            if effects.get('portraits') and section['action'] == SLGMODEL:
+                out.append('  Portraits: from the character file (previewed, marked "pending")')
             if effects.get('portraits') and section['action'] == 'patch':
                 out.append('  Portraits: ' + os.path.basename(os.path.dirname(os.path.dirname(
                     effects['portraits']['front']))) + ' (previewed, marked "pending")')
@@ -1058,6 +1085,8 @@ def _edit_title(edit: dict) -> str:
         return 'Pending: clear this slot'
     if edit['op'] == COPY:
         return f'Pending: paste a clone of {edit.get("source")}'
+    if edit['op'] == SLGMODEL:
+        return f'Pending: import the character file {os.path.basename(edit.get("file") or "?")} into this slot'
     if edit['op'] == 'rename':
         return f'Pending: rename to {edit["text"]!r}' if edit.get('text') else 'Pending: reset the name'
     if edit['op'] == 'stats':
@@ -1077,7 +1106,7 @@ def _edit_title(edit: dict) -> str:
             return f'Pending: voice pack clip {moment} from {os.path.basename(edit.get("origin") or edit["file"])}'
         return f'Pending: voice pack clip {moment} back to the stock clip'
     if edit['op'] == 'icon':
-        return f'Pending: {edit.get("view")} portrait from {icon_label(edit)}'
+        return f'Pending: {view_label(edit.get("view"))} portrait from {icon_label(edit)}'
     if edit['op'] == STAT_RESET:
         return 'Pending: clear its stat edits'
     return f'Pending: {edit["op"]}'
@@ -1096,7 +1125,10 @@ EQUIP_OPS = ('equip', 'equip_clear')
 ANIM = 'anim'                                 # one animation bank from an .anm file (Roster/slot_plan, test-pinned)
 ANIM_FILTERS = [('Animation banks', '*.anm'), ('All files', '*.*')]
 COPY = 'copy'                                 # paste: the slot becomes a clone (Roster/slot_plan, test-pinned)
-MODEL_OPS = ('patch', 'clear', COPY)
+SLGMODEL = 'slgmodel'                         # a character file of the Sluggers Characters patcher (test-pinned)
+SLGMODEL_EXTENSION = '.slgmodel'
+SLGMODEL_FILTERS = [('Character files', '*.slgmodel'), ('All files', '*.*')]
+MODEL_OPS = ('patch', 'clear', COPY, SLGMODEL)
 # A stat edit (the stat editor's edit file) belongs to no slot: its "id" is GAME_WIDE (Roster/slot_plan, test-pinned)
 STAT_EDITS, GAME_WIDE = 'stat_edits', 0xFF
 STAT_RESET = 'stat_reset'                     # clears one slot's stat edits (Roster/slot_plan, test-pinned)
@@ -1509,6 +1541,33 @@ def _section_lines(state: dict, section: dict, sizes: dict, warnings: bool = Tru
         if warnings:
             lines += [(f'Warning: {warning}', WARN) for warning in section['warnings']]
         return lines
+    if section['action'] == SLGMODEL:
+        info = section.get('slgmodel') or {}
+        base = int(info['base'], 16) if info.get('base') else None
+        base_text = f'{known_name(state, base)} ({hex_id(base)})' if base is not None else info.get('base_name', '?')
+        lines.append((f'Character file: {os.path.basename(info.get("file") or "?")}: {info.get("name", "?")}, built '
+                      f'on {base_text} -> {name_of(state, cid)} ({hex_id(cid)})', TEXT))
+        sizes_ = info.get('sizes') or {}
+        if info.get('high_only'):
+            lines.append((f'Models: High {_mb(sizes_.get("high") or 0)}, no Low model in the file: the High model is '
+                          f'used as the Low model too ({_mb(2 * (sizes_.get("high") or 0))} together)', WARN))
+        else:
+            lines.append((f'Models: High {_mb(sizes_.get("high") or 0)} + Low {_mb(sizes_.get("low") or 0)}, '
+                          'finished blocks written as they are', TEXT))
+        by = ', '.join(f'{label} {info[key]}' for key, label in (('author', 'by'), ('from', 'from')) if info.get(key))
+        if by:
+            lines.append((f'File: {by}', TEXT))
+        if info.get('notes'):
+            lines.append((f'Notes: {info["notes"]}', TEXT))
+        effects = section.get('effects') or {}
+        for key, label in (('model', 'Models'), ('name', 'Name'), ('stats', 'Stats'), ('voice', 'Voice'),
+                           (CHAR_VOICE, 'Own voice'), ('portrait_note', 'Portraits')):
+            if effects.get(key):
+                lines.append((f'{label}: {effects[key]}', TEXT))
+        lines += [(f'- {note}', TEXT) for note in section['notes'][1:]]
+        if warnings:
+            lines += [(f'Warning: {warning}', WARN) for warning in section['warnings']]
+        return lines
     if patch:
         source = int(section['source'], 16)
         lines.append((f'Source: {known_name(state, source)} ({hex_id(source)}) -> {name_of(state, cid)} '
@@ -1591,11 +1650,12 @@ def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int
                          ANIM: (f'Replace {len(anms)} animation banks of {target}?' if len(anms) > 1
                                 else f'Replace an animation bank of {target}?'),
                          'stats': f'Other stats for {target}?',
-                         'icon': f'New {view} portrait for {target}?',
+                         'icon': f'New {view_label(view)} portrait for {target}?',
                          'voice': f'Another voice for the square of {target}?',
                          CHAR_VOICE: f'An own voice for {target}?',
                          SPECIES_CLIP: f'Replace clip {moment} of the voice of {target}?',
-                         COPY: f'Paste onto {target}?'}.get(kind, f'Clear {target}?'))
+                         COPY: f'Paste onto {target}?',
+                         SLGMODEL: f'Import a character file into {target}?'}.get(kind, f'Clear {target}?'))
     error = error_message(output)
     lines = dialog.lines
     if plan is None or plan['refused']:
@@ -1644,6 +1704,7 @@ def slot_dialog(state: dict, cid: int, patch: bool, plan: dict | None, code: int
         lines.append((f'Build check failed: {error or f"exit code {code}"}. Nothing was staged.', ERROR))
         return dialog
     checks = ('slot rules, and every copied block validated' if kind == COPY
+              else 'slot rules, and the file\'s blocks validated against the slot\'s skeleton' if kind == SLGMODEL
               else 'slot rules, and the bank checked against the slot\'s skeleton' if kind == ANIM
               else 'slot rules, and the model built and validated' if kind == 'equip'
               else 'slot rules, and every model built and validated' if patch and not rename else 'slot rules')

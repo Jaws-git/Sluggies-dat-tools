@@ -19,6 +19,7 @@ for path in (ADDON_DIR, TOOLS_DIR, TOOLS_DIR / 'Hammerspace', pathlib.Path(__fil
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
+import BlockValidator  # noqa: E402
 import CustomSubmeshExport as cse  # noqa: E402
 import FieldCodec  # noqa: E402
 import HammerspaceMain as main  # noqa: E402
@@ -330,13 +331,72 @@ class BuildEntryTests(unittest.TestCase):
         entry = self._entry(loop_uvs_by_channel={0: self.loop_uvs, 1: edited})
         self.assertNotEqual(entry['UVChannels'][0]['UVChannelData'], entry['UVChannels'][1]['UVChannelData'])
 
-    def test_out_of_range_positions_name_the_donor_format(self):
-        far = cse.bone_local_geometry(
-            [(x + 40.0, y, z) for x, y, z in self.local], self.geometry.triangles,
+    def _far(self, offset):
+        return cse.bone_local_geometry(
+            [(x + offset, y, z) for x, y, z in self.local], self.geometry.triangles,
             cse.IDENTITY4, cse.IDENTITY4, cse.IDENTITY4,
         )
-        with self.assertRaisesRegex(ValueError, 'format 59, which a rebuilt donor submesh keeps'):
-            self._entry(geometry=far)
+
+    def test_positions_in_range_keep_the_donor_format_without_a_field(self):
+        infos = []
+        entry = self._entry(infos=infos)
+        self.assertNotIn('VertexBufferQuantizeInfo', entry)
+        self.assertFalse(any('stored in format' in line for line in infos))
+
+    def test_out_of_range_positions_widen_the_format(self):
+        far = self._far(40.0)
+        infos = []
+        entry = self._entry(geometry=far, infos=infos)
+        quantize = entry['VertexBufferQuantizeInfo']
+        # The finest format that holds the mesh: +40 needs +/-64 (shift 9).
+        self.assertEqual(quantize, 57)
+        self.assertTrue(cse.position_format_fits(far, quantize))
+        self.assertFalse(cse.position_format_fits(far, quantize + 1))
+        self.assertTrue(any('stored in format 57' in line for line in infos), infos)
+        raw = FieldCodec.decode_field(entry['VertexBufferData'])
+        self.assertEqual(struct.unpack_from('>3h', raw, 0),
+                         tuple(round(v * 512) for v in far.positions[0]))
+
+    def test_widened_entry_round_trips_through_the_patcher(self):
+        entry = self._entry(geometry=self._far(40.0))
+        self.model['UseHammerspace'] = True
+        self.sub['RigidRebuild'] = entry
+        main._validate_rigid_rebuilds(self.model)
+        with synthetic_donor.donor_environment() as env:
+            data = env.reload()
+            data['SluggiesModel']['UseHammerspace'] = True
+            data['SluggiesModel']['Submeshes'][RIGID]['RigidRebuild'] = entry
+            result = main.BuildModelBlock(data, main.SectionModes(gpl='build'), sluggie_path=env.sluggie_path)
+            self.assertTrue(result.validation_report['valid'], result.validation_report.get('errors'))
+            layout = BlockValidator.validate_model_block(result.block)['facts']['gpl_submesh_layout']
+            self.assertEqual(layout[RIGID]['position_quantize_info'], 57)
+
+    def test_positions_beyond_the_widest_format_are_refused(self):
+        with self.assertRaisesRegex(ValueError, 'widest position format'):
+            self._entry(geometry=self._far(40000.0))
+
+    def test_widened_format_is_validated(self):
+        entry = self._entry()
+        self.model['UseHammerspace'] = True
+        for bad in (0x40, 0x2F, True, '57'):
+            entry['VertexBufferQuantizeInfo'] = bad
+            self.sub['RigidRebuild'] = entry
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, 'must be an s16 position format'):
+                main._validate_rigid_rebuilds(self.model)
+
+    def test_outgrown_format_is_a_rebuild_reason(self):
+        self.assertFalse(rre.outgrew_position_format(self.geometry, 59))
+        self.assertTrue(rre.outgrew_position_format(self._far(40.0), 59))
+        self.assertFalse(rre.outgrew_position_format(self._far(40.0), 0x40))   # float never outgrows
+        self.assertEqual(
+            rre.decide_reasons(topology_changed=False, moved=False, host_changed=False,
+                               surfaces_changed=False, out_of_range=True),
+            [rre.REASON_POSITION_RANGE],
+        )
+
+    def test_donor_position_candidates(self):
+        self.assertEqual(cse.donor_position_candidates(61), tuple(range(61, 47, -1)))
+        self.assertEqual(cse.donor_position_candidates(48), (48,))
 
     def test_colors_and_normals_use_the_donor_formats(self):
         self.donor.color_format = (3, 0)       # RGB565

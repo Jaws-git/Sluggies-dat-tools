@@ -1,11 +1,15 @@
 """Character icons: each character's own portraits as PNGs in its model folder (``start.py --export-icons``).
 
 Writes ``icon/FrontIcon.png`` and ``icon/SideIcon.png`` (48x51 RGBA) into
-each character's high-poly model folder, next to its ``tex/``. The owner of a
-portrait is found through the icon bank's side and front source tables
-(layout elements 1/2, key = character ID, record +0x06 = resource row); a
-character's model folder is its ID + 0x12. Pages are decoded with
-``gx_decode``, so no external tool is needed.
+each character's high-poly model folder, next to its ``tex/``, and
+``icon/SideIconAlt.png`` for a character whose alternate side view (the
+bank's first source table, the side portrait facing the other way) is a cell
+of its own rather than the side or front cell: in the stock bank Luigi, Baby
+Luigi, Waluigi, Dixie Kong, King K. Rool, Baby Peach, Baby Daisy and Baby DK
+(the others mirror their side cell). The owner of a portrait is found through
+the icon bank's source tables (layout elements 0/1/2, key = character ID,
+record +0x06 = resource row); a character's model folder is its ID + 0x12.
+Pages are decoded with ``gx_decode``, so no external tool is needed.
 """
 
 import argparse
@@ -44,8 +48,9 @@ INPUT_DAT = os.path.join(ROOT_DIR, '1_Input', 'dt_na.dat')
 # whose records are keyed by character ID and name a resource row (+0x06): page and UV rect.
 MODELS_ROOT = os.path.join(ROOT_DIR, '2_Output_Assets')
 CHARACTER_ICON_DIR = 'icon'
-CHARACTER_ICON_FILES = {'front': 'FrontIcon.png', 'side': 'SideIcon.png'}
-CHARACTER_ICON_ELEMENTS = {'side': 1, 'front': 2}
+ALT_VIEW = 'side_alt'                      # the alternate side view: element 0 (normal_a), when a cell of its own
+CHARACTER_ICON_FILES = {'front': 'FrontIcon.png', 'side': 'SideIcon.png', ALT_VIEW: 'SideIconAlt.png'}
+CHARACTER_ICON_ELEMENTS = {'side': 1, 'front': 2, ALT_VIEW: 0}
 SOURCE_RECORD_RESOURCE = 0x06
 CHARACTER_DIR_OFFSET = 0x12                # a character's model directory is its ID + 0x12
 OWN_ICON_IDS = range(0x00, 0x4D)           # players and the six unused characters (dirs 18-94); Miis share one icon
@@ -115,12 +120,13 @@ def _decode_page(bank_bytes, desc):
 
 
 def _character_icon_cells(bank_bytes, page_sizes):
-    """Each character's own portrait cells, read from the bank's side and front source tables.
+    """Each character's own portrait cells, read from the bank's three source tables.
 
     Returns ``(cells, problems)``: ``cells`` maps character ID to {view: (page, (x, y, w, h))} for IDs in
     ``OWN_ICON_IDS`` with their own key; the game's fallback to the nearest lower key is deliberately not
-    followed. ``page_sizes`` maps texture index to (width, height). ``problems`` lists keys whose rect is
-    not a 48x51 cell inside a known page."""
+    followed. The alternate side view (``ALT_VIEW``) is listed only when it is a cell of its own, not the
+    side cell (mirrored at runtime) or the front cell (new IDs' convention). ``page_sizes`` maps texture
+    index to (width, height). ``problems`` lists keys whose rect is not a 48x51 cell inside a known page."""
     bank = layout2d.parse_bank(bank_bytes)
     rows = layout2d.resource_rows(bank_bytes, bank)
     cells, problems = {}, []
@@ -145,6 +151,10 @@ def _character_icon_cells(bank_bytes, page_sizes):
                                 f'is not a {GRID_CELL_WIDTH}x{GRID_CELL_HEIGHT} cell inside the page')
                 continue
             cells.setdefault(char_id, {})[view] = (page, (x, y, w, h))
+    for views in cells.values():
+        alt = views.get(ALT_VIEW)
+        if alt is not None and alt in (views.get('side'), views.get('front')):
+            del views[ALT_VIEW]
     return cells, problems
 
 
@@ -175,9 +185,10 @@ def _character_home_folder(models_root, dir_index):
 
 
 def _export_character_icons(models_root, cells, page_images):
-    """Write ``icon/FrontIcon.png`` and ``icon/SideIcon.png`` (48x51 RGBA) into each character's high-poly
-    model folder, and remove ones whose character has no own key in this bank. ``page_images`` maps page to
-    its RGBA image. Returns ``(written, skipped)``: one row per PNG, and {reason: [dir index, ...]}."""
+    """Write ``icon/FrontIcon.png``, ``icon/SideIcon.png`` and, when the character has one of its own,
+    ``icon/SideIconAlt.png`` (48x51 RGBA) into each character's high-poly model folder, and remove ones whose
+    character has no own key (or no alternate cell) in this bank. ``page_images`` maps page to its RGBA image.
+    Returns ``(written, skipped)``: one row per PNG, and {reason: [dir index, ...]}."""
     written, skipped = [], {}
     for char_id in OWN_ICON_IDS:
         dir_index = char_id + CHARACTER_DIR_OFFSET
@@ -241,8 +252,11 @@ def main():
     _slogger.info(f'Exporting character icons from {os.path.relpath(input_dol, ROOT_DIR)} / '
                   f'{os.path.relpath(input_dat, ROOT_DIR)}...', source='icons.export_icons')
     written, skipped = export_character_icons(input_dol, input_dat)
+    alts = sorted({row['dir'] for row in written if row['view'] == ALT_VIEW})
     _slogger.info(f'Character icons: {len({row["dir"] for row in written})} model folders '
-                  f'(<model>/{CHARACTER_ICON_DIR}/FrontIcon.png, SideIcon.png)', source='icons.export_icons')
+                  f'(<model>/{CHARACTER_ICON_DIR}/FrontIcon.png, SideIcon.png'
+                  + (f'; SideIconAlt.png for dirs {", ".join(map(str, alts))}' if alts else '') + ')',
+                  source='icons.export_icons')
     for reason, dirs in sorted(skipped.items()):
         _slogger.info(f'Character icons skipped ({reason}): dirs {", ".join(str(d) for d in dirs)}',
                       source='icons.export_icons')

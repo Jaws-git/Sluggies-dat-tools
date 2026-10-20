@@ -10,10 +10,13 @@ A donor rigid (CompCount 3) submesh takes one of two paths per export:
   the donor's, its world-space positions equal the mesh-local ones and every
   face still uses its imported surface;
 - a whole-blob ``RigidRebuild`` otherwise -- changed topology, an Object Mode
-  transform, a host-bone change that keeps the world position, or faces moved
-  between surfaces (including onto a new Add-material surface).
+  transform, a host-bone change that keeps the world position, faces moved
+  between surfaces (including onto a new Add-material surface), or positions
+  that no longer fit the donor's position format.
 
-The rebuild keeps the donor's formats, pools equal values,
+The rebuild keeps the donor's formats -- except that positions which outgrew
+the donor's s16 range step to a coarser shift (``VertexBufferQuantizeInfo``
+on the entry), as custom submeshes do -- pools equal values,
 mirrors UV channel 1 from channel 0 when the donor channels are identical
 and names surfaces by key.
 
@@ -43,6 +46,7 @@ REASON_TOPOLOGY = 'topology'
 REASON_TRANSFORM = 'object_transform'
 REASON_HOST = 'host_bone_world'
 REASON_SURFACES = 'surfaces'
+REASON_POSITION_RANGE = 'position_range'   # positions outgrew the donor's s16 format
 
 NEW_SURFACE_KEY_RE = re.compile(r'^sm(\d+)_new(\d+)$')
 RIGID_COMP_COUNT = 3
@@ -240,7 +244,17 @@ def positions_moved(mesh_local: Sequence[Sequence[float]], geometry: cse.BoneLoc
     return local != bone
 
 
-def decide_reasons(*, topology_changed: bool, moved: bool, host_changed: bool, surfaces_changed: bool) -> List[str]:
+def outgrew_position_format(geometry: cse.BoneLocalGeometry, quantize_info: int) -> bool:
+    """Whether an s16 donor format can no longer hold the positions: the
+    in-place paths keep the donor's header, so such a mesh needs a rebuild
+    (which may widen the format). Float donor formats never outgrow."""
+    return (quantize_info >> 4) == 3 and not cse.position_format_fits(geometry, quantize_info)
+
+
+def decide_reasons(
+    *, topology_changed: bool, moved: bool, host_changed: bool, surfaces_changed: bool,
+    out_of_range: bool = False,
+) -> List[str]:
     reasons = []
     if topology_changed:
         reasons.append(REASON_TOPOLOGY)
@@ -248,6 +262,8 @@ def decide_reasons(*, topology_changed: bool, moved: bool, host_changed: bool, s
         reasons.append(REASON_HOST if host_changed else REASON_TRANSFORM)
     if surfaces_changed:
         reasons.append(REASON_SURFACES)
+    if out_of_range:
+        reasons.append(REASON_POSITION_RANGE)
     return reasons
 
 
@@ -555,22 +571,21 @@ def build_rigid_rebuild_entry(
     adds ``FacialPoses`` and pins the normal entries of animated vertices."""
     warnings = warnings if warnings is not None else []
     infos = infos if infos is not None else []
+    position_format = cse.select_position_format(
+        object_name, host_bone_id, geometry, cse.donor_position_candidates(donor.position_quantize),
+    )
+    position_quantize = position_format[1]
+    widened = cse.widened_position_info(object_name, donor.position_quantize, position_quantize)
+    if widened:
+        infos.append(widened)
     facial_entries = None
     pinned_normal_data = None
     if facial_keys is not None:
         facial_entries, pinned_normal_data = encode_rigid_facial_poses(
-            object_name, facial_keys, geometry, donor.position_quantize,
+            object_name, facial_keys, geometry, position_quantize,
             donor.normal_format if loop_normals is not None else None, loop_normals,
             use_compression, warnings, infos,
         )
-    position_format = (RIGID_COMP_COUNT, donor.position_quantize)
-    try:
-        cse.check_position_range(object_name, host_bone_id, geometry, donor.position_quantize)
-    except ValueError as error:
-        raise ValueError(
-            f'{error} The donor stores positions in format {donor.position_quantize}, which a rebuilt '
-            'donor submesh keeps.'
-        ) from None
     positions = cse.encode_positions(object_name, geometry, position_format)
     faces_data, faces_count = cse.encode_faces(object_name, geometry.faces)
     if len(routing.indices) != faces_count:
@@ -580,6 +595,8 @@ def build_rigid_rebuild_entry(
         'HostBoneId': int(host_bone_id),
         'VertexBufferData': cse.encode_field(positions, use_compression),
     }
+    if widened:
+        entry['VertexBufferQuantizeInfo'] = position_quantize
     if donor.normal_format:
         if pinned_normal_data is not None:
             normal_data, normal_indices = pinned_normal_data

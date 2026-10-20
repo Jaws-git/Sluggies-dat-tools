@@ -347,7 +347,7 @@ class SluggiesGui:
         field with OK (file / save: plus Browse...). The popup closes first, then ``on_answer(text)`` or, for
         ``cancel_label`` and the close button, ``on_cancel()`` runs. One at a time: a new one replaces it. With
         "Skip confirmation popups" on, Yes / No and Continue popups are answered Yes / Continue at once; ``danger``
-        (a red Confirm, ``gecko_compat``) always asks."""
+        (a red Confirm, ``gecko_compat``) and ``overwrite`` (an export replacing files: Yes / No) always ask."""
         self._close_prompt()
         if kind in ('yesno', 'key') and self.skip_confirmations():
             answer = 'y' if kind == 'yesno' else ''
@@ -389,7 +389,7 @@ class SluggiesGui:
                         dpg.add_button(label='Browse...', callback=lambda: self._prompt_browse(kind == 'save'))
                 dpg.add_spacer(height=6)
             with dpg.group(horizontal=True):
-                if kind == 'yesno':
+                if kind in ('yesno', 'overwrite'):
                     yes = dpg.add_button(label='Yes', width=110, height=30, callback=lambda: answer('y'))
                     dpg.add_button(label='No', width=110, height=30, callback=lambda: answer('n'))
                 elif kind == 'key':
@@ -762,7 +762,8 @@ class SluggiesGui:
                              '2_Output_Assets.\nOff: no models are exported; untangling, .glb files and the '
                              'texture and debug options need it.')
             with dpg.tooltip(icons):
-                dpg.add_text('Write FrontIcon.png and SideIcon.png into each character model folder.')
+                dpg.add_text('Write FrontIcon.png and SideIcon.png (plus SideIconAlt.png where a character has an '
+                             'alternate side portrait) into each character model folder.')
             with dpg.tooltip(anims):
                 dpg.add_text('Write each character\'s raw animation files (anm/*.anm).\n'
                              'With "Also write .glb files" on, also a .glb of each next to them, '
@@ -998,9 +999,15 @@ class SluggiesGui:
         dpg.show_viewport()
         # files dropped from Explorer: handed to the GUI thread, which finds the field they landed on
         file_drop.install(native_dialog.find_owner_window(_VIEWPORT_TITLE),
-                          lambda paths, point: self.output_queue.put(
-                              ('call', self.maintenance_tab.on_files_dropped, paths, point)))
+                          lambda paths, point: self.output_queue.put(('call', self._on_files_dropped, paths, point)))
         self.grid_tab.request_read()
+
+    def _on_files_dropped(self, paths, point):
+        """Files dropped from Explorer: the open tab decides (the character grid's open slot, the Maintenance tab's
+        Dolphin texture field)."""
+        if self.grid_tab.on_files_dropped(paths, point):
+            return
+        self.maintenance_tab.on_files_dropped(paths, point)
 
     def run(self):
         self.build()

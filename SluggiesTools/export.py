@@ -58,7 +58,8 @@ def confirm_overwrite():
     if existing:
         answer = _slogger.ask(
             'Previous export files already exist in 2_Output_Assets. '
-            'Continue and overwrite? (y/n): '
+            'Continue and overwrite? (y/n): ',
+            kind='overwrite',
         ).strip().lower()
         _slogger.log_user_input('Model export overwrite confirm', answer, source='export')
         if answer != 'y':
@@ -1387,7 +1388,8 @@ def prepare_untangle_output_files():
         os.mkdir(output_dat_dir)
 
     if os.path.exists(output_dat_path) or os.path.exists(output_dol_path):
-        answer = _slogger.ask('Untangle mode will overwrite 3_Output_Dat/dt_na.dat and main.dol. Continue? (y/n): ').strip().lower()
+        answer = _slogger.ask('Untangle mode will overwrite 3_Output_Dat/dt_na.dat and main.dol. Continue? (y/n): ',
+                              kind='overwrite').strip().lower()
         _slogger.log_user_input(
             'Untangle overwrite confirm', answer, source='export'
         )

@@ -124,6 +124,8 @@ EQUIP_BUTTON_W = 76
 BADGE_FONT = 9                   # the grid's slot-count number, in portrait pixels (scaled with the texture)
 RENAME, SELECT, CLEAR, DISCARD = 'Rename...', 'Select .sluggie...', 'Clear slot', 'Discard pending'
 SELECT_LOW = 'Select lowpoly (L_) .sluggie...'   # beside Select .sluggie...: a Low model pick (joins a pending High)
+IMPORT_SLG = 'Import .slgmodel...'   # below them: a Sluggers Characters patcher character file
+SLGMODEL_DIR_SETTING = 'grid_last_slgmodel_dir'  # the GUI settings key: the folder the last character file came from
 STATS, VOICE = 'Adopt stats...', 'Voice...'
 ANIM = 'Replace animation...'       # on the row below, under Adopt stats...
 ANIM_DIR_SETTING = 'grid_last_anim_dir'   # the GUI settings key: the folder the last .anm came from
@@ -702,6 +704,35 @@ class CharacterGridTab:
                 tip = 'A roster pack load is pending: press "Patch Game" (or Discard it) first.'
             dpg.add_text(tip, wrap=420)
 
+    def _alt_icon_link(self, cid):
+        """``[Set Side Alt Icon]`` beside the Side label: a click picks the alternate side portrait (the side view
+        facing the other way; the game mirrors the side cell without one). Its tooltip explains it and shows the
+        alternate portrait the slot has, or the pending one."""
+        state = self.nav.state or self.loader.state
+        can = gui_grid.can_replace_portrait(cid)
+        usable = can and self.pending.pack is None and not self._locked()
+        pending = self.pending.portrait(cid, gui_grid.SIDE_ALT)
+        link = dpg.add_text(gui_grid.SET_ALT_TEXT, color=_PENDING if pending else (_CHANGED if usable else _EMPTY))
+        if usable:
+            with dpg.item_handler_registry() as handlers:
+                dpg.add_item_clicked_handler(callback=lambda *_: self._on_portrait(cid, gui_grid.SIDE_ALT))
+            dpg.bind_item_handler_registry(link, handlers)
+            self._name_handlers.append(handlers)
+        with dpg.tooltip(link):
+            if can and self.pending.pack is not None:
+                dpg.add_text('A roster pack load is pending: press "Patch Game" (or Discard it) first.', wrap=420)
+            else:
+                dpg.add_text(gui_grid.portrait_tip(cid, gui_grid.SIDE_ALT), wrap=420)
+            shown = pending or (gui_grid.icon_file(state, self.loader.state_path, cid, gui_grid.SIDE_ALT)
+                                if state and gui_grid.has_alt_icon(state, cid) else None)
+            texture = self._texture(shown, SLOT_SCALE) if shown else None
+            if texture is not None:
+                dpg.add_text('Pending alternate side portrait:' if pending else 'Its alternate side portrait:',
+                             color=_PENDING if pending else _DIM)
+                dpg.add_image(texture, width=PORTRAIT[0], height=PORTRAIT[1])
+            elif can:
+                dpg.add_text('No alternate side portrait: the side one is mirrored.', color=_DIM)
+
     @staticmethod
     def _caption(text, cell_w, fallback=False, color=None):
         """A centred label under a portrait; a fallback portrait is marked with ``*`` in the warning colour."""
@@ -893,9 +924,15 @@ class CharacterGridTab:
             details.append((gecko_compat.PENDING_WARNING, _GECKO))
         if self.pending.memory_line(cid):
             details.append((self.pending.memory_line(cid), _GECKO))
-        text_w = SLOT_W - 2 * PAD - 2 * (PORTRAIT[0] + 2 * FRAME + GAP) - GAP
+        # the Side label row carries [Set Side Alt Icon], which is wider than the portrait: the details column
+        # gives way to it (7 px per character, as _caption assumes)
+        side_label = ('Side (pending)' if self.pending.portrait(cid, gui_grid.SIDE)
+                      else 'Side *' if gui_grid.is_fallback(state, cid, gui_grid.SIDE) else 'Side')
+        side_row_w = 7 * len(side_label) + GAP + 7 * len(gui_grid.SET_ALT_TEXT)
+        left_w = (PORTRAIT[0] + 2 * FRAME + GAP) + max(PORTRAIT[0] + 2 * FRAME, side_row_w) + GAP
+        text_w = SLOT_W - 2 * PAD - left_w - GAP
         # left column: the portraits, then Select .sluggie... / Select lowpoly (L_) .sluggie... below them
-        left = PORTRAIT[1] + 2 * FRAME + LINE + GAP + 2 * BUTTON_H + 4 * TEXT_SPACING_Y
+        left = PORTRAIT[1] + 2 * FRAME + LINE + GAP + 3 * BUTTON_H + 6 * TEXT_SPACING_Y
         body = max(left, sum(_text_height(line, text_w) + TEXT_SPACING_Y for line, _c in details))
         tiles = gui_grid.equipment_tiles(state, cid, self.pending)
         # title + separator, body, spacer, Equipment row, the two button rows and the busy line (item spacing 2 px)
@@ -919,11 +956,14 @@ class CharacterGridTab:
                             preview = self.pending.portrait(cid, view)
                             self._portrait_slot_button(cid, view, preview)
                             fallback = gui_grid.is_fallback(state, cid, view)
-                            if preview:
-                                dpg.add_text(f'{view.capitalize()} (pending)', color=_PENDING)
-                            else:
-                                dpg.add_text(view.capitalize() + (' *' if fallback else ''),
-                                             color=_WARN if fallback else _DIM)
+                            with dpg.group(horizontal=True, horizontal_spacing=GAP):
+                                if preview:
+                                    dpg.add_text(f'{view.capitalize()} (pending)', color=_PENDING)
+                                else:
+                                    dpg.add_text(view.capitalize() + (' *' if fallback else ''),
+                                                 color=_WARN if fallback else _DIM)
+                                if view == gui_grid.SIDE:
+                                    self._alt_icon_link(cid)
                 dpg.add_spacer(height=GAP)
             with dpg.group():
                 for line, color in details:
@@ -943,6 +983,17 @@ class CharacterGridTab:
                 self.slot_buttons.append((select, usable))
                 with dpg.tooltip(select):
                     dpg.add_text(tip if usable else busy_tip, wrap=420)
+            dpg.add_spacer(height=GAP)
+            import_button = dpg.add_button(label=IMPORT_SLG, width=SELECT_W, height=BUTTON_H,
+                                           callback=lambda *_: self._on_import_slgmodel(cid),
+                                           enabled=not self._locked() and usable)
+            self.slot_buttons.append((import_button, usable))
+            with dpg.tooltip(import_button):
+                dpg.add_text('Stage a character file of the Sluggers Characters patcher (.slgmodel: finished '
+                             'High/Low models built on a stock player, portraits, voice clips) for this slot. A '
+                             'new ID takes the whole character (name, portraits, voice pack, the base\'s stats); a '
+                             'stock slot the models only. Dropping the file onto this window does the same. '
+                             '"Patch Game" writes the pending edits.' if usable else busy_tip, wrap=420)
         dpg.add_spacer(height=GAP, parent=box)
         if tiles:
             self._equipment_row(box, cid, tiles)
@@ -1077,21 +1128,76 @@ class CharacterGridTab:
 
     def _pick_sluggie(self, title):
         """Open the .sluggie picker in the folder the last pick came from (else the models folder)."""
-        if not self.app.pick_files('grid_sluggie_dialog', title, [('Sluggie files', '*.sluggie')],
+        if not self.app.pick_files('grid_sluggie_dialog', title,
+                                   [('Sluggie files', '*.sluggie'), ('Character files', '*.slgmodel')],
                                    self._on_sluggie_paths, on_cancel=self._end_action, remember=SLUGGIE_DIR_SETTING):
             self._end_action()
 
     def _on_sluggie_paths(self, paths):
         cid = self.action[0] if self.action else None
         equip = self.action[2] if self.action and len(self.action) == 3 and self.action[1] == 'equip' else None
-        path = next((p for p in paths if p and p.lower().endswith('.sluggie') and os.path.isfile(p)), None)
+        path = next((p for p in paths if p and p.lower().endswith(('.sluggie', gui_grid.SLGMODEL_EXTENSION))
+                     and os.path.isfile(p)), None)
         if cid is None or path is None:
             self.app.log_line(f'[character grid] no .sluggie file chosen: {paths[0]}', _WARN)
             self._end_action()
             return
         low = self.action[1:] == ('low',)
         self.action = None
+        if path.lower().endswith(gui_grid.SLGMODEL_EXTENSION) and equip is None:
+            self._start_preview(cid, None, slgmodel=path)
+            return
         self._start_preview(cid, path, equip=None if equip is None else (equip, path), low=low)
+
+    # ------------------------------------------------------------------ character files (.slgmodel)
+    def _on_import_slgmodel(self, cid):
+        """Import .slgmodel...: a Sluggers Characters patcher character file for the slot."""
+        if self._locked() or self.pending.pack is not None:
+            return
+        self.action = (cid, gui_grid.SLGMODEL)
+        self.set_busy(False)
+        if not self.app.pick_files('grid_slgmodel_dialog', 'Select a character file (.slgmodel) for this slot',
+                                   gui_grid.SLGMODEL_FILTERS, self._on_slgmodel_paths, on_cancel=self._end_action,
+                                   remember=SLGMODEL_DIR_SETTING):
+            self._end_action()
+
+    def _on_slgmodel_paths(self, paths):
+        cid = self.action[0] if isinstance(self.action, tuple) and self.action[1:] == (gui_grid.SLGMODEL,) else None
+        path = next((p for p in paths if p and p.lower().endswith(gui_grid.SLGMODEL_EXTENSION) and os.path.isfile(p)),
+                    None)
+        if cid is None or path is None:
+            self.app.log_line(f'[character grid] no .slgmodel file chosen: {paths[0]}', _WARN)
+            self._end_action()
+            return
+        self.action = None
+        self._start_preview(cid, None, slgmodel=path)
+
+    def on_files_dropped(self, paths, _point):
+        """Files dropped onto the window (``file_drop``) while a slot is open on this tab: a ``.slgmodel`` or a
+        ``.sluggie`` is staged for that slot as its button would. False when the drop is not for this tab."""
+        tab_bar = dpg.get_value('main_tab_bar')
+        if tab_bar not in ('grid_tab', dpg.get_alias_id('grid_tab')):
+            return False
+        cid = self.nav.slot
+        if cid is None or self.nav.level != gui_grid.SLOT:
+            self.app.log_line('[character grid] open a slot first, then drop the file onto the window', _WARN)
+            return True
+        if self._locked() or self.pending.pack is not None:
+            return True
+        path = next((p for p in paths if p.lower().endswith((gui_grid.SLGMODEL_EXTENSION, '.sluggie'))
+                     and os.path.isfile(p)), None)
+        if path is None:
+            self.app.log_line(f'[character grid] {os.path.basename(paths[0])} is not a .slgmodel or .sluggie file',
+                              _WARN)
+            return True
+        if len(paths) > 1:
+            self.app.log_line(f'[character grid] {len(paths)} files dropped; staging {os.path.basename(path)} only.')
+        self.action = None
+        if path.lower().endswith(gui_grid.SLGMODEL_EXTENSION):
+            self._start_preview(cid, None, slgmodel=path)
+        else:
+            self._start_preview(cid, path)
+        return True
 
     # ------------------------------------------------------------------ animations
     def _on_anim(self, cid):
@@ -1148,7 +1254,7 @@ class CharacterGridTab:
             return
         self.action = (cid, 'icon', view)
         self.set_busy(False)
-        if not self.app.pick_files('grid_image_dialog', f'Select an image for the {view} portrait',
+        if not self.app.pick_files('grid_image_dialog', f'Select an image for the {gui_grid.view_label(view)} portrait',
                                    gui_grid.IMAGE_FILTERS, self._on_image_paths, on_cancel=self._end_action,
                                    remember=IMAGE_DIR_SETTING):
             self._end_action()
@@ -1167,10 +1273,11 @@ class CharacterGridTab:
         redraws the result in-process. OK stages the edit (after the staging check)."""
         state = self.nav.state or self.loader.state
         preview = gui_grid.IconPreview(path)
-        other = gui_grid.SIDE if view == gui_grid.FRONT else gui_grid.FRONT
+        other = gui_grid.SIDE if view != gui_grid.SIDE else gui_grid.FRONT
+        label = gui_grid.view_label(view)
         vw, vh = dpg.get_viewport_client_width(), dpg.get_viewport_client_height()
         win = self.confirm = dpg.add_window(
-            label=f'{view.capitalize()} portrait of {gui_grid.name_of(state, cid)} ({gui_grid.hex_id(cid)})',
+            label=f'{label.capitalize()} portrait of {gui_grid.name_of(state, cid)} ({gui_grid.hex_id(cid)})',
             modal=True, no_collapse=True, no_saved_settings=True, autosize=True,
             pos=(max(0, (vw - CONFIRM_W) // 2), max(0, vh // 8)), on_close=lambda *_: self._end_action())
         result_tex = dpg.add_dynamic_texture(PORTRAIT[0], PORTRAIT[1], [0.0] * (PORTRAIT[0] * PORTRAIT[1] * 4),
@@ -1188,7 +1295,7 @@ class CharacterGridTab:
                 dpg.add_text('Your image', color=_DIM)
             with dpg.group():
                 dpg.add_image(result_tex, width=PORTRAIT[0], height=PORTRAIT[1], border_color=_PENDING)
-                dpg.add_text(f'New {view} (48x51)', color=_PENDING)
+                dpg.add_text(f'New {label} (48x51)', color=_PENDING)
             with dpg.group():
                 other_path = self.pending.portrait(cid, other) or gui_grid.icon_file(
                     state, self.loader.state_path, cid, other)
@@ -1363,23 +1470,27 @@ class CharacterGridTab:
         self._start_preview(cid, None, rename=text)
 
     def _start_preview(self, cid, sluggie, rename=None, value=None, icon=None, equip=None, copy_from=None,
-                       anim=None, low=False):
+                       anim=None, low=False, slgmodel=None):
         """The staging check (the pending edits plus this one; this one's build check); the confirm dialog
         opens when it is done. ``low``: ``sluggie`` is a Low model pick (``slot_plan`` refuses a High model and joins
         it to the slot's pending High pick); ``rename``: the new name text (blank resets), a rename edit instead of patch/clear;
         ``value``: ``(op, source)``, a stats or voice edit (source None: back to the default); ``icon``: a
         finished icon edit (``IconPreview.edit``); ``equip``: ``(slot file, .sluggie or None)``, an equipment edit
         (None: reset that file); ``copy_from``: the copied character, a paste (the slot becomes its clone); ``anim``:
-        a list of ``.anm`` files, one animation bank edit each (staged together)."""
+        a list of ``.anm`` files, one animation bank edit each (staged together); ``slgmodel``: a character file of
+        the Sluggers Characters patcher (``.slgmodel``), an import edit."""
         if self._locked():
             return
-        kind = (gui_grid.COPY if copy_from is not None else gui_grid.ANIM if anim is not None
+        kind = (gui_grid.SLGMODEL if slgmodel is not None
+                else gui_grid.COPY if copy_from is not None else gui_grid.ANIM if anim is not None
                 else 'equip' if equip is not None and equip[1] else 'equip_clear' if equip is not None
                 else 'icon' if icon is not None else 'rename' if rename is not None else value[0] if value
                 else 'patch' if sluggie else 'clear')
         view = icon['view'] if icon is not None else None
         gear_file = equip[0] if equip is not None else None
-        if copy_from is not None:
+        if slgmodel is not None:
+            edit = {'op': gui_grid.SLGMODEL, 'id': gui_grid.hex_id(cid), 'file': os.path.abspath(slgmodel)}
+        elif copy_from is not None:
             edit = gui_grid.copy_edit(cid, copy_from)
         elif anim is not None:
             edit = [{'op': gui_grid.ANIM, 'id': gui_grid.hex_id(cid), 'anm': path} for path in anim]

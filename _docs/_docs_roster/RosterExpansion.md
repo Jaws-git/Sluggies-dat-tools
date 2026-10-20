@@ -774,7 +774,8 @@ texture count; descriptors (0x20 bytes) from `+0x24`.
   ID ≤ the character, so an ID without its own record shows a neighbour's
   icon (*Dolphin*: the unused characters showed Pink Yoshi `0x46`). Each
   table's last frame must cover the highest key. Side records differ only in
-  byte `+0x26` (`0x02` for IDs 0x01, 0x08, 0x0B, 0x27, 0x3E–0x41, else `0x82`).
+  byte `+0x26` (`0x02` for IDs 0x01, 0x08, 0x0B, 0x27, 0x3E–0x41, else `0x82`):
+  its `0x80` bit is the mirror flag (see *The alternate side view* below).
 - **Resource table**: u32 row count, u32 length (8 + count × `0x14`), then
   the rows (`0x14` bytes): u16 page, u16 0, f32 v1, u1, v2, u2. The stock bank
   has 152 rows; 8 bytes follow the table at the end of the bank.
@@ -801,12 +802,28 @@ texture count; descriptors (0x20 bytes) from `+0x24`.
 - **Stock characters' portraits** (`stock_icons`, IDs `0x00`–`0x46`, which
   own keys in all three tables) are replaced by pointing their existing
   records at packed rows; no key is added and the records' own data stays.
-  normal_a goes to the side row: in the stock bank normal_a is a side-view
-  portrait, the same row as side except for IDs 0x01, 0x08, 0x0B, 0x27 and
-  0x3E–0x41, where it is a separate, slightly different side view (2026-10-05).
-  Where the game draws normal_a is not known: with Luigi's side and front
-  replaced, no screen still showed his old portrait (*Dolphin* 2026-10-05).
-  (New IDs' normal_a keys show the front row, as in the external tool.)
+  normal_a goes to the side row unless the entry has an alternate side view
+  (below). (New IDs' normal_a keys show the front row, as in the external
+  tool, unless they have an alternate side view.)
+- **The alternate side view** (2026-10-20). The first source table
+  (normal_a) is the side portrait facing the other way. For 63 of the 71
+  stock characters its record names the same row as the side record, and the
+  two records differ only in byte `+0x26`: `0x02` in normal_a, `0x82` in
+  side. The `0x80` bit is a horizontal mirror flag (inferred from this
+  pattern; not yet traced in the renderer), so one cell draws both facings.
+  The eight characters whose art is asymmetric (Luigi 0x01, Baby Luigi 0x08,
+  Waluigi 0x0B, Dixie Kong 0x27, King K. Rool 0x3E, Baby Peach 0x3F, Baby
+  Daisy 0x40, Baby DK 0x41) have a second hand-drawn cell on the side atlas
+  (rows 1/2, 9/10, 13/14, 42/43, 66/67, 68/69, 70/71, 72/73: normal_a row
+  first) and `0x02` in both records; their emblems (the "L", the "Γ", the
+  pacifier, the hair parting) read correctly in both facings. The icons step
+  takes `side_alt` in an `icon` object (a model folder's `SideIconAlt.png`;
+  the icon export writes it for characters whose normal_a row is a cell of
+  its own): the cell goes on the side page after the side cells, its row
+  after the side and front rows, the normal_a key points at it (added for a
+  new ID or spare row, re-pointed for a stock character) and the mirror bit
+  of the side record is cleared, so both PNGs are drawn as given. Which
+  screen draws normal_a is still unconfirmed in Dolphin.
 - **Stock portrait pages are C8.** All 71 stock characters' portraits (both
   views) sit on C8 pages (format 9), at 48×51 and not on 4-texel boundaries.
   Rebuilding one as our own cell re-encodes it to CMPR once: on Red Toad's side

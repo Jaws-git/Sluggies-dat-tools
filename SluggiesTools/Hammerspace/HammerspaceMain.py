@@ -251,7 +251,9 @@ class RigidRebuild:
     rebuilt as a whole blob from Blender data -- changed topology, an Object
     Mode transform, a host-bone change that keeps the world position, or
     faces moved between surfaces. Every buffer is in the donor's own formats
-    and bone-local to ``host_bone_id``. The donor
+    (positions in ``position_quantize`` when set: an s16 format coarser than
+    the donor's, for a mesh that outgrew its range) and bone-local to
+    ``host_bone_id``. The donor
     display states are kept; ``face_surface_table`` names, per surface key,
     which donor surface (``SurfaceId``) or appended new surface each triangle
     draws through."""
@@ -269,6 +271,7 @@ class RigidRebuild:
     new_surfaces:         list   # [RigidRebuildNewSurface], in append order
     reasons:              list   # [str], logging only
     facial_poses:         list | None = None   # [FacialPoseRebuild.RigidPoses]; None = export without FacialPoses
+    position_quantize:    int | None = None    # VertexBufferQuantizeInfo; None = the donor's
 
 
 @dataclass
@@ -282,7 +285,9 @@ class SkinnedRebuild:
     the canonical order (SkinnedRebuild.layout_skin), rebuilds the SKN from
     them and re-encodes one primitive list (triangle strips plus a
     GX_TRIANGLES block for the leftovers) per drawing surface. The donor
-    display states are kept, as for a RigidRebuild."""
+    display states are kept, as for a RigidRebuild. ``position_quantize``
+    (when set) replaces the donor's position format in the GPL position and
+    normal headers and the SKN header alike."""
     vertex_data:          bytes
     influences:           list   # [(vertex, bone, weight)]
     color_data:           bytes | None
@@ -295,6 +300,7 @@ class SkinnedRebuild:
     new_surfaces:         list   # [RigidRebuildNewSurface], in append order
     reasons:              list   # [str], logging only
     facial_poses:         list = field(default_factory=list)   # [FacialPoseRebuild.BodyPoses]
+    position_quantize:    int | None = None    # VertexBufferQuantizeInfo; None = the donor's
 
 
 @dataclass
@@ -2675,6 +2681,52 @@ _RIGID_REBUILD_M3_CHANNEL_FIELDS = {
 _RIGID_REBUILD_NEW_SURFACE_KEY_RE = re.compile(r'^sm(\d+)_new(\d+)$')
 #: int16 position formats: GX format nibble 3 (s16), any fixed-point shift.
 _RIGID_REBUILD_POSITION_FORMAT_NIBBLE = 3
+#: The ``VertexBufferQuantizeInfo`` a rebuild entry may carry: any s16 format
+#: (shift 0..15). The exporter writes one, coarser than the donor's, only when
+#: the mesh outgrew the donor's range; s16 keeps the 2-byte components, so
+#: only the fixed-point shift in the headers changes.
+_REBUILD_POSITION_QUANTIZE_VALUES = tuple(range(0x30, 0x40))
+
+
+def _rebuild_position_quantize_error(rebuild: dict) -> str | None:
+    """Why a rebuild entry's own ``VertexBufferQuantizeInfo`` is unusable, or
+    None (absent: the donor's format applies)."""
+    value = rebuild.get('VertexBufferQuantizeInfo')
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value not in _REBUILD_POSITION_QUANTIZE_VALUES:
+        return (
+            f'VertexBufferQuantizeInfo {value!r} must be an s16 position format '
+            f'({_REBUILD_POSITION_QUANTIZE_VALUES[0]}..{_REBUILD_POSITION_QUANTIZE_VALUES[-1]})'
+        )
+    return None
+
+
+def _rebuild_position_quantize(sub: dict, rebuild: 'RigidRebuild | SkinnedRebuild') -> int:
+    """The position format a rebuilt submesh is written in: the rebuild's own
+    when the exporter widened it, else the donor's."""
+    if rebuild.position_quantize is not None:
+        return rebuild.position_quantize
+    return int(sub['VertexBuffer']['VertexBufferQuantizeInfo'])
+
+
+def _follow_position_shift(header_quantize: int, donor_quantize: int, quantize: int) -> int:
+    """*header_quantize* (the body's normal header or the SKN header, which
+    read the interleaved position + normal records) with its fixed-point
+    shift moved to *quantize*'s when it shared the donor position shift. The
+    type nibble is kept: the SKN header's is 0 while the GPL one's is 3."""
+    if (header_quantize & 0xF) != (donor_quantize & 0xF):
+        return header_quantize
+    return (header_quantize & 0xF0) | (quantize & 0xF)
+
+
+def _widened_position_note(sub: dict, rebuild: 'RigidRebuild | SkinnedRebuild') -> str:
+    """Log suffix naming a position format that differs from the donor's."""
+    donor = int(sub['VertexBuffer']['VertexBufferQuantizeInfo'])
+    used = _rebuild_position_quantize(sub, rebuild)
+    if used == donor:
+        return ''
+    return f'; positions in format {used} (donor {donor}), range +/-{32768 >> (used & 0xF):g}'
 
 
 def _rigid_rebuild_in_place_edit_fields(sub: dict) -> list[str]:
@@ -2765,6 +2817,9 @@ def _validate_rigid_rebuilds(model: dict) -> None:
                 f'{_RIGID_REBUILD_POSITION_FORMAT_NIBBLE}); only int16 rigid positions can be rebuilt'
             )
             quantize = _CUSTOM_SUBMESH_POSITION_FORMAT[1]
+        quantize_error = _rebuild_position_quantize_error(rebuild)
+        if quantize_error:
+            fail(quantize_error)
         position_stride = 3 * _vb_comp_size(quantize)
 
         in_place = _rigid_rebuild_in_place_edit_fields(sub)
@@ -3014,6 +3069,7 @@ def _parse_rigid_rebuild(sub: dict, use_compression: bool) -> 'RigidRebuild | No
             )
             for entry in raw['FacialPoses']
         ],
+        position_quantize=raw.get('VertexBufferQuantizeInfo'),
     )
 
 
@@ -3065,8 +3121,7 @@ def _rigid_rebuild_donor_records(sub: dict) -> list[list]:
 def _rigid_rebuild_entry_counts(sub: dict, rebuild: 'RigidRebuild', color: 'ColorChannel | None') -> dict[str, int]:
     """Entries per vertex attribute the rebuild carries, keyed like Type-3
     descriptors (``position``, ``lighting``, ``color0``, ``texture<n>``)."""
-    vb = sub['VertexBuffer']
-    counts = {'position': len(rebuild.vertex_data) // (3 * _vb_comp_size(int(vb['VertexBufferQuantizeInfo'])))}
+    counts = {'position': len(rebuild.vertex_data) // (3 * _vb_comp_size(_rebuild_position_quantize(sub, rebuild)))}
     if rebuild.normal_data is not None:
         donor_normals = sub['NormalBuffer']
         stride = int(donor_normals.get('NormalBufferCompCount', 3)) * _vb_comp_size(int(donor_normals['NormalBufferQuantizeInfo']))
@@ -3221,7 +3276,6 @@ def _rigid_rebuild_to_submesh(
     *donor_color_array* is the donor blob's colour array for a submesh whose
     export lists no ColorChannel (see _gpl_blob_color_array)."""
     sub = model['Submeshes'][sub_index]
-    vb = sub['VertexBuffer']
     states = sub.get('DisplayStates') or []
     label = f'sub{sub_index}'
 
@@ -3336,13 +3390,14 @@ def _rigid_rebuild_to_submesh(
     _slogger.info(
         f"[RigidRebuild] {label} '{sub.get('MeshName', '')}': {counts['position']} vertices, "
         f"{rebuild.faces_count} faces, host bone {rebuild.host_bone_id}"
-        + (f" ({', '.join(rebuild.reasons)})" if rebuild.reasons else '') + f'; {summary}',
+        + (f" ({', '.join(rebuild.reasons)})" if rebuild.reasons else '') + f'; {summary}'
+        + _widened_position_note(sub, rebuild),
         source='hammerspace.main',
     )
     return _assemble_rigid_submesh(
         sub_index, sub.get('MeshName', ''), records, primitive_lists,
         vertex_data=rebuild.vertex_data,
-        vertex_quantize_info=int(vb['VertexBufferQuantizeInfo']),
+        vertex_quantize_info=_rebuild_position_quantize(sub, rebuild),
         uv_channels=uv_channels,
         color_channel=color_channel,
         normal_buffer=normal_buffer,
@@ -3596,6 +3651,9 @@ def _validate_skinned_rebuild(model: dict) -> None:
                     f'SkinData QuantizeInfo {skn_quantize} does not match the position format '
                     f'{quantize} (the SKN sources mirror the position buffer)'
                 )
+        quantize_error = _rebuild_position_quantize_error(rebuild)
+        if quantize_error:
+            fail(quantize_error)
         if sub.get('RigidRebuild'):
             fail('cannot be combined with a RigidRebuild on the same submesh')
         in_place = _rigid_rebuild_in_place_edit_fields(sub)
@@ -3933,6 +3991,7 @@ def _parse_skinned_rebuild(sub: dict, use_compression: bool) -> 'SkinnedRebuild 
             )
             for entry in raw.get('FacialPoses') or []
         ],
+        position_quantize=raw.get('VertexBufferQuantizeInfo'),
     )
 
 
@@ -4193,7 +4252,8 @@ def _skinned_rebuild_to_blob(
     vb = sub['VertexBuffer']
     states = sub.get('DisplayStates') or []
     label = f'sub{sub_index}'
-    quantize = int(vb['VertexBufferQuantizeInfo'])
+    donor_quantize = int(vb['VertexBufferQuantizeInfo'])
+    quantize = _rebuild_position_quantize(sub, rebuild)
     stride = _SKINNED_REBUILD_COMP_COUNT * _vb_comp_size(quantize)
     vertex_count = len(rebuild.vertex_data) // stride
 
@@ -4306,7 +4366,8 @@ def _skinned_rebuild_to_blob(
     _slogger.info(
         f"[SkinnedRebuild] {label} '{sub.get('MeshName', '')}': {vertex_count} vertices, "
         f'{rebuild.faces_count} faces (donor {donor_slots} slots, {sub.get("FacesCount")} faces)'
-        + (f" ({', '.join(rebuild.reasons)})" if rebuild.reasons else '') + f'; {surface_summary}',
+        + (f" ({', '.join(rebuild.reasons)})" if rebuild.reasons else '') + f'; {surface_summary}'
+        + _widened_position_note(sub, rebuild),
         source='hammerspace.main',
     )
     _slogger.info(f'[SkinnedRebuild] skin: {_skinned.summary(layout)}', source='hammerspace.main')
@@ -4315,7 +4376,7 @@ def _skinned_rebuild_to_blob(
     donor_normals = sub.get('NormalBuffer') if isinstance(sub.get('NormalBuffer'), dict) else None
     if donor_normals:
         normal_header = (
-            int(donor_normals.get('NormalBufferQuantizeInfo', quantize)),
+            _follow_position_shift(int(donor_normals.get('NormalBufferQuantizeInfo', donor_quantize)), donor_quantize, quantize),
             int(donor_normals.get('NormalBufferCompCount', _SKINNED_REBUILD_COMP_COUNT)),
             float(donor_normals.get('NormalAmbientPct', 0.0)),
         )
@@ -4330,7 +4391,8 @@ def _skinned_rebuild_to_blob(
         normal_header=normal_header,
     )
     skinning = _skinned_rebuild_skinning_data(
-        layout, position_buffer, int((model.get('SkinData') or {}).get('QuantizeInfo', quantize)),
+        layout, position_buffer,
+        _follow_position_shift(int((model.get('SkinData') or {}).get('QuantizeInfo', donor_quantize)), donor_quantize, quantize),
     )
     return blob, name_off, skinning, layout
 
@@ -7571,7 +7633,8 @@ def BuildModelBlock(
     ``ReimportTextures`` set, the donor textures are re-encoded from the edited
     PNGs in the sluggie's ``tex/`` folder via :func:`BuildTEX`; without it they
     are cloned from INPUT dt_na.dat. ``AdditionalTextureDescriptors`` are
-    encoded and appended either way. ``sluggie_path`` must point at the
+    encoded and appended either way, and a ``TextureReplacements`` slot is
+    re-encoded from its PNG either way. ``sluggie_path`` must point at the
     ``.sluggies`` file whenever a PNG is read. With neither, the rebuilt TEX
     section clones every texture payload, which is byte-equivalent to the
     clone path.
@@ -7585,6 +7648,29 @@ def BuildModelBlock(
         return _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, texture_plan)
     finally:
         _EMBEDDED_DONOR = previous
+
+
+def _texture_replacement_overrides(model: dict, sluggie_path) -> dict[int, str]:
+    """``TextureReplacements`` as ``png_overrides`` (donor index -> PNG in
+    tex/): a vanilla texture no surface binds any more, refilled by the
+    Blender export with a new PNG in that texture's own format."""
+    import texture_helper as _tex
+    descriptors = model.get('TextureDescriptors') or []
+    overrides: dict[int, str] = {}
+    for entry in model.get('TextureReplacements') or []:
+        index = entry.get('TextureIndex')
+        if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(descriptors):
+            raise ValueError(f'TextureReplacements: TextureIndex {index!r} is not a donor texture')
+        if index in overrides:
+            raise ValueError(f'TextureReplacements: texture {index} is replaced twice')
+        if int(descriptors[index].get('AdditionalMipCount') or 0):
+            # The encode path skips mipmapped textures; the refill would be lost.
+            raise ValueError(f'TextureReplacements: texture {index} is mipmapped and cannot be refilled')
+        name = _tex.validate_texture_file_name(entry.get('TextureFileName'))
+        if sluggie_path is None:
+            raise ValueError('TextureReplacements require the sluggie path to resolve the tex/ folder')
+        overrides[index] = _tex.resolve_texture_path(sluggie_path, name)
+    return overrides
 
 
 def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, texture_plan) -> ModelBlockBuild:
@@ -7647,6 +7733,8 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
         )
     if model.get('AdditionalTextureDescriptors') and modes.tex != 'build':
         raise ValueError("AdditionalTextureDescriptors require SectionModes.tex='build'")
+    if model.get('TextureReplacements') and modes.tex != 'build':
+        raise ValueError("TextureReplacements require SectionModes.tex='build'")
     if modes.tex == 'build' and texture_plan is None and (
         model.get('ReimportTextures') or model.get('AdditionalTextureDescriptors')
     ):
@@ -7749,6 +7837,10 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
         # AdditionalTextureFileName can be patched with its final TEX index
         # immediately, instead of a placeholder re-patched later.
         additional_texture_descriptors = model.get('AdditionalTextureDescriptors') or []
+        replacement_overrides = _texture_replacement_overrides(model, sluggie_path)
+        if replacement_overrides:
+            # An explicit override (single-texture CLI) wins over a refill.
+            tex_png_overrides = {**replacement_overrides, **(tex_png_overrides or {})}
         if texture_plan is not None and (
             model.get('ReimportTextures') or tex_png_overrides or additional_texture_descriptors
         ):

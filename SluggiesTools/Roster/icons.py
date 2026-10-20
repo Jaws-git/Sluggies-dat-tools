@@ -16,13 +16,24 @@ contain, cover or strict; default contain; ``icon_art``). In place of
 portraits are that model's exported ``icon/SideIcon.png`` and
 ``icon/FrontIcon.png`` (``model_icons``; an ``L_`` model uses its high-poly
 partner's). ``like`` (optional, not for stock entries) names the character
-whose source records the new keys copy; it decides the record flags, e.g.
-byte +0x26 of a side record (0x82 for most characters, 0x02 for Luigi and a
-few others, probably a mirror flag). The default is ``SPARE_DONORS`` for a
-spare row and the template for a new ID (as the external tool does). A stock
-entry adds no keys: its own side, front and normal_a records keep their data
-and only point at the new rows (normal_a at the side row: the stock normal_a
-art is a side-view variant).
+whose source records the new keys copy; it decides the record flags. The
+default is ``SPARE_DONORS`` for a spare row and the template for a new ID (as
+the external tool does). A stock entry adds no keys: its own side, front and
+normal_a records keep their data and only point at the new rows.
+
+**The alternate side view** (``side_alt``, optional; a model's
+``icon/SideIconAlt.png``). The bank's first source table (``normal_a``) is
+the side portrait facing the other way. In the stock bank 63 of the 71
+characters share one cell for both facings: their side record carries
+``0x82`` at byte +0x26 and the normal_a record ``0x02``, the ``0x80`` bit
+being the mirror flag, so one cell draws both ways. Eight asymmetric
+characters (Luigi, Baby Luigi, Waluigi, Dixie Kong, King K. Rool, Baby Peach,
+Baby Daisy, Baby DK) have a second hand-drawn cell and ``0x02`` in both
+records. An entry with ``side_alt`` does the same: its normal_a key points at
+the alternate cell and the mirror bit of its side record is cleared, so both
+PNGs are drawn as given. Without ``side_alt`` the normal_a key keeps today's
+behaviour: a stock entry's points at the side row, a new ID's at the front
+row (the external tool's convention) and a spare row gets none.
 
 What the step builds, when at least one entry has an ``icon`` (else it
 leaves the icon bank and the DOL alone):
@@ -41,10 +52,11 @@ leaves the icon bank and the DOL alone):
   every custom texture made for it (2026-10-17). Page image and palette offsets in a
   descriptor count from bank +0x20.
 * one side and one front resource row per entry after the 152 stock rows,
-  and keys pointing at them: side and front for every entry, normal_a too
-  for new IDs (it shows the front row, as in the external tool). Each
-  table's last frame (header +0x18) covers the highest key. Stock entries
-  re-point their own keys instead.
+  then one alternate-side row per entry that has one (its cell sits on the
+  side page), and keys pointing at them: side and front for every entry,
+  normal_a for new IDs (the front row) and for every entry with an alternate
+  side view (its row). Each table's last frame (header +0x18) covers the
+  highest key. Stock entries re-point their own keys instead.
 * the bank in DAT hammerspace, with the icon record pointing at it;
 * the three runtime hooks of the retired icon pipeline back to their stock
   words, should an older output still carry them (keys alone draw the icons;
@@ -111,6 +123,9 @@ KEPT_BLOCKS_EXT = '.cmpr'                      # a portrait's kept CMPR cell blo
 SPARE_DONORS = {0x47: 0x04, 0x48: 0x00, 0x49: 0x01, 0x4A: 0x02, 0x4B: 0x03, 0x4C: 0x05}
 STOCK_ICON_END = 0x47                          # stock IDs below own keys in all three tables (spare rows: ``wheels``)
 STOCK_KEY = 'stock_icons'                      # config: stock characters' replaced portraits
+ALT_VIEW = 'side_alt'                          # config / icon folder: the side portrait facing the other way
+VIEWS = ('side', 'front', ALT_VIEW)            # the config's icon keys (``side_alt`` optional)
+SIDE_FLAG_OFFSET, SIDE_MIRROR_BIT = 0x26, 0x80  # side record: the mirror bit (0x82 mirrors the cell, 0x02 draws it)
 RESOLVER_SITE, RESOLVER_STOCK = 0x80395E1C, 0x4080008C   # bge 0x80395EA8 (the Mii block) after cmpwi r24,0x4D
 RESOLVER_NORMAL, RESOLVER_MII = 0x80395E20, 0x80395EA8
 # The retired icon pipeline's runtime hooks: (site, stock word, its stub in a low-memory cave)
@@ -133,6 +148,11 @@ class IconEntry:
     front_path: str
     like: int
     fit: str = icon_art.DEFAULT_FIT_MODE
+    side_alt_path: str | None = None            # the alternate side view (``ALT_VIEW``), or None
+
+    @property
+    def has_alt(self) -> bool:
+        return self.side_alt_path is not None
 
     @property
     def new_id(self) -> bool:
@@ -148,10 +168,11 @@ class IconEntry:
 # Config
 # --------------------------------------------------------------------------
 
-def _icon_paths(where: str, icon: dict, icon_dir: str, check_files: bool) -> list[str]:
-    """[side, front] PNG paths of one ``icon`` object: plain names in ``icon_dir``, or a model's portraits."""
+def _icon_paths(where: str, icon: dict, icon_dir: str, check_files: bool) -> dict[str, str | None]:
+    """{view: PNG path} of one ``icon`` object (``VIEWS``; ``side_alt`` None when it has none): plain names in
+    ``icon_dir``, or a model's portraits (its ``SideIconAlt.png`` when the folder has one)."""
     if icon.get('model') is not None:
-        if icon.get('side') is not None or icon.get('front') is not None:
+        if any(icon.get(view) is not None for view in VIEWS):
             raise IconConfigError(f'{where}.icon: give either "model" or "side"/"front", not both')
         if not isinstance(icon['model'], str) or not icon['model']:
             raise IconConfigError(f'{where}.icon.model must be the path of a .sluggie or its model folder')
@@ -159,18 +180,22 @@ def _icon_paths(where: str, icon: dict, icon_dir: str, check_files: bool) -> lis
         if check_files and not found.ok:
             raise IconConfigError(f'{where}.icon.model: {found.problem}')
         home = found.home or model_icons.resolve_path(icon['model'])
-        return [found.side or os.path.join(home, model_icons.ICON_SUBDIR, model_icons.FILES['side']),
-                found.front or os.path.join(home, model_icons.ICON_SUBDIR, model_icons.FILES['front'])]
-    paths = []
-    for view in ('side', 'front'):
+        return {'side': found.side or os.path.join(home, model_icons.ICON_SUBDIR, model_icons.FILES['side']),
+                'front': found.front or os.path.join(home, model_icons.ICON_SUBDIR, model_icons.FILES['front']),
+                ALT_VIEW: found.side_alt}
+    paths = {}
+    for view in VIEWS:
         name = icon.get(view)
+        if view == ALT_VIEW and name is None:
+            paths[view] = None
+            continue
         if not isinstance(name, str) or not name or os.path.basename(name) != name:
             raise IconConfigError(f'{where}.icon.{view} must be a plain PNG file name (in 1_Input/_Icons), '
                                   'or give "model" instead')
         path = os.path.join(icon_dir, name)
         if check_files and not os.path.isfile(path):
             raise IconConfigError(f'{where}.icon.{view}: {path} not found')
-        paths.append(path)
+        paths[view] = path
     return paths
 
 
@@ -218,7 +243,7 @@ def parse_icons(config: dict, icon_dir: str | None = None, check_files: bool = T
         if fit not in icon_art.FIT_MODES:
             raise IconConfigError(f'{where}.icon.fit: {fit!r} is not one of {", ".join(icon_art.FIT_MODES)}')
         paths = _icon_paths(where, icon, icon_dir, check_files)
-        out.append(IconEntry(cid, paths[0], paths[1], like, fit))
+        out.append(IconEntry(cid, paths['side'], paths['front'], like, fit, paths[ALT_VIEW]))
     seen = [e.char_id for e in out]
     if len(set(seen)) != len(seen):
         raise IconConfigError('an ID has two icon entries')
@@ -239,9 +264,11 @@ def _key(record: bytes) -> int:
 
 
 def extend_table(bank: bytes, offset: int, keys: dict[int, tuple[int, int]],
-                 repoint: dict[int, int] | None = None) -> bytes:
+                 repoint: dict[int, int] | None = None, unmirror: set[int] | None = None) -> bytes:
     """The source table at ``offset`` with ``keys`` = {id: (like, resource row)} added and the existing keys in
-    ``repoint`` = {id: resource row} pointed at other rows; returns the table bytes."""
+    ``repoint`` = {id: resource row} pointed at other rows; returns the table bytes. ``unmirror``: IDs whose
+    record (added or re-pointed) gets the mirror bit of byte +0x26 cleared (side table: the cell is drawn as
+    given, the alternate view being its own cell)."""
     header = bytearray(bank[offset:offset + SOURCE_HEADER])
     records = _table(bank, offset)
     by_id = {_key(r): r for r in records}
@@ -256,6 +283,11 @@ def extend_table(bank: bytes, offset: int, keys: dict[int, tuple[int, int]],
         record = bytearray(donor)
         struct.pack_into('>HHH', record, 0x02, cid, RECORD_KIND, row)
         records.append(record)
+        by_id[cid] = record
+    for cid in unmirror or ():
+        if cid not in by_id:
+            raise IconBankError(f'0x{cid:02X} has no key in the source table at 0x{offset:X}')
+        by_id[cid][SIDE_FLAG_OFFSET] &= ~SIDE_MIRROR_BIT & 0xFF
     records.sort(key=_key, reverse=True)
     for i, record in enumerate(records):
         flags = struct.unpack_from('>H', record, 0)[0]
@@ -277,20 +309,28 @@ def _check_stock(stock_bank: bytes) -> None:
         raise IconBankError('the stock icon bank range does not hold the stock icon bank')
 
 
-def _table_keys(entries: list[IconEntry], side_row: dict, front_row: dict) -> dict:
+def _table_keys(entries: list[IconEntry], side_row: dict, front_row: dict, alt_row: dict) -> dict:
+    """Added keys per table: {id: (like, row)}. normal_a: the alternate row for entries that have one, else the
+    front row for new IDs (the external tool's convention) and no key for a spare row."""
     added = [e for e in entries if not e.stock]
+    normal_a = {}
+    for e in added:
+        if e.has_alt:
+            normal_a[e.char_id] = (e.like, alt_row[e.char_id])
+        elif e.new_id:
+            normal_a[e.char_id] = (e.like, front_row[e.char_id])
     return {
-        NORMAL_A_FIELD: {e.char_id: (e.like, front_row[e.char_id]) for e in added if e.new_id},
+        NORMAL_A_FIELD: normal_a,
         SIDE_FIELD: {e.char_id: (e.like, side_row[e.char_id]) for e in added},
         FRONT_FIELD: {e.char_id: (e.like, front_row[e.char_id]) for e in added},
     }
 
 
-def _table_repoints(entries: list[IconEntry], side_row: dict, front_row: dict) -> dict:
-    """Stock entries' own keys -> the new rows (normal_a: the side row; its stock art is a side-view variant)."""
+def _table_repoints(entries: list[IconEntry], side_row: dict, front_row: dict, alt_row: dict) -> dict:
+    """Stock entries' own keys -> the new rows (normal_a: the alternate row, else the side row)."""
     stock = [e for e in entries if e.stock]
     return {
-        NORMAL_A_FIELD: {e.char_id: side_row[e.char_id] for e in stock},
+        NORMAL_A_FIELD: {e.char_id: alt_row[e.char_id] if e.has_alt else side_row[e.char_id] for e in stock},
         SIDE_FIELD: {e.char_id: side_row[e.char_id] for e in stock},
         FRONT_FIELD: {e.char_id: front_row[e.char_id] for e in stock},
     }
@@ -370,16 +410,25 @@ def _kept_blocks(png_path: str) -> bytes | None:
         return f.read()
 
 
+def alt_entries(entries: list[IconEntry]) -> list[IconEntry]:
+    """The entries with an alternate side view, in order (their cells follow the side cells on the side page)."""
+    return [e for e in entries if e.has_alt]
+
+
 def compose_pages(entries: list[IconEntry]) -> tuple[Page, Page]:
     """Side and front pages: each entry's PNGs fitted to 48x51 with its own fit mode (``icon_art``). A PNG with
-    kept CMPR blocks beside it (``kept_blocks_path``) is its own cell, and the encoder keeps its blocks."""
+    kept CMPR blocks beside it (``kept_blocks_path``) is its own cell, and the encoder keeps its blocks. The
+    side page holds one cell per entry, then one per entry with an alternate side view (``alt_entries``)."""
     pages = []
     for view in ('side', 'front'):
-        paths = [getattr(e, f'{view}_path') for e in entries]
+        pairs = [(getattr(e, f'{view}_path'), e) for e in entries]
+        if view == 'side':
+            pairs += [(e.side_alt_path, e) for e in alt_entries(entries)]
+        paths = [p for p, _e in pairs]
         blocks = [_kept_blocks(p) for p in paths]
         keys = [('kept', os.path.normcase(os.path.abspath(p))) if b is not None else None
                 for p, b in zip(paths, blocks)]
-        portraits = [icon_art.load_portrait(p, e.fit) for p, e in zip(paths, entries)]
+        portraits = [icon_art.load_portrait(p, e.fit) for p, e in pairs]
         keys = [k if k is not None else image.tobytes() for k, image in zip(keys, portraits)]
         pages.append(pack_page(portraits, keys, blocks))
     return tuple(pages)
@@ -449,8 +498,9 @@ def build_packed_bank(stock_bank: bytes, entries: list[IconEntry], side: Page, f
     """The packed icon bank with keys, rows and art for ``entries`` (see the module docstring)."""
     _check_stock(stock_bank)
     n = len(entries)
-    if len(side.cells) != n or len(front.cells) != n:
-        raise IconBankError('the pages do not have one cell per entry')
+    alts = alt_entries(entries)
+    if len(side.cells) != n + len(alts) or len(front.cells) != n:
+        raise IconBankError('the pages do not have one cell per entry (plus one per alternate side view)')
     stock_end = STOCK_CONTAINER                          # stock texture section end = container start
     stock_desc = stock_end + CONTAINER_HEAD
     res = _pointer(stock_bank, stock_desc, RESOURCE_FIELD)
@@ -480,15 +530,21 @@ def build_packed_bank(stock_bank: bytes, entries: list[IconEntry], side: Page, f
         tex[d:d + DESCRIPTOR_SIZE] = _cmpr_descriptor(template, append(payload), page.width, page.height)
     struct.pack_into('>H', tex, 0x20, TEXTURE_COUNT)
 
-    # resource rows and keys
-    rows = [struct.pack('>HHffff', page_id, 0, y / page.height, x / page.width,
-                        (y + icon_art.ICON_HEIGHT) / page.height, (x + icon_art.ICON_WIDTH) / page.width)
-            for page_id, page in ((SIDE_PAGE, side), (FRONT_PAGE, front)) for x, y in page.cells]
+    # resource rows (side, front, then the alternate side cells) and keys
+    def row(page_id, page, x, y):
+        return struct.pack('>HHffff', page_id, 0, y / page.height, x / page.width,
+                           (y + icon_art.ICON_HEIGHT) / page.height, (x + icon_art.ICON_WIDTH) / page.width)
+    rows = ([row(SIDE_PAGE, side, x, y) for x, y in side.cells[:n]]
+            + [row(FRONT_PAGE, front, x, y) for x, y in front.cells]
+            + [row(SIDE_PAGE, side, x, y) for x, y in side.cells[n:]])
     side_row = {e.char_id: count + i for i, e in enumerate(entries)}
     front_row = {e.char_id: count + n + i for i, e in enumerate(entries)}
-    keys = _table_keys(entries, side_row, front_row)
-    repoints = _table_repoints(entries, side_row, front_row)
-    tables = [extend_table(stock_bank, start, keys[f], repoints[f]) for f, start in zip(TABLE_FIELDS, stock_tables)]
+    alt_row = {e.char_id: count + 2 * n + i for i, e in enumerate(alts)}
+    keys = _table_keys(entries, side_row, front_row, alt_row)
+    repoints = _table_repoints(entries, side_row, front_row, alt_row)
+    unmirror = {SIDE_FIELD: {e.char_id for e in alts}}
+    tables = [extend_table(stock_bank, start, keys[f], repoints[f], unmirror.get(f))
+              for f, start in zip(TABLE_FIELDS, stock_tables)]
     at = append(b''.join(tables))                        # after the pages: the stock atlases stay byte-identical
     table_starts = [at + sum(len(t) for t in tables[:i]) for i in range(len(tables))]
 
@@ -501,7 +557,7 @@ def build_packed_bank(stock_bank: bytes, entries: list[IconEntry], side: Page, f
     lo = min(stock_tables) - stock_end
     container[lo:res - stock_end] = bytes(res - stock_end - lo)
     container += b''.join(rows)
-    struct.pack_into('>II', container, res - stock_end, count + 2 * n, length + len(rows) * ROW_SIZE)
+    struct.pack_into('>II', container, res - stock_end, count + len(rows), length + len(rows) * ROW_SIZE)
     struct.pack_into('>I', container, CONTAINER_END_FIELD, len(container))
     desc = tex_end + CONTAINER_HEAD
     for field, start in zip(TABLE_FIELDS, table_starts):
@@ -578,6 +634,9 @@ def apply(ctx: steps.RosterContext, encode_cmpr=None) -> list[str]:
                                            + (f', {kept} kept as encoded' if kept else '') + ')'
                                            for view, p, kept in (('side', side, side_kept),
                                                                  ('front', front, front_kept))))
+    alts = alt_entries(entries)
+    if alts:
+        page_note += '; alternate side views: ' + ids.id_ranges(e.char_id for e in alts)
     words = read_record(ctx.dol)
     before = dhs.slot(words, 'en')[:2]
     at = dhs.allocate(ctx.dat, len(bank), dhs.reserved(ctx))

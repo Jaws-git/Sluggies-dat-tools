@@ -34,8 +34,9 @@ JSON-able dict:
   (the voice pack label they came from, or None); squares carry ``clip_ids``
   (the stock voice's moments ``species_clips`` replaced, ``{moment: INFO ID}``);
   ``state_cli`` turns both into ``char_clips`` / ``clips`` (``{moment: SHA-1 of the RWAV}``, None when there are
-  none) for the fingerprints), ``square``, ``icon`` (``{'front', 'side'}``:
-  where the game takes each portrait from, ``state_icons.resolve``; None
+  none) for the fingerprints), ``square``, ``icon`` (``{'front', 'side', 'side_alt'}``:
+  where the game takes each portrait from, ``state_icons.resolve``; the
+  alternate side view carries ``distinct`` when it is a cell of its own; None
   without a DAT) and ``blocks`` (``{'high', 'low'}``: the model directory's
   files 0 and 1 as the game loads them, ``offset``, ``length``, ``sha1``; a
   patch changes the fingerprint; None without a DAT) and ``equipment``

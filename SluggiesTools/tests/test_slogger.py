@@ -502,6 +502,8 @@ class TestPromptMarker(unittest.TestCase):
         self.assertEqual(slog.parse_prompt_marker(out[:-1]), ("text", "Output file name: "))
         slog, _answer, out = self._ask("1", "\nPick a\nfile: ", kind="file")
         self.assertEqual(slog.parse_prompt_marker(out[:-1]), ("file", "\nPick a\nfile: "))
+        slog, _answer, out = self._ask("1", "Overwrite? (y/n): ", kind="overwrite")
+        self.assertEqual(slog.parse_prompt_marker(out[:-1]), ("overwrite", "Overwrite? (y/n): "))
 
     def test_no_marker_outside_gui(self):
         _slog, answer, out = self._ask(None)

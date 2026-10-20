@@ -45,6 +45,17 @@ class FindTests(unittest.TestCase):
             self.assertEqual(found.side, os.path.join(hp, 'icon', 'SideIcon.png'))
             self.assertEqual(found.front, os.path.join(hp, 'icon', 'FrontIcon.png'))
 
+    def test_alternate_side_view_is_optional(self):
+        hp, _low = model_tree(self.root)
+        found = model_icons.find(hp)
+        self.assertTrue(found.ok, found.problem)
+        self.assertIsNone(found.side_alt)
+        portrait('green').save(os.path.join(hp, 'icon', model_icons.FILES[model_icons.ALT_VIEW]))
+        found = model_icons.find(hp)
+        self.assertEqual(found.side_alt, os.path.join(hp, 'icon', 'SideIconAlt.png'))
+        config = {'stock_icons': [{'id': '0x0D', 'icon': {'model': hp}}]}
+        self.assertEqual(icons.parse_icons(config)[0].side_alt_path, found.side_alt)
+
     def test_low_poly_uses_its_partner(self):
         hp, low = model_tree(self.root)
         found = model_icons.find(os.path.join(low, '79400000_L_toad.gpl.sluggie'))

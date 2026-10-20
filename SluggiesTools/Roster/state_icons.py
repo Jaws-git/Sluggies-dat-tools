@@ -8,15 +8,20 @@
    has own art);
 2. a player ID (and, with the roster's resolver branch at ``0x80395E1C``, a
    new ID) shows the record with the highest key <= ID of the view's source
-   table (front or side; the container descriptor's pointers, as the icons
-   step reads them);
+   table (front, side or the alternate side view ``side_alt``, the bank's
+   first table; the container descriptor's pointers, as the icons step reads
+   them);
 3. Mii IDs (``0x4D``-``0x64``, or any ID >= ``0x4D`` without the branch) show
    resource row ``0x97``; other IDs show key ``0x4D``, the "?" icon;
 4. the record's resource row gives the page and the rect.
 
 Each result records where the portrait comes from (``source``): ``own``,
 ``neighbour`` (a lower key), ``template`` (``portrait_of`` aliased it),
-``mii`` or ``invalid``. The GUI marks everything but ``own``.
+``mii`` or ``invalid``. The GUI marks everything but ``own``. The
+``side_alt`` result also carries ``distinct``: whether it is a cell of its
+own (the same key as the side view, and neither the side nor the front cell),
+i.e. the character has an alternate side portrait rather than a mirrored
+side cell (``has_alternate``).
 
 ``write_crops`` decodes the pages the results use (``Icons/gx_decode``) and
 writes each crop as a PNG, named by its page's SHA-1 and rect, so a re-read
@@ -39,8 +44,9 @@ except ImportError:
     import icons
     import ids
 
-VIEWS = ('front', 'side')
-TABLE_FIELDS = {'side': icons.SIDE_FIELD, 'front': icons.FRONT_FIELD}
+ALT_VIEW = icons.ALT_VIEW
+VIEWS = ('front', 'side', ALT_VIEW)
+TABLE_FIELDS = {'side': icons.SIDE_FIELD, 'front': icons.FRONT_FIELD, ALT_VIEW: icons.NORMAL_A_FIELD}
 PLAYER_END = 0x4D                                  # IDs below take the track path
 MII_END = 0x64                                     # 0x4D-0x64: the Mii path
 MII_ROW = 0x97
@@ -191,8 +197,27 @@ def resolve_all(image, bank: IconBank, cids, portrait_of: int | None) -> tuple[d
             except IconStateError as exc:
                 views[view] = None
                 problems.append(str(exc))
+        if views.get(ALT_VIEW) is not None:
+            views[ALT_VIEW]['distinct'] = _distinct(views)
         out[cid] = views
     return out, problems
+
+
+def _distinct(views: dict) -> bool:
+    """Whether the alternate side view is a cell of its own: the same key as the side view (not a neighbour's
+    normal_a record standing in), and neither the side nor the front cell."""
+    alt, side, front = views.get(ALT_VIEW), views.get('side'), views.get('front')
+    if alt is None or side is None or alt['key'] != side['key']:
+        return False
+    cell = lambda r: (r['page'], tuple(r['rect']))
+    return cell(alt) != cell(side) and (front is None or cell(alt) != cell(front))
+
+
+def has_alternate(views: dict | None) -> bool:
+    """Whether a character's resolved portraits (``resolve_all``'s per-ID dict) include an alternate side view of
+    its own."""
+    alt = (views or {}).get(ALT_VIEW)
+    return bool(alt) and bool(alt.get('distinct'))
 
 
 # --------------------------------------------------------------------------

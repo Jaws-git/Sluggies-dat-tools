@@ -16,6 +16,7 @@
 
 import json
 import os
+import struct
 import tempfile
 import unittest
 from unittest import mock
@@ -24,7 +25,8 @@ import numpy as np
 from PIL import Image
 
 from SluggiesTools import gui_grid
-from SluggiesTools.Roster import derive, icon_art, icon_import, icons, model_icons, slot_cli, slot_plan, state
+from SluggiesTools.Roster import (derive, icon_art, icon_import, icons, model_icons, slot_cli, slot_plan, state,
+                                  state_icons)
 from SluggiesTools.tests.test_roster_derive import Harness, portrait
 from SluggiesTools.tests.test_slot_plan import STATE_FILE, FakeEnv, make_config, make_state
 
@@ -238,7 +240,8 @@ class PlanIconTests(unittest.TestCase):
         plan = plan_icon(0x0D, env=env)
         self.assertEqual(plan.config['stock_icons'], [{'id': '0x0D', 'icon': {
             'front': 'pick_0D_front.png', 'side': 'keep_0D_side.png', 'fit': 'contain'}}])
-        self.assertEqual(env.calls, [('stock', 0x0D, 'side')])
+        # the stock alternate side view is looked at too: the same cell as the side one here, so none is kept
+        self.assertEqual(env.calls, [('stock', 0x0D, 'side'), ('stock', 0x0D, 'side_alt'), ('stock', 0x0D, 'side')])
 
     def test_other_view_from_the_model_folder(self):
         config = make_config()
@@ -261,6 +264,94 @@ class PlanIconTests(unittest.TestCase):
         config = make_config()
         plan_icon(0x66, config=config)
         self.assertEqual(config, make_config())
+
+
+class AltEnv(IconEnv):
+    """A stock bank whose alternate side cells differ from the side ones (Luigi-like art)."""
+
+    def stock_portrait(self, cid, view):
+        self.calls.append(('stock', cid, view))
+        return portrait((7, 8, 9, 255) if view == 'side_alt' else (4, 5, 6, 255))
+
+
+class PlanAlternateSideTests(unittest.TestCase):
+    def test_new_id_takes_an_alternate_view_and_keeps_the_others_by_name(self):
+        plan = plan_icon(0x66, 'side_alt')
+        self.assertEqual(entry_of(plan.config, 'ids', 0x66)['icon'],
+                         {'side_alt': 'pick_66_side_alt.png', 'side': 'side_0_0.png', 'front': 'front_0_0.png',
+                          'like': '0x04', 'fit': 'contain'})
+        self.assertEqual(list(plan.portraits), ['pick_66_side_alt.png'])
+        self.assertIn('Empty slot (0x66): alternate side portrait from mine.png (48x51)', plan.notes)
+        self.assertTrue(any('no longer mirrored' in n for n in plan.notes))
+        self.assertEqual(plan.effects['portraits'], {'side_alt': '/staged/mine.png'})
+        self.assertEqual(plan.effects['portrait_note'], 'alternate side portrait from mine.png')
+
+    def test_other_edits_keep_an_alternate_view_by_name(self):
+        config = make_config()
+        config['ids'][0]['icon']['side_alt'] = 'side_alt_52_0.png'
+        plan = plan_icon(0x66, 'front', config=config)
+        self.assertEqual(entry_of(plan.config, 'ids', 0x66)['icon']['side_alt'], 'side_alt_52_0.png')
+        self.assertEqual(list(plan.portraits), ['pick_66_front.png'])
+
+    def test_an_entry_without_one_keeps_mirroring(self):
+        env = IconEnv()
+        plan = plan_icon(0x66, 'front', env)                       # 0x66's entry names side and front only
+        self.assertNotIn('side_alt', entry_of(plan.config, 'ids', 0x66)['icon'])
+        self.assertEqual(env.calls, [])
+
+    def test_a_stock_character_keeps_a_distinct_stock_alternate_view(self):
+        env = AltEnv()
+        plan = plan_icon(0x0D, 'front', env)
+        icon = plan.config['stock_icons'][0]['icon']
+        self.assertEqual(icon, {'front': 'pick_0D_front.png', 'side': 'keep_0D_side.png',
+                                'side_alt': 'keep_0D_side_alt.png', 'fit': 'contain'})
+        self.assertEqual(plan.portraits['keep_0D_side_alt.png'].getpixel((0, 0)), (7, 8, 9, 255))
+        self.assertEqual(plan.portraits['keep_0D_side.png'].getpixel((0, 0)), (4, 5, 6, 255))
+
+    def test_a_slot_without_an_entry_keeps_a_distinct_alternate_view(self):
+        st = make_state()
+        char = next(c for c in st['characters'] if c['id'] == 0x68)
+        char['icon'] = {'side_alt': {'source': 'template', 'distinct': True}}
+        env = IconEnv()
+        plan = slot_plan.plan_icon(st, make_config(), 0x68, 'front', pick(), env, STATE_FILE)
+        self.assertEqual(entry_of(plan.config, 'ids', 0x68)['icon'],
+                         {'front': 'pick_68_front.png', 'side': 'keep_68_side.png',
+                          'side_alt': 'keep_68_side_alt.png', 'fit': 'contain'})
+        self.assertIn(('shown', 0x68, 'side_alt'), env.calls)
+        char['icon']['side_alt']['distinct'] = False
+        plan = slot_plan.plan_icon(st, make_config(), 0x68, 'front', pick(), IconEnv(), STATE_FILE)
+        self.assertNotIn('side_alt', entry_of(plan.config, 'ids', 0x68)['icon'])
+
+    def test_clear_drops_a_spare_rows_alternate_view(self):
+        config = make_config()
+        config['wheels'][0]['icon'] = {'side': 'a.png', 'front': 'b.png', 'side_alt': 'c.png', 'like': '0x04'}
+        plan = slot_plan.plan_clear(make_state(), config, 0x47, STATE_FILE)
+        self.assertEqual(plan.config['wheels'][0]['icon'], {'side': 'a.png', 'front': 'b.png', 'like': '0x04'})
+        self.assertTrue(any('alternate side portrait is dropped' in n for n in plan.notes))
+        self.assertEqual(plan.effects['portrait_note'], 'alternate side portrait dropped')
+        config['wheels'][0]['icon'].pop('side_alt')
+        plan = slot_plan.plan_clear(make_state(), config, 0x47, STATE_FILE)
+        self.assertIsNone(plan.config)                              # nothing to change in the config
+
+    def test_clear_of_a_new_id_drops_it_with_the_empty_slot_portraits(self):
+        config = make_config()
+        config['ids'][0]['icon']['side_alt'] = 'side_alt_52_0.png'
+        plan = slot_plan.plan_clear(make_state(), config, 0x66, STATE_FILE)
+        self.assertNotIn('side_alt', entry_of(plan.config, 'ids', 0x66)['icon'])
+
+    def test_bad_view_is_refused(self):
+        with self.assertRaisesRegex(slot_plan.PlanError, 'side_alt'):
+            plan_icon(0x66, 'back')
+        with self.assertRaisesRegex(slot_plan.PlanError, 'side_alt'):
+            slot_plan.parse_edits([icon('0x66', 'back')])
+        (e,) = slot_plan.parse_edits([icon('0x66', 'side_alt')])
+        self.assertEqual(e.view, 'side_alt')
+
+    def test_labels(self):
+        edit = {'op': 'icon', 'id': '0x66', 'view': 'side_alt', 'file': '/s/66_side_alt.png', 'origin': '/u/me.png'}
+        self.assertEqual(gui_grid._edit_title(edit), 'Pending: alternate side portrait from me.png')
+        self.assertTrue(gui_grid.portrait_tip(0x66, 'side_alt').startswith('Click to pick an alternate side'))
+        self.assertIn('Mii', gui_grid.portrait_tip(0x50, 'side_alt'))
 
 
 # --------------------------------------------------------------------------
@@ -424,6 +515,31 @@ class RoundTripTests(Harness):
             np.testing.assert_array_equal(pixels[..., 3] > 0, was[..., 3] >= 128)
         self.assertEqual(b.config['stock_icons'][0]['icon']['side'], 'keep_05_side.png')
 
+    def test_alternate_side_view_round_trip(self):
+        config = {'ids': [{'id': '0x66', 'template': '0x00', 'icon': {'side': 'red.png', 'front': 'blue.png'}}]}
+        before, after, b = self.apply(config, [
+            {'op': 'icon', 'id': '0x66', 'view': 'side_alt', 'file': self.write_image((0, 200, 250, 255))}])
+        self.assertEqual(b.config['ids'][0]['icon']['side_alt'], 'pick_66_side_alt.png')
+        self.assertFalse(self.cell(before, 0x66, 'side_alt')[2] == 'own' and
+                         state_icons.has_alternate(self.icon_state(before, 0x66)))
+        for kept in ('side', 'front'):
+            self.assertEqual(self.cell(after, 0x66, kept)[0], self.cell(before, 0x66, kept)[0], kept)
+        _blocks, pixels, source = self.cell(after, 0x66, 'side_alt')
+        self.assertEqual(source, 'own')
+        np.testing.assert_allclose(pixels[25, 24].astype(int), (0, 200, 250, 255), atol=12)
+        self.assertTrue(state_icons.has_alternate(self.icon_state(after, 0x66)))
+        image, dat = after
+        bank = derive.state_icons.read_bank(image, dat)
+        desc = struct.unpack_from('>I', bank.data, 4)[0] + icons.CONTAINER_HEAD
+        side = {icons._key(r): r for r in icons._table(bank.data, icons._pointer(bank.data, desc, icons.SIDE_FIELD))}
+        self.assertEqual(side[0x66][icons.SIDE_FLAG_OFFSET] & icons.SIDE_MIRROR_BIT, 0)
+
+    @staticmethod
+    def icon_state(files, cid):
+        image, dat = files
+        st = state.read_state(image, dat)
+        return next(c for c in st['characters'] if c['id'] == cid)['icon']
+
     def test_same_pixels_as_shown_is_nothing(self):
         config = {'ids': [{'id': '0x66', 'template': '0x00', 'icon': {'side': 'red.png', 'front': 'blue.png'}}]}
         _dol, _dat, _ctx, dat, image = self.build(config)
@@ -448,9 +564,12 @@ class CliTests(unittest.TestCase):
                                             '--output-dir', os.path.join(tmp, '3_Output_Dat')]), 0)
             with mock.patch('sys.stderr'), self.assertRaises(SystemExit):
                 slot_cli.main(['--icon', '0x0D', 'back', 'x.png', '--output-dir', os.path.join(tmp, '3_Output_Dat')])
-        (edit,) = run.call_args.args[0]
-        self.assertEqual((edit.op, edit.cid, edit.view, edit.fit, edit.trim, edit.file),
-                         ('icon', 0x0D, 'side', 'cover', False, os.path.abspath('x.png')))
+            (edit,) = run.call_args.args[0]
+            self.assertEqual((edit.op, edit.cid, edit.view, edit.fit, edit.trim, edit.file),
+                             ('icon', 0x0D, 'side', 'cover', False, os.path.abspath('x.png')))
+            self.assertEqual(slot_cli.main(['--icon', '0x0D', 'side_alt', 'x.png',
+                                            '--output-dir', os.path.join(tmp, '3_Output_Dat')]), 0)
+            self.assertEqual(run.call_args.args[0][0].view, 'side_alt')
 
     def test_dispatcher(self):
         import start

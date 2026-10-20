@@ -86,12 +86,17 @@ IDs on it; stock squares: ``stock_voices``, which reaches the whole species:
 its wheel, spare rows and new IDs on it). A voice is named by a character;
 the square takes its family's voice (the base character of its species).
 
-Portraits (``plan_icon``): one view (front or side) of a slot
-takes a user's image, fitted to 48x51 (``icon_import``). The other view keeps
-what the slot has: its own cell (by name, so its CMPR blocks stay), its
-model's portrait, or, without own portraits, what the game shows now (the
-template's or neighbour's crop; a stock ID's stock art), which then becomes
-the slot's own. Miis have no portrait records and are refused.
+Portraits (``plan_icon``): one view (front, side, or the alternate side
+view ``side_alt``: the side portrait facing the other way, which the game
+otherwise mirrors from the side cell) of a slot takes a user's image, fitted
+to 48x51 (``icon_import``). The other views keep what the slot has: its own
+cell (by name, so its CMPR blocks stay), its model's portrait, or, without
+own portraits, what the game shows now (the template's or neighbour's crop;
+a stock ID's stock art), which then becomes the slot's own. The alternate
+side view is kept only where the slot has one of its own (its config entry
+names it; a slot without an entry: a distinct cell, ``state_icons``); a slot
+without one keeps mirroring its side portrait. Miis have no portrait records
+and are refused.
 
 Equipment (``plan_equip`` / ``plan_equip_clear``): each slot's bat (file 2), left glove (3), right
 glove (4) and extra bat (5) can be replaced or reset on their own. The edit names a ``.sluggie`` exported from a
@@ -123,6 +128,19 @@ Stat edits and slot edits: the rebuild carries a slot's stat edits by character 
 stats source (``plan_stats``, a patch that sets a new square's stats) and through a clear; those plans say so
 (``Plan.stat_edits_kept``). ``plan_stat_reset`` (op ``stat_reset``) clears them: a ``reset:0xNN`` item in the same
 ``--apply-stat-edits`` step, at its place in the staging order (a later stat edit file sets values on top of it).
+
+Character file (``plan_slgmodel``, op ``slgmodel``): a ``.slgmodel`` of the Sluggers Characters patcher
+(``Roster/slgmodel.py``: finished High/Low blocks built on a stock player, portraits, voice clips) goes into a slot
+like a ``.sluggie`` pair whose blocks are already built: the blocks are written as they are
+(``--write-slot-blocks``, after the pack-load block checks, ``Env.slot_problems``; a file without a Low model uses
+its High model as the Low model too). A **new ID** takes the whole character: an own model directory from the
+base, the base's stats on a new square (and the square's voice, as a patch), the file's name (kept when it does
+not fit the plate), its portraits (the base's stock art for a missing view) and its voice clips as a voice pack
+``_gui/Sound_Packs/<name>`` on the base's voice (``character_voices``; without ``1_Input/sound_NA`` the clips are
+left out with a warning). A **stock slot** takes the models only (its own slot, or one with the same skeleton):
+name, stats, voice and portraits stay. The size (the base's ``sizescale`` row), colour swatch, stats values, bat,
+items and animations are not in the file: the base's apply. A later edit of the batch (rename, portrait, voice)
+goes on top; an earlier one of the slot is dropped, as for a paste.
 """
 
 from __future__ import annotations
@@ -138,7 +156,7 @@ try:
     from ..Hammerspace import UntanglePolicy
     from ..Sound import sound_packs
     from . import (anim, char_voices, clip_files, gear, icon_art, icon_import, icons, ids, model_icons, names,
-                   open_slot, voices, wheels)
+                   open_slot, slgmodel, state_icons, voices, wheels)
 except ImportError:
     from Hammerspace import UntanglePolicy
     from Sound import sound_packs
@@ -151,6 +169,8 @@ except ImportError:
     import model_icons
     import names
     import open_slot
+    import slgmodel
+    import state_icons
     import voices
     import char_voices
     import clip_files
@@ -452,6 +472,19 @@ class Env:
         {name: hex bytes}}, ``chemistry`` {other ID: [row byte, column byte]}), or None when unreadable."""
         return None
 
+    def read_slgmodel(self, path: str) -> slgmodel.SlgModel:
+        """The character file at ``path`` (``slgmodel.read`` against ``1_Input``); a refusal raises ``PlanError``."""
+        raise PlanError(f'cannot read the character file {os.path.basename(path)} here')
+
+    def encode_wav(self, data: bytes, label: str) -> tuple[bytes, list[str]]:
+        """A WAV (bytes) encoded as a voice clip (``Sound/clips``: ``(RWAV bytes, notes)``); a refusal raises
+        ``PlanError``."""
+        raise PlanError(f'cannot encode {label} here')
+
+    def free_pack_name(self, name: str) -> str:
+        """A voice pack name (``_gui/Sound_Packs/<name>``) not taken yet, made from ``name``."""
+        return name
+
 
 @dataclass
 class StatCheck:
@@ -490,6 +523,12 @@ class Plan:
     # copy: the snapshot files the chain reads ({file name in the copy folder: bytes, RGBA image or JSON data})
     copy_files: dict = field(default_factory=dict)
     clips: dict = field(default_factory=dict)        # {clip file name: RWAV bytes} the config's new custom clips
+    # slgmodel: what the character file holds ({'file', 'name', 'base', 'base_name', 'author', 'from', 'notes',
+    # 'left_out', 'high_only', 'sizes', 'portraits', 'voice_clips'})
+    slgmodel: dict | None = None
+    # slgmodel: the voice pack the chain's --write-voice-pack step creates from the file's clips ({'name', 'voice',
+    # 'origin', 'clips': {moment: {'rwav', 'wav'}: file names in ``copy_dir``}}; written there as <tag>_pack.json)
+    voice_pack: dict | None = None
 
     def to_json(self) -> dict:
         out = {'action': self.action, 'target': _hex(self.target), 'rebuild': self.config is not None,
@@ -497,6 +536,9 @@ class Plan:
                'nothing': self.nothing, 'effects': self.effects}
         if self.copy_source is not None:
             out['source'] = _hex(self.copy_source)
+        if self.slgmodel is not None:
+            out['source'] = self.slgmodel['base']
+            out['slgmodel'] = dict(self.slgmodel)
         if self.pair is not None:
             out['source'] = _hex(self.pair.source)
             out['files'] = {'high': self.pair.high, 'low': self.pair.low, 'picked': self.pair.picked}
@@ -683,6 +725,8 @@ def plan_patch(st: dict, config: dict, cid: int, pair: Pair, env: Env, state_fil
             plan.notes.append(f'portraits from {os.path.basename(found.home)}/{model_icons.ICON_SUBDIR} (it showed '
                               'the "empty slot" ones)')
             plan.effects['portraits'] = {'front': found.front, 'side': found.side}
+            if found.side_alt:
+                plan.effects['portraits'][ALT_VIEW] = found.side_alt
     else:
         plan.notes.append(f'{target_name} keeps its portraits (a model patch replaces only "empty slot" ones)')
 
@@ -766,6 +810,11 @@ def plan_clear(st: dict, config: dict, cid: int, state_file: str, env: Env | Non
                 del new[icons.STOCK_KEY]
             plan.notes.append(f'{target_name}: its stock portraits come back')
             plan.effects['portrait_note'] = 'stock portraits come back'
+        entry = _entry(new, 'wheels', cid) if cid in icons.SPARE_DONORS else None
+        if entry is not None and (entry.get('icon') or {}).get(ALT_VIEW) is not None:
+            del entry['icon'][ALT_VIEW]            # a spare row never had one: it mirrors its side portrait again
+            plan.notes.append(f'{target_name}: its alternate side portrait is dropped (the side one is mirrored)')
+            plan.effects['portrait_note'] = 'alternate side portrait dropped'
         entry = _entry(new, ids.STOCK_STATS_KEY, cid)
         if entry is not None:
             _drop(new, ids.STOCK_STATS_KEY, entry)
@@ -1308,7 +1357,14 @@ def plan_species_clip(st: dict, config: dict, cid: int, moment: str, file: str |
     return plan
 
 
-VIEWS = ('front', 'side')
+VIEWS = ('front', 'side')               # the views every slot has
+ALT_VIEW = icons.ALT_VIEW               # the alternate side view: optional, a cell of its own
+ICON_VIEWS = (*VIEWS, ALT_VIEW)         # the views an icon edit can set
+VIEW_LABELS = {'front': 'front', 'side': 'side', ALT_VIEW: 'alternate side'}
+
+
+def view_label(view: str) -> str:
+    return VIEW_LABELS.get(view, view)
 
 
 @dataclass
@@ -1344,53 +1400,85 @@ def plan_icon(st: dict, config: dict, cid: int, view: str, pick: IconPick, env: 
     of the batch changed the slot's portraits)."""
     char = _character(st, cid)
     target_name = _display(char)
-    if view not in VIEWS:
-        raise PlanError(f'{view!r} is not a portrait view (front or side)')
+    if view not in ICON_VIEWS:
+        raise PlanError(f'{view!r} is not a portrait view (front, side or side_alt)')
     if not has_portrait_records(cid):
         raise PlanError(f'{target_name} has no portrait records of its own (Miis show the Mii icon)')
     plan = Plan('icon', cid, None)
+    label = view_label(view)
     if compare and env.same_portrait(char, view, pick.image):
         plan.nothing = True
-        plan.notes.append(f'nothing to change: {target_name} shows this {view} portrait already')
+        plan.notes.append(f'nothing to change: {target_name} shows this {label} portrait already')
         return plan
     new = copy.deepcopy(config)
-    other = 'side' if view == 'front' else 'front'
     entry = _icon_entry(new, cid)
     current = (entry or {}).get('icon') or {}
     name = f'pick_{cid:02X}_{view}.png'
-    keep = f'keep_{cid:02X}_{other}.png'
     plan.portraits[name] = pick.image
-    other_name = None
-    if current.get('model') is not None:
-        path = getattr(env.model_icons(current['model']), other)
-        if path:
-            other_name = keep
-            plan.portraits[keep] = path
-            plan.notes.append(f'its {other} portrait stays the one from {os.path.basename(current["model"])}')
-    elif current.get(other):
-        other_name = current[other]                  # its own cell: kept by name (and CMPR blocks)
-    if other_name is None:
-        stock = cid < icons.STOCK_ICON_END
-        image = env.stock_portrait(cid, other) if stock else env.shown_portrait(char, other)
-        if image is None:
+    icon = {view: name, 'fit': icon_art.DEFAULT_FIT_MODE}
+    for other in (v for v in ICON_VIEWS if v != view):
+        kept = _kept_view(plan, env, char, current, other, view)
+        if kept is not None:
+            icon[other] = kept
+        elif other != ALT_VIEW:
             raise PlanError(f'{target_name}: its current {other} portrait cannot be read, so it cannot be kept '
                             'beside the new one')
-        other_name = keep
-        plan.portraits[keep] = image
-        shown = 'its stock' if stock else 'the'
-        plan.notes.append(f'{shown} {other} portrait it shows now becomes its own (kept beside the new {view} one)')
-    why = _set_icon(new, cid, {view: name, other: other_name, 'fit': icon_art.DEFAULT_FIT_MODE})
+    if view == ALT_VIEW and ALT_VIEW not in current:
+        plan.notes.append('its side portrait is no longer mirrored for the other facing: both are drawn as given')
+    why = _set_icon(new, cid, icon)
     if why:
         raise PlanError(f'{target_name}: {why}')
     plan.config = new
     _prepare(plan, state_file, [])
     plan.commands.append(('--roster-state',))
-    plan.notes.insert(0, f'{target_name}: {view} portrait from {pick.label} (48x51)')
+    plan.notes.insert(0, f'{target_name}: {label} portrait from {pick.label} (48x51)')
     plan.notes += pick.notes
     plan.warnings += pick.warnings
     plan.effects['portraits'] = {view: pick.path}
-    plan.effects['portrait_note'] = f'{view} portrait from {pick.label}'
+    plan.effects['portrait_note'] = f'{label} portrait from {pick.label}'
     return plan
+
+
+def _kept_view(plan: Plan, env: Env, char: dict, current: dict, other: str, view: str) -> str | None:
+    """The config name that keeps slot ``char``'s ``other`` portrait beside a new ``view`` one (module docstring;
+    the kept image goes into ``plan.portraits``), or None when it cannot be read (an alternate side view the slot
+    has not: None too)."""
+    cid = char['id']
+    keep = f'keep_{cid:02X}_{other}.png'
+    label = view_label(other)
+    if current.get('model') is not None:
+        path = getattr(env.model_icons(current['model']), other)
+        if path:
+            plan.portraits[keep] = path
+            plan.notes.append(f'its {label} portrait stays the one from {os.path.basename(current["model"])}')
+            return keep
+        if other == ALT_VIEW:
+            return None
+    elif current.get(other):
+        return current[other]                        # its own cell: kept by name (and CMPR blocks)
+    elif current and other == ALT_VIEW:
+        return None                                  # its entry names no alternate view: it mirrors the side one
+    stock = cid < icons.STOCK_ICON_END
+    if other == ALT_VIEW:
+        if stock:
+            image, side = env.stock_portrait(cid, ALT_VIEW), env.stock_portrait(cid, 'side')
+            if image is None or side is None or image.tobytes() == side.tobytes():
+                return None                          # its stock side cell is mirrored: no alternate view
+        else:
+            if not state_icons.has_alternate(char.get('icon')):
+                return None
+            image = env.shown_portrait(char, ALT_VIEW)
+            if image is None:
+                return None
+    else:
+        image = env.stock_portrait(cid, other) if stock else env.shown_portrait(char, other)
+        if image is None:
+            return None
+    plan.portraits[keep] = image
+    shown = 'its stock' if stock else 'the'
+    plan.notes.append(f'{shown} {label} portrait it shows now becomes its own (kept beside the new '
+                      f'{view_label(view)} one)')
+    return keep
 
 
 # --------------------------------------------------------------------------
@@ -1650,16 +1738,21 @@ def plan_copy(st: dict, config: dict, base_config: dict, cid: int, source: int, 
             plan.notes.append(f'portraits not copied: {source_name}\'s portraits cannot be read')
         elif not all(env.close_portrait(char, view, shown[view]) for view in VIEWS):
             own = (_icon_entry(base_config, source) or {}).get('icon') or {}
-            if all(own.get(view) for view in VIEWS):
-                icon = {view: own[view] for view in VIEWS}           # its own cells, by name: blocks kept
+            views = list(VIEWS)
+            if own.get(ALT_VIEW) or (not own and state_icons.has_alternate(src.get('icon'))):
+                shown[ALT_VIEW] = env.shown_portrait(src, ALT_VIEW)   # the source's alternate side view goes too
+                if shown[ALT_VIEW] is not None:
+                    views.append(ALT_VIEW)
+            if all(own.get(view) for view in views):
+                icon = {view: own[view] for view in views}           # its own cells, by name: blocks kept
             else:
-                icon = {view: f'copy_{tag}_{view}.png' for view in VIEWS}
-                plan.portraits.update({icon[view]: shown[view] for view in VIEWS})
+                icon = {view: f'copy_{tag}_{view}.png' for view in views}
+                plan.portraits.update({icon[view]: shown[view] for view in views})
             why = _set_icon(new, cid, dict(icon, fit='strict'))       # 48x51 cells, as the derive writes them
             if why:
                 plan.notes.append(f'portraits not copied: {why}')
             else:
-                plan.effects['portraits'] = {view: stash(f'preview_{tag}_{view}.png', shown[view]) for view in VIEWS}
+                plan.effects['portraits'] = {view: stash(f'preview_{tag}_{view}.png', shown[view]) for view in views}
                 plan.effects['portrait_note'] = f'{source_name}\'s portraits'
 
     # stat values, after the rebuild (the target's rows follow the copied stats source then)
@@ -1685,6 +1778,229 @@ def plan_copy(st: dict, config: dict, base_config: dict, cid: int, source: int, 
     plan.commands += stat_commands + slot_commands
     plan.commands.append(('--roster-state',))
     plan.notes.insert(0, f'{source_name} -> {target_name} (a clone of what the game holds now)')
+    return plan
+
+
+# --------------------------------------------------------------------------
+# Character files (.slgmodel): finished blocks plus the character's basics
+# --------------------------------------------------------------------------
+
+SLG_PREFIX = 'slg'                  # the snapshot files of an import in ``copy_dir``: slg_<id>_hp.bin, ...
+
+
+def _fit_portrait(image, what: str) -> tuple:
+    """A character file's portrait as a 48x51 cell (``icon_import.fit_user_image``): a 48x51 image as it is (alpha
+    hardened), another size fitted like a user image. ``(portrait, warnings)``."""
+    strict = image.size == slgmodel.PORTRAIT_SIZE
+    try:
+        portrait, warnings = icon_import.fit_user_image(image, 'strict' if strict else icon_art.DEFAULT_FIT_MODE,
+                                                        trim=not strict)
+    except (icon_import.IconImportError, icon_art.IconArtError) as exc:
+        raise PlanError(f'{what}: {exc}') from exc
+    if not strict:
+        warnings.insert(0, f'{what} is {image.width}x{image.height}, not 48x51: fitted like a user image')
+    return portrait, warnings
+
+
+def plan_slgmodel(st: dict, config: dict, cid: int, model: slgmodel.SlgModel, env: Env, state_file: str,
+                  names_text: dict | None = None) -> Plan:
+    """The chain that puts the character file ``model`` (``slgmodel.read``) into slot ``cid`` (module docstring,
+    "Character file"). The blocks go through the pack-load checks against the directory whose vanilla files the
+    slot will load (``Env.slot_problems``) and are written as they are; a new ID takes the character as a whole,
+    a stock slot the models only."""
+    char = _character(st, cid)
+    target_name = _display(char)
+    base = model.base_id
+    base_name = _source_name(base, names_text, st)
+    file_name = model.file_name
+    new = copy.deepcopy(config)
+    plan = Plan(SLGMODEL, cid, None)
+    folder = copy_dir(state_file)
+    tag = f'{SLG_PREFIX}_{cid:02X}'
+
+    def stash(name, data):
+        plan.copy_files[name] = data
+        return os.path.join(folder, name)
+
+    high, low = model.high, model.high if model.high_only else model.low
+    plan.slgmodel = {'file': model.path, 'name': model.name, 'base': _hex(base), 'base_name': model.base,
+                     'author': model.author, 'from': model.source, 'notes': model.notes,
+                     'left_out': list(model.left_out), 'high_only': model.high_only,
+                     'sizes': {'high': len(high), 'low': None if model.high_only else len(low)},
+                     'portraits': sorted(model.portraits), 'voice_clips': len(model.voice)}
+    if cid >= ids.FIRST_NEW:
+        entry = _entry(new, 'ids', cid)
+        if entry is None:
+            raise PlanError(f'{_hex(cid)} has no ids entry in the derived config')
+        check_dir = base + ids.MODEL_DIR_BASE
+        errors, warnings = env.slot_problems(check_dir, high, low)
+        if errors:
+            raise PlanError(f'{file_name} does not fit a slot built on {base_name}: {errors[0]}')
+        plan.warnings += warnings
+        kept = char.get('own_model_dir') and char.get('model_source') == base
+        plan.effects['model'] = (f'{model.name} ({file_name}, built on {base_name}) in '
+                                 + ('its own directory (kept)' if kept else
+                                    f'an own directory (fresh copy of {base_name}\'s files)'))
+        if kept:
+            plan.notes.append(f'{target_name} keeps its own model directory (copies of {base_name}\'s files)')
+        else:
+            entry['model'] = {'from': _hex(base)}
+            if char.get('own_model_dir'):
+                plan.notes.append(f'{target_name}\'s own model directory is copied afresh from {base_name} (it held '
+                                  f'{_hex(char["model_source"])}\'s files; models patched into it are dropped)')
+                changed = [gear.label(e['file']).lower() for e in (char.get('equipment') or {}).values()
+                           if e.get('vanilla') is False]
+                if changed:
+                    plan.warnings.append(f'{target_name}: the fresh directory copy also resets its equipment '
+                                         f'({", ".join(changed)}); stage the gear again after this import')
+                banks = custom_anims(char)
+                if banks:
+                    plan.warnings.append(f'{target_name}: the fresh directory copy also resets its custom animation '
+                                         f'bank{"s" if len(banks) != 1 else ""} ({", ".join(map(str, banks))}) to '
+                                         f'{base_name}\'s')
+            else:
+                plan.notes.append(f'{target_name} gets an own model directory: a copy of {base_name}\'s files')
+        # stats and the square's voice, as a patch of the base's models would set them
+        square = st['squares'][char['square']]
+        if square['kind'] == 'new':
+            if entry.get('stats') != _hex(base):
+                entry['stats'] = _hex(base)
+                plan.notes.append(f'{target_name} plays with {base_name}\'s stats (new square; the file carries '
+                                  'no stats)')
+                plan.effects['stats'] = base_name
+                _note_stat_edits(plan, env, cid, target_name)
+            k, sq = _square_config(new, cid) or (None, None)
+            voice_set = square.get('voice_set') is not None or (isinstance(sq, dict) and sq.get('voice') is not None)
+            if not voice_set:
+                if sq is None:
+                    raise PlanError(f'{_hex(cid)}: its square is missing from the derived config')
+                members = sq['members'] if isinstance(sq, dict) else sq
+                new['grid']['squares'][k] = {'members': list(members), 'voice': _hex(base)}
+                plan.notes.append(f'the square\'s voice becomes {base_name}\'s (first model on it)')
+                plan.effects['voice'] = f'{base_name} (square voice)'
+        else:
+            plan.notes.append(f'{target_name} keeps its stats (stock square)')
+        # name
+        problem = names.fit_problem(model.name)
+        value = {lang: model.name for lang in open_slot.SLOT_NAME}
+        if problem:
+            plan.warnings.append(f'{target_name} keeps its name: the file\'s name {model.name!r} does not fit the '
+                                 f'name plate ({problem}); rename the slot after the import')
+        elif entry.get('name') != value:
+            entry['name'] = value
+            plan.effects['name'] = model.name
+        # portraits: the file's, the base's stock art for a missing view
+        icon, previews, missing = {}, {}, []
+        for view in VIEWS:
+            image = model.portraits.get(view)
+            if image is not None:
+                portrait, warnings = _fit_portrait(image, f'{file_name}: the {view} portrait')
+                plan.warnings += warnings
+            else:
+                portrait = env.stock_portrait(base, view)
+                missing.append(view)
+            if portrait is None:
+                icon = None
+                break
+            name = f'{tag}_{view}.png'
+            plan.portraits[name] = portrait
+            icon[view] = name
+            previews[view] = stash(f'preview_{tag}_{view}.png', portrait)
+        if not has_portrait_records(cid):
+            plan.notes.append(f'portraits not imported: {target_name} has no portrait records')
+        elif icon is None:
+            plan.notes.append(f'portraits not imported, {target_name} keeps its own: the file has no '
+                              f'{" and ".join(missing)} portrait and {base_name}\'s stock art cannot be read')
+        else:
+            why = _set_icon(new, cid, dict(icon, fit='strict'))
+            if why:
+                plan.notes.append(f'portraits not imported: {why}')
+            else:
+                plan.effects['portraits'] = previews
+                plan.effects['portrait_note'] = (f'from {file_name}' if not missing else
+                                                 f'{", ".join(v for v in VIEWS if v not in missing) or "none"} from '
+                                                 f'{file_name}, {" and ".join(missing)} {base_name}\'s stock art')
+                if missing:
+                    plan.warnings.append(f'{file_name} has no {" and ".join(missing)} portrait: {base_name}\'s '
+                                         'stock art is used for it')
+        # voice: the file's own clips as a voice pack on the base's voice; without clips the base's voice when
+        # the square speaks with another
+        if cid < ids.PLAYER_END or _entry(new, 'ids', cid) is not None:
+            _k, sq = _square_config(new, cid) or (None, None)
+            square_voice = (ids._number(sq['voice'], 'voice') if isinstance(sq, dict) and sq.get('voice') is not None
+                            else square.get('voice'))
+            try:
+                same_family = square_voice is not None and voice_family(st, square_voice) == voice_family(st, base)
+            except PlanError:
+                same_family = False
+            own = [s for s in slgmodel.VOICE_SLOTS if s in model.voice]
+            if own and not env.sound_archive():
+                plan.warnings.append(f'{file_name} carries {len(own)} voice clips, but they need the game\'s sound '
+                                     'archive: copy files/sound_NA (MY2.brsar) into 1_Input/sound_NA and give the '
+                                     'slot its voice from the Voices tab (the clips stay in the file)')
+                own = []
+            if own:
+                pack_name = env.free_pack_name(model.name)
+                voice_entry = {'id': _hex(cid), 'voice': _hex(base), 'clips': {}, 'pack': pack_name}
+                # the pack's files go beside the batch's snapshots; the chain's --write-voice-pack step creates
+                # the pack from them once the game is written (a failed chain leaves no pack behind)
+                plan.voice_pack = {'name': pack_name, 'voice': base, 'origin': file_name, 'clips': {}}
+                for slot in own:
+                    rwav, notes = env.encode_wav(model.voice[slot], f'{file_name}: voice/{slot}.wav')
+                    name = clip_files.file_name(rwav)
+                    voice_entry['clips'][slot] = name
+                    plan.clips[name] = rwav
+                    plan.voice_pack['clips'][slot] = {'rwav': f'{tag}_{slot}.rwav', 'wav': f'{tag}_{slot}.wav'}
+                    stash(f'{tag}_{slot}.rwav', rwav)
+                    stash(f'{tag}_{slot}.wav', model.voice[slot])
+                    plan.notes += [f'voice/{slot}.wav: {note}' for note in notes]
+                _replace_entry(new, char_voices.KEY, cid, voice_entry)
+                rest = 'all 12 moments' if len(own) == len(slgmodel.VOICE_SLOTS) else f'the rest {base_name}\'s voice'
+                plan.effects[CHAR_VOICE] = f'pack {pack_name} ({len(own)} clips from the file, {rest})'
+                plan.notes.append(f'{target_name} speaks with the file\'s {len(own)} voice clips (voice pack '
+                                  f'{pack_name!r} in {sound_packs.PACK_DIR}, on {base_name}\'s voice; the clips are '
+                                  'copied into its voice bank in 3_Output_Dat/sound_NA/MY2.brsar: copy that file '
+                                  'into the game too)')
+            elif not same_family and env.sound_archive():
+                _replace_entry(new, char_voices.KEY, cid, {'id': _hex(cid), 'voice': _hex(base)})
+                plan.effects[CHAR_VOICE] = base_name
+                plan.notes.append(f'{target_name} speaks with {base_name}\'s voice as its own (its square speaks '
+                                  'with another)')
+            elif not same_family:
+                plan.warnings.append(f'{target_name} speaks with its square\'s voice, not {base_name}\'s: giving it '
+                                     'a voice of its own needs the game\'s sound archive in 1_Input/sound_NA')
+            else:
+                _replace_entry(new, char_voices.KEY, cid, None)
+        else:
+            plan.notes.append(f'voice not imported: {target_name} has no voice bank')
+    else:
+        check_dir = char['model_dir']
+        errors, warnings = env.slot_problems(check_dir, high, low)
+        if errors:
+            raise PlanError(f'{file_name} does not fit {target_name} ({errors[0]}). A stock slot keeps its own '
+                            f'animations, so only a model built on the same skeleton fits ({base_name}\'s own '
+                            'slot); put it on a new ID for the whole character.')
+        plan.warnings += warnings
+        plan.notes.append(f'{target_name} keeps its name, stats, voice and portraits (stock slot: the models only; '
+                          'put the file on a new ID for the whole character)')
+        plan.effects['model'] = f'{model.name} ({file_name}, built on {base_name})'
+    if model.high_only:
+        plan.warnings.append(f'{file_name} has no Low model: its High model is used as the Low model too, so the '
+                             'slot loads it twice on the field (counts twice against the memory budget)')
+    if model.left_out:
+        plan.notes.append(f'not in the file ({base_name}\'s apply): {"; ".join(model.left_out)}')
+    plan.notes.append(f'size: {base_name}\'s (the file carries no size; the stat editor\'s sizescale changes it)')
+    if new != config:
+        plan.config = new
+    _prepare(plan, state_file, [])
+    hp = stash(f'{tag}_hp.bin', high)
+    lp = hp if model.high_only else stash(f'{tag}_l.bin', low)
+    plan.commands.append(('--write-slot-blocks', _hex(cid), hp, lp))
+    if plan.voice_pack is not None:
+        plan.commands.append((WRITE_VOICE_PACK, stash(f'{tag}_pack.json', plan.voice_pack)))
+    plan.commands.append(('--roster-state',))
+    plan.notes.insert(0, f'{file_name} ({model.name}, built on {base_name}) -> {target_name}'
+                         + (' (High model as the Low model too)' if model.high_only else ''))
     return plan
 
 
@@ -1736,9 +2052,11 @@ def plan_stat_reset(st: dict, cid: int, env: Env, after_files: bool = False) -> 
     return plan
 
 
+WRITE_VOICE_PACK = '--write-voice-pack'               # a character file import's voice pack (``Plan.voice_pack``)
 SLOT_WRITES = ('--patch', '--unpatch', '--write-slot-blocks', '--write-slot-equipment',  # step 4 of a batch
-               '--write-slot-animation')
-MODEL_OPS = ('patch', 'clear', 'copy')               # copy: the slot becomes a clone of ``source`` (paste)
+               '--write-slot-animation', WRITE_VOICE_PACK)
+SLGMODEL = 'slgmodel'                                 # a character file of the Sluggers Characters patcher (``file``)
+MODEL_OPS = ('patch', 'clear', 'copy', SLGMODEL)     # copy: the slot becomes a clone of ``source`` (paste)
 CHAR_VOICE = 'char_voice'                             # the slot's own voice (``character_voices``)
 SPECIES_CLIP = 'species_clip'                         # one moment of a stock voice (``species_clips``); per moment
 SPECIES_CLIPS = 'species_clips'                       # its effects key
@@ -1768,7 +2086,7 @@ class Edit:
     pair: Pair | None = None
     source: int | None = None       # voice / stats: the character to take them from (None: back to the default);
     #                                 copy: the character the slot becomes a clone of
-    view: str | None = None         # icon: 'front' or 'side'
+    view: str | None = None         # icon: 'front', 'side' or 'side_alt' (the alternate side view)
     fit: str = icon_art.DEFAULT_FIT_MODE                  # icon: contain / cover / strict
     trim: bool = icon_import.DEFAULT_TRIM                 # icon: crop the transparent border first
     origin: str | None = None       # icon: the user's file, when ``file`` is the GUI's normalised copy;
@@ -1878,6 +2196,8 @@ def parse_edits(data) -> list[Edit]:
             continue
         if edit.op == 'patch' and not edit.file and not edit.low:
             raise PlanError(f'edit {n}: a patch needs a "file" (or a "low": a Low model pick)')
+        if edit.op == SLGMODEL and not isinstance(edit.file, str):
+            raise PlanError(f'edit {n}: a slgmodel edit needs a "file" (the .slgmodel character file)')
         if edit.op == 'rename' and not isinstance(edit.text, str):
             raise PlanError(f'edit {n}: a rename needs a "text" (blank resets the name)')
         if edit.op == COPY:
@@ -1904,8 +2224,9 @@ def parse_edits(data) -> list[Edit]:
             edit.trim = item.get('trim', icon_import.DEFAULT_TRIM)
             if not edit.file:
                 raise PlanError(f'edit {n}: an icon edit needs a "file" (the image)')
-            if edit.view not in VIEWS:
-                raise PlanError(f'edit {n}: an icon edit needs a "view" (front or side), not {edit.view!r}')
+            if edit.view not in ICON_VIEWS:
+                raise PlanError(f'edit {n}: an icon edit needs a "view" (front, side or side_alt), not '
+                                f'{edit.view!r}')
             if edit.fit not in icon_art.FIT_MODES:
                 raise PlanError(f'edit {n}: "fit" must be one of {", ".join(icon_art.FIT_MODES)}')
             if not isinstance(edit.trim, bool):
@@ -2042,10 +2363,11 @@ def merge_edits(edits: list[Edit], classify_fn=None, load_icon_fn=None, classify
                 notes.append(f'{_hex(edit.cid)}: the pending {edit.moment} clip edit is replaced by the later one')
             merged.append(edit)
             continue
-        if edit.op == COPY:
+        if edit.op in (COPY, SLGMODEL):               # the slot as a whole: earlier edits of it are dropped
+            what = 'paste' if edit.op == COPY else 'character file import'
             for old in [e for e in merged if e.cid == edit.cid]:
                 merged.remove(old)
-                notes.append(f'{_hex(edit.cid)}: the pending {old.op} is dropped: the later paste replaces the '
+                notes.append(f'{_hex(edit.cid)}: the pending {old.op} is dropped: the later {what} replaces the '
                              'whole slot')
             merged.append(edit)
             continue
@@ -2121,8 +2443,8 @@ def merge_edits(edits: list[Edit], classify_fn=None, load_icon_fn=None, classify
                    if edit.op in MODEL_OPS else None)
         if edit.op == 'patch' and edit.pair.high is None and earlier is not None:
             low_name = os.path.basename(edit.pair.low)
-            if earlier.op in ('clear', COPY):
-                what = 'clear' if earlier.op == 'clear' else 'paste'
+            if earlier.op in ('clear', COPY, SLGMODEL):
+                what = {'clear': 'clear', COPY: 'paste'}.get(earlier.op, 'character file import')
                 refused.append((edit, f'{low_name} has no High partner beside it, and a {what} of '
                                       f'{_hex(edit.cid)} is pending: patch the High model instead, or discard the '
                                       f'pending {what} first'))
@@ -2240,7 +2562,8 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
     3. one ``--roster --state`` when the merged config differs from the derived one;
     3b. one ``--apply-stat-edits`` with the pastes' stat values (``copy:`` items), after the rebuild;
     4. each slot's ``--patch`` / ``--unpatch`` / ``--write-slot-blocks`` / ``--write-slot-equipment`` /
-       ``--write-slot-animation``, in staging order;
+       ``--write-slot-animation`` / ``--write-voice-pack`` (a character file import's pack, after its blocks),
+       in staging order;
     5. one ``--roster-state``.
 
     Any refused edit refuses the whole batch: no commands, no config (``refused`` names them all)."""
@@ -2284,6 +2607,8 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
             elif edit.op == STAT_RESET:
                 plan = plan_stat_reset(st, edit.cid, env,
                                        after_files=any(e.op == STAT_EDITS for e, _p in batch.plans))
+            elif edit.op == SLGMODEL:
+                plan = plan_slgmodel(st, current, edit.cid, env.read_slgmodel(edit.file), env, state_file, names_text)
             else:
                 plan = plan_clear(st, current, edit.cid, state_file, env)
         except PlanError as exc:

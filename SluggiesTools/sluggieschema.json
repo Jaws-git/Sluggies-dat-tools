@@ -320,8 +320,14 @@
               },
               "RigidRebuild": {
                 "type": "object",
-                "description": "Hammerspace-only whole-blob rebuild of this rigid (VertexBufferCompCount 3) donor submesh, written by the Blender exporter when the slot-preserving edit fields cannot represent the edit: changed topology, an Object Mode transform, a host-bone change that keeps the world position, or faces moved between surfaces. The donor display states are kept (with ShaderModeEdited / DisplayStateParamBytesEdited applied) and only the primitive lists are re-encoded, one list per drawing surface (greedy GX_TRIANGLESTRIP runs plus one GX_TRIANGLES block for the leftovers, about half the bytes of plain triangles); Type-3 index widths are widened where a count needs it. The rebuilt blob is inserted before GPLUserData and the GEO descriptor repointed; the donor blob stays in place unreferenced. Never combined with the in-place *Edited fields on the same submesh (the patcher refuses the mix), and never on a submesh a ptr7 facial object references. Every buffer uses the donor's own formats (VertexBufferQuantizeInfo, NormalBuffer, ColorChannels and UVChannels quantization) and is bone-local to HostBoneId.",
+                "description": "Hammerspace-only whole-blob rebuild of this rigid (VertexBufferCompCount 3) donor submesh, written by the Blender exporter when the slot-preserving edit fields cannot represent the edit: changed topology, an Object Mode transform, a host-bone change that keeps the world position, faces moved between surfaces, or positions that outgrew the donor's position format. The donor display states are kept (with ShaderModeEdited / DisplayStateParamBytesEdited applied) and only the primitive lists are re-encoded, one list per drawing surface (greedy GX_TRIANGLESTRIP runs plus one GX_TRIANGLES block for the leftovers, about half the bytes of plain triangles); Type-3 index widths are widened where a count needs it. The rebuilt blob is inserted before GPLUserData and the GEO descriptor repointed; the donor blob stays in place unreferenced. Never combined with the in-place *Edited fields on the same submesh (the patcher refuses the mix), and never on a submesh a ptr7 facial object references. Every buffer uses the donor's own formats (VertexBufferQuantizeInfo, NormalBuffer, ColorChannels and UVChannels quantization) and is bone-local to HostBoneId.",
                 "properties": {
+                  "VertexBufferQuantizeInfo": {
+                    "type": "integer",
+                    "minimum": 48,
+                    "maximum": 63,
+                    "description": "Optional s16 position format (0x30..0x3F) of VertexBufferData, written only when the positions outgrew the donor's VertexBufferQuantizeInfo: the exporter steps from the donor's shift to coarser ones until the mesh fits. Absent: the donor's format. The patcher writes it into the rebuilt position header; FacialPoses deltas use it too."
+                  },
                   "HostBoneId": {
                     "type": "integer",
                     "minimum": 0,
@@ -427,11 +433,17 @@
               },
               "SkinnedRebuild": {
                 "type": "object",
-                "description": "Hammerspace-only whole rebuild of the skinned body (submesh 0, VertexBufferCompCount 6), written by the Blender exporter when the body's topology changed, it carries an Object Mode transform, or faces moved in a way the slot-preserving fields cannot store (a partial move, a move between shaders, or an Add-material surface). Any vertex and face count. The patcher assigns position slots in the canonical skin layout (one SK1/SK2 write per vertex, entries on their own cache lines, sources mirroring the position buffer, memClr 0/0), rebuilds the whole SKN section from Influences, keeps the donor display states (ShaderModeEdited / DisplayStateParamBytesEdited applied) and re-encodes one primitive list per drawing surface (GX_TRIANGLESTRIP runs plus a GX_TRIANGLES block, as RigidRebuild); the rebuilt blob is inserted before GPLUserData and the GEO descriptor repointed. Facial poses (ptr7) that address submesh 0 are rebuilt for the new vertex order from FacialPoses, or dropped (the header pointer is cleared) when the entry has none. Never combined with in-place *Edited fields on the submesh, a RigidRebuild, or a model-level SkinDataEdited.",
+                "description": "Hammerspace-only whole rebuild of the skinned body (submesh 0, VertexBufferCompCount 6), written by the Blender exporter when the body's topology changed, it carries an Object Mode transform, faces moved in a way the slot-preserving fields cannot store (a partial move, a move between shaders, or an Add-material surface), or its positions outgrew the donor's position format. Any vertex and face count. The patcher assigns position slots in the canonical skin layout (one SK1/SK2 write per vertex, entries on their own cache lines, sources mirroring the position buffer, memClr 0/0), rebuilds the whole SKN section from Influences, keeps the donor display states (ShaderModeEdited / DisplayStateParamBytesEdited applied) and re-encodes one primitive list per drawing surface (GX_TRIANGLESTRIP runs plus a GX_TRIANGLES block, as RigidRebuild); the rebuilt blob is inserted before GPLUserData and the GEO descriptor repointed. Facial poses (ptr7) that address submesh 0 are rebuilt for the new vertex order from FacialPoses, or dropped (the header pointer is cleared) when the entry has none. Never combined with in-place *Edited fields on the submesh, a RigidRebuild, or a model-level SkinDataEdited.",
                 "properties": {
+                  "VertexBufferQuantizeInfo": {
+                    "type": "integer",
+                    "minimum": 48,
+                    "maximum": 63,
+                    "description": "Optional s16 position format (0x30..0x3F) of VertexBufferData, written only when the body outgrew the donor's VertexBufferQuantizeInfo (see RigidRebuild.VertexBufferQuantizeInfo). The patcher writes it into the rebuilt position header and moves the normal header's and the SKN QuantizeInfo's shift with it where they shared the donor's; FacialPoses deltas use it too."
+                  },
                   "VertexBufferData": {
                     "type": "string",
-                    "description": "One interleaved x y z nx ny nz record per vertex (big-endian int16 in the donor's VertexBufferQuantizeInfo, int16 formats only), in model space, in the exporter's vertex order. Normals are per vertex, as the skinned buffer stores them."
+                    "description": "One interleaved x y z nx ny nz record per vertex (big-endian int16 in VertexBufferQuantizeInfo when set, else the donor's, int16 formats only), in model space, in the exporter's vertex order. Normals are per vertex, as the skinned buffer stores them."
                   },
                   "Influences": {
                     "type": "string",
@@ -825,6 +837,19 @@
             }
           },
           "required": ["CustomSubmeshId", "MeshName", "HostBoneId", "TemplateSource", "VertexBufferData", "FacesCount", "FacesData", "UVChannels", "TextureAssignment"],
+          "additionalProperties": false
+        }
+      },
+      "TextureReplacements": {
+        "type": "array",
+        "description": "Vanilla texture slots no surface binds any more, refilled by the Blender export with a new PNG from tex/ instead of appending it. The patcher re-encodes each slot from its PNG in the slot's own format (Hammerspace TEX build), whatever ReimportTextures says.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "TextureIndex": {"type": "integer", "minimum": 0},
+            "TextureFileName": {"type": "string"}
+          },
+          "required": ["TextureIndex", "TextureFileName"],
           "additionalProperties": false
         }
       },

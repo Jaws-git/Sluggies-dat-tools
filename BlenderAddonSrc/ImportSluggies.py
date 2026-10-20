@@ -779,6 +779,15 @@ def _create_material(mat_name, image, wrap_s=1):
     return mat
 
 
+def _new_image_texture_node(nodes, right_x, y):
+    """An Image Texture node at twice Blender's default width, its right edge
+    at *right_x* so the wider node does not cover the node it feeds."""
+    tex_node = nodes.new('ShaderNodeTexImage')
+    tex_node.width *= 2
+    tex_node.location = (right_x - tex_node.width, y)
+    return tex_node
+
+
 def _build_material_nodes(mat, image, wrap_s=1):
     """Replace *mat*'s node tree with the importer's texture tree (see _create_material)."""
     mat.use_nodes = True
@@ -792,8 +801,7 @@ def _build_material_nodes(mat, image, wrap_s=1):
     bsdf_node = nodes.new('ShaderNodeBsdfDiffuse')
     bsdf_node.location = (550, 0)
 
-    tex_node = nodes.new('ShaderNodeTexImage')
-    tex_node.location = (200, 0)
+    tex_node = _new_image_texture_node(nodes, 440, 0)
     if image:
         tex_node.image = image
     tex_node.extension = _GX_WRAP.get(wrap_s, 'REPEAT')

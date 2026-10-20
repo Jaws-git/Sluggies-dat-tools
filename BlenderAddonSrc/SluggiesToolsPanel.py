@@ -32,6 +32,7 @@ from .ImportSluggies import (
     SLUGGIES_OT_import_anm,
     _build_material_nodes,
     _create_material,
+    _new_image_texture_node,
     _set_surface_material_metadata,
 )
 
@@ -1771,9 +1772,9 @@ def _ensure_surface_texture(context, mat, tex_dir):
     if nodes:
         nodes[0].image = image
     elif color_input is not None:
-        tex_node = mat.node_tree.nodes.new('ShaderNodeTexImage')
+        tex_node = _new_image_texture_node(
+            mat.node_tree.nodes, color_input.node.location.x - 80, color_input.node.location.y)
         tex_node.image = image
-        tex_node.location = (color_input.node.location.x - 320, color_input.node.location.y)
         mat.node_tree.links.new(tex_node.outputs['Color'], color_input)
     else:
         _build_material_nodes(mat, image)
