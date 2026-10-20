@@ -342,10 +342,23 @@ class ClearTargetTests(SlotHarness):
 class SlotPairTests(unittest.TestCase):
     """``slot_pair_problems``, the checks a roster pack's blocks get before they go into a slot."""
 
-    def problems(self, high, low, skeleton=TOAD):
+    def problems(self, high, low, skeleton=TOAD, high_as_low=False):
         vanilla = {0: LodPartnerGuard.act_summary(model_block('kinopio_b.gpl', skeleton)),
                    1: LodPartnerGuard.act_summary(model_block('L_kinopio_b.gpl', skeleton))}
-        return SlotTarget.slot_pair_problems(high, low, vanilla)
+        return SlotTarget.slot_pair_problems(high, low, vanilla, high_as_low)
+
+    def test_a_second_high_model_as_low_only_when_allowed(self):
+        high, second = model_block('kinopio_r.gpl', TOAD, fill=0x11), model_block('kinopio_r.gpl', TOAD, fill=0x22)
+        self.assertIn('is not a Low model', self.problems(high, second)[0][0])
+        errors, warnings = self.problems(high, second, high_as_low=True)
+        self.assertEqual(errors, [])
+        self.assertIn('the Low block is a High model (kinopio_r.gpl', warnings[0])
+        self.assertEqual(self.problems(high, high, high_as_low=True), ([], []))      # the same block: no warning
+        # still checked: the slot's skeleton, and bones the High model lacks
+        self.assertIn('skeletons do not match',
+                      self.problems(high, model_block('kinopio_r.gpl', TOAD[:3]), high_as_low=True)[0][0])
+        draws_past = model_block('kinopio_r.gpl', TOAD + [3], {4: 0})
+        self.assertIn('draws or skins on bone(s) 4', self.problems(high, draws_past, high_as_low=True)[0][0])
 
     def test_a_matching_pair_and_the_high_model_as_low(self):
         high, low = VANILLA[(SOURCE, 0)], VANILLA[(SOURCE, 1)]
@@ -385,6 +398,14 @@ class WriteSlotBlocksTests(SlotHarness):
         self.assertEqual((self.live((TARGET, 0)), self.live((TARGET, 1))), (high, low))
         self.assert_vanilla_route((SOURCE, 0))
         self.assert_vanilla_route((SOURCE, 1))
+
+    def test_a_second_high_model_as_low_needs_the_flag(self):
+        high, second = model_block('kinopio_r.gpl', TOAD, fill=0x11), model_block('kinopio_r.gpl', TOAD, fill=0x22)
+        before = (self.output_dol.read_bytes(), self.output_dat.read_bytes())
+        self.assertFalse(main.WriteSlotBlocks('0x13', high, second))
+        self.assertEqual((self.output_dol.read_bytes(), self.output_dat.read_bytes()), before)
+        self.assertTrue(main.WriteSlotBlocks('0x13', high, second, high_as_low=True))
+        self.assertEqual((self.live((TARGET, 0)), self.live((TARGET, 1))), (high, second))
 
     def test_one_block_keeps_the_other_file(self):
         high = model_block('kinopio_b.gpl', TOAD, fill=0x33)

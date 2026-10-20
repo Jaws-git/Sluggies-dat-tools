@@ -368,11 +368,14 @@ def run_write_voice_pack(path):
                           cwd=TOOLS_DIR).returncode == 0
 
 
-def run_write_slot_blocks(target_id, high, low):
-    """Write finished model blocks (a roster pack's; '-' keeps that file) into a slot as they are."""
+def run_write_slot_blocks(target_id, high, low, high_as_low=False):
+    """Write finished model blocks (a roster pack's; '-' keeps that file) into a slot as they are (``high_as_low``:
+    the Low block may be a second High model, for a character file import)."""
     paths = [p if p == '-' else os.path.abspath(p) for p in (high, low)]
-    return subprocess.run(python_script_command(HS_MAIN_SCRIPT, '--write-slot-blocks', target_id, *paths),
-                          cwd=HS_DIR).returncode == 0
+    cmd = python_script_command(HS_MAIN_SCRIPT, '--write-slot-blocks', target_id, *paths)
+    if high_as_low:
+        cmd.append('--high-as-low')
+    return subprocess.run(cmd, cwd=HS_DIR).returncode == 0
 
 
 def run_write_slot_equipment(target_id, file_index, block):
@@ -988,6 +991,7 @@ def parse_args():
     parser.add_argument('--target-id', metavar='0xNN', help="patch/unpatch only: write the .sluggie models into this character ID's slot instead of their own route (always Hammerspace)")
     parser.add_argument('--target-file', type=int, choices=range(2, 15), metavar='N', help="with --target-id: the slot file an equipment .sluggie goes to (2 bat, 3 left glove, 4 right glove, 5 extra bat; default: the file it was exported from); with --unpatch --target-id and no files: reset only that equipment file or animation bank (6-14)")
     parser.add_argument('--as-low', action='store_true', help='with --target-id: a high-poly model without L_ partner is the low-poly model too')
+    parser.add_argument('--high-as-low', action='store_true', help='with --write-slot-blocks: the LOW block may be a second high-poly model (a .slgmodel character file import)')
     parser.add_argument('--validate-only', action='store_true', help='with --patch --target-id: build and validate the slot blocks, write nothing')
     parser.add_argument('--fit', choices=('contain', 'cover', 'strict'), help='set-icon only: contain (fit inside, the default), cover (fill and crop) or strict (the image must be 48x51)')
     parser.add_argument('--equipment', metavar='FILE', help="--patch-slot: the slot file (2 bat, 3 left glove, 4 right glove, 5 extra bat; or bat, glove_l, glove_r, extra) a bat or glove .sluggie goes to (default: the file it was exported from); --clear-slot: reset only that equipment file, or 'all' four, instead of the models")
@@ -1057,6 +1061,8 @@ def parse_args():
         parser.error('--validate-only needs --patch and --target-id.')
     if args.as_low and not args.target_id:
         parser.error('--as-low needs --target-id.')
+    if args.high_as_low and not args.write_slot_blocks:
+        parser.error('--high-as-low needs --write-slot-blocks.')
     if args.config and args.state:
         parser.error('--config and --state cannot be used together.')
     if args.roster and not (args.config or args.remove or args.state):
@@ -1248,7 +1254,7 @@ def main() -> int:
             if not run_load_roster(args.load_roster, dry_run=args.dry_run):
                 return 1
         elif args.write_slot_blocks:
-            if not run_write_slot_blocks(*args.write_slot_blocks):
+            if not run_write_slot_blocks(*args.write_slot_blocks, high_as_low=args.high_as_low):
                 return 1
         elif args.write_slot_equipment:
             if not run_write_slot_equipment(*args.write_slot_equipment):

@@ -275,10 +275,11 @@ def model(**changes):
 class ImportEnv(slot_plan.Env):
     def __init__(self, slot_errors=(), archive=True, stock_art=True):
         self.slot_errors, self.archive, self.stock_art = list(slot_errors), archive, stock_art
-        self.slot_calls, self.encoded = [], []
+        self.slot_calls, self.encoded, self.high_as_low = [], [], []
 
-    def slot_problems(self, directory, high, low):
+    def slot_problems(self, directory, high, low, high_as_low=False):
         self.slot_calls.append((directory, high, low))
+        self.high_as_low.append(high_as_low)
         return list(self.slot_errors), ['a warning']
 
     def stock_portrait(self, cid, view):
@@ -325,9 +326,10 @@ class NewIdPlanTests(unittest.TestCase):
         self.assertEqual(p.voice_pack['clips']['v1'], {'rwav': 'slg_66_v1.rwav', 'wav': 'slg_66_v1.wav'})
         self.assertEqual(len(env.encoded), 12)
         self.assertEqual(env.slot_calls, [(DAISY + 0x12, HIGH, LOW)])
+        self.assertEqual(env.high_as_low, [True])                     # a character file may ship two High models
         hp, lp = os.path.join(COPY_DIR, 'slg_66_hp.bin'), os.path.join(COPY_DIR, 'slg_66_l.bin')
         spec = os.path.join(COPY_DIR, 'slg_66_pack.json')
-        self.assertEqual(p.commands, [('--roster', '--state', STATE_FILE), ('--write-slot-blocks', '0x66', hp, lp),
+        self.assertEqual(p.commands, [('--roster', '--state', STATE_FILE), ('--write-slot-blocks', '0x66', hp, lp, '--high-as-low'),
                                       ('--write-voice-pack', spec), ('--roster-state',)])
         self.assertEqual((p.copy_files['slg_66_hp.bin'], p.copy_files['slg_66_l.bin']), (HIGH, LOW))
         self.assertIs(p.copy_files['slg_66_pack.json'], p.voice_pack)      # the chain step reads the pack from there
@@ -347,7 +349,7 @@ class NewIdPlanTests(unittest.TestCase):
     def test_high_only_writes_the_high_block_twice(self):
         p = plan(0x66, model(blocks={0: HIGH}))
         hp = os.path.join(COPY_DIR, 'slg_66_hp.bin')
-        self.assertIn(('--write-slot-blocks', '0x66', hp, hp), p.commands)
+        self.assertIn(('--write-slot-blocks', '0x66', hp, hp, '--high-as-low'), p.commands)
         self.assertNotIn('slg_66_l.bin', p.copy_files)
         self.assertTrue(any('used as the Low model too' in w for w in p.warnings))
         self.assertTrue(p.to_json()['slgmodel']['high_only'])
@@ -423,8 +425,9 @@ class StockSlotPlanTests(unittest.TestCase):
         p = plan(0x0D, env=env)
         self.assertIsNone(p.config)
         self.assertEqual(env.slot_calls, [(31, HIGH, LOW)])
+        self.assertEqual(env.high_as_low, [True])
         self.assertEqual(p.commands, [('--write-slot-blocks', '0x0D', os.path.join(COPY_DIR, 'slg_0D_hp.bin'),
-                                       os.path.join(COPY_DIR, 'slg_0D_l.bin')), ('--roster-state',)])
+                                       os.path.join(COPY_DIR, 'slg_0D_l.bin'), '--high-as-low'), ('--roster-state',)])
         self.assertTrue(any('models only' in n for n in p.notes))
         self.assertEqual(set(p.effects), {'model'})
         self.assertIsNone(p.voice_pack)

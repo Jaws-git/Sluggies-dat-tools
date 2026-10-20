@@ -269,7 +269,7 @@ class FileEnv(slot_plan.Env):
         except (OSError, ValueError):
             return None
 
-    def slot_problems(self, directory, high, low):
+    def slot_problems(self, directory, high, low, high_as_low=False):
         import LodPartnerGuard
         import SlotTarget
         vanilla = {f: self.vanilla_block(directory, f) for f in (slot_plan.HIGH_FILE, slot_plan.LOW_FILE)}
@@ -282,7 +282,7 @@ class FileEnv(slot_plan.Env):
             return problems, []
         summaries = {f: LodPartnerGuard.act_summary(b) if b else None for f, b in vanilla.items()}
         try:
-            return SlotTarget.slot_pair_problems(high, low, summaries)
+            return SlotTarget.slot_pair_problems(high, low, summaries, high_as_low)
         except SlotTarget.TargetError as exc:
             return [str(exc)], []
 

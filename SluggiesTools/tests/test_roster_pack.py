@@ -404,9 +404,11 @@ class DispatchTests(unittest.TestCase):
         with mock.patch('start.subprocess.run', return_value=mock.Mock(returncode=0)) as run:
             self.assertTrue(self.start.run_save_roster('r.sluggiesroster'))
             self.assertTrue(self.start.run_write_slot_blocks('0x0D', 'a.bin', '-'))
+            self.assertTrue(self.start.run_write_slot_blocks('0x0D', 'a.bin', 'b.bin', high_as_low=True))
         self.assertEqual(run.call_args_list[0].args[0][-2:], ['--save', os.path.abspath('r.sluggiesroster')])
         self.assertEqual(run.call_args_list[1].args[0][-4:], ['--write-slot-blocks', '0x0D', os.path.abspath('a.bin'),
                                                               '-'])
+        self.assertEqual(run.call_args_list[2].args[0][-2:], [os.path.abspath('b.bin'), '--high-as-low'])
 
 
 if __name__ == '__main__':

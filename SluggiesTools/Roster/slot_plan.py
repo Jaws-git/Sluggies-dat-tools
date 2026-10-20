@@ -133,7 +133,8 @@ Character file (``plan_slgmodel``, op ``slgmodel``): a ``.slgmodel`` of the Slug
 (``Roster/slgmodel.py``: finished High/Low blocks built on a stock player, portraits, voice clips) goes into a slot
 like a ``.sluggie`` pair whose blocks are already built: the blocks are written as they are
 (``--write-slot-blocks``, after the pack-load block checks, ``Env.slot_problems``; a file without a Low model uses
-its High model as the Low model too). A **new ID** takes the whole character: an own model directory from the
+its High model as the Low model too, and a second High model in the Low place is taken as the Low model with a
+warning: ``--high-as-low``, character files only). A **new ID** takes the whole character: an own model directory from the
 base, the base's stats on a new square (and the square's voice, as a patch), the file's name (kept when it does
 not fit the plate), its portraits (the base's stock art for a missing view) and its voice clips as a voice pack
 ``_gui/Sound_Packs/<name>`` on the base's voice (``character_voices``; without ``1_Input/sound_NA`` the clips are
@@ -443,9 +444,11 @@ class Env:
         """File ``file`` of directory ``directory`` in ``1_Input``, or None."""
         return None
 
-    def slot_problems(self, directory: int, high: bytes, low: bytes) -> tuple[list[str], list[str]]:
+    def slot_problems(self, directory: int, high: bytes, low: bytes,
+                      high_as_low: bool = False) -> tuple[list[str], list[str]]:
         """(errors, warnings) for loading ``high`` / ``low`` in a slot whose vanilla files are ``directory``'s
-        (validator, skeleton, High/Low pair rules: ``pack.LoadEnv.slot_problems``)."""
+        (validator, skeleton, High/Low pair rules: ``pack.LoadEnv.slot_problems``; ``high_as_low``: a second High
+        model may be the Low model, ``SlotTarget.slot_pair_problems``)."""
         return [], []
 
     def equipment_block_problems(self, directory: int, file: int, block: bytes) -> tuple[list[str], list[str]]:
@@ -1833,7 +1836,7 @@ def plan_slgmodel(st: dict, config: dict, cid: int, model: slgmodel.SlgModel, en
         if entry is None:
             raise PlanError(f'{_hex(cid)} has no ids entry in the derived config')
         check_dir = base + ids.MODEL_DIR_BASE
-        errors, warnings = env.slot_problems(check_dir, high, low)
+        errors, warnings = env.slot_problems(check_dir, high, low, high_as_low=True)
         if errors:
             raise PlanError(f'{file_name} does not fit a slot built on {base_name}: {errors[0]}')
         plan.warnings += warnings
@@ -1975,7 +1978,7 @@ def plan_slgmodel(st: dict, config: dict, cid: int, model: slgmodel.SlgModel, en
             plan.notes.append(f'voice not imported: {target_name} has no voice bank')
     else:
         check_dir = char['model_dir']
-        errors, warnings = env.slot_problems(check_dir, high, low)
+        errors, warnings = env.slot_problems(check_dir, high, low, high_as_low=True)
         if errors:
             raise PlanError(f'{file_name} does not fit {target_name} ({errors[0]}). A stock slot keeps its own '
                             f'animations, so only a model built on the same skeleton fits ({base_name}\'s own '
@@ -1995,7 +1998,8 @@ def plan_slgmodel(st: dict, config: dict, cid: int, model: slgmodel.SlgModel, en
     _prepare(plan, state_file, [])
     hp = stash(f'{tag}_hp.bin', high)
     lp = hp if model.high_only else stash(f'{tag}_l.bin', low)
-    plan.commands.append(('--write-slot-blocks', _hex(cid), hp, lp))
+    # a file may ship a second High model as its Low model (SlotTarget.slot_pair_problems)
+    plan.commands.append(('--write-slot-blocks', _hex(cid), hp, lp, '--high-as-low'))
     if plan.voice_pack is not None:
         plan.commands.append((WRITE_VOICE_PACK, stash(f'{tag}_pack.json', plan.voice_pack)))
     plan.commands.append(('--roster-state',))

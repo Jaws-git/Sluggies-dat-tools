@@ -8365,11 +8365,12 @@ def _write_route(block: bytes, chunk_number: int, file_index: int, model_name: s
     return new_offset
 
 
-def WriteSlotBlocks(character_id: str, high: bytes | None, low: bytes | None) -> bool:
+def WriteSlotBlocks(character_id: str, high: bytes | None, low: bytes | None, high_as_low: bool = False) -> bool:
     """Write finished model blocks (a roster pack's, ``start.py --write-slot-blocks``) into a slot as they are: no
     ``.sluggie``, no rebuild. ``high`` / ``low``: the slot's file 0 / file 1, or None to keep the one it has.
     Refused before anything is written when a block fails ``BlockValidator`` or the pair breaks the slot rules
-    (``SlotTarget.slot_pair_problems``: roles, the slot's skeleton, the Low model's partner and bones)."""
+    (``SlotTarget.slot_pair_problems``: roles, the slot's skeleton, the Low model's partner and bones;
+    ``high_as_low``: a second High model may be the Low model, for a character file import)."""
     try:
         cid, chunk_number = SlotTarget.resolve_dir(character_id)
     except (SlotTarget.TargetError, OSError) as exc:
@@ -8391,7 +8392,7 @@ def WriteSlotBlocks(character_id: str, high: bytes | None, low: bytes | None) ->
     after = {f: b if b is not None else LodPartnerGuard.read_current_block(chunk_number, f) for f, b in blocks.items()}
     try:
         problems, warnings = SlotTarget.slot_pair_problems(after[SlotTarget.HIGH_FILE], after[SlotTarget.LOW_FILE],
-                                                           SlotTarget.vanilla_summaries(chunk_number))
+                                                           SlotTarget.vanilla_summaries(chunk_number), high_as_low)
     except SlotTarget.TargetError as exc:
         problems, warnings = [str(exc)], []
     for warning in warnings:
@@ -8763,6 +8764,9 @@ if __name__ == '__main__':
     _parser.add_argument('--write-slot-blocks', nargs=3, default=None, metavar=('0xNN', 'HIGH', 'LOW'),
                          help="Write finished model blocks (a roster pack's) into this slot as they are; '-' keeps "
                               "that file (no .sluggie)")
+    _parser.add_argument('--high-as-low', action='store_true',
+                         help='With --write-slot-blocks: the LOW block may be a second High model (a character '
+                              'file import)')
     _args = _parser.parse_args()
     if _args.write_slot_equipment is not None:
         if _args.sluggies_path is not None:
@@ -8805,7 +8809,9 @@ if __name__ == '__main__':
         except OSError as _exc:
             _slogger.error(f'Slot write refused | {_exc}', source='hammerspace.main')
             raise SystemExit(1)
-        raise SystemExit(0 if WriteSlotBlocks(_cid, *_blocks) else 1)
+        raise SystemExit(0 if WriteSlotBlocks(_cid, *_blocks, high_as_low=_args.high_as_low) else 1)
+    if _args.high_as_low:
+        _parser.error('--high-as-low needs --write-slot-blocks')
     if _args.as_low and _args.target_id is None:
         _parser.error('--as-low needs --target-id')
     if _args.validate_only and _args.target_id is None:

@@ -295,14 +295,17 @@ def _prefix_problem(own: LodPartnerGuard.ActSummary, vanilla: LodPartnerGuard.Ac
 
 
 def slot_pair_problems(high: bytes | None, low: bytes | None,
-                       vanilla: dict[int, LodPartnerGuard.ActSummary | None]) -> tuple[list[str], list[str]]:
+                       vanilla: dict[int, LodPartnerGuard.ActSummary | None],
+                       high_as_low: bool = False) -> tuple[list[str], list[str]]:
     """``(errors, warnings)`` for a slot holding the High model ``high`` and the Low model ``low`` (finished blocks,
     e.g. from a roster pack). ``vanilla``: the slot directory's vanilla skeleton per file (an own model directory:
     its source's). Errors: unreadable ACT sections or wrong roles (a Low model equal to the High model is the High
     model used as the Low model too), a skeleton that does not start with the slot's vanilla skeleton, a Low model
     drawing on bones the High model lacks (``LodPartnerGuard``: crashes on load). A Low model that is not the High
     model's partner (another geo-name stem: it binds textures by index into that TEX) is a warning, as for a High
-    model patched over another character's Low model (``check``)."""
+    model patched over another character's Low model (``check``). ``high_as_low``: a High model in the Low slot
+    that is not the High block itself is taken too (a character file of the Sluggers Characters patcher ships
+    two High models), checked like the High model used as the Low model, with a warning."""
     if high is None or low is None:
         return ['the slot needs both a High and a Low model'], []
     hs, ls = LodPartnerGuard.act_summary(high), LodPartnerGuard.act_summary(low)
@@ -312,12 +315,16 @@ def slot_pair_problems(high: bytes | None, low: bytes | None,
     if hs.is_low_poly:
         errors.append(f'{hs.geo_name} is a Low model, not a High model')
     as_low = low == high
-    if not as_low and not ls.is_low_poly:
+    high_low = not as_low and high_as_low and not ls.is_low_poly
+    if high_low:
+        warnings.append(f'the Low block is a High model ({ls.geo_name}, not the High block itself): it is loaded as '
+                        'the Low model, so the slot holds two High-sized models on the field')
+    elif not as_low and not ls.is_low_poly:
         errors.append(f'{ls.geo_name} is not a Low model')
     elif not as_low and ls.stem != hs.stem:
         warnings.append(f'the slot\'s Low model {ls.geo_name} binds its textures by index into {hs.geo_name}\'s TEX '
                         '(it is not its partner)')
-    for own, role in ((hs, HIGH_FILE), (ls, HIGH_FILE if as_low else LOW_FILE)):
+    for own, role in ((hs, HIGH_FILE), (ls, HIGH_FILE if as_low or high_low else LOW_FILE)):
         base = vanilla.get(role)
         if base is None:
             errors.append(f'no vanilla skeleton to compare {own.geo_name} with')
