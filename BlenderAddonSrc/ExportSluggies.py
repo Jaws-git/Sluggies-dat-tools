@@ -3383,22 +3383,30 @@ def _partner_added_texture_descriptors(descriptors, additions):
     return TextureSlotsCore.partner_added_texture_descriptors(descriptors, additions)
 
 
-def _resolve_export_texture_context(sluggie_path, model):
+def _resolve_export_texture_context(sluggie_path, model, with_owner=False):
     """Return descriptor/path context, borrowing it for a paired `_L_` model.
 
     A borrowed list also holds the main model's appended textures (indices
     after its own descriptors): the `_L_` model binds textures by index into
     the main model's TEX, so a custom submesh on it can use them once the
-    main model is patched."""
+    main model is patched.
+
+    *with_owner* appends the paired main model's .sluggie path (None when
+    nothing is borrowed), for error messages."""
+    def _result(descriptors, tex_dir, owns, owner_path=None):
+        if with_owner:
+            return descriptors, tex_dir, owns, owner_path
+        return descriptors, tex_dir, owns
+
     model_dir = os.path.dirname(os.path.abspath(sluggie_path))
     local_descriptors = model.get("TextureDescriptors") or []
     if local_descriptors:
-        return local_descriptors, os.path.join(model_dir, 'tex'), True
+        return _result(local_descriptors, os.path.join(model_dir, 'tex'), True)
 
     folder_name = os.path.basename(model_dir)
     marker_index = folder_name.lower().find('_l_')
     if marker_index < 0:
-        return [], os.path.join(model_dir, 'tex'), False
+        return _result([], os.path.join(model_dir, 'tex'), False)
 
     paired_suffix = folder_name[marker_index + 3:].lower()
     parent_dir = os.path.dirname(model_dir)
@@ -3455,6 +3463,7 @@ def _resolve_export_texture_context(sluggie_path, model):
                     owner_model.get('AdditionalTextureDescriptors') or [],
                 ),
                 tex_dir,
+                owner_path,
             ))
 
     if len(candidates) > 1:
@@ -3462,9 +3471,9 @@ def _resolve_export_texture_context(sluggie_path, model):
             f"Low-poly model '{folder_name}' matches multiple sibling texture owners"
         )
     if candidates:
-        descriptors, tex_dir = candidates[0]
-        return descriptors, tex_dir, False
-    return [], os.path.join(model_dir, 'tex'), False
+        descriptors, tex_dir, owner_path = candidates[0]
+        return _result(descriptors, tex_dir, False, owner_path)
+    return _result([], os.path.join(model_dir, 'tex'), False)
 
 
 # Runtime testing found that cross-mode reassignment is unsafe. In particular,
@@ -4336,8 +4345,9 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         # re-encoded from tex/. A `_L_` model binds its High model's textures
         # by index (Manage texture slots sets these images).
         try:
-            texture_descriptors, texture_dir, owns_texture_section = (
-                _resolve_export_texture_context(self.filepath, data["SluggiesModel"])
+            texture_descriptors, texture_dir, owns_texture_section, texture_owner_path = (
+                _resolve_export_texture_context(
+                    self.filepath, data["SluggiesModel"], with_owner=True)
             )
             if owns_texture_section or texture_descriptors:
                 additions, desired_assignments, changed_materials = (
@@ -4355,11 +4365,17 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         except ValueError as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
+        # Names the High file a Low export paired with, so a wrong pairing
+        # (file names that don't match) shows in the error.
+        paired_main_model = (
+            f"paired main model ({os.path.basename(texture_owner_path)})"
+            if texture_owner_path else "paired main model"
+        )
 
         if additions and not owns_texture_section:
             self.report(
                 {"ERROR"},
-                "Low-poly model textures are owned by the paired main model. A low-poly "
+                f"Low-poly model textures are owned by the {paired_main_model}. A low-poly "
                 "material can only show one of the main model's textures (see Manage "
                 "texture slots); add new PNGs on the main model and export it first: "
                 f"{', '.join(addition['TextureFileName'] for addition in additions)}",
@@ -4439,7 +4455,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 )
                 if custom_additions and not owns_texture_section:
                     raise ValueError(
-                        "Low-poly model textures are owned by the paired main model; "
+                        f"Low-poly model textures are owned by the {paired_main_model}; "
                         "a custom submesh on it can only use an existing texture: "
                         + ", ".join(obj.name for obj in custom_submesh_candidates)
                     )
@@ -4497,7 +4513,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 new_names = ", ".join(mat.name for mat, _index in new_surface_entries)
                 if new_surface_additions and not owns_texture_section:
                     raise ValueError(
-                        "Low-poly model textures are owned by the paired main model; a new "
+                        f"Low-poly model textures are owned by the {paired_main_model}; a new "
                         f"material on it can only use an existing texture: {new_names}"
                     )
         except ValueError as exc:

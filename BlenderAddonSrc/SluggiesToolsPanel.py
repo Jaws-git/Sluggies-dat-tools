@@ -169,9 +169,12 @@ def _gather_scene_claims(context, arm_obj, bone_records, exclude=None):
     retargets, _issues = HostBones.compute_rigid_retargets(
         owner_bone_by_submesh, bone_geo_raw, target_bone_by_submesh, known_bone_ids)
 
+    # Only this armature's custom submeshes claim its bones: a high/low pair
+    # shares bone ids, and the other model's mesh on bone_N leaves ours free.
     custom_submesh_bone_ids = set()
     for o in context.view_layer.objects:
-        if o.type == 'MESH' and o.get('SluggiesCustomSubmesh') and o is not exclude:
+        if o.type == 'MESH' and o.parent is arm_obj and o.get('SluggiesCustomSubmesh') \
+                and o is not exclude:
             bone_id = _detect_uniform_vertex_bone_id(o)
             if bone_id is not None:
                 custom_submesh_bone_ids.add(bone_id)

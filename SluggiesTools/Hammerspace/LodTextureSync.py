@@ -124,17 +124,25 @@ def texture_count(block: bytes) -> int | None:
         return None
 
 
-def low_bind_range_errors(block: bytes, chunk_number: int, file_index: int) -> list[str]:
+def low_bind_range_errors(
+    block: bytes, chunk_number: int, file_index: int, partner_block: bytes | None = None,
+) -> list[str]:
     """Blocking errors for a low-poly *block* that binds a texture index past
-    the end of its high-poly partner's current TEX (the bind would read a
-    descriptor that does not exist). Empty for a high-poly model, a model
-    without partner, or an unreadable partner."""
+    the end of its high-poly partner's current TEX, or of its incoming
+    *partner_block* (the bind would read a descriptor that does not exist).
+    Empty for a high-poly model, a model without partner, or an unreadable
+    partner."""
     own = LodPartnerGuard.act_summary(block)
     if own is None or not own.is_low_poly:
         return []
     try:
-        found = LodPartnerGuard.find_partner(chunk_number, file_index, own)
-        high = LodPartnerGuard.read_current_block(chunk_number, found[0]) if found else None
+        found = LodPartnerGuard.find_partner(chunk_number, file_index, own, partner_block=partner_block)
+        if found is None:
+            high = None
+        elif partner_block is not None:
+            high = partner_block
+        else:
+            high = LodPartnerGuard.read_current_block(chunk_number, found[0])
     except (OSError, struct.error, ValueError):
         return []
     count = texture_count(high) if high else None
@@ -150,7 +158,8 @@ def low_bind_range_errors(block: bytes, chunk_number: int, file_index: int) -> l
     return [
         f'{own.geo_name} binds texture(s) its high-poly partner {high_name} '
         f'(chunk {chunk_number}, file {found[0]}) does not have: {binds}; '
-        f'{high_name} currently has {count} texture(s), 0-{count - 1}. '
+        f'{high_name} {"currently" if partner_block is None else "as patched in this run"} has '
+        f'{count} texture(s), 0-{count - 1}. '
         f'Patch {high_name} with its added textures first, or pick an existing texture.'
     ]
 

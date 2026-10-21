@@ -24,6 +24,10 @@ The two models are exported and patched independently, so neither
 ``.sluggie`` knows the other's state. This module reads the partner's
 *current* block (the output DOL route, or the input files before anything
 has been patched) and checks the pair as it would stand after the write.
+When one run patches both models, the first one is checked against the
+partner's incoming block instead (``partner_block``, built beforehand by
+the dispatcher): otherwise a pair that drops an added bone from both models
+would be refused whichever model went first.
 
 Partners are the two entries of one chunk at file indices ``n`` (high-poly)
 and ``n + 1`` (low-poly), confirmed by their ACT geo names: stripping the
@@ -166,15 +170,17 @@ def _entry_exists(chunk_number: int, file_index: int) -> bool:
 
 def find_partner(
     chunk_number: int, file_index: int, own: ActSummary, any_stem: bool = False,
+    partner_block: bytes | None = None,
 ) -> tuple[int, ActSummary] | None:
     """``(file_index, summary)`` of the other model of a high-/low-poly pair,
     or None when the model has no partner. ``any_stem``: pair by position
     only (a model patched into another character's slot, SlotTarget, pairs
-    with that slot's other model whatever its name)."""
+    with that slot's other model whatever its name). ``partner_block``: the
+    partner's incoming block, read instead of its current one."""
     partner_index = file_index + (-1 if own.is_low_poly else 1)
     if not _entry_exists(chunk_number, partner_index):
         return None
-    block = read_current_block(chunk_number, partner_index)
+    block = partner_block if partner_block is not None else read_current_block(chunk_number, partner_index)
     partner = act_summary(block) if block else None
     if partner is None or partner.is_low_poly == own.is_low_poly or (partner.stem != own.stem and not any_stem):
         return None
@@ -183,6 +189,7 @@ def find_partner(
 
 def _pair(
     new_block: bytes, chunk_number: int, file_index: int, any_stem: bool = False,
+    partner_block: bytes | None = None,
 ) -> tuple[ActSummary, int, ActSummary] | None:
     """``(own, partner_index, partner)`` for *new_block* as this entry, or
     None when the model has no partner or the partner cannot be read (logged)."""
@@ -190,7 +197,7 @@ def _pair(
     if own is None:
         return None
     try:
-        found = find_partner(chunk_number, file_index, own, any_stem)
+        found = find_partner(chunk_number, file_index, own, any_stem, partner_block)
     except (OSError, struct.error, ValueError) as exc:
         _slogger.warning(
             f'[LOD] could not read the high-/low-poly partner of {own.geo_name} '
@@ -213,14 +220,19 @@ def _bone_use(summary: ActSummary, bone: int) -> str:
     return f'{bone} ({", ".join(uses)})'
 
 
-def lod_partner_errors(new_block: bytes, chunk_number: int, file_index: int, any_stem: bool = False) -> list[str]:
+def lod_partner_errors(
+    new_block: bytes, chunk_number: int, file_index: int, any_stem: bool = False,
+    partner_block: bytes | None = None,
+) -> list[str]:
     """Blocking errors for making *new_block* the live model of this entry,
-    given the partner model's current state. Empty when the pair stays valid,
-    the model has no partner, or the partner cannot be read (logged)."""
-    pair = _pair(new_block, chunk_number, file_index, any_stem)
+    given the partner model's current state (or its incoming
+    *partner_block*). Empty when the pair stays valid, the model has no
+    partner, or the partner cannot be read (logged)."""
+    pair = _pair(new_block, chunk_number, file_index, any_stem, partner_block)
     if pair is None:
         return []
     own, partner_index, partner = pair
+    state = 'currently' if partner_block is None else 'as patched in this run'
 
     high, low = (partner, own) if own.is_low_poly else (own, partner)
     missing = sorted(
@@ -235,7 +247,7 @@ def lod_partner_errors(new_block: bytes, chunk_number: int, file_index: int, any
         return [
             f'{low.geo_name} draws geometry on bone(s) {bones}, but its high-poly '
             f'partner {high.geo_name} (chunk {chunk_number}, file {partner_index}) '
-            f'currently has only {high_range}. The game poses both models from the '
+            f'{state} has only {high_range}. The game poses both models from the '
             'high-poly skeleton, so this crashes on model load. Add the same bone(s) '
             f'to {high.geo_name} and patch it first, or host the geometry on an '
             'existing bone.'
@@ -243,7 +255,7 @@ def lod_partner_errors(new_block: bytes, chunk_number: int, file_index: int, any
     return [
         f'This {high.geo_name} would have only {high_range}, but its low-poly '
         f'partner {low.geo_name} (chunk {chunk_number}, file {partner_index}) '
-        f'currently draws geometry on bone(s) {bones}. The game poses both models '
+        f'{state} draws geometry on bone(s) {bones}. The game poses both models '
         'from the high-poly skeleton, so that would crash on model load. Keep those '
         f'bone(s) in {high.geo_name}, or first re-patch {low.geo_name} with its '
         'geometry on an existing bone.'
@@ -275,12 +287,15 @@ def _vanilla_bone_count(chunk_number: int, file_index: int) -> int | None:
     return summary.bone_count if summary else None
 
 
-def lod_partner_warnings(new_block: bytes, chunk_number: int, file_index: int, any_stem: bool = False) -> list[str]:
+def lod_partner_warnings(
+    new_block: bytes, chunk_number: int, file_index: int, any_stem: bool = False,
+    partner_block: bytes | None = None,
+) -> list[str]:
     """Non-fatal warnings for added bones (ids past the vanilla skeleton,
     present in both models) whose parent or SRT differs between the pair:
     the low-poly model is posed with the high-poly model's bone, so its own
     placement of that bone has no effect."""
-    pair = _pair(new_block, chunk_number, file_index, any_stem)
+    pair = _pair(new_block, chunk_number, file_index, any_stem, partner_block)
     if pair is None:
         return []
     own, partner_index, partner = pair

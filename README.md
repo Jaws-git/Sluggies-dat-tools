@@ -25,7 +25,7 @@ On startup we show the command prompt for like half a second ~~just to mess with
 - Numpy ``pip install numpy``  
 - Pillow ``pip install Pillow``  
 - DearPyGui ``pip install dearpygui``  
-- **wimgt** — part of [Wiimms SZS Tools](https://szs.wiimm.de/download.html); used to convert textures between TPL and PNG. It is already bundled in the portable Windows release. No textures without this.
+- **wimgt** — part of [Wiimms SZS Tools](https://szs.wiimm.de/download.html); used to convert textures between TPL and PNG. It is already bundled in the portable Windows release. No textures without this. Must be on PATH.
 - ffmpeg (optional, to import files other than .wav)
 - Philenarion's stat editor (optional, edit all stats of a player)
 - Autism
@@ -52,10 +52,9 @@ flowchart LR
     A[Extract game files] --> B[Export all assets]
     B --> C[Import to Blender]
     C --> D[Make changes]
-    D --> E[Export model back to same .sluggie file]
+    D --> E[Export model to a new or existing .sluggie file]
     E --> F[Write changes to game's .dat]
 ```
-All commands are to be used on the command line - enter "cmd" in file explorer's address bar to open a new terminal in the current folder.  
 
 ## Export  
 

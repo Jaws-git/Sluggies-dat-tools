@@ -683,13 +683,15 @@ def _needs_hammerspace(model, sluggie_path):
     return _unused_character_dir_index(sluggie_path) in UNUSED_CHARACTER_DIR_INDICES
 
 
-def _patch_sluggie(found, model, unpatch, target_id=None, as_low=False, validate_only=False, target_file=None):
+def _patch_sluggie(found, model, unpatch, target_id=None, as_low=False, validate_only=False, target_file=None,
+                   lod_partner_block=None):
     """Dispatch a .sluggie patch/unpatch through Hammerspace or in-place.
 
     With ``target_id`` the model goes into that character's slot, which is
     always a Hammerspace write (the in-place patcher can only write over the
     model's own block). ``validate_only`` builds and validates that block and
-    writes nothing."""
+    writes nothing. ``lod_partner_block``: the high-/low-poly partner's
+    incoming block (``_build_partner_block``), checked instead of the live one."""
     if target_id is not None or _needs_hammerspace(model, found):
         cmd = python_script_command(HS_MAIN_SCRIPT, found, *hammerspace_section_args(model))
         if target_id is not None:
@@ -698,6 +700,8 @@ def _patch_sluggie(found, model, unpatch, target_id=None, as_low=False, validate
             cmd += ['--validate-only'] if validate_only else []
         if unpatch:
             cmd.append('--unpatch')
+        if lod_partner_block is not None:
+            cmd += ['--lod-partner-block', lod_partner_block]
         subprocess.run(cmd, cwd=HS_DIR, check=True)
     else:
         if _current_model_in_hammerspace(model.get('ChunkNumber'), model.get('FileIndex')):
@@ -786,18 +790,90 @@ def _is_low_file(name):
     return '_L_' in os.path.basename(name)
 
 
+def _resolve_sluggie_quietly(filename):
+    """``(path, model)`` of a .sluggie file named on the command line, or None (a PNG, a missing, ambiguous or
+    unreadable file: the patch loop reports those)."""
+    if filename.lower().endswith('.png'):
+        return None
+    name = filename if filename.lower().endswith('.sluggie') else f'{filename}.sluggie'
+    try:
+        path = name if os.path.isabs(name) and os.path.isfile(name) else _model_files.find_unique(SEARCH_DIR, name)
+        return (path, _load_sluggie(path)['SluggiesModel']) if path else None
+    except (_model_files.AmbiguousNameError, OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _lod_pairs(filenames, target_id=None):
+    """``{first filename: (first path, second path, second model)}`` for each high-/low-poly pair this run patches
+    both models of, ``first`` and ``second`` in run order.
+
+    The first model's partner check must see the second model as it will be, not as it is: a pair that drops an
+    added bone from both models (or moves geometry off it) is refused otherwise, whichever goes first. Both models
+    must be Hammerspace writes (the in-place patcher has no partner check). Pairs: with ``target_id``, the slot's
+    high-poly and ``L_`` file; without, two models of one chunk at file indices ``n`` and ``n + 1``, the second
+    an ``L_`` model."""
+    resolved = []
+    for filename in filenames:
+        found = _resolve_sluggie_quietly(filename)
+        if found is not None and (target_id is not None or _needs_hammerspace(found[1], found[0])):
+            resolved.append((filename, *found))
+    pairs = {}
+    if target_id is not None:
+        highs = [entry for entry in resolved if not _is_low_file(entry[1])]
+        lows = [entry for entry in resolved if _is_low_file(entry[1])]
+        if len(highs) == 1 and len(lows) == 1:
+            (first, first_path, _), (_, second_path, second_model) = highs[0], lows[0]
+            pairs[first] = (first_path, second_path, second_model)
+        return pairs
+    for i, (name_a, path_a, model_a) in enumerate(resolved):
+        for name_b, path_b, model_b in resolved[i + 1:]:
+            if model_a.get('ChunkNumber') != model_b.get('ChunkNumber'):
+                continue
+            index_a, index_b = model_a.get('FileIndex'), model_b.get('FileIndex')
+            if not (isinstance(index_a, int) and isinstance(index_b, int)) or abs(index_a - index_b) != 1:
+                continue
+            low_path = path_a if index_a > index_b else path_b
+            if '_L_' not in os.path.basename(low_path) or name_a in pairs:
+                continue
+            pairs[name_a] = (path_a, path_b, model_b)
+    return pairs
+
+
+def _build_partner_block(path, model, out_path, target_id=None):
+    """Build *path*'s block into *out_path* (nothing patched); False when it does not build (its own patch reports
+    why)."""
+    cmd = python_script_command(HS_MAIN_SCRIPT, path, *hammerspace_section_args(model), '--build-to', out_path)
+    if target_id is not None:
+        # a slot run promotes in-place edits (HammerspaceMain), so the partner is built the same way
+        cmd += ['--target-id', target_id]
+    return subprocess.run(cmd, cwd=HS_DIR).returncode == 0
+
+
 def run_patching(filenames, unpatch=False, target_id=None, as_low=False, validate_only=False, target_file=None):
     """Patch or unpatch each file. Returns True when every file went through.
 
     With ``target_id`` (a slot) the files go in high-poly first, and the first
     failure skips the rest: an ``L_`` model must not follow a high-poly model
-    that did not make it into the slot."""
-    failed = False
+    that did not make it into the slot. When the run patches both models of a
+    high-/low-poly pair, the first one is checked against the second one's
+    incoming block (``_lod_pairs``)."""
     if target_id is not None:
         # A slot takes an L_ model only under its own high-poly model, so the
         # high-poly file goes first (by the model it patches: a variant's name
         # need not say L_).
         filenames = sorted(filenames, key=_is_low_file)
+    pairs = {} if unpatch or validate_only or as_low or target_file is not None else _lod_pairs(filenames, target_id)
+    if not pairs:
+        return _run_patching(filenames, unpatch, target_id, as_low, validate_only, target_file)
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix='sluggies_lod_') as block_dir:
+        return _run_patching(filenames, unpatch, target_id, as_low, validate_only, target_file, pairs, block_dir)
+
+
+def _run_patching(filenames, unpatch, target_id, as_low, validate_only, target_file, pairs=None, block_dir=None):
+    failed = False
+    pairs = pairs or {}
+    checked_against = {}  # second path -> first filename, patched against the second's incoming block
     for filename in filenames:
         if failed and target_id is not None:
             slogger.error(f"'{filename}' skipped: an earlier file of this slot patch failed.", source="dispatcher")
@@ -877,15 +953,37 @@ def run_patching(filenames, unpatch=False, target_id=None, as_low=False, validat
                 continue
 
             model = sluggies_data.get('SluggiesModel', {})
+            partner_block = None
+            if filename in pairs:
+                _, partner_path, partner_model = pairs[filename]
+                partner_block = os.path.join(block_dir, f'{filenames.index(filename)}.bin')
+                if _build_partner_block(partner_path, partner_model, partner_block, target_id):
+                    slogger.info(
+                        f"'{os.path.basename(found)}' is checked against the incoming "
+                        f"'{os.path.basename(partner_path)}' (both models of the pair are patched in this run)",
+                        source="dispatcher",
+                    )
+                else:
+                    partner_block = None
             try:
-                _patch_sluggie(found, model, unpatch, target_id, as_low, validate_only, target_file)
+                _patch_sluggie(found, model, unpatch, target_id, as_low, validate_only, target_file, partner_block)
             except subprocess.CalledProcessError as e:
                 slogger.error(
                     f"Patch failed for '{filename}' (exit code {e.returncode})",
                     source="dispatcher",
                 )
+                if found in checked_against:
+                    slogger.error(
+                        f"'{checked_against[found]}' was already patched, checked against this model as it would "
+                        "have been: the High and Low models may not match now (a Low model drawing on a bone its "
+                        f"High model lacks crashes on load). Fix and patch '{filename}' again, or re-patch "
+                        f"'{checked_against[found]}'.",
+                        source="dispatcher",
+                    )
                 failed = True
                 continue
+            if partner_block is not None:
+                checked_against[pairs[filename][1]] = filename
     return not failed
 
 

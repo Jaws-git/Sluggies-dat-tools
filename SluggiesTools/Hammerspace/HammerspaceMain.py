@@ -8170,7 +8170,11 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
     )
 
 
-def CheckLodPartner(build: ModelBlockBuild, target: 'SlotTarget.Target | None' = None) -> None:
+def CheckLodPartner(
+    build: ModelBlockBuild,
+    target: 'SlotTarget.Target | None' = None,
+    partner_block: bytes | None = None,
+) -> None:
     """Refuse a block that would break its high-/low-poly partner model
     (see LodPartnerGuard: a low-poly model may only draw on bones its
     high-poly partner has), and warn when an added bone is placed differently
@@ -8179,18 +8183,38 @@ def CheckLodPartner(build: ModelBlockBuild, target: 'SlotTarget.Target | None' =
     With a *target* (SlotTarget), the partner is the target slot's other
     model, whatever its name; a high-poly model used as the low variant too
     is its own partner, so there is nothing to check. Equipment (bats, gloves)
-    has no partner model at all."""
+    has no partner model at all. *partner_block*: the partner's incoming
+    block (``--lod-partner-block``: the run patches it right after this one),
+    checked instead of the live partner."""
     if target is not None and (target.as_low or target.equipment):
         return
     chunk_number, file_index = target.route if target else (build.chunk_number, build.file_index)
     any_stem = target is not None
-    errors = LodPartnerGuard.lod_partner_errors(build.block, chunk_number, file_index, any_stem)
+    if partner_block is not None and not _pairs_with(build.block, chunk_number, file_index, any_stem, partner_block):
+        _slogger.warning(
+            '[LOD] the incoming partner block is not the other model of this pair; checking the live partner',
+            source='hammerspace.main',
+        )
+        partner_block = None
+    errors = LodPartnerGuard.lod_partner_errors(build.block, chunk_number, file_index, any_stem, partner_block)
     if target is None:
-        errors += LodTextureSync.low_bind_range_errors(build.block, chunk_number, file_index)
+        errors += LodTextureSync.low_bind_range_errors(build.block, chunk_number, file_index, partner_block)
     if errors:
         raise ValueError(' '.join(errors))
-    for warning in LodPartnerGuard.lod_partner_warnings(build.block, chunk_number, file_index, any_stem):
+    for warning in LodPartnerGuard.lod_partner_warnings(
+        build.block, chunk_number, file_index, any_stem, partner_block,
+    ):
         _slogger.warning(f'[LOD] {warning}', source='hammerspace.main')
+
+
+def _pairs_with(block: bytes, chunk_number: int, file_index: int, any_stem: bool, partner_block: bytes) -> bool:
+    """Whether *partner_block* is the other model of *block*'s high-/low-poly pair at this entry."""
+    own = LodPartnerGuard.act_summary(block)
+    try:
+        return own is not None and LodPartnerGuard.find_partner(
+            chunk_number, file_index, own, any_stem, partner_block) is not None
+    except (OSError, struct.error, ValueError):
+        return False
 
 
 def CheckTarget(build: ModelBlockBuild, target: 'SlotTarget.Target') -> None:
@@ -8221,6 +8245,7 @@ def WriteModelBlock(
     model_name: str,
     output_offset: int | None = None,
     target: 'SlotTarget.Target | None' = None,
+    partner_block: bytes | None = None,
 ) -> int:
     """Write an assembled block to hammerspace and patch its output references.
 
@@ -8229,12 +8254,12 @@ def WriteModelBlock(
     vanilla block and the LOD checks all use the target, and the source route
     is left alone. With ``target.as_low`` the block also becomes the slot's
     low-poly model, as a copy of its own (WriteModelBlock is called again for
-    file 1)."""
+    file 1). *partner_block*: see CheckLodPartner."""
     if not build.validation_report.get('valid'):
         raise ValueError('refusing to write a model block with a failed validation report')
     if target is not None:
         CheckTarget(build, target)
-    CheckLodPartner(build, target)
+    CheckLodPartner(build, target, partner_block)
     chunk_number, file_index = target.route if target else (build.chunk_number, build.file_index)
     if target is None:
         # A low-poly model binds textures by index into its high-poly partner's
@@ -8751,6 +8776,12 @@ if __name__ == '__main__':
     _parser.add_argument('--validate-only', action='store_true',
                          help='With --target-id: build and validate the block a slot patch writes; no slot or LOD '
                               'checks, nothing written (start.py --patch-slot runs it before any write)')
+    _parser.add_argument('--build-to', default=None, metavar='BLOCK',
+                         help='Build and validate the block and save it to this file; no slot or LOD checks, '
+                              'nothing patched (start.py builds the second model of a pair this way)')
+    _parser.add_argument('--lod-partner-block', default=None, metavar='BLOCK',
+                         help="The high-/low-poly partner's incoming block (--build-to), patched right after this "
+                              'model: the partner checks use it instead of the live partner')
     _parser.add_argument('--clear-target', default=None, metavar='0xNN',
                          help="Restore this stock slot's HP and L_ models to vanilla (no .sluggie); with "
                               "--target-file: only that equipment file or animation bank (2-14)")
@@ -8816,6 +8847,8 @@ if __name__ == '__main__':
         _parser.error('--as-low needs --target-id')
     if _args.validate_only and _args.target_id is None:
         _parser.error('--validate-only needs --target-id')
+    if (_args.build_to is not None or _args.lod_partner_block is not None) and _args.unpatch:
+        _parser.error('--build-to and --lod-partner-block cannot be combined with --unpatch')
     if _args.clear_target is not None:
         if _args.sluggies_path is not None:
             _parser.error('--clear-target takes no .sluggie file')
@@ -8834,7 +8867,7 @@ if __name__ == '__main__':
     _index = _model['FileIndex']
     _model_name = os.path.basename(_args.sluggies_path)
     _target = None
-    if _args.target_id is not None and not _args.validate_only:
+    if _args.target_id is not None and not _args.validate_only and _args.build_to is None:
         try:
             _target = SlotTarget.make_target(_args.target_id, (_chunk, _index), _args.as_low, _args.target_file)
         except (SlotTarget.TargetError, OSError) as _exc:
@@ -8924,7 +8957,18 @@ if __name__ == '__main__':
         )
         if not _build.validation_report['valid']:
             raise ValueError('assembled model block failed validation')
-        if _args.validate_only:
+        _partner_block = None
+        if _args.lod_partner_block is not None:
+            with open(_args.lod_partner_block, 'rb') as _file_handle:
+                _partner_block = _file_handle.read()
+        if _args.build_to is not None:
+            with open(_args.build_to, 'wb') as _file_handle:
+                _file_handle.write(_build.block)
+            _slogger.info(
+                f'Block built for the partner check | Model: {_model_name} | {len(_build.block)} bytes | '
+                'nothing written to the game files',
+                source='hammerspace.main')
+        elif _args.validate_only:
             try:
                 import memory_guard
                 memory_guard.record_size(hh._ROOT, _args.sluggies_path, len(_build.block))
@@ -8938,11 +8982,12 @@ if __name__ == '__main__':
         elif _args.dry_run:
             if _target is not None:
                 CheckTarget(_build, _target)
-            CheckLodPartner(_build, _target)
+            CheckLodPartner(_build, _target, _partner_block)
             PreviewLodTextureSync(_build, _target)
             _slogger.info('Dry run complete; output DAT, DOL, and FST were not modified.', source='hammerspace.main')
         else:
-            WriteModelBlock(_build, _model_name, output_offset=_args.output_offset, target=_target)
+            WriteModelBlock(_build, _model_name, output_offset=_args.output_offset, target=_target,
+                            partner_block=_partner_block)
     except (OSError, KeyError, TypeError, ValueError, RuntimeError) as _exc:
         _slogger.error(
             f'Hammerspace operation failed | Model: {_model_name} | '

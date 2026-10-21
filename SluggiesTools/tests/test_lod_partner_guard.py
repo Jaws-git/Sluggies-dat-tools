@@ -139,6 +139,18 @@ class LodPartnerErrorsTests(unittest.TestCase):
         with mock.patch.object(guard, '_entry_exists', side_effect=OSError('no DOL')):
             self.assertEqual(guard.lod_partner_errors(LOW_ON_NEW_BONE, 18, 1), [])
 
+    def test_incoming_partner_block_replaces_the_live_partner(self):
+        # Koopa, 2026-10-21: both models drop added bone 91 in one run; the live L_ model still draws on it.
+        with (
+            mock.patch.object(guard, '_entry_exists', return_value=True),
+            mock.patch.object(guard, 'read_current_block', return_value=LOW_ON_NEW_BONE) as live,
+        ):
+            self.assertEqual(guard.lod_partner_errors(HIGH_91, 18, 0, partner_block=LOW_ON_OLD_BONE), [])
+            live.assert_not_called()
+            errors = guard.lod_partner_errors(HIGH_91, 18, 0, partner_block=_block('L_mario.gpl', 92, {91: 3}))
+        self.assertEqual(len(errors), 1)
+        self.assertIn('as patched in this run draws geometry on bone(s) 91', errors[0])
+
 
 class LodPartnerWarningsTests(unittest.TestCase):
     """Bone 91 is the added bone: both models vanilla-count 91."""

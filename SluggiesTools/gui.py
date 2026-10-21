@@ -750,11 +750,9 @@ class SluggiesGui:
             dpg.add_text('1) Export all models with untangled textures, plus .glb models and animations '
                          '(overwrites 3_Output_Dat/dt_na.dat and main.dol)')
             dpg.add_text('2) Apply the chosen roster preset')
-            dpg.add_text('3) Write the character icons (FrontIcon/SideIcon) from 3_Output_Dat into the model folders')
-            dpg.add_text('4) Decode the voices, effects and music into 2_Output_Assets/_SOUNDS as WAV files '
-                         '(skipped when 1_Input/sound_NA is missing)')
-            dpg.add_text('A failing step stops the rest. Game options (CPU vs CPU, player memory) are off afterwards: '
-                         'turn them on in the Options tab.')
+            dpg.add_text('3) Export the character icons')
+            dpg.add_text('4) Export voices, effects and music into /2_Output_Assets/_SOUNDS '
+                         '(requires /1_Input/sound_NA)')
             dpg.add_spacer(height=6)
             with dpg.group(horizontal=True):
                 self._action('Start', self._on_full_export, primary=True)

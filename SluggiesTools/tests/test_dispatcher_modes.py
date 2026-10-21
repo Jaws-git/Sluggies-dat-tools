@@ -695,11 +695,119 @@ class TargetedPatchDispatchTests(unittest.TestCase):
                 with open(os.path.join(temp_dir, name), 'w') as f:
                     json.dump({'SluggiesModel': {}}, f)
             with mock.patch.object(start, 'SEARCH_DIR', temp_dir), \
+                    mock.patch('start._build_partner_block', return_value=True), \
                     mock.patch('start._patch_sluggie') as patch:
                 start.run_patching(['1_L_kinopio.gpl.sluggie', '0_kinopio.gpl.sluggie'], target_id='0x13')
 
         order = [os.path.basename(call.args[0]) for call in patch.call_args_list]
         self.assertEqual(order, ['0_kinopio.gpl.sluggie', '1_L_kinopio.gpl.sluggie'])
+
+
+class LodPairDispatchTests(unittest.TestCase):
+    """A run that patches both models of a high-/low-poly pair checks the
+    first one against the second one's incoming block: Koopa, 2026-10-21, both
+    models dropping added bone 85 was refused because the high-poly model was
+    checked against the live L_ model that still drew on it."""
+
+    def _write(self, temp_dir, name, model):
+        path = os.path.join(temp_dir, name)
+        with open(path, 'w') as f:
+            json.dump({'SluggiesModel': model}, f)
+        return path
+
+    def _run(self, temp_dir, names, build_ok=True, patch_side_effect=None, **kwargs):
+        with mock.patch.object(start, 'SEARCH_DIR', temp_dir), \
+                mock.patch('start._build_partner_block', return_value=build_ok) as build, \
+                mock.patch('start._patch_sluggie', side_effect=patch_side_effect) as patch, \
+                mock.patch.object(start.slogger, 'error') as error, \
+                mock.patch.object(start.slogger, 'info'):
+            ok = start.run_patching(names, **kwargs)
+        return ok, build, patch, error
+
+    def test_slot_pair_checks_the_high_poly_against_the_incoming_low_poly(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self._write(temp_dir, '0_nokonoko.gpl.sluggie', {'ChunkNumber': 30, 'FileIndex': 0})
+            low = self._write(temp_dir, '1_L_nokonoko.gpl.sluggie', {'ChunkNumber': 30, 'FileIndex': 1})
+            ok, build, patch, _ = self._run(
+                temp_dir, ['0_nokonoko.gpl.sluggie', '1_L_nokonoko.gpl.sluggie'], target_id='0x0C')
+
+        self.assertTrue(ok)
+        build.assert_called_once()
+        self.assertEqual(build.call_args.args[0], low)
+        self.assertEqual(build.call_args.args[3], '0x0C')
+        high_block, low_block = (call.args[7] for call in patch.call_args_list)
+        self.assertEqual(high_block, build.call_args.args[2])
+        self.assertIsNone(low_block)
+
+    def test_partner_that_does_not_build_falls_back_to_the_live_check(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self._write(temp_dir, '0_nokonoko.gpl.sluggie', {'ChunkNumber': 30, 'FileIndex': 0})
+            self._write(temp_dir, '1_L_nokonoko.gpl.sluggie', {'ChunkNumber': 30, 'FileIndex': 1})
+            _, _, patch, _ = self._run(
+                temp_dir, ['0_nokonoko.gpl.sluggie', '1_L_nokonoko.gpl.sluggie'], build_ok=False, target_id='0x0C')
+
+        self.assertIsNone(patch.call_args_list[0].args[7])
+
+    def test_second_model_failing_after_the_first_went_in_is_reported(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self._write(temp_dir, '0_nokonoko.gpl.sluggie', {'ChunkNumber': 30, 'FileIndex': 0})
+            self._write(temp_dir, '1_L_nokonoko.gpl.sluggie', {'ChunkNumber': 30, 'FileIndex': 1})
+            ok, _, _, error = self._run(
+                temp_dir, ['0_nokonoko.gpl.sluggie', '1_L_nokonoko.gpl.sluggie'],
+                patch_side_effect=[None, subprocess.CalledProcessError(1, 'patch')], target_id='0x0C')
+
+        self.assertFalse(ok)
+        self.assertIn('may not match now', error.call_args_list[-1].args[0])
+
+    def test_own_route_pair_is_found_by_chunk_and_file_index(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model = {'UseHammerspace': True, 'ChunkNumber': 30}
+            high = self._write(temp_dir, '0_nokonoko.gpl.sluggie', {**model, 'FileIndex': 0})
+            self._write(temp_dir, '1_L_nokonoko.gpl.sluggie', {**model, 'FileIndex': 1})
+            _, build, patch, _ = self._run(temp_dir, ['1_L_nokonoko.gpl.sluggie', '0_nokonoko.gpl.sluggie'])
+
+        # no slot: the given order stands, so the L_ model goes first, checked against the incoming high-poly one
+        self.assertEqual(build.call_args.args[0], high)
+        self.assertIsNone(build.call_args.args[3])
+        self.assertIsNotNone(patch.call_args_list[0].args[7])
+
+    def test_unrelated_or_in_place_models_are_not_paired(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self._write(temp_dir, '0_nokonoko.gpl.sluggie', {'UseHammerspace': True, 'ChunkNumber': 30, 'FileIndex': 0})
+            self._write(temp_dir, '1_L_mario.gpl.sluggie', {'UseHammerspace': True, 'ChunkNumber': 18, 'FileIndex': 1})
+            self._write(temp_dir, '1_L_nokonoko.gpl.sluggie', {'ChunkNumber': 30, 'FileIndex': 1})
+            _, build, _, _ = self._run(
+                temp_dir, ['0_nokonoko.gpl.sluggie', '1_L_mario.gpl.sluggie', '1_L_nokonoko.gpl.sluggie'])
+
+        build.assert_not_called()
+
+    def test_unpatch_and_validate_only_runs_build_nothing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self._write(temp_dir, '0_nokonoko.gpl.sluggie', {'ChunkNumber': 30, 'FileIndex': 0})
+            self._write(temp_dir, '1_L_nokonoko.gpl.sluggie', {'ChunkNumber': 30, 'FileIndex': 1})
+            names = ['0_nokonoko.gpl.sluggie', '1_L_nokonoko.gpl.sluggie']
+            _, unpatch_build, _, _ = self._run(temp_dir, names, unpatch=True, target_id='0x0C')
+            _, validate_build, _, _ = self._run(temp_dir, names, validate_only=True, target_id='0x0C')
+
+        unpatch_build.assert_not_called()
+        validate_build.assert_not_called()
+
+    @mock.patch('start.subprocess.run')
+    def test_partner_block_reaches_the_hammerspace_command(self, mock_run):
+        start._patch_sluggie('/tmp/model.sluggie', {'ChunkNumber': 30, 'FileIndex': 0}, False, '0x0C',
+                             lod_partner_block='/tmp/low.bin')
+
+        self.assertEqual(mock_run.call_args[0][0][-2:], ['--lod-partner-block', '/tmp/low.bin'])
+
+    @mock.patch('start.subprocess.run')
+    def test_partner_build_writes_the_block_only(self, mock_run):
+        mock_run.return_value.returncode = 0
+        self.assertTrue(start._build_partner_block('/tmp/low.sluggie', {}, '/tmp/low.bin', '0x0C'))
+
+        cmd = mock_run.call_args[0][0]
+        self.assertIn('--build-to', cmd)
+        self.assertEqual(cmd[-2:], ['--target-id', '0x0C'])
+        self.assertNotIn('--unpatch', cmd)
 
     @mock.patch('start.subprocess.run')
     def test_png_with_target_is_refused(self, mock_run):
