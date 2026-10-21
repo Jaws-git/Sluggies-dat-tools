@@ -49,6 +49,10 @@ WIIMMS_VERSION = "v2.42a-r8989"
 WIIMMS_ARCHIVE = f"szs-{WIIMMS_VERSION}-cygwin64.zip"
 WIIMMS_URL = f"https://szs.wiimm.de/download/{WIIMMS_ARCHIVE}"
 WIIMMS_SHA256 = "ac54b82806d5867d2d9f003df972164138ae4f7a7ab8f29d8397664f31c9e892"
+# Temporary fallback while szs.wiimm.de is down: the same distribution re-zipped
+# from a local install, so it has its own checksum.
+WIIMMS_VENDORED = TOOLING_ROOT / "vendor" / WIIMMS_ARCHIVE
+WIIMMS_VENDORED_SHA256 = "10000f330f3a797a36216d58e4f8f58a957b89e002b42368172515634bd8e608"
 # Inside PyInstaller's contents directory; start.py adds its bin/ to PATH.
 WIIMMS_DIR = PACKAGE / "_internal" / "tools" / "wiimms-szs-tools"
 
@@ -93,6 +97,8 @@ def ignored_release_path(directory: str, names: list[str]) -> set[str]:
     ignored = {name for name in names if name == "__pycache__" or name.endswith(".pyc")}
     if Path(directory).name in {"SluggiesTools", "Icons"}:
         ignored.update(name for name in names if name == "tests")
+    if Path(directory).name == "_build":             # vendored Wiimms archive is bundled unpacked
+        ignored.update(name for name in names if name == "vendor")
     if Path(directory).name == "1_Input":            # the user's game files never ship
         ignored.update(name for name in names if name == "sound_NA" or name.lower().endswith((".dat", ".dol", ".bin")))
     return ignored
@@ -125,14 +131,18 @@ def bundle_wiimms_tools() -> None:
 
     destination = WIIMMS_DIR
     with tempfile.TemporaryDirectory(prefix="sluggies-wiimms-") as temporary:
-        archive = Path(temporary) / WIIMMS_ARCHIVE
-        print(f"Downloading Wiimms SZS Tools {WIIMMS_VERSION}")
-        urllib.request.urlretrieve(WIIMMS_URL, archive)
+        if WIIMMS_VENDORED.exists():
+            archive, expected = WIIMMS_VENDORED, WIIMMS_VENDORED_SHA256
+            print(f"Using vendored Wiimms SZS Tools {WIIMMS_VERSION}")
+        else:
+            archive, expected = Path(temporary) / WIIMMS_ARCHIVE, WIIMMS_SHA256
+            print(f"Downloading Wiimms SZS Tools {WIIMMS_VERSION}")
+            urllib.request.urlretrieve(WIIMMS_URL, archive)
 
         digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-        if digest != WIIMMS_SHA256:
+        if digest != expected:
             raise RuntimeError(
-                f"Wiimms SZS Tools checksum mismatch: expected {WIIMMS_SHA256}, got {digest}"
+                f"Wiimms SZS Tools checksum mismatch: expected {expected}, got {digest}"
             )
 
         with zipfile.ZipFile(archive) as package:
