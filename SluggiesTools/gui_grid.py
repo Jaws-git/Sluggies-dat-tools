@@ -885,11 +885,12 @@ class PendingEdits:
                 else DIFF_TEXT.get(what, what))
         return [f'Pending: load {self.pack["name"]}: {what}']
 
-    def staging(self, edit: dict | list[dict]) -> dict:
+    def staging(self, edit: dict | list[dict], drop_op: str | None = None) -> dict:
         """The edits file of a staging check: the pending edits (build checks passed when they were staged)
-        plus the new one (or several, staged together)."""
+        plus the new one (or several, staged together). ``drop_op``: leave out the pending edits of that op (a
+        gameplay settings load replaces the pending gameplay edits)."""
         new = edit if isinstance(edit, list) else [edit]
-        return {'edits': [dict(e, checked=True) for e in self.edits] + [dict(e) for e in new]}
+        return {'edits': [dict(e, checked=True) for e in self.edits if e['op'] != drop_op] + [dict(e) for e in new]}
 
     def to_file(self) -> dict:
         """The edits file Patch Game writes: every build check runs again."""
@@ -930,7 +931,7 @@ class PendingEdits:
             self.gecko.clear()
             return
         new = {int(s['target'], 16) for s in plan.get('edits') or []
-               if not s.get('checked') and s.get('action') not in (STAT_EDITS, STAT_RESET)}
+               if not s.get('checked') and s.get('action') not in (STAT_EDITS, STAT_RESET, GAMEPLAY)}
         if check.get('new_breaks') or not self.gecko - new:
             self.gecko |= new
 
@@ -948,6 +949,11 @@ class PendingEdits:
         self.memory.pop(cid, None)
         if self.pack and cid in self.pack['diff']:
             self.pack = None
+
+    def discard_op(self, op: str) -> None:
+        """Drop the pending edits of a game-wide ``op`` (``GAMEPLAY``, ``STAT_EDITS``)."""
+        self.edits = [e for e in self.edits if e['op'] != op]
+        self.sections = [s for s in self.sections if s['action'] != op]
 
     def clear(self) -> None:
         self.edits, self.sections, self.pack = [], [], None
@@ -1050,7 +1056,8 @@ class PendingEdits:
 
     def titles(self) -> list[tuple[str | None, str]]:
         """``(slot id or None, text)`` per pending edit, for the discard / save questions."""
-        out = [(e['id'], _edit_title(e).removeprefix('Pending: ')) for e in self.edits]
+        out = [(None if e['op'] in GAME_OPS else e['id'], _edit_title(e).removeprefix('Pending: '))
+               for e in self.edits]
         if self.pack:
             n = len(self.pack['diff'])
             out.append((None, f'load the roster pack {self.pack["name"]} ({n} slot{"s" if n != 1 else ""} change)'))
@@ -1068,6 +1075,8 @@ class PendingEdits:
 def _edit_title(edit: dict) -> str:
     if edit['op'] == STAT_EDITS:
         return f'Pending: stat editor value changes'
+    if edit['op'] == GAMEPLAY:
+        return f'Pending: gameplay settings: {gameplay_item_label(edit.get("file"))}'
     if edit['op'] == 'equip':
         what = EQUIP_LABELS.get(edit.get('file'), 'equipment').lower()
         where = f' (file {edit["file"]})' if edit.get('file') in (5,) else ''
@@ -1131,6 +1140,8 @@ SLGMODEL_FILTERS = [('Character files', '*.slgmodel'), ('All files', '*.*')]
 MODEL_OPS = ('patch', 'clear', COPY, SLGMODEL)
 # A stat edit (the stat editor's edit file) belongs to no slot: its "id" is GAME_WIDE (Roster/slot_plan, test-pinned)
 STAT_EDITS, GAME_WIDE = 'stat_edits', 0xFF
+GAMEPLAY = 'gameplay'                  # gameplay settings (Gameplay tab): game-wide too
+GAME_OPS = (STAT_EDITS, GAMEPLAY)
 STAT_RESET = 'stat_reset'                     # clears one slot's stat edits (Roster/slot_plan, test-pinned)
 
 
@@ -1260,10 +1271,11 @@ def stat_edit_risk(state: dict | None, lost: bool, reason: str = STATS_REPLACED)
             'character ID).')
 
 
-def edit_who(state: dict | None, cid: int) -> str:
-    """Who a pending or planned edit is for: ``Mario (0x00)``, or ``Stat edits`` for a game-wide stat edit."""
+def edit_who(state: dict | None, cid: int, action: str | None = None) -> str:
+    """Who a pending or planned edit is for: ``Mario (0x00)``, or ``Stat edits`` / ``Gameplay settings`` for a
+    game-wide edit (``action``: its op)."""
     if cid == GAME_WIDE:
-        return 'Stat edits'
+        return 'Gameplay settings' if action == GAMEPLAY else 'Stat edits'
     return f'{name_of(state, cid) if state else hex_id(cid)} ({hex_id(cid)})'
 # state key -> (slot file, label); the file numbers are Roster/gear.py's (test-pinned)
 EQUIP_TILES = (('bat', 2, 'Bat'), ('glove_l', 3, 'Left glove'), ('glove_r', 4, 'Right glove'),
@@ -1587,7 +1599,8 @@ def _refused_lines(state: dict, plan: dict, cid: int | None = None) -> list:
     lines = []
     for refused in plan['refused']:
         rid = int(refused['target'], 16)
-        where = ('' if rid == cid else 'Stat edits: ' if rid == GAME_WIDE
+        action = (refused.get('edit') or {}).get('op')
+        where = ('' if rid == cid else f'{edit_who(state, rid, action)}: ' if rid == GAME_WIDE
                  else f'{known_name(state, rid)} ({hex_id(rid)}): ')
         lines.append((f'Refused: {where}{refused["error"]}', ERROR))
     return lines
@@ -1757,15 +1770,18 @@ def summary_dialog(state: dict, plan: dict | None, code: int, output: str) -> Sl
             what = (section.get('effects') or {}).get('portrait_note') or 'new portrait'
         elif section['action'] == STAT_EDITS:
             what = (section.get('effects') or {}).get(STAT_EDITS) or 'changed values'
+        elif section['action'] == GAMEPLAY:
+            what = (f'{gameplay_item_label((section.get("edit") or {}).get("file"))}: '
+                    + ((section.get('effects') or {}).get(GAMEPLAY) or 'changed values'))
         elif section['action'] == STAT_RESET:
             what = 'stat edits ' + ((section.get('effects') or {}).get(STAT_EDITS) or 'cleared')
-        lines.append((f'{edit_who(state, cid)}: {what}', OK))
+        lines.append((f'{edit_who(state, cid, section["action"])}: {what}', OK))
         lines += [('    ' + text, kind) for text, kind in _section_lines(state, section, sizes, warnings=False)]
     for section in plan['skipped']:
         cid = int(section['target'], 16)
         why = {'rename': 'nothing to rename (named that already)', 'clear': 'nothing to clear (at its baseline '
                'already)', STAT_RESET: 'no stat edits to clear'}.get(section['action'], 'nothing to change')
-        lines.append((f'{edit_who(state, cid)}: {why}', TEXT))
+        lines.append((f'{edit_who(state, cid, section["action"])}: {why}', TEXT))
     lines += [(f'- {note}', TEXT) for note in plan['notes']]
     lines += [(f'Warning: {warning}', WARN) for warning in plan['warnings']]
     lines.append(('- one roster rebuild' if plan['rebuild'] else '- no roster rebuild needed', TEXT))
@@ -2081,3 +2097,160 @@ def save_pending_dialog(state: dict | None, pending: PendingEdits) -> SlotDialog
     return SlotDialog('Save the roster without the pending edits?', lines, True)
 
 
+# --------------------------------------------------------------------------
+# Gameplay settings (the Gameplay tab, gui_gameplay.py)
+# --------------------------------------------------------------------------
+
+GAMEPLAY_RESET = 'reset'                              # Gameplay/apply.RESET_ITEM (test-pinned)
+GAMEPLAY_STAGING_REL = os.path.join('_gui', 'gameplay')        # the staged edit files and load copies
+GAMEPLAY_DIR_REL = os.path.join('_gui', 'Gameplay_Settings')   # where Save / Load settings... start
+GAMEPLAY_EXTENSION = '.sluggiesgameplay'                       # Gameplay/apply.EXTENSION (test-pinned)
+GAMEPLAY_DIR_SETTING = 'gameplay_last_dir'
+GAMEPLAY_REPORT_REL = os.path.join('_gui', 'gameplay', 'report.json')
+
+
+def gameplay_edit(item: str) -> dict:
+    """The pending edit of a gameplay item: a file (the tab's staged values, a loaded settings file) or ``reset``."""
+    return {'op': GAMEPLAY, 'id': hex_id(GAME_WIDE), 'file': item}
+
+
+def staged_gameplay_items(pending: 'PendingEdits') -> list[str]:
+    """The pending gameplay items (files, ``reset``), in staging order."""
+    return [e['file'] for e in pending.edits if e['op'] == GAMEPLAY and e.get('file')]
+
+
+def gameplay_item_label(item: str | None) -> str:
+    """``back to 1_Input`` for a reset, ``loaded from NAME`` for a loaded file, ``changed values`` for the tab's own
+    staged values (``edit_*.json`` in the staging folder)."""
+    if not item:
+        return 'changed values'
+    if item.strip().lower() == GAMEPLAY_RESET:
+        return 'every value back to 1_Input'
+    name = os.path.basename(item)
+    if name.startswith('load_'):
+        return f'loaded from {name.split("_", 2)[-1]}'
+    return 'changed values'
+
+
+def load_gameplay_report(path: str) -> dict | None:
+    """The ``--apply-gameplay --report`` JSON (``Gameplay/apply.report``, or ``{"error"}``); None when unreadable."""
+    try:
+        with open(path, encoding='utf-8') as f:
+            report = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return report if isinstance(report, dict) else None
+
+
+def gameplay_save_path(path: str) -> str:
+    return path if path.lower().endswith(GAMEPLAY_EXTENSION) else path + GAMEPLAY_EXTENSION
+
+
+def gameplay_save_command(path: str) -> tuple:
+    return ('--save-gameplay', path)
+
+
+def gameplay_report_command(path: str, report: str) -> tuple:
+    return ('--apply-gameplay', path, '--dry-run', '--report', report)
+
+
+def gameplay_risk(state: dict | None) -> str | None:
+    """What an export that replaces main.dol does to the game's gameplay settings (``config_risks``), or None when
+    the game holds the 1_Input values (a roster run, a reset to vanilla included, carries them)."""
+    block = (state or {}).get('gameplay') or {}
+    current, vanilla = block.get('current'), block.get('vanilla')
+    if not current or not vanilla:
+        return None
+    n = sum(1 for table, rows in current.items() for row, cols in rows.items() for col, value in cols.items()
+            if ((vanilla.get(table) or {}).get(row) or {}).get(col) != value)
+    if not n:
+        return None
+    return (f'Gameplay settings ({n} value{"s" if n != 1 else ""} differ from 1_Input): {STATS_REPLACED}; save them '
+            'first on the Gameplay tab (Save settings...).')
+
+
+def gameplay_dialog(state: dict | None, plan: dict | None, code: int, output: str, item: str) -> SlotDialog:
+    """The confirm dialog of a gameplay item after its staging check (the pending edits plus this one): what the
+    pending gameplay edits change together, the notes and warnings, the verdict. ``can_apply`` only when the whole
+    check passed and the item is planned."""
+    dialog = SlotDialog('Stage the gameplay settings?')
+    lines = dialog.lines
+    error = error_message(output)
+    if plan is None or plan['refused']:
+        dialog.title = 'Gameplay settings: refused'
+        if plan is None:
+            error = error.removeprefix('refused, nothing written: ')
+            lines.append((f'Refused: {error or f"the planner failed (exit code {code})"}', ERROR))
+        else:
+            lines += _refused_lines(state or {}, plan, GAME_WIDE)
+        lines.append(('Nothing was staged.', TEXT))
+        return dialog
+    section = next((s for s in reversed(plan['edits']) if s['action'] == GAMEPLAY
+                    and _same_item((s.get('edit') or {}).get('file'), item)), None)
+    if section is None:
+        dialog.title = 'Gameplay settings: nothing to change'
+        lines.append(('The game holds these values already. Nothing was staged.', TEXT))
+        return dialog
+    lines.append((f'Changes: {(section.get("effects") or {}).get(GAMEPLAY) or "changed values"}', OK))
+    lines += [(f'- {note}', TEXT) for note in section['notes']]
+    lines += [(f'Warning: {warning}', WARN) for warning in section['warnings']]
+    lines += [(f'- {note}', TEXT) for note in plan.get('notes') or [] if note.startswith('gameplay:')]
+    if code != 0:
+        lines.append((f'Check failed: {error or f"exit code {code}"}. Nothing was staged.', ERROR))
+        return dialog
+    lines.append(('Checks passed: known fields, every value fits, the cross-field checks. Nothing written yet: '
+                  '"Patch Game" writes the pending edits.', OK))
+    dialog.can_apply = True
+    return dialog
+
+
+def _same_item(a: str | None, b: str) -> bool:
+    if not a:
+        return False
+    if b.strip().lower() == GAMEPLAY_RESET or a.strip().lower() == GAMEPLAY_RESET:
+        return a.strip().lower() == b.strip().lower()
+    return _same_file(a, b)
+
+
+def gameplay_load_dialog(report: dict | None, name: str, labels: dict, pending: int, only_diff: bool = True,
+                         legacy_title: str = 'AI Gameplay Tool file') -> SlotDialog:
+    """Load settings...: what the file ``name`` sets against the game (``report``: ``--apply-gameplay --dry-run
+    --report``), per inner tab (``labels``: ``{(table, row, column): (tab title, cell label)}``); ``only_diff``: only
+    the values that differ from the game. ``pending``: pending gameplay edits the load replaces. ``can_apply`` (Stage)
+    when the file was accepted."""
+    dialog = SlotDialog(f'Load gameplay settings: {name}')
+    lines = dialog.lines
+    if report is None or report.get('error'):
+        dialog.title = f'Gameplay settings: {name} refused'
+        lines.append((f'Refused: {(report or {}).get("error") or "the check failed (see the log)"}', ERROR))
+        lines.append(('Nothing was staged.', TEXT))
+        return dialog
+    if report.get('legacy'):
+        dialog.title = f'Load gameplay settings: {name} ({legacy_title})'
+        lines.append((f'An {legacy_title}: only the blocks its Gecko codes wrote are taken, as the bytes '
+                      'they wrote.', TEXT))
+    changes = report.get('changes') or []
+    lines.append((f'{len(changes)} value{"s" if len(changes) != 1 else ""} differ from the game'
+                  + (f', {report.get("same", 0)} the same' if report.get('same') else '') + '.',
+                  OK if changes else TEXT))
+    rows = report.get('changes') if only_diff else report.get('values')
+    current_tab = None
+    for v in rows or []:
+        tab, cell = labels.get((v['table'], v['row'], v['column']), ('?', f'{v["table"]} / {v["row"]} / {v["column"]}'))
+        if tab != current_tab:
+            lines.append((f'{tab}:', TEXT))
+            current_tab = tab
+        same = v['before'] == v['after']
+        lines.append((f'    {cell}: {v["before"]}' + ('' if same else f' -> {v["after"]}'), TEXT if same else OK))
+    lines += [(f'Note: {note}', TEXT) for note in report.get('notes') or []]
+    lines += [(f'Warning: {warning}', WARN) for warning in report.get('warnings') or []]
+    if pending:
+        lines.append((f'Stage replaces the {pending} pending gameplay edit{"s" if pending != 1 else ""}.', WARN))
+    if not changes:
+        lines.append(('The game holds these values already.' + (' Stage still drops the pending gameplay edits.'
+                                                                  if pending else ''), TEXT))
+        dialog.can_apply = bool(pending)
+        return dialog
+    lines.append(('Nothing written yet: Stage adds the values to the pending list, "Patch Game" writes them.', TEXT))
+    dialog.can_apply = True
+    return dialog

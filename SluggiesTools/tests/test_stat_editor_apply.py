@@ -76,7 +76,8 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual((prepared.characters, prepared.global_values), ([0x05, 0x66], 4))
         detected = carry.detect(out, vanilla())
         self.assertEqual(detected.rows[0x66], {BATTING: bytes([41])})
-        self.assertEqual(len(detected.globals), 4)
+        self.assertEqual(len(detected.globals), 3)          # the star boost is a gameplay setting (Gameplay/carry)
+        self.assertNotIn(BOOST_OP, detected.globals)
 
     def test_chemistry_regions(self):
         d = doc(self.image, {'0x01': {'chemistry': {'0x02': 2}},       # stock x stock: directional
@@ -269,7 +270,7 @@ class SlotOpTests(unittest.TestCase):
         self.assertEqual(gui_grid.edit_who(None, slot_plan.GAME_WIDE), 'Stat edits')
         pending = gui_grid.PendingEdits()
         pending.edits = [{'op': 'stat_edits', 'id': '0xFF', 'file': 'C:/x/stat_edits.json'}]
-        self.assertEqual(pending.titles(), [('0xFF', 'stat editor value changes')])
+        self.assertEqual(pending.titles(), [(None, 'stat editor value changes')])     # game-wide: no slot
         self.assertFalse(pending.has(0x00))
 
 

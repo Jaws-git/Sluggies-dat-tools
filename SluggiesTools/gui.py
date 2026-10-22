@@ -54,6 +54,7 @@ import file_drop
 import gui_character_grid
 import gui_sounds
 import gui_effects
+import gui_gameplay
 import gui_music
 import gui_grid
 import gui_maintenance
@@ -231,6 +232,7 @@ class SluggiesGui:
         self.settings = gui_settings.Settings(os.path.join(root_dir, gui_settings.SETTINGS_REL))   # one for every tab
         self.grid_tab = gui_character_grid.CharacterGridTab(self)
         self.stat_tab = stat_editor_tab.StatEditorTab(self)
+        self.gameplay_tab = gui_gameplay.GameplayTab(self)
         self.sounds_tab = gui_sounds.SoundsTab(self)
         self.effects_tab = gui_effects.EffectsTab(self)
         self.music_tab = gui_music.MusicTab(self)
@@ -927,6 +929,8 @@ class SluggiesGui:
             self.effects_tab.on_open()
         if dpg.get_item_alias(tab) == 'music_tab':
             self.music_tab.on_open()
+        if dpg.get_item_alias(tab) == 'gameplay_tab':
+            self.gameplay_tab.refresh()
 
     def _on_send(self, *_):
         text = dpg.get_value('stdin_field')
@@ -972,6 +976,7 @@ class SluggiesGui:
                 self._build_roster_tab()
                 self.grid_tab.build()
                 self.stat_tab.build()
+                self.gameplay_tab.build()
                 self.sounds_tab.build()
                 self.effects_tab.build()
                 self.music_tab.build()
@@ -1022,6 +1027,7 @@ class SluggiesGui:
             self._flush_log()
             self._show_prompt_request()
             self.stat_tab.tick()
+            self.gameplay_tab.tick()
             self.toast.tick()
             dpg.render_dearpygui_frame()
         self.stop_command()

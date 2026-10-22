@@ -10,7 +10,9 @@ Every character also gets its ``fingerprint`` (``pack.py``: block and portrait
 SHA-1s, name, stats, voice), which roster packs and the GUI's "changed since
 load/save" marker compare. ``game_options`` lists the game options that are on
 (``GameOptions/game_options.detect``) for the Options tab's CPU vs CPU status, and
-the stat edits the game holds (``read_stat_edits``) for the GUI's warnings.
+the stat edits the game holds (``read_stat_edits``) for the GUI's warnings, and the
+gameplay settings (``read_gameplay``: as the game holds them and as ``1_Input`` does) for
+the Gameplay tab.
 
 ``--derive`` (``start.py --roster-derive``) instead writes the derived
 config (``derive.py``) to ``_gui/derived/roster.json`` plus its
@@ -34,12 +36,16 @@ import slogger  # noqa: E402
 try:
     from ..Dol import dolfile
     from ..GameOptions import game_options
+    from ..Gameplay import read as gameplay_read
     from ..StatEditor import bridge as stat_bridge, carry
+    from ..StatEditor.fields import short
     from . import datfile, derive, pack, state, state_icons
 except ImportError:
     from Dol import dolfile
     from GameOptions import game_options
+    from Gameplay import read as gameplay_read
     from StatEditor import bridge as stat_bridge, carry
+    from StatEditor.fields import short
     import datfile
     import derive
     import pack
@@ -170,6 +176,22 @@ def read_stat_edits(image: dolfile.DolImage, input_folder: str) -> dict | None:
     return None if edits is None else carry.summary(edits)
 
 
+def read_gameplay(image: dolfile.DolImage, input_folder: str) -> dict:
+    """``{"current", "vanilla", "missing"}``: every gameplay value as ``image`` holds it and as
+    ``input_folder/main.dol`` does (``{table: {row: {column: value}}}``; vanilla None when that file cannot be read),
+    and the tables ``image`` does not map."""
+    vanilla = None
+    path = os.path.join(input_folder, 'main.dol')
+    try:
+        if os.path.isfile(path):
+            with open(path, 'rb') as f:
+                vanilla = gameplay_read.nested(gameplay_read.values(dolfile.DolImage(f.read())), short)
+    except (OSError, dolfile.DolError):
+        vanilla = None
+    return {'current': gameplay_read.nested(gameplay_read.values(image), short), 'vanilla': vanilla,
+            'missing': gameplay_read.missing_tables(image)}
+
+
 def run(output_dir: str = OUTPUT_DIR) -> dict:
     image, dat = _open(output_dir)
     result = state.read_state(image, dat)
@@ -177,6 +199,7 @@ def run(output_dir: str = OUTPUT_DIR) -> dict:
     state.clip_hashes(result, open_sound(output_dir))     # char_clips / clips: the custom clips' SHA-1s
     result['game_options'] = game_options.detect(image)   # keys of the options that are on (GUI status line)
     result['stat_edits'] = read_stat_edits(image, input_dir(output_dir))
+    result['gameplay'] = read_gameplay(image, input_dir(output_dir))
     result['icon_dir'] = ICON_DIR
     result['icon_crops'] = None
     if result['icons_read']:

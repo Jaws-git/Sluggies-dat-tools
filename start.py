@@ -75,6 +75,7 @@ SWITCH_PLAN_FILE = os.path.join(ROOT_DIR, '_gui', 'switch', 'plan.json')
 SLOT_PLAN_FILE = os.path.join(ROOT_DIR, '_gui', 'slot', 'plan.json')
 GAME_OPTIONS_SCRIPT = os.path.join(TOOLS_DIR, 'GameOptions', 'runner.py')
 STAT_EDITOR_SCRIPT = os.path.join(TOOLS_DIR, 'StatEditor', 'cli.py')
+GAMEPLAY_SCRIPT = os.path.join(TOOLS_DIR, 'Gameplay', 'cli.py')
 
 # Model directory indices that hold unused characters (see folderNameMap in
 # export.py). These characters share a playable character's model block and
@@ -423,6 +424,27 @@ def run_apply_stat_edits(paths, dry_run=False):
     if dry_run:
         cmd.append('--dry-run')
     return subprocess.run(cmd, cwd=TOOLS_DIR).returncode == 0
+
+
+def run_apply_gameplay(items, dry_run=False, report=None):
+    """Write gameplay edit / settings files (or AI Gameplay Tool files; in order) into 3_Output_Dat/main.dol
+    (Gameplay/cli.py): every item is checked first (known fields, storable values, cross-field checks); the item
+    ``reset`` puts every gameplay value back to 1_Input at its place in the order. ``dry_run`` lists the changes
+    and writes nothing; ``report``: write the check as JSON there."""
+    items = [p if p.strip().lower() == 'reset' else os.path.abspath(p) for p in items]
+    cmd = python_script_command(GAMEPLAY_SCRIPT, '--apply', *items)
+    if dry_run:
+        cmd.append('--dry-run')
+    if report:
+        cmd += ['--report', os.path.abspath(report)]
+    return subprocess.run(cmd, cwd=TOOLS_DIR).returncode == 0
+
+
+def run_save_gameplay(path):
+    """Write the gameplay settings 3_Output_Dat/main.dol holds into a settings file (Gameplay/cli.py); the game
+    files are only read."""
+    return subprocess.run(python_script_command(GAMEPLAY_SCRIPT, '--save', os.path.abspath(path)),
+                          cwd=TOOLS_DIR).returncode == 0
 
 
 def run_export(debug=False, notex=False, untangle=False, glb=False, anim_glb=False):
@@ -1030,6 +1052,9 @@ def parse_args():
             '  python start.py --set-icon 0xE1 front my_portrait.png --fit cover\n'
             '  python start.py --apply-slots _gui/slot/edits.json --dry-run\n'
             '  python start.py --apply-stat-edits stat_edits.json --dry-run\n'
+            '  python start.py --apply-gameplay my_settings.sluggiesgameplay --dry-run\n'
+            '  python start.py --apply-gameplay reset\n'
+            '  python start.py --save-gameplay my_settings.sluggiesgameplay\n'
             '  python start.py --save-roster my_roster.sluggiesroster\n'
             '  python start.py --load-roster my_roster.sluggiesroster --dry-run\n'
             '  python start.py --resplit-unused\n'
@@ -1071,6 +1096,8 @@ def parse_args():
     mode.add_argument('--game-options', action='store_true', help='show or change game options (CPU vs CPU, ...) in 3_Output_Dat/main.dol; use with --on/--off')
     mode.add_argument('--stat-bridge-export', metavar='FILE', help="write the Sluggers Stat Editor's bridge file (where 3_Output_Dat/main.dol keeps every stat table, the characters, the baseline values) to FILE")
     mode.add_argument('--apply-stat-edits', nargs='+', metavar='FILE', help="write the Sluggers Stat Editor's edit files (stat_edits.json from Bridge Mode; several: in order, a later one wins) into 3_Output_Dat/main.dol; refused unless made from this main.dol; an item reset:0xNN clears that character's stat edits at its place in the order (with --dry-run: list the changes only)")
+    mode.add_argument('--apply-gameplay', nargs='+', metavar='ITEM', help='write gameplay settings (CPU behaviour, star boosts, item odds) into 3_Output_Dat/main.dol: edit or settings files (.sluggiesgameplay) or AI Gameplay Tool files (cpu_behavior.json), in order (a later one wins); the item reset puts every gameplay value back to 1_Input (with --dry-run: check and list the changes only)')
+    mode.add_argument('--save-gameplay', metavar='FILE', help='save the gameplay settings of 3_Output_Dat/main.dol (CPU behaviour, star boosts, item odds) into a settings file (.sluggiesgameplay)')
     mode.add_argument('--export', action='store_true', help='export all models from 1_Input to 2_Output_Assets')
     mode.add_argument('--export-icons', action='store_true', help="write each character's FrontIcon.png/SideIcon.png into its model folder in 2_Output_Assets")
     mode.add_argument('--export-sounds', action='store_true', help="decode the game's sounds (1_Input/sound_NA: MY2.brsar and stream/*.brstm, copied from the game's files/sound_NA) into 2_Output_Assets/_SOUNDS as WAV files, one folder per archive group")
@@ -1095,8 +1122,9 @@ def parse_args():
     parser.add_argument('--equipment', metavar='FILE', help="--patch-slot: the slot file (2 bat, 3 left glove, 4 right glove, 5 extra bat; or bat, glove_l, glove_r, extra) a bat or glove .sluggie goes to (default: the file it was exported from); --clear-slot: reset only that equipment file, or 'all' four, instead of the models")
     parser.add_argument('--no-gear', action='store_true', help="--patch-slot of a model into a new ID: do not take the model's bats and gloves along")
     parser.add_argument('--no-trim', action='store_true', help='set-icon only: do not crop the transparent border before fitting')
+    parser.add_argument('--report', metavar='FILE', help='apply-gameplay only: write the check as JSON into FILE (used by the GUI)')
     parser.add_argument('--focus', metavar='0xNN', help='stat-bridge-export only: the character the stat editor preselects')
-    parser.add_argument('--remove', action='store_true', help='roster only: reset the roster to vanilla (against 1_Input), stat edits included, and stop')
+    parser.add_argument('--remove', action='store_true', help='roster only: reset the roster to vanilla (against 1_Input), stat edits included (gameplay settings are kept), and stop')
     parser.add_argument('--fresh', action='store_true', help="roster --config only: do not keep the slots' customisations (models in new IDs, names, portraits, stats sources, voices; slots leaving the grid are not reset); stat edits are still carried")
     parser.add_argument('--keep-stat-edits', action='store_true', help='roster --remove only: carry the stat edits over (used by --load-roster)')
     parser.add_argument('--on', nargs='+', default=[], metavar='OPTION', help='game-options only: turn these options on (cpu_vs_cpu, cpu_management, player_heap_16 / _32 / _48)')
@@ -1120,11 +1148,13 @@ def parse_args():
                              or args.patch_slot or args.clear_slot or args.rename_slot or args.set_voice
                              or args.set_char_voice or args.set_species_clip or args.copy_slot
                              or args.set_stats or args.set_icon or args.apply_slots or args.apply_stat_edits
-                             or args.import_slgmodel):
+                             or args.apply_gameplay or args.import_slgmodel):
         parser.error('--dry-run can only be used with --roster, --game-options, --patch-slot, '
                      '--clear-slot, --copy-slot, --import-slgmodel, --rename-slot, --set-voice, --set-char-voice, --set-species-clip, '
                      '--set-stats, --set-icon, --apply-slots, '
-                     '--apply-stat-edits, --load-roster or --defrag-hammerspace.')
+                     '--apply-stat-edits, --apply-gameplay, --load-roster or --defrag-hammerspace.')
+    if args.report and not args.apply_gameplay:
+        parser.error('--report can only be used with --apply-gameplay.')
     if args.equipment and not (args.patch_slot or args.clear_slot):
         parser.error('--equipment can only be used with --patch-slot or --clear-slot.')
     if args.no_gear and not args.patch_slot:
@@ -1165,7 +1195,7 @@ def parse_args():
         parser.error('--config and --state cannot be used together.')
     if args.roster and not (args.config or args.remove or args.state):
         parser.error('--roster needs --config PATH (a roster configuration), --state PATH or --remove.')
-    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.copy_slot, args.import_slgmodel, args.export_slot, args.rename_slot, args.set_voice, args.set_char_voice, args.set_species_clip, args.set_stats, args.set_icon, args.apply_slots, args.save_roster, args.load_roster, args.write_slot_blocks, args.write_slot_equipment, args.write_slot_animation, args.write_voice_pack, args.resplit_unused, args.defrag_hammerspace, args.export, args.export_icons, args.export_sounds, args.roster, args.roster_state, args.roster_derive, args.game_options, args.stat_bridge_export, args.apply_stat_edits]):
+    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.copy_slot, args.import_slgmodel, args.export_slot, args.rename_slot, args.set_voice, args.set_char_voice, args.set_species_clip, args.set_stats, args.set_icon, args.apply_slots, args.save_roster, args.load_roster, args.write_slot_blocks, args.write_slot_equipment, args.write_slot_animation, args.write_voice_pack, args.resplit_unused, args.defrag_hammerspace, args.export, args.export_icons, args.export_sounds, args.roster, args.roster_state, args.roster_derive, args.game_options, args.stat_bridge_export, args.apply_stat_edits, args.apply_gameplay, args.save_gameplay]):
         if len(sys.argv) == 1:
             args.gui = True
         else:
@@ -1285,6 +1315,12 @@ def main() -> int:
                 return 1
         elif args.apply_stat_edits:
             if not run_apply_stat_edits(args.apply_stat_edits, dry_run=args.dry_run):
+                return 1
+        elif args.apply_gameplay:
+            if not run_apply_gameplay(args.apply_gameplay, dry_run=args.dry_run, report=args.report):
+                return 1
+        elif args.save_gameplay:
+            if not run_save_gameplay(args.save_gameplay):
                 return 1
         elif args.export:
             run_export(debug=args.debug, notex=args.notex, untangle=args.untangle, glb=args.glb,

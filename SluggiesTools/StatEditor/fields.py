@@ -81,7 +81,7 @@ EDITOR_LISTS = {'statsList': STATS_LIST, 'pitchingList': PITCHING_LIST, 'sizeLis
                 'starBoostStatsList': STAR_BOOST_STATS_LIST, 'starBoostList': STAR_BOOST_LIST}
 
 # -- storage types ------------------------------------------------------------------------------------------------
-KINDS = {'u8': ('>B', 0, 0xFF), 'u16': ('>H', 0, 0xFFFF), 's16': ('>h', -0x8000, 0x7FFF),
+KINDS = {'u8': ('>B', 0, 0xFF), 's8': ('>b', -0x80, 0x7F), 'u16': ('>H', 0, 0xFFFF), 's16': ('>h', -0x8000, 0x7FFF),
          'u32': ('>I', 0, 0xFFFFFFFF), 'f32': ('>f', None, None)}
 STAR_BOOST_OPS = (1, 2)        # 1 add, 2 mult
 
@@ -286,6 +286,19 @@ def _global_fields() -> tuple[GlobalField, ...]:
 
 GLOBAL_FIELDS = _global_fields()
 GLOBAL_LOOKUP = {(f.table, f.row, f.column): f for f in GLOBAL_FIELDS}
+
+
+def short(value):
+    """``value`` as the editor shows it: an f32 as the shortest decimal that stores back to the same bytes."""
+    if not isinstance(value, float):
+        return value
+    raw = struct.pack('>f', value)
+    for digits in range(1, 10):
+        text = f'{value:.{digits}g}'
+        if struct.pack('>f', float(text)) == raw:
+            number = float(text)
+            return int(number) if number.is_integer() and abs(number) < 1e15 else number
+    return value
 
 
 def limit_problem(f: Field, value) -> str | None:

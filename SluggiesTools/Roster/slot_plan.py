@@ -119,6 +119,12 @@ Stat edits (``plan_stat_edits``): an edit file the Sluggers Stat Editor sent bac
 before the roster rebuild; the rebuild then carries the values onto the new layout like any other stat edit
 (``StatEditor/carry.py``).
 
+Gameplay settings (``plan_gameplay``, op ``gameplay``): a gameplay edit or settings file, an AI Gameplay Tool file
+or ``reset`` (``Gameplay/apply.py``; the GUI's Gameplay tab). Game-wide like a stat edit file (``id`` ``GAME_WIDE``):
+every staged item goes into one ``--apply-gameplay`` step, in staging order (a later one wins per field), after the
+stat edit files and the roster rebuild, so its star boosts win over a stat edit file's whatever the staging order. A
+``reset`` drops the earlier gameplay edits.
+
 Copy (``plan_copy``, op ``copy``, the grid's paste): slot ``id`` becomes a clone of ``source`` as the game holds
 it (finished blocks, name, portraits, stats source and every stat value; the square's voice stays unless the slot is
 alone on a new square). The planner snapshots the source into ``copy_dir`` before anything is written, so pending
@@ -418,6 +424,11 @@ class Env:
     def stat_edits(self, path: str) -> StatCheck:
         """The stat edit file at ``path`` (or a ``reset:0xNN`` item) checked against the game files
         (``StatEditor/apply.py``); a refusal raises ``PlanError``."""
+        raise NotImplementedError
+
+    def gameplay(self, items: list[str]) -> StatCheck:
+        """The gameplay items (files, ``reset``) checked together against the game files, in order
+        (``Gameplay/apply.py``); a refusal raises ``PlanError``."""
         raise NotImplementedError
 
     def stat_edited(self, cid: int) -> str | None:
@@ -2056,6 +2067,27 @@ def plan_stat_reset(st: dict, cid: int, env: Env, after_files: bool = False) -> 
     return plan
 
 
+def plan_gameplay(item: str, earlier: list[str], env: Env, after_stat_files: bool = False) -> Plan:
+    """The chain step that writes the gameplay item ``item`` (a file or ``reset``; ``--apply-gameplay``, merged by
+    ``plan_batch``), checked together with the ``earlier`` staged items (the result is what counts: the cross-field
+    checks need every value). ``nothing`` when the game holds the result already, unless an earlier item or a stat
+    edit file (``after_stat_files``: it may write star boosts first) is staged."""
+    check = env.gameplay(earlier + [item])
+    plan = Plan(GAMEPLAY, GAME_WIDE, None)
+    name = 'the gameplay reset' if item == GAMEPLAY_RESET else os.path.basename(item)
+    if check.summary is None and not earlier and not after_stat_files:
+        plan.nothing = True
+        plan.notes.append(f'nothing to change: the game holds the values of {name} already')
+        return plan
+    plan.commands.append(('--apply-gameplay', item))
+    if earlier:
+        plan.notes.append('with the earlier pending gameplay edits:')
+    plan.notes += check.lines
+    plan.warnings += check.warnings
+    plan.effects[GAMEPLAY] = check.summary or 'the values the game holds already'
+    return plan
+
+
 WRITE_VOICE_PACK = '--write-voice-pack'               # a character file import's voice pack (``Plan.voice_pack``)
 SLOT_WRITES = ('--patch', '--unpatch', '--write-slot-blocks', '--write-slot-equipment',  # step 4 of a batch
                '--write-slot-animation', WRITE_VOICE_PACK)
@@ -2071,6 +2103,9 @@ STAT_RESET = 'stat_reset'                             # one per slot; written wi
 SLOT_OPS = MODEL_OPS + ('rename',) + VALUE_OPS + ('icon',) + EQUIP_OPS + (ANIM, STAT_RESET, SPECIES_CLIP)
 COPY = 'copy'
 STAT_EDITS = 'stat_edits'                             # not a slot edit: every one is written, in staging order
+GAMEPLAY = 'gameplay'                                 # game-wide too: gameplay files / reset, in staging order
+GAMEPLAY_RESET = 'reset'                              # Gameplay/apply.RESET_ITEM (test-pinned)
+GAME_OPS = (STAT_EDITS, GAMEPLAY)
 GAME_WIDE = 0xFF                                      # the "id" of a stat edit: no character has it
 ORIGINS = ('user', 'bundled')
 DEFAULT_WORDS = ('', '-', 'default')                  # an edit's "source" that resets (CLI text)
@@ -2152,10 +2187,12 @@ def parse_edits(data) -> list[Edit]:
         raise PlanError('the edits file holds no list of edits')
     edits = []
     for n, item in enumerate(items, 1):
-        if isinstance(item, dict) and item.get('op') == STAT_EDITS:
-            if not item.get('file'):
-                raise PlanError(f'edit {n}: a stat_edits edit needs a "file" (the stat editor\'s edit file)')
-            edits.append(Edit(STAT_EDITS, GAME_WIDE, item['file'], checked=bool(item.get('checked')), index=n))
+        if isinstance(item, dict) and item.get('op') in GAME_OPS:
+            if not item.get('file') or not isinstance(item['file'], str):
+                raise PlanError(f'edit {n}: a {item["op"]} edit needs a "file" ('
+                                + ("the stat editor's edit file)" if item['op'] == STAT_EDITS
+                                   else 'a gameplay settings file, or "reset")'))
+            edits.append(Edit(item['op'], GAME_WIDE, item['file'], checked=bool(item.get('checked')), index=n))
             continue
         if not isinstance(item, dict) or item.get('op') not in SLOT_OPS or item.get('id') is None:
             raise PlanError(f'edit {n} is not an edit: {item!r}')
@@ -2351,6 +2388,16 @@ def merge_edits(edits: list[Edit], classify_fn=None, load_icon_fn=None, classify
 
     for edit in edits:
         if edit.op == STAT_EDITS:
+            merged.append(edit)
+            continue
+        if edit.op == GAMEPLAY:
+            if edit.file.strip().lower() == GAMEPLAY_RESET:
+                dropped = [e for e in merged if e.op == GAMEPLAY]
+                for old in dropped:
+                    merged.remove(old)
+                if dropped:
+                    notes.append(f'gameplay: {len(dropped)} pending gameplay edit{"s are" if len(dropped) != 1 else " is"} '
+                                 'dropped: the later reset puts every value back to 1_Input')
             merged.append(edit)
             continue
         if edit.op == STAT_RESET:
@@ -2568,6 +2615,7 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
     4. each slot's ``--patch`` / ``--unpatch`` / ``--write-slot-blocks`` / ``--write-slot-equipment`` /
        ``--write-slot-animation`` / ``--write-voice-pack`` (a character file import's pack, after its blocks),
        in staging order;
+    4b. one ``--apply-gameplay`` with every staged gameplay item, in staging order;
     5. one ``--roster-state``.
 
     Any refused edit refuses the whole batch: no commands, no config (``refused`` names them all)."""
@@ -2603,6 +2651,9 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
                 plan = plan_species_clip(st, current, edit.cid, edit.moment, edit.file, env, state_file, names_text)
             elif edit.op == STAT_EDITS:
                 plan = plan_stat_edits(edit.file, env)
+            elif edit.op == GAMEPLAY:
+                plan = plan_gameplay(edit.file, [e.file for e, _p in batch.plans if e.op == GAMEPLAY], env,
+                                     after_stat_files=any(e.op == STAT_EDITS for e in merged))
             elif edit.op == COPY:
                 plan = plan_copy(st, current, config, edit.cid, edit.source, env, state_file, names_text)
                 if any(e.cid == edit.source for e in merged if e is not edit):
@@ -2674,5 +2725,8 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
         batch.commands.append(('--apply-stat-edits', *stat_copies))
     for _edit, plan in batch.plans:
         batch.commands += [c for c in plan.commands if c[0] in SLOT_WRITES and '--validate-only' not in c]
+    gameplay = [p for _edit, plan in batch.plans for c in plan.commands if c[0] == '--apply-gameplay' for p in c[1:]]
+    if gameplay:                                    # after the stat edits and the rebuild: its values win
+        batch.commands.append(('--apply-gameplay', *gameplay))
     batch.commands.append(('--roster-state',))
     return batch

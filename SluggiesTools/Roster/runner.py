@@ -7,11 +7,15 @@ the files in ``3_Output_Dat`` (the normal pipeline's output).
 * It first resets the roster to vanilla (``reset.py``, against ``1_Input``),
   so repeated runs never stack and no record of earlier runs is needed.
 * ``--remove`` only resets the roster to vanilla, stat edits included
-  (``--keep-stat-edits`` carries them, for a stock roster pack's load).
+  (``--keep-stat-edits`` carries them, for a stock roster pack's load); the
+  gameplay settings stay.
 * ``--state FILE`` instead of ``--config``: a derived config (``derive.py``,
   read -> rebuild) with its portraits in the ``icons`` folder beside it.
 * Game options (``GameOptions/``, menu [8]) that are on before the reset are
   applied again afterwards.
+* Gameplay settings (``Gameplay/``: CPU behaviour, star boosts, item odds)
+  are read before the reset and written back afterwards (``Gameplay/carry.py``),
+  ``--remove`` included.
 * Stat edits (values that differ from what the roster itself writes, e.g.
   from the stat editor) are read before the reset and written onto the new
   layout by character ID (``StatEditor/carry.py``); removed IDs lose theirs.
@@ -50,6 +54,7 @@ try:
     from .. import gecko_compat
     from ..Dol import dolfile
     from ..GameOptions import game_options
+    from ..Gameplay import carry as gameplay_carry
     from ..Sound import brsar, effects, volumes
     from ..StatEditor import bridge, carry
     from . import datfile, derive, dol_hammerspace, manifest, model_dirs, reset, steps
@@ -57,6 +62,7 @@ except ImportError:
     import gecko_compat
     from Dol import dolfile
     from GameOptions import game_options
+    from Gameplay import carry as gameplay_carry
     from Sound import brsar, effects, volumes
     from StatEditor import bridge, carry
     import datfile
@@ -172,6 +178,7 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
         with open(sound_in_path, 'rb') as f:
             sound = f.read()
     options = game_options.detect(dolfile.DolImage(current))
+    gameplay = gameplay_carry.detect(dolfile.DolImage(current), dolfile.DolImage(vanilla))
     stat_log: list[str] = []
     try:
         stat_edits = carry.detect(dolfile.DolImage(current), dolfile.DolImage(vanilla))
@@ -222,6 +229,10 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
     if options:
         image = dolfile.DolImage(dol_bytes)
         log += [f'[game options] {line}' for line in game_options.apply(image, options)]
+        dol_bytes = image.to_bytes()
+    if gameplay:
+        image = dolfile.DolImage(dol_bytes)
+        log += [f'[gameplay] {line}' for line in gameplay_carry.apply(image, gameplay)]
         dol_bytes = image.to_bytes()
     result['dol_sha1'] = hashlib.sha1(dol_bytes).hexdigest()
     result['gecko_break'] = gecko_compat.breaks(current, dol_bytes)
@@ -274,7 +285,7 @@ def main(argv=None) -> int:
     source.add_argument('--config', help='the roster configuration JSON (e.g. from 1_Input/_RosterConfigurations)')
     source.add_argument('--state', help='a derived roster config (start.py --roster-derive), portraits beside it')
     parser.add_argument('--remove', action='store_true', help='only reset the roster to vanilla (1_Input), stat edits '
-                        'included')
+                        'included (gameplay settings are kept)')
     parser.add_argument('--keep-stat-edits', action='store_true', help='with --remove: carry the stat edits over')
     parser.add_argument('--dry-run', action='store_true', help='run in memory, write nothing')
     parser.add_argument('--output-dir', default=OUTPUT_DIR, help=argparse.SUPPRESS)

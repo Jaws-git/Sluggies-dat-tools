@@ -18,7 +18,9 @@ edits are re-derived from the DOL on every run.
   (stored as ``(new, stock)``), new x new is the separate matrix. A stock ID
   stays stock and a new ID stays new, so an edit always lands in the same kind
   of region it was read from.
-* **Global tables** (``fields.GLOBAL_FIELDS``): compared with ``1_Input``.
+* **Global tables** (``fields.GLOBAL_FIELDS``): compared with ``1_Input``,
+  except the star boosts: the gameplay settings carry them
+  (``Gameplay/carry.py``, kept by ``--remove``), whichever tool wrote them.
 
 Tables or code a DOL does not map (synthetic test DOLs) are skipped.
 """
@@ -35,6 +37,7 @@ except ImportError:
     from StatEditor import bridge, fields
 
 NEW_X_NEW = ids.ID_BOUND - ids.FIRST_NEW + 1
+GAMEPLAY_TABLES = frozenset({'star_boost'})            # global tables Gameplay/carry.py carries
 
 
 @dataclass
@@ -120,6 +123,8 @@ def detect(image: dolfile.DolImage, vanilla: dolfile.DolImage) -> StatEdits:
                     if live[i] != base[i]:
                         edits.chemistry[(a.id, b.id)] = live[i]
     for g in fields.GLOBAL_FIELDS:
+        if g.table in GAMEPLAY_TABLES:
+            continue
         if image.is_mapped(g.address, g.size) and vanilla.is_mapped(g.address, g.size):
             raw = image.read(g.address, g.size)
             if raw != vanilla.read(g.address, g.size):

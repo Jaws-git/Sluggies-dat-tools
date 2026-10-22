@@ -42,7 +42,6 @@ dry-run lines per character and table.
 
 import hashlib
 import json
-import struct
 from dataclasses import dataclass, field
 
 try:
@@ -175,17 +174,7 @@ def _value(spec: fields.Value, value, where: str):
     return value
 
 
-def short(value):
-    """``value`` as the editor shows it: an f32 as the shortest decimal that stores back to the same bytes."""
-    if not isinstance(value, float):
-        return value
-    raw = struct.pack('>f', value)
-    for digits in range(1, 10):
-        text = f'{value:.{digits}g}'
-        if struct.pack('>f', float(text)) == raw:
-            number = float(text)
-            return int(number) if number.is_integer() and abs(number) < 1e15 else number
-    return value
+short = fields.short
 
 
 class _Placer:

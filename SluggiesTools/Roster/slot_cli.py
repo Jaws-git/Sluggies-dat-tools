@@ -16,7 +16,7 @@ batch of one; ``--apply FILE`` reads an edits file (``{"edits": [{"op":
 "rename", "id": "0xNN", "text": ...}, {"op": "voice", "id": "0xNN", "source":
 "0xMM"}, {"op": "stats", "id": "0xNN", "source": null}, {"op": "icon", "id":
 "0xNN", "view": "front", "file": ..., "fit": "contain", "trim": true},
-{"op": "stat_edits", "file": ...}, {"op": "stat_reset", "id": "0xNN"}, {"op": "copy", "id": "0xNN", "source":
+{"op": "stat_edits", "file": ...}, {"op": "stat_reset", "id": "0xNN"}, {"op": "gameplay", "file": ... or "reset"}, {"op": "copy", "id": "0xNN", "source":
 "0xMM"}, {"op": "anim", "id": "0xNN", "anm": ...}, ...]}``; a null ``source`` goes back to
 the default; an icon edit's image is read and fitted here, ``icon_import``;
 a stat edit file is checked against ``main.dol`` here, ``StatEditor/apply``). ``--dry-run`` leaves out the build
@@ -192,6 +192,17 @@ class FileEnv(slot_plan.Env):
             return slot_plan.StatCheck(None)
         return slot_plan.StatCheck(stat_apply.summary(prepared), stat_apply.describe(prepared, names),
                                    prepared.warnings)
+
+    def gameplay(self, items):
+        from Gameplay import apply as gameplay_apply, cli as gameplay_cli
+        try:
+            prepared = gameplay_cli.check(self.image, items, self.input_dir or gameplay_cli.INPUT_DIR)
+        except (gameplay_apply.EditFileError, RuntimeError) as exc:      # DolError
+            raise slot_plan.PlanError(str(exc)) from exc
+        lines = gameplay_apply.describe(prepared) + prepared.notes
+        if not prepared.changes:
+            return slot_plan.StatCheck(None, lines, prepared.warnings)
+        return slot_plan.StatCheck(gameplay_apply.summary(prepared), lines, prepared.warnings)
 
     def _sound_archive_path(self):
         try:
@@ -714,7 +725,7 @@ def main(argv=None) -> int:
     for note in batch.notes:
         slogger.info(note, source=SOURCE)
     for edit, plan in batch.plans + batch.skipped:
-        who = 'stat edits' if edit.op == slot_plan.STAT_EDITS else _hex(edit.cid)
+        who = edit.op.replace('_', ' ') if edit.op in slot_plan.GAME_OPS else _hex(edit.cid)
         for note in plan.notes:
             slogger.info(f'{who}: {note}', source=SOURCE)
     for warning in batch.warnings:                   # the derive's, then each edit's
@@ -723,7 +734,7 @@ def main(argv=None) -> int:
         for edit, error in batch.refused:
             slogger.error(f'refused, nothing written: {error}' if len(edits) == 1
                           else f'refused, nothing written: edit {edit.index} ({edit.op}'
-                          + ('' if edit.op == slot_plan.STAT_EDITS else f' {_hex(edit.cid)}') + f'): {error}',
+                          + ('' if edit.op in slot_plan.GAME_OPS else f' {_hex(edit.cid)}') + f'): {error}',
                           source=SOURCE)
         return 1
     slogger.info(f'chain: {len(batch.commands)} commands for {len(batch.plans)} edit(s)'

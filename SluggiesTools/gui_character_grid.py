@@ -1733,6 +1733,40 @@ class CharacterGridTab:
             return False
         return True
 
+    def offer_gameplay(self, edit, replace=False, on_staged=None, confirm=False):
+        """The staging check of a gameplay item (the Gameplay tab: its staged values, a loaded settings file, a
+        reset): the pending edits plus this one (``replace``: without the pending gameplay edits, which a load
+        replaces). It is staged straight away when the check passes without warnings, unless ``confirm``; else its
+        dialog asks. ``on_staged`` runs once it is staged. False when the tab is busy or a roster pack load is
+        pending."""
+        if self._locked() or self.confirm is not None or self.pending.pack is not None:
+            return False
+        try:
+            gui_grid.write_edits(self.edits_path, self.pending.staging(
+                edit, drop_op=gui_grid.GAMEPLAY if replace else None))
+        except OSError as exc:
+            self.app.log_line(f'[gameplay] could not write {self.edits_path}: {exc}', _WARN)
+            return False
+        self.action = 'gameplay'
+
+        def stage(plan):
+            self._stage(plan)
+            if on_staged is not None:
+                on_staged()
+
+        def show(code, output):
+            state = self.nav.state or self.loader.state
+            plan = gui_grid.load_plan(self.plan_path)
+            dialog = gui_grid.gameplay_dialog(state, plan, code, output, edit['file'])
+            if dialog.can_apply and not confirm and not any(k == gui_grid.WARN for _t, k in dialog.lines):
+                stage(plan)
+                return
+            self._dialog(dialog, lambda: stage(plan), ok_label='Stage')
+        if not self._run([gui_grid.preview_command(self.edits_path)], 'Checking the gameplay settings...', show):
+            self._end_action()
+            return False
+        return True
+
     def _stage(self, plan):
         self._end_action()
         self.pending.accept(plan, gecko_compat.read_details(self.app.root_dir),     # the staging check's results
@@ -1761,6 +1795,10 @@ class CharacterGridTab:
         stat_risk = gui_grid.stat_edit_risk(state, stats_lost, stats_reason)
         if stat_risk:
             risks.append(stat_risk)
+        gameplay_risk = gui_grid.gameplay_risk(state) if stats_lost and stats_reason == gui_grid.STATS_REPLACED \
+            else None                                # a roster run (a reset included) carries them
+        if gameplay_risk:
+            risks.append(gameplay_risk)
         return risks
 
     def config_guard(self, then, title, action, stats_lost=False, stats_reason=gui_grid.STATS_REPLACED):
