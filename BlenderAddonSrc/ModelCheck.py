@@ -22,8 +22,11 @@ from . import ExportSluggies as ex
 from . import FieldCodec
 from . import HostBones
 from . import ModelCheckCore as core
+from . import RigidRebuildExport
+from . import SkinnedRebuildExport
 from . import SluggiePath
 from . import SluggiesToolsPanel as panel
+from . import StadiumCollisionExport
 from . import TemplateSources
 from .ImportSluggies import _set_surface_material_metadata
 from .ModelCheckCore import ERROR, INFO, WARNING, Finding
@@ -39,6 +42,7 @@ class ModelScope:
     for_export: bool = False
     reimport_textures: bool = True           # export option; the dialog assumes on
     unparented: list = field(default_factory=list)  # meshes tied only by VertexBufferOffset
+    texture_error: str = ""                  # why the texture context can't be resolved
     _textures: object = None
 
     @property
@@ -60,8 +64,8 @@ class ModelScope:
             if self.model is not None and self.sluggie_path:
                 try:
                     self._textures = ex._resolve_export_texture_context(self.sluggie_path, self.model)
-                except ValueError:
-                    pass
+                except ValueError as exc:
+                    self.texture_error = str(exc)
         return self._textures
 
 
@@ -222,6 +226,69 @@ def _used_materials(obj):
 
 def _used_vertices(mesh):
     return {v for poly in mesh.polygons for v in poly.vertices}
+
+
+def _rigid_index(scope, obj):
+    """The submesh index of a donor rigid (CompCount 3) mesh, else None."""
+    index = _submesh_index(scope, obj)
+    if index is None or not RigidRebuildExport.is_rigid_submesh(scope.model["Submeshes"][index]):
+        return None
+    return index
+
+
+def _owner_bone_id(model, submesh_index):
+    return next((int(b["BoneId"]) for b in model.get("BoneHierarchy") or []
+                 if ex._bone_geo_id_raw(b) == submesh_index), None)
+
+
+def _ownerless_rigid(scope, index, vertex_bone_ids):
+    """Exports before 2026-10-18 left submesh 0's owner without influences
+    when the model also has mesh-less bones, so the mesh imported with no
+    bone_<id> group at all; the exporter keeps it on its owner bone."""
+    return bool(vertex_bone_ids) and not any(vertex_bone_ids) \
+        and _owner_bone_id(scope.model, index) is not None
+
+
+def _export_bone_records(scope):
+    """The bones the exporter checks host bones against: the .sluggie's,
+    plus the armature's added bones it exports (by their bone_<id> names)."""
+    model = scope.model
+    records = HostBones.bone_records_from_hierarchy(model.get("BoneHierarchy") or [], model.get("SkinData"))
+    for bone in _added_bones(scope.armature):
+        bone_id = core.bone_id_from_name(bone.name)
+        parent_id = core.bone_id_from_name(bone.parent.name) if bone.parent is not None else None
+        if bone_id is None or (parent_id is None and (bone.parent is not None or not scope.stadium)):
+            continue   # not exported; check_donor_bones / check_added_bone_names tell
+        records.append(HostBones.BoneRecord(
+            bone_id, parent_id, int(bone.get('SluggiesGeoIdRaw', HostBones.GEO_ID_FREE)), False, True))
+    return records
+
+
+def _single_image_path(mat):
+    """The file path of a material's one connected image, or ''."""
+    nodes = ex._connected_image_texture_nodes(mat)
+    if len(nodes) != 1 or getattr(nodes[0], "image", None) is None:
+        return ""
+    return _image_path(nodes[0].image)
+
+
+def _export_file_name(path, tex_dir, plan_copy, reserved=()):
+    """The tex/ name the exporter binds *path* by: a PNG outside tex/ is
+    copied in under a free (or byte-identical) name when *plan_copy*."""
+    if plan_copy and tex_dir and os.path.isfile(path) and not _same_dir(os.path.dirname(path), tex_dir):
+        return ex._plan_external_texture_copy(path, tex_dir, {}, reserved)
+    return os.path.basename(path)
+
+
+def _used_new_surfaces(obj):
+    """The Add-material surfaces faces use: the ones export resolves."""
+    used = {poly.material_index for poly in obj.data.polygons}
+    found = []
+    for i, slot in enumerate(obj.material_slots):
+        mat = slot.material
+        if i in used and mat is not None and mat.get("SluggiesNewSurface") and mat not in found:
+            found.append(mat)
+    return found
 
 
 # ---------------------------------------------------------------------------
@@ -485,6 +552,48 @@ def check_geometry(context, scope):
                               f"{obj.name}: mesh has no faces.")
 
 
+def check_rebuild_format(context, scope):
+    """A changed topology needs the rigid or body rebuild, which reads int16
+    positions only. (A move or new surfaces need it too; those show only on
+    export.)"""
+    if scope.model is None:
+        return
+    for obj in scope.meshes:
+        index = _submesh_index(scope, obj)
+        if index is None:
+            continue
+        sub = scope.model["Submeshes"][index]
+        if (int((sub.get("VertexBuffer") or {}).get("VertexBufferQuantizeInfo", 0x30)) >> 4) == 3:
+            continue   # int16: both rebuilds take it
+        if RigidRebuildExport.is_rigid_submesh(sub):
+            donor = RigidRebuildExport.donor_rigid_submesh(index, sub)
+            error = RigidRebuildExport.donor_position_format_error(donor, obj.name)
+        elif index == 0 and SkinnedRebuildExport.is_skinned_submesh(sub):
+            donor = SkinnedRebuildExport.donor_skinned_submesh(index, sub, scope.model.get("SkinData"))
+            error = SkinnedRebuildExport.donor_position_format_error(donor, obj.name)
+        else:
+            continue
+        if error and ExportMode.topology_changed((poly.vertices for poly in obj.data.polygons),
+                                                 sub.get("FacesData")):
+            yield Finding("rebuild_format", ERROR, obj.name, "Faces can't change here", error)
+
+
+def check_collision(context, scope):
+    """Stadium collision settings the exporter refuses."""
+    if scope.model is None:
+        return
+    enabled = [obj for obj in scope.meshes
+               if getattr(obj, 'sluggies_collision', None) is not None and obj.sluggies_collision.enabled]
+    for obj in enabled:
+        if obj.sluggies_collision.invisible and not _is_custom(obj) \
+                and all(prop in obj for prop in core.REQUIRED_PROPS):
+            yield Finding("collision_invisible", ERROR, obj.name, "Original mesh made invisible",
+                          StadiumCollisionExport.invisible_model_mesh_error([obj.name]))
+    message = StadiumCollisionExport.chunk_error(scope.model.get("ChunkNumber"), [obj.name for obj in enabled])
+    if message:
+        yield Finding("collision_chunk", ERROR, scope.name, "Collision not possible here", message)
+
+
 def check_custom_host_bone(context, scope):
     for obj in scope.meshes:
         if not _is_custom(obj):
@@ -497,6 +606,72 @@ def check_custom_host_bone(context, scope):
                           + (f" The fix puts every vertex on bone_{majority}." if majority is not None else ""),
                           "one_bone" if majority is not None else None,
                           {"object": obj.name, "bone_id": majority} if majority is not None else {})
+
+
+def check_rigid_one_bone(context, scope):
+    """The exporter's rule for an original rigid mesh (_rigid_rebuild_plan):
+    every vertex on the same one bone_<id> group."""
+    if scope.model is None:
+        return
+    for obj in scope.meshes:
+        index = _rigid_index(scope, obj)
+        if index is None:
+            continue
+        vertex_bone_ids = ex._rigid_vertex_bone_ids(obj)
+        if _ownerless_rigid(scope, index, vertex_bone_ids):
+            continue
+        problem = RigidRebuildExport.vertex_bone_problem(obj.name, vertex_bone_ids)
+        if problem:
+            _ok, majority = core.host_bone_vote(vertex_bone_ids)
+            yield Finding("rigid_one_bone", ERROR, obj.name, "Rigid mesh not on one bone",
+                          problem + (f" The fix puts every vertex on bone_{majority}." if majority is not None else ""),
+                          "one_bone" if majority is not None else None,
+                          {"object": obj.name, "bone_id": majority} if majority is not None else {})
+
+
+def check_host_bones(context, scope):
+    """Host bones as the exporter re-checks them: a rigid mesh's bone must
+    exist, a moved rigid mesh needs a free bone, and a custom submesh's bone
+    must exist, own no mesh and host no other custom submesh."""
+    arm = scope.armature
+    if arm is None or scope.model is None \
+            or not HostBones.bone_metadata_is_current(arm.get('SluggiesBoneMetadataVersion')):
+        return
+    records = _export_bone_records(scope)
+    known = {r.bone_id for r in records}
+    donors = [obj for obj in scope.meshes if _submesh_index(scope, obj) is not None]
+    retargets, issues, obj_by_submesh = ex._candidate_rigid_retargets(donors, scope.model)
+    for obj in donors:
+        index = _rigid_index(scope, obj)
+        if index is None:
+            continue
+        bone_id = ex._detect_uniform_vertex_bone_id(obj)
+        if bone_id is not None and bone_id not in known:
+            yield Finding("host_bone", ERROR, obj.name, "Host bone missing",
+                          f"{obj.name}: host bone {bone_id} does not exist in the target .sluggie "
+                          "BoneHierarchy. Move the mesh to an existing bone.")
+    for issue in issues:
+        obj = obj_by_submesh.get(issue.submesh_index)
+        if obj is None or issue.reason == "unknown_bone":
+            continue
+        if issue.reason == "target_claimed_by_other_submesh":
+            detail = (f"{obj.name}: bone_{issue.target_bone_id} is already requested by submesh "
+                      f"{issue.detail}; one non-skinned bone can own only one GeoId.")
+        else:
+            detail = (f"{obj.name}: bone_{issue.target_bone_id} currently owns submesh {issue.detail}; "
+                      "the move is skipped to avoid a GeoId collision.")
+        yield Finding("host_bone_taken", WARNING, obj.name, "Moved onto a taken bone", detail)
+    hosts_by_bone = {}
+    for obj in scope.meshes:
+        if _is_custom(obj):
+            bone_id = ex._detect_uniform_vertex_bone_id(obj)
+            if bone_id is not None:
+                hosts_by_bone.setdefault(bone_id, []).append(obj)
+    names = {index: obj.name for index, obj in obj_by_submesh.items()}
+    for bone_id, objs in hosts_by_bone.items():
+        hosts = [HostBones.CustomSubmeshHost(obj.name, bone_id) for obj in objs]
+        for message in HostBones.custom_submesh_host_errors(records, retargets, hosts, names):
+            yield Finding("custom_host_bone", ERROR, objs[0].name, f"Host bone_{bone_id} not usable", message)
 
 
 def check_body_weights(context, scope):
@@ -720,8 +895,102 @@ def _image_findings(scope, obj, mat, image, new, tex_dir, reserved):
                       f"fit {core.GX_MAX_TEXTURE_DIMENSION}x{core.GX_MAX_TEXTURE_DIMENSION} (GX limit).")
 
 
+def check_texture_owner(context, scope):
+    if scope.model is None:
+        return
+    scope.texture_context()
+    if scope.texture_error:
+        yield Finding("texture_owner", ERROR, scope.name, "Texture folder not found", scope.texture_error)
+
+
+def check_texture_bindings(context, scope):
+    """The exporter's texture index rules (_resolve_material_texture_changes,
+    _resolve_custom_submesh_texture_changes): templates that resolve, donor
+    TextureIndex in range, one rebind per surface, and a Low model showing
+    only its High model's textures."""
+    if scope.model is None:
+        return
+    descriptors, tex_dir, owns = scope.texture_context()
+    if descriptors is None:
+        return
+    count = len(descriptors)
+    index_by_name = {d.get("TextureFileName"): int(d["TextureIndex"])
+                     for d in descriptors if d.get("TextureFileName")}
+    low_hint = ("Low-poly model textures are owned by the paired main model; a low-poly material can only "
+                "show one of the main model's textures (see Manage texture slots). Add new PNGs on the "
+                "main model and export it first")
+    for obj in scope.meshes:
+        custom = _is_custom(obj)
+        new_pngs = []
+        if custom:
+            source = str(obj.get("TemplateSource") or "")
+            template = None
+            try:
+                CustomSubmeshExport.attribute_plan(scope.model, source)
+                template = ex._custom_submesh_template_texture_index(scope.model, source)
+            except ValueError as exc:
+                yield Finding("template", ERROR, obj.name, "Template not in this model", f"{obj.name}: {exc}")
+            primary = ex._custom_submesh_material(obj)
+            if primary is None:
+                yield Finding("own_material", ERROR, obj.name, "Own material missing",
+                              f"{obj.name}: custom submesh has no material with its own SurfaceId "
+                              f"'{obj.get('CustomSubmeshId')}_ds0'. Make the part again with Add New Submesh.")
+            elif template is not None and not 0 <= template < count:
+                yield Finding("template", ERROR, obj.name, "Template texture invalid",
+                              f"Material '{primary.name}' has invalid template texture index {template}")
+            new_materials = ([primary] if primary is not None else []) \
+                + [m for m in _used_new_surfaces(obj) if m is not primary]
+        elif _submesh_index(scope, obj) is not None:
+            new_materials = _used_new_surfaces(obj)
+            rebound = {}
+            # The exporter resolves donor materials only with textures to bind.
+            for slot in obj.material_slots if (owns or descriptors) else ():
+                mat = slot.material
+                if mat is None or not mat.get("SurfaceId") or mat.get("SluggiesNewSurface"):
+                    continue
+                path = _single_image_path(mat)
+                if not path.lower().endswith('.png'):
+                    continue   # no image or not a PNG: check_textures tells
+                original = int(mat.get("TextureIndex", -1))
+                if not 0 <= original < count:
+                    yield Finding("texture_index", ERROR, obj.name, "Invalid texture index",
+                                  f"Material '{mat.name}' has invalid donor TextureIndex {original}. "
+                                  "Re-import the model to get the imported value back.")
+                    continue
+                file_name = _export_file_name(path, tex_dir, owns)
+                desired = index_by_name.get(file_name)
+                if desired is None and not owns:
+                    new_pngs.append(file_name)
+                if desired != original:
+                    rebound.setdefault(mat["SurfaceId"], []).append(mat.name)
+            for surface_id, names in rebound.items():
+                if len(names) > 1:
+                    yield Finding("surface_rebound_twice", ERROR, obj.name, "Surface rebound twice",
+                                  f"SurfaceId '{surface_id}' is assigned by multiple materials "
+                                  f"({', '.join(names)}) that show another texture. Keep one slot "
+                                  "for the surface.")
+        else:
+            continue
+        for mat in new_materials:
+            if mat.get("SluggiesNewSurface"):
+                template = int(mat.get("TemplateTextureIndex", -1))
+                if not 0 <= template < count:
+                    yield Finding("template", ERROR, obj.name, "Template texture invalid",
+                                  f"Material '{mat.name}' has invalid template texture index {template}. "
+                                  "Delete the material and make it again with Add material.")
+            path = _single_image_path(mat)
+            if not owns and path.lower().endswith('.png') \
+                    and _export_file_name(path, tex_dir, True, index_by_name) not in index_by_name:
+                new_pngs.append(os.path.basename(path))
+        if new_pngs:
+            yield Finding("low_new_png", ERROR, obj.name, "New PNG on a Low model",
+                          f"{obj.name}: {low_hint}: {', '.join(dict.fromkeys(new_pngs))}")
+
+
 # (function, run on export). Export-run checks report their ERROR findings
-# only; checks that make no sense on a selection skip themselves there.
+# only; checks that make no sense on a selection skip themselves there. The
+# dialog-only checks marked "mirror" repeat errors the exporter raises itself
+# while encoding.
 CHECKS = [
     (check_edit_mode, True),
     (check_sluggie_file, False),
@@ -736,11 +1005,17 @@ CHECKS = [
     (check_armature_link, True),
     (check_modifiers, False),
     (check_geometry, True),
+    (check_rebuild_format, False),      # mirror
+    (check_collision, False),           # mirror
     (check_custom_host_bone, True),
+    (check_rigid_one_bone, False),      # mirror
+    (check_host_bones, False),          # mirror
     (check_body_weights, True),
     (check_materials, True),
     (check_custom_uvs, True),
     (check_textures, True),
+    (check_texture_owner, False),       # mirror
+    (check_texture_bindings, False),    # mirror
     (check_texture_reimport_hint, False),
 ]
 

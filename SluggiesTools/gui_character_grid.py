@@ -1662,7 +1662,7 @@ class CharacterGridTab:
                 return
             self.app.log_line(f'[character grid] {who} exported to {result["folder"]}', _OK)
             self._end_action()
-            self.app.show_toast(toast, _OK)
+            self.app.toast.ok(toast)
         self._run([gui_grid.export_command(cid)], f'Exporting {who}...', done)
 
     def forget_copy(self):
@@ -1900,11 +1900,14 @@ class CharacterGridTab:
                 self._prune_staged_clips()
                 self.app.log_line('[character grid] Patch Game done: every pending edit is written.', _OK)
                 if deploy:
-                    self._deploy()
+                    self._deploy(patched=True)          # its toast says how the copy went
+                else:
+                    self.app.toast.ok('Game patched: every pending edit is written.')
             else:
                 self.app.log_line('[character grid] Patch Game stopped at a failed step: the pending edits are '
                                   'kept; the re-read shows what landed. Fix the cause and run Patch Game again.',
                                   _WARN)
+                self.app.toast.error('Patch Game failed: the pending edits are kept.')
             self.set_busy(self.app.busy)
         self._run([gui_grid.apply_command(self.edits_path, accept_gecko, accept_memory)], 'Patching the game...', done)
 
@@ -2023,11 +2026,14 @@ class CharacterGridTab:
                 self.app.log_line(f'[character grid] Patch Game done: roster pack {os.path.basename(path)} '
                                   'loaded.', _OK)
                 if deploy:
-                    self._deploy()
+                    self._deploy(patched=True)
+                else:
+                    self.app.toast.ok(f'Game patched: roster pack {os.path.basename(path)} loaded.')
             else:
                 self.app.log_line('[character grid] loading the roster pack stopped at a failed step: the load stays '
                                   'pending; the re-read shows what landed. Run Patch Game again once the cause is '
                                   'fixed.', _WARN)
+                self.app.toast.error('Patch Game failed: the roster pack load stays pending.')
             self._refresh_markers()
             self.set_busy(self.app.busy)
         self._run([gui_grid.load_command(path, accept_gecko=accept_gecko, accept_memory=accept_memory)],
@@ -2048,19 +2054,21 @@ class CharacterGridTab:
     def _patch_ok_label(self):
         return gui_grid.PATCH_DEPLOY_LABEL if self._deploying() else gui_grid.PATCH_LABEL
 
-    def _deploy(self):
-        """After a successful Patch Game with "Deploy patched files to game directory" ticked: copy the game files
-        with CopyFilesToGameDir.bat. The game directory it reads (3_Output_Dat/sluggiespath) is asked for here when
-        it is missing or no game folder, so the script never waits for input; Cancel or a blank / wrong answer
-        stops before the copy."""
+    def _deploy(self, patched=False):
+        """After a successful Patch Game with "Deploy patched files to game directory" ticked (``patched``), or
+        the Options tab's copy: copy the game files with CopyFilesToGameDir.bat. The game directory it reads
+        (3_Output_Dat/sluggiespath) is asked for here when it is missing or no game folder, so the script never
+        waits for input; Cancel or a blank / wrong answer stops before the copy. Every outcome ends in a toast."""
+        not_copied = 'Game patched, but the files were not copied' if patched else 'Files not copied'
         script = os.path.join(self.app.root_dir, gui_grid.DEPLOY_SCRIPT_REL)
         if not os.path.isfile(script):
             self.app.log_line(f'[character grid] files not copied: {script} is missing.', _WARN)
+            self.app.toast.error(f'{not_copied}: {os.path.basename(script)} is missing.')
             return
         path_file = os.path.join(self.app.root_dir, gui_grid.GAME_DIR_FILE_REL)
         stored = gui_grid.read_game_dir(path_file)
         if gui_grid.game_dir_problem(stored) is None:
-            self._copy_files(script, stored)
+            self._copy_files(script, stored, patched)
             return
 
         def answered(text):
@@ -2068,33 +2076,41 @@ class CharacterGridTab:
             problem = gui_grid.game_dir_problem(game_dir)
             if problem is not None:
                 self.app.log_line(f'[character grid] files not copied: {problem}', _WARN)
+                self.app.toast.error(f'{not_copied}: {problem}', hint=None)
                 return
             try:
                 gui_grid.write_game_dir(path_file, game_dir)
             except (OSError, UnicodeError) as exc:
                 self.app.log_line(f'[character grid] files not copied: could not write {path_file}: {exc}', _WARN)
+                self.app.toast.error(f'{not_copied}: the game directory could not be stored.')
                 return
-            self._copy_files(script, game_dir)
+            self._copy_files(script, game_dir, patched)
+
+        def cancelled():
+            self.app.log_line('[character grid] files not copied: the game directory prompt was cancelled', _WARN)
+            self.app.toast.warn(f'{not_copied}: the game directory prompt was cancelled.')
         lines = ['Enter the path to your unpacked copy of Mario Super Sluggers (US): its main folder, the one '
                  'holding DATA\\files and DATA\\sys. It is kept in 3_Output_Dat\\sluggiespath for the next time.']
         if stored:
             lines.append(f'The stored one cannot be used: {gui_grid.game_dir_problem(stored)}')
-        self.app.ask_text('Game directory', '\n\n'.join(lines), answered,
-                          lambda: self.app.log_line('[character grid] files not copied: the game directory prompt '
-                                                    'was cancelled', _WARN), initial=stored)
+        self.app.ask_text('Game directory', '\n\n'.join(lines), answered, cancelled, initial=stored)
 
     def _on_copy_now(self):
         """Options tab: copy the current 3_Output_Dat game files to the game directory without patching first."""
         if not self._options_locked():
             self._deploy()
 
-    def _copy_files(self, script, game_dir):
+    def _copy_files(self, script, game_dir, patched=False):
         def done(code, _output):
             if code == 0:
                 self.app.log_line(f'[character grid] game files copied to {game_dir}.', _OK)
+                self.app.toast.ok('Game patched and the files copied to the game directory.' if patched
+                                  else 'Game files copied to the game directory.')
             else:
                 self.app.log_line('[character grid] copying the files to the game directory failed: see the log '
                                   'above.', _WARN)
+                self.app.toast.error('Game patched, but copying the files to the game directory failed.' if patched
+                                     else 'Copying the files to the game directory failed.')
             self.set_busy(self.app.busy)
         self._run([gui_grid.deploy_command(script)], 'Copying the files to the game directory...', done)
 

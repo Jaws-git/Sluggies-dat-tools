@@ -48,7 +48,6 @@ import signal
 import subprocess
 import sys
 import threading
-import time
 
 import dearpygui.dearpygui as dpg
 import file_drop
@@ -59,6 +58,7 @@ import gui_music
 import gui_grid
 import gui_maintenance
 import gui_settings
+import gui_toast
 import native_dialog
 import slogger
 from StatEditor import gui_tab as stat_editor_tab
@@ -75,10 +75,6 @@ _CONSOLE_HEIGHT = 240           # the window grows by this when the console is s
 _CLOSE_DIALOG = 'close_running_dialog'
 _PROMPT_DIALOG = 'prompt_dialog'
 _PROMPT_FIELD = 'prompt_dialog_field'
-_TOAST = 'toast_window'
-_TOAST_HANDLERS = 'toast_handlers'
-_TOAST_SECONDS = 4.0
-_TOAST_WIDTH = 640
 _MARKER_LINE = re.compile(re.escape(slogger.PROMPT_MARKER) + r'[^\n]*\n')
 _EXTENSION_COLOR = (120, 220, 120, 255)    # the built-in file dialogs' highlighted file types
 PROMPT_DIR_SETTING = 'prompt_last_dir'     # the GUI settings key: the folder the prompt's last Browse... came from
@@ -220,7 +216,7 @@ class SluggiesGui:
         self.partial = ''
         self.log_lines = collections.deque(maxlen=_MAX_LOG_LINES)
         self.log_dirty = False             # log_lines changed since the console text was last set
-        self.toast_until = None            # time.monotonic() at which the open toast closes itself
+        self.toast = gui_toast.Toast()     # every tab's short notes (gui_toast)
         self.pending = []
         self.chain = []
         self.current = None                # the running step's arguments
@@ -563,38 +559,6 @@ class SluggiesGui:
 
     def log_line(self, line, color=_LOG_COLOR):
         self._log_line(line, color)
-
-    def show_toast(self, text, color=_LOG_COLOR, seconds=_TOAST_SECONDS):
-        """A short note at the bottom of the window that closes itself after ``seconds`` (a click closes it
-        sooner). A new toast replaces the open one."""
-        self._close_toast()
-        vw, vh = dpg.get_viewport_client_width(), dpg.get_viewport_client_height()
-        width = min(_TOAST_WIDTH, max(200, vw - 32))
-        with dpg.window(tag=_TOAST, no_title_bar=True, no_move=True, no_resize=True, no_collapse=True,
-                        no_saved_settings=True, no_focus_on_appearing=True, autosize=True, min_size=(20, 20),
-                        pos=(max(0, (vw - width) // 2), max(0, vh - 105))):
-            label = dpg.add_text(text, wrap=width - 16, color=color)
-        with dpg.item_handler_registry(tag=_TOAST_HANDLERS):       # a window takes no clicked handler
-            dpg.add_item_clicked_handler(callback=lambda *_: self._close_toast())
-        dpg.bind_item_handler_registry(label, _TOAST_HANDLERS)
-        self.toast_until = time.monotonic() + seconds
-
-    def _close_toast(self):
-        self.toast_until = None
-        for tag in (_TOAST, _TOAST_HANDLERS):
-            if dpg.does_item_exist(tag):
-                dpg.delete_item(tag)
-
-    def _tick_toast(self):
-        if self.toast_until is None:
-            return
-        if time.monotonic() >= self.toast_until:
-            self._close_toast()
-            return
-        # centered on its real size (known once it has been drawn) and kept there when the window is resized
-        width, height = dpg.get_item_rect_size(_TOAST)
-        vw, vh = dpg.get_viewport_client_width(), dpg.get_viewport_client_height()
-        dpg.set_item_pos(_TOAST, (max(0, (vw - width) // 2), max(0, vh - height - 70)))
 
     def _log_line(self, line, color=_LOG_COLOR):
         """Add a line to the console. ``color`` is kept for the callers; the console is one read-only text field
@@ -1052,7 +1016,7 @@ class SluggiesGui:
             self._flush_log()
             self._show_prompt_request()
             self.stat_tab.tick()
-            self._tick_toast()
+            self.toast.tick()
             dpg.render_dearpygui_frame()
         self.stop_command()
         dpg.destroy_context()

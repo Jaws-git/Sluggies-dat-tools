@@ -218,6 +218,20 @@ class TestWiring(unittest.TestCase):
         self.assertLess(source.index(gate), source.index('encode_bone_hierarchy_edited(context.selected_objects'))
         self.assertIn('self.report({"INFO"}, size_line)', source)
 
+    def test_dialog_shares_the_exporters_rules(self):
+        # Check Models reports what the exporter refuses while encoding,
+        # through the exporter's own rule functions.
+        source = (BLENDER_ADDON_DIR / 'ModelCheck.py').read_text(encoding='utf-8')
+        for rule in ('RigidRebuildExport.vertex_bone_problem(', 'HostBones.custom_submesh_host_errors(',
+                     'ex._candidate_rigid_retargets(', 'ex._custom_submesh_template_texture_index(',
+                     'StadiumCollisionExport.invisible_model_mesh_error(', 'StadiumCollisionExport.chunk_error(',
+                     'RigidRebuildExport.donor_position_format_error('):
+            self.assertIn(rule, source)
+        checks = source[source.index('CHECKS = ['):]
+        for check in ('check_rigid_one_bone', 'check_host_bones', 'check_texture_owner',
+                      'check_texture_bindings', 'check_collision', 'check_rebuild_format'):
+            self.assertIn(f'({check}, False)', checks)
+
     def test_fix_order_starts_with_the_mode_switch(self):
         source = (BLENDER_ADDON_DIR / 'ModelCheck.py').read_text(encoding='utf-8')
         fixes = source[source.index('FIXES = {'):]
