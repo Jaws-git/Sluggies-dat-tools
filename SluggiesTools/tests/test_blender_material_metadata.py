@@ -432,6 +432,18 @@ class BlenderMaterialTextureTests(unittest.TestCase):
 
         self.assertEqual(self.connected_nodes(material), [connected])
 
+    def test_one_image_node_linked_twice_counts_once(self):
+        # Blender returns a fresh wrapper per link.from_node read; the
+        # wrappers share as_pointer().
+        def wrapper():
+            return SimpleNamespace(type='TEX_IMAGE', inputs=_FakeInputs(), image=None,
+                                   as_pointer=lambda: 0x1234)
+        material = _material_graph('eyes', 'sm0_ds1', 0, [])
+        shader = material.node_tree.nodes[1]
+        shader.inputs = _FakeInputs(Color=_socket(wrapper()), Alpha=_socket(wrapper()))
+
+        self.assertEqual(len(self.connected_nodes(material)), 1)
+
     def test_zero_connected_images_is_unchanged(self):
         material = _material_graph('body', 'sm0_ds1', 0, [])
         obj = self._object(material)

@@ -18,6 +18,7 @@ from . import AnmExport
 from . import SluggiesToolsPanel
 from . import ModelCheckUI
 from . import TextureSlotsUI
+from . import SpecularStrengthUI
 
 bl_info = {
     "name": "Sluggies IO",
@@ -39,9 +40,11 @@ def register():
     SluggiesToolsPanel.register()
     ModelCheckUI.register()
     TextureSlotsUI.register()
+    SpecularStrengthUI.register()
 
 
 def unregister():
+    SpecularStrengthUI.unregister()
     TextureSlotsUI.unregister()
     ModelCheckUI.unregister()
     SluggiesToolsPanel.unregister()

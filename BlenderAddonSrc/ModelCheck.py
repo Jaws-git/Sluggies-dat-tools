@@ -500,7 +500,7 @@ def check_armature_link(context, scope):
                           "armature_modifier" if arm is not None else None,
                           {"object": obj.name, "armature": arm.name} if arm is not None else {})
         elif arm is not None and not scope.for_export and arm not in targets:
-            text = "Modifier on other armature" if targets else "No Armature modifier"
+            text = "Armature modifier points to wrong armature" if targets else "No Armature modifier"
             yield Finding("armature_link", WARNING, obj.name, text,
                           f"{obj.name} has no Armature modifier on {arm.name}, so it does not follow "
                           "the bones in Blender (and a rebuilt mesh can't be placed).",

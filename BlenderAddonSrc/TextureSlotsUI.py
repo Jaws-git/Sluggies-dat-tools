@@ -2,9 +2,11 @@
 Low-poly material shows.
 
 A `_L_` model draws with its High model's textures, by index. The dialog
-lists the High model's slots and lets each Low material pick one; OK sets
-the material's image to that slot's PNG, which the Low model's export then
-writes as a texture reassignment (``DesiredTextureAssignments``).
+lists the High model's slots and lets each Low material pick one; the
+material's image switches to that slot's PNG right away (viewport preview),
+OK keeps it and Cancel puts back the images the dialog opened with. The Low
+model's export writes the new image as a texture reassignment
+(``DesiredTextureAssignments``).
 """
 
 import os
@@ -93,6 +95,41 @@ def _image_file_name(node):
     return os.path.basename(os.path.normpath(bpy.path.abspath(path))) if path else ''
 
 
+# The open dialog's High tex/ folder and slot file names by index: a Low
+# item's update callback sees only the item, not the operator.
+_preview = {'tex_dir': '', 'slots': {}}
+
+
+def _material_image_node(material_name):
+    mat = bpy.data.materials.get(material_name)
+    nodes = _connected_image_texture_nodes(mat) if mat is not None else []
+    return nodes[0] if len(nodes) == 1 else None
+
+
+def _original_image(item):
+    return bpy.data.images.get(item.original_image) if item.original_image else None
+
+
+def _set_node_image(node, image):
+    if node.image != image:
+        node.image = image
+
+
+def _preview_texture_index(item, context):
+    """Show the picked slot's PNG on the material right away; the image the
+    dialog opened with for its original slot, or a slot that is missing."""
+    node = _material_image_node(item.material_name)
+    if node is None:
+        return
+    image = None
+    if item.texture_index != item.original_index:
+        file_name = _preview['slots'].get(item.texture_index)
+        path = os.path.join(_preview['tex_dir'], file_name) if file_name else ''
+        if path and os.path.isfile(path):
+            image = bpy.data.images.load(path, check_existing=True)
+    _set_node_image(node, image or _original_image(item))
+
+
 class SluggiesTextureSlot(bpy.types.PropertyGroup):
     index: IntProperty()  # type: ignore[valid-type]
     file_name: StringProperty()  # type: ignore[valid-type]
@@ -102,9 +139,11 @@ class SluggiesTextureSlot(bpy.types.PropertyGroup):
 class SluggiesLowTextureItem(bpy.types.PropertyGroup):
     material_name: StringProperty()  # type: ignore[valid-type]
     original_index: IntProperty(default=-1)  # type: ignore[valid-type]
+    original_image: StringProperty()  # type: ignore[valid-type]
     texture_index: IntProperty(  # type: ignore[valid-type]
         name="Texture index", min=0,
         description="High-model texture slot this low-poly material shows",
+        update=_preview_texture_index,
     )
 
 
@@ -156,6 +195,8 @@ class SLUGGIES_OT_manage_texture_slots(bpy.types.Operator):
                 model = {}
             self.tex_dir = os.path.join(os.path.dirname(os.path.abspath(high_path)), 'tex')
             slots = TextureSlotsCore.texture_slots(model)
+            _preview['tex_dir'] = self.tex_dir
+            _preview['slots'] = {index: file_name for index, file_name, _added in slots}
             for slot in slots:
                 entry = self.slots.add()
                 entry.index, entry.file_name, entry.added = slot
@@ -171,7 +212,9 @@ class SLUGGIES_OT_manage_texture_slots(bpy.types.Operator):
                     continue  # an image that is no High texture: not ours to rebind
                 item = self.items.add()
                 item.material_name = mat.name
+                # cached before texture_index: its update callback reads them
                 item.original_index = current
+                item.original_image = node.image.name if node.image else ''
                 item.texture_index = current
         return context.window_manager.invoke_props_dialog(self, width=690)
 
@@ -225,21 +268,22 @@ class SLUGGIES_OT_manage_texture_slots(bpy.types.Operator):
     def execute(self, context):
         if self.hint:
             return {"CANCELLED"}
+        # The preview already set the images; this reports the result (and
+        # sets them again, should an update have been missed).
         changed, errors = 0, []
         for item in self.items:
             if item.texture_index == item.original_index:
                 continue
             file_name = self._slot_name(item.texture_index)
-            mat = bpy.data.materials.get(item.material_name)
-            nodes = _connected_image_texture_nodes(mat) if mat is not None else []
-            if file_name is None or len(nodes) != 1:
+            node = _material_image_node(item.material_name)
+            if file_name is None or node is None:
                 errors.append(f"{item.material_name}: slot {item.texture_index} does not exist")
                 continue
             path = os.path.join(self.tex_dir, file_name)
             if not os.path.isfile(path):
                 errors.append(f"{item.material_name}: {path} not found")
                 continue
-            nodes[0].image = bpy.data.images.load(path, check_existing=True)
+            _set_node_image(node, bpy.data.images.load(path, check_existing=True))
             changed += 1
         for message in errors:
             self.report({"ERROR"}, message)
@@ -247,6 +291,13 @@ class SLUGGIES_OT_manage_texture_slots(bpy.types.Operator):
             self.report({"INFO"}, f"{changed} low-poly material(s) now use another texture slot; "
                                   "export the low-poly model to apply")
         return {"FINISHED"} if changed or not errors else {"CANCELLED"}
+
+    def cancel(self, context):
+        """Put back the images the dialog opened with."""
+        for item in self.items:
+            node = _material_image_node(item.material_name)
+            if node is not None:
+                _set_node_image(node, _original_image(item))
 
 
 def _wrap(text, width):

@@ -744,7 +744,10 @@ class SluggiesGui:
 
     def _build_export_tab(self):
         with dpg.tab(label='Export 3D'):
-            dpg.add_text('Export the models, icons and sounds from 1_Input to 2_Output_Assets.')
+            with dpg.group(horizontal=True):
+                dpg.add_text('Export the models, icons and sounds from 1_Input to 2_Output_Assets.')
+                dpg.add_loading_indicator(tag='export_spinner', style=1, radius=1.6, show=False,
+                                          color=(90, 200, 120, 255), secondary_color=(60, 120, 80, 255))
             models = dpg.add_checkbox(label='Export .sluggies', tag='exp_models', default_value=True,
                                       callback=lambda *_: self._export_options())
             dpg.add_checkbox(label='Also Write .glb files', tag='exp_glb', default_value=True,
@@ -799,7 +802,10 @@ class SluggiesGui:
             self.log_line('Nothing to export: tick "Export .sluggies", "Export Icons" or "Export sound files".',
                           _PROMPT_COLOR)
             return
-        self.run_chain(steps)
+        # the spinner runs while this export does (not for other tabs' commands)
+        dpg.configure_item('export_spinner', show=True)
+        if not self.run_chain(steps, lambda *_: dpg.configure_item('export_spinner', show=False)):
+            dpg.configure_item('export_spinner', show=False)
 
     def _build_roster_tab(self):
         with dpg.tab(label='Roster Size'):

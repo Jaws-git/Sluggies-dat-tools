@@ -46,6 +46,7 @@ ADDED_BONE_LENGTH = 1.0
 
 _BONE_NAME_RE = re.compile(r'^bone_(\d+)$')
 _SURFACE_ID_RE = re.compile(r'^sm(\d+)_ds\d+$')
+_SURFACE_OWNER_RE = re.compile(r'^sm(\d+)$')
 _CUSTOM_SUBMESH_ID_RE = re.compile(r'^custom(\d+)$')
 _SUBMESH_NAME_RE = re.compile(r'^CustomSubmesh_(\d+)$')
 _INVALID_SUBMESH_NAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -129,7 +130,10 @@ def _donor_mesh_objects(context, arm_obj):
 
 
 def _submesh_index_of(obj):
-    """Donor submesh index, parsed from any 'sm<N>_ds<M>' SurfaceId material."""
+    """Donor submesh index, parsed from any 'sm<N>_ds<M>' SurfaceId material,
+    else from an Add-material surface owned by 'sm<N>' (a body made with
+    Make Main Body has only those)."""
+    owned = None
     for slot in obj.material_slots:
         mat = slot.material
         if mat is None:
@@ -137,7 +141,11 @@ def _submesh_index_of(obj):
         m = _SURFACE_ID_RE.match(mat.get('SurfaceId', '') or '')
         if m:
             return int(m.group(1))
-    return None
+        m = _SURFACE_OWNER_RE.match(str(mat.get('SluggiesSurfaceOwner') or '')) \
+            if mat.get('SluggiesNewSurface') else None
+        if m and owned is None:
+            owned = int(m.group(1))
+    return owned
 
 
 def _gather_scene_claims(context, arm_obj, bone_records, exclude=None):
@@ -1140,6 +1148,8 @@ def _draw_rigid_mesh_box(layout, context):
         if obj is not None and obj.type == 'MESH':
             box.operator(SLUGGIES_OT_make_submesh.bl_idname)
         box.operator(SLUGGIES_OT_reassign_bone.bl_idname)
+        if kind is not None:
+            box.operator(SLUGGIES_OT_make_main_body.bl_idname)
     box.operator(SLUGGIES_OT_add_material.bl_idname)
     if kind != 'custom':
         box.operator(SLUGGIES_OT_set_specular_strength.bl_idname)
@@ -1840,16 +1850,20 @@ def _compact_material_slots(obj):
     return materials, primary
 
 
-def _make_submesh_materials(context, obj, arm_obj, tex_dir):
+def _make_submesh_materials(context, obj, arm_obj, tex_dir, template_of=None):
     """Turn every material of *obj* (already flagged as a custom submesh) into
     one of its surfaces: the primary into `<CustomSubmeshId>_ds0`, the others
     into Add-material surfaces, with the default template and specular
-    strength. Materials that already are its surfaces are kept; shared or
-    linked ones are copied first. Returns notes."""
+    strength. *template_of*(material), when given, picks each converted
+    material's template instead (the primary's becomes the submesh's
+    TemplateSource). Materials that already are its surfaces are kept; shared
+    or linked ones are copied first. Returns notes."""
     custom_submesh_id = str(obj['CustomSubmeshId'])
-    template_source = str(obj['TemplateSource'])
     added_template = ModelCheckCore.default_template(_model_is_stadium(arm_obj))
     materials, primary = _compact_material_slots(obj)
+    if template_of is not None and not _is_primary_surface_of(primary, custom_submesh_id):
+        obj['TemplateSource'] = template_of(primary)
+    template_source = str(obj['TemplateSource'])
     mesh = obj.data
     for index, mat in enumerate(materials):
         is_primary = mat == primary
@@ -1857,6 +1871,13 @@ def _make_submesh_materials(context, obj, arm_obj, tex_dir):
                   else _is_added_surface_of(mat, custom_submesh_id))
         if is_own:
             continue
+        # Read the template before the props go: it may be this very material.
+        if is_primary:
+            shader_mode = _template_shader_mode(context, arm_obj, template_source)
+            specular_strength = _template_specular_strength(context, arm_obj, template_source)
+        else:
+            plan = _new_surface_plan(
+                context, arm_obj, obj, template_of(mat) if template_of is not None else added_template)
         if mat.users > 1 or mat.library is not None:
             mat = mat.copy()
             mesh.materials[index] = mat
@@ -1864,12 +1885,9 @@ def _make_submesh_materials(context, obj, arm_obj, tex_dir):
             if prop in mat:
                 del mat[prop]
         if is_primary:
-            _set_custom_primary_surface(
-                mat, custom_submesh_id,
-                _template_shader_mode(context, arm_obj, template_source),
-                _template_specular_strength(context, arm_obj, template_source))
+            _set_custom_primary_surface(mat, custom_submesh_id, shader_mode, specular_strength)
         else:
-            _apply_new_surface_plan(mat, _new_surface_plan(context, arm_obj, obj, added_template))
+            _apply_new_surface_plan(mat, plan)
     notes = []
     for mat in mesh.materials:
         note = _ensure_surface_texture(context, mat, tex_dir)
@@ -1878,10 +1896,11 @@ def _make_submesh_materials(context, obj, arm_obj, tex_dir):
     return notes
 
 
-def _rename_uv_map(obj, new_name):
-    """Rename *obj*'s only UV map, and point its materials' UV Map and Normal
-    Map nodes that named the old one at the new name."""
-    layer = obj.data.uv_layers[0]
+def _rename_uv_map(obj, new_name, layer=None):
+    """Rename *obj*'s UV map *layer* (default: its first), and point its
+    materials' UV Map and Normal Map nodes that named the old one at the new
+    name."""
+    layer = layer if layer is not None else obj.data.uv_layers[0]
     old_name = layer.name
     if old_name == new_name:
         return
@@ -2016,55 +2035,326 @@ class SLUGGIES_OT_make_submesh(bpy.types.Operator):
             self.report({"ERROR"}, error)
             return {"CANCELLED"}
 
-        notes = []
-        if obj.data.users > 1:
-            obj.data = obj.data.copy()
-            notes.append("its mesh data was shared, so it got its own copy")
-
-        # A copy of a custom submesh (Shift+D) shares the original's id: give
-        # it a new one.
-        custom_submesh_id = str(obj.get('CustomSubmeshId') or '') if was_custom else ''
-        if not custom_submesh_id or any(
-                o is not obj and o.get('CustomSubmeshId') == custom_submesh_id
-                for o in context.view_layer.objects):
-            custom_submesh_id = _next_custom_submesh_id(context)
-        obj['SluggiesCustomSubmesh'] = True
-        obj['CustomSubmeshId'] = custom_submesh_id
-        obj['TemplateSource'] = template_source
-
-        obj.vertex_groups.clear()
-        group = obj.vertex_groups.new(name=f'bone_{bone_id}')
-        group.add(list(range(len(obj.data.vertices))), 1.0, 'REPLACE')
-
-        armature_mods = [m for m in obj.modifiers if m.type == 'ARMATURE']
-        mod = armature_mods[0] if armature_mods else obj.modifiers.new(name="Armature", type='ARMATURE')
-        for extra in armature_mods[1:]:
-            obj.modifiers.remove(extra)
-        mod.object = arm_obj
-        mod.vertex_group = ''
-        mod.use_vertex_groups = True
-        mod.use_bone_envelopes = False
-
-        # Parented like Add Submesh's cube, without moving it.
-        world = obj.matrix_world.copy()
-        obj.parent = arm_obj
-        obj.parent_type = 'OBJECT'
-        obj.matrix_parent_inverse = arm_obj.matrix_world.inverted()
-        obj.matrix_world = world
-
-        uv_layers = obj.data.uv_layers
-        if not uv_layers:
-            notes.append("no UV map: add one and unwrap it before exporting")
-        try:
-            notes += _make_submesh_materials(context, obj, arm_obj, tex_dir)
-        except ValueError as exc:
-            notes.append(f"materials not finished: {exc}")
-        if len(uv_layers) == 1:
-            _rename_uv_map(obj, _MADE_SUBMESH_UV_NAME)
-
+        custom_submesh_id, notes = _convert_to_custom_submesh(
+            context, obj, arm_obj, bone_id, template_source, tex_dir,
+            str(obj.get('CustomSubmeshId') or '') if was_custom else '')
         _select_new_object(context, obj)
         message = f"{obj.name} is now custom submesh {custom_submesh_id} on bone_{bone_id} ({template_source})"
         self.report({"INFO"}, "; ".join([message] + notes))
+        return {"FINISHED"}
+
+
+def _convert_to_custom_submesh(context, obj, arm_obj, bone_id, template_source, tex_dir,
+                               custom_submesh_id='', template_of=None):
+    """Make *obj* a custom rigid submesh of *arm_obj* on *bone_id*, where it
+    is: one full-weight vertex group, an Armature modifier, the armature as
+    parent and its materials as its surfaces (see _make_submesh_materials for
+    *template_of*). *custom_submesh_id* is kept unless empty or used by
+    another object. Returns (CustomSubmeshId, notes)."""
+    notes = []
+    if obj.data.users > 1:
+        obj.data = obj.data.copy()
+        notes.append("its mesh data was shared, so it got its own copy")
+
+    # A copy of a custom submesh (Shift+D) shares the original's id: give
+    # it a new one.
+    if not custom_submesh_id or any(
+            o is not obj and o.get('CustomSubmeshId') == custom_submesh_id
+            for o in context.view_layer.objects):
+        custom_submesh_id = _next_custom_submesh_id(context)
+    obj['SluggiesCustomSubmesh'] = True
+    obj['CustomSubmeshId'] = custom_submesh_id
+    obj['TemplateSource'] = template_source
+
+    obj.vertex_groups.clear()
+    group = obj.vertex_groups.new(name=f'bone_{bone_id}')
+    group.add(list(range(len(obj.data.vertices))), 1.0, 'REPLACE')
+
+    _ensure_armature_modifier(obj, arm_obj)
+
+    _parent_keeping_world(obj, arm_obj)
+
+    uv_layers = obj.data.uv_layers
+    if not uv_layers:
+        notes.append("no UV map: add one and unwrap it before exporting")
+    try:
+        notes += _make_submesh_materials(context, obj, arm_obj, tex_dir, template_of)
+    except ValueError as exc:
+        notes.append(f"materials not finished: {exc}")
+    if len(uv_layers) == 1:
+        _rename_uv_map(obj, _MADE_SUBMESH_UV_NAME)
+    return custom_submesh_id, notes
+
+
+def _ensure_armature_modifier(obj, arm_obj):
+    """One Armature modifier on *obj*, following *arm_obj* by vertex groups."""
+    armature_mods = [m for m in obj.modifiers if m.type == 'ARMATURE']
+    mod = armature_mods[0] if armature_mods else obj.modifiers.new(name="Armature", type='ARMATURE')
+    for extra in armature_mods[1:]:
+        obj.modifiers.remove(extra)
+    mod.object = arm_obj
+    mod.vertex_group = ''
+    mod.use_vertex_groups = True
+    mod.use_bone_envelopes = False
+
+
+def _parent_keeping_world(obj, arm_obj):
+    """Parent *obj* to *arm_obj* like Add Submesh's cube, without moving it."""
+    world = obj.matrix_world.copy()
+    obj.parent = arm_obj
+    obj.parent_type = 'OBJECT'
+    obj.matrix_parent_inverse = arm_obj.matrix_world.inverted()
+    obj.matrix_world = world
+
+
+# The skinned body. The body rebuild handles submesh 0 only.
+_BODY_SUBMESH = 0
+_BODY_UV_NAME = 'uv0'
+_MAIN_BODY_WARNING = "Each model can have only one skinned mesh."
+_OLD_BODY_WARNING = "The current main body becomes a rigid submesh and keeps only one of its vertex groups."
+# Object properties the importer writes on a donor submesh besides
+# REQUIRED_PROPS (UV binding, legacy per-surface shader modes).
+_DONOR_OBJECT_PROP_RE = re.compile(r'^(UV\d+_(TextureIndex|WrapS|WrapT)|DS_.+_ShaderMode)$')
+
+
+def _body_submesh(model):
+    """Submesh 0 of *model* when it is the skinned body, else None."""
+    submeshes = model.get('Submeshes') or []
+    sub = submeshes[_BODY_SUBMESH] if submeshes else None
+    if sub is None or int((sub.get('VertexBuffer') or {}).get('VertexBufferCompCount', 0)) != 6:
+        return None
+    return sub
+
+
+def _body_objects(context, arm_obj, body):
+    """The imported objects tied to the skinned *body* submesh."""
+    offset = str((body.get('VertexBuffer') or {}).get('VertexBufferOffset'))
+    return [o for o in _donor_mesh_objects(context, arm_obj)
+            if 'VertexBufferOffset' in o and str(o['VertexBufferOffset']) == offset]
+
+
+def _dominant_bone_choice(arm_obj, obj, choices):
+    """The host bone choice whose bone_<id> vertex group carries the most
+    weight in *obj*, else the free bone nearest it."""
+    bone_by_group = {group.index: _bone_id_from_name(group.name) for group in obj.vertex_groups}
+    totals = {}
+    for vertex in obj.data.vertices:
+        for element in vertex.groups:
+            bone_id = bone_by_group.get(element.group)
+            if bone_id is not None:
+                totals[bone_id] = totals.get(bone_id, 0.0) + element.weight
+    weighted = [c for c in choices if totals.get(c.bone_id, 0.0) > 0]
+    if weighted:
+        return max(weighted, key=lambda c: totals[c.bone_id])
+    return _default_reassign_target(arm_obj, obj, choices)
+
+
+def _old_body_template_of(model, stadium):
+    """template_of for _make_submesh_materials on a former body: each body
+    surface keeps its look as `derived:<SurfaceId>` (Spec surfaces), an
+    Add-material surface keeps its template, anything else gets the default."""
+    default = ModelCheckCore.default_template(stadium)
+
+    def template_of(mat):
+        surface_id = str(mat.get('SurfaceId') or '')
+        if mat.get('SluggiesNewSurface'):
+            candidate = str(mat.get('TemplateSource') or '')
+        elif _SURFACE_ID_RE.match(surface_id) and mat.get('ShaderMode') == 'Spec':
+            candidate = f'derived:{surface_id}'
+        else:
+            candidate = ''
+        if candidate:
+            try:
+                _custom_submesh_template_texture_index(model, candidate)
+                return candidate
+            except ValueError:
+                pass
+        return default
+
+    return template_of
+
+
+def _body_surface_plans(context, arm_obj, obj, model):
+    """(material, plan) for each material of the custom submesh *obj* as an
+    Add-material surface of the body, keeping its template, specular strength
+    and wrap modes. Raises ValueError before anything is changed."""
+    owner = f'sm{_BODY_SUBMESH}'
+    existing = [mat.get('SurfaceId', '') for mat in bpy.data.materials if mat.get('SurfaceId')]
+    default = ModelCheckCore.default_template(_model_is_stadium(arm_obj))
+    plans = []
+    for mat in dict.fromkeys(slot.material for slot in obj.material_slots if slot.material is not None):
+        template_source = str(
+            (mat.get('TemplateSource') if mat.get('SluggiesNewSurface') else obj.get('TemplateSource'))
+            or default)
+        template_texture_index = _custom_submesh_template_texture_index(model, template_source)
+        shader_mode = (_template_shader_mode(context, arm_obj, template_source) or mat.get('ShaderMode')
+                       or ('Spec' if template_source.startswith('derived:') else ''))
+        if 'SpecularStrength' in mat:
+            specular_strength = max(0, min(255, int(mat['SpecularStrength'])))
+        else:
+            specular_strength = _template_specular_strength(context, arm_obj, template_source)
+        if 'WrapS' in mat and 'WrapT' in mat:
+            wrap_s, wrap_t = int(mat['WrapS']), int(mat['WrapT'])
+        else:
+            wrap_s, wrap_t = _template_wrap_modes(context, arm_obj, template_source)
+        surface_id = TemplateSources.next_new_surface_key(owner, existing)
+        existing.append(surface_id)
+        plans.append((mat, {
+            'kind': 'donor',
+            'owner': owner,
+            'surface_id': surface_id,
+            'template_source': template_source,
+            'template_texture_index': template_texture_index,
+            'shader_mode': shader_mode,
+            'specular_strength': specular_strength,
+            'wrap_s': wrap_s,
+            'wrap_t': wrap_t,
+        }))
+    if not plans:
+        raise ValueError(f"{obj.name} has no material; give it one first")
+    return plans
+
+
+def _make_body(obj, arm_obj, model, plans):
+    """Turn the custom submesh *obj* into the skinned body: the submesh 0
+    VertexBuffer* properties, its materials as Add-material surfaces of sm0
+    (*plans*), its render UV map named like the body's channel 0. Its vertex
+    groups become the skin weights. Returns notes."""
+    notes = []
+    if obj.data.users > 1:
+        obj.data = obj.data.copy()
+        notes.append(f"{obj.name}'s mesh data was shared, so it got its own copy")
+    for prop in ('SluggiesCustomSubmesh', 'CustomSubmeshId', 'TemplateSource', 'SluggiesRigidPlacement'):
+        if prop in obj:
+            del obj[prop]
+    for prop, value in ModelCheckCore.mesh_props_for_submesh(model, _BODY_SUBMESH).items():
+        obj[prop] = value
+
+    mesh = obj.data
+    for mat, plan in plans:
+        target = mat
+        if mat.users > 1 or mat.library is not None:
+            target = mat.copy()
+            for index, slot_material in enumerate(mesh.materials):
+                if slot_material == mat:
+                    mesh.materials[index] = target
+        for prop in _SLUGGIES_MATERIAL_PROPS:
+            if prop in target:
+                del target[prop]
+        _apply_new_surface_plan(target, plan)
+
+    uv_layer = mesh.uv_layers.active_render or mesh.uv_layers.active
+    if uv_layer is None:
+        notes.append("no UV map: add one and unwrap it before exporting")
+    elif uv_layer.name != _BODY_UV_NAME:
+        other = mesh.uv_layers.get(_BODY_UV_NAME)
+        if other is not None:
+            _rename_uv_map(obj, f'{_BODY_UV_NAME}_old', other)
+        _rename_uv_map(obj, _BODY_UV_NAME, uv_layer)
+
+    _ensure_armature_modifier(obj, arm_obj)
+    _parent_keeping_world(obj, arm_obj)
+    if not any(_bone_id_from_name(group.name) is not None for group in obj.vertex_groups):
+        notes.append("no bone_<id> vertex group: weight it to the bones before exporting")
+    return notes
+
+
+class SLUGGIES_OT_make_main_body(bpy.types.Operator):
+    """Make the active custom submesh the model's skinned body (submesh 0);
+    the current body becomes a rigid custom submesh"""
+    bl_idname = "sluggies.make_main_body"
+    bl_label = "Make This Mesh the Main Body"
+    bl_description = ("Make the active custom submesh the model's skinned body (submesh 0), "
+                      "weighted by its vertex groups. The current body becomes a rigid submesh on one bone")
+    bl_options = {"UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        if context.mode != 'OBJECT':
+            if hasattr(cls, 'poll_message_set'):
+                cls.poll_message_set("Switch to Object Mode")
+            return False
+        arm_obj = _find_target_armature(context)
+        if arm_obj is None:
+            if hasattr(cls, 'poll_message_set'):
+                cls.poll_message_set(_no_target_armature_message(context))
+            return False
+        if not _bone_metadata_is_current(arm_obj):
+            if hasattr(cls, 'poll_message_set'):
+                cls.poll_message_set(HostBones.RE_IMPORT_MESSAGE)
+            return False
+        kind, _submesh_index = _rigid_mesh_kind(context.active_object)
+        if kind != 'custom':
+            if hasattr(cls, 'poll_message_set'):
+                cls.poll_message_set(
+                    "Only a custom submesh can become the body" if kind == 'donor'
+                    else "Select a custom submesh")
+            return False
+        return True
+
+    def invoke(self, context, event):
+        # Without a body in the scene nothing is demoted: no need to confirm.
+        arm_obj = _find_target_armature(context)
+        if arm_obj is None or not any(
+                o.get('VertexBufferCompCount') == 6 for o in _donor_mesh_objects(context, arm_obj)):
+            return self.execute(context)
+        return context.window_manager.invoke_confirm(
+            self, event, title=self.bl_label, message=_MAIN_BODY_WARNING + "\n" + _OLD_BODY_WARNING,
+            confirm_text="OK", icon='WARNING')
+
+    def execute(self, context):
+        arm_obj = _find_target_armature(context)
+        obj = context.active_object
+        if arm_obj is None or _rigid_mesh_kind(obj)[0] != 'custom':
+            self.report({"ERROR"}, "Select a custom submesh of a Sluggies model")
+            return {"CANCELLED"}
+        sluggie_path = SluggiePath.resolve(arm_obj)
+        if not sluggie_path:
+            self.report({"ERROR"}, SluggiePath.missing_message(arm_obj, "Make main body"))
+            return {"CANCELLED"}
+        model, tex_dir, error = _model_tex_dir(sluggie_path)
+        if error:
+            self.report({"ERROR"}, error)
+            return {"CANCELLED"}
+        body = _body_submesh(model)
+        if body is None:
+            self.report({"ERROR"}, "This model's submesh 0 is not a skinned body")
+            return {"CANCELLED"}
+        _renumber_added_bones_reporting(self, arm_obj)
+
+        # Everything that can fail is checked before the scene changes.
+        try:
+            plans = _body_surface_plans(context, arm_obj, obj, model)
+        except ValueError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        # The active mesh's own bone counts as free: it stops being rigid.
+        choices = _ordered_host_bone_choices(context, arm_obj, exclude=obj)
+        old_bodies = []
+        for old in _body_objects(context, arm_obj, body):
+            choice = _dominant_bone_choice(arm_obj, old, choices)
+            if choice is None:
+                self.report({"ERROR"}, f"No free bone left for {old.name} to become a rigid submesh on")
+                return {"CANCELLED"}
+            choices = [c for c in choices if c.bone_id != choice.bone_id]
+            old_bodies.append((old, choice.bone_id))
+
+        notes = _make_body(obj, arm_obj, model, plans)
+        stadium = _model_is_stadium(arm_obj)
+        template_of = _old_body_template_of(model, stadium)
+        for old, bone_id in old_bodies:
+            for prop in ModelCheckCore.REQUIRED_PROPS + tuple(
+                    key for key in old.keys() if _DONOR_OBJECT_PROP_RE.match(key)):
+                if prop in old:
+                    del old[prop]
+            custom_submesh_id, old_notes = _convert_to_custom_submesh(
+                context, old, arm_obj, bone_id, ModelCheckCore.default_template(stadium), tex_dir,
+                template_of=template_of)
+            notes.append(f"{old.name} is now custom submesh {custom_submesh_id} on bone_{bone_id}")
+            notes += old_notes
+
+        _select_new_object(context, obj)
+        self.report({"INFO"}, "; ".join([f"{obj.name} is now the skinned body (submesh 0)"] + notes))
         return {"FINISHED"}
 
 
@@ -2408,10 +2698,12 @@ class SLUGGIES_PT_tools(bpy.types.Panel):
             SluggiePath.draw_locate_button(col, context)
 
         layout.separator()
-        box = _collapsible_box(layout, context, 'textures', "Textures")
+        box = _collapsible_box(layout, context, 'textures', "Textures & Materials")
         if box is not None:
-            # By id: TextureSlotsUI registers it.
+            # By id: TextureSlotsUI and SpecularStrengthUI register them.
             box.operator("sluggies.manage_texture_slots", text="Manage texture slots", icon='TEXTURE')
+            box.operator("sluggies.manage_specular_strength", text="Manage specular strength",
+                         icon='MATERIAL')
 
         layout.separator()
         box = _collapsible_box(layout, context, 'bones', "Bones")
@@ -2440,6 +2732,7 @@ class SLUGGIES_PT_tools(bpy.types.Panel):
 def register():
     bpy.utils.register_class(SLUGGIES_OT_add_submesh)
     bpy.utils.register_class(SLUGGIES_OT_make_submesh)
+    bpy.utils.register_class(SLUGGIES_OT_make_main_body)
     bpy.utils.register_class(SLUGGIES_OT_add_bone)
     bpy.utils.register_class(SLUGGIES_OT_renumber_added_bones)
     bpy.utils.register_class(SLUGGIES_OT_toggle_bone_track)
@@ -2489,5 +2782,6 @@ def unregister():
     bpy.utils.unregister_class(SLUGGIES_OT_toggle_bone_track)
     bpy.utils.unregister_class(SLUGGIES_OT_renumber_added_bones)
     bpy.utils.unregister_class(SLUGGIES_OT_add_bone)
+    bpy.utils.unregister_class(SLUGGIES_OT_make_main_body)
     bpy.utils.unregister_class(SLUGGIES_OT_make_submesh)
     bpy.utils.unregister_class(SLUGGIES_OT_add_submesh)

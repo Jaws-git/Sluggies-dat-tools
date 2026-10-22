@@ -483,16 +483,20 @@ class MakeSubmeshOperatorStructureTests(unittest.TestCase):
         self.assertIn('_is_donor_mesh(obj)', poll)
 
     def test_execute_keeps_world_position_and_rebinds_to_one_bone(self):
-        src = self._method('_make_submesh')
-        self.assertIn('world = obj.matrix_world.copy()', src)
-        self.assertIn('obj.matrix_world = world', src)
+        self.assertIn('_ordered_host_bone_choices(context, arm_obj, exclude=obj)', self._method('_make_submesh'))
+        self.assertIn('_convert_to_custom_submesh(', self._method('_make_submesh'))
+        src = self._function('_convert_to_custom_submesh')
         self.assertIn('obj.vertex_groups.clear()', src)
         self.assertIn("f'bone_{bone_id}'", src)
-        self.assertIn('mod.object = arm_obj', src)
-        self.assertIn('_ordered_host_bone_choices(context, arm_obj, exclude=obj)', src)
+        self.assertIn('_ensure_armature_modifier(obj, arm_obj)', src)
+        self.assertIn('_parent_keeping_world(obj, arm_obj)', src)
+        self.assertIn('mod.object = arm_obj', self._function('_ensure_armature_modifier'))
+        parent = self._function('_parent_keeping_world')
+        self.assertIn('world = obj.matrix_world.copy()', parent)
+        self.assertIn('obj.matrix_world = world', parent)
 
     def test_only_a_single_uv_map_is_renamed(self):
-        src = self._method('_make_submesh')
+        src = self._function('_convert_to_custom_submesh')
         self.assertIn('if len(uv_layers) == 1:', src)
         self.assertIn('_rename_uv_map(obj, _MADE_SUBMESH_UV_NAME)', src)
         self.assertIn("_MADE_SUBMESH_UV_NAME = 'UV0'", self.source)
@@ -510,6 +514,58 @@ class MakeSubmeshOperatorStructureTests(unittest.TestCase):
         box = self._function('_draw_rigid_mesh_box')
         self.assertIn('SLUGGIES_OT_make_submesh.bl_idname', box)
         self.assertIn("obj.type == 'MESH'", box)
+
+
+class _FakeSlot:
+    def __init__(self, material):
+        self.material = material
+
+
+class _FakeMeshObj:
+    def __init__(self, *materials):
+        self.material_slots = [_FakeSlot(m) for m in materials]
+
+
+class MakeMainBodyTests(unittest.TestCase):
+    def setUp(self):
+        self.source = PANEL_PATH.read_text(encoding='utf-8')
+        self.tree = ast.parse(self.source)
+        self.ns = _extract({
+            're', '_SURFACE_ID_RE', '_SURFACE_OWNER_RE', '_submesh_index_of',
+            '_BODY_SUBMESH', '_body_submesh',
+        })
+
+    def _function(self, name):
+        node = next(n for n in self.tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
+        return ast.get_source_segment(self.source, node)
+
+    def test_body_with_only_added_surfaces_is_submesh_0(self):
+        fn = self.ns['_submesh_index_of']
+        added = _FakeMat(SluggiesNewSurface=True, SurfaceId='sm0_new0', SluggiesSurfaceOwner='sm0')
+        self.assertEqual(fn(_FakeMeshObj(added)), 0)
+        self.assertEqual(fn(_FakeMeshObj(added, _FakeMat(SurfaceId='sm2_ds1'))), 2)
+        custom = _FakeMat(SluggiesNewSurface=True, SurfaceId='custom0_new0', SluggiesSurfaceOwner='custom0')
+        self.assertIsNone(fn(_FakeMeshObj(custom, None)))
+
+    def test_only_a_skinned_submesh_0_is_a_body(self):
+        fn = self.ns['_body_submesh']
+        body = {'VertexBuffer': {'VertexBufferCompCount': 6}}
+        self.assertIs(fn({'Submeshes': [body]}), body)
+        self.assertIsNone(fn({'Submeshes': [{'VertexBuffer': {'VertexBufferCompCount': 3}}, body]}))
+        self.assertIsNone(fn({'Submeshes': []}))
+
+    def test_confirms_then_checks_before_changing_the_scene(self):
+        cls = next(n for n in self.tree.body
+                   if isinstance(n, ast.ClassDef) and n.name == 'SLUGGIES_OT_make_main_body')
+        src = ast.get_source_segment(self.source, cls)
+        self.assertIn('invoke_confirm(', src)
+        self.assertIn("kind != 'custom'", src)
+        self.assertLess(src.index('_body_surface_plans('), src.index('_make_body('))
+        self.assertLess(src.index('_dominant_bone_choice('), src.index('_make_body('))
+        self.assertIn('_convert_to_custom_submesh(', src)
+        self.assertIn('SLUGGIES_OT_make_main_body', self._function('register'))
+        self.assertIn('SLUGGIES_OT_make_main_body', self._function('unregister'))
+        self.assertIn('SLUGGIES_OT_make_main_body.bl_idname', self._function('_draw_rigid_mesh_box'))
 
 
 if __name__ == '__main__':

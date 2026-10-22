@@ -2561,7 +2561,10 @@ def _connected_image_texture_nodes(material):
     visited = set()
 
     def visit_node(node):
-        identity = id(node)
+        # Each link.from_node read makes a new Python wrapper, so id() differs
+        # for one node reached over several links (e.g. Color and Alpha).
+        as_pointer = getattr(node, "as_pointer", None)
+        identity = as_pointer() if callable(as_pointer) else id(node)
         if identity in visited:
             return
         visited.add(identity)
