@@ -3836,12 +3836,13 @@ def _skinned_rebuild_plan(context, obj, submesh_index, target_submesh, model, wa
     bone_hierarchy = model.get("BoneHierarchyEdited") or model.get("BoneHierarchy") or []
     parent_of = {int(b["BoneId"]): b.get("ParentBoneId") for b in bone_hierarchy if "BoneId" in b}
     allowed = SkinnedRebuildExport.allowed_skin_bones(donor, model.get("BoneHierarchyEdited"))
-    remap = SkinnedRebuildExport.remap_influences(_vertex_bone_weights(obj), allowed, parent_of)
+    vertex_weights = _vertex_bone_weights(obj)
+    remap = SkinnedRebuildExport.remap_influences(vertex_weights, allowed, parent_of)
     warnings.extend(SkinnedRebuildExport.remap_report(remap, obj.name))
     _mark_skinned_added_bones(model, remap.weights, obj.name, warnings)
     used = {v for tri in geometry.triangles for v in tri.vertices}
     unweighted_error = SkinnedRebuildExport.unweighted_error(
-        obj.name, [v for v in remap.unweighted if v in used],
+        obj.name, [v for v in remap.unweighted if v in used], vertex_weights,
     )
     if unweighted_error:
         raise ValueError(unweighted_error)

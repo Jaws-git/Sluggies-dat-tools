@@ -146,6 +146,22 @@ class WeightTests(unittest.TestCase):
         self.assertIn('vertex(es) have no weight', sre.unweighted_error('body', [4]))
         self.assertIsNone(sre.unweighted_error('body', []))
 
+    def test_unskinnable_bones_are_named_instead_of_unweighted(self):
+        parent_of = {0: None, 1: 0, 2: 0, 3: 2, 4: 3}
+        allowed = {3}
+        self.assertEqual(sre.unskinnable_bones(parent_of, allowed, parent_of), [0, 1, 2])
+        weights = [{2: 1.0}, {2: 0.5, 0: 0.5}, {}, {2: 0.0}, {4: 1.0}]
+        bare, by_bone = sre.split_unweighted([0, 1, 2, 3], weights)
+        self.assertEqual(bare, [2, 3])
+        self.assertEqual(by_bone, {2: 2, 0: 1})
+        error = sre.unweighted_error('body', [0], weights)
+        self.assertIn("bone_2 can't be used for skinning", error)
+        self.assertIn('bone_2: 1', error)
+        self.assertNotIn('have no weight', error)
+        error = sre.unweighted_error('body', [0, 1, 2], weights)
+        self.assertIn("bone_0 and bone_2 can't be used for skinning", error)
+        self.assertIn('1 vertex(es) have no weight', error)
+
     def test_allowed_skin_bones_adds_the_added_bones(self):
         donor = sre.DonorSkinnedSubmesh(
             index=0, position_quantize=0x30, normal_format=None, color_format=None, uv_formats={},

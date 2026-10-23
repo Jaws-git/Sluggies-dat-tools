@@ -7620,12 +7620,55 @@ def _rebase_hammerspace_resident_source(
     return vanilla_model_offset
 
 
+def _live_archive(chunk_number: int, file_index: int, vanilla: bytes, vanilla_layout, slot: int):
+    """The archive the output DOL routes ``(chunk_number, file_index)`` to now, as ``(bytes, layout)``.
+
+    Every patch of an archive member writes the whole archive, so a member
+    patched earlier lives only in this copy; rebuilding the vanilla archive
+    instead would drop it. None (rebuild the vanilla archive) when the live
+    entry cannot be read or is not the same archive: other slots populated,
+    or ``slot`` off the 32-byte grid.
+    """
+    offset, length = hh.readOutputDolEntry(chunk_number, file_index)
+    if offset < 0 or length <= 0:
+        return None
+    try:
+        with open(hh.OUTPUT_DAT, 'rb') as output:
+            output.seek(offset)
+            container = output.read(length)
+    except OSError:
+        return None
+    layout = parse_archive_container(container) if len(container) == length else None
+    if layout is None or layout.file_count != vanilla_layout.file_count or [
+        bool(o) for o in layout.offsets
+    ] != [bool(o) for o in vanilla_layout.offsets] or layout.offsets[slot] % hh.HS_ALIGN_BYTES:
+        _slogger.warning(
+            f'[Container] the output entry 0x{offset:08X}+{length:,} is not the same archive as the '
+            'vanilla one; rebuilding the vanilla archive, so edits of its other members are dropped',
+            source='hammerspace.main',
+        )
+        return None
+    vanilla_members = {m.slot: vanilla[m.offset:m.end] for m in vanilla_layout.members}
+    edited = [
+        m.slot for m in layout.members
+        if m.slot != slot and container[m.offset:m.end] != vanilla_members[m.slot]
+    ]
+    if edited:
+        _slogger.info(
+            f'[Container] carrying the live archive at 0x{offset:08X}+{length:,}: '
+            f'slot(s) {", ".join(map(str, edited))} keep their earlier edits',
+            source='hammerspace.main',
+        )
+    return container, layout
+
+
 def BuildModelBlock(
     data: dict,
     section_modes: SectionModes | None = None,
     sluggie_path: str | os.PathLike[str] | None = None,
     tex_png_overrides: dict[int, str] | None = None,
     texture_plan=None,
+    carry_live_members: bool = False,
 ) -> ModelBlockBuild:
     """Assemble a model block without modifying output DAT, DOL, or FST files.
 
@@ -7641,11 +7684,18 @@ def BuildModelBlock(
 
     A slot export's ``DonorEntry`` is the donor instead of the DOL route:
     every donor read comes from it (``_open_source``).
+
+    ``carry_live_members``: when the DOL entry is an archive, rebuild the
+    archive the output routes it to now (``_live_archive``) instead of the
+    vanilla one, so members patched earlier keep their edits. The model
+    itself is still built from its vanilla donor. Only for a block written
+    back to the model's own route; ignored with an embedded donor.
     """
     global _EMBEDDED_DONOR
     previous, _EMBEDDED_DONOR = _EMBEDDED_DONOR, donor_entry(data['SluggiesModel'])
     try:
-        return _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, texture_plan)
+        return _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, texture_plan,
+                                  carry_live_members)
     finally:
         _EMBEDDED_DONOR = previous
 
@@ -7673,7 +7723,8 @@ def _texture_replacement_overrides(model: dict, sluggie_path) -> dict[int, str]:
     return overrides
 
 
-def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, texture_plan) -> ModelBlockBuild:
+def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, texture_plan,
+                       carry_live_members=False) -> ModelBlockBuild:
     modes = section_modes or SectionModes()
     _validate_section_modes(modes)
 
@@ -7757,6 +7808,11 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
     route_prefix_size = 0
     route_container = b''
     archive_layout = None
+    # The archive the new member is put into, and where the member starts in
+    # it: the vanilla archive unless the live one is carried (below).
+    base_container = b''
+    base_layout = None
+    block_model_offset = 0
     if source_model_offset >= hh.BASE_SIZE and donor is None:
         source_model_offset = _rebase_hammerspace_resident_source(
             model, source_model_offset, source_model_length,
@@ -7805,6 +7861,12 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
                 f'{len(archive_layout.members) - 1} member(s) along',
                 source='hammerspace.main',
             )
+            base_container, base_layout = route_container, archive_layout
+            if carry_live_members and donor is None:
+                live = _live_archive(chunk_number, file_index, route_container, archive_layout, member.slot)
+                if live is not None:
+                    base_container, base_layout = live
+            block_model_offset = base_layout.offsets[member.slot]
         else:
             if route_suffix_size:
                 _slogger.warning(
@@ -8117,10 +8179,10 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
     report['root_scale_applied'] = root_scale_applied
     if archive_layout is not None:
         block, archive_report = rebuild_archive_container(
-            route_container,
-            route_prefix_size,
+            base_container,
+            block_model_offset,
             inner_block,
-            layout=archive_layout,
+            layout=base_layout,
         )
         report.update(archive_report)
         _slogger.info(
@@ -8135,8 +8197,9 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
         )
     else:
         block = route_prefix + inner_block
+        block_model_offset = route_prefix_size
     if route_prefix or archive_layout is not None:
-        report['container_prefix_size'] = route_prefix_size
+        report['container_prefix_size'] = block_model_offset
         report['inner_assembled_size'] = len(inner_block)
         report['inner_original_size'] = source_model_length
         report['assembled_size'] = len(block)
@@ -8151,7 +8214,7 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
             vanilla_entry = source.read(original_length)
         untangled = bytearray(block)
         for note in UntangledTextures.reapply(
-            untangled, route_prefix_size, model['TextureDescriptors'],
+            untangled, block_model_offset, model['TextureDescriptors'],
             vanilla_entry, route_prefix_size,
         ):
             _slogger.info(f'[Untangle] {note}', source='hammerspace.main')
@@ -8949,8 +9012,11 @@ if __name__ == '__main__':
         # build check measured (memory_guard: the player memory check uses that size)
         if _args.target_id is not None or donor_entry(_model) is not None:
             _modes = PromoteInplaceEdits(_model, _modes)
+        # an archive written back to this model's own route keeps the members patched before it
+        _own_route = _target is None and not _args.validate_only and _args.build_to is None
         _build = BuildModelBlock(_data, _modes, sluggie_path=_args.sluggies_path,
-                                 tex_png_overrides=_tex_png_overrides)
+                                 tex_png_overrides=_tex_png_overrides,
+                                 carry_live_members=_args.target_id is None or _own_route)
         _slogger.info(
             'Build validation report:\n' + _format_report_json(_build.validation_report),
             source='hammerspace.main',

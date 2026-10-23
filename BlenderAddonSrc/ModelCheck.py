@@ -771,9 +771,20 @@ def check_body_weights(context, scope):
         donor_count = core.vertex_buffer_vertex_count(model["Submeshes"][0].get("VertexBuffer") or {})
         covered = core.donor_covered_vertices(hierarchy, 0) if donor_count == len(obj.data.vertices) else None
         unweighted = core.unweighted_vertices(weights, _used_vertices(obj.data), allowed, parent_of, covered)
-        if unweighted:
-            yield Finding("unweighted", ERROR, obj.name, f"{core.plural(len(unweighted), 'vert')} unweighted",
-                          f"{obj.name}: {len(unweighted)} vertex(es) have no weight on any bone the "
+        # Vertices weighted only to bones without a skinned ancestor are
+        # reported by bone; the tooltip lists every such bone of the model.
+        bare, by_bone = SkinnedRebuildExport.split_unweighted(unweighted, weights)
+        if by_bone:
+            bones = (SkinnedRebuildExport.bone_list(by_bone) if len(by_bone) <= 2
+                     else f"{len(by_bone)} bones")
+            invalid = SkinnedRebuildExport.unskinnable_bones(parent_of, allowed, parent_of)
+            yield Finding("unskinnable_bones", ERROR, obj.name, f"{bones} can't be used for skinning",
+                          SkinnedRebuildExport.unskinnable_error(obj.name, by_bone)
+                          + " Bones of this model that can't be used for skinning: "
+                          + ", ".join(f"bone_{bone}" for bone in invalid) + ".")
+        if bare:
+            yield Finding("unweighted", ERROR, obj.name, f"{core.plural(len(bare), 'vert')} unweighted",
+                          f"{obj.name}: {len(bare)} vertex(es) have no weight on any bone the "
                           "original model skins to or any added bone. Assign them to bone_<id> "
                           "vertex groups of such bones.")
         over = core.overweighted_vertices(weights)

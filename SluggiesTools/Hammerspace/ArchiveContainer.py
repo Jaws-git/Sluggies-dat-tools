@@ -21,8 +21,9 @@ shifts the trailing offsets by the size delta.  Members other than the
 rewritten one are copied byte for byte, so anything this code does not
 understand (ANM blocks, padding, unreferenced slack) survives untouched.
 
-Only one member can be rewritten per call.  Editing several parts of the same
-character needs a hammerspace read-back path.
+Only one member can be rewritten per call.  Editing several members of the
+same archive works because the patcher rebuilds the archive the output routes
+to now (``HammerspaceMain._live_archive``), which holds the earlier edits.
 """
 
 import struct

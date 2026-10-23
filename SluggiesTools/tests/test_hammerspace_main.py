@@ -556,6 +556,71 @@ class BuildModelBlockTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'ModelLength'):
             self._build_archive_block(model_offset=0x1060, model_length=0x20)
 
+    def _build_archive_block_on_live(self, live_entry, carry_live_members=True):
+        """Build slot 1 of the vanilla archive while the output routes the entry to ``live_entry``."""
+        self.data['SluggiesModel'].update({'ModelOffset': 0x1060, 'ModelLength': 0x40})
+        patches = self._patch_common()
+        live_offset = 0x2000
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = self._build_archive_entry(temp_dir)
+            output_dat = pathlib.Path(temp_dir) / 'output.dat'
+            output_dat.write_bytes(bytes(live_offset) + bytes(live_entry))
+            with (
+                mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)),
+                mock.patch.object(main.hh, 'OUTPUT_DAT', str(output_dat)),
+                mock.patch.object(main.hh, 'readDolEntry', return_value=(0x1000, 0x100)),
+                mock.patch.object(main.hh, 'readOutputDolEntry', return_value=(live_offset, len(live_entry))),
+                patches[1], patches[2], patches[3], patches[4], patches[5],
+                patches[6], patches[7], patches[8],
+                mock.patch.object(main, 'validate_model_block', return_value={
+                    'valid': True,
+                    'errors': [],
+                    'warnings': [],
+                    'facts': {'section_pointers': {}},
+                }),
+            ):
+                return main.BuildModelBlock(self.data, carry_live_members=carry_live_members)
+
+    @staticmethod
+    def _archive(*members):
+        """A 3-slot archive of ``members`` back to back, each a multiple of 32 bytes."""
+        offsets, offset = [], 0x20
+        for member in members:
+            offsets.append(offset)
+            offset += len(member)
+        return struct.pack('>4I', 3, *offsets) + bytes(0x10) + b''.join(members)
+
+    def test_build_keeps_earlier_edits_of_the_other_archive_members(self):
+        # Slot 0 was patched earlier and grew, which moved slot 1; slot 2 was patched too.
+        live = self._archive(b'a' * 0x60, b'B' * 0x40, b'c' * 0x80)
+        result = self._build_archive_block_on_live(live)
+        report = result.validation_report
+        delta = report['archive_size_delta']
+
+        count, first, second, third = struct.unpack_from('>4I', result.block, 0)
+        self.assertEqual((count, first, second), (3, 0x20, 0x80))
+        self.assertEqual(third, 0xC0 + delta)
+        self.assertEqual(result.block[0x20:0x80], b'a' * 0x60)
+        self.assertEqual(result.block[third:], b'c' * 0x80)
+        self.assertEqual(report['container_prefix_size'], 0x80)
+        self.assertEqual(report['archive_original_size'], len(live))
+        self.assertEqual(report['assembled_size'], len(result.block))
+        self.assertEqual(report['original_size'], 0x100)
+
+    def test_build_rebuilds_the_vanilla_archive_unless_asked_to_carry_the_live_one(self):
+        live = self._archive(b'a' * 0x60, b'B' * 0x40, b'c' * 0x80)
+        result = self._build_archive_block_on_live(live, carry_live_members=False)
+
+        self.assertEqual(result.block[0x20:0x60], b'A' * 0x40)
+        self.assertEqual(result.validation_report['container_prefix_size'], 0x60)
+
+    def test_build_falls_back_to_the_vanilla_archive_when_the_live_entry_is_another_archive(self):
+        live = struct.pack('>3I', 2, 0x20, 0x60) + bytes(0x14) + b'x' * 0x80
+        result = self._build_archive_block_on_live(live)
+
+        self.assertEqual(result.block[0x20:0x60], b'A' * 0x40)
+        self.assertEqual(result.validation_report['archive_original_size'], 0x100)
+
     def _no_edit_gpl_build_model(self):
         self.data['SluggiesModel'].update({
             'UseHammerspace': True,

@@ -247,12 +247,73 @@ def remap_report(remap: InfluenceRemap, object_name: str) -> List[str]:
     return lines
 
 
-def unweighted_error(object_name: str, unweighted: Sequence[int]) -> Optional[str]:
+def unweighted_error(
+    object_name: str, unweighted: Sequence[int], vertex_weights: Optional[Sequence[dict]] = None,
+) -> Optional[str]:
+    """Refusal text for *unweighted* (vertices without an allowed influence).
+    With *vertex_weights*, vertices weighted only to unskinnable bones are
+    reported by bone (:func:`unskinnable_error`) rather than as unweighted."""
     if not unweighted:
         return None
+    if vertex_weights is None:
+        bare, by_bone = list(unweighted), {}
+    else:
+        bare, by_bone = split_unweighted(unweighted, vertex_weights)
+    parts = []
+    if by_bone:
+        parts.append(unskinnable_error(object_name, by_bone))
+    if bare:
+        parts.append(
+            f'{object_name}: {len(bare)} vertex(es) have no weight on any bone the original '
+            f'model skins to or any added bone. Assign them to bone_<id> vertex groups of such bones.'
+        )
+    return ' '.join(parts)
+
+
+def unskinnable_bones(bone_ids: Iterable[int], allowed: set, parent_of: dict) -> List[int]:
+    """The bones of *bone_ids* a weight cannot be skinned to: neither the
+    bone nor any ancestor is in *allowed*, so :func:`remap_influences` drops
+    their weights."""
+    result = []
+    for bone in bone_ids:
+        node, seen = bone, set()
+        while node is not None and node not in allowed and node not in seen:
+            seen.add(node)
+            node = parent_of.get(node)
+        if node not in allowed:
+            result.append(int(bone))
+    return sorted(result)
+
+
+def split_unweighted(unweighted: Sequence[int], vertex_weights: Sequence[dict]) -> Tuple[List[int], Dict[int, int]]:
+    """Split *unweighted* vertices into the ones with no positive weight at
+    all and, per bone, how many of the others are weighted to it (all of
+    their bones are unskinnable, or they would not be unweighted)."""
+    bare: List[int] = []
+    by_bone: Dict[int, int] = {}
+    for vertex in unweighted:
+        bones = [int(bone) for bone, weight in vertex_weights[vertex].items() if weight > 0]
+        if not bones:
+            bare.append(vertex)
+        for bone in bones:
+            by_bone[bone] = by_bone.get(bone, 0) + 1
+    return bare, by_bone
+
+
+def bone_list(bones: Iterable[int]) -> str:
+    names = [f'bone_{bone}' for bone in sorted(bones)]
+    return names[0] if len(names) == 1 else f'{", ".join(names[:-1])} and {names[-1]}'
+
+
+def unskinnable_error(object_name: str, by_bone: Dict[int, int]) -> str:
+    """Text for vertices weighted only to unskinnable bones (*by_bone*: bone
+    -> vertex count, from :func:`split_unweighted`)."""
+    vertices = ', '.join(f'bone_{bone}: {count}' for bone, count in sorted(by_bone.items()))
     return (
-        f'{object_name}: {len(unweighted)} vertex(es) have no weight on any bone the original '
-        f'model skins to or any added bone. Assign them to bone_<id> vertex groups of such bones.'
+        f"{object_name}: {bone_list(by_bone)} can't be used for skinning (neither "
+        f"{'it' if len(by_bone) == 1 else 'they'} nor any ancestor is a bone the original model "
+        f"skins to or an added bone). Vertices weighted only to {'it' if len(by_bone) == 1 else 'them'}: "
+        f"{vertices}. Please move the weights to a valid bone."
     )
 
 
