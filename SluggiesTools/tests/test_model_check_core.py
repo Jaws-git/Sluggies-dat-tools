@@ -200,6 +200,22 @@ class TestSizeEstimate(unittest.TestCase):
                          "Estimated size: 668 KB total (model 412 KB + textures 256 KB)")
 
 
+class TestVisibleCollections(unittest.TestCase):
+    def test_hidden_parent_hides_its_children(self):
+        tree = ("Scene Collection", False, [
+            ("Model", False, [("Parts", False, [])]),
+            ("Refs", True, [("Downloads", False, [])]),
+        ])
+        self.assertEqual(core.visible_collections(tree), {"Scene Collection", "Model", "Parts"})
+
+    def test_linked_twice_is_shown_by_its_visible_place(self):
+        tree = ("Scene Collection", False, [
+            ("Hidden", True, [("Shared", False, [])]),
+            ("Shown", False, [("Shared", False, [])]),
+        ])
+        self.assertIn("Shared", core.visible_collections(tree))
+
+
 class TestStaysBpyFree(unittest.TestCase):
     def test_no_bpy_import(self):
         tree = ast.parse((BLENDER_ADDON_DIR / 'ModelCheckCore.py').read_text(encoding='utf-8'))
@@ -229,8 +245,16 @@ class TestWiring(unittest.TestCase):
             self.assertIn(rule, source)
         checks = source[source.index('CHECKS = ['):]
         for check in ('check_rigid_one_bone', 'check_host_bones', 'check_texture_owner',
-                      'check_texture_bindings', 'check_collision', 'check_rebuild_format'):
+                      'check_texture_bindings', 'check_collision', 'check_rebuild_format',
+                      'check_mesh_limits'):
             self.assertIn(f'({check}, False)', checks)
+
+    def test_dialog_scans_meshes_outside_any_model(self):
+        source = (BLENDER_ADDON_DIR / 'ModelCheck.py').read_text(encoding='utf-8')
+        run = source[source.index('def run_checks('):]
+        self.assertIn('check_stray_objects(context, scopes)', run[:run.index('return')])
+        ui = (BLENDER_ADDON_DIR / 'ModelCheckUI.py').read_text(encoding='utf-8')
+        self.assertIn('_run_operator("sluggies.make_submesh")', ui)
 
     def test_fix_order_starts_with_the_mode_switch(self):
         source = (BLENDER_ADDON_DIR / 'ModelCheck.py').read_text(encoding='utf-8')

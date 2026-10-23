@@ -51,6 +51,7 @@ DEFAULT_STADIUM_TEMPLATE = "builtin:stadium_shdw_opaque_v1"
 
 GX_MAX_TEXTURE_DIMENSION = 1024
 MAX_BONE_INFLUENCES = 5
+U16_LIMIT = 0xFFFF   # vertices (and a custom submesh's triangles) one mesh can index
 
 
 @dataclass
@@ -62,6 +63,8 @@ class Finding:
     detail: str          # long text: tooltip and export log
     fix_id: Optional[str] = None     # key into ModelCheck.FIXES, None = no automatic fix
     fix_args: dict = field(default_factory=dict)  # plain data the fix needs
+    action_id: Optional[str] = None  # key into ModelCheckUI.ACTIONS: a button for a manual fix
+    action_args: dict = field(default_factory=dict)  # its "object" is the one it selects first
 
 
 def sort_findings(findings: Iterable[Finding]) -> List[Finding]:
@@ -331,6 +334,25 @@ def clipboard_text(path: str) -> str:
     finds in 2_Output_Assets, or the full path of a file elsewhere."""
     parts = os.path.normcase(os.path.abspath(path)).split(os.sep)
     return os.path.basename(path) if os.path.normcase('2_Output_Assets') in parts[:-1] else os.path.abspath(path)
+
+
+def visible_collections(node) -> Set[str]:
+    """Names of the collections shown in the viewport. *node* is the view
+    layer's collection tree as ``(name, hidden, [child nodes])``; a
+    collection is hidden with its own flag or any ancestor's. One linked
+    into several parents counts as shown when any of its places shows it."""
+    visible = set()
+
+    def walk(node, parent_hidden):
+        name, hidden, children = node
+        hidden = parent_hidden or hidden
+        if not hidden:
+            visible.add(name)
+        for child in children:
+            walk(child, hidden)
+
+    walk(node, False)
+    return visible
 
 
 def free_file_name(file_name: str, taken: Iterable[str]) -> str:

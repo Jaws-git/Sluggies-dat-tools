@@ -394,8 +394,10 @@ is the target.
   author left out.
 - A file without a Low model uses its High model as the Low model too
   (counted twice in the player memory check). A file whose `model.glb` was
-  edited in Blender after it was exported is refused (its game model is out
-  of date; export it again with the patcher). The deltas inside the file
+  edited after it was exported loads with a warning: reading a `.glb` is not
+  supported yet, so the slot gets the model as it was last exported, without
+  those edits (re-export the file from the tool that edited it to include
+  them). The deltas inside the file
   rebuild the blocks from `1_Input/main.dol`, `dt_na.dat` and
   `sound_NA/MY2.brsar`, which must be the clean game: a modded copy is
   refused.

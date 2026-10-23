@@ -219,6 +219,13 @@ class ReadTests(unittest.TestCase):
         self.assertEqual((m.voice_slots['v1'], m.voice_slots['v3']), ('own', 'base'))
         self.assertEqual(m.portraits, {})
 
+    def test_edited_glb_is_flagged_not_refused(self):
+        path = write_file(self.tmp, doc=meta(glb_sha1='0' * 40), glb=b'edited')
+        m = slgmodel.read(path, self.inputs)
+        self.assertTrue(m.has_glb)
+        self.assertTrue(m.glb_edited)
+        self.assertEqual((m.high, m.low), (HIGH, LOW))              # the blocks as exported
+
     def test_meta_only_read_needs_no_game(self):
         path = write_file(self.tmp)
         m = slgmodel.read(path, os.path.join(self.tmp, 'nowhere'), blocks=False)
@@ -232,7 +239,6 @@ class ReadTests(unittest.TestCase):
             (dict(doc=meta(name='  ')), 'no name'),
             (dict(doc=meta(blocks=[0, 2])), 'model files'),
             (dict(doc=meta(blocks=[])), 'no model files'),
-            (dict(doc=meta(glb_sha1='0' * 40), glb=b'edited'), 'edited in Blender'),
             (dict(members={'extra.txt': b'x'}), 'no place for'),
             (dict(members={'models/1.slgd': make_delta(LOW, LOW_OPS, sha=bytes(20))}), 'not the clean game'),
             (dict(members={'side.png': b'not a png'}), 'side portrait'),
@@ -353,6 +359,13 @@ class NewIdPlanTests(unittest.TestCase):
         self.assertNotIn('slg_66_l.bin', p.copy_files)
         self.assertTrue(any('used as the Low model too' in w for w in p.warnings))
         self.assertTrue(p.to_json()['slgmodel']['high_only'])
+
+    def test_edited_glb_warns_and_writes_the_exported_blocks(self):
+        p = plan(0x66, model(has_glb=True, glb_edited=True))
+        self.assertTrue(any('model.glb was edited' in w and 'without those edits' in w for w in p.warnings))
+        self.assertEqual((p.copy_files['slg_66_hp.bin'], p.copy_files['slg_66_l.bin']), (HIGH, LOW))
+        self.assertTrue(p.to_json()['slgmodel']['glb_edited'])
+        self.assertFalse(plan(0x66).to_json()['slgmodel']['glb_edited'])
 
     def test_without_the_archive_the_clips_are_left_out(self):
         env = ImportEnv(archive=False)
@@ -493,6 +506,12 @@ class EditTests(unittest.TestCase):
         self.assertIn('Character file: rosalina.slgmodel: Rosalina, built on', text)
         self.assertIn('Models: High', text)
         self.assertIn('Name: Rosalina', text)
+        self.assertNotIn('edits are not included', text)
+        edited = plan(0x66, model(has_glb=True, glb_edited=True))
+        section_e = dict(edited.to_json(), edit=section['edit'])
+        lines_e = gui_grid._section_lines(make_state(), section_e, {})
+        self.assertIn(('Models: its model.glb was edited after export; those edits are not included', gui_grid.WARN),
+                      lines_e)
         dialog = gui_grid.slot_dialog(make_state(), 0x66, False, {'refused': [], 'edits': [section], 'skipped': [],
                                                                    'notes': [], 'warnings': [], 'merged': []},
                                       0, '', None, kind='slgmodel')

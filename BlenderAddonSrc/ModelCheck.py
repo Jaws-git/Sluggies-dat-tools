@@ -306,16 +306,19 @@ def check_edit_mode(context, scope):
 def check_sluggie_file(context, scope):
     if scope.for_export or scope.armature is None:
         return
+    locate = {"object": scope.armature.name}
     if not scope.sluggie_path:
         yield Finding("sluggie_path", WARNING, scope.name, "No source .sluggie",
                       "The armature does not record the .sluggie it was imported from, so most "
                       "checks and Add New Submesh/Add material can't run. "
-                      + SluggiePath.LOCATE_HINT + ", or re-import the model.")
+                      + SluggiePath.LOCATE_HINT + ", or re-import the model.",
+                      action_id="locate_sluggie", action_args=locate)
     elif scope.load_error:
         yield Finding("sluggie_path", ERROR, scope.name, "Source .sluggie " + scope.load_error.split(' ')[0],
                       f"The armature's source file {scope.sluggie_path} is {scope.load_error}. "
                       "Restore the file, " + SluggiePath.LOCATE_HINT[0].lower() + SluggiePath.LOCATE_HINT[1:]
-                      + ", or re-import the model.")
+                      + ", or re-import the model.",
+                      action_id="locate_sluggie", action_args=locate)
 
 
 def check_bone_metadata(context, scope):
@@ -384,8 +387,10 @@ def check_donor_bones(context, scope):
     for kind, names in problems.items():
         if names:
             one, many, why = texts[kind]
+            action = {"object": arm.name, "bones": names} if kind == "orphan" else {}
             yield Finding(f"donor_bones_{kind}", WARNING, arm.name, one if len(names) == 1 else many,
-                          f"{', '.join(names[:8])}{' ...' if len(names) > 8 else ''}: these bones {why}.")
+                          f"{', '.join(names[:8])}{' ...' if len(names) > 8 else ''}: these bones {why}.",
+                          action_id="goto_bones" if action else None, action_args=action)
 
 
 def check_untracked_keys(context, scope):
@@ -432,29 +437,65 @@ def check_texture_reimport_hint(context, scope):
 # Checks: mesh level
 # ---------------------------------------------------------------------------
 
+# A mesh brought in without Sluggies properties.
+MAKE_SUBMESH_HINT = "Make it part of a model with Make into submesh (rigid, on one bone)"
+MERGE_HINT = "merge it into the main body (select it, then the body, and join with Ctrl+J)"
+
+
+def _weighted_bones(obj):
+    """The bone ids *obj*'s vertices carry positive bone_<id> weights on."""
+    return set().union(*ex._rigid_vertex_bone_ids(obj))
+
+
+def _foreign_groups_note(obj):
+    """A sentence on vertex groups that name no bone_<id> (weights from
+    another rig), or ''."""
+    if not obj.vertex_groups or any(core.bone_id_from_name(g.name) is not None for g in obj.vertex_groups):
+        return ""
+    names = [g.name for g in obj.vertex_groups]
+    return (f" Its vertex groups ({', '.join(names[:3])}{' ...' if len(names) > 3 else ''}) name no "
+            "bone_<id> of the armature; weights from another rig don't carry over.")
+
+
 def check_mesh_props(context, scope):
-    if scope.for_export or scope.model is None:
+    if scope.for_export:
         return
     for obj in scope.meshes:
         if _is_custom(obj):
             continue
         if not all(prop in obj for prop in core.REQUIRED_PROPS):
-            surfaces = {core.donor_surface_submesh(m.get("SurfaceId")) for m in _materials(obj)}
-            surfaces.discard(None)
-            index = core.match_submesh(obj.name, len(obj.data.vertices), surfaces, scope.model)
-            if index is None:
+            index = None
+            if scope.model is not None:
+                surfaces = {core.donor_surface_submesh(m.get("SurfaceId")) for m in _materials(obj)}
+                surfaces.discard(None)
+                index = core.match_submesh(obj.name, len(obj.data.vertices), surfaces, scope.model)
+            bones = sorted(_weighted_bones(obj)) if index is None else []
+            make_submesh = {"object": obj.name}
+            if len(bones) > 1:
+                # Only the skinned body (submesh 0) may follow several bones.
+                shown = ", ".join(f"bone_{b}" for b in bones[:6]) + (" ..." if len(bones) > 6 else "")
+                yield Finding("static_several_bones", WARNING, obj.name, "Static mesh on several bones",
+                              f"{obj.name} has no Sluggies properties, so it is not exported, and its "
+                              f"vertices are weighted to {len(bones)} bones ({shown}). Only the main "
+                              "body may follow several bones; every other mesh follows exactly one. "
+                              "Remove all but one bone influence (Make into submesh does that and "
+                              f"makes it part of the model), or {MERGE_HINT}.",
+                              action_id="make_submesh", action_args=make_submesh)
+            elif index is None and scope.model is not None:
                 yield Finding("mesh_props", WARNING, obj.name, "Not linked to a submesh",
                               f"{obj.name} lacks the VertexBuffer* properties that tie it to a "
                               "submesh of the .sluggie, and no submesh matches it, so it is not "
-                              "exported. Re-import the model, or make new parts with Add New Submesh.")
-            else:
+                              f"exported. {MAKE_SUBMESH_HINT}, or {MERGE_HINT}."
+                              + _foreign_groups_note(obj),
+                              action_id="make_submesh", action_args=make_submesh)
+            elif index is not None:
                 yield Finding("mesh_props", WARNING, obj.name, "Submesh link lost",
                               f"{obj.name} lacks the VertexBuffer* properties that tie it to "
                               f"submesh {index}, so it is not exported. The fix restores them "
                               "from the .sluggie.",
                               "restore_mesh_props", {"object": obj.name, "sluggie": scope.sluggie_path,
                                                      "index": index})
-        elif _submesh_index(scope, obj) is None:
+        elif scope.model is not None and _submesh_index(scope, obj) is None:
             yield Finding("mesh_props", WARNING, obj.name, "Not in this .sluggie",
                           f"{obj.name}: no submesh with VertexBufferOffset={obj['VertexBufferOffset']} "
                           f"in {os.path.basename(scope.sluggie_path)}; it is skipped on export.")
@@ -499,12 +540,23 @@ def check_armature_link(context, scope):
                           "it can't be placed relative to its host bone.",
                           "armature_modifier" if arm is not None else None,
                           {"object": obj.name, "armature": arm.name} if arm is not None else {})
-        elif arm is not None and not scope.for_export and arm not in targets:
-            text = "Armature modifier points to wrong armature" if targets else "No Armature modifier"
-            yield Finding("armature_link", WARNING, obj.name, text,
-                          f"{obj.name} has no Armature modifier on {arm.name}, so it does not follow "
-                          "the bones in Blender (and a rebuilt mesh can't be placed).",
-                          "armature_modifier", {"object": obj.name, "armature": arm.name})
+        elif arm is not None and not scope.for_export and targets[:1] != [arm]:
+            fix = ("armature_modifier", {"object": obj.name, "armature": arm.name})
+            if not targets:
+                yield Finding("armature_link", WARNING, obj.name, "No Armature modifier",
+                              f"{obj.name} has no Armature modifier on {arm.name}, so it does not follow "
+                              "the bones in Blender (and a rebuilt mesh can't be placed).", *fix)
+                continue
+            # Export places a mesh by its first Armature modifier (a
+            # downloaded mesh may still carry one on its own rig); a custom
+            # submesh there is refused or misplaced.
+            yield Finding("armature_link", ERROR if _is_custom(obj) else WARNING, obj.name,
+                          "Armature modifier points to wrong armature",
+                          f"{obj.name}: its {'first ' if len(targets) > 1 else ''}Armature modifier "
+                          f"follows {targets[0].name}, not {arm.name}. Export places the mesh by that "
+                          "armature, so it does not follow the bones (and a rebuilt mesh can't be "
+                          f"placed). The fix points it at {arm.name} and removes other Armature "
+                          "modifiers.", *fix)
     if arm is None or scope.for_export:
         return
     for obj in scope.meshes + scope.unparented:
@@ -550,6 +602,27 @@ def check_geometry(context, scope):
             if _is_custom(obj) or donor_faces:
                 yield Finding("no_faces", ERROR, obj.name, "No faces",
                               f"{obj.name}: mesh has no faces.")
+
+
+def check_mesh_limits(context, scope):
+    """The uint16 indices every rebuild writes: the vertices faces use, and
+    a custom submesh's triangle count (a downloaded high-poly mesh)."""
+    for obj in scope.meshes:
+        custom = _is_custom(obj)
+        if not custom and _submesh_index(scope, obj) is None:
+            continue
+        over = []
+        vertices = len(_used_vertices(obj.data))
+        if vertices > core.U16_LIMIT:
+            over.append(f"{vertices:,} vertices")
+        triangles = _triangle_count(obj.data) if custom else 0
+        if triangles > core.U16_LIMIT:
+            over.append(f"{triangles:,} triangles")
+        if over:
+            yield Finding("mesh_limits", ERROR, obj.name, f"Too many {over[0].split(' ')[1]}",
+                          f"{obj.name}: {' and '.join(over)}; the game indexes at most "
+                          f"{core.U16_LIMIT:,} per mesh. Reduce it (Decimate modifier, applied) or "
+                          "split it into several submeshes.")
 
 
 def check_rebuild_format(context, scope):
@@ -660,7 +733,9 @@ def check_host_bones(context, scope):
         else:
             detail = (f"{obj.name}: bone_{issue.target_bone_id} currently owns submesh {issue.detail}; "
                       "the move is skipped to avoid a GeoId collision.")
-        yield Finding("host_bone_taken", WARNING, obj.name, "Moved onto a taken bone", detail)
+        yield Finding("host_bone_taken", WARNING, obj.name, "Moved onto a taken bone",
+                      detail + " Use Reassign bone to move it to a free bone.",
+                      action_id="reassign_bone", action_args={"object": obj.name})
     hosts_by_bone = {}
     for obj in scope.meshes:
         if _is_custom(obj):
@@ -955,7 +1030,9 @@ def check_texture_bindings(context, scope):
                 if not 0 <= original < count:
                     yield Finding("texture_index", ERROR, obj.name, "Invalid texture index",
                                   f"Material '{mat.name}' has invalid donor TextureIndex {original}. "
-                                  "Re-import the model to get the imported value back.")
+                                  "Pick its texture in Manage texture slots, or re-import the model "
+                                  "to get the imported value back.",
+                                  action_id="texture_slots", action_args={"object": obj.name})
                     continue
                 file_name = _export_file_name(path, tex_dir, owns)
                 desired = index_by_name.get(file_name)
@@ -1005,6 +1082,7 @@ CHECKS = [
     (check_armature_link, True),
     (check_modifiers, False),
     (check_geometry, True),
+    (check_mesh_limits, False),         # mirror
     (check_rebuild_format, False),      # mirror
     (check_collision, False),           # mirror
     (check_custom_host_bone, True),
@@ -1047,12 +1125,55 @@ def check_low_high_bones(scopes):
                               "Add the same bones to the High model.")
 
 
+# Object types that look like model parts but export never reads.
+_NON_MESH_GEOMETRY = {'CURVE': "curve", 'SURFACE': "surface", 'FONT': "text", 'META': "metaball",
+                      'CURVES': "hair curves", 'POINTCLOUD': "point cloud", 'VOLUME': "volume"}
+
+
+def _layer_collection_tree(layer_collection):
+    collection = layer_collection.collection
+    hidden = layer_collection.exclude or layer_collection.hide_viewport or collection.hide_viewport
+    return (collection.name, hidden, [_layer_collection_tree(c) for c in layer_collection.children])
+
+
+def check_stray_objects(context, scopes):
+    """Meshes in no model: no Sluggies armature above them (none at all, or
+    a downloaded rig's), so export never reads them; and other geometry
+    (curves, text, ...) on a Sluggies armature, which it never reads either.
+    Objects only in hidden or excluded collections are references: skipped."""
+    claimed = {obj.name for scope in scopes for obj in scope.meshes + scope.unparented}
+    visible = core.visible_collections(_layer_collection_tree(context.view_layer.layer_collection))
+    for obj in context.scene.objects:
+        if not any(c.name in visible for c in obj.users_collection):
+            continue
+        rig = _parent_armature(obj)
+        owner = rig if is_sluggies_armature(rig) else None
+        if obj.type == 'MESH':
+            collision = getattr(obj, 'sluggies_collision', None)
+            if owner is not None or obj.name in claimed or (collision is not None and collision.enabled):
+                continue
+            where = (f"is parented to {rig.name}, which is not an imported Sluggies armature"
+                     if rig is not None else "is not parented to a Sluggies armature")
+            yield Finding("stray_mesh", WARNING, obj.name, "Not part of any model",
+                          f"{obj.name} {where}, so it belongs to no model and is never exported. "
+                          f"{MAKE_SUBMESH_HINT}, or {MERGE_HINT}. Hide its collection if it is only "
+                          "a reference." + _foreign_groups_note(obj),
+                          action_id="make_submesh", action_args={"object": obj.name})
+        elif obj.type in _NON_MESH_GEOMETRY and owner is not None:
+            yield Finding("stray_geometry", WARNING, obj.name,
+                          f"{_NON_MESH_GEOMETRY[obj.type].capitalize()} object is not exported",
+                          f"{obj.name} is a {_NON_MESH_GEOMETRY[obj.type]} object on {owner.name}; "
+                          "only meshes are exported. Convert it (Object > Convert > Mesh), then "
+                          f"{MAKE_SUBMESH_HINT[0].lower()}{MAKE_SUBMESH_HINT[1:]}.")
+
+
 def run_checks(context, scopes):
     findings = []
     for scope in scopes:
         for check, _export in CHECKS:
             findings.extend(check(context, scope))
     findings.extend(check_low_high_bones(scopes))
+    findings.extend(check_stray_objects(context, scopes))
     return core.sort_findings(findings)
 
 
@@ -1178,11 +1299,7 @@ def fix_reparent(context, object, armature):
 
 
 def fix_armature_modifier(context, object, armature):
-    obj, arm = _object(object), _object(armature)
-    mod = next((m for m in obj.modifiers if m.type == 'ARMATURE'), None)
-    if mod is None:
-        mod = obj.modifiers.new(name="Armature", type='ARMATURE')
-    mod.object = arm
+    panel._ensure_armature_modifier(_object(object), _object(armature))
 
 
 def fix_restore_mesh_props(context, object, sluggie, index):

@@ -29,8 +29,10 @@ CHUNK_PROP = 'SluggiesChunkNumber'
 
 LOCATE_HINT = "Use 'Locate source .sluggie' in the Sluggies panel to point the model at its file"
 
-# stored path -> path found for it, so a missing file is searched once per
-# session, not on every redraw or export step.
+# stored path -> path found for it ('' when nothing was found), so a missing
+# file is searched once, not on every redraw or export step. A miss is
+# searched again by the tools that act on the file (relink), and after a
+# load or a save (the .blend's folder is part of the search).
 _FOUND = {}
 
 
@@ -84,7 +86,8 @@ def resolve(arm_obj, hint='', relink=True):
 
     *hint* is a path the caller is about to use (the export target): its
     folder is searched first. With *relink*, a hit is written back to the
-    armature (off for draw-time callers, which may not write ID properties).
+    armature and a remembered miss is searched again (off for draw-time
+    callers, which may not write ID properties and must stay fast).
     """
     if arm_obj is None:
         return ''
@@ -93,7 +96,7 @@ def resolve(arm_obj, hint='', relink=True):
         return path
     key = os.path.normcase(path)
     found = _FOUND.get(key)
-    if not found or not os.path.isfile(found):
+    if found is None or (relink and not found) or (found and not os.path.isfile(found)):
         found = _search(arm_obj, path, hint)
         if path:
             _FOUND[key] = found
@@ -231,13 +234,25 @@ def _refresh_relative_paths(filepath=None, *_args):
             remember(obj, path, blend_dir)
 
 
+@persistent
+def _forget_found(*_args):
+    """After a load or a save: search remembered misses again."""
+    _FOUND.clear()
+
+
 def register():
     bpy.utils.register_class(SLUGGIES_OT_locate_sluggie)
     if _refresh_relative_paths not in bpy.app.handlers.save_pre:
         bpy.app.handlers.save_pre.append(_refresh_relative_paths)
+    for handlers in (bpy.app.handlers.load_post, bpy.app.handlers.save_post):
+        if _forget_found not in handlers:
+            handlers.append(_forget_found)
 
 
 def unregister():
+    for handlers in (bpy.app.handlers.load_post, bpy.app.handlers.save_post):
+        if _forget_found in handlers:
+            handlers.remove(_forget_found)
     if _refresh_relative_paths in bpy.app.handlers.save_pre:
         bpy.app.handlers.save_pre.remove(_refresh_relative_paths)
     bpy.utils.unregister_class(SLUGGIES_OT_locate_sluggie)

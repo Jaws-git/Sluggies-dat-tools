@@ -1249,23 +1249,22 @@ def _parse_bone_group_name(name):
 
 def _detect_uniform_vertex_bone_id(obj):
     """Return a single bone id when all vertices map to exactly one bone_<id>."""
+    group_bone = {group.index: _parse_bone_group_name(group.name) for group in obj.vertex_groups}
     uniform_id = None
     for vd in obj.data.vertices:
-        ids_here = set()
+        v_id = None
         for g in vd.groups:
             if g.weight <= 0:
                 continue
-            vg_name = obj.vertex_groups[g.group].name
-            parsed = _parse_bone_group_name(vg_name)
-            if parsed is not None:
-                ids_here.add(parsed)
-        if len(ids_here) != 1:
+            parsed = group_bone.get(g.group)
+            if parsed is None:
+                continue
+            if v_id is not None and v_id != parsed:
+                return None
+            v_id = parsed
+        if v_id is None or (uniform_id is not None and uniform_id != v_id):
             return None
-        v_id = next(iter(ids_here))
-        if uniform_id is None:
-            uniform_id = v_id
-        elif uniform_id != v_id:
-            return None
+        uniform_id = v_id
     return uniform_id
 
 

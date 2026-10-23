@@ -122,7 +122,7 @@ A new submesh is a static (rigid) mesh that follows one bone, like a hat or a he
 6. Patch the exported `.sluggie` normally. The patcher picks the build steps it needs by itself.
 
 **Using a mesh you already have**
-Any mesh object can become a new submesh, for example one you modeled or appended from another file. It needs no Sluggies properties.
+Any mesh object can become a new submesh, for example one you modeled or appended from another file. It needs no Sluggies properties. **Check Models** lists such meshes while they are not part of a model yet (no Sluggies armature above them, no Sluggies properties, or weights on several bones, which only the main body may have), with a button for this tool; meshes in hidden or excluded collections are left out.
 
 1. Make the mesh the active object (Object Mode) and click **Make Active Mesh into a Submesh**.
 2. Pick the armature (preselected: the one the mesh is parented to, else a selected one, else the nearest) and a free host bone (preselected: the free bone nearest the mesh).

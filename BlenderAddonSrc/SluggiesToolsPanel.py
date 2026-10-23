@@ -5,6 +5,7 @@ import re
 
 import bmesh
 import bpy
+from bpy.app.handlers import persistent
 from bpy.props import (
     BoolProperty, CollectionProperty, EnumProperty, FloatVectorProperty, IntProperty, StringProperty,
 )
@@ -148,6 +149,46 @@ def _submesh_index_of(obj):
     return owned
 
 
+# Object pointer -> (signature, bone id) for _uniform_bone_id: the panel and
+# its dialogs ask on every redraw, and the answer reads every vertex. Cleared
+# when a Mesh data-block changes (weights, vertex groups, Edit Mode; posing
+# updates only the objects, measured 2026-10-23), after undo/redo, on load and
+# by this module's own vertex group writes. The signature also catches a
+# swapped mesh, a changed vertex count and renamed vertex groups.
+_UNIFORM_BONE_CACHE = {}
+
+
+def _uniform_bone_id(obj):
+    """_detect_uniform_vertex_bone_id, cached (see _UNIFORM_BONE_CACHE)."""
+    mesh = obj.data
+    signature = (mesh.as_pointer(), len(mesh.vertices), tuple(g.name for g in obj.vertex_groups))
+    cached = _UNIFORM_BONE_CACHE.get(obj.as_pointer())
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+    bone_id = _detect_uniform_vertex_bone_id(obj)
+    _UNIFORM_BONE_CACHE[obj.as_pointer()] = (signature, bone_id)
+    return bone_id
+
+
+@persistent
+def _forget_uniform_bones_on_mesh_update(_scene, depsgraph):
+    if any(isinstance(update.id, bpy.types.Mesh) for update in depsgraph.updates):
+        _UNIFORM_BONE_CACHE.clear()
+
+
+@persistent
+def _forget_uniform_bones(*_args):
+    _UNIFORM_BONE_CACHE.clear()
+
+
+_UNIFORM_BONE_HANDLERS = (
+    ('depsgraph_update_post', _forget_uniform_bones_on_mesh_update),
+    ('undo_post', _forget_uniform_bones),
+    ('redo_post', _forget_uniform_bones),
+    ('load_post', _forget_uniform_bones),
+)
+
+
 def _gather_scene_claims(context, arm_obj, bone_records, exclude=None):
     """The scene state layered on top of the import-time snapshot (step 2).
     *exclude* is a custom submesh whose bone doesn't count as claimed (the
@@ -172,7 +213,7 @@ def _gather_scene_claims(context, arm_obj, bone_records, exclude=None):
     for sub_idx, from_bone_id in owner_bone_by_submesh.items():
         obj = object_by_submesh.get(sub_idx)
         if obj is not None:
-            target_bone_by_submesh[sub_idx] = _detect_uniform_vertex_bone_id(obj)
+            target_bone_by_submesh[sub_idx] = _uniform_bone_id(obj)
 
     retargets, _issues = HostBones.compute_rigid_retargets(
         owner_bone_by_submesh, bone_geo_raw, target_bone_by_submesh, known_bone_ids)
@@ -183,7 +224,7 @@ def _gather_scene_claims(context, arm_obj, bone_records, exclude=None):
     for o in context.view_layer.objects:
         if o.type == 'MESH' and o.parent is arm_obj and o.get('SluggiesCustomSubmesh') \
                 and o is not exclude:
-            bone_id = _detect_uniform_vertex_bone_id(o)
+            bone_id = _uniform_bone_id(o)
             if bone_id is not None:
                 custom_submesh_bone_ids.add(bone_id)
 
@@ -401,13 +442,50 @@ def _default_host_bone_choice(context, arm_obj, ordered_choices):
     return min(pool, key=_distance)
 
 
+# Dynamic enum items by name: (key, items). Blender calls an items callback
+# on every redraw of a dialog showing the enum and on every read of the
+# property, so a list is built once and reused while its key (armature,
+# active object) matches. invoke() drops it so each dialog starts fresh, and
+# execute()/cancel() drop it when the dialog closes; execute() still re-checks
+# the scene itself. Holding the items here also keeps their strings alive,
+# which Blender requires of dynamic enums.
+_ENUM_ITEMS = {}
+
+
+def _cached_enum_items(name, key, build):
+    cached = _ENUM_ITEMS.get(name)
+    if cached is None or cached[0] != key:
+        cached = _ENUM_ITEMS[name] = (key, build())
+    return cached[1]
+
+
+def _set_enum_items(name, key, items):
+    _ENUM_ITEMS[name] = (key, items)
+
+
+def _drop_enum_items(*names):
+    for name in names:
+        _ENUM_ITEMS.pop(name, None)
+
+
+def _pointer(obj):
+    return obj.as_pointer() if obj is not None else None
+
+
 def _host_bone_enum_items(self, context):
     arm_obj = _find_target_armature(context)
+    return _cached_enum_items(
+        'add_submesh.host_bone', _pointer(arm_obj), lambda: _host_bone_items(context, arm_obj))
+
+
+def _host_bone_items(context, arm_obj, ordered=None):
+    """Add Submesh's host bone items; *ordered* when the caller has the choices."""
     if arm_obj is None:
         return [('NONE', "No armature", _no_target_armature_message(context), 0)]
     if not _bone_metadata_is_current(arm_obj):
         return [('NONE', "Re-import needed", HostBones.RE_IMPORT_MESSAGE, 0)]
-    ordered = _ordered_host_bone_choices(context, arm_obj)
+    if ordered is None:
+        ordered = _ordered_host_bone_choices(context, arm_obj)
     if not ordered:
         return [('NONE', "No free bones", "Every bone already owns a mesh or is claimed", 0)]
     return _bone_choice_items(ordered)
@@ -440,6 +518,11 @@ def _template_source_description(choice):
 
 def _template_source_enum_items(self, context):
     arm_obj = _find_target_armature(context)
+    return _cached_enum_items(
+        'template_source', _pointer(arm_obj), lambda: _template_source_items(context, arm_obj))
+
+
+def _template_source_items(context, arm_obj):
     if arm_obj is None:
         return [('NONE', "None", _no_target_armature_message(context), 0)]
     choices = TemplateSources.build_template_source_choices(
@@ -566,6 +649,7 @@ def _create_custom_submesh_cube(context, arm_obj, bone_id, custom_submesh_id, su
 
     vg = obj.vertex_groups.new(name=f'bone_{bone_id}')
     vg.add(list(range(len(mesh.vertices))), 1.0, 'REPLACE')
+    _UNIFORM_BONE_CACHE.clear()
 
     mod = obj.modifiers.new(name="Armature", type='ARMATURE')
     mod.object = arm_obj
@@ -714,7 +798,7 @@ def _reassign_choices(context, arm_obj, obj):
     kind, submesh_index = _rigid_mesh_kind(obj)
     records = _bone_records(arm_obj)
     claims = _gather_scene_claims(context, arm_obj, records)
-    moving_bone_id = _detect_uniform_vertex_bone_id(obj)
+    moving_bone_id = _uniform_bone_id(obj)
     return HostBones.reassignment_choices(
         records, claims,
         moving_submesh_index=submesh_index if kind == 'donor' else None,
@@ -730,12 +814,14 @@ def _rigid_mesh_attachment_label(context, arm_obj, obj):
     kind, submesh_index = _rigid_mesh_kind(obj)
     if kind is None:
         return "Not a rigid or custom submesh"
-    bone_id = _detect_uniform_vertex_bone_id(obj)
+    bone_id = _uniform_bone_id(obj)
     if bone_id is None:
         return "No single bone_<id> vertex group with weight; assign one to reassign"
     if kind == 'donor':
         donor_bone_id = next(
-            (r.bone_id for r in _bone_records(arm_obj) if r.geo_id_raw == submesh_index), None)
+            (b_id for b in arm_obj.data.bones
+             if (b_id := _bone_id_from_name(b.name)) is not None
+             and int(b.get('SluggiesGeoIdRaw', HostBones.GEO_ID_FREE)) == submesh_index), None)
         if donor_bone_id is not None and donor_bone_id != bone_id:
             return f"Attached to bone_{bone_id} (moved from bone_{donor_bone_id})"
     return f"Attached to bone_{bone_id}"
@@ -744,9 +830,17 @@ def _rigid_mesh_attachment_label(context, arm_obj, obj):
 def _reassign_target_bone_enum_items(self, context):
     arm_obj = _find_target_armature(context)
     obj = context.active_object
+    return _cached_enum_items(
+        'reassign.target_bone', (_pointer(arm_obj), _pointer(obj)),
+        lambda: _reassign_target_bone_items(context, arm_obj, obj))
+
+
+def _reassign_target_bone_items(context, arm_obj, obj, ordered=None):
+    """Reassign's target bone items; *ordered* when the caller has the choices."""
     if arm_obj is None or obj is None:
         return [('NONE', "No armature", _no_target_armature_message(context), 0)]
-    ordered = _reassign_choices(context, arm_obj, obj)
+    if ordered is None:
+        ordered = _reassign_choices(context, arm_obj, obj)
     if not ordered:
         return [('NONE', "No other free bones", "No other bone is free to move to", 0)]
     return _bone_choice_items(ordered)
@@ -841,6 +935,8 @@ class SLUGGIES_OT_reassign_bone(bpy.types.Operator):
         if not ordered:
             self.report({"ERROR"}, "No other bone is free to move to")
             return {"CANCELLED"}
+        _set_enum_items('reassign.target_bone', (_pointer(arm_obj), _pointer(obj)),
+                        _reassign_target_bone_items(context, arm_obj, obj, ordered))
 
         default_choice = _default_reassign_target(arm_obj, obj, ordered)
         if default_choice is not None:
@@ -908,6 +1004,7 @@ class SLUGGIES_OT_reassign_bone(bpy.types.Operator):
                     obj.vertex_groups.remove(vg)
             new_vg = obj.vertex_groups.new(name=f'bone_{target_bone_id}')
             new_vg.add(list(range(len(obj.data.vertices))), 1.0, 'REPLACE')
+            _UNIFORM_BONE_CACHE.clear()
 
             mod = next((m for m in obj.modifiers if m.type == 'ARMATURE'), None)
             if mod is None:
@@ -926,9 +1023,11 @@ class SLUGGIES_OT_reassign_bone(bpy.types.Operator):
             return {"FINISHED"}
         finally:
             _end_bone_name_display(self, arm_obj)
+            _drop_enum_items('reassign.target_bone')
 
     def cancel(self, context):
         _end_bone_name_display(self, _find_target_armature(context))
+        _drop_enum_items('reassign.target_bone')
 
 
 def _new_surface_plan(context, arm_obj, obj, template_source):
@@ -1052,11 +1151,14 @@ class SLUGGIES_OT_add_material(bpy.types.Operator):
             return {"CANCELLED"}
 
         self.material_name = _default_new_material_name(obj)
+        _drop_enum_items('template_source')
         template_choices = TemplateSources.build_template_source_choices(
             _template_source_materials(context, arm_obj), stadium=_model_is_stadium(arm_obj))
         if template_choices:
             self.template_source = template_choices[0].template_source
         self.assign_selected_faces = True
+        # Read once: it parses the .sluggie, and draw() runs on every hover.
+        self._texture_warning = _low_poly_texture_warning(arm_obj)
         return context.window_manager.invoke_props_dialog(self)
 
     def draw(self, context):
@@ -1065,12 +1167,20 @@ class SLUGGIES_OT_add_material(bpy.types.Operator):
         layout.prop(self, 'template_source')
         if context.mode == 'EDIT_MESH':
             layout.prop(self, 'assign_selected_faces')
-        arm_obj = _find_target_armature(context)
-        warning = _low_poly_texture_warning(arm_obj) if arm_obj is not None else None
+        warning = getattr(self, '_texture_warning', None)
         if warning:
             layout.label(text=warning, icon='INFO')
 
+    def cancel(self, context):
+        _drop_enum_items('template_source')
+
     def execute(self, context):
+        try:
+            return self._add_material(context)
+        finally:
+            _drop_enum_items('template_source')
+
+    def _add_material(self, context):
         arm_obj = _find_target_armature(context)
         obj = context.active_object
         if arm_obj is None or obj is None:
@@ -1160,6 +1270,11 @@ STADIUM_ROOT_PARENT = '__ROOT__'
 
 def _add_bone_parent_enum_items(self, context):
     arm_obj = _find_target_armature(context)
+    return _cached_enum_items(
+        'add_bone.parent_bone', _pointer(arm_obj), lambda: _add_bone_parent_items(context, arm_obj))
+
+
+def _add_bone_parent_items(context, arm_obj):
     if arm_obj is None:
         return [('NONE', "No armature", _no_target_armature_message(context), 0)]
     # data.bones iterates depth-first through the hierarchy; list by numeric id.
@@ -1424,6 +1539,7 @@ class SLUGGIES_OT_add_bone(bpy.types.Operator):
             self.report({"ERROR"}, HostBones.RE_IMPORT_MESSAGE)
             return {"CANCELLED"}
         _renumber_added_bones_reporting(self, arm_obj)
+        _drop_enum_items('add_bone.parent_bone')
         active_bone = arm_obj.data.bones.active
         if _model_is_stadium(arm_obj):
             # A root bone is the default; a parent is picked deliberately.
@@ -1464,9 +1580,11 @@ class SLUGGIES_OT_add_bone(bpy.types.Operator):
             return {"FINISHED"}
         finally:
             _end_bone_name_display(self, arm_obj)
+            _drop_enum_items('add_bone.parent_bone')
 
     def cancel(self, context):
         _end_bone_name_display(self, _find_target_armature(context))
+        _drop_enum_items('add_bone.parent_bone')
 
 
 class SLUGGIES_OT_add_submesh(bpy.types.Operator):
@@ -1523,6 +1641,9 @@ class SLUGGIES_OT_add_submesh(bpy.types.Operator):
         if not ordered:
             self.report({"ERROR"}, "Every bone already owns a mesh or is claimed")
             return {"CANCELLED"}
+        _set_enum_items('add_submesh.host_bone', _pointer(arm_obj),
+                        _host_bone_items(context, arm_obj, ordered))
+        _drop_enum_items('template_source')
 
         self.submesh_name = _default_submesh_name(context)
         default_choice = _default_host_bone_choice(context, arm_obj, ordered)
@@ -1594,9 +1715,11 @@ class SLUGGIES_OT_add_submesh(bpy.types.Operator):
             return {"FINISHED"}
         finally:
             _end_bone_name_display(self, arm_obj)
+            _drop_enum_items('add_submesh.host_bone', 'template_source')
 
     def cancel(self, context):
         _end_bone_name_display(self, _find_target_armature(context))
+        _drop_enum_items('add_submesh.host_bone', 'template_source')
 
 
 # Everything the add-on writes on a material. A material that becomes a
@@ -1610,10 +1733,6 @@ _SLUGGIES_MATERIAL_PROPS = (
 
 # The name Make Submesh gives a mesh's only UV map.
 _MADE_SUBMESH_UV_NAME = 'UV0'
-
-# Dynamic enum strings must stay referenced from Python, or Blender may show
-# garbage in the dropdown.
-_MAKE_SUBMESH_ENUM_ITEMS = {}
 
 
 def _is_donor_mesh(obj):
@@ -1646,27 +1765,38 @@ def _make_submesh_armature(op):
     return arm_obj if arm_obj is not None and arm_obj.type == 'ARMATURE' else None
 
 
+_MAKE_SUBMESH_ENUMS = ('make_submesh.armature', 'make_submesh.host_bone')
+
+
 def _make_submesh_armature_enum_items(self, context):
+    return _cached_enum_items('make_submesh.armature', None, lambda: _make_submesh_armature_items(context))
+
+
+def _make_submesh_armature_items(context):
     armatures = _sluggies_armatures(context)
     items = [(a.name, a.name, f"Attach the mesh to a bone of {a.name}", idx)
              for idx, a in enumerate(armatures)]
-    items = items or [('NONE', "No armature", "Import a Sluggies model first", 0)]
-    _MAKE_SUBMESH_ENUM_ITEMS['armature'] = items
-    return items
+    return items or [('NONE', "No armature", "Import a Sluggies model first", 0)]
 
 
 def _make_submesh_bone_enum_items(self, context):
     arm_obj = _make_submesh_armature(self)
+    obj = context.active_object
+    return _cached_enum_items(
+        'make_submesh.host_bone', (_pointer(arm_obj), _pointer(obj)),
+        lambda: _make_submesh_bone_items(context, arm_obj, obj))
+
+
+def _make_submesh_bone_items(context, arm_obj, obj, ordered=None):
+    """Make Submesh's host bone items; *ordered* when the caller has the choices."""
     if arm_obj is None:
-        items = [('NONE', "No armature", "Pick an armature first", 0)]
-    elif not _bone_metadata_is_current(arm_obj):
-        items = [('NONE', "Re-import needed", HostBones.RE_IMPORT_MESSAGE, 0)]
-    else:
-        ordered = _ordered_host_bone_choices(context, arm_obj, exclude=context.active_object)
-        items = _bone_choice_items(ordered) or [
-            ('NONE', "No free bones", "Every bone already owns a mesh or is claimed", 0)]
-    _MAKE_SUBMESH_ENUM_ITEMS['host_bone'] = items
-    return items
+        return [('NONE', "No armature", "Pick an armature first", 0)]
+    if not _bone_metadata_is_current(arm_obj):
+        return [('NONE', "Re-import needed", HostBones.RE_IMPORT_MESSAGE, 0)]
+    if ordered is None:
+        ordered = _ordered_host_bone_choices(context, arm_obj, exclude=obj)
+    return _bone_choice_items(ordered) or [
+        ('NONE', "No free bones", "Every bone already owns a mesh or is claimed", 0)]
 
 
 def _update_make_submesh_armature(self, context):
@@ -1676,6 +1806,8 @@ def _update_make_submesh_armature(self, context):
     if arm_obj is None or obj is None or not _bone_metadata_is_current(arm_obj):
         return
     ordered = _ordered_host_bone_choices(context, arm_obj, exclude=obj)
+    _set_enum_items('make_submesh.host_bone', (_pointer(arm_obj), _pointer(obj)),
+                    _make_submesh_bone_items(context, arm_obj, obj, ordered))
     choice = _default_reassign_target(arm_obj, obj, ordered)
     if choice is not None:
         self.host_bone = f'bone_{choice.bone_id}'
@@ -1967,6 +2099,7 @@ class SLUGGIES_OT_make_submesh(bpy.types.Operator):
         for armature in armatures:
             if _bone_metadata_is_current(armature):
                 _renumber_added_bones_reporting(self, armature)
+        _drop_enum_items(*_MAKE_SUBMESH_ENUMS)
         self.armature = arm_obj.name
         _update_make_submesh_armature(self, context)
         self._display_armature = arm_obj.name
@@ -1986,13 +2119,14 @@ class SLUGGIES_OT_make_submesh(bpy.types.Operator):
         try:
             return self._make_submesh(context)
         finally:
-            self._restore_bone_names()
+            self._end_dialog()
 
     def cancel(self, context):
-        self._restore_bone_names()
+        self._end_dialog()
 
-    def _restore_bone_names(self):
+    def _end_dialog(self):
         _end_bone_name_display(self, bpy.data.objects.get(getattr(self, '_display_armature', '')))
+        _drop_enum_items(*_MAKE_SUBMESH_ENUMS)
 
     def _make_submesh(self, context):
         obj = context.active_object
@@ -2069,6 +2203,7 @@ def _convert_to_custom_submesh(context, obj, arm_obj, bone_id, template_source, 
     obj.vertex_groups.clear()
     group = obj.vertex_groups.new(name=f'bone_{bone_id}')
     group.add(list(range(len(obj.data.vertices))), 1.0, 'REPLACE')
+    _UNIFORM_BONE_CACHE.clear()
 
     _ensure_armature_modifier(obj, arm_obj)
 
@@ -2764,9 +2899,19 @@ def register():
         min=0.01,
         soft_max=4.0,
     )
+    for name, handler in _UNIFORM_BONE_HANDLERS:
+        handlers = getattr(bpy.app.handlers, name)
+        if handler not in handlers:
+            handlers.append(handler)
 
 
 def unregister():
+    for name, handler in _UNIFORM_BONE_HANDLERS:
+        handlers = getattr(bpy.app.handlers, name)
+        if handler in handlers:
+            handlers.remove(handler)
+    _UNIFORM_BONE_CACHE.clear()
+    _ENUM_ITEMS.clear()
     del bpy.types.Scene.sluggies_animation_scale
     del bpy.types.Scene.sluggies_show_free_host_bones
     for key in _COLLAPSIBLE_BOXES:

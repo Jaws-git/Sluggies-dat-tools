@@ -1556,6 +1556,8 @@ def _section_lines(state: dict, section: dict, sizes: dict, warnings: bool = Tru
         else:
             lines.append((f'Models: High {_mb(sizes_.get("high") or 0)} + Low {_mb(sizes_.get("low") or 0)}, '
                           'finished blocks written as they are', TEXT))
+        if info.get('glb_edited'):
+            lines.append(('Models: its model.glb was edited after export; those edits are not included', WARN))
         by = ', '.join(f'{label} {info[key]}' for key, label in (('author', 'by'), ('from', 'from')) if info.get(key))
         if by:
             lines.append((f'File: {by}', TEXT))

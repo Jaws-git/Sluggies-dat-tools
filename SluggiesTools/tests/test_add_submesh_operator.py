@@ -368,7 +368,7 @@ class AddSubmeshOperatorStructureTests(unittest.TestCase):
         invoke_src = ast.get_source_segment(self.source, invoke_fn)
         self.assertIn('_bone_metadata_is_current(arm_obj)', invoke_src)
         self.assertIn('HostBones.RE_IMPORT_MESSAGE', invoke_src)
-        for name in ('_host_bone_enum_items', '_draw_free_host_bones'):
+        for name in ('_host_bone_items', '_draw_free_host_bones'):
             fn_src = ast.get_source_segment(self.source, self._function(name))
             self.assertIn('_bone_metadata_is_current(arm_obj)', fn_src, name)
 

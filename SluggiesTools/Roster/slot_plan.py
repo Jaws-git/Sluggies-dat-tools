@@ -1841,7 +1841,12 @@ def plan_slgmodel(st: dict, config: dict, cid: int, model: slgmodel.SlgModel, en
                      'author': model.author, 'from': model.source, 'notes': model.notes,
                      'left_out': list(model.left_out), 'high_only': model.high_only,
                      'sizes': {'high': len(high), 'low': None if model.high_only else len(low)},
-                     'portraits': sorted(model.portraits), 'voice_clips': len(model.voice)}
+                     'portraits': sorted(model.portraits), 'voice_clips': len(model.voice),
+                     'glb_edited': model.glb_edited}
+    if model.glb_edited:
+        plan.warnings.append(f'{file_name}: its model.glb was edited after the file was exported, and reading a .glb '
+                             'is not supported yet: the slot gets the model as it was last exported, without those '
+                             'edits (re-export the file from the tool that edited it to include them)')
     if cid >= ids.FIRST_NEW:
         entry = _entry(new, 'ids', cid)
         if entry is None:

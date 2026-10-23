@@ -1,6 +1,7 @@
 """Check Models dialog: one box per object with its findings, a Fix
-checkbox where a fix exists (none ticked by default) and a Go to button.
-OK runs the ticked fixes as one undo step, then reports what is left."""
+checkbox where a fix exists (none ticked by default), else a button for the
+tool that fixes it by hand, and a Go to button. OK runs the ticked fixes as
+one undo step, then reports what is left."""
 
 import json
 
@@ -23,6 +24,8 @@ class SluggiesCheckRow(bpy.types.PropertyGroup):
     detail: StringProperty()  # type: ignore[valid-type]
     fix_id: StringProperty()  # type: ignore[valid-type]
     fix_args: StringProperty()  # type: ignore[valid-type]
+    action_id: StringProperty()  # type: ignore[valid-type]
+    action_args: StringProperty()  # type: ignore[valid-type]
     fix: BoolProperty(name="Fix", description="Fix this automatically on OK", default=False)  # type: ignore[valid-type]
 
 
@@ -62,6 +65,28 @@ def _unhide_collections(layer_collection, obj):
     return False
 
 
+def _frame_selected(context):
+    for area in context.screen.areas:
+        if area.type == 'VIEW_3D':
+            region = next(r for r in area.regions if r.type == 'WINDOW')
+            with context.temp_override(area=area, region=region):
+                bpy.ops.view3d.view_selected()
+            break
+
+
+def _go_to(context, obj):
+    """Object Mode, *obj* unhidden, the only selected object and active."""
+    if context.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    _unhide_collections(context.view_layer.layer_collection, obj)
+    obj.hide_viewport = False
+    obj.hide_set(False)
+    for other in context.view_layer.objects:
+        other.select_set(False)
+    obj.select_set(True)
+    context.view_layer.objects.active = obj
+
+
 class SLUGGIES_OT_check_goto(bpy.types.Operator):
     bl_idname = "sluggies.check_goto"
     bl_label = "Go to"
@@ -75,21 +100,88 @@ class SLUGGIES_OT_check_goto(bpy.types.Operator):
         if obj is None:
             self.report({'WARNING'}, f"{self.object_name} no longer exists")
             return {'CANCELLED'}
-        if context.mode != 'OBJECT':
-            bpy.ops.object.mode_set(mode='OBJECT')
-        _unhide_collections(context.view_layer.layer_collection, obj)
-        obj.hide_viewport = False
-        obj.hide_set(False)
-        for other in context.view_layer.objects:
-            other.select_set(False)
-        obj.select_set(True)
-        context.view_layer.objects.active = obj
-        for area in context.screen.areas:
-            if area.type == 'VIEW_3D':
-                region = next(r for r in area.regions if r.type == 'WINDOW')
-                with context.temp_override(area=area, region=region):
-                    bpy.ops.view3d.view_selected()
-                break
+        _go_to(context, obj)
+        _frame_selected(context)
+        return {'FINISHED'}
+
+
+def _go_to_bones(context, arm, bones):
+    """Edit Mode on *arm* with *bones* unhidden, selected and framed."""
+    for name in bones:
+        bone = arm.data.bones.get(name)
+        if bone is not None:
+            for collection in bone.collections:
+                collection.is_visible = True
+    bpy.ops.object.mode_set(mode='EDIT')
+    edit_bones = arm.data.edit_bones
+    for ebone in edit_bones:
+        ebone.select = ebone.select_head = ebone.select_tail = False
+    found = [edit_bones[name] for name in bones if name in edit_bones]
+    if not found:
+        raise ValueError(f"bones {', '.join(bones)} are gone")
+    for ebone in found:
+        ebone.hide = False
+        ebone.select = ebone.select_head = ebone.select_tail = True
+    edit_bones.active = found[0]
+    _frame_selected(context)
+
+
+def _run_operator(idname):
+    module, name = idname.split('.')
+    try:
+        getattr(getattr(bpy.ops, module), name)('INVOKE_DEFAULT')
+    except RuntimeError as exc:   # the tool's poll refused; its message says why
+        raise ValueError(str(exc).replace("Operator bpy.ops." + idname + ".poll() ", "")) from exc
+
+
+# action_id -> (button label, icon, run(context, obj, **action_args)). Each
+# selects its finding's object first, then opens the tool on it.
+ACTIONS = {
+    "locate_sluggie": ("Locate source .sluggie", 'FILE_REFRESH',
+                       lambda context, obj: _run_operator("sluggies.locate_sluggie")),
+    "goto_bones": ("Go to bones", 'BONE_DATA',
+                   lambda context, obj, bones: _go_to_bones(context, obj, bones)),
+    "reassign_bone": ("Reassign bone", 'BONE_DATA',
+                      lambda context, obj: _run_operator("sluggies.reassign_bone")),
+    "texture_slots": ("Manage texture slots", 'TEXTURE',
+                      lambda context, obj: _run_operator("sluggies.manage_texture_slots")),
+    "make_submesh": ("Make into submesh", 'MESH_DATA',
+                     lambda context, obj: _run_operator("sluggies.make_submesh")),
+}
+
+
+class SLUGGIES_OT_check_action(bpy.types.Operator):
+    bl_idname = "sluggies.check_action"
+    bl_label = "Open tool"
+    bl_description = "Select the object and open the tool that fixes this"
+    bl_options = {'INTERNAL'}
+
+    action_id: StringProperty()  # type: ignore[valid-type]
+    action_args: StringProperty()  # type: ignore[valid-type]
+
+    @classmethod
+    def description(cls, context, properties):
+        return {
+            "locate_sluggie": "Select the armature and pick its .sluggie file",
+            "goto_bones": "Select these bones in the armature's Edit Mode and frame them",
+            "reassign_bone": "Select the mesh and open Reassign to New Bone",
+            "texture_slots": "Select the mesh and open Manage texture slots",
+            "make_submesh": "Select the mesh and open Make Active Mesh into a Submesh",
+        }.get(properties.action_id, cls.bl_description)
+
+    def execute(self, context):
+        args = json.loads(self.action_args or "{}")
+        name = args.pop("object", "")
+        obj = bpy.data.objects.get(name)
+        if obj is None:
+            self.report({'WARNING'}, f"{name} no longer exists")
+            return {'CANCELLED'}
+        _go_to(context, obj)
+        try:
+            ACTIONS[self.action_id][2](context, obj, **args)
+        except ValueError as exc:
+            self.report({'WARNING'}, str(exc))
+            return {'CANCELLED'}
         return {'FINISHED'}
 
 
@@ -108,6 +200,8 @@ def _fill_rows(context):
         row.detail = finding.detail
         row.fix_id = finding.fix_id or ""
         row.fix_args = json.dumps(finding.fix_args)
+        row.action_id = finding.action_id or ""
+        row.action_args = json.dumps(finding.action_args)
     for scope in scopes:
         try:
             estimate = ModelCheck.estimate_scope_size(scope)
@@ -166,6 +260,11 @@ class SLUGGIES_OT_check_models(bpy.types.Operator):
                                icon=SEVERITY_ICON.get(row.severity, 'INFO'), emboss=False).detail = row.detail
                 if row.fix_id:
                     split.prop(row, "fix", text="Fix automatically")
+                elif row.action_id in ACTIONS:
+                    label, icon, _run = ACTIONS[row.action_id]
+                    op = split.operator(SLUGGIES_OT_check_action.bl_idname, text=label, icon=icon)
+                    op.action_id = row.action_id
+                    op.action_args = row.action_args
                 else:
                     split.label(text="")
         sizes = wm.sluggies_check_sizes
@@ -197,7 +296,7 @@ class SLUGGIES_OT_check_models(bpy.types.Operator):
 
 CLASSES = (
     SluggiesCheckRow, SluggiesCheckSize, SLUGGIES_OT_check_detail, SLUGGIES_OT_check_goto,
-    SLUGGIES_OT_check_models,
+    SLUGGIES_OT_check_action, SLUGGIES_OT_check_models,
 )
 
 

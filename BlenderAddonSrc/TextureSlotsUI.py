@@ -134,6 +134,7 @@ class SluggiesTextureSlot(bpy.types.PropertyGroup):
     index: IntProperty()  # type: ignore[valid-type]
     file_name: StringProperty()  # type: ignore[valid-type]
     added: BoolProperty()  # type: ignore[valid-type]
+    missing: BoolProperty()  # type: ignore[valid-type]
 
 
 class SluggiesLowTextureItem(bpy.types.PropertyGroup):
@@ -200,6 +201,8 @@ class SLUGGIES_OT_manage_texture_slots(bpy.types.Operator):
             for slot in slots:
                 entry = self.slots.add()
                 entry.index, entry.file_name, entry.added = slot
+                # checked once here, not in draw(), which runs on every hover
+                entry.missing = not os.path.isfile(os.path.join(self.tex_dir, entry.file_name))
             if not slots and not self.hint:
                 self.hint = f"{high_arm.name} has no texture slots."
             for mat, node in _low_materials(low_arm) if slots else []:
@@ -239,11 +242,10 @@ class SLUGGIES_OT_manage_texture_slots(bpy.types.Operator):
         left.label(text="Slot")
         right.label(text="Texture")
         for slot in self.slots:
-            missing = not os.path.isfile(os.path.join(self.tex_dir, slot.file_name))
             left.label(text=str(slot.index))
             right.label(text=slot.file_name + ("  (added)" if slot.added else "")
-                        + ("  (PNG missing in tex/)" if missing else ""),
-                        icon='ERROR' if missing else 'NONE')
+                        + ("  (PNG missing in tex/)" if slot.missing else ""),
+                        icon='ERROR' if slot.missing else 'NONE')
 
         layout.separator()
         layout.label(text=f"Low-poly materials ({self.low_name})")

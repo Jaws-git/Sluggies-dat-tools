@@ -11,7 +11,8 @@ for Blender. It is the equivalent of a High + Low ``.sluggie`` pair whose blocks
     models/<N>.slgd  model file N of the character's directory (0 = High, 1 = Low) as a delta against the clean
                      game (below): no game bytes travel in the file
     model.glb        the same model as glTF 2.0 on the base's skeleton (what people open in Blender). While its
-                     SHA-1 still equals ``glb_sha1`` the blocks are the model; an edited glb is not read here
+                     SHA-1 still equals ``glb_sha1`` the blocks are the model. An edited glb is not read here:
+                     ``glb_edited`` is set and the blocks (the model as last exported) are used anyway
     side.png, front.png   the select-screen portraits (48x51)
     voice/<slot>.wav the character's own voice clips, slots ``v1 v3 v4 v5 v6 v7 v8 v10 v11 v12 v13 v14`` (the same
                      12 moments as ``Sound/sound_packs.MOMENTS``, in that order); a slot marked "base" in
@@ -26,7 +27,8 @@ bytes. The rebuilt file must have the stated length and SHA-1; a modded ``1_Inpu
 ``read(path, input_dir)`` gives a ``SlgModel``: the metadata, the rebuilt blocks, the portraits as RGBA images and
 the voice WAVs as bytes. It refuses, in plain words, a damaged or oversized zip, a member outside the format, a
 newer ``format``, a ``base`` outside the stock players (``BASE_NAMES``: the patcher's own spelling of the 0x65
-stock names, copied as data) and an edited ``model.glb``. Nothing here touches the game files; the planner
+stock names, copied as data). An edited ``model.glb`` is flagged (``glb_edited``), not refused: the planner warns
+that the Blender edits are not in the blocks. Nothing here touches the game files; the planner
 (``slot_plan.plan_slgmodel``) decides what the character becomes in the roster.
 """
 
@@ -266,7 +268,7 @@ class SlgModel:
     voice: dict = field(default_factory=dict)           # {slot: WAV bytes} the character's own clips
     voice_slots: dict = field(default_factory=dict)     # {slot: 'own' | 'base'}
     has_glb: bool = False
-    glb_edited: bool = False
+    glb_edited: bool = False                            # model.glb changed since export: the blocks lack those edits
 
     @property
     def file_name(self) -> str:
@@ -355,10 +357,6 @@ def read(path: str, input_dir: str, blocks: bool = True) -> SlgModel:
         glb_sha = meta.get('glb_sha1')
         has_glb = GLB in names
         glb_edited = has_glb and glb_sha not in (None, hashlib.sha1(zf.read(GLB)).hexdigest())
-        if glb_edited:
-            raise SlgError(f'{name}: its model.glb was edited in Blender after the file was exported, so its game '
-                           'model is out of date. This tool uses the finished model blocks only (reading the '
-                           '.glb is not supported yet): export the character again with the patcher first.')
         left_out = meta.get('left_out') or []
         left_out = [left_out] if isinstance(left_out, str) else left_out
         model = SlgModel(path, title, base, cid, _text(meta, 'author'), _text(meta, 'from'), _text(meta, 'notes'),
