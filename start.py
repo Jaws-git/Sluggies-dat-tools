@@ -712,14 +712,19 @@ def _patch_sluggie(found, model, unpatch, target_id=None, as_low=False, validate
     With ``target_id`` the model goes into that character's slot, which is
     always a Hammerspace write (the in-place patcher can only write over the
     model's own block). ``validate_only`` builds and validates that block and
-    writes nothing. ``lod_partner_block``: the high-/low-poly partner's
-    incoming block (``_build_partner_block``), checked instead of the live one."""
+    writes nothing; without ``target_id`` it runs the plain patch's route as a
+    dry run (Hammerspace ``--dry-run``, the in-place patcher's
+    ``--validate-only``, the collision ``--dry-run``). ``lod_partner_block``: the
+    high-/low-poly partner's incoming block (``_build_partner_block``), checked
+    instead of the live one."""
     if target_id is not None or _needs_hammerspace(model, found):
         cmd = python_script_command(HS_MAIN_SCRIPT, found, *hammerspace_section_args(model))
         if target_id is not None:
             cmd += ['--target-id', target_id] + (['--as-low'] if as_low else [])
             cmd += ['--target-file', str(target_file)] if target_file is not None else []
             cmd += ['--validate-only'] if validate_only else []
+        elif validate_only:
+            cmd.append('--dry-run')
         if unpatch:
             cmd.append('--unpatch')
         if lod_partner_block is not None:
@@ -727,22 +732,28 @@ def _patch_sluggie(found, model, unpatch, target_id=None, as_low=False, validate
         subprocess.run(cmd, cwd=HS_DIR, check=True)
     else:
         if _current_model_in_hammerspace(model.get('ChunkNumber'), model.get('FileIndex')):
-            slogger.info(
-                f"Model is currently in hammerspace but this file requests an "
-                f"{'in-place unpatch' if unpatch else 'in-place patch'}; removing the "
-                "hammerspace block first to restore the original model bytes "
-                "and DOL route.",
-                source="dispatcher",
-            )
-            subprocess.run(
-                python_script_command(HS_MAIN_SCRIPT, found, '--unpatch'),
-                cwd=HS_DIR,
-                check=True,
-            )
+            if validate_only:
+                slogger.info("Model is currently in hammerspace: the patch removes that block first (not in a "
+                             "build check).", source="dispatcher")
+            else:
+                slogger.info(
+                    f"Model is currently in hammerspace but this file requests an "
+                    f"{'in-place unpatch' if unpatch else 'in-place patch'}; removing the "
+                    "hammerspace block first to restore the original model bytes "
+                    "and DOL route.",
+                    source="dispatcher",
+                )
+                subprocess.run(
+                    python_script_command(HS_MAIN_SCRIPT, found, '--unpatch'),
+                    cwd=HS_DIR,
+                    check=True,
+                )
 
         cmd = python_script_command(PATCH_SCRIPT, found)
         if unpatch:
             cmd.append('--unpatch')
+        if validate_only:
+            cmd.append('--validate-only')
         subprocess.run(cmd, cwd=TOOLS_DIR, check=True)
     # A stadium's collision is a file of its own, written next to either path.
     # Not for slot targets (characters have no collision file).
@@ -750,6 +761,8 @@ def _patch_sluggie(found, model, unpatch, target_id=None, as_low=False, validate
         cmd = python_script_command(COLLISION_SCRIPT, found)
         if unpatch:
             cmd.append('--unpatch')
+        if validate_only:
+            cmd.append('--dry-run')
         subprocess.run(cmd, cwd=HS_DIR, check=True)
 
 
@@ -1117,7 +1130,7 @@ def parse_args():
     parser.add_argument('--target-file', type=int, choices=range(2, 15), metavar='N', help="with --target-id: the slot file an equipment .sluggie goes to (2 bat, 3 left glove, 4 right glove, 5 extra bat; default: the file it was exported from); with --unpatch --target-id and no files: reset only that equipment file or animation bank (6-14)")
     parser.add_argument('--as-low', action='store_true', help='with --target-id: a high-poly model without L_ partner is the low-poly model too')
     parser.add_argument('--high-as-low', action='store_true', help='with --write-slot-blocks: the LOW block may be a second high-poly model (a .slgmodel character file import)')
-    parser.add_argument('--validate-only', action='store_true', help='with --patch --target-id: build and validate the slot blocks, write nothing')
+    parser.add_argument('--validate-only', action='store_true', help='with --patch: build and check every file, write nothing (with --target-id: the slot blocks; without: a dry run of the plain patch, in place or Hammerspace)')
     parser.add_argument('--fit', choices=('contain', 'cover', 'strict'), help='set-icon only: contain (fit inside, the default), cover (fill and crop) or strict (the image must be 48x51)')
     parser.add_argument('--equipment', metavar='FILE', help="--patch-slot: the slot file (2 bat, 3 left glove, 4 right glove, 5 extra bat; or bat, glove_l, glove_r, extra) a bat or glove .sluggie goes to (default: the file it was exported from); --clear-slot: reset only that equipment file, or 'all' four, instead of the models")
     parser.add_argument('--no-gear', action='store_true', help="--patch-slot of a model into a new ID: do not take the model's bats and gloves along")
@@ -1185,8 +1198,8 @@ def parse_args():
         parser.error('--target-file does not combine with --as-low.')
     if args.unpatch == [] and args.as_low:
         parser.error("--as-low does not apply to restoring a slot's models.")
-    if args.validate_only and not (args.patch and args.target_id):
-        parser.error('--validate-only needs --patch and --target-id.')
+    if args.validate_only and not args.patch:
+        parser.error('--validate-only needs --patch.')
     if args.as_low and not args.target_id:
         parser.error('--as-low needs --target-id.')
     if args.high_as_low and not args.write_slot_blocks:
@@ -1331,9 +1344,10 @@ def main() -> int:
             if not run_export_sounds():
                 return 1
         elif args.patch:
-            # A failed slot patch fails the command (the apply chain stops on it); plain patches keep going.
+            # A failed patch fails the command (the apply chain stops on it); a plain patch still tries every
+            # file first, a slot patch skips the rest.
             if not run_patching(args.patch, unpatch=False, target_id=args.target_id, as_low=args.as_low,
-                                validate_only=args.validate_only, target_file=args.target_file) and args.target_id:
+                                validate_only=args.validate_only, target_file=args.target_file):
                 return 1
         elif args.unpatch is not None:
             if not args.unpatch:

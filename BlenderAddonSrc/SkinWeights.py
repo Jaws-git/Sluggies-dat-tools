@@ -8,11 +8,11 @@ import math
 DEFAULT_WEIGHT_TARGET_SUM = 256
 SUPPORTED_WEIGHT_TARGET_SUMS = (255, 256)
 
-# Highest distinct-bone-per-vertex count observed across every player model in
-# dt_na.dat (SK2's 2-bone pair plus up to 3 SKAcc supplements). The format has
-# no hard structural limit, but nothing the game ships exceeds this, so it is
-# treated as the practical cap for authored/replacement content.
-MAX_BONE_INFLUENCES_PER_VERTEX = 5
+# Practical cap on distinct bones per vertex for authored/replacement content.
+# Vanilla player models reach 5 (SK2's 2-bone pair plus up to 3 SKAcc
+# supplements), but an authored model with 5 influences did not work in-game
+# (2026-10-23), so the cap is 4. Keep equal to ModelCheckCore.MAX_BONE_INFLUENCES.
+MAX_BONE_INFLUENCES_PER_VERTEX = 4
 
 
 def quantize_skin_weights(

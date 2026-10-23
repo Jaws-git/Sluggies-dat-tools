@@ -781,8 +781,8 @@ def check_body_weights(context, scope):
             yield Finding("overweighted", WARNING, obj.name,
                           f"{core.plural(len(over), 'vert')} on > {core.MAX_BONE_INFLUENCES} bones",
                           f"{obj.name}: {len(over)} vertex(es) are weighted to more than "
-                          f"{core.MAX_BONE_INFLUENCES} bones; no model in the game does that. The fix "
-                          "keeps the strongest five and normalizes them.",
+                          f"{core.MAX_BONE_INFLUENCES} bones; more did not work in-game. The fix "
+                          f"keeps the strongest {core.MAX_BONE_INFLUENCES} and normalizes them.",
                           "limit_weights", {"object": obj.name})
 
 

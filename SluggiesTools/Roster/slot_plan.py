@@ -125,6 +125,14 @@ every staged item goes into one ``--apply-gameplay`` step, in staging order (a l
 stat edit files and the roster rebuild, so its star boosts win over a stat edit file's whatever the staging order. A
 ``reset`` drops the earlier gameplay edits.
 
+Item models (``plan_item``, op ``item``): a ``.sluggie`` of a model outside the character and stadium directories
+(items, map objects, props; the grid tab's item tile). Stadium models (op ``stadium``, the grid's stadium tile) are
+the same edit for the stadium directories (``STADIUM_CHUNKS``). Game-wide too (``id`` ``GAME_WIDE``); the chain
+writes it as the CLI's plain patch does (``--patch FILE``: in place, or into hammerspace when the file asks for it),
+with the slot writes, in staging order, after a build check with the slots' (``--patch FILE --validate-only``: a
+dry run of that patch). One per model (``ModelOffset``): a later file of the same model replaces the
+earlier one. Character models are refused: they go into a slot (or its Equipment row); each op refuses the other's.
+
 Copy (``plan_copy``, op ``copy``, the grid's paste): slot ``id`` becomes a clone of ``source`` as the game holds
 it (finished blocks, name, portraits, stats source and every stat value; the square's voice stays unless the slot is
 alone on a new square). The planner snapshots the source into ``copy_dir`` before anything is written, so pending
@@ -357,6 +365,42 @@ def classify_anim(path: str) -> AnimPick:
         return AnimPick(path, data, bank, anim.bank_file(bank))
     except anim.AnimError as exc:
         raise PlanError(f'{name}: {exc}') from exc
+
+
+@dataclass(frozen=True)
+class ItemPick:
+    """A picked item model ``.sluggie``: the model it patches (``key``: chunk, file, model offset)."""
+    path: str
+    chunk: int
+    file: int | None
+    offset: str | None
+
+    @property
+    def key(self) -> tuple:
+        return (self.chunk, self.file, self.offset) if self.offset else (self.path.lower(),)
+
+
+def classify_item(path: str, op: str = 'item') -> ItemPick:
+    """The picked item model (``op`` ``stadium``: stadium model); refuses anything that is not an exported model
+    outside the character directories, and a stadium model as an item or the reverse."""
+    path = os.path.abspath(path)
+    name = os.path.basename(path)
+    if not path.lower().endswith('.sluggie') or not os.path.isfile(path):
+        raise PlanError(f'{path} is not a .sluggie file')
+    model = _load_model(path)
+    chunk = model.get('ChunkNumber')
+    if not isinstance(chunk, int):
+        raise PlanError(f'{name} names no model directory (ChunkNumber): export it again')
+    if chunk in CHARACTER_DIRS:
+        raise PlanError(f'{name} comes from a character directory ({chunk}): open the character\'s slot and use '
+                        'Select .sluggie... (bats and gloves: its Equipment row)')
+    if op == STADIUM and chunk not in STADIUM_CHUNKS:
+        raise PlanError(f'{name} comes from model directory {chunk}, not a stadium directory '
+                        f'({STADIUM_CHUNKS.start}-{STADIUM_CHUNKS.stop - 1}): use the Items square')
+    if op != STADIUM and chunk in STADIUM_CHUNKS:
+        raise PlanError(f'{name} comes from a stadium directory ({chunk}): use the Stadiums square')
+    offset = model.get('ModelOffset')
+    return ItemPick(path, chunk, model.get('FileIndex'), str(offset).lower() if offset is not None else None)
 
 
 # --------------------------------------------------------------------------
@@ -2093,6 +2137,19 @@ def plan_gameplay(item: str, earlier: list[str], env: Env, after_stat_files: boo
     return plan
 
 
+def plan_item(pick: ItemPick, op: str = 'item') -> Plan:
+    """The chain step that patches the item (``op`` ``stadium``: stadium) model ``pick`` as the CLI's plain patch
+    does (``--patch FILE``), after its build check (``--patch FILE --validate-only``: a dry run of that patch)."""
+    plan = Plan(op, GAME_WIDE, None)
+    plan.commands.append(('--patch', pick.path, '--validate-only'))
+    plan.commands.append(('--patch', pick.path))
+    where = f'model directory {pick.chunk}' + (f', file {pick.file}' if pick.file is not None else '')
+    plan.notes.append(f'{os.path.basename(pick.path)} ({where}) is patched like "Patch .sluggie models" of the '
+                      'command line menu: in place, or into hammerspace when the file asks for it')
+    plan.effects[op] = os.path.basename(pick.path)
+    return plan
+
+
 WRITE_VOICE_PACK = '--write-voice-pack'               # a character file import's voice pack (``Plan.voice_pack``)
 SLOT_WRITES = ('--patch', '--unpatch', '--write-slot-blocks', '--write-slot-equipment',  # step 4 of a batch
                '--write-slot-animation', WRITE_VOICE_PACK)
@@ -2110,7 +2167,12 @@ COPY = 'copy'
 STAT_EDITS = 'stat_edits'                             # not a slot edit: every one is written, in staging order
 GAMEPLAY = 'gameplay'                                 # game-wide too: gameplay files / reset, in staging order
 GAMEPLAY_RESET = 'reset'                              # Gameplay/apply.RESET_ITEM (test-pinned)
-GAME_OPS = (STAT_EDITS, GAMEPLAY)
+ITEM = 'item'                                         # game-wide: an item model .sluggie, a plain --patch
+STADIUM = 'stadium'                                   # the same for a stadium model .sluggie
+MODEL_FILE_OPS = (ITEM, STADIUM)
+GAME_OPS = (STAT_EDITS, GAMEPLAY, ITEM, STADIUM)
+# HammerspaceMain.STADIUM_CHUNKS: Mario Stadium (7) .. Toy Field (16)
+STADIUM_CHUNKS = range(7, 17)
 GAME_WIDE = 0xFF                                      # the "id" of a stat edit: no character has it
 ORIGINS = ('user', 'bundled')
 DEFAULT_WORDS = ('', '-', 'default')                  # an edit's "source" that resets (CLI text)
@@ -2122,7 +2184,7 @@ class Edit:
     op: str                         # 'patch' / 'clear' / 'rename' / 'voice' / 'stats' / 'icon' / ... / 'stat_edits'
     cid: int                        # the slot (voice: any slot of the square; stat_edits: GAME_WIDE)
     file: str | None = None         # patch: the picked .sluggie (a joined pair: the High model); icon: the image;
-    #                                 stat_edits: the stat editor's edit file
+    #                                 stat_edits: the stat editor's edit file; item: the item model .sluggie
     low: str | None = None          # patch: a Low pick joined to a pending High pick
     text: str | None = None         # rename
     checked: bool = False           # its build check already passed when it was staged (dry runs skip it)
@@ -2143,6 +2205,7 @@ class Edit:
     moment: str | None = None       # species_clip: the voice moment (``file``: the clip; None: the stock clip back)
     bank: int | None = None         # anim: the animation bank (6-14) the ``.anm`` in ``file`` goes to (``merge_edits``)
     anim: AnimPick | None = None    # anim: the read ``.anm`` (``merge_edits``)
+    item: ItemPick | None = None    # item: the model the file patches (``merge_edits``)
 
     def to_json(self) -> dict:
         out = {'op': self.op, 'id': _hex(self.cid)}
@@ -2196,6 +2259,7 @@ def parse_edits(data) -> list[Edit]:
             if not item.get('file') or not isinstance(item['file'], str):
                 raise PlanError(f'edit {n}: a {item["op"]} edit needs a "file" ('
                                 + ("the stat editor's edit file)" if item['op'] == STAT_EDITS
+                                   else f'the {item["op"]} model .sluggie)' if item['op'] in MODEL_FILE_OPS
                                    else 'a gameplay settings file, or "reset")'))
             edits.append(Edit(item['op'], GAME_WIDE, item['file'], checked=bool(item.get('checked')), index=n))
             continue
@@ -2363,7 +2427,8 @@ def _bundled_gear(edit: Edit, merged: list[Edit], notes: list[str], find_gear_fn
 
 
 def merge_edits(edits: list[Edit], classify_fn=None, load_icon_fn=None, classify_gear_fn=None,
-                find_gear_fn=None, classify_anim_fn=None) -> tuple[list[Edit], list[str], list[tuple[Edit, str]]]:
+                find_gear_fn=None, classify_anim_fn=None,
+                classify_item_fn=None) -> tuple[list[Edit], list[str], list[tuple[Edit, str]]]:
     """``(merged, notes, refused)``: the edits in staging order after the slot rules:
 
     * at most one model edit (patch / clear / copy) per slot: a later one replaces an earlier one;
@@ -2381,8 +2446,10 @@ def merge_edits(edits: list[Edit], classify_fn=None, load_icon_fn=None, classify
       replaces the gear an earlier patch brought along (``bundled`` edits) and stages its own behind it, never over
       a ``user`` edit of the same file;
     * animations: the last edit per slot and bank wins; a clear of the slot drops its earlier ones (it resets the
-      banks; a patch that copies a new ID's directory afresh does too, in ``plan_batch``)."""
+      banks; a patch that copies a new ID's directory afresh does too, in ``plan_batch``);
+    * item and stadium models: the last edit per model wins."""
     classify_fn = classify_fn or classify
+    classify_item_fn = classify_item_fn or classify_item
     load_icon_fn = load_icon_fn or load_icon
     classify_gear_fn = classify_gear_fn or classify_gear
     find_gear_fn = find_gear_fn or gear.find_gear
@@ -2403,6 +2470,19 @@ def merge_edits(edits: list[Edit], classify_fn=None, load_icon_fn=None, classify
                 if dropped:
                     notes.append(f'gameplay: {len(dropped)} pending gameplay edit{"s are" if len(dropped) != 1 else " is"} '
                                  'dropped: the later reset puts every value back to 1_Input')
+            merged.append(edit)
+            continue
+        if edit.op in MODEL_FILE_OPS:
+            try:
+                edit.item = edit.item or classify_item_fn(edit.file, edit.op)
+            except PlanError as exc:
+                refused.append((edit, str(exc)))
+                continue
+            same = next((e for e in merged if e.op == edit.op and e.item.key == edit.item.key), None)
+            if same is not None:
+                merged.remove(same)
+                notes.append(f'{edit.op}: the pending {os.path.basename(same.file)} is replaced by the later '
+                             f'{os.path.basename(edit.file)} (the same model)')
             merged.append(edit)
             continue
         if edit.op == STAT_RESET:
@@ -2607,25 +2687,27 @@ def _files_of(command: tuple) -> list[str]:
 
 def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: str,
                names_text: dict | None = None, skip_checked: bool = False, classify_fn=None,
-               load_icon_fn=None, classify_gear_fn=None, find_gear_fn=None, classify_anim_fn=None) -> Batch:
+               load_icon_fn=None, classify_gear_fn=None, find_gear_fn=None, classify_anim_fn=None,
+               classify_item_fn=None) -> Batch:
     """One chain for every edit: each edit is planned on the config the previous one left
     (``plan_patch`` / ``plan_clear``), then the chain is
 
-    1. one ``--patch ... --validate-only`` per patched slot (``skip_checked``: not for edits whose check
-       already passed, the GUI's staging dry run, unless a block size is not recorded: ``Env.build_size_known``);
+    1. one ``--patch ... --validate-only`` per patched slot and item / stadium model (``skip_checked``: not for
+       edits whose check already passed, the GUI's staging dry run, unless a slot block's size is not recorded:
+       ``Env.build_size_known``);
     2. one ``--apply-stat-edits`` with every staged stat edit file (they hold values for the DOL as it is now, and
        the rebuild carries them over);
     3. one ``--roster --state`` when the merged config differs from the derived one;
     3b. one ``--apply-stat-edits`` with the pastes' stat values (``copy:`` items), after the rebuild;
     4. each slot's ``--patch`` / ``--unpatch`` / ``--write-slot-blocks`` / ``--write-slot-equipment`` /
        ``--write-slot-animation`` / ``--write-voice-pack`` (a character file import's pack, after its blocks),
-       in staging order;
+       and each item model's ``--patch FILE``, in staging order;
     4b. one ``--apply-gameplay`` with every staged gameplay item, in staging order;
     5. one ``--roster-state``.
 
     Any refused edit refuses the whole batch: no commands, no config (``refused`` names them all)."""
     merged, notes, refused = merge_edits(edits, classify_fn, load_icon_fn, classify_gear_fn, find_gear_fn,
-                                         classify_anim_fn)
+                                         classify_anim_fn, classify_item_fn)
     batch = Batch(None, notes=notes, refused=refused)
     current = config
     portraits_touched = set()                       # slots whose portraits an earlier edit of the batch changed
@@ -2659,6 +2741,8 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
             elif edit.op == GAMEPLAY:
                 plan = plan_gameplay(edit.file, [e.file for e, _p in batch.plans if e.op == GAMEPLAY], env,
                                      after_stat_files=any(e.op == STAT_EDITS for e in merged))
+            elif edit.op in MODEL_FILE_OPS:
+                plan = plan_item(edit.item, edit.op)
             elif edit.op == COPY:
                 plan = plan_copy(st, current, config, edit.cid, edit.source, env, state_file, names_text)
                 if any(e.cid == edit.source for e in merged if e is not edit):
@@ -2715,7 +2799,8 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
         return batch                                 # only clears of slots at their baseline: nothing to run
     for edit, plan in batch.plans:
         checks = [c for c in plan.commands if '--validate-only' in c]
-        if not (skip_checked and edit.checked and all(env.build_size_known(p) for c in checks for p in _files_of(c))):
+        if not (skip_checked and edit.checked and all(env.build_size_known(p) for c in checks if '--target-id' in c
+                                                      for p in _files_of(c))):   # slot blocks: sizes for memory
             batch.commands += checks
     stat_items = [p for _edit, plan in batch.plans for c in plan.commands if c[0] == '--apply-stat-edits'
                   for p in c[1:]]                   # files and reset:0xNN items, in staging order

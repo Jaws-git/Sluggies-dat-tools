@@ -169,7 +169,7 @@ def skn_block_size(skin_data: dict, flush_ind_size: int = None) -> int:
     return total
 
 
-def patchSKNInPlaceResized(skin_data: dict, factors=None) -> int:
+def patchSKNInPlaceResized(skin_data: dict, factors=None, dry_run: bool = False) -> int:
     """Repack SKN source arrays in-place supporting variable vertex counts.
 
     Like ``patchSKNBlockInPlace`` but reads edited data from inline
@@ -185,6 +185,7 @@ def patchSKNInPlaceResized(skin_data: dict, factors=None) -> int:
     ``VertexCntEdited`` key.  ``restoreSKNBlockInPlace`` is used to undo.
 
     Returns total SK1+SK2 vertex count on success, -1 on failure.
+    ``dry_run``: the same checks, nothing read from or written to the DAT.
     """
     skn_abs     = int(skin_data['SKNOffset'], 16)
     orig_sk1s   = skin_data.get('SK1s',   [])
@@ -231,9 +232,12 @@ def patchSKNInPlaceResized(skin_data: dict, factors=None) -> int:
     flush_blob_rel = None
     if flush_ind_size and flush_abs_str and flush_abs_str not in (None, 'null'):
         flush_blob_rel = len(blob)
-        with open(OUTPUT_DAT, 'rb') as f_r:
-            f_r.seek(int(flush_abs_str, 16))
-            flush_bytes = f_r.read(flush_ind_size * 2)
+        if dry_run:
+            flush_bytes = bytes(flush_ind_size * 2)          # only its length counts
+        else:
+            with open(OUTPUT_DAT, 'rb') as f_r:
+                f_r.seek(int(flush_abs_str, 16))
+                flush_bytes = f_r.read(flush_ind_size * 2)
         blob.extend(_align4(flush_bytes))
 
     # Zero-pad to fill the original variable-data region exactly.
@@ -247,6 +251,8 @@ def patchSKNInPlaceResized(skin_data: dict, factors=None) -> int:
         )
         return -1
     blob.extend(b'\x00' * pad)
+    if dry_run:
+        return sum(e.get('VertexCntEdited', e['VertexCnt']) for e in orig_sk1s + orig_sk2s)
 
     total_verts = 0
 

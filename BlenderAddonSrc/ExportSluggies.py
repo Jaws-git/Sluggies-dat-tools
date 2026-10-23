@@ -2076,7 +2076,7 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
         )
         raise ValueError(
             f"{len(overweighted)} vertex(es) exceed the {MAX_BONE_INFLUENCES_PER_VERTEX}-bone "
-            f"influence limit observed across every player model in the game: {detail}. "
+            f"influence limit: {detail}. "
             f"Remove some nonzero-weight bone_<id> vertex groups from these vertices."
         )
 

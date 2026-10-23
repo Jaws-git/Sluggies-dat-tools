@@ -2,6 +2,7 @@
 
 import os
 import re
+import textwrap
 
 import bmesh
 import bpy
@@ -2689,7 +2690,30 @@ def _ensure_action_fcurve(arm_obj, action, data_path, index, group):
 
 # Sidebar boxes that collapse, each with a `Scene.sluggies_show_<key>_box`
 # toggle (expanded by default).
-_COLLAPSIBLE_BOXES = ('import_export', 'textures', 'bones', 'animations', 'mesh', 'collision')
+_COLLAPSIBLE_BOXES = ('rules', 'import_export', 'textures', 'bones', 'animations', 'mesh', 'collision')
+# Boxes that start collapsed; all others start expanded.
+_COLLAPSED_BY_DEFAULT = ('rules',)
+
+# Text of the 'Sluggers Model Rules' box, one bullet per entry.
+_MODEL_RULES = (
+    "Every model contains only one skinned submesh: submesh0.",
+    "Every other mesh object must be a rigid mesh that follows only one bone.",
+    "Every vertex of the skinned mesh needs a weight, on at most 4 bones.",
+    "A mesh can have at most 65,535 vertices.",
+    "Textures can be at most 1024x1024.",
+    "If larger textures are needed, use Dolphin's texture Load folder for overriding.",
+    "Every character has a High and a Low poly version (_L_).",
+    "Low poly models use the skeleton and textures of the High version; "
+    "they do not store their own textures.",
+    "New meshes brought in from elsewhere that need bone deformation should be "
+    "joined into the skinned mesh, via 'Make Active Mesh into a Submesh' or Ctrl+J.",
+    "Facial expressions are done via shape keys.",
+    "Use 'Check Models' to detect problems and, where possible, fix them automatically.",
+    "Never rename bones, and never leave gaps in the bone IDs.",
+    "Don't change the skeletal structure: never delete or re-parent original bones.",
+    "Don't rename the original (imported) mesh objects.",
+    "All meshes of one model must be children of the same armature.",
+)
 
 
 def _collapsible_box(layout, context, key, title):
@@ -2704,6 +2728,24 @@ def _collapsible_box(layout, context, key, title):
         icon_only=False, emboss=False,
     )
     return box if expanded else None
+
+
+def _draw_rules_box(layout, context):
+    """The 'Sluggers Model Rules' box: read-only bullets, wrapped to the sidebar width."""
+    box = _collapsible_box(layout, context, 'rules', "Sluggers Model Rules")
+    if box is None:
+        return
+    # Labels don't wrap in Blender; estimate characters per line from the region width.
+    width = context.region.width / max(context.preferences.view.ui_scale, 0.1)
+    chars = max(20, int((width - 40) / 6.5))
+    col = box.column(align=True)
+    for i, rule in enumerate(_MODEL_RULES):
+        if i:
+            col.separator(factor=0.5)
+        lines = textwrap.wrap(rule, chars - 2) or [""]
+        col.label(text="• " + lines[0])
+        for line in lines[1:]:
+            col.label(text="   " + line)
 
 
 def _draw_free_host_bones(layout, context):
@@ -2820,6 +2862,9 @@ class SLUGGIES_PT_tools(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
+        _draw_rules_box(layout, context)
+
+        layout.separator()
         # The File > Import/Export operators, so they are one click away.
         box = _collapsible_box(layout, context, 'import_export', "Import/Export")
         if box is not None:
@@ -2888,7 +2933,7 @@ def register():
         setattr(bpy.types.Scene, f'sluggies_show_{key}_box', BoolProperty(
             name="Expanded",
             description="Show or hide this group",
-            default=True,
+            default=key not in _COLLAPSED_BY_DEFAULT,
         ))
     bpy.types.Scene.sluggies_animation_scale = FloatVectorProperty(
         name="Animation scale",

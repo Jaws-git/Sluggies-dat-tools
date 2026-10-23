@@ -62,8 +62,9 @@ def _shader_mode_to_bytes(s: str) -> bytes:
 
 def abort(message):
     _slogger.error(message, source="patch_inplace")
-    answer = _slogger.ask("\nPress any key to exit...", kind="key")
-    _slogger.log_user_input("Press any key to exit", answer, source="patch_inplace")
+    if '--validate-only' not in sys.argv:        # a build check runs inside a chain: no prompt
+        answer = _slogger.ask("\nPress any key to exit...", kind="key")
+        _slogger.log_user_input("Press any key to exit", answer, source="patch_inplace")
     raise SystemExit(1)
 
 
@@ -93,7 +94,10 @@ def _facial_position_patches(model: dict, restore: bool) -> list[tuple[int, byte
 # ---------------------------------------------------------------------------
 
 unpatch    = '--unpatch' in sys.argv
-argv_clean = [a for a in sys.argv[1:] if a != '--unpatch']
+# --validate-only: every check of a patch (the edits read, encoded and checked), nothing written; the build check
+# of start.py --patch FILE --validate-only. A submesh edit that would be dropped fails it.
+validate_only = '--validate-only' in sys.argv
+argv_clean = [a for a in sys.argv[1:] if a not in ('--unpatch', '--validate-only')]
 
 # Parse --texture-file <png> and --texture-index <N> for single-texture mode.
 _texture_file: str | None = None
@@ -116,6 +120,9 @@ for _tok in _it:
     else:
         _argv_rest.append(_tok)
 argv_clean = _argv_rest
+
+if unpatch and validate_only:
+    abort("'--validate-only' checks a patch; it does not combine with '--unpatch'.")
 
 if unpatch and _texture_file:
     abort(
@@ -156,22 +163,27 @@ if not submeshes:
 
 mode_label = "original" if unpatch else "edited"
 _slogger.info(
-    f"Mode: {'--unpatch (restoring original data)' if unpatch else 'patch (writing edited data)'}",
+    f"Mode: {'--unpatch (restoring original data)' if unpatch else 'build check (nothing written)' if validate_only else 'patch (writing edited data)'}",
     source="patch_inplace",
 )
-
-if not os.path.exists(OUTPUT_DIR):
-    os.mkdir(OUTPUT_DIR)
-    _slogger.info(f"Created folder: {OUTPUT_DIR}/", source="patch_inplace")
 
 if not os.path.exists(INPUT_DAT):
     abort(f"Input file not found: {INPUT_DAT}\nCannot continue without a source dt_na.dat.")
 
+if validate_only:
+    pass                                     # nothing created or copied; sizes come from the DAT a patch would use
+elif not os.path.exists(OUTPUT_DIR):
+    os.mkdir(OUTPUT_DIR)
+    _slogger.info(f"Created folder: {OUTPUT_DIR}/", source="patch_inplace")
+
 if os.path.exists(OUTPUT_DAT):
     _slogger.info(f"Output file already exists, skipping copy: {OUTPUT_DAT}", source="patch_inplace")
-else:
+elif not validate_only:
     shutil.copy2(INPUT_DAT, OUTPUT_DAT)
     _slogger.info(f"Copied {INPUT_DAT} -> {OUTPUT_DAT}", source="patch_inplace")
+# The DAT a patch writes into (a build check without an output DAT: the input copy a patch would start from).
+_SIZE_DAT = OUTPUT_DAT if os.path.exists(OUTPUT_DAT) else INPUT_DAT
+_dropped_edits: list[str] = []   # submesh edits a patch would leave out (a build check fails on them)
 
 # ---------------------------------------------------------------------------
 # Build patch list
@@ -268,6 +280,7 @@ for i, submesh in enumerate(submeshes):
                 f"Re-export from Blender (a changed size is a Hammerspace export) and patch with start.py --patch.",
                 source="patch_inplace",
             )
+            _dropped_edits.append(f"submesh {i}: {'; '.join(reasons)}")
             continue
 
         # Sizes unchanged — in-place write
@@ -333,6 +346,7 @@ for i, submesh in enumerate(submeshes):
                     f"The normal edit is NOT applied; re-export from Blender and patch with start.py --patch.",
                     source="patch_inplace",
                 )
+                _dropped_edits.append(f"submesh {i} normals: {nb['NormalBufferLength']} → {len(compact_norm)} bytes")
             else:
                 normal_patches.append((i, int(nb["NormalBufferOffset"], 16), compact_norm))
                 _slogger.info(f"Submesh {i} normal: {len(compact_norm)} bytes (in-place)", source="patch_inplace")
@@ -484,7 +498,7 @@ if _texture_file and not unpatch:
         _target_descs = _matched[:1]
         _target_index = _target_descs[0].get("TextureIndex", 0)
     _input_dat_size = os.path.getsize(INPUT_DAT)
-    _output_dat_size = os.path.getsize(OUTPUT_DAT)
+    _output_dat_size = os.path.getsize(_SIZE_DAT)
     try:
         _plan = _tex.build_texture_plan(
             json_path, _target_descs,
@@ -515,7 +529,7 @@ elif _model.get("ReimportTextures"):
     _descriptors = _model.get("TextureDescriptors") or []
     if _descriptors:
         _input_dat_size = os.path.getsize(INPUT_DAT)
-        _output_dat_size = os.path.getsize(OUTPUT_DAT)
+        _output_dat_size = os.path.getsize(_SIZE_DAT)
         try:
             if unpatch:
                 texture_writes = _tex.build_unpatch_texture_writes(
@@ -544,6 +558,29 @@ elif _model.get("ReimportTextures"):
 # ---------------------------------------------------------------------------
 
 _textures_patched = len({w.texture_index for w in texture_writes})
+
+if validate_only:
+    if skin_data is not None and any(
+            sk.get('VertexCntEdited') is not None
+            for lst in [skin_data.get('SK1s', []), skin_data.get('SK2s', []), skin_data.get('SKAccs', [])]
+            for sk in lst):
+        if _skn.patchSKNInPlaceResized(skin_data, bind_pose_scale, dry_run=True) < 0:
+            _dropped_edits.append("the skin's resized source arrays do not fit the original SKN block")
+    if _dropped_edits:
+        _slogger.error(
+            "In-place build check failed: a patch would leave these edits out (re-export from Blender; a changed "
+            "size is a Hammerspace export): " + "; ".join(_dropped_edits),
+            source="patch_inplace",
+        )
+        raise SystemExit(1)
+    _slogger.info(
+        f"In-place build check passed | {os.path.basename(json_path)} | {len(patches)} vertex, "
+        f"{len(uv_patches)} UV, {len(normal_patches)} normal, {len(setting_patches)} shader-mode, "
+        f"{len(param_patches)} renderer-param, {len(facial_patches)} facial-pose, {len(bone_geo_patches)} bone-geo, "
+        f"{1 if root_scale_patch else 0} root-scale, {_textures_patched} texture patch(es) | nothing written",
+        source="patch_inplace",
+    )
+    raise SystemExit(0)
 
 if patches or uv_patches or normal_patches or setting_patches or param_patches or facial_patches or bone_geo_patches or root_scale_patch or texture_writes:
     _slogger.info(

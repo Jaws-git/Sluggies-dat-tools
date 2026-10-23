@@ -16,6 +16,9 @@
   state from the read, overlay from the pending edits).
 * Animations: ``animations_text`` (the slot summary's stock / custom line) and the ``anim`` edits of
   "Replace animation..." (one ``.anm`` bank each; several picked at once are staged together).
+* Item and stadium models: ``item_edit`` / ``item_dialog`` (the grid's item tile: ``.sluggie`` files of models
+  outside the character and stadium directories; the stadium tile: stadium models, ``op`` ``STADIUM``; staged
+  game-wide and patched as a plain ``--patch FILE``), ``banana_icon`` and ``flag_icon``.
 * Roster packs: ``load_dialog`` (the per-slot diff of
   ``--load-roster FILE --dry-run``), ``save_pending_dialog``, and the
   "changed since the pack was saved / loaded" marker (``Reference``).
@@ -931,7 +934,7 @@ class PendingEdits:
             self.gecko.clear()
             return
         new = {int(s['target'], 16) for s in plan.get('edits') or []
-               if not s.get('checked') and s.get('action') not in (STAT_EDITS, STAT_RESET, GAMEPLAY)}
+               if not s.get('checked') and s.get('action') not in (STAT_EDITS, STAT_RESET) + GAME_OPS}
         if check.get('new_breaks') or not self.gecko - new:
             self.gecko |= new
 
@@ -1077,6 +1080,8 @@ def _edit_title(edit: dict) -> str:
         return f'Pending: stat editor value changes'
     if edit['op'] == GAMEPLAY:
         return f'Pending: gameplay settings: {gameplay_item_label(edit.get("file"))}'
+    if edit['op'] in MODEL_FILE_TILES:
+        return f'Pending: {MODEL_FILE_TILES[edit["op"]].noun} {os.path.basename(edit.get("file") or "?")}'
     if edit['op'] == 'equip':
         what = EQUIP_LABELS.get(edit.get('file'), 'equipment').lower()
         where = f' (file {edit["file"]})' if edit.get('file') in (5,) else ''
@@ -1141,7 +1146,9 @@ MODEL_OPS = ('patch', 'clear', COPY, SLGMODEL)
 # A stat edit (the stat editor's edit file) belongs to no slot: its "id" is GAME_WIDE (Roster/slot_plan, test-pinned)
 STAT_EDITS, GAME_WIDE = 'stat_edits', 0xFF
 GAMEPLAY = 'gameplay'                  # gameplay settings (Gameplay tab): game-wide too
-GAME_OPS = (STAT_EDITS, GAMEPLAY)
+ITEM = 'item'                          # an item model .sluggie (the grid's item tile): game-wide too (test-pinned)
+STADIUM = 'stadium'                    # a stadium model .sluggie (the grid's stadium tile): game-wide too (test-pinned)
+GAME_OPS = (STAT_EDITS, GAMEPLAY, ITEM, STADIUM)
 STAT_RESET = 'stat_reset'                     # clears one slot's stat edits (Roster/slot_plan, test-pinned)
 
 
@@ -1272,9 +1279,11 @@ def stat_edit_risk(state: dict | None, lost: bool, reason: str = STATS_REPLACED)
 
 
 def edit_who(state: dict | None, cid: int, action: str | None = None) -> str:
-    """Who a pending or planned edit is for: ``Mario (0x00)``, or ``Stat edits`` / ``Gameplay settings`` for a
-    game-wide edit (``action``: its op)."""
+    """Who a pending or planned edit is for: ``Mario (0x00)``, or ``Stat edits`` / ``Gameplay settings`` /
+    ``Item models`` / ``Stadium models`` for a game-wide edit (``action``: its op)."""
     if cid == GAME_WIDE:
+        if action in MODEL_FILE_TILES:
+            return MODEL_FILE_TILES[action].title
         return 'Gameplay settings' if action == GAMEPLAY else 'Stat edits'
     return f'{name_of(state, cid) if state else hex_id(cid)} ({hex_id(cid)})'
 # state key -> (slot file, label); the file numbers are Roster/gear.py's (test-pinned)
@@ -1448,6 +1457,7 @@ class SlotDialog:
     offer_stat_reset: bool = False              # the slot keeps stat edits: offer "Stage + clear stat edits"
     gecko_break: bool = False                   # applying breaks Gecko code compatibility: red Confirm, never skipped
     memory_over: bool = False                   # a character will not fit its player memory: red "... anyway", never skipped
+    menu: bool = False                          # a choice, not a confirmation (the item tile's list): never skipped
 
     @property
     def danger(self) -> bool:
@@ -1461,8 +1471,8 @@ SKIP_CONFIRM_SETTING = 'skip_confirmation_popups'   # the GUI settings key (``gu
 def dialog_skippable(dialog: SlotDialog) -> bool:
     """With "Skip confirmation popups" on: a dialog that can apply counts as OK'd; one that only informs (Close)
     is skipped too unless it reports a warning or an error (a refusal must still be seen). A Gecko code
-    compatibility warning and a player memory warning are never skipped."""
-    if dialog.danger:
+    compatibility warning and a player memory warning are never skipped, nor a menu (``SlotDialog.menu``)."""
+    if dialog.danger or dialog.menu:
         return False
     return dialog.can_apply or not any(kind in (WARN, ERROR) for _text, kind in dialog.lines)
 
@@ -1775,6 +1785,9 @@ def summary_dialog(state: dict, plan: dict | None, code: int, output: str) -> Sl
         elif section['action'] == GAMEPLAY:
             what = (f'{gameplay_item_label((section.get("edit") or {}).get("file"))}: '
                     + ((section.get('effects') or {}).get(GAMEPLAY) or 'changed values'))
+        elif section['action'] in MODEL_FILE_TILES:
+            what = ('patch ' + ((section.get('effects') or {}).get(section['action'])
+                                or f'the {MODEL_FILE_TILES[section["action"]].noun}'))
         elif section['action'] == STAT_RESET:
             what = 'stat edits ' + ((section.get('effects') or {}).get(STAT_EDITS) or 'cleared')
         lines.append((f'{edit_who(state, cid, section["action"])}: {what}', OK))
@@ -1796,6 +1809,9 @@ def summary_dialog(state: dict, plan: dict | None, code: int, output: str) -> Sl
     lines.append(('Structural checks passed: slot rules, every model built and validated'
                   + (', every stat edit file fits the game' if any(s['action'] == STAT_EDITS for s in plan['edits'])
                      else '') + '. Patch Game writes them now.', OK))
+    for op, tile in MODEL_FILE_TILES.items():
+        if any(s['action'] == op for s in plan['edits']):
+            lines.append((tile.patch_note, TEXT))
     dialog.can_apply = True
     return dialog
 
@@ -2256,3 +2272,183 @@ def gameplay_load_dialog(report: dict | None, name: str, labels: dict, pending: 
     lines.append(('Nothing written yet: Stage adds the values to the pending list, "Patch Game" writes them.', TEXT))
     dialog.can_apply = True
     return dialog
+
+
+# --------------------------------------------------------------------------
+# Item and stadium models (the grid's item and stadium tiles)
+# --------------------------------------------------------------------------
+
+ITEM_TIP = 'Patch item models'
+ITEM_LABEL = 'Items'
+ITEM_FILTERS = [('Sluggie files', '*.sluggie')]
+ITEM_PATCH_NOTE = ('Item models are patched as "Patch .sluggie models" of the command line menu does (in place, or '
+                   'into hammerspace when the file asks for it), after a dry run of that patch as their build check.')
+STADIUM_TIP = 'Patch stadiums'
+STADIUM_LABEL = 'Stadiums'
+STADIUM_PATCH_NOTE = ITEM_PATCH_NOTE.replace('Item models', 'Stadium models')
+
+
+@dataclass(frozen=True)
+class ModelFileTile:
+    """The text of a tile that stages model ``.sluggie`` files game-wide (``item_edit`` and the rest)."""
+    label: str
+    tip: str
+    noun: str                                   # 'item model': pending lines, dialog titles
+    hint: str                                   # the empty tile's tooltip
+    checked: str                                # what the staging check made sure of
+    patch_note: str
+
+    @property
+    def title(self) -> str:
+        return self.noun[0].upper() + self.noun[1:] + 's'
+
+    def plural(self, n: int) -> str:
+        return self.noun + ('s' if n != 1 else '')
+
+
+MODEL_FILE_TILES = {
+    ITEM: ModelFileTile(ITEM_LABEL, ITEM_TIP, 'item model',
+                        'Click to pick item .sluggie files (models outside the character and stadium directories: '
+                        'items, map objects, props). "Patch Game" patches them as the command line menu does.',
+                        'each file is an exported model outside the character and stadium directories, and its '
+                        'patch built and passed its checks (a dry run)',
+                        ITEM_PATCH_NOTE),
+    STADIUM: ModelFileTile(STADIUM_LABEL, STADIUM_TIP, 'stadium model',
+                           'Click to pick stadium .sluggie files (models of the stadium directories). "Patch Game" '
+                           'patches them as the command line menu does.',
+                           'each file is an exported model of a stadium directory, and its patch built and passed '
+                           'its checks (a dry run)', STADIUM_PATCH_NOTE),
+}
+
+
+def item_edit(path: str, op: str = ITEM) -> dict:
+    """The pending edit of an item (``op`` ``STADIUM``: stadium) model ``.sluggie`` (``Roster/slot_plan``'s op)."""
+    return {'op': op, 'id': hex_id(GAME_WIDE), 'file': path}
+
+
+def staged_item_files(pending: 'PendingEdits', op: str = ITEM) -> list[str]:
+    """The pending item (stadium) model files, in staging order."""
+    return [e['file'] for e in pending.edits if e['op'] == op and e.get('file')]
+
+
+def item_tooltip(pending: 'PendingEdits', op: str = ITEM) -> list[str]:
+    """The tile's tooltip below its ``tip``: the pending item (stadium) models, or how to stage one."""
+    tile = MODEL_FILE_TILES[op]
+    files = staged_item_files(pending, op)
+    if not files:
+        return [tile.hint]
+    return [f'{len(files)} pending {tile.plural(len(files))}:'] + [
+        f'  {os.path.basename(f)}' for f in files]
+
+
+def items_dialog(pending: 'PendingEdits', op: str = ITEM) -> 'SlotDialog':
+    """The tile with pending item (stadium) models: their list; OK picks more files (Add), the extra button drops
+    them."""
+    tile = MODEL_FILE_TILES[op]
+    files = staged_item_files(pending, op)
+    dialog = SlotDialog(tile.title, [(f'{len(files)} pending {tile.plural(len(files))} '
+                                      '(nothing written yet):', TEXT)])
+    dialog.lines += [(f'  {os.path.basename(f)}', WARN) for f in files]
+    dialog.lines.append(('Add picks more .sluggie files; a file of a model that is pending already replaces it.',
+                         TEXT))
+    dialog.can_apply = dialog.menu = True
+    return dialog
+
+
+def item_dialog(state: dict | None, plan: dict | None, code: int, output: str, paths: list[str],
+                op: str = ITEM) -> 'SlotDialog':
+    """The confirm dialog of picked item (stadium) models after their staging check (the pending edits plus these):
+    each file, the notes and warnings, the verdict. ``can_apply`` only when the check passed and every file is
+    planned."""
+    tile = MODEL_FILE_TILES[op]
+    count = len(paths)
+    dialog = SlotDialog(f'Stage {count} {tile.plural(count)}?')
+    lines = dialog.lines
+    error = error_message(output)
+    if plan is None or plan['refused']:
+        dialog.title = f'{tile.title}: refused'
+        if plan is None:
+            error = error.removeprefix('refused, nothing written: ')
+            lines.append((f'Refused: {error or f"the planner failed (exit code {code})"}', ERROR))
+        else:
+            lines += _refused_lines(state or {}, plan, GAME_WIDE)
+        lines.append(('Nothing was staged.', TEXT))
+        return dialog
+    sections = [s for s in plan['edits'] if s['action'] == op
+                and any(_same_file((s.get('edit') or {}).get('file'), p) for p in paths)]
+    for section in sections:
+        lines.append((f'{tile.title[:-1]}: {(section.get("effects") or {}).get(op) or "?"}', OK))
+        lines += [(f'- {note}', TEXT) for note in section['notes']]
+        lines += [(f'Warning: {warning}', WARN) for warning in section['warnings']]
+    lines += [(f'- {note}', TEXT) for note in plan.get('notes') or [] if note.startswith(f'{op}:')]
+    if code != 0:
+        lines.append((f'Check failed: {error or f"exit code {code}"}. Nothing was staged.', ERROR))
+        return dialog
+    if len(sections) != count:
+        lines.append(('Not every picked file was planned. Nothing was staged.', ERROR))
+        return dialog
+    lines.append((f'Checks passed: {tile.checked}. Nothing written yet: Stage adds them to the pending list, '
+                  '"Patch Game" writes them.', OK))
+    dialog.can_apply = True
+    return dialog
+
+
+def banana_icon(size: tuple[int, int]):
+    """The item tile's picture: a banana on a transparent background, fitted into ``size`` (an RGBA PIL image)."""
+    import math
+    from PIL import Image, ImageDraw
+    w, h = size
+    k = 4                                                    # drawn 4x larger, then scaled down (smooth edges)
+
+    def band(t, offset, scale):
+        """A point across the banana at ``t`` (0-1 along it): ``offset`` -1 (inner edge) to 1 (outer edge)."""
+        angle = math.radians(190 + 150 * t)                  # a curve hanging down, tips up
+        half = 0.5 * (0.10 + 0.90 * math.sin(math.pi * t) ** 0.7) * scale
+        radius = 1.0 + offset * half
+        return math.cos(angle) * radius, -math.sin(angle) * radius
+
+    steps = [i / 40 for i in range(41)]
+    outline = [band(t, 1, 0.62) for t in steps] + [band(t, -1, 0.62) for t in reversed(steps)]
+    xs, ys = [p[0] for p in outline], [p[1] for p in outline]
+    fit = min(w * k * 0.84 / (max(xs) - min(xs)), h * k * 0.84 / (max(ys) - min(ys) + 0.25))
+    ox = w * k / 2 - fit * (max(xs) + min(xs)) / 2
+    oy = h * k / 2 - fit * (max(ys) + min(ys)) / 2 + fit * 0.08
+
+    def px(points):
+        return [(ox + x * fit, oy + y * fit) for x, y in points]
+
+    image = Image.new('RGBA', (w * k, h * k), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    tip = px([band(1, 0, 0.62)])[0]                          # the stem, at the right-hand tip
+    draw.line((tip, (tip[0] + 0.06 * fit, tip[1] - 0.22 * fit)), fill=(110, 80, 20, 255), width=int(0.12 * fit))
+    draw.polygon(px(outline), fill=(250, 210, 55, 255), outline=(120, 85, 20, 255), width=2 * k)
+    middle = steps[6:35]
+    draw.polygon(px([band(t, 0.15, 0.62) for t in middle] + [band(t, -0.55, 0.62) for t in reversed(middle)]),
+                 fill=(255, 238, 130, 255))                  # highlight along the inner curve
+    end = px([band(0, 0, 0.62)])[0]                          # the dark blossom end
+    draw.ellipse((end[0] - 0.05 * fit, end[1] - 0.05 * fit, end[0] + 0.05 * fit, end[1] + 0.05 * fit),
+                 fill=(90, 60, 15, 255))
+    return image.resize((w, h), Image.Resampling.LANCZOS)
+
+
+def flag_icon(size: tuple[int, int]):
+    """The stadium tile's picture: a flag pole with a triangular flag, on a transparent background (an RGBA PIL
+    image of ``size``)."""
+    from PIL import Image, ImageDraw
+    w, h = size
+    k = 4                                                    # drawn 4x larger, then scaled down (smooth edges)
+    s = min(w, h) * k                                        # a square drawing area, centred
+    ox, oy = (w * k - s) / 2, (h * k - s) / 2
+
+    def px(x, y):
+        return ox + x * s, oy + y * s
+
+    image = Image.new('RGBA', (w * k, h * k), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    outline = (60, 40, 30, 255)
+    draw.polygon([px(0.37, 0.16), px(0.86, 0.29), px(0.37, 0.42)],      # the flag, right of the pole's top
+                 fill=(220, 50, 45, 255), outline=outline, width=2 * k)
+    draw.rectangle((*px(0.30, 0.12), *px(0.37, 0.92)), fill=(190, 190, 200, 255), outline=outline, width=k)
+    draw.ellipse((*px(0.275, 0.06), *px(0.395, 0.18)), fill=(245, 200, 60, 255), outline=outline, width=k)
+    draw.rectangle((*px(0.20, 0.88), *px(0.47, 0.94)), fill=(120, 120, 130, 255), outline=outline, width=k)
+    return image.resize((w, h), Image.Resampling.LANCZOS)

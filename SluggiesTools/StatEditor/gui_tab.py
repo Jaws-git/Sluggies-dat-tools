@@ -337,7 +337,7 @@ class StatEditorTab:
         grid = self.app.grid_tab
         if grid._locked() or not gui_grid.staged_stat_files(grid.pending):
             return
-        grid.pending.discard(gui_grid.GAME_WIDE)
+        grid.pending.discard_op(gui_grid.STAT_EDITS)
         grid._pending_changed()
         self.app.log_line('[stat editor] the staged stat edits were discarded.', _DIM)
 

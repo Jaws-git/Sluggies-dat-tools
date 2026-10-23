@@ -145,7 +145,7 @@ class TestWeights(unittest.TestCase):
         weights = [{i: 0.1 * (i + 1) for i in range(6)}, {0: 1.0}]
         self.assertEqual(core.overweighted_vertices(weights), [0])
         limited = core.limited_weights(weights[0])
-        self.assertEqual(sorted(limited), [1, 2, 3, 4, 5])
+        self.assertEqual(sorted(limited), [2, 3, 4, 5])
         self.assertAlmostEqual(sum(limited.values()), 1.0)
 
     def test_host_bone_vote(self):

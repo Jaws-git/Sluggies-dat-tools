@@ -66,9 +66,19 @@ loads it (``--load-roster FILE``), replacing the whole roster. The pack last sav
 loaded is the session's reference: slots that differ from it get a blue
 border and a "changed since" line.
 
-On the stock grid Luigi has no square (the game hands him a captain's square
-at runtime). The reader lists his family as an off-grid square, drawn to the
-right of the grid's middle row, so his slots stay reachable.
+A column right of the grid holds the squares on no cell: Luigi (top row),
+the item tile (second row) and the stadium tile (third row). On the stock
+grid Luigi has no square (the game hands him a captain's square at runtime);
+the reader lists his family as an off-grid square so his slots stay
+reachable.
+
+The item tile (a banana; "Edit item models") stages ``.sluggie`` files of
+models outside the character and stadium directories (items, map objects,
+props): ``item`` edits, game-wide like stat edits, which Patch Game writes as
+the command line menu's plain patch (``--patch FILE``). The stadium tile (a
+flag; "Patch stadiums") does the same for stadium models (``stadium`` edits).
+With models pending a click lists them (Add..., Discard); else it opens the
+picker straight away.
 
 Copy / paste: right-clicking a one-member square on the grid or a swatch on
 a colour wheel opens a menu with **Copy** and **Paste** (a square with
@@ -107,7 +117,7 @@ GRID_ICON = (round(ICON[0] * GRID_SCALE), round(ICON[1] * GRID_SCALE))
 CELL = (104, GRID_ICON[1] + 2 * FRAME + 24)
 CELL_GAP = 2                     # horizontal space between grid cells
 ROW_PITCH = CELL[1] + 8          # cell height plus the spacing Dear PyGui puts between a cell's items and rows
-OFF_GRID_GAP = 24                # space between the grid and the squares beside it (stock Luigi)
+OFF_GRID_GAP = 24                # space between the grid and the column beside it (stock Luigi, item tiles)
 # Vertical gap after every text item in the whole GUI (gui.py's global theme; ImGui's default is 4). It spaces
 # separate add_text lines only: the lines of one wrapped text stay at the font's line height. Recommended
 # maximum: 10 -- above that, dialogs with many lines scroll early and the grid captions drift apart.
@@ -133,6 +143,11 @@ ANIM_DIR_SETTING = 'grid_last_anim_dir'   # the GUI settings key: the folder the
 SLUGGIE_DIR_SETTING = 'grid_last_sluggie_dir'   # the GUI settings key: the folder the last slot/equipment .sluggie came from
 IMAGE_DIR_SETTING = 'grid_last_image_dir'       # the GUI settings key: the folder the last portrait image came from
 PACK_DIR_SETTING = 'grid_last_pack_dir'         # the GUI settings key: the folder the last roster pack was loaded / saved in
+ITEM_DIR_SETTING = 'grid_last_item_dir'         # the GUI settings key: the folder the last item model .sluggie came from
+STADIUM_DIR_SETTING = 'grid_last_stadium_dir'   # the same for the last stadium model .sluggie
+MODEL_FILE_DIRS = {gui_grid.ITEM: ITEM_DIR_SETTING, gui_grid.STADIUM: STADIUM_DIR_SETTING}
+EXTRA_ROWS = 3                      # the column right of the grid: Luigi, the item tile, the stadium tile
+TILE_ICONS = {gui_grid.ITEM: ('banana', gui_grid.banana_icon), gui_grid.STADIUM: ('flag', gui_grid.flag_icon)}
 VOICE_ALL = 'Set voice (all)...'    # the square level (colour wheel): the voice reaches every member
 SLOT_BUTTONS = (RENAME, STATS, VOICE, CLEAR)     # the row below: Replace animation..., Discard pending
 EQUIP_PAIR_W = 2 * EQUIP_BUTTON_W - 8 + 4   # a tile's Select... + Reset buttons and the gap between them
@@ -523,17 +538,64 @@ class CharacterGridTab:
         if state is None:
             return
         cols, rows = state['shape']
-        dpg.configure_item('grid_cells', height=rows * ROW_PITCH + 16)
+        dpg.configure_item('grid_cells', height=max(rows, EXTRA_ROWS) * ROW_PITCH + 16)
         off_grid = list(state.get('off_grid') or [])
-        beside = (rows - 1) // 2                  # squares on no cell (stock Luigi) sit right of the middle row
-        for r in range(rows):
+        for r in range(max(rows, EXTRA_ROWS)):
             with dpg.group(horizontal=True, horizontal_spacing=CELL_GAP, parent='grid_cells'):
-                for c in range(cols):
-                    self._grid_cell(state['cells'][r * cols + c])
-                if r == beside and off_grid:
+                if r < rows:
+                    for c in range(cols):
+                        self._grid_cell(state['cells'][r * cols + c])
+                else:                             # a grid with fewer rows than the column beside it
+                    dpg.add_spacer(width=cols * CELL[0] + (cols - 1) * CELL_GAP)
+                if (r == 0 and off_grid) or r in (1, 2):
                     dpg.add_spacer(width=OFF_GRID_GAP - CELL_GAP)
+                if r == 0:                        # squares on no cell (stock Luigi)
                     for index in off_grid:
                         self._grid_cell(index)
+                elif r == 1:
+                    self._item_cell(gui_grid.ITEM)
+                elif r == 2:
+                    self._item_cell(gui_grid.STADIUM)
+
+    def _item_cell(self, op):
+        """The item tile (a banana) or the stadium tile (a flag): a click stages model .sluggie files
+        (``_on_items``). Orange border while models of the tile are pending."""
+        tile = gui_grid.MODEL_FILE_TILES[op]
+        files = gui_grid.staged_item_files(self.pending, op)
+        with dpg.group():
+            dpg.add_spacer(width=CELL[0], height=1)
+            w, h = GRID_ICON
+            texture = self._tile_texture(op)
+            indent = max(0, (CELL[0] - w - 2 * FRAME) // 2)
+            if texture is None:
+                button = dpg.add_button(label=tile.label, width=w + 2 * FRAME, height=h + 2 * FRAME,
+                                        indent=indent, callback=lambda: self._on_items(op))
+            else:
+                button = dpg.add_image_button(texture, width=w, height=h, indent=indent,
+                                              callback=lambda: self._on_items(op))
+            self._caption(tile.label + (f' ({len(files)})' if files else ''), CELL[0],
+                          color=_PENDING if files else None)
+        if files:
+            dpg.bind_item_theme(button, 'grid_pending_theme')
+        with dpg.tooltip(button):
+            dpg.add_text(tile.tip)
+            for n, line in enumerate(gui_grid.item_tooltip(self.pending, op)):
+                dpg.add_text(line, color=_PENDING if files and n else _DIM, wrap=420)
+
+    def _tile_texture(self, op):
+        """The item / stadium tile's texture (``gui_grid.banana_icon`` / ``flag_icon``), made once per read like
+        the portraits."""
+        name, draw = TILE_ICONS[op]
+        key = (name,)
+        if key not in self.textures:
+            try:
+                image = draw(GRID_ICON)
+            except (OSError, ValueError) as exc:
+                self.app.log_line(f'[character grid] the {name} tile picture could not be drawn: {exc}', _WARN)
+                return None
+            self.textures[key] = dpg.add_static_texture(image.width, image.height, _rgba(image),
+                                                        parent='grid_textures')
+        return self.textures[key]
 
     def _grid_cell(self, index):
         state = self.loader.state
@@ -1766,6 +1828,67 @@ class CharacterGridTab:
             self._end_action()
             return False
         return True
+
+    # ------------------------------------------------------------------ item and stadium models
+    def _on_items(self, op):
+        """The item / stadium tile (``op``): with pending models of the tile a dialog lists them (Add..., Discard);
+        else the picker."""
+        if self._locked():
+            return
+        tile = gui_grid.MODEL_FILE_TILES[op]
+        if self.pending.pack is not None:
+            self.action = 'ask'
+            self._dialog(gui_grid.SlotDialog(f'{tile.title}: refused', [
+                (f'A roster pack load is staged: Patch Game or discard it first, then stage the {tile.noun}s.',
+                 gui_grid.ERROR)]), self._end_action)
+            return
+        if not gui_grid.staged_item_files(self.pending, op):
+            self._pick_items(op)
+            return
+        self.action = 'ask'
+        self._dialog(gui_grid.items_dialog(self.pending, op), lambda: (self._end_action(), self._pick_items(op)),
+                     ok_label='Add...', extra=(f'Discard {tile.label.lower()}', lambda: self._discard_items(op)))
+
+    def _pick_items(self, op):
+        self.action = 'items'
+        self.set_busy(False)
+        if not self.app.pick_files('grid_sluggie_dialog', f'Select {gui_grid.MODEL_FILE_TILES[op].noun} .sluggie '
+                                   'files', gui_grid.ITEM_FILTERS, lambda paths: self._on_item_paths(paths, op),
+                                   on_cancel=self._end_action, multi=True, remember=MODEL_FILE_DIRS[op]):
+            self._end_action()
+
+    def _on_item_paths(self, paths, op):
+        chosen = list(dict.fromkeys(os.path.abspath(p) for p in paths
+                                    if p and p.lower().endswith('.sluggie') and os.path.isfile(p)))
+        if self.action != 'items' or not chosen:
+            self.app.log_line(f'[character grid] no .sluggie file chosen: {paths[0]}', _WARN)
+            self._end_action()
+            return
+        self.action = None
+        self._offer_items(chosen, op)
+
+    def _offer_items(self, paths, op):
+        """The staging check of picked item / stadium models (the pending edits plus these), then their confirm
+        dialog."""
+        try:
+            gui_grid.write_edits(self.edits_path, self.pending.staging([gui_grid.item_edit(p, op) for p in paths]))
+        except OSError as exc:
+            self.app.log_line(f'[character grid] could not write {self.edits_path}: {exc}', _WARN)
+            return
+        self.action = 'items'
+
+        def show(code, output):
+            plan = gui_grid.load_plan(self.plan_path)
+            dialog = gui_grid.item_dialog(self.nav.state or self.loader.state, plan, code, output, paths, op)
+            self._dialog(dialog, lambda: self._stage(plan), ok_label='Stage')
+        if not self._run([gui_grid.preview_command(self.edits_path)],
+                         f'Checking the {gui_grid.MODEL_FILE_TILES[op].noun}s...', show):
+            self._end_action()
+
+    def _discard_items(self, op):
+        self._end_action()
+        self.pending.discard_op(op)
+        self._pending_changed()
 
     def _stage(self, plan):
         self._end_action()

@@ -50,7 +50,7 @@ DEFAULT_TEMPLATE = "builtin:rigid_spec_v1"
 DEFAULT_STADIUM_TEMPLATE = "builtin:stadium_shdw_opaque_v1"
 
 GX_MAX_TEXTURE_DIMENSION = 1024
-MAX_BONE_INFLUENCES = 5
+MAX_BONE_INFLUENCES = 4   # 5 failed in-game (2026-10-23); keep equal to SkinWeights.MAX_BONE_INFLUENCES_PER_VERTEX
 U16_LIMIT = 0xFFFF   # vertices (and a custom submesh's triangles) one mesh can index
 
 
