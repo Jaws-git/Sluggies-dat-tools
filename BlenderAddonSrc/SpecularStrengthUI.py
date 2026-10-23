@@ -3,8 +3,8 @@ character's High and Low models in one dialog.
 
 Lists the materials of the active model and its LOD partner (whichever of
 the two are loaded). A specular (Type-7) material gets a 0-255 field; OK
-writes it to the material's ``SpecularStrength``, like Set Specular
-Strength, and each model's export applies it.
+writes it to the material's ``SpecularStrength``, and each model's export
+applies it.
 """
 
 import bpy
@@ -29,7 +29,7 @@ def _materials(arm_obj):
 
 
 def _is_specular(mat):
-    """A specular (Type-7) surface: same rule as Set Specular Strength."""
+    """A specular (Type-7) surface."""
     return mat.get('DisplayStateId') == 7
 
 

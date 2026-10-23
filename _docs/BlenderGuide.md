@@ -64,10 +64,10 @@ Everything else, such as moving vertices, editing UVs without new seams, shape k
 - change the position of existing UVs 
 - in case of multiple UVs concentrated in one single point, you can move the whole "unit" around as one
 - reimport edited PNG textures as long as their dimensons didn't change
-- change a material's specular (gloss) strength with **Set Specular Strength** (0 = no highlight, 255 = maximum; linear)
+- change a material's specular (gloss) strength with **Manage specular strength** (Sluggies sidebar, *Textures & Materials* box; 0 = no highlight, 255 = maximum; linear)
+  >- the dialog lists every material of the High model and its Low partner (whichever are imported) and sets the strength of each specular one. Export each changed model afterwards.
   >- only the strength can be changed. The highlight's shape comes from a small sphere-map texture that many models share, so editing that PNG changes every model using it.
   >- editing the second UV map does nothing: the game computes the specular texture coordinates from the vertex normals
-  >- **Manage specular strength** (Sluggies sidebar, *Textures & Materials* box) lists every material of the High model and its Low partner (whichever are imported) in one dialog and sets the strength of each specular one. Export each changed model afterwards.
 #### You can't:
 - add or remove vertices
 - manipulate material slots
@@ -181,7 +181,7 @@ All three looked the same in game tests. A `rigid:` template limits how detailed
 - Make every new submesh with **Add New Submesh** or **Make Active Mesh into a Submesh**, not by duplicating one (Shift+D). A copy keeps the original's internal id and material, which the tools don't expect; run **Make Active Mesh into a Submesh** on the copy to fix it.
 - Export to the `.sluggie` the armature was imported from, or to a new file name. Export refuses an existing file that belongs to a different model.
 - An armature imported with an older add-on version must be re-imported before you can add a submesh to it.
-- **Specular strength:** a new submesh made from a built-in template starts at 50. One made from a donor material starts at that material's current strength. Change it with **Set Specular Strength**.
+- **Specular strength:** a new submesh made from a built-in template starts at 50. One made from a donor material starts at that material's current strength. Change it with **Manage specular strength**.
 - **Bats and gloves work too.** They have only one bone by default, and it already carries the original mesh. To add a new rigid mesh to them, add a custom bone first with **Add Bone**.
 
 #### Editing rigid meshes

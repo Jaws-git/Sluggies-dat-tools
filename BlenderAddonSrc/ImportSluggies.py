@@ -839,7 +839,7 @@ def _set_surface_material_metadata(mat, ds_entry):
             min=0, max=255, soft_min=0, soft_max=255,
             description="Specular highlight intensity (0-255, linear TEV multiplier). "
             "Confirmed in-game for 'Spec'/'LhSp'/'RhSp' shader modes. "
-            "Edit via the 'Set Specular Strength' panel button.")
+            "Edit via the 'Manage specular strength' panel button.")
 
 
 @lru_cache(maxsize=None)
