@@ -204,6 +204,9 @@ class FileEnv(slot_plan.Env):
             return slot_plan.StatCheck(None, lines, prepared.warnings)
         return slot_plan.StatCheck(gameplay_apply.summary(prepared), lines, prepared.warnings)
 
+    def game_options(self):
+        return state_cli.game_options.detect(self.image)
+
     def _sound_archive_path(self):
         try:
             from . import runner

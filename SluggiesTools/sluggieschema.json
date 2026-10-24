@@ -447,7 +447,7 @@
                   },
                   "Influences": {
                     "type": "string",
-                    "description": "(vertex uint16, bone uint16, weight float32) big-endian records, one per bone influence, weights positive and normalized per vertex. Every vertex needs at least one; bones must be ones the donor's own SkinData skins to, or added bones (BoneHierarchyEdited UserAdded entries); the exporter moves other bones' weights to the nearest allowed ancestor."
+                    "description": "(vertex uint16, bone uint16, weight float32) big-endian records, one per bone influence, weights positive and normalized per vertex. Every vertex needs at least one; bones must be bones of the skeleton (BoneHierarchy or BoneHierarchyEdited, original or added); the exporter drops weights on bones the model does not have."
                   },
                   "ColorChannelData": {"type": "string", "description": "As RigidRebuild.ColorChannelData."},
                   "ColorFacesData": {"type": "string", "description": "As RigidRebuild.ColorFacesData."},

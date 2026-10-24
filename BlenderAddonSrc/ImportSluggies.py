@@ -9,6 +9,7 @@ from bpy_extras.io_utils import ImportHelper
 
 from . import AnimScale
 from . import AnmFormat
+from . import BoneRoles
 from . import CustomSubmeshImport
 from . import StadiumCollisionExport
 from . import FieldCodec
@@ -20,6 +21,12 @@ from . import SluggiePath
 # Fallback tail length for a bone that gets no direction from the hierarchy,
 # and the reference scale for clamping leaf-bone tails in build_armature.
 LEAF_TAIL_FALLBACK = 0.05
+
+# Reorient Bones: minimum length of a bone aimed at several children, and the
+# armature-space direction for a bone whose children give it none (world -Y
+# once the armature object's +90 deg X rotation is applied).
+REORIENT_MIN_FORK_LENGTH = 0.25
+REORIENT_FORWARD = mathutils.Vector((0.0, 0.0, 1.0))
 
 
 def _game_srt_matrix(trans, quat, scale):
@@ -50,7 +57,7 @@ def _anm_bone_corrections(arm_data):
     """{bone name: C} with C = inverse(game rest world) @ Blender rest matrix.
 
     Only for armatures imported with "Reorient Bones" on: build_armature aims
-    each bone's tail at its first child, so a Blender bone's axes differ from
+    each bone's tail at its children, so a Blender bone's axes differ from
     the game bone's. ANM keyframes are game locals; posing bone i to (game
     animated world) @ C_i deforms the mesh as the game does and leaves the
     rest pose untouched (the importer applies
@@ -1131,8 +1138,10 @@ def build_armature(name, bone_list, collection, skin_data=None, reorient=True):
 
     The armature object is named *name* (the imported .sluggie file name without
     its extension). Bone names are ``bone_<id>``. With *reorient* (the import
-    option "Reorient Bones"), tails are aimed at the first child's head when
-    available; leaf bones continue their parent's direction instead, falling
+    option "Reorient Bones"), tails are aimed at the child's head, or at the
+    average head of several children (at least REORIENT_MIN_FORK_LENGTH long;
+    forward when that gives no direction); leaf bones continue their parent's
+    direction instead, falling
     back to a small global-Z offset when there is no usable parent so the bone
     stays visible in the viewport. Without it, that step is skipped and every
     bone keeps the game's own rest orientation (its local +Y is the bone axis,
@@ -1168,12 +1177,12 @@ def build_armature(name, bone_list, collection, skin_data=None, reorient=True):
         eb.tail = (h[0], h[1], h[2] + LEAF_TAIL_FALLBACK)
         bone_id_to_name[bd['BoneId']] = eb.name
 
-    # Collect the first child head for each parent so we can aim tails
-    first_child_head = {}
+    # Collect every child head for each parent so we can aim tails
+    child_heads = {}
     for bd in bone_list:
         pid = bd['ParentBoneId']
-        if pid is not None and pid not in first_child_head:
-            first_child_head[pid] = bd['HeadPosition']
+        if pid is not None:
+            child_heads.setdefault(pid, []).append(mathutils.Vector(bd['HeadPosition']))
 
     for bd in bone_list:
         eb = edit_bones.get(bone_id_to_name.get(bd['BoneId'], ''))
@@ -1185,10 +1194,19 @@ def build_armature(name, bone_list, collection, skin_data=None, reorient=True):
             parent_eb = edit_bones.get(bone_id_to_name.get(pid, ''))
             if parent_eb:
                 eb.parent = parent_eb
-        # Aim tail towards first child when available
-        if reorient and bd['BoneId'] in first_child_head:
-            ch = first_child_head[bd['BoneId']]
-            eb.tail = (ch[0], ch[1], ch[2])
+        # Aim tail at the child, or at the children's average head. A fork's
+        # average can sit almost on the head (pelvis between the thighs), so
+        # forks get a minimum length; a bone with no direction points forward.
+        if reorient and bd['BoneId'] in child_heads:
+            heads_c = child_heads[bd['BoneId']]
+            target = sum(heads_c, mathutils.Vector()) / len(heads_c)
+            direction = target - eb.head
+            if direction.length <= 1e-9:
+                eb.tail = eb.head + REORIENT_FORWARD * REORIENT_MIN_FORK_LENGTH
+            elif len(heads_c) > 1 and direction.length < REORIENT_MIN_FORK_LENGTH:
+                eb.tail = eb.head + direction.normalized() * REORIENT_MIN_FORK_LENGTH
+            else:
+                eb.tail = target
 
     heads = [bd['HeadPosition'] for bd in bone_list]
     extent = max(
@@ -1226,7 +1244,7 @@ def build_armature(name, bone_list, collection, skin_data=None, reorient=True):
 
     # Runs after the loop above so every parent already has its final tail.
     for bd in bone_list:
-        if not reorient or bd['BoneId'] in first_child_head:
+        if not reorient or bd['BoneId'] in child_heads:
             continue
         eb = edit_bones.get(bone_id_to_name.get(bd['BoneId'], ''))
         if eb is None or eb.parent is None:
@@ -1282,6 +1300,32 @@ def build_armature(name, bone_list, collection, skin_data=None, reorient=True):
     arm_obj.rotation_euler[0] = math.pi / 2
     bpy.context.view_layer.objects.active = prev_active
     return arm_obj
+
+
+def assign_bone_collections(arm_obj):
+    """Sort every bone of *arm_obj* into the BoneRoles collections, from the
+    properties the import stored on it (SluggiesSkinned, SluggiesGeoIdRaw,
+    track_id, SluggiesUserAdded). Collections are created in
+    ``BoneRoles.COLLECTION_ORDER``, only for roles the model has."""
+    arm_data = arm_obj.data
+    roles_by_bone = {
+        bone.name: BoneRoles.bone_roles(
+            skinned=bool(bone.get('SluggiesSkinned', False)),
+            geo_id_raw=int(bone.get('SluggiesGeoIdRaw', BoneRoles.GEO_ID_FREE)),
+            track_id=int(bone.get('track_id', BoneRoles.NO_TRACK)),
+            has_parent=bone.parent is not None,
+            has_children=bool(bone.children),
+            user_added=bool(bone.get('SluggiesUserAdded', False)),
+        )
+        for bone in arm_data.bones
+    }
+    used = {role for roles in roles_by_bone.values() for role in roles}
+    for name in BoneRoles.COLLECTION_ORDER:
+        if name in used:
+            BoneRoles.bone_collection(arm_data, name)
+    for bone_name, roles in roles_by_bone.items():
+        for role in roles:
+            arm_data.collections[role].assign(arm_data.bones[bone_name])
 
 
 def _apply_import_rotation(obj):
@@ -1599,7 +1643,8 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
     filter_glob: StringProperty(default="*.sluggie", options={"HIDDEN"}) # type: ignore[valid-type]
     reorient_bones: BoolProperty(  # type: ignore[valid-type]
         name="Reorient Bones",
-        description=("Aim each bone at its first child (leaf bones continue their parent) "
+        description=("Aim each bone at its child, or the average of several children "
+                     "(leaf bones continue their parent) "
                      "for a readable skeleton. Off: bones keep the game's own rest "
                      "orientation. Only changes how the skeleton looks in Blender"),
         default=True,
@@ -1643,6 +1688,7 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
             # Bones added with Add Bone (BoneHierarchyEdited), so their custom
             # submeshes and body weights have them again.
             add_imported_added_bones(arm_obj, CustomSubmeshImport.added_bone_entries(model))
+            assign_bone_collections(arm_obj)
 
         imported = 0
         for i, submesh in enumerate(submeshes):

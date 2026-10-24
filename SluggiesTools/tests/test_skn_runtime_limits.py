@@ -59,10 +59,15 @@ class InPlaceSknEditProblemsTests(unittest.TestCase):
         skin = _skin(sk1_counts=(341,), quantize_info=0x40)
         self.assertIn('8184 bytes', skn.skn_edit_problems(skin)[0])
 
-    def test_sk1_bone_edit_to_an_unskinned_bone_is_refused(self):
+    def test_sk1_bone_edit_to_a_missing_bone_is_refused(self):
         skin = _skin()
         skin['SK1s'][0]['BoneIndexEdited'] = 5
-        self.assertIn('bone 5 is not one of the bones', skn.skn_edit_problems(skin)[0])
+        self.assertIn('bone 5 is not a bone of this model', skn.skn_edit_problems(skin, [10, 11])[0])
+
+    def test_sk1_bone_edit_to_an_unskinned_bone_of_the_skeleton_is_allowed(self):
+        skin = _skin()
+        skin['SK1s'][0]['BoneIndexEdited'] = 5
+        self.assertEqual(skn.skn_edit_problems(skin, range(40)), [])
 
     def test_sk1_bone_edit_to_another_skinned_bone_is_allowed(self):
         skin = _skin()
@@ -76,11 +81,18 @@ class HammerspaceSkinBoneTests(unittest.TestCase):
         edited['SK1s'][0]['BoneIndex'] = 30          # moved onto the SKAcc bone
         main._validate_skin_bones({'SkinData': _skin(), 'SkinDataEdited': edited})
 
-    def test_edited_skin_on_a_bone_the_donor_never_skins_is_refused(self):
+    def test_edited_skin_on_a_bone_the_donor_never_skins_passes(self):
         edited = _skin()
         edited['SK2s'][0]['BoneIndex2'] = 7
-        with self.assertRaisesRegex(ValueError, r"bone\(s\) \[7\], which the donor's skin never uses"):
-            main._validate_skin_bones({'SkinData': _skin(), 'SkinDataEdited': edited})
+        hierarchy = [{'BoneId': b} for b in range(32)]
+        main._validate_skin_bones({'SkinData': _skin(), 'SkinDataEdited': edited, 'BoneHierarchy': hierarchy})
+
+    def test_edited_skin_on_a_bone_the_skeleton_lacks_is_refused(self):
+        edited = _skin()
+        edited['SK2s'][0]['BoneIndex2'] = 77
+        hierarchy = [{'BoneId': b} for b in range(32)]
+        with self.assertRaisesRegex(ValueError, r"bone\(s\) \[77\], which this model's skeleton does not have"):
+            main._validate_skin_bones({'SkinData': _skin(), 'SkinDataEdited': edited, 'BoneHierarchy': hierarchy})
 
     def test_no_skin_edit_is_a_noop(self):
         main._validate_skin_bones({'SkinData': _skin()})

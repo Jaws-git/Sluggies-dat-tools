@@ -16,6 +16,17 @@ Hammerspace opens up additional memory at the end of the data file to store more
 2. Select the addon zip file as is, do not unpack it.  
 3. After the plugin is installed, import one .sluggie file using File->Import->Sluggers intermediate (.sluggie)  
 
+The armature's bones are sorted into **bone collections** (Armature properties -> Bone Collections) by their role in the original model. A bone can be in more than one.
+- **Skinning:** bends the body (the bones the body's weights use).
+- **Rigid mesh:** carries a rigid mesh (Mario's cap, for example).
+- **Tracked joint** / **Tracked tip:** no vertices of their own, but an animation track id; joints have child bones (root, hip, neck, head), tips don't (hand attach points for bat and glove, toe tips).
+- **Structural:** no vertices, no track, but child bones (branch points such as the pelvis).
+- **End tip** (hidden): no vertices, no track, no children (finger and nose tips).
+- **Marker** (hidden): bones with no parent and no children. The game addresses them by track id; what for is unknown.
+- **Added:** bones made with Add Bone.
+
+The collections only sort the bones for display; any bone can still be used for skinning (see "Editing the body").
+
 ## Export
 
 1. Select all submeshes you want to write back to the sluggie file in the viewport
@@ -293,16 +304,15 @@ The body is the first mesh, the one that bends with the skeleton through its `bo
 **Anything more rebuilds the whole body** in Hammerspace: adding or deleting vertices or faces, moving the body in Object Mode, changing which bones a vertex uses (adding, removing or moving vertex groups), moving only some faces of a surface to another material, moving faces to a material with another shader, or using an **Add material** surface. The export log says `body rebuild of <name> (<reasons>)`.
 
 Rules for a rebuilt body:
-- **Weights:** every vertex the faces use needs weight on at least one bone the original body skins to or one added bone; export stops and counts the vertices otherwise. Weights on other bones (original bones that carry a rigid mesh, bones the Low model doesn't skin) are moved to the nearest bone above them that the body may skin to, and the log says so. Weights are normalized for you; any number of bones per vertex works, but each bone past the second costs extra data.
+- **Weights:** every vertex the faces use needs weight on at least one bone of the model, original or added; export stops and counts the vertices otherwise. Any bone works, including original bones the original body doesn't skin to and bones that carry a rigid mesh (tested in game on Mario's High model); the log names such bones. Weights on a `bone_<id>` group the model has no bone for are dropped. Weights are normalized for you; any number of bones per vertex works, but each bone past the second costs extra data.
 - **Blink and mouth poses:** a body that the game animates in the face (Luigi, for example) keeps its expressions through the imported facial shape keys (`Basis` and `facial_object_<o>_pose_<p>`). Keep those keys; the log lists `facial object N: ... animated`. Edited key shapes are exported as the new poses. Without the keys, the patched body has no facial animation (the log warns). On a few characters some face vertices also use a third bone for their expressions (Kritter, King Boo, Peach, Daisy, Diddy); after a rebuild that third-bone part of the expression is left out, and the patch log warns.
 - **Materials:** every face must use one of the body's own materials (the imported ones or ones made with **Add material**), as on rigid meshes.
 - **Shape keys** other than the facial ones are ignored.
 - **Size:** the rebuilt body is stored compactly, but every added vertex and texture still counts toward the memory the game has for the whole scene (see "Keep new textures small" above). Check the High and Low model together.
-- A Low (`_L_`) body is rebuilt on its own, with the bones the Low model skins to.
+- A Low (`_L_`) body is rebuilt on its own.
 
 #### You can't (yet):
 - remove, reorder or re-parent original bones (adding bones is fine)
-- skin the body to original bones the original body doesn't skin to (added bones are fine, see "Editing the body")
 - skin a new submesh to more than one bone
 - remove an object's custom properties
 - rename imported objects

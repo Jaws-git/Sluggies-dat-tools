@@ -438,9 +438,10 @@ def donor_covered_vertices(bone_hierarchy: Sequence[dict], submesh_index: int) -
     return covered
 
 
-def allowed_skin_bones(skinned_bone_ids: Iterable[int], added_bone_ids: Iterable[int]) -> Set[int]:
-    """Bones a body vertex may be weighted to (SkinnedRebuildExport.allowed_skin_bones)."""
-    return set(skinned_bone_ids) | set(added_bone_ids)
+def allowed_skin_bones(bone_ids: Iterable[int], added_bone_ids: Iterable[int]) -> Set[int]:
+    """Bones a body vertex may be weighted to: every original and added bone
+    (SkinnedRebuildExport.allowed_skin_bones)."""
+    return set(bone_ids) | set(added_bone_ids)
 
 
 def unweighted_vertices(

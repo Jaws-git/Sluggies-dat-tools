@@ -55,7 +55,7 @@ WRITING_FLAGS = frozenset({'--export', '--roster', '--patch', '--unpatch', '--re
                            '--write-voice-pack', '--game-options'})
 STAGED_CLIPS_REL = os.path.join('_gui', 'slot', 'staged_clips')   # encoded clips of pending species_clip edits
 UNNAMED = '-'
-CPU_VS_CPU_OPTIONS = ('cpu_vs_cpu', 'cpu_management')   # what the Options tab's CPU vs CPU button turns off
+CPU_VS_CPU_OPTIONS = ('cpu_vs_cpu', 'cpu_management')   # what the CPU vs CPU tab's button turns off
 LUIGI = 0x01
 
 
@@ -82,51 +82,86 @@ def _game_options(state):
     return (state or {}).get('game_options')
 
 
-def cpu_vs_cpu_command(enable: bool = True) -> tuple:
-    """The Options tab's CPU vs CPU button step. Turning it off also turns management off: management does
-    nothing without it, and its button is locked then, so it could not be turned off afterwards."""
-    return ('--game-options', '--on', 'cpu_vs_cpu') if enable else ('--game-options', '--off', *CPU_VS_CPU_OPTIONS)
+def game_option_edit(key: str, on: bool) -> dict:
+    """The pending edit that turns the game option ``key`` on or off (Roster/slot_plan ``game_option``)."""
+    return {'op': GAME_OPTION, 'id': hex_id(GAME_WIDE), 'file': f'{"on" if on else "off"}:{key}'}
 
 
-def cpu_management_command(enable: bool = True) -> tuple:
-    """The Options tab's CPU vs CPU management button step."""
-    return ('--game-options', '--on' if enable else '--off', 'cpu_management')
+def staged_game_options(pending: 'PendingEdits | None') -> dict[str, bool]:
+    """{key: on} of the pending game option edits (the last one per option wins)."""
+    out = {}
+    for e in (pending.edits if pending is not None else ()):
+        if e['op'] == GAME_OPTION:
+            state, _colon, key = e.get('file', '').partition(':')
+            out[key] = state == 'on'
+    return out
 
 
-def cpu_vs_cpu_button(state) -> tuple[str, bool]:
-    """The CPU vs CPU button's label and whether it enables."""
-    on = 'cpu_vs_cpu' in (_game_options(state) or ())
+def _effective_options(state, pending) -> set[str]:
+    """The game options that are on once the pending game option edits are written."""
+    options = set(_game_options(state) or ())
+    for key, on in staged_game_options(pending).items():
+        (options.add if on else options.discard)(key)
+    return options
+
+
+def cpu_vs_cpu_edits(enable: bool = True) -> list[dict]:
+    """The CPU vs CPU tab's button edits. Turning it off also turns management off: management does nothing
+    without it, and its button is locked then, so it could not be turned off afterwards."""
+    if enable:
+        return [game_option_edit('cpu_vs_cpu', True)]
+    return [game_option_edit(key, False) for key in CPU_VS_CPU_OPTIONS]
+
+
+def cpu_management_edit(enable: bool = True) -> dict:
+    """The CPU vs CPU tab's management button edit."""
+    return game_option_edit('cpu_management', enable)
+
+
+def cpu_vs_cpu_button(state, pending=None) -> tuple[str, bool]:
+    """The CPU vs CPU button's label and whether it enables (the pending edits counted)."""
+    on = 'cpu_vs_cpu' in _effective_options(state, pending)
     return (CPU_VS_CPU_DISABLE, False) if on else (CPU_VS_CPU_ENABLE, True)
 
 
-def cpu_management_button(state) -> tuple[str, bool, bool]:
-    """The management button's label, whether it enables, and whether it is usable (only once the read found
-    CPU vs CPU on)."""
-    options = _game_options(state) or ()
+def cpu_management_button(state, pending=None) -> tuple[str, bool, bool]:
+    """The management button's label, whether it enables, and whether it is usable (only while CPU vs CPU is on,
+    or staged on)."""
+    options = _effective_options(state, pending)
     usable = 'cpu_vs_cpu' in options
     if 'cpu_management' in options:
         return CPU_MANAGEMENT_DISABLE, False, usable
     return CPU_MANAGEMENT_ENABLE, True, usable
 
 
-def cpu_vs_cpu_status(state) -> tuple[str, bool | None]:
-    """The status label beside the CPU vs CPU button and whether it is on (None: not known)."""
-    options = _game_options(state)
-    if options is None:
-        return 'Cpu vs Cpu: unknown', None
-    return ('Cpu vs Cpu: enabled', True) if 'cpu_vs_cpu' in options else ('Cpu vs Cpu: disabled', False)
+def _pending_suffix(pending, key: str) -> str:
+    staged = staged_game_options(pending).get(key)
+    return '' if staged is None else f' (pending: {"enabled" if staged else "disabled"})'
 
 
-def cpu_management_status(state) -> tuple[str, bool | None]:
-    """The status label beside the management button and whether it is on (None: not known)."""
+def cpu_vs_cpu_status(state, pending=None) -> tuple[str, bool | None]:
+    """The status label beside the CPU vs CPU button and whether the game has it on (None: not known); a pending
+    edit is named after it."""
     options = _game_options(state)
+    suffix = _pending_suffix(pending, 'cpu_vs_cpu')
     if options is None:
-        return 'Management: unknown', None
+        return 'Cpu vs Cpu: unknown' + suffix, None
+    return (('Cpu vs Cpu: enabled' + suffix, True) if 'cpu_vs_cpu' in options
+            else ('Cpu vs Cpu: disabled' + suffix, False))
+
+
+def cpu_management_status(state, pending=None) -> tuple[str, bool | None]:
+    """The status label beside the management button and whether it is on (None: not known); a pending edit is
+    named after it."""
+    options = _game_options(state)
+    suffix = _pending_suffix(pending, 'cpu_management')
+    if options is None:
+        return 'Management: unknown' + suffix, None
     if 'cpu_management' not in options:
-        return 'Management: disabled', False
+        return 'Management: disabled' + suffix, False
     if 'cpu_vs_cpu' not in options:
-        return 'Management: enabled (no effect without CPU vs CPU)', False
-    return 'Management: enabled', True
+        return 'Management: enabled (no effect without CPU vs CPU)' + suffix, False
+    return 'Management: enabled' + suffix, True
 
 
 # Player memory: each on-field player's heap (High + Low + bat or glove) is 870,400 bytes in the stock game.
@@ -1080,6 +1115,9 @@ def _edit_title(edit: dict) -> str:
         return f'Pending: stat editor value changes'
     if edit['op'] == GAMEPLAY:
         return f'Pending: gameplay settings: {gameplay_item_label(edit.get("file"))}'
+    if edit['op'] == GAME_OPTION:
+        state, _colon, key = (edit.get('file') or '').partition(':')
+        return f'Pending: turn {state} {GAME_OPTION_TITLES.get(key, key)}'
     if edit['op'] in MODEL_FILE_TILES:
         return f'Pending: {MODEL_FILE_TILES[edit["op"]].noun} {os.path.basename(edit.get("file") or "?")}'
     if edit['op'] == 'equip':
@@ -1148,7 +1186,9 @@ STAT_EDITS, GAME_WIDE = 'stat_edits', 0xFF
 GAMEPLAY = 'gameplay'                  # gameplay settings (Gameplay tab): game-wide too
 ITEM = 'item'                          # an item model .sluggie (the grid's item tile): game-wide too (test-pinned)
 STADIUM = 'stadium'                    # a stadium model .sluggie (the grid's stadium tile): game-wide too (test-pinned)
-GAME_OPS = (STAT_EDITS, GAMEPLAY, ITEM, STADIUM)
+GAME_OPTION = 'game_option'            # a game option on / off (Gameplay tab, CPU vs CPU): game-wide (test-pinned)
+GAME_OPTION_TITLES = {'cpu_vs_cpu': 'CPU vs CPU', 'cpu_management': 'CPU vs CPU management'}
+GAME_OPS = (STAT_EDITS, GAMEPLAY, ITEM, STADIUM, GAME_OPTION)
 STAT_RESET = 'stat_reset'                     # clears one slot's stat edits (Roster/slot_plan, test-pinned)
 
 
@@ -1284,7 +1324,7 @@ def edit_who(state: dict | None, cid: int, action: str | None = None) -> str:
     if cid == GAME_WIDE:
         if action in MODEL_FILE_TILES:
             return MODEL_FILE_TILES[action].title
-        return 'Gameplay settings' if action == GAMEPLAY else 'Stat edits'
+        return {GAMEPLAY: 'Gameplay settings', GAME_OPTION: 'Game options'}.get(action, 'Stat edits')
     return f'{name_of(state, cid) if state else hex_id(cid)} ({hex_id(cid)})'
 # state key -> (slot file, label); the file numbers are Roster/gear.py's (test-pinned)
 EQUIP_TILES = (('bat', 2, 'Bat'), ('glove_l', 3, 'Left glove'), ('glove_r', 4, 'Right glove'),
@@ -1785,6 +1825,8 @@ def summary_dialog(state: dict, plan: dict | None, code: int, output: str) -> Sl
         elif section['action'] == GAMEPLAY:
             what = (f'{gameplay_item_label((section.get("edit") or {}).get("file"))}: '
                     + ((section.get('effects') or {}).get(GAMEPLAY) or 'changed values'))
+        elif section['action'] == GAME_OPTION:
+            what = (section.get('effects') or {}).get(GAME_OPTION) or 'changed'
         elif section['action'] in MODEL_FILE_TILES:
             what = ('patch ' + ((section.get('effects') or {}).get(section['action'])
                                 or f'the {MODEL_FILE_TILES[section["action"]].noun}'))
@@ -2218,6 +2260,28 @@ def gameplay_dialog(state: dict | None, plan: dict | None, code: int, output: st
         return dialog
     lines.append(('Checks passed: known fields, every value fits, the cross-field checks. Nothing written yet: '
                   '"Patch Game" writes the pending edits.', OK))
+    dialog.can_apply = True
+    return dialog
+
+
+def game_option_dialog(state: dict | None, plan: dict | None, code: int, output: str) -> SlotDialog:
+    """The game option staging check's dialog. ``can_apply`` when the whole check passed: the merged list is
+    then staged as it is (an edit back to what the game has drops the earlier pending one of that option)."""
+    dialog = SlotDialog('Stage the game options?')
+    lines = dialog.lines
+    error = error_message(output)
+    if plan is None or plan['refused']:
+        dialog.title = 'Game options: refused'
+        if plan is None:
+            error = error.removeprefix('refused, nothing written: ')
+            lines.append((f'Refused: {error or f"the planner failed (exit code {code})"}', ERROR))
+        else:
+            lines += _refused_lines(state or {}, plan, GAME_WIDE)
+        lines.append(('Nothing was staged.', TEXT))
+        return dialog
+    if code != 0:
+        lines.append((f'Check failed: {error or f"exit code {code}"}. Nothing was staged.', ERROR))
+        return dialog
     dialog.can_apply = True
     return dialog
 

@@ -920,7 +920,7 @@ class SluggiesGui:
 
     def _on_tab(self, _sender, tab):
         self.grid_tab.forget_copy()
-        if (dpg.get_item_alias(tab) in ('grid_tab', 'options_tab', 'sounds_tab')
+        if (dpg.get_item_alias(tab) in ('grid_tab', 'options_tab', 'gameplay_tab', 'sounds_tab')
                 and self.grid_tab.loader.status != gui_grid.StateLoader.RUNNING):
             self.grid_tab.request_read()
         if dpg.get_item_alias(tab) == 'sounds_tab':

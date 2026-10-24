@@ -15,6 +15,7 @@ from mathutils import Matrix, Vector
 from . import CustomSubmeshExport
 from . import FieldCodec
 from . import AnimScale
+from . import BoneRoles
 from .AnmExport import SLUGGIES_OT_export_anm_group, _POSE_BONE_PATH, _action_fcurves, anm_groups
 from . import HostBones
 from . import ModelCheckCore
@@ -1233,6 +1234,71 @@ class SLUGGIES_OT_add_material(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def _mesh_armature(obj):
+    """The armature *obj* deforms with: its Armature modifier's, else its parent."""
+    for mod in obj.modifiers:
+        if mod.type == 'ARMATURE' and mod.object is not None:
+            return mod.object
+    if obj.parent is not None and obj.parent.type == 'ARMATURE':
+        return obj.parent
+    return None
+
+
+class SLUGGIES_OT_select_unweighted(bpy.types.Operator):
+    """Select the active mesh's vertices that no bone of its armature weights"""
+    bl_idname = "sluggies.select_unweighted"
+    bl_label = "Select Unweighted Vertices"
+    bl_description = ("Enter Edit Mode on the active mesh and select every vertex with no weight "
+                      "above 0 in a vertex group that matches a bone of its armature "
+                      "(Armature modifier, else parent)")
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        if obj is None or obj.type != 'MESH':
+            if hasattr(cls, 'poll_message_set'):
+                cls.poll_message_set("Select a mesh")
+            return False
+        return True
+
+    def execute(self, context):
+        obj = context.active_object
+        arm_obj = _mesh_armature(obj)
+        bone_names = set(arm_obj.data.bones.keys()) if arm_obj is not None else set()
+        bone_group_indices = {g.index for g in obj.vertex_groups if g.name in bone_names}
+
+        if obj.mode != 'EDIT':
+            bpy.ops.object.mode_set(mode='EDIT')
+        context.tool_settings.mesh_select_mode = (True, False, False)
+        bm = bmesh.from_edit_mesh(obj.data)
+        deform = bm.verts.layers.deform.active
+        for f in bm.faces:
+            f.select_set(False)
+        for e in bm.edges:
+            e.select_set(False)
+        found = 0
+        for v in bm.verts:
+            weighted = deform is not None and any(
+                index in bone_group_indices and weight > 0.0 for index, weight in v[deform].items())
+            if weighted:
+                v.select_set(False)
+                continue
+            v.hide_set(False)
+            v.select_set(True)
+            found += 1
+        bm.select_flush_mode()
+        bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
+
+        if arm_obj is None:
+            self.report({"WARNING"}, f"{obj.name} has no armature: all {found} vertices are unweighted")
+        elif found:
+            self.report({"WARNING"}, f"Selected {found} unweighted vertices on {obj.name} ({arm_obj.name})")
+        else:
+            self.report({"INFO"}, f"Every vertex of {obj.name} is weighted to a bone of {arm_obj.name}")
+        return {"FINISHED"}
+
+
 def _draw_rigid_mesh_box(layout, context):
     """The 'Rigid mesh' box (plan: renamed 'Mesh' for a custom submesh),
     showing the active object's current attachment and the Add submesh /
@@ -1262,6 +1328,8 @@ def _draw_rigid_mesh_box(layout, context):
         if kind is not None:
             box.operator(SLUGGIES_OT_make_main_body.bl_idname)
     box.operator(SLUGGIES_OT_add_material.bl_idname)
+    if obj is not None and obj.type == 'MESH':
+        box.operator(SLUGGIES_OT_select_unweighted.bl_idname)
 
 
 STADIUM_ROOT_PARENT = '__ROOT__'
@@ -1427,6 +1495,7 @@ def _create_added_bone(context, arm_obj, parent_bone_name, animation_track=False
     new_bone['track_id'] = HostBones.NO_TRACK
     if animation_track:
         _set_added_bone_track(arm_obj, new_bone, True)
+    BoneRoles.bone_collection(arm_obj.data, BoneRoles.ADDED).assign(new_bone)
 
     context.view_layer.objects.active = prev_active
     return new_bone
@@ -2852,6 +2921,7 @@ def register():
     bpy.utils.register_class(SLUGGIES_OT_toggle_bone_track)
     bpy.utils.register_class(SLUGGIES_OT_reassign_bone)
     bpy.utils.register_class(SLUGGIES_OT_add_material)
+    bpy.utils.register_class(SLUGGIES_OT_select_unweighted)
     bpy.utils.register_class(SLUGGIES_OT_scale_animations)
     bpy.utils.register_class(SLUGGIES_PT_tools)
     bpy.utils.register_class(SluggiesCollisionSettings)
@@ -2897,6 +2967,7 @@ def unregister():
     bpy.utils.unregister_class(SluggiesCollisionSettings)
     bpy.utils.unregister_class(SLUGGIES_PT_tools)
     bpy.utils.unregister_class(SLUGGIES_OT_scale_animations)
+    bpy.utils.unregister_class(SLUGGIES_OT_select_unweighted)
     bpy.utils.unregister_class(SLUGGIES_OT_add_material)
     bpy.utils.unregister_class(SLUGGIES_OT_reassign_bone)
     bpy.utils.unregister_class(SLUGGIES_OT_toggle_bone_track)

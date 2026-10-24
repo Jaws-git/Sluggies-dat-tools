@@ -662,10 +662,24 @@ def _legacy_uv_layer_name(all_channels, target_ch_ind):
 
 def _find_uv_layer(mesh, all_channels, target_ch_ind):
     """Return *mesh*'s UV layer for *target_ch_ind*, falling back to the
-    PaletteName-based name of .blend files imported before 2026-10-11."""
-    layer = mesh.uv_layers.get(_uv_layer_name(all_channels, target_ch_ind))
+    PaletteName-based name of .blend files imported before 2026-10-11, and
+    for the first channel ("uv0") to the render-active (else active) layer
+    when no other channel claims that layer's name."""
+    name = _uv_layer_name(all_channels, target_ch_ind)
+    layer = mesh.uv_layers.get(name)
     if layer is None:
         layer = mesh.uv_layers.get(_legacy_uv_layer_name(all_channels, target_ch_ind))
+    if layer is None and name == 'uv0':
+        active = mesh.uv_layers.active_render or mesh.uv_layers.active
+        if active is not None:
+            claimed = set()
+            for ch in all_channels:
+                idx = ch.get('UVChannelIndex', 0)
+                if idx != target_ch_ind:
+                    claimed.add(_uv_layer_name(all_channels, idx))
+                    claimed.add(_legacy_uv_layer_name(all_channels, idx))
+            if active.name not in claimed:
+                layer = active
     return layer
 
 
@@ -688,6 +702,8 @@ def encode_uv_channel_edited(obj, json_channel, use_compression=True, all_uv_cha
     else:
         uv_layer = (mesh_data.uv_layers.get(f"uv{ch_ind}")
                     or mesh_data.uv_layers.get(json_channel.get("PaletteName", "") or f"uv{ch_ind}"))
+        if uv_layer is None and ch_ind == 0:
+            uv_layer = mesh_data.uv_layers.active_render or mesh_data.uv_layers.active
     if uv_layer is None:
         return None
 
@@ -1682,10 +1698,15 @@ def skin_membership_changed(candidates, data):
         return False
     vertex_size = 6 * _comp_size_skin(skin_data["QuantizeInfo"])
     donor_sets = ExportMode.donor_skin_bone_sets(skin_data, vertex_size)
-    skinned_bone_ids = set().union(*donor_sets.values()) if donor_sets else set()
-    # A weight on an added bone is a membership change too (the body is then
-    # rebuilt with that bone; added bones may drive skinning, Dolphin 2026-10-12).
-    skinned_bone_ids |= SkinnedRebuildExport.added_bone_ids(data["SluggiesModel"].get("BoneHierarchyEdited"))
+    model = data["SluggiesModel"]
+    # A weight on any bone of the skeleton is a membership change too (the
+    # body is then rebuilt with that bone): added bones and original bones the
+    # donor never skins both drive skinning (Dolphin 2026-10-12, 2026-10-24).
+    skinned_bone_ids = SkinnedRebuildExport.allowed_skin_bones(
+        model.get("BoneHierarchyEdited") or model.get("BoneHierarchy")
+    )
+    if donor_sets:
+        skinned_bone_ids |= set().union(*donor_sets.values())
 
     obj_by_vb = {str(obj["VertexBufferOffset"]): obj for obj in candidates if "VertexBufferOffset" in obj}
     edited_sets = {}
@@ -3835,11 +3856,19 @@ def _skinned_rebuild_plan(context, obj, submesh_index, target_submesh, model, wa
 
     bone_hierarchy = model.get("BoneHierarchyEdited") or model.get("BoneHierarchy") or []
     parent_of = {int(b["BoneId"]): b.get("ParentBoneId") for b in bone_hierarchy if "BoneId" in b}
-    allowed = SkinnedRebuildExport.allowed_skin_bones(donor, model.get("BoneHierarchyEdited"))
+    allowed = SkinnedRebuildExport.allowed_skin_bones(bone_hierarchy)
     vertex_weights = _vertex_bone_weights(obj)
     remap = SkinnedRebuildExport.remap_influences(vertex_weights, allowed, parent_of)
     warnings.extend(SkinnedRebuildExport.remap_report(remap, obj.name))
     _mark_skinned_added_bones(model, remap.weights, obj.name, warnings)
+    newly_skinned = SkinnedRebuildExport.newly_skinned_bones(
+        remap.weights, donor, SkinnedRebuildExport.added_bone_ids(model.get("BoneHierarchyEdited")),
+    )
+    if newly_skinned:
+        warnings.append(
+            f"{obj.name}: skinned to original bone(s) the original body doesn't skin to: "
+            f"{SkinnedRebuildExport.bone_list(newly_skinned)}."
+        )
     used = {v for tri in geometry.triangles for v in tri.vertices}
     unweighted_error = SkinnedRebuildExport.unweighted_error(
         obj.name, [v for v in remap.unweighted if v in used], vertex_weights,

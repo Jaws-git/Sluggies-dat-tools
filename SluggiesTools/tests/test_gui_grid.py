@@ -553,18 +553,54 @@ class CpuVsCpuTests(unittest.TestCase):
                          ('Management: enabled (no effect without CPU vs CPU)', False))
         self.assertEqual(status({'game_options': ['cpu_vs_cpu', 'cpu_management']}), ('Management: enabled', True))
 
-    def test_commands_write_and_name_known_options(self):
+    def test_edits_stage_known_options(self):
         from GameOptions import game_options
-        for make in (gui_grid.cpu_vs_cpu_command, gui_grid.cpu_management_command):
-            command = make()
-            self.assertEqual(command[:2], ('--game-options', '--on'))
-            self.assertTrue(set(command[2:]) <= set(game_options.BY_KEY))
-            self.assertTrue(gui_grid.chain_writes([command]))      # the grid re-reads afterwards (status label)
-            self.assertEqual(make(False)[:2], ('--game-options', '--off'))
-        self.assertEqual(gui_grid.cpu_vs_cpu_command()[2:], ('cpu_vs_cpu',))
-        self.assertEqual(gui_grid.cpu_management_command()[2:], ('cpu_management',))
+        from Roster import slot_plan
+        self.assertEqual(gui_grid.GAME_OPTION, slot_plan.GAME_OPTION)
+        self.assertEqual(gui_grid.GAME_OPTION_TITLES, slot_plan.GAME_OPTION_TITLES)
+        self.assertTrue(set(slot_plan.GAME_OPTION_TITLES) <= set(game_options.BY_KEY))
+        self.assertEqual(gui_grid.cpu_vs_cpu_edits(), [{'op': 'game_option', 'id': '0xFF', 'file': 'on:cpu_vs_cpu'}])
+        self.assertEqual(gui_grid.cpu_management_edit(False)['file'], 'off:cpu_management')
         # turning CPU vs CPU off takes management with it (its button is locked afterwards)
-        self.assertEqual(gui_grid.cpu_vs_cpu_command(False)[2:], ('cpu_vs_cpu', 'cpu_management'))
+        self.assertEqual([e['file'] for e in gui_grid.cpu_vs_cpu_edits(False)],
+                         ['off:cpu_vs_cpu', 'off:cpu_management'])
+        self.assertTrue(gui_grid.chain_writes([('--game-options', '--on', 'cpu_vs_cpu')]))
+
+    def test_pending_edits_count(self):
+        pending = gui_grid.PendingEdits()
+        pending.edits = gui_grid.cpu_vs_cpu_edits()
+        state = {'game_options': []}
+        self.assertEqual(gui_grid.cpu_vs_cpu_button(state, pending), (gui_grid.CPU_VS_CPU_DISABLE, False))
+        self.assertTrue(gui_grid.cpu_management_button(state, pending)[2])     # usable: CPU vs CPU is staged on
+        self.assertEqual(gui_grid.cpu_vs_cpu_status(state, pending),
+                         ('Cpu vs Cpu: disabled (pending: enabled)', False))
+        self.assertEqual(gui_grid._edit_title(pending.edits[0]), 'Pending: turn on CPU vs CPU')
+        self.assertEqual(pending.titles(), [(None, 'turn on CPU vs CPU')])
+
+    def test_planner(self):
+        from Roster import slot_plan
+
+        class Env(slot_plan.Env):
+            def game_options(self):
+                return ['cpu_vs_cpu']
+
+        def plan(items):
+            return slot_plan.plan_batch({'characters': [], 'squares': []}, {}, slot_plan.parse_edits(items), Env(),
+                                        'state.json')
+        on = {'op': 'game_option', 'id': '0xFF', 'file': 'on:cpu_management'}
+        off = {'op': 'game_option', 'id': '0xFF', 'file': 'off:cpu_vs_cpu'}
+        b = plan([on, off])
+        self.assertTrue(b.ok, b.refused)
+        self.assertEqual(b.commands, [('--game-options', '--on', 'cpu_management', '--off', 'cpu_vs_cpu'),
+                                      ('--roster-state',)])
+        # the last edit per option wins; back to what the game has: nothing to write, nothing stays pending
+        b = plan([off, dict(off, file='on:cpu_vs_cpu')])
+        self.assertEqual((b.commands, b.to_json()['merged'], [p.action for _e, p in b.skipped]),
+                         ([], [], ['game_option']))
+        b = plan([dict(on, file='on:player_heap_32')])
+        self.assertTrue(b.refused)
+        with self.assertRaises(slot_plan.PlanError):
+            slot_plan.parse_edits([{'op': 'game_option'}])
 
     def test_buttons(self):
         button = gui_grid.cpu_vs_cpu_button

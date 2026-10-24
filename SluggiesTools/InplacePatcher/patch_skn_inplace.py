@@ -79,14 +79,15 @@ def _scaled_bind_pose(entry: dict, skin_data: dict, factors) -> bytes | None:
 # Public API
 # ---------------------------------------------------------------------------
 
-def skn_edit_problems(skin_data: dict) -> list[str]:
+def skn_edit_problems(skin_data: dict, bone_ids=None) -> list[str]:
     """Reasons the in-place SKN edits in *skin_data* would crash or break the
     game (skn_section.html#runtime-limits); empty when they are safe.
 
     Checks each SK1/SK2 entry's effective vertex count (``VertexCntEdited``
     or ``VertexCnt``) against the skinning loop's minimum and the locked-cache
-    buffer size, and that an SK1 ``BoneIndexEdited`` names a bone the model's
-    own skin already uses."""
+    buffer size, and that an SK1 ``BoneIndexEdited`` names a bone of the
+    skeleton (*bone_ids*; without it, a bone the model's own skin uses). Any
+    bone gets a skinning matrix (Dolphin, 2026-10-24)."""
     stride = 6 * _comp_size(int(skin_data.get('QuantizeInfo', 0)))
     problems = []
     for kind in ('SK1', 'SK2'):
@@ -96,14 +97,11 @@ def skn_edit_problems(skin_data: dict) -> list[str]:
                 kind, count, int(entry.get('VertexOffset', 0)), stride)
             if problem:
                 problems.append(f'{kind}[{index}]: {problem}')
-    skinned = skin_bone_ids(skin_data)
+    allowed = skin_bone_ids(skin_data) | {int(b) for b in (bone_ids or ())}
     for index, entry in enumerate(skin_data.get('SK1s', [])):
         bone = entry.get('BoneIndexEdited')
-        if bone is not None and int(bone) not in skinned:
-            problems.append(
-                f'SK1[{index}]: bone {bone} is not one of the bones this model skins to; '
-                'its matrix is not a skinning matrix, so the vertices would be misplaced '
-                'or invisible')
+        if bone is not None and int(bone) not in allowed:
+            problems.append(f'SK1[{index}]: bone {bone} is not a bone of this model')
     return problems
 
 

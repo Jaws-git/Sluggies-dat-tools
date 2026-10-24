@@ -1338,12 +1338,13 @@ def _added_bone_ids(model: dict) -> set[int]:
 
 
 def _allowed_skin_bones(model: dict) -> set[int]:
-    """Bones a skin may use: the bones the donor's own ``SkinData`` skins to
-    at this LOD, plus any added bone. An appended mesh-free bone gets a
-    skinning matrix like a vanilla one (Dolphin, 2026-10-12: Mario's hand SK1
-    retargeted to a new leaf bone under the hand deformed as vanilla); donor
-    bones outside the vanilla skin set do not (skn_section.html#runtime-limits)."""
-    return _skin_bone_ids(model.get('SkinData')) | _added_bone_ids(model)
+    """Bones a skin may use: every bone of the skeleton (``BoneHierarchy`` and
+    ``BoneHierarchyEdited``) plus the donor's own skin bones. The game builds
+    a skinning matrix for any bone the SKN names: an appended mesh-free bone
+    (Dolphin, 2026-10-12) and vanilla bones the donor never skins, mesh-free
+    or owning a rigid mesh (Mario High bones 49 and 55, Dolphin 2026-10-24)."""
+    hierarchy = (model.get('BoneHierarchy') or []) + (model.get('BoneHierarchyEdited') or [])
+    return {int(b['BoneId']) for b in hierarchy if 'BoneId' in b} | _skin_bone_ids(model.get('SkinData'))
 
 
 def _validate_bone_hierarchy_edited(model: dict) -> None:
@@ -1564,22 +1565,16 @@ def _validate_bone_hierarchy_edited(model: dict) -> None:
 
 
 def _validate_skin_bones(model: dict) -> None:
-    """Refuse a ``SkinDataEdited`` that skins to a donor bone the donor's own
-    skin (``SkinData``) never uses at this LOD. Such a bone owns a rigid
-    submesh or is missing from this LOD's skin, and its matrix-palette entry
-    is not a skinning matrix: the vertices end up misplaced or invisible
-    (skn_section.html#runtime-limits). Added bones are allowed
-    (``_allowed_skin_bones``). The Blender add-on already ignores vertex
-    groups for the refused bones; this check is the patch-time backstop."""
+    """Refuse a ``SkinDataEdited`` that skins to a bone the skeleton does not
+    have (``_allowed_skin_bones``)."""
     edited = model.get('SkinDataEdited')
     if not edited:
         return
     extra = sorted(_skin_bone_ids(edited) - _allowed_skin_bones(model))
     if extra:
         raise ValueError(
-            f"SkinDataEdited skins to bone(s) {extra}, which the donor's skin never uses; "
-            'these bones have no skinning matrix, so the vertices would be misplaced or '
-            'invisible. Weight those vertices to bones the original model skins to, or to added bones')
+            f"SkinDataEdited skins to bone(s) {extra}, which this model's skeleton does not have. "
+            'Weight those vertices to bones of this model')
 
 
 # ---------------------------------------------------------------------------
@@ -1965,6 +1960,29 @@ def _donor_palette_name(model: dict) -> str:
     return ''
 
 
+def _bindable_color_channel(records: list[list], color_channel: 'ColorChannel | None') -> 'ColorChannel | None':
+    """``color_channel`` with a one-entry array written twice when a Type-3
+    record of ``records`` reads color0 per vertex; unchanged otherwise.
+
+    The renderer binds a colour array only when it has two or more entries
+    (fn_8052E99C, 0x8052EBFC); one entry becomes a material colour. That is
+    right for a vertex format without color0 (the Mii body's one-entry array),
+    but a mesh that reads color0 per vertex with one entry (painted in one
+    colour, or not at all) then indexes the previous mesh's array: a stadium
+    cube drawn after Yoshi Park's field markings came out nearly transparent
+    (Dolphin, 2026-10-18), and so did a skinned-rebuilt Koopa body (2026-10-24).
+    A duplicate entry keeps every index valid and the colour the same."""
+    if color_channel is None or len(color_channel.color_data) != _color_entry_size(color_channel.quantize_info):
+        return color_channel
+    reads_vertex_color = any(
+        state_id == 3 and any(d['key'] == 'color0' for d in _custom_submesh_type3_descriptors(int(mode, 16)))
+        for state_id, _pad, mode in records
+    )
+    if not reads_vertex_color:
+        return color_channel
+    return replace(color_channel, color_data=color_channel.color_data * 2)
+
+
 def _assemble_rigid_submesh(
     submesh_index: int, mesh_name: str, records: list[list], primitive_lists: list[bytes],
     *, vertex_data: bytes, vertex_quantize_info: int, uv_channels: list,
@@ -1999,21 +2017,7 @@ def _assemble_rigid_submesh(
         )
         for (state_id, pad, mode), primitive_bytes in zip(records, primitive_lists)
     ]
-    reads_vertex_color = any(
-        state_id == 3 and any(d['key'] == 'color0' for d in _custom_submesh_type3_descriptors(int(mode, 16)))
-        for state_id, _pad, mode in records
-    )
-    if (reads_vertex_color and color_channel is not None
-            and len(color_channel.color_data) == _color_entry_size(color_channel.quantize_info)):
-        # The renderer binds a colour array only when it has two or more
-        # entries (fn_8052E99C, 0x8052EBFC); one entry becomes a material
-        # colour. That is right for a vertex format without color0 (the Mii
-        # body's one-entry array), but a mesh that reads color0 per vertex
-        # with one entry (painted in one colour, or not at all) then indexes
-        # the previous mesh's array: a stadium cube drawn after Yoshi Park's
-        # field markings came out nearly transparent (Dolphin, 2026-10-18).
-        # A duplicate entry keeps every index valid and the colour the same.
-        color_channel = replace(color_channel, color_data=color_channel.color_data * 2)
+    color_channel = _bindable_color_channel(records, color_channel)
     return Submesh(
         submesh_index=submesh_index,
         mesh_name=mesh_name,
@@ -3717,9 +3721,8 @@ def _validate_skinned_rebuild(model: dict) -> None:
                 fail(f'Influences vertex {bad_weight[0]} bone {bad_weight[1]} has a non-positive or non-finite weight {bad_weight[2]!r}')
             if unknown_bones:
                 fail(
-                    f"skins to bone(s) {sorted(unknown_bones)}, which the donor's skin never uses; "
-                    'these bones have no skinning matrix, so the vertices would be misplaced or '
-                    'invisible. Weight those vertices to bones the original model skins to, or to added bones'
+                    f"skins to bone(s) {sorted(unknown_bones)}, which this model's skeleton does not have. "
+                    'Weight those vertices to bones of this model'
                 )
             missing = sorted(set(range(vertex_count)) - weighted)
             if missing:
@@ -4305,6 +4308,7 @@ def _skinned_rebuild_to_blob(
     # The lighting attribute indexes the interleaved normals, so it has one
     # entry per position slot.
     records = _rigid_rebuild_donor_records(sub)
+    color_channel = _bindable_color_channel(records, color_channel)
     counts = {'position': layout.slot_count, 'lighting': layout.slot_count}
     if color_channel is not None and rebuild.color_data is not None:
         counts['color0'] = len(color_channel.color_data) // _color_entry_size(color_channel.quantize_info)

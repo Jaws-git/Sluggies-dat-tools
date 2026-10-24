@@ -554,7 +554,8 @@ python start.py --load-roster my_roster.sluggiesroster
   The red marks only show while the output game is still compatible.
   **Cancel** writes nothing. Maintenance → Scan shows whether the output
   game still works with these Gecko codes. The All-In-One Export leaves the
-  game options off; turn them on in the Options tab.
+  game options off; stage CPU vs CPU in Gameplay → CPU vs CPU (Patch Game
+  writes it) and set player memory in the Options tab.
 - **Player memory** (Options tab, or `--game-options --on player_heap_32`,
   `_48`, `_64` or `_128`): every player on the field gets a fixed memory area for its
   High model, Low model and bat or glove, 870,400 bytes (850 KB) in the

@@ -133,6 +133,10 @@ with the slot writes, in staging order, after a build check with the slots' (``-
 dry run of that patch). One per model (``ModelOffset``): a later file of the same model replaces the
 earlier one. Character models are refused: they go into a slot (or its Equipment row); each op refuses the other's.
 
+Game options (``plan_game_option``, op ``game_option``): ``on:KEY`` / ``off:KEY`` turns a game option (CPU vs CPU,
+its management; the GUI's Gameplay tab) on or off. Game-wide (``id`` ``GAME_WIDE``); the last edit per option wins,
+and the chain writes them in one ``--game-options`` step after the gameplay step.
+
 Copy (``plan_copy``, op ``copy``, the grid's paste): slot ``id`` becomes a clone of ``source`` as the game holds
 it (finished blocks, name, portraits, stats source and every stat value; the square's voice stays unless the slot is
 alone on a new square). The planner snapshots the source into ``copy_dir`` before anything is written, so pending
@@ -474,6 +478,10 @@ class Env:
         """The gameplay items (files, ``reset``) checked together against the game files, in order
         (``Gameplay/apply.py``); a refusal raises ``PlanError``."""
         raise NotImplementedError
+
+    def game_options(self) -> list[str]:
+        """The keys of the game options that are on in the output ``main.dol`` (``GameOptions/game_options.detect``)."""
+        return []
 
     def stat_edited(self, cid: int) -> str | None:
         """What stat edits the game holds for ``cid`` (``StatEditor/carry.CharacterEdits.text``), or None."""
@@ -2137,6 +2145,30 @@ def plan_gameplay(item: str, earlier: list[str], env: Env, after_stat_files: boo
     return plan
 
 
+def parse_game_option(item: str) -> tuple[str, bool]:
+    """``(key, on)`` of a game option item (``on:cpu_vs_cpu``, ``off:cpu_management``)."""
+    state, _colon, key = (item or '').strip().lower().partition(':')
+    if state not in ('on', 'off') or key not in GAME_OPTION_TITLES:
+        raise PlanError(f'{item!r} is not a game option item (on:KEY or off:KEY; KEY one of '
+                        f'{", ".join(GAME_OPTION_TITLES)})')
+    return key, state == 'on'
+
+
+def plan_game_option(item: str, env: Env) -> Plan:
+    """The chain step that turns the game option of ``item`` on or off (``--game-options``, merged by
+    ``plan_batch``); ``nothing`` when the game has it that way already."""
+    key, on = parse_game_option(item)
+    plan = Plan(GAME_OPTION, GAME_WIDE, None)
+    title = GAME_OPTION_TITLES[key]
+    if (key in env.game_options()) == on:
+        plan.nothing = True
+        plan.notes.append(f'nothing to change: {title} is {"on" if on else "off"} already')
+        return plan
+    plan.commands.append(('--game-options', '--on' if on else '--off', key))
+    plan.effects[GAME_OPTION] = f'{title} {"on" if on else "off"}'
+    return plan
+
+
 def plan_item(pick: ItemPick, op: str = 'item') -> Plan:
     """The chain step that patches the item (``op`` ``stadium``: stadium) model ``pick`` as the CLI's plain patch
     does (``--patch FILE``), after its build check (``--patch FILE --validate-only``: a dry run of that patch)."""
@@ -2170,7 +2202,10 @@ GAMEPLAY_RESET = 'reset'                              # Gameplay/apply.RESET_ITE
 ITEM = 'item'                                         # game-wide: an item model .sluggie, a plain --patch
 STADIUM = 'stadium'                                   # the same for a stadium model .sluggie
 MODEL_FILE_OPS = (ITEM, STADIUM)
-GAME_OPS = (STAT_EDITS, GAMEPLAY, ITEM, STADIUM)
+GAME_OPTION = 'game_option'                           # game-wide: a game option on / off (``on:KEY``); last per KEY
+# the game options that can be staged (GameOptions/game_options.OPTIONS keys, test-pinned)
+GAME_OPTION_TITLES = {'cpu_vs_cpu': 'CPU vs CPU', 'cpu_management': 'CPU vs CPU management'}
+GAME_OPS = (STAT_EDITS, GAMEPLAY, ITEM, STADIUM, GAME_OPTION)
 # HammerspaceMain.STADIUM_CHUNKS: Mario Stadium (7) .. Toy Field (16)
 STADIUM_CHUNKS = range(7, 17)
 GAME_WIDE = 0xFF                                      # the "id" of a stat edit: no character has it
@@ -2260,6 +2295,7 @@ def parse_edits(data) -> list[Edit]:
                 raise PlanError(f'edit {n}: a {item["op"]} edit needs a "file" ('
                                 + ("the stat editor's edit file)" if item['op'] == STAT_EDITS
                                    else f'the {item["op"]} model .sluggie)' if item['op'] in MODEL_FILE_OPS
+                                   else '"on:KEY" or "off:KEY")' if item['op'] == GAME_OPTION
                                    else 'a gameplay settings file, or "reset")'))
             edits.append(Edit(item['op'], GAME_WIDE, item['file'], checked=bool(item.get('checked')), index=n))
             continue
@@ -2447,7 +2483,8 @@ def merge_edits(edits: list[Edit], classify_fn=None, load_icon_fn=None, classify
       a ``user`` edit of the same file;
     * animations: the last edit per slot and bank wins; a clear of the slot drops its earlier ones (it resets the
       banks; a patch that copies a new ID's directory afresh does too, in ``plan_batch``);
-    * item and stadium models: the last edit per model wins."""
+    * item and stadium models: the last edit per model wins;
+    * game options: the last edit per option wins."""
     classify_fn = classify_fn or classify
     classify_item_fn = classify_item_fn or classify_item
     load_icon_fn = load_icon_fn or load_icon
@@ -2470,6 +2507,15 @@ def merge_edits(edits: list[Edit], classify_fn=None, load_icon_fn=None, classify
                 if dropped:
                     notes.append(f'gameplay: {len(dropped)} pending gameplay edit{"s are" if len(dropped) != 1 else " is"} '
                                  'dropped: the later reset puts every value back to 1_Input')
+            merged.append(edit)
+            continue
+        if edit.op == GAME_OPTION:
+            try:
+                key, _on = parse_game_option(edit.file)
+            except PlanError as exc:
+                refused.append((edit, str(exc)))
+                continue
+            merged = [e for e in merged if not (e.op == GAME_OPTION and parse_game_option(e.file)[0] == key)]
             merged.append(edit)
             continue
         if edit.op in MODEL_FILE_OPS:
@@ -2703,6 +2749,7 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
        ``--write-slot-animation`` / ``--write-voice-pack`` (a character file import's pack, after its blocks),
        and each item model's ``--patch FILE``, in staging order;
     4b. one ``--apply-gameplay`` with every staged gameplay item, in staging order;
+    4c. one ``--game-options`` with every staged game option (``--on`` / ``--off``);
     5. one ``--roster-state``.
 
     Any refused edit refuses the whole batch: no commands, no config (``refused`` names them all)."""
@@ -2743,6 +2790,8 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
                                      after_stat_files=any(e.op == STAT_EDITS for e in merged))
             elif edit.op in MODEL_FILE_OPS:
                 plan = plan_item(edit.item, edit.op)
+            elif edit.op == GAME_OPTION:
+                plan = plan_game_option(edit.file, env)
             elif edit.op == COPY:
                 plan = plan_copy(st, current, config, edit.cid, edit.source, env, state_file, names_text)
                 if any(e.cid == edit.source for e in merged if e is not edit):
@@ -2818,5 +2867,10 @@ def plan_batch(st: dict, config: dict, edits: list[Edit], env: Env, state_file: 
     gameplay = [p for _edit, plan in batch.plans for c in plan.commands if c[0] == '--apply-gameplay' for p in c[1:]]
     if gameplay:                                    # after the stat edits and the rebuild: its values win
         batch.commands.append(('--apply-gameplay', *gameplay))
+    options = [c for _edit, plan in batch.plans for c in plan.commands if c[0] == '--game-options']
+    on = [c[2] for c in options if c[1] == '--on']
+    off = [c[2] for c in options if c[1] == '--off']
+    if options:                                     # after the rebuild (which keeps the options the game has)
+        batch.commands.append(('--game-options', *(('--on', *on) if on else ()), *(('--off', *off) if off else ())))
     batch.commands.append(('--roster-state',))
     return batch

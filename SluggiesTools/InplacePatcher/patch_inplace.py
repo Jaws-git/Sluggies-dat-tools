@@ -197,7 +197,8 @@ param_patches    = []   # (submesh_idx, ds_idx, file_offset, raw_bytes)
 
 skin_data = data["SluggiesModel"].get("SkinData")  # None for non-skinned models
 if skin_data is not None and not unpatch:
-    _skn_problems = _skn.skn_edit_problems(skin_data)
+    _skn_problems = _skn.skn_edit_problems(
+        skin_data, [b["BoneId"] for b in data["SluggiesModel"].get("BoneHierarchy") or [] if "BoneId" in b])
     if _skn_problems:
         abort("Skin edit refused, it would crash or break the game: "
               + "; ".join(_skn_problems))

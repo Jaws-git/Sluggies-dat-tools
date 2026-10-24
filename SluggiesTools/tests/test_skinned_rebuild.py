@@ -813,6 +813,35 @@ class SkinnedRebuildBuildTests(unittest.TestCase):
         self.assertEqual(blob['normal_offset'], blob['pos_offset'] + 6)
         self.assertEqual(blob['normal'][1:], (N, synthetic_donor.SKINNED_QUANTIZE_INFO, 6))
 
+    def test_one_entry_vertex_color_is_written_twice(self):
+        # An unpainted body exports one white entry; the renderer binds a
+        # colour array only from two entries on, so color0 would index the
+        # previous mesh's array (half-transparent Koopa body, 2026-10-24).
+        def add_color0(data):
+            _with_third_bone(data)
+            sub = data['SluggiesModel']['Submeshes'][0]
+            sub['ColorChannels'] = [{
+                'ColorChannelIndex': 0, 'ColorChannelCompCount': 4, 'ColorChannelQuantizeInfo': 48,
+                'ColorChannelData': _b64(b'\xff\xf0\xff\xff'), 'ColorFacesData': sub['FacesData'],
+            }]
+            for state in sub['DisplayStates']:
+                if state['DisplayStateId'] == 3:
+                    state['ShaderMode'] = '00002888'      # 00002808 + color0 (u8 index)
+        self.env = self.enterContext(synthetic_donor.donor_environment(add_color0))
+        self.data = self.env.reload()
+        self.model = self.data['SluggiesModel']
+        self.model['UseHammerspace'] = True
+        rebuild = _rebuild(self.model, [[(BONE_A, 1.0)]] * N)
+        rebuild['ColorChannelData'] = _b64(b'\xff\xff')
+        rebuild['ColorFacesData'] = _u16s([0] * (3 * rebuild['FacesCount']))
+        self.model['Submeshes'][0]['SkinnedRebuild'] = rebuild
+        _result, gpl, _skn = self._build()
+        start = _descriptors(gpl)[0][0]
+        col_h = struct.unpack_from('>I', gpl, start + 4)[0]
+        col_ptr, col_count, col_q, _cc = struct.unpack_from('>IHBB', gpl, start + col_h)
+        self.assertEqual((col_count, col_q), (2, 48))
+        self.assertEqual(gpl[start + col_ptr:start + col_ptr + 4], b'\xff\xff' * 2)
+
     def test_facial_pointer_is_cleared_when_poses_address_submesh_0(self):
         self.model['FacialPoseData'] = {'Objects': [{'ObjectIndex': 0, 'SubmeshIndex': 0}]}
         section = struct.pack('>HHHHI', 5, 1, 1, 0, 0x0C) + bytes(0x14)

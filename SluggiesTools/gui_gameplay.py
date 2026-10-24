@@ -99,6 +99,7 @@ class GameplayTab:
                     dpg.add_spacer(width=8)
             with dpg.child_window(tag='gp_body', border=False, height=-36):
                 with dpg.tab_bar(tag='gp_tabs'):
+                    self.grid.build_cpu_vs_cpu()
                     for tab, title in tables.TABS:
                         with dpg.tab(label=title, tag=f'gp_tab_{tab}'):
                             with dpg.group(horizontal=True):

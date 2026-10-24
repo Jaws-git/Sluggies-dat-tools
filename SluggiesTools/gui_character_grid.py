@@ -355,18 +355,19 @@ class CharacterGridTab:
             dpg.add_key_release_handler(dpg.mvKey_Return, callback=self._on_enter)
             dpg.add_key_release_handler(dpg.mvKey_NumPadEnter, callback=self._on_enter)
 
-    def build_options(self):
-        """The Options tab: game options written into main.dol right away (CPU vs CPU). Its state comes from the
-        grid's read, so the tab lives here."""
-        with dpg.tab(label='Options', tag='options_tab'):
-            dpg.add_text('Pending player changes. Please commit or discard them before changing the game options.',
-                         tag='options_pending', color=_ERROR, wrap=600, show=False)
-            dpg.add_text('CPU League')
+    def build_cpu_vs_cpu(self):
+        """The Gameplay tab's "CPU vs CPU" inner tab: the buttons stage game option edits ("Patch Game" writes
+        them). Its state comes from the grid's read, so it is built here (inside the Gameplay tab's tab bar)."""
+        with dpg.tab(label='CPU vs CPU', tag='cpu_vs_cpu_tab'):
+            dpg.add_text('The buttons stage the change; "Patch Game" writes every pending edit.', color=_DIM)
+            dpg.add_button(label='Discard pending CPU vs CPU edits', tag='cpu_vs_cpu_discard', enabled=False,
+                           callback=lambda: self._on_cpu_vs_cpu_discard())
+            dpg.add_spacer(height=4)
             with dpg.group(horizontal=True):
                 dpg.add_button(label=gui_grid.CPU_VS_CPU_ENABLE, tag='grid_cpu_vs_cpu',
                                callback=lambda: self._on_cpu_vs_cpu())
                 with dpg.tooltip('grid_cpu_vs_cpu'):
-                    dpg.add_text('Turn on CPU vs CPU (hold Minus on controller starting a match). Turning it off '
+                    dpg.add_text('Stage CPU vs CPU on (hold Minus on controller starting a match). Turning it off '
                                  'also turns off its management.', wrap=420)
                 dpg.add_text('', tag='grid_cpu_vs_cpu_status')
             with dpg.group(horizontal=True):
@@ -374,14 +375,22 @@ class CharacterGridTab:
                                callback=lambda: self._on_cpu_management())
                 with dpg.tooltip('grid_cpu_management'):
                     dpg.add_text('In a CPU vs CPU match, controller 1 manages the fielding team (pause to make '
-                                 'defensive changes). Needs CPU vs CPU turned on first.', wrap=420)
+                                 'defensive changes). Needs CPU vs CPU on (or staged on) first.', wrap=420)
                 dpg.add_text('', tag='grid_cpu_management_status')
             # the tool's CPU vs CPU patch and Dolphin's CPU vs CPU Gecko codes must not both be active
             dpg.add_text('Disable all CPU vs CPU Gecko codes in Dolphin now!', tag='grid_cpu_gecko_warning',
                          color=_WARN, show=False)
-            dpg.add_spacer(height=4)
-            dpg.add_separator()
-            dpg.add_spacer(height=4)
+            with dpg.group(horizontal=True):
+                dpg.add_loading_indicator(tag='cpu_vs_cpu_spinner', style=1, radius=1.6, show=False,
+                                          color=(90, 200, 120, 255), secondary_color=(60, 120, 80, 255))
+                dpg.add_text('', tag='cpu_vs_cpu_status')
+
+    def build_options(self):
+        """The Options tab: game options written into main.dol right away (player memory). Its state comes from the
+        grid's read, so the tab lives here."""
+        with dpg.tab(label='Options', tag='options_tab'):
+            dpg.add_text('Pending player changes. Please commit or discard them before changing the game options.',
+                         tag='options_pending', color=_ERROR, wrap=600, show=False)
             dpg.add_text('Player memory')
             dpg.add_checkbox(label='I have manually increased the MEM2 limit in Dolphin to 128 MB',
                              tag='grid_big_memory', callback=lambda _s, value: self._on_big_memory(value))
@@ -503,9 +512,10 @@ class CharacterGridTab:
 
     def _show_status(self):
         """Spinner and status line: while the tab's own command runs (check, Patch Game) or the grid is read. The
-        Options tab shows them too (its CPU vs CPU status comes from the read)."""
+        Options tab and the Gameplay tab's CPU vs CPU tab show them too (their status comes from the read)."""
         busy = self.work is not None or self.loader.status == self.loader.RUNNING
-        for spinner, status in (('grid_spinner', 'grid_status'), ('options_spinner', 'options_status')):
+        for spinner, status in (('grid_spinner', 'grid_status'), ('options_spinner', 'options_status'),
+                                ('cpu_vs_cpu_spinner', 'cpu_vs_cpu_status')):
             if dpg.does_item_exist(spinner):
                 dpg.configure_item(spinner, show=busy)
                 dpg.set_value(status, self.work or self.loader.message)
@@ -516,16 +526,10 @@ class CharacterGridTab:
             dpg.set_value('grid_big_memory', True)     # a 128 MB level is on: its items must stay listed
         self._player_heap_items()
         dpg.set_value('grid_player_heap', gui_grid.player_heap_choice(level))
-        for tag, status in (('grid_cpu_vs_cpu', gui_grid.cpu_vs_cpu_status),
-                            ('grid_cpu_management', gui_grid.cpu_management_status),
-                            ('grid_player_heap', gui_grid.player_heap_status)):
-            text, enabled = status(state)
-            dpg.set_value(f'{tag}_status', text)
-            dpg.configure_item(f'{tag}_status', color=_OK if enabled else _WARN if enabled is False else _DIM)
-        dpg.configure_item('grid_cpu_vs_cpu', label=gui_grid.cpu_vs_cpu_button(state)[0])
-        dpg.configure_item('grid_cpu_management', label=gui_grid.cpu_management_button(state)[0])
-        self._enable_cpu_management(self._options_locked())
-        dpg.configure_item('grid_cpu_gecko_warning', show=gui_grid.cpu_vs_cpu_status(state)[1] is True)
+        text, enabled = gui_grid.player_heap_status(state)
+        dpg.set_value('grid_player_heap_status', text)
+        dpg.configure_item('grid_player_heap_status', color=_OK if enabled else _WARN if enabled is False else _DIM)
+        self._show_cpu_vs_cpu()
         dpg.set_value('grid_note', gui_grid.stock_luigi_note(state) if state else '')
         dpg.configure_item('grid_reference', show=self.reference is not None)
         if self.reference is not None:
@@ -1180,20 +1184,39 @@ class CharacterGridTab:
         options_locked = self._options_locked()
         if dpg.does_item_exist('options_pending'):
             dpg.configure_item('options_pending', show=bool(len(self.pending)))
-            for tag in ('grid_cpu_vs_cpu', 'grid_big_memory', 'grid_player_heap', 'options_copy_now'):
+            for tag in ('grid_big_memory', 'grid_player_heap', 'options_copy_now'):
                 dpg.configure_item(tag, enabled=not options_locked)
-        self._enable_cpu_management(options_locked)
+        self._show_cpu_vs_cpu()
 
     def _options_locked(self):
         """The Options tab writes main.dol right away, so it waits until pending player edits are committed or
         discarded (Patch Game would otherwise mix them)."""
         return self._locked() or bool(len(self.pending))
 
-    def _enable_cpu_management(self, locked):
-        """The management button is usable only while the read found CPU vs CPU on."""
-        if dpg.does_item_exist('grid_cpu_management'):
-            usable = gui_grid.cpu_management_button(self.loader.state)[2]
-            dpg.configure_item('grid_cpu_management', enabled=usable and not locked)
+    def _cpu_vs_cpu_locked(self):
+        """The CPU vs CPU buttons stage edits: not while the tab is busy or a roster pack load is pending."""
+        return self._locked() or self.confirm is not None or self.pending.pack is not None
+
+    def _show_cpu_vs_cpu(self):
+        """The CPU vs CPU tab's labels and buttons: the game's state with the pending game option edits on top
+        (the management button is usable only while CPU vs CPU is on or staged on)."""
+        if not dpg.does_item_exist('grid_cpu_vs_cpu'):
+            return
+        state, pending = self.loader.state, self.pending
+        staged = gui_grid.staged_game_options(pending)
+        for tag, key, status in (('grid_cpu_vs_cpu', 'cpu_vs_cpu', gui_grid.cpu_vs_cpu_status),
+                                 ('grid_cpu_management', 'cpu_management', gui_grid.cpu_management_status)):
+            text, enabled = status(state, pending)
+            dpg.set_value(f'{tag}_status', text)
+            dpg.configure_item(f'{tag}_status', color=_PENDING if key in staged else _OK if enabled
+                               else _WARN if enabled is False else _DIM)
+        locked = self._cpu_vs_cpu_locked()
+        dpg.configure_item('grid_cpu_vs_cpu', label=gui_grid.cpu_vs_cpu_button(state, pending)[0], enabled=not locked)
+        label, _enable, usable = gui_grid.cpu_management_button(state, pending)
+        dpg.configure_item('grid_cpu_management', label=label, enabled=usable and not locked)
+        dpg.configure_item('cpu_vs_cpu_discard', enabled=bool(staged) and not locked)
+        dpg.configure_item('grid_cpu_gecko_warning',
+                           show='cpu_vs_cpu' in gui_grid._effective_options(state, pending))
 
     def _pending_changed(self):
         """Redraw what shows the pending list: the grid's markers, the open levels, the buttons."""
@@ -2276,20 +2299,54 @@ class CharacterGridTab:
         self._run([gui_grid.deploy_command(script)], 'Copying the files to the game directory...', done)
 
     def _on_cpu_vs_cpu(self):
-        """Turn CPU vs CPU on or off in main.dol right away (not a staged edit: no roster data changes, and roster
-        rebuilds keep game options). The re-read after it updates the labels and the buttons."""
-        if self._options_locked():
+        """Stage CPU vs CPU on or off ("Patch Game" writes it); turning it off stages management off too."""
+        if self._cpu_vs_cpu_locked():
             return
-        enable = gui_grid.cpu_vs_cpu_button(self.loader.state)[1]
-        self._run_game_option(gui_grid.cpu_vs_cpu_command(enable), enable, 'CPU vs CPU')
+        enable = gui_grid.cpu_vs_cpu_button(self.loader.state, self.pending)[1]
+        self.offer_game_options(gui_grid.cpu_vs_cpu_edits(enable), 'CPU vs CPU ' + ('on' if enable else 'off'))
 
     def _on_cpu_management(self):
-        """Turn CPU vs CPU management on or off, like _on_cpu_vs_cpu; only while CPU vs CPU is on."""
-        if self._options_locked():
+        """Stage CPU vs CPU management on or off, like _on_cpu_vs_cpu; only while CPU vs CPU is on or staged on."""
+        if self._cpu_vs_cpu_locked():
             return
-        _label, enable, usable = gui_grid.cpu_management_button(self.loader.state)
+        _label, enable, usable = gui_grid.cpu_management_button(self.loader.state, self.pending)
         if usable:
-            self._run_game_option(gui_grid.cpu_management_command(enable), enable, 'CPU vs CPU management')
+            self.offer_game_options([gui_grid.cpu_management_edit(enable)],
+                                    'CPU vs CPU management ' + ('on' if enable else 'off'))
+
+    def _on_cpu_vs_cpu_discard(self):
+        if self._cpu_vs_cpu_locked():
+            return
+        self.pending.discard_op(gui_grid.GAME_OPTION)
+        self._pending_changed()
+        self.app.log_line('[character grid] the pending CPU vs CPU edits were discarded.', _DIM)
+
+    def offer_game_options(self, edits, what):
+        """The staging check of game option edits (the CPU vs CPU tab): the pending edits plus these. Staged
+        straight away when the check passes (an edit back to what the game has drops the pending one of that
+        option); else its dialog says why."""
+        if self._cpu_vs_cpu_locked():
+            return False
+        try:
+            gui_grid.write_edits(self.edits_path, self.pending.staging(edits))
+        except OSError as exc:
+            self.app.log_line(f'[character grid] could not write {self.edits_path}: {exc}', _WARN)
+            return False
+        self.action = 'game_option'
+
+        def show(code, output):
+            state = self.nav.state or self.loader.state
+            plan = gui_grid.load_plan(self.plan_path)
+            dialog = gui_grid.game_option_dialog(state, plan, code, output)
+            if dialog.can_apply:
+                self._stage(plan)
+                self.app.log_line(f'[character grid] staged: {what}; "Patch Game" writes it.', _PENDING)
+                return
+            self._dialog(dialog, self._end_action)
+        if not self._run([gui_grid.preview_command(self.edits_path)], 'Checking the game options...', show):
+            self._end_action()
+            return False
+        return True
 
     def _player_heap_items(self):
         dpg.configure_item('grid_player_heap', items=gui_grid.player_heap_choices(dpg.get_value('grid_big_memory')))

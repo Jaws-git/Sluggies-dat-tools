@@ -147,9 +147,6 @@ class WeightTests(unittest.TestCase):
         self.assertIsNone(sre.unweighted_error('body', []))
 
     def test_unskinnable_bones_are_named_instead_of_unweighted(self):
-        parent_of = {0: None, 1: 0, 2: 0, 3: 2, 4: 3}
-        allowed = {3}
-        self.assertEqual(sre.unskinnable_bones(parent_of, allowed, parent_of), [0, 1, 2])
         weights = [{2: 1.0}, {2: 0.5, 0: 0.5}, {}, {2: 0.0}, {4: 1.0}]
         bare, by_bone = sre.split_unweighted([0, 1, 2, 3], weights)
         self.assertEqual(bare, [2, 3])
@@ -162,22 +159,27 @@ class WeightTests(unittest.TestCase):
         self.assertIn("bone_0 and bone_2 can't be used for skinning", error)
         self.assertIn('1 vertex(es) have no weight', error)
 
-    def test_allowed_skin_bones_adds_the_added_bones(self):
+    def test_every_bone_of_the_skeleton_may_be_skinned(self):
         donor = sre.DonorSkinnedSubmesh(
             index=0, position_quantize=0x30, normal_format=None, color_format=None, uv_formats={},
             uv_mirrored=False, faces=[], face_surfaces=[], drawable_surfaces={}, facial=False,
             skinned_bones={3, 6},
         )
-        edited = [{'BoneId': 0, 'UserAdded': False}, {'BoneId': 9, 'UserAdded': True}, {'BoneId': 10, 'UserAdded': True}]
+        edited = [{'BoneId': b, 'UserAdded': False} for b in (0, 3, 5, 6)]
+        edited += [{'BoneId': 9, 'UserAdded': True}, {'BoneId': 10, 'UserAdded': True}]
         self.assertEqual(sre.added_bone_ids(edited), {9, 10})
         self.assertEqual(sre.added_bone_ids(None), set())
-        self.assertEqual(sre.allowed_skin_bones(donor, edited), {3, 6, 9, 10})
-        # A weight on an added bone stays there; a donor non-skin bone still moves up.
+        allowed = sre.allowed_skin_bones(edited)
+        self.assertEqual(allowed, {0, 3, 5, 6, 9, 10})
+        # Weights on an added bone and on a donor non-skin bone both stay; a
+        # bone the skeleton lacks is dropped.
         remap = sre.remap_influences(
-            [{9: 1.0}, {5: 1.0}], allowed=sre.allowed_skin_bones(donor, edited),
+            [{9: 1.0}, {5: 1.0}, {42: 1.0}], allowed=allowed,
             parent_of={0: None, 3: 0, 5: 3, 6: 3, 9: 6, 10: 9},
         )
-        self.assertEqual(remap.weights, [{9: 1.0}, {3: 1.0}])
+        self.assertEqual(remap.weights, [{9: 1.0}, {5: 1.0}, {}])
+        self.assertEqual(remap.dropped, {42: 1})
+        self.assertEqual(sre.newly_skinned_bones(remap.weights, donor, {9, 10}), [5])
 
     def test_encode_influences_normalizes_per_exported_vertex(self):
         raw = FieldCodec.decode_field(sre.encode_influences([{3: 2.0, 6: 2.0}, {3: 0.5}], [1, 0]))
