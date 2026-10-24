@@ -618,6 +618,44 @@ DOL hammerspace moves, even one holding only option stubs (the arena start
 rises from `0x807B6E80` to past the sections). Turn the Gecko codes off
 before using the options.
 
+**The MSS-AutoTeam autopicker** (`_Sluggers Characters Beta External Tool/
+Autopicker Source`, 2026-10-24) breaks the same way, for a different reason
+than its Gecko code. Its three Gecko lines (`04 0802B4` / `04 0802B8`: nop
+the `bl 0x80069CC0` and `bl 0x802C946C` in `fn_80080010`, the lineup
+screen's update; `04 06AED8 48000B80`: skip the body of `fn_8006AEA4`, the
+lineup reset, to its exit at `0x8006BA58`) and the stub it writes at
+`0x800021F0` (reached by a `b` it puts at `0x8006AED4`) touch no instruction
+our patchers change, and the stock and output DOL are byte-identical in both
+functions. What breaks is `finalize()`: it writes the stadium and the two
+captains at `0x811F769D`–`0x811F76AD`, i.e. +5..+7 and +0x14/+0x15 of the
+match settings object `*(r13-0xB00)` (stock `0x811F7698`; r13 =
+`0x807961C0`, set at `0x8000422C`), which the external tool saw move by
+exactly the arena-low delta in three RAM dumps of its own builds. The
+settings pointer at `0x807956C0` is in the DOL's data, so the patched
+autopicker reads it and uses the object wherever it is. The tool also
+treats every ID above `0x4C` as a Mii index, so new IDs (`0x66` and up)
+went down its Mii path; it now takes the Mii base from an optional
+`characters.json` (`start.py --export-autopicker`,
+`Roster/autopicker_export.py`: one English name per ID, empty for IDs the
+grid does not offer). Its rules bytes (`0x80794328`, bss) and the lineup
+pointer it reads (`0x806D121E`, data) never moved. Confirmed in a Dolphin
+MEM1 dump (2026-10-24, `player_heap_32` on, arena low `0x807C0020`, Dolphin
+memory override on: arena high `0x83FFF480`), taken on the exhibition captain
+select screen: `*(0x807956C0)` = `0x81202838` = stock + `0xB1A0` = arena
+low − `0x807B4E80` (the heaps start from the lowest of the four arena
+constants, as the external tool found), with the stadium at +5 and the
+captains at +0x14/+0x15; the stock address `0x811F7698` held zeros, so the
+released autopicker's writes land in nothing there. A live run of the
+patched autopicker on that DOL then set both 9-player teams (a Mii on
+each) as configured. Not yet checked: a new ID (`0x66` and up) written into
+the lineup by the autopicker's stub.
+
+The game option `autopicker` (`GameOptions/game_options.AUTOPICKER_PATCHES`,
+Options tab) writes the three Gecko lines into `main.dol` as plain
+in-place patches (`Patch`: no stub, no sections), so the DOL keeps the stock
+arena and `gecko_compat` still counts it as compatible. It is detected and
+carried over by roster runs like the hooked options.
+
 The same applies to roster runs: any run that adds the DOL sections (new IDs,
 names of new IDs, grid, wheel order, character voices, ...) breaks those
 Gecko codes. Renaming stock characters alone adds no sections (see *Names*).

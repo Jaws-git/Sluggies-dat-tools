@@ -1,10 +1,10 @@
 """Gecko code compatibility of ``main.dol``: one check for every tool that writes it.
 
-Community Gecko codes made for the stock game (e.g. "CPU vs CPU V2", "CPU vs CPU human management") read and
-write the MEM1 heap at fixed stock addresses. Our DOL hammerspace (``Roster/dol_hammerspace.py``: two sections
-above the boot stacks) raises the MEM1 arena start, which moves that heap, so those codes stop working
-(``_docs/_docs_roster/RosterExpansion.md``, "DOL hammerspace"). A ``main.dol`` is compatible while it has no such
-sections and its arena start is stock.
+Community Gecko codes made for the stock game (e.g. "CPU vs CPU V2", "CPU vs CPU human management") and tools that
+write Dolphin's memory (the MSS-AutoTeam autopicker's released build) read and write the MEM1 heap at fixed stock
+addresses. Our DOL hammerspace (``Roster/dol_hammerspace.py``: two sections above the boot stacks) raises the MEM1
+arena start, which moves that heap, so those codes stop working (``_docs/_docs_roster/RosterExpansion.md``, "DOL
+hammerspace"). A ``main.dol`` is compatible while it has no such sections and its arena start is stock.
 
 Only two writers add the sections: the roster runner (``Roster/runner.py``: steps that need DOL code, the
 manifest, game options carried over) and the game options (``GameOptions/runner.py``). Both check the bytes
@@ -42,11 +42,12 @@ INPUT_FOLDER = '1_Input'
 # Set by the dispatcher (``--accept-gecko-break``, or after its own question) for the commands it runs.
 ACCEPT_ENV = 'SLUGGIES_GECKO_ACCEPTED'
 WARNING = ('Gecko code compatibility: this change moves the game memory (DOL hammerspace). Gecko codes made '
-           'for the stock game (e.g. CPU vs CPU) will stop working with these files.')
+           'for the stock game (e.g. CPU vs CPU) and the stock MSS-AutoTeam autopicker will stop working with '
+           'these files.')
 QUESTION = WARNING + '\nContinue anyway? (y/n) '
 # A pending grid edit that breaks it (tooltips, the slot level).
 PENDING_WARNING = ('Gecko code compatibility break: once written, some Gecko codes made for the stock game (e.g. CPU vs '
-                   'CPU) may stop working.')
+                   'CPU) and the stock MSS-AutoTeam autopicker may stop working.')
 
 
 @dataclass(frozen=True)

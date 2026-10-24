@@ -618,6 +618,22 @@ class CpuVsCpuTests(unittest.TestCase):
                          (gui_grid.CPU_MANAGEMENT_DISABLE, False, True))
 
 
+class AutopickerTests(unittest.TestCase):
+    def test_key_is_a_game_option(self):
+        from GameOptions import game_options
+        self.assertIn(gui_grid.AUTOPICKER_KEY, game_options.BY_KEY)
+
+    def test_button_status_and_command(self):
+        self.assertEqual(gui_grid.autopicker_button({'game_options': []}), (gui_grid.AUTOPICKER_ENABLE, True))
+        self.assertEqual(gui_grid.autopicker_button({'game_options': ['autopicker']}),
+                         (gui_grid.AUTOPICKER_DISABLE, False))
+        self.assertIsNone(gui_grid.autopicker_status({})[1])
+        self.assertFalse(gui_grid.autopicker_status({'game_options': ['cpu_vs_cpu']})[1])
+        self.assertTrue(gui_grid.autopicker_status({'game_options': ['autopicker']})[1])
+        self.assertEqual(gui_grid.autopicker_command(True), ('--game-options', '--on', 'autopicker'))
+        self.assertEqual(gui_grid.autopicker_command(False), ('--game-options', '--off', 'autopicker'))
+
+
 class PlayerHeapTests(unittest.TestCase):
     def test_levels_mirror_the_game_options(self):
         from GameOptions import game_options

@@ -556,6 +556,26 @@ python start.py --load-roster my_roster.sluggiesroster
   game still works with these Gecko codes. The All-In-One Export leaves the
   game options off; stage CPU vs CPU in Gameplay → CPU vs CPU (Patch Game
   writes it) and set player memory in the Options tab.
+- **The MSS-AutoTeam autopicker** (`_Sluggers Characters Beta External
+  Tool/Autopicker Build`): its released build writes the stadium and the
+  captains at fixed stock heap addresses, so it stops working with the tools'
+  code area just like the Gecko codes above. (Its own Gecko code, the three
+  lines the window asks for, keeps working: nothing here touches those
+  instructions.) The source beside the build (`Autopicker Source`) is
+  patched to follow the game's own pointer instead, and reads an optional
+  `characters.json` next to its `options.json`. Write that file with
+  `py start.py --export-autopicker characters.json` after every roster
+  change: new characters then appear in its team editor and are not taken
+  for Miis. Mii IDs in its `teams.json` shift with the list's length, so
+  re-pick Miis in saved teams afterwards. Rebuild the exe from the patched
+  source (`build.py` there) to use it. Its Gecko code can live in the game
+  files instead of Dolphin: Options tab → **Enable autopicker patch** (or
+  `--game-options --on autopicker`) writes the three lines into `main.dol`;
+  then disable the "team autopicker" Gecko code in Dolphin. The patch
+  changes three instructions in place and adds no code area, so it keeps
+  the game compatible with stock Gecko codes, and it survives roster runs.
+  Without the autopicker running, the lineup screens keep the defaults the
+  game set when the team was picked (the stock lineup reset is skipped).
 - **Player memory** (Options tab, or `--game-options --on player_heap_32`,
   `_48`, `_64` or `_128`): every player on the field gets a fixed memory area for its
   High model, Low model and bat or glove, 870,400 bytes (850 KB) in the

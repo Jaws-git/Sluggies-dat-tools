@@ -164,6 +164,32 @@ def cpu_management_status(state, pending=None) -> tuple[str, bool | None]:
     return 'Management: enabled' + suffix, True
 
 
+# Team autopicker: the MSS-AutoTeam Gecko code written into main.dol (GameOptions/game_options.AUTOPICKER_PATCHES).
+AUTOPICKER_KEY = 'autopicker'
+AUTOPICKER_ENABLE = 'Enable autopicker patch'
+AUTOPICKER_DISABLE = 'Disable autopicker patch'
+
+
+def autopicker_button(state) -> tuple[str, bool]:
+    """The autopicker button's label and whether it enables."""
+    on = AUTOPICKER_KEY in (_game_options(state) or [])
+    return (AUTOPICKER_DISABLE, False) if on else (AUTOPICKER_ENABLE, True)
+
+
+def autopicker_command(enable: bool) -> tuple:
+    return ('--game-options', '--on' if enable else '--off', AUTOPICKER_KEY)
+
+
+def autopicker_status(state) -> tuple[str, bool | None]:
+    """The status label beside the button and whether the patch is on (None: not known)."""
+    options = _game_options(state)
+    if options is None:
+        return 'Autopicker patch: unknown', None
+    if AUTOPICKER_KEY in options:
+        return 'Autopicker patch: on (disable the "team autopicker" Gecko code in Dolphin)', True
+    return 'Autopicker patch: off', False
+
+
 # Player memory: each on-field player's heap (High + Low + bat or glove) is 870,400 bytes in the stock game.
 # The game options player_heap_<KB> raise it on stock memory; player_heap_big_<KB> need Dolphin's MEM2 override
 # at 128 MB and fall back to +48 KB without it (GameOptions/game_options.py, which these mirror).

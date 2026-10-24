@@ -2,7 +2,9 @@
 
 Each option replaces stock instructions with branches to stubs in the DOL
 hammerspace text section (``Roster/dol_hammerspace.py``), so it works with or
-without a roster injection. Stubs read game state only through ``r13``
+without a roster injection. An option made of plain patches (``Patch``: a
+word written in place, e.g. the team autopicker's) needs no stub and no
+sections, so it keeps the stock memory layout and Gecko code compatibility. Stubs read game state only through ``r13``
 globals, never through fixed heap addresses: the roster expansion raises the
 MEM1 arena start, so the heap addresses that stock-game Gecko codes use point
 at other data in an expanded game.
@@ -10,10 +12,13 @@ at other data in an expanded game.
 Incompatible with the community Gecko codes these options port ("CPU vs CPU V2", "CPU vs CPU human
 management"): with them enabled in Dolphin, CPU vs CPU does not start, even on a stock roster
 (2026-10-08). They hook the same sites, so Dolphin overwrites our branches, and they use stock heap
-addresses that any DOL hammerspace moves. Users must disable them (``_docs/RosterGuide.md``).
+addresses that any DOL hammerspace moves. Users must disable them (``_docs/RosterGuide.md``). The same
+move breaks the released MSS-AutoTeam autopicker (stadium / captains at the stock match settings
+0x811F7698); its patched source follows *(r13-0xB00) instead (``Roster/autopicker_export.py``).
 
 An option's on/off state is stored in the DOL itself: the option is on when
-all its hook sites branch into our text section. The roster runner resets
+all its hook sites branch into our text section and all its patch sites hold
+the patched words. The roster runner resets
 ``main.dol`` to ``1_Input`` before every injection. It calls ``detect`` before
 the reset and ``apply`` afterwards, so a roster re-run keeps the options.
 Turning an option off writes the stock words back. On a roster-built DOL its
@@ -48,11 +53,19 @@ class Hook:
 
 
 @dataclass(frozen=True)
+class Patch:
+    site: int
+    stock: int
+    new: int                          # written in place: no stub, no DOL hammerspace
+
+
+@dataclass(frozen=True)
 class Option:
     key: str
     title: str
     hooks: tuple[Hook, ...]
     group: str | None = None    # options of one group hook the same sites: only the one whose stub is there is on
+    patches: tuple[Patch, ...] = ()
 
 
 # ---------------------------------------------------------------- CPU vs CPU
@@ -251,6 +264,17 @@ def _big_heap_option(kb: int) -> Option:
                   group='player_heap')
 
 
+# ----------------------------------------------------------- team autopicker
+#
+# The Gecko code the MSS-AutoTeam autopicker asks for, written into main.dol instead (three plain words, so
+# the DOL keeps the stock memory layout): nop the `bl 0x80069CC0` and `bl Select::CExhiMemOrdTask::Notify`
+# in fn_80080010 (the order screen's update), and branch over fn_8006AEA4's lineup reset to its exit
+# (0x8006BA58), so the lineup the autopicker writes into RAM survives. The autopicker itself still writes
+# its lineup stub at run time (0x800021F0, reached by a `b` at 0x8006AED4).
+AUTOPICKER_PATCHES = (Patch(0x800802B4, 0x4BFE9A0D, 0x60000000),     # bl 0x80069CC0 -> nop
+                      Patch(0x800802B8, 0x482491B5, 0x60000000),     # bl 0x802C946C -> nop
+                      Patch(0x8006AED8, 0x98C3000C, 0x48000B80))     # stb r6,0xC(r3) -> b 0x8006BA58
+
 OPTIONS = (
     Option('cpu_vs_cpu', 'CPU vs CPU (hold A + Minus on controller 1 while confirming)',
            (Hook(CPU_SITE, CPU_STOCK, _cpu_vs_cpu_stub),)),
@@ -258,6 +282,8 @@ OPTIONS = (
            (Hook(INIT_SITE, INIT_STOCK, _hand_fielding_team(0, INIT_STOCK)),
             Hook(FLIP_SITE, FLIP_STOCK, _hand_fielding_team(6, FLIP_STOCK)),
             Hook(STATE_SITE, STATE_STOCK, _defense_change_stub))),
+    Option('autopicker', 'Team autopicker (the MSS-AutoTeam Gecko code, in main.dol)', (),
+           patches=AUTOPICKER_PATCHES),
 ) + tuple(_player_heap_option(kb) for kb in PLAYER_HEAP_LEVELS_KB) \
   + tuple(_big_heap_option(kb) for kb in BIG_HEAP_LEVELS_KB)
 BY_KEY = {o.key: o for o in OPTIONS}
@@ -283,8 +309,14 @@ def _stub_current(image: dolfile.DolImage, hook: Hook) -> bool:
     return image.is_mapped(target, len(expected)) and image.read(target, len(expected)) == expected
 
 
+def _patched(image: dolfile.DolImage, patch: Patch) -> bool:
+    return image.is_mapped(patch.site, 4) and image.u32(patch.site) == patch.new
+
+
 def is_on(image: dolfile.DolImage, key: str) -> bool:
     option = _option(key)
+    if not all(_patched(image, p) for p in option.patches):
+        return False
     if option.group:    # the sites are shared: the stub there tells which option of the group it is
         return all(_hooked(image, h) and _stub_current(image, h) for h in option.hooks)
     return all(_hooked(image, h) for h in option.hooks)
@@ -315,6 +347,13 @@ def _check_stock(image: dolfile.DolImage, option: Option) -> None:
         if word != h.stock and not _hooked(image, h):
             raise GameOptionError(f'{option.title}: 0x{h.site:08X} holds 0x{word:08X}, expected the stock '
                                   f'0x{h.stock:08X}; another patch changed it')
+    for p in option.patches:
+        if not image.is_mapped(p.site, 4):
+            raise GameOptionError(f'{option.title}: 0x{p.site:08X} is not in this main.dol')
+        word = image.u32(p.site)
+        if word not in (p.stock, p.new):
+            raise GameOptionError(f'{option.title}: 0x{p.site:08X} holds 0x{word:08X}, expected the stock '
+                                  f'0x{p.stock:08X}; another patch changed it')
 
 
 def apply(image: dolfile.DolImage, keys) -> list[str]:
@@ -344,15 +383,20 @@ def apply(image: dolfile.DolImage, keys) -> list[str]:
         todo.append(option)
     if not todo:
         return log
-    hs = dol_hammerspace.DolHammerspace.open_or_create(image)
+    # only options with stubs need the DOL hammerspace; plain patches keep the stock memory layout
+    hs = dol_hammerspace.DolHammerspace.open_or_create(image) if any(o.hooks for o in todo) else None
     for option in todo:
         for h in option.hooks:
             at = hs.code.here + (-hs.code.here % 4)
             if hs.code.put(h.stub(at, h.site).assemble(), 4) != at:
                 raise GameOptionError(f'{option.title}: stub placement moved')
             image.write_word(h.site, one(h.site, lambda a, t=at: a.b(t)))
-        log.append(f'{option.title}: on (' + ', '.join(f'0x{h.site:08X}' for h in option.hooks) + ')')
-    hs.commit()
+        for p in option.patches:
+            image.write_word(p.site, p.new)
+        sites = [h.site for h in option.hooks] + [p.site for p in option.patches]
+        log.append(f'{option.title}: on (' + ', '.join(f'0x{s:08X}' for s in sites) + ')')
+    if hs is not None:
+        hs.commit()
     return log
 
 
@@ -362,7 +406,10 @@ def _unhook(image: dolfile.DolImage, option: Option) -> bool:
     hooked = [h for h in option.hooks if _hooked(image, h)]
     for h in hooked:
         image.write_word(h.site, h.stock)
-    return bool(hooked)
+    patched = [p for p in option.patches if _patched(image, p)]
+    for p in patched:
+        image.write_word(p.site, p.stock)
+    return bool(hooked or patched)
 
 
 def remove(image: dolfile.DolImage, keys) -> list[str]:
@@ -373,7 +420,7 @@ def remove(image: dolfile.DolImage, keys) -> list[str]:
     hs = dol_hammerspace.DolHammerspace.open(image)
     if hs is None or hs.has_data:
         return log
-    still_on = detect(image)
+    still_on = [key for key in detect(image) if BY_KEY[key].hooks]     # plain patches don't live in the sections
     for key in still_on:
         _unhook(image, BY_KEY[key])
     dol_hammerspace.remove_sections(image)

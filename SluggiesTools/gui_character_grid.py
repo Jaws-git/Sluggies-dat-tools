@@ -420,6 +420,21 @@ class CharacterGridTab:
             dpg.add_spacer(height=4)
             dpg.add_separator()
             dpg.add_spacer(height=4)
+            dpg.add_text('Team autopicker')
+            with dpg.group(horizontal=True):
+                dpg.add_button(label=gui_grid.AUTOPICKER_ENABLE, tag='options_autopicker', width=260,
+                               callback=lambda: self._on_autopicker())
+                with dpg.tooltip('options_autopicker'):
+                    dpg.add_text('Writes the Gecko code that the MSS-AutoTeam autopicker asks for straight into '
+                                 'main.dol, so it no longer has to be enabled in Dolphin. It keeps the game from '
+                                 'resetting the lineup the autopicker writes; without the autopicker the lineup '
+                                 'screens keep their stock defaults.', wrap=420)
+                    dpg.add_text('Three instructions are changed in place: it adds no code area, so Gecko codes '
+                                 'made for the stock game keep working.', wrap=420)
+                dpg.add_text('', tag='options_autopicker_status')
+            dpg.add_spacer(height=4)
+            dpg.add_separator()
+            dpg.add_spacer(height=4)
             dpg.add_button(label='Copy to Dolphin now', tag='options_copy_now', callback=lambda: self._on_copy_now())
             with dpg.tooltip('options_copy_now'):
                 dpg.add_text('Copy output files back to the game folder and overwrite.', wrap=420)
@@ -529,6 +544,11 @@ class CharacterGridTab:
         text, enabled = gui_grid.player_heap_status(state)
         dpg.set_value('grid_player_heap_status', text)
         dpg.configure_item('grid_player_heap_status', color=_OK if enabled else _WARN if enabled is False else _DIM)
+        label, _enable = gui_grid.autopicker_button(state)
+        dpg.configure_item('options_autopicker', label=label)
+        text, on = gui_grid.autopicker_status(state)
+        dpg.set_value('options_autopicker_status', text)
+        dpg.configure_item('options_autopicker_status', color=_OK if on else _DIM)
         self._show_cpu_vs_cpu()
         dpg.set_value('grid_note', gui_grid.stock_luigi_note(state) if state else '')
         dpg.configure_item('grid_reference', show=self.reference is not None)
@@ -1184,7 +1204,7 @@ class CharacterGridTab:
         options_locked = self._options_locked()
         if dpg.does_item_exist('options_pending'):
             dpg.configure_item('options_pending', show=bool(len(self.pending)))
-            for tag in ('grid_big_memory', 'grid_player_heap', 'options_copy_now'):
+            for tag in ('grid_big_memory', 'grid_player_heap', 'options_autopicker', 'options_copy_now'):
                 dpg.configure_item(tag, enabled=not options_locked)
         self._show_cpu_vs_cpu()
 
@@ -2371,6 +2391,13 @@ class CharacterGridTab:
             return
         stock = choice == gui_grid.PLAYER_HEAP_STOCK_LABEL
         self._run_game_option(command, not stock, 'raised player memory' if stock else f'player memory {choice}')
+
+    def _on_autopicker(self):
+        """Turn the autopicker patch on or off in main.dol right away, like the player memory combo."""
+        if self._options_locked() or self.loader.state is None:
+            return
+        _label, enable = gui_grid.autopicker_button(self.loader.state)
+        self._run_game_option(gui_grid.autopicker_command(enable), enable, 'the autopicker patch')
 
     def _run_game_option(self, command, enable, name):
         verb = 'enabling' if enable else 'disabling'

@@ -15,7 +15,8 @@ from SluggiesTools.Roster import dol_hammerspace as dhs
 from SluggiesTools.Roster import runner as roster_runner
 from SluggiesTools.tests.test_roster_dev import ARENA, BSS, BSS_SIZE, CODE, CODE_SIZE
 
-HOOK_SITES = {h.site: h.stock for o in go.OPTIONS for h in o.hooks}
+HOOK_SITES = {h.site: h.stock for o in go.OPTIONS for h in o.hooks} | \
+    {p.site: p.stock for o in go.OPTIONS for p in o.patches}
 CPU_SITES = {h.site: h.stock for key in ('cpu_vs_cpu', 'cpu_management') for h in go.BY_KEY[key].hooks}
 
 
@@ -74,6 +75,34 @@ class GameOptionTests(unittest.TestCase):
         self.assertEqual(go.detect(self.image), ['cpu_vs_cpu'])
         for h in go.BY_KEY['cpu_management'].hooks:
             self.assertEqual(self.image.u32(h.site), h.stock)
+
+    def test_autopicker_patches_in_place_without_sections(self):
+        stock = self.image.to_bytes()
+        log = go.apply(self.image, ['autopicker'])
+        self.assertEqual(go.detect(self.image), ['autopicker'])
+        self.assertIn('0x8006AED8', log[-1])
+        for p in go.AUTOPICKER_PATCHES:
+            self.assertEqual(self.image.u32(p.site), p.new)
+        self.assertIsNone(dhs.DolHammerspace.open(self.image))
+        self.assertTrue(gecko_compat.status(self.image.to_bytes()).compatible)
+        self.assertEqual(go.apply(self.image, ['autopicker']), [go.BY_KEY['autopicker'].title + ': already on'])
+        go.remove(self.image, ['autopicker'])
+        self.assertEqual(self.image.to_bytes(), stock)
+
+    def test_autopicker_branch_goes_to_the_reset_exit(self):
+        p = go.AUTOPICKER_PATCHES[2]
+        self.assertEqual(ppc.branch_target(p.new, p.site), 0x8006BA58)
+
+    def test_autopicker_survives_turning_hooked_options_off(self):
+        go.apply(self.image, ['autopicker', 'cpu_vs_cpu'])
+        go.remove(self.image, ['cpu_vs_cpu'])     # no roster: the sections go, the patches stay
+        self.assertEqual(go.detect(self.image), ['autopicker'])
+        self.assertIsNone(dhs.DolHammerspace.open(self.image))
+
+    def test_autopicker_refuses_a_foreign_word(self):
+        self.image.write_word(0x800802B4, 0x12345678)
+        with self.assertRaises(go.GameOptionError):
+            go.apply(self.image, ['autopicker'])
 
     def test_stubs_replay_the_stock_word_and_return(self):
         go.apply(self.image, ['cpu_vs_cpu', 'cpu_management'])
