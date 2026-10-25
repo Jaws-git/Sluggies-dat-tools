@@ -656,6 +656,38 @@ in-place patches (`Patch`: no stub, no sections), so the DOL keeps the stock
 arena and `gecko_compat` still counts it as compatible. It is detected and
 carried over by roster runs like the hooked options.
 
+**CPU vs CPU extras** (2026-10-25; ported statically from the community
+Gecko codes' CPU vs CPU section, not yet tried in Dolphin). Every one avoids
+the stock heap addresses the Gecko codes use, so the roster's memory layout
+and the player memory levels leave them working:
+
+- `close_play_<0..100>` (group `close_play`, a hook at `0x80156348`): port
+  of "CPU Closeplay Overhaul". The Gecko code reads the CPU vs CPU state at
+  `0x811F76B0` (settings +0x18) and a random bit at `0x900D5BFC` (heap);
+  the stub reads `*(r13-0xB00)` +0x18 and the time base (`mftb`) instead,
+  and writes the static s16 `0x80624B1E` (row 0, column 3 of the table at
+  `0x80624B18` that the close play code at `0x80156A5C` adds to its frame
+  check): 2 for a player record (r31) with +0x1A1 set, else 1 at the chosen
+  odds and 60 otherwise; outside CPU vs CPU it writes the stock 20 back.
+- `triple_take`, `strikeout_camera`, `outfield_dives`: plain patches at
+  `0x802500BC`/`0x802529B4` (`beq` → nop, the same as the Gecko code's
+  forced r0 = 1), `0x802504A0` (`li r0,0`) and `0x800E2750` (`cmplwi r0,6`).
+  No sections: `gecko_compat` still counts the DOL as compatible.
+- `no_precharge` (`Floor`): "CPU Remove Precharge" writes 8.0 to six stock
+  addresses, which are rows of the per-ID `pitchwindup` table (`charge`,
+  f32 +0) of IDs `0x08`, `0x09`, `0x0F`, `0x27`, `0x3F` and `0x40`, the only
+  stock rows below 8.0. A roster run with new IDs moves that table, so the
+  option raises every character's row below 8.0 where the table's first
+  lis/low pair points (new IDs' rows too, written after the hammerspace
+  commit) and turning it off puts back the rows `ids.extended_table` builds
+  from `1_Input`. The stat edit carry also sees the raised rows as stat
+  edits and carries the same values.
+
+Not ported: "Random Star Hits" / "Random Star Pitches" write bytes at stock
+heap addresses (`0x900D6A78`, `0x900D6929`, entropy from `0x900DFCFC`)
+whose owning objects are not identified yet; a stock-game RAM dump during a
+match is needed to find them through a register or an `r13` global.
+
 The same applies to roster runs: any run that adds the DOL sections (new IDs,
 names of new IDs, grid, wheel order, character voices, ...) breaks those
 Gecko codes. Renaming stock characters alone adds no sections (see *Names*).

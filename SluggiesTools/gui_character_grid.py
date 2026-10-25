@@ -202,6 +202,7 @@ class CharacterGridTab:
         self.pack_dir = os.path.join(app.root_dir, gui_grid.PACK_DIR_REL)
         self.reference = None              # gui_grid.Reference: the pack last saved / loaded (session only)
         self.gecko_compatible = False      # the output main.dol still works with stock-game Gecko codes (each read)
+        self.close_play_shown = None       # the close play level the slider was last set to (CPU vs CPU tab)
         self.copied = None                 # the character Copy earmarked (session only), or None
         self._menu_targets = {}            # portrait button -> the square's members, for the right-click menu
         self.on_pending_changed = []       # callbacks other tabs register (the Voices tab shows pending clips)
@@ -368,7 +369,7 @@ class CharacterGridTab:
                                callback=lambda: self._on_cpu_vs_cpu())
                 with dpg.tooltip('grid_cpu_vs_cpu'):
                     dpg.add_text('Stage CPU vs CPU on (hold Minus on controller starting a match). Turning it off '
-                                 'also turns off its management.', wrap=420)
+                                 'also turns off its management and the close play odds.', wrap=420)
                 dpg.add_text('', tag='grid_cpu_vs_cpu_status')
             with dpg.group(horizontal=True):
                 dpg.add_button(label=gui_grid.CPU_MANAGEMENT_ENABLE, tag='grid_cpu_management',
@@ -377,6 +378,32 @@ class CharacterGridTab:
                     dpg.add_text('In a CPU vs CPU match, controller 1 manages the fielding team (pause to make '
                                  'defensive changes). Needs CPU vs CPU on (or staged on) first.', wrap=420)
                 dpg.add_text('', tag='grid_cpu_management_status')
+            dpg.add_spacer(height=4)
+            dpg.add_text('Close play odds (CPU vs CPU)')
+            with dpg.group(horizontal=True):
+                dpg.add_slider_int(tag='grid_close_play_odds', width=160, min_value=0, max_value=100,
+                                   default_value=gui_grid.CLOSE_PLAY_GECKO, format='%d%%',
+                                   callback=lambda _s, value: self._on_close_play_slider(value))
+                with dpg.tooltip('grid_close_play_odds'):
+                    dpg.add_text('Port of "CPU Closeplay Overhaul" [C^2]. In CPU vs CPU matches the close plays get '
+                                 'these odds (steps of 10%; 50% is the Gecko code); a player with the baserunning '
+                                 'ability always gets 100%. Human matches keep the stock close plays.', wrap=420)
+                    dpg.add_text('Needs CPU vs CPU on (or staged on) first. It adds code to main.dol, like CPU vs '
+                                 'CPU itself.', wrap=420)
+                dpg.add_button(label=gui_grid.CLOSE_PLAY_STAGE, tag='grid_close_play_stage',
+                               callback=lambda: self._on_close_play(True))
+                dpg.add_button(label=gui_grid.CLOSE_PLAY_DISABLE, tag='grid_close_play_disable',
+                               callback=lambda: self._on_close_play(False))
+                dpg.add_text('', tag='grid_close_play_status')
+            dpg.add_spacer(height=4)
+            dpg.add_text('CPU fixes (every match; no added code, so Gecko codes keep working)')
+            for key, _label, tip in gui_grid.CPU_FIXES:
+                with dpg.group(horizontal=True):
+                    dpg.add_button(label=gui_grid.cpu_fix_button(None, None, key)[0], tag=f'grid_fix_{key}',
+                                   width=260, callback=lambda _s, _a, u: self._on_cpu_fix(u), user_data=key)
+                    with dpg.tooltip(f'grid_fix_{key}'):
+                        dpg.add_text(tip, wrap=420)
+                    dpg.add_text('', tag=f'grid_fix_{key}_status')
             # the tool's CPU vs CPU patch and Dolphin's CPU vs CPU Gecko codes must not both be active
             dpg.add_text('Disable all CPU vs CPU Gecko codes in Dolphin now!', tag='grid_cpu_gecko_warning',
                          color=_WARN, show=False)
@@ -1234,9 +1261,27 @@ class CharacterGridTab:
         dpg.configure_item('grid_cpu_vs_cpu', label=gui_grid.cpu_vs_cpu_button(state, pending)[0], enabled=not locked)
         label, _enable, usable = gui_grid.cpu_management_button(state, pending)
         dpg.configure_item('grid_cpu_management', label=label, enabled=usable and not locked)
+        level = gui_grid.close_play_level(state, pending)
+        if level is not None and level != self.close_play_shown:    # follow the game / staged level, not each redraw
+            dpg.set_value('grid_close_play_odds', level)
+        self.close_play_shown = level
+        text, enabled = gui_grid.close_play_status(state, pending)
+        dpg.set_value('grid_close_play_status', text)
+        dpg.configure_item('grid_close_play_status', color=_PENDING if '(pending' in text else _OK if enabled
+                           else _WARN if enabled is False else _DIM)
+        stage, disable = gui_grid.close_play_buttons(state, pending,
+                                                     gui_grid.close_play_snap(dpg.get_value('grid_close_play_odds')))
+        dpg.configure_item('grid_close_play_stage', enabled=stage and not locked)
+        dpg.configure_item('grid_close_play_disable', enabled=disable and not locked)
+        for key, _label, _tip in gui_grid.CPU_FIXES:
+            dpg.configure_item(f'grid_fix_{key}', label=gui_grid.cpu_fix_button(state, pending, key)[0],
+                               enabled=not locked)
+            text, enabled = gui_grid.cpu_fix_status(state, pending, key)
+            dpg.set_value(f'grid_fix_{key}_status', text)
+            dpg.configure_item(f'grid_fix_{key}_status', color=_PENDING if key in staged else _OK if enabled
+                               else _DIM)
         dpg.configure_item('cpu_vs_cpu_discard', enabled=bool(staged) and not locked)
-        dpg.configure_item('grid_cpu_gecko_warning',
-                           show='cpu_vs_cpu' in gui_grid._effective_options(state, pending))
+        dpg.configure_item('grid_cpu_gecko_warning', show=gui_grid.cpu_gecko_warning(state, pending))
 
     def _pending_changed(self):
         """Redraw what shows the pending list: the grid's markers, the open levels, the buttons."""
@@ -2323,7 +2368,8 @@ class CharacterGridTab:
         if self._cpu_vs_cpu_locked():
             return
         enable = gui_grid.cpu_vs_cpu_button(self.loader.state, self.pending)[1]
-        self.offer_game_options(gui_grid.cpu_vs_cpu_edits(enable), 'CPU vs CPU ' + ('on' if enable else 'off'))
+        self.offer_game_options(gui_grid.cpu_vs_cpu_edits(enable, self.loader.state, self.pending),
+                                'CPU vs CPU ' + ('on' if enable else 'off'))
 
     def _on_cpu_management(self):
         """Stage CPU vs CPU management on or off, like _on_cpu_vs_cpu; only while CPU vs CPU is on or staged on."""
@@ -2333,6 +2379,28 @@ class CharacterGridTab:
         if usable:
             self.offer_game_options([gui_grid.cpu_management_edit(enable)],
                                     'CPU vs CPU management ' + ('on' if enable else 'off'))
+
+    def _on_close_play_slider(self, value):
+        """The slider snaps to the levels (steps of 10%); nothing is staged until Stage is clicked."""
+        dpg.set_value('grid_close_play_odds', gui_grid.close_play_snap(value))
+        self._show_cpu_vs_cpu()
+
+    def _on_close_play(self, enable):
+        """Stage the slider's close play odds, or turn them off; only while CPU vs CPU is on or staged on."""
+        if self._cpu_vs_cpu_locked():
+            return
+        percent = gui_grid.close_play_snap(dpg.get_value('grid_close_play_odds'))
+        stage, disable = gui_grid.close_play_buttons(self.loader.state, self.pending, percent)
+        edit = gui_grid.close_play_edit(self.loader.state, self.pending, percent if enable else None)
+        if edit is not None and (stage if enable else disable):
+            self.offer_game_options([edit], f'close play odds {percent}%' if enable else 'close play odds off')
+
+    def _on_cpu_fix(self, key):
+        """Stage a CPU fix on or off, like _on_cpu_vs_cpu."""
+        if self._cpu_vs_cpu_locked():
+            return
+        label, enable = gui_grid.cpu_fix_button(self.loader.state, self.pending, key)
+        self.offer_game_options([gui_grid.game_option_edit(key, enable)], label.lower())
 
     def _on_cpu_vs_cpu_discard(self):
         if self._cpu_vs_cpu_locked():

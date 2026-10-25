@@ -8,7 +8,7 @@ import unittest
 from unittest import mock
 
 from SluggiesTools import gecko_compat
-from SluggiesTools.Dol import dolfile, ppc
+from SluggiesTools.Dol import dolfile, inventory, ppc
 from SluggiesTools.GameOptions import game_options as go
 from SluggiesTools.GameOptions import runner as options_runner
 from SluggiesTools.Roster import dol_hammerspace as dhs
@@ -20,18 +20,21 @@ HOOK_SITES = {h.site: h.stock for o in go.OPTIONS for h in o.hooks} | \
 CPU_SITES = {h.site: h.stock for key in ('cpu_vs_cpu', 'cpu_management') for h in go.BY_KEY[key].hooks}
 
 
-def synthetic_dol() -> bytes:
+def synthetic_dol(extra_words: dict[int, int] | None = None, blobs=()) -> bytes:
     """test_roster_dev's DOL (T0 with OSInit's arena pairs) plus small sections holding the hook sites (data
-    slots 8 and up: a DOL has only 7 text slots, and the hammerspace needs one; the sites only need to be mapped)."""
+    slots 8 and up: a DOL has only 7 text slots, and the hammerspace needs one; the sites only need to be mapped).
+    ``extra_words`` ({address: word}) are mapped like the sites, ``blobs`` ((address, bytes)) as sections of their
+    own."""
     sections = []
     words = [0x60000000] * (CODE_SIZE // 4)
     for lis_site, (reg, value) in ARENA.items():
         words[(lis_site - CODE) // 4] = ppc.one(lis_site, lambda a: a.lis(reg, ppc.ha(value)))
         words[(lis_site + 4 - CODE) // 4] = ppc.one(lis_site + 4, lambda a: a.addi(reg, reg, ppc.lo(value)))
     sections.append((0, CODE, words))
-    groups = []     # hook sites close together share one section
-    for site in sorted(HOOK_SITES):
-        if groups and site - groups[-1][-1] < 0x200:
+    sites = HOOK_SITES | (extra_words or {})
+    groups = []     # hook sites close together share one section (the data slots run out otherwise)
+    for site in sorted(sites):
+        if groups and site - groups[-1][-1] < 0x10000:
             groups[-1].append(site)
         else:
             groups.append([site])
@@ -39,8 +42,11 @@ def synthetic_dol() -> bytes:
         base = group[0] - 0x10
         block = [0x60000000] * (-(-(group[-1] + 0x10 - base) // 0x20) * 8)    # 32-byte multiples, like real sections
         for site in group:
-            block[(site - base) // 4] = HOOK_SITES[site]
+            block[(site - base) // 4] = sites[site]
         sections.append((slot, base, block))
+    for slot, (address, blob) in enumerate(blobs, start=8 + len(groups)):
+        blob += bytes(-len(blob) % 0x20)                                         # 32-byte multiples too
+        sections.append((slot, address, list(struct.unpack(f'>{len(blob) // 4}I', blob))))
     header = bytearray(dolfile.HEADER_SIZE)
     body = b''
     for slot, address, block in sections:
@@ -59,6 +65,29 @@ def synthetic_dol() -> bytes:
 
 def stub_of(image: dolfile.DolImage, site: int) -> int:
     return ppc.branch_target(image.u32(site), site)
+
+
+WINDUP = inventory.table('pitchwindup')
+LOW_CHARGES = {0x08: 7.0, 0x0F: 5.0}            # the rows below the precharge floor; the others 9.0
+MOVED_WINDUP = 0x807D0000                       # where a roster run might have moved the table
+
+
+def windup_rows(rows: int = 0x66) -> bytes:
+    return b''.join(struct.pack('>3f', LOW_CHARGES.get(cid, 9.0), 1.0, 2.0) for cid in range(rows))
+
+
+def precharge_dol(table: int = WINDUP.address) -> bytes:
+    """synthetic_dol plus the pitchwindup table (at its stock address, and at ``table`` if it is moved) and the
+    first lis/addi pair that points the code at ``table``."""
+    lis_site, low_site = WINDUP.all_pairs[0]
+    pair = {lis_site: ppc.one(lis_site, lambda a: a.lis(3, ppc.ha(table))),
+            low_site: ppc.one(low_site, lambda a: a.addi(3, 3, ppc.lo(table)))}
+    blobs = [(WINDUP.address, windup_rows())] + ([(table, windup_rows())] if table != WINDUP.address else [])
+    return synthetic_dol(pair, blobs)
+
+
+def charge(image: dolfile.DolImage, cid: int, table: int = WINDUP.address) -> float:
+    return struct.unpack('>f', image.read(table + WINDUP.row_size * cid, 4))[0]
 
 
 class GameOptionTests(unittest.TestCase):
@@ -242,6 +271,89 @@ class GameOptionTests(unittest.TestCase):
             go.apply(self.image, ['nope'])
 
 
+class CpuVsCpuExtrasTests(unittest.TestCase):
+    """Ports of the community CPU vs CPU Gecko codes: the close play stub and the in-place fixes."""
+    FIXES = ['triple_take', 'strikeout_camera', 'outfield_dives', 'no_precharge']
+
+    def setUp(self):
+        self.image = dolfile.DolImage(precharge_dol())
+
+    def test_mftb(self):
+        self.assertEqual(ppc.one(0, lambda a: a.mftb(3)), 0x7C6C42E6)
+
+    def test_close_play_stub_reads_no_heap_address(self):
+        go.apply(self.image, ['close_play_30'])
+        self.assertEqual(go.detect(self.image), ['close_play_30'])
+        site = go.CLOSE_PLAY_SITE
+        stub = stub_of(self.image, site)
+        words = [self.image.u32(stub + i) for i in range(0, len(go.BY_KEY['close_play_30'].hooks[0].stub(stub, site)),
+                                                        4)]
+        one = lambda build: ppc.one(0, build)                                   # noqa: E731
+        self.assertEqual(words[0], one(lambda a: a.lwz(12, go.SETTINGS, 13)))   # CPU vs CPU through r13
+        self.assertIn(one(lambda a: a.lbz(11, go.CLOSE_PLAY_ABILITY, 31)), words)
+        self.assertIn(one(lambda a: a.mftb(11)), words)
+        self.assertIn(one(lambda a: a.cmplwi(11, 30)), words)
+        self.assertIn(one(lambda a: a.li(12, go.CLOSE_PLAY_STOCK_VALUE)), words)   # human matches: stock entry
+        self.assertIn(one(lambda a: a.sth(12, ppc.lo(go.CLOSE_PLAY_ENTRY), 11)), words)
+        self.assertEqual(words[-2], go.CLOSE_PLAY_STOCK)
+        self.assertEqual(ppc.branch_target(words[-1], stub + 4 * (len(words) - 1)), site + 4)
+        lis = [w & 0xFFFF for w in words if w >> 26 == 15]
+        self.assertEqual(lis, [ppc.ha(go.CLOSE_PLAY_ENTRY)])    # no stock heap address (0x811F..., 0x900D...)
+
+    def test_close_play_levels_replace_each_other(self):
+        go.apply(self.image, ['cpu_vs_cpu', 'close_play_30'])
+        log = go.apply(self.image, ['close_play_70'])
+        self.assertIn('off (replaced)', log[0])
+        self.assertEqual(go.detect(self.image), ['cpu_vs_cpu', 'close_play_70'])
+        with self.assertRaises(go.GameOptionError):
+            go.apply(self.image, ['close_play_10', 'close_play_20'])
+
+    def test_fixes_patch_in_place_without_sections(self):
+        stock = self.image.to_bytes()
+        go.apply(self.image, self.FIXES)
+        self.assertEqual(go.detect(self.image), self.FIXES)
+        self.assertIsNone(dhs.DolHammerspace.open(self.image))
+        self.assertTrue(gecko_compat.status(self.image.to_bytes()).compatible)
+        self.assertIn('already on', go.apply(self.image, ['triple_take'])[0])
+        go.remove(self.image, self.FIXES, dolfile.DolImage(stock))
+        self.assertEqual(self.image.to_bytes(), stock)
+
+    def test_fix_words(self):
+        one = lambda build: ppc.one(0, build)                                   # noqa: E731
+        for p in go.TRIPLE_TAKE_PATCHES:        # the `beq` the Gecko code's r0 = 1 never let branch
+            self.assertEqual(p.stock >> 16, 0x4182)
+            self.assertEqual(p.new, one(lambda a: a.nop()))
+        self.assertEqual(go.STRIKEOUT_CAMERA_PATCHES[0].new, one(lambda a: a.li(0, 0)))
+        self.assertEqual(go.OUTFIELD_DIVE_PATCHES[0].new, one(lambda a: a.cmplwi(0, 6)))
+
+    def test_precharge_raises_only_rows_below_the_floor(self):
+        log = go.apply(self.image, ['no_precharge'])
+        self.assertIn('rows raised to 8: 0x08, 0x0F', log[-1])
+        self.assertEqual([charge(self.image, cid) for cid in (0x00, 0x08, 0x0F, 0x64)], [9.0, 8.0, 8.0, 9.0])
+        self.assertEqual(self.image.read(WINDUP.address + WINDUP.row_size * 8 + 4, 8), struct.pack('>2f', 1.0, 2.0))
+
+    def test_precharge_off_puts_the_stock_values_back(self):
+        stock = dolfile.DolImage(self.image.to_bytes())
+        go.apply(self.image, ['no_precharge'])
+        with self.assertRaisesRegex(go.GameOptionError, '1_Input'):
+            go.remove(self.image, ['no_precharge'])            # the stock values come from 1_Input
+        self.assertIn('off', go.remove(self.image, ['no_precharge'], stock)[0])
+        self.assertEqual(self.image.to_bytes(), stock.to_bytes())
+
+    def test_precharge_follows_a_moved_table(self):
+        image = dolfile.DolImage(precharge_dol(MOVED_WINDUP))
+        go.apply(image, ['no_precharge'])
+        self.assertEqual(go.detect(image), ['no_precharge'])
+        self.assertEqual(charge(image, 0x08, MOVED_WINDUP), 8.0)
+        self.assertEqual(charge(image, 0x08), 7.0)                   # the stale stock copy: untouched
+
+    def test_precharge_without_its_table_is_off_and_refused(self):
+        image = dolfile.DolImage(synthetic_dol())                   # no lis pair: the table cannot be found
+        self.assertEqual(go.detect(image), [])
+        with self.assertRaisesRegex(go.GameOptionError, 'pitchwindup'):
+            go.apply(image, ['no_precharge'])
+
+
 class RunnerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = self.enterContext(tempfile.TemporaryDirectory())
@@ -308,6 +420,28 @@ class RunnerTests(unittest.TestCase):
         roster_runner.run(self.tmp, remove_only=True, input_dir=self.input_dir)
         self.assertEqual(go.detect(self.image()), ['cpu_vs_cpu', 'cpu_management'])
         options_runner.run(self.tmp, off=['cpu_vs_cpu', 'cpu_management'])
+        roster_runner.run(self.tmp, remove_only=True, input_dir=self.input_dir)
+        with open(self.dol_path, 'rb') as f:
+            self.assertEqual(f.read(), self.original)
+
+    def test_a_group_logs_one_line(self):
+        log = options_runner.run(self.tmp, on=['cpu_vs_cpu'])
+        self.assertIn('close_play: off (every level)', log)
+        self.assertFalse([line for line in log if line.startswith('close_play_')])
+        log = options_runner.run(self.tmp, on=['close_play_50'])
+        self.assertIn('close_play_50: on', ' '.join(log))
+        self.assertNotIn('close_play_40', ' '.join(log))
+
+    def test_cpu_extras_survive_roster_runs(self):
+        self.original = precharge_dol()
+        for path in (self.dol_path, os.path.join(self.input_dir, 'main.dol')):
+            with open(path, 'wb') as f:
+                f.write(self.original)
+        keys = ['cpu_vs_cpu', 'triple_take', 'strikeout_camera', 'outfield_dives', 'no_precharge', 'close_play_80']
+        options_runner.run(self.tmp, on=keys)
+        roster_runner.run(self.tmp, config_path=self.config, input_dir=self.input_dir)
+        self.assertEqual(go.detect(self.image()), keys)
+        options_runner.run(self.tmp, off=keys, input_dir=self.input_dir)    # the precharge's stock values
         roster_runner.run(self.tmp, remove_only=True, input_dir=self.input_dir)
         with open(self.dol_path, 'rb') as f:
             self.assertEqual(f.read(), self.original)

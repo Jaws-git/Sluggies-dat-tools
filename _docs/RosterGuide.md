@@ -539,6 +539,14 @@ python start.py --load-roster my_roster.sluggiesroster
   community Gecko codes "CPU vs CPU V2" and "CPU vs CPU human management".
   Disable both Gecko codes in Dolphin before using the options: with them
   on, matches start as normal human vs CPU matches, even on a stock roster.
+- **More CPU vs CPU options** (Gameplay → CPU vs CPU) replace further
+  community Gecko codes: the close play odds slider ("CPU Closeplay
+  Overhaul", 50% is the Gecko code; needs CPU vs CPU) and four CPU fixes
+  (triple take home runs, dynamic strikeout camera, outfield dives and
+  jumps, precharge removal). Disable those Gecko codes too. The four fixes
+  add no code area, so other Gecko codes keep working with them; precharge
+  removal also covers the new characters of a roster expansion. "Random Star Hits"
+  and "Random Star Pitches" are not offered yet.
 - **The red Gecko warning:** Gecko codes made for the stock game (CPU vs
   CPU and others) stop working once `main.dol` gets the tools' own code
   area. That happens with game options and with roster changes such as new

@@ -40,8 +40,9 @@ class GameOptionsRunError(RuntimeError):
     pass
 
 
-def build(output_dir: str = OUTPUT_DIR, on=(), off=()) -> tuple[bytes, bytes, list[str]]:
-    """``(current, new, log)``: ``main.dol`` before and after the change, built in memory."""
+def build(output_dir: str = OUTPUT_DIR, on=(), off=(), input_dir: str | None = None) -> tuple[bytes, bytes, list[str]]:
+    """``(current, new, log)``: ``main.dol`` before and after the change, built in memory. ``input_dir`` (default:
+    ``1_Input`` beside ``output_dir``) holds the stock ``main.dol`` that turning a floor option off reads."""
     dol_path = os.path.join(output_dir, 'main.dol')
     if not os.path.isfile(dol_path):
         raise GameOptionsRunError(f'{dol_path} is missing: run the normal pipeline first (menu [1])')
@@ -51,9 +52,19 @@ def build(output_dir: str = OUTPUT_DIR, on=(), off=()) -> tuple[bytes, bytes, li
     with open(dol_path, 'rb') as f:
         current = f.read()
     image = dolfile.DolImage(current)
-    log = game_options.remove(image, off) + game_options.apply(image, on)
-    for option in game_options.OPTIONS:
-        log.append(f'{option.key}: {"on" if game_options.is_on(image, option.key) else "off"} - {option.title}')
+    vanilla_path = os.path.join(input_dir or os.path.join(os.path.dirname(os.path.abspath(output_dir)), '1_Input'),
+                                'main.dol')
+    vanilla = None
+    if os.path.isfile(vanilla_path):
+        with open(vanilla_path, 'rb') as f:
+            vanilla = dolfile.DolImage(f.read())
+    log = game_options.remove(image, off, vanilla) + game_options.apply(image, on)
+    on_now = game_options.detect(image)
+    for option in game_options.OPTIONS:          # a group's levels: only the one that is on, or one line
+        if option.group is None or option.key in on_now:
+            log.append(f'{option.key}: {"on" if option.key in on_now else "off"} - {option.title}')
+    off_groups = {o.group for o in game_options.OPTIONS if o.group} - {game_options.BY_KEY[k].group for k in on_now}
+    log += [f'{group}: off (every level)' for group in sorted(off_groups)]
     return current, image.to_bytes(), log
 
 
@@ -63,11 +74,11 @@ def memory_problems(output_dir: str, current: bytes, data: bytes) -> list[str]:
         os.path.abspath(output_dir))))
 
 
-def run(output_dir: str = OUTPUT_DIR, on=(), off=(), dry_run: bool = False) -> list[str]:
+def run(output_dir: str = OUTPUT_DIR, on=(), off=(), dry_run: bool = False, input_dir: str | None = None) -> list[str]:
     """Turn options on / off. A change that breaks Gecko code compatibility (``gecko_compat``), or a lower player
     memory level some character no longer fits (``memory_guard``), asks first; cancelled, it raises
     GameOptionsRunError and writes nothing."""
-    current, data, log = build(output_dir, on, off)
+    current, data, log = build(output_dir, on, off, input_dir)
     if not dry_run and gecko_compat.breaks(current, data) and not gecko_compat.confirm('the game options'):
         raise GameOptionsRunError('cancelled: the game options would break Gecko code compatibility; '
                                       'nothing was written')

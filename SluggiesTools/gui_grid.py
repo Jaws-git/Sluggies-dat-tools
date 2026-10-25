@@ -55,7 +55,9 @@ WRITING_FLAGS = frozenset({'--export', '--roster', '--patch', '--unpatch', '--re
                            '--write-voice-pack', '--game-options'})
 STAGED_CLIPS_REL = os.path.join('_gui', 'slot', 'staged_clips')   # encoded clips of pending species_clip edits
 UNNAMED = '-'
-CPU_VS_CPU_OPTIONS = ('cpu_vs_cpu', 'cpu_management')   # what the CPU vs CPU tab's button turns off
+CPU_VS_CPU_OPTIONS = ('cpu_vs_cpu', 'cpu_management')   # what the CPU vs CPU tab's button turns off (+ close plays)
+CLOSE_PLAY_LEVELS = tuple(range(0, 101, 10))             # GameOptions/game_options.CLOSE_PLAY_LEVELS (test-pinned)
+CLOSE_PLAY_GECKO = 50                                    # the community Gecko code's odds
 LUIGI = 0x01
 
 
@@ -98,19 +100,23 @@ def staged_game_options(pending: 'PendingEdits | None') -> dict[str, bool]:
 
 
 def _effective_options(state, pending) -> set[str]:
-    """The game options that are on once the pending game option edits are written."""
+    """The game options that are on once the pending game option edits are written (an option staged on replaces
+    the other options of its group, ``GAME_OPTION_GROUPS``)."""
     options = set(_game_options(state) or ())
     for key, on in staged_game_options(pending).items():
+        if on and key in GAME_OPTION_GROUPS:
+            options -= {k for k in options if GAME_OPTION_GROUPS.get(k) == GAME_OPTION_GROUPS[key]}
         (options.add if on else options.discard)(key)
     return options
 
 
-def cpu_vs_cpu_edits(enable: bool = True) -> list[dict]:
-    """The CPU vs CPU tab's button edits. Turning it off also turns management off: management does nothing
-    without it, and its button is locked then, so it could not be turned off afterwards."""
+def cpu_vs_cpu_edits(enable: bool = True, state=None, pending=None) -> list[dict]:
+    """The CPU vs CPU tab's button edits. Turning it off also turns management and the close play odds off: they
+    do nothing without it, and their buttons are locked then, so they could not be turned off afterwards."""
     if enable:
         return [game_option_edit('cpu_vs_cpu', True)]
-    return [game_option_edit(key, False) for key in CPU_VS_CPU_OPTIONS]
+    close_play = close_play_edit(state, pending, None)
+    return [game_option_edit(key, False) for key in CPU_VS_CPU_OPTIONS] + ([close_play] if close_play else [])
 
 
 def cpu_management_edit(enable: bool = True) -> dict:
@@ -162,6 +168,113 @@ def cpu_management_status(state, pending=None) -> tuple[str, bool | None]:
     if 'cpu_vs_cpu' not in options:
         return 'Management: enabled (no effect without CPU vs CPU)' + suffix, False
     return 'Management: enabled' + suffix, True
+
+
+# Close play odds (GameOptions/game_options close_play_<percent>): one level at a time, only in CPU vs CPU.
+CLOSE_PLAY_STAGE = 'Stage odds'
+CLOSE_PLAY_DISABLE = 'Disable close play odds'
+
+
+def close_play_key(percent: int) -> str:
+    return f'close_play_{percent}'
+
+
+def close_play_snap(value) -> int:
+    """The slider's value as a level: the nearest one (0-100 in steps of 10)."""
+    try:
+        value = int(round(float(value) / 10.0)) * 10
+    except (TypeError, ValueError):
+        return CLOSE_PLAY_GECKO
+    return min(max(value, CLOSE_PLAY_LEVELS[0]), CLOSE_PLAY_LEVELS[-1])
+
+
+def _close_play_of(options) -> int | None:
+    return next((p for p in CLOSE_PLAY_LEVELS if close_play_key(p) in options), None)
+
+
+def close_play_level(state, pending=None) -> int | None:
+    """The close play odds once the pending edits are written (None: off)."""
+    return _close_play_of(_effective_options(state, pending))
+
+
+def close_play_buttons(state, pending, percent: int) -> tuple[bool, bool]:
+    """Whether Stage (the slider's ``percent``) and Disable are usable: only while CPU vs CPU is on or staged on;
+    Stage when ``percent`` is not the level already, Disable while a level is on or staged."""
+    options = _effective_options(state, pending)
+    level = _close_play_of(options)
+    usable = 'cpu_vs_cpu' in options
+    return usable and level != percent, usable and level is not None
+
+
+def close_play_edit(state, pending, percent: int | None) -> dict | None:
+    """The edit that stages the odds ``percent``, or turns them off (None). Off names the level the game has, so the
+    planner drops a pending level too; with none in the game, the pending one (the planner then drops it: nothing to
+    change). None when no level is on or staged."""
+    if percent is not None:
+        return game_option_edit(close_play_key(percent), True)
+    level = _close_play_of(_game_options(state) or ())
+    level = close_play_level(state, pending) if level is None else level
+    return game_option_edit(close_play_key(level), False) if level is not None else None
+
+
+def close_play_status(state, pending=None) -> tuple[str, bool | None]:
+    """The status label beside the close play buttons and whether the odds are on (None: not known); pending edits
+    are named after it."""
+    options = _game_options(state)
+    suffix = ''
+    if any(k in GAME_OPTION_GROUPS for k in staged_game_options(pending)):
+        level = close_play_level(state, pending)
+        suffix = f' (pending: {"disabled" if level is None else f"{level}%"})'
+    if options is None:
+        return 'Close plays: unknown' + suffix, None
+    level = _close_play_of(options)
+    if level is None:
+        return 'Close plays: stock' + suffix, False
+    if 'cpu_vs_cpu' not in options:
+        return f'Close plays: {level}% (no effect without CPU vs CPU)' + suffix, False
+    return f'Close plays: {level}%' + suffix, True
+
+
+# CPU fixes: plain patches (no DOL hammerspace), usable with or without CPU vs CPU: (option key, label, tooltip).
+CPU_FIXES = (
+    ('triple_take', 'Triple take home runs',
+     'Port of "CPU Restore Triple Take Homeruns" [C^2]: CPU home runs get the triple take replay that CPU vs CPU '
+     'skips.'),
+    ('strikeout_camera', 'Dynamic strikeout camera',
+     'Port of "CPU Restore Dynamic Strikeout Camera" [C^2]: strikeouts get the dynamic camera again in CPU vs CPU.'),
+    ('outfield_dives', 'Outfield dives and jumps',
+     'Port of "CPUs Can Dive and Jump in Outfield" [dementatino]: CPU fielders may dive and jump in the outfield, '
+     'in every match.'),
+    ('no_precharge', 'Precharge removal',
+     'Port of "CPU Remove Precharge" [philenarion and The Fun Guy]: every character\'s pitching "charge" value below '
+     '8.0 is raised to 8.0 (stock: six characters, at 5.0 or 7.0), in every match; the new IDs of a roster expansion '
+     'too. The stat editor shows the raised values as edits; disabling puts the stock values back.'),
+)
+
+
+def _cpu_fix_label(key: str) -> str:
+    return next(label for k, label, _tip in CPU_FIXES if k == key)
+
+
+def cpu_fix_button(state, pending, key: str) -> tuple[str, bool]:
+    """A CPU fix button's label and whether it enables (the pending edits counted)."""
+    label = _cpu_fix_label(key).lower()
+    return (f'Disable {label}', False) if key in _effective_options(state, pending) else (f'Enable {label}', True)
+
+
+def cpu_fix_status(state, pending, key: str) -> tuple[str, bool | None]:
+    """The status label beside a CPU fix button and whether the game has it on (None: not known); a pending edit is
+    named after it."""
+    options = _game_options(state)
+    text = f'{_cpu_fix_label(key)}: ' + ('unknown' if options is None else 'enabled' if key in options else 'disabled')
+    return text + _pending_suffix(pending, key), None if options is None else key in options
+
+
+def cpu_gecko_warning(state, pending=None) -> bool:
+    """Whether to warn about the CPU vs CPU Gecko codes: an option is on (or staged on) that hooks one of their sites
+    (CPU vs CPU, its management, the close play odds); the CPU fixes write the same as theirs in place."""
+    options = _effective_options(state, pending)
+    return bool({'cpu_vs_cpu', 'cpu_management'} & options) or _close_play_of(options) is not None
 
 
 # Team autopicker: the MSS-AutoTeam Gecko code written into main.dol (GameOptions/game_options.AUTOPICKER_PATCHES).
@@ -1213,7 +1326,11 @@ GAMEPLAY = 'gameplay'                  # gameplay settings (Gameplay tab): game-
 ITEM = 'item'                          # an item model .sluggie (the grid's item tile): game-wide too (test-pinned)
 STADIUM = 'stadium'                    # a stadium model .sluggie (the grid's stadium tile): game-wide too (test-pinned)
 GAME_OPTION = 'game_option'            # a game option on / off (Gameplay tab, CPU vs CPU): game-wide (test-pinned)
-GAME_OPTION_TITLES = {'cpu_vs_cpu': 'CPU vs CPU', 'cpu_management': 'CPU vs CPU management'}
+GAME_OPTION_TITLES = {'cpu_vs_cpu': 'CPU vs CPU', 'cpu_management': 'CPU vs CPU management',
+                      **{f'close_play_{p}': f'CPU vs CPU close play odds {p}%' for p in CLOSE_PLAY_LEVELS},
+                      'triple_take': 'CPU triple take replays', 'strikeout_camera': 'CPU strikeout camera',
+                      'outfield_dives': 'CPU outfield dives and jumps', 'no_precharge': 'No CPU precharge'}
+GAME_OPTION_GROUPS = {f'close_play_{p}': 'close_play' for p in CLOSE_PLAY_LEVELS}    # Roster/slot_plan (test-pinned)
 GAME_OPS = (STAT_EDITS, GAMEPLAY, ITEM, STADIUM, GAME_OPTION)
 STAT_RESET = 'stat_reset'                     # clears one slot's stat edits (Roster/slot_plan, test-pinned)
 

@@ -561,7 +561,7 @@ class CpuVsCpuTests(unittest.TestCase):
         self.assertTrue(set(slot_plan.GAME_OPTION_TITLES) <= set(game_options.BY_KEY))
         self.assertEqual(gui_grid.cpu_vs_cpu_edits(), [{'op': 'game_option', 'id': '0xFF', 'file': 'on:cpu_vs_cpu'}])
         self.assertEqual(gui_grid.cpu_management_edit(False)['file'], 'off:cpu_management')
-        # turning CPU vs CPU off takes management with it (its button is locked afterwards)
+        # turning CPU vs CPU off takes management with it (its button is locked afterwards); no close play level
         self.assertEqual([e['file'] for e in gui_grid.cpu_vs_cpu_edits(False)],
                          ['off:cpu_vs_cpu', 'off:cpu_management'])
         self.assertTrue(gui_grid.chain_writes([('--game-options', '--on', 'cpu_vs_cpu')]))
@@ -616,6 +616,90 @@ class CpuVsCpuTests(unittest.TestCase):
         self.assertEqual(button({'game_options': ['cpu_vs_cpu']}), (gui_grid.CPU_MANAGEMENT_ENABLE, True, True))
         self.assertEqual(button({'game_options': ['cpu_vs_cpu', 'cpu_management']}),
                          (gui_grid.CPU_MANAGEMENT_DISABLE, False, True))
+
+
+class CpuVsCpuExtrasTests(unittest.TestCase):
+    """Close play odds (one level of a group at a time) and the CPU fixes (plain toggles)."""
+
+    @staticmethod
+    def pending(*files):
+        pending = gui_grid.PendingEdits()
+        pending.edits = [{'op': 'game_option', 'id': '0xFF', 'file': f} for f in files]
+        return pending
+
+    def test_levels_and_groups_mirror_the_game_options(self):
+        from GameOptions import game_options
+        from Roster import slot_plan
+        self.assertEqual(gui_grid.CLOSE_PLAY_LEVELS, game_options.CLOSE_PLAY_LEVELS)
+        self.assertEqual(gui_grid.CLOSE_PLAY_LEVELS, slot_plan.CLOSE_PLAY_LEVELS)
+        self.assertEqual(gui_grid.CLOSE_PLAY_GECKO, game_options.CLOSE_PLAY_GECKO)
+        self.assertEqual(gui_grid.GAME_OPTION_GROUPS, slot_plan.GAME_OPTION_GROUPS)
+        self.assertEqual(gui_grid.GAME_OPTION_GROUPS, {o.key: o.group for o in game_options.OPTIONS
+                                                       if o.key in slot_plan.GAME_OPTION_TITLES and o.group})
+        self.assertTrue({key for key, _label, _tip in gui_grid.CPU_FIXES} <= set(slot_plan.GAME_OPTION_TITLES))
+        for key, _label, _tip in gui_grid.CPU_FIXES:       # plain patches / floors: no DOL hammerspace
+            self.assertFalse(game_options.BY_KEY[key].hooks, key)
+
+    def test_snap(self):
+        self.assertEqual([gui_grid.close_play_snap(v) for v in (0, 4, 5, 46, 100, 130, -5, None)],
+                         [0, 0, 0, 50, 100, 100, 0, gui_grid.CLOSE_PLAY_GECKO])
+
+    def test_a_staged_level_replaces_the_game_level(self):
+        state = {'game_options': ['cpu_vs_cpu', 'close_play_30']}
+        self.assertEqual(gui_grid.close_play_level(state), 30)
+        pending = self.pending('on:close_play_70')
+        self.assertEqual(gui_grid._effective_options(state, pending), {'cpu_vs_cpu', 'close_play_70'})
+        self.assertEqual(gui_grid.close_play_status(state, pending), ('Close plays: 30% (pending: 70%)', True))
+        self.assertEqual(gui_grid.close_play_buttons(state, pending, 70), (False, True))
+        self.assertEqual(gui_grid.close_play_buttons(state, pending, 40), (True, True))
+        # off names the game's level, so the planner drops the pending one too
+        self.assertEqual(gui_grid.close_play_edit(state, pending, None)['file'], 'off:close_play_30')
+        self.assertEqual(gui_grid.close_play_edit({'game_options': ['cpu_vs_cpu']}, pending, None)['file'],
+                         'off:close_play_70')
+        self.assertIsNone(gui_grid.close_play_edit({'game_options': ['cpu_vs_cpu']}, None, None))
+
+    def test_close_plays_need_cpu_vs_cpu(self):
+        self.assertEqual(gui_grid.close_play_buttons({'game_options': []}, None, 50), (False, False))
+        self.assertEqual(gui_grid.close_play_buttons({'game_options': []}, self.pending('on:cpu_vs_cpu'), 50),
+                         (True, False))
+        self.assertEqual(gui_grid.close_play_status({'game_options': ['close_play_50']}),
+                         ('Close plays: 50% (no effect without CPU vs CPU)', False))
+        self.assertEqual(gui_grid.close_play_status(None), ('Close plays: unknown', None))
+        self.assertEqual(gui_grid.close_play_status({'game_options': []}), ('Close plays: stock', False))
+        # turning CPU vs CPU off takes the close play level along
+        state = {'game_options': ['cpu_vs_cpu', 'close_play_50']}
+        self.assertEqual([e['file'] for e in gui_grid.cpu_vs_cpu_edits(False, state)],
+                         ['off:cpu_vs_cpu', 'off:cpu_management', 'off:close_play_50'])
+
+    def test_cpu_fixes(self):
+        state = {'game_options': ['triple_take']}
+        self.assertEqual(gui_grid.cpu_fix_button(state, None, 'triple_take'), ('Disable triple take home runs', False))
+        self.assertEqual(gui_grid.cpu_fix_button(state, None, 'no_precharge'), ('Enable precharge removal', True))
+        self.assertEqual(gui_grid.cpu_fix_status(state, self.pending('off:triple_take'), 'triple_take'),
+                         ('Triple take home runs: enabled (pending: disabled)', True))
+        self.assertEqual(gui_grid.cpu_fix_status(None, None, 'outfield_dives'),
+                         ('Outfield dives and jumps: unknown', None))
+        # the fixes write the same as their Gecko codes in place: no warning for them alone
+        self.assertFalse(gui_grid.cpu_gecko_warning(state))
+        self.assertTrue(gui_grid.cpu_gecko_warning(state, self.pending('on:close_play_50')))
+
+    def test_planner_merges_a_group(self):
+        from Roster import slot_plan
+
+        class Env(slot_plan.Env):
+            def game_options(self):
+                return ['cpu_vs_cpu', 'close_play_30']
+
+        def plan(*files):
+            items = [{'op': 'game_option', 'id': '0xFF', 'file': f} for f in files]
+            return slot_plan.plan_batch({'characters': [], 'squares': []}, {}, slot_plan.parse_edits(items), Env(),
+                                        'state.json')
+        b = plan('on:close_play_60', 'on:close_play_80', 'on:no_precharge')
+        self.assertEqual(b.commands[0], ('--game-options', '--on', 'close_play_80', 'no_precharge'))
+        b = plan('on:close_play_60', 'off:close_play_30')       # the later off replaces the staged level
+        self.assertEqual(b.commands[0], ('--game-options', '--off', 'close_play_30'))
+        b = plan('on:close_play_60', 'on:close_play_30')        # back to the game's level: nothing to write
+        self.assertEqual(b.commands, [])
 
 
 class AutopickerTests(unittest.TestCase):

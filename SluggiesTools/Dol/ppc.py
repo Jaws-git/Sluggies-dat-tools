@@ -170,6 +170,7 @@ class Asm:
     def mflr(self, rt): return self.word(x_form(rt, 0, 0, 339) | (0x100 << 11))
     def mtlr(self, rs): return self.word(x_form(rs, 0, 0, 467) | (0x100 << 11))
     def mtctr(self, rs): return self.word(x_form(rs, 0, 0, 467) | (0x120 << 11))
+    def mftb(self, rt): return self.word(x_form(rt, 0, 0, 371) | (0x188 << 11))     # time base, lower word
 
     # -- control flow ----------------------------------------------------
     def nop(self): return self.word(0x60000000)

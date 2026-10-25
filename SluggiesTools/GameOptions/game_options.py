@@ -28,17 +28,19 @@ rebuilds the sections from the options still on, or drops them and restores
 the stock arena start when none is, so the DOL is stock again.
 """
 
+import struct
 from dataclasses import dataclass
 from typing import Callable
 
 try:
-    from ..Dol import dolfile
+    from ..Dol import dolfile, inventory, relocate
     from ..Dol.ppc import Asm, branch_target, ha, lo, one
-    from ..Roster import dol_hammerspace
+    from ..Roster import dol_hammerspace, ids
 except ImportError:
-    from Dol import dolfile
+    from Dol import dolfile, inventory, relocate
     from Dol.ppc import Asm, branch_target, ha, lo, one
     import dol_hammerspace
+    import ids
 
 
 class GameOptionError(dolfile.DolError):
@@ -60,12 +62,20 @@ class Patch:
 
 
 @dataclass(frozen=True)
+class Floor:
+    table: str                        # a per-ID table (Dol/inventory): found where the roster put it, new IDs included
+    offset: int                       # an f32 in every character's row
+    value: float                      # rows below it are raised to it; off puts the roster's own value back
+
+
+@dataclass(frozen=True)
 class Option:
     key: str
     title: str
     hooks: tuple[Hook, ...]
     group: str | None = None    # options of one group hook the same sites: only the one whose stub is there is on
     patches: tuple[Patch, ...] = ()
+    floors: tuple[Floor, ...] = ()
 
 
 # ---------------------------------------------------------------- CPU vs CPU
@@ -148,6 +158,82 @@ def _defense_change_stub(base: int, site: int) -> Asm:
     a.word(STATE_STOCK)
     a.b(site + 4)
     return a
+
+
+# ------------------------------------------------------- CPU vs CPU close plays
+#
+# Port of the community Gecko code "CPU Closeplay Overhaul" [C^2] (C2 0x80156348): 50/50 close play odds in CPU
+# vs CPU, 100% for a player with the baserunning ability. The close play code (0x80156A5C-0x80156AA0) adds
+# CLOSE_PLAY_TABLE[row][column] (s16; row *(r13-0x1658), column from the byte table 0x80797264) to a base from
+# 0x806263D8 and, on the frame the play's counter reaches that sum, rolls the game's random(100) (0x80165C80).
+# The Gecko code wrote row 0 column 3 every time fn_8015619C reached the site: 2 when the byte +0x1A1 of the
+# player record r31 (*(0x807098C8 + 4 * the player's +0x16)) is set, else 1 or 60 from the low bit of a stock
+# heap halfword (0x900D5BFC, the game object +4). The stub draws from the time base instead (mftb modulo 100,
+# no heap address), so the odds of the 1 can be set; 50% is the Gecko code. Outside CPU vs CPU it writes the
+# stock value back (the Gecko code left its last value there for the next human match). Static data and r13 /
+# register reads only: a roster run or a player memory level moves none of it. The stub uses r0, r11, r12 and
+# cr0: r0 is loaded by the stock instruction, r11 and r12 are set again before they are read, and cr0 is set by
+# the `cmpw` right after the site.
+CLOSE_PLAY_SITE, CLOSE_PLAY_STOCK = 0x80156348, 0xA8030002     # lha r0,2(r3)
+CLOSE_PLAY_TABLE = 0x80624B18                                  # s16 [4 rows][4 columns]
+CLOSE_PLAY_ENTRY = CLOSE_PLAY_TABLE + 3 * 2                    # row 0, column 3 (0x80624B1E)
+CLOSE_PLAY_STOCK_VALUE = 0x14
+CLOSE_PLAY_ABILITY, CLOSE_PLAY_ABILITY_VALUE = 0x1A1, 2        # r31 + 0x1A1: the baserunning ability
+CLOSE_PLAY_HIT, CLOSE_PLAY_MISS = 1, 60                        # the Gecko code's two values
+CLOSE_PLAY_LEVELS = tuple(range(0, 101, 10))                   # % of draws that write CLOSE_PLAY_HIT
+CLOSE_PLAY_GECKO = 50
+
+
+def close_play_key(percent: int) -> str:
+    return f'close_play_{percent}'
+
+
+def _close_play_stub(percent: int):
+    def stub(base: int, site: int) -> Asm:
+        a = Asm(base)
+        _if_cpu_vs_cpu(a, 'stock')
+        a.li(12, CLOSE_PLAY_ABILITY_VALUE)
+        a.lbz(11, CLOSE_PLAY_ABILITY, 31).cmpwi(11, 0).bne('store')
+        a.mftb(11).li(0, 100).divwu(12, 11, 0).mullw(12, 12, 0).subf(11, 12, 11)     # r11 = time base % 100
+        a.li(12, CLOSE_PLAY_HIT).cmplwi(11, percent).blt('store')
+        a.li(12, CLOSE_PLAY_MISS).b('store')
+        a.label('stock')
+        a.li(12, CLOSE_PLAY_STOCK_VALUE)
+        a.label('store')
+        a.lis(11, ha(CLOSE_PLAY_ENTRY)).sth(12, lo(CLOSE_PLAY_ENTRY), 11)
+        a.word(CLOSE_PLAY_STOCK)
+        a.b(site + 4)
+        return a
+    return stub
+
+
+def _close_play_option(percent: int) -> Option:
+    note = ' (the Gecko code)' if percent == CLOSE_PLAY_GECKO else ''
+    return Option(close_play_key(percent),
+                  f'CPU vs CPU close play odds {percent}%{note}, 100% with the baserunning ability',
+                  (Hook(CLOSE_PLAY_SITE, CLOSE_PLAY_STOCK, _close_play_stub(percent)),), group='close_play')
+
+
+# ------------------------------------------------------------ CPU vs CPU fixes
+#
+# Ports of community Gecko codes as plain patches: no stub and no DOL hammerspace, so they keep the stock memory
+# layout and Gecko code compatibility, and they don't need the CPU vs CPU option (it only makes them matter).
+#
+# "CPU Restore Triple Take Homeruns" [C^2] (C2 0x802500B8 / 0x802529B0): set r0 = 1 before `cmpwi r0,0`, so the
+# `beq` after it never branches. The test before it: r3 (r4) == 2 and *(*(r13-0x1D78), or *(r13-0x1D7C)) +0x34
+# == 0, the game object's flag that CPU vs CPU sets. Here the `beq` becomes a nop: the same, since r0 is loaded
+# again before its next read on both ways on.
+TRIPLE_TAKE_PATCHES = (Patch(0x802500BC, 0x41820024, 0x60000000),    # beq 0x802500E0 -> nop
+                       Patch(0x802529B4, 0x41820024, 0x60000000))    # beq 0x802529D8 -> nop
+# "CPU Restore Dynamic Strikeout Camera" (C2 0x802504A0: li r0,0): the same flag, read in place.
+STRIKEOUT_CAMERA_PATCHES = (Patch(0x802504A0, 0x80050034, 0x38000000),)     # lwz r0,0x34(r5) -> li r0,0
+# "CPUs Can Dive and Jump in Outfield" [dementatino] (04 0x800E2750): states 2-8 instead of 2-5 (r0 = r29 - 2).
+OUTFIELD_DIVE_PATCHES = (Patch(0x800E2750, 0x28000003, 0x28000006),)       # cmplwi r0,3 -> cmplwi r0,6
+# "CPU Remove Precharge" [philenarion and The Fun Guy] wrote 8.0 to six stock addresses: the "charge" value (f32
+# +0, the stat editor's pitching "charge") of the pitchwindup rows of IDs 0x08, 0x09, 0x0F, 0x27, 0x3F and 0x40,
+# the only stock rows below 8.0 (7.0, and 5.0 for 0x0F). A roster run with new IDs moves that table, so the
+# option raises every character's row below 8.0 wherever the table is (new IDs' rows too) instead.
+PRECHARGE_FLOORS = (Floor('pitchwindup', 0, 8.0),)
 
 
 # ------------------------------------------------------------ player memory
@@ -284,7 +370,13 @@ OPTIONS = (
             Hook(STATE_SITE, STATE_STOCK, _defense_change_stub))),
     Option('autopicker', 'Team autopicker (the MSS-AutoTeam Gecko code, in main.dol)', (),
            patches=AUTOPICKER_PATCHES),
-) + tuple(_player_heap_option(kb) for kb in PLAYER_HEAP_LEVELS_KB) \
+    Option('triple_take', 'Triple take replays of CPU home runs (CPU vs CPU)', (), patches=TRIPLE_TAKE_PATCHES),
+    Option('strikeout_camera', 'Dynamic strikeout camera (CPU vs CPU)', (), patches=STRIKEOUT_CAMERA_PATCHES),
+    Option('outfield_dives', 'CPU fielders dive and jump in the outfield', (), patches=OUTFIELD_DIVE_PATCHES),
+    Option('no_precharge', 'No CPU precharge (every pitch "charge" value at least 8.0)', (),
+           floors=PRECHARGE_FLOORS),
+) + tuple(_close_play_option(p) for p in CLOSE_PLAY_LEVELS) \
+  + tuple(_player_heap_option(kb) for kb in PLAYER_HEAP_LEVELS_KB) \
   + tuple(_big_heap_option(kb) for kb in BIG_HEAP_LEVELS_KB)
 BY_KEY = {o.key: o for o in OPTIONS}
 
@@ -313,9 +405,51 @@ def _patched(image: dolfile.DolImage, patch: Patch) -> bool:
     return image.is_mapped(patch.site, 4) and image.u32(patch.site) == patch.new
 
 
+def _roster(image: dolfile.DolImage):
+    """The roster's new IDs and stats sources (``StatEditor/bridge.read_roster``: the manifest). A DOL without roster
+    data whose manifest cannot be read (another tool changed the grid code) has the stock IDs only."""
+    try:
+        from ..StatEditor import bridge
+    except ImportError:
+        from StatEditor import bridge
+    try:
+        return bridge.read_roster(image)
+    except (RuntimeError, ValueError):     # BridgeError; DolError from a grid site the DOL does not map
+        hs = dol_hammerspace.DolHammerspace.open(image)
+        if hs is not None and hs.has_data:
+            raise                       # a roster of ours whose new IDs cannot be read
+        return bridge.Roster(None, [], {})
+
+
+def _floor_cells(image: dolfile.DolImage, floor: Floor) -> list[tuple[int, int]]:
+    """``(character ID, address)`` of the floor's f32 in every character's row (stock IDs and the roster's new IDs),
+    in the table where ``image`` has it (its first lis/low pair, as ``StatEditor/bridge.table_layouts`` finds it)."""
+    try:
+        table = inventory.table(floor.table)
+        at = relocate.pair_address(image, *table.all_pairs[0]) + table.header + floor.offset
+        cids = list(range(ids.STOCK_IDS)) + [c.id for c in _roster(image).new]
+        return [(cid, at + table.row_size * cid) for cid in cids]
+    except (RuntimeError, ValueError) as exc:          # BridgeError, DolError, RelocationError (no lis pair)
+        raise GameOptionError(f'{floor.table}: the per-ID table could not be found ({exc})') from exc
+
+
+def _f32(image: dolfile.DolImage, address: int) -> float:
+    return struct.unpack('>f', image.read(address, 4))[0]
+
+
+def _floored(image: dolfile.DolImage, floor: Floor) -> bool:
+    try:
+        cells = _floor_cells(image, floor)
+    except GameOptionError:
+        return False
+    return all(_f32(image, a) >= floor.value for _cid, a in cells)
+
+
 def is_on(image: dolfile.DolImage, key: str) -> bool:
     option = _option(key)
     if not all(_patched(image, p) for p in option.patches):
+        return False
+    if not all(_floored(image, f) for f in option.floors):
         return False
     if option.group:    # the sites are shared: the stub there tells which option of the group it is
         return all(_hooked(image, h) and _stub_current(image, h) for h in option.hooks)
@@ -354,6 +488,8 @@ def _check_stock(image: dolfile.DolImage, option: Option) -> None:
         if word not in (p.stock, p.new):
             raise GameOptionError(f'{option.title}: 0x{p.site:08X} holds 0x{word:08X}, expected the stock '
                                   f'0x{p.stock:08X}; another patch changed it')
+    for f in option.floors:
+        _floor_cells(image, f)              # raises when the table cannot be found
 
 
 def apply(image: dolfile.DolImage, keys) -> list[str]:
@@ -393,14 +529,42 @@ def apply(image: dolfile.DolImage, keys) -> list[str]:
             image.write_word(h.site, one(h.site, lambda a, t=at: a.b(t)))
         for p in option.patches:
             image.write_word(p.site, p.new)
-        sites = [h.site for h in option.hooks] + [p.site for p in option.patches]
-        log.append(f'{option.title}: on (' + ', '.join(f'0x{s:08X}' for s in sites) + ')')
     if hs is not None:
         hs.commit()
+    for option in todo:     # floors after the commit: a roster's moved tables are in the data section it rewrites
+        sites = [f'0x{s:08X}' for s in [h.site for h in option.hooks] + [p.site for p in option.patches]]
+        for f in option.floors:
+            raised = []
+            for cid, a in _floor_cells(image, f):
+                if _f32(image, a) < f.value:
+                    image.write(a, struct.pack('>f', f.value))
+                    raised.append(f'0x{cid:02X}')
+            sites.append(f'{f.table} rows raised to {f.value:g}: {", ".join(raised) or "none"}')
+        log.append(f'{option.title}: on (' + ', '.join(sites) + ')')
     return log
 
 
-def _unhook(image: dolfile.DolImage, option: Option) -> bool:
+def _lower(image: dolfile.DolImage, floor: Floor, vanilla: dolfile.DolImage | None) -> bool:
+    """Put back the roster's own value (``bridge.baseline_rows`` of ``vanilla``: what a roster run writes without
+    stat edits) in every row that holds the floor and whose own value is below it. A row a stat edit set to
+    exactly the floor goes back too."""
+    if vanilla is None:
+        raise GameOptionError(f'{floor.table}: turning this option off needs 1_Input/main.dol (the stock values)')
+    roster = _roster(image)
+    table = inventory.table(floor.table)
+    blob, _log = ids.extended_table(vanilla, table, roster.new, ids.ROWS if roster.new else ids.STOCK_IDS + 1,
+                                    roster.stock_stats)
+    lowered = False
+    for cid, a in _floor_cells(image, floor):
+        at = table.header + table.row_size * cid + floor.offset
+        own = blob[at:at + 4]
+        if _f32(image, a) == floor.value and struct.unpack('>f', own)[0] < floor.value:
+            image.write(a, own)
+            lowered = True
+    return lowered
+
+
+def _unhook(image: dolfile.DolImage, option: Option, vanilla: dolfile.DolImage | None = None) -> bool:
     if option.group and not is_on(image, option.key) and not _group_outdated(image, option):
         return False    # the shared sites hold another option of the group
     hooked = [h for h in option.hooks if _hooked(image, h)]
@@ -409,14 +573,17 @@ def _unhook(image: dolfile.DolImage, option: Option) -> bool:
     patched = [p for p in option.patches if _patched(image, p)]
     for p in patched:
         image.write_word(p.site, p.stock)
-    return bool(hooked or patched)
+    lowered = [f for f in option.floors if _lower(image, f, vanilla)]
+    return bool(hooked or patched or lowered)
 
 
-def remove(image: dolfile.DolImage, keys) -> list[str]:
-    """Turn off the options in ``keys``: their hook sites get the stock words back. Without a roster (sections
-    holding only option stubs) the sections are rebuilt with the stubs of the options still on, or dropped with
-    the arena start back to stock when none is; with a roster the old stubs stay until the next roster run."""
-    log = [f'{_option(key).title}: ' + ('off' if _unhook(image, _option(key)) else 'already off') for key in keys]
+def remove(image: dolfile.DolImage, keys, vanilla: dolfile.DolImage | None = None) -> list[str]:
+    """Turn off the options in ``keys``: their hook sites get the stock words back, their floored rows the roster's
+    own values (from ``vanilla``, ``1_Input/main.dol``). Without a roster (sections holding only option stubs) the
+    sections are rebuilt with the stubs of the options still on, or dropped with the arena start back to stock when
+    none is; with a roster the old stubs stay until the next roster run."""
+    log = [f'{_option(key).title}: ' + ('off' if _unhook(image, _option(key), vanilla) else 'already off')
+           for key in keys]
     hs = dol_hammerspace.DolHammerspace.open(image)
     if hs is None or hs.has_data:
         return log

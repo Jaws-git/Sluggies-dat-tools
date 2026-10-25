@@ -134,8 +134,9 @@ dry run of that patch). One per model (``ModelOffset``): a later file of the sam
 earlier one. Character models are refused: they go into a slot (or its Equipment row); each op refuses the other's.
 
 Game options (``plan_game_option``, op ``game_option``): ``on:KEY`` / ``off:KEY`` turns a game option (CPU vs CPU,
-its management; the GUI's Gameplay tab) on or off. Game-wide (``id`` ``GAME_WIDE``); the last edit per option wins,
-and the chain writes them in one ``--game-options`` step after the gameplay step.
+its management, close play odds and the CPU fixes; the GUI's Gameplay tab) on or off. Game-wide (``id``
+``GAME_WIDE``); the last edit per option wins (per group for the close play levels, which replace each other), and
+the chain writes them in one ``--game-options`` step after the gameplay step.
 
 Copy (``plan_copy``, op ``copy``, the grid's paste): slot ``id`` becomes a clone of ``source`` as the game holds
 it (finished blocks, name, portraits, stats source and every stat value; the square's voice stays unless the slot is
@@ -2154,6 +2155,12 @@ def parse_game_option(item: str) -> tuple[str, bool]:
     return key, state == 'on'
 
 
+def _option_slot(item: str) -> str:
+    """What a later game option item replaces: the same option, or any option of its group (``GAME_OPTION_GROUPS``)."""
+    key = parse_game_option(item)[0]
+    return GAME_OPTION_GROUPS.get(key, key)
+
+
 def plan_game_option(item: str, env: Env) -> Plan:
     """The chain step that turns the game option of ``item`` on or off (``--game-options``, merged by
     ``plan_batch``); ``nothing`` when the game has it that way already."""
@@ -2204,7 +2211,13 @@ STADIUM = 'stadium'                                   # the same for a stadium m
 MODEL_FILE_OPS = (ITEM, STADIUM)
 GAME_OPTION = 'game_option'                           # game-wide: a game option on / off (``on:KEY``); last per KEY
 # the game options that can be staged (GameOptions/game_options.OPTIONS keys, test-pinned)
-GAME_OPTION_TITLES = {'cpu_vs_cpu': 'CPU vs CPU', 'cpu_management': 'CPU vs CPU management'}
+CLOSE_PLAY_LEVELS = tuple(range(0, 101, 10))         # game_options.CLOSE_PLAY_LEVELS (test-pinned)
+GAME_OPTION_TITLES = {'cpu_vs_cpu': 'CPU vs CPU', 'cpu_management': 'CPU vs CPU management',
+                      **{f'close_play_{p}': f'CPU vs CPU close play odds {p}%' for p in CLOSE_PLAY_LEVELS},
+                      'triple_take': 'CPU triple take replays', 'strikeout_camera': 'CPU strikeout camera',
+                      'outfield_dives': 'CPU outfield dives and jumps', 'no_precharge': 'No CPU precharge'}
+# options that replace each other (game_options.Option.group): the last edit per group wins
+GAME_OPTION_GROUPS = {f'close_play_{p}': 'close_play' for p in CLOSE_PLAY_LEVELS}
 GAME_OPS = (STAT_EDITS, GAMEPLAY, ITEM, STADIUM, GAME_OPTION)
 # HammerspaceMain.STADIUM_CHUNKS: Mario Stadium (7) .. Toy Field (16)
 STADIUM_CHUNKS = range(7, 17)
@@ -2511,11 +2524,11 @@ def merge_edits(edits: list[Edit], classify_fn=None, load_icon_fn=None, classify
             continue
         if edit.op == GAME_OPTION:
             try:
-                key, _on = parse_game_option(edit.file)
+                slot = _option_slot(edit.file)
             except PlanError as exc:
                 refused.append((edit, str(exc)))
                 continue
-            merged = [e for e in merged if not (e.op == GAME_OPTION and parse_game_option(e.file)[0] == key)]
+            merged = [e for e in merged if not (e.op == GAME_OPTION and _option_slot(e.file) == slot)]
             merged.append(edit)
             continue
         if edit.op in MODEL_FILE_OPS:

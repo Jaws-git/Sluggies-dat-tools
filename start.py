@@ -70,6 +70,7 @@ ROSTER_SLOT_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'slot_cli.py')
 ROSTER_PACK_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'pack_cli.py')
 ROSTER_SLOT_EXPORT_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'slot_export.py')
 ROSTER_SWITCH_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'switch_cli.py')
+ROSTER_AUTOPICKER_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'autopicker_export.py')
 PACK_PLAN_FILE = os.path.join(ROOT_DIR, '_gui', 'pack', 'plan.json')
 SWITCH_PLAN_FILE = os.path.join(ROOT_DIR, '_gui', 'switch', 'plan.json')
 SLOT_PLAN_FILE = os.path.join(ROOT_DIR, '_gui', 'slot', 'plan.json')
@@ -223,6 +224,13 @@ def run_roster_state(derive=False):
     if derive:
         cmd.append('--derive')
     # no check=True: the reader logs its own [Error] line, and the GUI shows the last one
+    return subprocess.run(cmd, cwd=TOOLS_DIR).returncode == 0
+
+
+def run_export_autopicker(path):
+    """Write the MSS-AutoTeam autopicker's characters.json (one name per ID the output game offers) to ``path``
+    (Roster/autopicker_export.py); the game files are only read."""
+    cmd = python_script_command(ROSTER_AUTOPICKER_SCRIPT, '--out', os.path.abspath(path))
     return subprocess.run(cmd, cwd=TOOLS_DIR).returncode == 0
 
 
@@ -1106,6 +1114,7 @@ def parse_args():
     mode.add_argument('--roster', '--roster-dev', dest='roster', action='store_true', help='inject a roster configuration (--config, e.g. from 1_Input/_RosterConfigurations) into 3_Output_Dat, replacing the previous injection')
     mode.add_argument('--roster-state', action='store_true', help='read the draft grid from 3_Output_Dat into _gui/roster_state.json (used by the GUI)')
     mode.add_argument('--roster-derive', action='store_true', help='write the roster config that rebuilds 3_Output_Dat as it is into _gui/derived (read -> rebuild; then --roster --state)')
+    mode.add_argument('--export-autopicker', metavar='FILE', help="write the MSS-AutoTeam autopicker's characters.json (one name per character ID that 3_Output_Dat offers; put it next to its options.json) to FILE")
     mode.add_argument('--game-options', action='store_true', help='show or change game options (CPU vs CPU, ...) in 3_Output_Dat/main.dol; use with --on/--off')
     mode.add_argument('--stat-bridge-export', metavar='FILE', help="write the Sluggers Stat Editor's bridge file (where 3_Output_Dat/main.dol keeps every stat table, the characters, the baseline values) to FILE")
     mode.add_argument('--apply-stat-edits', nargs='+', metavar='FILE', help="write the Sluggers Stat Editor's edit files (stat_edits.json from Bridge Mode; several: in order, a later one wins) into 3_Output_Dat/main.dol; refused unless made from this main.dol; an item reset:0xNN clears that character's stat edits at its place in the order (with --dry-run: list the changes only)")
@@ -1208,7 +1217,7 @@ def parse_args():
         parser.error('--config and --state cannot be used together.')
     if args.roster and not (args.config or args.remove or args.state):
         parser.error('--roster needs --config PATH (a roster configuration), --state PATH or --remove.')
-    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.copy_slot, args.import_slgmodel, args.export_slot, args.rename_slot, args.set_voice, args.set_char_voice, args.set_species_clip, args.set_stats, args.set_icon, args.apply_slots, args.save_roster, args.load_roster, args.write_slot_blocks, args.write_slot_equipment, args.write_slot_animation, args.write_voice_pack, args.resplit_unused, args.defrag_hammerspace, args.export, args.export_icons, args.export_sounds, args.roster, args.roster_state, args.roster_derive, args.game_options, args.stat_bridge_export, args.apply_stat_edits, args.apply_gameplay, args.save_gameplay]):
+    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.copy_slot, args.import_slgmodel, args.export_slot, args.rename_slot, args.set_voice, args.set_char_voice, args.set_species_clip, args.set_stats, args.set_icon, args.apply_slots, args.save_roster, args.load_roster, args.write_slot_blocks, args.write_slot_equipment, args.write_slot_animation, args.write_voice_pack, args.resplit_unused, args.defrag_hammerspace, args.export, args.export_icons, args.export_sounds, args.roster, args.roster_state, args.roster_derive, args.export_autopicker, args.game_options, args.stat_bridge_export, args.apply_stat_edits, args.apply_gameplay, args.save_gameplay]):
         if len(sys.argv) == 1:
             args.gui = True
         else:
@@ -1319,6 +1328,9 @@ def main() -> int:
                 return 1
         elif args.roster_state or args.roster_derive:
             if not run_roster_state(derive=args.roster_derive):
+                return 1
+        elif args.export_autopicker:
+            if not run_export_autopicker(args.export_autopicker):
                 return 1
         elif args.game_options:
             if not run_game_options(on=args.on, off=args.off, dry_run=args.dry_run):
