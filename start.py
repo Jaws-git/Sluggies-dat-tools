@@ -69,6 +69,7 @@ ROSTER_STATE_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'state_cli.py')
 ROSTER_SLOT_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'slot_cli.py')
 ROSTER_PACK_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'pack_cli.py')
 ROSTER_SLOT_EXPORT_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'slot_export.py')
+ROSTER_SLOT_ZIP_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'slot_zip.py')
 ROSTER_SWITCH_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'switch_cli.py')
 ROSTER_AUTOPICKER_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'autopicker_export.py')
 PACK_PLAN_FILE = os.path.join(ROOT_DIR, '_gui', 'pack', 'plan.json')
@@ -339,6 +340,13 @@ def run_export_slot(character_id):
     """Export a slot as the game holds it into 2_Output_Assets/Custom <name> NN (Roster/slot_export.py); the game
     files are only read."""
     return subprocess.run(python_script_command(ROSTER_SLOT_EXPORT_SCRIPT, character_id),
+                          cwd=TOOLS_DIR).returncode == 0
+
+
+def run_export_sluggiezip(character_id, path):
+    """Export a slot as one character package (Roster/slot_zip.py: models, equipment, animations, portraits, name,
+    stats, voice); the game files are only read."""
+    return subprocess.run(python_script_command(ROSTER_SLOT_ZIP_SCRIPT, character_id, os.path.abspath(path)),
                           cwd=TOOLS_DIR).returncode == 0
 
 
@@ -1065,6 +1073,7 @@ def parse_args():
             '  python start.py --rename-slot 0xE1 "Purple Yoshi"\n'
             '  python start.py --copy-slot 0x00 0xE1\n'
             '  python start.py --export-slot 0xE1\n'
+            '  python start.py --export-sluggiezip 0xE1 "Fire Mario.sluggiezip"\n'
             '  python start.py --set-voice 0x00 0x09\n'
             '  python start.py --set-char-voice 0x66 0x09\n'
             '  python start.py --set-char-voice 0x66 pack:Rosalina\n'
@@ -1101,6 +1110,9 @@ def parse_args():
     mode.add_argument('--export-slot', metavar='0xNN', help="export a slot as the game holds it (High and Low "
                       'model, bats and gloves, anm files, portraits) into 2_Output_Assets/Custom <name> NN as '
                       '.sluggie files that patch into any slot their base model fits')
+    mode.add_argument('--export-sluggiezip', nargs=2, metavar=('0xNN', 'FILE'), help='export a slot as the game '
+                      'holds it into one character package (.sluggiezip: models, bats and gloves, animations, '
+                      "portraits, name, stats, own voice), which the GUI's character grid stages onto any slot")
     mode.add_argument('--rename-slot', nargs=2, metavar=('0xNN', 'TEXT'), help='name a slot (stock characters included), one name for English, French and Spanish; it must fit the name plate; a blank TEXT resets the name (read -> rebuild)')
     mode.add_argument('--apply-slots', metavar='FILE', help='write staged slot edits (an edits file with patch/clear/rename edits per slot, as the GUI\'s "Patch Game" writes it) as one chain: read once, at most one roster rebuild, then the slot patches')
     mode.add_argument('--save-roster', metavar='FILE', help='save the whole roster of 3_Output_Dat (grid, names, voices, stats, own model directories, patched models, portraits) into a roster pack (.sluggiesroster)')
@@ -1217,7 +1229,7 @@ def parse_args():
         parser.error('--config and --state cannot be used together.')
     if args.roster and not (args.config or args.remove or args.state):
         parser.error('--roster needs --config PATH (a roster configuration), --state PATH or --remove.')
-    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.copy_slot, args.import_slgmodel, args.export_slot, args.rename_slot, args.set_voice, args.set_char_voice, args.set_species_clip, args.set_stats, args.set_icon, args.apply_slots, args.save_roster, args.load_roster, args.write_slot_blocks, args.write_slot_equipment, args.write_slot_animation, args.write_voice_pack, args.resplit_unused, args.defrag_hammerspace, args.export, args.export_icons, args.export_sounds, args.roster, args.roster_state, args.roster_derive, args.export_autopicker, args.game_options, args.stat_bridge_export, args.apply_stat_edits, args.apply_gameplay, args.save_gameplay]):
+    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.copy_slot, args.import_slgmodel, args.export_slot, args.export_sluggiezip, args.rename_slot, args.set_voice, args.set_char_voice, args.set_species_clip, args.set_stats, args.set_icon, args.apply_slots, args.save_roster, args.load_roster, args.write_slot_blocks, args.write_slot_equipment, args.write_slot_animation, args.write_voice_pack, args.resplit_unused, args.defrag_hammerspace, args.export, args.export_icons, args.export_sounds, args.roster, args.roster_state, args.roster_derive, args.export_autopicker, args.game_options, args.stat_bridge_export, args.apply_stat_edits, args.apply_gameplay, args.save_gameplay]):
         if len(sys.argv) == 1:
             args.gui = True
         else:
@@ -1409,6 +1421,9 @@ def main() -> int:
                 return 1
         elif args.export_slot:
             if not run_export_slot(args.export_slot):
+                return 1
+        elif args.export_sluggiezip:
+            if not run_export_sluggiezip(*args.export_sluggiezip):
                 return 1
         elif args.load_roster:
             if not run_load_roster(args.load_roster, dry_run=args.dry_run):

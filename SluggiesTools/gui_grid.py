@@ -45,6 +45,7 @@ EDITS_REL = os.path.join('_gui', 'slot', 'edits.json')
 PACK_PLAN_REL = os.path.join('_gui', 'pack', 'plan.json')
 SWITCH_PLAN_REL = os.path.join('_gui', 'switch', 'plan.json')
 SLOT_EXPORT_REL = os.path.join('_gui', 'slot_export.json')    # Roster/slot_export.RESULT_FILE
+PACKAGE_EXPORT_REL = os.path.join('_gui', 'sluggiezip_export.json')   # Roster/slot_zip.RESULT_FILE
 PACK_DIR_REL = os.path.join('_gui', 'Roster_Packs')   # where the pack dialogs start
 PACK_EXTENSION = '.sluggiesroster'
 # start.py modes whose commands can change what the grid shows: the tab re-reads after them
@@ -1466,7 +1467,9 @@ class PendingEdits:
 def _edit_title(edit: dict) -> str:
     if edit['op'] == STAT_EDITS:
         size = size_file(edit.get('file'))
-        return f'Pending: size {size[1]:g}x' if size else 'Pending: stat editor value changes'
+        package = package_stat_file(edit.get('file')) if not size else None
+        return (f'Pending: size {size[1]:g}x' if size else f'Pending: stat values from {package}' if package
+                else 'Pending: stat editor value changes')
     if edit['op'] == GAMEPLAY:
         return f'Pending: gameplay settings: {gameplay_item_label(edit.get("file"))}'
     if edit['op'] == GAME_OPTION:
@@ -1562,6 +1565,11 @@ STAT_RESET = 'stat_reset'                     # clears one slot's stat edits (Ro
 COPY_MULTIPLE = 'Cannot copy multiple characters at once'
 COPY_LABEL, PASTE_LABEL = 'Copy', 'Paste'
 EXPORT_LABEL = 'Export as .sluggie'
+EXPORT_PACKAGE_LABEL = 'Export to .sluggiezip'
+PACKAGE = 'package'                           # the confirm dialog of a whole character package (Roster/slot_zip)
+PACKAGE_EXTENSION = '.sluggiezip'             # Roster/slot_zip.EXTENSION
+PACKAGE_FILTERS = [('Character packages', '*.sluggiezip'), ('All files', '*.*')]
+PACKAGE_STAT_ORIGIN = 'sluggiezip'            # Roster/slot_zip.STAT_ORIGIN: a stat edit file made from a package
 
 
 def copy_edit(target: int, source: int) -> dict:
@@ -1573,7 +1581,7 @@ def context_menu(state: dict, members: list, copied: int | None, pack_pending: b
                  locked: bool) -> list[tuple[str, bool, str | None]]:
     """The right-click menu of a grid square or a colour-wheel swatch: ``(label, enabled, why disabled)``. A square
     with several characters gets only a disabled line; one character gets Copy and Paste (Paste needs a copied
-    character other than this one), then Export as .sluggie."""
+    character other than this one), then Export as .sluggie and Export to .sluggiezip."""
     if len(members) != 1:
         return [(COPY_MULTIPLE, False, 'Open the square and right-click one of its characters.')]
     cid = members[0]
@@ -1589,7 +1597,7 @@ def context_menu(state: dict, members: list, copied: int | None, pack_pending: b
     else:
         paste_why = busy or pack
     return [(COPY_LABEL, copy_why is None, copy_why), (PASTE_LABEL, paste_why is None, paste_why),
-            (EXPORT_LABEL, busy is None, busy)]
+            (EXPORT_LABEL, busy is None, busy), (EXPORT_PACKAGE_LABEL, busy is None, busy)]
 
 
 def export_command(cid: int) -> tuple:
@@ -1633,6 +1641,88 @@ def export_pending_dialog(state: dict | None, cid: int, pending: PendingEdits) -
     lines.append(('The export takes the slot as the game holds it now, so they are not in it. To include them, '
                   'Cancel and run "Patch Game" first.', TEXT))
     return SlotDialog(f'Export {who} without its pending edits?', lines, True)
+
+
+def package_name(state: dict | None, cid: int) -> str:
+    """The file name "Export to .sluggiezip" offers: the slot's name as the grid shows it, safe for Windows."""
+    name = ' '.join(re.sub(r'[<>:"/\\|?*\x00-\x1f]', ' ', name_of(state, cid) if state else '').split()).rstrip(' .')
+    return (name or f'Slot {hex_id(cid)}') + PACKAGE_EXTENSION
+
+
+def package_export_command(cid: int, path: str) -> tuple:
+    """Export to .sluggiezip: the slot as the game holds it into one character package."""
+    return ('--export-sluggiezip', hex_id(cid), path)
+
+
+def package_export_result(root_dir: str) -> dict | None:
+    """The last package export's result (``Roster/slot_zip``): ``path`` when it wrote one, ``error`` when it
+    aborted; None when there is none (it crashed before writing it)."""
+    try:
+        with open(os.path.join(root_dir, PACKAGE_EXPORT_REL), 'r', encoding='utf-8') as f:
+            result = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return result if isinstance(result, dict) else None
+
+
+def package_export_failed_dialog(state: dict | None, cid: int, result: dict | None) -> 'SlotDialog':
+    """Shown when "Export to .sluggiezip" wrote nothing: why it aborted."""
+    who = f'{name_of(state, cid) if state else hex_id(cid)} ({hex_id(cid)})'
+    error = (result or {}).get('error')
+    return SlotDialog('Export aborted', [
+        (f'{who} was not exported; nothing was written.', ERROR),
+        (f'Reason: {error}' if error else 'Reason: see the log for details.', WARN if error else TEXT)])
+
+
+def staged_package_files(pending: 'PendingEdits') -> set[str]:
+    """Every file the pending edits name (an extracted package stays while any of them points into it)."""
+    return {e[key] for e in pending.edits for key in ('file', 'low', 'sluggie', 'anm')
+            if isinstance(e.get(key), str)}
+
+
+def package_dialog(state: dict, cid: int, path: str, plan: dict | None, code: int, output: str,
+                   skipped: list[str]) -> 'SlotDialog':
+    """The confirm dialog of a character package (``Roster/slot_zip.stage``), after its staging check: each staged
+    aspect's lines, the aspects left out (``skipped``: not in the package, or the slot cannot take them, plus what
+    the slot holds already) and the verdict. ``can_apply`` only when the planner and the build checks passed."""
+    target = f'{name_of(state, cid)} ({hex_id(cid)})'
+    dialog = SlotDialog(f'Load {os.path.basename(path)} into {target}?')
+    lines = dialog.lines
+    lines.append((f'Package: {os.path.basename(path)} -> {target}', TEXT))
+    error = error_message(output)
+    if plan is None or plan['refused']:
+        dialog.title = f'{target}: refused'
+        if plan is None:
+            error = error.removeprefix('refused, nothing written: ')
+            lines.append((f'Refused: {error or f"the planner failed (exit code {code})"}', ERROR))
+        else:
+            lines += _refused_lines(state, plan, cid)
+        lines.append(('Nothing was staged: one refused aspect refuses the whole package.', TEXT))
+        return dialog
+    sizes = build_sizes(output)
+    new = [s for s in plan['edits'] if not s.get('checked')]
+    for section in new:
+        title = _edit_title(section['edit']).removeprefix('Pending: ')
+        lines.append((title[:1].upper() + title[1:], OK))
+        lines += [('    ' + text, kind) for text, kind in _section_lines(state, section, sizes)]
+    same = [s for s in plan['skipped'] if not s.get('checked')]
+    for section in same:
+        lines += [(f'Unchanged: {note}', TEXT) for note in section.get('notes') or []]
+    lines += [(f'Skipped: {text}', WARN) for text in skipped]
+    prefix = f'{hex_id(cid)}: '
+    lines += [(f'- {note.removeprefix(prefix)}', TEXT) for note in plan['notes'] if note.startswith(prefix)]
+    if code != 0:
+        lines.append((f'Build check failed: {error or f"exit code {code}"}. Nothing was staged.', ERROR))
+        return dialog
+    if not new:
+        dialog.title = f'{target}: nothing to change'
+        lines.append(('The slot holds everything in the package already.', TEXT))
+        return dialog
+    lines.append((f'Checks passed: slot rules, and every model built and validated. Nothing written yet: Stage adds '
+                  f'the {len(new)} edit{"s" if len(new) != 1 else ""} to the pending list, "Patch Game" writes them.',
+                  OK))
+    dialog.can_apply = True
+    return dialog
 
 
 def stat_reset_edit(cid: int) -> dict:
@@ -2342,6 +2432,29 @@ def staged_stat_files(pending: 'PendingEdits') -> list[str]:
 
 
 _STAT_IDS: dict[tuple[str, float], frozenset[int]] = {}
+
+
+_PACKAGE_FILES: dict[tuple[str, float], str | None] = {}
+
+
+def package_stat_file(path: str | None) -> str | None:
+    """The package a stat edit file was made from (``Roster/slot_zip.stat_doc``), None for any other stat edit
+    file. Cached per path and modification time, like ``size_file``."""
+    try:
+        key = (os.path.normcase(os.path.abspath(path)), os.path.getmtime(path))
+    except (OSError, TypeError, ValueError):
+        return None
+    if key not in _PACKAGE_FILES:
+        found = None
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                doc = json.load(f)
+            if isinstance(doc, dict) and doc.get('origin') == PACKAGE_STAT_ORIGIN:
+                found = str(doc.get('package') or 'a package')
+        except (OSError, ValueError, AttributeError, TypeError):
+            found = None
+        _PACKAGE_FILES[key] = found
+    return _PACKAGE_FILES[key]
 
 
 def stat_file_ids(path: str | None) -> frozenset[int]:

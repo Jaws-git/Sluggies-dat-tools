@@ -480,12 +480,12 @@ class SluggiesGui:
             self._files_done(None, *pick[:2], [p for p in paths or () if p], None)
 
     def pick_files(self, fallback_tag, title, filters, on_files, on_cancel=None, multi=False, initial_dir=None,
-                   save=False, default_ext=None, remember=None):
+                   save=False, default_ext=None, remember=None, default_name=None):
         """Ask for files: the Windows "Open" dialog (``save``: "Save As") when available (``native_dialog``),
         else the built-in dialog ``fallback_tag`` (``add_file_dialog``). ``on_files(paths)`` (never empty) /
         ``on_cancel()`` run on the GUI thread. It starts in the folder the last pick came from (GUI settings key
-        ``remember``, updated by each pick), else in ``initial_dir``, else in 2_Output_Assets. False when a native
-        dialog is already open."""
+        ``remember``, updated by each pick), else in ``initial_dir``, else in 2_Output_Assets. ``default_name``: the
+        file name filled in. False when a native dialog is already open."""
         if self.picking:
             return False
         initial = self.start_dir(self.settings.get(remember) if remember else None, initial_dir)
@@ -494,7 +494,7 @@ class SluggiesGui:
                 self.remember_dir(remember, paths[0])
                 _on_files(paths)
         if not native_dialog.enabled():
-            self._show_fallback(fallback_tag, initial, save, on_files, on_cancel)
+            self._show_fallback(fallback_tag, initial, save, on_files, on_cancel, default_name)
             return True
         self.picking = True
         owner = native_dialog.find_owner_window(_VIEWPORT_TITLE)
@@ -502,25 +502,28 @@ class SluggiesGui:
         def work():
             try:
                 result, error = native_dialog.ask_open_files(title, initial, filters, multi, owner, save,
-                                                             default_ext), None
+                                                             default_ext, default_name), None
             except Exception as exc:          # any failure: the built-in dialog takes over
                 result, error = None, str(exc)
-            self.output_queue.put(('files', (fallback_tag, initial, save), on_files, on_cancel, result, error))
+            self.output_queue.put(('files', (fallback_tag, initial, save, default_name), on_files, on_cancel, result,
+                                   error))
         threading.Thread(target=work, daemon=True).start()
         return True
 
-    def _show_fallback(self, tag, initial, save, on_files, on_cancel):
+    def _show_fallback(self, tag, initial, save, on_files, on_cancel, default_name=None):
         self.fallback_pick = (on_files, on_cancel, save)
         dpg.configure_item(tag, default_path=initial)
+        if default_name:
+            dpg.configure_item(tag, default_filename=os.path.splitext(default_name)[0])
         dpg.show_item(tag)
 
     def _files_done(self, fallback, on_files, on_cancel, result, error):
-        """A pick's result: ``fallback`` is (built-in dialog tag, start folder, save) to try when the native dialog
-        failed (``error``)."""
+        """A pick's result: ``fallback`` is (built-in dialog tag, start folder, save, default name) to try when the
+        native dialog failed (``error``)."""
         self.picking = False
         if error is not None:
             self._log_line(f'Windows file dialog failed ({error}); using the built-in one.', _PROMPT_COLOR)
-            self._show_fallback(*fallback, on_files, on_cancel)
+            self._show_fallback(*fallback[:3], on_files, on_cancel, *fallback[3:])
         elif result:
             on_files(result)
         elif on_cancel is not None:

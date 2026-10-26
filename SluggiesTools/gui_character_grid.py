@@ -93,6 +93,12 @@ away (it only reads the game): the slot as the game holds it becomes a
 ``2_Output_Assets/Custom <name> NN`` folder of ``.sluggie`` + ``.glb``
 files (``Roster/slot_export.py``);
 pending edits of the slot are not in it (asks first).
+**Export to .sluggiezip** (below it) asks where to save, then runs ``start.py --export-sluggiezip``: the slot as
+the game holds it (models, bats and gloves, animations, portraits, name, stats, own voice) becomes one character
+package (``Roster/slot_zip.py``). The slot level's **Import .sluggiezip package** (light blue, above Import .slgmodel...)
+picks one, extracts it (``slot_zip.stage``) and stages every aspect it holds onto the slot in one staging check;
+the confirm dialog (``gui_grid.package_dialog``) lists the staged aspects and the skipped ones (missing from the
+package, or not for this slot). A voice pack the load created is removed again when it is not staged.
 One shared popup window and one shared right-click handler serve every
 portrait button (``dpg.popup`` would leave a window and a handler registry
 behind on every redraw).
@@ -143,6 +149,8 @@ STATS, VOICE = 'Adopt stats...', 'Voice...'
 ANIM = 'Replace animation...'       # on the row below, under Adopt stats...
 SIZE = 'Set size...'                # the row below's first column, under Rename...
 ANIM_DIR_SETTING = 'grid_last_anim_dir'   # the GUI settings key: the folder the last .anm came from
+LOAD_PACKAGE = 'Import .sluggiezip package...'   # above Import .slgmodel...: every aspect of a package at once
+PACKAGE_DIR_SETTING = 'grid_last_package_dir'    # the GUI settings key: the folder the last package was saved / loaded in
 SLUGGIE_DIR_SETTING = 'grid_last_sluggie_dir'   # the GUI settings key: the folder the last slot/equipment .sluggie came from
 IMAGE_DIR_SETTING = 'grid_last_image_dir'       # the GUI settings key: the folder the last portrait image came from
 PACK_DIR_SETTING = 'grid_last_pack_dir'         # the GUI settings key: the folder the last roster pack was loaded / saved in
@@ -212,6 +220,7 @@ class CharacterGridTab:
         self._menu_targets = {}            # portrait button -> the square's members, for the right-click menu
         self.on_pending_changed = []       # callbacks other tabs register (the Voices tab shows pending clips)
         self.on_state_read = []            # callbacks run after every successful read
+        self._package = None               # (path, slot_zip.Staged) of the package being checked, until staged / closed
 
     # ------------------------------------------------------------------ build
     def build(self):
@@ -346,10 +355,25 @@ class CharacterGridTab:
                     for col, value in colors:
                         dpg.add_theme_color(col, value)
                     dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 4)
+        with dpg.theme(tag='grid_light_blue_theme'):         # whole-character files: .sluggiezip and .slgmodel
+            for state, colors in (
+                (True, ((dpg.mvThemeCol_Button, (110, 180, 235, 255)),
+                        (dpg.mvThemeCol_ButtonHovered, (140, 200, 245, 255)),
+                        (dpg.mvThemeCol_ButtonActive, (85, 155, 215, 255)),
+                        (dpg.mvThemeCol_Text, (20, 28, 38, 255)))),
+                (False, ((dpg.mvThemeCol_Button, (66, 76, 88, 255)),
+                         (dpg.mvThemeCol_Text, (150, 150, 150, 255)))),
+            ):
+                with dpg.theme_component(dpg.mvButton, enabled_state=state):
+                    for col, value in colors:
+                        dpg.add_theme_color(col, value)
+                    dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 4)
         dpg.add_texture_registry(tag='grid_textures')
         self.app.add_file_dialog('grid_sluggie_dialog', ('.sluggie',))
         self.app.add_file_dialog('grid_image_dialog', ('Images{' + ','.join(gui_grid.IMAGE_EXTENSIONS) + '}', '.*'))
         self.app.add_file_dialog('grid_anim_dialog', ('.anm', '.*'))
+        for tag in ('grid_package_save_dialog', 'grid_package_load_dialog'):
+            self.app.add_file_dialog(tag, (gui_grid.PACKAGE_EXTENSION, '.*'))
         dpg.add_texture_registry(tag='grid_dialog_textures')    # the icon dialog's; released when it closes
         for tag in ('grid_pack_save_dialog', 'grid_pack_load_dialog'):
             self.app.add_file_dialog(tag, (gui_grid.PACK_EXTENSION,), color=(120, 180, 255, 255),
@@ -1152,8 +1176,9 @@ class CharacterGridTab:
         side_row_w = 7 * len(side_label) + GAP + 7 * len(gui_grid.SET_ALT_TEXT)
         left_w = (PORTRAIT[0] + 2 * FRAME + GAP) + max(PORTRAIT[0] + 2 * FRAME, side_row_w) + GAP
         text_w = SLOT_W - 2 * PAD - left_w - GAP
-        # left column: the portraits, then Select .sluggie... / Select lowpoly (L_) .sluggie... below them
-        left = PORTRAIT[1] + 2 * FRAME + LINE + GAP + 3 * BUTTON_H + 6 * TEXT_SPACING_Y
+        # left column: the portraits, then Select .sluggie... / Select lowpoly (L_) .sluggie... below them, then
+        # Import .sluggiezip package / Import .slgmodel...
+        left = PORTRAIT[1] + 2 * FRAME + LINE + GAP + 4 * BUTTON_H + 8 * TEXT_SPACING_Y
         body = max(left, sum(_text_height(line, text_w) + TEXT_SPACING_Y for line, _c in details))
         tiles = gui_grid.equipment_tiles(state, cid, self.pending)
         # title + separator, body, spacer, Equipment row, the two button rows and the busy line (item spacing 2 px)
@@ -1205,9 +1230,21 @@ class CharacterGridTab:
                 with dpg.tooltip(select):
                     dpg.add_text(tip if usable else busy_tip, wrap=420)
             dpg.add_spacer(height=GAP)
+            package_button = dpg.add_button(label=LOAD_PACKAGE, width=SELECT_W, height=BUTTON_H,
+                                            callback=lambda *_: self._on_load_package(cid),
+                                            enabled=not self._locked() and usable)
+            dpg.bind_item_theme(package_button, 'grid_light_blue_theme')
+            self.slot_buttons.append((package_button, usable))
+            with dpg.tooltip(package_button):
+                dpg.add_text('Stage every aspect of a character package (.sluggiezip, right-click a character, '
+                             '"Export to .sluggiezip") for this slot at once: models, changed bats, gloves and '
+                             'animations, portraits, name, stats and voice. An aspect the package does not hold is '
+                             'skipped; a confirm dialog lists both first. "Patch Game" writes the pending edits.'
+                             if usable else busy_tip, wrap=420)
             import_button = dpg.add_button(label=IMPORT_SLG, width=SELECT_W, height=BUTTON_H,
                                            callback=lambda *_: self._on_import_slgmodel(cid),
                                            enabled=not self._locked() and usable)
+            dpg.bind_item_theme(import_button, 'grid_light_blue_theme')
             self.slot_buttons.append((import_button, usable))
             with dpg.tooltip(import_button):
                 dpg.add_text('Stage a character file of the Sluggers Characters patcher (.slgmodel: finished '
@@ -1888,6 +1925,13 @@ class CharacterGridTab:
                       anm=None):
         state = self.nav.state or self.loader.state
         plan = gui_grid.load_plan(self.plan_path)
+        if kind == gui_grid.PACKAGE:
+            path, staged = self._package
+            dialog = gui_grid.with_memory_warning(
+                gui_grid.package_dialog(state, cid, path, plan, code, output, staged.skipped),
+                memory_guard.read_details(self.app.root_dir), only=gui_grid.new_targets(plan))
+            self._dialog(dialog, lambda: self._stage_package(plan), ok_label='Stage')
+            return
         dialog = gui_grid.with_memory_warning(
             gui_grid.slot_dialog(state, cid, sluggie is not None, plan, code, output, self.pending, kind=kind,
                                  view=view, gear_file=gear_file, moment=moment, anm=anm),
@@ -1918,7 +1962,8 @@ class CharacterGridTab:
         dpg.delete_item('grid_context', children_only=True)
         actions = {gui_grid.COPY_LABEL: lambda: self._on_copy(members[0]),
                    gui_grid.PASTE_LABEL: lambda: self._on_paste(members[0]),
-                   gui_grid.EXPORT_LABEL: lambda: self._on_export(members[0])}
+                   gui_grid.EXPORT_LABEL: lambda: self._on_export(members[0]),
+                   gui_grid.EXPORT_PACKAGE_LABEL: lambda: self._on_export_package(members[0])}
         entries = gui_grid.context_menu(state, members, self.copied, self.pending.pack is not None, self._locked())
         sizes = [dpg.get_text_size(label) for label, _enabled, _why in entries]
         width = max((s[0] for s in sizes if s), default=0)
@@ -1976,6 +2021,107 @@ class CharacterGridTab:
             self._end_action()
             self.app.toast.ok(toast)
         self._run([gui_grid.export_command(cid)], f'Exporting {who}...', done)
+
+    # ------------------------------------------------------------------ character packages (.sluggiezip)
+    def _on_export_package(self, cid):
+        """Export to .sluggiezip: with pending edits on the slot ask first (they are not in the game yet), then the
+        Save As dialog."""
+        if self._locked():
+            return
+        if self.pending.has(cid):
+            self.action = 'ask'
+            self._dialog(gui_grid.export_pending_dialog(self.loader.state, cid, self.pending),
+                         lambda: (self._end_action(), self._pick_package_save(cid)), ok_label='Export without them')
+            return
+        self._pick_package_save(cid)
+
+    def _pick_package_save(self, cid):
+        self.action = (cid, gui_grid.PACKAGE)
+        self.set_busy(self.app.busy)
+        if not self.app.pick_files('grid_package_save_dialog', 'Export the character as',
+                                   gui_grid.PACKAGE_FILTERS, lambda paths: self._on_package_save_paths(cid, paths),
+                                   on_cancel=self._end_action, save=True,
+                                   default_ext=gui_grid.PACKAGE_EXTENSION.lstrip('.'), remember=PACKAGE_DIR_SETTING,
+                                   default_name=gui_grid.package_name(self.loader.state, cid)):
+            self._end_action()
+
+    def _on_package_save_paths(self, cid, paths):
+        path = paths[0] if paths else None
+        self._end_action()
+        if not path:
+            return
+        if not path.lower().endswith(gui_grid.PACKAGE_EXTENSION):
+            path += gui_grid.PACKAGE_EXTENSION
+        who = f'{gui_grid.name_of(self.loader.state, cid)} ({gui_grid.hex_id(cid)})'
+
+        def done(code, _output):
+            result = gui_grid.package_export_result(self.app.root_dir)
+            written = (result or {}).get('path') if code == 0 else None
+            if not written or not os.path.isfile(written):
+                self.app.log_line(f'[character grid] {who} was not exported: see the log above.', _WARN)
+                self.action = 'ask'
+                self._dialog(gui_grid.package_export_failed_dialog(self.loader.state, cid, result), self._end_action)
+                return
+            self.app.log_line(f'[character grid] {who} exported to {written}', _OK)
+            self.app.toast.ok(f'{os.path.basename(written)} has been created')
+        self._run([gui_grid.package_export_command(cid, path)], f'Exporting {who}...', done)
+
+    def _on_load_package(self, cid):
+        """Import .sluggiezip package...: pick a package; every aspect it holds is staged for the slot at once."""
+        if self._locked() or self.pending.pack is not None:
+            return
+        self.action = (cid, gui_grid.PACKAGE)
+        self.set_busy(False)
+        if not self.app.pick_files('grid_package_load_dialog', 'Select a character package (.sluggiezip) for this slot',
+                                   gui_grid.PACKAGE_FILTERS, self._on_package_paths, on_cancel=self._end_action,
+                                   remember=PACKAGE_DIR_SETTING):
+            self._end_action()
+
+    def _on_package_paths(self, paths):
+        cid = self.action[0] if isinstance(self.action, tuple) and self.action[1:] == (gui_grid.PACKAGE,) else None
+        path = next((p for p in paths if p and os.path.isfile(p)), None)
+        if cid is None or path is None:
+            self.app.log_line(f'[character grid] no character package chosen: {(paths or [None])[0] or "(none)"}', _WARN)
+            self._end_action()
+            return
+        self.action = None
+        from Roster import slot_zip
+        root = self.app.root_dir
+        slot_zip.prune(os.path.join(root, slot_zip.STAGED_REL), gui_grid.staged_package_files(self.pending))
+        font = os.path.join(root, FONT_REL)
+        try:
+            staged = slot_zip.stage(path, cid, self.nav.state or self.loader.state, root,
+                                    name_problem=lambda text: gui_grid.name_problem(text, font),
+                                    can_portrait=gui_grid.can_replace_portrait)
+        except (slot_zip.PackageError, OSError) as exc:
+            self.app.log_line(f'[character grid] {os.path.basename(path)} was not loaded: {exc}', _WARN)
+            self.action = 'ask'
+            self._dialog(gui_grid.SlotDialog('Package not loaded', [(str(exc), gui_grid.ERROR),
+                                                                    ('Nothing was staged.', gui_grid.TEXT)]),
+                         self._end_action)
+            return
+        self._package = (path, staged)
+        if not staged.edits:
+            self.action = 'ask'
+            self._dialog(gui_grid.SlotDialog(f'{os.path.basename(path)}: nothing to stage',
+                                             [(f'Skipped: {text}', gui_grid.WARN) for text in staged.skipped]),
+                         self._end_action)
+            return
+        self._check_and_confirm(cid, staged.edits, gui_grid.PACKAGE)
+
+    def package_stat_files(self) -> list[str]:
+        """The stat edit file of the package being checked (the Stat Editor tab keeps it until it is staged)."""
+        if self._package is None:
+            return []
+        return [e['file'] for e in self._package[1].edits if e['op'] == gui_grid.STAT_EDITS]
+
+    def _stage_package(self, plan):
+        """Stage on a package's confirm dialog: its voice pack (if it made one) stays."""
+        path = self._package[0] if self._package else None
+        self._package = None
+        self._stage(plan)
+        if path:
+            self.app.log_line(f'[character grid] {os.path.basename(path)} staged; "Patch Game" writes it.', _PENDING)
 
     def forget_copy(self):
         """Drop the copied character (a tab switch does this)."""
@@ -2739,6 +2885,10 @@ class CharacterGridTab:
             dpg.delete_item('grid_dialog_textures', children_only=True)
         self.confirm, self.confirm_default, self.action = None, None, None
         self.stat_offer = None
+        if self._package is not None:          # a package closed without Stage: the voice pack it made goes again
+            from Roster import slot_zip
+            slot_zip.remove_pack(self.app.root_dir, self._package[1].created_pack)
+            self._package = None
         self.set_busy(self.app.busy)
 
     def _prune_staged_icons(self):

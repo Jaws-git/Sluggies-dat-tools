@@ -826,7 +826,8 @@ def _set_surface_material_metadata(mat, ds_entry):
     shader_description = (
         "Editable Type-7 shader mode. Known names: Spec=specular  "
         "Shdw=no-specular  SpRf=specular-reflection  "
-        "RhSp/LhSp=right/left-hand-specular  GhSp=ghost."
+        "RhSp/LhSp=right/left-hand-specular  GhSp=ghost. "
+        "Edit via the 'Manage Materials' panel button."
         if display_state_id == 7 else
         f"Raw Type-{display_state_id} GX state setting. Exposed for "
         "surface comparison; only Type-7 shader-mode edits are exported."
@@ -846,7 +847,7 @@ def _set_surface_material_metadata(mat, ds_entry):
             min=0, max=255, soft_min=0, soft_max=255,
             description="Specular highlight intensity (0-255, linear TEV multiplier). "
             "Confirmed in-game for 'Spec'/'LhSp'/'RhSp' shader modes. "
-            "Edit via the 'Manage specular strength' panel button.")
+            "Edit via the 'Manage Materials' panel button.")
 
 
 @lru_cache(maxsize=None)
@@ -1328,6 +1329,38 @@ def assign_bone_collections(arm_obj):
             arm_data.collections[role].assign(arm_data.bones[bone_name])
 
 
+def add_rest_pose_action(arm_obj):
+    """A one-frame action keying every bone at its rest pose, made the
+    armature's active action, so the Action Editor can switch back to rest
+    after .anm imports. An empty action would not reset the pose: assigning
+    it leaves bones where the previous action put them. It has no
+    SluggiesAnmGroup, so the .anm export ignores it."""
+    action = bpy.data.actions.new(name=f"{arm_obj.name}_RestPose")
+    action.use_fake_user = True
+    action['SluggiesRestPose'] = True
+    if arm_obj.animation_data is None:
+        arm_obj.animation_data_create()
+    arm_obj.animation_data.action = action
+
+    def _key(data_path, values, group):
+        for i, value in enumerate(values):
+            # Blender 4.4+ (slotted actions) creates F-curves through the data-block.
+            if hasattr(action, 'fcurve_ensure_for_datablock'):
+                fc = action.fcurve_ensure_for_datablock(arm_obj, data_path, index=i, group_name=group)
+            else:
+                fc = action.fcurves.new(data_path, index=i, action_group=group)
+            fc.keyframe_points.insert(0, value, options={'FAST'})
+            fc.update()
+
+    for pose_bone in arm_obj.pose.bones:
+        pose_bone.rotation_mode = 'QUATERNION'
+        path = f'pose.bones["{bpy.utils.escape_identifier(pose_bone.name)}"]'
+        _key(f'{path}.location', (0.0, 0.0, 0.0), pose_bone.name)
+        _key(f'{path}.rotation_quaternion', (1.0, 0.0, 0.0, 0.0), pose_bone.name)
+        _key(f'{path}.scale', (1.0, 1.0, 1.0), pose_bone.name)
+    return action
+
+
 def _apply_import_rotation(obj):
     obj.matrix_world = obj.matrix_world @ mathutils.Matrix.Rotation(math.pi / 2, 4, 'X')
 
@@ -1689,6 +1722,7 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
             # submeshes and body weights have them again.
             add_imported_added_bones(arm_obj, CustomSubmeshImport.added_bone_entries(model))
             assign_bone_collections(arm_obj)
+            add_rest_pose_action(arm_obj)
 
         imported = 0
         for i, submesh in enumerate(submeshes):

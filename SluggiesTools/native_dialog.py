@@ -132,11 +132,11 @@ def room_below(hwnd):
 
 
 def ask_open_files(title: str, initial_dir: str, filters, multi: bool = False, owner=None,
-                   save: bool = False, default_ext: str | None = None):
+                   save: bool = False, default_ext: str | None = None, default_name: str | None = None):
     """Show the dialog. Returns the chosen paths (a list, one entry unless ``multi``), or None when
     the user cancels. Raises NativeDialogError when the dialog cannot be shown. ``save``: the "Save As"
     dialog instead (the file need not exist, overwriting asks first; ``default_ext`` without the dot is
-    appended to a name typed without one)."""
+    appended to a name typed without one). ``default_name``: the file name filled in."""
     try:
         comdlg32 = ctypes.WinDLL('comdlg32')
         ole32 = ctypes.WinDLL('ole32')
@@ -146,7 +146,7 @@ def ask_open_files(title: str, initial_dir: str, filters, multi: bool = False, o
     initialized = ole32.CoInitializeEx(None, 0x2) in (0, 1)       # COINIT_APARTMENTTHREADED; S_OK / S_FALSE
     try:
         filter_buffer = ctypes.create_unicode_buffer(filter_string(filters))
-        file_buffer = ctypes.create_unicode_buffer(_BUFFER_CHARS)
+        file_buffer = ctypes.create_unicode_buffer(default_name or '', _BUFFER_CHARS)
         ofn = _OPENFILENAMEW()
         ofn.lStructSize = ctypes.sizeof(ofn)
         ofn.hwndOwner = owner

@@ -26,6 +26,25 @@ HAND_VISIBILITY_ROLES = frozenset({"RhSp", "LhSp", "SpRf", "GhSp"})
 # draws with any other mode gets no SpecularStrength property.
 SPECULAR_SHADER_MODES = frozenset({"Spec", "LhSp", "RhSp", "GhSp"})
 
+# Tooltip of each Type-7 shader mode in the Manage Materials and Convert
+# Materials drop-downs.
+SHADER_MODE_DESCRIPTIONS = {
+    "Spec": "Specular: a sphere-map highlight scaled by the specular strength. "
+            "The usual character mode",
+    "RhSp": "Right-hand specular: like Spec, but parts with vertex alpha 0 are "
+            "hidden while the right hand wears the mitt",
+    "LhSp": "Left-hand specular: like Spec, but parts with vertex alpha 0 are "
+            "hidden while the left hand wears the mitt",
+    "GhSp": "Ghost specular: shaped like the hand modes. Vanilla only on Birdo's "
+            "ring and diamond; drew invisible as a new surface on Wario's cap",
+    "SpRf": "Specular plus reflection. Rare (11 vanilla surfaces); its other "
+            "parameter bytes are not decoded",
+    "Shdw": "Unlit, no specular. Stadium and map objects only: crashes and draws "
+            "black on characters",
+    "Audi": "Unlit stadium shader (15 vanilla surfaces), not decoded",
+    "Oeka": "Unlit shader (1 vanilla surface), not decoded",
+}
+
 # Mirrors HammerspaceMain.STADIUM_CHUNKS (= export.STADIUM_DIR_INDICES): the
 # .sluggie ChunkNumber of the stadium models, 7 Mario Stadium ... 16 Toy
 # Field. In a stadium a custom submesh must hang on a root bone (Dolphin,

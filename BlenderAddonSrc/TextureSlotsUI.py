@@ -219,7 +219,7 @@ class SLUGGIES_OT_manage_texture_slots(bpy.types.Operator):
                 item.original_index = current
                 item.original_image = node.image.name if node.image else ''
                 item.texture_index = current
-        return context.window_manager.invoke_props_dialog(self, width=690)
+        return context.window_manager.invoke_props_dialog(self, width=740)
 
     def _slot_name(self, index):
         for slot in self.slots:

@@ -18,14 +18,14 @@ from . import AnmExport
 from . import SluggiesToolsPanel
 from . import ModelCheckUI
 from . import TextureSlotsUI
-from . import SpecularStrengthUI
+from . import MaterialsUI
 
 bl_info = {
     "name": "Sluggies IO",
     "author": "JawSFM",
     "description": "Import/Export Sluggers intermediate JSON files (Mario Super Sluggers - Wii)",
     "blender": (4, 2, 0),
-    "version": (0, 8, 8),
+    "version": (0, 9, 0),
     "location": "File > Import/Export > Sluggers intermediate (.sluggie)",
     "warning": "",
     "category": "Import-Export",
@@ -40,11 +40,11 @@ def register():
     SluggiesToolsPanel.register()
     ModelCheckUI.register()
     TextureSlotsUI.register()
-    SpecularStrengthUI.register()
+    MaterialsUI.register()
 
 
 def unregister():
-    SpecularStrengthUI.unregister()
+    MaterialsUI.unregister()
     TextureSlotsUI.unregister()
     ModelCheckUI.unregister()
     SluggiesToolsPanel.unregister()

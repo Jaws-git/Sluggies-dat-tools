@@ -432,7 +432,60 @@ python start.py --export-slot 0x00
   goes through Hammerspace, also after Blender exports it (add-on 0.8.4 or
   newer). Files are larger than a regular export (the block rides along).
 - **Not in it:** pending edits of the slot (it asks first; patch them first
-  to include them), the name, stats and voice. Pasting (above) moves those.
+  to include them), the name, stats and voice. Pasting (above) moves those;
+  a character package (below) carries them to another game.
+
+## Character packages (`.sluggiezip`)
+
+A character package holds **every aspect** of one slot in one file, so a
+whole character can be passed around and staged in one go.
+
+**Export:** right-click a character in the **Character grid** tab and choose
+**Export to .sluggiezip** (below Export as .sluggie), then pick where to save
+it (the character's name is filled in):
+
+```
+python start.py --export-sluggiezip 0x66 "Fire Mario.sluggiezip"
+```
+
+The package is a zip (`manifest.json` lists what it holds) with:
+
+- the slot export described above (`files/`): High and Low model, bats and
+  gloves, every animation bank, the front and side portraits;
+- the name;
+- `stats.json`: every stat value the slot plays with (stats, pitching,
+  fielding, size) and its chemistry, plus the stock player its stats come
+  from;
+- the voice: the stock voice it speaks with, and its custom clips as a voice
+  pack (`voice.sluggiesvoice`) when it has any.
+
+As with Export as .sluggie, the game is read as it is now: pending edits of
+the slot are not in it (it asks first).
+
+**Load:** open a slot and press **Import .sluggiezip package** (light
+blue, above Import .slgmodel...). Every aspect the package holds is staged for that
+slot at once, with one check and one confirm dialog listing what is staged,
+what the slot holds already and what is skipped:
+
+- **Skipped aspects:** an aspect whose file is missing from the package
+  (remove files from the zip to leave aspects out), a name that does not fit
+  the name plate, portraits on a Mii slot, an own voice without
+  `1_Input/sound_NA/MY2.brsar`. The rest is staged.
+- **Bats, gloves and animations:** only the ones the exported slot had
+  changed; the unchanged ones are the base model's, which the slot gets
+  anyway.
+- **Stats:** the values are written as a stat edit file for the target slot
+  (green border like the Stat Editor's), made for the current
+  `3_Output_Dat/main.dol`. Chemistry is set in the target's row towards stock
+  characters; chemistry with new IDs is left out (they differ per roster).
+- **Voice:** custom clips become a voice pack in `_gui/Sound_Packs` (a pack
+  with the same name and clips is reused, another one keeps its name and the
+  package's gets `Name 2`). It is removed again when you do not stage the
+  package.
+- **All or nothing:** one refused aspect refuses the package (for example a
+  model whose skeleton does not fit a stock slot: put it on a new ID). Once
+  staged, each aspect is an ordinary pending edit; "Discard pending" drops
+  them, "Patch Game" writes them.
 
 ## Several changes at once
 

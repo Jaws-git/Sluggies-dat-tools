@@ -297,9 +297,10 @@ def read_slot(cid: int, dat_handle, output_dir: str = state_cli.OUTPUT_DIR):
 
 
 def write_export(cid: int, char: dict, entries: list[Entry], portraits: dict, models_dir: str = MODELS_DIR,
-                 today: str | None = None) -> str:
+                 today: str | None = None, record: dict | None = None) -> str:
     """Write the export folder; returns its path. Written into a hidden folder first and renamed at the end, so a
-    failure leaves nothing half-written."""
+    failure leaves nothing half-written. ``record`` (``slot_zip``): filled with what was written, as paths relative
+    to the folder: ``{file index: [.sluggie or .anm paths], 'portraits': {view: PNG path}}``."""
     export = _exporter()
     character = character_name(char)
     names = [m.name for e in entries for m in e.models]
@@ -319,6 +320,10 @@ def write_export(cid: int, char: dict, entries: list[Entry], portraits: dict, mo
             export.set_log_dir_index(e.chunk)
             if e.is_anm:
                 e.entry.child.dumpRaw(work, e.file_index, character)
+                if record is not None:
+                    import anm
+                    record.setdefault(e.file_index, []).append(
+                        os.path.join('anm', anm.anm_file_name(e.file_index, character) + '.anm'))
                 continue
             e.entry.child.toFile(work + os.sep, export_tex=True, export_glb=True)
             for model in e.models:
@@ -330,11 +335,15 @@ def write_export(cid: int, char: dict, entries: list[Entry], portraits: dict, mo
                 glb = os.path.join(model_folder, model.name + '.glb')
                 if os.path.isfile(glb):
                     os.replace(glb, os.path.join(model_folder, glb_name(model.name, export_tag)))
-                export.write_model_document(document(model, e.chunk, e.file_index, e.base, e.data, meta),
-                                            os.path.join(model_folder, sluggie_name(model.name, export_tag)))
+                sluggie = os.path.join(model_folder, sluggie_name(model.name, export_tag))
+                export.write_model_document(document(model, e.chunk, e.file_index, e.base, e.data, meta), sluggie)
+                if record is not None:
+                    record.setdefault(e.file_index, []).append(os.path.relpath(sluggie, work))
                 if e.file_index == 0 and high_folder is None:
                     high_folder = model_folder
-        _write_portraits(high_folder, portraits)
+        written = _write_portraits(high_folder, portraits)
+        if record is not None:
+            record['portraits'] = {view: os.path.relpath(path, work) for view, path in written.items()}
         os.rename(work, folder)
     except BaseException:
         shutil.rmtree(work, ignore_errors=True)
@@ -354,17 +363,21 @@ def _check_textures(model, model_folder: str) -> None:
         raise SlotExportError(f'{model.name}: texture export failed for {", ".join(missing)} (is wimgt installed?)')
 
 
-def _write_portraits(high_folder: str | None, portraits: dict) -> None:
+def _write_portraits(high_folder: str | None, portraits: dict) -> dict:
+    """``{view: path}`` of the portraits written (none when one is unreadable)."""
     if high_folder is None:
-        return
+        return {}
     missing = [view for view, image in portraits.items() if image is None]
     if missing:
         slogger.warning(f'portraits not written ({", ".join(missing)} unreadable)', source=SOURCE)
-        return
+        return {}
     icon_dir = os.path.join(high_folder, model_icons.ICON_SUBDIR)
     os.makedirs(icon_dir, exist_ok=True)
+    written = {}
     for view, image in portraits.items():
-        image.save(os.path.join(icon_dir, model_icons.FILES[view]))
+        written[view] = os.path.join(icon_dir, model_icons.FILES[view])
+        image.save(written[view])
+    return written
 
 
 def result_path(output_dir: str = state_cli.OUTPUT_DIR) -> str:

@@ -46,6 +46,10 @@ DONOR_MATERIAL_PROPS = ("SurfaceId", "TextureIndex", "WrapS", "WrapT", "DisplayS
 NEW_SURFACE_PROPS = ("SurfaceId", "SluggiesSurfaceOwner", "TemplateSource", "TemplateTextureIndex",
                      "WrapS", "WrapT")
 
+# Marks a main body that Join or Replace meshes set aside (`<name>.backup`):
+# in no model, and no stray mesh either.
+BACKUP_PROP = "SluggiesBackup"
+
 DEFAULT_TEMPLATE = "builtin:rigid_spec_v1"
 DEFAULT_STADIUM_TEMPLATE = "builtin:stadium_shdw_opaque_v1"
 

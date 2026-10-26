@@ -1157,7 +1157,8 @@ def check_stray_objects(context, scopes):
         owner = rig if is_sluggies_armature(rig) else None
         if obj.type == 'MESH':
             collision = getattr(obj, 'sluggies_collision', None)
-            if owner is not None or obj.name in claimed or (collision is not None and collision.enabled):
+            if owner is not None or obj.name in claimed or (collision is not None and collision.enabled) \
+                    or obj.get(core.BACKUP_PROP):
                 continue
             where = (f"is parented to {rig.name}, which is not an imported Sluggies armature"
                      if rig is not None else "is not parented to a Sluggies armature")

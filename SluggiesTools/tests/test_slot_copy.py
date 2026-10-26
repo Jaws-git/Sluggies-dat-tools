@@ -408,15 +408,16 @@ class GuiTests(unittest.TestCase):
     def test_menu(self):
         menu = lambda members, copied, pack=False, locked=False: [
             (label, enabled) for label, enabled, _why in gui_grid.context_menu(self.state, members, copied, pack, locked)]
-        export = ('Export as .sluggie', True)
+        export = ('Export as .sluggie', True), ('Export to .sluggiezip', True)
         self.assertEqual(menu([0x09, 0x68], None), [(gui_grid.COPY_MULTIPLE, False)])
-        self.assertEqual(menu([0x0D], None), [('Copy', True), ('Paste', False), export])
-        self.assertEqual(menu([0x0D], 0x0D), [('Copy', True), ('Paste', False), export])        # itself
-        self.assertEqual(menu([0x0D], 0x09), [('Copy', True), ('Paste', True), export])
-        self.assertEqual(menu([0x0D], 0x09, pack=True), [('Copy', True), ('Paste', False), export])  # reads only
+        self.assertEqual(menu([0x0D], None), [('Copy', True), ('Paste', False), *export])
+        self.assertEqual(menu([0x0D], 0x0D), [('Copy', True), ('Paste', False), *export])        # itself
+        self.assertEqual(menu([0x0D], 0x09), [('Copy', True), ('Paste', True), *export])
+        self.assertEqual(menu([0x0D], 0x09, pack=True), [('Copy', True), ('Paste', False), *export])  # reads only
         self.assertEqual(menu([0x0D], 0x09, locked=True),
-                         [('Copy', False), ('Paste', False), ('Export as .sluggie', False)])
-        self.assertEqual(menu([0x0D], 0x77), [('Copy', True), ('Paste', False), export])        # gone from the grid
+                         [('Copy', False), ('Paste', False), ('Export as .sluggie', False),
+                          ('Export to .sluggiezip', False)])
+        self.assertEqual(menu([0x0D], 0x77), [('Copy', True), ('Paste', False), *export])        # gone from the grid
 
     def test_copy_edit(self):
         edit = gui_grid.copy_edit(0x66, 0x09)
