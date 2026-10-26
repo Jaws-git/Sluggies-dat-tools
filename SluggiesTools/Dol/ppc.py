@@ -131,6 +131,7 @@ class Asm:
     def subf(self, rt, ra, rb): return self.word(x_form(rt, ra, rb, 40))  # rt = rb - ra
     def mullw(self, rt, ra, rb): return self.word(x_form(rt, ra, rb, 235))
     def divwu(self, rt, ra, rb): return self.word(x_form(rt, ra, rb, 459))
+    def divw(self, rt, ra, rb): return self.word(x_form(rt, ra, rb, 491))
     def mr(self, ra, rs): return self.word(x_form(rs, ra, rs, 444))  # or ra,rs,rs
     def extsb(self, ra, rs): return self.word(x_form(rs, ra, 0, 954))
 

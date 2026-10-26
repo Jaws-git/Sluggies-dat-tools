@@ -69,6 +69,23 @@ class Floor:
 
 
 @dataclass(frozen=True)
+class RowValue:
+    table: str                        # a per-ID table, found like a Floor's
+    offset: int                       # an f32 in every character's row
+    values: tuple[tuple[int, float], ...]   # (stock ID, value): every character whose row the roster copied from
+    #                                         that ID (itself, a new ID, a stock ID adopting its stats) gets it
+
+
+@dataclass(frozen=True)
+class RowByte:
+    table: str                        # a per-ID table, found like a Floor's
+    offset: int                       # a u8 in the row; with diagonal + the row's own ID (its chemistry towards itself)
+    value: int
+    ids: tuple[int, ...] | None = None    # the characters (by ID) whose rows get it; None: every character, new IDs too
+    diagonal: bool = False
+
+
+@dataclass(frozen=True)
 class Option:
     key: str
     title: str
@@ -76,6 +93,8 @@ class Option:
     group: str | None = None    # options of one group hook the same sites: only the one whose stub is there is on
     patches: tuple[Patch, ...] = ()
     floors: tuple[Floor, ...] = ()
+    values: tuple[RowValue, ...] = ()
+    bytes_: tuple[RowByte, ...] = ()
 
 
 # ---------------------------------------------------------------- CPU vs CPU
@@ -361,6 +380,283 @@ AUTOPICKER_PATCHES = (Patch(0x800802B4, 0x4BFE9A0D, 0x60000000),     # bl 0x8006
                       Patch(0x800802B8, 0x482491B5, 0x60000000),     # bl 0x802C946C -> nop
                       Patch(0x8006AED8, 0x98C3000C, 0x48000B80))     # stb r6,0xC(r3) -> b 0x8006BA58
 
+# ------------------------------------------------- unused character strike zones
+#
+# "Fix Unused Character Strikezone Heights" (04 0x80629C38 / 0x80629C5C / 0x80629C80 / 0x80629CA4) writes the f32
+# +0x1C of the charfloats rows (0x806291D8, 0x24 bytes per ID) of the unused characters 0x49 Toad, 0x4A Pianta,
+# 0x4B Kritter and 0x4C Koopa (stock 1.1, 1.3, 0.15, 1.0). That table is a stats table of the roster
+# (``ids.is_stats_table``): a run with new IDs moves it, a new ID copies its stats source's row, and a stock ID
+# that adopts stats takes its source's row (in place without new IDs). So the fix follows the table and goes to
+# every character whose row came from one of the four.
+STRIKE_ZONE_FIX = (RowValue('charfloats', 0x1C, ((0x49, 0.8), (0x4A, 0.95), (0x4B, 1.15), (0x4C, 0.9))),)
+
+# ------------------------------------------------------- characters and chemistry
+#
+# Ports of the community Gecko codes of the "Characters and Chemistry" section (Gameplay tab, Extras).
+#
+# "Duplicate Characters" [LlamaTrauma] (five 04 lines): plain patches. 0x802C9210/14 turn `cmpwi r24,0; beq` into
+# `cmpwi r24,0xFF; bne` (r24 is 0 there, so the branch is always taken), 0x80074DA4 and 0x80073AF8 drop a
+# `beq cr1` after a compare with fn_802D9910's result, and 0x80071B10 replaces the "already on the team" check
+# (`bl 0x800638A8`) with `li r3,0`.
+DUPLICATE_CHARACTER_PATCHES = (Patch(0x802C9210, 0x2C180000, 0x2C1800FF),     # cmpwi r24,0 -> cmpwi r24,0xFF
+                               Patch(0x802C9214, 0x4182000C, 0x4082000C),     # beq +0xC -> bne +0xC
+                               Patch(0x80074DA4, 0x418601E4, 0x60000000),     # beq cr1,0x80074F88 -> nop
+                               Patch(0x80071B10, 0x4BFF1D99, 0x38600000),     # bl 0x800638A8 -> li r3,0
+                               Patch(0x80073AF8, 0x41861490, 0x60000000))     # beq cr1,0x80074F88 -> nop
+# "Duplicate Captains" [LittleCoaks] (C2 0x80071B0C): in the team check loop (r27 = the slot 0-8, r29 = slot * 0x10,
+# r0 = the team's 0x10-byte slots), every slot but the first gets the first slot's character (s16 +0), so a team is
+# nine of its captain. Its stub returns to 0x80071B10, which "Duplicate Characters" patches: the two combine.
+DUPLICATE_CAPTAIN_SITE, DUPLICATE_CAPTAIN_STOCK = 0x80071B0C, 0x7C60EA14      # add r3,r0,r29
+
+
+def _duplicate_captain_stub(base: int, site: int) -> Asm:
+    # r5 is free: the Gecko code's own choice (fn_800638A8 takes r3/r4 only).
+    a = Asm(base)
+    a.word(DUPLICATE_CAPTAIN_STOCK)
+    a.cmpwi(27, 0).beq('back')
+    a.mr(5, 0).lha(5, 0, 5).sth(5, 0, 3)           # slot r27 = slot 0's character (lha's base can't be r0)
+    a.label('back')
+    a.b(site + 4)
+    return a
+
+
+# "Requires all characters are captains" [philenarion] (08 0x806CE9AF, 0x65 bytes 0x8E apart): the "captain" byte
+# (+7) of every stats row (0x806CE9A0, 0x8E bytes per ID) set to 1. The stats table moves with a roster run's new IDs,
+# so the option follows the table and sets every character's row, new IDs too.
+ALL_CAPTAINS = (RowByte('stats', 0x07, 1),)
+# "Captains Have Chemistry With Themselves" [LittleCoaks] (twelve 00 lines): chemistry 2 (stock 1) of the twelve
+# stock captains towards themselves (stats row +0x28 + own ID). New IDs' chemistry with themselves is in the roster's
+# own new-by-new table (Roster/ids.new_by_new_chemistry), which the option leaves alone.
+CAPTAIN_IDS = (0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x09, 0x0A, 0x0B, 0x11, 0x13)
+CAPTAIN_SELF_CHEMISTRY = (RowByte('stats', 0x28, 2, CAPTAIN_IDS, diagonal=True),)
+
+# --------------------------------------------------------------------- 99-0 tools
+#
+# Ports of the community Gecko codes of the "99-0 Tools" section (Gameplay tab, Extras). The score object
+# *(r13-0x1544) (0xA4 bytes, made at 0x8017F620, set up by fn_8017F688): +0 the inning (from 1), +4 and +0x1E the
+# two teams' arrays of 13 s16 (+0 the score, then the runs of innings 1-12), +0x38 / +0x52 two more such arrays,
+# +0x74 the result, +0x8E the innings, +0x8F the last inning (the innings + 3 in the stock game, so at most 12).
+#
+# "Always away team" [LlamaTrauma] (04 0x802CEAA4): the match settings' +8 (*(r13-0xB00)) takes 0 instead of the
+# low bit of a random draw (bl 0x80478A90), so the first team always bats first.
+ALWAYS_AWAY_PATCHES = (Patch(0x802CEAA4, 0x546007FE, 0x38000000),)        # clrlwi r0,r3,31 -> li r0,0
+# "Unlimited extra innings" [LittleCoaks] (04 0x8017F694, li r0,XX): the last inning XX instead of the innings + 3.
+# Here XX = 99. Experimental: the score arrays hold 12 innings, so from the 13th inning on the runs of team 0 land in
+# team 1's score and team 1's in the fields after its arrays (+0x6C.., the result at +0x74).
+EXTRA_INNINGS_LAST = 99
+EXTRA_INNINGS_PATCHES = (Patch(0x8017F694, 0x38040003, 0x38000000 | EXTRA_INNINGS_LAST),)   # addi r0,r4,3 -> li
+# "999 runs" [LlamaTrauma]: the scoreboard's two-digit score boxes (fn_8032FDxx, a loop over the teams, r28 = the
+# team, r27 = its score, r3 = its score array) show team 0's score in three digits and team 1's in one: team 0's box
+# shows (score % 1000) / 10, team 1's (team 0's score % 10) * 10 + min(its score, 9). The Gecko code also has the
+# "Always away team" line, so the first team (the one with three digits) is yours. It wrote its function over stock
+# code at 0x80489FC8 (bl from 0x8032FE14); here it is a stub. Four patches lay out the digits: always two per box,
+# and the tens digit of team 1's box and the box after the loop trade places (pane 4 <-> 5). The stub uses r0, r4,
+# r5 and cr0: all are set again before they are read, and cr0 by the stock compare the stub ends with.
+SCORE_999_SITE, SCORE_999_STOCK = 0x8032FE14, 0x2C1B0063      # cmpwi r27,99 (the stock score cap)
+SCORE_999_PATCHES = (Patch(0x8032FE30, 0x2C1B000A, 0x2C1B0000),     # cmpwi r27,10 -> cmpwi r27,0: two digits
+                     Patch(0x8032FEB4, 0x41800070, 0x7C000378),     # blt 0x8032FF24 -> or r0,r0,r0: tens digit too
+                     Patch(0x8032FECC, 0x38000004, 0x38000005),     # li r0,4 -> li r0,5
+                     Patch(0x8032FF34, 0x38C00005, 0x38C00004))     # li r6,5 -> li r6,4
+SCORE_ENTRY = 0x1A                                             # team 1's score array is team 0's + 0x1A
+
+
+def _score_999_stub(base: int, site: int) -> Asm:
+    a = Asm(base)
+    a.cmpwi(28, 1).bne('team0')
+    a.lhz(4, 4 - SCORE_ENTRY, 3)                               # r3 + 4 is team 1's score: team 0's (-0x16)
+    a.li(5, 10).divwu(0, 4, 5).mullw(0, 0, 5).subf(4, 0, 4).mulli(4, 4, 10)       # r4 = (team 0 % 10) * 10
+    a.cmpwi(27, 9).ble('add')
+    a.li(27, 9)
+    a.label('add')
+    a.add(27, 4, 27).b('back')
+    a.label('team0')
+    a.li(5, 1000).divw(0, 27, 5).mullw(0, 0, 5).subf(27, 0, 27)                   # r27 % 1000
+    a.li(5, 10).divw(27, 27, 5)
+    a.label('back')
+    a.word(SCORE_999_STOCK)
+    a.b(site + 4)
+    return a
+
+
+# ------------------------------------------------------------------ miscellaneous
+#
+# Ports of the community Gecko codes of the "Miscellaneous" section (Gameplay tab, Extras).
+#
+# "Mercy Rule Modifier" [ZPL] (04 0x8017F6A8, li r0,XX): fn_8017F688 sets the score object's +0xA2 to 10 when the
+# match settings' +9 (the mercy rule) is on, else to 0; a match ends once a team leads by +0xA2 runs (0x80136EE4,
+# 0x8015E474; 0 skips the check). One option per lead, a group on the one patch site; the stock 10 is "off".
+MERCY_RULE_SITE, MERCY_RULE_STOCK = 0x8017F6A8, 0x3800000A     # li r0,10
+MERCY_RULE_STOCK_RUNS = 10
+MERCY_RULE_LEVELS = tuple(r for r in range(1, 100) if r != MERCY_RULE_STOCK_RUNS)
+
+
+def mercy_rule_key(runs: int) -> str:
+    return f'mercy_rule_{runs}'
+
+
+def _mercy_rule_option(runs: int) -> Option:
+    return Option(mercy_rule_key(runs), f'Mercy rule at a {runs}-run lead (stock {MERCY_RULE_STOCK_RUNS})', (),
+                  group='mercy_rule', patches=(Patch(MERCY_RULE_SITE, MERCY_RULE_STOCK, 0x38000000 | runs),))
+
+
+# "Day/Night Music Themes" [C^2] (C2 0x803A43F4): the stadium select rewrote the music table 0x8062E608 (u32 track
+# per stadium index, the match settings' +5) on every confirm, with other tracks at night (settings +6) for Mario
+# Stadium (0), Wario City (2), Yoshi Park (3), Peach Ice Garden (4) and DK Jungle (5), and the stock ones by day.
+# Here the table's two reads (`lwzx r5` of table + index * 4, the index * 4 in r0) take the night track instead:
+# the table stays stock, and a match that skips the stadium select (the autopicker) gets the right music too. The
+# stubs use r12 and cr1: at the first site cr0 holds a compare the next instruction branches on; r12 is set again
+# before it is read at both.
+NIGHT_MUSIC_HOOKS = ((0x80389098, 0x7CA4002E), (0x803899C4, 0x7CA5002E))      # lwzx r5,r4,r0 / lwzx r5,r5,r0
+SETTINGS_NIGHT = 6
+NIGHT_MUSIC = ((0, 0x15), (2, 0x18), (3, 0x19), (4, 0x16), (5, 0x17))         # (stadium index, night track)
+
+
+def _night_music_stub(stock: int):
+    def stub(base: int, site: int) -> Asm:
+        a = Asm(base)
+        a.word(stock)
+        a.lwz(12, SETTINGS, 13).lbz(12, SETTINGS_NIGHT, 12)
+        a.cmpwi(12, 0, cr=1).beq('back', cr=1)
+        for stadium, track in NIGHT_MUSIC:
+            a.cmpwi(0, stadium * 4, cr=1).bne(f'not{stadium}', cr=1)
+            a.li(5, track).b('back')
+            a.label(f'not{stadium}')
+        a.label('back')
+        a.b(site + 4)
+        return a
+    return stub
+
+
+# "Challenge Mode - Press B+2 to get 999 Coins" [Master Kirby] (28 0x81317BB0 / 02 0x80E55C0A): while controller 1
+# held exactly B + 2, the coins (s16 +0x12E of the challenge struct *(r13-0xE80), made once at 0x802552C4) at their
+# stock heap address were set to 999. A roster expansion moves that struct (0x80E60C7C in a RAM dump of an expanded
+# game, 2026-10-25). The stub runs at the end of the per-frame controller update (fn_8050B5A4's epilogue, whose
+# `addi r11` the restore call after it reads), reads controller 1's held buttons like the CPU vs CPU stub, and sets
+# the coins only while challenge mode runs (its manager *(r13-0x1224) exists). It uses r10, r12 and cr0: the
+# epilogue reads none of them.
+COINS_SITE, COINS_STOCK = 0x8050BF44, 0x396100B0       # addi r11,r1,0xB0
+COINS_BUTTONS = 0x0500                                  # B (0x0400) + 2 (0x0100)
+CHALLENGE_MANAGER = -0x1224                             # r13
+CHALLENGE_STRUCT = -0xE80                               # r13
+CHALLENGE_COINS = 0x12E
+COINS_MAX = 999
+
+
+def _challenge_coins_stub(base: int, site: int) -> Asm:
+    a = Asm(base)
+    a.lwz(12, PAD_MANAGER, 13).cmpwi(12, 0).beq('back')
+    a.lwz(12, 0, 12).lhz(10, 0, 12)
+    a.andi_(10, 10, COINS_BUTTONS).cmpwi(10, COINS_BUTTONS).bne('back')
+    a.lwz(12, CHALLENGE_MANAGER, 13).cmpwi(12, 0).beq('back')
+    a.lwz(12, CHALLENGE_STRUCT, 13).cmpwi(12, 0).beq('back')
+    a.li(10, COINS_MAX).sth(10, CHALLENGE_COINS, 12)
+    a.label('back')
+    a.word(COINS_STOCK)
+    a.b(site + 4)
+    return a
+
+
+# ------------------------------------------------------------------------- cheats
+#
+# Ports of the [TNTkryzt] codes of Dolphin's code list (Options tab, Cheats; untested, the list says they may not
+# work). The four 06/04 codes put a function in the MEM1 tail (0x817FED14..) and branch to it from the site; here
+# each function is a stub of the same instructions. The three save data codes wrote stock heap addresses every frame;
+# the stubs write the same bytes through the r13 globals instead, from the end of the per-frame controller update
+# (fn_8050B5A4, whose caller drops r3: after __restore_gpr every volatile register and cr0 is free).
+#
+# "Toy Field 9999 Coins" (04 0x804CA690): fn_804CA354 clamps the coins (r24 +0x20) to 0..max (r0 = r24 +0xA8)
+# and stores the clamped r3; the patch stores the max.
+TOY_FIELD_COIN_PATCHES = (Patch(0x804CA690, 0x90780020, 0x90180020),)     # stw r3,0x20(r24) -> stw r0,0x20(r24)
+# "Homeruns Worth Double" (06 0x817FED64 / 04 0x8017FD94): fn_8017F924 adds a play's runs (s16 r28 +0x6C) to the
+# score; the stub doubles them when the word r28 +0xA94 is 1. r11 is set again before it is read, cr0 before use.
+DOUBLE_HR_SITE, DOUBLE_HR_STOCK = 0x8017FD94, 0xA81C006C    # lha r0,0x6C(r28)
+
+
+def _double_hr_stub(base: int, site: int) -> Asm:
+    a = Asm(base)
+    a.word(DOUBLE_HR_STOCK)
+    a.lwz(11, 0xA94, 28).cmpwi(11, 1).bne('back')
+    a.mulli(0, 0, 2)
+    a.label('back')
+    a.b(site + 4)
+    return a
+
+
+# "Reset Out Count B+1" (06 0x817FED14 / 04 0x80132230): in fn_801320D8 (r30 = *(r13-0x1D38), +9 the outs), while
+# the word r28 +0x34 is 1 and the halfword r30 +0x48 holds exactly B + 1 (0x0600), the outs are set to 0. The site
+# follows a bctrl, so r11 is free; cr0 is set again right after it.
+RESET_OUTS_SITE, RESET_OUTS_STOCK = 0x80132230, 0x881E0009  # lbz r0,9(r30)
+RESET_OUTS_BUTTONS = 0x0600
+
+
+def _reset_outs_stub(base: int, site: int) -> Asm:
+    a = Asm(base)
+    a.lwz(11, 0x34, 28).cmpwi(11, 1).bne('stock')
+    a.lhz(11, 0x48, 30).cmpwi(11, RESET_OUTS_BUTTONS).bne('stock')
+    a.li(0, 0).stb(0, 9, 30).b(site + 4)
+    a.label('stock')
+    a.word(RESET_OUTS_STOCK)
+    a.b(site + 4)
+    return a
+
+
+# "Extremely Fast Movement P1" (06 0x817FED40 / 04 0x8011B630): fn_8011B600 (r3 = a player object, r5 its third
+# argument) reads a speed f32 at r3 +0xEC; unless r5 is 0 or the word r5 -0x2A0 is 1, the stub writes 0.46875
+# there first. r11 is unused in the prologue; cr0 is set again right after the site.
+FAST_MOVEMENT_SITE, FAST_MOVEMENT_STOCK = 0x8011B630, 0xC3E300EC     # lfs f31,0xEC(r3)
+FAST_MOVEMENT_SPEED = 0x3EF00000                                     # 0.46875
+
+
+def _fast_movement_stub(base: int, site: int) -> Asm:
+    a = Asm(base)
+    a.cmpwi(5, 0).beq('stock')
+    a.lwz(11, -0x2A0, 5).cmpwi(11, 1).beq('stock')
+    a.lis(11, FAST_MOVEMENT_SPEED >> 16).stw(11, 0xEC, 3)
+    a.label('stock')
+    a.word(FAST_MOVEMENT_STOCK)
+    a.b(site + 4)
+    return a
+
+
+# "All Star Players" and "All MVP's" are one code (00 0x80E559A7 / 08 0x80E559A8, ten words): 41 bytes set to 1 at
+# +0x197 of the progress object *(r13-0x300) (_docs/SaveData.md; 0x80E55810 in the stock game, located from the
+# challenge struct's offset to it in a RAM dump of an expanded game, 2026-10-25, where those 41 bytes are 0 or 1).
+STARS_SITE, STARS_STOCK = 0x8050BF9C, 0x80010154            # lwz r0,0x154(r1)
+PROGRESS = -0x300                                           # r13
+STARS_FIRST, STARS_WORDS = 0x197, 10
+
+
+def _all_stars_stub(base: int, site: int) -> Asm:
+    a = Asm(base)
+    a.lwz(12, PROGRESS, 13).cmpwi(12, 0).beq('back')
+    a.li(11, 1).stb(11, STARS_FIRST, 12)
+    a.lis(11, 0x0101).addi(11, 11, 0x0101)
+    for i in range(STARS_WORDS):
+        a.stw(11, STARS_FIRST + 1 + 4 * i, 12)
+    a.label('back')
+    a.word(STARS_STOCK)
+    a.b(site + 4)
+    return a
+
+
+# "Unlock All Items" (04 0x80E55DAC..0x80E55DB4): twelve item counts at +0x2D0 of the challenge struct
+# *(r13-0xE80) (stock 0x80E55ADC, see the challenge coins) set to 99 each.
+ITEMS_SITE, ITEMS_STOCK = 0x8050BFA0, 0x7C0803A6            # mtlr r0
+CHALLENGE_ITEMS, ITEMS_WORDS, ITEMS_COUNT = 0x2D0, 3, 0x63
+
+
+def _all_items_stub(base: int, site: int) -> Asm:
+    a = Asm(base)
+    a.word(ITEMS_STOCK)
+    a.lwz(12, CHALLENGE_STRUCT, 13).cmpwi(12, 0).beq('back')
+    a.lis(11, ITEMS_COUNT * 0x0101).addi(11, 11, ITEMS_COUNT * 0x0101)
+    for i in range(ITEMS_WORDS):
+        a.stw(11, CHALLENGE_ITEMS + 4 * i, 12)
+    a.label('back')
+    a.b(site + 4)
+    return a
+
+
 OPTIONS = (
     Option('cpu_vs_cpu', 'CPU vs CPU (hold A + Minus on controller 1 while confirming)',
            (Hook(CPU_SITE, CPU_STOCK, _cpu_vs_cpu_stub),)),
@@ -375,7 +671,34 @@ OPTIONS = (
     Option('outfield_dives', 'CPU fielders dive and jump in the outfield', (), patches=OUTFIELD_DIVE_PATCHES),
     Option('no_precharge', 'No CPU precharge (every pitch "charge" value at least 8.0)', (),
            floors=PRECHARGE_FLOORS),
+    Option('unused_strike_zones', 'Strike zone heights of the unused characters (Toad, Pianta, Kritter, Koopa)', (),
+           values=STRIKE_ZONE_FIX),
+    Option('duplicate_characters', 'Duplicate characters (a character may be on a team more than once)', (),
+           patches=DUPLICATE_CHARACTER_PATCHES),
+    Option('duplicate_captains', 'Duplicate captains (both teams are nine of their captain)',
+           (Hook(DUPLICATE_CAPTAIN_SITE, DUPLICATE_CAPTAIN_STOCK, _duplicate_captain_stub),)),
+    Option('all_captains', 'Every character is a captain', (), bytes_=ALL_CAPTAINS),
+    Option('captain_self_chemistry', 'Captains have chemistry with themselves', (), bytes_=CAPTAIN_SELF_CHEMISTRY),
+    Option('always_away', 'Always away team (the first team bats first)', (), patches=ALWAYS_AWAY_PATCHES),
+    Option('score_999', '999 runs on the scoreboard (the first team\'s score in three digits)',
+           (Hook(SCORE_999_SITE, SCORE_999_STOCK, _score_999_stub),), patches=SCORE_999_PATCHES),
+    Option('extra_innings', f'Unlimited extra innings (up to inning {EXTRA_INNINGS_LAST}, experimental)', (),
+           patches=EXTRA_INNINGS_PATCHES),
+    Option('night_music', 'Day/night music themes (other music at night in five stadiums)',
+           tuple(Hook(site, stock, _night_music_stub(stock)) for site, stock in NIGHT_MUSIC_HOOKS)),
+    Option('challenge_coins', 'Challenge mode: hold B + 2 for 999 coins',
+           (Hook(COINS_SITE, COINS_STOCK, _challenge_coins_stub),)),
+    Option('toy_field_coins', 'Toy Field 9999 coins (cheat)', (), patches=TOY_FIELD_COIN_PATCHES),
+    Option('double_home_runs', 'Home runs worth double (cheat)',
+           (Hook(DOUBLE_HR_SITE, DOUBLE_HR_STOCK, _double_hr_stub),)),
+    Option('reset_outs', 'Reset the out count with B + 1 (cheat)',
+           (Hook(RESET_OUTS_SITE, RESET_OUTS_STOCK, _reset_outs_stub),)),
+    Option('fast_movement', 'Extremely fast movement, player 1 (cheat)',
+           (Hook(FAST_MOVEMENT_SITE, FAST_MOVEMENT_STOCK, _fast_movement_stub),)),
+    Option('all_stars', 'All star players / all MVPs (cheat)', (Hook(STARS_SITE, STARS_STOCK, _all_stars_stub),)),
+    Option('all_items', 'Unlock all items (cheat)', (Hook(ITEMS_SITE, ITEMS_STOCK, _all_items_stub),)),
 ) + tuple(_close_play_option(p) for p in CLOSE_PLAY_LEVELS) \
+  + tuple(_mercy_rule_option(r) for r in MERCY_RULE_LEVELS) \
   + tuple(_player_heap_option(kb) for kb in PLAYER_HEAP_LEVELS_KB) \
   + tuple(_big_heap_option(kb) for kb in BIG_HEAP_LEVELS_KB)
 BY_KEY = {o.key: o for o in OPTIONS}
@@ -421,16 +744,55 @@ def _roster(image: dolfile.DolImage):
         return bridge.Roster(None, [], {})
 
 
-def _floor_cells(image: dolfile.DolImage, floor: Floor) -> list[tuple[int, int]]:
-    """``(character ID, address)`` of the floor's f32 in every character's row (stock IDs and the roster's new IDs),
-    in the table where ``image`` has it (its first lis/low pair, as ``StatEditor/bridge.table_layouts`` finds it)."""
+def _cells(image: dolfile.DolImage, name: str, offset: int) -> list[tuple[int, int, int]]:
+    """``(character ID, row source, address)`` of the f32 at ``offset`` in every character's row of the per-ID table
+    ``name`` (stock IDs and the roster's new IDs), in the table where ``image`` has it (its first lis/low pair, as
+    ``StatEditor/bridge.table_layouts`` finds it). The row source is the stock ID whose row the roster copied there
+    (``ids.NewId.row_source``; a stock ID that adopts stats takes its source's row of a stats table)."""
     try:
-        table = inventory.table(floor.table)
-        at = relocate.pair_address(image, *table.all_pairs[0]) + table.header + floor.offset
-        cids = list(range(ids.STOCK_IDS)) + [c.id for c in _roster(image).new]
-        return [(cid, at + table.row_size * cid) for cid in cids]
+        table = inventory.table(name)
+        at = relocate.pair_address(image, *table.all_pairs[0]) + table.header + offset
+        roster = _roster(image)
+        adopted = roster.stock_stats if ids.is_stats_table(name) else {}
+        rows = [(cid, adopted.get(cid, cid)) for cid in range(ids.STOCK_IDS)]
+        rows += [(c.id, c.row_source(name)) for c in roster.new]
+        return [(cid, source, at + table.row_size * cid) for cid, source in rows]
     except (RuntimeError, ValueError) as exc:          # BridgeError, DolError, RelocationError (no lis pair)
-        raise GameOptionError(f'{floor.table}: the per-ID table could not be found ({exc})') from exc
+        raise GameOptionError(f'{name}: the per-ID table could not be found ({exc})') from exc
+
+
+def _floor_cells(image: dolfile.DolImage, floor: Floor) -> list[tuple[int, int]]:
+    """``(character ID, address)`` of the floor's f32 in every character's row (``_cells``)."""
+    return [(cid, a) for cid, _source, a in _cells(image, floor.table, floor.offset)]
+
+
+def _value_cells(image: dolfile.DolImage, fix: 'RowValue') -> list[tuple[int, bytes, int]]:
+    """``(character ID, the fixed f32's bytes, address)`` of every character whose row comes from a fixed ID."""
+    values = dict(fix.values)
+    return [(cid, struct.pack('>f', values[source]), a) for cid, source, a in _cells(image, fix.table, fix.offset)
+            if source in values]
+
+
+def _byte_cells(image: dolfile.DolImage, fix: RowByte) -> list[tuple[int, int]]:
+    """``(character ID, address)`` of the fix's u8 in the rows of its characters (``_cells``; diagonal: the column of
+    the row's own ID, stock IDs only)."""
+    cells = [(cid, a) for cid, _source, a in _cells(image, fix.table, fix.offset)
+             if fix.ids is None or cid in fix.ids]
+    if fix.diagonal:
+        cells = [(cid, a + cid) for cid, a in cells if cid < ids.STOCK_IDS]
+    return cells
+
+
+def _baseline(image: dolfile.DolImage, vanilla: dolfile.DolImage | None, name: str):
+    """``(cid, offset) -> 4 bytes``: the table's rows as a roster run builds them from ``vanilla`` (no options, no
+    stat edits)."""
+    if vanilla is None:
+        raise GameOptionError(f'{name}: turning this option off needs 1_Input/main.dol (the stock values)')
+    roster = _roster(image)
+    table = inventory.table(name)
+    blob, _log = ids.extended_table(vanilla, table, roster.new, ids.ROWS if roster.new else ids.STOCK_IDS + 1,
+                                    roster.stock_stats)
+    return lambda cid, offset: blob[table.header + table.row_size * cid + offset:][:4]
 
 
 def _f32(image: dolfile.DolImage, address: int) -> float:
@@ -445,11 +807,29 @@ def _floored(image: dolfile.DolImage, floor: Floor) -> bool:
     return all(_f32(image, a) >= floor.value for _cid, a in cells)
 
 
+def _fixed(image: dolfile.DolImage, fix: 'RowValue') -> bool:
+    try:
+        cells = _value_cells(image, fix)
+    except GameOptionError:
+        return False
+    return all(image.read(a, 4) == value for _cid, value, a in cells)
+
+
+def _byte_set(image: dolfile.DolImage, fix: RowByte) -> bool:
+    try:
+        cells = _byte_cells(image, fix)
+    except GameOptionError:
+        return False
+    return all(image.read(a, 1)[0] == fix.value for _cid, a in cells)
+
+
 def is_on(image: dolfile.DolImage, key: str) -> bool:
     option = _option(key)
     if not all(_patched(image, p) for p in option.patches):
         return False
-    if not all(_floored(image, f) for f in option.floors):
+    if not all(_floored(image, f) for f in option.floors) or not all(_fixed(image, v) for v in option.values):
+        return False
+    if not all(_byte_set(image, b) for b in option.bytes_):
         return False
     if option.group:    # the sites are shared: the stub there tells which option of the group it is
         return all(_hooked(image, h) and _stub_current(image, h) for h in option.hooks)
@@ -490,6 +870,10 @@ def _check_stock(image: dolfile.DolImage, option: Option) -> None:
                                   f'0x{p.stock:08X}; another patch changed it')
     for f in option.floors:
         _floor_cells(image, f)              # raises when the table cannot be found
+    for v in option.values:
+        _value_cells(image, v)
+    for b in option.bytes_:
+        _byte_cells(image, b)
 
 
 def apply(image: dolfile.DolImage, keys) -> list[str]:
@@ -540,28 +924,55 @@ def apply(image: dolfile.DolImage, keys) -> list[str]:
                     image.write(a, struct.pack('>f', f.value))
                     raised.append(f'0x{cid:02X}')
             sites.append(f'{f.table} rows raised to {f.value:g}: {", ".join(raised) or "none"}')
+        for v in option.values:
+            cells = _value_cells(image, v)
+            for _cid, value, a in cells:
+                image.write(a, value)
+            sites.append(f'{v.table} +0x{v.offset:X} set for ' + (', '.join(f'0x{cid:02X}' for cid, _v, _a in cells)
+                                                                   or 'none'))
+        for b in option.bytes_:
+            cells = _byte_cells(image, b)
+            for _cid, a in cells:
+                image.write(a, bytes([b.value]))
+            where = f'+0x{b.offset:X}' + (' + own ID' if b.diagonal else '')
+            sites.append(f'{b.table} {where} = {b.value} for {len(cells)} characters')
         log.append(f'{option.title}: on (' + ', '.join(sites) + ')')
     return log
 
 
 def _lower(image: dolfile.DolImage, floor: Floor, vanilla: dolfile.DolImage | None) -> bool:
-    """Put back the roster's own value (``bridge.baseline_rows`` of ``vanilla``: what a roster run writes without
-    stat edits) in every row that holds the floor and whose own value is below it. A row a stat edit set to
-    exactly the floor goes back too."""
-    if vanilla is None:
-        raise GameOptionError(f'{floor.table}: turning this option off needs 1_Input/main.dol (the stock values)')
-    roster = _roster(image)
-    table = inventory.table(floor.table)
-    blob, _log = ids.extended_table(vanilla, table, roster.new, ids.ROWS if roster.new else ids.STOCK_IDS + 1,
-                                    roster.stock_stats)
+    """Put back the roster's own value (``_baseline``: what a roster run writes without stat edits) in every row that
+    holds the floor and whose own value is below it. A row a stat edit set to exactly the floor goes back too."""
+    own = _baseline(image, vanilla, floor.table)
     lowered = False
     for cid, a in _floor_cells(image, floor):
-        at = table.header + table.row_size * cid + floor.offset
-        own = blob[at:at + 4]
-        if _f32(image, a) == floor.value and struct.unpack('>f', own)[0] < floor.value:
-            image.write(a, own)
+        if _f32(image, a) == floor.value and struct.unpack('>f', own(cid, floor.offset))[0] < floor.value:
+            image.write(a, own(cid, floor.offset))
             lowered = True
     return lowered
+
+
+def _unfix(image: dolfile.DolImage, fix: 'RowValue', vanilla: dolfile.DolImage | None) -> bool:
+    """Put back the roster's own value (``_baseline``) in every fixed row that still holds the fix."""
+    own = _baseline(image, vanilla, fix.table)
+    unfixed = False
+    for cid, value, a in _value_cells(image, fix):
+        if image.read(a, 4) == value and own(cid, fix.offset) != value:
+            image.write(a, own(cid, fix.offset))
+            unfixed = True
+    return unfixed
+
+
+def _unset(image: dolfile.DolImage, fix: RowByte, vanilla: dolfile.DolImage | None) -> bool:
+    """Put back the roster's own byte (``_baseline``) in every row that still holds the fix's value."""
+    own = _baseline(image, vanilla, fix.table)
+    unset = False
+    for cid, a in _byte_cells(image, fix):
+        stock = own(cid, fix.offset + (cid if fix.diagonal else 0))[:1]
+        if image.read(a, 1)[0] == fix.value and stock[0] != fix.value:
+            image.write(a, stock)
+            unset = True
+    return unset
 
 
 def _unhook(image: dolfile.DolImage, option: Option, vanilla: dolfile.DolImage | None = None) -> bool:
@@ -574,7 +985,9 @@ def _unhook(image: dolfile.DolImage, option: Option, vanilla: dolfile.DolImage |
     for p in patched:
         image.write_word(p.site, p.stock)
     lowered = [f for f in option.floors if _lower(image, f, vanilla)]
-    return bool(hooked or patched or lowered)
+    unfixed = [v for v in option.values if _unfix(image, v, vanilla)]
+    unset = [b for b in option.bytes_ if _unset(image, b, vanilla)]
+    return bool(hooked or patched or lowered or unfixed or unset)
 
 
 def remove(image: dolfile.DolImage, keys, vanilla: dolfile.DolImage | None = None) -> list[str]:

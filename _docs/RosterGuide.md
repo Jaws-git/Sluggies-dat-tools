@@ -482,7 +482,14 @@ image, the 48x51 result beside the other portrait, the fit choices (**Fit
 inside**, **Fill and crop**, **Exact 48x51**) and **Trim transparent
 border**, with warnings and refusals. The rename dialog tells you
 live whether the name fits the plate; **Stats...** and **Voice...** show the
-current assignment and a list to pick from. A dialog shows what
+current assignment and a list to pick from. **Set size...** (below
+**Rename...**) takes one factor for the character's size: 1 is its normal
+size, 1.2 makes it 20% bigger, 0.8 20% smaller (0.1 to 5). It scales the whole
+model (skeleton and mesh) in game and on the select screens through the
+character's size scale, the stat editor's size "Gameplay" and "Select
+Screens" values; the hitbox and fielding reach stay as they are. It is staged
+like a Stat Editor edit (**Normal size** in its dialog puts the size back). A
+dialog shows what
 will change (models and their sizes, directory, stats, voice, name,
 portraits, warnings) and whether the checks passed. **Stage** does not write
 anything yet. It adds the change to a list of pending edits:
@@ -547,6 +554,25 @@ python start.py --load-roster my_roster.sluggiesroster
   add no code area, so other Gecko codes keep working with them; precharge
   removal also covers the new characters of a roster expansion. "Random Star Hits"
   and "Random Star Pitches" are not offered yet.
+- **Extras** (Gameplay → Extras) toggle the "Characters and Chemistry"
+  Gecko codes the same way (staged; Patch Game writes them): duplicate
+  characters, duplicate captains (both teams nine of their captain; add
+  "every character a captain" to make a team of any character), every
+  character a captain (new characters too) and captain chemistry with
+  themselves. Disable those Gecko codes in Dolphin. Only duplicate captains
+  adds a code area; the two stats toggles show up as stat edits in the stat
+  editor. Below them, the "99-0 Tools" codes: always away team (your team
+  bats first), 999 runs (your score in three digits on the scoreboard, the
+  other team's in one; it turns on always away team too, and adds a code
+  area) and unlimited extra innings (up to the 99th; experimental, as the
+  game keeps the line score for 12 innings only). Below those, the
+  "Miscellaneous" codes: day/night music themes (other music at night in
+  Mario Stadium, Wario City, Yoshi Park, Peach Ice Garden and DK Jungle;
+  autopicked matches too), challenge mode 999 coins (hold B + 2 on
+  controller 1 in challenge mode) and the mercy rule lead (type the runs,
+  1-99, then "Stage lead"; "Stock mercy rule" goes back to 10). The first
+  two add a code area; the mercy rule is a plain patch. "Graffiti Runner
+  Mega" is not offered yet.
 - **The red Gecko warning:** Gecko codes made for the stock game (CPU vs
   CPU and others) stop working once `main.dol` gets the tools' own code
   area. That happens with game options and with roster changes such as new
@@ -584,6 +610,17 @@ python start.py --load-roster my_roster.sluggiesroster
   the game compatible with stock Gecko codes, and it survives roster runs.
   Without the autopicker running, the lineup screens keep the defaults the
   game set when the team was picked (the stock lineup reset is skipped).
+- **Cheats** (Options tab): the [TNTkryzt] codes found in Dolphin's code
+  list, each with its own Enable/Disable button, written into `main.dol`
+  right away (or `--game-options --on <key>`): Toy Field 9999 coins
+  (`toy_field_coins`), double home runs (`double_home_runs`), reset outs
+  with B + 1 (`reset_outs`), extremely fast movement for player 1
+  (`fast_movement`), all star players / MVPs (`all_stars`; the list has the
+  same code under both names) and all challenge mode items at 99
+  (`all_items`). None has been tested yet, so they may not work. Disable the
+  matching Gecko codes in Dolphin. All but the Toy Field coins add a code
+  area. The game saves the star flags and the items, so they stay after
+  disabling.
 - **Player memory** (Options tab, or `--game-options --on player_heap_32`,
   `_48`, `_64` or `_128`): every player on the field gets a fixed memory area for its
   High model, Low model and bat or glove, 870,400 bytes (850 KB) in the

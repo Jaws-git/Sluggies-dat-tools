@@ -2,7 +2,9 @@
 
 Three inner tabs (CPU Behaviour, Star Boosts, Item Odds) of value tables, filled from the game files: the values
 ``3_Output_Dat/main.dol`` holds, with the pending gameplay edits on top; ``1_Input/main.dol`` is "vanilla"
-(``Gameplay/view.py``). Without an output game the tab shows the 1_Input values read-only.
+(``Gameplay/view.py``). Without an output game the tab shows the 1_Input values read-only. The "CPU vs CPU" and
+"Extras" inner tabs (game option toggles) are built by the grid (``CharacterGridTab.build_cpu_vs_cpu`` /
+``build_extras``).
 
 * **Typing** a value makes it a draft (yellow); **Stage** (per inner tab) writes the inner tab's drafts into an edit
   file in ``_gui/gameplay`` and stages it like a grid edit (``CharacterGridTab.offer_gameplay``: the staging check,
@@ -111,6 +113,7 @@ class GameplayTab:
                             for section, section_tab, title_ in tables.SECTIONS:
                                 if section_tab == tab:
                                     self._build_section(section, title_)
+                    self.grid.build_extras()
         self._build_themes()
         self.app.add_file_dialog('gp_save_dialog', (gui_grid.GAMEPLAY_EXTENSION,), color=(120, 220, 160, 255),
                                  default_filename='gameplay')

@@ -367,7 +367,8 @@ class StatEditorTab:
                 self.received.pop(0)
                 self.offering = path
         staged = gui_grid.staged_stat_files(grid.pending)
-        keep = frozenset([*staged, *(p for p, _q in self.received), *([self.offering] if self.offering else [])])
+        keep = frozenset([*staged, *(p for p, _q in self.received), *([self.offering] if self.offering else []),
+                          *([grid.stat_offer] if grid.stat_offer else [])])    # the grid's Set size... file
         if keep != self._pruned and not self.app.busy:
             ei.prune_received(self.staging_dir, keep)
             self._pruned = keep

@@ -683,10 +683,161 @@ and the player memory levels leave them working:
   from `1_Input`. The stat edit carry also sees the raised rows as stat
   edits and carries the same values.
 
+**Unused character strike zones** (`unused_strike_zones`, Options tab,
+2026-10-25, not yet tried in Dolphin): the Gecko code "Fix Unused Character
+Strikezone Heights" writes f32 +0x1C of the `charfloats` rows (`0x806291D8`,
+0x24 bytes per ID) of `0x49`-`0x4C` (Toad 1.1 → 0.8, Pianta 1.3 → 0.95,
+Kritter 0.15 → 1.15, Koopa 1.0 → 0.9). `charfloats` is a stats table of the
+roster: a run with new IDs moves it, a new ID copies its stats source's row,
+and a stock ID that adopts stats takes its source's row (in place, without
+new IDs). The option (`RowValue`) therefore writes the value into every row
+copied from one of the four, wherever the table's first lis/low pair points,
+and turning it off puts back the rows `ids.extended_table` builds from
+`1_Input`. Only the roster runner rewrites these rows (`--set-stats` goes
+through a rebuild), and it applies the game options after its steps. The
+stat editor does not edit `charfloats`, so the stat edit carry ignores it.
+
+**Characters and chemistry** (Gameplay → Extras, 2026-10-25; ported
+statically from the community Gecko codes, not yet tried in Dolphin):
+
+- `duplicate_characters` ("Duplicate Characters" [LlamaTrauma]): plain
+  patches at `0x802C9210`/`0x802C9214` (`cmpwi r24,0; beq` →
+  `cmpwi r24,0xFF; bne`), `0x80074DA4` and `0x80073AF8` (`beq cr1` → nop)
+  and `0x80071B10` (the "already on the team" `bl 0x800638A8` →
+  `li r3,0`). No sections.
+- `duplicate_captains` ("Duplicate Captains" [LittleCoaks], C2
+  `0x80071B0C`): a hook whose stub replays `add r3,r0,r29` and, for team
+  slots 1-8 (r27), copies slot 0's character (s16 at r0) into the slot
+  (`sth` at r3). It returns to `0x80071B10`, so it combines with
+  `duplicate_characters`. It adds the DOL sections.
+- `all_captains` ("Requires all characters are captains" [philenarion],
+  08 `0x806CE9AF`, 0x65 bytes 0x8E apart): the "captain" byte (+7) of every
+  `stats` row (`0x806CE9A0` + header 8, 0x8E bytes per ID) set to 1
+  (`RowByte`). It follows the moved table and sets new IDs' rows too.
+- `captain_self_chemistry` ("Captains Have Chemistry With Themselves"
+  [LittleCoaks], twelve 00 lines): chemistry 2 (stock 1) at stats row
+  +0x28 + own ID for the twelve stock captains (`0x00`-`0x06`, `0x09`-`0x0B`,
+  `0x11`, `0x13`). New IDs' chemistry with themselves lives in the
+  new-by-new table and is left alone.
+
+Turning either stats option off puts back the rows `ids.extended_table`
+builds from `1_Input`. The stat edit carry sees the changed rows as stat
+edits, as with `no_precharge`.
+
+**99-0 tools** (Gameplay → Extras, 2026-10-25; ported statically from the
+community Gecko codes, not yet tried in Dolphin). The score object
+`*(r13-0x1544)` (0xA4 bytes, allocated at `0x8017F620`, set up by
+`fn_8017F688`): +0 the inning (from 1), +4 and +0x1E the two teams' arrays
+of 13 s16 (the score, then the runs of innings 1-12), +0x38 / +0x52 two more
+arrays of the same shape, +0x74 the result, +0x8E the innings, +0x8F the
+last inning.
+
+- `always_away` ("Always away team" [LlamaTrauma], 04 `0x802CEAA4`): plain
+  patch `clrlwi r0,r3,31` → `li r0,0`, so the match settings' +8 gets 0
+  instead of a random bit and the first team always bats first.
+- `extra_innings` ("Unlimited extra innings" [LittleCoaks], 04
+  `0x8017F694`): plain patch `addi r0,r4,3` → `li r0,99` (the Gecko code
+  leaves XX to the user), the last inning stored at +0x8F; stock it is the
+  innings + 3, at most 12. Experimental: the arrays hold 12 innings, and
+  nothing clamps the inning index, so from the 13th inning on team 0's runs
+  land in team 1's score and team 1's in +0x6C onwards (the result at +0x74).
+- `score_999` ("999 runs" [LlamaTrauma]): a hook at `0x8032FE14`
+  (`cmpwi r27,99`, the scoreboard's score cap, in its loop over the teams:
+  r28 the team, r27 its score, r3 its array) plus four plain patches that
+  lay out the digits (`0x8032FE30` `cmpwi r27,10` → `cmpwi r27,0`,
+  `0x8032FEB4` `blt` → `or r0,r0,r0`, `0x8032FECC` `li r0,4` → `li r0,5`,
+  `0x8032FF34` `li r6,5` → `li r6,4`). The stub is the Gecko code's
+  function: team 0's box shows (score % 1000) / 10, team 1's box
+  (team 0's score % 10) * 10 + min(its score, 9). The Gecko code wrote that
+  function over stock code at `0x80489FC8` (a `bl` at the site); the stub
+  lives in the DOL sections instead and uses r0/r4/r5 without a stack frame.
+  The Gecko code also holds the `always_away` line; the Extras button turns
+  `always_away` on with it (and leaves it on when 999 runs is turned off).
+
+**Miscellaneous** (Gameplay → Extras, 2026-10-25; ported statically from the
+community Gecko codes, not yet tried in Dolphin):
+
+- `mercy_rule_<runs>` ("Mercy Rule Modifier" [ZPL], 04 `0x8017F6A8`
+  `li r0,XX`): `fn_8017F688` sets the score object's +0xA2 to 10 when the
+  match settings' +9 (the mercy rule) is on, else to 0, and a match ends
+  once a team leads by +0xA2 runs (checks at `0x80136EE4`, `0x8015E474`; 0
+  skips them). Plain patch `li r0,10` → `li r0,<runs>`, one option per lead
+  1-99 in the group `mercy_rule`; 10 is stock, so it has no option. The
+  Extras tab takes the lead in an input field.
+- `night_music` ("Day/Night Music Themes" [C^2], C2 `0x803A43F4`): the music
+  table `0x8062E608` holds one u32 track per stadium index (match settings
+  +5; stock `6, 0xD, 7, 0xE, 0xB, 0xC, 9, 8, 0xA, 0xF`). The Gecko code
+  rewrote it at every stadium-select confirm: at night (settings +6 = 1)
+  Mario Stadium (0) `0x15`, Wario City (2) `0x18`, Yoshi Park (3) `0x19`,
+  Peach Ice Garden (4) `0x16` and DK Jungle (5) `0x17`, by day the stock
+  tracks. The port hooks the table's two reads instead (`0x80389098`
+  `lwzx r5,r4,r0` and `0x803899C4` `lwzx r5,r5,r0`, r0 = index × 4): at night
+  the stub replaces r5 with the night track. The table stays stock, and
+  matches that skip the stadium select (the autopicker) get the night music
+  too. The stubs use r12 and cr1 (cr0 at the first site holds a compare that
+  the next instruction branches on). It adds the DOL sections.
+- `challenge_coins` ("Challenge Mode - Press B+2 to get 999 Coins" [Master
+  Kirby], 28 `0x81317BB0` / 02 `0x80E55C0A`): the coins are the s16 at
+  +0x12E of the challenge struct `*(r13-0xE80)` (made once, at
+  `0x802552C4`). A RAM dump of an expanded game (2026-10-25) had the struct
+  at `0x80E60C7C`, 0xB1A0 past the address the Gecko code assumes, with 849
+  coins. The stub hooks the epilogue of the per-frame controller update
+  `fn_8050B5A4` (`0x8050BF44` `addi r11,r1,0xB0`, replayed because the
+  restore call after it reads r11). It reads controller 1's held buttons
+  like the CPU vs CPU stub (both B `0x0400` and 2 `0x0100` held) and writes
+  999 only while the challenge manager `*(r13-0x1224)` exists. It uses r10,
+  r12 and cr0 and adds the DOL sections.
+
 Not ported: "Random Star Hits" / "Random Star Pitches" write bytes at stock
 heap addresses (`0x900D6A78`, `0x900D6929`, entropy from `0x900DFCFC`)
 whose owning objects are not identified yet; a stock-game RAM dump during a
 match is needed to find them through a register or an `r13` global.
+"Graffiti Runner - Press A+Minus (-) to Mega" [Master Kirby] has the same
+problem: it writes a halfword at `0x900D5CF4` (0x0807), `0x900D5D64` (0x6000)
+and the odd address `0x900D5D69` (0x0C00), and f32 1.0 / 0.12 at
+`0x900D5D58` / `0x900D5D5C`, in an object of the minigame that is not
+identified yet. A stock-game MEM1 + MEM2 dump taken during Graffiti Runner
+is needed.
+
+**Cheats** (Options tab, Cheats; ported 2026-10-25, none tested in Dolphin):
+the [TNTkryzt] codes of Dolphin's code list, which the list marks "may not
+work". The three 06/04 codes put a function in the MEM1 tail and branch to
+it; their stubs are those functions, instruction for instruction.
+
+- `toy_field_coins` ("Toy Field 9999 Coins", 04 `0x804CA690`): `fn_804CA354`
+  clamps a value (r24 +0x20) to 0..r24 +0xA8 and stores the clamped r3; the
+  patch `stw r3,0x20(r24)` → `stw r0,0x20(r24)` stores the maximum. Plain
+  patch.
+- `double_home_runs` ("Homeruns Worth Double", 06 `0x817FED64` / 04
+  `0x8017FD94`): at `lha r0,0x6C(r28)` in `fn_8017F924` (the play's runs,
+  added to the score) the runs are doubled while the word r28 +0xA94 is 1.
+- `reset_outs` ("Reset Out Count B+1", 06 `0x817FED14` / 04 `0x80132230`):
+  in `fn_801320D8` (r30 = `*(r13-0x1D38)`, +9 the outs), while the word r28
+  +0x34 is 1 and the halfword r30 +0x48 is exactly `0x0600`, the outs are
+  set to 0.
+- `fast_movement` ("Extremely Fast Movement P1", 06 `0x817FED40` / 04
+  `0x8011B630`): before `lfs f31,0xEC(r3)` in `fn_8011B600`, f32 0.46875
+  (`0x3EF00000`) is written to r3 +0xEC unless r5 is 0 or the word r5 -0x2A0
+  is 1.
+- `all_stars` ("All Star Players" and "All MVP's": the list gives the same
+  code under both names; 00 `0x80E559A7` = 1, 08 `0x80E559A8` `0x01010101`
+  × 10): 41 bytes at +0x197 of the progress object `*(r13-0x300)` (see
+  `_docs/SaveData.md`). The stock address follows from the 2026-10-25 RAM
+  dump of an expanded game: the progress object sits 0x2CC below the
+  challenge struct there (`0x80E609B0`), so stock `0x80E55810`, and its 41
+  bytes at +0x197 hold 0s and 1s. Their meaning is not decoded.
+- `all_items` ("Unlock All Items", 04 `0x80E55DAC`..`0x80E55DB4` =
+  `0x63636363`): twelve bytes at +0x2D0 of the challenge struct
+  `*(r13-0xE80)` set to 99 (in the same dump: small counts such as 4, 9, 11).
+
+The Gecko codes wrote the two save data blocks every frame at their stock
+heap addresses; the stubs write the same bytes through the `r13` globals
+(null-checked), from the end of the per-frame controller update
+`fn_8050B5A4`: `0x8050BF9C` `lwz r0,0x154(r1)` and `0x8050BFA0` `mtlr r0`,
+after `__restore_gpr`. Its only caller (`0x8045D360`) drops r3, so every
+volatile register and cr0 are free there. Since the game saves these blocks,
+the values stay after the option is turned off. Every cheat but
+`toy_field_coins` adds the DOL sections.
 
 The same applies to roster runs: any run that adds the DOL sections (new IDs,
 names of new IDs, grid, wheel order, character voices, ...) breaks those

@@ -30,6 +30,7 @@ The roster state is the dict ``Roster/state.py`` writes
 import json
 import os
 import re
+import time
 from dataclasses import dataclass, field
 
 try:
@@ -58,6 +59,8 @@ UNNAMED = '-'
 CPU_VS_CPU_OPTIONS = ('cpu_vs_cpu', 'cpu_management')   # what the CPU vs CPU tab's button turns off (+ close plays)
 CLOSE_PLAY_LEVELS = tuple(range(0, 101, 10))             # GameOptions/game_options.CLOSE_PLAY_LEVELS (test-pinned)
 CLOSE_PLAY_GECKO = 50                                    # the community Gecko code's odds
+MERCY_RULE_STOCK = 10                                    # game_options.MERCY_RULE_STOCK_RUNS (test-pinned)
+MERCY_RULE_LEVELS = tuple(r for r in range(1, 100) if r != MERCY_RULE_STOCK)    # game_options (test-pinned)
 LUIGI = 0x01
 
 
@@ -222,7 +225,7 @@ def close_play_status(state, pending=None) -> tuple[str, bool | None]:
     are named after it."""
     options = _game_options(state)
     suffix = ''
-    if any(k in GAME_OPTION_GROUPS for k in staged_game_options(pending)):
+    if any(GAME_OPTION_GROUPS.get(k) == 'close_play' for k in staged_game_options(pending)):
         level = close_play_level(state, pending)
         suffix = f' (pending: {"disabled" if level is None else f"{level}%"})'
     if options is None:
@@ -252,18 +255,78 @@ CPU_FIXES = (
 )
 
 
+# Extras (Gameplay tab): the community Gecko codes of the "Characters and Chemistry" section, toggled like the CPU
+# fixes (GameOptions/game_options.py): (option key, label, tooltip).
+EXTRAS = (
+    ('duplicate_characters', 'Duplicate characters',
+     'Port of "Duplicate Characters" [LlamaTrauma]: a character may be on a team more than once (replace the captains '
+     'with any players you like). Plain patches: no added code, so Gecko codes keep working.'),
+    ('duplicate_captains', 'Duplicate captains',
+     'Port of "Duplicate Captains" [LittleCoaks]: both teams are nine of their captain; other characters cannot be '
+     'picked. Turn on "every character a captain" too to make a team of any character. It adds code to main.dol, '
+     'like CPU vs CPU.'),
+    ('all_captains', 'Every character a captain',
+     'Port of "Requires all characters are captains" [philenarion]: every character\'s "captain" stat is set, the new '
+     'IDs of a roster expansion too. The stat editor shows the changed values as edits; disabling puts the stock '
+     'values back.'),
+    ('captain_self_chemistry', 'Captain chemistry with themselves',
+     'Port of "Captains Have Chemistry With Themselves" [LittleCoaks]: the twelve stock captains get good chemistry '
+     '(2) with themselves, for teams of duplicates. The stat editor shows the changed values as edits; disabling puts '
+     'the stock values back.'),
+)
+# The "99-0 Tools" section, below them.
+EXTRAS_99_0 = (
+    ('always_away', 'Always away team',
+     'Port of "Always away team" [LlamaTrauma]: no coin flip for who bats first; the first team (yours) always bats '
+     'first. Plain patch: no added code, so Gecko codes keep working.'),
+    ('score_999', '999 runs',
+     'Port of "999 runs" [LlamaTrauma]: the scoreboard shows the first team\'s score in three digits (up to 999) and '
+     'the other team\'s in one (up to 9). Enabling it turns on "always away team" too, as the Gecko code does, so the '
+     'three digits are yours. It adds code to main.dol, like CPU vs CPU.'),
+    ('extra_innings', 'Unlimited extra innings',
+     'Port of "Unlimited extra innings" [LittleCoaks]: a tied match goes on up to the 99th inning (stock: 3 extra '
+     'innings). Experimental: the game keeps the line score for 12 innings only, so from the 13th inning on the runs '
+     'may land in the wrong score or break the match. Plain patch: no added code.'),
+)
+# The "Miscellaneous" section, below them (and the mercy rule lead, an input: MERCY_RULE_*).
+EXTRAS_MISC = (
+    ('night_music', 'Day/night music themes',
+     'Port of "Day/Night Music Themes" [C^2]: night matches at Mario Stadium, Wario City, Yoshi Park, Peach Ice '
+     'Garden and DK Jungle play other music; day matches keep the stock music. Unlike the Gecko code it also works '
+     'for matches the autopicker sets up. It adds code to main.dol, like CPU vs CPU.'),
+    ('challenge_coins', 'Challenge mode 999 coins',
+     'Port of "Challenge Mode - Press B+2 to get 999 Coins" [Master Kirby]: in challenge mode, hold B + 2 on '
+     'controller 1 to set your coins to 999. Unlike the Gecko code it finds the coins when a roster expansion moves '
+     'them. It adds code to main.dol, like CPU vs CPU.'),
+)
+# Enabling one of these also turns on the other (the Gecko code has its line); disabling leaves it alone.
+EXTRA_COMPANIONS = {'score_999': 'always_away'}
+EXTRA_TOGGLES = EXTRAS + EXTRAS_99_0 + EXTRAS_MISC
+
+
 def _cpu_fix_label(key: str) -> str:
-    return next(label for k, label, _tip in CPU_FIXES if k == key)
+    return next(label for k, label, _tip in CPU_FIXES + EXTRA_TOGGLES if k == key)
 
 
 def cpu_fix_button(state, pending, key: str) -> tuple[str, bool]:
-    """A CPU fix button's label and whether it enables (the pending edits counted)."""
+    """A CPU fix's (or an extra's) button label and whether it enables (the pending edits counted)."""
     label = _cpu_fix_label(key).lower()
     return (f'Disable {label}', False) if key in _effective_options(state, pending) else (f'Enable {label}', True)
 
 
+def cpu_fix_edits(state, pending, key: str) -> list[dict]:
+    """The edits of a CPU fix's (or an extra's) button: on or off, and on with its companion (``EXTRA_COMPANIONS``)
+    unless that is on already."""
+    enable = cpu_fix_button(state, pending, key)[1]
+    edits = [game_option_edit(key, enable)]
+    companion = EXTRA_COMPANIONS.get(key)
+    if enable and companion and companion not in _effective_options(state, pending):
+        edits.append(game_option_edit(companion, True))
+    return edits
+
+
 def cpu_fix_status(state, pending, key: str) -> tuple[str, bool | None]:
-    """The status label beside a CPU fix button and whether the game has it on (None: not known); a pending edit is
+    """The status label beside a CPU fix (or extra) button and whether the game has it on (None: not known); a pending edit is
     named after it."""
     options = _game_options(state)
     text = f'{_cpu_fix_label(key)}: ' + ('unknown' if options is None else 'enabled' if key in options else 'disabled')
@@ -275,6 +338,73 @@ def cpu_gecko_warning(state, pending=None) -> bool:
     (CPU vs CPU, its management, the close play odds); the CPU fixes write the same as theirs in place."""
     options = _effective_options(state, pending)
     return bool({'cpu_vs_cpu', 'cpu_management'} & options) or _close_play_of(options) is not None
+
+
+def extras_gecko_warning(state, pending=None) -> bool:
+    """Whether to warn about the Gecko codes the Extras replace: one of them is on (or staged on)."""
+    options = _effective_options(state, pending)
+    return bool({key for key, _label, _tip in EXTRA_TOGGLES} & options) or _mercy_rule_of(options) is not None
+
+
+# Mercy rule lead (GameOptions/game_options mercy_rule_<runs>): one level at a time; the stock 10 has no option.
+MERCY_RULE_STAGE = 'Stage lead'
+MERCY_RULE_RESET = 'Stock mercy rule'
+
+
+def mercy_rule_key(runs: int) -> str:
+    return f'mercy_rule_{runs}'
+
+
+def mercy_rule_clamp(value) -> int:
+    """The input's value as a lead: 1-99 runs (not a number: the stock 10)."""
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return MERCY_RULE_STOCK
+    return min(max(value, 1), 99)
+
+
+def _mercy_rule_of(options) -> int | None:
+    return next((r for r in MERCY_RULE_LEVELS if mercy_rule_key(r) in options), None)
+
+
+def mercy_rule_level(state, pending=None) -> int:
+    """The lead once the pending edits are written (the stock 10 without a level)."""
+    level = _mercy_rule_of(_effective_options(state, pending))
+    return MERCY_RULE_STOCK if level is None else level
+
+
+def mercy_rule_buttons(state, pending, runs: int) -> tuple[bool, bool]:
+    """Whether Stage (the input's ``runs``) and the stock button are usable: Stage when ``runs`` is not the lead
+    already, the stock button while a level is on or staged."""
+    level = _mercy_rule_of(_effective_options(state, pending))
+    return mercy_rule_level(state, pending) != runs, level is not None
+
+
+def mercy_rule_edit(state, pending, runs: int | None) -> dict | None:
+    """The edit that stages the lead ``runs``, or the stock lead (None or 10). The stock one turns the game's level
+    off, so the planner drops a pending level too; with none in the game, the pending one. None when no level is on
+    or staged."""
+    if runs is not None and runs != MERCY_RULE_STOCK:
+        return game_option_edit(mercy_rule_key(runs), True)
+    level = _mercy_rule_of(_game_options(state) or ())
+    level = _mercy_rule_of(_effective_options(state, pending)) if level is None else level
+    return game_option_edit(mercy_rule_key(level), False) if level is not None else None
+
+
+def mercy_rule_status(state, pending=None) -> tuple[str, bool | None]:
+    """The status label beside the mercy rule buttons and whether a lead is on (None: not known); pending edits are
+    named after it."""
+    options = _game_options(state)
+    suffix = ''
+    if any(GAME_OPTION_GROUPS.get(k) == 'mercy_rule' for k in staged_game_options(pending)):
+        suffix = f' (pending: {mercy_rule_level(state, pending)} runs)'
+    if options is None:
+        return 'Mercy rule: unknown' + suffix, None
+    level = _mercy_rule_of(options)
+    if level is None:
+        return f'Mercy rule: stock ({MERCY_RULE_STOCK} runs)' + suffix, False
+    return f'Mercy rule: {level} runs' + suffix, True
 
 
 # Team autopicker: the MSS-AutoTeam Gecko code written into main.dol (GameOptions/game_options.AUTOPICKER_PATCHES).
@@ -301,6 +431,84 @@ def autopicker_status(state) -> tuple[str, bool | None]:
     if AUTOPICKER_KEY in options:
         return 'Autopicker patch: on (disable the "team autopicker" Gecko code in Dolphin)', True
     return 'Autopicker patch: off', False
+
+
+# Unused character strike zones: the "Fix Unused Character Strikezone Heights" Gecko code, in main.dol
+# (GameOptions/game_options.STRIKE_ZONE_FIX); written right away like the autopicker patch.
+STRIKE_ZONE_KEY = 'unused_strike_zones'
+STRIKE_ZONE_ENABLE = 'Enable strike zone fix'
+STRIKE_ZONE_DISABLE = 'Disable strike zone fix'
+
+
+def strike_zone_button(state) -> tuple[str, bool]:
+    """The strike zone button's label and whether it enables."""
+    on = STRIKE_ZONE_KEY in (_game_options(state) or [])
+    return (STRIKE_ZONE_DISABLE, False) if on else (STRIKE_ZONE_ENABLE, True)
+
+
+def strike_zone_command(enable: bool) -> tuple:
+    return ('--game-options', '--on' if enable else '--off', STRIKE_ZONE_KEY)
+
+
+def strike_zone_status(state) -> tuple[str, bool | None]:
+    """The status label beside the button and whether the fix is on (None: not known)."""
+    options = _game_options(state)
+    if options is None:
+        return 'Strike zone fix: unknown', None
+    if STRIKE_ZONE_KEY in options:
+        return 'Strike zone fix: on (disable the Gecko code in Dolphin)', True
+    return 'Strike zone fix: off', False
+
+
+# Cheats (Options tab): the [TNTkryzt] codes of Dolphin's code list, in main.dol (GameOptions/game_options.py,
+# "cheats"); untested. Written right away like the autopicker patch: (option key, label after Enable / Disable,
+# tooltip).
+CHEATS = (
+    ('toy_field_coins', 'Toy Field 9999 coins',
+     'Port of "Toy Field 9999 Coins" [TNTkryzt]: your Toy Field coins go to the maximum. Plain patch: no added code, '
+     'so Gecko codes keep working.'),
+    ('double_home_runs', 'double home runs',
+     'Port of "Homeruns Worth Double" [TNTkryzt]: the runs of a home run count twice. It adds code to main.dol, like '
+     'CPU vs CPU.'),
+    ('reset_outs', 'reset outs (B + 1)',
+     'Port of "Reset Out Count B+1" [TNTkryzt]: hold B + 1 during a match to set the outs back to 0. It adds code to '
+     'main.dol, like CPU vs CPU.'),
+    ('fast_movement', 'extremely fast movement (P1)',
+     'Port of "Extremely Fast Movement P1" [TNTkryzt]: player 1 runs much faster. It adds code to main.dol, like CPU '
+     'vs CPU.'),
+    ('all_stars', 'all star players / MVPs',
+     'Port of "All Star Players" / "All MVP\'s" [TNTkryzt] (the list has the same code under both names): sets the '
+     '41 star / MVP flags of the loaded save slot. The game saves them, so they stay after disabling. Unlike the Gecko '
+     'code it finds the save data when a roster expansion moves it. It adds code to main.dol, like CPU vs CPU.'),
+    ('all_items', 'all items',
+     'Port of "Unlock All Items" [TNTkryzt]: the challenge mode items of the loaded save slot go to 99 each. The game '
+     'saves them, so they stay after disabling. Unlike the Gecko code it finds them when a roster expansion moves them. '
+     'It adds code to main.dol, like CPU vs CPU.'),
+)
+CHEATS_NOTE = ('Codes found in Dolphin\'s code list, written into main.dol. Untested: they may not work. Disable the '
+               'matching Gecko codes in Dolphin.')
+
+
+def _cheat_label(key: str) -> str:
+    return next(label for k, label, _tip in CHEATS if k == key)
+
+
+def cheat_button(state, key: str) -> tuple[str, bool]:
+    """A cheat's button label and whether it enables."""
+    label = _cheat_label(key)
+    return (f'Disable {label}', False) if key in (_game_options(state) or []) else (f'Enable {label}', True)
+
+
+def cheat_command(key: str, enable: bool) -> tuple:
+    return ('--game-options', '--on' if enable else '--off', key)
+
+
+def cheat_status(state, key: str) -> tuple[str, bool | None]:
+    """The status label beside a cheat's button and whether the game has it on (None: not known)."""
+    options = _game_options(state)
+    if options is None:
+        return 'unknown', None
+    return ('on', True) if key in options else ('off', False)
 
 
 # Player memory: each on-field player's heap (High + Low + bat or glove) is 870,400 bytes in the stock game.
@@ -777,6 +985,9 @@ def slot_details(state: dict, cid: int) -> list[str]:
     edits = stat_edits_of(state, cid)
     if edits:
         lines.append(f'Stat edits: {stat_edits_text(edits)}')
+    size = size_text(state, cid)
+    if size:
+        lines.append(size)
     animations = animations_text(c)
     if animations:
         lines.append(animations)
@@ -1251,7 +1462,8 @@ class PendingEdits:
 
 def _edit_title(edit: dict) -> str:
     if edit['op'] == STAT_EDITS:
-        return f'Pending: stat editor value changes'
+        size = size_file(edit.get('file'))
+        return f'Pending: size {size[1]:g}x' if size else 'Pending: stat editor value changes'
     if edit['op'] == GAMEPLAY:
         return f'Pending: gameplay settings: {gameplay_item_label(edit.get("file"))}'
     if edit['op'] == GAME_OPTION:
@@ -1329,8 +1541,16 @@ GAME_OPTION = 'game_option'            # a game option on / off (Gameplay tab, C
 GAME_OPTION_TITLES = {'cpu_vs_cpu': 'CPU vs CPU', 'cpu_management': 'CPU vs CPU management',
                       **{f'close_play_{p}': f'CPU vs CPU close play odds {p}%' for p in CLOSE_PLAY_LEVELS},
                       'triple_take': 'CPU triple take replays', 'strikeout_camera': 'CPU strikeout camera',
-                      'outfield_dives': 'CPU outfield dives and jumps', 'no_precharge': 'No CPU precharge'}
-GAME_OPTION_GROUPS = {f'close_play_{p}': 'close_play' for p in CLOSE_PLAY_LEVELS}    # Roster/slot_plan (test-pinned)
+                      'outfield_dives': 'CPU outfield dives and jumps', 'no_precharge': 'No CPU precharge',
+                      'duplicate_characters': 'Duplicate characters', 'duplicate_captains': 'Duplicate captains',
+                      'all_captains': 'Every character a captain',
+                      'captain_self_chemistry': 'Captain chemistry with themselves',
+                      'always_away': 'Always away team', 'score_999': '999 runs',
+                      'extra_innings': 'Unlimited extra innings',
+                      **{f'mercy_rule_{r}': f'Mercy rule at {r} runs' for r in MERCY_RULE_LEVELS},
+                      'night_music': 'Day/night music themes', 'challenge_coins': 'Challenge mode 999 coins'}
+GAME_OPTION_GROUPS = {**{f'close_play_{p}': 'close_play' for p in CLOSE_PLAY_LEVELS},    # Roster/slot_plan
+                      **{f'mercy_rule_{r}': 'mercy_rule' for r in MERCY_RULE_LEVELS}}    # (test-pinned)
 GAME_OPS = (STAT_EDITS, GAMEPLAY, ITEM, STADIUM, GAME_OPTION)
 STAT_RESET = 'stat_reset'                     # clears one slot's stat edits (Roster/slot_plan, test-pinned)
 
@@ -2010,6 +2230,108 @@ def stat_edit(path: str) -> dict:
     return {'op': STAT_EDITS, 'id': hex_id(GAME_WIDE), 'file': path}
 
 
+# The slot level's Set size...: one factor on the character's size scale (``sizescale``, the stat editor's size
+# "Gameplay" and "Select Screens"), 1 = the size the roster gives it without stat edits. It is staged as a stat edit
+# file of one character, written into the Stat Editor tab's staging folder under its received-file prefix
+# (``StatEditor/editor_install.RECEIVED_PREFIX``), so the tab's pruning deletes it once no pending edit uses it.
+SIZE_ORIGIN = 'set_size'                         # the file's "origin": a size edit, not the Stat Editor's
+SIZE_MIN, SIZE_MAX = 0.1, 5.0
+SIZE_FIELDS = (('gameplay', 'Gameplay'), ('select', 'Select Screens'))
+STAT_STAGING_REL = os.path.join('_gui', 'stat')
+SIZE_FILE_PREFIX = 'stat_edits_size_'
+
+
+def size_of(state: dict | None, cid: int) -> dict | None:
+    """``{"gameplay", "select", "base_gameplay", "base_select"}`` of ``cid`` (``Roster/state_cli.read_sizes``), or
+    None when the state has no sizes for it."""
+    return (((state or {}).get('sizes') or {}).get('characters') or {}).get(hex_id(cid))
+
+
+def size_factor(sizes: dict | None) -> float | None:
+    """The size factor the game gives a character now: its gameplay size over the roster's own (None: unknown)."""
+    if not sizes or not sizes.get('base_gameplay'):
+        return None
+    return sizes['gameplay'] / sizes['base_gameplay']
+
+
+def size_text(state: dict | None, cid: int) -> str | None:
+    """The slot summary's size line, or None without sizes."""
+    sizes = size_of(state, cid)
+    factor = size_factor(sizes)
+    if factor is None:
+        return None
+    what = 'normal' if abs(factor - 1) < 1e-6 else f'{factor:.3g}x its normal size'
+    return f'Size: {what} (scale {sizes["gameplay"]:g} in game, {sizes["select"]:g} on the select screens)'
+
+
+def parse_size(text: str) -> tuple[float | None, str | None]:
+    """The factor typed into Set size... and the reason it is refused (None when it is fine)."""
+    try:
+        value = float(text.strip().rstrip('xX').replace(',', '.'))
+    except ValueError:
+        return None, 'Type a number, e.g. 1.2 (20% bigger) or 0.8 (20% smaller)'
+    if not SIZE_MIN <= value <= SIZE_MAX:
+        return None, f'The factor must be between {SIZE_MIN:g} and {SIZE_MAX:g}'
+    return value, None
+
+
+def size_doc(state: dict, cid: int, factor: float) -> dict:
+    """The stat edit file (``StatEditor/apply.py``) that gives ``cid`` ``factor`` times its normal size, in game and
+    on the select screens. Valid only for the main.dol the state was read from."""
+    sizes = size_of(state, cid)
+    values = {name: float(f'{sizes["base_" + key] * factor:.6g}') for key, name in SIZE_FIELDS}
+    return {'format': 'sluggies-stat-edits', 'version': 1, 'main_dol_sha1': state['sizes']['main_dol_sha1'],
+            'origin': SIZE_ORIGIN, 'size_factor': factor, 'characters': {hex_id(cid): {'size': values}}}
+
+
+def write_size_file(root_dir: str, doc: dict, now: float | None = None) -> str:
+    """Write a size edit file into the Stat Editor tab's staging folder; returns its path."""
+    folder = os.path.join(root_dir, STAT_STAGING_REL)
+    os.makedirs(folder, exist_ok=True)
+    stamp = time.strftime('%Y%m%d-%H%M%S', time.localtime(time.time() if now is None else now))
+    path, n = os.path.join(folder, f'{SIZE_FILE_PREFIX}{stamp}.json'), 2
+    while os.path.exists(path):
+        path, n = os.path.join(folder, f'{SIZE_FILE_PREFIX}{stamp}-{n}.json'), n + 1
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(doc, f, indent=1)
+    return path
+
+
+_SIZE_FILES: dict[tuple[str, float], tuple[int, float] | None] = {}
+
+
+def size_file(path: str | None) -> tuple[int, float] | None:
+    """``(ID, factor)`` of a size edit file (``size_doc``), None for any other stat edit file. Cached per path and
+    modification time, like ``stat_file_ids``."""
+    try:
+        key = (os.path.normcase(os.path.abspath(path)), os.path.getmtime(path))
+    except (OSError, TypeError, ValueError):
+        return None
+    if key not in _SIZE_FILES:
+        found = None
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                doc = json.load(f)
+            if isinstance(doc, dict) and doc.get('origin') == SIZE_ORIGIN:
+                ids = list(doc.get('characters') or {})
+                if len(ids) == 1 and isinstance(doc.get('size_factor'), (int, float)):
+                    found = (int(ids[0], 16), float(doc['size_factor']))
+        except (OSError, ValueError, AttributeError, TypeError):
+            found = None
+        _SIZE_FILES[key] = found
+    return _SIZE_FILES[key]
+
+
+def pending_size(pending: 'PendingEdits', cid: int) -> float | None:
+    """The factor of ``cid``'s last pending size edit, or None."""
+    found = None
+    for path in staged_stat_files(pending):
+        size = size_file(path)
+        if size is not None and size[0] == cid:
+            found = size[1]
+    return found
+
+
 def staged_stat_files(pending: 'PendingEdits') -> list[str]:
     """The pending stat edit files, in staging order."""
     return [e['file'] for e in pending.edits if e['op'] == STAT_EDITS and e.get('file')]
@@ -2050,12 +2372,15 @@ def _same_file(a: str | None, b: str) -> bool:
 def stat_edits_dialog(state: dict | None, plan: dict | None, code: int, output: str, path: str) -> SlotDialog:
     """The confirm dialog of a stat edit file after its staging check (the pending edits plus this one): what it
     changes per character and table, its warnings and the verdict. ``can_apply`` (Stage stages it) only when the
-    whole check passed and the file changes something."""
-    dialog = SlotDialog('Stage the Stat Editor\'s values?')
+    whole check passed and the file changes something. A size edit file (``size_doc``) gets the size wording."""
+    size = size_file(path)
+    noun = 'Size' if size else 'Stat edits'
+    dialog = SlotDialog(f'Give {name_of(state or {}, size[0])} {size[1]:g}x its normal size?' if size
+                        else 'Stage the Stat Editor\'s values?')
     lines = dialog.lines
     error = error_message(output)
     if plan is None or plan['refused']:
-        dialog.title = 'Stat edits: refused'
+        dialog.title = f'{noun}: refused'
         if plan is None:
             error = error.removeprefix('refused, nothing written: ')
             lines.append((f'Refused: {error or f"the planner failed (exit code {code})"}', ERROR))
@@ -2068,11 +2393,12 @@ def stat_edits_dialog(state: dict | None, plan: dict | None, code: int, output: 
     section = next((s for s in plan['edits'] if s['action'] == STAT_EDITS
                     and _same_file((s.get('edit') or {}).get('file'), path)), None)
     if section is None:
-        dialog.title = 'Stat edits: nothing to change'
+        dialog.title = f'{noun}: nothing to change'
         skipped = next((s for s in plan['skipped'] if s['action'] == STAT_EDITS
                         and _same_file((s.get('edit') or {}).get('file'), path)), None)
         lines += [(f'- {note}', TEXT) for note in (skipped or {}).get('notes', [])]
-        lines.append(('The Stat Editor sent no value the game does not hold already. Nothing was staged.', TEXT))
+        lines.append(('The game has that size already. Nothing was staged.' if size else
+                      'The Stat Editor sent no value the game does not hold already. Nothing was staged.', TEXT))
         return dialog
     lines.append((f'Changes: {(section.get("effects") or {}).get(STAT_EDITS) or "changed values"}', OK))
     lines += [(f'- {note}', TEXT) for note in section['notes']]

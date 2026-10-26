@@ -10,7 +10,8 @@ Every character also gets its ``fingerprint`` (``pack.py``: block and portrait
 SHA-1s, name, stats, voice), which roster packs and the GUI's "changed since
 load/save" marker compare. ``game_options`` lists the game options that are on
 (``GameOptions/game_options.detect``) for the Gameplay tab's CPU vs CPU status, and
-the stat edits the game holds (``read_stat_edits``) for the GUI's warnings, and the
+the stat edits the game holds (``read_stat_edits``) for the GUI's warnings, every
+character's size scale (``read_sizes``) for the grid's Set size..., and the
 gameplay settings (``read_gameplay``: as the game holds them and as ``1_Input`` does) for
 the Gameplay tab.
 
@@ -37,14 +38,14 @@ try:
     from ..Dol import dolfile
     from ..GameOptions import game_options
     from ..Gameplay import read as gameplay_read
-    from ..StatEditor import bridge as stat_bridge, carry
+    from ..StatEditor import bridge as stat_bridge, carry, fields
     from ..StatEditor.fields import short
     from . import datfile, derive, pack, state, state_icons
 except ImportError:
     from Dol import dolfile
     from GameOptions import game_options
     from Gameplay import read as gameplay_read
-    from StatEditor import bridge as stat_bridge, carry
+    from StatEditor import bridge as stat_bridge, carry, fields
     from StatEditor.fields import short
     import datfile
     import derive
@@ -176,6 +177,40 @@ def read_stat_edits(image: dolfile.DolImage, input_folder: str) -> dict | None:
     return None if edits is None else carry.summary(edits)
 
 
+SIZE_FIELDS = (('gameplay', 'Gameplay'), ('select', 'Select Screens'))   # the stat editor's size group, 0-1
+
+
+def read_sizes(image: dolfile.DolImage, input_folder: str) -> dict | None:
+    """The size scale of every character (``sizescale``, the stat editor's size "Gameplay" / "Select Screens"), for
+    the grid's Set size...: ``{"main_dol_sha1", "characters": {"0xNN": {"gameplay", "select", "base_gameplay",
+    "base_select"}}}``, the values as ``image`` holds them and as the roster writes them without stat edits
+    (``bridge.baseline_rows``). The SHA-1 is the one a size edit file names (``StatEditor/apply.py``). None when
+    ``input_folder/main.dol`` or the roster cannot be read."""
+    path = os.path.join(input_folder, 'main.dol')
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, 'rb') as f:
+            vanilla = dolfile.DolImage(f.read())
+        place = carry.placement(image) if carry.table_mapped(vanilla, 'sizescale') else None
+        if place is None:
+            return None
+        baseline = stat_bridge.baseline_rows(vanilla, place.roster)['sizescale']
+    except (OSError, stat_bridge.BridgeError, dolfile.DolError):
+        return None
+    layout = place.layouts['sizescale']
+    out = {}
+    for cid in place.present:
+        live = image.read(layout.row_address(cid), layout.row_size)
+        sizes = {}
+        for key, name in SIZE_FIELDS:
+            f = fields.character_field('size', name)
+            sizes[key] = short(f.unpack(live[f.offset:f.offset + f.size]))
+            sizes['base_' + key] = short(f.unpack(baseline[cid][f.offset:f.offset + f.size]))
+        out[f'0x{cid:02X}'] = sizes
+    return {'main_dol_sha1': hashlib.sha1(image.data).hexdigest(), 'characters': out}
+
+
 def read_gameplay(image: dolfile.DolImage, input_folder: str) -> dict:
     """``{"current", "vanilla", "missing"}``: every gameplay value as ``image`` holds it and as
     ``input_folder/main.dol`` does (``{table: {row: {column: value}}}``; vanilla None when that file cannot be read),
@@ -199,6 +234,7 @@ def run(output_dir: str = OUTPUT_DIR) -> dict:
     state.clip_hashes(result, open_sound(output_dir))     # char_clips / clips: the custom clips' SHA-1s
     result['game_options'] = game_options.detect(image)   # keys of the options that are on (GUI status line)
     result['stat_edits'] = read_stat_edits(image, input_dir(output_dir))
+    result['sizes'] = read_sizes(image, input_dir(output_dir))
     result['gameplay'] = read_gameplay(image, input_dir(output_dir))
     result['icon_dir'] = ICON_DIR
     result['icon_crops'] = None

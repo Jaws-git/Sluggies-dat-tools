@@ -23,7 +23,9 @@ Edits are staged. The slot level's **Rename...** (a text box
 with a live "fits the name plate" line), **Select .sluggie...** and **Select
 lowpoly (L_) .sluggie...** (a Low model only; it joins the slot's pending High
 pick, so both are patched in one go), **Clear
-slot**, **Stats...** and **Voice...**, and the square level's **Set voice (all)...** (colour
+slot**, **Stats...** and **Voice...**, **Set size...** (below Rename...: one factor on the character's size
+scale, 1 = its normal size, written as a one-character stat edit file, ``gui_grid.size_doc``, and staged like the
+Stat Editor's), and the square level's **Set voice (all)...** (colour
 wheels only; both pick from a list) and the Equipment row's tiles (Bat, Left glove, Right glove, Extra bat;
 each has **Select...** for a bat/glove ``.sluggie`` and **Reset**) and **Replace animation...** (below Adopt stats...:
 one or more ``.anm`` banks, e.g. the Blender add-on's export, staged together; each whole bank is replaced) run a staging check
@@ -139,6 +141,7 @@ IMPORT_SLG = 'Import .slgmodel...'   # below them: a Sluggers Characters patcher
 SLGMODEL_DIR_SETTING = 'grid_last_slgmodel_dir'  # the GUI settings key: the folder the last character file came from
 STATS, VOICE = 'Adopt stats...', 'Voice...'
 ANIM = 'Replace animation...'       # on the row below, under Adopt stats...
+SIZE = 'Set size...'                # the row below's first column, under Rename...
 ANIM_DIR_SETTING = 'grid_last_anim_dir'   # the GUI settings key: the folder the last .anm came from
 SLUGGIE_DIR_SETTING = 'grid_last_sluggie_dir'   # the GUI settings key: the folder the last slot/equipment .sluggie came from
 IMAGE_DIR_SETTING = 'grid_last_image_dir'       # the GUI settings key: the folder the last portrait image came from
@@ -149,7 +152,7 @@ MODEL_FILE_DIRS = {gui_grid.ITEM: ITEM_DIR_SETTING, gui_grid.STADIUM: STADIUM_DI
 EXTRA_ROWS = 3                      # the column right of the grid: Luigi, the item tile, the stadium tile
 TILE_ICONS = {gui_grid.ITEM: ('banana', gui_grid.banana_icon), gui_grid.STADIUM: ('flag', gui_grid.flag_icon)}
 VOICE_ALL = 'Set voice (all)...'    # the square level (colour wheel): the voice reaches every member
-SLOT_BUTTONS = (RENAME, STATS, VOICE, CLEAR)     # the row below: Replace animation..., Discard pending
+SLOT_BUTTONS = (RENAME, STATS, VOICE, CLEAR)     # the row below: Set size..., Replace animation..., Discard pending
 EQUIP_PAIR_W = 2 * EQUIP_BUTTON_W - 8 + 4   # a tile's Select... + Reset buttons and the gap between them
 SLOT_BUTTON_W = EQUIP_PAIR_W      # the bottom row's buttons match that, so they align under the tiles
 SELECT_W = (SLOT_W - 2 * PAD) // 3  # Select .sluggie... and Select lowpoly (L_) .sluggie... above the Equipment row
@@ -193,6 +196,7 @@ class CharacterGridTab:
         self.confirm = None                # the open dialog window
         self._after_save = None            # runs once the pack chosen in the file dialog is saved
         self.confirm_default = None        # what Enter does in it (its OK / Close button), or None
+        self.stat_offer = None             # the stat edit file being offered (a Set size... file too), or None
         self.pending = gui_grid.PendingEdits()
         self.work = None                   # what the tab's own running command does (status text), or None
         self.edits_path = os.path.join(app.root_dir, gui_grid.EDITS_REL)
@@ -203,6 +207,7 @@ class CharacterGridTab:
         self.reference = None              # gui_grid.Reference: the pack last saved / loaded (session only)
         self.gecko_compatible = False      # the output main.dol still works with stock-game Gecko codes (each read)
         self.close_play_shown = None       # the close play level the slider was last set to (CPU vs CPU tab)
+        self.mercy_rule_shown = None       # the mercy rule lead the input was last set to (Extras tab)
         self.copied = None                 # the character Copy earmarked (session only), or None
         self._menu_targets = {}            # portrait button -> the square's members, for the right-click menu
         self.on_pending_changed = []       # callbacks other tabs register (the Voices tab shows pending clips)
@@ -412,6 +417,44 @@ class CharacterGridTab:
                                           color=(90, 200, 120, 255), secondary_color=(60, 120, 80, 255))
                 dpg.add_text('', tag='cpu_vs_cpu_status')
 
+    def build_extras(self):
+        """The Gameplay tab's "Extras" inner tab: community Gecko codes as toggles that stage game option edits, like
+        the CPU vs CPU tab's CPU fixes ("Patch Game" writes them)."""
+        with dpg.tab(label='Extras', tag='extras_tab'):
+            dpg.add_text('The buttons stage the change; "Patch Game" writes every pending edit.', color=_DIM)
+            dpg.add_spacer(height=4)
+            for title, extras in (('Characters and chemistry', gui_grid.EXTRAS), ('99-0 tools', gui_grid.EXTRAS_99_0),
+                                  ('Miscellaneous', gui_grid.EXTRAS_MISC)):
+                if extras is not gui_grid.EXTRAS:
+                    dpg.add_spacer(height=4)
+                dpg.add_text(title)
+                for key, _label, tip in extras:
+                    with dpg.group(horizontal=True):
+                        dpg.add_button(label=gui_grid.cpu_fix_button(None, None, key)[0], tag=f'grid_fix_{key}',
+                                       width=300, callback=lambda _s, _a, u: self._on_cpu_fix(u), user_data=key)
+                        with dpg.tooltip(f'grid_fix_{key}'):
+                            dpg.add_text(tip, wrap=420)
+                        dpg.add_text('', tag=f'grid_fix_{key}_status')
+            with dpg.group(horizontal=True):
+                dpg.add_input_int(tag='grid_mercy_rule_runs', width=120, min_value=1, max_value=99,
+                                  min_clamped=True, max_clamped=True, default_value=gui_grid.MERCY_RULE_STOCK,
+                                  callback=lambda: self._show_cpu_vs_cpu())
+                with dpg.tooltip('grid_mercy_rule_runs'):
+                    dpg.add_text('Port of "Mercy Rule Modifier" [ZPL]: with the mercy rule on in the match settings, '
+                                 'a match ends once a team leads by this many runs (1-99; stock 10). Plain patch: no '
+                                 'added code, so Gecko codes keep working.', wrap=420)
+                dpg.add_button(label=gui_grid.MERCY_RULE_STAGE, tag='grid_mercy_rule_stage',
+                               callback=lambda: self._on_mercy_rule(True))
+                dpg.add_button(label=gui_grid.MERCY_RULE_RESET, tag='grid_mercy_rule_reset',
+                               callback=lambda: self._on_mercy_rule(False))
+                dpg.add_text('', tag='grid_mercy_rule_status')
+            dpg.add_text('Disable the matching Gecko codes in Dolphin now!', tag='grid_extras_gecko_warning',
+                         color=_WARN, show=False)
+            with dpg.group(horizontal=True):
+                dpg.add_loading_indicator(tag='extras_spinner', style=1, radius=1.6, show=False,
+                                          color=(90, 200, 120, 255), secondary_color=(60, 120, 80, 255))
+                dpg.add_text('', tag='extras_status')
+
     def build_options(self):
         """The Options tab: game options written into main.dol right away (player memory). Its state comes from the
         grid's read, so the tab lives here."""
@@ -459,6 +502,33 @@ class CharacterGridTab:
                     dpg.add_text('Three instructions are changed in place: it adds no code area, so Gecko codes '
                                  'made for the stock game keep working.', wrap=420)
                 dpg.add_text('', tag='options_autopicker_status')
+            dpg.add_spacer(height=4)
+            dpg.add_separator()
+            dpg.add_spacer(height=4)
+            dpg.add_text('Unused character strike zones')
+            with dpg.group(horizontal=True):
+                dpg.add_button(label=gui_grid.STRIKE_ZONE_ENABLE, tag='options_strike_zone', width=260,
+                               callback=lambda: self._on_strike_zone())
+                with dpg.tooltip('options_strike_zone'):
+                    dpg.add_text('Writes the Gecko code "Fix Unused Character Strikezone Heights" into main.dol: the '
+                                 'strike zone heights of the unused Toad (0.8), Pianta (0.95), Kritter (1.15) and '
+                                 'Koopa (0.9).', wrap=420)
+                    dpg.add_text('It follows the roster: new characters that play with one of their stats get the '
+                                 'fixed height too, and it stays on through roster changes. It adds no code area, '
+                                 'so Gecko codes made for the stock game keep working.', wrap=420)
+                dpg.add_text('', tag='options_strike_zone_status')
+            dpg.add_spacer(height=4)
+            dpg.add_separator()
+            dpg.add_spacer(height=4)
+            dpg.add_text('Cheats')
+            dpg.add_text(gui_grid.CHEATS_NOTE, color=_DIM, wrap=600)
+            for key, _label, tip in gui_grid.CHEATS:
+                with dpg.group(horizontal=True):
+                    dpg.add_button(label=gui_grid.cheat_button(None, key)[0], tag=f'options_cheat_{key}', width=260,
+                                   callback=lambda _s, _a, k: self._on_cheat(k), user_data=key)
+                    with dpg.tooltip(f'options_cheat_{key}'):
+                        dpg.add_text(tip, wrap=420)
+                    dpg.add_text('', tag=f'options_cheat_{key}_status')
             dpg.add_spacer(height=4)
             dpg.add_separator()
             dpg.add_spacer(height=4)
@@ -557,7 +627,7 @@ class CharacterGridTab:
         Options tab and the Gameplay tab's CPU vs CPU tab show them too (their status comes from the read)."""
         busy = self.work is not None or self.loader.status == self.loader.RUNNING
         for spinner, status in (('grid_spinner', 'grid_status'), ('options_spinner', 'options_status'),
-                                ('cpu_vs_cpu_spinner', 'cpu_vs_cpu_status')):
+                                ('cpu_vs_cpu_spinner', 'cpu_vs_cpu_status'), ('extras_spinner', 'extras_status')):
             if dpg.does_item_exist(spinner):
                 dpg.configure_item(spinner, show=busy)
                 dpg.set_value(status, self.work or self.loader.message)
@@ -576,6 +646,15 @@ class CharacterGridTab:
         text, on = gui_grid.autopicker_status(state)
         dpg.set_value('options_autopicker_status', text)
         dpg.configure_item('options_autopicker_status', color=_OK if on else _DIM)
+        dpg.configure_item('options_strike_zone', label=gui_grid.strike_zone_button(state)[0])
+        text, on = gui_grid.strike_zone_status(state)
+        dpg.set_value('options_strike_zone_status', text)
+        dpg.configure_item('options_strike_zone_status', color=_OK if on else _DIM)
+        for key, _label, _tip in gui_grid.CHEATS:
+            dpg.configure_item(f'options_cheat_{key}', label=gui_grid.cheat_button(state, key)[0])
+            text, on = gui_grid.cheat_status(state, key)
+            dpg.set_value(f'options_cheat_{key}_status', text)
+            dpg.configure_item(f'options_cheat_{key}_status', color=_OK if on else _DIM)
         self._show_cpu_vs_cpu()
         dpg.set_value('grid_note', gui_grid.stock_luigi_note(state) if state else '')
         dpg.configure_item('grid_reference', show=self.reference is not None)
@@ -1150,19 +1229,26 @@ class CharacterGridTab:
                 ANIM: 'Stage animation banks (.anm, e.g. exported from Blender) for this slot; select several files '
                       'to stage them together. Every animation of a bank is replaced at once. It must fit the slot\'s skeleton (checked); the stock .anm '
                       'puts the bank back. "Patch Game" writes the pending edits.',
+                SIZE: 'Stage a size for this character: one factor on its size scale, in game and on the select '
+                      'screens (1 = its normal size; the whole model, skeleton and mesh). "Patch Game" writes the '
+                      'pending edits.',
                 DISCARD: "Drop this slot's pending edits (nothing was written for them yet)."}
         actions = {RENAME: lambda: self._on_rename(cid), CLEAR: lambda: self._start_preview(cid, None),
                    STATS: lambda: self._on_value('stats', cid), VOICE: lambda: self._on_value(gui_grid.CHAR_VOICE, cid),
-                   ANIM: lambda: self._on_anim(cid), DISCARD: lambda: self._on_discard(cid)}
+                   ANIM: lambda: self._on_anim(cid), SIZE: lambda: self._on_size(cid),
+                   DISCARD: lambda: self._on_discard(cid)}
         def slot_button(label, theme='primary_theme'):
             # a staged pack load replaces the roster: slot edits wait until it is written or discarded
-            usable = self.pending.has(cid) if label == DISCARD else self.pending.pack is None
+            usable = (self.pending.has(cid) if label == DISCARD else self.pending.pack is None
+                      and (label != SIZE or gui_grid.size_of(state, cid) is not None))
             button = dpg.add_button(label=label, width=SLOT_BUTTON_W, height=BUTTON_H, callback=actions[label],
                                     enabled=not self._locked() and usable)
             dpg.bind_item_theme(button, theme)
             self.slot_buttons.append((button, usable))
             tip = tips[label] if usable or label == DISCARD else (
-                'A roster pack load is pending: press "Patch Game" (or Discard it) first.')
+                'The size scale of this character could not be read (Refresh, or check 1_Input/main.dol).'
+                if label == SIZE and self.pending.pack is None
+                else 'A roster pack load is pending: press "Patch Game" (or Discard it) first.')
             with dpg.tooltip(button):
                 dpg.add_text(tip, wrap=420)
 
@@ -1170,8 +1256,8 @@ class CharacterGridTab:
         with dpg.group(horizontal=True, horizontal_spacing=GAP, parent=box):
             for label in SLOT_BUTTONS:       # Voice...: the slot's own voice (a stock voice or a voice pack)
                 slot_button(label, 'grid_warn_theme' if label == CLEAR else 'primary_theme')
-        stats_x = SLOT_BUTTONS.index(STATS) * (SLOT_BUTTON_W + GAP)
-        with dpg.group(horizontal=True, horizontal_spacing=GAP, parent=box, indent=stats_x):
+        with dpg.group(horizontal=True, horizontal_spacing=GAP, parent=box):
+            slot_button(SIZE)                # under Rename...
             slot_button(ANIM)                # under Adopt stats...
             dpg.add_spacer(width=SLOT_BUTTON_W)   # Set voice (all)... is a colour-wheel (square level) button only
             slot_button(DISCARD, 'grid_warn_theme')
@@ -1231,7 +1317,8 @@ class CharacterGridTab:
         options_locked = self._options_locked()
         if dpg.does_item_exist('options_pending'):
             dpg.configure_item('options_pending', show=bool(len(self.pending)))
-            for tag in ('grid_big_memory', 'grid_player_heap', 'options_autopicker', 'options_copy_now'):
+            for tag in ('grid_big_memory', 'grid_player_heap', 'options_autopicker', 'options_strike_zone',
+                        'options_copy_now', *(f'options_cheat_{key}' for key, _l, _t in gui_grid.CHEATS)):
                 dpg.configure_item(tag, enabled=not options_locked)
         self._show_cpu_vs_cpu()
 
@@ -1273,7 +1360,9 @@ class CharacterGridTab:
                                                      gui_grid.close_play_snap(dpg.get_value('grid_close_play_odds')))
         dpg.configure_item('grid_close_play_stage', enabled=stage and not locked)
         dpg.configure_item('grid_close_play_disable', enabled=disable and not locked)
-        for key, _label, _tip in gui_grid.CPU_FIXES:
+        for key, _label, _tip in gui_grid.CPU_FIXES + gui_grid.EXTRA_TOGGLES:
+            if not dpg.does_item_exist(f'grid_fix_{key}'):
+                continue
             dpg.configure_item(f'grid_fix_{key}', label=gui_grid.cpu_fix_button(state, pending, key)[0],
                                enabled=not locked)
             text, enabled = gui_grid.cpu_fix_status(state, pending, key)
@@ -1282,6 +1371,21 @@ class CharacterGridTab:
                                else _DIM)
         dpg.configure_item('cpu_vs_cpu_discard', enabled=bool(staged) and not locked)
         dpg.configure_item('grid_cpu_gecko_warning', show=gui_grid.cpu_gecko_warning(state, pending))
+        if dpg.does_item_exist('grid_extras_gecko_warning'):
+            dpg.configure_item('grid_extras_gecko_warning', show=gui_grid.extras_gecko_warning(state, pending))
+        if dpg.does_item_exist('grid_mercy_rule_runs'):
+            level = gui_grid.mercy_rule_level(state, pending)
+            if level != self.mercy_rule_shown:      # follow the game / staged lead, not each redraw
+                dpg.set_value('grid_mercy_rule_runs', level)
+            self.mercy_rule_shown = level
+            text, enabled = gui_grid.mercy_rule_status(state, pending)
+            dpg.set_value('grid_mercy_rule_status', text)
+            dpg.configure_item('grid_mercy_rule_status', color=_PENDING if '(pending' in text else _OK if enabled
+                               else _DIM)
+            stage, reset = gui_grid.mercy_rule_buttons(
+                state, pending, gui_grid.mercy_rule_clamp(dpg.get_value('grid_mercy_rule_runs')))
+            dpg.configure_item('grid_mercy_rule_stage', enabled=stage and not locked)
+            dpg.configure_item('grid_mercy_rule_reset', enabled=reset and not locked)
 
     def _pending_changed(self):
         """Redraw what shows the pending list: the grid's markers, the open levels, the buttons."""
@@ -1649,6 +1753,64 @@ class CharacterGridTab:
         self._end_action()
         self._start_preview(cid, None, rename=text)
 
+    def _on_size(self, cid):
+        """The Set size... dialog: a factor (1 = the character's normal size; a refused one gets a red line); OK writes a one-character stat edit file (``gui_grid.size_doc``) and runs its staging check."""
+        state = self.nav.state or self.loader.state
+        sizes = gui_grid.size_of(state, cid)
+        if self._locked() or sizes is None:
+            return
+        pending = gui_grid.pending_size(self.pending, cid)
+        current = gui_grid.size_factor(sizes)
+        vw, vh = dpg.get_viewport_client_width(), dpg.get_viewport_client_height()
+        self.action = (cid, 'size')
+        win = self.confirm = dpg.add_window(label=f'Size of {gui_grid.name_of(state, cid)} ({gui_grid.hex_id(cid)})',
+                                            modal=True, no_collapse=True, no_saved_settings=True, autosize=True,
+                                            pos=(max(0, (vw - CONFIRM_W) // 2), max(0, vh // 5)),
+                                            on_close=lambda *_: self._end_action())
+        dpg.add_text('One factor for the whole model (skeleton and mesh), in game and on the select screens: 1 is '
+                     'the character\'s normal size, 1.2 makes it 20% bigger, 0.8 20% smaller. Its hitbox and '
+                     'fielding reach stay as they are.', parent=win, wrap=CONFIRM_W)
+        dpg.add_text(gui_grid.size_text(state, cid), parent=win, color=_DIM)
+        if pending is not None:
+            dpg.add_text(f'Pending: {pending:g}x', parent=win, color=_PENDING)
+        status, ok = 'grid_size_status', 'grid_size_ok'
+
+        def changed(_s=None, text=None):
+            text = text if text is not None else dpg.get_value('grid_size_text')
+            _value, problem = gui_grid.parse_size(text)
+            dpg.set_value(status, problem or '')         # only a refusal shows
+            dpg.configure_item(status, color=_ERROR)
+            dpg.configure_item(ok, enabled=problem is None)
+
+        shown = pending if pending is not None else current
+        dpg.add_input_text(tag='grid_size_text', parent=win, width=160, hint='Factor, e.g. 1.2',
+                           default_value=f'{shown:.4g}', callback=changed)
+        dpg.add_text('', tag=status, parent=win)
+        dpg.add_spacer(height=GAP, parent=win)
+        with dpg.group(horizontal=True, parent=win):
+            dpg.add_button(label='OK', tag=ok, width=110, height=BUTTON_H, callback=lambda: self._on_size_ok(cid))
+            dpg.bind_item_theme(ok, 'primary_theme')
+            dpg.add_button(label='Normal size', width=110, height=BUTTON_H,
+                           callback=lambda: (dpg.set_value('grid_size_text', '1'), changed(text='1')))
+            dpg.add_button(label='Cancel', width=110, height=BUTTON_H, callback=lambda: self._end_action())
+        changed()
+        self.confirm_default = lambda: dpg.get_item_configuration(ok).get('enabled') and self._on_size_ok(cid)
+        dpg.focus_item('grid_size_text')
+        self.set_busy(self.app.busy)
+
+    def _on_size_ok(self, cid):
+        value, problem = gui_grid.parse_size(dpg.get_value('grid_size_text'))
+        state = self.nav.state or self.loader.state
+        self._end_action()
+        if problem is not None:
+            return
+        try:
+            path = gui_grid.write_size_file(self.app.root_dir, gui_grid.size_doc(state, cid, value))
+        except OSError as exc:
+            self.app.log_line(f'[character grid] could not write the size edit file: {exc}', _WARN)
+            return
+        self.offer_stat_edits(path)
+
     def _start_preview(self, cid, sluggie, rename=None, value=None, icon=None, equip=None, copy_from=None,
                        anim=None, low=False, slgmodel=None):
         """The staging check (the pending edits plus this one; this one's build check); the confirm dialog
@@ -1866,6 +2028,7 @@ class CharacterGridTab:
             self.app.log_line(f'[stat editor] could not write {self.edits_path}: {exc}', _WARN)
             return True
         self.action = 'stat_edits'
+        self.stat_offer = path                 # the Stat Editor tab keeps it while it is offered
 
         def show(code, output):
             state = self.nav.state or self.loader.state
@@ -2395,12 +2558,22 @@ class CharacterGridTab:
         if edit is not None and (stage if enable else disable):
             self.offer_game_options([edit], f'close play odds {percent}%' if enable else 'close play odds off')
 
-    def _on_cpu_fix(self, key):
-        """Stage a CPU fix on or off, like _on_cpu_vs_cpu."""
+    def _on_mercy_rule(self, enable):
+        """Stage the input's mercy rule lead, or the stock one (10 runs)."""
         if self._cpu_vs_cpu_locked():
             return
-        label, enable = gui_grid.cpu_fix_button(self.loader.state, self.pending, key)
-        self.offer_game_options([gui_grid.game_option_edit(key, enable)], label.lower())
+        runs = gui_grid.mercy_rule_clamp(dpg.get_value('grid_mercy_rule_runs'))
+        stage, reset = gui_grid.mercy_rule_buttons(self.loader.state, self.pending, runs)
+        edit = gui_grid.mercy_rule_edit(self.loader.state, self.pending, runs if enable else None)
+        if edit is not None and (stage if enable else reset):
+            self.offer_game_options([edit], f'mercy rule {runs} runs' if enable else 'stock mercy rule')
+
+    def _on_cpu_fix(self, key):
+        """Stage a CPU fix (or an extra) on or off, like _on_cpu_vs_cpu; on with its companion (999 runs)."""
+        if self._cpu_vs_cpu_locked():
+            return
+        label, _enable = gui_grid.cpu_fix_button(self.loader.state, self.pending, key)
+        self.offer_game_options(gui_grid.cpu_fix_edits(self.loader.state, self.pending, key), label.lower())
 
     def _on_cpu_vs_cpu_discard(self):
         if self._cpu_vs_cpu_locked():
@@ -2466,6 +2639,20 @@ class CharacterGridTab:
             return
         _label, enable = gui_grid.autopicker_button(self.loader.state)
         self._run_game_option(gui_grid.autopicker_command(enable), enable, 'the autopicker patch')
+
+    def _on_strike_zone(self):
+        """Turn the unused characters' strike zone fix on or off in main.dol right away, like the autopicker patch."""
+        if self._options_locked() or self.loader.state is None:
+            return
+        _label, enable = gui_grid.strike_zone_button(self.loader.state)
+        self._run_game_option(gui_grid.strike_zone_command(enable), enable, 'the strike zone fix')
+
+    def _on_cheat(self, key):
+        """Turn a cheat on or off in main.dol right away, like the autopicker patch."""
+        if self._options_locked() or self.loader.state is None:
+            return
+        label, enable = gui_grid.cheat_button(self.loader.state, key)
+        self._run_game_option(gui_grid.cheat_command(key, enable), enable, label.split(' ', 1)[1])
 
     def _run_game_option(self, command, enable, name):
         verb = 'enabling' if enable else 'disabling'
@@ -2551,6 +2738,7 @@ class CharacterGridTab:
         if dpg.does_item_exist('grid_dialog_textures'):
             dpg.delete_item('grid_dialog_textures', children_only=True)
         self.confirm, self.confirm_default, self.action = None, None, None
+        self.stat_offer = None
         self.set_busy(self.app.busy)
 
     def _prune_staged_icons(self):

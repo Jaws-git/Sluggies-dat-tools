@@ -2212,12 +2212,21 @@ MODEL_FILE_OPS = (ITEM, STADIUM)
 GAME_OPTION = 'game_option'                           # game-wide: a game option on / off (``on:KEY``); last per KEY
 # the game options that can be staged (GameOptions/game_options.OPTIONS keys, test-pinned)
 CLOSE_PLAY_LEVELS = tuple(range(0, 101, 10))         # game_options.CLOSE_PLAY_LEVELS (test-pinned)
+MERCY_RULE_LEVELS = tuple(r for r in range(1, 100) if r != 10)     # game_options.MERCY_RULE_LEVELS (test-pinned)
 GAME_OPTION_TITLES = {'cpu_vs_cpu': 'CPU vs CPU', 'cpu_management': 'CPU vs CPU management',
                       **{f'close_play_{p}': f'CPU vs CPU close play odds {p}%' for p in CLOSE_PLAY_LEVELS},
                       'triple_take': 'CPU triple take replays', 'strikeout_camera': 'CPU strikeout camera',
-                      'outfield_dives': 'CPU outfield dives and jumps', 'no_precharge': 'No CPU precharge'}
+                      'outfield_dives': 'CPU outfield dives and jumps', 'no_precharge': 'No CPU precharge',
+                      'duplicate_characters': 'Duplicate characters', 'duplicate_captains': 'Duplicate captains',
+                      'all_captains': 'Every character a captain',
+                      'captain_self_chemistry': 'Captain chemistry with themselves',
+                      'always_away': 'Always away team', 'score_999': '999 runs',
+                      'extra_innings': 'Unlimited extra innings',
+                      **{f'mercy_rule_{r}': f'Mercy rule at {r} runs' for r in MERCY_RULE_LEVELS},
+                      'night_music': 'Day/night music themes', 'challenge_coins': 'Challenge mode 999 coins'}
 # options that replace each other (game_options.Option.group): the last edit per group wins
-GAME_OPTION_GROUPS = {f'close_play_{p}': 'close_play' for p in CLOSE_PLAY_LEVELS}
+GAME_OPTION_GROUPS = {**{f'close_play_{p}': 'close_play' for p in CLOSE_PLAY_LEVELS},
+                      **{f'mercy_rule_{r}': 'mercy_rule' for r in MERCY_RULE_LEVELS}}
 GAME_OPS = (STAT_EDITS, GAMEPLAY, ITEM, STADIUM, GAME_OPTION)
 # HammerspaceMain.STADIUM_CHUNKS: Mario Stadium (7) .. Toy Field (16)
 STADIUM_CHUNKS = range(7, 17)

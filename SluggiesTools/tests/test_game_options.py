@@ -34,7 +34,7 @@ def synthetic_dol(extra_words: dict[int, int] | None = None, blobs=()) -> bytes:
     sites = HOOK_SITES | (extra_words or {})
     groups = []     # hook sites close together share one section (the data slots run out otherwise)
     for site in sorted(sites):
-        if groups and site - groups[-1][-1] < 0x10000:
+        if groups and site - groups[-1][-1] < 0x80000:
             groups[-1].append(site)
         else:
             groups.append([site])
@@ -47,6 +47,7 @@ def synthetic_dol(extra_words: dict[int, int] | None = None, blobs=()) -> bytes:
     for slot, (address, blob) in enumerate(blobs, start=8 + len(groups)):
         blob += bytes(-len(blob) % 0x20)                                         # 32-byte multiples too
         sections.append((slot, address, list(struct.unpack(f'>{len(blob) // 4}I', blob))))
+    assert sections[-1][0] < 17, 'synthetic_dol: out of data slots (the hammerspace needs one)'
     header = bytearray(dolfile.HEADER_SIZE)
     body = b''
     for slot, address, block in sections:
@@ -84,6 +85,35 @@ def precharge_dol(table: int = WINDUP.address) -> bytes:
             low_site: ppc.one(low_site, lambda a: a.addi(3, 3, ppc.lo(table)))}
     blobs = [(WINDUP.address, windup_rows())] + ([(table, windup_rows())] if table != WINDUP.address else [])
     return synthetic_dol(pair, blobs)
+
+
+CHARFLOATS = inventory.table('charfloats')
+UNUSED_HEIGHTS = {0x49: 1.1, 0x4A: 1.3, 0x4B: 0.15, 0x4C: 1.0}     # stock +0x1C of Toad, Pianta, Kritter, Koopa
+
+
+def charfloats_rows(rows: int) -> bytes:
+    out = bytearray()
+    for cid in range(rows):
+        row = bytearray(CHARFLOATS.row_size)
+        struct.pack_into('>f', row, 0x1C, UNUSED_HEIGHTS.get(cid, 0.9))
+        out += row
+    return bytes(out)
+
+
+def strike_zone_dol(table: int = CHARFLOATS.address) -> bytes:
+    """synthetic_dol plus the charfloats table (stock, and at ``table`` with 0x100 rows if it is moved) and the first
+    lis/addi pair that points the code at ``table``."""
+    lis_site, low_site = CHARFLOATS.all_pairs[0]
+    pair = {lis_site: ppc.one(lis_site, lambda a: a.lis(3, ppc.ha(table))),
+            low_site: ppc.one(low_site, lambda a: a.addi(3, 3, ppc.lo(table)))}
+    blobs = [(CHARFLOATS.address, charfloats_rows(0x66))]
+    if table != CHARFLOATS.address:
+        blobs.append((table, charfloats_rows(0x100)))
+    return synthetic_dol(pair, blobs)
+
+
+def height(image: dolfile.DolImage, cid: int, table: int = CHARFLOATS.address) -> bytes:
+    return image.read(table + CHARFLOATS.row_size * cid + 0x1C, 4)
 
 
 def charge(image: dolfile.DolImage, cid: int, table: int = WINDUP.address) -> float:
@@ -352,6 +382,284 @@ class CpuVsCpuExtrasTests(unittest.TestCase):
         self.assertEqual(go.detect(image), [])
         with self.assertRaisesRegex(go.GameOptionError, 'pitchwindup'):
             go.apply(image, ['no_precharge'])
+
+
+class StrikeZoneTests(unittest.TestCase):
+    """The "Fix Unused Character Strikezone Heights" Gecko code as a game option that follows the roster."""
+    KEY = 'unused_strike_zones'
+    GECKO = {0x80629C38: 0x3F4CCCCD, 0x80629C5C: 0x3F733333, 0x80629C80: 0x3F933333, 0x80629CA4: 0x3F666666}
+
+    def test_stock_layout_gets_the_gecko_words(self):
+        image = dolfile.DolImage(strike_zone_dol())
+        stock = image.to_bytes()
+        self.assertNotIn(self.KEY, go.detect(image))
+        go.apply(image, [self.KEY])
+        self.assertIn(self.KEY, go.detect(image))
+        self.assertEqual({a: image.u32(a) for a in self.GECKO}, self.GECKO)
+        self.assertEqual(height(image, 0x48), struct.pack('>f', 0.9))               # others untouched
+        self.assertIsNone(dhs.DolHammerspace.open(image))                            # no code area
+        with self.assertRaisesRegex(go.GameOptionError, '1_Input'):
+            go.remove(image, [self.KEY])
+        go.remove(image, [self.KEY], dolfile.DolImage(stock))
+        self.assertEqual(image.to_bytes(), stock)
+
+    def test_follows_a_moved_table_and_the_rows_copied_from_the_unused_characters(self):
+        from SluggiesTools.Roster import ids
+        from SluggiesTools.StatEditor import bridge
+        moved = MOVED_WINDUP
+        image = dolfile.DolImage(strike_zone_dol(moved))
+        vanilla = dolfile.DolImage(strike_zone_dol())
+        # 0x66 plays with Toad's stats; Pianta adopts Mario's (0x00), so its row is Mario's and stays
+        roster = bridge.Roster({}, [ids.NewId(0x66, 0x49, 0, 0, None, 0x49)], {0x4A: 0x00})
+        with mock.patch.object(go, '_roster', return_value=roster):
+            log = go.apply(image, [self.KEY])
+            self.assertIn('0x49, 0x4B, 0x4C, 0x66', log[-1])
+            self.assertEqual([height(image, cid, moved) for cid in (0x49, 0x66, 0x4A)],
+                             [struct.pack('>f', 0.8), struct.pack('>f', 0.8), struct.pack('>f', 1.3)])  # 0x4A: untouched
+            self.assertEqual(height(image, 0x49), struct.pack('>f', 1.1))           # the stale stock copy
+            self.assertIn(self.KEY, go.detect(image))
+            go.remove(image, [self.KEY], vanilla)
+            self.assertEqual(height(image, 0x66, moved), struct.pack('>f', 1.1))    # Toad's own value again
+
+
+STATS = inventory.table('stats')
+
+
+def stats_rows(rows: int) -> bytes:
+    """A stats table (header + rows): bytes 0-1 the row's own ID, the stock captains' "captain" byte set, chemistry 1."""
+    out = bytearray(STATS.header)
+    for cid in range(rows):
+        row = bytearray(STATS.row_size)
+        struct.pack_into('>H', row, 0, cid)
+        row[0x07] = 1 if cid in go.CAPTAIN_IDS else 0
+        row[0x28:0x28 + 0x65] = bytes([1]) * 0x65
+        out += row
+    return bytes(out)
+
+
+def stats_dol(table: int = STATS.address) -> bytes:
+    """synthetic_dol plus the stats table (stock, and at ``table`` with 0x100 rows if it is moved) and the first
+    lis/addi pair that points the code at ``table``."""
+    lis_site, low_site = STATS.all_pairs[0]
+    pair = {lis_site: ppc.one(lis_site, lambda a: a.lis(3, ppc.ha(table))),
+            low_site: ppc.one(low_site, lambda a: a.addi(3, 3, ppc.lo(table)))}
+    blobs = [(STATS.address, stats_rows(0x66))]
+    if table != STATS.address:
+        blobs.append((table, stats_rows(0x100)))
+    return synthetic_dol(pair, blobs)
+
+
+def stats_byte(image: dolfile.DolImage, cid: int, offset: int, table: int = STATS.address) -> int:
+    return image.read(table + STATS.header + STATS.row_size * cid + offset, 1)[0]
+
+
+class CharacterExtrasTests(unittest.TestCase):
+    """Ports of the "Characters and Chemistry" Gecko codes (Gameplay tab, Extras)."""
+
+    def setUp(self):
+        self.image = dolfile.DolImage(stats_dol())
+        self.stock = self.image.to_bytes()
+
+    def test_gecko_addresses_are_the_stock_stats_rows(self):
+        rows = STATS.address + STATS.header
+        self.assertEqual(rows + 0x07, 0x806CE9AF)                                        # the 08 line's start
+        self.assertEqual([rows + STATS.row_size * c + 0x28 + c for c in (0x00, 0x13)], [0x806CE9D0, 0x806CF46D])
+
+    def test_duplicate_characters_patch_in_place(self):
+        go.apply(self.image, ['duplicate_characters'])
+        self.assertEqual(go.detect(self.image), ['duplicate_characters'])
+        self.assertIsNone(dhs.DolHammerspace.open(self.image))
+        self.assertEqual(self.image.u32(0x80071B10), 0x38600000)
+        go.remove(self.image, ['duplicate_characters'])
+        self.assertEqual(self.image.to_bytes(), self.stock)
+
+    def test_duplicate_captains_stub_copies_slot_zero(self):
+        go.apply(self.image, ['duplicate_captains', 'duplicate_characters'])
+        self.assertEqual(go.detect(self.image), ['duplicate_characters', 'duplicate_captains'])
+        site = go.DUPLICATE_CAPTAIN_SITE
+        stub = stub_of(self.image, site)
+        words = [self.image.u32(stub + 4 * i) for i in range(7)]
+        self.assertEqual(words[:6], [0x7C60EA14, 0x2C1B0000, 0x41820010, 0x7C050378, 0xA8A50000, 0xB0A30000])
+        self.assertEqual(ppc.branch_target(words[6], stub + 24), site + 4)
+        go.remove(self.image, ['duplicate_captains', 'duplicate_characters'])
+        self.assertEqual(self.image.to_bytes(), self.stock)
+
+    def test_all_captains_sets_every_row(self):
+        go.apply(self.image, ['all_captains'])
+        self.assertEqual(go.detect(self.image), ['all_captains'])
+        self.assertEqual({stats_byte(self.image, cid, 0x07) for cid in range(0x65)}, {1})
+        with self.assertRaisesRegex(go.GameOptionError, '1_Input'):
+            go.remove(self.image, ['all_captains'])
+        go.remove(self.image, ['all_captains'], dolfile.DolImage(self.stock))
+        self.assertEqual(self.image.to_bytes(), self.stock)
+
+    def test_captain_self_chemistry_only_on_the_diagonal(self):
+        go.apply(self.image, ['captain_self_chemistry'])
+        self.assertEqual(go.detect(self.image), ['captain_self_chemistry'])
+        self.assertEqual([stats_byte(self.image, c, 0x28 + c) for c in (0x00, 0x13, 0x07)], [2, 2, 1])
+        self.assertEqual(stats_byte(self.image, 0x00, 0x28 + 0x01), 1)
+        go.remove(self.image, ['captain_self_chemistry'], dolfile.DolImage(self.stock))
+        self.assertEqual(self.image.to_bytes(), self.stock)
+
+    def test_follow_a_moved_table_and_new_ids(self):
+        from SluggiesTools.Roster import ids
+        from SluggiesTools.StatEditor import bridge
+        moved = MOVED_WINDUP
+        image = dolfile.DolImage(stats_dol(moved))
+        vanilla = dolfile.DolImage(stats_dol())
+        roster = bridge.Roster({}, [ids.NewId(0x66, 0x07, 0, 0, None, 0x07)], {})
+        with mock.patch.object(go, '_roster', return_value=roster):
+            go.apply(image, ['all_captains', 'captain_self_chemistry'])
+            self.assertEqual(go.detect(image), ['all_captains', 'captain_self_chemistry'])
+            self.assertEqual([stats_byte(image, c, 0x07, moved) for c in (0x07, 0x66)], [1, 1])
+            self.assertEqual(stats_byte(image, 0x07, 0x07), 0)                       # the stale stock copy
+            self.assertEqual(stats_byte(image, 0x00, 0x28, moved), 2)
+            go.remove(image, ['all_captains', 'captain_self_chemistry'], vanilla)
+            self.assertEqual([stats_byte(image, c, 0x07, moved) for c in (0x00, 0x07, 0x66)], [1, 0, 0])
+            self.assertEqual(stats_byte(image, 0x00, 0x28, moved), 1)
+            self.assertEqual(go.detect(image), [])
+
+
+class NinetyNineZeroTests(unittest.TestCase):
+    """Ports of the "99-0 Tools" Gecko codes (Gameplay tab, Extras)."""
+
+    def setUp(self):
+        self.image = dolfile.DolImage(synthetic_dol())
+        self.stock = self.image.to_bytes()
+
+    def test_plain_patches_in_place(self):
+        go.apply(self.image, ['always_away', 'extra_innings'])
+        self.assertEqual(go.detect(self.image), ['always_away', 'extra_innings'])
+        self.assertIsNone(dhs.DolHammerspace.open(self.image))
+        self.assertEqual([self.image.u32(a) for a in (0x802CEAA4, 0x8017F694)], [0x38000000, 0x38000063])
+        go.remove(self.image, ['always_away', 'extra_innings'])
+        self.assertEqual(self.image.to_bytes(), self.stock)
+
+    def test_score_999_stub_is_the_gecko_function(self):
+        go.apply(self.image, ['score_999'])
+        self.assertEqual(go.detect(self.image), ['score_999'])
+        site = go.SCORE_999_SITE
+        stub = stub_of(self.image, site)
+        words = [self.image.u32(stub + 4 * i) for i in range(21)]
+        # the Gecko code's inner function (0x8048A01C), with r0/r4/r5 for r9/r10 and no stack frame
+        self.assertEqual(words[:3], [0x2C1C0001, 0x40820030, 0xA083FFEA])      # cmpwi r28,1; bne; lhz r4,-0x16(r3)
+        self.assertEqual(words[19], go.SCORE_999_STOCK)
+        self.assertEqual(ppc.branch_target(words[20], stub + 80), site + 4)
+        self.assertEqual([self.image.u32(p.site) for p in go.SCORE_999_PATCHES],
+                         [0x2C1B0000, 0x7C000378, 0x38000005, 0x38C00004])
+        go.remove(self.image, ['score_999'])
+        self.assertEqual(self.image.to_bytes(), self.stock)
+
+
+class MiscellaneousTests(unittest.TestCase):
+    """Ports of the "Miscellaneous" Gecko codes (Gameplay tab, Extras)."""
+
+    def setUp(self):
+        self.image = dolfile.DolImage(synthetic_dol())
+        self.stock = self.image.to_bytes()
+
+    @staticmethod
+    def one(build) -> int:
+        return ppc.one(0, build)
+
+    def stub_words(self, site: int) -> list[int]:
+        stub = stub_of(self.image, site)
+        words = []
+        while not words or ppc.branch_target(words[-1], stub + 4 * (len(words) - 1)) != site + 4:
+            words.append(self.image.u32(stub + 4 * len(words)))
+        return words
+
+    def test_mercy_rule_levels_replace_each_other_in_place(self):
+        self.assertNotIn(go.mercy_rule_key(go.MERCY_RULE_STOCK_RUNS), go.BY_KEY)     # the stock lead is "off"
+        go.apply(self.image, ['mercy_rule_15'])
+        self.assertEqual(go.detect(self.image), ['mercy_rule_15'])
+        self.assertEqual(self.image.u32(go.MERCY_RULE_SITE), 0x3800000F)            # li r0,15
+        self.assertIsNone(dhs.DolHammerspace.open(self.image))
+        log = go.apply(self.image, ['mercy_rule_3'])
+        self.assertIn('off (replaced)', ' '.join(log))
+        self.assertEqual(go.detect(self.image), ['mercy_rule_3'])
+        with self.assertRaisesRegex(go.GameOptionError, 'both be on'):
+            go.apply(self.image, ['mercy_rule_20', 'mercy_rule_30'])
+        go.remove(self.image, ['mercy_rule_3'])
+        self.assertEqual(self.image.to_bytes(), self.stock)
+
+    def test_night_music_stubs_pick_the_night_tracks(self):
+        go.apply(self.image, ['night_music'])
+        self.assertEqual(go.detect(self.image), ['night_music'])
+        for site, stock in go.NIGHT_MUSIC_HOOKS:
+            words = self.stub_words(site)
+            self.assertEqual(words[0], stock)                                       # the table read first
+            self.assertIn(self.one(lambda a: a.lbz(12, go.SETTINGS_NIGHT, 12)), words)
+            self.assertIn(self.one(lambda a: a.cmpwi(12, 0, cr=1)), words)               # cr0 is the site's
+            self.assertNotIn(self.one(lambda a: a.cmpwi(12, 0)), words)
+            for stadium, track in go.NIGHT_MUSIC:
+                self.assertIn(self.one(lambda a: a.cmpwi(0, stadium * 4, cr=1)), words)
+                self.assertIn(self.one(lambda a: a.li(5, track)), words)
+        go.remove(self.image, ['night_music'])
+        self.assertEqual(self.image.to_bytes(), self.stock)
+
+    def test_challenge_coins_stub_reads_no_heap_address(self):
+        go.apply(self.image, ['challenge_coins'])
+        self.assertEqual(go.detect(self.image), ['challenge_coins'])
+        words = self.stub_words(go.COINS_SITE)
+        self.assertEqual(words[-2], go.COINS_STOCK)                                 # the epilogue's addi r11
+        self.assertFalse([w for w in words if w >> 26 == 15])                       # no lis: r13 globals only
+        for build in (lambda a: a.lwz(12, go.PAD_MANAGER, 13), lambda a: a.lwz(12, go.CHALLENGE_MANAGER, 13),
+                      lambda a: a.lwz(12, go.CHALLENGE_STRUCT, 13), lambda a: a.andi_(10, 10, 0x0500),
+                      lambda a: a.li(10, 999), lambda a: a.sth(10, go.CHALLENGE_COINS, 12)):
+            self.assertIn(self.one(build), words)
+        self.assertFalse([w for w in words if (w >> 21) & 31 == 11 and w != go.COINS_STOCK])    # r11 kept
+        go.remove(self.image, ['challenge_coins'])
+        self.assertEqual(self.image.to_bytes(), self.stock)
+
+
+class CheatTests(unittest.TestCase):
+    """Ports of the [TNTkryzt] codes of Dolphin's code list (Options tab, Cheats)."""
+
+    # The functions the 06 codes write to the MEM1 tail, at their Gecko addresses.
+    GECKO_FUNCTIONS = {
+        'double_home_runs': (0x817FED64, 'A81C006C817C0A942C0B0001408200081C0000024A981020'),
+        'reset_outs': (0x817FED14, '817C00342C0B00014082001CA17E00482C0B060040820010'
+                                   '38000000981E00094A933500881E00094A9334F8'),
+        'fast_movement': (0x817FED40, '2C050000418200188165FD602C0B00014182000C3D603EF0916300ECC3E300EC4A91C8D4'),
+    }
+
+    def setUp(self):
+        self.image = dolfile.DolImage(synthetic_dol())
+        self.stock = self.image.to_bytes()
+
+    def test_hook_stubs_are_the_gecko_functions(self):
+        for key, (address, gecko) in self.GECKO_FUNCTIONS.items():
+            hook, = go.BY_KEY[key].hooks
+            self.assertEqual(hook.stub(address, hook.site).assemble().hex().upper(), gecko, key)
+
+    def test_toy_field_coins_patches_in_place(self):
+        go.apply(self.image, ['toy_field_coins'])
+        self.assertEqual(go.detect(self.image), ['toy_field_coins'])
+        self.assertIsNone(dhs.DolHammerspace.open(self.image))
+        self.assertEqual(self.image.u32(0x804CA690), 0x90180020)
+        go.remove(self.image, ['toy_field_coins'])
+        self.assertEqual(self.image.to_bytes(), self.stock)
+
+    def test_save_data_stubs_read_no_heap_address(self):
+        keys = ['all_stars', 'all_items', 'challenge_coins']        # the three per-frame hooks share the epilogue
+        go.apply(self.image, keys)
+        self.assertEqual(go.detect(self.image), ['challenge_coins', 'all_stars', 'all_items'])
+        one = lambda build: ppc.one(0, build)      # noqa: E731
+        stars = MiscellaneousTests.stub_words(self, go.STARS_SITE)
+        self.assertEqual(stars[0], one(lambda a: a.lwz(12, go.PROGRESS, 13)))
+        self.assertEqual(stars[-2], go.STARS_STOCK)
+        self.assertIn(one(lambda a: a.stb(11, 0x197, 12)), stars)
+        self.assertEqual([w for w in stars if w >> 26 == 36], [one(lambda a, o=o: a.stw(11, o, 12))
+                                                              for o in range(0x198, 0x1C0, 4)])
+        items = MiscellaneousTests.stub_words(self, go.ITEMS_SITE)
+        self.assertEqual(items[:2], [go.ITEMS_STOCK, one(lambda a: a.lwz(12, go.CHALLENGE_STRUCT, 13))])
+        self.assertEqual(items[4:6], [one(lambda a: a.lis(11, 0x6363)), one(lambda a: a.addi(11, 11, 0x6363))])
+        self.assertEqual(items[6:9], [one(lambda a, o=o: a.stw(11, o, 12)) for o in (0x2D0, 0x2D4, 0x2D8)])
+        for words in (stars, items):         # the only lis is the fill value's: r13 globals, no heap address
+            self.assertEqual(len([w for w in words if w >> 26 == 15]), 1)
+        go.remove(self.image, keys)
+        self.assertEqual(self.image.to_bytes(), self.stock)
 
 
 class RunnerTests(unittest.TestCase):

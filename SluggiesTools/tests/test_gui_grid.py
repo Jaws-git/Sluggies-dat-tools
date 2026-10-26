@@ -683,6 +683,59 @@ class CpuVsCpuExtrasTests(unittest.TestCase):
         self.assertFalse(gui_grid.cpu_gecko_warning(state))
         self.assertTrue(gui_grid.cpu_gecko_warning(state, self.pending('on:close_play_50')))
 
+    def test_extras(self):
+        self.assertTrue({key for key, _label, _tip in gui_grid.EXTRAS} <= set(gui_grid.GAME_OPTION_TITLES))
+        state = {'game_options': ['all_captains']}
+        self.assertEqual(gui_grid.cpu_fix_button(state, None, 'all_captains'),
+                         ('Disable every character a captain', False))
+        self.assertEqual(gui_grid.cpu_fix_status(state, self.pending('on:duplicate_captains'), 'duplicate_captains'),
+                         ('Duplicate captains: disabled (pending: enabled)', False))
+        self.assertTrue(gui_grid.extras_gecko_warning(state))
+        self.assertFalse(gui_grid.extras_gecko_warning({'game_options': ['triple_take']}))
+        self.assertFalse(gui_grid.extras_gecko_warning(state, self.pending('off:all_captains')))
+
+    def test_extras_99_0(self):
+        self.assertTrue({key for key, _label, _tip in gui_grid.EXTRAS_99_0} <= set(gui_grid.GAME_OPTION_TITLES))
+        self.assertTrue(gui_grid.extras_gecko_warning({'game_options': ['extra_innings']}))
+        # 999 runs turns "always away team" on with it (the Gecko code has its line), not off
+        self.assertEqual(gui_grid.cpu_fix_edits({'game_options': []}, None, 'score_999'),
+                         [gui_grid.game_option_edit('score_999', True), gui_grid.game_option_edit('always_away', True)])
+        self.assertEqual(gui_grid.cpu_fix_edits({'game_options': ['always_away']}, None, 'score_999'),
+                         [gui_grid.game_option_edit('score_999', True)])
+        self.assertEqual(gui_grid.cpu_fix_edits({'game_options': ['score_999', 'always_away']}, None, 'score_999'),
+                         [gui_grid.game_option_edit('score_999', False)])
+
+    def test_extras_misc(self):
+        from GameOptions import game_options
+        self.assertTrue({key for key, _label, _tip in gui_grid.EXTRAS_MISC} <= set(gui_grid.GAME_OPTION_TITLES))
+        self.assertTrue(gui_grid.extras_gecko_warning({'game_options': ['night_music']}))
+        self.assertEqual(gui_grid.MERCY_RULE_STOCK, game_options.MERCY_RULE_STOCK_RUNS)
+        self.assertEqual(gui_grid.MERCY_RULE_LEVELS, game_options.MERCY_RULE_LEVELS)
+
+    def test_mercy_rule_lead(self):
+        self.assertEqual([gui_grid.mercy_rule_clamp(v) for v in (0, 1, 15, 99, 150, None, 'x')],
+                         [1, 1, 15, 99, 99, gui_grid.MERCY_RULE_STOCK, gui_grid.MERCY_RULE_STOCK])
+        stock = {'game_options': []}
+        self.assertEqual(gui_grid.mercy_rule_level(stock), 10)
+        self.assertEqual(gui_grid.mercy_rule_status(stock), ('Mercy rule: stock (10 runs)', False))
+        self.assertEqual(gui_grid.mercy_rule_buttons(stock, None, 10), (False, False))
+        self.assertEqual(gui_grid.mercy_rule_buttons(stock, None, 5), (True, False))
+        self.assertIsNone(gui_grid.mercy_rule_edit(stock, None, None))
+        self.assertIsNone(gui_grid.mercy_rule_edit(stock, None, 10))
+        self.assertEqual(gui_grid.mercy_rule_edit(stock, None, 5)['file'], 'on:mercy_rule_5')
+        state = {'game_options': ['mercy_rule_15']}
+        pending = self.pending('on:mercy_rule_20')
+        self.assertEqual(gui_grid.mercy_rule_level(state, pending), 20)
+        self.assertEqual(gui_grid.mercy_rule_status(state, pending), ('Mercy rule: 15 runs (pending: 20 runs)', True))
+        self.assertEqual(gui_grid.mercy_rule_buttons(state, pending, 20), (False, True))
+        self.assertEqual(gui_grid.mercy_rule_buttons(state, pending, 10), (True, True))
+        # back to stock names the game's level, so the planner drops the pending one too
+        self.assertEqual(gui_grid.mercy_rule_edit(state, pending, 10)['file'], 'off:mercy_rule_15')
+        self.assertEqual(gui_grid.mercy_rule_edit(stock, pending, None)['file'], 'off:mercy_rule_20')
+        self.assertTrue(gui_grid.extras_gecko_warning(state))
+        # a mercy rule edit is not a close play edit
+        self.assertEqual(gui_grid.close_play_status({'game_options': []}, pending), ('Close plays: stock', False))
+
     def test_planner_merges_a_group(self):
         from Roster import slot_plan
 
@@ -700,6 +753,36 @@ class CpuVsCpuExtrasTests(unittest.TestCase):
         self.assertEqual(b.commands[0], ('--game-options', '--off', 'close_play_30'))
         b = plan('on:close_play_60', 'on:close_play_30')        # back to the game's level: nothing to write
         self.assertEqual(b.commands, [])
+
+
+class StrikeZoneTests(unittest.TestCase):
+    def test_button_status_command(self):
+        from GameOptions import game_options
+        self.assertIn(gui_grid.STRIKE_ZONE_KEY, game_options.BY_KEY)
+        self.assertFalse(game_options.BY_KEY[gui_grid.STRIKE_ZONE_KEY].hooks)       # no DOL hammerspace
+        self.assertEqual(gui_grid.strike_zone_button({'game_options': []}), (gui_grid.STRIKE_ZONE_ENABLE, True))
+        self.assertEqual(gui_grid.strike_zone_button({'game_options': ['unused_strike_zones']}),
+                         (gui_grid.STRIKE_ZONE_DISABLE, False))
+        self.assertEqual(gui_grid.strike_zone_status(None), ('Strike zone fix: unknown', None))
+        self.assertTrue(gui_grid.strike_zone_status({'game_options': ['unused_strike_zones']})[1])
+        self.assertEqual(gui_grid.strike_zone_command(False), ('--game-options', '--off', 'unused_strike_zones'))
+
+
+class CheatTests(unittest.TestCase):
+    def test_keys_are_game_options(self):
+        from GameOptions import game_options
+        for key, _label, _tip in gui_grid.CHEATS:
+            self.assertIn(key, game_options.BY_KEY)
+
+    def test_button_status_command(self):
+        self.assertEqual(gui_grid.cheat_button({'game_options': []}, 'all_items'), ('Enable all items', True))
+        self.assertEqual(gui_grid.cheat_button({'game_options': ['all_items']}, 'all_items'),
+                         ('Disable all items', False))
+        self.assertEqual(gui_grid.cheat_button(None, 'reset_outs'), ('Enable reset outs (B + 1)', True))
+        self.assertEqual(gui_grid.cheat_status(None, 'all_items'), ('unknown', None))
+        self.assertEqual(gui_grid.cheat_status({'game_options': ['all_items']}, 'all_items'), ('on', True))
+        self.assertEqual(gui_grid.cheat_status({'game_options': ['all_stars']}, 'all_items'), ('off', False))
+        self.assertEqual(gui_grid.cheat_command('all_stars', True), ('--game-options', '--on', 'all_stars'))
 
 
 class AutopickerTests(unittest.TestCase):
