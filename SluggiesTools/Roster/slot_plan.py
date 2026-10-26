@@ -2217,6 +2217,7 @@ GAME_OPTION_TITLES = {'cpu_vs_cpu': 'CPU vs CPU', 'cpu_management': 'CPU vs CPU 
                       **{f'close_play_{p}': f'CPU vs CPU close play odds {p}%' for p in CLOSE_PLAY_LEVELS},
                       'triple_take': 'CPU triple take replays', 'strikeout_camera': 'CPU strikeout camera',
                       'outfield_dives': 'CPU outfield dives and jumps', 'no_precharge': 'No CPU precharge',
+                      'star_pitch_buff': 'Star pitch buff (Waluigi, Yoshi, Peach)',
                       'duplicate_characters': 'Duplicate characters', 'duplicate_captains': 'Duplicate captains',
                       'all_captains': 'Every character a captain',
                       'captain_self_chemistry': 'Captain chemistry with themselves',

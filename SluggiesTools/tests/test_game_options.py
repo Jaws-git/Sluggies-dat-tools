@@ -303,7 +303,7 @@ class GameOptionTests(unittest.TestCase):
 
 class CpuVsCpuExtrasTests(unittest.TestCase):
     """Ports of the community CPU vs CPU Gecko codes: the close play stub and the in-place fixes."""
-    FIXES = ['triple_take', 'strikeout_camera', 'outfield_dives', 'no_precharge']
+    FIXES = ['triple_take', 'strikeout_camera', 'outfield_dives', 'no_precharge', 'star_pitch_buff']
 
     def setUp(self):
         self.image = dolfile.DolImage(precharge_dol())
@@ -355,6 +355,11 @@ class CpuVsCpuExtrasTests(unittest.TestCase):
             self.assertEqual(p.new, one(lambda a: a.nop()))
         self.assertEqual(go.STRIKEOUT_CAMERA_PATCHES[0].new, one(lambda a: a.li(0, 0)))
         self.assertEqual(go.OUTFIELD_DIVE_PATCHES[0].new, one(lambda a: a.cmplwi(0, 6)))
+        # the Gecko code's three 02 lines (address: halfword); the other halfword of each word stays stock
+        gecko = {0x80624956: 0xF703, 0x8062495E: 0xF806, 0x8062493E: 0xF904}
+        for p in go.STAR_PITCH_PATCHES:
+            self.assertEqual(p.new >> 16, p.stock >> 16)
+            self.assertEqual(p.new & 0xFFFF, gecko[p.site + 2])
 
     def test_precharge_raises_only_rows_below_the_floor(self):
         log = go.apply(self.image, ['no_precharge'])

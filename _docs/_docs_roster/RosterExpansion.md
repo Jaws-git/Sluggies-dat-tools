@@ -682,6 +682,15 @@ and the player memory levels leave them working:
   commit) and turning it off puts back the rows `ids.extended_table` builds
   from `1_Input`. The stat edit carry also sees the raised rows as stat
   edits and carries the same values.
+- `star_pitch_buff` (2026-10-26, not yet tried in Dolphin): "Buff
+  Waluigi/Yoshi/Peach Star Pitches" writes three halfwords (02 lines) of the
+  static table at `0x80624908` (8-byte rows of four (s8, u8) pairs): the
+  last pair of rows 6 (`0xFA01` → `0xF904`), 9 (`0xFA01` → `0xF703`) and 10
+  (`0xFC04` → `0xF806`). Not a per-ID table, so it stays in place; the option
+  patches the three words that hold them (`0x8062493C`, `0x80624954`,
+  `0x8062495C`). The Gecko list's "Pre-Charge Removal" (8.0 at `0x80628460`
+  and `0x8062846C`, the `pitchwindup` rows of `0x08` and `0x09`) is a subset
+  of `no_precharge`.
 
 **Unused character strike zones** (`unused_strike_zones`, Options tab,
 2026-10-25, not yet tried in Dolphin): the Gecko code "Fix Unused Character

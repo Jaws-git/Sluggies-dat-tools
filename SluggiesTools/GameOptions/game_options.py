@@ -253,6 +253,12 @@ OUTFIELD_DIVE_PATCHES = (Patch(0x800E2750, 0x28000003, 0x28000006),)       # cmp
 # the only stock rows below 8.0 (7.0, and 5.0 for 0x0F). A roster run with new IDs moves that table, so the
 # option raises every character's row below 8.0 wherever the table is (new IDs' rows too) instead.
 PRECHARGE_FLOORS = (Floor('pitchwindup', 0, 8.0),)
+# "Buff Waluigi/Yoshi/Peach Star Pitches" (three 02 lines): the last (s8, u8) pair of rows 9, 10 and 6 of the static
+# table 0x80624908 (8-byte rows of four such pairs; not a per-ID table, so a roster run leaves it in place). Here the
+# words holding the three halfwords, the other halfword of each kept stock.
+STAR_PITCH_PATCHES = (Patch(0x8062493C, 0xF801FA01, 0xF801F904),     # row 6 +6: 0xFA01 -> 0xF904
+                      Patch(0x80624954, 0xF801FA01, 0xF801F703),     # row 9 +6: 0xFA01 -> 0xF703
+                      Patch(0x8062495C, 0xFB05FC04, 0xFB05F806))     # row 10 +6: 0xFC04 -> 0xF806
 
 
 # ------------------------------------------------------------ player memory
@@ -671,6 +677,7 @@ OPTIONS = (
     Option('outfield_dives', 'CPU fielders dive and jump in the outfield', (), patches=OUTFIELD_DIVE_PATCHES),
     Option('no_precharge', 'No CPU precharge (every pitch "charge" value at least 8.0)', (),
            floors=PRECHARGE_FLOORS),
+    Option('star_pitch_buff', 'Buffed star pitches of Waluigi, Yoshi and Peach', (), patches=STAR_PITCH_PATCHES),
     Option('unused_strike_zones', 'Strike zone heights of the unused characters (Toad, Pianta, Kritter, Koopa)', (),
            values=STRIKE_ZONE_FIX),
     Option('duplicate_characters', 'Duplicate characters (a character may be on a team more than once)', (),
