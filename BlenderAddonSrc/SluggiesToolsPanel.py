@@ -31,6 +31,7 @@ from . import TemplateSources
 from . import TextureFolder
 from .ExportSluggies import (
     SLUGGIES_OT_export,
+    model_meshes,
     _connected_image_texture_nodes,
     _custom_submesh_template_texture_index,
     _detect_uniform_vertex_bone_id,
@@ -2474,6 +2475,33 @@ def _set_aside_old_bodies(old_bodies):
     return names
 
 
+def _carry_shape_key_names(old_bodies, new_body):
+    """Give *new_body* an empty shape key (a copy of its basis) for each
+    shape key name of the replaced *old_bodies* it lacks, so the facial
+    poses keep their names and only need sculpting. Returns notes."""
+    names = list(dict.fromkeys(
+        key.name for old in old_bodies if old.data.shape_keys is not None
+        for key in old.data.shape_keys.key_blocks))
+    if not names:
+        return []
+    keys = new_body.data.shape_keys
+    existing = set(keys.key_blocks.keys()) if keys is not None else set()
+    added = 0
+    if keys is None:
+        # The first key becomes the reference (basis) key.
+        new_body.shape_key_add(name=names[0], from_mix=False)
+        existing.add(names[0])
+    for name in names:
+        if name not in existing:
+            new_body.shape_key_add(name=name, from_mix=False)
+            existing.add(name)
+            added += 1
+    if not added:
+        return []
+    return [f"{new_body.name} got {added} empty shape key{'s' if added != 1 else ''} "
+            f"named like the replaced body's: sculpt them for its facial animation"]
+
+
 def _make_body(obj, arm_obj, model, plans, check_weights=True):
     """Turn the custom submesh *obj* into the skinned body: the submesh 0
     VertexBuffer* properties, its materials as Add-material surfaces of sm0
@@ -3691,6 +3719,7 @@ class SLUGGIES_OT_adapt_meshes(bpy.types.Operator):
                 notes.append(f"{new_body.name} has no material; give it one before Convert Materials")
             # The summary's closing "Next: weight..." line covers the weights.
             notes += _make_body(new_body, arm_obj, model, None, check_weights=False)
+            notes += _carry_shape_key_names(old_bodies, new_body)
             lines.append(f"{new_body.name} is now the main body")
             backups = _set_aside_old_bodies(old_bodies)
             if backups:
@@ -4742,6 +4771,9 @@ class SLUGGIES_OT_export_high_low(bpy.types.Operator):
             for model, path in zip(self._models(), targets):
                 state = "overwrite" if os.path.isfile(path) else "new"
                 col.label(text=f"{model.name}: {os.path.basename(path)} ({state})", icon='FILE')
+                hidden = [obj.name for obj in [model] + model_meshes(context, model)[1] if not obj.visible_get()]
+                if hidden:
+                    col.label(text=f"Unhidden before the export: {', '.join(hidden)}", icon='HIDE_OFF')
         layout.prop(self, 'use_custom_normals')
         layout.prop(self, 'reimport_textures')
 
@@ -4755,6 +4787,20 @@ class SLUGGIES_OT_export_high_low(bpy.types.Operator):
         except ValueError as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
+        # The exporter skips hidden meshes and a hidden armature can't be
+        # selected: unhide both models, then check both before writing either.
+        unhidden = []
+        for arm_obj in (high, low):
+            for obj in [arm_obj] + model_meshes(context, arm_obj)[1]:
+                if not obj.visible_get():
+                    obj.hide_set(False)
+                    obj.hide_viewport = False
+                    unhidden.append(obj.name)
+        for arm_obj in (high, low):
+            if not arm_obj.visible_get() or not model_meshes(context, arm_obj)[0]:
+                self.report({"ERROR"}, f"{arm_obj.name} or its meshes are in a hidden collection: "
+                                       "show it and export again")
+                return {"CANCELLED"}
         selected, active = list(context.selected_objects), context.view_layer.objects.active
         written = []
         try:
@@ -4765,12 +4811,17 @@ class SLUGGIES_OT_export_high_low(bpy.types.Operator):
                     obj.select_set(False)
                 arm_obj.select_set(True)
                 context.view_layer.objects.active = arm_obj
-                result = bpy.ops.sluggies.export_json(
-                    'EXEC_DEFAULT', filepath=path, exclude_unselected=True,
-                    use_custom_normals=self.use_custom_normals, reimport_textures=self.reimport_textures)
+                try:
+                    result = bpy.ops.sluggies.export_json(
+                        'EXEC_DEFAULT', filepath=path, exclude_unselected=True,
+                        use_custom_normals=self.use_custom_normals, reimport_textures=self.reimport_textures)
+                except RuntimeError as exc:  # the exporter's ERROR report
+                    result, why = set(), f": {str(exc).removeprefix('Error: ').strip()}"
+                else:
+                    why = "; see the messages above"
                 if 'FINISHED' not in result:
                     done = f" ({written[0]} was written)" if written else ""
-                    self.report({"ERROR"}, f"Export of {arm_obj.name} failed{done}; see the messages above")
+                    self.report({"ERROR"}, f"Export of {arm_obj.name} failed{done}{why}")
                     return {"CANCELLED"}
                 written.append(os.path.basename(path))
         finally:
@@ -4780,7 +4831,8 @@ class SLUGGIES_OT_export_high_low(bpy.types.Operator):
                 if obj.name in context.view_layer.objects:
                     obj.select_set(True)
             context.view_layer.objects.active = active
-        self.report({"INFO"}, f"Exported {high.name} to {written[0]} and {low.name} to {written[1]}")
+        shown = f" (unhid {', '.join(unhidden)})" if unhidden else ""
+        self.report({"INFO"}, f"Exported {high.name} to {written[0]} and {low.name} to {written[1]}{shown}")
         return {"FINISHED"}
 
 

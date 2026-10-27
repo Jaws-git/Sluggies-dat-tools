@@ -40,8 +40,7 @@ _DRAFT = (255, 230, 120, 255)
 _CHANGED = (130, 190, 255, 255)
 MARK_COLORS = {view.PROBLEM: _ERROR, view.DRAFT: _DRAFT, view.PENDING: _PENDING, view.CHANGED: _CHANGED}
 LOCK_TEXT = 'A roster pack load is pending: press "Patch Game" (or Discard it) first.'
-GECKO_NOTE = ('Gecko codes win: if the AI Gameplay Tool\'s codes are still on in Dolphin, they overwrite these values '
-              'every frame. Turn them off.')
+GECKO_NOTE = ('Gecko codes win: if the codes are still active in Dolphin, they overwrite these values. Turn them off now.')
 CELL_W = {'u8': 64, 's8': 64, 's16': 76, 'f32': 84}
 CHOICE_W = 110
 PATCH_W = 170
@@ -101,7 +100,7 @@ class GameplayTab:
                 dpg.add_text('Stage every gameplay value back to 1_Input/main.dol, star boosts included.', wrap=360)
             dpg.add_text('', tag='gp_source', color=_DIM, wrap=1100)
             dpg.add_text('', tag='gp_status', wrap=1100)
-            dpg.add_text(GECKO_NOTE, color=_DIM, wrap=1100)
+            dpg.add_text(GECKO_NOTE, color=_WARN, wrap=1100)
             with dpg.group(horizontal=True):
                 for mark, label in ((view.DRAFT, 'edited, not staged'), (view.PENDING, 'pending'),
                                     (view.CHANGED, 'differs from 1_Input'), (view.PROBLEM, 'problem')):
