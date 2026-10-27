@@ -309,6 +309,53 @@ class ClearTests(unittest.TestCase):
         self.assertEqual(plan.commands, [('--roster', '--state', STATE_FILE), ('--unpatch', '--target-id', '0x0D'),
                                          ('--roster-state',)])
 
+    def test_stock_slot_gets_its_stock_name_back(self):
+        config = dict(make_config(), stock_names=[{'id': '0x09', 'name': {'en': 'Bow'}},
+                                                  {'id': '0x0D', 'name': {'en': 'Jasmine'}}])
+        plan = slot_plan.plan_clear(make_state(), config, 0x0D, STATE_FILE)
+        self.assertEqual(plan.config['stock_names'], [{'id': '0x09', 'name': {'en': 'Bow'}}])
+        self.assertEqual(plan.effects['name'], 'its stock name')
+        self.assertEqual(plan.commands[0], ('--roster', '--state', STATE_FILE))
+        alone = slot_plan.plan_clear(make_state(), dict(make_config(), stock_names=config['stock_names'][1:]), 0x0D,
+                                     STATE_FILE)
+        self.assertNotIn('stock_names', alone.config)
+
+    def test_spare_row_drops_its_name(self):
+        config = make_config()
+        config['wheels'][0]['name'] = {'en': 'Black Yoshi'}
+        plan = slot_plan.plan_clear(make_state(), config, 0x47, STATE_FILE)
+        self.assertEqual(plan.config['wheels'][0], {'id': '0x47', 'wheel': '0x06', 'swatch': 1})
+        self.assertEqual(plan.effects['name'], 'its stock name')
+
+
+class AtBaselineTests(unittest.TestCase):
+    """``slot_cli.FileEnv.at_baseline``: a slot with only a rename or an own voice is not at its baseline."""
+
+    def at_baseline(self, cid, config):
+        env = slot_cli.FileEnv.__new__(slot_cli.FileEnv)
+        with mock.patch.object(slot_cli.FileEnv, 'models_at_baseline', return_value=True), \
+                mock.patch.object(slot_cli.FileEnv, 'shows_open_slot_portraits', return_value=True):
+            return env.at_baseline(next(c for c in make_state()['characters'] if c['id'] == cid), config)
+
+    def test_stock_slot(self):
+        self.assertTrue(self.at_baseline(0x0D, make_config()))
+        self.assertFalse(self.at_baseline(0x0D, dict(make_config(), stock_names=[{'id': '0x0D', 'name': {}}])))
+        self.assertFalse(self.at_baseline(0x0D, dict(make_config(), character_voices=[{'id': '0x0D',
+                                                                                      'voice': '0x09'}])))
+
+    def test_spare_row(self):
+        config = make_config()
+        self.assertTrue(self.at_baseline(0x47, config))
+        config['wheels'][0]['name'] = {'en': 'Black Yoshi'}
+        self.assertFalse(self.at_baseline(0x47, config))
+        config['wheels'][0] = {'id': '0x47', 'icon': {'side': 'a.png', 'front': 'b.png', 'side_alt': 'c.png'}}
+        self.assertFalse(self.at_baseline(0x47, config))
+
+    def test_new_id_with_an_own_voice(self):
+        self.assertTrue(self.at_baseline(0x66, make_config()))
+        self.assertFalse(self.at_baseline(0x66, dict(make_config(), character_voices=[{'id': '0x66',
+                                                                                      'voice': '0x09'}])))
+
 
 class RenameTests(unittest.TestCase):
     """``plan_rename`` for a stock character, a spare row and a new ID."""

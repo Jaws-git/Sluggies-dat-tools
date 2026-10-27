@@ -101,10 +101,12 @@ the Low model too, which loads it twice on the field. A Low model alone is
 refused on a new ID; on a stock character it is accepted only when the slot's
 High model is its own partner.
 
-`--clear-slot` gives a stock character its vanilla models, portraits and
-own stats back, and a new ID a fresh copy of its template's files, the
-template's stats, the "Empty slot" name and portraits. The square's voice
-stays.
+`--clear-slot` gives a stock character its vanilla models, equipment,
+animations, portraits, own stats and stock name back, and a new ID a fresh
+copy of its template's files, the template's stats, the "Empty slot" name
+and portraits. Either loses its own character voice. The square's voice
+stays, as do stat edits unless you also clear them ("Stage + clear stat
+edits").
 
 ## Replacing a slot's animations
 

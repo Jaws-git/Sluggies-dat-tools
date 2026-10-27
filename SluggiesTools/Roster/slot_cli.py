@@ -402,8 +402,11 @@ class FileEnv(slot_plan.Env):
 
     def at_baseline(self, char, config):
         """Both models are the vanilla blocks of the slot's own source (a new ID: its template, with the
-        open-slot name, template stats and the "empty slot" portraits; a stock ID: no replaced portraits)."""
+        open-slot name, template stats and the "empty slot" portraits; a stock ID: no replaced portraits, other
+        stats or rename; either: no own character voice)."""
         cid = char['id']
+        if slot_plan._entry(config, slot_plan.char_voices.KEY, cid) is not None:
+            return False
         if cid >= ids.FIRST_NEW:
             entry = slot_plan._entry(config, 'ids', cid)
             if (entry is None or 'stats' in entry or char.get('model_source') != char.get('template')
@@ -412,7 +415,9 @@ class FileEnv(slot_plan.Env):
             if not self.shows_open_slot_portraits(char):
                 return False
         elif (slot_plan._entry(config, icons.STOCK_KEY, cid) is not None
-              or slot_plan._entry(config, ids.STOCK_STATS_KEY, cid) is not None):
+              or slot_plan._entry(config, ids.STOCK_STATS_KEY, cid) is not None
+              or slot_plan.stock_renamed(config, cid)
+              or ((slot_plan._entry(config, 'wheels', cid) or {}).get('icon') or {}).get(icons.ALT_VIEW) is not None):
             return False
         if not self.models_at_baseline(char):
             return False

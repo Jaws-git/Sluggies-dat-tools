@@ -56,8 +56,9 @@ Patch:
   patch; when one is missing it keeps them and the plan says so.
 
 Clear: a stock slot gets its vanilla HP and ``L_`` back and loses
-replaced portraits (``stock_icons``) and another stats source
-(``stock_stats``); a new ID gets a fresh copy of its template's files, the
+replaced portraits (``stock_icons``), another stats source
+(``stock_stats``) and a rename (``stock_names``; a spare row: its
+``wheels`` entry's name); a new ID gets a fresh copy of its template's files, the
 template's stats, the "Empty slot" name and portraits. The square voice
 stays.
 
@@ -887,6 +888,9 @@ def plan_clear(st: dict, config: dict, cid: int, state_file: str, env: Env | Non
             _drop(new, ids.STOCK_STATS_KEY, entry)
             plan.notes.append(f'{target_name}: its own stats come back')
             plan.effects['stats'] = 'its own'
+        if _drop_stock_name(new, cid):
+            plan.notes.append(f'{target_name}: its stock name comes back')
+            plan.effects['name'] = 'its stock name'
         _clear_char_voice(new, cid, plan, target_name)
         if new != config:
             plan.config = new
@@ -1145,6 +1149,25 @@ def _drop(config: dict, key: str, entry: dict) -> None:
     config[key].remove(entry)
     if not config[key]:
         del config[key]
+
+
+def stock_renamed(config: dict, cid: int) -> bool:
+    """Whether the stock or spare-row ID ``cid`` has a name of its own in ``config`` (``stock_names``, a spare row's
+    ``wheels`` entry)."""
+    if cid in wheels.SPARE_IDS:
+        return 'name' in (_entry(config, 'wheels', cid) or {})
+    return _entry(config, names.STOCK_KEY, cid) is not None
+
+
+def _drop_stock_name(config: dict, cid: int) -> bool:
+    """Give the stock or spare-row ID ``cid`` its default name back (as a blank rename does); whether it had another."""
+    if not stock_renamed(config, cid):
+        return False
+    if cid in wheels.SPARE_IDS:
+        del _entry(config, 'wheels', cid)['name']
+    else:
+        _drop(config, names.STOCK_KEY, _entry(config, names.STOCK_KEY, cid))
+    return True
 
 
 def _set_stock_entry(config: dict, key: str, cid: int, field_: str, value: str | None) -> None:
