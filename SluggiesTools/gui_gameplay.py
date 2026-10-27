@@ -16,7 +16,8 @@ Three inner tabs (CPU Behaviour, Star Boosts, Item Odds) of value tables, filled
   asks first); **Load settings...** checks a file (``--apply-gameplay FILE --dry-run --report``; our settings files
   and the AI Gameplay Tool's ``cpu_behavior.json``), shows what differs per inner tab, and stages a copy of it in
   place of the pending gameplay edits.
-* **Patch Game (N)** runs the grid's Patch Game: every pending edit, grid and gameplay, in one chain.
+* **Patch Game (N)** runs the grid's Patch Game: every pending edit, grid and gameplay, in one chain. The
+  "Deploy patched files to game directory" checkbox at the end of the row shares the grid's value (``source``).
 
 While a roster pack load is pending the tab is locked, as the sound tabs are.
 """
@@ -43,6 +44,7 @@ GECKO_NOTE = ('Gecko codes win: if the AI Gameplay Tool\'s codes are still on in
               'every frame. Turn them off.')
 CELL_W = {'u8': 64, 's8': 64, 's16': 76, 'f32': 84}
 CHOICE_W = 110
+PATCH_W = 170
 
 
 class GameplayTab:
@@ -73,16 +75,23 @@ class GameplayTab:
             dpg.add_text('CPU behaviour, star boosts and item odds, written into main.dol (no Gecko codes). Typed '
                          'values are staged per inner tab; "Patch Game" writes every pending edit.', wrap=1100)
             with dpg.group(horizontal=True):
-                dpg.add_button(label='Save settings...', tag='gp_save', callback=lambda: self._on_save())
-                dpg.add_button(label='Load settings...', tag='gp_load', callback=lambda: self._on_load())
+                dpg.add_button(label='Patch Game', tag='gp_patch', width=PATCH_W, callback=lambda: self._on_patch())
+                dpg.bind_item_theme('gp_patch', 'primary_theme')
                 dpg.add_spacer(width=12)
                 dpg.add_button(label='Reset gameplay settings', tag='gp_reset_all', callback=lambda: self._on_reset_all())
                 dpg.bind_item_theme('gp_reset_all', 'grid_warn_theme')
                 dpg.add_button(label='Discard pending gameplay edits', tag='gp_discard',
                                callback=lambda: self._on_discard())
                 dpg.add_spacer(width=12)
-                dpg.add_button(label='Patch Game', tag='gp_patch', width=170, callback=lambda: self._on_patch())
-                dpg.bind_item_theme('gp_patch', 'primary_theme')
+                dpg.add_button(label='Save settings...', tag='gp_save', callback=lambda: self._on_save())
+                dpg.add_button(label='Load settings...', tag='gp_load', callback=lambda: self._on_load())
+                dpg.add_spacer(width=12)
+                # the grid's checkbox value (source): one setting, ticking either ticks both
+                dpg.add_checkbox(label=gui_grid.DEPLOY_LABEL, tag='gp_deploy', source='grid_deploy',
+                                 callback=lambda _sender, value: self.grid._on_deploy_toggle(value))
+            with dpg.tooltip('gp_deploy'):
+                dpg.add_text('After a successful Patch Game, copy the game files from 3_Output_Dat into the game '
+                             'directory (the same setting as on the Character grid tab).', wrap=420)
             with dpg.tooltip('gp_save'):
                 dpg.add_text('Save the gameplay settings the game holds into a .sluggiesgameplay file.', wrap=360)
             with dpg.tooltip('gp_load'):
@@ -481,13 +490,13 @@ class GameplayTab:
         per_tab = tuple(sum(1 for f in self.drafts if tables.TABLES_BY_KEY[f.table].tab == tab)
                         for tab, _t in tables.TABS)
         shown = (self._blocked(), self.app.busy, self.grid.action is not None, len(pending), self._pending_items(),
-                 per_tab, self.snap.readonly, self.snap.error, self.snap.source)
+                 per_tab, self.snap.readonly, self.snap.error, self.snap.source, self.grid._deploying())
         if shown != self._shown:
             self._shown = shown
             self._apply(shown, per_tab)
 
     def _apply(self, shown, per_tab):
-        blocked, busy, acting, count, items, _per_tab, readonly, error, source = shown
+        blocked, busy, acting, count, items, _per_tab, readonly, error, source, deploy = shown
         free = not busy and not acting
         dpg.set_value('gp_source', source)
         if error:
@@ -513,8 +522,10 @@ class GameplayTab:
         dpg.configure_item('gp_load', enabled=stageable)
         dpg.configure_item('gp_save', enabled=free and not readonly)
         dpg.configure_item('gp_discard', enabled=free and bool(items))
-        dpg.configure_item('gp_patch', label=f'Patch Game ({count})' if count else 'Patch Game',
-                           enabled=free and bool(count))
+        # one width for both labels (the longer one's), so the row does not shift when Deploy is ticked
+        size = dpg.get_text_size(gui_grid.patch_label(count, True))
+        dpg.configure_item('gp_patch', label=gui_grid.patch_label(count, deploy),
+                           width=max(PATCH_W, int(size[0]) + 20) if size else PATCH_W, enabled=free and bool(count))
         editable = not readonly and self.grid.pending.pack is None
         for f, (item, _tip) in self.cells.items():
             if f in self.snap.current:

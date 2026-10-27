@@ -25,7 +25,7 @@ LEAF_TAIL_FALLBACK = 0.05
 # Reorient Bones: minimum length of a bone aimed at several children, and the
 # armature-space direction for a bone whose children give it none (world -Y
 # once the armature object's +90 deg X rotation is applied).
-REORIENT_MIN_FORK_LENGTH = 0.25
+REORIENT_MIN_FORK_LENGTH = 0.15
 REORIENT_FORWARD = mathutils.Vector((0.0, 0.0, 1.0))
 
 
