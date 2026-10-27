@@ -2,16 +2,20 @@
 (not from a .sluggie) before they are ported onto a Sluggers donor."""
 
 import bmesh
+import bpy
 
 from . import ModelCheckCore
 
 
-# Merge by Distance threshold, in mesh units. 
-# only true duplicates (split seams of a game rip) merge, not fine detail.
-DEFAULT_MERGE_DISTANCE = 1e-4
-
-# Corner attribute that carries custom normals through the merge.
+# Corner attribute that carries custom normals through the loose-geometry delete.
 _NORMALS_ATTR = "_sluggies_cleanup_normal"
+
+# Modifier types Clean Up removes. Merge by Distance is left to the user.
+_SMOOTH_MODIFIERS = {'SMOOTH', 'CORRECTIVE_SMOOTH', 'LAPLACIANSMOOTH'}
+_MASK_MODIFIERS = {'MASK'}
+# Physics tab simulations kept as modifiers (rigid bodies and force fields
+# are not modifiers: _remove_physics clears them separately).
+_PHYSICS_MODIFIERS = {'CLOTH', 'SOFT_BODY', 'COLLISION', 'FLUID', 'DYNAMIC_PAINT'}
 
 
 def is_sluggies_mesh(obj):
@@ -36,10 +40,16 @@ def cleanup_targets(objects):
     return targets, skipped
 
 
-def _merge_and_remove_loose(mesh, merge_distance):
-    """Merge duplicate vertices, then delete vertices and edges that no face
-    uses. Custom normals are kept as they were. Returns (merged vertices,
-    loose vertices, loose edges) removed."""
+def _remove_loose(mesh):
+    """Delete vertices and edges that no face uses (no Merge by Distance:
+    that is left to the user). Custom normals are kept as they were. Returns
+    (loose vertices, loose edges) removed; a mesh without any is left
+    untouched."""
+    face_edges = {key for p in mesh.polygons for key in p.edge_keys}
+    if all(e.key in face_edges for e in mesh.edges) \
+            and len({v for p in mesh.polygons for v in p.vertices}) == len(mesh.vertices):
+        return 0, 0
+
     custom_normals = mesh.has_custom_normals
     if custom_normals:
         attr = mesh.attributes.new(_NORMALS_ATTR, 'FLOAT_VECTOR', 'CORNER')
@@ -47,10 +57,6 @@ def _merge_and_remove_loose(mesh, merge_distance):
 
     bm = bmesh.new()
     bm.from_mesh(mesh)
-    before = len(bm.verts)
-    bmesh.ops.remove_doubles(bm, verts=bm.verts[:], dist=merge_distance)
-    merged = before - len(bm.verts)
-
     before = len(bm.verts)
     loose_edges = [e for e in bm.edges if not e.link_faces]
     bmesh.ops.delete(bm, geom=loose_edges, context='EDGES')
@@ -67,7 +73,32 @@ def _merge_and_remove_loose(mesh, merge_distance):
         mesh.attributes.remove(attr)
         mesh.normals_split_custom_set([flat[i:i + 3] for i in range(0, len(flat), 3)])
     mesh.update()
-    return merged, loose_verts, len(loose_edges)
+    return loose_verts, len(loose_edges)
+
+
+def _remove_modifiers(obj, types):
+    """Delete *obj*'s modifiers of the given types. Returns how many."""
+    doomed = [m for m in obj.modifiers if m.type in types]
+    for mod in doomed:
+        obj.modifiers.remove(mod)
+    return len(doomed)
+
+
+def _remove_physics(obj):
+    """Delete *obj*'s physics simulations: the Physics tab's modifiers
+    (cloth, soft body, collision, fluid, dynamic paint), its rigid body and
+    rigid body constraint, and its force field. Returns how many."""
+    removed = _remove_modifiers(obj, _PHYSICS_MODIFIERS)
+    for attr, op in (('rigid_body', bpy.ops.rigidbody.object_remove),
+                     ('rigid_body_constraint', bpy.ops.rigidbody.constraint_remove)):
+        if getattr(obj, attr) is not None:
+            with bpy.context.temp_override(object=obj, active_object=obj):
+                op()
+            removed += 1
+    if obj.field is not None and obj.field.type != 'NONE':
+        obj.field.type = 'NONE'
+        removed += 1
+    return removed
 
 
 def _remove_empty_vertex_groups(obj):
@@ -160,17 +191,20 @@ def convert_material_nodes(material):
     return links, _remove_unreachable_nodes(material)
 
 
-def run_cleanup(targets, merge_distance=DEFAULT_MERGE_DISTANCE):
+def run_cleanup(targets):
     """Clean *targets* (mesh objects); mesh data shared between them is
     cleaned once. Materials themselves are left alone (their node cleanup,
     convert_material_nodes, belongs to the Convert Materials step). Returns
     the counts for the summary."""
-    counts = dict(objects=len(targets), merged=0, loose_verts=0, loose_edges=0,
-                  vertex_groups=0, material_slots=0)
+    counts = dict(objects=len(targets), smooth_modifiers=0, mask_modifiers=0, physics=0,
+                  loose_verts=0, loose_edges=0, vertex_groups=0, material_slots=0)
+    for obj in targets:
+        counts['smooth_modifiers'] += _remove_modifiers(obj, _SMOOTH_MODIFIERS)
+        counts['mask_modifiers'] += _remove_modifiers(obj, _MASK_MODIFIERS)
+        counts['physics'] += _remove_physics(obj)
     meshes = list(dict.fromkeys(obj.data for obj in targets))
     for mesh in meshes:
-        merged, loose_verts, loose_edges = _merge_and_remove_loose(mesh, merge_distance)
-        counts['merged'] += merged
+        loose_verts, loose_edges = _remove_loose(mesh)
         counts['loose_verts'] += loose_verts
         counts['loose_edges'] += loose_edges
     for obj in targets:
@@ -185,7 +219,9 @@ def summary_lines(counts):
     n = counts['objects']
     lines = [f"Cleaned {n} mesh{'es' if n != 1 else ''}"]
     done = [
-        (counts['merged'], "duplicate vertices merged"),
+        (counts['smooth_modifiers'], "smoothing modifiers removed"),
+        (counts['mask_modifiers'], "mask modifiers removed"),
+        (counts['physics'], "physics simulations removed"),
         (counts['loose_verts'], "loose vertices removed"),
         (counts['loose_edges'], "loose edges removed"),
         (counts['vertex_groups'], "empty vertex groups removed"),

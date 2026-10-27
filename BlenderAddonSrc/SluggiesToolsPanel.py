@@ -2742,8 +2742,9 @@ _ADAPT_TRANSFORM_DESCRIPTION = (
 _ADAPT_STEPS = (
     ('CLEANUP', "Clean Up",
      "On meshes not imported from a .sluggie (all of them, or the selected ones; a selected "
-     "non-Sluggies armature includes its children): merge duplicate "
-     "vertices, remove loose vertices and edges, empty vertex groups and unused material slots. "
+     "non-Sluggies armature includes its children): remove smoothing and mask modifiers, physics "
+     "simulations, loose vertices and edges, empty vertex groups and unused material slots. "
+     "Duplicate vertices are not merged (use Merge by Distance yourself if needed). "
      "Materials themselves stay as they are"),
     ('ARMATURE', "Assign to Armature",
      "Parent the meshes not imported from a .sluggie (all of them, or the selected ones; a selected "
@@ -2807,12 +2808,6 @@ class SLUGGIES_OT_adapt_cleanup(bpy.types.Operator):
     bl_description = next(desc for ident, _label, desc in _ADAPT_STEPS if ident == 'CLEANUP')
     bl_options = {"REGISTER", "UNDO"}
 
-    merge_distance: FloatProperty(  # type: ignore[valid-type]
-        name="Merge Distance",
-        description="Vertices closer than this (in mesh units) are merged. Kept tiny so fine detail survives",
-        default=AdaptCleanup.DEFAULT_MERGE_DISTANCE, min=0.0, soft_max=0.001, precision=6,
-    )
-
     @classmethod
     def poll(cls, context):
         if context.mode != 'OBJECT':
@@ -2827,7 +2822,7 @@ class SLUGGIES_OT_adapt_cleanup(bpy.types.Operator):
             where = "selected" if selected else "in this scene"
             self.report({"WARNING"}, f"No meshes {where} to clean (.sluggie imports are left alone)")
             return {"CANCELLED"}
-        counts = AdaptCleanup.run_cleanup(targets, self.merge_distance)
+        counts = AdaptCleanup.run_cleanup(targets)
         lines = AdaptCleanup.summary_lines(counts)
         if selected and skipped:
             lines.append(f"Skipped {_meshes(len(skipped))} from a .sluggie")
