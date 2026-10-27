@@ -5776,6 +5776,65 @@ def PatchGPLMaterialStates(gpl_bytes: bytes, data: dict, model_offset: int) -> b
     return bytes(patched)
 
 
+EXCLUDED_KEY = 'Excluded'   # BlenderAddonSrc/ExportMode.EXCLUDED_KEY
+
+
+def excluded_submesh_indices(model: dict) -> list:
+    """Indices of the donor submeshes the export left out (``Excluded``).
+    Raises ValueError for one that cannot be excluded: the skinned body, or
+    one that also carries a rebuild (its blob would be replaced)."""
+    indices = []
+    for index, submesh in enumerate(model.get('Submeshes', [])):
+        if not submesh.get(EXCLUDED_KEY):
+            continue
+        if index == 0 or int(submesh.get('VertexBuffer', {}).get('VertexBufferCompCount', 0)) == 6:
+            raise ValueError(f'sub{index}: the skinned body cannot be excluded')
+        if submesh.get('RigidRebuild') is not None or submesh.get('SkinnedRebuild') is not None:
+            raise ValueError(f'sub{index}: excluded and rebuilt at once; export the model again')
+        indices.append(index)
+    return indices
+
+
+def PatchGPLExcludeSubmeshes(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes:
+    """Empty the primitive lists of every excluded submesh over a cloned
+    donor GPL: pointer and size 0 in each display state record, which the
+    game skips (a list pointer of 0 draws nothing). Vertex data, display
+    state records, counts and the owner bone stay, so no index moves.
+    Before any blob is replaced or relocated (the field offsets are the
+    donor's)."""
+
+    indices = excluded_submesh_indices(model)
+    if not indices:
+        return gpl_bytes
+    with _open_source(model_offset) as source:
+        source.seek(model_offset + 0x04)
+        raw = source.read(4)
+    if len(raw) != 4:
+        raise IOError(f'Could not read donor GPL offset at 0x{model_offset + 4:08X}')
+    gpl_absolute = model_offset + struct.unpack('>I', raw)[0]
+    patched = bytearray(gpl_bytes)
+    submeshes = model.get('Submeshes', [])
+    for submesh_index in indices:
+        emptied = 0
+        for state_index, state in enumerate(submeshes[submesh_index].get('DisplayStates', [])):
+            if not int(state.get('PrimListLength') or 0):
+                continue
+            for key in ('PrimListPtrFieldOffset', 'PrimListSizeFieldOffset'):
+                relative = _hex(state[key]) - gpl_absolute
+                if relative < 0 or relative + 4 > len(patched):
+                    raise ValueError(
+                        f'sub{submesh_index} ds{state_index}: {key} 0x{relative:X} is outside '
+                        f'cloned GPL size 0x{len(patched):X}')
+                patched[relative:relative + 4] = b'\0\0\0\0'
+            emptied += 1
+        _slogger.info(
+            f'[GPL] excluded sub{submesh_index} ({submeshes[submesh_index].get("MeshName", "")}): '
+            f'{emptied} primitive list(s) emptied',
+            source='hammerspace.main',
+        )
+    return bytes(patched)
+
+
 def PatchGPLPositionArrays(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes:
     """Patch validated same-size position arrays over an otherwise cloned GPL."""
 
@@ -7765,6 +7824,8 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
     # textures are re-encoded from tex/ or cloned.
     if model.get('DesiredTextureAssignments') and modes.gpl != 'build':
         raise ValueError('DesiredTextureAssignments require the GPL build mode')
+    if excluded_submesh_indices(model) and modes.gpl != 'build':
+        raise ValueError('Excluded submeshes require the GPL build mode')
     custom_submesh_additional_texture_names = {
         (owner.get('TextureAssignment') or {}).get('AdditionalTextureFileName')
         for cs in model.get('CustomSubmeshes') or []
@@ -7978,6 +8039,7 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
             submesh.get('ColorArraysEditedByImporter')
             for submesh in model.get('Submeshes', [])
         )
+        excluded_indices = excluded_submesh_indices(model)
         if (
             has_material_state_edits
             or position_edits
@@ -7986,6 +8048,7 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
             or color_array_edits
             or rigid_rebuild_indices
             or skinned_rebuild
+            or excluded_indices
             or getattr(parsed, 'custom_submeshes', None)
         ):
             gpl_bytes = CloneGPL(source_model_offset, source_model_length)
@@ -7997,6 +8060,11 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
             if has_material_state_edits:
                 gpl_bytes = PatchGPLMaterialStates(
                     gpl_bytes, data, source_model_offset
+                )
+            if excluded_indices:
+                # Donor field offsets: before any blob is replaced or moved.
+                gpl_bytes = PatchGPLExcludeSubmeshes(
+                    gpl_bytes, model, source_model_offset
                 )
             if position_edits:
                 gpl_bytes = PatchGPLPositionArrays(

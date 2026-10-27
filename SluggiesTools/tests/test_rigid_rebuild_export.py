@@ -560,7 +560,7 @@ class FacialPosesTests(unittest.TestCase):
 
     def test_facial_warning_is_shared_with_the_body(self):
         self.assertIs(sre.facial_warning, rre.facial_warning)
-        self.assertIn('no facial animation', rre.facial_warning('head', self.donor, 0))
+        self.assertIn('no facial expressions', rre.facial_warning('head', self.donor, 0))
         self.assertIsNone(rre.facial_warning('head', self.donor, 0, carried=True))
 
 

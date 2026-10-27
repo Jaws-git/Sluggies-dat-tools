@@ -13,7 +13,8 @@ import bpy
 from bpy.props import BoolProperty, CollectionProperty, EnumProperty, IntProperty, StringProperty
 
 from .TemplateSources import SHADER_MODE_DESCRIPTIONS, SPECULAR_SHADER_MODES
-from .TextureSlotsUI import _lod_pair, _sluggies_armatures, _target_armature
+from .SluggiesToolsPanel import _find_target_armature as _target_armature, _no_target_armature_message
+from .TextureSlotsUI import _lod_pair
 
 
 # Type-7 shader FourCCs a donor surface can switch between, by class. Mirrors
@@ -104,10 +105,7 @@ class SLUGGIES_OT_manage_materials(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         if _target_armature(context) is None:
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set(
-                    "Select an armature (or one of its meshes) as the active object"
-                    if _sluggies_armatures(context) else "Import a Sluggies model first")
+            cls.poll_message_set(_no_target_armature_message(context))
             return False
         return True
 

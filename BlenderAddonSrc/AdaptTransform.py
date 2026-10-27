@@ -16,13 +16,17 @@ for parts no group names, from the bones of an armature the meshes still
 follow.
 
 Scale fit (SCALE_FIT_ITEMS): by default the overall height, with the hands
-pulling a little; 'arms' lines up hand height and spread alone; 'head' puts
+pulling a little; 'arms' lines up hand height and spread alone, and the
+hands' depth instead of the torso's (hair or a cape hanging down the back
+shifts the torso's); 'head' puts
 the head's joint with the neck (the old rig's head bone, else where the head
 vertex group blends into the neck) at the height of the armature's head (or
 neck) bone. The scale matches the overall height first; hand height and
 spread (hand/finger vertex groups) pull it a little when both hands are
 found. The model's lowest point lands on the armature origin, centred
-sideways on it, with its torso around the spine bones.
+sideways on it, with its torso around the spine bones. Hair (vertex groups
+or materials named so, _HAIR_WORDS) counts for the height but not for the
+sideways centre or the torso depth.
 """
 
 import re
@@ -63,7 +67,8 @@ SCALE_FIT_ITEMS = [
     ('DEFAULT', "Default",
      "Match the model's overall height; hand/finger vertex groups adjust it a little"),
     ('ARMS', "Prefer arms fit",
-     "Scale so the hands line up with the armature's (height and spread); the head may end up higher or lower"),
+     "Scale and place so the hands line up with the armature's (height, spread and depth); the head may end "
+     "up higher or lower"),
     ('HEAD', "Prefer head fit",
      "Scale so the head meets the neck where the armature's does; the arms may end up longer or shorter"),
 ]
@@ -94,6 +99,15 @@ _NAMED_UP_MIN_SPAN = 0.12
 # along one axis and at least this share of the largest extent.
 _NAMED_FRONT_DOMINANCE = 0.6
 _NAMED_FRONT_MIN_SPAN = 0.005
+
+# Hair (vertex group or material name words): left out of the torso depth
+# and the sideways centre, which a ponytail or a side braid would pull off.
+_HAIR_WORDS = frozenset({
+    'hair', 'hairs', 'ponytail', 'pony', 'pigtail', 'pigtails', 'twintail', 'twintails', 'braid', 'braids',
+    'bang', 'bangs', 'fringe', 'tress', 'tresses', 'ahoge',
+})
+# A vertex is hair when hair groups carry at least this share of its weight.
+_HAIR_WEIGHT_SHARE = 0.5
 
 _MIRROR_SAMPLES = 2000
 _KDTREE_MAX_POINTS = 60000
@@ -127,6 +141,38 @@ def _world_points(obj, depsgraph=None):
         source.to_mesh_clear()
     m = np.array(obj.matrix_world)
     return co.reshape(-1, 3) @ m[:3, :3].T + m[:3, 3]
+
+
+def _hair_mask(obj, depsgraph=None):
+    """Per vertex of _world_points(*obj*, *depsgraph*): whether it is hair,
+    mostly weighted to vertex groups named like hair or on a face with a
+    material named so (_HAIR_WORDS). None when nothing is named so."""
+    groups = {g.index for g in obj.vertex_groups if AdaptWeights.name_tokens(g.name) & _HAIR_WORDS}
+    slots = {i for i, slot in enumerate(obj.material_slots)
+             if slot.material is not None and AdaptWeights.name_tokens(slot.material.name) & _HAIR_WORDS}
+    if not groups and not slots:
+        return None
+    source = obj.evaluated_get(depsgraph) if depsgraph is not None else obj
+    mesh = source.to_mesh() if depsgraph is not None else obj.data
+    try:
+        mask = np.zeros(len(mesh.vertices), dtype=bool)
+        if groups:
+            for v in mesh.vertices:
+                total = hair = 0.0
+                for g in v.groups:
+                    total += g.weight
+                    if g.group in groups:
+                        hair += g.weight
+                if total > 0.0 and hair >= _HAIR_WEIGHT_SHARE * total:
+                    mask[v.index] = True
+        if slots:
+            for poly in mesh.polygons:
+                if poly.material_index in slots:
+                    mask[list(poly.vertices)] = True
+    finally:
+        if depsgraph is not None:
+            source.to_mesh_clear()
+    return mask
 
 
 def _mirror_scores(points):
@@ -565,9 +611,15 @@ def fit(arm_obj, meshes, scene_objects, depsgraph, up_choice='AUTO', front_choic
     groups lack them, hand and head positions (its bones as posed with
     *source_posed*, else at rest); *scale_fit*: a SCALE_FIT_ITEMS id."""
     target = _target(arm_obj, scene_objects)
-    points = np.vstack([_world_points(o, depsgraph) for o in meshes])
+    per_mesh = [_world_points(o, depsgraph) for o in meshes]
+    points = np.vstack(per_mesh)
     if len(points) < 3:
         raise ValueError("The selected meshes have no vertices")
+    hair = np.concatenate([
+        mask if mask is not None and len(mask) == len(pts) else np.zeros(len(pts), dtype=bool)
+        for pts, mask in zip(per_mesh, (_hair_mask(o, depsgraph) for o in meshes))])
+    if hair.all():   # all of it named hair: the names say nothing
+        hair[:] = False
 
     named = named_points(meshes, source_armatures, source_posed) if 'AUTO' in (up_choice, front_choice) else {}
     up, front, up_how, front_how = _source_frame(points, target['frame'], up_choice, front_choice, named)
@@ -577,11 +629,14 @@ def fit(arm_obj, meshes, scene_objects, depsgraph, up_choice='AUTO', front_choic
     src_height = float(src[:, 2].max()) - ground
     if src_height <= 0.0:
         raise ValueError(f"The selected meshes are flat along their up axis {axis_name(up)}")
-    lateral_centre = float(src[:, 0].min() + src[:, 0].max()) / 2
+    body = src[~hair]
+    lateral_centre = float(body[:, 0].min() + body[:, 0].max()) / 2
 
     to_src = src_frame.transposed()
     scale, hand_note = _height_scale(target, meshes, to_src, ground, src_height, lateral_centre,
                                      use_hands, source_armatures, source_posed)
+    # (source, target) depth that the arms fit lines up instead of the torso's.
+    hand_depths = None
     if scale_fit == 'ARMS':
         src_hands = _source_hands(meshes, to_src, lateral_centre, source_armatures, source_posed)
         if not target['hands']:
@@ -595,7 +650,8 @@ def fit(arm_obj, meshes, scene_objects, depsgraph, up_choice='AUTO', front_choic
             t_side = sum(abs(h.x) for h in target['hands']) / 2
             if s_up * s_up + s_side * s_side > 0.0:
                 scale = (t_up * s_up + t_side * s_side) / (s_up * s_up + s_side * s_side)
-                hand_note = "Arms fit: hand height and spread line up with the armature's"
+                hand_depths = (sum(h.y for h in src_hands) / 2, sum(h.y for h in target['hands']) / 2)
+                hand_note = "Arms fit: hand height, spread and depth line up with the armature's"
     elif scale_fit == 'HEAD':
         s_head = _source_head_joint(meshes, source_armatures, to_src, source_posed)
         if target['head'] is None:
@@ -606,13 +662,20 @@ def fit(arm_obj, meshes, scene_objects, depsgraph, up_choice='AUTO', front_choic
             scale = target['head'] / (s_head - ground)
             hand_note = "Head fit: the head meets the neck where the armature's does"
 
-    # Torso depth: the vertices between the target's pelvis and neck heights.
-    band = src[(src[:, 2] >= ground + target['pelvis'] / scale) & (src[:, 2] <= ground + target['neck'] / scale)]
-    depth_points = band if len(band) else src
-    depth_centre = float(depth_points[:, 1].min() + depth_points[:, 1].max()) / 2
+    if hand_depths is not None:
+        # The hands' depth: hair, capes or a belly can shift the torso's.
+        depth_centre, target_depth = hand_depths
+    else:
+        # Torso depth: the vertices between the target's pelvis and neck
+        # heights, hair left out.
+        in_band = (src[:, 2] >= ground + target['pelvis'] / scale) & (src[:, 2] <= ground + target['neck'] / scale)
+        band = src[in_band & ~hair]
+        depth_points = band if len(band) else (src[in_band] if in_band.any() else src)
+        depth_centre = float(depth_points[:, 1].min() + depth_points[:, 1].max()) / 2
+        target_depth = target['spine_depth']
 
     anchor_src = src_frame @ Vector((lateral_centre, depth_centre, ground))
-    anchor_tgt = target['origin'] + target['frame'] @ Vector((0.0, target['spine_depth'], 0.0))
+    anchor_tgt = target['origin'] + target['frame'] @ Vector((0.0, target_depth, 0.0))
     rotation = target['frame'] @ src_frame.transposed()
     matrix = Matrix.Translation(anchor_tgt) @ rotation.to_4x4() @ Matrix.Scale(scale, 4) \
         @ Matrix.Translation(-anchor_src)
@@ -622,5 +685,6 @@ def fit(arm_obj, meshes, scene_objects, depsgraph, up_choice='AUTO', front_choic
         f"Up {axis_name(up)}{how[up_how]}, facing {axis_name(front)}{how[front_how]}",
         f"Scale x{scale:.4g}: height {src_height * scale:.3g} (armature model {target['height']:.3g})",
         hand_note,
-    ] + target['notes']
+    ] + ([f"Hair ({int(hair.sum()):,} vertices) left out of the torso depth and sideways centre"]
+         if hair.any() else []) + target['notes']
     return matrix, lines

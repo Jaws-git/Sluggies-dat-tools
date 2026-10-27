@@ -309,7 +309,7 @@ def _armature(context):
 _group_items_cache = []
 
 
-def _group_items(_self, _context):
+def _build_group_items():
     # Blender needs the item strings kept alive while the enum is shown.
     global _group_items_cache
     _group_items_cache = [
@@ -317,6 +317,12 @@ def _group_items(_self, _context):
         for name, actions in sorted(anm_groups().items())
     ] or [('NONE', "(no imported .anm groups)", "")]
     return _group_items_cache
+
+
+def _group_items(_self, _context):
+    # Called on every redraw of the dialog; invoke() rebuilds the list, as
+    # anm_groups() walks every action.
+    return _group_items_cache or _build_group_items()
 
 
 class SLUGGIES_OT_export_anm_group(bpy.types.Operator):
@@ -331,7 +337,7 @@ class SLUGGIES_OT_export_anm_group(bpy.types.Operator):
         if _armature(context) is None:
             self.report({"ERROR"}, "Select the armature the animation was imported onto")
             return {"CANCELLED"}
-        if not anm_groups():
+        if _build_group_items()[0][0] == 'NONE':
             self.report({"ERROR"}, "No imported animation groups; import an .anm file first")
             return {"CANCELLED"}
         return context.window_manager.invoke_props_dialog(self, confirm_text="OK")

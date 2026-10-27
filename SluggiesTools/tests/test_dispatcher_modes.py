@@ -26,6 +26,12 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
 
         self.assertEqual(start.hammerspace_section_args(model), ['--gpl', 'build'])
 
+    def test_excluded_submesh_requests_gpl_build_and_hammerspace(self):
+        model = {'Submeshes': [{}, {'Excluded': True}]}
+
+        self.assertEqual(start.hammerspace_section_args(model), ['--gpl', 'build'])
+        self.assertTrue(start._needs_hammerspace(model, ''))
+
     def test_custom_submesh_only_export_requests_gpl_build(self):
         # No donor edit at all, just a
         # custom submesh on an existing texture.

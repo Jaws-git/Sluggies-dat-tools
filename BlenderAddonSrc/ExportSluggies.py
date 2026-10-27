@@ -1171,11 +1171,13 @@ def _comp_size_skin(quant_info):
     return 4 if fmt in [4, 7, 0xa] else 2
 
 
-def _skn_block_size(skin_data: dict, flush_ind_size: int = None) -> int:
+def _skn_block_size(skin_data: dict, flush_ind_size: int = None, edited: bool = False) -> int:
     """Calculate total byte size of an SKN block from a SkinData or SkinDataEdited dict.
 
     Mirrors the logic of patch_skn_dat.skn_block_size so the Blender exporter
     can compare original vs edited sizes without importing from SluggiesTools.
+    With *edited*, each entry's *Edited field is measured where present
+    (encode_skin_weights_inplace: does the edited layout still fit?).
     """
     sk1s   = skin_data.get('SK1s',   [])
     sk2s   = skin_data.get('SK2s',   [])
@@ -1186,55 +1188,23 @@ def _skn_block_size(skin_data: dict, flush_ind_size: int = None) -> int:
     def _a4(n):
         return (n + 3) & ~3
 
+    def _field(e, key):
+        return _a4(len(_to_bytes((edited and e.get(key + 'Edited')) or e[key])))
+
     total  = 0x24                 # SKN header
     total += len(sk1s)   * 0x40  # SK1 structs
     total += len(sk2s)   * 0x74  # SK2 structs
     total += len(skaccs) * 0x44  # SKAcc structs
 
     for e in sk1s:
-        total += _a4(len(_to_bytes(e['BindPoseData'])))
+        total += _field(e, 'BindPoseData')
     for e in sk2s:
-        total += _a4(len(_to_bytes(e['BindPoseData'])))
-        total += _a4(len(_to_bytes(e['WeightData'])))
+        total += _field(e, 'BindPoseData')
+        total += _field(e, 'WeightData')
     for e in skaccs:
-        total += _a4(len(_to_bytes(e['BindPoseData'])))
-        total += _a4(len(_to_bytes(e['DestIndexData'])))
-        total += _a4(len(_to_bytes(e['WeightData'])))
-
-    if flush_ind_size:
-        total += _a4(flush_ind_size * 2)
-
-    return total
-
-
-def _skn_block_size_inplace_edited(skin_data: dict) -> int:
-    """Like _skn_block_size but uses *Edited field lengths when present.
-
-    Used by encode_skin_weights_inplace to check whether the edited variable-count
-    layout still fits within the original SKN block.
-    """
-    sk1s   = skin_data.get('SK1s',   [])
-    sk2s   = skin_data.get('SK2s',   [])
-    skaccs = skin_data.get('SKAccs', [])
-    flush_ind_size = skin_data.get('FlushIndSize', 0)
-
-    def _a4(n):
-        return (n + 3) & ~3
-
-    total  = 0x24
-    total += len(sk1s)   * 0x40
-    total += len(sk2s)   * 0x74
-    total += len(skaccs) * 0x44
-
-    for e in sk1s:
-        total += _a4(len(_to_bytes(e.get('BindPoseDataEdited') or e['BindPoseData'])))
-    for e in sk2s:
-        total += _a4(len(_to_bytes(e.get('BindPoseDataEdited') or e['BindPoseData'])))
-        total += _a4(len(_to_bytes(e.get('WeightDataEdited')   or e['WeightData'])))
-    for e in skaccs:
-        total += _a4(len(_to_bytes(e.get('BindPoseDataEdited')  or e['BindPoseData'])))
-        total += _a4(len(_to_bytes(e.get('DestIndexDataEdited') or e['DestIndexData'])))
-        total += _a4(len(_to_bytes(e.get('WeightDataEdited')    or e['WeightData'])))
+        total += _field(e, 'BindPoseData')
+        total += _field(e, 'DestIndexData')
+        total += _field(e, 'WeightData')
 
     if flush_ind_size:
         total += _a4(flush_ind_size * 2)
@@ -1664,7 +1634,7 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
     # Edited size can never exceed original because we only shrink or keep equal.
     # This guard catches any unforeseen logic errors.
     orig_size = _skn_block_size(skin_data)
-    edit_size = _skn_block_size_inplace_edited(skin_data)
+    edit_size = _skn_block_size(skin_data, edited=True)
 
     if edit_size > orig_size:
         overflow = edit_size - orig_size
@@ -4107,6 +4077,17 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
 
     filename_ext = ".sluggie"
     filter_glob: StringProperty(default="*.sluggie", options={"HIDDEN"})  # type: ignore[valid-type]
+    # First, so the file browser lists it at the top.
+    exclude_unselected: BoolProperty(  # type: ignore[valid-type]
+        name="Exclude all unselected meshes",
+        description=(
+            "The patched model keeps only the meshes this export writes: every original mesh "
+            "that is not selected is left out of the game (not drawn), and its earlier edits "
+            "are dropped. The main body always stays; stadiums keep every mesh. Off: unselected "
+            "meshes keep their original or earlier exported state"
+        ),
+        default=True,
+    )
     use_custom_normals: BoolProperty(  # type: ignore[valid-type]
         name="Overwrite Normals",
         description=(
@@ -4552,6 +4533,22 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
 
+        # Unselected original meshes are left out of the patched model (option).
+        # Not on stadiums: a collision-only export selects no mesh at all.
+        stadium_model = TemplateSources.is_stadium_chunk(data["SluggiesModel"].get("ChunkNumber"))
+        excluded_indices = ExportMode.exclude_unselected_submeshes(
+            submeshes, [next(i for i, sm in enumerate(submeshes) if sm is target)
+                        for _obj, target in object_submeshes],
+            self.exclude_unselected and not stadium_model,
+        )
+        if self.exclude_unselected and stadium_model:
+            infos.append("Stadium: unselected meshes are kept (Exclude all unselected meshes is for characters)")
+        for index in excluded_indices:
+            _drop_facial_edits_for_submesh(data, index)
+        excluded_names = [submeshes[i].get("MeshName") or f"submesh {i}" for i in excluded_indices]
+        if excluded_names:
+            infos.append(f"Excluded from the patched model (not selected): {', '.join(excluded_names)}")
+
         # --- Export mode: in-place when nothing would be lost, else Hammerspace ---
         # Model-level reasons skip the in-place attempt. Otherwise the meshes
         # are first encoded in place on a copy; any edit that attempt cannot
@@ -4569,6 +4566,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             stale_submeshes=ExportMode.stale_hammerspace_submeshes(
                 submeshes, [obj["VertexBufferOffset"] for obj, _sm in object_submeshes]
             ),
+            excluded_submeshes=excluded_names,
         ) + [
             RigidRebuildExport.mode_reason(plan.obj.name, plan.reasons)
             for plan in rigid_plans.values()

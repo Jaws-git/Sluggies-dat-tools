@@ -130,6 +130,38 @@ class StaleEditTests(unittest.TestCase):
         self.assertNotIn('UVFacesDataEdited', channels[2])
 
 
+class ExcludeTests(unittest.TestCase):
+    def _submeshes(self):
+        return [
+            {'VertexBuffer': {'VertexBufferCompCount': 6}},                       # body: always kept
+            {'VertexBuffer': {'VertexBufferCompCount': 3, 'VertexBufferDataEdited': 'E'},
+             'RigidRebuild': {}, 'FacesDataEdited': 'F',
+             'DisplayStates': [{'ShaderModeEdited': 'Spec', 'ShaderMode': 'Spec'}]},
+            {'VertexBuffer': {'VertexBufferCompCount': 3}, 'Excluded': True},     # exported now
+        ]
+
+    def test_unselected_are_excluded_and_stripped(self):
+        submeshes = self._submeshes()
+        self.assertEqual(ExportMode.exclude_unselected_submeshes(submeshes, [2]), [1])
+        self.assertNotIn('Excluded', submeshes[0])
+        self.assertTrue(submeshes[1]['Excluded'])
+        for key in ('RigidRebuild', 'FacesDataEdited'):
+            self.assertNotIn(key, submeshes[1])
+        self.assertNotIn('VertexBufferDataEdited', submeshes[1]['VertexBuffer'])
+        self.assertEqual(submeshes[1]['DisplayStates'], [{'ShaderMode': 'Spec'}])
+        self.assertNotIn('Excluded', submeshes[2])
+
+    def test_option_off_keeps_everything(self):
+        submeshes = self._submeshes()
+        self.assertEqual(ExportMode.exclude_unselected_submeshes(submeshes, [], exclude=False), [])
+        self.assertIn('RigidRebuild', submeshes[1])
+        self.assertNotIn('Excluded', submeshes[2])
+
+    def test_reason(self):
+        self.assertEqual(ExportMode.model_level_reasons({'ChunkNumber': 18}, excluded_submeshes=['hair']),
+                         ['excluded meshes (hair)'])
+
+
 class ModelLevelReasonTests(unittest.TestCase):
     def test_plain_model_has_no_reason(self):
         self.assertEqual(ExportMode.model_level_reasons({'ChunkNumber': 18}), [])

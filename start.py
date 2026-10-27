@@ -596,7 +596,8 @@ def hammerspace_section_args(model):
         submesh.get('FaceSurfaceIdsEdited') is not None
         for submesh in model.get('Submeshes', [])
     ) or changed_positions or has_uv_edits or has_normal_edits or has_color_edits \
-            or custom_submeshes or rigid_rebuilds or skinned_rebuilds:
+            or custom_submeshes or rigid_rebuilds or skinned_rebuilds \
+            or any(submesh.get('Excluded') for submesh in model.get('Submeshes', [])):
         args.extend(['--gpl', 'build'])
         if skinned_rebuilds or (any(
             submesh.get('VertexBuffer', {}).get('VertexBufferCompCount') == 6
@@ -697,7 +698,8 @@ _HAMMERSPACE_ONLY_MODEL_FIELDS = (
     'DesiredTextureAssignments',
 )
 # Submesh-level fields only the Hammerspace builder applies.
-_HAMMERSPACE_ONLY_SUBMESH_FIELDS = ('FacesDataEdited', 'FaceSurfaceIdsEdited', 'RigidRebuild', 'SkinnedRebuild')
+_HAMMERSPACE_ONLY_SUBMESH_FIELDS = ('FacesDataEdited', 'FaceSurfaceIdsEdited', 'RigidRebuild', 'SkinnedRebuild',
+                                    'Excluded')
 
 
 def _needs_hammerspace(model, sluggie_path):

@@ -23,7 +23,6 @@ except ImportError:  # imported flat by the unit tests
 # UV_FORMAT, COLOR_FORMAT); positions carry their own VertexBufferQuantizeInfo.
 NORMAL_QUANTIZE = 62
 UV_QUANTIZE = 62
-COLOR_ENTRY_SIZE = 2  # RGBA4444
 
 
 @dataclass

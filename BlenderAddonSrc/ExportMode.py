@@ -23,8 +23,12 @@ from typing import Iterable, List, Optional, Sequence, Tuple
 
 try:  # inside Blender this module is part of the addon package
     from . import FieldCodec
+    from . import ModelCheckCore
+    from . import RigidRebuildExport
 except ImportError:  # imported flat by the unit tests
     import FieldCodec
+    import ModelCheckCore
+    import RigidRebuildExport
 
 # Mirrors SluggiesTools/Hammerspace/UntanglePolicy.UNUSED_CHARACTER_DIRS (the
 # .sluggie ChunkNumber equals the model dir). The unused characters' blocks
@@ -37,8 +41,9 @@ UNUSED_CHARACTER_CHUNKS = (89, 90, 91, 92, 93, 94)
 # patch it.
 DONOR_ENTRY_KEY = "DonorEntry"
 
-# Mirrors SluggiesTools/texture_helper.GX_MAX_TEXTURE_DIMENSION.
-GX_MAX_TEXTURE_DIMENSION = 1024
+# Mirror SluggiesTools/texture_helper's (ModelCheckCore holds the add-on's copy).
+GX_MAX_TEXTURE_DIMENSION = ModelCheckCore.GX_MAX_TEXTURE_DIMENSION
+clamp_texture_dimensions = ModelCheckCore.clamp_texture_dimensions
 
 # Fields an earlier Hammerspace export leaves on a submesh. The in-place
 # patcher ignores every one of them, so a model that still carries them on a
@@ -59,20 +64,6 @@ def _decode_field(value) -> bytes:
 def is_unused_character_chunk(chunk_number) -> bool:
     """Whether a .sluggie ChunkNumber is one of the unused characters."""
     return isinstance(chunk_number, int) and chunk_number in UNUSED_CHARACTER_CHUNKS
-
-
-def clamp_texture_dimensions(
-    width: int, height: int, max_dimension: int = GX_MAX_TEXTURE_DIMENSION,
-) -> Tuple[int, int]:
-    """Mirrors ``texture_helper.clamp_texture_dimensions``."""
-    longest = max(width, height)
-    if longest <= max_dimension:
-        return width, height
-    factor = longest / max_dimension
-    return (
-        min(max_dimension, max(1, round(width / factor))),
-        min(max_dimension, max(1, round(height / factor))),
-    )
 
 
 def png_dimensions(path) -> Optional[Tuple[int, int]]:
@@ -135,6 +126,40 @@ def stale_hammerspace_submeshes(submeshes: Sequence[dict], exported_offsets) -> 
     return stale
 
 
+# A donor submesh the export left out on purpose (the "Exclude all unselected
+# meshes" option): the Hammerspace builder keeps its data, bone and display
+# states but empties its primitive lists, so the game draws nothing for it
+# (SluggiesTools/Hammerspace/HammerspaceMain.PatchGPLExcludeSubmeshes).
+EXCLUDED_KEY = "Excluded"
+# Per display state edits that would draw again what is excluded.
+_STATE_EDIT_FIELDS = ("ShaderModeEdited", "DisplayStateParamBytesEdited", "PrimListDataEdited")
+
+
+def exclude_unselected_submeshes(submeshes: Sequence[dict], exported_indices: Iterable[int],
+                                 exclude: bool = True) -> List[int]:
+    """With *exclude*, mark every submesh outside this export as
+    EXCLUDED_KEY and drop its earlier edits (rebuilds, in-place edits,
+    display state edits). The skinned body (submesh 0) always stays.
+    Exported submeshes, and every one without *exclude*, lose the mark.
+    Returns the indices now excluded; the caller drops their facial edits."""
+    exported = set(exported_indices)
+    excluded = []
+    for index, submesh in enumerate(submeshes):
+        body = index == 0 or int((submesh.get("VertexBuffer") or {}).get("VertexBufferCompCount", 0)) == 6
+        if not exclude or index in exported or body:
+            submesh.pop(EXCLUDED_KEY, None)
+            continue
+        RigidRebuildExport.strip_in_place_edits(submesh)
+        submesh.pop("RigidRebuild", None)
+        submesh.pop("SkinnedRebuild", None)
+        for state in submesh.get("DisplayStates") or []:
+            for field in _STATE_EDIT_FIELDS:
+                state.pop(field, None)
+        submesh[EXCLUDED_KEY] = True
+        excluded.append(index)
+    return excluded
+
+
 def promote_inplace_uv_edits(submeshes: Sequence[dict], exported_offsets) -> int:
     """Give in-place UV edits on submeshes outside a Hammerspace export the
     donor's ``UVFacesData`` as ``UVFacesDataEdited``.
@@ -169,9 +194,12 @@ def model_level_reasons(
     changed_materials: Sequence[str] = (),
     resized_textures: Sequence[str] = (),
     stale_submeshes: Sequence[str] = (),
+    excluded_submeshes: Sequence[str] = (),
 ) -> List[str]:
     """Reasons, known before any mesh is encoded, that require Hammerspace."""
     reasons = []
+    if excluded_submeshes:
+        reasons.append(f"excluded meshes ({', '.join(excluded_submeshes)})")
     if custom_submesh_names:
         reasons.append(f"custom submeshes ({', '.join(custom_submesh_names)})")
     if has_new_bones:

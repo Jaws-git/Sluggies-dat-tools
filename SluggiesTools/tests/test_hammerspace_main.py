@@ -753,6 +753,34 @@ class BuildModelBlockTests(unittest.TestCase):
         self.assertEqual(patched[0x11:0x18], bytes.fromhex('01020311110000'))
         self.assertEqual(patched[0x21:0x28], b'\x04\x05\x06Spec')
 
+    def test_exclude_empties_primitive_lists_only(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_dat = pathlib.Path(temp_dir) / 'dt_na.dat'
+            donor = bytearray(0x100)
+            struct.pack_into('>I', donor, 0x04, 0x20)   # GPL at block+0x20
+            input_dat.write_bytes(donor)
+            gpl = bytearray(b'\xAA' * 0x40)
+            model = {'Submeshes': [
+                {'VertexBuffer': {'VertexBufferCompCount': 6}, 'DisplayStates': []},
+                {'Excluded': True, 'VertexBuffer': {'VertexBufferCompCount': 3}, 'DisplayStates': [
+                    {'PrimListLength': 0x20, 'PrimListPtrFieldOffset': '0x2C', 'PrimListSizeFieldOffset': '0x30'},
+                    {'PrimListLength': 0, 'PrimListPtrFieldOffset': '0x3C', 'PrimListSizeFieldOffset': '0x40'},
+                ]},
+            ]}
+            with mock.patch.object(main.hh, 'INPUT_DAT', str(input_dat)):
+                patched = main.PatchGPLExcludeSubmeshes(bytes(gpl), model, 0)
+
+        self.assertEqual(patched[0x0C:0x14], b'\0' * 8)          # pointer and size of ds0
+        self.assertEqual(patched[:0x0C], b'\xAA' * 0x0C)
+        self.assertEqual(patched[0x14:], b'\xAA' * (0x40 - 0x14))  # ds1 has no list: untouched
+
+    def test_exclude_refuses_body_and_rebuilt(self):
+        with self.assertRaisesRegex(ValueError, 'skinned body'):
+            main.excluded_submesh_indices({'Submeshes': [{'Excluded': True}]})
+        with self.assertRaisesRegex(ValueError, 'rebuilt'):
+            main.excluded_submesh_indices({'Submeshes': [{}, {'Excluded': True, 'RigidRebuild': {}}]})
+        self.assertEqual(main.excluded_submesh_indices({'Submeshes': [{}, {}, {'Excluded': True}]}), [2])
+
     def test_gpl_build_tolerates_missing_primlistdata(self):
         parsed = main.ParseSluggie({'SluggiesModel': {
             'UseCompression': False,

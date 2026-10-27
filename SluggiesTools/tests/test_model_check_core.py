@@ -339,5 +339,40 @@ class SluggiePathWiringTests(unittest.TestCase):
         self.assertIn('SluggiePath.remember(arm_obj, self.filepath)', source[dump:dump + 600])
 
 
+class PlayerMemoryTests(unittest.TestCase):
+    def test_constants_match_sluggies_tools(self):
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        from SluggiesTools import game_memory, gui_grid
+        from SluggiesTools.GameOptions import game_options
+        self.assertEqual(core.PLAYER_HEAP_STOCK, game_options.PLAYER_HEAP_STOCK)
+        self.assertEqual(core.PLAYER_HEAP_LEVELS_KB, game_options.PLAYER_HEAP_LEVELS_KB)
+        self.assertEqual(core.PLAYER_HEAP_SAFE_KB, game_options.PLAYER_HEAP_SAFE_KB)
+        self.assertEqual(core.BIG_HEAP_LEVELS_KB, game_options.BIG_HEAP_LEVELS_KB)
+        self.assertEqual(core.EXPERIMENTAL_HEAP_LEVELS_KB, game_options.EXPERIMENTAL_HEAP_LEVELS_KB)
+        self.assertEqual(core.PLAYER_HEAP_HEAD, game_memory.HEAP_HEAD)
+        self.assertEqual(core.PLAYER_BLOCK_OVERHEAD, game_memory.BLOCK_OVERHEAD)
+        self.assertEqual(core.PLAYER_HEAP_GUI_LEVELS,
+                         tuple((kb, big) for _key, _label, kb, big in gui_grid.PLAYER_HEAP_LEVELS))
+        need = game_memory.CharacterNeed(18, 761_472, 77_984, 26_944)
+        self.assertEqual(core.player_heap_need(761_472, 77_984, 26_944), need.need)
+
+    def test_level(self):
+        stock = core.PLAYER_HEAP_STOCK - core.PLAYER_HEAP_HEAD
+        self.assertEqual(core.player_heap_level(stock), (0, False))
+        self.assertEqual(core.player_heap_level(stock + 1), (32, False))
+        # +48 KB is not offered in the GUI: the next one is +64 KB.
+        self.assertEqual(core.player_heap_level(stock + 40 * 1024), (64, False))
+        self.assertEqual(core.player_heap_level(stock + 300 * 1024), (512, True))
+        self.assertEqual(core.player_heap_level(2_560_000), (2048, True))
+        self.assertEqual(core.player_heap_level(core.player_heap_usable(4096)), (4096, True))
+        # +5 MB exists but counts as too big.
+        self.assertIsNone(core.player_heap_level(core.player_heap_usable(4096) + 1))
+
+    def test_format(self):
+        self.assertEqual(core.format_heap_kb(64), '+64 KB')
+        self.assertEqual(core.format_heap_kb(2048), '+2 MB')
+
+
 if __name__ == '__main__':
     unittest.main()

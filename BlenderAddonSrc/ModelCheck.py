@@ -974,7 +974,8 @@ def _image_findings(scope, obj, mat, image, new, tex_dir, reserved):
     if size and max(size) > core.GX_MAX_TEXTURE_DIMENSION and not scope.for_export:
         yield Finding("big_texture", WARNING, obj.name, f"Texture over {core.GX_MAX_TEXTURE_DIMENSION} px",
                       f"{os.path.basename(path)} is {size[0]}x{size[1]}; the patcher scales it down to "
-                      f"fit {core.GX_MAX_TEXTURE_DIMENSION}x{core.GX_MAX_TEXTURE_DIMENSION} (GX limit).")
+                      f"fit {core.GX_MAX_TEXTURE_DIMENSION}x{core.GX_MAX_TEXTURE_DIMENSION} (GX limit).",
+                      action_id="show_name", action_args={"name": os.path.basename(path)})
 
 
 def check_texture_owner(context, scope):
@@ -1068,7 +1069,8 @@ def check_texture_bindings(context, scope):
                 new_pngs.append(os.path.basename(path))
         if new_pngs:
             yield Finding("low_new_png", ERROR, obj.name, "New PNG on a Low model",
-                          f"{obj.name}: {low_hint}: {', '.join(dict.fromkeys(new_pngs))}")
+                          f"{obj.name}: {low_hint}: {', '.join(dict.fromkeys(new_pngs))}",
+                          action_id="export_high")
 
 
 # (function, run on export). Export-run checks report their ERROR findings
@@ -1175,12 +1177,116 @@ def check_stray_objects(context, scopes):
                           f"{MAKE_SUBMESH_HINT[0].lower()}{MAKE_SUBMESH_HINT[1:]}.")
 
 
+_PARTNER_MODELS = {}
+
+
+def _partner_on_disk(scope, low):
+    """The .sluggie of *scope*'s partner on disk: its `_L_` model (*low*) or
+    its main model, from the sibling folders, or None."""
+    model_dir = os.path.dirname(os.path.abspath(scope.sluggie_path))
+    parent = os.path.dirname(model_dir)
+    paths = []
+    try:
+        names = sorted(os.listdir(parent))
+    except OSError:
+        return None
+    for name in names:
+        folder = os.path.join(parent, name)
+        if folder == model_dir or not os.path.isdir(folder):
+            continue
+        if core.low_partner_matches(name, scope.folder) if low else core.low_partner_matches(scope.folder, name):
+            try:
+                paths += [os.path.join(folder, f) for f in sorted(os.listdir(folder))
+                          if f.lower().endswith('.sluggie')]
+            except OSError:
+                continue
+    return core.pick_partner(paths, scope.sluggie_path) if paths else None
+
+
+def _scene_partner(scope, scopes, low):
+    """*scope*'s partner among the scene's *scopes*, or None."""
+    found = [other for other in scopes if other is not scope and other.armature is not None and other.sluggie_path
+             and (core.low_partner_matches(other.folder, scope.folder) if low
+                  else core.low_partner_matches(scope.folder, other.folder))]
+    if len(found) > 1:
+        path = core.pick_partner([other.sluggie_path for other in found], scope.sluggie_path)
+        found = [other for other in found if other.sluggie_path == path]
+    return found[0] if len(found) == 1 else None
+
+
+def _player_memory_text(need, parts):
+    level = core.player_heap_level(need)
+    files = " + ".join(parts) + f" + {core.PLAYER_BLOCK_OVERHEAD} = {need:,} bytes"
+    stock = core.player_heap_usable(0)
+    if level is None:
+        top = core.player_heap_usable(core.PLAYER_HEAP_MAX_KB)
+        return (ERROR, "Too big for player memory", f"Over {core.format_heap_kb(core.PLAYER_HEAP_MAX_KB)}",
+                f"This character needs about {files}: {need - top:,} bytes more than the largest player memory "
+                f"(Player memory {core.format_heap_kb(core.PLAYER_HEAP_MAX_KB)}, {top:,} bytes), so the game "
+                "crashes when it loads onto the field. Make the meshes or textures smaller. Export still works.")
+    extra_kb, big = level
+    name = core.format_heap_kb(extra_kb)
+    detail = (f"This character needs about {files}; the stock player memory holds {stock:,}, so the game "
+              f"crashes when it loads onto the field. Pick Player memory {name} or more "
+              f"({core.player_heap_usable(extra_kb):,} bytes) in the SluggiesTools character grid.")
+    if big:
+        detail += (f" That level needs Dolphin with MEM2 at 128 MB: without the override (and on a real Wii) "
+                   f"the game keeps +{core.PLAYER_HEAP_SAFE_KB} KB and crashes.")
+    elif extra_kb > core.PLAYER_HEAP_SAFE_KB:
+        detail += " That is past the stock-memory budget: a busy scene may run out of game memory."
+    if extra_kb in core.EXPERIMENTAL_HEAP_LEVELS_KB:
+        detail += " That level is experimental."
+    return WARNING, f"Needs player memory {name}", f"Player memory {name}", detail
+
+
+def check_player_memory(scopes):
+    """Each character's High + Low + a bat or glove against the player heap
+    levels (game_memory's rule, on the size estimates): the smallest level it
+    needs, or too big above +PLAYER_HEAP_MAX_KB. Only told here: export
+    never refuses an oversized model."""
+    done = set()
+    for scope in scopes:
+        if scope.armature is None or scope.model is None or not scope.sluggie_path or scope.stadium \
+                or id(scope) in done:
+            continue
+        low = core.is_low_folder(scope.folder)
+        partner = _scene_partner(scope, scopes, not low)
+        parts, sizes = {}, {}
+        for role, other in (("Low" if low else "High", scope), ("High" if low else "Low", partner)):
+            if other is not None:
+                done.add(id(other))
+                estimate = estimate_scope_size(other)
+                if estimate is not None:
+                    sizes[role] = sum(estimate)
+                    parts[role] = f"{role} {sizes[role]:,} (estimate)"
+        missing = "High" if low else "Low"
+        if missing not in sizes:
+            path = _partner_on_disk(scope, not low)
+            model, _error = _load_model(path, _PARTNER_MODELS) if path else (None, "")
+            length = int((model or {}).get("ModelLength") or 0)
+            if not length:
+                continue   # no partner: not a character (a bat, a glove, an object)
+            sizes[missing] = length
+            parts[missing] = f"{missing} {length:,} (its .sluggie, not loaded)"
+        if "High" not in sizes or "Low" not in sizes:
+            continue
+        need = core.player_heap_need(sizes["High"], sizes["Low"])
+        if core.player_heap_level(need) == (0, False):
+            continue
+        ordered = [parts["High"], parts["Low"], f"bat/glove {core.PLAYER_GEAR_ALLOWANCE:,} (the largest stock one)"]
+        severity, text, label, detail = _player_memory_text(need, ordered)
+        owner = partner if low and partner is not None else scope
+        yield Finding("player_memory", severity, owner.name, text, detail,
+                      action_id="show_name", action_args={"name": label, "icon": 'MEMORY'})
+
+
 def run_checks(context, scopes):
     findings = []
     for scope in scopes:
         for check, _export in CHECKS:
             findings.extend(check(context, scope))
     findings.extend(check_low_high_bones(scopes))
+    findings.extend(check_player_memory(scopes))
     findings.extend(check_stray_objects(context, scopes))
     return core.sort_findings(findings)
 

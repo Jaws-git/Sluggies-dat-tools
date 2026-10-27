@@ -700,9 +700,6 @@ def encode_color_rgba4444(rgba):
     return ((r << 12) | (g << 8) | (b << 4) | a).to_bytes(2, 'big')
 
 
-UNSET_COLOR = (0.0, 0.0, 0.0, 0.0)
-
-
 def is_unset_color(rgba) -> bool:
     """Exactly (0, 0, 0, 0): black with alpha 0. Blender fills a colour
     attribute with it on the corners of geometry joined from an object that

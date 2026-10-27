@@ -467,6 +467,19 @@ if _rigid_rebuilt and not unpatch:
         "start.py --patch, which routes the file through the Hammerspace builder."
     )
 
+# An excluded submesh (Blender's "Exclude all unselected meshes") gets empty
+# primitive lists, which only the Hammerspace builder writes.
+_excluded = [
+    f"submesh {index}" for index, submesh in enumerate(_model.get("Submeshes") or [])
+    if submesh.get("Excluded")
+]
+if _excluded and not unpatch:
+    abort(
+        f"{', '.join(_excluded)} {'is' if len(_excluded) == 1 else 'are'} excluded from the model. "
+        "Excluded meshes require Hammerspace; patch with start.py --patch, which routes the file "
+        "through the Hammerspace builder."
+    )
+
 if _texture_file and not unpatch:
     # Single-texture mode: patch exactly one texture from a given PNG,
     # independent of the ReimportTextures flag.

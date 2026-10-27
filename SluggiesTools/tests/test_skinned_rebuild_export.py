@@ -77,9 +77,10 @@ class DonorFactsTests(unittest.TestCase):
         donor = sre.donor_skinned_submesh(0, sub, model['SkinData'], facial_submeshes={0})
         self.assertTrue(donor.facial)
         warning = sre.facial_warning('body', donor, 3)
-        self.assertIn('no facial animation', warning)
+        self.assertIn('no facial expressions', warning)
         self.assertIn('Basis', warning)
-        self.assertIn('Re-import', sre.facial_warning('body', donor, 0))
+        self.assertEqual(sre.facial_warning('body', donor, 0),
+                         'body: No shapekeys found - Model has no facial expressions')
         self.assertIsNone(sre.facial_warning('body', donor, 3, carried=True))
         self.assertIsNone(sre.facial_warning('body', _donor, 0))
 

@@ -102,11 +102,16 @@ def bones_to_mirror(high, low):
 def copy_object(obj, collection):
     """A copy of *obj* with its own mesh and materials (the High model's stay
     untouched), linked to *collection*, visible, without Armature modifiers
-    (the caller points one at the Low armature) and without parent, where
-    *obj* is in the world."""
+    (the caller points one at the Low armature), without shape keys (Low
+    models have no vertex animation) and without parent, where *obj* is in
+    the world."""
     copy = obj.copy()
     copy.data = obj.data.copy()
     collection.objects.link(copy)
+    if copy.data.shape_keys is not None:
+        copy.shape_key_clear()
+    if 'FacialShapeKeyCount' in copy:
+        copy['FacialShapeKeyCount'] = 0
     copy.parent = None
     copy.matrix_world = obj.matrix_world.copy()
     copy.hide_viewport = False
@@ -150,14 +155,11 @@ def decimate(context, obj, mode, iterations=2, ratio=DEFAULT_RATIO, quads=False)
     """Thin *obj*'s mesh in place: a Decimate modifier (*mode* UNSUBDIV or
     COLLAPSE), first in the stack and applied; with *quads*, Un-Subdivide
     runs on the mesh after tris_to_quads (it finds no grid in triangles).
-    Shape keys block applying a modifier, so they are removed first.
-    Returns notes."""
+    *obj* has no shape keys (copy_object removes them; they would block
+    applying the modifier). Returns notes."""
     if mode not in (UNSUBDIV, COLLAPSE):
         return []
     notes = []
-    if obj.data.shape_keys is not None:
-        obj.shape_key_clear()
-        notes.append(f"{obj.name}: shape keys removed to decimate it")
     if mode == UNSUBDIV and quads:
         tris_to_quads(obj.data)
     mod = obj.modifiers.new(name="Lowpoly Decimate", type='DECIMATE')

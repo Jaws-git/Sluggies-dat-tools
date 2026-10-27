@@ -48,7 +48,6 @@ REASON_HOST = 'host_bone_world'
 REASON_SURFACES = 'surfaces'
 REASON_POSITION_RANGE = 'position_range'   # positions outgrew the donor's s16 format
 
-NEW_SURFACE_KEY_RE = re.compile(r'^sm(\d+)_new(\d+)$')
 RIGID_COMP_COUNT = 3
 _U16_LIMIT = 0xFFFF
 
@@ -474,10 +473,6 @@ def _check_u16(object_name: str, label: str, count: int) -> None:
         raise ValueError(f'{object_name}: {count} distinct {label} exceed the uint16 index range')
 
 
-def _index_buffer(indices, use_compression: bool):
-    return cse.encode_field(struct.pack(f'>{len(indices)}H', *indices), use_compression)
-
-
 def encode_color_channel(
     object_name: str, color_format, geometry, loop_colors, use_compression: bool, infos: Optional[List[str]] = None,
 ) -> dict:
@@ -493,7 +488,7 @@ def encode_color_channel(
     _check_u16(object_name, 'colors', len(color_data) // _COLOR_ENTRY_SIZE[color_format[1] >> 4])
     return {
         'ColorChannelData': cse.encode_field(color_data, use_compression),
-        'ColorFacesData': _index_buffer(color_indices, use_compression),
+        'ColorFacesData': cse._index_buffer(color_indices, use_compression),
     }
 
 
@@ -540,7 +535,7 @@ def encode_uv_channels(
         {
             'UVChannelIndex': channel,
             'UVChannelData': cse.encode_field(encoded_uvs[channel][0], use_compression),
-            'UVFacesData': _index_buffer(encoded_uvs[channel][1], use_compression),
+            'UVFacesData': cse._index_buffer(encoded_uvs[channel][1], use_compression),
         }
         for channel in channels
     ]
@@ -604,7 +599,7 @@ def build_rigid_rebuild_entry(
             normal_data, normal_indices = cse.encode_loop_normals(object_name, geometry, loop_normals, donor.normal_format)
         _check_u16(object_name, 'normals', len(normal_indices) and max(normal_indices) + 1)
         entry['NormalBufferData'] = cse.encode_field(normal_data, use_compression)
-        entry['NormalFacesData'] = _index_buffer(normal_indices, use_compression)
+        entry['NormalFacesData'] = cse._index_buffer(normal_indices, use_compression)
     if donor.color_format:
         entry.update(encode_color_channel(object_name, donor.color_format, geometry, loop_colors, use_compression, infos))
 
@@ -615,7 +610,7 @@ def build_rigid_rebuild_entry(
     entry['FacesCount'] = faces_count
     entry['FacesData'] = cse.encode_field(faces_data, use_compression)
     entry['FaceSurfaceTable'] = list(routing.table)
-    entry['FaceSurfaceIndices'] = _index_buffer(routing.indices, use_compression)
+    entry['FaceSurfaceIndices'] = cse._index_buffer(routing.indices, use_compression)
     if new_surfaces:
         entry['NewSurfaces'] = [dict(surface) for surface in new_surfaces]
     entry['Reason'] = list(reasons)
@@ -656,15 +651,9 @@ def facial_warning(object_name: str, donor, shape_key_count: int, carried: bool 
     (rigid submesh) the poses."""
     if not donor.facial or carried:
         return None
-    note = (
-        ' Its shape keys lack the Basis key, so they are not exported.' if shape_key_count
-        else ' Re-import the mesh to get its facial shape keys back.'
-    )
-    return (
-        f"{object_name}: this model's blink and mouth poses animate this mesh's vertices, which "
-        f'the rebuild renumbers, and the mesh has no facial shape keys to rebuild them from, so '
-        f'the patched model will have no facial animation on it.{note}'
-    )
+    if shape_key_count:
+        return f'{object_name}: Shapekeys without a Basis key - Model has no facial expressions'
+    return f'{object_name}: No shapekeys found - Model has no facial expressions'
 
 
 def _loop_vertices(geometry: cse.BoneLocalGeometry) -> List[int]:

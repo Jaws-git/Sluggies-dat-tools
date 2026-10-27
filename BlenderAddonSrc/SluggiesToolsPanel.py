@@ -1,5 +1,6 @@
 """Sluggies Tools sidebar panel (3D View > Sidebar > Sluggies Tools)."""
 
+import functools
 import os
 import re
 import textwrap
@@ -55,7 +56,6 @@ ADDED_BONE_LENGTH = 1.0
 _BONE_NAME_RE = re.compile(r'^bone_(\d+)$')
 _SURFACE_ID_RE = re.compile(r'^sm(\d+)_ds\d+$')
 _SURFACE_OWNER_RE = re.compile(r'^sm(\d+)$')
-_CUSTOM_SUBMESH_ID_RE = re.compile(r'^custom(\d+)$')
 _SUBMESH_NAME_RE = re.compile(r'^CustomSubmesh_(\d+)$')
 _INVALID_SUBMESH_NAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
@@ -179,7 +179,9 @@ def _uniform_bone_id(obj):
 
 @persistent
 def _forget_uniform_bones_on_mesh_update(_scene, depsgraph):
-    if any(isinstance(update.id, bpy.types.Mesh) for update in depsgraph.updates):
+    # Runs on every depsgraph update (playback, transform drags): skip the
+    # update walk while there is nothing to forget.
+    if _UNIFORM_BONE_CACHE and any(isinstance(update.id, bpy.types.Mesh) for update in depsgraph.updates):
         _UNIFORM_BONE_CACHE.clear()
 
 
@@ -430,23 +432,27 @@ def _validate_material_name(name):
     return None
 
 
-def _default_host_bone_choice(context, arm_obj, ordered_choices):
-    """The recommended bone nearest the 3D cursor (plan step 3), falling back
-    to the first available choice when nothing is 'recommended'."""
+def _nearest_choice(arm_obj, ordered_choices, point):
+    """The recommended bone whose head is nearest the world-space *point*,
+    falling back to all choices when nothing is 'recommended'."""
     recommended = [c for c in ordered_choices if c.status == HostBones.STATUS_RECOMMENDED]
     pool = recommended or ordered_choices
     if not pool:
         return None
-    cursor_world = context.scene.cursor.location
 
     def _distance(choice):
         bone = arm_obj.data.bones.get(f'bone_{choice.bone_id}')
         if bone is None:
             return float('inf')
         head_world = arm_obj.matrix_world @ bone.head_local
-        return (head_world - cursor_world).length
+        return (head_world - point).length
 
     return min(pool, key=_distance)
+
+
+def _default_host_bone_choice(context, arm_obj, ordered_choices):
+    """The recommended bone nearest the 3D cursor (plan step 3)."""
+    return _nearest_choice(arm_obj, ordered_choices, context.scene.cursor.location)
 
 
 # Dynamic enum items by name: (key, items). Blender calls an items callback
@@ -542,16 +548,17 @@ def _template_source_items(context, arm_obj):
     ]
 
 
-def _update_host_bone_preview(self, context):
-    """Best-effort: Blender may not redraw the viewport while a props dialog
-    is open, so this is a courtesy, not a guarantee."""
-    arm_obj = _find_target_armature(context)
-    bone_id = _bone_id_from_name(self.host_bone)
-    if arm_obj is None or bone_id is None:
-        return
-    bone = arm_obj.data.bones.get(f'bone_{bone_id}')
+def _preview_active_bone(arm_obj, bone_name):
+    """Make *bone_name* the active bone of *arm_obj* while a dialog picks it.
+    Best-effort: Blender may not redraw the viewport while a props dialog is
+    open, so this is a courtesy, not a guarantee."""
+    bone = arm_obj.data.bones.get(bone_name) if arm_obj is not None else None
     if bone is not None:
         arm_obj.data.bones.active = bone
+
+
+def _update_host_bone_preview(self, context):
+    _preview_active_bone(_find_target_armature(context), self.host_bone)
 
 
 def _next_custom_submesh_id(context):
@@ -619,13 +626,7 @@ def _unwrap_cube_angle_based(context, obj):
     """Angle-based unwrap along the seams _mark_cube_uv_seams set, so the
     cube ships with a real UV layout instead of the default single-square
     projection from bmesh.ops.create_cube."""
-    if context.object is not None and context.object.mode != 'OBJECT':
-        bpy.ops.object.mode_set(mode='OBJECT')
-    for o in context.view_layer.objects:
-        o.select_set(False)
-    obj.select_set(True)
-    context.view_layer.objects.active = obj
-
+    _select_new_object(context, obj)
     bpy.ops.object.mode_set(mode='EDIT')
     bpy.ops.mesh.select_all(action='SELECT')
     bpy.ops.uv.unwrap(method='ANGLE_BASED', margin=0.01)
@@ -785,20 +786,7 @@ def _object_world_bbox_center(obj):
 def _default_reassign_target(arm_obj, obj, ordered_choices):
     """The recommended bone nearest the object's own world bounding-box
     centre (plan: 'the object is what's being moved', not the 3D cursor)."""
-    recommended = [c for c in ordered_choices if c.status == HostBones.STATUS_RECOMMENDED]
-    pool = recommended or ordered_choices
-    if not pool:
-        return None
-    center = _object_world_bbox_center(obj)
-
-    def _distance(choice):
-        bone = arm_obj.data.bones.get(f'bone_{choice.bone_id}')
-        if bone is None:
-            return float('inf')
-        head_world = arm_obj.matrix_world @ bone.head_local
-        return (head_world - center).length
-
-    return min(pool, key=_distance)
+    return _nearest_choice(arm_obj, ordered_choices, _object_world_bbox_center(obj))
 
 
 def _reassign_choices(context, arm_obj, obj):
@@ -873,14 +861,7 @@ def _placement_enum_items(self, context):
 
 
 def _update_reassign_target_preview(self, context):
-    """Best-effort active-bone preview, matching _update_host_bone_preview."""
-    arm_obj = _find_target_armature(context)
-    bone_id = _bone_id_from_name(self.target_bone)
-    if arm_obj is None or bone_id is None:
-        return
-    bone = arm_obj.data.bones.get(f'bone_{bone_id}')
-    if bone is not None:
-        arm_obj.data.bones.active = bone
+    _preview_active_bone(_find_target_armature(context), self.target_bone)
 
 
 class SLUGGIES_OT_reassign_bone(bpy.types.Operator):
@@ -906,27 +887,23 @@ class SLUGGIES_OT_reassign_bone(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         if context.mode != 'OBJECT':
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set("Switch to Object Mode")
+            cls.poll_message_set("Switch to Object Mode")
             return False
         obj = context.active_object
         arm_obj = _find_target_armature(context)
         if arm_obj is None:
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set(_no_target_armature_message(context))
+            cls.poll_message_set(_no_target_armature_message(context))
             return False
         if not _bone_metadata_is_current(arm_obj):
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set(HostBones.RE_IMPORT_MESSAGE)
+            cls.poll_message_set(HostBones.RE_IMPORT_MESSAGE)
             return False
         kind, _submesh_index = _rigid_mesh_kind(obj)
         if kind is None:
-            if hasattr(cls, 'poll_message_set'):
-                if obj is not None and obj.get('VertexBufferCompCount') == 6:
-                    cls.poll_message_set(
-                        "Skinned submeshes follow bone weights; edit vertex groups instead")
-                else:
-                    cls.poll_message_set("Select a rigid or custom submesh")
+            if obj is not None and obj.get('VertexBufferCompCount') == 6:
+                cls.poll_message_set(
+                    "Skinned submeshes follow bone weights; edit vertex groups instead")
+            else:
+                cls.poll_message_set("Select a rigid or custom submesh")
             return False
         return True
 
@@ -1130,23 +1107,19 @@ class SLUGGIES_OT_add_material(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         if context.mode not in ('OBJECT', 'EDIT_MESH'):
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set("Switch to Object Mode or Edit Mode")
+            cls.poll_message_set("Switch to Object Mode or Edit Mode")
             return False
         obj = context.active_object
         arm_obj = _find_target_armature(context)
         if arm_obj is None:
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set(_no_target_armature_message(context))
+            cls.poll_message_set(_no_target_armature_message(context))
             return False
         if not _bone_metadata_is_current(arm_obj):
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set(HostBones.RE_IMPORT_MESSAGE)
+            cls.poll_message_set(HostBones.RE_IMPORT_MESSAGE)
             return False
         kind, _submesh_index = _add_material_mesh_kind(obj)
         if kind is None:
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set("Select a donor or custom submesh")
+            cls.poll_message_set("Select a donor or custom submesh")
             return False
         return True
 
@@ -1262,8 +1235,7 @@ class SLUGGIES_OT_select_unweighted(bpy.types.Operator):
     def poll(cls, context):
         obj = context.active_object
         if obj is None or obj.type != 'MESH':
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set("Select a mesh")
+            cls.poll_message_set("Select a mesh")
             return False
         return True
 
@@ -1414,8 +1386,7 @@ class SLUGGIES_OT_renumber_added_bones(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         if context.mode != 'OBJECT':
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set("Switch to Object Mode")
+            cls.poll_message_set("Switch to Object Mode")
             return False
         return _find_target_armature(context) is not None
 
@@ -1532,8 +1503,7 @@ class SLUGGIES_OT_toggle_bone_track(bpy.types.Operator):
         arm_obj = _find_target_armature(context)
         bone = arm_obj.data.bones.active if arm_obj is not None else None
         if bone is None or not bone.get('SluggiesUserAdded'):
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set("Make an added bone the active bone")
+            cls.poll_message_set("Make an added bone the active bone")
             return False
         return True
 
@@ -1594,12 +1564,10 @@ class SLUGGIES_OT_add_bone(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         if context.mode != 'OBJECT':
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set("Switch to Object Mode")
+            cls.poll_message_set("Switch to Object Mode")
             return False
         if not _any_sluggies_armature_imported(context):
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set("Import a Sluggies model first")
+            cls.poll_message_set("Import a Sluggies model first")
             return False
         return True
 
@@ -1687,13 +1655,11 @@ class SLUGGIES_OT_add_submesh(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         if context.mode != 'OBJECT':
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set("Switch to Object Mode")
+            cls.poll_message_set("Switch to Object Mode")
             return False
         # Only an armature or one of its child objects names the model.
         if _find_target_armature(context) is None:
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set(_no_target_armature_message(context))
+            cls.poll_message_set(_no_target_armature_message(context))
             return False
         return True
 
@@ -1887,11 +1853,7 @@ def _update_make_submesh_armature(self, context):
 
 
 def _update_make_submesh_bone_preview(self, context):
-    """Best-effort active-bone preview, matching _update_host_bone_preview."""
-    arm_obj = _make_submesh_armature(self)
-    bone = arm_obj.data.bones.get(self.host_bone) if arm_obj is not None else None
-    if bone is not None:
-        arm_obj.data.bones.active = bone
+    _preview_active_bone(_make_submesh_armature(self), self.host_bone)
 
 
 def _model_tex_dir(sluggie_path):
@@ -2055,14 +2017,15 @@ def _compact_material_slots(obj):
     return materials, primary
 
 
-def _make_submesh_materials(context, obj, arm_obj, tex_dir, template_of=None):
+def _make_submesh_materials(context, obj, arm_obj, tex_dir, template_of=None, ensure_textures=True):
     """Turn every material of *obj* (already flagged as a custom submesh) into
     one of its surfaces: the primary into `<CustomSubmeshId>_ds0`, the others
     into Add-material surfaces, with the default template and specular
     strength. *template_of*(material), when given, picks each converted
     material's template instead (the primary's becomes the submesh's
     TemplateSource). Materials that already are its surfaces are kept; shared
-    or linked ones are copied first. Returns notes."""
+    or linked ones are copied first. With *ensure_textures*, each surface
+    gets a PNG in *tex_dir* (_ensure_surface_texture). Returns notes."""
     custom_submesh_id = str(obj['CustomSubmeshId'])
     added_template = ModelCheckCore.default_template(_model_is_stadium(arm_obj))
     materials, primary = _compact_material_slots(obj)
@@ -2094,7 +2057,7 @@ def _make_submesh_materials(context, obj, arm_obj, tex_dir, template_of=None):
         else:
             _apply_new_surface_plan(mat, plan)
     notes = []
-    for mat in mesh.materials:
+    for mat in mesh.materials if ensure_textures else ():
         note = _ensure_surface_texture(context, mat, tex_dir)
         if note:
             notes.append(note)
@@ -2142,21 +2105,17 @@ class SLUGGIES_OT_make_submesh(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         if context.mode != 'OBJECT':
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set("Switch to Object Mode")
+            cls.poll_message_set("Switch to Object Mode")
             return False
         obj = context.active_object
         if obj is None or obj.type != 'MESH':
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set("Make a mesh object active")
+            cls.poll_message_set("Make a mesh object active")
             return False
         if _is_donor_mesh(obj):
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set("This mesh is an imported part of the model")
+            cls.poll_message_set("This mesh is an imported part of the model")
             return False
         if not _any_sluggies_armature_imported(context):
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set("Import a Sluggies model first")
+            cls.poll_message_set("Import a Sluggies model first")
             return False
         return True
 
@@ -2252,13 +2211,14 @@ class SLUGGIES_OT_make_submesh(bpy.types.Operator):
 
 
 def _convert_to_custom_submesh(context, obj, arm_obj, bone_id, template_source, tex_dir,
-                               custom_submesh_id='', template_of=None, set_up_materials=True):
+                               custom_submesh_id='', template_of=None, set_up_materials=True,
+                               ensure_textures=True):
     """Make *obj* a custom rigid submesh of *arm_obj* on *bone_id*, where it
     is: one full-weight vertex group, an Armature modifier, the armature as
     parent and its materials as its surfaces (see _make_submesh_materials for
-    *template_of*; skipped without *set_up_materials*, which the Adapt box
-    leaves to Convert Materials). *custom_submesh_id* is kept unless empty or
-    used by another object. Returns (CustomSubmeshId, notes)."""
+    *template_of* and *ensure_textures*; skipped without *set_up_materials*,
+    which the Adapt box leaves to Convert Materials). *custom_submesh_id* is
+    kept unless empty or used by another object. Returns (CustomSubmeshId, notes)."""
     notes = []
     if obj.data.users > 1:
         obj.data = obj.data.copy()
@@ -2288,7 +2248,7 @@ def _convert_to_custom_submesh(context, obj, arm_obj, bone_id, template_source, 
         notes.append("no UV map: add one and unwrap it before exporting")
     if set_up_materials:
         try:
-            notes += _make_submesh_materials(context, obj, arm_obj, tex_dir, template_of)
+            notes += _make_submesh_materials(context, obj, arm_obj, tex_dir, template_of, ensure_textures)
         except ValueError as exc:
             notes.append(f"materials not finished: {exc}")
     if len(uv_layers) == 1:
@@ -2514,12 +2474,12 @@ def _set_aside_old_bodies(old_bodies):
     return names
 
 
-def _make_body(obj, arm_obj, model, plans):
+def _make_body(obj, arm_obj, model, plans, check_weights=True):
     """Turn the custom submesh *obj* into the skinned body: the submesh 0
     VertexBuffer* properties, its materials as Add-material surfaces of sm0
     (*plans*; None leaves them to Convert Materials), its render UV map named
-    like the body's channel 0. Its vertex groups become the skin weights.
-    Returns notes."""
+    like the body's channel 0. Its vertex groups become the skin weights;
+    *check_weights* notes a body without bone_<id> groups. Returns notes."""
     notes = []
     if obj.data.users > 1:
         obj.data = obj.data.copy()
@@ -2535,7 +2495,7 @@ def _make_body(obj, arm_obj, model, plans):
     notes += _use_body_uv_name(obj)
     _ensure_armature_modifier(obj, arm_obj)
     _parent_keeping_world(obj, arm_obj)
-    if not any(_bone_id_from_name(group.name) is not None for group in obj.vertex_groups):
+    if check_weights and not any(_bone_id_from_name(group.name) is not None for group in obj.vertex_groups):
         notes.append("no bone_<id> vertex group: weight it to the bones before exporting")
     return notes
 
@@ -2552,24 +2512,20 @@ class SLUGGIES_OT_make_main_body(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         if context.mode != 'OBJECT':
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set("Switch to Object Mode")
+            cls.poll_message_set("Switch to Object Mode")
             return False
         arm_obj = _find_target_armature(context)
         if arm_obj is None:
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set(_no_target_armature_message(context))
+            cls.poll_message_set(_no_target_armature_message(context))
             return False
         if not _bone_metadata_is_current(arm_obj):
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set(HostBones.RE_IMPORT_MESSAGE)
+            cls.poll_message_set(HostBones.RE_IMPORT_MESSAGE)
             return False
         kind, _submesh_index = _rigid_mesh_kind(context.active_object)
         if kind != 'custom':
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set(
-                    "Only a custom submesh can become the body" if kind == 'donor'
-                    else "Select a custom submesh")
+            cls.poll_message_set(
+                "Only a custom submesh can become the body" if kind == 'donor'
+                else "Select a custom submesh")
             return False
         return True
 
@@ -2640,8 +2596,7 @@ class SLUGGIES_OT_scale_animations(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         if _find_target_armature(context) is None:
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set(_no_target_armature_message(context))
+            cls.poll_message_set(_no_target_armature_message(context))
             return False
         return True
 
@@ -2828,8 +2783,7 @@ class SLUGGIES_OT_adapt_cleanup(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         if context.mode != 'OBJECT':
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set("Switch to Object Mode")
+            cls.poll_message_set("Switch to Object Mode")
             return False
         return True
 
@@ -2900,7 +2854,7 @@ _ASSIGN_PREVIEW = {}
 
 def _assign_settings(op):
     return dict(armature=op.armature, align=op.align, up_axis=op.up_axis, front_axis=op.front_axis,
-                scale_fit=op.scale_fit, pose=op.pose)
+                scale_fit=op.scale_fit, pose=op.pose, align_only=op.align and op.align_only)
 
 
 def _update_assign_preview(self, context):
@@ -2923,12 +2877,14 @@ def _run_assign_preview():
     return None
 
 
-def _start_assign_preview(targets):
+def _start_assign_preview(context, targets):
     _ASSIGN_PREVIEW.clear()
+    _ASSIGN_PREVIEW['targets'] = list(targets)
+    # The old rigs too: Align and scale only moves them.
     _ASSIGN_PREVIEW['saved'] = {
         obj: (obj.matrix_basis.copy(), obj.data,
               [(m, m.show_viewport) for m in obj.modifiers if m.type == 'ARMATURE'])
-        for obj in targets
+        for obj in list(targets) + _old_rigs(context, targets)
     }
     _ASSIGN_PREVIEW['backups'] = {}
 
@@ -2968,7 +2924,7 @@ def _apply_assign_preview(context, settings):
     if arm_obj is None or arm_obj not in _sluggies_armatures(context):
         _ASSIGN_PREVIEW['error'] = "Pick a Sluggies armature"
         return
-    targets = list(_ASSIGN_PREVIEW['saved'])
+    targets = _ASSIGN_PREVIEW['targets']
     try:
         _ASSIGN_PREVIEW['backups'] = _bake_assign_poses(context, targets, settings)
         matrix, lines = _assign_fit(context, arm_obj, targets, settings)
@@ -2976,15 +2932,44 @@ def _apply_assign_preview(context, settings):
         _restore_assign_state()
         _ASSIGN_PREVIEW['error'] = str(exc)
         return
-    for obj in targets:
-        for mod in obj.modifiers:
-            if mod.type == 'ARMATURE':
-                mod.show_viewport = False
-    worlds = {obj: matrix @ obj.matrix_world for obj in targets}
-    # Parents first: moving a parent moves its children along.
-    for obj in sorted(targets, key=_depth):
-        obj.matrix_world = worlds[obj]
+    if not settings['align_only']:
+        for obj in targets:
+            for mod in obj.modifiers:
+                if mod.type == 'ARMATURE':
+                    mod.show_viewport = False
+    _move_all(_aligned_objects(context, targets, settings), matrix)
     _ASSIGN_PREVIEW['lines'] = lines
+
+
+def _aligned_objects(context, targets, settings):
+    """What the alignment moves: the meshes, or with Align and scale only
+    their old rigs along with them (a mesh moved away from the rig that
+    deforms it would bend wrong), without what a moved parent takes along."""
+    if not settings['align_only']:
+        return list(targets)
+    return _without_followers(set(targets) | set(_old_rigs(context, targets)))
+
+
+def _without_followers(objects):
+    """*objects* (a set) minus those with an ancestor in it: moving that
+    ancestor moves them along."""
+    def follows(obj):
+        parent = obj.parent
+        while parent is not None:
+            if parent in objects:
+                return True
+            parent = parent.parent
+        return False
+
+    return [obj for obj in objects if not follows(obj)]
+
+
+def _move_all(objects, matrix):
+    """Left-multiply *matrix* onto each of *objects*' world matrix."""
+    worlds = {obj: matrix @ obj.matrix_world for obj in objects}
+    # Parents first: moving a parent moves its children along.
+    for obj in sorted(objects, key=_depth):
+        obj.matrix_world = worlds[obj]
 
 
 def _depth(obj):
@@ -3010,8 +2995,9 @@ def _restore_meshes(backups):
 
 def _bake_assign_poses(context, targets, settings):
     """With 'Use pose', the old rig's current pose written into each target
-    that follows a posed one. Returns {object: backup}."""
-    if settings['pose'] != 'POSE':
+    that follows a posed one (not with Align and scale only: the rig keeps
+    posing it). Returns {object: backup}."""
+    if settings['pose'] != 'POSE' or settings['align_only']:
         return {}
     posed = {rig for rig in _old_rigs(context, targets) if AdaptTransform.is_posed(rig)}
     backups = {}
@@ -3032,7 +3018,12 @@ def _bake_assign_poses(context, targets, settings):
 def _assign_fit(context, arm_obj, targets, settings):
     """AdaptTransform.fit for *targets*, measured as they will show once
     parented: without their Armature modifiers (a kept pose is baked in by
-    then)."""
+    then). With Align and scale only, as they show now: the old rig keeps
+    posing them, so its pose is baked in just for measuring (the vertex
+    group readings use the mesh data, not the displayed shape)."""
+    align_only = settings['align_only']
+    baked = _bake_assign_poses(context, targets, dict(settings, pose='POSE', align_only=False)) \
+        if align_only else {}
     modifiers = [m for obj in targets for m in obj.modifiers if m.type == 'ARMATURE' and m.show_viewport]
     try:
         for mod in modifiers:
@@ -3041,10 +3032,11 @@ def _assign_fit(context, arm_obj, targets, settings):
         return AdaptTransform.fit(
             arm_obj, targets, context.scene.objects, context.evaluated_depsgraph_get(),
             settings['up_axis'], settings['front_axis'], source_armatures=_old_rigs(context, targets),
-            scale_fit=settings['scale_fit'], source_posed=settings['pose'] == 'POSE')
+            scale_fit=settings['scale_fit'], source_posed=align_only or settings['pose'] == 'POSE')
     finally:
         for mod in modifiers:
             mod.show_viewport = True
+        _restore_meshes(baked)
         context.view_layer.update()
 
 
@@ -3067,6 +3059,14 @@ class SLUGGIES_OT_adapt_armature(bpy.types.Operator):
                      "the armature: upright, facing its front, head at its model's height. Up and front are "
                      "read from the old rig's names (head, feet, eyes, ...) where it has them. Previewed "
                      "while the dialog is open"),
+        default=False,
+        update=_update_assign_preview,
+    )
+    align_only: BoolProperty(  # type: ignore[valid-type]
+        name="Align and scale only - no reassignment",
+        description=("Only turn, scale and move the meshes onto the armature; they stay on their old rig, "
+                     "which moves along with them, and keep its pose. Nothing is parented and no Armature "
+                     "modifier changes"),
         default=False,
         update=_update_assign_preview,
     )
@@ -3104,12 +3104,10 @@ class SLUGGIES_OT_adapt_armature(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         if context.mode != 'OBJECT':
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set("Switch to Object Mode")
+            cls.poll_message_set("Switch to Object Mode")
             return False
         if not _any_sluggies_armature_imported(context):
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set("Import a Sluggies model first")
+            cls.poll_message_set("Import a Sluggies model first")
             return False
         return True
 
@@ -3135,7 +3133,7 @@ class SLUGGIES_OT_adapt_armature(bpy.types.Operator):
             else next((a for a in armatures if a in context.selected_objects), None)
         if arm_obj is not None:
             self.armature = arm_obj.name
-        _start_assign_preview(targets)
+        _start_assign_preview(context, targets)
         if self.align:
             _update_assign_preview(self, context)
         return context.window_manager.invoke_props_dialog(self, width=360)
@@ -3145,10 +3143,12 @@ class SLUGGIES_OT_adapt_armature(bpy.types.Operator):
         layout.prop(self, 'armature')
         arm_obj = bpy.data.objects.get(self.armature) if self.armature != 'NONE' else None
         targets, _skipped, others = self._targets(context, arm_obj)
-        if any(AdaptTransform.is_posed(rig) for rig in _old_rigs(context, targets)):
+        align_only = self.align and self.align_only
+        if not align_only and any(AdaptTransform.is_posed(rig) for rig in _old_rigs(context, targets)):
             layout.row().prop(self, 'pose', expand=True)
         layout.prop(self, 'align')
         if self.align:
+            layout.prop(self, 'align_only')
             row = layout.row()
             row.prop(self, 'up_axis')
             row.prop(self, 'front_axis')
@@ -3162,7 +3162,7 @@ class SLUGGIES_OT_adapt_armature(bpy.types.Operator):
                 for text in _ASSIGN_PREVIEW['lines']:
                     col.label(text=text)
         box = layout.box()
-        box.label(text=f"{_meshes(len(targets)).capitalize()} to parent:")
+        box.label(text=f"{_meshes(len(targets)).capitalize()} to {'align' if align_only else 'parent'}:")
         col = box.column(align=True)
         for obj in targets[:_ASSIGN_LIST_MAX]:
             col.label(text=obj.name, icon='MESH_DATA')
@@ -3211,6 +3211,15 @@ class SLUGGIES_OT_adapt_armature(bpy.types.Operator):
             _restore_meshes(backups)
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
+
+        if settings['align_only']:
+            moved = _aligned_objects(context, targets, settings)
+            _move_all(moved, matrix)
+            rigs = [obj.name for obj in moved if obj.type == 'ARMATURE']
+            lines = [f"Aligned {_meshes(len(targets))} to {arm_obj.name}, not parented"
+                     + (f" (moved along: {', '.join(rigs)})" if rigs else "")] + fit_lines
+            self.report({"INFO"}, "; ".join(lines))
+            return {"FINISHED"}
 
         # World matrices first: a target may be the parent of another.
         worlds = {obj: matrix @ obj.matrix_world for obj in targets}
@@ -3281,12 +3290,10 @@ class SLUGGIES_OT_adapt_transform(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         if context.mode != 'OBJECT':
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set("Switch to Object Mode")
+            cls.poll_message_set("Switch to Object Mode")
             return False
         if not _selected_external_meshes(context):
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set("Select the meshes to fit (not ones from a .sluggie)")
+            cls.poll_message_set("Select the meshes to fit (not ones from a .sluggie)")
             return False
         return True
 
@@ -3321,15 +3328,7 @@ class SLUGGIES_OT_adapt_transform(bpy.types.Operator):
         armatures = _sluggies_armatures(context)
         movable = {o for o in context.selected_objects
                    if o not in armatures and not (o.type == 'MESH' and AdaptCleanup.is_sluggies_mesh(o))}
-
-        def moved_ancestor(obj):
-            node = obj.parent
-            while node is not None:
-                if node in movable:
-                    return True
-                node = node.parent
-            return False
-        roots = [o for o in movable if not moved_ancestor(o)]
+        roots = _without_followers(movable)
         worlds = {o: o.matrix_world.copy() for o in roots}
         for obj, world in worlds.items():
             obj.matrix_world = matrix @ world
@@ -3367,11 +3366,7 @@ def _update_adapt_mesh_row(self, context):
 
 
 def _update_adapt_mesh_bone(self, context):
-    """Best-effort active-bone preview, matching _update_host_bone_preview."""
-    arm_obj = _adapt_meshes_armature(context)
-    bone = arm_obj.data.bones.get(self.bone) if arm_obj is not None else None
-    if bone is not None:
-        arm_obj.data.bones.active = bone
+    _preview_active_bone(_adapt_meshes_armature(context), self.bone)
 
 
 def _adapt_mesh_bone_items(self, context):
@@ -3511,12 +3506,10 @@ class SLUGGIES_OT_adapt_meshes(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         if context.mode != 'OBJECT':
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set("Switch to Object Mode")
+            cls.poll_message_set("Switch to Object Mode")
             return False
         if _selected_sluggies_armature(context) is None:
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set("Select a Sluggies armature or one of its child objects")
+            cls.poll_message_set("Select a Sluggies armature or one of its child objects")
             return False
         return True
 
@@ -3691,7 +3684,8 @@ class SLUGGIES_OT_adapt_meshes(bpy.types.Operator):
         if new_body is not None:
             if not any(slot.material is not None for slot in new_body.material_slots):
                 notes.append(f"{new_body.name} has no material; give it one before Convert Materials")
-            notes += _make_body(new_body, arm_obj, model, None)
+            # The summary's closing "Next: weight..." line covers the weights.
+            notes += _make_body(new_body, arm_obj, model, None, check_weights=False)
             lines.append(f"{new_body.name} is now the main body")
             backups = _set_aside_old_bodies(old_bodies)
             if backups:
@@ -3820,16 +3814,19 @@ class SLUGGIES_OT_adapt_materials(bpy.types.Operator):
 
     rows: bpy.props.CollectionProperty(type=SluggiesConvertMaterialRow)  # type: ignore[valid-type]
     armature_name: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})  # type: ignore[valid-type]
+    collect_textures: BoolProperty(  # type: ignore[valid-type]
+        name="Collect and create copies of all textures in project folder",
+        description="Needs a saved .blend: the copies go in a folder next to it",
+        default=True, options={'SKIP_SAVE'},
+    )
 
     @classmethod
     def poll(cls, context):
         if context.mode != 'OBJECT':
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set("Switch to Object Mode")
+            cls.poll_message_set("Switch to Object Mode")
             return False
         if _selected_sluggies_armature(context) is None:
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set("Select a Sluggies armature or one of its child objects")
+            cls.poll_message_set("Select a Sluggies armature or one of its child objects")
             return False
         return True
 
@@ -3856,6 +3853,7 @@ class SLUGGIES_OT_adapt_materials(bpy.types.Operator):
         offered = {item[0] for item in _convert_template_items(stadium)}
         default = ModelCheckCore.default_template(stadium)
         self.armature_name = arm_obj.name
+        self.collect_textures = bool(bpy.data.filepath)
         self.rows.clear()
         for mat, obj in _convert_material_targets(context, arm_obj, model):
             row = self.rows.add()
@@ -3868,7 +3866,7 @@ class SLUGGIES_OT_adapt_materials(bpy.types.Operator):
             row.template = next((str(c) for c in candidates if c and str(c) in offered), default)
             if mat is not None and 'SpecularStrength' in mat:
                 row.strength = max(0, min(255, int(mat['SpecularStrength'])))
-        if not self.rows:
+        if not self.rows and not any(TextureFolder.needs_conversion(i) for i in _model_images(context)):
             self.report({"INFO"}, "No materials to convert: the body and rigid submeshes use Sluggies surfaces")
             return {"CANCELLED"}
         return context.window_manager.invoke_props_dialog(self, width=640)
@@ -3887,11 +3885,14 @@ class SLUGGIES_OT_adapt_materials(bpy.types.Operator):
         layout.label(text=f"Armature: {self.armature_name}", icon='ARMATURE_DATA')
         box = layout.box()
         col = box.column(align=True)
-        material_col, mesh_col, mode_col, strength_col = self._columns(col.row())
-        material_col.label(text="Material")
-        mesh_col.label(text="Mesh")
-        mode_col.label(text="Shader mode")
-        strength_col.label(text="Specular strength")
+        if not self.rows:
+            col.label(text="No materials to convert, only textures")
+        else:
+            material_col, mesh_col, mode_col, strength_col = self._columns(col.row())
+            material_col.label(text="Material")
+            mesh_col.label(text="Mesh")
+            mode_col.label(text="Shader mode")
+            strength_col.label(text="Specular strength")
         for row in self.rows:
             material_col, mesh_col, mode_col, strength_col = self._columns(col.row())
             material_col.label(text=row.material_name or "(new material)", icon='MATERIAL')
@@ -3902,9 +3903,13 @@ class SLUGGIES_OT_adapt_materials(bpy.types.Operator):
             else:
                 strength_col.label(text="no specular")
         layout.label(text="OK also removes the nodes that do not feed a shader's colour", icon='INFO')
-        if bpy.data.filepath:
-            folder = os.path.basename(TextureFolder.folder_for(bpy.data.filepath))
-            layout.label(text=f"... and copies the textures in use to //{folder}/", icon='INFO')
+        limit = ModelCheckCore.GX_MAX_TEXTURE_DIMENSION
+        layout.label(text=f"... and makes every texture a PNG of at most {limit}x{limit} "
+                          f"(the original kept as <name>{TextureFolder.BACKUP_SUFFIX}.<ext>)", icon='INFO')
+        # An unsaved project has no folder to copy into: shown off and greyed out.
+        row = layout.row()
+        row.enabled = bool(bpy.data.filepath)
+        row.prop(self, 'collect_textures')
 
     def execute(self, context):
         arm_obj = bpy.data.objects.get(self.armature_name)
@@ -3943,7 +3948,10 @@ class SLUGGIES_OT_adapt_materials(bpy.types.Operator):
                 links += removed_links
                 nodes += removed_nodes
 
-        notes = []
+        # Before the surfaces are set up: they would save a non-PNG image as a PNG copy in tex/.
+        collect = self.collect_textures and bool(bpy.data.filepath)
+        folder = TextureFolder.folder_for(bpy.data.filepath) if collect else None
+        converted, notes = TextureFolder.convert(_model_images(context), folder)
         owner = f'sm{_BODY_SUBMESH}'
         for row, mat in body_rows:
             for prop in _SLUGGIES_MATERIAL_PROPS:
@@ -3990,12 +3998,14 @@ class SLUGGIES_OT_adapt_materials(bpy.types.Operator):
 
         rigid_count = sum(len(entries) for entries in rigid_rows.values())
         lines = [f"Converted {_materials(len(body_rows) + rigid_count)}: "
-                 f"{len(body_rows)} on the main body, {rigid_count} on rigid submeshes"]
+                 f"{len(body_rows)} on the main body, {rigid_count} on rigid submeshes"] if self.rows else []
         if links or nodes:
             lines.append(f"Removed {links} node link{'s' if links != 1 else ''} and "
                          f"{nodes} node{'s' if nodes != 1 else ''} that did not feed a shader's colour")
-        if bpy.data.filepath:   # a saved project: its textures go next to the .blend
-            folder = TextureFolder.folder_for(bpy.data.filepath)
+        if converted:
+            limit = ModelCheckCore.GX_MAX_TEXTURE_DIMENSION
+            lines.append(f"{converted} texture{'s' if converted != 1 else ''} now a PNG of at most {limit}x{limit}")
+        if collect:   # its textures go next to the .blend
             moved, written, texture_notes = TextureFolder.collect(_model_images(context), folder)
             lines.append(f"{moved} texture{'s' if moved != 1 else ''} in use now in //{os.path.basename(folder)}/ "
                          f"({written} copied there)")
@@ -4062,12 +4072,10 @@ class SLUGGIES_OT_adapt_weights(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         if context.mode != 'OBJECT':
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set("Switch to Object Mode")
+            cls.poll_message_set("Switch to Object Mode")
             return False
         if _selected_sluggies_armature(context) is None:
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set("Select a Sluggies armature or one of its child objects")
+            cls.poll_message_set("Select a Sluggies armature or one of its child objects")
             return False
         return True
 
@@ -4329,18 +4337,15 @@ class SLUGGIES_OT_adapt_lowpoly(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         if context.mode != 'OBJECT':
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set("Switch to Object Mode")
+            cls.poll_message_set("Switch to Object Mode")
             return False
         high = _selected_sluggies_armature(context)
         if high is None:
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set("Select the High model's armature or one of its child objects")
+            cls.poll_message_set("Select the High model's armature or one of its child objects")
             return False
         low, problem = _lowpoly_partner(context, high)
         if low is None:
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set(problem)
+            cls.poll_message_set(problem)
             return False
         return True
 
@@ -4402,9 +4407,9 @@ class SLUGGIES_OT_adapt_lowpoly(bpy.types.Operator):
             count_col.label(text=f"{row.vertices:,}")
             mode_col.prop(row, 'mode', text="")
             if row.mode == AdaptLowpoly.UNSUBDIV:
-                line = value_col.row(align=True)
-                line.prop(row, 'iterations', expand=True)
-                line.prop(row, 'tris_to_quads', text="Tris to quads")
+                value_col.row(align=True).prop(row, 'iterations', expand=True)
+                # Its own line: next to the iterations it is cut off.
+                value_col.prop(row, 'tris_to_quads', text="Tris to quads")
             elif row.mode == AdaptLowpoly.COLLAPSE:
                 value_col.prop(row, 'ratio', text="")
             else:
@@ -4531,6 +4536,8 @@ class SLUGGIES_OT_adapt_lowpoly(bpy.types.Operator):
             copy.name = f'{obj.name}_low'
             copy[AdaptLowpoly.LOW_SOURCE_PROP] = obj.name
             copy.matrix_world = to_low @ obj.matrix_world
+            if obj.data.shape_keys is not None:
+                notes.append(f"{copy.name}: shape keys removed (Low models have no vertex animation)")
             notes.extend(AdaptLowpoly.decimate(context, copy, row.mode, row.iterations, row.ratio,
                                                row.tris_to_quads))
             return copy
@@ -4601,9 +4608,11 @@ class SLUGGIES_OT_adapt_lowpoly(bpy.types.Operator):
             strengths = {mat.name: mat['SpecularStrength'] for mat in copy.data.materials
                          if mat is not None and 'SpecularStrength' in mat}
             _strip_donor_props(copy)
+            # The copies show their High siblings' images: no new PNGs.
             custom_submesh_id, copy_notes = _convert_to_custom_submesh(
                 context, copy, low, bone_id, default, low_tex_dir,
-                template_of=lambda mat, templates=templates: templates.get(mat.name, default))
+                template_of=lambda mat, templates=templates: templates.get(mat.name, default),
+                ensure_textures=False)
             for mat in copy.data.materials:
                 if mat is not None and 'SpecularStrength' in mat and mat.name in strengths:
                     mat['SpecularStrength'] = strengths[mat.name]
@@ -4660,8 +4669,9 @@ def _draw_adapt_box(layout, context):
     col = box.column(align=True)
     if not bpy.data.filepath:  # never saved: no .blend to save to yet
         col.operator("wm.save_as_mainfile", text="0. Create a Blend file!", icon='FILE_BLEND')
+    any_selected = bool(context.selected_objects)
     for n, (ident, label, _desc) in enumerate(_ADAPT_STEPS, 1):
-        if context.selected_objects:
+        if any_selected:
             label = {'CLEANUP': "Clean (selected)", 'ARMATURE': "Assign to Armature (selected)"}.get(ident, label)
         if ident in _ADAPT_STEP_OPERATORS:
             col.operator(_ADAPT_STEP_OPERATORS[ident], text=f"{n}. {label}")
@@ -4721,13 +4731,18 @@ def _draw_rules_box(layout, context):
     width = context.region.width / max(context.preferences.view.ui_scale, 0.1)
     chars = max(20, int((width - 40) / 6.5))
     col = box.column(align=True)
-    for i, rule in enumerate(_MODEL_RULES):
+    for i, lines in enumerate(_wrapped_rules(chars)):
         if i:
             col.separator(factor=0.5)
-        lines = textwrap.wrap(rule, chars - 2) or [""]
         col.label(text="• " + lines[0])
         for line in lines[1:]:
             col.label(text="   " + line)
+
+
+@functools.lru_cache(maxsize=8)
+def _wrapped_rules(chars):
+    """_MODEL_RULES wrapped to *chars* per line (the sidebar width changes rarely)."""
+    return tuple(tuple(textwrap.wrap(rule, chars - 2) or [""]) for rule in _MODEL_RULES)
 
 
 def _draw_free_host_bones(layout, context):

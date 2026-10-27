@@ -10,6 +10,7 @@ model's export writes the new image as a texture reassignment
 """
 
 import os
+import textwrap
 
 import bpy
 from bpy.props import BoolProperty, CollectionProperty, IntProperty, StringProperty
@@ -19,25 +20,9 @@ from . import ModelCheckCore
 from . import SluggiePath
 from . import TextureSlotsCore
 from .ExportSluggies import _connected_image_texture_nodes
-
-
-def _sluggies_armatures(context):
-    return [
-        o for o in context.view_layer.objects
-        if o.type == 'ARMATURE' and 'SluggiesBoneMetadataVersion' in o.keys()
-    ]
-
-
-def _target_armature(context):
-    """The Sluggies armature of the active object (itself, or a mesh's parent)."""
-    obj = context.active_object
-    if obj is None:
-        return None
-    for candidate in (obj, obj.parent):
-        if candidate is not None and candidate.type == 'ARMATURE' \
-                and 'SluggiesBoneMetadataVersion' in candidate.keys():
-            return candidate
-    return None
+from .SluggiesToolsPanel import (
+    _find_target_armature as _target_armature, _no_target_armature_message, _sluggies_armatures,
+)
 
 
 def _lod_pair(context, arm_obj):
@@ -166,10 +151,7 @@ class SLUGGIES_OT_manage_texture_slots(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         if _target_armature(context) is None:
-            if hasattr(cls, 'poll_message_set'):
-                cls.poll_message_set(
-                    "Select an armature (or one of its meshes) as the active object"
-                    if _sluggies_armatures(context) else "Import a Sluggies model first")
+            cls.poll_message_set(_no_target_armature_message(context))
             return False
         return True
 
@@ -184,10 +166,7 @@ class SLUGGIES_OT_manage_texture_slots(bpy.types.Operator):
             self.hint = ("No high-poly model of this character is loaded. Import its "
                          ".sluggie too: the low-poly model uses the high-poly model's "
                          "textures, so its slots are listed from there.")
-        elif low_arm is None:
-            self.hint = ("No low-poly (L_) model of this character is loaded. Import it "
-                         "to choose the textures its materials use.")
-        else:
+        else:   # without a Low model only the High model's slots are listed
             high_path = SluggiePath.resolve(high_arm)
             try:
                 model = FieldCodec.load_sluggie(high_path).get('SluggiesModel', {})
@@ -205,7 +184,7 @@ class SLUGGIES_OT_manage_texture_slots(bpy.types.Operator):
                 entry.missing = not os.path.isfile(os.path.join(self.tex_dir, entry.file_name))
             if not slots and not self.hint:
                 self.hint = f"{high_arm.name} has no texture slots."
-            for mat, node in _low_materials(low_arm) if slots else []:
+            for mat, node in _low_materials(low_arm) if slots and low_arm is not None else []:
                 file_name = _image_file_name(node)
                 current = TextureSlotsCore.slot_for_file(slots, file_name)
                 if current is None and not file_name:
@@ -231,7 +210,7 @@ class SLUGGIES_OT_manage_texture_slots(bpy.types.Operator):
         layout = self.layout
         if self.hint:
             col = layout.column(align=True)
-            for number, line in enumerate(_wrap(self.hint, 90)):
+            for number, line in enumerate(textwrap.wrap(self.hint, 90)):
                 col.label(text=line, icon='INFO' if number == 0 else 'BLANK1')
             return
 
@@ -248,6 +227,11 @@ class SLUGGIES_OT_manage_texture_slots(bpy.types.Operator):
                         icon='ERROR' if slot.missing else 'NONE')
 
         layout.separator()
+        if not self.low_name:
+            layout.label(text="Low-poly materials")
+            layout.box().label(text="No low-poly (L_) model of this character is loaded. Import it "
+                                    "to choose the textures its materials use.", icon='INFO')
+            return
         layout.label(text=f"Low-poly materials ({self.low_name})")
         box = layout.box()
         if not self.items:
@@ -300,19 +284,6 @@ class SLUGGIES_OT_manage_texture_slots(bpy.types.Operator):
             node = _material_image_node(item.material_name)
             if node is not None:
                 _set_node_image(node, _original_image(item))
-
-
-def _wrap(text, width):
-    lines, line = [], ''
-    for word in text.split():
-        if line and len(line) + 1 + len(word) > width:
-            lines.append(line)
-            line = word
-        else:
-            line = f"{line} {word}" if line else word
-    if line:
-        lines.append(line)
-    return lines
 
 
 _CLASSES = (SluggiesTextureSlot, SluggiesLowTextureItem, SLUGGIES_OT_manage_texture_slots)

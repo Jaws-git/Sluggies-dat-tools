@@ -12,7 +12,7 @@ from . import ModelCheck
 from . import ModelCheckCore as core
 
 SEVERITY_ICON = {core.ERROR: 'CANCEL', core.WARNING: 'ERROR', core.INFO: 'INFO'}
-DIALOG_MIN_WIDTH = 450
+DIALOG_MIN_WIDTH = 550
 # Label column / Fix-or-Go-to column.
 SPLIT_FACTOR = 0.7
 
@@ -185,6 +185,35 @@ class SLUGGIES_OT_check_action(bpy.types.Operator):
         return {'FINISHED'}
 
 
+# action_id -> (label, icon, tooltip) for findings no tool fixes: the Fix
+# column says what to do instead.
+HINTS = {
+    "export_high": ("Export high model to update", 'EXPORT',
+                    "A Low model never stores textures of its own: it shows its High model's textures by "
+                    "their index in the High model's .sluggie, as last exported. A texture added on the "
+                    "High model becomes known to the Low model only once the High model is exported; "
+                    "exporting the Low model alone cannot add it"),
+}
+
+
+class SLUGGIES_OT_check_hint(bpy.types.Operator):
+    """What to do about a finding no tool fixes; the tooltip explains, a
+    click copies it to the Info editor."""
+    bl_idname = "sluggies.check_hint"
+    bl_label = "Hint"
+    bl_options = {'INTERNAL'}
+
+    hint_id: StringProperty()  # type: ignore[valid-type]
+
+    @classmethod
+    def description(cls, context, properties):
+        return HINTS.get(properties.hint_id, ("", "", ""))[2]
+
+    def execute(self, context):
+        self.report({'INFO'}, HINTS.get(self.hint_id, ("", "", ""))[2])
+        return {'FINISHED'}
+
+
 def _fill_rows(context):
     wm = context.window_manager
     rows, sizes = wm.sluggies_check_rows, wm.sluggies_check_sizes
@@ -239,7 +268,7 @@ class SLUGGIES_OT_check_models(bpy.types.Operator):
             return {'CANCELLED'}
         rows = context.window_manager.sluggies_check_rows
         longest = max([len(r.text) for r in rows] + [len(r.object_name) + 8 for r in rows])
-        width = max(DIALOG_MIN_WIDTH, int((longest * 7 + 140) * context.preferences.view.ui_scale))
+        width = max(DIALOG_MIN_WIDTH, int((longest * 7 + 240) * context.preferences.view.ui_scale))
         return context.window_manager.invoke_props_dialog(self, width=width)
 
     def draw(self, context):
@@ -265,6 +294,13 @@ class SLUGGIES_OT_check_models(bpy.types.Operator):
                     op = split.operator(SLUGGIES_OT_check_action.bl_idname, text=label, icon=icon)
                     op.action_id = row.action_id
                     op.action_args = row.action_args
+                elif row.action_id in HINTS:
+                    label, icon, _tooltip = HINTS[row.action_id]
+                    split.operator(SLUGGIES_OT_check_hint.bl_idname, text=label, icon=icon,
+                                   emboss=False).hint_id = row.action_id
+                elif row.action_id == "show_name":   # what the finding is about, e.g. a texture
+                    args = json.loads(row.action_args)
+                    split.label(text=args.get("name", ""), icon=args.get("icon", 'IMAGE_DATA'))
                 else:
                     split.label(text="")
         sizes = wm.sluggies_check_sizes
@@ -296,7 +332,7 @@ class SLUGGIES_OT_check_models(bpy.types.Operator):
 
 CLASSES = (
     SluggiesCheckRow, SluggiesCheckSize, SLUGGIES_OT_check_detail, SLUGGIES_OT_check_goto,
-    SLUGGIES_OT_check_action, SLUGGIES_OT_check_models,
+    SLUGGIES_OT_check_action, SLUGGIES_OT_check_hint, SLUGGIES_OT_check_models,
 )
 
 

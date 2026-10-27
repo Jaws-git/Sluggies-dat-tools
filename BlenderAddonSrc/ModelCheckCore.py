@@ -57,6 +57,26 @@ GX_MAX_TEXTURE_DIMENSION = 1024
 MAX_BONE_INFLUENCES = 4   # 5 failed in-game (2026-10-23); keep equal to SkinWeights.MAX_BONE_INFLUENCES_PER_VERTEX
 U16_LIMIT = 0xFFFF   # vertices (and a custom submesh's triangles) one mesh can index
 
+# Player memory, mirrored from SluggiesTools (GameOptions/game_options.py and
+# game_memory.py; a test keeps them equal). Every player on the field gets one
+# heap for its High model, Low model and one bat or glove; a player whose
+# files don't fit crashes the game when it is loaded onto the field.
+PLAYER_HEAP_STOCK = 0xD4800
+PLAYER_HEAP_HEAD = 0x50          # the heap's own header inside its size
+PLAYER_BLOCK_OVERHEAD = 404      # small blocks, block headers and alignment
+PLAYER_HEAP_LEVELS_KB = (32, 48, 64, 128, 200)
+PLAYER_HEAP_SAFE_KB = 48         # the stock-memory ceiling (fallback of the big levels)
+BIG_HEAP_LEVELS_KB = (512, 1024, 2048, 4096, 5120)   # need Dolphin's 128 MB MEM2 override
+EXPERIMENTAL_HEAP_LEVELS_KB = frozenset((200, 5120))
+# (extra KB, big level) the SluggiesTools GUI offers (gui_grid.PLAYER_HEAP_LEVELS).
+PLAYER_HEAP_GUI_LEVELS = ((32, False), (64, False), (128, False), (200, False),
+                          (512, True), (1024, True), (2048, True), (4096, True), (5120, True))
+# Above this a model counts as too big, whatever the game options offer.
+PLAYER_HEAP_MAX_KB = 4096
+# The largest stock bat or glove (files 2-5; 1_Input main.dol, 2026-10-27):
+# Blender does not see the character's own.
+PLAYER_GEAR_ALLOWANCE = 39_712
+
 
 @dataclass
 class Finding:
@@ -67,7 +87,7 @@ class Finding:
     detail: str          # long text: tooltip and export log
     fix_id: Optional[str] = None     # key into ModelCheck.FIXES, None = no automatic fix
     fix_args: dict = field(default_factory=dict)  # plain data the fix needs
-    action_id: Optional[str] = None  # key into ModelCheckUI.ACTIONS: a button for a manual fix
+    action_id: Optional[str] = None  # key into ModelCheckUI.ACTIONS (a button for a manual fix) or HINTS, or "show_name" (action_args name, icon)
     action_args: dict = field(default_factory=dict)  # its "object" is the one it selects first
 
 
@@ -172,15 +192,6 @@ def wrap_modes_for_texture(model: dict, submesh_index: int, texture_index) -> Tu
     channel = next((ch for ch in channels if ch.get("TextureIndex") == texture_index), None)
     channel = channel or (channels[0] if channels else {})
     return int(channel.get("WrapS", 1)), int(channel.get("WrapT", 1))
-
-
-def specular_strength_from_display_state(ds: dict) -> Optional[int]:
-    if ds.get("DisplayStateId") != 7:
-        return None
-    try:
-        return bytes.fromhex(ds.get("DisplayStateParamBytes", "000000"))[0]
-    except (ValueError, IndexError):
-        return 0
 
 
 def default_template(stadium: bool) -> str:
@@ -686,6 +697,30 @@ def estimate_size(model: dict, mesh_counts: Dict[int, Tuple[int, int]], custom_m
         textures += descriptor_texture_bytes(
             {**template, "AdditionalMipCount": template.get("AdditionalMipCount", 0)}, (width, height))
     return max(0, model_bytes), textures
+
+
+def player_heap_need(high: int, low: int, gear: int = PLAYER_GEAR_ALLOWANCE) -> int:
+    """Bytes a player's heap must hold (game_memory.CharacterNeed.need)."""
+    return high + low + gear + PLAYER_BLOCK_OVERHEAD
+
+
+def player_heap_usable(extra_kb: int) -> int:
+    return PLAYER_HEAP_STOCK + extra_kb * 1024 - PLAYER_HEAP_HEAD
+
+
+def player_heap_level(need: int) -> Optional[Tuple[int, bool]]:
+    """The smallest player memory level the SluggiesTools GUI offers that
+    holds *need* bytes: (extra KB, 0 for stock; whether it is a
+    player_heap_big_* level), or None when even +PLAYER_HEAP_MAX_KB is too small."""
+    for extra_kb, big in ((0, False),) + PLAYER_HEAP_GUI_LEVELS:
+        if extra_kb <= PLAYER_HEAP_MAX_KB and need <= player_heap_usable(extra_kb):
+            return extra_kb, big
+    return None
+
+
+def format_heap_kb(extra_kb: int) -> str:
+    """'+48 KB', '+2 MB'."""
+    return f"+{extra_kb // 1024} MB" if extra_kb >= 1024 and extra_kb % 1024 == 0 else f"+{extra_kb} KB"
 
 
 def format_kb(value: int) -> str:
