@@ -28,6 +28,7 @@ from . import SluggiePath
 from . import SluggiesToolsPanel as panel
 from . import StadiumCollisionExport
 from . import TemplateSources
+from . import TextureConvert
 from .ImportSluggies import _set_surface_material_metadata
 from .ModelCheckCore import ERROR, INFO, WARNING, Finding
 
@@ -273,11 +274,34 @@ def _single_image_path(mat):
 
 
 def _export_file_name(path, tex_dir, plan_copy, reserved=()):
-    """The tex/ name the exporter binds *path* by: a PNG outside tex/ is
-    copied in under a free (or byte-identical) name when *plan_copy*."""
-    if plan_copy and tex_dir and os.path.isfile(path) and not _same_dir(os.path.dirname(path), tex_dir):
-        return ex._plan_external_texture_copy(path, tex_dir, {}, reserved)
+    """The tex/ name the exporter binds *path* by: a PNG outside tex/ (or
+    another format's PNG conversion) is copied in under a free (or
+    byte-identical) name when *plan_copy*."""
+    if plan_copy and tex_dir and os.path.isfile(path) and (
+            TextureConvert.needs_conversion(path) or not _same_dir(os.path.dirname(path), tex_dir)):
+        try:
+            return ex._plan_external_texture_copy(path, tex_dir, {}, reserved)
+        except ValueError:
+            pass   # cannot be converted: check_textures tells
     return os.path.basename(path)
+
+
+def _usable_image_path(path):
+    """True when export can read the image at *path*: a PNG, or another
+    format it converts (missing files included: check_textures tells)."""
+    return bool(path) and (not TextureConvert.needs_conversion(path)
+                           or TextureConvert.convert_problem(path) is None)
+
+
+def _texture_size(path, image=None):
+    """``(width, height)`` of the texture at *path*: a PNG's header, else the
+    size Blender reads for *image* (a format export converts); or None."""
+    size = ExportMode.png_dimensions(path)
+    if size is None and image is not None and TextureConvert.needs_conversion(path) \
+            and os.path.isfile(path):
+        width, height = image.size
+        size = (width, height) if width and height else None
+    return size
 
 
 def _used_new_surfaces(obj):
@@ -912,13 +936,13 @@ def check_textures(context, scope):
             if any(getattr(node, "image", None) is None for node in nodes):
                 yield Finding("empty_node", ERROR, obj.name, "Texture node empty",
                               f"'{mat.name}' on {obj.name} has an Image Texture node without an image; "
-                              "load a PNG into it (or remove the node) before exporting")
+                              "load an image into it (or remove the node) before exporting")
                 continue
             if not nodes:
                 if new:
                     yield Finding("empty_node", ERROR, obj.name, "No texture image",
                                   f"'{mat.name}' on {obj.name} has no image in its texture node; "
-                                  "load a PNG before exporting")
+                                  "load an image before exporting")
                 continue
             if len(nodes) > 1:
                 yield Finding("multi_image", ERROR, obj.name, "Several textures in material",
@@ -949,19 +973,30 @@ def _image_findings(scope, obj, mat, image, new, tex_dir, reserved):
                       f"'{image.name}' ({mat.name}) was edited in Blender but not saved; export reads "
                       "the PNG from disk, so the edit is lost. The fix saves it.",
                       "save_image", {"image": image.name})
-    if not path.lower().endswith('.png'):
-        yield Finding("not_png", ERROR, obj.name, "Image not a PNG",
-                      f"Material '{mat.name}' image must be a PNG: {os.path.basename(path)}. The fix "
-                      "saves it as a PNG into tex/.", "image_to_tex" if tex_dir else None, fix_tex)
+    convert = TextureConvert.needs_conversion(path)
+    problem = TextureConvert.convert_problem(path) if convert else None
+    if problem:
+        yield Finding("not_png", ERROR, obj.name, "Image format not supported",
+                      f"Material '{mat.name}' image must be a {TextureConvert.FORMAT_NAMES}: "
+                      f"{os.path.basename(path)} {problem}. The fix saves it as a PNG into tex/.",
+                      "image_to_tex" if tex_dir else None, fix_tex)
         return
     if not os.path.isfile(path):
         packed = image.packed_file is not None
-        yield Finding("image_missing", ERROR, obj.name, "PNG file missing",
-                      f"'{mat.name}': the PNG {path} does not exist."
+        what = "image" if convert else "PNG"
+        yield Finding("image_missing", ERROR, obj.name, f"{what.capitalize()} file missing",
+                      f"'{mat.name}': the {what} {path} does not exist."
                       + (" It is packed into the .blend; the fix writes it into tex/." if packed else ""),
                       "image_to_tex" if packed and tex_dir else None, fix_tex if packed else {})
         return
-    if tex_dir and not new and not scope.for_export and not _same_dir(os.path.dirname(path), tex_dir) \
+    if convert and not scope.for_export:
+        target = _export_file_name(path, tex_dir, True, reserved) if tex_dir \
+            else TextureConvert.converted_name(os.path.basename(path))
+        yield Finding("converted_image", INFO, obj.name, "Image converted to PNG",
+                      f"'{mat.name}': {os.path.basename(path)} is not a PNG; the export converts it and "
+                      f"writes tex/{target}. The fix saves it as a PNG into tex/ now and points the "
+                      "image at it.", "image_to_tex" if tex_dir else None, fix_tex)
+    elif tex_dir and not new and not scope.for_export and not _same_dir(os.path.dirname(path), tex_dir) \
             and not _same_file_bytes(path, os.path.join(tex_dir, os.path.basename(path))):
         # The patcher reads tex/<name>; the export copies a PNG from
         # elsewhere in (a free name if taken), so this only tells.
@@ -970,8 +1005,8 @@ def _image_findings(scope, obj, mat, image, new, tex_dir, reserved):
                       f"{os.path.join(tex_dir, os.path.basename(path))}. The export copies it there; "
                       f"the fix copies {path} now (a free name if taken) and points the image at the copy.",
                       "copy_to_tex", {**fix_tex, "reserved": reserved})
-    size = ExportMode.png_dimensions(path)
-    if size and max(size) > core.GX_MAX_TEXTURE_DIMENSION and not scope.for_export:
+    size = _texture_size(path, image) if not scope.for_export else None
+    if size and max(size) > core.GX_MAX_TEXTURE_DIMENSION:
         yield Finding("big_texture", WARNING, obj.name, f"Texture over {core.GX_MAX_TEXTURE_DIMENSION} px",
                       f"{os.path.basename(path)} is {size[0]}x{size[1]}; the patcher scales it down to "
                       f"fit {core.GX_MAX_TEXTURE_DIMENSION}x{core.GX_MAX_TEXTURE_DIMENSION} (GX limit).",
@@ -1032,8 +1067,8 @@ def check_texture_bindings(context, scope):
                 if mat is None or not mat.get("SurfaceId") or mat.get("SluggiesNewSurface"):
                     continue
                 path = _single_image_path(mat)
-                if not path.lower().endswith('.png'):
-                    continue   # no image or not a PNG: check_textures tells
+                if not _usable_image_path(path):
+                    continue   # no image or a format export cannot convert: check_textures tells
                 original = int(mat.get("TextureIndex", -1))
                 if not 0 <= original < count:
                     yield Finding("texture_index", ERROR, obj.name, "Invalid texture index",
@@ -1064,7 +1099,7 @@ def check_texture_bindings(context, scope):
                                   f"Material '{mat.name}' has invalid template texture index {template}. "
                                   "Delete the material and make it again with Add material.")
             path = _single_image_path(mat)
-            if not owns and path.lower().endswith('.png') \
+            if not owns and _usable_image_path(path) \
                     and _export_file_name(path, tex_dir, True, index_by_name) not in index_by_name:
                 new_pngs.append(os.path.basename(path))
         if new_pngs:
@@ -1356,7 +1391,7 @@ def estimate_scope_size(scope, objects=None):
                     file_name = os.path.basename(path)
                     if not path or file_name in names or file_name in seen:
                         continue
-                    size = ExportMode.png_dimensions(path)
+                    size = _texture_size(path, node.image)
                     if size:
                         seen.add(file_name)
                         template = mat.get("TemplateTextureIndex", mat.get("TextureIndex", -1))
@@ -1501,10 +1536,12 @@ def fix_copy_to_tex(context, image, tex_dir, reserved=()):
     if not os.path.isfile(source):
         raise ValueError(f"{source} not found")
     os.makedirs(tex_dir, exist_ok=True)
-    file_name = ex._plan_external_texture_copy(source, tex_dir, {}, tuple(reserved))
+    planned = {}
+    file_name = ex._plan_external_texture_copy(source, tex_dir, planned, tuple(reserved))
     target = os.path.join(tex_dir, file_name)
     if not os.path.isfile(target):
-        shutil.copyfile(source, target)
+        # The planned source: another format's PNG conversion.
+        shutil.copyfile(planned.get(file_name, source), target)
     img.filepath = target
 
 

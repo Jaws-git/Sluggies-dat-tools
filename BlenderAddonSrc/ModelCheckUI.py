@@ -12,9 +12,9 @@ from . import ModelCheck
 from . import ModelCheckCore as core
 
 SEVERITY_ICON = {core.ERROR: 'CANCEL', core.WARNING: 'ERROR', core.INFO: 'INFO'}
-DIALOG_MIN_WIDTH = 550
+DIALOG_MIN_WIDTH = 600
 # Label column / Fix-or-Go-to column.
-SPLIT_FACTOR = 0.7
+SPLIT_FACTOR = 0.64
 
 
 class SluggiesCheckRow(bpy.types.PropertyGroup):
@@ -268,7 +268,7 @@ class SLUGGIES_OT_check_models(bpy.types.Operator):
             return {'CANCELLED'}
         rows = context.window_manager.sluggies_check_rows
         longest = max([len(r.text) for r in rows] + [len(r.object_name) + 8 for r in rows])
-        width = max(DIALOG_MIN_WIDTH, int((longest * 7 + 240) * context.preferences.view.ui_scale))
+        width = max(DIALOG_MIN_WIDTH, int((longest * 7 + 290) * context.preferences.view.ui_scale))
         return context.window_manager.invoke_props_dialog(self, width=width)
 
     def draw(self, context):

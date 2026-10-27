@@ -20,6 +20,7 @@ from . import FieldCodec
 from . import RigidRebuildExport
 from . import SkinnedRebuildExport
 from . import TemplateSources
+from . import TextureConvert
 from . import TextureSlotsCore
 from . import HostBones
 from . import ModelCheckCore
@@ -2615,7 +2616,8 @@ def _resolve_material_texture_changes(
 
     *planned_copies* (a dict, see `_plan_external_texture_copy`): an existing
     PNG outside tex/ that the export reads is planned as a copy into tex/
-    instead of failing; the caller performs the copies."""
+    instead of failing, and an image in another format (TextureConvert) as
+    its PNG conversion; the caller performs the copies."""
     descriptor_by_name = {
         descriptor.get("TextureFileName"): int(descriptor["TextureIndex"])
         for descriptor in descriptors
@@ -2662,22 +2664,26 @@ def _resolve_material_texture_changes(
 
             resolved_path = path_resolver(image_path)
             file_name = os.path.basename(os.path.normpath(resolved_path))
-            if not file_name.lower().endswith('.png'):
+            source_path = os.path.abspath(os.path.normpath(resolved_path))
+            convert = TextureConvert.needs_conversion(file_name)
+            problem = TextureConvert.convert_problem(source_path) if convert else None
+            if problem:
                 raise ValueError(
-                    f"Material '{material.name}' image must be a PNG: {file_name}"
+                    f"Material '{material.name}' image must be a "
+                    f"{TextureConvert.FORMAT_NAMES}: {file_name} {problem}"
                 )
             local_path = os.path.join(tex_dir, file_name)
             desired_index = descriptor_by_name.get(file_name)
-            source_path = os.path.abspath(os.path.normpath(resolved_path))
             if planned_copies is not None and validate_texture_files and (
                 require_donor_files or desired_index is None
-            ) and os.path.isfile(source_path) and (
+            ) and os.path.isfile(source_path) and (convert or (
                 os.path.normcase(os.path.dirname(source_path))
                 != os.path.normcase(os.path.abspath(tex_dir))
-            ):
-                # Linked from outside tex/: copied in (or an identical file
-                # there reused); a name tex/ holds with other bytes takes
-                # a free name, which then appends a new texture.
+            )):
+                # Linked from outside tex/ (or another format, converted):
+                # copied in (or an identical file there reused); a name tex/
+                # holds with other bytes takes a free name, which then
+                # appends a new texture.
                 file_name = _plan_external_texture_copy(source_path, tex_dir, planned_copies)
                 local_path = os.path.join(tex_dir, file_name)
                 desired_index = descriptor_by_name.get(file_name)
@@ -2812,11 +2818,18 @@ def _plan_external_texture_copy(source_path, tex_dir, planned_copies, reserved_n
     TextureFileName) is never claimed as a fresh copy target, even when its
     file is missing from tex/.
 
-    `planned_copies` maps tex/ file name -> source path and is updated in
-    place. Returns the chosen file name.
+    An image in another format is converted first (TextureConvert): its PNG
+    is what is copied and compared, under ``<stem>.png``, ``<stem>_1.png``,
+    ... Raises ValueError when it cannot be converted.
+
+    `planned_copies` maps tex/ file name -> source path (the converted PNG
+    for another format) and is updated in place. Returns the chosen file name.
     """
     file_name = os.path.basename(source_path)
     stem, ext = os.path.splitext(file_name)
+    if TextureConvert.needs_conversion(file_name):
+        source_path = TextureConvert.converted_png(source_path)
+        file_name, ext = TextureConvert.converted_name(file_name), '.png'
     try:
         with open(source_path, 'rb') as source_file:
             source_bytes = source_file.read()
@@ -2863,8 +2876,9 @@ def _resolve_custom_submesh_texture_changes(
     clones its GX format from (`_custom_submesh_template_texture_index`).
 
     Unlike donor materials, a custom submesh image may live outside tex/:
-    it is planned as a copy into tex/ (`_plan_external_texture_copy`) that
-    the caller performs once the export is otherwise validated.
+    it is planned as a copy into tex/ (`_plan_external_texture_copy`, which
+    also converts other formats to PNG) that the caller performs once the
+    export is otherwise validated.
 
     `custom_submesh_entries` is a list of (material, template_texture_index)
     pairs. Returns (additions, assignment_by_material_name, texture_copies):
@@ -2918,20 +2932,23 @@ def _resolve_custom_submesh_texture_changes(
 
         resolved_path = os.path.abspath(os.path.normpath(path_resolver(image_path)))
         file_name = os.path.basename(resolved_path)
-        if not file_name.lower().endswith('.png'):
+        convert = TextureConvert.needs_conversion(file_name)
+        problem = TextureConvert.convert_problem(resolved_path) if convert else None
+        if problem:
             raise ValueError(
-                f"Material '{material.name}' image must be a PNG: {file_name}"
+                f"Material '{material.name}' image must be a "
+                f"{TextureConvert.FORMAT_NAMES}: {file_name} {problem}"
             )
         if validate_texture_files and not os.path.isfile(resolved_path):
             raise ValueError(
-                f"Texture PNG for material '{material.name}' does not exist: "
-                f"{resolved_path}"
+                f"Texture {'image' if convert else 'PNG'} for material "
+                f"'{material.name}' does not exist: {resolved_path}"
             )
         in_tex_dir = (
             os.path.normcase(os.path.dirname(resolved_path))
             == os.path.normcase(os.path.abspath(tex_dir))
         )
-        if not in_tex_dir:
+        if convert or not in_tex_dir:
             file_name = _plan_external_texture_copy(
                 resolved_path, tex_dir, planned_copies, descriptor_by_name
             )
@@ -5066,8 +5083,9 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 "Texture slots were refilled: a paired low-poly (_L_) model may now show other "
                 "textures; check it with Manage texture slots.")
 
-        # PNGs linked from outside tex/ are copied in now, once nothing can
-        # cancel the export, so the patcher finds them by name.
+        # PNGs linked from outside tex/ (and other formats' PNG conversions)
+        # are copied in now, once nothing can cancel the export, so the
+        # patcher finds them by name.
         try:
             for source_path, target_path in texture_copies:
                 os.makedirs(os.path.dirname(target_path), exist_ok=True)
@@ -5076,7 +5094,11 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             self.report({"ERROR"}, f"Could not copy texture into tex/: {exc}")
             return {"CANCELLED"}
         for source_path, target_path in texture_copies:
-            self.report({"INFO"}, f"Copied {source_path} to {target_path}")
+            original = TextureConvert.source_of(source_path)
+            if original:
+                self.report({"INFO"}, f"Converted {original} to the PNG {target_path}")
+            else:
+                self.report({"INFO"}, f"Copied {source_path} to {target_path}")
 
         FieldCodec.dump_sluggie(data, self.filepath)
         # The scene now belongs to the written file (a new name, or the

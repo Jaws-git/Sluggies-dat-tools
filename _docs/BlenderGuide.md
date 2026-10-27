@@ -113,11 +113,12 @@ Everything else, such as moving vertices, editing UVs without new seams, shape k
 4. Export. The new PNG is added whatever **Reimport textures from tex folder** says (that option only decides whether the original textures are rewritten). The export uses Hammerspace by itself.
 5. Patch the exported `.sluggie` normally.
 
-- Only Image Texture nodes connected to the Material Output count. Unconnected helper nodes are ignored, and a material with no connected image node keeps its original texture. A connected Image Texture node **without an image** stops the export and names the material: load a PNG into it or remove the node.
+- Only Image Texture nodes connected to the Material Output count. Unconnected helper nodes are ignored, and a material with no connected image node keeps its original texture. A connected Image Texture node **without an image** stops the export and names the material: load an image into it or remove the node.
 - If more than one Image Texture node is connected, export stops and names the material.
 - The PNG is looked up only in this model's own `tex/` folder. If it's missing, the export stops.
 - Choosing a PNG the model already has (another texture from its `tex/` folder) just points the material at that texture. Nothing new is added.
 - The same PNG on several materials is stored only once.
+- **Other image formats.** JPEG, TGA, WEBP and BMP images work too: export converts the image to `<name>.png` in the model's `tex/` folder and uses that PNG. If another file already has that name, the PNG gets a free name (`<name>_1.png`, ...) and is added as a new texture, so a converted image never replaces an original texture by itself. The format is read from the file's contents, not its extension. Other formats (TIFF, EXR, HDR, PSD, GIF, ...) stop the export. **Check Models** lists every image export will convert, and its fix saves the image as a PNG in `tex/` right away. A JPEG has no transparency, so use it only for opaque textures.
 
 > [!NOTE]
 > **Player characters and their Low model.** Every player character has a High model and a Low partner model (the Low model's folder name contains `_L_`). The Low model owns no textures and draws with the High model's textures by number. When you move a High material to another texture, the Low model keeps its original textures, so at a distance the character shows the old look. This is only cosmetic. To make them match, use **Manage texture slots** (Sluggies sidebar, *Textures & Materials* box) with both models imported: it lists the High model's texture slots (as of its last export, added textures included) and lets you pick a slot for each Low material. The material shows the picked slot's PNG in the viewport right away; **OK** keeps the picks, **Cancel** puts back the textures the dialog opened with. Export the Low model afterwards (it goes to Hammerspace), and patch the High model first when a Low material uses a texture the High model added. Editing an existing PNG in place (same file name) changes both models.
@@ -185,7 +186,7 @@ All three looked the same in game tests. A `rigid:` template limits how detailed
 
 **Textures**
 - Add New Submesh saves a blank `<name>.png` into the model's `tex/` folder and connects it. Paint it or replace it.
-- The texture can be a PNG from anywhere on disk. Export copies it into the model's `tex/` folder under a free name.
+- The texture can be a PNG from anywhere on disk. Export copies it into the model's `tex/` folder under a free name. A JPEG, TGA, WEBP or BMP is converted to a PNG there the same way.
 - A Low model (folder name contains `_L_`) owns no textures: it draws with its High model's textures. When the High model's folder holds several `.sluggie` files (variants), the Low file pairs with the one of the same name, without the leading offset and `L_` (`78711424_L_mario_red.gpl.sluggie` pairs with `78277664_mario_red.gpl.sluggie`). Without such a file it pairs with the exported one, named after its folder. Manage texture slots and the patcher's slot planner use the same rule. Its new submesh can use any PNG from the High model's `tex/` folder, including textures the High model's own export added. Patch the High model first, so those added textures exist in the game when the Low model is patched.
 - The new submesh exists only in the model you patch. The game switches to the Low model at a distance, so add a matching submesh there too if it should stay visible.
 

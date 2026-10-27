@@ -19,6 +19,7 @@ if str(ROOT_DIR / 'BlenderAddonSrc') not in sys.path:
 import FieldCodec  # noqa: E402  (bpy-free; the exec'd add-on helpers use it)
 import TextureSlotsCore  # noqa: E402  (bpy-free, likewise)
 import ModelCheckCore  # noqa: E402  (bpy-free, likewise)
+import TextureConvert  # noqa: E402  (bpy-free, likewise)
 
 
 def _load_helper(path, name):
@@ -80,6 +81,7 @@ def _load_texture_helpers():
     namespace = {
         'json': __import__('json'), 'os': os, 'FieldCodec': FieldCodec,
         'TextureSlotsCore': TextureSlotsCore, 'ModelCheckCore': ModelCheckCore,
+        'TextureConvert': TextureConvert,
     }
     exec(compile(module, str(EXPORTER_PATH), 'exec'), namespace)
     return namespace
@@ -711,16 +713,30 @@ class BlenderMaterialTextureTests(unittest.TestCase):
             )
         self.assertEqual(changes, ([], {'sm0_ds1': 2}, ['body']))
 
-    def test_non_png_image_is_rejected(self):
+    def test_unreadable_non_png_image_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             image_path = pathlib.Path(temp_dir, 'new.jpg')
             image_path.write_bytes(b'jpg')
             material = _material_graph('body', 'sm0_ds1', 0, [image_path])
-            with self.assertRaisesRegex(ValueError, 'image must be a PNG'):
+            with self.assertRaisesRegex(
+                    ValueError, 'image must be a PNG, JPEG, TGA, WEBP or BMP: new.jpg is not an image'):
                 self.resolve_changes(
                     [(self._object(material), {})],
                     [{'TextureIndex': 0, 'TextureFileName': '0.png'}],
                     temp_dir,
+                )
+
+    def test_unsupported_format_is_rejected(self):
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as temp_dir:
+            image_path = pathlib.Path(temp_dir, 'new.tif')
+            Image.new('RGB', (4, 4)).save(image_path, 'TIFF')
+            material = _material_graph('body', 'sm0_ds1', 0, [image_path])
+            with self.assertRaisesRegex(ValueError, 'new.tif is a TIFF image'):
+                self.resolve_changes(
+                    [(self._object(material), {})],
+                    [{'TextureIndex': 0, 'TextureFileName': '0.png'}],
+                    temp_dir, planned_copies={},
                 )
 
     def test_multiple_connected_images_uses_exact_error(self):
@@ -1104,6 +1120,112 @@ class BlenderExportUiTests(unittest.TestCase):
         source = panel_path.read_text(encoding='utf-8')
         self.assertNotIn('SLUGGIES_OT_transfer_pose', source)
         self.assertNotIn('SLUGGIES_OT_transfer_animation', source)
+
+
+class NonPngTextureConversionTests(unittest.TestCase):
+    """Other image formats go into tex/ as their PNG conversion (TextureConvert)."""
+
+    def setUp(self):
+        from unittest import mock
+        from PIL import Image
+        self.Image = Image
+
+        def pillow_rgba(path):
+            with Image.open(path) as img:
+                rgba = img.convert('RGBA')
+            return rgba.width, rgba.height, rgba.tobytes()
+
+        cache = tempfile.TemporaryDirectory()
+        self.addCleanup(cache.cleanup)
+        for patch in (mock.patch.object(TextureConvert, 'cache_dir', cache.name),
+                      mock.patch.object(TextureConvert, 'decode_rgba', pillow_rgba)):
+            patch.start()
+            self.addCleanup(patch.stop)
+        helpers = _load_texture_helpers()
+        self.resolve_changes = helpers['_resolve_material_texture_changes']
+        self.resolve_custom_changes = helpers['_resolve_custom_submesh_texture_changes']
+
+    def _image(self, path, fmt, color=(200, 30, 10, 255)):
+        self.Image.new('RGBA', (8, 4), color).convert('RGB' if fmt == 'JPEG' else 'RGBA').save(path, fmt)
+        return path
+
+    @staticmethod
+    def _object(*materials):
+        return SimpleNamespace(material_slots=[SimpleNamespace(material=m) for m in materials])
+
+    def test_non_png_in_tex_is_planned_as_its_png(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tex_dir = pathlib.Path(temp_dir)
+            (tex_dir / '0.png').write_bytes(b'donor')
+            image_path = self._image(tex_dir / 'new.jpg', 'JPEG')
+            planned = {}
+            additions, assignments, _changed = self.resolve_changes(
+                [(self._object(_material_graph('body', 'sm0_ds1', 0, [image_path])), {})],
+                [{'TextureIndex': 0, 'TextureFileName': '0.png'}],
+                str(tex_dir), planned_copies=planned,
+            )
+            self.assertEqual(list(planned), ['new.png'])
+            self.assertEqual(TextureConvert.source_of(planned['new.png']), str(image_path))
+            with self.Image.open(planned['new.png']) as png:
+                self.assertEqual((png.format, png.size), ('PNG', (8, 4)))
+        self.assertEqual(additions, [{'TextureFileName': 'new.png', 'TemplateTextureIndex': 0}])
+        self.assertEqual(assignments, {'sm0_ds1': 1})
+
+    def test_conversion_identical_to_a_tex_png_rebinds_without_copy(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tex_dir = pathlib.Path(temp_dir, 'tex')
+            tex_dir.mkdir()
+            source = self._image(pathlib.Path(temp_dir, '1.tga'), 'TGA', (1, 2, 3, 128))
+            (tex_dir / '0.png').write_bytes(b'donor')
+            (tex_dir / '1.png').write_bytes(pathlib.Path(TextureConvert.converted_png(str(source))).read_bytes())
+            planned = {}
+            result = self.resolve_changes(
+                [(self._object(_material_graph('body', 'sm0_ds1', 0, [source])), {})],
+                [{'TextureIndex': 0, 'TextureFileName': '0.png'},
+                 {'TextureIndex': 1, 'TextureFileName': '1.png'}],
+                str(tex_dir), planned_copies=planned,
+            )
+        self.assertEqual(planned, {})
+        self.assertEqual(result, ([], {'sm0_ds1': 1}, ['body']))
+
+    def test_conversion_never_overwrites_a_tex_png_with_other_bytes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tex_dir = pathlib.Path(temp_dir)
+            (tex_dir / '0.png').write_bytes(b'donor')
+            image_path = self._image(tex_dir / '0.webp', 'WEBP')
+            planned = {}
+            additions, assignments, _changed = self.resolve_changes(
+                [(self._object(_material_graph('body', 'sm0_ds1', 0, [image_path])), {})],
+                [{'TextureIndex': 0, 'TextureFileName': '0.png'}],
+                str(tex_dir), planned_copies=planned,
+            )
+        self.assertEqual(list(planned), ['0_1.png'])
+        self.assertEqual(additions, [{'TextureFileName': '0_1.png', 'TemplateTextureIndex': 0}])
+        self.assertEqual(assignments, {'sm0_ds1': 1})
+
+    def test_custom_submesh_image_is_converted_into_tex(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tex_dir = pathlib.Path(temp_dir, 'tex')
+            tex_dir.mkdir()
+            image_path = self._image(pathlib.Path(temp_dir, 'hat.bmp'), 'BMP')
+            material = _material_graph('hat_mat', 'custom0_ds0', 0, [image_path])
+            additions, assignments, copies = self.resolve_custom_changes(
+                [(material, 0), (material, 0)],
+                [{'TextureIndex': 0, 'TextureFileName': '0.png'}],
+                str(tex_dir),
+            )
+            converted = TextureConvert.converted_png(str(image_path))
+        self.assertEqual(additions[0], {'TextureFileName': 'hat.png', 'TemplateTextureIndex': 0})
+        self.assertEqual(assignments, {'hat_mat': {'AdditionalTextureFileName': 'hat.png'}})
+        self.assertEqual(copies, [(converted, str(tex_dir / 'hat.png'))])
+
+    def test_missing_custom_submesh_image_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            material = _material_graph('hat_mat', 'custom0_ds0', 0, [pathlib.Path(temp_dir, 'gone.jpg')])
+            with self.assertRaisesRegex(ValueError, 'Texture image .* does not exist'):
+                self.resolve_custom_changes(
+                    [(material, 0)], [{'TextureIndex': 0, 'TextureFileName': '0.png'}], temp_dir,
+                )
 
 
 if __name__ == '__main__':
