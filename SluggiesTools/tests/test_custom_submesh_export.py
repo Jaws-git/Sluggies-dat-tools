@@ -318,7 +318,7 @@ class ValidateCustomSubmeshesWiringTests(unittest.TestCase):
 
     def test_execute_refuses_out_of_step_added_bone_names_before_bone_export(self):
         source = _execute_source()
-        guard = 'added_bone_name_error(context.selected_objects, context)'
+        guard = 'added_bone_name_error(selected, context)'
         self.assertIn(guard, source)
         self.assertLess(source.index(guard), source.index('encode_bone_hierarchy_edited('))
         self.assertLess(source.index(guard), source.index('validate_custom_submeshes('))

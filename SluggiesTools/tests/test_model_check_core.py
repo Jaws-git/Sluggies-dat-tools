@@ -231,7 +231,7 @@ class TestWiring(unittest.TestCase):
         source = (BLENDER_ADDON_DIR / 'ExportSluggies.py').read_text(encoding='utf-8')
         gate = 'ModelCheck.export_errors('
         self.assertIn(gate, source)
-        self.assertLess(source.index(gate), source.index('encode_bone_hierarchy_edited(context.selected_objects'))
+        self.assertLess(source.index(gate), source.index('encode_bone_hierarchy_edited(selected'))
         self.assertIn('self.report({"INFO"}, size_line)', source)
 
     def test_dialog_shares_the_exporters_rules(self):

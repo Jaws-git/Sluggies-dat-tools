@@ -258,6 +258,34 @@ def pick_partner(candidates: Iterable[str], own_path: str) -> Optional[str]:
     return prefer_exported(candidates)
 
 
+_BAD_NAME_CHARS = set('\\/:*?"<>|')
+
+
+def pair_export_paths(high_path: str, low_path: str, name: str) -> Tuple[str, str]:
+    """The ``.sluggie`` files Export (High+Low) writes for the entered *name*:
+    ``<name>.sluggie`` next to *high_path*, and next to *low_path* the Low
+    model's offset prefix plus ``L_`` and *name* without its own offset
+    prefix, so :func:`pick_partner` pairs the two by :func:`variant_key`
+    ('93430528_peach.jasmine' -> '93938880_L_peach.jasmine.sluggie').
+    Raises ValueError for a name that cannot be a file name."""
+    name = (name or '').strip()
+    if name.lower().endswith('.sluggie'):
+        name = name[:-len('.sluggie')]
+    variant = _OFFSET_PREFIX_RE.sub('', name)
+    if variant[:2].lower() == 'l_':
+        variant = variant[2:]
+    if not variant.strip(' .'):
+        raise ValueError("Enter a name for the two .sluggie files")
+    if any(c in _BAD_NAME_CHARS for c in name) or name.endswith(('.', ' ')):
+        raise ValueError(f"'{name}' is not a valid file name")
+    low_dir = os.path.dirname(os.path.abspath(low_path))
+    match = (_OFFSET_PREFIX_RE.match(os.path.basename(low_path))
+             or _OFFSET_PREFIX_RE.match(os.path.basename(low_dir)))
+    low_name = (match.group(0) if match else '') + 'L_' + variant
+    return (os.path.join(os.path.dirname(os.path.abspath(high_path)), name + '.sluggie'),
+            os.path.join(low_dir, low_name + '.sluggie'))
+
+
 def model_identity(model: dict) -> Optional[Tuple[int, int, str]]:
     """``(ChunkNumber, FileIndex, ModelOffset)`` of a ``SluggiesModel``, or
     None when a field is missing: the game model a ``.sluggie`` patches."""

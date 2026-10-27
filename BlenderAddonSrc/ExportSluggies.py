@@ -4083,6 +4083,40 @@ def _encode_face_surface_assignment(obj, display_states, surf_mat, use_compressi
     return _from_bytes(raw, use_compression), True
 
 
+def model_meshes(context, arm_obj):
+    """(visible, hidden) meshes of the model *arm_obj*: its Sluggies, custom
+    submesh and collision meshes below it or deformed by it."""
+    shown, hidden = [], []
+    for obj in context.view_layer.objects:
+        if obj.type != 'MESH':
+            continue
+        owner = obj.parent
+        while owner is not None and owner.type != 'ARMATURE':
+            owner = owner.parent
+        if owner is not arm_obj and not any(
+                m.type == 'ARMATURE' and m.object is arm_obj for m in obj.modifiers):
+            continue
+        collision = getattr(obj, 'sluggies_collision', None)
+        if not (obj.get('SluggiesCustomSubmesh') or (collision is not None and collision.enabled)
+                or all(prop in obj for prop in REQUIRED_PROPS)):
+            continue
+        (shown if obj.visible_get() else hidden).append(obj)
+    return shown, hidden
+
+
+def export_selection(context):
+    """(the objects the export treats as selected, hidden meshes left out):
+    the selection, or for a selection of one model's armature and no mesh,
+    that armature with all its visible meshes."""
+    from . import ModelCheck
+    selected = list(context.selected_objects)
+    armatures = [obj for obj in selected if ModelCheck.is_sluggies_armature(obj)]
+    if len(armatures) != 1 or any(obj.type == 'MESH' for obj in selected):
+        return selected, []
+    shown, hidden = model_meshes(context, armatures[0])
+    return selected + shown, hidden
+
+
 class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
     bl_idname = "sluggies.export_json"
     bl_label = "Export Sluggers intermediate"
@@ -4100,7 +4134,8 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         description=(
             "The patched model keeps only the meshes this export writes: every original mesh "
             "that is not selected is left out of the game (not drawn), and its earlier edits "
-            "are dropped. The main body always stays; stadiums keep every mesh. Off: unselected "
+            "are dropped. The main body always stays; stadiums keep every mesh. With only the "
+            "armature selected, all its visible meshes count as selected. Off: unselected "
             "meshes keep their original or earlier exported state"
         ),
         default=True,
@@ -4171,7 +4206,9 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         # source (older imports) or with a lost one reads the target, which
         # the export below then records as its source.
         from . import ModelCheck
-        arm_obj = ModelCheck.selection_armature(context.selected_objects)
+        # Only an armature selected: all its visible meshes count as selected.
+        selected, hidden_meshes = export_selection(context)
+        arm_obj = ModelCheck.selection_armature(selected)
         source_path = SluggiePath.resolve(arm_obj, hint=self.filepath)
         stored_path = SluggiePath.stored(arm_obj)
         if not source_path:
@@ -4232,11 +4269,11 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         # edits to an existing one — so they are collected separately and
         # excluded from the VertexBufferOffset-matching candidates below.
         custom_submesh_candidates = [
-            obj for obj in context.selected_objects
+            obj for obj in selected
             if obj.type == 'MESH' and obj.get('SluggiesCustomSubmesh')
         ]
         candidates = [
-            obj for obj in context.selected_objects
+            obj for obj in selected
             if obj.type == 'MESH' and not obj.get('SluggiesCustomSubmesh')
             and all(prop in obj for prop in REQUIRED_PROPS)
         ]
@@ -4244,7 +4281,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         # Stadium collision: any selected mesh with collision turned on (a model
         # mesh, a custom submesh or a plain collision-only mesh).
         collision_objects = [
-            obj for obj in context.selected_objects
+            obj for obj in selected
             if obj.type == 'MESH' and getattr(obj, 'sluggies_collision', None) is not None
             and obj.sluggies_collision.enabled
         ]
@@ -4252,7 +4289,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         # count whether selected or not: once the scene has any, the patcher
         # rebuilds the whole collision file from them, so a deleted one is
         # collision removed, not collision left out by the selection.
-        collision_armature = ModelCheck.selection_armature(context.selected_objects)
+        collision_armature = ModelCheck.selection_armature(selected)
         original_colliders = [
             obj for obj in context.scene.objects
             if obj.type == 'MESH' and StadiumCollisionExport.REGION_PROP in obj
@@ -4290,7 +4327,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         check_errors = ModelCheck.export_errors(
             context, data["SluggiesModel"], self.filepath,
             candidates + custom_submesh_candidates + [
-                obj for obj in context.selected_objects if obj.type == 'ARMATURE'
+                obj for obj in selected if obj.type == 'ARMATURE'
             ],
             self.reimport_textures,
         )
@@ -4420,12 +4457,12 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         # Everything below reads bone ids from bone_<N> names; refuse while an
         # added bone's name and its exported id disagree (a deleted added
         # bone shifts the later ids, 2026-09-29).
-        name_error = added_bone_name_error(context.selected_objects, context)
+        name_error = added_bone_name_error(selected, context)
         if name_error:
             self.report({"ERROR"}, name_error)
             return {"CANCELLED"}
-        encode_bone_hierarchy_edited(context.selected_objects, data, warnings, context)
-        warnings.extend(untracked_keys_warnings(context.selected_objects, context))
+        encode_bone_hierarchy_edited(selected, data, warnings, context)
+        warnings.extend(untracked_keys_warnings(selected, context))
         bone_hierarchy_errors = validate_bone_hierarchy_edited_export(
             data["SluggiesModel"], warnings
         )
@@ -4565,6 +4602,9 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         excluded_names = [submeshes[i].get("MeshName") or f"submesh {i}" for i in excluded_indices]
         if excluded_names:
             infos.append(f"Excluded from the patched model (not selected): {', '.join(excluded_names)}")
+        if hidden_meshes:
+            warnings.append("Armature selected: its hidden meshes are not exported: "
+                            + ", ".join(obj.name for obj in hidden_meshes))
 
         # --- Export mode: in-place when nothing would be lost, else Hammerspace ---
         # Model-level reasons skip the in-place attempt. Otherwise the meshes
@@ -4574,7 +4614,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         hammerspace_reasons = ExportMode.model_level_reasons(
             data["SluggiesModel"],
             custom_submesh_names=[obj.name for obj in custom_submesh_candidates],
-            has_new_bones=armature_has_new_bones(context.selected_objects, context),
+            has_new_bones=armature_has_new_bones(selected, context),
             changed_materials=changed_materials,
             resized_textures=(
                 ExportMode.texture_size_changes(local_texture_descriptors, texture_dir)

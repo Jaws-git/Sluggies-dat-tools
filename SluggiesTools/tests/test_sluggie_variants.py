@@ -87,6 +87,24 @@ class ExportTargetTests(unittest.TestCase):
     def test_unreadable_target_is_refused(self):
         self.assertIn('not a readable', ModelCheckCore.overwrite_error(self.SOURCE, None, 'b.sluggie'))
 
+    def test_high_low_names_share_the_variant(self):
+        high = os.path.join('c', '93430528_peach.gpl', '93430528_peach.gpl.sluggie')
+        low = os.path.join('c', '93938880_L_peach.gpl', '93938880_L_peach.gpl.sluggie')
+        pair = ModelCheckCore.pair_export_paths
+        self.assertEqual(pair(high, low, '93430528_peach.gpl'), (os.path.abspath(high), os.path.abspath(low)))
+        new_high, new_low = pair(high, low, ' 93430528_peach.jasmine.sluggie ')
+        self.assertEqual(new_high, os.path.abspath(os.path.join('c', '93430528_peach.gpl',
+                                                                '93430528_peach.jasmine.sluggie')))
+        self.assertEqual(new_low, os.path.abspath(os.path.join('c', '93938880_L_peach.gpl',
+                                                               '93938880_L_peach.jasmine.sluggie')))
+        self.assertEqual(ModelCheckCore.pick_partner([high, new_high], new_low), new_high)
+        # A Low file without an offset takes its folder's.
+        renamed_low = os.path.join('c', '93938880_L_peach.gpl', 'low.sluggie')
+        self.assertEqual(os.path.basename(pair(high, renamed_low, 'jasmine')[1]), '93938880_L_jasmine.sluggie')
+        for bad in ('', '93430528_', 'a/b', 'x?'):
+            with self.subTest(name=bad), self.assertRaises(ValueError):
+                pair(high, low, bad)
+
     def test_clipboard_gets_a_bare_name_only_inside_the_models_folder(self):
         inside = os.path.join('E:' + os.sep, 'S', '2_Output_Assets', '18 Mario', 'm', 'm_red.sluggie')
         outside = os.path.join('E:' + os.sep, 'Mods', 'm_red.sluggie')

@@ -2742,6 +2742,11 @@ _ADAPT_STEPS = (
      "the Low model's body, a rigid mesh the Low model's mesh on its bone"),
     # Opens the regular Check Models dialog (its own tooltip shows).
     ('CHECK', "Check For Problems", "Check the models in the scene for problems"),
+    # Shown only while the selected model's High and Low are both imported.
+    ('EXPORT', "Export (High+Low)",
+     "For the High or Low model selected (or above the selected object), with its partner imported too: "
+     "export both into .sluggie files of one name, the High model first. Every visible mesh of each "
+     "model is exported; hidden or deleted original meshes are left out of the game"),
 )
 
 
@@ -4647,6 +4652,138 @@ class SLUGGIES_OT_adapt_lowpoly(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def _high_low_pair(context, arm_obj):
+    """(High, Low, None) for the imported model *arm_obj* (either of the two)
+    and its imported partner, or (None, None, why there is none)."""
+    path = SluggiePath.resolve(arm_obj, relink=False)
+    if not path:
+        return None, None, SluggiePath.missing_message(arm_obj, "Export (High+Low)")
+    if not AdaptLowpoly.is_low_model(path):
+        low, problem = _lowpoly_partner(context, arm_obj)
+        return (arm_obj, low, None) if low is not None else (None, None, problem)
+    highs = [h for h in _sluggies_armatures(context)
+             if h is not arm_obj and _lowpoly_partner(context, h)[0] is arm_obj]
+    if len(highs) != 1:
+        return None, None, (f"Import the High version of {arm_obj.name} first" if not highs
+                            else f"Several High models pair with {arm_obj.name}")
+    return highs[0], arm_obj, None
+
+
+class SLUGGIES_OT_export_high_low(bpy.types.Operator):
+    """Export (High+Low) step of the 'Adapt' box: both models into .sluggie
+    files of one name"""
+    bl_idname = "sluggies.export_high_low"
+    bl_label = "Export (High+Low)"
+    bl_description = next(desc for ident, _label, desc in _ADAPT_STEPS if ident == 'EXPORT')
+    bl_options = {"UNDO"}
+
+    name: StringProperty(  # type: ignore[valid-type]
+        name="Name",
+        description=("File name of the High model's .sluggie (without .sluggie); the Low model's is its "
+                     "offset, L_ and this name without its offset. An existing name is overwritten, a "
+                     "new one is created next to the current files"),
+    )
+    use_custom_normals: BoolProperty(  # type: ignore[valid-type]
+        name="Overwrite Normals",
+        description=SLUGGIES_OT_export.__annotations__['use_custom_normals'].keywords['description'],
+        default=False,
+    )
+    reimport_textures: BoolProperty(  # type: ignore[valid-type]
+        name="Reimport textures from tex folder",
+        description=SLUGGIES_OT_export.__annotations__['reimport_textures'].keywords['description'],
+        default=False,
+    )
+    high_name: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})  # type: ignore[valid-type]
+    low_name: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})  # type: ignore[valid-type]
+
+    @classmethod
+    def poll(cls, context):
+        if context.mode != 'OBJECT':
+            cls.poll_message_set("Switch to Object Mode")
+            return False
+        arm_obj = _selected_sluggies_armature(context)
+        if arm_obj is None:
+            cls.poll_message_set("Select the High or Low model's armature or one of its child objects")
+            return False
+        high, _low, problem = _high_low_pair(context, arm_obj)
+        if high is None:
+            cls.poll_message_set(problem)
+            return False
+        return True
+
+    def _models(self):
+        return bpy.data.objects.get(self.high_name), bpy.data.objects.get(self.low_name)
+
+    def _targets(self):
+        high, low = self._models()
+        return ModelCheckCore.pair_export_paths(
+            SluggiePath.resolve(high, relink=False), SluggiePath.resolve(low, relink=False), self.name)
+
+    def invoke(self, context, event):
+        high, low, problem = _high_low_pair(context, _selected_sluggies_armature(context))
+        if high is None:
+            self.report({"ERROR"}, problem)
+            return {"CANCELLED"}
+        self.high_name, self.low_name = high.name, low.name
+        # The High model's last exported (or imported) file.
+        name = os.path.basename(SluggiePath.resolve(high, relink=False))
+        self.name = name[:-len('.sluggie')] if name.lower().endswith('.sluggie') else name
+        return context.window_manager.invoke_props_dialog(self, width=520)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, 'name')
+        col = layout.column(align=True)
+        try:
+            targets = self._targets()
+        except ValueError as exc:
+            col.label(text=str(exc), icon='ERROR')
+        else:
+            for model, path in zip(self._models(), targets):
+                state = "overwrite" if os.path.isfile(path) else "new"
+                col.label(text=f"{model.name}: {os.path.basename(path)} ({state})", icon='FILE')
+        layout.prop(self, 'use_custom_normals')
+        layout.prop(self, 'reimport_textures')
+
+    def execute(self, context):
+        high, low = self._models()
+        if high is None or low is None:
+            self.report({"ERROR"}, "Select the High or Low model again")
+            return {"CANCELLED"}
+        try:
+            targets = self._targets()
+        except ValueError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        selected, active = list(context.selected_objects), context.view_layer.objects.active
+        written = []
+        try:
+            # High first: the Low export borrows the High file's textures.
+            # The armature alone: the exporter takes all its visible meshes.
+            for arm_obj, path in zip((high, low), targets):
+                for obj in context.selected_objects:
+                    obj.select_set(False)
+                arm_obj.select_set(True)
+                context.view_layer.objects.active = arm_obj
+                result = bpy.ops.sluggies.export_json(
+                    'EXEC_DEFAULT', filepath=path, exclude_unselected=True,
+                    use_custom_normals=self.use_custom_normals, reimport_textures=self.reimport_textures)
+                if 'FINISHED' not in result:
+                    done = f" ({written[0]} was written)" if written else ""
+                    self.report({"ERROR"}, f"Export of {arm_obj.name} failed{done}; see the messages above")
+                    return {"CANCELLED"}
+                written.append(os.path.basename(path))
+        finally:
+            for obj in context.selected_objects:
+                obj.select_set(False)
+            for obj in selected:
+                if obj.name in context.view_layer.objects:
+                    obj.select_set(True)
+            context.view_layer.objects.active = active
+        self.report({"INFO"}, f"Exported {high.name} to {written[0]} and {low.name} to {written[1]}")
+        return {"FINISHED"}
+
+
 # Adapt steps implemented by their own operator instead of the placeholder
 # (bl_idname; Check Models is ModelCheckUI's, which imports this module).
 _ADAPT_STEP_OPERATORS = {
@@ -4658,6 +4795,7 @@ _ADAPT_STEP_OPERATORS = {
     'WEIGHTS': SLUGGIES_OT_adapt_weights.bl_idname,
     'LOWPOLY': SLUGGIES_OT_adapt_lowpoly.bl_idname,
     'CHECK': "sluggies.check_models",
+    'EXPORT': SLUGGIES_OT_export_high_low.bl_idname,
 }
 
 
@@ -4671,6 +4809,10 @@ def _draw_adapt_box(layout, context):
         col.operator("wm.save_as_mainfile", text="0. Create a Blend file!", icon='FILE_BLEND')
     any_selected = bool(context.selected_objects)
     for n, (ident, label, _desc) in enumerate(_ADAPT_STEPS, 1):
+        if ident == 'EXPORT':
+            arm_obj = _selected_sluggies_armature(context)
+            if arm_obj is None or _high_low_pair(context, arm_obj)[0] is None:
+                continue
         if any_selected:
             label = {'CLEANUP': "Clean (selected)", 'ARMATURE': "Assign to Armature (selected)"}.get(ident, label)
         if ident in _ADAPT_STEP_OPERATORS:
@@ -4935,6 +5077,7 @@ def register():
     bpy.utils.register_class(SLUGGIES_OT_adapt_weights)
     bpy.utils.register_class(SluggiesLowpolyRow)
     bpy.utils.register_class(SLUGGIES_OT_adapt_lowpoly)
+    bpy.utils.register_class(SLUGGIES_OT_export_high_low)
     bpy.utils.register_class(SLUGGIES_PT_tools)
     bpy.utils.register_class(SluggiesCollisionSettings)
     bpy.types.Object.sluggies_collision = bpy.props.PointerProperty(type=SluggiesCollisionSettings)
@@ -4978,6 +5121,7 @@ def unregister():
     del bpy.types.Object.sluggies_collision
     bpy.utils.unregister_class(SluggiesCollisionSettings)
     bpy.utils.unregister_class(SLUGGIES_PT_tools)
+    bpy.utils.unregister_class(SLUGGIES_OT_export_high_low)
     bpy.utils.unregister_class(SLUGGIES_OT_adapt_lowpoly)
     bpy.utils.unregister_class(SluggiesLowpolyRow)
     bpy.utils.unregister_class(SLUGGIES_OT_adapt_weights)
