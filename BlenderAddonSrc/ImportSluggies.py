@@ -1303,12 +1303,20 @@ def build_armature(name, bone_list, collection, skin_data=None, reorient=True):
     return arm_obj
 
 
-def assign_bone_collections(arm_obj):
+def assign_bone_collections(arm_obj, bone_names=None):
     """Sort every bone of *arm_obj* into the BoneRoles collections, from the
     properties the import stored on it (SluggiesSkinned, SluggiesGeoIdRaw,
     track_id, SluggiesUserAdded). Collections are created in
-    ``BoneRoles.COLLECTION_ORDER``, only for roles the model has."""
+    ``BoneRoles.COLLECTION_ORDER``, only for roles the model has. With
+    *bone_names*, only those bones, taken out of their old role collections
+    first."""
     arm_data = arm_obj.data
+    if bone_names is not None:
+        for name in BoneRoles.COLLECTION_ORDER:
+            collection = arm_data.collections.get(name)
+            if collection is not None:
+                for bone_name in bone_names:
+                    collection.unassign(arm_data.bones[bone_name])
     roles_by_bone = {
         bone.name: BoneRoles.bone_roles(
             skinned=bool(bone.get('SluggiesSkinned', False)),
@@ -1319,6 +1327,7 @@ def assign_bone_collections(arm_obj):
             user_added=bool(bone.get('SluggiesUserAdded', False)),
         )
         for bone in arm_data.bones
+        if bone_names is None or bone.name in bone_names
     }
     used = {role for roles in roles_by_bone.values() for role in roles}
     for name in BoneRoles.COLLECTION_ORDER:
@@ -1532,6 +1541,93 @@ def add_imported_added_bones(arm_obj, entries):
         b['track_id'] = int(entry.get('TrackId', GEO_ID_FREE))
     bpy.context.view_layer.objects.active = prev_active
     return [name for name, _order, _entry in created]
+
+
+def restore_donor_bones(context, arm_obj, bone_list, skin_data=None):
+    """Put the .sluggie's skeleton (*bone_list*, its BoneHierarchy) back on
+    *arm_obj*: donor bones deleted in Blender come back where a fresh import
+    puts them (Reorient Bones as on the original import), with their track
+    id and import metadata, and every donor bone gets its original parent.
+    Added bones keep their place, parent and collections. Keys of a deleted
+    bone stay in its actions under its name, so its animation comes back
+    with it. Returns (restored names, re-parented names)."""
+    bones = arm_obj.data.bones
+    expected = {f"bone_{bd['BoneId']}": (f"bone_{bd['ParentBoneId']}" if bd['ParentBoneId'] is not None else None)
+                for bd in bone_list}
+    for name in expected:
+        if name in bones and bones[name].get('SluggiesUserAdded'):
+            raise ValueError(f"added bone {name} holds the name of an original bone; renumber added bones first")
+    missing = [name for name in expected if name not in bones]
+    reparent = [name for name in expected if name in bones
+                and (bones[name].parent.name if bones[name].parent else None) != expected[name]]
+    if not missing and not reparent:
+        return [], []
+    if arm_obj.name not in context.view_layer.objects:
+        raise ValueError(f"{arm_obj.name} is not in the view layer; include its collection")
+    old_parents = {bones[name].parent.name for name in reparent if bones[name].parent is not None}
+
+    view_layer = context.view_layer
+    prev_active = view_layer.objects.active
+    selected = [obj for obj in view_layer.objects if obj.select_get()]
+    for obj in selected:
+        obj.select_set(False)
+    try:
+        fresh = {}
+        if missing:
+            # A throwaway fresh import gives the deleted bones the same rest
+            # frames (tails, roll) the original import gave them.
+            temp = build_armature("__sluggies_restore_bones", bone_list, context.scene.collection, skin_data,
+                                  reorient=bool(arm_obj.get('SluggiesBonesReoriented', True)))
+            temp_data = temp.data
+            for name in missing:
+                bone = temp_data.bones[name]
+                # Plain copies: the temp armature's ID properties die with it.
+                props = {key: value.to_list() if hasattr(value, 'to_list') else value
+                         for key, value in bone.items()}
+                fresh[name] = (bone.head_local.copy(), bone.tail_local.copy(), bone.matrix_local.copy(),
+                               bone.inherit_scale, props)
+            bpy.data.objects.remove(temp)
+            bpy.data.armatures.remove(temp_data)
+
+        hidden = (arm_obj.hide_get(), arm_obj.hide_viewport)
+        arm_obj.hide_set(False)
+        arm_obj.hide_viewport = False
+        arm_obj.select_set(True)
+        view_layer.objects.active = arm_obj
+        bpy.ops.object.mode_set(mode='EDIT')
+        try:
+            edit_bones = arm_obj.data.edit_bones
+            for name in missing:
+                head, tail, matrix, _inherit, _props = fresh[name]
+                eb = edit_bones.new(name)
+                eb.head = head
+                eb.tail = tail
+                eb.matrix = matrix
+                eb.use_connect = False
+            for name in missing + reparent:
+                parent = expected[name]
+                edit_bones[name].parent = edit_bones[parent] if parent is not None else None
+        finally:
+            bpy.ops.object.mode_set(mode='OBJECT')
+            arm_obj.select_set(False)
+            arm_obj.hide_set(hidden[0])
+            arm_obj.hide_viewport = hidden[1]
+
+        bones = arm_obj.data.bones
+        for name in missing:
+            _head, _tail, _matrix, inherit, props = fresh[name]
+            bone = bones[name]
+            bone.inherit_scale = inherit
+            for key, value in props.items():
+                bone[key] = value
+        touched = set(missing) | set(reparent) | old_parents | {expected[n] for n in missing + reparent}
+        assign_bone_collections(arm_obj, [name for name in touched if name is not None
+                                          and not bones[name].get('SluggiesUserAdded')])
+    finally:
+        for obj in selected:
+            obj.select_set(True)
+        view_layer.objects.active = prev_active
+    return missing, reparent
 
 
 def _custom_submesh_image(name, assignment, sluggie_dir, texture_file_map):

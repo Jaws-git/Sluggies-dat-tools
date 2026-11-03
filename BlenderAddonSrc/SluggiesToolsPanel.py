@@ -2754,7 +2754,7 @@ _ADAPT_STEPS = (
     # it back, uncomment this entry, its _ADAPT_STEP_OPERATORS entry and its
     # register/unregister lines.
     # ('TRANSFORM', "Scale and Position", _ADAPT_TRANSFORM_DESCRIPTION),
-    ('MESHES', "Join or Replace meshes",
+    ('MESHES', "Join or Replace Meshes",
      "For the Sluggies armature selected (or above the selected object): join each added mesh into the "
      "main body, let one replace it, add it as a rigid submesh on a free bone, or ignore it"),
     ('WEIGHTS', "Map Weights or Autorig",

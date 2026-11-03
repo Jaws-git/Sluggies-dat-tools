@@ -29,7 +29,7 @@ from . import SluggiesToolsPanel as panel
 from . import StadiumCollisionExport
 from . import TemplateSources
 from . import TextureConvert
-from .ImportSluggies import _set_surface_material_metadata
+from .ImportSluggies import _set_surface_material_metadata, restore_donor_bones
 from .ModelCheckCore import ERROR, INFO, WARNING, Finding
 
 
@@ -400,20 +400,31 @@ def check_donor_bones(context, scope):
                     "a renamed bone are ignored on export. Rename them back"),
         "missing": ("Original bone deleted", "Original bones deleted",
                     "are missing from the armature. Export keeps them (they come from the "
-                    ".sluggie), but weights on them and their animation are lost in Blender. "
-                    "Re-import to get them back"),
+                    ".sluggie), but weights on them and their animation are lost in Blender"),
         "reparented": ("Original bone re-parented", "Original bones re-parented",
                        "have another parent in Blender than in the game. Export ignores the "
                        "change; the game keeps the original hierarchy"),
         "orphan": ("Added bone without parent", "Added bones without parent",
                    "have no parent bone and are not exported. Parent them to a bone"),
     }
+    # A renamed bone would come back twice (as itself and as its re-created
+    # bone_<id>), so the skeleton is restored only once the names are back.
+    restore = {"armature": arm.name, "sluggie": scope.sluggie_path}
+    restore_note = (". Rename the renamed bones back first; then the fix restores the original "
+                    "skeleton from the .sluggie" if problems["renamed"] else
+                    ". The fix restores the original skeleton from the .sluggie (deleted bones with "
+                    "their track, original parents); added bones stay as they are")
     for kind, names in problems.items():
         if names:
             one, many, why = texts[kind]
+            fixable = kind in ("missing", "reparented")
+            if fixable:
+                why += restore_note
+                fixable = not problems["renamed"]
             action = {"object": arm.name, "bones": names} if kind == "orphan" else {}
             yield Finding(f"donor_bones_{kind}", WARNING, arm.name, one if len(names) == 1 else many,
                           f"{', '.join(names[:8])}{' ...' if len(names) > 8 else ''}: these bones {why}.",
+                          "restore_skeleton" if fixable else None, restore if fixable else {},
                           action_id="goto_bones" if action else None, action_args=action)
 
 
@@ -1579,6 +1590,12 @@ def fix_remove_slots(context, object, slots):
             bpy.ops.object.material_slot_remove()
 
 
+def fix_restore_skeleton(context, armature, sluggie):
+    model = _fix_model(sluggie)
+    fix_object_mode(context)
+    restore_donor_bones(context, _object(armature), model.get("BoneHierarchy") or [], model.get("SkinData"))
+
+
 def fix_renumber_bones(context, armature):
     panel._renumber_added_bones(_object(armature))
 
@@ -1609,6 +1626,8 @@ FIXES = {
     "one_bone": fix_one_bone,
     "limit_weights": fix_limit_weights,
     "remove_slots": fix_remove_slots,
+    # Before renumbering: a restored original bone changes the donor count.
+    "restore_skeleton": fix_restore_skeleton,
     "renumber_bones": fix_renumber_bones,
     "reset_root_scale": fix_reset_root_scale,
     "bone_track": fix_bone_track,
