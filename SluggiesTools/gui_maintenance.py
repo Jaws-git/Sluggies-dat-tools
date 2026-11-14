@@ -184,12 +184,12 @@ class MaintenanceTab:
     def confirm_defrag(self):
         if self.app.busy:
             return
-        self.app.ask_text(
+        self.app.confirm(
             'Defragment hammerspace?',
             'Moves the hammerspace blocks of 3_Output_Dat/dt_na.dat together, repoints main.dol and shrinks the '
             'file. A backup is kept until every block checks out, and put back if anything fails. Copy '
             'dt_na.dat, main.dol and fst.bin to the game together afterwards.',
-            lambda _answer: self.defrag(), lambda: None, kind='yesno')
+            self.defrag)
 
     def defrag(self):
         path = self._dat_path()

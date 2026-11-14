@@ -1472,7 +1472,7 @@ def main():
             untangle_context = {
                 'enabled': True,
                 'seen_names': set(),
-                'seen_image_starts': {},
+                'handled_images': {},
                 'report_lines': [
                     f'Hammerspace clone pre-pass complete: cloned {clone_count} entries from dirs 89-94.'
                 ] + untangle_bootstrap_report,

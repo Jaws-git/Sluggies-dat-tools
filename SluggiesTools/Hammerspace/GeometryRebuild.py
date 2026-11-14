@@ -747,13 +747,21 @@ def _compact_shared_color_array(
         slot_for.setdefault(entry, index)
     required = {entry for entries in edited_by_channel.values() for entry in entries}
     reused = set()
+    # Slots an unedited channel still points at keep their donor value: that
+    # channel keeps its donor indices, so repurposing one would recolour it.
+    pinned = {
+        index
+        for channel, indices in donor_indices_by_channel.items()
+        if channel not in edited_by_channel
+        for index in indices
+    }
 
     def assign(entry: bytes) -> int:
         index = slot_for.get(entry)
         if index is not None:
             return index
         for candidate in range(len(donor_entries)):
-            if candidate in reused:
+            if candidate in reused or candidate in pinned:
                 continue
             if donor_entries[candidate] in required:
                 continue

@@ -48,6 +48,7 @@ import signal
 import subprocess
 import sys
 import threading
+import traceback
 
 import dearpygui.dearpygui as dpg
 import file_drop
@@ -156,6 +157,8 @@ class _ProcessJob:
 
     _PROCESS_SET_QUOTA = 0x0100
     _PROCESS_TERMINATE = 0x0001
+    _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+    _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
 
     def __init__(self, kernel32, handle):
         self.kernel32, self.handle = kernel32, handle
@@ -181,6 +184,7 @@ class _ProcessJob:
         job = kernel32.CreateJobObjectW(None, None)
         if not job:
             return None
+        cls._kill_on_close(kernel32, job)
         # the PID is still ours: Popen holds a handle to the process, so Windows cannot reuse it yet
         handle = kernel32.OpenProcess(cls._PROCESS_SET_QUOTA | cls._PROCESS_TERMINATE, False, process.pid)
         assigned = bool(handle) and kernel32.AssignProcessToJobObject(job, handle)
@@ -190,6 +194,32 @@ class _ProcessJob:
             kernel32.CloseHandle(job)
             return None
         return cls(kernel32, job)
+
+    @classmethod
+    def _kill_on_close(cls, kernel32, job):
+        """Make Windows end the job's processes when its last handle closes: if the window dies without
+        ``stop_command`` (killed, crashed), a patch must not go on writing ``3_Output_Dat`` unattended. Best effort:
+        a job without the limit still works for Stop."""
+        import ctypes
+        from ctypes import wintypes
+
+        class _Basic(ctypes.Structure):
+            _fields_ = [('PerProcessUserTimeLimit', ctypes.c_int64), ('PerJobUserTimeLimit', ctypes.c_int64),
+                        ('LimitFlags', wintypes.DWORD), ('MinimumWorkingSetSize', ctypes.c_size_t),
+                        ('MaximumWorkingSetSize', ctypes.c_size_t), ('ActiveProcessLimit', wintypes.DWORD),
+                        ('Affinity', ctypes.c_size_t), ('PriorityClass', wintypes.DWORD),
+                        ('SchedulingClass', wintypes.DWORD)]
+
+        class _Extended(ctypes.Structure):
+            _fields_ = [('BasicLimitInformation', _Basic), ('IoInfo', ctypes.c_uint64 * 6),
+                        ('ProcessMemoryLimit', ctypes.c_size_t), ('JobMemoryLimit', ctypes.c_size_t),
+                        ('PeakProcessMemoryUsed', ctypes.c_size_t), ('PeakJobMemoryUsed', ctypes.c_size_t)]
+
+        info = _Extended()
+        info.BasicLimitInformation.LimitFlags = cls._JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        kernel32.SetInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD)
+        return bool(kernel32.SetInformationJobObject(job, cls._JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                                                     ctypes.byref(info), ctypes.sizeof(info)))
 
     def terminate(self):
         return bool(self.handle) and bool(self.kernel32.TerminateJobObject(self.handle, 1))
@@ -228,6 +258,7 @@ class SluggiesGui:
         self.fallback_pick = None          # (on_files, on_cancel, save) of the pick a built-in file dialog serves
         self.prompt_request = None         # ask_text's popup, waiting to be shown (_show_prompt_request)
         self.prompt_closed_frame = -2      # frame the last popup was deleted in
+        self.last_error = None             # (what, traceback) last reported by _report_exception
         self.console_grow = 0              # px the window grew when the console was shown
         self.settings = gui_settings.Settings(os.path.join(root_dir, gui_settings.SETTINGS_REL))   # one for every tab
         self.grid_tab = gui_character_grid.CharacterGridTab(self)
@@ -288,6 +319,25 @@ class SluggiesGui:
             self.job = _ProcessJob.attach(self.process)
         self._set_busy(True)
         threading.Thread(target=self._pump_output, args=(self.process,), daemon=True).start()
+
+    @staticmethod
+    def attach_job(process):
+        """A ``_ProcessJob`` for a process started outside the command chain (Windows; None elsewhere or when
+        Windows refuses). Start that process with ``start_new_session=not _WINDOWS`` for ``end_process_tree``."""
+        return _ProcessJob.attach(process) if _WINDOWS else None
+
+    @staticmethod
+    def end_process_tree(process, job):
+        """End ``process`` and every process it started (its job on Windows, its process group elsewhere)."""
+        if job is not None:
+            job.terminate()
+        elif not _WINDOWS:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except OSError:
+                pass
+        if process.poll() is None:
+            process.kill()
 
     def _pump_output(self, process):
         stream = process.stdout
@@ -361,6 +411,14 @@ class SluggiesGui:
             return
         self.prompt_request = (title, text, on_answer, on_cancel, kind, initial, cancel_label)
         self._show_prompt_request()
+
+    def confirm(self, title, text, on_yes, kind='yesno'):
+        """A Yes / No (or ``danger``) popup that runs ``on_yes()`` only on Yes; No, Cancel and the close box do
+        nothing. Use it instead of ``ask_text`` for confirmations, so no caller can forget to check the answer."""
+        def answer(value):
+            if str(value).strip().lower() in ('y', 'yes'):
+                on_yes()
+        self.ask_text(title, text, answer, lambda: None, kind=kind)
 
     def _show_prompt_request(self):
         """Open the popup ``ask_text`` asked for, once the previous one is gone for a frame (run calls this every
@@ -536,18 +594,49 @@ class SluggiesGui:
                 item = self.output_queue.get_nowait()
             except queue.Empty:
                 return
-            if isinstance(item, tuple) and item[0] == 'grid_state':
-                self.grid_tab.on_read_done(item[1], item[2])
-            elif isinstance(item, tuple) and item[0] == 'files':
-                self._files_done(*item[1:])
-            elif isinstance(item, tuple) and item[0] == 'call':     # a worker thread's result, run on the GUI thread
-                item[1](*item[2:])
-            elif isinstance(item, tuple):
-                self._finish_process(item[1])
-            else:
-                if self.on_chain_done is not None:
-                    self.chain_output.append(item)
-                self._append_text(item)
+            try:
+                self._handle_queue_item(item)
+            except Exception:                      # one failed handler must not end the window (and its chain)
+                self._report_exception('A result handler failed')
+
+    def _handle_queue_item(self, item):
+        if isinstance(item, tuple) and item[0] == 'grid_state':
+            self.grid_tab.on_read_done(item[1], item[2])
+        elif isinstance(item, tuple) and item[0] == 'files':
+            self._files_done(*item[1:])
+        elif isinstance(item, tuple) and item[0] == 'call':         # a worker thread's result, run on the GUI thread
+            item[1](*item[2:])
+        elif isinstance(item, tuple):
+            self._finish_process(item[1])
+        else:
+            if self.on_chain_done is not None:
+                self.chain_output.append(item)
+            self._append_text(item)
+
+    def _report_exception(self, what):
+        """Log the current exception's traceback to the console and the log file and show an error toast; the
+        same error repeated (a per-frame call failing every frame) is reported once."""
+        text = traceback.format_exc()
+        key = (what, text)
+        if key == self.last_error:
+            return
+        self.last_error = key
+        for line in text.rstrip().splitlines():
+            self._log_line(line)
+        try:
+            slogger.error(f'{what}:\n{text}', source='gui')
+        except Exception:
+            pass
+        try:
+            self.toast.error(f'{what} ({sys.exc_info()[0].__name__}).')
+        except Exception:
+            pass
+
+    def _guarded(self, what, call):
+        try:
+            call()
+        except Exception:
+            self._report_exception(what)
 
     def _append_text(self, text):
         text = text.replace('\r\n', '\n')
@@ -1025,16 +1114,19 @@ class SluggiesGui:
 
     def run(self):
         self.build()
-        while dpg.is_dearpygui_running():
-            self._drain_queue()
-            self._flush_log()
-            self._show_prompt_request()
-            self.stat_tab.tick()
-            self.gameplay_tab.tick()
-            self.toast.tick()
-            dpg.render_dearpygui_frame()
-        self.stop_command()
-        dpg.destroy_context()
+        try:
+            while dpg.is_dearpygui_running():
+                self._drain_queue()
+                self._guarded('The console update failed', self._flush_log)
+                self._guarded('A popup failed to open', self._show_prompt_request)
+                self._guarded('The stat editor failed', self.stat_tab.tick)
+                self._guarded('The gameplay tab failed', self.gameplay_tab.tick)
+                self._guarded('A notification failed', self.toast.tick)
+                dpg.render_dearpygui_frame()
+        finally:
+            self.stop_command()                    # never leave a patch running unattended
+            self._guarded('Stopping the grid reader failed', self.grid_tab.stop_reader)
+            dpg.destroy_context()
 
 
 def run_gui(command_prefix, root_dir):

@@ -106,6 +106,35 @@ def _texture_file_map(texture_descriptors):
     return mapping
 
 
+def _assigned_surface_texture_files(model, texture_file_map):
+    """{SurfaceId: PNG name} of the exported ``DesiredTextureAssignments``.
+
+    An index below the donor descriptor count names a donor texture; a higher
+    one an ``AdditionalTextureDescriptors`` entry (appended in that order by
+    the export). The surface material then shows that PNG, so a re-import
+    followed by an export assigns it again instead of dropping it."""
+    assignments = model.get("DesiredTextureAssignments") or {}
+    if not assignments:
+        return {}
+    donor_count = len(model.get("TextureDescriptors") or [])
+    additions = model.get("AdditionalTextureDescriptors") or []
+    files = {}
+    for surface_id, index in assignments.items():
+        try:
+            index = int(index)
+        except (TypeError, ValueError):
+            continue
+        if index < donor_count:
+            name = (texture_file_map or {}).get(index)
+        elif index - donor_count < len(additions):
+            name = additions[index - donor_count].get("TextureFileName")
+        else:
+            name = None
+        if name:
+            files[str(surface_id)] = name
+    return files
+
+
 def _texture_file_map_from_sibling_sluggie(current_sluggie_path, model):
     """Return a fallback texture file map from a sibling .sluggie when needed.
 
@@ -629,10 +658,221 @@ def decode_face_texture_indices(submesh, face_count):
 def _has_edited_data(submesh):
     """Return True when *submesh* contains any edited mesh data."""
     vb = submesh.get("VertexBuffer") or {}
+    normal_buffer = submesh.get("NormalBuffer")
     return bool(
         vb.get("VertexBufferDataEdited") or submesh.get("FacesDataEdited")
         or submesh.get("RigidRebuild") or submesh.get("SkinnedRebuild")
+        or submesh.get("FaceSurfaceIdsEdited")
+        or any(ch.get("UVChannelDataEdited") for ch in submesh.get("UVChannels") or [])
+        or any(ch.get("ColorChannelDataEdited") for ch in submesh.get("ColorChannels") or [])
+        or (isinstance(normal_buffer, dict) and normal_buffer.get("NormalBufferDataEdited"))
     )
+
+
+_INPLACE_SKIN_EDIT_KEYS = ("BindPoseDataEdited", "WeightDataEdited", "VertexCntEdited",
+                           "BoneIndexEdited", "DestIndexDataEdited")
+
+
+def _submesh_vertex_ranges(model):
+    """``[(global start, vertex count)]`` per submesh: the skinned position
+    slots run on across the submeshes (as in the exporter's skin encoders)."""
+    ranges, start = [], 0
+    for submesh in model.get("Submeshes") or []:
+        vb = submesh.get("VertexBuffer") or {}
+        comp = 4 if (int(vb.get("VertexBufferQuantizeInfo", 0)) >> 4) in (4, 7, 0xa) else 2
+        stride = int(vb.get("VertexBufferCompCount") or 3) * comp
+        count = int(vb.get("VertexBufferLength") or 0) // stride if stride else 0
+        ranges.append((start, count))
+        start += count
+    return ranges
+
+
+def _skin_bytes(entry, key, edited):
+    value = (entry.get(key + "Edited") if edited else None) or entry.get(key)
+    return _to_bytes(value) if value else b""
+
+
+def _decode_skin_totals(skin, edited):
+    """``{global vertex: {bone: raw weight}}`` of a SkinData dict, the way
+    the core parser sums SK1 (256), SK2 and SKAcc contributions. *edited*
+    reads the in-place ``*Edited`` fields where present."""
+    vs = 6 * (4 if (int(skin.get("QuantizeInfo", 0)) >> 4) in (4, 7, 0xa) else 2)
+    totals = {}
+
+    def add(bone, vertex, raw):
+        slot = totals.setdefault(vertex, {})
+        slot[bone] = slot.get(bone, 0) + raw
+
+    def count(entry):
+        if edited and entry.get("VertexCntEdited") is not None:
+            return int(entry["VertexCntEdited"])
+        return int(entry["VertexCnt"])
+
+    for entry in skin.get("SK1s") or []:
+        bone = entry.get("BoneIndexEdited") if edited and entry.get("BoneIndexEdited") is not None else entry["BoneIndex"]
+        start = (int(entry.get("GplVertexArrValue", 0)) + int(entry.get("VertexOffset", 0))) // vs
+        for i in range(count(entry)):
+            add(int(bone), start + i, 256)
+    for entry in skin.get("SK2s") or []:
+        start = (int(entry.get("GplVertexArrValue", 0)) + int(entry.get("VertexOffset", 0))) // vs
+        weights = _skin_bytes(entry, "WeightData", edited)
+        for i in range(min(count(entry), len(weights) // 2)):
+            add(int(entry["BoneIndex1"]), start + i, weights[2 * i])
+            add(int(entry["BoneIndex2"]), start + i, weights[2 * i + 1])
+    for entry in skin.get("SKAccs") or []:
+        base = int(entry.get("GplDestArrValue", 0)) // vs
+        weights = _skin_bytes(entry, "WeightData", edited)
+        dests_raw = _skin_bytes(entry, "DestIndexData", edited)
+        dests = struct.unpack(f'>{len(dests_raw) // 2}H', dests_raw[:len(dests_raw) // 2 * 2])
+        for i in range(min(count(entry), len(weights), len(dests))):
+            add(int(entry["BoneIndex"]), base + dests[i], weights[i])
+    return totals
+
+
+def _decode_model_skin_edit(edited, skin, ranges):
+    """``{global vertex: {bone: raw weight}}`` of a model-level
+    ``SkinDataEdited``, or None when it cannot be placed. Its entries name
+    each member by its index inside its submesh (``VertexIndices``; SKAcc:
+    ``DestIndexData``). The encoder keeps the donor's bone sets and groups
+    the members by their donor entry (SK1: bone and GplVertexArrValue, SK2:
+    bone pair and GplVertexArrValue, SKAcc: bone), so each index is placed
+    among the slots of that donor entry."""
+    if edited.get("MembershipEdited"):
+        return None
+    vs = 6 * (4 if (int(skin.get("QuantizeInfo", 0)) >> 4) in (4, 7, 0xa) else 2)
+
+    def local_map(slots):
+        mapping = {}
+        for vertex in slots:
+            for start, n in ranges:
+                if start <= vertex < start + n:
+                    if vertex - start in mapping:
+                        raise LookupError("ambiguous vertex index")
+                    mapping[vertex - start] = vertex
+                    break
+        return mapping
+
+    def run_slots(entries):
+        slots = set()
+        for entry in entries:
+            start = (int(entry.get("GplVertexArrValue", 0)) + int(entry.get("VertexOffset", 0))) // vs
+            slots.update(range(start, start + int(entry["VertexCnt"])))
+        return slots
+
+    def indices(entry, key):
+        raw = _to_bytes(entry.get(key)) if entry.get(key) else b""
+        return struct.unpack(f'>{len(raw) // 2}H', raw[:len(raw) // 2 * 2])
+
+    totals = {}
+
+    def add(mapping, bone, local, raw):
+        vertex = mapping[local]                    # KeyError: not a slot of the donor entry
+        slot = totals.setdefault(vertex, {})
+        slot[bone] = slot.get(bone, 0) + raw
+
+    try:
+        for entry in edited.get("SK1s") or []:
+            bone, gpl = int(entry["BoneIndex"]), int(entry.get("GplVertexArrValue", 0))
+            donors = [e for e in skin.get("SK1s") or []
+                      if int(e["BoneIndex"]) == bone and int(e.get("GplVertexArrValue", 0)) == gpl]
+            if not donors:
+                return None
+            mapping = local_map(run_slots(donors))
+            for local in indices(entry, "VertexIndices"):
+                add(mapping, bone, local, 256)
+        for entry in edited.get("SK2s") or []:
+            pair = {int(entry["BoneIndex1"]), int(entry["BoneIndex2"])}
+            gpl = int(entry.get("GplVertexArrValue", 0))
+            donors = [e for e in skin.get("SK2s") or []
+                      if {int(e["BoneIndex1"]), int(e["BoneIndex2"])} == pair
+                      and int(e.get("GplVertexArrValue", 0)) == gpl]
+            if not donors:
+                return None
+            mapping = local_map(run_slots(donors))
+            weights = _to_bytes(entry.get("WeightData")) if entry.get("WeightData") else b""
+            for i, local in enumerate(indices(entry, "VertexIndices")):
+                add(mapping, int(entry["BoneIndex1"]), local, weights[2 * i])
+                add(mapping, int(entry["BoneIndex2"]), local, weights[2 * i + 1])
+        for entry in edited.get("SKAccs") or []:
+            bone = int(entry["BoneIndex"])
+            slots = set()
+            for donor in skin.get("SKAccs") or []:
+                if int(donor["BoneIndex"]) == bone:
+                    base = int(donor.get("GplDestArrValue", 0)) // vs
+                    slots.update(base + d for d in indices(donor, "DestIndexData"))
+            if not slots:
+                return None
+            mapping = local_map(slots)
+            weights = _to_bytes(entry.get("WeightData")) if entry.get("WeightData") else b""
+            for i, local in enumerate(indices(entry, "DestIndexData")):
+                add(mapping, bone, local, weights[i])
+    except (LookupError, ValueError, struct.error):
+        return None
+    return totals
+
+
+def _edited_skin_influences(model):
+    """``({submesh: [(vertex, bone, weight)]}, skinned bone ids)`` of the
+    skinned bones as the file's skin edits leave them (in-place ``*Edited``
+    SK fields, or a model-level ``SkinDataEdited``); None when the file has
+    no skin edit or it cannot be decoded. Weights are raw / 256, as in the
+    core parser's ``VertexInfluences``."""
+    skin = model.get("SkinData") or {}
+    model_edit = model.get("SkinDataEdited")
+    inplace = any(key in entry for name in ("SK1s", "SK2s", "SKAccs")
+                  for entry in skin.get(name) or [] for key in _INPLACE_SKIN_EDIT_KEYS)
+    if not skin or not (inplace or model_edit):
+        return None
+    ranges = _submesh_vertex_ranges(model)
+    try:
+        if model_edit:
+            totals = _decode_model_skin_edit(model_edit, skin, ranges)
+            if totals is None:
+                print("WARNING: SkinDataEdited could not be mapped to vertices; "
+                      "the _edit objects show the donor skin weights")
+                return None
+        else:
+            totals = _decode_skin_totals(skin, True)
+    except (KeyError, ValueError, struct.error) as exc:
+        print(f"WARNING: skin edits could not be decoded ({exc}); "
+              "the _edit objects show the donor skin weights")
+        return None
+    skinned = {int(e["BoneIndex"]) for e in skin.get("SK1s") or []}
+    skinned |= {int(e[k]) for e in skin.get("SK2s") or [] for k in ("BoneIndex1", "BoneIndex2")}
+    skinned |= {int(e["BoneIndex"]) for e in skin.get("SKAccs") or []}
+    skinned |= {bone for bones in totals.values() for bone in bones}
+    per_submesh = {}
+    for vertex, bones in sorted(totals.items()):
+        for index, (start, n) in enumerate(ranges):
+            if start <= vertex < start + n:
+                per_submesh.setdefault(index, []).extend(
+                    (vertex - start, bone, raw / 256.0) for bone, raw in sorted(bones.items()) if raw > 0)
+                break
+    return per_submesh, skinned
+
+
+def _edit_object_influences(submesh_index, bone_list, skin_edit):
+    """Influences for an ``_edit`` object of a submesh the skin edit touches:
+    the donor's for non-skinned bones plus the edited skinned weights; None
+    when the skin edit does not reach this submesh."""
+    if skin_edit is None:
+        return None
+    per_submesh, skinned = skin_edit
+    donor_skinned = False
+    influences = []
+    for bd in bone_list or []:
+        bone_id = int(bd['BoneId'])
+        for entry in bd.get('VertexInfluences', []):
+            if entry['SubmeshIndex'] != submesh_index:
+                continue
+            if bone_id in skinned:
+                donor_skinned = True
+                continue
+            raw = _to_bytes(entry['Influences'])
+            influences.extend((v, bone_id, w) for v, w in struct.iter_unpack('>Hf', raw))
+    if not donor_skinned and submesh_index not in per_submesh:
+        return None
+    return influences + per_submesh.get(submesh_index, [])
 
 
 def _rigid_import_placement(submesh, donor_owner, effective_owner):
@@ -683,7 +923,50 @@ def _edited_submesh_view(submesh):
         edited_uvs.append(ch)
     view["UVChannels"] = edited_uvs
 
+    # Per-loop colours and standalone normals: without these the `_edit`
+    # object would show donor values and the next export would drop the edit.
+    colors = []
+    for ch in view.get("ColorChannels") or []:
+        ch = dict(ch)
+        if ch.get("ColorChannelDataEdited") and ch.get("ColorFacesDataEdited"):
+            ch["ColorChannelData"] = ch["ColorChannelDataEdited"]
+            ch["ColorFacesData"] = ch["ColorFacesDataEdited"]
+        colors.append(ch)
+    view["ColorChannels"] = colors
+
+    normal_buffer = view.get("NormalBuffer")
+    if (isinstance(normal_buffer, dict) and normal_buffer.get("NormalBufferDataEdited")
+            and normal_buffer.get("NormalFacesDataEdited")):
+        normal_buffer = dict(normal_buffer)
+        normal_buffer["NormalBufferData"] = normal_buffer["NormalBufferDataEdited"]
+        normal_buffer["NormalFacesData"] = normal_buffer["NormalFacesDataEdited"]
+        view["NormalBuffer"] = normal_buffer
+
+    # Faces moved to another donor surface: one DisplayStates index per face.
+    face_surface_ids = _edited_face_surface_ids(view)
+    if face_surface_ids is not None:
+        view["_FaceSurfaceIds"] = face_surface_ids
+
     return view
+
+
+def _edited_face_surface_ids(view):
+    """SurfaceId of every face from ``FaceSurfaceIdsEdited``, or None when the
+    field is absent or does not fit the faces / display states."""
+    raw = _to_bytes(view.get("FaceSurfaceIdsEdited")) if view.get("FaceSurfaceIdsEdited") else b""
+    if not raw:
+        return None
+    display_states = view.get("DisplayStates") or []
+    indices = struct.unpack(f'>{len(raw) // 2}H', raw[:len(raw) // 2 * 2])
+    if len(indices) != int(view.get("FacesCount") or 0):
+        return None
+    ids = []
+    for ds_idx in indices:
+        surface_id = display_states[ds_idx].get("SurfaceId") if ds_idx < len(display_states) else None
+        if not surface_id:
+            return None
+        ids.append(surface_id)
+    return ids
 
 
 def _skinned_rebuild_influences(submesh):
@@ -820,7 +1103,9 @@ def _build_material_nodes(mat, image, wrap_s=1):
 def _set_surface_material_metadata(mat, ds_entry):
     display_state_id = ds_entry.get("DisplayStateId")
     mat["DisplayStateId"] = display_state_id
-    mat["ShaderMode"] = ds_entry.get("ShaderMode", "")
+    # An exported edit wins, so a re-import keeps it (the export compares
+    # with the donor value and drops the edit when they match).
+    mat["ShaderMode"] = ds_entry.get("ShaderModeEdited") or ds_entry.get("ShaderMode", "")
     mat.id_properties_ui("DisplayStateId").update(
         description="GX display-state command type for this donor surface.")
     shader_description = (
@@ -835,7 +1120,8 @@ def _set_surface_material_metadata(mat, ds_entry):
     mat.id_properties_ui("ShaderMode").update(description=shader_description)
 
     if display_state_id == 7:
-        param_hex = ds_entry.get("DisplayStateParamBytes", "000000")
+        param_hex = (ds_entry.get("DisplayStateParamBytesEdited")
+                     or ds_entry.get("DisplayStateParamBytes", "000000"))
         try:
             # The 3 exported bytes are struct offsets +1..+3; specular
             # intensity is offset +1, i.e. index 0.
@@ -895,12 +1181,14 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
                uv_channels=None, color_channels=None,
                face_texture_indices=None, sluggie_dir=None,
                submesh_meta=None, prebuilt_materials=None,
-               texture_file_map=None, face_surface_ids=None):
+               texture_file_map=None, face_surface_ids=None, surface_texture_files=None):
     """Create a Blender mesh object from a vertex list and link it to *collection*.
 
     *face_surface_ids*, when given, names the surface of every face directly
     (a rebuilt rigid submesh routes faces by key), instead of the donor's
-    cumulative ``FaceCount`` ranges."""
+    cumulative ``FaceCount`` ranges. *surface_texture_files* ({SurfaceId:
+    PNG name}, ``_assigned_surface_texture_files``) overrides the image of a
+    new surface material; its ``TextureIndex`` stays the donor's."""
     mesh = bpy.data.meshes.new(name)
     mesh.from_pydata(positions, [], faces)
     mesh.update()
@@ -1005,7 +1293,7 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
                     continue
                 surface_id = ds.get("SurfaceId") or f"ds{ds_idx}"
                 prop_val = f"DS_{surface_id}_ShaderMode"
-                obj[prop_val] = ds.get("ShaderMode", "")
+                obj[prop_val] = ds.get("ShaderModeEdited") or ds.get("ShaderMode", "")
                 obj.id_properties_ui(prop_val).update(
                     description=(
                         f"Surface {surface_id} shader mode (legacy — re-export to get per-surface materials). "
@@ -1062,7 +1350,10 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
                 mat = prebuilt_materials[surface_id]
             elif sluggie_dir is not None:
                 tex_file = (texture_file_map or {}).get(fi_tex, f'{fi_tex}.png')
-                img_path = _resolve_texture_image_path(sluggie_dir, tex_file)
+                assigned_file = (surface_texture_files or {}).get(surface_id)
+                img_path = assigned_file and _resolve_texture_image_path(sluggie_dir, assigned_file)
+                if not img_path:                   # no assignment, or its PNG is gone: the donor's
+                    img_path = _resolve_texture_image_path(sluggie_dir, tex_file)
                 image = bpy.data.images.load(img_path, check_existing=True) if img_path else None
                 mat = _create_material(f'{name}_{surface_id}', image, wrap_s)
                 # Store surface identity and editable properties on the material
@@ -1132,6 +1423,17 @@ def build_mesh(name, positions, normals, faces, vb_meta, collection,
             poly.material_index = mat_slot.get(tex_idx, fallback_slot)
 
     return obj
+
+
+def _restore_root_bone_scale(arm_obj, edited):
+    """Put an exported ``RootBoneScaleEdited`` back on the armature, so a
+    re-import followed by an export keeps the model scale."""
+    try:
+        value = tuple(float(v) for v in edited)
+    except (TypeError, ValueError):
+        return
+    if len(value) == 3 and all(math.isfinite(v) for v in value):
+        arm_obj["RootBoneScale"] = value
 
 
 def build_armature(name, bone_list, collection, skin_data=None, reorient=True):
@@ -1790,6 +2092,8 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
         sluggie_dir = os.path.dirname(self.filepath)
         if not texture_file_map:
             texture_file_map = _texture_file_map_from_sibling_sluggie(self.filepath, model)
+        surface_texture_files = _assigned_surface_texture_files(model, texture_file_map)
+        skin_edit = _edited_skin_influences(model)
 
         collection = context.collection
 
@@ -1807,6 +2111,7 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
             arm_obj = build_armature(base_name, bone_list, collection, model.get("SkinData"),
                                      reorient=self.reorient_bones)
             arm_obj['SluggiesBonesReoriented'] = bool(self.reorient_bones)
+            _restore_root_bone_scale(arm_obj, model.get("RootBoneScaleEdited"))
             abs_bone_mats = _compute_bone_absolute_matrices(bone_list)
             # So the exporter and Add submesh can find this model's file and
             # tex/ directory without asking the user (SluggiePath.resolve).
@@ -1834,7 +2139,8 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
             obj = build_mesh(mesh_name, positions, normals, faces, vb, collection,
                              uv_channels, color_channels,
                              face_texture_indices=face_texture_indices, sluggie_dir=sluggie_dir,
-                             submesh_meta=submesh, texture_file_map=texture_file_map)
+                             submesh_meta=submesh, texture_file_map=texture_file_map,
+                             surface_texture_files=surface_texture_files)
             # The donor object stays on its donor bone as the "before" view;
             # the `_edit` object shows every edit, a bone move included, on
             # the effective owner (GeoIdEdited first).
@@ -1842,6 +2148,12 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
             rebuilt = bool(submesh.get("RigidRebuild") or submesh.get("SkinnedRebuild"))
             skinned_influences = _skinned_rebuild_influences(submesh)
             original_owner, make_edit = _rigid_import_placement(submesh, donor_owner, effective_owner)
+            if skinned_influences is None and not rebuilt and effective_owner == donor_owner:
+                # Skin weights edited in place or by SkinDataEdited: the
+                # `_edit` object carries them (the donor object keeps the
+                # donor weights as the "before" view).
+                skinned_influences = _edit_object_influences(i, bone_list, skin_edit)
+                make_edit = make_edit or skinned_influences is not None
             if arm_obj is not None:
                 add_vertex_groups(obj, i, bone_list, arm_obj)
                 obj.parent = arm_obj

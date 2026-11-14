@@ -177,6 +177,7 @@ BUSY_TEXT = 'A command is running (see the log)...'
 POPUP_SPINNER_RADIUS = 4         # the spinner over a level's box while a command runs
 POPUP_SPINNER_PX = 64            # its size: radius x the font size (16 pt Segoe UI; 60 with Open Sans)
 _NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+READ_TIMEOUT = 60                # s: a --roster-state read that takes longer is stopped and reported as failed
 _WARN = (255, 210, 90, 255)
 _DIM = (230, 230, 230, 255)
 _EMPTY = (110, 110, 110, 255)
@@ -195,6 +196,7 @@ class CharacterGridTab:
     def __init__(self, app):
         self.app = app                     # gui.SluggiesGui: command prefix, root, queue, log
         self.loader = gui_grid.StateLoader(os.path.join(app.root_dir, gui_grid.STATE_REL))
+        self.reader = None                 # (Popen, job or None) of a running --roster-state read
         self.nav = gui_grid.GridNav()
         self.popups = []                   # [(dim window, box window)], bottom first
         self.textures = {}                 # (crop path, scale) -> texture tag; released on every re-read
@@ -591,14 +593,38 @@ class CharacterGridTab:
         env = dict(os.environ, PYTHONUNBUFFERED='1', PYTHONIOENCODING='utf-8')
 
         def work():
+            job = None
             try:
-                done = subprocess.run(command, cwd=self.app.root_dir, env=env, stdin=subprocess.DEVNULL,
-                                      capture_output=True, creationflags=_NO_WINDOW)
-                code, output = done.returncode, done.stdout.decode('utf-8', errors='replace')
+                process = subprocess.Popen(command, cwd=self.app.root_dir, env=env, stdin=subprocess.DEVNULL,
+                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                           creationflags=_NO_WINDOW, start_new_session=os.name != 'nt')
+                job = self.app.attach_job(process)
+                self.reader = (process, job)
+                try:
+                    stdout, _stderr = process.communicate(timeout=READ_TIMEOUT)
+                    code, output = process.returncode, stdout.decode('utf-8', errors='replace')
+                except subprocess.TimeoutExpired:
+                    self.app.end_process_tree(process, job)
+                    try:
+                        process.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass                       # a child outside the job still holds the pipe
+                    code, output = 1, (f'[Error] the grid reader did not finish within {READ_TIMEOUT} s and was '
+                                       'stopped')
             except OSError as exc:
                 code, output = 1, f'[Error] could not start the grid reader: {exc}'
+            finally:
+                self.reader = None
+                if job is not None:
+                    job.close()
             self.app.output_queue.put(('grid_state', code, output))
         threading.Thread(target=work, daemon=True).start()
+
+    def stop_reader(self):
+        """End a running grid read (the window closes): it must not go on running unattended."""
+        reader = self.reader
+        if reader is not None:
+            self.app.end_process_tree(*reader)
 
     def on_read_done(self, code, output):
         again = self.loader.finish(code, output)

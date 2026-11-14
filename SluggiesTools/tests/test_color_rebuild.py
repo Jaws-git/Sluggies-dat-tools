@@ -11,7 +11,7 @@ for import_path in (TOOLS_DIR, HAMMERSPACE_DIR):
         sys.path.insert(0, str(import_path))
 
 from drawlist import decodeDrawList, encodeDrawList
-from GeometryRebuild import rebuild_edited_uvs
+from GeometryRebuild import _compact_shared_color_array, rebuild_edited_uvs
 
 
 DESCRIPTORS = [
@@ -256,6 +256,30 @@ class ColorRebuildTests(unittest.TestCase):
 
         self.assertFalse(rebuild_edited_uvs(data))
         self.assertNotIn('ColorArraysEditedByImporter', submesh)
+
+
+class SharedColorCompactionTests(unittest.TestCase):
+    def test_unedited_channel_slots_are_not_repurposed(self):
+        a, b, c = _rgba(1, 1, 1, 255), _rgba(2, 2, 2, 255), _rgba(3, 3, 3, 255)
+        data, indices, preserve = _compact_shared_color_array(
+            'test', [a, b],
+            {'color0': [0, 0], 'color1': [0, 0]},
+            {'color0': [c, c]}, {'color0': [0, 1]}, 2)
+        slots = [data[i:i + 4] for i in range(0, len(data), 4)]
+        self.assertEqual(indices['color1'], [0, 0])
+        self.assertEqual(slots[0], a)              # color1 still shows A
+        self.assertEqual([slots[i] for i in indices['color0']], [c, c])
+        self.assertFalse(preserve)
+
+    def test_free_donor_slot_is_still_reused(self):
+        a, b, c = _rgba(1, 1, 1, 255), _rgba(2, 2, 2, 255), _rgba(3, 3, 3, 255)
+        data, indices, _preserve = _compact_shared_color_array(
+            'test', [a, b],
+            {'color0': [1, 1], 'color1': [0, 0]},
+            {'color0': [c, c], 'color1': [a, a]}, {'color0': [0, 1], 'color1': [0, 1]}, 2)
+        self.assertEqual(len(data), 8)             # b's slot took c, nothing appended
+        self.assertEqual(indices['color0'], [1, 1])
+
 
 
 if __name__ == '__main__':

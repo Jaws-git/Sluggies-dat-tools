@@ -573,7 +573,10 @@ elif _model.get("ReimportTextures"):
 
 _textures_patched = len({w.texture_index for w in texture_writes})
 
-if validate_only:
+# Edits a patch would leave out refuse the whole patch before the first write
+# (a build check and a real patch alike), so dt_na.dat never holds a partial
+# patch reported as done.
+if validate_only or not unpatch:
     if skin_data is not None and any(
             sk.get('VertexCntEdited') is not None
             for lst in [skin_data.get('SK1s', []), skin_data.get('SK2s', []), skin_data.get('SKAccs', [])]
@@ -581,12 +584,15 @@ if validate_only:
         if _skn.patchSKNInPlaceResized(skin_data, bind_pose_scale, dry_run=True) < 0:
             _dropped_edits.append("the skin's resized source arrays do not fit the original SKN block")
     if _dropped_edits:
-        _slogger.error(
-            "In-place build check failed: a patch would leave these edits out (re-export from Blender; a changed "
-            "size is a Hammerspace export): " + "; ".join(_dropped_edits),
-            source="patch_inplace",
-        )
-        raise SystemExit(1)
+        _message = (
+            "a patch would leave these edits out (re-export from Blender; a changed size is a Hammerspace "
+            "export): " + "; ".join(_dropped_edits))
+        if validate_only:
+            _slogger.error("In-place build check failed: " + _message, source="patch_inplace")
+            raise SystemExit(1)
+        abort(f"In-place patch refused, nothing written: {_message}")
+
+if validate_only:
     _slogger.info(
         f"In-place build check passed | {os.path.basename(json_path)} | {len(patches)} vertex, "
         f"{len(uv_patches)} UV, {len(normal_patches)} normal, {len(setting_patches)} shader-mode, "
@@ -693,8 +699,10 @@ if skin_data is not None and not unpatch:
         )
     if needs_resize:
         total_sk = _skn.patchSKNInPlaceResized(skin_data, bind_pose_scale)
-        if total_sk >= 0:
-            _slogger.info(f"Skin bind-pose source and weight arrays patched in-place (resized, {total_sk} SK1+SK2 verts).", source="patch_inplace")
+        if total_sk < 0:                           # the dry run above passed, so this is unexpected
+            abort("Resized skin patch failed after the other edits were written; the output dt_na.dat is "
+                  "only partly patched. Unpatch or restore it before using it.")
+        _slogger.info(f"Skin bind-pose source and weight arrays patched in-place (resized, {total_sk} SK1+SK2 verts).", source="patch_inplace")
     else:
         if _skn.patchSKNInPlace(skin_data, bind_pose_scale):
             _slogger.info("Skin bind-pose source and weight arrays patched in-place.", source="patch_inplace")

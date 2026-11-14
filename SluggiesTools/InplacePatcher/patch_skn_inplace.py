@@ -35,11 +35,31 @@ from binfmt import decode_field as _decode_field
 from binfmt import skin_bone_ids, skn_direct_entry_problem
 
 OUTPUT_DAT = os.path.join(_ROOT_DIR, '3_Output_Dat', 'dt_na.dat')
+INPUT_DAT = os.path.join(_ROOT_DIR, '1_Input', 'dt_na.dat')
 
 
 def _to_bytes(data) -> bytes:
     """Decode a binary field: ``x:`` hex string (legacy: base64 or ``z:`` zlib) or a list of byte values."""
     return _decode_field(data)
+
+
+def _original_flush_bytes(skin_data: dict):
+    """The donor flush-index array: ``FlushIndData`` from the .sluggie, else read from the INPUT DAT at its
+    original offset. Never from the output DAT: a resized patch moves the array there, so a second patch (or an
+    unpatch) would read whatever now sits at the old offset. None when neither source has it."""
+    size = int(skin_data.get('FlushIndSize') or 0) * 2
+    data = skin_data.get('FlushIndData')
+    if data:
+        raw = _to_bytes(data)
+        if len(raw) == size:
+            return raw
+    flush_abs_str = skin_data.get('FlushIndAbsolutePtr')
+    if not size or not flush_abs_str or flush_abs_str == 'null' or not os.path.isfile(INPUT_DAT):
+        return None
+    with open(INPUT_DAT, 'rb') as f_r:
+        f_r.seek(int(flush_abs_str, 16))
+        raw = f_r.read(size)
+    return raw if len(raw) == size else None
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +244,7 @@ def patchSKNInPlaceResized(skin_data: dict, factors=None, dry_run: bool = False)
         offsets.append(len(blob))
         blob.extend(_align4(_to_bytes(_eff(e, 'WeightDataEdited', 'WeightData'))))
 
-    # Flush-index array — content is unchanged; read from its current file position.
+    # Flush-index array: content unchanged, moved behind the repacked arrays.
     flush_ind_size = skin_data.get('FlushIndSize', 0)
     flush_abs_str  = skin_data.get('FlushIndAbsolutePtr')
     flush_blob_rel = None
@@ -233,9 +253,14 @@ def patchSKNInPlaceResized(skin_data: dict, factors=None, dry_run: bool = False)
         if dry_run:
             flush_bytes = bytes(flush_ind_size * 2)          # only its length counts
         else:
-            with open(OUTPUT_DAT, 'rb') as f_r:
-                f_r.seek(int(flush_abs_str, 16))
-                flush_bytes = f_r.read(flush_ind_size * 2)
+            flush_bytes = _original_flush_bytes(skin_data)
+            if flush_bytes is None:
+                _slogger.error(
+                    "SKN in-place resize: the donor flush-index array is neither in the .sluggie (FlushIndData) "
+                    f"nor readable from {INPUT_DAT}. Aborting.",
+                    source="patch_skn_inplace",
+                )
+                return -1
         blob.extend(_align4(flush_bytes))
 
     # Zero-pad to fill the original variable-data region exactly.
@@ -457,6 +482,17 @@ def restoreSKNBlockInPlace(skin_data: dict) -> bool:
         if flush_abs_str and flush_abs_str not in (None, 'null'):
             f.seek(int(skin_data['FlushIndArrFieldOffset'], 16))
             f.write(struct.pack('>I', int(flush_abs_str, 16) - skn_abs))
+            # The resized patch's blob covered the array's original bytes.
+            flush_bytes = _original_flush_bytes(skin_data)
+            if flush_bytes is not None:
+                f.seek(int(flush_abs_str, 16))
+                f.write(flush_bytes)
+            else:
+                _slogger.warning(
+                    "SKN restore: the donor flush-index array was not found (no FlushIndData, no input DAT); "
+                    "its pointer is restored but its bytes are not.",
+                    source="patch_skn_inplace",
+                )
             wrote_any = True
 
         # --- SK1 entries ---
