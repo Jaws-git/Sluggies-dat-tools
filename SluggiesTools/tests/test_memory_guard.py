@@ -2,7 +2,6 @@
 the build checks' size records, the projection of a planned chain, the dry-run record and the question, the lower
 player memory level, and the GUI's dialog lines."""
 
-import json
 import os
 import tempfile
 import unittest

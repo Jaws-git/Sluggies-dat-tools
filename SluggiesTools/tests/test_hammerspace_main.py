@@ -1,5 +1,5 @@
 import base64
-import json
+import contextlib
 import os
 import pathlib
 import struct
@@ -22,6 +22,45 @@ import texture_helper
 if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import synthetic_donor
+
+
+class CommandLineDispatchTests(unittest.TestCase):
+    """``main(argv)``: which operation an argument list reaches, and its exit code."""
+
+    def test_usage_errors_exit_with_code_2(self):
+        for argv in (
+            ['x.sluggie', '--as-low'],
+            ['x.sluggie', '--validate-only'],
+            ['x.sluggie', '--high-as-low'],
+            ['x.sluggie', '--target-file', '2'],
+            ['x.sluggie', '--clear-target', '0x10'],
+            ['x.sluggie', '--texture-index', '1'],
+            [],
+        ):
+            with self.subTest(argv=argv), mock.patch.object(sys, 'stderr'), self.assertRaises(SystemExit) as raised:
+                main.main(argv)
+            self.assertEqual(raised.exception.code, 2)
+
+    def test_clear_target_reaches_the_model_or_the_equipment_reset(self):
+        with (
+            mock.patch.object(main, 'ClearTarget', return_value=True) as clear_target,
+            mock.patch.object(main, 'ClearEquipment', return_value=False) as clear_equipment,
+        ):
+            self.assertEqual(main.main(['--clear-target', '0x10']), 0)
+            self.assertEqual(main.main(['--clear-target', '0x10', '--target-file', '3']), 1)
+        clear_target.assert_called_once_with('0x10')
+        clear_equipment.assert_called_once_with('0x10', 3)
+
+    def test_slot_block_write_reads_its_files_and_keeps_a_dash(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            high = pathlib.Path(temp_dir) / 'high.bin'
+            high.write_bytes(b'HIGH')
+            with mock.patch.object(main, 'WriteSlotBlocks', return_value=True) as write_blocks:
+                self.assertEqual(main.main(['--write-slot-blocks', '0x10', str(high), '-']), 0)
+            write_blocks.assert_called_once_with('0x10', b'HIGH', None, high_as_low=False)
+            with mock.patch.object(main, 'WriteSlotBlocks') as write_blocks:
+                self.assertEqual(main.main(['--write-slot-blocks', '0x10', str(high) + '.none', '-']), 1)
+            write_blocks.assert_not_called()
 
 
 class ValidationReportFormattingTests(unittest.TestCase):
@@ -55,21 +94,14 @@ class BuildSKNSkinningDataTests(unittest.TestCase):
                 vertex_cnt=1,
                 vertex_offset=0,
                 bind_pose_data=b'\x01' * 12,
-                vertex_arr_field_offset=0,
-                gpl_vertex_arr_field_offset=0,
                 vertex_arr_absolute_ptr=0x1000 + pointer,
                 gpl_vertex_arr_value=0,
             )
 
         skinning = main.SkinningData(
             skn_offset=0x1000,
-            gpl_base_offset=0,
-            mem_clr_ptr_field_offset=0,
-            mem_clr_sze_field_offset=0,
             mem_clr_ptr_value=0,
-            mem_clr_absolute_ptr=0,
             mem_clr_size=0,
-            flush_ind_arr_field_offset=0,
             flush_ind_absolute_ptr=None,
             flush_ind_size=0,
             flush_ind_data=b'',
@@ -97,9 +129,6 @@ class BuildSKNSkinningDataTests(unittest.TestCase):
                 vertex_offset=0,
                 bind_pose_data=b'\x01' * (vertex_count * 12),
                 weight_data=b'\x80' * (vertex_count * 2),
-                vertex_arr_field_offset=0,
-                weight_arr_field_offset=0,
-                gpl_vertex_arr_field_offset=0,
                 vertex_arr_absolute_ptr=0,
                 weight_arr_absolute_ptr=0,
                 gpl_vertex_arr_value=0,
@@ -107,13 +136,8 @@ class BuildSKNSkinningDataTests(unittest.TestCase):
 
         skinning = main.SkinningData(
             skn_offset=0,
-            gpl_base_offset=0,
-            mem_clr_ptr_field_offset=0,
-            mem_clr_sze_field_offset=0,
             mem_clr_ptr_value=0,
-            mem_clr_absolute_ptr=0,
             mem_clr_size=0,
-            flush_ind_arr_field_offset=0,
             flush_ind_absolute_ptr=0,
             flush_ind_size=1,
             flush_ind_data=b'\x00\x00',
@@ -139,9 +163,9 @@ class BuildSKNSkinningDataTests(unittest.TestCase):
     @staticmethod
     def _rebuilt_skinning(sk1s, sk2s):
         return main.SkinningData(
-            skn_offset=0, gpl_base_offset=0, mem_clr_ptr_field_offset=0,
-            mem_clr_sze_field_offset=0, mem_clr_ptr_value=0, mem_clr_absolute_ptr=0,
-            mem_clr_size=0, flush_ind_arr_field_offset=0, flush_ind_absolute_ptr=0,
+            skn_offset=0,
+            mem_clr_ptr_value=0,
+            mem_clr_size=0, flush_ind_absolute_ptr=0,
             flush_ind_size=1, flush_ind_data=b'\x00\x00', quantize_info=9,
             sk1s=sk1s, sk2s=sk2s, sk_accs=[],
         )
@@ -150,8 +174,8 @@ class BuildSKNSkinningDataTests(unittest.TestCase):
     def _sk1(gva, vertex_offset, count, fill):
         return main.SK1(
             bone_index=0, vertex_cnt=count, vertex_offset=vertex_offset,
-            bind_pose_data=bytes([fill]) * (count * 12), vertex_arr_field_offset=0,
-            gpl_vertex_arr_field_offset=0, vertex_arr_absolute_ptr=0,
+            bind_pose_data=bytes([fill]) * (count * 12),
+            vertex_arr_absolute_ptr=0,
             gpl_vertex_arr_value=gva,
         )
 
@@ -162,8 +186,7 @@ class BuildSKNSkinningDataTests(unittest.TestCase):
         sk2 = main.SK2(
             bone_index1=0, bone_index2=1, vertex_cnt=1, vertex_offset=8,
             bind_pose_data=b'\x03' * 12, weight_data=b'\x80\x80',
-            vertex_arr_field_offset=0, weight_arr_field_offset=0,
-            gpl_vertex_arr_field_offset=0, vertex_arr_absolute_ptr=0,
+            vertex_arr_absolute_ptr=0,
             weight_arr_absolute_ptr=0, gpl_vertex_arr_value=0x60,
         )
         skinning = self._rebuilt_skinning(
@@ -220,7 +243,7 @@ class BuildModelBlockTests(unittest.TestCase):
             mock.patch.object(main.hh, 'readDolEntry', return_value=(0x1000, 0x2000)),
             mock.patch.object(main, 'ParseSluggie', return_value=self.parsed),
             mock.patch.object(main, 'CloneGPL', return_value=b'GPL'),
-            mock.patch.object(main, '_gpl_pos_offsets_from_bytes', return_value=[3]),
+            contextlib.nullcontext(),          # (free slot: the tests index this tuple)
             mock.patch.object(main, 'CloneACT', return_value=b'ACT'),
             mock.patch.object(main, 'CloneTEX', return_value=b'TEX'),
             mock.patch.object(main, 'CloneSKN', return_value=b'SKN'),
@@ -247,25 +270,6 @@ class BuildModelBlockTests(unittest.TestCase):
                 cloned = main.CloneGPL(model_offset, 0x40)
 
         self.assertEqual(cloned, b'GPL!')
-
-    def test_gpl_source_layout_requires_unchanged_primitive_list_lengths(self):
-        draw_state = SimpleNamespace(
-            prim_list_data=b'original',
-            prim_list_length=len(b'original'),
-            source_state_offset=0x120,
-        )
-        submesh = SimpleNamespace(
-            source_layout_offset=0x100,
-            position_data_ptr_field_offset=0x118,
-            source_position_data_offset=0x180,
-            draw_states=[draw_state],
-        )
-        mesh = SimpleNamespace(source_gpl_base_offset=0x20, submeshes=[submesh])
-
-        self.assertTrue(main._can_preserve_gpl_source_layout(mesh))
-        draw_state.prim_list_data = b'reassigned surface payload'
-        self.assertTrue(main._can_preserve_gpl_internal_layout(mesh))
-        self.assertFalse(main._can_preserve_gpl_source_layout(mesh))
 
     def _position_model(self, edited):
         return {
@@ -644,12 +648,11 @@ class BuildModelBlockTests(unittest.TestCase):
 
     def test_gpl_build_without_edits_clones_donor_gpl(self):
         # Regression (2026-10-08): with every edit compacted away, gpl=build
-        # used the full serializer, which zeroed Mario's body color header.
+        # rewrote the whole GPL, which zeroed Mario's body color header.
         self._no_edit_gpl_build_model()
         patches = self._patch_common()
         with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[7], patches[8]:
             with (
-                mock.patch.object(main, 'BuildGPLMeshData') as build_gpl,
                 mock.patch.object(main, 'BuildSKNSkinningData', return_value=b'BUILT_SKN') as build_skn,
             ):
                 result = main.BuildModelBlock(
@@ -657,8 +660,7 @@ class BuildModelBlockTests(unittest.TestCase):
                     main.SectionModes(gpl='build', skn='build'),
                 )
 
-        build_gpl.assert_not_called()
-        build_skn.assert_called_once_with(self.parsed, main.GPLBuildResult(b'GPL', [3]))
+        build_skn.assert_called_once_with(self.parsed, main.GPLBuildResult(b'GPL'))
         self.assertEqual(result.section_sizes['GPL'], len(b'GPL'))
         self.assertEqual(result.section_modes.gpl, 'build')
         self.assertEqual(result.section_modes.skn, 'build')
@@ -671,12 +673,9 @@ class BuildModelBlockTests(unittest.TestCase):
             with (
                 mock.patch.object(main, 'rebuild_surface_assignments', return_value=False),
                 mock.patch.object(main, 'rebuild_edited_uvs', return_value=False),
-                mock.patch.object(main, 'BuildGPLMeshData') as build_gpl,
             ):
                 with self.assertRaisesRegex(ValueError, 'sub0 ds0.*no patch route'):
                     main.BuildModelBlock(self.data, main.SectionModes(gpl='build'))
-
-        build_gpl.assert_not_called()
 
     def test_shader_mode_edit_patches_cloned_gpl(self):
         self.data['SluggiesModel']['Submeshes'] = [{
@@ -688,7 +687,6 @@ class BuildModelBlockTests(unittest.TestCase):
                 mock.patch.object(main, '_validate_hammerspace_contract'),
                 mock.patch.object(main, 'rebuild_surface_assignments', return_value=False),
                 mock.patch.object(main, 'PatchGPLMaterialStates', return_value=b'PATCHED') as patch_states,
-                mock.patch.object(main, 'BuildGPLMeshData') as build_gpl,
             ):
                 result = main.BuildModelBlock(
                     self.data,
@@ -696,7 +694,6 @@ class BuildModelBlockTests(unittest.TestCase):
                 )
 
         patch_states.assert_called_once()
-        build_gpl.assert_not_called()
         self.assertEqual(result.section_sizes['GPL'], len(b'PATCHED'))
 
     def test_specular_only_edit_patches_cloned_gpl(self):
@@ -715,12 +712,10 @@ class BuildModelBlockTests(unittest.TestCase):
                 mock.patch.object(main, '_validate_hammerspace_contract'),
                 mock.patch.object(main, 'rebuild_surface_assignments', return_value=False),
                 mock.patch.object(main, 'PatchGPLMaterialStates', return_value=b'PATCHED') as patch_states,
-                mock.patch.object(main, 'BuildGPLMeshData') as build_gpl,
             ):
                 main.BuildModelBlock(self.data, main.SectionModes(gpl='build'))
 
         patch_states.assert_called_once()
-        build_gpl.assert_not_called()
 
     def test_material_alias_patches_texture_and_drawable_states(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -780,88 +775,6 @@ class BuildModelBlockTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'rebuilt'):
             main.excluded_submesh_indices({'Submeshes': [{}, {'Excluded': True, 'RigidRebuild': {}}]})
         self.assertEqual(main.excluded_submesh_indices({'Submeshes': [{}, {}, {'Excluded': True}]}), [2])
-
-    def test_gpl_build_tolerates_missing_primlistdata(self):
-        parsed = main.ParseSluggie({'SluggiesModel': {
-            'UseCompression': False,
-            'Submeshes': [{
-                'FacesCount': 0,
-                'FacesData': [0],
-                'FaceTextureIndices': [],
-                'VertexBuffer': {
-                    'VertexBufferData': [0, 0, 0, 0, 0, 0],
-                    'VertexBufferCompCount': 3,
-                    'VertexBufferQuantizeInfo': 0,
-                },
-                'UVChannels': [],
-                'ColorChannels': [],
-                'DisplayStates': [{
-                    'DisplayStateId': 0,
-                    'PrimListData': None,
-                    'ShaderMode': 'Spec',
-                    'PrimListPtrFieldOffset': '0x0',
-                    'PrimListSizeFieldOffset': '0x0',
-                    'PrimListAbsoluteOffset': '0x0',
-                    'PrimListLength': 0,
-                    'DisplayStateParamBytes': '000000',
-                }],
-            }],
-        }})
-        result = main.BuildGPLMeshData(parsed)
-        self.assertEqual(struct.unpack_from('>I', result.gpl_bytes, 0x00)[0], 0x00B749E0)
-        self.assertEqual(len(result.pos_gpl_offsets), 1)
-        descriptor_offset = struct.unpack_from('>I', result.gpl_bytes, 0x10)[0]
-        layout_offset = struct.unpack_from('>I', result.gpl_bytes, descriptor_offset)[0]
-        position_header_offset = struct.unpack_from('>I', result.gpl_bytes, layout_offset)[0]
-        display_header_offset = struct.unpack_from('>I', result.gpl_bytes, layout_offset + 0x10)[0]
-        position_data_offset = struct.unpack_from('>I', result.gpl_bytes, layout_offset + position_header_offset)[0]
-        display_state_offset = struct.unpack_from('>I', result.gpl_bytes, layout_offset + display_header_offset + 4)[0]
-        self.assertGreater(display_state_offset, position_data_offset + 6)
-
-    def test_gpl_builder_pads_primitive_payload_and_size_to_32_bytes(self):
-        parsed = main.ParseSluggie({'SluggiesModel': {
-            'UseCompression': False,
-            'Submeshes': [{
-                'FacesCount': 0,
-                'FacesData': [],
-                'FaceTextureIndices': [],
-                'VertexBuffer': {
-                    'VertexBufferData': [0, 0, 0, 0, 0, 0],
-                    'VertexBufferCompCount': 3,
-                    'VertexBufferQuantizeInfo': 0,
-                },
-                'UVChannels': [],
-                'ColorChannels': [],
-                'DisplayStates': [{
-                    'DisplayStateId': 7,
-                    'PrimListData': [0x90, 0, 0, 0],
-                    'ShaderMode': '00000000',
-                    'PrimListPtrFieldOffset': '0x0',
-                    'PrimListSizeFieldOffset': '0x0',
-                    'PrimListAbsoluteOffset': '0x0',
-                    'PrimListLength': 4,
-                    'DisplayStateParamBytes': '000000',
-                }],
-            }],
-        }})
-
-        result = main.BuildGPLMeshData(parsed)
-        descriptor_offset = struct.unpack_from('>I', result.gpl_bytes, 0x10)[0]
-        layout_offset = struct.unpack_from('>I', result.gpl_bytes, descriptor_offset)[0]
-        display_header_offset = struct.unpack_from('>I', result.gpl_bytes, layout_offset + 0x10)[0]
-        display_state_offset = struct.unpack_from(
-            '>I', result.gpl_bytes, layout_offset + display_header_offset + 4
-        )[0]
-        primitive_offset, primitive_size = struct.unpack_from(
-            '>II', result.gpl_bytes, layout_offset + display_state_offset + 8
-        )
-
-        self.assertEqual(primitive_size, 32)
-        self.assertEqual((layout_offset + primitive_offset) % 32, 0)
-        self.assertEqual(
-            result.gpl_bytes[layout_offset + primitive_offset:layout_offset + primitive_offset + 32],
-            b'\x90\x00\x00\x00' + b'\x00' * 28,
-        )
 
     def test_parser_consumes_rebuilt_surface_primitive_list(self):
         parsed = main.ParseSluggie({'SluggiesModel': {
@@ -1270,6 +1183,73 @@ class BuildModelBlockTests(unittest.TestCase):
         zero_original.assert_called_once_with(18, 0)
         write_dumps.assert_called_once_with('fixture.sluggie', 0x1000, 42, b'model-block', original_block=None)
 
+    def _plain_build(self):
+        return main.ModelBlockBuild(
+            block=b'model-block', parsed=self.parsed, chunk_number=18, file_index=0,
+            original_offset=0x1000, original_length=42, section_modes=main.SectionModes(),
+            section_sizes={}, validation_report={'valid': True},
+        )
+
+    def test_failed_sharer_route_is_undone_and_the_new_block_freed(self):
+        def patch(chunk, index, offset, length):
+            if (chunk, index) == (19, 1) and offset == 0x2000:
+                raise main.hh.DolEntryError('record gone')
+
+        with (
+            mock.patch.object(main.hh, 'readOutputDolEntry', return_value=(0x500, 42)),
+            mock.patch.object(main.hh, 'routedHammerspaceRanges', return_value=[]),
+            mock.patch.object(main.hh, 'findFreeMemoryChunk', return_value=0x2000),
+            mock.patch.object(main.hh, 'writeModelBlock'),
+            mock.patch.object(main.hh, 'patchDolEntry', side_effect=patch) as patch_dol,
+            mock.patch.object(main.hh, 'findSharedEntries', return_value=[(19, 1)]),
+            mock.patch.object(main.hh, 'zeroRangeIfUnrouted') as zero_new,
+            mock.patch.object(main.hh, 'patchFstFileSize') as patch_fst,
+            mock.patch.object(main.hh, 'zeroOriginalModel') as zero_original,
+            mock.patch.object(main.hh, 'writeDebugDumps') as write_dumps,
+            self.assertRaises(main.hh.DolEntryError),
+        ):
+            main.WriteModelBlock(self._plain_build(), 'fixture.sluggie')
+
+        self.assertEqual(patch_dol.call_args_list, [
+            mock.call(18, 0, 0x2000, 11),
+            mock.call(19, 1, 0x2000, 11),
+            mock.call(18, 0, 0x500, 42),            # the primary route goes back to its old block
+        ])
+        zero_new.assert_called_once_with(0x2000, 11)
+        patch_fst.assert_not_called()
+        zero_original.assert_not_called()
+        write_dumps.assert_not_called()
+
+    def test_route_without_a_directory_record_writes_nothing(self):
+        with (
+            mock.patch.object(main.hh, 'readOutputDolEntry', return_value=(-1, -1)),
+            mock.patch.object(main.hh, 'readDolEntry', return_value=(-1, -1)),
+            mock.patch.object(main.hh, 'routedHammerspaceRanges', return_value=[]),
+            mock.patch.object(main.hh, 'findFreeMemoryChunk', return_value=0x2000),
+            mock.patch.object(main.hh, 'findSharedEntries', return_value=[]),
+            mock.patch.object(main.hh, 'writeModelBlock') as write_model,
+            mock.patch.object(main.hh, 'patchDolEntry') as patch_dol,
+            self.assertRaises(RuntimeError),
+        ):
+            main.WriteModelBlock(self._plain_build(), 'fixture.sluggie')
+        write_model.assert_not_called()
+        patch_dol.assert_not_called()
+
+    def test_debug_dump_failure_does_not_fail_the_write(self):
+        with (
+            mock.patch.object(main.hh, 'readOutputDolEntry', return_value=(0, 42)),
+            mock.patch.object(main.hh, 'routedHammerspaceRanges', return_value=[]),
+            mock.patch.object(main.hh, 'findFreeMemoryChunk', return_value=0x2000),
+            mock.patch.object(main.hh, 'writeModelBlock'),
+            mock.patch.object(main.hh, 'patchDolEntry'),
+            mock.patch.object(main.hh, 'findSharedEntries', return_value=[]),
+            mock.patch.object(main.hh, 'patchFstFileSize'),
+            mock.patch.object(main.hh, 'zeroOriginalModel'),
+            mock.patch.object(main.hh, 'writeDebugDumps', side_effect=OSError('disk full')),
+            mock.patch.object(main.os.path, 'getsize', return_value=123456),
+        ):
+            self.assertEqual(main.WriteModelBlock(self._plain_build(), 'fixture.sluggie'), 0x2000)
+
     def test_write_operation_accepts_explicit_aligned_destination(self):
         build = main.ModelBlockBuild(
             block=b'model-block',
@@ -1599,19 +1579,14 @@ class BuildTEXTests(unittest.TestCase):
             image_data_length=image_length,
             palette_data_offset=palette_offset,
             palette_data_length=palette_length,
-            texture_descriptor_offset=0,
         )
 
     def _make_parsed(self, textures, clut_count=0):
         return main.SluggieParsed(
-            mesh=main.MeshData(submeshes=[], source_gpl_base_offset=0),
+            mesh=main.MeshData(submeshes=[], ),
             bones=None,
             textures=main.TextureData(textures=textures),
             skinning=None,
-            gpl_user_data=None,
-            gpl_user_data_len=0,
-            act_header=None,
-            tex_header=main.TEXHeader(clut_count=clut_count) if clut_count else None,
             trailing_sections=[],
             model_offset=0,
             model_length=0,
@@ -1977,7 +1952,7 @@ class BuildModelBlockTEXBuildTests(unittest.TestCase):
             mock.patch.object(main.hh, 'readDolEntry', return_value=(0x1000, 0x2000)),
             mock.patch.object(main, 'ParseSluggie', return_value=self.parsed),
             mock.patch.object(main, 'CloneGPL', return_value=b'GPL'),
-            mock.patch.object(main, '_gpl_pos_offsets_from_bytes', return_value=[3]),
+            contextlib.nullcontext(),          # (free slot: the tests index this tuple)
             mock.patch.object(main, 'CloneACT', return_value=b'ACT'),
             mock.patch.object(main, 'CloneTEX', return_value=b'TEX'),
             mock.patch.object(main, 'CloneSKN', return_value=b'SKN'),
@@ -2977,18 +2952,15 @@ class ValidateCustomSubmeshesTests(unittest.TestCase):
                 self.assertEqual((records[4][1], records[4][2]), (bytes(3), 'Shdw'))
 
     def test_stadium_chunks_match_the_exporter(self):
-        # export.py prompts on import, so read its constant from the source.
-        import ast
-        source = (pathlib.Path(main.__file__).resolve().parents[1] / 'export.py').read_text(encoding='utf-8')
-        for node in ast.parse(source).body:
-            if isinstance(node, ast.Assign) and any(
-                getattr(t, 'id', None) == 'STADIUM_DIR_INDICES' for t in node.targets
-            ):
-                self.assertEqual(eval(compile(ast.Expression(node.value), 'export', 'eval')),
-                                 main.STADIUM_CHUNKS)
-                break
-        else:
-            self.fail('export.STADIUM_DIR_INDICES not found')
+        # One definition (UntanglePolicy.STADIUM_DIRS); the patcher, the exporter and the roster
+        # planner take it from there instead of declaring the range again.
+        self.assertIs(main.STADIUM_CHUNKS, main.UntanglePolicy.STADIUM_DIRS)
+        self.assertEqual(list(main.STADIUM_CHUNKS), list(range(7, 17)))
+        tools = pathlib.Path(main.__file__).resolve().parents[1]
+        for relative, line in (('export.py', 'STADIUM_DIR_INDICES = UntanglePolicy.STADIUM_DIRS'),
+                               ('Roster/slot_plan.py', 'STADIUM_CHUNKS = UntanglePolicy.STADIUM_DIRS')):
+            with self.subTest(relative):
+                self.assertIn(line, (tools / relative).read_text(encoding='utf-8'))
 
     def test_missing_hammerspace_flag_is_rejected(self):
         model = _validation_base_model()
@@ -3102,20 +3074,18 @@ class ValidateCustomSubmeshesTests(unittest.TestCase):
 
     def test_unverified_builtins_are_rejected(self):
         """A built-in stays refused until a Dolphin test confirms
-        it in game, so an unverified capture cannot reach a DAT write."""
-        unverified = [
-            name for name, template in main._CUSTOM_SUBMESH_BUILTIN_TEMPLATES.items()
-            if not template['VerifiedInGame']
-        ]
-        self.assertTrue(unverified, 'expected at least one unverified built-in')
-        for name in unverified:
-            with self.subTest(name):
-                model = _validation_base_model()
-                model['CustomSubmeshes'] = [
-                    _validation_entry(TemplateSource=f'builtin:{name}')
-                ]
-                with self.assertRaisesRegex(ValueError, 'not verified in game yet'):
-                    main._validate_custom_submeshes(model)
+        it in game, so an unverified capture cannot reach a DAT write.
+        Every built-in is verified today, so the test un-verifies one."""
+        registry = main._CUSTOM_SUBMESH_BUILTIN_TEMPLATES
+        self.assertTrue(all(template['VerifiedInGame'] for template in registry.values()))
+        name = 'rigid_spec_v1'
+        model = _validation_base_model()
+        model['CustomSubmeshes'] = [_validation_entry(TemplateSource=f'builtin:{name}')]
+        main._validate_custom_submeshes(model)
+        with mock.patch.dict(registry, {name: dict(registry[name], VerifiedInGame=False)}):
+            self.assertNotIn(name, main.builtin_template_names())
+            with self.assertRaisesRegex(ValueError, 'not verified in game yet'):
+                main._validate_custom_submeshes(model)
 
     def test_builtin_layer_count_must_match_uv_channel_count(self):
         model = _validation_base_model()
@@ -3202,12 +3172,12 @@ class ValidateCustomSubmeshesTests(unittest.TestCase):
     def test_float_positions_reach_the_blob_header_and_bounds(self):
         sub = main.Submesh(
             submesh_index=1, mesh_name='CustomSubmesh_0', faces_count=1,
-            faces_data=struct.pack('>3H', 0, 1, 2), face_texture_indices=b'',
+            faces_data=struct.pack('>3H', 0, 1, 2),
             vertex_data=struct.pack('>9f', 0, 0, 0, 56.5, 0, 0, 0, -25.25, 76.0),
             vertex_comp_count=3, vertex_quantize_info=0x40,
-            uv_channels=[], color_channels=[], draw_states=[], position_data_ptr_field_offset=0,
-            vertex_count_field_offset=0, normal_buffer=None, source_layout_offset=0,
-            source_position_data_offset=0, preserve_source_layout=False,
+            uv_channels=[], color_channels=[], draw_states=[],
+            normal_buffer=None,
+            preserve_source_layout=False,
         )
         blob, _ = main._build_rigid_submesh_blob(sub)
         pos_off = struct.unpack_from('>I', blob, 0x00)[0]
@@ -3246,15 +3216,6 @@ class ValidateCustomSubmeshesTests(unittest.TestCase):
         })]
         with self.assertRaisesRegex(ValueError, 'exactly one of'):
             main._validate_custom_submeshes(model)
-
-    def test_builtin_template_registry_matches_fixture_script_copy(self):
-        # The fixture script reads the states and hash from this module; this
-        # guards against it growing its own copy again.
-        import build_template_source_fixture as tsf
-        ours = main._CUSTOM_SUBMESH_BUILTIN_TEMPLATES['rigid_spec_v1']
-        theirs = tsf.BUILTIN_RIGID_SPEC_V1
-        self.assertEqual(ours['States'], theirs['States'])
-        self.assertEqual(ours['Sha256'], theirs['Sha256'])
 
 
 class CustomSubmeshType3AndTextureHelperTests(unittest.TestCase):
@@ -3535,7 +3496,7 @@ class CustomSubmeshTemplateRecordsTests(unittest.TestCase):
     def test_builtin_template_names_offers_only_verified_templates(self):
         self.assertEqual(
             main.builtin_template_names(),
-            ('rigid_spec_v1', 'rigid_rhsp_v1', 'rigid_lhsp_v1',
+            ('rigid_spec_v1', 'rigid_shdw_v1', 'rigid_ghsp_v1', 'rigid_rhsp_v1', 'rigid_lhsp_v1',
              'stadium_shdw_opaque_v1', 'stadium_shdw_cutout_v1'),
         )
         self.assertEqual(
@@ -3586,7 +3547,6 @@ class BuildRigidSubmeshBlobTests(unittest.TestCase):
             mesh_name='CustomSubmesh_0',
             faces_count=1,
             faces_data=struct.pack('>3H', 0, 1, 2),
-            face_texture_indices=b'',
             vertex_data=struct.pack('>9h', 0, 0, 0, 1, 0, 0, 0, 1, 0),
             vertex_comp_count=3,
             vertex_quantize_info=59,
@@ -3595,15 +3555,9 @@ class BuildRigidSubmeshBlobTests(unittest.TestCase):
             draw_states=[main.DrawState(
                 display_state_id=7, display_state_pad_bytes=b'\x64\x00\x64',
                 prim_list_data=b'\x90\x00\x03' + b'\x00' * 29, active_descriptors=[],
-                prim_list_ptr_field_offset=0, prim_list_size_field_offset=0,
-                prim_list_absolute_offset=0, prim_list_length=32,
-                shader_mode_field_offset=0, shader_mode='Spec', source_state_offset=0,
+                shader_mode='Spec',
             )],
-            position_data_ptr_field_offset=0,
-            vertex_count_field_offset=0,
             normal_buffer=None,
-            source_layout_offset=0,
-            source_position_data_offset=0,
             preserve_source_layout=False,
         )
         base.update(overrides)
@@ -3646,10 +3600,9 @@ class BuildRigidSubmeshBlobTests(unittest.TestCase):
 
     def test_normal_buffer_present_is_wired_into_dolayout(self):
         sub = self._submesh(normal_buffer=main.NormalBuffer(
-            normal_data_ptr_field_offset=0, normal_count_field_offset=0,
-            normal_buffer_offset=0, normal_buffer_length=6, comp_count=3,
+            comp_count=3,
             quantize_info=62, ambient_pct=0.0,
-            normal_data=struct.pack('>3h', 0, 16384, 0), source_header_offset=0,
+            normal_data=struct.pack('>3h', 0, 16384, 0),
         ))
         blob, _ = main._build_rigid_submesh_blob(sub)
         nor_off = struct.unpack_from('>I', blob, 0x0c)[0]
@@ -3730,12 +3683,12 @@ class PatchGPLAppendSubmeshTests(unittest.TestCase):
 
         new_sub = main.Submesh(
             submesh_index=1, mesh_name='CustomSubmesh_0', faces_count=1,
-            faces_data=struct.pack('>3H', 0, 1, 2), face_texture_indices=b'',
+            faces_data=struct.pack('>3H', 0, 1, 2),
             vertex_data=struct.pack('>9h', 0, 0, 0, 1, 0, 0, 0, 1, 0),
             vertex_comp_count=3, vertex_quantize_info=59,
-            uv_channels=[], color_channels=[], draw_states=[], position_data_ptr_field_offset=0,
-            vertex_count_field_offset=0, normal_buffer=None, source_layout_offset=0,
-            source_position_data_offset=0, preserve_source_layout=False,
+            uv_channels=[], color_channels=[], draw_states=[],
+            normal_buffer=None,
+            preserve_source_layout=False,
         )
         parsed = SimpleNamespace(custom_submeshes=[SimpleNamespace(
             custom_submesh_id='custom0', host_bone_id=5, template_source='builtin:rigid_spec_v1',
@@ -3770,12 +3723,12 @@ class PatchGPLAppendSubmeshTests(unittest.TestCase):
     def _new_sub(self):
         return main.Submesh(
             submesh_index=1, mesh_name='CustomSubmesh_0', faces_count=1,
-            faces_data=struct.pack('>3H', 0, 1, 2), face_texture_indices=b'',
+            faces_data=struct.pack('>3H', 0, 1, 2),
             vertex_data=struct.pack('>9h', 0, 0, 0, 1, 0, 0, 0, 1, 0),
             vertex_comp_count=3, vertex_quantize_info=59,
-            uv_channels=[], color_channels=[], draw_states=[], position_data_ptr_field_offset=0,
-            vertex_count_field_offset=0, normal_buffer=None, source_layout_offset=0,
-            source_position_data_offset=0, preserve_source_layout=False,
+            uv_channels=[], color_channels=[], draw_states=[],
+            normal_buffer=None,
+            preserve_source_layout=False,
         )
 
     def _append(self, gpl_bytes, donor_gpl_length=None):
@@ -4013,6 +3966,19 @@ class PatchGPLAppendSubmeshSyntheticDonorTests(unittest.TestCase):
         self.assertEqual(
             len(build.validation_report['validator_facts']['gpl_submesh_layout']), donor_count + 1,
         )
+
+    def test_changed_submesh_count_is_refused(self):
+        # New geometry is a CustomSubmesh; an entry added to or taken from Submeshes has no route.
+        import copy
+        modes = main.SectionModes(gpl='build', act='clone', tex='clone', skn='clone', trailing='clone')
+        for change in ('added', 'removed'):
+            data, model = self._load()
+            if change == 'added':
+                model['Submeshes'].append(copy.deepcopy(model['Submeshes'][1]))
+            else:
+                model['Submeshes'].pop()
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, 'submeshes cannot be added'):
+                main.BuildModelBlock(data, modes, sluggie_path=self.env.sluggie_path)
 
     def test_rigid_template_produces_a_valid_block(self):
         _, model = self._load()

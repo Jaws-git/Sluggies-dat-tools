@@ -6,7 +6,6 @@ two gloves of one bone, each with the 32-byte archive container the game's equip
 placeholder). The planner, GUI and pack cases use hand-made states and fake environments.
 """
 
-import copy
 import hashlib
 import json
 import os

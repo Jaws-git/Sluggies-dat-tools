@@ -10,7 +10,6 @@ import pathlib
 import struct
 import sys
 import unittest
-from types import SimpleNamespace
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parents[2]
 IMPORTER_PATH = ROOT_DIR / 'BlenderAddonSrc' / 'ImportSluggies.py'

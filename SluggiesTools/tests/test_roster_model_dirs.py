@@ -11,9 +11,7 @@ import json
 import os
 import shutil
 import struct
-import tempfile
 import unittest
-from unittest import mock
 
 from SluggiesTools.Dol import dirtable, dolfile, inventory
 from SluggiesTools.Hammerspace import HammerspaceHelper as hh

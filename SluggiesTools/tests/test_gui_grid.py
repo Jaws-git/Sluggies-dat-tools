@@ -1208,11 +1208,9 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(gui_grid.patch_label(3, False), 'Patch Game (3)')
         self.assertEqual(gui_grid.patch_label(3, True), 'Patch Game & copy files (3)')
 
-    def test_deploy_command_runs_as_it_is(self):
-        command = gui_grid.deploy_command(r'C:\My Tools\CopyFilesToGameDir.bat', comspec='cmd.exe')
-        self.assertIsInstance(command, gui_grid.ShellStep)
-        self.assertEqual(command, ('cmd.exe', '/c', r'C:\My Tools\CopyFilesToGameDir.bat'))
-        self.assertFalse(gui_grid.chain_writes([command]))         # the copy leaves 3_Output_Dat as it is
+    def test_deploy_step_is_a_start_py_call(self):
+        self.assertEqual(gui_grid.DEPLOY_ARGS, ('--deploy-game-files',))
+        self.assertFalse(gui_grid.chain_writes([gui_grid.DEPLOY_ARGS]))    # the copy leaves 3_Output_Dat as it is
 
     def test_clean_game_dir(self):
         self.assertEqual(gui_grid.clean_game_dir('  "D:\\Games\\MSS\\"  \n'), r'D:\Games\MSS')

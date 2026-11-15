@@ -7,7 +7,12 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 BLENDER_ADDON_DIR = ROOT / 'BlenderAddonSrc'
 if str(BLENDER_ADDON_DIR) not in sys.path:
     sys.path.insert(0, str(BLENDER_ADDON_DIR))
+for _path in (ROOT / 'SluggiesTools', ROOT / 'SluggiesTools' / 'Hammerspace'):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
+import HammerspaceMain as hammerspace  # noqa: E402
+import TemplateSources  # noqa: E402
 from TemplateSources import (  # noqa: E402
     BUILTIN_TEMPLATES,
     BUILTIN_TEMPLATE_NAMES,
@@ -148,7 +153,7 @@ class BuiltinTemplateMetadataTests(unittest.TestCase):
 
     def test_only_verified_templates_are_offered(self):
         self.assertEqual(BUILTIN_TEMPLATE_NAMES, (
-            'rigid_spec_v1', 'rigid_rhsp_v1', 'rigid_lhsp_v1',
+            'rigid_spec_v1', 'rigid_shdw_v1', 'rigid_ghsp_v1', 'rigid_rhsp_v1', 'rigid_lhsp_v1',
             'stadium_shdw_opaque_v1', 'stadium_shdw_cutout_v1',
         ))
         for name, template in BUILTIN_TEMPLATES.items():
@@ -177,6 +182,41 @@ class BuiltinTemplateMetadataTests(unittest.TestCase):
 
     def test_builtin_surfaces_start_at_specular_strength_50(self):
         self.assertEqual(BUILTIN_DEFAULT_SPECULAR_STRENGTH, 50)
+
+
+class BuiltinRegistryMirrorTests(unittest.TestCase):
+    """The Blender add-on cannot import HammerspaceMain, so TemplateSources mirrors the
+    patcher's registry by hand. These catch drift."""
+
+    def test_addon_mirror_matches_the_registry(self):
+        registry = hammerspace._CUSTOM_SUBMESH_BUILTIN_TEMPLATES
+        self.assertEqual(sorted(TemplateSources.BUILTIN_TEMPLATES), sorted(registry))
+        for name, template in registry.items():
+            with self.subTest(name):
+                mirror = TemplateSources.BUILTIN_TEMPLATES[name]
+                self.assertEqual(mirror.layers, template['Layers'])
+                self.assertEqual(mirror.shader_mode, template['ShaderMode'])
+                self.assertEqual(mirror.verified_in_game, template['VerifiedInGame'])
+                self.assertEqual(mirror.normals, template.get('Normals', True))
+                self.assertEqual(mirror.stadium_only, template.get('StadiumOnly', False))
+                self.assertTrue(mirror.description)
+        self.assertEqual(
+            TemplateSources.BUILTIN_TEMPLATE_NAMES,
+            hammerspace.builtin_template_names(verified_only=True),
+        )
+
+    def test_stadium_and_specular_mirrors_match_the_tools(self):
+        self.assertEqual(tuple(TemplateSources.STADIUM_CHUNKS), tuple(hammerspace.STADIUM_CHUNKS))
+        self.assertEqual(
+            TemplateSources.SPECULAR_SHADER_MODES,
+            hammerspace._CUSTOM_SUBMESH_SPECULAR_SHADER_MODES,
+        )
+
+    def test_hand_visibility_role_mirror_matches_the_tools(self):
+        self.assertEqual(
+            TemplateSources.HAND_VISIBILITY_ROLES,
+            hammerspace._CUSTOM_SUBMESH_HAND_VISIBILITY_ROLES,
+        )
 
 
 class TemplateSurfaceIdTests(unittest.TestCase):

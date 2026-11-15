@@ -611,6 +611,27 @@ def routedHammerspaceRanges() -> list[tuple[int, int]]:
     return sorted(ranges)
 
 
+class DolEntryError(RuntimeError):
+    """A directory record of main.dol could not be found or written."""
+
+
+def _readDirRecord(dol_path: str, dir_ptr: int, file_index: int) -> tuple | None:
+    """The twelve words of record ``file_index`` of the directory at ``dir_ptr``, or None when that
+    position holds no directory record (negative or past-the-end index, short file, or one of
+    the three language slots does not start with the DAT file-name pointer)."""
+    if file_index < 0:
+        return None
+    with open(dol_path, 'rb') as dol:
+        dol.seek(dir_ptr + file_index * _ENTRY_SIZE)
+        raw = dol.read(_ENTRY_SIZE)
+    if len(raw) < _ENTRY_SIZE:
+        return None
+    words = struct.unpack('>12I', raw)
+    if words[0] != _DAT_FNAME_PTR or words[4] != _DAT_FNAME_PTR or words[8] != _DAT_FNAME_PTR:
+        return None
+    return words
+
+
 def readDolEntry(chunk_number: int, file_index: int) -> tuple[int, int]:
     """Read the offset and length for a model entry from the INPUT main.dol.
 
@@ -622,12 +643,13 @@ def readDolEntry(chunk_number: int, file_index: int) -> tuple[int, int]:
         _slogger.error(f"chunk_number {chunk_number} out of range (0-{len(dir_ptrs) - 1})", source="hammerspace.helper")
         return -1, -1
 
-    entry_offset = dir_ptrs[chunk_number] + file_index * _ENTRY_SIZE
-    with open(INPUT_DOL, 'rb') as dol:
-        dol.seek(entry_offset + 4)
-        len_en    = struct.unpack('>I', dol.read(4))[0]  # word[1]
-        offset_en = struct.unpack('>I', dol.read(4))[0]  # word[2]
-    return offset_en, len_en
+    words = _readDirRecord(INPUT_DOL, dir_ptrs[chunk_number], file_index)
+    if words is None:
+        _slogger.error(
+            f"chunk={chunk_number}, file_index={file_index} is not a directory record of the input main.dol",
+            source="hammerspace.helper")
+        return -1, -1
+    return words[2], words[1]
 
 
 def readOutputDolEntry(chunk_number: int, file_index: int) -> tuple[int, int]:
@@ -647,12 +669,10 @@ def readOutputDolEntry(chunk_number: int, file_index: int) -> tuple[int, int]:
     if not (0 <= chunk_number < len(dir_ptrs)):
         return -1, -1
 
-    entry_offset = dir_ptrs[chunk_number] + file_index * _ENTRY_SIZE
-    with open(OUTPUT_DOL, 'rb') as dol:
-        dol.seek(entry_offset + 4)
-        len_en    = struct.unpack('>I', dol.read(4))[0]  # word[1]
-        offset_en = struct.unpack('>I', dol.read(4))[0]  # word[2]
-    return offset_en, len_en
+    words = _readDirRecord(OUTPUT_DOL, dir_ptrs[chunk_number], file_index)
+    if words is None:
+        return -1, -1
+    return words[2], words[1]
 
 
 def patchDolEntry(chunk_number: int, file_index: int, new_offset: int, new_length: int) -> None:
@@ -664,6 +684,9 @@ def patchDolEntry(chunk_number: int, file_index: int, new_offset: int, new_lengt
     into all three language slots (en, sp, fr) of the OUTPUT main.dol.
 
     If the output main.dol does not yet exist, it is copied from the input first.
+
+    Raises ``DolEntryError`` and writes nothing when the input main.dol is missing,
+    ``chunk_number`` is out of range, or the position is not a directory record.
 
     Layout of each 48-byte entry (big-endian uint32 words):
       word[0]  = DAT_FNAME_PTR   (not modified)
@@ -683,8 +706,7 @@ def patchDolEntry(chunk_number: int, file_index: int, new_offset: int, new_lengt
     # Ensure output DOL exists
     if not os.path.exists(OUTPUT_DOL):
         if not os.path.exists(INPUT_DOL):
-            _slogger.error(f"Input DOL not found: {INPUT_DOL}", source="hammerspace.helper")
-            return
+            raise DolEntryError(f"Input DOL not found: {INPUT_DOL}")
         os.makedirs(os.path.dirname(OUTPUT_DOL), exist_ok=True)
         shutil.copy2(INPUT_DOL, OUTPUT_DOL)
         _slogger.info("Copied main.dol to output folder.", source="hammerspace.helper")
@@ -692,28 +714,23 @@ def patchDolEntry(chunk_number: int, file_index: int, new_offset: int, new_lengt
     dir_ptrs = _outputDirPtrs()
 
     if not (0 <= chunk_number < len(dir_ptrs)):
-        _slogger.error(f"chunk_number {chunk_number} out of range (0-{len(dir_ptrs) - 1})", source="hammerspace.helper")
-        return
+        raise DolEntryError(f"chunk_number {chunk_number} out of range (0-{len(dir_ptrs) - 1})")
 
-    entry_offset = dir_ptrs[chunk_number] + file_index * _ENTRY_SIZE
+    words = _readDirRecord(OUTPUT_DOL, dir_ptrs[chunk_number], file_index)
+    if words is None:
+        raise DolEntryError(
+            f"chunk={chunk_number}, file_index={file_index} is not a directory record of the output main.dol")
 
-    # (file_pos_in_dol, value) pairs for every field that must be updated
-    patches = [
-        (entry_offset +  4, new_length),  # len_en
-        (entry_offset +  8, new_offset),  # offset_en
-        (entry_offset + 12, new_length),  # alloc_size_en (word[3])
-        (entry_offset + 20, new_length),  # len_sp
-        (entry_offset + 24, new_offset),  # offset_sp
-        (entry_offset + 28, new_length),  # alloc_size_sp (word[7])
-        (entry_offset + 36, new_length),  # len_fr
-        (entry_offset + 40, new_offset),  # offset_fr
-        (entry_offset + 44, new_length),  # alloc_size_fr (word[11])
-    ]
-
+    # One record, one write: length, offset and allocation size of each language slot.
+    record = struct.pack(
+        '>12I',
+        words[0], new_length, new_offset, new_length,   # en
+        words[4], new_length, new_offset, new_length,   # sp
+        words[8], new_length, new_offset, new_length,   # fr
+    )
     with open(OUTPUT_DOL, 'r+b') as dol:
-        for file_pos, value in patches:
-            dol.seek(file_pos)
-            dol.write(struct.pack('>I', value))
+        dol.seek(dir_ptrs[chunk_number] + file_index * _ENTRY_SIZE)
+        dol.write(record)
 
     _slogger.info(f"Patched DOL entry: chunk={chunk_number}, file_index={file_index}, "
           f"offset=0x{new_offset:08X}, length=0x{new_length:X}", source="hammerspace.helper")
@@ -876,8 +893,8 @@ def removeModelFromHammerspace(chunk_number: int, file_index: int, split_baselin
             patchDolEntry(sc, si, orig_offset, orig_length)
 
     _slogger.info(f"[5] Zeroing {cur_length:,} bytes at 0x{cur_offset:08X} in OUTPUT dt_na.dat ...", source="hammerspace.helper")
-    zeroRange(cur_offset, cur_length)
-    _slogger.info(f"    Zeroed {cur_length:,} bytes.", source="hammerspace.helper")
+    if zeroRangeIfUnrouted(cur_offset, cur_length):       # the DOL is restored: a route left here is a sharer's
+        _slogger.info(f"    Zeroed {cur_length:,} bytes.", source="hammerspace.helper")
 
     _slogger.info(f"Done. chunk={chunk_number}, file_index={file_index} removed from hammerspace.", source="hammerspace.helper")
     return True, cur_offset, cur_length

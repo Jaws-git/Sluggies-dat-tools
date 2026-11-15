@@ -21,7 +21,6 @@ The game inlines two range helpers: *is player* (``0 <= id < 0x4D``) and
 
 import argparse
 import json
-import os
 import struct
 from dataclasses import asdict, dataclass
 

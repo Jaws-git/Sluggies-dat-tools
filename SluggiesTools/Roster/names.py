@@ -242,7 +242,7 @@ def range_tests(image: dolfile.DolImage, hs: dol_hammerspace.DolHammerspace) -> 
         a.label('back')
         a.b(site + 4)
         at = hs.code.put(a.assemble(), 4)
-        image.patch_word(site, word, one(site, lambda b: b.b(at)))
+        image.patch_word(site, word, one(site, lambda b, at=at: b.b(at)))
 
 
 def plate_sites(image: dolfile.DolImage, hs: dol_hammerspace.DolHammerspace, first_row: int) -> list[str]:
@@ -260,7 +260,7 @@ def plate_sites(image: dolfile.DolImage, hs: dol_hammerspace.DolHammerspace, fir
         a.label('stock')
         a.word(s.stock).b(s.address + 4)
         at = hs.code.put(a.assemble(), 4)
-        image.write_word(s.address, one(s.address, lambda b: b.b(at)))
+        image.write_word(s.address, one(s.address, lambda b, at=at: b.b(at)))
         if word != s.stock:
             log.append(f'0x{s.address:08X}: the template alias for name plates replaced')
     return log

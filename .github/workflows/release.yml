@@ -20,7 +20,13 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # The portable build ships for Windows only; the source deployment must
+    # keep working elsewhere, so the suites run on both.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     env:
       UV_PYTHON_PREFERENCE: only-system
     steps:
@@ -36,10 +42,13 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
         with:
-          version: "latest"
+          version: "0.11.6"
 
       - name: Install locked dependencies
         run: uv sync --locked --project SluggiesTools/_build
+
+      - name: Static check
+        run: uvx ruff@0.17.5 check
 
       - name: Run core tests
         run: uv run --project SluggiesTools/_build python -m unittest discover -s SluggiesTools/tests -v
@@ -65,7 +74,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
         with:
-          version: "latest"
+          version: "0.11.6"
 
       - name: Build portable application
         run: python SluggiesTools/_build/build.py

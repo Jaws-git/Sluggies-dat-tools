@@ -2,7 +2,6 @@
 build splicing them into the ptr7 section of a submesh that is not rebuilt (2026-10-15: before, a slot patch
 refused them and a Hammerspace-mode file dropped them silently)."""
 
-import base64
 import struct
 import unittest
 from unittest import mock

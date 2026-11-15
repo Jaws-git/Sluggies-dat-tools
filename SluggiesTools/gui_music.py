@@ -11,7 +11,7 @@ output file differs from the input one shows as replaced.
   included (winsound plays one sound at a time).
 * **Replace...** encodes a WAV (other sound files through ffmpeg, ``Sound/clips``) into the stock stream's layout (``Sound/brstm_write``: same channels, rate and
   blocks; a WAV ``smpl`` loop is kept, else a looping stock track loops from the start) on a worker thread and
-  writes ``3_Output_Dat/sound_NA/stream/<file>`` directly; CopyFilesToGameDir.bat ("Patch Game & copy files")
+  writes ``3_Output_Dat/sound_NA/stream/<file>`` directly; "Patch Game & copy files" (``deploy_files.py``)
   copies it into the game. **Reset** writes the stock file there again (so the next copy restores the game's).
 * **Replace gain** (the toolbar, dB) scales the file Replace... encodes (``gui_volume``).
 * **Set volume** sets the sound's volume byte in the archive (``gui_volume``; written right away, no staging).

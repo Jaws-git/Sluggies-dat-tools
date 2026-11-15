@@ -11,7 +11,7 @@ from unittest import mock
 
 from SluggiesTools.Dol import inventory, relocate
 from SluggiesTools.Roster import dol_hammerspace as dhs
-from SluggiesTools.Roster import grid, ids, layout_file, manifest, names, runner, slots, state, steps, wheels
+from SluggiesTools.Roster import grid, layout_file, manifest, names, runner, slots, state, steps
 from SluggiesTools.tests.test_roster_grid import HEADS, STOCK_MAP, image_for_grid
 from SluggiesTools.tests.test_roster_names import stock_table
 from SluggiesTools.tests.test_roster_wheels import FakeLayout

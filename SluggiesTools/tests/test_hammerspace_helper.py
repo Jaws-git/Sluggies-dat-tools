@@ -217,6 +217,64 @@ class FindSharedEntriesTests(unittest.TestCase):
                 self.assertEqual(helper.findSharedEntries(2, 0), [(1, 0)])
 
 
+class PatchDolEntryTests(unittest.TestCase):
+    """patchDolEntry writes only into a directory record and raises otherwise."""
+
+    def _dol(self, root):
+        """Directory 0 holds two records; 48 bytes of other data follow."""
+        data = bytearray(48 * 3)
+        for index in range(2):
+            struct.pack_into('>12I', data, index * 48, *([helper._DAT_FNAME_PTR, 8, 0x10 * (index + 1), 8] * 3))
+        data[96:144] = bytes(range(48))
+        path = root / 'main.dol'
+        path.write_bytes(data)
+        return path
+
+    def _patched(self, path):
+        return (
+            mock.patch.object(helper, 'INPUT_DOL', str(path)),
+            mock.patch.object(helper, 'OUTPUT_DOL', str(path)),
+            mock.patch.object(helper, '_readDirPtrs', return_value=[0]),
+            mock.patch.object(helper, '_extraDirStarts', return_value=[]),
+        )
+
+    def test_record_is_written_in_all_three_slots(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = self._dol(pathlib.Path(temp_dir))
+            before = path.read_bytes()
+            a, b, c, d = self._patched(path)
+            with a, b, c, d:
+                helper.patchDolEntry(0, 1, 0x5000, 0x40)
+                self.assertEqual(helper.readOutputDolEntry(0, 1), (0x5000, 0x40))
+            after = path.read_bytes()
+            self.assertEqual(struct.unpack_from('>12I', after, 48),
+                             (helper._DAT_FNAME_PTR, 0x40, 0x5000, 0x40) * 3)
+            self.assertEqual(after[:48] + after[96:], before[:48] + before[96:])
+
+    def test_refuses_what_is_not_a_directory_record(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = self._dol(pathlib.Path(temp_dir))
+            before = path.read_bytes()
+            a, b, c, d = self._patched(path)
+            with a, b, c, d:
+                for chunk, index in ((0, 2), (0, 3), (0, -1), (5, 0)):
+                    with self.subTest(chunk=chunk, index=index), self.assertRaises(helper.DolEntryError):
+                        helper.patchDolEntry(chunk, index, 0x5000, 0x40)
+                self.assertEqual(helper.readOutputDolEntry(0, 2), (-1, -1))
+                self.assertEqual(helper.readDolEntry(0, 2), (-1, -1))
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_missing_input_dol_raises(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            with (
+                mock.patch.object(helper, 'INPUT_DOL', str(root / 'none.dol')),
+                mock.patch.object(helper, 'OUTPUT_DOL', str(root / 'out' / 'main.dol')),
+                self.assertRaises(helper.DolEntryError),
+            ):
+                helper.patchDolEntry(0, 0, 0x5000, 0x40)
+
+
 class ZeroOriginalModelTests(unittest.TestCase):
     """Two directories share one vanilla block, like an unused character and its owner."""
 

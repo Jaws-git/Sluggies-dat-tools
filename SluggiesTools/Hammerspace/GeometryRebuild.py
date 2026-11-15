@@ -40,8 +40,7 @@ from binfmt import (
     comp_size as _comp_size,
     decode_field as _dec,
     encode_field as _enc,
-    SKN_MAX_SOURCE_BYTES,
-    SKN_MIN_DIRECT_VERTICES,
+    shader_mode_bytes,
 )
 from compact_channel import (
     compact_channel as _compact_channel,
@@ -49,8 +48,6 @@ from compact_channel import (
 )
 from drawlist import (computeRequiredDescriptors, decodeDrawList,
                       encodeDrawList, patchType3Setting)
-from ModelFormat import (CACHE_LINE_SIZE, align_up, compute_mem_clear_range,
-                         conservative_flush_indices)
 
 import slogger as _slogger
 
@@ -66,9 +63,7 @@ def _u16s(data: bytes) -> list[int]:
 
 
 def _setting_int(shader_mode: str) -> int:
-    if len(shader_mode) == 8 and all(c in '0123456789abcdefABCDEF' for c in shader_mode):
-        return int(shader_mode, 16)
-    return int.from_bytes(shader_mode.encode('ascii')[:4].ljust(4, b'\x00'), 'big')
+    return int.from_bytes(shader_mode_bytes(shader_mode), 'big')
 
 
 def apply_desired_texture_assignments(data: dict) -> bool:
@@ -356,7 +351,7 @@ def _rewrite_uv_primitive_blocks(
         elif opcode == 0x80:
             pending_quads = bytearray()
 
-            def flush_quads():
+            def flush_quads(pending_quads=pending_quads):
                 if not pending_quads:
                     return
                 count = len(pending_quads) // stride
@@ -730,7 +725,6 @@ def _compact_shared_color_array(
     """
     if not donor_entries:
         raise ValueError(f'{what}: donor color array is empty')
-    entry_size = len(donor_entries[0])
     for channel, indices in donor_indices_by_channel.items():
         if len(indices) != loop_count:
             raise ValueError(

@@ -2317,10 +2317,10 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
         )
         if not verts_match:
             msg += (
-                f"\n  Note: SKAcc vertex count differs from original — this is normal"
-                f" when some SKAcc dest slots fall outside submesh 0 (e.g. Head/Accessory"
-                f" submeshes). Those vertices are not part of the edited mesh and do not"
-                f" affect main-mesh skinning. Hammerspace write can proceed."
+                "\n  Note: SKAcc vertex count differs from original — this is normal"
+                " when some SKAcc dest slots fall outside submesh 0 (e.g. Head/Accessory"
+                " submeshes). Those vertices are not part of the edited mesh and do not"
+                " affect main-mesh skinning. Hammerspace write can proceed."
             )
         return True, msg
     return True, None

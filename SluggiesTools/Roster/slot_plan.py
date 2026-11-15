@@ -2252,8 +2252,7 @@ GAME_OPTION_TITLES = {'cpu_vs_cpu': 'CPU vs CPU', 'cpu_management': 'CPU vs CPU 
 GAME_OPTION_GROUPS = {**{f'close_play_{p}': 'close_play' for p in CLOSE_PLAY_LEVELS},
                       **{f'mercy_rule_{r}': 'mercy_rule' for r in MERCY_RULE_LEVELS}}
 GAME_OPS = (STAT_EDITS, GAMEPLAY, ITEM, STADIUM, GAME_OPTION)
-# HammerspaceMain.STADIUM_CHUNKS: Mario Stadium (7) .. Toy Field (16)
-STADIUM_CHUNKS = range(7, 17)
+STADIUM_CHUNKS = UntanglePolicy.STADIUM_DIRS      # Mario Stadium (7) .. Toy Field (16)
 GAME_WIDE = 0xFF                                      # the "id" of a stat edit: no character has it
 ORIGINS = ('user', 'bundled')
 DEFAULT_WORDS = ('', '-', 'default')                  # an edit's "source" that resets (CLI text)

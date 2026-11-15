@@ -253,8 +253,7 @@ class CharacterGridTab:
                                  callback=lambda _sender, value: self._on_deploy_toggle(value))
                 with dpg.tooltip('grid_deploy'):
                     dpg.add_text('After a successful Patch Game, copy dt_na.dat, main.dol, fst.bin and the sound '
-                                 'files (sound_NA) from 3_Output_Dat into the game directory '
-                                 '(3_Output_Dat/CopyFilesToGameDir.bat). The '
+                                 'files (sound_NA) from 3_Output_Dat into the game directory. The '
                                  'game directory is asked for the first time and kept in 3_Output_Dat/sluggiespath.',
                                  wrap=420)
                 dpg.add_spacer(width=12)
@@ -2640,19 +2639,14 @@ class CharacterGridTab:
 
     def _deploy(self, patched=False):
         """After a successful Patch Game with "Deploy patched files to game directory" ticked (``patched``), or
-        the Options tab's copy: copy the game files with CopyFilesToGameDir.bat. The game directory it reads
-        (3_Output_Dat/sluggiespath) is asked for here when it is missing or no game folder, so the script never
-        waits for input; Cancel or a blank / wrong answer stops before the copy. Every outcome ends in a toast."""
+        the Options tab's copy: copy the game files (``start.py --deploy-game-files``, deploy_files.py). The
+        game directory it reads (3_Output_Dat/sluggiespath) is asked for here when it is missing or no game
+        folder; Cancel or a blank / wrong answer stops before the copy. Every outcome ends in a toast."""
         not_copied = 'Game patched, but the files were not copied' if patched else 'Files not copied'
-        script = os.path.join(self.app.root_dir, gui_grid.DEPLOY_SCRIPT_REL)
-        if not os.path.isfile(script):
-            self.app.log_line(f'[character grid] files not copied: {script} is missing.', _WARN)
-            self.app.toast.error(f'{not_copied}: {os.path.basename(script)} is missing.')
-            return
         path_file = os.path.join(self.app.root_dir, gui_grid.GAME_DIR_FILE_REL)
         stored = gui_grid.read_game_dir(path_file)
         if gui_grid.game_dir_problem(stored) is None:
-            self._copy_files(script, stored, patched)
+            self._copy_files(stored, patched)
             return
 
         def answered(text):
@@ -2668,13 +2662,15 @@ class CharacterGridTab:
                 self.app.log_line(f'[character grid] files not copied: could not write {path_file}: {exc}', _WARN)
                 self.app.toast.error(f'{not_copied}: the game directory could not be stored.')
                 return
-            self._copy_files(script, game_dir, patched)
+            self._copy_files(game_dir, patched)
 
         def cancelled():
             self.app.log_line('[character grid] files not copied: the game directory prompt was cancelled', _WARN)
             self.app.toast.warn(f'{not_copied}: the game directory prompt was cancelled.')
+        files_dir, sys_dir = gui_grid.GAME_SUBDIRS
         lines = ['Enter the path to your unpacked copy of Mario Super Sluggers (US): its main folder, the one '
-                 'holding DATA\\files and DATA\\sys. It is kept in 3_Output_Dat\\sluggiespath for the next time.']
+                 f'holding {files_dir} and {sys_dir}. It is kept in {gui_grid.GAME_DIR_FILE_REL} for the next '
+                 'time.']
         if stored:
             lines.append(f'The stored one cannot be used: {gui_grid.game_dir_problem(stored)}')
         self.app.ask_text('Game directory', '\n\n'.join(lines), answered, cancelled, initial=stored)
@@ -2684,7 +2680,7 @@ class CharacterGridTab:
         if not self._options_locked():
             self._deploy()
 
-    def _copy_files(self, script, game_dir, patched=False):
+    def _copy_files(self, game_dir, patched=False):
         def done(code, _output):
             if code == 0:
                 self.app.log_line(f'[character grid] game files copied to {game_dir}.', _OK)
@@ -2696,7 +2692,7 @@ class CharacterGridTab:
                 self.app.toast.error('Game patched, but copying the files to the game directory failed.' if patched
                                      else 'Copying the files to the game directory failed.')
             self.set_busy(self.app.busy)
-        self._run([gui_grid.deploy_command(script)], 'Copying the files to the game directory...', done)
+        self._run([gui_grid.DEPLOY_ARGS], 'Copying the files to the game directory...', done)
 
     def _on_cpu_vs_cpu(self):
         """Stage CPU vs CPU on or off ("Patch Game" writes it); turning it off stages management off too."""

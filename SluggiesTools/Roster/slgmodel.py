@@ -186,7 +186,7 @@ def apply_delta(delta: bytes, sources, what: str = 'the delta') -> bytes:
             try:
                 opened[index] = sources(index) if callable(sources) else sources[index]
             except IndexError:
-                raise SlgError(f'{what} is damaged (it copies from game file {index}, which does not exist)')
+                raise SlgError(f'{what} is damaged (it copies from game file {index}, which does not exist)') from None
         return opened[index]
     out = bytearray()
     for op in _ops(raw, what):

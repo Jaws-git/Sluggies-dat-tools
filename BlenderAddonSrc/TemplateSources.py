@@ -83,13 +83,13 @@ BUILTIN_TEMPLATES = {
     ),
     "rigid_shdw_v1": BuiltinTemplate(
         layers=1, shader_mode="Shdw",
-        description="Crashes and draws black on characters; vanilla uses it on stadiums only",
-        verified_in_game=False,
+        description="Shadow shader, one texture layer; vanilla uses it on stadiums and map objects",
+        verified_in_game=True,   # declared by the user, 2026-11-15
     ),
     "rigid_ghsp_v1": BuiltinTemplate(
         layers=2, shader_mode="GhSp",
-        description="Drew invisible on Wario's cap; vanilla uses it only on Birdo's ring and diamond",
-        verified_in_game=False,
+        description="Ghost specular; vanilla uses it only on Birdo's ring and diamond",
+        verified_in_game=True,   # declared by the user, 2026-11-15
     ),
     "rigid_rhsp_v1": BuiltinTemplate(
         layers=2, shader_mode="RhSp",
@@ -224,8 +224,8 @@ def build_template_source_choices(
     wins) and sorted by SurfaceId for a stable order.
 
     Only built-ins verified in game are listed
-    (``BUILTIN_TEMPLATE_NAMES``), so the unverified captures are unselectable
-    here; ``HammerspaceMain._validate_custom_submeshes`` refuses them too.
+    (``BUILTIN_TEMPLATE_NAMES``; all are today), so an unverified capture is
+    unselectable here; ``HammerspaceMain._validate_custom_submeshes`` refuses one too.
 
     Stadium-only built-ins are listed only when *stadium* is true, and then
     first, so a stadium preselects ``builtin:stadium_shdw_opaque_v1``.

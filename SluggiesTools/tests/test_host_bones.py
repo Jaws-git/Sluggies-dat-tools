@@ -14,7 +14,6 @@ from HostBones import (  # noqa: E402
     GEO_ID_FREE,
     BoneRecord,
     CustomSubmeshHost,
-    HostBoneChoice,
     RigidRetarget,
     SceneClaims,
     STATUS_ALLOWED,

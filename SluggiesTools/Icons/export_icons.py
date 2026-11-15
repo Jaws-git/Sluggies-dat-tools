@@ -267,4 +267,4 @@ if __name__ == '__main__':
         main()
     except (ExportIconsError, layout2d.Layout2dError, gx_decode.GxDecodeError) as exc:
         _slogger.error(str(exc), source='icons.export_icons')
-        raise SystemExit(1)
+        raise SystemExit(1) from None

@@ -1,8 +1,6 @@
-from base import *
-from act import *
-import numpy as np
-from helper import *
-from model0 import *
+import os
+from base import FileChunk
+from helper import Object, SRT, getQuantizedData, quantizedDataSize
 import slogger
 
 # Animation bank (file index 6-14) -> what its animations are for, appended to the

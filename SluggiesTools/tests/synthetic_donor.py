@@ -20,7 +20,7 @@ The donor is a whole, self-consistent model, not a stub:
 - **SKN**: one SK1 and one SKAcc covering submesh 0's vertices.
 
 The `.sluggie` and the block are built together so they cannot drift: the
-block's GPL section *is* `BuildGPLMeshData`'s output for this `.sluggie`, and
+block's GPL section is written from this `.sluggie` (`donor_gpl.build_gpl`), and
 the `.sluggie`'s absolute `*Offset` fields are filled in from where the
 sections actually land.
 
@@ -46,8 +46,8 @@ for _path in (TOOLS_DIR, HAMMERSPACE_DIR):
         sys.path.insert(0, str(_path))
 
 import act_rebuild  # noqa: E402
+import donor_gpl  # noqa: E402
 import HammerspaceHelper as hh  # noqa: E402
-import HammerspaceMain as main  # noqa: E402
 
 # --------------------------------------------------------------------------
 # Placement
@@ -502,7 +502,7 @@ def _build_skn_bytes() -> bytes:
 def build_donor(mutate=None) -> tuple[dict, bytes, int]:
     """Return ``(sluggie_dict, dat_bytes, model_length)``.
 
-    The GPL section is ``BuildGPLMeshData``'s own output for this `.sluggie`,
+    The GPL section is written from this `.sluggie` (``donor_gpl.build_gpl``),
     so the block and the JSON describe the same model by construction. Every
     section starts on a 32-byte boundary, and the `.sluggie`'s absolute
     `GeoIdFieldOffset` / `SRTOffset` fields are filled in from where the ACT
@@ -515,7 +515,7 @@ def build_donor(mutate=None) -> tuple[dict, bytes, int]:
     data = build_sluggie()
     if mutate is not None:
         mutate(data)
-    gpl_bytes = main.BuildGPLMeshData(main.ParseSluggie(data)).gpl_bytes
+    gpl_bytes = donor_gpl.build_gpl(data)
     act_bytes = _build_act_bytes()
     tex_bytes = _build_tex_bytes()
     skn_bytes = _build_skn_bytes()

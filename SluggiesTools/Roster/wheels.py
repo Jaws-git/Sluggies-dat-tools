@@ -237,7 +237,7 @@ def ten_member_code(image: dolfile.DolImage, hs: dol_hammerspace.DolHammerspace)
         stock = inventory.site('wheel7', address).stock
         hs.code.put(b'', 4)
         at = hs.code.put(node_stub(address, stock, hs.code.here), 4)
-        image.patch_word(address, stock, one(address, lambda a: a.b(at)))
+        image.patch_word(address, stock, one(address, lambda a, at=at: a.b(at)))
     wrong = [f'0x{s.address:08X}' for s in sites if s.tool is not None and image.u32(s.address) != s.tool]
     if wrong:
         raise dolfile.DolError('10-member wheels: result differs from the external tool at ' + ', '.join(wrong[:8]))

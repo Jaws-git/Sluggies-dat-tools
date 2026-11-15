@@ -1,6 +1,6 @@
 import numpy as np
 import math
-from base import *
+from base import FileChunk
 # Re-exported so the legacy `from helper import *` chain (act/anm/ds/gpl/tpl ->
 # model0 -> export) keeps seeing itb/bti; binfmt.py is their real home.
 from binfmt import itb, bti  # noqa: F401

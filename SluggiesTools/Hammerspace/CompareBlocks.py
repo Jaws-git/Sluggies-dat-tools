@@ -65,12 +65,7 @@ def cstr(b: bytes, off: int) -> str:
     return b[off:end].decode('ascii', errors='replace')
 
 
-def comp_size(q: int) -> int:
-    return 4 if (q >> 4) in (4, 7, 0xa) else 2
-
-
-def color_stride(q: int) -> int:
-    return {0: 2, 1: 3, 2: 4, 3: 2, 4: 3, 5: 4}.get(q >> 4, 2)
+from binfmt import color_entry_size as color_stride, comp_size  # noqa: E402,F401
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +102,7 @@ def parse_block(blk: bytes) -> dict:
                                             u32(blk, base + 0x10))
         m_uv = u8(blk, base + 0x14)
 
-        def hdr8(off):
+        def hdr8(off, base=base):
             return (u32(blk, base + off), u16(blk, base + off + 4),
                     u8(blk, base + off + 6), u8(blk, base + off + 7))
 

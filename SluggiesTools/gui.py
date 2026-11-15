@@ -287,7 +287,7 @@ class SluggiesGui:
         if self.process is not None:
             self._log_line('A command is already running.', _PROMPT_COLOR)
             return False
-        self.pending = [step if isinstance(step, tuple) else tuple(step) for step in steps]   # keeps a ShellStep
+        self.pending = [tuple(step) for step in steps]
         self.chain = list(self.pending)
         self.on_chain_done, self.chain_output = on_done, []
         self._start_next()
@@ -295,7 +295,7 @@ class SluggiesGui:
 
     def _start_next(self):
         args = self.current = self.pending.pop(0)
-        command = list(args) if isinstance(args, gui_grid.ShellStep) else [*self.command_prefix, *args]
+        command = [*self.command_prefix, *args]
         self._log_line('> ' + ' '.join(args), _PROMPT_COLOR)
         env = dict(os.environ, PYTHONUNBUFFERED='1', PYTHONIOENCODING='utf-8', **{slogger.PROMPT_ENV: '1'})
         try:

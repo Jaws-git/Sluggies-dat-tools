@@ -1868,24 +1868,16 @@ PATCH_LABEL = 'Patch Game'
 PATCH_DEPLOY_LABEL = 'Patch Game & copy files'
 DEPLOY_LABEL = 'Deploy patched files to game directory'
 DEPLOY_SETTING = 'deploy_to_game_dir'           # the GUI settings key (``gui_settings``) of that checkbox
-DEPLOY_SCRIPT_REL = os.path.join('3_Output_Dat', 'CopyFilesToGameDir.bat')
-GAME_DIR_FILE_REL = os.path.join('3_Output_Dat', 'sluggiespath')    # the script's game directory, one line
-# where CopyFilesToGameDir.bat copies dt_na.dat and sound_NA/ (DATA/files) and main.dol / fst.bin (DATA/sys)
+DEPLOY_ARGS = ('--deploy-game-files',)         # the start.py step that copies the files (deploy_files.py)
+# the game directory, one line; shared with 3_Output_Dat/CopyFilesToGameDir.bat (the same copy, run by hand)
+GAME_DIR_FILE_REL = os.path.join('3_Output_Dat', 'sluggiespath')
+# where dt_na.dat and sound_NA/ (DATA/files) and main.dol / fst.bin (DATA/sys) go
 GAME_SUBDIRS = (os.path.join('DATA', 'files'), os.path.join('DATA', 'sys'))
 _GAME_DIR_ENCODING = 'oem' if os.name == 'nt' else 'utf-8'           # what cmd's set /p and echo use
 
 
-class ShellStep(tuple):
-    """A command chain step run as it is, not as start.py arguments (``SluggiesGui.run_chain``)."""
-
-
 def patch_label(count: int, deploy: bool) -> str:
     return f'{PATCH_DEPLOY_LABEL if deploy else PATCH_LABEL} ({count})'
-
-
-def deploy_command(script: str, comspec: str | None = None) -> ShellStep:
-    """Run CopyFilesToGameDir.bat (through cmd, so it also runs from a path with spaces)."""
-    return ShellStep((comspec or os.environ.get('ComSpec', 'cmd.exe'), '/c', script))
 
 
 def read_game_dir(path: str) -> str:
@@ -1916,7 +1908,8 @@ def game_dir_problem(game_dir: str) -> str | None:
 
 
 def write_game_dir(path: str, game_dir: str) -> None:
-    """Store the game directory for CopyFilesToGameDir.bat (it reads the first line with ``set /p``)."""
+    """Store the game directory (CopyFilesToGameDir.bat reads the first line with ``set /p``, hence the
+    encoding)."""
     with open(path, 'w', encoding=_GAME_DIR_ENCODING) as f:
         f.write(game_dir + '\n')
 

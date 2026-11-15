@@ -373,7 +373,7 @@ def _validate_gpl(
             state.fail(f'GPL submesh[{submesh_index}] layout fields failed: {type(exc).__name__}: {exc}')
             continue
 
-        def hdr8(rel_off: int, label: str) -> tuple[int, int, int, int] | None:
+        def hdr8(rel_off: int, label: str, layout_off: int = layout_off) -> tuple[int, int, int, int] | None:
             abs_off = layout_off + rel_off
             if not state.in_bounds(abs_off, 8, label):
                 return None

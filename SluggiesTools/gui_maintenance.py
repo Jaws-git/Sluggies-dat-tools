@@ -395,11 +395,15 @@ class MaintenanceTab:
             return path
 
     def _show(self, path):
-        """Open Explorer with the file selected (its folder when the file is gone)."""
+        """Open the file manager: on Windows Explorer with the file selected (its folder when the file is
+        gone), elsewhere the file's folder."""
+        folder = os.path.dirname(path)
         try:
-            if os.path.exists(path):
+            if not _WINDOWS:
+                subprocess.Popen(['open' if platform.system() == 'Darwin' else 'xdg-open', folder])
+            elif os.path.exists(path):
                 subprocess.Popen(['explorer', '/select,', os.path.normpath(path)])
             else:
-                os.startfile(os.path.dirname(path))
+                os.startfile(folder)
         except OSError as exc:
-            self.app.log_line(f'Could not open Explorer: {exc}')
+            self.app.log_line(f'Could not open the folder {folder}: {exc}')

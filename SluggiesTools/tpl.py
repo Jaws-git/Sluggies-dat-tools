@@ -1,5 +1,5 @@
-from base import *
-from helper import *
+from base import FileChunk
+from binfmt import itb
 import os
 import shutil
 import subprocess

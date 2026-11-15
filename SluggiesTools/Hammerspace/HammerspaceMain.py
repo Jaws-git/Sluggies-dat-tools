@@ -28,6 +28,7 @@ from binfmt import (
     comp_size as _vb_comp_size,
     decode_field as _decode,
     load_sluggie,
+    shader_mode_bytes as _shader_mode_bytes,
     skin_bone_ids as _skin_bone_ids,
 )
 from BlockValidator import validate_model_block
@@ -90,9 +91,60 @@ class _PlacedDonor(io.BytesIO):
         return super().tell() + self._base
 
 
+# The donor's DOL entry, read once by BuildModelBlock for the build it runs (``(offset, bytes)``), so the
+# section clones and patches below read memory instead of reopening the DAT. Reads outside it, and every
+# read while no build runs, go to the file.
+_PRELOADED_DONOR: tuple[int, bytes] | None = None
+
+
+def _preload_donor(absolute_offset: int, length: int) -> None:
+    """Keep the ``length`` donor bytes at ``absolute_offset`` in memory until the build ends (BuildModelBlock
+    clears it). Nothing is kept when they cannot be read whole; the reads then go to the file as before."""
+    global _PRELOADED_DONOR
+    _PRELOADED_DONOR = None
+    if _EMBEDDED_DONOR is not None or length <= 0:
+        return
+    try:
+        with open(_source_dat_path(absolute_offset), 'rb') as source:
+            source.seek(absolute_offset)
+            data = source.read(length)
+    except OSError:
+        return
+    if len(data) == length:
+        _PRELOADED_DONOR = (absolute_offset, data)
+
+
+def _read_donor(absolute_offset: int, length: int) -> bytes:
+    """Up to ``length`` donor bytes at ``absolute_offset`` (fewer at the end of the source): from the embedded
+    donor entry while one is set, else from the preloaded entry when it holds the whole range, else from the
+    DAT that holds the offset."""
+    cached = _PRELOADED_DONOR
+    if _EMBEDDED_DONOR is None and cached is not None:
+        start = absolute_offset - cached[0]
+        if 0 <= start and start + length <= len(cached[1]):
+            return cached[1][start:start + length]
+    with _open_source(absolute_offset) as source:
+        source.seek(absolute_offset)
+        return source.read(length)
+
+
+def _donor_header(model_offset: int) -> tuple[int, ...]:
+    """The eight words of the donor model's block header: 0, GPL, ACT, TEX, SKN, ptr6, ptr7, ptr8
+    (block-relative section offsets, 0 where the model has no such section)."""
+    return struct.unpack('>8I', _read_donor(model_offset, 0x20))
+
+
+def _donor_gpl_absolute(model_offset: int) -> int:
+    """Absolute offset of the donor model's GPL section (what the .sluggie's GPL field offsets count from)."""
+    raw = _read_donor(model_offset + 0x04, 4)
+    if len(raw) != 4:
+        raise IOError(f'Could not read donor GPL offset at 0x{model_offset + 4:08X}')
+    return model_offset + struct.unpack('>I', raw)[0]
+
+
 def _open_source(absolute_offset: int):
     """A binary file to read donor bytes at ``absolute_offset`` from: the embedded donor entry while one is set,
-    else the DAT that holds the offset."""
+    else the DAT that holds the offset. Donor reads go through ``_read_donor``."""
     if _EMBEDDED_DONOR is None:
         return open(_source_dat_path(absolute_offset), 'rb')
     base, data = _EMBEDDED_DONOR
@@ -112,26 +164,15 @@ class DrawState:
     display_state_pad_bytes:     bytes
     prim_list_data:              bytes
     active_descriptors:          list   # [{'key': str, 'index_size': int}]
-    prim_list_ptr_field_offset:  int    # absolute file offset
-    prim_list_size_field_offset: int
-    prim_list_absolute_offset:   int
-    prim_list_length:            int
-    shader_mode_field_offset:    int
     shader_mode:                 str
-    source_state_offset:         int
 
 
 @dataclass
 class NormalBuffer:
-    normal_data_ptr_field_offset: int   # absolute file offset of normalsPtr field
-    normal_count_field_offset:    int   # absolute file offset of numNormals field
-    normal_buffer_offset:         int   # absolute file offset of raw data
-    normal_buffer_length:         int
     comp_count:                   int
     quantize_info:                int
     ambient_pct:                  float
     normal_data:                  bytes
-    source_header_offset:         int
 
 
 @dataclass
@@ -145,9 +186,6 @@ class UVChannel:
     uv_faces_data:            bytes   # edited if present, else original
     comp_count:               int
     quantize_info:            int
-    uv_data_ptr_field_offset: int
-    uv_count_field_offset:    int
-    source_data_offset:       int
 
 
 @dataclass
@@ -157,7 +195,6 @@ class ColorChannel:
     color_faces_data: bytes
     comp_count:       int
     quantize_info:    int
-    source_data_offset: int
 
 
 @dataclass
@@ -166,18 +203,13 @@ class Submesh:
     mesh_name:                      str
     faces_count:                    int
     faces_data:                     bytes   # edited if present, else original
-    face_texture_indices:           bytes
     vertex_data:                    bytes   # edited if present, else original
     vertex_comp_count:              int
     vertex_quantize_info:           int
     uv_channels:                    list    # [UVChannel]
     color_channels:                 list    # [ColorChannel]
     draw_states:                    list    # [DrawState]
-    position_data_ptr_field_offset: int
-    vertex_count_field_offset:      int
     normal_buffer:                  NormalBuffer | None   # None for skinned meshes
-    source_layout_offset:           int
-    source_position_data_offset:    int
     preserve_source_layout:         bool
     rigid_rebuild:                  'RigidRebuild | None' = None
     skinned_rebuild:                'SkinnedRebuild | None' = None
@@ -186,7 +218,6 @@ class Submesh:
 @dataclass
 class MeshData:
     submeshes: list   # [Submesh]
-    source_gpl_base_offset: int
 
 
 @dataclass
@@ -306,18 +337,12 @@ class SkinnedRebuild:
 @dataclass
 class Bone:
     bone_id:            int
-    geo_id:             int
-    parent_bone_id:     int | None
     skinned:            bool
     track_id:           int
     srt_type:           int    # SRT block type byte (0x4 / 0x8 / 0xc; 0 when no SRT)
-    draw_priority:      int    # render priority byte from ACTBoneLayout +0x19
-    inherit_transform:  bool   # inheritance flag from ACTBoneLayout +0x18
     translation:        list   # [x, y, z]
     scale:              list   # [x, y, z]
     quaternion:         list   # [w, x, y, z]
-    head_position:      list   # [x, y, z]
-    vertex_influences:  list   # [{'submesh_index': int, 'influences': bytes}]
 
 
 @dataclass
@@ -343,7 +368,6 @@ class Texture:
     image_data_length:         int
     palette_data_offset:       int | None
     palette_data_length:       int | None
-    texture_descriptor_offset: int
 
 
 @dataclass
@@ -357,8 +381,6 @@ class SK1:
     vertex_cnt:                  int
     vertex_offset:               int
     bind_pose_data:              bytes   # edited if present, else original
-    vertex_arr_field_offset:     int
-    gpl_vertex_arr_field_offset: int
     vertex_arr_absolute_ptr:     int
     gpl_vertex_arr_value:        int
 
@@ -371,9 +393,6 @@ class SK2:
     vertex_offset:               int
     bind_pose_data:              bytes   # edited if present, else original
     weight_data:                 bytes   # edited if present, else original
-    vertex_arr_field_offset:     int
-    weight_arr_field_offset:     int
-    gpl_vertex_arr_field_offset: int
     vertex_arr_absolute_ptr:     int
     weight_arr_absolute_ptr:     int
     gpl_vertex_arr_value:        int
@@ -386,10 +405,6 @@ class SKAcc:
     bind_pose_data:            bytes   # edited if present, else original
     dest_index_data:           bytes
     weight_data:               bytes   # edited if present, else original
-    vertex_arr_field_offset:   int
-    dest_arr_field_offset:     int
-    gpl_dest_arr_field_offset: int
-    weight_arr_field_offset:   int
     vertex_arr_absolute_ptr:   int
     dest_arr_absolute_ptr:     int
     gpl_dest_arr_value:        int
@@ -399,13 +414,8 @@ class SKAcc:
 @dataclass
 class SkinningData:
     skn_offset:                int
-    gpl_base_offset:           int
-    mem_clr_ptr_field_offset:  int
-    mem_clr_sze_field_offset:  int
     mem_clr_ptr_value:         int
-    mem_clr_absolute_ptr:      int
     mem_clr_size:              int
-    flush_ind_arr_field_offset: int
     flush_ind_absolute_ptr:    int | None
     flush_ind_size:            int
     flush_ind_data:            bytes
@@ -414,19 +424,6 @@ class SkinningData:
     sk2s:                      list   # [SK2]
     sk_accs:                   list   # [SKAcc]
     preserve_source_layout:    bool = False
-
-
-@dataclass
-class TEXHeader:
-    clut_count: int    # uint16 at TEXPalette +0x02 (numCLUTsMaybe)
-
-
-@dataclass
-class ACTHeader:
-    actor_id:          int    # uint16 at ACT header +0x04
-    skin_file_id:      int    # uint16 at ACT header +0x14
-    geo_name:          str    # string pointed to by ACT header +0x10
-    act_tree_unknown:  int    # uint32 at Tree struct +0x00 (ACT +0x08)
 
 
 @dataclass
@@ -442,10 +439,6 @@ class SluggieParsed:
     bones:              BoneData | None     # None for static meshes
     textures:           TextureData
     skinning:           SkinningData | None  # None for non-skinned models
-    gpl_user_data:      bytes | None        # raw GPL user-data block, or None
-    gpl_user_data_len:  int                 # 0 when no user data
-    act_header:         ACTHeader | None    # ACT section header fields, or None
-    tex_header:         TEXHeader | None    # TEX section header fields, or None
     trailing_sections:  list[TrailingSection]  # schema-backed ptr6/ptr7/ptr8 payloads
     model_offset:       int                 # absolute byte offset of model block in INPUT dat
     model_length:       int                 # byte length of model block in INPUT dat
@@ -527,17 +520,15 @@ def _position_edits(model: dict) -> list[tuple[int, dict, bytes]]:
 # CustomSubmeshes validation
 # ---------------------------------------------------------------------------
 # Cross-checks a CustomSubmeshes entry against the rest of the .sluggie
-# contract before any DAT/DOL write. This runs ahead of ParseSluggie/
-# BuildGPLMeshData, which don't otherwise touch CustomSubmeshes at all
-# (ParseSluggie is a pure parse); GPL/ACT/TEX assembly comes later.
+# contract before any DAT/DOL write. This runs ahead of ParseSluggie, which
+# is a pure parse; GPL/ACT/TEX assembly comes later.
 
-# Stadium model directories, 7 Mario Stadium ... 16 Toy Field; the same range as
-# export.STADIUM_DIR_INDICES (export.py can't be imported: it prompts). Every
+# Stadium model directories, 7 Mario Stadium ... 16 Toy Field. Every
 # vanilla stadium bone is a root. New bones there may be roots (new root bones
 # draw correctly, Dolphin 2026-10-18; the earlier "does not draw" results were a
 # one-colour-entry bug, see _assemble_rigid_submesh) or children (a mesh on a new
 # child bone follows parent then child, Dolphin 2026-10-18, E7).
-STADIUM_CHUNKS = range(7, 17)
+STADIUM_CHUNKS = UntanglePolicy.STADIUM_DIRS
 
 _CUSTOM_SUBMESH_HAND_VISIBILITY_ROLES = frozenset({'RhSp', 'LhSp', 'SpRf', 'GhSp'})
 _CUSTOM_SUBMESH_REJECTED_DERIVED_TYPE6 = '00000375'  # never occurs on a rigid submesh
@@ -572,9 +563,7 @@ _CUSTOM_SUBMESH_COLOR_STRIDE    = 2   # CompCount 4, QuantizeInfo 48 (RGBA4444)
 # `VerifiedInGame` gates a template: _validate_template_source refuses an
 # unverified one and the Add submesh / Add material dialogs hide it
 # (TemplateSources.BUILTIN_TEMPLATE_NAMES), until a Dolphin test
-# confirms it. The only copy:
-# build_template_source_fixture.BUILTIN_TEMPLATES reads this whole registry,
-# including provenance.
+# confirms it. This registry is the only copy.
 _CUSTOM_SUBMESH_BUILTIN_TEMPLATES = {
     'rigid_spec_v1': {
         'States': (
@@ -615,10 +604,12 @@ _CUSTOM_SUBMESH_BUILTIN_TEMPLATES = {
         'Sha256': '324907992ca4c44273724ddc0b2bc9983c9972cc69bcc5a57fdbb876b452df2b',
         'Layers': 1,
         'ShaderMode': 'Shdw',
-        # Failed in Dolphin (2026-09-26): the Shdw mode crashes
-        # on load and draws black on a character cap, in this 1-layer form and
-        # in a copy of the cap's own 2-layer group alike.
-        'VerifiedInGame': False,
+        # Declared verified by the user on 2026-11-15 (an earlier in-game test
+        # showed no visual anomalies). The first test (Dolphin, 2026-09-26)
+        # had failed: the Shdw mode crashed on load and drew black on a
+        # character cap, in this 1-layer form and in a copy of the cap's own
+        # 2-layer group alike.
+        'VerifiedInGame': True,
         'Provenance': {
             'Model': '137 Various A/653486528_manhole01.gpl',
             'MeshName': 'manhole',
@@ -640,7 +631,10 @@ _CUSTOM_SUBMESH_BUILTIN_TEMPLATES = {
         'Sha256': '6a5e44b42125c7033de42f0a5b8a2ad9a744d52fb4a496dce4793640f57a1560',
         'Layers': 2,
         'ShaderMode': 'GhSp',
-        'VerifiedInGame': False,  # drew invisible on Wario's cap
+        # Declared verified by the user on 2026-11-15 (an earlier in-game test
+        # showed no visual anomalies). An older test drew it invisible on
+        # Wario's cap.
+        'VerifiedInGame': True,
         'Provenance': {
             'Model': '35 Birdo/142642016_catherine.gpl',
             'MeshName': 'gold_ring',
@@ -761,20 +755,11 @@ def builtin_template_names(verified_only: bool = True) -> tuple[str, ...]:
     )
 
 
-def _custom_submesh_setting_bytes(shader_mode: str) -> bytes:
-    if len(shader_mode) == 8 and all(c in '0123456789abcdefABCDEF' for c in shader_mode):
-        return bytes.fromhex(shader_mode)
-    return shader_mode.encode('ascii', errors='replace').ljust(4, b'\x00')[:4]
-
-
 def _custom_submesh_state_records_sha256(records) -> str:
-    """Hash display-state records as their 16-byte headers without pointers.
-
-    Mirrors build_template_source_fixture.state_records_sha256 exactly (same
-    algorithm and byte layout)."""
+    """Hash display-state records as their 16-byte headers without pointers."""
     import hashlib
     payload = b''.join(
-        bytes([state_id]) + bytes.fromhex(pad) + _custom_submesh_setting_bytes(mode)
+        bytes([state_id]) + bytes.fromhex(pad) + _shader_mode_bytes(mode)
         for state_id, pad, mode in records
     )
     return hashlib.sha256(payload).hexdigest()
@@ -1553,9 +1538,9 @@ def _validate_bone_hierarchy_edited(model: dict) -> None:
             if int(sk1['BoneIndex']) not in known_ids:
                 fail(f"{skin_key}: SK1 entry names bone {sk1['BoneIndex']}, which is neither a donor nor an added bone")
         for sk2 in skin_data.get('SK2s') or []:
-            for field in ('BoneIndex1', 'BoneIndex2'):
-                if int(sk2[field]) not in known_ids:
-                    fail(f"{skin_key}: SK2 entry names bone {sk2[field]}, which is neither a donor nor an added bone")
+            for bone_field in ('BoneIndex1', 'BoneIndex2'):
+                if int(sk2[bone_field]) not in known_ids:
+                    fail(f"{skin_key}: SK2 entry names bone {sk2[bone_field]}, which is neither a donor nor an added bone")
         for skacc in skin_data.get('SKAccs') or []:
             if int(skacc['BoneIndex']) not in known_ids:
                 fail(f"{skin_key}: SKAcc entry names bone {skacc['BoneIndex']}, which is neither a donor nor an added bone")
@@ -1635,8 +1620,7 @@ def _custom_submesh_with_texture_index(mode: str, texture_index: int) -> str:
 
 
 def _custom_submesh_type3_descriptors(setting: int) -> list[dict]:
-    """Decode a Type-3 setting word into the ordered attribute index layout
-    (mirrors build_add_submesh_fixture._type3_descriptors)."""
+    """Decode a Type-3 setting word into the ordered attribute index layout."""
     descriptors = []
     for key, shift in drawlist._ATTR_BIT_SHIFT.items():
         mode = (setting >> shift) & 0b11
@@ -1716,8 +1700,7 @@ def _custom_submesh_rigid_records(states: list, surface_index: int) -> list[list
 
 def _custom_submesh_derived_records(submesh0_states: list, surface_id: str) -> list[list]:
     """`derived:` template source: build the canonical rigid record order
-    from the effective states of a submesh-0 surface (ported from
-    build_template_source_fixture.derive_rigid_state_records; validity is
+    from the effective states of a submesh-0 surface (validity is
     already enforced by _validate_custom_submeshes)."""
     surface_index = next(
         index for index, state in enumerate(submesh0_states)
@@ -1756,8 +1739,7 @@ def _custom_submesh_derived_records(submesh0_states: list, surface_id: str) -> l
 
 def _custom_submesh_builtin_records(model: dict, name: str) -> list[list]:
     """`builtin:` template source: bind the stored canonical rigid list to
-    the host model's own submesh-0 textures (ported from
-    build_template_source_fixture.builtin_rigid_state_records)."""
+    the host model's own submesh-0 textures."""
     template = _CUSTOM_SUBMESH_BUILTIN_TEMPLATES[name]
     submesh0 = (model.get('Submeshes') or [None])[0] or {}
     bindings: dict[int, int] = {}
@@ -2007,13 +1989,7 @@ def _assemble_rigid_submesh(
             display_state_pad_bytes=pad,
             prim_list_data=primitive_bytes,
             active_descriptors=[],
-            prim_list_ptr_field_offset=0,
-            prim_list_size_field_offset=0,
-            prim_list_absolute_offset=0,
-            prim_list_length=len(primitive_bytes),
-            shader_mode_field_offset=0,
             shader_mode=mode,
-            source_state_offset=0,
         )
         for (state_id, pad, mode), primitive_bytes in zip(records, primitive_lists)
     ]
@@ -2023,18 +1999,13 @@ def _assemble_rigid_submesh(
         mesh_name=mesh_name,
         faces_count=faces_count,
         faces_data=faces_data,
-        face_texture_indices=b'',
         vertex_data=vertex_data,
         vertex_comp_count=_CUSTOM_SUBMESH_POSITION_FORMAT[0],
         vertex_quantize_info=vertex_quantize_info,
         uv_channels=uv_channels,
         color_channels=[color_channel] if color_channel is not None else [],
         draw_states=draw_states,
-        position_data_ptr_field_offset=0,
-        vertex_count_field_offset=0,
         normal_buffer=normal_buffer,
-        source_layout_offset=0,
-        source_position_data_offset=0,
         preserve_source_layout=False,
     )
 
@@ -2063,9 +2034,6 @@ def _custom_submesh_to_submesh(
             uv_faces_data=uv.uv_faces_data,
             comp_count=_CUSTOM_SUBMESH_UV_FORMAT[0],
             quantize_info=_CUSTOM_SUBMESH_UV_FORMAT[1],
-            uv_data_ptr_field_offset=0,
-            uv_count_field_offset=0,
-            source_data_offset=0,
         )
         for uv in sorted(cs.uv_channels, key=lambda channel: channel.channel_index)
     ]
@@ -2077,20 +2045,14 @@ def _custom_submesh_to_submesh(
             color_faces_data=cs.color_faces_data or b'',
             comp_count=_CUSTOM_SUBMESH_COLOR_FORMATS[cs.color_quantize_info],
             quantize_info=cs.color_quantize_info,
-            source_data_offset=0,
         )
     normal_buffer = None
     if cs.normal_data:
         normal_buffer = NormalBuffer(
-            normal_data_ptr_field_offset=0,
-            normal_count_field_offset=0,
-            normal_buffer_offset=0,
-            normal_buffer_length=len(cs.normal_data),
             comp_count=_CUSTOM_SUBMESH_NORMAL_FORMAT[0],
             quantize_info=_CUSTOM_SUBMESH_NORMAL_FORMAT[1],
             ambient_pct=0.0,
             normal_data=cs.normal_data,
-            source_header_offset=0,
         )
     return _assemble_rigid_submesh(
         submesh_index, cs.mesh_name, records, primitive_lists,
@@ -2196,189 +2158,132 @@ def _build_custom_submesh(
     )
 
 
+def _serialize_submesh_blob(
+    mesh_name: str, states: list[tuple], *, position_data: bytes, position_count: int, position_quantize: int,
+    position_comp_count: int, uv_channels: list, color_channel: 'ColorChannel | None',
+    normal_header: tuple | None, normal_data: bytes = b'', aligned: bool = False, position_reserve: int = 0,
+) -> tuple[bytes, int]:
+    """One submesh as a self-contained GPL blob: the layout struct and its headers, the mesh and
+    palette names, the position, colour, UV and normal arrays, the display-state records and the
+    primitive lists (each on a 32-byte boundary and padded to one). Returns ``(blob, name_off)``;
+    every offset in the blob counts from its start, which is where the descriptor points.
+
+    ``states``: ``(state id, pad bytes, shader mode, primitive list bytes)`` per display state.
+    ``normal_header``: ``(count, quantize, comp count, ambient)``, or None for no lighting header;
+    with no ``normal_data`` the normals are the second half of each position record.
+    ``aligned`` is the skinned layout: positions on a 32-byte boundary with at least
+    ``position_reserve`` bytes (the SKN write-back range), and each later array on a 4-byte one.
+    Without it the arrays follow the names directly, each padded to four bytes (rigid submeshes)."""
+    def align(offset: int, alignment: int) -> int:
+        return (offset + alignment - 1) & ~(alignment - 1)
+
+    pos_hdr, col_hdr, uv_hdr = 0x18, 0x20, 0x28
+    nor_hdr = uv_hdr + len(uv_channels) * 0x10
+    dsp_hdr = nor_hdr + 0x0c
+    cursor = dsp_hdr + 0x0c
+    payloads: list[tuple[int, bytes]] = []
+
+    def place(data: bytes, reserve: int = 0) -> int:
+        nonlocal cursor
+        offset = cursor
+        payloads.append((offset, data))
+        cursor += max(len(data), reserve)
+        return offset
+
+    name_off = place(mesh_name.encode('ascii', errors='replace') + b'\x00')
+    palette_offs = [place((uv.palette_name or '').encode('ascii', errors='replace') + b'\x00') for uv in uv_channels]
+    if aligned:
+        cursor = align(cursor, 32)
+        pos_off = place(position_data, position_reserve)
+    else:
+        pos_off = place(_align4(position_data))
+    col_off = 0
+    if color_channel is not None:
+        if aligned:
+            cursor = align(cursor, 4)
+        col_off = place(_align4(color_channel.color_data))
+    uv_offs = []
+    for uv in uv_channels:
+        if aligned:
+            cursor = align(cursor, 4)
+        uv_offs.append(place(_align4(uv.uv_data)))
+    if normal_data:
+        nor_off = place(_align4(normal_data))
+    else:
+        nor_off = pos_off + 3 * _vb_comp_size(position_quantize)
+    if aligned:
+        cursor = align(cursor, 4)
+    states_off = cursor
+    cursor += len(states) * 0x10
+    list_offs, list_sizes = [], []
+    for _state_id, _pad, _mode, primitive_bytes in states:
+        if primitive_bytes:
+            cursor = align(cursor, 32)
+            padded = primitive_bytes + b'\x00' * ((-len(primitive_bytes)) % 32)
+            list_offs.append(place(padded))
+            list_sizes.append(len(padded))
+        else:
+            list_offs.append(0)
+            list_sizes.append(0)
+
+    blob = bytearray(cursor)
+    for offset, data in payloads:
+        blob[offset:offset + len(data)] = data
+    struct.pack_into('>5IB', blob, 0, pos_hdr, col_hdr, uv_hdr, nor_hdr if normal_header is not None else 0,
+                     dsp_hdr, len(uv_channels))
+    struct.pack_into('>IHBB', blob, pos_hdr, pos_off, position_count, position_quantize, position_comp_count)
+    if color_channel is not None:
+        struct.pack_into('>IHBB', blob, col_hdr, col_off,
+                         len(color_channel.color_data) // _color_entry_size(color_channel.quantize_info),
+                         color_channel.quantize_info, color_channel.comp_count)
+    for j, uv in enumerate(uv_channels):
+        uv_stride = _vb_comp_size(uv.quantize_info) * uv.comp_count
+        struct.pack_into('>IHBBII', blob, uv_hdr + j * 0x10, uv_offs[j],
+                         len(uv.uv_data) // uv_stride if uv_stride else 0, uv.quantize_info, uv.comp_count,
+                         palette_offs[j], 0)
+    if normal_header is not None:
+        normal_count, normal_quantize, normal_comp_count, ambient = normal_header
+        struct.pack_into('>IHBBf', blob, nor_hdr, nor_off, normal_count, normal_quantize, normal_comp_count, ambient)
+    struct.pack_into('>IIH', blob, dsp_hdr, next((offset for offset in list_offs if offset), 0), states_off,
+                     len(states))
+    for k, (state_id, pad, mode, _primitive_bytes) in enumerate(states):
+        at = states_off + k * 0x10
+        blob[at] = state_id
+        blob[at + 0x01:at + 0x04] = pad[:3].ljust(3, b'\x00')        # renderer parameters, not padding
+        blob[at + 0x04:at + 0x08] = _shader_mode_bytes(mode)
+        struct.pack_into('>II', blob, at + 0x08, list_offs[k], list_sizes[k])
+    return bytes(blob), name_off
+
+
 def _build_rigid_submesh_blob(sub: 'Submesh') -> tuple[bytes, int]:
     """Serialize one brand-new rigid (CompCount 3) submesh as a self-contained
-    GPL blob (DOLayout + headers + raw arrays + display states + primitive
-    lists), ready to be appended to an existing GPL section.
+    GPL blob, ready to be appended to an existing GPL section.
 
-    A restricted, single-submesh subset of BuildGPLMeshData's general
-    (non-preserving) layout path: no skinning (custom submeshes never carry
-    SK1/SK2/SKAcc) and no donor-layout preservation (a new submesh has no
-    donor bytes to preserve). Returns (blob_bytes, name_off), where name_off
+    No skinning (custom submeshes never carry SK1/SK2/SKAcc) and no donor
+    layout to keep (a new submesh has no donor bytes). Returns (blob_bytes, name_off), where name_off
     is relative to the start of blob_bytes -- which is also the DOLayout's
     own start, matching the GEO descriptor's DOLayoutPtr convention.
     """
-
-    def _align32(offset: int) -> int:
-        return (offset + 31) & ~31
-
-    def _vertex_count(data: bytes, comp_count: int, quant_info: int) -> int:
-        stride = _vb_comp_size(quant_info) * comp_count
-        return len(data) // stride if stride else 0
-
-    def _color_count(data: bytes, quant_info: int) -> int:
-        fmt = quant_info >> 4
-        stride = {0: 2, 1: 3, 2: 4, 3: 2, 4: 3, 5: 4}.get(fmt, 2)
-        return len(data) // stride
-
-    M_uv = len(sub.uv_channels)
-    n_ds = len(sub.draw_states)
-
-    POS_OFF = 0x18
-    COL_OFF = 0x20
-    UV_OFF  = 0x28
-    NOR_OFF = UV_OFF  + M_uv * 0x10
-    DSP_OFF = NOR_OFF + 0x0c
-    HDR_END = DSP_OFF + 0x0c
-
-    cursor = HDR_END
-
-    name_bytes = sub.mesh_name.encode('ascii', errors='replace') + b'\x00'
-    name_off   = cursor
-    cursor    += len(name_bytes)
-
-    pal_name_offs       = []
-    pal_name_bytes_list = []
-    for uv in sub.uv_channels:
-        pal_b = (uv.palette_name or '').encode('ascii', errors='replace') + b'\x00'
-        pal_name_offs.append(cursor)
-        pal_name_bytes_list.append(pal_b)
-        cursor += len(pal_b)
-
-    pos_data     = _align4(sub.vertex_data)
-    pos_data_off = cursor
-    cursor      += len(pos_data)
-
-    col_data     = b''
-    col_data_off = 0
-    if sub.color_channels:
-        col_data     = _align4(sub.color_channels[0].color_data)
-        col_data_off = cursor
-        cursor      += len(col_data)
-
-    uv_data_offs = []
-    uv_data_list = []
-    for uv in sub.uv_channels:
-        uv_b = _align4(uv.uv_data)
-        uv_data_offs.append(cursor)
-        uv_data_list.append(uv_b)
-        cursor += len(uv_b)
-
-    nor_data     = b''
-    nor_data_off = 0
-    if sub.normal_buffer and sub.normal_buffer.normal_data:
-        nor_data     = _align4(sub.normal_buffer.normal_data)
-        nor_data_off = cursor
-        cursor      += len(nor_data)
-
-    DS_OFF = cursor
-    cursor += n_ds * 0x10
-
-    pl_offs       = []
-    pl_bytes_list = []
-    for ds in sub.draw_states:
-        if ds.prim_list_data:
-            cursor = _align32(cursor)
-            pl_b = ds.prim_list_data + b'\x00' * ((-len(ds.prim_list_data)) % 32)
-            pl_offs.append(cursor)
-            pl_bytes_list.append(pl_b)
-            cursor += len(pl_b)
-        else:
-            pl_offs.append(0)
-            pl_bytes_list.append(b'')
-
-    blob_size = cursor
-
-    pos_count = _vertex_count(sub.vertex_data, sub.vertex_comp_count, sub.vertex_quantize_info)
-    col_count = 0
-    if sub.color_channels:
-        cc0 = sub.color_channels[0]
-        col_count = _color_count(cc0.color_data, cc0.quantize_info)
-    uv_counts = [
-        _vertex_count(uv.uv_data, uv.comp_count, uv.quantize_info)
-        for uv in sub.uv_channels
-    ]
-    nor_count = 0
-    if sub.normal_buffer and sub.normal_buffer.normal_data:
-        nb = sub.normal_buffer
-        nor_count = _vertex_count(nb.normal_data, nb.comp_count, nb.quantize_info)
-
-    has_lighting = bool(sub.normal_buffer and sub.normal_buffer.normal_data)
-
-    blob = bytearray(blob_size)
-
-    struct.pack_into('>I', blob, 0x00, POS_OFF)
-    struct.pack_into('>I', blob, 0x04, COL_OFF)
-    struct.pack_into('>I', blob, 0x08, UV_OFF)
-    struct.pack_into('>I', blob, 0x0c, NOR_OFF if has_lighting else 0)
-    struct.pack_into('>I', blob, 0x10, DSP_OFF)
-    struct.pack_into('B',  blob, 0x14, M_uv)
-
-    struct.pack_into('>I', blob, POS_OFF + 0x00, pos_data_off)
-    struct.pack_into('>H', blob, POS_OFF + 0x04, pos_count)
-    struct.pack_into('B',  blob, POS_OFF + 0x06, sub.vertex_quantize_info)
-    struct.pack_into('B',  blob, POS_OFF + 0x07, sub.vertex_comp_count)
-
-    if sub.color_channels:
-        cc0 = sub.color_channels[0]
-        struct.pack_into('>I', blob, COL_OFF + 0x00, col_data_off)
-        struct.pack_into('>H', blob, COL_OFF + 0x04, col_count)
-        struct.pack_into('B',  blob, COL_OFF + 0x06, cc0.quantize_info)
-        struct.pack_into('B',  blob, COL_OFF + 0x07, cc0.comp_count)
-
-    for j, uv in enumerate(sub.uv_channels):
-        uv_off = UV_OFF + j * 0x10
-        struct.pack_into('>I', blob, uv_off + 0x00, uv_data_offs[j])
-        struct.pack_into('>H', blob, uv_off + 0x04, uv_counts[j])
-        struct.pack_into('B',  blob, uv_off + 0x06, uv.quantize_info)
-        struct.pack_into('B',  blob, uv_off + 0x07, uv.comp_count)
-        struct.pack_into('>I', blob, uv_off + 0x08, pal_name_offs[j])
-        struct.pack_into('>I', blob, uv_off + 0x0c, 0)
-
-    if has_lighting:
-        nb = sub.normal_buffer
-        struct.pack_into('>I', blob, NOR_OFF + 0x00, nor_data_off)
-        struct.pack_into('>H', blob, NOR_OFF + 0x04, nor_count)
-        struct.pack_into('B',  blob, NOR_OFF + 0x06, nb.quantize_info)
-        struct.pack_into('B',  blob, NOR_OFF + 0x07, nb.comp_count)
-        struct.pack_into('>f', blob, NOR_OFF + 0x08, nb.ambient_pct)
-
-    first_pl = next(
-        (pl_offs[k] for k, ds in enumerate(sub.draw_states) if ds.prim_list_data),
-        0,
+    position_stride = _vb_comp_size(sub.vertex_quantize_info) * sub.vertex_comp_count
+    normals = sub.normal_buffer if sub.normal_buffer and sub.normal_buffer.normal_data else None
+    normal_header = None
+    if normals is not None:
+        normal_stride = _vb_comp_size(normals.quantize_info) * normals.comp_count
+        normal_header = (len(normals.normal_data) // normal_stride if normal_stride else 0,
+                         normals.quantize_info, normals.comp_count, normals.ambient_pct)
+    return _serialize_submesh_blob(
+        sub.mesh_name,
+        [(ds.display_state_id, ds.display_state_pad_bytes, ds.shader_mode, ds.prim_list_data)
+         for ds in sub.draw_states],
+        position_data=sub.vertex_data,
+        position_count=len(sub.vertex_data) // position_stride if position_stride else 0,
+        position_quantize=sub.vertex_quantize_info,
+        position_comp_count=sub.vertex_comp_count,
+        uv_channels=sub.uv_channels,
+        color_channel=sub.color_channels[0] if sub.color_channels else None,
+        normal_header=normal_header,
+        normal_data=normals.normal_data if normals is not None else b'',
     )
-    struct.pack_into('>I', blob, DSP_OFF + 0x00, first_pl)
-    struct.pack_into('>I', blob, DSP_OFF + 0x04, DS_OFF)
-    struct.pack_into('>H', blob, DSP_OFF + 0x08, n_ds)
-
-    for k, ds in enumerate(sub.draw_states):
-        ds_off  = DS_OFF + k * 0x10
-        setting = struct.unpack('>I', _custom_submesh_setting_bytes(ds.shader_mode))[0]
-        struct.pack_into('B', blob, ds_off + 0x00, ds.display_state_id)
-        pad = ds.display_state_pad_bytes
-        blob[ds_off + 0x01 : ds_off + 0x04] = pad[:3] if len(pad) >= 3 else pad.ljust(3, b'\x00')
-        struct.pack_into('>I', blob, ds_off + 0x04, setting)
-        struct.pack_into('>I', blob, ds_off + 0x08, pl_offs[k])
-        struct.pack_into('>I', blob, ds_off + 0x0c, len(pl_bytes_list[k]) if ds.prim_list_data else 0)
-
-    def _put(rel_off: int, data: bytes) -> None:
-        blob[rel_off : rel_off + len(data)] = data
-
-    _put(name_off, name_bytes)
-    for pal_off, pal_b in zip(pal_name_offs, pal_name_bytes_list):
-        _put(pal_off, pal_b)
-    _put(pos_data_off, pos_data)
-    if col_data:
-        _put(col_data_off, col_data)
-    for uv_off, uv_b in zip(uv_data_offs, uv_data_list):
-        _put(uv_off, uv_b)
-    if nor_data:
-        _put(nor_data_off, nor_data)
-    for pl_off, pl_b in zip(pl_offs, pl_bytes_list):
-        if pl_b:
-            _put(pl_off, pl_b)
-
-    return bytes(blob), name_off
 
 
 def _submesh_position_half_extents(sub) -> tuple[float, float, float]:
@@ -2523,7 +2428,7 @@ def PatchGPLAppendSubmesh(
     0's own position array, not absolute GPL addresses, so relocating
     blobs as a unit doesn't affect SKN either (confirmed by an
     animated-skinning test in Dolphin). New blobs are inserted right after the existing
-    ones and before GPLUserData, matching BuildGPLMeshData's own blob order.
+    ones and before GPLUserData.
 
     ``donor_gpl_length`` is the cloned donor GPL's size. Anything past it is
     a payload PatchGPLUVRebuild appended (normal/UV/color arrays, primitive
@@ -2606,9 +2511,8 @@ def PatchGPLAppendSubmesh(
     # The blob region doesn't generally start on a 32-byte boundary itself
     # (vanilla data packs it directly after the descriptor table); what does
     # need to hold is that a skinned submesh 0's own *absolute* position-array
-    # alignment survives the relocation. BuildGPLMeshData achieves that today
-    # by choosing a blob-relative pos_data_off with a residue calibrated to
-    # the blob's fixed GPL-relative base (_align32_residue). Shifting every
+    # alignment survives the relocation. The donor's blob-relative position
+    # offset has the residue that fits the blob's GPL-relative base. Shifting every
     # existing blob's base by a multiple of 32 preserves that residue
     # relationship untouched; any other shift would silently misalign it.
     padded_len = _align32_residue(len(out), old_blob_region_start % 32)
@@ -2775,6 +2679,161 @@ def _facial_pose_submeshes(model: dict) -> set[int]:
     }
 
 
+def _validate_rebuild_geometry(
+    rebuild: dict, fail, use_compression: bool, stride: int, record_label: str,
+) -> tuple[int | None, int | None]:
+    """The checks a ``RigidRebuild`` and a ``SkinnedRebuild`` share for ``FacesCount``,
+    ``VertexBufferData`` (``stride`` bytes per vertex, named ``record_label`` in the message) and
+    ``FacesData``. Returns ``(faces_count, vertex_count)``, each None where it is unusable."""
+    faces_count = rebuild.get('FacesCount')
+    if not isinstance(faces_count, int) or isinstance(faces_count, bool) or not (1 <= faces_count <= 0xFFFF):
+        fail(f'FacesCount {faces_count!r} must be a uint16 value of at least 1')
+        faces_count = None
+
+    vertex_bytes = _decode(rebuild['VertexBufferData'], use_compression) if rebuild.get('VertexBufferData') else b''
+    vertex_count = None
+    if not vertex_bytes or len(vertex_bytes) % stride:
+        fail(f'VertexBufferData length {len(vertex_bytes)} is not a whole number of {stride}-byte {record_label}')
+    else:
+        vertex_count = len(vertex_bytes) // stride
+        if vertex_count > 0xFFFF:
+            fail(f'vertex count {vertex_count} exceeds the uint16 index range')
+
+    if faces_count is not None:
+        faces_bytes = _decode(rebuild['FacesData'], use_compression) if rebuild.get('FacesData') is not None else b''
+        if len(faces_bytes) != faces_count * 6:
+            fail(
+                f'FacesData length {len(faces_bytes)} does not match FacesCount '
+                f'{faces_count} (expected {faces_count * 6} bytes)'
+            )
+        elif vertex_count is not None:
+            for vertex_index in struct.unpack(f'>{len(faces_bytes) // 2}H', faces_bytes):
+                if vertex_index >= vertex_count:
+                    fail(f'face index {vertex_index} is out of range for {vertex_count} vertices')
+                    break
+    return faces_count, vertex_count
+
+
+def _rebuild_loop_buffer_check(fail, use_compression: bool, faces_count: int | None):
+    """The per-loop array check of a rebuild: the indexed array itself, and three loops per face."""
+    def check(label: str, data_field, faces_field, stride: int) -> None:
+        _validate_custom_submesh_indexed_array(fail, label, use_compression, data_field, faces_field, stride)
+        if faces_count is not None and faces_field is not None:
+            loops = len(_decode(faces_field, use_compression)) // 2
+            if loops != faces_count * 3:
+                fail(f'{label} face-index buffer holds {loops} loops, expected {faces_count * 3}')
+    return check
+
+
+def _validate_rebuild_colors_and_uvs(sub: dict, rebuild: dict, fail, check_loop_buffer) -> dict:
+    """A rebuild carries the donor's colour channel and exactly the donor's UV channels.
+    Returns the donor UV channels by index."""
+    donor_colors = sub.get('ColorChannels') or []
+    if donor_colors:
+        if rebuild.get('ColorChannelData') is None or rebuild.get('ColorFacesData') is None:
+            fail('must carry ColorChannelData and ColorFacesData: the donor submesh has a color channel')
+        else:
+            stride = _color_entry_size(int(donor_colors[0].get('ColorChannelQuantizeInfo', 48)))
+            check_loop_buffer('ColorChannelData', rebuild.get('ColorChannelData'), rebuild.get('ColorFacesData'), stride)
+    elif rebuild.get('ColorChannelData') is not None or rebuild.get('ColorFacesData') is not None:
+        fail('carries colors but the donor submesh has no color channel')
+
+    donor_uv_by_index = {int(uv['UVChannelIndex']): uv for uv in sub.get('UVChannels') or []}
+    rebuild_uv_by_index = {}
+    for uv in rebuild.get('UVChannels') or []:
+        channel = uv.get('UVChannelIndex')
+        if not isinstance(channel, int) or channel in rebuild_uv_by_index:
+            fail(f'UVChannels has a missing or repeated UVChannelIndex {channel!r}')
+            continue
+        rebuild_uv_by_index[channel] = uv
+    if set(rebuild_uv_by_index) != set(donor_uv_by_index):
+        fail(
+            f'UVChannels {sorted(rebuild_uv_by_index)} must be the donor channel set '
+            f'{sorted(donor_uv_by_index)}'
+        )
+    for channel, uv in rebuild_uv_by_index.items():
+        donor_uv = donor_uv_by_index.get(channel)
+        if donor_uv is None:
+            continue
+        stride = int(donor_uv.get('UVChannelCompCount', 2)) * _vb_comp_size(
+            int(donor_uv.get('UVChannelQuantizeInfo', _CUSTOM_SUBMESH_UV_FORMAT[1]))
+        )
+        check_loop_buffer(f'UVChannels[{channel}]', uv.get('UVChannelData'), uv.get('UVFacesData'), stride)
+    return donor_uv_by_index
+
+
+def _validate_rebuild_surfaces(
+    model: dict, index: int, sub: dict, rebuild: dict, fail, use_compression: bool, faces_count: int | None,
+    *, uv_channel_count: int, has_normals: bool, is_stadium: bool, rigid_surfaces: dict, additional_names: set,
+) -> None:
+    """``FaceSurfaceTable``, ``FaceSurfaceIndices``, ``NewSurfaces`` and ``Reason`` of a rebuild."""
+    drawable = _rigid_rebuild_drawable_surfaces(sub.get('DisplayStates') or [])
+    table = rebuild.get('FaceSurfaceTable')
+    if not isinstance(table, list) or not table or not all(isinstance(key, str) and key for key in table):
+        fail('FaceSurfaceTable must be a non-empty list of surface keys')
+        table = []
+    elif len(set(table)) != len(table):
+        fail('FaceSurfaceTable lists a surface key twice')
+
+    new_surfaces = rebuild.get('NewSurfaces') or []
+    if not isinstance(new_surfaces, list) or not all(isinstance(entry, dict) for entry in new_surfaces):
+        fail('NewSurfaces must be a list of objects')
+        new_surfaces = []
+    new_keys = [entry.get('SurfaceKey') for entry in new_surfaces]
+    if len(set(new_keys)) != len(new_keys):
+        fail('NewSurfaces keys are not unique')
+
+    for key in table:
+        if key in drawable or key in new_keys:
+            continue
+        fail(
+            f'FaceSurfaceTable key {key!r} is neither a drawing surface of this submesh '
+            f'({sorted(drawable)}) nor a NewSurfaces key'
+        )
+
+    indices_raw = _decode(rebuild['FaceSurfaceIndices'], use_compression) if rebuild.get('FaceSurfaceIndices') is not None else b''
+    used_keys: set[str] = set()
+    if len(indices_raw) % 2:
+        fail(f'FaceSurfaceIndices length {len(indices_raw)} is not a whole number of uint16 values')
+    else:
+        indices = struct.unpack(f'>{len(indices_raw) // 2}H', indices_raw)
+        if faces_count is not None and len(indices) != faces_count:
+            fail(f'FaceSurfaceIndices holds {len(indices)} entries for FacesCount {faces_count}')
+        for value in indices:
+            if value >= len(table):
+                fail(f'FaceSurfaceIndices value {value} is out of range for {len(table)} table entries')
+                break
+            used_keys.add(table[value])
+
+    for entry in new_surfaces:
+        key = entry.get('SurfaceKey')
+
+        def fail_surface(message: str, _key=key) -> None:
+            fail(f'new surface {_key!r}: {message}')
+
+        match = _RIGID_REBUILD_NEW_SURFACE_KEY_RE.match(str(key))
+        if match is None or int(match.group(1)) != index:
+            fail_surface(f'key must match sm{index}_new<K>')
+        if key not in table:
+            fail_surface('is not listed in FaceSurfaceTable')
+        elif key not in used_keys:
+            fail_surface('is used by no face')
+        _validate_new_surface_entry(
+            model, entry, fail_surface,
+            uv_channel_count=uv_channel_count,
+            has_normals=has_normals,
+            is_stadium=is_stadium,
+            rigid_surfaces=rigid_surfaces,
+            additional_names=additional_names,
+        )
+
+    reasons = rebuild.get('Reason')
+    if reasons is not None and not (
+        isinstance(reasons, list) and all(isinstance(reason, str) for reason in reasons)
+    ):
+        fail('Reason must be a list of strings')
+
+
 def _validate_rigid_rebuilds(model: dict) -> None:
     """Reject an invalid
     ``Submeshes[i].RigidRebuild`` before any DAT/DOL write. Each error names
@@ -2795,9 +2854,6 @@ def _validate_rigid_rebuilds(model: dict) -> None:
     additional_names = {
         entry.get('TextureFileName') for entry in model.get('AdditionalTextureDescriptors') or []
     }
-
-    def _u16_count(raw: bytes) -> int:
-        return len(raw) // 2
 
     for index, sub in rebuilt:
         rebuild = sub['RigidRebuild']
@@ -2844,39 +2900,9 @@ def _validate_rigid_rebuilds(model: dict) -> None:
                     f'{owners} of submesh {index} (GeoIdEdited where set, else GeoIdRaw)'
                 )
 
-        faces_count = rebuild.get('FacesCount')
-        if not isinstance(faces_count, int) or isinstance(faces_count, bool) or not (1 <= faces_count <= 0xFFFF):
-            fail(f'FacesCount {faces_count!r} must be a uint16 value of at least 1')
-            faces_count = None
-
-        vertex_bytes = _decode(rebuild['VertexBufferData'], use_compression) if rebuild.get('VertexBufferData') else b''
-        vertex_count = None
-        if not vertex_bytes or len(vertex_bytes) % position_stride:
-            fail(f'VertexBufferData length {len(vertex_bytes)} is not a whole number of {position_stride}-byte positions')
-        else:
-            vertex_count = len(vertex_bytes) // position_stride
-            if vertex_count > 0xFFFF:
-                fail(f'vertex count {vertex_count} exceeds the uint16 index range')
-
-        if faces_count is not None:
-            faces_bytes = _decode(rebuild['FacesData'], use_compression) if rebuild.get('FacesData') is not None else b''
-            if len(faces_bytes) != faces_count * 6:
-                fail(
-                    f'FacesData length {len(faces_bytes)} does not match FacesCount '
-                    f'{faces_count} (expected {faces_count * 6} bytes)'
-                )
-            elif vertex_count is not None:
-                for vertex_index in struct.unpack(f'>{len(faces_bytes) // 2}H', faces_bytes):
-                    if vertex_index >= vertex_count:
-                        fail(f'face index {vertex_index} is out of range for {vertex_count} vertices')
-                        break
-
-        def _check_loop_buffer(label: str, data_field, faces_field, stride: int) -> None:
-            _validate_custom_submesh_indexed_array(fail, label, use_compression, data_field, faces_field, stride)
-            if faces_count is not None and faces_field is not None:
-                loops = _u16_count(_decode(faces_field, use_compression))
-                if loops != faces_count * 3:
-                    fail(f'{label} face-index buffer holds {loops} loops, expected {faces_count * 3}')
+        faces_count, vertex_count = _validate_rebuild_geometry(
+            rebuild, fail, use_compression, position_stride, 'positions')
+        _check_loop_buffer = _rebuild_loop_buffer_check(fail, use_compression, faces_count)
 
         donor_normals = sub.get('NormalBuffer') if isinstance(sub.get('NormalBuffer'), dict) else None
         normal_count = normal_stride = None
@@ -2901,104 +2927,13 @@ def _validate_rigid_rebuilds(model: dict) -> None:
                 normal_count=normal_count, normal_stride=normal_stride,
             )
 
-        donor_colors = sub.get('ColorChannels') or []
-        if donor_colors:
-            if rebuild.get('ColorChannelData') is None or rebuild.get('ColorFacesData') is None:
-                fail('must carry ColorChannelData and ColorFacesData: the donor submesh has a color channel')
-            else:
-                stride = _color_entry_size(int(donor_colors[0].get('ColorChannelQuantizeInfo', 48)))
-                _check_loop_buffer('ColorChannelData', rebuild.get('ColorChannelData'), rebuild.get('ColorFacesData'), stride)
-        elif rebuild.get('ColorChannelData') is not None or rebuild.get('ColorFacesData') is not None:
-            fail('carries colors but the donor submesh has no color channel')
-
-        donor_uv_by_index = {int(uv['UVChannelIndex']): uv for uv in sub.get('UVChannels') or []}
-        rebuild_uv_by_index = {}
-        for uv in rebuild.get('UVChannels') or []:
-            channel = uv.get('UVChannelIndex')
-            if not isinstance(channel, int) or channel in rebuild_uv_by_index:
-                fail(f'UVChannels has a missing or repeated UVChannelIndex {channel!r}')
-                continue
-            rebuild_uv_by_index[channel] = uv
-        if set(rebuild_uv_by_index) != set(donor_uv_by_index):
-            fail(
-                f'UVChannels {sorted(rebuild_uv_by_index)} must be the donor channel set '
-                f'{sorted(donor_uv_by_index)}'
-            )
-        for channel, uv in rebuild_uv_by_index.items():
-            donor_uv = donor_uv_by_index.get(channel)
-            if donor_uv is None:
-                continue
-            stride = int(donor_uv.get('UVChannelCompCount', 2)) * _vb_comp_size(
-                int(donor_uv.get('UVChannelQuantizeInfo', _CUSTOM_SUBMESH_UV_FORMAT[1]))
-            )
-            _check_loop_buffer(f'UVChannels[{channel}]', uv.get('UVChannelData'), uv.get('UVFacesData'), stride)
-
-        states = sub.get('DisplayStates') or []
-        drawable = _rigid_rebuild_drawable_surfaces(states)
-        table = rebuild.get('FaceSurfaceTable')
-        if not isinstance(table, list) or not table or not all(isinstance(key, str) and key for key in table):
-            fail('FaceSurfaceTable must be a non-empty list of surface keys')
-            table = []
-        elif len(set(table)) != len(table):
-            fail('FaceSurfaceTable lists a surface key twice')
-
-        new_surfaces = rebuild.get('NewSurfaces') or []
-        if not isinstance(new_surfaces, list) or not all(isinstance(entry, dict) for entry in new_surfaces):
-            fail('NewSurfaces must be a list of objects')
-            new_surfaces = []
-        new_keys = [entry.get('SurfaceKey') for entry in new_surfaces]
-        if len(set(new_keys)) != len(new_keys):
-            fail('NewSurfaces keys are not unique')
-
-        for key in table:
-            if key in drawable or key in new_keys:
-                continue
-            fail(
-                f'FaceSurfaceTable key {key!r} is neither a drawing surface of this submesh '
-                f'({sorted(drawable)}) nor a NewSurfaces key'
-            )
-
-        indices_raw = _decode(rebuild['FaceSurfaceIndices'], use_compression) if rebuild.get('FaceSurfaceIndices') is not None else b''
-        used_keys: set[str] = set()
-        if len(indices_raw) % 2:
-            fail(f'FaceSurfaceIndices length {len(indices_raw)} is not a whole number of uint16 values')
-        else:
-            indices = struct.unpack(f'>{len(indices_raw) // 2}H', indices_raw)
-            if faces_count is not None and len(indices) != faces_count:
-                fail(f'FaceSurfaceIndices holds {len(indices)} entries for FacesCount {faces_count}')
-            for value in indices:
-                if value >= len(table):
-                    fail(f'FaceSurfaceIndices value {value} is out of range for {len(table)} table entries')
-                    break
-                used_keys.add(table[value])
-
-        for entry in new_surfaces:
-            key = entry.get('SurfaceKey')
-
-            def fail_surface(message: str, _key=key) -> None:
-                fail(f'new surface {_key!r}: {message}')
-
-            match = _RIGID_REBUILD_NEW_SURFACE_KEY_RE.match(str(key))
-            if match is None or int(match.group(1)) != index:
-                fail_surface(f'key must match sm{index}_new<K>')
-            if key not in table:
-                fail_surface('is not listed in FaceSurfaceTable')
-            elif key not in used_keys:
-                fail_surface('is used by no face')
-            _validate_new_surface_entry(
-                model, entry, fail_surface,
-                uv_channel_count=len(donor_uv_by_index),
-                has_normals=bool(donor_normals and donor_normals.get('NormalBufferData')),
-                is_stadium=is_stadium,
-                rigid_surfaces=rigid_surfaces,
-                additional_names=additional_names,
-            )
-
-        reasons = rebuild.get('Reason')
-        if reasons is not None and not (
-            isinstance(reasons, list) and all(isinstance(reason, str) for reason in reasons)
-        ):
-            fail('Reason must be a list of strings')
+        donor_uv_by_index = _validate_rebuild_colors_and_uvs(sub, rebuild, fail, _check_loop_buffer)
+        _validate_rebuild_surfaces(
+            model, index, sub, rebuild, fail, use_compression, faces_count,
+            uv_channel_count=len(donor_uv_by_index),
+            has_normals=bool(donor_normals and donor_normals.get('NormalBufferData')),
+            is_stadium=is_stadium, rigid_surfaces=rigid_surfaces, additional_names=additional_names,
+        )
 
     if errors:
         raise ValueError('; '.join(errors))
@@ -3292,27 +3227,21 @@ def _rigid_rebuild_to_submesh(
             color_faces_data=rebuild.color_faces_data or b'',
             comp_count=int(donor_color['ColorChannelCompCount']),
             quantize_info=int(donor_color['ColorChannelQuantizeInfo']),
-            source_data_offset=0,
         )
     elif donor_color_array is not None:
         quantize_info, comp_count, payload = donor_color_array
         color_channel = ColorChannel(
             channel_index=0, color_data=payload, color_faces_data=b'',
-            comp_count=comp_count, quantize_info=quantize_info, source_data_offset=0,
+            comp_count=comp_count, quantize_info=quantize_info,
         )
     normal_buffer = None
     if rebuild.normal_data is not None:
         donor_normals = sub['NormalBuffer']
         normal_buffer = NormalBuffer(
-            normal_data_ptr_field_offset=0,
-            normal_count_field_offset=0,
-            normal_buffer_offset=0,
-            normal_buffer_length=len(rebuild.normal_data),
             comp_count=int(donor_normals.get('NormalBufferCompCount', 3)),
             quantize_info=int(donor_normals['NormalBufferQuantizeInfo']),
             ambient_pct=float(donor_normals.get('NormalAmbientPct', 0.0)),
             normal_data=rebuild.normal_data,
-            source_header_offset=0,
         )
     donor_uv_by_index = {int(uv['UVChannelIndex']): uv for uv in sub.get('UVChannels') or []}
     uv_channels = []
@@ -3328,9 +3257,6 @@ def _rigid_rebuild_to_submesh(
             uv_faces_data=uv.uv_faces_data,
             comp_count=int(donor_uv.get('UVChannelCompCount', 2)),
             quantize_info=int(donor_uv['UVChannelQuantizeInfo']),
-            uv_data_ptr_field_offset=0,
-            uv_count_field_offset=0,
-            source_data_offset=0,
         ))
 
     # Donor records, with index widths widened where the new counts need it.
@@ -3666,35 +3592,8 @@ def _validate_skinned_rebuild(model: dict) -> None:
         if model.get('SkinDataEdited'):
             fail('cannot be combined with SkinDataEdited: the rebuild carries its own weights')
 
-        faces_count = rebuild.get('FacesCount')
-        if not isinstance(faces_count, int) or isinstance(faces_count, bool) or not (1 <= faces_count <= 0xFFFF):
-            fail(f'FacesCount {faces_count!r} must be a uint16 value of at least 1')
-            faces_count = None
-
-        vertex_bytes = _decode(rebuild['VertexBufferData'], use_compression) if rebuild.get('VertexBufferData') else b''
-        vertex_count = None
-        if not vertex_bytes or len(vertex_bytes) % stride:
-            fail(
-                f'VertexBufferData length {len(vertex_bytes)} is not a whole number of '
-                f'{stride}-byte position+normal records'
-            )
-        else:
-            vertex_count = len(vertex_bytes) // stride
-            if vertex_count > 0xFFFF:
-                fail(f'vertex count {vertex_count} exceeds the uint16 index range')
-
-        if faces_count is not None:
-            faces_bytes = _decode(rebuild['FacesData'], use_compression) if rebuild.get('FacesData') is not None else b''
-            if len(faces_bytes) != faces_count * 6:
-                fail(
-                    f'FacesData length {len(faces_bytes)} does not match FacesCount '
-                    f'{faces_count} (expected {faces_count * 6} bytes)'
-                )
-            elif vertex_count is not None:
-                for vertex_index in struct.unpack(f'>{len(faces_bytes) // 2}H', faces_bytes):
-                    if vertex_index >= vertex_count:
-                        fail(f'face index {vertex_index} is out of range for {vertex_count} vertices')
-                        break
+        faces_count, vertex_count = _validate_rebuild_geometry(
+            rebuild, fail, use_compression, stride, 'position+normal records')
 
         raw_influences = _decode(rebuild['Influences'], use_compression) if rebuild.get('Influences') is not None else b''
         if len(raw_influences) % _SKINNED_REBUILD_INFLUENCE.size:
@@ -3730,114 +3629,18 @@ def _validate_skinned_rebuild(model: dict) -> None:
                 more = f' (+{len(missing) - 10} more)' if len(missing) > 10 else ''
                 fail(f'{len(missing)} vertex(es) have no skin influence: {shown}{more}')
 
-        def _check_loop_buffer(label: str, data_field, faces_field, entry_stride: int) -> None:
-            _validate_custom_submesh_indexed_array(fail, label, use_compression, data_field, faces_field, entry_stride)
-            if faces_count is not None and faces_field is not None:
-                loops = len(_decode(faces_field, use_compression)) // 2
-                if loops != faces_count * 3:
-                    fail(f'{label} face-index buffer holds {loops} loops, expected {faces_count * 3}')
+        _check_loop_buffer = _rebuild_loop_buffer_check(fail, use_compression, faces_count)
 
         if rebuild.get('NormalBufferData') is not None or rebuild.get('NormalFacesData') is not None:
             fail('carries a standalone normal array; a skinned submesh keeps its normals interleaved in VertexBufferData')
 
-        donor_colors = sub.get('ColorChannels') or []
-        if donor_colors:
-            if rebuild.get('ColorChannelData') is None or rebuild.get('ColorFacesData') is None:
-                fail('must carry ColorChannelData and ColorFacesData: the donor submesh has a color channel')
-            else:
-                entry_stride = _color_entry_size(int(donor_colors[0].get('ColorChannelQuantizeInfo', 48)))
-                _check_loop_buffer('ColorChannelData', rebuild.get('ColorChannelData'), rebuild.get('ColorFacesData'), entry_stride)
-        elif rebuild.get('ColorChannelData') is not None or rebuild.get('ColorFacesData') is not None:
-            fail('carries colors but the donor submesh has no color channel')
-
-        donor_uv_by_index = {int(uv['UVChannelIndex']): uv for uv in sub.get('UVChannels') or []}
-        rebuild_uv_by_index = {}
-        for uv in rebuild.get('UVChannels') or []:
-            channel = uv.get('UVChannelIndex')
-            if not isinstance(channel, int) or channel in rebuild_uv_by_index:
-                fail(f'UVChannels has a missing or repeated UVChannelIndex {channel!r}')
-                continue
-            rebuild_uv_by_index[channel] = uv
-        if set(rebuild_uv_by_index) != set(donor_uv_by_index):
-            fail(
-                f'UVChannels {sorted(rebuild_uv_by_index)} must be the donor channel set '
-                f'{sorted(donor_uv_by_index)}'
-            )
-        for channel, uv in rebuild_uv_by_index.items():
-            donor_uv = donor_uv_by_index.get(channel)
-            if donor_uv is None:
-                continue
-            entry_stride = int(donor_uv.get('UVChannelCompCount', 2)) * _vb_comp_size(
-                int(donor_uv.get('UVChannelQuantizeInfo', _CUSTOM_SUBMESH_UV_FORMAT[1]))
-            )
-            _check_loop_buffer(f'UVChannels[{channel}]', uv.get('UVChannelData'), uv.get('UVFacesData'), entry_stride)
-
-        states = sub.get('DisplayStates') or []
-        drawable = _rigid_rebuild_drawable_surfaces(states)
-        table = rebuild.get('FaceSurfaceTable')
-        if not isinstance(table, list) or not table or not all(isinstance(key, str) and key for key in table):
-            fail('FaceSurfaceTable must be a non-empty list of surface keys')
-            table = []
-        elif len(set(table)) != len(table):
-            fail('FaceSurfaceTable lists a surface key twice')
-
-        new_surfaces = rebuild.get('NewSurfaces') or []
-        if not isinstance(new_surfaces, list) or not all(isinstance(entry, dict) for entry in new_surfaces):
-            fail('NewSurfaces must be a list of objects')
-            new_surfaces = []
-        new_keys = [entry.get('SurfaceKey') for entry in new_surfaces]
-        if len(set(new_keys)) != len(new_keys):
-            fail('NewSurfaces keys are not unique')
-
-        for key in table:
-            if key in drawable or key in new_keys:
-                continue
-            fail(
-                f'FaceSurfaceTable key {key!r} is neither a drawing surface of this submesh '
-                f'({sorted(drawable)}) nor a NewSurfaces key'
-            )
-
-        indices_raw = _decode(rebuild['FaceSurfaceIndices'], use_compression) if rebuild.get('FaceSurfaceIndices') is not None else b''
-        used_keys: set[str] = set()
-        if len(indices_raw) % 2:
-            fail(f'FaceSurfaceIndices length {len(indices_raw)} is not a whole number of uint16 values')
-        else:
-            indices = struct.unpack(f'>{len(indices_raw) // 2}H', indices_raw)
-            if faces_count is not None and len(indices) != faces_count:
-                fail(f'FaceSurfaceIndices holds {len(indices)} entries for FacesCount {faces_count}')
-            for value in indices:
-                if value >= len(table):
-                    fail(f'FaceSurfaceIndices value {value} is out of range for {len(table)} table entries')
-                    break
-                used_keys.add(table[value])
-
-        for entry in new_surfaces:
-            key = entry.get('SurfaceKey')
-
-            def fail_surface(message: str, _key=key) -> None:
-                fail(f'new surface {_key!r}: {message}')
-
-            match = _RIGID_REBUILD_NEW_SURFACE_KEY_RE.match(str(key))
-            if match is None or int(match.group(1)) != index:
-                fail_surface(f'key must match sm{index}_new<K>')
-            if key not in table:
-                fail_surface('is not listed in FaceSurfaceTable')
-            elif key not in used_keys:
-                fail_surface('is used by no face')
-            _validate_new_surface_entry(
-                model, entry, fail_surface,
-                uv_channel_count=len(donor_uv_by_index),
-                has_normals=_skinned_rebuild_draws_lighting(states),
-                is_stadium=is_stadium,
-                rigid_surfaces=rigid_surfaces,
-                additional_names=additional_names,
-            )
-
-        reasons = rebuild.get('Reason')
-        if reasons is not None and not (
-            isinstance(reasons, list) and all(isinstance(reason, str) for reason in reasons)
-        ):
-            fail('Reason must be a list of strings')
+        donor_uv_by_index = _validate_rebuild_colors_and_uvs(sub, rebuild, fail, _check_loop_buffer)
+        _validate_rebuild_surfaces(
+            model, index, sub, rebuild, fail, use_compression, faces_count,
+            uv_channel_count=len(donor_uv_by_index),
+            has_normals=_skinned_rebuild_draws_lighting(sub.get('DisplayStates') or []),
+            is_stadium=is_stadium, rigid_surfaces=rigid_surfaces, additional_names=additional_names,
+        )
 
         _validate_skinned_rebuild_facial_poses(model, rebuild, fail, use_compression, vertex_count, stride, index)
 
@@ -4043,126 +3846,20 @@ def _build_skinned_submesh_blob(
     ``(blob, name_off)`` like ``_build_rigid_submesh_blob``."""
     if len(primitive_lists) != len(records):
         raise ValueError(f'{len(primitive_lists)} primitive lists for {len(records)} display-state records')
-
-    def _align(offset: int, alignment: int) -> int:
-        return (offset + alignment - 1) & ~(alignment - 1)
-
-    M_uv = len(uv_channels)
-    n_ds = len(records)
-    POS_OFF = 0x18
-    COL_OFF = 0x20
-    UV_OFF = 0x28
-    NOR_OFF = UV_OFF + M_uv * 0x10
-    DSP_OFF = NOR_OFF + 0x0c
-    HDR_END = DSP_OFF + 0x0c
-
-    cursor = HDR_END
-    name_bytes = mesh_name.encode('ascii', errors='replace') + b'\x00'
-    name_off = cursor
-    cursor += len(name_bytes)
-    pal_name_offs, pal_name_bytes_list = [], []
-    for uv in uv_channels:
-        pal_b = (uv.palette_name or '').encode('ascii', errors='replace') + b'\x00'
-        pal_name_offs.append(cursor)
-        pal_name_bytes_list.append(pal_b)
-        cursor += len(pal_b)
-
-    cursor = _align(cursor, 32)
-    pos_data_off = cursor
-    cursor += max(len(position_buffer), write_back_end)
-
-    col_data, col_data_off = b'', 0
-    if color_channel is not None:
-        cursor = _align(cursor, 4)
-        col_data = _align4(color_channel.color_data)
-        col_data_off = cursor
-        cursor += len(col_data)
-
-    uv_data_offs, uv_data_list = [], []
-    for uv in uv_channels:
-        cursor = _align(cursor, 4)
-        uv_b = _align4(uv.uv_data)
-        uv_data_offs.append(cursor)
-        uv_data_list.append(uv_b)
-        cursor += len(uv_b)
-
-    cursor = _align(cursor, 4)
-    DS_OFF = cursor
-    cursor += n_ds * 0x10
-
-    pl_offs, pl_bytes_list = [], []
-    for primitive_bytes in primitive_lists:
-        if primitive_bytes:
-            cursor = _align(cursor, 32)
-            pl_b = primitive_bytes + b'\x00' * ((-len(primitive_bytes)) % 32)
-            pl_offs.append(cursor)
-            pl_bytes_list.append(pl_b)
-            cursor += len(pl_b)
-        else:
-            pl_offs.append(0)
-            pl_bytes_list.append(b'')
-
-    blob = bytearray(cursor)
-    struct.pack_into('>I', blob, 0x00, POS_OFF)
-    struct.pack_into('>I', blob, 0x04, COL_OFF)
-    struct.pack_into('>I', blob, 0x08, UV_OFF)
-    struct.pack_into('>I', blob, 0x0c, NOR_OFF if normal_header is not None else 0)
-    struct.pack_into('>I', blob, 0x10, DSP_OFF)
-    struct.pack_into('B', blob, 0x14, M_uv)
-
-    struct.pack_into('>I', blob, POS_OFF + 0x00, pos_data_off)
-    struct.pack_into('>H', blob, POS_OFF + 0x04, slot_count)
-    struct.pack_into('B', blob, POS_OFF + 0x06, vertex_quantize_info)
-    struct.pack_into('B', blob, POS_OFF + 0x07, _SKINNED_REBUILD_COMP_COUNT)
-
-    if color_channel is not None:
-        struct.pack_into('>I', blob, COL_OFF + 0x00, col_data_off)
-        struct.pack_into('>H', blob, COL_OFF + 0x04, len(color_channel.color_data) // _color_entry_size(color_channel.quantize_info))
-        struct.pack_into('B', blob, COL_OFF + 0x06, color_channel.quantize_info)
-        struct.pack_into('B', blob, COL_OFF + 0x07, color_channel.comp_count)
-
-    for j, uv in enumerate(uv_channels):
-        uv_off = UV_OFF + j * 0x10
-        uv_stride = _vb_comp_size(uv.quantize_info) * uv.comp_count
-        struct.pack_into('>I', blob, uv_off + 0x00, uv_data_offs[j])
-        struct.pack_into('>H', blob, uv_off + 0x04, len(uv.uv_data) // uv_stride if uv_stride else 0)
-        struct.pack_into('B', blob, uv_off + 0x06, uv.quantize_info)
-        struct.pack_into('B', blob, uv_off + 0x07, uv.comp_count)
-        struct.pack_into('>I', blob, uv_off + 0x08, pal_name_offs[j])
-        struct.pack_into('>I', blob, uv_off + 0x0c, 0)
-
-    if normal_header is not None:
-        nor_quantize, nor_comp_count, ambient = normal_header
-        struct.pack_into('>I', blob, NOR_OFF + 0x00, pos_data_off + 3 * _vb_comp_size(vertex_quantize_info))
-        struct.pack_into('>H', blob, NOR_OFF + 0x04, slot_count)
-        struct.pack_into('B', blob, NOR_OFF + 0x06, nor_quantize)
-        struct.pack_into('B', blob, NOR_OFF + 0x07, nor_comp_count)
-        struct.pack_into('>f', blob, NOR_OFF + 0x08, ambient)
-
-    first_pl = next((offset for offset in pl_offs if offset), 0)
-    struct.pack_into('>I', blob, DSP_OFF + 0x00, first_pl)
-    struct.pack_into('>I', blob, DSP_OFF + 0x04, DS_OFF)
-    struct.pack_into('>H', blob, DSP_OFF + 0x08, n_ds)
-    for k, (state_id, pad, mode) in enumerate(records):
-        ds_off = DS_OFF + k * 0x10
-        struct.pack_into('B', blob, ds_off + 0x00, state_id)
-        blob[ds_off + 0x01:ds_off + 0x04] = pad[:3] if len(pad) >= 3 else pad.ljust(3, b'\x00')
-        blob[ds_off + 0x04:ds_off + 0x08] = _custom_submesh_setting_bytes(mode)
-        struct.pack_into('>I', blob, ds_off + 0x08, pl_offs[k])
-        struct.pack_into('>I', blob, ds_off + 0x0c, len(pl_bytes_list[k]))
-
-    blob[name_off:name_off + len(name_bytes)] = name_bytes
-    for pal_off, pal_b in zip(pal_name_offs, pal_name_bytes_list):
-        blob[pal_off:pal_off + len(pal_b)] = pal_b
-    blob[pos_data_off:pos_data_off + len(position_buffer)] = position_buffer
-    if col_data:
-        blob[col_data_off:col_data_off + len(col_data)] = col_data
-    for uv_off, uv_b in zip(uv_data_offs, uv_data_list):
-        blob[uv_off:uv_off + len(uv_b)] = uv_b
-    for pl_off, pl_b in zip(pl_offs, pl_bytes_list):
-        if pl_b:
-            blob[pl_off:pl_off + len(pl_b)] = pl_b
-    return bytes(blob), name_off
+    return _serialize_submesh_blob(
+        mesh_name,
+        [(state_id, pad, mode, primitive_bytes)
+         for (state_id, pad, mode), primitive_bytes in zip(records, primitive_lists)],
+        position_data=position_buffer,
+        position_count=slot_count,
+        position_quantize=vertex_quantize_info,
+        position_comp_count=_SKINNED_REBUILD_COMP_COUNT,
+        uv_channels=uv_channels,
+        color_channel=color_channel,
+        normal_header=(slot_count, *normal_header) if normal_header is not None else None,
+        aligned=True,
+        position_reserve=write_back_end,
+    )
 
 
 def _skinned_rebuild_skinning_data(
@@ -4182,8 +3879,6 @@ def _skinned_rebuild_skinning_data(
                 vertex_cnt=entry.vertex_count,
                 vertex_offset=entry.vertex_offset,
                 bind_pose_data=source,
-                vertex_arr_field_offset=0,
-                gpl_vertex_arr_field_offset=0,
                 vertex_arr_absolute_ptr=0,
                 gpl_vertex_arr_value=entry.dest,
             ))
@@ -4195,9 +3890,6 @@ def _skinned_rebuild_skinning_data(
                 vertex_offset=entry.vertex_offset,
                 bind_pose_data=source,
                 weight_data=bytes(unit for pair in entry.weights for unit in pair),
-                vertex_arr_field_offset=0,
-                weight_arr_field_offset=0,
-                gpl_vertex_arr_field_offset=0,
                 vertex_arr_absolute_ptr=0,
                 weight_arr_absolute_ptr=0,
                 gpl_vertex_arr_value=entry.dest,
@@ -4211,10 +3903,6 @@ def _skinned_rebuild_skinning_data(
             ),
             dest_index_data=b''.join(struct.pack('>H', slot) for slot, _vertex, _units in entry.members),
             weight_data=bytes(units for _slot, _vertex, units in entry.members),
-            vertex_arr_field_offset=0,
-            dest_arr_field_offset=0,
-            gpl_dest_arr_field_offset=0,
-            weight_arr_field_offset=0,
             vertex_arr_absolute_ptr=0,
             dest_arr_absolute_ptr=0,
             gpl_dest_arr_value=0,
@@ -4224,13 +3912,8 @@ def _skinned_rebuild_skinning_data(
     ]
     return SkinningData(
         skn_offset=0,
-        gpl_base_offset=0,
-        mem_clr_ptr_field_offset=0,
-        mem_clr_sze_field_offset=0,
         mem_clr_ptr_value=0,
-        mem_clr_absolute_ptr=0,
         mem_clr_size=0,
-        flush_ind_arr_field_offset=0,
         flush_ind_absolute_ptr=None,
         flush_ind_size=len(layout.flush),
         flush_ind_data=b''.join(struct.pack('>H', index) for index in layout.flush),
@@ -4277,13 +3960,12 @@ def _skinned_rebuild_to_blob(
             color_faces_data=rebuild.color_faces_data or b'',
             comp_count=int(donor_color['ColorChannelCompCount']),
             quantize_info=int(donor_color['ColorChannelQuantizeInfo']),
-            source_data_offset=0,
         )
     elif donor_color_array is not None:
         color_quantize, color_comp_count, payload = donor_color_array
         color_channel = ColorChannel(
             channel_index=0, color_data=payload, color_faces_data=b'',
-            comp_count=color_comp_count, quantize_info=color_quantize, source_data_offset=0,
+            comp_count=color_comp_count, quantize_info=color_quantize,
         )
     donor_uv_by_index = {int(uv['UVChannelIndex']): uv for uv in sub.get('UVChannels') or []}
     uv_channels = []
@@ -4299,9 +3981,6 @@ def _skinned_rebuild_to_blob(
             uv_faces_data=uv.uv_faces_data,
             comp_count=int(donor_uv.get('UVChannelCompCount', 2)),
             quantize_info=int(donor_uv['UVChannelQuantizeInfo']),
-            uv_data_ptr_field_offset=0,
-            uv_count_field_offset=0,
-            source_data_offset=0,
         ))
 
     # Donor records with index widths widened where the new counts need it.
@@ -4552,23 +4231,8 @@ def PatchGPLReplaceSkinnedSubmesh(
 
 @dataclass
 class GPLBuildResult:
-    """Output of BuildGPLMeshData.
-
-    Carries the raw bytes of the GPL section plus the metadata that the SKN
-    builder needs to recalculate gplVertexArr / gplDestArr fields without
-    having to re-parse the byte string.
-
-    Attributes
-    ----------
-    gpl_bytes : bytes
-        The complete GPL section.
-    pos_gpl_offsets : list[int]
-        For each submesh i, the GPL-section-relative byte offset of that
-        submesh's raw position data array.  This is what the SKN builder uses
-        as ``new_pos_gpl_off[i]`` when recalculating gplVertexArr.
-    """
+    """The GPL section of a build: ``gpl_bytes`` is the complete section."""
     gpl_bytes: bytes
-    pos_gpl_offsets: list[int]
 
 
 @dataclass(frozen=True)
@@ -4607,218 +4271,155 @@ class ModelBlockBuild:
 # ParseSluggie
 # ---------------------------------------------------------------------------
 
-def ParseSluggie(data: dict) -> SluggieParsed:
-    """Parse the JSON contents of a .sluggies file into in-memory data
-    structures ready for hammerspace block assembly.
+def _parse_submesh(index: int, sub: dict, use_compression: bool, position_edit_submeshes: set) -> Submesh:
+    """One ``Submeshes`` entry. Edited arrays are used only where the matching primitive lists
+    were rebuilt too (see the flags below)."""
+    faces_count = sub.get('FacesCountEdited', sub['FacesCount'])
+    faces_data  = _decode(sub.get('FacesDataEdited') or sub['FacesData'], use_compression)
 
-    Prefers *Edited fields (written by the Blender exporter in Hammerspace
-    Mode) over the original data where both are present.
+    vb          = sub['VertexBuffer']
 
-    Parameters
-    ----------
-    data:
-        The full parsed JSON dict (top-level object from the .sluggies file,
-        which has a single key ``'SluggiesModel'``).
+    # Determine whether prim lists have been rebuilt.  If not, the GPU
+    # draw commands still reference the ORIGINAL compact UV/color arrays,
+    # so we must use the original data even if *Edited fields exist.
+    _prim_lists_edited = any(
+        'PrimListDataEdited' in ds for ds in sub.get('DisplayStates', [])
+    )
+    _surface_only_rebuild = sub.get('SurfaceAssignmentsRebuiltByImporter', False)
+    _position_only_edited = index in position_edit_submeshes
+    _uv_arrays_edited = sub.get('UVArraysEditedByImporter', False)
+    _uv_primitive_lists_rebuilt = sub.get('UVPrimitiveListsRebuiltByImporter', False)
+    _topology_arrays_edited = (
+        _prim_lists_edited
+        and not _surface_only_rebuild
+        and not _uv_primitive_lists_rebuilt
+    )
+    _geometry_arrays_edited = _topology_arrays_edited or _position_only_edited
 
-    Returns
-    -------
-    SluggieParsed
-        Container holding MeshData, BoneData (or None), TextureData, and
-        SkinningData (or None).
-    """
+    if _geometry_arrays_edited:
+        vertex_data = _decode(vb.get('VertexBufferDataEdited') or vb['VertexBufferData'], use_compression)
+    else:
+        vertex_data = _decode(vb['VertexBufferData'], use_compression)
 
-    model   = data['SluggiesModel']
-    use_compression = model.get('UseCompression', True)
-    source_gpl_base_offset = _hex((model.get('SkinData') or {}).get('GplBaseOffset', '0x0'))
-    position_edit_submeshes = set(model.get('_PositionEditSubmeshes', []))
-
-    # ---- MeshData ----------------------------------------------------------
-    submeshes = []
-    for i, sub in enumerate(model.get('Submeshes', [])):
-        faces_count = sub.get('FacesCountEdited', sub['FacesCount'])
-        faces_data  = _decode(sub.get('FacesDataEdited') or sub['FacesData'], use_compression)
-        raw_fti     = sub.get('FaceTextureIndicesEdited') or sub.get('FaceTextureIndices')
-        face_tex_indices = _decode(raw_fti, use_compression) if raw_fti else b''
-
-        vb          = sub['VertexBuffer']
-
-        # Determine whether prim lists have been rebuilt.  If not, the GPU
-        # draw commands still reference the ORIGINAL compact UV/color arrays,
-        # so we must use the original data even if *Edited fields exist.
-        _prim_lists_edited = any(
-            'PrimListDataEdited' in ds for ds in sub.get('DisplayStates', [])
-        )
-        _surface_only_rebuild = sub.get('SurfaceAssignmentsRebuiltByImporter', False)
-        _position_only_edited = i in position_edit_submeshes
-        _uv_arrays_edited = sub.get('UVArraysEditedByImporter', False)
-        _uv_primitive_lists_rebuilt = sub.get('UVPrimitiveListsRebuiltByImporter', False)
-        _topology_arrays_edited = (
-            _prim_lists_edited
-            and not _surface_only_rebuild
-            and not _uv_primitive_lists_rebuilt
-        )
-        _geometry_arrays_edited = _topology_arrays_edited or _position_only_edited
-
-        if _geometry_arrays_edited:
-            vertex_data = _decode(vb.get('VertexBufferDataEdited') or vb['VertexBufferData'], use_compression)
+    uv_channels = []
+    for uv in sub.get('UVChannels', []):
+        if _uv_arrays_edited or _topology_arrays_edited:
+            _uv_src = uv.get('UVChannelDataEdited') or uv['UVChannelData']
         else:
-            vertex_data = _decode(vb['VertexBufferData'], use_compression)
-
-        uv_channels = []
-        for uv in sub.get('UVChannels', []):
-            if _uv_arrays_edited or _topology_arrays_edited:
-                _uv_src = uv.get('UVChannelDataEdited') or uv['UVChannelData']
-            else:
-                _uv_src = uv['UVChannelData']
-            uv_channels.append(UVChannel(
-                channel_index            = uv['UVChannelIndex'],
-                palette_name             = uv['PaletteName'],
-                texture_index            = uv.get('TextureIndex', 0),
-                wrap_s                   = uv.get('WrapS', 0),
-                wrap_t                   = uv.get('WrapT', 0),
-                uv_data                  = _decode(_uv_src, use_compression),
-                uv_faces_data            = _decode(uv.get('UVFacesDataEdited')   or uv['UVFacesData'],   use_compression),
-                comp_count               = uv['UVChannelCompCount'],
-                quantize_info            = uv['UVChannelQuantizeInfo'],
-                uv_data_ptr_field_offset = _hex(uv.get('UVDataPtrFieldOffset', '0x0')),
-                uv_count_field_offset    = _hex(uv.get('UVCountFieldOffset',    '0x0')),
-                source_data_offset       = _hex(uv.get('UVChannelOffset', '0x0')),
-            ))
-
-        color_channels = []
-        _color_arrays_edited = (
-            sub.get('ColorArraysEditedByImporter', False)
-            or _topology_arrays_edited
-        )
-        for cc in sub.get('ColorChannels', []):
-            if _color_arrays_edited:
-                _color_src = cc.get('ColorChannelDataEdited') or cc['ColorChannelData']
-                _color_faces_src = cc.get('ColorFacesDataEdited') or cc['ColorFacesData']
-            else:
-                _color_src = cc['ColorChannelData']
-                _color_faces_src = cc['ColorFacesData']
-            color_channels.append(ColorChannel(
-                channel_index    = cc['ColorChannelIndex'],
-                color_data       = _decode(_color_src, use_compression),
-                color_faces_data = _decode(_color_faces_src, use_compression),
-                comp_count       = cc['ColorChannelCompCount'],
-                quantize_info    = cc['ColorChannelQuantizeInfo'],
-                source_data_offset = _hex(cc.get('ColorChannelOffset', '0x0')),
-            ))
-
-        draw_states = []
-        for ds in sub.get('DisplayStates', []):
-            pad_hex = ds.get('DisplayStateParamBytesEdited') or ds.get('DisplayStateParamBytes', '000000')
-            prim_list_data = (
-                ds.get('PrimListDataEdited')
-                if 'PrimListDataEdited' in ds
-                else ds.get('PrimListData')
-            )
-            if prim_list_data in (None, ''):
-                prim_list_bytes = b''
-            else:
-                prim_list_bytes = _decode(prim_list_data, use_compression)
-            draw_states.append(DrawState(
-                display_state_id            = ds['DisplayStateId'],
-                display_state_pad_bytes     = bytes.fromhex(pad_hex),
-                prim_list_data              = prim_list_bytes,
-                active_descriptors          = ds.get('VertexStreamLayout') or ds.get('ActiveDescriptors', []),
-                prim_list_ptr_field_offset  = _hex(ds['PrimListPtrFieldOffset']),
-                prim_list_size_field_offset = _hex(ds['PrimListSizeFieldOffset']),
-                prim_list_absolute_offset   = _hex(ds['PrimListAbsoluteOffset']),
-                prim_list_length            = ds['PrimListLength'],
-                shader_mode_field_offset    = _hex(ds['ShaderModeFieldOffset']) if ds.get('ShaderModeFieldOffset') else 0,
-                shader_mode                 = ds.get('ShaderModeEdited') or ds.get('ShaderMode', ''),
-                source_state_offset         = _hex(ds['ShaderModeFieldOffset']) - 4 if ds.get('ShaderModeFieldOffset') else 0,
-            ))
-
-        raw_nb = sub.get('NormalBuffer')
-        normal_buffer = None
-        if raw_nb:
-            normal_buffer = NormalBuffer(
-                normal_data_ptr_field_offset = _hex(raw_nb['NormalDataPtrFieldOffset']),
-                normal_count_field_offset    = _hex(raw_nb['NormalCountFieldOffset']),
-                normal_buffer_offset         = _hex(raw_nb['NormalBufferOffset']),
-                normal_buffer_length         = raw_nb['NormalBufferLength'],
-                comp_count                   = raw_nb['NormalBufferCompCount'],
-                quantize_info                = raw_nb['NormalBufferQuantizeInfo'],
-                ambient_pct                  = raw_nb.get('NormalAmbientPct', 0.0),
-                normal_data                  = _decode(
-                    (
-                        raw_nb.get('NormalBufferDataEdited') or raw_nb['NormalBufferData']
-                        if _topology_arrays_edited
-                        or sub.get('NormalArraysEditedByImporter', False)
-                        else raw_nb['NormalBufferData']
-                    ),
-                    use_compression,
-                ),
-                source_header_offset         = _hex(raw_nb.get('NormalDataPtrFieldOffset', '0x0')),
-            )
-
-        submeshes.append(Submesh(
-            submesh_index                  = i,
-            mesh_name                      = sub.get('MeshName', ''),
-            faces_count                    = faces_count,
-            faces_data                     = faces_data,
-            face_texture_indices           = face_tex_indices,
-            vertex_data                    = vertex_data,
-            vertex_comp_count              = vb['VertexBufferCompCount'],
-            vertex_quantize_info           = vb['VertexBufferQuantizeInfo'],
-            uv_channels                    = uv_channels,
-            color_channels                 = color_channels,
-            draw_states                    = draw_states,
-            position_data_ptr_field_offset = _hex(sub.get('PositionDataPtrFieldOffset', '0x0')),
-            vertex_count_field_offset      = _hex(sub.get('VertexCountFieldOffset',      '0x0')),
-            normal_buffer                  = normal_buffer,
-            source_layout_offset           = _hex(sub.get('SubmeshOffset', '0x0')),
-            source_position_data_offset    = _hex(vb.get('VertexBufferOffset', '0x0')),
-            preserve_source_layout         = not (
-                _geometry_arrays_edited or _uv_primitive_lists_rebuilt
-            ),
-            rigid_rebuild                  = _parse_rigid_rebuild(sub, use_compression),
-            skinned_rebuild                = _parse_skinned_rebuild(sub, use_compression),
+            _uv_src = uv['UVChannelData']
+        uv_channels.append(UVChannel(
+            channel_index            = uv['UVChannelIndex'],
+            palette_name             = uv['PaletteName'],
+            texture_index            = uv.get('TextureIndex', 0),
+            wrap_s                   = uv.get('WrapS', 0),
+            wrap_t                   = uv.get('WrapT', 0),
+            uv_data                  = _decode(_uv_src, use_compression),
+            uv_faces_data            = _decode(uv.get('UVFacesDataEdited')   or uv['UVFacesData'],   use_compression),
+            comp_count               = uv['UVChannelCompCount'],
+            quantize_info            = uv['UVChannelQuantizeInfo'],
         ))
 
-    mesh_data = MeshData(
-        submeshes=submeshes,
-        source_gpl_base_offset=source_gpl_base_offset,
+    color_channels = []
+    _color_arrays_edited = (
+        sub.get('ColorArraysEditedByImporter', False)
+        or _topology_arrays_edited
+    )
+    for cc in sub.get('ColorChannels', []):
+        if _color_arrays_edited:
+            _color_src = cc.get('ColorChannelDataEdited') or cc['ColorChannelData']
+            _color_faces_src = cc.get('ColorFacesDataEdited') or cc['ColorFacesData']
+        else:
+            _color_src = cc['ColorChannelData']
+            _color_faces_src = cc['ColorFacesData']
+        color_channels.append(ColorChannel(
+            channel_index    = cc['ColorChannelIndex'],
+            color_data       = _decode(_color_src, use_compression),
+            color_faces_data = _decode(_color_faces_src, use_compression),
+            comp_count       = cc['ColorChannelCompCount'],
+            quantize_info    = cc['ColorChannelQuantizeInfo'],
+        ))
+
+    draw_states = []
+    for ds in sub.get('DisplayStates', []):
+        pad_hex = ds.get('DisplayStateParamBytesEdited') or ds.get('DisplayStateParamBytes', '000000')
+        prim_list_data = (
+            ds.get('PrimListDataEdited')
+            if 'PrimListDataEdited' in ds
+            else ds.get('PrimListData')
+        )
+        if prim_list_data in (None, ''):
+            prim_list_bytes = b''
+        else:
+            prim_list_bytes = _decode(prim_list_data, use_compression)
+        draw_states.append(DrawState(
+            display_state_id            = ds['DisplayStateId'],
+            display_state_pad_bytes     = bytes.fromhex(pad_hex),
+            prim_list_data              = prim_list_bytes,
+            active_descriptors          = ds.get('VertexStreamLayout') or ds.get('ActiveDescriptors', []),
+            shader_mode                 = ds.get('ShaderModeEdited') or ds.get('ShaderMode', ''),
+        ))
+
+    raw_nb = sub.get('NormalBuffer')
+    normal_buffer = None
+    if raw_nb:
+        normal_buffer = NormalBuffer(
+            comp_count                   = raw_nb['NormalBufferCompCount'],
+            quantize_info                = raw_nb['NormalBufferQuantizeInfo'],
+            ambient_pct                  = raw_nb.get('NormalAmbientPct', 0.0),
+            normal_data                  = _decode(
+                (
+                    raw_nb.get('NormalBufferDataEdited') or raw_nb['NormalBufferData']
+                    if _topology_arrays_edited
+                    or sub.get('NormalArraysEditedByImporter', False)
+                    else raw_nb['NormalBufferData']
+                ),
+                use_compression,
+            ),
+        )
+
+    return Submesh(
+        submesh_index                  = index,
+        mesh_name                      = sub.get('MeshName', ''),
+        faces_count                    = faces_count,
+        faces_data                     = faces_data,
+        vertex_data                    = vertex_data,
+        vertex_comp_count              = vb['VertexBufferCompCount'],
+        vertex_quantize_info           = vb['VertexBufferQuantizeInfo'],
+        uv_channels                    = uv_channels,
+        color_channels                 = color_channels,
+        draw_states                    = draw_states,
+        normal_buffer                  = normal_buffer,
+        preserve_source_layout         = not (
+            _geometry_arrays_edited or _uv_primitive_lists_rebuilt
+        ),
+        rigid_rebuild                  = _parse_rigid_rebuild(sub, use_compression),
+        skinned_rebuild                = _parse_skinned_rebuild(sub, use_compression),
     )
 
-    # ---- GPL user data ----------------------------------------------------
-    gpl_user_data_len = model.get('GPLUserDataLength', 0)
-    raw_gpl_ud = model.get('GPLUserData')
-    gpl_user_data = _decode(raw_gpl_ud, use_compression) if raw_gpl_ud else None
 
-    # ---- BoneData ----------------------------------------------------------
+def _parse_bones(model: dict, use_compression: bool) -> BoneData | None:
+    """``BoneHierarchyEdited`` when present, else ``BoneHierarchy``."""
     raw_bones = model.get('BoneHierarchyEdited') or model.get('BoneHierarchy')
     if raw_bones:
         bones = []
         for b in raw_bones:
-            influences = [
-                {'submesh_index': inf['SubmeshIndex'],
-                 'influences':    _decode(inf['Influences'], use_compression)}
-                for inf in b.get('VertexInfluences', [])
-            ]
             bones.append(Bone(
                 bone_id            = b['BoneId'],
-                geo_id             = b['GeoId'],
-                parent_bone_id     = b.get('ParentBoneId'),
                 skinned            = b['Skinned'],
                 track_id           = b['TrackId'],
                 srt_type           = b.get('SRTType', 0),
-                draw_priority      = b.get('DrawPriority', 0),
-                inherit_transform  = b.get('InheritTransform', True),
                 translation        = b['Translation'],
                 scale              = b['Scale'],
                 quaternion         = b['Quaternion'],
-                head_position      = b.get('HeadPosition', [0.0, 0.0, 0.0]),
-                vertex_influences  = influences,
             ))
         bone_data = BoneData(bones=bones)
     else:
         bone_data = None
+    return bone_data
 
-    # ---- TextureData -------------------------------------------------------
+
+def _parse_textures(model: dict, use_compression: bool) -> TextureData:
+    """``TextureDescriptors``."""
     textures = []
     for tex in model.get('TextureDescriptors', []):
         textures.append(Texture(
@@ -4838,12 +4439,14 @@ def ParseSluggie(data: dict) -> SluggieParsed:
             image_data_length         = tex['ImageDataLength'],
             palette_data_offset       = _hex(tex['PaletteDataOffset']) if tex.get('PaletteDataOffset') else None,
             palette_data_length       = tex.get('PaletteDataLength'),
-            texture_descriptor_offset = _hex(tex['TextureDescriptorOffset']),
         ))
 
     texture_data = TextureData(textures=textures)
+    return texture_data
 
-    # ---- SkinningData ------------------------------------------------------
+
+def _parse_skinning(model: dict, use_compression: bool, position_edit_submeshes: set) -> SkinningData | None:
+    """``SkinData``, with the edited payload of ``SkinDataEdited`` where the geometry was edited."""
     # Use the ORIGINAL SkinData for structural ordering (bone indices,
     # gplVertexArr, vertex_offset) since the game engine depends on the
     # original SK entry order.  Substitute edited payload (bind-pose data,
@@ -4955,8 +4558,6 @@ def ParseSluggie(data: dict) -> SluggieParsed:
                 vertex_cnt                  = (ed or s)['VertexCnt'],
                 vertex_offset               = s.get('VertexOffset', 0),
                 bind_pose_data              = _decode(bp_src, use_compression),
-                vertex_arr_field_offset     = _hex(s.get('VertexArrFieldOffset',     '0x0')),
-                gpl_vertex_arr_field_offset = _hex(s.get('GplVertexArrFieldOffset',  '0x0')),
                 vertex_arr_absolute_ptr     = _hex(s.get('VertexArrAbsolutePtr',     '0x0')),
                 gpl_vertex_arr_value        = s.get('GplVertexArrValue', 0),
             ))
@@ -4986,9 +4587,6 @@ def ParseSluggie(data: dict) -> SluggieParsed:
                 vertex_offset               = s.get('VertexOffset', 0),
                 bind_pose_data              = _decode(bp_src, use_compression),
                 weight_data                 = _decode(wt_src, use_compression),
-                vertex_arr_field_offset     = _hex(s.get('VertexArrFieldOffset',     '0x0')),
-                weight_arr_field_offset     = _hex(s.get('WeightArrFieldOffset',     '0x0')),
-                gpl_vertex_arr_field_offset = _hex(s.get('GplVertexArrFieldOffset',  '0x0')),
                 vertex_arr_absolute_ptr     = _hex(s.get('VertexArrAbsolutePtr',     '0x0')),
                 weight_arr_absolute_ptr     = _hex(s.get('WeightArrAbsolutePtr',     '0x0')),
                 gpl_vertex_arr_value        = s.get('GplVertexArrValue', 0),
@@ -5022,10 +4620,6 @@ def ParseSluggie(data: dict) -> SluggieParsed:
                 bind_pose_data            = _decode(bp_src, use_compression),
                 dest_index_data           = _decode(dest_src, use_compression),
                 weight_data               = _decode(wt_src, use_compression),
-                vertex_arr_field_offset   = _hex(s.get('VertexArrFieldOffset',   '0x0')),
-                dest_arr_field_offset     = _hex(s.get('DestArrFieldOffset',     '0x0')),
-                gpl_dest_arr_field_offset = _hex(s.get('GplDestArrFieldOffset',  '0x0')),
-                weight_arr_field_offset   = _hex(s.get('WeightArrFieldOffset',   '0x0')),
                 vertex_arr_absolute_ptr   = _hex(s.get('VertexArrAbsolutePtr',   '0x0')),
                 dest_arr_absolute_ptr     = _hex(s.get('DestArrAbsolutePtr',     '0x0')),
                 gpl_dest_arr_value        = s.get('GplDestArrValue', 0),
@@ -5035,17 +4629,12 @@ def ParseSluggie(data: dict) -> SluggieParsed:
     if raw_skn:
         skinning_data = SkinningData(
             skn_offset                = _hex(raw_skn.get('SKNOffset',                '0x0')),
-            gpl_base_offset           = _hex(raw_skn.get('GplBaseOffset',            '0x0')),
-            mem_clr_ptr_field_offset  = _hex(raw_skn.get('MemClrPtrFieldOffset',     '0x0')),
-            mem_clr_sze_field_offset  = _hex(raw_skn.get('MemClrSzeFieldOffset',     '0x0')),
             mem_clr_ptr_value         = raw_skn.get(
                 'MemClrPtrValue',
                 _hex(raw_skn.get('MemClrAbsolutePtr', '0x0'))
                 - _hex(raw_skn.get('GplBaseOffset', '0x0')),
             ),
-            mem_clr_absolute_ptr      = _hex(raw_skn.get('MemClrAbsolutePtr',        '0x0')),
             mem_clr_size              = raw_skn.get('MemClrSize', 0),
-            flush_ind_arr_field_offset= _hex(raw_skn.get('FlushIndArrFieldOffset',   '0x0')),
             flush_ind_absolute_ptr    = _hex(raw_skn['FlushIndAbsolutePtr']) if raw_skn.get('FlushIndAbsolutePtr') else None,
             flush_ind_size            = _flush_source.get('FlushIndSize', 0),
             flush_ind_data            = _decode(_flush_source['FlushIndData'], use_compression) if _flush_source.get('FlushIndData') else b'',
@@ -5057,8 +4646,11 @@ def ParseSluggie(data: dict) -> SluggieParsed:
         )
     else:
         skinning_data = None
+    return skinning_data
 
-    # ---- Trailing sections ------------------------------------------------
+
+def _parse_trailing_sections(model: dict, use_compression: bool) -> list:
+    """``TrailingSections``."""
     trailing_sections = []
     for entry in model.get('TrailingSections', []) or []:
         if not isinstance(entry, dict):
@@ -5068,24 +4660,11 @@ def ParseSluggie(data: dict) -> SluggieParsed:
             original_ptr        = _hex(entry.get('OriginalPtr', '0x0')),
             data                = _decode(entry.get('Data'), use_compression) if entry.get('Data') else b'',
         ))
+    return trailing_sections
 
-    # ---- TEXHeader ---------------------------------------------------------
-    raw_tex_hdr = model.get('TEXHeader')
-    tex_header = TEXHeader(clut_count=raw_tex_hdr['CLUTCount']) if raw_tex_hdr else None
 
-    # ---- ACTHeader ---------------------------------------------------------
-    raw_act_hdr = model.get('ACTHeader')
-    if raw_act_hdr:
-        act_header = ACTHeader(
-            actor_id         = raw_act_hdr.get('ActorID', 0),
-            skin_file_id     = raw_act_hdr.get('SkinFileID', 0),
-            geo_name         = raw_act_hdr.get('GeoName', ''),
-            act_tree_unknown = raw_act_hdr.get('ACTTreeUnknown', 0),
-        )
-    else:
-        act_header = None
-
-    # ---- CustomSubmeshes ----------------------------------------------------
+def _parse_custom_submeshes(model: dict, use_compression: bool) -> list:
+    """``CustomSubmeshes``."""
     # Parse only, never touching donor
     # Submeshes/MeshData. Cross-checks (host bone freedom, template validity,
     # texture-assignment resolution, ...) are _validate_custom_submeshes' job.
@@ -5129,20 +4708,56 @@ def ParseSluggie(data: dict) -> SluggieParsed:
                 if cs.get('FaceSurfaceIndices') is not None else ()
             ),
         ))
+    return custom_submeshes
+
+
+def ParseSluggie(data: dict, position_edit_submeshes=()) -> SluggieParsed:
+    """Parse the JSON contents of a .sluggies file into in-memory data
+    structures ready for hammerspace block assembly.
+
+    Prefers *Edited fields (written by the Blender exporter in Hammerspace
+    Mode) over the original data where both are present.
+
+    Parameters
+    ----------
+    data:
+        The full parsed JSON dict (top-level object from the .sluggies file,
+        which has a single key ``'SluggiesModel'``). It is not modified.
+    position_edit_submeshes:
+        Indices of the submeshes whose positions are edited without a topology
+        change (``_position_edits``); their edited position and skin arrays are used.
+
+    Returns
+    -------
+    SluggieParsed
+        Container holding MeshData, BoneData (or None), TextureData, and
+        SkinningData (or None).
+    """
+
+    model = data['SluggiesModel']
+    use_compression = model.get('UseCompression', True)
+    position_edit_submeshes = set(position_edit_submeshes)
+
+    mesh_data = MeshData(
+        submeshes=[
+            _parse_submesh(index, sub, use_compression, position_edit_submeshes)
+            for index, sub in enumerate(model.get('Submeshes', []))
+        ],
+    )
+    bone_data = _parse_bones(model, use_compression)
+    texture_data = _parse_textures(model, use_compression)
+    skinning_data = _parse_skinning(model, use_compression, position_edit_submeshes)
+    trailing_sections = _parse_trailing_sections(model, use_compression)
 
     return SluggieParsed(
         mesh              = mesh_data,
         bones             = bone_data,
         textures          = texture_data,
         skinning          = skinning_data,
-        gpl_user_data     = gpl_user_data,
-        gpl_user_data_len = gpl_user_data_len,
-        act_header        = act_header,
-        tex_header        = tex_header,
         trailing_sections = trailing_sections,
         model_offset      = _hex(model.get('ModelOffset', '0x0')),
         model_length      = model.get('ModelLength', 0),
-        custom_submeshes  = custom_submeshes,
+        custom_submeshes  = _parse_custom_submeshes(model, use_compression),
     )
 
 
@@ -5151,581 +4766,16 @@ def ParseSluggie(data: dict) -> SluggieParsed:
 # Section builders
 # ---------------------------------------------------------------------------
 
-def _can_preserve_gpl_internal_layout(mesh: MeshData) -> bool:
-    return bool(mesh.source_gpl_base_offset) and all(
-        getattr(sub, 'preserve_source_layout', True)
-        and sub.source_layout_offset
-        and sub.position_data_ptr_field_offset
-        and sub.source_position_data_offset
-        and sub.draw_states
-        and sub.draw_states[0].source_state_offset
-        for sub in mesh.submeshes
-    )
-
-
-def _can_preserve_gpl_source_layout(mesh: MeshData) -> bool:
-    return _can_preserve_gpl_internal_layout(mesh) and all(
-        sub.source_layout_offset
-        and sub.position_data_ptr_field_offset
-        and sub.source_position_data_offset
-        and sub.draw_states
-        and sub.draw_states[0].source_state_offset
-        and all(
-            len(draw_state.prim_list_data) == draw_state.prim_list_length
-            for draw_state in sub.draw_states
-        )
-        for sub in mesh.submeshes
-    )
-
-
-def BuildGPLMeshData(parsed: SluggieParsed) -> GPLBuildResult:
-    """Build the GPL (Mesh Data) section from the parsed sluggies data.
-
-    Encodes vertex position/UV/color/normal arrays, assembles draw lists,
-    and lays out all GEO descriptors, DOLayout structs, and data headers
-    with correct relative pointers.
-
-    Returns a GPLBuildResult containing the complete GPL section bytes and
-    per-submesh GPL-relative position array offsets (needed by the SKN
-    builder to recalculate gplVertexArr / gplDestArr without re-parsing).
-
-    Pointer conventions
-    -------------------
-    - GEO Descriptor DOLayoutPtr and namePtr  →  GPL-section-relative
-    - All pointers inside DOLayout and its sub-structs →  DOLayout-start-relative
-    """
-
-    GPL_MAGIC    = 0x00B749E0
-    GPL_HDR_SIZE = 0x14   # magic + userDataLen + userDataPtr + N + descriptorPtr
-
-    # -------------------------------------------------------------------------
-    # Local helpers
-    # -------------------------------------------------------------------------
-
-    def _align32(offset: int) -> int:
-        """Round offset UP to next 32-byte boundary."""
-        return (offset + 31) & ~31
-
-    def _align32_residue(offset: int, residue: int) -> int:
-        """Round offset up to the next value with the requested mod-32 residue."""
-        return offset + ((residue - offset) & 31)
-
-    def _vertex_count(data: bytes, comp_count: int, quant_info: int) -> int:
-        stride = _vb_comp_size(quant_info) * comp_count
-        return len(data) // stride if stride else 0
-
-    def _color_count(data: bytes, quant_info: int) -> int:
-        fmt = quant_info >> 4
-        stride = {0: 2, 1: 3, 2: 4, 3: 2, 4: 3, 5: 4}.get(fmt, 2)
-        return len(data) // stride
-
-    def _setting_bytes(shader_mode: str) -> bytes:
-        """Decode a ShaderMode string back to 4 raw bytes (the setting field)."""
-        if len(shader_mode) == 8 and all(c in '0123456789abcdefABCDEF' for c in shader_mode):
-            return bytes.fromhex(shader_mode)
-        return shader_mode.encode('ascii', errors='replace').ljust(4, b'\x00')[:4]
-
-    # -------------------------------------------------------------------------
-    # per-submesh layout pass (all offsets DOLayout-relative)
-    # count derivation from raw buffer sizes
-    # -------------------------------------------------------------------------
-
-    N = len(parsed.mesh.submeshes)
-    sub_layouts = []
-    preserve_internal_layout = _can_preserve_gpl_internal_layout(parsed.mesh)
-    preserve_source_layout = _can_preserve_gpl_source_layout(parsed.mesh)
-
-    sk_write_end = 0
-    if parsed.skinning:
-        skinning = parsed.skinning
-        skin_stride = _vb_comp_size(skinning.quantize_info) * 6
-        direct_writes = set()
-        for entry in (*skinning.sk1s, *skinning.sk2s):
-            direct_writes.update(
-                entry.gpl_vertex_arr_value + entry.vertex_offset + index * skin_stride
-                for index in range(entry.vertex_cnt)
-            )
-        accumulation_writes = set()
-        for entry in skinning.sk_accs:
-            destinations = struct.unpack(f'>{entry.vertex_cnt}H', entry.dest_index_data)
-            accumulation_writes.update(
-                entry.gpl_dest_arr_value + destination * skin_stride
-                for destination in destinations
-            )
-        mem_clear_ptr, mem_clear_size = compute_mem_clear_range(
-            direct_writes, accumulation_writes, skin_stride)
-        write_offsets = direct_writes | accumulation_writes
-        if write_offsets:
-            sk_write_end = max(offset + skin_stride for offset in write_offsets)
-        sk_write_end = max(sk_write_end, mem_clear_ptr + mem_clear_size)
-
-    for submesh_index, sub in enumerate(parsed.mesh.submeshes):
-        M_uv = len(sub.uv_channels)
-        n_ds = len(sub.draw_states)
-
-        # Fixed-size header region layout (sizes in bytes)
-        # 0x00  DOLayout          0x18
-        # 0x18  PositionHeader    0x08
-        # 0x20  ColorHeader       0x08
-        # 0x28  UV_Header × M_uv  M_uv × 0x10
-        # ...   NormalHeader      0x0c
-        # ...   DisplayHeader     0x0c
-        # ...   DisplayState × n_ds  n_ds × 0x10
-        POS_OFF = 0x18
-        COL_OFF = 0x20
-        UV_OFF  = 0x28
-        NOR_OFF = UV_OFF  + M_uv * 0x10
-        DSP_OFF = NOR_OFF + 0x0c
-        HDR_END = DSP_OFF + 0x0c
-
-        cursor = HDR_END
-
-        # --- mesh name string ---
-        name_bytes = sub.mesh_name.encode('ascii', errors='replace') + b'\x00'
-        name_off   = cursor
-        cursor    += len(name_bytes)
-
-        # --- per-UV palette name strings ---
-        pal_name_offs       = []
-        pal_name_bytes_list = []
-        for uv in sub.uv_channels:
-            pal_b = (uv.palette_name or '').encode('ascii', errors='replace') + b'\x00'
-            pal_name_offs.append(cursor)
-            pal_name_bytes_list.append(pal_b)
-            cursor += len(pal_b)
-
-        # Skinned meshes (cc=6): align position data to 32-byte boundary
-        # (Wii Broadway dcbz requirement — SKN deformer write target).
-        # Non-skinned meshes: no alignment required (original data is unaligned).
-        is_interleaved = (sub.vertex_comp_count == 6)
-        if is_interleaved:
-            cursor = _align32(cursor)
-
-        # --- position raw data ---
-        pos_data     = _align4(sub.vertex_data)
-        if submesh_index == 0 and sk_write_end > len(pos_data):
-            pos_data += b'\x00' * (sk_write_end - len(pos_data))
-        pos_data_off = cursor
-        cursor      += len(pos_data)
-
-        # --- color raw data (all channels share one buffer; use channel-0) ---
-        col_data     = b''
-        col_data_off = 0
-        if sub.color_channels:
-            col_data     = _align4(sub.color_channels[0].color_data)
-            col_data_off = cursor
-            cursor      += len(col_data)
-
-        # --- UV raw data (one buffer per channel) ---
-        uv_data_offs  = []
-        uv_data_list  = []
-        for uv in sub.uv_channels:
-            uv_b = _align4(uv.uv_data)
-            uv_data_offs.append(cursor)
-            uv_data_list.append(uv_b)
-            cursor += len(uv_b)
-
-        # --- normal raw data ---
-        # Skinned (interleaved) meshes use cc=6: pos+normal are packed together
-        # in the position buffer.  NorHdr.rawPtr points 6 bytes into that
-        # buffer; no separate normal data block is stored.
-        nor_data     = b''
-        nor_data_off = 0
-        if is_interleaved and sub.normal_buffer:
-            comp_size    = _vb_comp_size(sub.vertex_quantize_info)
-            nor_data_off = pos_data_off + comp_size * 3
-        elif sub.normal_buffer and sub.normal_buffer.normal_data:
-            nor_data     = _align4(sub.normal_buffer.normal_data)
-            nor_data_off = cursor
-            cursor      += len(nor_data)
-
-        # Donor GPL layouts place display-state records after all attribute
-        # arrays. Some runtime state handling depends on that ordering.
-        DS_OFF = cursor
-        cursor += n_ds * 0x10
-
-        # --- per-display-state primitive list data ---
-        # Prim lists (GX display lists) MUST be 32-byte aligned — the GPU
-        # command processor reads them via DMA in 32-byte bursts.
-        pl_offs       = []
-        pl_bytes_list = []
-        for ds in sub.draw_states:
-            if ds.prim_list_data:
-                cursor = _align32(cursor)
-                pl_b = ds.prim_list_data + b'\x00' * (
-                    (-len(ds.prim_list_data)) % 32
-                )
-                pl_offs.append(cursor)
-                pl_bytes_list.append(pl_b)
-                cursor += len(pl_b)
-            else:
-                pl_offs.append(0)
-                pl_bytes_list.append(b'')
-
-        if preserve_internal_layout:
-            source_base = parsed.mesh.source_gpl_base_offset
-            source_layout = sub.source_layout_offset - source_base
-            source_pos_header = sub.position_data_ptr_field_offset - sub.source_layout_offset
-            source_pos_data = sub.source_position_data_offset - sub.source_layout_offset
-            source_uv_headers = [
-                uv.uv_data_ptr_field_offset - sub.source_layout_offset
-                for uv in sub.uv_channels
-            ]
-            source_uv_data = [
-                uv.source_data_offset - sub.source_layout_offset
-                for uv in sub.uv_channels
-            ]
-            source_state = sub.draw_states[0].source_state_offset - sub.source_layout_offset
-            source_display = source_state - 0x0C
-            source_normal = (
-                sub.normal_buffer.source_header_offset - sub.source_layout_offset
-                if sub.normal_buffer else 0
-            )
-            source_normal_data = (
-                sub.normal_buffer.normal_buffer_offset - sub.source_layout_offset
-                if sub.normal_buffer else 0
-            )
-            source_color = (
-                sub.color_channels[0].source_data_offset - sub.source_layout_offset
-                if sub.color_channels else 0
-            )
-            source_color_header = (
-                source_color - 8 if source_color else source_normal - 8
-            )
-            source_prim = [
-                ds.prim_list_absolute_offset - sub.source_layout_offset
-                if ds.prim_list_data else 0
-                for ds in sub.draw_states
-            ]
-
-            POS_OFF = source_pos_header
-            COL_OFF = source_color_header
-            UV_OFF = source_uv_headers[0] if source_uv_headers else source_normal
-            NOR_OFF = source_normal
-            DSP_OFF = source_display
-            DS_OFF = source_state
-            pos_data_off = source_pos_data
-            col_data_off = source_color
-            uv_data_offs = source_uv_data
-            nor_data_off = (
-                source_pos_data + _vb_comp_size(sub.vertex_quantize_info) * 3
-                if is_interleaved else source_normal_data
-            )
-            source_ends = [
-                POS_OFF + 8,
-                COL_OFF + 8,
-                UV_OFF + M_uv * 0x10,
-                NOR_OFF + 0x0C if NOR_OFF else 0,
-                DSP_OFF + 0x0C,
-                DS_OFF + n_ds * 0x10,
-                pos_data_off + len(pos_data),
-                col_data_off + len(col_data) if col_data_off else 0,
-                *(offset + len(data) for offset, data in zip(uv_data_offs, uv_data_list)),
-                nor_data_off + len(nor_data) if nor_data else 0,
-                *(
-                    offset + draw_state.prim_list_length
-                    for offset, draw_state in zip(source_prim, sub.draw_states)
-                    if offset
-                ),
-            ]
-            cursor = max(source_ends)
-            pl_offs = []
-            for source_off, draw_state, data in zip(
-                source_prim, sub.draw_states, pl_bytes_list
-            ):
-                if not data:
-                    pl_offs.append(0)
-                elif source_off and len(draw_state.prim_list_data) <= draw_state.prim_list_length:
-                    pl_offs.append(source_off)
-                else:
-                    source_layout = sub.source_layout_offset - parsed.mesh.source_gpl_base_offset
-                    cursor = _align32_residue(cursor, (-source_layout) & 31)
-                    pl_offs.append(cursor)
-                    cursor += len(data)
-
-            if not preserve_source_layout:
-                palette_offsets = {}
-                pal_name_offs = []
-                for pal_b in pal_name_bytes_list:
-                    if pal_b not in palette_offsets:
-                        palette_offsets[pal_b] = cursor
-                        cursor += len(pal_b)
-                        cursor = (cursor + 3) & ~3
-                    pal_name_offs.append(palette_offsets[pal_b])
-                name_off = cursor
-                cursor += len(name_bytes)
-
-        blob_size = cursor
-
-        # derive counts from buffer sizes
-        pos_count = _vertex_count(sub.vertex_data, sub.vertex_comp_count, sub.vertex_quantize_info)
-
-        col_count = 0
-        if sub.color_channels:
-            cc0       = sub.color_channels[0]
-            col_count = _color_count(cc0.color_data, cc0.quantize_info)
-
-        uv_counts = [
-            _vertex_count(uv.uv_data, uv.comp_count, uv.quantize_info)
-            for uv in sub.uv_channels
-        ]
-
-        nor_count = 0
-        if is_interleaved and sub.normal_buffer:
-            nor_count = pos_count
-        elif sub.normal_buffer and sub.normal_buffer.normal_data:
-            nb        = sub.normal_buffer
-            nor_count = _vertex_count(nb.normal_data, nb.comp_count, nb.quantize_info)
-
-        sub_layouts.append({
-            'is_interleaved':      is_interleaved,
-            'sub':                 sub,
-            'M_uv':                M_uv,
-            'n_ds':                n_ds,
-            'POS_OFF':             POS_OFF,
-            'COL_OFF':             COL_OFF,
-            'UV_OFF':              UV_OFF,
-            'NOR_OFF':             NOR_OFF,
-            'DSP_OFF':             DSP_OFF,
-            'DS_OFF':              DS_OFF,
-            'blob_size':           blob_size,
-            'name_off':            name_off,
-            'name_bytes':          name_bytes,
-            'pal_name_offs':       pal_name_offs,
-            'pal_name_bytes_list': pal_name_bytes_list,
-            'pos_data':            pos_data,
-            'pos_data_off':        pos_data_off,
-            'pos_count':           pos_count,
-            'col_data':            col_data,
-            'col_data_off':        col_data_off,
-            'col_count':           col_count,
-            'uv_data_offs':        uv_data_offs,
-            'uv_data_list':        uv_data_list,
-            'uv_counts':           uv_counts,
-            'nor_data':            nor_data,
-            'nor_data_off':        nor_data_off,
-            'nor_count':           nor_count,
-            'pl_offs':             pl_offs,
-            'pl_bytes_list':       pl_bytes_list,
-        })
-
-    # -------------------------------------------------------------------------
-    # GPL-level address layout
-    # -------------------------------------------------------------------------
-
-    GEO_DESC_OFF  = GPL_HDR_SIZE          # 0x14
-    GEO_DESC_SIZE = N * 8
-    # Blob starts must be 32-byte aligned in flexible layouts. Unchanged
-    # source-layout rebuilds retain the donor coordinates exactly.
-    BLOBS_START = _align32(GEO_DESC_OFF + GEO_DESC_SIZE)
-    if preserve_source_layout:
-        blob_gpl_offs = [
-            lay['sub'].source_layout_offset - parsed.mesh.source_gpl_base_offset
-            for lay in sub_layouts
-        ]
-        cursor = max(gpl_off + lay['blob_size'] for gpl_off, lay in zip(blob_gpl_offs, sub_layouts))
-        for index, (gpl_off, lay) in enumerate(zip(blob_gpl_offs, sub_layouts)):
-            palette_offsets: dict[bytes, int] = {}
-            unique_palette_bytes = []
-            for pal_b in lay['pal_name_bytes_list']:
-                if pal_b not in palette_offsets:
-                    palette_offsets[pal_b] = 0
-                    unique_palette_bytes.append(pal_b)
-            palette_size = sum((len(pal_b) + 3) & ~3 for pal_b in unique_palette_bytes)
-            next_layout = blob_gpl_offs[index + 1] if index + 1 < len(blob_gpl_offs) else cursor
-            palette_cursor = next_layout - palette_size if index + 1 < len(blob_gpl_offs) else cursor
-            pal_name_offs = []
-            for pal_b in lay['pal_name_bytes_list']:
-                if not palette_offsets[pal_b]:
-                    palette_offsets[pal_b] = palette_cursor
-                    palette_cursor += len(pal_b)
-                    palette_cursor = (palette_cursor + 3) & ~3
-                pal_name_offs.append(palette_offsets[pal_b] - gpl_off)
-            lay['pal_name_offs'] = pal_name_offs
-            cursor = max(cursor, palette_cursor)
-        for gpl_off, lay in zip(blob_gpl_offs, sub_layouts):
-            lay['name_off'] = cursor - gpl_off
-            cursor += len(lay['name_bytes'])
-        cursor = _align32(cursor)
-    else:
-        blob_gpl_offs = []
-        cursor = BLOBS_START
-        for lay in sub_layouts:
-            if preserve_internal_layout:
-                source_layout = (
-                    lay['sub'].source_layout_offset - parsed.mesh.source_gpl_base_offset
-                )
-                cursor = _align32_residue(cursor, source_layout & 31)
-            blob_gpl_offs.append(cursor)
-            cursor += lay['blob_size']
-            if not preserve_internal_layout:
-                cursor = _align32(cursor)
-
-    # GPL-relative byte offset of each submesh's raw position data array.
-    # Computed here so the SKN builder can use them directly instead of
-    # re-parsing gpl_bytes (blob_gpl_offs[i] is the DOLayout base; pos_data_off
-    # is DOLayout-relative, so their sum is the GPL-relative pos array offset).
-    pos_gpl_offsets = [
-        blob_gpl_offs[i] + sub_layouts[i]['pos_data_off']
-        for i in range(N)
-    ]
-
-    user_data_gpl_off = cursor
-    user_data_bytes   = parsed.gpl_user_data if parsed.gpl_user_data else b''
-    total_size        = cursor + len(user_data_bytes)
-
-    # -------------------------------------------------------------------------
-    # Assembly
-    # -------------------------------------------------------------------------
-
-    gpl = bytearray(total_size)
-
-    # GPL Header (0x14 bytes)
-    struct.pack_into('>I', gpl, 0x00, GPL_MAGIC)
-    struct.pack_into('>I', gpl, 0x04, parsed.gpl_user_data_len)
-    struct.pack_into('>I', gpl, 0x08, user_data_gpl_off if user_data_bytes else 0)
-    struct.pack_into('>I', gpl, 0x0c, N)
-    struct.pack_into('>I', gpl, 0x10, GEO_DESC_OFF)
-
-    for i, (lay, gpl_b) in enumerate(zip(sub_layouts, blob_gpl_offs)):
-        sub     = lay['sub']
-        POS_OFF = lay['POS_OFF'];  COL_OFF = lay['COL_OFF']
-        UV_OFF  = lay['UV_OFF'];   NOR_OFF = lay['NOR_OFF']
-        DSP_OFF = lay['DSP_OFF'];  DS_OFF  = lay['DS_OFF']
-        M_uv    = lay['M_uv'];     n_ds    = lay['n_ds']
-
-        # A DOLightingHeader exists only when the submesh carries normal data:
-        # skinned (interleaved cc=6) meshes always do, non-skinned meshes only
-        # when a separate NormalBuffer was exported.  When absent, the pointer
-        # must stay 0 — a non-zero pointer to a zeroed header makes the game's
-        # model loader allocate a normal vertex attribute, shifting the UV
-        # attribute slots the (copied) display-state shader expects and
-        # producing blocky color/UV distortion in-game.
-        has_lighting = bool(
-            sub.normal_buffer
-            and (lay['is_interleaved'] or sub.normal_buffer.normal_data)
-        )
-
-        # GEO Descriptor (GPL-relative pointers)
-        desc = GEO_DESC_OFF + i * 8
-        struct.pack_into('>I', gpl, desc,     gpl_b)                       # DOLayoutPtr
-        struct.pack_into('>I', gpl, desc + 4, gpl_b + lay['name_off'])     # namePtr
-
-        # DOLayout (DOLayout-relative sub-struct pointers)
-        struct.pack_into('>I', gpl, gpl_b + 0x00, POS_OFF)
-        struct.pack_into('>I', gpl, gpl_b + 0x04, COL_OFF)
-        struct.pack_into('>I', gpl, gpl_b + 0x08, UV_OFF)
-        struct.pack_into('>I', gpl, gpl_b + 0x0c, NOR_OFF if has_lighting else 0)
-        struct.pack_into('>I', gpl, gpl_b + 0x10, DSP_OFF)
-        struct.pack_into('B',  gpl, gpl_b + 0x14, M_uv)
-        # 0x15–0x17: padding (zero, already initialised)
-
-        # Position Header (DOLayout-relative rawPtr)
-        struct.pack_into('>I', gpl, gpl_b + POS_OFF + 0x00, lay['pos_data_off'])
-        struct.pack_into('>H', gpl, gpl_b + POS_OFF + 0x04, lay['pos_count'])
-        struct.pack_into('B',  gpl, gpl_b + POS_OFF + 0x06, sub.vertex_quantize_info)
-        struct.pack_into('B',  gpl, gpl_b + POS_OFF + 0x07, sub.vertex_comp_count)
-
-        # Color Header
-        if sub.color_channels:
-            cc0 = sub.color_channels[0]
-            struct.pack_into('>I', gpl, gpl_b + COL_OFF + 0x00, lay['col_data_off'])
-            struct.pack_into('>H', gpl, gpl_b + COL_OFF + 0x04, lay['col_count'])
-            struct.pack_into('B',  gpl, gpl_b + COL_OFF + 0x06, cc0.quantize_info)
-            struct.pack_into('B',  gpl, gpl_b + COL_OFF + 0x07, cc0.comp_count)
-        # else: all-zero (zero-initialised array)
-
-        # UV Headers (M_uv × 0x10)
-        for j, uv in enumerate(sub.uv_channels):
-            uv_off = gpl_b + UV_OFF + j * 0x10
-            struct.pack_into('>I', gpl, uv_off + 0x00, lay['uv_data_offs'][j])   # textureCoordsArrPtr
-            struct.pack_into('>H', gpl, uv_off + 0x04, lay['uv_counts'][j])
-            struct.pack_into('B',  gpl, uv_off + 0x06, uv.quantize_info)
-            struct.pack_into('B',  gpl, uv_off + 0x07, uv.comp_count)
-            struct.pack_into('>I', gpl, uv_off + 0x08, lay['pal_name_offs'][j])  # paletteNamePtr
-            struct.pack_into('>I', gpl, uv_off + 0x0c, 0)                        # palettePtr (runtime)
-
-        # Normal (Lighting) Header
-        # Interleaved: rawPtr already set to pos_data_off+6 (no separate buffer).
-        # Non-interleaved: rawPtr points to the separate normal data block.
-        # Guarded by has_lighting (see DOLayout pointer write above) so the
-        # pointer and the header body are emitted together, or not at all.
-        if has_lighting:
-            nb = sub.normal_buffer
-            struct.pack_into('>I', gpl, gpl_b + NOR_OFF + 0x00, lay['nor_data_off'])
-            struct.pack_into('>H', gpl, gpl_b + NOR_OFF + 0x04, lay['nor_count'])
-            struct.pack_into('B',  gpl, gpl_b + NOR_OFF + 0x06, nb.quantize_info)
-            struct.pack_into('B',  gpl, gpl_b + NOR_OFF + 0x07, nb.comp_count)
-            struct.pack_into('>f', gpl, gpl_b + NOR_OFF + 0x08, nb.ambient_pct)
-        # else: all-zero (no lighting header: pointer left 0)
-
-        # Display Header
-        first_pl = next(
-            (lay['pl_offs'][k] for k, ds in enumerate(sub.draw_states) if ds.prim_list_data),
-            0,
-        )
-        struct.pack_into('>I', gpl, gpl_b + DSP_OFF + 0x00, first_pl)   # primitivePtr (not used directly)
-        struct.pack_into('>I', gpl, gpl_b + DSP_OFF + 0x04, DS_OFF)     # displayStatePtr
-        struct.pack_into('>H', gpl, gpl_b + DSP_OFF + 0x08, n_ds)
-        # 0x0a–0x0b: padding
-
-        # Display States (n_ds × 0x10)
-        for k, ds in enumerate(sub.draw_states):
-            ds_off  = gpl_b + DS_OFF + k * 0x10
-            setting = struct.unpack('>I', _setting_bytes(ds.shader_mode))[0]
-            struct.pack_into('B',  gpl, ds_off + 0x00, ds.display_state_id)
-            # bytes 0x01–0x03: renderer parameters (NOT padding)
-            pad = ds.display_state_pad_bytes
-            gpl[ds_off + 0x01 : ds_off + 0x04] = pad[:3] if len(pad) >= 3 else pad.ljust(3, b'\x00')
-            struct.pack_into('>I', gpl, ds_off + 0x04, setting)
-            struct.pack_into('>I', gpl, ds_off + 0x08, lay['pl_offs'][k])
-            struct.pack_into('>I', gpl, ds_off + 0x0c,
-                         len(lay['pl_bytes_list'][k]) if ds.prim_list_data else 0)
-
-        # Raw data payloads  (DOLayout-relative offsets, written into gpl at gpl_b + off)
-        def _put(rel_off: int, data: bytes) -> None:
-            gpl[gpl_b + rel_off : gpl_b + rel_off + len(data)] = data
-
-        _put(lay['name_off'], lay['name_bytes'])
-        for pal_off, pal_b in zip(lay['pal_name_offs'], lay['pal_name_bytes_list']):
-            _put(pal_off, pal_b)
-        _put(lay['pos_data_off'], lay['pos_data'])
-        if lay['col_data']:
-            _put(lay['col_data_off'], lay['col_data'])
-        for uv_off, uv_b in zip(lay['uv_data_offs'], lay['uv_data_list']):
-            _put(uv_off, uv_b)
-        if lay['nor_data']:
-            _put(lay['nor_data_off'], lay['nor_data'])
-        for pl_off, pl_b in zip(lay['pl_offs'], lay['pl_bytes_list']):
-            if pl_b:
-                _put(pl_off, pl_b)
-
-    # User data (appended after all submesh blobs)
-    if user_data_bytes:
-        gpl[user_data_gpl_off : user_data_gpl_off + len(user_data_bytes)] = user_data_bytes
-
-    return GPLBuildResult(gpl_bytes=bytes(gpl), pos_gpl_offsets=pos_gpl_offsets)
-
-
 def CloneGPL(model_offset: int, model_length: int) -> bytes:
-    """Clone the GPL section verbatim from the model's source DAT.
+    """Clone the GPL section verbatim from the model's donor.
 
-    Reads the model block header to determine GPL boundaries, then returns
-    the raw GPL bytes unchanged.  No pointer fixups needed (all internal
-    GPL pointers are GPL-section-relative or DOLayout-relative).
+    No pointer fixups needed (all internal GPL pointers are GPL-section-relative
+    or DOLayout-relative).
     """
-    with _open_source(model_offset) as f:
-        f.seek(model_offset)
-        hdr = f.read(0x20)
-        gpl_off = struct.unpack_from('>I', hdr, 0x04)[0]
-        act_off = struct.unpack_from('>I', hdr, 0x08)[0]
-        tex_off = struct.unpack_from('>I', hdr, 0x0c)[0]
-        skn_off = struct.unpack_from('>I', hdr, 0x10)[0]
-        # GPL ends where the next present section starts
-        next_off = act_off or tex_off or skn_off or model_length
-        gpl_len = next_off - gpl_off
-        f.seek(model_offset + gpl_off)
-        data = f.read(gpl_len)
+    _, gpl_off, act_off, tex_off, skn_off, *_ = _donor_header(model_offset)
+    # GPL ends where the next present section starts
+    gpl_len = (act_off or tex_off or skn_off or model_length) - gpl_off
+    data = _read_donor(model_offset + gpl_off, gpl_len)
     _slogger.info(f"[CloneGPL] {gpl_len:,} bytes from block+0x{gpl_off:X}", source="hammerspace.main")
     return data
 
@@ -5733,13 +4783,7 @@ def CloneGPL(model_offset: int, model_length: int) -> bytes:
 def PatchGPLMaterialStates(gpl_bytes: bytes, data: dict, model_offset: int) -> bytes:
     """Patch aliased Type-7 material bytes over an otherwise verbatim donor GPL."""
 
-    with _open_source(model_offset) as source:
-        source.seek(model_offset + 0x04)
-        raw = source.read(4)
-    if len(raw) != 4:
-        raise IOError(f'Could not read donor GPL offset at 0x{model_offset + 4:08X}')
-    gpl_offset = struct.unpack('>I', raw)[0]
-    gpl_absolute = model_offset + gpl_offset
+    gpl_absolute = _donor_gpl_absolute(model_offset)
     patched = bytearray(gpl_bytes)
 
     for submesh_index, submesh in enumerate(data['SluggiesModel'].get('Submeshes', [])):
@@ -5761,10 +4805,7 @@ def PatchGPLMaterialStates(gpl_bytes: bytes, data: dict, model_offset: int) -> b
                 state.get('DisplayStateParamBytesEdited') or state.get('DisplayStateParamBytes', '000000')
             )
             setting = state.get('ShaderModeEdited') or state.get('ShaderMode', '')
-            if len(setting) == 8 and all(c in '0123456789abcdefABCDEF' for c in setting):
-                setting_bytes = bytes.fromhex(setting)
-            else:
-                setting_bytes = setting.encode('ascii', errors='replace').ljust(4, b'\x00')[:4]
+            setting_bytes = _shader_mode_bytes(setting)
             patched[state_relative + 1:state_relative + 4] = pad[:3].ljust(3, b'\x00')
             patched[state_relative + 4:state_relative + 8] = setting_bytes
             _slogger.info(
@@ -5806,12 +4847,7 @@ def PatchGPLExcludeSubmeshes(gpl_bytes: bytes, model: dict, model_offset: int) -
     indices = excluded_submesh_indices(model)
     if not indices:
         return gpl_bytes
-    with _open_source(model_offset) as source:
-        source.seek(model_offset + 0x04)
-        raw = source.read(4)
-    if len(raw) != 4:
-        raise IOError(f'Could not read donor GPL offset at 0x{model_offset + 4:08X}')
-    gpl_absolute = model_offset + struct.unpack('>I', raw)[0]
+    gpl_absolute = _donor_gpl_absolute(model_offset)
     patched = bytearray(gpl_bytes)
     submeshes = model.get('Submeshes', [])
     for submesh_index in indices:
@@ -5838,12 +4874,7 @@ def PatchGPLExcludeSubmeshes(gpl_bytes: bytes, model: dict, model_offset: int) -
 def PatchGPLPositionArrays(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes:
     """Patch validated same-size position arrays over an otherwise cloned GPL."""
 
-    with _open_source(model_offset) as source:
-        source.seek(model_offset + 0x04)
-        raw = source.read(4)
-    if len(raw) != 4:
-        raise IOError(f'Could not read donor GPL offset at 0x{model_offset + 4:08X}')
-    gpl_absolute = model_offset + struct.unpack('>I', raw)[0]
+    gpl_absolute = _donor_gpl_absolute(model_offset)
     patched = bytearray(gpl_bytes)
     for submesh_index, submesh, edited in _position_edits(model):
         position_absolute = _hex(submesh['VertexBuffer']['VertexBufferOffset'])
@@ -5865,12 +4896,7 @@ def PatchGPLPositionArrays(gpl_bytes: bytes, model: dict, model_offset: int) -> 
 def PatchGPLUVArrays(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes:
     """Patch same-size edited UV/normal arrays over an otherwise cloned donor GPL."""
 
-    with _open_source(model_offset) as source:
-        source.seek(model_offset + 0x04)
-        raw = source.read(4)
-    if len(raw) != 4:
-        raise IOError(f'Could not read donor GPL offset at 0x{model_offset + 4:08X}')
-    gpl_absolute = model_offset + struct.unpack('>I', raw)[0]
+    gpl_absolute = _donor_gpl_absolute(model_offset)
     use_compression = model.get('UseCompression', True)
     patched = bytearray(gpl_bytes)
     for submesh_index, submesh in enumerate(model.get('Submeshes', [])):
@@ -5979,12 +5005,7 @@ def PatchGPLUVArrays(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes:
 def PatchGPLUVRebuild(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes:
     """Append resized UV/list payloads and redirect pointers over cloned GPL."""
 
-    with _open_source(model_offset) as source:
-        source.seek(model_offset + 0x04)
-        raw = source.read(4)
-    if len(raw) != 4:
-        raise IOError(f'Could not read donor GPL offset at 0x{model_offset + 4:08X}')
-    gpl_absolute = model_offset + struct.unpack('>I', raw)[0]
+    gpl_absolute = _donor_gpl_absolute(model_offset)
     use_compression = model.get('UseCompression', True)
     patched = bytearray(gpl_bytes)
 
@@ -6154,42 +5175,10 @@ def PatchGPLUVRebuild(gpl_bytes: bytes, model: dict, model_offset: int) -> bytes
             if state.get('ShaderModeEdited') is not None:
                 setting_field = _hex(state['ShaderModeFieldOffset']) - gpl_absolute
                 setting = state['ShaderModeEdited']
-                setting_bytes = (
-                    bytes.fromhex(setting)
-                    if len(setting) == 8 and all(c in '0123456789abcdefABCDEF' for c in setting)
-                    else setting.encode('ascii', errors='replace').ljust(4, b'\x00')[:4]
-                )
+                setting_bytes = _shader_mode_bytes(setting)
                 patched[setting_field:setting_field + 4] = setting_bytes
 
     return bytes(patched)
-
-
-def _gpl_pos_offsets_from_bytes(gpl_bytes: bytes) -> list[int]:
-    """Extract per-submesh GPL-relative position-data offsets from raw GPL bytes.
-
-    Parses the GPL header and GEO descriptors to find each submesh's
-    DOLayout, then reads the PositionHeader rawPtr field.  Returns a list
-    of GPL-section-relative byte offsets (one per submesh).
-
-    This is used when the GPL section is cloned (not rebuilt) and we still
-    need the pos_gpl_offsets metadata for the SKN builder.
-    """
-    # GPL header: +0x0c = N (submesh count), +0x10 = descriptorPtr
-    n_submeshes = struct.unpack_from('>I', gpl_bytes, 0x0c)[0]
-    desc_ptr    = struct.unpack_from('>I', gpl_bytes, 0x10)[0]
-
-    offsets = []
-    for i in range(n_submeshes):
-        # GEO descriptor: 8 bytes each → first uint32 = DOLayout GPL-rel ptr
-        blob_ptr = struct.unpack_from('>I', gpl_bytes, desc_ptr + i * 8)[0]
-        # DOLayout +0x00 = posHeaderPtr (DOLayout-relative)
-        pos_hdr_ptr = struct.unpack_from('>I', gpl_bytes, blob_ptr)[0]
-        # PositionHeader +0x00 = raw data array ptr (DOLayout-relative)
-        pos_arr_ptr = struct.unpack_from('>I', gpl_bytes, blob_ptr + pos_hdr_ptr)[0]
-        # GPL-relative offset = DOLayout base + pos_arr_ptr
-        offsets.append(blob_ptr + pos_arr_ptr)
-
-    return offsets
 
 
 def BuildACTBoneHierarchy(data: dict, source_model_offset: int, source_model_length: int) -> bytes:
@@ -6331,48 +5320,32 @@ def _rebuild_act_bone_hierarchy(act_bytes: bytes, data: dict, source_model_offse
 
 
 def CloneACT(model_offset: int, model_length: int) -> bytes:
-    """Clone the ACT section verbatim from the model's source DAT.
+    """Clone the ACT section verbatim from the model's donor.
 
     Returns the raw ACT bytes unchanged, or b'' if the model has no ACT section.
     """
-    with _open_source(model_offset) as f:
-        f.seek(model_offset)
-        hdr = f.read(0x20)
-        act_off = struct.unpack_from('>I', hdr, 0x08)[0]
-        if not act_off:
-            _slogger.info("[CloneACT] No ACT section", source="hammerspace.main")
-            return b''
-        tex_off = struct.unpack_from('>I', hdr, 0x0c)[0]
-        skn_off = struct.unpack_from('>I', hdr, 0x10)[0]
-        next_off = tex_off or skn_off or model_length
-        act_len = next_off - act_off
-        f.seek(model_offset + act_off)
-        data = f.read(act_len)
+    _, _, act_off, tex_off, skn_off, *_ = _donor_header(model_offset)
+    if not act_off:
+        _slogger.info("[CloneACT] No ACT section", source="hammerspace.main")
+        return b''
+    act_len = (tex_off or skn_off or model_length) - act_off
+    data = _read_donor(model_offset + act_off, act_len)
     _slogger.info(f"[CloneACT] {act_len:,} bytes from block+0x{act_off:X}", source="hammerspace.main")
     return data
 
 
 def _act_section_absolute(source_model_offset: int) -> int:
-    """Return the absolute INPUT-file offset of a model's ACT section.
-
-    Reads the model block header at ``source_model_offset`` in INPUT dt_na.dat
-    and returns ``source_model_offset + act_off`` (``act_off`` is the big-endian
-    uint32 at header +0x08). Returns 0 when the model has no ACT section
-    (``act_off`` is 0).
+    """Return the absolute offset of the donor model's ACT section, 0 when the model has none.
 
     This is the reference point used to convert the ``.sluggie``'s absolute
     ``SRTOffset`` (``ACT.absolute + orientationPTR``) into an ACT-section-relative
     offset, which stays valid after the hammerspace block is relocated.
     """
-    with _open_source(source_model_offset) as f:
-        f.seek(source_model_offset)
-        hdr = f.read(0x20)
+    hdr = _read_donor(source_model_offset, 0x20)
     if len(hdr) < 0x20:
         return 0
     act_off = struct.unpack_from('>I', hdr, 0x08)[0]
-    if not act_off:
-        return 0
-    return source_model_offset + act_off
+    return source_model_offset + act_off if act_off else 0
 
 
 def _apply_root_scale_patch(act_bytes: bytes, data: dict, source_model_offset: int) -> bytes:
@@ -6553,8 +5526,7 @@ def _apply_geo_id_patches(act_bytes: bytes, data: dict, source_model_offset: int
         current = struct.unpack_from('>H', patched, act_relative)[0]
         if current != 0xFFFF:
             # Exports written before the export.py GeoIdFieldOffset fix (see
-            # that file's extract_bone_hierarchy comment, and
-            # build_add_submesh_fixture.py's identical fallback) recorded
+            # that file's extract_bone_hierarchy comment) recorded
             # bl.absolute + 0x0C instead of the real geoFileIdRaw field at
             # bl.absolute + 0x14, an 8-byte offset bug. Older .sluggie files
             # on disk still carry the stale offset. Try the corrected
@@ -6594,26 +5566,20 @@ def _apply_geo_id_patches(act_bytes: bytes, data: dict, source_model_offset: int
 
 
 def CloneTEX(model_offset: int, model_length: int) -> bytes:
-    """Clone the TEX section verbatim from the model's source DAT.
+    """Clone the TEX section verbatim from the model's donor.
 
     Returns the raw TEX bytes unchanged, or b'' if the model has no TEX section.
     """
-    with _open_source(model_offset) as f:
-        f.seek(model_offset)
-        hdr = f.read(0x20)
-        tex_off = struct.unpack_from('>I', hdr, 0x0c)[0]
-        if not tex_off:
-            _slogger.info("[CloneTEX] No TEX section", source="hammerspace.main")
-            return b''
-        skn_off = struct.unpack_from('>I', hdr, 0x10)[0]
-        trailing_offsets = [struct.unpack_from('>I', hdr, offset)[0] for offset in (0x14, 0x18, 0x1c)]
-        next_off = min(
-            [offset for offset in [skn_off, *trailing_offsets] if offset > tex_off]
-            + [model_length]
-        )
-        tex_len = next_off - tex_off
-        f.seek(model_offset + tex_off)
-        data = f.read(tex_len)
+    _, _, _, tex_off, skn_off, *trailing_offsets = _donor_header(model_offset)
+    if not tex_off:
+        _slogger.info("[CloneTEX] No TEX section", source="hammerspace.main")
+        return b''
+    next_off = min(
+        [offset for offset in [skn_off, *trailing_offsets] if offset > tex_off]
+        + [model_length]
+    )
+    tex_len = next_off - tex_off
+    data = _read_donor(model_offset + tex_off, tex_len)
     _slogger.info(f"[CloneTEX] {tex_len:,} bytes from block+0x{tex_off:X}", source="hammerspace.main")
     return data
 
@@ -6733,7 +5699,6 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
                 image_data_length=0,
                 palette_data_offset=None,
                 palette_data_length=None,
-                texture_descriptor_offset=0,
             ))
 
     # --- Pass 1: determine payload bytes and dimensions for each texture ---
@@ -6773,9 +5738,7 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
                     f"image_data_offset={tex.image_data_offset} or "
                     f"image_data_length={tex.image_data_length} is zero"
                 )
-            with _open_source(tex.image_data_offset) as f:
-                f.seek(tex.image_data_offset)
-                image_bytes = f.read(tex.image_data_length)
+            image_bytes = _read_donor(tex.image_data_offset, tex.image_data_length)
             if len(image_bytes) != tex.image_data_length:
                 raise IOError(
                     f"[BuildTEX] texture {idx}: expected to read "
@@ -6784,9 +5747,7 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
                 )
             image_payloads.append((idx, image_bytes))
             if tex.palette_data_offset and tex.palette_data_length:
-                with _open_source(tex.palette_data_offset) as f:
-                    f.seek(tex.palette_data_offset)
-                    palette_bytes = f.read(tex.palette_data_length)
+                palette_bytes = _read_donor(tex.palette_data_offset, tex.palette_data_length)
                 if len(palette_bytes) != tex.palette_data_length:
                     raise IOError(
                         f"[BuildTEX] texture {idx}: expected to read "
@@ -6880,31 +5841,6 @@ def BuildTEX(parsed: SluggieParsed, texture_plan=None) -> bytes:
         source="hammerspace.main",
     )
     return bytes(out)
-
-
-def BuildSKNSkinningDataCopyOnly(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> bytes:
-    """Return the SKN (Skinning Data) section bytes verbatim from INPUT dt_na.dat.
-
-    Reads the original SKN block from the input file using the section offset
-    stored in the model-block file header. memClrPtr, gplVertexArr, and
-    gplDestArr are position-data-relative and require no GPL relocation.
-
-    Returns the raw SKN section bytes (patched), or b'' if the model has no
-    SKN section.
-    """
-
-    if not parsed.model_offset:
-        return b''
-
-    with _open_source(parsed.model_offset) as f:
-        f.seek(parsed.model_offset)
-        hdr = f.read(0x20)
-        skn_off = struct.unpack_from('>I', hdr, 0x10)[0]
-        if not skn_off:
-            return b''
-        skn_len = parsed.model_length - skn_off
-        f.seek(parsed.model_offset + skn_off)
-        return f.read(skn_len)
 
 
 def _source_blob_for_skn(entry: object, vertex_stride: int) -> bytes:
@@ -7218,8 +6154,7 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
     include any trailing sub-sections (ptr6/ptr7/ptr8 data that lives after
     the SKN section in the original block).  If the original model has non-
     zero ptr6/ptr7/ptr8 pointers, that data must be appended separately to
-    the returned bytes, or BuildSKNSkinningDataCopyOnly should be used
-    instead.
+    the returned bytes.
 
     Returns the complete SKN section as a byte string, or b'' for non-skinned
     models.
@@ -7287,41 +6222,28 @@ def BuildSKNSkinningData(parsed: SluggieParsed, gpl_result: GPLBuildResult) -> b
 
 def CloneSKN(model_offset: int, model_length: int) -> bytes:
     """Clone the SKN section verbatim, excluding ptr6/ptr7/ptr8 sections."""
-    with _open_source(model_offset) as f:
-        f.seek(model_offset)
-        hdr = f.read(0x20)
-        skn_off = struct.unpack_from('>I', hdr, 0x10)[0]
-        if not skn_off:
-            _slogger.info("[CloneSKN] No SKN section", source="hammerspace.main")
-            return b''
-        trailing_offsets = [struct.unpack_from('>I', hdr, offset)[0] for offset in (0x14, 0x18, 0x1c)]
-        skn_end = min(
-            [offset for offset in trailing_offsets if offset > skn_off]
-            + [model_length]
-        )
-        skn_len = skn_end - skn_off
-        f.seek(model_offset + skn_off)
-        data = f.read(skn_len)
+    _, _, _, _, skn_off, *trailing_offsets = _donor_header(model_offset)
+    if not skn_off:
+        _slogger.info("[CloneSKN] No SKN section", source="hammerspace.main")
+        return b''
+    skn_end = min(
+        [offset for offset in trailing_offsets if offset > skn_off]
+        + [model_length]
+    )
+    skn_len = skn_end - skn_off
+    data = _read_donor(model_offset + skn_off, skn_len)
     _slogger.info(f"[CloneSKN] {skn_len:,} bytes from block+0x{skn_off:X}", source="hammerspace.main")
     return data
 
 
 def CloneTrailingSections(model_offset: int, model_length: int) -> tuple[bytes, int]:
     """Clone the contiguous ptr6/ptr7/ptr8 tail and return its original offset."""
-    with _open_source(model_offset) as f:
-        f.seek(model_offset)
-        hdr = f.read(0x20)
-        offsets = [
-            struct.unpack_from('>I', hdr, field_offset)[0]
-            for field_offset in (0x14, 0x18, 0x1c)
-        ]
-        offsets = [offset for offset in offsets if 0 < offset < model_length]
-        if not offsets:
-            _slogger.info("[CloneTrailing] No ptr6/ptr7/ptr8 sections", source="hammerspace.main")
-            return b'', 0
-        start = min(offsets)
-        f.seek(model_offset + start)
-        data = f.read(model_length - start)
+    offsets = [offset for offset in _donor_header(model_offset)[5:] if 0 < offset < model_length]
+    if not offsets:
+        _slogger.info("[CloneTrailing] No ptr6/ptr7/ptr8 sections", source="hammerspace.main")
+        return b'', 0
+    start = min(offsets)
+    data = _read_donor(model_offset + start, model_length - start)
     _slogger.info(f"[CloneTrailing] {len(data):,} bytes from block+0x{start:X}", source="hammerspace.main")
     return data, start
 
@@ -7463,16 +6385,14 @@ def BuildHEADERModelBlock(
 
 
 def CloneHEADER(model_offset: int) -> bytes:
-    """Clone the 0x20-byte model block header verbatim from the source DAT.
+    """Clone the 0x20-byte model block header verbatim from the donor.
 
     The header contains block-relative pointers to GPL, ACT, TEX, SKN, and
     any ptr6/ptr7/ptr8 sub-sections.  When all sections are cloned at their
     original sizes and reassembled in the same order, these pointers remain
     valid without any fixups.
     """
-    with _open_source(model_offset) as f:
-        f.seek(model_offset)
-        data = f.read(0x20)
+    data = _read_donor(model_offset, 0x20)
     _slogger.info(f"[CloneHEADER] 0x20 bytes from offset 0x{model_offset:08X}", source="hammerspace.main")
     return data
 
@@ -7754,13 +6674,14 @@ def BuildModelBlock(
     itself is still built from its vanilla donor. Only for a block written
     back to the model's own route; ignored with an embedded donor.
     """
-    global _EMBEDDED_DONOR
+    global _EMBEDDED_DONOR, _PRELOADED_DONOR
     previous, _EMBEDDED_DONOR = _EMBEDDED_DONOR, donor_entry(data['SluggiesModel'])
+    previous_preload, _PRELOADED_DONOR = _PRELOADED_DONOR, None
     try:
         return _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, texture_plan,
                                   carry_live_members)
     finally:
-        _EMBEDDED_DONOR = previous
+        _EMBEDDED_DONOR, _PRELOADED_DONOR = previous, previous_preload
 
 
 def _texture_replacement_overrides(model: dict, sluggie_path) -> dict[int, str]:
@@ -7786,18 +6707,27 @@ def _texture_replacement_overrides(model: dict, sluggie_path) -> dict[int, str]:
     return overrides
 
 
-def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, texture_plan,
-                       carry_live_members=False) -> ModelBlockBuild:
-    modes = section_modes or SectionModes()
-    _validate_section_modes(modes)
+@dataclass
+class _DonorRoute:
+    """Where a build's donor model is, and what its DOL entry holds around it."""
+    chunk_number:        int
+    file_index:          int
+    original_offset:     int            # the DOL entry (or the embedded donor entry)
+    original_length:     int
+    source_model_offset: int            # the model inside that entry
+    source_model_length: int
+    route_prefix:        bytes          # entry bytes before the model (not an archive)
+    route_prefix_size:   int
+    archive_layout:      object         # the entry's archive table, or None
+    base_container:      bytes          # the archive the rebuilt member goes into
+    base_layout:         object
+    block_model_offset:  int            # where the member starts in that archive
+    donor:               tuple | None   # the embedded donor entry (a slot export), or None
 
-    model = data['SluggiesModel']
-    _validate_hammerspace_contract(model, modes)
-    _validate_bone_hierarchy_edited(model)
-    _validate_skin_bones(model)
-    _validate_custom_submeshes(model)
-    _validate_rigid_rebuilds(model)
-    _validate_skinned_rebuild(model)
+
+def _check_mode_requirements(model: dict, modes: SectionModes, texture_plan, sluggie_path) -> tuple[list[int], bool]:
+    """Refuse edits whose section is not in build mode. Returns the rigid submeshes that are rebuilt
+    and whether the skinned body is."""
     rigid_rebuild_indices = [
         index for index, sub in enumerate(model.get('Submeshes') or []) if sub.get('RigidRebuild')
     ]
@@ -7808,15 +6738,6 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
     )
     if skinned_rebuild and (modes.gpl != 'build' or modes.skn != 'build'):
         raise ValueError("SkinnedRebuild requires SectionModes.gpl='build' and skn='build'")
-    # Facial poses (ptr7) address vertices by index, and a rebuilt submesh
-    # has a new vertex order. With ``FacialPoses`` in the rebuild the section
-    # is rebuilt for that order (body and, since 2026-10-10,
-    # rigid submeshes); a body without them drops the poses (the header
-    # pointer is cleared, as the external tool does for every character), a
-    # rigid submesh without them has its objects neutralized. Poses on
-    # submeshes that are not rebuilt are untouched.
-    clear_facial_pointer = skinned_rebuild and _SKINNED_REBUILD_SUBMESH in _facial_pose_submeshes(model)
-    facial_rebuilders: dict = {}
     # A low-poly model has no TEX section: its assignments are indices into
     # the high-poly partner's TEX (checked against it in CheckLodPartner).
     # New PNGs (AdditionalTextureDescriptors) need the TEX builder, whatever
@@ -7855,6 +6776,12 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
         model.get('ReimportTextures') or model.get('AdditionalTextureDescriptors')
     ):
         _merge_duplicate_texture_additions(model, sluggie_path)
+    return rigid_rebuild_indices, skinned_rebuild
+
+
+def _resolve_donor_route(model: dict, carry_live_members: bool) -> _DonorRoute:
+    """Find the donor model of a build: its DOL entry (or embedded donor entry), the model inside it,
+    and the prefix or archive around the model that the new block has to carry."""
     chunk_number = model['ChunkNumber']
     file_index = model['FileIndex']
     donor = _EMBEDDED_DONOR
@@ -7867,6 +6794,7 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
             f'Invalid donor DOL entry for chunk={chunk_number}, file_index={file_index}: '
             f'offset={original_offset}, length={original_length}'
         )
+    _preload_donor(original_offset, original_length)
     source_model_offset = _hex(model.get('ModelOffset', original_offset))
     source_model_length = model.get('ModelLength', original_length)
     route_prefix = b''
@@ -7892,9 +6820,7 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
     if route_prefix_size or route_suffix_size:
         # The DOL entry holds more than this model, so read all of it: the
         # bytes around the model have to be carried into the new block.
-        with _open_source(original_offset) as source:
-            source.seek(original_offset)
-            route_container = source.read(original_length)
+        route_container = _read_donor(original_offset, original_length)
         if len(route_container) != original_length:
             raise IOError(
                 f'could not read the {original_length} byte DOL entry '
@@ -7946,73 +6872,91 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
                     f'inner model starts at +0x{route_prefix_size:X}',
                     source='hammerspace.main',
                 )
+    return _DonorRoute(
+        chunk_number=chunk_number,
+        file_index=file_index,
+        original_offset=original_offset,
+        original_length=original_length,
+        source_model_offset=source_model_offset,
+        source_model_length=source_model_length,
+        route_prefix=route_prefix,
+        route_prefix_size=route_prefix_size,
+        archive_layout=archive_layout,
+        base_container=base_container,
+        base_layout=base_layout,
+        block_model_offset=block_model_offset,
+        donor=donor,
+    )
 
-    position_edits = _position_edits(model) if modes.gpl == 'build' else []
-    if position_edits:
-        model['_PositionEditSubmeshes'] = [index for index, _, _ in position_edits]
-    else:
-        model.pop('_PositionEditSubmeshes', None)
-    if modes.gpl == 'build':
-        rebuild_surface_assignments(data)
-        rebuild_edited_uvs(data)
-        apply_desired_texture_assignments(data)
-    parsed = ParseSluggie(data)
-    if getattr(parsed, 'custom_submeshes', None) and modes.gpl != 'build':
-        raise ValueError("CustomSubmeshes require SectionModes.gpl='build'")
-    if modes.tex == 'build':
-        # Resolved before the GPL append below so a custom submesh's
-        # AdditionalTextureFileName can be patched with its final TEX index
-        # immediately, instead of a placeholder re-patched later.
-        additional_texture_descriptors = model.get('AdditionalTextureDescriptors') or []
-        replacement_overrides = _texture_replacement_overrides(model, sluggie_path)
-        if replacement_overrides:
-            # An explicit override (single-texture CLI) wins over a refill.
-            tex_png_overrides = {**replacement_overrides, **(tex_png_overrides or {})}
-        if texture_plan is not None and (
-            model.get('ReimportTextures') or tex_png_overrides or additional_texture_descriptors
-        ):
+
+def _resolve_texture_plan(model: dict, sluggie_path, tex_png_overrides, texture_plan):
+    """The texture plan of a ``tex='build'`` run: the caller's, or one built from the tex/ folder when
+    the file reimports, replaces or adds textures (else None: every payload is cloned)."""
+    # Resolved before the GPL append below so a custom submesh's
+    # AdditionalTextureFileName can be patched with its final TEX index
+    # immediately, instead of a placeholder re-patched later.
+    additional_texture_descriptors = model.get('AdditionalTextureDescriptors') or []
+    replacement_overrides = _texture_replacement_overrides(model, sluggie_path)
+    if replacement_overrides:
+        # An explicit override (single-texture CLI) wins over a refill.
+        tex_png_overrides = {**replacement_overrides, **(tex_png_overrides or {})}
+    if texture_plan is not None and (
+        model.get('ReimportTextures') or tex_png_overrides or additional_texture_descriptors
+    ):
+        raise ValueError(
+            'a caller-supplied texture_plan cannot be combined with '
+            'ReimportTextures, png overrides, or AdditionalTextureDescriptors'
+        )
+    if texture_plan is None and (
+        model.get('ReimportTextures') or tex_png_overrides or additional_texture_descriptors
+    ):
+        if sluggie_path is None:
             raise ValueError(
-                'a caller-supplied texture_plan cannot be combined with '
-                'ReimportTextures, png overrides, or AdditionalTextureDescriptors'
+                "tex='build' with texture reimport inputs requires "
+                "the sluggie path to resolve the tex/ folder; pass "
+                "sluggie_path to BuildModelBlock"
             )
-        if texture_plan is None and (
-            model.get('ReimportTextures') or tex_png_overrides or additional_texture_descriptors
-        ):
-            if sluggie_path is None:
-                raise ValueError(
-                    "tex='build' with texture reimport inputs requires "
-                    "the sluggie path to resolve the tex/ folder; pass "
-                    "sluggie_path to BuildModelBlock"
-                )
-            import texture_helper as _tex
-            additions = tuple(
-                _tex.AdditionalTextureDescriptor(
-                    texture_file_name=entry['TextureFileName'],
-                    template_texture_index=int(entry['TemplateTextureIndex']),
-                )
-                for entry in additional_texture_descriptors
+        import texture_helper as _tex
+        additions = tuple(
+            _tex.AdditionalTextureDescriptor(
+                texture_file_name=entry['TextureFileName'],
+                template_texture_index=int(entry['TemplateTextureIndex']),
             )
-            plan_kwargs = {
-                'allow_dimension_change': True,
-                'png_overrides': tex_png_overrides,
-                'reimport_donor_textures': bool(model.get('ReimportTextures')),
-            }
-            if additions:
-                plan_kwargs['additional_descriptors'] = additions
-            texture_plan = _tex.build_hammerspace_texture_plan(
-                sluggie_path,
-                model.get('TextureDescriptors') or [],
-                **plan_kwargs,
+            for entry in additional_texture_descriptors
+        )
+        plan_kwargs = {
+            'allow_dimension_change': True,
+            'png_overrides': tex_png_overrides,
+            'reimport_donor_textures': bool(model.get('ReimportTextures')),
+        }
+        if additions:
+            plan_kwargs['additional_descriptors'] = additions
+        texture_plan = _tex.build_hammerspace_texture_plan(
+            sluggie_path,
+            model.get('TextureDescriptors') or [],
+            **plan_kwargs,
+        )
+        for _sk in texture_plan.skipped:
+            _sk_fields = [f"expected {_sk.expected_payload_length} bytes"]
+            if _sk.generated_payload_length is not None:
+                _sk_fields.append(f"generated {_sk.generated_payload_length} bytes")
+            _slogger.warning(
+                f"texture {_sk.texture_index} ({_sk.texture_file_name}): "
+                f"{', '.join(_sk_fields)}; left unchanged ({_sk.reason})",
+                source='hammerspace.main',
             )
-            for _sk in texture_plan.skipped:
-                _sk_fields = [f"expected {_sk.expected_payload_length} bytes"]
-                if _sk.generated_payload_length is not None:
-                    _sk_fields.append(f"generated {_sk.generated_payload_length} bytes")
-                _slogger.warning(
-                    f"texture {_sk.texture_index} ({_sk.texture_file_name}): "
-                    f"{', '.join(_sk_fields)}; left unchanged ({_sk.reason})",
-                    source='hammerspace.main',
-                )
+    return texture_plan
+
+
+def _build_gpl_section(data: dict, parsed: SluggieParsed, modes: SectionModes, source_model_offset: int,
+                       source_model_length: int, texture_plan, sluggie_path, position_edits: list,
+                       rigid_rebuild_indices: list[int], skinned_rebuild: bool,
+                       facial_rebuilders: dict) -> tuple[bytes, bool]:
+    """The GPL section: the donor's, with every edit patched in or its blob replaced. Fills
+    ``facial_rebuilders`` and, for a rebuilt body, ``parsed.skinning``. Returns the section and
+    whether a rebuilt body brought its own facial poses."""
+    model = data['SluggiesModel']
+    body_facial_rebuilt = False
     if modes.gpl == 'build':
         has_material_state_edits = any(
             state.get('MaterialStateAliasedByImporter')
@@ -8087,7 +7031,7 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
                 parsed.skinning = rebuilt_skinning
                 if body_facial_rebuilder is not None:
                     facial_rebuilders[_SKINNED_REBUILD_SUBMESH] = body_facial_rebuilder
-                    clear_facial_pointer = False
+                    body_facial_rebuilt = True
             if rigid_rebuild_indices:
                 # Replace before the append: the append relocates every blob,
                 # replaced ones included, as one unit.
@@ -8097,19 +7041,12 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
                 )
                 facial_rebuilders.update(_rigid_rebuild_facial_rebuilders(model, parsed))
             if getattr(parsed, 'custom_submeshes', None):
-                # Always clone + append (never the full BuildGPLMeshData
-                # rebuild): a same-count rebuild's preserve-layout fast path
-                # is known to corrupt unmodified donor data, and a new submesh has no donor
-                # layout to preserve regardless.
+                # Clone + append: the donor's blobs stay as they are.
                 _warn_stadium_custom_submesh_alpha(model, parsed, sluggie_path)
                 gpl_bytes = PatchGPLAppendSubmesh(
                     gpl_bytes, model, parsed, texture_index_by_file_name,
                     donor_gpl_length=donor_gpl_length,
                 )
-            gpl_result = GPLBuildResult(
-                gpl_bytes=gpl_bytes,
-                pos_gpl_offsets=_gpl_pos_offsets_from_bytes(gpl_bytes),
-            )
         else:
             gpl_bytes = CloneGPL(source_model_offset, source_model_length)
             donor_submesh_count = (
@@ -8118,15 +7055,15 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
             )
             if (donor_submesh_count is not None
                     and len(model.get('Submeshes', [])) != donor_submesh_count):
-                # Only the fixture probes get here (build_add_submesh_fixture.py,
-                # build_template_source_fixture.py): they append a raw entry to
-                # Submeshes, which only the full serializer can emit.
-                gpl_result = BuildGPLMeshData(parsed)
+                # No edit route adds or removes a Submeshes entry (new geometry is a
+                # CustomSubmesh), and no GPL is written from nothing.
+                raise ValueError(
+                    f"GPL build: the file lists {len(model.get('Submeshes', []))} submeshes, its donor model "
+                    f'has {donor_submesh_count}; submeshes cannot be added to or removed from Submeshes '
+                    '(add geometry as a custom submesh)')
             else:
                 # Every edit compacted away (or none was exported): the donor
-                # GPL is the right output. The full serializer rewrites
-                # unedited donor data; here it zeroed Mario's body color
-                # header on a cap-only color edit (2026-10-08).
+                # GPL is the right output.
                 pending = [
                     f'sub{submesh_index} ds{state_index}'
                     for submesh_index, submesh in enumerate(model.get('Submeshes', []))
@@ -8136,56 +7073,23 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
                 if pending:
                     raise ValueError(
                         'GPL build: primitive-list edits on '
-                        f'{", ".join(pending)} have no patch route; refusing the '
-                        'full GPL serializer')
+                        f'{", ".join(pending)} have no patch route')
                 _slogger.info(
                     '[GPL] build requested but no GPL edit remains after '
                     'preprocessing; using the donor GPL unchanged',
                     source='hammerspace.main',
                 )
-                gpl_result = GPLBuildResult(
-                    gpl_bytes=gpl_bytes,
-                    pos_gpl_offsets=_gpl_pos_offsets_from_bytes(gpl_bytes),
-                )
+
     else:
         gpl_bytes = CloneGPL(source_model_offset, source_model_length)
-        gpl_result = GPLBuildResult(
-            gpl_bytes=gpl_bytes,
-            pos_gpl_offsets=_gpl_pos_offsets_from_bytes(gpl_bytes),
-        )
+    return gpl_bytes, body_facial_rebuilt
 
-    # BuildACTBoneHierarchy picks the clone route
-    # (CloneACT + _apply_root_scale_patch + _apply_geo_id_patches, both
-    # ACT-section-relative so they stay correct across hammerspace
-    # relocation) or the rebuild route (BoneHierarchyEdited present -- new
-    # leaf bones change the section's length, so it can no longer be a fixed
-    # verbatim clone) on its own.
-    act_bytes = BuildACTBoneHierarchy(data, source_model_offset, source_model_length)
-    _act_before = CloneACT(source_model_offset, source_model_length)
-    root_scale_applied = bool(_act_before) and (
-        _apply_root_scale_patch(_act_before, data, source_model_offset) != _act_before
-    )
-    if modes.tex == 'build':
-        tex_bytes = BuildTEX(parsed, texture_plan)
-    else:
-        tex_bytes = CloneTEX(source_model_offset, source_model_length)
-    if modes.skn == 'build':
-        skn_bytes = BuildSKNSkinningData(parsed, gpl_result)
-    else:
-        skn_bytes = CloneSKN(source_model_offset, source_model_length)
-    # Bind-pose vertex scaling: apply the model's
-    # RootBoneScaleEdited factors to the SKN bind-pose data. Covers both build
-    # mode (freshly built SKN) and clone mode (verbatim SKN clone) since both
-    # produce the same SKN section layout. No-op when the model has no
-    # non-uniform scale.
-    bind_pose_factors = _root_scale.resolve_bind_pose_scale(model)
-    if bind_pose_factors is not None and skn_bytes:
-        skn_bytes = _scale_skn_bind_pose(skn_bytes, bind_pose_factors)
-        _slogger.info(
-            f'[SKN] bind-pose scaled by {bind_pose_factors} '
-            f'(RootBoneScaleEdited)',
-            source='hammerspace.main',
-        )
+
+def _build_trailing_sections(model: dict, parsed: SluggieParsed, facial_rebuilders: dict,
+                             clear_facial_pointer: bool, source_model_offset: int,
+                             source_model_length: int) -> tuple[bytes, int, list]:
+    """The ptr6/ptr7/ptr8 tail: the file's sections (ptr7 rebuilt where facial poses changed), else
+    the donor's. Returns ``(bytes, original offset, sections)``."""
     parsed_trailing_sections = getattr(parsed, 'trailing_sections', None) or []
     rebuilt_facial_section = None
     if not clear_facial_pointer:
@@ -8217,38 +7121,23 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
             source_model_offset,
             source_model_length,
         )
-    original_header = CloneHEADER(source_model_offset)
-    inner_block = BuildHEADERModelBlock(
-        gpl_result.gpl_bytes,
-        act_bytes,
-        tex_bytes,
-        skn_bytes,
-        trailing_bytes=trailing_bytes,
-        original_header=original_header,
-        original_trailing_off=original_trailing_offset,
-        trailing_sections=parsed_trailing_sections or None,
-    )
-    if clear_facial_pointer and struct.unpack_from('>I', inner_block, 0x18)[0]:
-        cleared = bytearray(inner_block)
-        struct.pack_into('>I', cleared, 0x18, 0)
-        inner_block = bytes(cleared)
-        _slogger.warning(
-            '[SkinnedRebuild] facial poses (ptr7) address submesh 0 by vertex index, which the '
-            'rebuilt body renumbers: the pointer is cleared, so this model has no blink or '
-            'mouth animation (the section bytes stay in the block unreferenced)',
-            source='hammerspace.main',
-        )
-    section_sizes = {
-        'GPL': len(gpl_result.gpl_bytes),
-        'ACT': len(act_bytes),
-        'TEX': len(tex_bytes),
-        'SKN': len(skn_bytes),
-        'trailing': len(trailing_bytes),
-    }
-    report = _build_validation_report(
-        inner_block, source_model_length, modes, section_sizes
-    )
-    report['root_scale_applied'] = root_scale_applied
+    return trailing_bytes, original_trailing_offset, parsed_trailing_sections
+
+
+def _wrap_inner_block(route: _DonorRoute, model: dict, inner_block: bytes, report: dict) -> bytes:
+    """Put the built model back into what its DOL entry holds around it (an archive or a prefix), and
+    give an unused character's cloned textures their untangled bytes. Adds the sizes to ``report``."""
+    chunk_number = route.chunk_number
+    original_offset = route.original_offset
+    original_length = route.original_length
+    source_model_length = route.source_model_length
+    route_prefix = route.route_prefix
+    route_prefix_size = route.route_prefix_size
+    archive_layout = route.archive_layout
+    base_container = route.base_container
+    base_layout = route.base_layout
+    block_model_offset = route.block_model_offset
+    donor = route.donor
     if archive_layout is not None:
         block, archive_report = rebuild_archive_container(
             base_container,
@@ -8291,17 +7180,129 @@ def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, tex
         ):
             _slogger.info(f'[Untangle] {note}', source='hammerspace.main')
         block = bytes(untangled)
+    return block
+
+
+def _build_model_block(data, section_modes, sluggie_path, tex_png_overrides, texture_plan,
+                       carry_live_members=False) -> ModelBlockBuild:
+    modes = section_modes or SectionModes()
+    _validate_section_modes(modes)
+
+    model = data['SluggiesModel']
+    _validate_hammerspace_contract(model, modes)
+    _validate_bone_hierarchy_edited(model)
+    _validate_skin_bones(model)
+    _validate_custom_submeshes(model)
+    _validate_rigid_rebuilds(model)
+    _validate_skinned_rebuild(model)
+    rigid_rebuild_indices, skinned_rebuild = _check_mode_requirements(model, modes, texture_plan, sluggie_path)
+    # Facial poses (ptr7) address vertices by index, and a rebuilt submesh
+    # has a new vertex order. With ``FacialPoses`` in the rebuild the section
+    # is rebuilt for that order (body and, since 2026-10-10,
+    # rigid submeshes); a body without them drops the poses (the header
+    # pointer is cleared, as the external tool does for every character), a
+    # rigid submesh without them has its objects neutralized. Poses on
+    # submeshes that are not rebuilt are untouched.
+    clear_facial_pointer = skinned_rebuild and _SKINNED_REBUILD_SUBMESH in _facial_pose_submeshes(model)
+    facial_rebuilders: dict = {}
+    route = _resolve_donor_route(model, carry_live_members)
+    source_model_offset, source_model_length = route.source_model_offset, route.source_model_length
+
+    position_edits = _position_edits(model) if modes.gpl == 'build' else []
+    if modes.gpl == 'build':
+        rebuild_surface_assignments(data)
+        rebuild_edited_uvs(data)
+        apply_desired_texture_assignments(data)
+    parsed = ParseSluggie(data, [index for index, _, _ in position_edits])
+    if getattr(parsed, 'custom_submeshes', None) and modes.gpl != 'build':
+        raise ValueError("CustomSubmeshes require SectionModes.gpl='build'")
+    if modes.tex == 'build':
+        texture_plan = _resolve_texture_plan(model, sluggie_path, tex_png_overrides, texture_plan)
+    gpl_bytes, body_facial_rebuilt = _build_gpl_section(
+        data, parsed, modes, source_model_offset, source_model_length, texture_plan, sluggie_path,
+        position_edits, rigid_rebuild_indices, skinned_rebuild, facial_rebuilders)
+    if body_facial_rebuilt:
+        clear_facial_pointer = False
+    gpl_result = GPLBuildResult(gpl_bytes=gpl_bytes)
+
+    # BuildACTBoneHierarchy picks the clone route
+    # (CloneACT + _apply_root_scale_patch + _apply_geo_id_patches, both
+    # ACT-section-relative so they stay correct across hammerspace
+    # relocation) or the rebuild route (BoneHierarchyEdited present -- new
+    # leaf bones change the section's length, so it can no longer be a fixed
+    # verbatim clone) on its own.
+    act_bytes = BuildACTBoneHierarchy(data, source_model_offset, source_model_length)
+    _act_before = CloneACT(source_model_offset, source_model_length)
+    root_scale_applied = bool(_act_before) and (
+        _apply_root_scale_patch(_act_before, data, source_model_offset) != _act_before
+    )
+    if modes.tex == 'build':
+        tex_bytes = BuildTEX(parsed, texture_plan)
+    else:
+        tex_bytes = CloneTEX(source_model_offset, source_model_length)
+    if modes.skn == 'build':
+        skn_bytes = BuildSKNSkinningData(parsed, gpl_result)
+    else:
+        skn_bytes = CloneSKN(source_model_offset, source_model_length)
+    # Bind-pose vertex scaling: apply the model's
+    # RootBoneScaleEdited factors to the SKN bind-pose data. Covers both build
+    # mode (freshly built SKN) and clone mode (verbatim SKN clone) since both
+    # produce the same SKN section layout. No-op when the model has no
+    # non-uniform scale.
+    bind_pose_factors = _root_scale.resolve_bind_pose_scale(model)
+    if bind_pose_factors is not None and skn_bytes:
+        skn_bytes = _scale_skn_bind_pose(skn_bytes, bind_pose_factors)
+        _slogger.info(
+            f'[SKN] bind-pose scaled by {bind_pose_factors} '
+            f'(RootBoneScaleEdited)',
+            source='hammerspace.main',
+        )
+    trailing_bytes, original_trailing_offset, parsed_trailing_sections = _build_trailing_sections(
+        model, parsed, facial_rebuilders, clear_facial_pointer, source_model_offset, source_model_length)
+    original_header = CloneHEADER(source_model_offset)
+    inner_block = BuildHEADERModelBlock(
+        gpl_result.gpl_bytes,
+        act_bytes,
+        tex_bytes,
+        skn_bytes,
+        trailing_bytes=trailing_bytes,
+        original_header=original_header,
+        original_trailing_off=original_trailing_offset,
+        trailing_sections=parsed_trailing_sections or None,
+    )
+    if clear_facial_pointer and struct.unpack_from('>I', inner_block, 0x18)[0]:
+        cleared = bytearray(inner_block)
+        struct.pack_into('>I', cleared, 0x18, 0)
+        inner_block = bytes(cleared)
+        _slogger.warning(
+            '[SkinnedRebuild] facial poses (ptr7) address submesh 0 by vertex index, which the '
+            'rebuilt body renumbers: the pointer is cleared, so this model has no blink or '
+            'mouth animation (the section bytes stay in the block unreferenced)',
+            source='hammerspace.main',
+        )
+    section_sizes = {
+        'GPL': len(gpl_result.gpl_bytes),
+        'ACT': len(act_bytes),
+        'TEX': len(tex_bytes),
+        'SKN': len(skn_bytes),
+        'trailing': len(trailing_bytes),
+    }
+    report = _build_validation_report(
+        inner_block, source_model_length, modes, section_sizes
+    )
+    report['root_scale_applied'] = root_scale_applied
+    block = _wrap_inner_block(route, model, inner_block, report)
     return ModelBlockBuild(
         block=block,
         parsed=parsed,
-        chunk_number=chunk_number,
-        file_index=file_index,
-        original_offset=original_offset,
-        original_length=original_length,
+        chunk_number=route.chunk_number,
+        file_index=route.file_index,
+        original_offset=route.original_offset,
+        original_length=route.original_length,
         section_modes=modes,
         section_sizes=section_sizes,
         validation_report=report,
-        donor_block=donor[1] if donor is not None else None,
+        donor_block=route.donor[1] if route.donor is not None else None,
     )
 
 
@@ -8411,17 +7412,22 @@ def WriteModelBlock(
         # a slot's bat or glove is its own: the vanilla block's other users keep it
         share_route=not (target is not None and target.equipment),
     )
-    hh.writeDebugDumps(
-        model_name,
-        build.original_offset,
-        build.original_length,
-        build.block,
-        original_block=build.donor_block,
-    )
     if target is None:
         LodTextureSync.sync_partner_of_high(chunk_number, file_index, build.block, high_before)
     elif target.as_low and file_index != SlotTarget.LOW_FILE:
         WriteModelBlock(build, model_name, target=replace(target, file_index=SlotTarget.LOW_FILE))
+    # Last, and never fatal: the game files are complete at this point, and a dump that cannot
+    # be written (disk full, the file open in another program) must not look like a failed patch.
+    try:
+        hh.writeDebugDumps(
+            model_name,
+            build.original_offset,
+            build.original_length,
+            build.block,
+            original_block=build.donor_block,
+        )
+    except OSError as exc:
+        _slogger.warning(f'Debug dumps not written | Model: {model_name} | {exc}', source='hammerspace.main')
     return new_offset
 
 
@@ -8501,12 +7507,48 @@ def _write_route(block: bytes, chunk_number: int, file_index: int, model_name: s
             + ' share this block but keep their own route',
             source='hammerspace.main',
         )
-    hh.writeModelBlock(block, new_offset)
-    hh.patchDolEntry(chunk_number, file_index, new_offset, len(block))
-    for shared_chunk, shared_index in shared_entries:
-        hh.patchDolEntry(shared_chunk, shared_index, new_offset, len(block))
+    # Every record this write will route is read before the first byte is written, so a record
+    # that cannot be routed stops the run with nothing changed.
+    routes = [(chunk_number, file_index)] + [tuple(route) for route in shared_entries]
+    previous = {}
+    for route in routes:
+        entry = hh.readOutputDolEntry(*route)
+        if entry[0] == -1:
+            entry = hh.readDolEntry(*route)
+        if entry[0] == -1:
+            raise RuntimeError(f'chunk {route[0]}, file {route[1]} has no directory record in main.dol')
+        previous[route] = entry
 
-    hh.patchFstFileSize(os.path.getsize(hh.OUTPUT_DAT))
+    hh.writeModelBlock(block, new_offset)
+    routed = []
+    try:
+        for route in routes:
+            hh.patchDolEntry(*route, new_offset, len(block))
+            routed.append(route)
+    except Exception as exc:
+        # Put the records already switched back on their old block (a re-run finds the sharers
+        # by that offset), then free the new block again.
+        _slogger.error(
+            f'Hammerspace Log: Route write failed | Model: {model_name} | {type(exc).__name__}: {exc} | '
+            'undoing the routes already written',
+            source='hammerspace.main',
+        )
+        for route in routed:
+            try:
+                hh.patchDolEntry(*route, *previous[route])
+            except Exception as undo_exc:
+                _slogger.error(
+                    f'Could not restore the route of chunk {route[0]}, file {route[1]}: {undo_exc}',
+                    source='hammerspace.main',
+                )
+        try:
+            hh.zeroRangeIfUnrouted(new_offset, len(block))
+        except OSError as zero_exc:
+            _slogger.error(f'Could not free the new block at 0x{new_offset:08X}: {zero_exc}',
+                           source='hammerspace.main')
+        raise
+
+    hh.patchFstFileSize(os.path.getsize(hh.OUTPUT_DAT))    # warns by itself when there is no fst.bin
     hh.zeroOriginalModel(chunk_number, file_index)
     if replacing_hammerspace_block and current_offset != new_offset:
         hh.zeroRangeIfUnrouted(current_offset, current_length)
@@ -8600,13 +7642,18 @@ def UnpatchTarget(target: 'SlotTarget.Target') -> bool:
                 source='hammerspace.main',
             )
         ok, removed_offset, removed_length = hh.removeModelFromHammerspace(chunk_number, file_index)
-        success = success and ok
-        if ok:
-            _slogger.info(
-                f'Hammerspace Log: Removed | Slot: chunk {chunk_number}, file {file_index} | '
-                f'Address: 0x{removed_offset:08X} | Size: {removed_length / (1024 * 1024):.2f} MB',
+        if not ok:
+            _slogger.error(
+                f'Slot unpatch stopped | Slot: {target.describe()} | chunk {chunk_number}, file {file_index} '
+                'could not be restored; the files after it were left as they are',
                 source='hammerspace.main',
             )
+            return False
+        _slogger.info(
+            f'Hammerspace Log: Removed | Slot: chunk {chunk_number}, file {file_index} | '
+            f'Address: 0x{removed_offset:08X} | Size: {removed_length / (1024 * 1024):.2f} MB',
+            source='hammerspace.main',
+        )
     return success
 
 
@@ -8639,6 +7686,13 @@ def ClearTarget(character_id: str) -> bool:
                 continue
         ok, removed_offset, removed_length = hh.removeModelFromHammerspace(chunk_number, file_index)
         success = success and ok
+        if not ok:
+            _slogger.error(
+                f'Slot clear stopped | Slot: {target.describe()} | file {file_index} could not be restored; '
+                'the files after it were left as they are',
+                source='hammerspace.main',
+            )
+            break
         if ok:
             _slogger.info(
                 f'Hammerspace Log: Removed | Slot: 0x{cid:02X} (chunk {chunk_number}, file {file_index}) | '
@@ -8778,35 +7832,6 @@ def WriteSlotAnimation(character_id: str, file_index: int, bank: bytes) -> bool:
     return True
 
 
-# ---------------------------------------------------------------------------
-# BuildClone — full-block verbatim copy (DEACTIVATED, kept for reference)
-# ---------------------------------------------------------------------------
-
-# def BuildClone(chunk_number: int, file_index: int) -> bytes:
-#     """Read the entire original model block verbatim from INPUT dt_na.dat.
-#
-#     All internal pointers within a model block are section-relative or
-#     block-relative, so relocating the block to a different file offset
-#     requires NO pointer fixups inside the data itself.  Only the DOL
-#     directory entry (handled by patchDolEntry) needs updating.
-#
-#     Returns the raw model block bytes ready for writeModelBlock().
-#     """
-#     offset, length = hh.readDolEntry(chunk_number, file_index)
-#     if offset == -1 or length <= 0:
-#         raise ValueError(f"Invalid DOL entry for chunk={chunk_number}, file_index={file_index}")
-#
-#     with open(hh.INPUT_DAT, 'rb') as f:
-#         f.seek(offset)
-#         block = f.read(length)
-#
-#     if len(block) != length:
-#         raise IOError(f"Short read: expected {length} bytes at 0x{offset:08X}, got {len(block)}")
-#
-#     print(f"    Read {length:,} bytes from INPUT at 0x{offset:08X}")
-#     return block
-
-
 def _format_report_json(value, indent=2, _level=0, _key=None):
     """Indented JSON, but with scalar-only lists kept on a single line."""
     import json
@@ -8884,9 +7909,10 @@ def PromoteInplaceEdits(model: dict, modes: SectionModes) -> SectionModes:
 # Entry point
 # ---------------------------------------------------------------------------
 
-if __name__ == '__main__':
+def main(argv=None) -> int:
+    """The command line (``start.py`` runs this module as a script). Returns the exit code;
+    a usage error exits through argparse (code 2)."""
     import argparse as _ap
-    import json as _json
 
     _parser = _ap.ArgumentParser(description='Build a hammerspace model block from a .sluggies file.')
     _parser.add_argument('sluggies_path', nargs='?', help='Path to the .sluggies file')
@@ -8933,7 +7959,7 @@ if __name__ == '__main__':
     _parser.add_argument('--high-as-low', action='store_true',
                          help='With --write-slot-blocks: the LOW block may be a second High model (a character '
                               'file import)')
-    _args = _parser.parse_args()
+    _args = _parser.parse_args(argv)
     if _args.write_slot_equipment is not None:
         if _args.sluggies_path is not None:
             _parser.error('--write-slot-equipment takes no .sluggie file')
@@ -8944,8 +7970,8 @@ if __name__ == '__main__':
             _equipment_file = int(_file, 0)
         except (OSError, ValueError) as _exc:
             _slogger.error(f'Slot write refused | {_exc}', source='hammerspace.main')
-            raise SystemExit(1)
-        raise SystemExit(0 if WriteSlotEquipment(_cid, _equipment_file, _equipment_block) else 1)
+            return 1
+        return 0 if WriteSlotEquipment(_cid, _equipment_file, _equipment_block) else 1
     if _args.write_slot_animation is not None:
         if _args.sluggies_path is not None:
             _parser.error('--write-slot-animation takes no .sluggie file')
@@ -8956,8 +7982,8 @@ if __name__ == '__main__':
             _bank_file = int(_file, 0)
         except (OSError, ValueError) as _exc:
             _slogger.error(f'Slot write refused | {_exc}', source='hammerspace.main')
-            raise SystemExit(1)
-        raise SystemExit(0 if WriteSlotAnimation(_cid, _bank_file, _bank) else 1)
+            return 1
+        return 0 if WriteSlotAnimation(_cid, _bank_file, _bank) else 1
     if _args.target_file is not None and _args.target_id is None and _args.clear_target is None:
         _parser.error('--target-file needs --target-id (or --clear-target)')
     if _args.write_slot_blocks is not None:
@@ -8974,8 +8000,8 @@ if __name__ == '__main__':
                     _blocks.append(_file.read())
         except OSError as _exc:
             _slogger.error(f'Slot write refused | {_exc}', source='hammerspace.main')
-            raise SystemExit(1)
-        raise SystemExit(0 if WriteSlotBlocks(_cid, *_blocks, high_as_low=_args.high_as_low) else 1)
+            return 1
+        return 0 if WriteSlotBlocks(_cid, *_blocks, high_as_low=_args.high_as_low) else 1
     if _args.high_as_low:
         _parser.error('--high-as-low needs --write-slot-blocks')
     if _args.as_low and _args.target_id is None:
@@ -8988,8 +8014,8 @@ if __name__ == '__main__':
         if _args.sluggies_path is not None:
             _parser.error('--clear-target takes no .sluggie file')
         if _args.target_file is not None:
-            raise SystemExit(0 if ClearEquipment(_args.clear_target, _args.target_file) else 1)
-        raise SystemExit(0 if ClearTarget(_args.clear_target) else 1)
+            return 0 if ClearEquipment(_args.clear_target, _args.target_file) else 1
+        return 0 if ClearTarget(_args.clear_target) else 1
     if _args.sluggies_path is None:
         _parser.error('the .sluggie path is required')
 
@@ -9007,7 +8033,7 @@ if __name__ == '__main__':
             _target = SlotTarget.make_target(_args.target_id, (_chunk, _index), _args.as_low, _args.target_file)
         except (SlotTarget.TargetError, OSError) as _exc:
             _slogger.error(f'Slot patch refused | Model: {_model_name} | {_exc}', source='hammerspace.main')
-            raise SystemExit(1)
+            return 1
         if _target is None:
             _slogger.info(
                 f"Slot {_args.target_id} is this model's own route (chunk {_chunk}, file {_index}); "
@@ -9016,7 +8042,7 @@ if __name__ == '__main__':
             )
 
     if _args.unpatch and _target is not None:
-        raise SystemExit(0 if UnpatchTarget(_target) else 1)
+        return 0 if UnpatchTarget(_target) else 1
 
     if _args.unpatch:
         _unpatch_errors = LodPartnerGuard.lod_partner_unpatch_errors(_chunk, _index)
@@ -9027,7 +8053,7 @@ if __name__ == '__main__':
                 + ' '.join(_unpatch_errors),
                 source='hammerspace.main',
             )
-            raise SystemExit(1)
+            return 1
         _high_before = LodPartnerGuard.read_current_block(_chunk, _index)
         _split_baseline = None
         if UntanglePolicy.is_split(_chunk, _index):
@@ -9061,7 +8087,7 @@ if __name__ == '__main__':
                 f'Size: {_removed_length / (1024 * 1024):.2f} MB',
                 source='hammerspace.main',
             )
-        raise SystemExit(0 if _success else 1)
+        return 0 if _success else 1
 
     _tex_png_overrides = None
     if _args.texture_file is not None:
@@ -9126,12 +8152,16 @@ if __name__ == '__main__':
         else:
             WriteModelBlock(_build, _model_name, output_offset=_args.output_offset, target=_target,
                             partner_block=_partner_block)
-    except (OSError, KeyError, TypeError, ValueError, RuntimeError) as _exc:
+    except Exception as _exc:      # whatever a builder raises (struct.error, IndexError, ...) ends here
         _slogger.error(
             f'Hammerspace operation failed | Model: {_model_name} | '
             f'{type(_exc).__name__}: {_exc}',
             source='hammerspace.main',
         )
-        raise SystemExit(1)
+        return 1
 
-    raise SystemExit(0)
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

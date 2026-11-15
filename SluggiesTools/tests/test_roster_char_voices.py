@@ -514,9 +514,9 @@ class PackPlanTests(unittest.TestCase):
         self.assertNotIn('character_voices', gone.config)
 
     def test_pack_refusals(self):
-        for pack, env in (('Nope', self.env), ('Empty', self.env), ('Rosa', NoArchiveEnv())):
-            with self.subTest(pack=pack), self.assertRaises(slot_plan.PlanError):
-                slot_plan.plan_char_voice(make_state(), make_config(), 0x0E, None, STATE_FILE, NAMES, env, pack=pack)
+        for pack_name, env in (('Nope', self.env), ('Empty', self.env), ('Rosa', NoArchiveEnv())):
+            with self.subTest(pack=pack_name), self.assertRaises(slot_plan.PlanError):
+                slot_plan.plan_char_voice(make_state(), make_config(), 0x0E, None, STATE_FILE, NAMES, env, pack=pack_name)
         self.empty.voice = 0x09                        # a pack with a base voice and no clips: the base alone
         plan = slot_plan.plan_char_voice(make_state(), make_config(), 0x0E, None, STATE_FILE, NAMES, self.env, pack='Empty')
         self.assertEqual(plan.config['character_voices'], [{'id': '0x0E', 'voice': '0x09'}])

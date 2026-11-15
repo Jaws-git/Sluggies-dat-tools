@@ -825,7 +825,7 @@ def apply_voices(ctx: steps.RosterContext, grid: Grid, write) -> list[str]:
                            'voice or body: the gameplay branches of that species follow the voice (untested)')
         log.append(f'square 0x{sq[0]:02X}: voice of 0x{voice:02X} (species 0x{target:02X}) for '
                    + (', '.join(f'0x{c:02X}' for c in voiced) or 'no square-only member')
-                   + (f'; ' + ', '.join(f'0x{c:02X}' for c in kept) + ' keep their own (on a wheel)' if kept else ''))
+                   + ('; ' + ', '.join(f'0x{c:02X}' for c in kept) + ' keep their own (on a wheel)' if kept else ''))
     return log
 
 

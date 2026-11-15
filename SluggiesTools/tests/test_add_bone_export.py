@@ -295,7 +295,6 @@ class EncodeBoneHierarchyEditedTests(unittest.TestCase):
         arm = _FakeArmObj([donor0, second, first])
         data = {"SluggiesModel": {"BoneHierarchy": [self._donor_bone(0)]}}
         self.fn([arm], data, [], _FakeContext())
-        edited_by_name = {b["BoneId"]: b for b in data["SluggiesModel"]["BoneHierarchyEdited"]}
         first_entry = next(b for b in data["SluggiesModel"]["BoneHierarchyEdited"] if b["UserAdded"] and b["ParentBoneId"] == 0)
         second_entry = next(b for b in data["SluggiesModel"]["BoneHierarchyEdited"] if b["UserAdded"] and b["ParentBoneId"] == first_entry["BoneId"])
         self.assertEqual(first_entry["BoneId"], 1)

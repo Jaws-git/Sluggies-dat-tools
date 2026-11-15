@@ -25,7 +25,7 @@ import numpy as np
 from PIL import Image
 
 from SluggiesTools import gui_grid
-from SluggiesTools.Roster import (derive, icon_art, icon_import, icons, model_icons, slot_cli, slot_plan, state,
+from SluggiesTools.Roster import (derive, icon_art, icon_import, icons, slot_cli, slot_plan, state,
                                   state_icons)
 from SluggiesTools.tests.test_roster_derive import Harness, portrait
 from SluggiesTools.tests.test_slot_plan import STATE_FILE, FakeEnv, make_config, make_state

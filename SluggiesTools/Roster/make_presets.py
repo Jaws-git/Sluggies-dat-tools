@@ -23,7 +23,6 @@ so they get wheels of 3 (60 IDs) next to the 63 that fill the existing wheels, a
 for that). Swatches: the colours (0-10) the wheel does not use yet, lowest first.
 """
 
-import copy
 import json
 import os
 import sys
@@ -37,7 +36,7 @@ if ROOT not in sys.path:
 from SluggiesTools.Dol import dolfile, inventory  # noqa: E402
 from SluggiesTools.Roster import grid, ids, wheels  # noqa: E402
 from SluggiesTools.Roster.open_slot import (  # noqa: E402
-    ICON_DIR, ICON_SIZE, SLOT_ICON, SLOT_NAME, slot_portrait, write_slot_icons)
+    ICON_DIR, SLOT_ICON, SLOT_NAME, write_slot_icons)
 
 WHEEL_SIZE = 10
 NEW_WHEEL_SIZE = 3               # characters without a wheel (the ID budget, see above)

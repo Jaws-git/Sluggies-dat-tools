@@ -213,7 +213,7 @@ game's sound archive: copy the game's `files/sound_NA` folder (`MY2.brsar`
 and `stream/`) into `1_Input/sound_NA/`. The voice's clips are copied into
 the slot's voice bank, and the rebuild writes the grown archive to
 `3_Output_Dat/sound_NA/MY2.brsar`, which goes into the game with the other
-files (`CopyFilesToGameDir.bat` copies it). Each copied voice adds about
+files (the GUI's copy and `CopyFilesToGameDir.bat` copy it). Each copied voice adds about
 100–250 KB to the bank of the slot's species, which the game loads whenever
 that species plays; the Maintenance tab's "Sound memory" check warns when a
 bank grows past what is known to work. `-` gives the slot its square's voice
@@ -960,7 +960,7 @@ first: `3_Output_Dat/sound_NA/MY2.brsar` when it exists, and each track from
 - **Replace...** picks a WAV (any rate, mono or stereo; or MP3, OGG, FLAC, ...
   with ffmpeg) and encodes it in the stock track's format (stereo, its 32,000 or 44,100 Hz, same block layout), so
   only the `.brstm` changes. It is written to `3_Output_Dat/sound_NA/stream/`
-  at once (nothing to stage); **Patch Game & copy files** (CopyFilesToGameDir)
+  at once (nothing to stage); **Patch Game & copy files**
   copies it into the game. A loop in the WAV (`smpl` chunk, as the sound export
   writes) is kept; otherwise a track that loops in the game loops from the
   start. Encoding takes a few seconds per minute of music (a spinner shows

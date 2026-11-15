@@ -197,7 +197,6 @@ class StockStatsTests(unittest.TestCase):
         stats = inventory.table('stats')
         table = ids.new_by_new_chemistry(self.image.read(stats.address, stats.header + 0x66 * ids.STATS_ROW),
                                          stats.header, ids.parse_ids({'ids': self.NEW}))
-        n = ids.ID_BOUND - ids.FIRST_NEW + 1
         self.assertEqual(table[1], (0x0D + 0x04) % 4)
 
     def test_in_place_without_ids(self):

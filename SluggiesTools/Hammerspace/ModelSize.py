@@ -47,7 +47,7 @@ def model_record(name: str, in_image) -> tuple[int, int]:
     try:
         path = name if os.path.isfile(name) else model_files.find_unique(MODELS_DIR, sluggie_name)
     except model_files.AmbiguousNameError as exc:
-        raise SystemExit(str(exc))
+        raise SystemExit(str(exc)) from None
     if path:
         try:
             model = load_sluggie(path)['SluggiesModel']

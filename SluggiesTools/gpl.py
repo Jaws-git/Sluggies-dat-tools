@@ -1,8 +1,5 @@
-from base import *
-from act import *
-import numpy as np
-from helper import *
-from model0 import *
+from base import File, FileChunk, intFromBytes
+from helper import getQuantizedColorData, getQuantizedData
 import slogger
 
 # np.set_printoptions(precision=3, suppress=True, threshold=np.inf)

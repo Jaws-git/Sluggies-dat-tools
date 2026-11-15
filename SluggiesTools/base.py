@@ -1,6 +1,4 @@
-import warnings
 import struct
-import os
 import pprint
 pp = pprint.PrettyPrinter(indent=0)
 

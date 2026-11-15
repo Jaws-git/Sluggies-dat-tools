@@ -6,7 +6,6 @@ structurally with the AST.
 """
 
 import ast
-import json
 import math
 import pathlib
 import struct

@@ -57,7 +57,7 @@ try:
     from ..Gameplay import carry as gameplay_carry
     from ..Sound import brsar, effects, volumes
     from ..StatEditor import bridge, carry
-    from . import datfile, derive, dol_hammerspace, manifest, model_dirs, reset, steps
+    from . import datfile, derive, manifest, model_dirs, reset, steps
 except ImportError:
     import gecko_compat
     from Dol import dolfile
@@ -67,7 +67,6 @@ except ImportError:
     from StatEditor import bridge, carry
     import datfile
     import derive
-    import dol_hammerspace
     import manifest
     import model_dirs
     import reset

@@ -1,7 +1,6 @@
 """RigidRebuild: whole-blob rebuild of a donor rigid submesh,
 on the synthetic donor."""
 import base64
-import copy
 import pathlib
 import struct
 import sys
@@ -346,7 +345,9 @@ class RigidRebuildValidatorTests(unittest.TestCase):
 
         rebuild['FaceSurfaceIndices'] = _u16s([0, 0, 0, 1, 1, 1])
         rebuild['NewSurfaces'] = [_new_surface(template='builtin:rigid_shdw_v1')]
-        self._refused('not verified in game')
+        registry = main._CUSTOM_SUBMESH_BUILTIN_TEMPLATES
+        with mock.patch.dict(registry, {'rigid_shdw_v1': dict(registry['rigid_shdw_v1'], VerifiedInGame=False)}):
+            self._refused('not verified in game')
         rebuild['NewSurfaces'] = [_new_surface(template='rigid:sm9_ds9')]
         self._refused('does not exist on a rigid submesh')
         rebuild['NewSurfaces'] = [_new_surface(texture={})]
@@ -841,7 +842,7 @@ class SingleColorEntryTests(unittest.TestCase):
     @staticmethod
     def _assemble(type3_mode: str, color_data: bytes):
         color = main.ColorChannel(channel_index=0, color_data=color_data, color_faces_data=b'',
-                                  comp_count=4, quantize_info=0x30, source_data_offset=0)
+                                  comp_count=4, quantize_info=0x30, )
         records = [[3, b'\x00\x00\x00', type3_mode], [6, b'\x01\x00\x00', '00000374']]
         sub = main._assemble_rigid_submesh(
             7, 'cube', records, [b'', b'\x90'], vertex_data=b'', vertex_quantize_info=0x3B,

@@ -576,7 +576,7 @@ def retire_hooks(image: dolfile.DolImage) -> list[str]:
         word = image.u32(site)
         if word == stock:
             continue
-        if word != one(site, lambda a: a.b(stub)):
+        if word != one(site, lambda a, stub=stub: a.b(stub)):
             raise dolfile.DolError(f'icon hook site 0x{site:08X} is {word:08X}: neither stock nor the pipeline hook')
         image.write_word(site, stock)
         log.append(f'icon hook 0x{site:08X} back to stock (stub 0x{stub:08X} left as dead code)')

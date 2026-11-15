@@ -12,7 +12,6 @@ input's (the hammerspace tail may stay, zeroed). Prints one line per check; exit
 import hashlib
 import os
 import shutil
-import struct
 import sys
 import tempfile
 

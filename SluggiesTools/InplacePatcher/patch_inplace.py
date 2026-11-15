@@ -1,7 +1,6 @@
 import os
 import sys
 import shutil
-import struct
 
 # Resolve project directories relative to this file so the script works
 # regardless of the current working directory.
@@ -31,6 +30,7 @@ import facial_pose_edits as _facial_edits
 from binfmt import comp_size as _comp_size
 from binfmt import decode_field as _decode_field
 from binfmt import load_sluggie as _load_sluggie
+from binfmt import shader_mode_bytes as _shader_mode_bytes
 from compact_channel import compact_channel, compact_channel_fixed_slots
 
 # ---------------------------------------------------------------------------
@@ -55,9 +55,7 @@ def _shader_mode_to_bytes(s: str) -> bytes:
     writes for modes whose bytes are all in range 32-126, or the 8-char lowercase
     hex form (e.g. '11110000') that export.py writes for non-printable modes.
     """
-    if len(s) == 8 and all(c in '0123456789abcdefABCDEF' for c in s):
-        return bytes.fromhex(s)
-    return s.encode('ascii', errors='replace').ljust(4, b'\x00')[:4]
+    return _shader_mode_bytes(s)
 
 
 def abort(message):

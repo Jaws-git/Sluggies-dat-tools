@@ -183,7 +183,7 @@ def parse_ids(config: dict) -> list[NewId]:
         if 'wheel' in entry and entry['wheel'] is None:
             wheel = None
             squares = [m for sq in square_member_lists(config) for m in sq or []]
-            if cid not in {_number(m, f'grid.squares') for m in squares}:
+            if cid not in {_number(m, 'grid.squares') for m in squares}:
                 raise IdConfigError(f'{where}: 0x{cid:02X} has no wheel ("wheel": null), so it must be on a new '
                                     'grid square (grid.squares)')
         else:

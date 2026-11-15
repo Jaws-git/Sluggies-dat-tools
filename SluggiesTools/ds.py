@@ -1,5 +1,5 @@
-from base import *
-from helper import *
+from base import FileChunk
+from helper import Object
 
 class Tree(FileChunk):
     def analyze(self):

@@ -1,0 +1,18 @@
+# Static check run by CI (`uvx ruff check`). Kept narrow on purpose: undefined
+# and unused names, syntax errors, closures over loop variables, and `raise`
+# inside `except` without `from`.
+target-version = "py312"
+extend-exclude = [
+    "_Sluggers Characters Beta External Tool",
+    "Philenarion Stat Editor",
+    "dist",
+    "build",
+]
+
+[lint]
+select = ["F", "E9", "B023", "B904"]
+
+[lint.per-file-ignores]
+# Tests and hand-run probe scripts call their loop closures at once.
+"**/tests/*" = ["B023"]
+"**/probe_*.py" = ["B023"]

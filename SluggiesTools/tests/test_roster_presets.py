@@ -8,7 +8,7 @@ import unittest
 from unittest import mock
 
 from SluggiesTools.Dol import relocate
-from SluggiesTools.Roster import grid, icons, ids, make_presets, names, wheels
+from SluggiesTools.Roster import grid, icons, ids, make_presets, names, open_slot, wheels
 from SluggiesTools.tests.test_roster_grid import HEADS, STOCK_MAP
 from SluggiesTools.tests.test_roster_ids import fresh_image
 from SluggiesTools.tests.test_roster_names import plate_bank
@@ -53,14 +53,14 @@ class SquareOnlyIdTests(unittest.TestCase):
 
 class SlotIconTests(unittest.TestCase):
     def test_portrait(self):
-        img = make_presets.slot_portrait()
+        img = open_slot.slot_portrait()
         self.assertEqual(img.size, (48, 51))
         self.assertEqual(img.getpixel((24, 25))[3], 255)
 
     def test_same_file_one_cell(self):
         with tempfile.TemporaryDirectory() as tmp:
             for name in make_presets.SLOT_ICON.values():
-                make_presets.slot_portrait().save(os.path.join(tmp, name))
+                open_slot.slot_portrait().save(os.path.join(tmp, name))
             config = {'ids': [{'id': f'0x{c:02X}', 'template': '0x06', 'icon': dict(make_presets.SLOT_ICON)}
                               for c in (0x66, 0x67)]}
             side, front = icons.compose_pages(icons.parse_icons(config, tmp))

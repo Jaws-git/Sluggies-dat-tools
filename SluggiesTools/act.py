@@ -1,8 +1,8 @@
-from base import *
-from ds import *
+import struct
+from base import FileChunk, intFromBytes
+from ds import Tree
 import numpy as np
-from helper import *
-from model0 import *
+from helper import Object, SRT, getQuantizedData, quantizedDataSize
 import slogger
 from binfmt import clean_geo_name
 
@@ -78,7 +78,7 @@ class ACTLayout(FileChunk):
         old_pos = self.tell()
         self.seek(self.userDataPtr + 0x2)
         self.track_bone_offset = self.half()
-        track_type = self.half()
+        self.half()  # track type, not used
         self.seek(self.userDataPtr + 0xC)
         for i in range(self.boneCount):
             track_ids.append(self.half())
@@ -87,7 +87,7 @@ class ACTLayout(FileChunk):
         self.seek(self.userDataPtr + self.track_bone_offset + 0xC)
         for i in range(self.boneCount):
             bone_id = self.byte()
-            type = self.byte()
+            self.byte()  # bone type, not used
             bone_track_pairs[bone_id] = track_ids[i]
         self.seek(old_pos)
 

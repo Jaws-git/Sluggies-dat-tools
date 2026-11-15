@@ -4,7 +4,7 @@ import struct
 import unittest
 from unittest import mock
 
-from SluggiesTools.Dol import dolfile, inventory, relocate
+from SluggiesTools.Dol import inventory, relocate
 from SluggiesTools.Icons import layout2d
 from SluggiesTools.Icons.tests.test_layout2d import make_bank, make_element
 from SluggiesTools.Roster import dol_hammerspace as dhs

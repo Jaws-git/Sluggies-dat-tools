@@ -63,6 +63,7 @@ HS_DIR = os.path.join(TOOLS_DIR, 'Hammerspace')
 HS_MAIN_SCRIPT = os.path.join(HS_DIR, 'HammerspaceMain.py')
 UNTANGLE_POLICY_SCRIPT = os.path.join(HS_DIR, 'UntanglePolicy.py')
 DEFRAG_SCRIPT = os.path.join(HS_DIR, 'Defrag.py')
+DEPLOY_SCRIPT = os.path.join(TOOLS_DIR, 'deploy_files.py')
 COLLISION_SCRIPT = os.path.join(HS_DIR, 'StadiumCollision.py')
 ROSTER_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'runner.py')
 ROSTER_STATE_SCRIPT = os.path.join(TOOLS_DIR, 'Roster', 'state_cli.py')
@@ -164,6 +165,12 @@ def run_defrag_hammerspace(dry_run=False):
     if dry_run:
         cmd.append('--dry-run')
     return subprocess.run(cmd, cwd=HS_DIR).returncode == 0
+
+
+def run_deploy_game_files():
+    """Copy the patched game files from 3_Output_Dat into the unpacked game (deploy_files.py; the game
+    directory is the one stored in 3_Output_Dat/sluggiespath). False when not everything was copied."""
+    return subprocess.run(python_script_command(DEPLOY_SCRIPT), cwd=TOOLS_DIR).returncode == 0
 
 
 def run_roster(config=None, remove=False, dry_run=False, state=None, keep_stat_edits=False):
@@ -1091,6 +1098,7 @@ def parse_args():
             '  python start.py --load-roster my_roster.sluggiesroster --dry-run\n'
             '  python start.py --resplit-unused\n'
             '  python start.py --defrag-hammerspace --dry-run\n'
+            '  python start.py --deploy-game-files\n'
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -1125,6 +1133,7 @@ def parse_args():
     mode.add_argument('--write-voice-pack', metavar='FILE', help="create the voice pack a character file import planned (its <tag>_pack.json in _gui/slot/copies) in _gui/Sound_Packs (used by --import-slgmodel's chain)")
     mode.add_argument('--resplit-unused', action='store_true', help='repair: give unused-character routes (dirs 89-94) that point at a playable character\'s block their own copy again')
     mode.add_argument('--defrag-hammerspace', action='store_true', help='pack the hammerspace blocks of 3_Output_Dat/dt_na.dat without gaps, repoint main.dol and shrink the file (with --dry-run: report only)')
+    mode.add_argument('--deploy-game-files', action='store_true', help="copy the patched game files (dt_na.dat, main.dol, fst.bin, sound_NA) from 3_Output_Dat into the unpacked game whose main folder is stored in 3_Output_Dat/sluggiespath (what CopyFilesToGameDir.bat does; used by the GUI's deploy option)")
     mode.add_argument('--roster', '--roster-dev', dest='roster', action='store_true', help='inject a roster configuration (--config, e.g. from 1_Input/_RosterConfigurations) into 3_Output_Dat, replacing the previous injection')
     mode.add_argument('--roster-state', action='store_true', help='read the draft grid from 3_Output_Dat into _gui/roster_state.json (used by the GUI)')
     mode.add_argument('--roster-derive', action='store_true', help='write the roster config that rebuilds 3_Output_Dat as it is into _gui/derived (read -> rebuild; then --roster --state)')
@@ -1231,7 +1240,7 @@ def parse_args():
         parser.error('--config and --state cannot be used together.')
     if args.roster and not (args.config or args.remove or args.state):
         parser.error('--roster needs --config PATH (a roster configuration), --state PATH or --remove.')
-    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.copy_slot, args.import_slgmodel, args.export_slot, args.export_sluggiezip, args.rename_slot, args.set_voice, args.set_char_voice, args.set_species_clip, args.set_stats, args.set_icon, args.apply_slots, args.save_roster, args.load_roster, args.write_slot_blocks, args.write_slot_equipment, args.write_slot_animation, args.write_voice_pack, args.resplit_unused, args.defrag_hammerspace, args.export, args.export_icons, args.export_sounds, args.roster, args.roster_state, args.roster_derive, args.export_autopicker, args.game_options, args.stat_bridge_export, args.apply_stat_edits, args.apply_gameplay, args.save_gameplay]):
+    if not any([args.gui, args.patch, args.unpatch is not None, args.patch_slot, args.clear_slot, args.copy_slot, args.import_slgmodel, args.export_slot, args.export_sluggiezip, args.rename_slot, args.set_voice, args.set_char_voice, args.set_species_clip, args.set_stats, args.set_icon, args.apply_slots, args.save_roster, args.load_roster, args.write_slot_blocks, args.write_slot_equipment, args.write_slot_animation, args.write_voice_pack, args.resplit_unused, args.defrag_hammerspace, args.deploy_game_files, args.export, args.export_icons, args.export_sounds, args.roster, args.roster_state, args.roster_derive, args.export_autopicker, args.game_options, args.stat_bridge_export, args.apply_stat_edits, args.apply_gameplay, args.save_gameplay]):
         if len(sys.argv) == 1:
             args.gui = True
         else:
@@ -1332,6 +1341,9 @@ def main() -> int:
             run_resplit_unused()
         elif args.defrag_hammerspace:
             if not run_defrag_hammerspace(dry_run=args.dry_run):
+                return 1
+        elif args.deploy_game_files:
+            if not run_deploy_game_files():
                 return 1
         elif args.roster and args.config and not (args.fresh or args.remove):
             if not run_roster_switch(args.config, dry_run=args.dry_run):

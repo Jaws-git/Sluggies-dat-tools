@@ -1,7 +1,9 @@
-from tpl import *
-from gpl import *
-from act import *
-from anm import *
+from base import FileChunk
+from helper import Object, prior_deletions
+from tpl import TEXPalette
+from gpl import GPL
+from act import ACTLayout, BoneInfluence, SKN
+from anm import ANM
 import numpy as np
 import os
 import shutil

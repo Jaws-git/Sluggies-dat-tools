@@ -38,6 +38,14 @@ def color_entry_size(quantize_info: int) -> int:
     return _COLOR_ENTRY_SIZE.get(quantize_info >> 4, 2)
 
 
+def shader_mode_bytes(shader_mode: str) -> bytes:
+    """The four bytes of a display state's setting field for a ``ShaderMode`` string: the export writes the
+    ASCII form ('Spec') where all four bytes are printable, else eight hex digits ('11110000')."""
+    if len(shader_mode) == 8 and all(c in '0123456789abcdefABCDEF' for c in shader_mode):
+        return bytes.fromhex(shader_mode)
+    return shader_mode.encode('ascii', errors='replace').ljust(4, b'\x00')[:4]
+
+
 def align4(data: bytes) -> bytes:
     """Zero-pad *data* up to the next 4-byte boundary."""
     return data + b'\x00' * ((4 - len(data) % 4) % 4)

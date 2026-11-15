@@ -1,4 +1,11 @@
-from model0 import *
+from base import File
+from binfmt import bti, itb
+from anm import ANM
+from model0 import (
+    Archive, ExpectedFormatSkip, MaybeArchive, UNTANGLE_SKIP_STADIUMS,
+    set_log_dir_index,
+    Model0,  # noqa: F401  (Roster/slot_export.py reads it from this module)
+)
 import os
 import shutil
 import json
@@ -37,7 +44,7 @@ EXPORT_ANIM = '--anim-glb' in sys.argv  # raw anm/*.anm; their .glb files also n
 # 7 Mario Stadium ... 16 Toy Field. When UNTANGLE_SKIP_STADIUMS is enabled,
 # texture untangling is bypassed for these directories so their texture
 # names/bytes in the dat are left untouched.
-STADIUM_DIR_INDICES = range(7, 17)
+STADIUM_DIR_INDICES = UntanglePolicy.STADIUM_DIRS
 
 
 def _encode_bytes(data: bytes):
@@ -1562,7 +1569,7 @@ def main():
             convert_anm_directory(dir_dir)
         if len(os.listdir(dir_dir)) == 0:
             os.rmdir(dir_dir)
-        _slogger.info(f'Finished exporting', source=f'export.dir{dir_ind}')
+        _slogger.info('Finished exporting', source=f'export.dir{dir_ind}')
 
     if untangle_context and untangle_context.get('dat_output_handle'):
         untangle_context['dat_output_handle'].flush()

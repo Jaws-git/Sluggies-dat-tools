@@ -14,8 +14,8 @@ is needed:
 - its **owners** are the routes outside those directories that share its
   vanilla offset.
 
-This module is the one home of the directory list. ``export.py`` and
-``start.py`` import it. ``HammerspaceHelper`` is imported lazily, so the
+This module is the one home of the directory lists (the unused characters and the
+stadiums). ``export.py`` and ``start.py`` import it. ``HammerspaceHelper`` is imported lazily, so the
 dispatcher can use the list without pulling in the helper.
 """
 from __future__ import annotations
@@ -23,6 +23,10 @@ from __future__ import annotations
 #: Model directory indices of the six unused characters (character IDs
 #: 0x47-0x4C; directory = ID + 18). See ``export.folderNameMap``.
 UNUSED_CHARACTER_DIRS: tuple[int, ...] = (89, 90, 91, 92, 93, 94)
+
+#: Model directory indices of the stadiums, 7 Mario Stadium ... 16 Toy Field (never untangled). The tools
+#: take the range from here; the Blender add-on mirrors it (``TemplateSources.STADIUM_CHUNKS``).
+STADIUM_DIRS = range(7, 17)
 
 
 def _helper():
