@@ -20,6 +20,7 @@ Elsewhere than Windows the playback buttons are disabled. The list is read once 
 reads it again.
 """
 
+import struct
 import atexit
 import os
 import shutil
@@ -63,10 +64,14 @@ class Track:
 
 
 def _same_file(a, b):
-    if os.path.getsize(a) != os.path.getsize(b):
+    """Whether two files hold the same bytes; a file that cannot be read counts as different."""
+    try:
+        if os.path.getsize(a) != os.path.getsize(b):
+            return False
+        with open(a, 'rb') as fa, open(b, 'rb') as fb:
+            return fa.read() == fb.read()
+    except OSError:
         return False
-    with open(a, 'rb') as fa, open(b, 'rb') as fb:
-        return fa.read() == fb.read()
 
 
 def read_tracks(root):
@@ -101,7 +106,7 @@ def read_tracks(root):
             try:
                 with open(track.path, 'rb') as handle:
                     track.info = brstm.info(handle.read(brstm.INFO_BYTES))
-            except (OSError, brstm.BrstmError, IndexError, ValueError) as exc:
+            except (OSError, brstm.BrstmError, IndexError, ValueError, struct.error) as exc:
                 track.problem = str(exc)
         tracks.append(track)
     return sorted(tracks, key=lambda t: t.sound_id), archive_path
@@ -433,6 +438,6 @@ class MusicTab:
         try:
             with open(track.path, 'rb') as handle:
                 track.info = brstm.info(handle.read(brstm.INFO_BYTES))
-        except (OSError, brstm.BrstmError, IndexError, ValueError) as exc:
+        except (OSError, brstm.BrstmError, IndexError, ValueError, struct.error) as exc:
             track.problem = str(exc)
         self._draw_list()

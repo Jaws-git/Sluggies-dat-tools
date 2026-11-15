@@ -235,6 +235,22 @@ def _align(n, a=0x20):
     return (n + a - 1) // a * a
 
 
+def loop_history(data, histories, coefs, start, block_samples):
+    """``(h1, h2)``: the two decoded samples before sample ``start`` of an encoded channel (``encode_channel``'s
+    ``data`` and ``histories``), which the HEAD chunk stores for the loop start.
+
+    Only the block that holds ``start`` is decoded, from its stored start history: decoding the whole channel
+    for these two samples took about 140 s for a five-minute track (the one-lane decoder is a per-sample
+    Python loop), next to 12 s of encoding."""
+    block, within = divmod(int(start), block_samples)
+    h1, h2 = histories[block]
+    if within == 0:
+        return int(h1), int(h2)
+    lane = dsp_adpcm.Lane(data[block].tobytes()[:dsp_adpcm.samples_to_bytes(within) + 8], within, coefs, h1, h2)
+    decoded = dsp_adpcm.decode([lane])[0]
+    return int(decoded[within - 1]), int(decoded[within - 2]) if within >= 2 else int(h1)
+
+
 def build(original, channels, loop):
     """A ``.brstm`` with the stock file ``original``'s HEAD layout (channel count, rate, block size) holding
     ``channels`` (one int16 array per channel, at the original's rate). ``loop``: ``(start, end)`` or None."""
@@ -273,13 +289,10 @@ def build(original, channels, loop):
     for c, (coefs, data, histories) in enumerate(encoded):
         ao = base + brstm.u32(b, base + brstm.u32(b, ct + 4 + 8 * c + 4) + 4) - head
         flat = data.reshape(-1)
-        dec = dsp_adpcm.Lane(bytes(flat[:dsp_adpcm.samples_to_bytes(n) + 8]), n, coefs)
         loop_ps = loop_h1 = loop_h2 = 0
         if loop:
-            decoded = dsp_adpcm.decode([dec])[0]
             loop_ps = int(flat[loop[0] // FRAME * 8])
-            loop_h1 = int(decoded[loop[0] - 1]) if loop[0] >= 1 else 0
-            loop_h2 = int(decoded[loop[0] - 2]) if loop[0] >= 2 else 0
+            loop_h1, loop_h2 = loop_history(data, histories, coefs, loop[0], block_samples)
         struct.pack_into('>16h', new_head, ao, *coefs)
         struct.pack_into('>HHhhHhh', new_head, ao + 0x20, 0, int(flat[0]), 0, 0, loop_ps, loop_h1, loop_h2)
     adpc_body = bytearray()

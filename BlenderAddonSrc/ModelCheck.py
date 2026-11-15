@@ -640,8 +640,11 @@ def check_geometry(context, scope):
 
 
 def check_mesh_limits(context, scope):
-    """The uint16 indices every rebuild writes: the vertices faces use, and
-    a custom submesh's triangle count (a downloaded high-poly mesh)."""
+    """The uint16 indices every rebuild writes: the vertices faces use and
+    the triangle count (a downloaded high-poly mesh). Every rebuild and the
+    patcher refuse more than U16_LIMIT triangles, not only custom submeshes.
+    Runs on export too: the encoders pack these indices before their own
+    count checks in some orders."""
     for obj in scope.meshes:
         custom = _is_custom(obj)
         if not custom and _submesh_index(scope, obj) is None:
@@ -650,7 +653,7 @@ def check_mesh_limits(context, scope):
         vertices = len(_used_vertices(obj.data))
         if vertices > core.U16_LIMIT:
             over.append(f"{vertices:,} vertices")
-        triangles = _triangle_count(obj.data) if custom else 0
+        triangles = _triangle_count(obj.data)
         if triangles > core.U16_LIMIT:
             over.append(f"{triangles:,} triangles")
         if over:
@@ -1137,7 +1140,7 @@ CHECKS = [
     (check_armature_link, True),
     (check_modifiers, False),
     (check_geometry, True),
-    (check_mesh_limits, False),         # mirror
+    (check_mesh_limits, True),
     (check_rebuild_format, False),      # mirror
     (check_collision, False),           # mirror
     (check_custom_host_bone, True),
@@ -1643,11 +1646,21 @@ def run_fixes(context, requests):
     _FIX_MODELS.clear()
     calls = {}
     for fix_id, args in requests:
-        calls.setdefault((fix_id, json.dumps(args, sort_keys=True)), []).append(args)
+        if fix_id == "remove_slots":
+            # One call per object with every slot to remove: the slot numbers are those of check time, and
+            # a second call would use them after the first one shifted the slots (and take a used material).
+            key = json.dumps({"object": args["object"]})
+        else:
+            key = json.dumps(args, sort_keys=True)
+        calls.setdefault((fix_id, key), []).append(args)
     fixed, failed, messages = 0, 0, []
     for (fix_id, _key), group in sorted(calls.items(), key=lambda item: FIX_ORDER.index(item[0][0])):
+        arguments = group[0]
+        if fix_id == "remove_slots":
+            arguments = {"object": group[0]["object"],
+                         "slots": sorted({slot for args in group for slot in args["slots"]})}
         try:
-            FIXES[fix_id](context, **group[0])
+            FIXES[fix_id](context, **arguments)
         except Exception as exc:  # each fix reports its own failure, the run goes on
             failed += len(group)
             messages.append(f"{fix_id.replace('_', ' ')}: {exc}")

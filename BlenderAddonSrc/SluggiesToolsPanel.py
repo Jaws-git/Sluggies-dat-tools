@@ -4,6 +4,7 @@ import functools
 import os
 import re
 import textwrap
+import traceback
 
 import bmesh
 import bpy
@@ -1424,57 +1425,68 @@ def _create_added_bone(context, arm_obj, parent_bone_name, animation_track=False
     the bone's own rotation/translation, so the exporter derives it from the
     values it writes (act_section.html#srt-type) rather than inheriting a
     parent's mask that may not fit."""
+    # Everything that can refuse is asked before the bone exists: a used-up track id range used to leave
+    # the new bone behind without its properties.
+    track_id = HostBones.NO_TRACK
+    if animation_track:
+        track_id = HostBones.next_added_track_id(
+            [int(b.get('track_id', HostBones.NO_TRACK)) for b in arm_obj.data.bones])
     prev_active = context.view_layer.objects.active
     prev_mode = context.object.mode if context.object is not None else 'OBJECT'
-    context.view_layer.objects.active = arm_obj
-    bpy.ops.object.mode_set(mode='EDIT')
     try:
-        edit_bones = arm_obj.data.edit_bones
-        parent_eb = edit_bones.get(parent_bone_name) if parent_bone_name else None
-        new_name = _unused_bone_name(arm_obj)
-        new_eb = edit_bones.new(new_name)
-        new_eb.parent = parent_eb
-        new_eb.use_connect = False
-        # World-aligned, facing -Y regardless of the parent bone's own
-        # direction: convert the world -Y/+Z axes into the armature object's
-        # local space, since edit-bone coordinates live there.
-        world_to_local = arm_obj.matrix_world.to_3x3().inverted()
-        local_dir = world_to_local @ Vector((0.0, -1.0, 0.0))
-        local_up = world_to_local @ Vector((0.0, 0.0, 1.0))
-        # `local_dir` is a world unit vector expressed in local space, so its
-        # local length already equals one world unit under the object's scale:
-        # scaling it by ADDED_BONE_LENGTH gives that length in the viewport,
-        # whatever the parent bone measures.
-        tail_offset = (
-            local_dir * ADDED_BONE_LENGTH
-            if local_dir.length > 1e-9 else Vector((0.0, 0.0, ADDED_BONE_LENGTH))
-        )
-        # Originates at the parent's tail, not floating off to the side, so
-        # chained bones visually continue the parent like a real skeleton. A
-        # root bone starts at the 3D cursor.
-        new_eb.head = (
-            parent_eb.tail if parent_eb is not None and not at_cursor
-            else arm_obj.matrix_world.inverted() @ context.scene.cursor.location
-        )
-        new_eb.tail = new_eb.head + tail_offset
-        new_eb.align_roll(local_up)
-        new_name = new_eb.name
+        context.view_layer.objects.active = arm_obj
+        try:
+            bpy.ops.object.mode_set(mode='EDIT')
+        except RuntimeError as exc:
+            raise ValueError(
+                f"{arm_obj.name} cannot be put into Edit Mode (is the armature hidden, or its collection "
+                f"excluded from the view layer?): {exc}") from exc
+        try:
+            edit_bones = arm_obj.data.edit_bones
+            parent_eb = edit_bones.get(parent_bone_name) if parent_bone_name else None
+            new_name = _unused_bone_name(arm_obj)
+            new_eb = edit_bones.new(new_name)
+            new_eb.parent = parent_eb
+            new_eb.use_connect = False
+            # World-aligned, facing -Y regardless of the parent bone's own
+            # direction: convert the world -Y/+Z axes into the armature object's
+            # local space, since edit-bone coordinates live there.
+            world_to_local = arm_obj.matrix_world.to_3x3().inverted()
+            local_dir = world_to_local @ Vector((0.0, -1.0, 0.0))
+            local_up = world_to_local @ Vector((0.0, 0.0, 1.0))
+            # `local_dir` is a world unit vector expressed in local space, so its
+            # local length already equals one world unit under the object's scale:
+            # scaling it by ADDED_BONE_LENGTH gives that length in the viewport,
+            # whatever the parent bone measures.
+            tail_offset = (
+                local_dir * ADDED_BONE_LENGTH
+                if local_dir.length > 1e-9 else Vector((0.0, 0.0, ADDED_BONE_LENGTH))
+            )
+            # Originates at the parent's tail, not floating off to the side, so
+            # chained bones visually continue the parent like a real skeleton. A
+            # root bone starts at the 3D cursor.
+            new_eb.head = (
+                parent_eb.tail if parent_eb is not None and not at_cursor
+                else arm_obj.matrix_world.inverted() @ context.scene.cursor.location
+            )
+            new_eb.tail = new_eb.head + tail_offset
+            new_eb.align_roll(local_up)
+            new_name = new_eb.name
+        finally:
+            bpy.ops.object.mode_set(mode=prev_mode if prev_mode in ('OBJECT', 'EDIT') else 'OBJECT')
+
+        new_bone = arm_obj.data.bones[new_name]
+        new_bone['SluggiesUserAdded'] = True
+        new_bone['SluggiesCreationOrder'] = _next_new_bone_creation_order(arm_obj)
+        new_bone['SluggiesGeoIdRaw'] = HostBones.GEO_ID_FREE
+        new_bone['SluggiesSkinned'] = False
+        new_bone['SluggiesDrawPriority'] = 0
+        new_bone['SluggiesInheritTransform'] = True
+        new_bone['track_id'] = track_id
+        BoneRoles.bone_collection(arm_obj.data, BoneRoles.ADDED).assign(new_bone)
+
     finally:
-        bpy.ops.object.mode_set(mode=prev_mode if prev_mode in ('OBJECT', 'EDIT') else 'OBJECT')
-
-    new_bone = arm_obj.data.bones[new_name]
-    new_bone['SluggiesUserAdded'] = True
-    new_bone['SluggiesCreationOrder'] = _next_new_bone_creation_order(arm_obj)
-    new_bone['SluggiesGeoIdRaw'] = HostBones.GEO_ID_FREE
-    new_bone['SluggiesSkinned'] = False
-    new_bone['SluggiesDrawPriority'] = 0
-    new_bone['SluggiesInheritTransform'] = True
-    new_bone['track_id'] = HostBones.NO_TRACK
-    if animation_track:
-        _set_added_bone_track(arm_obj, new_bone, True)
-    BoneRoles.bone_collection(arm_obj.data, BoneRoles.ADDED).assign(new_bone)
-
-    context.view_layer.objects.active = prev_active
+        context.view_layer.objects.active = prev_active
     return new_bone
 
 
@@ -1538,6 +1550,25 @@ def _end_bone_name_display(op, arm_obj):
         arm_obj.data.show_names = False
 
 
+
+
+def _reports_failure(execute):
+    """For the ``execute`` of an operator that changes the scene in several steps (Make Submesh, Make Main
+    Body, Join or Replace Meshes, Convert Materials, Generate Lowpoly). Their own checks run before the first
+    change; a file or Blender error after that (a texture that cannot be saved, a join that is refused)
+    used to end in a traceback over a half-converted model, with no undo step. Now the error is reported
+    and the operator returns FINISHED, so what it had changed is one step to undo."""
+    @functools.wraps(execute)
+    def guarded(self, context):
+        try:
+            return execute(self, context)
+        except (OSError, RuntimeError, ValueError, KeyError) as exc:
+            traceback.print_exc()
+            self.report({"ERROR"},
+                f"{self.bl_label} stopped partway ({type(exc).__name__}: {exc}). Undo (Ctrl+Z) takes back "
+                "what it had already changed; the traceback is in the system console.")
+            return {"FINISHED"}
+    return guarded
 
 
 class SLUGGIES_OT_add_bone(bpy.types.Operator):
@@ -2148,6 +2179,7 @@ class SLUGGIES_OT_make_submesh(bpy.types.Operator):
         col.label(text="Materials get the default template; ones without")
         col.label(text="a texture get a PNG in their colour in tex/.")
 
+    @_reports_failure
     def execute(self, context):
         try:
             return self._make_submesh(context)
@@ -2567,6 +2599,7 @@ class SLUGGIES_OT_make_main_body(bpy.types.Operator):
             self, event, title=self.bl_label, message=_MAIN_BODY_WARNING + "\n" + _OLD_BODY_WARNING,
             confirm_text="OK", icon='WARNING')
 
+    @_reports_failure
     def execute(self, context):
         arm_obj = _find_target_armature(context)
         obj = context.active_object
@@ -2640,6 +2673,12 @@ class SLUGGIES_OT_scale_animations(bpy.types.Operator):
         if not groups:
             self.report({"ERROR"}, "Import the character's animation banks first "
                                    "(Import Sluggers .anm, files 6-14 of its anm folder)")
+            return {"CANCELLED"}
+        if getattr(arm_obj.animation_data, 'use_tweak_mode', False):
+            # Blender refuses to switch the action then: some actions would be scaled, the rest not, and a
+            # second run would scale the first ones twice.
+            self.report({"ERROR"}, "The armature's NLA is in tweak mode: leave it (Tab in the NLA editor) "
+                                   "and scale again")
             return {"CANCELLED"}
         factors = tuple(float(f) for f in context.scene.sluggies_animation_scale)
         if min(factors) <= 0.0:
@@ -3634,6 +3673,7 @@ class SLUGGIES_OT_adapt_meshes(bpy.types.Operator):
             line.alert = True
             line.label(text=message, icon='ERROR')
 
+    @_reports_failure
     def execute(self, context):
         wm = context.window_manager
         faulty, messages = _adapt_mesh_faults(wm)
@@ -3940,6 +3980,7 @@ class SLUGGIES_OT_adapt_materials(bpy.types.Operator):
         row.enabled = bool(bpy.data.filepath)
         row.prop(self, 'collect_textures')
 
+    @_reports_failure
     def execute(self, context):
         arm_obj = bpy.data.objects.get(self.armature_name)
         found = self._model(arm_obj)
@@ -4446,6 +4487,7 @@ class SLUGGIES_OT_adapt_lowpoly(bpy.types.Operator):
         layout.label(text="The main body replaces the Low model's body; a rigid mesh replaces the Low model's "
                           "mesh on its bone, or is added there", icon='INFO')
 
+    @_reports_failure
     def execute(self, context):
         high = bpy.data.objects.get(self.high_name)
         low = bpy.data.objects.get(self.low_name)

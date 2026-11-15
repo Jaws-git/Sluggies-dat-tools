@@ -151,12 +151,14 @@ class ModelExportKeepsFilesTests(unittest.TestCase):
             model = object.__new__(model0.Model0)
             model.name, model.ACT, model.TEXPalette = '1_mario.gpl', None, None
 
-            def model_data(**kwargs):
-                model0._copy_texture_pngs(kwargs['texture_output_dir'])
-                return SimpleNamespace(textures={})
+            def export_textures(untangle_context=None, texture_output_dir=None):
+                model0._copy_texture_pngs(texture_output_dir, temp_dir)
+                return {}
 
-            with mock.patch.object(model0, 'TEX_TEMP_DIR', temp_dir), \
-                    mock.patch.object(model, 'model_data', side_effect=model_data, create=True):
+            with mock.patch.object(model0, 'TEXTURE_DECODE_WORKERS', 1), \
+                    mock.patch.object(model, 'export_textures', side_effect=export_textures, create=True), \
+                    mock.patch.object(model, 'model_data', return_value=SimpleNamespace(textures={}),
+                                      create=True):
                 model.toFile(out, export_tex=True, export_glb=True)
 
             for path in kept:
@@ -176,11 +178,11 @@ class ModelSizeTests(unittest.TestCase):
 class PatchOrderTests(unittest.TestCase):
     def test_low_file_known_by_its_file_index(self):
         sys.path.insert(0, str(TOOLS_DIR.parent))
-        import start
+        from SluggiesTools import patch_dispatch  # noqa: E402
         with tempfile.TemporaryDirectory() as root:
             low = _write(os.path.join(root, 'mario red low.sluggie'), FileIndex=1)
             high = _write(os.path.join(root, 'x_L_y high.sluggie'), FileIndex=0)
-            self.assertEqual(sorted([low, high], key=start._is_low_file), [high, low])
+            self.assertEqual(sorted([low, high], key=patch_dispatch._is_low_file), [high, low])
 
 
 if __name__ == '__main__':

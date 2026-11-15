@@ -51,8 +51,9 @@ def u32(b, o): return struct.unpack_from('>I', b, o)[0]
 def s16(b, o): return struct.unpack_from('>h', b, o)[0]
 
 
-class BrsarError(Exception):
-    pass
+class BrsarError(ValueError):
+    """A sound archive that cannot be read. A ``ValueError``, like the other sound errors, so the callers
+    that report those (the roster run, the GUI tabs) report this one too."""
 
 
 @dataclass

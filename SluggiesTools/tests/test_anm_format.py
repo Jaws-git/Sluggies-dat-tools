@@ -113,6 +113,70 @@ class RebuiltTrackTests(unittest.TestCase):
         seq = A.parse(A.write(0x01321AFD, 0, [[track]]))['sequences'][0][0]
         self.assertEqual(seq['keys'][1]['settings'][A.CH_TRANSLATION], [0.0, 0.0, 2.0])
 
+    @staticmethod
+    def _reduce_reference(samples, vec_tol, quat_tol):
+        """``reduce_samples`` without its shortcut for a still track: the greedy loop as it was."""
+        n = len(samples)
+
+        def fits(a, b):
+            ta, tb = samples[a][0], samples[b][0]
+            for i in range(a + 1, b):
+                t = (samples[i][0] - ta) / (tb - ta)
+                for ch in (1, 3):
+                    guess = A._lerp(samples[a][ch], samples[b][ch], t)
+                    if max(abs(g - v) for g, v in zip(guess, samples[i][ch])) > vec_tol:
+                        return False
+                guess, q = A._slerp(samples[a][2], samples[b][2], t), samples[i][2]
+                if sum(g * v for g, v in zip(guess, q)) < 0:
+                    q = [-v for v in q]
+                if max(abs(g - v) for g, v in zip(guess, q)) > quat_tol:
+                    return False
+            return True
+
+        keep, anchor, end = [0], 0, 1
+        while end < n - 1:
+            if not fits(anchor, end + 1):
+                keep.append(end)
+                anchor = end
+            end += 1
+        return keep + [n - 1]
+
+    def test_a_still_track_takes_the_shortcut_with_the_same_result(self):
+        unit = [math.cos(0.3), 0.0, math.sin(0.3), 0.0]
+        cases = {
+            'still': [(float(f), [1.0, 1.0, 1.0], list(unit), [0.5, 0.0, 2.0]) for f in range(40)],
+            # the same quaternion, far from unit length, on every frame: no interpolation reproduces it
+            'still, not a unit quaternion': [(float(f), [1.0] * 3, [2.0, 0.0, 0.0, 0.0], [0.0] * 3)
+                                             for f in range(12)],
+            'one frame differs': [(float(f), [1.0] * 3, list(unit), [0.0, 1.0 if f == 7 else 0.0, 0.0])
+                                  for f in range(20)],
+            'moving': self._samples(),
+        }
+        for name, samples in cases.items():
+            with self.subTest(case=name):
+                self.assertEqual(A.reduce_samples(samples, 1e-3, 2e-4),
+                                 self._reduce_reference(samples, 1e-3, 2e-4))
+        self.assertEqual(A.reduce_samples(cases['still'], 1e-3, 2e-4), [0, 39])
+        self.assertEqual(A.reduce_samples(cases['still, not a unit quaternion'], 1e-3, 2e-4), list(range(12)))
+
+    def test_a_track_still_but_for_noise_takes_the_shortcut_with_the_loop_s_result(self):
+        import random
+        rng = random.Random(11)
+        quats = ([1.0, 0.0, 0.0, 0.0], [0.5, 0.5, 0.5, 0.5], [0.0, 0.6, 0.0, 0.8])
+        for case in range(60):
+            base_q = quats[case % 3]
+            noise = (0.0, 2e-5, 2.4e-5, 1e-4, 3e-4)[case % 5]        # under, at and over the shortcut's bound
+            vec_noise = noise * 5
+            samples = []
+            for i in range(30):
+                jitter = lambda values, amount: [v + rng.uniform(-amount, amount) for v in values]  # noqa: E731
+                samples.append((float(i), jitter([1.0, 1.0, 1.0], vec_noise), jitter(base_q, noise),
+                                jitter([0.5, -2.0, 30.0], vec_noise)))
+            self.assertEqual(A.reduce_samples(samples, 1e-3, 2e-4), self._reduce_reference(samples, 1e-3, 2e-4),
+                             (case, noise))
+        calm = [(float(i), [1.0, 1.0, 1.0], [1.0, 1e-5 * (i % 2), 0.0, 0.0], [0.0, 0.0, 0.0]) for i in range(50)]
+        self.assertEqual(A.reduce_samples(calm, 1e-3, 2e-4), [0, 49])
+
     def test_hemisphere_flip_is_removed(self):
         samples = self._samples(3)
         t, s, q, tr = samples[1]

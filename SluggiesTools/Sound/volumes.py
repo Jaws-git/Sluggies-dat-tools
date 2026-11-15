@@ -20,7 +20,7 @@ source's volume.
 import json
 import os
 
-from Sound import brsar
+from Sound import archive_lock, brsar
 
 LIBRARY_FILE = os.path.join('_gui', 'sound_volumes.json')   # user data in _gui, like Sound_FX
 FORMAT = 1
@@ -142,7 +142,12 @@ def game_volumes(root_dir):
 def set_volume(root_dir, name, volume):
     """Store ``volume`` for sound ``name`` (dropped from the library when it is the stock volume) and write it
     into ``3_Output_Dat/sound_NA/MY2.brsar`` (made first, with the sound effects, when missing). Returns
-    ``(old volume in the output, stock volume)``."""
+    ``(old volume in the output, stock volume)``. One writer at a time (``archive_lock``)."""
+    with archive_lock.writing():
+        return _set_volume(root_dir, name, volume)
+
+
+def _set_volume(root_dir, name, volume):
     volume = check_volume(volume)
     input_path, output_path = brsar.archive_paths(root_dir)
     stock = next((s for s in brsar.Brsar.from_file(input_path).sounds() if s.name == name), None)
@@ -164,7 +169,13 @@ def set_volume(root_dir, name, volume):
     save_library(root_dir, library)
     out, changed, _missing = write_volumes(base, {name: volume})
     if changed:
-        with open(output_path + '.tmp', 'wb') as handle:
-            handle.write(out)
-        os.replace(output_path + '.tmp', output_path)
+        temp = archive_lock.temp_path(output_path)
+        try:
+            with open(temp, 'wb') as handle:
+                handle.write(out)
+            os.replace(temp, output_path)
+        except OSError:
+            if os.path.exists(temp):
+                os.remove(temp)
+            raise
     return old, stock.volume

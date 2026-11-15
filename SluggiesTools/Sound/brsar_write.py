@@ -177,8 +177,10 @@ def encode_clip(templates, rate, samples):
     (the first on a tie)."""
     if not templates:
         raise WriteError('no mono ADPCM wave to take coefficients from')
-    built = [rwav_build(t, rate, samples) for t in templates]
-    return min(built, key=lambda rv: rwav_error(rv, samples))
+    x = np.asarray(samples, dtype=np.int64)
+    encoded = dsp_adpcm.encode_many(x, [rwav_coefs(t) for t in templates])      # one pass for every template
+    best = min(range(len(templates)), key=lambda i: encoded[i][2])
+    return rwav_from(templates[best], rate, len(x), encoded[best][0])
 
 
 # ------------------------------------------------------------------------------------------------ RWSD

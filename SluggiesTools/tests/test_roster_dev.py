@@ -5,6 +5,7 @@ import os
 import struct
 import tempfile
 import unittest
+from unittest import mock
 
 from SluggiesTools.Dol import dolfile, ppc
 from SluggiesTools.Roster import dol_hammerspace as dhs
@@ -185,6 +186,115 @@ class RunnerTests(unittest.TestCase):
     def test_config_is_required(self):
         with self.assertRaisesRegex(runner.RosterDevError, 'no roster configuration'):
             runner.run(self.tmp, input_dir=self.input_dir)
+
+
+
+class DatFileUndoTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = self.enterContext(tempfile.TemporaryDirectory())
+        self.path = os.path.join(self.tmp, 'dt_na.dat')
+        self.before = bytes(range(256))
+        with open(self.path, 'wb') as f:
+            f.write(self.before)
+
+    def raw(self) -> bytes:
+        with open(self.path, 'rb') as f:
+            return f.read()
+
+    def test_rollback_takes_a_flush_back(self):
+        dat = datfile.DatFile(self.path)
+        dat.write(0x10, b'abcd')
+        dat.write(0x12, b'XY')                                    # overlapping writes: undone newest first
+        dat.grow(0x180)
+        dat.write(0x150, b'tail')
+        dat.flush(keep_undo=True)
+        self.assertEqual(len(self.raw()), 0x180)
+        dat.rollback()
+        self.assertEqual(self.raw(), self.before)
+        self.assertEqual((dat.size, dat.disk_size), (0x100, 0x100))
+        with self.assertRaises(datfile.DatFileError):
+            dat.rollback()                                        # only once
+
+    def test_a_flush_that_fails_midway_takes_itself_back(self):
+        dat = datfile.DatFile(self.path)
+        dat.grow(0x180)
+        dat.write(0x10, b'abcd')
+        dat.pending.append((0x20, None))                          # the second write dies
+        with self.assertRaises(TypeError):
+            dat.flush(keep_undo=True)
+        self.assertEqual(self.raw(), self.before)
+
+    def test_a_plain_flush_keeps_no_undo(self):
+        dat = datfile.DatFile(self.path)
+        dat.write(0x10, b'abcd')
+        dat.flush()
+        with self.assertRaises(datfile.DatFileError):
+            dat.rollback()
+
+
+class CommitTests(unittest.TestCase):
+    """``runner.commit``: main.dol and dt_na.dat change together or not at all."""
+
+    def setUp(self):
+        self.tmp = self.enterContext(tempfile.TemporaryDirectory())
+        self.dol_path = os.path.join(self.tmp, 'main.dol')
+        self.dat_path = os.path.join(self.tmp, 'dt_na.dat')
+        with open(self.dol_path, 'wb') as f:
+            f.write(b'old dol')
+        with open(self.dat_path, 'wb') as f:
+            f.write(bytes(range(64)))
+        self.enterContext(mock.patch.object(runner, 'INPUT_DIR', os.path.join(self.tmp, 'no_input')))
+        self.dat = datfile.DatFile(self.dat_path)
+        self.dat.grow(0x80)
+        self.dat.write(0x08, b'moved copy')
+        self.dat.write(0x60, b'new copy')
+
+    def files(self) -> tuple[bytes, bytes]:
+        with open(self.dol_path, 'rb') as dol, open(self.dat_path, 'rb') as dat:
+            return dol.read(), dat.read()
+
+    def assert_unchanged(self):
+        self.assertEqual(self.files(), (b'old dol', bytes(range(64))))
+        self.assertEqual(sorted(os.listdir(self.tmp)), ['dt_na.dat', 'main.dol'])     # no temp file left
+
+    def test_writes_both(self):
+        runner.commit(self.tmp, b'new dol', self.dat, None)
+        dol, dat = self.files()
+        self.assertEqual((dol, len(dat), dat[0x08:0x12], dat[0x60:0x68]), (b'new dol', 0x80, b'moved copy', b'new copy'))
+        self.assertEqual(sorted(os.listdir(self.tmp)), ['dt_na.dat', 'main.dol'])
+
+    def test_a_dol_that_cannot_be_replaced_takes_the_dat_back(self):
+        with mock.patch.object(runner.os, 'replace', side_effect=PermissionError('in use')):
+            with self.assertRaisesRegex(runner.RosterDevError, 'Nothing was changed'):
+                runner.commit(self.tmp, b'new dol', self.dat, None)
+        self.assert_unchanged()
+
+    def test_a_dat_flush_that_fails_changes_nothing(self):
+        self.dat.pending.append((0x20, None))
+        with self.assertRaises(TypeError):
+            runner.commit(self.tmp, b'new dol', self.dat, None)
+        self.assertEqual(self.files(), (b'old dol', bytes(range(64))))
+
+    def test_a_target_that_cannot_be_opened_stops_before_any_write(self):
+        os.remove(self.dol_path)
+        with self.assertRaisesRegex(runner.RosterDevError, 'cannot be written'):
+            runner.commit(self.tmp, b'new dol', self.dat, None)
+        self.assertEqual(os.listdir(self.tmp), ['dt_na.dat'])
+        with open(self.dat_path, 'rb') as f:
+            self.assertEqual(f.read(), bytes(range(64)))
+
+    def test_a_sound_archive_that_cannot_be_replaced_says_what_was_written(self):
+        real_replace = os.replace
+
+        def replace(src, dst):
+            if dst.endswith('.brsar'):
+                raise PermissionError('in use')
+            real_replace(src, dst)
+
+        with mock.patch.object(runner.os, 'replace', side_effect=replace):
+            with self.assertRaisesRegex(runner.RosterDevError, 'main.dol and dt_na.dat were written'):
+                runner.commit(self.tmp, b'new dol', self.dat, b'sound')
+        self.assertEqual(self.files()[0], b'new dol')
 
 
 if __name__ == '__main__':

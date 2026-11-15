@@ -277,13 +277,22 @@ class ExportSoundsTests(unittest.TestCase):
         self.assertIsNone(next(s for s in index['sounds'] if s['name'] == 'bgm_test')['path'])
         self.assertNotIn('stream/bgm_test.wav', self._paths())
 
-    def test_earlier_export_is_replaced_but_other_folders_are_kept(self):
+    def test_earlier_export_is_replaced_but_other_files_and_folders_are_kept(self):
+        """Only what the earlier export's index lists is removed: the Sound FX file dialog opens in this
+        folder, and a WAV the user saved there went with the whole folder before."""
+        index = export_sounds.export(self.sound_dir, self.out)
+        mine = os.path.join(self.out, 'group_old', 'my_own.wav')
+        os.makedirs(os.path.dirname(mine))
+        open(mine, 'wb').close()
+        listed = next(r['path'] for r in index['sounds'] if r.get('path'))
+        beside = os.path.join(self.out, os.path.dirname(listed), 'my_take.wav')
+        open(beside, 'wb').close()
+        export_sounds.clear_output(self.out)
+        self.assertEqual(sorted(self._paths()), sorted(
+            ['group_old/my_own.wav', os.path.dirname(listed).replace(os.sep, '/') + '/my_take.wav']))
         export_sounds.export(self.sound_dir, self.out)
-        stale = os.path.join(self.out, 'group_old', 'gone.wav')
-        os.makedirs(os.path.dirname(stale))
-        open(stale, 'wb').close()
-        export_sounds.export(self.sound_dir, self.out)
-        self.assertNotIn('group_old/gone.wav', self._paths())
+        self.assertIn('group_old/my_own.wav', self._paths())
+        self.assertIn(listed, self._paths())
         other = os.path.join(self.tmp, 'mine')
         os.makedirs(other)
         open(os.path.join(other, 'keep.txt'), 'w').close()

@@ -245,9 +245,22 @@ class TestWiring(unittest.TestCase):
             self.assertIn(rule, source)
         checks = source[source.index('CHECKS = ['):]
         for check in ('check_rigid_one_bone', 'check_host_bones', 'check_texture_owner',
-                      'check_texture_bindings', 'check_collision', 'check_rebuild_format',
-                      'check_mesh_limits'):
+                      'check_texture_bindings', 'check_collision', 'check_rebuild_format'):
             self.assertIn(f'({check}, False)', checks)
+        # The vertex and triangle limits run on export as well: some encoders pack the indices before
+        # their own count check, which was a struct.error traceback instead of a message.
+        self.assertIn('(check_mesh_limits, True)', checks)
+        limits = source[source.index('def check_mesh_limits('):source.index('def check_rebuild_format(')]
+        self.assertNotIn('if custom else 0', limits)              # triangles of every mesh, not only custom ones
+
+    def test_slot_removals_of_one_object_are_one_call(self):
+        # Two findings with slot numbers of check time: a second call would use them after the first
+        # one shifted the slots.
+        source = (BLENDER_ADDON_DIR / 'ModelCheck.py').read_text(encoding='utf-8')
+        run = source[source.index('def run_fixes('):]
+        run = run[:run.index('return fixed')]
+        self.assertIn('if fix_id == "remove_slots":', run)
+        self.assertIn('sorted({slot for args in group for slot in args["slots"]})', run)
 
     def test_dialog_scans_meshes_outside_any_model(self):
         source = (BLENDER_ADDON_DIR / 'ModelCheck.py').read_text(encoding='utf-8')

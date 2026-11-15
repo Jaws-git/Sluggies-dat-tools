@@ -1261,6 +1261,35 @@ class EncodePngToTplTests(unittest.TestCase):
             self.assertEqual(len(parsed["image_data"]), 256)
             self.assertEqual(parsed["palette_data"], b"")
 
+    def test_cache_gives_the_same_tpl_without_wimgt(self):
+        """With the cache folder set, a second encode of the same PNG and format runs no wimgt; another format,
+        or the PNG edited, does."""
+        import texture_helper
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as temp_dir:
+            png = self._make_fixture_png(temp_dir)
+            cache = os.path.join(temp_dir, "cache")
+            with mock.patch.dict(os.environ, {texture_helper.TPL_CACHE_ENV: cache}):
+                first = encode_png_to_tpl(png, gx_format=0xE)
+                self.assertEqual(len(os.listdir(cache)), 1)
+                with mock.patch.object(texture_helper.subprocess, "run", side_effect=AssertionError("wimgt ran")):
+                    again = encode_png_to_tpl(png, gx_format=0xE)
+                    with self.assertRaises(AssertionError):
+                        encode_png_to_tpl(png, gx_format=0x6)
+                    Image.new("RGBA", (8, 8), (1, 2, 3, 255)).save(png, "PNG")
+                    with self.assertRaises(AssertionError):
+                        encode_png_to_tpl(png, gx_format=0xE)
+                self.assertEqual(again.as_dict(), first.as_dict())
+                # an entry that does not parse is encoded again and replaced
+                entry = os.path.join(cache, os.listdir(cache)[0])
+                with open(entry, "wb") as f:
+                    f.write(b"junk")
+                Image.new("RGBA", (8, 8), (200, 100, 50, 255)).save(png, "PNG")
+                self.assertEqual(encode_png_to_tpl(png, gx_format=0xE)["format"], 0xE)
+            with mock.patch.dict(os.environ):
+                os.environ.pop(texture_helper.TPL_CACHE_ENV, None)
+                self.assertIsNone(texture_helper._tpl_cache_path(png, "CMPR", "wimgt"))
+
     def test_encode_cmpr(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             png = self._make_fixture_png(temp_dir)

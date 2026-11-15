@@ -48,6 +48,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import traceback
 
 import dearpygui.dearpygui as dpg
@@ -66,6 +67,7 @@ import slogger
 from StatEditor import gui_tab as stat_editor_tab
 
 _MAX_LOG_LINES = 3000
+_LOG_FLUSH_INTERVAL = 0.1          # seconds between console text updates (a long run prints thousands of lines)
 _LOG_COLOR = (220, 220, 220, 255)
 _DANGER_COLOR = (255, 120, 110, 255)             # gecko_compat warnings, like the grid's error lines
 _PROMPT_COLOR = (255, 210, 90, 255)
@@ -247,6 +249,11 @@ class SluggiesGui:
         self.partial = ''
         self.log_lines = collections.deque(maxlen=_MAX_LOG_LINES)
         self.log_dirty = False             # log_lines changed since the console text was last set
+        self.console_visible = False       # the console area is shown (hidden: its text is not rebuilt)
+        self.log_flushed_at = 0.0          # time.monotonic() of the last console text update
+        # Buttons run on Dear PyGui's callback thread, results on the main thread: the chain's state
+        # (process, pending, chain, on_chain_done, chain_output) changes only under this lock.
+        self.chain_lock = threading.RLock()
         self.toast = gui_toast.Toast()     # every tab's short notes (gui_toast)
         self.pending = []
         self.chain = []
@@ -275,7 +282,21 @@ class SluggiesGui:
 
     @property
     def busy(self):
-        return self.process is not None
+        """A command runs, or the next step of its chain is about to start."""
+        return self.process is not None or bool(self.pending)
+
+    def writing(self):
+        """A chain that can change the game files runs: nothing should read them meanwhile."""
+        return self.busy and gui_grid.chain_writes(self.chain)
+
+    @staticmethod
+    def _sound_write_running():
+        """A Sound FX or Set volume write of this window runs (``Sound/archive_lock``)."""
+        try:
+            from Sound import archive_lock
+        except ImportError:
+            return False
+        return archive_lock.busy()
 
     def skip_confirmations(self):
         """Options tab, "Skip confirmation popups": confirmations go on as if OK was clicked."""
@@ -284,14 +305,20 @@ class SluggiesGui:
     def run_chain(self, steps, on_done=None):
         """Run several commands in order, stopping at the first failure. ``on_done(code, output)`` runs after the
         last step (or the failed one) with the whole chain's output. False when a command already runs."""
-        if self.process is not None:
-            self._log_line('A command is already running.', _PROMPT_COLOR)
-            return False
-        self.pending = [tuple(step) for step in steps]
-        self.chain = list(self.pending)
-        self.on_chain_done, self.chain_output = on_done, []
-        self._start_next()
-        return True
+        with self.chain_lock:
+            if self.busy:
+                self._log_line('A command is already running.', _PROMPT_COLOR)
+                return False
+            if gui_grid.chain_writes(steps) and self._sound_write_running():
+                # Both rewrite MY2.brsar whole: the later one would drop the other's change.
+                self._log_line('A sound is still being written to MY2.brsar: try again in a moment.', _PROMPT_COLOR)
+                self.toast.warn('A sound is still being written: try again in a moment.')
+                return False
+            self.pending = [tuple(step) for step in steps]
+            self.chain = list(self.pending)
+            self.on_chain_done, self.chain_output = on_done, []
+            self._start_next()
+            return True
 
     def _start_next(self):
         args = self.current = self.pending.pop(0)
@@ -663,8 +690,12 @@ class SluggiesGui:
     def _flush_log(self):
         """Show the new console lines: once per frame, not per line, as a long run prints thousands. The field is
         as tall as its text so the console window (not the field) scrolls, and it follows the newest line."""
-        if not self.log_dirty:
+        if not self.log_dirty or not self.console_visible:
+            return                                 # hidden: stays dirty, shown again by the first frame after
+        now = time.monotonic()
+        if now - self.log_flushed_at < _LOG_FLUSH_INTERVAL:
             return
+        self.log_flushed_at = now
         self.log_dirty = False
         lines = list(self.log_lines)
         if self.partial:
@@ -681,6 +712,7 @@ class SluggiesGui:
         if show == dpg.get_item_configuration('console_area')['show']:
             return
         dpg.configure_item('console_area', show=show)
+        self.console_visible = bool(show)
         if show:
             self.console_grow = self._grow_for_console()
             dpg.set_y_scroll('log_window', 1.0e9)
@@ -715,28 +747,34 @@ class SluggiesGui:
 
     def _finish_process(self, code):
         self._close_prompt()                       # an unanswered prompt dies with its command
-        if self.partial:
-            self._log_line(self.partial)
-            self.partial = ''
-        stopped, self.stopping = self.stopping, False
-        self._log_line('[stopped]' if stopped else f'[finished, exit code {code}]', _PROMPT_COLOR)
-        self.process = None
-        if self.job is not None:
-            self.job.close()
-            self.job = None
-        if stopped and code == 0:
-            code = 1                               # stopped after its last line: still not a finished chain
-        if code == 0 and self.pending:
-            self._start_next()
-            return
-        if self.pending:
-            self._log_line('Remaining steps skipped because the command was stopped.' if stopped else
-                           'Remaining steps skipped because a step failed.', _PROMPT_COLOR)
-            self.pending = []
-        self._set_busy(False)
-        if gui_grid.chain_writes(self.chain):
+        with self.chain_lock:
+            if self.partial:
+                self._log_line(self.partial)
+                self.partial = ''
+            stopped, self.stopping = self.stopping, False
+            self._log_line('[stopped]' if stopped else f'[finished, exit code {code}]', _PROMPT_COLOR)
+            self.process = None
+            if self.job is not None:
+                self.job.close()
+                self.job = None
+            if stopped and code == 0:
+                code = 1                           # stopped after its last line: still not a finished chain
+            if code == 0 and self.pending:
+                self._start_next()
+                return
+            if self.pending:
+                self._log_line('Remaining steps skipped because the command was stopped.' if stopped else
+                               'Remaining steps skipped because a step failed.', _PROMPT_COLOR)
+                self.pending = []
+            self._set_busy(False)
+            wrote = gui_grid.chain_writes(self.chain)
+            # This chain's callback and output are taken here: a chain a button starts from now on has its own.
+            callback, self.on_chain_done = self.on_chain_done, None
+            output, self.chain_output = ''.join(self.chain_output), []
+        if wrote:
             self.grid_tab.request_read()          # the game files may have changed: re-read the grid
-        self._chain_done(code)
+        if callback is not None:
+            callback(code, output)
 
     def _chain_done(self, code):
         callback, self.on_chain_done = self.on_chain_done, None
@@ -1014,7 +1052,7 @@ class SluggiesGui:
         self.grid_tab.forget_copy()
         if (dpg.get_item_alias(tab) in ('grid_tab', 'options_tab', 'gameplay_tab', 'sounds_tab')
                 and self.grid_tab.loader.status != gui_grid.StateLoader.RUNNING):
-            self.grid_tab.request_read()
+            self.grid_tab.request_read(if_changed=True)    # only when the game files differ from the last read
         if dpg.get_item_alias(tab) == 'sounds_tab':
             self.sounds_tab.on_open()
         if dpg.get_item_alias(tab) == 'effects_tab':

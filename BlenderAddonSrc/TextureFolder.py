@@ -86,6 +86,15 @@ def _same_bytes(data):
     return same
 
 
+def _relpath(path):
+    """*path* relative to the .blend (``//...``), or *path* itself where there is no relative form: on
+    Windows a texture on another drive than the .blend (``bpy.path.relpath`` raises ValueError there)."""
+    try:
+        return bpy.path.relpath(path)
+    except ValueError:
+        return path
+
+
 def _source_path(image):
     return os.path.normpath(bpy.path.abspath(image.filepath)) if image.filepath else ''
 
@@ -126,7 +135,8 @@ def convert(images, folder=None):
             continue
         source = _source_path(image)
         if os.path.normcase(source) in by_source:   # another image of the same file
-            image.filepath = by_source[os.path.normcase(source)]
+            png = by_source[os.path.normcase(source)]
+            image.filepath = _relpath(png) if bpy.data.filepath else png
             image.reload()
             converted += 1
             continue
@@ -140,6 +150,8 @@ def convert(images, folder=None):
         size = ModelCheckCore.clamp_texture_dimensions(width, height)
         in_place = _is_png(image, source) \
             and os.path.normcase(os.path.dirname(source)) == os.path.normcase(target_dir)
+        old_path, old_format = image.filepath_raw, image.file_format
+        written_png = None                       # a new PNG this attempt wrote (removed again when it fails)
         try:
             os.makedirs(target_dir, exist_ok=True)
             backup, there = _target(target_dir, f'{stem}{BACKUP_SUFFIX}{ext}',
@@ -156,6 +168,7 @@ def convert(images, folder=None):
             image.filepath_raw = path
             image.file_format = 'PNG'
             image.save()
+            written_png = None if in_place else path
             if not in_place:
                 # A file in the project folder is the step's own copy: it becomes the backup.
                 own_copy = folder and os.path.normcase(os.path.dirname(source)) == os.path.normcase(target_dir)
@@ -166,11 +179,23 @@ def convert(images, folder=None):
                 elif not there:
                     shutil.copy2(source, backup)
         except (OSError, RuntimeError) as exc:
+            # Back to the file it came from: not left scaled in memory, marked PNG and pointed at a path
+            # that may not exist.
+            try:
+                image.filepath_raw, image.file_format = old_path, old_format
+                image.reload()
+            except (RuntimeError, TypeError):
+                pass
+            if written_png:
+                try:
+                    os.remove(written_png)
+                except OSError:
+                    pass
             notes.append(f"'{image.name}' could not be converted: {exc}")
             continue
         claimed.add(os.path.normcase(path))
         by_source[os.path.normcase(source)] = path
-        image.filepath = bpy.path.relpath(path) if bpy.data.filepath else path
+        image.filepath = _relpath(path) if bpy.data.filepath else path
         converted += 1
         what = f"{width}x{height} -> {size[0]}x{size[1]}" if size != (width, height) else "as a PNG"
         notes.append(f"'{image.name}': {what} in {os.path.basename(path)}, "
@@ -196,42 +221,47 @@ def collect(images, folder):
         on_disk = bool(source) and os.path.isfile(source) and not image.is_dirty
         packed = image.packed_file is not None and not image.is_dirty
         if not (on_disk or packed or image.is_dirty):
-            notes.append(f"'{image.name}': its file {source or '(none)'} is missing, not copied")
+            if source:
+                notes.append(f"'{image.name}': its file {source} is missing, not copied")
+            else:
+                notes.append(f"'{image.name}' has no file and nothing painted on it: not copied")
             continue
         if on_disk and os.path.normcase(os.path.dirname(source)) == os.path.normcase(os.path.normpath(folder)):
             claimed.add(os.path.normcase(source))
-            image.filepath = bpy.path.relpath(source)
+            image.filepath = _relpath(source)
             moved += 1
             continue
 
-        os.makedirs(folder, exist_ok=True)
-        file_name = os.path.basename(source) or f'{bpy.path.clean_name(image.name)}.png'
-        if on_disk and os.path.normcase(source) in by_source:
-            path = by_source[os.path.normcase(source)]
-        else:
-            if on_disk:
-                path, there = _target(folder, file_name,
-                                      lambda p, s=source: filecmp.cmp(s, p, shallow=False), claimed)
-                if not there:
-                    shutil.copy2(source, path)
-                by_source[os.path.normcase(source)] = path
-            elif packed:
-                data = bytes(image.packed_file.data)
-                path, there = _target(folder, file_name, _same_bytes(data), claimed)
-                if not there:
-                    with open(path, 'wb') as handle:
-                        handle.write(data)
-            else:   # edited in Blender and not saved: save the edited pixels
-                path, there = _target(folder, file_name, None, claimed)
-                try:
+        # A folder or file that cannot be written (locked, read-only, full disk) leaves this image where it
+        # is and goes on with the next one; the images before it are already in the folder.
+        try:
+            os.makedirs(folder, exist_ok=True)
+            file_name = os.path.basename(source) or f'{bpy.path.clean_name(image.name)}.png'
+            if on_disk and os.path.normcase(source) in by_source:
+                path = by_source[os.path.normcase(source)]
+            else:
+                if on_disk:
+                    path, there = _target(folder, file_name,
+                                          lambda p, s=source: filecmp.cmp(s, p, shallow=False), claimed)
+                    if not there:
+                        shutil.copy2(source, path)
+                    by_source[os.path.normcase(source)] = path
+                elif packed:
+                    data = bytes(image.packed_file.data)
+                    path, there = _target(folder, file_name, _same_bytes(data), claimed)
+                    if not there:
+                        with open(path, 'wb') as handle:
+                            handle.write(data)
+                else:   # edited in Blender and not saved: save the edited pixels
+                    path, there = _target(folder, file_name, None, claimed)
                     image.save(filepath=path, save_copy=True)
-                except RuntimeError as exc:
-                    notes.append(f"'{image.name}' could not be saved: {exc}")
-                    continue
-            written += not there
+                written += not there
+        except (OSError, RuntimeError) as exc:
+            notes.append(f"'{image.name}' could not be copied into {folder}: {exc}")
+            continue
         claimed.add(os.path.normcase(path))
         if image.source == 'GENERATED':
             image.source = 'FILE'
-        image.filepath = bpy.path.relpath(path)
+        image.filepath = _relpath(path)
         moved += 1
     return moved, written, notes

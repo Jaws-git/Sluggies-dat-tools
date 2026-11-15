@@ -186,6 +186,39 @@ class PackFileTests(PackTestCase):
             pack.read_pack(self.rewrite(lambda f: f.__setitem__('icons/../evil.png', b'')))
         with self.assertRaisesRegex(pack.PackError, 'portrait front_0_0.png is missing'):
             pack.read_pack(self.rewrite(lambda f: f.pop('icons/front_0_0.png')))
+
+    def test_names_that_are_paths_on_windows_are_refused(self):
+        """``icons/..\\..\\x.png`` is a plain name to posixpath and a way out of the folder to Windows."""
+        for name in ('icons/..\\..\\evil.png', 'icons/C:evil.png', 'icons/sub\\evil.png',
+                     'icons/..\\evil' + pack.icons.KEPT_BLOCKS_EXT):
+            with self.assertRaisesRegex(pack.PackError, 'unexpected file'):
+                pack.read_pack(self.rewrite(lambda f, name=name: f.__setitem__(name, b'')))
+        self.assertTrue(pack._plain_file_name('front_0_0.png'))
+        for bad in ('', '.', '..', 'a/b', 'a\\b', 'C:x', 'a\x00b'):
+            self.assertFalse(pack._plain_file_name(bad), bad)
+
+    def test_size_caps_and_damage(self):
+        with mock.patch.object(pack, 'MAX_UNPACKED', 64):
+            with self.assertRaisesRegex(pack.PackError, 'too big'):
+                pack.read_pack(self.path)
+        with mock.patch.object(pack, 'MAX_MEMBERS', 2):
+            with self.assertRaisesRegex(pack.PackError, 'too big'):
+                pack.read_pack(self.path)
+        with open(self.path, 'rb') as f:
+            raw = bytearray(f.read())
+        at = raw.index(b'models/0x0D_hp.bin') + len('models/0x0D_hp.bin') + 4     # inside the member's data
+        raw[at] ^= 0xFF
+        bad = os.path.join(self.tmp, 'crc' + pack.EXTENSION)
+        with open(bad, 'wb') as f:
+            f.write(raw)
+        with self.assertRaises(pack.PackError):
+            pack.read_pack(bad)
+
+    def test_a_failed_write_leaves_no_temp_file(self):
+        target = os.path.join(self.tmp, 'new' + pack.EXTENSION)
+        with self.assertRaises(TypeError):
+            pack.write_pack(target, {'pack.json': b'{}', 'x': None})
+        self.assertFalse(os.path.exists(target) or os.path.exists(target + '.tmp'))
         not_zip = os.path.join(self.tmp, 'x' + pack.EXTENSION)
         with open(not_zip, 'wb') as f:
             f.write(b'not a zip')
@@ -198,7 +231,12 @@ class PackFileTests(PackTestCase):
         p = pack.read_pack(self.path)
         plan = self.plan(game)
         folder = os.path.join(self.tmp, 'load')
+        stray = os.path.join(folder, 'models', 'left behind')        # a stray folder is cleared, not an error
+        os.makedirs(stray)
+        with open(os.path.join(stray, 'old.bin'), 'wb') as f:
+            f.write(b'old')
         path = pack.extract(p, plan, folder)
+        self.assertFalse(os.path.exists(stray))
         with open(path, encoding='utf-8') as f:
             self.assertEqual(json.load(f), plan.config if plan.config is not None else p.config)
         with open(os.path.join(folder, 'models', '0x0D_hp.bin'), 'rb') as f:

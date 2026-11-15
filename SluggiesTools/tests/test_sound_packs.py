@@ -100,6 +100,35 @@ class CustomPackTests(unittest.TestCase):
         with self.assertRaisesRegex(sound_packs.PackError, 'plain file name'):
             sound_packs.load_pack(pack.folder)
 
+    def test_a_damaged_pack_file_is_a_pack_error_and_leaves_no_folder(self):
+        pack = sound_packs.create_pack(self.tmp, 'Rosa', 0x09)
+        sound_packs.set_clip(pack, 'v1', self.a)
+        path = sound_packs.export_pack(pack, os.path.join(self.tmp, 'out', 'rosa'))
+        with open(path, 'rb') as handle:
+            raw = bytearray(handle.read())
+        at = raw.index(b'v1.rwav') + len('v1.rwav') + 6                 # inside the clip's compressed data
+        raw[at] ^= 0xFF
+        bad = os.path.join(self.tmp, 'damaged' + sound_packs.PACK_EXTENSION)
+        with open(bad, 'wb') as handle:
+            handle.write(raw)
+        with self.assertRaises(sound_packs.PackError):
+            sound_packs.read_pack_file(bad)
+        with self.assertRaises(sound_packs.PackError):
+            sound_packs.import_pack(self.tmp, bad, name='Damaged')
+        self.assertFalse(os.path.exists(sound_packs.pack_folder(self.tmp, 'Damaged')))
+
+    def test_an_import_that_fails_midway_removes_its_folder(self):
+        """A folder without pack.json is not listed, and a second import said "exists already"."""
+        from unittest import mock
+        pack = sound_packs.create_pack(self.tmp, 'Rosa', 0x09)
+        sound_packs.set_clip(pack, 'v1', self.a)
+        path = sound_packs.export_pack(pack, os.path.join(self.tmp, 'out', 'rosa'))
+        with mock.patch.object(sound_packs, 'save_pack', side_effect=OSError('disk full')):
+            with self.assertRaises(OSError):
+                sound_packs.import_pack(self.tmp, path, name='Copy')
+        self.assertFalse(os.path.exists(sound_packs.pack_folder(self.tmp, 'Copy')))
+        self.assertEqual(sound_packs.import_pack(self.tmp, path, name='Copy').name, 'Copy')
+
     def test_export_and_import(self):
         pack = sound_packs.create_pack(self.tmp, 'Rosa', 0x09)
         sound_packs.set_clip(pack, 'v1', self.a, b'RIFF-wav', origin='cheer.wav')

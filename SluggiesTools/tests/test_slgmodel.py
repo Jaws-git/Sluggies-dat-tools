@@ -5,6 +5,7 @@ The deltas and zips are built here from synthetic bytes (no game data); the plan
 state and derived config of ``test_slot_plan`` with a fake ``Env``.
 """
 
+import contextlib
 import hashlib
 import json
 import os
@@ -152,6 +153,35 @@ class DeltaTests(unittest.TestCase):
             slgmodel.apply_delta(delta, modded)
         with self.assertRaisesRegex(slgmodel.SlgError, 'past its end'):
             slgmodel.apply_delta(delta, [SOURCES[0], SOURCES[1][:100], SOURCES[2]])
+
+    def test_crafted_deltas_are_refused_at_once(self):
+        """A few KB that unpack to millions of empty ops took minutes; one that inflates without end took the
+        memory. Both are refused in well under a second."""
+        import time
+        empty_ops = make_delta(HIGH, [('copy', 0, 0, 0)] * 200000)
+        self.assertLess(len(empty_ops), 4096)
+        inflates = zlib.compress(slgmodel.DELTA_MAGIC + bytes(24) + bytes(slgmodel.MAX_DELTA_RAW + 1024))
+        self.assertLess(len(inflates), 64 * 1024)
+        started = time.perf_counter()
+        for delta, text in ((empty_ops, 'empty delta ops'), (inflates, 'unpacks to more than')):
+            for call in (lambda d: slgmodel.apply_delta(d, SOURCES), slgmodel.delta_sources, slgmodel.delta_info):
+                with self.assertRaisesRegex(slgmodel.SlgError, text) if call is not slgmodel.delta_info \
+                        or 'unpacks' in text else contextlib.nullcontext():
+                    call(delta)
+        self.assertLess(time.perf_counter() - started, 5.0)
+        # a few empty ops are no reason to refuse a file
+        self.assertEqual(slgmodel.apply_delta(make_delta(HIGH, [('literal', b'')] + HIGH_OPS), SOURCES), HIGH)
+
+    def test_a_copy_past_the_source_is_not_sliced_first(self):
+        class Source:
+            def __len__(self):
+                return 1000
+
+            def __getitem__(self, item):
+                raise AssertionError('sliced before the length was checked')
+
+        with self.assertRaisesRegex(slgmodel.SlgError, 'past its end'):
+            slgmodel.apply_delta(make_delta(bytes(2000), [('copy', 0, 0, 2000)]), [Source(), b'', b''])
 
     def test_damaged_deltas(self):
         with self.assertRaisesRegex(slgmodel.SlgError, 'not a delta'):

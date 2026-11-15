@@ -43,6 +43,27 @@ def _effects():
     return effects
 
 
+OUTCOME_OK, OUTCOME_WARN, OUTCOME_ERROR = 'ok', 'warn', 'error'
+ARCHIVE_NAME = '3_Output_Dat/sound_NA/MY2.brsar'
+
+
+def effect_outcome(name, done, notes, error, problems, changed, stored):
+    """``(status text, OUTCOME_*)`` of a Sound FX job. ``done``: what the job did to the library; ``stored``:
+    it got that far; ``changed`` / ``problems``: ``effects.sync_output``'s result; ``error``: what was raised."""
+    if error and stored:
+        return (f'{done}, but {ARCHIVE_NAME} could not be written: {error}. The sound is kept in the library; '
+                '"Patch Game" writes it.'), OUTCOME_WARN
+    if error:
+        return f'Refused: {error}', OUTCOME_ERROR
+    own = [problem for problem in problems if problem.startswith(f'{name}:')]
+    if own:
+        return f'{done}, but it was not written to {ARCHIVE_NAME}: {own[0].split(": ", 1)[-1]}.', OUTCOME_WARN
+    note = f' ({"; ".join(notes)})' if notes else ''
+    if not changed:
+        return f'{done}: {ARCHIVE_NAME} already held it, nothing was written.{note}', OUTCOME_WARN
+    return f'{done}: {ARCHIVE_NAME} written.{note}', OUTCOME_OK
+
+
 class EffectsTab:
     def __init__(self, app):
         self.app = app                       # gui.SluggiesGui
@@ -244,11 +265,12 @@ class EffectsTab:
         root = self.app.root_dir
 
         def work():
-            notes, done, error, problems = [], None, None, []
+            notes, done, error, problems, changed, stored = [], None, None, [], 0, False
             try:
                 with gui_audio.render_turns():
                     notes, done = job()
-                    _changed, problems = _effects().sync_output(root)
+                    stored = True                      # the library has the change; the archive comes next
+                    changed, problems = _effects().sync_output(root)
             except Exception as exc:
                 error = str(exc) if isinstance(exc, (ValueError, OSError)) else f'{type(exc).__name__}: {exc}'
             library = None
@@ -256,27 +278,33 @@ class EffectsTab:
                 library = _effects().load_library(root)
             except Exception:
                 pass
-            self.app.output_queue.put(('call', self._ran, effect, notes, done, error, problems, library))
+            self.app.output_queue.put(('call', self._ran, effect, notes, done, error, problems, library,
+                                       changed, stored))
         threading.Thread(target=work, daemon=True).start()
 
-    def _ran(self, effect, notes, done, error, problems, library):
+    def _ran(self, effect, notes, done, error, problems, library, changed=1, stored=False):
+        """``done`` says what the job did to the library; what happened to MY2.brsar is added here, from the
+        write's own result (the status used to say "written" whenever nothing raised)."""
         self.working = None
         self._spinner()
         if library is not None:
             self.library = library
         for problem in problems:
             self.app.log_line(f'[sound fx] {problem}', _WARN)
+        text, color = effect_outcome(effect.name, done, notes, error, problems, changed, stored)
         if error:
-            self._status(f'Refused: {error}', _ERROR)
             self.app.log_line(f'[sound fx] {effect.name}: {error}', _WARN)
         else:
             for note in notes:
                 self.app.log_line(f'[sound fx] {effect.name}: {note}', _DIM)
-            self.app.log_line(f'[sound fx] {done}', _OK)
-            self._status(done + (f' ({"; ".join(notes)})' if notes else ''), _OK)
+        self.app.log_line(f'[sound fx] {text}', {OUTCOME_OK: _OK, OUTCOME_WARN: _WARN, OUTCOME_ERROR: _ERROR}[color])
+        self._status(text, {OUTCOME_OK: _OK, OUTCOME_WARN: _WARN, OUTCOME_ERROR: _ERROR}[color])
         self._draw_list()
 
     def _encode(self, effect, path):
+        if self.app.busy:                              # a command started while the file dialog was open
+            self._status('A command is running: try again when it is done.', _WARN)
+            return
         effects = _effects()
         root = self.app.root_dir
         stock = self._wave(effect, stock=True)
@@ -285,8 +313,7 @@ class EffectsTab:
         def job():
             rwav, notes = effects.encode(path, stock, gain)
             effects.set_effect(root, effect.name, rwav, origin=path)
-            return notes, (f'{effect.name} replaced by {os.path.basename(path)}{gui_volume.gain_label(gain)}: '
-                           '3_Output_Dat/sound_NA/MY2.brsar written.')
+            return notes, f'{effect.name} replaced by {os.path.basename(path)}{gui_volume.gain_label(gain)}'
         self._run(effect, f'Encoding {os.path.basename(path)} for {effect.name}...', job)
 
     def _on_reset(self, effect):
@@ -300,7 +327,7 @@ class EffectsTab:
 
         def job():
             effects.remove_effect(root, effect.name)
-            return [], f'{effect.name} reset to the stock sound: 3_Output_Dat/sound_NA/MY2.brsar written.'
+            return [], f'{effect.name} reset to the stock sound'
         self._run(effect, f'Resetting {effect.name}...', job)
 
     def _on_volume(self, effect):

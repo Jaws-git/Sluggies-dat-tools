@@ -148,9 +148,11 @@ def save(path: str, output_dir: str = state_cli.OUTPUT_DIR, input_dir: str = INP
     return meta
 
 
-def plan(path: str, output_dir: str = state_cli.OUTPUT_DIR, input_dir: str = INPUT_DIR) -> pack.LoadPlan:
+def plan(path: str, output_dir: str = state_cli.OUTPUT_DIR, input_dir: str = INPUT_DIR,
+         dry_run: bool = False) -> pack.LoadPlan:
     """Check the pack at ``path`` and plan its load into the output; writes the plan (and, when it is not refused,
-    the files its chain reads)."""
+    the files its chain reads). Custom voice clips of the game that cannot be read back refuse or ask
+    (``state_cli.derive_for_write``; ``dry_run``: a warning only)."""
     folder = pack_dir(output_dir)
     os.makedirs(folder, exist_ok=True)
     if os.path.exists(plan_path(output_dir)):
@@ -158,13 +160,15 @@ def plan(path: str, output_dir: str = state_cli.OUTPUT_DIR, input_dir: str = INP
     p = pack.read_pack(path)
     st = state_cli.run(output_dir)
     image, dat = state_cli._open(output_dir)
-    derived = derive.derive(image, dat, state_cli.open_sound(output_dir))
+    derived = state_cli.derive_for_write(image, dat, output_dir, dry_run)
     game_fp = {pack._hex(c['id']): c['fingerprint'] for c in st['characters']}
     load_dir = os.path.join(folder, LOAD_DIR)
     state_file = os.path.join(load_dir, derive.CONFIG_FILE)
     inputs = InputFiles(input_dir)
     result = pack.plan_load(p, st, game_fp, derived, FileLoadEnv(inputs), state_file,
                             lambda name: os.path.join(load_dir, *name.split('/')))
+    if dry_run and derived.lost_clips:
+        result.warnings.insert(0, derived.warnings[0])       # derive_for_write's notice
     if result.ok and result.commands:
         pack.extract(p, result, load_dir)
         final = {} if result.remove else result.config        # a stock pack: no new IDs stay
@@ -185,13 +189,14 @@ def main(argv=None) -> int:
     what = parser.add_mutually_exclusive_group(required=True)
     what.add_argument('--save', metavar='FILE', help='write the output\'s roster into a pack')
     what.add_argument('--load', metavar='FILE', help='check a pack and plan its load (start.py runs the chain)')
+    parser.add_argument('--dry-run', action='store_true', help='--load: the plan is only checked, never written')
     parser.add_argument('--output-dir', default=state_cli.OUTPUT_DIR, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     try:
         if args.save:
             meta = save(args.save, args.output_dir)
         else:
-            result = plan(args.load, args.output_dir)
+            result = plan(args.load, args.output_dir, dry_run=args.dry_run)
     except (RuntimeError, ValueError, OSError) as exc:   # PackError, StateError, DeriveError, ...
         slogger.error(f'refused, nothing written: {exc}', source=SOURCE)
         return 1

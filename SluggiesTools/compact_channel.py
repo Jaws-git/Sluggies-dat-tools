@@ -68,6 +68,13 @@ def compact_channel(what: str, stride: int, original: bytes,
     ]
     split_indices = {}
     new_indices = []
+    # Both lookups of the loop below, built once: every edited record a donor slot's loops ask for, and the
+    # donor slots that already have a split. Rebuilding them per new (slot, value) pair made a re-unwrapped
+    # body quadratic (measured 2026-11-12: 42 s for 6,000 slots and 36,000 loops).
+    records_by_slot = {}
+    for index, candidate in zip(original_indices, edited_records):
+        records_by_slot.setdefault(index, set()).add(candidate)
+    split_slots = set()
     for donor_index, record in zip(original_indices, edited_records):
         donor_record = compact_records[donor_index]
         if record == donor_record:
@@ -77,19 +84,13 @@ def compact_channel(what: str, stride: int, original: bytes,
         if split_key not in split_indices:
             # Reuse the donor slot for the first edited value only when no
             # loop still needs its original value.
-            slot_records = {
-                candidate
-                for index, candidate in zip(original_indices, edited_records)
-                if index == donor_index
-            }
-            if donor_record not in slot_records and not any(
-                key[0] == donor_index for key in split_indices
-            ):
+            if donor_record not in records_by_slot[donor_index] and donor_index not in split_slots:
                 compact_records[donor_index] = record
                 split_indices[split_key] = donor_index
             else:
                 split_indices[split_key] = len(compact_records)
                 compact_records.append(record)
+            split_slots.add(donor_index)
         new_indices.append(split_indices[split_key])
     if len(compact_records) > 0xFFFF:
         raise ValueError(

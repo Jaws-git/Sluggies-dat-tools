@@ -49,11 +49,19 @@ def anm_groups():
 
 
 def _group_sequences(actions):
-    """Actions ordered by sequence index; raises ValueError on gaps/duplicates."""
-    count = max(int(a.get('SluggiesAnmSequenceCount', 0)) for a in actions)
-    by_index = {}
-    for action in actions:
-        by_index.setdefault(int(action.get('SluggiesAnmSequence', -1)), []).append(action)
+    """Actions ordered by sequence index; raises ValueError on gaps/duplicates, on a group whose import
+    properties are gone or damaged (no sequence count, no readable track records), so the export refuses
+    with the action's name before anything is built."""
+    try:
+        count = max(int(a.get('SluggiesAnmSequenceCount', 0)) for a in actions)
+        by_index = {}
+        for action in actions:
+            by_index.setdefault(int(action.get('SluggiesAnmSequence', -1)), []).append(action)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"the group's sequence properties are not numbers ({e})") from e
+    if count < 1:
+        raise ValueError("no action of the group carries its sequence count (SluggiesAnmSequenceCount); "
+                         "import the .anm again")
     problems = []
     for index in range(count):
         found = by_index.get(index, [])
@@ -62,6 +70,14 @@ def _group_sequences(actions):
         elif len(found) > 1:
             names = ', '.join(sorted(a.name for a in found))
             problems.append(f"sequence {index} has several actions ({names}); delete the extra ones")
+        else:
+            # An action outside 0..count-1 is not part of the file and stays out, as before.
+            try:
+                int(found[0]['SluggiesAnmMagic'])
+                _records(found[0])
+            except Exception as e:  # noqa: BLE001 - a missing key, damaged JSON or compressed data
+                problems.append(f"{found[0].name}: its imported track data cannot be read "
+                                f"({type(e).__name__}: {e}); import the .anm again")
     if problems:
         raise ValueError('; '.join(problems))
     return [by_index[i][0] for i in range(count)]
@@ -170,6 +186,9 @@ class _ActionSwap:
 
     def __enter__(self):
         ad = self.arm_obj.animation_data or self.arm_obj.animation_data_create()
+        if getattr(ad, 'use_tweak_mode', False):
+            # Blender refuses to change the action then, on the way in and on the way back out.
+            raise ValueError("the armature's NLA is in tweak mode: leave it (Tab in the NLA editor) and export again")
         self.ad = ad
         self.frame = (self.scene.frame_current, self.scene.frame_subframe)
         self.action = ad.action
@@ -189,17 +208,28 @@ class _ActionSwap:
             self.ad.action_slot = action.slots[0]
 
     def __exit__(self, *exc):
-        self.ad.action = self.action
-        if self.slot is not None and hasattr(self.ad, 'action_slot'):
-            try:
+        """Put everything back, each item on its own: one that Blender refuses must not leave the rest
+        (muted NLA tracks, influence, the frame) changed."""
+        def restore_mutes():
+            for track, mute in self.mutes:
+                track.mute = mute
+
+        def restore_action():
+            self.ad.action = self.action
+
+        def restore_slot():
+            if self.slot is not None and hasattr(self.ad, 'action_slot'):
                 self.ad.action_slot = self.slot
-            except (TypeError, RuntimeError):
+
+        for restore in (
+                restore_mutes, restore_action, restore_slot,
+                lambda: setattr(self.ad, 'action_influence', self.influence),
+                lambda: setattr(self.ad, 'action_blend_type', self.blend),
+                lambda: self.scene.frame_set(self.frame[0], subframe=self.frame[1])):
+            try:
+                restore()
+            except Exception:  # noqa: BLE001 - whatever Blender raises here, the other items still go back
                 pass
-        self.ad.action_influence = self.influence
-        self.ad.action_blend_type = self.blend
-        for track, mute in self.mutes:
-            track.mute = mute
-        self.scene.frame_set(self.frame[0], subframe=self.frame[1])
         return False
 
 
@@ -396,9 +426,24 @@ class SLUGGIES_OT_export_anm(bpy.types.Operator, ExportHelper):
         except ValueError as e:
             self.report({"ERROR"}, f"Not written: {e}")
             return {"CANCELLED"}
+        except Exception as e:  # noqa: BLE001 - damaged action properties, a degenerate pose: say so, no traceback
+            self.report({"ERROR"}, f"Not written: '{self.group}' could not be built ({type(e).__name__}: {e})")
+            return {"CANCELLED"}
 
-        with open(self.filepath, 'wb') as f:
-            f.write(data)
+        # Beside the target, then moved over it: the target is by default the bank the group was imported
+        # from, and a write that fails halfway must not cut that file short.
+        temp = self.filepath + '.tmp'
+        try:
+            with open(temp, 'wb') as f:
+                f.write(data)
+            os.replace(temp, self.filepath)
+        except OSError as e:
+            try:
+                os.remove(temp)
+            except OSError:
+                pass
+            self.report({"ERROR"}, f"Could not write {self.filepath}: {e}. The file is as it was before.")
+            return {"CANCELLED"}
         for note in notes:
             self.report({"INFO"}, note)
         for warning in untracked_keys_warnings(arm_obj, actions):

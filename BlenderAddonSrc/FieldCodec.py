@@ -15,6 +15,7 @@ all decode the same way.
 import base64
 import json
 import lzma
+import os
 import zlib
 
 HEX_FIELD_PREFIX = 'x:'
@@ -71,11 +72,22 @@ def load_sluggie(path):
 def dump_sluggie(document, path, text=None):
     """Write a .sluggie file: xz-compressed, or plain JSON for a --debug
     document (SluggiesModel.UseCompression false). text is the JSON to write
-    (default: document indented by 2)."""
+    (default: document indented by 2). Written beside the target and moved
+    over it, so a failed write (full disk, locked file) leaves the old file
+    whole: an export writes back into its source by default. Raises OSError."""
     if text is None:
         text = json.dumps(document, indent=2)
     raw = text.encode('utf-8')
     if (document.get('SluggiesModel') or {}).get('UseCompression', True):
         raw = lzma.compress(raw, preset=XZ_PRESET)
-    with open(path, 'wb') as handle:
-        handle.write(raw)
+    temp = f'{path}.tmp'
+    try:
+        with open(temp, 'wb') as handle:
+            handle.write(raw)
+        os.replace(temp, path)
+    except BaseException:
+        try:
+            os.remove(temp)
+        except OSError:
+            pass
+        raise

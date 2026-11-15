@@ -25,7 +25,6 @@ Usage:
 """
 
 import os
-import struct
 import sys
 
 # Initialize universal logger for standalone use.
@@ -35,12 +34,6 @@ if _CBS_TOOLS_DIR not in sys.path:
 
 import slogger as _slogger
 _slogger.configure()
-
-u32 = lambda b, o: struct.unpack_from('>I', b, o)[0]
-u16 = lambda b, o: struct.unpack_from('>H', b, o)[0]
-u8  = lambda b, o: b[o]
-
-GPL_MAGIC = 0x00B749E0
 
 _pass = 0
 _fail = 0
@@ -65,7 +58,10 @@ def cstr(b: bytes, off: int) -> str:
     return b[off:end].decode('ascii', errors='replace')
 
 
-from binfmt import color_entry_size as color_stride, comp_size  # noqa: E402,F401
+from binfmt import color_entry_size as color_stride, comp_size, u16  # noqa: E402,F401
+from ModelBlock import GPL_MAGIC, GplSection, ModelBlock, SknSection  # noqa: E402
+
+_HEADER_KEYS = {'GPL': 'gpl', 'ACT': 'act', 'TEX': 'tex', 'SKN': 'skn', 'ptr6': 'p6', 'ptr7': 'p7', 'ptr8': 'p8'}
 
 
 # ---------------------------------------------------------------------------
@@ -73,11 +69,10 @@ from binfmt import color_entry_size as color_stride, comp_size  # noqa: E402,F40
 # ---------------------------------------------------------------------------
 
 def parse_block(blk: bytes) -> dict:
-    hdr = {
-        'gpl': u32(blk, 0x04), 'act': u32(blk, 0x08),
-        'tex': u32(blk, 0x0c), 'skn': u32(blk, 0x10),
-        'p6': u32(blk, 0x14), 'p7': u32(blk, 0x18), 'p8': u32(blk, 0x1c),
-    }
+    """The compared fields of one block. A block cut short raises
+    ``ModelBlock.ModelBlockError`` (a ``struct.error`` and an ``IndexError``)."""
+    model = ModelBlock(blk)
+    hdr = {_HEADER_KEYS[name]: pointer for name, pointer in model.pointers().items()}
     ptrs = sorted([p for p in hdr.values() if p] + [len(blk)])
 
     def section_end(start: int) -> int:
@@ -87,24 +82,27 @@ def parse_block(blk: bytes) -> dict:
 
     # ---- GPL ----
     g = hdr['gpl']
-    assert u32(blk, g) == GPL_MAGIC, 'GPL magic missing'
-    n = u32(blk, g + 0x0c)
-    desc = u32(blk, g + 0x10)
-    ud_len = u32(blk, g + 0x04)
-    ud_ptr = u32(blk, g + 0x08)
+    gpl = GplSection(model, g)
+    assert gpl.magic == GPL_MAGIC, 'GPL magic missing'
+    n = gpl.submesh_count
+    desc = gpl.descriptor_ptr
+    ud_len = gpl.user_data_length
+    ud_ptr = gpl.user_data_ptr
     subs = []
     for i in range(n):
-        blob = u32(blk, g + desc + i * 8)          # GPL-relative
-        name = cstr(blk, g + u32(blk, g + desc + i * 8 + 4))
+        descriptor = gpl.descriptor(desc, i)
+        blob = descriptor.layout_ptr                # GPL-relative
+        name = cstr(blk, g + descriptor.name_ptr)
         base = g + blob
-        pos_h, col_h, uv_h, nor_h, dsp_h = (u32(blk, base), u32(blk, base + 4),
-                                            u32(blk, base + 8), u32(blk, base + 0xc),
-                                            u32(blk, base + 0x10))
-        m_uv = u8(blk, base + 0x14)
+        layout = gpl.layout(blob)
+        pos_h, col_h, uv_h, nor_h, dsp_h = (layout.position_header_ptr, layout.color_header_ptr,
+                                            layout.uv_header_ptr, layout.normal_header_ptr,
+                                            layout.display_header_ptr)
+        m_uv = layout.uv_count
 
-        def hdr8(off, base=base):
-            return (u32(blk, base + off), u16(blk, base + off + 4),
-                    u8(blk, base + off + 6), u8(blk, base + off + 7))
+        def hdr8(off, layout=layout):
+            header = layout.array_header(off)
+            return header.data_ptr, header.count, header.quantize_info, header.comp_count
 
         p_raw, p_cnt, p_q, p_cc = hdr8(pos_h)
         c_raw, c_cnt, c_q, c_cc = hdr8(col_h)
@@ -114,9 +112,9 @@ def parse_block(blk: bytes) -> dict:
 
         uvs = []
         for j in range(m_uv):
-            o = uv_h + j * 0x10
+            o = uv_h + j * layout.UV_HEADER_STRIDE
             raw, cnt, q, cc = hdr8(o)
-            palette_ptr = u32(blk, base + o + 8)
+            palette_ptr = layout.array_header(o).palette_name_ptr
             pal = cstr(blk, base + palette_ptr) if palette_ptr else ''
             data = blk[base + raw: base + raw + cnt * comp_size(q) * cc] if raw else b''
             uvs.append({'cnt': cnt, 'q': q, 'cc': cc, 'pal': pal, 'data': data,
@@ -124,31 +122,32 @@ def parse_block(blk: bytes) -> dict:
                         'block_off': (base + raw) if raw else 0})
 
         n_raw, n_cnt, n_q, n_cc = hdr8(nor_h)
-        amb = struct.unpack_from('>f', blk, base + nor_h + 8)[0]
+        amb = layout.array_header(nor_h).ambient
         # standalone normals only (interleaved cc=6 normals live inside pos buffer)
         nor_bytes = b''
         if n_raw and p_cc != 6:
             nor_bytes = blk[base + n_raw: base + n_raw + n_cnt * comp_size(n_q) * n_cc]
 
-        ds_ptr = u32(blk, base + dsp_h + 4)
-        n_ds = u16(blk, base + dsp_h + 8)
+        display = layout.display_header_at(dsp_h)
+        ds_ptr = display.state_table_ptr
+        n_ds = display.state_count
         dss = []
         for k in range(n_ds):
-            o = base + ds_ptr + k * 0x10
-            pl_ptr, pl_len = u32(blk, o + 8), u32(blk, o + 0xc)
+            state = layout.display_state(ds_ptr, k)
+            pl_ptr, pl_len = state.primitive_ptr, state.primitive_length
             dss.append({
-                'id': u8(blk, o), 'params': bytes(blk[o + 1:o + 4]),
-                'setting': u32(blk, o + 4),
-                'record_rel': ds_ptr + k * 0x10, 'prim_rel': pl_ptr,
+                'id': state.id, 'params': state.params,
+                'setting': state.setting,
+                'record_rel': ds_ptr + k * state.SIZE, 'prim_rel': pl_ptr,
                 'pl': blk[base + pl_ptr: base + pl_ptr + pl_len] if pl_ptr else b'',
                 'pl_block_off': (base + pl_ptr) if pl_ptr else 0,
             })
         subs.append({
             'name': name,
                 'layout_rel': blob,
-                'name_ptr': u32(blk, g + desc + i * 8 + 4),
+                'name_ptr': descriptor.name_ptr,
                 'headers': {'pos': pos_h, 'col': col_h, 'uv': uv_h, 'nor': nor_h, 'display': dsp_h},
-                'display': {'primitive_ptr': u32(blk, base + dsp_h), 'state_ptr': ds_ptr},
+                'display': {'primitive_ptr': display.primitive_ptr, 'state_ptr': ds_ptr},
             'pos': {'cnt': p_cnt, 'q': p_q, 'cc': p_cc, 'data': pos_bytes,
                     'raw_rel': p_raw, 'block_off': base + p_raw if p_raw else 0},
             'col': {'cnt': c_cnt, 'q': c_q, 'cc': c_cc, 'data': col_bytes,
@@ -171,44 +170,48 @@ def parse_block(blk: bytes) -> dict:
     out['skn'] = None
     if hdr['skn']:
         s = hdr['skn']
-        n1, n2, na = u16(blk, s), u16(blk, s + 2), u16(blk, s + 4)
-        q = u8(blk, s + 6)
+        skn = SknSection(model, s)
+        n1, n2, na = skn.sk1_count, skn.sk2_count, skn.acc_count
+        q = skn.quantize_info
         stride = comp_size(q) * 6
-        sk1p, sk2p, accp = u32(blk, s + 8), u32(blk, s + 0xc), u32(blk, s + 0x10)
-        mcp, mcs = u32(blk, s + 0x14), u32(blk, s + 0x18)
-        fip, fis = u32(blk, s + 0x1c), u32(blk, s + 0x20)
+        sk1p, sk2p, accp = skn.sk1_ptr, skn.sk2_ptr, skn.acc_ptr
+        mcp, mcs = skn.mem_clear_ptr, skn.mem_clear_size
+        fip, fis = skn.flush_ptr, skn.flush_count
 
         sk1s, sk2s, accs = [], [], []
         for i in range(n1):
-            b0 = s + sk1p + i * 0x40
-            src, gva = u32(blk, b0 + 0x30), u32(blk, b0 + 0x34)
-            bi, cnt, vo = u16(blk, b0 + 0x38), u16(blk, b0 + 0x3a), u8(blk, b0 + 0x3c)
+            entry = skn.sk1(sk1p, i)
+            b0 = entry.offset
+            src, gva = entry.source_ptr, entry.vertex_array_ptr
+            bi, cnt, vo = entry.bone_id, entry.vertex_count, entry.vertex_offset
             sk1s.append({'bi': bi, 'cnt': cnt, 'vo': vo, 'gva': gva,
                          'src': blk[s + src: s + src + vo + cnt * stride],
                          'src_block_off': s + src,
-                         'mtx_zero': blk[b0:b0 + 0x30] == bytes(0x30)})
+                         'mtx_zero': blk[b0:b0 + entry.MATRIX_SIZE] == bytes(entry.MATRIX_SIZE)})
         for i in range(n2):
-            b0 = s + sk2p + i * 0x74
-            src, wt, gva = u32(blk, b0 + 0x60), u32(blk, b0 + 0x64), u32(blk, b0 + 0x68)
-            bi1, bi2 = u16(blk, b0 + 0x6c), u16(blk, b0 + 0x6e)
-            cnt, vo = u16(blk, b0 + 0x70), u8(blk, b0 + 0x72)
+            entry = skn.sk2(sk2p, i)
+            b0 = entry.offset
+            src, wt, gva = entry.source_ptr, entry.weight_ptr, entry.vertex_array_ptr
+            bi1, bi2 = entry.bone_id_1, entry.bone_id_2
+            cnt, vo = entry.vertex_count, entry.vertex_offset
             sk2s.append({'bi1': bi1, 'bi2': bi2, 'cnt': cnt, 'vo': vo, 'gva': gva,
                          'src': blk[s + src: s + src + vo + cnt * stride],
                          'wt': blk[s + wt: s + wt + cnt * 2],
                          'src_block_off': s + src, 'wt_block_off': s + wt,
-                         'mtx_zero': blk[b0:b0 + 0x60] == bytes(0x60)})
+                         'mtx_zero': blk[b0:b0 + entry.MATRIX_SIZE] == bytes(entry.MATRIX_SIZE)})
         for i in range(na):
-            b0 = s + accp + i * 0x44
-            src, dst, gda, wt = (u32(blk, b0 + 0x30), u32(blk, b0 + 0x34),
-                                 u32(blk, b0 + 0x38), u32(blk, b0 + 0x3c))
-            bi, cnt = u16(blk, b0 + 0x40), u16(blk, b0 + 0x42)
+            entry = skn.acc(accp, i)
+            b0 = entry.offset
+            src, dst, gda, wt = (entry.source_ptr, entry.destination_index_ptr,
+                                 entry.destination_array_ptr, entry.weight_ptr)
+            bi, cnt = entry.bone_id, entry.vertex_count
             accs.append({'bi': bi, 'cnt': cnt, 'gda': gda,
                          'src': blk[s + src: s + src + cnt * stride],
                          'dst': blk[s + dst: s + dst + cnt * 2],
                          'wt': blk[s + wt: s + wt + cnt],
                          'src_block_off': s + src, 'dst_block_off': s + dst,
                          'wt_block_off': s + wt,
-                         'mtx_zero': blk[b0:b0 + 0x30] == bytes(0x30)})
+                         'mtx_zero': blk[b0:b0 + entry.MATRIX_SIZE] == bytes(entry.MATRIX_SIZE)})
         out['skn'] = {
             'n1': n1, 'n2': n2, 'na': na, 'q': q,
             'mcp': mcp, 'mcs': mcs, 'fis': fis,

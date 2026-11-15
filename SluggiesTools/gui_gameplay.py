@@ -442,7 +442,12 @@ class GameplayTab:
             os.remove(self.report_path)
         except OSError:
             pass
-        os.makedirs(os.path.dirname(self.report_path), exist_ok=True)
+        try:
+            os.makedirs(os.path.dirname(self.report_path), exist_ok=True)
+        except OSError as exc:
+            self.app.log_line(f'[gameplay] could not create the folder of {self.report_path}: {exc}', _WARN)
+            self.app.toast.error('The settings file could not be checked.')
+            return
         self.grid.action = 'gameplay_file'
         if not self.app.run_chain([gui_grid.gameplay_report_command(path, self.report_path)],
                                   on_done=lambda code, _o: self._show_load(path, code)):
@@ -470,7 +475,10 @@ class GameplayTab:
             self._in_flight.add(copy)
             if not self.grid.offer_gameplay(gui_grid.gameplay_edit(copy), replace=True, on_staged=staged):
                 self._in_flight.discard(copy)
-                os.remove(copy)
+                try:
+                    os.remove(copy)
+                except OSError:
+                    pass                     # a leftover copy in the staging folder harms nothing
         dialog = gui_grid.gameplay_load_dialog(report, name, labels, pending, True, view.LEGACY_TITLE)
         self.grid.action = 'ask'
         self.grid._dialog(dialog, stage, ok_label='Stage',

@@ -1,7 +1,9 @@
 import bpy
+import functools
 import os
 import math
 import struct
+import traceback
 import mathutils
 from functools import lru_cache
 from bpy.props import BoolProperty, StringProperty, CollectionProperty
@@ -1802,12 +1804,19 @@ def _srt_local_matrix(bone):
     return mathutils.Matrix.Translation(trans) @ rotation @ mathutils.Matrix.Diagonal((*scale, 1.0))
 
 
-def add_imported_added_bones(arm_obj, entries):
+def add_imported_added_bones(arm_obj, entries, donor_game_matrices=None):
     """Re-create the Add Bone bones of ``BoneHierarchyEdited`` (*entries* from
     CustomSubmeshImport.added_bone_entries) on *arm_obj*, with the properties
     Add Bone gives them. The exporter wrote each one's rest matrix relative to
     its parent's Blender rest matrix (a stadium root's relative to the
-    armature), so this inverts it exactly. Returns the bone names."""
+    armature), so this inverts it exactly. In a stadium a child of an original
+    bone is written relative to that bone's GAME frame instead
+    (``encode_bone_hierarchy_edited``): pass the stadium's
+    *donor_game_matrices* (``{BoneId: absolute matrix}`` of the original
+    bones) and those children are placed from it. Blender's own frame of an
+    original bone is reoriented for display and would put the bone elsewhere
+    (Blender 5.2.2, Yoshi Park, 2026-11-15: placed at (3, -2, 5), back at
+    (3, -5, -2) and turned by 90 degrees). Returns the bone names."""
     if not entries:
         return []
     prev_active = bpy.context.view_layer.objects.active
@@ -1825,7 +1834,12 @@ def add_imported_added_bones(arm_obj, entries):
             eb = edit_bones.new(name)
             eb.head = (0.0, 0.0, 0.0)
             eb.tail = (0.0, ADDED_BONE_LENGTH, 0.0)
-            base = parent_eb.matrix if parent_eb is not None else mathutils.Matrix.Identity(4)
+            if parent_eb is None:
+                base = mathutils.Matrix.Identity(4)
+            elif donor_game_matrices is not None and int(parent) in donor_game_matrices:
+                base = mathutils.Matrix(donor_game_matrices[int(parent)])
+            else:
+                base = parent_eb.matrix
             eb.matrix = base @ _srt_local_matrix(entry)
             eb.parent = parent_eb
             eb.use_connect = False
@@ -2064,6 +2078,57 @@ def build_collision_object(entry, arm_obj, collection):
     return obj
 
 
+# What an import creates, in the order a failed one is taken apart again (users before the data they use).
+_IMPORTED_KINDS = ('objects', 'collections', 'meshes', 'armatures', 'actions', 'materials', 'images')
+
+
+def _datablock_names():
+    return {kind: {block.name for block in getattr(bpy.data, kind)} for kind in _IMPORTED_KINDS}
+
+
+def _remove_datablocks_added_since(before):
+    """Remove every datablock of ``_IMPORTED_KINDS`` that is not named in *before*; returns how many."""
+    removed = 0
+    for kind in _IMPORTED_KINDS:
+        collection = getattr(bpy.data, kind)
+        for block in [block for block in collection if block.name not in before[kind]]:
+            try:
+                collection.remove(block)
+                removed += 1
+            except (RuntimeError, ReferenceError):
+                pass
+    return removed
+
+
+def _undoes_failed_import(execute):
+    """For the import operator's ``execute``: a damaged or hand-edited file fails somewhere in the middle of
+    the build (a short buffer, a missing key). Instead of a traceback over a half-built scene (the armature,
+    some meshes, Blender left in armature Edit Mode), the error is reported, Object Mode restored and
+    everything the import had created removed again."""
+    @functools.wraps(execute)
+    def guarded(self, context):
+        if context.mode != 'OBJECT':
+            self.report({"ERROR"}, "Switch to Object Mode before importing a .sluggie.")
+            return {"CANCELLED"}
+        before = _datablock_names()
+        try:
+            return execute(self, context)
+        except Exception as exc:  # noqa: BLE001 - whatever a damaged file raises, the scene is put back
+            traceback.print_exc()
+            try:
+                if bpy.context.mode != 'OBJECT':
+                    bpy.ops.object.mode_set(mode='OBJECT')
+            except Exception:  # noqa: BLE001
+                pass
+            removed = _remove_datablocks_added_since(before)
+            self.report({"ERROR"},
+                f"Import failed ({type(exc).__name__}: {exc}): {os.path.basename(self.filepath)} is damaged "
+                f"or not a model file. The {removed} object(s) and data blocks it had built were removed "
+                "again; the full traceback is in the system console.")
+            return {"CANCELLED"}
+    return guarded
+
+
 class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
     bl_idname = "sluggies.import_json"
     bl_label = "Import Sluggers intermediate"
@@ -2081,6 +2146,7 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
         default=True,
     )
 
+    @_undoes_failed_import
     def execute(self, context):
         data = FieldCodec.load_sluggie(self.filepath)
 
@@ -2121,7 +2187,10 @@ class SLUGGIES_OT_import(bpy.types.Operator, ImportHelper):
             arm_obj['SluggiesChunkNumber'] = int(model_number)
             # Bones added with Add Bone (BoneHierarchyEdited), so their custom
             # submeshes and body weights have them again.
-            add_imported_added_bones(arm_obj, CustomSubmeshImport.added_bone_entries(model))
+            from . import TemplateSources
+            add_imported_added_bones(
+                arm_obj, CustomSubmeshImport.added_bone_entries(model),
+                abs_bone_mats if TemplateSources.is_stadium_chunk(model_number) else None)
             assign_bone_collections(arm_obj)
             add_rest_pose_action(arm_obj)
 

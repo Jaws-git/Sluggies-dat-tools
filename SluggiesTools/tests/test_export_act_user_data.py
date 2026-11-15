@@ -1,6 +1,6 @@
 """Export of the ACT user-data facts to .sluggie (act_section.html#user-data).
 
-Round-trip tests for the export.py fields: BoneHierarchy's per-bone
+Round-trip tests for the exported fields: BoneHierarchy's per-bone
 MirrorBoneId/MirrorRole (decoded from the kind-2 ACT user-data entry)
 and the model-level ACTUserData object (which kinds are present, plus every
 kind-4 entry preserved verbatim as an opaque blob).
@@ -8,19 +8,13 @@ kind-4 entry preserved verbatim as an opaque blob).
 Builds a synthetic ACT section with ``act_rebuild`` (already exercised by
 test_act_rebuild_identity.py) and feeds it through the *real* act.py parser
 (``ACTLayout``) rather than a hand-rolled duplicate, so this test exercises
-the same code path export.py itself uses. No game assets required.
+the same code path the export itself uses. No game assets required.
 
-export.py itself is never imported (CLAUDE.md: "Never import export.py for
-side effects -- it prompts interactively"; in fact the whole module runs an
-export the moment it's imported, not just at the bottom). Instead the four
-functions under test are lifted out of its source with ``ast`` and exec'd
-into a throwaway namespace -- this exercises the exact same code as a real
-export, without ever letting the module-level script body run.
+The functions under test are the document builders of ``sluggie_document.py``
+(importing it has no side effects: no prompt, no command line, no logger set-up).
 """
 from __future__ import annotations
 
-import ast
-import base64
 import io
 import json
 import os
@@ -33,41 +27,9 @@ if TOOLS_DIR not in sys.path:
     sys.path.insert(0, TOOLS_DIR)
 
 import act_rebuild  # noqa: E402
+import sluggie_document as export  # noqa: E402
 from act import ACTLayout  # noqa: E402
-from binfmt import decode_field, encode_field as _encode_field  # noqa: E402
-
-
-def _load_export_functions(*names):
-    """Exec just the named top-level function defs from export.py's source
-    into a fresh namespace, skipping every module-level side effect."""
-    export_path = os.path.join(TOOLS_DIR, 'export.py')
-    with open(export_path, 'r', encoding='utf-8') as f:
-        source = f.read()
-    tree = ast.parse(source, filename=export_path)
-    wanted = set(names)
-    module = ast.Module(body=[
-        node for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name in wanted
-    ], type_ignores=[])
-    ns = {'struct': struct, 'base64': base64, 'DEBUG_NO_COMPRESSION': False,
-          '_encode_field': _encode_field}
-
-    class _StubLogger:
-        def warning(self, *args, **kwargs):
-            pass
-    ns['_slogger'] = _StubLogger()
-
-    exec(compile(module, export_path, 'exec'), ns)
-    missing = wanted - ns.keys()
-    if missing:
-        raise AssertionError(f"export.py no longer defines: {sorted(missing)}")
-    return ns
-
-
-export = type('export', (), _load_export_functions(
-    '_encode_bytes', '_read_act_user_data_descriptors', '_extract_mirror_table',
-    'extract_act_user_data', 'extract_bone_data',
-))
+from binfmt import decode_field  # noqa: E402
 
 
 def _build_synthetic_act_bytes(bone_count=3, kind4_track_ids=(5, 7)):
@@ -180,6 +142,9 @@ class ExportACTUserDataTests(unittest.TestCase):
         self.assertIsNone(bone_list[0]['MirrorBoneId'])
         self.assertIsNone(bone_list[0]['MirrorRole'])
         self.assertIsNone(export.extract_act_user_data(model))
+        # No user data, no track table: the bone has no track. (The reader used to take the ACT header,
+        # at "user data pointer" 0, for the table: 0x79 here, the low half of the version word.)
+        self.assertEqual(bone_list[0]['TrackId'], 0xFFFF)
 
     def test_act_user_data_present_kinds_and_kind4_blob_round_trip(self):
         act_bytes = _build_synthetic_act_bytes(kind4_track_ids=(5, 7, 42))

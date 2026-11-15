@@ -5,6 +5,7 @@ import json
 import ntpath
 import os
 import re
+import shutil
 import struct
 import subprocess
 import tempfile
@@ -119,9 +120,8 @@ def _mip_chain_payload_length(
     """Return the exact stored byte length of a full mip chain.
 
     Sums the encoded byte length of each level from zero through
-    ``additional_mip_count`` using the proven donor level-dimension contract
-    (milestone 0.1). Used to report the expected payload length for a skipped
-    mipmapped texture (PLAN 3.1, fifth bullet).
+    ``additional_mip_count`` with each level at its halved dimensions.
+    Used to report the expected payload length for a skipped mipmapped texture.
     """
     total = 0
     for level in range(additional_mip_count + 1):
@@ -319,7 +319,7 @@ def resolve_tex_dir(sluggie_path: str | os.PathLike[str]) -> str:
     into the same model directory, so ``tex/`` is a *sibling* of the ``.sluggie``
     file. Resolving it against the ``.sluggie``'s directory — rather than the
     process working directory — keeps texture re-import correct no matter where
-    ``patch_inplace.py`` is launched from (PLAN 3.1, first bullet).
+    ``patch_inplace.py`` is launched from.
     """
     sluggie_dir = os.path.dirname(os.path.abspath(os.fspath(sluggie_path)))
     return os.path.join(sluggie_dir, "tex")
@@ -330,7 +330,7 @@ def resolve_texture_path(sluggie_path: str | os.PathLike[str], texture_file_name
 
     ``texture_file_name`` is the descriptor's ``TextureFileName`` (a bare file
     name such as ``0.png``). Directory-component validation of that name is a
-    separate concern (PLAN 3.1, second bullet); this helper only performs the
+    separate concern; this helper only performs the
     sibling-directory resolution.
     """
     return os.path.join(resolve_tex_dir(sluggie_path), texture_file_name)
@@ -342,7 +342,7 @@ def validate_texture_file_name(texture_file_name: Any) -> str:
     The name must be a non-empty string that is a *bare* file name: no
     directory components (``/``, ``\\``, or ``.``/``..`` segments) and no
     Windows reserved characters. This keeps the resolved path inside the
-    ``.sluggie``'s ``tex/`` folder (PLAN 3.1, second bullet).
+    ``.sluggie``'s ``tex/`` folder.
 
     Raises ValueError with a message naming the offending value.
     """
@@ -387,7 +387,7 @@ def validate_texture_descriptors(descriptors: Sequence[Mapping[str, Any]]) -> li
     Each descriptor must carry exactly one ``TextureFileName`` (a bare file
     name). Missing, null, or unsafe names are rejected with a message that
     includes the descriptor's ``TextureIndex`` so the offending texture can be
-    identified (PLAN 3.1, second bullet).
+    identified.
 
     Returns the list of validated names in descriptor order.
     """
@@ -523,8 +523,7 @@ def read_png_dimensions(png_path: str | os.PathLike[str]) -> tuple[int, int]:
     """Return the ``(width, height)`` of a PNG file using Pillow.
 
     This is the cheap, WIMGT-free dimension read used to validate a texture
-    PNG against its descriptor before any encoding work (PLAN 3.1, fourth
-    bullet).
+    PNG against its descriptor before any encoding work.
 
     Raises TextureEncodingError if the file is missing, unreadable, or not a
     valid image.
@@ -552,8 +551,7 @@ def check_png_dimensions(
 
     Reads the PNG dimensions with Pillow (no WIMGT involved) and raises
     ValueError if the width or height differs from the descriptor. This is the
-    "check PNG dimensions before invoking WIMGT" step (PLAN 3.1, fourth
-    bullet): a dimension mismatch is rejected before any encoding work.
+    "check PNG dimensions before invoking WIMGT" step: a dimension mismatch is rejected before any encoding work.
 
     Returns the actual ``(width, height)`` on success.
     """
@@ -614,8 +612,8 @@ def _validate_parsed_tpl_against_descriptor(
 ) -> None:
     """Validate an encoded TPL against its descriptor's authoritative metadata.
 
-    The encoded TPL's metadata and payload sizes are the authoritative checks
-    (PLAN "Required behavior"): the image format must equal the descriptor's
+    The encoded TPL's metadata and payload sizes are the authoritative checks:
+    the image format must equal the descriptor's
     ``Format``, and palette presence/format must match the descriptor. A
     mismatch means WIMGT produced something the donor cannot accept in place.
 
@@ -764,8 +762,7 @@ class SkippedTexture:
     """A texture skipped because its mip layout is unsupported.
 
     The donor's image and palette bytes are left unchanged. The plan carries
-    the skip so the patcher can report it in the final summary (PLAN 3.1,
-    fifth bullet; PLAN 4.2). This is the only nonfatal validation outcome;
+    the skip so the patcher can report it in the final summary. This is the only nonfatal validation outcome;
     every other failure remains fatal.
     """
 
@@ -782,7 +779,7 @@ class TexturePlan:
 
     ``entries`` holds the validated, encoded textures in descriptor order.
     ``skipped`` holds the mipmapped textures that were validated as an
-    unsupported mip layout and left unchanged (PLAN 3.1, fifth bullet). The
+    unsupported mip layout and left unchanged. The
     plan is only returned when every non-skipped descriptor encoded and
     validated successfully; any other failure aborts before a plan is produced.
     """
@@ -802,7 +799,7 @@ class TexturePlan:
 
 @dataclass(frozen=True)
 class TextureWrite:
-    """One planned in-place DAT write for a texture payload (PLAN 3.2, first bullet).
+    """One planned in-place DAT write for a texture payload.
 
     A write is represented as ``(kind, texture_index, offset, payload_length,
     bytes)``:
@@ -861,7 +858,7 @@ def build_texture_plan(
 ) -> TexturePlan:
     """Encode and validate every descriptor, returning a plan only if all succeed.
 
-    This is the all-or-nothing gate (PLAN 3.1, fifth bullet): for each
+    This is the all-or-nothing gate: for each
     descriptor it resolves the PNG from the ``.sluggie``'s ``tex/`` folder,
     checks the PNG dimensions against the descriptor, encodes with WIMGT, and
     validates the encoded TPL against the descriptor's authoritative metadata.
@@ -875,10 +872,10 @@ def build_texture_plan(
     current single-image encoding path cannot validate a mip chain, so such a
     texture is treated as an unsupported mip layout: it is recorded in
     ``plan.skipped``, a warning is logged, and its donor bytes are left
-    unchanged. This is the only nonfatal outcome (PLAN 3.1, fifth bullet).
+    unchanged. This is the only nonfatal outcome.
     Missing files and bad dimensions remain fatal even for mipmapped
     textures: the skip exception covers only a *validated* unsupported mip
-    layout, not malformed input (PLAN "Required behavior").
+    layout, not malformed input.
 
     ``encoder`` is injectable for testing; it defaults to
     :func:`encode_png_to_tpl` and must accept the same keyword arguments.
@@ -914,7 +911,7 @@ def build_texture_plan(
         if expected_width is not None and expected_height is not None:
             # Missing files and bad dimensions stay fatal even for mipmapped
             # textures: the skip exception only covers a *validated*
-            # unsupported mip layout (PLAN "Required behavior").
+            # unsupported mip layout.
             check_png_dimensions(png_path, expected_width, expected_height)
 
         additional_mip_count = descriptor.get("AdditionalMipCount") or 0
@@ -1270,8 +1267,7 @@ def _proven_length(value: Any, kind: str, index: Any) -> int:
     """Return the descriptor's proven payload length, requiring it to be present.
 
     The proven length (``ImagePayloadLength`` for images, ``PaletteDataLength``
-    for palettes) is the authoritative byte length for the write (PLAN 3.2,
-    second bullet). It is *required*: a descriptor that does not carry it cannot
+    for palettes) is the authoritative byte length for the write. It is *required*: a descriptor that does not carry it cannot
     be validated against the donor, so a missing value raises ValueError naming
     the texture and the offending field. The write then covers exactly this many
     bytes, preserving any remaining bytes between the proven length and the
@@ -1297,7 +1293,7 @@ def _check_within_capacity(capacity: Any, payload_length: int, kind: str, index:
 
     The write covers exactly the proven payload length, preserving any remaining
     bytes between the proven length and the buffer capacity (``ImageDataCapacity``
-    for images; PLAN 3.2, second bullet). A proven length that exceeds the
+    for images). A proven length that exceeds the
     capacity would write beyond the buffer, so it is rejected.
     """
     if capacity is None:
@@ -1316,7 +1312,7 @@ def _check_within_capacity(capacity: Any, payload_length: int, kind: str, index:
 def _dat_size(value: Any, label: str) -> int:
     """Validate a DAT file size, requiring it to be a non-negative int.
 
-    The bounds check (PLAN 3.2, third bullet) needs the exact byte size of the
+    The bounds check needs the exact byte size of the
     input and output ``dt_na.dat`` files. A missing or invalid size cannot be
     used to validate write ranges, so it raises ValueError naming the offending
     value.
@@ -1363,7 +1359,7 @@ def _check_write_within_dat(write: TextureWrite, size: int, label: str) -> None:
     Offsets are absolute file offsets into ``dt_na.dat`` (``export.py`` emits
     ``ImageDataOffset``/``PaletteDataOffset`` as ``palette.absolute + ptr``), so
     a write is in-bounds when ``offset + payload_length <= size``. A write that
-    would extend past the end of the DAT is rejected (PLAN 3.2, third bullet).
+    would extend past the end of the DAT is rejected.
     """
     end = write.offset + write.payload_length
     if end > size:
@@ -1384,7 +1380,7 @@ def texture_writes_for(descriptor: Mapping[str, Any], entry: TexturePlanEntry) -
 
     An image write is always produced. A palette write is produced only when the
     entry carries palette bytes. Each write's ``payload_length`` is the
-    descriptor's *proven* length, which is required (PLAN 3.2, second bullet);
+    descriptor's *proven* length, which is required;
     the :class:`TextureWrite` invariant then requires the encoded bytes to be
     exactly that long. The write covers only the proven length, so any remaining
     bytes between ``ImagePayloadLength`` and ``ImageDataCapacity`` are preserved
@@ -1429,7 +1425,7 @@ def texture_writes_for(descriptor: Mapping[str, Any], entry: TexturePlanEntry) -
 def _detect_overlaps(writes: Sequence[TextureWrite]) -> list[TextureWrite]:
     """Group writes by offset, coalesce identical aliases, and reject conflicts.
 
-    PLAN 3.2, fourth bullet: multiple descriptors may share the same image (or
+    Multiple descriptors may share the same image (or
     palette) pointer. When two writes target the same ``(offset,
     payload_length)`` range and carry identical bytes, they are *identical-layout
     aliases* and are coalesced into one write. Different-layout aliases (same
@@ -1496,18 +1492,17 @@ def build_texture_writes(
     into an image write plus (when present) a palette write. Writes are
     bounds-checked, grouped by offset, and deduplicated before being returned
     sorted by offset. This produces the full write list *without* opening the
-    output DAT for writing (PLAN 3.2, last bullet); the patcher applies them in
+    output DAT for writing; the patcher applies them in
     its existing write phase.
 
     Every write is bounds-checked against both the input and output
-    ``dt_na.dat`` sizes (PLAN 3.2, third bullet): a write whose
+    ``dt_na.dat`` sizes: a write whose
     ``offset + payload_length`` exceeds either size is rejected, so no planned
     write can extend past the end of either file.
 
     Identical-layout aliases (same offset, same length, same bytes) are
     coalesced into one write. Different-layout aliases (same offset, different
-    length) and any other overlapping writes are rejected (PLAN 3.2, fourth
-    bullet).
+    length) and any other overlapping writes are rejected.
     """
     input_size = _dat_size(input_dat_size, "input")
     output_size = _dat_size(output_dat_size, "output")
@@ -1539,7 +1534,7 @@ def build_unpatch_texture_writes(
 ) -> tuple[TextureWrite, ...]:
     """Build restoration writes for every descriptor from the input DAT.
 
-    Used in unpatch mode (PLAN "Required behavior", ``--unpatch``). No PNG
+    Used in unpatch mode (``--unpatch``). No PNG
     files are read and WIMGT is not invoked. Each descriptor's image and
     optional palette bytes are read from ``input_dat_path`` at the exact proven
     offsets and lengths from the descriptor, then bounds-checked and
@@ -1551,13 +1546,22 @@ def build_unpatch_texture_writes(
     input_size = _dat_size(input_dat_size, "input")
     output_size = _dat_size(output_dat_size, "output")
 
-    with open(input_dat_path, "rb") as _f:
-        input_dat = _f.read()
-
-    if len(input_dat) != input_size:
+    actual_size = os.path.getsize(input_dat_path)
+    if actual_size != input_size:
         raise ValueError(
-            f"input DAT read {len(input_dat)} bytes but expected {input_size}"
+            f"input DAT read {actual_size} bytes but expected {input_size}"
         )
+
+    # Only the texture ranges are read: loading the whole 715 MB file for a few textures cost 0.64 s and
+    # 715 MB of memory per unpatched model (measured 2026-11-12).
+    with open(input_dat_path, "rb") as input_file:
+        return _unpatch_writes_from(input_file, descriptors, input_size, output_size)
+
+
+def _unpatch_writes_from(input_file, descriptors, input_size, output_size):
+    def read_range(offset: int, length: int) -> bytes:
+        input_file.seek(offset)
+        return input_file.read(length)
 
     raw_writes: list[TextureWrite] = []
     for descriptor in descriptors:
@@ -1577,7 +1581,7 @@ def build_unpatch_texture_writes(
             texture_index=index,
             offset=image_offset,
             payload_length=image_payload_length,
-            bytes=input_dat[image_offset : image_offset + image_payload_length],
+            bytes=read_range(image_offset, image_payload_length),
         )
         _check_write_within_dat(image_write, output_size, "output")
         raw_writes.append(image_write)
@@ -1594,12 +1598,56 @@ def build_unpatch_texture_writes(
                 texture_index=index,
                 offset=palette_offset,
                 payload_length=palette_payload_length,
-                bytes=input_dat[palette_offset : palette_offset + palette_payload_length],
+                bytes=read_range(palette_offset, palette_payload_length),
             )
             _check_write_within_dat(palette_write, output_size, "output")
             raw_writes.append(palette_write)
 
     return tuple(_detect_overlaps(raw_writes))
+
+
+# Encoded TPLs are kept in the folder this variable names (the dispatcher sets it to ``_gui/tpl_cache``), so a
+# patch does not run wimgt again for a PNG it encoded before. Unset: no cache (tests, direct calls).
+TPL_CACHE_ENV = "SLUGGIES_TPL_CACHE"
+TPL_CACHE_MAX_FILES = 4000         # the oldest entries go when a write finds more
+
+
+def _tpl_cache_path(png_path, target: str, wimgt_executable: str) -> str | None:
+    """Where the TPL of this PNG file and wimgt target is cached, or None without a cache. The name is a hash
+    of the PNG's bytes, the target and the wimgt program (path, size, modification time), so an edited PNG, another
+    format or another wimgt never reads an old entry."""
+    folder = os.environ.get(TPL_CACHE_ENV)
+    if not folder:
+        return None
+    try:
+        digest = hashlib.sha256()
+        with open(png_path, "rb") as f:
+            digest.update(f.read())
+        program = shutil.which(wimgt_executable) or wimgt_executable
+        stat = os.stat(program)
+        digest.update(f"|{target}|{os.path.abspath(program)}|{stat.st_size}|{stat.st_mtime_ns}".encode())
+    except OSError:
+        return None
+    return os.path.join(folder, digest.hexdigest() + ".tpl")
+
+
+def _tpl_cache_store(path: str, tpl_bytes: bytes) -> None:
+    """Write a cache entry (through a temporary name) and drop the oldest ones over the limit. A cache that
+    cannot be written is only a slower next run."""
+    try:
+        folder = os.path.dirname(path)
+        os.makedirs(folder, exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "wb") as f:
+            f.write(tpl_bytes)
+        os.replace(tmp, path)
+        entries = [e for e in os.scandir(folder) if e.name.endswith(".tpl")]
+        if len(entries) > TPL_CACHE_MAX_FILES:
+            entries.sort(key=lambda e: e.stat().st_mtime_ns)
+            for entry in entries[:len(entries) - TPL_CACHE_MAX_FILES]:
+                os.remove(entry.path)
+    except OSError:
+        pass
 
 
 def encode_png_to_tpl(
@@ -1617,8 +1665,8 @@ def encode_png_to_tpl(
     validated. The temporary directory is removed on both success and failure.
 
     When ``expected_width`` and ``expected_height`` are both provided, the PNG's
-    dimensions are checked against them with Pillow *before* WIMGT is invoked
-    (PLAN 3.1, fourth bullet); a mismatch raises ValueError without running
+    dimensions are checked against them with Pillow *before* WIMGT is invoked;
+    a mismatch raises ValueError without running
     WIMGT. The comparison is made against
     :func:`clamp_texture_dimensions` of the PNG's size, because a PNG larger
     than ``GX_MAX_TEXTURE_DIMENSION`` on either axis is downscaled to fit the
@@ -1641,6 +1689,25 @@ def encode_png_to_tpl(
                 f"PNG dimensions {file_width}x{file_height} do not match descriptor "
                 f"{expected_width}x{expected_height} for {png_path}"
             )
+
+    cache_path = _tpl_cache_path(png_path, target, wimgt_executable)
+    if cache_path is not None and os.path.isfile(cache_path):
+        try:
+            with open(cache_path, "rb") as cached:
+                parsed = parse_single_image_tpl(cached.read())
+        except (OSError, ValueError, struct.error, IndexError):
+            parsed = None                  # an unreadable entry: encode again, the write below replaces it
+        if parsed is not None:
+            file_size = read_png_dimensions(png_path)
+            if clamp_texture_dimensions(*file_size) != file_size:
+                slogger.warning(
+                    f"{os.path.basename(os.fspath(png_path))}: "
+                    f"{file_size[0]}x{file_size[1]} exceeds the GX maximum "
+                    f"texture size of {GX_MAX_TEXTURE_DIMENSION}x{GX_MAX_TEXTURE_DIMENSION}; "
+                    f"downscaled for encoding",
+                    source="texture_helper",
+                )
+            return parsed
 
     from PIL import Image
 
@@ -1708,7 +1775,10 @@ def encode_png_to_tpl(
         with open(tpl_path, "rb") as tpl_file:
             tpl_bytes = tpl_file.read()
 
-    return parse_single_image_tpl(tpl_bytes)
+    parsed = parse_single_image_tpl(tpl_bytes)
+    if cache_path is not None:
+        _tpl_cache_store(cache_path, tpl_bytes)        # only a TPL that parsed
+    return parsed
 
 
 # A Dolphin dump name: tex1_<w>x<h>[_m]_<hash>[_<tlut hash>|_$]_<format>[_mip<n>]

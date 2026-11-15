@@ -196,41 +196,68 @@ def encode_reference(samples, coefs, h1=0, h2=0):
 def encode(samples, coefs, h1=0, h2=0):
     """16-bit samples -> ``(DSP-ADPCM frame bytes, (h1, h2) after the last sample)``. Whole 8-byte frames; a
     partial last frame is zero-padded (the padding counts in the error, as the reference does)."""
-    if len(coefs) != 16:
-        raise ValueError(f'16 coefficients expected, got {len(coefs)}')
+    data, history, _error = encode_many(samples, [coefs], h1, h2)[0]
+    return data, history
+
+
+def encode_many(samples, coef_sets, h1=0, h2=0, history_frame=None):
+    """``encode`` with several coefficient sets at once (one pass over the frames, so nearly the cost of one):
+    ``[(frame bytes, (h1, h2) after the last sample, squared error over the real samples)]``, one per set, each
+    the bytes ``encode`` gives for that set alone. The error is what a decoder's output differs from ``samples``
+    by (the zero padding of a partial last frame is searched over, as in ``encode``, but not counted here).
+    ``history_frame``: each result gains a fourth item, the decoder's ``(h1, h2)`` at the start of that frame
+    (the two decoded samples before it; a loop point's stored history)."""
+    sets = [list(c) for c in coef_sets]
+    for coefs in sets:
+        if len(coefs) != 16:
+            raise ValueError(f'16 coefficients expected, got {len(coefs)}')
     x = np.asarray(samples, dtype=np.int64)
     n = len(x)
+    lanes = len(sets)
     frames = (n + FRAME_SAMPLES - 1) // FRAME_SAMPLES
     padded = np.zeros(frames * FRAME_SAMPLES, np.int64)
     padded[:n] = x
-    c1 = np.repeat(np.array(coefs[0::2], np.int64), 16)            # candidate k = predictor * 16 + scale
-    c2 = np.repeat(np.array(coefs[1::2], np.int64), 16)
+    table = np.array(sets, np.int64).reshape(lanes, 16)
+    c1 = np.repeat(table[:, 0::2], 16, axis=1)                     # (lanes, 128): candidate k = predictor * 16 + scale
+    c2 = np.repeat(table[:, 1::2], 16, axis=1)
     scale = np.tile(np.int64(1) << np.arange(16, dtype=np.int64), 8)
     fscale = scale.astype(np.float64)
-    out = bytearray()
-    h1, h2 = int(h1), int(h2)
+    out = np.zeros((lanes, frames * FRAME_BYTES), np.uint8)
+    rows = np.arange(lanes)
+    b1 = np.full(lanes, int(h1), np.int64)
+    b2 = np.full(lanes, int(h2), np.int64)
+    total = np.zeros(lanes, np.int64)
+    nibbles = np.empty((FRAME_SAMPLES, lanes, 128), np.int64)
+    errors = np.empty((FRAME_SAMPLES, lanes, 128), np.int64)
+    marked = None
     for f in range(frames):
         if f % YIELD_FRAMES == 0:
             time.sleep(0)                    # let other threads (a GUI's render loop) run between frames
+        if f == history_frame:
+            marked = (b1.copy(), b2.copy())
         frame = padded[f * FRAME_SAMPLES:(f + 1) * FRAME_SAMPLES]
-        a1 = np.full(128, h1, np.int64)
-        a2 = np.full(128, h2, np.int64)
-        err = np.zeros(128, np.int64)
-        nibbles = np.empty((FRAME_SAMPLES, 128), np.int64)
+        a1 = np.repeat(b1[:, None], 128, 1)
+        a2 = np.repeat(b2[:, None], 128, 1)
         for i in range(FRAME_SAMPLES):
             t = frame[i]
             base = c1 * a1 + c2 * a2
             predicted = (base + 1024) >> 11
             q = np.clip(np.round((t - predicted) / fscale), -8, 7).astype(np.int64)
             v = np.clip((((q * scale) << 11) + 1024 + base) >> 11, -32768, 32767)
-            err += (t - v) ** 2
+            errors[i] = (t - v) ** 2
             nibbles[i] = q & 0xF
             a2, a1 = a1, v
-        k = int(np.argmin(err))
-        predictor, scale_exp = divmod(k, 16)
-        out.append((predictor << 4) | scale_exp)
-        column = nibbles[:, k]
-        for j in range(0, FRAME_SAMPLES, 2):
-            out.append(int((column[j] << 4) | column[j + 1]))
-        h1, h2 = int(a1[k]), int(a2[k])
-    return bytes(out), (h1, h2)
+        k = np.argmin(errors.sum(axis=0), axis=1)                  # (lanes,): the first best candidate
+        real = min(FRAME_SAMPLES, n - f * FRAME_SAMPLES)
+        total += errors[:real, rows, k].sum(axis=0)
+        column = nibbles[:, rows, k]                               # (14, lanes)
+        block = out[:, f * FRAME_BYTES:(f + 1) * FRAME_BYTES]
+        block[:, 0] = ((k // 16) << 4) | (k % 16)
+        block[:, 1:] = ((column[0::2] << 4) | column[1::2]).T
+        b1, b2 = a1[rows, k], a2[rows, k]
+    results = [(out[lane].tobytes(), (int(b1[lane]), int(b2[lane])), int(total[lane])) for lane in range(lanes)]
+    if history_frame is None:
+        return results
+    if marked is None:                        # at or past the end: the history after the last frame
+        marked = (b1, b2)
+    return [r + ((int(marked[0][lane]), int(marked[1][lane])),) for lane, r in enumerate(results)]

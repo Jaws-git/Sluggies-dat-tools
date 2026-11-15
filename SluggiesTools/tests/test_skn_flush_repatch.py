@@ -1,6 +1,6 @@
-"""A resized in-place skin patch moves the flush-index array; patching again
-(or unpatching) must still use the donor flush bytes, not whatever now sits at
-the array's old offset in the output DAT."""
+"""A resized in-place skin patch keeps every SKN array at its original offset. Earlier versions repacked the
+arrays and moved the flush-index array: patching (or unpatching) over that layout must put the donor flush
+bytes back, from the .sluggie or the input DAT, never from the array's old offset in the output DAT."""
 import os
 import pathlib
 import struct
@@ -75,31 +75,101 @@ class FlushRepatchTests(unittest.TestCase):
         rel = struct.unpack_from('>I', raw, SKN + 0x1C)[0]
         return raw[SKN + rel:SKN + rel + len(FLUSH)]
 
-    def _patch_twice(self, skin):
-        for _ in range(2):
-            self.assertGreaterEqual(_skn.patchSKNInPlaceResized(skin), 0)
-            self.assertEqual(self._flush_at_pointer(), FLUSH)
+    def _legacy_patched(self):
+        """The output DAT as the 4-byte repack of earlier versions left it: the shortened source array, the
+        flush-index array moved right behind it (over the old second vertex) and its old place overwritten."""
+        raw = bytearray(_dat())
+        new_flush_rel = DATA_REL + VS
+        raw[SKN + new_flush_rel:SKN + new_flush_rel + len(FLUSH)] = FLUSH
+        raw[SKN + FLUSH_REL:SKN + FLUSH_REL + len(FLUSH)] = b'\xEE' * len(FLUSH)
+        struct.pack_into('>I', raw, SKN + 0x1C, new_flush_rel)
+        struct.pack_into('>H', raw, SK1_STRUCT + 0x0A, 1)
+        with open(self.output, 'wb') as f:
+            f.write(raw)
 
-    def test_second_patch_reads_flush_from_the_sluggie(self):
+    def _expected_patched(self):
+        raw = bytearray(_dat())
+        raw[SKN + DATA_REL + VS:SKN + DATA_REL + 2 * VS] = bytes(VS)      # the dropped vertex, zeroed
+        struct.pack_into('>H', raw, SK1_STRUCT + 0x0A, 1)
+        return bytes(raw)
+
+    def test_arrays_and_flush_keep_their_place(self):
+        """A shortened array stays at its (32-aligned) vanilla offset; no pointer moves; patching twice is the
+        same as once, and needs no donor flush bytes."""
         os.remove(self.input)
-        self._patch_twice(_skin(True))
+        for _ in range(2):
+            self.assertEqual(_skn.patchSKNInPlaceResized(_skin(False)), 1)
+            self.assertEqual(self._out(), self._expected_patched())
+        self.assertEqual(self._flush_at_pointer(), FLUSH)
 
-    def test_second_patch_reads_flush_from_the_input_dat(self):
-        self._patch_twice(_skin(False))
+    def test_legacy_layout_is_put_back_from_the_sluggie(self):
+        self._legacy_patched()
+        os.remove(self.input)
+        self.assertEqual(_skn.patchSKNInPlaceResized(_skin(True)), 1)
+        self.assertEqual(self._out(), self._expected_patched())
 
-    def test_unpatch_puts_the_flush_bytes_back(self):
-        skin = _skin(True)
-        self._patch_twice(skin)
-        self.assertTrue(_skn.restoreSKNBlockInPlace(skin))
-        raw = self._out()
-        self.assertEqual(struct.unpack_from('>I', raw, SKN + 0x1C)[0], FLUSH_REL)
-        self.assertEqual(raw, _dat())
+    def test_legacy_layout_is_put_back_from_the_input_dat(self):
+        self._legacy_patched()
+        self.assertEqual(_skn.patchSKNInPlaceResized(_skin(False)), 1)
+        self.assertEqual(self._out(), self._expected_patched())
 
-    def test_no_flush_source_refuses(self):
+    def test_legacy_layout_without_a_flush_source_refuses(self):
+        self._legacy_patched()
         os.remove(self.input)
         before = self._out()
         self.assertEqual(_skn.patchSKNInPlaceResized(_skin(False)), -1)
         self.assertEqual(self._out(), before)
+
+    def test_unpatch_restores_the_file(self):
+        for prepare in (lambda: None, self._legacy_patched):
+            prepare()
+            skin = _skin(True)
+            self.assertEqual(_skn.patchSKNInPlaceResized(skin), 1)
+            self.assertTrue(_skn.restoreSKNBlockInPlace(skin))
+            self.assertEqual(self._out(), _dat())
+
+    def test_a_grown_array_is_refused(self):
+        skin = _skin(True)
+        skin['SK1s'][0]['BindPoseDataEdited'] = encode_field(SRC + bytes(VS), False)
+        skin['SK1s'][0]['VertexCntEdited'] = 3
+        before = self._out()
+        self.assertEqual(_skn.patchSKNInPlaceResized(skin, dry_run=True), -1)
+        self.assertEqual(_skn.patchSKNInPlaceResized(skin), -1)
+        self.assertEqual(self._out(), before)
+
+    def test_an_empty_edited_array_is_not_taken_for_a_missing_one(self):
+        """SKAcc entry emptied by the edit: its weights are the (empty) edited array, not the donor's."""
+        acc_struct, acc_src, acc_dest, acc_wt = 0x300, 0x320, 0x340, 0x360
+        skin = _skin(True)
+        skin['SKAccs'] = [{
+            'VertexCnt': 1, 'VertexCntEdited': 0,
+            'BindPoseData': encode_field(bytes(range(VS)), False), 'BindPoseDataEdited': encode_field(b'', False),
+            'DestIndexData': encode_field(b'\x00\x07', False), 'DestIndexDataEdited': encode_field(b'', False),
+            'WeightData': encode_field(b'\x80', False), 'WeightDataEdited': encode_field(b'', False),
+            'VertexArrFieldOffset': hex(acc_struct), 'VertexArrAbsolutePtr': hex(acc_src),
+            'DestArrFieldOffset': hex(acc_struct + 4), 'DestArrAbsolutePtr': hex(acc_dest),
+            'WeightArrFieldOffset': hex(acc_struct + 8), 'WeightArrAbsolutePtr': hex(acc_wt),
+        }]
+        with open(self.output, 'r+b') as f:
+            f.seek(acc_wt)
+            f.write(b'\x80')
+        self.assertEqual(_skn.patchSKNInPlaceResized(skin), 1)
+        raw = self._out()
+        self.assertEqual(raw[acc_wt], 0)
+        self.assertEqual(struct.unpack_from('>H', raw, acc_struct + 0x12)[0], 0)
+
+    def test_writes_go_through_the_given_handle(self):
+        """With ``dat=`` the caller's guarded handle takes every write: a block that does not hold the SKN
+        refuses the patch, and the handle undoes what was written."""
+        import dat_writes
+        before = self._out()
+        with self.assertRaises(dat_writes.OutOfBlockWrite):
+            with dat_writes.GuardedDat(self.output, SKN + DATA_REL, VS * 2) as dat:    # the array, not the structs
+                _skn.patchSKNInPlaceResized(_skin(True), dat=dat)
+        self.assertEqual(self._out(), before)
+        with dat_writes.GuardedDat(self.output, SKN, 0x200) as dat:
+            self.assertEqual(_skn.patchSKNInPlaceResized(_skin(True), dat=dat), 1)
+        self.assertEqual(self._out(), self._expected_patched())
 
 
 if __name__ == '__main__':

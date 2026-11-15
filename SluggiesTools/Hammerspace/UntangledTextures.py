@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import glob
 import os
-import struct
 
 try:
     from tpl import TEXDescriptor
@@ -30,10 +29,13 @@ except ImportError:  # pragma: no cover - SluggiesTools not on sys.path yet
     from tpl import TEXDescriptor
 import model_files
 from binfmt import load_sluggie
+try:
+    from ModelBlock import ModelBlock, texture_payload_len
+except ImportError:  # imported as Hammerspace.UntangledTextures
+    from .ModelBlock import ModelBlock, texture_payload_len
 
 #: Matches the export's untangle ``max_attempts``.
 MAX_ATTEMPTS = 8192
-_BITS_PER_PIXEL = {0: 4, 1: 8, 2: 8, 3: 16, 4: 16, 5: 16, 6: 32, 8: 4, 9: 8, 10: 16, 14: 4}
 _MODELS_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', '2_Output_Assets'))
 
 
@@ -48,19 +50,20 @@ def _helper():
 class _Texture:
     """One texture's level-0 image range and palette inside a block."""
 
-    def __init__(self, block, tex_start, descriptor):
-        data_ptr, palette_ptr = struct.unpack_from('>II', block, descriptor)
-        self.height, self.width = struct.unpack_from('>HH', block, descriptor + 8)
-        self.format = block[descriptor + 0x17]
-        palette_entries = struct.unpack_from('>H', block, descriptor + 0x18)[0]
+    def __init__(self, tex, descriptor):
+        data_ptr, palette_ptr = descriptor.image_ptr, descriptor.palette_ptr
+        self.height, self.width = descriptor.height, descriptor.width
+        self.format = descriptor.format
+        palette_entries = descriptor.palette_entries
         # Same payload the export hashes: level 0 only (TEXDescriptor._data_length).
-        length = self.height * self.width * _BITS_PER_PIXEL[self.format] >> 3
-        self.image_start = tex_start + data_ptr
+        length = texture_payload_len(self.format, self.width, self.height)
+        if length is None:
+            raise KeyError(self.format)
+        self.image_start = tex.offset + data_ptr
         self.image_end = self.image_start + length
         self.tlut = b''
         if palette_ptr > 0 and palette_entries > 0:
-            start = tex_start + palette_ptr
-            self.tlut = bytes(block[start:start + palette_entries * 2])
+            self.tlut = tex.model.raw(tex.offset + palette_ptr, palette_entries * 2)
 
     def name(self, image) -> str:
         stub = TEXDescriptor.__new__(TEXDescriptor)
@@ -69,13 +72,13 @@ class _Texture:
 
 
 def textures(block, model_start: int) -> list[_Texture]:
-    """The TEX descriptors of the model at ``model_start``, in index order."""
-    tex_ptr = struct.unpack_from('>I', block, model_start + 0x0C)[0]
-    if not tex_ptr:
+    """The TEX descriptors of the model at ``model_start``, in index order.
+    Raises ``ModelBlockError`` (a ``struct.error``) for a block cut short and
+    ``KeyError`` for a texture format the export does not know."""
+    tex = ModelBlock(block, model_start).tex()
+    if tex is None:
         return []
-    tex_start = model_start + tex_ptr
-    count = struct.unpack_from('>H', block, tex_start)[0]
-    return [_Texture(block, tex_start, tex_start + 4 + index * 0x20) for index in range(count)]
+    return [_Texture(tex, descriptor) for descriptor in tex.descriptors()]
 
 
 def replay(image: bytes, texture: _Texture, target: str, max_attempts: int = MAX_ATTEMPTS):

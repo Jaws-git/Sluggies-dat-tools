@@ -113,6 +113,37 @@ class RwavRwarTests(unittest.TestCase):
             brsar_write.encode_clip([], 32000, x)
         with self.assertRaises(brsar_write.WriteError):
             brsar_write.rwav_coefs(stereo)
+        # the one-pass choice is the one of building every template's RWAV and decoding it
+        built = [brsar_write.rwav_build(t, 32000, x) for t in (self.template, fitted)]
+        self.assertEqual(rv, min(built, key=lambda b: brsar_write.rwav_error(b, x)))
+
+    def test_encode_many_is_encode_per_set(self):
+        """Several coefficient sets in one pass: each set's bytes and history are ``encode``'s, the error is the
+        decoded clip's (a partial last frame's padding not counted)."""
+        np_rng = np.random.default_rng(5)
+        good = [0, 0, 2048, 0, 0, 2048, 1024, 1024, 3072, -1024, 4096, -2048, 1536, 512, 2560, -512]
+        sets = [good, self.coefs, [int(v) for v in np_rng.integers(-2048, 2048, 16)]]
+        for length in (1, 14, 45, 200):
+            x = smooth(length, np_rng)
+            many = dsp_adpcm.encode_many(x, sets, 7, -3)
+            self.assertEqual(len(many), len(sets))
+            for coefs, (data, history, error) in zip(sets, many):
+                self.assertEqual((data, history), dsp_adpcm.encode_reference(x, coefs, 7, -3))
+                decoded = np.array(dsp_adpcm.decode_reference(Lane(data, length, coefs, 7, -3)), np.int64)
+                self.assertEqual(error, int(((decoded - np.asarray(x, np.int64)) ** 2).sum()))
+        with self.assertRaises(ValueError):
+            dsp_adpcm.encode_many([1, 2, 3], [good, [0] * 15])
+        # the history at a frame start is the two decoded samples before it (a loop point's stored history)
+        x = smooth(200, np_rng)
+        plain = dsp_adpcm.encode_many(x, sets)
+        for frame in (0, 3, 14, 15, 99):
+            marked = dsp_adpcm.encode_many(x, sets, history_frame=frame)
+            for coefs, base, (data, history, error, at) in zip(sets, plain, marked):
+                self.assertEqual((data, history, error), base)
+                decoded = dsp_adpcm.decode_reference(Lane(data, 200, coefs))
+                start = min(frame * 14, 210)
+                padded = decoded + dsp_adpcm.decode_reference(Lane(data, 210, coefs))[200:]
+                self.assertEqual(at, (padded[start - 1], padded[start - 2]) if start else (0, 0))
 
     def test_rwsd_add_entries(self):
         rwsd = synth.build_rwsd([0, 2, 0])

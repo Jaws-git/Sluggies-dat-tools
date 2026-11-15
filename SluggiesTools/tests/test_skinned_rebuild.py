@@ -20,7 +20,7 @@ import ExportMode  # noqa: E402
 import FacialPoseRebuild as fpr  # noqa: E402
 import HammerspaceMain as main  # noqa: E402
 import SkinnedRebuild as sr  # noqa: E402
-import start  # noqa: E402
+from SluggiesTools import patch_dispatch  # noqa: E402
 import synthetic_donor  # noqa: E402
 from binfmt import SKN_MAX_SOURCE_BYTES, decode_field  # noqa: E402
 from drawlist import decodeDrawList  # noqa: E402
@@ -958,12 +958,12 @@ class SkinnedRebuildBuildTests(unittest.TestCase):
 class SkinnedRebuildWiringTests(unittest.TestCase):
     def test_dispatcher_selects_gpl_skn_and_tex_build(self):
         model = {'Submeshes': [{'SkinnedRebuild': {'NewSurfaces': []}}]}
-        self.assertEqual(start.hammerspace_section_args(model), ['--gpl', 'build', '--skn', 'build'])
+        self.assertEqual(patch_dispatch.hammerspace_section_args(model), ['--gpl', 'build', '--skn', 'build'])
         model['Submeshes'][0]['SkinnedRebuild']['NewSurfaces'] = [
             {'TextureAssignment': {'AdditionalTextureFileName': 'new.png'}},
         ]
-        self.assertEqual(start.hammerspace_section_args(model), ['--gpl', 'build', '--skn', 'build', '--tex', 'build'])
-        self.assertTrue(start._needs_hammerspace({'Submeshes': [{'SkinnedRebuild': {}}]}, 'x.sluggie'))
+        self.assertEqual(patch_dispatch.hammerspace_section_args(model), ['--gpl', 'build', '--skn', 'build', '--tex', 'build'])
+        self.assertTrue(patch_dispatch._needs_hammerspace({'Submeshes': [{'SkinnedRebuild': {}}]}, 'x.sluggie'))
 
     def test_export_mode_treats_a_rebuild_as_a_hammerspace_only_edit(self):
         submeshes = [{'VertexBuffer': {'VertexBufferOffset': '0x10'}, 'SkinnedRebuild': {}}]

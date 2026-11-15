@@ -32,11 +32,16 @@ from dataclasses import dataclass, field
 import HammerspaceHelper as hh
 import LodPartnerGuard
 import slogger as _slogger
-
-_GPL_MAGIC = 0x00B749E0
-_DS_RECORD_SIZE = 0x10
-_TEXTURE_BIND_ID = 1
-_TEXTURE_INDEX_MASK = 0x1FFF
+from binfmt import u32 as _u32
+from ModelBlock import (
+    GPL_MAGIC as _GPL_MAGIC,
+    TEXTURE_BIND_STATE_ID as _TEXTURE_BIND_ID,
+    TEXTURE_INDEX_MASK as _TEXTURE_INDEX_MASK,
+    TEXTURE_LAYER_MASK as _TEXTURE_LAYER_MASK,
+    TEXTURE_LAYER_SHIFT as _TEXTURE_LAYER_SHIFT,
+    ModelBlock,
+    ModelBlockError,
+)
 
 # Write the planned L bind edits. Off: the follow rule can pick the wrong
 # surface (see the module docstring); with it off, differences are only logged.
@@ -73,42 +78,35 @@ class BindSyncPlan:
     differences: list[BindDifference] = field(default_factory=list)
 
 
-def _u32(block: bytes, offset: int) -> int:
-    return struct.unpack_from('>I', block, offset)[0]
-
-
-def _cstr(block: bytes, offset: int) -> str:
-    end = block.find(b'\x00', offset)
-    return block[offset:end if end != -1 else len(block)].decode('ascii', errors='replace')
+def _cstr(model: ModelBlock, offset: int) -> str:
+    end = model.find_nul(offset)
+    size = (end if end != -1 else len(model.data)) - offset
+    return model.raw(offset, size).decode('ascii', errors='replace')
 
 
 def texture_binds(block: bytes) -> list[TextureBind]:
     """Every Type-1 (texture bind) display state of a model block's GPL
     section. Empty when the block has no readable GPL section."""
     try:
-        gpl = _u32(block, 0x04)
-        if not gpl or _u32(block, gpl) != _GPL_MAGIC:
+        model = ModelBlock(block)
+        gpl = model.gpl()
+        if gpl is None or gpl.magic != _GPL_MAGIC:
             return []
-        count = _u32(block, gpl + 0x0C)
-        descriptors = gpl + _u32(block, gpl + 0x10)
         binds = []
-        for submesh in range(count):
-            base = gpl + _u32(block, descriptors + submesh * 8)
-            name = _cstr(block, gpl + _u32(block, descriptors + submesh * 8 + 4))
-            display = base + _u32(block, base + 0x10)
-            states = base + _u32(block, display + 4)
-            state_count = struct.unpack_from('>H', block, display + 8)[0]
-            for index in range(state_count):
-                record = states + index * _DS_RECORD_SIZE
-                if block[record] != _TEXTURE_BIND_ID:
+        for submesh, descriptor in enumerate(gpl.descriptors()):
+            layout = gpl.layout(descriptor.layout_ptr)
+            name = _cstr(model, gpl.offset + descriptor.name_ptr)
+            for index, state in enumerate(layout.display_states()):
+                if state.id != _TEXTURE_BIND_ID:
                     continue
-                setting = _u32(block, record + 4)
+                setting = state.setting
                 binds.append(TextureBind(
-                    submesh, name, index, bytes(block[record + 1:record + 4]),
-                    (setting >> 13) & 0x7, setting & _TEXTURE_INDEX_MASK, record + 4,
+                    submesh, name, index, state.params,
+                    (setting >> _TEXTURE_LAYER_SHIFT) & _TEXTURE_LAYER_MASK,
+                    setting & _TEXTURE_INDEX_MASK, state.setting_offset,
                 ))
         return binds
-    except (struct.error, IndexError):
+    except ModelBlockError:
         return []
 
 
@@ -116,11 +114,9 @@ def texture_count(block: bytes) -> int | None:
     """Descriptor count of a model block's TEX section, or None when the
     block has no readable TEX section (a low-poly model has none)."""
     try:
-        tex = _u32(block, 0x0C)
-        if not tex or tex + 2 > len(block):
-            return None
-        return struct.unpack_from('>H', block, tex)[0]
-    except struct.error:
+        tex = ModelBlock(block).tex()
+        return tex.count if tex is not None else None
+    except ModelBlockError:
         return None
 
 

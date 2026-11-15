@@ -76,19 +76,25 @@ class ACTLayout(FileChunk):
         # That gets read here and stored in the bone objects when they're created
         track_ids = []
         old_pos = self.tell()
-        self.seek(self.userDataPtr + 0x2)
-        self.track_bone_offset = self.half()
-        self.half()  # track type, not used
-        self.seek(self.userDataPtr + 0xC)
-        for i in range(self.boneCount):
-            track_ids.append(self.half())
-        # print(track_ids)
         bone_track_pairs = {}
-        self.seek(self.userDataPtr + self.track_bone_offset + 0xC)
-        for i in range(self.boneCount):
-            bone_id = self.byte()
-            self.byte()  # bone type, not used
-            bone_track_pairs[bone_id] = track_ids[i]
+        if self.userDataSize:
+            self.seek(self.userDataPtr + 0x2)
+            self.track_bone_offset = self.half()
+            self.half()  # track type, not used
+            self.seek(self.userDataPtr + 0xC)
+            for i in range(self.boneCount):
+                track_ids.append(self.half())
+            # print(track_ids)
+            self.seek(self.userDataPtr + self.track_bone_offset + 0xC)
+            for i in range(self.boneCount):
+                bone_id = self.byte()
+                self.byte()  # bone type, not used
+                bone_track_pairs[bone_id] = track_ids[i]
+        else:
+            # No user data (867 of the 1,408 stock models with an ACT): the pointer is 0, and reading a
+            # "table" there gave the ACT header and bone table as track ids. No bone has a track.
+            self.track_bone_offset = 0
+            track_ids = [0xFFFF] * self.boneCount
         self.seek(old_pos)
 
         self.bone_layouts = {}
@@ -98,7 +104,7 @@ class ACTLayout(FileChunk):
             node = node_stack.pop()
             # Start of Tree + address directly after node - node length - 4 (because there's an orientation thing before the node)
             # I should have had the hierarchy return the address the node starts at but oh well it's all relative anyway
-            bone_layout = self.add_child(0x8 + node.addr - 0x14, 0, ACTBoneLayout, "Bone Layout #" + hex(i))
+            bone_layout = self.add_child(0x8 + node.addr - 0x14, 0, ACTBoneLayout, "Bone Layout #" + hex(len(self.bone_layouts)))
             bone_layout.analyze()
             if not bone_layout.skinned:
                 # geoFileId is 0 for a mesh-less bone too (raw 0xFFFF); only

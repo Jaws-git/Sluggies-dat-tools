@@ -242,6 +242,26 @@ class StageTests(unittest.TestCase):
             self.stage(bad)
         self.assertFalse(os.path.exists(os.path.join(self.root, '_gui', 'slot', 'escape.txt')))
 
+    def test_size_caps_and_a_failed_unpack_leave_nothing_staged(self):
+        from unittest import mock
+        path = write_package(self.root, manifest())
+        staged = os.path.join(self.root, slot_zip.STAGED_REL)
+        for cap in ('MAX_UNPACKED', 'MAX_MEMBERS'):
+            with mock.patch.object(slot_zip, cap, 1):
+                with self.assertRaisesRegex(slot_zip.PackageError, 'too big'):
+                    slot_zip.extract(path, staged)
+        self.assertFalse(os.path.exists(staged) and os.listdir(staged))
+
+        def dying_extract(zf, folder):
+            with open(os.path.join(folder, 'half'), 'wb') as f:
+                f.write(b'x')
+            raise zipfile.BadZipFile('bad CRC')
+
+        with mock.patch.object(zipfile.ZipFile, 'extractall', dying_extract):
+            with self.assertRaisesRegex(slot_zip.PackageError, 'damaged'):
+                slot_zip.extract(path, staged)
+        self.assertEqual(os.listdir(staged), [])
+
     def test_prune_keeps_what_pending_edits_use(self):
         path = write_package(self.root, manifest())
         kept, dropped = self.stage(path), self.stage(path)

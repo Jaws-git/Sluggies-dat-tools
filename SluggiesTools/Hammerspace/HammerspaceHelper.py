@@ -47,22 +47,67 @@ _FST_DAT_SIZE_OFF   = _FST_DAT_ENTRY_IDX * 12 + 8  # type/name(4) + offset(4) + 
 
 ### Hammerspace Helpers
 
+# The backup of a running defragmentation (Defrag.py), beside the output DAT. While its info file exists the
+# output files are half moved: Defrag restores them, and nothing else may read or write them before that.
+DEFRAG_BACKUP_FOLDER = '_defrag_backup'
+DEFRAG_BACKUP_INFO = 'defrag.json'
+
+
+def defragBackupPending() -> bool:
+    """Whether an interrupted defragmentation left its complete backup behind."""
+    return os.path.isfile(os.path.join(os.path.dirname(OUTPUT_DAT), DEFRAG_BACKUP_FOLDER, DEFRAG_BACKUP_INFO))
+
+
+def copyFileAtomic(source: str, target: str) -> None:
+    """Copy ``source`` to ``target`` through a temporary file beside it, so an interrupted copy never leaves a
+    truncated ``target`` that later runs take for a complete file. Raises ``OSError``."""
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    temp = target + '.copying'
+    try:
+        shutil.copy2(source, temp)
+        os.replace(temp, target)
+    except BaseException:
+        try:
+            os.remove(temp)
+        except OSError:
+            pass
+        raise
+
+
+def outputDatProblem() -> str | None:
+    """Why the existing OUTPUT dt_na.dat cannot be a copy of the input (it is shorter: an interrupted copy or a
+    cut-off file), or None. A patched output is never shorter than the input: blocks are only added past it."""
+    if not (os.path.exists(OUTPUT_DAT) and os.path.exists(INPUT_DAT)):
+        return None
+    output_size, input_size = os.path.getsize(OUTPUT_DAT), os.path.getsize(INPUT_DAT)
+    if output_size >= input_size:
+        return None
+    return (f"{OUTPUT_DAT} is {output_size:,} bytes, shorter than the input dt_na.dat ({input_size:,} bytes): it is "
+            "incomplete (an interrupted copy?). Delete it, or restore it from a backup, and run again; a fresh "
+            "copy of the input is then made.")
+
+
 def ensureOutputDat(required_total_size: int = 0) -> bool:
     """Ensure OUTPUT_DAT exists and is at least ``required_total_size`` bytes.
 
-    If the file is missing it is copied from INPUT_DAT first.  If it is
+    If the file is missing it is copied from INPUT_DAT first (through a temporary file).  If it is
     smaller than ``required_total_size`` it is extended with zero bytes.
 
-    Returns True on success, False if the input file is also missing."""
+    Returns True on success, False if the input file is also missing or the existing output is shorter than
+    the input (``outputDatProblem``)."""
 
     if not os.path.exists(OUTPUT_DAT):
         if not os.path.exists(INPUT_DAT):
             _slogger.error(f"OUTPUT dt_na.dat not found and INPUT dt_na.dat is also missing: {INPUT_DAT}", source="hammerspace.helper")
             return False
-        os.makedirs(os.path.dirname(OUTPUT_DAT), exist_ok=True)
         _slogger.info("OUTPUT dt_na.dat not found. Copying from input ...", source="hammerspace.helper")
-        shutil.copy2(INPUT_DAT, OUTPUT_DAT)
+        copyFileAtomic(INPUT_DAT, OUTPUT_DAT)
         _slogger.info(f"Copied {INPUT_DAT} -> {OUTPUT_DAT}", source="hammerspace.helper")
+    else:
+        problem = outputDatProblem()
+        if problem:
+            _slogger.error(problem, source="hammerspace.helper")
+            return False
 
     if required_total_size > 0:
         current_size = os.path.getsize(OUTPUT_DAT)
@@ -92,8 +137,7 @@ def patchFstFileSize(new_size: int) -> bool:
                             "Disc filesystem size will NOT be updated.\n"
                             "The game may not be able to read hammerspace data.", source="hammerspace.helper")
             return False
-        os.makedirs(os.path.dirname(_FST_OUTPUT), exist_ok=True)
-        shutil.copy2(_FST_INPUT, _FST_OUTPUT)
+        copyFileAtomic(_FST_INPUT, _FST_OUTPUT)
         _slogger.info("Copied fst.bin to output folder.", source="hammerspace.helper")
 
     with open(_FST_OUTPUT, 'r+b') as f:
@@ -707,8 +751,7 @@ def patchDolEntry(chunk_number: int, file_index: int, new_offset: int, new_lengt
     if not os.path.exists(OUTPUT_DOL):
         if not os.path.exists(INPUT_DOL):
             raise DolEntryError(f"Input DOL not found: {INPUT_DOL}")
-        os.makedirs(os.path.dirname(OUTPUT_DOL), exist_ok=True)
-        shutil.copy2(INPUT_DOL, OUTPUT_DOL)
+        copyFileAtomic(INPUT_DOL, OUTPUT_DOL)
         _slogger.info("Copied main.dol to output folder.", source="hammerspace.helper")
 
     dir_ptrs = _outputDirPtrs()

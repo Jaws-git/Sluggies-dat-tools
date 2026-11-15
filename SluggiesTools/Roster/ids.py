@@ -188,8 +188,8 @@ def parse_ids(config: dict) -> list[NewId]:
                                     'grid square (grid.squares)')
         else:
             wheel = _number(entry.get('wheel', template), f'{where}.wheel')
-        if wheel is not None and not (0 <= wheel < PLAYER_END or wheel in {i.id for i in out if i.wheel is not None}):
-            raise IdConfigError(f'{where}: wheel 0x{wheel:02X} is neither a stock player ID nor an earlier new ID')
+        if wheel is not None and wheel < 0:
+            raise IdConfigError(f'{where}: wheel {wheel} is not a character ID')
         swatch = entry.get('swatch')
         if isinstance(swatch, str) and swatch.lower() in SWATCHES:
             swatch = SWATCHES[swatch.lower()]
@@ -204,7 +204,18 @@ def parse_ids(config: dict) -> list[NewId]:
                 raise IdConfigError(f'{where}.stats: 0x{stats:02X} is not a stock player ID (0x00-0x4C)')
         used.add(cid)
         out.append(NewId(cid, template, wheel, swatch, _parse_model(entry.get('model'), f'{where}.model'), stats))
-    return sorted(out, key=lambda c: c.id)
+    out.sort(key=lambda c: c.id)
+    # A wheel on another new ID: the rows are built in ID order (``selector_rows``), so the host needs the
+    # lower number, wherever the config lists it. Checked on the whole list for that reason.
+    with_wheel = {c.id for c in out if c.wheel is not None}
+    for c in out:
+        if c.wheel is None or c.wheel < PLAYER_END:
+            continue
+        if c.wheel not in with_wheel or c.wheel >= c.id:
+            raise IdConfigError(
+                f'ids: 0x{c.id:02X}: wheel 0x{c.wheel:02X} is neither a stock player ID nor a new ID with a '
+                'lower number and a wheel of its own')
+    return out
 
 
 def parse_stock_stats(config: dict) -> dict[int, int]:

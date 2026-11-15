@@ -283,8 +283,11 @@ def _manifest(image: dolfile.DolImage) -> dict | None:
     return mf
 
 
-def read_state(image: dolfile.DolImage, dat=None) -> dict:
-    """The grid as the game shows it (module docstring). ``dat``: anything with ``read(offset, size)``."""
+def read_state(image: dolfile.DolImage, dat=None, blocks: bool = True) -> dict:
+    """The grid as the game shows it (module docstring). ``dat``: anything with ``read(offset, size)``.
+    ``blocks=False`` leaves every character's ``blocks`` / ``equipment`` / ``animations`` None: reading them
+    hashes about 247 MB of the DAT (93 % of a read), which a caller that wants the grid or the names
+    does not need."""
     mf = _manifest(image)
     warnings: list[str] = []
     if mf is not None and _grid_built(image):
@@ -400,7 +403,7 @@ def read_state(image: dolfile.DolImage, dat=None) -> dict:
                                'voice': voice, 'char_voice': char_voice, 'char_clip_ids': clip_ids,
                                'char_pack': pack, 'square': index})
     characters.sort(key=lambda c: c['id'])
-    _model_blocks(image, dat, characters, warnings)
+    _model_blocks(image, dat if blocks else None, characters, warnings)
     icons_read = _resolve_icons(image, dat, mf, characters, warnings)
     return {'version': VERSION, 'kind': 'stock' if mf is None else 'expanded', 'shape': [cols, rows],
             'luigi_own_square': luigi, 'cells': cell_index, 'off_grid': off_grid, 'squares': squares,

@@ -1,6 +1,5 @@
 import os
 import sys
-import shutil
 
 # Resolve project directories relative to this file so the script works
 # regardless of the current working directory.
@@ -26,6 +25,8 @@ import patch_skn_inplace as _skn
 import texture_helper as _tex
 import root_scale as _root_scale
 import bone_geo_inplace as _bone_geo
+import dat_writes as _dat_writes
+from Hammerspace import HammerspaceHelper as _hh
 import facial_pose_edits as _facial_edits
 from binfmt import comp_size as _comp_size
 from binfmt import decode_field as _decode_field
@@ -56,6 +57,10 @@ def _shader_mode_to_bytes(s: str) -> bytes:
     hex form (e.g. '11110000') that export.py writes for non-printable modes.
     """
     return _shader_mode_bytes(s)
+
+
+class _PatchFailed(Exception):
+    """A write-phase failure: the writes made so far are undone."""
 
 
 def abort(message):
@@ -155,6 +160,26 @@ submeshes = data["SluggiesModel"].get("Submeshes", [])
 if not submeshes:
     abort("No submeshes found in JSON.")
 
+
+def _model_block(model: dict) -> tuple[int, int]:
+    """``(start, length)`` of the model's own block in the DAT: the only range this patcher writes into.
+    Aborts when the .sluggie names none, or one that cannot be this model's block in the input game files."""
+    try:
+        start, length = int(model["ModelOffset"], 16), int(model["ModelLength"])
+    except (KeyError, TypeError, ValueError):
+        abort(f"{os.path.basename(json_path)} has no usable ModelOffset / ModelLength; export the model again.")
+    record = None
+    chunk, file_index = model.get("ChunkNumber"), model.get("FileIndex")
+    if os.path.isfile(_hh.INPUT_DOL) and isinstance(chunk, int) and isinstance(file_index, int):
+        record = _hh.readDolEntry(chunk, file_index)
+        if record[0] < 0:
+            abort(f"{os.path.basename(json_path)}: ChunkNumber {chunk} / FileIndex {file_index} is not a model "
+                  "of the input main.dol; the .sluggie does not belong to these game files.")
+    problem = _dat_writes.block_problem(start, length, os.path.getsize(INPUT_DAT), record)
+    if problem:
+        abort(f"In-place patch refused, nothing written: {problem}.")
+    return start, length
+
 # ---------------------------------------------------------------------------
 # Ensure output file exists
 # ---------------------------------------------------------------------------
@@ -168,19 +193,22 @@ _slogger.info(
 if not os.path.exists(INPUT_DAT):
     abort(f"Input file not found: {INPUT_DAT}\nCannot continue without a source dt_na.dat.")
 
-if validate_only:
-    pass                                     # nothing created or copied; sizes come from the DAT a patch would use
-elif not os.path.exists(OUTPUT_DIR):
-    os.mkdir(OUTPUT_DIR)
-    _slogger.info(f"Created folder: {OUTPUT_DIR}/", source="patch_inplace")
-
+# An output shorter than the input is an interrupted copy (or a cut-off file): patching into it would be lost
+# work at best, and a write past its end would grow it with zeros.
+_short_output = _hh.outputDatProblem()
+if _short_output:
+    abort(_short_output)
 if os.path.exists(OUTPUT_DAT):
     _slogger.info(f"Output file already exists, skipping copy: {OUTPUT_DAT}", source="patch_inplace")
-elif not validate_only:
-    shutil.copy2(INPUT_DAT, OUTPUT_DAT)
+elif not validate_only:                      # a build check creates and copies nothing
+    try:
+        _hh.copyFileAtomic(INPUT_DAT, OUTPUT_DAT)      # through a temporary file: never a half copy
+    except OSError as exc:
+        abort(f"Could not copy {INPUT_DAT} to {OUTPUT_DAT}: {exc}")
     _slogger.info(f"Copied {INPUT_DAT} -> {OUTPUT_DAT}", source="patch_inplace")
 # The DAT a patch writes into (a build check without an output DAT: the input copy a patch would start from).
 _SIZE_DAT = OUTPUT_DAT if os.path.exists(OUTPUT_DAT) else INPUT_DAT
+_block_start, _block_length = _model_block(data["SluggiesModel"])
 _dropped_edits: list[str] = []   # submesh edits a patch would leave out (a build check fails on them)
 
 # ---------------------------------------------------------------------------
@@ -571,24 +599,56 @@ elif _model.get("ReimportTextures"):
 
 _textures_patched = len({w.texture_index for w in texture_writes})
 
+
+def _refuse(message: str):
+    """Stop before the first write: a failed build check, or a refused patch."""
+    if validate_only:
+        _slogger.error("In-place build check failed: " + message, source="patch_inplace")
+        raise SystemExit(1)
+    abort(f"In-place patch refused, nothing written: {message}")
+
+
+_skin_resized = skin_data is not None and any(
+    sk.get('VertexCntEdited') is not None
+    for lst in [skin_data.get('SK1s', []), skin_data.get('SK2s', []), skin_data.get('SKAccs', [])]
+    for sk in lst)
+
 # Edits a patch would leave out refuse the whole patch before the first write
 # (a build check and a real patch alike), so dt_na.dat never holds a partial
 # patch reported as done.
-if validate_only or not unpatch:
-    if skin_data is not None and any(
-            sk.get('VertexCntEdited') is not None
-            for lst in [skin_data.get('SK1s', []), skin_data.get('SK2s', []), skin_data.get('SKAccs', [])]
-            for sk in lst):
-        if _skn.patchSKNInPlaceResized(skin_data, bind_pose_scale, dry_run=True) < 0:
-            _dropped_edits.append("the skin's resized source arrays do not fit the original SKN block")
+if not unpatch:
+    if _skin_resized and _skn.patchSKNInPlaceResized(skin_data, bind_pose_scale, dry_run=True) < 0:
+        _dropped_edits.append("the skin's resized source arrays do not fit the original ones")
     if _dropped_edits:
-        _message = (
-            "a patch would leave these edits out (re-export from Blender; a changed size is a Hammerspace "
-            "export): " + "; ".join(_dropped_edits))
-        if validate_only:
-            _slogger.error("In-place build check failed: " + _message, source="patch_inplace")
-            raise SystemExit(1)
-        abort(f"In-place patch refused, nothing written: {_message}")
+        _refuse("a patch would leave these edits out (re-export from Blender; a changed size is a Hammerspace "
+                "export): " + "; ".join(_dropped_edits))
+
+# Every write, as (log label, offset, bytes), checked against the model's own block: the offsets come from the
+# .sluggie, and nothing else keeps a wrong one out of a neighbouring model.
+_planned_writes = (
+    [(f"Submesh {i} vertex", offset, raw) for i, offset, raw in patches]
+    + [(f"Submesh {i} UV ch {ch_ind}", offset, raw) for i, ch_ind, offset, raw in uv_patches]
+    + [(f"Submesh {i} normal", offset, raw) for i, offset, raw in normal_patches]
+    + [(f"Submesh {i} DS[{ds_idx}] shader", offset, raw) for i, ds_idx, offset, raw in setting_patches]
+    + [(f"Submesh {i} DS[{ds_idx}] params", offset, raw) for i, ds_idx, offset, raw in param_patches]
+    + [("Facial pose", offset, raw) for offset, raw in facial_patches]
+    + [(f"Bone {bone_id} GeoId", offset, raw) for bone_id, offset, raw in bone_geo_patches]
+    + ([(f"Bone {root_scale_patch[0]} root SRT scale", root_scale_patch[1], root_scale_patch[2])]
+       if root_scale_patch else [])
+)
+_writes, _cut_writes, _outside_writes = _dat_writes.fit_to_block(_planned_writes, _block_start, _block_length)
+# A texture is written whole or not at all (its read-back check needs every byte).
+_outside_writes += [
+    f"texture {_tw.texture_index} {_tw.kind}: 0x{_tw.offset:X}+{_tw.payload_length:,}"
+    for _tw in texture_writes
+    if not (_block_start <= _tw.offset and _tw.offset + _tw.payload_length <= _block_start + _block_length)
+]
+if _outside_writes:
+    _refuse(f"these writes are outside the model's block (0x{_block_start:X}+{_block_length:,}); the .sluggie is "
+            "damaged or does not belong to these game files: " + "; ".join(_outside_writes))
+for _note in _cut_writes:
+    _slogger.warning(f"{_note}: the original buffer runs past the end of the model's block; the bytes beyond it "
+                     "belong to the next model and are left alone.", source="patch_inplace")
 
 if validate_only:
     _slogger.info(
@@ -600,124 +660,87 @@ if validate_only:
     )
     raise SystemExit(0)
 
-if patches or uv_patches or normal_patches or setting_patches or param_patches or facial_patches or bone_geo_patches or root_scale_patch or texture_writes:
-    _slogger.info(
-        f"Writing {len(patches)} vertex, {len(uv_patches)} UV, "
-    f"{len(normal_patches)} normal, {len(setting_patches)} shader-mode, "
-    f"{len(param_patches)} renderer-param, "
-    f"{len(facial_patches)} facial-pose, {len(bone_geo_patches)} bone-geo, "
-    f"{1 if root_scale_patch else 0} root-scale, "
-        f"{_textures_patched} texture "
-        f"patch(es) to {OUTPUT_DAT} ...",
-        source="patch_inplace",
-    )
-    with open(OUTPUT_DAT, 'r+b') as f:
-        for i, offset, raw in patches:
-            f.seek(offset)
-            f.write(raw)
-            _slogger.info(f"Submesh {i} vertex: wrote {len(raw)} bytes at 0x{offset:X}", source="patch_inplace")
-        for i, ch_ind, offset, raw in uv_patches:
-            f.seek(offset)
-            f.write(raw)
-            _slogger.info(f"Submesh {i} UV ch {ch_ind}: wrote {len(raw)} bytes at 0x{offset:X}", source="patch_inplace")
-        for i, offset, raw in normal_patches:
-            f.seek(offset)
-            f.write(raw)
-            _slogger.info(f"Submesh {i} normal: wrote {len(raw)} bytes at 0x{offset:X}", source="patch_inplace")
-        for i, ds_idx, offset, raw in setting_patches:
-            f.seek(offset)
-            f.write(raw)
-            _slogger.info(f"Submesh {i} DS[{ds_idx}] shader: wrote {raw!r} at 0x{offset:X}", source="patch_inplace")
-        for i, ds_idx, offset, raw in param_patches:
-            f.seek(offset)
-            f.write(raw)
-            _slogger.info(f"Submesh {i} DS[{ds_idx}] params: wrote {raw!r} at 0x{offset:X}", source="patch_inplace")
-        for offset, raw in facial_patches:
-            f.seek(offset)
-            f.write(raw)
-            _slogger.info(f"Facial pose: wrote {len(raw)} bytes at 0x{offset:X}", source="patch_inplace")
-        for bone_id, offset, raw in bone_geo_patches:
-            f.seek(offset)
-            f.write(raw)
-            _slogger.info(
-                f"Bone {bone_id} GeoId: wrote {raw.hex()} at 0x{offset:X}",
-                source="patch_inplace",
-            )
-        if root_scale_patch:
-            bone_id, offset, raw = root_scale_patch
-            f.seek(offset)
-            f.write(raw)
-            _slogger.info(
-                f"Bone {bone_id} root SRT scale: wrote {raw.hex()} at 0x{offset:X}",
-                source="patch_inplace",
-            )
-        # Apply texture writes grouped by texture_index; verify each write
-        # byte-for-byte before logging the per-texture success line (PLAN 4.2).
-        _writes_by_tex: dict = {}
-        for _tw in texture_writes:
-            _writes_by_tex.setdefault(_tw.texture_index, []).append(_tw)
-        for _tex_idx, _tex_group in _writes_by_tex.items():
-            _img_bytes = 0
-            _pal_bytes = 0
-            for _tw in _tex_group:
-                f.seek(_tw.offset)
-                f.write(_tw.bytes)
-                f.seek(_tw.offset)
-                _readback = f.read(_tw.payload_length)
-                if _readback != _tw.bytes:
-                    _differ = sum(a != b for a, b in zip(_readback, _tw.bytes))
-                    abort(
-                        f"texture {_tw.texture_index} {_tw.kind}: "
-                        f"write verification failed at 0x{_tw.offset:X}: "
-                        f"{_differ} byte(s) differ in {_tw.payload_length} written"
-                    )
-                if _tw.kind == "image":
-                    _img_bytes = _tw.payload_length
-                else:
-                    _pal_bytes = _tw.payload_length
-            _log_parts = [f"{_img_bytes} image bytes"]
-            if _pal_bytes:
-                _log_parts.append(f"{_pal_bytes} palette bytes")
-            _slogger.info(
-                f"texture {_tex_idx}: wrote {', '.join(_log_parts)}",
-                source="patch_inplace",
-            )
 
-# In-place skin source and weight patching (skinned models)
-if skin_data is not None and not unpatch:
-    needs_resize = any(
-        sk.get('VertexCntEdited') is not None
-        for lst in [skin_data.get('SK1s', []), skin_data.get('SK2s', []), skin_data.get('SKAccs', [])]
-        for sk in lst
-    )
-    if bind_pose_scale is not None:
-        _slogger.info(
-            f"Applying root-bone scale to SKN bind-pose vertices: {bind_pose_scale}",
-            source="patch_inplace",
-        )
-    if needs_resize:
-        total_sk = _skn.patchSKNInPlaceResized(skin_data, bind_pose_scale)
-        if total_sk < 0:                           # the dry run above passed, so this is unexpected
-            abort("Resized skin patch failed after the other edits were written; the output dt_na.dat is "
-                  "only partly patched. Unpatch or restore it before using it.")
-        _slogger.info(f"Skin bind-pose source and weight arrays patched in-place (resized, {total_sk} SK1+SK2 verts).", source="patch_inplace")
-    else:
-        if _skn.patchSKNInPlace(skin_data, bind_pose_scale):
-            _slogger.info("Skin bind-pose source and weight arrays patched in-place.", source="patch_inplace")
+def _write_all(f) -> None:
+    """The whole write phase, through the guarded handle *f*. Raises on any failure; the caller's ``with``
+    block then undoes the writes made so far."""
+    for label, offset, raw in _writes:
+        f.seek(offset)
+        f.write(raw)
+        shown = raw.hex() if len(raw) <= 12 else f"{len(raw)} bytes"
+        _slogger.info(f"{label}: wrote {shown} at 0x{offset:X}", source="patch_inplace")
 
-# In-place skin source and weight restoration (--unpatch)
-if skin_data is not None and unpatch:
-    needs_restore_block = any(
-        sk.get('VertexCntEdited') is not None
-        for lst in [skin_data.get('SK1s', []), skin_data.get('SK2s', []), skin_data.get('SKAccs', [])]
-        for sk in lst
-    )
-    if needs_restore_block:
-        if _skn.restoreSKNBlockInPlace(skin_data):
-            _slogger.info("Skin bind-pose source arrays restored in-place (resized block undone).", source="patch_inplace")
-    else:
-        if _skn.restoreSKNInPlace(skin_data):
+    # Texture writes grouped by texture_index; each is verified byte for byte
+    # before the per-texture success line is logged.
+    writes_by_tex: dict = {}
+    for tw in texture_writes:
+        writes_by_tex.setdefault(tw.texture_index, []).append(tw)
+    for tex_idx, tex_group in writes_by_tex.items():
+        img_bytes = 0
+        pal_bytes = 0
+        for tw in tex_group:
+            f.seek(tw.offset)
+            f.write(tw.bytes)
+            f.seek(tw.offset)
+            readback = f.read(tw.payload_length)
+            if readback != tw.bytes:
+                differ = sum(a != b for a, b in zip(readback, tw.bytes))
+                raise _PatchFailed(
+                    f"texture {tw.texture_index} {tw.kind}: write verification failed at 0x{tw.offset:X}: "
+                    f"{differ} byte(s) differ in {tw.payload_length} written")
+            if tw.kind == "image":
+                img_bytes = tw.payload_length
+            else:
+                pal_bytes = tw.payload_length
+        log_parts = [f"{img_bytes} image bytes"]
+        if pal_bytes:
+            log_parts.append(f"{pal_bytes} palette bytes")
+        _slogger.info(f"texture {tex_idx}: wrote {', '.join(log_parts)}", source="patch_inplace")
+
+    if skin_data is None:
+        return
+    if unpatch:
+        # In-place skin source and weight restoration
+        if _skin_resized:
+            if _skn.restoreSKNBlockInPlace(skin_data, dat=f):
+                _slogger.info("Skin bind-pose source arrays restored in-place (resized block undone).",
+                              source="patch_inplace")
+        elif _skn.restoreSKNInPlace(skin_data, dat=f):
             _slogger.info("Skin bind-pose source and weight arrays restored in-place.", source="patch_inplace")
+        return
+    # In-place skin source and weight patching
+    if bind_pose_scale is not None:
+        _slogger.info(f"Applying root-bone scale to SKN bind-pose vertices: {bind_pose_scale}",
+                      source="patch_inplace")
+    if _skin_resized:
+        total_sk = _skn.patchSKNInPlaceResized(skin_data, bind_pose_scale, dat=f)
+        if total_sk < 0:                               # the dry run above passed, so this is unexpected
+            raise _PatchFailed("the resized skin patch failed (see the error above)")
+        _slogger.info(
+            f"Skin bind-pose source and weight arrays patched in-place (resized, {total_sk} SK1+SK2 verts).",
+            source="patch_inplace")
+    elif _skn.patchSKNInPlace(skin_data, bind_pose_scale, dat=f):
+        _slogger.info("Skin bind-pose source and weight arrays patched in-place.", source="patch_inplace")
+
+
+_slogger.info(
+    f"Writing {len(patches)} vertex, {len(uv_patches)} UV, {len(normal_patches)} normal, "
+    f"{len(setting_patches)} shader-mode, {len(param_patches)} renderer-param, {len(facial_patches)} facial-pose, "
+    f"{len(bone_geo_patches)} bone-geo, {1 if root_scale_patch else 0} root-scale, {_textures_patched} texture "
+    f"patch(es) to {OUTPUT_DAT} ...",
+    source="patch_inplace",
+)
+# Every write goes through one guarded handle: none leaves the model's block, and a failure midway puts the
+# replaced bytes back, so the DAT holds the whole patch or none of it.
+try:
+    with _dat_writes.GuardedDat(OUTPUT_DAT, _block_start, _block_length) as _dat:
+        _write_all(_dat)
+except _dat_writes.RollbackFailed as exc:
+    abort(f"In-place {'unpatch' if unpatch else 'patch'} failed and could not be undone: {exc}. The output "
+          "dt_na.dat is only partly written; restore it from a backup before using it.")
+except (_PatchFailed, _dat_writes.OutOfBlockWrite, OSError, KeyError, ValueError) as exc:
+    abort(f"In-place {'unpatch' if unpatch else 'patch'} failed; every write was undone and the output dt_na.dat "
+          f"is as it was before: {exc}")
 
 # ---------------------------------------------------------------------------
 # Summary

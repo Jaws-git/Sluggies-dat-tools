@@ -19,7 +19,8 @@ clone step grows the file in large steps. This module rewrites the hammerspace t
 - **Safety.** Before writing, the output ``main.dol``, ``fst.bin`` and the DAT tail from the first changed byte
   are copied into ``3_Output_Dat/_defrag_backup`` (its ``defrag.json`` is written last). Every route is hashed
   before and checked after; any failure restores the backup. A backup left by an interrupted run is restored
-  by the next run, which then stops.
+  by the next run, which then stops; ``start.py`` runs that restore before any other command, so nothing
+  reads or patches the half-moved files. A missing ``fst.bin`` refuses the run before the backup.
 
 Run as a script (``start.py --defrag-hammerspace [--dry-run]``) or use :func:`analyze` / :func:`run`.
 """
@@ -43,9 +44,9 @@ except ImportError:
 import slogger as _slogger                     # HammerspaceHelper put SluggiesTools on sys.path
 
 SOURCE = 'hammerspace.defrag'
-SLOTS = ((1, 2), (5, 6), (9, 10))             # (length word, offset word) of the en, fr, sp slots
-BACKUP_FOLDER = '_defrag_backup'
-_BACKUP_INFO = 'defrag.json'
+SLOTS = ((1, 2), (5, 6), (9, 10))             # (length word, offset word) of the en, sp, fr slots
+BACKUP_FOLDER = hh.DEFRAG_BACKUP_FOLDER
+_BACKUP_INFO = hh.DEFRAG_BACKUP_INFO
 _BACKUP_TAIL = 'dt_na.tail'
 _BACKUP_DOL = 'main.dol'
 _BACKUP_FST = 'fst.bin'
@@ -118,9 +119,15 @@ class Layout:
         return not self.moved and self.saved <= 0
 
     def first_change(self):
-        """The lowest DAT offset this layout writes (a moved extent's new place, else the truncation point)."""
-        moved = self.moved
-        return moved[0].new_start if moved else self.new_size
+        """The lowest DAT offset this layout writes: a moved extent's new place, or the first alignment gap
+        between the packed extents (``_move_extents`` zeroes those, the one before the first extent and the
+        buffer after the last included). The backup starts here, so a restore is byte-exact."""
+        cursor = hh.BASE_SIZE
+        for extent in self.extents:
+            if extent.new_start > cursor or extent.delta:
+                return min(cursor, extent.new_start)
+            cursor = extent.new_start + extent.length
+        return min(cursor, self.new_size)
 
 
 @dataclass
@@ -140,8 +147,18 @@ def _backup_dir():
 
 
 def backup_pending():
-    """Whether an interrupted run left a complete backup (the next run restores it)."""
-    return os.path.isfile(os.path.join(_backup_dir(), _BACKUP_INFO))
+    """Whether an interrupted run left a complete backup (the next run restores it; so does the dispatcher,
+    before any other command touches the half-moved files)."""
+    return hh.defragBackupPending()
+
+
+def _fst_problem():
+    """Why the FST cannot be updated (``hh.patchFstFileSize`` would fail), or None. Asked before the backup:
+    without an ``fst.bin`` the run would move everything, fail at the last step and move it all back."""
+    if os.path.isfile(hh._FST_OUTPUT) or os.path.isfile(hh._FST_INPUT):
+        return None
+    return (f'fst.bin not found ({hh._FST_INPUT}): the disc file table has to get the new dt_na.dat size. Put '
+            "the game's sys/fst.bin into 1_Input and run again")
 
 
 def _mb(n):
@@ -292,6 +309,8 @@ def restore_backup():
     shutil.copy2(os.path.join(folder, _BACKUP_DOL), hh.OUTPUT_DOL)
     if info.get('fst'):
         shutil.copy2(os.path.join(folder, _BACKUP_FST), hh._FST_OUTPUT)
+    elif os.path.isfile(hh._FST_OUTPUT):
+        os.remove(hh._FST_OUTPUT)              # there was none before the run: the run's own copy goes again
     _drop_backup()
     return True
 
@@ -408,9 +427,15 @@ def run(dry_run=False):
     for extent in layout.moved:
         _slogger.info(f'{"Would move" if dry_run else "Move"} 0x{extent.start:08X} -> 0x{extent.new_start:08X} '
                       f'({extent.length:,} bytes)', source=SOURCE)
+    fst_problem = _fst_problem()
     if dry_run:
+        if fst_problem:
+            report.warnings.append(f'a real run would be refused: {fst_problem}')
+            _slogger.warning(report.warnings[-1], source=SOURCE)
         _summary(report)
         return report
+    if fst_problem:
+        raise DefragError(fst_problem)         # before the backup and the first write
 
     before = _hash_routes(layout.routes)
     _write_backup(layout)

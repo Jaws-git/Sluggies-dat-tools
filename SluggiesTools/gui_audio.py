@@ -11,6 +11,7 @@ import contextlib
 import os
 import sys
 import tempfile
+import threading
 
 from Sound import ffmpeg
 
@@ -78,12 +79,29 @@ class ClipPlayer:
         winsound.PlaySound(self.path, winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
 
 
+_FAST_SWITCH = 0.0005
+_turns_lock = threading.Lock()
+_turns_depth = 0                  # worker threads inside render_turns right now
+_turns_interval = None            # the interpreter's switch interval from before the first of them
+
+
 @contextlib.contextmanager
 def render_turns():
-    """Around long numpy work on a worker thread that holds the GIL: give the render thread more turns meanwhile."""
-    interval = sys.getswitchinterval()
-    sys.setswitchinterval(0.0005)
+    """Around long numpy work on a worker thread that holds the GIL: give the render thread more turns meanwhile.
+
+    Workers overlap (a clip preview while a track converts): the interval is saved by the first one in and put
+    back by the last one out. Each saving and restoring its own left the interpreter on the fast interval for
+    the rest of the session whenever the second one in was the last one out."""
+    global _turns_depth, _turns_interval
+    with _turns_lock:
+        if _turns_depth == 0:
+            _turns_interval = sys.getswitchinterval()
+            sys.setswitchinterval(_FAST_SWITCH)
+        _turns_depth += 1
     try:
         yield
     finally:
-        sys.setswitchinterval(interval)
+        with _turns_lock:
+            _turns_depth -= 1
+            if _turns_depth == 0:
+                sys.setswitchinterval(_turns_interval)

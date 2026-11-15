@@ -19,7 +19,7 @@ import ExportMode  # noqa: E402
 import FacialPoseRebuild as fpr  # noqa: E402
 import GeometryRebuild  # noqa: E402
 import HammerspaceMain as main  # noqa: E402
-import start  # noqa: E402
+from SluggiesTools import patch_dispatch  # noqa: E402
 import synthetic_donor  # noqa: E402
 import test_skinned_rebuild  # noqa: E402
 import texture_helper  # noqa: E402
@@ -630,7 +630,7 @@ class RigidRebuildBuildTests(unittest.TestCase):
         donor_positions[0:2] = struct.pack('>h', 777)
         skinned['VertexBufferDataEdited'] = base64.b64encode(bytes(donor_positions)).decode('ascii')
         self.model['Submeshes'][RIGID]['RigidRebuild'] = _resized_rebuild(self.model, 9)
-        self.assertEqual(start.hammerspace_section_args(self.model)[:2], ['--gpl', 'build'])
+        self.assertEqual(patch_dispatch.hammerspace_section_args(self.model)[:2], ['--gpl', 'build'])
 
         result, gpl = self._build()
         self.assertEqual(_record_faces(_blob(gpl, RIGID), 5), _fan(9))
@@ -883,12 +883,12 @@ class RigidRebuildGuardTests(unittest.TestCase):
 
     def test_dispatcher_selects_gpl_build_and_tex_build_for_an_appended_texture(self):
         model = {'Submeshes': [{}, {'RigidRebuild': {'NewSurfaces': []}}]}
-        self.assertEqual(start.hammerspace_section_args(model), ['--gpl', 'build'])
+        self.assertEqual(patch_dispatch.hammerspace_section_args(model), ['--gpl', 'build'])
         model['Submeshes'][1]['RigidRebuild']['NewSurfaces'] = [
             {'TextureAssignment': {'AdditionalTextureFileName': 'new.png'}},
         ]
-        self.assertEqual(start.hammerspace_section_args(model), ['--gpl', 'build', '--tex', 'build'])
-        self.assertTrue(start._needs_hammerspace({'Submeshes': [{'RigidRebuild': {}}]}, 'x.sluggie'))
+        self.assertEqual(patch_dispatch.hammerspace_section_args(model), ['--gpl', 'build', '--tex', 'build'])
+        self.assertTrue(patch_dispatch._needs_hammerspace({'Submeshes': [{'RigidRebuild': {}}]}, 'x.sluggie'))
 
     def test_export_mode_treats_a_rebuild_as_a_hammerspace_only_edit(self):
         submeshes = [{'VertexBuffer': {'VertexBufferOffset': '0x10'}, 'RigidRebuild': {}}]

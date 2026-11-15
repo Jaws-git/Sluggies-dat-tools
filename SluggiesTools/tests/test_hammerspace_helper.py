@@ -13,6 +13,55 @@ if str(HAMMERSPACE_DIR) not in sys.path:
 import HammerspaceHelper as helper
 
 
+class EnsureOutputDatTests(unittest.TestCase):
+    """The first copy of dt_na.dat is whole or absent, and a shorter output is never patched into."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.input = pathlib.Path(temp.name) / 'in' / 'dt_na.dat'
+        self.output = pathlib.Path(temp.name) / 'out' / 'dt_na.dat'
+        self.input.parent.mkdir()
+        self.input.write_bytes(bytes(range(200)))
+        for name, value in (('INPUT_DAT', str(self.input)), ('OUTPUT_DAT', str(self.output))):
+            patcher = mock.patch.object(helper, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_copies_the_input_and_can_extend_it(self):
+        self.assertTrue(helper.ensureOutputDat(256))
+        self.assertEqual(self.output.read_bytes(), bytes(range(200)) + bytes(56))
+        self.assertEqual([p.name for p in self.output.parent.iterdir()], ['dt_na.dat'])
+
+    def test_an_interrupted_copy_leaves_no_output(self):
+        def dying_copy(source, target):
+            pathlib.Path(target).write_bytes(pathlib.Path(source).read_bytes()[:50])
+            raise KeyboardInterrupt
+
+        with mock.patch.object(helper.shutil, 'copy2', side_effect=dying_copy):
+            with self.assertRaises(KeyboardInterrupt):
+                helper.ensureOutputDat()
+        self.assertEqual(list(self.output.parent.iterdir()), [])
+        self.assertTrue(helper.ensureOutputDat())                 # the next run starts over
+        self.assertEqual(self.output.read_bytes(), bytes(range(200)))
+
+    def test_an_output_shorter_than_the_input_is_refused(self):
+        self.output.parent.mkdir()
+        self.output.write_bytes(bytes(range(50)))                 # what a killed plain copy used to leave
+        self.assertIn('shorter than the input', helper.outputDatProblem())
+        self.assertFalse(helper.ensureOutputDat(256))
+        self.assertEqual(self.output.read_bytes(), bytes(range(50)))
+
+    def test_a_longer_output_or_a_missing_input_is_fine(self):
+        self.output.parent.mkdir()
+        self.output.write_bytes(bytes(300))
+        self.assertIsNone(helper.outputDatProblem())
+        self.input.unlink()
+        self.output.write_bytes(bytes(10))
+        self.assertIsNone(helper.outputDatProblem())
+        self.assertTrue(helper.ensureOutputDat())
+
+
 class FindFreeMemoryChunkTests(unittest.TestCase):
     def _find(self, region, length, *, base_size=64, chunk_size=64, alignment=32, reserved=()):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -105,6 +154,7 @@ class WriteModelBlockTests(unittest.TestCase):
             dat_path.write_bytes(b'\x00' * 256)
             with (
                 mock.patch.object(helper, 'OUTPUT_DAT', str(dat_path)),
+                mock.patch.object(helper, 'INPUT_DAT', str(dat_path) + '.absent'),
                 mock.patch.object(helper, 'HS_BUFFER_BYTES', 0),
             ):
                 helper.writeModelBlock(b'model-block', 64)
@@ -141,6 +191,7 @@ class WriteModelBlockTests(unittest.TestCase):
 
             with (
                 mock.patch.object(helper, 'OUTPUT_DAT', str(dat_path)),
+                mock.patch.object(helper, 'INPUT_DAT', str(dat_path) + '.absent'),
                 mock.patch.object(helper, 'HS_BUFFER_BYTES', 0),
                 mock.patch('builtins.open', side_effect=open_with_corrupt_read),
             ):

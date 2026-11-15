@@ -100,6 +100,24 @@ class ParseIdsTests(unittest.TestCase):
         with self.assertRaises(ids.IdConfigError):
             ids.parse_ids({'ids': [{'id': 0x66, 'template': 0}, {'id': 0x66, 'template': 1}]})
 
+    def test_a_wheel_on_a_new_id_needs_the_lower_numbered_host(self):
+        """The rows are built in ID order: a host with the higher number passed the check (it came first in
+        the config) and then failed with a KeyError."""
+        host_later = {'ids': [{'id': 0x70, 'template': 0}, {'id': 0x66, 'template': 1, 'wheel': 0x70}]}
+        with self.assertRaisesRegex(ids.IdConfigError, '0x66: wheel 0x70'):
+            ids.parse_ids(host_later)
+        for bad in ({'id': 0x67, 'template': 1, 'wheel': 0x67},                      # itself
+                    {'id': 0x67, 'template': 1, 'wheel': 0x60},                      # not an ID of the roster
+                    {'id': 0x67, 'template': 1, 'wheel': -1}):
+            with self.subTest(bad=bad), self.assertRaises(ids.IdConfigError):
+                ids.parse_ids({'ids': [{'id': 0x66, 'template': 0}, bad]})
+        # the config's own order does not matter
+        listed_first = {'ids': [{'id': 0x70, 'template': 1, 'wheel': 0x66}, {'id': 0x66, 'template': 0}]}
+        parsed = ids.parse_ids(listed_first)
+        self.assertEqual([(c.id, c.wheel) for c in parsed], [(0x66, 0), (0x70, 0x66)])
+        rows = [bytearray(8) for _ in range(ids.STOCK_IDS + 1)]
+        ids.selector_rows(rows, parsed)                                              # no KeyError
+
 
 class IdentityRelocationTests(unittest.TestCase):
     def test_every_table_moves_unchanged(self):

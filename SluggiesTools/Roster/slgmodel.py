@@ -118,11 +118,20 @@ def base_name(cid: int) -> str:
 # Deltas
 # --------------------------------------------------------------------------
 
+# What a delta may inflate to: the literals of one rebuilt block plus its ops. And how many empty ops a delta
+# may hold: a real one has none to speak of, a crafted one had two million (8 KB of file, minutes of work).
+MAX_DELTA_RAW = 2 * MAX_BLOCK
+MAX_EMPTY_OPS = 4096
+
+
 def _raw(delta: bytes, what: str) -> bytes:
     try:
-        raw = zlib.decompress(delta)
+        inflater = zlib.decompressobj()
+        raw = inflater.decompress(delta, MAX_DELTA_RAW + 1)
     except zlib.error as exc:
         raise SlgError(f'{what} is damaged (not a delta file: {exc})') from exc
+    if len(raw) > MAX_DELTA_RAW or inflater.unconsumed_tail:
+        raise SlgError(f'{what} is damaged (it unpacks to more than {MAX_DELTA_RAW >> 20} MB)')
     if len(raw) < DELTA_HEAD or raw[:len(DELTA_MAGIC)] != DELTA_MAGIC:
         raise SlgError(f'{what} is damaged (not a delta file)')
     return raw
@@ -150,19 +159,25 @@ def _ops(raw: bytes, what: str):
             shift += 7
             if not b & 0x80:
                 return value
+    empty = 0
     while p < len(raw):
         op = raw[p]
         p += 1
         if op == 0:
-            yield ('copy', varint(), varint(), varint())
+            copy = ('copy', varint(), varint(), varint())
+            empty += not copy[3]
+            yield copy
         elif op == 1:
             length = varint()
             if p + length > len(raw):
                 raise SlgError(f'{what} is damaged (a delta literal is cut short)')
+            empty += not length
             yield ('literal', raw[p:p + length])
             p += length
         else:
             raise SlgError(f'{what} is damaged (unknown delta op {op})')
+        if empty > MAX_EMPTY_OPS:
+            raise SlgError(f'{what} is damaged (it holds thousands of empty delta ops)')
 
 
 def delta_sources(delta: bytes, what: str = 'the delta') -> list[int]:
@@ -192,8 +207,11 @@ def apply_delta(delta: bytes, sources, what: str = 'the delta') -> bytes:
     for op in _ops(raw, what):
         if op[0] == 'copy':
             _kind, index, offset, n = op
+            if len(out) + n > length:
+                break                                # more than the file it says it rebuilds: refused below
             src = source(index)
-            piece = src[offset:offset + n]
+            # asked before slicing: a copy "of 4 GB" from a mapped dt_na.dat would first read all of it
+            piece = src[offset:offset + n] if offset + n <= len(src) else b''
             if len(piece) != n:
                 raise SlgError(f'{what} copies {n:,} bytes at {offset:,} of {DELTA_SOURCE_NAMES[index] if index < 3 else index}, '
                                'past its end: 1_Input is not the clean game this file was made from')

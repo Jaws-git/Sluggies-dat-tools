@@ -49,7 +49,7 @@ def character_names(roster: dict) -> list[str]:
 def write(path: str, output_dir: str = state_cli.OUTPUT_DIR) -> list[str]:
     """Write the autopicker's ``characters.json`` for the output game to ``path``; returns the list."""
     image, dat = state_cli._open(output_dir)
-    roster = state.read_state(image, dat)
+    roster = state.read_state(image, dat, blocks=False)   # names only
     if not roster.get('names_read', True):
         slogger.warning('no names read (dt_na.dat missing): the list holds IDs only', source=SOURCE)
     chars = character_names(roster)

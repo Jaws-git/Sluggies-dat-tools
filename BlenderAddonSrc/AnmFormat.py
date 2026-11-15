@@ -360,6 +360,25 @@ def reduce_samples(samples, vec_tol, quat_tol):
                 return False
         return True
 
+    # A track that does not move (most bones of most sequences): every check above compares the same values,
+    # so they all pass or all fail, and one decides. Without this the loop below costs n * n / 2 checks for
+    # it (measured outside Blender: 92 ms for 240 frames, against under 2 ms for a moving track).
+    still = samples[0][1:]
+    if all(sample[1:] == still for sample in samples):
+        return [0, n - 1] if fits(0, 2) else list(range(n))
+    # Still but for float noise: every sample within a fraction of the tolerance of the first one, and the
+    # rotation a unit quaternion to the same fraction. Any interpolation between two such samples stays that
+    # close to the first one too (a lerp exactly; a slerp to within the square of the distance), so every check
+    # of the loop below would pass and it would keep the two ends. One pass instead of n * n / 2 checks.
+    scale0, quat0, move0 = still
+    quat_slack = quat_tol / 8.0
+    if abs(sum(v * v for v in quat0) - 1.0) <= quat_slack and all(
+            max(abs(x - y) for x, y in zip(sample[1], scale0)) <= vec_tol / 4.0
+            and max(abs(x - y) for x, y in zip(sample[3], move0)) <= vec_tol / 4.0
+            and max(abs(x - y) for x, y in zip(sample[2], quat0)) <= quat_slack
+            for sample in samples):
+        return [0, n - 1]
+
     keep = [0]
     anchor = 0
     end = 1

@@ -25,6 +25,7 @@ voice steps, so "Patch Game" keeps them; ``sync_output`` writes ``3_Output_Dat/s
 (the GUI's Sound FX tab), the library's waves in and the stock ones back for the sounds it no longer holds.
 """
 
+import struct
 import json
 import os
 import re
@@ -32,7 +33,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from Sound import brsar, brsar_write, brstm_write, clips, dsp_adpcm
+from Sound import archive_lock, brsar, brsar_write, brstm_write, clips, dsp_adpcm
 
 LIBRARY_DIR = os.path.join('_gui', 'Sound_FX')   # user data in _gui, like Sound_Packs
 LIBRARY_FILE = 'effects.json'
@@ -126,17 +127,15 @@ def list_effects(archive):
 
 # ------------------------------------------------------------------------------------------------ encoding
 
-def _encode_channel(x, stock_coefs):
-    """int16 samples -> ``(coefs, encoded bytes, decoded int16)``: trained coefficients or the stock wave's,
-    whichever reproduces the sound better."""
-    best = None
-    for coefs in (brstm_write.train_coefs(x), list(stock_coefs)):
-        encoded, _ = dsp_adpcm.encode(x, coefs)
-        decoded = dsp_adpcm.decode([dsp_adpcm.Lane(encoded, len(x), coefs)])[0]
-        error = int(((decoded.astype(np.int64) - x.astype(np.int64)) ** 2).sum())
-        if best is None or error < best[0]:
-            best = (error, coefs, encoded, decoded)
-    return best[1:]
+def _encode_channel(x, stock_coefs, loop_start=None):
+    """int16 samples -> ``(coefs, encoded bytes, (h1, h2))``: trained coefficients or the stock wave's,
+    whichever reproduces the sound better, and the decoder's history at sample ``loop_start`` (a frame start;
+    ``(0, 0)`` without one): the two decoded samples before it, taken from the encoder."""
+    sets = [brstm_write.train_coefs(x), list(stock_coefs)]
+    frame = None if loop_start is None else loop_start // dsp_adpcm.FRAME_SAMPLES
+    results = dsp_adpcm.encode_many(x, sets, history_frame=frame)  # both in one pass; the first wins a tie
+    best = min(range(len(sets)), key=lambda i: results[i][2])
+    return sets[best], results[best][0], (results[best][3] if frame is not None else (0, 0))
 
 
 def encode(path, stock_rwav, gain_db=0.0):
@@ -144,7 +143,7 @@ def encode(path, stock_rwav, gain_db=0.0):
     level changed by ``gain_db`` decibels (``clips.apply_gain``)."""
     try:
         stock = brsar.parse_rwav(bytes(stock_rwav))
-    except (brsar.BrsarError, IndexError, ValueError) as exc:
+    except (brsar.BrsarError, IndexError, ValueError, struct.error) as exc:
         raise EffectError(f'the stock wave is not readable: {exc}') from exc
     if stock.format != brsar.ADPCM:
         raise EffectError('only DSP-ADPCM effects can be replaced (this stock wave is PCM)')
@@ -180,12 +179,10 @@ def encode(path, stock_rwav, gain_db=0.0):
         notes.append('loops from the start (the stock sound loops; a WAV smpl loop sets another point)')
     lanes = []
     for c in range(channels):
-        coefs, encoded, decoded = _encode_channel(samples[c][:n], stock.channels[c].coefs)
+        coefs, encoded, history = _encode_channel(samples[c][:n], stock.channels[c].coefs, loop_start)
         context = (0, 0, 0)
         if loop_start is not None:
-            context = (encoded[loop_start // dsp_adpcm.FRAME_SAMPLES * dsp_adpcm.FRAME_BYTES],
-                       int(decoded[loop_start - 1]) if loop_start >= 1 else 0,
-                       int(decoded[loop_start - 2]) if loop_start >= 2 else 0)
+            context = (encoded[loop_start // dsp_adpcm.FRAME_SAMPLES * dsp_adpcm.FRAME_BYTES], *history)
         lanes.append((coefs, encoded, context))
     rwav = brsar_write.rwav_from_channels(stock_rwav, stock.rate, n, lanes, loop_start)
     if len(rwav) > BIG_FACTOR * len(stock_rwav):
@@ -304,7 +301,7 @@ def library_waves(archive, root_dir, entries=None):
                 rv = handle.read()
             wave = brsar.parse_rwav(rv)
             want = len(brsar.parse_rwav(stock.rwav(sound)).channels)
-        except (OSError, brsar.BrsarError, IndexError, ValueError) as exc:
+        except (OSError, brsar.BrsarError, IndexError, ValueError, struct.error) as exc:
             problems.append(f'{name}: {exc}')
             continue
         if wave.format != brsar.ADPCM or len(wave.channels) != want:
@@ -334,7 +331,12 @@ def apply_library(data, root_dir):
 def sync_output(root_dir):
     """Bring ``3_Output_Dat/sound_NA/MY2.brsar`` (made from ``1_Input``'s when missing) in line with the library:
     each effect sound plays its library wave, or the stock wave when the library has none. Returns
-    ``(sounds changed, problems)``."""
+    ``(sounds changed, problems)``. One writer at a time (``archive_lock``)."""
+    with archive_lock.writing():
+        return _sync_output(root_dir)
+
+
+def _sync_output(root_dir):
     input_path, output_path = brsar.archive_paths(root_dir)
     with open(input_path, 'rb') as handle:
         stock_bytes = handle.read()
@@ -359,7 +361,13 @@ def sync_output(root_dir):
     if waves or not os.path.isfile(output_path):
         out = brsar_write.replace_waves(base, waves)
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        with open(output_path + '.tmp', 'wb') as handle:
-            handle.write(out)
-        os.replace(output_path + '.tmp', output_path)
+        temp = archive_lock.temp_path(output_path)
+        try:
+            with open(temp, 'wb') as handle:
+                handle.write(out)
+            os.replace(temp, output_path)
+        except OSError:
+            if os.path.exists(temp):
+                os.remove(temp)
+            raise
     return len(waves), problems

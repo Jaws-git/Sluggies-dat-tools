@@ -231,6 +231,25 @@ class EffectsTests(unittest.TestCase):
         self.assertEqual(out, self.data)
         self.assertEqual(len(lines), 2)
 
+    def test_a_cut_short_library_wave_is_a_problem_not_a_traceback(self):
+        """One damaged .rwav in _gui/Sound_FX stopped every roster run: the parser raises struct.error on
+        it, which no caller caught."""
+        effects.set_effect(self.root, 'hit_a', self.stock)
+        path = effects.entry_path(self.root, effects.load_library(self.root)['hit_a'])
+        for size in (0x12, 0x30, 0x60):
+            with open(path, 'wb') as handle:
+                handle.write(self.stock[:size])
+            waves, problems = effects.library_waves(self.archive, self.root)
+            self.assertEqual((waves, len(problems)), ({}, 1), size)
+            self.assertTrue(problems[0].startswith('hit_a:'))
+            out, lines = effects.apply_library(self.data, self.root)
+            self.assertEqual(out, self.data)
+
+    def test_parser_errors_are_value_errors(self):
+        from Sound import brstm
+        self.assertTrue(issubclass(brsar.BrsarError, ValueError))
+        self.assertTrue(issubclass(brstm.BrstmError, ValueError))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -23,6 +23,7 @@ import re
 import shutil
 import struct
 import zipfile
+import zlib
 from dataclasses import dataclass, field
 
 from Sound import brsar, clips
@@ -302,21 +303,30 @@ def read_pack_file(path):
         zf = zipfile.ZipFile(path)
     except (OSError, zipfile.BadZipFile) as exc:
         raise PackError(f'{os.path.basename(path)} is not a voice pack: {exc}') from exc
-    with zf:
-        names = zf.namelist()
-        if PACK_FILE not in names:
-            raise PackError(f'{os.path.basename(path)} is not a voice pack ({PACK_FILE} missing)')
-        try:
-            doc = json.loads(zf.read(PACK_FILE).decode('utf-8'))
-        except (UnicodeDecodeError, ValueError) as exc:
-            raise PackError(f'{PACK_FILE} in the pack is not valid JSON: {exc}') from exc
-        files = {}
-        for name in names:
-            if name == PACK_FILE or name.endswith('/'):
-                continue
-            if posixpath.dirname(name) or posixpath.basename(name) != name:
-                raise PackError(f'unexpected file in the pack: {name}')
-            files[name] = zf.read(name)
+    try:
+        with zf:
+            return _read_open_pack_file(zf, path)
+    except (zipfile.BadZipFile, zlib.error, EOFError, RuntimeError, NotImplementedError) as exc:
+        if isinstance(exc, PackError):
+            raise
+        raise PackError(f'{os.path.basename(path)} is damaged: {exc}') from exc
+
+
+def _read_open_pack_file(zf, path):
+    names = zf.namelist()
+    if PACK_FILE not in names:
+        raise PackError(f'{os.path.basename(path)} is not a voice pack ({PACK_FILE} missing)')
+    try:
+        doc = json.loads(zf.read(PACK_FILE).decode('utf-8'))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise PackError(f'{PACK_FILE} in the pack is not valid JSON: {exc}') from exc
+    files = {}
+    for name in names:
+        if name == PACK_FILE or name.endswith('/'):
+            continue
+        if posixpath.dirname(name) or posixpath.basename(name) != name:
+            raise PackError(f'unexpected file in the pack: {name}')
+        files[name] = zf.read(name)
     stem = os.path.basename(path)
     stem = stem[:-len(PACK_EXTENSION)] if stem.lower().endswith(PACK_EXTENSION) else os.path.splitext(stem)[0]
     pack = _parse(doc, stem, stem)
@@ -340,13 +350,18 @@ def import_pack(root_dir, path, name=None):
     if os.path.exists(folder):
         raise PackError(f'a pack named {name!r} exists already')
     os.makedirs(folder)
-    for clip in pack.clips.values():
-        for file_name in (clip.rwav, clip.wav):
-            if file_name and file_name in files:
-                with open(os.path.join(folder, file_name), 'wb') as handle:
-                    handle.write(files[file_name])
-    pack.folder, pack.name = folder, name
-    save_pack(pack)
+    try:
+        for clip in pack.clips.values():
+            for file_name in (clip.rwav, clip.wav):
+                if file_name and file_name in files:
+                    with open(os.path.join(folder, file_name), 'wb') as handle:
+                        handle.write(files[file_name])
+        pack.folder, pack.name = folder, name
+        save_pack(pack)
+    except BaseException:
+        # A folder without pack.json is not in the list, and a second import would say "exists already".
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
     return pack
 
 

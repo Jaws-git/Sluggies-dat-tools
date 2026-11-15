@@ -184,12 +184,27 @@ def _character_home_folder(models_root, dir_index):
     return candidates[0], None
 
 
-def _export_character_icons(models_root, cells, page_images):
+def _same_pixels(path, image):
+    """Whether the PNG at ``path`` shows exactly ``image`` (an unreadable file does not)."""
+    try:
+        with Image.open(path) as existing:
+            return existing.size == image.size and existing.convert('RGBA').tobytes() == image.tobytes()
+    except (OSError, ValueError):
+        return False
+
+
+def _export_character_icons(models_root, cells, page_images, confirm=None):
     """Write ``icon/FrontIcon.png``, ``icon/SideIcon.png`` and, when the character has one of its own,
     ``icon/SideIconAlt.png`` (48x51 RGBA) into each character's high-poly model folder, and remove ones whose
     character has no own key (or no alternate cell) in this bank. ``page_images`` maps page to its RGBA image.
-    Returns ``(written, skipped)``: one row per PNG, and {reason: [dir index, ...]}."""
+
+    These files are also what a patch reads, so a user may have edited or added one. ``confirm(changed,
+    removed)`` (lists of paths) is asked once before any existing PNG with other pixels is overwritten or any
+    is removed; when it says no, those files stay as they are and only new ones are written. Without
+    ``confirm`` nothing is asked.
+    Returns ``(written, skipped)``: one row per PNG the bank has, and {reason: [dir index, ...]}."""
     written, skipped = [], {}
+    plans = []                # (path, image or None to remove, icon dir)
     for char_id in OWN_ICON_IDS:
         dir_index = char_id + CHARACTER_DIR_OFFSET
         home, reason = _character_home_folder(models_root, dir_index)
@@ -204,11 +219,10 @@ def _export_character_icons(models_root, cells, page_images):
             path = os.path.join(icon_dir, file_name)
             if view not in views:
                 if os.path.exists(path):
-                    os.remove(path)
+                    plans.append((path, None, icon_dir))
                 continue
             page, (x, y, w, h) = views[view]
-            ensure_dir(icon_dir)
-            page_images[page].crop((x, y, x + w, y + h)).convert('RGBA').save(path, 'PNG')
+            plans.append((path, page_images[page].crop((x, y, x + w, y + h)).convert('RGBA'), icon_dir))
             written.append({
                 'dir': dir_index,
                 'character_id': f'0x{char_id:02X}',
@@ -217,13 +231,44 @@ def _export_character_icons(models_root, cells, page_images):
                 'rect': [x, y, w, h],
                 'png': os.path.relpath(path, models_root).replace('\\', '/'),   # relative to 2_Output_Assets
             })
+    changed = [path for path, image, _dir in plans
+               if image is not None and os.path.exists(path) and not _same_pixels(path, image)]
+    removed = [path for path, image, _dir in plans if image is None]
+    keep = set()
+    if (changed or removed) and confirm is not None and not confirm(changed, removed):
+        keep = set(changed) | set(removed)
+    for path, image, icon_dir in plans:
+        if path in keep:
+            continue
+        if image is None:
+            os.remove(path)
+        else:
+            ensure_dir(icon_dir)
+            image.save(path, 'PNG')
+    for icon_dir in {icon_dir for _path, _image, icon_dir in plans}:
         if os.path.isdir(icon_dir) and not os.listdir(icon_dir):
             os.rmdir(icon_dir)
     return written, skipped
 
 
-def export_character_icons(dol_path, dat_path, models_root=MODELS_ROOT):
-    """Read the icon bank the DOL points at and write every character's icons. Returns ``(written, skipped)``."""
+def _confirm_icon_changes(changed, removed):
+    """Ask before portraits already in the model folders are replaced or removed (they are a patch input)."""
+    parts = []
+    if changed:
+        parts.append(f'{len(changed)} portrait PNG(s) differ from the game\'s and would be overwritten '
+                     f'(e.g. {os.path.relpath(changed[0], MODELS_ROOT)})')
+    if removed:
+        parts.append(f'{len(removed)} PNG(s) the game has no portrait for would be removed '
+                     f'(e.g. {os.path.relpath(removed[0], MODELS_ROOT)})')
+    answer = _slogger.ask(f'Icon export: {"; ".join(parts)}. Replace them? (y/n; n keeps them): ',
+                          kind='overwrite').strip().lower()
+    _slogger.log_user_input('Icon export overwrite confirm', answer, source='icons.export_icons')
+    return answer == 'y'
+
+
+def export_character_icons(dol_path, dat_path, models_root=MODELS_ROOT, confirm=_confirm_icon_changes):
+    """Read the icon bank the DOL points at and write every character's icons. Returns ``(written, skipped)``.
+    ``confirm``: asked before existing portraits are overwritten or removed (``_export_character_icons``)."""
     bank_bytes = _read_bank(dol_path, dat_path)
     pages = _page_descriptors(bank_bytes)
     cells, problems = _character_icon_cells(
@@ -232,7 +277,7 @@ def export_character_icons(dol_path, dat_path, models_root=MODELS_ROOT):
         _slogger.warning(f'Character icon skipped: {problem}', source='icons.export_icons')
     used = {page for views in cells.values() for page, _rect in views.values()}
     page_images = {page: _decode_page(bank_bytes, pages[page]) for page in sorted(used)}
-    return _export_character_icons(models_root, cells, page_images)
+    return _export_character_icons(models_root, cells, page_images, confirm=confirm)
 
 
 def main():

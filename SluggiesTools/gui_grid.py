@@ -592,6 +592,51 @@ def player_heap_status(state) -> tuple[str, bool | None]:
 # Loader
 # --------------------------------------------------------------------------
 
+# The files ``start.py --roster-state`` reads (relative to the project root): while none of them changed, a
+# read gives the state the GUI already has.
+STATE_SOURCES = (
+    os.path.join('3_Output_Dat', 'main.dol'),
+    os.path.join('3_Output_Dat', 'dt_na.dat'),
+    os.path.join('3_Output_Dat', 'sound_NA', 'MY2.brsar'),
+    os.path.join('1_Input', 'main.dol'),
+)
+
+
+def state_signature(root_dir: str) -> tuple:
+    """``(size, mtime)`` of every file the grid state is read from (None for a missing one)."""
+    signature = []
+    for rel in STATE_SOURCES:
+        try:
+            info = os.stat(os.path.join(root_dir, rel))
+            signature.append((info.st_size, info.st_mtime_ns))
+        except OSError:
+            signature.append(None)
+    return tuple(signature)
+
+
+STATE_VERSION = 1                # Roster/state.VERSION (test-pinned): the form of roster_state.json read here
+_STATE_KEYS = ('kind', 'shape', 'cells', 'squares', 'characters')
+
+
+def state_problem(state) -> str | None:
+    """Why a loaded ``roster_state.json`` cannot be used, or None. Checked once where the file is read: the
+    tabs take its keys for granted, and a file of another form (another version of the tools, a hand edit)
+    used to fail somewhere in a redraw."""
+    if not isinstance(state, dict):
+        return 'it is not a roster state (not a JSON object)'
+    if state.get('version') != STATE_VERSION:
+        return (f'it is roster state version {state.get("version")!r}, this window reads version {STATE_VERSION} '
+                '(written by another version of the tools?)')
+    missing = [key for key in _STATE_KEYS if key not in state]
+    if missing:
+        return f'it lacks {", ".join(missing)}'
+    shape = state['shape']
+    if not (isinstance(shape, list) and len(shape) == 2) or not isinstance(state['squares'], list) \
+            or not isinstance(state['characters'], list):
+        return 'its grid fields have an unexpected form'
+    return None
+
+
 class StateLoader:
     """One background read at a time; a refresh asked for while one runs is queued (run once afterwards)."""
 
@@ -603,27 +648,41 @@ class StateLoader:
         self.state = None
         self.error = ''
         self.queued = False
+        self.signature = None                # state_signature() the loaded state was read from
+        self._started_with = None
 
-    def start(self) -> bool:
-        """True when the caller should launch a read now; False when one runs (the refresh is queued)."""
+    def start(self, signature: tuple | None = None) -> bool:
+        """True when the caller should launch a read now; False when one runs (the refresh is queued).
+        ``signature``: ``state_signature()`` taken now, before the read starts."""
         if self.status == self.RUNNING:
             self.queued = True
             return False
         self.status = self.RUNNING
         self.error = ''
+        self._started_with = signature
         return True
+
+    def current(self, signature: tuple) -> bool:
+        """Whether the loaded state was read from files with this ``state_signature()``: a read would only
+        repeat it."""
+        return self.status == self.DONE and self.signature is not None and self.signature == signature
 
     def finish(self, code: int, output: str = '') -> bool:
         """Take a read's exit code and output. Returns True when a queued refresh should start next."""
         if code == 0:
             try:
                 with open(self.state_path, encoding='utf-8') as f:
-                    self.state = json.load(f)
+                    state = json.load(f)
+                problem = state_problem(state)
+                if problem:
+                    raise ValueError(problem)
+                self.state = state
                 self.status = self.DONE
             except (OSError, ValueError) as exc:
                 self.status, self.error = self.FAILED, f'could not load {self.state_path}: {exc}'
         else:
             self.status, self.error = self.FAILED, error_message(output) or f'exit code {code}'
+        self.signature = self._started_with if self.status == self.DONE else None
         queued, self.queued = self.queued, False
         return queued
 
@@ -1932,7 +1991,7 @@ def load_plan(path: str) -> dict | None:
             plan = json.load(f)
     except (OSError, ValueError):
         return None
-    return plan if plan.get('action') == 'batch' else None
+    return plan if isinstance(plan, dict) and plan.get('action') == 'batch' else None
 
 
 def _mb(size: int) -> str:

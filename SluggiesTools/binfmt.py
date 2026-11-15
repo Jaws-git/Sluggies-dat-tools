@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import json
 import lzma
+import os
 import re
 import struct
 import zlib
@@ -197,14 +198,25 @@ def read_sluggie_head(path, size: int) -> str:
 def dump_sluggie(document: dict, path, text: str | None = None) -> None:
     """Write a ``.sluggie`` file: xz-compressed, or plain JSON for a
     ``--debug`` document (``SluggiesModel.UseCompression`` false). ``text`` is
-    the JSON to write (default: ``document`` indented by 2)."""
+    the JSON to write (default: ``document`` indented by 2). Written beside the
+    target and moved over it, so a failed write leaves the old file whole.
+    Raises ``OSError``."""
     if text is None:
         text = json.dumps(document, indent=2)
     raw = text.encode('utf-8')
     if (document.get('SluggiesModel') or {}).get('UseCompression', True):
         raw = lzma.compress(raw, preset=XZ_PRESET)
-    with open(path, 'wb') as handle:
-        handle.write(raw)
+    temp = f'{path}.tmp'
+    try:
+        with open(temp, 'wb') as handle:
+            handle.write(raw)
+        os.replace(temp, path)
+    except BaseException:
+        try:
+            os.remove(temp)
+        except OSError:
+            pass
+        raise
 
 
 # ACT geo names are "<stem>.gpl" (or ".tpl"). The game's own data leaves 34 of

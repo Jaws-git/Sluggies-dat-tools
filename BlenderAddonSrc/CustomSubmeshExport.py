@@ -5,15 +5,16 @@ quantization rules can be unit-tested without Blender. ExportSluggies.py
 reads the Blender scene and hands plain tuples/lists to the functions here.
 """
 
-import math
 import struct
 from dataclasses import dataclass
 
 try:  # inside Blender this module is part of the addon package
-    from . import FieldCodec
+    from . import FieldCodec  # noqa: F401  (reached as CustomSubmeshExport.FieldCodec)
+    from . import RebuildCommon as rc
     from . import TemplateSources
 except ImportError:  # imported flat by the unit tests
-    import FieldCodec
+    import FieldCodec  # noqa: F401
+    import RebuildCommon as rc
     import TemplateSources
 
 
@@ -71,7 +72,7 @@ def compact_vertex_indices(triangles):
 IDENTITY4 = ((1.0, 0.0, 0.0, 0.0), (0.0, 1.0, 0.0, 0.0),
              (0.0, 0.0, 1.0, 0.0), (0.0, 0.0, 0.0, 1.0))
 
-_SINGULAR_EPSILON = 1e-12
+_SINGULAR_EPSILON = rc.SINGULAR_EPSILON
 
 
 def mat4_mul(a, b):
@@ -104,29 +105,9 @@ def transform_point(m, p):
     )
 
 
-def mat3_determinant(m):
-    return (
-        m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
-        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
-        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
-    )
-
-
-def normal_matrix(m):
-    """Inverse-transpose of *m*'s upper 3x3, for transforming normals.
-    Raises ValueError when the 3x3 is singular."""
-    det = mat3_determinant(m)
-    if abs(det) < _SINGULAR_EPSILON:
-        raise ValueError('matrix is singular (zero scale on an axis?)')
-    # inverse-transpose == cofactor matrix / determinant
-    cof = [[0.0] * 3 for _ in range(3)]
-    for r in range(3):
-        for c in range(3):
-            r1, r2 = [i for i in range(3) if i != r]
-            c1, c2 = [i for i in range(3) if i != c]
-            minor = m[r1][c1] * m[r2][c2] - m[r1][c2] * m[r2][c1]
-            cof[r][c] = (-minor if (r + c) % 2 else minor) / det
-    return cof
+# The normal transform lives in RebuildCommon (the shared normal encoder uses it).
+mat3_determinant = rc.mat3_determinant
+normal_matrix = rc.normal_matrix
 
 
 def quaternion_matrix(w, x, y, z):
@@ -207,16 +188,7 @@ def keep_offset_world_matrix(obj_world, arm_world, b_old, b_new):
     return mat4_mul(m, obj_world)
 
 
-def transform_normals(normals, m):
-    """Transform normals by *m*'s inverse-transpose and renormalize. A normal
-    that collapses to zero length (a degenerate input) comes back as +Z."""
-    nm = normal_matrix(m)
-    result = []
-    for n in normals:
-        t = [nm[r][0] * n[0] + nm[r][1] * n[1] + nm[r][2] * n[2] for r in range(3)]
-        length = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]) ** 0.5
-        result.append((t[0] / length, t[1] / length, t[2] / length) if length > 1e-12 else (0.0, 0.0, 1.0))
-    return result
+transform_normals = rc.transform_normals
 
 
 def is_mirrored(m):
@@ -326,6 +298,7 @@ POSITION_FORMAT = (3, 59)
 NORMAL_FORMAT = (3, 62)
 UV_FORMAT = (2, 62)
 COLOR_FORMAT = (4, 48)
+COLOR_STRIDE = 2                 # bytes of one RGBA4444 entry (not the component count)
 
 # Adaptive position quantization. Every candidate is an s16 format (high nibble
 # 3), so the stride stays 6 bytes per vertex whichever one is picked; only the
@@ -341,25 +314,13 @@ COLOR_FORMAT = (4, 48)
 # Nothing coarser than 59 is ever picked for a mesh that fits, and nothing
 # finer than 59 is offered at all -- the donor round-trip anchor depends on
 # 59 staying the default, and rigid donor buffers use it too.
-POSITION_QUANTIZE_CANDIDATES = tuple(range(0x3B, 0x2F, -1))  # 59, 58, ... 48
+POSITION_QUANTIZE_CANDIDATES = tuple(range(POSITION_FORMAT[1], rc.COARSEST_POSITION_QUANTIZE - 1, -1))  # 59, 58, ... 48
 
 
-def int16_divisor(quantize_info):
-    """Fixed-point divisor for an int16 QuantizeInfo. Float formats never
-    occur in the canonical rigid contract and are rejected."""
-    if (quantize_info >> 4) in (4, 7, 0xA):
-        raise ValueError(f'QuantizeInfo {quantize_info} is a float format; custom submeshes use int16')
-    return 1 << (quantize_info & 0xF)
-
-
-def int16_range(quantize_info):
-    """Smallest and largest coordinate representable in *quantize_info*."""
-    divisor = int16_divisor(quantize_info)
-    return -32768 / divisor, 32767 / divisor
-
-
-def _fits_int16(value, divisor):
-    return math.isfinite(value) and -32768 <= round(value * divisor) <= 32767
+# int16 quantization is shared with the donor rebuilds (RebuildCommon).
+int16_divisor = rc.int16_divisor
+int16_range = rc.int16_range
+_fits_int16 = rc.fits_int16
 
 
 def check_position_range(object_name, host_bone_id, geometry, quantize_info=POSITION_FORMAT[1]):
@@ -374,39 +335,21 @@ def check_position_range(object_name, host_bone_id, geometry, quantize_info=POSI
     candidate formats and only lands here -- on the coarsest one -- when the
     mesh fits none of them.
     """
-    divisor = int16_divisor(quantize_info)
-    low, high = int16_range(quantize_info)
-    worst = None  # (overshoot, exported index)
-    for index, position in enumerate(geometry.positions):
-        if all(_fits_int16(v, divisor) for v in position):
-            continue
-        overshoot = max(
-            max(v - high, low - v) if math.isfinite(v) else math.inf
-            for v in position
-        )
-        if worst is None or overshoot > worst[0]:
-            worst = (overshoot, index)
+    worst = rc.worst_out_of_range_vertex(geometry, quantize_info)
     if worst is None:
         return
-    position = geometry.positions[worst[1]]
+    low, high = int16_range(quantize_info)
+    position = geometry.positions[worst]
     distance = sum(v * v for v in position) ** 0.5
     raise ValueError(
-        f'{object_name}: vertex {geometry.source_vertices[worst[1]]} is at bone-local '
+        f'{object_name}: vertex {geometry.source_vertices[worst]} is at bone-local '
         f'({position[0]:.4f}, {position[1]:.4f}, {position[2]:.4f}), {distance:.4f} units from '
         f'host bone {host_bone_id}; positions must stay within {low:g}..{high:g} on every axis. '
         'Move the mesh closer to its host bone or choose a host bone nearer to the mesh.'
     )
 
 
-def position_format_fits(geometry, quantize_info):
-    """True when every bone-local coordinate is representable in
-    *quantize_info*, using the same rounding as the quantizer."""
-    divisor = int16_divisor(quantize_info)
-    return all(
-        _fits_int16(value, divisor)
-        for position in geometry.positions
-        for value in position
-    )
+position_format_fits = rc.position_format_fits
 
 
 def select_position_format(
@@ -426,9 +369,9 @@ def select_position_format(
     Raises ValueError naming the worst vertex when not even the coarsest
     candidate fits.
     """
-    for quantize_info in candidates:
-        if position_format_fits(geometry, quantize_info):
-            return (POSITION_FORMAT[0], quantize_info)
+    quantize_info = rc.first_fitting_format(geometry, candidates)
+    if quantize_info is not None:
+        return (POSITION_FORMAT[0], quantize_info)
     coarsest = candidates[-1]
     try:
         check_position_range(object_name, host_bone_id, geometry, coarsest)
@@ -440,41 +383,16 @@ def select_position_format(
     raise AssertionError('coarsest candidate reported a fit it does not have')
 
 
-def donor_position_candidates(donor_quantize):
-    """The s16 position formats a rebuilt donor submesh may use, finest
-    first: the donor's own, then one shift coarser at a time down to 48.
-    A mesh that still fits the donor's format keeps it byte for byte; one
-    that outgrew it (a stadium prop stretched past +/-4 in format 61) trades
-    precision for range instead of being refused."""
-    return tuple(range(int(donor_quantize), POSITION_QUANTIZE_CANDIDATES[-1] - 1, -1))
+# Shared with the donor rebuilds (RebuildCommon).
+donor_position_candidates = rc.donor_position_candidates
+widened_position_info = rc.widened_position_info
+quantize_int16 = rc.quantize_int16
+quantize_int16_lazy = rc.quantize_int16_lazy
 
 
-def widened_position_info(object_name, donor_quantize, quantize_info):
-    """The INFO line for a rebuilt donor submesh stored coarser than its
-    donor, or None when it kept the donor's format."""
-    if quantize_info == donor_quantize:
-        return None
-    _low, high = int16_range(quantize_info)
-    return (
-        f'{object_name}: positions reach past the original format {donor_quantize} '
-        f'(+/-{int16_range(donor_quantize)[1]:.4g}), so they are stored in format {quantize_info} '
-        f'(+/-{high:.4g}, steps of 1/{int16_divisor(quantize_info)} unit).'
-    )
-
-
-def quantize_int16(value, divisor, context):
-    """Quantize one component to int16, rejecting (never clamping) a value
-    that is not finite or doesn't fit. *context* names what is being encoded."""
-    value = float(value)
-    if not math.isfinite(value):
-        raise ValueError(f'{context}: value is not finite ({value})')
-    quantized = round(value * divisor)
-    if not -32768 <= quantized <= 32767:
-        raise ValueError(
-            f'{context}: value {value:.6f} is outside the representable range '
-            f'{-32768 / divisor:g}..{32767 / divisor:g}'
-        )
-    return quantized
+def same_vertex_data(a, b):
+    """Whether two per-vertex values (a position or a normal, any sequence type) are exactly equal."""
+    return tuple(a) == tuple(b)
 
 
 def encode_positions(object_name, geometry, position_format=POSITION_FORMAT):
@@ -522,7 +440,7 @@ _TYPE3_SHIFTS = {
 _U8_ENTRY_LIMIT = 0x100      # a u8 index addresses 256 entries
 _U16_ENTRY_LIMIT = 0xFFFF
 MESH_NAME_MAX_LENGTH = 31    # donor names are short ("body", "head"); keep new ones short too
-WHITE = (1.0, 1.0, 1.0, 1.0)
+WHITE = rc.WHITE
 
 
 @dataclass
@@ -625,25 +543,7 @@ def attribute_plan(model, template_source):
     return AttributePlan(normals, True, uv_count, {})
 
 
-def dedupe_records(records):
-    """Pool identical encoded records, first occurrence first. Returns
-    ``(data, indices)``: the concatenated unique records and, per input
-    record, its index into them.
-
-    Unlike the donor 3.2/3.3 per-loop edits, a new submesh has no donor slot
-    layout to preserve, so shared values are pooled. That keeps u8-indexed
-    `rigid:` templates usable for real meshes (a 12-triangle cube has 36
-    loops but only 6 distinct normals)."""
-    pool = {}
-    data = bytearray()
-    indices = []
-    for record in records:
-        index = pool.get(record)
-        if index is None:
-            index = pool[record] = len(pool)
-            data += record
-        indices.append(index)
-    return bytes(data), indices
+dedupe_records = rc.dedupe_records
 
 
 def _check_entry_limit(object_name, template_source, key, label, count, plan):
@@ -658,37 +558,19 @@ def _check_entry_limit(object_name, template_source, key, label, count, plan):
         )
 
 
-def _loop_order(geometry):
-    return [loop for tri in geometry.triangles for loop in tri.loops]
+_loop_order = rc.loop_order
 
 
 def encode_loop_normals(object_name, geometry, loop_normals, normal_format=NORMAL_FORMAT):
     """Per-loop object-local normals to bone-local unit normals, quantized.
     *loop_normals* is indexed by Blender loop index."""
-    comp_count, quantize_info = normal_format
-    divisor = int16_divisor(quantize_info)
-    loops = _loop_order(geometry)
-    transformed = transform_normals([loop_normals[loop] for loop in loops], geometry.to_bone)
-    records = []
-    for loop, normal in zip(loops, transformed):
-        values = [quantize_int16(v, divisor, f'{object_name} loop {loop} normal') for v in normal]
-        values += [0] * (comp_count - 3)
-        records.append(struct.pack(f'>{comp_count}h', *values))
-    return dedupe_records(records)
+    return rc.encode_loop_normals(object_name, geometry, loop_normals, normal_format)
 
 
 def encode_loop_uvs(object_name, geometry, loop_uvs, uv_format=UV_FORMAT):
     """Per-loop Blender UVs to game ST. The importer flips V (``t = 1 - v``),
     so export flips it back, as encode_mesh_hammerspace does."""
-    comp_count, quantize_info = uv_format
-    divisor = int16_divisor(quantize_info)
-    records = []
-    for loop in _loop_order(geometry):
-        u, v = loop_uvs[loop]
-        s = quantize_int16(u, divisor, f'{object_name} loop {loop} UV u')
-        t = quantize_int16(1.0 - v, divisor, f'{object_name} loop {loop} UV v (stored as 1 - v)')
-        records.append(struct.pack(f'>{comp_count}h', s, t, *([0] * (comp_count - 2))))
-    return dedupe_records(records)
+    return rc.encode_loop_uvs(object_name, geometry, loop_uvs, uv_format)
 
 
 def encode_color_rgba4444(rgba):
@@ -696,55 +578,58 @@ def encode_color_rgba4444(rgba):
     RGBA4444 value, matching the builder's 2-byte color stride
     (HammerspaceMain._CUSTOM_SUBMESH_COLOR_STRIDE). QuantizeInfo 48 is
     RGBA4444 in the engine, not RGBA8 (confirmed in Dolphin)."""
-    r, g, b, a = (int(round(max(0.0, min(1.0, float(c))) * 15)) for c in rgba)
-    return ((r << 12) | (g << 8) | (b << 4) | a).to_bytes(2, 'big')
+    return rc.encode_color_entry(COLOR_FORMAT[1], rgba)
 
 
-def is_unset_color(rgba) -> bool:
-    """Exactly (0, 0, 0, 0): black with alpha 0. Blender fills a colour
-    attribute with it on the corners of geometry joined from an object that
-    had no such attribute, and the game draws those corners invisible
-    (vertex alpha 0; Mario body, 2026-10-09), so the exporters write white."""
-    return all(float(c) <= 0.0 for c in rgba)
-
-
-def fill_unset_colors(object_name, colors, infos=None):
-    """*colors* with every unset corner (:func:`is_unset_color`) replaced by
-    white, reporting the count to *infos* when any was replaced."""
-    filled, replaced = [], 0
-    for color in colors:
-        if is_unset_color(color):
-            filled.append(WHITE)
-            replaced += 1
-        else:
-            filled.append(color)
-    if replaced and infos is not None:
-        infos.append(
-            f'{object_name}: {replaced} face corner(s) had the vertex colour (0, 0, 0, 0), which '
-            "Blender gives geometry joined from an object without a 'color0' attribute and which "
-            'the game draws invisible; they were exported as opaque white.'
-        )
-    return filled
+is_unset_color = rc.is_unset_color
+fill_unset_colors = rc.fill_unset_colors
 
 
 def encode_loop_colors(geometry, loop_colors, object_name='', infos=None):
     """Per-loop colors. *loop_colors* is indexed by Blender loop index, or
     None for a mesh without colors (every loop white, one pooled entry).
     Unset corners are written white (:func:`fill_unset_colors`)."""
-    loops = _loop_order(geometry)
-    colors = [WHITE] * len(loops) if loop_colors is None else [loop_colors[loop] for loop in loops]
-    colors = fill_unset_colors(object_name, colors, infos)
-    return dedupe_records([encode_color_rgba4444(c) for c in colors])
+    return rc.encode_loop_colors(geometry, loop_colors, COLOR_FORMAT[1], object_name, infos)
 
 
-def encode_field(raw, use_compression=True):
-    """``x:`` hex string, or a byte list in a --debug file, following the
-    .sluggie's UseCompression flag."""
-    return FieldCodec.encode_field(raw, use_compression)
+encode_field = rc.encode_field
+_index_buffer = rc.index_buffer
 
 
-def _index_buffer(indices, use_compression):
-    return encode_field(struct.pack(f'>{len(indices)}H', *indices), use_compression)
+@dataclass
+class CustomSubmeshSurfaces:
+    """The surface facts of a custom submesh in the shape ``route_faces``
+    reads from a donor: its one primary surface, no imported
+    per-face surfaces."""
+    custom_submesh_id: str
+    primary_surface_id: str
+
+    @property
+    def owner_key(self):
+        return self.custom_submesh_id
+
+    @property
+    def drawable_surfaces(self):
+        return {self.primary_surface_id: 0}
+
+    @property
+    def face_surfaces(self):
+        return []
+
+
+def route_custom_submesh_faces(object_name, custom_submesh_id, primary_surface_id, triangles, polygon_slots, slots):
+    """``route_faces`` for a custom submesh: every face must use the primary ``<id>_ds0`` material or an
+    Add-material surface owned by this custom submesh; ``new_keys`` lists
+    the additional surfaces in first-use order."""
+    donor = CustomSubmeshSurfaces(custom_submesh_id, primary_surface_id)
+    return rc.route_faces(object_name, donor, triangles, polygon_slots, slots, topology_changed=True)
+
+
+def custom_submesh_face_surface_indices(routing):
+    """Per triangle, the ``CustomSubmeshes[].FaceSurfaceIndices`` value: 0
+    for the primary surface, ``k`` for ``new_keys[k - 1]``."""
+    position = {key: k for k, key in enumerate(routing.new_keys, start=1)}
+    return [position.get(routing.table[index], 0) for index in routing.indices]
 
 
 def sanitize_mesh_name(name):
@@ -813,7 +698,7 @@ def build_custom_submesh_entry(
             geometry, loop_colors, object_name, infos if infos is not None else warnings,
         )
         _check_entry_limit(object_name, template_source, 'color0', 'colors',
-                           len(color_data) // COLOR_FORMAT[0], plan)
+                           len(color_data) // COLOR_STRIDE, plan)
         entry['ColorChannelData'] = encode_field(color_data, use_compression)
         entry['ColorFacesData'] = _index_buffer(color_indices, use_compression)
 

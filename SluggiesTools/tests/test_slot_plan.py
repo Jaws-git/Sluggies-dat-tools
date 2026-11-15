@@ -753,7 +753,7 @@ class SlotCliTests(unittest.TestCase):
             with mock.patch.object(slot_cli.state_cli, '_open', return_value=(None, None)), \
                     mock.patch.object(slot_cli.state, 'read_state', return_value={}), \
                     mock.patch.object(slot_cli.state, 'read_names', return_value={}), \
-                    mock.patch.object(slot_cli.derive, 'derive', return_value=mock.Mock(config={}, warnings=[], portraits={})), \
+                    mock.patch.object(slot_cli.derive, 'derive', return_value=mock.Mock(config={}, warnings=[], portraits={}, lost_clips=[])), \
                     mock.patch.object(slot_cli.slot_plan, 'plan_batch', return_value=refused), \
                     mock.patch.object(slot_cli.derive, 'write') as write:
                 edits_file = os.path.join(out, 'edits.json')
@@ -840,15 +840,16 @@ class DispatchTests(unittest.TestCase):
 class TargetedPatchStopsTests(unittest.TestCase):
     def test_low_poly_file_is_skipped_after_a_failed_high_poly_file(self):
         import subprocess
-        import start
+        import start  # noqa: F401  (puts the project root on sys.path)
+        from SluggiesTools import patch_dispatch
         with tempfile.TemporaryDirectory() as tmp:
             paths = []
             for name in ('0_koopa.gpl.sluggie', '1_L_koopa.gpl.sluggie'):
                 paths.append(os.path.join(tmp, name))
                 with open(paths[-1], 'w') as f:
                     json.dump({'SluggiesModel': {}}, f)
-            with mock.patch('start._patch_sluggie', side_effect=subprocess.CalledProcessError(1, 'x')) as patch:
-                self.assertFalse(start.run_patching(list(reversed(paths)), target_id='0x66'))
+            with mock.patch('SluggiesTools.patch_dispatch._patch_sluggie', side_effect=subprocess.CalledProcessError(1, 'x')) as patch:
+                self.assertFalse(patch_dispatch.run_patching(list(reversed(paths)), target_id='0x66'))
         self.assertEqual([os.path.basename(c.args[0]) for c in patch.call_args_list], ['0_koopa.gpl.sluggie'])
 
 

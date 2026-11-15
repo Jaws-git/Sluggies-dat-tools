@@ -29,6 +29,7 @@ class GridReaderTimeoutTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.app = SimpleNamespace(
             command_prefix=[sys.executable, '-c', _HANG], root_dir=tmp.name, output_queue=queue.Queue(),
+            writing=lambda: False,
             attach_job=gui.SluggiesGui.attach_job, end_process_tree=gui.SluggiesGui.end_process_tree)
         self.tab = object.__new__(gui_character_grid.CharacterGridTab)
         self.tab.app = self.app

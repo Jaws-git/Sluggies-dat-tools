@@ -7,6 +7,7 @@ import struct
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -112,6 +113,19 @@ class BuildTests(unittest.TestCase):
             block, offset = divmod(frame, 112 // 14)
             self.assertEqual(loop_ps, stream.lanes[c][block].data[offset * 8])
             self.assertEqual((loop_h1, loop_h2), (int(decoded[c][293]), int(decoded[c][292])))
+
+    def test_loop_history_needs_only_the_block_of_the_loop_start(self):
+        """The same two samples a decode of the whole channel gives, at every kind of position: the stream
+        start, a block start, the first and second sample of a block, the middle of one."""
+        x = music(1500, seed=5)
+        coefs = brstm_write.train_coefs(x)
+        data, histories = brstm_write.encode_channel(x, coefs, 112)
+        whole = dsp_adpcm.decode([dsp_adpcm.Lane(data.reshape(-1).tobytes(), len(x), coefs)])[0]
+        for start in (0, 112, 113, 114, 294, 1400, 1498):
+            expected = (int(whole[start - 1]) if start >= 1 else 0, int(whole[start - 2]) if start >= 2 else 0)
+            self.assertEqual(brstm_write.loop_history(data, histories, coefs, start, 112), expected, start)
+        with mock.patch.object(dsp_adpcm, 'decode', side_effect=AssertionError('decoded')):
+            brstm_write.loop_history(data, histories, coefs, 224, 112)            # a block start: no decode
 
     def test_refuses_other_channel_counts(self):
         with self.assertRaises(brstm_write.MusicError):

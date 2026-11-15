@@ -14,7 +14,7 @@ def state(*squares, luigi=True) -> dict:
     """A roster state with one cell per square; ``squares``: member lists (first = head)."""
     chars = [{'id': m, 'name': {'en': f'C{m:02X}'}, 'template': None, 'model_dir': m + 0x12, 'stats': m,
               'square': k} for k, sq in enumerate(squares) for m in sq]
-    return {'kind': 'expanded', 'shape': [len(squares), 1], 'luigi_own_square': luigi,
+    return {'version': 1, 'kind': 'expanded', 'shape': [len(squares), 1], 'luigi_own_square': luigi,
             'cells': list(range(len(squares))),
             'squares': [{'kind': 'stock', 'head_index': k, 'head': sq[0], 'members': list(sq), 'voice': sq[0]}
                         for k, sq in enumerate(squares)],
@@ -35,6 +35,33 @@ class LoaderTests(unittest.TestCase):
         self.assertFalse(self.loader.finish(0))
         self.assertEqual(self.loader.status, StateLoader.DONE)
         self.assertEqual(self.loader.message, 'Roster grid, 2x1, 2 squares')
+
+    def test_a_state_of_another_form_fails_the_read_instead_of_a_redraw(self):
+        """The tabs take the state's keys for granted; what is not a state of this version is refused where
+        it is read."""
+        import gui_grid
+        from Roster import state as roster_state
+        self.assertEqual(gui_grid.STATE_VERSION, roster_state.VERSION)
+        good = state([0x00])
+        self.assertIsNone(gui_grid.state_problem(good))
+        for bad, text in (([], 'not a JSON object'), ({}, 'version None'), (dict(good, version=2), 'version 2'),
+                          ({k: v for k, v in good.items() if k != 'squares'}, 'lacks squares'),
+                          (dict(good, shape=[3]), 'unexpected form')):
+            self.assertIn(text, gui_grid.state_problem(bad))
+            self.loader.state = good
+            self.loader.start()
+            with open(self.path, 'w', encoding='utf-8') as f:
+                json.dump(bad, f)
+            self.loader.finish(0)
+            self.assertEqual(self.loader.status, StateLoader.FAILED)
+            self.assertEqual(self.loader.state, good)             # the last good state stays
+
+    def test_a_plan_that_is_not_an_object_is_no_plan(self):
+        import gui_grid
+        for content in ('[]', '"x"', '{"action": "other"}'):
+            with open(self.path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            self.assertIsNone(gui_grid.load_plan(self.path))
 
     def test_failed_keeps_the_last_state_and_names_the_error(self):
         self.loader.state = state([0x00])

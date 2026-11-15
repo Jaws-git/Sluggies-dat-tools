@@ -158,6 +158,39 @@ class ExportCharacterIconTests(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(hp, 'icon', 'SideIconAlt.png')))
             self.assertTrue(os.path.isfile(os.path.join(hp, 'icon', 'SideIcon.png')))
 
+    def test_an_edited_or_added_portrait_is_asked_about_first(self):
+        """The icon folder is also what a patch reads: a portrait the user edited, or an alternate one they
+        added, is only replaced or removed when the confirmation says so."""
+        with tempfile.TemporaryDirectory() as root:
+            hp = make_model_folder(root, '18 Mario', '78277664_mario.gpl')
+            cells = {0x00: {'side': (0x00, (1, 1, 48, 51)), 'front': (0x4F, (1, 1, 48, 51))}}
+            asked = []
+
+            def confirm(answer):
+                def ask(changed, removed):
+                    asked.append((sorted(os.path.basename(p) for p in changed),
+                                  sorted(os.path.basename(p) for p in removed)))
+                    return answer
+                return ask
+
+            export_icons._export_character_icons(root, cells, self.pages, confirm=confirm(False))
+            export_icons._export_character_icons(root, cells, self.pages, confirm=confirm(False))
+            self.assertEqual(asked, [])                       # new files, then the same pixels: nothing to ask
+            front, alt = (os.path.join(hp, 'icon', name) for name in ('FrontIcon.png', 'SideIconAlt.png'))
+            Image.new('RGBA', (48, 51), (0, 255, 0, 255)).save(front)            # the user's edit
+            Image.new('RGBA', (48, 51), (0, 0, 255, 255)).save(alt)              # the user's own file
+
+            export_icons._export_character_icons(root, cells, self.pages, confirm=confirm(False))
+            self.assertEqual(asked, [(['FrontIcon.png'], ['SideIconAlt.png'])])
+            with Image.open(front) as image:
+                self.assertEqual(image.getpixel((0, 0)), (0, 255, 0, 255))       # kept
+            self.assertTrue(os.path.isfile(alt))
+
+            export_icons._export_character_icons(root, cells, self.pages, confirm=confirm(True))
+            with Image.open(front) as image:
+                self.assertEqual(image.getpixel((0, 0)), (255, 0, 0, 255))       # the game's again
+            self.assertFalse(os.path.exists(alt))
+
     def test_removes_icons_when_the_key_is_gone(self):
         with tempfile.TemporaryDirectory() as root:
             hp = make_model_folder(root, '89 Unused Yoshi A', '715046144_yoshi.gpl')

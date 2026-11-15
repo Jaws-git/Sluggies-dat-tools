@@ -20,8 +20,8 @@ for path in (ROOT_DIR, TOOLS_DIR, TOOLS_DIR / 'Hammerspace', ADDON_DIR, pathlib.
 import CustomSubmeshExport as cse  # noqa: E402
 import HammerspaceMain as main  # noqa: E402
 import RigidRebuildExport as rre  # noqa: E402
-import start  # noqa: E402
 import synthetic_donor  # noqa: E402
+from SluggiesTools import patch_dispatch  # noqa: E402
 import texture_helper  # noqa: E402
 import test_custom_submesh_export as tcs  # noqa: E402
 import test_rigid_rebuild as trr  # noqa: E402
@@ -266,10 +266,10 @@ class TextureNameConsumersTests(unittest.TestCase):
                 'AdditionalSurfaces': [_surface(texture={'AdditionalTextureFileName': 'new.png'})],
             }],
         }
-        args = start.hammerspace_section_args(model)
+        args = patch_dispatch.hammerspace_section_args(model)
         self.assertEqual(args, ['--gpl', 'build', '--tex', 'build'])
         model['CustomSubmeshes'][0]['AdditionalSurfaces'][0]['TextureAssignment'] = {'DonorTextureIndex': 1}
-        self.assertEqual(start.hammerspace_section_args(model), ['--gpl', 'build'])
+        self.assertEqual(patch_dispatch.hammerspace_section_args(model), ['--gpl', 'build'])
 
     def test_merge_remaps_an_additional_surface_to_the_kept_texture(self):
         model = {

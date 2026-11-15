@@ -257,24 +257,85 @@ def run(output_dir: str = OUTPUT_DIR, config_path: str | None = None, remove_onl
                    'copied clips, and custom clips, are refused)')
 
     if not dry_run:
-        tmp = dol_path + '.roster_tmp'
-        with open(tmp, 'wb') as f:
-            f.write(dol_bytes)
-        if dat is not None:
-            grown = dat.grown
-            dat.flush()
-            if grown:
-                log.append(patch_fst(output_dir, dat.size))
-        os.replace(tmp, dol_path)
-        if sound_out is not None:
-            sound_path = os.path.join(output_dir, SOUND_ARCHIVE)
-            os.makedirs(os.path.dirname(sound_path), exist_ok=True)
-            tmp = sound_path + '.roster_tmp'
-            with open(tmp, 'wb') as f:
-                f.write(sound_out)
-            os.replace(tmp, sound_path)
+        log += commit(output_dir, dol_bytes, dat, sound_out)
     result['log'] = log
     return result
+
+
+def _remove_quietly(*paths: str) -> None:
+    for path in paths:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def commit(output_dir: str, dol_bytes: bytes, dat, sound_out: bytes | None) -> list[str]:
+    """Write the run's files: ``main.dol`` and ``dt_na.dat`` together or not at all, then ``fst.bin`` and the
+    sound archive. Returns log lines; raises RosterDevError with what state the files are in.
+
+    The DAT is written in place (it is too large to write twice), so the order is: prove both files can be
+    opened for writing, write the new DOL (and sound archive) beside their targets, flush the DAT keeping the
+    replaced bytes, replace the DOL. A DAT flush that fails takes itself back; a DOL that cannot be replaced
+    takes the DAT flush back. Either way the old DOL still matches the DAT."""
+    dol_path = os.path.join(output_dir, 'main.dol')
+    sound_path = os.path.join(output_dir, SOUND_ARCHIVE)
+    dol_tmp, sound_tmp = dol_path + '.roster_tmp', sound_path + '.roster_tmp'
+    unchanged = 'Nothing was changed: main.dol and dt_na.dat are as they were.'
+    for path in (dol_path, dat.path if dat is not None else None):
+        if path is None:
+            continue
+        try:
+            with open(path, 'r+b'):
+                pass
+        except OSError as exc:
+            raise RosterDevError(f'{_display_path(path)} cannot be written ({exc}). Is it open in Dolphin or '
+                                 f'another program, or read-only? {unchanged}') from exc
+    try:
+        with open(dol_tmp, 'wb') as f:
+            f.write(dol_bytes)
+        if sound_out is not None:
+            os.makedirs(os.path.dirname(sound_path), exist_ok=True)
+            with open(sound_tmp, 'wb') as f:
+                f.write(sound_out)
+    except OSError as exc:
+        _remove_quietly(dol_tmp, sound_tmp)
+        raise RosterDevError(f'the new files could not be written into {_display_path(output_dir)} ({exc}; disk '
+                             f'full?). {unchanged}') from exc
+
+    grown = dat is not None and dat.grown
+    try:
+        if dat is not None:
+            dat.flush(keep_undo=True)
+        try:
+            os.replace(dol_tmp, dol_path)
+        except OSError:
+            if dat is not None:
+                dat.rollback()
+            raise
+    except datfile.DatFileError as exc:
+        _remove_quietly(dol_tmp, sound_tmp)
+        raise RosterDevError(
+            f'{exc}. main.dol is still the old one, so main.dol and dt_na.dat do not match now: run the roster '
+            'again once the cause is fixed, or put your backup of 3_Output_Dat back.') from exc
+    except OSError as exc:
+        _remove_quietly(dol_tmp, sound_tmp)
+        raise RosterDevError(f'main.dol and dt_na.dat could not be written ({exc}). Is a file open in Dolphin '
+                             f'or another program, or the disk full? {unchanged}') from exc
+
+    # From here main.dol and dt_na.dat are the new pair.
+    log = []
+    try:
+        if grown:
+            log.append(patch_fst(output_dir, dat.size))
+        if sound_out is not None:
+            os.replace(sound_tmp, sound_path)
+    except OSError as exc:
+        _remove_quietly(sound_tmp)
+        raise RosterDevError(
+            f'main.dol and dt_na.dat were written, but {"fst.bin or " if grown else ""}the sound archive was not '
+            f'({exc}). Run the roster again once the file can be written.') from exc
+    return log
 
 
 def main(argv=None) -> int:
@@ -296,6 +357,9 @@ def main(argv=None) -> int:
                      keep_stat_edits=args.keep_stat_edits)
     except (RuntimeError, ValueError) as exc:     # every step's errors (DolError, config errors, ...)
         slogger.error(str(exc), source=SOURCE)
+        return 1
+    except OSError as exc:                        # a file that could not be read; writes report through commit()
+        slogger.error(f'file error, the roster run stopped before it wrote anything: {exc}', source=SOURCE)
         return 1
     for line in report['log']:
         slogger.info(line, source=SOURCE)

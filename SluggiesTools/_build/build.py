@@ -89,9 +89,20 @@ def build_executable() -> None:
     )
 
 
+# Never part of a release, wherever they lie: caches, a virtual environment (uv sync has just made
+# SluggiesTools/_build/.venv, with numpy, pillow, Dear PyGui and PyInstaller in it) and the hand-run probes.
+NOT_RELEASED_ANYWHERE = {"__pycache__", ".venv", ".pytest_cache", ".ruff_cache"}
+# Not released from SluggiesTools/: the build tooling (its notices file is copied by name) and local debug work.
+NOT_RELEASED_TOOLS = {"tests", "_build", "Debug"}
+
+
 def ignored_release_path(directory: str, names: list[str]) -> set[str]:
-    ignored = {name for name in names if name == "__pycache__" or name.endswith(".pyc")}
-    if Path(directory).name in {"SluggiesTools", "Icons"}:
+    ignored = {name for name in names
+               if name in NOT_RELEASED_ANYWHERE or name.endswith(".pyc")
+               or (name.startswith("probe_") and name.endswith(".py"))}
+    if Path(directory).name == "SluggiesTools":
+        ignored.update(name for name in names if name in NOT_RELEASED_TOOLS)
+    if Path(directory).name == "Icons":
         ignored.update(name for name in names if name == "tests")
     if Path(directory).name == "1_Input":            # the user's game files never ship
         ignored.update(name for name in names if name == "sound_NA" or name.lower().endswith((".dat", ".dol", ".bin")))
@@ -183,6 +194,12 @@ def verify() -> Path:
         missing.extend(path for path in windows_required if not path.exists())
     if missing:
         raise FileNotFoundError(f"Release verification failed; missing: {missing}")
+    tools = PACKAGE / "SluggiesTools"
+    unwanted = [tools / name for name in sorted(NOT_RELEASED_TOOLS) if (tools / name).exists()]
+    unwanted += [path for path in tools.rglob("*")
+                 if path.name in NOT_RELEASED_ANYWHERE or (path.name.startswith("probe_") and path.suffix == ".py")]
+    if unwanted:
+        raise RuntimeError(f"Release verification failed; these must not ship: {unwanted[:10]}")
     return executable
 
 

@@ -105,6 +105,58 @@ class AllocatorTests(unittest.TestCase):
         dat = self.dat(bytes(0x100))
         self.assertEqual(dhs.allocate(dat, 0x10, [], BASE), BASE)
 
+    @staticmethod
+    def reference_scan(dat, length, reserved, base):
+        """The allocator's rule, byte by byte on a full read (no cache)."""
+        start, end = -(-base // 32) * 32, -(-dat.size // 32) * 32
+        data = dat.read_padded(start, max(0, end - start))
+        need = -(-length // 32)
+        run = start
+        for pos in range(start, end, 32):
+            taken = any(data[pos - start:pos - start + 32]) or any(
+                lo < pos + 32 and pos < lo + n for lo, n in reserved if n > 0)
+            if taken:
+                if (pos - run) // 32 >= need:
+                    return run, end
+                run = pos + 32
+        if (end - run) // 32 >= need:
+            return run, end
+        return None, max(run, start)
+
+    def test_cached_scan_matches_a_full_read_through_writes_growth_and_flushes(self):
+        import random
+        rng = random.Random(20261115)
+        data = bytearray(BASE + 0x800)
+        for _ in range(12):
+            data[BASE + rng.randrange(0x800)] = 1
+        dat = self.dat(bytes(data))
+        reserved = []
+        with mock.patch.object(dhs, 'SCAN_CHUNK', 0x100):
+            for step in range(300):
+                length = rng.choice((1, 0x20, 0x21, 0x60, 0x200, 0x900))
+                self.assertEqual(dhs._scan(dat, length, reserved, BASE),
+                                 self.reference_scan(dat, length, reserved, BASE), step)
+                action = rng.randrange(8)
+                if action < 3:                                   # place a file, as a step does
+                    at = dhs.allocate(dat, length, reserved, BASE)
+                    dat.write(at, bytes([rng.randrange(1, 256)]) * length)
+                    if rng.random() < 0.5:
+                        reserved.append((at, length))
+                elif action == 3 and dat.size > BASE + 0x40:     # zero a range (a removed copy)
+                    at = BASE + rng.randrange(dat.size - BASE - 0x20)
+                    dat.write(at, bytes(rng.randrange(1, 0x20)))
+                elif action == 4 and dat.size > BASE + 0x40:     # an unaligned write over old data
+                    at = BASE + rng.randrange(dat.size - BASE - 0x20)
+                    dat.write(at, b'\x07' * rng.randrange(1, 0x20))
+                elif action == 5:
+                    dat.grow(dat.size + rng.randrange(0x100))
+                elif action == 6:
+                    dat.flush(keep_undo=rng.random() < 0.5)
+                elif action == 7 and reserved:
+                    reserved.pop(rng.randrange(len(reserved)))
+        self.assertEqual(dhs._scan(dat, 0x40, reserved, BASE + 0x40),          # another base: a fresh map
+                         self.reference_scan(dat, 0x40, reserved, BASE + 0x40))
+
 
 class LayoutStepTests(unittest.TestCase):
     def setUp(self):

@@ -55,7 +55,9 @@ import io
 import json
 import os
 import posixpath
+import shutil
 import zipfile
+import zlib
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -92,6 +94,13 @@ FIELD_LABELS = {'high': 'High model', 'low': 'Low model', 'bat': 'bat', 'glove_l
 OPTIONAL_FIELDS = (*EQUIP_ROLES, *CLIP_FIELDS)        # fields older packs lack: missing counts as unchanged
 SAME, DIFFERS, GAME_ONLY, PACK_ONLY = 'same', 'differs', 'game', 'pack'
 ROSTER_KEYS_IGNORED = ('version', 'comment')
+
+
+# What a pack may unpack to. The game's whole data file is 715 MB and a pack holds a part of it (changed model
+# blocks, portraits, voice clips), so anything past these is not a roster pack; the caps keep a small crafted zip
+# from filling the memory (every member is read into it).
+MAX_UNPACKED = 1 << 30
+MAX_MEMBERS = 10000
 
 
 class PackError(ValueError):
@@ -267,10 +276,17 @@ def write_pack(path: str, files: dict[str, bytes]) -> None:
     folder = os.path.dirname(os.path.abspath(path))
     os.makedirs(folder, exist_ok=True)
     tmp = path + '.tmp'
-    with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for name in sorted(files, key=lambda n: (n != META_FILE, n)):
-            zf.writestr(name, files[name])
-    os.replace(tmp, path)
+    try:
+        with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for name in sorted(files, key=lambda n: (n != META_FILE, n)):
+                zf.writestr(name, files[name])
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 # --------------------------------------------------------------------------
@@ -294,6 +310,13 @@ class Pack:
         return {role: self.blocks[(cid, role)] for role in EQUIP_ROLES if (cid, role) in self.blocks}
 
 
+def _plain_file_name(base: str) -> bool:
+    """Whether ``base`` is a file name that stays in the folder it is written to on every system: no path
+    separator of either kind, no drive colon, not ``.`` / ``..``, no control character."""
+    return (bool(base) and base not in ('.', '..') and not any(c in base for c in '/\\:')
+            and all(ord(c) >= 32 for c in base))
+
+
 def _member(zf: zipfile.ZipFile, name: str) -> bytes:
     try:
         return zf.read(name)
@@ -315,44 +338,57 @@ def read_pack(path: str) -> Pack:
         zf = zipfile.ZipFile(path)
     except (OSError, zipfile.BadZipFile) as exc:
         raise PackError(f'{path} is not a roster pack: {exc}') from exc
-    with zf:
-        meta = _load_json(zf, META_FILE)
-        if not isinstance(meta, dict) or meta.get('format') not in READABLE_FORMATS:
-            raise PackError(f'{os.path.basename(path)} is a roster pack of format {meta.get("format")!r}; this tool '
-                            f'reads format {" and ".join(map(str, READABLE_FORMATS))}')
-        config = _load_json(zf, STATE_FILE)
-        fingerprints = _load_json(zf, FINGERPRINTS_FILE)
-        if not isinstance(config, dict) or not isinstance(fingerprints, dict):
-            raise PackError('the pack\'s state or fingerprints are not JSON objects')
-        icons_, clips_ = {}, {}
-        for name in zf.namelist():
-            if name.startswith(ICON_DIR + '/') and not name.endswith('/'):
-                base = posixpath.basename(name)
-                if posixpath.dirname(name) != ICON_DIR or not base.endswith(('.png', icons.KEPT_BLOCKS_EXT)):
-                    raise PackError(f'unexpected file in the pack: {name}')
-                icons_[base] = zf.read(name)
-            elif name.startswith(CLIP_DIR + '/') and not name.endswith('/'):
-                base = posixpath.basename(name)
-                if posixpath.dirname(name) != CLIP_DIR or not base.endswith(clip_files.clips.RWAV_EXTENSION):
-                    raise PackError(f'unexpected file in the pack: {name}')
-                data = zf.read(name)
-                if clip_files.file_name(data) != base:
-                    raise PackError(f'the voice clip {base} does not match its name: the pack is damaged')
-                clips_[base] = data
-        blocks = {}
-        for key, roles in (meta.get('blocks') or {}).items():
-            try:
-                cid = _cid(key)
-            except (TypeError, ValueError) as exc:
-                raise PackError(f'pack.json names a block of {key!r}, not an ID') from exc
-            for role, name in roles.items():
-                if role not in BLOCK_ROLES or name != block_name(cid, role):
-                    raise PackError(f'pack.json names an unexpected block for {key}: {role} {name!r}')
-                data = _member(zf, name)
-                expected = (fingerprints.get(key) or {}).get(role)
-                if hashlib.sha1(data).hexdigest() != expected:
-                    raise PackError(f'the {role} block of {key} does not match its fingerprint: the pack is damaged')
-                blocks[(cid, role)] = data
+    try:
+        with zf:
+            return _read_open_pack(zf, path)
+    except (zipfile.BadZipFile, zlib.error, EOFError) as exc:
+        raise PackError(f'{os.path.basename(path)} is damaged: {exc}') from exc
+
+
+def _read_open_pack(zf: zipfile.ZipFile, path: str) -> Pack:
+    infos = zf.infolist()
+    if len(infos) > MAX_MEMBERS or sum(info.file_size for info in infos) > MAX_UNPACKED:
+        raise PackError(f'{os.path.basename(path)} is too big to be a roster pack (over {MAX_MEMBERS:,} files or '
+                        f'{MAX_UNPACKED >> 20:,} MB unpacked)')
+    meta = _load_json(zf, META_FILE)
+    if not isinstance(meta, dict) or meta.get('format') not in READABLE_FORMATS:
+        raise PackError(f'{os.path.basename(path)} is a roster pack of format {meta.get("format")!r}; this tool '
+                        f'reads format {" and ".join(map(str, READABLE_FORMATS))}')
+    config = _load_json(zf, STATE_FILE)
+    fingerprints = _load_json(zf, FINGERPRINTS_FILE)
+    if not isinstance(config, dict) or not isinstance(fingerprints, dict):
+        raise PackError('the pack\'s state or fingerprints are not JSON objects')
+    icons_, clips_ = {}, {}
+    for name in zf.namelist():
+        if name.startswith(ICON_DIR + '/') and not name.endswith('/'):
+            base = posixpath.basename(name)
+            if (posixpath.dirname(name) != ICON_DIR or not base.endswith(('.png', icons.KEPT_BLOCKS_EXT))
+                    or not _plain_file_name(base)):      # e.g. icons/..\..\x.png, a path on Windows
+                raise PackError(f'unexpected file in the pack: {name}')
+            icons_[base] = zf.read(name)
+        elif name.startswith(CLIP_DIR + '/') and not name.endswith('/'):
+            base = posixpath.basename(name)
+            if (posixpath.dirname(name) != CLIP_DIR or not base.endswith(clip_files.clips.RWAV_EXTENSION)
+                    or not _plain_file_name(base)):
+                raise PackError(f'unexpected file in the pack: {name}')
+            data = zf.read(name)
+            if clip_files.file_name(data) != base:
+                raise PackError(f'the voice clip {base} does not match its name: the pack is damaged')
+            clips_[base] = data
+    blocks = {}
+    for key, roles in (meta.get('blocks') or {}).items():
+        try:
+            cid = _cid(key)
+        except (TypeError, ValueError) as exc:
+            raise PackError(f'pack.json names a block of {key!r}, not an ID') from exc
+        for role, name in roles.items():
+            if role not in BLOCK_ROLES or name != block_name(cid, role):
+                raise PackError(f'pack.json names an unexpected block for {key}: {role} {name!r}')
+            data = _member(zf, name)
+            expected = (fingerprints.get(key) or {}).get(role)
+            if hashlib.sha1(data).hexdigest() != expected:
+                raise PackError(f'the {role} block of {key} does not match its fingerprint: the pack is damaged')
+            blocks[(cid, role)] = data
     for entry in _icon_entries(config):
         for view in icons.VIEWS:
             name = entry['icon'].get(view)
@@ -609,7 +645,11 @@ def extract(pack: Pack, plan: LoadPlan, folder: str) -> str:
     for sub in (icon_dir, model_dir, clip_dir):
         os.makedirs(sub, exist_ok=True)
         for name in os.listdir(sub):
-            os.remove(os.path.join(sub, name))
+            entry = os.path.join(sub, name)
+            if os.path.isdir(entry) and not os.path.islink(entry):
+                shutil.rmtree(entry)             # a stray folder (these are the tool's own working folders)
+            else:
+                os.remove(entry)
     for name, data in pack.icons.items():
         with open(os.path.join(icon_dir, name), 'wb') as f:
             f.write(data)

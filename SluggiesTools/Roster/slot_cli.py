@@ -450,12 +450,13 @@ class FileEnv(slot_plan.Env):
         return True
 
 
-def _prepare(output_dir: str) -> tuple:
-    """The game as the planner reads it: ``(image, dat, state, derived)``."""
+def _prepare(output_dir: str, dry_run: bool = False) -> tuple:
+    """The game as the planner reads it: ``(image, dat, state, derived)``. Custom voice clips that cannot be read
+    back refuse or ask (``state_cli.derive_for_write``; ``dry_run``: a warning only)."""
     image, dat = state_cli._open(output_dir)
     st = state.read_state(image, dat)
     state_cli.add_vanilla_flags(st)                  # the equipment baseline checks need it
-    return image, dat, st, derive.derive(image, dat, state_cli.open_sound(output_dir))
+    return image, dat, st, state_cli.derive_for_write(image, dat, output_dir, dry_run)
 
 
 def _plan_into(prepared: tuple, edits: list, output_dir: str, folder: str, skip_checked: bool) -> slot_plan.Batch:
@@ -491,7 +492,7 @@ def run(edits: list, output_dir: str = state_cli.OUTPUT_DIR, skip_checked: bool 
     """Plan the batch ``edits`` (``slot_plan.Edit``s) and write the files the chain reads. ``gecko`` (dry runs):
     record whether the chain breaks Gecko code compatibility (``gecko_check``). ``prepared``: the game as
     ``_prepare`` read it already."""
-    prepared = prepared or _prepare(output_dir)
+    prepared = prepared or _prepare(output_dir, dry_run=skip_checked)
     pristine = (prepared[2], prepared[3]) if not gecko else copy.deepcopy((prepared[2], prepared[3]))
     batch = _plan_into(prepared, edits, output_dir, slot_dir(output_dir), skip_checked)
     tmp = plan_path(output_dir) + '.tmp'
@@ -684,7 +685,7 @@ def main(argv=None) -> int:
             if args.target:
                 cid = slots.parse_id(args.target)
             else:
-                prepared = _prepare(args.output_dir)
+                prepared = _prepare(args.output_dir, dry_run=args.dry_run)
                 cid = pick_open_slot(prepared, args.output_dir)
                 slogger.info(f'target: the open slot {_hex(cid)}', source=SOURCE)
             edits = [slot_plan.Edit(slot_plan.SLGMODEL, cid, path, index=1)]

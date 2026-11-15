@@ -204,12 +204,14 @@ class SoundsTab:
         state = self._state()
         if not state:
             return None
-        return next((sq for sq in state['squares'] if sq['kind'] == 'stock' and sq['head'] == head), None)
+        return next((sq for sq in state.get('squares') or []
+                     if sq.get('kind') == 'stock' and sq.get('head') == head), None)
 
     def _pack_users(self, name):
         """The slots that speak with custom pack ``name`` now (state) and the pending edits that assign it."""
         state = self._state()
-        now = [c['id'] for c in (state or {}).get('characters') or [] if c.get('char_pack') == name]
+        now = [c['id'] for c in (state or {}).get('characters') or []
+               if c.get('char_pack') == name and 'id' in c]
         return now, self.grid.pending.char_voice_users(name)
 
     def _draw_list(self):
@@ -367,7 +369,8 @@ class SoundsTab:
                      parent=parent, color=_DIM, wrap=900)
         with dpg.group(horizontal=True, parent=parent):
             state = self._state()
-            heads = sorted({sq['head'] for sq in (state or {}).get('squares') or [] if sq['kind'] == 'stock'})
+            heads = sorted({sq['head'] for sq in (state or {}).get('squares') or []
+                            if sq.get('kind') == 'stock' and isinstance(sq.get('head'), int)})
             choices = ['(the slot\'s own species voice)'] + [self._name(h) for h in heads]
             current = choices[0] if pack.voice is None or pack.voice not in heads else self._name(pack.voice)
             dpg.add_text('Base voice:', color=_DIM)
@@ -511,10 +514,14 @@ class SoundsTab:
             def done(rwav, _wav):
                 import hashlib
                 folder = os.path.join(self.app.root_dir, gui_grid.STAGED_CLIPS_REL)
-                os.makedirs(folder, exist_ok=True)
                 staged = os.path.join(folder, hashlib.sha1(rwav).hexdigest()[:16] + '.rwav')
-                with open(staged, 'wb') as handle:
-                    handle.write(rwav)
+                try:
+                    os.makedirs(folder, exist_ok=True)
+                    with open(staged, 'wb') as handle:
+                        handle.write(rwav)
+                except OSError as exc:
+                    self._status(f'The clip could not be stored ({exc}).', _ERROR)
+                    return
                 edit = gui_grid.species_clip_edit(head, moment, staged, origin=path)
                 if not self.grid.stage_edit(edit, gui_grid.SPECIES_CLIP, moment):
                     self._status('The character grid is busy: try again in a moment.', _WARN)
@@ -631,8 +638,10 @@ class SoundsTab:
             self._draw_detail()
         warn = (f' {len(now)} slot(s) speak with it in the game; they keep their clips until given another voice.'
                 if now else '')
+        # 'danger' always asks: with "Skip confirmation popups" on, 'yesno' answered Yes by itself and the
+        # folder was gone unasked.
         self.app.ask_text('Delete the voice pack?', f'Delete the folder of {pack.name!r} with its clips?{warn}',
-                          answer, lambda: None, kind='yesno')
+                          answer, lambda: None, kind='danger')
 
     def _on_export(self, pack):
         _brsar, _clips, sound_packs = _sound_modules()

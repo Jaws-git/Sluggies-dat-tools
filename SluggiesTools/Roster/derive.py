@@ -96,6 +96,7 @@ class Derived:
     portraits: dict = field(default_factory=dict)      # {file name: (48x51 RGBA image, cell blocks or None)}
     warnings: list = field(default_factory=list)
     clips: dict = field(default_factory=dict)          # {file name: RWAV bytes} the config's custom voice clips
+    lost_clips: list = field(default_factory=list)     # where each custom clip that could not be read back was
 
 
 def _hex(cid: int) -> str:
@@ -293,14 +294,17 @@ def _clip_reader(sound, out: Derived):
     def read(sid, where):
         if sounds is None:
             out.warnings.append(f'{where}: custom clip (sound {sid}) dropped: the output sound archive is missing')
+            out.lost_clips.append(where)
             return None
         if not 0 <= sid < len(sounds) or sounds[sid].type != brsar.WAVE:
             out.warnings.append(f'{where}: custom clip dropped: sound {sid} is not a wave sound of the output archive')
+            out.lost_clips.append(where)
             return None
         try:
             rwav = brsar_write.sound_rwav(archive, sounds[sid])
         except Exception as exc:                  # BrsarError / WriteError of either import path, struct errors
             out.warnings.append(f'{where}: custom clip dropped: {exc}')
+            out.lost_clips.append(where)
             return None
         name = clip_files.file_name(rwav)
         out.clips.setdefault(name, rwav)
@@ -325,7 +329,7 @@ def derive(image: dolfile.DolImage, dat, sound=None) -> Derived:
     if dat is None:
         raise DeriveError('dt_na.dat is missing: the roster cannot be read back without it')
     mf = state._manifest(image)
-    st = state.read_state(image, dat)
+    st = state.read_state(image, dat, blocks=False)      # the grid fields only
     out = Derived({'version': 1, 'comment': 'Derived from the game files (GUI character grid, read -> rebuild).'})
     out.warnings += st['warnings']
     if mf is None:

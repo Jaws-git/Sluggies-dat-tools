@@ -115,6 +115,34 @@ def _busy_blocks(chunk: bytes) -> np.ndarray:
     return blocks.any(axis=1)
 
 
+def _busy_map(dat, start: int, end: int) -> np.ndarray:
+    """One flag per 32-byte block of ``[start, end)``: True when any byte (pending writes included) is non-zero.
+
+    The file is read once per ``DatFile`` and flush; afterwards only the blocks under writes made since the
+    last call are read again. Without this every allocation re-read all of hammerspace (a 51 MB hammerspace:
+    54 ms per allocation, measured 2026-11-15), which adds up when a run copies many files."""
+    blocks = max(0, (end - start) // ALIGN)
+    cache = dat.hs_busy_cache
+    if cache is None or cache['start'] != start or cache['version'] != dat.version:
+        busy = np.zeros(blocks, dtype=bool)
+        pos = start
+        while pos < end:
+            size = min(SCAN_CHUNK, end - pos)
+            busy[(pos - start) // ALIGN:(pos - start + size) // ALIGN] = _busy_blocks(dat.read_padded(pos, size))
+            pos += size
+    else:
+        busy = cache['busy']
+        if busy.size < blocks:                              # the file grew: the new bytes read as zeros
+            busy = np.concatenate((busy, np.zeros(blocks - busy.size, dtype=bool)))
+        for at, blob in dat.pending[cache['seen']:]:
+            lo = max(at // ALIGN * ALIGN, start)
+            hi = min(-(-(at + len(blob)) // ALIGN) * ALIGN, end)
+            if lo < hi:
+                busy[(lo - start) // ALIGN:(hi - start) // ALIGN] = _busy_blocks(dat.read_padded(lo, hi - lo))
+    dat.hs_busy_cache = {'start': start, 'version': dat.version, 'seen': len(dat.pending), 'busy': busy}
+    return busy
+
+
 def _scan(dat, length: int, reserved, base: int) -> tuple[int | None, int]:
     """``(first fitting offset or None, start of the zero run that reaches the end of the file)``.
 
@@ -123,27 +151,19 @@ def _scan(dat, length: int, reserved, base: int) -> tuple[int | None, int]:
     start = -(-base // ALIGN) * ALIGN
     end = -(-dat.size // ALIGN) * ALIGN
     need = -(-length // ALIGN)
-    spans = sorted((o, o + n) for o, n in reserved if n > 0)
-    run_start = start // ALIGN                              # global block index where the current zero run began
-    pos = start
-    while pos < end:
-        size = min(SCAN_CHUNK, end - pos)
-        busy = _busy_blocks(dat.read_padded(pos, size)).copy()
-        first = pos // ALIGN
-        for lo, hi in spans:                                # reserved blocks count as busy
-            if hi <= pos or lo >= pos + size:
-                continue
-            busy[max(lo, pos) // ALIGN - first:-(-min(hi, pos + size) // ALIGN) - first] = True
-        edges = np.concatenate(([run_start - 1 - first], np.flatnonzero(busy)))
-        gaps = np.diff(edges) - 1
-        hit = np.flatnonzero(gaps >= need)
-        if hit.size:
-            return int(first + edges[hit[0]] + 1) * ALIGN, end
-        run_start = first + int(edges[-1]) + 1
-        pos += size
-    if end // ALIGN - run_start >= need:
-        return run_start * ALIGN, end
-    return None, max(run_start * ALIGN, start)
+    busy = _busy_map(dat, start, end).copy()
+    for lo, hi in ((o, o + n) for o, n in reserved if n > 0):   # reserved blocks count as busy
+        if hi <= start or lo >= end:
+            continue
+        busy[(max(lo, start) - start) // ALIGN:-(-(min(hi, end) - start) // ALIGN)] = True
+    edges = np.concatenate(([-1], np.flatnonzero(busy)))
+    hit = np.flatnonzero(np.diff(edges) - 1 >= need)
+    if hit.size:
+        return start + int(edges[hit[0]] + 1) * ALIGN, end
+    run_start = start + (int(edges[-1]) + 1) * ALIGN            # the zero run that reaches the end of the file
+    if (end - run_start) // ALIGN >= need:
+        return run_start, end
+    return None, max(run_start, start)
 
 
 def find_free(dat, length: int, reserved, base: int | None = None) -> int | None:

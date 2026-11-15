@@ -917,6 +917,16 @@ class LoopAttributeTests(unittest.TestCase):
         for key in ('NormalBufferData', 'NormalFacesData', 'ColorChannelData', 'ColorFacesData'):
             self.assertNotIn(key, entry)
 
+    def test_the_colour_limit_counts_entries_not_components(self):
+        """One colour is 2 bytes (RGBA4444). Dividing by the component count (4) halved the count, so a u8
+        template took twice as many colours as its index can name."""
+        colors = [(1.0, 0.0, 0.0, 1.0) if loop < 18 else (0.0, 0.5, 1.0, 0.25) for loop in range(36)]
+        plan = cse.AttributePlan(normals=True, color=True, uv_channels=1, entry_limits={'color0': 2})
+        self._entry(plan=plan, loop_colors=colors)                     # two colours fit a limit of two
+        plan.entry_limits['color0'] = 1
+        with self.assertRaisesRegex(ValueError, 'Cube: 2 distinct colors'):
+            self._entry(plan=plan, loop_colors=colors)
+
     def test_template_index_width_overflow_is_rejected_with_advice(self):
         # The limit applies to pooled entries: the cube has 36 UV loops but
         # only 3 distinct UVs, so a limit of 3 passes and 2 fails.

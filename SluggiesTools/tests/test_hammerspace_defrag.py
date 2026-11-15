@@ -187,6 +187,60 @@ class DefragTests(unittest.TestCase):
         self.assertEqual(self.fx.snapshot(), files)
 
 
+class DefragFstAndBackupRangeTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.fx = Fixture(self.temp.name)
+        self.input_fst = pathlib.Path(self.temp.name) / 'input_fst.bin'
+        stack = ExitStack()
+        for patch in self.fx.patches():
+            stack.enter_context(patch)
+        stack.enter_context(mock.patch.object(helper, '_FST_INPUT', str(self.input_fst)))
+        self.addCleanup(stack.close)
+
+    def test_a_missing_fst_refuses_before_the_backup_and_the_first_write(self):
+        self.fx.fst.unlink()
+        files = self.fx.dat.read_bytes(), self.fx.dol.read_bytes()
+
+        with mock.patch.object(Defrag, '_write_backup', side_effect=AssertionError('backup written')):
+            with self.assertRaisesRegex(Defrag.DefragError, 'fst.bin not found'):
+                Defrag.run()
+            report = Defrag.run(dry_run=True)
+
+        self.assertTrue(any('fst.bin not found' in text for text in report.warnings))
+        self.assertEqual((self.fx.dat.read_bytes(), self.fx.dol.read_bytes()), files)
+        self.assertFalse(self.fx.fst.exists())
+
+    def test_a_failed_run_removes_the_fst_it_created(self):
+        self.fx.fst.replace(self.input_fst)                                # only 1_Input has an fst.bin
+        files = self.fx.dat.read_bytes(), self.fx.dol.read_bytes()
+
+        with mock.patch.object(Defrag, '_verify', side_effect=Defrag.DefragError('no')):
+            with self.assertRaises(Defrag.DefragError):
+                Defrag.run()
+
+        self.assertEqual((self.fx.dat.read_bytes(), self.fx.dol.read_bytes()), files)
+        self.assertFalse(self.fx.fst.exists())
+
+    def test_the_backup_covers_the_zeroed_alignment_gaps(self):
+        """Packed blocks, a dirty alignment gap and a long tail: nothing moves, but the gap is zeroed. A failed
+        run has to give those gap bytes back too."""
+        Defrag.run()
+        data = bytearray(self.fx.dat.read_bytes())
+        data[0x1050:0x1060] = b'G' * 0x10
+        self.fx.dat.write_bytes(bytes(data) + b'T' * 0x100)
+        layout = Defrag.analyze()
+        self.assertEqual((layout.moved, layout.first_change()), ([], 0x1050))
+        files = self.fx.snapshot()
+
+        with mock.patch.object(Defrag, '_patch_dol', side_effect=OSError('disk full')):
+            with self.assertRaises(OSError):
+                Defrag.run()
+
+        self.assertEqual(self.fx.snapshot(), files)
+
+
 class UnknownPointerTests(unittest.TestCase):
     def test_warns_about_a_dol_word_naming_a_moving_block(self):
         with tempfile.TemporaryDirectory() as temp:

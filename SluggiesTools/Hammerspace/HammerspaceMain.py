@@ -6655,6 +6655,11 @@ def BuildModelBlock(
 ) -> ModelBlockBuild:
     """Assemble a model block without modifying output DAT, DOL, or FST files.
 
+    ``data`` itself is edited on the way: the rebuild steps write their
+    results back into the document (surface assignments, rebuilt UVs, the
+    desired texture assignments, merged duplicate texture additions). Pass
+    a document that is not used for anything else afterwards, or a copy.
+
     When ``section_modes.tex == 'build'`` and the sluggie has
     ``ReimportTextures`` set, the donor textures are re-encoded from the edited
     PNGs in the sluggie's ``tex/`` folder via :func:`BuildTEX`; without it they

@@ -24,8 +24,8 @@ from Sound.dsp_adpcm import Lane
 PCM8, PCM16, ADPCM = 0, 1, 2
 
 
-class BrstmError(Exception):
-    pass
+class BrstmError(ValueError):
+    """A stream that cannot be read (a ``ValueError``, as ``brsar.BrsarError``)."""
 
 
 def u16(b, o): return struct.unpack_from('>H', b, o)[0]

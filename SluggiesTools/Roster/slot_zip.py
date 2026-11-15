@@ -50,6 +50,7 @@ import shutil
 import sys
 import time
 import zipfile
+import zlib
 from dataclasses import dataclass, field
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -85,6 +86,13 @@ STAT_ORIGIN = 'sluggiezip'                 # the stat edit file's "origin" (gui_
 ICON_VIEWS = ('front', 'side')
 GEAR_FILES = (2, 3, 4, 5)
 ANIM_FILES = tuple(range(6, 15))
+
+
+# What a package may unpack to: one character's models, gear, animation banks, portraits and voice clips (a
+# model block is under 16 MB, the largest stock one 2.7 MB). The caps keep a small crafted zip from filling the
+# disk when it is unpacked.
+MAX_UNPACKED = 512 << 20
+MAX_MEMBERS = 5000
 
 
 class PackageError(RuntimeError):
@@ -269,25 +277,36 @@ def read_manifest(zf: zipfile.ZipFile, label: str) -> dict:
 
 def extract(path: str, staged_dir: str) -> tuple[dict, str]:
     """``(manifest, folder)``: the package unpacked into a fresh folder under ``staged_dir``. Member names that
-    leave the folder are refused."""
+    leave the folder and archives past ``MAX_UNPACKED`` / ``MAX_MEMBERS`` are refused; a folder that could not
+    be unpacked completely is removed again."""
     label = os.path.basename(path)
     try:
         zf = zipfile.ZipFile(path)
     except (OSError, zipfile.BadZipFile) as exc:
         raise PackageError(f'{label} is not a character package: {exc}') from None
     with zf:
+        infos = zf.infolist()
+        if len(infos) > MAX_MEMBERS or sum(info.file_size for info in infos) > MAX_UNPACKED:
+            raise PackageError(f'{label} is too big to be a character package (over {MAX_MEMBERS:,} files or '
+                               f'{MAX_UNPACKED >> 20} MB unpacked)')
         manifest = read_manifest(zf, label)
         stem = slot_export.safe_name(os.path.splitext(label)[0]) or 'package'
         folder, n = os.path.join(staged_dir, stem), 2
         while os.path.exists(folder):
             folder, n = os.path.join(staged_dir, f'{stem} {n}'), n + 1
         root = os.path.abspath(folder)
-        for info in zf.infolist():
+        for info in infos:
             target = os.path.abspath(os.path.join(root, *info.filename.split('/')))
             if not target.startswith(root + os.sep):
                 raise PackageError(f'{label}: unexpected member {info.filename!r}')
         os.makedirs(folder)
-        zf.extractall(folder)
+        try:
+            zf.extractall(folder)
+        except BaseException as exc:
+            shutil.rmtree(folder, ignore_errors=True)        # never a half-unpacked package in the staging folder
+            if isinstance(exc, (zipfile.BadZipFile, zlib.error, EOFError)):
+                raise PackageError(f'{label} is damaged: {exc}') from None
+            raise
     return manifest, folder
 
 

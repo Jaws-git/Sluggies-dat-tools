@@ -139,6 +139,37 @@ def dolphin_texture_basename(width, height, gx_format, image_data, tlut_data=b''
     return base_name + '_' + texture_name + tlut_name + '_' + format_name
 
 
+def decode_tpl(fname, pngname):
+    """Decode the TPL *fname* into *pngname* with wimgt and remove the TPL. Raises ``RuntimeError``.
+    The work is in the wimgt process, so several of these run well side by side on threads."""
+    try:
+        result = subprocess.run(
+            ['wimgt', 'decode', '-q', '-d', pngname, fname],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        if not os.path.exists(pngname):
+            detail = result.stderr.strip() or result.stdout.strip() or 'no diagnostic output'
+            raise RuntimeError(f'wimgt completed without creating {pngname}: {detail}')
+    except FileNotFoundError as exc:
+        slogger.error(
+            f'wimgt was not found on PATH while exporting texture {pngname}',
+            source='texture.export',
+        )
+        raise RuntimeError('wimgt was not found on PATH') from exc
+    except subprocess.CalledProcessError as exc:
+        detail = exc.stderr.strip() or exc.stdout.strip() or f'exit code {exc.returncode}'
+        slogger.error(
+            f'wimgt failed to export texture {pngname}: {detail}',
+            source='texture.export',
+        )
+        raise RuntimeError(f'wimgt failed to export texture {pngname}: {detail}') from exc
+    finally:
+        if os.path.exists(fname):
+            os.remove(fname)
+
+
 class TEXPalette(FileChunk):
     def analyze(self):
         global globalcounter
@@ -282,10 +313,16 @@ class TEXDescriptor(FileChunk):
         }
 
     def toFile(self, path, image_data_override=None, tlut_data_override=None):
+        """Write ``path + '.png'``: the texture as a one-image TPL, decoded by wimgt."""
+        decode_tpl(self.writeTpl(path, image_data_override, tlut_data_override), path + '.png')
+
+    def writeTpl(self, path, image_data_override=None, tlut_data_override=None):
+        """Write the texture as the one-image TPL ``path + '.tpl'`` (reads the model's file) and return that
+        name; ``decode_tpl`` turns it into the PNG. Two steps, so a model's TPLs can be written one after
+        the other and decoded side by side."""
         dataLength = self._data_length()
         hasPalette = self.paletteDataPtr > 0
         fname = path + '.tpl'
-        pngname = path + '.png'
 
         out = open(fname, 'wb')
         # TEXPalette
@@ -350,32 +387,7 @@ class TEXDescriptor(FileChunk):
                     raise Exception('tlut_data_override length mismatch in TEX export')
                 out.write(tlut_data_override)
         out.close()
-        try:
-            result = subprocess.run(
-                ['wimgt', 'decode', '-q', '-d', pngname, fname],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            if not os.path.exists(pngname):
-                detail = result.stderr.strip() or result.stdout.strip() or 'no diagnostic output'
-                raise RuntimeError(f'wimgt completed without creating {pngname}: {detail}')
-        except FileNotFoundError as exc:
-            slogger.error(
-                f'wimgt was not found on PATH while exporting texture {pngname}',
-                source='texture.export',
-            )
-            raise RuntimeError('wimgt was not found on PATH') from exc
-        except subprocess.CalledProcessError as exc:
-            detail = exc.stderr.strip() or exc.stdout.strip() or f'exit code {exc.returncode}'
-            slogger.error(
-                f'wimgt failed to export texture {pngname}: {detail}',
-                source='texture.export',
-            )
-            raise RuntimeError(f'wimgt failed to export texture {pngname}: {detail}') from exc
-        finally:
-            if os.path.exists(fname):
-                os.remove(fname)
+        return fname
 
     def dolphinTextureBasename(self):
         """Return Dolphin-compatible base texture name (without .png)."""

@@ -19,18 +19,20 @@ if str(TOOLS_DIR) not in sys.path:
 import start
 from texture_helper import PngTextureTarget
 
+from SluggiesTools import patch_dispatch  # noqa: E402
+
 
 class HammerspaceSectionArgsTests(unittest.TestCase):
     def test_surface_assignments_request_gpl_build(self):
         model = {'Submeshes': [{}, {'FaceSurfaceIdsEdited': 'AAE='}]}
 
-        self.assertEqual(start.hammerspace_section_args(model), ['--gpl', 'build'])
+        self.assertEqual(patch_dispatch.hammerspace_section_args(model), ['--gpl', 'build'])
 
     def test_excluded_submesh_requests_gpl_build_and_hammerspace(self):
         model = {'Submeshes': [{}, {'Excluded': True}]}
 
-        self.assertEqual(start.hammerspace_section_args(model), ['--gpl', 'build'])
-        self.assertTrue(start._needs_hammerspace(model, ''))
+        self.assertEqual(patch_dispatch.hammerspace_section_args(model), ['--gpl', 'build'])
+        self.assertTrue(patch_dispatch._needs_hammerspace(model, ''))
 
     def test_custom_submesh_only_export_requests_gpl_build(self):
         # No donor edit at all, just a
@@ -40,7 +42,7 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
             'CustomSubmeshes': [{'TextureAssignment': {'DonorTextureIndex': 0}}],
         }
 
-        self.assertEqual(start.hammerspace_section_args(model), ['--gpl', 'build'])
+        self.assertEqual(patch_dispatch.hammerspace_section_args(model), ['--gpl', 'build'])
 
     def test_custom_submesh_with_new_texture_requests_gpl_and_tex_build(self):
         model = {
@@ -51,7 +53,7 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
         }
 
         self.assertEqual(
-            start.hammerspace_section_args(model),
+            patch_dispatch.hammerspace_section_args(model),
             ['--gpl', 'build', '--tex', 'build'],
         )
 
@@ -65,17 +67,17 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
         }
 
         self.assertEqual(
-            start.hammerspace_section_args(model),
+            patch_dispatch.hammerspace_section_args(model),
             ['--gpl', 'build', '--tex', 'build'],
         )
 
     def test_empty_custom_submesh_list_keeps_clone_defaults(self):
         model = {'Submeshes': [{}], 'CustomSubmeshes': []}
 
-        self.assertEqual(start.hammerspace_section_args(model), [])
+        self.assertEqual(patch_dispatch.hammerspace_section_args(model), [])
 
     def test_unchanged_model_keeps_clone_defaults(self):
-        self.assertEqual(start.hammerspace_section_args({'Submeshes': [{}]}), [])
+        self.assertEqual(patch_dispatch.hammerspace_section_args({'Submeshes': [{}]}), [])
 
     def test_static_position_edit_requests_only_gpl_build(self):
         model = {
@@ -90,7 +92,7 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
         }
 
         self.assertEqual(
-            start.hammerspace_section_args(model),
+            patch_dispatch.hammerspace_section_args(model),
             ['--gpl', 'build'],
         )
 
@@ -108,7 +110,7 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
         }
 
         self.assertEqual(
-            start.hammerspace_section_args(model),
+            patch_dispatch.hammerspace_section_args(model),
             ['--gpl', 'build', '--skn', 'build'],
         )
 
@@ -124,7 +126,7 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
             }],
         }
 
-        self.assertEqual(start.hammerspace_section_args(model), [])
+        self.assertEqual(patch_dispatch.hammerspace_section_args(model), [])
 
     def test_uv_edit_payload_requests_gpl_build(self):
         model = {
@@ -139,7 +141,7 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
         }
 
         self.assertEqual(
-            start.hammerspace_section_args(model),
+            patch_dispatch.hammerspace_section_args(model),
             ['--gpl', 'build'],
         )
 
@@ -156,7 +158,7 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
             }],
         }
 
-        self.assertEqual(start.hammerspace_section_args(model), [])
+        self.assertEqual(patch_dispatch.hammerspace_section_args(model), [])
 
     def test_normal_edit_payload_requests_gpl_build(self):
         model = {
@@ -172,7 +174,7 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
         }
 
         self.assertEqual(
-            start.hammerspace_section_args(model),
+            patch_dispatch.hammerspace_section_args(model),
             ['--gpl', 'build'],
         )
 
@@ -189,7 +191,7 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
             }],
         }
 
-        self.assertEqual(start.hammerspace_section_args(model), [])
+        self.assertEqual(patch_dispatch.hammerspace_section_args(model), [])
 
     def test_color_edit_payload_requests_gpl_build(self):
         model = {
@@ -205,7 +207,7 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
         }
 
         self.assertEqual(
-            start.hammerspace_section_args(model),
+            patch_dispatch.hammerspace_section_args(model),
             ['--gpl', 'build'],
         )
 
@@ -222,7 +224,7 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
             }],
         }
 
-        self.assertEqual(start.hammerspace_section_args(model), [])
+        self.assertEqual(patch_dispatch.hammerspace_section_args(model), [])
 
     def test_normal_and_color_edits_request_gpl_build(self):
         model = {
@@ -241,19 +243,19 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
         }
 
         self.assertEqual(
-            start.hammerspace_section_args(model),
+            patch_dispatch.hammerspace_section_args(model),
             ['--gpl', 'build'],
         )
 
     def test_other_edit_markers_do_not_activate_unfinished_rebuilders(self):
         model = {'Submeshes': [{'FacesDataEdited': 'AAAA'}]}
 
-        self.assertEqual(start.hammerspace_section_args(model), [])
+        self.assertEqual(patch_dispatch.hammerspace_section_args(model), [])
 
     def test_reimport_textures_requests_tex_build(self):
         model = {'Submeshes': [{}], 'ReimportTextures': True}
 
-        self.assertEqual(start.hammerspace_section_args(model), ['--tex', 'build'])
+        self.assertEqual(patch_dispatch.hammerspace_section_args(model), ['--tex', 'build'])
 
     def test_desired_texture_assignment_requests_gpl_and_tex_build(self):
         model = {
@@ -263,7 +265,7 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
         }
 
         self.assertEqual(
-            start.hammerspace_section_args(model),
+            patch_dispatch.hammerspace_section_args(model),
             ['--gpl', 'build', '--tex', 'build'],
         )
 
@@ -274,7 +276,7 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
         }
 
         self.assertEqual(
-            start.hammerspace_section_args(model),
+            patch_dispatch.hammerspace_section_args(model),
             ['--gpl', 'build', '--tex', 'build'],
         )
 
@@ -287,19 +289,19 @@ class HammerspaceSectionArgsTests(unittest.TestCase):
         }
 
         self.assertEqual(
-            start.hammerspace_section_args(model),
+            patch_dispatch.hammerspace_section_args(model),
             ['--gpl', 'build', '--tex', 'build'],
         )
 
     def test_reimport_textures_false_keeps_tex_clone(self):
         model = {'Submeshes': [{}], 'ReimportTextures': False}
 
-        self.assertEqual(start.hammerspace_section_args(model), [])
+        self.assertEqual(patch_dispatch.hammerspace_section_args(model), [])
 
     def test_absent_reimport_textures_keeps_tex_clone(self):
         model = {'Submeshes': [{}]}
 
-        self.assertEqual(start.hammerspace_section_args(model), [])
+        self.assertEqual(patch_dispatch.hammerspace_section_args(model), [])
 
 
 class PatchPngTests(unittest.TestCase):
@@ -314,13 +316,13 @@ class PatchPngTests(unittest.TestCase):
             texture_index=texture_index,
         )
 
-    @mock.patch('start._current_model_in_hammerspace', return_value=False)
+    @mock.patch('SluggiesTools.patch_dispatch._current_model_in_hammerspace', return_value=False)
     @mock.patch('start.subprocess.run')
     def test_inplace_path_command(self, mock_run, _mock_hs_check):
         target = self._make_target()
         model = {'ChunkNumber': 18, 'FileIndex': 0}
 
-        start._patch_png(target, model)
+        patch_dispatch._patch_png(target, model)
 
         mock_run.assert_called_once()
         cmd = mock_run.call_args[0][0]
@@ -334,7 +336,7 @@ class PatchPngTests(unittest.TestCase):
         target = self._make_target()
         model = {'UseHammerspace': True, 'Submeshes': [{}]}
 
-        start._patch_png(target, model)
+        patch_dispatch._patch_png(target, model)
 
         mock_run.assert_called_once()
         cmd = mock_run.call_args[0][0]
@@ -362,7 +364,7 @@ class RunPatchingDispatchTests(unittest.TestCase):
             texture_index=texture_index,
         )
 
-    @mock.patch('start._current_model_in_hammerspace', return_value=False)
+    @mock.patch('SluggiesTools.patch_dispatch._current_model_in_hammerspace', return_value=False)
     @mock.patch('start.subprocess.run')
     def test_png_routes_to_patch_png(self, mock_run, _mock_hs_check):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -370,28 +372,28 @@ class RunPatchingDispatchTests(unittest.TestCase):
             self._write_sluggie(sluggie)
             target = self._make_target(sluggie)
 
-            with mock.patch.object(start._tex, 'resolve_png_to_texture', return_value=target):
-                start.run_patching(['0.png'])
+            with mock.patch.object(patch_dispatch._tex, 'resolve_png_to_texture', return_value=target):
+                patch_dispatch.run_patching(['0.png'])
 
             mock_run.assert_called_once()
             cmd = mock_run.call_args[0][0]
             self.assertIn('--texture-file', cmd)
 
-    @mock.patch('start._current_model_in_hammerspace', return_value=False)
+    @mock.patch('SluggiesTools.patch_dispatch._current_model_in_hammerspace', return_value=False)
     @mock.patch('start.subprocess.run')
     def test_sluggie_routes_to_patch_sluggie(self, mock_run, _mock_hs_check):
         with tempfile.TemporaryDirectory() as temp_dir:
             sluggie = os.path.join(temp_dir, 'model.sluggie')
             self._write_sluggie(sluggie)
 
-            with mock.patch.object(start, 'SEARCH_DIR', temp_dir):
-                start.run_patching(['model.sluggie'])
+            with mock.patch.object(patch_dispatch, 'SEARCH_DIR', temp_dir):
+                patch_dispatch.run_patching(['model.sluggie'])
 
             mock_run.assert_called_once()
             cmd = mock_run.call_args[0][0]
             self.assertNotIn('--texture-file', cmd)
 
-    @mock.patch('start._current_model_in_hammerspace', return_value=False)
+    @mock.patch('SluggiesTools.patch_dispatch._current_model_in_hammerspace', return_value=False)
     @mock.patch('start.subprocess.run')
     def test_sluggie_name_found_twice_is_refused(self, mock_run, _mock_hs_check):
         # A copied model folder: the bare name has two targets, so nothing is patched (the walk used to take the
@@ -400,8 +402,8 @@ class RunPatchingDispatchTests(unittest.TestCase):
             self._write_sluggie(os.path.join(temp_dir, '18 Mario', 'model.sluggie'))
             self._write_sluggie(os.path.join(temp_dir, '18 Mario - Copy', 'model.sluggie'))
 
-            with mock.patch.object(start, 'SEARCH_DIR', temp_dir),                     mock.patch.object(start.slogger, 'error') as error:
-                ok = start.run_patching(['model.sluggie'])
+            with mock.patch.object(patch_dispatch, 'SEARCH_DIR', temp_dir),                     mock.patch.object(start.slogger, 'error') as error:
+                ok = patch_dispatch.run_patching(['model.sluggie'])
 
             self.assertFalse(ok)
             mock_run.assert_not_called()
@@ -409,7 +411,7 @@ class RunPatchingDispatchTests(unittest.TestCase):
             self.assertIn("exists 2 times", message)
             self.assertIn(os.path.join('18 Mario - Copy', 'model.sluggie'), message)
 
-    @mock.patch('start._current_model_in_hammerspace', return_value=False)
+    @mock.patch('SluggiesTools.patch_dispatch._current_model_in_hammerspace', return_value=False)
     @mock.patch('start.subprocess.run')
     def test_full_path_patches_one_of_two_copies(self, mock_run, _mock_hs_check):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -417,28 +419,28 @@ class RunPatchingDispatchTests(unittest.TestCase):
             self._write_sluggie(os.path.join(temp_dir, '18 Mario', 'model.sluggie'))
             self._write_sluggie(chosen)
 
-            with mock.patch.object(start, 'SEARCH_DIR', temp_dir):
-                ok = start.run_patching([chosen])
+            with mock.patch.object(patch_dispatch, 'SEARCH_DIR', temp_dir):
+                ok = patch_dispatch.run_patching([chosen])
 
             self.assertTrue(ok)
             mock_run.assert_called_once()
             self.assertIn(chosen, mock_run.call_args[0][0])
 
-    @mock.patch('start._current_model_in_hammerspace', return_value=False)
+    @mock.patch('SluggiesTools.patch_dispatch._current_model_in_hammerspace', return_value=False)
     @mock.patch('start.subprocess.run')
     def test_sluggie_name_without_extension_routes_to_patch_sluggie(self, mock_run, _mock_hs_check):
         with tempfile.TemporaryDirectory() as temp_dir:
             sluggie = os.path.join(temp_dir, 'model.sluggie')
             self._write_sluggie(sluggie)
 
-            with mock.patch.object(start, 'SEARCH_DIR', temp_dir):
-                start.run_patching(['model'])
+            with mock.patch.object(patch_dispatch, 'SEARCH_DIR', temp_dir):
+                patch_dispatch.run_patching(['model'])
 
             mock_run.assert_called_once()
             cmd = mock_run.call_args[0][0]
             self.assertNotIn('--texture-file', cmd)
 
-    @mock.patch('start._current_model_in_hammerspace', return_value=False)
+    @mock.patch('SluggiesTools.patch_dispatch._current_model_in_hammerspace', return_value=False)
     @mock.patch('start.subprocess.run')
     def test_mixed_png_and_sluggie(self, mock_run, _mock_hs_check):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -447,10 +449,10 @@ class RunPatchingDispatchTests(unittest.TestCase):
             target = self._make_target(sluggie)
 
             with (
-                mock.patch.object(start._tex, 'resolve_png_to_texture', return_value=target),
-                mock.patch.object(start, 'SEARCH_DIR', temp_dir),
+                mock.patch.object(patch_dispatch._tex, 'resolve_png_to_texture', return_value=target),
+                mock.patch.object(patch_dispatch, 'SEARCH_DIR', temp_dir),
             ):
-                start.run_patching(['0.png', 'model.sluggie'])
+                patch_dispatch.run_patching(['0.png', 'model.sluggie'])
 
             self.assertEqual(mock_run.call_count, 2)
             cmds = [call[0][0] for call in mock_run.call_args_list]
@@ -460,13 +462,13 @@ class RunPatchingDispatchTests(unittest.TestCase):
     @mock.patch('start.subprocess.run')
     def test_unpatch_png_rejected(self, mock_run):
         with mock.patch.object(start.slogger, 'error') as mock_error:
-            start.run_patching(['0.png'], unpatch=True)
+            patch_dispatch.run_patching(['0.png'], unpatch=True)
 
         mock_run.assert_not_called()
         mock_error.assert_called_once()
         self.assertIn('--unpatch does not accept .png', mock_error.call_args[0][0])
 
-    @mock.patch('start._current_model_in_hammerspace', return_value=False)
+    @mock.patch('SluggiesTools.patch_dispatch._current_model_in_hammerspace', return_value=False)
     @mock.patch('start.subprocess.run')
     def test_png_child_failure_continues_batch(self, mock_run, _mock_hs_check):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -480,11 +482,11 @@ class RunPatchingDispatchTests(unittest.TestCase):
             ]
 
             with (
-                mock.patch.object(start._tex, 'resolve_png_to_texture', return_value=target),
+                mock.patch.object(patch_dispatch._tex, 'resolve_png_to_texture', return_value=target),
                 mock.patch.object(start.slogger, 'error'),
                 mock.patch.object(start.slogger, 'info'),
             ):
-                start.run_patching(['first.png', 'second.png'])
+                patch_dispatch.run_patching(['first.png', 'second.png'])
 
             self.assertEqual(mock_run.call_count, 2)
 
@@ -495,8 +497,8 @@ class RunPatchingDispatchTests(unittest.TestCase):
             self._write_sluggie(sluggie, model_data={'UseHammerspace': True, 'Submeshes': [{}]})
             target = self._make_target(sluggie)
 
-            with mock.patch.object(start._tex, 'resolve_png_to_texture', return_value=target):
-                start.run_patching(['0.png'])
+            with mock.patch.object(patch_dispatch._tex, 'resolve_png_to_texture', return_value=target):
+                patch_dispatch.run_patching(['0.png'])
 
             mock_run.assert_called_once()
             cmd = mock_run.call_args[0][0]
@@ -510,9 +512,9 @@ class UnusedCharacterGuardTests(unittest.TestCase):
     still goes through Hammerspace rather than into the shared donor block."""
 
     def test_dir_index_from_export_folder_name(self):
-        with mock.patch.object(start, 'SEARCH_DIR', '/x/2_Output_Assets'):
+        with mock.patch.object(patch_dispatch, 'SEARCH_DIR', '/x/2_Output_Assets'):
             self.assertEqual(
-                start._unused_character_dir_index(
+                patch_dispatch._unused_character_dir_index(
                     '/x/2_Output_Assets/89 Unused Yoshi A/'
                     '715046144_yoshi.gpl/715046144_yoshi.gpl.sluggie'
                 ),
@@ -520,19 +522,19 @@ class UnusedCharacterGuardTests(unittest.TestCase):
             )
 
     def test_dir_index_non_digit_folder_returns_none(self):
-        with mock.patch.object(start, 'SEARCH_DIR', '/x/2_Output_Assets'):
+        with mock.patch.object(patch_dispatch, 'SEARCH_DIR', '/x/2_Output_Assets'):
             self.assertIsNone(
-                start._unused_character_dir_index('/x/2_Output_Assets/model/model.sluggie')
+                patch_dispatch._unused_character_dir_index('/x/2_Output_Assets/model/model.sluggie')
             )
 
     def test_dir_index_path_outside_search_dir_returns_none(self):
-        with mock.patch.object(start, 'SEARCH_DIR', '/x/2_Output_Assets'):
+        with mock.patch.object(patch_dispatch, 'SEARCH_DIR', '/x/2_Output_Assets'):
             self.assertIsNone(
-                start._unused_character_dir_index('/elsewhere/89 Unused Yoshi A/model.sluggie')
+                patch_dispatch._unused_character_dir_index('/elsewhere/89 Unused Yoshi A/model.sluggie')
             )
 
     def test_dir_index_empty_returns_none(self):
-        self.assertIsNone(start._unused_character_dir_index(''))
+        self.assertIsNone(patch_dispatch._unused_character_dir_index(''))
 
     @mock.patch('start.subprocess.run')
     def test_sluggie_inplace_for_unused_character_routes_to_hammerspace(self, mock_run):
@@ -542,8 +544,8 @@ class UnusedCharacterGuardTests(unittest.TestCase):
             with open(found, 'w') as f:
                 json.dump({'SluggiesModel': {'UseHammerspace': False, 'Submeshes': [{}]}}, f)
 
-            with mock.patch.object(start, 'SEARCH_DIR', temp_dir):
-                start._patch_sluggie(found, {'UseHammerspace': False, 'Submeshes': [{}]}, False)
+            with mock.patch.object(patch_dispatch, 'SEARCH_DIR', temp_dir):
+                patch_dispatch._patch_sluggie(found, {'UseHammerspace': False, 'Submeshes': [{}]}, False)
 
             mock_run.assert_called_once()
             cmd = mock_run.call_args[0][0]
@@ -557,8 +559,8 @@ class UnusedCharacterGuardTests(unittest.TestCase):
             with open(found, 'w') as f:
                 json.dump({'SluggiesModel': {'UseHammerspace': True, 'Submeshes': [{}]}}, f)
 
-            with mock.patch.object(start, 'SEARCH_DIR', temp_dir):
-                start._patch_sluggie(found, {'UseHammerspace': True, 'Submeshes': [{}]}, False)
+            with mock.patch.object(patch_dispatch, 'SEARCH_DIR', temp_dir):
+                patch_dispatch._patch_sluggie(found, {'UseHammerspace': True, 'Submeshes': [{}]}, False)
 
             mock_run.assert_called_once()
             cmd = mock_run.call_args[0][0]
@@ -573,10 +575,10 @@ class UnusedCharacterGuardTests(unittest.TestCase):
                 json.dump({'SluggiesModel': {'UseHammerspace': False, 'Submeshes': [{}]}}, f)
 
             with (
-                mock.patch.object(start, 'SEARCH_DIR', temp_dir),
-                mock.patch.object(start, '_current_model_in_hammerspace', return_value=False),
+                mock.patch.object(patch_dispatch, 'SEARCH_DIR', temp_dir),
+                mock.patch.object(patch_dispatch, '_current_model_in_hammerspace', return_value=False),
             ):
-                start._patch_sluggie(found, {'UseHammerspace': False, 'Submeshes': [{}]}, False)
+                patch_dispatch._patch_sluggie(found, {'UseHammerspace': False, 'Submeshes': [{}]}, False)
 
             mock_run.assert_called_once()
             cmd = mock_run.call_args[0][0]
@@ -596,8 +598,8 @@ class UnusedCharacterGuardTests(unittest.TestCase):
                 texture_index=0,
             )
 
-            with mock.patch.object(start, 'SEARCH_DIR', temp_dir):
-                start._patch_png(target, {'UseHammerspace': False, 'Submeshes': [{}]})
+            with mock.patch.object(patch_dispatch, 'SEARCH_DIR', temp_dir):
+                patch_dispatch._patch_png(target, {'UseHammerspace': False, 'Submeshes': [{}]})
 
             mock_run.assert_called_once()
             cmd = mock_run.call_args[0][0]
@@ -617,8 +619,8 @@ class UnusedCharacterGuardTests(unittest.TestCase):
                 texture_index=0,
             )
 
-            with mock.patch.object(start, 'SEARCH_DIR', temp_dir):
-                start._patch_png(target, {'UseHammerspace': True, 'Submeshes': [{}]})
+            with mock.patch.object(patch_dispatch, 'SEARCH_DIR', temp_dir):
+                patch_dispatch._patch_png(target, {'UseHammerspace': True, 'Submeshes': [{}]})
 
             mock_run.assert_called_once()
             cmd = mock_run.call_args[0][0]
@@ -632,8 +634,8 @@ class NeedsHammerspaceTests(unittest.TestCase):
     PATH = '/x/2_Output_Assets/18 Mario/m.gpl/m.gpl.sluggie'
 
     def needs(self, model):
-        with mock.patch.object(start, 'SEARCH_DIR', '/x/2_Output_Assets'):
-            return start._needs_hammerspace(model, self.PATH)
+        with mock.patch.object(patch_dispatch, 'SEARCH_DIR', '/x/2_Output_Assets'):
+            return patch_dispatch._needs_hammerspace(model, self.PATH)
 
     def test_flag_decides_for_a_plain_file(self):
         self.assertFalse(self.needs({'UseHammerspace': False, 'Submeshes': [{}]}))
@@ -682,7 +684,7 @@ class TargetedPatchDispatchTests(unittest.TestCase):
 
     @mock.patch('start.subprocess.run')
     def test_inplace_file_with_target_goes_to_hammerspace(self, mock_run):
-        start._patch_sluggie('/tmp/model.sluggie', {'ChunkNumber': 18, 'FileIndex': 0}, False, '0x13', True)
+        patch_dispatch._patch_sluggie('/tmp/model.sluggie', {'ChunkNumber': 18, 'FileIndex': 0}, False, '0x13', True)
 
         cmd = mock_run.call_args[0][0]
         self.assertTrue(any('HammerspaceMain' in arg for arg in cmd))
@@ -690,7 +692,7 @@ class TargetedPatchDispatchTests(unittest.TestCase):
 
     @mock.patch('start.subprocess.run')
     def test_targeted_unpatch_passes_the_target(self, mock_run):
-        start._patch_sluggie('/tmp/model.sluggie', {'ChunkNumber': 18, 'FileIndex': 0}, True, '0x13')
+        patch_dispatch._patch_sluggie('/tmp/model.sluggie', {'ChunkNumber': 18, 'FileIndex': 0}, True, '0x13')
 
         cmd = mock_run.call_args[0][0]
         self.assertEqual(cmd[-3:], ['--target-id', '0x13', '--unpatch'])
@@ -700,10 +702,10 @@ class TargetedPatchDispatchTests(unittest.TestCase):
             for name in ('1_L_kinopio.gpl.sluggie', '0_kinopio.gpl.sluggie'):
                 with open(os.path.join(temp_dir, name), 'w') as f:
                     json.dump({'SluggiesModel': {}}, f)
-            with mock.patch.object(start, 'SEARCH_DIR', temp_dir), \
-                    mock.patch('start._build_partner_block', return_value=True), \
-                    mock.patch('start._patch_sluggie') as patch:
-                start.run_patching(['1_L_kinopio.gpl.sluggie', '0_kinopio.gpl.sluggie'], target_id='0x13')
+            with mock.patch.object(patch_dispatch, 'SEARCH_DIR', temp_dir), \
+                    mock.patch('SluggiesTools.patch_dispatch._build_partner_block', return_value=True), \
+                    mock.patch('SluggiesTools.patch_dispatch._patch_sluggie') as patch:
+                patch_dispatch.run_patching(['1_L_kinopio.gpl.sluggie', '0_kinopio.gpl.sluggie'], target_id='0x13')
 
         order = [os.path.basename(call.args[0]) for call in patch.call_args_list]
         self.assertEqual(order, ['0_kinopio.gpl.sluggie', '1_L_kinopio.gpl.sluggie'])
@@ -722,12 +724,12 @@ class LodPairDispatchTests(unittest.TestCase):
         return path
 
     def _run(self, temp_dir, names, build_ok=True, patch_side_effect=None, **kwargs):
-        with mock.patch.object(start, 'SEARCH_DIR', temp_dir), \
-                mock.patch('start._build_partner_block', return_value=build_ok) as build, \
-                mock.patch('start._patch_sluggie', side_effect=patch_side_effect) as patch, \
+        with mock.patch.object(patch_dispatch, 'SEARCH_DIR', temp_dir), \
+                mock.patch('SluggiesTools.patch_dispatch._build_partner_block', return_value=build_ok) as build, \
+                mock.patch('SluggiesTools.patch_dispatch._patch_sluggie', side_effect=patch_side_effect) as patch, \
                 mock.patch.object(start.slogger, 'error') as error, \
                 mock.patch.object(start.slogger, 'info'):
-            ok = start.run_patching(names, **kwargs)
+            ok = patch_dispatch.run_patching(names, **kwargs)
         return ok, build, patch, error
 
     def test_slot_pair_checks_the_high_poly_against_the_incoming_low_poly(self):
@@ -800,7 +802,7 @@ class LodPairDispatchTests(unittest.TestCase):
 
     @mock.patch('start.subprocess.run')
     def test_partner_block_reaches_the_hammerspace_command(self, mock_run):
-        start._patch_sluggie('/tmp/model.sluggie', {'ChunkNumber': 30, 'FileIndex': 0}, False, '0x0C',
+        patch_dispatch._patch_sluggie('/tmp/model.sluggie', {'ChunkNumber': 30, 'FileIndex': 0}, False, '0x0C',
                              lod_partner_block='/tmp/low.bin')
 
         self.assertEqual(mock_run.call_args[0][0][-2:], ['--lod-partner-block', '/tmp/low.bin'])
@@ -808,7 +810,7 @@ class LodPairDispatchTests(unittest.TestCase):
     @mock.patch('start.subprocess.run')
     def test_partner_build_writes_the_block_only(self, mock_run):
         mock_run.return_value.returncode = 0
-        self.assertTrue(start._build_partner_block('/tmp/low.sluggie', {}, '/tmp/low.bin', '0x0C'))
+        self.assertTrue(patch_dispatch._build_partner_block('/tmp/low.sluggie', {}, '/tmp/low.bin', '0x0C'))
 
         cmd = mock_run.call_args[0][0]
         self.assertIn('--build-to', cmd)
@@ -817,34 +819,159 @@ class LodPairDispatchTests(unittest.TestCase):
 
     @mock.patch('start.subprocess.run')
     def test_png_with_target_is_refused(self, mock_run):
-        start.run_patching(['0.png'], target_id='0x13')
+        patch_dispatch.run_patching(['0.png'], target_id='0x13')
         mock_run.assert_not_called()
 
 
 class StadiumCollisionDispatchTests(unittest.TestCase):
     """A .sluggie with StadiumCollision also runs the collision writer."""
 
-    @mock.patch('start._current_model_in_hammerspace', return_value=False)
+    @mock.patch('SluggiesTools.patch_dispatch._current_model_in_hammerspace', return_value=False)
     @mock.patch('start.subprocess.run')
     def test_collision_script_runs_after_the_model(self, mock_run, _mock_hs_check):
         model = {'ChunkNumber': 10, 'FileIndex': 0, 'StadiumCollision': []}
-        start._patch_sluggie('/tmp/sta.sluggie', model, False)
-        self.assertEqual(mock_run.call_count, 2)
-        cmd = mock_run.call_args_list[1][0][0]
-        self.assertIn(start.COLLISION_SCRIPT, cmd)
-        self.assertNotIn('--unpatch', cmd)
+        patch_dispatch._patch_sluggie('/tmp/sta.sluggie', model, False)
+        # the collision is checked (nothing written) before the model is patched, and written after it
+        commands = [call[0][0] for call in mock_run.call_args_list]
+        self.assertEqual(len(commands), 3)
+        check, model_patch, write = commands
+        self.assertIn(patch_dispatch.COLLISION_SCRIPT, check)
+        self.assertIn('--dry-run', check)
+        self.assertNotIn(patch_dispatch.COLLISION_SCRIPT, model_patch)
+        self.assertIn(patch_dispatch.COLLISION_SCRIPT, write)
+        self.assertNotIn('--dry-run', write)
+        self.assertNotIn('--unpatch', write)
 
-    @mock.patch('start._current_model_in_hammerspace', return_value=False)
+    @mock.patch('SluggiesTools.patch_dispatch._current_model_in_hammerspace', return_value=False)
+    @mock.patch('start.subprocess.run')
+    def test_a_refused_collision_stops_before_the_model_is_patched(self, mock_run, _mock_hs_check):
+        mock_run.side_effect = subprocess.CalledProcessError(1, 'collision')
+        model = {'ChunkNumber': 10, 'FileIndex': 0, 'StadiumCollision': []}
+        with self.assertRaises(subprocess.CalledProcessError):
+            patch_dispatch._patch_sluggie('/tmp/sta.sluggie', model, False)
+        self.assertEqual(mock_run.call_count, 1)
+        self.assertIn('--dry-run', mock_run.call_args_list[0][0][0])
+
+    @mock.patch('SluggiesTools.patch_dispatch._current_model_in_hammerspace', return_value=False)
     @mock.patch('start.subprocess.run')
     def test_unpatch_restores_collision(self, mock_run, _mock_hs_check):
         model = {'ChunkNumber': 10, 'FileIndex': 0, 'UseHammerspace': True, 'StadiumCollision': [{}]}
-        start._patch_sluggie('/tmp/sta.sluggie', model, True)
+        patch_dispatch._patch_sluggie('/tmp/sta.sluggie', model, True)
         cmd = mock_run.call_args_list[-1][0][0]
-        self.assertIn(start.COLLISION_SCRIPT, cmd)
+        self.assertIn(patch_dispatch.COLLISION_SCRIPT, cmd)
         self.assertIn('--unpatch', cmd)
 
-    @mock.patch('start._current_model_in_hammerspace', return_value=False)
+    @mock.patch('SluggiesTools.patch_dispatch._current_model_in_hammerspace', return_value=False)
     @mock.patch('start.subprocess.run')
     def test_no_field_no_collision_step(self, mock_run, _mock_hs_check):
-        start._patch_sluggie('/tmp/sta.sluggie', {'ChunkNumber': 10, 'FileIndex': 0}, False)
+        patch_dispatch._patch_sluggie('/tmp/sta.sluggie', {'ChunkNumber': 10, 'FileIndex': 0}, False)
         mock_run.assert_called_once()
+
+
+class PatchExitCodeTests(unittest.TestCase):
+    """A failed .png patch and a failed plain unpatch fail the command, like a failed .sluggie patch."""
+
+    def test_png_failures_fail_the_run(self):
+        self.assertFalse(patch_dispatch.run_patching(['tex.png'], unpatch=True))             # --unpatch takes no .png
+        with mock.patch.object(patch_dispatch._tex, 'resolve_png_to_texture', side_effect=ValueError('no such texture')):
+            self.assertFalse(patch_dispatch.run_patching(['tex.png']))
+        target = PngTextureTarget(png_path='/tmp/tex.png', sluggie_path='/tmp/model.sluggie', descriptor={},
+                                  texture_index=0)
+        with mock.patch.object(patch_dispatch._tex, 'resolve_png_to_texture', return_value=target):
+            with mock.patch.object(patch_dispatch, '_load_sluggie', side_effect=OSError('gone')):
+                self.assertFalse(patch_dispatch.run_patching(['tex.png']))
+            with (mock.patch.object(patch_dispatch, '_load_sluggie', return_value={'SluggiesModel': {}}),
+                  mock.patch.object(patch_dispatch, '_patch_png',
+                                    side_effect=subprocess.CalledProcessError(1, 'patch'))):
+                self.assertFalse(patch_dispatch.run_patching(['tex.png']))
+            with (mock.patch.object(patch_dispatch, '_load_sluggie', return_value={'SluggiesModel': {}}),
+                  mock.patch.object(patch_dispatch, '_patch_png')):
+                self.assertTrue(patch_dispatch.run_patching(['tex.png']))
+
+    def test_a_failed_plain_unpatch_exits_1(self):
+        from SluggiesTools.Hammerspace import HammerspaceHelper
+        with (mock.patch.object(sys, 'argv', ['start.py', '--unpatch', 'model.sluggie']),
+              mock.patch.object(HammerspaceHelper, 'defragBackupPending', return_value=False),
+              mock.patch.object(patch_dispatch, 'run_patching', return_value=False)):
+            self.assertEqual(start.main(), 1)
+
+
+class InterruptedDefragTests(unittest.TestCase):
+    """A pending defrag backup is restored before any other command reads or writes the output files."""
+
+    def _main(self, argv, pending, restore_ok=True):
+        from SluggiesTools.Hammerspace import HammerspaceHelper
+        calls = []
+        with (
+            mock.patch.object(sys, 'argv', ['start.py', *argv]),
+            mock.patch.object(HammerspaceHelper, 'defragBackupPending', return_value=pending),
+            mock.patch.object(start, 'run_defrag_hammerspace',
+                              side_effect=lambda dry_run=False: calls.append(('defrag', dry_run)) or restore_ok),
+            mock.patch.object(start, 'run_deploy_game_files', side_effect=lambda: calls.append('deploy') or True),
+            mock.patch.object(start, 'run_gui', side_effect=lambda: calls.append('gui')),
+        ):
+            return start.main(), calls
+
+    def test_nothing_pending_runs_the_command(self):
+        self.assertEqual(self._main(['--deploy-game-files'], pending=False), (0, ['deploy']))
+
+    def test_pending_backup_is_restored_first(self):
+        self.assertEqual(self._main(['--deploy-game-files'], pending=True), (0, [('defrag', False), 'deploy']))
+
+    def test_a_failed_restore_stops_the_command(self):
+        self.assertEqual(self._main(['--deploy-game-files'], pending=True, restore_ok=False),
+                         (1, [('defrag', False)]))
+
+    def test_defrag_and_gui_handle_it_themselves(self):
+        self.assertEqual(self._main(['--defrag-hammerspace', '--dry-run'], pending=True), (0, [('defrag', True)]))
+        self.assertEqual(self._main(['--gui'], pending=True), (0, ['gui']))
+
+
+class ModeTableTests(unittest.TestCase):
+    """``start.MODES`` is the one list of commands: what runs, what takes ``--dry-run``, what changes player memory."""
+
+    def parse(self, *argv):
+        with mock.patch.object(sys, 'argv', ['start.py', *argv]):
+            return start.parse_args()
+
+    def test_dry_run_and_memory_sets(self):
+        self.assertEqual({m.attr for m in start.MODES if m.dry_run}, {
+            'roster', 'game_options', 'load_roster', 'defrag_hammerspace', 'patch_slot', 'clear_slot', 'rename_slot',
+            'set_voice', 'set_char_voice', 'set_species_clip', 'copy_slot', 'set_stats', 'set_icon', 'apply_slots',
+            'apply_stat_edits', 'apply_gameplay', 'import_slgmodel'})
+        self.assertEqual({m.attr for m in start.MODES if m.memory}, {
+            'patch', 'unpatch', 'patch_slot', 'clear_slot', 'copy_slot', 'import_slgmodel', 'apply_slots',
+            'load_roster', 'write_slot_blocks', 'write_slot_equipment', 'roster', 'game_options'})
+        self.assertEqual(len({m.attr for m in start.MODES}), len(start.MODES))
+
+    def test_selection(self):
+        self.assertEqual(start.selected_mode(self.parse('--unpatch', '--target-id', '0x13')).attr, 'unpatch')
+        self.assertEqual(start.selected_mode(self.parse('--roster-derive')).attr, 'roster_derive')
+        self.assertEqual(start.selected_mode(self.parse('--rename-slot', '0x0D', 'Toad', '--dry-run')).attr,
+                         'rename_slot')
+        for argv in (('--export', '--dry-run'), ('--patch', 'a.sluggie', '--dry-run')):
+            with self.subTest(argv=argv), mock.patch('sys.stderr'), self.assertRaises(SystemExit):
+                self.parse(*argv)
+
+    def test_changes_game_memory(self):
+        self.assertTrue(start._changes_game_memory(self.parse('--patch', 'a.sluggie')))
+        self.assertTrue(start._changes_game_memory(self.parse('--unpatch', '--target-id', '0x13')))
+        self.assertFalse(start._changes_game_memory(self.parse('--patch', 'a.sluggie', '--validate-only')))
+        self.assertFalse(start._changes_game_memory(self.parse('--apply-slots', 'e.json', '--dry-run')))
+        self.assertFalse(start._changes_game_memory(self.parse('--rename-slot', '0x0D', 'Toad')))
+        self.assertFalse(start._changes_game_memory(self.parse('--game-options')))
+        self.assertTrue(start._changes_game_memory(self.parse('--game-options', '--on', 'cpu_vs_cpu')))
+
+    def test_roster_dispatch(self):
+        from SluggiesTools.Hammerspace import HammerspaceHelper
+        for argv, expected in ((('--roster', '--config', 'c.json'), 'switch'),
+                               (('--roster', '--config', 'c.json', '--fresh'), 'roster'),
+                               (('--roster', '--remove'), 'roster')):
+            calls = []
+            with (mock.patch.object(sys, 'argv', ['start.py', *argv]),
+                  mock.patch.object(HammerspaceHelper, 'defragBackupPending', return_value=False),
+                  mock.patch.object(start, '_memory_snapshot', return_value=None),
+                  mock.patch.object(start, 'run_roster_switch', side_effect=lambda *a, **k: calls.append('switch') or True),
+                  mock.patch.object(start, 'run_roster', side_effect=lambda *a, **k: calls.append('roster') or False)):
+                code = start.main()
+            self.assertEqual((calls, code), ([expected], 0 if expected == 'switch' else 1), argv)

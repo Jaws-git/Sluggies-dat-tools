@@ -19,7 +19,6 @@ holds them without a second lossy step; looped sounds keep their loop points in 
 import argparse
 import json
 import os
-import shutil
 import sys
 import time
 
@@ -183,9 +182,40 @@ def sequence_records(archive):
 
 
 def clear_output(out_dir):
-    """Remove an earlier export (recognised by its index file); another folder is left as it is."""
-    if os.path.isfile(os.path.join(out_dir, INDEX_NAME)):
-        shutil.rmtree(out_dir)
+    """Remove an earlier export: the files its index lists, the index, and the folders that are empty after
+    that. Everything else in the folder stays (the Sound FX file dialog opens here, so users keep their own
+    WAVs beside the exported ones; the whole folder used to be deleted). A folder without this export's
+    index is left as it is."""
+    index_path = os.path.join(out_dir, INDEX_NAME)
+    try:
+        with open(index_path, encoding='utf-8') as handle:
+            index = json.load(handle)
+        records = index['sounds'] if index.get('archive') == ARCHIVE_NAME else None
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return
+    if not isinstance(records, list):
+        return
+    root = os.path.abspath(out_dir)
+    for record in records:
+        rel = record.get('path') if isinstance(record, dict) else None
+        if not isinstance(rel, str) or not rel:
+            continue
+        path = os.path.abspath(os.path.join(root, *rel.split('/')))
+        if path.startswith(root + os.sep) and os.path.isfile(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+    try:
+        os.remove(index_path)
+    except OSError:
+        pass
+    for folder, _dirs, _files in os.walk(root, topdown=False):
+        if folder != root and not os.listdir(folder):
+            try:
+                os.rmdir(folder)
+            except OSError:
+                pass
 
 
 def export(sound_dir=INPUT_SOUND_DIR, out_dir=OUTPUT_DIR):

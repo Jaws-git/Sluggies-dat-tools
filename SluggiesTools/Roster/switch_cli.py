@@ -53,8 +53,10 @@ def plan_path(output_dir: str = state_cli.OUTPUT_DIR) -> str:
     return os.path.join(switch_dir(output_dir), PLAN_FILE)
 
 
-def plan(config_path: str, output_dir: str = state_cli.OUTPUT_DIR, icon_dir: str = icons.ICON_DIR) -> migrate.SwitchPlan:
-    """Plan the switch to the preset at ``config_path``; writes the merged config and the plan."""
+def plan(config_path: str, output_dir: str = state_cli.OUTPUT_DIR, icon_dir: str = icons.ICON_DIR,
+         dry_run: bool = False) -> migrate.SwitchPlan:
+    """Plan the switch to the preset at ``config_path``; writes the merged config and the plan. Custom voice
+    clips that cannot be read back refuse or ask (``state_cli.derive_for_write``; ``dry_run``: a warning only)."""
     folder = switch_dir(output_dir)
     os.makedirs(folder, exist_ok=True)
     if os.path.exists(plan_path(output_dir)):
@@ -65,7 +67,7 @@ def plan(config_path: str, output_dir: str = state_cli.OUTPUT_DIR, icon_dir: str
     state_cli.add_vanilla_flags(st)
     inputs = state_cli.input_dir(output_dir)
     st['stat_edits'] = state_cli.read_stat_edits(image, inputs)
-    derived = derive.derive(image, dat, state_cli.open_sound(output_dir))
+    derived = state_cli.derive_for_write(image, dat, output_dir, dry_run)
     state_file = os.path.join(folder, derive.CONFIG_FILE)
     result = migrate.plan_switch(preset, st, derived, slot_cli.FileEnv(image, dat, inputs),
                                  state_file, icon_dir, os.path.dirname(os.path.abspath(config_path)))
@@ -103,10 +105,11 @@ def main(argv=None) -> int:
     slogger.configure()
     parser = argparse.ArgumentParser(description='Plan a roster switch that keeps the slots\' customisations.')
     parser.add_argument('--config', required=True, help='the roster configuration JSON')
+    parser.add_argument('--dry-run', action='store_true', help='the plan is only checked, never written to the game')
     parser.add_argument('--output-dir', default=state_cli.OUTPUT_DIR, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     try:
-        result = plan(args.config, args.output_dir)
+        result = plan(args.config, args.output_dir, dry_run=args.dry_run)
     except (RuntimeError, ValueError, OSError) as exc:   # SwitchError, StateError, DeriveError, RosterDevError, ...
         slogger.error(f'refused, nothing written: {exc}', source=SOURCE)
         return 1

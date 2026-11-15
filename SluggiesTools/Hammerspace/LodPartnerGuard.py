@@ -46,6 +46,7 @@ import HammerspaceHelper as hh
 import slogger as _slogger
 from binfmt import clean_geo_name
 from act_rebuild import BONE_RECORD_SIZE, HEADER_SIZE as ACT_HEADER_SIZE, SRT_RECORD_SIZE
+from ModelBlock import HEADER_SIZE as MODEL_HEADER_SIZE, ModelBlock, ModelBlockError, SknSection
 
 _GEO_ID_NONE = 0xFFFF
 _LOW_POLY_PREFIX = 'L_'
@@ -77,56 +78,55 @@ class ActSummary:
 def act_summary(block: bytes) -> ActSummary | None:
     """Geo name, bone count and geometry-owning bones of a model block's ACT
     section, or None when the block has no readable ACT section."""
-    if len(block) < 0x20:
-        return None
-    act = struct.unpack_from('>I', block, 0x08)[0]
-    if not act or act + ACT_HEADER_SIZE > len(block):
-        return None
-    bone_count = struct.unpack_from('>H', block, act + 0x06)[0]
-    geo_name_ptr = struct.unpack_from('>I', block, act + 0x10)[0]
-    table_end = act + ACT_HEADER_SIZE + bone_count * BONE_RECORD_SIZE
-    if table_end > len(block) or not geo_name_ptr or act + geo_name_ptr >= len(block):
-        return None
+    model = ModelBlock(block)
+    try:
+        if not model.has(0, MODEL_HEADER_SIZE):
+            return None
+        act = model.act()
+        if act is None or not model.has(act.offset, ACT_HEADER_SIZE):
+            return None
+        bone_count = act.bone_count
+        geo_name_ptr = act.geo_name_ptr
+        if (not model.has(act.offset, ACT_HEADER_SIZE + bone_count * BONE_RECORD_SIZE)
+                or not geo_name_ptr or not model.has(act.offset + geo_name_ptr, 1)):
+            return None
 
-    name_start = act + geo_name_ptr
-    name_end = block.find(b'\x00', name_start)
-    if name_end == -1:
-        return None
-    geo_name = clean_geo_name(block[name_start:name_end].decode('latin-1'))
+        name_start = act.offset + geo_name_ptr
+        name_end = model.find_nul(name_start)
+        if name_end == -1:
+            return None
+        geo_name = clean_geo_name(model.raw(name_start, name_end - name_start).decode('latin-1'))
 
-    drawn, parents, srts = {}, {}, {}
-    for index in range(bone_count):
-        record = act + ACT_HEADER_SIZE + index * BONE_RECORD_SIZE
-        orientation_ptr, _prev, _next, parent_ptr, _child, geo_id, bone_id = struct.unpack_from(
-            '>IIIIIHH', block, record,
-        )
-        if geo_id != _GEO_ID_NONE:
-            drawn[bone_id] = geo_id
-        parents[bone_id] = (parent_ptr - ACT_HEADER_SIZE) // BONE_RECORD_SIZE if parent_ptr else None
-        srt_at = act + orientation_ptr
-        srts[bone_id] = (
-            struct.unpack_from(_SRT_FORMAT, block, srt_at)
-            if orientation_ptr and srt_at + SRT_RECORD_SIZE <= len(block) else None
-        )
-    return ActSummary(geo_name, bone_count, drawn, parents, srts, _skin_bones(block))
+        drawn, parents, srts = {}, {}, {}
+        for index in range(bone_count):
+            bone = act.bone(index)
+            orientation_ptr, parent_ptr, geo_id, bone_id = (
+                bone.orientation_ptr, bone.parent_ptr, bone.geo_id, bone.bone_id)
+            if geo_id != _GEO_ID_NONE:
+                drawn[bone_id] = geo_id
+            parents[bone_id] = (parent_ptr - ACT_HEADER_SIZE) // BONE_RECORD_SIZE if parent_ptr else None
+            srt_at = act.offset + orientation_ptr
+            srts[bone_id] = (
+                model.unpack(_SRT_FORMAT, srt_at)
+                if orientation_ptr and model.has(srt_at, SRT_RECORD_SIZE) else None
+            )
+        return ActSummary(geo_name, bone_count, drawn, parents, srts, _skin_bones(block))
+    except ModelBlockError:
+        return None
 
 
 def _skin_bones(block: bytes) -> frozenset[int]:
     """Bone ids named by the block's SK1/SK2/SKAcc records (header word
-    +0x10 points at the SKN section); empty when the block has none."""
-    if len(block) < 0x14:
+    +0x10 points at the SKN section); empty when the block has none. A
+    record that runs past the block is skipped, the others still count."""
+    model = ModelBlock(block)
+    try:
+        skn = model.skn()
+        if skn is None or not model.has(skn.offset, SknSection.HEADER_SIZE):
+            return frozenset()
+        return frozenset(model.u16(at) for at in skn.bone_id_offsets() if model.has(at, 2))
+    except ModelBlockError:
         return frozenset()
-    skn = struct.unpack_from('>I', block, 0x10)[0]
-    if not skn or skn + 0x24 > len(block):
-        return frozenset()
-    n1, n2, na = struct.unpack_from('>HHH', block, skn)
-    sk1, sk2, acc = struct.unpack_from('>III', block, skn + 0x08)
-    fields = (
-        [skn + sk1 + i * 0x40 + 0x38 for i in range(n1)]
-        + [skn + sk2 + i * 0x74 + off for i in range(n2) for off in (0x6C, 0x6E)]
-        + [skn + acc + i * 0x44 + 0x40 for i in range(na)]
-    )
-    return frozenset(struct.unpack_from('>H', block, at)[0] for at in fields if at + 2 <= len(block))
 
 
 def read_current_block(chunk_number: int, file_index: int) -> bytes | None:

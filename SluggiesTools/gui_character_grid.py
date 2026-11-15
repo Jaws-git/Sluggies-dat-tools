@@ -104,6 +104,7 @@ portrait button (``dpg.popup`` would leave a window and a handler registry
 behind on every redraw).
 """
 
+import functools
 import math
 import os
 import subprocess
@@ -113,6 +114,7 @@ import dearpygui.dearpygui as dpg
 import numpy as np
 from PIL import Image
 
+import chain_marker
 import gecko_compat
 import gui_grid
 import memory_guard
@@ -192,14 +194,28 @@ _COPIED = (80, 215, 215, 255)
 _LINE_COLORS = {gui_grid.TEXT: _DIM, gui_grid.WARN: _WARN, gui_grid.ERROR: _ERROR, gui_grid.OK: _OK}
 
 
+def _draws(method):
+    """For the methods that rebuild the grid or its pop-outs. The main thread rebuilds when a read or a chain
+    ends, Dear PyGui's callback thread on a click, Esc or a resize; overlapping, they deleted each other's
+    items, collided on the fixed tags or left a dim overlay nothing removed. One at a time now."""
+    @functools.wraps(method)
+    def locked(self, *args, **kwargs):
+        with self.draw_lock:
+            return method(self, *args, **kwargs)
+    return locked
+
+
 class CharacterGridTab:
+    draw_lock = threading.RLock()        # see _draws; one tab per window
+
     def __init__(self, app):
         self.app = app                     # gui.SluggiesGui: command prefix, root, queue, log
         self.loader = gui_grid.StateLoader(os.path.join(app.root_dir, gui_grid.STATE_REL))
         self.reader = None                 # (Popen, job or None) of a running --roster-state read
         self.nav = gui_grid.GridNav()
         self.popups = []                   # [(dim window, box window)], bottom first
-        self.textures = {}                 # (crop path, scale) -> texture tag; released on every re-read
+        self.textures = {}                 # texture key -> texture tag (``_texture``, ``_tile_texture``)
+        self._retired = {}                 # the last read's textures, until the redraw took what it still shows
         self.slot_buttons = []             # the slot level's working buttons (disabled while a command runs)
         self._name_handlers = []           # click handlers of the slot level's name (deleted with the levels)
         self.action = None                 # the action in progress (file dialog to confirm dialog), or None
@@ -223,6 +239,7 @@ class CharacterGridTab:
         self.on_pending_changed = []       # callbacks other tabs register (the Voices tab shows pending clips)
         self.on_state_read = []            # callbacks run after every successful read
         self._package = None               # (path, slot_zip.Staged) of the package being checked, until staged / closed
+        self._chain_marker_logged = None   # the unfinished-chain marker last written to the console
 
     # ------------------------------------------------------------------ build
     def build(self):
@@ -260,6 +277,10 @@ class CharacterGridTab:
                 dpg.add_loading_indicator(tag='grid_spinner', style=1, radius=1.6, show=False,
                                           color=(90, 200, 120, 255), secondary_color=(60, 120, 80, 255))
                 dpg.add_text('', tag='grid_status')
+            with dpg.group(horizontal=True, tag='grid_chain_marker', show=False):
+                # a chain that failed or was cut off midway (chain_marker.py): nothing was rolled back
+                dpg.add_button(label='Dismiss', callback=lambda: self._dismiss_chain_marker())
+                dpg.add_text('', tag='grid_chain_marker_text', color=_WARN, wrap=820)
             dpg.add_text('', tag='grid_note', color=_WARN, wrap=900)
             dpg.add_text('', tag='grid_reference', color=_CHANGED, wrap=900, show=False)
             dpg.add_child_window(tag='grid_cells', border=False, horizontal_scrollbar=True)
@@ -373,6 +394,7 @@ class CharacterGridTab:
         self.app.add_file_dialog('grid_sluggie_dialog', ('.sluggie',))
         self.app.add_file_dialog('grid_image_dialog', ('Images{' + ','.join(gui_grid.IMAGE_EXTENSIONS) + '}', '.*'))
         self.app.add_file_dialog('grid_anim_dialog', ('.anm', '.*'))
+        self.app.add_file_dialog('grid_slgmodel_dialog', ('.slgmodel', '.*'))   # Import .slgmodel...'s fallback
         for tag in ('grid_package_save_dialog', 'grid_package_load_dialog'):
             self.app.add_file_dialog(tag, (gui_grid.PACKAGE_EXTENSION, '.*'))
         dpg.add_texture_registry(tag='grid_dialog_textures')    # the icon dialog's; released when it closes
@@ -584,8 +606,16 @@ class CharacterGridTab:
             self.app.log_line(f'[options] could not save the setting: {exc}', _WARN)
 
     # ------------------------------------------------------------------ reading
-    def request_read(self):
-        if not self.loader.start():
+    def request_read(self, if_changed=False):
+        """Read the grid from the game files in the background. Not while a chain writes them (its end reads
+        anyway; a read in between sees half-written files and can hold ``main.dol`` open when the chain wants
+        to replace it). ``if_changed`` (a tab switch): not when the files are those of the loaded state."""
+        if self.app.writing():
+            return
+        signature = gui_grid.state_signature(self.app.root_dir)
+        if if_changed and self.loader.current(signature):
+            return
+        if not self.loader.start(signature):
             return                          # one runs; the refresh is queued
         self._show_status()
         command = [*self.app.command_prefix, '--roster-state']
@@ -619,12 +649,27 @@ class CharacterGridTab:
             self.app.output_queue.put(('grid_state', code, output))
         threading.Thread(target=work, daemon=True).start()
 
+    def _show_chain_marker(self):
+        """The note of a chain that did not finish, above the grid; logged once per marker."""
+        marker = chain_marker.read(self.app.root_dir)
+        if dpg.does_item_exist('grid_chain_marker'):
+            dpg.configure_item('grid_chain_marker', show=marker is not None)
+            dpg.set_value('grid_chain_marker_text', chain_marker.message(marker) if marker else '')
+        if marker is not None and marker != self._chain_marker_logged:
+            self.app.log_line(f'[character grid] {chain_marker.message(marker)}', _WARN)
+        self._chain_marker_logged = marker
+
+    def _dismiss_chain_marker(self):
+        chain_marker.clear(self.app.root_dir)
+        self._show_chain_marker()
+
     def stop_reader(self):
         """End a running grid read (the window closes): it must not go on running unattended."""
         reader = self.reader
         if reader is not None:
             self.app.end_process_tree(*reader)
 
+    @_draws
     def on_read_done(self, code, output):
         again = self.loader.finish(code, output)
         self._read_gecko()
@@ -638,10 +683,11 @@ class CharacterGridTab:
                 self.copied = None
         self._clear_popups()
         dpg.delete_item('grid_cells', children_only=True)
-        self._release_textures()
+        self._retire_textures()
         self._show_status()
         self._draw_grid()
         self._draw_popups()
+        self._drop_retired_textures()
         for callback in self.on_state_read:
             callback()
         if again:
@@ -681,6 +727,7 @@ class CharacterGridTab:
                 dpg.configure_item(spinner, show=busy)
                 dpg.set_value(status, self.work or self.loader.message)
         self._show_popup_spinner()
+        self._show_chain_marker()
         state = self.loader.state
         level = gui_grid.player_heap_level(state)
         if gui_grid.player_heap_is_big(level):
@@ -711,6 +758,7 @@ class CharacterGridTab:
             dpg.set_value('grid_reference', self.reference.line(state))
 
     # ------------------------------------------------------------------ level 0
+    @_draws
     def _draw_grid(self):
         dpg.delete_item('grid_cells', children_only=True)
         state = self.loader.state
@@ -766,6 +814,8 @@ class CharacterGridTab:
         the portraits."""
         name, draw = TILE_ICONS[op]
         key = (name,)
+        if key not in self.textures and key in self._retired:
+            self.textures[key] = self._retired.pop(key)
         if key not in self.textures:
             try:
                 image = draw(GRID_ICON)
@@ -838,7 +888,14 @@ class CharacterGridTab:
         """A static texture of a crop, scaled by a whole factor (nearest-neighbour); None when unreadable.
         ``badge``: a number drawn into the bottom right corner (the grid's slot count). ``split``: the display size
         ``(w, h)`` of a button with both markers (``_split_texture``; ``gecko``: its pending half red)."""
-        key = (path, scale, badge, split, gecko)
+        try:
+            stat = os.stat(path)
+        except OSError:
+            return None
+        # the file's time and size are in the key: a crop can change under the same name between two reads
+        key = (path, stat.st_mtime_ns, stat.st_size, scale, badge, split, gecko)
+        if key not in self.textures and key in self._retired:
+            self.textures[key] = self._retired.pop(key)            # unchanged since the last read: kept
         if key not in self.textures:
             try:
                 with Image.open(path) as png:
@@ -890,9 +947,21 @@ class CharacterGridTab:
         draw.rounded_rectangle((x0, y0, x0 + w, y0 + h), radius=2 * pad, fill=(20, 20, 24, 215))
         draw.text((x0 + 2 * pad - left, y0 + pad - top), text, font=font, fill=(255, 255, 255, 255))
 
-    def _release_textures(self):
-        dpg.delete_item('grid_textures', children_only=True)
+    @_draws
+    def _retire_textures(self):
+        """Before a redraw after a read (every item showing a texture is deleted by then): the textures made
+        so far are set aside. The redraw takes back the ones it still shows (same file, time, size and
+        decoration), so an unchanged portrait is not opened and uploaded again; ``_drop_retired_textures``
+        deletes the rest."""
+        self._retired.update(self.textures)
         self.textures = {}
+
+    @_draws
+    def _drop_retired_textures(self):
+        retired, self._retired = self._retired, {}
+        for tag in retired.values():
+            if dpg.does_item_exist(tag):
+                dpg.delete_item(tag)
 
     def _portrait_texture(self, cid, view, scale, badge=None, split=None, gecko=False):
         state = self.loader.state
@@ -1031,6 +1100,7 @@ class CharacterGridTab:
     def on_viewport_resize(self):
         self._draw_popups()
 
+    @_draws
     def _clear_popups(self):
         for dim, box in self.popups:
             for item in (box, dim):
@@ -1042,6 +1112,7 @@ class CharacterGridTab:
                 dpg.delete_item(registry)
         self._name_handlers = []
 
+    @_draws
     def _draw_popups(self):
         self._clear_popups()
         self.slot_buttons = []
@@ -1449,6 +1520,7 @@ class CharacterGridTab:
             dpg.configure_item('grid_mercy_rule_stage', enabled=stage and not locked)
             dpg.configure_item('grid_mercy_rule_reset', enabled=reset and not locked)
 
+    @_draws
     def _pending_changed(self):
         """Redraw what shows the pending list: the grid's markers, the open levels, the buttons."""
         self._prune_staged_icons()
@@ -2118,7 +2190,9 @@ class CharacterGridTab:
             staged = slot_zip.stage(path, cid, self.nav.state or self.loader.state, root,
                                     name_problem=lambda text: gui_grid.name_problem(text, font),
                                     can_portrait=gui_grid.can_replace_portrait)
-        except (slot_zip.PackageError, OSError) as exc:
+        except Exception as exc:  # noqa: BLE001 - a package from someone else: whatever is wrong with it is said
+            if not isinstance(exc, (slot_zip.PackageError, OSError)):
+                exc = slot_zip.PackageError(f'the package is damaged ({type(exc).__name__}: {exc})')
             self.app.log_line(f'[character grid] {os.path.basename(path)} was not loaded: {exc}', _WARN)
             self.action = 'ask'
             self._dialog(gui_grid.SlotDialog('Package not loaded', [(str(exc), gui_grid.ERROR),

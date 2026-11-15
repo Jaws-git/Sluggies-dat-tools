@@ -147,6 +147,24 @@ class WeightTests(unittest.TestCase):
         self.assertIn('vertex(es) have no weight', sre.unweighted_error('body', [4]))
         self.assertIsNone(sre.unweighted_error('body', []))
 
+    def test_remap_keeps_the_strongest_four_bones(self):
+        """More than four bones on a vertex did not work in-game: the weakest are left out, with a warning."""
+        parent_of = {b: None for b in range(1, 8)}
+        five = {1: 0.1, 2: 0.3, 3: 0.2, 4: 0.3, 5: 0.1}
+        remap = sre.remap_influences([{1: 1.0}, five, {1: 0.25, 2: 0.25, 3: 0.25, 4: 0.25}],
+                                     allowed=set(parent_of), parent_of=parent_of)
+        self.assertEqual(remap.limited, [1])
+        self.assertEqual(remap.weights[1], {2: 0.3, 4: 0.3, 3: 0.2, 1: 0.1})     # the tie 1 / 5: the lower id stays
+        self.assertEqual(remap.weights[2], {1: 0.25, 2: 0.25, 3: 0.25, 4: 0.25})
+        report = sre.remap_report(remap, 'body')
+        self.assertEqual(len(report), 1)
+        self.assertIn('1 vertex(es) were weighted to more than 4 bones', report[0])
+        # weights merged onto one ancestor count once
+        merged = sre.remap_influences([{1: 0.2, 2: 0.2, 3: 0.2, 4: 0.2, 6: 0.2}], allowed={1, 2, 3, 4},
+                                      parent_of={**parent_of, 6: 4})
+        self.assertEqual(merged.limited, [])
+        self.assertEqual(len(merged.weights[0]), 4)
+
     def test_unskinnable_bones_are_named_instead_of_unweighted(self):
         weights = [{2: 1.0}, {2: 0.5, 0: 0.5}, {}, {2: 0.0}, {4: 1.0}]
         bare, by_bone = sre.split_unweighted([0, 1, 2, 3], weights)

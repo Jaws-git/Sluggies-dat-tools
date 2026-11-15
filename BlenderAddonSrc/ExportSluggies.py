@@ -1,12 +1,14 @@
 import bpy
 import contextlib
 import copy
+import functools
 import json
 import math
 import os
 import re
 import shutil
 import struct
+import traceback
 from dataclasses import dataclass
 from bpy.props import BoolProperty, StringProperty
 from bpy_extras.io_utils import ExportHelper
@@ -193,35 +195,34 @@ def _facial_vertex_indices(attribute):
 
 
 def _encode_facial_key(
-    key, pose_zero_data, source_pose_data, indices, pose_index, quant_info,
+    key, basis_key, source_pose_data, indices, pose_index, quant_info,
     component_count, component_size,
 ):
+    """One pose array: pose zero holds the Basis key's positions, every later pose its key's offset from
+    the Basis key (*basis_key*), the same Basis this export writes as pose zero. Blender moves the relative
+    keys along when the Basis is edited, so measuring from the file's old pose zero put the Basis edit into
+    every pose a second time (Blender 5.2.2, 2026-11-15: a Basis edit of 0.5 came back as poses moved by
+    1.0)."""
     if component_size != 2 or component_count < 3:
         return None
     divisor = 1 << (quant_info & 0xF)
     stride = component_count * component_size
-    pose_zero_raw = _to_bytes(pose_zero_data)
     raw = bytearray(_to_bytes(source_pose_data))
-    if len(raw) != len(indices) * stride or len(pose_zero_raw) != len(indices) * stride:
+    if len(raw) != len(indices) * stride:
         return None
     for mapped_index, vertex_index in enumerate(indices):
         coordinate = key.data[vertex_index].co
         if pose_index == 0:
             values = coordinate
         else:
-            imported_pose_zero = struct.unpack_from(
-                '>3h', pose_zero_raw, mapped_index * stride
-            )
-            values = tuple(
-                coordinate[axis] - imported_pose_zero[axis] / divisor
-                for axis in range(3)
-            )
+            basis = basis_key.data[vertex_index].co
+            values = tuple(coordinate[axis] - basis[axis] for axis in range(3))
         for component, value in enumerate(values):
-            quantized = max(-32768, min(32767, round(value * divisor)))
-            struct.pack_into(
-                '>h', raw, mapped_index * stride + component * component_size,
-                quantized,
-            )
+            # Out of range or not finite raises, as every other position path does: clamping would flatten
+            # the shape onto the limit without a word.
+            offset = mapped_index * stride + component * component_size
+            raw[offset:offset + 2] = _pack_quantized_component(
+                value, divisor, f"shape key {key.name} vertex {vertex_index} {'xyz'[component]}")
     return bytes(raw)
 
 
@@ -253,10 +254,7 @@ def encode_facial_pose_edits(
         original_poses = position.get("PoseData", [])
         object_index = facial_object.get("ObjectIndex")
         pose_count = facial_object.get("PoseCount", facial_data.get("PoseCount", 0))
-        pose_zero_data = edited_lookup.get(
-            (object_index, 0), original_poses[0] if original_poses else None
-        )
-        if pose_zero_data is None:
+        if not original_poses:
             continue
         pose_edits = []
         for pose_index in range(pose_count):
@@ -268,11 +266,14 @@ def encode_facial_pose_edits(
             source_pose_data = edited_lookup.get(
                 (object_index, pose_index), original_poses[pose_index]
             )
-            edited_raw = _encode_facial_key(
-                key, pose_zero_data, source_pose_data, indices, pose_index,
-                quant_info, position.get("ComponentCount", 3),
-                position.get("ComponentSize", 2),
-            )
+            try:
+                edited_raw = _encode_facial_key(
+                    key, basis_key, source_pose_data, indices, pose_index,
+                    quant_info, position.get("ComponentCount", 3),
+                    position.get("ComponentSize", 2),
+                )
+            except ValueError as exc:
+                raise ValueError(f"{obj.name}: {exc}") from exc
             if edited_raw is None:
                 continue
             if edited_raw != _to_bytes(original_poses[pose_index]):
@@ -793,10 +794,14 @@ def _per_loop_normals(mesh, loop_indices):
     usable is always exported.
     """
     result = []
+    polygon_of_loop = None               # built for the first degenerate normal only (a loop does not name its face)
     for loop_idx in loop_indices:
         n = mesh.loops[loop_idx].normal
         if n.length_squared < 1e-8:
-            n = mesh.polygons[mesh.loops[loop_idx].polygon_index].normal
+            if polygon_of_loop is None:
+                polygon_of_loop = {
+                    index: polygon.index for polygon in mesh.polygons for index in polygon.loop_indices}
+            n = mesh.polygons[polygon_of_loop[loop_idx]].normal
         result.append((n[0], n[1], n[2]))
     return result
 
@@ -1059,6 +1064,10 @@ def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False, use_com
     )
 
     face_flat = [vi for tri in triangles for vi in tri.vertices]
+    if len(mesh.vertices) > 0x10000:
+        raise ValueError(
+            f"the mesh has {len(mesh.vertices):,} vertices; a submesh indexes at most 65,536. "
+            "Split it into several meshes or reduce it")
     faces_data = _from_bytes(struct.pack(f'>{len(face_flat)}H', *face_flat), use_compression)
 
     # Per-face texture index derived from Blender material slots.
@@ -1075,6 +1084,9 @@ def encode_mesh_hammerspace(obj, json_submesh, use_custom_normals=False, use_com
                     tex_idx = int(slot.material.name.rsplit('_mat', 1)[1])
                 except (IndexError, ValueError):
                     pass
+            if not 0 <= tex_idx <= 0xFFFF:
+                raise ValueError(
+                    f"material {slot.material.name}: TextureIndex {tex_idx} is not a texture index (0-65535)")
         mat_to_tex[slot_idx] = tex_idx
     face_tex_flat = [
         mat_to_tex.get(mesh.polygons[tri.polygon_index].material_index, 0)
@@ -1337,14 +1349,7 @@ def _candidate_rigid_retargets(candidates, model):
         if (not bd.get("Skinned")) and bd.get("GeoId") is not None and int(bd.get("GeoId", -1)) >= 0
     }
 
-    def _geo_raw(bd):
-        if bd.get("GeoIdRaw") is not None:
-            return int(bd["GeoIdRaw"])
-        if bd.get("Skinned"):
-            return GEO_ID_FREE
-        return int(bd.get("GeoId", GEO_ID_FREE))
-
-    bone_geo_raw = {bone_id: _geo_raw(bd) for bone_id, bd in bone_by_id.items()}
+    bone_geo_raw = {bone_id: _bone_geo_id_raw(bd) for bone_id, bd in bone_by_id.items()}
 
     target_bone_by_submesh = {}
     for sub_idx, from_bone_id in owner_bone_by_submesh.items():
@@ -1920,8 +1925,11 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
             parsed.sort(key=lambda x: -x[1])
 
             if len(parsed) > MAX_BONE_INFLUENCES_PER_VERTEX:
+                # The weakest weights are left out (quantize_skin_weights
+                # normalizes the rest); more bones did not work in-game.
                 overweighted.append((obj.name, v.index, len(parsed)))
-                continue
+                parsed.sort(key=lambda x: (-x[1], x[0]))
+                del parsed[MAX_BONE_INFLUENCES_PER_VERTEX:]
 
             v_idx = v.index
             global_idx = _sub_vtx_starts[sub_idx] + v_idx
@@ -2062,15 +2070,11 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
                     skacc_groups.setdefault(bone_id, []).append(
                         (sub_idx, v_idx, unit, v_idx, obj))
 
-    if overweighted:
-        detail = "; ".join(
-            f"{name} vertex {idx} ({count} bones)" for name, idx, count in overweighted
-        )
-        raise ValueError(
-            f"{len(overweighted)} vertex(es) exceed the {MAX_BONE_INFLUENCES_PER_VERTEX}-bone "
-            f"influence limit: {detail}. "
-            f"Remove some nonzero-weight bone_<id> vertex groups from these vertices."
-        )
+    by_object: dict[str, list[int]] = {}
+    for name, idx, _count in overweighted:
+        by_object.setdefault(name, []).append(idx)
+    for name, indices in by_object.items():
+        warnings.append(SkinnedRebuildExport.limited_warning(name, indices))
 
     if unweighted:
         detail = "; ".join(f"{name} vertex {idx}" for name, idx in unweighted)
@@ -2391,28 +2395,10 @@ def detect_length_mismatches(obj, json_submesh):
             f"(buffer {expected_vb_len} B → {actual_vb_len} B)"
         )
 
-    for ch in json_submesh.get("UVChannels", []):
-        ch_ind       = ch.get("UVChannelIndex", 0)
-        uv_comp      = ch.get("UVChannelCompCount", 2)
-        uv_quant     = ch.get("UVChannelQuantizeInfo", 0)
-        uv_cs        = 4 if (uv_quant >> 4) in [4, 7, 0xa] else 2
-        orig_uv_len  = ch.get("UVChannelLength", 0)
-        orig_uv_cnt  = orig_uv_len // (uv_comp * uv_cs) if uv_comp * uv_cs else 0
-        # Count distinct UV coords in the Blender layer via UVFacesData slot range
-        uv_faces_raw = ch.get("UVFacesData")
-        if uv_faces_raw:
-            import struct as _st
-            raw   = _to_bytes(uv_faces_raw)
-            n     = len(raw) // 2
-            slots = list(_st.unpack(f'>{n}H', raw))
-            new_uv_cnt = max(slots) + 1 if slots else 0
-        else:
-            new_uv_cnt = orig_uv_cnt
-        if new_uv_cnt != orig_uv_cnt:
-            issues.append(
-                f"UV channel {ch_ind} slot count changed: {orig_uv_cnt} → {new_uv_cnt}"
-            )
-
+    # UV edits need no check of their own here: a changed vertex count, a changed topology and a UV seam
+    # conflict are each found elsewhere. (A check that stood here compared the donor's UV array length with
+    # the donor's own highest face index, so a donor with an unused trailing UV slot failed it on every
+    # export and always went to Hammerspace.)
     return issues
 
 
@@ -3043,9 +3029,12 @@ def _armature_rest_pose(context, arm_obj):
     bind pose the game positions are relative to."""
     arm_data = arm_obj.data
     previous = arm_data.pose_position
-    arm_data.pose_position = 'REST'
-    context.view_layer.update()
+    if previous == 'REST':               # already there (the user's setting, or an enclosing use): nothing to do
+        yield
+        return
     try:
+        arm_data.pose_position = 'REST'
+        context.view_layer.update()
         yield
     finally:
         arm_data.pose_position = previous
@@ -3528,13 +3517,8 @@ def _empty_image_node_errors(objects):
     return errors
 
 
-def _bone_geo_id_raw(bone):
-    """Literal ACT GeoId of a BoneHierarchy entry (GEO_ID_FREE when mesh-free)."""
-    if bone.get("GeoIdRaw") is not None:
-        return int(bone["GeoIdRaw"])
-    if bone.get("Skinned"):
-        return GEO_ID_FREE
-    return int(bone.get("GeoId", GEO_ID_FREE))
+# Literal ACT GeoId of a BoneHierarchy entry (GEO_ID_FREE when mesh-free).
+_bone_geo_id_raw = RigidRebuildExport.bone_geo_id_raw
 
 
 def _rigid_vertex_bone_ids(obj):
@@ -4117,6 +4101,26 @@ def export_selection(context):
     return selected + shown, hidden
 
 
+def _reports_unexpected_errors(execute):
+    """For the export operator's ``execute``: an error no step expected becomes an error report Blender can
+    show (and CANCELLED) instead of a bare traceback; the traceback goes to the system console.
+    ``self._wrote_file`` (set by ``execute`` after the write) tells the user whether the file changed."""
+    @functools.wraps(execute)
+    def guarded(self, context):
+        self._wrote_file = False
+        try:
+            return execute(self, context)
+        except Exception as exc:  # noqa: BLE001 - the last line of defence of a 1,000-line export
+            traceback.print_exc()
+            state = ("The .sluggie file was already written; check it before patching."
+                     if self._wrote_file else "Nothing was written.")
+            self.report({"ERROR"},
+                f"Export failed with an unexpected error ({type(exc).__name__}: {exc}). {state} "
+                "The full traceback is in the system console (Window > Toggle System Console).")
+            return {"CANCELLED"}
+    return guarded
+
+
 class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
     bl_idname = "sluggies.export_json"
     bl_label = "Export Sluggers intermediate"
@@ -4177,6 +4181,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             return {"RUNNING_MODAL"}
         return super().invoke(context, event)
 
+    @_reports_unexpected_errors
     def execute(self, context):
         # --- load and sanity-check the source and target ---
         if not getattr(self, "filepath", "").strip():
@@ -4971,10 +4976,14 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 )
 
             rebuilt_objects = [p.obj for p in list(skinned_plans.values()) + list(rigid_plans.values())]
-            update_facial_pose_edits(
-                [obj for obj in candidates if not any(rebuilt is obj for rebuilt in rebuilt_objects)],
-                data, warnings,
-            )
+            try:
+                update_facial_pose_edits(
+                    [obj for obj in candidates if not any(rebuilt is obj for rebuilt in rebuilt_objects)],
+                    data, warnings,
+                )
+            except ValueError as exc:
+                self.report({"ERROR"}, f"Facial pose edit: {exc}")
+                return {"CANCELLED"}
             for rebuilt_plan in list(skinned_plans.values()) + list(rigid_plans.values()):
                 _drop_facial_edits_for_submesh(data, rebuilt_plan.submesh_index)
 
@@ -5140,7 +5149,13 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             else:
                 self.report({"INFO"}, f"Copied {source_path} to {target_path}")
 
-        FieldCodec.dump_sluggie(data, self.filepath)
+        try:
+            FieldCodec.dump_sluggie(data, self.filepath)
+        except OSError as exc:
+            self.report({"ERROR"},
+                f"Could not write {self.filepath}: {exc}. The file is as it was before the export.")
+            return {"CANCELLED"}
+        self._wrote_file = True
         # The scene now belongs to the written file (a new name, or the
         # target an armature with a lost source read): the next export,
         # Check Models and Texture slots use it.

@@ -15,13 +15,32 @@ from binfmt import (
     color_entry_size as _color_stride,
     comp_size as _comp_size,
     skn_direct_entry_problem,
-    u8 as _u8,
     u16 as _u16,
     u32 as _u32,
 )
+from ModelBlock import (
+    GPL_MAGIC,
+    HEADER_SIZE,
+    TEXTURE_BIND_STATE_ID,
+    TEXTURE_INDEX_MASK,
+    ActSection,
+    ArrayHeader,
+    Bone,
+    DisplayHeader,
+    DisplayState,
+    ModelBlock,
+    Sk1,
+    Sk2,
+    SkAcc,
+    SknSection,
+    SubmeshDescriptor,
+    SubmeshLayout,
+    TexDescriptor,
+    TexSection,
+    texture_payload_len,
+)
 from ModelFormat import CACHE_LINE_SIZE, align_up, compute_mem_clear_range, is_array_aligned
 
-GPL_MAGIC = 0x00B749E0
 _VECTOR_QUANTIZE_FORMATS = {0, 3, 4, 7, 0xA}
 _COLOR_QUANTIZE_FORMATS = {0, 1, 2, 3, 4, 5}
 
@@ -94,26 +113,6 @@ def _validate_quantized_payload_values(
                         f'component {component}: {value}'
                     )
                     return
-
-
-def _tpl_payload_len(fmt: int, width: int, height: int) -> int | None:
-    bits_per_pixel = {
-        0: 4,
-        1: 8,
-        2: 8,
-        3: 16,
-        4: 16,
-        5: 16,
-        6: 32,
-        8: 4,
-        9: 8,
-        10: 16,
-        14: 4,
-    }
-    bpp = bits_per_pixel.get(fmt)
-    if bpp is None:
-        return None
-    return (width * height * bpp) >> 3
 
 
 _ATTR_KEYS = (
@@ -269,7 +268,7 @@ class _ValidationState:
 
 def _validate_header(state: _ValidationState) -> dict[str, int]:
     block = state.block
-    if len(block) < 0x20:
+    if len(block) < HEADER_SIZE:
         state.fail(f'block too short for model header: {len(block)} bytes')
         return {}
 
@@ -277,15 +276,7 @@ def _validate_header(state: _ValidationState) -> dict[str, int]:
         first_word = _u32(block, 0x00)
         if first_word != 0:
             state.fail(f'header first word is 0x{first_word:08X}, expected 0')
-        pointers = {
-            'GPL': _u32(block, 0x04),
-            'ACT': _u32(block, 0x08),
-            'TEX': _u32(block, 0x0C),
-            'SKN': _u32(block, 0x10),
-            'ptr6': _u32(block, 0x14),
-            'ptr7': _u32(block, 0x18),
-            'ptr8': _u32(block, 0x1C),
-        }
+        pointers = ModelBlock(block).pointers()
     except struct.error as exc:
         state.fail(f'header parse failed: {type(exc).__name__}: {exc}')
         return {}
@@ -295,9 +286,9 @@ def _validate_header(state: _ValidationState) -> dict[str, int]:
         state.fail('GPL pointer is zero (required section missing)')
 
     populated = [value for value in pointers.values() if value]
-    valid_populated = [value for value in populated if 0x20 <= value < len(block)]
+    valid_populated = [value for value in populated if HEADER_SIZE <= value < len(block)]
     for section, pointer in pointers.items():
-        if pointer and not (0x20 <= pointer < len(block)):
+        if pointer and not (HEADER_SIZE <= pointer < len(block)):
             state.fail(f'{section} pointer outside block: 0x{pointer:X}')
 
     if populated != sorted(populated):
@@ -335,6 +326,8 @@ def _validate_gpl(
     gpl_start, _ = state.facts['section_ranges']['GPL']['start'], state.facts['section_ranges']['GPL']['end']
     block = state.block
 
+    # Read with the plain helpers, not through ModelBlock: a GPL pointer near
+    # the block end makes these reads fail, and the report quotes that error.
     try:
         magic = _u32(block, gpl_start)
         if magic != GPL_MAGIC:
@@ -346,51 +339,54 @@ def _validate_gpl(
         return
 
     desc_off = gpl_start + descriptor_ptr
-    if not state.in_bounds(desc_off, submesh_count * 8, 'GPL descriptor table'):
+    if not state.in_bounds(desc_off, submesh_count * SubmeshDescriptor.SIZE, 'GPL descriptor table'):
         return
 
+    model = ModelBlock(block)
     submesh_facts = []
 
     for submesh_index in range(submesh_count):
-        descriptor_off = desc_off + submesh_index * 8
+        descriptor = SubmeshDescriptor(model, desc_off + submesh_index * SubmeshDescriptor.SIZE)
         try:
-            layout_rel = _u32(block, descriptor_off)
+            layout_rel = descriptor.layout_ptr
         except struct.error as exc:
             state.fail(f'GPL descriptor[{submesh_index}] parse failed: {type(exc).__name__}: {exc}')
             continue
         layout_off = gpl_start + layout_rel
-        if not state.in_bounds(layout_off, 0x18, f'GPL submesh[{submesh_index}] layout'):
+        if not state.in_bounds(layout_off, SubmeshLayout.SIZE, f'GPL submesh[{submesh_index}] layout'):
             continue
 
+        layout = SubmeshLayout(model, layout_off)
         try:
-            pos_h = _u32(block, layout_off + 0x00)
-            col_h = _u32(block, layout_off + 0x04)
-            uv_h = _u32(block, layout_off + 0x08)
-            nor_h = _u32(block, layout_off + 0x0C)
-            dsp_h = _u32(block, layout_off + 0x10)
-            uv_count = _u8(block, layout_off + 0x14)
+            pos_h = layout.position_header_ptr
+            col_h = layout.color_header_ptr
+            uv_h = layout.uv_header_ptr
+            nor_h = layout.normal_header_ptr
+            dsp_h = layout.display_header_ptr
+            uv_count = layout.uv_count
         except struct.error as exc:
             state.fail(f'GPL submesh[{submesh_index}] layout fields failed: {type(exc).__name__}: {exc}')
             continue
 
         def hdr8(rel_off: int, label: str, layout_off: int = layout_off) -> tuple[int, int, int, int] | None:
             abs_off = layout_off + rel_off
-            if not state.in_bounds(abs_off, 8, label):
+            if not state.in_bounds(abs_off, ArrayHeader.SIZE, label):
                 return None
+            header = ArrayHeader(model, abs_off)
             try:
-                return _u32(block, abs_off), _u16(block, abs_off + 4), _u8(block, abs_off + 6), _u8(block, abs_off + 7)
+                return header.data_ptr, header.count, header.quantize_info, header.comp_count
             except struct.error as exc:
                 state.fail(f'{label} parse failed: {type(exc).__name__}: {exc}')
                 return None
 
         # GPL structures the skin write-back must never land on: an array
         # header there is overwritten every frame (skn_section.html#runtime-limits).
-        structure_ranges.append((f'sub{submesh_index}.layout', layout_off, layout_off + 0x18))
+        structure_ranges.append((f'sub{submesh_index}.layout', layout_off, layout_off + SubmeshLayout.SIZE))
         header_offsets = [('pos', pos_h), ('col', col_h)] + ([('nor', nor_h)] if nor_h else [])
-        header_offsets += [(f'uv{i}', uv_h + i * 0x10) for i in range(uv_count)]
+        header_offsets += [(f'uv{i}', uv_h + i * SubmeshLayout.UV_HEADER_STRIDE) for i in range(uv_count)]
         for header_name, header_rel in header_offsets:
             structure_ranges.append((f'sub{submesh_index}.{header_name}_header',
-                                   layout_off + header_rel, layout_off + header_rel + 8))
+                                   layout_off + header_rel, layout_off + header_rel + ArrayHeader.SIZE))
 
         pos = hdr8(pos_h, f'GPL submesh[{submesh_index}] position header')
         col = hdr8(col_h, f'GPL submesh[{submesh_index}] color header')
@@ -466,7 +462,7 @@ def _validate_gpl(
 
         uv_counts = [0] * 8
         for uv_index in range(uv_count):
-            uv_hdr_rel = uv_h + uv_index * 0x10
+            uv_hdr_rel = uv_h + uv_index * SubmeshLayout.UV_HEADER_STRIDE
             uv = hdr8(uv_hdr_rel, f'GPL submesh[{submesh_index}] uv[{uv_index}] header')
             if not uv:
                 continue
@@ -494,19 +490,20 @@ def _validate_gpl(
                     non_pos_ranges.append((f'sub{submesh_index}.uv{uv_index}', uv_abs, uv_abs + uv_size))
 
         dsp_header_abs = layout_off + dsp_h
-        if not state.in_bounds(dsp_header_abs, 0x0A, f'GPL submesh[{submesh_index}] display-state header'):
+        if not state.in_bounds(dsp_header_abs, DisplayHeader.SIZE, f'GPL submesh[{submesh_index}] display-state header'):
             continue
+        display_header = DisplayHeader(model, dsp_header_abs)
         try:
-            ds_table_rel = _u32(block, dsp_header_abs + 0x04)
-            ds_count = _u16(block, dsp_header_abs + 0x08)
+            ds_table_rel = display_header.state_table_ptr
+            ds_count = display_header.state_count
         except struct.error as exc:
             state.fail(f'GPL submesh[{submesh_index}] display-state header parse failed: {type(exc).__name__}: {exc}')
             continue
         ds_table_abs = layout_off + ds_table_rel
-        if not state.in_bounds(ds_table_abs, ds_count * 0x10, f'GPL submesh[{submesh_index}] display-state table'):
+        if not state.in_bounds(ds_table_abs, ds_count * DisplayState.SIZE, f'GPL submesh[{submesh_index}] display-state table'):
             continue
-        structure_ranges.append((f'sub{submesh_index}.ds_header', dsp_header_abs, dsp_header_abs + 0x0A))
-        structure_ranges.append((f'sub{submesh_index}.ds_table', ds_table_abs, ds_table_abs + ds_count * 0x10))
+        structure_ranges.append((f'sub{submesh_index}.ds_header', dsp_header_abs, dsp_header_abs + DisplayHeader.SIZE))
+        structure_ranges.append((f'sub{submesh_index}.ds_table', ds_table_abs, ds_table_abs + ds_count * DisplayState.SIZE))
 
         active_descriptors: list[dict] = []
         lighting_limit = nor_count if nor_count else (pos_count if pos_cc == 6 else 0)
@@ -526,12 +523,12 @@ def _validate_gpl(
         }
 
         for ds_index in range(ds_count):
-            ds_abs = ds_table_abs + ds_index * 0x10
+            display_state = DisplayState(model, ds_table_abs + ds_index * DisplayState.SIZE)
             try:
-                ds_id = _u8(block, ds_abs + 0x00)
-                setting = _u32(block, ds_abs + 0x04)
-                prim_rel = _u32(block, ds_abs + 0x08)
-                prim_len = _u32(block, ds_abs + 0x0C)
+                ds_id = display_state.id
+                setting = display_state.setting
+                prim_rel = display_state.primitive_ptr
+                prim_len = display_state.primitive_length
             except struct.error as exc:
                 state.fail(f'GPL submesh[{submesh_index}] ds[{ds_index}] parse failed: {type(exc).__name__}: {exc}')
                 continue
@@ -542,11 +539,11 @@ def _validate_gpl(
                     f'GPL submesh[{submesh_index}] ds[{ds_index}]',
                     state,
                 )
-            elif ds_id == 1:
+            elif ds_id == TEXTURE_BIND_STATE_ID:
                 state.facts.setdefault('gpl_texture_references', []).append({
                     'submesh': submesh_index,
                     'display_state': ds_index,
-                    'texture_index': setting & 0x1FFF,
+                    'texture_index': setting & TEXTURE_INDEX_MASK,
                 })
 
             if prim_rel and prim_len:
@@ -588,11 +585,12 @@ def _validate_tex(state: _ValidationState) -> None:
     tex_end = state.facts['section_ranges']['TEX']['end']
     block = state.block
 
-    if not state.in_bounds(tex_start, 4, 'TEX header'):
+    if not state.in_bounds(tex_start, TexSection.HEADER_SIZE, 'TEX header'):
         return
+    tex = TexSection(ModelBlock(block), tex_start)
     try:
-        texture_count = _u16(block, tex_start + 0x00)
-        clut_count = _u16(block, tex_start + 0x02)
+        texture_count = tex.count
+        clut_count = tex.clut_count
     except struct.error as exc:
         state.fail(f'TEX header parse failed: {type(exc).__name__}: {exc}')
         return
@@ -608,30 +606,30 @@ def _validate_tex(state: _ValidationState) -> None:
                 f'{texture_index} is outside TEX count {texture_count}'
             )
 
-    descriptor_table = tex_start + 4
-    if not state.in_bounds(descriptor_table, texture_count * 0x20, 'TEX descriptor table'):
+    descriptor_table = tex_start + TexSection.HEADER_SIZE
+    if not state.in_bounds(descriptor_table, texture_count * TexDescriptor.SIZE, 'TEX descriptor table'):
         return
 
-    data_start = descriptor_table + texture_count * 0x20
+    data_start = descriptor_table + texture_count * TexDescriptor.SIZE
     payload_ranges = []
     actual_clut_count = 0
 
     for index in range(texture_count):
-        desc_abs = descriptor_table + index * 0x20
-        if not state.in_bounds(desc_abs, 0x20, f'TEX descriptor[{index}]'):
+        descriptor = tex.descriptor(index)
+        if not state.in_bounds(descriptor.offset, TexDescriptor.SIZE, f'TEX descriptor[{index}]'):
             continue
         try:
-            image_ptr = _u32(block, desc_abs + 0x00)
-            palette_ptr = _u32(block, desc_abs + 0x04)
-            height = _u16(block, desc_abs + 0x08)
-            width = _u16(block, desc_abs + 0x0A)
-            fmt = _u8(block, desc_abs + 0x17)
-            palette_entries = _u16(block, desc_abs + 0x18)
+            image_ptr = descriptor.image_ptr
+            palette_ptr = descriptor.palette_ptr
+            height = descriptor.height
+            width = descriptor.width
+            fmt = descriptor.format
+            palette_entries = descriptor.palette_entries
         except struct.error as exc:
             state.fail(f'TEX descriptor[{index}] parse failed: {type(exc).__name__}: {exc}')
             continue
 
-        image_len = _tpl_payload_len(fmt, width, height)
+        image_len = texture_payload_len(fmt, width, height)
         if image_len is None:
             state.fail(f'TEX descriptor[{index}] uses unsupported format {fmt}')
             continue
@@ -715,8 +713,6 @@ def _validate_tex(state: _ValidationState) -> None:
             )
 
 
-_ACT_BONE_GEO_ID_OFFSET = 0x14
-_ACT_BONE_ID_OFFSET = 0x16
 _GEO_ID_FREE = 0xFFFF
 
 
@@ -745,15 +741,16 @@ def _validate_act_geo_ids(state: _ValidationState, gpl_submeshes: list[dict]) ->
         state.fail(f'{label}: ACT section too short (0x{act_end - act_start:X} bytes)')
         return
 
-    bone_count = _u16(block, act_start + 0x06)
-    root = _u32(block, act_start + 0x0C)
+    act = ActSection(ModelBlock(block), act_start)
+    bone_count = act.bone_count
+    root = act.root_ptr
 
     def node_words(addr: int) -> tuple[int, int, int, int] | None:
-        layout = act_start + addr
-        if addr <= 0 or layout + _ACT_BONE_ID_OFFSET + 2 > act_end:
+        if addr <= 0 or act_start + addr + Bone.LINKED_SIZE > act_end:
             state.fail(f'{label}: bone node 0x{addr:X} outside ACT section')
             return None
-        return struct.unpack_from('>4I', block, layout + 4)
+        bone = act.bone_at(addr)
+        return bone.previous_ptr, bone.next_ptr, bone.parent_ptr, bone.first_child_ptr
 
     owners: dict[int, list[int]] = {}
     visited: set[int] = set()
@@ -783,9 +780,9 @@ def _validate_act_geo_ids(state: _ValidationState, gpl_submeshes: list[dict]) ->
         words = node_words(addr)
         if words is None:
             return
-        layout = act_start + addr
-        geo_id = _u16(block, layout + _ACT_BONE_GEO_ID_OFFSET)
-        bone_id = _u16(block, layout + _ACT_BONE_ID_OFFSET)
+        bone = act.bone_at(addr)
+        geo_id = bone.geo_id
+        bone_id = bone.bone_id
         if geo_id != _GEO_ID_FREE:
             if geo_id >= len(gpl_submeshes):
                 state.fail(
@@ -1121,21 +1118,22 @@ def _validate_skn(
     skn_start = state.facts['section_ranges']['SKN']['start']
     skn_end = state.facts['section_ranges']['SKN']['end']
     block = state.block
-    if not state.in_bounds(skn_start, 0x24, 'SKN header'):
+    if not state.in_bounds(skn_start, SknSection.HEADER_SIZE, 'SKN header'):
         return
 
+    skn = SknSection(ModelBlock(block), skn_start)
     try:
-        n1 = _u16(block, skn_start + 0x00)
-        n2 = _u16(block, skn_start + 0x02)
-        na = _u16(block, skn_start + 0x04)
-        quantize_info = _u8(block, skn_start + 0x06)
-        sk1_ptr = _u32(block, skn_start + 0x08)
-        sk2_ptr = _u32(block, skn_start + 0x0C)
-        acc_ptr = _u32(block, skn_start + 0x10)
-        memclr_ptr = _u32(block, skn_start + 0x14)
-        memclr_size = _u32(block, skn_start + 0x18)
-        flush_ptr = _u32(block, skn_start + 0x1C)
-        flush_size = _u32(block, skn_start + 0x20)
+        n1 = skn.sk1_count
+        n2 = skn.sk2_count
+        na = skn.acc_count
+        quantize_info = skn.quantize_info
+        sk1_ptr = skn.sk1_ptr
+        sk2_ptr = skn.sk2_ptr
+        acc_ptr = skn.acc_ptr
+        memclr_ptr = skn.mem_clear_ptr
+        memclr_size = skn.mem_clear_size
+        flush_ptr = skn.flush_ptr
+        flush_size = skn.flush_count
     except struct.error as exc:
         state.fail(f'SKN header parse failed: {type(exc).__name__}: {exc}')
         return
@@ -1153,11 +1151,11 @@ def _validate_skn(
     accumulation_writes: set[int] = set()
 
     if sk1_ptr:
-        state.in_bounds(skn_start + sk1_ptr, n1 * 0x40, 'SK1 struct array')
+        state.in_bounds(skn_start + sk1_ptr, n1 * Sk1.SIZE, 'SK1 struct array')
     if sk2_ptr:
-        state.in_bounds(skn_start + sk2_ptr, n2 * 0x74, 'SK2 struct array')
+        state.in_bounds(skn_start + sk2_ptr, n2 * Sk2.SIZE, 'SK2 struct array')
     if acc_ptr:
-        state.in_bounds(skn_start + acc_ptr, na * 0x44, 'SKAcc struct array')
+        state.in_bounds(skn_start + acc_ptr, na * SkAcc.SIZE, 'SKAcc struct array')
 
     if flush_ptr and flush_size:
         flush_abs = skn_start + flush_ptr
@@ -1168,15 +1166,15 @@ def _validate_skn(
         skn_write_ends.append(memclr_ptr + memclr_size)
 
     for index in range(n1):
-        struct_abs = skn_start + sk1_ptr + index * 0x40
-        if not state.in_bounds(struct_abs, 0x40, f'SK1[{index}] struct'):
+        sk1 = skn.sk1(sk1_ptr, index)
+        if not state.in_bounds(sk1.offset, Sk1.SIZE, f'SK1[{index}] struct'):
             continue
         try:
-            src_ptr = _u32(block, struct_abs + 0x30)
-            gva = _u32(block, struct_abs + 0x34)
-            bone_indices.setdefault(_u16(block, struct_abs + 0x38), []).append(f'SK1[{index}]')
-            vertex_count = _u16(block, struct_abs + 0x3A)
-            vertex_offset = _u8(block, struct_abs + 0x3C)
+            src_ptr = sk1.source_ptr
+            gva = sk1.vertex_array_ptr
+            bone_indices.setdefault(sk1.bone_id, []).append(f'SK1[{index}]')
+            vertex_count = sk1.vertex_count
+            vertex_offset = sk1.vertex_offset
         except struct.error as exc:
             state.fail(f'SK1[{index}] parse failed: {type(exc).__name__}: {exc}')
             continue
@@ -1195,17 +1193,17 @@ def _validate_skn(
         skn_write_ends.append(direct_write_ends[-1])
 
     for index in range(n2):
-        struct_abs = skn_start + sk2_ptr + index * 0x74
-        if not state.in_bounds(struct_abs, 0x74, f'SK2[{index}] struct'):
+        sk2 = skn.sk2(sk2_ptr, index)
+        if not state.in_bounds(sk2.offset, Sk2.SIZE, f'SK2[{index}] struct'):
             continue
         try:
-            src_ptr = _u32(block, struct_abs + 0x60)
-            wt_ptr = _u32(block, struct_abs + 0x64)
-            gva = _u32(block, struct_abs + 0x68)
-            bone_indices.setdefault(_u16(block, struct_abs + 0x6C), []).append(f'SK2[{index}]')
-            bone_indices.setdefault(_u16(block, struct_abs + 0x6E), []).append(f'SK2[{index}]')
-            vertex_count = _u16(block, struct_abs + 0x70)
-            vertex_offset = _u8(block, struct_abs + 0x72)
+            src_ptr = sk2.source_ptr
+            wt_ptr = sk2.weight_ptr
+            gva = sk2.vertex_array_ptr
+            bone_indices.setdefault(sk2.bone_id_1, []).append(f'SK2[{index}]')
+            bone_indices.setdefault(sk2.bone_id_2, []).append(f'SK2[{index}]')
+            vertex_count = sk2.vertex_count
+            vertex_offset = sk2.vertex_offset
         except struct.error as exc:
             state.fail(f'SK2[{index}] parse failed: {type(exc).__name__}: {exc}')
             continue
@@ -1233,16 +1231,16 @@ def _validate_skn(
         skn_write_ends.append(direct_write_ends[-1])
 
     for index in range(na):
-        struct_abs = skn_start + acc_ptr + index * 0x44
-        if not state.in_bounds(struct_abs, 0x44, f'SKAcc[{index}] struct'):
+        acc = skn.acc(acc_ptr, index)
+        if not state.in_bounds(acc.offset, SkAcc.SIZE, f'SKAcc[{index}] struct'):
             continue
         try:
-            src_ptr = _u32(block, struct_abs + 0x30)
-            dst_ptr = _u32(block, struct_abs + 0x34)
-            gda = _u32(block, struct_abs + 0x38)
-            wt_ptr = _u32(block, struct_abs + 0x3C)
-            bone_indices.setdefault(_u16(block, struct_abs + 0x40), []).append(f'SKAcc[{index}]')
-            vertex_count = _u16(block, struct_abs + 0x42)
+            src_ptr = acc.source_ptr
+            dst_ptr = acc.destination_index_ptr
+            gda = acc.destination_array_ptr
+            wt_ptr = acc.weight_ptr
+            bone_indices.setdefault(acc.bone_id, []).append(f'SKAcc[{index}]')
+            vertex_count = acc.vertex_count
         except struct.error as exc:
             state.fail(f'SKAcc[{index}] parse failed: {type(exc).__name__}: {exc}')
             continue
@@ -1325,10 +1323,10 @@ def _validate_skn(
     # In-game evidence that the runtime depends on it beyond the per-entry
     # pointers: Luigi facial-posed neck vertices stretched when it broke.
     struct_end = max(
-        0x24,
-        sk1_ptr + n1 * 0x40 if sk1_ptr else 0,
-        sk2_ptr + n2 * 0x74 if sk2_ptr else 0,
-        acc_ptr + na * 0x44 if acc_ptr else 0,
+        SknSection.HEADER_SIZE,
+        sk1_ptr + n1 * Sk1.SIZE if sk1_ptr else 0,
+        sk2_ptr + n2 * Sk2.SIZE if sk2_ptr else 0,
+        acc_ptr + na * SkAcc.SIZE if acc_ptr else 0,
     )
     mirror_base = align_up(struct_end)
     off_mirror = [

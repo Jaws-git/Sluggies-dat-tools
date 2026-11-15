@@ -20,6 +20,7 @@ config (``derive.py``) to ``_gui/derived/roster.json`` plus its
 portraits; ``start.py --roster --state`` that file rebuilds the roster from it.
 """
 
+import struct
 import argparse
 import hashlib
 import json
@@ -85,19 +86,68 @@ def _open(output_dir: str):
     return image, datfile.DatFile(dat_path) if os.path.isfile(dat_path) else None
 
 
-def open_sound(output_dir: str):
-    """The output's sound archive (``Sound.brsar.Brsar``), or None when there is none (or it cannot be read)."""
+def read_sound(output_dir: str) -> tuple:
+    """``(archive, problem, retry)``: the output's sound archive (``Sound.brsar.Brsar``), or None with the reason
+    it cannot be read; ``retry``: the file is there but could not be opened (in use), so it is worth trying again."""
     try:
         from Sound import brsar
     except ImportError:
         from SluggiesTools.Sound import brsar
     path = os.path.join(output_dir, brsar.ARCHIVE)
     if not os.path.isfile(path):
-        return None
+        return None, f'{path} is missing', False
     try:
-        return brsar.Brsar.from_file(path)
-    except (OSError, brsar.BrsarError, ValueError, IndexError):
-        return None
+        return brsar.Brsar.from_file(path), None, False
+    except OSError as exc:
+        return None, f'{path} cannot be opened ({exc})', True
+    except (brsar.BrsarError, ValueError, IndexError, struct.error) as exc:
+        return None, f'{path} is damaged ({exc})', False
+
+
+def open_sound(output_dir: str):
+    """The output's sound archive (``Sound.brsar.Brsar``), or None when there is none (or it cannot be read)."""
+    return read_sound(output_dir)[0]
+
+
+# Set by the dispatcher (``--drop-voice-clips``) for the planners it runs: unreadable custom clips are dropped
+# without asking.
+DROP_CLIPS_ENV = 'SLUGGIES_DROP_VOICE_CLIPS'
+
+
+def derive_for_write(image, dat, output_dir: str, dry_run: bool = False) -> derive.Derived:
+    """``derive.derive`` for a planner whose chain rebuilds the roster. The custom voice clips live only in the
+    output sound archive, and the rebuild writes a new one from what was read: clips that cannot be read back
+    would be gone for good. So: an archive that is in use refuses (``DeriveError``, try again); a missing or
+    damaged one, or single unreadable clips, ask first (a ``danger`` prompt, never skipped; no answer counts as
+    no) unless ``DROP_CLIPS_ENV`` is set. A dry run writes nothing, so it only puts the notice in front of the
+    warnings."""
+    archive, problem, retry = read_sound(output_dir)
+    derived = derive.derive(image, dat, archive)
+    lost = derived.lost_clips
+    if not lost:
+        return derived
+    where = ', '.join(lost[:3]) + (f' and {len(lost) - 3} more' if len(lost) > 3 else '')
+    head = (f'{len(lost)} custom voice clip(s) cannot be read back ({where}): '
+            + (problem or 'the output sound archive does not hold them') + '.')
+    if retry:
+        raise derive.DeriveError(head + ' Close the program that has the file open (Dolphin?) and try again.')
+    if dry_run:
+        derived.warnings.insert(0, head + ' Writing this to the game will ask whether to drop them.')
+        return derived
+    if os.environ.get(DROP_CLIPS_ENV):
+        slogger.warning(head + ' Dropped (--drop-voice-clips).', source=SOURCE)
+        return derived
+    try:
+        answer = slogger.ask(head + ' The roster is rebuilt from what can be read, so going on removes these clips '
+                             'from the game for good (the voice packs in _gui/Sound_Packs are not touched). '
+                             'Go on without them? (y/n) ', kind='danger')
+    except EOFError:
+        answer = ''
+    if answer.strip().lower() not in ('y', 'yes'):
+        raise derive.DeriveError(head + ' Put the sound archive back, or run again with --drop-voice-clips to go '
+                                 'on without these clips.')
+    slogger.warning(head + ' Dropped (confirmed).', source=SOURCE)
+    return derived
 
 
 def run_derive(output_dir: str = OUTPUT_DIR) -> tuple[derive.Derived, str]:
