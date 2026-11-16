@@ -4445,8 +4445,25 @@ def _parse_textures(model: dict, use_compression: bool) -> TextureData:
     return texture_data
 
 
+def _donor_aligned_weights(entry: dict, use_compression: bool):
+    """``WeightDataEdited`` of a donor SK2/SKAcc entry when it can stand in for ``WeightData``, else None.
+
+    The field holds the entry's weights in the donor's order: an in-place export writes it on every entry,
+    a Hammerspace export on the entries with repainted weights. It is used only at the donor's length (an
+    in-place vertex-count edit shortens it, and only the in-place patcher applies that)."""
+    edited = entry.get('WeightDataEdited')
+    if edited is None or entry.get('VertexCntEdited') is not None:
+        return None
+    if len(_decode(edited, use_compression)) != len(_decode(entry['WeightData'], use_compression)):
+        raise ValueError(
+            f"WeightDataEdited of the skin entry of bone "
+            f"{entry.get('BoneIndex', entry.get('BoneIndex1'))} does not have the length of its WeightData")
+    return edited
+
+
 def _parse_skinning(model: dict, use_compression: bool, position_edit_submeshes: set) -> SkinningData | None:
-    """``SkinData``, with the edited payload of ``SkinDataEdited`` where the geometry was edited."""
+    """``SkinData``, with the edited payload of ``SkinDataEdited`` where the geometry was edited, and with
+    the weights of ``WeightDataEdited`` on the donor entries where the layout is kept."""
     # Use the ORIGINAL SkinData for structural ordering (bone indices,
     # gplVertexArr, vertex_offset) since the game engine depends on the
     # original SK entry order.  Substitute edited payload (bind-pose data,
@@ -4580,6 +4597,9 @@ def _parse_skinning(model: dict, use_compression: bool, position_edit_submeshes:
             else:
                 bp_src = s['BindPoseData']
                 wt_src = s['WeightData']
+            if position_edit_lists is not None or not (_geometry_edited and ed):
+                # The donor's slots are kept: repainted weights come from the donor-aligned field.
+                wt_src = _donor_aligned_weights(s, use_compression) or wt_src
             sk2s.append(SK2(
                 bone_index1                 = s['BoneIndex1'],
                 bone_index2                 = s['BoneIndex2'],
@@ -4609,6 +4629,8 @@ def _parse_skinning(model: dict, use_compression: bool, position_edit_submeshes:
             else:
                 bp_src = s['BindPoseData']
                 wt_src = s['WeightData']
+            if position_edit_lists is not None or not (_geometry_edited and ed):
+                wt_src = _donor_aligned_weights(s, use_compression) or wt_src
             dest_src = (
                 s['DestIndexData']
                 if position_edit_lists is not None

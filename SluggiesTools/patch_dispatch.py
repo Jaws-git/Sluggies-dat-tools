@@ -119,6 +119,15 @@ def hammerspace_section_args(model):
         for surface in rebuild.get('NewSurfaces') or []
     )
 
+    # Repainted skin weights on the donor's own entries (``WeightDataEdited`` at the donor's length: an
+    # in-place export, or a Hammerspace export of a body that keeps its layout) need the SKN builder.
+    skin = model.get('SkinData') or {}
+    skin_weights_edited = any(
+        entry.get('WeightDataEdited') is not None and entry.get('VertexCntEdited') is None
+        and decode_binary(entry['WeightDataEdited']) != decode_binary(entry.get('WeightData'))
+        for entry in (skin.get('SK2s') or []) + (skin.get('SKAccs') or [])
+    )
+
     args = []
     if model.get('DesiredTextureAssignments') or any(
         submesh.get('FaceSurfaceIdsEdited') is not None
@@ -132,6 +141,8 @@ def hammerspace_section_args(model):
             for submesh in changed_positions
         ) and model.get('SkinDataEdited')):
             args.extend(('--skn', 'build'))
+    if skin_weights_edited and '--skn' not in args:
+        args.extend(('--skn', 'build'))
 
     # New PNGs are appended to TEX whether or not the donor textures are
     # reimported (ReimportTextures only covers those).

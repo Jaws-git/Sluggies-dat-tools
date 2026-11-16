@@ -232,7 +232,7 @@ class TestWiring(unittest.TestCase):
         gate = 'ModelCheck.export_errors('
         self.assertIn(gate, source)
         self.assertLess(source.index(gate), source.index('encode_bone_hierarchy_edited(selected'))
-        self.assertIn('self.report({"INFO"}, size_line)', source)
+        self.assertIn('self.report({"INFO"}, run.size_line)', source)
 
     def test_dialog_shares_the_exporters_rules(self):
         # Check Models reports what the exporter refuses while encoding,

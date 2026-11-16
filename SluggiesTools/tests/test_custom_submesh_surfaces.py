@@ -419,7 +419,7 @@ class ExporterGlueTests(unittest.TestCase):
 
     def test_execute_resolves_additional_materials_with_the_primary_ones(self):
         source = tre.EXPORTER_PATH.read_text(encoding='utf-8')
-        execute = source[source.index('custom_texture_entries = []'):source.index('# --- Rigid rebuilds')]
+        execute = source[source.index('custom_texture_entries = []'):source.index('    def _plan_rebuilds(')]
         self.assertIn('_custom_submesh_additional_materials(obj)', execute)
         self.assertLess(execute.index('_custom_submesh_additional_materials(obj)'),
                         execute.index('_resolve_custom_submesh_texture_changes('))

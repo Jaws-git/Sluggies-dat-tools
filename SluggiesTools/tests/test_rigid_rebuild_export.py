@@ -656,8 +656,8 @@ class ExporterGlueTests(unittest.TestCase):
         self.assertIn('_find_new_materials(obj, target_submesh, submesh_index)', execute)
         self.assertIn('both belong to', execute)
         # A rebuilt submesh never gets FaceSurfaceIdsEdited; the pop precedes the encode.
-        self.assertLess(execute.index('target_submesh.pop("FaceSurfaceIdsEdited", None)\n                    written += 1'),
-                        execute.index('_encode_face_surface_assignment('))
+        self.assertLess(execute.index('target_submesh.pop("FaceSurfaceIdsEdited", None)\n            return True'),
+                        execute.index('self._encode_face_surface_edits(run, obj, target_submesh, surf_mat)'))
 
     def test_texture_resolver_skips_new_surface_materials(self):
         helpers = _load(EXPORTER_PATH, {'_resolve_material_texture_changes', '_connected_image_texture_nodes',

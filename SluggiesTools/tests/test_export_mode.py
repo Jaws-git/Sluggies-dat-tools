@@ -285,9 +285,10 @@ def _export_class():
 
 
 def _execute_source():
-    cls = _export_class()
-    return ast.unparse(next(node for node in cls.body
-                            if isinstance(node, ast.FunctionDef) and node.name == 'execute'))
+    # `execute` and the phase methods it runs, which follow it in the class in the order they run.
+    methods = [node for node in _export_class().body if isinstance(node, ast.FunctionDef)]
+    start = next(i for i, node in enumerate(methods) if node.name == 'execute')
+    return '\n'.join(ast.unparse(node) for node in methods[start:])
 
 
 class ExporterWiringTests(unittest.TestCase):
@@ -311,6 +312,10 @@ class ExporterWiringTests(unittest.TestCase):
     def test_in_place_attempt_runs_on_a_copy(self):
         source = _execute_source()
         self.assertIn('data = base_data if use_hammerspace else copy.deepcopy(base_data)', source)
+        # The pass's phases work on that copy, and on fresh copies of the notes.
+        self.assertIn('run.data, run.use_hammerspace = (data, use_hammerspace)', source)
+        self.assertIn('run.warnings, run.errors, run.infos = (list(base_warnings), list(base_errors), list(base_infos))',
+                      source)
 
     def test_in_place_skin_encoder_runs_only_without_mesh_reasons(self):
         source = _execute_source()

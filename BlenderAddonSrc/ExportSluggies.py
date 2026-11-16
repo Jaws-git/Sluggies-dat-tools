@@ -9,7 +9,7 @@ import re
 import shutil
 import struct
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from bpy.props import BoolProperty, StringProperty
 from bpy_extras.io_utils import ExportHelper
 
@@ -1375,6 +1375,13 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
     For SKAcc entries, any vertex can be freely removed since dest indices are
     explicit; duplicate-dest entries are always preserved verbatim.
 
+    Weights: a vertex that has its donor bones at unchanged weights keeps the
+    donor's bytes, so an export without changes writes the donor's weight
+    arrays. A vertex with changed weights gets its Blender weights
+    normalized to 256 units (``_changed_weight_units``, as in Hammerspace
+    mode), shared among the donor's bones of that vertex: only those have a
+    record to hold a weight.
+
     Writes into each SK entry:
     - 'BindPoseDataEdited'     (SK1 / SK2 / SKAcc)
     - 'WeightDataEdited'       (SK2 / SKAcc)
@@ -1459,6 +1466,39 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
         ):
             buf.extend(pack_val(val, f"{obj.name} vertex {local_v} {component}"))
         return bytes(buf)
+
+    # Weights, per vertex: the donor's own bytes while the vertex has its
+    # donor bones at unchanged weights, else the Blender weights normalized
+    # to 256 units (the rule of the Hammerspace encoder,
+    # _changed_weight_units). Only the donor's bones of a vertex can be
+    # stored in place, so the units are shared among those.
+    donor = _index_donor_skin(skin_data, vertex_size)
+    units_cache = {}
+
+    def weight_units(obj, local_v, global_v):
+        """``{bone_id: units of 256}`` of a vertex with changed weights, or
+        None when it keeps the donor's bytes."""
+        if global_v in units_cache:
+            return units_cache[global_v]
+        donor_totals = donor.weight_total.get(global_v, {})
+        parsed = []
+        for g in obj.data.vertices[local_v].groups:
+            if g.weight <= 0:
+                continue
+            bone_id = _parse_bone_group_name(obj.vertex_groups[g.group].name)
+            if bone_id is not None and bone_id in donor_totals:
+                parsed.append((bone_id, g.weight))
+        parsed.sort(key=lambda item: (-item[1], item[0]))
+        if not parsed:
+            units = {}
+        elif {bone_id for bone_id, _ in parsed} == set(donor_totals):
+            units = _changed_weight_units(parsed, donor_totals)
+        else:
+            units = {}
+            for bone_id, unit in quantize_skin_weights(parsed, target_sum=256):
+                units[bone_id] = units.get(bone_id, 0) + unit
+        units_cache[global_v] = units
+        return units
 
     wrote_any = False
 
@@ -1567,10 +1607,12 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
                 w2 = _get_vgroup_weight(obj, bone2_name, local_v)
                 if w1 > 0 or w2 > 0:
                     slot_src.append(encode_vertex(obj, local_v))
-                    slot_wt.append(bytes([
-                        max(0, min(255, round(w1 * 256))),
-                        max(0, min(255, round(w2 * 256))),
-                    ]))
+                    units = weight_units(obj, local_v, global_start + i)
+                    if units is None:
+                        slot_wt.append(bytes([orig_wt[i * 2], orig_wt[i * 2 + 1]]))
+                    else:
+                        # A pair bone at the full 256 units is stored as 255 (one byte).
+                        slot_wt.append(bytes([min(255, units.get(bone1, 0)), min(255, units.get(bone2, 0))]))
                     last_kept = i
                 else:
                     # Both bones removed — keep original for middle-ordering.
@@ -1609,6 +1651,7 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
         new_src  = bytearray()
         new_dest = bytearray()
         new_wt   = bytearray()
+        seen_dests = set()
 
         for i in range(n):
             di       = dest_idxs[i]
@@ -1616,17 +1659,26 @@ def encode_skin_weights_inplace(candidates, data, warnings, use_custom_normals=F
             obj, local_v = resolve(global_v)
 
             if di in dup_dests or obj is None:
-                # Preserve verbatim — dup-dest or unknown vertex.
+                # Preserve verbatim — dup-dest or unknown vertex. A dup-dest
+                # vertex with changed weights gets its weight on the first
+                # record and 0 on the others (one weight per bone in Blender).
+                units = weight_units(obj, local_v, global_v) if obj is not None else None
+                if units is None:
+                    weight = orig_wt[i]
+                else:
+                    weight = 0 if di in seen_dests else min(255, units.get(bone_id, 0))
                 new_src  += orig_src[i * vertex_size : (i + 1) * vertex_size]
                 new_dest += struct.pack('>H', di)
-                new_wt   += bytes([orig_wt[i]])
+                new_wt   += bytes([weight])
             else:
                 w = _get_vgroup_weight(obj, bone_name, local_v)
                 if w > 0:
+                    units = weight_units(obj, local_v, global_v)
                     new_src  += encode_vertex(obj, local_v)
                     new_dest += struct.pack('>H', di)
-                    new_wt   += bytes([max(0, min(255, round(w * 256)))])
+                    new_wt   += bytes([orig_wt[i] if units is None else min(255, units.get(bone_id, 0))])
                 # else: vertex removed from this SKAcc entry — skip entirely.
+            seen_dests.add(di)
 
         new_count = len(new_dest) // 2
         skacc["BindPoseDataEdited"]  = _from_bytes(bytes(new_src),  use_compression)
@@ -1730,6 +1782,666 @@ def skinned_donor_objects(candidates, data):
     return mapping
 
 
+def _skin_component_packer(quant_info):
+    """``pack(value, context)`` for one bind-pose component (position or
+    normal) in the quantization of ``SkinData.QuantizeInfo``."""
+    is_float = (quant_info >> 4) in [4, 7, 0xa]
+    divisor = 1 << (quant_info & 0xF)
+
+    def pack_val(v, context):
+        if is_float:
+            if not math.isfinite(float(v)):
+                raise ValueError(f"{context}: coordinate/component is not finite ({v})")
+            return struct.pack('>f', float(v))
+        return _pack_quantized_component(v, divisor, context)
+
+    return pack_val
+
+
+def _submesh_vertex_ranges(submeshes):
+    """``(starts, counts)``: the first global vertex index and the vertex
+    count of each submesh (for global <-> local mapping)."""
+    starts = []
+    counts = []
+    cumulative = 0
+    for sm in submeshes:
+        vb = sm["VertexBuffer"]
+        vb_cs = _comp_size_skin(vb["VertexBufferQuantizeInfo"])
+        count = vb["VertexBufferLength"] // (vb["VertexBufferCompCount"] * vb_cs)
+        starts.append(cumulative)
+        counts.append(count)
+        cumulative += count
+    return starts, counts
+
+
+@dataclass
+class _DonorSkinIndex:
+    """The donor SkinData, looked up by global vertex index.
+
+    ``membership`` is used to detect whether the Blender vertex groups
+    changed which bones influence a vertex; the entry maps and
+    ``skacc_weight`` replay the donor's role assignment for the vertices
+    whose bone set is unchanged.
+    """
+    vertex_stride: int               # 6 components (xyz + nxnynz) * component size
+    skinned_bone_ids: set            # bones with any SK1/SK2/SKAcc entry
+    sk1_entry_of: dict               # global vertex -> SK1s index
+    sk2_entry_of: dict               # global vertex -> SK2s index
+    first_sk1_entry_by_bone: dict    # bone id -> first SK1s index
+    first_sk2_entry_by_pair: dict    # (lo, hi) -> first SK2s index
+    membership: dict                 # global vertex -> {bone id}
+    skacc_weight: dict               # (bone id, global vertex) -> donor weight byte
+    weight_total: dict               # global vertex -> {bone id: units of 256, all its records summed}
+
+
+def _index_donor_skin(skin_data, vertex_stride):
+    """Build the ``_DonorSkinIndex`` of *skin_data*."""
+    # Only bones that already appear in the original SK data should feed the
+    # rebuild.  Non-skinned bones own static submesh geometry and have NO SK
+    # entries; their vertex groups must not be promoted to SK1/SK2/SKAcc entries
+    # or the new block will exceed the original's size even with no mesh changes.
+    index = _DonorSkinIndex(vertex_stride, set(), {}, {}, {}, {}, {}, {}, {})
+
+    def add_weight(vertex, bone_id, units):
+        totals = index.weight_total.setdefault(vertex, {})
+        totals[bone_id] = totals.get(bone_id, 0) + units
+
+    # entry-index maps (NOT bone-id maps): a bone can legitimately own more
+    # than one SK1/SK2 entry (different gplVertexArr destinations) — grouping
+    # by bone id alone would silently merge them and change the entry count
+    # even with no membership edit at all. Verified against production data:
+    # Luigi's bone 51 owns two separate SK1 entries.
+    # The first_* maps are the fallback target for a vertex reassigned TO a
+    # bone from elsewhere: reuse that bone's first existing entry rather than
+    # always minting a new one.
+    for idx, e in enumerate(skin_data.get('SK1s', [])):
+        index.skinned_bone_ids.add(e['BoneIndex'])
+        index.first_sk1_entry_by_bone.setdefault(e['BoneIndex'], idx)
+        first = (e['GplVertexArrValue'] + e.get('VertexOffset', 0)) // vertex_stride
+        for i in range(e['VertexCnt']):
+            index.sk1_entry_of[first + i] = idx
+            index.membership.setdefault(first + i, set()).add(e['BoneIndex'])
+            add_weight(first + i, e['BoneIndex'], 256)
+    for idx, e in enumerate(skin_data.get('SK2s', [])):
+        index.skinned_bone_ids.add(e['BoneIndex1'])
+        index.skinned_bone_ids.add(e['BoneIndex2'])
+        pair = (min(e['BoneIndex1'], e['BoneIndex2']), max(e['BoneIndex1'], e['BoneIndex2']))
+        index.first_sk2_entry_by_pair.setdefault(pair, idx)
+        first = (e['GplVertexArrValue'] + e.get('VertexOffset', 0)) // vertex_stride
+        pair_weights = _to_bytes(e['WeightData'])
+        for i in range(e['VertexCnt']):
+            index.sk2_entry_of[first + i] = idx
+            index.membership.setdefault(first + i, set()).update(
+                (e['BoneIndex1'], e['BoneIndex2']))
+            add_weight(first + i, e['BoneIndex1'], pair_weights[2 * i])
+            add_weight(first + i, e['BoneIndex2'], pair_weights[2 * i + 1])
+    # skacc_weight is the literal donor weight byte, for replaying an
+    # unchanged vertex's SKAcc contribution exactly rather than re-deriving
+    # it. Donor duplicate-dest (twist/blend) entries are handled separately
+    # by _restore_duplicate_dest_skaccs, so keeping only the first match
+    # here is fine.
+    for e in skin_data.get('SKAccs', []):
+        index.skinned_bone_ids.add(e['BoneIndex'])
+        n = e['VertexCnt']
+        if n == 0:
+            continue
+        dests = struct.unpack(f'>{n}H', _to_bytes(e['DestIndexData']))
+        weights = _to_bytes(e['WeightData'])
+        dest_base = e.get('GplDestArrValue', 0) // vertex_stride
+        for pos, di in enumerate(dests):
+            index.membership.setdefault(dest_base + di, set()).add(e['BoneIndex'])
+            index.skacc_weight.setdefault((e['BoneIndex'], dest_base + di), weights[pos])
+            add_weight(dest_base + di, e['BoneIndex'], weights[pos])
+    return index
+
+
+@dataclass
+class _SkinGroups:
+    """Result of classifying every vertex of the exported skinned meshes.
+
+    SK1/SK2 group keys are donor ENTRY INDEXES when a vertex keeps its
+    original entry's bone(s), falling back to the bone's/pair's first
+    existing entry, or a synthetic ('new_sk1', bone_id) / ('new_sk2', lo, hi)
+    key when reassigned to a bone/pair with no existing entry at all. This
+    preserves entry count for the (overwhelmingly common) no-membership-
+    change case, since a bone owning multiple separate SK1/SK2 entries must
+    not be silently merged into one.
+    """
+    sk1: dict = field(default_factory=dict)    # entry key -> [(sub_idx, local_v, obj)]
+    sk2: dict = field(default_factory=dict)    # entry key -> [(sub_idx, local_v, w_lo, w_hi, obj)]
+    skacc: dict = field(default_factory=dict)  # bone_id -> [(sub_idx, local_v, weight_unit, dest_local_v, obj)]
+    ignored_group_names: set = field(default_factory=set)
+    unweighted: list = field(default_factory=list)    # (object name, vertex index)
+    overweighted: list = field(default_factory=list)  # (object name, vertex index, influence count)
+    membership_edited: bool = False
+    # global vertex -> {bone id: units of 256}: bones unchanged, weights repainted
+    refreshed: dict = field(default_factory=dict)
+
+
+def _vertex_skin_influences(obj, v, skinned_bone_ids, groups, orig_bones):
+    """``[(bone_id, weight)]`` of vertex *v* from its ``bone_<id>`` groups,
+    strongest first and cut to the influence limit. Groups of bones the donor
+    does not skin are noted in *groups* and left out. A vertex that still has
+    exactly its donor bones (*orig_bones*) is not cut: original models hold up
+    to five bones on a vertex, in the donor's own layout."""
+    parsed = []
+    for vge in v.groups:
+        vg = obj.vertex_groups[vge.group]
+        if not vg.name.startswith("bone_") or vge.weight <= 0.0:
+            continue
+        try:
+            bone_id = int(vg.name[5:])
+        except ValueError:
+            continue
+        if bone_id not in skinned_bone_ids:
+            groups.ignored_group_names.add(vg.name)
+            continue
+        parsed.append((bone_id, vge.weight))
+    parsed.sort(key=lambda x: -x[1])
+
+    if len(parsed) > MAX_BONE_INFLUENCES_PER_VERTEX and {bone_id for bone_id, _ in parsed} != orig_bones:
+        # The weakest weights are left out (quantize_skin_weights
+        # normalizes the rest); more bones did not work in-game.
+        groups.overweighted.append((obj.name, v.index, len(parsed)))
+        parsed.sort(key=lambda x: (-x[1], x[0]))
+        del parsed[MAX_BONE_INFLUENCES_PER_VERTEX:]
+    return parsed
+
+
+def _changed_weight_units(parsed, donor_totals):
+    """``{bone_id: units of 256}`` when the weights of a vertex differ from
+    the donor's, else None. *parsed* is ``[(bone_id, weight)]`` on the donor's
+    bones, *donor_totals* ``{bone_id: units}``.
+
+    Unchanged means every weight still rounds to the donor's units (an
+    imported weight is units / 256, and original vertices need not sum to 256:
+    255 and 257 occur), or the weights give the donor's units once normalized
+    (all scaled alike). Changed weights are normalized to 256 units with the
+    largest-remainder rule, as for a rebuilt body.
+    """
+    if all(abs(weight * 256 - donor_totals.get(bone_id, 0)) < 0.5 for bone_id, weight in parsed):
+        return None
+    units: dict[int, int] = {}
+    for bone_id, unit in quantize_skin_weights(parsed, target_sum=256):
+        units[bone_id] = units.get(bone_id, 0) + unit
+    if all(units.get(bone_id, 0) == donor_totals.get(bone_id, 0) for bone_id, _ in parsed):
+        return None
+    return units
+
+
+def _replay_donor_roles(skin_data, donor, groups, parsed, global_idx, sub_idx, v_idx, obj):
+    """Classify a vertex whose bone set is unchanged from the donor.
+
+    Membership (WHICH bones influence a vertex) always comes from Blender's
+    current vertex groups. But the donor's choice of WHICH ROLE each bone
+    plays — SK2 pair partner vs. SKAcc supplement — is an authored structural
+    fact, not simply "the two heaviest weights": verified against production
+    data (Luigi), 103 vertices have a real 3rd (SKAcc) influence, and picking
+    the top-2-by-weight bones as the SK2 pair does NOT reliably reproduce the
+    donor's actual pair (Blender's re-imported weight order need not match
+    the donor's role assignment). So the donor's own role assignment is
+    replicated exactly here.
+
+    The weight bytes are the donor's own only while the weights are unchanged
+    too (``_changed_weight_units``); a repainted vertex gets its Blender
+    weights in the donor's roles and is noted in ``groups.refreshed``. A bone
+    whose share rounds to nothing keeps its record with weight 0, so the
+    entries stay the donor's.
+    """
+    units = _changed_weight_units(parsed, donor.weight_total.get(global_idx, {}))
+    if units is not None and global_idx not in donor.sk1_entry_of:
+        # An SK1 vertex has no weight record of its own to rewrite.
+        groups.refreshed[global_idx] = units
+    else:
+        units = None
+
+    def replay_skaccs(bone_ids):
+        for bone_id in bone_ids:
+            byte = donor.skacc_weight.get((bone_id, global_idx))
+            if byte is not None:
+                if units is not None:
+                    byte = min(255, units.get(bone_id, 0))
+                groups.skacc.setdefault(bone_id, []).append((sub_idx, v_idx, byte, v_idx, obj))
+
+    if global_idx in donor.sk2_entry_of:
+        entry_idx = donor.sk2_entry_of[global_idx]
+        e = skin_data['SK2s'][entry_idx]
+        b_lo = min(e['BoneIndex1'], e['BoneIndex2'])
+        b_hi = max(e['BoneIndex1'], e['BoneIndex2'])
+        first = (e['GplVertexArrValue'] + e.get('VertexOffset', 0)) // donor.vertex_stride
+        k = global_idx - first
+        wt_bytes = _to_bytes(e['WeightData'])
+        w1_byte, w2_byte = wt_bytes[2 * k], wt_bytes[2 * k + 1]
+        w_lo, w_hi = (w1_byte, w2_byte) if e['BoneIndex1'] <= e['BoneIndex2'] else (w2_byte, w1_byte)
+        if units is not None:
+            # A pair bone at the full 256 units is stored as 255 (one byte).
+            w_lo, w_hi = min(255, units.get(b_lo, 0)), min(255, units.get(b_hi, 0))
+        groups.sk2.setdefault(entry_idx, []).append((sub_idx, v_idx, w_lo, w_hi, obj))
+        replay_skaccs(b for b, _ in parsed if b not in (b_lo, b_hi))
+        return
+
+    if global_idx in donor.sk1_entry_of:
+        entry_idx = donor.sk1_entry_of[global_idx]
+        sk1_bone = skin_data['SK1s'][entry_idx]['BoneIndex']
+        groups.sk1.setdefault(entry_idx, []).append((sub_idx, v_idx, obj))
+        replay_skaccs(b for b, _ in parsed if b != sk1_bone)
+        return
+
+    # SKAcc-only vertex: no SK1/SK2 primary in the donor at all.
+    replay_skaccs(b for b, _ in parsed)
+
+
+def _assign_edited_roles(skin_data, donor, groups, parsed, orig_bones, global_idx, sub_idx, v_idx, obj):
+    """Classify a vertex whose bone set differs from the donor's.
+
+    There is no donor role assignment to replicate, so quantize fresh — but
+    keep the vertex in its donor skinning CATEGORY (SK1 / SK2 /
+    accumulation-only) whenever the new bone set allows it. The build tool
+    lays entries out without reordering vertices, and donor data never lets
+    an SK1/SK2 entry share a 32-byte cache line with another entry or with an
+    accumulation-only slot (verified across all 361 skinned models), so a
+    category change mid-entry cannot be laid out.
+    """
+    new_bones = {bone_id for bone_id, _ in parsed}
+    quantized = quantize_skin_weights(parsed, target_sum=256)
+    merged: dict[int, int] = {}
+    for bone_id, unit in quantized:
+        merged[bone_id] = merged.get(bone_id, 0) + unit
+
+    donor_sk1 = donor.sk1_entry_of.get(global_idx)
+    donor_sk2 = donor.sk2_entry_of.get(global_idx)
+    if donor_sk1 is None and donor_sk2 is None and orig_bones:
+        # Donor accumulation-only vertex: its slot lives in the memClr
+        # tail, so every influence stays an SKAcc contribution. A lone
+        # full-weight bone clamps 256 -> 255 (same MVP loss as SK2).
+        for bone_id, unit in sorted(merged.items()):
+            groups.skacc.setdefault(bone_id, []).append(
+                (sub_idx, v_idx, min(255, unit), v_idx, obj))
+        return
+
+    if len(parsed) == 1:
+        bone_id = parsed[0][0]
+        sk1_key = donor_sk1
+        if sk1_key is None or skin_data['SK1s'][sk1_key]['BoneIndex'] != bone_id:
+            sk1_key = donor.first_sk1_entry_by_bone.get(bone_id, ('new_sk1', bone_id))
+        groups.sk1.setdefault(sk1_key, []).append((sub_idx, v_idx, obj))
+        return
+
+    # SK2 pair: the donor's surviving direct bone(s) first, then the
+    # bones that replaced lost ones, then the rest by weight — so a
+    # remapped SKAcc supplement bone stays a supplement.
+    ranked = [bone_id for bone_id, _ in parsed]
+    if donor_sk2 is not None:
+        donor_pair = skin_data['SK2s'][donor_sk2]
+        survivors = [b for b in (donor_pair['BoneIndex1'], donor_pair['BoneIndex2'])
+                     if b in new_bones]
+    elif donor_sk1 is not None:
+        donor_bone = skin_data['SK1s'][donor_sk1]['BoneIndex']
+        survivors = [donor_bone] if donor_bone in new_bones else []
+    else:
+        survivors = []
+    replacements = [b for b in ranked if b not in orig_bones]
+    top_bones = []
+    for bone_id in survivors + replacements + ranked:
+        if bone_id not in top_bones:
+            top_bones.append(bone_id)
+    top_bones = top_bones[:2]
+    b_lo, b_hi = min(top_bones), max(top_bones)
+    # A single dominant bone can legitimately claim the full 256-unit
+    # budget (e.g. the second influence quantizes to zero); clamping
+    # to 255 here loses at most 1/256 of a unit — accepted for MVP
+    # rather than reclassifying the vertex as SK1 after the fact.
+    w_lo = min(255, merged.get(b_lo, 0))
+    w_hi = min(255, merged.get(b_hi, 0))
+    sk2_key = donor.first_sk2_entry_by_pair.get((b_lo, b_hi), ('new_sk2', b_lo, b_hi))
+    groups.sk2.setdefault(sk2_key, []).append((sub_idx, v_idx, w_lo, w_hi, obj))
+
+    if len(parsed) > 2:
+        for bone_id, unit in quantized:
+            if bone_id in (b_lo, b_hi):
+                continue
+            groups.skacc.setdefault(bone_id, []).append((sub_idx, v_idx, unit, v_idx, obj))
+
+
+def _classify_skin_vertices(obj_to_sub, skin_data, donor, sub_vtx_starts):
+    """Sort every vertex of the exported skinned meshes into SK1 / SK2 /
+    SKAcc groups (see ``encode_skin_hammerspace`` for the rules)."""
+    groups = _SkinGroups()
+    for _, (sub_idx, obj) in obj_to_sub.items():
+        for v in obj.data.vertices:
+            v_idx = v.index
+            global_idx = sub_vtx_starts[sub_idx] + v_idx
+            orig_bones = donor.membership.get(global_idx, set())
+            parsed = _vertex_skin_influences(obj, v, donor.skinned_bone_ids, groups, orig_bones)
+
+            if not parsed:
+                # Real donor models legitimately leave some submesh-0
+                # vertices with no SK1/SK2/SKAcc coverage at all (static/
+                # unused position slots) — that is not an error. Only a
+                # vertex that DID have a donor bone influence and lost it
+                # is a genuine regression worth rejecting.
+                if orig_bones:
+                    groups.unweighted.append((obj.name, v_idx))
+                    groups.membership_edited = True
+                continue
+
+            # Only a vertex whose bone set actually changed falls back to the
+            # general influence-count heuristic; an unchanged one replays the
+            # donor's roles, with the donor's weight bytes unless the weights
+            # were repainted.
+            if {bone_id for bone_id, _ in parsed} == orig_bones:
+                _replay_donor_roles(skin_data, donor, groups, parsed, global_idx, sub_idx, v_idx, obj)
+            else:
+                groups.membership_edited = True
+                _assign_edited_roles(
+                    skin_data, donor, groups, parsed, orig_bones, global_idx, sub_idx, v_idx, obj)
+    return groups
+
+
+def _report_skin_classification(groups, warnings):
+    """Add the classification warnings; raise ``ValueError`` when a vertex
+    lost every donor bone influence."""
+    by_object: dict[str, list[int]] = {}
+    for name, idx, _count in groups.overweighted:
+        by_object.setdefault(name, []).append(idx)
+    for name, indices in by_object.items():
+        warnings.append(SkinnedRebuildExport.limited_warning(name, indices))
+
+    if groups.unweighted:
+        detail = "; ".join(f"{name} vertex {idx}" for name, idx in groups.unweighted)
+        ignored_detail = (
+            f" Ignored vertex groups (not donor-skinned bones): "
+            f"{', '.join(sorted(groups.ignored_group_names))}."
+            if groups.ignored_group_names else ""
+        )
+        raise ValueError(
+            f"{len(groups.unweighted)} vertex(es) have no valid donor bone influence: "
+            f"{detail}.{ignored_detail}"
+        )
+
+    for name in sorted(groups.ignored_group_names):
+        warnings.append(
+            f"Vertex group '{name}' does not resolve to a donor-skinned bone; ignored.")
+
+
+def _restore_duplicate_dest_skaccs(skin_data, skacc_groups, obj_to_sub,
+                                   sub_vtx_starts, sub_vtx_counts, vertex_stride, warnings, refreshed):
+    """Rebuild the donor SKAcc entries that accumulate twice onto one dest slot.
+
+    A Blender vertex group holds only one weight per (vertex, bone), so such
+    entries cannot survive the round trip. They are rebuilt in *skacc_groups*
+    from the donor dest/weight arrays, taking only the bind-pose source from
+    Blender. A vertex with repainted weights (*refreshed*) gets its new
+    weight on its first record and 0 on the others.
+    """
+    obj_by_sub = {sub_idx: obj for _, (sub_idx, obj) in obj_to_sub.items()}
+
+    def resolve_global_vertex(global_idx):
+        for sub_idx, start in enumerate(sub_vtx_starts):
+            if start <= global_idx < start + sub_vtx_counts[sub_idx]:
+                obj = obj_by_sub.get(sub_idx)
+                if obj is None:
+                    return None
+                local = global_idx - start
+                if local >= len(obj.data.vertices):
+                    return None
+                return sub_idx, local, obj
+        return None
+
+    for e in skin_data.get('SKAccs', []):
+        n = e['VertexCnt']
+        if n == 0:
+            continue
+        dests = list(struct.unpack(f'>{n}H', _to_bytes(e['DestIndexData'])))
+        if len(set(dests)) == n:
+            continue
+        weights = _to_bytes(e['WeightData'])
+        dest_base = e.get('GplDestArrValue', 0) // vertex_stride
+        current = {sub_vtx_starts[entry[0]] + entry[1]
+                   for entry in skacc_groups.get(e['BoneIndex'], [])}
+        if current != {dest_base + di for di in dests}:
+            # This bone's accumulation membership was edited: restoring the
+            # donor entry would silently undo the edit (or resurrect a bone
+            # that lost every vertex), so keep the Blender-built entry.
+            warnings.append(
+                f"SKAcc bone {e['BoneIndex']}: membership edited, duplicate dest "
+                f"slots (donor 255+1 weights) rebuilt from Blender weights")
+            continue
+        rebuilt = []
+        seen = set()
+        for di, w in zip(dests, weights):
+            loc = resolve_global_vertex(dest_base + di)
+            if loc is None:
+                rebuilt = None
+                break
+            units = refreshed.get(dest_base + di)
+            if units is not None:
+                w = 0 if di in seen else min(255, units.get(e['BoneIndex'], 0))
+            seen.add(di)
+            sub_idx, local_v, obj = loc
+            rebuilt.append((sub_idx, local_v, w, di, obj))
+        if rebuilt is None:
+            warnings.append(
+                f"SKAcc bone {e['BoneIndex']}: duplicate dest slots could not be "
+                f"resolved to mesh vertices; entry left as rebuilt from Blender")
+            continue
+        skacc_groups[e['BoneIndex']] = rebuilt
+
+
+def _donor_aligned_weight_edits(skin_data, vertex_stride, refreshed, use_compression):
+    """``[(donor SK2/SKAcc entry, WeightDataEdited)]`` for the entries that
+    hold a vertex with repainted weights (*refreshed*).
+
+    The array has the donor's length and order, so the Hammerspace builder
+    can put it in place of ``WeightData`` without touching the layout: it is
+    the field an in-place export writes. A vertex that an SKAcc entry writes
+    twice gets its weight on the first record and 0 on the others.
+    """
+    edits = []
+    if not refreshed:
+        return edits
+    for e in skin_data.get('SK2s', []):
+        first = (e['GplVertexArrValue'] + e.get('VertexOffset', 0)) // vertex_stride
+        weights = bytearray(_to_bytes(e['WeightData']))
+        donor_weights = bytes(weights)
+        for i in range(e['VertexCnt']):
+            units = refreshed.get(first + i)
+            if units is not None:
+                weights[2 * i] = min(255, units.get(e['BoneIndex1'], 0))
+                weights[2 * i + 1] = min(255, units.get(e['BoneIndex2'], 0))
+        if weights != donor_weights:
+            edits.append((e, _from_bytes(bytes(weights), use_compression)))
+    for e in skin_data.get('SKAccs', []):
+        n = e['VertexCnt']
+        if n == 0:
+            continue
+        dests = struct.unpack(f'>{n}H', _to_bytes(e['DestIndexData']))
+        weights = bytearray(_to_bytes(e['WeightData']))
+        donor_weights = bytes(weights)
+        dest_base = e.get('GplDestArrValue', 0) // vertex_stride
+        seen = set()
+        for pos, di in enumerate(dests):
+            units = refreshed.get(dest_base + di)
+            if units is not None:
+                weights[pos] = 0 if di in seen else min(255, units.get(e['BoneIndex'], 0))
+            seen.add(di)
+        if weights != donor_weights:
+            edits.append((e, _from_bytes(bytes(weights), use_compression)))
+    return edits
+
+
+def _encode_skin_source(entries, pack_val, custom_normals_cache, use_compression):
+    """BindPoseData (position + normal per member) of one SK entry."""
+    raw = bytearray()
+    for entry in entries:
+        obj_ref = entry[-1]
+        v       = obj_ref.data.vertices[entry[1]]
+        _cn     = custom_normals_cache.get(id(obj_ref))
+        nx, ny, nz = (_cn[v.index].x, _cn[v.index].y, _cn[v.index].z) if _cn is not None else (v.normal.x, v.normal.y, v.normal.z)
+        for component, val in zip(
+            ('x', 'y', 'z', 'nx', 'ny', 'nz'),
+            (v.co.x, v.co.y, v.co.z, nx, ny, nz),
+        ):
+            raw += pack_val(
+                val,
+                f"{obj_ref.name} vertex {v.index} SKN {component}",
+            )
+    return _from_bytes(bytes(raw), use_compression)
+
+
+def _build_skin_entries(skin_data, groups, encode_src, use_compression):
+    """``(SK1s, SK2s, SKAccs)`` entry lists of SkinDataEdited from *groups*.
+
+    ``groups.sk1`` / ``groups.sk2`` keys are either a donor SK1s/SK2s entry
+    INDEX (int) or a ('new_sk1', bone_id) / ('new_sk2', lo, hi) sentinel for
+    a bone/pair with no existing donor entry. Each key is resolved back to
+    its BoneIndex(es)/GplVertexArrValue: an existing entry's GPL value is a
+    harmless best-effort hint for the no-membership-change case (Geometry
+    Rebuild recomputes it unconditionally whenever MembershipEdited is set),
+    and a synthetic entry gets a 0 placeholder — never read as final data
+    either.
+    """
+    orig_sk1s_list = skin_data.get('SK1s', [])
+    orig_sk2s_list = skin_data.get('SK2s', [])
+
+    def _sk1_identity(key):
+        if isinstance(key, int):
+            e = orig_sk1s_list[key]
+            return e['BoneIndex'], e.get('GplVertexArrValue', 0)
+        return key[1], 0  # ('new_sk1', bone_id)
+
+    def _sk2_identity(key):
+        if isinstance(key, int):
+            e = orig_sk2s_list[key]
+            b_lo = min(e['BoneIndex1'], e['BoneIndex2'])
+            b_hi = max(e['BoneIndex1'], e['BoneIndex2'])
+            return b_lo, b_hi, e.get('GplVertexArrValue', 0)
+        return key[1], key[2], 0  # ('new_sk2', lo, hi)
+
+    _orig_skacc_gda = {
+        e['BoneIndex']: e.get('GplDestArrValue', 0)
+        for e in skin_data.get('SKAccs', [])
+    }
+
+    # VertexIndices: skinned position-slot index of each member, in payload
+    # order. The build tool splits an entry into contiguous runs from these
+    # instead of value-matching bind-pose records (ambiguous for duplicates).
+    def encode_vertex_indices(entries):
+        return _from_bytes(
+            struct.pack(f'>{len(entries)}H', *(entry[1] for entry in entries)), use_compression)
+
+    new_sk1s = []
+    for key in sorted(groups.sk1, key=lambda k: _sk1_identity(k)[0]):
+        entries = groups.sk1[key]
+        bone_id, gpl_value = _sk1_identity(key)
+        new_sk1s.append({
+            "BoneIndex": bone_id,
+            "VertexCnt": len(entries),
+            "BindPoseData": encode_src(entries),
+            "VertexIndices": encode_vertex_indices(entries),
+            "GplVertexArrValue": gpl_value,
+        })
+
+    new_sk2s = []
+    for key in sorted(groups.sk2, key=lambda k: _sk2_identity(k)[:2]):
+        entries = groups.sk2[key]
+        b_lo, b_hi, gpl_value = _sk2_identity(key)
+        wt = bytearray()
+        for e in entries:
+            wt.append(max(0, min(255, e[2])))
+            wt.append(max(0, min(255, e[3])))
+        new_sk2s.append({
+            "BoneIndex1": b_lo, "BoneIndex2": b_hi,
+            "VertexCnt": len(entries),
+            "BindPoseData": encode_src(entries),
+            "WeightData": _from_bytes(bytes(wt), use_compression),
+            "VertexIndices": encode_vertex_indices(entries),
+            "GplVertexArrValue": gpl_value,
+        })
+
+    new_skaccs = []
+    for bone_id, entries in sorted(groups.skacc.items()):
+        wt   = bytearray()
+        dest = bytearray()
+        for e in entries:
+            wt   += bytes([max(0, min(255, e[2]))])
+            dest += struct.pack('>H', e[3])
+        new_skaccs.append({
+            "BoneIndex": bone_id, "VertexCnt": len(entries),
+            "BindPoseData":   encode_src(entries),
+            "WeightData":    _from_bytes(bytes(wt), use_compression),
+            "DestIndexData": _from_bytes(bytes(dest), use_compression),
+            "GplDestArrValue": _orig_skacc_gda.get(bone_id, 0),
+        })
+
+    return new_sk1s, new_sk2s, new_skaccs
+
+
+def _skin_size_message(skin_data, candidate_edited, flush_ind_size):
+    """The export note on how the rebuilt SKN block's size compares with the
+    donor's, or ``None`` when it is the same."""
+    orig_size = _skn_block_size(skin_data)
+    edit_size = _skn_block_size(candidate_edited, flush_ind_size=flush_ind_size)
+
+    # Per-category vertex totals — used in both feedback paths.
+    orig_sk1s   = skin_data.get('SK1s',   [])
+    orig_sk2s   = skin_data.get('SK2s',   [])
+    orig_skaccs = skin_data.get('SKAccs', [])
+    new_sk1s    = candidate_edited['SK1s']
+    new_sk2s    = candidate_edited['SK2s']
+    new_skaccs  = candidate_edited['SKAccs']
+    orig_v1 = sum(e['VertexCnt'] for e in orig_sk1s)
+    orig_v2 = sum(e['VertexCnt'] for e in orig_sk2s)
+    orig_v3 = sum(e['VertexCnt'] for e in orig_skaccs)
+    edit_v1 = sum(e['VertexCnt'] for e in new_sk1s)
+    edit_v2 = sum(e['VertexCnt'] for e in new_sk2s)
+    edit_v3 = sum(e['VertexCnt'] for e in new_skaccs)
+
+    def _sk_stats(n1, v1, n2, v2, n3, v3, total):
+        return (
+            f"{total} B  "
+            f"SK1: {n1} entries / {v1} verts  "
+            f"SK2: {n2} entries / {v2} verts  "
+            f"SKAcc: {n3} entries / {v3} verts"
+        )
+
+    stats = (
+        f"  Original: {_sk_stats(len(orig_sk1s), orig_v1, len(orig_sk2s), orig_v2, len(orig_skaccs), orig_v3, orig_size)}\n"
+        f"  Edited:   {_sk_stats(len(new_sk1s), edit_v1, len(new_sk2s), edit_v2, len(new_skaccs), edit_v3, edit_size)}"
+    )
+
+    if edit_size > orig_size:
+        # Size growth is fine in hammerspace mode — the block is written to the
+        # extended region of the dat file with no in-place size constraint.
+        # (The hard overflow guard only applies to in-place mode, which uses
+        # encode_skin_weights_inplace instead of this function.)
+        return f"SKN block grew by {edit_size - orig_size} B (hammerspace accommodates this).\n{stats}"
+
+    # The hammerspace rebuild always uses vertex_offset=0, so BindPoseData blobs
+    # omit the VertexOffset prefix bytes present in original SK1/SK2 entries.
+    # Add those bytes back to edit_size so the comparison reflects actual payload
+    # content: when SK1/SK2/SKAcc entries and vertex counts are identical the sizes
+    # compare as equal and no spurious shrinkage message is shown.
+    def _a4_vo(n): return (n + 3) & ~3
+    vo_adjustment = (
+        sum(_a4_vo(e.get('VertexOffset', 0)) for e in orig_sk1s) +
+        sum(_a4_vo(e.get('VertexOffset', 0)) for e in orig_sk2s)
+    )
+    effective_shrinkage = orig_size - (edit_size + vo_adjustment)
+    if effective_shrinkage <= 0:
+        return None
+
+    msg = f"SKN block shrunk by {effective_shrinkage} B; patcher will zero-pad the remainder.\n{stats}"
+    if not (edit_v1 == orig_v1 and edit_v2 == orig_v2 and edit_v3 == orig_v3):
+        msg += (
+            "\n  Note: SKAcc vertex count differs from original — this is normal"
+            " when some SKAcc dest slots fall outside submesh 0 (e.g. Head/Accessory"
+            " submeshes). Those vertices are not part of the edited mesh and do not"
+            " affect main-mesh skinning. Hammerspace write can proceed."
+        )
+    return msg
+
+
 def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False):
     """Rebuild SK1/SK2/SKAcc from Blender vertex groups for hammerspace export.
 
@@ -1768,6 +2480,11 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
     Bone pairs in SK2 are stored with the lower BoneId first.
     Source data (bind-pose XYZ + NxNyNz) is encoded with SkinData.QuantizeInfo.
     Writes 'SkinDataEdited' at the model level.  Returns (ok, message).
+
+    Phases: index the donor (``_index_donor_skin``), classify the vertices
+    (``_classify_skin_vertices``), report (``_report_skin_classification``),
+    restore duplicate-dest SKAccs (``_restore_duplicate_dest_skaccs``),
+    encode (``_build_skin_entries``), size note (``_skin_size_message``).
     """
     skin_data = data["SluggiesModel"].get("SkinData")
     if not skin_data:
@@ -1776,17 +2493,7 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
     submeshes  = data["SluggiesModel"].get("Submeshes", [])
     quant_info = skin_data["QuantizeInfo"]
     use_compression = data["SluggiesModel"].get("UseCompression", True)
-    cs         = _comp_size_skin(quant_info)
-    fmt_nibble = quant_info >> 4
-    is_float   = fmt_nibble in [4, 7, 0xa]
-    divisor    = 1 << (quant_info & 0xF)
-
-    def pack_val(v, context):
-        if is_float:
-            if not math.isfinite(float(v)):
-                raise ValueError(f"{context}: coordinate/component is not finite ({v})")
-            return struct.pack('>f', float(v))
-        return _pack_quantized_component(v, divisor, context)
+    pack_val   = _skin_component_packer(quant_info)
 
     obj_to_sub = skinned_donor_objects(candidates, data)
     if not obj_to_sub:
@@ -1797,91 +2504,14 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
         # an earlier run) alone instead.
         return True, None
 
-    # Only bones that already appear in the original SK data should feed the
-    # rebuild.  Non-skinned bones own static submesh geometry and have NO SK
-    # entries; their vertex groups must not be promoted to SK1/SK2/SKAcc entries
-    # or the new block will exceed the original's size even with no mesh changes.
-    skinned_bone_ids: set[int] = set()
-    for _e in skin_data.get('SK1s',   []):
-        skinned_bone_ids.add(_e['BoneIndex'])
-    for _e in skin_data.get('SK2s',   []):
-        skinned_bone_ids.add(_e['BoneIndex1'])
-        skinned_bone_ids.add(_e['BoneIndex2'])
-    for _e in skin_data.get('SKAccs', []):
-        skinned_bone_ids.add(_e['BoneIndex'])
-
-    # --- Original per-vertex bone membership (donor SkinData) ---
-    # Used ONLY to detect whether the user's Blender vertex-group edits
-    # actually changed skin membership anywhere in the model — NOT for
-    # classification. SkinDataEdited is
-    # treated as the complete source of truth for entry membership once an
-    # edit is detected; membership must not be re-derived from stale donor
-    # per-entry structure.
-    _vertex_stride = 6 * cs  # 6 components (xyz + nxnynz) * component size
-
-    # Compute cumulative vertex starts per submesh (for global ↔ local mapping)
-    _sub_vtx_starts = []
-    _sub_vtx_counts = []
-    _cumulative = 0
-    for _sm in submeshes:
-        _vb = _sm["VertexBuffer"]
-        _vb_cs = _comp_size_skin(_vb["VertexBufferQuantizeInfo"])
-        _vtx_count = _vb["VertexBufferLength"] // (_vb["VertexBufferCompCount"] * _vb_cs)
-        _sub_vtx_starts.append(_cumulative)
-        _sub_vtx_counts.append(_vtx_count)
-        _cumulative += _vtx_count
-
-    # entry-index maps (NOT bone-id maps): a bone can legitimately own more
-    # than one SK1/SK2 entry (different gplVertexArr destinations) — grouping
-    # by bone id alone would silently merge them and change the entry count
-    # even with no membership edit at all. Verified against production data:
-    # Luigi's bone 51 owns two separate SK1 entries.
-    _sk1_entry_of: dict[int, int] = {}
-    for _idx, _e in enumerate(skin_data.get('SK1s', [])):
-        _first = (_e['GplVertexArrValue'] + _e.get('VertexOffset', 0)) // _vertex_stride
-        for _i in range(_e['VertexCnt']):
-            _sk1_entry_of[_first + _i] = _idx
-    _sk2_entry_of: dict[int, int] = {}
-    for _idx, _e in enumerate(skin_data.get('SK2s', [])):
-        _first = (_e['GplVertexArrValue'] + _e.get('VertexOffset', 0)) // _vertex_stride
-        for _i in range(_e['VertexCnt']):
-            _sk2_entry_of[_first + _i] = _idx
-    # Fallback target for a vertex reassigned TO a bone from elsewhere: reuse
-    # that bone's first existing entry rather than always minting a new one.
-    _first_sk1_entry_by_bone: dict[int, int] = {}
-    for _idx, _e in enumerate(skin_data.get('SK1s', [])):
-        _first_sk1_entry_by_bone.setdefault(_e['BoneIndex'], _idx)
-    _first_sk2_entry_by_pair: dict[tuple[int, int], int] = {}
-    for _idx, _e in enumerate(skin_data.get('SK2s', [])):
-        _pair = (min(_e['BoneIndex1'], _e['BoneIndex2']), max(_e['BoneIndex1'], _e['BoneIndex2']))
-        _first_sk2_entry_by_pair.setdefault(_pair, _idx)
-
-    _orig_membership: dict[int, set[int]] = {}
-    for _e in skin_data.get('SK1s', []):
-        _first = (_e['GplVertexArrValue'] + _e.get('VertexOffset', 0)) // _vertex_stride
-        for _i in range(_e['VertexCnt']):
-            _orig_membership.setdefault(_first + _i, set()).add(_e['BoneIndex'])
-    for _e in skin_data.get('SK2s', []):
-        _first = (_e['GplVertexArrValue'] + _e.get('VertexOffset', 0)) // _vertex_stride
-        for _i in range(_e['VertexCnt']):
-            _orig_membership.setdefault(_first + _i, set()).update(
-                (_e['BoneIndex1'], _e['BoneIndex2']))
-    # (bone_id, global_idx) -> literal donor weight byte, for replaying an
-    # unchanged vertex's SKAcc contribution exactly rather than re-deriving
-    # it. Donor duplicate-dest (twist/blend) entries are handled separately
-    # below by the existing round-trip special case, so keeping only the
-    # first match here is fine.
-    _donor_skacc_weight: dict[tuple[int, int], int] = {}
-    for _e in skin_data.get('SKAccs', []):
-        _n = _e['VertexCnt']
-        if _n == 0:
-            continue
-        _dests = struct.unpack(f'>{_n}H', _to_bytes(_e['DestIndexData']))
-        _weights = _to_bytes(_e['WeightData'])
-        _dest_base = _e.get('GplDestArrValue', 0) // _vertex_stride
-        for _pos, _di in enumerate(_dests):
-            _orig_membership.setdefault(_dest_base + _di, set()).add(_e['BoneIndex'])
-            _donor_skacc_weight.setdefault((_e['BoneIndex'], _dest_base + _di), _weights[_pos])
+    # The donor structure is used to detect whether the Blender vertex-group
+    # edits changed skin membership anywhere in the model, and to replay the
+    # donor's roles for unchanged vertices. SkinDataEdited is treated as the
+    # complete source of truth for entry membership once an edit is detected;
+    # membership must not be re-derived from stale donor per-entry structure.
+    vertex_stride = 6 * _comp_size_skin(quant_info)
+    donor = _index_donor_skin(skin_data, vertex_stride)
+    sub_vtx_starts, sub_vtx_counts = _submesh_vertex_ranges(submeshes)
 
     # Pre-compute custom split normals per object when requested
     custom_normals_cache = {}
@@ -1891,366 +2521,23 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
             if _cn is not None:
                 custom_normals_cache[_obj_id] = _cn
 
-    # SK1/SK2 group keys are donor ENTRY INDEXES when a vertex keeps its
-    # original entry's bone(s), falling back to the bone's/pair's first
-    # existing entry, or a synthetic ('new_sk1', bone_id) / ('new_sk2', lo, hi)
-    # key when reassigned to a bone/pair with no existing entry at all. This
-    # preserves entry count for the (overwhelmingly common) no-membership-
-    # change case, since a bone owning multiple separate SK1/SK2 entries must
-    # not be silently merged into one.
-    sk1_groups   = {}  # entry key → [(sub_idx, local_v, obj)]
-    sk2_groups   = {}  # entry key → [(sub_idx, local_v, w_lo, w_hi, obj)]
-    skacc_groups = {}  # bone_id → [(sub_idx, local_v, weight_unit, dest_local_v, obj)]
-
-    ignored_group_names: set[str] = set()
-    unweighted: list[tuple[str, int]] = []
-    overweighted: list[tuple[str, int, int]] = []
-    membership_edited = False
-
-    for _, (sub_idx, obj) in obj_to_sub.items():
-        for v in obj.data.vertices:
-            parsed = []
-            for vge in v.groups:
-                vg = obj.vertex_groups[vge.group]
-                if not vg.name.startswith("bone_") or vge.weight <= 0.0:
-                    continue
-                try:
-                    bone_id = int(vg.name[5:])
-                except ValueError:
-                    continue
-                if bone_id not in skinned_bone_ids:
-                    ignored_group_names.add(vg.name)
-                    continue
-                parsed.append((bone_id, vge.weight))
-            parsed.sort(key=lambda x: -x[1])
-
-            if len(parsed) > MAX_BONE_INFLUENCES_PER_VERTEX:
-                # The weakest weights are left out (quantize_skin_weights
-                # normalizes the rest); more bones did not work in-game.
-                overweighted.append((obj.name, v.index, len(parsed)))
-                parsed.sort(key=lambda x: (-x[1], x[0]))
-                del parsed[MAX_BONE_INFLUENCES_PER_VERTEX:]
-
-            v_idx = v.index
-            global_idx = _sub_vtx_starts[sub_idx] + v_idx
-            orig_bones = _orig_membership.get(global_idx, set())
-
-            if not parsed:
-                # Real donor models legitimately leave some submesh-0
-                # vertices with no SK1/SK2/SKAcc coverage at all (static/
-                # unused position slots) — that is not an error. Only a
-                # vertex that DID have a donor bone influence and lost it
-                # is a genuine regression worth rejecting.
-                if orig_bones:
-                    unweighted.append((obj.name, v_idx))
-                    membership_edited = True
-                continue
-
-            new_bones = {bone_id for bone_id, _ in parsed}
-            membership_unchanged = (new_bones == orig_bones)
-            if not membership_unchanged:
-                membership_edited = True
-
-            # --- Classification. Membership (WHICH bones influence a
-            # vertex) always comes from Blender's current vertex groups. But the donor's choice of WHICH
-            # ROLE each bone plays — SK2 pair partner vs. SKAcc supplement —
-            # is an authored structural fact, not simply "the two heaviest
-            # weights": verified against production data (Luigi), 103
-            # vertices have a real 3rd (SKAcc) influence, and picking the
-            # top-2-by-weight bones as the SK2 pair does NOT reliably
-            # reproduce the donor's actual pair (Blender's re-imported
-            # weight order need not match the donor's role assignment). So
-            # whenever this vertex's bone SET is unchanged from the donor,
-            # replicate the donor's own role assignment exactly, refreshing
-            # only the weight VALUES from Blender; only a vertex whose bone
-            # set actually changed falls back to the general influence-count
-            # heuristic, since there is no donor role assignment left to
-            # replicate for its new bone set.
-            if membership_unchanged and global_idx in _sk2_entry_of:
-                entry_idx = _sk2_entry_of[global_idx]
-                e = skin_data['SK2s'][entry_idx]
-                b_lo = min(e['BoneIndex1'], e['BoneIndex2'])
-                b_hi = max(e['BoneIndex1'], e['BoneIndex2'])
-                first = (e['GplVertexArrValue'] + e.get('VertexOffset', 0)) // _vertex_stride
-                k = global_idx - first
-                wt_bytes = _to_bytes(e['WeightData'])
-                w1_byte, w2_byte = wt_bytes[2 * k], wt_bytes[2 * k + 1]
-                w_lo, w_hi = (w1_byte, w2_byte) if e['BoneIndex1'] <= e['BoneIndex2'] else (w2_byte, w1_byte)
-                sk2_groups.setdefault(entry_idx, []).append((sub_idx, v_idx, w_lo, w_hi, obj))
-                for bone_id in (b for b, _ in parsed if b not in (b_lo, b_hi)):
-                    byte = _donor_skacc_weight.get((bone_id, global_idx))
-                    if byte is not None:
-                        skacc_groups.setdefault(bone_id, []).append((sub_idx, v_idx, byte, v_idx, obj))
-                continue
-
-            if membership_unchanged and global_idx in _sk1_entry_of:
-                entry_idx = _sk1_entry_of[global_idx]
-                sk1_bone = skin_data['SK1s'][entry_idx]['BoneIndex']
-                sk1_groups.setdefault(entry_idx, []).append((sub_idx, v_idx, obj))
-                for bone_id in (b for b, _ in parsed if b != sk1_bone):
-                    byte = _donor_skacc_weight.get((bone_id, global_idx))
-                    if byte is not None:
-                        skacc_groups.setdefault(bone_id, []).append((sub_idx, v_idx, byte, v_idx, obj))
-                continue
-
-            if membership_unchanged:
-                # SKAcc-only vertex: no SK1/SK2 primary in the donor at all.
-                for bone_id, _ in parsed:
-                    byte = _donor_skacc_weight.get((bone_id, global_idx))
-                    if byte is not None:
-                        skacc_groups.setdefault(bone_id, []).append((sub_idx, v_idx, byte, v_idx, obj))
-                continue
-
-            # --- Genuinely edited membership: no donor role assignment to
-            # replicate, so quantize fresh — but keep the vertex in its donor
-            # skinning CATEGORY (SK1 / SK2 / accumulation-only) whenever the
-            # new bone set allows it. The build tool lays entries out without
-            # reordering vertices, and donor data never lets an SK1/SK2 entry
-            # share a 32-byte cache line with another entry or with an
-            # accumulation-only slot (verified across all 361 skinned models),
-            # so a category change mid-entry cannot be laid out. ---
-            quantized = quantize_skin_weights(parsed, target_sum=256)
-            merged: dict[int, int] = {}
-            for bone_id, unit in quantized:
-                merged[bone_id] = merged.get(bone_id, 0) + unit
-
-            donor_sk1 = _sk1_entry_of.get(global_idx)
-            donor_sk2 = _sk2_entry_of.get(global_idx)
-            if donor_sk1 is None and donor_sk2 is None and orig_bones:
-                # Donor accumulation-only vertex: its slot lives in the memClr
-                # tail, so every influence stays an SKAcc contribution. A lone
-                # full-weight bone clamps 256 -> 255 (same MVP loss as SK2).
-                for bone_id, unit in sorted(merged.items()):
-                    skacc_groups.setdefault(bone_id, []).append(
-                        (sub_idx, v_idx, min(255, unit), v_idx, obj))
-                continue
-
-            if len(parsed) == 1:
-                bone_id = parsed[0][0]
-                sk1_key = donor_sk1
-                if sk1_key is None or skin_data['SK1s'][sk1_key]['BoneIndex'] != bone_id:
-                    sk1_key = _first_sk1_entry_by_bone.get(bone_id, ('new_sk1', bone_id))
-                sk1_groups.setdefault(sk1_key, []).append((sub_idx, v_idx, obj))
-                continue
-
-            # SK2 pair: the donor's surviving direct bone(s) first, then the
-            # bones that replaced lost ones, then the rest by weight — so a
-            # remapped SKAcc supplement bone stays a supplement.
-            ranked = [bone_id for bone_id, _ in parsed]
-            if donor_sk2 is not None:
-                _donor_pair = skin_data['SK2s'][donor_sk2]
-                survivors = [b for b in (_donor_pair['BoneIndex1'], _donor_pair['BoneIndex2'])
-                             if b in new_bones]
-            elif donor_sk1 is not None:
-                _donor_bone = skin_data['SK1s'][donor_sk1]['BoneIndex']
-                survivors = [_donor_bone] if _donor_bone in new_bones else []
-            else:
-                survivors = []
-            replacements = [b for b in ranked if b not in orig_bones]
-            top_bones = []
-            for bone_id in survivors + replacements + ranked:
-                if bone_id not in top_bones:
-                    top_bones.append(bone_id)
-            top_bones = top_bones[:2]
-            b_lo, b_hi = min(top_bones), max(top_bones)
-            # A single dominant bone can legitimately claim the full 256-unit
-            # budget (e.g. the second influence quantizes to zero); clamping
-            # to 255 here loses at most 1/256 of a unit — accepted for MVP
-            # rather than reclassifying the vertex as SK1 after the fact.
-            w_lo = min(255, merged.get(b_lo, 0))
-            w_hi = min(255, merged.get(b_hi, 0))
-            sk2_key = _first_sk2_entry_by_pair.get((b_lo, b_hi), ('new_sk2', b_lo, b_hi))
-            sk2_groups.setdefault(sk2_key, []).append(
-                (sub_idx, v_idx, w_lo, w_hi, obj))
-
-            if len(parsed) > 2:
-                for bone_id, unit in quantized:
-                    if bone_id in (b_lo, b_hi):
-                        continue
-                    skacc_groups.setdefault(bone_id, []).append(
-                        (sub_idx, v_idx, unit, v_idx, obj))
-
-    by_object: dict[str, list[int]] = {}
-    for name, idx, _count in overweighted:
-        by_object.setdefault(name, []).append(idx)
-    for name, indices in by_object.items():
-        warnings.append(SkinnedRebuildExport.limited_warning(name, indices))
-
-    if unweighted:
-        detail = "; ".join(f"{name} vertex {idx}" for name, idx in unweighted)
-        ignored_detail = (
-            f" Ignored vertex groups (not donor-skinned bones): "
-            f"{', '.join(sorted(ignored_group_names))}."
-            if ignored_group_names else ""
-        )
-        raise ValueError(
-            f"{len(unweighted)} vertex(es) have no valid donor bone influence: "
-            f"{detail}.{ignored_detail}"
-        )
-
-    for _name in sorted(ignored_group_names):
-        warnings.append(
-            f"Vertex group '{_name}' does not resolve to a donor-skinned bone; ignored.")
-
-    # A Blender vertex group holds only one weight per (vertex, bone), so donor
-    # SKAcc entries that accumulate twice onto the same dest slot cannot survive
-    # the round trip.  Rebuild those entries from the donor dest/weight arrays,
-    # taking only the bind-pose source from Blender.
-    _obj_by_sub = {sub_idx: obj for _, (sub_idx, obj) in obj_to_sub.items()}
-
-    def _resolve_global_vertex(global_idx):
-        for _sub_idx, _start in enumerate(_sub_vtx_starts):
-            if _start <= global_idx < _start + _sub_vtx_counts[_sub_idx]:
-                _obj = _obj_by_sub.get(_sub_idx)
-                if _obj is None:
-                    return None
-                _local = global_idx - _start
-                if _local >= len(_obj.data.vertices):
-                    return None
-                return _sub_idx, _local, _obj
-        return None
-
-    for _e in skin_data.get('SKAccs', []):
-        _n = _e['VertexCnt']
-        if _n == 0:
-            continue
-        _dests = list(struct.unpack(f'>{_n}H', _to_bytes(_e['DestIndexData'])))
-        if len(set(_dests)) == _n:
-            continue
-        _weights = _to_bytes(_e['WeightData'])
-        _dest_base = _e.get('GplDestArrValue', 0) // _vertex_stride
-        _current = {_sub_vtx_starts[entry[0]] + entry[1]
-                    for entry in skacc_groups.get(_e['BoneIndex'], [])}
-        if _current != {_dest_base + _di for _di in _dests}:
-            # This bone's accumulation membership was edited: restoring the
-            # donor entry would silently undo the edit (or resurrect a bone
-            # that lost every vertex), so keep the Blender-built entry.
-            warnings.append(
-                f"SKAcc bone {_e['BoneIndex']}: membership edited, duplicate dest "
-                f"slots (donor 255+1 weights) rebuilt from Blender weights")
-            continue
-        _rebuilt = []
-        for _di, _w in zip(_dests, _weights):
-            _loc = _resolve_global_vertex(_dest_base + _di)
-            if _loc is None:
-                _rebuilt = None
-                break
-            _sub_idx, _local_v, _obj = _loc
-            _rebuilt.append((_sub_idx, _local_v, _w, _di, _obj))
-        if _rebuilt is None:
-            warnings.append(
-                f"SKAcc bone {_e['BoneIndex']}: duplicate dest slots could not be "
-                f"resolved to mesh vertices; entry left as rebuilt from Blender")
-            continue
-        skacc_groups[_e['BoneIndex']] = _rebuilt
+    groups = _classify_skin_vertices(obj_to_sub, skin_data, donor, sub_vtx_starts)
+    _report_skin_classification(groups, warnings)
+    _restore_duplicate_dest_skaccs(
+        skin_data, groups.skacc, obj_to_sub, sub_vtx_starts, sub_vtx_counts, vertex_stride, warnings,
+        groups.refreshed)
 
     def encode_src(entries):
-        raw = bytearray()
-        for entry in entries:
-            obj_ref = entry[-1]
-            v       = obj_ref.data.vertices[entry[1]]
-            _cn     = custom_normals_cache.get(id(obj_ref))
-            nx, ny, nz = (_cn[v.index].x, _cn[v.index].y, _cn[v.index].z) if _cn is not None else (v.normal.x, v.normal.y, v.normal.z)
-            for component, val in zip(
-                ('x', 'y', 'z', 'nx', 'ny', 'nz'),
-                (v.co.x, v.co.y, v.co.z, nx, ny, nz),
-            ):
-                raw += pack_val(
-                    val,
-                    f"{obj_ref.name} vertex {v.index} SKN {component}",
-                )
-        return _from_bytes(bytes(raw), use_compression)
+        return _encode_skin_source(entries, pack_val, custom_normals_cache, use_compression)
 
-    # sk1_groups/sk2_groups keys are either a donor SK1s/SK2s entry INDEX
-    # (int) or a ('new_sk1', bone_id) / ('new_sk2', lo, hi) sentinel for a
-    # bone/pair with no existing donor entry. Resolve each key back to its
-    # BoneIndex(es)/GplVertexArrValue: an existing entry's GPL value is a
-    # harmless best-effort hint for the no-membership-change case (Geometry
-    # Rebuild recomputes it unconditionally whenever MembershipEdited is
-    # set), and a synthetic entry gets a 0 placeholder — never read as final
-    # data either.
-    orig_sk1s_list = skin_data.get('SK1s', [])
-    orig_sk2s_list = skin_data.get('SK2s', [])
-
-    def _sk1_identity(key):
-        if isinstance(key, int):
-            e = orig_sk1s_list[key]
-            return e['BoneIndex'], e.get('GplVertexArrValue', 0)
-        return key[1], 0  # ('new_sk1', bone_id)
-
-    def _sk2_identity(key):
-        if isinstance(key, int):
-            e = orig_sk2s_list[key]
-            b_lo = min(e['BoneIndex1'], e['BoneIndex2'])
-            b_hi = max(e['BoneIndex1'], e['BoneIndex2'])
-            return b_lo, b_hi, e.get('GplVertexArrValue', 0)
-        return key[1], key[2], 0  # ('new_sk2', lo, hi)
-
-    _orig_skacc_gda = {
-        e['BoneIndex']: e.get('GplDestArrValue', 0)
-        for e in skin_data.get('SKAccs', [])
-    }
-
-    # VertexIndices: skinned position-slot index of each member, in payload
-    # order. The build tool splits an entry into contiguous runs from these
-    # instead of value-matching bind-pose records (ambiguous for duplicates).
-    def encode_vertex_indices(entries):
-        return _from_bytes(
-            struct.pack(f'>{len(entries)}H', *(entry[1] for entry in entries)), use_compression)
-
-    new_sk1s = []
-    for key in sorted(sk1_groups, key=lambda k: _sk1_identity(k)[0]):
-        entries = sk1_groups[key]
-        bone_id, gpl_value = _sk1_identity(key)
-        new_sk1s.append({
-            "BoneIndex": bone_id,
-            "VertexCnt": len(entries),
-            "BindPoseData": encode_src(entries),
-            "VertexIndices": encode_vertex_indices(entries),
-            "GplVertexArrValue": gpl_value,
-        })
-
-    new_sk2s = []
-    for key in sorted(sk2_groups, key=lambda k: _sk2_identity(k)[:2]):
-        entries = sk2_groups[key]
-        b_lo, b_hi, gpl_value = _sk2_identity(key)
-        wt = bytearray()
-        for e in entries:
-            wt.append(max(0, min(255, e[2])))
-            wt.append(max(0, min(255, e[3])))
-        new_sk2s.append({
-            "BoneIndex1": b_lo, "BoneIndex2": b_hi,
-            "VertexCnt": len(entries),
-            "BindPoseData": encode_src(entries),
-            "WeightData": _from_bytes(bytes(wt), use_compression),
-            "VertexIndices": encode_vertex_indices(entries),
-            "GplVertexArrValue": gpl_value,
-        })
-
-    new_skaccs = []
-    for bone_id, entries in sorted(skacc_groups.items()):
-        wt   = bytearray()
-        dest = bytearray()
-        for e in entries:
-            wt   += bytes([max(0, min(255, e[2]))])
-            dest += struct.pack('>H', e[3])
-        new_skaccs.append({
-            "BoneIndex": bone_id, "VertexCnt": len(entries),
-            "BindPoseData":   encode_src(entries),
-            "WeightData":    _from_bytes(bytes(wt), use_compression),
-            "DestIndexData": _from_bytes(bytes(dest), use_compression),
-            "GplDestArrValue": _orig_skacc_gda.get(bone_id, 0),
-        })
-
-    flush_ind_size = skin_data.get('FlushIndSize', 0)
-
+    new_sk1s, new_sk2s, new_skaccs = _build_skin_entries(skin_data, groups, encode_src, use_compression)
     candidate_edited = {
         "QuantizeInfo": quant_info,
         "SK1s":         new_sk1s,
         "SK2s":         new_sk2s,
         "SKAccs":       new_skaccs,
     }
-    if membership_edited:
+    if groups.membership_edited:
         # A changed bone set takes the body rebuild (SkinnedRebuild), which
         # is decided before this encoder runs; reaching this means the body
         # object was not planned for it.
@@ -2259,75 +2546,19 @@ def encode_skin_hammerspace(candidates, data, warnings, use_custom_normals=False
             "export the body object itself (not only other parts) so its skin can be rebuilt"
         )
 
-    orig_size = _skn_block_size(skin_data)
-    edit_size = _skn_block_size(candidate_edited, flush_ind_size=flush_ind_size)
-
-    # Per-category vertex totals — used in both feedback paths.
-    orig_sk1s   = skin_data.get('SK1s',   [])
-    orig_sk2s   = skin_data.get('SK2s',   [])
-    orig_skaccs = skin_data.get('SKAccs', [])
-    orig_v1 = sum(e['VertexCnt'] for e in orig_sk1s)
-    orig_v2 = sum(e['VertexCnt'] for e in orig_sk2s)
-    orig_v3 = sum(e['VertexCnt'] for e in orig_skaccs)
-    edit_v1 = sum(e['VertexCnt'] for e in new_sk1s)
-    edit_v2 = sum(e['VertexCnt'] for e in new_sk2s)
-    edit_v3 = sum(e['VertexCnt'] for e in new_skaccs)
-
-    # The hammerspace rebuild always uses vertex_offset=0, so BindPoseData blobs
-    # omit the VertexOffset prefix bytes present in original SK1/SK2 entries.
-    # Add those bytes back to edit_size so the comparison reflects actual payload
-    # content: when SK1/SK2/SKAcc entries and vertex counts are identical the sizes
-    # compare as equal and no spurious shrinkage message is shown.
-    def _a4_vo(n): return (n + 3) & ~3
-    vo_adjustment = (
-        sum(_a4_vo(e.get('VertexOffset', 0)) for e in orig_sk1s) +
-        sum(_a4_vo(e.get('VertexOffset', 0)) for e in orig_sk2s)
-    )
-    edit_size_adj = edit_size + vo_adjustment
-
-    def _sk_stats(n1, v1, n2, v2, n3, v3, total):
-        return (
-            f"{total} B  "
-            f"SK1: {n1} entries / {v1} verts  "
-            f"SK2: {n2} entries / {v2} verts  "
-            f"SKAcc: {n3} entries / {v3} verts"
-        )
-
-    if edit_size > orig_size:
-        # Size growth is fine in hammerspace mode — the block is written to the
-        # extended region of the dat file with no in-place size constraint.
-        # (The hard overflow guard only applies to in-place mode, which uses
-        # encode_skin_weights_inplace instead of this function.)
-        overflow = edit_size - orig_size
-        candidate_edited["FlushIndSize"] = flush_ind_size
-        data["SluggiesModel"]["SkinDataEdited"] = candidate_edited
-        msg = (
-            f"SKN block grew by {overflow} B (hammerspace accommodates this).\n"
-            f"  Original: {_sk_stats(len(orig_sk1s), orig_v1, len(orig_sk2s), orig_v2, len(orig_skaccs), orig_v3, orig_size)}\n"
-            f"  Edited:   {_sk_stats(len(new_sk1s), edit_v1, len(new_sk2s), edit_v2, len(new_skaccs), edit_v3, edit_size)}"
-        )
-        return True, msg
-
-    effective_shrinkage = orig_size - edit_size_adj
+    flush_ind_size = skin_data.get('FlushIndSize', 0)
+    message = _skin_size_message(skin_data, candidate_edited, flush_ind_size)
     candidate_edited["FlushIndSize"] = flush_ind_size
     data["SluggiesModel"]["SkinDataEdited"] = candidate_edited
-
-    if effective_shrinkage > 0:
-        verts_match = (edit_v1 == orig_v1 and edit_v2 == orig_v2 and edit_v3 == orig_v3)
-        msg = (
-            f"SKN block shrunk by {effective_shrinkage} B; patcher will zero-pad the remainder.\n"
-            f"  Original: {_sk_stats(len(orig_sk1s), orig_v1, len(orig_sk2s), orig_v2, len(orig_skaccs), orig_v3, orig_size)}\n"
-            f"  Edited:   {_sk_stats(len(new_sk1s), edit_v1, len(new_sk2s), edit_v2, len(new_skaccs), edit_v3, edit_size)}"
-        )
-        if not verts_match:
-            msg += (
-                "\n  Note: SKAcc vertex count differs from original — this is normal"
-                " when some SKAcc dest slots fall outside submesh 0 (e.g. Head/Accessory"
-                " submeshes). Those vertices are not part of the edited mesh and do not"
-                " affect main-mesh skinning. Hammerspace write can proceed."
-            )
-        return True, msg
-    return True, None
+    # Repainted weights also go onto the donor entries, in the donor's order:
+    # that is what the Hammerspace builder applies when the layout is kept.
+    for entry, weight_data in _donor_aligned_weight_edits(
+            skin_data, vertex_stride, groups.refreshed, use_compression):
+        entry["WeightDataEdited"] = weight_data
+    if groups.refreshed:
+        note = f"Skin weights changed on {len(groups.refreshed)} vertex(es) that keep their bones."
+        message = f"{message}\n{note}" if message else note
+    return True, message
 
 
 def _skin_data_edited_is_empty(data):
@@ -4101,6 +4332,80 @@ def export_selection(context):
     return selected + shown, hidden
 
 
+class ExportCancelled(Exception):
+    """Raised by an export phase to stop the export: ``execute`` reports each message as an error and returns
+    CANCELLED. Deliberately not a ``ValueError``: the phases turn the encoders' ``ValueError`` into this, and
+    their ``except ValueError`` blocks must let it through."""
+
+    def __init__(self, messages):
+        self.messages = [messages] if isinstance(messages, str) else list(messages)
+        super().__init__("; ".join(self.messages))
+
+
+class _ExportRun:
+    """What the phases of one export share (``SLUGGIES_OT_export.execute`` runs them in order).
+
+    ``data`` is the parsed source ``.sluggie``. The phases before the mesh encode write into it before the
+    export mode is known (bone hierarchy, facial edits of excluded meshes); that is safe only because nothing
+    is written to disk when a phase cancels. During the mesh encode ``data``, ``warnings``, ``errors`` and
+    ``infos`` are those of the current pass: the in-place attempt works on copies, and a pass that has to be
+    repeated in Hammerspace mode starts again from the state before it."""
+
+    def __init__(self):
+        # Source and target (_load_source).
+        self.selected = []
+        self.hidden_meshes = []
+        self.arm_obj = None
+        self.source_path = ""
+        self.save_as = False
+        self.data = None
+        self.use_compression = True
+        self.submeshes = []
+        # The selection by role (_collect_objects).
+        self.candidates = []
+        self.custom_submesh_candidates = []
+        self.collision_objects = []
+        self.original_colliders = []
+        self.invisible_objects = []
+        self.size_line = ""
+        # Notes reported after the encode: ordinary warnings; expected, harmless notes (faces per surface,
+        # mirrored UV 1); and severe but non-fatal conditions (part of the user's edit was discarded), which
+        # are reported at ERROR level so they are not lost among the warnings.
+        self.warnings = []
+        self.infos = []
+        self.errors = []
+        # (object, submesh) and (object, submesh index) per selected original mesh (_match_submeshes).
+        self.object_submeshes = []
+        self.object_submesh_indices = []
+        # Textures (_resolve_material_textures).
+        self.local_texture_descriptors = []
+        self.texture_descriptors = []
+        self.texture_dir = None
+        self.owns_texture_section = False
+        self.paired_main_model = "paired main model"
+        self.additions = []
+        self.desired_assignments = {}
+        self.changed_materials = []
+        # tex/ file name -> source PNG linked from outside tex/, copied in once nothing can cancel the export.
+        self.planned_texture_copies = {}
+        # Custom submeshes (_encode_custom_submeshes).
+        self.custom_submesh_entries = []
+        self.custom_additions = []
+        # Whole-submesh rebuilds by submesh index (_plan_rebuilds).
+        self.rigid_plans = {}
+        self.skinned_plans = {}
+        self.new_surface_additions = []
+        self.new_surface_assignments = {}
+        self.excluded_names = []
+        # Export mode and the mesh encode (_decide_mode, _encode_meshes).
+        self.hammerspace_reasons = []
+        self.use_hammerspace = False
+        self.pass_reasons = []
+        self.written = 0
+        self.root_scale = None
+        self.texture_copies = []
+
+
 def _reports_unexpected_errors(execute):
     """For the export operator's ``execute``: an error no step expected becomes an error report Blender can
     show (and CANCELLED) instead of a bare traceback; the traceback goes to the system console.
@@ -4110,7 +4415,7 @@ def _reports_unexpected_errors(execute):
         self._wrote_file = False
         try:
             return execute(self, context)
-        except Exception as exc:  # noqa: BLE001 - the last line of defence of a 1,000-line export
+        except Exception as exc:  # noqa: BLE001 - the last line of defence of the whole export
             traceback.print_exc()
             state = ("The .sluggie file was already written; check it before patching."
                      if self._wrote_file else "Nothing was written.")
@@ -4183,7 +4488,6 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
 
     @_reports_unexpected_errors
     def execute(self, context):
-        # --- load and sanity-check the source and target ---
         if not getattr(self, "filepath", "").strip():
             self.report(
                 {"ERROR"},
@@ -4192,16 +4496,42 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             )
             return {"CANCELLED"}
 
+        # The phases, in order. Each reads and fills `run`; one that cannot
+        # go on raises ExportCancelled. Nothing is written to disk before
+        # _copy_textures, so a cancel before it leaves the files as they were.
+        run = _ExportRun()
+        try:
+            self._load_source(context, run)
+            self._collect_objects(context, run)
+            self._match_submeshes(run)
+            self._resolve_material_textures(run)
+            self._encode_bones(context, run)
+            self._encode_custom_submeshes(context, run)
+            self._plan_rebuilds(context, run)
+            self._exclude_unselected(run)
+            self._decide_mode(context, run)
+            self._encode_meshes(context, run)
+            self._report_mode(run)
+            self._encode_collision(context, run)
+            self._report_notes(run)
+            self._finish_model_fields(run)
+            self._copy_textures(run)
+            self._write_file(context, run)
+        except ExportCancelled as cancelled:
+            for message in cancelled.messages:
+                self.report({"ERROR"}, message)
+            return {"CANCELLED"}
+        return {"FINISHED"}
+
+    def _load_source(self, context, run):
+        """Find and read the armature's source ``.sluggie`` and check the target file."""
         # Edit Mode keeps the mesh in BMesh, so mesh.uv_layers etc. read as
         # empty (IndexError on a custom submesh's UVs, Blender 5.2,
         # 2026-09-29). Refuse instead of flushing half the data.
         if context.mode.startswith('EDIT'):
-            self.report(
-                {"ERROR"},
+            raise ExportCancelled(
                 "Export is not possible in Edit Mode. Switch to Object Mode "
-                "(Tab) and export again.",
-            )
-            return {"CANCELLED"}
+                "(Tab) and export again.")
 
         # The model is read from the armature's source .sluggie and written
         # to the target (self.filepath), which may be a new file in any
@@ -4222,14 +4552,13 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     f"The armature's source file {stored_path} is missing; reading the target instead.")
             source_path = self.filepath
         if not os.path.isfile(source_path):
-            self.report({"ERROR"},
+            raise ExportCancelled(
                 f"{os.path.basename(self.filepath)} does not exist yet and "
                 + (f"the armature's source file {stored_path} is missing. "
                    if stored_path else "the armature records no source .sluggie to read the model from. ")
                 + "Export into the existing .sluggie of this model instead, "
                 + SluggiePath.LOCATE_HINT[0].lower() + SluggiePath.LOCATE_HINT[1:]
                 + ", or re-import the model.")
-            return {"CANCELLED"}
         save_as = (os.path.normcase(os.path.abspath(source_path))
                    != os.path.normcase(os.path.abspath(self.filepath)))
 
@@ -4237,22 +4566,18 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             with open(source_path, 'rb') as f:
                 content = f.read().strip()
         except Exception as e:
-            self.report({"ERROR"}, f"Could not read file: {e}")
-            return {"CANCELLED"}
+            raise ExportCancelled(f"Could not read file: {e}") from e
 
         if not content:
-            self.report({"ERROR"}, f"Source .sluggie file {source_path} is empty.")
-            return {"CANCELLED"}
+            raise ExportCancelled(f"Source .sluggie file {source_path} is empty.")
 
         try:
             data = FieldCodec.loads_sluggie(content)
         except ValueError as e:
-            self.report({"ERROR"}, f"Could not parse the .sluggie file: {e}")
-            return {"CANCELLED"}
+            raise ExportCancelled(f"Could not parse the .sluggie file: {e}") from e
 
         if "SluggiesModel" not in data:
-            self.report({"ERROR"}, "JSON does not contain a 'SluggiesModel' entry.")
-            return {"CANCELLED"}
+            raise ExportCancelled("JSON does not contain a 'SluggiesModel' entry.")
 
         if save_as and os.path.exists(self.filepath):
             try:
@@ -4262,11 +4587,18 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             overwrite_error = ModelCheckCore.overwrite_error(
                 data["SluggiesModel"], target_model, os.path.basename(self.filepath))
             if overwrite_error:
-                self.report({"ERROR"}, overwrite_error)
-                return {"CANCELLED"}
+                raise ExportCancelled(overwrite_error)
 
-        use_compression = data["SluggiesModel"].get("UseCompression", True)
-        submeshes = data["SluggiesModel"].get("Submeshes", [])
+        run.selected, run.hidden_meshes, run.arm_obj = selected, hidden_meshes, arm_obj
+        run.source_path, run.save_as, run.data = source_path, save_as, data
+        run.use_compression = data["SluggiesModel"].get("UseCompression", True)
+        run.submeshes = data["SluggiesModel"].get("Submeshes", [])
+
+    def _collect_objects(self, context, run):
+        """Sort the selection into original meshes, custom submeshes and collision objects, and run the
+        Check Models error checks on it."""
+        from . import ModelCheck
+        selected, data, submeshes = run.selected, run.data, run.submeshes
 
         # --- collect selected mesh objects that carry Sluggies custom properties ---
         # Custom submeshes have no
@@ -4294,7 +4626,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         # count whether selected or not: once the scene has any, the patcher
         # rebuilds the whole collision file from them, so a deleted one is
         # collision removed, not collision left out by the selection.
-        collision_armature = ModelCheck.selection_armature(selected)
+        collision_armature = run.arm_obj
         original_colliders = [
             obj for obj in context.scene.objects
             if obj.type == 'MESH' and StadiumCollisionExport.REGION_PROP in obj
@@ -4310,25 +4642,22 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         invisible_error = StadiumCollisionExport.invisible_model_mesh_error(
             [obj.name for obj in invisible_objects if obj in candidates])
         if invisible_error:
-            self.report({"ERROR"}, invisible_error)
-            return {"CANCELLED"}
+            raise ExportCancelled(invisible_error)
         custom_submesh_candidates = [obj for obj in custom_submesh_candidates if obj not in invisible_objects]
 
         if not candidates and not custom_submesh_candidates and not collision_objects:
-            self.report({"ERROR"},
+            raise ExportCancelled(
                 "No selected mesh objects with Sluggies custom properties found. "
                 "Import the JSON first, then select the meshes you want to export.")
-            return {"CANCELLED"}
 
         if len(candidates) > len(submeshes):
-            self.report({"ERROR"},
+            raise ExportCancelled(
                 f"{len(candidates)} mesh(es) selected but the target JSON only defines "
                 f"{len(submeshes)} submesh(es). Make sure you are exporting to the correct file.")
-            return {"CANCELLED"}
 
         # The Check Models error checks on the selected model, before anything
-        # is encoded (ModelCheck is imported above, in the function: it
-        # imports this module).
+        # is encoded (ModelCheck is imported in the function: it imports this
+        # module).
         check_errors = ModelCheck.export_errors(
             context, data["SluggiesModel"], self.filepath,
             candidates + custom_submesh_candidates + [
@@ -4337,9 +4666,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             self.reimport_textures,
         )
         if check_errors:
-            for message in check_errors:
-                self.report({"ERROR"}, message)
-            return {"CANCELLED"}
+            raise ExportCancelled(check_errors)
         try:
             size_line = ModelCheck.export_size_line(
                 context, data["SluggiesModel"], self.filepath,
@@ -4348,17 +4675,15 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         except Exception as exc:  # the estimate must never stop an export
             size_line = f"Size estimate failed: {exc}"
 
-        written = 0
-        warnings = []
-        # Expected, harmless notes (e.g. faces per surface, mirrored UV 1).
-        infos = []
-        # Non-fatal but severe conditions: the export still completes, yet part
-        # of the user's edit was discarded. Reported at ERROR level so it is not
-        # lost among ordinary warnings.
-        errors = []
-        object_submeshes = []
+        run.candidates, run.custom_submesh_candidates = candidates, custom_submesh_candidates
+        run.collision_objects, run.original_colliders = collision_objects, original_colliders
+        run.invisible_objects, run.size_line = invisible_objects, size_line
+
+    def _match_submeshes(self, run):
+        """Pair each selected original mesh with its submesh of the file and check its materials."""
+        submeshes, warnings = run.submeshes, run.warnings
         matched_objects = {}
-        for obj in candidates:
+        for obj in run.candidates:
             # match by VertexBufferOffset (unique per submesh)
             target_submesh = next(
                 (sm for sm in submeshes
@@ -4375,42 +4700,40 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             # Two selected objects for one submesh (e.g. a mesh and its
             # re-imported `_edit` copy) would silently let the last one win.
             if submesh_index in matched_objects:
-                self.report({"ERROR"},
+                raise ExportCancelled(
                     f"{matched_objects[submesh_index].name} and {obj.name} both belong to "
                     f"submesh {submesh_index}. Select only one of them and export again."
                 )
-                return {"CANCELLED"}
             matched_objects[submesh_index] = obj
-            object_submeshes.append((obj, target_submesh))
+            run.object_submeshes.append((obj, target_submesh))
+            run.object_submesh_indices.append((obj, submesh_index))
 
             # Every material must be a surface of this submesh: imported, or
             # added with Add material (rigid submeshes only).
             new_materials = _find_new_materials(obj, target_submesh, submesh_index)
             if new_materials:
                 names = ", ".join(f"'{n}' ({r})" for n, r in new_materials)
-                self.report({"ERROR"},
+                raise ExportCancelled(
                     f"Error: {obj.name} uses material(s) that are not surfaces of this "
                     f"submesh: {names}. Use its imported materials or Add material, and "
                     f"reassign or remove the other faces."
                 )
-                return {"CANCELLED"}
 
         # an empty Image Texture node blocks the export, whatever
         # the texture toggles say.
-        image_errors = _empty_image_node_errors(candidates + custom_submesh_candidates)
+        image_errors = _empty_image_node_errors(run.candidates + run.custom_submesh_candidates)
         if image_errors:
-            for message in image_errors:
-                self.report({"ERROR"}, message)
-            return {"CANCELLED"}
+            raise ExportCancelled(image_errors)
 
-        local_texture_descriptors = (
+    def _resolve_material_textures(self, run):
+        """Find the model's texture list (a Low model uses its High model's) and what the original
+        meshes' materials change in it."""
+        data = run.data
+        run.local_texture_descriptors = (
             data["SluggiesModel"].get("TextureDescriptors") or []
         )
-        owns_texture_section = bool(local_texture_descriptors)
+        owns_texture_section = bool(run.local_texture_descriptors)
         additions, desired_assignments, changed_materials = [], {}, []
-        # tex/ file name -> source PNG linked from outside tex/, copied in
-        # once nothing can cancel the export.
-        planned_texture_copies = {}
         # A material showing another texture (a new PNG, or another of the
         # model's textures) is exported whatever the Reimport textures toggle
         # says: the toggle only decides whether the original textures are
@@ -4424,19 +4747,18 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             if owns_texture_section or texture_descriptors:
                 additions, desired_assignments, changed_materials = (
                     _resolve_material_texture_changes(
-                        object_submeshes,
+                        run.object_submeshes,
                         texture_descriptors,
                         texture_dir,
                         path_resolver=bpy.path.abspath,
                         validate_texture_files=owns_texture_section,
                         skip_unset_images=not owns_texture_section,
                         require_donor_files=self.reimport_textures,
-                        planned_copies=planned_texture_copies,
+                        planned_copies=run.planned_texture_copies,
                     )
                 )
         except ValueError as exc:
-            self.report({"ERROR"}, str(exc))
-            return {"CANCELLED"}
+            raise ExportCancelled(str(exc)) from exc
         # Names the High file a Low export paired with, so a wrong pairing
         # (file names that don't match) shows in the error.
         paired_main_model = (
@@ -4445,118 +4767,116 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         )
 
         if additions and not owns_texture_section:
-            self.report(
-                {"ERROR"},
+            raise ExportCancelled(
                 f"Low-poly model textures are owned by the {paired_main_model}. A low-poly "
                 "material can only show one of the main model's textures (see Manage "
                 "texture slots); add new PNGs on the main model and export it first: "
                 f"{', '.join(addition['TextureFileName'] for addition in additions)}",
             )
-            return {"CANCELLED"}
 
-        # Added bones (Add Bone) — model-level, written only
-        # when the armature has any SluggiesUserAdded bone. Runs before custom
-        # submesh encoding below, which resolves host bones against it: a
-        # custom submesh may be hosted on a user-added bone that has no
-        # BoneHierarchy entry yet.
+        run.texture_descriptors, run.texture_dir = texture_descriptors, texture_dir
+        run.owns_texture_section, run.paired_main_model = owns_texture_section, paired_main_model
+        run.additions, run.desired_assignments = additions, desired_assignments
+        run.changed_materials = changed_materials
+
+    def _encode_bones(self, context, run):
+        """Added bones (Add Bone): model-level, written only when the armature has any SluggiesUserAdded
+        bone. Runs before the custom submeshes, which resolve their host bones against it: a custom submesh
+        may be hosted on a user-added bone that has no BoneHierarchy entry yet."""
+        selected, data, warnings = run.selected, run.data, run.warnings
         # Everything below reads bone ids from bone_<N> names; refuse while an
         # added bone's name and its exported id disagree (a deleted added
         # bone shifts the later ids, 2026-09-29).
         name_error = added_bone_name_error(selected, context)
         if name_error:
-            self.report({"ERROR"}, name_error)
-            return {"CANCELLED"}
+            raise ExportCancelled(name_error)
         encode_bone_hierarchy_edited(selected, data, warnings, context)
         warnings.extend(untracked_keys_warnings(selected, context))
         bone_hierarchy_errors = validate_bone_hierarchy_edited_export(
             data["SluggiesModel"], warnings
         )
         if bone_hierarchy_errors:
-            for err in bone_hierarchy_errors:
-                self.report({"ERROR"}, err)
-            return {"CANCELLED"}
+            raise ExportCancelled(bone_hierarchy_errors)
 
-        # --- Custom submeshes ---
-        # Their PNGs are added whatever the Reimport textures toggle says.
-        # CustomSubmeshes always mirrors the current selection, like
-        # AdditionalTextureDescriptors.
-        custom_submesh_entries = []
-        custom_additions = []
-        if custom_submesh_candidates:
-            model = data["SluggiesModel"]
-            try:
-                validate_custom_submeshes(
-                    custom_submesh_candidates, candidates, model, warnings
-                )
-                primary_materials = []
-                custom_texture_entries = []
-                for obj in custom_submesh_candidates:
-                    new_materials = _find_new_materials(obj, None)
-                    if new_materials:
-                        names = ", ".join(f"'{n}' ({r})" for n, r in new_materials)
-                        raise ValueError(
-                            f"{obj.name}: custom submeshes support only their own surface "
-                            f"materials ({names})"
-                        )
-                    material = _custom_submesh_material(obj)
-                    if material is None:
-                        raise ValueError(
-                            f"{obj.name}: custom submesh has no material with its own "
-                            f"SurfaceId '{obj.get('CustomSubmeshId')}_ds0'"
-                        )
-                    template_texture_index = _custom_submesh_template_texture_index(
-                        model, str(obj.get("TemplateSource") or "")
-                    )
-                    primary_materials.append(material)
-                    custom_texture_entries.append((material, template_texture_index))
-                    # Add-material surfaces on the custom submesh resolve their
-                    # images the same way.
-                    additional_materials, _unused = _custom_submesh_additional_materials(obj)
-                    for extra in additional_materials.values():
-                        custom_texture_entries.append(
-                            (extra, int(extra.get("TemplateTextureIndex", -1)))
-                        )
-                (
-                    custom_additions, custom_assignments, _copies,
-                ) = _resolve_custom_submesh_texture_changes(
-                    custom_texture_entries,
-                    texture_descriptors,
-                    texture_dir,
-                    path_resolver=bpy.path.abspath,
-                    planned_copies=planned_texture_copies,
-                )
-                if custom_additions and not owns_texture_section:
-                    raise ValueError(
-                        f"Low-poly model textures are owned by the {paired_main_model}; "
-                        "a custom submesh on it can only use an existing texture: "
-                        + ", ".join(obj.name for obj in custom_submesh_candidates)
-                    )
-                for obj, material in zip(custom_submesh_candidates, primary_materials):
-                    custom_submesh_entries.append(encode_custom_submesh(
-                        context, obj, model, custom_assignments[material.name],
-                        warnings, use_compression,
-                        material.get("SpecularStrength"),
-                        texture_assignments=custom_assignments, infos=infos,
-                    ))
-            except ValueError as exc:
-                self.report({"ERROR"}, str(exc))
-                return {"CANCELLED"}
-
-        # --- Rigid rebuilds ---
-        # Each rigid donor submesh takes the in-place path unless its
-        # topology, transform, host bone (world position kept) or surfaces
-        # changed, or its positions outgrew the donor's format; then it is
-        # exported as a whole RigidRebuild. New
-        # Add-material surfaces resolve their images like custom submeshes.
-        rigid_plans = {}
-        # The skinned body: a whole
-        # SkinnedRebuild when its topology, transform or surfaces changed in
-        # a way the slot-preserving paths cannot store.
-        skinned_plans = {}
-        new_surface_additions, new_surface_assignments = [], {}
+    def _encode_custom_submeshes(self, context, run):
+        """Encode the selected custom submeshes. Their PNGs are added whatever the Reimport textures toggle
+        says. CustomSubmeshes always mirrors the current selection, like AdditionalTextureDescriptors."""
+        custom_submesh_candidates, candidates = run.custom_submesh_candidates, run.candidates
+        warnings, infos = run.warnings, run.infos
+        if not custom_submesh_candidates:
+            return
+        model = run.data["SluggiesModel"]
         try:
-            for obj, target_submesh in object_submeshes:
-                submesh_index = next(i for i, sm in enumerate(submeshes) if sm is target_submesh)
+            validate_custom_submeshes(
+                custom_submesh_candidates, candidates, model, warnings
+            )
+            primary_materials = []
+            custom_texture_entries = []
+            for obj in custom_submesh_candidates:
+                new_materials = _find_new_materials(obj, None)
+                if new_materials:
+                    names = ", ".join(f"'{n}' ({r})" for n, r in new_materials)
+                    raise ValueError(
+                        f"{obj.name}: custom submeshes support only their own surface "
+                        f"materials ({names})"
+                    )
+                material = _custom_submesh_material(obj)
+                if material is None:
+                    raise ValueError(
+                        f"{obj.name}: custom submesh has no material with its own "
+                        f"SurfaceId '{obj.get('CustomSubmeshId')}_ds0'"
+                    )
+                template_texture_index = _custom_submesh_template_texture_index(
+                    model, str(obj.get("TemplateSource") or "")
+                )
+                primary_materials.append(material)
+                custom_texture_entries.append((material, template_texture_index))
+                # Add-material surfaces on the custom submesh resolve their
+                # images the same way.
+                additional_materials, _unused = _custom_submesh_additional_materials(obj)
+                for extra in additional_materials.values():
+                    custom_texture_entries.append(
+                        (extra, int(extra.get("TemplateTextureIndex", -1)))
+                    )
+            (
+                custom_additions, custom_assignments, _copies,
+            ) = _resolve_custom_submesh_texture_changes(
+                custom_texture_entries,
+                run.texture_descriptors,
+                run.texture_dir,
+                path_resolver=bpy.path.abspath,
+                planned_copies=run.planned_texture_copies,
+            )
+            run.custom_additions = custom_additions
+            if custom_additions and not run.owns_texture_section:
+                raise ValueError(
+                    f"Low-poly model textures are owned by the {run.paired_main_model}; "
+                    "a custom submesh on it can only use an existing texture: "
+                    + ", ".join(obj.name for obj in custom_submesh_candidates)
+                )
+            for obj, material in zip(custom_submesh_candidates, primary_materials):
+                run.custom_submesh_entries.append(encode_custom_submesh(
+                    context, obj, model, custom_assignments[material.name],
+                    warnings, run.use_compression,
+                    material.get("SpecularStrength"),
+                    texture_assignments=custom_assignments, infos=infos,
+                ))
+        except ValueError as exc:
+            raise ExportCancelled(str(exc)) from exc
+
+    def _plan_rebuilds(self, context, run):
+        """Decide which original meshes are exported as a whole rebuild.
+
+        Each rigid donor submesh takes the in-place path unless its topology, transform, host bone (world
+        position kept) or surfaces changed, or its positions outgrew the donor's format; then it is exported
+        as a whole RigidRebuild. The skinned body is a whole SkinnedRebuild when its topology, transform or
+        surfaces changed in a way the slot-preserving paths cannot store. New Add-material surfaces resolve
+        their images like custom submeshes."""
+        data, warnings = run.data, run.warnings
+        rigid_plans, skinned_plans = run.rigid_plans, run.skinned_plans
+        try:
+            for (obj, target_submesh), (_obj, submesh_index) in zip(
+                    run.object_submeshes, run.object_submesh_indices):
                 if RigidRebuildExport.is_rigid_submesh(target_submesh):
                     plan = _rigid_rebuild_plan(
                         context, obj, submesh_index, target_submesh, data["SluggiesModel"], warnings,
@@ -4576,430 +4896,470 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             ]
             if new_surface_entries:
                 (
-                    new_surface_additions, new_surface_assignments, _copies,
+                    run.new_surface_additions, run.new_surface_assignments, _copies,
                 ) = _resolve_custom_submesh_texture_changes(
-                    new_surface_entries, texture_descriptors, texture_dir,
+                    new_surface_entries, run.texture_descriptors, run.texture_dir,
                     path_resolver=bpy.path.abspath,
-                    planned_copies=planned_texture_copies,
+                    planned_copies=run.planned_texture_copies,
                 )
                 new_names = ", ".join(mat.name for mat, _index in new_surface_entries)
-                if new_surface_additions and not owns_texture_section:
+                if run.new_surface_additions and not run.owns_texture_section:
                     raise ValueError(
-                        f"Low-poly model textures are owned by the {paired_main_model}; a new "
+                        f"Low-poly model textures are owned by the {run.paired_main_model}; a new "
                         f"material on it can only use an existing texture: {new_names}"
                     )
         except ValueError as exc:
-            self.report({"ERROR"}, str(exc))
-            return {"CANCELLED"}
+            raise ExportCancelled(str(exc)) from exc
 
-        # Unselected original meshes are left out of the patched model (option).
-        # Not on stadiums: a collision-only export selects no mesh at all.
+    def _exclude_unselected(self, run):
+        """Unselected original meshes are left out of the patched model (option). Not on stadiums: a
+        collision-only export selects no mesh at all."""
+        data, submeshes, infos = run.data, run.submeshes, run.infos
         stadium_model = TemplateSources.is_stadium_chunk(data["SluggiesModel"].get("ChunkNumber"))
         excluded_indices = ExportMode.exclude_unselected_submeshes(
-            submeshes, [next(i for i, sm in enumerate(submeshes) if sm is target)
-                        for _obj, target in object_submeshes],
+            submeshes, [index for _obj, index in run.object_submesh_indices],
             self.exclude_unselected and not stadium_model,
         )
         if self.exclude_unselected and stadium_model:
             infos.append("Stadium: unselected meshes are kept (Exclude all unselected meshes is for characters)")
         for index in excluded_indices:
             _drop_facial_edits_for_submesh(data, index)
-        excluded_names = [submeshes[i].get("MeshName") or f"submesh {i}" for i in excluded_indices]
-        if excluded_names:
-            infos.append(f"Excluded from the patched model (not selected): {', '.join(excluded_names)}")
-        if hidden_meshes:
-            warnings.append("Armature selected: its hidden meshes are not exported: "
-                            + ", ".join(obj.name for obj in hidden_meshes))
+        run.excluded_names = [submeshes[i].get("MeshName") or f"submesh {i}" for i in excluded_indices]
+        if run.excluded_names:
+            infos.append(f"Excluded from the patched model (not selected): {', '.join(run.excluded_names)}")
+        if run.hidden_meshes:
+            run.warnings.append("Armature selected: its hidden meshes are not exported: "
+                                + ", ".join(obj.name for obj in run.hidden_meshes))
 
-        # --- Export mode: in-place when nothing would be lost, else Hammerspace ---
-        # Model-level reasons skip the in-place attempt. Otherwise the meshes
-        # are first encoded in place on a copy; any edit that attempt cannot
-        # store adds a reason, and the meshes are encoded again in Hammerspace
-        # mode on the real data.
-        hammerspace_reasons = ExportMode.model_level_reasons(
+    def _decide_mode(self, context, run):
+        """Export mode: in-place when nothing would be lost, else Hammerspace. Model-level reasons skip the
+        in-place attempt; ``_encode_meshes`` adds the reasons only an encode can find."""
+        data, submeshes = run.data, run.submeshes
+        run.hammerspace_reasons = ExportMode.model_level_reasons(
             data["SluggiesModel"],
-            custom_submesh_names=[obj.name for obj in custom_submesh_candidates],
-            has_new_bones=armature_has_new_bones(selected, context),
-            changed_materials=changed_materials,
+            custom_submesh_names=[obj.name for obj in run.custom_submesh_candidates],
+            has_new_bones=armature_has_new_bones(run.selected, context),
+            changed_materials=run.changed_materials,
             resized_textures=(
-                ExportMode.texture_size_changes(local_texture_descriptors, texture_dir)
-                if self.reimport_textures and owns_texture_section else []
+                ExportMode.texture_size_changes(run.local_texture_descriptors, run.texture_dir)
+                if self.reimport_textures and run.owns_texture_section else []
             ),
             stale_submeshes=ExportMode.stale_hammerspace_submeshes(
-                submeshes, [obj["VertexBufferOffset"] for obj, _sm in object_submeshes]
+                submeshes, [obj["VertexBufferOffset"] for obj, _sm in run.object_submeshes]
             ),
-            excluded_submeshes=excluded_names,
+            excluded_submeshes=run.excluded_names,
         ) + [
             RigidRebuildExport.mode_reason(plan.obj.name, plan.reasons)
-            for plan in rigid_plans.values()
+            for plan in run.rigid_plans.values()
         ] + [
             SkinnedRebuildExport.mode_reason(plan.obj.name, plan.reasons)
-            for plan in skinned_plans.values()
+            for plan in run.skinned_plans.values()
         ]
-        use_hammerspace = bool(hammerspace_reasons)
-        object_submesh_indices = [
-            (obj, next(i for i, sm in enumerate(submeshes) if sm is target_submesh))
-            for obj, target_submesh in object_submeshes
-        ]
-        base_data, base_warnings, base_errors, base_infos = data, warnings, errors, infos
+        run.use_hammerspace = bool(run.hammerspace_reasons)
+
+    def _encode_meshes(self, context, run):
+        """Encode the original meshes and the model-level data that depends on them, in up to two passes.
+
+        Without a model-level reason the meshes are first encoded in place on a copy; any edit that attempt
+        cannot store adds a reason, and everything is encoded again in Hammerspace mode on the real data,
+        with the notes as they were before the attempt."""
+        base_data, base_warnings, base_errors, base_infos = run.data, run.warnings, run.errors, run.infos
+        use_hammerspace = run.use_hammerspace
         while True:
             data = base_data if use_hammerspace else copy.deepcopy(base_data)
-            warnings, errors, infos = list(base_warnings), list(base_errors), list(base_infos)
-            written = 0
-            pass_reasons = []
+            run.data, run.use_hammerspace = data, use_hammerspace
+            run.warnings, run.errors, run.infos = list(base_warnings), list(base_errors), list(base_infos)
+            run.written = 0
+            pass_reasons = run.pass_reasons = []
 
-            for obj, submesh_index in object_submesh_indices:
-                target_submesh = data["SluggiesModel"]["Submeshes"][submesh_index]
-                plan = rigid_plans.get(submesh_index)
-                skinned_plan = skinned_plans.get(submesh_index)
-                if plan is not None:
-                    # Whole-blob rebuild: none of the in-place edit fields may
-                    # stay on the submesh (the patcher refuses the mix).
-                    try:
-                        entry = _rigid_rebuild_entry(plan, new_surface_assignments, use_compression, warnings, infos)
-                    except ValueError as exc:
-                        self.report({"ERROR"}, str(exc))
-                        return {"CANCELLED"}
-                    RigidRebuildExport.strip_in_place_edits(target_submesh)
-                    target_submesh.pop("SkinnedRebuild", None)
-                    target_submesh["RigidRebuild"] = entry
-                elif skinned_plan is not None:
-                    try:
-                        entry = _skinned_rebuild_entry(skinned_plan, new_surface_assignments, use_compression, warnings, infos)
-                    except ValueError as exc:
-                        self.report({"ERROR"}, str(exc))
-                        return {"CANCELLED"}
-                    SkinnedRebuildExport.strip_in_place_edits(target_submesh)
-                    target_submesh.pop("RigidRebuild", None)
-                    target_submesh["SkinnedRebuild"] = entry
-                elif use_hammerspace:
-                    target_submesh.pop("RigidRebuild", None)
-                    target_submesh.pop("SkinnedRebuild", None)
-                    try:
-                        hs = encode_mesh_hammerspace(
-                            obj,
-                            target_submesh,
-                            use_custom_normals=self.use_custom_normals,
-                            use_compression=use_compression,
-                        )
-                    except ValueError as exc:
-                        self.report({"ERROR"}, f"{obj.name}: {exc}")
-                        return {"CANCELLED"}
-                    target_submesh["VertexBuffer"]["VertexBufferDataEdited"] = hs['VertexBufferDataEdited']
-                    target_submesh["FacesDataEdited"] = hs['FacesDataEdited']
-                    target_submesh["FacesCountEdited"] = hs['FacesCountEdited']
-                    target_submesh["FaceTextureIndicesEdited"] = hs['FaceTextureIndicesEdited']
-                    for json_channel in target_submesh.get("UVChannels", []):
-                        ch_ind = json_channel.get("UVChannelIndex", 0)
-                        if ch_ind in hs['UVEdits']:
-                            uv_data_enc, uv_faces_enc = hs['UVEdits'][ch_ind]
-                            json_channel["UVChannelDataEdited"] = uv_data_enc
-                            json_channel["UVFacesDataEdited"] = uv_faces_enc
-                        else:
-                            layer_name = _uv_layer_name(target_submesh.get("UVChannels", []), ch_ind)
-                            warnings.append(
-                                f"{obj.name}: UV layer '{layer_name}' not found — UV channel {ch_ind} skipped."
-                            )
-
-                    # Per-loop normals (standalone NormalBuffer) and per-loop colors
-                    # (plan 3.3) — written only when the submesh actually has them.
-                    normal_buffer = target_submesh.get("NormalBuffer")
-                    if hs.get("NormalEdits") is not None and isinstance(normal_buffer, dict):
-                        normal_data_enc, normal_faces_enc = hs["NormalEdits"]
-                        normal_buffer["NormalBufferDataEdited"] = normal_data_enc
-                        normal_buffer["NormalFacesDataEdited"] = normal_faces_enc
-                    elif isinstance(normal_buffer, dict):
-                        # Submesh has a NormalBuffer the exporter refused to encode —
-                        # drop stale per-loop edits so the original NormalBuffer stays authoritative.
-                        if (self.use_custom_normals
-                                and normal_buffer.get("NormalBufferData")):
-                            # The user asked for normals to be overwritten and the
-                            # submesh has a standalone buffer, so encode_normal_edits
-                            # bailed out: extended records (CompCount > 3) could not
-                            # keep their donor tail mapping. Silently dropping this
-                            # ships a model whose lighting is not what was edited.
-                            donor_loops = len(_to_bytes(
-                                normal_buffer.get("NormalFacesData") or b""
-                            )) // 2
-                            errors.append(
-                                f"{obj.name}: standalone normal overwrite DROPPED — "
-                                f"extended normal records (CompCount "
-                                f"{normal_buffer.get('NormalBufferCompCount')}) could not "
-                                f"preserve their donor mapping ({donor_loops} donor loops). "
-                                f"The donor normals were kept; your normal edits are NOT "
-                                f"in this export. Keep the original topology or turn "
-                                f"Overwrite Normals off."
-                            )
-                        normal_buffer.pop("NormalBufferDataEdited", None)
-                        normal_buffer.pop("NormalFacesDataEdited", None)
-                    for json_channel in target_submesh.get("ColorChannels", []):
-                        ch_ind = json_channel.get("ColorChannelIndex", 0)
-                        if ch_ind in hs["ColorEdits"]:
-                            color_data_enc, color_faces_enc = hs["ColorEdits"][ch_ind]
-                            json_channel["ColorChannelDataEdited"] = color_data_enc
-                            json_channel["ColorFacesDataEdited"] = color_faces_enc
-                        else:
-                            json_channel.pop("ColorChannelDataEdited", None)
-                            json_channel.pop("ColorFacesDataEdited", None)
-                            warnings.append(
-                                f"{obj.name}: color attribute 'color{ch_ind}' not found — "
-                                f"color channel {ch_ind} skipped."
-                            )
-                else:
-                    target_submesh.pop("RigidRebuild", None)
-                    target_submesh.pop("SkinnedRebuild", None)
-                    mismatches = validate_against_json(obj, target_submesh)
-                    if mismatches:
-                        warnings.append(
-                            f"{obj.name}: metadata mismatch ({'; '.join(mismatches)}) — skipped."
-                        )
-                        continue
-
-                    length_issues = detect_length_mismatches(obj, target_submesh)
-                    if length_issues:
-                        pass_reasons.append(f"{obj.name}: " + "; ".join(length_issues))
-                    elif ExportMode.topology_changed(
-                        (poly.vertices for poly in obj.data.polygons),
-                        target_submesh.get("FacesData"),
-                    ):
-                        pass_reasons.append(f"{obj.name}: faces changed")
-
-                    try:
-                        edited_data = encode_vertex_buffer_edited(
-                            obj,
-                            obj["VertexBufferCompCount"],
-                            obj["VertexBufferQuantizeInfo"],
-                            use_custom_normals=self.use_custom_normals,
-                            use_compression=use_compression,
-                            donor_data=target_submesh["VertexBuffer"].get("VertexBufferData"),
-                        )
-                    except ValueError as exc:
-                        self.report({"ERROR"}, f"{obj.name}: {exc}")
-                        return {"CANCELLED"}
-                    target_submesh["VertexBuffer"]["VertexBufferDataEdited"] = edited_data
-                    # Clear any stale hammerspace face data so it can't mismatch the
-                    # in-place vertex buffer (which must stay at the original vertex count).
-                    target_submesh.pop("FacesDataEdited", None)
-                    target_submesh.pop("FacesCountEdited", None)
-                    target_submesh.pop("FaceTextureIndicesEdited", None)
-                    loop_indices = [
-                        li for poly in obj.data.polygons for li in poly.loop_indices
-                    ]
-                    inplace_normal_buffer = target_submesh.get("NormalBuffer")
-                    if (self.use_custom_normals
-                            and isinstance(inplace_normal_buffer, dict)
-                            and "NormalBufferData" in inplace_normal_buffer):
-                        if _apply_inplace_normal_edits(
-                            obj,
-                            inplace_normal_buffer,
-                            loop_indices,
-                            errors,
-                            use_compression,
-                        ):
-                            pass_reasons.append(
-                                f"{obj.name}: normals split on shared normal slots"
-                            )
-                    elif isinstance(inplace_normal_buffer, dict):
-                        inplace_normal_buffer.pop("NormalBufferDataEdited", None)
-                        inplace_normal_buffer.pop("NormalFacesDataEdited", None)
-                    # In-place patching cannot write colours: any colour edit
-                    # needs Hammerspace.
-                    for json_channel in target_submesh.get("ColorChannels", []):
-                        json_channel.pop("ColorChannelDataEdited", None)
-                        json_channel.pop("ColorFacesDataEdited", None)
-                        encoded_colors = encode_color_edits(
-                            obj, json_channel, loop_indices, use_compression=False
-                        )
-                        if encoded_colors is not None and ExportMode.colors_changed(
-                            bytes(encoded_colors[0]), json_channel
-                        ):
-                            pass_reasons.append(
-                                f"{obj.name}: vertex colours "
-                                f"(color{json_channel.get('ColorChannelIndex', 0)}) edited"
-                            )
-
-                    # Re-encode UV channels from Blender UV layers
-                    uv_seam_reason_added = False
-                    _all_uv_ch = target_submesh.get("UVChannels", [])
-                    for json_channel in _all_uv_ch:
-                        result = encode_uv_channel_edited(obj, json_channel, use_compression=use_compression, all_uv_channels=_all_uv_ch)
-                        ch_ind = json_channel.get("UVChannelIndex", 0)
-                        if result is None:
-                            layer_name = _uv_layer_name(_all_uv_ch, ch_ind)
-                            warnings.append(
-                                f"{obj.name}: UV layer '{layer_name}' not found — UV channel {ch_ind} skipped."
-                            )
-                            continue
-                        uv_data_enc, conflicts = result
-                        if conflicts and not uv_seam_reason_added:
-                            pass_reasons.append(f"{obj.name}: UV seams split")
-                            uv_seam_reason_added = True
-                        json_channel["UVChannelDataEdited"] = uv_data_enc
-                        # UVFacesDataEdited is no longer written: the draw list indices
-                        # are unchanged so UVFacesData still applies after patching.
-
-                # Write back DisplayState shader modes (Type-7 FourCC codes) if edited.
-                # Prefer mat["ShaderMode"] on the surface material (new path, 2.2+).
-                # Fall back to DS_{surface_id}_ShaderMode on the object (legacy path).
-                surf_mat = {
-                    mat.get("SurfaceId"): mat
-                    for slot in obj.material_slots
-                    if (mat := slot.material) is not None and mat.get("SurfaceId")
-                }
-                for ds_idx, ds in enumerate(target_submesh.get("DisplayStates", [])):
-                    if ds.get("DisplayStateId") != 7:
-                        continue
-                    original = ds.get("ShaderMode", "")
-                    surface_id = ds.get("SurfaceId") or f"ds{ds_idx}"
-                    mat = surf_mat.get(surface_id)
-                    if mat is not None:
-                        new_val = str(mat.get("ShaderMode") or "")
-                    else:
-                        prop_val = f"DS_{surface_id}_ShaderMode"
-                        new_val = str(obj[prop_val]) if prop_val in obj else None
-                    if new_val is not None and new_val != original:
-                        ds["ShaderModeEdited"] = new_val
-                    else:
-                        ds.pop("ShaderModeEdited", None)
-
-                # Write back specular strength (struct offset +1 = index 0 of the
-                # 3-byte DisplayStateParamBytes) if edited via the material's
-                # "SpecularStrength" custom property. Indices 1 and 2 are preserved.
-                for ds_idx, ds in enumerate(target_submesh.get("DisplayStates", [])):
-                    if ds.get("DisplayStateId") != 7:
-                        continue
-                    original_hex = ds.get("DisplayStateParamBytes", "000000")
-                    surface_id = ds.get("SurfaceId") or f"ds{ds_idx}"
-                    mat = surf_mat.get(surface_id)
-                    if mat is None or "SpecularStrength" not in mat:
-                        ds.pop("DisplayStateParamBytesEdited", None)
-                        continue
-                    try:
-                        original_bytes = bytes.fromhex(original_hex).ljust(3, b'\x00')[:3]
-                    except ValueError:
-                        original_bytes = b'\x00\x00\x00'
-                    new_strength = max(0, min(255, int(mat["SpecularStrength"])))
-                    new_bytes = bytes([new_strength, original_bytes[1], original_bytes[2]])
-                    new_hex = new_bytes.hex()
-                    if new_hex != original_hex:
-                        ds["DisplayStateParamBytesEdited"] = new_hex
-                    else:
-                        ds.pop("DisplayStateParamBytesEdited", None)
-
-                if plan is not None or skinned_plan is not None:
-                    # Faces are routed inside the rebuild entry itself.
-                    target_submesh.pop("FaceSurfaceIdsEdited", None)
-                    written += 1
-                    continue
-
-                # Export per-face draw-state assignment when faces have been moved.
-                try:
-                    face_sid_data, face_sid_changed = _encode_face_surface_assignment(
-                        obj, target_submesh.get("DisplayStates", []),
-                        surf_mat, use_compression, warnings,
-                    )
-                except ValueError as exc:
-                    self.report({"ERROR"}, str(exc))
-                    return {"CANCELLED"}
-                if face_sid_changed and not RigidRebuildExport.is_rigid_submesh(target_submesh):
-                    partial_error = _partial_move_error(
-                        obj, target_submesh.get("DisplayStates", []), surf_mat,
-                    )
-                    if partial_error:
-                        self.report({"ERROR"}, partial_error)
-                        return {"CANCELLED"}
-                if face_sid_changed:
-                    if not ENABLE_MATERIAL_REASSIGNMENT_EXPORT:
-                        self.report({"ERROR"},
-                            f"{obj.name}: material reassignment is currently disabled. "
-                            "Dolphin testing found unresolved runtime corruption even "
-                            "for complete moves between compatible donor surfaces. "
-                            "Restore every face to its originally imported material "
-                            "before exporting."
-                        )
-                        return {"CANCELLED"}
-                    target_submesh["FaceSurfaceIdsEdited"] = face_sid_data
-                    if not use_hammerspace:
-                        pass_reasons.append(f"{obj.name}: faces moved to other materials")
-                else:
-                    target_submesh.pop("FaceSurfaceIdsEdited", None)
-
-                written += 1
+            for obj, submesh_index in run.object_submesh_indices:
+                if self._encode_object(run, obj, submesh_index):
+                    run.written += 1
 
             # The in-place skin encoder assumes the donor vertex layout, so a
             # mesh edit that already needs Hammerspace switches before it runs.
             if not use_hammerspace and pass_reasons:
-                hammerspace_reasons = pass_reasons
+                run.hammerspace_reasons = pass_reasons
                 use_hammerspace = True
                 continue
 
-            # Skin data is model-level — purge stale edited fields, then re-encode.
-            # Both only make sense when a skinned donor mesh is actually part of
-            # this export: purging and re-encoding without one would drop the
-            # model's whole SK1/SK2/SKAcc structure (and any skin edit from an
-            # earlier run) on, say, a custom-submesh-only export.
-            encode_unskinned_bone_reassignments(candidates, data, warnings)
-            if skinned_plans:
-                # The rebuilt body carries its own weights; SkinDataEdited
-                # describes the donor's slots and must not be written.
-                _purge_skn_edited(data)
-            elif skinned_donor_objects(candidates, data):
-                _purge_skn_edited(data)
-                if use_hammerspace:
-                    try:
-                        skn_ok, skn_msg = encode_skin_hammerspace(
-                            candidates,
-                            data,
-                            warnings,
-                            use_custom_normals=self.use_custom_normals,
-                        )
-                    except ValueError as exc:
-                        self.report({"ERROR"}, str(exc))
-                        return {"CANCELLED"}
-                    if not skn_ok:
-                        self.report({"ERROR"}, skn_msg)
-                        return {"CANCELLED"}
-                    if skn_msg:
-                        self.report({"INFO"}, skn_msg)
-                elif encode_skin_weights_inplace(
-                    candidates, data, warnings, use_custom_normals=self.use_custom_normals
-                ) is None:
-                    pass_reasons.append("skin data no longer fits its original size")
-            elif data["SluggiesModel"].get("SkinData") and _skin_data_edited_is_empty(data):
-                # Only an export from before this guard existed can have left
-                # an empty SkinDataEdited on a skinned model; it would unskin
-                # the model. Drop it so the donor structure is used again.
-                _purge_skn_edited(data)
-                warnings.append(
-                    "Removed an empty SkinDataEdited left by an earlier export that "
-                    "included no skinned mesh; the model's donor skinning is used again."
-                )
-
-            rebuilt_objects = [p.obj for p in list(skinned_plans.values()) + list(rigid_plans.values())]
-            try:
-                update_facial_pose_edits(
-                    [obj for obj in candidates if not any(rebuilt is obj for rebuilt in rebuilt_objects)],
-                    data, warnings,
-                )
-            except ValueError as exc:
-                self.report({"ERROR"}, f"Facial pose edit: {exc}")
-                return {"CANCELLED"}
-            for rebuilt_plan in list(skinned_plans.values()) + list(rigid_plans.values()):
-                _drop_facial_edits_for_submesh(data, rebuilt_plan.submesh_index)
-
-            # Whole-model root-bone scale — model-level, written only when edited.
-            root_scale = encode_root_bone_scale_edited(candidates, data, warnings, context)
+            self._encode_model_level(context, run)
 
             if use_hammerspace or not pass_reasons:
                 break
-            hammerspace_reasons = pass_reasons
+            run.hammerspace_reasons = pass_reasons
             use_hammerspace = True
 
+        if use_hammerspace:
+            ExportMode.promote_inplace_uv_edits(
+                data["SluggiesModel"]["Submeshes"],
+                [obj["VertexBufferOffset"] for obj, _index in run.object_submesh_indices],
+            )
+
+    def _encode_object(self, run, obj, submesh_index):
+        """Encode one original mesh into its submesh of the current pass, by the path that applies (rigid
+        rebuild, body rebuild, Hammerspace or in place). False when the mesh was skipped."""
+        target_submesh = run.data["SluggiesModel"]["Submeshes"][submesh_index]
+        warnings, infos, use_compression = run.warnings, run.infos, run.use_compression
+        new_surface_assignments = run.new_surface_assignments
+        plan = run.rigid_plans.get(submesh_index)
+        skinned_plan = run.skinned_plans.get(submesh_index)
+        if plan is not None:
+            # Whole-blob rebuild: none of the in-place edit fields may
+            # stay on the submesh (the patcher refuses the mix).
+            try:
+                entry = _rigid_rebuild_entry(plan, new_surface_assignments, use_compression, warnings, infos)
+            except ValueError as exc:
+                raise ExportCancelled(str(exc)) from exc
+            RigidRebuildExport.strip_in_place_edits(target_submesh)
+            target_submesh.pop("SkinnedRebuild", None)
+            target_submesh["RigidRebuild"] = entry
+        elif skinned_plan is not None:
+            try:
+                entry = _skinned_rebuild_entry(skinned_plan, new_surface_assignments, use_compression, warnings, infos)
+            except ValueError as exc:
+                raise ExportCancelled(str(exc)) from exc
+            SkinnedRebuildExport.strip_in_place_edits(target_submesh)
+            target_submesh.pop("RigidRebuild", None)
+            target_submesh["SkinnedRebuild"] = entry
+        elif run.use_hammerspace:
+            self._encode_object_hammerspace(run, obj, target_submesh)
+        elif not self._encode_object_inplace(run, obj, target_submesh):
+            return False
+
+        surf_mat = self._write_display_state_edits(obj, target_submesh)
+
+        if plan is not None or skinned_plan is not None:
+            # Faces are routed inside the rebuild entry itself.
+            target_submesh.pop("FaceSurfaceIdsEdited", None)
+            return True
+
+        self._encode_face_surface_edits(run, obj, target_submesh, surf_mat)
+        return True
+
+    def _encode_object_hammerspace(self, run, obj, target_submesh):
+        """Hammerspace path of one mesh: every buffer is re-encoded from Blender and may change size."""
+        warnings, errors = run.warnings, run.errors
+        target_submesh.pop("RigidRebuild", None)
+        target_submesh.pop("SkinnedRebuild", None)
+        try:
+            hs = encode_mesh_hammerspace(
+                obj,
+                target_submesh,
+                use_custom_normals=self.use_custom_normals,
+                use_compression=run.use_compression,
+            )
+        except ValueError as exc:
+            raise ExportCancelled(f"{obj.name}: {exc}") from exc
+        target_submesh["VertexBuffer"]["VertexBufferDataEdited"] = hs['VertexBufferDataEdited']
+        target_submesh["FacesDataEdited"] = hs['FacesDataEdited']
+        target_submesh["FacesCountEdited"] = hs['FacesCountEdited']
+        target_submesh["FaceTextureIndicesEdited"] = hs['FaceTextureIndicesEdited']
+        for json_channel in target_submesh.get("UVChannels", []):
+            ch_ind = json_channel.get("UVChannelIndex", 0)
+            if ch_ind in hs['UVEdits']:
+                uv_data_enc, uv_faces_enc = hs['UVEdits'][ch_ind]
+                json_channel["UVChannelDataEdited"] = uv_data_enc
+                json_channel["UVFacesDataEdited"] = uv_faces_enc
+            else:
+                layer_name = _uv_layer_name(target_submesh.get("UVChannels", []), ch_ind)
+                warnings.append(
+                    f"{obj.name}: UV layer '{layer_name}' not found — UV channel {ch_ind} skipped."
+                )
+
+        # Per-loop normals (standalone NormalBuffer) and per-loop colors
+        # — written only when the submesh actually has them.
+        normal_buffer = target_submesh.get("NormalBuffer")
+        if hs.get("NormalEdits") is not None and isinstance(normal_buffer, dict):
+            normal_data_enc, normal_faces_enc = hs["NormalEdits"]
+            normal_buffer["NormalBufferDataEdited"] = normal_data_enc
+            normal_buffer["NormalFacesDataEdited"] = normal_faces_enc
+        elif isinstance(normal_buffer, dict):
+            # Submesh has a NormalBuffer the exporter refused to encode —
+            # drop stale per-loop edits so the original NormalBuffer stays authoritative.
+            if (self.use_custom_normals
+                    and normal_buffer.get("NormalBufferData")):
+                # The user asked for normals to be overwritten and the
+                # submesh has a standalone buffer, so encode_normal_edits
+                # bailed out: extended records (CompCount > 3) could not
+                # keep their donor tail mapping. Silently dropping this
+                # ships a model whose lighting is not what was edited.
+                donor_loops = len(_to_bytes(
+                    normal_buffer.get("NormalFacesData") or b""
+                )) // 2
+                errors.append(
+                    f"{obj.name}: standalone normal overwrite DROPPED — "
+                    f"extended normal records (CompCount "
+                    f"{normal_buffer.get('NormalBufferCompCount')}) could not "
+                    f"preserve their donor mapping ({donor_loops} donor loops). "
+                    f"The donor normals were kept; your normal edits are NOT "
+                    f"in this export. Keep the original topology or turn "
+                    f"Overwrite Normals off."
+                )
+            normal_buffer.pop("NormalBufferDataEdited", None)
+            normal_buffer.pop("NormalFacesDataEdited", None)
+        for json_channel in target_submesh.get("ColorChannels", []):
+            ch_ind = json_channel.get("ColorChannelIndex", 0)
+            if ch_ind in hs["ColorEdits"]:
+                color_data_enc, color_faces_enc = hs["ColorEdits"][ch_ind]
+                json_channel["ColorChannelDataEdited"] = color_data_enc
+                json_channel["ColorFacesDataEdited"] = color_faces_enc
+            else:
+                json_channel.pop("ColorChannelDataEdited", None)
+                json_channel.pop("ColorFacesDataEdited", None)
+                warnings.append(
+                    f"{obj.name}: color attribute 'color{ch_ind}' not found — "
+                    f"color channel {ch_ind} skipped."
+                )
+
+    def _encode_object_inplace(self, run, obj, target_submesh):
+        """In-place path of one mesh: every buffer keeps its original size. An edit this path cannot store
+        becomes a reason in ``run.pass_reasons``. False when the mesh was skipped (metadata mismatch)."""
+        warnings, errors, pass_reasons = run.warnings, run.errors, run.pass_reasons
+        use_compression = run.use_compression
+        target_submesh.pop("RigidRebuild", None)
+        target_submesh.pop("SkinnedRebuild", None)
+        mismatches = validate_against_json(obj, target_submesh)
+        if mismatches:
+            warnings.append(
+                f"{obj.name}: metadata mismatch ({'; '.join(mismatches)}) — skipped."
+            )
+            return False
+
+        length_issues = detect_length_mismatches(obj, target_submesh)
+        if length_issues:
+            pass_reasons.append(f"{obj.name}: " + "; ".join(length_issues))
+        elif ExportMode.topology_changed(
+            (poly.vertices for poly in obj.data.polygons),
+            target_submesh.get("FacesData"),
+        ):
+            pass_reasons.append(f"{obj.name}: faces changed")
+
+        try:
+            edited_data = encode_vertex_buffer_edited(
+                obj,
+                obj["VertexBufferCompCount"],
+                obj["VertexBufferQuantizeInfo"],
+                use_custom_normals=self.use_custom_normals,
+                use_compression=use_compression,
+                donor_data=target_submesh["VertexBuffer"].get("VertexBufferData"),
+            )
+        except ValueError as exc:
+            raise ExportCancelled(f"{obj.name}: {exc}") from exc
+        target_submesh["VertexBuffer"]["VertexBufferDataEdited"] = edited_data
+        # Clear any stale hammerspace face data so it can't mismatch the
+        # in-place vertex buffer (which must stay at the original vertex count).
+        target_submesh.pop("FacesDataEdited", None)
+        target_submesh.pop("FacesCountEdited", None)
+        target_submesh.pop("FaceTextureIndicesEdited", None)
+        loop_indices = [
+            li for poly in obj.data.polygons for li in poly.loop_indices
+        ]
+        inplace_normal_buffer = target_submesh.get("NormalBuffer")
+        if (self.use_custom_normals
+                and isinstance(inplace_normal_buffer, dict)
+                and "NormalBufferData" in inplace_normal_buffer):
+            if _apply_inplace_normal_edits(
+                obj,
+                inplace_normal_buffer,
+                loop_indices,
+                errors,
+                use_compression,
+            ):
+                pass_reasons.append(
+                    f"{obj.name}: normals split on shared normal slots"
+                )
+        elif isinstance(inplace_normal_buffer, dict):
+            inplace_normal_buffer.pop("NormalBufferDataEdited", None)
+            inplace_normal_buffer.pop("NormalFacesDataEdited", None)
+        # In-place patching cannot write colours: any colour edit
+        # needs Hammerspace.
+        for json_channel in target_submesh.get("ColorChannels", []):
+            json_channel.pop("ColorChannelDataEdited", None)
+            json_channel.pop("ColorFacesDataEdited", None)
+            encoded_colors = encode_color_edits(
+                obj, json_channel, loop_indices, use_compression=False
+            )
+            if encoded_colors is not None and ExportMode.colors_changed(
+                bytes(encoded_colors[0]), json_channel
+            ):
+                pass_reasons.append(
+                    f"{obj.name}: vertex colours "
+                    f"(color{json_channel.get('ColorChannelIndex', 0)}) edited"
+                )
+
+        # Re-encode UV channels from Blender UV layers
+        uv_seam_reason_added = False
+        _all_uv_ch = target_submesh.get("UVChannels", [])
+        for json_channel in _all_uv_ch:
+            result = encode_uv_channel_edited(obj, json_channel, use_compression=use_compression, all_uv_channels=_all_uv_ch)
+            ch_ind = json_channel.get("UVChannelIndex", 0)
+            if result is None:
+                layer_name = _uv_layer_name(_all_uv_ch, ch_ind)
+                warnings.append(
+                    f"{obj.name}: UV layer '{layer_name}' not found — UV channel {ch_ind} skipped."
+                )
+                continue
+            uv_data_enc, conflicts = result
+            if conflicts and not uv_seam_reason_added:
+                pass_reasons.append(f"{obj.name}: UV seams split")
+                uv_seam_reason_added = True
+            json_channel["UVChannelDataEdited"] = uv_data_enc
+            # UVFacesDataEdited is no longer written: the draw list indices
+            # are unchanged so UVFacesData still applies after patching.
+        return True
+
+    @staticmethod
+    def _write_display_state_edits(obj, target_submesh):
+        """Write the shader mode and specular strength edits of the mesh's surface materials into its
+        Type-7 display states. Returns the materials by SurfaceId."""
+        # Write back DisplayState shader modes (Type-7 FourCC codes) if edited.
+        # Prefer mat["ShaderMode"] on the surface material (new path, 2.2+).
+        # Fall back to DS_{surface_id}_ShaderMode on the object (legacy path).
+        surf_mat = {
+            mat.get("SurfaceId"): mat
+            for slot in obj.material_slots
+            if (mat := slot.material) is not None and mat.get("SurfaceId")
+        }
+        for ds_idx, ds in enumerate(target_submesh.get("DisplayStates", [])):
+            if ds.get("DisplayStateId") != 7:
+                continue
+            original = ds.get("ShaderMode", "")
+            surface_id = ds.get("SurfaceId") or f"ds{ds_idx}"
+            mat = surf_mat.get(surface_id)
+            if mat is not None:
+                new_val = str(mat.get("ShaderMode") or "")
+            else:
+                prop_val = f"DS_{surface_id}_ShaderMode"
+                new_val = str(obj[prop_val]) if prop_val in obj else None
+            if new_val is not None and new_val != original:
+                ds["ShaderModeEdited"] = new_val
+            else:
+                ds.pop("ShaderModeEdited", None)
+
+        # Write back specular strength (struct offset +1 = index 0 of the
+        # 3-byte DisplayStateParamBytes) if edited via the material's
+        # "SpecularStrength" custom property. Indices 1 and 2 are preserved.
+        for ds_idx, ds in enumerate(target_submesh.get("DisplayStates", [])):
+            if ds.get("DisplayStateId") != 7:
+                continue
+            original_hex = ds.get("DisplayStateParamBytes", "000000")
+            surface_id = ds.get("SurfaceId") or f"ds{ds_idx}"
+            mat = surf_mat.get(surface_id)
+            if mat is None or "SpecularStrength" not in mat:
+                ds.pop("DisplayStateParamBytesEdited", None)
+                continue
+            try:
+                original_bytes = bytes.fromhex(original_hex).ljust(3, b'\x00')[:3]
+            except ValueError:
+                original_bytes = b'\x00\x00\x00'
+            new_strength = max(0, min(255, int(mat["SpecularStrength"])))
+            new_bytes = bytes([new_strength, original_bytes[1], original_bytes[2]])
+            new_hex = new_bytes.hex()
+            if new_hex != original_hex:
+                ds["DisplayStateParamBytesEdited"] = new_hex
+            else:
+                ds.pop("DisplayStateParamBytesEdited", None)
+        return surf_mat
+
+    def _encode_face_surface_edits(self, run, obj, target_submesh, surf_mat):
+        """Export the per-face draw-state assignment when faces have been moved to other materials."""
+        try:
+            face_sid_data, face_sid_changed = _encode_face_surface_assignment(
+                obj, target_submesh.get("DisplayStates", []),
+                surf_mat, run.use_compression, run.warnings,
+            )
+        except ValueError as exc:
+            raise ExportCancelled(str(exc)) from exc
+        if face_sid_changed and not RigidRebuildExport.is_rigid_submesh(target_submesh):
+            partial_error = _partial_move_error(
+                obj, target_submesh.get("DisplayStates", []), surf_mat,
+            )
+            if partial_error:
+                raise ExportCancelled(partial_error)
+        if face_sid_changed:
+            if not ENABLE_MATERIAL_REASSIGNMENT_EXPORT:
+                raise ExportCancelled(
+                    f"{obj.name}: material reassignment is currently disabled. "
+                    "Dolphin testing found unresolved runtime corruption even "
+                    "for complete moves between compatible donor surfaces. "
+                    "Restore every face to its originally imported material "
+                    "before exporting."
+                )
+            target_submesh["FaceSurfaceIdsEdited"] = face_sid_data
+            if not run.use_hammerspace:
+                run.pass_reasons.append(f"{obj.name}: faces moved to other materials")
+        else:
+            target_submesh.pop("FaceSurfaceIdsEdited", None)
+
+    def _encode_model_level(self, context, run):
+        """The model-level data of one pass: bone reassignments of unskinned meshes, skin, facial poses and
+        the root bone scale."""
+        candidates, data, warnings = run.candidates, run.data, run.warnings
+        skinned_plans, rigid_plans = run.skinned_plans, run.rigid_plans
+        use_hammerspace, pass_reasons = run.use_hammerspace, run.pass_reasons
+        # Skin data is model-level — purge stale edited fields, then re-encode.
+        # Both only make sense when a skinned donor mesh is actually part of
+        # this export: purging and re-encoding without one would drop the
+        # model's whole SK1/SK2/SKAcc structure (and any skin edit from an
+        # earlier run) on, say, a custom-submesh-only export.
+        encode_unskinned_bone_reassignments(candidates, data, warnings)
+        if skinned_plans:
+            # The rebuilt body carries its own weights; SkinDataEdited
+            # describes the donor's slots and must not be written.
+            _purge_skn_edited(data)
+        elif skinned_donor_objects(candidates, data):
+            _purge_skn_edited(data)
+            if use_hammerspace:
+                try:
+                    skn_ok, skn_msg = encode_skin_hammerspace(
+                        candidates,
+                        data,
+                        warnings,
+                        use_custom_normals=self.use_custom_normals,
+                    )
+                except ValueError as exc:
+                    raise ExportCancelled(str(exc)) from exc
+                if not skn_ok:
+                    raise ExportCancelled(skn_msg)
+                if skn_msg:
+                    self.report({"INFO"}, skn_msg)
+            elif encode_skin_weights_inplace(
+                candidates, data, warnings, use_custom_normals=self.use_custom_normals
+            ) is None:
+                pass_reasons.append("skin data no longer fits its original size")
+        elif data["SluggiesModel"].get("SkinData") and _skin_data_edited_is_empty(data):
+            # Only an export from before this guard existed can have left
+            # an empty SkinDataEdited on a skinned model; it would unskin
+            # the model. Drop it so the donor structure is used again.
+            _purge_skn_edited(data)
+            warnings.append(
+                "Removed an empty SkinDataEdited left by an earlier export that "
+                "included no skinned mesh; the model's donor skinning is used again."
+            )
+
+        rebuilt_objects = [p.obj for p in list(skinned_plans.values()) + list(rigid_plans.values())]
+        try:
+            update_facial_pose_edits(
+                [obj for obj in candidates if not any(rebuilt is obj for rebuilt in rebuilt_objects)],
+                data, warnings,
+            )
+        except ValueError as exc:
+            raise ExportCancelled(f"Facial pose edit: {exc}") from exc
+        for rebuilt_plan in list(skinned_plans.values()) + list(rigid_plans.values()):
+            _drop_facial_edits_for_submesh(data, rebuilt_plan.submesh_index)
+
+        # Whole-model root-bone scale — model-level, written only when edited.
+        run.root_scale = encode_root_bone_scale_edited(candidates, data, warnings, context)
+
+    def _report_mode(self, run):
+        """Report the chosen export mode, the size estimate and how each rigid or rebuilt mesh was written."""
+        data, hammerspace_reasons = run.data, run.hammerspace_reasons
         self.report({"INFO"}, ExportMode.mode_message(hammerspace_reasons))
-        if size_line:
-            self.report({"INFO"}, size_line)
-        for obj, submesh_index in object_submesh_indices:
-            plan = rigid_plans.get(submesh_index)
+        if run.size_line:
+            self.report({"INFO"}, run.size_line)
+        for obj, submesh_index in run.object_submesh_indices:
+            plan = run.rigid_plans.get(submesh_index)
             if plan is not None:
                 self.report({"INFO"},
                     f"{obj.name}: rigid rebuild ({', '.join(plan.reasons)}): "
@@ -5007,8 +5367,8 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                     f"{len(plan.geometry.positions)} vertices on bone_{plan.host_bone_id}; "
                     + RigidRebuildExport.surface_report(obj.name, plan.routing)
                 )
-            elif submesh_index in skinned_plans:
-                skinned_plan = skinned_plans[submesh_index]
+            elif submesh_index in run.skinned_plans:
+                skinned_plan = run.skinned_plans[submesh_index]
                 self.report({"INFO"},
                     f"{obj.name}: body rebuild ({', '.join(skinned_plan.reasons)}): "
                     f"{len(skinned_plan.donor.faces)} -> {len(skinned_plan.geometry.faces)} faces, "
@@ -5017,21 +5377,17 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 )
             elif RigidRebuildExport.is_rigid_submesh(data["SluggiesModel"]["Submeshes"][submesh_index]):
                 self.report({"INFO"}, f"{obj.name}: in-place rigid edit (no rebuild needed).")
-        if use_hammerspace:
-            ExportMode.promote_inplace_uv_edits(
-                data["SluggiesModel"]["Submeshes"],
-                [obj["VertexBufferOffset"] for obj, _index in object_submesh_indices],
-            )
 
-        # StadiumCollision mirrors the selection once a file has it; a file that
-        # never had collision gets no field, so exporting a night model leaves the
-        # collision file it shares with the day model alone.
-        model = data["SluggiesModel"]
+    def _encode_collision(self, context, run):
+        """StadiumCollision mirrors the selection once a file has it; a file that never had collision gets
+        no field, so exporting a night model leaves the collision file it shares with the day model alone."""
+        collision_objects, original_colliders = run.collision_objects, run.original_colliders
+        infos = run.infos
+        model = run.data["SluggiesModel"]
         collision_error = StadiumCollisionExport.chunk_error(
             model.get("ChunkNumber"), [obj.name for obj in collision_objects])
         if collision_error:
-            self.report({"ERROR"}, collision_error)
-            return {"CANCELLED"}
+            raise ExportCancelled(collision_error)
         if original_colliders:
             model[StadiumCollisionExport.REPLACE_FIELD] = True
         else:
@@ -5039,10 +5395,9 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
         if collision_objects or original_colliders or model.get(StadiumCollisionExport.FIELD):
             try:
                 model[StadiumCollisionExport.FIELD] = encode_stadium_collision(
-                    context, collision_objects, arm_obj, warnings)
+                    context, collision_objects, run.arm_obj, run.warnings)
             except ValueError as exc:
-                self.report({"ERROR"}, str(exc))
-                return {"CANCELLED"}
+                raise ExportCancelled(str(exc)) from exc
             if original_colliders:
                 infos.append(
                     f"Stadium collision rebuilt from the scene: {len(original_colliders)} original "
@@ -5051,32 +5406,43 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 infos.append(
                     f"Stadium collision: {len(collision_objects)} object(s) "
                     f"({', '.join(obj.name for obj in collision_objects)})")
-                if invisible_objects:
+                if run.invisible_objects:
                     infos.append("Collision only, not drawn: "
-                                 + ", ".join(obj.name for obj in invisible_objects))
+                                 + ", ".join(obj.name for obj in run.invisible_objects))
             else:
                 infos.append("Stadium collision: no collision object selected; "
                              "the patcher restores the stadium's vanilla collision")
         else:
             model.pop(StadiumCollisionExport.FIELD, None)
 
+    def _report_notes(self, run):
+        """Report the notes the encode collected, and refuse an export that wrote nothing."""
+        custom_submesh_entries = run.custom_submesh_entries
         # INFO stays out of the report popup: the file browser shows only
         # WARNING and above there; the Info editor still lists these.
-        for i in infos:
+        for i in run.infos:
             self.report({"INFO"}, i)
-        for w in warnings:
+        for w in run.warnings:
             self.report({"WARNING"}, w)
-        for e in errors:
+        for e in run.errors:
             self.report({"ERROR"}, e)
 
+        written = run.written
         written += len(custom_submesh_entries)
-        if written == 0 and not collision_objects:
-            self.report({"ERROR"}, "No submeshes written. Check the warnings above.")
-            return {"CANCELLED"}
+        run.written = written
+        if written == 0 and not run.collision_objects:
+            raise ExportCancelled("No submeshes written. Check the warnings above.")
 
+    def _finish_model_fields(self, run):
+        """Write the model-level fields that describe the whole export: the mode, the texture lists and
+        the custom submeshes."""
+        data, texture_dir, use_hammerspace = run.data, run.texture_dir, run.use_hammerspace
+        additions, desired_assignments = run.additions, run.desired_assignments
+        custom_additions, new_surface_additions = run.custom_additions, run.new_surface_additions
+        custom_submesh_entries = run.custom_submesh_entries
         data["SluggiesModel"]["UseHammerspace"] = use_hammerspace
         data["SluggiesModel"]["ReimportTextures"] = (
-            self.reimport_textures and bool(local_texture_descriptors)
+            self.reimport_textures and bool(run.local_texture_descriptors)
         )
         # A RigidRebuild left on an unselected submesh by an earlier export
         # keeps its bone move and its PNGs (the two model-level fields above
@@ -5093,22 +5459,20 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
 
         carried = RigidRebuildExport.carry_unselected_rebuilds(
             data["SluggiesModel"],
-            [index for _obj, index in object_submesh_indices],
+            [index for _obj, index in run.object_submesh_indices],
             data["SluggiesModel"].get("AdditionalTextureDescriptors") or [],
             recover_addition=_recover_addition,
         )
         if carried.errors:
-            for message in carried.errors:
-                self.report({"ERROR"}, message)
-            return {"CANCELLED"}
+            raise ExportCancelled(carried.errors)
         for message in carried.messages:
             self.report({"INFO"}, message)
         additions = _merge_texture_additions(
             additions, custom_additions + new_surface_additions + carried.additions,
         )
-        texture_copies = [
+        run.texture_copies = [
             (source_path, os.path.join(texture_dir, name))
-            for name, source_path in planned_texture_copies.items()
+            for name, source_path in run.planned_texture_copies.items()
         ]
         if additions:
             data["SluggiesModel"]["AdditionalTextureDescriptors"] = additions
@@ -5132,16 +5496,16 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
                 "Texture slots were refilled: a paired low-poly (_L_) model may now show other "
                 "textures; check it with Manage texture slots.")
 
-        # PNGs linked from outside tex/ (and other formats' PNG conversions)
-        # are copied in now, once nothing can cancel the export, so the
-        # patcher finds them by name.
+    def _copy_textures(self, run):
+        """PNGs linked from outside tex/ (and other formats' PNG conversions) are copied in now, once
+        nothing but the write itself can cancel the export, so the patcher finds them by name."""
+        texture_copies = run.texture_copies
         try:
             for source_path, target_path in texture_copies:
                 os.makedirs(os.path.dirname(target_path), exist_ok=True)
                 shutil.copyfile(source_path, target_path)
         except OSError as exc:
-            self.report({"ERROR"}, f"Could not copy texture into tex/: {exc}")
-            return {"CANCELLED"}
+            raise ExportCancelled(f"Could not copy texture into tex/: {exc}") from exc
         for source_path, target_path in texture_copies:
             original = TextureConvert.source_of(source_path)
             if original:
@@ -5149,22 +5513,24 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             else:
                 self.report({"INFO"}, f"Copied {source_path} to {target_path}")
 
+    def _write_file(self, context, run):
+        """Write the ``.sluggie`` and make the scene belong to it."""
+        data, arm_obj, root_scale = run.data, run.arm_obj, run.root_scale
         try:
             FieldCodec.dump_sluggie(data, self.filepath)
         except OSError as exc:
-            self.report({"ERROR"},
-                f"Could not write {self.filepath}: {exc}. The file is as it was before the export.")
-            return {"CANCELLED"}
+            raise ExportCancelled(
+                f"Could not write {self.filepath}: {exc}. The file is as it was before the export.") from exc
         self._wrote_file = True
         # The scene now belongs to the written file (a new name, or the
         # target an armature with a lost source read): the next export,
         # Check Models and Texture slots use it.
         if arm_obj is not None:
             SluggiePath.remember(arm_obj, self.filepath)
-        if save_as and arm_obj is not None:
+        if run.save_as and arm_obj is not None:
             self.report({"INFO"},
                 f"Saved as a new file; {arm_obj.name} now uses {self.filepath} "
-                f"({os.path.basename(source_path)} is unchanged).")
+                f"({os.path.basename(run.source_path)} is unchanged).")
 
         context.window_manager.clipboard = ModelCheckCore.clipboard_text(self.filepath)
         scale_note = (
@@ -5172,8 +5538,7 @@ class SLUGGIES_OT_export(bpy.types.Operator, ExportHelper):
             if root_scale else ""
         )
         self.report({"INFO"},
-            f"Wrote edited vertex data for {written} submesh(es){scale_note} to {self.filepath}")
-        return {"FINISHED"}
+            f"Wrote edited vertex data for {run.written} submesh(es){scale_note} to {self.filepath}")
 
 
 def menu_func_export(self, context):

@@ -92,15 +92,18 @@ class CustomSubmeshExportGuardTests(unittest.TestCase):
             node for node in tree.body
             if isinstance(node, ast.ClassDef) and node.name == 'SLUGGIES_OT_export'
         )
-        execute = next(
-            node for node in export_class.body
-            if isinstance(node, ast.FunctionDef) and node.name == 'execute'
-        )
         gates = [
-            ast.unparse(node.test) for node in ast.walk(execute)
+            ast.unparse(node.test) for method in _execute_methods(export_class) for node in ast.walk(method)
             if isinstance(node, ast.If) and 'not self.reimport_textures' in ast.unparse(node.test)
         ]
         self.assertEqual(gates, [])
+
+
+def _execute_methods(export_class):
+    """``execute`` and the phase methods it runs, which follow it in the class in the order they run."""
+    methods = [node for node in export_class.body if isinstance(node, ast.FunctionDef)]
+    start = next(i for i, node in enumerate(methods) if node.name == 'execute')
+    return methods[start:]
 
 
 def _execute_source():
@@ -109,10 +112,7 @@ def _execute_source():
         node for node in tree.body
         if isinstance(node, ast.ClassDef) and node.name == 'SLUGGIES_OT_export'
     )
-    return ast.unparse(next(
-        node for node in export_class.body
-        if isinstance(node, ast.FunctionDef) and node.name == 'execute'
-    ))
+    return '\n'.join(ast.unparse(node) for node in _execute_methods(export_class))
 
 
 class _FakeMaterial:

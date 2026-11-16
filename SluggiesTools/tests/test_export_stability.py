@@ -148,6 +148,59 @@ class LengthCheckTests(unittest.TestCase):
         self.assertIn('vertex count changed', issues[0])
 
 
+class ExportPhaseTests(unittest.TestCase):
+    """``execute`` runs phase methods; a phase stops the export only by raising ``ExportCancelled``."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tree = ast.parse(EXPORT_PATH.read_text(encoding='utf-8'))
+        operator = next(node for node in cls.tree.body
+                        if isinstance(node, ast.ClassDef) and node.name == 'SLUGGIES_OT_export')
+        cls.methods = {node.name: node for node in operator.body if isinstance(node, ast.FunctionDef)}
+
+    def _cancelled_class(self):
+        node = next(node for node in self.tree.body
+                    if isinstance(node, ast.ClassDef) and node.name == 'ExportCancelled')
+        namespace = {}
+        exec(compile(ast.Module(body=[node], type_ignores=[]), str(EXPORT_PATH), 'exec'), namespace)
+        return namespace['ExportCancelled']
+
+    def test_cancel_carries_one_or_several_messages(self):
+        cancelled = self._cancelled_class()
+        self.assertEqual(cancelled('one').messages, ['one'])
+        self.assertEqual(cancelled(['one', 'two']).messages, ['one', 'two'])
+        # The phases turn an encoder's ValueError into a cancel inside `except ValueError` blocks.
+        self.assertFalse(issubclass(cancelled, ValueError))
+
+    def test_execute_runs_every_phase_and_catches_the_cancel_once(self):
+        execute = self.methods['execute']
+        called = [node.func.attr for node in ast.walk(execute)
+                  if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                  and isinstance(node.func.value, ast.Name) and node.func.value.id == 'self'
+                  and node.func.attr.startswith('_')]
+        self.assertGreater(len(called), 10)
+        self.assertEqual(len(called), len(set(called)))
+        # The phases are defined after `execute`, in the order they run (the wiring tests rely on it).
+        phases_in_file = [name for name in self.methods if name in called]
+        self.assertEqual(phases_in_file, called)
+        handlers = [node for node in ast.walk(execute) if isinstance(node, ast.ExceptHandler)]
+        self.assertEqual([ast.unparse(handler.type) for handler in handlers], ['ExportCancelled'])
+
+    def test_no_phase_returns_cancelled_or_reports_an_error_itself(self):
+        names = list(self.methods)
+        for name in names[names.index('execute') + 1:]:
+            source = ast.unparse(self.methods[name])
+            self.assertNotIn('CANCELLED', source, name)
+            if name != '_report_notes':                 # it reports the collected non-fatal errors
+                self.assertNotIn("self.report({'ERROR'}", source, name)
+
+    def test_execute_and_its_phases_stay_short(self):
+        names = list(self.methods)
+        for name in names[names.index('execute'):]:
+            node = self.methods[name]
+            self.assertLessEqual(node.end_lineno - node.lineno + 1, 100, name)
+
+
 class AtomicSluggieWriteTests(unittest.TestCase):
     WRITERS = (('binfmt', binfmt), ('add-on', FieldCodec))
 
